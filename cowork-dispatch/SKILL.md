@@ -28,6 +28,33 @@ Use this skill when the user asks for any of the following:
 - External Codex CLI is used only for execution tasks from `.cowork/tasks.yaml`.
 - `tasks.yaml` is only for approved execution work. Never put spec review, plan review, or planning tasks into YAML.
 
+## Default Execution Mode
+
+When the user says "cowork", "CoWork", or activates the collaboration flow, run the **full pipeline end-to-end** without pausing between phases:
+
+```
+init → spec (brainstorm + draft + Codex review loop) → plan (Codex draft + Claude review loop + commit) → dispatch → monitor → verify results → report
+```
+
+**Continue by default.** Do not ask for confirmation between phases. After each phase completes, immediately proceed to the next. Report progress in one sentence per phase transition (e.g., "Spec approved, proceeding to plan.").
+
+**Pause only when:**
+
+- A design choice or ambiguity requires user decision (e.g., approach A vs B during brainstorm).
+- Codex review raises a major issue that has multiple valid resolutions.
+- An unrecoverable error occurs (quota exhausted on all accounts, zmx session conflict).
+- Codex execution fails with `status: failed` in results.
+
+**Do not pause for:**
+
+- Spec minor corrections — Codex or Claude Code fixes them and continues.
+- Plan gaps or contradictions — send feedback to Codex, re-review, continue.
+- 503 errors — auto-retry with `zmx send "GO"` and continue.
+- Quota exhaustion on one account — auto-switch with `codex-multi-auth` and continue.
+- Test failures during Codex execution — Codex handles them per the plan.
+
+**After Codex completes:** read `.cowork/results.yaml`, review the diff (`git diff`), run the full test suite, and report the final status to the user. If all tests pass, the flow is done. If tests fail or results show `partial`/`failed`, diagnose and report.
+
 ## Commands
 
 ### init
@@ -87,11 +114,7 @@ Use this skill when the user asks for any of the following:
    - Always wrap the codex command with `bash -c '...'`. zmx passes arguments as-is; without `bash -c`, a command string with flags is treated as a single executable name.
    - Use `codex --dangerously-bypass-approvals-and-sandbox` (not `codex exec`; the full client handles zmx sessions correctly).
 
-8. Wait 3 minutes, then check progress:
-
-   ```bash
-   zmx history cx-<name> | tail -20
-   ```
+8. **Initial error check** — wait 3 minutes, then run `zmx history cx-<name> | tail -20` once to detect startup failures (503, quota).
 
 9. If history shows a 503-style error, run:
 
@@ -109,7 +132,24 @@ Use this skill when the user asks for any of the following:
     5. Report: `Switched account and retried.`
 
 11. If no account has quota, report that manual action is required. Do not delete dispatched tasks from `.cowork/tasks.yaml`.
-12. Tell the user:
+
+12. **Completion monitoring** — after the initial error check passes, use a single background file-based monitor. Do not repeatedly call `zmx history`.
+
+    ```bash
+    until [ -f .cowork/results.yaml ] && grep -q '^\[\]' .cowork/tasks.yaml 2>/dev/null; do
+      sleep 30
+    done
+    zmx history cx-<name> | tail -60
+    ```
+
+    Rules:
+    - Check file state (`tasks.yaml` → `[]` and `results.yaml` exists), not zmx history output (format is unstable: `Wrote` vs `Edited`).
+    - Use `sleep 30`, not `sleep 10`.
+    - Run this as a single background monitor. Do not manually call `zmx history` in a loop.
+    - At most one additional mid-progress check at 3 minutes. No consecutive checks.
+    - Only read `zmx history` once after the monitor signals completion.
+
+13. Tell the user:
     - `zmx attach cx-<name>` shows live progress.
     - `zmx history cx-<name> | tail -30` shows recent output.
     - `zmx wait cx-<name>` blocks until the session task completes.
