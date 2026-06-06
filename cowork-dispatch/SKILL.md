@@ -64,9 +64,10 @@ init → spec (brainstorm + draft + Codex review loop) → plan (Codex draft + C
 ### init
 
 1. Create `.cowork/` in the project root if missing.
-2. Create `.cowork/tasks.yaml` with `[]` if missing.
-3. Create `.cowork/results.yaml` with `[]` if missing.
-4. Do not overwrite non-empty existing queue or result files.
+2. Ensure `.cowork/` is excluded in `.gitignore`; if it is not, add it and commit the `.gitignore` change.
+3. Create `.cowork/tasks.yaml` with `[]` if missing.
+4. Create `.cowork/results.yaml` with `[]` if missing.
+5. Do not overwrite non-empty existing queue or result files.
 
 ### spec
 
