@@ -129,7 +129,11 @@ model 與 effort 會依 client 類型映射到對應 CLI 旗標：
    codex exec ... "review prompt" 2>>"$LOG" | tee -a "$LOG"
    ```
    log 命名格式：`spec-review-<ISO8601>.log`。多輪審查產生多個 log 檔。
-5. **CLI 執行監控**（有 Monitor 能力時）：以 `run_in_background: true` 執行 CLI 指令，同時以 Monitor 工具監控 log 檔（`persistent: false`）：
+5. **CLI 執行監控：**
+   - **Claude Code dispatch**：以 `run_in_background: true` 執行 CLI 指令，**必須**以 Monitor 工具執行下方監控腳本（`persistent: false`）。不得改用 timeout 或同步等待。
+   - **Codex dispatch 或其他無 Monitor 的 agent**：以 `&` 背景啟動 CLI，再同步執行下方輪詢腳本。禁止以過小 timeout 直接等待。
+
+   Claude Code Monitor 腳本（`persistent: false`，DRIFT_CHECK 後重設繼續）：
    ```bash
    LOG="<log_path>"
    START=$SECONDS
@@ -149,7 +153,32 @@ model 與 effort 會依 client 類型映射到對應 CLI 旗標：
      fi
    done
    ```
-   收到 `STALL`：嘗試恢復或報告使用者。收到 `DRIFT_CHECK`：判斷 reviewer 是否死循環、prompt 劫持或偏離目標，確認偏離時終止並報告。無 Monitor 能力的 agent 維持同步執行。
+   收到 `STALL`：嘗試恢復或報告使用者。收到 `DRIFT_CHECK`：判斷 reviewer 是否死循環、prompt 劫持或偏離目標，確認偏離時終止並報告。
+
+   Codex 同步輪詢腳本（DRIFT_CHECK 後停止，由 agent 決定是否 resume）：
+   ```bash
+   LOG="<log_path>"
+   <cli_command> 2>>"$LOG" | tee -a "$LOG" &
+   CLI_PID=$!
+   START=$SECONDS
+   LAST_MOD=$(stat -c %Y "$LOG" 2>/dev/null || echo 0)
+   while sleep 300; do
+     kill -0 "$CLI_PID" 2>/dev/null || { echo "CLI completed"; break; }
+     [ -f "$LOG" ] || { echo "heartbeat: log not yet created"; continue; }
+     CURRENT_MOD=$(stat -c %Y "$LOG")
+     if [ "$CURRENT_MOD" -eq "$LAST_MOD" ]; then
+       echo "STALL: log unchanged for 5 min"
+       tail -20 "$LOG"; kill "$CLI_PID" 2>/dev/null; break
+     fi
+     LAST_MOD=$CURRENT_MOD
+     if [ $(( SECONDS - START )) -ge 1800 ]; then
+       echo "DRIFT_CHECK: $(( SECONDS - START ))s elapsed"
+       tail -20 "$LOG"; kill "$CLI_PID" 2>/dev/null; break
+     fi
+     echo "heartbeat: $(( SECONDS - START ))s elapsed"
+   done
+   ```
+   收到 `STALL`：嘗試恢復或報告使用者。收到 `DRIFT_CHECK`：確認無偏離後以 `codex exec resume <session_id>` 繼續；確認偏離時終止並報告。
 6. 小問題由 reviewer 直接修正；重大問題由 writer 修正後重新送審。
 7. 迴圈直到規格核准。不將審查工作寫入 `tasks.yaml`。
 8. **CLI 中斷防護：** 若 `codex exec` 審查因逾時或錯誤中斷，**不得自行編造審查結論**。查詢 session ID 後以 `codex exec resume` 恢復執行，取得實際審查結果。
@@ -164,7 +193,9 @@ model 與 effort 會依 client 類型映射到對應 CLI 旗標：
    codex exec ... "plan prompt" 2>>"$LOG" | tee -a "$LOG"
    ```
    log 命名格式：`plan-write-<ISO8601>.log`。審查迴圈中每次呼叫產生獨立 log。
-4. **CLI 執行監控：** 同 spec 階段步驟 5，log 路徑替換為對應的 `plan-write-*.log` 或 `plan-review-*.log`。
+4. **CLI 執行監控：**
+   - **Claude Code dispatch**：同 spec 步驟 5，log 路徑替換為 `plan-write-*.log` 或 `plan-review-*.log`。**必須**使用 Monitor，不得改用 timeout 或同步等待。
+   - **Codex dispatch 或其他無 Monitor 的 agent**：同 spec 步驟 5 Codex 同步輪詢腳本，log 路徑替換為 `plan-write-*.log` 或 `plan-review-*.log`。禁止以過小 timeout 直接等待。
 5. 有缺漏或偏離時，回饋 writer 修正後再審。
 6. **CLI 中斷防護：** 若 `codex exec` 撰寫或審查因逾時或錯誤中斷，**不得自行編造計劃內容或審查結論**。查詢 session ID 後以 `codex exec resume` 恢復執行。
 7. 規格與計劃皆核准後一起提交：
@@ -241,9 +272,11 @@ model 與 effort 會依 client 類型映射到對應 CLI 旗標：
 
    完成判定：`results.yaml` 前幾行包含已派發的 `task_id`。
 
-   **方式 A：Claude Code dispatch（有 Monitor 工具）**
+   Claude Code dispatch **必須**選擇方式 A；不得改用 timeout 或同步等待。
 
-   使用 **Monitor** 工具執行監控腳本（`persistent: false`）。非阻塞，每行 `echo` 成為 agent 通知。
+   **方式 A：Claude Code dispatch**
+
+   **必須**使用 **Monitor** 工具執行監控腳本（`persistent: false`）。非阻塞，每行 `echo` 成為 agent 通知。
 
    收到 `STALL` 通知時：檢查 `zmx list` 確認 session 狀態，視需要嘗試恢復。
    收到 `DRIFT_CHECK` 通知時：閱讀輸出內容，判斷是否死循環、prompt 劫持、或偏離任務目標。確認偏離時終止 session 並報告使用者。
@@ -259,12 +292,25 @@ model 與 effort 會依 client 類型映射到對應 CLI 旗標：
 
 7. 告知使用者可用指令：`zmx attach <session>`（即時檢視）、`zmx tail <session>`（即時跟蹤輸出）、`zmx history <session> | tail -20`（近期輸出）、`zmx list`（所有工作階段）、`Ctrl+\`（脫離 attach 不終止）。
 
-   **cli client（codex-exec / claude-cli）：** 將輸出導向 log 檔後等待完成，再讀取 `results.yaml`：
+   **cli client（codex-exec / claude-cli）：**
+   - **Claude Code dispatch**：以 `run_in_background: true` 執行 CLI 指令，**必須**以 Monitor 工具監控 log 檔（同 spec 步驟 5）。不得改用 timeout 或同步等待。
+   - **Codex dispatch 或其他無 Monitor 的 agent**：以 `&` 背景啟動 CLI，同步執行輪詢腳本（同 spec 步驟 5 Codex 同步輪詢腳本）。禁止以過小 timeout 直接等待。完成判定改為 `results.yaml` 前幾行包含已派發的 `task_id`，在 `kill -0` 檢查後加入：
+     ```bash
+     head -3 .cowork/results.yaml 2>/dev/null | grep -q "<task_id>" && { echo "DONE: <task_id>"; break; }
+     ```
+
    ```bash
    LOG=.cowork/logs/code-exec-$(date -u +%Y%m%dT%H%M%SZ).log
-   codex exec ... "runner prompt" 2>>"$LOG" | tee -a "$LOG"
+   codex exec ... "runner prompt" 2>>"$LOG" | tee -a "$LOG" &
+   CLI_PID=$!
+   # 接著執行 Codex 同步輪詢腳本
    ```
-   不需 zmx session 管理與監控。
+   不需 zmx session 管理。
+
+   **cli client 錯誤處理：**
+   - codex-exec 帳號配額耗盡（STALL 觸發或 log 出現配額錯誤）：`codex-multi-auth check` → `codex-multi-auth switch <n>` → `codex exec resume <session_id>` → 重新執行輪詢腳本
+   - 全部帳號無配額：報告需手動處理，不刪除 `tasks.yaml` 中的任務。
+   - `codex-multi-auth` 僅適用於 codex-exec；claude-cli 配額耗盡需手動處理。
 
 ### status
 
