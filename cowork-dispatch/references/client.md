@@ -21,7 +21,7 @@
 
 ## 解析優先序
 
-所有維度（client、model、effort、permission、monitor）皆遵循同一優先序：
+所有維度（client、model、effort、permission、monitor、spec_review_flow）皆遵循同一優先序：
 
 1. **使用者 prompt** — 最高優先。例如「spec 用 codex-exec 審查」「code 用 claude-tui effort max」「不要監控」。
 2. **`.cowork/config.yaml`** — 專案預設（選用）。
@@ -30,6 +30,7 @@
 `.cowork/config.yaml` 格式（僅列出需覆蓋的欄位）：
 
 ```yaml
+spec_review_flow: ai-first  # ai-first | user-first
 phases:
   spec_reviewer:
     client: codex-exec
@@ -46,6 +47,19 @@ phases:
     model: gpt-5.5
     effort: medium
     permission: danger-full-access
+  test_executor:
+    client: codex-tui
+    model: gpt-5.5
+    effort: high
+    permission: danger-full-access
+  qa_executor:
+    client: codex-tui
+    model: gpt-5.5
+    effort: high
+    permission: danger-full-access
+test:
+  max_retries: 30
+  max_retries_per_task: 7
 monitor:
   enabled: true
   review:
@@ -53,6 +67,9 @@ monitor:
     drift: 1800
   code:
     stall: 900
+    drift: 3600
+  test:
+    stall: 600
     drift: 3600
 ```
 
@@ -65,6 +82,8 @@ monitor:
 | plan_writer   | 撰寫計劃 | codex-exec  | gpt-5.5    | xhigh       | workspace-write    | 僅需讀取原始碼與寫入計劃文件             |
 | plan_reviewer | 審查計劃 | self        | —          | —           | —                  | —                                        |
 | code_executor | 執行實作 | codex-tui   | gpt-5.5    | medium      | danger-full-access | 需執行測試、安裝套件、完整系統存取       |
+| test_executor | 執行測試與修正 | codex-tui  | gpt-5.5 | high        | danger-full-access | 需寫測試、修改程式碼、使用者可介入         |
+| qa_executor   | 黑箱驗收       | codex-tui  | gpt-5.5 | high        | danger-full-access | 啟動並驅動真實 app、拿 QA 清單逐條黑箱驗收、不修改程式碼、使用者可介入 |
 
 `self` = 目前執行此 skill 的 agent 自行處理，不委派外部 client。
 
@@ -134,7 +153,7 @@ zmx run cc-<name> -d bash -c 'claude --name <task_id> --model=<model> --effort <
 - 必須用 `bash -c '...'` 包裹指令。不加時帶旗標的指令被視為單一執行檔名。
 - codex-tui 用 `codex`（非 `codex exec`）。
 - claude-tui 用 `claude`（互動模式）。`--name` 指定 session 名稱供恢復用。
-- 向運行中的 session 傳送訊息：`zmx send <session> "<message>"`。不需終止 session，訊息直接送入 stdin。常見用途：503 卡住時送 `"GO"` 恢復、補充指示、催促回應。
+- 向運行中的 session 傳送訊息：`zmx send <session> "<message>"`。不需終止 session，訊息直接送入 stdin。常見用途：503 卡住時送 `"Continue"` 恢復、補充指示、催促回應。
 
 ## 監控方式
 

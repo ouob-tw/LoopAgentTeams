@@ -11,6 +11,7 @@ YAML 列表，包含已核准的實作任務。Runner 由上而下處理。
   goal: "在 src/models/user.py 實作 SQLAlchemy User 模型"
   context:
     plan_file: "docs/plans/2026-05-18-user-api-plan.md"
+    spec_file: "docs/specs/2026-05-18-user-api-spec.md"
     related_files:
       - "src/models/"
       - "src/db.py"
@@ -29,6 +30,7 @@ YAML 列表，包含已核准的實作任務。Runner 由上而下處理。
 | `goal` | 是 | string | 實作目標 |
 | `context` | 否 | object | 執行輔助資訊 |
 | `context.plan_file` | 否 | string | 專案根目錄相對路徑，指向已核准計劃 |
+| `context.spec_file` | 否 | string | 專案根目錄相對路徑，指向已核准規格 |
 | `context.related_files` | 否 | string[] | 相關檔案或目錄 |
 | `constraints` | 否 | string[] | 實作約束 |
 | `created_by` | 是 | string | 建立此任務的 agent 識別名稱 |
