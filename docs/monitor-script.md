@@ -116,4 +116,4 @@ fi
 
 ## 與專案的關係
 
-此腳本用於 `cowork-dispatch` 的 spec/plan 審查階段（見 README 的「兩層監控」章節）。Runner 階段使用 zmx 的 `history` 指令進行類似監控，間隔更長（存活 15 分鐘、偏離 1 小時）。
+此腳本用於 `loop-dispatch` 的 spec/plan 審查階段（見 README 的「兩層監控」章節）。Runner 階段使用 zmx 的 `history` 指令進行類似監控，間隔更長（存活 15 分鐘、偏離 1 小時）。
