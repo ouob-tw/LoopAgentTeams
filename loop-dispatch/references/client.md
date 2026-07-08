@@ -235,7 +235,7 @@ while sleep ${STALL:-900}; do
     LAST_LINES=$CURRENT
   else
     echo "STALL: no new output for ${STALL:-900}s"
-    zmx history "$SESSION" | tail -20
+    zmx history "$SESSION" | tail -20; break
   fi
   if [ $(( SECONDS - LAST_DRIFT )) -ge ${DRIFT:-3600} ]; then
     echo "DRIFT_CHECK: ${SECONDS}s elapsed, verify direction"
@@ -246,6 +246,8 @@ done
 ```
 
 完成判定：`results.yaml` 前幾行包含已派發的 `task_id`。
+
+STALL 與 ALERT 只結束監控迴圈，zmx session 本身不受影響。dispatch agent 檢查後決定介入（如 `zmx send`）或重啟監控，與 exec 腳本行為一致。
 
 ### 監控事件處理
 
@@ -301,7 +303,7 @@ codex exec resume --sandbox <permission> --approval-policy never <session_uuid> 
 
 #### claude-exec
 
-session ID 即啟動時 `--name` 指定的 `<agent_id>`。
+session 名稱即啟動時 `--name` 指定的 `<agent_id>`。`-p` 模式的 `--resume` 接受 session ID 或 session 名稱（在同一專案目錄下依名稱解析）；名稱不存在時直接報錯退出（exit 1），不會卡住。
 
 恢復：
 
@@ -331,12 +333,12 @@ zmx run cx-<name> -d bash -c 'codex resume --include-non-interactive --sandbox <
 
 #### claude-tui
 
-session ID 即啟動時 `--name` 指定的 `<agent_id>`。
+session 名稱即啟動時 `--name` 指定的 `<agent_id>`，在同一專案目錄下以名稱恢復。TUI 模式下名稱不存在時會開啟互動式選單並帶入搜尋詞，此時 `zmx attach` 人工處理，或 kill 後確認名稱重試。
 
-恢復：
+恢復（互動模式，不加 `-p`）：
 
 ```bash
-zmx run cc-<name> -d bash -c 'claude --resume <agent_id> --permission-mode <permission> -p "繼續執行未完成的任務"'
+zmx run cc-<name> -d bash -c 'claude --resume <agent_id> --permission-mode <permission> "繼續執行未完成的任務"'
 ```
 
 ## 注意事項
