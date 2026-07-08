@@ -148,6 +148,12 @@ loop-runner/            Runner Agent 技能（執行者）
   references/
     yaml-schema.md          tasks.yaml / results.yaml 格式定義
 
+three-tier-testing/     測試架構技能（三層分離）
+  SKILL.md                  通用原則、歸屬判斷、範圍判斷
+  references/
+    python.md               pytest 設定與指令
+    typescript.md           Vitest + Playwright 設定與指令
+
 .loop/                  執行時工作目錄（gitignore）
   tasks.yaml                待處理任務佇列
   results.yaml              執行結果
