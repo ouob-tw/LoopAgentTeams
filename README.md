@@ -2,98 +2,19 @@
 
 配合 [Superpowers](https://github.com/obra/superpowers) 規格驅動開發的多 Agent 協作技能組。
 
-使用者提出需求後，經過互動式腦力激盪確認方向，後續的規格審查、計劃產生、任務派發、背景執行、進度監控、結果驗收由系統自動串接，不需手動介入每個階段的銜接。遇到設計歧義或不可恢復的錯誤時會暫停請求決策。
+使用者提出需求後，經過互動式腦力激盪確認方向，後續的規格撰寫與審查、計劃產生、任務派發、背景執行、進度監控、結果驗收由系統自動串接，不需手動介入每個階段的銜接。遇到設計歧義或不可恢復的錯誤時會暫停請求決策。
 
-Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 CLI Agent。Runner Agent 在獨立的背景 session 中執行實作任務，完成後寫回結果。Agent 間透過 YAML 佇列（`tasks.yaml` / `results.yaml`）與 workspace 檔案解耦通訊，不依賴特定 Agent 框架。
+Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 CLI Agent。Runner Agent 在獨立的背景 session 中執行實作任務，完成後寫回結果。Agent 間透過 YAML 佇列（`tasks.yaml` / `results.yaml`）與 workspace 檔案解耦通訊。
 
 ## 特點
 
+- **不綁定 Agent 框架** — 任何支援 skills 的 Agent 都能擔任 Dispatch Agent——Claude Code、Codex、hermes、OpenClaw、Pi Agent 等；Agent 間通訊只靠 YAML 佇列與 CLI 指令，沒有框架 API、沒有 SDK
 - **不受單次額度限制** — 不依賴 `/goal` 等一次性自動化指令，任務以 session 持久化執行，不受 Codex 5 小時額度等限制，直到完成為止
 - **額度耗盡自動換號** — 搭配 [codex-multi-auth](https://github.com/nicobailey/codex-multi-auth)，Codex 帳號配額用完時自動切換到下一個帳號，無需人工介入
-- **人類可直接介入任意 Agent** — 透過 zmx session manager，隨時 attach 到任何背景執行中的 Agent（TUI 模式），即時查看進度或直接輸入訊息，不需要透過主 Agent 轉達
+- **人類可直接介入任意 Agent** — 透過 zmx session manager，隨時 attach 到任何背景執行中的 Agent（TUI 模式），即時查看進度或直接輸入訊息，不需要透過 Dispatch Agent 轉達
 - **跨模型協作** — 可在不同階段召喚不同模型，例如 Opus 4.8 探索程式碼、Opus 4.6 撰寫文件、GPT-5.5 編寫程式碼，依任務特性選用最適合的模型
 - **相容未來計費模式** — 若 Anthropic 日後對 `claude -p`（CLI 同步模式）收費，可直接改用 TUI 模式讓 Agent 操控互動介面，不影響流程
 - **Runner 擁有完整權限** — 解決 Codex plugin for Claude Code 無法臨時授予 full-auto 權限的問題，Runner 在獨立 session 中執行，權限由啟動時的設定決定
-
-## 安裝
-
-需要 Unix 環境（Linux / macOS）。
-
-前置需求：
-
-| 工具 | 用途 | 必要性 |
-|------|------|--------|
-| [Node.js](https://nodejs.org/) 18+ | 執行 `npx skills` 安裝技能 | 必要 |
-| git | 版本控制、提交規格與計劃 | 必要 |
-| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Dispatch Agent 與 Runner Agent 的執行環境之一 | 至少裝一個 |
-| [Codex CLI](https://github.com/openai/codex) | Runner Agent 的執行環境之一，也用於 spec/plan 審查 | 至少裝一個 |
-| [zmx](https://github.com/neurosnap/zmx) | 長時任務的背景 session 管理（見下方說明） | zmx client 需要 |
-| [codex-multi-auth](https://github.com/nicobailey/codex-multi-auth) | Codex 多帳號切換，配額耗盡時自動切換 | 選用 |
-
-```bash
-# 安裝 Superpowers skills（腦力激盪、規格撰寫等基礎工作流）
-npx skills add obra/superpowers
-
-# 安裝 LoopAgentTeams skills
-npx skills add ouob-tw/LoopAgentTeams
-```
-
-長時任務需要 zmx（發行檔為 tar.gz，內含單一執行檔）：
-
-```bash
-ZMX_VERSION=0.6.0
-mkdir -p ~/.local/bin
-
-# Linux x86_64
-curl -fsSL "https://github.com/neurosnap/zmx/releases/download/v${ZMX_VERSION}/zmx-${ZMX_VERSION}-linux-x86_64.tar.gz" | tar -xz -C ~/.local/bin
-
-# macOS Apple Silicon
-curl -fsSL "https://github.com/neurosnap/zmx/releases/download/v${ZMX_VERSION}/zmx-${ZMX_VERSION}-macos-aarch64.tar.gz" | tar -xz -C ~/.local/bin
-```
-
-其他架構（Linux aarch64、macOS Intel）將檔名中的架構改為 `linux-aarch64` 或 `macos-x86_64`。最新版本見 [zmx releases](https://github.com/neurosnap/zmx/releases)。
-
-## zmx 是什麼
-
-[zmx](https://github.com/neurosnap/zmx) 是輕量級的 terminal session 持久化工具。與 tmux 最大的理念差異在於：zmx 不做視窗管理（pane/window/tab），而是讓每個 session 是獨立的原生滾動終端。本專案用它來背景執行 Runner Agent，Dispatch Agent 透過 zmx 指令監控進度與讀取輸出。
-
-跟 tmux 的差異：
-
-| | tmux | zmx |
-|---|---|---|
-| 核心理念 | 終端多工器，管理 pane/window/tab | 原生滾動的 session 持久化 |
-| 視窗管理 | 內建分割、切換、佈局 | 不做，每個 session 獨立存在 |
-| 滾動 | tmux 自己的 scrollback buffer | 直接用終端模擬器的原生滾動 |
-| 輸出擷取 | `capture-pane` 等複雜操作 | `zmx history` 直接取得完整 scrollback |
-| 背景執行 | `send-keys` + detach | `zmx run -d` 一行搞定 |
-| 追蹤輸出 | 需要 attach 到 pane | `zmx tail` 即時追蹤，不需 attach |
-
-## 用法
-
-在任何支援 skills 的 Code Agent 中觸發 `loop-dispatch`，會自動從腦力激盪開始跑完整流程：
-
-```
-loop 幫我做一個使用者登入功能
-```
-
-可以指定各階段的 client 設定：
-
-```
-spec 用 codex-exec 審查，code 用 claude-tui sonnet 4.6 medium
-```
-
-Runner 通常由 Dispatch 自動啟動，也可以手動觸發 `loop-runner`。
-
-### 執行中查看進度
-
-Runner 在背景跑時，可以用 zmx 指令查看：
-
-| 指令 | 說明 |
-|------|------|
-| `zmx list` | 列出所有背景 session |
-| `zmx attach <session>` | 即時檢視 Runner 執行畫面（`Ctrl+\` 脫離） |
-| `zmx tail <session>` | 追蹤 session 輸出 |
-| `zmx history <session> \| tail -20` | 查看最近輸出 |
 
 ## 流程
 
@@ -142,6 +63,71 @@ Runner 在背景跑時，可以用 zmx 指令查看：
   回報使用者
 ```
 
+## 安裝
+
+需要 Unix 環境（Linux / macOS）。
+
+前置需求：
+
+| 工具 | 用途 | 必要性 |
+|------|------|--------|
+| [Node.js](https://nodejs.org/) 18+ | 執行 `npx skills` 安裝技能 | 必要 |
+| git | 版本控制、提交規格與計劃 | 必要 |
+| [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Dispatch Agent 與 Runner Agent 的執行環境之一 | 至少裝一個 |
+| [Codex CLI](https://github.com/openai/codex) | Runner Agent 的執行環境之一，也用於 spec/plan 審查 | 至少裝一個 |
+| [zmx](https://github.com/neurosnap/zmx) | 長時任務的背景 session 管理（見 [zmx 是什麼](#zmx-是什麼)） | TUI client 需要 |
+| [codex-multi-auth](https://github.com/nicobailey/codex-multi-auth) | Codex 多帳號切換，配額耗盡時自動切換 | 選用 |
+
+```bash
+# 安裝 Superpowers skills（腦力激盪、規格撰寫等基礎工作流）
+npx skills add obra/superpowers
+
+# 安裝 LoopAgentTeams skills
+npx skills add ouob-tw/LoopAgentTeams
+```
+
+長時任務需要 zmx（發行檔為 tar.gz，內含單一執行檔）：
+
+```bash
+ZMX_VERSION=0.6.0
+mkdir -p ~/.local/bin
+
+# Linux x86_64
+curl -fsSL "https://github.com/neurosnap/zmx/releases/download/v${ZMX_VERSION}/zmx-${ZMX_VERSION}-linux-x86_64.tar.gz" | tar -xz -C ~/.local/bin
+
+# macOS Apple Silicon
+curl -fsSL "https://github.com/neurosnap/zmx/releases/download/v${ZMX_VERSION}/zmx-${ZMX_VERSION}-macos-aarch64.tar.gz" | tar -xz -C ~/.local/bin
+```
+
+其他架構（Linux aarch64、macOS Intel）將檔名中的架構改為 `linux-aarch64` 或 `macos-x86_64`。最新版本見 [zmx releases](https://github.com/neurosnap/zmx/releases)。
+
+## 用法
+
+在任何支援 skills 的 Code Agent 中觸發 `loop-dispatch`，會自動從腦力激盪開始跑完整流程：
+
+```
+loop 幫我做一個使用者登入功能
+```
+
+可以指定各階段的 client 設定：
+
+```
+spec 用 codex-exec 審查，code 用 claude-tui sonnet 4.6 medium
+```
+
+Runner 通常由 Dispatch 自動啟動，也可以手動觸發 `loop-runner`。
+
+### 執行中查看進度
+
+Runner 在背景跑時，可以用 zmx 指令查看：
+
+| 指令 | 說明 |
+|------|------|
+| `zmx list` | 列出所有背景 session |
+| `zmx attach <session>` | 即時檢視 Runner 執行畫面（`Ctrl+\` 脫離） |
+| `zmx tail <session>` | 追蹤 session 輸出 |
+| `zmx history <session> \| tail -20` | 查看最近輸出 |
+
 ## 架構
 
 ```
@@ -177,7 +163,7 @@ three-tier-testing/     測試架構技能（三層分離）
 | codex-tui   | zmx 背景執行 + codex TUI      | 長時任務        |
 | codex-exec  | codex exec（同步）             | Agent 直接呼叫  |
 
-> **TUI（Terminal UI）**：在終端機中運作的互動式圖形介面，可以即時交互與顯示執行狀態。
+> **TUI（Terminal UI）**：在終端機中運作的互動式文字介面，可即時交互與顯示執行狀態。
 
 ## 兩層監控
 
@@ -188,3 +174,22 @@ three-tier-testing/     測試架構技能（三層分離）
 | spec/plan  | 5 分鐘 log 檔無 mtime 變更    | 30 分鐘讀 log 判斷方向         |
 | runner     | 15 分鐘 zmx history 無新輸出  | 1 小時讀 zmx history 判斷方向  |
 | test/qa    | 10 分鐘無新輸出               | 1 小時讀輸出判斷方向           |
+
+## zmx 是什麼
+
+[zmx](https://github.com/neurosnap/zmx) 是輕量級的 terminal session 持久化工具。與 tmux 最大的理念差異在於：zmx 不做視窗管理（pane/window/tab），而是讓每個 session 是獨立的原生滾動終端。本專案用它來背景執行 Runner Agent，Dispatch Agent 透過 zmx 指令監控進度與讀取輸出。
+
+跟 tmux 的差異：
+
+| | tmux | zmx |
+|---|---|---|
+| 核心理念 | 終端多工器，管理 pane/window/tab | 原生滾動的 session 持久化 |
+| 視窗管理 | 內建分割、切換、佈局 | 不做，每個 session 獨立存在 |
+| 滾動 | tmux 自己的 scrollback buffer | 直接用終端模擬器的原生滾動 |
+| 輸出擷取 | `capture-pane` 等複雜操作 | `zmx history` 直接取得完整 scrollback |
+| 背景執行 | `send-keys` + detach | `zmx run -d` 一行搞定 |
+| 追蹤輸出 | 需要 attach 到 pane | `zmx tail` 即時追蹤，不需 attach |
+
+## 授權
+
+[MIT](LICENSE)

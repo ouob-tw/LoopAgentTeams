@@ -161,7 +161,7 @@ zmx run cc-<name> -d bash -c 'claude --name <agent_id> --model=<model> --effort 
 
 ## 監控方式
 
-依 dispatch agent 的能力選擇。`monitor.enabled: false` 或使用者說「不要監控」時跳過監控。
+依 Dispatch Agent 的能力選擇。`monitor.enabled: false` 或使用者說「不要監控」時跳過監控。
 
 ### Claude Code dispatch
 
@@ -247,7 +247,7 @@ done
 
 完成判定：`results.yaml` 前幾行包含已派發的 `task_id`。
 
-STALL 與 ALERT 只結束監控迴圈，zmx session 本身不受影響。dispatch agent 檢查後決定介入（如 `zmx send`）或重啟監控，與 exec 腳本行為一致。
+STALL 與 ALERT 只結束監控迴圈，zmx session 本身不受影響。Dispatch Agent 檢查後決定介入（如 `zmx send`）或重啟監控，與 exec 腳本行為一致。
 
 ### 監控事件處理
 
