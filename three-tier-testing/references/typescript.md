@@ -7,6 +7,7 @@
 | 單元測試 | Vitest | `src/**/*.test.ts` |
 | 整合測試 | Playwright | `tests/integration/*.spec.ts` |
 | E2E | Playwright | `tests/e2e/*.spec.ts` |
+| 驗收測試（選用） | Playwright | `tests/qa_e2e/*.spec.ts` |
 
 前後端分離時，以上路徑皆相對於 `<frontend>/`。整合與 E2E 皆可用 Playwright，差別在後端：mock backend → integration，真實 server → E2E。
 
@@ -23,6 +24,9 @@ npx playwright test tests/integration
 
 # 只跑 E2E
 npx playwright test tests/e2e
+
+# 只跑驗收測試
+npx playwright test tests/qa_e2e
 ```
 
 ## 環境設定
@@ -40,4 +44,5 @@ npx vitest --reporter=verbose --run 2>&1 | head -30
 # 確認 playwright 只收集指定目錄
 npx playwright test tests/integration --list
 npx playwright test tests/e2e --list
+npx playwright test tests/qa_e2e --list
 ```

@@ -63,6 +63,15 @@ description: Use when setting up test infrastructure, adding tests, reorganizing
 - 完整 API 呼叫鏈搭配真實外部服務與真實 API 金鑰
 - 判斷標準：有 mock 就不是 E2E，歸 integration
 
+## 驗收測試（`tests/qa_e2e/`，選用）
+
+三層之外的獨立目錄，存放對應規格驗收清單（QA）的測試。LoopAgentTeams 的 qa_executor 依規格逐條撰寫於此。
+
+- 技術規則同 E2E：無 mock、驅動真實應用
+- 與 `tests/e2e/` 分開的原因：每條測試對應規格的一條驗收項，由驗收方撰寫；修正實作的一方（如 test_executor）只能執行、不得修改
+- 裸跑不含此目錄，執行需明確指定（設定方式見語言 reference）
+- 前後端分離時放 `<frontend>/tests/qa_e2e/`
+
 ## 從扁平 tests/ 遷移
 
 - [ ] 建立 `tests/unit/` 和 `tests/integration/`

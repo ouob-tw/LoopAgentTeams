@@ -14,6 +14,8 @@ tests/
     conftest.py          ← DB engine、自動標記、環境載入
   e2e/                   ← 可選；前後端分離時改放 <frontend>/tests/e2e/
     conftest.py
+  qa_e2e/                ← 可選；驗收測試（見 SKILL.md），規則同 e2e
+    conftest.py
 ```
 
 每個測試子目錄都需要 `__init__.py`，缺少的話 pytest 會靜默跳過該目錄。
@@ -26,6 +28,7 @@ testpaths = ["tests/unit"]
 markers = [
     "integration: requires services (DB, cache)",
     "e2e: requires full stack with real external keys",
+    "qa_e2e: acceptance tests from spec QA checklist",
 ]
 ```
 
@@ -44,7 +47,7 @@ def pytest_collection_modifyitems(items):
         item.add_marker(pytest.mark.integration)
 ```
 
-`tests/e2e/conftest.py` 同理，改用 `pytest.mark.e2e`。
+`tests/e2e/conftest.py` 同理，改用 `pytest.mark.e2e`；`tests/qa_e2e/conftest.py` 用 `pytest.mark.qa_e2e`。
 
 ## 環境設定
 
@@ -68,6 +71,9 @@ pytest tests/unit tests/integration
 
 # E2E（Python）
 pytest tests/e2e -m e2e
+
+# 驗收測試
+pytest tests/qa_e2e -m qa_e2e
 ```
 
 ## 驗證迴圈
