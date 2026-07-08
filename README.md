@@ -4,7 +4,7 @@
 
 使用者提出需求後，經過互動式腦力激盪確認方向，後續的規格審查、計劃產生、任務派發、背景執行、進度監控、結果驗收由系統自動串接，不需手動介入每個階段的銜接。遇到設計歧義或不可恢復的錯誤時會暫停請求決策。
 
-Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 CLI Agent。Runner Agent 在獨立的背景 session 中執行實作任務，完成後寫回結果。兩者透過 YAML 佇列（`tasks.yaml` / `results.yaml`）解耦通訊，不依賴特定 Agent 框架。
+Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 CLI Agent。Runner Agent 在獨立的背景 session 中執行實作任務，完成後寫回結果。Agent 間透過 YAML 佇列（`tasks.yaml` / `results.yaml`）與 workspace 檔案解耦通訊，不依賴特定 Agent 框架。
 
 ## 特點
 
@@ -96,14 +96,14 @@ Runner 在背景跑時，可以用 zmx 指令查看：
     v
 +---------------------------+
 |  spec（規格）              |
-|  brainstorm → 撰寫 → 審查  |   <-- Superpowers 腦力激盪 + 撰寫計劃工作流
+|  brainstorm → 撰寫 → 審查  |   <-- Superpowers 腦力激盪工作流
 |  審查迴圈直到核准           |       審查委派給外部 CLI Agent
 +---------------------------+
     |
     v
 +---------------------------+
 |  plan（計劃）              |
-|  產生計劃 → 審查            |   <-- 外部 CLI Agent 撰寫，Dispatch Agent 審查
+|  產生計劃 → 審查            |   <-- Superpowers 撰寫計劃工作流
 |  審查迴圈直到核准           |       規格 + 計劃一起 git commit
 +---------------------------+
     |
@@ -123,9 +123,12 @@ Runner 在背景跑時，可以用 zmx 指令查看：
     |
     v
 +---------------------------+
-|  verify（驗收）            |
-|  讀取結果 → git diff       |   <-- 自動執行測試套件
-|  執行測試 → 診斷失敗        |       失敗時診斷並報告
+|  test（測試與驗收）         |
+|  test_executor：           |   <-- 寫整合 + E2E 測試，修到綠
+|    整合 + E2E 測試         |
+|  qa_executor：             |   <-- 依 QA 清單寫驗收測試至 qa_e2e/
+|    驗收測試 → qa_e2e/      |       失敗回饋 test_executor 修正
+|  迴圈到全過或達上限         |       結果透過 workspace 傳遞
 +---------------------------+
     |
     v
@@ -136,7 +139,9 @@ Runner 在背景跑時，可以用 zmx 指令查看：
 
 ```
 cowork-dispatch/          Dispatch Agent 技能（協調者）
-  SKILL.md                  流程定義、Client 設定、監控邏輯
+  SKILL.md                  流程定義、監控邏輯
+  references/
+    client.md               Client 指令格式、內建預設、監控腳本、Session 恢復
 
 cowork-runner/            Runner Agent 技能（執行者）
   SKILL.md                  任務讀取、實作、結果寫入
@@ -147,16 +152,17 @@ cowork-runner/            Runner Agent 技能（執行者）
   tasks.yaml                待處理任務佇列
   results.yaml              執行結果
   logs/                     CLI 執行 log
+  workspace/                Agent 間傳遞大型資料（依 task_id 分目錄）
 ```
 
 ## 支援的 Client
 
-| Client     | 執行方式                          | 適用場景        |
-| ---------- | --------------------------------- | --------------- |
-| claude-zmx | zmx 背景執行 + claude TUI     | 長時任務        |
-| claude-cli | claude -p（同步）                  | Agent 直接呼叫  |
-| codex-zmx  | zmx 背景執行 + codex TUI      | 長時任務        |
-| codex-exec | codex exec（同步）                 | Agent 直接呼叫  |
+| Client      | 執行方式                       | 適用場景        |
+| ----------- | ------------------------------ | --------------- |
+| claude-tui  | zmx 背景執行 + claude TUI     | 長時任務        |
+| claude-exec | claude -p（同步）              | Agent 直接呼叫  |
+| codex-tui   | zmx 背景執行 + codex TUI      | 長時任務        |
+| codex-exec  | codex exec（同步）             | Agent 直接呼叫  |
 
 > **TUI（Terminal UI）**：在終端機中運作的互動式圖形介面，可以即時交互與顯示執行狀態。
 
