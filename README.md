@@ -38,13 +38,20 @@ npx skills add obra/superpowers
 npx skills add ouob-tw/LoopAgentTeams
 ```
 
-長時任務需要 zmx：
+長時任務需要 zmx（發行檔為 tar.gz，內含單一執行檔）：
 
 ```bash
-# 下載 zmx 二進位檔
-curl -fsSL https://github.com/neurosnap/zmx/releases/latest/download/zmx-linux-x86_64 -o ~/.local/bin/zmx
-chmod +x ~/.local/bin/zmx
+ZMX_VERSION=0.6.0
+mkdir -p ~/.local/bin
+
+# Linux x86_64
+curl -fsSL "https://github.com/neurosnap/zmx/releases/download/v${ZMX_VERSION}/zmx-${ZMX_VERSION}-linux-x86_64.tar.gz" | tar -xz -C ~/.local/bin
+
+# macOS Apple Silicon
+curl -fsSL "https://github.com/neurosnap/zmx/releases/download/v${ZMX_VERSION}/zmx-${ZMX_VERSION}-macos-aarch64.tar.gz" | tar -xz -C ~/.local/bin
 ```
+
+其他架構（Linux aarch64、macOS Intel）將檔名中的架構改為 `linux-aarch64` 或 `macos-x86_64`。最新版本見 [zmx releases](https://github.com/neurosnap/zmx/releases)。
 
 ## zmx 是什麼
 
@@ -72,7 +79,7 @@ loop 幫我做一個使用者登入功能
 可以指定各階段的 client 設定：
 
 ```
-spec 用 codex-exec 審查，code 用 claude-zmx sonnet 4.6 medium
+spec 用 codex-exec 審查，code 用 claude-tui sonnet 4.6 medium
 ```
 
 Runner 通常由 Dispatch 自動啟動，也可以手動觸發 `loop-runner`。
@@ -180,3 +187,4 @@ three-tier-testing/     測試架構技能（三層分離）
 | ---------- | ------------------------------ | ------------------------------ |
 | spec/plan  | 5 分鐘 log 檔無 mtime 變更    | 30 分鐘讀 log 判斷方向         |
 | runner     | 15 分鐘 zmx history 無新輸出  | 1 小時讀 zmx history 判斷方向  |
+| test/qa    | 10 分鐘無新輸出               | 1 小時讀輸出判斷方向           |
