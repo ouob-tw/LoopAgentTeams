@@ -35,7 +35,7 @@ Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 C
 npx skills add obra/superpowers
 
 # 安裝 LoopAgentTeams skills
-npx skills add ouob-tw/coWorkCLIAgent
+npx skills add ouob-tw/LoopAgentTeams
 ```
 
 長時任務需要 zmx：
