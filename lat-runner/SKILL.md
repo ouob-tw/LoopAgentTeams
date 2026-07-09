@@ -29,7 +29,7 @@ compatibility: "Any Code Agent client (Claude Code, Codex CLI, etc.). Requires s
 - [ ] 若有 plan_file → 讀取計劃檔案，確認階段順序
 - [ ] 判斷是否匹配可用領域技能，匹配時載入
 - [ ] 依計劃階段順序（或 goal）執行實作
-- [ ] 在 results.yaml 頂部插入結果（使用相同 task_id）
+- [ ] 在 results.yaml 頂部插入結果（使用相同 task_id 與 agent_id）
 - [ ] 從 tasks.yaml 移除此任務
 ```
 
@@ -50,7 +50,7 @@ compatibility: "Any Code Agent client (Claude Code, Codex CLI, etc.). Requires s
 ## 後續任務
 
 - 僅在大型任務需拆分且剩餘工作可追蹤時才新增。
-- `task_id` 格式：`task-{unix_ms}-{random_hex_3}`，`created_by` 填入目前 agent 的識別名稱。
+- 沿用相同 `task_id`（Spec 檔名），`agent_id` 遞增 round（如 `code_executor_2_<task_id>`、`code_executor_3_<task_id>`），`created_by` 填入目前 agent 的識別名稱。
 - 僅限實作任務，不新增審查類任務。
 
 ## 完成輸出

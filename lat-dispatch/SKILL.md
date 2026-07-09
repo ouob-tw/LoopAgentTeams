@@ -13,7 +13,7 @@ compatibility: "Requires git and zmx. Each configured client needs its correspon
 
 ## Client 設定
 
-可用 client、指令格式、解析優先序、內建預設、config.yaml 格式參見 `references/client.md`。
+可用 client、指令格式、解析優先序、內建預設、config.yaml 格式參見 `references/clients.md`。
 
 ## 預設流程
 
@@ -64,20 +64,20 @@ compatibility: "Requires git and zmx. Each configured client needs its correspon
 3. spec 須含「驗收清單（QA）」章節。每條 Q 以可觀察的使用者行為描述目標（不用實作字眼），A 寫解法與對應測試／證據。隨規格一起確認。
 4. **若 `user-first`：** 暫停，向使用者呈現草稿全文，等待使用者同意。使用者可要求修改，修改後重新呈現直到同意。
 5. 依 `spec_reviewer` 的 client 類型呼叫審查。
-6. exec client 執行時依 `references/client.md` 的 log 擷取方式記錄輸出，依監控方式章節執行監控。
+6. exec client 執行時依 `references/clients.md` 的 log 擷取方式記錄輸出，依監控方式章節執行監控。
 7. 小問題由 reviewer 直接修正；重大問題由 writer 修正後重新送審。
 8. 迴圈直到審查通過。不將審查工作寫入 `tasks.yaml`。
 9. 向使用者呈現最終規格，等待確認後視為規格核准。
-10. 中斷時依 `references/client.md` 的中斷防護與 Session 恢復流程處理。
+10. 中斷時依 `references/clients.md` 的中斷防護與 Session 恢復流程處理。
 
 ### plan
 
 1. 規格核准後才開始。
 2. 使用 Superpowers 撰寫計劃工作流，依 `plan_writer` client 產生實作計劃 → `plan_reviewer` 對照規格審查。
 3. 計劃須將 spec 的每一條 QA 驗收項對應到具體的整合／E2E 測試目標，以及 qa_executor 的驗收方式。測試目標以英文撰寫。
-4. exec client 執行時依 `references/client.md` 的 log 擷取方式記錄輸出，依監控方式章節執行監控。
+4. exec client 執行時依 `references/clients.md` 的 log 擷取方式記錄輸出，依監控方式章節執行監控。
 5. 有缺漏或偏離時，回饋 writer 修正後再審。
-6. 中斷時依 `references/client.md` 的中斷防護與 Session 恢復流程處理。
+6. 中斷時依 `references/clients.md` 的中斷防護與 Session 恢復流程處理。
 7. 規格與計劃皆核准後一起提交：
    ```bash
    git commit -m "docs: add <feature-name> spec and implementation plan"
@@ -89,21 +89,22 @@ compatibility: "Requires git and zmx. Each configured client needs its correspon
 1. 確認計劃已通過完整審查迴圈（不是僅存在或看似完成）。
 2. 建立**一個摘要任務**指向計劃檔案，不拆分為多個細粒度任務。
 3. 附加任務至 `tasks.yaml`，欄位順序與格式參見 `lat-runner/references/yaml-schema.md`。
-   - `task_id`：`task-{unix_ms}-{random_hex_3}`
+   - `task_id`：Spec 檔名（不含 `.md`），如 `2026-07-09-user-api-spec`
+   - `agent_id`：`code_executor_1_<task_id>`
    - `goal`：一句話描述完整實作範圍
    - `context.plan_file`、`context.spec_file`、`context.related_files`
    - `constraints`：保留計劃與使用者的實作約束
    - `created_by`：目前 agent 的識別名稱
-4. 依解析出的 `code_executor` client，按 `references/client.md` 的指令格式啟動執行。
+4. 依解析出的 `code_executor` client，按 `references/clients.md` 的指令格式啟動執行。
 
    Runner prompt：
 
    ```
-   [<task_id>_code] You are the lat-runner. Read .lat/tasks.yaml, execute all pending implementation tasks following the lat-runner skill. Use sub-agents to parallelize independent development work when beneficial. Write .lat/results.yaml, remove completed tasks, then exit.
+   [<agent_id>] You are the lat-runner. Read .lat/tasks.yaml, execute all pending implementation tasks following the lat-runner skill. Use sub-agents to parallelize independent development work when beneficial. Write .lat/results.yaml, remove completed tasks, then exit.
    ```
 
-5. 依 `references/client.md` 的監控方式章節執行監控。`monitor.enabled: false` 或使用者說「不要監控」時跳過監控，直接告知使用者手動檢查。
-6. 錯誤處理依 `references/client.md` 的錯誤處理章節。
+5. 依 `references/clients.md` 的監控方式章節執行監控。`monitor.enabled: false` 或使用者說「不要監控」時跳過監控，直接告知使用者手動檢查。
+6. 錯誤處理依 `references/clients.md` 的錯誤處理章節。
 7. tui client 時告知使用者可用指令：`zmx attach <session>`（即時檢視）、`zmx list`（所有工作階段）、`Ctrl+\`（脫離 attach 不終止）。
 
 ### test
@@ -111,35 +112,35 @@ compatibility: "Requires git and zmx. Each configured client needs its correspon
 1. 確認 code_executor 已完成且 results.yaml 狀態為 `completed`。
 2. 依 `test_executor` 的 client 類型啟動測試 agent（zmx session）。
 
-   首次 test_executor prompt（`agent_id` = `<task_id>_test`）：
+   首次 test_executor prompt（`agent_id` = `test_executor_1_<task_id>`）：
 
    ```
-   [<task_id>_test] Read the spec at <spec_file> and the test targets in <plan_file>. Following the three-tier-testing skill, write and run integration tests and E2E tests for the implemented code. Use sub-agents to parallelize independent test writing when beneficial. Do not write or modify unit tests. If tests fail, fix the implementation code and re-run until all tests pass. Run unit tests to confirm no regressions before finishing. E2E tests go in the project's E2E test directory (tests/e2e/ or <frontend>/tests/e2e/).
+   [test_executor_1_<task_id>] Read the spec at <spec_file> and the test targets in <plan_file>. Following the three-tier-testing skill, write and run integration tests and E2E tests for the implemented code. Use sub-agents to parallelize independent test writing when beneficial. Do not write or modify unit tests. If tests fail, fix the implementation code and re-run until all tests pass. Run unit tests to confirm no regressions before finishing. E2E tests go in the project's E2E test directory (tests/e2e/ or <frontend>/tests/e2e/). When finished, prepend your result to .lat/results.yaml (newest first) following the yaml-schema — task_id is '<task_id>', agent_id is 'test_executor_1_<task_id>'.
    ```
 
-3. 依 `references/client.md` 的監控方式章節執行監控。
-4. test_executor 全部通過後，依 `qa_executor` client 啟動驗收（新 zmx session，`agent_id` = `<task_id>_qa`，多輪時 `<task_id>_qa_<N>`）。
+3. 依 `references/clients.md` 的監控方式章節執行監控。
+4. test_executor 全部通過後，依 `qa_executor` client 啟動驗收（新 zmx session，`agent_id` = `qa_executor_1_<task_id>`，多輪時 round 遞增）。
 
    qa_executor prompt：
 
    ```
-   [<task_id>_qa] Read the spec at <spec_file> and its acceptance checklist (QA). Following the three-tier-testing skill, launch and drive the real application as a user would, and verify each acceptance item by observing actual behavior — do NOT rely on the existing test suite. Use sub-agents to parallelize independent checklist items when beneficial. For every checklist item, write an E2E test in tests/qa_e2e/ (or <frontend>/tests/qa_e2e/) that encodes the acceptance criterion, run it against the real application, and record the result. Do not modify implementation code or existing test files. Write your results to .lat/workspace/<task_id>/qa-results.md — report each item as PASS or FAIL with evidence (command + output/log/screenshot); for FAIL include expected versus observed.
+   [qa_executor_1_<task_id>] Read the spec at <spec_file> and its acceptance checklist (QA). Following the three-tier-testing skill, launch and drive the real application as a user would, and verify each acceptance item by observing actual behavior — do NOT rely on the existing test suite. Use sub-agents to parallelize independent checklist items when beneficial. For every checklist item, write an E2E test in tests/qa_e2e/ (or <frontend>/tests/qa_e2e/) that encodes the acceptance criterion, run it against the real application, and record the result. Do not modify implementation code or existing test files. Write your results to .lat/workspace/<task_id>/qa-results.md — report each item as PASS or FAIL with evidence (command + output/log/screenshot); for FAIL include expected versus observed. Also prepend your result to .lat/results.yaml (newest first) following the yaml-schema — task_id is '<task_id>', agent_id is 'qa_executor_1_<task_id>'.
    ```
 
 5. 讀取 `.lat/workspace/<task_id>/qa-results.md`：
    - **全部 PASS** → 進入 report。
-   - **有 FAIL** → 啟動 test_executor 修正（新 zmx session，`agent_id` = `<task_id>_test_<N>`，N 為輪次）。
+   - **有 FAIL** → 啟動 test_executor 修正（新 zmx session，`agent_id` = `test_executor_<N>_<task_id>`，N 為輪次）。
 
    修正 test_executor prompt：
 
    ```
-   [<task_id>_test_<N>] Acceptance verification failed. Read the spec at <spec_file> for requirements context, and read .lat/workspace/<task_id>/qa-results.md for the failed items and evidence. Fix the implementation code so the real application satisfies these items. Re-run the failing tests in tests/qa_e2e/ to verify your fix, then run unit tests to confirm no regressions. Do not modify test files in tests/qa_e2e/.
+   [test_executor_<N>_<task_id>] Acceptance verification failed. Read the spec at <spec_file> for requirements context, and read .lat/workspace/<task_id>/qa-results.md for the failed items and evidence. Fix the implementation code so the real application satisfies these items. Re-run the failing tests in tests/qa_e2e/ to verify your fix, then run unit tests to confirm no regressions. Do not modify test files in tests/qa_e2e/. When finished, prepend your result to .lat/results.yaml (newest first) following the yaml-schema — task_id is '<task_id>', agent_id is 'test_executor_<N>_<task_id>'.
    ```
 
 6. test_executor 修完後回到步驟 4（qa_executor 重新驗收）。
 7. 迴圈直到 qa_executor 全部 PASS，或達到重試上限（`test.max_retries` / `test.max_retries_per_task`）。超過上限時暫停，向使用者報告失敗細節與證據。
 8. tui client 時告知使用者可用指令：`zmx attach <session>`（即時檢視）、`zmx list`（所有工作階段）、`Ctrl+\`（脫離 attach 不終止）。
-9. 中斷時依 `references/client.md` 的中斷防護與 Session 恢復流程處理。
+9. 中斷時依 `references/clients.md` 的中斷防護與 Session 恢復流程處理。
 
 ### report
 
@@ -159,5 +160,5 @@ compatibility: "Requires git and zmx. Each configured client needs its correspon
 
 ## 注意事項
 
-- Client 指令格式、監控、錯誤處理、Session 恢復參見 `references/client.md`。
+- Client 指令格式、監控、錯誤處理、Session 恢復參見 `references/clients.md`。
 - 佇列檔案規則參見 `lat-runner/references/yaml-schema.md`。

@@ -1,6 +1,6 @@
 # Claude Session 恢復方案決策
 
-`lat-dispatch` 需要在中斷後恢復 Claude Code session（見 client.md 的「Session 恢復」）。本文記錄兩個候選方案、實測驗證過程，以及為什麼最終採用名稱方案。
+`lat-dispatch` 需要在中斷後恢復 Claude Code session（見 clients.md 的「Session 恢復」）。本文記錄兩個候選方案、實測驗證過程，以及為什麼最終採用名稱方案。
 
 ## 候選方案
 

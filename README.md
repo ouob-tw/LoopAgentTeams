@@ -142,7 +142,7 @@ Runner 在背景跑時，可以用 zmx 指令查看：
 lat-dispatch/           Dispatch Agent 技能（協調者）
   SKILL.md                  流程定義、監控邏輯
   references/
-    client.md               Client 指令格式、內建預設、監控腳本、Session 恢復
+    clients.md               Client 指令格式、內建預設、監控腳本、Session 恢復
 
 lat-runner/             Runner Agent 技能（執行者）
   SKILL.md                  任務讀取、實作、結果寫入
