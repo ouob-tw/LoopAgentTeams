@@ -1,6 +1,6 @@
-# Loop YAML 結構定義
+# LAT YAML 結構定義
 
-`.loop/tasks.yaml` 與 `.loop/results.yaml` 的完整結構、錯誤處理規則與狀態摘要。
+`.lat/tasks.yaml` 與 `.lat/results.yaml` 的完整結構、錯誤處理規則與狀態摘要。
 
 ## tasks.yaml
 
@@ -82,14 +82,14 @@ errors:
 ### tasks.yaml 解析失敗
 
 1. 輸出錯誤訊息。
-2. 備份為 `.loop/tasks.yaml.bad`（已存在則用時間戳命名，如 `.loop/tasks.yaml.20260520T120000Z.bad`）。
+2. 備份為 `.lat/tasks.yaml.bad`（已存在則用時間戳命名，如 `.lat/tasks.yaml.20260520T120000Z.bad`）。
 3. 重建 `tasks.yaml` 內容為 `[]`。
 4. 正常退出，讓使用者檢查壞檔。
 
 ### results.yaml 解析失敗
 
 1. 輸出警告。
-2. 備份為 `.loop/results.yaml.bad`（已存在則用時間戳命名）。
+2. 備份為 `.lat/results.yaml.bad`（已存在則用時間戳命名）。
 3. 建立新 `results.yaml`，僅含當前結果。
 4. 安全時繼續處理。
 

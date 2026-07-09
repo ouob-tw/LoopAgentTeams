@@ -24,10 +24,10 @@
 所有維度（client、model、effort、permission、monitor、spec_review_flow）皆遵循同一優先序：
 
 1. **使用者 prompt** — 最高優先。例如「spec 用 codex-exec 審查」「code 用 claude-tui effort max」「不要監控」。
-2. **`.loop/config.yaml`** — 專案預設（選用）。
+2. **`.lat/config.yaml`** — 專案預設（選用）。
 3. **內建預設** — 兜底。
 
-`.loop/config.yaml` 格式（僅列出需覆蓋的欄位）：
+`.lat/config.yaml` 格式（僅列出需覆蓋的欄位）：
 
 ```yaml
 spec_review_flow: ai-first  # ai-first | user-first
@@ -102,7 +102,7 @@ codex exec --sandbox <permission> --approval-policy never --model=<model> -c mod
 Log 擷取：
 
 ```bash
-LOG=.loop/logs/<phase>-$(date -u +%Y%m%dT%H%M%SZ).log
+LOG=.lat/logs/<phase>-$(date -u +%Y%m%dT%H%M%SZ).log
 codex exec --sandbox <permission> --approval-policy never --model=<model> -c model_reasoning_effort="<effort>" "<prompt>" 2>>"$LOG" | tee -a "$LOG"
 ```
 
@@ -119,7 +119,7 @@ claude --name <agent_id> --model=<model> --effort <effort> --permission-mode <pe
 Log 擷取：
 
 ```bash
-LOG=.loop/logs/<phase>-$(date -u +%Y%m%dT%H%M%SZ).jsonl
+LOG=.lat/logs/<phase>-$(date -u +%Y%m%dT%H%M%SZ).jsonl
 claude --name <agent_id> --model=<model> --effort <effort> --permission-mode <permission> -p "<prompt>" --output-format stream-json --verbose > "$LOG"
 ```
 
@@ -227,7 +227,7 @@ while sleep ${STALL:-900}; do
   zmx list 2>/dev/null | grep -q "$SESSION" || {
     echo "ALERT: session gone"; zmx history "$SESSION" | tail -20; break
   }
-  head -3 .loop/results.yaml 2>/dev/null | grep -q "$TID" && {
+  head -3 .lat/results.yaml 2>/dev/null | grep -q "$TID" && {
     echo "DONE: $TID"; zmx history "$SESSION" | tail -20; break
   }
   CURRENT=$(zmx history "$SESSION" 2>/dev/null | wc -l)

@@ -103,10 +103,12 @@ curl -fsSL "https://github.com/neurosnap/zmx/releases/download/v${ZMX_VERSION}/z
 
 ## 用法
 
-在任何支援 skills 的 Code Agent 中觸發 `loop-dispatch`，會自動從腦力激盪開始跑完整流程：
+在任何支援 skills 的 Code Agent 中觸發 `lat-dispatch`，會自動從腦力激盪開始跑完整流程：
 
 ```
-loop 幫我做一個使用者登入功能
+# 提及 teamwork/loop/lat(LoopAgentTeams) 都可觸發
+# 注意：/loop 是 Claude Code 內建指令，避免用斜線開頭
+lat 幫我做一個使用者登入功能
 ```
 
 可以指定各階段的 client 設定：
@@ -115,7 +117,7 @@ loop 幫我做一個使用者登入功能
 spec 用 codex-exec 審查，code 用 claude-tui sonnet 4.6 medium
 ```
 
-Runner 通常由 Dispatch 自動啟動，也可以手動觸發 `loop-runner`。
+Runner 通常由 Dispatch 自動啟動，也可以手動觸發 `lat-runner`。
 
 ### 執行中查看進度
 
@@ -131,12 +133,12 @@ Runner 在背景跑時，可以用 zmx 指令查看：
 ## 架構
 
 ```
-loop-dispatch/          Dispatch Agent 技能（協調者）
+lat-dispatch/           Dispatch Agent 技能（協調者）
   SKILL.md                  流程定義、監控邏輯
   references/
     client.md               Client 指令格式、內建預設、監控腳本、Session 恢復
 
-loop-runner/            Runner Agent 技能（執行者）
+lat-runner/             Runner Agent 技能（執行者）
   SKILL.md                  任務讀取、實作、結果寫入
   references/
     yaml-schema.md          tasks.yaml / results.yaml 格式定義
@@ -147,7 +149,7 @@ three-tier-testing/     測試架構技能（三層分離）
     python.md               pytest 設定與指令
     typescript.md           Vitest + Playwright 設定與指令
 
-.loop/                  執行時工作目錄（gitignore）
+.lat/                  執行時工作目錄（gitignore）
   tasks.yaml                待處理任務佇列
   results.yaml              執行結果
   logs/                     CLI 執行 log

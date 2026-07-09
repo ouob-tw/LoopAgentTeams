@@ -1,6 +1,6 @@
 # 監控腳本說明
 
-Dispatch Agent 在 spec/plan 審查等 exec client 階段使用的監控腳本講解。啟動外部 exec client 後，以輪詢方式偵測停滯與偏離。腳本本體以 `loop-dispatch/references/client.md` 的「exec 監控腳本」為準，本文逐段解說其設計。
+Dispatch Agent 在 spec/plan 審查等 exec client 階段使用的監控腳本講解。啟動外部 exec client 後，以輪詢方式偵測停滯與偏離。腳本本體以 `lat-dispatch/references/client.md` 的「exec 監控腳本」為準，本文逐段解說其設計。
 
 ## 完整腳本
 
@@ -64,7 +64,7 @@ LAST_MOD=$(stat -c %Y "$LOG" 2>/dev/null || echo 0)
 while sleep ${STALL:-300}; do
 ```
 
-每 `STALL` 秒檢查一次（預設 300 秒，即 5 分鐘）。間隔由 `.loop/config.yaml` 的 `monitor.<階段>.stall` 決定：review 300、code 900、test 600。`sleep` 的回傳值作為迴圈條件，只要 sleep 正常完成就繼續執行。
+每 `STALL` 秒檢查一次（預設 300 秒，即 5 分鐘）。間隔由 `.lat/config.yaml` 的 `monitor.<階段>.stall` 決定：review 300、code 900、test 600。`sleep` 的回傳值作為迴圈條件，只要 sleep 正常完成就繼續執行。
 
 ### 程序存活檢查
 
@@ -119,4 +119,4 @@ Claude Code dispatch 以 Monitor 工具執行迴圈時，DRIFT_CHECK 後重設 `
 
 ## 與專案的關係
 
-此腳本用於 `loop-dispatch` 的 exec client 監控（見 README 的「兩層監控」章節）。tui client（code/test/qa 階段的 zmx session）使用 client.md 的「tui 監控腳本」，改以 `zmx history` 行數偵測停滯、`results.yaml` 判定完成，間隔更長（code 存活 15 分鐘、test 10 分鐘，偏離皆 1 小時）。
+此腳本用於 `lat-dispatch` 的 exec client 監控（見 README 的「兩層監控」章節）。tui client（code/test/qa 階段的 zmx session）使用 client.md 的「tui 監控腳本」，改以 `zmx history` 行數偵測停滯、`results.yaml` 判定完成，間隔更長（code 存活 15 分鐘、test 10 分鐘，偏離皆 1 小時）。
