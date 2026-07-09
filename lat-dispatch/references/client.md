@@ -7,7 +7,7 @@
 | Client ID  | 呼叫方式                         | 適用場景              |
 | ---------- | -------------------------------- | --------------------- |
 | claude-tui | zmx run + claude tui（detached） | 長時任務 + 能人工監控 |
-| claude-exec | claude -p "\<prompt\>"           | agent 呼叫            |
+| claude-exec | claude --print "\<prompt\>"           | agent 呼叫            |
 | codex-exec | codex exec "\<prompt\>"          | agent 呼叫            |
 | codex-tui  | zmx run + codex tui（detached）  | 長時任務 + 能人工監控 |
 
@@ -93,17 +93,19 @@ monitor:
 
 ## exec client
 
+`codex exec` 無 `--ask-for-approval` 旗標——非互動模式本身就不詢問人類。
+
 ### codex-exec
 
 ```bash
-codex exec --sandbox <permission> --approval-policy never --model=<model> -c model_reasoning_effort="<effort>" "<prompt>"
+codex exec --sandbox <permission> --model <model> --config model_reasoning_effort="<effort>" "<prompt>"
 ```
 
 Log 擷取：
 
 ```bash
 LOG=.lat/logs/<phase>-$(date -u +%Y%m%dT%H%M%SZ).log
-codex exec --sandbox <permission> --approval-policy never --model=<model> -c model_reasoning_effort="<effort>" "<prompt>" 2>>"$LOG" | tee -a "$LOG"
+codex exec --sandbox <permission> --model <model> --config model_reasoning_effort="<effort>" "<prompt>" 2>>"$LOG" | tee -a "$LOG"
 ```
 
 - stdout → terminal（AI 可見）+ log 檔
@@ -113,14 +115,14 @@ codex exec --sandbox <permission> --approval-policy never --model=<model> -c mod
 ### claude-exec
 
 ```bash
-claude --name <agent_id> --model=<model> --effort <effort> --permission-mode <permission> -p "<prompt>" --output-format stream-json --verbose > <log_path>
+claude --name <agent_id> --model=<model> --effort <effort> --permission-mode <permission> --print "<prompt>" --output-format stream-json --verbose > <log_path>
 ```
 
 Log 擷取：
 
 ```bash
 LOG=.lat/logs/<phase>-$(date -u +%Y%m%dT%H%M%SZ).jsonl
-claude --name <agent_id> --model=<model> --effort <effort> --permission-mode <permission> -p "<prompt>" --output-format stream-json --verbose > "$LOG"
+claude --name <agent_id> --model=<model> --effort <effort> --permission-mode <permission> --print "<prompt>" --output-format stream-json --verbose > "$LOG"
 ```
 
 - stdout（stream-json）→ JSONL 檔
@@ -135,6 +137,8 @@ claude --name <agent_id> --model=<model> --effort <effort> --permission-mode <pe
 
 ## tui client
 
+`codex` TUI 須加 `--ask-for-approval never`——detached session 無人值守，不加則模型會卡在等待審批。`never` 意為「自動執行所有指令，不詢問人類」。
+
 客戶端短名：claude → `cc`，codex → `cx`。
 
 工作階段命名 `<短名>-<英文短名>`（如 `cx-user-api`）。先 `zmx list` 檢查同名 session 是否存在，已存在則加數字後綴（如 `cx-user-api-2`）。
@@ -142,7 +146,7 @@ claude --name <agent_id> --model=<model> --effort <effort> --permission-mode <pe
 ### codex-tui
 
 ```bash
-zmx run cx-<name> -d bash -c 'codex --sandbox <permission> --approval-policy never --model=<model> -c model_reasoning_effort="<effort>" "<prompt>"'
+zmx run cx-<name> -d bash -c 'codex --sandbox <permission> --ask-for-approval never --model <model> --config model_reasoning_effort="<effort>" "<prompt>"'
 ```
 
 ### claude-tui
@@ -269,7 +273,7 @@ STALL 與 ALERT 只結束監控迴圈，zmx session 本身不受影響。Dispatc
 
 ### exec client
 
-- **codex-exec 配額耗盡（STALL 觸發或 log 出現配額錯誤）：** `codex-multi-auth check` → `codex-multi-auth switch <n>` → `codex exec resume --sandbox <permission> --approval-policy never <session_uuid>` → 重新執行監控
+- **codex-exec 配額耗盡（STALL 觸發或 log 出現配額錯誤）：** `codex-multi-auth check` → `codex-multi-auth switch <n>` → `codex exec resume <session_uuid>` → 重新執行監控
 - **claude-exec 配額耗盡：** 需手動處理
 - **全部帳號無配額：** 報告需手動處理，不刪除 `tasks.yaml` 中的任務
 
@@ -298,7 +302,7 @@ grep -oP 'session id: \K[0-9a-f-]+' "$LOG" | head -1
 恢復：
 
 ```bash
-codex exec resume --sandbox <permission> --approval-policy never <session_uuid> "繼續執行未完成的任務"
+codex exec resume <session_uuid> "繼續執行未完成的任務"
 ```
 
 #### claude-exec
@@ -308,7 +312,7 @@ session 名稱即啟動時 `--name` 指定的 `<agent_id>`。`-p` 模式的 `--r
 恢復：
 
 ```bash
-claude --resume <agent_id> --permission-mode <permission> -p "繼續執行未完成的任務"
+claude --resume <agent_id> --permission-mode <permission> --print "繼續執行未完成的任務"
 ```
 
 ### tui 恢復
@@ -328,7 +332,7 @@ grep -l "<agent_id>" ~/.codex/sessions/$(date -u +%Y/%m/%d)/*.jsonl | head -1 | 
 恢復：
 
 ```bash
-zmx run cx-<name> -d bash -c 'codex resume --include-non-interactive --sandbox <permission> --approval-policy never <session_uuid> "繼續執行未完成的任務"'
+zmx run cx-<name> -d bash -c 'codex resume --include-non-interactive --sandbox <permission> --ask-for-approval never <session_uuid> "繼續執行未完成的任務"'
 ```
 
 #### claude-tui
