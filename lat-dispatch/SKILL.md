@@ -1,11 +1,6 @@
 ---
 name: lat-dispatch
-description: >
-  Use this skill to orchestrate LoopAgentTeams (LAT) multi-agent collaboration — spec writing,
-  plan review, task dispatch, progress monitoring, and result acceptance. Use when the user
-  mentions lat, loop, teamwork, loopagentteams, multi-agent collaboration, spec/plan authoring,
-  task dispatch, queue status, or result cleanup, even if they don't name the skill directly.
-  Supports multiple Code Agent clients (Claude Code, Codex CLI, etc.).
+description: "Orchestrate LAT (LoopAgentTeams) multi-agent collaboration: spec writing, plan review, task dispatch, monitoring, testing, and acceptance. Use when the user mentions lat, loop, teamwork, loopagentteams, multi-agent, spec/plan authoring, task dispatch, queue status, or result cleanup — even without naming the skill. Supports Claude Code, Codex CLI, and other Code Agent clients."
 compatibility: "Requires git and zmx. Each configured client needs its corresponding CLI tool."
 ---
 

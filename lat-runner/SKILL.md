@@ -1,10 +1,6 @@
 ---
 name: lat-runner
-description: >
-  Use this skill to execute queued tasks from .lat/tasks.yaml — read tasks, implement
-  according to plan, write results.yaml, and remove completed tasks. Use when the prompt
-  contains lat-runner, or when asked to process .lat/tasks.yaml or .lat/results.yaml.
-  Typically launched by lat-dispatch. Works with any Code Agent client.
+description: "Execute queued tasks from .lat/tasks.yaml — read tasks, implement according to plan, write results.yaml, and remove completed tasks. Use when the prompt contains lat-runner, or when asked to process .lat/tasks.yaml or .lat/results.yaml. Typically launched by lat-dispatch."
 compatibility: "Any Code Agent client (Claude Code, Codex CLI, etc.). Requires shell access and a project workspace with .lat/ directory."
 ---
 
