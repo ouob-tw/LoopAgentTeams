@@ -86,6 +86,12 @@ npx skills add obra/superpowers
 npx skills add ouob-tw/LoopAgentTeams
 ```
 
+更新已安裝的 skills 到最新版本：
+
+```bash
+npx skills update
+```
+
 長時任務需要 zmx（發行檔為 tar.gz，內含單一執行檔）：
 
 ```bash
