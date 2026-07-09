@@ -63,7 +63,14 @@ compatibility: "Requires git and zmx. Each configured client needs its correspon
 2. 腦力激盪完成後，`spec_writer` 撰寫規格初稿。
 3. spec 須含「驗收清單（QA）」章節。每條 Q 以可觀察的使用者行為描述目標（不用實作字眼），A 寫解法與對應測試／證據。隨規格一起確認。
 4. **若 `user-first`：** 暫停，向使用者呈現草稿全文，等待使用者同意。使用者可要求修改，修改後重新呈現直到同意。
-5. 依 `spec_reviewer` 的 client 類型呼叫審查。
+5. 依 `spec_reviewer` 的 client 類型呼叫審查（`agent_id` = `spec_reviewer_1_<task_id>`）。
+
+   spec_reviewer prompt：
+
+   ```
+   [spec_reviewer_1_<task_id>] Review the spec at <spec_file>. Check for completeness, ambiguity, missing edge cases, and testability of the acceptance checklist (QA). If you find minor issues, fix them directly in the file. If you find major issues that need design decisions, list them clearly and do not modify the file. Report your review result as PASS or NEEDS_REVISION with details.
+   ```
+
 6. exec client 執行時依 `references/clients.md` 的 log 擷取方式記錄輸出，依監控方式章節執行監控。
 7. 小問題由 reviewer 直接修正；重大問題由 writer 修正後重新送審。
 8. 迴圈直到審查通過。不將審查工作寫入 `tasks.yaml`。
@@ -73,7 +80,14 @@ compatibility: "Requires git and zmx. Each configured client needs its correspon
 ### plan
 
 1. 規格核准後才開始。
-2. 使用 Superpowers 撰寫計劃工作流，依 `plan_writer` client 產生實作計劃 → `plan_reviewer` 對照規格審查。
+2. 使用 Superpowers 撰寫計劃工作流，依 `plan_writer` client 產生實作計劃（`agent_id` = `plan_writer_1_<task_id>`） → `plan_reviewer` 對照規格審查。
+
+   plan_writer prompt：
+
+   ```
+   [plan_writer_1_<task_id>] Read the approved spec at <spec_file>. Write an implementation plan that covers all requirements and maps each QA acceptance item to concrete integration/E2E test targets and qa_executor verification methods. Write test targets in English. Save the plan to <plan_file>.
+   ```
+
 3. 計劃須將 spec 的每一條 QA 驗收項對應到具體的整合／E2E 測試目標，以及 qa_executor 的驗收方式。測試目標以英文撰寫。
 4. exec client 執行時依 `references/clients.md` 的 log 擷取方式記錄輸出，依監控方式章節執行監控。
 5. 有缺漏或偏離時，回饋 writer 修正後再審。
@@ -157,6 +171,72 @@ compatibility: "Requires git and zmx. Each configured client needs its correspon
 1. 重設 `results.yaml` 為 `[]`。不修改 `tasks.yaml`。
 2. 清理 `workspace/`：刪除修改時間超過 `workspace.retention_days`（預設 60）天的子目錄。
 3. 清理 `logs/`：刪除修改時間超過 `logs.retention_days`（預設 60）天的 log 檔案。
+
+## Sub-Agent 異常診斷
+
+任何 phase 的 sub-agent（spec_reviewer、plan_writer、code_executor、test_executor、qa_executor）回報工具相關錯誤時，適用本流程。
+
+### 核心原則
+
+- **不信 sub-agent 的自我診斷。** Sub-agent 回報「沒有權限」「沒有此工具」「工具不可用」時，視為待驗證，不視為事實。常見原因是工具呼叫參數錯誤，sub-agent 誤判為權限問題。
+- **不代做。** Dispatch 絕對不接手 sub-agent 的任務。即使 sub-agent 看起來卡住，也只能診斷與通知，不可自行執行該 phase 的工作內容。
+
+### 診斷流程
+
+```
+1. 驗指令 → 確認 Dispatch 下的啟動指令正確
+2. 查 log  → 讀取 sub-agent 的 log，找到實際錯誤訊息
+3. 通知    → 把真正的錯誤原因告訴 sub-agent，讓它自行修正
+```
+
+**步驟 1 — 驗指令：**
+確認啟動指令的 permission / sandbox flag、model、prompt 格式皆正確。若指令本身有誤，修正後重新啟動 sub-agent。
+
+**步驟 2 — 查 log：**
+`.lat/logs/` 的 log 可能不完整（尤其 tui client 不經過 `.lat/logs/`）。必須直接讀取主機上 CLI 工具的完整 session JSONL。
+
+每個 phase 的啟動 prompt 皆以 `[<agent_id>]` 開頭（如 `[test_executor_1_2026-07-09-user-api-spec]`），因此可用 `agent_id` 在 session 目錄中精確定位對應的 session 檔案。
+
+定位 session 檔案：
+
+- **Codex：**
+  ```bash
+  grep -rl "<agent_id>" ~/.codex/sessions/$(date -u +%Y/%m/%d)/*.jsonl | head -1
+  ```
+  跨日加查前一天：`$(date -u -d yesterday +%Y/%m/%d)`。
+
+- **Claude Code：**
+  session 索引在 `~/.claude/sessions/<pid>.json`，內含 `name`（即 `agent_id`）與 `sessionId`。
+  ```bash
+  grep -rl "<agent_id>" ~/.claude/sessions/*.json | head -1
+  ```
+  取得 `sessionId` 後，讀取對應的 JSONL：
+  ```bash
+  ~/.claude/projects/<project-slug>/<sessionId>.jsonl
+  ```
+  `<project-slug>` 為工作目錄路徑以 `-` 取代 `/`（如 `/home/swy/myapp` → `-home-swy-myapp`）。
+
+在 JSONL 中搜尋工具呼叫錯誤：
+```bash
+grep -i "error\|failed\|permission\|denied\|invalid" <session-jsonl>
+```
+
+找到實際錯誤訊息後，判斷真正原因（參數格式錯誤、schema 不符、真的權限不足等）。
+
+**步驟 3 — 通知 sub-agent：**
+依 client 類型通知：
+- tui → `zmx send <session> "<問題描述與修正指引>"`
+- exec → 依 `references/clients.md` 的 Session 恢復流程 resume，在 prompt 中帶入問題描述
+
+通知內容須包含：實際錯誤訊息、錯誤原因、修正方向。
+
+### 重試上限
+
+同一 sub-agent 因同類工具錯誤被通知 **3 次**後仍未解決，暫停該 phase，向使用者報告：
+- sub-agent 的角色與 agent_id
+- 實際錯誤訊息
+- 已嘗試的修正指引
+- 建議的人工處理方式
 
 ## 注意事項
 
