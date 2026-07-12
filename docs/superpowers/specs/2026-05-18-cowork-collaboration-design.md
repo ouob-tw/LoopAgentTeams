@@ -1,5 +1,7 @@
 # CoWork：Claude Code + Codex CLI 協作系統
 
+> **歷史文件：** 本文件記錄 2026-05-18 的舊 `.cowork` 設計，已被現行 `lat-dispatch`／`lat-runner` 的 `.lat/workspace/<TASK_ID>/` 永久 ledger 契約取代，不得作為目前執行依據。
+
 ## 概述
 
 Claude Code 與 Codex CLI 之間的兩階段協作系統。第一階段（內部）：Claude Code 撰寫 spec/plan，並使用 Codex plugin 反覆審核直到無錯誤。第二階段（外部）：將確認過的執行任務派發到 YAML 佇列，由獨立的 Codex CLI 執行。

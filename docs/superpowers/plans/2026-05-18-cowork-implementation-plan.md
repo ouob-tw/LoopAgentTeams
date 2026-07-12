@@ -1,5 +1,7 @@
 # CoWork 協作系統 Implementation Plan
 
+> **歷史文件：** 本文件記錄 2026-05-18 的舊 `.cowork` 計劃，已被現行 `lat-dispatch`／`lat-runner` 的 `.lat/workspace/<TASK_ID>/` 永久 ledger 契約取代，不得作為目前執行依據。
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use `superpowers:subagent-driven-development` (recommended) or `superpowers:executing-plans` to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **目標：** 建立符合 agentskills.io 規格的 `cowork-dispatch` 與 `cowork-runner` 兩個 skill，讓 Claude Code 負責規劃、審核、派發與啟動外部 Codex CLI session，Codex CLI 負責從 YAML 佇列執行任務並寫回結果。

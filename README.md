@@ -4,7 +4,7 @@
 
 使用者提出需求後，經過互動式腦力激盪確認方向，後續的規格撰寫與審查、計劃產生、任務派發、背景執行、進度監控、結果驗收由系統自動串接，不需手動介入每個階段的銜接。遇到設計歧義或不可恢復的錯誤時會暫停請求決策。
 
-Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 CLI Agent。Runner Agent 在獨立的背景 session 中執行實作任務，完成後寫回結果。Agent 間透過 YAML 佇列（`tasks.yaml` / `results.yaml`）與 workspace 檔案解耦通訊。
+Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 CLI Agent。Runner Agent 在獨立的背景 session 中執行實作任務，完成後寫回結果。每個 TASK_ID 在 `.lat/workspace/<TASK_ID>/` 保有獨立的 `tasks.yaml`／`results.yaml` 永久 ledger，Agent 間不共用或刪除其他任務的歷史。
 
 ## 特點
 
@@ -12,7 +12,7 @@ Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 C
 - **不受單次額度限制** — 不依賴 `/goal` 等一次性自動化指令，任務以 session 持久化執行，不受 Codex 5 小時額度等限制，直到完成為止
 - **額度耗盡自動換號** — 搭配 [codex-multi-auth](https://github.com/nicobailey/codex-multi-auth)，Codex 帳號配額用完時自動切換到下一個帳號，無需人工介入
 - **人類可直接介入任意 Agent** — 透過 zmx session manager，隨時 attach 到任何背景執行中的 Agent（TUI 模式），即時查看進度或直接輸入訊息，不需要透過 Dispatch Agent 轉達
-- **跨模型協作** — 可在不同階段召喚不同模型，例如 Opus 4.8 探索程式碼、Opus 4.6 撰寫文件、GPT-5.5 編寫程式碼，依任務特性選用最適合的模型
+- **跨模型協作** — 可在不同階段召喚不同模型，例如 Opus 4.8 探索程式碼、Opus 4.6 撰寫文件、gpt-5.6-luna 編寫程式碼，依任務特性選用最適合的模型
 - **相容未來計費模式** — 若 Anthropic 日後對 `claude -p`（CLI 同步模式）收費，可直接改用 TUI 模式讓 Agent 操控互動介面，不影響流程
 - **Runner 擁有完整權限** — 解決 Codex plugin for Claude Code 無法臨時授予 full-auto 權限的問題，Runner 在獨立 session 中執行，權限由啟動時的設定決定
 
@@ -24,21 +24,22 @@ Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 C
     v
 +---------------------------+
 |  spec（規格）              |
-|  brainstorm → 撰寫 → 審查  |   <-- Superpowers 腦力激盪工作流
-|  審查迴圈直到核准           |       審查委派給外部 CLI Agent
+|  草稿 → 初始化 TASK_ID     |   <-- Superpowers 腦力激盪工作流
+|  ledger → 外部 Reviewer    |       Reviewer 只報告、不改檔
+|  → Dispatch 獨立裁決       |
 +---------------------------+
     |
     v
 +---------------------------+
 |  plan（計劃）              |
-|  產生計劃 → 審查            |   <-- Superpowers 撰寫計劃工作流
-|  審查迴圈直到核准           |       規格 + 計劃一起 git commit
+|  外部 Writer → Reviewer    |   <-- Writer / Reviewer / Dispatch 三層
+|  → Dispatch 獨立裁決       |       規格 + 計劃一起 git commit
 +---------------------------+
     |
     v
 +---------------------------+
 |  dispatch（派發）          |
-|  建立任務 → tasks.yaml     |   <-- 一個摘要任務指向計劃檔案
+|  驗證 ledger → 加入任務    |   <-- 一個摘要任務指向計劃檔案
 |  啟動 Runner session       |       支援 zmx / CLI 兩種執行方式
 +---------------------------+
     |
@@ -46,7 +47,7 @@ Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 C
 +---------------------------+
 |  monitor（監控）           |
 |  存活檢查 + 偏離檢查       |   <-- 兩層監控，無硬性 timeout
-|  等待 results.yaml 寫入    |       卡住（STALL）或偏離方向（DRIFT_CHECK）
+|  等待 session 完成標記     |       卡住（STALL）或偏離方向（DRIFT_CHECK）
 +---------------------------+       時通知 AI 介入
     |
     v
@@ -63,9 +64,19 @@ Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 C
   回報使用者
 ```
 
+### Ledger 是什麼
+
+`ledger` 原本是金融／會計中的「分類帳」，在軟體系統中延伸為權威、持久且可追溯的紀錄。LAT 的 `tasks.yaml`／`results.yaml` 是生命週期帳本：同一筆 task 可以更新 status，但已完成的 executor round 不刪除；重試會用新的 `agent_id` 追加紀錄。
+
+它不是嚴格不可變的金融交易帳本，也不是完成後移除項目的普通 queue。Session JSONL 保存 Agent 對話，`prompts/` 保存可清理的暫存輸入，兩者都不屬於 task ledger。
+
+### 審查不是照單全收
+
+Spec／Plan Reviewer 都是 report-only，只提交附證據的 finding，不直接修改文件。Dispatch 逐項查證後標記 `ACCEPT`、`REJECT` 或 `USER_DECISION`；即使 Reviewer 回覆 `PASS`，仍會對需求範圍、QA 可測試性與高風險假設執行 focused gap scan。只有 Reviewer 與 Dispatch 裁決都完成後，該階段才通過。
+
 ## 安裝
 
-需要 Unix 環境（Linux / macOS）。
+`lat-dispatch` 的統一 Session Monitor 支援 GNU/Linux 與 macOS（macOS 內建 Bash 3.2 即可）。腳本會自動選擇 GNU 或 BSD 的 `date`／`stat` 語法，不需要另外安裝 GNU coreutils、`gdate` 或 `gstat`。
 
 前置需求：
 
@@ -73,10 +84,26 @@ Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 C
 |------|------|--------|
 | [Node.js](https://nodejs.org/) 18+ | 執行 `npx skills` 安裝技能 | 必要 |
 | git | 版本控制、提交規格與計劃 | 必要 |
+| jq、uuidgen、trash-cli | Session 解析、UUID 與安全清理 | `lat-dispatch` 必要 |
 | [Claude Code](https://docs.anthropic.com/en/docs/claude-code) | Dispatch Agent 與 Runner Agent 的執行環境之一 | 至少裝一個 |
 | [Codex CLI](https://github.com/openai/codex) | Runner Agent 的執行環境之一，也用於 spec/plan 審查 | 至少裝一個 |
 | [zmx](https://github.com/neurosnap/zmx) | 長時任務的背景 session 管理（見 [zmx 是什麼](#zmx-是什麼)） | TUI client 需要 |
 | [codex-multi-auth](https://github.com/nicobailey/codex-multi-auth) | Codex 多帳號切換，配額耗盡時自動切換 | 選用 |
+
+GNU/Linux（Debian／Ubuntu）安裝 Monitor 相依套件：
+
+```bash
+sudo apt-get update
+sudo apt-get install -y jq uuid-runtime trash-cli
+```
+
+macOS 已內建 `uuidgen`；其餘相依套件可用 Homebrew 安裝：
+
+```bash
+brew install jq trash-cli
+```
+
+Homebrew 官方 formula：[jq](https://formulae.brew.sh/formula/jq)、[trash-cli](https://formulae.brew.sh/formula/trash-cli)。macOS 相容分支已用模擬 BSD `date`／`stat` 的自動測試覆蓋，目前尚未在實體 macOS 主機執行 live smoke test。
 
 ```bash
 # 安裝 Superpowers skills（腦力激盪、規格撰寫等基礎工作流）
@@ -107,14 +134,23 @@ curl -fsSL "https://github.com/neurosnap/zmx/releases/download/v${ZMX_VERSION}/z
 
 其他架構（Linux aarch64、macOS Intel）將檔名中的架構改為 `linux-aarch64` 或 `macos-x86_64`。最新版本見 [zmx releases](https://github.com/neurosnap/zmx/releases)。
 
+### 真實 TUI + zmx 驗證紀錄
+
+2026-07-12 在 GNU/Linux 主機使用 zmx 0.6.0、Codex CLI 0.144.1 與 Claude Code 2.1.207 實際執行兩條完整流程。兩個 client 都以互動式 TUI 啟動，沒有使用 exec 模式，也沒有將 stdout／stderr 重新導向成獨立 log：
+
+| Client | 啟動與監控 | 原始 Session 證據 | 結果與清理 |
+|--------|------------|-------------------|------------|
+| Codex TUI (`gpt-5.6-luna`) | `zmx run -d` 啟動；Monitor 只傳 `agent_id` 自動定位 | `~/.codex/sessions/2026/07/12/rollout-2026-07-12T01-00-44-019f521f-cfa7-7932-b39e-988eb854c261.jsonl` | `COMPLETED`，Final Answer 為 `CODEX_TUI_ZMX_OK`；`zmx kill` 後 session 不在 `zmx list` |
+| Claude TUI (`claude-sonnet-4-6`) | `zmx run -d` 搭配預先指定的 `--session-id`；Monitor 讀明確 Project transcript | `~/.claude/projects/-home-swy-coWorkCLIAgent/2c264f29-7768-40b4-8435-527a23c15c56.jsonl` | `COMPLETED`，Final Answer 為 `CLAUDE_TUI_ZMX_OK`；`zmx kill` 後 session 不在 `zmx list` |
+
+這項 live smoke test 驗證的是 GNU/Linux host 上的完整 TUI／zmx／原始 Session JSONL 資料流。macOS 相容性目前由 Bash 3.2 parser 與模擬 BSD `date`／`stat` 測試覆蓋，尚未宣稱已在實體 macOS 主機完成 live smoke test。
+
 ## 用法
 
 在任何支援 skills 的 Code Agent 中觸發 `lat-dispatch`，會自動從腦力激盪開始跑完整流程：
 
 ```
-# 提及 teamwork/loop/lat(LoopAgentTeams) 都可觸發
-# 注意：/loop 是 Claude Code 內建指令，避免用斜線開頭
-lat 幫我做一個使用者登入功能
+lat-dispatch 幫我做一個使用者登入功能
 ```
 
 可以指定各階段的 client 設定：
@@ -147,7 +183,7 @@ lat-dispatch/           Dispatch Agent 技能（協調者）
 lat-runner/             Runner Agent 技能（執行者）
   SKILL.md                  任務讀取、實作、結果寫入
   references/
-    yaml-schema.md          tasks.yaml / results.yaml 格式定義
+    yaml-schema.md          每個 TASK_ID 的 tasks/results ledger 定義
 
 three-tier-testing/     測試架構技能（三層分離）
   SKILL.md                  通用原則、歸屬判斷、範圍判斷
@@ -156,10 +192,13 @@ three-tier-testing/     測試架構技能（三層分離）
     typescript.md           Vitest + Playwright 設定與指令
 
 .lat/                  執行時工作目錄（gitignore）
-  tasks.yaml                待處理任務佇列
-  results.yaml              執行結果
-  logs/                     CLI 執行 log
-  workspace/                Agent 間傳遞大型資料（依 task_id 分目錄）
+  logs/                     診斷資料
+  workspace/
+    <TASK_ID>/
+      tasks.yaml            不刪除的 phase/round 生命週期紀錄
+      results.yaml          不刪除的執行結果歷史
+      qa-results.md         QA 驗收證據
+      prompts/              可依 retention 清理的暫存 prompt
 ```
 
 ## 支援的 Client
@@ -179,9 +218,9 @@ three-tier-testing/     測試架構技能（三層分離）
 
 | 階段       | 存活檢查（工具是否正常運行）       | 偏離檢查（是否在做對的事）     |
 | ---------- | ------------------------------ | ------------------------------ |
-| spec/plan  | 5 分鐘 log 檔無 mtime 變更    | 30 分鐘讀 log 判斷方向         |
-| runner     | 15 分鐘 zmx history 無新輸出  | 1 小時讀 zmx history 判斷方向  |
-| test/qa    | 10 分鐘無新輸出               | 1 小時讀輸出判斷方向           |
+| spec/plan  | 5 分鐘 session JSONL 無 mtime 變更 | 30 分鐘讀 session 判斷方向  |
+| runner     | 15 分鐘 session JSONL 無 mtime 變更 | 1 小時讀 session 判斷方向   |
+| test/qa    | 10 分鐘 session JSONL 無 mtime 變更 | 1 小時讀 session 判斷方向   |
 
 ## zmx 是什麼
 

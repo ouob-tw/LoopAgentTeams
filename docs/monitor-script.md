@@ -1,122 +1,137 @@
 # 監控腳本說明
 
-Dispatch Agent 在 spec/plan 審查等 exec client 階段使用的監控腳本講解。啟動外部 exec client 後，以輪詢方式偵測停滯與偏離。腳本本體以 `lat-dispatch/references/clients.md` 的「exec 監控腳本」為準，本文逐段解說其設計。
+Dispatch Agent 在 exec / tui client 階段共用 `lat-dispatch/scripts/monitor-session.sh`。腳本直接讀取 CLI 工具的原始 Session JSONL，以修改時間偵測停滯、以 client 對應的 turn 完成契約判定完成並提取 Final Answer。安裝成 skill 後，`lat-dispatch` 內的命令從 skill root 使用相對路徑 `scripts/monitor-session.sh`。
 
-## 完整腳本
+## 設計原則
+
+Codex exec／TUI 直接監控原生 Session JSONL；Claude exec／TUI 直接監控 Project transcript。
+
+- 不使用 `tee`、獨立 exec log、`.exit` 或 `.done` marker
+- exec 與 TUI 使用相同的原始 Session 完成來源
+- `COMPLETED` 只證明最新 turn 完成，不證明 exec OS 程序退出
+- exec EOF／exit code 不屬於本 Monitor 的 turn 完成契約
+- codex 以 `agent_id`（prompt 前綴 `[<agent_id>]`）搜尋定位
+
+## 共通機制
+
+### POLL 等待
+
+`POLL` 是 Monitor 的檢查間隔，預設為 5 秒，可用 `--poll <秒數>` 覆蓋。它適用於所有外部 Agent 監控階段：`spec_reviewer`、`plan_writer`、`code_executor`、`test_executor`、`qa_executor`；由 Dispatch 自行處理的階段不使用 Monitor。
+
+- 尚未找到 JSONL 時，每隔 `POLL` 秒重新定位一次。
+- 監控中每輪檢查完成標記、mtime、STALL、DRIFT 後，等待 `POLL` 秒再檢查。
+- Monitor 啟動時立即檢查，第一次檢查前不等待；Final Answer 通常最晚在下一個 POLL 週期被發現。
+- `sleep "$POLL"` 只暫停 Monitor，不會暫停 Sub-Agent。
+
+`POLL` 是檢查頻率；`STALL` 是多久沒有進展才視為停滯；`DRIFT` 是多久提醒 Dispatch 檢查方向；`yield_time_ms` 是 Dispatch 等待 Monitor 輸出的時間。
+
+### 迴圈結構
+
+所有腳本使用 `while true; do ... sleep; done`，`sleep` 在迴圈尾部，進入迴圈時立即做第一次檢查。如果 exec/tui 在等待階段就已完成，首次迭代即可偵測到完成標記。
+
+### 停滯檢查
 
 ```bash
-LOG="<log_path>"
-
-# codex-exec 啟動：
-<codex_command> 2>>"$LOG" | tee -a "$LOG" &
-
-# claude-exec 啟動（擇一）：
-# claude ... --output-format stream-json --verbose > "$LOG" &
-
-EXEC_PID=$!
-START=$SECONDS
-LAST_MOD=$(stat -c %Y "$LOG" 2>/dev/null || echo 0)
-while sleep ${STALL:-300}; do
-  kill -0 "$EXEC_PID" 2>/dev/null || { echo "COMPLETED"; break; }
-  [ -f "$LOG" ] || continue
-  CURRENT_MOD=$(stat -c %Y "$LOG")
-  if [ "$CURRENT_MOD" -eq "$LAST_MOD" ]; then
-    echo "STALL: log unchanged for ${STALL:-300}s"
-    tail -20 "$LOG"; break
-  fi
+CURRENT_MOD=$(file_mtime "$JSONL_PATH" || echo 0)
+if [ "$CURRENT_MOD" != "$LAST_MOD" ]; then
   LAST_MOD=$CURRENT_MOD
-  if [ $(( SECONDS - START )) -ge ${DRIFT:-1800} ]; then
-    echo "DRIFT_CHECK: $(( SECONDS - START ))s elapsed"
-    tail -20 "$LOG"
-    START=$SECONDS
-  fi
-done
-```
-
-## 逐段解析
-
-### 啟動 exec client 並記錄日誌
-
-```bash
-LOG="<log_path>"
-<codex_command> 2>>"$LOG" | tee -a "$LOG" &
-EXEC_PID=$!
-```
-
-- codex-exec：stderr 追加到日誌檔，stdout 透過 `tee` 同時輸出到終端和日誌檔
-- claude-exec：stdout（stream-json）直接寫入 JSONL 日誌檔，stderr 留在終端（不可 `2>&1`，會破壞 JSONL 格式）
-- `&` 放到背景執行，`$!` 取得背景程序的 PID
-
-### 初始化計時器
-
-```bash
-START=$SECONDS
-LAST_MOD=$(stat -c %Y "$LOG" 2>/dev/null || echo 0)
-```
-
-- `$SECONDS` 是 bash 內建的秒數計數器，記錄監控起始時間
-- `stat -c %Y` 取得日誌檔的最後修改時間（unix timestamp）
-- 檔案不存在時 fallback 為 `0`，避免 stat 報錯
-
-### 主監控迴圈
-
-```bash
-while sleep ${STALL:-300}; do
-```
-
-每 `STALL` 秒檢查一次（預設 300 秒，即 5 分鐘）。間隔由 `.lat/config.yaml` 的 `monitor.<階段>.stall` 決定：review 300、code 900、test 600。`sleep` 的回傳值作為迴圈條件，只要 sleep 正常完成就繼續執行。
-
-### 程序存活檢查
-
-```bash
-kill -0 "$EXEC_PID" 2>/dev/null || { echo "COMPLETED"; break; }
-```
-
-`kill -0` 不發送信號，只檢查程序是否存在。程序已結束則輸出 `COMPLETED` 並跳出迴圈——這是「監控事件處理」表中進入下一階段的信號。
-
-### 日誌檔存在檢查
-
-```bash
-[ -f "$LOG" ] || continue
-```
-
-防禦性檢查。exec client 剛啟動的前幾秒可能還沒產生輸出，日誌檔尚未建立。跳過本次迭代，避免後續 `stat` 對不存在的檔案報錯。
-
-### STALL 偵測（停滯檢查）
-
-```bash
-CURRENT_MOD=$(stat -c %Y "$LOG")
-if [ "$CURRENT_MOD" -eq "$LAST_MOD" ]; then
-    echo "STALL: log unchanged for ${STALL:-300}s"
-    tail -20 "$LOG"; break
-fi
-LAST_MOD=$CURRENT_MOD
-```
-
-比較日誌檔的修改時間，如果一個 STALL 週期內沒有任何變化，判定 exec client 可能卡住。印出最後 20 行日誌供除錯後跳出迴圈，交由 Dispatch Agent 檢查狀態、嘗試恢復或報告使用者。
-
-### DRIFT_CHECK 偵測（偏離檢查）
-
-```bash
-if [ $(( SECONDS - START )) -ge ${DRIFT:-1800} ]; then
-    echo "DRIFT_CHECK: $(( SECONDS - START ))s elapsed"
-    tail -20 "$LOG"
-    START=$SECONDS
+  LAST_CHANGE=$SECONDS
+elif [ $((SECONDS - LAST_CHANGE)) -ge "$STALL" ]; then
+  echo "STALL: JSONL unchanged for ${STALL:-N}s"
+  exit 2
 fi
 ```
 
-每累計 `DRIFT` 秒（預設 1800 秒，即 30 分鐘），印出經過時間和最後 20 行日誌。供外部監控者（人或上層 agent）判斷 exec client 是否還在做正確的事。印完後重設 `START`，下個 DRIFT 週期才會再觸發。
+`file_mtime` 在 GNU/Linux 使用 `stat -c %y`，在 macOS 使用 BSD `stat -f %m`。mtime 改變時重設 `LAST_CHANGE`，只有連續 `STALL` 秒沒有變化才回報停滯。STALL 只結束 Monitor，不終止 exec/tui 程序，dispatch agent 收到事件後決定介入。
 
-Claude Code dispatch 以 Monitor 工具執行迴圈時，DRIFT_CHECK 後重設 `START` 繼續；Codex dispatch 以 `exec_command` 執行時，DRIFT_CHECK 後 `break`，由 agent 決定是否 resume（詳見 clients.md 的「監控方式」）。
+### 偏離檢查
 
-## 監控機制總覽
+```bash
+if [ $(( SECONDS - START )) -ge ${DRIFT:-N} ]; then
+  echo "DRIFT_CHECK: $(( SECONDS - START ))s elapsed"
+  START=$SECONDS
+fi
+```
 
-| 機制 | 觸發條件 | 行為 |
-|------|---------|------|
-| COMPLETED | PID 不存在 | 程序正常結束，停止監控，進入下一階段 |
-| STALL | 日誌一個 STALL 週期沒更新 | 印出最後 20 行日誌，跳出迴圈，交由 agent 處理 |
-| DRIFT_CHECK | 每 DRIFT 秒 | 印出進度供判斷方向，繼續執行 |
+每累計 `DRIFT` 秒輸出經過時間。Claude Code dispatch 以 Monitor 執行時重設繼續；Codex dispatch 以 `exec_command` 執行時，agent 收到輸出後自行決定是否中斷。
 
-## 與專案的關係
+### 完成標記
 
-此腳本用於 `lat-dispatch` 的 exec client 監控（見 README 的「兩層監控」章節）。tui client（code/test/qa 階段的 zmx session）使用 clients.md 的「tui 監控腳本」，改以 `zmx history` 行數偵測停滯、`results.yaml` 中的 `agent_id` 判定完成，間隔更長（code 存活 15 分鐘、test 10 分鐘，偏離皆 1 小時）。
+| Client | 完成標記 | 檢查方式 | 結果提取 |
+|--------|---------|---------|---------|
+| Claude exec / TUI | Project transcript 的 `assistant` + text + `stop_reason == "end_turn"` | 先找最後一筆人類 user prompt，再找其後最後一筆符合條件的 assistant record | 合併該 record 的 text blocks |
+| Codex exec / TUI | 同一 turn 有 assistant `phase == "final_answer"` 與 `payload.type == "task_complete"` 或 `"turn_complete"` | 以最新 `task_started.turn_id` 配對，不能假設是最後一行 | 完成事件的 `.payload.last_agent_message` |
+
+Claude 的 `last-prompt` 是恢復／分支定位資料，不是完成標記。Project transcript 的 `stop_reason == "end_turn"` 表示模型自然完成該 turn，但不表示 exec 程序已退出。
+
+Monitor 一律把 Final Answer 原文交給 Dispatch。reviewer/writer 不寫 ledger；executor 更新 `.lat/workspace/<TASK_ID>/tasks.yaml` 與 `results.yaml`，但 ledger 不能取代 Session turn 完成標記。
+
+## 共用腳本
+
+四種執行模式都呼叫 bundled Monitor。下列 repo 範例使用完整 repo-relative path；正式 skill 內與 `references/*.md` 則從 skill root 使用 `scripts/monitor-session.sh`。完整參數與 client 啟動範例見 `lat-dispatch/references/clients.md`。
+
+```bash
+lat-dispatch/scripts/monitor-session.sh codex \
+  --agent-id "$AGENT_ID" --stall 300 --drift 1800
+```
+
+Claude exec／TUI 的 Project transcript 路徑由啟動時的 `--session-id "$UUID"` 直接算出，透過 `--jsonl-path "$JSONL_PATH"` 傳入。完整啟動方式見 `lat-dispatch/references/clients.md`。
+
+恢復既有 Session 時，啟動前記錄 JSONL 行數並傳入 `--after-line <N>`；Monitor 只接受該行之後的新 turn，避免回傳上一輪 Final Answer。新 Session 預設 `--after-line 0`。
+
+### Session 定位
+
+Codex exec/tui 不傳 `--jsonl-path`；Monitor 以 `agent_id` 搜尋本地與 UTC 的今天／前一天原生 JSONL，以涵蓋跨午夜時 Codex 依本地日期建立目錄的情況。只接受 user prompt 文字以 `[<agent_id>]` 開頭的檔案，並以原生 `stat` mtime 選擇最新匹配項（GNU/Linux 為奈秒字串，macOS 為 epoch 秒）。若最高 mtime 完全相同，視為候選不明並繼續等待，不依 glob 順序猜測。搜尋時間納入 STALL；自動定位後檔案消失時只考慮該次定位後新出現的匹配路徑，避免退回舊 Session。
+
+若自動定位回報 `STALL: session file not found`，Dispatch 擴大搜尋範圍並人工確認正確 JSONL，然後以明確路徑重啟：
+
+```bash
+lat-dispatch/scripts/monitor-session.sh codex \
+  --agent-id "$AGENT_ID" --jsonl-path "$JSONL_PATH" \
+  --stall 300 --drift 1800
+```
+
+## 輸出
+
+成功時輸出固定 envelope，Final Answer 保持原文：
+
+```text
+COMPLETED
+client=codex
+agent_id=<agent_id>
+turn_id=<turn_id>
+final_answer:
+<原始 Final Answer>
+```
+
+腳本不終止 exec 或 zmx session。TUI 發生 STALL 後，Dispatch 再以 `zmx list` 診斷 session 是否仍存在。
+
+## Runtime signals
+
+| 事件 | 來源 | 處理 |
+|------|------|------|
+| `COMPLETED` | exec / tui | 對應 client 的完成契約成立，提取 Final Answer 交給 Dispatch，再依角色契約決定下一階段 |
+| `STALL` | 所有 | JSONL 修改時間停滯，交由 dispatch agent 處理 |
+| `DRIFT_CHECK` | 所有 | 累計時間過長，供判斷方向 |
+
+`DRIFT_CHECK` 是非終止通知；`COMPLETED` 與 `STALL` 會結束本次 Monitor。
+
+## Exit outcomes
+
+| Exit code | 意義 |
+|-----------|------|
+| `0` | 最新 turn 已完成，Final Answer 已輸出 |
+| `2` | Session 未出現或 JSONL 停滯 |
+| `64` | client、參數或數值格式錯誤 |
+| `65` | `--after-line` 超出目前 JSONL 範圍 |
+| `69` | 缺少必要的本機指令 |
+
+## STALL 間隔
+
+間隔由 `.lat/config.yaml` 的 `monitor.<階段>.stall` 決定：
+
+| 階段 | STALL（秒） | DRIFT（秒） | 適用 |
+|------|-----------|------------|------|
+| review（spec/plan） | 300 | 1800 | exec |
+| code | 900 | 3600 | tui |
+| test | 600 | 3600 | tui |

@@ -1,39 +1,45 @@
 ---
 name: lat-runner
-description: "Execute queued tasks from .lat/tasks.yaml — read tasks, implement according to plan, write results.yaml, and remove completed tasks. Use when the prompt contains lat-runner, or when asked to process .lat/tasks.yaml or .lat/results.yaml. Typically launched by lat-dispatch."
-compatibility: "Any Code Agent client (Claude Code, Codex CLI, etc.). Requires shell access and a project workspace with .lat/ directory."
+description: "Execute one approved task from .lat/workspace/<TASK_ID>/tasks.yaml, persist its result and lifecycle status without deleting history, then exit. Use when the prompt contains lat-runner or names a LAT TASK_ID ledger. Typically launched by lat-dispatch."
+compatibility: "Any Code Agent client with shell access and a project workspace containing .lat/workspace/<TASK_ID>/."
 ---
 
 # LAT Runner
 
-執行 `.lat/tasks.yaml` 的已核准實作任務，通常由 `lat-dispatch` 啟動。
+執行 `.lat/workspace/<TASK_ID>/tasks.yaml` 中一筆精確匹配 `agent_id` 的已核准實作任務，通常由 `lat-dispatch` 啟動。
 
 ## 執行邊界
 
 - 僅執行已核准的實作任務。不處理規格審查或計劃審查。
-- 處理完當前佇列後正常退出。不建立背景守護程序或長期監聽器。
+- 一次只處理 prompt 指定的 `TASK_ID` 與 `agent_id`，不得掃描或執行其他 task directory。
+- 完成後正常退出。不建立背景守護程序或長期監聽器。
+- `TASK_ID` 必須符合安全 slug：只允許英數、`.`、`_`、`-`，不得為 `.`、`..`，不得含 `/`。
 
 ## 處理流程
 
-1. 讀取 `.lat/tasks.yaml`。
-2. 檔案遺失、空、或 `[]` → 輸出 `No pending tasks`，exit code `0` 退出。
-3. YAML 解析失敗 → 依 `references/yaml-schema.md` 的解析錯誤處理流程。
-4. 由上而下處理任務，每個任務依照以下檢查清單執行：
+1. 驗證 prompt 指定的 `TASK_ID` 與 `agent_id`，讀取 `.lat/workspace/<TASK_ID>/tasks.yaml` 與 `results.yaml`。
+2. 任一 ledger 遺失、空字串、格式錯誤，或找不到精確 `agent_id` → 依 `references/yaml-schema.md` 回報非零錯誤，不建立或清空檔案。
+3. 若已存在相同 `task_id + agent_id` 的 `completed` result，但 task 尚非 `completed`，只將 task 原子更新為 `completed`，不重做實作。
+4. task 必須是 `pending` 或可恢復的 `running`；`partial`、`failed`、`completed` 不直接重做，交由 Dispatch 建立下一 round。
+5. 將 task 原子更新為 `running`，再依以下檢查清單執行：
 
 ```
 - [ ] 讀取任務的 goal、context、constraints
 - [ ] 若有 plan_file → 讀取計劃檔案，確認階段順序
 - [ ] 判斷是否匹配可用領域技能，匹配時載入
 - [ ] 依計劃階段順序（或 goal）執行實作
-- [ ] 在 results.yaml 頂部插入結果（使用相同 task_id 與 agent_id）
-- [ ] 從 tasks.yaml 移除此任務
+- [ ] 以相同 task_id + agent_id 原子 upsert results.yaml
+- [ ] 將 tasks.yaml 中同一筆 task 原子更新為相同最終 status
 ```
 
 補充規則：
 - 有 `context.plan_file` 時，**必須先讀取計劃**，依定義的階段順序執行。每個階段完成後專案應可執行。
 - 無計劃檔案的簡單任務：依 `goal` 直接執行。
 - 技能不得擴大任務範圍；與 `constraints` 衝突時以 `constraints` 為準。
-- 從 `tasks.yaml` 移除已處理任務（不論完成、部分完成、或失敗）。保留未處理任務。
+- 不刪除任何 task 或 result 歷史。
+- 每次寫回先在同目錄建立暫存檔，完整解析並驗證後以 `mv` 原子替換目標檔。
+- result 先寫、task status 後寫；若兩步間中斷，下次依精確 completed result reconciliation，不重複執行。
+- `partial` 或 `failed` 寫回後立即退出並保留該 task；Dispatch 決定是否新增下一 round。
 
 ## 結果狀態
 
@@ -46,16 +52,16 @@ compatibility: "Any Code Agent client (Claude Code, Codex CLI, etc.). Requires s
 ## 後續任務
 
 - 僅在大型任務需拆分且剩餘工作可追蹤時才新增。
-- 沿用相同 `task_id`（Spec 檔名），`agent_id` 遞增 round（如 `code_executor_2_<task_id>`、`code_executor_3_<task_id>`），`created_by` 填入目前 agent 的識別名稱。
+- 沿用相同 `task_id`（Spec 檔名），由 Dispatch 在同一 `tasks.yaml` 新增遞增 round 的 `agent_id`（如 `code_executor_2_<task_id>`），`created_by` 填入 Dispatch 識別名稱。
 - 僅限實作任務，不新增審查類任務。
 
 ## 完成輸出
 
-- 無任務 → `No pending tasks`，exit code `0`。
-- 有任務 → 輸出各狀態計數（processed / completed / partial / failed）與修改檔案清單。
+- 精確 task 不存在或不可執行 → 輸出錯誤並非零退出。
+- 有任務 → 輸出最終 status、修改檔案清單與 ledger 路徑。
 - 處理完成後不保持 zmx 工作階段。
 
 ## 注意事項
 
 - 不要跳過或重新排序計劃中的階段。
-- 結果寫入規則、YAML 欄位順序、空狀態處理、解析錯誤備份流程皆參見 `references/yaml-schema.md`。
+- ledger 寫入、reconciliation、遷移、欄位順序與解析錯誤流程皆參見 `references/yaml-schema.md`。
