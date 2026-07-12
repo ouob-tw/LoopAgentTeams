@@ -7,10 +7,10 @@
 ```
 tests/
   unit/
-    __init__.py
+    __init__.py          ← 選用；只有 package-relative import 需要
     conftest.py          ← 單元測試共用 fixture（無 DB）
   integration/
-    __init__.py
+    __init__.py          ← 選用
     conftest.py          ← DB engine、自動標記、環境載入
   e2e/                   ← 可選；前後端分離時改放 <frontend>/tests/e2e/
     conftest.py
@@ -18,7 +18,7 @@ tests/
     conftest.py
 ```
 
-每個測試子目錄都需要 `__init__.py`，缺少的話 pytest 會靜默跳過該目錄。
+pytest 會依目錄層級載入 `conftest.py`，不需要用 `__init__.py` 限制 hook 範圍。只有測試使用 package-relative import 或專案慣例要求 package 時才加入 `__init__.py`。
 
 ## pyproject.toml
 
@@ -41,17 +41,21 @@ markers = [
 ```python
 # tests/integration/conftest.py
 import pytest
+from pathlib import Path
+
+INTEGRATION_DIR = Path(__file__).parent
 
 def pytest_collection_modifyitems(items):
     for item in items:
-        item.add_marker(pytest.mark.integration)
+        if INTEGRATION_DIR in item.path.parents:
+            item.add_marker(pytest.mark.integration)
 ```
 
 `tests/e2e/conftest.py` 同理，改用 `pytest.mark.e2e`；`tests/qa_e2e/conftest.py` 用 `pytest.mark.qa_e2e`。
 
 ## 環境設定
 
-**Host（預設）：** `.env.test` 指向本機開發 DB。整合測試的 conftest 用 `load_dotenv(".env.test", override=True)` 以 session scope autouse fixture 載入。
+**Host（預設）：** `.env.test` 指向本機測試 DB。在 `tests/integration/conftest.py` 頂層（fixture 之前）呼叫 `load_dotenv(".env.test", override=True)`，可保證早於該目錄的 test module import。若 root conftest、pytest plugin 或應用 bootstrap 更早 import 設定模組，必須把 `.env.test` 載入移到更早的測試入口；不要宣稱 integration conftest 一定早於所有 import。
 
 **Docker：** 建立 `docker-compose.test.yml`，服務使用非預設 port（如 Postgres 用 5433）。整合測試的 conftest 以 session scope autouse fixture 啟動／關閉容器。
 
@@ -61,19 +65,19 @@ def pytest_collection_modifyitems(items):
 
 ```bash
 # 只跑單元測試（預設）
-pytest
+uv run pytest
 
 # 只跑整合測試
-pytest tests/integration -m integration
+uv run pytest tests/integration -m integration
 
-# 全部 Python 測試
-pytest tests/unit tests/integration
+# 單元 + 整合測試
+uv run pytest tests/unit tests/integration
 
 # E2E（Python）
-pytest tests/e2e -m e2e
+uv run pytest tests/e2e -m e2e
 
 # 驗收測試
-pytest tests/qa_e2e -m qa_e2e
+uv run pytest tests/qa_e2e -m qa_e2e
 ```
 
 ## 驗證迴圈
@@ -82,10 +86,10 @@ pytest tests/qa_e2e -m qa_e2e
 
 ```bash
 # 必須只收集單元測試（無 DB fixture、無 integration 標記）
-pytest --collect-only
+uv run pytest --collect-only
 
 # 必須只收集整合測試（全部標記為 integration）
-pytest tests/integration -m integration --collect-only
+uv run pytest tests/integration -m integration --collect-only
 ```
 
-不符合預期時檢查：檔案歸屬、`__init__.py`、自動標記 conftest。
+不符合預期時檢查：檔案歸屬、conftest 作用域、自動標記與環境載入順序。

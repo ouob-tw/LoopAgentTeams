@@ -16,8 +16,8 @@
 Vitest 預設只收集 `src/**/*.test.ts`（由 vitest config 的 `include` 控制）。Playwright 需明確指定目錄：
 
 ```bash
-# 只跑單元測試（預設）
-npx vitest
+# 只跑單元測試（預設，run 避免 watch mode）
+npx vitest run
 
 # 只跑整合測試
 npx playwright test tests/integration
