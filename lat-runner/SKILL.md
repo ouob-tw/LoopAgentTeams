@@ -20,7 +20,7 @@ compatibility: "Any Code Agent client with shell access and a project workspace 
 1. 驗證 prompt 指定的 `TASK_ID` 與 `agent_id`，讀取 `.lat/workspace/<TASK_ID>/tasks.yaml` 與 `results.yaml`。
 2. 任一 ledger 遺失、空字串、格式錯誤，或找不到精確 `agent_id` → 依 `references/yaml-schema.md` 回報非零錯誤，不建立或清空檔案。
 3. 若已存在相同 `task_id + agent_id` 的 `completed` result，但 task 尚非 `completed`，只將 task 原子更新為 `completed`，不重做實作。
-4. task 必須是 `pending` 或可恢復的 `running`；`partial`、`failed`、`completed` 不直接重做，交由 Dispatch 建立下一 round。
+4. task 必須是 `pending` 或可恢復的 `running`；`partial`、`failed`、`completed` 不直接重做，交由 Dispatch 建立下一個 agent instance。
 5. 將 task 原子更新為 `running`，再依以下檢查清單執行：
 
 ```
@@ -39,7 +39,7 @@ compatibility: "Any Code Agent client with shell access and a project workspace 
 - 不刪除任何 task 或 result 歷史。
 - 每次寫回先在同目錄建立暫存檔，完整解析並驗證後以 `mv` 原子替換目標檔。
 - result 先寫、task status 後寫；若兩步間中斷，下次依精確 completed result reconciliation，不重複執行。
-- `partial` 或 `failed` 寫回後立即退出並保留該 task；Dispatch 決定是否新增下一 round。
+- `partial` 或 `failed` 寫回後立即退出並保留該 task；Dispatch 決定是否新增下一個 agent instance。
 
 ## 結果狀態
 
@@ -52,7 +52,7 @@ compatibility: "Any Code Agent client with shell access and a project workspace 
 ## 後續任務
 
 - 僅在大型任務需拆分且剩餘工作可追蹤時才新增。
-- 沿用相同 `task_id`（Spec 檔名），由 Dispatch 在同一 `tasks.yaml` 新增遞增 round 的 `agent_id`（如 `code_executor_2_<task_id>`），`created_by` 填入 Dispatch 識別名稱。
+- 沿用相同 `task_id`（Spec 檔名），由 Dispatch 在同一 `tasks.yaml` 新增遞增 instance 的 `agent_id`（如 `code_executor_2_<task_id>`），`created_by` 填入 Dispatch 識別名稱。
 - 僅限實作任務，不新增審查類任務。
 
 ## 完成輸出

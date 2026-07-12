@@ -51,7 +51,7 @@ claude --resume <agent_id> --permission-mode <permission> -p "繼續執行未完
 
 關鍵差異在於**恢復憑證是否可重組**：
 
-- `agent_id` 格式為 `<phase>_<round>_<task_id>`，是**確定性的**；同一 TASK_ID 的 tasks/results ledger 位於 `.lat/workspace/<TASK_ID>/`，可重組名稱恢復指令。
+- `agent_id` 格式為 `<phase>_<instance>_<task_id>`，是**確定性的**；同一 TASK_ID 的 tasks/results ledger 位於 `.lat/workspace/<TASK_ID>/`，可重組名稱恢復指令。instance 代表邏輯 Agent 實例；resume 相同 transcript 時不增加。
 - 啟動時仍指定 UUID，讓 Monitor 可直接計算 `~/.claude/projects/<project-slug>/<UUID>.jsonl`。恢復憑證使用名稱，因此不必把 UUID 寫進全域 queue。
 
 失敗模式也可接受：`-p` 模式名稱不存在時乾淨報錯（exit 1、訊息明確），Dispatch Agent 能立刻辨識並回報，不會靜默卡住。
@@ -61,7 +61,7 @@ claude --resume <agent_id> --permission-mode <permission> -p "繼續執行未完
 | 前提 | 現況 |
 |------|------|
 | 恢復指令須在同一專案目錄執行（名稱在專案 session 範圍內解析） | dispatch 的所有指令都在專案根目錄執行 ✓ |
-| session 名稱須唯一 | `<phase>_<round>_<task_id>` 對同一 task round 唯一 ✓ |
+| session 名稱須唯一 | `<phase>_<instance>_<task_id>` 對同一 task 的 Agent instance 唯一 ✓ |
 | TUI 模式找不到名稱會開互動式選單 | 屬恢復流程的例外情境，`zmx attach` 可人工處理 ✓ |
 
 ## 何時改用 Session ID 方案

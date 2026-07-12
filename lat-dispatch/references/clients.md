@@ -118,9 +118,13 @@ claude --session-id "$UUID" --name "$AGENT_ID" \
 
 - `--session-id "$UUID"`：預先指定 UUID，Project transcript 路徑可直接算出並交給 Monitor
 - `--name <agent_id>`：指定 session 名稱供恢復用
-- `agent_id` 格式為 `<phase>_<round>_<task_id>`（如 `spec_reviewer_1_2026-05-18-user-api-spec`），round 固定帶（從 1 起算）
+- `agent_id` 格式為 `<phase>_<instance>_<task_id>`（如 `spec_reviewer_1_2026-05-18-user-api-spec`）。instance 是該 phase 在此 TASK_ID 下的邏輯 Agent 實例序號，從 1 起算。
+- 繼續同一工作、修正 finding、錯誤恢復，或重新建立 zmx wrapper 但 resume 原 transcript 時，維持原 instance。只有建立不延續原 transcript 的新 Agent Session 時才增加 instance。
+- Review round 是文件送審次數，與 instance 是不同概念。修正版交給新的 `spec_reviewer`／`plan_reviewer` 獨立審查時，開始新的 review round 與 reviewer instance；同一審查因中斷而 resume 時兩者都不增加。
 
 ### Prompt 安全傳遞
+
+所有可重用 prompt template 都以 `[<agent_id>]` 開頭，並在同一 template 內以 `<agent_id>` 引用 ledger 目標。文件 placeholder 一律使用小寫角括號（如 `<agent_id>`、`<task_id>`、`<instance>`）；shell 變數才使用大寫 `$AGENT_ID`、`$TASK_ID`、`$INSTANCE`。寫入 `PROMPT_PATH` 前必須將 placeholder 解析為實際值，送給 client 的 prompt 不得殘留 `<agent_id>`。
 
 不得把原始 prompt 插入 `export LAT_PROMPT="<prompt>"`、`bash -c` 或其他 shell command 字串，否則 `$()`、反引號與引號可能在啟動 client 前被 shell 展開。
 
@@ -176,7 +180,7 @@ zmx run cc-<name> -d bash -c 'exec claude --session-id '"$UUID"' --name <agent_i
 - 必須使用 `zmx run -d`（detached）。沒有 `-d` 時 zmx 阻塞呼叫端，呼叫端退出時工作階段被終止。
 - 必須用 `bash -c '...'` 包裹指令。不加時帶旗標的指令被視為單一執行檔名。
 - codex-tui 用 `codex`（非 `codex exec`）。
-- claude-tui 用 `claude`（互動模式）。`--name <agent_id>` 指定 session 名稱供恢復用。`agent_id` 格式為 `<phase>_<round>_<task_id>`（如 `test_executor_1_2026-05-18-user-api-spec`），round 固定帶（從 1 起算）。
+- claude-tui 用 `claude`（互動模式）。`--name <agent_id>` 指定 session 名稱供恢復用。`agent_id` 格式為 `<phase>_<instance>_<task_id>`（如 `test_executor_1_2026-05-18-user-api-spec`），instance 固定帶（從 1 起算）。
 - 向運行中的 session 傳送動態訊息時，先用檔案編輯 API 寫入安全的 `MESSAGE_PATH`，再執行 `zmx send <session> "$(cat -- "$MESSAGE_PATH")$(printf '\r')"`；不得把原始訊息插入 shell command。`zmx send` 是 raw input，不會自動附加 carriage return，必須手動加 `$(printf '\r')`。固定字串可直接使用，例如 503 卡住時送 `"Continue$(printf '\r')"`。
 
 ## 監控方式

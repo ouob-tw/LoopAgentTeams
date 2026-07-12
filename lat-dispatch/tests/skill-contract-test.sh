@@ -95,11 +95,19 @@ assert_contains "$spec_section" '證據' \
   'spec_reviewer findings do not require evidence'
 assert_contains "$spec_section" 'Dispatch/spec_writer' \
   'Accepted Spec findings are not routed to the original author'
-assert_contains "$spec_section" '下一 round' \
+assert_contains "$spec_section" '下一 review round' \
   'Spec fixes do not require a new reviewer round'
 
 assert_contains "$plan_section" '送審前自檢' \
   'Plan author does not perform a preflight self-check'
+assert_contains "$plan_section" '`plan_writer_<instance>_<task_id>`' \
+  'Plan writer agent_id does not use the instance placeholder'
+assert_contains "$plan_section" '邏輯 Agent 實例序號' \
+  'Plan writer instance semantics are not defined'
+assert_contains "$plan_section" '維持原 instance' \
+  'Plan corrections do not preserve the original writer instance'
+assert_contains "$plan_section" '新的 `plan_writer` Session' \
+  'Plan writer instance does not advance for a replacement session'
 assert_contains "$plan_section" 'plan_reviewer' \
   'Plan flow has no external plan_reviewer'
 assert_contains "$plan_section" 'Do not modify the plan file' \
@@ -108,8 +116,28 @@ assert_contains "$plan_section" 'finding ID' \
   'plan_reviewer findings do not require stable IDs'
 assert_contains "$plan_section" '原 `plan_writer`' \
   'Accepted Plan findings are not routed to the original writer'
-assert_contains "$plan_section" '下一 round' \
+assert_contains "$plan_section" '下一 review round' \
   'Plan fixes do not require a new reviewer round'
+
+grep -q -F '`agent_id` 格式為 `<phase>_<instance>_<task_id>`' "$CLIENTS" || \
+  fail 'Client agent_id contract does not use the instance placeholder'
+grep -q -F 'resume 原 transcript 時，維持原 instance' "$CLIENTS" || \
+  fail 'Client agent_id contract does not preserve a resumed instance'
+grep -q -F 'Review round 是文件送審次數，與 instance 是不同概念' "$CLIENTS" || \
+  fail 'Client contract does not separate review rounds from agent instances'
+grep -q -F '所有可重用 prompt template 都以 `[<agent_id>]` 開頭' "$CLIENTS" || \
+  fail 'Client contract does not define the canonical prompt marker'
+assert_not_contains "$(cat "$SKILL" "$CLIENTS")" '<N>' \
+  'Legacy <N> agent_id placeholder remains in the skill contract'
+assert_not_contains "$(cat "$SKILL" "$CLIENTS")" '<phase>_<round>_<task_id>' \
+  'Legacy round-based agent_id format remains in the skill contract'
+
+prompt_count=$(grep -c -E '^   \[<agent_id>\]' "$SKILL")
+[ "$prompt_count" -eq 7 ] || \
+  fail "Expected 7 canonical prompt templates, found $prompt_count"
+if grep -Eq '^   \[(spec_reviewer|plan_writer|plan_reviewer|code_executor|test_executor|qa_executor)_' "$SKILL"; then
+  fail 'A reusable prompt still reconstructs agent_id instead of using [<agent_id>]'
+fi
 
 assert_contains "$adjudication_section" 'Reviewer 的 verdict 與 finding 都是待驗證主張' \
   'Reviewer output is not explicitly advisory'
@@ -184,6 +212,11 @@ grep -q -F 'spec phase' "$SCHEMA" || \
   fail 'YAML schema does not distinguish the Dispatch Agent from dispatch phase'
 grep -q -F 'reviewer 啟動前' "$SCHEMA" || \
   fail 'YAML schema does not require initialization before spec review'
+grep -q -F '`<phase>_<instance>_<task_id>`' "$SCHEMA" || \
+  fail 'YAML schema does not use the agent instance format'
+if grep -q -F '<phase>_<round>_<task_id>' "$SCHEMA"; then
+  fail 'YAML schema still uses the legacy agent round format'
+fi
 grep -q -F '金融' "$README" || \
   fail 'README does not explain the accounting origin of ledger'
 grep -q -F '生命週期帳本' "$README" || \

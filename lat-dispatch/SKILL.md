@@ -91,16 +91,16 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
 4. spec 須含「驗收清單（QA）」章節。每條 Q 以可觀察的使用者行為描述目標（不用實作字眼），A 寫解法與對應測試／證據。隨規格一起確認。
 5. `Dispatch/spec_writer` 完成送審前自檢：確認需求範圍、使用者決策、QA 對應、placeholder 與內部矛盾。
 6. **若 `user-first`：** 暫停，向使用者呈現草稿全文，等待使用者同意。使用者可要求修改，修改後重新自檢，直到同意。
-7. 依 `spec_reviewer` 的 client 類型呼叫 report-only 審查（`agent_id` = `spec_reviewer_<N>_<task_id>`，N 從 1 起算）。Reviewer 不修改檔案；每個 finding 須提供 finding ID、嚴重度、主張、具體證據與建議。
+7. 依 `spec_reviewer` 的 client 類型呼叫 report-only 審查（`agent_id` = `spec_reviewer_<instance>_<task_id>`，instance 從 1 起算）。Reviewer 不修改檔案；每個 finding 須提供 finding ID、嚴重度、主張、具體證據與建議。
 
    spec_reviewer prompt：
 
    ```
-   [spec_reviewer_<N>_<task_id>] Review the spec at <spec_file>. Do not modify the spec file. Check completeness, ambiguity, missing edge cases, user-confirmed scope, and testability of every QA item. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
+   [<agent_id>] Review the spec at <spec_file>. Do not modify the spec file. Check completeness, ambiguity, missing edge cases, user-confirmed scope, and testability of every QA item. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
    ```
 
 8. 依 `references/clients.md` 監控原始 Session JSONL；收到完成標記後，Dispatch 依「審查裁決」逐項驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
-9. `ACCEPT` findings 由 `Dispatch/spec_writer` 修正後重新執行送審前自檢，再啟動下一 round `spec_reviewer`；`REJECT` 記錄證據後不採用；`USER_DECISION` 暫停詢問使用者。
+9. `ACCEPT` findings 由 `Dispatch/spec_writer` 修正後重新執行送審前自檢，再以新的 `spec_reviewer` instance 啟動下一 review round；`REJECT` 記錄證據後不採用；`USER_DECISION` 暫停詢問使用者。
 10. 迴圈直到 Reviewer verdict 與 Dispatch adjudication 都允許通過。不將審查或裁決工作寫入 `tasks.yaml`。
 11. 向使用者呈現最終規格，等待確認後視為規格核准。
 12. 中斷時依 `references/clients.md` 的中斷防護與 Session 恢復流程處理。
@@ -108,25 +108,25 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
 ### plan
 
 1. 規格核准後才開始。
-2. 使用 Superpowers 撰寫計劃工作流，依外部 `plan_writer` client 產生實作計劃（`agent_id` = `plan_writer_1_<task_id>`）。
+2. 使用 Superpowers 撰寫計劃工作流，依外部 `plan_writer` client 產生實作計劃（`agent_id` = `plan_writer_<instance>_<task_id>`）。instance 是邏輯 Agent 實例序號：首次指派為 1；恢復同一 Writer Session 修改時維持原 instance；只有原 Session 無法恢復或 Dispatch 明確改派新的 `plan_writer` Session 時，才以既有最大 Writer instance 加 1。Writer instance 與 `plan_reviewer` 的 review round 各自獨立。
 
    plan_writer prompt：
 
    ```
-   [plan_writer_1_<task_id>] Read the approved spec at <spec_file>. Write an implementation plan that covers all requirements and maps each QA acceptance item to concrete integration/E2E test targets and qa_executor verification methods. Write test targets in English. Save the plan to <plan_file>. Before finishing, self-check scope coverage, QA mappings, placeholders, contradictions, and executable commands.
+   [<agent_id>] Read the approved spec at <spec_file>. Write an implementation plan that covers all requirements and maps each QA acceptance item to concrete integration/E2E test targets and qa_executor verification methods. Write test targets in English. Save the plan to <plan_file>. Before finishing, self-check scope coverage, QA mappings, placeholders, contradictions, and executable commands.
    ```
 
 3. 計劃須將 spec 的每一條 QA 驗收項對應到具體的整合／E2E 測試目標，以及 qa_executor 的驗收方式。測試目標以英文撰寫。
-4. Monitor 回傳 writer Final Answer 後，Dispatch 確認原 `plan_writer` 已完成送審前自檢，再依外部 `plan_reviewer` client 啟動 report-only 審查（`agent_id` = `plan_reviewer_<N>_<task_id>`，N 從 1 起算）。Reviewer 不修改檔案；每個 finding 須提供 finding ID、嚴重度、主張、具體證據與建議。
+4. Monitor 回傳 writer Final Answer 後，Dispatch 確認原 `plan_writer` 已完成送審前自檢，再依外部 `plan_reviewer` client 啟動 report-only 審查（`agent_id` = `plan_reviewer_<instance>_<task_id>`，instance 從 1 起算）。Reviewer 不修改檔案；每個 finding 須提供 finding ID、嚴重度、主張、具體證據與建議。
 
    plan_reviewer prompt：
 
    ```
-   [plan_reviewer_<N>_<task_id>] Review <plan_file> against the approved spec at <spec_file>. Do not modify the plan file. Check complete requirement coverage, every QA-to-test mapping, sequencing, dependencies, rollback or failure handling where relevant, and command executability. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
+   [<agent_id>] Review <plan_file> against the approved spec at <spec_file>. Do not modify the plan file. Check complete requirement coverage, every QA-to-test mapping, sequencing, dependencies, rollback or failure handling where relevant, and command executability. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
    ```
 
 5. 依 `references/clients.md` 監控 reviewer 原始 Session JSONL；完成後，Dispatch 依「審查裁決」逐項驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
-6. `ACCEPT` findings 交回原 `plan_writer` 修正；writer 修正後重新送審前自檢，再啟動下一 round `plan_reviewer`。`REJECT` 記錄證據後不採用；`USER_DECISION` 暫停詢問使用者。
+6. `ACCEPT` findings 交回原 `plan_writer` Session 修正並維持原 instance；若無法恢復或 Dispatch 明確改派，才啟動新的 `plan_writer` Session 並將 instance 加 1。writer 修正後重新送審前自檢，再以新的 `plan_reviewer` instance 啟動下一 review round。`REJECT` 記錄證據後不採用；`USER_DECISION` 暫停詢問使用者。
 7. 迴圈直到 Reviewer verdict 與 Dispatch adjudication 都允許通過。不將計劃撰寫、審查或裁決工作寫入 `tasks.yaml`。
 8. 中斷時依 `references/clients.md` 的中斷防護與 Session 恢復流程處理。
 9. 規格與計劃皆核准後一起提交：
@@ -165,26 +165,26 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    首次 test_executor prompt（`agent_id` = `test_executor_1_<task_id>`）：
 
    ```
-   [test_executor_1_<task_id>] Read the spec at <spec_file> and the test targets in <plan_file>. Following the three-tier-testing skill, write and run integration tests and E2E tests for the implemented code. Use sub-agents to parallelize independent test writing when beneficial. Do not write or modify unit tests. If tests fail, fix the implementation code and re-run until all tests pass. Run unit tests to confirm no regressions before finishing. E2E tests go in the project's E2E test directory (tests/e2e/ or <frontend>/tests/e2e/). When finished, upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact entry in .lat/workspace/<task_id>/tasks.yaml to the same final status following the yaml-schema — task_id is '<task_id>', agent_id is 'test_executor_1_<task_id>'.
+   [<agent_id>] Read the spec at <spec_file> and the test targets in <plan_file>. Following the three-tier-testing skill, write and run integration tests and E2E tests for the implemented code. Use sub-agents to parallelize independent test writing when beneficial. Do not write or modify unit tests. If tests fail, fix the implementation code and re-run until all tests pass. Run unit tests to confirm no regressions before finishing. E2E tests go in the project's E2E test directory (tests/e2e/ or <frontend>/tests/e2e/). When finished, upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact entry in .lat/workspace/<task_id>/tasks.yaml to the same final status following the yaml-schema — task_id is '<task_id>', agent_id is '<agent_id>'.
    ```
 
 3. 先將 test task 以 `status: running` 附加到該 task ledger，再依 `references/clients.md` 監控；接收 Final Answer，並以 tasks/results 中精確匹配的狀態判斷成功、部分完成或失敗。
-4. test_executor 全部通過後，將 qa task 以 `status: running` 附加到同一 ledger，再依 `qa_executor` client 啟動驗收（新 zmx session，`agent_id` = `qa_executor_1_<task_id>`，多輪時 round 遞增）。
+4. test_executor 全部通過後，將 qa task 以 `status: running` 附加到同一 ledger，再依 `qa_executor` client 啟動獨立驗收（`agent_id` = `qa_executor_<instance>_<task_id>`；首次 instance 為 1，每次修正後重新驗收時啟動新的 Agent Session 並增加 instance）。
 
    qa_executor prompt：
 
    ```
-   [qa_executor_1_<task_id>] Read the spec at <spec_file> and its acceptance checklist (QA). Following the three-tier-testing skill, launch and drive the real application as a user would, and verify each acceptance item by observing actual behavior — do NOT rely on the existing test suite. Use sub-agents to parallelize independent checklist items when beneficial. For every checklist item, write an E2E test in tests/qa_e2e/ (or <frontend>/tests/qa_e2e/) that encodes the acceptance criterion, run it against the real application, and record the result. Do not modify implementation code or existing test files. Write your results to .lat/workspace/<task_id>/qa-results.md — report each item as PASS or FAIL with evidence (command + output/log/screenshot); for FAIL include expected versus observed. Also upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact tasks.yaml entry to the same final status — task_id is '<task_id>', agent_id is 'qa_executor_1_<task_id>'.
+   [<agent_id>] Read the spec at <spec_file> and its acceptance checklist (QA). Following the three-tier-testing skill, launch and drive the real application as a user would, and verify each acceptance item by observing actual behavior — do NOT rely on the existing test suite. Use sub-agents to parallelize independent checklist items when beneficial. For every checklist item, write an E2E test in tests/qa_e2e/ (or <frontend>/tests/qa_e2e/) that encodes the acceptance criterion, run it against the real application, and record the result. Do not modify implementation code or existing test files. Write your results to .lat/workspace/<task_id>/qa-results.md — report each item as PASS or FAIL with evidence (command + output/log/screenshot); for FAIL include expected versus observed. Also upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact tasks.yaml entry to the same final status — task_id is '<task_id>', agent_id is '<agent_id>'.
    ```
 
 5. 讀取 `.lat/workspace/<task_id>/qa-results.md`：
    - **全部 PASS** → 進入 report。
-   - **有 FAIL** → 啟動 test_executor 修正（新 zmx session，`agent_id` = `test_executor_<N>_<task_id>`，N 為輪次）。
+   - **有 FAIL** → 啟動新的 `test_executor` Agent Session 修正（`agent_id` = `test_executor_<instance>_<task_id>`，instance 使用該 phase 的下一個序號）。
 
    修正 test_executor prompt：
 
    ```
-   [test_executor_<N>_<task_id>] Acceptance verification failed. Read the spec at <spec_file> for requirements context, and read .lat/workspace/<task_id>/qa-results.md for the failed items and evidence. Fix the implementation code so the real application satisfies these items. Re-run the failing tests in tests/qa_e2e/ to verify your fix, then run unit tests to confirm no regressions. Do not modify test files in tests/qa_e2e/. When finished, upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact tasks.yaml entry to the same final status — task_id is '<task_id>', agent_id is 'test_executor_<N>_<task_id>'.
+   [<agent_id>] Acceptance verification failed. Read the spec at <spec_file> for requirements context, and read .lat/workspace/<task_id>/qa-results.md for the failed items and evidence. Fix the implementation code so the real application satisfies these items. Re-run the failing tests in tests/qa_e2e/ to verify your fix, then run unit tests to confirm no regressions. Do not modify test files in tests/qa_e2e/. When finished, upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact tasks.yaml entry to the same final status — task_id is '<task_id>', agent_id is '<agent_id>'.
    ```
 
 6. qa_executor 監控同樣必須接收 Final Answer；驗收狀態以該 task directory 的 tasks/results ledger 與 `qa-results.md` 為準。test_executor 修完後回到步驟 4（qa_executor 重新驗收）。

@@ -25,13 +25,13 @@
 | 名稱 | 說明 | 範例 |
 |------|------|------|
 | `task_id` | Spec 檔名（不含 `.md`），整輪 teamwork 的共用識別碼 | `2026-05-18-user-api-spec` |
-| `agent_id` | `<phase>_<round>_<task_id>`，兼作 session 名稱供 TUI 恢復用 | `code_executor_1_2026-05-18-user-api-spec` |
+| `agent_id` | `<phase>_<instance>_<task_id>`，兼作 session 名稱供 TUI 恢復用 | `code_executor_1_2026-05-18-user-api-spec` |
 
 一個 `task_id` 下會有多筆不同 `agent_id` 的紀錄，代表同一輪 teamwork 中各階段 executor 的產出。
 
 ### agent_id 命名規則
 
-格式：`<phase>_<round>_<task_id>`。phase 對應 config 名稱，round 固定帶（從 1 起算）。
+格式：`<phase>_<instance>_<task_id>`。phase 對應 config 名稱；instance 是該 phase 在此 TASK_ID 下的邏輯 Agent 實例序號，固定帶且從 1 起算。resume 同一 transcript 時維持 instance；只有建立不延續原 transcript 的新 Agent Session 時才增加。
 
 | 階段 | agent_id | 重試 |
 |------|----------|------|
@@ -41,7 +41,7 @@
 
 ## tasks.yaml
 
-YAML 列表，永久保存同一 TASK_ID 各 phase／round 的生命週期紀錄。完成後更新 status，不刪除項目。
+YAML 列表，永久保存同一 TASK_ID 各 phase／instance 的生命週期紀錄。完成後更新 status，不刪除項目。
 
 ```yaml
 - task_id: "2026-05-18-user-api-spec"
@@ -91,8 +91,8 @@ pending -> running -> completed
                    -> failed
 ```
 
-- `partial`、`failed`、`completed` 都是該 agent round 的最終狀態，不直接轉回 `running`。
-- 重試須新增下一 round 的 `agent_id`，保留舊紀錄。
+- `partial`、`failed`、`completed` 都是該 agent instance 的最終狀態，不直接轉回 `running`。
+- 重試須新增下一 instance 的 `agent_id`，保留舊紀錄。
 - `running` 且沒有 result 表示可 resume 的中斷工作。
 
 ## results.yaml
@@ -174,7 +174,7 @@ errors:
 1. upsert `results.yaml`。
 2. 更新 `tasks.yaml` 的最終 status。
 
-若中斷後 task 仍為 `running`，但已有精確匹配的 `completed` result，Runner 只把 task reconciliation 為 `completed`，不得重做實作。partial／failed result 不自動重跑，由 Dispatch 新增下一 round。
+若中斷後 task 仍為 `running`，但已有精確匹配的 `completed` result，Runner 只把 task reconciliation 為 `completed`，不得重做實作。partial／failed result 不自動重跑，由 Dispatch 新增下一 instance。
 
 ## 解析錯誤處理
 
@@ -210,7 +210,7 @@ errors:
 1. 解析兩個舊檔；任一檔解析失敗即停止，不修改來源。
 2. 收集兩檔所有 `task_id`，逐一驗證安全 slug。
 3. 按 `task_id` 分組，寫入 `.lat/workspace/<TASK_ID>/tasks.yaml` 與 `results.yaml` 暫存檔。
-4. 舊 task 必須已有唯一的 `agent_id`；由其 `<phase>_<round>_<task_id>` 格式解析 `phase`，且 task_id 尾段必須與該筆 `task_id` 完全相同。缺少 `agent_id`、格式無法唯一解析或重複時停止遷移，不猜測或生成識別碼。
+4. 舊 task 必須已有唯一的 `agent_id`；由其 `<phase>_<instance>_<task_id>` 格式解析 `phase`，且 task_id 尾段必須與該筆 `task_id` 完全相同。缺少 `agent_id`、格式無法唯一解析或重複時停止遷移，不猜測或生成識別碼。
 5. 舊 task 沒有 status 時：有精確 `task_id + agent_id` result 就使用 result status，否則設為 `pending`；補上 `started_at`、`completed_at`。
 6. 驗證每個來源 task／result 在對應的新 ledger 中恰好出現一次；新 tasks 總筆數須等於舊 tasks，新 results 總筆數須等於舊 results，兩者不要求彼此相等。
 7. 寫入 `.lat/migration-report.md`，列出來源筆數、各 TASK_ID 筆數與驗證結果。
