@@ -4,7 +4,7 @@
 
 使用者提出需求後，經過互動式腦力激盪確認方向，後續的規格撰寫與審查、計劃產生、任務派發、背景執行、進度監控、結果驗收由系統自動串接，不需手動介入每個階段的銜接。遇到設計歧義或不可恢復的錯誤時會暫停請求決策。
 
-Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 CLI Agent。Runner Agent 在獨立的背景 session 中執行實作任務，完成後寫回結果。每個 TASK_ID 在 `.lat/workspace/<TASK_ID>/` 保有獨立的 `tasks.yaml`／`results.yaml` 永久 ledger，Agent 間不共用或刪除其他任務的歷史。
+Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 CLI Agent。Runner Agent 在獨立的背景 session 中執行實作任務，完成後寫回結果。每個 TASK_ID 的任務狀態與執行結果都保存在 `.lat/workspace/<TASK_ID>/`，新任務不會覆蓋舊紀錄。
 
 ## 特點
 
@@ -25,7 +25,7 @@ Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 C
 +---------------------------+
 |  spec（規格）              |
 |  草稿 → 初始化 TASK_ID     |   <-- Superpowers 腦力激盪工作流
-|  ledger → 外部 Reviewer    |       Reviewer 只報告、不改檔
+|  建立任務紀錄 → Reviewer   |       Reviewer 只報告、不改檔
 |  → Dispatch 獨立裁決       |
 +---------------------------+
     |
@@ -39,7 +39,7 @@ Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 C
     v
 +---------------------------+
 |  dispatch（派發）          |
-|  驗證 ledger → 加入任務    |   <-- 一個摘要任務指向計劃檔案
+|  驗證任務紀錄 → 加入任務    |   <-- 一個摘要任務指向計劃檔案
 |  啟動 Runner session       |       支援 zmx / CLI 兩種執行方式
 +---------------------------+
     |
@@ -64,19 +64,13 @@ Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 C
   回報使用者
 ```
 
-### Ledger 是什麼
-
-`ledger` 原本是金融／會計中的「分類帳」，在軟體系統中延伸為權威、持久且可追溯的紀錄。LAT 的 `tasks.yaml`／`results.yaml` 是生命週期帳本：同一筆 task 可以更新 status，但已完成的 executor round 不刪除；重試會用新的 `agent_id` 追加紀錄。
-
-它不是嚴格不可變的金融交易帳本，也不是完成後移除項目的普通 queue。Session JSONL 保存 Agent 對話，`prompts/` 保存可清理的暫存輸入，兩者都不屬於 task ledger。
-
 ### 審查不是照單全收
 
 Spec／Plan Reviewer 都是 report-only，只提交附證據的 finding，不直接修改文件。Dispatch 逐項查證後標記 `ACCEPT`、`REJECT` 或 `USER_DECISION`；即使 Reviewer 回覆 `PASS`，仍會對需求範圍、QA 可測試性與高風險假設執行 focused gap scan。只有 Reviewer 與 Dispatch 裁決都完成後，該階段才通過。
 
 ## 安裝
 
-`lat-dispatch` 的統一 Session Monitor 支援 GNU/Linux 與 macOS（macOS 內建 Bash 3.2 即可）。腳本會自動選擇 GNU 或 BSD 的 `date`／`stat` 語法，不需要另外安裝 GNU coreutils、`gdate` 或 `gstat`。
+`lat-dispatch` 的統一 Session Monitor 支援 GNU/Linux 與 macOS。
 
 前置需求：
 
@@ -102,8 +96,6 @@ macOS 已內建 `uuidgen`；其餘相依套件可用 Homebrew 安裝：
 ```bash
 brew install jq trash-cli
 ```
-
-Homebrew 官方 formula：[jq](https://formulae.brew.sh/formula/jq)、[trash-cli](https://formulae.brew.sh/formula/trash-cli)。macOS 相容分支已用模擬 BSD `date`／`stat` 的自動測試覆蓋，目前尚未在實體 macOS 主機執行 live smoke test。
 
 ```bash
 # 安裝 Superpowers skills（腦力激盪、規格撰寫等基礎工作流）
@@ -133,17 +125,6 @@ curl -fsSL "https://github.com/neurosnap/zmx/releases/download/v${ZMX_VERSION}/z
 ```
 
 其他架構（Linux aarch64、macOS Intel）將檔名中的架構改為 `linux-aarch64` 或 `macos-x86_64`。最新版本見 [zmx releases](https://github.com/neurosnap/zmx/releases)。
-
-### 真實 TUI + zmx 驗證紀錄
-
-2026-07-12 在 GNU/Linux 主機使用 zmx 0.6.0、Codex CLI 0.144.1 與 Claude Code 2.1.207 實際執行兩條完整流程。兩個 client 都以互動式 TUI 啟動，沒有使用 exec 模式，也沒有將 stdout／stderr 重新導向成獨立 log：
-
-| Client | 啟動與監控 | 原始 Session 證據 | 結果與清理 |
-|--------|------------|-------------------|------------|
-| Codex TUI (`gpt-5.6-luna`) | `zmx run -d` 啟動；Monitor 只傳 `agent_id` 自動定位 | `~/.codex/sessions/2026/07/12/rollout-2026-07-12T01-00-44-019f521f-cfa7-7932-b39e-988eb854c261.jsonl` | `COMPLETED`，Final Answer 為 `CODEX_TUI_ZMX_OK`；`zmx kill` 後 session 不在 `zmx list` |
-| Claude TUI (`claude-sonnet-4-6`) | `zmx run -d` 搭配預先指定的 `--session-id`；Monitor 讀明確 Project transcript | `~/.claude/projects/-home-swy-coWorkCLIAgent/2c264f29-7768-40b4-8435-527a23c15c56.jsonl` | `COMPLETED`，Final Answer 為 `CLAUDE_TUI_ZMX_OK`；`zmx kill` 後 session 不在 `zmx list` |
-
-這項 live smoke test 驗證的是 GNU/Linux host 上的完整 TUI／zmx／原始 Session JSONL 資料流。macOS 相容性目前由 Bash 3.2 parser 與模擬 BSD `date`／`stat` 測試覆蓋，尚未宣稱已在實體 macOS 主機完成 live smoke test。
 
 ## 用法
 
@@ -183,7 +164,7 @@ lat-dispatch/           Dispatch Agent 技能（協調者）
 lat-runner/             Runner Agent 技能（執行者）
   SKILL.md                  任務讀取、實作、結果寫入
   references/
-    yaml-schema.md          每個 TASK_ID 的 tasks/results ledger 定義
+    yaml-schema.md          每個 TASK_ID 的任務與結果格式
 
 three-tier-testing/     測試架構技能（三層分離）
   SKILL.md                  通用原則、歸屬判斷、範圍判斷
@@ -195,7 +176,7 @@ three-tier-testing/     測試架構技能（三層分離）
   logs/                     診斷資料
   workspace/
     <TASK_ID>/
-      tasks.yaml            不刪除的 phase/round 生命週期紀錄
+      tasks.yaml            不刪除的 phase/instance 生命週期紀錄
       results.yaml          不刪除的執行結果歷史
       qa-results.md         QA 驗收證據
       prompts/              可依 retention 清理的暫存 prompt

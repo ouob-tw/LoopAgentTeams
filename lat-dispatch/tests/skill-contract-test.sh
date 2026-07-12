@@ -217,9 +217,10 @@ grep -q -F '`<phase>_<instance>_<task_id>`' "$SCHEMA" || \
 if grep -q -F '<phase>_<round>_<task_id>' "$SCHEMA"; then
   fail 'YAML schema still uses the legacy agent round format'
 fi
-grep -q -F '金融' "$README" || \
-  fail 'README does not explain the accounting origin of ledger'
-grep -q -F '生命週期帳本' "$README" || \
-  fail 'README does not define LAT lifecycle ledger semantics'
+grep -q -F '新任務不會覆蓋舊紀錄' "$README" || \
+  fail 'README does not explain that task history is preserved'
+if grep -qi -F 'ledger' "$README"; then
+  fail 'README still exposes the internal ledger term'
+fi
 
 echo 'PASS: skill-contract'
