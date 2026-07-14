@@ -222,7 +222,7 @@ Monitor 依 `agent_id` 自動定位 JSONL。Codex dispatch 時包含 exec 啟動
 AGENT_ID="<agent_id>"
 
 # --- Exec 啟動（Codex dispatch 用；Claude Code dispatch 省略此段）---
-codex exec --sandbox <permission> --model <model> --config model_reasoning_effort="<effort>" - < "$PROMPT_PATH" &
+codex exec --sandbox <permission> --model <model> --config model_reasoning_effort="<effort>" - < "$PROMPT_PATH" >/dev/null 2>&1 &
 
 scripts/monitor-session.sh codex \
   --agent-id "$AGENT_ID" \
@@ -231,7 +231,7 @@ scripts/monitor-session.sh codex \
 
 Claude Code dispatch 使用時：Monitor 執行共用腳本（不含 exec 啟動）。
 
-Codex dispatch 使用時：exec 啟動與共用監控腳本以同一個 `exec_command` session 執行；Dispatch 以 `write_stdin` 接收 `DRIFT_CHECK` 或終端事件。
+Codex dispatch 使用時：exec 啟動與共用監控腳本可在同一個無 PTY 的 `exec_command` session 執行。`codex exec` 必須在 `&` 前將 FD 1 與 FD 2 明確導向 `/dev/null`；Final Answer 改由 Monitor 從原始 Session JSONL 提取。Monitor 自身的 FD 1 與 FD 2 都保留給 Dispatch，Dispatch 以 `write_stdin` 接收 Monitor 的狀態、診斷、`DRIFT_CHECK` 或終端事件。
 
 ### claude-tui 監控
 
@@ -343,7 +343,7 @@ BASELINE_LINES=$(wc -l < "$JSONL_PATH")
 恢復：
 
 ```bash
-codex exec resume "$SESSION_UUID" - < "$PROMPT_PATH"
+codex exec resume "$SESSION_UUID" - < "$PROMPT_PATH" >/dev/null 2>&1 &
 ```
 
 恢復後以明確路徑監控：

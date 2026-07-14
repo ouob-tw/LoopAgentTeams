@@ -301,6 +301,7 @@ test_argument_validation() {
 test_formal_skill_documentation_contracts() {
   local repo_root
   repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
+  local clients="$repo_root/lat-dispatch/references/clients.md"
 
   if grep -R -n -F '<skill-dir>/scripts/monitor-session.sh' \
     "$repo_root/lat-dispatch/SKILL.md" "$repo_root/lat-dispatch/references"; then
@@ -315,6 +316,12 @@ test_formal_skill_documentation_contracts() {
   fi
   grep -q -F 'scripts/monitor-session.sh' "$repo_root/lat-dispatch/SKILL.md" || \
     fail "formal skill does not list the bundled Monitor script"
+  grep -q -F "codex exec --sandbox <permission> --model <model> --config model_reasoning_effort=\"<effort>\" - < \"\$PROMPT_PATH\" >/dev/null 2>&1 &" "$clients" || \
+    fail "codex-exec monitor launch does not isolate client stdout and stderr"
+  grep -q -F "codex exec resume \"\$SESSION_UUID\" - < \"\$PROMPT_PATH\" >/dev/null 2>&1 &" "$clients" || \
+    fail "codex-exec resume does not isolate client stdout and stderr"
+  grep -q -F 'Monitor 自身的 FD 1 與 FD 2 都保留給 Dispatch' "$clients" || \
+    fail "formal skill does not preserve Monitor stdout and stderr for Dispatch"
 }
 
 test_explicit_jsonl_path
