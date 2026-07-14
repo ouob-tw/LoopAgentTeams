@@ -51,6 +51,16 @@ write_codex_pending() {
     '{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}' >"$path"
 }
 
+write_codex_incomplete() {
+  local path=$1 agent_id=$2
+  mkdir -p "$(dirname "$path")"
+  printf '%s\n' \
+    '{"type":"response_item","payload":{"type":"message","role":"user","content":[{"type":"input_text","text":"['"$agent_id"'] run the task"}]}}' \
+    '{"type":"event_msg","payload":{"type":"task_started","turn_id":"turn-1"}}' \
+    '{"type":"event_msg","payload":{"type":"token_count","info":null,"rate_limits":{"limit_id":"premium","primary":null,"secondary":null,"credits":{"has_credits":false,"unlimited":false,"balance":"0"},"rate_limit_reached_type":null}}}' \
+    '{"type":"event_msg","payload":{"type":"task_complete","turn_id":"turn-1","last_agent_message":null}}' >"$path"
+}
+
 run_monitor() {
   local output status
   set +e
@@ -214,6 +224,21 @@ test_codex_accepts_turn_complete() {
   assert_contains "$output" "turn answer"
 }
 
+test_codex_reports_completed_turn_without_final_answer() {
+  local jsonl="$TMP_DIR/manual/incomplete.jsonl" result status output
+  write_codex_incomplete "$jsonl" incomplete_agent
+  result=$(run_monitor codex --agent-id incomplete_agent --jsonl-path "$jsonl" --stall 1 --drift 2 --poll 1)
+  status=${result%%$'\n'*}
+  output=${result#*$'\n'}
+  [ "$status" -eq 3 ] || fail "incomplete Codex turn exited $status instead of 3: $output"
+  assert_contains "$output" "INCOMPLETE"
+  assert_contains "$output" "client=codex"
+  assert_contains "$output" "agent_id=incomplete_agent"
+  assert_contains "$output" "turn_id=turn-1"
+  assert_contains "$output" "reason=turn_complete_without_final_answer"
+  [[ "$output" != *"QUOTA_EXHAUSTED"* ]] || fail "Monitor guessed quota exhaustion from ambiguous rollout fields"
+}
+
 test_after_line_ignores_previous_completion() {
   local claude_jsonl="$TMP_DIR/manual/claude-resume.jsonl"
   local codex_jsonl="$TMP_DIR/manual/codex-resume.jsonl" result status output
@@ -322,6 +347,14 @@ test_formal_skill_documentation_contracts() {
     fail "codex-exec resume does not isolate client stdout and stderr"
   grep -q -F 'Monitor 自身的 FD 1 與 FD 2 都保留給 Dispatch' "$clients" || \
     fail "formal skill does not preserve Monitor stdout and stderr for Dispatch"
+  grep -q -F "\`INCOMPLETE\`" "$clients" || \
+    fail "formal skill does not document the incomplete-turn terminal event"
+  grep -q -F "\`codex-multi-auth check\` → \`codex-multi-auth status\`" "$clients" || \
+    fail "formal skill does not verify live quota before classifying an incomplete turn"
+  grep -q -F 'zmx history <session> | tail -7' "$clients" || \
+    fail "formal skill does not inspect TUI scrollback for non-quota failures"
+  grep -q -F "任何 \`zmx send\`、\`zmx kill\` 或 resume 前" "$clients" || \
+    fail "formal skill does not preserve TUI evidence before recovery changes the scrollback tail"
 }
 
 test_explicit_jsonl_path
@@ -335,6 +368,7 @@ test_codex_discovery_rejects_ambiguous_mtime
 test_codex_auto_discovery_with_macos_native_tools
 test_codex_explicit_fallback_path
 test_codex_accepts_turn_complete
+test_codex_reports_completed_turn_without_final_answer
 test_after_line_ignores_previous_completion
 test_codex_ignores_completed_previous_turn
 test_codex_re_resolves_deleted_session

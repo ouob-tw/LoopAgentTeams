@@ -41,6 +41,7 @@ compatibility: "Linux or macOS with Bash 3.2+. Requires git, zmx, jq, uuidgen, t
 - Claude exec 與 TUI 都監控 Project transcript；最新人類 prompt 之後的 `assistant` text 加 `stop_reason: "end_turn"` 表示該 turn 完成，`last-prompt` 不得視為完成標記。
 - Codex exec 與 TUI 都監控原生 Session JSONL；同一 turn 必須同時有 `response_item` 的 `phase: "final_answer"` 與 `event_msg.payload.type: "task_complete"` 或 `"turn_complete"`。
 - `COMPLETED` 只代表最新 turn 已輸出 Final Answer 並結束，不代表 exec OS 程序已 EOF／退出或 exit code 為 0。
+- Codex 最新 turn 已有 `task_complete`／`turn_complete` 卻沒有 Final Answer 時，Monitor 立即回報 `INCOMPLETE`；Dispatch 不得從 rollout 欄位猜測原因，須依 `references/clients.md` 先驗證帳號配額，再檢查 client 對應的診斷來源。
 - Monitor 不建立、自訂或重新導向 exec log；四種 client 模式皆直接讀 CLI 原始 Session JSONL，並將 Final Answer 原文交給 Dispatch Agent。
 - 監控來源的修改時間有變動表示仍有活動，超過該階段 `stall` 秒未變才回報 `STALL`。
 - `spec_reviewer`、`plan_writer`、`plan_reviewer` 等工作不寫 task ledger；Dispatch 使用 Monitor 回傳的 Final Answer 進行審查裁決。

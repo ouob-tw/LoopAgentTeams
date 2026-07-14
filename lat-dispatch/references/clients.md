@@ -269,20 +269,32 @@ Codex 與 Claude 的 exec／TUI 都依各自原始 Session JSONL 判定 turn 完
 | 事件 | 來源 | 處理 |
 |------|------|------|
 | `COMPLETED` | exec / tui | 對應 client 的完成契約成立；將 Final Answer 交給 Dispatch，再依角色契約決定下一階段 |
+| `INCOMPLETE` | Codex exec / tui | 最新 turn 已結束但沒有 Final Answer；依下方流程先驗證配額，再檢查 client 診斷來源，不得推斷完成或原因 |
 | `STALL` | 兩者 | 檢查狀態，嘗試恢復或報告使用者 |
 | `DRIFT_CHECK` | 兩者 | 判斷是否死循環、prompt 劫持或偏離目標。確認偏離時終止並報告 |
 
 ## 錯誤處理
 
+### Codex `INCOMPLETE`
+
+1. 執行 `codex-multi-auth check` → `codex-multi-auth status`，以即時檢查結果及 current／pinned 帳號確認該 Session 是否因配額耗盡而停止；不得只因任一其他帳號顯示 `quota-exhausted` 就判定本 Session 的原因。
+2. 若確認是目前帳號配額耗盡，依 client 類型執行下方切換與恢復流程。
+3. 若不是配額問題且 client 是 tui，在任何 `zmx send`、`zmx kill` 或 resume 前立即檢查最後畫面：
+   ```bash
+   zmx history <session> | tail -7
+   ```
+   若因終端寬度換行而缺少錯誤開頭，改用 `tail -30`。這是人工診斷來源，不以固定行數或字串自動分類錯誤。
+4. 若不是配額問題且 client 是 exec，rollout JSONL 不保證保存 transient error，且 client FD 1／FD 2 已導向 `/dev/null`；回報 `INCOMPLETE` 與現有證據並保留 task ledger 原狀，不得猜測原因。
+
 ### tui client
 
 - **503 錯誤：** `zmx send <session> "Continue$(printf '\r')"`
-- **codex 帳號配額耗盡：** `codex-multi-auth check` → `codex-multi-auth switch <n>` → `zmx kill <session>` → 依「Session 恢復」恢復
+- **已確認 codex 帳號配額耗盡：** `codex-multi-auth switch <n>` → `zmx kill <session>` → 依「Session 恢復」恢復
 - **全部帳號無配額：** 報告需手動處理，保留 task ledger 原狀
 
 ### exec client
 
-- **codex-exec 配額耗盡（STALL 觸發或 Session JSONL 出現配額錯誤）：** `codex-multi-auth check` → `codex-multi-auth switch <n>` → `codex exec resume <session_uuid>` → 重新執行監控
+- **已確認 codex-exec 帳號配額耗盡：** `codex-multi-auth switch <n>` → `codex exec resume <session_uuid>` → 重新執行監控
 - **claude-exec 配額耗盡：** 需手動處理
 - **全部帳號無配額：** 報告需手動處理，保留 task ledger 原狀
 

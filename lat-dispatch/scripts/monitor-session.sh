@@ -53,6 +53,7 @@ fi
 
 FOUND_TURN_ID=""
 FOUND_FINAL=""
+CODEX_INCOMPLETE=false
 PLATFORM=$(uname -s 2>/dev/null || true)
 SEEN_CODEX_PATHS=()
 
@@ -135,12 +136,21 @@ resolve_codex_jsonl() {
 
 detect_codex_completion() {
   local turn_id final_item complete_item
+  CODEX_INCOMPLETE=false
   turn_id=$(jq -r --argjson after_line "$AFTER_LINE" 'select(
     input_line_number > $after_line and
     .type == "event_msg" and
     (.payload.type == "task_started" or .payload.type == "turn_started")
   ) | .payload.turn_id' "$JSONL_PATH" 2>/dev/null | tail -1)
   [ -n "$turn_id" ] || return 1
+
+  complete_item=$(jq -c --arg turn_id "$turn_id" --argjson after_line "$AFTER_LINE" 'select(
+      input_line_number > $after_line and
+      .type == "event_msg" and
+      (.payload.type == "task_complete" or .payload.type == "turn_complete") and
+      .payload.turn_id == $turn_id
+    )' "$JSONL_PATH" 2>/dev/null | tail -1)
+  [ -n "$complete_item" ] || return 1
 
   final_item=$(jq -c --arg turn_id "$turn_id" --argjson after_line "$AFTER_LINE" 'select(
       input_line_number > $after_line and
@@ -150,15 +160,11 @@ detect_codex_completion() {
       .payload.phase == "final_answer" and
       .payload.internal_chat_message_metadata_passthrough.turn_id == $turn_id
     )' "$JSONL_PATH" 2>/dev/null | tail -1)
-  [ -n "$final_item" ] || return 1
-
-  complete_item=$(jq -c --arg turn_id "$turn_id" --argjson after_line "$AFTER_LINE" 'select(
-      input_line_number > $after_line and
-      .type == "event_msg" and
-      (.payload.type == "task_complete" or .payload.type == "turn_complete") and
-      .payload.turn_id == $turn_id
-    )' "$JSONL_PATH" 2>/dev/null | tail -1)
-  [ -n "$complete_item" ] || return 1
+  if [ -z "$final_item" ]; then
+    FOUND_TURN_ID=$turn_id
+    CODEX_INCOMPLETE=true
+    return 1
+  fi
 
   FOUND_TURN_ID=$turn_id
   FOUND_FINAL=$(jq -r '.payload.last_agent_message // ""' <<<"$complete_item")
@@ -211,6 +217,14 @@ emit_completion() {
   printf '%s\n' "$FOUND_FINAL"
 }
 
+emit_incomplete() {
+  echo "INCOMPLETE"
+  echo "client=$CLIENT"
+  echo "agent_id=$AGENT_ID"
+  echo "turn_id=$FOUND_TURN_ID"
+  echo "reason=turn_complete_without_final_answer"
+}
+
 wait_started=$SECONDS
 while [ -z "$JSONL_PATH" ] || [ ! -f "$JSONL_PATH" ]; do
   [ "$CLIENT" != codex ] || [ -n "$JSONL_PATH" ] || resolve_codex_jsonl || true
@@ -233,6 +247,11 @@ while true; do
   if detect_completion; then
     emit_completion
     exit 0
+  fi
+
+  if [ "$CLIENT" = codex ] && [ "$CODEX_INCOMPLETE" = true ]; then
+    emit_incomplete
+    exit 3
   fi
 
   if [ "$AUTO_RESOLVE_CODEX" = true ] && [ ! -f "$JSONL_PATH" ]; then
