@@ -128,6 +128,49 @@ test_claude_ignores_completed_previous_turn() {
   [[ "$output" != *"old answer"* ]] || fail "returned the previous Claude turn"
 }
 
+test_stall_does_not_terminate_live_client_and_rearm_completes() {
+  local jsonl="$TMP_DIR/manual/stall-rearm.jsonl" result status output sentinel_pid
+  write_codex_pending "$jsonl" stall_rearm_agent
+  sleep 20 &
+  sentinel_pid=$!
+
+  result=$(run_monitor codex --agent-id stall_rearm_agent --jsonl-path "$jsonl" --stall 1 --drift 2 --poll 1)
+  status=${result%%$'\n'*}
+  output=${result#*$'\n'}
+  [ "$status" -eq 2 ] || fail "live-client STALL exited $status instead of 2: $output"
+  assert_contains "$output" "STALL: JSONL unchanged for 1s"
+  kill -0 "$sentinel_pid" 2>/dev/null || fail "Monitor terminated the live client sentinel"
+
+  write_codex_completion "$jsonl" stall_rearm_agent "resumed answer"
+  result=$(run_monitor codex --agent-id stall_rearm_agent --jsonl-path "$jsonl" --stall 1 --drift 2 --poll 1)
+  status=${result%%$'\n'*}
+  output=${result#*$'\n'}
+  [ "$status" -eq 0 ] || fail "re-armed Monitor exited $status: $output"
+  assert_contains "$output" "resumed answer"
+
+  kill -TERM "$sentinel_pid" 2>/dev/null || true
+  wait "$sentinel_pid" 2>/dev/null || true
+}
+
+test_drift_check_is_non_terminal() {
+  local jsonl="$TMP_DIR/manual/drift-then-complete.jsonl" result status output updater_pid
+  write_codex_pending "$jsonl" drift_agent
+  (
+    sleep 2
+    write_codex_completion "$jsonl" drift_agent "completed after drift"
+  ) &
+  updater_pid=$!
+
+  result=$(run_monitor codex --agent-id drift_agent --jsonl-path "$jsonl" --stall 5 --drift 1 --poll 1)
+  status=${result%%$'\n'*}
+  output=${result#*$'\n'}
+  wait "$updater_pid"
+
+  [ "$status" -eq 0 ] || fail "DRIFT_CHECK terminated Monitor with status $status: $output"
+  assert_contains "$output" "DRIFT_CHECK:"
+  assert_contains "$output" "completed after drift"
+}
+
 test_codex_auto_discovery_uses_latest_agent_prompt() {
   local day_dir result status output
   day_dir="$TMP_DIR/codex/sessions/$(date -u +%Y/%m/%d)"
@@ -341,10 +384,14 @@ test_formal_skill_documentation_contracts() {
   fi
   grep -q -F 'scripts/monitor-session.sh' "$repo_root/lat-dispatch/SKILL.md" || \
     fail "formal skill does not list the bundled Monitor script"
-  grep -q -F "codex exec --sandbox <permission> --model <model> --config model_reasoning_effort=\"<effort>\" - < \"\$PROMPT_PATH\" >/dev/null 2>&1 &" "$clients" || \
-    fail "codex-exec monitor launch does not isolate client stdout and stderr"
+  grep -q -F "scripts/run-exec-client.sh --pid-file \"\$PID_FILE\"" "$clients" || \
+    fail "codex-exec launch does not use the PID runner"
+  grep -q -F "codex exec --sandbox <permission> --model <model> --config model_reasoning_effort=\"<effort>\" -" "$clients" || \
+    fail "codex-exec monitor launch command is missing"
   grep -q -F "codex exec resume \"\$SESSION_UUID\" - < \"\$PROMPT_PATH\" >/dev/null 2>&1 &" "$clients" || \
     fail "codex-exec resume does not isolate client stdout and stderr"
+  grep -q -F "< \"\$PROMPT_PATH\" >/dev/null 2>&1 &" "$clients" || \
+    fail "codex-exec monitor launch does not isolate client stdout and stderr"
   grep -q -F 'Monitor 自身的 FD 1 與 FD 2 都保留給 Dispatch' "$clients" || \
     fail "formal skill does not preserve Monitor stdout and stderr for Dispatch"
   grep -q -F "\`INCOMPLETE\`" "$clients" || \
@@ -362,6 +409,8 @@ test_claude_last_prompt_is_not_completion
 test_claude_requires_assistant_role
 test_claude_accepts_string_content
 test_claude_ignores_completed_previous_turn
+test_stall_does_not_terminate_live_client_and_rearm_completes
+test_drift_check_is_non_terminal
 test_codex_auto_discovery_uses_latest_agent_prompt
 test_codex_discovery_timeout
 test_codex_discovery_rejects_ambiguous_mtime

@@ -53,13 +53,23 @@ code_config=$(awk '
   active && /^  test_executor:/ { exit }
   active { print }
 ' "$CLIENTS")
+qa_config=$(awk '
+  /^  qa_executor:/ { active=1 }
+  active && /^test:/ { exit }
+  active { print }
+' "$CLIENTS")
 plan_reviewer_config=$(awk '
   /^  plan_reviewer:/ { active=1 }
   active && /^  code_executor:/ { exit }
   active { print }
 ' "$CLIENTS")
 code_table=$(grep -F '| code_executor |' "$CLIENTS" || true)
+qa_table=$(grep -F '| qa_executor' "$CLIENTS" || true)
 plan_reviewer_table=$(grep -F '| plan_reviewer |' "$CLIENTS" || true)
+monitor_config=$(awk '
+  /^monitor:/ { active=1 }
+  active { print }
+' "$CLIENTS")
 
 assert_contains "$spec_section" '建立 `.lat/workspace/<TASK_ID>/`' \
   'Spec flow does not initialize the TASK_ID workspace'
@@ -171,6 +181,54 @@ assert_contains "$plan_reviewer_table" '| gpt-5.6-sol | xhigh' \
 assert_contains "$plan_reviewer_table" '| read-only' \
   'plan_reviewer defaults table does not use read-only permission'
 
+assert_contains "$monitor_config" $'review:\n    stall: 600\n    drift: 1800' \
+  'Review monitor defaults are not 600s stall and 1800s drift'
+grep -q -F 'yield_time_ms=600000' "$CLIENTS" || \
+  fail 'Review monitor wait does not use the 600s resolved stall'
+grep -q -F 'timeout_ms: 3600000' "$CLIENTS" || \
+  fail 'Claude Monitor timeout_ms contract is missing'
+grep -q -F 'persistent: true' "$CLIENTS" || \
+  fail 'Claude Monitor persistent contract is missing'
+grep -q -F '同一 client turn' "$CLIENTS" || \
+  fail 'Monitor re-arm does not preserve resolved settings for the same turn'
+grep -q -F '使用者 prompt' "$CLIENTS" || \
+  fail 'Monitor settings do not retain the prompt/config/default resolution priority'
+grep -q -F 'scripts/run-exec-client.sh' "$CLIENTS" || \
+  fail 'Exec launch examples do not use the bundled PID runner'
+grep -q -F 'Monitor 前確認新的 PID file 已存在' "$CLIENTS" || \
+  fail 'Exec launch does not wait for the new PID file before Monitor starts'
+grep -q -F '.lat/workspace/<TASK_ID>/runtime/<agent_id>.pid' "$CLIENTS" || \
+  fail 'Exec PID file location is not documented'
+grep -q -F 'kill -TERM "$CLIENT_PID"' "$CLIENTS" || \
+  fail 'Confirmed exec termination does not target the recorded PID with SIGTERM'
+grep -q -F 'kill -0 "$CLIENT_PID"' "$CLIENTS" || \
+  fail 'Exec termination does not verify that the recorded PID is alive'
+grep -q -F '缺檔、格式錯誤或程序不存在時停止' "$CLIENTS" || \
+  fail 'Invalid or missing PID handling is not fail-closed'
+grep -q -F '不得使用 `pgrep`' "$CLIENTS" || \
+  fail 'Invalid or missing PID handling can still guess a process with pgrep'
+grep -q -F '不自動升級 SIGKILL 或終止 process group' "$CLIENTS" || \
+  fail 'Exec termination can still escalate beyond the recorded PID'
+grep -q -F '單一 `STALL`' "$CLIENTS" || \
+  fail 'STALL is not explicitly advisory for exec and TUI clients'
+grep -q -F 'TUI 維持以精確 zmx session 名稱控制' "$CLIENTS" || \
+  fail 'TUI process control no longer uses the zmx session handle'
+grep -q -F '`COMPLETED` 也不授權 kill' "$CLIENTS" || \
+  fail 'COMPLETED can still trigger an exec kill'
+
+grep -F '[<agent_id>] Review the spec at <spec_file>.' "$SKILL" | grep -q -F 'Context7 MCP' || \
+  fail 'spec_reviewer prompt does not expose the existing Context7 MCP capability'
+grep -F '[<agent_id>] Read the approved spec at <spec_file>.' "$SKILL" | grep -q -F 'Context7 MCP' || \
+  fail 'plan_writer prompt does not expose the existing Context7 MCP capability'
+grep -F '[<agent_id>] Review <plan_file> against the approved spec' "$SKILL" | grep -q -F 'Context7 MCP' || \
+  fail 'plan_reviewer prompt does not expose the existing Context7 MCP capability'
+grep -q -F 'LAT 不安裝 Context7 CLI、不啟用 strict MCP config、不停用其他 MCP，也不改變 phase 的 permission' "$CLIENTS" || \
+  fail 'Context7 capability does not preserve existing MCP and permission settings'
+assert_not_contains "$(cat "$SKILL" "$CLIENTS")" '--strict-mcp-config' \
+  'LAT enables strict MCP config while adding Context7'
+assert_not_contains "$(cat "$SKILL" "$CLIENTS")" 'npx ctx7' \
+  'LAT still depends on the removed Context7 CLI'
+
 assert_contains "$dispatch_section" '驗證既有' \
   'Dispatch does not validate the existing workspace and ledgers'
 assert_not_contains "$dispatch_section" '建立 `.lat/workspace/<TASK_ID>/`' \
@@ -186,18 +244,33 @@ assert_contains "$dispatch_section" '附加 code task' \
 
 assert_contains "$code_config" 'client: codex-tui' \
   'code_executor config example does not default to codex-tui'
-assert_contains "$code_config" 'model: gpt-5.6-luna' \
-  'code_executor config example does not default to gpt-5.6-luna'
-assert_contains "$code_config" 'effort: high' \
-  'code_executor config example does not default to high effort'
+assert_contains "$code_config" 'model: gpt-5.6-terra' \
+  'code_executor config example does not default to gpt-5.6-terra'
+assert_contains "$code_config" 'effort: medium' \
+  'code_executor config example does not default to medium effort'
 assert_contains "$code_config" 'permission: danger-full-access' \
   'code_executor config example does not default to danger-full-access'
 assert_contains "$code_table" '| codex-tui' \
   'code_executor defaults table does not use codex-tui'
-assert_contains "$code_table" '| gpt-5.6-luna | high' \
-  'code_executor defaults table does not use Luna/high'
+assert_contains "$code_table" '| gpt-5.6-terra | medium' \
+  'code_executor defaults table does not use Terra/medium'
 assert_contains "$code_table" '| danger-full-access |' \
   'code_executor defaults table does not use danger-full-access'
+
+assert_contains "$qa_config" 'client: codex-tui' \
+  'qa_executor config example does not default to codex-tui'
+assert_contains "$qa_config" 'model: gpt-5.6-terra' \
+  'qa_executor config example does not default to gpt-5.6-terra'
+assert_contains "$qa_config" 'effort: medium' \
+  'qa_executor config example does not default to medium effort'
+assert_contains "$qa_config" 'permission: danger-full-access' \
+  'qa_executor config example does not default to danger-full-access'
+assert_contains "$qa_table" '| codex-tui' \
+  'qa_executor defaults table does not use codex-tui'
+assert_contains "$qa_table" '| gpt-5.6-terra | medium' \
+  'qa_executor defaults table does not use Terra/medium'
+assert_contains "$qa_table" '| danger-full-access |' \
+  'qa_executor defaults table does not use danger-full-access'
 
 assert_contains "$status_section" '`[]` 視為正常空 ledger' \
   'Status does not recognize a valid empty ledger'

@@ -43,7 +43,7 @@ elif [ $((SECONDS - LAST_CHANGE)) -ge "$STALL" ]; then
 fi
 ```
 
-`file_mtime` 在 GNU/Linux 使用 `stat -c %y`，在 macOS 使用 BSD `stat -f %m`。mtime 改變時重設 `LAST_CHANGE`，只有連續 `STALL` 秒沒有變化才回報停滯。STALL 只結束 Monitor，不終止 exec/tui 程序，dispatch agent 收到事件後決定介入。
+`file_mtime` 在 GNU/Linux 使用 `stat -c %y`，在 macOS 使用 BSD `stat -f %m`。mtime 改變時重設 `LAST_CHANGE`，只有連續 `STALL` 秒沒有變化才回報停滯。STALL 只結束 Monitor，不終止 exec/tui 程序；單一 STALL 只觸發 Dispatch 診斷，不授權 kill。
 
 ### 偏離檢查
 
@@ -73,10 +73,12 @@ Monitor 一律把 Final Answer 原文交給 Dispatch。reviewer/writer 不寫 le
 
 ```bash
 lat-dispatch/scripts/monitor-session.sh codex \
-  --agent-id "$AGENT_ID" --stall 300 --drift 1800
+  --agent-id "$AGENT_ID" --stall 600 --drift 1800
 ```
 
 Claude exec／TUI 的 Project transcript 路徑由啟動時的 `--session-id "$UUID"` 直接算出，透過 `--jsonl-path "$JSONL_PATH"` 傳入。完整啟動方式見 `lat-dispatch/references/clients.md`。
+
+exec client 由 `lat-dispatch/scripts/run-exec-client.sh` 啟動。runner 以 `$!` 將實際 client PID 寫入 `.lat/workspace/<TASK_ID>/runtime/<agent_id>.pid`，等待 client，並在退出時以 `trash-put` 清理 PID file；Monitor 不讀寫 PID file。
 
 恢復既有 Session 時，啟動前記錄 JSONL 行數並傳入 `--after-line <N>`；Monitor 只接受該行之後的新 turn，避免回傳上一輪 Final Answer。新 Session 預設 `--after-line 0`。
 
@@ -89,7 +91,7 @@ Codex exec/tui 不傳 `--jsonl-path`；Monitor 以 `agent_id` 搜尋本地與 UT
 ```bash
 lat-dispatch/scripts/monitor-session.sh codex \
   --agent-id "$AGENT_ID" --jsonl-path "$JSONL_PATH" \
-  --stall 300 --drift 1800
+  --stall 600 --drift 1800
 ```
 
 ## 輸出
@@ -117,7 +119,9 @@ reason=turn_complete_without_final_answer
 
 `INCOMPLETE` 不等同配額耗盡。Dispatch 先執行 `codex-multi-auth check` 與 `codex-multi-auth status`；若不是配額問題且為 TUI，須在改變 Session 前以 `zmx history <session> | tail -7` 檢查最後畫面，必要時擴大為 `tail -30`。exec 的 transient error 不保證保存在 rollout JSONL，且目前不另存 client FD 1／FD 2。
 
-腳本不終止 exec 或 zmx session。TUI 發生 STALL 後，Dispatch 再以 `zmx list` 診斷 session 是否仍存在。
+腳本不終止 exec 或 zmx session。STALL 後，Dispatch 先診斷 client 與 Session JSONL；健康 client 以同一 client turn 已解析的原始 monitor 值重新監控。只有確認失敗後才可操作 control handle：exec 使用已保存 PID，TUI 使用精確 zmx session 名稱。
+
+Claude Code Dispatch 對 Monitor 工具固定傳入 `timeout_ms: 3600000`、`persistent: true`。persistent 只讓外層工具持續等待 bundled script；`COMPLETED`、`INCOMPLETE`、`STALL` 仍會終止腳本，`DRIFT_CHECK` 不建立第二個 Monitor。
 
 ## Runtime signals
 
@@ -147,6 +151,6 @@ reason=turn_complete_without_final_answer
 
 | 階段 | STALL（秒） | DRIFT（秒） | 適用 |
 |------|-----------|------------|------|
-| review（spec/plan） | 300 | 1800 | exec |
+| review（spec/plan） | 600 | 1800 | exec |
 | code | 900 | 3600 | tui |
 | test | 600 | 3600 | tui |

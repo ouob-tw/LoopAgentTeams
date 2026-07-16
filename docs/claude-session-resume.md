@@ -2,6 +2,8 @@
 
 `lat-dispatch` 需要在中斷後恢復 Claude Code session（見 clients.md 的「Session 恢復」）。本文記錄兩個候選方案、實測驗證過程，以及為什麼最終採用「UUID 定位 transcript、名稱負責恢復」的混合方案。
 
+下列片段只比較 Claude Session 參數。正式 LAT exec 啟動與恢復仍須依 `lat-dispatch/references/clients.md` 由 `scripts/run-exec-client.sh` 包裹，以保存並清理 client PID。
+
 ## 候選方案
 
 ### 方案 A：Session ID（UUID）

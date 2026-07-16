@@ -13,6 +13,7 @@ compatibility: "Linux or macOS with Bash 3.2+. Requires git, zmx, jq, uuidgen, t
 ## Available scripts
 
 - `scripts/monitor-session.sh` — 監控 Codex／Claude 原始 Session JSONL 並提取最新 turn 的 Final Answer
+- `scripts/run-exec-client.sh` — 啟動 exec client、以 `$!` 保存 PID、等待退出並清理 PID file
 
 ## 預設流程
 
@@ -44,6 +45,9 @@ compatibility: "Linux or macOS with Bash 3.2+. Requires git, zmx, jq, uuidgen, t
 - Codex 最新 turn 已有 `task_complete`／`turn_complete` 卻沒有 Final Answer 時，Monitor 立即回報 `INCOMPLETE`；Dispatch 不得從 rollout 欄位猜測原因，須依 `references/clients.md` 先驗證帳號配額，再檢查 client 對應的診斷來源。
 - Monitor 不建立、自訂或重新導向 exec log；四種 client 模式皆直接讀 CLI 原始 Session JSONL，並將 Final Answer 原文交給 Dispatch Agent。
 - 監控來源的修改時間有變動表示仍有活動，超過該階段 `stall` 秒未變才回報 `STALL`。
+- review 階段的內建值為 `stall: 600`、`drift: 1800`；同一 client turn 的初次 Monitor 與 re-arm 必須重用同一組已解析值。
+- Claude Code Dispatch 呼叫 Monitor 時固定使用 `timeout_ms: 3600000`、`persistent: true`；生命週期由 bundled script 的終端事件控制。
+- 單一 `STALL` 只觸發診斷，不授權 kill。exec 依 `references/clients.md` 使用啟動時保存的 PID；TUI 仍使用 zmx session handle。
 - `spec_reviewer`、`plan_writer`、`plan_reviewer` 等工作不寫 task ledger；Dispatch 使用 Monitor 回傳的 Final Answer 進行審查裁決。
 - `code_executor`、`test_executor`、`qa_executor` 不論使用 exec 或 tui，都須寫 `.lat/workspace/<TASK_ID>/results.yaml` 並更新同目錄 `tasks.yaml` 的精確 `agent_id` 狀態。流程狀態以 ledger 為準，Final Answer 僅供摘要與診斷。
 - ledger 出現結果不能單獨代表 turn 已完成；executor 仍須等 Monitor 回傳 `COMPLETED` 才能進入下一階段。
@@ -97,7 +101,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    spec_reviewer prompt：
 
    ```
-   [<agent_id>] Review the spec at <spec_file>. Do not modify the spec file. Check completeness, ambiguity, missing edge cases, user-confirmed scope, and testability of every QA item. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
+   [<agent_id>] Review the spec at <spec_file>. Do not modify the spec file. Check completeness, ambiguity, missing edge cases, user-confirmed scope, and testability of every QA item. When current library, framework, SDK, API, CLI, or cloud-service documentation is needed, use the existing Context7 MCP; do not install a Context7 CLI or change permissions or other MCPs. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
    ```
 
 8. 依 `references/clients.md` 監控原始 Session JSONL；收到完成標記後，Dispatch 依「審查裁決」逐項驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
@@ -114,7 +118,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    plan_writer prompt：
 
    ```
-   [<agent_id>] Read the approved spec at <spec_file>. Write an implementation plan that covers all requirements and maps each QA acceptance item to concrete integration/E2E test targets and qa_executor verification methods. Write test targets in English. Save the plan to <plan_file>. Before finishing, self-check scope coverage, QA mappings, placeholders, contradictions, and executable commands.
+   [<agent_id>] Read the approved spec at <spec_file>. Write an implementation plan that covers all requirements and maps each QA acceptance item to concrete integration/E2E test targets and qa_executor verification methods. When current library, framework, SDK, API, CLI, or cloud-service documentation is needed, use the existing Context7 MCP; do not install a Context7 CLI or change permissions or other MCPs. Write test targets in English. Save the plan to <plan_file>. Before finishing, self-check scope coverage, QA mappings, placeholders, contradictions, and executable commands.
    ```
 
 3. 計劃須將 spec 的每一條 QA 驗收項對應到具體的整合／E2E 測試目標，以及 qa_executor 的驗收方式。測試目標以英文撰寫。
@@ -123,7 +127,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    plan_reviewer prompt：
 
    ```
-   [<agent_id>] Review <plan_file> against the approved spec at <spec_file>. Do not modify the plan file. Check complete requirement coverage, every QA-to-test mapping, sequencing, dependencies, rollback or failure handling where relevant, and command executability. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
+   [<agent_id>] Review <plan_file> against the approved spec at <spec_file>. Do not modify the plan file. Check complete requirement coverage, every QA-to-test mapping, sequencing, dependencies, rollback or failure handling where relevant, and command executability. When current library, framework, SDK, API, CLI, or cloud-service documentation is needed, use the existing Context7 MCP; do not install a Context7 CLI or change permissions or other MCPs. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
    ```
 
 5. 依 `references/clients.md` 監控 reviewer 原始 Session JSONL；完成後，Dispatch 依「審查裁決」逐項驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
