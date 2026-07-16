@@ -191,8 +191,16 @@ assert_contains "$plan_reviewer_table" '| —' \
 
 assert_contains "$monitor_config" $'review:\n    stall: 600\n    drift: 1800' \
   'Review monitor defaults are not 600s stall and 1800s drift'
-grep -q -F 'yield_time_ms=600000' "$CLIENTS" || \
-  fail 'Review monitor wait does not use the 600s resolved stall'
+grep -q -F 'WAIT_MS = min(stall_ms, 120000, tool_max_yield_ms)' "$CLIENTS" || \
+  fail 'Codex monitor wait does not use the 120s preferred wait within the tool limit'
+grep -q -F '空輪詢的 schema 上限是 300000 毫秒' "$CLIENTS" || \
+  fail 'Codex monitor wait does not distinguish the write_stdin poll limit from the active wait limit'
+grep -q -F '// @exec: {"yield_time_ms": 120000' "$CLIENTS" || \
+  fail 'Codex monitor wait does not set the outer functions.exec yield'
+grep -q -F 'yield_time_ms: 120000' "$CLIENTS" || \
+  fail 'Codex monitor wait does not synchronize the inner write_stdin yield'
+grep -q -F '不得重啟 Monitor' "$CLIENTS" || \
+  fail 'Codex capped wait does not preserve the existing Monitor session'
 grep -q -F 'timeout_ms: 3600000' "$CLIENTS" || \
   fail 'Claude Monitor timeout_ms contract is missing'
 grep -q -F 'persistent: true' "$CLIENTS" || \

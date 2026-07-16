@@ -206,10 +206,22 @@ zmx run cc-<name> -d bash -c 'exec claude --session-id '"$UUID"' --name <agent_i
 
 以 `exec_command` 執行監控腳本，再以 `write_stdin` 等待輸出。
 
-**`yield_time_ms` 必須等於該階段的 `stall` 值（毫秒）**，避免腳本 sleep 期間反覆檢查拿到空輸出。
+每次等待先計算 `WAIT_MS = min(stall_ms, 120000, tool_max_yield_ms)`。`write_stdin` 傳入 `chars: ""` 時是空輪詢，空輪詢的 schema 上限是 300000 毫秒；傳入非空字元時上限是 30000 毫秒。`stall` 仍是 Monitor 判定停滯的門檻；`120000` 是 Codex Dispatch 的偏好單次等待值；`WAIT_MS` 只控制 Dispatch 單次等待多久。不得為了對齊 600／900 秒的 phase stall 而傳入超出工具上限的值。
 
-- exec client（review）→ `exec_command` 執行 exec 監控腳本 → `write_stdin` yield_time_ms=600000
-- tui client（code）→ `exec_command` 執行 tui 監控腳本 → `write_stdin` yield_time_ms=900000
+呼叫 `write_stdin` 時，外層 `functions.exec` pragma 與內層 `write_stdin.yield_time_ms` 必須設為同一個 `WAIT_MS`，避免外層沿用預設約 10 秒的 yield 而反覆喚醒 Dispatch。一般 review／code phase 的 stall 都高於 120 秒，因此有效值是 120000；這仍低於 `write_stdin` 空輪詢的工具上限。等待範例如下：
+
+```javascript
+// @exec: {"yield_time_ms": 120000, "max_output_tokens": 20000}
+const result = await tools.write_stdin({
+  session_id: MONITOR_SESSION_ID,
+  chars: "",
+  yield_time_ms: 120000,
+  max_output_tokens: 20000,
+});
+text(result.output);
+```
+
+若 120 秒後 `write_stdin` 回傳 Monitor 仍在執行，下一次仍以同一個 exec `session_id` 呼叫 `write_stdin`；不得重啟 Monitor，也不得重設已解析的 `stall`、`drift` 或 `poll`。若外層 `functions.exec` 仍提早回傳 `Script running with cell ID ...`，才以 `functions.wait` 接續該 cell；cell ID 與 Monitor 的 exec session ID 是不同層級，不得混用。
 
 ### claude-exec 監控
 
