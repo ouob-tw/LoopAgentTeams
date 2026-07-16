@@ -128,6 +128,16 @@ assert_contains "$plan_section" '原 `plan_writer`' \
   'Accepted Plan findings are not routed to the original writer'
 assert_contains "$plan_section" '下一 review round' \
   'Plan fixes do not require a new reviewer round'
+assert_contains "$plan_section" '`plan_reviewer.client` 為 `self`' \
+  'Plan flow does not branch on the self reviewer default'
+assert_contains "$plan_section" 'Dispatch 完整審查' \
+  'Dispatch does not perform the full Plan review in self mode'
+assert_contains "$plan_section" '不建立 `plan_reviewer` Agent ID、prompt file、PID、Session 或 Monitor' \
+  'Self Plan review still creates external reviewer resources'
+assert_contains "$plan_section" 'Dispatch 不得直接修改 Plan' \
+  'Dispatch self review can modify the Plan directly'
+assert_contains "$plan_section" '覆蓋為外部 client' \
+  'Plan flow does not preserve the external reviewer override'
 
 grep -q -F '`agent_id` 格式為 `<phase>_<instance>_<task_id>`' "$CLIENTS" || \
   fail 'Client agent_id contract does not use the instance placeholder'
@@ -166,20 +176,18 @@ assert_contains "$adjudication_section" '不得只閱讀 Reviewer Final Answer' 
 
 assert_contains "$spec_reviewer_config" 'permission: read-only' \
   'spec_reviewer is not read-only'
-assert_contains "$plan_reviewer_config" 'client: codex-exec' \
-  'plan_reviewer is not an external codex-exec client'
+assert_contains "$plan_reviewer_config" 'client: self' \
+  'plan_reviewer does not default to Dispatch self review'
 assert_contains "$plan_reviewer_config" 'model: gpt-5.6-sol' \
   'plan_reviewer does not default to gpt-5.6-sol'
 assert_contains "$plan_reviewer_config" 'effort: xhigh' \
   'plan_reviewer does not default to xhigh effort'
 assert_contains "$plan_reviewer_config" 'permission: read-only' \
   'plan_reviewer is not read-only'
-assert_contains "$plan_reviewer_table" '| codex-exec' \
-  'plan_reviewer defaults table does not use codex-exec'
-assert_contains "$plan_reviewer_table" '| gpt-5.6-sol | xhigh' \
-  'plan_reviewer defaults table does not use Sol/xhigh'
-assert_contains "$plan_reviewer_table" '| read-only' \
-  'plan_reviewer defaults table does not use read-only permission'
+assert_contains "$plan_reviewer_table" '| self' \
+  'plan_reviewer defaults table does not use self'
+assert_contains "$plan_reviewer_table" '| —' \
+  'plan_reviewer self defaults table still exposes external runtime dimensions'
 
 assert_contains "$monitor_config" $'review:\n    stall: 600\n    drift: 1800' \
   'Review monitor defaults are not 600s stall and 1800s drift'
