@@ -24,7 +24,7 @@ cleanup_pid_file() {
 }
 trap cleanup_pid_file EXIT
 
-"$@" &
+"$@" <&0 &
 CLIENT_PID=$!
 if ! printf '%s\n' "$CLIENT_PID" >"$PID_FILE"; then
   kill -TERM "$CLIENT_PID" 2>/dev/null || true

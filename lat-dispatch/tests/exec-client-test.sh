@@ -114,8 +114,29 @@ test_refuses_to_overwrite_existing_pid_file() {
   [ "$(cat "$pid_file")" = '4242' ] || fail "runner changed an existing PID file"
 }
 
+test_forwards_stdin_to_child() {
+  local child="$TMP_DIR/read-stdin-child.sh"
+  local pid_file="$TMP_DIR/runtime/stdin.pid"
+  local observed_file="$TMP_DIR/observed-stdin.txt"
+  local expected='prompt with $() and `backticks` preserved literally'
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'cat > "$1"' >"$child"
+  chmod +x "$child"
+
+  printf '%s\n' "$expected" | \
+    "$RUNNER" --pid-file "$pid_file" -- "$child" "$observed_file"
+
+  [ -f "$observed_file" ] || fail "child did not create the stdin capture file"
+  [ "$(cat "$observed_file")" = "$expected" ] || \
+    fail "runner did not forward stdin to the child unchanged"
+  [ ! -e "$pid_file" ] || fail "PID file was not trashed after stdin child exit"
+}
+
 test_records_exact_child_pid_and_cleans_after_term
 test_propagates_normal_child_status_and_cleans_pid_file
 test_refuses_to_overwrite_existing_pid_file
+test_forwards_stdin_to_child
 
 echo 'PASS: exec-client'
