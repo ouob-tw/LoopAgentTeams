@@ -13,6 +13,7 @@ Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 C
 - **額度耗盡自動換號** — 搭配 [codex-multi-auth](https://github.com/nicobailey/codex-multi-auth)，Codex 帳號配額用完時自動切換到下一個帳號，無需人工介入
 - **人類可直接介入任意 Agent** — 透過 zmx session manager，隨時 attach 到任何背景執行中的 Agent（TUI 模式），即時查看進度或直接輸入訊息，不需要透過 Dispatch Agent 轉達
 - **跨模型協作** — 可在不同階段召喚不同模型，例如 Opus 4.8 探索程式碼、Opus 4.6 撰寫文件、gpt-5.6-terra 編寫程式碼，依任務特性選用最適合的模型
+- **三層測試隔離** — 依外部依賴將測試分為單元、整合與 E2E；裸跑只執行單元測試，整合與 E2E 必須明確指定，另以 `qa_e2e/` 保存規格驗收測試
 - **相容未來計費模式** — 若 Anthropic 日後對 `claude -p`（CLI 同步模式）收費，可直接改用 TUI 模式讓 Agent 操控互動介面，不影響流程
 - **Runner 擁有完整權限** — 解決 Codex plugin for Claude Code 無法臨時授予 full-auto 權限的問題，Runner 在獨立 session 中執行，權限由啟動時的設定決定
 
