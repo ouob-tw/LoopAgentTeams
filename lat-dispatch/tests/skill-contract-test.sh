@@ -191,16 +191,19 @@ assert_contains "$plan_reviewer_table" '| —' \
 
 assert_contains "$monitor_config" $'review:\n    stall: 600\n    drift: 1800' \
   'Review monitor defaults are not 600s stall and 1800s drift'
-grep -q -F 'WAIT_MS = min(stall_ms, 120000, tool_max_yield_ms)' "$CLIENTS" || \
-  fail 'Codex monitor wait does not use the 120s preferred wait within the tool limit'
-grep -q -F '空輪詢的 schema 上限是 300000 毫秒' "$CLIENTS" || \
-  fail 'Codex monitor wait does not distinguish the write_stdin poll limit from the active wait limit'
-grep -q -F '// @exec: {"yield_time_ms": 120000' "$CLIENTS" || \
-  fail 'Codex monitor wait does not set the outer functions.exec yield'
-grep -q -F 'yield_time_ms: 120000' "$CLIENTS" || \
-  fail 'Codex monitor wait does not synchronize the inner write_stdin yield'
-grep -q -F '不得重啟 Monitor' "$CLIENTS" || \
-  fail 'Codex capped wait does not preserve the existing Monitor session'
+if grep -q -F 'Codex dispatch（或其他無 Monitor 的 agent）' "$CLIENTS"; then
+  fail 'Codex monitor wait contract still implies unverified compatibility with other agents'
+fi
+grep -q -F '空輪詢的 `write_stdin.yield_time_ms` 固定為 300000' "$CLIENTS" || \
+  fail 'Codex monitor write_stdin empty poll does not use the 300s tool window'
+grep -q -F '首次外層 `functions.exec` 等待 120000' "$CLIENTS" || \
+  fail 'Codex monitor initial functions.exec wait is not 120s'
+grep -q -F '`functions.wait` 每次等待 60000' "$CLIENTS" || \
+  fail 'Codex monitor functions.wait cadence is not 60s'
+grep -q -F '後續 `functions.exec` 等待 60000' "$CLIENTS" || \
+  fail 'Codex monitor follow-up functions.exec cadence is not 60s'
+grep -q -F '原 `session_id`' "$CLIENTS" || \
+  fail 'Codex monitor follow-up does not preserve the exec session'
 grep -q -F 'timeout_ms: 3600000' "$CLIENTS" || \
   fail 'Claude Monitor timeout_ms contract is missing'
 grep -q -F 'persistent: true' "$CLIENTS" || \

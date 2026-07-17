@@ -1,5 +1,9 @@
 # Codex Monitor 等待節奏修正規格
 
+## 適用範圍
+
+本規格只描述目前 Codex `functions.exec`、`functions.wait`、`exec_command` 與 `write_stdin` 的工具機制及參數。其他 agent、client 或 runtime 的對應機制尚未驗證，不得從本規格類推；各 client 仍依自己的工具契約處理。
+
 ## 背景
 
 Codex Dispatch 透過 `exec_command` 啟動 LAT Monitor shell process，再以 `write_stdin` 等待同一個 exec session 的輸出。實際執行時，即使內層等待已設為 30 或 60 秒，外層 `functions.exec` 若未設定自己的 yield，仍會沿用約 10 秒的預設值，提早回傳 `Script running with cell ID ...` 並喚醒 Codex。
@@ -34,40 +38,64 @@ Codex Dispatch 透過 `exec_command` 啟動 LAT Monitor shell process，再以 `
 
 目前 Codex developer 行為指引要求「避免執行超過 60 秒的阻塞 sleep／wait，因為期間可能無法與使用者溝通」。這是互動性指引，不是 `functions.exec` 或 `write_stdin` 的工具硬限制，也不是 LAT Monitor 的 timeout。
 
-使用者已明確接受超過 60 秒才取得一次狀態的互動取捨，並決定 Codex Dispatch 的偏好單次等待值改為 120000 毫秒。LAT skill 因此採用 120 秒；60 秒指引仍保留在本規格作為決策背景，但不作為本功能的有效等待上限。
+首次執行工具時通常還沒有新的使用者請求需要處理，因此使用者決定首次外層 `functions.exec` 等待 120000 毫秒。進入後續等待後，為避免使用者中途插入訊息等待過久，`functions.wait` 與後續外層 `functions.exec` 改採 60000 毫秒。內層空輪詢的 `write_stdin.yield_time_ms` 固定使用工具上限 300000 毫秒；它可能因取得輸出、程序完成或等待期結束而回傳，不假設 Monitor 必定在 300 秒內產生輸出。
 
 ## 設計
 
-### 等待值
+### 內層 `write_stdin`
 
-Codex Dispatch 每次等待使用：
+空輪詢固定使用：
 
 ```text
-WAIT_MS = min(stall_ms, 120000, tool_max_yield_ms)
+WRITE_STDIN_WAIT_MS = 300000
 ```
 
-- `stall_ms`：目前 phase 的 Monitor 停滯門檻。
-- `120000`：本次確認的 Codex Dispatch 偏好等待值。
-- `tool_max_yield_ms`：目前呼叫模式的工具 schema 上限。
+這是目前 `write_stdin` 空輪詢的 schema 上限。Monitor 的 `stall` 可能是 600 或 900 秒，因此單次 300 秒等待不保證取得 Monitor 輸出；等待期結束但 Monitor session 仍在執行時，下一次仍沿用同一個 `session_id`。
 
-一般 review 與 code phase 的 `stall` 分別為 600 秒與 900 秒，而 `write_stdin` 使用空輪詢，所以上述兩種情況的 `WAIT_MS` 都是 120000 毫秒。
+### 首次外層等待
 
-### 外層與內層同步
-
-每次 Codex Monitor 等待，外層 `functions.exec` pragma 與內層 `write_stdin.yield_time_ms` 必須使用相同的 `WAIT_MS`：
+首次外層 `functions.exec` 等待 120000 毫秒，內層 `write_stdin` 則等待 300000 毫秒：
 
 ```javascript
 // @exec: {"yield_time_ms": 120000, "max_output_tokens": 20000}
 const result = await tools.write_stdin({
   session_id: MONITOR_SESSION_ID,
   chars: "",
-  yield_time_ms: 120000,
+  yield_time_ms: 300000,
   max_output_tokens: 20000,
 });
 text(result.output);
 ```
 
-若 120 秒後 Monitor 仍在執行，下一次呼叫沿用同一個 exec `session_id`。若外層仍因平台限制提早回傳 `Script running with cell ID ...`，才以 `functions.wait` 接續該 cell。
+### 外層 cell 的後續等待
+
+若外層 `functions.exec` 回傳 `Script running with cell ID ...`，後續以 `functions.wait` 接續同一個 JavaScript cell，每次最多等待 60000 毫秒：
+
+```javascript
+functions.wait({
+  cell_id: CELL_ID,
+  yield_time_ms: 60000,
+});
+```
+
+cell 仍在執行時重複相同等待，讓 Dispatch 最多每 60 秒重新取得控制權。`functions.wait` 只能接續外層 `cell_id`，不能用 Monitor 的 exec `session_id` 呼叫，也不能取代一般 Monitor 輪詢。
+
+### Monitor exec session 的後續輪詢
+
+若 JavaScript cell 已完成，但 `write_stdin` 回傳 Monitor exec session 仍在執行，新一輪外層 `functions.exec` 等待 60000 毫秒，內層 `write_stdin` 仍等待 300000 毫秒：
+
+```javascript
+// @exec: {"yield_time_ms": 60000, "max_output_tokens": 20000}
+const result = await tools.write_stdin({
+  session_id: MONITOR_SESSION_ID,
+  chars: "",
+  yield_time_ms: 300000,
+  max_output_tokens: 20000,
+});
+text(result.output);
+```
+
+後續輪詢沿用同一個 exec `session_id`，不得重啟 Monitor 或重設 phase 設定。
 
 ## 不變項目
 
@@ -80,9 +108,9 @@ text(result.output);
 
 ## 驗收清單（QA）
 
-### Q1：不再每 10 秒喚醒 Codex
+### Q1：首次等待不再每 10 秒喚醒 Codex
 
-**A：** Codex Monitor 範例的外層 `functions.exec` 與內層 `write_stdin` 都明確使用 120000 毫秒；contract test 同時檢查兩者。
+**A：** Codex Monitor 首次等待範例的外層 `functions.exec` 明確使用 120000 毫秒，內層空輪詢的 `write_stdin` 使用 300000 毫秒；contract test 同時檢查兩者。
 
 ### Q2：等待結束不重啟 Monitor
 
@@ -92,9 +120,9 @@ text(result.output);
 
 **A：** 文件記錄 `write_stdin` 空輪詢上限 300000 毫秒、非空寫入上限 30000 毫秒，以及 `functions.exec` 接受 300000 但最大值未文件化，避免誤稱兩者具有相同的已知硬上限。
 
-### Q4：保留 60 秒指引的真實定位
+### Q4：後續等待維持 60 秒互動節奏
 
-**A：** 規格明確記錄 60 秒是互動性行為指引、不是工具硬限制；同時記錄使用者已接受取捨並選擇 120 秒。
+**A：** 外層 cell 的後續 `functions.wait` 與重新輪詢 Monitor 時的外層 `functions.exec` 都使用 60000 毫秒；內層 `write_stdin` 維持 300000 毫秒。規格同時說明 60 秒是互動性目標，不是工具硬限制。
 
 ### Q5：Monitor 語意無回歸
 
