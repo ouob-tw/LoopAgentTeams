@@ -199,7 +199,7 @@ three-tier-testing/     測試架構技能（三層分離）
 
 | 階段       | 存活檢查（工具是否正常運行）       | 偏離檢查（是否在做對的事）     |
 | ---------- | ------------------------------ | ------------------------------ |
-| spec/plan  | 5 分鐘 session JSONL 無 mtime 變更 | 30 分鐘讀 session 判斷方向  |
+| spec/plan  | 10 分鐘 session JSONL 無 mtime 變更 | 30 分鐘讀 session 判斷方向  |
 | runner     | 15 分鐘 session JSONL 無 mtime 變更 | 1 小時讀 session 判斷方向   |
 | test/qa    | 10 分鐘 session JSONL 無 mtime 變更 | 1 小時讀 session 判斷方向   |
 

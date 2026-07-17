@@ -91,7 +91,7 @@ monitor:
 | plan_writer   | 撰寫計劃 | codex-exec  | gpt-5.6-sol | xhigh       | workspace-write    | 僅需讀取原始碼與寫入計劃文件             |
 | plan_reviewer | 審查計劃 | self        | —          | —           | —                  | Dispatch 完整審查，不直接修改 Plan       |
 | code_executor | 執行實作 | codex-tui   | gpt-5.6-terra | medium      | danger-full-access | 需執行測試、安裝套件、完整系統存取       |
-| test_executor | 執行測試與修正 | codex-tui  | gpt-5.6-luna | high        | danger-full-access | 需寫測試、修改程式碼、使用者可介入         |
+| test_executor | 執行測試與修正 | codex-tui  | gpt-5.6-terra | medium        | danger-full-access | 需寫測試、修改程式碼、使用者可介入         |
 | qa_executor   | 驗收測試       | codex-tui  | gpt-5.6-terra | medium      | danger-full-access | 驅動真實 app、依 QA 清單寫 E2E 測試驗收、不修改實作碼、使用者可介入 |
 
 `self` = 目前執行此 skill 的 agent 自行處理，不委派外部 client。`plan_reviewer` 為 self 時，config 中的 model、effort、permission 不生效；使用者將 client 覆蓋為外部 client 時，這三個內建值才作為兜底。
