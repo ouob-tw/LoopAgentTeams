@@ -35,17 +35,17 @@ phases:
   spec_reviewer:
     client: codex-exec
     model: gpt-5.6-sol
-    effort: xhigh
+    effort: high
     permission: read-only
   plan_writer:
     client: codex-exec
     model: gpt-5.6-sol
-    effort: xhigh
+    effort: high
     permission: workspace-write
   plan_reviewer:
     client: self
     model: gpt-5.6-sol
-    effort: xhigh
+    effort: high
     permission: read-only
   code_executor:
     client: codex-tui
@@ -87,8 +87,8 @@ monitor:
 | 階段          | 角色     | 預設 Client | 預設 model | 預設 effort | 預設 permission    | 理由                                     |
 | ------------- | -------- | ----------- | ---------- | ----------- | ------------------ | ---------------------------------------- |
 | spec_writer   | 撰寫規格 | self        | —          | —           | —                  | —                                        |
-| spec_reviewer | 審查規格 | codex-exec  | gpt-5.6-sol | xhigh       | read-only          | report-only，由 Dispatch 驗證 finding    |
-| plan_writer   | 撰寫計劃 | codex-exec  | gpt-5.6-sol | xhigh       | workspace-write    | 僅需讀取原始碼與寫入計劃文件             |
+| spec_reviewer | 審查規格 | codex-exec  | gpt-5.6-sol | high       | read-only          | report-only，由 Dispatch 驗證 finding    |
+| plan_writer   | 撰寫計劃 | codex-exec  | gpt-5.6-sol | high       | workspace-write    | 僅需讀取原始碼與寫入計劃文件             |
 | plan_reviewer | 審查計劃 | self        | —          | —           | —                  | Dispatch 完整審查，不直接修改 Plan       |
 | code_executor | 執行實作 | codex-tui   | gpt-5.6-terra | medium      | danger-full-access | 需執行測試、安裝套件、完整系統存取       |
 | test_executor | 執行測試與修正 | codex-tui  | gpt-5.6-terra | medium        | danger-full-access | 需寫測試、修改程式碼、使用者可介入         |
