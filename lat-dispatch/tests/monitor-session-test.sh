@@ -367,9 +367,11 @@ test_argument_validation() {
 }
 
 test_formal_skill_documentation_contracts() {
-  local repo_root
+  local repo_root resume_section
   repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
   local clients="$repo_root/lat-dispatch/references/clients.md"
+  local claude_resume_doc="$repo_root/docs/claude-session-resume.md"
+  resume_section=$(sed -n '/^## Session 恢復$/,/^## 注意事項$/p' "$clients")
 
   if grep -R -n -F '<skill-dir>/scripts/monitor-session.sh' \
     "$repo_root/lat-dispatch/SKILL.md" "$repo_root/lat-dispatch/references"; then
@@ -388,8 +390,24 @@ test_formal_skill_documentation_contracts() {
     fail "codex-exec launch does not use the PID runner"
   grep -q -F "codex exec --sandbox <permission> --model <model> --config model_reasoning_effort=\"<effort>\" -" "$clients" || \
     fail "codex-exec monitor launch command is missing"
-  grep -q -F "codex exec resume \"\$SESSION_UUID\" - < \"\$PROMPT_PATH\" >/dev/null 2>&1 &" "$clients" || \
-    fail "codex-exec resume does not isolate client stdout and stderr"
+  grep -q -F "codex exec --sandbox <permission> --model <model>" <<<"$resume_section" || \
+    fail "codex-exec resume does not preserve the original permission and model"
+  grep -q -F "    --config model_reasoning_effort=\"<effort>\" \\" <<<"$resume_section" || \
+    fail "codex-exec resume does not preserve the original effort"
+  grep -q -F "resume \"\$SESSION_UUID\" - < \"\$PROMPT_PATH\" >/dev/null 2>&1 &" <<<"$resume_section" || \
+    fail "codex-exec resume does not preserve the session and isolated stdio contract"
+  grep -q -F 'claude --resume <agent_id> --model=<model> --effort <effort>' <<<"$resume_section" || \
+    fail "claude-exec resume does not preserve the original model and effort"
+  grep -q -F 'codex resume --include-non-interactive --sandbox <permission> --ask-for-approval never --model <model> --config model_reasoning_effort="<effort>"' <<<"$resume_section" || \
+    fail "codex-tui resume does not preserve the original model, effort, and permission"
+  grep -q -F 'claude --resume <agent_id> --model=<model> --effort <effort> --permission-mode <permission>' <<<"$resume_section" || \
+    fail "claude-tui resume does not preserve the original model, effort, and permission"
+  grep -q -F '一律沿用首次啟動時已解析的原始值' <<<"$resume_section" || \
+    fail "formal skill does not preserve resolved client settings across resume"
+  grep -q -F "claude --resume \"\$SID\" --model=<model> --effort <effort>" "$claude_resume_doc" || \
+    fail "Claude UUID resume documentation does not preserve model and effort"
+  grep -q -F 'claude --resume <agent_id> --model=<model> --effort <effort>' "$claude_resume_doc" || \
+    fail "Claude named resume documentation does not preserve model and effort"
   grep -q -F "< \"\$PROMPT_PATH\" >/dev/null 2>&1 &" "$clients" || \
     fail "codex-exec monitor launch does not isolate client stdout and stderr"
   grep -q -F 'Monitor 自身的 FD 1 與 FD 2 都保留給 Dispatch' "$clients" || \
