@@ -10,6 +10,17 @@ compatibility: "Linux or macOS with Bash 3.2+. Requires git, zmx, jq, uuidgen, t
 
 可用 client、指令格式、解析優先序、內建預設、config.yaml 格式參見 `references/clients.md`。
 
+## 內建 Subagent 路由與等待
+
+- 每個委派階段先解析目標 client，再比較 Dispatch 宿主與目標模型家族；同宿主使用內建 subagent，跨宿主才使用外部 CLI client。
+- 同宿主派發時讀取 `references/native-subagents.md`；跨宿主才讀取 `references/clients.md` 的 CLI 啟動、Monitor 與恢復章節。
+- Codex 呼叫 GPT／Codex worker 時使用內建 `spawn_agent`，再以 `wait_agent` 直接等待完成通知或 mailbox 更新。
+- Claude Code 呼叫 Claude worker 時使用內建 `Agent`；前景直接等完成，背景等待 completion notification 或使用 blocking `TaskOutput`。
+- 內建 subagent 等待期間不得固定輪詢 subagent 狀態。等待明確逾時或異常時只做一次診斷；worker 仍在執行且無確認錯誤時，重新進入 blocking wait。
+- 各 phase 的等待分流一致：內建 subagent 直接等待完成通知；外部 CLI 才啟動 Monitor。
+- 內建 subagent 不啟動 CLI、zmx、PID file、Session JSONL Monitor。收到完成通知後仍依角色契約處理 Final Answer、review adjudication、executor ledger 與 QA evidence。
+- 外部 CLI 的啟動、監控、恢復與錯誤處理維持 `references/clients.md` 的既有契約。
+
 ## Available scripts
 
 - `scripts/monitor-session.sh` — 監控 Codex／Claude 原始 Session JSONL 並提取最新 turn 的 Final Answer
@@ -35,9 +46,9 @@ compatibility: "Linux or macOS with Bash 3.2+. Requires git, zmx, jq, uuidgen, t
 - **不得推斷完成狀態。** 只有實際執行該階段的檢查步驟後，才可勾選完成。
 - **不得跳步。** 除非使用者明確要求跳過特定步驟。
 
-### Monitor 完成契約
+### 外部 CLI Monitor 完成契約
 
-- 執行監控時從本技能目錄呼叫 `scripts/monitor-session.sh`；不要在 prompt 或臨時 shell 中重寫監控迴圈。client 啟動與 session 定位方式見 `references/clients.md`。
+- 外部 CLI 執行監控時從本技能目錄呼叫 `scripts/monitor-session.sh`；不要在 prompt 或臨時 shell 中重寫監控迴圈。client 啟動與 session 定位方式見 `references/clients.md`。內建 subagent 不使用本節 Monitor。
 - Codex 監控只傳 `agent_id` 時由腳本自動定位 JSONL；定位 STALL 時，Dispatch 擴大搜尋並人工確認後，以 `--jsonl-path "$JSONL_PATH"` 重啟 Monitor。
 - Claude exec 與 TUI 都監控 Project transcript；最新人類 prompt 之後的 `assistant` text 加 `stop_reason: "end_turn"` 表示該 turn 完成，`last-prompt` 不得視為完成標記。
 - Codex exec 與 TUI 都監控原生 Session JSONL；同一 turn 必須同時有 `response_item` 的 `phase: "final_answer"` 與 `event_msg.payload.type: "task_complete"` 或 `"turn_complete"`。
@@ -48,9 +59,9 @@ compatibility: "Linux or macOS with Bash 3.2+. Requires git, zmx, jq, uuidgen, t
 - review 階段的內建值為 `stall: 600`、`drift: 1800`；同一 client turn 的初次 Monitor 與 re-arm 必須重用同一組已解析值。
 - Claude Code Dispatch 呼叫 Monitor 時固定使用 `timeout_ms: 3600000`、`persistent: true`；生命週期由 bundled script 的終端事件控制。
 - 單一 `STALL` 只觸發診斷，不授權 kill。exec 依 `references/clients.md` 使用啟動時保存的 PID；TUI 仍使用 zmx session handle。
-- `spec_reviewer`、`plan_writer` 與外部 override 的 `plan_reviewer` 不寫 task ledger；Dispatch 使用 Monitor 回傳的 Final Answer 進行審查。self `plan_reviewer` 不啟動 Monitor，也不寫 task ledger。
+- `spec_reviewer`、`plan_writer` 與非 self 的 `plan_reviewer` 不寫 task ledger；內建 subagent 以完成通知交回 Final Answer，外部 CLI 由 Monitor 交回 Final Answer。self `plan_reviewer` 不委派 agent，也不寫 task ledger。
 - `code_executor`、`test_executor`、`qa_executor` 不論使用 exec 或 tui，都須寫 `.lat/workspace/<TASK_ID>/results.yaml` 並更新同目錄 `tasks.yaml` 的精確 `agent_id` 狀態。流程狀態以 ledger 為準，Final Answer 僅供摘要與診斷。
-- ledger 出現結果不能單獨代表 turn 已完成；executor 仍須等 Monitor 回傳 `COMPLETED` 才能進入下一階段。
+- ledger 出現結果不能單獨代表 turn 已完成；executor 還須收到內建 subagent 完成通知或外部 Monitor `COMPLETED`，才能進入下一階段。
 
 ## 審查裁決（Dispatch Independent Adjudication）
 
@@ -98,7 +109,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
 4. spec 須含「驗收清單（QA）」章節。每條 Q 以可觀察的使用者行為描述目標（不用實作字眼），A 寫解法與對應測試／證據。隨規格一起確認。
 5. `Dispatch/spec_writer` 完成送審前自檢：確認需求範圍、使用者決策、QA 對應、placeholder 與內部矛盾。
 6. **若 `user-first`：** 暫停，向使用者呈現草稿全文，等待使用者同意。使用者可要求修改，修改後重新自檢，直到同意。
-7. 依 `spec_reviewer` 的 client 類型呼叫 report-only 審查（`agent_id` = `spec_reviewer_<instance>_<task_id>`，instance 從 1 起算）。Reviewer 不修改檔案；每個 finding 須提供 finding ID、嚴重度、主張、具體證據與建議。
+7. 依 `spec_reviewer` 的目標 client 與同宿主路由呼叫 report-only 審查（`agent_id` = `spec_reviewer_<instance>_<task_id>`，instance 從 1 起算）。Reviewer 不修改檔案；每個 finding 須提供 finding ID、嚴重度、主張、具體證據與建議。
 
    spec_reviewer prompt：
 
@@ -106,7 +117,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    [<agent_id>] Review the spec at <spec_file>. Do not modify the spec file. Check completeness, ambiguity, missing edge cases, user-confirmed scope, and testability of every QA item. When current library, framework, SDK, API, CLI, or cloud-service documentation is needed, use the existing Context7 MCP; do not install a Context7 CLI or change permissions or other MCPs. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
    ```
 
-8. 依 `references/clients.md` 監控原始 Session JSONL；收到完成標記後，Dispatch 依「審查裁決」逐項驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
+8. 內建 subagent 直接等待完成通知；外部 CLI 才依 `references/clients.md` 監控原始 Session JSONL。收到 Final Answer 後，Dispatch 依「審查裁決」逐項驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
 9. `ACCEPT` findings 由 `Dispatch/spec_writer` 修正後重新執行送審前自檢，再以新的 `spec_reviewer` instance 啟動下一 review round；`REJECT` 記錄證據後不採用；`USER_DECISION` 暫停詢問使用者。
 10. 迴圈直到 Reviewer verdict 與 Dispatch adjudication 都允許通過。不將審查或裁決工作寫入 `tasks.yaml`。
 11. 向使用者呈現最終規格，等待確認後視為規格核准。
@@ -115,7 +126,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
 ### plan
 
 1. 規格核准後才開始。
-2. 使用 Superpowers 撰寫計劃工作流，依外部 `plan_writer` client 產生實作計劃（`agent_id` = `plan_writer_<instance>_<task_id>`）。instance 是邏輯 Agent 實例序號：首次指派為 1；恢復同一 Writer Session 修改時維持原 instance；只有原 Session 無法恢復或 Dispatch 明確改派新的 `plan_writer` Session 時，才以既有最大 Writer instance 加 1。Writer instance 與 `plan_reviewer` 的 review round 各自獨立。
+2. 使用 Superpowers 撰寫計劃工作流，依 `plan_writer` 的目標 client 與同宿主路由產生實作計劃（`agent_id` = `plan_writer_<instance>_<task_id>`）。instance 是邏輯 Agent 實例序號：首次指派為 1；恢復同一 Writer Session 修改時維持原 instance；只有原 Session 無法恢復或 Dispatch 明確改派新的 `plan_writer` Session 時，才以既有最大 Writer instance 加 1。Writer instance 與 `plan_reviewer` 的 review round 各自獨立。
 
    plan_writer prompt：
 
@@ -124,7 +135,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    ```
 
 3. 計劃須將 spec 的每一條 QA 驗收項對應到具體的整合／E2E 測試目標，以及 qa_executor 的驗收方式。測試目標以英文撰寫。
-4. Monitor 回傳 writer Final Answer 後，Dispatch 確認原 `plan_writer` 已完成送審前自檢，再依解析出的 `plan_reviewer.client` 分流：
+4. 內建完成通知或外部 Monitor 回傳 writer Final Answer 後，Dispatch 確認原 `plan_writer` 已完成送審前自檢，再依解析出的 `plan_reviewer.client` 分流：
    - `plan_reviewer.client` 為 `self`：Dispatch 完整審查 approved Spec、Plan、使用者決策、QA 對應、相關程式碼、順序、依賴、失敗處理與命令可執行性。self 模式不建立 `plan_reviewer` Agent ID、prompt file、PID、Session 或 Monitor；Dispatch 不得直接修改 Plan。每個 finding 仍須提供穩定 finding ID、嚴重度、主張、具體證據與建議。
    - 使用者覆蓋為外部 client：啟動 report-only `plan_reviewer`（`agent_id` = `plan_reviewer_<instance>_<task_id>`，instance 從 1 起算）。Reviewer 不修改檔案；每個 finding 使用相同格式。
 
@@ -134,7 +145,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    [<agent_id>] Review <plan_file> against the approved spec at <spec_file>. Do not modify the plan file. Check complete requirement coverage, every QA-to-test mapping, sequencing, dependencies, rollback or failure handling where relevant, and command executability. When current library, framework, SDK, API, CLI, or cloud-service documentation is needed, use the existing Context7 MCP; do not install a Context7 CLI or change permissions or other MCPs. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
    ```
 
-5. self 模式由 Dispatch 直接決定 `PASS`、`NEEDS_REVISION` 或 `USER_DECISION`。外部模式依 `references/clients.md` 監控 reviewer 原始 Session JSONL，再由 Dispatch 依「審查裁決」驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
+5. self 模式由 Dispatch 直接決定 `PASS`、`NEEDS_REVISION` 或 `USER_DECISION`。非 self 模式依同宿主路由等待內建完成通知，或依 `references/clients.md` 監控外部 reviewer 原始 Session JSONL；再由 Dispatch 依「審查裁決」驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
 6. 需要修正的 findings 交回原 `plan_writer` Session 並維持原 instance；若無法恢復或 Dispatch 明確改派，才啟動新的 `plan_writer` Session 並將 instance 加 1。writer 修正後重新送審前自檢：self 模式由 Dispatch 再次完整審查；外部模式以新的 `plan_reviewer` instance 啟動下一 review round。`USER_DECISION` 暫停詢問使用者。
 7. 迴圈直到 self Dispatch review 通過，或外部 Reviewer verdict 與 Dispatch adjudication 都允許通過。不將計劃撰寫、審查或裁決工作寫入 `tasks.yaml`。
 8. 中斷時依 `references/clients.md` 的中斷防護與 Session 恢復流程處理。
@@ -154,7 +165,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    - `context.plan_file`、`context.spec_file`、`context.related_files`
    - `constraints`：保留計劃與使用者的實作約束
    - `created_by`：目前 agent 的識別名稱
-4. 依解析出的 `code_executor` client，按 `references/clients.md` 的指令格式啟動執行。
+4. 依解析出的 `code_executor` client 與同宿主路由啟動執行：同宿主使用內建 subagent，跨宿主按 `references/clients.md` 的 CLI 指令格式啟動。
 
    Runner prompt：
 
@@ -162,14 +173,14 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    [<agent_id>] You are the lat-runner for TASK_ID '<task_id>'. Read .lat/workspace/<task_id>/tasks.yaml and process only the exact pending task whose agent_id is '<agent_id>', following the lat-runner skill. Use sub-agents to parallelize independent development work when beneficial. Upsert the result into .lat/workspace/<task_id>/results.yaml, update the same task entry to its final status without deleting it, then exit.
    ```
 
-5. 依 `references/clients.md` 的監控方式章節執行監控。Monitor 必須等 turn 完成並將 Final Answer 交給 Dispatch；Dispatch 再讀取 `.lat/workspace/<TASK_ID>/results.yaml` 中精確匹配 `task_id`、`agent_id` 的結果，並與 `tasks.yaml.status` 交叉確認後決定是否進入 test。`monitor.enabled: false` 或使用者說「不要監控」時跳過監控，直接告知使用者手動檢查。
+5. 內建 subagent 直接等待完成通知；外部 CLI 才依 `references/clients.md` 啟動 Monitor 並等待 `COMPLETED`。取得 Final Answer 後，Dispatch 再讀取 `.lat/workspace/<TASK_ID>/results.yaml` 中精確匹配 `task_id`、`agent_id` 的結果，並與 `tasks.yaml.status` 交叉確認後決定是否進入 test。外部 CLI 的 `monitor.enabled: false` 或使用者說「不要監控」時跳過監控，直接告知使用者手動檢查。
 6. 錯誤處理依 `references/clients.md` 的錯誤處理章節。
 7. tui client 時告知使用者可用指令：`zmx attach <session>`（即時檢視）、`zmx list`（所有工作階段）、`Ctrl+\`（脫離 attach 不終止）。
 
 ### test
 
 1. 確認 `.lat/workspace/<TASK_ID>/` 中 code_executor 的 task 與 result 狀態皆為 `completed`。
-2. 依 `test_executor` 的 client 類型啟動測試 agent（zmx session）。
+2. 依 `test_executor` 的目標 client 與同宿主路由啟動測試 agent；只有外部 TUI client 建立 zmx session。
 
    首次 test_executor prompt（`agent_id` = `test_executor_1_<task_id>`）：
 
@@ -177,8 +188,8 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    [<agent_id>] Read the spec at <spec_file> and the test targets in <plan_file>. Following the three-tier-testing skill, write and run integration tests and E2E tests for the implemented code. Use sub-agents to parallelize independent test writing when beneficial. Do not write or modify unit tests. If tests fail, fix the implementation code and re-run until all tests pass. Run unit tests to confirm no regressions before finishing. E2E tests go in the project's E2E test directory (tests/e2e/ or <frontend>/tests/e2e/). When finished, upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact entry in .lat/workspace/<task_id>/tasks.yaml to the same final status following the yaml-schema — task_id is '<task_id>', agent_id is '<agent_id>'.
    ```
 
-3. 先將 test task 以 `status: running` 附加到該 task ledger，再依 `references/clients.md` 監控；接收 Final Answer，並以 tasks/results 中精確匹配的狀態判斷成功、部分完成或失敗。
-4. test_executor 全部通過後，將 qa task 以 `status: running` 附加到同一 ledger，再依 `qa_executor` client 啟動獨立驗收（`agent_id` = `qa_executor_<instance>_<task_id>`；首次 instance 為 1，每次修正後重新驗收時啟動新的 Agent Session 並增加 instance）。
+3. 先將 test task 以 `status: running` 附加到該 task ledger；內建 subagent 直接等待完成通知，外部 CLI 才依 `references/clients.md` 監控。接收 Final Answer 後，以 tasks/results 中精確匹配的狀態判斷成功、部分完成或失敗。
+4. test_executor 全部通過後，將 qa task 以 `status: running` 附加到同一 ledger，再依 `qa_executor` 的目標 client 與同宿主路由啟動獨立驗收（`agent_id` = `qa_executor_<instance>_<task_id>`；首次 instance 為 1，每次修正後重新驗收時啟動新的 Agent Session 並增加 instance）。
 
    qa_executor prompt：
 
@@ -196,7 +207,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    [<agent_id>] Acceptance verification failed. Read the spec at <spec_file> for requirements context, and read .lat/workspace/<task_id>/qa-results.md for the failed items and evidence. Fix the implementation code so the real application satisfies these items. Re-run the failing tests in tests/qa_e2e/ to verify your fix, then run unit tests to confirm no regressions. Do not modify test files in tests/qa_e2e/. When finished, upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact tasks.yaml entry to the same final status — task_id is '<task_id>', agent_id is '<agent_id>'.
    ```
 
-6. qa_executor 監控同樣必須接收 Final Answer；驗收狀態以該 task directory 的 tasks/results ledger 與 `qa-results.md` 為準。test_executor 修完後回到步驟 4（qa_executor 重新驗收）。
+6. qa_executor 同樣必須由內建完成通知或外部 Monitor 接收 Final Answer；驗收狀態以該 task directory 的 tasks/results ledger 與 `qa-results.md` 為準。test_executor 修完後回到步驟 4（qa_executor 重新驗收）。
 7. 迴圈直到 qa_executor 全部 PASS，或達到重試上限（`test.max_retries` / `test.max_retries_per_task`）。超過上限時暫停，向使用者報告失敗細節與證據。
 8. tui client 時告知使用者可用指令：`zmx attach <session>`（即時檢視）、`zmx list`（所有工作階段）、`Ctrl+\`（脫離 attach 不終止）。
 9. 中斷時依 `references/clients.md` 的中斷防護與 Session 恢復流程處理。

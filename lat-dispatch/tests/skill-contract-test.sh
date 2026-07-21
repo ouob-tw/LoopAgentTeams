@@ -180,8 +180,8 @@ assert_contains "$plan_reviewer_config" 'client: self' \
   'plan_reviewer does not default to Dispatch self review'
 assert_contains "$plan_reviewer_config" 'model: gpt-5.6-sol' \
   'plan_reviewer does not default to gpt-5.6-sol'
-assert_contains "$plan_reviewer_config" 'effort: xhigh' \
-  'plan_reviewer does not default to xhigh effort'
+assert_contains "$plan_reviewer_config" 'effort: high' \
+  'plan_reviewer does not default to high effort'
 assert_contains "$plan_reviewer_config" 'permission: read-only' \
   'plan_reviewer is not read-only'
 assert_contains "$plan_reviewer_table" '| self' \

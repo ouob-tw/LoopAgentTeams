@@ -4,11 +4,11 @@
 
 使用者提出需求後，經過互動式腦力激盪確認方向，後續的規格撰寫與審查、計劃產生、任務派發、背景執行、進度監控、結果驗收由系統自動串接，不需手動介入每個階段的銜接。遇到設計歧義或不可恢復的錯誤時會暫停請求決策。
 
-Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 CLI Agent。Runner Agent 在獨立的背景 session 中執行實作任務，完成後寫回結果。每個 TASK_ID 的任務狀態與執行結果都保存在 `.lat/workspace/<TASK_ID>/`，新任務不會覆蓋舊紀錄。
+Dispatch Agent 是協調者，驅動整個生命週期並委派工作。同宿主優先使用內建 subagent，直接等待完成通知；跨宿主才使用外部 CLI Agent 與 Session Monitor。Runner Agent 完成後寫回結果。每個 TASK_ID 的任務狀態與執行結果都保存在 `.lat/workspace/<TASK_ID>/`，新任務不會覆蓋舊紀錄。
 
 ## 特點
 
-- **不綁定 Agent 框架** — 任何支援 skills 的 Agent 都能擔任 Dispatch Agent——Claude Code、Codex、hermes、OpenClaw、Pi Agent 等；Agent 間通訊只靠 YAML 佇列與 CLI 指令，沒有框架 API、沒有 SDK
+- **不綁定 Agent 框架** — 任何支援 skills 的 Agent 都能擔任 Dispatch Agent——Claude Code、Codex、hermes、OpenClaw、Pi Agent 等；同宿主使用內建 subagent，跨宿主以 YAML 工作紀錄與 CLI client 協作
 - **不受單次額度限制** — 不依賴 `/goal` 等一次性自動化指令，任務以 session 持久化執行，不受 Codex 5 小時額度等限制，直到完成為止
 - **額度耗盡自動換號** — 搭配 [codex-multi-auth](https://github.com/nicobailey/codex-multi-auth)，Codex 帳號配額用完時自動切換到下一個帳號，無需人工介入
 - **人類可直接介入任意 Agent** — 透過 zmx session manager，隨時 attach 到任何背景執行中的 Agent（TUI 模式），即時查看進度或直接輸入訊息，不需要透過 Dispatch Agent 轉達
@@ -41,15 +41,15 @@ Dispatch Agent 是協調者，驅動整個生命週期並委派工作給外部 C
 +---------------------------+
 |  dispatch（派發）          |
 |  驗證任務紀錄 → 加入任務    |   <-- 一個摘要任務指向計劃檔案
-|  啟動 Runner session       |       支援 zmx / CLI 兩種執行方式
+|  啟動 Runner              |       同宿主內建 subagent／跨宿主 CLI
 +---------------------------+
     |
     v
 +---------------------------+
 |  monitor（監控）           |
-|  存活檢查 + 偏離檢查       |   <-- 兩層監控，無硬性 timeout
-|  等待 session 完成標記     |       卡住（STALL）或偏離方向（DRIFT_CHECK）
-+---------------------------+       時通知 AI 介入
+|  等待內建完成通知          |   <-- 內建不輪詢；外部 CLI 才做兩層監控
+|  或外部 session 完成標記   |       STALL／DRIFT_CHECK 時通知 AI 介入
++---------------------------+
     |
     v
 +---------------------------+
@@ -143,9 +143,9 @@ spec 用 codex-exec 審查，code 用 claude-tui sonnet 4.6 medium
 
 Runner 通常由 Dispatch 自動啟動，也可以手動觸發 `lat-runner`。
 
-### 執行中查看進度
+### 外部 TUI 執行中查看進度
 
-Runner 在背景跑時，可以用 zmx 指令查看：
+Runner 透過外部 TUI 在背景跑時，可以用 zmx 指令查看：
 
 | 指令 | 說明 |
 |------|------|
@@ -183,7 +183,11 @@ three-tier-testing/     測試架構技能（三層分離）
       prompts/              可依 retention 清理的暫存 prompt
 ```
 
-## 支援的 Client
+## 支援的派發方式
+
+同宿主優先使用內建 subagent：Codex → GPT／Codex、Claude Code → Claude。內建 worker 完成時直接通知 Dispatch，不以固定週期查詢狀態。
+
+跨宿主使用下列外部 Client：
 
 | Client      | 執行方式                       | 適用場景        |
 | ----------- | ------------------------------ | --------------- |
@@ -194,9 +198,9 @@ three-tier-testing/     測試架構技能（三層分離）
 
 > **TUI（Terminal UI）**：在終端機中運作的互動式文字介面，可即時交互與顯示執行狀態。
 
-## 兩層監控
+## 外部 CLI 兩層監控
 
-取代硬性 timeout，以存活檢查與偏離檢查確保任務正常推進：
+外部 CLI 以存活檢查與偏離檢查取代硬性 timeout；內建 subagent 直接等待完成通知，不使用本節監控：
 
 | 階段       | 存活檢查（工具是否正常運行）       | 偏離檢查（是否在做對的事）     |
 | ---------- | ------------------------------ | ------------------------------ |

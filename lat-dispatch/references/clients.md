@@ -1,6 +1,10 @@
 # Client 執行模式
 
-所有階段呼叫外部 client 時，依本文件規則執行。指令中以 `phase`、`role` 標示該步驟的階段名稱與角色。
+所有階段先依本文件解析目標 client，再依 Dispatch 宿主選擇內建 subagent 或外部 CLI。只有外部 CLI 路徑使用本文件後續的啟動、Session Monitor 與恢復指令。指令中以 `phase`、`role` 標示該步驟的階段名稱與角色。
+
+## 同宿主內建 Subagent
+
+Dispatch 宿主與目標模型家族相同時，內建 subagent 優先於同模型家族的 CLI client；跨宿主才沿用已解析的外部 CLI client。同宿主派發時必須讀取 `references/native-subagents.md`，依宿主使用內建工具並直接等待完成通知。
 
 ## 可用 Client
 
