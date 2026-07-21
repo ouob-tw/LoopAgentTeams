@@ -37,7 +37,7 @@ compatibility: "Linux or macOS with Bash 3.2+. Requires git, zmx, jq, uuidgen, t
 - [ ] spec：腦力激盪 → 草稿／確定 TASK_ID → 初始化 task workspace 與空 ledger → 審查（依 spec_review_flow）→ 使用者確認
 - [ ] plan：產生計劃 → 審查迴圈 → 規格與計劃一起提交
 - [ ] dispatch：驗證既有 `.lat/workspace/<TASK_ID>/` ledger → 附加 code task → 啟動 code_executor
-- [ ] monitor：以 client 原始 Session JSONL 做健康與 turn 完成監控 → 將 Final Answer 交給 Dispatch；executor 另確認 task ledger
+- [ ] monitor：內建 subagent 等待完成通知／外部 CLI 監控原始 Session JSONL → 將 Final Answer 交給 Dispatch；executor 另確認 task ledger
 - [ ] test：test_executor 寫+跑整合與 E2E 測試修到綠 → qa_executor 依 QA 清單寫驗收測試至 qa_e2e/ → 失敗回饋 test_executor 修，迴圈到全過或達上限
 - [ ] report：向使用者報告最終狀態
 ```
@@ -243,16 +243,27 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
 
 ### 診斷流程
 
+先依派發路由選擇下列流程，不得把外部 CLI 的 JSONL、PID、zmx 或 resume 契約套用到內建 subagent。
+
+### 內建 subagent 診斷
+
+1. **驗派發：**確認內建工具參數、model、effort、permission、canonical `agent_id` 與 prompt 正確；runtime handle 依 `references/native-subagents.md` 另行保存。
+2. **查原生結果：**Codex 讀取 `wait_agent`／mailbox 回傳與保存的 runtime agent ID／path；Claude Code 讀取 `Agent` result／task notification 與保存的 runtime `agentId`。只在等待明確逾時或異常時查一次狀態，不固定輪詢。
+3. **通知原 agent：**Codex 依 agent 是否仍在執行使用 `send_message`／`followup_task`；Claude Code 以 `Agent` 的 `resume: <runtime_agent_id>` 延續原 subagent。訊息須包含實際錯誤、原因與修正方向。
+4. **缺少 Final Answer：**內建 subagent 已結束但沒有可用 Final Answer 時，不得視為完成，也不得改查外部 CLI JSONL。先用保存的 runtime handle 與原生結果診斷；能續傳時要求同一 subagent 補交結果，不能續傳時暫停並報告原生錯誤證據。
+
+### 外部 CLI sub-agent 診斷
+
 ```
 1. 驗指令 → 確認 Dispatch 下的啟動指令正確
 2. 查 Session → 讀取 sub-agent 的原始 Session JSONL，找到實際錯誤訊息
 3. 通知    → 把真正的錯誤原因告訴 sub-agent，讓它自行修正
 ```
 
-**步驟 1 — 驗指令：**
+**外部步驟 1 — 驗指令：**
 確認啟動指令的 permission / sandbox flag、model、prompt 格式皆正確。若指令本身有誤，修正後重新啟動 sub-agent。
 
-**步驟 2 — 查 Session：**
+**外部步驟 2 — 查 Session：**
 `.lat/logs/` 不是完成或診斷的主要來源。必須直接讀取主機上 CLI 工具的完整原始 Session JSONL。
 
 每個 phase 的啟動 prompt 皆以 `[<agent_id>]` 開頭（如 `[test_executor_1_2026-07-09-user-api-spec]`），因此可用 `agent_id` 在 session 目錄中精確定位對應的 session 檔案。
@@ -282,7 +293,7 @@ grep -i "error\|failed\|permission\|denied\|invalid" <session-jsonl>
 
 找到實際錯誤訊息後，判斷真正原因（參數格式錯誤、schema 不符、真的權限不足等）。
 
-**步驟 3 — 通知 sub-agent：**
+**外部步驟 3 — 通知 sub-agent：**
 依 client 類型通知：
 
 - tui → 先用檔案編輯 API 將訊息寫入安全的 `MESSAGE_PATH`，再執行 `zmx send <session> "$(cat -- "$MESSAGE_PATH")$(printf '\r')"`

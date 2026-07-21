@@ -7,6 +7,9 @@ SKILL="$ROOT/lat-dispatch/SKILL.md"
 CLIENTS="$ROOT/lat-dispatch/references/clients.md"
 NATIVE="$ROOT/lat-dispatch/references/native-subagents.md"
 README="$ROOT/README.md"
+SMOKE="$ROOT/lat-dispatch/tests/native-subagent-smoke.md"
+shopt -s nullglob
+SMOKE_RESULTS=("$ROOT"/lat-dispatch/tests/native-subagent-smoke-results-*.md)
 
 fail() {
   echo "FAIL: $*" >&2
@@ -16,6 +19,12 @@ fail() {
 assert_file_contains() {
   local file=$1 expected=$2 message=$3
   grep -q -F -- "$expected" "$file" || fail "$message"
+}
+
+assert_smoke_results_contain() {
+  local expected=$1 message=$2
+  [ "${#SMOKE_RESULTS[@]}" -gt 0 ] || fail 'Host capability smoke has no runtime evidence artifacts'
+  grep -q -F -- "$expected" "${SMOKE_RESULTS[@]}" || fail "$message"
 }
 
 assert_file_contains "$CLIENTS" '## 同宿主內建 Subagent' \
@@ -61,6 +70,12 @@ assert_file_contains "$NATIVE" '不得用正規化後的 task name 改寫 ledger
   'Codex task_name normalization can corrupt the canonical ledger identity'
 assert_file_contains "$NATIVE" '保存 `Agent` 回傳的 `agentId`' \
   'Claude native dispatch does not preserve the runtime agentId for waiting or resume'
+assert_file_contains "$NATIVE" '`claude-fable-5` → `fable`' \
+  'Claude native dispatch does not map configured model IDs to Agent model aliases'
+assert_file_contains "$NATIVE" '檢查回傳的 `resolvedModel`' \
+  'Claude native dispatch does not verify the actual child model'
+assert_file_contains "$NATIVE" '不得以不同 model 靜默執行' \
+  'Native dispatch can silently run a model different from the resolved phase model'
 
 assert_file_contains "$SKILL" '同宿主使用內建 subagent' \
   'Dispatch workflow does not select native same-host subagents'
@@ -70,12 +85,47 @@ assert_file_contains "$SKILL" '不得固定輪詢 subagent 狀態' \
   'Dispatch workflow does not prohibit native subagent status polling'
 assert_file_contains "$SKILL" '內建 subagent 直接等待完成通知；外部 CLI 才啟動 Monitor' \
   'Phase workflow does not distinguish native completion from external monitoring'
+assert_file_contains "$SKILL" 'monitor：內建 subagent 等待完成通知／外部 CLI 監控原始 Session JSONL' \
+  'Progress checklist still treats external Session JSONL monitoring as universal'
 if grep -q -F '依 `test_executor` 的 client 類型啟動測試 agent（zmx session）' "$SKILL"; then
   fail 'Test phase still requires zmx for native subagents'
 fi
 if grep -q -F 'executor 仍須等 Monitor 回傳 `COMPLETED`' "$SKILL"; then
   fail 'Executor completion still unconditionally requires the external Monitor'
 fi
+assert_file_contains "$SKILL" '### 內建 subagent 診斷' \
+  'Subagent diagnostics do not branch for native runtime data'
+assert_file_contains "$SKILL" '### 外部 CLI sub-agent 診斷' \
+  'Existing CLI diagnostics are not explicitly scoped to external clients'
+assert_file_contains "$SKILL" '`send_message`／`followup_task`' \
+  'Codex native diagnostics lack a native continuation channel'
+assert_file_contains "$SKILL" '`Agent` 的 `resume: <runtime_agent_id>`' \
+  'Claude native diagnostics lack runtime agent resume guidance'
+assert_file_contains "$SKILL" '已結束但沒有可用 Final Answer' \
+  'Native diagnostics do not handle completion without a Final Answer'
+
+assert_file_contains "$SMOKE" '## Codex：完成通知' \
+  'Host capability smoke does not cover Codex completion notification'
+assert_file_contains "$SMOKE" '## Codex：等待逾時後恢復' \
+  'Host capability smoke does not cover Codex timeout recovery'
+assert_file_contains "$SMOKE" '## Claude Code：完成通知' \
+  'Host capability smoke does not cover Claude native Agent completion'
+assert_file_contains "$SMOKE" '`model: fable`' \
+  'Claude host smoke does not pass the configured Fable model to Agent'
+assert_file_contains "$SMOKE" '`resolvedModel` 為 Fable' \
+  'Claude host smoke does not verify the child resolved model'
+assert_file_contains "$SMOKE" 'canonical `agent_id` 保留在 child prompt 的 `[<agent_id>]` 前綴' \
+  'Claude host smoke does not preserve the canonical ID in the child prompt'
+assert_file_contains "$SMOKE" '不得啟動同模型家族 CLI' \
+  'Host capability smoke does not prohibit same-host CLI fallback'
+assert_file_contains "$SMOKE" 'native child 的實際 model 為 `gpt-5.6-terra`' \
+  'Terra E2E does not verify the actual native child model'
+assert_smoke_results_contain 'Overall: PASS' \
+  'Host capability smoke has no passing runtime evidence artifact'
+assert_smoke_results_contain 'TERRA_NATIVE_E2E_OK' \
+  'Runtime evidence does not include the Terra native child marker'
+assert_smoke_results_contain 'claude-fable-5' \
+  'Runtime evidence does not prove the Claude native child model'
 
 assert_file_contains "$README" '同宿主優先使用內建 subagent' \
   'README still describes every delegation as external CLI work'
