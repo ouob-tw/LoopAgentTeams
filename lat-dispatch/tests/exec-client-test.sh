@@ -203,11 +203,101 @@ test_every_captured_line_has_utc_capture_time() {
   return 0
 }
 
+test_launch_refuses_existing_runtime_logs() {
+  local child="$TMP_DIR/never-run-child.sh"
+  local pid_file="$TMP_DIR/runtime/logrefuse.pid"
+  local status
+  launcher_logs_for logrefuse
+
+  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$child"
+  chmod +x "$child"
+  mkdir -p "$(dirname "$OUT_LOG")"
+  printf '%s\n' 'PRE_EXISTING' >"$OUT_LOG"
+
+  set +e
+  run_launcher "$pid_file" "$OUT_LOG" "$ERR_LOG" launch "$child" >/dev/null 2>&1
+  status=$?
+  set -e
+
+  [ "$status" -eq 65 ] || fail "launcher did not refuse to overwrite an existing runtime log: $status"
+  [ "$(cat "$OUT_LOG")" = 'PRE_EXISTING' ] || fail "launcher modified an existing runtime log"
+  [ ! -e "$ERR_LOG" ] || fail "launcher created the stderr log despite refusing the launch"
+}
+
+test_resume_appends_with_boundaries() {
+  local child="$TMP_DIR/echo-child.sh"
+  local pid_file_1="$TMP_DIR/runtime/resume1.pid"
+  local pid_file_2="$TMP_DIR/runtime/resume2.pid"
+  local boundaries
+  launcher_logs_for resume
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf '\''{"type":"run","n":"%s"}\n'\'' "$1"' \
+    'echo "stderr run $1" >&2' >"$child"
+  chmod +x "$child"
+
+  run_launcher "$pid_file_1" "$OUT_LOG" "$ERR_LOG" launch "$child" first || fail "initial launch failed"
+  run_launcher "$pid_file_2" "$OUT_LOG" "$ERR_LOG" resume "$child" second || fail "resume run failed"
+
+  grep -q '"n":"first"' "$OUT_LOG" || fail "resume lost the original stdout events"
+  grep -q '"n":"second"' "$OUT_LOG" || fail "resume did not append new stdout events"
+  boundaries=$(jq -r 'select(.stream == "meta" and .event.type == "lat.runtime_boundary") | .event.action' "$OUT_LOG")
+  [ "$boundaries" = $'launch\nresume' ] || fail "stdout boundaries are not launch then resume: $boundaries"
+  jq -se 'all(.[] | select(.stream == "meta"); .event.agent_id == "code_executor_1_exec-client-test")' \
+    "$OUT_LOG" >/dev/null || fail "stdout boundary lacks the agent_id"
+  [ "$(grep -c 'LAT_RUNTIME_BOUNDARY' "$ERR_LOG")" -eq 2 ] || fail "stderr does not have two boundaries"
+  grep -Eq "$TS_RE LAT_RUNTIME_BOUNDARY agent_id=code_executor_1_exec-client-test action=resume" "$ERR_LOG" || \
+    fail "stderr resume boundary sentinel malformed"
+  grep -q 'stderr run first' "$ERR_LOG" && grep -q 'stderr run second' "$ERR_LOG" || \
+    fail "resume lost or dropped stderr lines"
+}
+
+test_resume_refuses_missing_runtime_logs() {
+  # resume appends to the original files (spec); it must never create them.
+  # Every path below is owned by this test only: its own child, PID file,
+  # client marker, and log pair from launcher_logs_for.
+  local child="$TMP_DIR/resume-refuse-child.sh"
+  local pid_file="$TMP_DIR/runtime/resumerefuse.pid"
+  local marker="$TMP_DIR/resumerefuse-client-marker"
+  local status
+  launcher_logs_for resumerefuse
+
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$1"' >"$child"
+  chmod +x "$child"
+
+  # Case 1: both logs missing.
+  set +e
+  run_launcher "$pid_file" "$OUT_LOG" "$ERR_LOG" resume "$child" "$marker" >/dev/null 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 65 ] || fail "resume with both logs missing was not refused with 65: $status"
+  [ ! -e "$OUT_LOG" ] || fail "resume created the stdout log"
+  [ ! -e "$ERR_LOG" ] || fail "resume created the stderr log"
+  [ ! -e "$marker" ] || fail "client was started despite refused resume"
+
+  # Case 2: only the stdout log exists.
+  mkdir -p "$(dirname "$OUT_LOG")"
+  printf '%s\n' '{"captured_at":"2026-07-24T00:00:00Z","stream":"meta","event":{}}' >"$OUT_LOG"
+  set +e
+  run_launcher "$pid_file" "$OUT_LOG" "$ERR_LOG" resume "$child" "$marker" >/dev/null 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 65 ] || fail "resume with a missing stderr log was not refused with 65: $status"
+  [ "$(wc -l <"$OUT_LOG")" -eq 1 ] || fail "refused resume modified the existing stdout log"
+  [ ! -e "$ERR_LOG" ] || fail "refused resume created the missing stderr log"
+  [ ! -e "$marker" ] || fail "client was started despite a missing stderr log"
+  [ ! -e "$pid_file" ] || fail "PID file left behind after refused resume"
+}
+
 test_records_exact_child_pid_and_cleans_after_term
 test_propagates_normal_child_status_and_cleans_pid_file
 test_refuses_to_overwrite_existing_pid_file
 test_forwards_stdin_to_child
 test_separates_fd1_and_fd2_without_cross_pollution
 test_every_captured_line_has_utc_capture_time
+test_launch_refuses_existing_runtime_logs
+test_resume_appends_with_boundaries
+test_resume_refuses_missing_runtime_logs
 
 echo 'PASS: exec-client'
