@@ -33,6 +33,7 @@ compatibility: "Any Code Agent client with shell access and a project workspace 
 ```
 
 補充規則：
+- 開始任何 ledger mutation 前，必須完整讀取 `../lat-dispatch/references/yaml-schema.md`，並依其必填欄位、欄位名稱、欄位順序與原子寫入規則處理。
 - 有 `context.plan_file` 時，**必須先讀取計劃**，依定義的階段順序執行。每個階段完成後專案應可執行。
 - 無計劃檔案的簡單任務：依 `goal` 直接執行。
 - 技能不得擴大任務範圍；與 `constraints` 衝突時以 `constraints` 為準。

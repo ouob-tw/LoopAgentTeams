@@ -148,6 +148,9 @@ fi
 code_process_rules=$(section '補充規則：' '## 結果狀態' "$CODE_SKILL")
 has_ordered_markers "$code_process_rules" "$RESULT_FIRST_RULE" "$TASK_STATUS_AFTER_RULE" || \
   fail 'lat-code skill does not independently require result-first task-status ordering'
+assert_contains "$code_process_rules" \
+  '開始任何 ledger mutation 前，必須完整讀取 `../lat-dispatch/references/yaml-schema.md`' \
+  'lat-code does not require reading the shared schema before ledger mutation'
 
 spec_section=$(section '### spec' '### plan' "$SKILL")
 plan_section=$(section '### plan' '### dispatch' "$SKILL")
@@ -584,6 +587,8 @@ grep -q -F 'following the lat-code skill' "$SKILL" || \
   fail 'Dispatch code prompt does not load the lat-code skill'
 grep -q -F 'code_executor_<instance>_<task_id>' "$CODE_SKILL" || \
   fail 'lat-code does not keep the code_executor agent_id identity'
+[ "$(grep -c -F -- '--add-dir "$HOME/.claude/skills/lat-dispatch/references"' "$CLIENTS")" -ge 2 ] || \
+  fail 'Claude exec launch/resume does not authorize the installed shared-schema reference'
 for doc in "$SKILL" "$CLIENTS" "$README" "$CODE_SKILL" "$SCHEMA"; do
   assert_not_contains "$(cat "$doc")" 'lat-runner' \
     "Active document still references lat-runner: $doc"

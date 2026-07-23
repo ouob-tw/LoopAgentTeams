@@ -142,6 +142,7 @@ scripts/run-exec-client.sh --pid-file "$PID_FILE" \
   --agent-id "$AGENT_ID" --action "$ACTION" --stdout-format claude-stream-json -- \
   claude --session-id "$UUID" --name "$AGENT_ID" \
     --model=<model> --effort <effort> --permission-mode <permission> \
+    --add-dir "$HOME/.claude/skills/lat-dispatch/references" \
     --print --output-format stream-json --verbose "$(cat -- "$PROMPT_PATH")"
 ```
 
@@ -519,7 +520,9 @@ scripts/run-exec-client.sh --pid-file "$PID_FILE" \
   --stdout-log "$STDOUT_LOG" --stderr-log "$STDERR_LOG" \
   --agent-id "$AGENT_ID" --action "$ACTION" --stdout-format claude-stream-json -- \
   claude --resume <agent_id> --model=<model> --effort <effort> \
-    --permission-mode <permission> --print --output-format stream-json --verbose \
+    --permission-mode <permission> \
+    --add-dir "$HOME/.claude/skills/lat-dispatch/references" \
+    --print --output-format stream-json --verbose \
     "$(cat -- "$PROMPT_PATH")" >/dev/null &
 ```
 

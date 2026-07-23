@@ -2,11 +2,11 @@
 
 - 執行目錄：`/home/swy/LoopAgentTeams`
 - Task ID：`lat-exec-runtime-smoke`
-- 結果：`BLOCKED`
-- 阻擋原因：真實 Codex exec 通過 PID pre-flight gate 後遇到 usage limit，沒有產生 Session JSONL Final Answer，launcher exit status 為 1。依 smoke brief「quota／auth 不可用即停止」規則，未啟動 Claude exec。
+- 最終結果：`PASS`
+- 首次阻擋：真實 Codex exec 通過 PID pre-flight gate 後遇到 usage limit，沒有產生 Session JSONL Final Answer，launcher exit status 為 1。Dispatch 切換到可用帳號後，以新的 Agent Session 完成 Codex／Claude Q8 與 lat-code Q9；首次 blocked 證據保留如下。
 - Procedure correction：事後 review 發現原 gate 只用 `read` 取第一行，無法拒絕 live PID 後的尾隨內容；procedure 已改為驗證完整檔案。此修正沒有重跑 client，也不改變下列歷史 BLOCKED evidence。
 
-## Codex exec
+## Codex exec（首次 blocked attempt）
 
 ### 啟動與 Monitor trace
 
@@ -88,7 +88,7 @@ CODEX_STDERR_SENTINEL_OK
 4. **PASS** — stderr 第一行為 `LAT_RUNTIME_BOUNDARY` sentinel，所有現有行都有 UTC 前綴。
 5. **FAIL** — trace 證明 Monitor 前未讀 runtime log，且只在失敗後做 bounded diagnosis；但此次沒有正常完成路徑，無法完成 Q4 正常路徑佐證。
 
-## Claude exec
+## Claude exec（首次 blocked attempt）
 
 未啟動。Codex 回傳精確 quota 錯誤後，依 brief「任一真實 client 因 quota／auth 不可用即記錄、停止並回報」執行。
 
@@ -144,4 +144,177 @@ empty expected=REJECT actual=REJECT PASS
 nondigit expected=REJECT actual=REJECT PASS
 ```
 
-這是 deterministic procedure fixture，不是新的真實 client run；Q8 維持 `BLOCKED`。
+這是 deterministic procedure fixture，不是新的真實 client run；當時 Q8 維持 `BLOCKED`，後續 completion rerun 如下。
+
+## Completion rerun：Q8 Codex exec
+
+切換到可用 Codex 帳號後，以新的 `agent_id=code_executor_3_lat-exec-runtime-smoke` 避免重用首次 blocked transcript。PID gate 只讀 process handle 與 PID file；正常完成前沒有讀 runtime log。
+
+```text
+pid_gate=PASS
+COMPLETED
+client=codex
+agent_id=code_executor_3_lat-exec-runtime-smoke
+turn_id=019f90d0-c775-7a82-b9ca-c6a0f899d00e
+final_answer:
+RUNTIME_SMOKE_OK
+monitor_exit=0
+exit=0
+pid_file_after=absent
+```
+
+完成後才做有限摘錄。`head -n 3 "$STDOUT_LOG"`：
+
+```jsonl
+{"captured_at":"2026-07-23T21:10:28Z","stream":"meta","event":{"type":"lat.runtime_boundary","agent_id":"code_executor_3_lat-exec-runtime-smoke","action":"launch"}}
+{"captured_at":"2026-07-23T21:10:29Z","stream":"stdout","event":{"type":"thread.started","thread_id":"019f90d0-c6e3-7f11-bc03-5edb6c0dc294"}}
+{"captured_at":"2026-07-23T21:10:29Z","stream":"stdout","event":{"type":"turn.started"}}
+```
+
+`tail -n 7 "$STDERR_LOG"`（實際一行）：
+
+```text
+2026-07-23T21:10:28Z LAT_RUNTIME_BOUNDARY agent_id=code_executor_3_lat-exec-runtime-smoke action=launch
+```
+
+```text
+STDOUT_ALL_TIMESTAMP_PASS
+STDERR_ALL_TIMESTAMP_PASS
+boundary_action=launch
+```
+
+Codex 準則 1–5：**PASS**。另一次重用舊 `code_executor_1_...` 的 rerun 曾在新 JSONL 寫入前被 auto-discovery 選到首次 blocked transcript；client 本身 exit 0，明確指定該次新 JSONL 後 Monitor 也回報 `COMPLETED/RUNTIME_SMOKE_OK`。該次不作 Q4 的正常路徑證據，最終採上列全新 agent instance。
+
+## Completion rerun：Q8 Claude exec
+
+```text
+uuid=8eac7cf9-2f06-41c5-9e65-2121c5c654f8
+pid_gate=PASS
+COMPLETED
+client=claude
+agent_id=code_executor_2_lat-exec-runtime-smoke
+final_answer:
+RUNTIME_SMOKE_OK
+monitor_exit=0
+exit=0
+pid_file_after=absent
+```
+
+有限摘錄：
+
+```jsonl
+{"captured_at":"2026-07-23T21:00:52Z","stream":"meta","event":{"type":"lat.runtime_boundary","agent_id":"code_executor_2_lat-exec-runtime-smoke","action":"launch"}}
+{"captured_at":"2026-07-23T21:00:53Z","stream":"stdout","event":{"type":"system","subtype":"hook_started","hook_name":"SessionStart:startup","session_id":"8eac7cf9-2f06-41c5-9e65-2121c5c654f8"}}
+```
+
+```text
+2026-07-23T21:00:52Z LAT_RUNTIME_BOUNDARY agent_id=code_executor_2_lat-exec-runtime-smoke action=launch
+STDOUT_ALL_TIMESTAMP_PASS
+STDERR_ALL_TIMESTAMP_PASS
+boundary_action=launch
+```
+
+Claude 準則 1–5：**PASS**。
+
+## Completion rerun：Q9 real lat-code execution
+
+Skill visibility probe：
+
+```text
+lat-code: yes
+lat-runner: no
+```
+
+第一次 real execution 確實呼叫 `Skill(lat-code)`，也先寫 result 再更新 task，但 result 使用了未定義的 `phase`／`files_changed`，且缺少必填 `goal`，因此視為 RED，不採為完成證據。Root cause 是 skill 只叫 Agent「參見」共享 schema，沒有要求 mutation 前完整讀取。
+
+加入 contract test 後，RED：
+
+```text
+FAIL: lat-code does not require reading the shared schema before ledger mutation
+```
+
+最小修正要求 mutation 前完整讀取 schema；GREEN：
+
+```text
+PASS: skill-contract
+```
+
+新 workspace `2026-07-24-lat-code-rename-smoke-retry` 的首次 launch 證明 Claude 還需要明確讀取 installed companion reference 的權限：
+
+```text
+I need permission to read the shared schema reference file at
+/home/swy/.claude/skills/lat-dispatch/references/yaml-schema.md
+```
+
+因此 Claude exec launch／resume 契約加入：
+
+```bash
+--add-dir "$HOME/.claude/skills/lat-dispatch/references"
+```
+
+以相同 UUID、相同 agent instance、`action=resume` 與 `--after-line 30` 繼續後：
+
+```text
+COMPLETED
+client=claude
+agent_id=code_executor_1_2026-07-24-lat-code-rename-smoke-retry
+final_answer: Task ... is done.
+monitor_exit=0
+exit=0
+pid_file_after=absent
+```
+
+Session JSONL tool evidence（line number、tool、關鍵 input）：
+
+```text
+12  Skill  {"skill":"lat-code",...}
+20  Read   {"file_path":"/home/swy/.claude/skills/lat-dispatch/references/yaml-schema.md"}
+105 Write  {"file_path":".../results.yaml.tmp",...}
+107 Bash   {"command":"mv results.yaml.tmp results.yaml && cat results.yaml"}
+112 Write  {"file_path":".../tasks.yaml.tmp",...status: completed...}
+114 Bash   {"command":"mv tasks.yaml.tmp tasks.yaml ..."}
+OK-no-lat-runner-tools
+```
+
+最終 artifact：
+
+```text
+scratch/lat-code-smoke-retry.txt = LAT_CODE_SMOKE_OK
+results.yaml status = completed
+tasks.yaml status = completed
+SCHEMA_PARSE_PASS
+```
+
+Q9：**PASS**。結果寫入（105／107）明確早於 task final status 更新（112／114），兩份 ledger 均可由 PyYAML 解析且符合必填欄位。
+
+## Final gate 與 installed-copy sync
+
+Repository verification：
+
+```text
+PASS: exec-client
+PASS: monitor-session
+PASS: skill-contract
+PASS: native-subagent-contract
+PASS: no active lat-runner reference
+bash -n: clean
+ShellCheck: clean
+git diff --check: clean
+lat-code/SKILL.md: 68 lines
+lat-dispatch/SKILL.md: 316 lines
+lat-code structure: SKILL.md only
+```
+
+完成 repository verification 後，以 rollback-safe staged replacement 同步實際存在 LAT copies 的 roots：
+
+```text
+SYNC_OK root=/home/swy/.agents/skills
+SYNC_OK root=/home/swy/.claude/skills
+NO_OLD_PATH root=/home/swy/.agents/skills
+NO_STAGE root=/home/swy/.agents/skills
+NO_OLD_PATH root=/home/swy/.claude/skills
+NO_STAGE root=/home/swy/.claude/skills
+CODEX_ROOT_UNTOUCHED_NO_LAT_COPIES
+```
+
+兩個 synced roots 的 `lat-dispatch`／`lat-code` 均以 `diff -qr` 驗證 byte-identical；`/home/swy/.codex/skills` 原本沒有 LAT copy，未建立新 copy。
