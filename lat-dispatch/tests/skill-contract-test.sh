@@ -317,6 +317,7 @@ fi
 
 clean_section=$(section '### clean' '### purge' "$SKILL")
 purge_section=$(section '### purge' '## Sub-Agent 異常診斷' "$SKILL")
+runtime_diagnosis_section=$(section '### Runtime 診斷' '### Exec PID 診斷與終止' "$CLIENTS")
 
 grep -q -F '.lat/logs/<TASK_ID>/<agent_id>.stdout.jsonl' "$CLIENTS" || \
   fail 'Runtime stdout log path is not documented'
@@ -358,10 +359,29 @@ grep -q -F '不自動判定或清除 stale lock' "$CLIENTS" || \
   fail 'Launcher docs invent stale-lock auto-recovery'
 assert_not_contains "$(cat "$CLIENTS")" '>/dev/null 2>&1' \
   'clients.md still discards launcher stderr when backgrounding the exec launcher'
-grep -q -F 'tail -n 7 "$STDERR_LOG"' "$CLIENTS" || \
-  fail 'Diagnosis does not start with tail -n 7 of stderr'
-grep -q -F 'tail -n 20 "$STDERR_LOG"' "$CLIENTS" || \
-  fail 'Diagnosis does not escalate to tail -n 20 of stderr'
+assert_contains "$runtime_diagnosis_section" 'stderr runtime log 不存在' \
+  'Runtime diagnosis does not branch on a pre-log startup failure'
+assert_contains "$runtime_diagnosis_section" '保留的 launcher FD2' \
+  'Pre-log startup failure does not diagnose from preserved launcher stderr'
+assert_contains "$runtime_diagnosis_section" '不得對不存在的 stderr runtime log 執行 `tail`' \
+  'Pre-log diagnosis may tail a missing runtime stderr log'
+assert_contains "$runtime_diagnosis_section" '只有 stderr runtime log 存在時' \
+  'Runtime stderr tailing is not gated on log existence'
+assert_contains "$runtime_diagnosis_section" 'tail -n 7 "$STDERR_LOG"' \
+  'Diagnosis does not start with tail -n 7 of stderr'
+assert_contains "$runtime_diagnosis_section" '只有已有具體診斷理由且 7 行不足時' \
+  'Diagnosis does not reason-gate expansion beyond the first 7 stderr lines'
+assert_contains "$runtime_diagnosis_section" '記錄擴大理由後' \
+  'Diagnosis does not preserve why stderr was expanded'
+assert_contains "$runtime_diagnosis_section" 'tail -n 20 "$STDERR_LOG"' \
+  'Diagnosis does not escalate to tail -n 20 of stderr'
+assert_contains "$runtime_diagnosis_section" '20 行仍不足且有新的具體診斷理由時' \
+  'Diagnosis does not reason-gate expansion beyond 20 stderr lines'
+tail7_line=$(line_number "$runtime_diagnosis_section" 'tail -n 7 "$STDERR_LOG"')
+tail20_line=$(line_number "$runtime_diagnosis_section" 'tail -n 20 "$STDERR_LOG"')
+if [ -z "$tail7_line" ] || [ -z "$tail20_line" ] || [ "$tail7_line" -ge "$tail20_line" ]; then
+  fail 'Runtime diagnosis does not order tail -n 7 before tail -n 20'
+fi
 grep -q -F '正常完成時，Dispatch 不讀取任何 runtime log' "$CLIENTS" || \
   fail 'Normal completion still reads runtime logs'
 grep -q -F 'boundary 之後的事件' "$CLIENTS" || \
@@ -391,5 +411,17 @@ assert_contains "$clean_section" '不得以 `pgrep`' \
   'clean may guess process liveness with pgrep'
 assert_contains "$purge_section" '.lat/logs/<TASK_ID>' \
   'purge does not remove the task runtime log directory'
+assert_contains "$purge_section" '任何 `${PID_FILE}.lock` ownership lock 存在' \
+  'purge does not fail closed while launcher ownership is reserved'
+assert_contains "$purge_section" '有效 PID（`kill -0` 存活）' \
+  'purge can delete a task with a running exec'
+assert_contains "$purge_section" 'PID 格式錯誤' \
+  'purge does not fail closed on malformed PID state'
+assert_contains "$purge_section" '不得以 `pgrep`' \
+  'purge may guess process liveness with pgrep'
+assert_contains "$purge_section" '保留 `.lat/workspace/<TASK_ID>/` 與 `.lat/logs/<TASK_ID>/`' \
+  'purge does not preserve both task directories when ownership is uncertain'
+assert_contains "$purge_section" '回報後停止 purge' \
+  'purge does not report and stop on unsafe runtime ownership state'
 
 echo 'PASS: skill-contract'

@@ -318,22 +318,23 @@ Codex 與 Claude 的 exec／TUI 都依各自原始 Session JSONL 判定 turn 完
 啟動失敗、`INCOMPLETE` 或 `STALL` 時，Dispatch 依序：
 
 1. 記錄事件種類、`agent_id`、PID 狀態與兩個 runtime log 路徑。
-2. 先讀 stderr 最後 7 行：
+2. 先檢查 stderr runtime log。stderr runtime log 不存在（`[ ! -f "$STDERR_LOG" ]`）表示可能是 pre-log 啟動失敗：診斷來源是保留的 launcher FD2；記錄該輸出與 launcher exit status，跳過下列 runtime tail 步驟，不得建立空 log，也不得對不存在的 stderr runtime log 執行 `tail`。
+3. 只有 stderr runtime log 存在時，先讀最後 7 行：
 
    ```bash
    tail -n 7 "$STDERR_LOG"
    ```
 
-3. 若 7 行不足，再擴大為最後 20 行：
+4. 只有已有具體診斷理由且 7 行不足時（例如已見錯誤結尾但開頭被截斷），記錄擴大理由後才讀最後 20 行：
 
    ```bash
    tail -n 20 "$STDERR_LOG"
    ```
 
-4. 20 行仍不足時不規定固定下一個範圍；Dispatch 依已見證據自行決定擴大 stderr、篩選 stdout 結構化事件，或驗證帳號、配額與程序狀態。
-5. stdout 查詢只看目前 launch／resume boundary 之後的事件，優先篩選 client 對應的 error／failed events；不得直接載入完整 stdout JSONL。
-6. 若 runtime 指向帳號或配額問題，仍須以即時帳號狀態驗證，不得只憑歷史 log 判定目前狀態。
-7. 仍無明確原因時，回報已查看的路徑、範圍、時間與現有證據；不猜測、不 kill、不變更 ledger。
+5. 20 行仍不足且有新的具體診斷理由時，不規定固定下一個範圍；Dispatch 記錄理由後，依已見證據自行決定擴大 stderr、篩選 stdout 結構化事件，或驗證帳號、配額與程序狀態。
+6. stdout 查詢只看目前 launch／resume boundary 之後的事件，優先篩選 client 對應的 error／failed events；不得直接載入完整 stdout JSONL。
+7. 若 runtime 指向帳號或配額問題，仍須以即時帳號狀態驗證，不得只憑歷史 log 判定目前狀態。
+8. 仍無明確原因時，回報已查看的路徑、範圍、擴大理由、時間與現有證據；不猜測、不 kill、不變更 ledger。
 
 Dispatch 不得無理由讀取完整 runtime log；已有具體診斷理由時可自行擴大範圍。
 

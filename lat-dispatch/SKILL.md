@@ -230,7 +230,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
 
 ### purge
 
-只有使用者明確指定 `purge <TASK_ID>` 時，驗證 TASK_ID 後才可用 `trash-put` 刪除 `.lat/workspace/<TASK_ID>/` 與 `.lat/logs/<TASK_ID>/`。一般 `clean` 永不刪除 task ledger。
+只有使用者明確指定 `purge <TASK_ID>` 時才進入此流程。驗證 TASK_ID 後，先檢查該 task 的全部 runtime ownership：任何 `${PID_FILE}.lock` ownership lock 存在、任何 PID file 仍有有效 PID（`kill -0` 存活），或任何 PID 格式錯誤時，一律保留 `.lat/workspace/<TASK_ID>/` 與 `.lat/logs/<TASK_ID>/`，回報後停止 purge；不得自動判定或清除 stale lock，也不得以 `pgrep` 猜測程序。只有沒有 ownership lock，且所有 PID file 都遺失或記錄的程序已不存在時，才可用 `trash-put` 刪除上述兩個 task 目錄。一般 `clean` 永不刪除 task ledger。
 
 ## Sub-Agent 異常診斷
 
