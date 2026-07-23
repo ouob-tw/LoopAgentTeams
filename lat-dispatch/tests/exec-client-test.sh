@@ -206,29 +206,52 @@ test_every_captured_line_has_utc_capture_time() {
 test_launch_refuses_existing_runtime_logs() {
   local child="$TMP_DIR/never-run-child.sh"
   local pid_file="$TMP_DIR/runtime/logrefuse.pid"
+  local marker="$TMP_DIR/logrefuse-client-marker"
+  local expected_log="$TMP_DIR/logrefuse-expected"
   local status
-  launcher_logs_for logrefuse
 
-  printf '%s\n' '#!/usr/bin/env bash' 'exit 0' >"$child"
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$1"' >"$child"
   chmod +x "$child"
+
+  # Case 1: only the stdout log exists.
+  launcher_logs_for logrefuseout
   mkdir -p "$(dirname "$OUT_LOG")"
   printf '%s\n' 'PRE_EXISTING' >"$OUT_LOG"
+  cp "$OUT_LOG" "$expected_log"
 
   set +e
-  run_launcher "$pid_file" "$OUT_LOG" "$ERR_LOG" launch "$child" >/dev/null 2>&1
+  run_launcher "$pid_file" "$OUT_LOG" "$ERR_LOG" launch "$child" "$marker" >/dev/null 2>&1
   status=$?
   set -e
 
   [ "$status" -eq 65 ] || fail "launcher did not refuse to overwrite an existing runtime log: $status"
-  [ "$(cat "$OUT_LOG")" = 'PRE_EXISTING' ] || fail "launcher modified an existing runtime log"
+  cmp -s "$expected_log" "$OUT_LOG" || fail "launcher modified an existing stdout log"
   [ ! -e "$ERR_LOG" ] || fail "launcher created the stderr log despite refusing the launch"
+  [ ! -e "$marker" ] || fail "client was started despite an existing stdout log"
+  [ ! -e "$pid_file" ] || fail "PID file left behind after stdout-log refusal"
+
+  # Case 2: only the stderr log exists.
+  launcher_logs_for logrefuseerr
+  printf '%s\n' 'PRE_EXISTING_STDERR' >"$ERR_LOG"
+  cp "$ERR_LOG" "$expected_log"
+
+  set +e
+  run_launcher "$pid_file" "$OUT_LOG" "$ERR_LOG" launch "$child" "$marker" >/dev/null 2>&1
+  status=$?
+  set -e
+
+  [ "$status" -eq 65 ] || fail "launcher did not refuse an existing stderr runtime log: $status"
+  [ ! -e "$OUT_LOG" ] || fail "launcher created the stdout log despite refusing the launch"
+  cmp -s "$expected_log" "$ERR_LOG" || fail "launcher modified an existing stderr log"
+  [ ! -e "$marker" ] || fail "client was started despite an existing stderr log"
+  [ ! -e "$pid_file" ] || fail "PID file left behind after stderr-log refusal"
 }
 
 test_resume_appends_with_boundaries() {
   local child="$TMP_DIR/echo-child.sh"
   local pid_file_1="$TMP_DIR/runtime/resume1.pid"
   local pid_file_2="$TMP_DIR/runtime/resume2.pid"
-  local boundaries
+  local stdout_sequence stderr_sequence
   launcher_logs_for resume
 
   printf '%s\n' \
@@ -240,17 +263,23 @@ test_resume_appends_with_boundaries() {
   run_launcher "$pid_file_1" "$OUT_LOG" "$ERR_LOG" launch "$child" first || fail "initial launch failed"
   run_launcher "$pid_file_2" "$OUT_LOG" "$ERR_LOG" resume "$child" second || fail "resume run failed"
 
-  grep -q '"n":"first"' "$OUT_LOG" || fail "resume lost the original stdout events"
-  grep -q '"n":"second"' "$OUT_LOG" || fail "resume did not append new stdout events"
-  boundaries=$(jq -r 'select(.stream == "meta" and .event.type == "lat.runtime_boundary") | .event.action' "$OUT_LOG")
-  [ "$boundaries" = $'launch\nresume' ] || fail "stdout boundaries are not launch then resume: $boundaries"
-  jq -se 'all(.[] | select(.stream == "meta"); .event.agent_id == "code_executor_1_exec-client-test")' \
+  stdout_sequence=$(jq -r '
+    if .stream == "meta" and .event.type == "lat.runtime_boundary"
+    then "boundary:" + .event.action
+    elif .stream == "stdout" and .event.type == "run"
+    then "run:" + .event.n
+    else "unexpected"
+    end
+  ' "$OUT_LOG")
+  [ "$stdout_sequence" = $'boundary:launch\nrun:first\nboundary:resume\nrun:second' ] || \
+    fail "stdout sequence is not launch boundary, first run, resume boundary, second run: $stdout_sequence"
+  jq -se 'all(.[] | select(.stream == "meta" and .event.type == "lat.runtime_boundary");
+    .event.agent_id == "code_executor_1_exec-client-test")' \
     "$OUT_LOG" >/dev/null || fail "stdout boundary lacks the agent_id"
-  [ "$(grep -c 'LAT_RUNTIME_BOUNDARY' "$ERR_LOG")" -eq 2 ] || fail "stderr does not have two boundaries"
-  grep -Eq "$TS_RE LAT_RUNTIME_BOUNDARY agent_id=code_executor_1_exec-client-test action=resume" "$ERR_LOG" || \
-    fail "stderr resume boundary sentinel malformed"
-  grep -q 'stderr run first' "$ERR_LOG" && grep -q 'stderr run second' "$ERR_LOG" || \
-    fail "resume lost or dropped stderr lines"
+  stderr_sequence=$(sed -E "s/${TS_RE#^} //" "$ERR_LOG")
+  [ "$stderr_sequence" = \
+    $'LAT_RUNTIME_BOUNDARY agent_id=code_executor_1_exec-client-test action=launch\nstderr run first\nLAT_RUNTIME_BOUNDARY agent_id=code_executor_1_exec-client-test action=resume\nstderr run second' ] || \
+    fail "stderr boundaries and run lines are malformed or out of order: $stderr_sequence"
 }
 
 test_resume_refuses_missing_runtime_logs() {
@@ -260,6 +289,7 @@ test_resume_refuses_missing_runtime_logs() {
   local child="$TMP_DIR/resume-refuse-child.sh"
   local pid_file="$TMP_DIR/runtime/resumerefuse.pid"
   local marker="$TMP_DIR/resumerefuse-client-marker"
+  local expected_log="$TMP_DIR/resumerefuse-expected"
   local status
   launcher_logs_for resumerefuse
 
@@ -277,16 +307,32 @@ test_resume_refuses_missing_runtime_logs() {
   [ ! -e "$marker" ] || fail "client was started despite refused resume"
 
   # Case 2: only the stdout log exists.
+  launcher_logs_for resumerefuseout
   mkdir -p "$(dirname "$OUT_LOG")"
   printf '%s\n' '{"captured_at":"2026-07-24T00:00:00Z","stream":"meta","event":{}}' >"$OUT_LOG"
+  cp "$OUT_LOG" "$expected_log"
   set +e
   run_launcher "$pid_file" "$OUT_LOG" "$ERR_LOG" resume "$child" "$marker" >/dev/null 2>&1
   status=$?
   set -e
   [ "$status" -eq 65 ] || fail "resume with a missing stderr log was not refused with 65: $status"
-  [ "$(wc -l <"$OUT_LOG")" -eq 1 ] || fail "refused resume modified the existing stdout log"
+  cmp -s "$expected_log" "$OUT_LOG" || fail "refused resume modified the existing stdout log"
   [ ! -e "$ERR_LOG" ] || fail "refused resume created the missing stderr log"
   [ ! -e "$marker" ] || fail "client was started despite a missing stderr log"
+  [ ! -e "$pid_file" ] || fail "PID file left behind after refused resume"
+
+  # Case 3: only the stderr log exists.
+  launcher_logs_for resumerefuseerr
+  printf '%s\n' '2026-07-24T00:00:00Z EXISTING_STDERR' >"$ERR_LOG"
+  cp "$ERR_LOG" "$expected_log"
+  set +e
+  run_launcher "$pid_file" "$OUT_LOG" "$ERR_LOG" resume "$child" "$marker" >/dev/null 2>&1
+  status=$?
+  set -e
+  [ "$status" -eq 65 ] || fail "resume with a missing stdout log was not refused with 65: $status"
+  [ ! -e "$OUT_LOG" ] || fail "refused resume created the missing stdout log"
+  cmp -s "$expected_log" "$ERR_LOG" || fail "refused resume modified the existing stderr log"
+  [ ! -e "$marker" ] || fail "client was started despite a missing stdout log"
   [ ! -e "$pid_file" ] || fail "PID file left behind after refused resume"
 }
 
