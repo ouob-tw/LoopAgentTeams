@@ -1,12 +1,12 @@
 ---
-name: lat-runner
-description: "Execute one approved task from .lat/workspace/<TASK_ID>/tasks.yaml, persist its result and lifecycle status without deleting history, then exit. Use when the prompt contains lat-runner or names a LAT TASK_ID ledger. Typically launched by lat-dispatch."
-compatibility: "Any Code Agent client with shell access and a project workspace containing .lat/workspace/<TASK_ID>/."
+name: lat-code
+description: "Execute one approved code-phase task from .lat/workspace/<TASK_ID>/tasks.yaml as the code_executor, persist its result and lifecycle status without deleting history, then exit. Use when the prompt contains lat-code or names a LAT TASK_ID ledger with a code_executor agent_id. Typically launched by lat-dispatch."
+compatibility: "Any Code Agent client with shell access and a project workspace containing .lat/workspace/<TASK_ID>/. Companion skill: requires lat-dispatch installed alongside (shared ledger schema at ../lat-dispatch/references/yaml-schema.md); not installable standalone."
 ---
 
-# LAT Runner
+# LAT Code
 
-執行 `.lat/workspace/<TASK_ID>/tasks.yaml` 中一筆精確匹配 `agent_id` 的已核准實作任務，通常由 `lat-dispatch` 啟動。
+執行 `.lat/workspace/<TASK_ID>/tasks.yaml` 中一筆精確匹配 `agent_id`（`code_executor_<instance>_<task_id>`）的已核准 code phase 實作任務，通常由 `lat-dispatch` 啟動。
 
 ## 執行邊界
 
@@ -18,7 +18,7 @@ compatibility: "Any Code Agent client with shell access and a project workspace 
 ## 處理流程
 
 1. 驗證 prompt 指定的 `TASK_ID` 與 `agent_id`，讀取 `.lat/workspace/<TASK_ID>/tasks.yaml` 與 `results.yaml`。
-2. 任一 ledger 遺失、空字串、格式錯誤，或找不到精確 `agent_id` → 依 `references/yaml-schema.md` 回報非零錯誤，不建立或清空檔案。
+2. 任一 ledger 遺失、空字串、格式錯誤，或找不到精確 `agent_id` → 依 `../lat-dispatch/references/yaml-schema.md` 回報非零錯誤，不建立或清空檔案。
 3. 若已存在相同 `task_id + agent_id` 的 `completed` result，但 task 尚非 `completed`，只將 task 原子更新為 `completed`，不重做實作。
 4. task 必須是 `pending` 或可恢復的 `running`；`partial`、`failed`、`completed` 不直接重做，交由 Dispatch 建立下一個 agent instance。
 5. 將 task 原子更新為 `running`，再依以下檢查清單執行：
@@ -64,4 +64,4 @@ compatibility: "Any Code Agent client with shell access and a project workspace 
 ## 注意事項
 
 - 不要跳過或重新排序計劃中的階段。
-- ledger 寫入、reconciliation、遷移、欄位順序與解析錯誤流程皆參見 `references/yaml-schema.md`。
+- ledger 寫入、reconciliation、遷移、欄位順序與解析錯誤流程皆參見 `../lat-dispatch/references/yaml-schema.md`。共享 ledger schema 由 companion `lat-dispatch` skill 提供；`lat-code` 不支援單獨安裝。

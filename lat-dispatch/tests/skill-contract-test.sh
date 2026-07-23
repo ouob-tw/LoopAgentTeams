@@ -6,7 +6,8 @@ set -uo pipefail
 ROOT=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 SKILL="$ROOT/lat-dispatch/SKILL.md"
 CLIENTS="$ROOT/lat-dispatch/references/clients.md"
-SCHEMA="$ROOT/lat-runner/references/yaml-schema.md"
+SCHEMA="$ROOT/lat-dispatch/references/yaml-schema.md"
+CODE_SKILL="$ROOT/lat-code/SKILL.md"
 README="$ROOT/README.md"
 
 fail() {
@@ -460,5 +461,22 @@ assert_contains "$purge_section" '保留 `.lat/workspace/<TASK_ID>/` 與 `.lat/l
   'purge does not preserve both task directories when ownership is uncertain'
 assert_contains "$purge_section" '回報後停止 purge' \
   'purge does not report and stop on unsafe runtime ownership state'
+
+[ -f "$SCHEMA" ] || fail 'Shared YAML schema is not at lat-dispatch/references/yaml-schema.md'
+[ -f "$CODE_SKILL" ] || fail 'lat-code/SKILL.md does not exist'
+[ ! -e "$ROOT/lat-runner" ] || fail 'The old lat-runner skill directory still exists'
+grep -q '^name: lat-code$' "$CODE_SKILL" || fail 'lat-code frontmatter name is wrong'
+grep -q -F '../lat-dispatch/references/yaml-schema.md' "$CODE_SKILL" || \
+  fail 'lat-code does not reference the companion shared schema'
+grep -E '^compatibility:' "$CODE_SKILL" | grep -q -F 'lat-dispatch' || \
+  fail 'lat-code compatibility does not declare the lat-dispatch companion dependency'
+grep -q -F 'following the lat-code skill' "$SKILL" || \
+  fail 'Dispatch code prompt does not load the lat-code skill'
+grep -q -F 'code_executor_<instance>_<task_id>' "$CODE_SKILL" || \
+  fail 'lat-code does not keep the code_executor agent_id identity'
+for doc in "$SKILL" "$CLIENTS" "$README" "$CODE_SKILL" "$SCHEMA"; do
+  assert_not_contains "$(cat "$doc")" 'lat-runner' \
+    "Active document still references lat-runner: $doc"
+done
 
 echo 'PASS: skill-contract'

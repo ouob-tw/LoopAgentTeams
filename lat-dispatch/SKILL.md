@@ -90,7 +90,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
 1. 在專案根目錄建立 `.lat/`（如不存在）。
 2. 確保 `.gitignore` 排除 `.lat/`；若無則新增並提交。
 3. 建立 `logs/` 和 `workspace/` 子目錄（如不存在）。不建立全域 `.lat/tasks.yaml` 或 `.lat/results.yaml`。
-4. 若存在舊的全域 `.lat/tasks.yaml` 或 `.lat/results.yaml`，依 `lat-runner/references/yaml-schema.md` 的遷移流程按 `task_id` 分組；完整驗證後才用 `trash-put` 移除舊檔。
+4. 若存在舊的全域 `.lat/tasks.yaml` 或 `.lat/results.yaml`，依 `references/yaml-schema.md` 的遷移流程按 `task_id` 分組；完整驗證後才用 `trash-put` 移除舊檔。
 
 ### spec
 
@@ -158,7 +158,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
 
 1. 確認計劃已通過完整審查迴圈（不是僅存在或看似完成）。
 2. 建立**一個摘要任務**指向計劃檔案，不拆分為多個細粒度任務。
-3. 驗證既有 `.lat/workspace/<TASK_ID>/`、`tasks.yaml` 與 `results.yaml` 均存在且可解析，並確認 task/result 內的 `task_id` 都匹配目錄名稱；缺少或損壞時暫停，不得自行重建或重設。確認 `code_executor_1_<task_id>` 尚未存在後，附加 code task 至 `tasks.yaml`，欄位順序與格式參見 `lat-runner/references/yaml-schema.md`。
+3. 驗證既有 `.lat/workspace/<TASK_ID>/`、`tasks.yaml` 與 `results.yaml` 均存在且可解析，並確認 task/result 內的 `task_id` 都匹配目錄名稱；缺少或損壞時暫停，不得自行重建或重設。確認 `code_executor_1_<task_id>` 尚未存在後，附加 code task 至 `tasks.yaml`，欄位順序與格式參見 `references/yaml-schema.md`。
    - `task_id`：Spec 檔名（不含 `.md`），如 `2026-07-09-user-api-spec`
    - `agent_id`：`code_executor_1_<task_id>`
    - `goal`：一句話描述完整實作範圍
@@ -167,10 +167,10 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    - `created_by`：目前 agent 的識別名稱
 4. 依解析出的 `code_executor` client 與同宿主路由啟動執行：同宿主使用內建 subagent，跨宿主按 `references/clients.md` 的 CLI 指令格式啟動。
 
-   Runner prompt：
+   lat-code prompt：
 
    ```
-   [<agent_id>] You are the lat-runner for TASK_ID '<task_id>'. Read .lat/workspace/<task_id>/tasks.yaml and process only the exact pending task whose agent_id is '<agent_id>', following the lat-runner skill. Use sub-agents to parallelize independent development work when beneficial. Upsert the result into .lat/workspace/<task_id>/results.yaml, update the same task entry to its final status without deleting it, then exit.
+   [<agent_id>] You are the lat-code executor for TASK_ID '<task_id>'. Read .lat/workspace/<task_id>/tasks.yaml and process only the exact pending task whose agent_id is '<agent_id>', following the lat-code skill. Use sub-agents to parallelize independent development work when beneficial. Upsert the result into .lat/workspace/<task_id>/results.yaml, update the same task entry to its final status without deleting it, then exit.
    ```
 
 5. 內建 subagent 直接等待完成通知；外部 CLI 才依 `references/clients.md` 啟動 Monitor 並等待 `COMPLETED`。取得 Final Answer 後，Dispatch 再讀取 `.lat/workspace/<TASK_ID>/results.yaml` 中精確匹配 `task_id`、`agent_id` 的結果，並與 `tasks.yaml.status` 交叉確認後決定是否進入 test。外部 CLI 的 `monitor.enabled: false` 或使用者說「不要監控」時跳過監控，直接告知使用者手動檢查。
@@ -313,4 +313,4 @@ grep -i "error\|failed\|permission\|denied\|invalid" <session-jsonl>
 ## 注意事項
 
 - Client 指令格式、監控、錯誤處理、Session 恢復參見 `references/clients.md`。
-- 佇列檔案規則參見 `lat-runner/references/yaml-schema.md`。
+- 佇列檔案規則參見 `references/yaml-schema.md`。
