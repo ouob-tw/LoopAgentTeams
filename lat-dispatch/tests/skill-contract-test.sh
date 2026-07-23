@@ -380,8 +380,8 @@ assert_contains "$runtime_diagnosis_section" 'STDERR_BASELINE_LINES' \
   'Runtime diagnosis does not use the pre-launch stderr baseline'
 assert_contains "$runtime_readiness_section" 'NEXT_LINE=$((STDERR_BASELINE_LINES + 1))' \
   'Runtime readiness does not calculate the single current-boundary line'
-assert_contains "$runtime_readiness_section" 'CURRENT_BOUNDARY=$(sed -n "${NEXT_LINE}p" "$STDERR_LOG" 2>/dev/null)' \
-  'Runtime readiness does not read exactly one post-baseline line'
+assert_contains "$runtime_readiness_section" 'CURRENT_BOUNDARY=$(sed -n "${NEXT_LINE}p;${NEXT_LINE}q" "$STDERR_LOG" 2>/dev/null)' \
+  'Runtime readiness does not read one post-baseline line and quit immediately'
 assert_contains "$runtime_readiness_section" 'case "$CURRENT_BOUNDARY" in' \
   'Runtime readiness does not use a bounded boundary match'
 assert_contains "$runtime_readiness_section" '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z" LAT_RUNTIME_BOUNDARY agent_id=$AGENT_ID action=$ACTION")' \

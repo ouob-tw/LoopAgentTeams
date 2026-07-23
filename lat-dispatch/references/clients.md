@@ -337,7 +337,7 @@ Codex 與 Claude 的 exec／TUI 都依各自原始 Session JSONL 判定 turn 完
 
    ```bash
    NEXT_LINE=$((STDERR_BASELINE_LINES + 1))
-   CURRENT_BOUNDARY=$(sed -n "${NEXT_LINE}p" "$STDERR_LOG" 2>/dev/null)
+   CURRENT_BOUNDARY=$(sed -n "${NEXT_LINE}p;${NEXT_LINE}q" "$STDERR_LOG" 2>/dev/null)
    case "$CURRENT_BOUNDARY" in
      [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z" LAT_RUNTIME_BOUNDARY agent_id=$AGENT_ID action=$ACTION")
        CURRENT_STDERR_READY=true
