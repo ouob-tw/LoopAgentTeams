@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# shellcheck disable=SC2016 # Helper scripts intentionally need literal shell variables.
+# shellcheck disable=SC2016,SC2030,SC2031
+# Helper scripts need literal variables; fake-jq PATH changes are subshell-local by design.
 
 set -uo pipefail
 
@@ -336,6 +337,225 @@ test_resume_refuses_missing_runtime_logs() {
   [ ! -e "$pid_file" ] || fail "PID file left behind after refused resume"
 }
 
+test_stderr_error_survives_for_a_later_session() {
+  local child="$TMP_DIR/transient-error-child.sh"
+  local pid_file="$TMP_DIR/runtime/transient.pid"
+  local status diagnosis
+  launcher_logs_for transient
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'echo "TRANSIENT_ERR_SENTINEL: stream disconnected before completion" >&2' \
+    'exit 1' >"$child"
+  chmod +x "$child"
+
+  set +e
+  run_launcher "$pid_file" "$OUT_LOG" "$ERR_LOG" launch "$child"
+  status=$?
+  set -e
+  [ "$status" -eq 1 ] || fail "launcher did not propagate the failing client status: $status"
+
+  # A separate process stands in for a later Dispatch session doing the tail -n 7 ladder.
+  diagnosis=$(bash -c "tail -n 7 '$ERR_LOG'")
+  grep -q 'TRANSIENT_ERR_SENTINEL' <<<"$diagnosis" || \
+    fail "a fresh process could not recover the transient stderr error"
+  grep -Eq "$TS_RE TRANSIENT_ERR_SENTINEL" <<<"$diagnosis" || \
+    fail "recovered stderr error lacks its UTC capture time"
+}
+
+test_preserves_unparsed_stdout_lines() {
+  local child="$TMP_DIR/mixed-stdout-child.sh"
+  local pid_file="$TMP_DIR/runtime/unparsed.pid"
+  launcher_logs_for unparsed
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf '\''{"type":"ok"}\n'\''' \
+    'echo "plain text warning that is not JSON"' \
+    'exit 0' >"$child"
+  chmod +x "$child"
+
+  run_launcher "$pid_file" "$OUT_LOG" "$ERR_LOG" launch "$child" || fail "launcher failed"
+
+  jq -e 'select(.event.type == "lat.unparsed_line")
+         | .event.text == "plain text warning that is not JSON"' "$OUT_LOG" >/dev/null || \
+    fail "non-JSON stdout line was lost or not wrapped in an unparsed envelope"
+  jq -se 'any(.[]; .event.type == "ok")' "$OUT_LOG" >/dev/null || \
+    fail "valid JSON stdout line was not preserved as a native event"
+}
+
+test_preserves_tail_output_of_a_fast_exit() {
+  local child="$TMP_DIR/burst-child.sh"
+  local pid_file="$TMP_DIR/runtime/burst.pid"
+  local events
+  launcher_logs_for burst
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'i=0' \
+    'while [ "$i" -lt 200 ]; do printf '\''{"type":"burst","i":%s}\n'\'' "$i"; i=$((i+1)); done' \
+    'echo "final stderr line before exit" >&2' \
+    'exit 0' >"$child"
+  chmod +x "$child"
+
+  run_launcher "$pid_file" "$OUT_LOG" "$ERR_LOG" launch "$child" || fail "launcher failed"
+
+  events=$(jq -s '[.[] | select(.stream == "stdout")] | length' "$OUT_LOG")
+  [ "$events" -eq 200 ] || fail "tail-end stdout events were lost: $events of 200"
+  grep -q 'final stderr line before exit' "$ERR_LOG" || fail "tail-end stderr line was lost"
+}
+
+test_does_not_start_client_when_log_setup_fails() {
+  local child="$TMP_DIR/marker-child.sh"
+  local pid_file="$TMP_DIR/runtime/nostart.pid"
+  local blocker="$TMP_DIR/not-a-directory"
+  local status
+  launcher_logs_for nostart
+
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$1"' >"$child"
+  chmod +x "$child"
+  printf '%s\n' 'file, not dir' >"$blocker"
+
+  set +e
+  run_launcher "$pid_file" "$blocker/deep/out.jsonl" "$ERR_LOG" launch \
+    "$child" "$TMP_DIR/nostart-ran" >/dev/null 2>&1
+  status=$?
+  set -e
+
+  [ "$status" -eq 73 ] || fail "launcher did not fail closed on log dir creation: $status"
+  [ ! -e "$TMP_DIR/nostart-ran" ] || fail "client was started despite log setup failure"
+  [ ! -e "$pid_file" ] || fail "PID file left behind after refused start"
+}
+
+test_capture_initialization_failure_never_starts_client() {
+  local child="$TMP_DIR/capture-init-marker-child.sh"
+  local pid_file="$TMP_DIR/runtime/capinit.pid"
+  local marker="$TMP_DIR/capinit-client-marker"
+  local fake_bin="$TMP_DIR/capinit-fake-bin"
+  local real_jq status
+  launcher_logs_for capinit
+
+  real_jq=$(command -v jq) || fail "jq not installed"
+  mkdir -p "$fake_bin"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'case " $* " in' \
+    '  *" -Rc "*) sleep 0.2; exit 13 ;;' \
+    '  *) exec '"$real_jq"' "$@" ;;' \
+    'esac' >"$fake_bin/jq"
+  chmod +x "$fake_bin/jq"
+
+  printf '%s\n' '#!/usr/bin/env bash' 'touch "$1"' >"$child"
+  chmod +x "$child"
+
+  set +e
+  (
+    PATH="$fake_bin:$PATH"
+    "$LAUNCHER" --pid-file "$pid_file" --stdout-log "$OUT_LOG" --stderr-log "$ERR_LOG" \
+      --agent-id code_executor_1_exec-client-test --action launch \
+      --stdout-format codex-jsonl -- "$child" "$marker"
+  ) >/dev/null 2>"$TMP_DIR/capinit-shell.err"
+  status=$?
+  set -e
+
+  [ "$status" -eq 70 ] || \
+    fail "capture initialization failure was not reported as exit 70: $status"
+  [ ! -e "$marker" ] || fail "client started before capture readiness was acknowledged"
+  [ ! -e "$pid_file" ] || fail "PID file left behind after capture initialization failure"
+  grep -Eq "$TS_RE LAT_LAUNCHER_ERROR agent_id=code_executor_1_exec-client-test " "$ERR_LOG" || \
+    fail "capture initialization diagnostic missing from the stderr runtime log"
+}
+
+test_capture_failure_terminates_client_once_and_exits_nonzero() {
+  local child="$TMP_DIR/long-capture-child.sh"
+  local pid_file="$TMP_DIR/runtime/capfail.pid"
+  local observed_file="$TMP_DIR/capfail-observed.pid"
+  local recorded_pid status
+  launcher_logs_for capfail
+
+  write_long_running_child "$child"
+  # Backgrounded on purpose and called directly (not via run_launcher) so
+  # WRAPPER_PID is the launcher itself and jq is its direct child. Launcher
+  # stderr is captured to prove post-boundary diagnostics do not leak there.
+  "$LAUNCHER" --pid-file "$pid_file" --stdout-log "$OUT_LOG" --stderr-log "$ERR_LOG" \
+    --agent-id code_executor_1_exec-client-test --action launch \
+    --stdout-format codex-jsonl -- "$child" "$observed_file" \
+    2>"$TMP_DIR/capfail-shell.err" &
+  WRAPPER_PID=$!
+  wait_for_file "$pid_file"
+  wait_for_file "$observed_file"
+  recorded_pid=$(cat "$pid_file")
+
+  # Simulate a fatal capture-channel failure: kill the stdout capture (jq is a
+  # direct child of the launcher). Test-only; production never locates processes.
+  pkill -TERM -P "$WRAPPER_PID" -x jq || fail "could not target the stdout capture process"
+
+  set +e
+  wait "$WRAPPER_PID"
+  status=$?
+  set -e
+  WRAPPER_PID=""
+
+  [ "$status" -eq 70 ] || fail "launcher did not report capture failure with exit 70: $status"
+  kill -0 "$recorded_pid" 2>/dev/null && fail "client survived the capture-failure SIGTERM"
+  [ ! -e "$pid_file" ] || fail "PID file was not trashed after capture failure"
+  grep -Eq "$TS_RE LAT_LAUNCHER_ERROR agent_id=code_executor_1_exec-client-test " "$ERR_LOG" || \
+    fail "capture-failure diagnostic was not appended to the stderr runtime log"
+  ! grep -q 'capture channel failed' "$TMP_DIR/capfail-shell.err" || \
+    fail "post-boundary diagnostic leaked into the launcher's shell stderr"
+  ! grep -q 'LAT_LAUNCHER_ERROR' "$TMP_DIR/capfail-shell.err" || \
+    fail "LAT_LAUNCHER_ERROR sentinel leaked into the launcher's shell stderr"
+  return 0
+}
+
+test_reports_capture_failure_detected_after_client_exit() {
+  # Pins the post-wait status validation: the client exits cleanly before the
+  # liveness loop can observe any capture failure, and the stdout capture (a
+  # PATH-shadowed jq that exits 13 after EOF in -Rc mode) fails only at drain
+  # time. The launcher must still report exit 70 with a timestamped diagnostic.
+  local child="$TMP_DIR/fast-exit-child.sh"
+  local pid_file="$TMP_DIR/runtime/postwait.pid"
+  local fake_bin="$TMP_DIR/fake-bin"
+  local real_jq status
+  launcher_logs_for postwait
+
+  real_jq=$(command -v jq) || fail "jq not installed"
+  mkdir -p "$fake_bin"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    "\"$real_jq\" \"\$@\"" \
+    'rc=$?' \
+    'case " $* " in *" -Rc "*) exit 13 ;; *) exit "$rc" ;; esac' >"$fake_bin/jq"
+  chmod +x "$fake_bin/jq"
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf '\''{"type":"fast"}\n'\''' \
+    'exit 0' >"$child"
+  chmod +x "$child"
+
+  set +e
+  (
+    PATH="$fake_bin:$PATH"
+    "$LAUNCHER" --pid-file "$pid_file" --stdout-log "$OUT_LOG" --stderr-log "$ERR_LOG" \
+      --agent-id code_executor_1_exec-client-test --action launch \
+      --stdout-format codex-jsonl -- "$child"
+  ) >/dev/null 2>"$TMP_DIR/postwait-shell.err"
+  status=$?
+  set -e
+
+  [ "$status" -eq 70 ] || \
+    fail "capture failure after client exit was not reported as exit 70: $status"
+  grep -Eq "$TS_RE LAT_LAUNCHER_ERROR agent_id=code_executor_1_exec-client-test " "$ERR_LOG" || \
+    fail "post-exit capture-failure diagnostic missing from the stderr runtime log"
+  grep -q 'stdout=13' "$ERR_LOG" || \
+    fail "diagnostic does not record the nonzero capture exit status"
+  ! grep -q 'capture channel failed' "$TMP_DIR/postwait-shell.err" || \
+    fail "post-boundary diagnostic leaked into the launcher's shell stderr"
+  ! grep -q 'LAT_LAUNCHER_ERROR' "$TMP_DIR/postwait-shell.err" || \
+    fail "LAT_LAUNCHER_ERROR sentinel leaked into the launcher's shell stderr"
+}
+
 test_records_exact_child_pid_and_cleans_after_term
 test_propagates_normal_child_status_and_cleans_pid_file
 test_refuses_to_overwrite_existing_pid_file
@@ -345,5 +565,12 @@ test_every_captured_line_has_utc_capture_time
 test_launch_refuses_existing_runtime_logs
 test_resume_appends_with_boundaries
 test_resume_refuses_missing_runtime_logs
+test_stderr_error_survives_for_a_later_session
+test_preserves_unparsed_stdout_lines
+test_preserves_tail_output_of_a_fast_exit
+test_does_not_start_client_when_log_setup_fails
+test_capture_initialization_failure_never_starts_client
+test_capture_failure_terminates_client_once_and_exits_nonzero
+test_reports_capture_failure_detected_after_client_exit
 
 echo 'PASS: exec-client'

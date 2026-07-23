@@ -98,31 +98,77 @@ printf '%s LAT_RUNTIME_BOUNDARY agent_id=%s action=%s\n' \
   >>"$STDERR_LOG" || { echo "ERROR: cannot write stderr runtime log" >&2; exit 73; }
 RUNTIME_LOG_READY=true
 
+# Hold both FIFOs open only while the capture processes initialize. This lets
+# each capture open its real input before the client exists, so readiness can be
+# acknowledged without treating process liveness as initialization evidence.
+exec 7<>"$FIFO_DIR/stdout" || exit 73
+exec 8<>"$FIFO_DIR/stderr" || exit 73
+READY_TOKEN="LAT_CAPTURE_READY:${AGENT_ID}:$$:$BOUNDARY_TS"
+
 # stdout capture: one envelope per line; non-JSON lines are kept as unparsed events.
-jq -Rc --unbuffered '. as $line
-  | {captured_at: (now | todate), stream: "stdout",
-     event: ($line | try fromjson catch {type: "lat.unparsed_line", text: $line})}' \
-  <"$FIFO_DIR/stdout" >>"$STDOUT_LOG" &
+jq -Rc --unbuffered --arg ready "$READY_TOKEN" '. as $line
+  | if $line == $ready
+    then $line | debug | empty
+    else {captured_at: (now | todate), stream: "stdout",
+          event: ($line | try fromjson catch {type: "lat.unparsed_line", text: $line})}
+    end' \
+  7>&- 8>&- <"$FIFO_DIR/stdout" >>"$STDOUT_LOG" 2>"$FIFO_DIR/stdout.ready" &
 OUT_CAP_PID=$!
 
 capture_stderr() {
   local line
+  printf '%s\n' "$READY_TOKEN" >"$FIFO_DIR/stderr.ready"
   while IFS= read -r line || [ -n "$line" ]; do
     printf '%s %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" "$line"
   done
 }
-capture_stderr <"$FIFO_DIR/stderr" >>"$STDERR_LOG" &
+capture_stderr 7>&- 8>&- <"$FIFO_DIR/stderr" >>"$STDERR_LOG" &
 ERR_CAP_PID=$!
 
-if ! kill -0 "$OUT_CAP_PID" 2>/dev/null || ! kill -0 "$ERR_CAP_PID" 2>/dev/null; then
+printf '%s\n' "$READY_TOKEN" >&7
+READY_ATTEMPTS=0
+while { ! grep -Fq "$READY_TOKEN" "$FIFO_DIR/stdout.ready" 2>/dev/null ||
+        ! grep -Fq "$READY_TOKEN" "$FIFO_DIR/stderr.ready" 2>/dev/null; }; do
+  if ! kill -0 "$OUT_CAP_PID" 2>/dev/null || ! kill -0 "$ERR_CAP_PID" 2>/dev/null ||
+     [ "$READY_ATTEMPTS" -ge 100 ]; then
+    break
+  fi
+  sleep 0.02
+  READY_ATTEMPTS=$((READY_ATTEMPTS + 1))
+done
+if ! grep -Fq "$READY_TOKEN" "$FIFO_DIR/stdout.ready" 2>/dev/null ||
+   ! grep -Fq "$READY_TOKEN" "$FIFO_DIR/stderr.ready" 2>/dev/null; then
   launcher_diag "timestamp capture failed before client start"
+  exec 7>&-
+  exec 8>&-
   kill -TERM "$OUT_CAP_PID" "$ERR_CAP_PID" 2>/dev/null || true
   wait "$OUT_CAP_PID" "$ERR_CAP_PID" 2>/dev/null || true
   exit 70
 fi
 
-"$@" <&0 >"$FIFO_DIR/stdout" 2>"$FIFO_DIR/stderr" &
+launch_client() {
+  printf '%s\n' "$READY_TOKEN" >"$FIFO_DIR/client.ready" || exit 73
+  exec "$@"
+}
+launch_client "$@" <&0 7>&- 8>&- >"$FIFO_DIR/stdout" 2>"$FIFO_DIR/stderr" &
 CLIENT_PID=$!
+CLIENT_READY_ATTEMPTS=0
+while ! grep -Fq "$READY_TOKEN" "$FIFO_DIR/client.ready" 2>/dev/null; do
+  if ! kill -0 "$CLIENT_PID" 2>/dev/null || [ "$CLIENT_READY_ATTEMPTS" -ge 100 ]; then
+    break
+  fi
+  sleep 0.02
+  CLIENT_READY_ATTEMPTS=$((CLIENT_READY_ATTEMPTS + 1))
+done
+exec 7>&-
+exec 8>&-
+if ! grep -Fq "$READY_TOKEN" "$FIFO_DIR/client.ready" 2>/dev/null; then
+  launcher_diag "client channel failed before exec"
+  kill -TERM "$CLIENT_PID" 2>/dev/null || true
+  wait "$CLIENT_PID" 2>/dev/null || true
+  wait "$OUT_CAP_PID" "$ERR_CAP_PID" 2>/dev/null || true
+  exit 70
+fi
 if ! printf '%s\n' "$CLIENT_PID" >"$PID_FILE"; then
   launcher_diag "cannot write PID file: $PID_FILE"
   kill -TERM "$CLIENT_PID" 2>/dev/null || true
