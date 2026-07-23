@@ -15,13 +15,18 @@ fail() {
   exit 1
 }
 
-section() {
-  local start=$1 end=$2 file=$3
+bounded_section() {
+  local start=$1 end=$2
   awk -v start="$start" -v end="$end" '
     $0 == start { active=1 }
     active && $0 == end { exit }
     active { print }
-  ' "$file"
+  '
+}
+
+section() {
+  local start=$1 end=$2 file=$3
+  bounded_section "$start" "$end" < "$file"
 }
 
 assert_contains() {
@@ -38,6 +43,111 @@ line_number() {
   local text=$1 marker=$2
   grep -n -F "$marker" <<<"$text" | head -1 | cut -d: -f1
 }
+
+initial_frontmatter() {
+  awk '
+    NR == 1 && $0 == "---" { active=1; next }
+    active && $0 == "---" { exit }
+    active { print }
+  '
+}
+
+frontmatter_has_exact_field() {
+  local frontmatter=$1 key=$2 expected=$3
+  local actual
+  actual=$(grep -E "^${key}:" <<<"$frontmatter" || true)
+  [ "$actual" = "$expected" ]
+}
+
+fenced_block_after_label() {
+  local label=$1
+  awk -v label="$label" '
+    $0 == label { found=1; next }
+    found && $0 == "   ```" {
+      if (active) { exit }
+      active=1
+      next
+    }
+    active { print }
+  '
+}
+
+has_ordered_markers() {
+  local text=$1 first=$2 second=$3
+  [[ "$text" == *"$first"*"$second"* ]]
+}
+
+EXPECTED_CODE_NAME='name: lat-code'
+EXPECTED_CODE_DESCRIPTION='description: "Execute one approved code-phase task from .lat/workspace/<TASK_ID>/tasks.yaml as the code_executor, persist its result and lifecycle status without deleting history, then exit. Use when the prompt contains lat-code or names a LAT TASK_ID ledger with a code_executor agent_id. Typically launched by lat-dispatch."'
+EXPECTED_CODE_COMPATIBILITY='compatibility: "Any Code Agent client with shell access and a project workspace containing .lat/workspace/<TASK_ID>/. Companion skill: requires lat-dispatch installed alongside (shared ledger schema at ../lat-dispatch/references/yaml-schema.md); not installable standalone."'
+
+weakened_frontmatter=$(initial_frontmatter <<EOF
+---
+name: wrong-name
+description: "Wrong description"
+compatibility: "Wrong compatibility"
+---
+$EXPECTED_CODE_NAME
+$EXPECTED_CODE_DESCRIPTION
+$EXPECTED_CODE_COMPATIBILITY
+EOF
+)
+if frontmatter_has_exact_field "$weakened_frontmatter" name "$EXPECTED_CODE_NAME"; then
+  fail 'Frontmatter parser accepted planned metadata placed outside the initial YAML block'
+fi
+
+code_frontmatter=$(initial_frontmatter < "$CODE_SKILL")
+frontmatter_has_exact_field "$code_frontmatter" name "$EXPECTED_CODE_NAME" || \
+  fail 'lat-code initial frontmatter name does not exactly match the plan'
+frontmatter_has_exact_field "$code_frontmatter" description "$EXPECTED_CODE_DESCRIPTION" || \
+  fail 'lat-code initial frontmatter description does not exactly match the plan'
+frontmatter_has_exact_field "$code_frontmatter" compatibility "$EXPECTED_CODE_COMPATIBILITY" || \
+  fail 'lat-code initial frontmatter compatibility does not exactly match the companion contract'
+
+RESULT_UPSERT='Upsert the result into .lat/workspace/<task_id>/results.yaml'
+TASK_STATUS_UPDATE='update the same task entry to its final status'
+weakened_dispatch_prompt=$(fenced_block_after_label '   lat-code prompt：' <<EOF
+   lat-code prompt：
+
+   \`\`\`
+   Read .lat/workspace/<task_id>/tasks.yaml, then $TASK_STATUS_UPDATE. Afterward, $RESULT_UPSERT.
+   \`\`\`
+
+   unrelated example：
+
+   \`\`\`
+   $RESULT_UPSERT, then $TASK_STATUS_UPDATE.
+   \`\`\`
+EOF
+)
+if has_ordered_markers "$weakened_dispatch_prompt" "$RESULT_UPSERT" "$TASK_STATUS_UPDATE"; then
+  fail 'lat-code prompt extractor accepted ordered decoy text outside the exact prompt block'
+fi
+
+lat_code_prompt=$(fenced_block_after_label '   lat-code prompt：' < "$SKILL")
+assert_contains "$lat_code_prompt" 'Read .lat/workspace/<task_id>/tasks.yaml' \
+  'Dispatch lat-code prompt does not identify the tasks.yaml entry to update'
+has_ordered_markers "$lat_code_prompt" "$RESULT_UPSERT" "$TASK_STATUS_UPDATE" || \
+  fail 'lat-code prompt does not order the results.yaml upsert before the tasks.yaml status update'
+
+RESULT_FIRST_RULE='result 先寫'
+TASK_STATUS_AFTER_RULE='task status 後寫'
+weakened_code_rules=$(bounded_section '補充規則：' '## 結果狀態' <<EOF
+補充規則：
+- $TASK_STATUS_AFTER_RULE，之後才 $RESULT_FIRST_RULE。
+## 結果狀態
+
+## 注意事項
+- $RESULT_FIRST_RULE、$TASK_STATUS_AFTER_RULE。
+EOF
+)
+if has_ordered_markers "$weakened_code_rules" "$RESULT_FIRST_RULE" "$TASK_STATUS_AFTER_RULE"; then
+  fail 'lat-code process-rule extractor accepted ordered decoy text outside its exact section'
+fi
+
+code_process_rules=$(section '補充規則：' '## 結果狀態' "$CODE_SKILL")
+has_ordered_markers "$code_process_rules" "$RESULT_FIRST_RULE" "$TASK_STATUS_AFTER_RULE" || \
+  fail 'lat-code skill does not independently require result-first task-status ordering'
 
 spec_section=$(section '### spec' '### plan' "$SKILL")
 plan_section=$(section '### plan' '### dispatch' "$SKILL")
