@@ -4,6 +4,7 @@
 - Task ID：`lat-exec-runtime-smoke`
 - 結果：`BLOCKED`
 - 阻擋原因：真實 Codex exec 通過 PID pre-flight gate 後遇到 usage limit，沒有產生 Session JSONL Final Answer，launcher exit status 為 1。依 smoke brief「quota／auth 不可用即停止」規則，未啟動 Claude exec。
+- Procedure correction：事後 review 發現原 gate 只用 `read` 取第一行，無法拒絕 live PID 後的尾隨內容；procedure 已改為驗證完整檔案。此修正沒有重跑 client，也不改變下列歷史 BLOCKED evidence。
 
 ## Codex exec
 
@@ -120,3 +121,27 @@ CODEX_ROOT_UNTOUCHED_NO_LAT_COPIES
 ```
 
 因此，Task 6 的同步前置在 Task 7 開始時成立；本次 fresh diff 的差異只限 Task 7 自己新增的兩份 smoke artifacts。Task 7 沒有擴權重做 installed-skill staged swap。
+
+## PID gate deterministic fixture（procedure correction）
+
+先以舊 gate 重現 root cause：
+
+```text
+valid expected=ACCEPT actual=ACCEPT result=PASS
+live-plus-junk expected=REJECT actual=ACCEPT result=RED_EXPECTED_FAILURE
+extra-blank expected=REJECT actual=ACCEPT result=RED_EXPECTED_FAILURE
+empty expected=REJECT actual=REJECT result=PASS
+nondigit expected=REJECT actual=REJECT result=PASS
+```
+
+修正後 gate 要求 `wc -l == 1`、以 `cat` 捕捉完整內容、內容非空且全為十進位數字，最後才對該 PID 執行 `kill -0`。GREEN fixture：
+
+```text
+valid expected=ACCEPT actual=ACCEPT PASS
+live-plus-junk expected=REJECT actual=REJECT PASS
+extra-blank expected=REJECT actual=REJECT PASS
+empty expected=REJECT actual=REJECT PASS
+nondigit expected=REJECT actual=REJECT PASS
+```
+
+這是 deterministic procedure fixture，不是新的真實 client run；Q8 維持 `BLOCKED`。

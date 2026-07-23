@@ -30,13 +30,58 @@ while :; do
     exit "$LAUNCHER_STATUS"
   fi
 
-  if [ -s "$PID_FILE" ]; then
-    IFS= read -r CLIENT_PID < "$PID_FILE"
-    if [[ "$CLIENT_PID" =~ ^[0-9]+$ ]] && kill -0 "$CLIENT_PID" 2>/dev/null; then
+  if [ -s "$PID_FILE" ] && [ "$(wc -l < "$PID_FILE")" -eq 1 ]; then
+    CLIENT_PID=$(cat -- "$PID_FILE")
+    if [ -n "$CLIENT_PID" ] &&
+       [[ "$CLIENT_PID" =~ ^[0-9]+$ ]] &&
+       kill -0 "$CLIENT_PID" 2>/dev/null; then
       break
     fi
   fi
   sleep 0.05
+done
+```
+
+`wc -l == 1` 要求檔案恰有一個 newline-terminated line；`cat` 必須捕捉完整內容，不能只用 `read` 讀第一行而忽略尾隨垃圾。修改 gate 後先跑 deterministic fixture，不啟動真實 client：
+
+```bash
+FIXTURE_DIR=$(mktemp -d /tmp/lat-pid-gate.XXXXXX) || exit 1
+sleep 30 &
+LIVE_PID=$!
+cleanup_fixture() {
+  kill "$LIVE_PID" 2>/dev/null || true
+  wait "$LIVE_PID" 2>/dev/null || true
+  [ ! -d "$FIXTURE_DIR" ] || trash-put "$FIXTURE_DIR"
+}
+trap cleanup_fixture EXIT
+
+pid_gate_accepts() {
+  local pid_file=$1 client_pid
+  [ -s "$pid_file" ] && [ "$(wc -l < "$pid_file")" -eq 1 ] || return 1
+  client_pid=$(cat -- "$pid_file")
+  [ -n "$client_pid" ] &&
+    [[ "$client_pid" =~ ^[0-9]+$ ]] &&
+    kill -0 "$client_pid" 2>/dev/null
+}
+
+printf '%s\n' "$LIVE_PID" >"$FIXTURE_DIR/valid"
+printf '%s\njunk\n' "$LIVE_PID" >"$FIXTURE_DIR/live-plus-junk"
+printf '%s\n\n' "$LIVE_PID" >"$FIXTURE_DIR/extra-blank"
+: >"$FIXTURE_DIR/empty"
+printf 'not-a-pid\n' >"$FIXTURE_DIR/nondigit"
+
+for CASE_NAME in valid live-plus-junk extra-blank empty nondigit; do
+  if pid_gate_accepts "$FIXTURE_DIR/$CASE_NAME"; then
+    ACTUAL=ACCEPT
+  else
+    ACTUAL=REJECT
+  fi
+  case "$CASE_NAME" in
+    valid) EXPECTED=ACCEPT ;;
+    *) EXPECTED=REJECT ;;
+  esac
+  [ "$ACTUAL" = "$EXPECTED" ] || exit 1
+  echo "$CASE_NAME expected=$EXPECTED actual=$ACTUAL PASS"
 done
 ```
 
