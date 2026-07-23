@@ -333,19 +333,19 @@ Codex 與 Claude 的 exec／TUI 都依各自原始 Session JSONL 判定 turn 完
 啟動失敗、`INCOMPLETE` 或 `STALL` 時，Dispatch 依序：
 
 1. 記錄事件種類、`agent_id`、`ACTION`、PID 狀態、兩個 runtime log 路徑與啟動前保存的 `STDERR_BASELINE_LINES`。
-2. 只檢查 baseline 之後是否有本次 attempt 的 stderr boundary：
+2. 只讀 baseline 後第一行，檢查它是否為本次 attempt 的 stderr boundary；不得為 readiness 掃描後續內容：
 
    ```bash
-   if [ -f "$STDERR_LOG" ] && awk \
-     -v after="$STDERR_BASELINE_LINES" \
-     -v expected="LAT_RUNTIME_BOUNDARY agent_id=$AGENT_ID action=$ACTION" '
-       NR > after && index($0, expected) { found=1 }
-       END { exit(found ? 0 : 1) }
-     ' "$STDERR_LOG"; then
-     CURRENT_STDERR_READY=true
-   else
-     CURRENT_STDERR_READY=false
-   fi
+   NEXT_LINE=$((STDERR_BASELINE_LINES + 1))
+   CURRENT_BOUNDARY=$(sed -n "${NEXT_LINE}p" "$STDERR_LOG" 2>/dev/null)
+   case "$CURRENT_BOUNDARY" in
+     [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z" LAT_RUNTIME_BOUNDARY agent_id=$AGENT_ID action=$ACTION")
+       CURRENT_STDERR_READY=true
+       ;;
+     *)
+       CURRENT_STDERR_READY=false
+       ;;
+   esac
    ```
 
 3. `CURRENT_STDERR_READY=false` 且 launcher 已非零退出時，視為 pre-log 啟動失敗，診斷來源是保留的 launcher FD2；記錄該輸出與 launcher exit status，跳過 runtime tail。既有 stderr runtime log 的 launch 拒絕，以及 resume 缺 stdout、但 stderr 已存在，兩種情況都不得 tail 舊 stderr。若 launcher 尚未非零退出，不得先分類或讀取舊 log，先確認其狀態。

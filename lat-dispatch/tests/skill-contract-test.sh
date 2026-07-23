@@ -319,6 +319,11 @@ clean_section=$(section '### clean' '### purge' "$SKILL")
 purge_section=$(section '### purge' '## Sub-Agent 異常診斷' "$SKILL")
 exec_client_section=$(section '## exec client' '### Prompt 安全傳遞' "$CLIENTS")
 runtime_diagnosis_section=$(section '### Runtime 診斷' '### Exec PID 診斷與終止' "$CLIENTS")
+runtime_readiness_section=$(awk '
+  $0 == "### Runtime 診斷" { active=1 }
+  active && /^4\. 只有本次 stderr boundary/ { exit }
+  active { print }
+' "$CLIENTS")
 
 grep -q -F '.lat/logs/<TASK_ID>/<agent_id>.stdout.jsonl' "$CLIENTS" || \
   fail 'Runtime stdout log path is not documented'
@@ -373,8 +378,18 @@ if [ -z "$baseline_line" ] || [ -z "$launcher_line" ] || [ "$baseline_line" -ge 
 fi
 assert_contains "$runtime_diagnosis_section" 'STDERR_BASELINE_LINES' \
   'Runtime diagnosis does not use the pre-launch stderr baseline'
-assert_contains "$runtime_diagnosis_section" 'NR > after' \
-  'Runtime readiness can inspect stderr lines from an older attempt'
+assert_contains "$runtime_readiness_section" 'NEXT_LINE=$((STDERR_BASELINE_LINES + 1))' \
+  'Runtime readiness does not calculate the single current-boundary line'
+assert_contains "$runtime_readiness_section" 'CURRENT_BOUNDARY=$(sed -n "${NEXT_LINE}p" "$STDERR_LOG" 2>/dev/null)' \
+  'Runtime readiness does not read exactly one post-baseline line'
+assert_contains "$runtime_readiness_section" 'case "$CURRENT_BOUNDARY" in' \
+  'Runtime readiness does not use a bounded boundary match'
+assert_contains "$runtime_readiness_section" '[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z" LAT_RUNTIME_BOUNDARY agent_id=$AGENT_ID action=$ACTION")' \
+  'Runtime readiness does not exactly match timestamp, agent, and action'
+assert_not_contains "$runtime_readiness_section" 'NR > after' \
+  'Runtime readiness still scans every line after the baseline'
+assert_not_contains "$runtime_readiness_section" ',\$p' \
+  'Runtime readiness still reads an unbounded post-baseline range'
 assert_contains "$runtime_diagnosis_section" 'LAT_RUNTIME_BOUNDARY agent_id=$AGENT_ID action=$ACTION' \
   'Runtime readiness does not require the current attempt boundary'
 assert_contains "$runtime_diagnosis_section" 'launcher 已非零退出' \
