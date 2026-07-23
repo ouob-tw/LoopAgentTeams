@@ -8,10 +8,14 @@ LAUNCHER=$(cd "$(dirname "${BASH_SOURCE[0]}")/../scripts" && pwd)/run-exec-clien
 TMP_DIR=$(mktemp -d "${TMPDIR:-/tmp}/exec-client-test.XXXXXX") || exit 1
 SENTINEL_PID=""
 WRAPPER_PID=""
+RACE_PID_1=""
+RACE_PID_2=""
 TS_RE='^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z'
 
 cleanup() {
   [ -z "$WRAPPER_PID" ] || kill -TERM "$WRAPPER_PID" 2>/dev/null || true
+  [ -z "$RACE_PID_1" ] || kill -TERM "$RACE_PID_1" 2>/dev/null || true
+  [ -z "$RACE_PID_2" ] || kill -TERM "$RACE_PID_2" 2>/dev/null || true
   [ -z "$SENTINEL_PID" ] || kill -TERM "$SENTINEL_PID" 2>/dev/null || true
   trash-put "$TMP_DIR"
 }
@@ -466,25 +470,143 @@ test_capture_initialization_failure_never_starts_client() {
     fail "capture initialization diagnostic missing from the stderr runtime log"
 }
 
+test_concurrent_launches_atomically_reserve_pid_and_logs() {
+  local child="$TMP_DIR/race-child.sh"
+  local pid_file="$TMP_DIR/runtime/race.pid"
+  local observed_file="$TMP_DIR/race-observed.pid"
+  local release_file="$TMP_DIR/race-release"
+  local starts_dir="$TMP_DIR/race-starts"
+  local fake_bin="$TMP_DIR/race-fake-bin"
+  local barrier_dir="$TMP_DIR/race-barrier"
+  local status_1_file="$TMP_DIR/race-status-1"
+  local status_2_file="$TMP_DIR/race-status-2"
+  local real_jq loser_status recorded_pid observed_pid starts attempts
+  launcher_logs_for race
+
+  real_jq=$(command -v jq) || fail "jq not installed"
+  mkdir -p "$fake_bin" "$barrier_dir" "$starts_dir"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'case " $* " in' \
+    '  *" -cn "*)' \
+    '    if mkdir "$LAT_RACE_BARRIER/first" 2>/dev/null; then' \
+    '      i=0' \
+    '      while [ ! -d "$LAT_RACE_BARRIER/second" ] && [ "$i" -lt 25 ]; do' \
+    '        sleep 0.02' \
+    '        i=$((i + 1))' \
+    '      done' \
+    '    else' \
+    '      mkdir "$LAT_RACE_BARRIER/second" 2>/dev/null || true' \
+    '    fi' \
+    '    ;;' \
+    'esac' \
+    'exec '"$real_jq"' "$@"' >"$fake_bin/jq"
+  chmod +x "$fake_bin/jq"
+
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'mkdir "$1/$$"' \
+    'printf "%s\n" "$$" >"$2"' \
+    'while [ ! -e "$3" ]; do sleep 0.02; done' \
+    'exit 0' >"$child"
+  chmod +x "$child"
+
+  (
+    set +e
+    PATH="$fake_bin:$PATH" LAT_RACE_BARRIER="$barrier_dir" \
+      "$LAUNCHER" --pid-file "$pid_file" --stdout-log "$OUT_LOG" --stderr-log "$ERR_LOG" \
+      --agent-id code_executor_1_exec-client-test --action launch \
+      --stdout-format codex-jsonl -- "$child" "$starts_dir" "$observed_file" "$release_file" \
+      2>"$TMP_DIR/race-shell-1.err"
+    printf '%s\n' "$?" >"$status_1_file"
+  ) &
+  RACE_PID_1=$!
+  (
+    set +e
+    PATH="$fake_bin:$PATH" LAT_RACE_BARRIER="$barrier_dir" \
+      "$LAUNCHER" --pid-file "$pid_file" --stdout-log "$OUT_LOG" --stderr-log "$ERR_LOG" \
+      --agent-id code_executor_1_exec-client-test --action launch \
+      --stdout-format codex-jsonl -- "$child" "$starts_dir" "$observed_file" "$release_file" \
+      2>"$TMP_DIR/race-shell-2.err"
+    printf '%s\n' "$?" >"$status_2_file"
+  ) &
+  RACE_PID_2=$!
+
+  attempts=0
+  while [ ! -s "$status_1_file" ] && [ ! -s "$status_2_file" ] &&
+        [ "$attempts" -lt 100 ]; do
+    sleep 0.02
+    attempts=$((attempts + 1))
+  done
+  if [ -s "$status_1_file" ]; then
+    loser_status=$(cat "$status_1_file")
+  elif [ -s "$status_2_file" ]; then
+    loser_status=$(cat "$status_2_file")
+  else
+    touch "$release_file"
+    wait "$RACE_PID_1" 2>/dev/null || true
+    wait "$RACE_PID_2" 2>/dev/null || true
+    RACE_PID_1=""
+    RACE_PID_2=""
+    fail "neither concurrent launcher rejected ownership promptly"
+  fi
+
+  # The loser must not remove or replace any ownership held by the live winner.
+  [ "$loser_status" -eq 65 ] || fail "concurrent loser did not exit 65: $loser_status"
+  wait_for_file "$pid_file"
+  wait_for_file "$observed_file"
+  recorded_pid=$(cat "$pid_file")
+  observed_pid=$(cat "$observed_file")
+  [ "$recorded_pid" = "$observed_pid" ] || fail "loser disturbed the winner PID ownership"
+  [ -s "$OUT_LOG" ] || fail "loser removed or truncated the winner stdout log"
+  [ -s "$ERR_LOG" ] || fail "loser removed or truncated the winner stderr log"
+  starts=$(find "$starts_dir" -type d ! -path "$starts_dir" | wc -l | tr -d ' ')
+  [ "$starts" -eq 1 ] || fail "concurrent launch started $starts clients instead of exactly one"
+  [ "$(jq -s '[.[] | select(.event.type == "lat.runtime_boundary")] | length' "$OUT_LOG")" -eq 1 ] || \
+    fail "concurrent launch mixed multiple ownership boundaries into stdout"
+  [ "$(grep -c ' LAT_RUNTIME_BOUNDARY ' "$ERR_LOG")" -eq 1 ] || \
+    fail "concurrent launch mixed multiple ownership boundaries into stderr"
+
+  touch "$release_file"
+  wait "$RACE_PID_1" 2>/dev/null || true
+  wait "$RACE_PID_2" 2>/dev/null || true
+  RACE_PID_1=""
+  RACE_PID_2=""
+  [ "$(cat "$status_1_file")" -eq 0 ] || [ "$(cat "$status_2_file")" -eq 0 ] || \
+    fail "concurrent winner did not exit 0"
+  [ ! -e "$pid_file" ] || fail "winner PID file was not cleaned after completion"
+  [ ! -e "${pid_file}.lock" ] || fail "ownership reservation was not cleaned"
+}
+
 test_capture_failure_terminates_client_once_and_exits_nonzero() {
   local child="$TMP_DIR/long-capture-child.sh"
   local pid_file="$TMP_DIR/runtime/capfail.pid"
   local observed_file="$TMP_DIR/capfail-observed.pid"
-  local recorded_pid status
+  local term_count_file="$TMP_DIR/capfail-term-count"
+  local recorded_pid observed_pid status
   launcher_logs_for capfail
 
-  write_long_running_child "$child"
+  printf '%s\n' \
+    '#!/usr/bin/env bash' \
+    'printf "%s\n" "$$" >"$1"' \
+    'term_count=0' \
+    'trap '\''term_count=$((term_count + 1)); printf "%s\n" "$term_count" >>"$2"; exit 143'\'' TERM' \
+    'while true; do sleep 1; done' >"$child"
+  chmod +x "$child"
   # Backgrounded on purpose and called directly (not via run_launcher) so
   # WRAPPER_PID is the launcher itself and jq is its direct child. Launcher
   # stderr is captured to prove post-boundary diagnostics do not leak there.
   "$LAUNCHER" --pid-file "$pid_file" --stdout-log "$OUT_LOG" --stderr-log "$ERR_LOG" \
     --agent-id code_executor_1_exec-client-test --action launch \
-    --stdout-format codex-jsonl -- "$child" "$observed_file" \
+    --stdout-format codex-jsonl -- "$child" "$observed_file" "$term_count_file" \
     2>"$TMP_DIR/capfail-shell.err" &
   WRAPPER_PID=$!
   wait_for_file "$pid_file"
   wait_for_file "$observed_file"
   recorded_pid=$(cat "$pid_file")
+  observed_pid=$(cat "$observed_file")
+  [ "$recorded_pid" = "$observed_pid" ] || \
+    fail "capture-failure PID file does not match the child-observed PID"
 
   # Simulate a fatal capture-channel failure: kill the stdout capture (jq is a
   # direct child of the launcher). Test-only; production never locates processes.
@@ -498,6 +620,9 @@ test_capture_failure_terminates_client_once_and_exits_nonzero() {
 
   [ "$status" -eq 70 ] || fail "launcher did not report capture failure with exit 70: $status"
   kill -0 "$recorded_pid" 2>/dev/null && fail "client survived the capture-failure SIGTERM"
+  [ "$(wc -l <"$term_count_file" | tr -d ' ')" -eq 1 ] || \
+    fail "client did not observe exactly one TERM"
+  [ "$(cat "$term_count_file")" -eq 1 ] || fail "client TERM counter is not exactly one"
   [ ! -e "$pid_file" ] || fail "PID file was not trashed after capture failure"
   grep -Eq "$TS_RE LAT_LAUNCHER_ERROR agent_id=code_executor_1_exec-client-test " "$ERR_LOG" || \
     fail "capture-failure diagnostic was not appended to the stderr runtime log"
@@ -505,6 +630,8 @@ test_capture_failure_terminates_client_once_and_exits_nonzero() {
     fail "post-boundary diagnostic leaked into the launcher's shell stderr"
   ! grep -q 'LAT_LAUNCHER_ERROR' "$TMP_DIR/capfail-shell.err" || \
     fail "LAT_LAUNCHER_ERROR sentinel leaked into the launcher's shell stderr"
+  grep -q 'client=143' "$ERR_LOG" || \
+    fail "capture-failure diagnostic does not record client=143"
   return 0
 }
 
@@ -570,6 +697,7 @@ test_preserves_unparsed_stdout_lines
 test_preserves_tail_output_of_a_fast_exit
 test_does_not_start_client_when_log_setup_fails
 test_capture_initialization_failure_never_starts_client
+test_concurrent_launches_atomically_reserve_pid_and_logs
 test_capture_failure_terminates_client_once_and_exits_nonzero
 test_reports_capture_failure_detected_after_client_exit
 

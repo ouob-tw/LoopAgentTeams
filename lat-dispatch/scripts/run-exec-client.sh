@@ -45,6 +45,25 @@ command -v jq >/dev/null || { echo "ERROR: jq not found" >&2; exit 69; }
 
 mkdir -p "$(dirname "$PID_FILE")" || exit 73
 mkdir -p "$(dirname "$STDOUT_LOG")" "$(dirname "$STDERR_LOG")" || exit 73
+
+OWNERSHIP_LOCK="${PID_FILE}.lock"
+if ! mkdir "$OWNERSHIP_LOCK" 2>/dev/null; then
+  echo "ERROR: runtime ownership is already reserved: $OWNERSHIP_LOCK" >&2
+  exit 65
+fi
+PID_OWNED=false
+FIFO_DIR=""
+
+# shellcheck disable=SC2317 # Invoked indirectly by the EXIT trap.
+cleanup() {
+  if [ "$PID_OWNED" = true ] && [ -e "$PID_FILE" ]; then
+    trash-put -- "$PID_FILE"
+  fi
+  [ -z "$FIFO_DIR" ] || [ ! -d "$FIFO_DIR" ] || trash-put -- "$FIFO_DIR"
+  [ ! -d "$OWNERSHIP_LOCK" ] || trash-put -- "$OWNERSHIP_LOCK"
+}
+trap cleanup EXIT
+
 [ ! -e "$PID_FILE" ] || { echo "ERROR: PID file already exists: $PID_FILE" >&2; exit 65; }
 if [ "$ACTION" = launch ]; then
   for log in "$STDOUT_LOG" "$STDERR_LOG"; do
@@ -78,13 +97,6 @@ FIFO_DIR=$(mktemp -d "${TMPDIR:-/tmp}/lat-exec-capture.XXXXXX") || exit 73
 CLIENT_PID=""
 OUT_CAP_PID=""
 ERR_CAP_PID=""
-
-# shellcheck disable=SC2317 # Invoked indirectly by the EXIT trap.
-cleanup() {
-  [ ! -e "$PID_FILE" ] || trash-put -- "$PID_FILE"
-  [ ! -d "$FIFO_DIR" ] || trash-put -- "$FIFO_DIR"
-}
-trap cleanup EXIT
 
 mkfifo "$FIFO_DIR/stdout" "$FIFO_DIR/stderr" || exit 73
 
@@ -169,6 +181,7 @@ if ! grep -Fq "$READY_TOKEN" "$FIFO_DIR/client.ready" 2>/dev/null; then
   wait "$OUT_CAP_PID" "$ERR_CAP_PID" 2>/dev/null || true
   exit 70
 fi
+PID_OWNED=true
 if ! printf '%s\n' "$CLIENT_PID" >"$PID_FILE"; then
   launcher_diag "cannot write PID file: $PID_FILE"
   kill -TERM "$CLIENT_PID" 2>/dev/null || true
