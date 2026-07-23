@@ -388,13 +388,13 @@ test_formal_skill_documentation_contracts() {
     fail "formal skill does not list the bundled Monitor script"
   grep -q -F "scripts/run-exec-client.sh --pid-file \"\$PID_FILE\"" "$clients" || \
     fail "codex-exec launch does not use the PID runner"
-  grep -q -F "codex exec --sandbox <permission> --model <model> --config model_reasoning_effort=\"<effort>\" -" "$clients" || \
+  grep -q -F "codex exec --json --sandbox <permission> --model <model> --config model_reasoning_effort=\"<effort>\" -" "$clients" || \
     fail "codex-exec monitor launch command is missing"
-  grep -q -F "codex exec --sandbox <permission> --model <model>" <<<"$resume_section" || \
+  grep -q -F "codex exec --json --sandbox <permission> --model <model>" <<<"$resume_section" || \
     fail "codex-exec resume does not preserve the original permission and model"
   grep -q -F "    --config model_reasoning_effort=\"<effort>\" \\" <<<"$resume_section" || \
     fail "codex-exec resume does not preserve the original effort"
-  grep -q -F "resume \"\$SESSION_UUID\" - < \"\$PROMPT_PATH\" >/dev/null 2>&1 &" <<<"$resume_section" || \
+  grep -q -F "resume \"\$SESSION_UUID\" - < \"\$PROMPT_PATH\" >/dev/null &" <<<"$resume_section" || \
     fail "codex-exec resume does not preserve the session and isolated stdio contract"
   grep -q -F 'claude --resume <agent_id> --model=<model> --effort <effort>' <<<"$resume_section" || \
     fail "claude-exec resume does not preserve the original model and effort"
@@ -408,8 +408,10 @@ test_formal_skill_documentation_contracts() {
     fail "Claude UUID resume documentation does not preserve model and effort"
   grep -q -F 'claude --resume <agent_id> --model=<model> --effort <effort>' "$claude_resume_doc" || \
     fail "Claude named resume documentation does not preserve model and effort"
-  grep -q -F "< \"\$PROMPT_PATH\" >/dev/null 2>&1 &" "$clients" || \
-    fail "codex-exec monitor launch does not isolate client stdout and stderr"
+  grep -q -F "< \"\$PROMPT_PATH\" >/dev/null &" "$clients" || \
+    fail "codex-exec monitor launch does not discard launcher stdout"
+  grep -q -F 'client 自身的 FD1／FD2 永不進入 Dispatch shell' "$clients" || \
+    fail "codex-exec monitor launch does not capture client stdout and stderr"
   grep -q -F 'Monitor 自身的 FD 1 與 FD 2 都保留給 Dispatch' "$clients" || \
     fail "formal skill does not preserve Monitor stdout and stderr for Dispatch"
   grep -q -F "\`INCOMPLETE\`" "$clients" || \

@@ -24,7 +24,7 @@ compatibility: "Linux or macOS with Bash 3.2+. Requires git, zmx, jq, uuidgen, t
 ## Available scripts
 
 - `scripts/monitor-session.sh` — 監控 Codex／Claude 原始 Session JSONL 並提取最新 turn 的 Final Answer
-- `scripts/run-exec-client.sh` — 啟動 exec client、以 `$!` 保存 PID、等待退出並清理 PID file
+- `scripts/run-exec-client.sh` — exec launcher：啟動 exec client、保存精確 PID、將 FD1／FD2 捕捉為帶 UTC capture time 的 runtime logs、等待退出並清理 PID file
 
 ## 預設流程
 
@@ -226,11 +226,11 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
 
 1. 不重設或刪除任何 task directory 的 `tasks.yaml`、`results.yaml` 或 `qa-results.md`。
 2. 以 `trash-put` 清理 `.lat/workspace/*/prompts/` 中超過 `prompts.retention_days`（預設 7）天的暫存 prompt。
-3. 以 `trash-put` 清理 `.lat/logs/` 中超過 `logs.retention_days`（預設 60）天的檔案。
+3. 以 `trash-put` 清理 `.lat/logs/` 中超過 `logs.retention_days`（預設 60）天的檔案；runtime logs 只能在對應 exec 已不在執行時清除——`${PID_FILE}.lock` ownership lock 存在時跳過該 `agent_id` 的 logs，保留並回報，不得自動判定或清除 stale lock；無 lock 時，`.lat/workspace/<TASK_ID>/runtime/<agent_id>.pid` 仍有有效 PID（`kill -0` 存活）也跳過。PID file 遺失表示 exec 已結束、可清；PID 格式錯誤時不得以 `pgrep` 猜測，保留該組 logs 並回報。
 
 ### purge
 
-只有使用者明確指定 `purge <TASK_ID>` 時，驗證 TASK_ID 後才可用 `trash-put` 刪除 `.lat/workspace/<TASK_ID>/`。一般 `clean` 永不刪除 task ledger。
+只有使用者明確指定 `purge <TASK_ID>` 時，驗證 TASK_ID 後才可用 `trash-put` 刪除 `.lat/workspace/<TASK_ID>/` 與 `.lat/logs/<TASK_ID>/`。一般 `clean` 永不刪除 task ledger。
 
 ## Sub-Agent 異常診斷
 

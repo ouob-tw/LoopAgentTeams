@@ -315,4 +315,81 @@ if grep -qi -F 'ledger' "$README"; then
   fail 'README still exposes the internal ledger term'
 fi
 
+clean_section=$(section '### clean' '### purge' "$SKILL")
+purge_section=$(section '### purge' '## Sub-Agent 異常診斷' "$SKILL")
+
+grep -q -F '.lat/logs/<TASK_ID>/<agent_id>.stdout.jsonl' "$CLIENTS" || \
+  fail 'Runtime stdout log path is not documented'
+grep -q -F '.lat/logs/<TASK_ID>/<agent_id>.stderr.log' "$CLIENTS" || \
+  fail 'Runtime stderr log path is not documented'
+grep -q -F -- '--stdout-log "$STDOUT_LOG" --stderr-log "$STDERR_LOG"' "$CLIENTS" || \
+  fail 'Exec launch examples do not pass explicit runtime log paths'
+grep -q -F -- '--agent-id' "$CLIENTS" || \
+  fail 'Exec launch examples do not pass the agent_id to the launcher'
+grep -q -F -- '--action launch' "$CLIENTS" || \
+  fail 'Launch examples do not state the action explicitly'
+grep -q -F -- '--action resume' "$CLIENTS" || \
+  fail 'Resume examples do not state the action explicitly'
+grep -q -F -- '--stdout-format codex-jsonl' "$CLIENTS" || \
+  fail 'Codex exec examples do not declare the native stdout format'
+grep -q -F -- '--stdout-format claude-stream-json' "$CLIENTS" || \
+  fail 'Claude exec examples do not declare the native stdout format'
+grep -q -F 'codex exec --json' "$CLIENTS" || \
+  fail 'Codex exec does not use native JSONL output'
+grep -q -F -- '--output-format stream-json --verbose' "$CLIENTS" || \
+  fail 'Claude exec does not use native stream JSON output'
+grep -q -F 'lat.runtime_boundary' "$CLIENTS" || \
+  fail 'The stdout boundary envelope is not documented'
+grep -q -F 'LAT_RUNTIME_BOUNDARY' "$CLIENTS" || \
+  fail 'The stderr boundary sentinel is not documented'
+grep -q -F 'LAT_LAUNCHER_ERROR' "$CLIENTS" || \
+  fail 'The launcher fatal diagnostic sentinel is not documented'
+grep -q -F '只寫入 stderr runtime log' "$CLIENTS" || \
+  fail 'Post-boundary launcher diagnostics are not single-sourced to the runtime log'
+grep -q -F '不再輸出到 launcher stderr' "$CLIENTS" || \
+  fail 'clients.md still allows duplicated post-boundary diagnostics on the shell'
+grep -q -F '缺任一即 exit 65 拒絕啟動' "$CLIENTS" || \
+  fail 'Resume does not require both existing runtime logs'
+grep -q -F '${PID_FILE}.lock' "$CLIENTS" || \
+  fail 'Atomic launcher ownership lock is not documented'
+grep -q -F 'lock 已存在即 exit 65' "$CLIENTS" || \
+  fail 'Existing launcher ownership lock does not fail closed with exit 65'
+grep -q -F '不自動判定或清除 stale lock' "$CLIENTS" || \
+  fail 'Launcher docs invent stale-lock auto-recovery'
+assert_not_contains "$(cat "$CLIENTS")" '>/dev/null 2>&1' \
+  'clients.md still discards launcher stderr when backgrounding the exec launcher'
+grep -q -F 'tail -n 7 "$STDERR_LOG"' "$CLIENTS" || \
+  fail 'Diagnosis does not start with tail -n 7 of stderr'
+grep -q -F 'tail -n 20 "$STDERR_LOG"' "$CLIENTS" || \
+  fail 'Diagnosis does not escalate to tail -n 20 of stderr'
+grep -q -F '正常完成時，Dispatch 不讀取任何 runtime log' "$CLIENTS" || \
+  fail 'Normal completion still reads runtime logs'
+grep -q -F 'boundary 之後的事件' "$CLIENTS" || \
+  fail 'Stdout diagnosis is not scoped to the current launch/resume boundary'
+grep -q -F '不得直接載入完整 stdout JSONL' "$CLIENTS" || \
+  fail 'Diagnosis may still load the full stdout JSONL'
+grep -q -F 'exec launcher' "$CLIENTS" || \
+  fail 'clients.md does not use the exec launcher term'
+if grep -E 'runner' "$CLIENTS" | grep -v -E 'lat-runner|Runner prompt' | grep -q 'runner'; then
+  fail 'clients.md still calls the exec launcher a bare runner'
+fi
+assert_not_contains "$(cat "$CLIENTS")" 'client FD 1／FD 2 已導向 `/dev/null`' \
+  'clients.md still claims exec FDs are discarded to /dev/null'
+grep -q -F '2>&1' "$CLIENTS" && ! grep -q -F '不將 FD1 與 FD2 以 `2>&1` 合併' "$CLIENTS" && \
+  fail 'clients.md merges runtime channels with 2>&1'
+assert_contains "$clean_section" 'logs.retention_days' \
+  'clean does not honor the runtime log retention window'
+assert_contains "$clean_section" '仍有有效 PID' \
+  'clean can delete runtime logs of a still-running exec'
+assert_contains "$clean_section" '`${PID_FILE}.lock`' \
+  'clean does not honor atomic launcher ownership'
+assert_contains "$clean_section" 'ownership lock 存在時跳過' \
+  'clean can delete logs while launcher ownership is reserved'
+assert_contains "$clean_section" '不得自動判定或清除 stale lock' \
+  'clean invents stale-lock auto-recovery'
+assert_contains "$clean_section" '不得以 `pgrep`' \
+  'clean may guess process liveness with pgrep'
+assert_contains "$purge_section" '.lat/logs/<TASK_ID>' \
+  'purge does not remove the task runtime log directory'
+
 echo 'PASS: skill-contract'
