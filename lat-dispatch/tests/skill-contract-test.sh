@@ -317,6 +317,7 @@ fi
 
 clean_section=$(section '### clean' '### purge' "$SKILL")
 purge_section=$(section '### purge' '## Sub-Agent 異常診斷' "$SKILL")
+exec_client_section=$(section '## exec client' '### Prompt 安全傳遞' "$CLIENTS")
 runtime_diagnosis_section=$(section '### Runtime 診斷' '### Exec PID 診斷與終止' "$CLIENTS")
 
 grep -q -F '.lat/logs/<TASK_ID>/<agent_id>.stdout.jsonl' "$CLIENTS" || \
@@ -327,10 +328,12 @@ grep -q -F -- '--stdout-log "$STDOUT_LOG" --stderr-log "$STDERR_LOG"' "$CLIENTS"
   fail 'Exec launch examples do not pass explicit runtime log paths'
 grep -q -F -- '--agent-id' "$CLIENTS" || \
   fail 'Exec launch examples do not pass the agent_id to the launcher'
-grep -q -F -- '--action launch' "$CLIENTS" || \
+grep -q -F 'ACTION=launch' "$CLIENTS" || \
   fail 'Launch examples do not state the action explicitly'
-grep -q -F -- '--action resume' "$CLIENTS" || \
+grep -q -F 'ACTION=resume' "$CLIENTS" || \
   fail 'Resume examples do not state the action explicitly'
+grep -q -F -- '--action "$ACTION"' "$CLIENTS" || \
+  fail 'Exec examples do not bind launcher action to the diagnosed attempt'
 grep -q -F -- '--stdout-format codex-jsonl' "$CLIENTS" || \
   fail 'Codex exec examples do not declare the native stdout format'
 grep -q -F -- '--stdout-format claude-stream-json' "$CLIENTS" || \
@@ -359,26 +362,45 @@ grep -q -F '不自動判定或清除 stale lock' "$CLIENTS" || \
   fail 'Launcher docs invent stale-lock auto-recovery'
 assert_not_contains "$(cat "$CLIENTS")" '>/dev/null 2>&1' \
   'clients.md still discards launcher stderr when backgrounding the exec launcher'
-assert_contains "$runtime_diagnosis_section" 'stderr runtime log 不存在' \
-  'Runtime diagnosis does not branch on a pre-log startup failure'
+assert_contains "$exec_client_section" '每次 launch／resume 呼叫 exec launcher 前' \
+  'Exec setup does not record stderr state before every launcher attempt'
+assert_contains "$exec_client_section" 'STDERR_BASELINE_LINES=$(wc -l < "$STDERR_LOG")' \
+  'Exec setup does not record the stderr baseline line count'
+baseline_line=$(line_number "$exec_client_section" 'STDERR_BASELINE_LINES=$(wc -l < "$STDERR_LOG")')
+launcher_line=$(line_number "$exec_client_section" 'scripts/run-exec-client.sh --pid-file')
+if [ -z "$baseline_line" ] || [ -z "$launcher_line" ] || [ "$baseline_line" -ge "$launcher_line" ]; then
+  fail 'Exec setup does not record STDERR_BASELINE_LINES before launcher start'
+fi
+assert_contains "$runtime_diagnosis_section" 'STDERR_BASELINE_LINES' \
+  'Runtime diagnosis does not use the pre-launch stderr baseline'
+assert_contains "$runtime_diagnosis_section" 'NR > after' \
+  'Runtime readiness can inspect stderr lines from an older attempt'
+assert_contains "$runtime_diagnosis_section" 'LAT_RUNTIME_BOUNDARY agent_id=$AGENT_ID action=$ACTION' \
+  'Runtime readiness does not require the current attempt boundary'
+assert_contains "$runtime_diagnosis_section" 'launcher 已非零退出' \
+  'Missing current boundary can be classified before launcher failure is known'
 assert_contains "$runtime_diagnosis_section" '保留的 launcher FD2' \
   'Pre-log startup failure does not diagnose from preserved launcher stderr'
-assert_contains "$runtime_diagnosis_section" '不得對不存在的 stderr runtime log 執行 `tail`' \
-  'Pre-log diagnosis may tail a missing runtime stderr log'
-assert_contains "$runtime_diagnosis_section" '只有 stderr runtime log 存在時' \
-  'Runtime stderr tailing is not gated on log existence'
-assert_contains "$runtime_diagnosis_section" 'tail -n 7 "$STDERR_LOG"' \
+assert_contains "$runtime_diagnosis_section" '既有 stderr runtime log 的 launch 拒絕' \
+  'Existing-stderr launch refusal is not classified as a pre-log FD2 failure'
+assert_contains "$runtime_diagnosis_section" 'resume 缺 stdout、但 stderr 已存在' \
+  'Missing-stdout resume refusal is not classified as a pre-log FD2 failure'
+assert_contains "$runtime_diagnosis_section" '兩種情況都不得 tail 舊 stderr' \
+  'Pre-log refusal cases can still diagnose from stale runtime stderr'
+assert_contains "$runtime_diagnosis_section" '本次 stderr boundary 存在時' \
+  'Runtime tailing is not gated on the current attempt boundary'
+assert_contains "$runtime_diagnosis_section" 'sed -n "$((STDERR_BASELINE_LINES + 1)),\$p" "$STDERR_LOG" | tail -n 7' \
   'Diagnosis does not start with tail -n 7 of stderr'
 assert_contains "$runtime_diagnosis_section" '只有已有具體診斷理由且 7 行不足時' \
   'Diagnosis does not reason-gate expansion beyond the first 7 stderr lines'
 assert_contains "$runtime_diagnosis_section" '記錄擴大理由後' \
   'Diagnosis does not preserve why stderr was expanded'
-assert_contains "$runtime_diagnosis_section" 'tail -n 20 "$STDERR_LOG"' \
+assert_contains "$runtime_diagnosis_section" 'sed -n "$((STDERR_BASELINE_LINES + 1)),\$p" "$STDERR_LOG" | tail -n 20' \
   'Diagnosis does not escalate to tail -n 20 of stderr'
 assert_contains "$runtime_diagnosis_section" '20 行仍不足且有新的具體診斷理由時' \
   'Diagnosis does not reason-gate expansion beyond 20 stderr lines'
-tail7_line=$(line_number "$runtime_diagnosis_section" 'tail -n 7 "$STDERR_LOG"')
-tail20_line=$(line_number "$runtime_diagnosis_section" 'tail -n 20 "$STDERR_LOG"')
+tail7_line=$(line_number "$runtime_diagnosis_section" 'tail -n 7')
+tail20_line=$(line_number "$runtime_diagnosis_section" 'tail -n 20')
 if [ -z "$tail7_line" ] || [ -z "$tail20_line" ] || [ "$tail7_line" -ge "$tail20_line" ]; then
   fail 'Runtime diagnosis does not order tail -n 7 before tail -n 20'
 fi
