@@ -200,6 +200,18 @@ three-tier-testing/     測試架構技能（三層分離）
 
 > **TUI（Terminal UI）**：在終端機中運作的互動式文字介面，可即時交互與顯示執行狀態。
 
+### Exec runtime 診斷
+
+外部 exec client 會將每次執行的原始 runtime 保存至 `.lat/logs/<TASK_ID>/`：
+
+- `<agent_id>.stdout.jsonl`：保留 client 的原生結構化事件，外層加入 `captured_at`、`stream` 與 `event`。
+- `<agent_id>.stderr.log`：保留人類可讀的 stderr，每行加入 RFC 3339 UTC 秒級時間。
+- launch 與 resume 都會寫入 boundary；resume 只會附加到原檔案，不會覆寫既有紀錄。
+
+Session JSONL 仍是完成狀態與 Final Answer 的唯一依據；正常完成不讀 runtime log。只有 Session Monitor 無法判斷或回報異常時，Dispatch 才先以 `tail -n 7` 查看當次 FD2 尾端，資訊不足再擴大為 `tail -n 20`，後續範圍由 Agent 依錯誤內容判斷，避免一次讀入整份 sub-agent runtime。
+
+runtime logs 預設保留 60 天；清理前會先確認 ownership lock、PID 與 launcher 狀態，無法安全判定時停止清理。
+
 ## 外部 CLI 兩層監控
 
 外部 CLI 以存活檢查與偏離檢查取代硬性 timeout；內建 subagent 直接等待完成通知，不使用本節監控：
