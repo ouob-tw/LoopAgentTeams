@@ -404,6 +404,18 @@ grep -q -F 'test_executor 先提高為 `gpt-5.6-terra`／high' "$CLIENTS" || \
   fail 'Test escalation does not prefer Terra/high'
 grep -q -F '修復工作本身直接涉及上述具名高風險' "$CLIENTS" || \
   fail 'Sol escalation for test executor is not limited to high-risk remediation'
+grep -q -F '使用者明確指定 qa_executor 使用 `gpt-5.6-sol`' "$CLIENTS" || \
+  fail 'QA Sol override does not start from an explicit user selection'
+grep -q -F '`low → medium → high`' "$CLIENTS" || \
+  fail 'QA Sol effort escalation order is not explicit'
+grep -q -F '`qa-results.md` 出現任一 `FAIL`' "$CLIENTS" || \
+  fail 'QA Sol effort escalation is not tied to acceptance failure'
+grep -q -F '首次 Sol 驗收使用 low' "$CLIENTS" || \
+  fail 'First QA Sol attempt does not start at low effort'
+grep -q -F 'high 後維持 high' "$CLIENTS" || \
+  fail 'QA Sol effort escalation does not cap at high'
+grep -q -F '`low → medium → high → xhigh → max`' "$CLIENTS" && \
+  fail 'QA Sol effort escalation still exceeds high'
 
 assert_contains "$adjudication_section" 'optional hardening' \
   'Reviewer scope does not distinguish optional hardening'

@@ -114,6 +114,11 @@ test_executor 先提高為 `gpt-5.6-terra`／high；只有修復工作本身直�
 的具體風險。若 QA 發現上述風險，只升級負責修復的下一個 test_executor，不升級
 qa_executor。使用者明確指定的模型仍有最高優先序。
 
+使用者明確指定 qa_executor 使用 `gpt-5.6-sol` 時，首次 Sol 驗收使用 low。
+若該輪 `qa-results.md` 出現任一 `FAIL`，修復完成後的下一個 qa_executor 才依
+`low → medium → high` 提高一階；驗收全部 PASS 時停止，high 後維持 high。
+executor 本身的工具錯誤或未完成依異常診斷處理，不計入驗收 effort 升級。
+
 ## exec client
 
 `codex exec` 無 `--ask-for-approval` 旗標——非互動模式本身就不詢問人類。
