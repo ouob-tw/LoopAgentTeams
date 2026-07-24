@@ -58,8 +58,8 @@ phases:
     permission: danger-full-access
   test_executor:
     client: codex-tui
-    model: gpt-5.6-luna
-    effort: high
+    model: gpt-5.6-terra
+    effort: medium
     permission: danger-full-access
   qa_executor:
     client: codex-tui
@@ -105,11 +105,14 @@ monitor:
 Spec reviewer 與 plan writer 維持 `gpt-5.6-sol`／high，優先在需求與計劃階段
 排除會向後放大的問題。原本預設使用 `gpt-5.6-terra` 的 code／test／QA 角色，
 不因任務較長或檔案較多就升級；只有其目前工作直接涉及並行正確性、秘密或權限
-邊界、不可逆資料遷移、付款／扣款，或外部副作用的冪等與結果不明等具名高風險
-時，才把該次 Agent 覆蓋為 `gpt-5.6-sol` 與較高 effort。Dispatch 必須在派發訊息
-中寫出觸發升級的具體風險。例行 QA 不在完成後另設固定升級階段；若 QA 發現上述
-風險，只升級負責該問題的下一個 remediation test_executor。使用者明確指定的
-模型仍有最高優先序。
+邊界、不可逆資料遷移、付款／扣款，或外部副作用的冪等與結果不明等具名高風險時，
+才把該次 code_executor 覆蓋為 `gpt-5.6-sol` 與較高 effort。qa_executor 維持 `gpt-5.6-terra`／medium；
+只有驗收本身需要較複雜的操作、觀察或證據判讀時，
+最多提高為 `gpt-5.6-terra`／high，不自動切換 Sol。遇到疑難測試或除錯時，
+test_executor 先提高為 `gpt-5.6-terra`／high；只有修復工作本身直接涉及上述具名高風險，
+才可覆蓋為 `gpt-5.6-sol` 與較高 effort。Dispatch 必須在派發訊息中寫出觸發升級
+的具體風險。若 QA 發現上述風險，只升級負責修復的下一個 test_executor，不升級
+qa_executor。使用者明確指定的模型仍有最高優先序。
 
 ## exec client
 

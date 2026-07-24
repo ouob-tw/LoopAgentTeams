@@ -167,6 +167,11 @@ code_config=$(awk '
   active && /^  test_executor:/ { exit }
   active { print }
 ' "$CLIENTS")
+test_config=$(awk '
+  /^  test_executor:/ { active=1 }
+  active && /^  qa_executor:/ { exit }
+  active { print }
+' "$CLIENTS")
 qa_config=$(awk '
   /^  qa_executor:/ { active=1 }
   active && /^test:/ { exit }
@@ -183,6 +188,7 @@ plan_writer_config=$(awk '
   active { print }
 ' "$CLIENTS")
 code_table=$(grep -F '| code_executor |' "$CLIENTS" || true)
+test_table=$(grep -F '| test_executor |' "$CLIENTS" || true)
 qa_table=$(grep -F '| qa_executor' "$CLIENTS" || true)
 plan_reviewer_table=$(grep -F '| plan_reviewer |' "$CLIENTS" || true)
 monitor_config=$(awk '
@@ -390,8 +396,14 @@ grep -q -F 'Spec reviewer 與 plan writer 維持 `gpt-5.6-sol`／high' "$CLIENTS
   fail 'Client contract does not preserve high-reasoning first-pass design'
 grep -q -F '原本預設使用 `gpt-5.6-terra` 的 code／test／QA 角色' "$CLIENTS" || \
   fail 'Client contract does not limit risk escalation to Terra executor roles'
-grep -q -F 'remediation test_executor' "$CLIENTS" || \
-  fail 'QA-discovered risk escalation is not scoped to remediation'
+grep -q -F 'qa_executor 維持 `gpt-5.6-terra`／medium' "$CLIENTS" || \
+  fail 'QA does not remain on Terra/medium by default'
+grep -q -F '最多提高為 `gpt-5.6-terra`／high' "$CLIENTS" || \
+  fail 'QA escalation is not capped at Terra/high'
+grep -q -F 'test_executor 先提高為 `gpt-5.6-terra`／high' "$CLIENTS" || \
+  fail 'Test escalation does not prefer Terra/high'
+grep -q -F '修復工作本身直接涉及上述具名高風險' "$CLIENTS" || \
+  fail 'Sol escalation for test executor is not limited to high-risk remediation'
 
 assert_contains "$adjudication_section" 'optional hardening' \
   'Reviewer scope does not distinguish optional hardening'
@@ -420,6 +432,21 @@ assert_contains "$code_table" '| gpt-5.6-terra | medium' \
   'code_executor defaults table does not use Terra/medium'
 assert_contains "$code_table" '| danger-full-access |' \
   'code_executor defaults table does not use danger-full-access'
+
+assert_contains "$test_config" 'client: codex-tui' \
+  'test_executor config example does not default to codex-tui'
+assert_contains "$test_config" 'model: gpt-5.6-terra' \
+  'test_executor config example does not default to gpt-5.6-terra'
+assert_contains "$test_config" 'effort: medium' \
+  'test_executor config example does not default to medium effort'
+assert_contains "$test_config" 'permission: danger-full-access' \
+  'test_executor config example does not default to danger-full-access'
+assert_contains "$test_table" '| codex-tui' \
+  'test_executor defaults table does not use codex-tui'
+assert_contains "$test_table" '| gpt-5.6-terra | medium' \
+  'test_executor defaults table does not use Terra/medium'
+assert_contains "$test_table" '| danger-full-access |' \
+  'test_executor defaults table does not use danger-full-access'
 
 assert_contains "$qa_config" 'client: codex-tui' \
   'qa_executor config example does not default to codex-tui'
