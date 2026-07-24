@@ -114,10 +114,11 @@ test_executor 先提高為 `gpt-5.6-terra`／high；只有修復工作本身直�
 的具體風險。若 QA 發現上述風險，只升級負責修復的下一個 test_executor，不升級
 qa_executor。使用者明確指定的模型仍有最高優先序。
 
-使用者明確指定 qa_executor 使用 `gpt-5.6-sol` 時，首次 Sol 驗收使用 low。
-若該輪 `qa-results.md` 出現任一 `FAIL`，修復完成後的下一個 qa_executor 才依
-`low → medium → high` 提高一階；驗收全部 PASS 時停止，high 後維持 high。
-executor 本身的工具錯誤或未完成依異常診斷處理，不計入驗收 effort 升級。
+使用者明確指定 qa_executor 使用 `gpt-5.6-sol`，但只指定 model、未指定 effort 時，
+首次 Sol 驗收使用 low。若該輪 `qa-results.md` 出現任一 `FAIL`，修復完成後的下一個
+qa_executor 才依 `low → medium → high` 提高一階；驗收全部 PASS 時停止，high 後維持 high。
+使用者明確指定的 effort 維持最高優先序，不套用此漸進規則。executor 本身的
+工具錯誤或未完成依異常診斷處理，不計入驗收 effort 升級。
 
 ## exec client
 
@@ -255,7 +256,7 @@ zmx run cc-<name> -d bash -c 'exec claude --session-id '"$UUID"' --name <agent_i
 - 首次外層 `functions.exec` 等待 300000 毫秒。
 - `functions.exec` 回傳 `cell_id` 後，`functions.wait` 每次等待 300000 毫秒。
 - cell 完成但 Monitor session 仍在執行時，後續 `functions.exec` 等待 300000 毫秒，並以原 `session_id` 再次呼叫 `write_stdin`。
-- 等待工具會在完成通知或新使用者輸入抵達時提早返回；沒有狀態變更時不發送進度訊息，也不額外呼叫狀態查詢。
+- 等待工具取得完成通知或其他輸出時會提早返回；沒有狀態變更時不發送進度訊息，也不額外呼叫狀態查詢。
 
 ### claude-exec 監控
 

@@ -1,5 +1,7 @@
 # Codex Monitor 等待節奏修正規格
 
+> 已取代：本規格已由 `lat-dispatch/references/clients.md` 的 300000 毫秒等待契約取代；以下內容只保留歷史決策背景，不再代表目前執行規則。
+
 ## 適用範圍
 
 本規格只描述目前 Codex `functions.exec`、`functions.wait`、`exec_command` 與 `write_stdin` 的工具機制及參數。其他 agent、client 或 runtime 的對應機制尚未驗證，不得從本規格類推；各 client 仍依自己的工具契約處理。

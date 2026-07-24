@@ -278,8 +278,8 @@ assert_not_contains "$(cat "$SKILL" "$CLIENTS")" '<phase>_<round>_<task_id>' \
   'Legacy round-based agent_id format remains in the skill contract'
 
 prompt_count=$(grep -c -E '^   \[<agent_id>\]' "$SKILL")
-[ "$prompt_count" -eq 7 ] || \
-  fail "Expected 7 canonical prompt templates, found $prompt_count"
+[ "$prompt_count" -eq 9 ] || \
+  fail "Expected 9 canonical prompt templates, found $prompt_count"
 if grep -Eq '^   \[(spec_reviewer|plan_writer|plan_reviewer|code_executor|test_executor|qa_executor)_' "$SKILL"; then
   fail 'A reusable prompt still reconstructs agent_id instead of using [<agent_id>]'
 fi
@@ -416,6 +416,15 @@ grep -q -F 'high 後維持 high' "$CLIENTS" || \
   fail 'QA Sol effort escalation does not cap at high'
 grep -q -F '`low → medium → high → xhigh → max`' "$CLIENTS" && \
   fail 'QA Sol effort escalation still exceeds high'
+grep -q -F '只指定 model、未指定 effort' "$CLIENTS" || \
+  fail 'QA Sol effort ladder does not preserve an explicit user effort'
+grep -q -F '明確指定的 effort 維持最高優先序' "$CLIENTS" || \
+  fail 'Explicit user effort does not retain highest priority'
+grep -q -F '新使用者輸入' "$CLIENTS" "$ROOT/docs/monitor-script.md" && \
+  fail 'Monitor wait docs still claim unverified early return on new user input'
+grep -q -F '本規格已由 `lat-dispatch/references/clients.md` 的 300000 毫秒等待契約取代' \
+  "$ROOT/docs/superpowers/specs/2026-07-17-codex-monitor-wait-cadence-design.md" || \
+  fail 'Historical wait-cadence spec is not marked superseded'
 
 assert_contains "$adjudication_section" 'optional hardening' \
   'Reviewer scope does not distinguish optional hardening'
@@ -423,12 +432,30 @@ assert_contains "$adjudication_section" '增量 diff' \
   'Re-review does not prefer the incremental revision diff'
 assert_contains "$adjudication_section" '重新讀取完整目標' \
   'Re-review has no evidence-based escape hatch for full rereads'
+assert_contains "$spec_section" '<prior_findings>' \
+  'Spec re-review prompt does not receive prior findings'
+assert_contains "$spec_section" '<revision_base>' \
+  'Spec re-review prompt does not receive the revision baseline'
+assert_contains "$spec_section" '<incremental_diff>' \
+  'Spec re-review prompt does not receive the incremental diff'
+assert_contains "$plan_section" '<prior_findings>' \
+  'Plan re-review prompt does not receive prior findings'
+assert_contains "$plan_section" '<revision_base>' \
+  'Plan re-review prompt does not receive the revision baseline'
+assert_contains "$plan_section" '<incremental_diff>' \
+  'Plan re-review prompt does not receive the incremental diff'
+assert_contains "$adjudication_section" '實際內容或可讀取的安全檔案路徑' \
+  'Re-review placeholders have no concrete delivery contract'
 
 test_section=$(section '### test' '### report' "$SKILL")
 assert_contains "$test_section" 'smallest covering tests' \
   'Test executor prompt does not constrain fix loops to covering tests'
+assert_contains "$test_section" 'fix the implementation code rather than weakening the tests' \
+  'Initial test executor prompt does not require implementation fixes'
 assert_contains "$test_section" '完整回歸只在此 gate 執行一次' \
   'Dispatch does not own the single full-regression gate'
+assert_contains "$test_section" '同樣計入 `test.max_retries` 與 `test.max_retries_per_task`' \
+  'Full-regression remediation is not bounded by retry limits'
 
 assert_contains "$code_config" 'client: codex-tui' \
   'code_executor config example does not default to codex-tui'

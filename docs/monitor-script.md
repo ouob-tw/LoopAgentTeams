@@ -24,7 +24,7 @@ Codex exec／TUI 直接監控原生 Session JSONL；Claude exec／TUI 直接監�
 - Monitor 啟動時立即檢查，第一次檢查前不等待；Final Answer 通常最晚在下一個 POLL 週期被發現。
 - `sleep "$POLL"` 只暫停 Monitor，不會暫停 Sub-Agent。
 
-`POLL` 是檢查頻率；`STALL` 是多久沒有進展才視為停滯；`DRIFT` 是多久提醒 Dispatch 檢查方向；`yield_time_ms` 是 Dispatch 單次等待 Monitor 輸出的時間。以下參數僅適用於目前 Codex functions 工具，其他 runtime 不得類推：空輪詢的 `write_stdin.yield_time_ms`、首次外層 `functions.exec`、拿到 `cell_id` 後的 `functions.wait`，以及沿用原 `session_id` 的後續 `functions.exec`，都使用 300000 毫秒等待。完成通知、狀態變更或新使用者輸入會提早返回；無變更時不額外產生進度訊息或狀態查詢。
+`POLL` 是檢查頻率；`STALL` 是多久沒有進展才視為停滯；`DRIFT` 是多久提醒 Dispatch 檢查方向；`yield_time_ms` 是 Dispatch 單次等待 Monitor 輸出的時間。以下參數僅適用於目前 Codex functions 工具，其他 runtime 不得類推：空輪詢的 `write_stdin.yield_time_ms`、首次外層 `functions.exec`、拿到 `cell_id` 後的 `functions.wait`，以及沿用原 `session_id` 的後續 `functions.exec`，都使用 300000 毫秒等待。完成通知或其他輸出會提早返回；無變更時不額外產生進度訊息或狀態查詢。
 
 ### 迴圈結構
 
