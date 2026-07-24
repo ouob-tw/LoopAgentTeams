@@ -75,6 +75,16 @@ Reviewer 的 verdict 與 finding 都是待驗證主張，不是 phase 的最終�
 
 Reviewer 回覆 `PASS` 時，Dispatch 仍須執行 focused gap scan，至少檢查需求範圍、已確認決策、QA 可測試性及高風險假設。這不是完整重做作者自檢；只有發現矛盾、重大風險或證據不足時才升級為完整審查。
 
+Reviewer 的範圍以已確認的 Spec、Plan、使用者決策，以及派發時具名的實際風險為
+界線。Finding 若無法指出對應需求，或沒有可重現的失敗／攻擊路徑，只能標為
+optional hardening，不得阻擋 phase。Dispatch 應拒絕把假設性的極端情境升格為
+新需求，除非它直接影響既有驗收項或已具名的安全邊界。
+
+第一輪審查讀取完整目標。作者依 accepted findings 修正後，re-review 只提供前輪
+findings、修正基準與該基準之後的增量 diff；Reviewer 只驗證 findings 是否修正及
+增量是否造成直接 regression。只有增量顯示架構已重寫、基準不可信，或具體證據
+指出未修改區域受影響時，才重新讀取完整目標，並在結果中說明原因。
+
 Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted findings，原作者修正並再次自檢，再啟動下一 round Reviewer 與新的 Dispatch 裁決。Reviewer verdict 與 Dispatch adjudication 都完成後，phase 才能通過；若 Reviewer 回覆 `NEEDS_REVISION` 但所有 finding 均被 Dispatch 以證據 `REJECT`，focused gap scan 通過後仍可批准。
 
 `plan_reviewer.client: self` 時沒有外部 Reviewer verdict 或額外 adjudication：Dispatch 直接依相同證據標準完整審查 Plan、產生 findings，並將修正交回原 `plan_writer`。Dispatch 在 self review 中不得直接修改 Plan。
@@ -114,7 +124,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    spec_reviewer prompt：
 
    ```
-   [<agent_id>] Review the spec at <spec_file>. Do not modify the spec file. Check completeness, ambiguity, missing edge cases, user-confirmed scope, and testability of every QA item. When current library, framework, SDK, API, CLI, or cloud-service documentation is needed, use the existing Context7 MCP; do not install a Context7 CLI or change permissions or other MCPs. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
+   [<agent_id>] Review the spec at <spec_file>. Do not modify the spec file. Stay bounded to the user-confirmed scope and named practical risks; label unsupported extra hardening as optional and non-blocking. Check completeness, ambiguity, missing edge cases, user-confirmed scope, and testability of every QA item. For a re-review, inspect the prior findings and incremental revision diff first; reopen the full artifact only if the delta changes architecture or concrete evidence shows an unaffected section is implicated. When current library, framework, SDK, API, CLI, or cloud-service documentation is needed, use the existing Context7 MCP; do not install a Context7 CLI or change permissions or other MCPs. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
    ```
 
 8. 內建 subagent 直接等待完成通知；外部 CLI 才依 `references/clients.md` 監控原始 Session JSONL。收到 Final Answer 後，Dispatch 依「審查裁決」逐項驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
@@ -142,7 +152,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    外部 plan_reviewer prompt：
 
    ```
-   [<agent_id>] Review <plan_file> against the approved spec at <spec_file>. Do not modify the plan file. Check complete requirement coverage, every QA-to-test mapping, sequencing, dependencies, rollback or failure handling where relevant, and command executability. When current library, framework, SDK, API, CLI, or cloud-service documentation is needed, use the existing Context7 MCP; do not install a Context7 CLI or change permissions or other MCPs. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
+   [<agent_id>] Review <plan_file> against the approved spec at <spec_file>. Do not modify the plan file. Stay bounded to the approved spec, user decisions, and named practical risks; label unsupported extra hardening as optional and non-blocking. Check complete requirement coverage, every QA-to-test mapping, sequencing, dependencies, rollback or failure handling where relevant, and command executability. For a re-review, inspect the prior findings and incremental revision diff first; reopen the full artifact only if the delta changes architecture or concrete evidence implicates an unaffected section. When current library, framework, SDK, API, CLI, or cloud-service documentation is needed, use the existing Context7 MCP; do not install a Context7 CLI or change permissions or other MCPs. Report VERDICT: PASS or NEEDS_REVISION. For every finding include a stable finding ID, severity, claim, concrete evidence with file/section references, and recommendation.
    ```
 
 5. self 模式由 Dispatch 直接決定 `PASS`、`NEEDS_REVISION` 或 `USER_DECISION`。非 self 模式依同宿主路由等待內建完成通知，或依 `references/clients.md` 監控外部 reviewer 原始 Session JSONL；再由 Dispatch 依「審查裁決」驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
@@ -185,7 +195,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    首次 test_executor prompt（`agent_id` = `test_executor_1_<task_id>`）：
 
    ```
-   [<agent_id>] Read the spec at <spec_file> and the test targets in <plan_file>. Following the three-tier-testing skill, write and run integration tests and E2E tests for the implemented code. Use sub-agents to parallelize independent test writing when beneficial. Do not write or modify unit tests. If tests fail, fix the implementation code and re-run until all tests pass. Run unit tests to confirm no regressions before finishing. E2E tests go in the project's E2E test directory (tests/e2e/ or <frontend>/tests/e2e/). When finished, upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact entry in .lat/workspace/<task_id>/tasks.yaml to the same final status following the yaml-schema — task_id is '<task_id>', agent_id is '<agent_id>'.
+   [<agent_id>] Read the spec at <spec_file> and the test targets in <plan_file>. Following the three-tier-testing skill, write and run integration tests and E2E tests for the implemented code. Use sub-agents to parallelize independent test writing when beneficial. Do not write or modify unit tests. During the fix loop, run only the failing tests and the smallest covering tests for changed behavior; do not repeatedly run whole tiers. Once the covering set is green, finish without a full regression because Dispatch runs that gate once after QA passes. E2E tests go in the project's E2E test directory (tests/e2e/ or <frontend>/tests/e2e/). When finished, upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact entry in .lat/workspace/<task_id>/tasks.yaml to the same final status following the yaml-schema — task_id is '<task_id>', agent_id is '<agent_id>'.
    ```
 
 3. 先將 test task 以 `status: running` 附加到該 task ledger；內建 subagent 直接等待完成通知，外部 CLI 才依 `references/clients.md` 監控。接收 Final Answer 後，以 tasks/results 中精確匹配的狀態判斷成功、部分完成或失敗。
@@ -201,16 +211,17 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    - **全部 PASS** → 進入 report。
    - **有 FAIL** → 啟動新的 `test_executor` Agent Session 修正（`agent_id` = `test_executor_<instance>_<task_id>`，instance 使用該 phase 的下一個序號）。
 
-   修正 test_executor prompt：
+   修正輪 test_executor prompt：
 
    ```
-   [<agent_id>] Acceptance verification failed. Read the spec at <spec_file> for requirements context, and read .lat/workspace/<task_id>/qa-results.md for the failed items and evidence. Fix the implementation code so the real application satisfies these items. Re-run the failing tests in tests/qa_e2e/ to verify your fix, then run unit tests to confirm no regressions. Do not modify test files in tests/qa_e2e/. When finished, upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact tasks.yaml entry to the same final status — task_id is '<task_id>', agent_id is '<agent_id>'.
+   [<agent_id>] Acceptance verification failed. Read the spec at <spec_file> for requirements context, and read .lat/workspace/<task_id>/qa-results.md for the failed items and evidence. Fix the implementation code so the real application satisfies these items. Re-run only the failing QA tests and the smallest covering tests for the changed behavior; do not run a whole-tier regression. Do not modify test files in tests/qa_e2e/. When finished, upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact tasks.yaml entry to the same final status — task_id is '<task_id>', agent_id is '<agent_id>'.
    ```
 
 6. qa_executor 同樣必須由內建完成通知或外部 Monitor 接收 Final Answer；驗收狀態以該 task directory 的 tasks/results ledger 與 `qa-results.md` 為準。test_executor 修完後回到步驟 4（qa_executor 重新驗收）。
 7. 迴圈直到 qa_executor 全部 PASS，或達到重試上限（`test.max_retries` / `test.max_retries_per_task`）。超過上限時暫停，向使用者報告失敗細節與證據。
-8. tui client 時告知使用者可用指令：`zmx attach <session>`（即時檢視）、`zmx list`（所有工作階段）、`Ctrl+\`（脫離 attach 不終止）。
-9. 中斷時依 `references/clients.md` 的中斷防護與 Session 恢復流程處理。
+8. QA 全部 PASS 後，Dispatch 依 Plan 中已定義的驗證命令執行一次完整回歸。完整回歸只在此 gate 執行一次；若失敗，記錄精確失敗後建立下一個 test_executor 修正，修正期間仍只跑 covering tests，下一次 QA 通過後才再執行一次完整回歸。
+9. tui client 時告知使用者可用指令：`zmx attach <session>`（即時檢視）、`zmx list`（所有工作階段）、`Ctrl+\`（脫離 attach 不終止）。
+10. 中斷時依 `references/clients.md` 的中斷防護與 Session 恢復流程處理。
 
 ### report
 

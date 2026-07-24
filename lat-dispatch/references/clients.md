@@ -92,13 +92,24 @@ monitor:
 | ------------- | -------- | ----------- | ---------- | ----------- | ------------------ | ---------------------------------------- |
 | spec_writer   | 撰寫規格 | self        | —          | —           | —                  | —                                        |
 | spec_reviewer | 審查規格 | codex-exec  | gpt-5.6-sol | high       | read-only          | report-only，由 Dispatch 驗證 finding    |
-| plan_writer   | 撰寫計劃 | codex-exec  | gpt-5.6-sol | high       | workspace-write    | 僅需讀取原始碼與寫入計劃文件             |
+| plan_writer   | 撰寫計劃 | codex-exec  | gpt-5.6-sol | high       | workspace-write    | 初次建立正確計劃，避免錯誤放大到後續階段 |
 | plan_reviewer | 審查計劃 | self        | —          | —           | —                  | Dispatch 完整審查，不直接修改 Plan       |
 | code_executor | 執行實作 | codex-tui   | gpt-5.6-terra | medium      | danger-full-access | 需執行測試、安裝套件、完整系統存取       |
 | test_executor | 執行測試與修正 | codex-tui  | gpt-5.6-terra | medium        | danger-full-access | 需寫測試、修改程式碼、使用者可介入         |
 | qa_executor   | 驗收測試       | codex-tui  | gpt-5.6-terra | medium      | danger-full-access | 驅動真實 app、依 QA 清單寫 E2E 測試驗收、不修改實作碼、使用者可介入 |
 
 `self` = 目前執行此 skill 的 agent 自行處理，不委派外部 client。`plan_reviewer` 為 self 時，config 中的 model、effort、permission 不生效；使用者將 client 覆蓋為外部 client 時，這三個內建值才作為兜底。
+
+## 依風險升級模型
+
+Spec reviewer 與 plan writer 維持 `gpt-5.6-sol`／high，優先在需求與計劃階段
+排除會向後放大的問題。原本預設使用 `gpt-5.6-terra` 的 code／test／QA 角色，
+不因任務較長或檔案較多就升級；只有其目前工作直接涉及並行正確性、秘密或權限
+邊界、不可逆資料遷移、付款／扣款，或外部副作用的冪等與結果不明等具名高風險
+時，才把該次 Agent 覆蓋為 `gpt-5.6-sol` 與較高 effort。Dispatch 必須在派發訊息
+中寫出觸發升級的具體風險。例行 QA 不在完成後另設固定升級階段；若 QA 發現上述
+風險，只升級負責該問題的下一個 remediation test_executor。使用者明確指定的
+模型仍有最高優先序。
 
 ## exec client
 
@@ -233,9 +244,10 @@ zmx run cc-<name> -d bash -c 'exec claude --session-id '"$UUID"' --name <agent_i
 `stall` 是 Monitor 停滯門檻，與工具單次等待時間分開：
 
 - 空輪詢的 `write_stdin.yield_time_ms` 固定為 300000。
-- 首次外層 `functions.exec` 等待 120000 毫秒。
-- `functions.exec` 回傳 `cell_id` 後，`functions.wait` 每次等待 60000 毫秒。
-- cell 完成但 Monitor session 仍在執行時，後續 `functions.exec` 等待 60000 毫秒，並以原 `session_id` 再次呼叫 `write_stdin`。
+- 首次外層 `functions.exec` 等待 300000 毫秒。
+- `functions.exec` 回傳 `cell_id` 後，`functions.wait` 每次等待 300000 毫秒。
+- cell 完成但 Monitor session 仍在執行時，後續 `functions.exec` 等待 300000 毫秒，並以原 `session_id` 再次呼叫 `write_stdin`。
+- 等待工具會在完成通知或新使用者輸入抵達時提早返回；沒有狀態變更時不發送進度訊息，也不額外呼叫狀態查詢。
 
 ### claude-exec 監控
 

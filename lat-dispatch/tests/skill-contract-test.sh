@@ -177,6 +177,11 @@ plan_reviewer_config=$(awk '
   active && /^  code_executor:/ { exit }
   active { print }
 ' "$CLIENTS")
+plan_writer_config=$(awk '
+  /^  plan_writer:/ { active=1 }
+  active && /^  plan_reviewer:/ { exit }
+  active { print }
+' "$CLIENTS")
 code_table=$(grep -F '| code_executor |' "$CLIENTS" || true)
 qa_table=$(grep -F '| qa_executor' "$CLIENTS" || true)
 plan_reviewer_table=$(grep -F '| plan_reviewer |' "$CLIENTS" || true)
@@ -310,12 +315,14 @@ if grep -q -F 'Codex dispatch（或其他無 Monitor 的 agent）' "$CLIENTS"; t
 fi
 grep -q -F '空輪詢的 `write_stdin.yield_time_ms` 固定為 300000' "$CLIENTS" || \
   fail 'Codex monitor write_stdin empty poll does not use the 300s tool window'
-grep -q -F '首次外層 `functions.exec` 等待 120000' "$CLIENTS" || \
-  fail 'Codex monitor initial functions.exec wait is not 120s'
-grep -q -F '`functions.wait` 每次等待 60000' "$CLIENTS" || \
-  fail 'Codex monitor functions.wait cadence is not 60s'
-grep -q -F '後續 `functions.exec` 等待 60000' "$CLIENTS" || \
-  fail 'Codex monitor follow-up functions.exec cadence is not 60s'
+grep -q -F '首次外層 `functions.exec` 等待 300000' "$CLIENTS" || \
+  fail 'Codex monitor initial functions.exec wait is not 300s'
+grep -q -F '`functions.wait` 每次等待 300000' "$CLIENTS" || \
+  fail 'Codex monitor functions.wait cadence is not 300s'
+grep -q -F '後續 `functions.exec` 等待 300000' "$CLIENTS" || \
+  fail 'Codex monitor follow-up functions.exec cadence is not 300s'
+grep -q -F '沒有狀態變更時不發送進度訊息' "$CLIENTS" || \
+  fail 'Codex monitor contract does not suppress unchanged progress updates'
 grep -q -F '原 `session_id`' "$CLIENTS" || \
   fail 'Codex monitor follow-up does not preserve the exec session'
 grep -q -F 'timeout_ms: 3600000' "$CLIENTS" || \
@@ -374,6 +381,30 @@ assert_contains "$dispatch_section" '`code_executor_1_<task_id>` 尚未存在' \
   'Dispatch does not enforce a unique code executor agent_id'
 assert_contains "$dispatch_section" '附加 code task' \
   'Dispatch does not append the first code task'
+
+assert_contains "$plan_writer_config" 'model: gpt-5.6-sol' \
+  'plan_writer config example does not default to gpt-5.6-sol'
+assert_contains "$plan_writer_config" 'effort: high' \
+  'plan_writer config example does not default to high effort'
+grep -q -F 'Spec reviewer 與 plan writer 維持 `gpt-5.6-sol`／high' "$CLIENTS" || \
+  fail 'Client contract does not preserve high-reasoning first-pass design'
+grep -q -F '原本預設使用 `gpt-5.6-terra` 的 code／test／QA 角色' "$CLIENTS" || \
+  fail 'Client contract does not limit risk escalation to Terra executor roles'
+grep -q -F 'remediation test_executor' "$CLIENTS" || \
+  fail 'QA-discovered risk escalation is not scoped to remediation'
+
+assert_contains "$adjudication_section" 'optional hardening' \
+  'Reviewer scope does not distinguish optional hardening'
+assert_contains "$adjudication_section" '增量 diff' \
+  'Re-review does not prefer the incremental revision diff'
+assert_contains "$adjudication_section" '重新讀取完整目標' \
+  'Re-review has no evidence-based escape hatch for full rereads'
+
+test_section=$(section '### test' '### report' "$SKILL")
+assert_contains "$test_section" 'smallest covering tests' \
+  'Test executor prompt does not constrain fix loops to covering tests'
+assert_contains "$test_section" '完整回歸只在此 gate 執行一次' \
+  'Dispatch does not own the single full-regression gate'
 
 assert_contains "$code_config" 'client: codex-tui' \
   'code_executor config example does not default to codex-tui'
