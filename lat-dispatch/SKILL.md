@@ -222,9 +222,17 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    [<agent_id>] Read the spec at <spec_file> and its acceptance checklist (QA). Following the three-tier-testing skill, launch and drive the real application as a user would, and verify each acceptance item by observing actual behavior — do NOT rely on the existing test suite. Use sub-agents to parallelize independent checklist items when beneficial. For every checklist item, write an E2E test in tests/qa_e2e/ (or <frontend>/tests/qa_e2e/) that encodes the acceptance criterion, run it against the real application, and record the result. Do not modify implementation code or existing test files. Write your results to .lat/workspace/<task_id>/qa-results.md — report each item as PASS or FAIL with evidence (command + output/log/screenshot); for FAIL include expected versus observed. Also upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact tasks.yaml entry to the same final status — task_id is '<task_id>', agent_id is '<agent_id>'.
    ```
 
-5. 讀取 `.lat/workspace/<task_id>/qa-results.md`：
-   - **全部 PASS** → 進入 report。
-   - **有 FAIL** → 啟動新的 `test_executor` Agent Session 修正（`agent_id` = `test_executor_<instance>_<task_id>`，instance 使用該 phase 的下一個序號）。
+5. 讀取 `.lat/workspace/<task_id>/qa-results.md`，將每個未通過項目分類為 `PRODUCT_FAILURE`、`QA_INVALID`、`TOOL_OR_ENVIRONMENT_FAILURE`，並依 `references/clients.md` 決定下一輪 QA effort：
+   - **全部 PASS** → 進入步驟 8 的完整回歸 gate。
+   - **`QA_INVALID`** → 先將新的 qa task 以 `status: running` 附加到 ledger，再啟動新的 `qa_executor` Agent Session 修正驗收方法（`agent_id` = `qa_executor_<instance>_<task_id>`，instance 使用該 phase 的下一個序號）；若同輪另有 `PRODUCT_FAILURE`，待重新建立可信驗收結果後再處理。
+   - **`PRODUCT_FAILURE`** → 啟動新的 `test_executor` Agent Session 修正實作（`agent_id` = `test_executor_<instance>_<task_id>`，instance 使用該 phase 的下一個序號）。
+   - **`TOOL_OR_ENVIRONMENT_FAILURE`** → 不啟動 test_executor；依「Sub-Agent 異常診斷」修復或以相同 effort 重試，取得有效驗收結果後重新分類。
+
+   QA_INVALID 修正輪 qa_executor prompt：
+
+   ```
+   [<agent_id>] Previous QA execution was classified as QA_INVALID. Read the spec at <spec_file>, its acceptance checklist, and .lat/workspace/<task_id>/qa-results.md. Correct only the affected acceptance tests under tests/qa_e2e/ (or <frontend>/tests/qa_e2e/) and re-run them against the real application until each affected item has consistent PASS or FAIL evidence. Do not modify implementation code or tests outside the QA acceptance directory. Update .lat/workspace/<task_id>/qa-results.md with command and output/log/screenshot evidence, then upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact tasks.yaml entry to the same final status — task_id is '<task_id>', agent_id is '<agent_id>'.
+   ```
 
    修正輪 test_executor prompt：
 
@@ -232,7 +240,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    [<agent_id>] Acceptance verification failed. Read the spec at <spec_file> for requirements context, and read .lat/workspace/<task_id>/qa-results.md for the failed items and evidence. Fix the implementation code so the real application satisfies these items. Re-run only the failing QA tests and the smallest covering tests for the changed behavior; do not run a whole-tier regression. Do not modify test files in tests/qa_e2e/. When finished, upsert your result into .lat/workspace/<task_id>/results.yaml and update your exact tasks.yaml entry to the same final status — task_id is '<task_id>', agent_id is '<agent_id>'.
    ```
 
-6. qa_executor 同樣必須由內建完成通知或外部 Monitor 接收 Final Answer；驗收狀態以該 task directory 的 tasks/results ledger 與 `qa-results.md` 為準。test_executor 修完後回到步驟 4（qa_executor 重新驗收）。
+6. qa_executor 同樣必須由內建完成通知或外部 Monitor 接收 Final Answer；驗收狀態以該 task directory 的 tasks/results ledger 與 `qa-results.md` 為準。QA_INVALID 修正輪完成後回到步驟 5 重新分類；test_executor 修完後回到步驟 4（qa_executor 重新驗收）。
 7. 迴圈直到 qa_executor 全部 PASS，或達到重試上限（`test.max_retries` / `test.max_retries_per_task`）。超過上限時暫停，向使用者報告失敗細節與證據。
 8. QA 全部 PASS 後，Dispatch 依 Plan 中已定義的驗證命令執行一次完整回歸。完整回歸只在此 gate 執行一次；若失敗，記錄精確失敗後建立下一個 test_executor 修正，且該修正輪同樣計入 `test.max_retries` 與 `test.max_retries_per_task`。修正期間仍只跑 covering tests，下一次 QA 通過後才再執行一次完整回歸。
 9. tui client 時告知使用者可用指令：`zmx attach <session>`（即時檢視）、`zmx list`（所有工作階段）、`Ctrl+\`（脫離 attach 不終止）。

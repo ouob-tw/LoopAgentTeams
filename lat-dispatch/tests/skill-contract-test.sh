@@ -278,8 +278,8 @@ assert_not_contains "$(cat "$SKILL" "$CLIENTS")" '<phase>_<round>_<task_id>' \
   'Legacy round-based agent_id format remains in the skill contract'
 
 prompt_count=$(grep -c -E '^   \[<agent_id>\]' "$SKILL")
-[ "$prompt_count" -eq 9 ] || \
-  fail "Expected 9 canonical prompt templates, found $prompt_count"
+[ "$prompt_count" -eq 10 ] || \
+  fail "Expected 10 canonical prompt templates, found $prompt_count"
 if grep -Eq '^   \[(spec_reviewer|plan_writer|plan_reviewer|code_executor|test_executor|qa_executor)_' "$SKILL"; then
   fail 'A reusable prompt still reconstructs agent_id instead of using [<agent_id>]'
 fi
@@ -331,6 +331,26 @@ grep -q -F '沒有狀態變更時不發送進度訊息' "$CLIENTS" || \
   fail 'Codex monitor contract does not suppress unchanged progress updates'
 grep -q -F '原 `session_id`' "$CLIENTS" || \
   fail 'Codex monitor follow-up does not preserve the exec session'
+grep -q -F 'Codex Dispatch 跨宿主啟動 exec client' "$CLIENTS" || \
+  fail 'Cross-host Codex dispatch has no exec launcher ownership contract'
+grep -q -F '前景命令保留在獨立、長期存活的無 PTY `exec_command` session' "$CLIENTS" || \
+  fail 'Cross-host Codex dispatch does not keep the launcher in a durable exec session'
+grep -q -F '取得 launcher 的 `session_id`' "$CLIENTS" || \
+  fail 'Cross-host Codex dispatch does not retain the launcher session handle'
+grep -q -F '另一個 `exec_command` session 啟動 Monitor' "$CLIENTS" || \
+  fail 'Cross-host Codex dispatch does not separate launcher and Monitor ownership'
+grep -q -F '不得只等待 PID file 寫入後就讓父 shell 返回' "$CLIENTS" || \
+  fail 'Cross-host Codex dispatch still allows a short-lived parent shell'
+grep -q -F 'PID file 只證明 client 曾啟動，不代表 launcher 已脫離父 shell' "$CLIENTS" || \
+  fail 'Cross-host Codex dispatch mistakes PID readiness for process ownership'
+grep -q -F '等待 launcher session 自然 EOF' "$CLIENTS" || \
+  fail 'Cross-host Codex dispatch does not retain ownership through launcher cleanup'
+grep -q -F 'MONITOR_STATUS=0' "$CLIENTS" || \
+  fail 'Combined Codex exec example does not preserve Monitor status'
+grep -q -F 'wait "$EXEC_LAUNCHER_PID"' "$CLIENTS" || \
+  fail 'Combined Codex exec example exits before the launcher reaches EOF'
+grep -q -F 'LAUNCHER_STATUS=0' "$CLIENTS" || \
+  fail 'Combined Codex exec example does not preserve launcher status'
 grep -q -F 'timeout_ms: 3600000' "$CLIENTS" || \
   fail 'Claude Monitor timeout_ms contract is missing'
 grep -q -F 'persistent: true' "$CLIENTS" || \
@@ -408,8 +428,39 @@ grep -q -F '使用者明確指定 qa_executor 使用 `gpt-5.6-sol`' "$CLIENTS" |
   fail 'QA Sol override does not start from an explicit user selection'
 grep -q -F '`low → medium → high`' "$CLIENTS" || \
   fail 'QA Sol effort escalation order is not explicit'
-grep -q -F '`qa-results.md` 出現任一 `FAIL`' "$CLIENTS" || \
-  fail 'QA Sol effort escalation is not tied to acceptance failure'
+grep -q -F '`PRODUCT_FAILURE`' "$CLIENTS" || \
+  fail 'QA Sol effort policy does not classify clear product failures'
+grep -q -F '`QA_INVALID`' "$CLIENTS" || \
+  fail 'QA Sol effort policy does not classify invalid QA reasoning or evidence'
+grep -q -F '`TOOL_OR_ENVIRONMENT_FAILURE`' "$CLIENTS" || \
+  fail 'QA Sol effort policy does not classify tool or environment failures'
+grep -q -F '若該輪 `qa-results.md` 出現任一 `FAIL`' "$CLIENTS" && \
+  fail 'QA Sol effort policy still escalates on any acceptance failure'
+grep -q -F '只有 `QA_INVALID`' "$CLIENTS" || \
+  fail 'QA Sol effort escalation is not limited to QA reasoning or evidence failure'
+if ! grep -q -F '`PRODUCT_FAILURE`：驗收步驟有效' "$CLIENTS" ||
+   ! grep -q -F '交給下一個 test_executor 修實作，下一輪 QA 維持目前 effort' "$CLIENTS"; then
+  fail 'Clear product failures do not route implementation repair without QA effort escalation'
+fi
+if ! grep -q -F '`QA_INVALID`：驗收測試無效' "$CLIENTS" ||
+   ! grep -q -F '啟動新的 qa_executor 修正驗收方法；只有 `QA_INVALID` 才將下一輪 Sol QA' "$CLIENTS" ||
+   ! grep -q -F '提高一階' "$CLIENTS"; then
+  fail 'QA-invalid results do not route QA correction with exactly one effort-step escalation'
+fi
+if ! grep -q -F '`TOOL_OR_ENVIRONMENT_FAILURE`：client' "$CLIENTS" ||
+   ! grep -q -F '依異常診斷處理並以相同 effort 重試' "$CLIENTS"; then
+  fail 'Tool or environment failures do not retain the current QA effort'
+fi
+grep -q -F '產品失敗代表 QA 已完成有效判定' "$CLIENTS" || \
+  fail 'Clear product failures are not documented as successful QA adjudication'
+grep -q -F '分類、觸發條件、具體證據、前一輪 model／effort' "$CLIENTS" || \
+  fail 'Dispatch does not record evidence for automatic QA effort escalation'
+grep -q -F '證據不足時維持原 effort' "$CLIENTS" || \
+  fail 'Insufficient QA evidence does not preserve the current effort'
+grep -q -F '不得只以任務複雜作為升級理由' "$CLIENTS" || \
+  fail 'Vague task complexity can still justify automatic QA effort escalation'
+grep -q -F '先處理 `QA_INVALID` 並重新建立可信驗收結果，再處理' "$CLIENTS" || \
+  fail 'Mixed QA results do not prioritize restoring valid QA evidence'
 grep -q -F '首次 Sol 驗收使用 low' "$CLIENTS" || \
   fail 'First QA Sol attempt does not start at low effort'
 grep -q -F 'high 後維持 high' "$CLIENTS" || \
@@ -456,6 +507,18 @@ assert_contains "$test_section" '完整回歸只在此 gate 執行一次' \
   'Dispatch does not own the single full-regression gate'
 assert_contains "$test_section" '同樣計入 `test.max_retries` 與 `test.max_retries_per_task`' \
   'Full-regression remediation is not bounded by retry limits'
+assert_contains "$test_section" '`PRODUCT_FAILURE`、`QA_INVALID`、`TOOL_OR_ENVIRONMENT_FAILURE`' \
+  'Dispatch does not classify QA failures before choosing the next executor'
+assert_contains "$test_section" '依 `references/clients.md` 決定下一輪 QA effort' \
+  'Test flow does not apply the documented evidence-based QA effort policy'
+assert_contains "$test_section" 'Previous QA execution was classified as QA_INVALID' \
+  'QA invalid-result retry has no dedicated correction prompt'
+assert_contains "$test_section" '先將新的 qa task 以 `status: running` 附加到 ledger' \
+  'QA invalid-result retry launches without a tasks.yaml running entry'
+assert_contains "$test_section" 'Correct only the affected acceptance tests under tests/qa_e2e/' \
+  'QA invalid-result retry cannot correct its own acceptance tests'
+assert_contains "$test_section" 'Do not modify implementation code or tests outside the QA acceptance directory' \
+  'QA invalid-result retry does not preserve implementation and non-QA test boundaries'
 
 assert_contains "$code_config" 'client: codex-tui' \
   'code_executor config example does not default to codex-tui'

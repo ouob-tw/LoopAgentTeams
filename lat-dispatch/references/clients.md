@@ -115,10 +115,19 @@ test_executor 先提高為 `gpt-5.6-terra`／high；只有修復工作本身直�
 qa_executor。使用者明確指定的模型仍有最高優先序。
 
 使用者明確指定 qa_executor 使用 `gpt-5.6-sol`，但只指定 model、未指定 effort 時，
-首次 Sol 驗收使用 low。若該輪 `qa-results.md` 出現任一 `FAIL`，修復完成後的下一個
-qa_executor 才依 `low → medium → high` 提高一階；驗收全部 PASS 時停止，high 後維持 high。
-使用者明確指定的 effort 維持最高優先序，不套用此漸進規則。executor 本身的
-工具錯誤或未完成依異常診斷處理，不計入驗收 effort 升級。
+首次 Sol 驗收使用 low。Dispatch 依 ledger、`qa-results.md`、驗收輸出與必要的
+runtime 診斷，將每個未通過項目分類為：
+
+- `PRODUCT_FAILURE`：驗收步驟有效，實際行為清楚違反已核准 Spec／QA 項目。產品失敗代表 QA 已完成有效判定；交給下一個 test_executor 修實作，下一輪 QA 維持目前 effort。
+- `QA_INVALID`：驗收測試無效、PASS／FAIL 與證據矛盾，或 app 與測試環境正常時仍無法可靠判定 QA 項目。啟動新的 qa_executor 修正驗收方法；只有 `QA_INVALID` 才將下一輪 Sol QA 依 `low → medium → high` 提高一階。
+- `TOOL_OR_ENVIRONMENT_FAILURE`：client、權限、服務啟動、連線、測試環境或工具呼叫失敗，尚未得到有效產品結論。依異常診斷處理並以相同 effort 重試。
+- `PASS`：全部項目均有一致且足夠的 PASS 證據；停止 QA effort 階梯。
+
+同一輪同時含多種未通過項目時，先處理 `QA_INVALID` 並重新建立可信驗收結果，再處理
+有效的 `PRODUCT_FAILURE`；單一工具或環境錯誤不否定同輪其他已有充分證據的項目。
+high 後維持 high。使用者明確指定的 effort 維持最高優先序，不套用此漸進規則。
+每次自動升級必須記錄分類、觸發條件、具體證據、前一輪 model／effort、同階不足的原因及提高
+一階預期改善的驗收判定；證據不足時維持原 effort，不得只以任務複雜作為升級理由。
 
 ## exec client
 
@@ -252,6 +261,10 @@ zmx run cc-<name> -d bash -c 'exec claude --session-id '"$UUID"' --name <agent_i
 
 `stall` 是 Monitor 停滯門檻，與工具單次等待時間分開：
 
+- Codex Dispatch 跨宿主啟動 exec client 時，預設將 `run-exec-client.sh` 作為前景命令保留在獨立、長期存活的無 PTY `exec_command` session；不得在會提前返回的父 shell 中把 launcher 裸放到背景。
+- `exec_command` yield 後取得 launcher 的 `session_id`，確認 PID file 已寫入，再用另一個 `exec_command` session 啟動 Monitor。Monitor re-arm 期間保留原 launcher session；Monitor `COMPLETED` 不代表 client 已 EOF，完成後仍以原 `session_id` 等待 launcher session 自然 EOF，讓 exec launcher 清理 PID file 與 ownership lock。
+- 不得只等待 PID file 寫入後就讓父 shell 返回。PID file 只證明 client 曾啟動，不代表 launcher 已脫離父 shell；父 shell 結束可能在 Session JSONL 建立前終止 launcher 與 client，只留下 runtime boundary、PID file 與 ownership lock。
+- 若 runtime 使用單一持續 shell 同時承載背景 launcher 與 Monitor，該 shell 必須跨越 Monitor terminal event 並等待 launcher EOF，不得在 PID readiness 後返回。沒有明確 ownership 的裸 `&` 不屬於受支援的啟動方式。
 - 空輪詢的 `write_stdin.yield_time_ms` 固定為 300000。
 - 首次外層 `functions.exec` 等待 300000 毫秒。
 - `functions.exec` 回傳 `cell_id` 後，`functions.wait` 每次等待 300000 毫秒。
@@ -299,9 +312,17 @@ while [ ! -s "$PID_FILE" ]; do
   sleep 0.05
 done
 
+MONITOR_STATUS=0
 scripts/monitor-session.sh codex \
   --agent-id "$AGENT_ID" \
-  --stall "${STALL:-600}" --drift "${DRIFT:-1800}"
+  --stall "${STALL:-600}" --drift "${DRIFT:-1800}" || MONITOR_STATUS=$?
+
+LAUNCHER_STATUS=0
+wait "$EXEC_LAUNCHER_PID" || LAUNCHER_STATUS=$?
+if [ "$MONITOR_STATUS" -ne 0 ]; then
+  exit "$MONITOR_STATUS"
+fi
+exit "$LAUNCHER_STATUS"
 ```
 
 Claude Code dispatch 使用時：Monitor 執行共用腳本（不含 exec 啟動）。
