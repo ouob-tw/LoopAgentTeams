@@ -155,7 +155,9 @@ assert_contains "$code_process_rules" \
 spec_section=$(section '### spec' '### plan' "$SKILL")
 plan_section=$(section '### plan' '### dispatch' "$SKILL")
 dispatch_section=$(section '### dispatch' '### test' "$SKILL")
+report_section=$(section '### report' '### status' "$SKILL")
 status_section=$(section '### status' '### clean' "$SKILL")
+clean_section=$(section '### clean' '### purge' "$SKILL")
 adjudication_section=$(section '## 審查裁決（Dispatch Independent Adjudication）' '## 指令' "$SKILL")
 spec_reviewer_config=$(awk '
   /^  spec_reviewer:/ { active=1 }
@@ -232,6 +234,12 @@ assert_contains "$spec_section" 'Dispatch/spec_writer' \
   'Accepted Spec findings are not routed to the original author'
 assert_contains "$spec_section" '下一 review round' \
   'Spec fixes do not require a new reviewer round'
+assert_contains "$spec_section" '優先恢復原 `spec_reviewer` Session' \
+  'Spec re-review does not reuse the original reviewer session by default'
+assert_contains "$spec_section" '維持原 reviewer instance' \
+  'Spec re-review does not preserve the original reviewer instance'
+assert_not_contains "$spec_section" '以新的 `spec_reviewer` instance 啟動下一 review round' \
+  'Spec re-review still creates a fresh reviewer instance by default'
 
 assert_contains "$plan_section" '送審前自檢' \
   'Plan author does not perform a preflight self-check'
@@ -253,6 +261,12 @@ assert_contains "$plan_section" '原 `plan_writer`' \
   'Accepted Plan findings are not routed to the original writer'
 assert_contains "$plan_section" '下一 review round' \
   'Plan fixes do not require a new reviewer round'
+assert_contains "$plan_section" '優先恢復原 `plan_reviewer` Session' \
+  'Plan re-review does not reuse the original reviewer session by default'
+assert_contains "$plan_section" '維持原 reviewer instance' \
+  'Plan re-review does not preserve the original reviewer instance'
+assert_not_contains "$plan_section" '以新的 `plan_reviewer` instance 啟動下一 review round' \
+  'Plan re-review still creates a fresh reviewer instance by default'
 assert_contains "$plan_section" '`plan_reviewer.client` 為 `self`' \
   'Plan flow does not branch on the self reviewer default'
 assert_contains "$plan_section" 'Dispatch 完整審查' \
@@ -270,6 +284,10 @@ grep -q -F 'resume 原 transcript 時，維持原 instance' "$CLIENTS" || \
   fail 'Client agent_id contract does not preserve a resumed instance'
 grep -q -F 'Review round 是文件送審次數，與 instance 是不同概念' "$CLIENTS" || \
   fail 'Client contract does not separate review rounds from agent instances'
+grep -q -F 're-review 優先 resume 原 Reviewer Session 並維持原 instance' "$CLIENTS" || \
+  fail 'Client contract does not reuse the original reviewer session by default'
+grep -q -F '只有原 Session 無法恢復、需要改變 model／effort、修正已造成架構重寫或基準失效、Dispatch 已以證據判定原 Reviewer 不可靠，或使用者要求獨立 final review' "$CLIENTS" || \
+  fail 'Client contract does not bound fresh reviewer sessions to explicit conditions'
 grep -q -F '所有可重用 prompt template 都以 `[<agent_id>]` 開頭' "$CLIENTS" || \
   fail 'Client contract does not define the canonical prompt marker'
 assert_not_contains "$(cat "$SKILL" "$CLIENTS")" '<N>' \
@@ -296,6 +314,12 @@ assert_contains "$adjudication_section" 'Reviewer 回覆 `PASS`' \
   'Dispatch does not independently check Reviewer PASS verdicts'
 assert_contains "$adjudication_section" 'focused gap scan' \
   'Dispatch PASS handling lacks a focused risk scan'
+assert_contains "$adjudication_section" 'PASS 後的 focused gap scan 不是改善清單' \
+  'PASS handling can still become an unbounded improvement sweep'
+assert_contains "$adjudication_section" '具體違反已確認需求／QA、可重現失敗、或對主 task 造成直接 regression' \
+  'PASS handling does not require a concrete bug tied to the main task'
+assert_contains "$adjudication_section" '不建立 finding、不交回修正、不延長 phase' \
+  'PASS handling still allows non-bugs or unrelated details to extend the phase'
 assert_contains "$adjudication_section" '不得只閱讀 Reviewer Final Answer' \
   'Dispatch adjudication can still rubber-stamp the Final Answer'
 
@@ -379,6 +403,10 @@ grep -q -F '單一 `STALL`' "$CLIENTS" || \
   fail 'STALL is not explicitly advisory for exec and TUI clients'
 grep -q -F 'TUI 維持以精確 zmx session 名稱控制' "$CLIENTS" || \
   fail 'TUI process control no longer uses the zmx session handle'
+grep -q -F '.lat/workspace/<TASK_ID>/runtime/<agent_id>.zmx-session' "$CLIENTS" || \
+  fail 'TUI launch does not persist its exact zmx session handle'
+grep -q -F '先原子保存精確 zmx session 名稱，再啟動 TUI' "$CLIENTS" || \
+  fail 'TUI launch is not ordered after durable zmx handle persistence'
 grep -q -F '`COMPLETED` 也不授權 kill' "$CLIENTS" || \
   fail 'COMPLETED can still trigger an exec kill'
 
@@ -416,14 +444,26 @@ grep -q -F 'Spec reviewer 與 plan writer 維持 `gpt-5.6-sol`／high' "$CLIENTS
   fail 'Client contract does not preserve high-reasoning first-pass design'
 grep -q -F '原本預設使用 `gpt-5.6-terra` 的 code／test／QA 角色' "$CLIENTS" || \
   fail 'Client contract does not limit risk escalation to Terra executor roles'
+grep -q -F '一般 code_executor 維持 `gpt-5.6-terra`／medium' "$CLIENTS" || \
+  fail 'Routine code executor no longer defaults to Terra/medium'
+grep -q -F '`gpt-5.6-terra`／high → `gpt-5.6-sol`／medium → `gpt-5.6-sol`／high' "$CLIENTS" || \
+  fail 'Code correctness escalation ladder is not explicit'
+grep -q -F '具名高風險只將第一輪提高為 `gpt-5.6-terra`／high' "$CLIENTS" || \
+  fail 'Named high risk does not start at Terra/high'
+grep -q -F '同類 covering test、QA 或 review correctness failure' "$CLIENTS" || \
+  fail 'Code escalation does not require concrete project failure evidence'
+grep -q -F '工具或環境失敗不提高 code model／effort' "$CLIENTS" || \
+  fail 'Tool or environment failures can still escalate the code model'
+grep -q -F '直接把該次 code_executor 覆蓋為 `gpt-5.6-sol`' "$CLIENTS" && \
+  fail 'Named risk can still skip the code escalation ladder and jump directly to Sol'
 grep -q -F 'qa_executor 維持 `gpt-5.6-terra`／medium' "$CLIENTS" || \
   fail 'QA does not remain on Terra/medium by default'
 grep -q -F '最多提高為 `gpt-5.6-terra`／high' "$CLIENTS" || \
   fail 'QA escalation is not capped at Terra/high'
 grep -q -F 'test_executor 先提高為 `gpt-5.6-terra`／high' "$CLIENTS" || \
   fail 'Test escalation does not prefer Terra/high'
-grep -q -F '修復工作本身直接涉及上述具名高風險' "$CLIENTS" || \
-  fail 'Sol escalation for test executor is not limited to high-risk remediation'
+grep -q -F '後續若是 code correctness' "$CLIENTS" || \
+  fail 'Test executor code repair does not follow the evidence-based code ladder'
 grep -q -F '使用者明確指定 qa_executor 使用 `gpt-5.6-sol`' "$CLIENTS" || \
   fail 'QA Sol override does not start from an explicit user selection'
 grep -q -F '`low → medium → high`' "$CLIENTS" || \
@@ -505,6 +545,23 @@ assert_contains "$test_section" 'fix the implementation code rather than weakeni
   'Initial test executor prompt does not require implementation fixes'
 assert_contains "$test_section" '完整回歸只在此 gate 執行一次' \
   'Dispatch does not own the single full-regression gate'
+
+assert_contains "$report_section" '先執行 `clean <TASK_ID>`' \
+  'Report does not invoke task-scoped cleanup before reporting'
+assert_contains "$report_section" '完成 cleanup 後' \
+  'Report can be emitted before task-scoped cleanup finishes'
+assert_contains "$clean_section" '`.lat/workspace/<TASK_ID>/runtime/*.zmx-session`' \
+  'Clean does not read persisted task-scoped zmx handles'
+assert_contains "$clean_section" '精確匹配' \
+  'Clean can select zmx sessions by fuzzy matching'
+assert_contains "$clean_section" '內建完成通知或外部 Monitor `COMPLETED`' \
+  'Clean can terminate a zmx session without terminal completion evidence'
+assert_contains "$clean_section" '`zmx kill "$SESSION_NAME"`' \
+  'Clean does not terminate the exact persisted zmx session'
+assert_contains "$clean_section" '不得依 TASK_ID、agent_id 或名稱片段猜測' \
+  'Clean can infer an unrecorded zmx session name'
+assert_not_contains "$clean_section" 'zmx kill "$SESSION_NAME" --force' \
+  'Clean force-kills zmx sessions'
 assert_contains "$test_section" '同樣計入 `test.max_retries` 與 `test.max_retries_per_task`' \
   'Full-regression remediation is not bounded by retry limits'
 assert_contains "$test_section" '`PRODUCT_FAILURE`、`QA_INVALID`、`TOOL_OR_ENVIRONMENT_FAILURE`' \

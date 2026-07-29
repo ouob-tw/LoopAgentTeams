@@ -39,7 +39,7 @@ compatibility: "Linux or macOS with Bash 3.2+. Requires git, zmx, jq, uuidgen, t
 - [ ] dispatch：驗證既有 `.lat/workspace/<TASK_ID>/` ledger → 附加 code task → 啟動 code_executor
 - [ ] monitor：內建 subagent 等待完成通知／外部 CLI 監控原始 Session JSONL → 將 Final Answer 交給 Dispatch；executor 另確認 task ledger
 - [ ] test：test_executor 寫+跑整合與 E2E 測試修到綠 → qa_executor 依 QA 清單寫驗收測試至 qa_e2e/ → 失敗回饋 test_executor 修，迴圈到全過或達上限
-- [ ] report：向使用者報告最終狀態
+- [ ] report：`clean <TASK_ID>` 清理已完成的 task-scoped zmx sessions → 向使用者報告最終狀態
 ```
 
 - 每個階段轉換以一句話報告進度。
@@ -73,7 +73,7 @@ Reviewer 的 verdict 與 finding 都是待驗證主張，不是 phase 的最終�
 - `REJECT`：證據不成立，記錄具體駁回理由。
 - `USER_DECISION`：涉及多解的產品或架構決策，暫停並詢問使用者。
 
-Reviewer 回覆 `PASS` 時，Dispatch 仍須執行 focused gap scan，至少檢查需求範圍、已確認決策、QA 可測試性及高風險假設。這不是完整重做作者自檢；只有發現矛盾、重大風險或證據不足時才升級為完整審查。
+Reviewer 回覆 `PASS` 時，Dispatch 仍須執行 focused gap scan，至少檢查需求範圍、已確認決策、QA 可測試性及高風險假設。PASS 後的 focused gap scan 不是改善清單；只有具體違反已確認需求／QA、可重現失敗、或對主 task 造成直接 regression 時，才重新開啟 review。措辭、格式、命名偏好、註解、文件潤飾、可選 refactor，以及與主 task 無直接關聯的微小改善，不建立 finding、不交回修正、不延長 phase。
 
 Reviewer 的範圍以已確認的 Spec、Plan、使用者決策，以及派發時具名的實際風險為
 界線。Finding 若無法指出對應需求，或沒有可重現的失敗／攻擊路徑，只能標為
@@ -87,6 +87,12 @@ findings、修正基準與該基準之後的增量 diff；Reviewer 只驗證 fin
 Dispatch 啟動 re-review 前，必須將 `<prior_findings>`、`<revision_base>` 與
 `<incremental_diff>` 解析為實際內容或可讀取的安全檔案路徑；不得保留 placeholder，
 也不得只要求新的 Reviewer 自行尋找前輪結果。
+
+同一審查鏈的 re-review 優先 resume 原 Reviewer Session，開始新的 review round 但
+維持原 reviewer instance、model、effort 與 permission。只有原 Session 無法恢復、
+需要改變 model／effort、修正已造成架構重寫或基準失效、Dispatch 已以證據判定原
+Reviewer 不可靠，或使用者要求獨立 final review 時，才建立新的 Reviewer Session
+與 instance。
 
 Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted findings，原作者修正並再次自檢，再啟動下一 round Reviewer 與新的 Dispatch 裁決。Reviewer verdict 與 Dispatch adjudication 都完成後，phase 才能通過；若 Reviewer 回覆 `NEEDS_REVISION` 但所有 finding 均被 Dispatch 以證據 `REJECT`，focused gap scan 通過後仍可批准。
 
@@ -137,7 +143,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    ```
 
 8. 內建 subagent 直接等待完成通知；外部 CLI 才依 `references/clients.md` 監控原始 Session JSONL。收到 Final Answer 後，Dispatch 依「審查裁決」逐項驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
-9. `ACCEPT` findings 由 `Dispatch/spec_writer` 修正後重新執行送審前自檢，再解析 re-review prompt 的三個增量 placeholder，以新的 `spec_reviewer` instance 啟動下一 review round；`REJECT` 記錄證據後不採用；`USER_DECISION` 暫停詢問使用者。
+9. `ACCEPT` findings 由 `Dispatch/spec_writer` 修正後重新執行送審前自檢，再解析 re-review prompt 的三個增量 placeholder；下一 review round 優先恢復原 `spec_reviewer` Session 並維持原 reviewer instance，只有符合「審查裁決」的 fresh Session 條件時才建立下一個 instance。`REJECT` 記錄證據後不採用；`USER_DECISION` 暫停詢問使用者。
 10. 迴圈直到 Reviewer verdict 與 Dispatch adjudication 都允許通過。不將審查或裁決工作寫入 `tasks.yaml`。
 11. 向使用者呈現最終規格，等待確認後視為規格核准。
 12. 中斷時依 `references/clients.md` 的中斷防護與 Session 恢復流程處理。
@@ -171,7 +177,7 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
    ```
 
 5. self 模式由 Dispatch 直接決定 `PASS`、`NEEDS_REVISION` 或 `USER_DECISION`。非 self 模式依同宿主路由等待內建完成通知，或依 `references/clients.md` 監控外部 reviewer 原始 Session JSONL；再由 Dispatch 依「審查裁決」驗證 finding，並在 Reviewer `PASS` 時執行 focused gap scan。
-6. 需要修正的 findings 交回原 `plan_writer` Session 並維持原 instance；若無法恢復或 Dispatch 明確改派，才啟動新的 `plan_writer` Session 並將 instance 加 1。writer 修正後重新送審前自檢：self 模式由 Dispatch 再次完整審查；外部模式解析 re-review prompt 的三個增量 placeholder，再以新的 `plan_reviewer` instance 啟動下一 review round。`USER_DECISION` 暫停詢問使用者。
+6. 需要修正的 findings 交回原 `plan_writer` Session 並維持原 instance；若無法恢復或 Dispatch 明確改派，才啟動新的 `plan_writer` Session 並將 instance 加 1。writer 修正後重新送審前自檢：self 模式由 Dispatch 再次完整審查；外部模式解析 re-review prompt 的三個增量 placeholder，下一 review round 優先恢復原 `plan_reviewer` Session 並維持原 reviewer instance，只有符合「審查裁決」的 fresh Session 條件時才建立下一個 instance。`USER_DECISION` 暫停詢問使用者。
 7. 迴圈直到 self Dispatch review 通過，或外部 Reviewer verdict 與 Dispatch adjudication 都允許通過。不將計劃撰寫、審查或裁決工作寫入 `tasks.yaml`。
 8. 中斷時依 `references/clients.md` 的中斷防護與 Session 恢復流程處理。
 9. 規格與計劃皆核准後一起提交：
@@ -248,7 +254,8 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
 
 ### report
 
-向使用者報告最終狀態：需求摘要、交付內容、`git diff` 變更範圍、逐條 QA 驗收項的結果與證據（指令 + 輸出）、測試結果、變更檔案清單。
+1. 先執行 `clean <TASK_ID>`，依 clean 契約清理目前 task 已完成的 zmx sessions；無法安全清理者保留並記入報告。
+2. 完成 cleanup 後向使用者報告最終狀態：需求摘要、交付內容、`git diff` 變更範圍、逐條 QA 驗收項的結果與證據（指令 + 輸出）、測試結果、變更檔案清單，以及保留的 zmx session 與原因。
 
 ### status
 
@@ -259,8 +266,10 @@ Reviewer 為 report-only，不得直接修改 Spec／Plan。若有 accepted find
 ### clean
 
 1. 不重設或刪除任何 task directory 的 `tasks.yaml`、`results.yaml` 或 `qa-results.md`。
-2. 以 `trash-put` 清理 `.lat/workspace/*/prompts/` 中超過 `prompts.retention_days`（預設 7）天的暫存 prompt。
-3. 以 `trash-put` 清理 `.lat/logs/` 中超過 `logs.retention_days`（預設 60）天的檔案；runtime logs 只能在對應 exec 已不在執行時清除——`${PID_FILE}.lock` ownership lock 存在時跳過該 `agent_id` 的 logs，保留並回報，不得自動判定或清除 stale lock；無 lock 時，`.lat/workspace/<TASK_ID>/runtime/<agent_id>.pid` 仍有有效 PID（`kill -0` 存活）也跳過。PID file 遺失表示 exec 已結束、可清；PID 格式錯誤時不得以 `pgrep` 猜測，保留該組 logs 並回報。
+2. `clean <TASK_ID>` 先驗證 TASK_ID 與既有 workspace，再讀取 `.lat/workspace/<TASK_ID>/runtime/*.zmx-session`。每個 regular file 必須只有一行、符合 `[A-Za-z0-9._-]+` 且以 `cx-` 或 `cc-` 開頭；格式不符即保留並回報。
+3. 將保存的名稱與 `zmx list --short` 做精確匹配。只有對應 Agent 已有內建完成通知或外部 Monitor `COMPLETED`，且 executor 的 tasks/results（如適用）已是終端狀態時，才執行 `zmx kill "$SESSION_NAME"`。不得依 TASK_ID、agent_id 或名稱片段猜測未保存的 session，不得使用 `--force`，也不得把 session 消失視為 phase 完成證據；證據不足或精確名稱不存在時保留並回報。
+4. 以 `trash-put` 清理 `.lat/workspace/*/prompts/` 中超過 `prompts.retention_days`（預設 7）天的暫存 prompt。
+5. 以 `trash-put` 清理 `.lat/logs/` 中超過 `logs.retention_days`（預設 60）天的檔案；runtime logs 只能在對應 exec 已不在執行時清除——`${PID_FILE}.lock` ownership lock 存在時跳過該 `agent_id` 的 logs，保留並回報，不得自動判定或清除 stale lock；無 lock 時，`.lat/workspace/<TASK_ID>/runtime/<agent_id>.pid` 仍有有效 PID（`kill -0` 存活）也跳過。PID file 遺失表示 exec 已結束、可清；PID 格式錯誤時不得以 `pgrep` 猜測，保留該組 logs 並回報。
 
 ### purge
 

@@ -104,15 +104,23 @@ monitor:
 
 Spec reviewer 與 plan writer 維持 `gpt-5.6-sol`／high，優先在需求與計劃階段
 排除會向後放大的問題。原本預設使用 `gpt-5.6-terra` 的 code／test／QA 角色，
-不因任務較長或檔案較多就升級；只有其目前工作直接涉及並行正確性、秘密或權限
-邊界、不可逆資料遷移、付款／扣款，或外部副作用的冪等與結果不明等具名高風險時，
-才把該次 code_executor 覆蓋為 `gpt-5.6-sol` 與較高 effort。qa_executor 維持 `gpt-5.6-terra`／medium；
-只有驗收本身需要較複雜的操作、觀察或證據判讀時，
-最多提高為 `gpt-5.6-terra`／high，不自動切換 Sol。遇到疑難測試或除錯時，
-test_executor 先提高為 `gpt-5.6-terra`／high；只有修復工作本身直接涉及上述具名高風險，
-才可覆蓋為 `gpt-5.6-sol` 與較高 effort。Dispatch 必須在派發訊息中寫出觸發升級
-的具體風險。若 QA 發現上述風險，只升級負責修復的下一個 test_executor，不升級
-qa_executor。使用者明確指定的模型仍有最高優先序。
+不因任務較長或檔案較多就升級；一般 code_executor 維持 `gpt-5.6-terra`／medium。
+
+Code 實作與修正使用 `gpt-5.6-terra`／high → `gpt-5.6-sol`／medium → `gpt-5.6-sol`／high
+的漸進階梯。並行正確性、秘密或權限邊界、不可逆資料遷移、
+付款／扣款，或外部副作用的冪等與結果不明等具名高風險只將第一輪提高為 `gpt-5.6-terra`／high，
+不直接跳到 Sol。只有同類 covering test、QA 或 review correctness failure 提供具體
+專案證據時，下一個負責修復的 executor 才提高一階；
+再次出現同類 failure 才升至 Sol/high。每次升級須記錄前一階 model／effort、具體
+失敗證據、同階不足原因與下一階預期改善；證據不足維持原階。
+工具或環境失敗不提高 code model／effort；不同且無關的新 failure 也不沿用前一問題的升級階梯。
+
+qa_executor 維持 `gpt-5.6-terra`／medium；只有驗收本身需要較複雜的操作、觀察或
+證據判讀時，最多提高為 `gpt-5.6-terra`／high，不自動切換 Sol。遇到疑難測試或
+除錯時，test_executor 先提高為 `gpt-5.6-terra`／high；後續若是 code correctness
+修復，依上述階梯與證據提高。若 QA 發現具名高風險，只將負責修復的下一個
+test_executor 納入上述階梯，不升級 qa_executor。使用者明確指定的模型與 effort
+仍有最高優先序。
 
 使用者明確指定 qa_executor 使用 `gpt-5.6-sol`，但只指定 model、未指定 effort 時，
 首次 Sol 驗收使用 low。Dispatch 依 ledger、`qa-results.md`、驗收輸出與必要的
@@ -179,7 +187,7 @@ scripts/run-exec-client.sh --pid-file "$PID_FILE" \
 - `--name <agent_id>`：指定 session 名稱供恢復用
 - `agent_id` 格式為 `<phase>_<instance>_<task_id>`（如 `spec_reviewer_1_2026-05-18-user-api-spec`）。instance 是該 phase 在此 TASK_ID 下的邏輯 Agent 實例序號，從 1 起算。
 - 繼續同一工作、修正 finding、錯誤恢復，或重新建立 zmx wrapper 但 resume 原 transcript 時，維持原 instance。只有建立不延續原 transcript 的新 Agent Session 時才增加 instance。
-- Review round 是文件送審次數，與 instance 是不同概念。修正版交給新的 `spec_reviewer` 或外部 `plan_reviewer` 獨立審查時，開始新的 review round 與 reviewer instance；同一審查因中斷而 resume 時兩者都不增加。self `plan_reviewer` 沒有 reviewer instance。
+- Review round 是文件送審次數，與 instance 是不同概念。re-review 優先 resume 原 Reviewer Session 並維持原 instance；文件再次送審時 review round 增加，但不因 resume 增加 instance。只有原 Session 無法恢復、需要改變 model／effort、修正已造成架構重寫或基準失效、Dispatch 已以證據判定原 Reviewer 不可靠，或使用者要求獨立 final review 時，才建立新的 reviewer instance。self `plan_reviewer` 沒有 reviewer instance。
 
 ### Prompt 安全傳遞
 
@@ -222,6 +230,16 @@ Session JSONL 維持唯一的 completion／Final Answer 來源；runtime logs �
 客戶端短名：claude → `cc`，codex → `cx`。
 
 工作階段命名 `<短名>-<英文短名>`（如 `cx-user-api`）。先 `zmx list` 檢查同名 session 是否存在，已存在則加數字後綴（如 `cx-user-api-2`）。
+
+選定名稱後，Dispatch 使用自身的檔案編輯 API，先原子保存精確 zmx session 名稱，再啟動 TUI：
+
+```text
+.lat/workspace/<TASK_ID>/runtime/<agent_id>.zmx-session
+```
+
+檔案內容只有實際傳給 `zmx run` 的單一 session 名稱。首次 launch 與 resume 都更新為
+本次精確 control handle；不得只保存可推導名稱、名稱前綴或 glob。`clean <TASK_ID>`
+依此 handle 執行 report 前的 task-scoped 清理。
 
 ### codex-tui
 
