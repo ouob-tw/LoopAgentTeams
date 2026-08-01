@@ -47,9 +47,15 @@ for mode in duplicate mismatch no-seal dependency auth quota permission; do
   [[ $(state "$mode" '.mode') == exec && $(state "$mode" '.session.sealed') == false && $(state "$mode" '.session.id') == null ]] || fail "$mode left a resumable or alternate operation"
   [[ ! -e $prompt ]] || fail "$mode retained a private prompt after client failure"
 done
-setup identity-failure; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok AGENT_INVOKE_FAIL_IDENTITY=1
-expect_fail launch identity-failure codex "$workspace" "$prompt" model-x high danger-full-access ''
-unset AGENT_INVOKE_FAIL_IDENTITY
+setup identity-failure; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok AGENT_INVOKE_FAIL_IDENTITY=1 FAKE_SYNC_READY="$HOME/ready" FAKE_SYNC_RELEASE="$HOME/release"
+launch identity-failure codex "$workspace" "$prompt" model-x high danger-full-access '' & invoke_pid=$!
+for _ in $(seq 1 50); do [[ -e $FAKE_SYNC_READY ]] && break; sleep 0.02; done
+[[ -e $FAKE_SYNC_READY ]] || fail 'forked child did not expose pre-stdin synchronization point'
+kill -0 "$invoke_pid" || fail 'launcher terminated before synchronized child release'
+[[ -e $prompt ]] || fail 'launcher shredded prompt before forked child consumed stdin'
+touch "$FAKE_SYNC_RELEASE"
+if wait "$invoke_pid"; then fail 'identity capture failure unexpectedly succeeded'; fi
+unset AGENT_INVOKE_FAIL_IDENTITY FAKE_SYNC_READY FAKE_SYNC_RELEASE
 cmp -s "$FAKE_STDIN" <(printf '%s\n' "\$(touch should-not-run); --resume \"quoted\"") || fail 'identity failure disposed prompt before the forked child consumed stdin'
 [[ ! -e $prompt && $(state identity-failure '.session.sealed') == false && $(state identity-failure '.active_turn.kind') == launch ]] || fail 'identity failure did not wait, dispose, and remain fail-closed'
 setup resume-settings; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok

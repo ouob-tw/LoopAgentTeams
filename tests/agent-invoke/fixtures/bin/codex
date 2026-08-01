@@ -1,6 +1,10 @@
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "codex|$PWD|$*" >> "$FAKE_LOG"
+if [[ -n ${FAKE_SYNC_READY:-} ]]; then
+  : > "$FAKE_SYNC_READY"
+  while [[ ! -e ${FAKE_SYNC_RELEASE:?} ]]; do sleep 0.02; done
+fi
 cat > "$FAKE_STDIN"
 case ${FAKE_CODEX_MODE:-ok} in
   dependency|auth|quota|permission) exit 42 ;;
