@@ -192,19 +192,6 @@ sandbox_run() {
     --chdir "$CASE_WORKSPACE" -- "$@"
 }
 
-# Prove that a writable bind does not make the real root or real skill trees mutable.
-# The positional parameters are intentionally expanded by the sandboxed shell.
-# shellcheck disable=SC2016
-sandbox_run sh -c 'test ! -w /etc && test ! -w "$1" && test ! -w "$2" && test ! -w "$3"' sh \
-  "$REAL_AGENTS_SKILLS" "$REAL_CODEX_SKILLS" "$REAL_CLAUDE_SKILLS" ||
-  die "$EX_UNAVAILABLE" 'Bubblewrap read-only mount preflight failed'
-sandbox_run codex login status >"$TRACE_ROOT/codex-auth-status.txt" 2>&1 ||
-  die "$EX_UNAVAILABLE" 'Codex auth status failed inside Bubblewrap'
-sandbox_run claude auth status --json >"$TRACE_ROOT/claude-auth-status.json" 2>&1 ||
-  die "$EX_UNAVAILABLE" 'Claude auth status failed inside Bubblewrap'
-jq -e . "$TRACE_ROOT/claude-auth-status.json" >/dev/null ||
-  die "$EX_UNAVAILABLE" 'Claude auth status did not return JSON inside Bubblewrap'
-
 candidate_sha=''
 install_source=$source_ref
 if [[ -d $source_ref ]]; then
@@ -231,6 +218,19 @@ fi
 [[ $candidate_sha =~ ^[0-9a-f]{40}$ && -f $CANDIDATE_ROOT/agent-invoke/SKILL.md ]] ||
   die "$EX_UNAVAILABLE" 'agent-invoke is not installed: invalid candidate'
 
+# Source identity and package shape are resolved before any real auth command.
+# The positional parameters are intentionally expanded by the sandboxed shell.
+# shellcheck disable=SC2016
+sandbox_run sh -c 'test ! -w /etc && test ! -w "$1" && test ! -w "$2" && test ! -w "$3"' sh \
+  "$REAL_AGENTS_SKILLS" "$REAL_CODEX_SKILLS" "$REAL_CLAUDE_SKILLS" ||
+  die "$EX_UNAVAILABLE" 'Bubblewrap read-only mount preflight failed'
+sandbox_run codex login status >"$TRACE_ROOT/codex-auth-status.txt" 2>&1 ||
+  die "$EX_UNAVAILABLE" 'Codex auth status failed inside Bubblewrap'
+sandbox_run claude auth status --json >"$TRACE_ROOT/claude-auth-status.json" 2>&1 ||
+  die "$EX_UNAVAILABLE" 'Claude auth status failed inside Bubblewrap'
+jq -e . "$TRACE_ROOT/claude-auth-status.json" >/dev/null ||
+  die "$EX_UNAVAILABLE" 'Claude auth status did not return JSON inside Bubblewrap'
+
 sandbox_run /home/swy/.bun/bin/bunx skills add "$install_source" -g \
   --agent codex claude-code --skill agent-invoke --copy -y >"$TRACE_ROOT/skills-add.txt" 2>&1 ||
   die "$EX_UNAVAILABLE" 'agent-invoke is not installed: Skills CLI failed'
@@ -249,8 +249,14 @@ diff -qr "$CANDIDATE_ROOT/agent-invoke" "$CODEX_INSTALLED" >/dev/null ||
   die "$EX_UNAVAILABLE" 'Codex installed package differs from candidate bytes'
 diff -qr "$CANDIDATE_ROOT/agent-invoke" "$CLAUDE_INSTALLED" >/dev/null ||
   die "$EX_UNAVAILABLE" 'Claude Code installed package differs from candidate bytes'
-manifest_tree "$CANDIDATE_ROOT/agent-invoke" "$PROTECTION_ROOT/installed.manifest"
-installed_manifest_sha256=$(sha256sum "$PROTECTION_ROOT/installed.manifest")
+manifest_tree "$CANDIDATE_ROOT/agent-invoke" "$PROTECTION_ROOT/candidate.manifest"
+manifest_tree "$CODEX_INSTALLED" "$PROTECTION_ROOT/codex-installed.before"
+manifest_tree "$CLAUDE_INSTALLED" "$PROTECTION_ROOT/claude-installed.before"
+cmp -s "$PROTECTION_ROOT/candidate.manifest" "$PROTECTION_ROOT/codex-installed.before" ||
+  die "$EX_UNAVAILABLE" 'Codex installed package metadata differs from candidate contract'
+cmp -s "$PROTECTION_ROOT/codex-installed.before" "$PROTECTION_ROOT/claude-installed.before" ||
+  die "$EX_UNAVAILABLE" 'Codex and Claude Code installed package manifests differ'
+installed_manifest_sha256=$(sha256sum "$PROTECTION_ROOT/codex-installed.before")
 installed_manifest_sha256=${installed_manifest_sha256%% *}
 installed_read_only=true
 
@@ -304,12 +310,16 @@ if (( client_status == 0 )); then
   if [[ $host_client == codex ]]; then
     tool_events=$(sed -n '/^{/p' "$trace" | jq -sc '[.[] | .. | objects |
       select(.type? == "command_execution" or .type? == "mcp_tool_call" or .type? == "collaboration_tool_call") |
-      {type,name:(.name // null),command:(.command // null),status:(.status // null)}] | unique')
+      {type,id:(.id // null),tool_use_id:(.tool_use_id // null),name:(.name // null),
+       command:(.command // .input?.command // null),status:(.status // null),
+       is_error:(.is_error // null),model:(.model // .input?.model // null)}] | unique')
     result_excerpt=$(sed -n '/^{/p' "$trace" | jq -rs '[.[] | select(.type == "item.completed" and .item.type == "agent_message") | .item.text] | last // ""')
   else
     tool_events=$(sed -n '/^{/p' "$trace" | jq -sc '[.[] | .. | objects |
       select(.type? == "tool_use" or .type? == "tool_result") |
-      {type,name:(.name // null),status:(.status // null)}] | unique')
+      {type,id:(.id // null),tool_use_id:(.tool_use_id // null),name:(.name // null),
+       command:(.input?.command // null),status:(.status // null),
+       is_error:(.is_error // null),model:(.input?.model // .model // null)}] | unique')
     result_excerpt=$(sed -n '/^{/p' "$trace" | jq -rs '[.[] | select(.type == "assistant") |
       .message.content[]? | select(.type == "text") | .text] | last // ""')
   fi
@@ -338,8 +348,6 @@ if (( state_count > 0 )) && jq -e 'all(.[];
   session_id=$(jq -r 'map(.session.id) | sort | join(",")' <<<"$state_records")
   mode=$(jq -r 'map(.mode) | unique | sort | join(",")' <<<"$state_records")
   if [[ $mode == native ]]; then route=native; else route=external; fi
-  authoritative_outcome=true
-  outcome_event=sealed-registry-turn-completed
 elif (( state_count == 0 )) && [[ $case_id == native-unavailable || $case_id == unsupported-client ]] &&
      (( client_status == 0 )) && jq -e 'length == 0' <<<"$tool_events" >/dev/null &&
      jq -e 'length > 0' <<<"$skill_events" >/dev/null; then
@@ -356,6 +364,45 @@ elif (( state_count == 0 )) && [[ $case_id == native-unavailable || $case_id == 
   fi
 fi
 
+# A sealed idle registry proves identity only. Completion requires a matched,
+# successful host tool result or the exact authoritative completion monitor.
+matched_completion_event='null'
+if [[ $identity_state == sealed ]]; then
+  if [[ $mode == native ]]; then
+    matched_completion_event=$(jq -c 'first(
+      .[] as $event |
+      select(((($event.name // "") | endswith("wait_agent")) or ($event.name // "") == "Agent") and
+        (($event.status // "") == "completed" or ($event.status // "") == "success")) |
+      $event
+    ) // first(
+      .[] as $use | select($use.type == "tool_use" and $use.name == "Agent" and ($use.id // "") != "") |
+      .[] as $result | select($result.type == "tool_result" and $result.tool_use_id == $use.id and $result.is_error != true) |
+      ($use + {status:"success",result_type:$result.type})
+    ) // null' <<<"$tool_events")
+  else
+    matched_completion_event=$(jq -c 'first(.[] |
+      select(((.command // "") | contains("monitor-session.sh")) and
+        ((.status // "") == "completed" or (.status // "") == "success"))) // first(
+      .[] as $use | select($use.type == "tool_use" and (($use.command // "") | contains("monitor-session.sh")) and ($use.id // "") != "") |
+      .[] as $result | select($result.type == "tool_result" and $result.tool_use_id == $use.id and $result.is_error != true) |
+      ($use + {status:"success",result_type:$result.type})
+    ) // null' <<<"$tool_events")
+  fi
+  if [[ $matched_completion_event != null ]]; then
+    authoritative_outcome=true
+    outcome_event=authoritative-completion-observed
+  fi
+fi
+
+# Model is accepted only from immutable registry settings or the matched
+# authoritative event. Ambiguous or absent provenance remains fail-closed.
+model_candidates=$(jq -cn --argjson states "$state_records" --argjson event "$matched_completion_event" '
+  ([$states[] | (.settings?.model // .model // empty)] +
+   [($event.model // empty)]) | map(select(type == "string" and length > 0)) | unique')
+if [[ $(jq 'length' <<<"$model_candidates") == 1 ]]; then
+  model=$(jq -r '.[0]' <<<"$model_candidates")
+fi
+
 manifest_tree "$CASE_WORKSPACE/.lat" "$PROTECTION_ROOT/lat.after"
 lat_unchanged=false
 cmp -s "$PROTECTION_ROOT/lat.before" "$PROTECTION_ROOT/lat.after" && lat_unchanged=true
@@ -368,8 +415,11 @@ if protected_state_unchanged; then
   real_credentials_unchanged=true
 fi
 installed_package_unchanged=false
-if diff -qr "$CANDIDATE_ROOT/agent-invoke" "$CODEX_INSTALLED" >/dev/null &&
-   diff -qr "$CANDIDATE_ROOT/agent-invoke" "$CLAUDE_INSTALLED" >/dev/null; then
+manifest_tree "$CODEX_INSTALLED" "$PROTECTION_ROOT/codex-installed.after"
+manifest_tree "$CLAUDE_INSTALLED" "$PROTECTION_ROOT/claude-installed.after"
+if cmp -s "$PROTECTION_ROOT/codex-installed.before" "$PROTECTION_ROOT/codex-installed.after" &&
+   cmp -s "$PROTECTION_ROOT/claude-installed.before" "$PROTECTION_ROOT/claude-installed.after" &&
+   cmp -s "$PROTECTION_ROOT/codex-installed.after" "$PROTECTION_ROOT/claude-installed.after"; then
   installed_package_unchanged=true
 fi
 stop_intent_absent_after_finalize=false
@@ -378,35 +428,35 @@ clean_after_stop_succeeded=false
 # Generic host prose is never acceptance evidence. Each case must additionally
 # expose the activated skill and its route-specific carrier/state evidence.
 case_evidence_valid=false
+unverified_reason=AUTHORITATIVE_EVIDENCE_INCOMPLETE
 if jq -e 'length > 0' <<<"$skill_events" >/dev/null; then
   case $case_id in
     unsupported-client|native-unavailable)
       [[ $route == refusal && $mode == none && $identity_state == not-created ]] && case_evidence_valid=true
       ;;
     codex-native|claude-native|native-resume)
-      [[ $route == native && $mode == native && -n $model ]] &&
-        jq -e 'any(.[]; .type == "collaboration_tool_call" or (.name // "") == "Agent")' <<<"$tool_events" >/dev/null &&
+      [[ $route == native && $mode == native && -n $model && $authoritative_outcome == true ]] &&
         case_evidence_valid=true
       ;;
     codex-to-claude-exec|claude-to-codex-exec|same-host-exec|managed-exec-resume|imported-resume)
-      [[ $route == external && $mode == exec && -n $model ]] &&
-        jq -e 'any(.[]; .type == "command_execution" or .type == "tool_use")' <<<"$tool_events" >/dev/null &&
+      [[ $route == external && $mode == exec && -n $model && $authoritative_outcome == true ]] &&
         case_evidence_valid=true
       ;;
     same-host-tui|managed-tui-resume)
-      [[ $route == external && $mode == tui && -n $model ]] &&
-        jq -e 'any(.[]; ((.command // "") | contains("zmx")))' <<<"$tool_events" >/dev/null &&
+      [[ $route == external && $mode == tui && -n $model && $authoritative_outcome == true ]] &&
+        jq -e 'any(.[]; ((.command // "") | contains("zmx")) and
+          ((.status // "") == "completed" or (.status // "") == "success"))' <<<"$tool_events" >/dev/null &&
         case_evidence_valid=true
       ;;
     lifecycle)
-      [[ $stop_intent_absent_after_finalize == true && $clean_after_stop_succeeded == true ]] && case_evidence_valid=true
+      unverified_reason=LIFECYCLE_CASE_VALIDATOR_UNVERIFIED
       ;;
     prune)
-      # A real prune validator must observe dry-run, exact confirmation, and
-      # preserved ambiguous/non-target entries. Prose cannot satisfy it.
-      false
+      unverified_reason=PRUNE_CASE_VALIDATOR_UNVERIFIED
       ;;
   esac
+else
+  unverified_reason=SKILL_ACTIVATION_NOT_OBSERVED
 fi
 passed=false
 if (( client_status == 0 )) &&
@@ -414,14 +464,17 @@ if (( client_status == 0 )) &&
       $real_skill_roots_unchanged == true && $real_credentials_unchanged == true &&
       $installed_package_unchanged == true && $case_evidence_valid == true ]]; then
   passed=true
+  unverified_reason=''
 fi
+if [[ $passed == true ]]; then verification_status=verified; else verification_status=unverified; fi
 
 evidence_tmp=$(mktemp "${evidence}.tmp.XXXXXX")
 jq -n \
   --arg case_id "$case_id" --arg candidate_sha "$candidate_sha" --arg route "$route" \
   --arg client "$host_client" --arg mode "$mode" --arg model "$model" --arg session_id "$session_id" \
-  --arg result_excerpt "$result_excerpt" --argjson tool_events "$tool_events" --argjson skill_events "$skill_events" \
+  --argjson tool_events "$tool_events" --argjson skill_events "$skill_events" \
   --arg outcome_event "$outcome_event" --argjson exit_status "$client_status" \
+  --arg verification_status "$verification_status" --arg unverified_reason "$unverified_reason" \
   --arg identity_state "$identity_state" --argjson identity_unambiguous "$identity_unambiguous" \
   --arg installed_manifest_sha256 "$installed_manifest_sha256" \
   --argjson real_skill_roots_unchanged "$real_skill_roots_unchanged" \
@@ -432,13 +485,14 @@ jq -n \
   --argjson clean_after_stop_succeeded "$clean_after_stop_succeeded" \
   --argjson passed "$passed" \
   '{case_id:$case_id,candidate_sha:$candidate_sha,route:$route,client:$client,mode:$mode,model:$model,
-    session_id:$session_id,tool_events:$tool_events,skill_events:$skill_events,outcome_event:$outcome_event,result_excerpt:$result_excerpt,exit_status:$exit_status,
+    session_id:$session_id,tool_events:$tool_events,skill_events:$skill_events,outcome_event:$outcome_event,exit_status:$exit_status,
     identity_state:$identity_state,identity_unambiguous:$identity_unambiguous,
     installed_manifest_sha256:$installed_manifest_sha256,
     real_skill_roots_unchanged:$real_skill_roots_unchanged,real_credentials_unchanged:$real_credentials_unchanged,
     lat_unchanged:$lat_unchanged,installed_package_unchanged:$installed_package_unchanged,
     lat_dispatch_installed:$lat_dispatch_installed,
     authoritative_outcome:$authoritative_outcome,
+    verification:{status:$verification_status,reason_code:(if $unverified_reason == "" then null else $unverified_reason end)},
     stop_intent_absent_after_finalize:$stop_intent_absent_after_finalize,
     clean_after_stop_succeeded:$clean_after_stop_succeeded,passed:$passed}' >"$evidence_tmp"
 chmod 600 "$evidence_tmp"
