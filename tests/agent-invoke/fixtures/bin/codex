@@ -2,10 +2,17 @@
 set -euo pipefail
 printf '%s\n' "codex|$PWD|$*" >> "$FAKE_LOG"
 if [[ -n ${FAKE_SYNC_READY:-} ]]; then
+  printf '%s\n' "$BASHPID" > "${FAKE_SYNC_CHILD_PID:?}"
+  record_exit() { : > "${FAKE_SYNC_EXITED:?}"; }
+  trap record_exit EXIT
   : > "$FAKE_SYNC_READY"
   while [[ ! -e ${FAKE_SYNC_RELEASE:?} ]]; do sleep 0.02; done
 fi
 cat > "$FAKE_STDIN"
+if [[ -n ${FAKE_SYNC_READY:-} ]]; then
+  : > "${FAKE_SYNC_STDIN_CONSUMED:?}"
+  while [[ ! -e ${FAKE_SYNC_EXIT_RELEASE:?} ]]; do sleep 0.02; done
+fi
 case ${FAKE_CODEX_MODE:-ok} in
   dependency|auth|quota|permission) exit 42 ;;
   mismatch) printf '{"type":"thread.started","thread_id":"wrong-thread"}\n' ;;

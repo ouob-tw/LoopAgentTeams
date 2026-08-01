@@ -47,16 +47,42 @@ for mode in duplicate mismatch no-seal dependency auth quota permission; do
   [[ $(state "$mode" '.mode') == exec && $(state "$mode" '.session.sealed') == false && $(state "$mode" '.session.id') == null ]] || fail "$mode left a resumable or alternate operation"
   [[ ! -e $prompt ]] || fail "$mode retained a private prompt after client failure"
 done
-setup identity-failure; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok AGENT_INVOKE_FAIL_IDENTITY=1 FAKE_SYNC_READY="$HOME/ready" FAKE_SYNC_RELEASE="$HOME/release"
+setup identity-failure; sync_dir=$(mktemp -d "$HOME/identity-sync.XXXXXX")
+export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok AGENT_INVOKE_FAIL_IDENTITY=1
+export FAKE_SYNC_READY="$sync_dir/ready" FAKE_SYNC_RELEASE="$sync_dir/release" FAKE_SYNC_CHILD_PID="$sync_dir/child-pid"
+export FAKE_SYNC_STDIN_CONSUMED="$sync_dir/stdin-consumed" FAKE_SYNC_EXIT_RELEASE="$sync_dir/exit-release" FAKE_SYNC_EXITED="$sync_dir/exited"
+[[ ! -e $FAKE_SYNC_RELEASE && ! -e $FAKE_SYNC_EXIT_RELEASE ]] || fail 'identity failure release path existed before launch'
 launch identity-failure codex "$workspace" "$prompt" model-x high danger-full-access '' & invoke_pid=$!
+identity_fail() {
+  : > "$FAKE_SYNC_RELEASE"; : > "$FAKE_SYNC_EXIT_RELEASE"
+  wait "$invoke_pid" 2>/dev/null || :
+  fail "$*"
+}
 for _ in $(seq 1 50); do [[ -e $FAKE_SYNC_READY ]] && break; sleep 0.02; done
-[[ -e $FAKE_SYNC_READY ]] || fail 'forked child did not expose pre-stdin synchronization point'
-kill -0 "$invoke_pid" || fail 'launcher terminated before synchronized child release'
-[[ -e $prompt ]] || fail 'launcher shredded prompt before forked child consumed stdin'
-touch "$FAKE_SYNC_RELEASE"
-if wait "$invoke_pid"; then fail 'identity capture failure unexpectedly succeeded'; fi
-unset AGENT_INVOKE_FAIL_IDENTITY FAKE_SYNC_READY FAKE_SYNC_RELEASE
-cmp -s "$FAKE_STDIN" <(printf '%s\n' "\$(touch should-not-run); --resume \"quoted\"") || fail 'identity failure disposed prompt before the forked child consumed stdin'
+[[ -e $FAKE_SYNC_READY ]] || identity_fail 'forked child did not expose pre-stdin synchronization point'
+[[ -s $FAKE_SYNC_CHILD_PID ]] || identity_fail 'forked child did not expose its PID'
+read -r child_pid < "$FAKE_SYNC_CHILD_PID"
+[[ $child_pid =~ ^[0-9]+$ ]] || identity_fail 'forked child exposed an invalid PID'
+kill -0 "$child_pid" || identity_fail 'forked child was not alive before synchronized release'
+kill -0 "$invoke_pid" || identity_fail 'launcher terminated before synchronized child release'
+[[ -e $prompt ]] || identity_fail 'launcher shredded prompt before forked child consumed stdin'
+: > "$FAKE_SYNC_RELEASE"
+for _ in $(seq 1 50); do [[ -e $FAKE_SYNC_STDIN_CONSUMED ]] && break; sleep 0.02; done
+[[ -e $FAKE_SYNC_STDIN_CONSUMED ]] || identity_fail 'release did not permit the forked child to consume stdin'
+cmp -s "$FAKE_STDIN" <(printf '%s\n' "\$(touch should-not-run); --resume \"quoted\"") || identity_fail 'identity failure did not deliver stdin to the forked child'
+kill -0 "$child_pid" || identity_fail 'forked child terminated before its exit release'
+[[ -e $prompt ]] || identity_fail 'launcher shredded prompt while the forked child remained alive'
+: > "$FAKE_SYNC_EXIT_RELEASE"
+for _ in $(seq 1 100); do
+  [[ -e $prompt || -e $FAKE_SYNC_EXITED ]] || identity_fail 'launcher shredded prompt before the forked child exited'
+  kill -0 "$child_pid" 2>/dev/null || break
+  sleep 0.02
+done
+kill -0 "$child_pid" 2>/dev/null && identity_fail 'forked child did not terminate after its exit release'
+[[ -e $FAKE_SYNC_EXITED ]] || identity_fail 'forked child termination was not observed before prompt disposal'
+set +e; wait "$invoke_pid"; invoke_status=$?; set -e
+[[ $invoke_status -ne 0 ]] || fail 'identity capture failure unexpectedly succeeded'
+unset AGENT_INVOKE_FAIL_IDENTITY FAKE_SYNC_READY FAKE_SYNC_RELEASE FAKE_SYNC_CHILD_PID FAKE_SYNC_STDIN_CONSUMED FAKE_SYNC_EXIT_RELEASE FAKE_SYNC_EXITED
 [[ ! -e $prompt && $(state identity-failure '.session.sealed') == false && $(state identity-failure '.active_turn.kind') == launch ]] || fail 'identity failure did not wait, dispose, and remain fail-closed'
 setup resume-settings; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok
 launch settings codex "$workspace" "$prompt" model-x high danger-full-access ''
