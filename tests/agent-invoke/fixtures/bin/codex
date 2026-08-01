@@ -1,0 +1,11 @@
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "codex|$PWD|$*" >> "$FAKE_LOG"
+cat > "$FAKE_STDIN"
+case ${FAKE_CODEX_MODE:-ok} in
+  dependency|auth|quota|permission) exit 42 ;;
+  mismatch) printf '{"type":"thread.started","thread_id":"wrong-thread"}\n' ;;
+  duplicate) printf '{"type":"thread.started","thread_id":"%s"}\n{"type":"thread.started","thread_id":"%s"}\n' "$FAKE_SESSION" "$FAKE_SESSION" ;;
+  no-seal) exit 43 ;;
+  *) printf '{"type":"thread.started","thread_id":"%s"}\n{"type":"response.completed"}\n' "$FAKE_SESSION"; sleep "${FAKE_DELAY:-1}" ;;
+esac

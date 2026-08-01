@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "claude|$PWD|$*" >> "$FAKE_LOG"
+cat > "$FAKE_STDIN"
+case ${FAKE_CLAUDE_MODE:-ok} in
+  dependency|auth|quota|permission) exit 42 ;;
+  mismatch) printf '{"type":"system","subtype":"init","session_id":"wrong-session","model":"%s"}\n' "$FAKE_MODEL" ;;
+  no-seal) exit 43 ;;
+  *) printf '{"type":"system","subtype":"init","session_id":"%s","model":"%s"}\n' "$FAKE_SESSION" "$FAKE_MODEL"; printf '{"type":"assistant","session_id":"%s","model":"%s","stop_reason":"end_turn","message":{"content":[{"type":"text","text":"Claude final answer"}]}}\n' "$FAKE_SESSION" "$FAKE_MODEL"; sleep "${FAKE_DELAY:-1}" ;;
+esac
