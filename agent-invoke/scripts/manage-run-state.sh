@@ -334,7 +334,7 @@ classify_prune_candidate() {
   local state operation=$1
   state=$(read_state "$1") || return
   jq -r --arg operation "$operation" '
-    if (.schema != 1 or .operation_id != $operation or (.client != "codex" and .client != "claude") or (.workspace|type) != "string" or (.workspace|startswith("/")|not) or (.mode != "native" and .mode != "exec" and .mode != "tui") or (.status|type) != "string" or (.session|type) != "object" or ((.session.id|type) != "string" and .session.id != null) or (.session.sealed|type) != "boolean" or ((.owner|type) != "object" and .owner != null) or ((.stop_intent|type) != "object" and .stop_intent != null) or ((.active_turn|type) != "object" and .active_turn != null)) then "blocked-malformed"
+    if (.schema != 1 or .operation_id != $operation or (.client != "codex" and .client != "claude") or (.workspace|type) != "string" or (.workspace|startswith("/")|not) or (.mode != "native" and .mode != "exec" and .mode != "tui") or (.status|type) != "string" or (.session|type) != "object" or ((.session.id|type) != "string" and .session.id != null) or (.session.sealed|type) != "boolean" or (.session.sealed == true and ((.session.id|type) != "string" or (.session.id|length) == 0)) or ((.owner|type) != "object" and .owner != null) or ((.stop_intent|type) != "object" and .stop_intent != null) or ((.active_turn|type) != "object" and .active_turn != null)) then "blocked-malformed"
     elif .session.sealed != true then "blocked-unsealed"
     elif .stop_intent != null then "blocked-stop-intent"
     elif .active_turn != null then "blocked-active-turn"

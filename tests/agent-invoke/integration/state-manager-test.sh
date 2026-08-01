@@ -211,6 +211,13 @@ chmod 600 "$HOME/.agent-invoke/runs/malformed.json"
 expect_fail clean_one_registry_entry malformed --confirm
 [[ -f "$HOME/.agent-invoke/runs/malformed.json" ]] || fail 'malformed metadata was trashed'
 
+printf '%s\n' '{"schema":1,"operation_id":"sealed-null","client":"codex","workspace":"/tmp/workspace","mode":"exec","status":"interrupted","session":{"sealed":true,"id":null},"owner":null,"stop_intent":null,"active_turn":null}' > "$HOME/.agent-invoke/runs/sealed-null.json"
+chmod 600 "$HOME/.agent-invoke/runs/sealed-null.json"
+[[ $(classify_prune_candidate sealed-null) == blocked-malformed ]] || fail 'sealed null identity was not manual-only'
+expect_fail clean_one_registry_entry sealed-null --confirm
+[[ -f "$HOME/.agent-invoke/runs/sealed-null.json" ]] || fail 'sealed null identity was trashed'
+expect_fail prune --confirm sealed-null
+
 bootstrap_launch native-error codex "$HOME/workspace" '' native
 error_turn=$(json_at native-error '.active_turn.token'); error_seal=$(json_at native-error '.active_turn.seal_token')
 seal_session_once native-error "$error_turn" "$error_seal" native-error-handle '{"type":"native","handle":"native-error-handle","token":"error-owner"}'
