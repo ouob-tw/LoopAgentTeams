@@ -216,7 +216,7 @@ exec_owner_is_live() {
   pid=$(jq -er '.pid' <<<"$owner") || return
   started=$(jq -er '.started' <<<"$owner") || return
   executable=$(jq -er '.executable' <<<"$owner") || return
-  [[ $pid =~ ^[2-9][0-9]*$ && $executable == /* ]] || return
+  [[ $pid =~ ^[1-9][0-9]*$ && $pid -gt 1 && $executable == /* ]] || return
   kill -0 "$pid" 2>/dev/null || return
   current_started=$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//') || return
   current_executable=$(readlink "/proc/$pid/exe" 2>/dev/null) || return
