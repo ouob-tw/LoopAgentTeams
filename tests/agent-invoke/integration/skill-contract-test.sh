@@ -24,6 +24,12 @@ forbid_literal() {
   ! rg -Fq -- "$literal" "$file" || fail "forbidden literal in ${file#$repo_root/}: $literal"
 }
 
+forbid_bash_native_primitive() {
+  local file=$1
+  local pattern='(?i)\bBash\b[^\n]*(?:invoke|call|simulate|run|execute|use|proxy|emulate|trigger|呼叫|代理|模擬|偽造)[^\n]*(?:spawn_agent|wait_agent|interrupt_agent|TaskStop|\bAgent\b)'
+  ! rg -Pqi -- "$pattern" "$file" || fail "Bash must not invoke or simulate a native primitive in ${file#$repo_root/}"
+}
+
 [[ -d "$package_dir" && -f "$skill_file" && -f "$native_file" && -f "$prompts_file" ]] || fail "agent-invoke package is absent"
 (( $(wc -l < "$skill_file") <= 150 )) || fail "SKILL.md exceeds 150 lines"
 
@@ -49,8 +55,7 @@ forbid_literal "$skill_file" 'lat-dispatch'
 forbid_literal "$skill_file" 'references/test'
 forbid_literal "$skill_file" 'tests/agent-invoke'
 forbid_literal "$skill_file" 'evidence'
-forbid_literal "$skill_file" 'Bash.*spawn_agent'
-forbid_literal "$skill_file" 'Bash.*interrupt_agent'
+forbid_bash_native_primitive "$skill_file"
 
 require_literal "$native_file" 'bootstrap before prompt delivery'
 require_literal "$native_file" 'spawn_agent'
