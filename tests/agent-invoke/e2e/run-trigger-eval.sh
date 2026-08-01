@@ -21,8 +21,17 @@ repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 prompts_file="$repo_root/tests/agent-invoke/e2e/trigger-prompts.json"
 [[ $(jq 'length' "$prompts_file") == 18 && $(jq '[.[]|select(.should_trigger)]|length' "$prompts_file") == 12 && $(jq '[.[]|select(.should_trigger|not)]|length' "$prompts_file") == 6 ]] || exit 65
 work_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-invoke-trigger.XXXXXX")
-trap 'find "$work_root" -type f -exec shred -u {} +; find "$work_root" -type l -exec unlink {} +; find "$work_root" -depth -type d -exec rmdir {} + 2>/dev/null || :' EXIT
+top_level_bashpid=$BASHPID
+cleanup() {
+  [[ $BASHPID == "$top_level_bashpid" ]] || return 0
+  find "$work_root" -type f -exec shred -u -- {} +
+  find "$work_root" -type l -exec unlink -- {} \;
+  find "$work_root" -depth -type d -exec rmdir -- {} + 2>/dev/null || :
+}
+trap cleanup EXIT
 mkdir -p "$(dirname "$output")"
+[[ ! -e $output ]] || { printf '%s\n' 'output already exists' >&2; exit 66; }
+output_tmp=$(mktemp "${output}.tmp.XXXXXX")
 
 run_one() {
   local expected=$1 prompt=$2 run_dir=$3 trace=$4 candidate source_path command status json_trace
@@ -37,9 +46,9 @@ run_one() {
   source_path=$(realpath "$candidate/SKILL.md")
   command='Evaluate only which execution route you would choose for the following user request. If a skill activates, consult its complete instructions before selecting the route. Do not modify files, delegate work, create operation state, invoke agents, or use the network. Explain the selected route or refusal briefly.\n\nUser request: '
   if [[ $client == codex ]]; then
-    codex exec --ephemeral --skip-git-repo-check --sandbox read-only --json -C "$run_dir" "${command}${prompt}" >"$trace" 2>&1
+    (cd "$run_dir" && codex exec --ephemeral --skip-git-repo-check --sandbox read-only --json -C "$run_dir" "${command}${prompt}" < /dev/null) >"$trace" 2>&1
   else
-    (cd "$run_dir" && claude -p --no-session-persistence --output-format stream-json --permission-mode manual "${command}${prompt}") >"$trace" 2>&1
+    (cd "$run_dir" && claude -p --no-session-persistence --output-format stream-json --permission-mode manual "${command}${prompt}" < /dev/null) >"$trace" 2>&1
   fi
   status=$?
   if (( status != 0 )); then
@@ -72,4 +81,5 @@ while IFS= read -r case_json; do
   case_summary=$(jq -cn --arg id "$id" --argjson passed_runs "$passed_runs" --argjson failures "$failures_json" '$ARGS.named + {runs:3,passed:($passed_runs == 3),passed_runs:$passed_runs,failures:$failures}')
   all_cases=$(jq -cn --argjson current "$all_cases" --argjson case "$case_summary" '$current + [$case]')
 done < <(jq -c '.[]' "$prompts_file")
-jq -n --arg client "$client" --argjson cases "$all_cases" '{client:$client,cases:$cases}' >"$output"
+jq -n --arg client "$client" --argjson cases "$all_cases" '{client:$client,cases:$cases}' >"$output_tmp"
+mv -- "$output_tmp" "$output"

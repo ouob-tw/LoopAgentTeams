@@ -68,6 +68,18 @@ require_literal "$trigger_runner" '.agents/skills/agent-invoke'
 require_literal "$trigger_runner" '.claude/skills/agent-invoke'
 require_literal "$trigger_runner" '--output-format stream-json'
 require_literal "$trigger_runner" 'target skill was not read'
+top_level_marker="top_level_bashpid=\$BASHPID"
+cleanup_marker="[[ \$BASHPID == \"\$top_level_bashpid\" ]] || return 0"
+output_marker='output_tmp='
+publish_marker="mv -- \"\$output_tmp\" \"\$output\""
+stdin_marker='< /dev/null'
+codex_cwd_marker="(cd \"\$run_dir\" && codex exec"
+require_literal "$trigger_runner" "$top_level_marker"
+require_literal "$trigger_runner" "$cleanup_marker"
+require_literal "$trigger_runner" "$output_marker"
+require_literal "$trigger_runner" "$publish_marker"
+require_literal "$trigger_runner" "$stdin_marker"
+require_literal "$trigger_runner" "$codex_cwd_marker"
 forbid_literal "$trigger_runner" 'Answer exactly TRIGGER'
 forbid_literal "$trigger_runner" 'Answer exactly NO_TRIGGER'
 
