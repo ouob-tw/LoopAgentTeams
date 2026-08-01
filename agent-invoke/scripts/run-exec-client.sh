@@ -26,7 +26,7 @@ action=$1 operation=$2 client=$3 workspace=$4 prompt=$5 model=$6 effort=$7 permi
 [[ $client == claude || $client == codex ]] || die 'unsupported client'
 [[ -d $workspace && ! -L $workspace && -f $prompt && ! -L $prompt && -n $model && -n $effort && -n $permission ]] || die 'unsafe launch input'
 workspace=$(cd "$workspace" && pwd -P)
-child_pid= child_started=0 child_waited=0
+child_pid='' child_started=0 child_waited=0
 dispose_prompt() {
   if [[ $child_started == 1 && $child_waited != 1 ]]; then
     wait "$child_pid" 2>/dev/null || :

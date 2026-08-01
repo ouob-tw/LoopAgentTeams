@@ -1,18 +1,20 @@
 [
-  {
-    "name": "native-launch",
-    "prompt": "以目前支援的原生 Agent 啟動目標家族工作，使用 workspace /repo。"
-  },
-  {
-    "name": "exact-resume",
-    "prompt": "使用已封存的精確 runtime handle 續接剛才的原生工作。"
-  },
-  {
-    "name": "cross-family-consent",
-    "prompt": "原生路徑不可用時，我明確同意使用跨家族客戶端啟動此工作。"
-  },
-  {
-    "name": "unsealed-resume-refusal",
-    "prompt": "請用未封存的 handle 續接工作。"
-  }
+  {"id":"positive-generic-delegation","should_trigger":true,"prompt":"請把這個修正委派給另一個 Agent 執行，完成後帶回結果。"},
+  {"id":"positive-exact-model","should_trigger":true,"prompt":"用指定的 Claude Code model 將測試任務交給 agent，保留 model 與 effort。"},
+  {"id":"positive-same-host","should_trigger":true,"prompt":"在目前 Codex 宿主直接啟動同家族 agent 處理這個工作。"},
+  {"id":"positive-cross-family","should_trigger":true,"prompt":"目前原生路徑不可用；我明確同意用另一個支援 client 委派工作。"},
+  {"id":"positive-explicit-exec","should_trigger":true,"prompt":"明確使用 external exec client 啟動這個 agent operation。"},
+  {"id":"positive-explicit-tui","should_trigger":true,"prompt":"我明確要持久互動式 TUI 來執行這個 agent 工作。"},
+  {"id":"positive-unsupported-client","should_trigger":true,"prompt":"請用不支援的 agent client 委派此工作；若不能做請安全拒絕。"},
+  {"id":"positive-operation-id-resume","should_trigger":true,"prompt":"用 operation ID 對應的已封存精確 handle 續接剛才的 agent 工作。"},
+  {"id":"positive-exact-reference-resume","should_trigger":true,"prompt":"依這個精確 session UUID 或 transcript path 續接同一個 agent。"},
+  {"id":"positive-stop","should_trigger":true,"prompt":"停止這個精確 agent task，並確認使用正確的宿主停止流程。"},
+  {"id":"positive-clean","should_trigger":true,"prompt":"確認這個已封存且沒有 active turn 的 agent operation 可以 clean。"},
+  {"id":"positive-prune","should_trigger":true,"prompt":"請先 dry-run 列出可 prune 的已封存 agent operation。"},
+  {"id":"negative-full-lat","should_trigger":false,"prompt":"請用 LAT 為整個產品功能建立 spec、plan、派工與全流程驗證。"},
+  {"id":"negative-docs-only","should_trigger":false,"prompt":"只閱讀 agent-invoke 的文件，整理原生路徑的說明，不要執行 agent。"},
+  {"id":"negative-generic-shell","should_trigger":false,"prompt":"給我一個 Bash 指令，列出目前目錄的 shell scripts。"},
+  {"id":"negative-no-delegation","should_trigger":false,"prompt":"請你直接修正這個小 typo，不要委派給其他 agent。"},
+  {"id":"negative-pure-git","should_trigger":false,"prompt":"顯示這個分支相對 main 的 git diff 與最近三個 commit。"},
+  {"id":"negative-current-agent-editing","should_trigger":false,"prompt":"請在目前工作階段直接編輯 SKILL.md 的一個拼字。"}
 ]
