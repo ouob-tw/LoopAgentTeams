@@ -55,7 +55,10 @@ derive_claude_project_slug() {
 
 claude_transcript_matches() {
   local transcript=$1 uuid=$2
-  jq -es --arg uuid "$uuid" 'any(.[]; (.sessionId? == $uuid) or (.uuid? == $uuid))' "$transcript" >/dev/null
+  jq -es --arg uuid "$uuid" '
+    [.[] | .sessionId? | select(type == "string")] as $session_ids |
+    ($session_ids | length) > 0 and all($session_ids[]; . == $uuid)
+  ' "$transcript" >/dev/null
 }
 
 resolve_claude_uuid_or_path() {
@@ -83,7 +86,7 @@ codex_session_meta_id() {
 codex_session_matches() {
   local session=$1 uuid=$2 workspace=$3
   jq -es --arg uuid "$uuid" --arg workspace "$workspace" \
-    '[.[] | select(.type == "session_meta" and .payload.id == $uuid and .payload.cwd == $workspace)] | length == 1' "$session" >/dev/null
+    '[.[] | select(.type == "session_meta")] as $metadata | $metadata | length == 1 and .[0].payload.id == $uuid and .[0].payload.cwd == $workspace' "$session" >/dev/null
 }
 
 resolve_codex_uuid_or_path() {

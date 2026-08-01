@@ -48,6 +48,7 @@ begin_turn operation-1 resume resume-token
 expect_fail begin_turn operation-1 resume second-token
 expect_fail verify_native_owner operation-1 wrong native-id-1
 verify_native_owner operation-1 resume-token native-id-1
+[[ $(json_at operation-1 '.session.id') == native-id-1 ]] || fail 'invalid native handle replaced identity'
 complete_turn operation-1 resume-token
 
 new_home zmx
@@ -55,6 +56,17 @@ bootstrap_launch zmx-1 codex "$HOME/workspace" '' tui
 zturn=$(json_at zmx-1 '.active_turn.token')
 zseal=$(json_at zmx-1 '.active_turn.seal_token')
 expect_fail seal_session_once zmx-1 "$zturn" "$zseal" zmx-session '{"type":"zmx","token":"zmx-owner"}'
+
+new_home owner-modes
+bootstrap_launch native-owner codex "$HOME/workspace" '' native
+oturn=$(json_at native-owner '.active_turn.token')
+oseal=$(json_at native-owner '.active_turn.seal_token')
+expect_fail seal_session_once native-owner "$oturn" "$oseal" wrong-owner '{"type":"exec","token":"owner"}'
+bootstrap_launch exec-owner codex "$HOME/workspace" '' exec
+eturn=$(json_at exec-owner '.active_turn.token')
+eseal=$(json_at exec-owner '.active_turn.seal_token')
+expect_fail seal_session_once exec-owner "$eturn" "$eseal" exec-session '{"type":"exec","token":""}'
+expect_fail seal_session_once exec-owner "$eturn" "$eseal" exec-session '{"type":"native","handle":"exec-session"}'
 
 new_home claude
 bootstrap_launch claude-1 claude "$HOME/workspace" preallocated-uuid native
@@ -93,6 +105,22 @@ rm -rf "$HOME/.agent-invoke"
 ln -s "$test_root/elsewhere" "$HOME/.agent-invoke"
 expect_fail bootstrap_launch symlinked codex "$HOME/workspace" '' native
 
+new_home nested-symlink
+mkdir -p "$HOME/.agent-invoke"
+ln -s "$test_root/elsewhere" "$HOME/.agent-invoke/runs"
+expect_fail bootstrap_launch nested-symlink codex "$HOME/workspace" '' native
+
+new_home permissions
+mkdir -p "$HOME/.agent-invoke/runs"
+printf '{"schema":1}\n' > "$HOME/.agent-invoke/runs/unsafe.json"
+chmod 644 "$HOME/.agent-invoke/runs/unsafe.json"
+expect_fail read_state unsafe
+chmod 600 "$HOME/.agent-invoke/runs/unsafe.json"
+if chown 65534 "$HOME/.agent-invoke/runs/unsafe.json" 2>/dev/null; then
+  expect_fail read_state unsafe
+  chown "$(id -u)" "$HOME/.agent-invoke/runs/unsafe.json"
+fi
+
 new_home stops
 bootstrap_launch external-stop codex "$HOME/workspace" '' exec
 sturn=$(json_at external-stop '.active_turn.token')
@@ -113,12 +141,25 @@ expect_fail finalize_native_stop native-stop wrong native-handle
 finalize_native_stop native-stop "$nturn" native-handle
 [[ $(json_at native-stop '.status') == stopped ]] || fail 'native stop did not finalize'
 
+bootstrap_launch native-lost codex "$HOME/workspace" '' native
+lost_turn=$(json_at native-lost '.active_turn.token')
+lost_seal=$(json_at native-lost '.active_turn.seal_token')
+seal_session_once native-lost "$lost_turn" "$lost_seal" lost-handle '{"type":"native","handle":"lost-handle"}'
+prepare_native_stop native-lost "$lost_turn" lost-handle
+complete_turn native-lost "$lost_turn"
+expect_fail finalize_native_stop native-lost "$lost_turn" lost-handle
+
 bootstrap_launch cleanable codex "$HOME/workspace" '' exec
 clean_turn=$(json_at cleanable '.active_turn.token')
 clean_seal=$(json_at cleanable '.active_turn.seal_token')
 seal_session_once cleanable "$clean_turn" "$clean_seal" clean-id '{"type":"exec","token":"clean-owner"}'
 complete_turn cleanable "$clean_turn"
-clean_one_registry_entry cleanable --dry-run | grep -qx 'recoverable-clean' || fail 'dry run did not classify clean state'
+expect_fail clean_one_registry_entry cleanable --dry-run
+[[ $(classify_prune_candidate cleanable) == blocked-live-or-ambiguous-owner ]] || fail 'live owner is removable'
+jq '.owner=null' "$HOME/.agent-invoke/runs/cleanable.json" > "$HOME/.agent-invoke/runs/cleanable.json.tmp"
+chmod 600 "$HOME/.agent-invoke/runs/cleanable.json.tmp"
+mv "$HOME/.agent-invoke/runs/cleanable.json.tmp" "$HOME/.agent-invoke/runs/cleanable.json"
+clean_one_registry_entry cleanable --dry-run | grep -qx 'recoverable-clean' || fail 'dry run did not classify ownerless state'
 [[ -f "$HOME/.agent-invoke/runs/cleanable.json" ]] || fail 'dry run removed state'
 clean_one_registry_entry cleanable --confirm
 [[ ! -e "$HOME/.agent-invoke/runs/cleanable.json" ]] || fail 'confirmed clean retained state'
@@ -127,5 +168,13 @@ clean_one_registry_entry cleanable --confirm
 bootstrap_launch unsealed codex "$HOME/workspace" '' exec
 [[ $(classify_prune_candidate unsealed) == blocked-unsealed ]] || fail 'unsealed state is prunable'
 expect_fail clean_one_registry_entry unsealed --all
+
+new_token() { :; }
+new_home empty-token
+expect_fail bootstrap_launch empty-token codex "$HOME/workspace" '' native
+[[ ! -e "$HOME/.agent-invoke/runs/empty-token.json" ]] || fail 'empty token created resumable state'
+# shellcheck source=/dev/null
+source "$helper"
+[[ ! -e "$HOME/.lat" ]] || fail 'state helper wrote .lat'
 
 printf 'PASS: secure state manager\n'

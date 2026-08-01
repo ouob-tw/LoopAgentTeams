@@ -17,12 +17,31 @@ owner_uid() {
   stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1"
 }
 
+state_mode() {
+  stat -c '%a' "$1" 2>/dev/null || stat -f '%Lp' "$1"
+}
+
+assert_no_state_symlink_components() {
+  local path=$1 rest current component
+  local -a components
+  [[ $path == /* ]] || path="$(pwd -P)/$path"
+  rest=${path#/}
+  current=
+  IFS=/ read -r -a components <<<"$rest"
+  for component in "${components[@]}"; do
+    [[ -n $component ]] || continue
+    current="$current/$component"
+    [[ ! -L "$current" ]] || { state_error "symlinked registry component"; return; }
+  done
+}
+
 private_dir() {
   local directory=$1 parent
   parent=$(dirname "$directory")
-  [[ ! -L "$directory" && ! -L "$parent" ]] || state_error "symlinked registry component"
+  assert_no_state_symlink_components "$directory" || return
+  [[ -d "$parent" && ! -L "$parent" ]] || { state_error "registry parent is not a directory"; return; }
   if [[ ! -e "$directory" ]]; then
-    mkdir "$directory" || return
+    mkdir -m 700 "$directory" || return
   fi
   [[ -d "$directory" && ! -L "$directory" ]] || state_error "registry component is not a directory"
   [[ $(owner_uid "$directory") == $(id -u) ]] || state_error "registry component is not owned"
@@ -76,8 +95,13 @@ atomic_json_replace() {
   payload=$(cat)
   directory=$(dirname "$destination")
   base=$(basename "$destination")
+  assert_no_state_symlink_components "$directory" || return
   [[ -d "$directory" && ! -L "$directory" && ! -L "$destination" ]] \
     || { state_error "unsafe state destination"; return; }
+  if [[ -e "$destination" ]]; then
+    [[ -f "$destination" && $(owner_uid "$destination") == $(id -u) && $(state_mode "$destination") == 600 ]] \
+      || { state_error "existing state destination is unsafe"; return; }
+  fi
   tmp=$(mktemp "$directory/.${base}.tmp.XXXXXX") || return
   if ! printf '%s' "$payload" | jq -e . >"$tmp"; then
     shred -u "$tmp" || :
@@ -93,6 +117,8 @@ read_state() {
   ensure_registry || return
   file=$(state_file "$1") || return
   [[ -f "$file" && ! -L "$file" ]] || { state_error "state is absent"; return; }
+  [[ $(owner_uid "$file") == $(id -u) && $(state_mode "$file") == 600 ]] \
+    || { state_error "state file is not private"; return; }
   jq -e . "$file"
 }
 
@@ -108,6 +134,7 @@ bootstrap_launch() {
   file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
   if [[ -e "$file" ]]; then release_owned_lock "$operation" || :; state_error "state already exists"; return; fi
   turn=$(new_token); seal=$(new_token)
+  [[ -n $turn && -n $seal ]] || { release_owned_lock "$operation" || :; state_error "token generation failed"; return; }
   payload=$(jq -n --arg operation "$operation" --arg client "$client" --arg workspace "$canonical" \
     --arg provisional "$provisional" --arg mode "$mode" --arg turn "$turn" --arg seal "$seal" \
     '{schema:1,operation_id:$operation,client:$client,workspace:$workspace,mode:$mode,status:"active",session:{id:(if $provisional == "" then null else $provisional end),sealed:false},owner:null,stop_intent:null,active_turn:{kind:"launch",token:$turn,seal_token:$seal}}')
@@ -125,7 +152,9 @@ seal_session_once() {
   if ! jq -e --arg turn "$turn" --arg seal "$seal" --arg session "$session_id" --argjson owner "$owner_json" '
     .session.sealed == false and .stop_intent == null and .active_turn.token == $turn and .active_turn.seal_token == $seal and
     ((.session.id == null) or (.session.id == $session)) and
-    (($owner.type == "native" and $owner.handle == $session) or ($owner.type == "exec" and ($owner.token|type) == "string") or ($owner.type == "zmx" and $owner.session_id == $session and ($owner.token|type) == "string"))' <<<"$before" >/dev/null; then
+    ((.mode == "native" and $owner.type == "native" and $owner.handle == $session) or
+     (.mode == "exec" and $owner.type == "exec" and ($owner.token|type) == "string" and ($owner.token|length) > 0) or
+     (.mode == "tui" and $owner.type == "zmx" and $owner.session_id == $session and ($owner.token|type) == "string" and ($owner.token|length) > 0))' <<<"$before" >/dev/null; then
     release_owned_lock "$operation" || :; state_error "seal identity mismatch or already sealed"; return
   fi
   after=$(jq --arg session "$session_id" --argjson owner "$owner_json" '.session.id=$session | .session.sealed=true | .owner=$owner' <<<"$before")
@@ -205,7 +234,7 @@ finalize_native_stop() {
   acquire_lock "$operation" || return
   file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
   before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
-  jq -e --arg turn "$turn" --arg handle "$handle" '.stop_intent.kind == "native" and .stop_intent.status == "prepared" and .stop_intent.turn_token == $turn and .stop_intent.handle == $handle and .owner.handle == $handle' <<<"$before" >/dev/null \
+  jq -e --arg turn "$turn" --arg handle "$handle" '.active_turn.token == $turn and .stop_intent.kind == "native" and .stop_intent.status == "prepared" and .stop_intent.turn_token == $turn and .stop_intent.handle == $handle and .owner.type == "native" and .owner.handle == $handle' <<<"$before" >/dev/null \
     || { release_owned_lock "$operation" || :; state_error "native stop confirmation mismatch"; return; }
   after=$(jq '.status="stopped" | .active_turn=null | .stop_intent.status="finalized"' <<<"$before")
   if ! printf '%s' "$after" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
@@ -215,7 +244,7 @@ finalize_native_stop() {
 classify_prune_candidate() {
   local state
   state=$(read_state "$1") || return
-  jq -r 'if .session.sealed != true then "blocked-unsealed" elif .stop_intent != null then "blocked-stop-intent" elif .active_turn != null then "blocked-active-turn" else "recoverable-clean" end' <<<"$state"
+  jq -r 'if .session.sealed != true then "blocked-unsealed" elif .stop_intent != null then "blocked-stop-intent" elif .active_turn != null then "blocked-active-turn" elif .owner != null then "blocked-live-or-ambiguous-owner" else "recoverable-clean" end' <<<"$state"
 }
 
 clean_one_registry_entry() {
