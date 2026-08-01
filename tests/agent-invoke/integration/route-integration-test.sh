@@ -20,6 +20,7 @@ bootstrap_launch tui-1 codex "$HOME/workspace" '' tui
 turn=$(json_at tui-1 '.active_turn.token'); seal=$(json_at tui-1 '.active_turn.seal_token')
 token='tuionertoken'; handle="ai-tui-1-${token:0:12}"
 "$AGENT_INVOKE_ZMX_BIN" start "$handle"
+expect_fail seal_session_once tui-1 "$turn" "$seal" codex-session '{"type":"zmx","handle":"ai-tui-1-wrongprefix","session_id":"codex-session","token":"tuionertoken"}'
 seal_session_once tui-1 "$turn" "$seal" codex-session "{\"type\":\"zmx\",\"handle\":\"$handle\",\"session_id\":\"codex-session\",\"token\":\"$token\"}"
 # shellcheck disable=SC2016 # literal metacharacters are the stdin contract.
 printf '%s' 'literal $HOME; "quotes"; `backticks`' | "$AGENT_INVOKE_ZMX_BIN" send "$handle"
@@ -27,6 +28,12 @@ printf '%s' 'literal $HOME; "quotes"; `backticks`' | "$AGENT_INVOKE_ZMX_BIN" sen
 [[ $(cat "$test_root/zmx/$handle.messages") == $'literal $HOME; "quotes"; `backticks`\r' ]] || fail 'ZMX delivery did not preserve stdin bytes and separate return'
 expect_fail verify_zmx_owner tui-1 "$turn" codex-session wrong-owner
 verify_zmx_owner tui-1 "$turn" codex-session "$token"
+[[ $(reuse_zmx_wrapper tui-1 "$turn" codex-session "$token") == "$handle" ]] || fail 'live TUI wrapper was not reused'
+"$AGENT_INVOKE_ZMX_BIN" stop "$handle"
+replacement_token='replacement1'; replacement_handle="ai-tui-1-${replacement_token:0:12}"
+"$AGENT_INVOKE_ZMX_BIN" start "$replacement_handle"
+replace_zmx_wrapper tui-1 "$turn" codex-session "$token" "{\"type\":\"zmx\",\"handle\":\"$replacement_handle\",\"session_id\":\"codex-session\",\"token\":\"$replacement_token\"}"
+handle=$replacement_handle; token=$replacement_token
 expect_fail stop_external_owner tui-1 "$turn" wrong-owner
 stop_external_owner tui-1 "$turn" "$token"
 [[ ! -e "$test_root/zmx/$handle" ]] || fail 'exact ZMX carrier was not stopped'

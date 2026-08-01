@@ -160,7 +160,7 @@ seal_session_once() {
     ((.session.id == null) or (.session.id == $session)) and
     ((.mode == "native" and $owner.type == "native" and $owner.handle == $session and ($owner.token|type) == "string" and ($owner.token|length) > 0) or
      (.mode == "exec" and $owner.type == "exec" and ($owner.token|type) == "string" and ($owner.token|length) > 0) or
-     (.mode == "tui" and $owner.type == "zmx" and ($owner.handle|type) == "string" and ($owner.handle|test("^ai-" + $operation + "-[A-Za-z0-9]+$")) and $owner.session_id == $session and ($owner.token|type) == "string" and ($owner.token|length) > 0))' <<<"$before" >/dev/null; then
+     (.mode == "tui" and $owner.type == "zmx" and ($owner.token|type) == "string" and ($owner.token|length) > 0 and $owner.handle == ("ai-" + $operation + "-" + $owner.token[0:12]) and $owner.session_id == $session))' <<<"$before" >/dev/null; then
     release_owned_lock "$operation" || :; state_error "seal identity mismatch or already sealed"; return
   fi
   after=$(jq --arg session "$session_id" --argjson owner "$owner_json" '.session.id=$session | .session.sealed=true | .owner=$owner' <<<"$before")
@@ -230,6 +230,35 @@ zmx_owner_is_live() {
   "$zmx" exists "$handle"
 }
 
+reuse_zmx_wrapper() {
+  local operation=$1 turn=$2 session_id=$3 owner_token=$4 owner
+  acquire_lock "$operation" || return
+  owner=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
+  jq -e --arg turn "$turn" --arg session "$session_id" --arg owner "$owner_token" '.mode == "tui" and .active_turn.token == $turn and .owner.type == "zmx" and .owner.session_id == $session and .owner.token == $owner and .owner.handle == ("ai-" + .operation_id + "-" + .owner.token[0:12])' <<<"$owner" >/dev/null \
+    || { release_owned_lock "$operation" || :; state_error "ZMX owner mismatch"; return; }
+  zmx_owner_is_live "$(jq -c '.owner' <<<"$owner")" || { release_owned_lock "$operation" || :; state_error "ZMX wrapper is not live"; return; }
+  jq -r '.owner.handle' <<<"$owner"
+  release_owned_lock "$operation"
+}
+
+replace_zmx_wrapper() {
+  local operation=$1 turn=$2 session_id=$3 old_token=$4 replacement_json=$5 file before after
+  jq -e . >/dev/null <<<"$replacement_json" || { state_error "invalid replacement owner JSON"; return; }
+  acquire_lock "$operation" || return
+  file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
+  before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
+  jq -e --arg operation "$operation" --arg turn "$turn" --arg session "$session_id" --arg old "$old_token" --argjson replacement "$replacement_json" '
+    .mode == "tui" and .active_turn.token == $turn and .owner.type == "zmx" and .owner.session_id == $session and .owner.token == $old and
+    $replacement.type == "zmx" and $replacement.session_id == $session and ($replacement.token|type) == "string" and ($replacement.token|length) > 0 and
+    $replacement.handle == ("ai-" + $operation + "-" + $replacement.token[0:12])' <<<"$before" >/dev/null \
+    || { release_owned_lock "$operation" || :; state_error "ZMX replacement mismatch"; return; }
+  ! zmx_owner_is_live "$(jq -c '.owner' <<<"$before")" || { release_owned_lock "$operation" || :; state_error "ZMX wrapper is still live"; return; }
+  zmx_owner_is_live "$replacement_json" || { release_owned_lock "$operation" || :; state_error "replacement ZMX wrapper is not live"; return; }
+  after=$(jq --argjson replacement "$replacement_json" '.owner=$replacement' <<<"$before")
+  if ! printf '%s' "$after" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
+  release_owned_lock "$operation"
+}
+
 stop_external_owner() {
   local operation=$1 turn=$2 owner_token=$3 file before after owner kind zmx
   acquire_lock "$operation" || return
@@ -273,13 +302,13 @@ prepare_native_stop() {
 
 confirm_native_stop() {
   local operation=${1-} turn=${2-} handle=${3-} owner_token=${4-} stop_token=${5-} status=${6-} confirmation
-  [[ $status == stopped && -n $turn && -n $handle && -n $owner_token && -n $stop_token ]] || { state_error "invalid native stop confirmation"; return; }
+  [[ -n $status && -n $turn && -n $handle && -n $owner_token && -n $stop_token ]] || { state_error "invalid native stop confirmation"; return; }
   acquire_lock "$operation" || return
   confirmation=$(stop_confirmation_file "$operation") || { release_owned_lock "$operation" || :; return; }
   read_state "$operation" | jq -e --arg turn "$turn" --arg handle "$handle" --arg owner "$owner_token" --arg stop "$stop_token" \
     '.stop_intent.kind == "native" and .stop_intent.status == "prepared" and .stop_intent.turn_token == $turn and .stop_intent.handle == $handle and .stop_intent.owner_token == $owner and .stop_intent.stop_token == $stop' >/dev/null \
     || { release_owned_lock "$operation" || :; state_error "native stop confirmation mismatch"; return; }
-  jq -n --arg turn "$turn" --arg handle "$handle" --arg owner "$owner_token" --arg stop "$stop_token" '{turn_token:$turn,handle:$handle,owner_token:$owner,stop_token:$stop,status:"stopped"}' | atomic_json_replace "$confirmation" || { release_owned_lock "$operation" || :; return 65; }
+  jq -n --arg turn "$turn" --arg handle "$handle" --arg owner "$owner_token" --arg stop "$stop_token" --arg status "$status" '{turn_token:$turn,handle:$handle,owner_token:$owner,stop_token:$stop,status:$status}' | atomic_json_replace "$confirmation" || { release_owned_lock "$operation" || :; return 65; }
   release_owned_lock "$operation"
 }
 
@@ -302,10 +331,38 @@ finalize_native_stop() {
 }
 
 classify_prune_candidate() {
-  local state
+  local state operation=$1
   state=$(read_state "$1") || return
-  jq -r 'if .session.sealed != true then "blocked-unsealed" elif .stop_intent != null then "blocked-stop-intent" elif .active_turn != null then "blocked-active-turn" elif .owner != null then "blocked-live-or-ambiguous-owner" else "recoverable-clean" end' <<<"$state"
+  jq -r --arg operation "$operation" '
+    if (.schema != 1 or .operation_id != $operation or (.client != "codex" and .client != "claude") or (.workspace|type) != "string" or (.workspace|startswith("/")|not) or (.mode != "native" and .mode != "exec" and .mode != "tui") or (.status|type) != "string" or (.session|type) != "object" or ((.session.id|type) != "string" and .session.id != null) or (.session.sealed|type) != "boolean" or ((.owner|type) != "object" and .owner != null) or ((.stop_intent|type) != "object" and .stop_intent != null) or ((.active_turn|type) != "object" and .active_turn != null)) then "blocked-malformed"
+    elif .session.sealed != true then "blocked-unsealed"
+    elif .stop_intent != null then "blocked-stop-intent"
+    elif .active_turn != null then "blocked-active-turn"
+    elif .owner != null then "blocked-live-or-ambiguous-owner"
+    else "recoverable-clean"
+    end' <<<"$state"
 }
+
+prune_registry() {
+  local option=${1---dry-run} operation file base
+  [[ $option == --dry-run || $option == --confirm ]] || { state_error "prune requires --dry-run or --confirm"; return; }
+  if [[ $option == --confirm ]]; then
+    operation=${2-}
+    valid_operation_id "$operation" || { state_error "prune confirmation requires one exact operation"; return; }
+    clean_one_registry_entry "$operation" --confirm
+    return
+  fi
+  ensure_registry || return
+  while IFS= read -r -d '' file; do
+    base=$(basename "$file")
+    [[ $base == *.stop-confirmation.json ]] && continue
+    operation=${base%.json}
+    valid_operation_id "$operation" || continue
+    printf '%s %s\n' "$operation" "$(classify_prune_candidate "$operation")"
+  done < <(find "$(state_root)/runs" -maxdepth 1 -type f -print0)
+}
+
+prune() { prune_registry "$@"; }
 
 clean_one_registry_entry() {
   local operation=$1 option=$2 file class
@@ -331,6 +388,9 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     finalize-native-stop) finalize_native_stop "$@" ;;
     stop-external) stop_external_owner "$@" ;;
     clean-one) clean_one_registry_entry "$@" ;;
+    reuse-zmx) reuse_zmx_wrapper "$@" ;;
+    replace-zmx) replace_zmx_wrapper "$@" ;;
+    prune) prune "$@" ;;
     *) state_error 'unsupported state command'; exit 64 ;;
   esac
 fi

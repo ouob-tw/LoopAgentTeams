@@ -201,4 +201,26 @@ finalize_native_stop native-finalize "$nf_turn" native-finalize-handle native-ow
 clean_one_registry_entry native-finalize --confirm
 [[ ! -e "$HOME/.agent-invoke/runs/native-finalize.json" ]] || fail 'finalized native state was not cleanable'
 
+# Task 4 review RED: malformed but parseable metadata is manual-only, and an
+# exact host error is retained as confirmation without allowing finalization.
+new_home review-round-1
+mkdir -p "$HOME/.agent-invoke/runs"
+printf '%s\n' '{"schema":0,"operation_id":"malformed","session":{"sealed":true,"id":"x"},"owner":null,"stop_intent":null,"active_turn":null}' > "$HOME/.agent-invoke/runs/malformed.json"
+chmod 600 "$HOME/.agent-invoke/runs/malformed.json"
+[[ $(classify_prune_candidate malformed) == blocked-malformed ]] || fail 'malformed metadata was not manual-only'
+expect_fail clean_one_registry_entry malformed --confirm
+[[ -f "$HOME/.agent-invoke/runs/malformed.json" ]] || fail 'malformed metadata was trashed'
+
+bootstrap_launch native-error codex "$HOME/workspace" '' native
+error_turn=$(json_at native-error '.active_turn.token'); error_seal=$(json_at native-error '.active_turn.seal_token')
+seal_session_once native-error "$error_turn" "$error_seal" native-error-handle '{"type":"native","handle":"native-error-handle","token":"error-owner"}'
+error_stop=$(prepare_native_stop native-error "$error_turn" native-error-handle error-owner)
+confirm_native_stop native-error "$error_turn" native-error-handle error-owner "$error_stop" error
+[[ $(jq -r '.status' "$HOME/.agent-invoke/runs/native-error.json.stop-confirmation.json") == error ]] || fail 'host error status was not retained'
+before_error=$(cat "$HOME/.agent-invoke/runs/native-error.json")
+expect_fail finalize_native_stop native-error "$error_turn" native-error-handle error-owner "$error_stop"
+[[ $(cat "$HOME/.agent-invoke/runs/native-error.json") == "$before_error" ]] || fail 'error finalize changed protected state'
+prune_output=$(prune)
+grep -qx 'malformed blocked-malformed' <<<"$prune_output" || fail 'prune did not list exact malformed entry and reason'
+
 printf 'PASS: secure state manager\n'
