@@ -488,18 +488,89 @@ transcript 留在臨時目錄或 CI artifact，不提交 repo。
 
 使用小型、可讀的 prompt set 驗證 description：
 
-- 至少 12 個應觸發案例：一般委派、明確 model、同宿主、跨宿主、明確 exec、明確 TUI、
-  呼叫尚未支援的 client、使用 operation ID resume、使用精確 session reference resume、
-  `stop`、`clean`、`prune`。
-- 至少 6 個不應觸發或應轉交案例：完整 LAT 流程、只問文件、一般 shell 指令、
-  無 Agent 委派需求、純 Git 操作、只要求修改目前 Agent 自己的內容。
+- 固定 11 個應觸發或需安全拒絕的案例：一般委派、明確 Claude model、跨 client、
+  明確 exec、明確 TUI、呼叫尚未支援的 client、使用 operation ID resume、使用精確
+  session reference resume、`stop`、`clean`、`prune`。
+- 固定 3 個不應觸發或應轉交案例：完整 LAT 流程、只要求資訊或單一指令且沒有委派需求、
+  只要求目前 Agent 直接完成工作。
 
-應觸發案例必須在 fresh-agent trace 中出現 `agent-invoke` 啟用與 `SKILL.md` 讀取；
-不應觸發案例不得讀取該 Skill。上述案例必須全數符合預期才通過。
+本評估不讀取硬碟上的 client 原始 session JSONL，也不要求 client 暴露 Skill activation、
+`Read` tool 或 `SKILL.md` 路徑事件。每個 fresh agent 只收到原始案例與一段共用的評估
+輸出契約；契約只描述欄位，不揭露該案例的預期答案。runner 必須建立 decision-only
+turn：client 有 tool-disable／deny 設定時必須啟用；沒有完整停用介面時，必須使用
+client 的結構化 event stream，將任何 tool event 或 permission request 判為失敗。
+不得退回一般可寫 session，也不得產生 invoke／resume／stop／clean／prune 副作用。
 
-每個 prompt 以 fresh agent 固定執行三次，三次都符合預期才通過。只保存每案的觸發次數
-與精簡失敗摘要，raw traces 留在暫存或 CI artifact；不得為此建立新的通用 evaluator、
-archive 或 schema。
+每次 turn 使用新的隔離 HOME 與 workspace；其中不包含 repo、真實 `~/.agent-invoke/`、
+預期 envelope 或可用的真實 operation/session metadata。resume 案例只使用合成且無法指向
+真實 session 的 sealed metadata。runner 在前後驗證真實 `~/.agent-invoke/` 與 repo
+狀態不變；任何可觀察的 tool event、permission request、狀態變動或額外輸出都失敗。
+agent 必須只輸出一個 JSON decision envelope：
+
+```json
+{
+  "intent": "invoke|resume|stop|clean|prune|other",
+  "decision_scope": "agent-invoke|other",
+  "target_client": "codex|claude|unsupported|none",
+  "route": "native|external-exec|external-tui|resume-existing|none",
+  "reason_code": "one approved enum value"
+}
+```
+
+`reason_code` 只允許：`same-family-native`、`cross-family-exec`、`explicit-exec`、
+`explicit-tui`、`exact-resume`、`unsupported-client`、`lifecycle-stop`、
+`lifecycle-clean`、`lifecycle-prune`、`lat-workflow`、
+`direct-work`、`non-delegation-request`。不得讓 runner 或 agent 自行新增 reason。
+
+每個案例在 parent runner 可讀的 repo-level prompt set 另存 `expected.codex` 與
+`expected.claude`，但 runner 只把 rendered prompt 與共用欄位契約送給 child；expected
+資料不得出現在 child 的 context、HOME、workspace 或可見 filesystem。prompt 不得用
+「同宿主」「另一個 client」等缺少實際身分的文字；runner 依目前 client render 出明確
+宿主、目標 client、model 或合成的 sealed operation/session metadata。五個欄位的唯一
+合法答案如下；`AI` 表示 `agent-invoke`，`X` 表示 `external-exec`：
+
+| case | host | intent | scope | target | route | reason |
+|---|---|---|---|---|---|---|
+| generic-native | Codex | invoke | AI | codex | native | same-family-native |
+| generic-native | Claude | invoke | AI | claude | native | same-family-native |
+| exact-claude-model | Codex | invoke | AI | claude | X | cross-family-exec |
+| exact-claude-model | Claude | invoke | AI | claude | native | same-family-native |
+| cross-client | Codex | invoke | AI | claude | X | cross-family-exec |
+| cross-client | Claude | invoke | AI | codex | X | cross-family-exec |
+| explicit-exec | Codex | invoke | AI | codex | X | explicit-exec |
+| explicit-exec | Claude | invoke | AI | claude | X | explicit-exec |
+| explicit-tui | Codex | invoke | AI | codex | external-tui | explicit-tui |
+| explicit-tui | Claude | invoke | AI | claude | external-tui | explicit-tui |
+| unsupported-client | Codex／Claude | invoke | AI | unsupported | none | unsupported-client |
+| operation-resume | Codex／Claude | resume | AI | claude | resume-existing | exact-resume |
+| reference-resume | Codex／Claude | resume | AI | codex | resume-existing | exact-resume |
+| stop | Codex／Claude | stop | AI | none | none | lifecycle-stop |
+| clean | Codex／Claude | clean | AI | none | none | lifecycle-clean |
+| prune | Codex／Claude | prune | AI | none | none | lifecycle-prune |
+| full-LAT | Codex／Claude | other | other | none | none | lat-workflow |
+| non-delegation-request | Codex／Claude | other | other | none | none | non-delegation-request |
+| direct-work | Codex／Claude | other | other | none | none | direct-work |
+
+表中的 Codex／Claude 共用列是同一個 case 的兩個 host expectation，不增加案例數；總數固定
+為 14。
+
+固定 runner 只以 `jq` 驗證
+schema 與 exact field equality：11 個應觸發或需安全拒絕案例的 `decision_scope` 必須是
+`agent-invoke`，並符合各自 route／reason；3 個不應觸發案例必須是 `other`、route
+`none`，並符合各自 reason。尚未支援的 client 仍屬 `agent-invoke` scope，但必須選
+route `none` 與 `unsupported-client`，不得產生外部副作用。
+
+這是 **behavior-level trigger proxy**：只證明 fresh agent 的可觀察決策符合本 Skill
+契約，不宣稱證明它實際載入或讀取了某個檔案。它不得替代第 9.3 節的真實 route E2E。
+不使用 LLM grader、regex path mention 或自由文字自述作 verdict。
+
+每個 prompt 在每個 client 以 fresh agent 固定執行兩次，兩次的 exact envelope 都符合預期
+才通過；共 14 × 2 clients × 2 repetitions = 56 turns。
+每個 client turn 有 120 秒上限；timeout、非零 client status、非 JSON、額外文字、未知
+enum 或任何欄位 mismatch 都 fail closed，runner 發布 summary 後必須以非零結束。只保存
+每案通過次數與不含 raw response 的結構化 mismatch／status code；解析所需的原始輸出只能
+存在於私有暫存，runner 結束前必須刪除，不得上傳 artifact 或提交 repo。不得為此建立
+LLM evaluator、通用 evaluator、archive 或額外 schema framework。
 
 ## 10. 驗收條件
 
@@ -535,8 +606,9 @@ Spec／Plan／review／test／QA phase。每個 installed E2E 都以 `.lat` file
 ### QA-6：Skill 維持精簡
 
 `SKILL.md` 不超過 150 行；沒有 compatibility mirror；package 不含測試、fixture、
-raw trace 或 generated evidence；fresh-agent trace 顯示每次只讀取選定 route 所需
-reference。
+raw trace 或 generated evidence；靜態 contract 證明 reference 只能由對應 route
+條件載入，fresh-agent decision envelope 則在不讀 client 原始 JSONL 的前提下符合固定
+trigger 行為矩陣。這些證據不宣稱觀察到實際檔案讀取。
 
 ### QA-7：真實安裝結果優先
 
