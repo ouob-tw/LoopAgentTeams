@@ -13,10 +13,12 @@ description: Use when a user asks to delegate work to a Codex or Claude Code age
 
 `action,target_family,route,client,mode,model,effort,permission,workspace,resume_reference`
 
-- `action` 僅為 launch、follow-up、resume 或 stop；缺值或歧義即詢問，不猜測。
+- `action` 僅為 launch、follow-up、resume、stop、clean 或 prune；缺值或歧義即詢問，不猜測。
 - `target_family`、`client`、`workspace` 與 `permission` 必須在啟動前傳遞給選定路徑，並在回覆前完成 target transmission 與 target verification。
 - `resume_reference` 只可使用先前回傳、已封存的精確執行期 handle；不得由名稱、摘要或相近工作取代。
 - 未提供 `route` 時，依序套用下節決策。最後輸出正規化欄位與 exactly one selected route。
+- stop、clean 與 prune 的執行對象是精確 operation，不是新的 Agent client；只做路由決策時，不選 target client 或 route。
+- 只要求資訊、要求目前 Agent 直接工作且不委派，或要求完整規格／計畫／審查／測試工作流時，不屬於此 skill；不要選取 invoke route。
 
 ## 路由決策
 

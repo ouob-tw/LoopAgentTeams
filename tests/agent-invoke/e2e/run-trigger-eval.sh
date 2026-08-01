@@ -195,10 +195,10 @@ extract_single_envelope() {
   if [[ $client == codex ]]; then
     jq -r 'select(.type == "item.completed" and .item.type == "agent_message") | .item.text // empty' "$stream" >"$response"
   else
-    jq -r 'select(.type == "result") | .result // empty' "$stream" >"$response"
+    jq -c 'select(.type == "result" and (.structured_output | type) == "object") | .structured_output' "$stream" >"$response"
   fi
   [[ $(wc -l <"$response") -eq 1 ]] || return 1
-  jq -ce '
+  jq -ce 'select(
     type == "object" and
     (keys | sort) == ["decision_scope","intent","reason_code","route","target_client"] and
     (.intent | IN("invoke","resume","stop","clean","prune","other")) and
@@ -206,6 +206,7 @@ extract_single_envelope() {
     (.target_client | IN("codex","claude","unsupported","none")) and
     (.route | IN("native","external-exec","external-tui","resume-existing","none")) and
     (.reason_code | IN("same-family-native","cross-family-exec","explicit-exec","explicit-tui","exact-resume","unsupported-client","lifecycle-stop","lifecycle-clean","lifecycle-prune","lat-workflow","direct-work","non-delegation-request"))
+  )
   ' "$response" >"$final"
 }
 
@@ -215,29 +216,31 @@ compare_expected() {
 }
 
 run_decision_turn() {
-  local rendered_prompt=$1 final=$2 request schema stream mcp_config status
+  local rendered_prompt=$1 final=$2 request schema stream diagnostics mcp_config status
   request=$CASE_TMP/request.txt
   schema=$CASE_TMP/decision-schema.json
   stream=$CASE_TMP/client-stream.jsonl
+  diagnostics=$CASE_TMP/client-stderr.log
   mcp_config=$CASE_CLAUDE_CONFIG/mcp.json
   printf '%s\n\n%s\n' \
-    'Return exactly one JSON object with intent, decision_scope, target_client, route, and reason_code. Do not invoke tools, modify files, create state, delegate work, or add text. Allowed values: intent=invoke|resume|stop|clean|prune|other; decision_scope=agent-invoke|other; target_client=codex|claude|unsupported|none; route=native|external-exec|external-tui|resume-existing|none; reason_code=same-family-native|cross-family-exec|explicit-exec|explicit-tui|exact-resume|unsupported-client|lifecycle-stop|lifecycle-clean|lifecycle-prune|lat-workflow|direct-work|non-delegation-request.' \
+    'Return exactly one JSON object with intent, decision_scope, target_client, route, and reason_code. Do not invoke tools, modify files, create state, delegate work, or add text. Field meanings: intent is the standalone invoke/resume/lifecycle action, or other when no standalone delegation is requested; decision_scope is agent-invoke only for a standalone invoke/resume/lifecycle request, otherwise other; target_client is the invoked/resumed client, unsupported for an unsupported target, and none for lifecycle or other scope; route is the selected invoke/resume execution route, and none for refusal, lifecycle, or other scope; reason_code is the single category that explains this decision. Allowed values: intent=invoke|resume|stop|clean|prune|other; decision_scope=agent-invoke|other; target_client=codex|claude|unsupported|none; route=native|external-exec|external-tui|resume-existing|none; reason_code=same-family-native|cross-family-exec|explicit-exec|explicit-tui|exact-resume|unsupported-client|lifecycle-stop|lifecycle-clean|lifecycle-prune|lat-workflow|direct-work|non-delegation-request.' \
     "User request: $rendered_prompt" >"$request"
   printf '%s\n' '{"type":"object","additionalProperties":false,"required":["intent","decision_scope","target_client","route","reason_code"],"properties":{"intent":{"type":"string"},"decision_scope":{"type":"string"},"target_client":{"type":"string"},"route":{"type":"string"},"reason_code":{"type":"string"}}}' >"$schema"
-  printf '%s\n' '{}' >"$mcp_config"
+  printf '%s\n' '{"mcpServers":{}}' >"$mcp_config"
   if [[ $client == codex ]]; then
     if sandbox_run "$codex_module_root" /opt/node_modules "$codex_runtime" /opt/node /opt/node \
       /opt/node_modules/@openai/codex/bin/codex.js exec \
       --ephemeral --ignore-user-config --ignore-rules --sandbox read-only --json \
       --config agents.enabled=false --config web_search="disabled" --output-schema "$schema" \
-      "$(<"$request")" >"$stream" 2>&1; then
+      "$(<"$request")" >"$stream" 2>"$diagnostics"; then
       status=0
     else
       status=$?
     fi
   else
-    if sandbox_run "$claude_binary" /opt/claude /opt/claude --print --output-format stream-json --no-session-persistence \
-      --strict-mcp-config --mcp-config "$mcp_config" --tools "" "$(<"$request")" >"$stream" 2>&1; then
+    if sandbox_run "$claude_binary" /opt/claude /opt/claude --print --verbose --output-format stream-json --no-session-persistence \
+      --strict-mcp-config --mcp-config "$mcp_config" --json-schema "$(<"$schema")" --tools "" \
+      <"$request" >"$stream" 2>"$diagnostics"; then
       status=0
     else
       status=$?
@@ -304,7 +307,7 @@ cleanup_case "$case_root"
 case_root=''
 
 all_cases='[]'
-while IFS= read -r case_json; do
+while IFS= read -r case_json <&3; do
   id=$(jq -r '.id' <<<"$case_json")
   expected=$(jq -c --arg client "$client" '.expected[$client]' <<<"$case_json")
   rendered_prompt=$(render_case "$(jq -r '.prompt' <<<"$case_json")")
@@ -330,7 +333,7 @@ while IFS= read -r case_json; do
   done
   case_summary=$(jq -cn --arg id "$id" --argjson passed_runs "$passed_runs" --argjson failures "$failures" '$ARGS.named + {runs:2,passed:($passed_runs == 2),passed_runs:$passed_runs,failures:$failures}')
   all_cases=$(jq -cn --argjson current "$all_cases" --argjson case "$case_summary" '$current + [$case]')
-done < <(jq -c '.[]' "$prompts_file")
+done 3< <(jq -c '.[]' "$prompts_file")
 
 snapshot_tree "$real_registry" "$protection_root/registry.after"
 git -C "$repo_root" status --porcelain=v1 --untracked-files=all >"$protection_root/repository.after"
