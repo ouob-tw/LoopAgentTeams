@@ -34,7 +34,7 @@ mkdir -p "$(dirname "$output")"
 output_tmp=$(mktemp "${output}.tmp.XXXXXX")
 
 run_one() {
-  local expected=$1 prompt=$2 run_dir=$3 trace=$4 candidate source_path command status json_trace read=false
+  local expected=$1 prompt=$2 run_dir=$3 trace=$4 candidate source_path command status json_trace activation=false read=false
   mkdir -p "$run_dir"
   if [[ $client == codex ]]; then
     candidate="$run_dir/.agents/skills/agent-invoke"
@@ -52,18 +52,24 @@ run_one() {
   fi
   status=$?
   if (( status != 0 )); then
-    printf 'client exit %s: %s' "$status" "$(tr '\n' ' ' <"$trace" | tr -s ' ' | cut -c1-160)"
+    if (( status == 124 )); then printf '%s' 'client timeout (exit 124)'; else printf 'client failure (exit %s)' "$status"; fi
     return 1
   fi
   json_trace="$run_dir/events.jsonl"
   sed -n '/^{/p' "$trace" >"$json_trace"
-  if jq -e --arg candidate "$candidate/SKILL.md" --arg source "$source_path" '
-      .. | objects | select(.type? == "command_execution" or .type? == "tool_use" or .type? == "skill") |
-      (.command? // .input?.command? // .path? // .skill_path? // "") | strings | select(contains($candidate) or contains($source))' "$json_trace" >/dev/null; then
-    read=true
+  if [[ $client == codex ]]; then
+    jq -e '.. | objects | select(.type? == "skill" and (.name? == "agent-invoke" or .skill? == "agent-invoke"))' "$json_trace" >/dev/null && activation=true
+    jq -e --arg candidate "$candidate/SKILL.md" --arg source "$source_path" '.. | objects | select(.type? == "command_execution") | .command? // "" | strings | select(contains($candidate) or contains($source))' "$json_trace" >/dev/null && read=true
+  else
+    jq -e '.. | objects | select(.type? == "tool_use" and .name? == "Skill" and (.input.skill? == "agent-invoke" or .input.name? == "agent-invoke"))' "$json_trace" >/dev/null && activation=true
+    jq -e --arg candidate "$candidate/SKILL.md" --arg source "$source_path" '.. | objects | select(.type? == "tool_use" and .name? == "Read") | (.input.file_path? // .input.path? // "") | strings | select(contains($candidate) or contains($source))' "$json_trace" >/dev/null && read=true
   fi
-  if [[ $read == "$expected" ]]; then return 0; fi
-  if [[ $expected == true ]]; then printf '%s' 'observable target skill read event was absent'; else printf '%s' 'observable target skill read event appeared for a near-miss'; fi
+  if [[ $expected == true && $activation == true && $read == true ]]; then return 0; fi
+  if [[ $expected == false && $activation == false && $read == false ]]; then return 0; fi
+  if [[ $expected == true && $activation == false ]]; then printf '%s' 'observable target skill activation event was absent'
+  elif [[ $expected == true ]]; then printf '%s' 'observable target skill read event was absent'
+  elif [[ $read == true ]]; then printf '%s' 'observable target skill read event appeared for a near-miss'
+  else printf '%s' 'observable target skill activation event appeared for a near-miss'; fi
   return 1
 }
 
@@ -81,3 +87,4 @@ while IFS= read -r case_json; do
 done < <(jq -c '.[]' "$prompts_file")
 jq -n --arg client "$client" --argjson cases "$all_cases" '{client:$client,cases:$cases}' >"$output_tmp"
 mv -- "$output_tmp" "$output"
+jq -e 'all(.cases[]; .passed == true and .runs == 3)' "$output" >/dev/null

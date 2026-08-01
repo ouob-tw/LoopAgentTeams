@@ -69,6 +69,10 @@ require_literal "$trigger_runner" '.claude/skills/agent-invoke'
 require_literal "$trigger_runner" '--output-format stream-json'
 require_literal "$trigger_runner" 'observable target skill read event was absent'
 require_literal "$trigger_runner" 'observable target skill read event appeared for a near-miss'
+require_literal "$trigger_runner" 'observable target skill activation event was absent'
+require_literal "$trigger_runner" 'client timeout (exit 124)'
+require_literal "$trigger_runner" 'all(.cases[]; .passed == true and .runs == 3)'
+forbid_literal "$trigger_runner" "tr '\\n' ' ' <\"\$trace\""
 validation_marker="[[ ( \$client == codex || \$client == claude ) && \$skill_root == /*"
 require_literal "$trigger_runner" "$validation_marker"
 require_literal "$trigger_runner" 'timeout --signal=TERM --kill-after=10s 120s'
