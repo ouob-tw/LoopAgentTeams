@@ -11,6 +11,7 @@ source "$repo_root/agent-invoke/scripts/resolve-session-reference.sh"
 die() { printf 'agent-invoke exec: %s\n' "$*" >&2; exit 65; }
 child_identity() {
   local pid=$1 executable started
+  [[ ${AGENT_INVOKE_FAIL_IDENTITY:-0} != 1 ]] || return 1
   executable=$(readlink "/proc/$pid/exe" 2>/dev/null || command -v ps)
   started=$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//')
   [[ -n $executable && -n $started ]] || return 1
@@ -25,7 +26,14 @@ action=$1 operation=$2 client=$3 workspace=$4 prompt=$5 model=$6 effort=$7 permi
 [[ $client == claude || $client == codex ]] || die 'unsupported client'
 [[ -d $workspace && ! -L $workspace && -f $prompt && ! -L $prompt && -n $model && -n $effort && -n $permission ]] || die 'unsafe launch input'
 workspace=$(cd "$workspace" && pwd -P)
-dispose_prompt() { [[ ! -e $prompt ]] || shred -u "$prompt"; }
+child_pid= child_started=0 child_waited=0
+dispose_prompt() {
+  if [[ $child_started == 1 && $child_waited != 1 ]]; then
+    wait "$child_pid" 2>/dev/null || :
+    child_waited=1
+  fi
+  [[ ! -e $prompt ]] || shred -u "$prompt"
+}
 trap dispose_prompt EXIT
 run_file="$(state_root)/runs/$operation"; manifest="$run_file.manifest"
 settings=$(jq -n --arg client "$client" --arg workspace "$workspace" --arg model "$model" --arg effort "$effort" --arg permission "$permission" '{client:$client,workspace:$workspace,model:$model,effort:$effort,permission:$permission}')
@@ -58,10 +66,12 @@ else
 fi
 
 (cd "$workspace" && "${argv[@]}" < "$prompt" > "$stream") & pid=$!
+child_pid=$pid; child_started=1
 owner=$(child_identity "$pid") || die 'cannot establish exact child identity'
 observed=$(child_identity "$pid") || die 'child identity changed before wait'
 [[ $(jq -r '.pid, .started, .executable' <<<"$owner") == $(jq -r '.pid, .started, .executable' <<<"$observed") ]] || die 'reused PID or changed executable refused'
 set +e; wait "$pid"; result=$?; set -e
+child_waited=1
 shred -u "$prompt" || die 'private prompt disposal failed'
 [[ $result -eq 0 ]] || exit "$result"
 chmod 600 "$stream"

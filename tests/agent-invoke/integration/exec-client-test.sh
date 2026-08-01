@@ -47,6 +47,11 @@ for mode in duplicate mismatch no-seal dependency auth quota permission; do
   [[ $(state "$mode" '.mode') == exec && $(state "$mode" '.session.sealed') == false && $(state "$mode" '.session.id') == null ]] || fail "$mode left a resumable or alternate operation"
   [[ ! -e $prompt ]] || fail "$mode retained a private prompt after client failure"
 done
+setup identity-failure; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok AGENT_INVOKE_FAIL_IDENTITY=1
+expect_fail launch identity-failure codex "$workspace" "$prompt" model-x high danger-full-access ''
+unset AGENT_INVOKE_FAIL_IDENTITY
+cmp -s "$FAKE_STDIN" <(printf '%s\n' "\$(touch should-not-run); --resume \"quoted\"") || fail 'identity failure disposed prompt before the forked child consumed stdin'
+[[ ! -e $prompt && $(state identity-failure '.session.sealed') == false && $(state identity-failure '.active_turn.kind') == launch ]] || fail 'identity failure did not wait, dispose, and remain fail-closed'
 setup resume-settings; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok
 launch settings codex "$workspace" "$prompt" model-x high danger-full-access ''
 turn=$(state settings '.active_turn.token'); bash "$repo_root/agent-invoke/scripts/manage-run-state.sh" complete-turn settings "$turn"
