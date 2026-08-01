@@ -1,13 +1,12 @@
-# External completion evidence
+# 外部完成證據
 
-`monitor-session.sh` accepts an operation, exact active-turn token, exact exec
-owner token, and an owned regular transcript. It first verifies the sealed
-state and the immutable settings manifest.
+`monitor-session.sh` 接受 operation、exact active-turn token、exact exec owner
+token 與 owned regular transcript。它會先驗證 sealed state 及 immutable settings
+manifest。
 
-Claude completion requires the sealed session ID, the selected model, and the
-newest matching user-to-assistant `end_turn` result. Codex completion requires
-the sealed `session_meta` ID and workspace, a matching resumed-turn model, a
-`response_item` with `phase=final_answer`, and `task_complete` or
-`turn_complete` in that turn. The monitor prints the one Final Answer before
-calling `complete-turn` with the exact token. Missing or conflicting evidence
-returns exit 70 and leaves the turn active.
+Claude 完成需要 sealed session ID、選定 model，以及最新相符的 user-to-assistant
+`end_turn` 結果。Codex 完成需要 sealed `session_meta` ID 與 workspace、sealed 的
+owned transcript、baseline 後同一 turn 的 matching model、`phase=final_answer` 的
+`response_item`，以及同一 turn 的 `task_complete` 或 `turn_complete`。monitor 會先
+印出唯一的 Final Answer，才以 exact token 呼叫 `complete-turn`。缺少或衝突的證據
+返回 exit 70 並保留 active turn。

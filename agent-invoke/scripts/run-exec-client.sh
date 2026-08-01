@@ -5,6 +5,8 @@ set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)
 # shellcheck source=/dev/null
 source "$repo_root/agent-invoke/scripts/manage-run-state.sh"
+# shellcheck source=/dev/null
+source "$repo_root/agent-invoke/scripts/resolve-session-reference.sh"
 
 die() { printf 'agent-invoke exec: %s\n' "$*" >&2; exit 65; }
 child_identity() {
@@ -23,6 +25,10 @@ action=$1 operation=$2 client=$3 workspace=$4 prompt=$5 model=$6 effort=$7 permi
 [[ $client == claude || $client == codex ]] || die 'unsupported client'
 [[ -d $workspace && ! -L $workspace && -f $prompt && ! -L $prompt && -n $model && -n $effort && -n $permission ]] || die 'unsafe launch input'
 workspace=$(cd "$workspace" && pwd -P)
+dispose_prompt() { [[ ! -e $prompt ]] || shred -u "$prompt"; }
+trap dispose_prompt EXIT
+run_file="$(state_root)/runs/$operation"; manifest="$run_file.manifest"
+settings=$(jq -n --arg client "$client" --arg workspace "$workspace" --arg model "$model" --arg effort "$effort" --arg permission "$permission" '{client:$client,workspace:$workspace,model:$model,effort:$effort,permission:$permission}')
 
 if [[ $action == launch ]]; then
   [[ $client != claude || -n $session_id ]] || die 'Claude launch requires a preallocated exact UUID'
@@ -31,19 +37,16 @@ if [[ $action == launch ]]; then
 else
   [[ -n $session_id && -n $turn_token ]] || die 'resume requires exact session and turn token'
   [[ $(state_value "$operation" '.client') == "$client" && $(state_value "$operation" '.workspace') == "$workspace" && $(state_value "$operation" '.mode') == exec && $(state_value "$operation" '.session.sealed') == true && $(state_value "$operation" '.session.id') == "$session_id" ]] || die 'resume identity mismatch'
+  [[ -f $manifest && ! -L $manifest && $(jq -cS . "$manifest") == $(jq -cS . <<<"$settings") ]] || die 'resume settings mismatch'
   begin_turn "$operation" resume "$turn_token" || exit $?
 fi
 
-run_file="$(state_root)/runs/$operation"
-stream="$run_file.stream.$(state_value "$operation" '.active_turn.token')"; manifest="$run_file.manifest"
+stream="$run_file.stream.$(state_value "$operation" '.active_turn.token')"
 umask 077
 [[ ! -e $stream ]] || die 'capture already exists'
-settings=$(jq -n --arg client "$client" --arg workspace "$workspace" --arg model "$model" --arg effort "$effort" --arg permission "$permission" '{client:$client,workspace:$workspace,model:$model,effort:$effort,permission:$permission}')
 if [[ $action == launch ]]; then
   [[ ! -e $manifest ]] || die 'immutable settings already exist'
   printf '%s\n' "$settings" > "$manifest"; chmod 600 "$manifest"
-else
-  [[ -f $manifest && ! -L $manifest && $(jq -cS . "$manifest") == $(jq -cS . <<<"$settings") ]] || die 'resume settings mismatch'
 fi
 
 if [[ $client == claude ]]; then
@@ -59,6 +62,7 @@ owner=$(child_identity "$pid") || die 'cannot establish exact child identity'
 observed=$(child_identity "$pid") || die 'child identity changed before wait'
 [[ $(jq -r '.pid, .started, .executable' <<<"$owner") == $(jq -r '.pid, .started, .executable' <<<"$observed") ]] || die 'reused PID or changed executable refused'
 set +e; wait "$pid"; result=$?; set -e
+shred -u "$prompt" || die 'private prompt disposal failed'
 [[ $result -eq 0 ]] || exit "$result"
 chmod 600 "$stream"
 
@@ -69,6 +73,11 @@ else
   confirmed=$(jq -r 'select(.type == "thread.started") | .thread_id // .thread.id // empty' "$stream")
   [[ $(printf '%s\n' "$confirmed" | sed '/^$/d' | wc -l) -eq 1 && -n $confirmed ]] || die 'Codex must emit exactly one authoritative thread.started'
   session_id=$confirmed
+  if [[ $action == launch ]]; then
+    transcript=$(resolve_codex_uuid_or_path "$session_id" "$workspace") || die 'Codex native transcript is not one exact owned match'
+    baseline=$(wc -l < "$transcript")
+    owner=$(jq --arg transcript "$transcript" --argjson baseline "$baseline" '.transcript=$transcript | .baseline=$baseline' <<<"$owner")
+  fi
 fi
 if [[ $action == launch ]]; then
   turn=$(state_value "$operation" '.active_turn.token'); seal=$(state_value "$operation" '.active_turn.seal_token')

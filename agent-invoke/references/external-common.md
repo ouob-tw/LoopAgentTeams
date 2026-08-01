@@ -1,16 +1,15 @@
-# External execution safety
+# 外部執行安全
 
-Use an external client only after the caller has selected it and supplied a
-canonical workspace, immutable model/effort/permission settings, and a private
-regular prompt file. The launcher runs in that exact workspace and supplies
-the prompt only on stdin; never interpolate prompt content into argv.
+只有在呼叫端已選定外部 client，並提供 canonical workspace、不可變的
+model／effort／permission 設定及私有普通 prompt 檔後，才可執行。launcher
+必須在該 workspace 內執行，prompt 只能經 stdin 傳入，絕不可插入 argv。
 
-The first identity is provisional. A failed dependency, authentication, quota,
-permission, child-identity, or authoritative-start check is a refusal: do not
-fall back to another client or mode. Keep the active turn and unsealed record
-for inspection; do not make it resumable. Captures and setting manifests are
-private, per-operation files. Resume requires the sealed exact session and an
-identical settings manifest.
+第一個 identity 一律為 provisional。依賴、驗證、配額、權限、child identity
+或 authoritative start 任一檢查失敗即拒絕；不得改用其他 client 或 mode。
+保留 active turn 與 unsealed record 供檢查，但不可使其可 resume。capture 與
+settings manifest 是每個 operation 的私有檔案；resume 必須使用 sealed exact
+session 與完全相同的 settings manifest。prompt 在已交付或已證明未交付後必須
+安全清除。
 
-Do not report completion from a client exit alone. Completion is controlled by
-the monitor after transcript evidence, and only it may clear the matching turn.
+不得只因 client exit 就回報完成。monitor 必須取得 transcript evidence，且只有
+它可以清除相符的 active turn。

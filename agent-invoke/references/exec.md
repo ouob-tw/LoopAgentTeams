@@ -1,14 +1,13 @@
-# External exec handoff
+# 外部 exec 交接
 
-`run-exec-client.sh` accepts exactly one launch or resume operation. Launch
-bootstraps an `exec` record; Claude retains its caller-preallocated UUID until
-one matching authoritative init event confirms it, while fresh Codex seals the
-single authoritative `thread.started` ID. The seal includes the PID, start
-time, executable, and private owner token.
+`run-exec-client.sh` 一次只接受一個 launch 或 resume operation。launch 會
+bootstrap 一筆 `exec` record；Claude 的呼叫端預配置 UUID 必須等到唯一相符的
+authoritative init event 確認才可 seal，fresh Codex 則必須先找到唯一、owned 的
+native transcript，再 seal 唯一的 authoritative `thread.started` ID。seal 記錄
+PID、start time、executable、private owner token、Codex transcript 與 baseline。
 
-The launcher uses Bash arrays for the client argv and a redirected prompt file.
-It captures one per-turn stream, waits for that exact child, then refuses a
-missing, duplicate, or mismatched start identity. A successful launch leaves
-the active turn in place for the completion monitor. Resume first verifies the
-sealed client, workspace, exact session, and immutable settings, then begins
-the caller's exact turn token.
+launcher 以 Bash array 建立 client argv，並 redirect 私有 prompt 檔。它會 capture
+每個 turn 的 stream、等待該 exact child，並拒絕缺少、重複或不相符的 start identity。
+成功 launch 會保留 active turn 給 completion monitor。resume 必須先驗證 sealed
+client、workspace、exact session 與 immutable settings，才可建立呼叫端指定的 exact
+turn token。
