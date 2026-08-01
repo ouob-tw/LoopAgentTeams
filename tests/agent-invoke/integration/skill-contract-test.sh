@@ -44,6 +44,8 @@ require_literal "$skill_file" '2. override'
 require_literal "$skill_file" '3. native'
 require_literal "$skill_file" '4. cross-family'
 require_literal "$skill_file" 'explicit consent'
+require_literal "$skill_file" '目標家族與目前 client 不同時，未要求 TUI 即採用跨家族 client exec'
+require_literal "$skill_file" '同家族 native 不可用時，沒有 explicit external consent 必須拒絕'
 require_literal "$skill_file" 'unsupported client'
 require_literal "$skill_file" 'target transmission'
 require_literal "$skill_file" 'target verification'
@@ -56,6 +58,7 @@ for reference in native.md exec.md external-common.md lifecycle.md monitoring.md
 done
 require_literal "$skill_file" '先完成 native 決策，才可讀取任何 external reference'
 require_literal "$skill_file" 'bootstrap 後只可 seal 一次，且必須先於任何 managed resume'
+require_literal "$skill_file" 'clean 或 prune'
 forbid_literal "$skill_file" 'lat-dispatch'
 
 forbid_literal "$skill_file" 'references/test'
@@ -64,30 +67,42 @@ forbid_literal "$skill_file" 'evidence'
 forbid_bash_native_primitive "$skill_file"
 forbid_bash_native_primitive "$native_file"
 
+# shellcheck disable=SC2016
+claude_skill_marker='$CASE_CLAUDE_CONFIG/skills/agent-invoke'
+# shellcheck disable=SC2016
+codex_runtime_marker='"$codex_runtime" /opt/node'
 require_literal "$trigger_runner" '.agents/skills/agent-invoke'
-require_literal "$trigger_runner" '.claude/skills/agent-invoke'
+require_literal "$trigger_runner" "$claude_skill_marker"
+for runner_function in validate_prompt_set render_case create_isolated_client_home run_decision_turn extract_single_envelope reject_tool_events compare_expected write_summary; do
+  require_literal "$trigger_runner" "${runner_function}()"
+done
 require_literal "$trigger_runner" '--output-format stream-json'
-require_literal "$trigger_runner" 'observable target skill read event was absent'
-require_literal "$trigger_runner" 'observable target skill read event appeared for a near-miss'
-require_literal "$trigger_runner" 'observable target skill activation event was absent'
-require_literal "$trigger_runner" 'client timeout (exit 124)'
-require_literal "$trigger_runner" 'all(.cases[]; .passed == true and .runs == 3)'
+require_literal "$trigger_runner" '--strict-mcp-config'
+require_literal "$trigger_runner" '--tools ""'
+require_literal "$trigger_runner" '--ignore-user-config'
+require_literal "$trigger_runner" '--ignore-rules'
+require_literal "$trigger_runner" 'agents.enabled=false'
+require_literal "$trigger_runner" 'web_search="disabled"'
+require_literal "$trigger_runner" '--output-schema'
+require_literal "$trigger_runner" 'bwrap --die-with-parent --new-session'
+require_literal "$trigger_runner" '--tmpfs /opt'
+require_literal "$trigger_runner" "$codex_runtime_marker"
+require_literal "$trigger_runner" '/opt/node_modules/@openai/codex/bin/codex.js'
+require_literal "$trigger_runner" 'if sandbox_run'
+require_literal "$trigger_runner" 'shred -u'
+require_literal "$trigger_runner" "RUN_REASON='timeout'"
+require_literal "$trigger_runner" 'all(.cases[]; .passed == true and .runs == 2)'
 forbid_literal "$trigger_runner" "tr '\\n' ' ' <\"\$trace\""
 validation_marker="[[ ( \$client == codex || \$client == claude ) && \$skill_root == /*"
 require_literal "$trigger_runner" "$validation_marker"
 require_literal "$trigger_runner" 'timeout --signal=TERM --kill-after=10s 120s'
-top_level_marker="top_level_bashpid=\$BASHPID"
-cleanup_marker="[[ \$BASHPID == \"\$top_level_bashpid\" ]] || return 0"
 output_marker='output_tmp='
 publish_marker="mv -- \"\$output_tmp\" \"\$output\""
-stdin_marker='< /dev/null'
-codex_cwd_marker="(cd \"\$run_dir\" && timeout --signal=TERM"
-require_literal "$trigger_runner" "$top_level_marker"
-require_literal "$trigger_runner" "$cleanup_marker"
 require_literal "$trigger_runner" "$output_marker"
 require_literal "$trigger_runner" "$publish_marker"
-require_literal "$trigger_runner" "$stdin_marker"
-require_literal "$trigger_runner" "$codex_cwd_marker"
+forbid_literal "$trigger_runner" 'should_trigger'
+forbid_literal "$trigger_runner" 'activation event'
+forbid_literal "$trigger_runner" 'read event'
 forbid_literal "$trigger_runner" 'Answer exactly TRIGGER'
 forbid_literal "$trigger_runner" 'Answer exactly NO_TRIGGER'
 
