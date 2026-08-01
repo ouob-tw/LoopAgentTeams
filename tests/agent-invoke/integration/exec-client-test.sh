@@ -52,10 +52,20 @@ export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok AGEN
 export FAKE_SYNC_READY="$sync_dir/ready" FAKE_SYNC_RELEASE="$sync_dir/release" FAKE_SYNC_CHILD_PID="$sync_dir/child-pid"
 export FAKE_SYNC_STDIN_CONSUMED="$sync_dir/stdin-consumed" FAKE_SYNC_EXIT_RELEASE="$sync_dir/exit-release" FAKE_SYNC_EXITED="$sync_dir/exited"
 export FAKE_SYNC_SHRED_ENTERED="$sync_dir/shred-entered" FAKE_SYNC_SHRED_RELEASE="$sync_dir/shred-release" FAKE_SYNC_PROMPT="$prompt"
+export FAKE_SYNC_SHRED_CHECKED_PID="$sync_dir/shred-checked-pid" FAKE_SYNC_SHRED_CHILD_LIVE="$sync_dir/shred-child-live"
 export FAKE_REAL_SHRED; FAKE_REAL_SHRED=$(command -v shred)
 # shellcheck disable=SC2016 # Preserve wrapper variables for its runtime.
 printf '%s\n' '#!/usr/bin/env bash' 'set -euo pipefail' 'target=${!#}' \
-  'if [[ $target == ${FAKE_SYNC_PROMPT:?} ]]; then' '  : > "${FAKE_SYNC_SHRED_ENTERED:?}"' \
+  'if [[ $target == ${FAKE_SYNC_PROMPT:?} ]]; then' \
+  '  for _ in $(seq 1 100); do [[ -s ${FAKE_SYNC_CHILD_PID:?} ]] && break; sleep 0.02; done' \
+  '  [[ -s ${FAKE_SYNC_CHILD_PID:?} ]] || exit 98' \
+  '  read -r child_pid < "${FAKE_SYNC_CHILD_PID:?}"' \
+  '  printf "%s\n" "$child_pid" > "${FAKE_SYNC_SHRED_CHECKED_PID:?}"' \
+  '  if kill -0 "$child_pid" 2>/dev/null; then' \
+  '    : > "${FAKE_SYNC_SHRED_CHILD_LIVE:?}"' \
+  '    exit 97' \
+  '  fi' \
+  '  : > "${FAKE_SYNC_SHRED_ENTERED:?}"' \
   '  while [[ ! -e ${FAKE_SYNC_SHRED_RELEASE:?} ]]; do sleep 0.02; done' 'fi' \
   'exec "${FAKE_REAL_SHRED:?}" "$@"' > "$sync_dir/shred"
 chmod 700 "$sync_dir/shred"
@@ -73,6 +83,7 @@ for _ in $(seq 1 50); do [[ -e $FAKE_SYNC_READY ]] && break; sleep 0.02; done
 read -r child_pid < "$FAKE_SYNC_CHILD_PID"
 [[ $child_pid =~ ^[0-9]+$ ]] || identity_fail 'forked child exposed an invalid PID'
 kill -0 "$child_pid" || identity_fail 'forked child was not alive before synchronized release'
+[[ ! -e $FAKE_SYNC_SHRED_CHILD_LIVE ]] || identity_fail 'prompt disposal attempted while the exact child PID remained alive'
 kill -0 "$invoke_pid" || identity_fail 'launcher terminated before synchronized child release'
 [[ -e $prompt ]] || identity_fail 'launcher shredded prompt before forked child consumed stdin'
 : > "$FAKE_SYNC_RELEASE"
@@ -81,6 +92,7 @@ for _ in $(seq 1 50); do [[ -e $FAKE_SYNC_STDIN_CONSUMED ]] && break; sleep 0.02
 cmp -s "$FAKE_STDIN" <(printf '%s\n' "\$(touch should-not-run); --resume \"quoted\"") || identity_fail 'identity failure did not deliver stdin to the forked child'
 kill -0 "$child_pid" || identity_fail 'forked child terminated before its exit release'
 [[ -e $prompt ]] || identity_fail 'launcher shredded prompt while the forked child remained alive'
+[[ ! -e $FAKE_SYNC_SHRED_CHILD_LIVE ]] || identity_fail 'prompt disposal attempted while the exact child PID remained alive'
 [[ ! -e $FAKE_SYNC_SHRED_ENTERED ]] || identity_fail 'launcher began prompt disposal while the forked child remained alive'
 : > "$FAKE_SYNC_EXIT_RELEASE"
 for _ in $(seq 1 100); do
@@ -92,12 +104,14 @@ kill -0 "$child_pid" 2>/dev/null && identity_fail 'forked child did not terminat
 [[ -e $prompt ]] || identity_fail 'launcher shredded prompt before child PID termination was observed'
 [[ -e $FAKE_SYNC_EXITED ]] || identity_fail 'forked child termination was not observed before prompt disposal'
 for _ in $(seq 1 50); do [[ -e $FAKE_SYNC_SHRED_ENTERED ]] && break; sleep 0.02; done
+[[ $(< "$FAKE_SYNC_SHRED_CHECKED_PID") == "$child_pid" ]] || identity_fail 'prompt disposal did not check the exact child PID'
+[[ ! -e $FAKE_SYNC_SHRED_CHILD_LIVE ]] || identity_fail 'prompt disposal entered while the exact child PID remained alive'
 [[ -e $FAKE_SYNC_SHRED_ENTERED && -e $prompt ]] || identity_fail 'prompt was not retained at the post-termination disposal boundary'
 : > "$FAKE_SYNC_SHRED_RELEASE"
 set +e; wait "$invoke_pid"; invoke_status=$?; set -e
 [[ $invoke_status -ne 0 ]] || fail 'identity capture failure unexpectedly succeeded'
 PATH=$original_path; export PATH
-unset AGENT_INVOKE_FAIL_IDENTITY FAKE_SYNC_READY FAKE_SYNC_RELEASE FAKE_SYNC_CHILD_PID FAKE_SYNC_STDIN_CONSUMED FAKE_SYNC_EXIT_RELEASE FAKE_SYNC_EXITED FAKE_SYNC_SHRED_ENTERED FAKE_SYNC_SHRED_RELEASE FAKE_SYNC_PROMPT FAKE_REAL_SHRED
+unset AGENT_INVOKE_FAIL_IDENTITY FAKE_SYNC_READY FAKE_SYNC_RELEASE FAKE_SYNC_CHILD_PID FAKE_SYNC_STDIN_CONSUMED FAKE_SYNC_EXIT_RELEASE FAKE_SYNC_EXITED FAKE_SYNC_SHRED_ENTERED FAKE_SYNC_SHRED_RELEASE FAKE_SYNC_PROMPT FAKE_SYNC_SHRED_CHECKED_PID FAKE_SYNC_SHRED_CHILD_LIVE FAKE_REAL_SHRED
 [[ ! -e $prompt && $(state identity-failure '.mode') == exec && $(state identity-failure '.session.sealed') == false && $(state identity-failure '.session.id') == null && $(state identity-failure '.active_turn.kind') == launch ]] || fail 'identity failure did not wait, dispose, and remain fail-closed'
 setup resume-settings; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok
 launch settings codex "$workspace" "$prompt" model-x high danger-full-access ''
