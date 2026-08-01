@@ -1,0 +1,18 @@
+[
+  {
+    "name": "native-launch",
+    "prompt": "以目前支援的原生 Agent 啟動目標家族工作，使用 workspace /repo。"
+  },
+  {
+    "name": "exact-resume",
+    "prompt": "使用已封存的精確 runtime handle 續接剛才的原生工作。"
+  },
+  {
+    "name": "cross-family-consent",
+    "prompt": "原生路徑不可用時，我明確同意使用跨家族客戶端啟動此工作。"
+  },
+  {
+    "name": "unsealed-resume-refusal",
+    "prompt": "請用未封存的 handle 續接工作。"
+  }
+]
