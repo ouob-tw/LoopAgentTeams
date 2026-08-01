@@ -34,7 +34,7 @@ mkdir -p "$(dirname "$output")"
 output_tmp=$(mktemp "${output}.tmp.XXXXXX")
 
 run_one() {
-  local expected=$1 prompt=$2 run_dir=$3 trace=$4 candidate source_path command status json_trace
+  local expected=$1 prompt=$2 run_dir=$3 trace=$4 candidate command status json_trace response contract=false
   mkdir -p "$run_dir"
   if [[ $client == codex ]]; then
     candidate="$run_dir/.agents/skills/agent-invoke"
@@ -43,12 +43,11 @@ run_one() {
   fi
   mkdir -p "$(dirname "$candidate")"
   ln -s "$skill_root" "$candidate"
-  source_path=$(realpath "$candidate/SKILL.md")
-  command='Evaluate only which execution route you would choose for the following user request. If a skill activates, consult its complete instructions before selecting the route. Do not modify files, delegate work, create operation state, invoke agents, or use the network. Explain the selected route or refusal briefly.\n\nUser request: '
+  command='Evaluate only which execution route you would choose for the following user request. If a skill activates, follow its completion requirements. Do not modify files, delegate work, create operation state, invoke agents, or use the network.\n\nUser request: '
   if [[ $client == codex ]]; then
-    (cd "$run_dir" && codex exec --ephemeral --skip-git-repo-check --sandbox read-only --json -C "$run_dir" "${command}${prompt}" < /dev/null) >"$trace" 2>&1
+    (cd "$run_dir" && timeout --signal=TERM --kill-after=10s 120s codex exec --ephemeral --skip-git-repo-check --sandbox read-only --json -C "$run_dir" "${command}${prompt}" < /dev/null) >"$trace" 2>&1
   else
-    (cd "$run_dir" && claude -p --no-session-persistence --output-format stream-json --permission-mode manual "${command}${prompt}" < /dev/null) >"$trace" 2>&1
+    (cd "$run_dir" && timeout --signal=TERM --kill-after=10s 120s claude -p --no-session-persistence --output-format stream-json --permission-mode manual "${command}${prompt}" < /dev/null) >"$trace" 2>&1
   fi
   status=$?
   if (( status != 0 )); then
@@ -57,15 +56,10 @@ run_one() {
   fi
   json_trace="$run_dir/events.jsonl"
   sed -n '/^{/p' "$trace" >"$json_trace"
-  if jq -e --arg candidate "$candidate/SKILL.md" --arg source "$source_path" '
-      .. | objects | select(.type? == "command_execution" or .type? == "tool_use") |
-      (.command? // .input?.command? // "") | strings | select(contains($candidate) or contains($source))' "$json_trace" >/dev/null; then
-    read=true
-  else
-    read=false
-  fi
-  if [[ $read == "$expected" ]]; then return 0; fi
-  if [[ $expected == true ]]; then printf '%s' 'target skill was not read'; else printf '%s' 'target skill was read for a near-miss'; fi
+  response=$(jq -r '.. | objects | select(.type? == "agent_message") | .text? // empty' "$json_trace" 2>/dev/null || true)
+  if [[ $response == *action* && $response == *target_family* && $response == *resume_reference* && $response == *route* ]]; then contract=true; fi
+  if [[ $contract == "$expected" ]]; then return 0; fi
+  if [[ $expected == true ]]; then printf '%s' 'normalized route contract was absent'; else printf '%s' 'normalized route contract appeared for a near-miss'; fi
   return 1
 }
 
