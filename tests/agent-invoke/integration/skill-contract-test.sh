@@ -26,8 +26,8 @@ forbid_literal() {
 
 forbid_bash_native_primitive() {
   local file=$1
-  local pattern='(?i)\bBash\b[^\n]*(?:invoke|call|simulate|run|execute|use|proxy|emulate|trigger|呼叫|代理|模擬|偽造)[^\n]*(?:spawn_agent|wait_agent|interrupt_agent|TaskStop|\bAgent\b)'
-  ! rg -Pqi -- "$pattern" "$file" || fail "Bash must not invoke or simulate a native primitive in ${file#$repo_root/}"
+  local pattern='(?is)\bBash\b(?:(?!\n[ \t]*\n).)*(?:invoke|call|simulate|run|execute|use|proxy|emulate|trigger|呼叫|代理|模擬|偽造)(?:(?!\n[ \t]*\n).)*(?:spawn_agent|wait_agent|interrupt_agent|TaskStop|\bAgent\b)'
+  ! rg -PUqi -- "$pattern" "$file" || fail "Bash must not invoke or simulate a native primitive in ${file#$repo_root/}"
 }
 
 [[ -d "$package_dir" && -f "$skill_file" && -f "$native_file" && -f "$prompts_file" ]] || fail "agent-invoke package is absent"
