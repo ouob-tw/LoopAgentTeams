@@ -7,6 +7,10 @@ EX_CANTCREAT=66
 EX_UNAVAILABLE=69
 EX_SOFTWARE=70
 
+repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
+# shellcheck source=/dev/null
+source "$repo_root/tests/agent-invoke/e2e/validate-installed-evidence.sh"
+
 usage() {
   printf '%s\n' 'usage: run-installed-e2e.sh --source LOCAL_REPO_OR_GIT_REF --case CASE_ID --evidence ABSOLUTE_JSON' >&2
   exit "$EX_USAGE"
@@ -136,6 +140,7 @@ manifest_tree "$CASE_WORKSPACE/.lat" "$PROTECTION_ROOT/lat.before"
 cleanup_started=true
 protection_failed=false
 evidence_tmp=''
+observer_pid=''
 protected_state_unchanged() {
   manifest_tree "$REAL_AGENTS_SKILLS" "$PROTECTION_ROOT/agents.after"
   manifest_tree "$REAL_CODEX_SKILLS" "$PROTECTION_ROOT/codex.after"
@@ -152,6 +157,10 @@ protected_state_unchanged() {
 cleanup() {
   local original_status=$?
   if [[ ${cleanup_started:-false} == true ]]; then
+    if [[ -n ${observer_pid:-} ]]; then
+      kill "$observer_pid" 2>/dev/null || true
+      wait "$observer_pid" 2>/dev/null || true
+    fi
     if ! protected_state_unchanged; then
       protection_failed=true
       printf '%s\n' 'real skill or credential manifest changed' >&2
@@ -173,11 +182,15 @@ trap 'exit 130' INT
 trap 'exit 143' TERM
 
 installed_read_only=false
+provenance_read_only=false
 sandbox_run() {
   local extra_binds=()
   if [[ $installed_read_only == true ]]; then
     extra_binds+=(--ro-bind "$CASE_HOME/.agents/skills" "$CASE_HOME/.agents/skills")
     extra_binds+=(--ro-bind "$CASE_HOME/.claude/skills" "$CASE_HOME/.claude/skills")
+  fi
+  if [[ $provenance_read_only == true ]]; then
+    extra_binds+=(--ro-bind "$PROVENANCE_SOURCE" "$PROVENANCE_SOURCE")
   fi
   bwrap --die-with-parent --new-session \
     --ro-bind / / --dev-bind /dev /dev --proc /proc \
@@ -260,6 +273,129 @@ installed_manifest_sha256=$(sha256sum "$PROTECTION_ROOT/codex-installed.before")
 installed_manifest_sha256=${installed_manifest_sha256%% *}
 installed_read_only=true
 
+snapshot_operation_directories() {
+  local destination=$1 runs=$CASE_HOME/.agent-invoke/runs entry
+  [[ ! -e $destination ]] || return 65
+  mkdir -m 700 "$destination" "$destination/runs"
+  if [[ ! -e $runs && ! -L $runs ]]; then return 0; fi
+  [[ -d $runs && ! -L $runs ]] || return 65
+  while IFS= read -r -d '' entry; do
+    [[ -d $entry && ! -L $entry ]] || return 65
+    artifact_digest "$entry" >/dev/null 2>&1 || return 65
+    cp -a -- "$entry" "$destination/runs/" || return 65
+  done < <(find -P "$runs" -mindepth 1 -maxdepth 1 -print0 | LC_ALL=C sort -z)
+}
+
+process_manifest() {
+  local output=$1 proc pid uid cwd started executable executable_digest
+  : >"$output"
+  for proc in /proc/[0-9]*; do
+    pid=${proc##*/}
+    uid=$(stat -c '%u' "$proc" 2>/dev/null) || continue
+    [[ $uid == "$(id -u)" ]] || continue
+    cwd=$(readlink "$proc/cwd" 2>/dev/null) || continue
+    [[ $cwd == "$CASE_ROOT" || $cwd == "$CASE_ROOT"/* ]] || continue
+    started=$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//')
+    executable=$(readlink "$proc/exe" 2>/dev/null) || executable=unavailable
+    executable_digest=$(printf '%s' "$executable" | sha256sum | awk '{print $1}')
+    printf '%s\t%s\t%s\n' "$pid" "$started" "$executable_digest" >>"$output"
+  done
+  LC_ALL=C sort -o "$output" "$output"
+  chmod 600 "$output"
+}
+
+capture_refusal_surfaces() {
+  local destination=$1
+  [[ ! -e $destination ]] || return 65
+  mkdir -m 700 "$destination"
+  manifest_tree "$CASE_HOME/.agent-invoke" "$destination/agent-state.manifest"
+  manifest_tree "$CASE_CODEX_HOME/sessions" "$destination/codex-sessions.manifest"
+  manifest_tree "$CASE_CLAUDE_CONFIG/projects" "$destination/claude-projects.manifest"
+  manifest_tree "$CASE_ZMX_DIR" "$destination/zmx.manifest"
+  manifest_tree "$CASE_WORKSPACE/.lat" "$destination/lat.manifest"
+  process_manifest "$destination/processes.manifest"
+  chmod 600 "$destination"/*.manifest
+}
+
+capture_operation_once() {
+  local source=$1 destination=$2 temporary
+  [[ -e $destination ]] && return 0
+  mkdir -p "$(dirname "$destination")"
+  temporary=${destination}.tmp.$$
+  [[ ! -e $temporary ]] || trash-put -- "$temporary" >/dev/null 2>&1 || return 1
+  artifact_digest "$source" >/dev/null 2>&1 || return 1
+  if ! cp -a -- "$source" "$temporary" 2>/dev/null || ! artifact_digest "$temporary" >/dev/null 2>&1; then
+    trash-put -- "$temporary" >/dev/null 2>&1 || true
+    return 1
+  fi
+  mv -- "$temporary" "$destination"
+}
+
+capture_registry_once() {
+  local destination=$1 temporary
+  [[ -e $destination ]] && return 0
+  mkdir -p "$(dirname "$destination")"
+  temporary=${destination}.tmp.$$
+  snapshot_operation_directories "$temporary" || return 1
+  mv -- "$temporary" "$destination"
+}
+
+observe_operation_checkpoints_once() {
+  local runs=$CASE_HOME/.agent-invoke/runs operation_dir operation
+  [[ -d $runs && ! -L $runs ]] || return 0
+  while IFS= read -r -d '' operation_dir; do
+    operation=${operation_dir##*/}
+    [[ $operation =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] || continue
+    if [[ -f $operation_dir/metadata.json && -f $operation_dir/session-ref.json &&
+          -f $operation_dir/runtime/owner.json && -f $operation_dir/runtime/active-turn.json ]] &&
+       jq -e . "$operation_dir/metadata.json" "$operation_dir/session-ref.json" \
+         "$operation_dir/runtime/owner.json" "$operation_dir/runtime/active-turn.json" >/dev/null 2>&1; then
+      if [[ -f $operation_dir/runtime/stop-intent.json ]] &&
+         jq -e . "$operation_dir/runtime/stop-intent.json" >/dev/null 2>&1; then
+        capture_operation_once "$operation_dir" "$CHECKPOINT_ROOT/lifecycle-before/runs/$operation" || true
+      fi
+      capture_operation_once "$operation_dir" "$CHECKPOINT_ROOT/pre-completion/runs/$operation" || true
+    fi
+    if [[ -f $operation_dir/metadata.json && -f $operation_dir/session-ref.json &&
+          ! -e $operation_dir/runtime/stop-intent.json && ! -e $operation_dir/runtime/owner.json &&
+          ! -e $operation_dir/runtime/active-turn.json ]]; then
+      if [[ $case_id == prune ]]; then
+        capture_registry_once "$CHECKPOINT_ROOT/prune-before/$operation" || true
+      elif [[ $case_id == lifecycle ]] &&
+           jq -e '.status=="interrupted"' "$operation_dir/metadata.json" >/dev/null 2>&1; then
+        capture_operation_once "$operation_dir" "$CHECKPOINT_ROOT/after-finalize/runs/$operation" || true
+      fi
+    fi
+  done < <(find -P "$runs" -mindepth 1 -maxdepth 1 -type d -print0 | LC_ALL=C sort -z)
+}
+
+observe_operation_checkpoints() {
+  : >"$OBSERVER_READY"
+  while [[ ! -e $OBSERVER_STOP ]]; do
+    observe_operation_checkpoints_once
+    sleep 0.02
+  done
+  observe_operation_checkpoints_once
+}
+
+runner_nonce=$(dd if=/dev/urandom bs=24 count=1 2>/dev/null | sha256sum | awk '{print $1}')
+[[ $runner_nonce =~ ^[a-f0-9]{64}$ ]] || die "$EX_SOFTWARE" 'cannot create runner provenance nonce'
+PROVENANCE_SOURCE=$CASE_TMP/provenance-$runner_nonce
+readonly PROVENANCE_SOURCE runner_nonce
+mkdir -m 700 "$PROVENANCE_SOURCE"
+snapshot_operation_directories "$PROVENANCE_SOURCE/before" ||
+  die "$EX_DATAERR" 'cannot capture exact pre-invocation operation directories'
+if [[ $case_id == native-unavailable || $case_id == unsupported-client ]]; then
+  capture_refusal_surfaces "$PROVENANCE_SOURCE/refusal-before" ||
+    die "$EX_DATAERR" 'cannot capture complete pre-refusal state'
+fi
+CHECKPOINT_ROOT=$PROVENANCE_SOURCE/checkpoints
+OBSERVER_STOP=$PROVENANCE_SOURCE/.observer-stop
+OBSERVER_READY=$PROVENANCE_SOURCE/.observer-ready
+readonly CHECKPOINT_ROOT OBSERVER_STOP OBSERVER_READY
+mkdir -m 700 "$CHECKPOINT_ROOT"
+provenance_read_only=true
+
 case_prompt() {
   case $case_id in
     codex-native) printf '%s' 'Use agent-invoke to delegate a read-only greeting task to a Codex subagent through the default same-host native route. Return the exact route, runtime identity, authoritative completion event, and final result.' ;;
@@ -286,6 +422,13 @@ esac
 prompt=$(case_prompt)
 trace=$TRACE_ROOT/$case_id.jsonl
 client_status=0
+observe_operation_checkpoints &
+observer_pid=$!
+for _ in {1..100}; do
+  [[ -e $OBSERVER_READY ]] && break
+  sleep 0.01
+done
+[[ -e $OBSERVER_READY ]] || die "$EX_SOFTWARE" 'operation checkpoint observer did not start'
 if [[ $host_client == codex ]]; then
   sandbox_run timeout --signal=TERM --kill-after=15s 300s codex exec --skip-git-repo-check \
     --sandbox workspace-write --json "$prompt" < /dev/null >"$trace" 2>&1 || client_status=$?
@@ -293,6 +436,9 @@ else
   sandbox_run timeout --signal=TERM --kill-after=15s 300s claude -p --no-session-persistence \
     --output-format stream-json --permission-mode acceptEdits "$prompt" < /dev/null >"$trace" 2>&1 || client_status=$?
 fi
+: >"$OBSERVER_STOP"
+wait "$observer_pid" || die "$EX_DATAERR" 'operation checkpoint observer failed'
+observer_pid=''
 
 # Real evidence must be machine-observable. A host's prose success is deliberately
 # insufficient; absence of an authoritative carrier/tool completion fails closed.
@@ -331,19 +477,35 @@ if (( client_status == 0 )); then
 fi
 result_excerpt=$(tr '\n\r\t' '   ' <<<"$result_excerpt" | tr -s ' ' | cut -c1-240)
 
+snapshot_operation_directories "$PROVENANCE_SOURCE/after" ||
+  die "$EX_DATAERR" 'cannot capture exact post-invocation operation directories'
+if [[ $case_id == native-unavailable || $case_id == unsupported-client ]]; then
+  capture_refusal_surfaces "$PROVENANCE_SOURCE/refusal-after" ||
+    die "$EX_DATAERR" 'cannot capture complete post-refusal state'
+fi
+
 state_records='[]'
-if [[ -d $CASE_HOME/.agent-invoke/runs ]]; then
-  while IFS= read -r -d '' state_file; do
-    state_records=$(jq -cn --argjson records "$state_records" --slurpfile state "$state_file" '$records + $state')
-  done < <(find -P "$CASE_HOME/.agent-invoke/runs" -maxdepth 1 -type f -name '*.json' ! -name '*.stop-confirmation.json' -print0)
+if [[ -d $PROVENANCE_SOURCE/after/runs ]]; then
+  while IFS= read -r -d '' operation_dir; do
+    [[ -f $operation_dir/metadata.json && ! -L $operation_dir/metadata.json ]] ||
+      die "$EX_DATAERR" 'operation snapshot is missing exact metadata'
+    metadata_record=$(jq -e . "$operation_dir/metadata.json") || die "$EX_DATAERR" 'operation metadata is invalid'
+    session_record=null; owner_record=null; turn_record=null
+    [[ ! -e $operation_dir/session-ref.json ]] || session_record=$(jq -e . "$operation_dir/session-ref.json") || die "$EX_DATAERR" 'operation session reference is invalid'
+    [[ ! -e $operation_dir/runtime/owner.json ]] || owner_record=$(jq -e . "$operation_dir/runtime/owner.json") || die "$EX_DATAERR" 'operation owner is invalid'
+    [[ ! -e $operation_dir/runtime/active-turn.json ]] || turn_record=$(jq -e . "$operation_dir/runtime/active-turn.json") || die "$EX_DATAERR" 'operation active turn is invalid'
+    state_records=$(jq -cn --argjson records "$state_records" --argjson metadata "$metadata_record" \
+      --argjson session "$session_record" --argjson owner "$owner_record" --argjson turn "$turn_record" \
+      '$records + [$metadata + {session:(if $session==null then {id:null,sealed:false} else {id:$session.session_id,sealed:true,path:($session.path//null),handle:($session.handle//null)} end),owner:$owner,active_turn:$turn}]')
+  done < <(find -P "$PROVENANCE_SOURCE/after/runs" -mindepth 1 -maxdepth 1 -type d -print0 | LC_ALL=C sort -z)
 fi
 state_count=$(jq 'length' <<<"$state_records")
 if (( state_count > 0 )) && jq -e 'all(.[];
     .session.sealed == true and (.session.id | type == "string" and length > 0) and
-    .active_turn == null and (.owner | type == "object") and
-    ((.mode == "native" and .owner.type == "native" and .owner.handle == .session.id) or
-     (.mode == "exec" and .owner.type == "exec") or
-     (.mode == "tui" and .owner.type == "zmx" and .owner.session_id == .session.id)))' <<<"$state_records" >/dev/null; then
+    (.owner == null or
+      (.mode == "native" and .owner.type == "native" and .owner.handle == .session.id) or
+      (.mode == "exec" and .owner.type == "exec") or
+      (.mode == "tui" and .owner.type == "zmx" and .owner.session_id == .session.id)))' <<<"$state_records" >/dev/null; then
   identity_state=sealed
   session_id=$(jq -r 'map(.session.id) | sort | join(",")' <<<"$state_records")
   mode=$(jq -r 'map(.mode) | unique | sort | join(",")' <<<"$state_records")
@@ -425,6 +587,134 @@ fi
 stop_intent_absent_after_finalize=false
 clean_after_stop_succeeded=false
 
+# Select only machine-readable route facts. The raw host stream remains outside
+# the provenance envelope and is destroyed by the runner cleanup.
+facts_root=$PROVENANCE_SOURCE/facts
+mkdir -m 700 "$facts_root"
+printf '%s\n' "$tool_events" >"$facts_root/tool-events.json"
+sed -n '/^{/p' "$trace" | jq -sc '[.[] | .. | objects |
+  select((.operation_id|type)=="string" and (.session_id|type)=="string" and
+    (.owner_token|type)=="string" and (.turn_token|type)=="string" and
+    (.status=="success" or .status=="completed")) | .status="success"] | unique' \
+  >"$facts_root/completion-events.json"
+sed -n '/^{/p' "$trace" | jq -sc 'first(.[] | .. | objects |
+  select((.tool_use|type)=="object" and (.tool_result|type)=="object")) // null' >"$facts_root/native-start.json"
+sed -n '/^{/p' "$trace" | jq -sc 'first(.[] | .. | objects |
+  select((.handle|type)=="string" and (.actual_model|type)=="string" and .authoritative==true)) // null' \
+  >"$facts_root/native-child-model.json"
+sed -n '/^{/p' "$trace" | jq -sc --arg case_id "$case_id" 'first(.[] | .. | objects |
+  select(.case_id==$case_id and .decision=="refused" and (.reason_code|type)=="string")) // null' \
+  >"$facts_root/refusal.json"
+sed -n '/^{/p' "$trace" | jq -sc 'first(.[] | .. | objects |
+  select(.agent_invoke_evidence?.kind=="lifecycle") | .agent_invoke_evidence) // null' \
+  >"$facts_root/lifecycle.json"
+sed -n '/^{/p' "$trace" | jq -sc 'first(.[] | .. | objects |
+  select(.agent_invoke_evidence?.kind=="prune") | .agent_invoke_evidence) // null' \
+  >"$facts_root/prune.json"
+
+# A route can publish PASS only from this invocation's nonce manifest and the
+# copied artifacts named by that manifest. No host-created validator directory
+# or preexisting artifact is consulted.
+validator_root=$TRACE_ROOT/validator
+validator_evidence_valid=false
+capture_and_validate_installed_case_evidence() {
+  local operation_dir after_operation events operation_count operation success failure selected dry
+  case $case_id in
+    unsupported-client|native-unavailable)
+      capture_validator_artifacts "$validator_root" "$case_id" "$runner_nonce" \
+        refusal.json "$facts_root/refusal.json" tool-events.json "$facts_root/tool-events.json" \
+        before "$PROVENANCE_SOURCE/refusal-before" after "$PROVENANCE_SOURCE/refusal-after"
+      validate_validator_artifacts "$validator_root" "$case_id" "$runner_nonce"
+      validate_preexecution_refusal "$case_id" "$validator_root/refusal.json" "$validator_root/tool-events.json" \
+        "$validator_root/before" "$validator_root/after"
+      ;;
+    codex-native|claude-native|native-resume)
+      operation_count=$(find "$CHECKPOINT_ROOT/pre-completion/runs" -mindepth 1 -maxdepth 1 -type d -printf . 2>/dev/null | wc -c)
+      [[ $operation_count == 1 ]] || return 65
+      capture_validator_artifacts "$validator_root" "$case_id" "$runner_nonce" \
+        pre-completion "$CHECKPOINT_ROOT/pre-completion" after "$PROVENANCE_SOURCE/after" \
+        completion-events.json "$facts_root/completion-events.json" native-start.json "$facts_root/native-start.json" \
+        native-child-model.json "$facts_root/native-child-model.json"
+      validate_validator_artifacts "$validator_root" "$case_id" "$runner_nonce"
+      operation_dir=$(find "$validator_root/pre-completion/runs" -mindepth 1 -maxdepth 1 -type d -print)
+      operation=${operation_dir##*/}; after_operation=$validator_root/after/runs/$operation
+      recover_native_model "$operation_dir/metadata.json" "$operation_dir/session-ref.json" "$operation_dir/runtime/owner.json" \
+        "$operation_dir/runtime/active-turn.json" "$validator_root/native-start.json" \
+        "$validator_root/native-child-model.json" \
+        <(select_exact_completion_event "$operation_dir" "$validator_root/completion-events.json") >/dev/null
+      validate_completion_cleanup "$operation_dir" "$after_operation"
+      ;;
+    codex-to-claude-exec|claude-to-codex-exec|same-host-exec|same-host-tui|managed-exec-resume|managed-tui-resume|imported-resume)
+      operation_count=$(find "$CHECKPOINT_ROOT/pre-completion/runs" -mindepth 1 -maxdepth 1 -type d -printf . 2>/dev/null | wc -c)
+      [[ $operation_count == 1 ]] || return 65
+      capture_validator_artifacts "$validator_root" "$case_id" "$runner_nonce" \
+        pre-completion "$CHECKPOINT_ROOT/pre-completion" after "$PROVENANCE_SOURCE/after" \
+        completion-events.json "$facts_root/completion-events.json"
+      validate_validator_artifacts "$validator_root" "$case_id" "$runner_nonce"
+      operation_dir=$(find "$validator_root/pre-completion/runs" -mindepth 1 -maxdepth 1 -type d -print)
+      operation=${operation_dir##*/}; after_operation=$validator_root/after/runs/$operation
+      events="$validator_root/completion-events.json"
+      recover_external_model "$operation_dir/metadata.json" "$operation_dir/session-ref.json" "$operation_dir/runtime/owner.json" \
+        "$operation_dir/runtime/active-turn.json" <(select_exact_completion_event "$operation_dir" "$events") >/dev/null
+      validate_completion_cleanup "$operation_dir" "$after_operation"
+      ;;
+    lifecycle)
+      jq -e '(keys|sort)==["failed_finalize","failed_operation_id","kind","successful_clean","successful_finalize","successful_operation_id"] and
+        .kind=="lifecycle" and .successful_finalize=="confirmed" and .successful_clean=="confirmed" and
+        .failed_finalize=="refused" and (.successful_operation_id|test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
+        (.failed_operation_id|test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
+        .successful_operation_id!=.failed_operation_id' "$facts_root/lifecycle.json" >/dev/null || evidence_die 'lifecycle facts are incomplete'
+      success=$(jq -r .successful_operation_id "$facts_root/lifecycle.json")
+      failure=$(jq -r .failed_operation_id "$facts_root/lifecycle.json")
+      [[ -d $CHECKPOINT_ROOT/lifecycle-before/runs/$success ]] || evidence_die 'successful lifecycle before checkpoint is absent'
+      [[ -d $CHECKPOINT_ROOT/lifecycle-before/runs/$failure ]] || evidence_die 'failed lifecycle before checkpoint is absent'
+      [[ -d $CHECKPOINT_ROOT/after-finalize/runs/$success ]] || evidence_die 'successful lifecycle finalize checkpoint is absent'
+      [[ -d $PROVENANCE_SOURCE/after/runs/$failure ]] || evidence_die 'failed lifecycle final state is absent'
+      [[ ! -e $PROVENANCE_SOURCE/after/runs/$success ]] || evidence_die 'cleaned lifecycle operation remains present'
+      selected=$PROVENANCE_SOURCE/lifecycle-selected; mkdir -m 700 "$selected"
+      cp -a "$CHECKPOINT_ROOT/lifecycle-before/runs/$success" "$selected/success"
+      cp -a "$CHECKPOINT_ROOT/lifecycle-before/runs/$failure" "$selected/failure"
+      capture_validator_artifacts "$validator_root" "$case_id" "$runner_nonce" \
+        lifecycle-facts.json "$facts_root/lifecycle.json" before "$selected" \
+        after-finalize "$CHECKPOINT_ROOT/after-finalize/runs/$success" after "$PROVENANCE_SOURCE/after"
+      validate_validator_artifacts "$validator_root" "$case_id" "$runner_nonce"
+      validate_lifecycle_evidence "$validator_root/before" "$validator_root/after-finalize" \
+        "$validator_root/after/runs/$success" "$validator_root/after/runs/$failure"
+      ;;
+    prune)
+      jq -e '(keys|sort)==["confirmation","confirmed_operation_id","dry_run","kind"] and .kind=="prune" and
+        .confirmation=="confirmed" and (.confirmed_operation_id|test("^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$")) and
+        (.dry_run|type=="array")' "$facts_root/prune.json" >/dev/null || evidence_die 'prune facts are incomplete'
+      operation=$(jq -r .confirmed_operation_id "$facts_root/prune.json")
+      [[ -d $CHECKPOINT_ROOT/prune-before/$operation/runs/$operation && ! -e $PROVENANCE_SOURCE/after/runs/$operation ]] || evidence_die 'prune checkpoints are incomplete'
+      dry=$PROVENANCE_SOURCE/prune-dry.json; jq '.dry_run' "$facts_root/prune.json" >"$dry"; chmod 600 "$dry"
+      capture_validator_artifacts "$validator_root" "$case_id" "$runner_nonce" \
+        prune-facts.json "$facts_root/prune.json" dry-run.json "$dry" \
+        before "$CHECKPOINT_ROOT/prune-before/$operation" after "$PROVENANCE_SOURCE/after"
+      validate_validator_artifacts "$validator_root" "$case_id" "$runner_nonce"
+      validate_prune_evidence "$validator_root/dry-run.json" "$operation" \
+        "$validator_root/before/runs" "$validator_root/after/runs"
+      ;;
+  esac
+}
+if ( capture_and_validate_installed_case_evidence ); then
+  validator_evidence_valid=true
+  case $case_id in
+    lifecycle)
+      authoritative_outcome=true; outcome_event=authoritative-lifecycle-observed
+      route=lifecycle; mode=mixed; identity_state=sealed
+      stop_intent_absent_after_finalize=true; clean_after_stop_succeeded=true
+      ;;
+    prune)
+      authoritative_outcome=true; outcome_event=authoritative-prune-observed
+      route=prune; mode=none; identity_state=sealed
+      ;;
+  esac
+fi
+
+identity_unambiguous=false
+if [[ $identity_state == sealed || $identity_state == not-created ]]; then identity_unambiguous=true; fi
+
 # Generic host prose is never acceptance evidence. Each case must additionally
 # expose the activated skill and its route-specific carrier/state evidence.
 case_evidence_valid=false
@@ -449,10 +739,13 @@ if jq -e 'length > 0' <<<"$skill_events" >/dev/null; then
         case_evidence_valid=true
       ;;
     lifecycle)
-      unverified_reason=LIFECYCLE_CASE_VALIDATOR_UNVERIFIED
+      [[ $validator_evidence_valid == true && $stop_intent_absent_after_finalize == true &&
+         $clean_after_stop_succeeded == true ]] && case_evidence_valid=true ||
+        unverified_reason=LIFECYCLE_CASE_VALIDATOR_UNVERIFIED
       ;;
     prune)
-      unverified_reason=PRUNE_CASE_VALIDATOR_UNVERIFIED
+      [[ $validator_evidence_valid == true ]] && case_evidence_valid=true ||
+        unverified_reason=PRUNE_CASE_VALIDATOR_UNVERIFIED
       ;;
   esac
 else
@@ -462,7 +755,7 @@ passed=false
 if (( client_status == 0 )) &&
    [[ $authoritative_outcome == true && $lat_unchanged == true && $identity_unambiguous == true &&
       $real_skill_roots_unchanged == true && $real_credentials_unchanged == true &&
-      $installed_package_unchanged == true && $case_evidence_valid == true ]]; then
+      $installed_package_unchanged == true && $case_evidence_valid == true && $validator_evidence_valid == true ]]; then
   passed=true
   unverified_reason=''
 fi
@@ -481,6 +774,7 @@ jq -n \
   --argjson real_credentials_unchanged "$real_credentials_unchanged" --argjson lat_unchanged "$lat_unchanged" \
   --argjson installed_package_unchanged "$installed_package_unchanged" \
   --argjson authoritative_outcome "$authoritative_outcome" --argjson lat_dispatch_installed false \
+  --argjson validator_evidence_valid "$validator_evidence_valid" \
   --argjson stop_intent_absent_after_finalize "$stop_intent_absent_after_finalize" \
   --argjson clean_after_stop_succeeded "$clean_after_stop_succeeded" \
   --argjson passed "$passed" \
@@ -491,7 +785,7 @@ jq -n \
     real_skill_roots_unchanged:$real_skill_roots_unchanged,real_credentials_unchanged:$real_credentials_unchanged,
     lat_unchanged:$lat_unchanged,installed_package_unchanged:$installed_package_unchanged,
     lat_dispatch_installed:$lat_dispatch_installed,
-    authoritative_outcome:$authoritative_outcome,
+    authoritative_outcome:$authoritative_outcome,validator_evidence_valid:$validator_evidence_valid,
     verification:{status:$verification_status,reason_code:(if $unverified_reason == "" then null else $unverified_reason end)},
     stop_intent_absent_after_finalize:$stop_intent_absent_after_finalize,
     clean_after_stop_succeeded:$clean_after_stop_succeeded,passed:$passed}' >"$evidence_tmp"

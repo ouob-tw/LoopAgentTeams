@@ -1,0 +1,2 @@
+{"sessionId":"11111111-1111-4111-8111-111111111111","type":"user","message":{"role":"user","content":"fixed request"}}
+{"sessionId":"11111111-1111-4111-8111-111111111111","type":"assistant","model":"model-x","stop_reason":"end_turn","message":{"role":"assistant","content":[{"text":"fixed final answer"}]}}

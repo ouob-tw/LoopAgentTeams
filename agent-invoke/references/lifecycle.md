@@ -6,13 +6,15 @@
 
 ## Bootstrap 與 seal
 
-`bootstrap-launch <operation> <client> <workspace> <provisional-id> <mode>`
-會原子寫入一筆 unsealed record。Claude 可在 unsealed record 保存預配置 UUID；Codex
-一律以 null identity 開始。launch turn 回傳 authoritative identity 後，必須以同一個
-turn/seal token 呼叫 `seal-session`。identity 未 seal 前不可 resume；既有 seal、rebind、
-token 不符、partial write 或不確定性都維持原 record 並拒絕。
+`bootstrap-launch <operation> <route> <client> <mode> <model> <effort>
+<permission> <workspace> <origin> [provisional-id]` 建立 private operation tree：
+`metadata.json` 保存 immutable route/client/settings，`session-ref.json` 只保存 sealed
+identity，carrier 與 current turn 僅在 `runtime/owner.json` 和
+`runtime/active-turn.json`。舊 `runs/<operation>.json`/`.manifest` 一律 exit 65，
+`legacy flat state requires exact re-import`；永不自動遷移。
 
 `begin-turn` 只接受 sealed identity、沒有 active turn、沒有 stop intent 的 record；
+它會以同一 transaction 寫入新 active turn 與 metadata 的 `last_resumed_at`；
 `complete-turn` 必須收到 exact active turn token。exec、ZMX 與 native owner 都同時核對
 當前 turn 與其 exact owner token/handle。
 
@@ -40,3 +42,11 @@ tool。
 會在同一個 lock 下重新核對該唯一 record，再以 `trash-put --` 移入垃圾桶。unsealed、
 active、stop-intent、live/ambiguous owner、malformed 或 unsafe metadata 都只能手動處理；
 沒有 age-based cleanup，也沒有不受限的 `clean --all`。
+
+已安裝 E2E 對 lifecycle/prune 採 tree 證據：successful finalize 前後必須可證明 exact
+stop-intent、owner、active-turn 已移除，且 clean 後 operation directory 不存在；failed、
+uncertain、mismatched finalize 必須使上述三個檔案 byte-for-byte 保留。prune 必須先記錄唯一
+`recoverable-clean` candidate/reason，再確認只移除該 candidate，active 或 ambiguous 記錄不可
+被當作可清理對象。runner 只依 structured fact 中的 exact operation ID 選取由自身 observer
+保存的 phase checkpoint；缺少任一 checkpoint、fact 不符或 non-target tree 改變都維持
+unverified。

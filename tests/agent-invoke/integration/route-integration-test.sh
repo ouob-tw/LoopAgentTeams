@@ -8,13 +8,21 @@ test_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-invoke-route.XXXXXX")
 trap 'rm -rf "$test_root"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 expect_fail() { if "$@" >/dev/null 2>&1; then fail "expected refusal: $*"; fi; }
-json_at() { jq -er "$2" "$HOME/.agent-invoke/runs/$1.json"; }
+json_at() { read_state "$1" | jq -er "$2"; }
 
 HOME="$test_root/home"; export HOME
 mkdir -p "$HOME/workspace" "$test_root/zmx"
 export AGENT_INVOKE_ZMX_BIN="$fixture_bin/zmx" FAKE_ZMX_DIR="$test_root/zmx"
 # shellcheck source=/dev/null
 source "$helper"
+eval "$(declare -f bootstrap_launch | sed '1s/bootstrap_launch/bootstrap_tree/')"
+bootstrap_launch() {
+  if [[ $# == 5 ]]; then
+    bootstrap_tree "$1" "$5" "$2" "$5" legacy-test-model legacy legacy "$3" managed "$4"
+  else
+    bootstrap_tree "$@"
+  fi
+}
 
 bootstrap_launch tui-1 codex "$HOME/workspace" '' tui
 turn=$(json_at tui-1 '.active_turn.token'); seal=$(json_at tui-1 '.active_turn.seal_token')

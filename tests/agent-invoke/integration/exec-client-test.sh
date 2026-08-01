@@ -2,12 +2,14 @@
 set -euo pipefail
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 launcher="$repo_root/agent-invoke/scripts/run-exec-client.sh"
+# shellcheck source=/dev/null
+source "$repo_root/agent-invoke/scripts/manage-run-state.sh"
 fixtures="$repo_root/tests/agent-invoke/fixtures/bin"
 root=$(mktemp -d "${TMPDIR:-/tmp}/agent-invoke-exec.XXXXXX")
 trap 'rm -rf "$root"' EXIT
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 expect_fail() { if "$@" >/dev/null 2>&1; then fail "expected refusal: $*"; fi; }
-state() { jq -er "$2" "$HOME/.agent-invoke/runs/$1.json"; }
+state() { read_state "$1" | jq -er "$2"; }
 setup() {
   HOME="$root/$1"; export HOME; workspace="$HOME/work tree"; mkdir -p "$workspace" "$HOME/.claude/projects" "$HOME/.codex/sessions/2026/08"
   prompt="$HOME/prompt"; printf '%s\n' "\$(touch should-not-run); --resume \"quoted\"" > "$prompt"
@@ -17,29 +19,40 @@ launch() { "$launcher" launch "$@"; }
 resume() { "$launcher" resume "$@"; }
 [[ -f "$launcher" ]] || fail "missing exec launcher: $launcher"
 
+# Invalid launch input must refuse before creating state or consuming the
+# caller-owned prompt; `launch` cannot bypass this validation branch.
+setup invalid-launch
+expect_fail launch invalid-operation invalid-client "$workspace" "$prompt" model-x high danger-full-access ''
+[[ -e $prompt && ! -e $HOME/.agent-invoke ]] || fail 'invalid launch mutated prompt or state'
+
 setup claude; export FAKE_SESSION=11111111-1111-4111-8111-111111111111 FAKE_CLAUDE_MODE=ok
 launch c claude "$workspace" "$prompt" model-x high bypassPermissions "$FAKE_SESSION"
 [[ $(state c '.session.id') == "$FAKE_SESSION" && $(state c '.session.sealed') == true && -n $(state c '.owner.pid') && -n $(state c '.owner.started') && -n $(state c '.owner.executable') && -n $(state c '.owner.token') ]] || fail 'Claude did not create exact sealed owner identity'
-[[ $(state c '.active_turn.kind') == launch ]] || fail 'launcher cleared active turn'
+[[ $(state c '.session.path') == "$HOME/.claude/projects/"*"/$FAKE_SESSION.jsonl" && $(state c '.active_turn.baseline') == 0 ]] || fail 'Claude launch did not seal one canonical transcript at baseline zero'
+[[ $(state c '.active_turn.action') == launch ]] || fail 'launcher cleared active turn'
 grep -Fqx "claude|$workspace|--print --output-format stream-json --verbose --model model-x --effort high --permission-mode bypassPermissions --session-id $FAKE_SESSION" "$FAKE_LOG" || fail 'Claude launch argv differs'
 cmp -s "$FAKE_STDIN" <(printf '%s\n' "\$(touch should-not-run); --resume \"quoted\"") || fail 'metacharacter prompt was not stdin-only'
 [[ ! -e $prompt ]] || fail 'delivered private prompt was retained'
 ! rg -q -- '--resume|--continue|--session-name' "$FAKE_LOG" || fail 'fuzzy Claude flag used'
 turn=$(state c '.active_turn.token'); bash "$repo_root/agent-invoke/scripts/manage-run-state.sh" complete-turn c "$turn"
+claude_ref_before=$(< "$(session_ref_file c)"); claude_metadata_before=$(< "$(metadata_file c)"); claude_baseline=$(wc -l < "$(state c '.session.path')" | tr -d ' ')
 printf 'resume safely\n' > "$prompt"
 resume c claude "$workspace" "$prompt" model-x high bypassPermissions "$FAKE_SESSION" exact-resume-turn
 grep -Fqx "claude|$workspace|--print --output-format stream-json --verbose --model model-x --effort high --permission-mode bypassPermissions --resume $FAKE_SESSION" "$FAKE_LOG" || fail 'Claude resume argv differs'
-[[ $(state c '.active_turn.token') == exact-resume-turn ]] || fail 'resume turn token changed'
+[[ $(state c '.active_turn.token') == exact-resume-turn && $(state c '.active_turn.baseline') == "$claude_baseline" && $(< "$(session_ref_file c)") == "$claude_ref_before" && $(jq -cS 'del(.last_resumed_at)' "$(metadata_file c)") == $(jq -cS 'del(.last_resumed_at)' <<<"$claude_metadata_before") && $(state c '.last_resumed_at') != null && $(state c '.owner.type') == exec ]] || fail 'Claude resume changed sealed identity or did not preserve its pre-execution baseline'
 
 setup codex; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok
 launch x codex "$workspace" "$prompt" model-x high danger-full-access ''
 [[ $(state x '.session.id') == "$FAKE_SESSION" && $(state x '.session.sealed') == true ]] || fail 'Codex thread.started was not sealed'
+[[ $(jq -r .path "$HOME/.agent-invoke/runs/x/session-ref.json") == "$FAKE_CODEX_TRANSCRIPT" && $(state x '.active_turn.baseline') == 0 && $(state x '.active_turn.client_turn_id') == native-turn-fixed && $(state x '.owner.type') == exec ]] || fail 'Codex launch did not bind canonical transcript baseline and native turn'
 grep -Fqx "codex|$workspace|exec --json --model model-x --sandbox danger-full-access --config model_reasoning_effort=high -" "$FAKE_LOG" || fail 'Codex launch argv differs'
 ! rg -q -- '--thread|--resume|--continue' "$FAKE_LOG" || fail 'fuzzy Codex flag used'
 turn=$(state x '.active_turn.token'); bash "$repo_root/agent-invoke/scripts/manage-run-state.sh" complete-turn x "$turn"
+codex_ref_before=$(< "$(session_ref_file x)"); codex_metadata_before=$(< "$(metadata_file x)"); codex_baseline=$(wc -l < "$FAKE_CODEX_TRANSCRIPT" | tr -d ' ')
 printf 'resume safely\n' > "$prompt"
 resume x codex "$workspace" "$prompt" model-x high danger-full-access "$FAKE_SESSION" exact-resume-turn
 grep -Fqx "codex|$workspace|exec --json --model model-x --sandbox danger-full-access --config model_reasoning_effort=high resume $FAKE_SESSION -" "$FAKE_LOG" || fail 'Codex resume argv differs'
+[[ $(state x '.active_turn.token') == exact-resume-turn && $(state x '.active_turn.baseline') == "$codex_baseline" && $(state x '.active_turn.client_turn_id') == native-turn-fixed && $(< "$(session_ref_file x)") == "$codex_ref_before" && $(jq -cS 'del(.last_resumed_at)' "$(metadata_file x)") == $(jq -cS 'del(.last_resumed_at)' <<<"$codex_metadata_before") && $(state x '.last_resumed_at') != null && $(state x '.owner.type') == exec ]] || fail 'Codex resume changed sealed identity or did not preserve its pre-execution baseline'
 
 for mode in duplicate mismatch no-seal dependency auth quota permission; do
   setup "$mode"; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE="$mode"
@@ -47,6 +60,13 @@ for mode in duplicate mismatch no-seal dependency auth quota permission; do
   [[ $(state "$mode" '.mode') == exec && $(state "$mode" '.session.sealed') == false && $(state "$mode" '.session.id') == null ]] || fail "$mode left a resumable or alternate operation"
   [[ ! -e $prompt ]] || fail "$mode retained a private prompt after client failure"
 done
+# A terminal child is not start evidence.  The launcher must reap this exact
+# child and fail before continuing its start-evidence polling path.
+setup permission-reap; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=permission
+set +e; permission_output=$(launch permission-reap codex "$workspace" "$prompt" model-x high danger-full-access '' 2>&1); permission_status=$?; set -e
+[[ $permission_status != 0 ]] || fail 'terminal permission child unexpectedly launched'
+grep -Fqx 'agent-invoke exec: child exited before exact session identity' <<<"$permission_output" || fail 'terminal child entered start-evidence polling'
+[[ ! -e $prompt && $(state permission-reap '.session.sealed') == false ]] || fail 'terminal child did not retain provisional state and dispose prompt'
 setup identity-failure; sync_dir=$(mktemp -d "$HOME/identity-sync.XXXXXX")
 export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok AGENT_INVOKE_FAIL_IDENTITY=1
 export FAKE_SYNC_READY="$sync_dir/ready" FAKE_SYNC_RELEASE="$sync_dir/release" FAKE_SYNC_CHILD_PID="$sync_dir/child-pid"
@@ -112,7 +132,7 @@ set +e; wait "$invoke_pid"; invoke_status=$?; set -e
 [[ $invoke_status -ne 0 ]] || fail 'identity capture failure unexpectedly succeeded'
 PATH=$original_path; export PATH
 unset AGENT_INVOKE_FAIL_IDENTITY FAKE_SYNC_READY FAKE_SYNC_RELEASE FAKE_SYNC_CHILD_PID FAKE_SYNC_STDIN_CONSUMED FAKE_SYNC_EXIT_RELEASE FAKE_SYNC_EXITED FAKE_SYNC_SHRED_ENTERED FAKE_SYNC_SHRED_RELEASE FAKE_SYNC_PROMPT FAKE_SYNC_SHRED_CHECKED_PID FAKE_SYNC_SHRED_CHILD_LIVE FAKE_REAL_SHRED
-[[ ! -e $prompt && $(state identity-failure '.mode') == exec && $(state identity-failure '.session.sealed') == false && $(state identity-failure '.session.id') == null && $(state identity-failure '.active_turn.kind') == launch ]] || fail 'identity failure did not wait, dispose, and remain fail-closed'
+[[ ! -e $prompt && $(state identity-failure '.mode') == exec && $(state identity-failure '.session.sealed') == false && $(state identity-failure '.session.id') == null && $(state identity-failure '.active_turn.action') == launch ]] || fail 'identity failure did not wait, dispose, and remain fail-closed'
 setup resume-settings; export FAKE_SESSION=22222222-2222-4222-8222-222222222222 FAKE_CODEX_MODE=ok
 launch settings codex "$workspace" "$prompt" model-x high danger-full-access ''
 turn=$(state settings '.active_turn.token'); bash "$repo_root/agent-invoke/scripts/manage-run-state.sh" complete-turn settings "$turn"

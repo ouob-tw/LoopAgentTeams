@@ -8,11 +8,33 @@ trap 'rm -rf "$test_root"' EXIT
 
 fail() { printf 'FAIL: %s\n' "$*" >&2; exit 1; }
 expect_fail() { if "$@" >/dev/null 2>&1; then fail "expected refusal: $*"; fi; }
-json_at() { jq -er "$2" "$HOME/.agent-invoke/runs/$1.json"; }
+json_at() { read_state "$1" | jq -er "$2"; }
+operation_snapshot() {
+  local operation=$1 file root
+  root="$HOME/.agent-invoke/runs/$operation"
+  [[ -d $root && ! -L $root ]] || return 1
+  while IFS= read -r file; do
+    printf '%s\t%s\n' "${file#"$root"/}" "$(jq -cS . "$file")"
+  done < <(find "$root" -type f -name '*.json' -print | LC_ALL=C sort)
+}
 
 [[ -f "$helper" ]] || fail "missing state helper: $helper"
 # shellcheck source=/dev/null
 source "$helper"
+# The historical five-argument notation is translated only by this test
+# harness.  The sourced production function itself accepts the current tree
+# interface exclusively; the direct CLI regression below proves refusal.
+install_legacy_test_bootstrap() {
+eval "$(declare -f bootstrap_launch | sed '1s/bootstrap_launch/bootstrap_tree/')"
+bootstrap_launch() {
+  if [[ $# == 5 ]]; then
+    bootstrap_tree "$1" "$5" "$2" "$5" legacy-test-model legacy legacy "$3" managed "$4"
+  else
+    bootstrap_tree "$@"
+  fi
+}
+}
+install_legacy_test_bootstrap
 
 new_home() {
   HOME="$test_root/home-$1"
@@ -21,18 +43,28 @@ new_home() {
 }
 
 new_home basic
+set +e; "$helper" bootstrap-launch obsolete codex "$HOME/workspace" '' native >/dev/null 2>&1; obsolete_status=$?; set -e
+[[ $obsolete_status == 65 && ! -e "$HOME/.agent-invoke" ]] || fail 'obsolete five-argument bootstrap was not refused without state mutation'
 for invalid in '' '.' '..' '../escape' 'has space' 'x/y'; do
   expect_fail bootstrap_launch "$invalid" codex "$HOME/workspace" '' native
 done
 bootstrap_launch operation-1 codex "$HOME/workspace" '' native
-state="$HOME/.agent-invoke/runs/operation-1.json"
+state="$HOME/.agent-invoke/runs/operation-1"
 [[ $(stat -c '%a' "$HOME/.agent-invoke") == 700 ]] || fail 'registry directory is not private'
 [[ $(stat -c '%a' "$HOME/.agent-invoke/runs") == 700 ]] || fail 'runs directory is not private'
-[[ $(stat -c '%a' "$state") == 600 ]] || fail 'state file is not private'
+[[ $(stat -c '%a' "$state/metadata.json") == 600 ]] || fail 'state metadata is not private'
 [[ $(json_at operation-1 '.session.sealed') == false ]] || fail 'bootstrap sealed prematurely'
 [[ $(json_at operation-1 '.session.id') == null ]] || fail 'native bootstrap invented identity'
 [[ -n $(json_at operation-1 '.active_turn.token') ]] || fail 'bootstrap omitted launch turn'
 [[ ! -e "$HOME/workspace/.agent-invoke" ]] || fail 'state escaped private registry'
+
+# A symlinked runtime directory must be refused even when its contained JSON
+# files themselves are owned/private regular files.
+mv "$HOME/.agent-invoke/runs/operation-1/runtime" "$HOME/.agent-invoke/runs/operation-1/runtime-real"
+ln -s "$HOME/.agent-invoke/runs/operation-1/runtime-real" "$HOME/.agent-invoke/runs/operation-1/runtime"
+expect_fail read_state operation-1
+rm "$HOME/.agent-invoke/runs/operation-1/runtime"
+mv "$HOME/.agent-invoke/runs/operation-1/runtime-real" "$HOME/.agent-invoke/runs/operation-1/runtime"
 
 turn=$(json_at operation-1 '.active_turn.token')
 seal=$(json_at operation-1 '.active_turn.seal_token')
@@ -70,7 +102,7 @@ expect_fail seal_session_once exec-owner "$eturn" "$eseal" exec-session '{"type"
 
 new_home claude
 bootstrap_launch claude-1 claude "$HOME/workspace" preallocated-uuid native
-[[ $(json_at claude-1 '.session.id') == preallocated-uuid ]] || fail 'Claude UUID not retained provisionally'
+[[ $(json_at claude-1 '.active_turn.session_id') == preallocated-uuid ]] || fail 'Claude UUID not retained provisionally'
 [[ $(json_at claude-1 '.session.sealed') == false ]] || fail 'Claude UUID sealed before confirmation'
 cturn=$(json_at claude-1 '.active_turn.token')
 cseal=$(json_at claude-1 '.active_turn.seal_token')
@@ -92,6 +124,8 @@ fseal=$(json_at fresh '.active_turn.seal_token')
 seal_session_once fresh "$fturn" "$fseal" external-1 '{"type":"exec","token":"exec-owner"}'
 complete_turn fresh "$fturn"
 begin_turn fresh resume exec-turn
+resume_owner=$(jq -n --argjson pid "$$" --arg started "$(ps -o lstart= -p $$ | sed 's/^ *//')" --arg executable "$(readlink /proc/$$/exe)" --arg token exec-owner '{type:"exec",pid:$pid,started:$started,executable:$executable,token:$token}')
+bind_external_turn fresh exec-turn external-1 "$resume_owner"
 verify_exec_owner fresh exec-turn exec-owner
 expect_fail verify_exec_owner fresh exec-turn other-owner
 complete_turn fresh exec-turn
@@ -130,6 +164,9 @@ external_started=$(ps -o lstart= -p "$external_pid" | sed 's/^ *//')
 external_executable=$(readlink "/proc/$external_pid/exe")
 external_owner=$(jq -n --argjson pid "$external_pid" --arg started "$external_started" --arg executable "$external_executable" '{type:"exec",pid:$pid,started:$started,executable:$executable,token:"owner-token"}')
 seal_session_once external-stop "$sturn" "$sseal" external-id "$external_owner"
+before_stop_mismatch=$(operation_snapshot external-stop)
+expect_fail stop_external_owner external-stop "$sturn" wrong-owner
+[[ $(operation_snapshot external-stop) == "$before_stop_mismatch" ]] || fail 'mismatched external stop mutated state'
 stop_external_owner external-stop "$sturn" owner-token
 [[ $(json_at external-stop '.status') == interrupted ]] || fail 'external stop was not recorded'
 [[ $(json_at external-stop '.owner') == null && $(json_at external-stop '.active_turn') == null ]] || fail 'external stop retained protected carrier state'
@@ -152,23 +189,29 @@ lost_turn=$(json_at native-lost '.active_turn.token')
 lost_seal=$(json_at native-lost '.active_turn.seal_token')
 seal_session_once native-lost "$lost_turn" "$lost_seal" lost-handle '{"type":"native","handle":"lost-handle","token":"lost-owner"}'
 prepare_native_stop native-lost "$lost_turn" lost-handle lost-owner >/dev/null
-complete_turn native-lost "$lost_turn"
+expect_fail complete_turn native-lost "$lost_turn"
+[[ $(json_at native-lost '.active_turn.token') == "$lost_turn" ]] || fail 'prepared stop allowed active turn removal'
 expect_fail finalize_native_stop native-lost "$lost_turn" lost-handle lost-owner no-token
 
 bootstrap_launch cleanable codex "$HOME/workspace" '' exec
 clean_turn=$(json_at cleanable '.active_turn.token')
 clean_seal=$(json_at cleanable '.active_turn.seal_token')
 seal_session_once cleanable "$clean_turn" "$clean_seal" clean-id '{"type":"exec","token":"clean-owner"}'
-complete_turn cleanable "$clean_turn"
 expect_fail clean_one_registry_entry cleanable --dry-run
-[[ $(classify_prune_candidate cleanable) == blocked-live-or-ambiguous-owner ]] || fail 'live owner is removable'
-jq '.owner=null' "$HOME/.agent-invoke/runs/cleanable.json" > "$HOME/.agent-invoke/runs/cleanable.json.tmp"
-chmod 600 "$HOME/.agent-invoke/runs/cleanable.json.tmp"
-mv "$HOME/.agent-invoke/runs/cleanable.json.tmp" "$HOME/.agent-invoke/runs/cleanable.json"
+[[ $(classify_prune_candidate cleanable) == blocked-active-turn ]] || fail 'active owner is removable'
+complete_turn cleanable "$clean_turn"
 clean_one_registry_entry cleanable --dry-run | grep -qx 'recoverable-clean' || fail 'dry run did not classify ownerless state'
-[[ -f "$HOME/.agent-invoke/runs/cleanable.json" ]] || fail 'dry run removed state'
+[[ -d "$HOME/.agent-invoke/runs/cleanable" ]] || fail 'dry run removed state'
+real_trash=$(command -v trash-put); trash_wrapper="$test_root/trash-wrapper"; mkdir -p "$trash_wrapper"
+# shellcheck disable=SC2016 # Wrapper variables intentionally expand at invocation.
+printf '%s\n' '#!/usr/bin/env bash' '[[ -d "${HOME:?}/.agent-invoke/locks/cleanable.lock" ]] || exit 97' ': > "${FAKE_TRASH_LOCK_OBSERVED:?}"' 'exec "${FAKE_REAL_TRASH:?}" "$@"' > "$trash_wrapper/trash-put"
+chmod 700 "$trash_wrapper/trash-put"
+export FAKE_REAL_TRASH="$real_trash" FAKE_TRASH_LOCK_OBSERVED="$test_root/clean-lock-observed"
+original_path=$PATH; PATH="$trash_wrapper:$PATH"; export PATH
 clean_one_registry_entry cleanable --confirm
-[[ ! -e "$HOME/.agent-invoke/runs/cleanable.json" ]] || fail 'confirmed clean retained state'
+PATH=$original_path; export PATH; unset FAKE_REAL_TRASH FAKE_TRASH_LOCK_OBSERVED
+[[ -e "$test_root/clean-lock-observed" ]] || fail 'clean released lock before trash'
+[[ ! -e "$HOME/.agent-invoke/runs/cleanable" ]] || fail 'confirmed clean retained state'
 bootstrap_launch unsealed codex "$HOME/workspace" '' exec
 [[ $(classify_prune_candidate unsealed) == blocked-unsealed ]] || fail 'unsealed state is prunable'
 expect_fail clean_one_registry_entry unsealed --all
@@ -179,6 +222,7 @@ expect_fail bootstrap_launch empty-token codex "$HOME/workspace" '' native
 [[ ! -e "$HOME/.agent-invoke/runs/empty-token.json" ]] || fail 'empty token created resumable state'
 # shellcheck source=/dev/null
 source "$helper"
+install_legacy_test_bootstrap
 [[ ! -e "$HOME/.lat" ]] || fail 'state helper wrote .lat'
 
 # Task 4 RED: a native finalize must require a token-bound confirmed stop and
@@ -190,16 +234,16 @@ nf_seal=$(json_at native-finalize '.active_turn.seal_token')
 seal_session_once native-finalize "$nf_turn" "$nf_seal" native-finalize-handle '{"type":"native","handle":"native-finalize-handle","token":"native-owner"}'
 prepare_native_stop native-finalize "$nf_turn" native-finalize-handle native-owner >/dev/null
 nf_stop=$(json_at native-finalize '.stop_intent.stop_token')
-before=$(cat "$HOME/.agent-invoke/runs/native-finalize.json")
+before=$(operation_snapshot native-finalize)
 expect_fail finalize_native_stop native-finalize "$nf_turn" native-finalize-handle native-owner "$nf_stop"
-[[ $(cat "$HOME/.agent-invoke/runs/native-finalize.json") == "$before" ]] || fail 'uncertain native finalize changed protected state'
+[[ $(operation_snapshot native-finalize) == "$before" ]] || fail 'uncertain native finalize changed protected state'
 confirm_native_stop native-finalize "$nf_turn" native-finalize-handle native-owner "$nf_stop" stopped
 finalize_native_stop native-finalize "$nf_turn" native-finalize-handle native-owner "$nf_stop"
 [[ $(json_at native-finalize '.owner') == null ]] || fail 'native finalize retained owner'
 [[ $(json_at native-finalize '.active_turn') == null ]] || fail 'native finalize retained active turn'
 [[ $(json_at native-finalize '.stop_intent') == null ]] || fail 'native finalize retained stop intent'
 clean_one_registry_entry native-finalize --confirm
-[[ ! -e "$HOME/.agent-invoke/runs/native-finalize.json" ]] || fail 'finalized native state was not cleanable'
+[[ ! -e "$HOME/.agent-invoke/runs/native-finalize" ]] || fail 'finalized native state was not cleanable'
 
 # Task 4 review RED: malformed but parseable metadata is manual-only, and an
 # exact host error is retained as confirmation without allowing finalization.
@@ -218,16 +262,50 @@ expect_fail clean_one_registry_entry sealed-null --confirm
 [[ -f "$HOME/.agent-invoke/runs/sealed-null.json" ]] || fail 'sealed null identity was trashed'
 expect_fail prune --confirm sealed-null
 
+# Critical state transaction RED: injected mid-commit failures must roll each
+# protected tree back as one operation, rather than retaining a session/owner
+# without the matching active turn.
+bootstrap_launch tx-seal codex "$HOME/workspace" '' exec
+tx_turn=$(json_at tx-seal '.active_turn.token'); tx_seal=$(json_at tx-seal '.active_turn.seal_token'); tx_before=$(operation_snapshot tx-seal)
+AGENT_INVOKE_FAIL_STATE_TX_AT=1 expect_fail seal_session_once tx-seal "$tx_turn" "$tx_seal" tx-session '{"type":"exec","pid":1,"started":"x","executable":"x","token":"tx-owner"}'
+[[ $(operation_snapshot tx-seal) == "$tx_before" && ! -e "$HOME/.agent-invoke/runs/tx-seal/session-ref.json" ]] || fail 'seal transaction left a contradictory partial tree'
+
+# A hostile pending journal may not traverse a substituted runtime component.
+mkdir "$HOME/.agent-invoke/runs/tx-seal/.state-transaction.hostile"; chmod 700 "$HOME/.agent-invoke/runs/tx-seal/.state-transaction.hostile"
+printf '%s\n' '{"status":"pending","entries":[{"index":0,"relative":"runtime/owner.json","had_old":false}]}' | atomic_json_replace "$HOME/.agent-invoke/runs/tx-seal/.state-transaction.hostile/manifest.json"
+printf '%s\n' '{"sentinel":true}' > "$HOME/runtime-sentinel.json"
+mv "$HOME/.agent-invoke/runs/tx-seal/runtime" "$HOME/.agent-invoke/runs/tx-seal/runtime-real"; ln -s "$HOME" "$HOME/.agent-invoke/runs/tx-seal/runtime"
+expect_fail read_state tx-seal
+[[ $(cat "$HOME/runtime-sentinel.json") == '{"sentinel":true}' ]] || fail 'journal recovery traversed substituted runtime symlink'
+unlink "$HOME/.agent-invoke/runs/tx-seal/runtime"; mv "$HOME/.agent-invoke/runs/tx-seal/runtime-real" "$HOME/.agent-invoke/runs/tx-seal/runtime"
+shred -u "$HOME/.agent-invoke/runs/tx-seal/.state-transaction.hostile/manifest.json"; rmdir "$HOME/.agent-invoke/runs/tx-seal/.state-transaction.hostile"
+
+bootstrap_launch tx-bind codex "$HOME/workspace" '' exec
+txb_turn=$(json_at tx-bind '.active_turn.token'); txb_seal=$(json_at tx-bind '.active_turn.seal_token')
+seal_session_once tx-bind "$txb_turn" "$txb_seal" tx-bind-session '{"type":"exec","pid":1,"started":"x","executable":"x","token":"first-owner"}'
+complete_turn tx-bind "$txb_turn"; begin_turn tx-bind resume tx-bind-turn; txb_before=$(operation_snapshot tx-bind)
+txb_owner=$(jq -n --argjson pid "$$" --arg started "$(ps -o lstart= -p $$ | sed 's/^ *//')" --arg executable "$(readlink /proc/$$/exe)" '{type:"exec",pid:$pid,started:$started,executable:$executable,token:"next-owner"}')
+AGENT_INVOKE_FAIL_STATE_TX_AT=1 expect_fail bind_external_turn tx-bind tx-bind-turn tx-bind-session "$txb_owner"
+[[ $(operation_snapshot tx-bind) == "$txb_before" ]] || fail 'bind transaction left a contradictory partial tree'
+
+import_record="$HOME/import-record.json"
+jq -n --arg workspace "$HOME/workspace" '{source:"imported",sealed:true,immutable:true,client:"codex",session_id:"import-session",session_path:"/tmp/import-session.jsonl",workspace:$workspace,mode:"exec",settings:{model:{value:"model-x"},effort:{value:"high"},permission:{value:"danger"}}}' > "$import_record"; chmod 600 "$import_record"
+AGENT_INVOKE_FAIL_STATE_TX_AT=0 expect_fail import_state tx-import exec codex exec model-x high danger "$HOME/workspace" imported "$import_record"
+[[ $(json_at tx-import '.session.sealed') == false && ! -e "$HOME/.agent-invoke/runs/tx-import/session-ref.json" ]] || fail 'import transaction left a partial sealed identity'
+
+printf '%s\n' '{}' > "$HOME/.agent-invoke/runs/orphan.manifest"; chmod 600 "$HOME/.agent-invoke/runs/orphan.manifest"
+expect_fail bootstrap_launch orphan codex "$HOME/workspace" '' native
+expect_fail prune --dry-run
+
 bootstrap_launch native-error codex "$HOME/workspace" '' native
 error_turn=$(json_at native-error '.active_turn.token'); error_seal=$(json_at native-error '.active_turn.seal_token')
 seal_session_once native-error "$error_turn" "$error_seal" native-error-handle '{"type":"native","handle":"native-error-handle","token":"error-owner"}'
 error_stop=$(prepare_native_stop native-error "$error_turn" native-error-handle error-owner)
 confirm_native_stop native-error "$error_turn" native-error-handle error-owner "$error_stop" error
-[[ $(jq -r '.status' "$HOME/.agent-invoke/runs/native-error.json.stop-confirmation.json") == error ]] || fail 'host error status was not retained'
-before_error=$(cat "$HOME/.agent-invoke/runs/native-error.json")
+[[ $(jq -r '.status' "$HOME/.agent-invoke/runs/native-error/runtime/.confirmation.json") == error ]] || fail 'host error status was not retained'
+before_error=$(operation_snapshot native-error)
 expect_fail finalize_native_stop native-error "$error_turn" native-error-handle error-owner "$error_stop"
-[[ $(cat "$HOME/.agent-invoke/runs/native-error.json") == "$before_error" ]] || fail 'error finalize changed protected state'
-prune_output=$(prune)
-grep -qx 'malformed blocked-malformed' <<<"$prune_output" || fail 'prune did not list exact malformed entry and reason'
+[[ $(operation_snapshot native-error) == "$before_error" ]] || fail 'error finalize changed protected state'
+expect_fail prune --dry-run
 
 printf 'PASS: secure state manager\n'

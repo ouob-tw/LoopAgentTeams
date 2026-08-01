@@ -10,7 +10,11 @@ one `session_meta.payload.id` equal to the UUID and a `cwd` equal to the
 canonical workspace. FIFO files, symlink components, duplicate matches,
 mismatched IDs/cwd, and path escape refuse.
 
-The record is sealed and immutable at import time:
+`manage-run-state.sh import` accepts only the resolver's owned `0600` regular
+JSON, rechecks client/mode/workspace/settings and requires `origin=imported`.
+It creates immutable metadata and identity-only `session-ref.json`, with no
+owner or active-turn; an existing ID, mismatch, symlink, or replay refuses.
+The imported identity is sealed and immutable at import time:
 
 ```json
 {"source":"imported","sealed":true,"immutable":true,"owner":{"type":"external"},"mode":"exec|tui","session_id":"exact UUID","session_path":"canonical path"}
