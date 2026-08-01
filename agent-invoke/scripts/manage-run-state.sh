@@ -1,0 +1,246 @@
+#!/usr/bin/env bash
+# Private, fail-closed state for agent-invoke.  Safe to source from Bash 3.2.
+
+state_root() { printf '%s/.agent-invoke\n' "$HOME"; }
+
+valid_operation_id() {
+  [[ ${1-} =~ ^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$ ]] && [[ $1 != . && $1 != .. ]]
+}
+
+state_error() { printf 'agent-invoke state: %s\n' "$*" >&2; return 65; }
+
+new_token() {
+  dd if=/dev/urandom bs=24 count=1 2>/dev/null | od -An -tx1 | tr -d ' \n'
+}
+
+owner_uid() {
+  stat -c '%u' "$1" 2>/dev/null || stat -f '%u' "$1"
+}
+
+private_dir() {
+  local directory=$1 parent
+  parent=$(dirname "$directory")
+  [[ ! -L "$directory" && ! -L "$parent" ]] || state_error "symlinked registry component"
+  if [[ ! -e "$directory" ]]; then
+    mkdir "$directory" || return
+  fi
+  [[ -d "$directory" && ! -L "$directory" ]] || state_error "registry component is not a directory"
+  [[ $(owner_uid "$directory") == $(id -u) ]] || state_error "registry component is not owned"
+  chmod 700 "$directory"
+}
+
+ensure_registry() {
+  local root
+  root=$(state_root)
+  private_dir "$root" || return
+  private_dir "$root/runs" || return
+  private_dir "$root/locks" || return
+}
+
+state_file() {
+  valid_operation_id "${1-}" || { state_error "unsafe operation id"; return; }
+  printf '%s/runs/%s.json\n' "$(state_root)" "$1"
+}
+
+lock_dir() {
+  valid_operation_id "${1-}" || { state_error "unsafe operation id"; return; }
+  printf '%s/locks/%s.lock\n' "$(state_root)" "$1"
+}
+
+acquire_lock() {
+  local operation=$1 lock
+  valid_operation_id "$operation" || { state_error "unsafe operation id"; return; }
+  ensure_registry || return
+  lock=$(lock_dir "$operation") || return
+  mkdir "$lock" 2>/dev/null || { state_error "lock already exists"; return; }
+  chmod 700 "$lock"
+  jq -n --arg operation "$operation" --argjson pid "$$" '{operation_id:$operation,pid:$pid}' \
+    | atomic_json_replace "$lock/owner.json" || { rmdir "$lock" 2>/dev/null || :; return 65; }
+}
+
+release_owned_lock() {
+  local operation=$1 lock owner
+  valid_operation_id "$operation" || { state_error "unsafe operation id"; return; }
+  lock=$(lock_dir "$operation") || return
+  owner="$lock/owner.json"
+  [[ -d "$lock" && -f "$owner" && ! -L "$owner" ]] || { state_error "lock is not owned"; return; }
+  jq -e --arg operation "$operation" --argjson pid "$$" \
+    '.operation_id == $operation and .pid == $pid' "$owner" >/dev/null \
+    || { state_error "lock belongs to another process"; return; }
+  shred -u "$owner" || return
+  rmdir "$lock" || return
+}
+
+atomic_json_replace() {
+  local destination=$1 payload tmp directory base
+  payload=$(cat)
+  directory=$(dirname "$destination")
+  base=$(basename "$destination")
+  [[ -d "$directory" && ! -L "$directory" && ! -L "$destination" ]] \
+    || { state_error "unsafe state destination"; return; }
+  tmp=$(mktemp "$directory/.${base}.tmp.XXXXXX") || return
+  if ! printf '%s' "$payload" | jq -e . >"$tmp"; then
+    shred -u "$tmp" || :
+    state_error "invalid JSON"
+    return
+  fi
+  chmod 600 "$tmp" || { shred -u "$tmp" || :; return; }
+  mv -f "$tmp" "$destination"
+}
+
+read_state() {
+  local file
+  ensure_registry || return
+  file=$(state_file "$1") || return
+  [[ -f "$file" && ! -L "$file" ]] || { state_error "state is absent"; return; }
+  jq -e . "$file"
+}
+
+bootstrap_launch() {
+  local operation=$1 client=$2 workspace=$3 provisional=${4-} mode=${5-native} file canonical turn seal payload
+  valid_operation_id "$operation" || { state_error "unsafe operation id"; return; }
+  [[ $client == claude || $client == codex ]] || { state_error "unsupported client"; return; }
+  [[ -d "$workspace" && ! -L "$workspace" ]] || { state_error "workspace is not an existing directory"; return; }
+  canonical=$(cd "$workspace" && pwd -P) || return
+  [[ $mode == native || $mode == exec || $mode == tui ]] || { state_error "unsupported mode"; return; }
+  if [[ $client == codex && -n $provisional ]]; then state_error "Codex bootstrap cannot preseal identity"; return; fi
+  acquire_lock "$operation" || return
+  file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
+  if [[ -e "$file" ]]; then release_owned_lock "$operation" || :; state_error "state already exists"; return; fi
+  turn=$(new_token); seal=$(new_token)
+  payload=$(jq -n --arg operation "$operation" --arg client "$client" --arg workspace "$canonical" \
+    --arg provisional "$provisional" --arg mode "$mode" --arg turn "$turn" --arg seal "$seal" \
+    '{schema:1,operation_id:$operation,client:$client,workspace:$workspace,mode:$mode,status:"active",session:{id:(if $provisional == "" then null else $provisional end),sealed:false},owner:null,stop_intent:null,active_turn:{kind:"launch",token:$turn,seal_token:$seal}}')
+  if ! printf '%s' "$payload" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
+  release_owned_lock "$operation"
+}
+
+seal_session_once() {
+  local operation=$1 turn=$2 seal=$3 session_id=$4 owner_json=$5 file before after
+  [[ -n $session_id ]] || { state_error "missing authoritative session identity"; return; }
+  jq -e . >/dev/null <<<"$owner_json" || { state_error "invalid owner JSON"; return; }
+  acquire_lock "$operation" || return
+  file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
+  before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
+  if ! jq -e --arg turn "$turn" --arg seal "$seal" --arg session "$session_id" --argjson owner "$owner_json" '
+    .session.sealed == false and .stop_intent == null and .active_turn.token == $turn and .active_turn.seal_token == $seal and
+    ((.session.id == null) or (.session.id == $session)) and
+    (($owner.type == "native" and $owner.handle == $session) or ($owner.type == "exec" and ($owner.token|type) == "string") or ($owner.type == "zmx" and $owner.session_id == $session and ($owner.token|type) == "string"))' <<<"$before" >/dev/null; then
+    release_owned_lock "$operation" || :; state_error "seal identity mismatch or already sealed"; return
+  fi
+  after=$(jq --arg session "$session_id" --argjson owner "$owner_json" '.session.id=$session | .session.sealed=true | .owner=$owner' <<<"$before")
+  if ! printf '%s' "$after" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
+  release_owned_lock "$operation"
+}
+
+begin_turn() {
+  local operation=$1 kind=$2 token=$3 file before after
+  [[ -n $kind && -n $token ]] || { state_error "missing turn identity"; return; }
+  acquire_lock "$operation" || return
+  file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
+  before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
+  jq -e --arg token "$token" --arg kind "$kind" '.session.sealed == true and .active_turn == null and .stop_intent == null and ($token|length) > 0 and ($kind|length) > 0' <<<"$before" >/dev/null \
+    || { release_owned_lock "$operation" || :; state_error "resume is not allowed"; return; }
+  after=$(jq --arg token "$token" --arg kind "$kind" '.active_turn={kind:$kind,token:$token,seal_token:null}' <<<"$before")
+  if ! printf '%s' "$after" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
+  release_owned_lock "$operation"
+}
+
+complete_turn() {
+  local operation=$1 token=$2 file before after
+  acquire_lock "$operation" || return
+  file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
+  before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
+  jq -e --arg token "$token" '.active_turn.token == $token' <<<"$before" >/dev/null \
+    || { release_owned_lock "$operation" || :; state_error "turn token mismatch"; return; }
+  after=$(jq '.active_turn=null' <<<"$before")
+  if ! printf '%s' "$after" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
+  release_owned_lock "$operation"
+}
+
+verify_exec_owner() {
+  local operation=$1 turn=$2 owner_token=$3
+  read_state "$operation" | jq -e --arg turn "$turn" --arg owner "$owner_token" \
+    '.active_turn.token == $turn and .owner.type == "exec" and .owner.token == $owner' >/dev/null
+}
+
+verify_zmx_owner() {
+  local operation=$1 turn=$2 session_id=$3 owner_token=$4
+  read_state "$operation" | jq -e --arg turn "$turn" --arg session "$session_id" --arg owner "$owner_token" \
+    '.active_turn.token == $turn and .owner.type == "zmx" and .owner.session_id == $session and .owner.token == $owner' >/dev/null
+}
+
+verify_native_owner() {
+  local operation=$1 turn=$2 handle=$3
+  read_state "$operation" | jq -e --arg turn "$turn" --arg handle "$handle" \
+    '.active_turn.token == $turn and .owner.type == "native" and .owner.handle == $handle' >/dev/null
+}
+
+stop_external_owner() {
+  local operation=$1 turn=$2 owner_token=$3 file before after
+  acquire_lock "$operation" || return
+  file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
+  before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
+  jq -e --arg turn "$turn" --arg owner "$owner_token" '.active_turn.token == $turn and .stop_intent == null and ((.owner.type == "exec" or .owner.type == "zmx") and .owner.token == $owner)' <<<"$before" >/dev/null \
+    || { release_owned_lock "$operation" || :; state_error "external owner mismatch"; return; }
+  after=$(jq --arg turn "$turn" '.stop_intent={kind:"external",status:"requested",turn_token:$turn}' <<<"$before")
+  if ! printf '%s' "$after" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
+  release_owned_lock "$operation"
+}
+
+prepare_native_stop() {
+  local operation=$1 turn=$2 handle=$3 file before after
+  acquire_lock "$operation" || return
+  file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
+  before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
+  jq -e --arg turn "$turn" --arg handle "$handle" '.active_turn.token == $turn and .stop_intent == null and .owner.type == "native" and .owner.handle == $handle' <<<"$before" >/dev/null \
+    || { release_owned_lock "$operation" || :; state_error "native owner mismatch"; return; }
+  after=$(jq --arg turn "$turn" --arg handle "$handle" '.stop_intent={kind:"native",status:"prepared",turn_token:$turn,handle:$handle}' <<<"$before")
+  if ! printf '%s' "$after" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
+  release_owned_lock "$operation"
+}
+
+finalize_native_stop() {
+  local operation=$1 turn=$2 handle=$3 file before after
+  acquire_lock "$operation" || return
+  file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
+  before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
+  jq -e --arg turn "$turn" --arg handle "$handle" '.stop_intent.kind == "native" and .stop_intent.status == "prepared" and .stop_intent.turn_token == $turn and .stop_intent.handle == $handle and .owner.handle == $handle' <<<"$before" >/dev/null \
+    || { release_owned_lock "$operation" || :; state_error "native stop confirmation mismatch"; return; }
+  after=$(jq '.status="stopped" | .active_turn=null | .stop_intent.status="finalized"' <<<"$before")
+  if ! printf '%s' "$after" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
+  release_owned_lock "$operation"
+}
+
+classify_prune_candidate() {
+  local state
+  state=$(read_state "$1") || return
+  jq -r 'if .session.sealed != true then "blocked-unsealed" elif .stop_intent != null then "blocked-stop-intent" elif .active_turn != null then "blocked-active-turn" else "recoverable-clean" end' <<<"$state"
+}
+
+clean_one_registry_entry() {
+  local operation=$1 option=$2 file class
+  [[ $option == --dry-run || $option == --confirm ]] || { state_error "clean requires one explicit operation"; return; }
+  acquire_lock "$operation" || return
+  class=$(classify_prune_candidate "$operation") || { release_owned_lock "$operation" || :; return; }
+  if [[ $class != recoverable-clean ]]; then release_owned_lock "$operation" || :; state_error "state is not recoverable"; return; fi
+  if [[ $option == --dry-run ]]; then release_owned_lock "$operation" || :; printf '%s\n' "$class"; return; fi
+  file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
+  shred -u "$file" || { release_owned_lock "$operation" || :; return; }
+  release_owned_lock "$operation"
+}
+
+if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
+  command=${1-}; shift || :
+  case $command in
+    bootstrap-launch) bootstrap_launch "$@" ;;
+    seal-session) seal_session_once "$@" ;;
+    begin-turn) begin_turn "$@" ;;
+    complete-turn) complete_turn "$@" ;;
+    prepare-native-stop) prepare_native_stop "$@" ;;
+    finalize-native-stop) finalize_native_stop "$@" ;;
+    stop-external) stop_external_owner "$@" ;;
+    clean-one) clean_one_registry_entry "$@" ;;
+    *) state_error 'unsupported state command'; exit 64 ;;
+  esac
+fi
