@@ -67,8 +67,10 @@ forbid_bash_native_primitive "$native_file"
 require_literal "$trigger_runner" '.agents/skills/agent-invoke'
 require_literal "$trigger_runner" '.claude/skills/agent-invoke'
 require_literal "$trigger_runner" '--output-format stream-json'
-require_literal "$trigger_runner" 'normalized route contract was absent'
-require_literal "$trigger_runner" 'normalized route contract appeared for a near-miss'
+require_literal "$trigger_runner" 'observable target skill read event was absent'
+require_literal "$trigger_runner" 'observable target skill read event appeared for a near-miss'
+validation_marker="[[ ( \$client == codex || \$client == claude ) && \$skill_root == /*"
+require_literal "$trigger_runner" "$validation_marker"
 require_literal "$trigger_runner" 'timeout --signal=TERM --kill-after=10s 120s'
 top_level_marker="top_level_bashpid=\$BASHPID"
 cleanup_marker="[[ \$BASHPID == \"\$top_level_bashpid\" ]] || return 0"

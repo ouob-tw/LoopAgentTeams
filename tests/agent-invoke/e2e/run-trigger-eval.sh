@@ -15,7 +15,7 @@ while (( $# )); do
     *) usage ;;
   esac
 done
-[[ $client == codex || $client == claude && $skill_root == /* && -f $skill_root/SKILL.md && $output == /* ]] || usage
+[[ ( $client == codex || $client == claude ) && $skill_root == /* && -f $skill_root/SKILL.md && $output == /* ]] || usage
 
 repo_root=$(cd "$(dirname "${BASH_SOURCE[0]}")/../../.." && pwd)
 prompts_file="$repo_root/tests/agent-invoke/e2e/trigger-prompts.json"
@@ -34,7 +34,7 @@ mkdir -p "$(dirname "$output")"
 output_tmp=$(mktemp "${output}.tmp.XXXXXX")
 
 run_one() {
-  local expected=$1 prompt=$2 run_dir=$3 trace=$4 candidate command status json_trace response contract=false
+  local expected=$1 prompt=$2 run_dir=$3 trace=$4 candidate source_path command status json_trace read=false
   mkdir -p "$run_dir"
   if [[ $client == codex ]]; then
     candidate="$run_dir/.agents/skills/agent-invoke"
@@ -43,6 +43,7 @@ run_one() {
   fi
   mkdir -p "$(dirname "$candidate")"
   ln -s "$skill_root" "$candidate"
+  source_path=$(realpath "$candidate/SKILL.md")
   command='Evaluate only which execution route you would choose for the following user request. If a skill activates, follow its completion requirements. Do not modify files, delegate work, create operation state, invoke agents, or use the network.\n\nUser request: '
   if [[ $client == codex ]]; then
     (cd "$run_dir" && timeout --signal=TERM --kill-after=10s 120s codex exec --ephemeral --skip-git-repo-check --sandbox read-only --json -C "$run_dir" "${command}${prompt}" < /dev/null) >"$trace" 2>&1
@@ -56,10 +57,13 @@ run_one() {
   fi
   json_trace="$run_dir/events.jsonl"
   sed -n '/^{/p' "$trace" >"$json_trace"
-  response=$(jq -r '.. | objects | select(.type? == "agent_message") | .text? // empty' "$json_trace" 2>/dev/null || true)
-  if [[ $response == *action* && $response == *target_family* && $response == *resume_reference* && $response == *route* ]]; then contract=true; fi
-  if [[ $contract == "$expected" ]]; then return 0; fi
-  if [[ $expected == true ]]; then printf '%s' 'normalized route contract was absent'; else printf '%s' 'normalized route contract appeared for a near-miss'; fi
+  if jq -e --arg candidate "$candidate/SKILL.md" --arg source "$source_path" '
+      .. | objects | select(.type? == "command_execution" or .type? == "tool_use" or .type? == "skill") |
+      (.command? // .input?.command? // .path? // .skill_path? // "") | strings | select(contains($candidate) or contains($source))' "$json_trace" >/dev/null; then
+    read=true
+  fi
+  if [[ $read == "$expected" ]]; then return 0; fi
+  if [[ $expected == true ]]; then printf '%s' 'observable target skill read event was absent'; else printf '%s' 'observable target skill read event appeared for a near-miss'; fi
   return 1
 }
 
