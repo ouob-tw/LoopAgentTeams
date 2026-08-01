@@ -61,6 +61,12 @@ state_file() {
   printf '%s/runs/%s.json\n' "$(state_root)" "$1"
 }
 
+stop_confirmation_file() {
+  local file
+  file=$(state_file "$1") || return
+  printf '%s.stop-confirmation.json\n' "$file"
+}
+
 lock_dir() {
   valid_operation_id "${1-}" || { state_error "unsafe operation id"; return; }
   printf '%s/locks/%s.lock\n' "$(state_root)" "$1"
@@ -149,12 +155,12 @@ seal_session_once() {
   acquire_lock "$operation" || return
   file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
   before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
-  if ! jq -e --arg turn "$turn" --arg seal "$seal" --arg session "$session_id" --argjson owner "$owner_json" '
+  if ! jq -e --arg operation "$operation" --arg turn "$turn" --arg seal "$seal" --arg session "$session_id" --argjson owner "$owner_json" '
     .session.sealed == false and .stop_intent == null and .active_turn.token == $turn and .active_turn.seal_token == $seal and
     ((.session.id == null) or (.session.id == $session)) and
-    ((.mode == "native" and $owner.type == "native" and $owner.handle == $session) or
+    ((.mode == "native" and $owner.type == "native" and $owner.handle == $session and ($owner.token|type) == "string" and ($owner.token|length) > 0) or
      (.mode == "exec" and $owner.type == "exec" and ($owner.token|type) == "string" and ($owner.token|length) > 0) or
-     (.mode == "tui" and $owner.type == "zmx" and $owner.session_id == $session and ($owner.token|type) == "string" and ($owner.token|length) > 0))' <<<"$before" >/dev/null; then
+     (.mode == "tui" and $owner.type == "zmx" and ($owner.handle|type) == "string" and ($owner.handle|test("^ai-" + $operation + "-[A-Za-z0-9]+$")) and $owner.session_id == $session and ($owner.token|type) == "string" and ($owner.token|length) > 0))' <<<"$before" >/dev/null; then
     release_owned_lock "$operation" || :; state_error "seal identity mismatch or already sealed"; return
   fi
   after=$(jq --arg session "$session_id" --argjson owner "$owner_json" '.session.id=$session | .session.sealed=true | .owner=$owner' <<<"$before")
@@ -200,44 +206,98 @@ verify_zmx_owner() {
 }
 
 verify_native_owner() {
-  local operation=$1 turn=$2 handle=$3
-  read_state "$operation" | jq -e --arg turn "$turn" --arg handle "$handle" \
-    '.active_turn.token == $turn and .owner.type == "native" and .owner.handle == $handle' >/dev/null
+  local operation=$1 turn=$2 handle=$3 owner_token=${4-}
+  read_state "$operation" | jq -e --arg turn "$turn" --arg handle "$handle" --arg owner "$owner_token" \
+    '.active_turn.token == $turn and .owner.type == "native" and .owner.handle == $handle and (if $owner == "" then true else .owner.token == $owner end)' >/dev/null
+}
+
+exec_owner_is_live() {
+  local owner=$1 pid started executable current_started current_executable
+  pid=$(jq -er '.pid' <<<"$owner") || return
+  started=$(jq -er '.started' <<<"$owner") || return
+  executable=$(jq -er '.executable' <<<"$owner") || return
+  [[ $pid =~ ^[2-9][0-9]*$ && $executable == /* ]] || return
+  kill -0 "$pid" 2>/dev/null || return
+  current_started=$(ps -o lstart= -p "$pid" 2>/dev/null | sed 's/^ *//') || return
+  current_executable=$(readlink "/proc/$pid/exe" 2>/dev/null) || return
+  [[ $current_started == "$started" && $current_executable == "$executable" ]]
+}
+
+zmx_owner_is_live() {
+  local owner=$1 handle zmx
+  handle=$(jq -er '.handle' <<<"$owner") || return
+  zmx=${AGENT_INVOKE_ZMX_BIN:-zmx}
+  "$zmx" exists "$handle"
 }
 
 stop_external_owner() {
-  local operation=$1 turn=$2 owner_token=$3 file before after
+  local operation=$1 turn=$2 owner_token=$3 file before after owner kind zmx
   acquire_lock "$operation" || return
   file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
   before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
   jq -e --arg turn "$turn" --arg owner "$owner_token" '.active_turn.token == $turn and .stop_intent == null and ((.owner.type == "exec" or .owner.type == "zmx") and .owner.token == $owner)' <<<"$before" >/dev/null \
     || { release_owned_lock "$operation" || :; state_error "external owner mismatch"; return; }
-  after=$(jq --arg turn "$turn" '.stop_intent={kind:"external",status:"requested",turn_token:$turn}' <<<"$before")
+  owner=$(jq -c '.owner' <<<"$before")
+  kind=$(jq -r '.owner.type' <<<"$before")
+  if [[ $kind == exec ]]; then
+    exec_owner_is_live "$owner" || { release_owned_lock "$operation" || :; state_error "external exec carrier is not exact and live"; return; }
+    kill -TERM "$(jq -r '.pid' <<<"$owner")" 2>/dev/null || { release_owned_lock "$operation" || :; state_error "external exec stop failed"; return; }
+    wait "$(jq -r '.pid' <<<"$owner")" 2>/dev/null || :
+    kill -0 "$(jq -r '.pid' <<<"$owner")" 2>/dev/null && { release_owned_lock "$operation" || :; state_error "external exec carrier remains live"; return; }
+  else
+    zmx=${AGENT_INVOKE_ZMX_BIN:-zmx}
+    zmx_owner_is_live "$owner" || { release_owned_lock "$operation" || :; state_error "external ZMX carrier is not exact and live"; return; }
+    "$zmx" stop "$(jq -r '.handle' <<<"$owner")" || { release_owned_lock "$operation" || :; state_error "external ZMX stop failed"; return; }
+    ! zmx_owner_is_live "$owner" || { release_owned_lock "$operation" || :; state_error "external ZMX carrier remains live"; return; }
+  fi
+  after=$(jq '.status="interrupted" | .owner=null | .active_turn=null | .stop_intent=null' <<<"$before")
   if ! printf '%s' "$after" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
   release_owned_lock "$operation"
 }
 
 prepare_native_stop() {
-  local operation=$1 turn=$2 handle=$3 file before after
+  local operation=$1 turn=$2 handle=$3 owner_token=$4 file before after stop_token
+  [[ -n $owner_token ]] || { state_error "missing native owner token"; return; }
   acquire_lock "$operation" || return
   file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
   before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
-  jq -e --arg turn "$turn" --arg handle "$handle" '.active_turn.token == $turn and .stop_intent == null and .owner.type == "native" and .owner.handle == $handle' <<<"$before" >/dev/null \
+  jq -e --arg turn "$turn" --arg handle "$handle" --arg owner "$owner_token" '.active_turn.token == $turn and .stop_intent == null and .owner.type == "native" and .owner.handle == $handle and .owner.token == $owner' <<<"$before" >/dev/null \
     || { release_owned_lock "$operation" || :; state_error "native owner mismatch"; return; }
-  after=$(jq --arg turn "$turn" --arg handle "$handle" '.stop_intent={kind:"native",status:"prepared",turn_token:$turn,handle:$handle}' <<<"$before")
+  stop_token=$(new_token)
+  [[ -n $stop_token ]] || { release_owned_lock "$operation" || :; state_error "token generation failed"; return; }
+  after=$(jq --arg turn "$turn" --arg handle "$handle" --arg owner "$owner_token" --arg stop "$stop_token" '.stop_intent={kind:"native",status:"prepared",turn_token:$turn,handle:$handle,owner_token:$owner,stop_token:$stop}' <<<"$before")
   if ! printf '%s' "$after" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
+  release_owned_lock "$operation"
+  printf '%s\n' "$stop_token"
+}
+
+confirm_native_stop() {
+  local operation=${1-} turn=${2-} handle=${3-} owner_token=${4-} stop_token=${5-} status=${6-} confirmation
+  [[ $status == stopped && -n $turn && -n $handle && -n $owner_token && -n $stop_token ]] || { state_error "invalid native stop confirmation"; return; }
+  acquire_lock "$operation" || return
+  confirmation=$(stop_confirmation_file "$operation") || { release_owned_lock "$operation" || :; return; }
+  read_state "$operation" | jq -e --arg turn "$turn" --arg handle "$handle" --arg owner "$owner_token" --arg stop "$stop_token" \
+    '.stop_intent.kind == "native" and .stop_intent.status == "prepared" and .stop_intent.turn_token == $turn and .stop_intent.handle == $handle and .stop_intent.owner_token == $owner and .stop_intent.stop_token == $stop' >/dev/null \
+    || { release_owned_lock "$operation" || :; state_error "native stop confirmation mismatch"; return; }
+  jq -n --arg turn "$turn" --arg handle "$handle" --arg owner "$owner_token" --arg stop "$stop_token" '{turn_token:$turn,handle:$handle,owner_token:$owner,stop_token:$stop,status:"stopped"}' | atomic_json_replace "$confirmation" || { release_owned_lock "$operation" || :; return 65; }
   release_owned_lock "$operation"
 }
 
 finalize_native_stop() {
-  local operation=$1 turn=$2 handle=$3 file before after
+  local operation=${1-} turn=${2-} handle=${3-} owner_token=${4-} stop_token=${5-} file before after confirmation
+  [[ -n $owner_token && -n $stop_token ]] || { state_error "missing native stop tokens"; return; }
   acquire_lock "$operation" || return
   file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
   before=$(read_state "$operation") || { release_owned_lock "$operation" || :; return 65; }
-  jq -e --arg turn "$turn" --arg handle "$handle" '.active_turn.token == $turn and .stop_intent.kind == "native" and .stop_intent.status == "prepared" and .stop_intent.turn_token == $turn and .stop_intent.handle == $handle and .owner.type == "native" and .owner.handle == $handle' <<<"$before" >/dev/null \
+  confirmation=$(stop_confirmation_file "$operation") || { release_owned_lock "$operation" || :; return; }
+  jq -e --arg turn "$turn" --arg handle "$handle" --arg owner "$owner_token" --arg stop "$stop_token" '.active_turn.token == $turn and .stop_intent.kind == "native" and .stop_intent.status == "prepared" and .stop_intent.turn_token == $turn and .stop_intent.handle == $handle and .stop_intent.owner_token == $owner and .stop_intent.stop_token == $stop and .owner.type == "native" and .owner.handle == $handle and .owner.token == $owner' <<<"$before" >/dev/null \
     || { release_owned_lock "$operation" || :; state_error "native stop confirmation mismatch"; return; }
-  after=$(jq '.status="stopped" | .active_turn=null | .stop_intent.status="finalized"' <<<"$before")
+  [[ -f $confirmation && ! -L $confirmation && $(owner_uid "$confirmation") == $(id -u) && $(state_mode "$confirmation") == 600 ]] || { release_owned_lock "$operation" || :; state_error "native stop is unconfirmed"; return; }
+  jq -e --arg turn "$turn" --arg handle "$handle" --arg owner "$owner_token" --arg stop "$stop_token" '.status == "stopped" and .turn_token == $turn and .handle == $handle and .owner_token == $owner and .stop_token == $stop' "$confirmation" >/dev/null \
+    || { release_owned_lock "$operation" || :; state_error "native stop confirmation is invalid"; return; }
+  after=$(jq '.status="interrupted" | .owner=null | .active_turn=null | .stop_intent=null' <<<"$before")
   if ! printf '%s' "$after" | atomic_json_replace "$file"; then release_owned_lock "$operation" || :; return 65; fi
+  shred -u "$confirmation" || { release_owned_lock "$operation" || :; return 65; }
   release_owned_lock "$operation"
 }
 
@@ -255,7 +315,7 @@ clean_one_registry_entry() {
   if [[ $class != recoverable-clean ]]; then release_owned_lock "$operation" || :; state_error "state is not recoverable"; return; fi
   if [[ $option == --dry-run ]]; then release_owned_lock "$operation" || :; printf '%s\n' "$class"; return; fi
   file=$(state_file "$operation") || { release_owned_lock "$operation" || :; return; }
-  shred -u "$file" || { release_owned_lock "$operation" || :; return; }
+  trash-put -- "$file" || { release_owned_lock "$operation" || :; return; }
   release_owned_lock "$operation"
 }
 
@@ -267,6 +327,7 @@ if [[ ${BASH_SOURCE[0]} == "$0" ]]; then
     begin-turn) begin_turn "$@" ;;
     complete-turn) complete_turn "$@" ;;
     prepare-native-stop) prepare_native_stop "$@" ;;
+    confirm-native-stop) confirm_native_stop "$@" ;;
     finalize-native-stop) finalize_native_stop "$@" ;;
     stop-external) stop_external_owner "$@" ;;
     clean-one) clean_one_registry_entry "$@" ;;

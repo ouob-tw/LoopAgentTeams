@@ -38,10 +38,10 @@ turn=$(json_at operation-1 '.active_turn.token')
 seal=$(json_at operation-1 '.active_turn.seal_token')
 expect_fail seal_session_once operation-1 wrong "$seal" native-id-1 '{"type":"native","handle":"native-id-1"}'
 expect_fail seal_session_once operation-1 "$turn" wrong native-id-1 '{"type":"native","handle":"native-id-1"}'
-seal_session_once operation-1 "$turn" "$seal" native-id-1 '{"type":"native","handle":"native-id-1"}'
+seal_session_once operation-1 "$turn" "$seal" native-id-1 '{"type":"native","handle":"native-id-1","token":"native-owner-1"}'
 [[ $(json_at operation-1 '.session.id') == native-id-1 ]] || fail 'seal did not persist exact identity'
 [[ $(json_at operation-1 '.session.sealed') == true ]] || fail 'seal did not make identity authoritative'
-expect_fail seal_session_once operation-1 "$turn" "$seal" replacement '{"type":"native","handle":"replacement"}'
+expect_fail seal_session_once operation-1 "$turn" "$seal" replacement '{"type":"native","handle":"replacement","token":"native-owner-1"}'
 expect_fail begin_turn operation-1 resume resume-token
 complete_turn operation-1 "$turn"
 begin_turn operation-1 resume resume-token
@@ -75,7 +75,7 @@ bootstrap_launch claude-1 claude "$HOME/workspace" preallocated-uuid native
 cturn=$(json_at claude-1 '.active_turn.token')
 cseal=$(json_at claude-1 '.active_turn.seal_token')
 expect_fail begin_turn claude-1 resume blocked-before-seal
-seal_session_once claude-1 "$cturn" "$cseal" preallocated-uuid '{"type":"native","handle":"preallocated-uuid"}'
+seal_session_once claude-1 "$cturn" "$cseal" preallocated-uuid '{"type":"native","handle":"preallocated-uuid","token":"claude-native-owner"}'
 complete_turn claude-1 "$cturn"
 
 new_home lock
@@ -125,29 +125,35 @@ new_home stops
 bootstrap_launch external-stop codex "$HOME/workspace" '' exec
 sturn=$(json_at external-stop '.active_turn.token')
 sseal=$(json_at external-stop '.active_turn.seal_token')
-seal_session_once external-stop "$sturn" "$sseal" external-id '{"type":"exec","token":"owner-token"}'
+(sleep 30) & external_pid=$!
+external_started=$(ps -o lstart= -p "$external_pid" | sed 's/^ *//')
+external_executable=$(readlink "/proc/$external_pid/exe")
+external_owner=$(jq -n --argjson pid "$external_pid" --arg started "$external_started" --arg executable "$external_executable" '{type:"exec",pid:$pid,started:$started,executable:$executable,token:"owner-token"}')
+seal_session_once external-stop "$sturn" "$sseal" external-id "$external_owner"
 stop_external_owner external-stop "$sturn" owner-token
-[[ $(json_at external-stop '.stop_intent.kind') == external ]] || fail 'external stop was not recorded'
-expect_fail begin_turn external-stop resume after-stop
-expect_fail clean_one_registry_entry external-stop --confirm
+[[ $(json_at external-stop '.status') == interrupted ]] || fail 'external stop was not recorded'
+[[ $(json_at external-stop '.owner') == null && $(json_at external-stop '.active_turn') == null ]] || fail 'external stop retained protected carrier state'
+clean_one_registry_entry external-stop --confirm
 
 bootstrap_launch native-stop codex "$HOME/workspace" '' native
 nturn=$(json_at native-stop '.active_turn.token')
 nseal=$(json_at native-stop '.active_turn.seal_token')
-seal_session_once native-stop "$nturn" "$nseal" native-handle '{"type":"native","handle":"native-handle"}'
-prepare_native_stop native-stop "$nturn" native-handle
+seal_session_once native-stop "$nturn" "$nseal" native-handle '{"type":"native","handle":"native-handle","token":"native-owner"}'
+prepare_native_stop native-stop "$nturn" native-handle native-owner >/dev/null
 expect_fail finalize_native_stop native-stop wrong native-handle
 [[ $(json_at native-stop '.stop_intent.status') == prepared ]] || fail 'uncertain native stop did not remain fail-closed'
-finalize_native_stop native-stop "$nturn" native-handle
-[[ $(json_at native-stop '.status') == stopped ]] || fail 'native stop did not finalize'
+native_stop_token=$(json_at native-stop '.stop_intent.stop_token')
+confirm_native_stop native-stop "$nturn" native-handle native-owner "$native_stop_token" stopped
+finalize_native_stop native-stop "$nturn" native-handle native-owner "$native_stop_token"
+[[ $(json_at native-stop '.status') == interrupted ]] || fail 'native stop did not finalize'
 
 bootstrap_launch native-lost codex "$HOME/workspace" '' native
 lost_turn=$(json_at native-lost '.active_turn.token')
 lost_seal=$(json_at native-lost '.active_turn.seal_token')
-seal_session_once native-lost "$lost_turn" "$lost_seal" lost-handle '{"type":"native","handle":"lost-handle"}'
-prepare_native_stop native-lost "$lost_turn" lost-handle
+seal_session_once native-lost "$lost_turn" "$lost_seal" lost-handle '{"type":"native","handle":"lost-handle","token":"lost-owner"}'
+prepare_native_stop native-lost "$lost_turn" lost-handle lost-owner >/dev/null
 complete_turn native-lost "$lost_turn"
-expect_fail finalize_native_stop native-lost "$lost_turn" lost-handle
+expect_fail finalize_native_stop native-lost "$lost_turn" lost-handle lost-owner no-token
 
 bootstrap_launch cleanable codex "$HOME/workspace" '' exec
 clean_turn=$(json_at cleanable '.active_turn.token')
@@ -163,8 +169,6 @@ clean_one_registry_entry cleanable --dry-run | grep -qx 'recoverable-clean' || f
 [[ -f "$HOME/.agent-invoke/runs/cleanable.json" ]] || fail 'dry run removed state'
 clean_one_registry_entry cleanable --confirm
 [[ ! -e "$HOME/.agent-invoke/runs/cleanable.json" ]] || fail 'confirmed clean retained state'
-[[ $(classify_prune_candidate external-stop) == blocked-stop-intent ]] || fail 'stop intent is prunable'
-[[ $(classify_prune_candidate native-stop) == blocked-stop-intent ]] || fail 'native stop intent is prunable'
 bootstrap_launch unsealed codex "$HOME/workspace" '' exec
 [[ $(classify_prune_candidate unsealed) == blocked-unsealed ]] || fail 'unsealed state is prunable'
 expect_fail clean_one_registry_entry unsealed --all
@@ -176,5 +180,25 @@ expect_fail bootstrap_launch empty-token codex "$HOME/workspace" '' native
 # shellcheck source=/dev/null
 source "$helper"
 [[ ! -e "$HOME/.lat" ]] || fail 'state helper wrote .lat'
+
+# Task 4 RED: a native finalize must require a token-bound confirmed stop and
+# leave the protected records untouched on any failure.
+new_home native-finalize
+bootstrap_launch native-finalize codex "$HOME/workspace" '' native
+nf_turn=$(json_at native-finalize '.active_turn.token')
+nf_seal=$(json_at native-finalize '.active_turn.seal_token')
+seal_session_once native-finalize "$nf_turn" "$nf_seal" native-finalize-handle '{"type":"native","handle":"native-finalize-handle","token":"native-owner"}'
+prepare_native_stop native-finalize "$nf_turn" native-finalize-handle native-owner >/dev/null
+nf_stop=$(json_at native-finalize '.stop_intent.stop_token')
+before=$(cat "$HOME/.agent-invoke/runs/native-finalize.json")
+expect_fail finalize_native_stop native-finalize "$nf_turn" native-finalize-handle native-owner "$nf_stop"
+[[ $(cat "$HOME/.agent-invoke/runs/native-finalize.json") == "$before" ]] || fail 'uncertain native finalize changed protected state'
+confirm_native_stop native-finalize "$nf_turn" native-finalize-handle native-owner "$nf_stop" stopped
+finalize_native_stop native-finalize "$nf_turn" native-finalize-handle native-owner "$nf_stop"
+[[ $(json_at native-finalize '.owner') == null ]] || fail 'native finalize retained owner'
+[[ $(json_at native-finalize '.active_turn') == null ]] || fail 'native finalize retained active turn'
+[[ $(json_at native-finalize '.stop_intent') == null ]] || fail 'native finalize retained stop intent'
+clean_one_registry_entry native-finalize --confirm
+[[ ! -e "$HOME/.agent-invoke/runs/native-finalize.json" ]] || fail 'finalized native state was not cleanable'
 
 printf 'PASS: secure state manager\n'
