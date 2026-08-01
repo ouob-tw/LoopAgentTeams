@@ -67,10 +67,37 @@ forbid_literal "$skill_file" 'evidence'
 forbid_bash_native_primitive "$skill_file"
 forbid_bash_native_primitive "$native_file"
 
+assert_route_contract() {
+  jq -ne '
+    def route($host; $target; $native_available; $external_consent):
+      if $host != $target then "external-exec"
+      elif $native_available then "native"
+      elif $external_consent then "external-exec"
+      else "refuse"
+      end;
+    [
+      {host:"codex", target:"claude", native_available:true, external_consent:false, expected:"external-exec"},
+      {host:"claude", target:"codex", native_available:true, external_consent:false, expected:"external-exec"},
+      {host:"codex", target:"codex", native_available:false, external_consent:false, expected:"refuse"},
+      {host:"claude", target:"claude", native_available:false, external_consent:false, expected:"refuse"},
+      {host:"codex", target:"codex", native_available:false, external_consent:true, expected:"external-exec"},
+      {host:"claude", target:"claude", native_available:false, external_consent:true, expected:"external-exec"}
+    ] | all(.[]; route(.host; .target; .native_available; .external_consent) == .expected)
+  ' >/dev/null || fail 'cross-family default and same-family native-unavailable contract failed'
+}
+
+assert_route_contract
+
 # shellcheck disable=SC2016
 claude_skill_marker='$CASE_CLAUDE_CONFIG/skills/agent-invoke'
 # shellcheck disable=SC2016
 codex_runtime_marker='"$codex_runtime" /opt/node'
+# shellcheck disable=SC2016
+sandbox_signature_marker='local client_source=$1 client_target=$2'
+# shellcheck disable=SC2016
+codex_sandbox_call_marker='sandbox_run "$codex_module_root" /opt/node_modules "$codex_runtime" /opt/node /opt/node'
+# shellcheck disable=SC2016
+claude_sandbox_call_marker='sandbox_run "$claude_binary" /opt/claude /opt/claude'
 require_literal "$trigger_runner" '.agents/skills/agent-invoke'
 require_literal "$trigger_runner" "$claude_skill_marker"
 for runner_function in validate_prompt_set render_case create_isolated_client_home run_decision_turn extract_single_envelope reject_tool_events compare_expected write_summary; do
@@ -89,6 +116,9 @@ require_literal "$trigger_runner" '--tmpfs /opt'
 require_literal "$trigger_runner" "$codex_runtime_marker"
 require_literal "$trigger_runner" '/opt/node_modules/@openai/codex/bin/codex.js'
 require_literal "$trigger_runner" 'if sandbox_run'
+require_literal "$trigger_runner" "$sandbox_signature_marker"
+require_literal "$trigger_runner" "$codex_sandbox_call_marker"
+require_literal "$trigger_runner" "$claude_sandbox_call_marker"
 require_literal "$trigger_runner" 'shred -u'
 require_literal "$trigger_runner" "RUN_REASON='timeout'"
 require_literal "$trigger_runner" 'all(.cases[]; .passed == true and .runs == 2)'

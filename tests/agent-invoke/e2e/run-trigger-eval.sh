@@ -157,12 +157,18 @@ create_isolated_client_home() {
 }
 
 sandbox_run() {
+  local client_source=$1 client_target=$2
+  shift 2
   local runtime_bind=()
-  [[ $client == codex ]] && runtime_bind=(--ro-bind "$client_runtime_source" /opt/node)
+  if [[ $client == codex ]]; then
+    local runtime_source=$1 runtime_target=$2
+    shift 2
+    runtime_bind=(--ro-bind "$runtime_source" "$runtime_target")
+  fi
   timeout --signal=TERM --kill-after=10s 120s bwrap --die-with-parent --new-session --unshare-all --share-net \
     --ro-bind / / --tmpfs /home --tmpfs /opt --dev-bind /dev /dev --proc /proc \
     --bind "$case_root" "$case_root" \
-    --ro-bind "$client_program_source" "$client_program_target" \
+    --ro-bind "$client_source" "$client_target" \
     "${runtime_bind[@]}" \
     --ro-bind "$real_credential" "$CASE_CREDENTIAL_TARGET" \
     --setenv HOME "$CASE_HOME" --setenv CODEX_HOME "$CASE_CODEX_HOME" \
@@ -220,7 +226,8 @@ run_decision_turn() {
   printf '%s\n' '{"type":"object","additionalProperties":false,"required":["intent","decision_scope","target_client","route","reason_code"],"properties":{"intent":{"type":"string"},"decision_scope":{"type":"string"},"target_client":{"type":"string"},"route":{"type":"string"},"reason_code":{"type":"string"}}}' >"$schema"
   printf '%s\n' '{}' >"$mcp_config"
   if [[ $client == codex ]]; then
-    if sandbox_run /opt/node /opt/node_modules/@openai/codex/bin/codex.js exec \
+    if sandbox_run "$codex_module_root" /opt/node_modules "$codex_runtime" /opt/node /opt/node \
+      /opt/node_modules/@openai/codex/bin/codex.js exec \
       --ephemeral --ignore-user-config --ignore-rules --sandbox read-only --json \
       --config agents.enabled=false --config web_search="disabled" --output-schema "$schema" \
       "$(<"$request")" >"$stream" 2>&1; then
@@ -229,7 +236,7 @@ run_decision_turn() {
       status=$?
     fi
   else
-    if sandbox_run /opt/claude --print --output-format stream-json --no-session-persistence \
+    if sandbox_run "$claude_binary" /opt/claude /opt/claude --print --output-format stream-json --no-session-persistence \
       --strict-mcp-config --mcp-config "$mcp_config" --tools "" "$(<"$request")" >"$stream" 2>&1; then
       status=0
     else
@@ -277,8 +284,6 @@ if [[ $client == codex ]]; then
   codex_runtime=$(readlink -f "$(command -v node)")
   [[ -d $codex_module_root ]] || die "$EX_UNAVAILABLE" 'Codex program files are unavailable'
   [[ -x $codex_runtime ]] || die "$EX_UNAVAILABLE" 'Codex runtime is unavailable'
-  client_program_source=$codex_module_root
-  client_program_target=/opt/node_modules
   if ! bwrap --die-with-parent --new-session --unshare-all --share-net --ro-bind / / --tmpfs /home --tmpfs /opt \
     --dev-bind /dev /dev --proc /proc --bind "$case_root" "$case_root" \
     --ro-bind "$codex_module_root" /opt/node_modules --ro-bind "$codex_runtime" /opt/node \
@@ -289,8 +294,6 @@ if [[ $client == codex ]]; then
 else
   claude_binary=$(readlink -f "$(command -v claude)")
   [[ -x $claude_binary ]] || die "$EX_UNAVAILABLE" 'Claude program files are unavailable'
-  client_program_source=$claude_binary
-  client_program_target=/opt/claude
   if ! bwrap --die-with-parent --new-session --unshare-all --share-net --ro-bind / / --tmpfs /home --tmpfs /opt \
     --dev-bind /dev /dev --proc /proc --bind "$case_root" "$case_root" --ro-bind "$claude_binary" /opt/claude \
     --ro-bind "$real_credential" "$CASE_CREDENTIAL_TARGET" -- /opt/claude --version >/dev/null 2>&1; then
