@@ -56,6 +56,7 @@ forbid_literal "$skill_file" 'references/test'
 forbid_literal "$skill_file" 'tests/agent-invoke'
 forbid_literal "$skill_file" 'evidence'
 forbid_bash_native_primitive "$skill_file"
+forbid_bash_native_primitive "$native_file"
 
 require_literal "$native_file" 'bootstrap before prompt delivery'
 require_literal "$native_file" 'spawn_agent'
