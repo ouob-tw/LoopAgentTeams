@@ -1,4 +1,4 @@
-# 獨立 LAT Client 路由 Skill 設計規格
+# 獨立 Agent Invoke Skill 設計規格
 
 **狀態：** 草案，待使用者確認
 
@@ -20,11 +20,15 @@
 使用者實際安裝測試後發現：即使目前宿主已具備可用的內建 subagent，`lat-client`
 仍會啟動外部 CLI／TUI。這不只是實作錯誤，而是舊 Spec 的產品邊界與驗收條件錯誤。
 
-本次重新定義 `lat-client`：
+本次以新名稱 `agent-invoke` 重新定義這項能力：
 
-> `lat-client` 是一個不依賴完整 LAT 生命週期的輕量 Agent 呼叫路由 Skill。
+> `agent-invoke` 是一個不依賴完整 LAT 生命週期的輕量 Agent 呼叫 Skill。
 > 它先判斷是否可用目前宿主的內建 subagent；只有跨客戶端家族、使用者明確指定，
 > 或確實需要外部持久 session 時，才進入外部 CLI／TUI 路徑。
+
+名稱採用 `agent-invoke`，因為主要使用者意圖是「呼叫任意 Agent client 並取得
+結果」；route 只是內部實作。名稱不使用 `lat-` 前綴，以表明它可脫離完整 LAT
+workflow 獨立安裝與使用。
 
 ## 2. 本次教訓與根因
 
@@ -69,7 +73,7 @@
 結果是同一份 client 規則被複製，任何修改都要處理相容鏡像與版本漂移，也讓「先
 證明獨立 Skill 可用」被擴張成 Dispatch 遷移工程。
 
-**改善：** 第一階段的 `lat-client` 與 `lat-dispatch` 完全獨立。不得修改 Dispatch、
+**改善：** 第一階段的 `agent-invoke` 與 `lat-dispatch` 完全獨立。不得修改 Dispatch、
 不得建立 runtime dependency、不得建立 mirror。未來是否整合另立 Spec 決定。
 
 ### 2.5 漸進揭露名義存在，內容仍然重複
@@ -97,7 +101,7 @@ schema，沒有先修正核心路由。
 
 ## 3. 目標
 
-1. 新增可獨立安裝與觸發的 `lat-client` Skill。
+1. 新增可獨立安裝與觸發的 `agent-invoke` Skill。
 2. 不載入完整 `lat-dispatch` 即可委派一個 Agent 並取得結果。
 3. 同宿主、同 Agent 家族預設使用內建 subagent。
 4. 跨宿主家族或使用者明確要求時，才使用外部 exec CLI／ZMX TUI。
@@ -108,7 +112,7 @@ schema，沒有先修正核心路由。
 ## 4. 非目標
 
 - 不修改 `lat-dispatch/` 任何檔案或既有行為。
-- 不將 `lat-client` 接入完整 LAT phase、ledger、review、test 或 QA 流程。
+- 不將 `agent-invoke` 接入完整 LAT phase、ledger、review、test 或 QA 流程。
 - 不建立 `.lat/workspace`、`tasks.yaml` 或 `results.yaml`。
 - 不遷移、刪除或鏡像 `lat-dispatch` 的 client references 與 scripts。
 - 不建立 `lat-native-client`、`lat-cli-client`、`lat-tui-client` 等多個使用者入口。
@@ -132,7 +136,7 @@ schema，沒有先修正核心路由。
 使用者要求呼叫 Agent
         |
         v
-lat-client/SKILL.md
+agent-invoke/SKILL.md
   解析明確覆寫 -> 判斷宿主與目標家族 -> 選定唯一 route
         |
         +-- native ------> 宿主內建 subagent，直接等待結果
@@ -142,7 +146,7 @@ lat-client/SKILL.md
         `-- external TUI --> ZMX session + completion handling
 ```
 
-`lat-client` 不呼叫或讀取 `lat-dispatch`。`lat-dispatch` 也不需要知道 `lat-client`
+`agent-invoke` 不呼叫或讀取 `lat-dispatch`。`lat-dispatch` 也不需要知道 `agent-invoke`
 存在。兩者可以單獨安裝、單獨更新與單獨驗證。
 
 ## 7. 路由契約
@@ -187,7 +191,7 @@ native route：
 - 不得啟動 Claude Code 或 Codex CLI。
 - 不得啟動 ZMX。
 - 不得建立 PID、Session JSONL monitor 或外部 session handle。
-- 不得建立 `.lat-client/`。
+- 不得建立 `.agent-invoke/`。
 - 不得讀取 external exec／TUI／monitoring reference。
 - 不得固定輪詢；使用宿主的完成通知或 blocking wait。
 - 完成條件是內建 subagent 已返回本次委派結果。
@@ -207,7 +211,7 @@ external route：
 外部狀態限於：
 
 ```text
-.lat-client/runs/{operation_id}/
+.agent-invoke/runs/{operation_id}/
 ├── metadata.json
 ├── prompt.txt
 ├── session-handle
@@ -223,7 +227,7 @@ external route：
 候選結構：
 
 ```text
-lat-client/
+agent-invoke/
 ├── SKILL.md
 ├── references/
 │   ├── native.md
@@ -236,7 +240,7 @@ lat-client/
     └── monitor-session.sh
 
 tests/
-└── lat-client/
+└── agent-invoke/
 ```
 
 規則：
@@ -266,7 +270,7 @@ Skill 主體在啟用時會完整載入，因此只保留每次都需要的決�
 先寫會在舊版失敗的測試：
 
 - `SKILL.md` 具有 explicit override → native-first → cross-family 的固定優先順序。
-- native route 明確禁止 CLI、ZMX、monitor 與 `.lat-client` 狀態。
+- native route 明確禁止 CLI、ZMX、monitor 與 `.agent-invoke` 狀態。
 - external reference 只能在 external route 選定後載入。
 - Skill 不依賴或鏡像 `lat-dispatch`。
 - 安裝 package 不包含 tests、fixtures、traces 或 generated reports。
@@ -288,9 +292,9 @@ Skill 主體在啟用時會完整載入，因此只保留每次都需要的決�
 發布候選前，以 fresh agent 安裝 `#dev` 後完成：
 
 1. Codex 宿主呼叫 GPT／Codex worker：觀察到內建 subagent，且無外部程序與
-   `.lat-client` 狀態。
+   `.agent-invoke` 狀態。
 2. Claude Code 宿主呼叫 Claude worker：觀察到內建 Agent，且無外部程序與
-   `.lat-client` 狀態。
+   `.agent-invoke` 狀態。
 3. Codex 宿主呼叫 Claude：觀察到 Claude external exec 與正確結果。
 4. Claude Code 宿主呼叫 GPT／Codex：觀察到 Codex external exec 與正確結果。
 5. 任一同宿主案例明確要求 TUI：觀察到 external TUI，證明使用者覆寫有效。
@@ -315,7 +319,7 @@ transcript 留在臨時目錄或 CI artifact，不提交 repo。
 ### QA-1：同宿主預設使用 native
 
 Codex→GPT／Codex 與 Claude Code→Claude 的真實安裝案例都使用宿主內建 subagent；
-沒有 CLI、ZMX、monitor 或 `.lat-client` 副作用。
+沒有 CLI、ZMX、monitor 或 `.agent-invoke` 副作用。
 
 ### QA-2：跨宿主預設使用 external exec
 
@@ -330,11 +334,11 @@ Codex→Claude 與 Claude Code→GPT／Codex 都啟動正確的 external exec cl
 ### QA-4：與 Dispatch 完全獨立
 
 本次 diff 中 `lat-dispatch/` 為零變更；移除或未安裝 `lat-dispatch` 時，
-`lat-client` 仍可安裝、觸發並完成三種 route。
+`agent-invoke` 仍可安裝、觸發並完成三種 route。
 
 ### QA-5：不載入完整 LAT
 
-任何 `lat-client` route 都不建立 `.lat/workspace`、task ledger，不進入
+任何 `agent-invoke` route 都不建立 `.lat/workspace`、task ledger，不進入
 Spec／Plan／review／test／QA phase。
 
 ### QA-6：Skill 維持精簡
@@ -352,7 +356,7 @@ review 結論或 Agent 自述成功不能替代缺少的 E2E。
 
 ### 第一階段：獨立實作
 
-- 只新增 `lat-client`、其必要 scripts 與 repo-level tests。
+- 只新增 `agent-invoke`、其必要 scripts 與 repo-level tests。
 - `lat-dispatch` 維持 `main@5a8e76c` 的行為。
 - 在本機與 `dev` 候選完成測試，不推進 `main`。
 
@@ -366,7 +370,7 @@ review 結論或 Agent 自述成功不能替代缺少的 E2E。
 
 只有獨立 Skill 通過後，才討論：
 
-- `lat-dispatch` 是否要引用 `lat-client`。
+- `lat-dispatch` 是否要引用 `agent-invoke`。
 - 如何避免相容鏡像與雙份規則。
 - main/dev 文件與正式發布步驟。
 
@@ -379,7 +383,7 @@ review 結論或 Agent 自述成功不能替代缺少的 E2E。
 1. 使用者不載入完整 LAT，也能委派另一個 Agent。
 2. 同客戶端優先使用內建 subagent，沒有不必要的外部程序。
 3. 跨客戶端與明確覆寫仍能安全使用 external exec／TUI。
-4. `lat-client` 可獨立安裝，`lat-dispatch` 零修改。
+4. `agent-invoke` 可獨立安裝，`lat-dispatch` 零修改。
 5. Skill 內容足以可靠執行，但不重複完整 Dispatch 或建立大型評估框架。
 6. 真實 `#dev` 安裝行為與上述規則一致，並由使用者確認後才進入實作整合或正式
    發布討論。
