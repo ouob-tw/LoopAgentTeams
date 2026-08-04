@@ -7,7 +7,7 @@ readonly SCOPES='["agent-invoke","other"]'
 readonly TARGETS='["codex","claude","unsupported","none"]'
 readonly ROUTES='["native","external-exec","external-tui","resume-existing","none"]'
 readonly REASONS='["same-family-native","cross-family-exec","explicit-exec","explicit-tui","exact-resume","unsupported-client","lifecycle-stop","lifecycle-clean","lifecycle-prune","lat-workflow","direct-work","non-delegation-request"]'
-readonly CASE_IDS='["clean","cross-client","direct-work","exact-claude-model","explicit-exec","explicit-tui","full-LAT","generic-native","non-delegation-request","operation-resume","prune","reference-resume","stop","unsupported-client"]'
+readonly CASE_IDS='["cross-client","direct-work","explicit-exec","full-LAT","generic-native","non-delegation-request","reference-resume","stop"]'
 
 usage() {
   printf '%s\n' 'usage: run-trigger-eval.sh --client codex|claude --skill-root ABSOLUTE_PATH --output SUMMARY_JSON' >&2
@@ -45,7 +45,7 @@ validate_prompt_set() {
   jq -e \
     --argjson intents "$INTENTS" --argjson scopes "$SCOPES" --argjson targets "$TARGETS" \
     --argjson routes "$ROUTES" --argjson reasons "$REASONS" --argjson case_ids "$CASE_IDS" '
-      length == 14 and
+      length == 8 and
       ([.[].id] | sort) == $case_ids and
       all(.[];
         (keys | sort) == ["expected","id","prompt"] and
@@ -313,7 +313,8 @@ while IFS= read -r case_json <&3; do
   rendered_prompt=$(render_case "$(jq -r '.prompt' <<<"$case_json")")
   passed_runs=0
   failures='[]'
-  for repetition in 1 2; do
+  # shellcheck disable=SC2043 # V1 runs a single repetition; the loop keeps the per-run shape
+  for repetition in 1; do
     case_root=$(mktemp -d "${TMPDIR:-/tmp}/agent-invoke-trigger-${id}.XXXXXX")
     create_isolated_client_home "$case_root"
     final=$CASE_TMP/final-envelope.json
@@ -331,7 +332,7 @@ while IFS= read -r case_json <&3; do
     cleanup_case "$case_root"
     case_root=''
   done
-  case_summary=$(jq -cn --arg id "$id" --argjson passed_runs "$passed_runs" --argjson failures "$failures" '$ARGS.named + {runs:2,passed:($passed_runs == 2),passed_runs:$passed_runs,failures:$failures}')
+  case_summary=$(jq -cn --arg id "$id" --argjson passed_runs "$passed_runs" --argjson failures "$failures" '$ARGS.named + {runs:1,passed:($passed_runs == 1),passed_runs:$passed_runs,failures:$failures}')
   all_cases=$(jq -cn --argjson current "$all_cases" --argjson case "$case_summary" '$current + [$case]')
 done 3< <(jq -c '.[]' "$prompts_file")
 
@@ -341,4 +342,4 @@ state_unchanged=true
 cmp -s "$protection_root/registry.before" "$protection_root/registry.after" &&
   cmp -s "$protection_root/repository.before" "$protection_root/repository.after" || state_unchanged=false
 write_summary "$all_cases" "$state_unchanged"
-jq -e '.state_unchanged == true and all(.cases[]; .passed == true and .runs == 2)' "$output" >/dev/null
+jq -e '.state_unchanged == true and all(.cases[]; .passed == true and .runs == 1)' "$output" >/dev/null

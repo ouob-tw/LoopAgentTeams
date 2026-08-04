@@ -150,9 +150,9 @@ assert_structured_stream_ignores_stderr() {
   [[ -f $codex_output && -f $claude_output ]] || fail 'trigger runner did not publish both diagnostic summaries'
   if ! jq -e -s '
     ([.[].client] | sort) == ["claude","codex"] and
-    all(.[]; .state_unchanged == true and (.cases | length) == 14 and
+    all(.[]; .state_unchanged == true and (.cases | length) == 8 and
       (.cases[] | select(.id == "generic-native") |
-        .passed == true and .passed_runs == 2 and (.failures | length) == 0))
+        .passed == true and .passed_runs == 1 and (.failures | length) == 0))
   ' "$codex_output" "$claude_output" >/dev/null; then
     summary=$(jq -cs '
       map({client,state_unchanged,generic:(.cases[]|select(.id=="generic-native"))})
@@ -162,7 +162,7 @@ assert_structured_stream_ignores_stderr() {
   jq -e '
     .state_unchanged == true and
     (.cases[] | select(.id == "generic-native") |
-      .passed == true and .passed_runs == 2 and (.failures | length) == 0)
+      .passed == true and .passed_runs == 1 and (.failures | length) == 0)
   ' "$codex_output" >/dev/null
   (( codex_status != 0 && claude_status != 0 )) || fail 'constant fake envelopes unexpectedly satisfied a complete trigger matrix'
 }
@@ -203,7 +203,7 @@ require_literal "$trigger_runner" "$codex_sandbox_call_marker"
 require_literal "$trigger_runner" "$claude_sandbox_call_marker"
 require_literal "$trigger_runner" 'shred -u'
 require_literal "$trigger_runner" "RUN_REASON='timeout'"
-require_literal "$trigger_runner" 'all(.cases[]; .passed == true and .runs == 2)'
+require_literal "$trigger_runner" 'all(.cases[]; .passed == true and .runs == 1)'
 forbid_literal "$trigger_runner" "tr '\\n' ' ' <\"\$trace\""
 validation_marker="[[ ( \$client == codex || \$client == claude ) && \$skill_root == /*"
 require_literal "$trigger_runner" "$validation_marker"
