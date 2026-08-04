@@ -127,6 +127,11 @@ Agent Skills validation、`SKILL.md` 行數 ≤ 150、package boundary、`lat-di
 `turn.failed` 且無 agent message），處置方式是**更換 Codex 帳號後重跑**。不得記為
 blocked、不得以 Claude 側證據替代、不得降級為 deterministic-only。
 
+換帳號依 `codex-multi-auth check` → `switch <n>` 進行。**切換後必須確認新帳號支援目標
+模型**：2026-08-04 實測顯示帳號之間的模型權限不同，額度全滿的帳號仍可能回覆
+`The '<model>' model is not supported when using Codex with a ChatGPT account.`。該錯誤與
+額度耗盡是不同原因，處置是再換一個帳號或改用該帳號支援的模型，不得記為額度問題。
+
 ### 6.3 Installed smoke（縮編）
 
 既有 `tests/agent-invoke/e2e/run-installed-e2e.sh` 已是 `--case CASE_ID` 單案 runner，
