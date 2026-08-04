@@ -197,6 +197,30 @@ QA-5 三句主張的最終歸屬：
 
 補強只針對上述四項缺口，不擴張為新的 provenance 層。
 
+### 6.4.1 skill activation 判定式的範圍例外
+
+2026-08-04 執行時發現 `run-installed-e2e.sh:472-476` 的 `skill_events` 判定式只認
+`.type == "skill"` 或 `.name == "Skill"`，並從 `.path` / `.skill_path` 取路徑。那是
+Claude Code 的事件形狀。Codex 的 `--json` 串流沒有該型別物件，因此該判定式對所有
+Codex 宿主案例恆為偽——8 案中有 6 案，含 `lifecycle`。
+
+實測 rollout JSONL 證實 Codex **確實啟用了 skill**，證據以已執行命令的形式存在：
+
+```text
+sed -n '1,240p' /home/swy/.codex/skills/agent-invoke/SKILL.md
+sed -n '1,240p' /home/swy/.codex/skills/agent-invoke/references/native.md
+```
+
+Dispatch 於 2026-08-04 裁決：對這一條判定式開範圍例外，允許擴充為同時接受
+「已執行命令字串中出現結尾為 `/agent-invoke/SKILL.md` 的絕對路徑」。
+
+例外的邊界：
+
+- 只限這一條 `skill_events` 判定式，其餘斷言仍受 6.4 的只增不減約束。
+- 不得降低強度：仍必須要求絕對路徑實際出現於執行紀錄，不接受僅出現在系統提示的
+  skill 清單中——那只證明 skill 可用，不證明被啟用。
+- 這是修正一條**恆偽**的判定式，不是放寬標準。保留原寫法不保護任何行為。
+
 ### 6.5 V1 不再建造
 
 不新增任何 evidence 機器：不做 `evidence-summary.json` 彙總、不擴充 provenance chain、
