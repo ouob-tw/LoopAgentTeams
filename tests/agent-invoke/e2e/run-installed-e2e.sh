@@ -469,11 +469,29 @@ if (( client_status == 0 )); then
     result_excerpt=$(sed -n '/^{/p' "$trace" | jq -rs '[.[] | select(.type == "assistant") |
       .message.content[]? | select(.type == "text") | .text] | last // ""')
   fi
-  skill_events=$(sed -n '/^{/p' "$trace" | jq -sc '[.[] | .. | objects |
-    select((.type? == "skill" or .name? == "Skill") and
+  # Claude Code reports activation as a Skill tool_use carrying .skill/.path.
+  # Codex has no skill event type and no .path: it activates by reading the
+  # installed package, so the same fact arrives as a command_execution whose
+  # .command names the installed .../agent-invoke/SKILL.md. Spec 6.4.1 scopes an
+  # exception for this one predicate. The added branch reads only executed
+  # command text, never prose or the system-prompt skill listing, and demands an
+  # absolute path, so the strength of the gate is unchanged.
+  skill_events=$(sed -n '/^{/p' "$trace" | jq -sc '
+    def executed_command:
+      if (.type? == "command_execution" or ((.type? // "") | tostring | endswith("function_call")))
+      then ((.command? // .arguments? // .input?.command? // "") | tostring)
+      else "" end;
+    def executed_activation_path:
+      [executed_command |
+       match("(^|[^[:alnum:]._/-])(/[^[:space:]]*/agent-invoke/SKILL[.]md)") |
+       .captures[1].string] | first // null;
+    [.[] | .. | objects |
+    select(((.type? == "skill" or .name? == "Skill") and
       (((.skill? // .skill_name? // .input?.skill? // "") | tostring) == "agent-invoke" or
-       ((.path? // .skill_path? // "") | tostring | endswith("/agent-invoke/SKILL.md")))) |
-    {type,name:(.name // null),skill:(.skill // .skill_name // .input?.skill // null),path:(.path // .skill_path // null)}] | unique')
+       ((.path? // .skill_path? // "") | tostring | endswith("/agent-invoke/SKILL.md")))) or
+      (executed_activation_path != null)) |
+    {type,name:(.name // null),skill:(.skill // .skill_name // .input?.skill // null),
+     path:(.path // .skill_path // executed_activation_path)}] | unique')
 fi
 result_excerpt_full=$result_excerpt
 result_excerpt=$(tr '\n\r\t' '   ' <<<"$result_excerpt" | tr -s ' ' | cut -c1-240)
