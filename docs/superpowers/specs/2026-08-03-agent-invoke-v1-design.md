@@ -166,7 +166,7 @@ evidence 欄位，不得移除、放寬或改寫既有邏輯。`agent-invoke/` �
 | 編號 | 現況缺口 | 補強 |
 |---|---|---|
 | E-1 | native case 的 pass predicate 只檢查 route／mode／model／completion，未排除外部 carrier | 對已寫入 evidence JSON 的 `tool_events` 加「零 exec／ZMX carrier」斷言。此項不需改 runner，可由外部 jq 斷言完成 |
-| E-2 | `result_excerpt` 只用於比對拒絕字串，未寫入 evidence，也不在 pass predicate | 委派內容改用固定且不含敏感資訊的 marker，evidence 增加單一布林 `result_returned`，並納入 pass predicate |
+| E-2 | `result_excerpt` 只用於比對拒絕字串，未寫入 evidence，也不在 pass predicate | 在既有委派 prompt **之後追加**一句固定、不含敏感資訊的 marker 回傳要求，既有 prompt 文字與既有斷言的原文及語義**完全保留不動**；再新增 evidence 布林欄位 `result_returned` 與對應的 pass assertion |
 | E-3 | `managed-exec-resume` 與單次 exec case 共用 predicate，只要求一個 operation、一次 completion | 增加兩 turn 的 session identity、設定與 baseline 比對 |
 | E-4 | lifecycle validator 只驗成功／失敗兩個 operation 的 identity 與 stop-intent 清除 | 增加三個有界斷言：非目標 operation snapshot 不變、stop 後可用相同 session identity 開新 turn、clean 前後原生 session sentinel 不變 |
 
@@ -237,9 +237,10 @@ Claude 代理。工作確實交給了對方家族的代理，而且這一次的�
 
 **A：** cross-family external exec。證據：installed case `claude-to-codex-exec` 與
 `codex-to-claude-exec`，通過條件為 `route == external`、`mode == exec`、model 可辨識、
-有 authoritative completion，**外加 E-2 的 `result_returned == true`**——委派內容使用固定且
-不含敏感資訊的 marker，host 最終回覆必須含該 marker。少了 E-2，完成事件存在不等於
-結果真的回到使用者手上。另有 decision proxy case `cross-client` 與
+有 authoritative completion，**外加 E-2 的 `result_returned == true`**——在既有委派 prompt
+之後追加一句固定、不含敏感資訊的 marker 回傳要求（既有 prompt 原文不動），host 最終回覆
+必須含該 marker。少了 E-2，完成事件存在不等於結果真的回到使用者手上。
+另有 decision proxy case `cross-client` 與
 `tests/agent-invoke/integration/exec-client-test.sh`。
 
 ### QA-3 明確指定才走外部，沒指定不會自作主張
