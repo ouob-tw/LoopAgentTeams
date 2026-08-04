@@ -117,6 +117,7 @@ run_normal_case() {
   (
     export HOME=$normal_home CODEX_HOME=$normal_home/.codex CLAUDE_CONFIG_DIR=$normal_home/.claude
     export FAKE_REFUSAL_MUTATION=$mutation
+    export FAKE_EXEC_VARIANT=${FAKE_EXEC_VARIANT-}
     # Called indirectly by the sourced production runner.
     # shellcheck disable=SC2317
     bwrap() {
@@ -154,6 +155,30 @@ run_normal_case() {
           for _ in {1..200}; do [[ -d $CHECKPOINT_ROOT/pre-completion/runs/op ]] && break; sleep 0.01; done
           printf '%s\n' "{\"type\":\"command_execution\",\"id\":\"call-1\",\"command\":\"monitor-session.sh\",\"status\":\"completed\",\"operation_id\":\"op\",\"client\":\"codex\",\"workspace\":\"$CASE_WORKSPACE\",\"session_id\":\"session-x\",\"owner_token\":\"owner-x\",\"turn_token\":\"turn-x\",\"model\":\"model-x\"}"
           trash-put -- "$operation_root/runtime/owner.json" "$operation_root/runtime/active-turn.json"
+          ;;
+        codex-to-claude-exec|managed-exec-resume)
+          operation_root="$fake_home/.agent-invoke/runs/op"
+          mkdir -p "$operation_root/runtime"
+          printf '%s\n' '{"operation_id":"op","route":"exec","client":"codex","mode":"exec","workspace":"WORKSPACE","model":"model-x"}' |
+            sed "s|WORKSPACE|$CASE_WORKSPACE|" >"$operation_root/metadata.json"
+          printf '%s\n' '{"session_id":"session-x","path":"/tmp/session.jsonl"}' >"$operation_root/session-ref.json"
+          printf '%s\n' '{"type":"exec","pid":123,"started":"start","executable":"/bin/codex","token":"owner-x"}' >"$operation_root/runtime/owner.json"
+          printf '%s\n' '{"token":"turn-1","session_id":"session-x"}' >"$operation_root/runtime/active-turn.json"
+          for _ in {1..200}; do [[ -d $CHECKPOINT_ROOT/pre-completion/runs/op ]] && break; sleep 0.01; done
+          fake_completion_event() {
+            printf '%s\n' "{\"type\":\"command_execution\",\"id\":\"call-$1\",\"command\":\"monitor-session.sh\",\"status\":\"completed\",\"operation_id\":\"op\",\"client\":\"codex\",\"workspace\":\"$CASE_WORKSPACE\",\"session_id\":\"$2\",\"owner_token\":\"owner-x\",\"turn_token\":\"turn-$1\",\"model\":\"model-x\"}"
+          }
+          fake_completion_event 1 session-x
+          case $FAKE_EXEC_VARIANT in
+            two-turns) fake_completion_event 2 session-x ;;
+            mismatched-turns) fake_completion_event 2 session-y ;;
+          esac
+          trash-put -- "$operation_root/runtime/owner.json" "$operation_root/runtime/active-turn.json"
+          case $FAKE_EXEC_VARIANT in
+            no-marker) printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"delegated greeting done"}}' ;;
+            *) printf '%s\n' '{"type":"item.completed","item":{"type":"agent_message","text":"delegated greeting done AGENTINVOKEV1RESULT"}}' ;;
+          esac
+          return 0
           ;;
         lifecycle)
           for operation in lifecycle-success lifecycle-failure; do
@@ -235,4 +260,47 @@ for mutation in agent-state codex-sessions claude-projects zmx lat process; do
     kill "$refusal_pid" 2>/dev/null || true
   fi
 done
+
+# E-2: a cross-family exec case must carry the delegated result back to the
+# host. A completion event without the returned marker is not acceptance.
+FAKE_EXEC_VARIANT=with-marker
+run_normal_case codex-to-claude-exec "$normal_root/e2-marker.json" ||
+  fail 'runner rejected a cross-family exec case that returned the delegated marker'
+jq -e '.result_returned == true and .passed == true' "$normal_root/e2-marker.json" >/dev/null ||
+  fail 'returned delegated marker was not recorded as result_returned'
+FAKE_EXEC_VARIANT=no-marker
+if run_normal_case codex-to-claude-exec "$normal_root/e2-no-marker.json" >/dev/null 2>&1; then
+  fail 'runner accepted a cross-family exec case whose delegated result never came back'
+fi
+jq -e '.result_returned == false and .passed == false' "$normal_root/e2-no-marker.json" >/dev/null ||
+  fail 'absent delegated marker was not rejected as result_returned false'
+
+# E-3: an exact resume shows two or more authoritative turns carrying one
+# session identity. One turn, or two differing identities, is a fresh session.
+FAKE_EXEC_VARIANT=two-turns
+run_normal_case managed-exec-resume "$normal_root/e3-two-turns.json" ||
+  fail 'runner rejected a resume that continued one exact session across two turns'
+jq -e '(.resume_turn_identities | length) == 2 and (.resume_turn_identities | unique | length) == 1 and .passed == true' \
+  "$normal_root/e3-two-turns.json" >/dev/null || fail 'exact resume identities were not recorded'
+FAKE_EXEC_VARIANT=one-turn
+if run_normal_case managed-exec-resume "$normal_root/e3-one-turn.json" >/dev/null 2>&1; then
+  fail 'runner accepted a resume case that only ever completed one turn'
+fi
+jq -e '(.resume_turn_identities | length) == 1 and .passed == false' "$normal_root/e3-one-turn.json" >/dev/null ||
+  fail 'single-turn resume was not rejected'
+FAKE_EXEC_VARIANT=mismatched-turns
+if run_normal_case managed-exec-resume "$normal_root/e3-mismatch.json" >/dev/null 2>&1; then
+  fail 'runner accepted a resume whose second turn used a different session identity'
+fi
+jq -e '(.resume_turn_identities | unique | length) == 2 and .passed == false' "$normal_root/e3-mismatch.json" >/dev/null ||
+  fail 'mismatched resume identities were not rejected'
+FAKE_EXEC_VARIANT=''
+
+# E-4 (partial): a lifecycle run that alters a non-target operation's immutable
+# snapshot must be rejected.
+printf '%s\n' '{"operation_id":"failure","status":"changed"}' > "$failure_lifecycle/metadata.json"
+expect65 "$validator" validate_lifecycle_evidence "$before_lifecycle" "$after_finalize" "$after_clean" "$failure_lifecycle"
+cp "$before_lifecycle/failure/metadata.json" "$failure_lifecycle/metadata.json"
+"$validator" validate_lifecycle_evidence "$before_lifecycle" "$after_finalize" "$after_clean" "$failure_lifecycle"
+
 printf 'PASS: installed evidence validators\n'

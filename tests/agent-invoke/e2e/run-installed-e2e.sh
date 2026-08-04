@@ -400,8 +400,8 @@ case_prompt() {
   case $case_id in
     codex-native) printf '%s' 'Use agent-invoke to delegate a read-only greeting task to a Codex subagent through the default same-host native route. Return the exact route, runtime identity, authoritative completion event, and final result.' ;;
     claude-native) printf '%s' 'Use agent-invoke to delegate a read-only greeting task to a Claude subagent through the default same-host native route. Return the exact route, runtime identity, authoritative completion event, and final result.' ;;
-    codex-to-claude-exec) printf '%s' 'Use agent-invoke from Codex to ask a Claude agent for a read-only greeting using external exec. Return the exact carrier argv, session identity, model, authoritative completion event, and final result.' ;;
-    claude-to-codex-exec) printf '%s' 'Use agent-invoke from Claude Code to ask a Codex agent for a read-only greeting using external exec. Return the exact carrier argv, session identity, model, authoritative completion event, and final result.' ;;
+    codex-to-claude-exec) printf '%s' 'Use agent-invoke from Codex to ask a Claude agent for a read-only greeting using external exec. Return the exact carrier argv, session identity, model, authoritative completion event, and final result. Instruct the delegated agent to end its reply with the exact token AGENTINVOKEV1RESULT, and include that token verbatim in your own final reply.' ;;
+    claude-to-codex-exec) printf '%s' 'Use agent-invoke from Claude Code to ask a Codex agent for a read-only greeting using external exec. Return the exact carrier argv, session identity, model, authoritative completion event, and final result. Instruct the delegated agent to end its reply with the exact token AGENTINVOKEV1RESULT, and include that token verbatim in your own final reply.' ;;
     same-host-exec) printf '%s' 'Use agent-invoke and explicitly select same-host external exec for a read-only greeting. Prove that exactly one external carrier ran and native/TUI did not.' ;;
     same-host-tui) printf '%s' 'Use agent-invoke and explicitly select a persistent same-host ZMX TUI for a read-only greeting. Prove the exact ZMX and client session identities and authoritative completion.' ;;
     native-unavailable) printf '%s' 'Use agent-invoke for a same-family task while treating the native host capability as unavailable. Refuse before state or external carrier creation; do not request fallback consent.' ;;
@@ -475,7 +475,16 @@ if (( client_status == 0 )); then
        ((.path? // .skill_path? // "") | tostring | endswith("/agent-invoke/SKILL.md")))) |
     {type,name:(.name // null),skill:(.skill // .skill_name // .input?.skill // null),path:(.path // .skill_path // null)}] | unique')
 fi
+result_excerpt_full=$result_excerpt
 result_excerpt=$(tr '\n\r\t' '   ' <<<"$result_excerpt" | tr -s ' ' | cut -c1-240)
+# E-2: a completion event proves the turn ended, not that the delegated result
+# reached the host. The cross-family cases must carry the marker back verbatim.
+result_returned=false
+case $case_id in
+  codex-to-claude-exec|claude-to-codex-exec)
+    grep -Fq 'AGENTINVOKEV1RESULT' <<<"$result_excerpt_full" && result_returned=true ;;
+  *) result_returned=true ;;
+esac
 
 snapshot_operation_directories "$PROVENANCE_SOURCE/after" ||
   die "$EX_DATAERR" 'cannot capture exact post-invocation operation directories'
@@ -597,6 +606,9 @@ sed -n '/^{/p' "$trace" | jq -sc '[.[] | .. | objects |
     (.owner_token|type)=="string" and (.turn_token|type)=="string" and
     (.status=="success" or .status=="completed")) | .status="success"] | unique' \
   >"$facts_root/completion-events.json"
+# E-3: one session identity per authoritative completion. An exact resume shows
+# two or more turns that all carry the same identity; a fresh session does not.
+resume_turn_identities=$(jq -c '[.[] | .session_id]' "$facts_root/completion-events.json")
 sed -n '/^{/p' "$trace" | jq -sc 'first(.[] | .. | objects |
   select((.tool_use|type)=="object" and (.tool_result|type)=="object")) // null' >"$facts_root/native-start.json"
 sed -n '/^{/p' "$trace" | jq -sc 'first(.[] | .. | objects |
@@ -720,6 +732,9 @@ if [[ $identity_state == sealed || $identity_state == not-created ]]; then ident
 case_evidence_valid=false
 unverified_reason=AUTHORITATIVE_EVIDENCE_INCOMPLETE
 if jq -e 'length > 0' <<<"$skill_events" >/dev/null; then
+  # E-3 adds a specific managed-exec-resume branch ahead of the shared exec
+  # branch, whose pattern list is preserved unchanged.
+  # shellcheck disable=SC2221,SC2222
   case $case_id in
     unsupported-client|native-unavailable)
       [[ $route == refusal && $mode == none && $identity_state == not-created ]] && case_evidence_valid=true
@@ -728,8 +743,15 @@ if jq -e 'length > 0' <<<"$skill_events" >/dev/null; then
       [[ $route == native && $mode == native && -n $model && $authoritative_outcome == true ]] &&
         case_evidence_valid=true
       ;;
+    managed-exec-resume)
+      [[ $route == external && $mode == exec && -n $model && $authoritative_outcome == true &&
+         $result_returned == true ]] &&
+        jq -e 'length >= 2 and (unique | length) == 1 and .[0] != ""' <<<"$resume_turn_identities" >/dev/null &&
+        case_evidence_valid=true
+      ;;
     codex-to-claude-exec|claude-to-codex-exec|same-host-exec|managed-exec-resume|imported-resume)
-      [[ $route == external && $mode == exec && -n $model && $authoritative_outcome == true ]] &&
+      [[ $route == external && $mode == exec && -n $model && $authoritative_outcome == true &&
+         $result_returned == true ]] &&
         case_evidence_valid=true
       ;;
     same-host-tui|managed-tui-resume)
@@ -777,6 +799,8 @@ jq -n \
   --argjson validator_evidence_valid "$validator_evidence_valid" \
   --argjson stop_intent_absent_after_finalize "$stop_intent_absent_after_finalize" \
   --argjson clean_after_stop_succeeded "$clean_after_stop_succeeded" \
+  --argjson result_returned "$result_returned" \
+  --argjson resume_turn_identities "$resume_turn_identities" \
   --argjson passed "$passed" \
   '{case_id:$case_id,candidate_sha:$candidate_sha,route:$route,client:$client,mode:$mode,model:$model,
     session_id:$session_id,tool_events:$tool_events,skill_events:$skill_events,outcome_event:$outcome_event,exit_status:$exit_status,
@@ -788,7 +812,8 @@ jq -n \
     authoritative_outcome:$authoritative_outcome,validator_evidence_valid:$validator_evidence_valid,
     verification:{status:$verification_status,reason_code:(if $unverified_reason == "" then null else $unverified_reason end)},
     stop_intent_absent_after_finalize:$stop_intent_absent_after_finalize,
-    clean_after_stop_succeeded:$clean_after_stop_succeeded,passed:$passed}' >"$evidence_tmp"
+    clean_after_stop_succeeded:$clean_after_stop_succeeded,
+    result_returned:$result_returned,resume_turn_identities:$resume_turn_identities,passed:$passed}' >"$evidence_tmp"
 chmod 600 "$evidence_tmp"
 mv -- "$evidence_tmp" "$evidence"
 
