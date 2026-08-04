@@ -102,27 +102,44 @@ blocked、不得以 Claude 側證據替代、不得降級為 deterministic-only�
 
 ### 6.3 Installed smoke（縮編）
 
-安裝到真實位置後執行 6 案：
+既有 `tests/agent-invoke/e2e/run-installed-e2e.sh` 已是 `--case CASE_ID` 單案 runner，
+支援 14 個 case ID。V1 **不新寫 script、不修改該 runner**，只執行其中 6 個 case：
 
-| 案 | 內容 | 對應 |
+| 案 | runner case ID | 對應 |
 |---|---|---|
-| S1 | Claude host → native Claude subagent | V1-A |
-| S2 | Codex host → native Codex subagent | V1-A |
-| S3 | Claude host → Codex external exec | V1-B |
-| S4 | Codex host → Claude external exec | V1-B |
-| S5 | S3 的 operation 以封存 handle resume | V1-D |
-| S6 | S3 的 operation 執行 stop 後 clean | V1-E |
+| S1 | `claude-native` | V1-A |
+| S2 | `codex-native` | V1-A |
+| S3 | `claude-to-codex-exec` | V1-B |
+| S4 | `codex-to-claude-exec` | V1-B |
+| S5 | `managed-exec-resume` | V1-D |
+| S6 | `lifecycle` | V1-E |
 
-每案必須驗證：`.lat/workspace` 未被建立（QA-5 精神）、`~/.agent-invoke/` 只出現預期的
-最小 metadata、無非預期的 ZMX session 殘留。
+每案的通過條件由 runner 與 `validate-installed-evidence.sh` 既有邏輯決定，已涵蓋
+`.lat` 未變、真實 skill root／credential 未變、installed package 未變、identity 明確、
+authoritative completion 存在。
 
-V1 smoke 另寫一支獨立 script，**不修改** 既有 `tests/agent-invoke/e2e/run-installed-e2e.sh`
-（795 行、14 group）與 `validate-installed-evidence.sh`。那兩支保留在 repo 作為 V1.1 素材。
+兩點必須誠實記載：
 
-### 6.4 V1 不做
+- V1 因此連帶使用既有的 nonce／manifest／validator provenance 機制。這與 6.4 不衝突：
+  6.4 指的是不再**建造**新的 evidence 機器，既有且已 review 的機制照用。
+- `lifecycle` case 同時涵蓋 exec、TUI 與 native lifecycle，因此會順帶執行 TUI 路徑。
+  它是 6 案中唯一涵蓋 stop／clean 的，故保留；但這不使 TUI 脫離 5.2 的 experimental
+  標記。若 `lifecycle` 僅因 TUI 子步驟失敗，處置是：記錄實際失敗點，將 stop／clean 的
+  V1 覆蓋降為 `tests/agent-invoke/integration/state-manager-test.sh` 的 deterministic 證據，
+  並把 `lifecycle` 移入 V1.1，不得改寫 runner 讓它通過。
 
-nonce／manifest／provenance chain、`evidence-summary.json`、operation snapshot 比對、
-14-group installed matrix、remote `dev` E2E、`test_executor`／`qa_executor` 獨立 phase。
+另 8 個 case ID（`same-host-exec`、`same-host-tui`、`native-unavailable`、
+`unsupported-client`、`managed-tui-resume`、`imported-resume`、`native-resume`、`prune`）
+留給 V1.1，V1 不執行。
+
+### 6.4 V1 不再建造
+
+不新增任何 evidence 機器：不做 `evidence-summary.json` 彙總、不擴充 provenance chain、
+不做 operation snapshot 比對層、不跑 14-group installed matrix、不做 remote `dev` E2E、
+不設 `test_executor`／`qa_executor` 獨立 phase。
+
+既有且已 review 的機制（`run-installed-e2e.sh` 內的 nonce manifest 與
+`validate-installed-evidence.sh`）照常使用，不視為新建造。
 
 ## 7. 安裝
 
