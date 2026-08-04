@@ -434,7 +434,7 @@ if [[ $host_client == codex ]]; then
     --sandbox workspace-write --json "$prompt" < /dev/null >"$trace" 2>&1 || client_status=$?
 else
   sandbox_run timeout --signal=TERM --kill-after=15s 300s claude -p --no-session-persistence \
-    --output-format stream-json --permission-mode acceptEdits "$prompt" < /dev/null >"$trace" 2>&1 || client_status=$?
+    --output-format stream-json --verbose --permission-mode acceptEdits "$prompt" < /dev/null >"$trace" 2>&1 || client_status=$?
 fi
 : >"$OBSERVER_STOP"
 wait "$observer_pid" || die "$EX_DATAERR" 'operation checkpoint observer failed'
