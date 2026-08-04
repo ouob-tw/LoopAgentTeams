@@ -147,6 +147,9 @@ validate_lifecycle_evidence() {
   for file in stop-intent.json owner.json active-turn.json; do
     cmp -s "$failure_before/runtime/$file" "$failure/runtime/$file" || evidence_die 'failed finalize did not retain protected records'
   done
+  jq -e --slurpfile before "$failure_before/metadata.json" \
+    '. == $before[0]' "$failure/metadata.json" >/dev/null ||
+    evidence_die 'lifecycle altered a non-target operation'
 }
 validate_prune_evidence() {
   local dry=$1 id=$2 before=$3 after=$4
