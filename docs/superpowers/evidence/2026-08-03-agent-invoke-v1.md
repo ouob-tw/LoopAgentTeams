@@ -120,21 +120,36 @@ added to the runner. It weakens nothing — it is what makes the stream the runn
 parses exist at all. After the fix `claude-native` exits 0 and the trace carries a
 genuine `{"type":"tool_use","name":"Skill","skill":"agent-invoke"}` activation event.
 
-### Finding 3 — Codex emits no skill-activation event (harness limitation, unresolved)
+### Finding 3 — the activation predicate reads the wrong field for Codex (harness, unresolved)
 
-`run-installed-e2e.sh` gates every case on `skill_events` being non-empty, and that
-predicate matches only objects with `.type == "skill"` or `.name == "Skill"`, or a
-path ending `/agent-invoke/SKILL.md`. A direct probe of `codex exec --json` showed
-its entire event vocabulary to be `thread.started`, `turn.started`, `item.started`,
-`item.completed`, `command_execution`, `agent_message`, `turn.completed`. There is
-no skill event type, and the predicate matched zero objects even though the
-transcript referenced `agent-invoke` six times. Codex activation is observable only
-as a `command_execution` reading the installed `SKILL.md`.
+`run-installed-e2e.sh` gates every case on `skill_events` being non-empty. That
+predicate matches objects with `.type == "skill"` or `.name == "Skill"`, and reads
+the skill path out of `.path` or `.skill_path`. A direct probe of
+`codex exec --json` showed its entire event vocabulary to be `thread.started`,
+`turn.started`, `item.started`, `item.completed`, `command_execution`,
+`agent_message`, `turn.completed` — there is no skill event type and no `.path`
+field, so the predicate matched zero objects.
+
+**Codex did activate the skill.** Both the `--json` stream and the Codex rollout
+record show it reading the installed package directly:
+
+```
+completed  /bin/bash -lc "sed -n '1,240p' /home/swy/.codex/skills/agent-invoke/SKILL.md"
+completed  /bin/bash -lc "sed -n '1,240p' /home/swy/.codex/skills/agent-invoke/references/native.md"
+```
+
+So the activation fact is present in the very stream the runner already parses; it
+is carried in `command_execution.command` rather than in a `.path` field. This is a
+field-mapping defect in the harness, not an unobservable host and not a product
+defect — the install and the activation both work.
 
 Six of the eight cases are Codex-hosted, including `lifecycle` and
-`native-unavailable`, and all six fail at this same gate. Making them pass would
-require broadening the activation predicate, which is exactly the weakening of an
-existing assertion that the additive-only constraint forbids. It was not done.
+`native-unavailable`, and all six fail at this same gate. The minimal correction is
+to let the existing predicate also match a `command_execution` whose `.command`
+names the installed `.../agent-invoke/SKILL.md` — which keeps the same strength,
+since it still demands the installed SKILL.md path appear. It was **not** applied
+here: it edits an existing predicate rather than adding to it, and under the
+additive-only constraint that is Dispatch's call, not the executor's.
 
 ### Finding 4 — `claude-native` produces no operation record (product behaviour)
 
@@ -148,6 +163,23 @@ performing the native delegation the case asserts. Observed tool sequences were
 Per the global constraint this was recorded and not fixed. Whether it is a skill
 instruction defect or a limitation of non-interactive `-p` mode is for the product
 TASK_ID to determine; either way QA-1's installed half is unproven.
+
+### Diagnostic method and a model-rule deviation
+
+Findings 3 and 4 were confirmed by reading the Codex rollout JSONL under
+`~/.codex/sessions/` and the captured `--json` stream, rather than by re-running
+cases. That is both faster and cheaper in quota, and it is what produced the
+`sed ... SKILL.md` evidence above. Note that neither runner leaves such a record
+for its own cases: `run-installed-e2e.sh` shreds its traces on exit, and
+`run-trigger-eval.sh` runs with an isolated `CODEX_HOME` and
+`--no-session-persistence`, so only the ad-hoc probe was inspectable.
+
+Deviation to record: that probe was launched as a bare `codex exec` with no
+`--model`, so it ran on `gpt-5.6-sol`. The LAT `code_executor` default is
+`gpt-5.6-terra` / medium, and the probe should have pinned it. The conclusion is
+unaffected — a host's JSON event vocabulary does not vary by model, and the
+`command_execution` shape shown above is structural — but the run was not
+model-pinned as the LAT client rules require.
 
 ### Codex quota
 
