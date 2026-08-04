@@ -173,7 +173,27 @@ evidence 欄位，不得移除、放寬或改寫既有邏輯。`agent-invoke/` �
 | E-1 | native case 的 pass predicate 只檢查 route／mode／model／completion，未排除外部 carrier | 對已寫入 evidence JSON 的 `tool_events` 加「零 exec／ZMX carrier」斷言。此項不需改 runner，可由外部 jq 斷言完成 |
 | E-2 | `result_excerpt` 只用於比對拒絕字串，未寫入 evidence，也不在 pass predicate | 在既有委派 prompt **之後追加**一句固定、不含敏感資訊的 marker 回傳要求，既有 prompt 文字與既有斷言的原文及語義**完全保留不動**；再新增 evidence 布林欄位 `result_returned` 與對應的 pass assertion |
 | E-3 | `managed-exec-resume` 與單次 exec case 共用 predicate，只要求一個 operation、一次 completion | 增加兩 turn 的 session identity、設定與 baseline 比對 |
-| E-4 | lifecycle validator 只驗成功／失敗兩個 operation 的 identity 與 stop-intent 清除 | 增加三個有界斷言：非目標 operation snapshot 不變、stop 後可用相同 session identity 開新 turn、clean 前後原生 session sentinel 不變 |
+| E-4 | lifecycle validator 只驗成功／失敗兩個 operation 的 identity 與 stop-intent 清除 | 增加「lifecycle 執行改動非目標 operation 的 immutable metadata 即拒絕」斷言。QA-5 的另兩句改由既有證據組合承擔，見下方說明 |
+
+E-4 的原始設計（三個新斷言）在 2026-08-04 實作時證實無法表達，這是設計缺陷不是實作失敗：
+`validate_lifecycle_evidence` 的第三個參數 `after_clean` 實際傳入
+`$validator_root/after/runs/$success`，而 `validate-installed-evidence.sh:145` 已經斷言
+`! -e $after_clean`，因此該路徑下的任何檔案都不可達；第二個參數 `after_finalize` 本身
+就是 success operation 目錄，其下不存在再一層 `success/`。要產出 `resume-turn.json` 與
+`native-sentinel` 需要新的 observer checkpoint 與 validator 簽章，直接違反 6.5。
+
+QA-5 三句主張的最終歸屬：
+
+- **其他 operation 不受影響**：既有斷言已涵蓋。`failure` operation 即非目標 operation，
+  validator 已 `cmp` 其 `metadata.json`、`session-ref.json` 與三個 runtime 檔案。E-4 再補一條
+  「改動非目標 operation immutable metadata 即拒絕」。
+- **stop 後可用相同 identity 接續**：拆為兩段既有證據——lifecycle 的
+  `cmp -s "$success_before/session-ref.json" "$after_finalize/session-ref.json"` 證明 stop 未動
+  identity；`managed-exec-resume` 加 E-3 證明被保存的 identity 確實可接續。
+- **原生對話紀錄不被刪**：本測試架構無法端到端驗證。installed case 跑在 bwrap 的
+  tmpfs home 內，沒有可比對的宿主外部 sentinel。此句降級由設計契約（clean 只移除 registry
+  目錄，已由 `! -e $after_clean` 斷言）與 `state-manager-test.sh` 的 deterministic 覆蓋承擔，
+  V1 不宣稱有端到端證據。
 
 補強只針對上述四項缺口，不擴張為新的 provenance 層。
 
@@ -280,16 +300,19 @@ Claude 代理。工作確實交給了對方家族的代理，而且這一次的�
 
 ### QA-5 停止與清除只影響指定的那一次
 
-**Q：** 使用者要求停掉某一次委派時，只有那一次被停掉，其他正在進行的不受影響，而且之後
-還能用原識別碼接續。使用者要求清除某一次的紀錄時，若那一次還在跑，系統拒絕並要求先停止。
-不論停止或清除，Claude／Codex 本身的對話紀錄都不會被刪掉。
+**Q：** 使用者要求停掉某一次委派時，只有那一次被停掉，其他的不受影響，而且被停掉那一次
+的識別碼原封保留、之後仍可接續。使用者要求清除某一次的紀錄時，若那一次還在跑，系統拒絕
+並要求先停止。
+
+清除只移除 `~/.agent-invoke` 底下該次的 registry 目錄，不觸及 Claude／Codex 本身的對話
+紀錄——這一點在 V1 只有設計契約與 deterministic 覆蓋，沒有端到端證據，見 6.4。
 
 **A：** ownership-verified stop 與 fail-closed clean。證據：installed case `lifecycle`
-（stop 後 intent 消失、clean 成功；本案為硬性 gate，無 fallback）**外加 E-4 的三個有界斷言**
-——非目標 operation 的 snapshot 前後不變、stop 之後能以相同 session identity 開始新 turn、
-clean 前後原生 session sentinel 不變。這三項分別對應 Q 裡的「其他不受影響」「之後還能
-接續」「原生紀錄不會被刪掉」；少了 E-4，現有 validator 只驗到成功與失敗兩個 operation 的
-identity 與 stop-intent 清除，證明不了那三件事。另有 decision proxy case `stop` 與
+（stop 後 intent 消失、clean 成功；本案為硬性 gate，無 fallback）。Q 的兩句主張分別由：
+「其他不受影響」——validator 對 `failure` operation 的 `cmp` 斷言，加 E-4 的「改動非目標
+operation immutable metadata 即拒絕」；「識別碼保留且可接續」——lifecycle 的
+`cmp -s "$success_before/session-ref.json" "$after_finalize/session-ref.json"` 加
+`managed-exec-resume` 的 E-3。另有 decision proxy case `stop` 與
 `tests/agent-invoke/integration/state-manager-test.sh` 的 PID reuse、handle 不符、
 owner 證據不完整三種 fail-closed 斷言。
 

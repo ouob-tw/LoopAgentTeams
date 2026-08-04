@@ -205,16 +205,16 @@ Three installed cases currently pass on state alone and cannot distinguish a rea
 
 - [ ] **Step 1: Write the failing assertions first**
 
-Extend `tests/agent-invoke/e2e/installed-evidence-validator-test.sh` — that file is exempt from "do not modify" only in the additive sense; append new cases, change nothing existing. Add three cases:
+Extend `tests/agent-invoke/e2e/installed-evidence-validator-test.sh` — that file is exempt from "do not modify" only in the additive sense; append new cases, change nothing existing. Add these cases:
 
 1. An evidence fixture for `claude-to-codex-exec` whose `result_returned` is `false` must be rejected.
 2. An evidence fixture for `managed-exec-resume` whose `resume_turn_identities` has fewer than two entries, or two entries that differ, must be rejected.
-3. A lifecycle fixture in which the non-target operation snapshot differs before and after must be rejected.
+3. A lifecycle fixture in which the non-target (`failure`) operation's `metadata.json` differs from its before-snapshot must be rejected.
 
 - [ ] **Step 2: Run the validator test to verify the new cases fail**
 
 Run: `bash tests/agent-invoke/e2e/installed-evidence-validator-test.sh`
-Expected: FAIL on the three new cases, because the assertions they describe do not exist yet. The pre-existing cases must still pass — if any of them breaks, you have modified rather than added, and must revert.
+Expected: FAIL on the new cases, because the assertions they describe do not exist yet. The pre-existing cases must still pass — if any of them breaks, you have modified rather than added, and must revert.
 
 - [ ] **Step 3: Implement E-2 — prove the delegated result came back**
 
@@ -258,28 +258,37 @@ managed-exec-resume)
 
 placed as a new branch **before** the existing shared branch, so the shared branch keeps its current text and simply stops matching this one case. Removing `managed-exec-resume` from the shared branch's pattern would be a modification — do not do that; adding an earlier, more specific branch is the additive form.
 
-- [ ] **Step 5: Implement E-4 — three bounded lifecycle assertions**
+- [ ] **Step 5: Implement E-4 — one bounded lifecycle assertion**
 
-In `validate_lifecycle_evidence()`, after the existing assertions and without touching them, add:
+An earlier version of this step named paths that cannot exist. That was a plan defect, corrected here from the real call site at `run-installed-e2e.sh:693`:
 
 ```bash
-cmp -s "$before/bystander/metadata.json" "$after_clean/bystander/metadata.json" ||
-  evidence_die 'clean changed a non-target operation'
-[[ -f $after_finalize/success/resume-turn.json ]] ||
-  evidence_die 'stop did not leave a resumable identity'
-jq -e --slurpfile ref "$success_before/session-ref.json" '.[0] == $ref[0]' \
-  "$after_finalize/success/resume-turn.json" >/dev/null ||
-  evidence_die 'resume after stop did not reuse the exact session identity'
-cmp -s "$before/native-sentinel" "$after_clean/native-sentinel" ||
-  evidence_die 'clean removed or altered the native session'
+validate_lifecycle_evidence "$validator_root/before" "$validator_root/after-finalize" \
+  "$validator_root/after/runs/$success" "$validator_root/after/runs/$failure"
 ```
 
-The runner must produce the `bystander` operation, the `resume-turn.json` capture, and the `native-sentinel` file. Follow the existing snapshot helpers in the runner rather than inventing a new mechanism — that would cross into the new-machinery ban in spec section 6.5.
+So inside the function, `$after_clean` is the cleaned success operation, which `validate-installed-evidence.sh:145` already asserts does **not** exist, and `$after_finalize` is itself the success operation directory with no `success/` level beneath it. Nothing may be read under either path.
+
+QA-5's three claims now land as follows, and only the first needs new code:
+
+- Non-target operation unaffected — the `failure` operation is that non-target operation, and the existing `cmp` assertions already cover its `metadata.json`, `session-ref.json`, and three runtime files. Add one assertion on top.
+- Identity survives stop and stays resumable — already covered by the existing `cmp -s "$success_before/session-ref.json" "$after_finalize/session-ref.json"` here, combined with E-3 on `managed-exec-resume`. No new code.
+- Native transcript not deleted by clean — not expressible in this harness, since the case runs inside a bwrap tmpfs home with no host-side sentinel to compare. Spec section 6.4 records this as design-contract plus `state-manager-test.sh` coverage only. Do not attempt it, and do not claim it.
+
+In `validate_lifecycle_evidence()`, after the existing assertions and without touching them, add exactly:
+
+```bash
+jq -e --slurpfile before "$failure_before/metadata.json" \
+  '. == $before[0]' "$failure/metadata.json" >/dev/null ||
+  evidence_die 'lifecycle altered a non-target operation'
+```
+
+If `installed-evidence-validator-test.sh` already carries an equivalent assertion added in commit `468596b`, verify it matches this semantics and leave it as is rather than duplicating it.
 
 - [ ] **Step 6: Run the validator test to verify all cases now pass**
 
 Run: `bash tests/agent-invoke/e2e/installed-evidence-validator-test.sh`
-Expected: PASS, including the three new cases and every pre-existing case.
+Expected: PASS, including the new cases and every pre-existing case.
 
 - [ ] **Step 7: Prove the change was additive**
 
@@ -302,7 +311,7 @@ git commit -m "test(agent-invoke): make three installed cases falsifiable
 
 E-2 proves the delegated result reached the host, E-3 proves the
 resume continued the same session rather than starting a new one, and
-E-4 adds three bounded lifecycle assertions. All strictly additive."
+E-4 rejects a lifecycle run that alters the non-target operation. All strictly additive."
 ```
 
 Expected: syntax and ShellCheck silent; `git diff --stat -- agent-invoke/` prints nothing.
@@ -618,7 +627,7 @@ Spec section 9 acceptance items, each mapped to a concrete test target and to ho
 | QA-2 cross-family delegation returns the result | installed `claude-to-codex-exec`, `codex-to-claude-exec`; proxy `cross-client`; `exec-client-test.sh` | Task 5 Step 3's E-2 assertion: `result_returned == true`, meaning the `AGENTINVOKEV1RESULT` token added by Task 2 Step 3 reached the host's final reply. |
 | QA-3 external only when asked; no silent downgrade | installed `same-host-exec`, `native-unavailable`; proxy `explicit-exec` | `same-host-exec` proves exactly one external carrier ran when explicitly requested. `native-unavailable` goes through the existing `validate_preexecution_refusal`, which already asserts an empty `tools` array and a `diff -qr`-identical protected state. |
 | QA-4 resume continues the same conversation | installed `managed-exec-resume`; proxy `reference-resume`; `session-reference-test.sh` | Task 2 Step 4's E-3 branch: `resume_turn_identities` has at least two entries that are all identical and non-empty. |
-| QA-5 stop and clean affect only the named operation | installed `lifecycle`; proxy `stop`; `state-manager-test.sh` | Task 2 Step 5's E-4 assertions: the bystander operation is unchanged, the post-stop resume reuses the exact session identity, and the native sentinel survives clean. |
+| QA-5 stop and clean affect only the named operation | installed `lifecycle`; proxy `stop`; `state-manager-test.sh` | E-4 rejects a lifecycle run that alters the non-target operation. Identity survival is the existing `session-ref.json` comparison plus E-3 on `managed-exec-resume`. The native-transcript claim is design-contract only in V1, per spec 6.4. |
 | QA-6 does not take over what it should not | proxy `full-LAT`, `non-delegation-request`, `direct-work`; `skill-contract-test.sh` | All three negative cases pass on both clients in Task 4. `lat_unchanged` on the installed cases is supporting evidence only. |
 | QA-7 installed and usable on both hosts | Task 3 Steps 5–8 | Activation runs from a temporary directory outside the repository, and the evidence is a host skill-activation event or a read of the installed `SKILL.md` — not a route list the host could have produced from the repository copy. |
 | QA-8 unverified behaviors are labelled | Task 5 Step 5 | The evidence note names TUI resume, `prune`, persistent native handles, and arbitrary session import as not verified in V1. |
