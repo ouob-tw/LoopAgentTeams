@@ -61,16 +61,18 @@ The current runner hard-codes fourteen case IDs and two repetitions per case, wh
 
 The six V1 cases and their spec mapping:
 
-| case id | V1 behavior |
-|---|---|
-| `generic-native` | V1-A native-first routing |
-| `cross-client` | V1-B cross-family exec |
-| `explicit-exec` | V1-C explicit external override |
-| `reference-resume` | V1-D exact external session resume |
-| `stop` | V1-E lifecycle stop |
-| `clean` | V1-E lifecycle clean |
+| case id | V1 behavior | QA |
+|---|---|---|
+| `generic-native` | V1-A native-first routing | QA-1 |
+| `cross-client` | V1-B cross-family exec | QA-2 |
+| `explicit-exec` | V1-C explicit external override | QA-3 |
+| `reference-resume` | V1-D exact external session resume | QA-4 |
+| `stop` | V1-E lifecycle stop | QA-5 |
+| `full-LAT` | negative: must not take over a full LAT workflow request | QA-6 |
 
-V1-F (registry shape) is not a routing decision; it is covered by `state-manager-test.sh` and by the installed smoke in Task 3.
+`clean` is deliberately not in the proxy set: it is nearly the same decision as `stop` (both `route: none`, `decision_scope: agent-invoke`), and it is covered for real by the installed `lifecycle` case plus `state-manager-test.sh`. The sixth slot buys the distinct failure mode of over-triggering instead.
+
+V1-F (registry shape) is not a routing decision; it is covered by `state-manager-test.sh` and by the installed smoke in Task 4.
 
 - [ ] **Step 1: Preserve the full fourteen-case set**
 
@@ -105,10 +107,10 @@ Expected: FAIL, reporting the missing literal `all(.cases[]; .passed == true and
 
 ```bash
 cd /home/swy/LoopAgentTeams
-jq '[.[] | select(.id | IN("generic-native","cross-client","explicit-exec","reference-resume","stop","clean"))]' \
+jq '[.[] | select(.id | IN("generic-native","cross-client","explicit-exec","reference-resume","stop","full-LAT"))]' \
   tests/agent-invoke/e2e/trigger-prompts-full.json > tests/agent-invoke/e2e/trigger-prompts.json.tmp
 mv tests/agent-invoke/e2e/trigger-prompts.json.tmp tests/agent-invoke/e2e/trigger-prompts.json
-jq -e 'length == 6 and ([.[].id] | sort) == ["clean","cross-client","explicit-exec","generic-native","reference-resume","stop"]' \
+jq -e 'length == 6 and ([.[].id] | sort) == ["cross-client","explicit-exec","full-LAT","generic-native","reference-resume","stop"]' \
   tests/agent-invoke/e2e/trigger-prompts.json
 ```
 
@@ -125,7 +127,7 @@ readonly CASE_IDS='["clean","cross-client","direct-work","exact-claude-model","e
 with:
 
 ```bash
-readonly CASE_IDS='["clean","cross-client","explicit-exec","generic-native","reference-resume","stop"]'
+readonly CASE_IDS='["cross-client","explicit-exec","full-LAT","generic-native","reference-resume","stop"]'
 ```
 
 In `validate_prompt_set`, line 48, replace `length == 14 and` with `length == 6 and`.
@@ -457,6 +459,21 @@ Expected: `dev` pushed; `main` and `origin/main` both still `5a8e76c6712ba130799
 ---
 
 ## QA Acceptance Mapping
+
+Spec section 9 acceptance items, each mapped to a concrete test target and to how `qa_executor` verifies it against the real installed skill.
+
+| QA | Integration / E2E test target | qa_executor verification |
+|---|---|---|
+| QA-1 same-family delegation spawns no external process | `tests/agent-invoke/integration/route-integration-test.sh`; installed cases `claude-native`, `codex-native`; proxy case `generic-native` | On the installed skill, ask each host to delegate a read-only task to its own family. Assert the evidence JSON has `route == "native"`, `mode == "native"`, `authoritative_outcome == true`, and that `tool_events` contains no `zmx` or exec carrier command. |
+| QA-2 cross-family delegation returns the result | `tests/agent-invoke/integration/exec-client-test.sh`; installed cases `claude-to-codex-exec`, `codex-to-claude-exec`; proxy case `cross-client` | Ask each host to delegate to the other family. Assert `route == "external"`, `mode == "exec"`, a non-empty `model`, a non-empty `session_id`, and that the host's final text contains the delegated agent's answer. |
+| QA-3 external only when asked; no silent downgrade | `tests/agent-invoke/integration/route-integration-test.sh` override and refusal assertions; proxy case `explicit-exec` | Issue one explicit "use external exec" request and confirm the host discloses the selected route. Then issue a plain same-family request and confirm no external carrier started. |
+| QA-4 resume continues the same conversation | `tests/agent-invoke/integration/session-reference-test.sh`; installed case `managed-exec-resume`; proxy case `reference-resume` | Resume a sealed operation and assert the evidence keeps the same `session_id` and `model` while producing a new turn result. Then resume a fabricated handle and assert it fails without creating a new session. |
+| QA-5 stop and clean affect only the named operation | `tests/agent-invoke/integration/state-manager-test.sh`; installed case `lifecycle`; proxy case `stop` | Assert `stop_intent_absent_after_finalize == true` and `clean_after_stop_succeeded == true`. Separately confirm the underlying Claude/Codex native session file still exists after clean. |
+| QA-6 does not take over what it should not | `tests/agent-invoke/integration/skill-contract-test.sh` scope assertions; proxy case `full-LAT`; `lat_unchanged` on every installed case | Ask each host for a full spec/plan/review/test workflow and confirm no `agent-invoke` operation is created. Assert `lat_unchanged == true` on all six installed cases. |
+| QA-7 installed and usable on both hosts | Plan Task 2 Steps 6–7 | Re-run the two activation prompts against the installed skill and confirm both hosts name the five routes. Confirm the three install paths resolve and the digests match the repository package. |
+| QA-8 unverified behaviors are labelled | Plan Task 4 Step 5 | Read the evidence note and confirm it names TUI resume, `prune`, persistent native handles, and arbitrary session import as not verified in V1. |
+
+Process gates (spec section 8):
 
 | Spec | Satisfied by |
 |---|---|
