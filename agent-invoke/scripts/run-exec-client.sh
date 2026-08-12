@@ -67,7 +67,7 @@ else
   esac
 fi
 if [[ $client == codex ]]; then
-  client_turn_id=$(tail -n "+$((baseline + 1))" "$transcript" | jq -r --arg model "$model" 'select(.type=="turn_context" and .model==$model) | .turn_id//empty')
+  client_turn_id=$(tail -n "+$((baseline + 1))" "$transcript" | jq -r --arg model "$model" 'select(.type=="turn_context" and .payload.model==$model) | .payload.turn_id//empty')
   [[ $(printf '%s\n' "$client_turn_id" | sed '/^$/d' | wc -l) == 1 && -n $client_turn_id ]] || die 'Codex transcript must expose one current native turn identity'
 fi
 turn=$(state_value "$operation" '.active_turn.token')

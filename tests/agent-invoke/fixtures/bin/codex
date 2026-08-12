@@ -24,7 +24,7 @@ case ${FAKE_CODEX_MODE:-ok} in
       if [[ ! -e $FAKE_CODEX_TRANSCRIPT ]] || ! rg -q '"type":"session_meta"' "$FAKE_CODEX_TRANSCRIPT"; then
         printf '{"type":"session_meta","payload":{"id":"%s","cwd":"%s"}}\n' "$FAKE_SESSION" "$PWD" >> "$FAKE_CODEX_TRANSCRIPT"
       fi
-      printf '{"type":"turn_context","turn_id":"native-turn-fixed","model":"%s"}\n' "$FAKE_MODEL" >> "$FAKE_CODEX_TRANSCRIPT"
+      printf '{"type":"turn_context","payload":{"turn_id":"native-turn-fixed","model":"%s"}}\n' "$FAKE_MODEL" >> "$FAKE_CODEX_TRANSCRIPT"
     fi
     printf '{"type":"thread.started","thread_id":"%s"}\n{"type":"response.completed"}\n' "$FAKE_SESSION"
     sleep "${FAKE_DELAY:-1}"

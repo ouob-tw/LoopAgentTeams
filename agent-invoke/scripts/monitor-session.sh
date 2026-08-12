@@ -15,11 +15,11 @@ if [[ $client == codex ]]; then
   result=$(jq -ers --arg turn "$turn_id" --arg model "$model" '
     reduce .[] as $event ({context:false,final:false,complete:false,invalid:false,answer:""};
       if .invalid then .
-      elif ($event.type=="turn_context" and $event.turn_id==$turn and $event.model==$model) then
+      elif ($event.type=="turn_context" and $event.payload.turn_id==$turn and $event.payload.model==$model) then
         if .context then .invalid=true else .context=true end
-      elif ($event.type=="response_item" and ($event.payload.phase//"")=="final_answer") then
-        if .context and (.final|not) then .final=true | .answer=($event.payload.text//"") else .invalid=true end
-      elif (($event.type=="task_complete" or $event.type=="turn_complete") and $event.payload.turn_id==$turn) then
+      elif ($event.type=="response_item" and ($event.payload.phase//"")=="final_answer" and ($event.payload.internal_chat_message_metadata_passthrough.turn_id//"")==$turn) then
+        if .context and (.final|not) then .final=true | .answer=([$event.payload.content[]?|select(.type=="output_text").text//empty]|join("")) else .invalid=true end
+      elif ($event.type=="event_msg" and ($event.payload.type=="task_complete" or $event.payload.type=="turn_complete") and $event.payload.turn_id==$turn) then
         if .final and (.complete|not) then .complete=true else .invalid=true end
       else . end)
     | select(.context and .final and .complete and (.invalid|not))' <<<"$post") || incomplete 'Codex current turn is not completed'
