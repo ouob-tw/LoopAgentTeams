@@ -32,6 +32,8 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
 
 ## 按需委派
 
+每次委派前讀取 [Agent 設定](references/agents.md)，明確設定模型、thinking effort 與權限模式；原生 Subagent、HCOM 與各階段內部再委派都適用。
+
 - **Prototype**：需要具體素材驗證設計問題時，委派 /prototype，將成果與結論交回 Designer。
 - **Wayfinder**：工作太大、關鍵決策尚未釐清時，委派 /wayfinder 建立與推進決策地圖，結果交回 Designer；需要使用者參與的決策仍由使用者回答。
 - **Agent 機制**：Orchestrator 建立或指派外部 Agent／原生 Subagent。外部 Agent 由 HCOM 協調，適合跨 client 或使用者直接互動；原生 Subagent 使用當前 client 的委派能力。
