@@ -27,6 +27,17 @@ description: Use when setting up test infrastructure, adding tests, reorganizing
 多資料庫 / 訊息佇列？       → Docker
 ```
 
+## Docker 構建與清理
+
+適用於以容器交付的專案；Host 模式維持原有測試方式。
+
+- 開發測試重用專案開發 image，掛載目前工作區的程式碼；與 production 共用 runtime 版本、依賴鎖定與 Dockerfile 階段，依賴變更時重建。
+- 正式 E2E／QA 使用 production Dockerfile 的正式 target 構建，不掛載原始碼；修改後重建受影響 image 並重新驗證。改到 Dockerfile、啟動、打包或檔案權限時，提前驗證正式 image。
+- 正常構建重用 build cache，不預設使用 `--no-cache`。
+- 每個任務使用獨立 Compose project 名稱或資源標籤，記錄自己建立的資源。
+- 執行者先保存測試結果與必要 logs，再清理已無後續用途的任務專用 container、network、測試 volume 與 image；後續仍需使用的資源交接給接手者。
+- 保留共用 image、共用資料與 build cache，不執行全域 prune。Build cache 的容量與期限由主機 GC 政策管理。
+
 ## 測試範圍判斷
 
 優先測試：

@@ -26,7 +26,7 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
 - [ ] 實作：Implementer 使用 /implement；所有 Tickets 完成實作、測試、獨立 Review 與必要修正。
 - [ ] 整合：Orchestrator 協調整合，由執行 Agent 驗證整合後版本；同版本已有的有效證據可沿用。
 - [ ] 驗收：QA 按需求與驗收條件測試；問題交回 Implementer 修正，再複驗。
-- [ ] 交付：Orchestrator 核對驗收證據，回報成果與未完成事項；必要驗證未執行時，不宣告完成。
+- [ ] 交付：Orchestrator 核對驗收證據，確認測試資源已依 three-tier-testing 清理或交接，回報成果與未完成事項；必要驗證未執行時，不宣告完成。
 
 需要 Prototype／Wayfinder 時，加入對應子任務。後續修改若使先前驗證失效，重新開啟受影響項目。
 
@@ -37,6 +37,7 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
 - **Prototype**：需要具體素材驗證設計問題時，委派 /prototype，將成果與結論交回 Designer。
 - **Wayfinder**：工作太大、關鍵決策尚未釐清時，委派 /wayfinder 建立與推進決策地圖，結果交回 Designer；需要使用者參與的決策仍由使用者回答。
 - **Agent 機制**：Orchestrator 建立或指派外部 Agent／原生 Subagent。外部 Agent 由 HCOM 協調，適合跨 client 或使用者直接互動；原生 Subagent 使用當前 client 的委派能力。
+- **工作區**：平行實作或需要保留現有工作區時，使用獨立 Git worktree 與分支，預設放在專案的 `.worktrees/<task-id>/`，不放 Temp；建立前確認 `.worktrees/` 已被 Git 忽略。單一實作且工作區乾淨時，可直接開發。
 
 ## 交接
 
