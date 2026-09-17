@@ -27,6 +27,8 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
   - [ ] 共用檔案依序修改，指定目前負責的 Ticket；接手前由 Orchestrator 更新分工與依賴，下一張 Ticket 從已整合版本接續。
   - [ ] 將可開始的 Tickets 交給 Implementer，每張實作任務使用新 context。
 - [ ] 實作：Implementer 使用 /implement；所有 Tickets 完成實作、測試、獨立 Review 與必要修正。
+  - [ ] Orchestrator 自行實作的部分同樣送獨立 Review，標準與其他 Tickets 相同；
+        兼任實作者不等於免除審查，未經審查的那一段通常是整批品質最差的地方。
 - [ ] 整合：Orchestrator 協調整合，由執行 Agent 在整合後版本驗證各 Ticket 的驗收條件與跨 Ticket 限制。
   - [ ] 交付版本須保留原樣的檔案，記錄路徑與基準 commit，逐一做位元組比對，合併無衝突時亦同；「本票不修改」不代表其他 Ticket 不得修改。
   - [ ] 驗證在整合後工作區執行，記錄版本、環境重建方式、指令與結果；指向其他 Ticket 工作區的絕對路徑須改為整合後工作區的對應路徑再執行。
