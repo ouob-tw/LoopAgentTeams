@@ -237,6 +237,10 @@ runtime logs 預設保留 60 天；清理前會先確認 ownership lock、PID �
 | 背景執行 | `send-keys` + detach | `zmx run -d` 一行搞定 |
 | 追蹤輸出 | 需要 attach 到 pane | `zmx tail` 即時追蹤，不需 attach |
 
+## HCOM 與 HERDR
+
+透過 `HERDR_WS` 指定 Agent 所在 workspace；未指定時使用當下有焦點的位置。見 [安裝教學](docs/hcom-herdr-setup.md)與 [wrapper 腳本](scripts/herdr-ws.sh)。
+
 ## 授權
 
 [MIT](LICENSE)
