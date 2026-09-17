@@ -2,7 +2,7 @@
 
 ## 模型與 effort
 
-使用者指定優先；未指定時，由 Orchestrator 依任務與 client 能力選擇模型，明確傳入模型 ID 與 effort，不依賴隱含預設。
+使用者指定優先；未指定時，前端任務預設使用 `claude-opus-5`，後端任務預設使用 `gpt-6-astra`。其他或混合任務由 Orchestrator 依任務與 client 能力選擇模型。明確傳入模型 ID 與 effort，不依賴隱含預設。
 
 | 模型 ID | 起始 effort |
 | --- | --- |
@@ -35,3 +35,9 @@ Codex 的 `--yolo` 同時關閉確認與 sandbox。這些啟動設定不擴大�
 原生 Subagent 使用 client 支援的模型、effort 與權限欄位；權限受宿主限制，不能把 CLI 參數寫進 prompt 就當作生效。原生機制無法套用必要設定時，改用可支援的 HCOM 外部 Agent；仍不可用則回報 Orchestrator。
 
 啟動或升級後，從工具回傳、session 資訊或啟動紀錄核對模型、effort 與權限模式。未能確認的設定明確標示，不宣稱已生效；再委派時附上本文件。
+
+## HCOM 收尾
+
+- Orchestrator 記錄本次 LAT 建立的 HCOM Agent 名稱，包含再委派建立的 Agents。
+- 執行 Agent 保存成果、清理自己的測試資源並回報後待命，不自行關閉。
+- Orchestrator 確認成果與交接完成、沒有後續任務後，用 `hcom kill` 關閉並確認結果。只關閉本次 LAT 建立的 Agents，保留使用者原有或其他流程的 Agents。

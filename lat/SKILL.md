@@ -26,7 +26,7 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
 - [ ] 實作：Implementer 使用 /implement；所有 Tickets 完成實作、測試、獨立 Review 與必要修正。
 - [ ] 整合：Orchestrator 協調整合，由執行 Agent 驗證整合後版本；同版本已有的有效證據可沿用。
 - [ ] 驗收：QA 按需求與驗收條件測試；問題交回 Implementer 修正，再複驗。
-- [ ] 交付：Orchestrator 核對驗收證據，確認測試資源已依 three-tier-testing 清理或交接，回報成果與未完成事項；必要驗證未執行時，不宣告完成。
+- [ ] 交付：Orchestrator 核對驗收證據，確認測試資源已依 three-tier-testing 清理或交接，並依 Agent 設定完成 HCOM 收尾，回報成果與未完成事項；必要驗證未執行時，不宣告完成。
 
 需要 Prototype／Wayfinder 時，加入對應子任務。後續修改若使先前驗證失效，重新開啟受影響項目。
 
