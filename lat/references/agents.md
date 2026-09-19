@@ -36,6 +36,15 @@ Codex 的 `--yolo` 同時關閉確認與 sandbox。這些啟動設定不擴大�
 
 啟動或升級後，從工具回傳、session 資訊或啟動紀錄核對模型、effort 與權限模式。未能確認的設定明確標示，不宣稱已生效；再委派時附上本文件。
 
+## Codex 額度與換帳號
+
+- **查額度與帳號**：`codex-multi-auth check` 即時查額度，再用 `codex-multi-auth status` 核對 current／pinned 帳號；須確認受影響 Agent 使用哪個帳號，不能將目前全域選擇當成舊程序的帳號。
+- **辨識額度耗盡**：用 `hcom term <agent> --name <自身名稱>` 查看畫面。Codex 本輪顯示 `You've hit your usage limit` 即代表額度用完；Claude 完整訊息尚未確認，但 client 本輪錯誤含 `usage limit` 同樣視為額度耗盡，不把歷史殘留訊息當成本輪錯誤。
+- **確認停止**：目前畫面同時出現 `0% left` 與 `usage limit`，即可確認 Agent 因額度耗盡停工，進入換帳號流程。只有 `0% left` 或 HCOM idle 時仍須核對本輪與工具執行狀態；仍在工作就繼續等，無法確認也不切換或重啟。下列帳號切換指令僅適用 Codex。
+- **換帳號續接**：僅在本輪已明確停止、任務未完成且確認因額度無法續作時，記下 session ID、工作目錄、未提交成果及原 model／effort／權限；`codex-multi-auth switch <n>` 後核對帳號，再以 `hcom kill <agent> --name <自身名稱>` 結束舊程序，確認退出後用 `hcom r <session-id> --name <自身名稱> <原 client 參數>` 續接。明確指定原 session，不用 `--last`。
+- **同帳號補額度**：確認額度恢復後，向已停工的 Agent 發送接續位置，先嘗試直接續作。兩種恢復方式都須確認實際工作進展，不能只看額度數字。
+- **全部帳號無額度**：保留成果並回報使用者，等待處理。
+
 ## HERDR workspace
 
 HCOM 使用 `--terminal herdr` 時，透過已安裝的 `herdr-ws.sh` 指定位置：
