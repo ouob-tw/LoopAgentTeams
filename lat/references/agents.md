@@ -69,4 +69,4 @@ HERDR_WS=<workspace_id> hcom 1 codex --terminal herdr --name <自身名稱> <cli
 
 - Orchestrator 記錄本次 LAT 建立的 HCOM Agent 名稱，包含再委派建立的 Agents。
 - 執行 Agent 保存成果、清理自己的測試資源並回報後待命，不自行關閉。
-- Orchestrator 確認成果與交接完成、沒有後續任務後，用 `hcom kill` 關閉並確認結果。只關閉本次 LAT 建立的 Agents，保留使用者原有或其他流程的 Agents。
+- Orchestrator 依 [任務收尾](task-cards.md#任務收尾) 的時機，用 `hcom kill` 關閉並確認結果，同步完成該任務清理與歸檔。只關閉本次 LAT 建立的 Agents，保留使用者原有或其他流程的 Agents。

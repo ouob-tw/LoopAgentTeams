@@ -29,5 +29,13 @@
 - Orchestrator 派工時建立卡片並填好任務位置與資源分配。
 - Agent 在開工、每個檢查點及結束時更新目前狀態、已完成工作與下一步，不累加敘事日誌。內建 Agent 無檔案存取能力時，由 Orchestrator 代寫。
 - Orchestrator 從 Git 查證成果後填入 deliverable commit，確認整合後標記 merged。
-- 合併及資源清理完成後，由 Orchestrator 移至 `.lat/tasks/done/`；仍有待交接資源時保留在原處並寫明歸屬。
-- 清理僅限卡片列明且屬於本任務的資源；普通暫存檔使用 trash-cli，含機密的暫存檔使用 `shred -u`。
+
+## 任務收尾
+
+每項任務合併至整合分支且整合後驗證通過後，由 Orchestrator 在關閉 Agent 的同一步驟完成以下清理，不等整批結束：
+
+- 清理任務卡列明且屬於本任務的資源；普通暫存檔用 trash-cli，含機密者先用 `shred -u`，再移除所在 worktree。
+- 以 `git worktree remove` 移除該任務的獨立 worktree，以 `git branch -d` 刪除任務分支；`-D` 僅限使用者明確確認放棄該分支。
+- 將任務卡移至 `.lat/tasks/done/`。
+
+只有任務卡明列待完成後續工作時可暫留，例如 QA 保留 worktree 供複驗；後續工作完成後立即收尾。
