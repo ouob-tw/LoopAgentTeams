@@ -18,28 +18,46 @@
 
 ## 安裝
 
-需要 Git、Bun，以及支援 skills 的 Agent client；外部 Agent 協作另需 HCOM 與對應 client。
+| 工具 | 用途 |
+| --- | --- |
+| Git | 版本控制與獨立 worktree |
+| Bun | 執行下方 `bunx` 安裝指令 |
+| [HCOM](https://github.com/aannoo/hcom) | 跨 Agent client 通訊與協作 |
+| [skills CLI](https://github.com/vercel-labs/skills) | 安裝與更新技能，以 `bunx skills` 執行 |
+| Agent client（Claude Code／Codex 等） | 載入技能並執行任務 |
 
-在本專案根目錄安裝目前 checkout 的技能，以下以 Claude Code 全局安裝為例：
+Claude Code + Codex 全局安裝Skills指令：
 
 ```bash
-bunx skills add . --skill lat --skill three-tier-testing --global --agent claude-code
-```
-
-dev 開發時，將本地工作區的 LAT 同步安裝到 Claude Code 與 Codex：
-
-```bash
-bunx skills add /home/swy/LoopAgentTeams --skill lat --global \
-  --agent claude-code codex --yes
+bunx skills add ouob-tw/LoopAgentTeams --skill lat --skill three-tier-testing --global --agent claude-code codex
 ```
 
 另行安裝 [Matt skills](https://github.com/mattpocock/skills) 中需要的階段技能：
 
 ```bash
-bunx skills add mattpocock/skills --global --agent claude-code
+bunx skills add mattpocock/skills --global --agent claude-code codex
 ```
 
-依安裝提示選擇技能；使用其他 client 時替換 `--agent`。CLI 選項見 [skills 安裝說明](https://github.com/vercel-labs/skills#readme)。更新本地 checkout 後，重新執行本地安裝指令同步技能。
+依安裝提示選擇技能；使用其他 client 時替換 `--agent`。CLI 選項見 [skills 安裝說明](https://github.com/vercel-labs/skills#readme)
+
+### 可選工具
+
+- **[HERDR](docs/hcom-herdr-setup.md)**：集中查看多個 Agent 與 HCOM 建立的外部 Agent，透過 workspace 整理工作視窗；串接方式見連結說明。
+
+- **[codex-multi-auth](https://github.com/ndycode/codex-multi-auth)**：Codex 帳號與額度管理，以 `codex-multi-auth switch <n>` 指令切換；LAT 的檢查與重啟續接方式見 [Agent 設定](lat/references/agents.md#codex-額度與換帳號)。
+  ```bash
+  bun add --global codex-multi-auth
+  codex-multi-auth login  # 各帳號分別登入
+  ```
+- **[cswap（claude-swap）](https://github.com/realiti4/claude-swap#automatic-switching)**：Claude Code 支援熱切換；加入帳號並啟動自動切換後，接近額度上限時會自動換到有額度的帳號，無須逐次手動操作。Linux／Windows 通常不需重啟 Claude Code；macOS 須等待 Keychain 快取更新。
+
+  以下安裝方式需先安裝 [uv](https://docs.astral.sh/uv/getting-started/installation/)。
+
+  ```bash
+  uv tool install claude-swap
+  cswap add  # 每次登入不同 Claude Code 帳號後執行
+  cswap auto  # 保持執行，自動監看與切換
+  ```
 
 ## 用法
 
@@ -67,3 +85,18 @@ HCOM 回報或使用者未回覆不能解除等待；相依工作保持阻塞，
 ## 授權
 
 [MIT](LICENSE)
+
+## 本地開發
+
+首次下載（已有本地工作區可略過）：
+
+```bash
+git clone https://github.com/ouob-tw/LoopAgentTeams.git ~/LoopAgentTeams
+```
+
+修改後同步安裝到 Claude Code + Codex（可重複執行）：
+
+```bash
+bunx skills add ~/LoopAgentTeams --skill lat --global \
+  --agent claude-code codex --yes
+```
