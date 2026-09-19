@@ -7,6 +7,8 @@ description: "使用者指定 LAT 或 LoopAgentTeams 的 Matt skills 流程時�
 
 LAT 管理角色、階段轉換與交接；各階段的做法交給對應 Matt skill。
 
+啟動時讀取專案 `AGENTS.md`／`CLAUDE.md` 與 `docs/agents/issue-tracker.md`（由 /setup-matt-pocock-skills 設定），依配置的 issue tracker 讀寫 Spec 與 Tickets。證據、交接／未解事項及學習說明分開保存，具體位置依專案設定；交接與未解事項建立 tracker issues，決策依下方「交接」規則保存。
+
 ## 角色
 
 - **Orchestrator**：主控 Agent，管理流程、派發、裁決與整合交付；詳細執行交給其他 Agent。
@@ -23,6 +25,7 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
 - [ ] 使用者確認：讓使用者確認 Spec；使用者已明確確認目前版本的 Spec 時，不重複詢問。這是唯一的正式確認點。
 - [ ] Tickets：同一位 Designer 使用 /to-tickets，拆分工作並列出驗收條件與依賴。
 - [ ] 派發：Orchestrator 核對規劃與分工。
+  - [ ] 依 [任務卡](references/task-cards.md) 建立每張派工卡，配置各 Agent 的獨立 sandbox／container prefix 與 port range，登記資源歸屬。
   - [ ] 平行派發前，列出各 Ticket 預計修改的檔案與整合後必須成立的限制，先協調解決衝突。
   - [ ] 共用檔案依序修改，指定目前負責的 Ticket；接手前由 Orchestrator 更新分工與依賴，下一張 Ticket 從已整合版本接續。
   - [ ] 將可開始的 Tickets 交給 Implementer，每張實作任務使用新 context。
@@ -30,13 +33,14 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
   - [ ] Orchestrator 自行實作的部分同樣送獨立 Review，標準與其他 Tickets 相同；
         兼任實作者不等於免除審查，未經審查的那一段通常是整批品質最差的地方。
 - [ ] 整合：Orchestrator 協調整合，由執行 Agent 在整合後版本驗證各 Ticket 的驗收條件與跨 Ticket 限制。
+  - [ ] 合併到整合分支前先公告；從 Git 核對交付 commit 的存在、內容與整合結果，從實際測試與有效證據核對成果，不直接採信 Agent 回報的 hash 或成功敘述。
   - [ ] 交付版本須保留原樣的檔案，記錄路徑與基準 commit，逐一做位元組比對，合併無衝突時亦同；「本票不修改」不代表其他 Ticket 不得修改。
   - [ ] 驗證在整合後工作區執行，記錄版本、環境重建方式、指令與結果；指向其他 Ticket 工作區的絕對路徑須改為整合後工作區的對應路徑再執行。
   - [ ] 同版本且環境與設定仍適用的有效證據可沿用，其餘重新驗證。
   - [ ] 整合驗證通過後，關閉沒有後續任務的執行 Agent，重新計算可開始的 Tickets。
         新解除阻塞的項目重新進入「派發」，含其下的分工與限制協調。所有 Tickets 完成前，流程不停在階段交接點。
 - [ ] 驗收：QA 按需求與驗收條件測試；問題交回 Implementer 修正，再複驗。
-- [ ] 交付：Orchestrator 核對驗收證據，確認測試資源已依 three-tier-testing 清理或交接，並依 Agent 設定完成 HCOM 收尾，回報成果與未完成事項；必要驗證未執行時，不宣告完成。
+- [ ] 交付：Orchestrator 核對驗收證據，確認測試資源已依 three-tier-testing 清理或交接，完成任務卡歸檔與 Agent 收尾；外部 Agent 依 Agent 設定完成 HCOM 收尾。回報成果與未完成事項；必要驗證未執行時，不宣告完成。
 
 需要 Prototype／Wayfinder 時，加入對應子任務。後續修改若使先前驗證失效，重新開啟受影響項目。
 
@@ -46,15 +50,18 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
 
 - **Prototype**：需要具體素材驗證設計問題時，委派 /prototype，將成果與結論交回 Designer。
 - **Wayfinder**：工作太大、關鍵決策尚未釐清時，委派 /wayfinder 建立與推進決策地圖，結果交回 Designer；需要使用者參與的決策仍由使用者回答。
-- **Agent 機制**：Orchestrator 建立或指派外部 Agent／原生 Subagent。外部 Agent 由 HCOM 協調，適合跨 client 或使用者直接互動；原生 Subagent 使用當前 client 的委派能力。
+- **Agent 機制**：先依 Agent 設定選擇前端 Claude、後端 Codex，使用者指定優先；再選委派機制。內建 Agent 能滿足所選模型、effort 與權限設定時優先使用，否則透過 HCOM 啟動對應 client，不為使用內建 Agent 而改換模型。內建 Agent 透過原生委派／訊息管道協調，外部 Agent 透過 HCOM 訊息協調。
 - **工作區**：平行實作或需要保留現有工作區時，使用獨立 Git worktree 與分支，預設放在專案的 `.worktrees/<task-id>/`，不放 Temp；建立前確認 `.worktrees/` 已被 Git 忽略。單一實作且工作區乾淨時，可直接開發。
+- **共用狀態**：更動共用 Docker images／networks／預設名稱容器、共用資料庫等全域資源前，透過上述通訊管道公告影響範圍，與使用該資源的 Agents 協調；整合分支亦依整合步驟先公告再合併。公告不取代既有授權。
 
 ## 交接
 
 - 派發時提供：目標、範圍、授權、Spec／Ticket 位置、驗收條件、工作位置與審查基準。
 - 一併提供下方「確認與自動推進」規則及共用決策目錄的絕對路徑，讓接手 Agent 核對授權與待決事項。
-- 完成時回報：成果位置與版本、決策證據、測試／審查結果、未完成事項與下一步。裁決若影響架構、依賴、範圍或後續 Ticket，Orchestrator 在相依實作開始前，將選擇、理由、影響與延後事項寫入 repo 既有的 Spec／決策文件，更新受影響 Ticket，並在交付時核對文件連結。
+- 完成時回報：成果位置與版本、決策證據、測試／審查結果、未完成事項與下一步。Orchestrator 在相依實作開始前，將持久的架構／依賴決策寫入 `docs/adr/`；範圍與 Ticket 層級決策記在 tracker 的 Spec／Ticket。記錄選擇、理由、影響與延後事項，更新受影響 Spec／Ticket，並在交付時核對文件連結。
 - 接手者先讀交接及引用文件；長對話換 session 時可按需使用 /handoff 整理脈絡。
+- 通訊歷程由 client 與 HCOM 保存，不另寫敘事型執行日誌。內建 Agent 的進度依 Agent 設定查狀態與任務卡，外部 Agent 可查 HCOM events／transcript。任務卡只維護目前狀態；每批由 Orchestrator 寫一份整合狀態摘要，不逐 Agent 建立報告。
+- 執行 Agent 的提交只包含程式碼、驗證證據與確實未解決的事項；未解事項依 tracker 配置保存，任務卡與對話紀錄不提交。主控依上述文件分工維護 Spec／Tickets、ADR 與批次摘要。
 
 ## 確認與自動推進
 
@@ -62,7 +69,7 @@ Grilling 時與使用者共同討論。Spec 確認後，在已確認的需求、
 
 Matt skills 中其他流程性的使用者確認，由 Orchestrator 根據既有決策處理：/to-spec 的測試切入點併入 Spec 確認；/to-tickets 的粒度、依賴與拆合由 Orchestrator 核對，不再逐項詢問使用者。
 
-執行 Agent 卡住時先調查與嘗試解決，再將阻礙交給 Orchestrator 協調。Codex 額度警訊或換帳號時，依 [Agent 設定](references/agents.md#codex-額度與換帳號) 先確認停止再恢復。只有無法在既定範圍與權限內繼續，需要使用者提供資訊、操作，或改變已確認的需求時，才回來詢問，並說明卡在哪裡、已嘗試什麼及需要的協助。
+執行 Agent 卡住時先調查與嘗試解決，再將阻礙交給 Orchestrator 協調。Agent 沉默、主控 HCOM 身分掉線或額度警訊時，依 [Agent 設定](references/agents.md#存活檢查與身分恢復) 查證；額度耗盡後等待或採用替代方案，由使用者決定。只有無法在既定範圍與權限內繼續，需要使用者提供資訊、操作，或改變已確認的需求時，才回來詢問，並說明卡在哪裡、已嘗試什麼及需要的協助。
 
 ### 使用者待決事項
 

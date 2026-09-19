@@ -2,7 +2,7 @@
 
 ## 模型與 effort
 
-使用者指定優先；未指定時，前端任務預設使用 `claude-opus-5`，後端任務預設使用 `gpt-6-astra`。其他或混合任務由 Orchestrator 依任務與 client 能力選擇模型。明確傳入模型 ID 與 effort，不依賴隱含預設。
+使用者指定優先；未指定時，前端任務優先使用 Claude（預設 `claude-opus-5`），後端任務優先使用 Codex（預設 `gpt-6-astra`）。先依此選擇模型，再選擇可滿足設定的內建 Agent 或 HCOM；不因目前 client 的內建 Agent 限制而改變前後端分工。其他或混合任務由 Orchestrator 依任務與 client 能力選擇模型。明確傳入模型 ID 與 effort，不依賴隱含預設。
 
 | 模型 ID | 起始 effort |
 | --- | --- |
@@ -36,12 +36,18 @@ Codex 的 `--yolo` 同時關閉確認與 sandbox。這些啟動設定不擴大�
 
 啟動或升級後，從工具回傳、session 資訊或啟動紀錄核對模型、effort 與權限模式。未能確認的設定明確標示，不宣稱已生效；再委派時附上本文件。
 
+## 存活檢查與身分恢復
+
+- Agent 沉默時先讀任務卡，確認已完成工作、下一步及資源歸屬，再查執行狀態。內建 Agent 查狀態與任務卡，仍不清楚就直接傳訊詢問，不讀取完整 subagent transcript 檔案，以免塞滿主控 context；外部 Agent 使用 `hcom term <agent> --name <自身名稱>` 檢查本輪額度或其他阻礙。
+- Orchestrator 的 HCOM 身分掉線時，以 `hcom start --as <自身名稱> --name <自身名稱>` 恢復，再從最後已處理事件補讀 HCOM events／transcript，核對任務卡與待決紀錄後續作。
+- 額度耗盡時保存成果並回報；等待恢復、換帳號或其他替代方案由使用者決定。有適用的明確既有選擇就遵照，不自行切換。
+
 ## Codex 額度與換帳號
 
 - **查額度與帳號**：`codex-multi-auth check` 即時查額度，再用 `codex-multi-auth status` 核對 current／pinned 帳號；須確認受影響 Agent 使用哪個帳號，不能將目前全域選擇當成舊程序的帳號。
 - **辨識額度耗盡**：用 `hcom term <agent> --name <自身名稱>` 查看畫面。Codex 本輪顯示 `You've hit your usage limit` 即代表額度用完；Claude 完整訊息尚未確認，但 client 本輪錯誤含 `usage limit` 同樣視為額度耗盡，不把歷史殘留訊息當成本輪錯誤。
-- **確認停止**：目前畫面同時出現 `0% left` 與 `usage limit`，即可確認 Agent 因額度耗盡停工，進入換帳號流程。只有 `0% left` 或 HCOM idle 時仍須核對本輪與工具執行狀態；仍在工作就繼續等，無法確認也不切換或重啟。下列帳號切換指令僅適用 Codex。
-- **換帳號續接**：僅在本輪已明確停止、任務未完成且確認因額度無法續作時，記下 session ID、工作目錄、未提交成果及原 model／effort／權限；`codex-multi-auth switch <n>` 後核對帳號，再以 `hcom kill <agent> --name <自身名稱>` 結束舊程序，確認退出後用 `hcom r <session-id> --name <自身名稱> <原 client 參數>` 續接。明確指定原 session，不用 `--last`。
+- **確認停止**：目前畫面同時出現 `0% left` 與 `usage limit`，即可確認 Agent 因額度耗盡停工，依使用者選擇處理。只有 `0% left` 或 HCOM idle 時仍須核對本輪與工具執行狀態；仍在工作就繼續等，無法確認也不切換或重啟。下列帳號切換指令僅適用 Codex 外部 Agent。
+- **換帳號續接**：僅在使用者已選擇換帳號、本輪已明確停止、任務未完成且確認因額度無法續作時，記下 session ID、工作目錄、未提交成果及原 model／effort／權限；`codex-multi-auth switch <n>` 後核對帳號，再以 `hcom kill <agent> --name <自身名稱>` 結束舊程序，確認退出後用 `hcom r <session-id> --name <自身名稱> <原 client 參數>` 續接。明確指定原 session，不用 `--last`。
 - **同帳號補額度**：確認額度恢復後，向已停工的 Agent 發送接續位置，先嘗試直接續作。兩種恢復方式都須確認實際工作進展，不能只看額度數字。
 - **全部帳號無額度**：保留成果並回報使用者，等待處理。
 
