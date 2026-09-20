@@ -26,19 +26,32 @@
 | [skills CLI](https://github.com/vercel-labs/skills) | 安裝與更新技能，以 `bunx skills` 執行 |
 | Agent client（Claude Code／Codex 等） | 載入技能並執行任務 |
 
-Claude Code + Codex 全局安裝Skills指令：
+先用原生 skills 指令全域安裝 LAT 與本 repo 收錄的技能至 Claude Code + Codex：
 
 ```bash
-bunx skills add ouob-tw/LoopAgentTeams --skill lat --skill three-tier-testing --global --agent claude-code codex
+bunx skills add ouob-tw/LoopAgentTeams \
+  --skill lat three-tier-testing to-spec to-tickets implement grill-with-docs wayfinder handoff \
+  --skill setup-matt-pocock-skills triage to-questionnaire \
+  --global --agent claude-code codex
 ```
 
-另行安裝 [Matt skills](https://github.com/mattpocock/skills) 中需要的階段技能：
+本 repo 收錄上述九個 [Matt skills](https://github.com/mattpocock/skills) 的副本，移除 `disable-model-invocation` 並啟用 Codex 的 `allow_implicit_invocation`，讓 LAT 可呼叫各階段技能。
+
+接著安裝其餘必要的 Matt skills：
 
 ```bash
-bunx skills add mattpocock/skills --global --agent claude-code codex
+bunx skills add mattpocock/skills \
+  --skill code-review prototype grilling domain-modeling tdd \
+  --global --agent claude-code codex
 ```
 
-依安裝提示選擇技能；使用其他 client 時替換 `--agent`。CLI 選項見 [skills 安裝說明](https://github.com/vercel-labs/skills#readme)
+若要安裝完整的 `Mattpocock Skills` 群組，改用下列腳本取代上一條指令。腳本依上游 plugin 清單選取技能，預設排除 `Other` 群組及 LAT repo 已收錄的同名技能：
+
+```bash
+uv run scripts/install-matt-skills.py
+```
+
+腳本在本 repo 執行，需有 `uv`、`gh`、`bunx` 與 `trash-put`；加上 `--dry-run` 可預覽。預設全域安裝至 Claude Code 與 Codex，使用其他 client 時加上 `--agent`。CLI 選項見 [skills 安裝說明](https://github.com/vercel-labs/skills#readme)
 
 ### 可選工具
 
@@ -97,6 +110,8 @@ git clone https://github.com/ouob-tw/LoopAgentTeams.git ~/LoopAgentTeams
 修改後同步安裝到 Claude Code + Codex（可重複執行）：
 
 ```bash
-bunx skills add ~/LoopAgentTeams --skill lat --global \
+bunx skills add ~/LoopAgentTeams \
+  --skill lat three-tier-testing to-spec to-tickets implement grill-with-docs wayfinder handoff \
+  --skill setup-matt-pocock-skills triage to-questionnaire --global \
   --agent claude-code codex --yes
 ```
