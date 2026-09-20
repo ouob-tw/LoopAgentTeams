@@ -53,17 +53,7 @@ Codex 的 `--yolo` 同時關閉確認與 sandbox。這些啟動設定不擴大�
 
 ## HERDR workspace
 
-HCOM 使用 `--terminal herdr` 時，透過已安裝的 `herdr-ws.sh` 指定位置：
-
-```bash
-herdr workspace list
-HERDR_WS=<workspace_id> hcom 1 codex --terminal herdr --name <自身名稱> <client參數>
-```
-
-- 使用清單中的 ID；亦支援名稱／編號，ID 優先。模型、effort 與權限參數沿用上方設定。
-- 未設定或空字串（`HERDR_WS=`）會使用所連線 HERDR server 當下有焦點的 workspace；建立後不切換焦點。需要預設行為時先清除先前 export 的值。
-- 找不到指定目標就報錯；`--dir` 只設定程序目錄，不決定 workspace。
-- `HERDR_WS` 是 wrapper 的環境變數，不是 HCOM 的 `--workspace` 選項；不以代表呼叫端位置的 `HERDR_WORKSPACE_ID` 自動代入。
+使用者指定 workspace 時，先查詢 `herdr workspace list` 取得目標 ID，再以 `HERDR_WORKSPACE_ID=<目標ID> hcom ...` 啟動。未指定時照常執行 HCOM。
 
 ## HCOM 收尾
 

@@ -1,6 +1,6 @@
 # HCOM 建立 HERDR Agent 的 workspace 路由研究
 
-後續已完成 wrapper 修改與模擬測試；目前安裝方式見 [設定教學](hcom-herdr-setup.md)。以下保留修改前研究紀錄。
+現行設定已改為 preset 直接使用呼叫端的 `HERDR_WORKSPACE_ID`，見 [設定教學](hcom-herdr-setup.md)。以下僅保留舊 wrapper 路由研究，不代表現行預設。
 
 研究日期：2026-09-18。範圍是確認現況與提出修改方式；未修改執行環境，未建立 Agent 或分頁。
 
