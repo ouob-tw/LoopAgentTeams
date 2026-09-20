@@ -24,7 +24,7 @@ binary = "herdr"
 pane_id_env = "HERDR_PANE_ID"
 ```
 
-本機已完成以上設定。用法與預設行為見 [LAT Agent 設定](../lat/references/agents.md#herdr-workspace)；範例中的名稱、ID 與 client 參數須替換後執行。
+本機已完成以上設定。用法與預設行為見 [LAT Agent 設定](../skills/local/lat/references/agents.md#herdr-workspace)；範例中的名稱、ID 與 client 參數須替換後執行。
 
 ## 驗證
 

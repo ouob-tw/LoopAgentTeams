@@ -47,7 +47,7 @@ def main():
             parser.error(f"Required command not found: {command}")
 
     repo = Path(__file__).resolve().parents[1]
-    local = skill_names(repo)
+    local = skill_names(repo / "skills")
     temporary = Path(tempfile.mkdtemp(prefix="lat-skills-"))
     try:
         upstream_dir = temporary / "upstream"
