@@ -12,13 +12,13 @@
 
 - **主控**：管理進度、分工、授權與交接；實作與 QA 分開委派。
 - **階段技能**：`grill-with-docs`、`to-spec`、`to-tickets`、`implement`、`code-review`；需要時加入 `prototype`、`wayfinder`。
-- **Agent 協作**：原生 Subagent 使用當前 client 的能力；外部 Agent 透過 HCOM 協調，可跨 client 或讓使用者直接互動。
+- **Agent 協作**：原生 Subagent 使用當前 client 的能力；外部 Agent 透過 HCOM 協調，可跨 client 或讓使用者直接互動。不需要完整流程時，用 [hcom-spawn](skills/local/hcom-spawn/SKILL.md) 直接召喚 Agent 協作。
 - **整合驗證**：平行派工前協調共用檔案，整合後核對驗收條件、保留檔案與測試證據；合併無衝突不等於驗證通過。
 - **三層測試**：單元、整合與 E2E 分開執行；QA 操作真實應用，必要驗證未執行時不宣告完成。
 
 ## 安裝
 
-技能依來源放在 `skills/local/`（LAT、three-tier-testing）與 `skills/matt/`（Matt skills 副本）。
+技能依來源放在 `skills/local/`（LAT、hcom-spawn、three-tier-testing）與 `skills/matt/`（Matt skills 副本）。
 
 | 工具 | 用途 |
 | --- | --- |
@@ -32,7 +32,7 @@
 
 ```bash
 bunx skills add ouob-tw/LoopAgentTeams \
-  --skill lat three-tier-testing to-spec to-tickets implement grill-with-docs wayfinder handoff \
+  --skill lat hcom-spawn three-tier-testing to-spec to-tickets implement grill-with-docs wayfinder handoff \
   --skill setup-matt-pocock-skills triage to-questionnaire \
   --global --agent claude-code codex
 ```
@@ -93,6 +93,7 @@ HCOM 回報或使用者未回覆不能解除等待；相依工作保持阻塞，
 ## 文件
 
 - [LAT 流程與規則](skills/local/lat/SKILL.md)
+- [hcom-spawn：召喚 Agent 協作](skills/local/hcom-spawn/SKILL.md)
 - [模型、權限與 HCOM 設定](skills/local/lat/references/agents.md)
 - [三層測試](skills/local/three-tier-testing/SKILL.md)
 - [HCOM／HERDR workspace 設定](docs/hcom-herdr-setup.md)
@@ -113,7 +114,7 @@ git clone https://github.com/ouob-tw/LoopAgentTeams.git ~/LoopAgentTeams
 
 ```bash
 bunx skills add ~/LoopAgentTeams \
-  --skill lat three-tier-testing to-spec to-tickets implement grill-with-docs wayfinder handoff \
+  --skill lat hcom-spawn three-tier-testing to-spec to-tickets implement grill-with-docs wayfinder handoff \
   --skill setup-matt-pocock-skills triage to-questionnaire --global \
   --agent claude-code codex --yes
 ```
