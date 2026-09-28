@@ -7,7 +7,7 @@ Use the `gh` CLI for all operations and **always pass `-R ouob-tw/LoopAgentTeams
 ## Conventions
 
 - **Create an issue**: `gh issue create -R ouob-tw/LoopAgentTeams-work --title "..." --body "..."`. Use a heredoc for multi-line bodies.
-- **Read an issue**: `gh issue view <number> -R ouob-tw/LoopAgentTeams-work --comments`, filtering comments by `jq` and also fetching labels.
+- **Read an issue**: `gh issue view <number> -R ouob-tw/LoopAgentTeams-work --json number,title,body,labels,comments`, filtering with `--jq`. Always pass `--json`: plain `gh issue view` fails on older `gh` versions with a GraphQL error about the deprecated `projectCards` field.
 - **List issues**: `gh issue list -R ouob-tw/LoopAgentTeams-work --state open --json number,title,body,labels,comments --jq '[.[] | {number, title, body, labels: [.labels[].name], comments: [.comments[].body]}]'` with appropriate `--label` and `--state` filters.
 - **Comment on an issue**: `gh issue comment <number> -R ouob-tw/LoopAgentTeams-work --body "..."`
 - **Apply / remove labels**: `gh issue edit <number> -R ouob-tw/LoopAgentTeams-work --add-label "..."` / `--remove-label "..."`
@@ -37,7 +37,7 @@ Create a GitHub issue in `ouob-tw/LoopAgentTeams-work`.
 
 ## When a skill says "fetch the relevant ticket"
 
-Run `gh issue view <number> -R ouob-tw/LoopAgentTeams-work --comments`.
+Run `gh issue view <number> -R ouob-tw/LoopAgentTeams-work --json number,title,body,labels,comments`.
 
 ## Wayfinding operations
 
