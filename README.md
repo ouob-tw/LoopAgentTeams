@@ -97,6 +97,7 @@ HCOM 回報或使用者未回覆不能解除等待；相依工作保持阻塞，
 - [LAT 的 Agent 派工與收尾規則](skills/local/lat/references/agents.md)
 - [三層測試](skills/local/three-tier-testing/SKILL.md)
 - [HCOM／HERDR workspace 設定](docs/hcom-herdr-setup.md)
+- [Codex 壓縮後的 HCOM 說明](docs/codex-hcom-compact.md)
 
 ## 授權
 
