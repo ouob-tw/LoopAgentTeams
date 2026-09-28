@@ -58,7 +58,7 @@ Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，�
 | Codex | 底部狀態列 `GPT-6-Astra <effort>` | 開場 `permissions: YOLO mode` |
 | Claude Code | 開場 `Opus 5.5 with <effort> effort`、底部 `Opus 5.5 <effort>` | 底部 `⏵⏵ bypass permissions on` |
 
-畫面上的 effort 要跟你傳的那一個對得上，不是表上寫的某個值。
+表上的模型名與 effort 是傳 `claude-opus-5-5` 加 `medium` 時的樣子。畫面要對得上你實際傳的那一組，不是表上寫的值。
 
 `hcom list --json` 的 `tag`、`directory`、`tool` 欄位核對 tag 與工作目錄。從回傳或畫面確認不到的設定，回報時標為未確認，不宣稱已生效。
 
