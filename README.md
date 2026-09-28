@@ -59,7 +59,7 @@ uv run scripts/install-matt-skills.py
 
 - **[HERDR](docs/hcom-herdr-setup.md)**：集中查看多個 Agent 與 HCOM 建立的外部 Agent，透過 workspace 整理工作視窗；串接方式見連結說明。
 
-- **[codex-multi-auth](https://github.com/ndycode/codex-multi-auth)**：Codex 帳號與額度管理，以 `codex-multi-auth switch <n>` 指令切換；LAT 的檢查與重啟續接方式見 [Agent 設定](skills/local/lat/references/agents.md#codex-額度與換帳號)。
+- **[codex-multi-auth](https://github.com/ndycode/codex-multi-auth)**：Codex 帳號與額度管理，以 `codex-multi-auth switch <n>` 指令切換；額度檢查與換帳號續接方式見 hcom-spawn 的 [Agent 沉默、卡住、額度與身分恢復](skills/local/hcom-spawn/references/troubleshooting.md#codex-額度與換帳號)。
   ```bash
   bun add --global codex-multi-auth
   codex-multi-auth login  # 各帳號分別登入
@@ -80,7 +80,7 @@ uv run scripts/install-matt-skills.py
 LAT 幫我完成這個功能，先討論需求。
 ```
 
-可直接指定模型、分工與範圍；未指定時依 [Agent 設定](skills/local/lat/references/agents.md) 執行。
+可直接指定模型、分工與範圍；未指定時依 [hcom-spawn](skills/local/hcom-spawn/SKILL.md#選模型與-effort) 的模型與 effort 預設執行。
 
 ## 使用者決策
 
@@ -94,7 +94,7 @@ HCOM 回報或使用者未回覆不能解除等待；相依工作保持阻塞，
 
 - [LAT 流程與規則](skills/local/lat/SKILL.md)
 - [hcom-spawn：召喚 Agent 協作](skills/local/hcom-spawn/SKILL.md)
-- [模型、權限與 HCOM 設定](skills/local/lat/references/agents.md)
+- [LAT 的 Agent 派工與收尾規則](skills/local/lat/references/agents.md)
 - [三層測試](skills/local/three-tier-testing/SKILL.md)
 - [HCOM／HERDR workspace 設定](docs/hcom-herdr-setup.md)
 
