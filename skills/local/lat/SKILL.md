@@ -7,7 +7,7 @@ description: "使用者指定 LAT 或 LoopAgentTeams 的 Matt skills 流程時�
 
 LAT 管理角色、階段轉換與交接；各階段的做法交給對應 Matt skill。
 
-啟動時讀取專案 `AGENTS.md`／`CLAUDE.md` 與 `docs/agents/issue-tracker.md`（由 /setup-matt-pocock-skills 設定），依配置的 issue tracker 讀寫 Spec 與 Tickets。證據、交接／未解事項及學習說明分開保存，具體位置依專案設定；交接與未解事項建立 tracker issues，決策依下方「交接」規則保存。
+啟動時讀取專案 `AGENTS.md`／`CLAUDE.md` 與 `docs/agents/issue-tracker.md`（由 /setup-matt-pocock-skills 設定），依配置的 issue tracker 讀寫 Spec 與 Tickets。尚未設定時，若專案 repo 是公開的，建議另建私人 `<repo>-work` repo 存放 issues，避免交接與證據中的內網位址、本機路徑或帳號資訊公開。證據、交接／未解事項及學習說明分開保存，具體位置依專案設定；交接與未解事項建立 tracker issues，決策依下方「交接」規則保存。
 
 ## 角色
 
