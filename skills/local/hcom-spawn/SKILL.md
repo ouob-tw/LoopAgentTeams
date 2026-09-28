@@ -23,7 +23,11 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 上表是常用預設，不是白名單。使用者指定表外模型時，先用工具查該 client 的可用模型，必要時查官方文件，確認正確 ID、可用性與支援的 effort。能唯一對應就用；有歧義或無法使用才詢問，不擅自換模型。表外模型從 `medium` 起；不支援時用已查證的可用級別並說明。
 
-啟動時明確傳入模型 ID 與 effort，不依賴隱含預設。
+啟動時明確傳入模型 ID 與 effort，不依賴隱含預設。前後端分工只看任務，不因為目前 client 的內建 Agent 做不到就改分工。
+
+### 用自己 client 的內建 Agent 時
+
+模型與 effort 照上面同一套規則，用 client 支援的欄位傳入。權限受宿主限制，把 CLI 參數寫進 prompt 不等於生效。內建機制套不上必要設定時，改用支援的 HCOM 外部 Agent；仍不可用就回報使用者。
 
 ## 啟動
 
@@ -51,8 +55,10 @@ Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，�
 
 | Client | 模型與 effort | 權限 |
 | --- | --- | --- |
-| Codex | 底部狀態列 `GPT-6-Astra medium` | 開場 `permissions: YOLO mode` |
-| Claude Code | 開場 `Opus 5 with medium effort`、底部 `Opus 5 medium` | 底部 `⏵⏵ bypass permissions on` |
+| Codex | 底部狀態列 `GPT-6-Astra <effort>` | 開場 `permissions: YOLO mode` |
+| Claude Code | 開場 `Opus 5 with <effort> effort`、底部 `Opus 5 <effort>` | 底部 `⏵⏵ bypass permissions on` |
+
+畫面上的 effort 要跟你傳的那一個對得上，不是表上寫的某個值。
 
 `hcom list --json` 的 `tag`、`directory`、`tool` 欄位核對 tag 與工作目錄。從回傳或畫面確認不到的設定，回報時標為未確認，不宣稱已生效。
 
@@ -100,7 +106,7 @@ Agent 不自動關閉，也不排程清理。工作結束後留著，使用者�
 使用者說「收掉」才關，而且只關 `<自身名稱>-` 開頭的 Agent，使用者自己開的或其他流程的一律保留：
 
 ```bash
-hcom kill tag:<自身名稱>-<主題> --go --name <自身名稱>   # 只收一組
+hcom kill tag:<自身名稱>-<主題> --name <自身名稱>   # 只收一組
 ```
 
 全部收掉時，先列出 `<自身名稱>-` 開頭的 tag，逐組執行，再用 `hcom list` 核對都已停止。
@@ -120,7 +126,6 @@ hcom r <名稱> --go --name <自身名稱> -c 'model_reasoning_effort="<原 effo
 
 - 新啟動（`hcom N <client>`）和帶 client 參數的 `r`／`f` 預設只印 `LAUNCH PREVIEW`，不加 `--go` 什麼都不會發生。不帶參數的 `hcom r <名稱>` 和 `hcom kill` 直接執行，不需要 `--go`。
 - 所有 hcom 指令都要帶 `--name <自身名稱>`，否則身分對不上。
-- `--intent` 三種：`request` 要對方回、`inform` 不用回、`ack` 回覆別人（`ack` 必須配 `--reply-to <id>`）。
 - `--dir` 只設程序的工作目錄，不會選 HERDR workspace。
 - 忘記語法先跑 `hcom <指令> --help`，不要猜參數。
 

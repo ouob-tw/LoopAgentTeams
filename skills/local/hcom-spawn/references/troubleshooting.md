@@ -1,6 +1,6 @@
 # Agent 沉默、卡住、額度與身分恢復
 
-召喚者用的處理程序。所有 hcom 指令都帶 `--name <自身名稱>`。
+召喚者用的處理程序。
 
 ## 存活檢查
 
@@ -31,7 +31,7 @@ Agent 久無回應時，依序：
 - **辨識額度耗盡**：`hcom term <名稱>` 的畫面上，Codex 本輪出現 `You've hit your usage limit` 就是額度用完；Claude 本輪錯誤含 `usage limit` 同樣視為額度耗盡。
 - **確認停止**：畫面同時出現 `0% left` 與 `usage limit` 才算確認停工。只有 `0% left` 或 HCOM 顯示 idle 時，還要核對本輪與工具執行狀態；還在工作就繼續等，無法確認就不切換也不重啟。
 - **等或換由使用者決定**：額度耗盡時先保存成果並回報使用者，等使用者選擇等待恢復、換帳號或其他做法。有適用的明確既有授權就遵照，不自行切換帳號。
-- **換帳號續接**（僅 Codex 外部 Agent）：使用者已選擇換帳號、本輪已明確停止、任務未完成且確認是額度造成時，先記下 session ID、工作目錄、未提交成果與原本的 model／effort／權限參數；`codex-multi-auth switch <n>` 後核對帳號，`hcom kill <名稱> --name <自身名稱>` 結束舊程序，確認退出後 `hcom r <session-id> --go --name <自身名稱> -c 'model_reasoning_effort="<原 effort>"'` 續接。`hcom r` 會重放原本的 `--model` 與 `--yolo`，重複傳會讓 Codex 啟動失敗；只補 effort 這一項。明確指定原 session，不用 `--last`。
+- **換帳號續接**（僅 Codex 外部 Agent）：使用者已選擇換帳號、本輪已明確停止、任務未完成且確認是額度造成時，先記下 session ID、工作目錄、未提交成果與原本的 model／effort／權限參數；`codex-multi-auth switch <n>` 後核對帳號，`hcom kill <名稱> --name <自身名稱>` 結束舊程序，確認退出後依 SKILL.md 的「接回已關閉的 Agent」以原 session ID 續接。
 - **同帳號補到額度**：確認額度恢復後，把接續位置傳給停工的 Agent，先試直接續作。
 - 兩種恢復方式都要確認實際工作進展，不能只看額度數字。
 - **全部帳號都沒額度**：保留成果並回報使用者，等處理。
