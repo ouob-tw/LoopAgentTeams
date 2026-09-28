@@ -11,12 +11,12 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 ## 選模型與 effort
 
-使用者指定的模型與 effort 優先。使用者只說「Codex」或「Claude」時，用該 client 的預設模型。未指定時：前端任務用 Claude（`claude-opus-5`），後端任務用 Codex（`gpt-6-astra`）；其他或混合任務依任務內容選。
+使用者指定的模型與 effort 優先。使用者只說「Codex」或「Claude」時，用該 client 的預設模型。未指定時：前端任務用 Claude（`claude-opus-5-5`），後端任務用 Codex（`gpt-6-astra`）；其他或混合任務依任務內容選。
 
 | 模型 | 起始 effort |
 | --- | --- |
 | `gpt-6-astra` | 簡單任務 `low`、複雜任務 `medium` |
-| `gpt-5-sol`、`claude-opus-5`、`claude-sonnet-5`、其他 | `medium` |
+| `gpt-5-sol`、`claude-opus-5-5`、`claude-sonnet-5`、其他 | `medium` |
 
 **簡單任務**：查資料、讀文件或程式碼回答問題、跑指令收集結果、單一檔案小修改、照明確指示改文字。
 **複雜任務**：跨檔案實作、除錯、設計、審查、需自行權衡方案。
@@ -40,7 +40,7 @@ hcom 1 codex --tag <自身名稱>-<主題> --go --name <自身名稱> \
 
 ```bash
 hcom 1 claude --tag <自身名稱>-<主題> --go --name <自身名稱> \
-  --model claude-opus-5 --effort medium --dangerously-skip-permissions
+  --model claude-opus-5-5 --effort medium --dangerously-skip-permissions
 ```
 
 Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，讓被召喚的 Agent 不會停在確認畫面卡住協作。`--yolo` 同時關掉確認與 sandbox。這些啟動參數不擴大任務授權範圍，任務邊界寫在第一則訊息裡。
@@ -56,7 +56,7 @@ Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，�
 | Client | 模型與 effort | 權限 |
 | --- | --- | --- |
 | Codex | 底部狀態列 `GPT-6-Astra <effort>` | 開場 `permissions: YOLO mode` |
-| Claude Code | 開場 `Opus 5 with <effort> effort`、底部 `Opus 5 <effort>` | 底部 `⏵⏵ bypass permissions on` |
+| Claude Code | 開場 `Opus 5.5 with <effort> effort`、底部 `Opus 5.5 <effort>` | 底部 `⏵⏵ bypass permissions on` |
 
 畫面上的 effort 要跟你傳的那一個對得上，不是表上寫的某個值。
 
