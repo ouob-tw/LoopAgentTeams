@@ -48,6 +48,8 @@ HCOM 0.7.26 安裝的設定片段如下；它是既有設定的一部分，請�
 | 修改全域 matcher → HCOM 接回 | HCOM 將 matcher 恢復原值；其他 hooks 與備份一致 | PASS；候選修法不持久 |
 | 專用 session 的 compact probe → 真實手動壓縮 → 下一輪 | 收到 `source=compact`；handler exit 0、stdout 0 bytes | PASS；沒有由 hook 補回說明 |
 | 接回 → HCOM 回報 | 同名、同 session ID，完整說明仍在 | PASS |
+| 未再附參數的接回 → 核對有效設定 | argv 保留原參數，實際 effort 卻從 low 變成 medium | FAIL：effort 未維持；票內追蹤 |
+| 重複附 `--model` 接回 → 啟動失敗 | 第二次接回因重複參數退出 | FAIL：接回異常；票內追蹤 |
 
 Probe 只記錄真實 hook payload、轉交原 handler 並原樣輸出結果，沒有替 handler 產生說明。全域候選 matcher 被啟動流程撤回後，另用 session 專屬 hook 完成 handler 測試；不能把這項結果當成全域候選設定已成功部署。
 
