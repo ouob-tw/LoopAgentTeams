@@ -2,14 +2,14 @@
 
 ## 模型與 effort
 
-使用者指定優先；未指定時，前端任務優先使用 Claude（預設 `claude-opus-5`），後端任務優先使用 Codex（預設 `gpt-6-astra`）。先依此選擇模型，再選擇可滿足設定的內建 Agent 或 HCOM；不因目前 client 的內建 Agent 限制而改變前後端分工。其他或混合任務由 Orchestrator 依任務與 client 能力選擇模型。明確傳入模型 ID 與 effort，不依賴隱含預設。
+使用者指定優先；未指定時，前端任務優先使用 Claude（預設 `claude-opus-5-5`），後端任務優先使用 Codex（預設 `gpt-6-astra`）。先依此選擇模型，再選擇可滿足設定的內建 Agent 或 HCOM；不因目前 client 的內建 Agent 限制而改變前後端分工。其他或混合任務由 Orchestrator 依任務與 client 能力選擇模型。明確傳入模型 ID 與 effort，不依賴隱含預設。
 
 | 模型 ID | 起始 effort |
 | --- | --- |
 | `gpt-6-astra` | `low` |
 | `gpt-5-sol` | `medium` |
 | `claude-sonnet-5` | `medium` |
-| `claude-opus-5` | `medium` |
+| `claude-opus-5-5` | `medium` |
 
 這是常用預設，不是白名單。使用者指定列表外模型時，先用工具查 client 的可用模型，必要時查官方文件，確認正確 ID、可用性與支援的 effort。能唯一對應就使用；有歧義或無法使用才詢問，不擅自換模型。其他模型從 `medium` 起；不支援時使用已查證的可用預設並說明。
 
