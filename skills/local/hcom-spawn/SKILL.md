@@ -127,6 +127,8 @@ hcom r <名稱> --go --name <自身名稱> -c 'model_reasoning_effort="<原 effo
 - 新啟動（`hcom N <client>`）和帶 client 參數的 `r`／`f` 預設只印 `LAUNCH PREVIEW`，不加 `--go` 什麼都不會發生。不帶參數的 `hcom r <名稱>` 和 `hcom kill` 直接執行，不需要 `--go`。
 - 所有 hcom 指令都要帶 `--name <自身名稱>`，否則身分對不上。
 - `--dir` 只設程序的工作目錄，不會選 HERDR workspace。
+- Claude CLI 啟動時不驗證模型 ID，打錯的 ID 照樣啟動並顯示在畫面上。啟動成功不代表 ID 正確，表外模型一定要先查證。
+- 不是每個模型都在畫面或 transcript 顯示 effort，實測 Haiku 4.5 就沒有顯示。
 - 忘記語法先跑 `hcom <指令> --help`，不要猜參數。
 
 ## Agent 沉默、卡住或額度耗盡
