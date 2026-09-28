@@ -50,7 +50,8 @@ HCOM 0.7.26 安裝的設定片段如下；它是既有設定的一部分，請�
 | 接回 → HCOM 回報 | 同名、同 session ID，完整說明仍在 | PASS |
 | 未再附參數的接回 → 核對有效設定 | argv 保留原參數，實際 effort 卻從 low 變成 medium | FAIL：effort 未維持；票內追蹤 |
 | 重複附 `--model` 接回 → 啟動失敗 | 第二次接回因重複參數退出 | FAIL：接回異常；票內追蹤 |
+| 接回只明確補 effort → 核對有效設定 | 模型與權限維持、effort 恢復 low | PASS：本次恢復路徑 |
 
 Probe 只記錄真實 hook payload、轉交原 handler 並原樣輸出結果，沒有替 handler 產生說明。全域候選 matcher 被啟動流程撤回後，另用 session 專屬 hook 完成 handler 測試；不能把這項結果當成全域候選設定已成功部署。
 
-接回時也要重新核對有效參數。本次 `hcom r` 沿用儲存的 `--model`、effort 設定與 `--yolo` argv，但未附參數的接回畫面及 transcript 顯示 effort 從 low 變成 medium；argv 存在不等於生效。重複附上 `--model` 的第二次接回曾因重複參數而退出。詳細重現證據與後續處理留在私人票，不在此保證某種接回參數組合適用所有版本。
+接回時也要重新核對有效參數。本次 `hcom r` 沿用儲存的 `--model`、effort 設定與 `--yolo` argv，但未附參數的接回畫面及 transcript 顯示 effort 從 low 變成 medium；argv 存在不等於生效。重複附上 `--model` 的第二次接回曾因重複參數而退出。本次改用 `hcom r <測試名稱> --go --name <召喚者> -c 'model_reasoning_effort="low"'` 後，transcript 確認 low 恢復，模型及權限維持原值。詳細重現證據留在私人票；這是已驗證的本次恢復路徑，不保證適用所有版本。
