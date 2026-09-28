@@ -1,62 +1,25 @@
 # Agent 設定
 
-## 模型與 effort
+模型與 effort 預設、卡住時升級、啟動參數與核對、tag、存活檢查與身分恢復、Codex 額度與換帳號、HERDR workspace、HCOM 關閉指令，一律呼叫 /hcom-spawn，這裡不重複。原生 Subagent、HCOM 外部 Agent 與各階段內部再委派都適用。本文件只放 LAT 在 hcom-spawn 之上多加的規則。
 
-使用者指定優先；未指定時，前端任務優先使用 Claude（預設 `claude-opus-5-5`），後端任務優先使用 Codex（預設 `gpt-6-astra`）。先依此選擇模型，再選擇可滿足設定的內建 Agent 或 HCOM；不因目前 client 的內建 Agent 限制而改變前後端分工。其他或混合任務由 Orchestrator 依任務與 client 能力選擇模型。明確傳入模型 ID 與 effort，不依賴隱含預設。
+hcom-spawn 裡的「自身名稱」就是發起委派的那一方：主控派工時是主控自己的 HCOM 名稱，執行 Agent 再委派時是執行 Agent 自己的名稱。
 
-| 模型 ID | 起始 effort |
-| --- | --- |
-| `gpt-6-astra` | `low` |
-| `gpt-5-sol` | `medium` |
-| `claude-sonnet-5` | `medium` |
-| `claude-opus-5-5` | `medium` |
+## 派工
 
-這是常用預設，不是白名單。使用者指定列表外模型時，先用工具查 client 的可用模型，必要時查官方文件，確認正確 ID、可用性與支援的 effort。能唯一對應就使用；有歧義或無法使用才詢問，不擅自換模型。其他模型從 `medium` 起；不支援時使用已查證的可用預設並說明。
+- 外部 Agent 的第一則任務訊息照 /hcom-spawn 的固定欄位寫，再補上 SKILL.md「交接」要求的 Spec／Ticket 位置、驗收條件、授權、任務卡與決策目錄路徑。
+- 執行 Agent 卡住時，依 /hcom-spawn 的升級規則處理；到最高可用 effort 仍卡住，交回主控決定換模型、新 context 或拆小任務，主控在既有授權內裁決，超出授權才問使用者。
 
-## 卡住時升級
+## 存活與恢復
 
-- 有進展就維持目前 effort；單次測試失敗不算卡住。
-- 同一問題試過兩種不同方法仍無新進展，由 Orchestrator 升一級：`low → medium → high → xhigh`，僅使用模型支援的級別。
-- 升級時交付失敗證據、已排除的方法與下一個待驗證假設。client 無法原地調整時，帶交接資訊建立新 Agent。
-- `xhigh` 或最高可用級別仍卡住，交回 Orchestrator 決定換模型、新 context 或拆小任務；使用者指定的模型不自行替換。
-- 缺資訊、帳號、權限或環境問題，先處理阻礙，不靠增加 thinking 重試。新任務回到起始 effort；使用者明定的 effort 限制優先。
+- Agent 沉默時，先讀它的任務卡，確認已完成工作、下一步及資源歸屬，再依 /hcom-spawn 查執行狀態。
+- 內建 Agent 沒有 HCOM 畫面：查 client 提供的狀態與任務卡，仍不清楚就直接傳訊詢問，不讀取完整 subagent transcript 檔案，以免塞滿主控 context。
+- 主控的 HCOM 身分掉線時，依 /hcom-spawn 恢復並補讀漏掉的事件後，再核對任務卡與 `.lat/decisions/` 待決紀錄才續作。
 
-## 啟動設定
+## 收尾
 
-外部 Agent 經 HCOM 啟動，將以下參數傳給對應 client：
+hcom-spawn 預設等使用者說「收掉」才關 Agent；LAT 改由流程決定時機：
 
-| Client | 模型與 effort | 預設權限參數 |
-| --- | --- | --- |
-| Codex | `--model <ID> -c 'model_reasoning_effort="<effort>"'` | `--yolo` |
-| Claude Code | `--model <ID> --effort <effort>` | `--dangerously-skip-permissions` |
-
-Codex 的 `--yolo` 同時關閉確認與 sandbox。這些啟動設定不擴大任務授權範圍。
-
-原生 Subagent 使用 client 支援的模型、effort 與權限欄位；權限受宿主限制，不能把 CLI 參數寫進 prompt 就當作生效。原生機制無法套用必要設定時，改用可支援的 HCOM 外部 Agent；仍不可用則回報 Orchestrator。
-
-啟動或升級後，從工具回傳、session 資訊或啟動紀錄核對模型、effort 與權限模式。未能確認的設定明確標示，不宣稱已生效；再委派時附上本文件。
-
-## 存活檢查與身分恢復
-
-- Agent 沉默時先讀任務卡，確認已完成工作、下一步及資源歸屬，再查執行狀態。內建 Agent 查狀態與任務卡，仍不清楚就直接傳訊詢問，不讀取完整 subagent transcript 檔案，以免塞滿主控 context；外部 Agent 使用 `hcom term <agent> --name <自身名稱>` 檢查本輪額度或其他阻礙。
-- Orchestrator 的 HCOM 身分掉線時，以 `hcom start --as <自身名稱> --name <自身名稱>` 恢復，再從最後已處理事件補讀 HCOM events／transcript，核對任務卡與待決紀錄後續作。
-- 額度耗盡時保存成果並回報；等待恢復、換帳號或其他替代方案由使用者決定。有適用的明確既有選擇就遵照，不自行切換。
-
-## Codex 額度與換帳號
-
-- **查額度與帳號**：`codex-multi-auth check` 即時查額度，再用 `codex-multi-auth status` 核對 current／pinned 帳號；須確認受影響 Agent 使用哪個帳號，不能將目前全域選擇當成舊程序的帳號。
-- **辨識額度耗盡**：用 `hcom term <agent> --name <自身名稱>` 查看畫面。Codex 本輪顯示 `You've hit your usage limit` 即代表額度用完；Claude 完整訊息尚未確認，但 client 本輪錯誤含 `usage limit` 同樣視為額度耗盡，不把歷史殘留訊息當成本輪錯誤。
-- **確認停止**：目前畫面同時出現 `0% left` 與 `usage limit`，即可確認 Agent 因額度耗盡停工，依使用者選擇處理。只有 `0% left` 或 HCOM idle 時仍須核對本輪與工具執行狀態；仍在工作就繼續等，無法確認也不切換或重啟。下列帳號切換指令僅適用 Codex 外部 Agent。
-- **換帳號續接**：僅在使用者已選擇換帳號、本輪已明確停止、任務未完成且確認因額度無法續作時，記下 session ID、工作目錄、未提交成果及原 model／effort／權限；`codex-multi-auth switch <n>` 後核對帳號，再以 `hcom kill <agent> --name <自身名稱>` 結束舊程序，確認退出後用 `hcom r <session-id> --name <自身名稱> <原 client 參數>` 續接。明確指定原 session，不用 `--last`。
-- **同帳號補額度**：確認額度恢復後，向已停工的 Agent 發送接續位置，先嘗試直接續作。兩種恢復方式都須確認實際工作進展，不能只看額度數字。
-- **全部帳號無額度**：保留成果並回報使用者，等待處理。
-
-## HERDR workspace
-
-使用者指定 workspace 時，先查詢 `herdr workspace list` 取得目標 ID，再以 `HERDR_WORKSPACE_ID=<目標ID> hcom ...` 啟動。未指定時照常執行 HCOM。
-
-## HCOM 收尾
-
-- Orchestrator 記錄本次 LAT 建立的 HCOM Agent 名稱，包含再委派建立的 Agents。
+- 主控記錄本次 LAT 建立的 HCOM Agent 名稱，包含執行 Agent 再委派建立的 Agents；執行 Agent 再委派後，把新 Agent 名稱回報主控。
 - 執行 Agent 保存成果、清理自己的測試資源並回報後待命，不自行關閉。
-- Orchestrator 依 [任務收尾](task-cards.md#任務收尾) 的時機，用 `hcom kill` 關閉並確認結果，同步完成該任務清理與歸檔。只關閉本次 LAT 建立的 Agents，保留使用者原有或其他流程的 Agents。
+- 主控依 [任務收尾](task-cards.md#任務收尾) 的時機，用 /hcom-spawn 的關閉方式逐一關閉該任務記錄的 Agents 並核對已停止，同步完成清理與歸檔。
+- 只關閉本次 LAT 建立的 Agents。名稱前綴相同但不在本次紀錄裡的（例如同一主控先前的 LAT 或 hcom-spawn 協作），以及使用者原有或其他流程的 Agents，一律保留。
