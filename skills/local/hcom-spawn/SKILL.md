@@ -11,12 +11,12 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 ## 選模型與 effort
 
-使用者指定的模型與 effort 優先。使用者只說「Codex」或「Claude」時，用該 client 的預設模型。未指定時：前端任務用 Claude（`claude-opus-5-5`），後端任務用 Codex（`gpt-6-astra`）；其他或混合任務依任務內容選。
+使用者指定的模型與 effort 優先。使用者只說「Codex」或「Claude」時，用該 client 的預設模型。未指定時：前端任務用 Claude，簡單的用 `claude-sonnet-5-5`、複雜的用 `claude-opus-5-5`；後端任務用 Codex（`gpt-6-astra`）；其他或混合任務依任務內容選。
 
 | 模型 | 起始 effort |
 | --- | --- |
 | `gpt-6-astra` | 簡單任務 `low`、複雜任務 `medium` |
-| `gpt-5-sol`、`claude-opus-5-5`、`claude-sonnet-5`、其他 | `medium` |
+| `gpt-5.6-sol`、`claude-opus-5-5`、`claude-sonnet-5-5`、其他 | `medium` |
 
 **簡單任務**：查資料、讀文件或程式碼回答問題、跑指令收集結果、單一檔案小修改、照明確指示改文字。
 **複雜任務**：跨檔案實作、除錯、設計、審查、需自行權衡方案。
