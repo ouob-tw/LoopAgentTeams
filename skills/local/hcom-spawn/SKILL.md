@@ -115,7 +115,7 @@ hcom kill tag:<自身名稱>-<主題> --name <自身名稱>   # 只收一組
 
 `hcom r` 會自己重放原本的啟動參數，所以**不要重複傳 `--model` 或 `--yolo`**，重複會讓 Codex 啟動失敗。
 
-明確指定已記錄的名稱或 session ID，不用 `--last`。一般接回沿用原 effort；卡住升級時用已選定的新 effort，模型與權限維持原值。只補 effort：
+明確指定已記錄的名稱或 session ID，不用 `--last`。一般接回沿用原 effort；卡住升級時用已選定的新 effort，模型與權限維持原值。Codex 接回時一律在指令最後附上 effort（原值或新值），原因見下方實測。只補 effort：
 
 ```bash
 hcom r <名稱或session-ID> --go --name <自身名稱> -c 'model_reasoning_effort="<目標 effort>"'   # Codex
