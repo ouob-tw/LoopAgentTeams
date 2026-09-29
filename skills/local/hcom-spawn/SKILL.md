@@ -103,7 +103,7 @@ hcom list --names --name <自身名稱>
 
 Agent 不自動關閉，也不排程清理。工作結束後留著，使用者可以切到它的視窗直接對話。
 
-使用者說「收掉」才關，而且只關 `<自身名稱>-` 開頭的 Agent，使用者自己開的或其他流程的一律保留：
+一般收尾等使用者說「收掉」才關；卡住升級 effort 與額度換帳號的關閉／接回，依 troubleshooting 的恢復流程。只關 `<自身名稱>-` 開頭的 Agent，使用者自己開的或其他流程的一律保留：
 
 ```bash
 hcom kill tag:<自身名稱>-<主題> --name <自身名稱>   # 只收一組
@@ -115,12 +115,16 @@ hcom kill tag:<自身名稱>-<主題> --name <自身名稱>   # 只收一組
 
 `hcom r` 會自己重放原本的啟動參數，所以**不要重複傳 `--model` 或 `--yolo`**，重複會讓 Codex 啟動失敗。
 
+明確指定已記錄的名稱或 session ID，不用 `--last`。一般接回沿用原 effort；卡住升級時用已選定的新 effort，模型與權限維持原值。只補 effort：
+
 ```bash
-hcom r <名稱> --name <自身名稱>                                    # Claude：模型、effort、bypass permissions 都會回來
-hcom r <名稱> --go --name <自身名稱> -c 'model_reasoning_effort="<原 effort>"'   # Codex：effort 會掉回 medium，只補這一項
+hcom r <名稱或session-ID> --go --name <自身名稱> -c 'model_reasoning_effort="<目標 effort>"'   # Codex
+hcom r <名稱或session-ID> --go --name <自身名稱> --effort <目標 effort>                       # Claude
 ```
 
-明確指定名稱或 session ID，不用 `--last`。接回後照「啟動後核對」再看一次畫面。
+HCOM 0.7.26 實測：Codex CLI 0.158.0 未補 effort 時曾從 low 回到 medium，明確補上可指定目標值；Claude Code 2.1.284 會重放原 `--effort medium`，再附 `--effort high` 不報錯，後面的 high 生效。Claude 沿用原 effort 時也可不帶參數接回。這些結果限於已測版本，更新後重新核對。
+
+接回後照「啟動後核對」看畫面，再核對 session ID、工作目錄與 transcript：Codex 看新一輪的 `turn_context`（model、effort、approval_policy、sandbox_policy），Claude 看新一輪的 `message.model`、`effort`／`perTurnEffort` 及使用者訊息的 `permissionMode`。確認目標 effort、原模型與權限，並讓 Agent 接續關閉前的對話；啟動參數或「啟動成功」本身不算驗證。無法確認的項目標為未確認。
 
 ## Gotchas
 
