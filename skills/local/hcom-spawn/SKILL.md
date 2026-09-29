@@ -122,7 +122,7 @@ hcom r <名稱或session-ID> --go --name <自身名稱> -c 'model_reasoning_effo
 hcom r <名稱或session-ID> --go --name <自身名稱> --effort <目標 effort>                       # Claude
 ```
 
-HCOM 0.7.26 實測：Codex CLI 0.158.0 未補 effort 時曾從 low 回到 medium，明確補上可指定目標值；Claude Code 2.1.284 會重放原 `--effort medium`，再附 `--effort high` 不報錯，後面的 high 生效。Claude 沿用原 effort 時也可不帶參數接回。這些結果限於已測版本，更新後重新核對。
+HCOM 0.7.26 實測：Codex CLI 0.158.0 接回時，HCOM 重放的 effort 放在 `resume` 之前不會生效，改用全域設定的預設 effort，附在指令最後的 effort 才會生效；Claude Code 2.1.284 會重放原 `--effort medium`，再附 `--effort high` 不報錯，後面的 high 生效。Claude 沿用原 effort 時也可不帶參數接回。這些結果限於已測版本，更新後重新核對。
 
 接回後照「啟動後核對」看畫面，再核對 session ID、工作目錄與 transcript：Codex 看新一輪的 `turn_context`（model、effort、approval_policy、sandbox_policy），Claude 看新一輪的 `message.model`、`effort`／`perTurnEffort` 及使用者訊息的 `permissionMode`。確認目標 effort、原模型與權限，並讓 Agent 接續關閉前的對話；啟動參數或「啟動成功」本身不算驗證。無法確認的項目標為未確認。
 
