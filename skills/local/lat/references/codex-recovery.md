@@ -45,6 +45,8 @@ uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" install \
 
 在該隔離 `CODEX_HOME` 啟動 Codex，透過正常 `/hooks` 介面檢查並信任此 command；helper 不寫信任設定、不 bypass。更新 command 或搬動技能後需重新檢查。hook 的執行環境須能找到 `uv` 與 Python。
 
+install 將 LAT group 放在 HCOM SessionStart group 前方，避免 HCOM 重設 hooks 時搬動自己的 group，造成 LAT 的位置式信任 key 失效。舊版安裝重跑 install 會調整位置，須重新以 `/hooks` 信任 LAT；HCOM 由正常啟動流程恢復自己的信任。HCOM／Codex 更新或重設 hooks 後，仍應在 `/hooks` 確認 LAT 為啟用且已信任。
+
 ```bash
 uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" uninstall \
   --codex-home "$codex_home" --preview

@@ -157,7 +157,15 @@ def configure(args):
                 handlers.append(handler)
             group['matcher'] = '^(compact|resume)$'
         else:
-            groups.append(dict(name=GROUP_NAME, matcher='^(compact|resume)$', hooks=[handler]))
+            group = dict(name=GROUP_NAME, matcher='^(compact|resume)$', hooks=[handler])
+            groups.append(group)
+        # HCOM re-setup removes its group and appends it again. Keep LAT before
+        # that group so its positional Codex trust key survives reconciliation.
+        groups.remove(group)
+        index = next((i for i, g in enumerate(groups)
+                      if any(is_hcom_sessionstart(h) for h in g.get('hooks', []))),
+                     len(groups))
+        groups.insert(index, group)
     else:
         for group in owned:
             handlers = group.get('hooks')
@@ -187,6 +195,17 @@ def configure(args):
             print(f'Backup: {backup.name}')
     write_json(path, updated, original)
     print(f'Updated {path}; review changed hooks through Codex /hooks before use')
+
+
+def is_hcom_sessionstart(handler):
+    if not isinstance(handler, dict) or handler.get('type') != 'command':
+        return False
+    try:
+        command = shlex.split(handler.get('command', ''))
+        return (len(command) == 2 and Path(command[0]).name == 'hcom'
+                and command[1] == 'codex-sessionstart')
+    except (ValueError, TypeError):
+        return False
 
 
 def is_lat_command(handler):

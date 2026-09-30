@@ -19,6 +19,8 @@ uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" install \
 
 重新啟動 Codex，輸入 `/hooks`，進入 `SessionStart`，選中 command 結尾為 `codex-lat-session.py hook`、matcher 為 `^(compact|resume)$` 的項目，按 `t` 信任。只核准這一項；確認它顯示 `[x]`。不要使用略過信任檢查的啟動參數。
 
+HCOM／Codex 更新或重設 hooks 後，再以 `/hooks` 確認 LAT 已啟用且受信任；升級舊版 LAT hook 後，也要重跑 install 並重新信任。
+
 ## 平常怎麼用
 
 LAT 主控讀完專案設定後，先登記對話，再建立進度清單。可請主控提供 `.lat/sessions/<session-id>.json` 路徑，確認 `status` 是 `active`，且 `skill_dir` 指向已安裝 LAT。只閱讀技能或擔任執行 Agent 不會啟用。
