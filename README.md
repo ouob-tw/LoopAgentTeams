@@ -136,7 +136,7 @@ uv run scripts/install-matt-skills.py
 
 技能原始檔依來源分成 `skills/local/`（LAT、hcom-spawn、three-tier-testing）與 `skills/matt/`（Matt skills 副本）。
 
-本 repo 收錄的九個 Matt skills 副本，移除了 `disable-model-invocation` 並啟用 Codex 的 `allow_implicit_invocation`，讓 LAT 能自動呼叫各階段技能，因此不能直接換成上游原版。
+本 repo 收錄的九個 Matt skills 副本，移除了 `disable-model-invocation` 並啟用 Codex 的 `allow_implicit_invocation`，讓 LAT 能自動呼叫各階段技能，因此不能直接換成上游原版。副本來源為上游 main `d81f3a1`（內容等同待發布的 v1.3.0）；更新時優先採用正式發布版，正式版落後時採用已準備發布的版本並記錄 commit。
 
 首次下載（已有本地工作區可略過）：
 
