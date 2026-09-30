@@ -11,10 +11,11 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 ## 選模型與 effort
 
-使用者指定的模型與 effort 優先。使用者只說「Codex」或「Claude」時，用該 client 的預設模型。未指定時：前端任務用 Claude，簡單的用 `claude-sonnet-5-5`、複雜的用 `claude-opus-5-5`；後端任務用 Codex（`gpt-6-astra`）；其他或混合任務依任務內容選。
+使用者指定的模型與 effort 優先。使用者只說「Codex」或「Claude」時，用該 client 的預設模型。未指定時：前端任務用 Claude，簡單的用 `claude-sonnet-5-5`、複雜的用 `claude-opus-5-5`；後端任務用 Codex（`gpt-6.1-sol`，簡單複雜都從 `medium` 起）；其他或混合任務依任務內容選。
 
 | 模型 | 起始 effort |
 | --- | --- |
+| `gpt-6.1-sol`（後端預設） | `medium` |
 | `gpt-6-astra` | 簡單任務 `low`、複雜任務 `medium` |
 | `gpt-5.6-sol`、`claude-opus-5-5`、`claude-sonnet-5-5`、其他 | `medium` |
 
@@ -35,7 +36,7 @@ tag 用 `<自身名稱>-<主題>`，主題一兩個英文小寫單字（`review`
 
 ```bash
 hcom 1 codex --tag <自身名稱>-<主題> --go --name <自身名稱> \
-  --model gpt-6-astra -c 'model_reasoning_effort="low"' --yolo
+  --model gpt-6.1-sol -c 'model_reasoning_effort="medium"' --yolo
 ```
 
 ```bash
@@ -55,10 +56,10 @@ Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，�
 
 | Client | 模型與 effort | 權限 |
 | --- | --- | --- |
-| Codex | 底部狀態列 `GPT-6-Astra <effort>` | 開場 `permissions: YOLO mode` |
+| Codex | 底部狀態列 `<模型名> <effort>`（如 `GPT-6.1-Sol medium`） | 開場 `permissions: YOLO mode` |
 | Claude Code | 開場 `Opus 5.5 with <effort> effort`、底部 `Opus 5.5 <effort>` | 底部 `⏵⏵ bypass permissions on` |
 
-表上的模型名與 effort 是傳 `claude-opus-5-5` 加 `medium` 時的樣子。畫面要對得上你實際傳的那一組，不是表上寫的值。
+Claude 列的模型名與 effort 是傳 `claude-opus-5-5` 加 `medium` 時的樣子。畫面要對得上你實際傳的那一組，不是表上寫的值。
 
 `hcom list --json` 的 `tag`、`directory`、`tool` 欄位核對 tag 與工作目錄。從回傳或畫面確認不到的設定，回報時標為未確認，不宣稱已生效。
 
@@ -95,21 +96,30 @@ hcom send @<agent> --intent request --name <自身名稱> --file <訊息檔路�
 
 ## 回報與收尾
 
-每次向使用者回報結果時，附上**還開著的 Agent**清單，使用者才不會忘記有誰在跑：
+工作期間不向使用者公告 Agent 的開啟或關閉，由召喚者自己記錄名稱、session ID、client／model／effort 與工作目錄，使用者要找回時據此接回。任務收尾（含取消或移交）的最後一次回報，只列仍開著的 Agent 與保留原因；全部關閉就不提。使用者詢問時依當下狀態回答。只有兩種情況立即告知：使用者直接要求開啟 Agent，回覆是否開啟成功；使用者需要與特定 Agent 互動，提供名稱及必要操作。回報前核對狀態：
 
 ```bash
 hcom list --names --name <自身名稱>
 ```
 
-Agent 不自動關閉，也不排程清理。工作結束後留著，使用者可以切到它的視窗直接對話。
+Agent 確定用不到時，召喚者主動關閉，不必等使用者說「收掉」。以下全部成立才算用不到：
 
-一般收尾等使用者說「收掉」才關；卡住升級 effort 與額度換帳號的關閉／接回，依 troubleshooting 的恢復流程。只關 `<自身名稱>-` 開頭的 Agent，使用者自己開的或其他流程的一律保留：
+- 成果與必要驗證已保存、回報，且召喚者核對過符合任務；只有 Agent 自稱完成不算。
+- 沒有待回的問題、排定的審查／修正／複測、交接中的相依工作或未完成的再委派。
+- 沒有進行中的回合或指令；它擁有的程序與資源已清理或交給具名負責者。
+- 成果位置清楚，未提交的修改已交代位置與歸屬。
+- 使用者沒要求留著它，且是自己召喚的 Agent。
+
+閒置（listening）或單一則完成訊息不等於用不到；不設定時清理。卡住升級 effort 與額度換帳號的關閉／接回，依 troubleshooting 的恢復流程。只關 `<自身名稱>-` 開頭的 Agent，使用者自己開的或其他流程的一律保留。
+
+關閉前記下名稱、session ID、client／model／effort、工作目錄與成果位置，關閉後核對已停止。關閉不代表可刪除它的 transcript、worktree 或成果。關閉結果不另外回報。
 
 ```bash
-hcom kill tag:<自身名稱>-<主題> --name <自身名稱>   # 只收一組
+hcom kill <名稱> --name <自身名稱>                   # 關一個
+hcom kill tag:<自身名稱>-<主題> --name <自身名稱>   # 整組都符合條件才用
 ```
 
-全部收掉時，先列出 `<自身名稱>-` 開頭的 tag，逐組執行，再用 `hcom list` 核對都已停止。
+接回會還原對話與工作目錄，但不會還原當時執行中的指令、HERDR 視窗排版或已刪除的 worktree；工作目錄已不存在時，接回前先指定有效目錄並核對。
 
 ### 接回已關閉的 Agent
 
@@ -125,6 +135,23 @@ hcom r <名稱或session-ID> --go --name <自身名稱> --effort <目標 effort>
 HCOM 0.7.26 實測：Codex CLI 0.158.0 接回時，HCOM 重放的 effort 放在 `resume` 之前不會生效，改用全域設定的預設 effort，附在指令最後的 effort 才會生效；Claude Code 2.1.284 會重放原 `--effort medium`，再附 `--effort high` 不報錯，後面的 high 生效。Claude 沿用原 effort 時也可不帶參數接回。這些結果限於已測版本，更新後重新核對。
 
 接回後照「啟動後核對」看畫面，再核對 session ID、工作目錄與 transcript：Codex 看新一輪的 `turn_context`（model、effort、approval_policy、sandbox_policy），Claude 看新一輪的 `message.model`、`effort`／`perTurnEffort` 及使用者訊息的 `permissionMode`。確認目標 effort、原模型與權限，並讓 Agent 接續關閉前的對話；啟動參數或「啟動成功」本身不算驗證。無法確認的項目標為未確認。
+
+## 替 Agent 按鍵
+
+需要在 Agent 的終端畫面觸發斜線指令（如 `/compact`）、在選單移動或取消時，用 `hcom term inject`。它把字元原樣送進對方終端，沒有方向鍵參數，特殊鍵用 bash 的 `$'…'` 送跳脫序列：
+
+```bash
+hcom term inject <名稱> '/compact' --name <自身名稱>   # 打字，不送出
+hcom term inject <名稱> --enter --name <自身名稱>      # Enter
+hcom term inject <名稱> $'\e[B' --name <自身名稱>      # ↓；↑ \e[A、→ \e[C、← \e[D
+hcom term inject <名稱> $'\e' --name <自身名稱>        # Esc
+```
+
+- 每按一步就用 `hcom term <名稱>` 看畫面，確認游標或選項真的移到目標再按 Enter。選單會改設定（例如 `/model`）而畫面確認不了時，按 Esc 離開，不要盲按 Enter。
+- 按鍵之間用 `hcom listen 2` 等畫面更新，不用 `sleep`。
+- 只按任務需要的鍵；替 Agent 選選項等於替它做決定，任務訊息沒授權的選擇先問使用者。
+
+HCOM 0.7.26 實測：Claude Code 2.1.284 文字帶 `--enter` 一次送出可用；Codex CLI 0.158.0 文字與 Enter 分兩次送可用，一次送出未測。Codex `/model` 選單送 `\e[B` 游標下移一項，送 `\e` 離開且模型未變。
 
 ## Gotchas
 
