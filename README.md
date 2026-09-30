@@ -130,6 +130,7 @@ uv run scripts/install-matt-skills.py
 - [三層測試](skills/local/three-tier-testing/SKILL.md)
 - [HCOM／HERDR workspace 設定](docs/hcom-herdr-setup.md)
 - [Codex context 壓縮後的 HCOM 說明](docs/codex-hcom-compact.md)
+- [Codex LAT 壓縮後恢復：安裝與使用](docs/codex-lat-recovery.md)
 
 ## 本地開發
 
