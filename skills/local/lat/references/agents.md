@@ -13,6 +13,7 @@ hcom-spawn 裡的「自身名稱」就是發起委派的那一方：主控派工
 ## 派工
 
 - 外部 Agent 的第一則任務訊息照 /hcom-spawn 的固定欄位寫，再補上 SKILL.md「交接」要求的項目。
+- /code-review 的 Spec 面向審查一律派給 `gpt-6-astra`，effort `medium`；使用者另行指定時從其指定。Standards 面向照 /hcom-spawn 預設選模型。
 - 每項任務用自己的 tag 主題，同一個 tag 不跨任務共用，關閉整組時才不會誤關其他任務的 Agents。
 - 執行 Agent 卡住時，由召喚它的一方（通常是主控）依 /hcom-spawn 的升級規則提高 effort 或換模型；升級路線走完仍卡住，交回主控決定新 context 或拆小任務。
 
