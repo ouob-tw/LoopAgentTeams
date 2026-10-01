@@ -81,17 +81,17 @@ description: Use when setting up test infrastructure, adding tests, reorganizing
 
 ## 驗收測試（`tests/qa_e2e/`，選用）
 
-三層之外的獨立目錄，存放對應規格驗收清單（QA）的測試。LoopAgentTeams 的 qa_executor 依規格逐條撰寫於此。
+三層之外的獨立目錄，存放對應規格驗收清單（QA）的測試。LoopAgentTeams 的 QA 依規格逐條撰寫於此。
 
 - 技術規則同 E2E：無 mock、驅動真實應用
-- 與 `tests/e2e/` 分開的原因：每條測試對應規格的一條驗收項，由驗收方撰寫；修正實作的一方（如 test_executor）只能執行、不得修改
+- 與 `tests/e2e/` 分開的原因：每條測試對應規格的一條驗收項，由驗收方撰寫；修正實作的一方（如 Implementer）只能執行、不得修改
 - 裸跑不含此目錄，執行需明確指定（設定方式見語言 reference）
 - 前後端分離時放 `<frontend>/tests/qa_e2e/`
 
 ## 從扁平 tests/ 遷移
 
 - [ ] 建立 `tests/unit/` 和 `tests/integration/`
-- [ ] 逐一檢查測試檔：用到真實外部服務 → `integration/`，純 mock → `unit/`
+- [ ] 逐一檢查測試檔，依上方「測試歸屬判斷」分類至對應目錄
 - [ ] 拆分共用 fixture：DB fixture → `integration/`，其餘 → `unit/`
 - [ ] 設定裸跑只執行單元測試（依語言設定）
 - [ ] 每層加上自動標記或標籤
@@ -112,7 +112,6 @@ description: Use when setting up test infrastructure, adding tests, reorganizing
 
 ## 注意事項
 
-- 裸跑只跑單元測試是核心設定。若設定錯誤導致裸跑執行整合測試，會破壞層級隔離。
 - 若測試 import 了真實外部服務，即使放在 `tests/unit/` 也是整合測試。正確做法是搬移檔案，不是 mock import。
 - Docker 模式使用非預設 port，避免與開發環境衝突。
 - Host 模式需確保外部服務在測試前已啟動。

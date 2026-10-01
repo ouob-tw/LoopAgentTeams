@@ -86,14 +86,6 @@ hcom send @<agent> --intent request --name <自身名稱> --file <訊息檔路�
 沒有人看你的對話視窗，不需要在視窗輸出說明，所有回報都用 `hcom send`。
 ```
 
-回報對象與語法寫在這則訊息裡，被召喚的 Agent 自己的上下文就一直帶著這兩樣，不必倚賴 HCOM 說明或你再交代一次。
-
-溝通語言也得明寫：被召喚的 Agent 會跟著這則訊息的語言走，就算它自己的全域規則要求英文也一樣。
-
-## 協作拓撲
-
-被召喚的 Agent 知道彼此名稱與分工，直接互相傳訊；互相審查這類來回不必經過你。你只做開頭（召喚與交代）、收尾（關閉）、以及向使用者回報。
-
 ## 回報與收尾
 
 工作期間不向使用者公告 Agent 的開啟或關閉，由召喚者自己記錄名稱、session ID、client／model／effort 與工作目錄，使用者要找回時據此接回。任務收尾（含取消或移交）的最後一次回報，只列仍開著的 Agent 與保留原因；全部關閉就不提。使用者詢問時依當下狀態回答。只有兩種情況立即告知：使用者直接要求開啟 Agent，回覆是否開啟成功；使用者需要與特定 Agent 互動，提供名稱及必要操作。回報前核對狀態：
@@ -138,20 +130,7 @@ HCOM 0.7.26 實測：Codex CLI 0.158.0 接回時，HCOM 重放的 effort 放在 
 
 ## 替 Agent 按鍵
 
-需要在 Agent 的終端畫面觸發斜線指令（如 `/compact`）、在選單移動或取消時，用 `hcom term inject`。它把字元原樣送進對方終端，沒有方向鍵參數，特殊鍵用 bash 的 `$'…'` 送跳脫序列：
-
-```bash
-hcom term inject <名稱> '/compact' --name <自身名稱>   # 打字，不送出
-hcom term inject <名稱> --enter --name <自身名稱>      # Enter
-hcom term inject <名稱> $'\e[B' --name <自身名稱>      # ↓；↑ \e[A、→ \e[C、← \e[D
-hcom term inject <名稱> $'\e' --name <自身名稱>        # Esc
-```
-
-- 每按一步就用 `hcom term <名稱>` 看畫面，確認游標或選項真的移到目標再按 Enter。選單會改設定（例如 `/model`）而畫面確認不了時，按 Esc 離開，不要盲按 Enter。
-- 按鍵之間用 `hcom listen 2` 等畫面更新，不用 `sleep`。
-- 只按任務需要的鍵；替 Agent 選選項等於替它做決定，任務訊息沒授權的選擇先問使用者。
-
-HCOM 0.7.26 實測：Claude Code 2.1.284 文字帶 `--enter` 一次送出可用；Codex CLI 0.158.0 文字與 Enter 分兩次送可用，一次送出未測。Codex `/model` 選單送 `\e[B` 游標下移一項，送 `\e` 離開且模型未變。
+替 Agent 輸入文字、斜線指令或按鍵前，先讀 [按鍵程序](references/key-injection.md)。替 Agent 選選項等於替它做決定，任務訊息沒授權的選擇先問使用者。
 
 ## Gotchas
 

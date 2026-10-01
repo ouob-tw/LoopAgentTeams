@@ -34,32 +34,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client
 
 ## Hook 安裝與移除
 
-技能檔案安裝不會註冊 hook。Claude 使用者層級設定：`install --client claude --claude-settings <settings.json>`（預設 `~/.claude/settings.json`），於 SessionStart 新增 matcher `^(compact|resume)$`、command 結尾為 `hook --client claude` 的 group；同樣先 preview、備份、保留其他設定，重跑不重複，`uninstall` 加相同參數移除。使用者層級 hook 不需信任步驟；重啟 Claude Code 後在 `/hooks` 確認。以下 Codex 說明的 HCOM 排序與信任機制不適用於 Claude。
-
-Codex：先確認有效 `CODEX_HOME`（預設 `~/.codex`），檢查 preview 後，在既有授權範圍內執行同一指令去掉 `--preview`。以下示範隔離目錄：
-
-```bash
-codex_home=/absolute/path/to/isolated-codex-home
-uv run --no-project python "$lat_dir/scripts/lat-session.py" install \
-  --codex-home "$codex_home" --preview
-uv run --no-project python "$lat_dir/scripts/lat-session.py" install \
-  --codex-home "$codex_home"
-```
-
-只在該目錄的 `hooks.json` 合併獨立 `lat-codex-recovery` group，事件只有 SessionStart，matcher 只有 compact／resume。command 使用 helper 所在技能的實際絕對路徑。HCOM／第三方 entries 與未知欄位保留；同版本重跑不重複。變更前備份為 `hooks.json.lat-backup-*`，寫入前檢查內容是否同期變動，再原子替換；偵測到變動便停止，檢查後重跑。安裝期間避免同時由其他工具改設定，檢查不是跨工具的檔案鎖。
-
-在該隔離 `CODEX_HOME` 啟動 Codex，透過正常 `/hooks` 介面檢查並信任此 command；helper 不寫信任設定、不 bypass。更新 command 或搬動技能後需重新檢查。hook 的執行環境須能找到 `uv` 與 Python。
-
-install 將 LAT group 放在 HCOM SessionStart group 前方，避免 HCOM 重設 hooks 時搬動自己的 group，造成 LAT 的位置式信任 key 失效。舊版安裝重跑 install 會調整位置，須重新以 `/hooks` 信任 LAT；HCOM 由正常啟動流程恢復自己的信任。HCOM／Codex 更新或重設 hooks 後，仍應在 `/hooks` 確認 LAT 為啟用且已信任。
-
-```bash
-uv run --no-project python "$lat_dir/scripts/lat-session.py" uninstall \
-  --codex-home "$codex_home" --preview
-uv run --no-project python "$lat_dir/scripts/lat-session.py" uninstall \
-  --codex-home "$codex_home"
-```
-
-移除僅刪 LAT command，保留其他 handlers／未知欄位；不刪 session 紀錄、備份或信任設定。
+技能檔案安裝不會註冊 hook。安裝／移除 hook、搬動技能或修改 command，以及排查 hook 啟用／信任問題前，先讀 [Hook 設定程序](hook-setup.md)。Codex 須透過 `/hooks` 信任 command，LAT group 位於 HCOM SessionStart group 前；Claude 使用者層級 hook 不需信任步驟，不適用 Codex 的 HCOM 排序規則，重啟後在 `/hooks` 確認。
 
 ## 邊界與限制
 
@@ -69,21 +44,3 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" uninstall \
 - `/clear` 與 fork／新 session 不繼承標記。`/clear` 不改舊紀錄；日後 resume 舊對話仍可恢復，直到明確停用。沒有 clear handler；SessionEnd 也不刪紀錄。SubagentStart／Stop 不掛此 hook（其 payload ID 是父 session）。
 - 每次 compact／resume 都重新匹配，不設永久「已提示」旗標；不累積全文、不呼叫模型、不掃 transcript、不連網、不觸發 compact。
 - 啟用前發生的壓縮無法恢復；遺漏停用可能留下 active。移動工作區、session 移交、版本漂移偵測與 plugin 包裝不在 v1。
-
-## 驗證
-
-單元／CLI 合約測試（僅暫存檔，沒有模型或真實 Codex）：
-
-```bash
-uv run --no-project python -m unittest discover -s "$lat_dir/tests"
-```
-
-實機測試使用專用 Git 工作區、隔離 `CODEX_HOME`、技能副本與假進度／待決檔，保留原始 transcript 與 hook 設定。若複製 auth，限制權限為 0600，禁止輸出內容；測試完成以 `shred -u` 清除。測試程序結束後清理自己的非機密暫存資源。
-
-1. install preview → install → 正常 `/hooks` 信任；核對其他 command 保留。啟動 Codex 主控載入 `$lat`，讀設定後 activate，完整讀 references 與假進度。
-2. `/compact` 後要求繼續。從工具紀錄核對：首個相依動作之前完整重讀紀錄、SKILL、兩份 references、進度與待決紀錄，並核對 tracker；截斷讀取與模型自稱記得均不算通過。
-3. 同 session 再 compact 一次，確認同樣恢復並有進度，沒有全文累積或無進度迴圈。完成後 deactivate，再 compact／resume 應零注入。
-4. 另一次真實 auto compact：僅對測試程序設定 `-c model_auto_compact_token_limit=<基礎context加餘量>`，用有限假工具輸出跨過門檻；確認真實 auto boundary 的提示在當次 continuation 前，以及首個相依動作前重讀。無法觸發記 NOT_EXECUTED，不用模擬 hook 取代。
-5. 行為核對：已授權工作繼續；沒有真人答覆的 pending 仍阻擋；缺獨立 review 不宣告完成。負向核對同 repo 的 no-LAT session、執行 Agent、completed session 零注入。記錄 PASS／FAIL／UNPROVEN／NOT_EXECUTED。
-
-提示 token 數以 `o200k_base` 為代理，目標 ≤300；計入實際紀錄路徑。tokenizer 僅供驗證，不是 helper 依賴。hook 契約與信任機制見 [Codex 官方 hooks 文件](https://learn.chatgpt.com/docs/hooks)；已實測基準為 Codex 0.158.0。
