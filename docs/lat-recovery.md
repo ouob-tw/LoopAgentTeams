@@ -1,6 +1,6 @@
-# Codex LAT 壓縮後恢復：使用方式
+# LAT 壓縮後恢復：使用方式
 
-此功能供 Codex 的 LAT 主控使用。安裝一次後，在專案對 Codex 說「用 LAT 處理這個任務」即可；主控會登記目前對話，結束或取消時停用。Claude 沿用原流程。
+此功能供 Codex 與 Claude 的 LAT 主控使用。安裝一次後，在專案對 Agent 說「用 LAT 處理這個任務」即可；主控會登記目前對話，結束或取消時停用。以下指令預設為 Codex；Claude 的差異見「Claude Code」一節。
 
 ## 安裝一次
 
@@ -9,17 +9,30 @@
 ```bash
 lat_dir="$HOME/.agents/skills/lat"
 codex_home="${CODEX_HOME:-$HOME/.codex}"
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" install \
+uv run --no-project python "$lat_dir/scripts/lat-session.py" install \
   --codex-home "$codex_home" --preview
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" install \
+uv run --no-project python "$lat_dir/scripts/lat-session.py" install \
   --codex-home "$codex_home"
 ```
 
 檢查 preview 只有 LAT group，再執行安裝。helper 會備份原本的 `hooks.json`，保留其他 hooks；重跑不會重複新增。
 
-重新啟動 Codex，輸入 `/hooks`，進入 `SessionStart`，選中 command 結尾為 `codex-lat-session.py hook`、matcher 為 `^(compact|resume)$` 的項目，按 `t` 信任。只核准這一項；確認它顯示 `[x]`。不要使用略過信任檢查的啟動參數。
+重新啟動 Codex，輸入 `/hooks`，進入 `SessionStart`，選中 command 結尾為 `lat-session.py hook`、matcher 為 `^(compact|resume)$` 的項目，按 `t` 信任。只核准這一項；確認它顯示 `[x]`。不要使用略過信任檢查的啟動參數。
 
 HCOM／Codex 更新或重設 hooks 後，再以 `/hooks` 確認 LAT 已啟用且受信任；升級舊版 LAT hook 後，也要重跑 install 並重新信任。
+
+舊版 helper 名為 `codex-lat-session.py`。更新技能後舊檔不再存在，原本的 hook 會失效：重跑上面的 install，會把既有 LAT command 改指向 `lat-session.py`，再到 `/hooks` 重新信任。
+
+## Claude Code
+
+Claude 壓縮後只重新附上每個技能的前 5,000 tokens，LAT 後段規則與 references 會遺失，因此同樣需要這個 hook。install 寫入使用者層級的 `~/.claude/settings.json`（可用 `--claude-settings` 指定其他檔案），不需信任步驟：
+
+```bash
+uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client claude --preview
+uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client claude
+```
+
+重新啟動 Claude Code，在 `/hooks` 的 `SessionStart` 確認有 command 結尾為 `hook --client claude`、matcher 為 `^(compact|resume)$` 的項目。下方停用與移除指令在 Claude 一律加上 `--client claude`。
 
 ## 平常怎麼用
 
@@ -36,7 +49,7 @@ LAT 主控讀完專案設定後，先登記對話，再建立進度清單。可�
 確認舊任務已取消，從紀錄檔名取得 session ID，再指定該專案 Git 工作區根目錄：
 
 ```bash
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" deactivate \
+uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate \
   --workspace /absolute/path/to/project \
   --session-id '<舊紀錄的 session ID>' --status cancelled
 ```
@@ -46,10 +59,10 @@ uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" deactivate \
 ## 移除 hook
 
 ```bash
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" uninstall \
+uv run --no-project python "$lat_dir/scripts/lat-session.py" uninstall \
   --codex-home "$codex_home" --preview
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" uninstall \
+uv run --no-project python "$lat_dir/scripts/lat-session.py" uninstall \
   --codex-home "$codex_home"
 ```
 
-重新啟動 Codex 後生效。只移除 LAT command；技能、session 紀錄、備份及信任設定仍保留。詳細主控程序見 [Codex 恢復參考](../skills/local/lat/references/codex-recovery.md)。
+重新啟動 Codex 後生效。只移除 LAT command；技能、session 紀錄、備份及信任設定仍保留。詳細主控程序見 [主控恢復參考](../skills/local/lat/references/recovery.md)。

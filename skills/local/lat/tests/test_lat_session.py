@@ -10,7 +10,7 @@ import sys
 import tempfile
 import unittest
 
-SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/codex-lat-session.py'
+SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-session.py'
 SKILL = SCRIPT.parent.parent
 SESSION = '11111111-1111-4111-8111-111111111111'
 OTHER = '22222222-2222-4222-8222-222222222222'
@@ -31,7 +31,7 @@ class SessionTests(unittest.TestCase):
         self.record = self.work / '.lat/sessions' / f'{SESSION}.json'
 
     def cli(self, *args, payload=None, session=SESSION):
-        env = dict(os.environ, CODEX_THREAD_ID=session)
+        env = dict(os.environ, CODEX_THREAD_ID=session, CLAUDE_CODE_SESSION_ID='')
         return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
                               input=json.dumps(payload) if payload is not None else '',
                               text=True, capture_output=True, env=env, cwd=self.work)
@@ -275,12 +275,102 @@ class SessionTests(unittest.TestCase):
             if calls == 2:
                 path.write_text('{"external": true}')
             return real_read(target)
-        args = argparse.Namespace(codex_home=home, action='install', preview=False)
+        args = argparse.Namespace(codex_home=home, action='install', preview=False,
+                                  client='codex')
         with patch.object(helper, 'current_bytes', side_effect=competing_read):
             with self.assertRaisesRegex(ValueError, 'Concurrent'):
                 helper.configure(args)
         self.assertEqual(json.loads(path.read_text()), {'external': True})
         self.assertEqual(list(home.iterdir()), [path])
+
+
+    def test_claude_controller_record_and_hook_are_client_scoped(self):
+        env = dict(os.environ, CODEX_THREAD_ID='', CLAUDE_CODE_SESSION_ID=SESSION)
+        result = subprocess.run([sys.executable, str(SCRIPT), 'activate', '--client', 'claude',
+                                 '--workspace', self.work, '--progress', self.progress,
+                                 '--decisions', self.decisions],
+                                text=True, capture_output=True, env=env, cwd=self.work)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['client'], 'claude')
+        payload = dict(hook_event_name='SessionStart', source='compact',
+                       cwd=str(self.work), session_id=SESSION)
+        for source in ('compact', 'resume'):
+            result = self.cli('hook', '--client', 'claude', payload=dict(payload, source=source))
+            self.assertIn(str(self.record), result.stdout)
+        for changes in ({'source': 'startup'}, {'source': 'clear'}, {'source': 'fork'}):
+            self.assert_silent(self.cli('hook', '--client', 'claude',
+                                        payload=dict(payload, **changes)))
+        # A Codex hook never answers a Claude record.
+        self.assert_silent(self.cli('hook', payload=payload))
+        result = self.cli('deactivate', '--client', 'claude', '--workspace', self.work,
+                          '--status', 'completed', '--session-id', SESSION, session=OTHER)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assert_silent(self.cli('hook', '--client', 'claude', payload=payload))
+
+    def test_claude_activation_requires_claude_session_id(self):
+        result = self.cli('activate', '--client', 'claude', '--workspace', self.work,
+                          '--progress', self.progress, '--decisions', self.decisions)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertFalse(self.record.exists())
+
+    def test_claude_settings_install_merge_idempotence_and_uninstall(self):
+        settings = self.root / 'claude' / 'settings.json'
+        settings.parent.mkdir()
+        hcom = {'hooks': [{'type': 'command', 'command': 'hcom sessionstart'}]}
+        original = {'permissions': {'allow': ['Bash(ls:*)']}, 'hooks': {
+            'SessionStart': [hcom], 'Stop': [{'hooks': [{'type': 'command', 'command': 's'}]}]}}
+        settings.write_text(json.dumps(original))
+        before = settings.read_bytes()
+        flags = ('--client', 'claude', '--claude-settings', settings)
+        preview = self.cli('install', *flags, '--preview')
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertIn('--client claude', preview.stdout)
+        self.assertEqual(settings.read_bytes(), before)
+        self.assertEqual(self.cli('install', *flags).returncode, 0)
+        merged = json.loads(settings.read_text())
+        self.assertEqual(merged['permissions'], original['permissions'])
+        self.assertEqual(merged['hooks']['Stop'], original['hooks']['Stop'])
+        groups = merged['hooks']['SessionStart']
+        self.assertEqual(groups[0], hcom)
+        self.assertEqual(groups[1]['matcher'], '^(compact|resume)$')
+        self.assertNotIn('name', groups[1])
+        self.assertTrue(groups[1]['hooks'][0]['command'].endswith('hook --client claude'))
+        self.assertEqual(len(list(settings.parent.glob('settings.json.lat-backup-*'))), 1)
+        first = settings.read_bytes()
+        self.assertEqual(self.cli('install', *flags).returncode, 0)
+        self.assertEqual(settings.read_bytes(), first)
+        self.assertEqual(self.cli('uninstall', *flags).returncode, 0)
+        self.assertEqual(json.loads(settings.read_text()), original)
+
+    def test_claude_install_refuses_shared_group_without_changes(self):
+        settings = self.root / 'settings.json'
+        flags = ('--client', 'claude', '--claude-settings', settings)
+        self.assertEqual(self.cli('install', *flags).returncode, 0)
+        config = json.loads(settings.read_text())
+        group = config['hooks']['SessionStart'][0]
+        group['matcher'] = '^(startup|compact|resume)$'
+        group['hooks'].append({'type': 'command', 'command': 'echo third-party'})
+        settings.write_text(json.dumps(config))
+        before = settings.read_bytes()
+        result = self.cli('install', *flags)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('shares a SessionStart group', result.stderr)
+        self.assertEqual(settings.read_bytes(), before)
+
+
+    def test_install_migrates_pre_rename_codex_command(self):
+        home = self.root / 'config'
+        home.mkdir()
+        path = home / 'hooks.json'
+        old = 'uv run --no-project python /old/lat/scripts/codex-lat-session.py hook'
+        path.write_text(json.dumps({'hooks': {'SessionStart': [
+            {'name': 'lat-codex-recovery', 'matcher': '^(compact|resume)$',
+             'hooks': [{'type': 'command', 'command': old}]}]}}))
+        self.assertEqual(self.cli('install', '--codex-home', home).returncode, 0)
+        groups = json.loads(path.read_text())['hooks']['SessionStart']
+        self.assertEqual(len(groups), 1)
+        self.assertEqual(groups[0]['hooks'], [{'type': 'command', 'command':
+                         f'uv run --no-project python {SCRIPT} hook'}])
 
 
 if __name__ == '__main__':

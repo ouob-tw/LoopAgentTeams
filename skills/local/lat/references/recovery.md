@@ -1,6 +1,8 @@
-# Codex 主控恢復
+# 主控恢復
 
-只供 Codex 的 LAT 主控使用。閱讀／審查 LAT、安裝技能與執行 Agent 不啟用。Claude 維持原流程。helper 只用 Python 標準函式庫，以 `uv run --no-project python` 執行。
+供 Codex 與 Claude 的 LAT 主控使用。閱讀／審查 LAT、安裝技能與執行 Agent 不啟用。helper 只用 Python 標準函式庫，以 `uv run --no-project python` 執行。所有子指令的 `--client` 預設 `codex`，Claude 主控一律加 `--client claude`。
+
+Claude 壓縮後只重新附上每個技能前 5,000 tokens（合計 25,000），LAT 後段規則、references 與 hcom-spawn 可能遺失，因此同樣需要此 hook。
 
 ## 主控啟動與結束
 
@@ -12,17 +14,18 @@ lat_dir=/absolute/path/to/installed/lat
 workspace=/absolute/path/to/git-worktree
 progress=/absolute/path/to/existing-progress.md
 decisions=/absolute/path/to/shared/decisions
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" activate \
+client=codex  # Claude 主控改為 claude
+uv run --no-project python "$lat_dir/scripts/lat-session.py" activate --client "$client" \
   --workspace "$workspace" --progress "$progress" --decisions "$decisions"
 ```
 
-activate 直接讀取主控 shell 的 `CODEX_THREAD_ID`，不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑，紀錄 client、session、主控角色、工作區、active 狀態與恢復路徑。已有不同紀錄時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
+activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；Claude：`CLAUDE_CODE_SESSION_ID`），不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑，紀錄 client、session、主控角色、工作區、active 狀態與恢復路徑。已有不同紀錄時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
 
 3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`，以及 `progress_path` 與 `decisions_path` 內的待決紀錄。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。
 4. 交付前停用為 completed；取消時停用為 cancelled。成功後紀錄保留，後續 compact／resume 不再提示。
 
 ```bash
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" deactivate \
+uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client "$client" \
   --workspace "$workspace" --status completed
 # 取消則改為 --status cancelled。
 ```
@@ -31,13 +34,15 @@ uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" deactivate \
 
 ## Hook 安裝與移除
 
-技能檔案安裝不會註冊 hook。先確認有效 `CODEX_HOME`（預設 `~/.codex`），檢查 preview 後，在既有授權範圍內執行同一指令去掉 `--preview`。以下示範隔離目錄：
+技能檔案安裝不會註冊 hook。Claude 使用者層級設定：`install --client claude --claude-settings <settings.json>`（預設 `~/.claude/settings.json`），於 SessionStart 新增 matcher `^(compact|resume)$`、command 結尾為 `hook --client claude` 的 group；同樣先 preview、備份、保留其他設定，重跑不重複，`uninstall` 加相同參數移除。使用者層級 hook 不需信任步驟；重啟 Claude Code 後在 `/hooks` 確認。以下 Codex 說明的 HCOM 排序與信任機制不適用於 Claude。
+
+Codex：先確認有效 `CODEX_HOME`（預設 `~/.codex`），檢查 preview 後，在既有授權範圍內執行同一指令去掉 `--preview`。以下示範隔離目錄：
 
 ```bash
 codex_home=/absolute/path/to/isolated-codex-home
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" install \
+uv run --no-project python "$lat_dir/scripts/lat-session.py" install \
   --codex-home "$codex_home" --preview
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" install \
+uv run --no-project python "$lat_dir/scripts/lat-session.py" install \
   --codex-home "$codex_home"
 ```
 
@@ -48,9 +53,9 @@ uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" install \
 install 將 LAT group 放在 HCOM SessionStart group 前方，避免 HCOM 重設 hooks 時搬動自己的 group，造成 LAT 的位置式信任 key 失效。舊版安裝重跑 install 會調整位置，須重新以 `/hooks` 信任 LAT；HCOM 由正常啟動流程恢復自己的信任。HCOM／Codex 更新或重設 hooks 後，仍應在 `/hooks` 確認 LAT 為啟用且已信任。
 
 ```bash
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" uninstall \
+uv run --no-project python "$lat_dir/scripts/lat-session.py" uninstall \
   --codex-home "$codex_home" --preview
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" uninstall \
+uv run --no-project python "$lat_dir/scripts/lat-session.py" uninstall \
   --codex-home "$codex_home"
 ```
 
@@ -59,7 +64,7 @@ uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" uninstall \
 ## 邊界與限制
 
 - v1 僅支援 Git 工作區。activate 要求正規化後的 worktree 根目錄；子目錄 cwd 可恢復，但 hook 只查最近 `.git` 邊界的工作區，另一 worktree／巢狀 repo 不繼承。非 Git 的 activate 報錯，hook 靜默。
-- hook 使用 payload `session_id`（hook process 沒有 `CODEX_THREAD_ID`），只匹配自己的紀錄。client=codex、role=orchestrator、workspace、session_id、active 全部相符才提示。這是流程提醒，不是防惡意 Agent 的安全門禁。
+- hook 使用 payload `session_id`（hook process 沒有主控的 session 環境變數），只匹配自己的紀錄。client 與 hook 的 `--client` 相同、role=orchestrator、workspace、session_id、active 全部相符才提示。這是流程提醒，不是防惡意 Agent 的安全門禁。
 - 沒有該 ID 的紀錄或已知條件不符：exit 0、零輸出。精確 ID 的紀錄損壞，或匹配後所需檔案缺失：輸出短恢復錯誤，不推定授權。
 - `/clear` 與 fork／新 session 不繼承標記。`/clear` 不改舊紀錄；日後 resume 舊對話仍可恢復，直到明確停用。沒有 clear handler；SessionEnd 也不刪紀錄。SubagentStart／Stop 不掛此 hook（其 payload ID 是父 session）。
 - 每次 compact／resume 都重新匹配，不設永久「已提示」旗標；不累積全文、不呼叫模型、不掃 transcript、不連網、不觸發 compact。

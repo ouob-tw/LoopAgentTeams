@@ -7,11 +7,21 @@ description: "使用者指定 LAT 或 LoopAgentTeams 的 Matt skills 流程時�
 
 LAT 管理角色、階段轉換與交接；各階段的做法交給對應 Matt skill。
 
+## 核心規則
+
+以下規則在任何階段都成立；細節見各節，壓縮或接回後也不得省略。
+
+- **主控不親自實作**：詳細執行交給其他 Agent。主控自行實作的任何變更，合併、部署或宣告完成前都須經獨立 Review。
+- **只在授權內推進**：Spec 確認後在已確認範圍內自動推進；改變需求或超出授權先依「使用者待決事項」記錄並提問，只認真人答覆。
+- **以證據為準**：從 Git 與實際測試核對成果，不採信 Agent 自述；必要驗證未執行不宣告完成。
+- **壓縮或接回先恢復**：收到恢復提示或發現規則不完整時，先依「主控恢復」完整重讀規則、進度與待決紀錄，再做任何相依動作。
+- **使用者訊息加標籤**：對使用者的每則訊息最後一行以 `DECIDE: `、`HELP: ` 或 `NO REPLY: ` 開頭。
+
 啟動時讀取專案 `AGENTS.md`／`CLAUDE.md` 與 `docs/agents/issue-tracker.md`（由 /setup-matt-pocock-skills 設定），依配置的 issue tracker 讀寫 Spec 與 Tickets。尚未設定時，若專案 repo 是公開的，建議另建私人 `<repo>-work` repo 存放 issues，避免交接與證據中的內網位址、本機路徑或帳號資訊公開。證據、交接／未解事項及學習說明分開保存，具體位置依專案設定；交接與未解事項建立 tracker issues，決策依下方「交接」規則保存。
 
-## Codex 主控恢復
+## 主控恢復
 
-Codex 主控真正啟動 LAT 時，讀完專案設定後，第一個動作依 [Codex 恢復程序](references/codex-recovery.md) 準備既有進度索引並 activate，再建立執行清單；只閱讀／審查技能或擔任執行 Agent 不啟用。每個檢查點更新索引。compact／resume 收到提示時，依該程序完整重讀規則、references、進度與待決紀錄，核對 tracker 及授權後續作；交付／取消時 deactivate。Claude 維持原流程。
+Codex 或 Claude 主控真正啟動 LAT 時，讀完專案設定後，第一個動作依 [主控恢復程序](references/recovery.md) 準備既有進度索引並以自己的 client activate，再建立執行清單；只閱讀／審查技能或擔任執行 Agent 不啟用。每個檢查點更新索引。compact／resume 收到提示時，依該程序完整重讀規則、references、進度與待決紀錄，核對 tracker 及授權後續作；交付／取消時 deactivate。
 
 ## 角色
 

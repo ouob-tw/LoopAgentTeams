@@ -98,18 +98,25 @@ uv run scripts/install-matt-skills.py
 
 腳本需在[本地 clone](#本地開發) 的 repo 目錄執行，並需要 `uv`、`gh`、`bunx` 與 `trash-put`；加上 `--dry-run` 可先預覽。預設全域安裝至 Claude Code 與 Codex，使用其他 client 時加上 `--agent`。其他選項見 [skills 安裝說明](https://github.com/vercel-labs/skills#readme)。
 
-**3. Codex 壓縮恢復 hook**（以 Codex 擔任 LAT 主控時建議安裝；Claude 不需要）：
+**3. 壓縮恢復 hook**（以 Codex 或 Claude 擔任 LAT 主控時建議安裝）：
 
-Codex 壓縮上下文後不會保留已載入的 LAT 內容。安裝此 hook 後，登記為 LAT 主控的 Codex 對話在壓縮或接回時會收到短提示，先完整重讀 LAT 規則、進度與待決紀錄再繼續。需要 `uv`。
+Codex 壓縮上下文後不會保留已載入的 LAT 內容；Claude 只保留每個技能的前段，LAT 後段規則與 references 會遺失。安裝此 hook 後，登記為 LAT 主控的對話在壓縮或接回時會收到短提示，先完整重讀 LAT 規則、進度與待決紀錄再繼續。需要 `uv`。
 
 ```bash
 lat_dir="$HOME/.agents/skills/lat"
 codex_home="${CODEX_HOME:-$HOME/.codex}"
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" install --codex-home "$codex_home" --preview
-uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" install --codex-home "$codex_home"
+uv run --no-project python "$lat_dir/scripts/lat-session.py" install --codex-home "$codex_home" --preview
+uv run --no-project python "$lat_dir/scripts/lat-session.py" install --codex-home "$codex_home"
 ```
 
-確認 preview 只新增 LAT 的 hook 後再安裝；原本的 `hooks.json` 會先備份，其他 hooks 保留。重新啟動 Codex，在 `/hooks` 的 `SessionStart` 只信任 command 結尾為 `codex-lat-session.py hook` 的項目。HCOM／Codex 更新或重設 hooks 後，再到 `/hooks` 確認它仍受信任。使用方式、停用遺留紀錄與移除步驟見 [Codex LAT 壓縮後恢復](docs/codex-lat-recovery.md)。
+確認 preview 只新增 LAT 的 hook 後再安裝；原本的 `hooks.json` 會先備份，其他 hooks 保留。重新啟動 Codex，在 `/hooks` 的 `SessionStart` 只信任 command 結尾為 `lat-session.py hook` 的項目。HCOM／Codex 更新或重設 hooks 後，再到 `/hooks` 確認它仍受信任。使用方式、舊版 `codex-lat-session.py` 的升級、停用遺留紀錄與移除步驟見 [LAT 壓縮後恢復](docs/lat-recovery.md)。
+
+Claude Code 寫入使用者層級的 `~/.claude/settings.json`，不需信任步驟，重啟 Claude Code 後生效：
+
+```bash
+uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client claude --preview
+uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client claude
+```
 
 ### 專案初始化
 
@@ -143,7 +150,7 @@ uv run --no-project python "$lat_dir/scripts/codex-lat-session.py" install --cod
 - [三層測試](skills/local/three-tier-testing/SKILL.md)
 - [HCOM／HERDR workspace 設定](docs/hcom-herdr-setup.md)
 - [Codex context 壓縮後的 HCOM 說明](docs/codex-hcom-compact.md)
-- [Codex LAT 壓縮後恢復：安裝與使用](docs/codex-lat-recovery.md)
+- [LAT 壓縮後恢復：安裝與使用](docs/lat-recovery.md)
 
 ## 本地開發
 

@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Codex LAT controller records and SessionStart recovery (stdlib only)."""
+"""Codex/Claude LAT controller records and SessionStart recovery (stdlib only)."""
 import argparse
 import copy
 import difflib
@@ -13,11 +13,16 @@ import tempfile
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 GROUP_NAME = 'lat-codex-recovery'
+# The controller reads its own session ID from the client environment.
+SESSION_ENV = dict(codex='CODEX_THREAD_ID', claude='CLAUDE_CODE_SESSION_ID')
+MATCHER = '^(compact|resume)$'
+# Pre-rename installs used codex-lat-session.py; recognize them so install/uninstall migrate.
+COMMAND_NAMES = ('lat-session.py', 'codex-lat-session.py')
 
 
 def session_id(value):
     if not isinstance(value, str) or not re.fullmatch(r'[A-Za-z0-9_-]{1,128}', value):
-        raise ValueError('A valid CODEX_THREAD_ID is required; do not infer a session ID')
+        raise ValueError('A valid client session ID is required; do not infer a session ID')
     return value
 
 
@@ -79,8 +84,8 @@ def activate(args):
     workspace = args.workspace.resolve(strict=True)
     if workspace_root(workspace) != workspace:
         raise ValueError('--workspace must be the Git worktree root')
-    sid = session_id(os.environ.get('CODEX_THREAD_ID'))
-    record = dict(client='codex', session_id=sid, role='orchestrator',
+    sid = session_id(os.environ.get(SESSION_ENV[args.client]))
+    record = dict(client=args.client, session_id=sid, role='orchestrator',
                   workspace=str(workspace), status='active', skill_dir=str(SKILL_DIR),
                   progress_path=str(args.progress.resolve(strict=True)),
                   decisions_path=str(args.decisions.resolve(strict=True)))
@@ -106,11 +111,11 @@ def pointer(path):
 
 def deactivate(args):
     workspace = args.workspace.resolve(strict=True)
-    sid = session_id(args.session_id or os.environ.get('CODEX_THREAD_ID'))
+    sid = session_id(args.session_id or os.environ.get(SESSION_ENV[args.client]))
     path = workspace / '.lat/sessions' / f'{sid}.json'
     original = current_bytes(path)
     record = read_json(path)
-    expected = dict(client='codex', session_id=sid, role='orchestrator',
+    expected = dict(client=args.client, session_id=sid, role='orchestrator',
                     workspace=str(workspace))
     if any(record.get(key) != value for key, value in expected.items()):
         raise ValueError('Controller identity does not match; record unchanged')
@@ -125,7 +130,10 @@ def context(text):
 
 
 def configure(args):
-    path = args.codex_home.expanduser().resolve() / 'hooks.json'
+    if args.client == 'codex':
+        path = args.codex_home.expanduser().resolve() / 'hooks.json'
+    else:
+        path = args.claude_settings.expanduser().resolve()
     original = current_bytes(path)
     config = json.loads(original) if original is not None else {}
     if not isinstance(config, dict) or not isinstance(config.get('hooks', {}), dict):
@@ -135,10 +143,18 @@ def configure(args):
     groups = events.setdefault('SessionStart', [])
     if not isinstance(groups, list) or any(not isinstance(g, dict) for g in groups):
         raise ValueError('Expected SessionStart matcher groups')
-    owned = [g for g in groups if g.get('name') == GROUP_NAME]
+    if args.client == 'codex':
+        owned = [g for g in groups if g.get('name') == GROUP_NAME]
+    else:
+        # Claude settings groups have no name field; own the group holding our command.
+        owned = [g for g in groups if isinstance(g.get('hooks'), list)
+                 and any(is_lat_command(h) for h in g['hooks'])]
     if args.action == 'install':
-        command = shlex.join(['uv', 'run', '--no-project', 'python',
-                              str(SKILL_DIR / 'scripts/codex-lat-session.py'), 'hook'])
+        command = ['uv', 'run', '--no-project', 'python',
+                   str(SKILL_DIR / 'scripts/lat-session.py'), 'hook']
+        if args.client == 'claude':
+            command += ['--client', 'claude']
+        command = shlex.join(command)
         handler = dict(type='command', command=command)
         if owned:
             # Own only our command, preserving unknown fields and added third-party handlers.
@@ -149,23 +165,32 @@ def configure(args):
             if not isinstance(handlers, list):
                 raise ValueError('Invalid LAT command group')
             lat_handlers = [h for h in handlers if is_lat_command(h)]
+            # An unnamed Claude group may be shared; resetting its matcher would
+            # change when the other handlers run.
+            if args.client == 'claude' and len(lat_handlers) != len(handlers):
+                raise ValueError('LAT hook shares a SessionStart group with other handlers; '
+                                 'move them to their own group and retry')
             if len(lat_handlers) > 1:
                 raise ValueError('LAT group ownership is ambiguous; inspect hooks.json')
             if lat_handlers:
                 lat_handlers[0].update(handler)
             else:
                 handlers.append(handler)
-            group['matcher'] = '^(compact|resume)$'
+            group['matcher'] = MATCHER
+        elif args.client == 'codex':
+            group = dict(name=GROUP_NAME, matcher=MATCHER, hooks=[handler])
+            groups.append(group)
         else:
-            group = dict(name=GROUP_NAME, matcher='^(compact|resume)$', hooks=[handler])
+            group = dict(matcher=MATCHER, hooks=[handler])
             groups.append(group)
         # HCOM re-setup removes its group and appends it again. Keep LAT before
         # that group so its positional Codex trust key survives reconciliation.
-        groups.remove(group)
-        index = next((i for i, g in enumerate(groups)
-                      if any(is_hcom_sessionstart(h) for h in g.get('hooks', []))),
-                     len(groups))
-        groups.insert(index, group)
+        if args.client == 'codex':
+            groups.remove(group)
+            index = next((i for i, g in enumerate(groups)
+                          if any(is_hcom_sessionstart(h) for h in g.get('hooks', []))),
+                         len(groups))
+            groups.insert(index, group)
     else:
         for group in owned:
             handlers = group.get('hooks')
@@ -189,12 +214,15 @@ def configure(args):
     if current_bytes(path) != original:
         raise ValueError('Concurrent hooks.json change; retry after inspection')
     if original is not None:
-        with tempfile.NamedTemporaryFile(prefix='hooks.json.lat-backup-', dir=path.parent,
+        with tempfile.NamedTemporaryFile(prefix=f'{path.name}.lat-backup-', dir=path.parent,
                                          delete=False) as backup:
             backup.write(original)
             print(f'Backup: {backup.name}')
     write_json(path, updated, original)
-    print(f'Updated {path}; review changed hooks through Codex /hooks before use')
+    if args.client == 'codex':
+        print(f'Updated {path}; review changed hooks through Codex /hooks before use')
+    else:
+        print(f'Updated {path}; restart Claude Code sessions and confirm the hook in /hooks')
 
 
 def is_hcom_sessionstart(handler):
@@ -213,14 +241,15 @@ def is_lat_command(handler):
         return False
     try:
         command = shlex.split(handler.get('command', ''))
-        return (len(command) == 6 and command[:4] == ['uv', 'run', '--no-project', 'python']
-                and Path(command[4]).name == 'codex-lat-session.py' and command[5] == 'hook')
+        return (len(command) in (6, 8) and command[:4] == ['uv', 'run', '--no-project', 'python']
+                and Path(command[4]).name in COMMAND_NAMES and command[5] == 'hook'
+                and command[6:] in ([], ['--client', 'claude']))
     except (ValueError, TypeError):
         return False
 
 
-def hook():
-    # Hook payload IDs are authoritative: the hook process has no CODEX_THREAD_ID.
+def hook(client):
+    # Hook payload IDs are authoritative: the hook process has no client session env.
     try:
         payload = json.load(sys.stdin)
         if not isinstance(payload, dict) or payload.get('hook_event_name') != 'SessionStart':
@@ -239,7 +268,7 @@ def hook():
         return
     try:
         record = read_json(path)
-        expected = dict(client='codex', session_id=sid, role='orchestrator',
+        expected = dict(client=client, session_id=sid, role='orchestrator',
                         workspace=str(root), status='active')
         # Reject known mismatches before checking broken dependencies.
         if any(key in record and record[key] != value for key, value in expected.items()):
@@ -256,7 +285,7 @@ def hook():
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     sub = parser.add_subparsers(dest='action', required=True)
-    start = sub.add_parser('activate', help='Activate only the current Codex LAT controller')
+    start = sub.add_parser('activate', help='Activate only the current LAT controller')
     start.add_argument('--workspace', type=Path, required=True)
     start.add_argument('--progress', type=Path, required=True)
     start.add_argument('--decisions', type=Path, required=True)
@@ -269,7 +298,11 @@ def main():
         config = sub.add_parser(action, help=f'{action.title()} the independent LAT hook group')
         config.add_argument('--codex-home', type=Path,
                             default=Path(os.environ.get('CODEX_HOME', '~/.codex')))
+        config.add_argument('--claude-settings', type=Path,
+                            default=Path('~/.claude/settings.json'))
         config.add_argument('--preview', action='store_true', help='Show diff without writing')
+    for command in sub.choices.values():
+        command.add_argument('--client', choices=tuple(SESSION_ENV), default='codex')
     args = parser.parse_args()
     try:
         if args.action == 'activate':
@@ -277,7 +310,7 @@ def main():
         elif args.action == 'deactivate':
             deactivate(args)
         elif args.action == 'hook':
-            hook()
+            hook(args.client)
         else:
             configure(args)
     except (OSError, ValueError, TypeError, KeyError) as exc:
