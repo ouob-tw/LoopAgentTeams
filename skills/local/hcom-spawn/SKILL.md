@@ -117,14 +117,20 @@ hcom kill tag:<自身名稱>-<主題> --name <自身名稱>   # 整組都符合�
 
 `hcom r` 會自己重放原本的啟動參數，所以**不要重複傳 `--model` 或 `--yolo`**，重複會讓 Codex 啟動失敗。
 
-明確指定已記錄的名稱或 session ID，不用 `--last`。一般接回沿用原 effort；卡住升級時用已選定的新 effort，模型與權限維持原值。Codex 接回時一律在指令最後附上 effort（原值或新值），原因見下方實測。只補 effort：
+需要 HCOM >= 0.7.27。明確指定已記錄的名稱或 session ID，不用 `--last`。一般接回沿用原模型、effort 與權限：
+
+```bash
+hcom r <名稱或session-ID> --go --name <自身名稱>
+```
+
+只有要改 effort（例如卡住升級）時，才在指令最後附上已選定的新 effort，模型與權限維持原值：
 
 ```bash
 hcom r <名稱或session-ID> --go --name <自身名稱> -c 'model_reasoning_effort="<目標 effort>"'   # Codex
 hcom r <名稱或session-ID> --go --name <自身名稱> --effort <目標 effort>                       # Claude
 ```
 
-HCOM 0.7.26 實測：Codex CLI 0.158.0 接回時，HCOM 重放的 effort 放在 `resume` 之前不會生效，改用全域設定的預設 effort，附在指令最後的 effort 才會生效；Claude Code 2.1.284 會重放原 `--effort medium`，再附 `--effort high` 不報錯，後面的 high 生效。Claude 沿用原 effort 時也可不帶參數接回。這些結果限於已測版本，更新後重新核對。
+HCOM 0.7.27 / Codex CLI 0.159.3 實測：未附 effort 接回保留原 low，附上 high 後生效。Claude 的沿用原 effort 與附上 high 覆寫行為僅在 HCOM 0.7.26 / Claude Code 2.1.284 測過，未在 0.7.27 重測。這些結果限於已測版本，更新後重新核對。
 
 接回後照「啟動後核對」看畫面，再核對 session ID、工作目錄與 transcript：Codex 看新一輪的 `turn_context`（model、effort、approval_policy、sandbox_policy），Claude 看新一輪的 `message.model`、`effort`／`perTurnEffort` 及使用者訊息的 `permissionMode`。確認目標 effort、原模型與權限，並讓 Agent 接續關閉前的對話；啟動參數或「啟動成功」本身不算驗證。無法確認的項目標為未確認。
 
