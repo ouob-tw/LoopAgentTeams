@@ -686,7 +686,7 @@ class NotificationTests(PanelTestCase):
                 if mode == "raw":
                     self.assertIn("答覆：\na\n", self.questions.read_text())
                 else:
-                    self.assertIn("答覆：A. Yes（建議）\n", self.questions.read_text())
+                    self.assertIn("答覆：A. Yes\n", self.questions.read_text())
                 self.assertFalse(self.pending())
                 self.assertEqual(len(self.calls()), 2)
 

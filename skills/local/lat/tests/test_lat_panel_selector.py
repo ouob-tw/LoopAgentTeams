@@ -141,7 +141,7 @@ class SingleSelectTests(SelectorTestCase):
         app = self.make_app()
         async with app.run_test() as pilot:
             await self.press(pilot, "2")
-            self.assertIn("答覆：B. 合併到 dev，並推送到 GitHub（建議）\n\n- [ ] 送出", section(self.text(), "Q1"))
+            self.assertIn("答覆：B. 合併到 dev，並推送到 GitHub\n\n- [ ] 送出", section(self.text(), "Q1"))
             self.assertIn("☒ 正式版要怎麼併…", self.tabs(app))
             self.assertIn("2. 合併到 dev，並推送到 GitHub（建議）  ✔", self.view(app))
             await self.press(pilot, "down", "enter")
@@ -209,6 +209,24 @@ class MultiSelectTests(SelectorTestCase):
             self.assertEqual(app.current.id, "Q3")
         self.assertEqual(self.calls(), [])
 
+    async def test_recommended_marker_is_display_only_and_old_answers_still_restore(self):
+        self.questions.write_text(MULTI.replace("- [ ] 封存", "- [ ] 封存（建議）"))
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            self.assertIn("2. [ ] 封存（建議）", self.view(app))
+            await self.press(pilot, "2", "1")
+            self.assertIn("答覆：封存；主控綁定\n", self.text())
+        self.questions.write_text(MULTI.replace("- [ ] 封存", "- [ ] 封存（建議）").replace(
+            "答覆：\n", "答覆：封存（建議）；通知\n"
+        ) + "\n" + SINGLE.replace("Q1 · r1", "Q4 · r1").replace(
+            "答覆：\n", "答覆：B. 合併到 dev，並推送到 GitHub（建議）\n"
+        ))
+        reopened = self.make_app()
+        async with reopened.run_test():
+            self.assertEqual(reopened.drafts["Q2"].selected, [1, 2])
+            self.assertEqual(reopened.drafts["Q2"].unmatched, "")
+            self.assertEqual(reopened.drafts["Q4"].selected, [1])
+
     async def test_unchecking_everything_clears_the_draft(self):
         app = self.make_app()
         async with app.run_test() as pilot:
@@ -254,7 +272,8 @@ class InputOnlyTests(SelectorTestCase):
             self.assertTrue(self.text().endswith("答覆：x\n- [x] 送\n\n- [ ] 送出\n"))
             self.assertEqual(self.core.parse_questions(self.text())[-1]["status"], "pending")
             await self.press(pilot, "escape", "right")
-            self.assertIn("☒ 還有什麼想法？\n  （未儲存：答覆或備註含不允許的行）", self.view(app))
+            self.assertIn("☐ 還有什麼想法？\n  （未儲存：答覆或備註含不允許的行）", self.view(app))
+            self.assertIn("☐ 還有什麼想法？", self.tabs(app))
             await self.press(pilot, "enter")
             self.assertIn("沒有可送出的答覆", self.status(app))
             await self.press(pilot, "left", "enter", "backspace", "backspace", "escape")
@@ -318,7 +337,7 @@ class SubmitTests(SelectorTestCase):
                 "送出前檢查",
                 "",
                 "☒ 正式版要怎麼併入？",
-                "  B. 合併到 dev，並推送到 GitHub（建議）",
+                "  B. 合併到 dev，並推送到 GitHub",
                 "☒ 要開哪些功能？",
                 "  主控綁定",
                 "☐ 還有什麼想法？",

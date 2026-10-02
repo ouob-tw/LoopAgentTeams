@@ -52,6 +52,7 @@ RECORDED = "✔ 已記錄"
 LOCKED = "已送出或已記錄的題目不能修改；要改答案請在聊天告訴主控"
 FORGED = "答覆或備註不能有單獨一行寫成「- [x] 送出」、「答覆：」或題目標題；這次輸入沒有儲存"
 TAB_TITLE_CELLS = 16
+RECOMMENDED = "（建議）"
 NO_BINDING = "此 workspace 沒有綁定的 LAT 主控"
 CONFLICT = "外部內容已變更，暫停儲存。F5：備份目前草稿並載入磁碟版本。"
 CONFLICT_CLOSE = "有未存的衝突草稿。先按 F5 備份草稿並載入磁碟版本，再關閉。"
@@ -212,6 +213,11 @@ def wrap_rows(rows, width):
     return output, starts
 
 
+def answer_label(label):
+    """Option text as written to the answer area; 建議 is display-only."""
+    return label.removesuffix(RECOMMENDED).rstrip()
+
+
 def short_title(title):
     if cell_len(title) <= TAB_TITLE_CELLS:
         return title
@@ -298,7 +304,7 @@ class Draft:
                 or selection.startswith(f"{option.key}.")
             ):
                 return index
-            if selection == option.label:
+            if selection in (option.label, answer_label(option.label)):
                 return index
         return None
 
@@ -317,10 +323,10 @@ class Draft:
                 return None
             option = self.options[self.selected[0]]
             return lat_panel.QuestionAnswer(
-                "single", (f"{option.key}. {option.label}",), "", self.note
+                "single", (f"{option.key}. {answer_label(option.label)}",), "", self.note
             )
         labels = tuple(
-            self.options[index].label for index in self.selected
+            answer_label(self.options[index].label) for index in self.selected
             if index != self.other_index
         )
         other = self.other if self.other_index in self.selected and self.other.strip() else ""
@@ -342,6 +348,8 @@ class Draft:
     def marker(self):
         if self.status == "recorded":
             return "✔"
+        if self.unsaved:
+            return "☐"
         return "☒" if self.answer() is not None or self.unmatched else "☐"
 
 
