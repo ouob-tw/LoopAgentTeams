@@ -93,7 +93,7 @@ def _question_changes(before, after):
     for question_id in sorted(before_by_id.keys() | after_by_id.keys()):
         old = before_by_id.get(question_id)
         new = after_by_id.get(question_id)
-        if old is None or new is None or _section_text(old) != _section_text(new):
+        if old is None or new is None or old["raw"] != new["raw"]:
             change = {
                 "id": question_id,
                 "before_status": old["status"] if old else None,

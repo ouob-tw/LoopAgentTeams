@@ -126,6 +126,33 @@ class LockedReplaceTests(unittest.TestCase):
                 }],
             })
 
+    def test_panel_save_records_a_question_changed_only_in_an_archived_revision(self):
+        panel = load_module()
+        before = (
+            "## Q1 | r2 | pending\n問題：Current\n選項：A\n建議：\n影響：\n"
+            "答覆：\n批註：\n\n"
+            "### 舊版 r1（不套用至 r2）\n答覆：Old\n批註：Before\n"
+        )
+        after = before.replace("批註：Before", "批註：After")
+        with tempfile.TemporaryDirectory() as directory:
+            path = Path(directory) / ".lat/questions.md"
+            path.parent.mkdir()
+            path.write_text(before)
+
+            self.assertTrue(panel.save_panel_edit(path, before, after))
+
+            entry = json.loads(
+                (path.parent / "panel-journal.jsonl").read_text().splitlines()[-1]
+            )
+            self.assertEqual(entry["changed_questions"], [{
+                "id": "Q1",
+                "before_status": "pending",
+                "after_status": "pending",
+                "section_sha256": hashlib.sha256(
+                    before.split("\n\n### 舊版", 1)[0].encode() + b"\n"
+                ).hexdigest(),
+            }])
+
 
 class QuestionCliTests(unittest.TestCase):
     def setUp(self):
