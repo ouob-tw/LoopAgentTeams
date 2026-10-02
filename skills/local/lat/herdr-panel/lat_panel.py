@@ -24,6 +24,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   question provenance --id ID --journal panel-journal.jsonl
   question set-status --id ID --revision N --status recorded \
       --expected-section-sha256 HASH
+  question archive-recorded --older-than 300
   bind --hcom-name NAME --client CLIENT --session-id ID --workspace ROOT \
        [--herdr-workspace ID]
   unbind --session-id ID
@@ -105,15 +106,29 @@ def _question_changes(before, after):
     return changes
 
 
-def _append_journal(journal_path, before, after):
+def _iso_time(now=None):
+    value = datetime.now().astimezone() if now is None else now
+    if value.tzinfo is None or value.utcoffset() is None:
+        raise ValueError("time must include a UTC offset")
+    return value.isoformat(timespec="seconds")
+
+
+def _append_journal(journal_path, before, after, *, kind=None, details=None, now=None):
     journal_path = Path(journal_path)
     journal_path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
-        "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "time": (
+            datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+            if now is None else now.astimezone(timezone.utc).isoformat().replace("+00:00", "Z")
+        ),
         "before_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
         "after_sha256": hashlib.sha256(after.encode("utf-8")).hexdigest(),
         "changed_questions": _question_changes(before, after),
     }
+    if kind is not None:
+        entry["kind"] = kind
+    if details:
+        entry.update(details)
     with journal_path.open("a", encoding="utf-8") as journal:
         journal.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
         journal.flush()
@@ -150,7 +165,8 @@ def save_panel_edit(questions_path, expected_text, new_text):
 _SECTION_HEADER = re.compile(
     r"^## (?P<title>[^\r\n]+)\r?\n"
     r"(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*) · r(?P<revision>[1-9][0-9]*) · "
-    r"(?P<status_label>待答|已記錄)[ \t]*$",
+    r"(?P<status_label>待答|已記錄)"
+    r"(?: · (?P<recorded_at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d))?[ \t]*$",
     re.MULTILINE,
 )
 _ARCHIVE_HEADER = re.compile(
@@ -197,6 +213,7 @@ def parse_questions(text):
             "revision": int(match.group("revision")),
             "status": status,
             "status_label": status_label,
+            "recorded_at": match.group("recorded_at"),
             "start": match.start(),
             "end": end,
             "raw": raw,
@@ -205,7 +222,7 @@ def parse_questions(text):
             "answer_block": answer_block,
             "checked": checked,
             "status_start": match.start("status_label") - match.start(),
-            "status_end": match.end("status_label") - match.start(),
+            "status_end": match.end() - match.start(),
         })
     return sections
 
@@ -222,6 +239,11 @@ def _section_text(section):
 
 def _section_sha256(section):
     return hashlib.sha256(_section_text(section).encode("utf-8")).hexdigest()
+
+
+def _full_section_sha256(section):
+    text = section["raw"].rstrip("\r\n") + "\n"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
 
 
 def _question_section(document, question_id):
@@ -358,7 +380,7 @@ def upsert_question(questions_path, question_id, section_text):
 
 
 def set_question_status(
-    questions_path, question_id, revision, status, expected_section_sha256
+    questions_path, question_id, revision, status, expected_section_sha256, *, now=None
 ):
     """Set status only when the revision and current section hash both match."""
     if status != "recorded":
@@ -377,10 +399,119 @@ def set_question_status(
                 f"section hash mismatch: expected {expected_section_sha256}, "
                 f"found {actual_section_sha256}"
             )
+        recorded_at = _iso_time(now)
         status_start = existing["start"] + existing["status_start"]
         status_end = existing["start"] + existing["status_end"]
-        updated = document[:status_start] + "已記錄" + document[status_end:]
+        updated = (
+            document[:status_start]
+            + f"已記錄 · {recorded_at}"
+            + document[status_end:]
+        )
         _replace_locked(questions_path, updated)
+        recorded_section = _question_section(updated, question_id)
+        _append_journal(
+            questions_path.parent / "panel-journal.jsonl",
+            document,
+            updated,
+            kind="set-status",
+            details={
+                "recorded_question": question_id,
+                "recorded_revision": revision,
+                "recorded_at": recorded_at,
+                "recorded_section_sha256": _full_section_sha256(recorded_section),
+            },
+            now=now,
+        )
+
+
+def _recorded_hashes(journal_path):
+    hashes = {}
+    try:
+        lines = Path(journal_path).read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        return hashes
+    for line_number, line in enumerate(lines, 1):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid panel journal line {line_number}: {error.msg}") from None
+        if entry.get("kind") == "set-status" and entry.get("recorded_question"):
+            hashes[entry["recorded_question"]] = entry.get("recorded_section_sha256")
+    return hashes
+
+
+def _archive_path(questions_path):
+    questions_path = Path(questions_path)
+    return questions_path.with_name(f"{questions_path.stem}-archive{questions_path.suffix}")
+
+
+def _append_archive(path, sections):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    additions = [section for section in sections if section not in existing]
+    if not additions:
+        return
+    separator = "" if not existing or existing.endswith("\n\n") else "\n"
+    with path.open("a", encoding="utf-8") as archive:
+        archive.write(separator + "".join(additions))
+        archive.flush()
+        os.fsync(archive.fileno())
+
+
+def archive_recorded_questions(
+    questions_path, older_than, *, expected_text=None, now=None
+):
+    """Move unchanged recorded sections older than ``older_than`` seconds.
+
+    Returns archived question IDs. If ``expected_text`` no longer matches the
+    file, returns ``None`` without changing either file.
+    """
+    questions_path = Path(questions_path)
+    current_time = datetime.now().astimezone() if now is None else now
+    if current_time.tzinfo is None or current_time.utcoffset() is None:
+        raise ValueError("time must include a UTC offset")
+    journal_path = questions_path.parent / "panel-journal.jsonl"
+    archive_path = _archive_path(questions_path)
+    with _path_lock(questions_path):
+        document = questions_path.read_text(encoding="utf-8")
+        if expected_text is not None and document != expected_text:
+            return None
+        recorded_hashes = _recorded_hashes(journal_path)
+        eligible = []
+        for section in _sections(document):
+            if section["status"] != "recorded" or not section["recorded_at"]:
+                continue
+            recorded_at = datetime.fromisoformat(section["recorded_at"])
+            if (current_time - recorded_at).total_seconds() <= older_than:
+                continue
+            if recorded_hashes.get(section["id"]) != _full_section_sha256(section):
+                continue
+            eligible.append(section)
+        if not eligible:
+            return []
+        archived_ids = [section["id"] for section in eligible]
+        archived_raw = [section["raw"] for section in eligible]
+        kept = []
+        cursor = 0
+        for section in eligible:
+            kept.append(document[cursor:section["start"]])
+            cursor = section["end"]
+        kept.append(document[cursor:])
+        updated = "".join(kept)
+        _append_archive(archive_path, archived_raw)
+        _replace_locked(questions_path, updated)
+        _append_journal(
+            journal_path,
+            document,
+            updated,
+            kind="archive-recorded",
+            details={
+                "archived_questions": archived_ids,
+                "archive_path": str(archive_path),
+            },
+            now=now,
+        )
+        return archived_ids
 
 
 def plugin_directory(kind, env=None):
@@ -634,6 +765,11 @@ def _build_parser():
         "--status", required=True, choices=("recorded",)
     )
     set_status.add_argument("--expected-section-sha256", required=True)
+    archive_recorded = question_commands.add_parser("archive-recorded")
+    archive_recorded.add_argument(
+        "--questions", type=Path, default=Path(".lat/questions.md")
+    )
+    archive_recorded.add_argument("--older-than", type=float, default=300)
     bind = commands.add_parser("bind")
     bind.add_argument("--hcom-name", required=True)
     bind.add_argument("--client", required=True)
@@ -676,6 +812,17 @@ def main(argv=None):
                 args.questions, args.id, args.revision, args.status,
                 args.expected_section_sha256,
             )
+            return 0
+        if args.command == "question" and args.question_command == "archive-recorded":
+            if args.older_than < 0:
+                raise ValueError("--older-than must be zero or greater")
+            expected = args.questions.read_text(encoding="utf-8")
+            archived = archive_recorded_questions(
+                args.questions, args.older_than, expected_text=expected
+            )
+            if archived is None:
+                raise ValueError("questions changed while archiving; retry")
+            print(json.dumps({"archived": archived}, ensure_ascii=False))
             return 0
         if args.command == "bind":
             binding, replaced = bind_controller(

@@ -4,6 +4,7 @@ Run with Textual available:
   uv run --no-project --with textual==8.2.8 python -m unittest discover -s "$lat_dir/tests"
 """
 import importlib.util
+from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
@@ -195,6 +196,55 @@ class EditorTests(PanelTestCase):
             self.assertFalse(self.pending())
             self.assertEqual(self.status(app), "")
 
+    async def test_recorded_question_is_archived_on_open_without_notify(self):
+        recorded_at = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc)
+        expected_hash = self.core._section_sha256(
+            self.core.parse_questions(self.questions.read_text())[0]
+        )
+        self.core.set_question_status(
+            self.questions, "Q1", 1, "recorded", expected_hash, now=recorded_at,
+        )
+        app = self.make_app(
+            ARCHIVE_AFTER=300,
+            archive_now=lambda _self: recorded_at + timedelta(seconds=301),
+        )
+
+        async with app.run_test():
+            self.assertNotIn("Q1 · r1", app.editor.text)
+            self.assertIn(
+                "## Choose?", self.questions.with_name("questions-archive.md").read_text()
+            )
+            self.assertEqual(self.calls(), [])
+            self.assertFalse(self.pending())
+
+    async def test_recorded_questions_are_archived_periodically_without_notify(self):
+        recorded_at = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc)
+        expected_hash = self.core._section_sha256(
+            self.core.parse_questions(self.questions.read_text())[0]
+        )
+        self.core.set_question_status(
+            self.questions, "Q1", 1, "recorded", expected_hash, now=recorded_at,
+        )
+        clock = [recorded_at + timedelta(seconds=299)]
+        app = self.make_app(
+            POLL_INTERVAL=0.05,
+            ARCHIVE_AFTER=300,
+            archive_now=lambda _self: clock[0],
+        )
+
+        async with app.run_test() as pilot:
+            self.assertIn("Q1 · r1 · 已記錄", app.editor.text)
+            self.assertFalse(self.questions.with_name("questions-archive.md").exists())
+            clock[0] = recorded_at + timedelta(seconds=301)
+            await pilot.pause(0.2)
+            self.assertNotIn("Q1 · r1", app.editor.text)
+            self.assertEqual(app.editor.text, self.questions.read_text())
+            self.assertIn(
+                "## Choose?", self.questions.with_name("questions-archive.md").read_text()
+            )
+            self.assertEqual(self.calls(), [])
+            self.assertFalse(self.pending())
+
     async def test_conflict_pauses_saving_and_f5_backs_up_draft_then_loads_disk(self):
         app = self.make_app(POLL_INTERVAL=60, NOTIFY_DELAY=30)
         async with app.run_test() as pilot:
@@ -221,6 +271,34 @@ class EditorTests(PanelTestCase):
             await pilot.press("z")
             await pilot.pause()
             self.assertIn("Agent impact.", self.questions.read_text())
+
+    async def test_periodic_archive_leaves_a_recorded_section_with_conflict_draft(self):
+        recorded_at = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc)
+        expected_hash = self.core._section_sha256(
+            self.core.parse_questions(self.questions.read_text())[0]
+        )
+        self.core.set_question_status(
+            self.questions, "Q1", 1, "recorded", expected_hash, now=recorded_at,
+        )
+        recorded = self.questions.read_text()
+        clock = [recorded_at + timedelta(seconds=299)]
+        app = self.make_app(
+            POLL_INTERVAL=0.05,
+            ARCHIVE_AFTER=300,
+            archive_now=lambda _self: clock[0],
+        )
+
+        async with app.run_test() as pilot:
+            self.questions.write_text("# Agent note\n\n" + recorded)
+            app.editor.move_cursor((7, 0))
+            await pilot.press("x")
+            await pilot.pause()
+            self.assertTrue(app.conflict)
+            clock[0] = recorded_at + timedelta(seconds=301)
+            await pilot.pause(0.2)
+            self.assertEqual(self.questions.read_text(), "# Agent note\n\n" + recorded)
+            self.assertFalse(self.questions.with_name("questions-archive.md").exists())
+            self.assertIn("外部內容已變更", self.status(app))
 
     async def test_missing_binding_or_file_opens_read_only_with_reason(self):
         for error, expected in (
