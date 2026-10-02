@@ -33,7 +33,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 
 `--herdr-workspace`、`--herdr-tab`、`--herdr-pane` 分別預設取 `HERDR_WORKSPACE_ID`、`HERDR_TAB_ID`、`HERDR_PANE_ID`。綁定以 session ID 為鍵；同一 session 重綁只更新自己，不會覆蓋同 workspace 的其他主控。輸出 JSON 的 `replaced` 不是 `null` 時，表示更新了自己上一筆綁定。任一必要 ID 缺少時不綁定、不猜測。
 
-按 F2 時，外掛先用 Herdr 0.9.3 的即時 pane/tab 快照找「主控 pane 現在位於目前 tab」的綁定；只有查詢失敗時才採用綁定時記下的 tab。若目前 tab 沒有主控，但 workspace 只有一個綁定，就直接開啟；有兩個以上則先顯示單行數字選單，按數字選檔，無效按鍵不動作，Ctrl+Q 關閉；完全沒有綁定才顯示「此 workspace 沒有綁定的 LAT 中控」。通知送出前會依問題檔自己的 session 再查一次綁定，不借用同 workspace 的其他主控。
+按 F2 時，外掛先用 Herdr 0.9.3 的即時 pane/tab 快照找「主控 pane 現在位於目前 tab」的綁定；只有查詢失敗時才採用綁定時記下的 tab。若目前 tab 沒有主控，但 workspace 只有一個綁定，就直接開啟；有兩個以上則先顯示單行數字選單，按數字選檔，無效按鍵不動作，Ctrl+Q 關閉。每頁最多九個主控，超過時用左右方向鍵換頁後再按單一數字；完全沒有綁定才顯示「此 workspace 沒有綁定的 LAT 中控」。通知送出前會依問題檔自己的 session 再查一次綁定，不借用同 workspace 的其他主控。
 
 舊版 `bindings.json` 以 workspace 為鍵，正式版不會拿來路由；讀取時會回報 `legacy bindings ignored`。第一個主控重新綁定時會建立 v2 資料並回報 `legacy_ignored` 數量，其他主控再逐一綁定。既有 `.lat/questions.md` 不會自動搬移或刪除；由主控按實際待決內容手動移入自己的新問題檔。
 
@@ -80,10 +80,11 @@ cp "$questions" "$snapshot"
 
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenance \
-  --questions "$snapshot" --journal "$workspace/.lat/panel-journal.jsonl" --id "<ID>"
+  --questions "$snapshot" --source-questions "$questions" \
+  --journal "$workspace/.lat/panel-journal.jsonl" --id "<ID>"
 ```
 
-成功時輸出 `"status": "ok"`、題號、面板紀錄路徑、行號、時間與 `section_sha256`。這表示快照中該題目前版本區段，與面板最後一次變更該題時記錄的區段相同；之後 Agent 修改其他題目不影響核對。沒有該題的面板紀錄、舊紀錄缺少逐題雜湊，或同一題之後又被修改時，指令失敗並說明原因，依第 2 點處理。
+成功時輸出 `"status": "ok"`、題號、來源問題檔、面板紀錄路徑、行號、時間與 `section_sha256`。`--questions` 是唯讀快照，`--source-questions` 是面板實際編輯的專屬問題檔，用來隔離同一專案其他主控的同名題號。這表示快照中該題目前版本區段，與面板最後一次變更該來源檔案中該題時記錄的區段相同；之後 Agent 修改其他題目或其他主控的問題檔不影響核對。沒有該來源檔案該題的面板紀錄、舊紀錄缺少逐題雜湊，或同一題之後又被修改時，指令失敗並說明原因，依第 2 點處理。
 
 1. **已勾選送出、版本與決策紀錄相同、答覆指向明確，且通過面板來源核對**：寫入 `.lat/decisions/<ID>.md`：
    - 「答覆：」欄位原文，逐字複製，不摘要、不改寫；

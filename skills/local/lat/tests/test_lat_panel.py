@@ -117,6 +117,7 @@ class LockedReplaceTests(unittest.TestCase):
             entry = entries[0]
             self.assertRegex(entry.pop("time"), r"^\d{4}-\d\d-\d\dT.*Z$")
             self.assertEqual(entry, {
+                "questions_path": str(path.resolve()),
                 "before_sha256": hashlib.sha256(before.encode()).hexdigest(),
                 "after_sha256": hashlib.sha256(after.encode()).hexdigest(),
                 "changed_questions": [{
@@ -445,6 +446,7 @@ class QuestionCliTests(unittest.TestCase):
 
         result = self.cli(
             "question", "provenance", "--questions", snapshot,
+            "--source-questions", self.questions,
             "--journal", self.questions.parent / "panel-journal.jsonl", "--id", "Q1",
         )
 
@@ -452,6 +454,7 @@ class QuestionCliTests(unittest.TestCase):
         proof = json.loads(result.stdout)
         self.assertEqual(proof["status"], "ok")
         self.assertEqual(proof["id"], "Q1")
+        self.assertEqual(proof["questions_path"], str(self.questions.resolve()))
         self.assertEqual(proof["journal_line"], 2)
         self.assertRegex(proof["time"], r"^\d{4}-\d\d-\d\dT.*Z$")
         self.assertEqual(
@@ -480,6 +483,47 @@ class QuestionCliTests(unittest.TestCase):
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn("has no per-question section hash", result.stderr)
+
+    def test_same_question_id_in_two_controller_files_keeps_provenance_and_archive_separate(self):
+        panel = load_module()
+        first = self.root / ".lat/questions-alpha.md"
+        second = self.root / ".lat/questions-beta.md"
+        pending = (
+            "## Choose?\nQ1 · r1 · 待答\n\nA（建議）\n   No impact.\n\n"
+            "答覆：\n\n- [ ] 送出\n"
+        )
+        first_submitted = pending.replace(
+            "答覆：\n\n- [ ] 送出", "答覆：\nA\n\n- [x] 送出"
+        )
+        second_submitted = pending.replace(
+            "答覆：\n\n- [ ] 送出", "答覆：\nB\n\n- [x] 送出"
+        )
+        first.write_text(pending)
+        second.write_text(pending)
+        self.assertTrue(panel.save_panel_edit(first, pending, first_submitted))
+        self.assertTrue(panel.save_panel_edit(second, pending, second_submitted))
+        journal = self.root / ".lat/panel-journal.jsonl"
+        first_snapshot = self.root / "first-snapshot.md"
+        first_snapshot.write_text(first.read_text())
+
+        first_provenance = panel.question_provenance(
+            first_snapshot, journal, "Q1", source_questions_path=first
+        )
+        second_provenance = panel.question_provenance(second, journal, "Q1")
+        recorded_at = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc)
+        panel.set_question_status(
+            first, "Q1", 1, "recorded", first_provenance["section_sha256"],
+            now=recorded_at,
+        )
+        panel.set_question_status(
+            second, "Q1", 1, "recorded", second_provenance["section_sha256"],
+            now=recorded_at,
+        )
+        later = recorded_at + timedelta(seconds=301)
+        self.assertEqual(panel.archive_recorded_questions(first, 300, now=later), ["Q1"])
+        self.assertEqual(panel.archive_recorded_questions(second, 300, now=later), ["Q1"])
+        self.assertIn("## Choose?", panel._archive_path(first).read_text())
+        self.assertIn("## Choose?", panel._archive_path(second).read_text())
 
     def test_set_status_refuses_when_answer_changed_after_snapshot(self):
         original = (

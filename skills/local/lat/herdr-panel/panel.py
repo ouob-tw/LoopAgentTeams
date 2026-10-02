@@ -159,6 +159,7 @@ class Panel(App):
     POLL_INTERVAL = 0.5
     NOTIFY_TIMEOUT = 10
     ARCHIVE_AFTER = 300
+    PICKER_PAGE_SIZE = 9
     ENABLE_COMMAND_PALETTE = False
     CSS = """
     #picker { height: 1; padding: 0 1; }
@@ -187,6 +188,7 @@ class Panel(App):
         self.session_id = session_id or None
         self.choices = choices or []
         self.picker_active = bool(self.choices)
+        self.picker_page = 0
         self.saved = ""
         self.conflict = False
         self.close_armed = False
@@ -221,11 +223,7 @@ class Panel(App):
         )
 
     def compose(self) -> ComposeResult:
-        picker = "  ".join(
-            f"{index} {item.get('hcom_name', '')}（{Path(item.get('workspace', '')).name}）"
-            for index, item in enumerate(self.choices, 1)
-        )
-        yield Static(picker, id="picker", markup=False)
+        yield Static(self.picker_text(), id="picker", markup=False)
         yield TextArea(
             self.saved, soft_wrap=True, show_line_numbers=False,
             read_only=self.read_only, id="editor",
@@ -249,13 +247,37 @@ class Panel(App):
         if self.notification_pending():
             self.start_notification()
 
+    def picker_text(self):
+        start = self.picker_page * self.PICKER_PAGE_SIZE
+        visible = self.choices[start:start + self.PICKER_PAGE_SIZE]
+        text = "  ".join(
+            f"{index} {item.get('hcom_name', '')}（{Path(item.get('workspace', '')).name}）"
+            for index, item in enumerate(visible, 1)
+        )
+        page_count = (len(self.choices) + self.PICKER_PAGE_SIZE - 1) // self.PICKER_PAGE_SIZE
+        if page_count > 1:
+            text += f"  [{self.picker_page + 1}/{page_count}] ←/→ 換頁"
+        return text
+
     def on_key(self, event: events.Key):
-        if not self.picker_active or not event.character or not event.character.isdigit():
+        if not self.picker_active:
+            return
+        page_count = (len(self.choices) + self.PICKER_PAGE_SIZE - 1) // self.PICKER_PAGE_SIZE
+        if event.key in ("left", "right"):
+            direction = -1 if event.key == "left" else 1
+            new_page = min(max(self.picker_page + direction, 0), page_count - 1)
+            if new_page != self.picker_page:
+                self.picker_page = new_page
+                self.query_one("#picker", Static).update(self.picker_text())
+            event.stop()
+            return
+        if not event.character or not event.character.isdigit():
             return
         choice_index = int(event.character) - 1
-        if 0 <= choice_index < len(self.choices):
+        absolute_index = self.picker_page * self.PICKER_PAGE_SIZE + choice_index
+        if 0 <= choice_index < self.PICKER_PAGE_SIZE and absolute_index < len(self.choices):
             event.stop()
-            self.select_choice(self.choices[choice_index])
+            self.select_choice(self.choices[absolute_index])
 
     def select_choice(self, binding):
         self.path = Path(binding["questions_path"])

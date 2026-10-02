@@ -21,7 +21,8 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
   question upsert --questions PATH --id ID --file section.md
   question section-hash --questions PATH --id ID
-  question provenance --questions PATH --id ID --journal panel-journal.jsonl
+  question provenance --questions SNAPSHOT --source-questions PATH --id ID \
+      --journal panel-journal.jsonl
   question set-status --questions PATH --id ID --revision N --status recorded \
       --expected-section-sha256 HASH
   question archive-recorded --questions PATH --older-than 300
@@ -135,7 +136,9 @@ def _append_journal(journal_path, before, after, *, kind=None, details=None, now
         os.fsync(journal.fileno())
 
 
-def locked_replace(path, expected_text, new_text, *, journal_path=None):
+def locked_replace(
+    path, expected_text, new_text, *, journal_path=None, journal_details=None,
+):
     """Return true after an atomic replacement, or false on content conflict."""
     path = Path(path)
     with _path_lock(path):
@@ -147,7 +150,9 @@ def locked_replace(path, expected_text, new_text, *, journal_path=None):
             return False
         _replace_locked(path, new_text)
         if journal_path is not None:
-            _append_journal(journal_path, expected_text, new_text)
+            _append_journal(
+                journal_path, expected_text, new_text, details=journal_details
+            )
         return True
 
 
@@ -159,6 +164,7 @@ def save_panel_edit(questions_path, expected_text, new_text):
         expected_text,
         new_text,
         journal_path=questions_path.parent / "panel-journal.jsonl",
+        journal_details={"questions_path": _question_key(questions_path)},
     )
 
 
@@ -255,7 +261,16 @@ def _question_section(document, question_id):
     return matching[0]
 
 
-def question_provenance(questions_path, journal_path, question_id):
+def _journal_entry_matches_questions(entry, questions_path):
+    recorded_path = entry.get("questions_path")
+    if recorded_path is not None:
+        return recorded_path == _question_key(questions_path)
+    return Path(questions_path).name == "questions.md"
+
+
+def question_provenance(
+    questions_path, journal_path, question_id, *, source_questions_path=None,
+):
     """Return panel provenance for one question in a questions snapshot."""
     document = Path(questions_path).read_text(encoding="utf-8")
     section = _question_section(document, question_id)
@@ -267,11 +282,14 @@ def question_provenance(questions_path, journal_path, question_id):
         journal_lines = Path(journal_path).read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         raise ValueError(f"panel journal not found: {journal_path}") from None
+    source_questions_path = source_questions_path or questions_path
     for line_number, line in enumerate(journal_lines, 1):
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as error:
             raise ValueError(f"invalid panel journal line {line_number}: {error.msg}") from None
+        if not _journal_entry_matches_questions(entry, source_questions_path):
+            continue
         for change in entry.get("changed_questions", []):
             if change.get("id") == question_id:
                 latest = (line_number, entry, change)
@@ -294,6 +312,7 @@ def question_provenance(questions_path, journal_path, question_id):
         "journal_path": str(Path(journal_path)),
         "journal_line": line_number,
         "time": entry.get("time"),
+        "questions_path": _question_key(source_questions_path),
         "section_sha256": section_sha256,
     }
 
@@ -415,6 +434,7 @@ def set_question_status(
             updated,
             kind="set-status",
             details={
+                "questions_path": _question_key(questions_path),
                 "recorded_question": question_id,
                 "recorded_revision": revision,
                 "recorded_at": recorded_at,
@@ -424,7 +444,7 @@ def set_question_status(
         )
 
 
-def _recorded_hashes(journal_path):
+def _recorded_hashes(journal_path, questions_path):
     hashes = {}
     try:
         lines = Path(journal_path).read_text(encoding="utf-8").splitlines()
@@ -435,7 +455,11 @@ def _recorded_hashes(journal_path):
             entry = json.loads(line)
         except json.JSONDecodeError as error:
             raise ValueError(f"invalid panel journal line {line_number}: {error.msg}") from None
-        if entry.get("kind") == "set-status" and entry.get("recorded_question"):
+        if (
+            _journal_entry_matches_questions(entry, questions_path)
+            and entry.get("kind") == "set-status"
+            and entry.get("recorded_question")
+        ):
             hashes[entry["recorded_question"]] = entry.get("recorded_section_sha256")
     return hashes
 
@@ -476,7 +500,7 @@ def archive_recorded_questions(
         document = questions_path.read_text(encoding="utf-8")
         if expected_text is not None and document != expected_text:
             return None
-        recorded_hashes = _recorded_hashes(journal_path)
+        recorded_hashes = _recorded_hashes(journal_path, questions_path)
         eligible = []
         for section in _sections(document):
             if section["status"] != "recorded" or not section["recorded_at"]:
@@ -506,6 +530,7 @@ def archive_recorded_questions(
             updated,
             kind="archive-recorded",
             details={
+                "questions_path": _question_key(questions_path),
                 "archived_questions": archived_ids,
                 "archive_path": str(archive_path),
             },
@@ -816,6 +841,7 @@ def _build_parser():
     upsert.add_argument("--file", required=True, type=Path)
     provenance = question_commands.add_parser("provenance")
     provenance.add_argument("--questions", required=True, type=Path)
+    provenance.add_argument("--source-questions", type=Path)
     provenance.add_argument("--journal", required=True, type=Path)
     provenance.add_argument("--id", required=True)
     section_hash = question_commands.add_parser("section-hash")
@@ -861,7 +887,10 @@ def main(argv=None):
             return 0
         if args.command == "question" and args.question_command == "provenance":
             print(json.dumps(
-                question_provenance(args.questions, args.journal, args.id),
+                question_provenance(
+                    args.questions, args.journal, args.id,
+                    source_questions_path=args.source_questions,
+                ),
                 ensure_ascii=False,
             ))
             return 0

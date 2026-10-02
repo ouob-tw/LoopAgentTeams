@@ -427,6 +427,33 @@ class OpenActionTests(PanelTestCase):
             await self.settle(app, pilot)
             self.assertIsNotNone(app.return_code)
 
+    async def test_picker_pages_past_nine_controllers_with_single_digit_choices(self):
+        choices = []
+        for index in range(1, 11):
+            questions = self.root / f"project-{index}/.lat/questions-ctl-{index}.md"
+            questions.parent.mkdir(parents=True)
+            questions.write_text(QUESTIONS.replace("Q1", f"Q{index}"))
+            choices.append({
+                "hcom_name": f"ctl-{index}",
+                "workspace": str(self.root / f"project-{index}"),
+                "questions_path": str(questions),
+                "session_id": f"s-{index}",
+            })
+        app = self.panel.Panel.from_env({
+            "LAT_PANEL_HERDR_WORKSPACE": "ws-a",
+            "LAT_PANEL_CHOICES": json.dumps(choices),
+            "HERDR_CONFIG_PATH": str(self.config),
+        })
+        async with app.run_test() as pilot:
+            self.assertIn("[1/2] ←/→ 換頁", str(app.query_one("#picker").render()))
+            await pilot.press("right")
+            await pilot.pause()
+            self.assertIn("1 ctl-10（project-10）", str(app.query_one("#picker").render()))
+            await pilot.press("1")
+            await pilot.pause()
+            self.assertEqual(app.session_id, "s-10")
+            self.assertIn("Q10", app.editor.text)
+
 
 class NotificationTests(PanelTestCase):
     async def type_and_wait(self, app, pilot, keys, wait, gap=0.1):
