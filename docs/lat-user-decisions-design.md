@@ -99,7 +99,7 @@ blocks:
 2026-10-02 補充（Spec ouob-tw/LoopAgentTeams-work#14）：Herdr 已安裝 `lat.panel` 外掛時，使用者也可在待答問題面板作答。主控程序寫在 `skills/local/lat/references/question-panel.md`；聊天作答照舊有效，沒有 Herdr 或未安裝面板時流程不變。
 
 - **角色分工：** `.lat/decisions/<ID>.md` 仍是唯一的權威紀錄。每個主控各有一份 `.lat/questions-<hcom-name>.md` 給使用者看與作答，題號與決策紀錄 ID 相同；每題以問題本身為標題，下一行顯示 `<ID> · r<N> · <待答|已記錄>`，內文自然說明背景、選項與影響。主控透過 `lat_panel.py question upsert` 提供標題與內文，不覆寫使用者的作答區或送出勾選框。
-- **workspace 與 tab 路由：** 綁定以主控 session 為鍵，保存 HCOM 名稱、client、session、專案、Herdr workspace、tab 與 pane，同一 workspace 可同時保留多個主控。F2 先以 Herdr 的即時 pane 位置找目前 tab 內的主控；查詢失敗才使用綁定時的 tab。沒有 tab 相符時，workspace 只有一個主控就直接開啟，有多個就讓使用者按數字選擇；每頁最多九個，超過時用左右方向鍵換頁；完全沒有才顯示未綁定。通知依已開啟檔案自己的 session 重新解析，不會轉送給同 workspace 的其他主控。
+- **workspace 與 tab 路由：** 綁定以主控 session 為鍵，保存 HCOM 名稱、client、session、專案、Herdr workspace、tab 與 pane，同一 workspace 可同時保留多個主控。設定的面板快捷鍵先以 Herdr 的即時 pane 位置找目前 tab 內的主控；查詢失敗才使用綁定時的 tab。沒有 tab 相符時，workspace 只有一個主控就直接開啟，有多個就讓使用者按數字選擇；每頁最多九個，超過時用左右方向鍵換頁；完全沒有才顯示未綁定。通知依已開啟檔案自己的 session 重新解析，不會轉送給同 workspace 的其他主控。
 - **舊資料：** 舊版 workspace-keyed `bindings.json` 不參與路由，主控必須重新綁定；第一筆新綁定會用 v2 格式取代舊綁定資料並回報忽略數量。既有 `.lat/questions.md` 不自動搬移或刪除，由主控依實際待決內容手動移入自己的專屬問題檔。
 - **書寫格式：** 背景以一句話說明；選項名稱直接逐行列出，不加項目符號、彼此不留空行，影響說明縮排三個空白，建議標在選項名稱上。作答與批註都寫在「答覆：」到 `- [ ] 送出` 之間，不另設批註欄。
 - **可採用的答覆：** 狀態為 `待答` 且使用者已勾選 `- [x] 送出`、版本與決策紀錄相同、答覆指向明確，且快照中該題目前版本區段的雜湊，等於面板紀錄中最後一次變更該題時保存的 `section_sha256`。主控依同一份快照處理題目，把答覆原文、題號版本與該筆面板紀錄位置（檔案、行號、時間、`section_sha256`）寫入決策紀錄，之後才以相同區段雜湊為前提把該題標為 `已記錄`；版本或雜湊不符就拒絕更新。
