@@ -470,8 +470,9 @@ class BindingCliTests(unittest.TestCase):
         self.assertIn("no LAT controller is bound", ambiguous.stderr)
 
         self.assertEqual(self.cli("unbind", "--session-id", "s2").returncode, 0)
-        fallback = self.cli("resolve", "--herdr-workspace", "missing")
-        self.assertEqual(json.loads(fallback.stdout)["hcom_name"], "alpha")
+        unbound = self.cli("resolve", "--herdr-workspace", "missing")
+        self.assertNotEqual(unbound.returncode, 0)
+        self.assertIn("no LAT controller is bound", unbound.stderr)
 
         replaced = self.bind("gamma", "s3", self.second, "herdr-1")
         payload = json.loads(replaced.stdout)

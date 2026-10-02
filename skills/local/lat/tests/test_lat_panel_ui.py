@@ -263,7 +263,9 @@ class OpenActionTests(PanelTestCase):
     def test_open_resolves_each_workspace_binding_and_never_guesses(self):
         other = self.root / "other"
         self.assertEqual(self.open("ws-a")["LAT_PANEL_FILE"], str(self.questions))
-        self.assertEqual(self.open("ws-unknown")["LAT_PANEL_FILE"], str(self.questions))
+        unbound = self.open("ws-unknown")
+        self.assertNotIn("LAT_PANEL_FILE", unbound)
+        self.assertEqual(unbound["LAT_PANEL_ERROR"], self.panel.NO_BINDING)
         self.core.bind_controller("ctl-b", "codex", "s-b", other, "ws-b")
         self.assertEqual(self.open("ws-b")["LAT_PANEL_FILE"], str(other / ".lat/questions.md"))
         self.assertEqual(self.open("ws-a")["LAT_PANEL_HERDR_WORKSPACE"], "ws-a")
@@ -305,6 +307,16 @@ class NotificationTests(PanelTestCase):
         async with app.run_test() as pilot:
             await self.type_and_wait(app, pilot, "a", 0.6)
             self.assertEqual([call[1] for call in self.calls()], ["@ctl-new"])
+
+    async def test_notification_does_not_use_another_workspaces_sole_binding(self):
+        self.core.unbind_controller("s-a")
+        self.core.bind_controller("ctl-b", "codex", "s-b", self.project, "ws-b")
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.type_and_wait(app, pilot, "a", 0.6)
+            self.assertEqual(self.calls(), [])
+            self.assertTrue(self.pending())
+            self.assertIn(self.panel.NO_BINDING, self.status(app))
 
     async def test_close_flushes_pending_notification_before_exit(self):
         app = self.make_app(NOTIFY_DELAY=30)
