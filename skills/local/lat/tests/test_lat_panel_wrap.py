@@ -27,8 +27,10 @@ class CJKWrapTests(unittest.TestCase):
         import cjk_wrap
         from rich.cells import cell_len
         from textual import _wrap
+        from textual.document import _wrapped_document
 
         cls.cjk_wrap, cls.textual_wrap = cjk_wrap, _wrap
+        cls.wrapped_document = _wrapped_document
         cls.cell_len = staticmethod(cell_len)
 
     def setUp(self):
@@ -36,31 +38,39 @@ class CJKWrapTests(unittest.TestCase):
         hook.start()
         self.addCleanup(hook.stop)
 
-    def wrap(self, text, width, chunks=None):
-        if chunks is not None:
-            with patch.object(self.textual_wrap, "chunks", chunks):
-                return self.wrap(text, width)
-        offsets = self.textual_wrap.compute_wrap_offsets(text, width, 4)
+    def wrap(self, text, width):
+        offsets = self.cjk_wrap.compute_wrap_offsets(text, width, 4)
         bounds = [0, *offsets, len(text)]
         return [text[start:end] for start, end in zip(bounds, bounds[1:])]
 
-    def test_private_textual_hook_is_pinned_and_installed_by_panel(self):
+    def test_private_textual_hooks_are_pinned_and_installed_by_panel(self):
         import textual
-        from textual.document import _wrapped_document
 
-        # Fails loudly when the pinned Textual internals this hook relies on change.
+        # Fails loudly when the pinned Textual internals these hooks rely on change.
         self.assertEqual(textual.__version__, "8.2.8")
         self.assertEqual(self.textual_wrap.re_chunk.pattern, r"\S+\s*|\s+")
         self.assertIs(
-            _wrapped_document.compute_wrap_offsets, self.textual_wrap.compute_wrap_offsets
+            self.cjk_wrap.TEXTUAL_COMPUTE_WRAP_OFFSETS, self.textual_wrap.compute_wrap_offsets
         )
         self.assertIn("chunks", self.textual_wrap.compute_wrap_offsets.__code__.co_names)
-        with patch.object(self.textual_wrap, "chunks", self.cjk_wrap.TEXTUAL_CHUNKS):
+        document = self.wrapped_document.WrappedDocument
+        for method in (document.wrap, document.wrap_range):
+            self.assertIn("compute_wrap_offsets", method.__code__.co_names)
+        with (
+            patch.object(self.textual_wrap, "chunks", self.cjk_wrap.TEXTUAL_CHUNKS),
+            patch.object(
+                self.wrapped_document, "compute_wrap_offsets",
+                self.cjk_wrap.TEXTUAL_COMPUTE_WRAP_OFFSETS,
+            ),
+        ):
             spec = importlib.util.spec_from_file_location(
                 "lat_panel_wrap_check", HERDR_PANEL / "panel.py"
             )
             spec.loader.exec_module(importlib.util.module_from_spec(spec))
             self.assertIs(self.textual_wrap.chunks, self.cjk_wrap.chunks)
+            self.assertIs(
+                self.wrapped_document.compute_wrap_offsets, self.cjk_wrap.compute_wrap_offsets
+            )
 
     def test_real_user_samples_fill_lines_without_avoidable_gaps(self):
         self.assertEqual(self.wrap(SAMPLES[0], 24), [
@@ -106,6 +116,29 @@ class CJKWrapTests(unittest.TestCase):
             with self.subTest(text=text):
                 self.assertEqual(self.wrap(text, width), expected)
 
+    def test_folded_over_wide_words_keep_kinsoku(self):
+        cases = (
+            ("中文https://example.com/abcdefghijklmnopqrst）好", 20,
+             ["中文", "https://example.com/", "abcdefghijklmnopqrs", "t）好"]),
+            ("abcdefghij）。好", 10, ["abcdefghi", "j）。好"]),
+            ("（（（（（（", 4, ["（（", "（（", "（（"]),
+        )
+        for text, width, expected in cases:
+            with self.subTest(text=text):
+                self.assertEqual(self.wrap(text, width), expected)
+        # From width 6 every character plus its glued marks fits on one line.
+        for width in range(6, 30):
+            for text in (cases[0][0], "說明：" + "x" * 50 + "」，結束"):
+                with self.subTest(text=text[:6], width=width):
+                    lines = self.wrap(text, width)
+                    self.assertEqual("".join(lines), text)
+                    for line in lines:
+                        self.assertLessEqual(self.cell_len(line), width)
+                    for line in lines[1:]:
+                        self.assertNotIn(line[0], self.cjk_wrap.CJK_NO_START)
+                    for line in lines[:-1]:
+                        self.assertNotIn(line.rstrip()[-1], self.cjk_wrap.CJK_NO_END)
+
     def test_latin_words_numbers_and_urls_stay_whole_and_english_is_unchanged(self):
         self.assertEqual(
             self.wrap("中文中文 https://example.com/x 中文", 24),
@@ -121,9 +154,12 @@ class CJKWrapTests(unittest.TestCase):
         for text in english:
             for width in range(1, 41):
                 with self.subTest(text=text[:10], width=width):
+                    with patch.object(
+                        self.textual_wrap, "chunks", self.cjk_wrap.TEXTUAL_CHUNKS
+                    ):
+                        expected = self.textual_wrap.compute_wrap_offsets(text, width, 4)
                     self.assertEqual(
-                        self.wrap(text, width),
-                        self.wrap(text, width, self.cjk_wrap.TEXTUAL_CHUNKS),
+                        self.cjk_wrap.compute_wrap_offsets(text, width, 4), expected
                     )
 
     def test_wide_characters_never_split_or_overflow(self):
