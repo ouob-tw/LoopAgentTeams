@@ -33,7 +33,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 
 `--herdr-workspace`、`--herdr-tab`、`--herdr-pane` 分別預設取 `HERDR_WORKSPACE_ID`、`HERDR_TAB_ID`、`HERDR_PANE_ID`。綁定以 session ID 為鍵；同一 session 重綁只更新自己，不會覆蓋同 workspace 的其他主控。輸出 JSON 的 `replaced` 不是 `null` 時，表示更新了自己上一筆綁定。任一必要 ID 缺少時不綁定、不猜測。
 
-按下設定的面板快捷鍵（建議 `prefix+a`）時，外掛先用 Herdr 0.9.3 的即時 pane/tab 快照找「主控 pane 現在位於目前 tab」的綁定；只有查詢失敗時才採用綁定時記下的 tab。若目前 tab 沒有主控，但 workspace 只有一個綁定，就直接開啟；有兩個以上則先顯示單行數字選單，按數字選檔，無效按鍵不動作，Ctrl+Q 關閉。每頁最多九個主控，超過時用左右方向鍵換頁後再按單一數字；完全沒有綁定才顯示「此 workspace 沒有綁定的 LAT 中控」。通知送出前會依問題檔自己的 session 再查一次綁定，不借用同 workspace 的其他主控。
+按下設定的面板快捷鍵時，外掛先用 Herdr 0.9.3 的即時 pane/tab 快照找「主控 pane 現在位於目前 tab」的綁定；只有查詢失敗時才採用綁定時記下的 tab。若目前 tab 沒有主控，但 workspace 只有一個綁定，就直接開啟；有兩個以上則先顯示單行數字選單，按數字選檔，無效按鍵不動作，Ctrl+Q 關閉。每頁最多九個主控，超過時用左右方向鍵換頁後再按單一數字；完全沒有綁定才顯示「此 workspace 沒有綁定的 LAT 中控」。通知送出前會依問題檔自己的 session 再查一次綁定，不借用同 workspace 的其他主控。
 
 舊版 `bindings.json` 以 workspace 為鍵，正式版不會拿來路由；讀取時會回報 `legacy bindings ignored`。第一個主控重新綁定時會建立 v2 資料並回報 `legacy_ignored` 數量，其他主控再逐一綁定。既有 `.lat/questions.md` 不會自動搬移或刪除；由主控按實際待決內容手動移入自己的新問題檔。
 
@@ -149,7 +149,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" unbind --session-
 
    更新技能檔案但安裝位置不變時，不需重新連結；搬動技能目錄後重新連結。
 2. 備份 Herdr 設定檔（`HERDR_CONFIG_PATH`，未設定時為 `~/.config/herdr/config.toml`）為同目錄的 `config.toml.lat-backup-<時間>`。
-3. 只新增或修改面板使用的 `[[keys.command]]` 區塊，其他設定（含使用者自己的修改）保持原樣；建議使用 `prefix+a`，已有這個快捷鍵時只改它的 `command`：
+3. 先確認建議的 `prefix+a` 沒有被其他指令使用。沒有衝突時，只新增或修改面板使用的 `[[keys.command]]` 區塊，其他設定（含使用者自己的修改）保持原樣；若 `prefix+a` 已屬於其他指令，停止並請使用者選擇新的快捷鍵，不覆寫原綁定：
 
    ```toml
    [[keys.command]]
