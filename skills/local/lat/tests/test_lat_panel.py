@@ -462,6 +462,49 @@ class QuestionCliTests(unittest.TestCase):
             hashlib.sha256(answered.split("\n\n## Other?", 1)[0].encode() + b"\n").hexdigest(),
         )
 
+    def test_same_line_answer_with_uppercase_submit_survives_provenance_status_and_archive(self):
+        panel = load_module()
+        pending = (
+            "## Choose?\nQ1 · r1 · 待答\n\nA（建議）\n   No impact.\n\n"
+            "答覆：\n\n- [ ] 送出\n"
+        )
+        answered = pending.replace(
+            "答覆：\n\n- [ ] 送出", "答覆：B\nSecond line\n\n- [X] 送出"
+        )
+        self.questions.write_text(pending)
+        self.assertTrue(panel.save_panel_edit(self.questions, pending, answered))
+        [parsed] = panel.parse_questions(answered)
+        self.assertEqual(parsed["answer"], "B\nSecond line")
+        self.assertEqual(parsed["status"], "ready")
+
+        proof = panel.question_provenance(
+            self.questions,
+            self.questions.parent / "panel-journal.jsonl",
+            "Q1",
+        )
+        recorded_at = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc)
+        panel.set_question_status(
+            self.questions,
+            "Q1",
+            1,
+            "recorded",
+            proof["section_sha256"],
+            now=recorded_at,
+        )
+        self.assertEqual(
+            panel.archive_recorded_questions(
+                self.questions,
+                300,
+                now=recorded_at + timedelta(seconds=301),
+            ),
+            ["Q1"],
+        )
+        self.assertEqual(self.questions.read_text(), "")
+        self.assertIn(
+            "答覆：B\nSecond line\n\n- [X] 送出",
+            self.questions.with_name("questions-archive.md").read_text(),
+        )
+
     def test_provenance_refuses_legacy_entry_without_a_section_hash(self):
         section = (
             "## Choose?\nQ1 · r1 · 待答\n\n- A\n\n答覆：\nA\n\n- [x] 送出\n"
