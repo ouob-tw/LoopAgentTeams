@@ -11,7 +11,7 @@ Public API used by the Textual panel and LAT controller:
 * ``question_provenance`` checks one snapshot section against the latest panel
   journal entry that changed that question.
 * ``bind_controller``, ``unbind_controller``, and ``resolve_binding`` manage
-  per-Herdr-workspace routing with the sole-binding fallback.
+  exact per-Herdr-workspace routing.
 * ``mark_notification_pending``, ``notification_is_pending``,
   ``send_pending_notification``, and ``clear_pending_notification`` provide the
   persisted notification lifecycle. ``send_pending_notification`` returns an
@@ -462,14 +462,12 @@ def unbind_controller(session_id, *, config_dir=None):
 
 
 def resolve_binding(herdr_workspace=None, *, config_dir=None):
-    """Resolve an exact workspace binding, or the sole machine-wide binding."""
+    """Resolve only the exact Herdr workspace binding."""
     path = _bindings_path(config_dir)
     with _path_lock(path):
         bindings = _read_bindings(path)
     if herdr_workspace and herdr_workspace in bindings:
         return bindings[herdr_workspace]
-    if len(bindings) == 1:
-        return next(iter(bindings.values()))
     raise ValueError("no LAT controller is bound to this Herdr workspace")
 
 

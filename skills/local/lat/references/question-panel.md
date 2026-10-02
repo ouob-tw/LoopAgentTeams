@@ -30,7 +30,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
   --session-id "$session_id" --workspace "$workspace"
 ```
 
-`--herdr-workspace` 預設取 `HERDR_WORKSPACE_ID`。輸出 JSON 的 `replaced` 不是 `null` 時，表示取代了同一 workspace 的舊綁定；把舊綁定的 HCOM 名稱與 session 記入進度索引。session ID 缺少時不綁定、不猜測。Herdr server 重建使 workspace ID 改變時，重新執行綁定。
+`--herdr-workspace` 預設取 `HERDR_WORKSPACE_ID`。F2 開啟與送出通知時都只採用目前 Herdr workspace 的綁定；沒有綁定就顯示「此 workspace 沒有綁定的 LAT 中控」，即使全機只有另一筆綁定也不借用。輸出 JSON 的 `replaced` 不是 `null` 時，表示取代了同一 workspace 的舊綁定；把舊綁定的 HCOM 名稱與 session 記入進度索引。session ID 缺少時不綁定、不猜測。Herdr server 重建使 workspace ID 改變時，重新執行綁定。
 
 ## 寫題
 
