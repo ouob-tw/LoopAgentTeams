@@ -362,6 +362,26 @@ class BindingCliTests(unittest.TestCase):
         )
 
 
+class PluginDirectoryTests(unittest.TestCase):
+    def test_fallback_matches_herdr_plugin_directory_layout(self):
+        panel = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            env = {
+                "PATH": str(root / "no-herdr"),
+                "XDG_CONFIG_HOME": str(root / "config"),
+                "XDG_STATE_HOME": str(root / "state"),
+            }
+            self.assertEqual(
+                panel.plugin_directory("config", env),
+                root / "config/herdr/plugins/config/lat.panel",
+            )
+            self.assertEqual(
+                panel.plugin_directory("state", env),
+                root / "state/herdr/plugins/lat.panel",
+            )
+
+
 class NotificationTests(unittest.TestCase):
     def test_pending_state_survives_failed_delivery_and_clears_after_target_delivery(self):
         panel = load_module()
