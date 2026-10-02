@@ -8,6 +8,8 @@ Public API used by the Textual panel and LAT controller:
   ``<questions parent>/panel-journal.jsonl``.
 * ``parse_questions``, ``upsert_question``, and ``set_question_status`` model
   and update ``## ID | rN | status`` sections without touching other sections.
+* ``question_provenance`` checks one snapshot section against the latest panel
+  journal entry that changed that question.
 * ``bind_controller``, ``unbind_controller``, and ``resolve_binding`` manage
   per-Herdr-workspace routing with the sole-binding fallback.
 * ``mark_notification_pending``, ``notification_is_pending``,
@@ -18,7 +20,10 @@ Public API used by the Textual panel and LAT controller:
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
   question upsert --id ID --file section.md
-  question set-status --id ID --revision N --status recorded
+  question section-hash --id ID
+  question provenance --id ID --journal panel-journal.jsonl
+  question set-status --id ID --revision N --status recorded \
+      --expected-section-sha256 HASH
   bind --hcom-name NAME --client CLIENT --session-id ID --workspace ROOT \
        [--herdr-workspace ID]
   unbind --session-id ID
@@ -89,11 +94,14 @@ def _question_changes(before, after):
         old = before_by_id.get(question_id)
         new = after_by_id.get(question_id)
         if old is None or new is None or old["raw"] != new["raw"]:
-            changes.append({
+            change = {
                 "id": question_id,
                 "before_status": old["status"] if old else None,
                 "after_status": new["status"] if new else None,
-            })
+            }
+            if new is not None:
+                change["section_sha256"] = _section_sha256(new)
+            changes.append(change)
     return changes
 
 
@@ -195,6 +203,66 @@ def parse_questions(text):
 _sections = parse_questions
 
 
+def _section_text(section):
+    """Return the current-revision section without inter-section whitespace."""
+    marker = _ARCHIVE_HEADER.search(section["raw"])
+    current = section["raw"][:marker.start()] if marker else section["raw"]
+    return current.rstrip("\n") + "\n"
+
+
+def _section_sha256(section):
+    return hashlib.sha256(_section_text(section).encode("utf-8")).hexdigest()
+
+
+def _question_section(document, question_id):
+    matching = [item for item in _sections(document) if item["id"] == question_id]
+    if len(matching) > 1:
+        raise ValueError(f"duplicate question ID: {question_id}")
+    if not matching:
+        raise ValueError(f"question not found: {question_id}")
+    return matching[0]
+
+
+def question_provenance(questions_path, journal_path, question_id):
+    """Return panel provenance for one question in a questions snapshot."""
+    document = Path(questions_path).read_text(encoding="utf-8")
+    section_sha256 = _section_sha256(_question_section(document, question_id))
+    latest = None
+    try:
+        journal_lines = Path(journal_path).read_text(encoding="utf-8").splitlines()
+    except FileNotFoundError:
+        raise ValueError(f"panel journal not found: {journal_path}") from None
+    for line_number, line in enumerate(journal_lines, 1):
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError as error:
+            raise ValueError(f"invalid panel journal line {line_number}: {error.msg}") from None
+        for change in entry.get("changed_questions", []):
+            if change.get("id") == question_id:
+                latest = (line_number, entry, change)
+    if latest is None:
+        raise ValueError(f"no panel journal entry touched question: {question_id}")
+    line_number, entry, change = latest
+    recorded_sha256 = change.get("section_sha256")
+    if recorded_sha256 is None:
+        raise ValueError(
+            f"panel journal line {line_number} has no per-question section hash"
+        )
+    if recorded_sha256 != section_sha256:
+        raise ValueError(
+            f"section hash mismatch: snapshot {section_sha256}, "
+            f"panel journal line {line_number} {recorded_sha256}"
+        )
+    return {
+        "status": "ok",
+        "id": question_id,
+        "journal_path": str(Path(journal_path)),
+        "journal_line": line_number,
+        "time": entry.get("time"),
+        "section_sha256": section_sha256,
+    }
+
+
 def _one_section(text, expected_id):
     sections = _sections(text)
     if len(sections) != 1 or sections[0]["id"] != expected_id:
@@ -276,22 +344,25 @@ def upsert_question(questions_path, question_id, section_text):
         return revision
 
 
-def set_question_status(questions_path, question_id, revision, status):
-    """Set one question status when its current revision matches exactly."""
+def set_question_status(
+    questions_path, question_id, revision, status, expected_section_sha256
+):
+    """Set status only when the revision and current section hash both match."""
     if status != "recorded":
         raise ValueError("the controller may only set status to recorded")
     questions_path = Path(questions_path)
     with _path_lock(questions_path):
         document = questions_path.read_text(encoding="utf-8")
-        matching = [item for item in _sections(document) if item["id"] == question_id]
-        if len(matching) > 1:
-            raise ValueError(f"duplicate question ID: {question_id}")
-        existing = matching[0] if matching else None
-        if existing is None:
-            raise ValueError(f"question not found: {question_id}")
+        existing = _question_section(document, question_id)
         if existing["revision"] != revision:
             raise ValueError(
                 f"revision mismatch: expected r{revision}, found r{existing['revision']}"
+            )
+        actual_section_sha256 = _section_sha256(existing)
+        if actual_section_sha256 != expected_section_sha256:
+            raise ValueError(
+                f"section hash mismatch: expected {expected_section_sha256}, "
+                f"found {actual_section_sha256}"
             )
         header = _SECTION_HEADER.search(document, existing["start"], existing["end"])
         updated_header = f"## {question_id} | r{revision} | {status}"
@@ -475,6 +546,12 @@ def _delivered_targets(payload):
     return targets
 
 
+def _hcom_receipt_names(target):
+    """Return the full HCOM name and its receipt-level unique base name."""
+    target = target.removeprefix("@")
+    return {target, target.rsplit("-", 1)[-1]}
+
+
 def send_pending_notification(questions_path, binding, *, state_dir=None, env=None, timeout=10):
     """Send one persisted notification; return ``(ok, reason)`` and clear on success."""
     questions_key = _question_key(questions_path)
@@ -514,7 +591,7 @@ def send_pending_notification(questions_path, binding, *, state_dir=None, env=No
     except json.JSONDecodeError:
         return False, "invalid hcom JSON response"
     delivered = {item.removeprefix("@") for item in _delivered_targets(payload)}
-    if target not in delivered:
+    if _hcom_receipt_names(target).isdisjoint(delivered):
         return False, f"notification not delivered to {target}"
     clear_pending_notification(
         questions_path, state_dir=state_dir, expected_generation=generation
@@ -531,6 +608,13 @@ def _build_parser():
     upsert.add_argument("--questions", type=Path, default=Path(".lat/questions.md"))
     upsert.add_argument("--id", required=True)
     upsert.add_argument("--file", required=True, type=Path)
+    provenance = question_commands.add_parser("provenance")
+    provenance.add_argument("--questions", required=True, type=Path)
+    provenance.add_argument("--journal", required=True, type=Path)
+    provenance.add_argument("--id", required=True)
+    section_hash = question_commands.add_parser("section-hash")
+    section_hash.add_argument("--questions", required=True, type=Path)
+    section_hash.add_argument("--id", required=True)
     set_status = question_commands.add_parser("set-status")
     set_status.add_argument("--questions", type=Path, default=Path(".lat/questions.md"))
     set_status.add_argument("--id", required=True)
@@ -538,6 +622,7 @@ def _build_parser():
     set_status.add_argument(
         "--status", required=True, choices=("recorded",)
     )
+    set_status.add_argument("--expected-section-sha256", required=True)
     bind = commands.add_parser("bind")
     bind.add_argument("--hcom-name", required=True)
     bind.add_argument("--client", required=True)
@@ -560,9 +645,25 @@ def main(argv=None):
             )
             print(f"{args.id} r{revision}")
             return 0
+        if args.command == "question" and args.question_command == "provenance":
+            print(json.dumps(
+                question_provenance(args.questions, args.journal, args.id),
+                ensure_ascii=False,
+            ))
+            return 0
+        if args.command == "question" and args.question_command == "section-hash":
+            document = args.questions.read_text(encoding="utf-8")
+            print(json.dumps({
+                "id": args.id,
+                "section_sha256": _section_sha256(
+                    _question_section(document, args.id)
+                ),
+            }))
+            return 0
         if args.command == "question" and args.question_command == "set-status":
             set_question_status(
-                args.questions, args.id, args.revision, args.status
+                args.questions, args.id, args.revision, args.status,
+                args.expected_section_sha256,
             )
             return 0
         if args.command == "bind":

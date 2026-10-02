@@ -58,35 +58,42 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question upsert \
 
 ## 收到 `lat-panel` 通知
 
-通知只表示問題檔有變更，本身不是核准證據，也不代表使用者已作答。收到後先讀待決紀錄，再複製一份快照，雜湊與所有題目都只從這份快照讀取，標記 `recorded` 之前不重讀原檔：
+通知只表示問題檔有變更，本身不是核准證據，也不代表使用者已作答。收到後先讀待決紀錄，再複製一份快照；所有題目與來源證據都只從這份快照讀取：
 
 ```bash
 snapshot=$(mktemp)
 cp "$workspace/.lat/questions.md" "$snapshot"
-sha256sum "$snapshot"
 ```
 
-處理完移除暫存快照。只看各題目前版本區段，`### 舊版` 以下一律不套用。
+處理完以 `shred -u "$snapshot"` 清除快照。只看各題目前版本區段，`### 舊版` 以下一律不套用。
 
-**面板來源核對**：`panel-journal.jsonl` 最後一筆紀錄的 `after_sha256` 等於快照雜湊，表示快照內容就是使用者最後一次在面板存檔的結果。不相等（例如之後有 Agent 寫入），或沒有紀錄檔時，快照中的 `ready` 都無法對應面板操作，依第 2 點處理。
+**面板來源核對**：對每個 `ready` 題目執行下列指令，不自行解析區段或計算雜湊：
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenance \
+  --questions "$snapshot" --journal "$workspace/.lat/panel-journal.jsonl" --id "<ID>"
+```
+
+成功時輸出 `"status": "ok"`、題號、面板紀錄路徑、行號、時間與 `section_sha256`。這表示快照中該題目前版本區段，與面板最後一次變更該題時記錄的區段相同；之後 Agent 修改其他題目不影響核對。沒有該題的面板紀錄、舊紀錄缺少逐題雜湊，或同一題之後又被修改時，指令失敗並說明原因，依第 2 點處理。
 
 1. **`ready`、版本與決策紀錄相同、答覆指向明確，且通過面板來源核對**：寫入 `.lat/decisions/<ID>.md`：
    - 「答覆：」欄位原文，逐字複製，不摘要、不改寫；
    - 題號與版本 `<ID> r<版本>`；
-   - 來源：面板，以及上述最後一筆面板紀錄的檔案路徑、行號、`time` 與 `after_sha256`；
+   - 來源：面板，以及 `provenance` 輸出的面板紀錄路徑、行號、`time` 與 `section_sha256`；
    - 依答覆核准的方案與範圍。
 
-   寫入後才標為 `recorded`；指令回報版本不符時，表示題目已變，重新讀檔處理：
+   寫入後才標為 `recorded`，並傳入 `provenance` 輸出的區段雜湊。版本或區段雜湊不符時，表示同一題在快照後已變更；不可把目前內容標成已記錄，重新讀檔處理：
 
    ```bash
    uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question set-status \
-     --questions "$workspace/.lat/questions.md" --id "<ID>" --revision <版本> --status recorded
+     --questions "$workspace/.lat/questions.md" --id "<ID>" --revision <版本> \
+     --status recorded --expected-section-sha256 "<provenance 輸出的 section_sha256>"
    ```
 2. **未通過面板來源核對、版本不符、答覆有歧義，或一段答覆含糊涵蓋多題**：不放行，維持待決；在聊天說明不能採用的原因，請使用者釐清，或在面板再存檔一次、改在聊天回答。
 3. **`pending` 題的答覆、任何批註**：都是草稿，不是核准。批註作為討論輸入回應；需要時修改題目並依「寫題」升版。
 4. **沒有 `ready` 題的變更**：只更新理解，不改變授權；處理完結束回合等待。
 
-使用者在聊天回答 `<ID> r<版本>：…` 時，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄；記錄後同樣執行 `set-status recorded`，讓面板反映狀態。
+使用者在聊天回答 `<ID> r<版本>：…` 時，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄。標記前先對同一份快照執行 `question section-hash --questions "$snapshot" --id "<ID>"`，再把輸出的 `section_sha256` 傳給上述 `set-status`，讓面板反映狀態；不需要偽造面板來源。
 
 面板紀錄與檔案權限只是來源證據，不是防偽機制：能寫 `.lat/` 的 Agent 理論上能偽造答覆或紀錄。
 
