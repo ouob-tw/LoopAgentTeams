@@ -82,7 +82,7 @@ class PanelTestCase(unittest.IsolatedAsyncioTestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
         self.project = self.root / "project"
-        self.questions = self.project / ".lat/questions.md"
+        self.questions = self.project / ".lat/questions-ctl-a.md"
         self.questions.parent.mkdir(parents=True)
         self.questions.write_text(QUESTIONS)
         self.hcom_dir = self.root / "hcom"
@@ -102,7 +102,9 @@ class PanelTestCase(unittest.IsolatedAsyncioTestCase):
         })
         environment.start()
         self.addCleanup(environment.stop)
-        self.core.bind_controller("ctl-a", "claude", "s-a", self.project, "ws-a")
+        self.core.bind_controller(
+            "ctl-a", "claude", "s-a", self.project, "ws-a", "tab-a", "pane-a"
+        )
 
     def set_hcom(self, mode):
         (self.hcom_dir / "mode").write_text(mode)
@@ -114,7 +116,7 @@ class PanelTestCase(unittest.IsolatedAsyncioTestCase):
     def make_app(self, error="", **timing):
         attributes = {"NOTIFY_DELAY": 0.3, "POLL_INTERVAL": 0.1, "NOTIFY_TIMEOUT": 1, **timing}
         app_class = type("TestPanel", (self.panel.Panel,), attributes)
-        return app_class(str(self.questions), "ws-a", error)
+        return app_class(str(self.questions), "ws-a", error, session_id="s-a")
 
     def status(self, app):
         status = app.query_one("#status")
@@ -212,7 +214,7 @@ class EditorTests(PanelTestCase):
         async with app.run_test():
             self.assertNotIn("Q1 · r1", app.editor.text)
             self.assertIn(
-                "## Choose?", self.questions.with_name("questions-archive.md").read_text()
+                "## Choose?", self.core._archive_path(self.questions).read_text()
             )
             self.assertEqual(self.calls(), [])
             self.assertFalse(self.pending())
@@ -234,13 +236,13 @@ class EditorTests(PanelTestCase):
 
         async with app.run_test() as pilot:
             self.assertIn("Q1 · r1 · 已記錄", app.editor.text)
-            self.assertFalse(self.questions.with_name("questions-archive.md").exists())
+            self.assertFalse(self.core._archive_path(self.questions).exists())
             clock[0] = recorded_at + timedelta(seconds=301)
             await pilot.pause(0.2)
             self.assertNotIn("Q1 · r1", app.editor.text)
             self.assertEqual(app.editor.text, self.questions.read_text())
             self.assertIn(
-                "## Choose?", self.questions.with_name("questions-archive.md").read_text()
+                "## Choose?", self.core._archive_path(self.questions).read_text()
             )
             self.assertEqual(self.calls(), [])
             self.assertFalse(self.pending())
@@ -264,7 +266,7 @@ class EditorTests(PanelTestCase):
 
             await pilot.press("f5")
             await pilot.pause()
-            [backup] = self.questions.parent.glob("questions-draft-*.md")
+            [backup] = self.questions.parent.glob("questions-ctl-a-draft-*.md")
             self.assertIn("答覆：\nxy\n", backup.read_text())
             self.assertEqual(app.editor.text, agent_text)
             self.assertEqual(self.status(app), "")
@@ -297,7 +299,7 @@ class EditorTests(PanelTestCase):
             clock[0] = recorded_at + timedelta(seconds=301)
             await pilot.pause(0.2)
             self.assertEqual(self.questions.read_text(), "# Agent note\n\n" + recorded)
-            self.assertFalse(self.questions.with_name("questions-archive.md").exists())
+            self.assertFalse(self.core._archive_path(self.questions).exists())
             self.assertIn("外部內容已變更", self.status(app))
 
     async def test_missing_binding_or_file_opens_read_only_with_reason(self):
@@ -322,15 +324,23 @@ class EditorTests(PanelTestCase):
 
 
 class OpenActionTests(PanelTestCase):
-    def open(self, workspace):
+    def open(self, workspace, tab, panes=None, *, snapshot_error=None):
         requests = []
 
         def request(method, params, env):
             requests.append((method, params))
+            if method == "session.snapshot":
+                if snapshot_error:
+                    raise RuntimeError(snapshot_error)
+                return {"result": {"type": "session_snapshot", "snapshot": {
+                    "panes": panes or [],
+                }}}
             return {"result": "ok"}
 
-        self.panel.open_popup({"HERDR_WORKSPACE_ID": workspace}, request=request)
-        [(method, params)] = requests
+        self.panel.open_popup(
+            {"HERDR_WORKSPACE_ID": workspace, "HERDR_TAB_ID": tab}, request=request
+        )
+        method, params = requests[-1]
         self.assertEqual(method, "plugin.pane.open")
         self.assertEqual(
             (params["plugin_id"], params["entrypoint"], params["placement"]),
@@ -338,22 +348,111 @@ class OpenActionTests(PanelTestCase):
         )
         return params["env"]
 
-    def test_open_resolves_each_workspace_binding_and_never_guesses(self):
+    def test_tab_match_uses_current_pane_tab_instead_of_recorded_tab(self):
         other = self.root / "other"
-        self.assertEqual(self.open("ws-a")["LAT_PANEL_FILE"], str(self.questions))
-        unbound = self.open("ws-unknown")
-        self.assertNotIn("LAT_PANEL_FILE", unbound)
-        self.assertEqual(unbound["LAT_PANEL_ERROR"], self.panel.NO_BINDING)
-        self.core.bind_controller("ctl-b", "codex", "s-b", other, "ws-b")
-        self.assertEqual(self.open("ws-b")["LAT_PANEL_FILE"], str(other / ".lat/questions.md"))
-        self.assertEqual(self.open("ws-a")["LAT_PANEL_HERDR_WORKSPACE"], "ws-a")
-        unbound = self.open("ws-unknown")
+        self.core.bind_controller(
+            "ctl-b", "codex", "s-b", other, "ws-a", "old-tab", "pane-b"
+        )
+        opened = self.open("ws-a", "new-tab", [
+            {"pane_id": "pane-a", "tab_id": "tab-a", "workspace_id": "ws-a"},
+            {"pane_id": "pane-b", "tab_id": "new-tab", "workspace_id": "ws-a"},
+        ])
+        self.assertEqual(opened["LAT_PANEL_SESSION_ID"], "s-b")
+        self.assertEqual(opened["LAT_PANEL_FILE"], str(other / ".lat/questions-ctl-b.md"))
+
+    def test_snapshot_failure_falls_back_to_recorded_tab(self):
+        opened = self.open("ws-a", "tab-a", snapshot_error="unavailable")
+        self.assertEqual(opened["LAT_PANEL_SESSION_ID"], "s-a")
+
+    def test_single_picker_and_none_routes(self):
+        self.assertEqual(self.open("ws-a", "third", [])["LAT_PANEL_SESSION_ID"], "s-a")
+        other = self.root / "other"
+        self.core.bind_controller(
+            "ctl-b", "codex", "s-b", other, "ws-a", "tab-b", "pane-b"
+        )
+        picker = self.open("ws-a", "third", [])
+        choices = json.loads(picker["LAT_PANEL_CHOICES"])
+        self.assertEqual([item["session_id"] for item in choices], ["s-a", "s-b"])
+        self.assertNotIn("LAT_PANEL_FILE", picker)
+
+        unbound = self.open("ws-unknown", "tab-z", [])
         self.assertNotIn("LAT_PANEL_FILE", unbound)
         self.assertEqual(unbound["LAT_PANEL_ERROR"], self.panel.NO_BINDING)
         self.assertEqual(
             self.panel.Panel.from_env({"LAT_PANEL_ERROR": self.panel.NO_BINDING}).notices["file"],
             self.panel.NO_BINDING,
         )
+
+    async def test_picker_accepts_digit_ignores_invalid_key_and_ctrl_q_closes(self):
+        other = self.root / "other"
+        other_questions = other / ".lat/questions-ctl-b.md"
+        other_questions.parent.mkdir(parents=True)
+        other_questions.write_text(QUESTIONS.replace("Q1", "Q2"))
+        choices = [
+            {
+                "hcom_name": "ctl-a", "workspace": str(self.project),
+                "questions_path": str(self.questions), "session_id": "s-a",
+            },
+            {
+                "hcom_name": "ctl-b", "workspace": str(other),
+                "questions_path": str(other_questions), "session_id": "s-b",
+            },
+        ]
+        panel_env = {
+            "LAT_PANEL_HERDR_WORKSPACE": "ws-a",
+            "LAT_PANEL_CHOICES": json.dumps(choices),
+            "HERDR_CONFIG_PATH": str(self.config),
+        }
+        close_app = self.panel.Panel.from_env(panel_env)
+        async with close_app.run_test() as pilot:
+            await pilot.press("ctrl+q")
+            await pilot.pause()
+            self.assertIsNotNone(close_app.return_code)
+
+        app = self.panel.Panel.from_env(panel_env)
+        async with app.run_test() as pilot:
+            self.assertEqual(
+                str(app.query_one("#picker").render()),
+                "1 ctl-a（project）  2 ctl-b（other）",
+            )
+            await pilot.press("x")
+            await pilot.pause()
+            self.assertTrue(app.picker_active)
+            await pilot.press("2")
+            await pilot.pause()
+            self.assertFalse(app.picker_active)
+            self.assertEqual(app.session_id, "s-b")
+            self.assertIn("Q2", app.editor.text)
+            await pilot.press("ctrl+q")
+            await self.settle(app, pilot)
+            self.assertIsNotNone(app.return_code)
+
+    async def test_picker_pages_past_nine_controllers_with_single_digit_choices(self):
+        choices = []
+        for index in range(1, 11):
+            questions = self.root / f"project-{index}/.lat/questions-ctl-{index}.md"
+            questions.parent.mkdir(parents=True)
+            questions.write_text(QUESTIONS.replace("Q1", f"Q{index}"))
+            choices.append({
+                "hcom_name": f"ctl-{index}",
+                "workspace": str(self.root / f"project-{index}"),
+                "questions_path": str(questions),
+                "session_id": f"s-{index}",
+            })
+        app = self.panel.Panel.from_env({
+            "LAT_PANEL_HERDR_WORKSPACE": "ws-a",
+            "LAT_PANEL_CHOICES": json.dumps(choices),
+            "HERDR_CONFIG_PATH": str(self.config),
+        })
+        async with app.run_test() as pilot:
+            self.assertIn("[1/2] ←/→ 換頁", str(app.query_one("#picker").render()))
+            await pilot.press("right")
+            await pilot.pause()
+            self.assertIn("1 ctl-10（project-10）", str(app.query_one("#picker").render()))
+            await pilot.press("1")
+            await pilot.pause()
+            self.assertEqual(app.session_id, "s-10")
+            self.assertIn("Q10", app.editor.text)
 
 
 class NotificationTests(PanelTestCase):
@@ -379,22 +478,27 @@ class NotificationTests(PanelTestCase):
             self.assertFalse(self.pending())
             self.assertEqual(self.status(app), "")
 
-    async def test_notification_goes_to_the_current_workspace_binding(self):
-        self.core.bind_controller("ctl-new", "codex", "s-new", self.project, "ws-a")
+    async def test_two_controllers_same_project_keep_files_and_notifications_separate(self):
+        second, _replaced, _legacy = self.core.bind_controller(
+            "ctl-new", "codex", "s-new", self.project, "ws-a", "tab-a", "pane-new"
+        )
+        self.assertNotEqual(second["questions_path"], str(self.questions))
         app = self.make_app()
         async with app.run_test() as pilot:
             await self.type_and_wait(app, pilot, "a", 0.6)
-            self.assertEqual([call[1] for call in self.calls()], ["@ctl-new"])
+            self.assertEqual([call[1] for call in self.calls()], ["@ctl-a"])
 
     async def test_notification_does_not_use_another_workspaces_sole_binding(self):
         self.core.unbind_controller("s-a")
-        self.core.bind_controller("ctl-b", "codex", "s-b", self.project, "ws-b")
+        self.core.bind_controller(
+            "ctl-b", "codex", "s-b", self.project, "ws-b", "tab-b", "pane-b"
+        )
         app = self.make_app()
         async with app.run_test() as pilot:
             await self.type_and_wait(app, pilot, "a", 0.6)
             self.assertEqual(self.calls(), [])
             self.assertTrue(self.pending())
-            self.assertIn(self.panel.NO_BINDING, self.status(app))
+            self.assertIn("no LAT controller binding for session: s-a", self.status(app))
 
     async def test_close_flushes_pending_notification_before_exit(self):
         app = self.make_app(NOTIFY_DELAY=30)

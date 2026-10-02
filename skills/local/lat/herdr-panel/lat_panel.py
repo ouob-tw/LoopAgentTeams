@@ -10,8 +10,8 @@ Public API used by the Textual panel and LAT controller:
   and update natural-language question sections without touching other sections.
 * ``question_provenance`` checks one snapshot section against the latest panel
   journal entry that changed that question.
-* ``bind_controller``, ``unbind_controller``, and ``resolve_binding`` manage
-  exact per-Herdr-workspace routing.
+* ``bind_controller``, ``unbind_controller``, and the binding lookup helpers
+  manage per-controller routing inside a Herdr workspace.
 * ``mark_notification_pending``, ``notification_is_pending``,
   ``send_pending_notification``, and ``clear_pending_notification`` provide the
   persisted notification lifecycle. ``send_pending_notification`` returns an
@@ -19,16 +19,17 @@ Public API used by the Textual panel and LAT controller:
 
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
-  question upsert --id ID --file section.md
-  question section-hash --id ID
-  question provenance --id ID --journal panel-journal.jsonl
-  question set-status --id ID --revision N --status recorded \
+  question upsert --questions PATH --id ID --file section.md
+  question section-hash --questions PATH --id ID
+  question provenance --questions SNAPSHOT --source-questions PATH --id ID \
+      --journal panel-journal.jsonl
+  question set-status --questions PATH --id ID --revision N --status recorded \
       --expected-section-sha256 HASH
-  question archive-recorded --older-than 300
+  question archive-recorded --questions PATH --older-than 300
   bind --hcom-name NAME --client CLIENT --session-id ID --workspace ROOT \
-       [--herdr-workspace ID]
+       [--herdr-workspace ID] [--herdr-tab ID] [--herdr-pane ID]
   unbind --session-id ID
-  resolve [--herdr-workspace ID]
+  resolve (--session-id ID | [--herdr-workspace ID])
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
 Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
@@ -135,7 +136,9 @@ def _append_journal(journal_path, before, after, *, kind=None, details=None, now
         os.fsync(journal.fileno())
 
 
-def locked_replace(path, expected_text, new_text, *, journal_path=None):
+def locked_replace(
+    path, expected_text, new_text, *, journal_path=None, journal_details=None,
+):
     """Return true after an atomic replacement, or false on content conflict."""
     path = Path(path)
     with _path_lock(path):
@@ -147,7 +150,9 @@ def locked_replace(path, expected_text, new_text, *, journal_path=None):
             return False
         _replace_locked(path, new_text)
         if journal_path is not None:
-            _append_journal(journal_path, expected_text, new_text)
+            _append_journal(
+                journal_path, expected_text, new_text, details=journal_details
+            )
         return True
 
 
@@ -159,6 +164,7 @@ def save_panel_edit(questions_path, expected_text, new_text):
         expected_text,
         new_text,
         journal_path=questions_path.parent / "panel-journal.jsonl",
+        journal_details={"questions_path": _question_key(questions_path)},
     )
 
 
@@ -255,7 +261,16 @@ def _question_section(document, question_id):
     return matching[0]
 
 
-def question_provenance(questions_path, journal_path, question_id):
+def _journal_entry_matches_questions(entry, questions_path):
+    recorded_path = entry.get("questions_path")
+    if recorded_path is not None:
+        return recorded_path == _question_key(questions_path)
+    return Path(questions_path).name == "questions.md"
+
+
+def question_provenance(
+    questions_path, journal_path, question_id, *, source_questions_path=None,
+):
     """Return panel provenance for one question in a questions snapshot."""
     document = Path(questions_path).read_text(encoding="utf-8")
     section = _question_section(document, question_id)
@@ -267,11 +282,14 @@ def question_provenance(questions_path, journal_path, question_id):
         journal_lines = Path(journal_path).read_text(encoding="utf-8").splitlines()
     except FileNotFoundError:
         raise ValueError(f"panel journal not found: {journal_path}") from None
+    source_questions_path = source_questions_path or questions_path
     for line_number, line in enumerate(journal_lines, 1):
         try:
             entry = json.loads(line)
         except json.JSONDecodeError as error:
             raise ValueError(f"invalid panel journal line {line_number}: {error.msg}") from None
+        if not _journal_entry_matches_questions(entry, source_questions_path):
+            continue
         for change in entry.get("changed_questions", []):
             if change.get("id") == question_id:
                 latest = (line_number, entry, change)
@@ -294,6 +312,7 @@ def question_provenance(questions_path, journal_path, question_id):
         "journal_path": str(Path(journal_path)),
         "journal_line": line_number,
         "time": entry.get("time"),
+        "questions_path": _question_key(source_questions_path),
         "section_sha256": section_sha256,
     }
 
@@ -415,6 +434,7 @@ def set_question_status(
             updated,
             kind="set-status",
             details={
+                "questions_path": _question_key(questions_path),
                 "recorded_question": question_id,
                 "recorded_revision": revision,
                 "recorded_at": recorded_at,
@@ -424,7 +444,7 @@ def set_question_status(
         )
 
 
-def _recorded_hashes(journal_path):
+def _recorded_hashes(journal_path, questions_path):
     hashes = {}
     try:
         lines = Path(journal_path).read_text(encoding="utf-8").splitlines()
@@ -435,7 +455,11 @@ def _recorded_hashes(journal_path):
             entry = json.loads(line)
         except json.JSONDecodeError as error:
             raise ValueError(f"invalid panel journal line {line_number}: {error.msg}") from None
-        if entry.get("kind") == "set-status" and entry.get("recorded_question"):
+        if (
+            _journal_entry_matches_questions(entry, questions_path)
+            and entry.get("kind") == "set-status"
+            and entry.get("recorded_question")
+        ):
             hashes[entry["recorded_question"]] = entry.get("recorded_section_sha256")
     return hashes
 
@@ -476,7 +500,7 @@ def archive_recorded_questions(
         document = questions_path.read_text(encoding="utf-8")
         if expected_text is not None and document != expected_text:
             return None
-        recorded_hashes = _recorded_hashes(journal_path)
+        recorded_hashes = _recorded_hashes(journal_path, questions_path)
         eligible = []
         for section in _sections(document):
             if section["status"] != "recorded" or not section["recorded_at"]:
@@ -506,6 +530,7 @@ def archive_recorded_questions(
             updated,
             kind="archive-recorded",
             details={
+                "questions_path": _question_key(questions_path),
                 "archived_questions": archived_ids,
                 "archive_path": str(archive_path),
             },
@@ -541,6 +566,14 @@ def _bindings_path(config_dir=None):
     return directory / "bindings.json"
 
 
+class LegacyBindingsError(ValueError):
+    def __init__(self, count):
+        self.count = count
+        super().__init__(
+            f"legacy bindings ignored ({count}); each LAT controller must rebind"
+        )
+
+
 def _read_bindings(path):
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -548,34 +581,66 @@ def _read_bindings(path):
         return {}
     if not isinstance(payload, dict) or not isinstance(payload.get("bindings", {}), dict):
         raise ValueError("invalid bindings file")
-    return payload.get("bindings", {})
+    bindings = payload.get("bindings", {})
+    if payload.get("version") != 2 and bindings:
+        raise LegacyBindingsError(len(bindings))
+    return bindings
 
 
 def _write_bindings(path, bindings):
     path.parent.mkdir(parents=True, exist_ok=True)
-    _replace_locked(path, json.dumps({"bindings": bindings}, ensure_ascii=False, indent=2) + "\n")
+    _replace_locked(
+        path,
+        json.dumps({"version": 2, "bindings": bindings}, ensure_ascii=False, indent=2)
+        + "\n",
+    )
 
 
-def bind_controller(hcom_name, client, session_id, workspace, herdr_workspace, *, config_dir=None):
-    """Bind one Herdr workspace and return ``(binding, replaced_binding)``."""
-    if not herdr_workspace:
-        raise ValueError("Herdr workspace ID is required")
+def _safe_controller_name(hcom_name):
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", hcom_name).strip("-_").lower()
+    if not safe:
+        raise ValueError("HCOM name has no safe filename characters")
+    return safe
+
+
+def bind_controller(
+    hcom_name, client, session_id, workspace, herdr_workspace, herdr_tab, herdr_pane,
+    *, config_dir=None,
+):
+    """Bind one controller session and return its binding and prior state."""
+    missing = [
+        label for label, value in (
+            ("HCOM name", hcom_name), ("client", client), ("session ID", session_id),
+            ("Herdr workspace ID", herdr_workspace), ("Herdr tab ID", herdr_tab),
+            ("Herdr pane ID", herdr_pane),
+        ) if not value
+    ]
+    if missing:
+        raise ValueError(f"{', '.join(missing)} required")
     workspace = Path(workspace).expanduser().resolve()
+    questions_name = f"questions-{_safe_controller_name(hcom_name)}.md"
     binding = {
         "hcom_name": hcom_name,
         "client": client,
         "session_id": session_id,
         "workspace": str(workspace),
-        "questions_path": str(workspace / ".lat/questions.md"),
+        "questions_path": str(workspace / ".lat" / questions_name),
         "herdr_workspace": herdr_workspace,
+        "herdr_tab": herdr_tab,
+        "herdr_pane": herdr_pane,
     }
     path = _bindings_path(config_dir)
     with _path_lock(path):
-        bindings = _read_bindings(path)
-        replaced = bindings.get(herdr_workspace)
-        bindings[herdr_workspace] = binding
+        legacy_ignored = 0
+        try:
+            bindings = _read_bindings(path)
+        except LegacyBindingsError as error:
+            legacy_ignored = error.count
+            bindings = {}
+        replaced = bindings.get(session_id)
+        bindings[session_id] = binding
         _write_bindings(path, bindings)
-    return binding, replaced
+    return binding, replaced, legacy_ignored
 
 
 def unbind_controller(session_id, *, config_dir=None):
@@ -584,21 +649,45 @@ def unbind_controller(session_id, *, config_dir=None):
     with _path_lock(path):
         bindings = _read_bindings(path)
         kept = {
-            workspace_id: binding for workspace_id, binding in bindings.items()
-            if binding.get("session_id") != session_id
+            owner_session: binding for owner_session, binding in bindings.items()
+            if owner_session != session_id
         }
         if kept != bindings:
             _write_bindings(path, kept)
         return len(bindings) - len(kept)
 
 
-def resolve_binding(herdr_workspace=None, *, config_dir=None):
-    """Resolve only the exact Herdr workspace binding."""
+def list_bindings(herdr_workspace=None, *, config_dir=None):
+    """Return version-2 bindings, optionally restricted to one workspace."""
     path = _bindings_path(config_dir)
     with _path_lock(path):
         bindings = _read_bindings(path)
-    if herdr_workspace and herdr_workspace in bindings:
-        return bindings[herdr_workspace]
+    values = list(bindings.values())
+    if herdr_workspace is not None:
+        values = [
+            binding for binding in values
+            if binding.get("herdr_workspace") == herdr_workspace
+        ]
+    return sorted(values, key=lambda item: (item.get("hcom_name", ""), item.get("session_id", "")))
+
+
+def resolve_session_binding(session_id, *, config_dir=None):
+    """Resolve a controller's own binding without any workspace fallback."""
+    path = _bindings_path(config_dir)
+    with _path_lock(path):
+        binding = _read_bindings(path).get(session_id)
+    if binding:
+        return binding
+    raise ValueError(f"no LAT controller binding for session: {session_id}")
+
+
+def resolve_binding(herdr_workspace=None, *, config_dir=None):
+    """Resolve a workspace only when it has exactly one controller."""
+    bindings = list_bindings(herdr_workspace, config_dir=config_dir)
+    if len(bindings) == 1:
+        return bindings[0]
+    if len(bindings) > 1:
+        raise ValueError("multiple LAT controllers are bound to this Herdr workspace")
     raise ValueError("no LAT controller is bound to this Herdr workspace")
 
 
@@ -752,6 +841,7 @@ def _build_parser():
     upsert.add_argument("--file", required=True, type=Path)
     provenance = question_commands.add_parser("provenance")
     provenance.add_argument("--questions", required=True, type=Path)
+    provenance.add_argument("--source-questions", type=Path)
     provenance.add_argument("--journal", required=True, type=Path)
     provenance.add_argument("--id", required=True)
     section_hash = question_commands.add_parser("section-hash")
@@ -776,10 +866,13 @@ def _build_parser():
     bind.add_argument("--session-id", required=True)
     bind.add_argument("--workspace", required=True, type=Path)
     bind.add_argument("--herdr-workspace", default=os.environ.get("HERDR_WORKSPACE_ID"))
+    bind.add_argument("--herdr-tab", default=os.environ.get("HERDR_TAB_ID"))
+    bind.add_argument("--herdr-pane", default=os.environ.get("HERDR_PANE_ID"))
     unbind = commands.add_parser("unbind")
     unbind.add_argument("--session-id", required=True)
     resolve = commands.add_parser("resolve")
     resolve.add_argument("--herdr-workspace", default=os.environ.get("HERDR_WORKSPACE_ID"))
+    resolve.add_argument("--session-id")
     return parser
 
 
@@ -794,7 +887,10 @@ def main(argv=None):
             return 0
         if args.command == "question" and args.question_command == "provenance":
             print(json.dumps(
-                question_provenance(args.questions, args.journal, args.id),
+                question_provenance(
+                    args.questions, args.journal, args.id,
+                    source_questions_path=args.source_questions,
+                ),
                 ensure_ascii=False,
             ))
             return 0
@@ -825,18 +921,26 @@ def main(argv=None):
             print(json.dumps({"archived": archived}, ensure_ascii=False))
             return 0
         if args.command == "bind":
-            binding, replaced = bind_controller(
+            binding, replaced, legacy_ignored = bind_controller(
                 args.hcom_name, args.client, args.session_id, args.workspace,
-                args.herdr_workspace,
+                args.herdr_workspace, args.herdr_tab, args.herdr_pane,
             )
-            print(json.dumps({"binding": binding, "replaced": replaced}, ensure_ascii=False))
+            print(json.dumps({
+                "binding": binding,
+                "replaced": replaced,
+                "legacy_ignored": legacy_ignored,
+            }, ensure_ascii=False))
             return 0
         if args.command == "unbind":
             removed = unbind_controller(args.session_id)
             print(json.dumps({"removed": removed}))
             return 0
         if args.command == "resolve":
-            print(json.dumps(resolve_binding(args.herdr_workspace), ensure_ascii=False))
+            binding = (
+                resolve_session_binding(args.session_id)
+                if args.session_id else resolve_binding(args.herdr_workspace)
+            )
+            print(json.dumps(binding, ensure_ascii=False))
             return 0
     except (OSError, ValueError) as error:
         print(f"lat-panel: {error}", file=sys.stderr)
