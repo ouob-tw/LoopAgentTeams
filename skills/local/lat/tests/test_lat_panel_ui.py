@@ -341,6 +341,7 @@ class RawEditorTests(PanelTestCase):
         self.core.set_question_status(
             self.questions, "Q1", 1, "recorded", expected_hash, now=recorded_at,
         )
+        self.core.upsert_question(self.questions, "Q2", "## Other?\n\nFree text.\n")
         recorded = self.questions.read_text()
         clock = [recorded_at + timedelta(seconds=299)]
         app = self.make_app(
@@ -352,7 +353,8 @@ class RawEditorTests(PanelTestCase):
         async with app.run_test() as pilot:
             await self.raw(pilot)
             self.questions.write_text("# Agent note\n\n" + recorded)
-            app.editor.move_cursor((ANSWER_LINE, 0))
+            # Q1 is recorded and read-only; the conflicting draft goes into Q2.
+            app.editor.move_cursor((recorded.splitlines().index("Free text."), 0))
             await pilot.press("x")
             await pilot.pause()
             self.assertTrue(app.conflict)

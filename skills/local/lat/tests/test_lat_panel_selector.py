@@ -218,17 +218,36 @@ class MultiSelectTests(SelectorTestCase):
 
 
 class InputOnlyTests(SelectorTestCase):
-    async def test_input_only_question_writes_plain_text_and_explains_why(self):
+    async def test_input_only_question_shows_the_box_and_typing_starts_the_answer(self):
         app = self.make_app()
         async with app.run_test() as pilot:
             await self.press(pilot, "right", "right")
-            self.assertIn("答覆：（按 Enter 輸入）", self.view(app))
+            self.assertTrue(app.input.display)
+            self.assertIsNone(app.focused)
             self.assertEqual(self.status(app), "Q3：題目沒有可解析的選項，只能輸入文字")
-            await self.press(pilot, "1", "space")
-            self.assertTrue(self.text().endswith(TEXT))
-            await self.press(pilot, "enter", *"想法", "escape")
-            self.assertTrue(self.text().endswith("答覆：想法\n\n- [ ] 送出\n"))
-            self.assertIn("答覆：想法", self.view(app))
+            await self.press(pilot, *"想法", "1", "space", "enter", "x", "escape")
+            self.assertTrue(self.text().endswith("答覆：想法1 \nx\n\n- [ ] 送出\n"))
+            self.assertIsNone(app.focused)
+            self.assertTrue(app.input.display)
+            await self.press(pilot, "enter")
+            self.assertIs(app.focused, app.input)
+            await self.press(pilot, "escape", "left")
+            self.assertFalse(app.input.display)
+
+    async def test_text_that_would_forge_a_submit_box_is_not_saved(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "right", *"x", "enter")
+            for key in "- [x] 送出":
+                await pilot.press("space" if key == " " else key)
+            await pilot.pause()
+            self.assertIn("這次輸入沒有儲存", self.status(app))
+            self.assertIs(app.focused, app.input)
+            self.assertTrue(self.text().endswith("答覆：x\n- [x] 送\n\n- [ ] 送出\n"))
+            self.assertEqual(self.core.parse_questions(self.text())[-1]["status"], "pending")
+            await self.press(pilot, "backspace", "backspace", "escape")
+            self.assertNotIn("沒有儲存", self.status(app))
+            self.assertTrue(self.text().endswith("答覆：x\n- [x] \n\n- [ ] 送出\n"))
 
     async def test_mixed_option_styles_fall_back_to_input(self):
         self.questions.write_text(TEXT.replace("請自由回答。", "A. One\n- [ ] Two"))
@@ -255,7 +274,8 @@ class DraftRestoreTests(SelectorTestCase):
             self.assertEqual(app.current.selected, [2, 0, 3])
             self.assertIn("4. [x] 其他（自己輸入）\n         x", self.view(app))
             await self.press(pilot, "right")
-            self.assertIn("答覆：line1\n      line2", self.view(app))
+            self.assertTrue(app.input.display)
+            self.assertEqual(app.input.text, "line1\nline2")
             await pilot.press("escape")
             await self.settle(app, pilot)
         self.assertEqual(self.text(), text)
@@ -270,7 +290,7 @@ class DraftRestoreTests(SelectorTestCase):
         async with app.run_test() as pilot:
             self.assertIn("目前答覆無法對應選項：Z. 不存在", self.view(app))
             await self.press(pilot, "right")
-            self.assertIn("☒ 正式版要怎麼併入？：Z. 不存在", self.view(app))
+            self.assertIn("☒ 正式版要怎麼併入？\n  Z. 不存在", self.view(app))
             await self.press(pilot, "enter")
             self.assertIn("沒有可送出的答覆", self.status(app))
             self.assertIn("- [ ] 送出", self.text())
@@ -285,9 +305,12 @@ class SubmitTests(SelectorTestCase):
             self.assertEqual(self.view(app).splitlines(), [
                 "送出前檢查",
                 "",
-                "☒ 正式版要怎麼併入？：B. 合併到 dev，並推送到 GitHub（建議）",
-                "☒ 要開哪些功能？：主控綁定",
-                "☐ 還有什麼想法？：（未作答）",
+                "☒ 正式版要怎麼併入？",
+                "  B. 合併到 dev，並推送到 GitHub（建議）",
+                "☒ 要開哪些功能？",
+                "  主控綁定",
+                "☐ 還有什麼想法？",
+                "  （未作答）",
                 "",
                 "❯ Enter 送出 2 題",
             ])
@@ -443,7 +466,7 @@ class RawModeTests(SelectorTestCase):
         async with app.run_test() as pilot:
             await self.press(pilot, "ctrl+e")
             self.questions.write_text(self.text() + "\n# Agent\n")
-            app.editor.move_cursor((0, 0))
+            app.editor.move_cursor(app.editor.document.end)
             await self.press(pilot, "x")
             await self.press(pilot, "ctrl+e")
             self.assertTrue(app.editor.display)
@@ -467,6 +490,124 @@ class RawModeTests(SelectorTestCase):
             self.assertIn("題目格式錯誤", self.view(app))
             await pilot.pause(0.3)
             self.assertIn("送出格式錯誤", self.status(app))
+
+
+class ReviewFixTests(SelectorTestCase):
+    async def test_tab_inside_an_input_keeps_focus_and_esc_only_leaves_it(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "4", *"ab", "tab")
+            self.assertIs(app.focused, app.input)
+            await self.press(pilot, "escape")
+            self.assertIsNone(app.return_code)
+            self.assertIsNone(app.focused)
+            await self.press(pilot, "down")
+            self.assertEqual(app.current.cursor, 3)
+
+    async def test_raw_editor_refuses_changes_to_submitted_questions(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "1", "right", "right", "right", "enter")
+            await self.settle(app, pilot)
+            submitted = self.text()
+            await self.press(pilot, "ctrl+e")
+            line = app.editor.text.splitlines().index("答覆：A. 合併到 dev，不推送")
+            app.editor.replace("答覆：C. 先不合併", (line, 0), (line, len("答覆：A. 合併到 dev，不推送")))
+            await pilot.pause()
+            self.assertEqual(self.text(), submitted)
+            self.assertEqual(app.editor.text, submitted)
+            self.assertIn("已送出或已記錄的題目不能修改", self.status(app))
+            app.editor.move_cursor(app.editor.document.end)
+            await self.press(pilot, "z")
+            self.assertEqual(self.text(), submitted + "z")
+            self.assertNotIn("不能修改", self.status(app))
+            await self.press(pilot, "ctrl+e")
+            self.assertIn("已送出，等待記錄", self.view(app))
+
+    async def test_malformed_unchecked_question_shows_persistent_status_error(self):
+        self.questions.write_text(SINGLE.replace("答覆：\n", "") + "\n" + MULTI)
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            expected = "題目格式錯誤：Q1 找不到答覆或送出標記，請按 Ctrl+E 修正"
+            self.assertEqual(self.status(app), expected)
+            await self.press(pilot, "right", "1")
+            self.assertEqual(self.status(app), expected)
+
+    async def test_review_wraps_long_titles_without_a_huge_indent(self):
+        long_title = "這是一個非常非常長的題目標題用來測試送出頁的換行是否正常"
+        self.questions.write_text(SINGLE.replace("正式版要怎麼併入？", long_title))
+        app = self.make_app()
+        async with app.run_test(size=(44, 30)) as pilot:
+            await self.press(pilot, "1", "right")
+            lines = self.view(app).splitlines()
+            self.assertEqual(lines[2:5], [
+                "☒ 這是一個非常非常長的題目標題用來測試送",
+                "  出頁的換行是否正常",
+                "  A. 合併到 dev，不推送",
+            ])
+
+    async def test_partially_unmatched_multi_answer_is_shown_and_not_submitted(self):
+        self.questions.write_text(MULTI.replace("答覆：\n", "答覆：通知；不存在\n"))
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "enter")
+            self.assertIn("通知（無法對應選項：不存在）", self.view(app))
+            self.assertIn("沒有可送出的答覆", self.status(app))
+            self.assertIn("- [ ] 送出", self.text())
+            await self.press(pilot, "left", "1", "right", "enter")
+            await self.settle(app, pilot)
+            self.assertIn("答覆：通知；主控綁定\n\n- [x] 送出", self.text())
+
+    async def test_revised_notice_stays_until_that_question_is_answered_again(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "1", "left")
+            self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n")
+            await pilot.pause(0.3)
+            notice = "題目已更新：Q2 r2，這題的選擇已重設"
+            self.assertIn(notice, self.status(app))
+            await self.press(pilot, "down", "2", "right")
+            self.assertIn(notice, self.status(app))
+            await self.press(pilot, "1")
+            self.assertNotIn(notice, self.status(app))
+
+    async def test_cancelled_other_keeps_the_previous_single_answer(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "1", "tab", "n", "escape", "4", "escape")
+            self.assertIn("答覆：A. 合併到 dev，不推送\n備註：n\n", self.text())
+            self.assertEqual(app.current.selected, [0])
+            await self.press(pilot, "4", "x", "escape")
+            self.assertIn("答覆：其他：x\n備註：n\n", self.text())
+
+    async def test_note_is_hidden_while_there_is_no_answer_to_keep_it(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "1", "tab", "n", "escape", "1")
+            self.assertNotIn("備註", self.view(app))
+            self.assertEqual(section(self.text(), "Q2"), MULTI + "\n")
+
+    async def test_more_than_nine_options_use_arrows_for_the_rest(self):
+        options = "".join(f"{chr(65 + index)}. 選項{index + 1}\n" for index in range(10))
+        self.questions.write_text(TEXT.replace("請自由回答。", options))
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            self.assertIn("11. 其他（自己輸入）", self.view(app))
+            await self.press(pilot, "9")
+            self.assertIn("答覆：I. 選項9\n", self.text())
+            await self.press(pilot, "down", "enter")
+            self.assertIn("答覆：J. 選項10\n", self.text())
+
+    async def test_hand_written_other_and_note_restore_into_inputs(self):
+        self.questions.write_text(SINGLE.replace("答覆：\n", "答覆：其他：自訂\n備註：說明\n"))
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            self.assertEqual(app.current.selected, [3])
+            self.assertIn("4. 其他（自己輸入）  ✔\n     自訂", self.view(app))
+            await self.press(pilot, "4")
+            self.assertEqual(app.input.text, "自訂")
+            await self.press(pilot, "escape", "tab")
+            self.assertEqual(app.input.text, "說明")
 
 
 if __name__ == "__main__":

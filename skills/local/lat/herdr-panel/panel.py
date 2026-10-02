@@ -49,6 +49,8 @@ NO_QUESTIONS = "目前沒有待答問題"
 OTHER_LABEL = "其他（自己輸入）"
 SUBMITTED = "已送出，等待記錄"
 RECORDED = "✔ 已記錄"
+LOCKED = "已送出或已記錄的題目不能修改；要改答案請在聊天告訴主控"
+FORGED = "答覆或備註不能有單獨一行寫成「- [x] 送出」、「答覆：」或題目標題；這次輸入沒有儲存"
 TAB_TITLE_CELLS = 16
 NO_BINDING = "此 workspace 沒有綁定的 LAT 主控"
 CONFLICT = "外部內容已變更，暫停儲存。F5：備份目前草稿並載入磁碟版本。"
@@ -234,6 +236,7 @@ class Draft:
         self.options = parsed.options
         self.reason = parsed.reason
         self.context = lat_panel.question_context(section)
+        self.malformed_submission = section["malformed_submission"]
         if section["status_label"] == "已記錄":
             self.status = "recorded"
         elif section["checked"]:
@@ -258,6 +261,11 @@ class Draft:
     @property
     def editable(self):
         return self.status == "draft"
+
+    @property
+    def submittable(self):
+        """Editable with an answer the review tab shows in full."""
+        return self.editable and self.answer() is not None and not self.unmatched
 
     def restore(self, answer):
         self.note = answer.note
@@ -322,7 +330,8 @@ class Draft:
         if answer is None:
             return self.unmatched or "（未作答）"
         area = lat_panel.render_answer_area(answer)
-        return area.rsplit("\n\n- [", 1)[0].removeprefix("答覆：")
+        text = area.rsplit("\n\n- [", 1)[0].removeprefix("答覆：")
+        return f"{text}（無法對應選項：{self.unmatched}）" if self.unmatched else text
 
     def marker(self):
         if self.status == "recorded":
@@ -388,6 +397,7 @@ class Panel(App):
         self.drafts = {}
         self.tab = 0
         self.input_target = None
+        self.revised = {}
         self.saved = ""
         self.conflict = False
         self.close_armed = False
@@ -443,6 +453,7 @@ class Panel(App):
         yield Static(KEYS, id="keys", markup=False)
 
     def on_mount(self):
+        self.query_one("#body").can_focus = False
         self.query_one("#picker", Static).display = self.picker_active
         self.input.display = False
         self.query_one("#input-label", Static).display = False
@@ -484,6 +495,14 @@ class Panel(App):
 
     def on_key(self, event: events.Key):
         if not self.picker_active:
+            draft = self.current
+            if (
+                self.focused is None and not self.raw_mode and not self.closing
+                and draft and draft.editable and draft.kind is None
+                and event.is_printable and event.character
+            ):
+                event.stop()
+                self.type_text(draft, event.character)
             return
         if not event.character or not event.character.isdigit():
             return
@@ -574,11 +593,14 @@ class Panel(App):
             elif old is not None and (
                 question_id == current_id or old.answer() is not None
             ):
-                self.notices["action"] = (
-                    f"題目已更新：{question_id} r{draft.revision}，這題的選擇已重設"
-                )
+                self.revised[question_id] = draft.revision
             drafts[question_id] = draft
         self.drafts = drafts
+        self.revised = {
+            question_id: revision for question_id, revision in self.revised.items()
+            if question_id in drafts and drafts[question_id].editable
+        }
+        self.render_revised()
         if self.input_target and drafts.get(current_id) is not previous:
             self.close_input()
         ids = self.tab_ids
@@ -586,11 +608,26 @@ class Panel(App):
             self.tab = len(ids) if on_review else min(self.tab, len(ids))
         else:
             self.tab = ids.index(current_id)
+        broken = [
+            draft.id for draft in drafts.values()
+            if draft.status == "broken" and not draft.malformed_submission
+        ]
+        self.notices["broken"] = (
+            f"題目格式錯誤：{'、'.join(broken)} 找不到答覆或送出標記，請按 Ctrl+E 修正"
+            if broken else ""
+        )
         self.notices["duplicates"] = (
             f"題號重複：{'、'.join(duplicates)}，請按 Ctrl+E 修正" if duplicates else ""
         )
         self.notices["submission"] = submission_error_text(text)
         self.refresh_view()
+
+    def render_revised(self):
+        """Keep 題目已更新 visible until the user answers that question again."""
+        self.notices["revised"] = "；".join(
+            f"題目已更新：{question_id} r{revision}，這題的選擇已重設"
+            for question_id, revision in self.revised.items()
+        )
 
     # Rendering ------------------------------------------------------------
 
@@ -632,7 +669,8 @@ class Panel(App):
         rows.append(("", "", ""))
         focus_row = len(rows)
         if draft.kind is None:
-            rows.append(("答覆：", draft.other or "（按 Enter 輸入）", "" if draft.other else "dim"))
+            if not draft.editable and draft.other:
+                rows.append(("答覆：", draft.other, ""))
         else:
             for index, label in enumerate([option.label for option in draft.options] + [OTHER_LABEL]):
                 focused = draft.editable and index == draft.cursor
@@ -654,7 +692,7 @@ class Panel(App):
                     rows.append((indent, draft.other, ""))
         if draft.unmatched:
             rows.append(("", f"目前答覆無法對應選項：{draft.unmatched}", "dim"))
-        if draft.note:
+        if draft.note and draft.answer() is not None:
             rows.append(("備註：", draft.note, ""))
         return rows, focus_row
 
@@ -662,16 +700,16 @@ class Panel(App):
         rows = [("", "送出前檢查", "bold"), ("", "", "")]
         ready = 0
         for draft in self.drafts.values():
-            prefix = f"{draft.marker()} {draft.title}："
+            rows.append((f"{draft.marker()} ", draft.title, ""))
             if draft.status == "recorded":
-                rows.append((prefix, "已記錄", "dim"))
+                rows.append(("  ", "已記錄", "dim"))
                 continue
             text = draft.summary()
             if draft.status == "submitted":
                 text += f"（{SUBMITTED}）"
-            elif draft.answer() is not None and draft.editable:
+            elif draft.submittable:
                 ready += 1
-            rows.append((prefix, text, "" if draft.answer() is not None else "dim"))
+            rows.append(("  ", text, "" if draft.answer() is not None else "dim"))
         rows.append(("", "", ""))
         rows.append((
             "❯ " if ready else "",
@@ -698,12 +736,33 @@ class Panel(App):
             if draft and draft.editable and draft.kind is None and draft.reason else ""
         )
         self.render_status()
+        if self.input_target is None:
+            self.show_text_input(draft)
         if starts:
             line = starts[min(focus_row, len(starts) - 1)]
             self.call_after_refresh(
                 body.scroll_to_region, Region(0, line, max(body.size.width, 1), 1),
                 animate=False,
             )
+
+    def show_text_input(self, draft):
+        """Show an input-only question's answer box, unfocused, on its tab."""
+        shown = bool(
+            draft and draft.editable and draft.kind is None
+            and not self.raw_mode and not self.read_only
+        )
+        label = self.query_one("#input-label", Static)
+        if shown:
+            label.update(f"{draft.id} 答覆（Enter 或直接輸入）")
+            if self.input.text != draft.other:
+                self.input.load_text(draft.other)
+        self.input.display = label.display = shown
+
+    def type_text(self, draft, character):
+        """Start typing an input-only answer with the key that was pressed."""
+        self.open_input("text")
+        self.input.insert(character)
+        self.write_text_change(draft, self.input.text)
 
     def on_resize(self, _event):
         if not self.raw_mode and not self.picker_active:
@@ -738,7 +797,10 @@ class Panel(App):
         if self.picker_active:
             raise SkipAction()
         draft = self.selector_draft()
-        if not draft or not draft.editable or draft.kind is None:
+        if draft and draft.editable and draft.kind is None:
+            self.type_text(draft, str(digit))
+            return
+        if not draft or not draft.editable:
             self.refresh_view()
             return
         index = digit - 1
@@ -770,6 +832,9 @@ class Panel(App):
 
     def action_toggle(self):
         draft = self.selector_draft()
+        if draft and draft.editable and draft.kind is None:
+            self.type_text(draft, " ")
+            return
         if draft and draft.editable and draft.kind == "multi":
             self.toggle_option(draft, draft.cursor)
         self.refresh_view()
@@ -784,6 +849,10 @@ class Panel(App):
         self.refresh_view()
 
     def select_option(self, draft, index):
+        """Select one option; 其他 replaces the answer only once text is typed."""
+        if index == draft.other_index and not draft.other.strip():
+            self.open_input("other")
+            return
         draft.selected = [index]
         draft.unmatched = ""
         self.write_draft(draft)
@@ -842,11 +911,19 @@ class Panel(App):
         draft = self.current
         if self.input_target is None or draft is None or self.closing:
             return
-        value = event.text_area.text
+        self.write_text_change(draft, event.text_area.text)
+
+    def write_text_change(self, draft, value):
         attribute = "note" if self.input_target == "note" else "other"
         if getattr(draft, attribute) == value:
             return
         setattr(draft, attribute, value)
+        if self.input_target == "other" and draft.kind == "single":
+            if value.strip():
+                draft.selected = [draft.other_index]
+                draft.unmatched = ""
+            elif draft.selected == [draft.other_index]:
+                draft.selected = []
         self.write_draft(draft)
         self.refresh_view()
 
@@ -866,6 +943,10 @@ class Panel(App):
             result = lat_panel.write_question_answer(
                 self.path, draft.id, draft.revision, draft.hash, draft.answer()
             )
+        except lat_panel.AnswerFormatError:
+            # Keep the typed text so the user can fix the offending line.
+            self.notices["save"] = FORGED
+            return False
         except (OSError, ValueError) as error:
             self.notices["save"] = f"儲存失敗：{error}"
             self.reload_disk(reset={draft.id})
@@ -873,6 +954,8 @@ class Panel(App):
         self.notices["save"] = ""
         if result["status"] == "saved":
             draft.hash = result["section_sha256"]
+            if self.revised.pop(draft.id, None):
+                self.render_revised()
             return True
         revision = draft.revision
         self.reload_disk(reset={draft.id})
@@ -881,13 +964,15 @@ class Panel(App):
             updated is None or updated.revision == revision
         ):
             self.notices["action"] = f"{draft.id} 已在外部變更，這次的選擇沒有儲存"
+        elif result["status"] == "read_only":
+            self.notices["action"] = f"{draft.id} 已送出或已記錄，這次的修改沒有儲存"
         return False
 
     def submit(self):
         expected = {
             draft.id: (draft.revision, draft.hash)
             for draft in self.drafts.values()
-            if draft.editable and draft.answer() is not None
+            if draft.submittable
         }
         if not expected:
             self.notices["action"] = "沒有可送出的答覆"
@@ -959,6 +1044,10 @@ class Panel(App):
         text = self.editor.text
         if self.read_only or self.conflict or text == self.saved:
             return not self.conflict
+        if locked_ids(self.saved) - locked_ids(text):
+            self.notices["save"] = LOCKED
+            self.load(self.saved)
+            return True
         try:
             saved = lat_panel.save_panel_edit(self.path, self.saved, text)
         except OSError as error:
@@ -1137,7 +1226,7 @@ class Panel(App):
         self.start_notification()
 
     def action_escape(self):
-        if self.input_target and self.focused is self.input:
+        if self.focused is self.input:
             self.leave_input()
             return
         self.action_close_panel()
@@ -1180,13 +1269,21 @@ class Panel(App):
             self.close_armed = True
 
 
+def locked_ids(text):
+    """``(id, section hash)`` of questions that are submitted or recorded."""
+    return {
+        (section["id"], lat_panel.question_section_sha256(section))
+        for section in lat_panel.parse_questions(text)
+        if section["status"] in ("ready", "recorded")
+    }
+
+
 def ready_ids(text):
     """IDs of 待答 questions whose 送出 box is checked."""
     return {
         section["id"] for section in lat_panel.parse_questions(text)
         if section["status"] == "ready"
     }
-
 
 
 def main(argv):

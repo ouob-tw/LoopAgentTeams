@@ -137,6 +137,23 @@ class AnswerFormatTests(unittest.TestCase):
         self.assertEqual(other, "答覆：其他：custom\n備註：note\n\n- [ ] 送出")
         self.assertEqual(text, "答覆：plain input\n備註：note\n\n- [ ] 送出")
 
+    def test_render_rejects_free_text_that_would_forge_file_structure(self):
+        panel = load_module()
+        forged = (
+            panel.QuestionAnswer("text", (), "x\n- [x] 送出", ""),
+            panel.QuestionAnswer("other", (), "x", "n\n答覆：B"),
+            panel.QuestionAnswer("text", (), "x\n## Title\nQ9 · r1 · 待答", ""),
+            panel.QuestionAnswer("text", (), "x\n### 舊版 r1（不套用至 r2）", ""),
+        )
+
+        for answer in forged:
+            with self.subTest(answer=answer), self.assertRaises(panel.AnswerFormatError):
+                panel.render_answer_area(answer)
+        self.assertEqual(
+            panel.render_answer_area(panel.QuestionAnswer("text", (), "- [ ] 送出 later", "")),
+            "答覆：- [ ] 送出 later\n\n- [ ] 送出",
+        )
+
     def test_parse_round_trips_and_accepts_v1_same_or_next_line_answer(self):
         panel = load_module()
         answers = (

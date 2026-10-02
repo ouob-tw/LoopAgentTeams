@@ -15,7 +15,8 @@ Public API used by the Textual panel and LAT controller:
   the question is unchecked;
   ``submit_question_answers`` checks several answered drafts in one write; and
   ``mark_submit_notification_pending`` applies the submit-only notification
-  policy. ``render_answer_area`` emits the canonical hand-editable Markdown.
+  policy. ``render_answer_area`` emits the canonical hand-editable Markdown
+  and raises ``AnswerFormatError`` for text that would forge file structure.
   Write results are ``saved``, ``read_only``, or ``question_changed``; batch
   results are ``submitted`` or ``question_changed``. V2-T2 should replace its
   loaded identity with the hash returned by each successful draft save.
@@ -437,8 +438,17 @@ def parse_question_answer(question):
     raise ValueError(f"unknown option kind: {option_kind}")
 
 
+class AnswerFormatError(ValueError):
+    """Free-form answer or note text would read as question-file structure."""
+
+
 def render_answer_area(answer, *, submitted=False):
-    """Render one answer and submit checkbox in the canonical V2 format."""
+    """Render one answer and submit checkbox in the canonical V2 format.
+
+    Raises ``AnswerFormatError`` when free-form text contains a line that would
+    be parsed as a submit box, another answer marker, a section header, or an
+    old-revision header.
+    """
     if answer.kind == "single":
         if len(answer.selections) != 1 or answer.other:
             raise ValueError("single answer requires exactly one selection")
@@ -465,8 +475,15 @@ def render_answer_area(answer, *, submitted=False):
         note_lines = answer.note.splitlines()
         lines.append(f"備註：{note_lines[0]}")
         lines.extend(note_lines[1:])
-    lines.extend(("", f"- [{'x' if submitted else ' '}] 送出"))
-    return "\n".join(lines)
+    area = "\n".join(lines)
+    if (
+        _SUBMIT_MARKER.search(area)
+        or len(_ANSWER_MARKER.findall(area)) > 1
+        or _SECTION_HEADER.search(area)
+        or _ARCHIVE_HEADER.search(area)
+    ):
+        raise AnswerFormatError("answer text contains a question-file structure line")
+    return f"{area}\n\n- [{'x' if submitted else ' '}] 送出"
 
 
 def _section_text(section):
