@@ -184,36 +184,6 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.cli('uninstall', '--codex-home', home).returncode, 0)
         self.assertEqual(json.loads(hooks.read_text()), original)
 
-    def test_lat_position_survives_hcom_re_setup_and_migrates_old_install(self):
-        home = self.root / 'config'
-        home.mkdir()
-        path = home / 'hooks.json'
-        herdr = {'hooks': [{'type': 'command', 'command': 'bash herdr.sh session'}]}
-        hcom = {'matcher': 'startup|resume|clear|fork', 'hooks': [
-            {'type': 'command', 'command': 'hcom codex-sessionstart'}]}
-        original = {'hooks': {'SessionStart': [herdr, hcom]}}
-        path.write_text(json.dumps(original))
-        self.assertEqual(self.cli('install', '--codex-home', home).returncode, 0)
-        config = json.loads(path.read_text())
-        groups = config['hooks']['SessionStart']
-        self.assertEqual(groups[0], herdr)
-        self.assertEqual(groups[1].get('name'), 'lat-codex-recovery')
-        self.assertEqual(groups[2], hcom)
-        lat = groups[1]
-        # HCOM re-setup removes its empty group and appends its replacement.
-        groups.remove(hcom)
-        groups.append(hcom)
-        self.assertEqual(groups[1], lat)
-        # An old install appended LAT after HCOM; reinstall migrates it.
-        groups[:] = [herdr, hcom, lat]
-        path.write_text(json.dumps(config))
-        self.assertEqual(self.cli('install', '--codex-home', home).returncode, 0)
-        self.assertEqual(json.loads(path.read_text())['hooks']['SessionStart'],
-                         [herdr, lat, hcom])
-        before = path.read_bytes()
-        self.assertEqual(self.cli('install', '--codex-home', home).returncode, 0)
-        self.assertEqual(path.read_bytes(), before)
-
     def test_invalid_hooks_config_is_not_overwritten(self):
         home = self.root / 'config'
         home.mkdir()

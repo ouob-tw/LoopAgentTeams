@@ -183,14 +183,6 @@ def configure(args):
         else:
             group = dict(matcher=MATCHER, hooks=[handler])
             groups.append(group)
-        # HCOM re-setup removes its group and appends it again. Keep LAT before
-        # that group so its positional Codex trust key survives reconciliation.
-        if args.client == 'codex':
-            groups.remove(group)
-            index = next((i for i, g in enumerate(groups)
-                          if any(is_hcom_sessionstart(h) for h in g.get('hooks', []))),
-                         len(groups))
-            groups.insert(index, group)
     else:
         for group in owned:
             handlers = group.get('hooks')
@@ -223,17 +215,6 @@ def configure(args):
         print(f'Updated {path}; review changed hooks through Codex /hooks before use')
     else:
         print(f'Updated {path}; restart Claude Code sessions and confirm the hook in /hooks')
-
-
-def is_hcom_sessionstart(handler):
-    if not isinstance(handler, dict) or handler.get('type') != 'command':
-        return False
-    try:
-        command = shlex.split(handler.get('command', ''))
-        return (len(command) == 2 and Path(command[0]).name == 'hcom'
-                and command[1] == 'codex-sessionstart')
-    except (ValueError, TypeError):
-        return False
 
 
 def is_lat_command(handler):

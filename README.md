@@ -109,7 +109,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install --codex-hom
 uv run --no-project python "$lat_dir/scripts/lat-session.py" install --codex-home "$codex_home"
 ```
 
-確認 preview 只新增 LAT 的 hook 後再安裝；原本的 `hooks.json` 會先備份，其他 hooks 保留。重新啟動 Codex，在 `/hooks` 的 `SessionStart` 只信任 command 結尾為 `lat-session.py hook` 的項目。HCOM／Codex 更新或重設 hooks 後，再到 `/hooks` 確認它仍受信任。使用方式、舊版 `codex-lat-session.py` 的升級、停用遺留紀錄與移除步驟見 [LAT 壓縮後恢復](docs/lat-recovery.md)。
+確認 preview 只新增 LAT 的 hook 後再安裝；原本的 `hooks.json` 會先備份，其他 hooks 保留。重新啟動 Codex，在 `/hooks` 的 `SessionStart` 只信任 command 結尾為 `lat-session.py hook` 的項目。Codex 更新或重設 hooks 後，再到 `/hooks` 確認它仍受信任。使用方式、舊版 `codex-lat-session.py` 的升級、停用遺留紀錄與移除步驟見 [LAT 壓縮後恢復](docs/lat-recovery.md)。
 
 Claude Code 寫入使用者層級的 `~/.claude/settings.json`，不需信任步驟，重啟 Claude Code 後生效：
 
@@ -149,7 +149,6 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client cl
 - [hcom-spawn：召喚 Agent 協作](skills/local/hcom-spawn/SKILL.md)
 - [三層測試](skills/local/three-tier-testing/SKILL.md)
 - [HCOM／HERDR workspace 設定](docs/hcom-herdr-setup.md)
-- [Codex context 壓縮後的 HCOM 說明](docs/codex-hcom-compact.md)
 - [LAT 壓縮後恢復：安裝與使用](docs/lat-recovery.md)
 
 ## 本地開發

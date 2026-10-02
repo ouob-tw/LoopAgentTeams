@@ -34,7 +34,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client
 
 ## Hook 安裝與移除
 
-技能檔案安裝不會註冊 hook。安裝／移除 hook、搬動技能或修改 command，以及排查 hook 啟用／信任問題前，先讀 [Hook 設定程序](hook-setup.md)。Codex 須透過 `/hooks` 信任 command，LAT group 位於 HCOM SessionStart group 前；Claude 使用者層級 hook 不需信任步驟，不適用 Codex 的 HCOM 排序規則，重啟後在 `/hooks` 確認。
+技能檔案安裝不會註冊 hook。安裝／移除 hook、搬動技能或修改 command，以及排查 hook 啟用／信任問題前，先讀 [Hook 設定程序](hook-setup.md)。Codex 須透過 `/hooks` 信任 command；Claude 使用者層級 hook 不需信任步驟，重啟後在 `/hooks` 確認。
 
 ## 邊界與限制
 

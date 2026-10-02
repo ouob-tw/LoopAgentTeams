@@ -19,7 +19,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install \
 
 重新啟動 Codex，輸入 `/hooks`，進入 `SessionStart`，選中 command 結尾為 `lat-session.py hook`、matcher 為 `^(compact|resume)$` 的項目，按 `t` 信任。只核准這一項；確認它顯示 `[x]`。不要使用略過信任檢查的啟動參數。
 
-HCOM／Codex 更新或重設 hooks 後，再以 `/hooks` 確認 LAT 已啟用且受信任；升級舊版 LAT hook 後，也要重跑 install 並重新信任。
+Codex 更新或重設 hooks 後，再以 `/hooks` 確認 LAT 已啟用且受信任；升級舊版 LAT hook 後，也要重跑 install 並重新信任。
 
 舊版 helper 名為 `codex-lat-session.py`。更新技能後舊檔不再存在，原本的 hook 會失效：重跑上面的 install，會把既有 LAT command 改指向 `lat-session.py`，再到 `/hooks` 重新信任。
 
