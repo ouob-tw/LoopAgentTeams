@@ -43,6 +43,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import uuid
 
 
 @contextmanager
@@ -145,8 +146,11 @@ _SECTION_HEADER = re.compile(
 )
 _FIELD = re.compile(
     r"^(?P<name>問題|選項|建議|影響|答覆|批註)：(?P<value>.*?)"
-    r"(?=^(?:問題|選項|建議|影響|答覆|批註)：|^### |\Z)",
+    r"(?=^(?:問題|選項|建議|影響|答覆|批註)：|\Z)",
     re.MULTILINE | re.DOTALL,
+)
+_ARCHIVE_HEADER = re.compile(
+    r"^### 舊版 r[1-9][0-9]*（不套用至 r[1-9][0-9]*）$", re.MULTILINE
 )
 _FIELD_NAMES = ("問題", "選項", "建議", "影響", "答覆", "批註")
 
@@ -158,7 +162,8 @@ def parse_questions(text):
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         raw = text[match.start():end]
-        current_raw = raw.split("\n### 舊版 ", 1)[0]
+        archive = _ARCHIVE_HEADER.search(raw)
+        current_raw = raw[:archive.start()] if archive else raw
         fields = {
             field.group("name"): field.group("value").rstrip("\n")
             for field in _FIELD.finditer(current_raw)
@@ -189,8 +194,8 @@ def _one_section(text, expected_id):
 
 
 def _archive_text(raw):
-    marker = raw.find("### 舊版 ")
-    return raw[marker:].rstrip("\n") if marker >= 0 else ""
+    marker = _ARCHIVE_HEADER.search(raw)
+    return raw[marker.start():].rstrip("\n") if marker else ""
 
 
 def _render_section(question_id, revision, status, fields, archives=""):
@@ -397,11 +402,14 @@ def mark_notification_pending(questions_path, *, state_dir=None):
     key = _question_key(questions_path)
     with _path_lock(path):
         pending = _read_pending(path)
+        generation = uuid.uuid4().hex
         pending[key] = {
             "questions_path": key,
             "marked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "generation": generation,
         }
         _write_pending(path, pending)
+    return generation
 
 
 def notification_is_pending(questions_path, *, state_dir=None):
@@ -411,15 +419,27 @@ def notification_is_pending(questions_path, *, state_dir=None):
         return _question_key(questions_path) in _read_pending(path)
 
 
-def clear_pending_notification(questions_path, *, state_dir=None):
+_UNCONDITIONAL_CLEAR = object()
+
+
+def clear_pending_notification(
+    questions_path, *, state_dir=None, expected_generation=_UNCONDITIONAL_CLEAR
+):
     """Clear one pending notification, leaving other projects untouched."""
     path = _notification_path(state_dir)
     key = _question_key(questions_path)
     with _path_lock(path):
         pending = _read_pending(path)
-        if key in pending:
+        current = pending.get(key)
+        generation_matches = (
+            expected_generation is _UNCONDITIONAL_CLEAR
+            or current and current.get("generation") == expected_generation
+        )
+        if current and generation_matches:
             del pending[key]
             _write_pending(path, pending)
+            return True
+        return False
 
 
 def _delivered_targets(payload):
@@ -441,8 +461,12 @@ def _delivered_targets(payload):
 def send_pending_notification(questions_path, binding, *, state_dir=None, env=None, timeout=10):
     """Send one persisted notification; return ``(ok, reason)`` and clear on success."""
     questions_key = _question_key(questions_path)
-    if not notification_is_pending(questions_path, state_dir=state_dir):
+    state_path = _notification_path(state_dir)
+    with _path_lock(state_path):
+        pending = _read_pending(state_path).get(questions_key)
+    if not pending:
         return True, "no pending notification"
+    generation = pending.get("generation")
     if _question_key(binding.get("questions_path", "")) != questions_key:
         return False, "binding does not match the questions path"
     target = binding.get("hcom_name", "")
@@ -475,7 +499,9 @@ def send_pending_notification(questions_path, binding, *, state_dir=None, env=No
     delivered = {item.removeprefix("@") for item in _delivered_targets(payload)}
     if target not in delivered:
         return False, f"notification not delivered to {target}"
-    clear_pending_notification(questions_path, state_dir=state_dir)
+    clear_pending_notification(
+        questions_path, state_dir=state_dir, expected_generation=generation
+    )
     return True, "delivered"
 
 

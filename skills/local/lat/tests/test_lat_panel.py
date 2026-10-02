@@ -1,5 +1,6 @@
 """LAT panel core contract tests; all files and processes are disposable."""
 import importlib.util
+import fcntl
 import hashlib
 import json
 import multiprocessing
@@ -9,6 +10,7 @@ import subprocess
 import sys
 import tempfile
 import unittest
+from unittest.mock import patch
 
 
 MODULE = Path(__file__).resolve().parents[1] / "herdr-panel/lat_panel.py"
@@ -21,39 +23,79 @@ def load_module():
     return module
 
 
-def race_replace(path, expected, replacement, start, results):
+def panel_save_worker(path, expected, replacement, ready, start, results):
     panel = load_module()
+    ready.set()
     start.wait()
-    results.put(panel.locked_replace(Path(path), expected, replacement))
+    results.put(("panel", panel.save_panel_edit(Path(path), expected, replacement)))
+
+
+def question_upsert_worker(path, section_text, ready, start, results):
+    panel = load_module()
+    ready.set()
+    start.wait()
+    results.put(("agent", panel.upsert_question(Path(path), "Q1", section_text)))
 
 
 class LockedReplaceTests(unittest.TestCase):
-    def test_only_one_racing_writer_can_replace_the_expected_content(self):
-        panel = load_module()
-        with tempfile.TemporaryDirectory() as directory:
-            path = Path(directory) / "questions.md"
-            path.write_text("before")
-            path.chmod(0o640)
-            context = multiprocessing.get_context("spawn")
-            start = context.Event()
-            results = context.Queue()
-            processes = [
-                context.Process(
-                    target=race_replace,
-                    args=(str(path), "before", replacement, start, results),
-                )
-                for replacement in ("first", "second")
-            ]
-            for process in processes:
-                process.start()
-            start.set()
-            for process in processes:
-                process.join(10)
-                self.assertEqual(process.exitcode, 0)
+    def test_panel_save_and_agent_upsert_share_a_real_process_lock_in_both_orders(self):
+        context = multiprocessing.get_context("spawn")
+        before = (
+            "## Q1 | r1 | pending\n問題：Choose\n選項：A\n建議：Old\n影響：Impact\n"
+            "答覆：Draft\n批註：Note\n\n"
+            "## Q2 | r1 | pending\n問題：Keep\n選項：Yes\n建議：\n影響：\n答覆：\n批註：\n"
+        )
+        panel_text = before.replace("pending", "ready", 1).replace(
+            "答覆：Draft", "答覆：Panel answer", 1
+        )
+        section = (
+            "## Q1 | r1 | pending\n問題：Choose\n選項：A\n建議：Agent advice\n"
+            "影響：Impact\n答覆：\n批註：\n"
+        )
+        for preferred in ("panel", "agent"):
+            with self.subTest(preferred=preferred), tempfile.TemporaryDirectory() as directory:
+                path = Path(directory) / ".lat/questions.md"
+                path.parent.mkdir()
+                path.write_text(before)
+                path.chmod(0o640)
+                lock_path = path.with_name(f".{path.name}.lock")
+                results = context.Queue()
+                controls = {
+                    name: (context.Event(), context.Event()) for name in ("panel", "agent")
+                }
+                processes = {
+                    "panel": context.Process(
+                        target=panel_save_worker,
+                        args=(str(path), before, panel_text, *controls["panel"], results),
+                    ),
+                    "agent": context.Process(
+                        target=question_upsert_worker,
+                        args=(str(path), section, *controls["agent"], results),
+                    ),
+                }
+                with lock_path.open("a") as held_lock:
+                    fcntl.flock(held_lock.fileno(), fcntl.LOCK_EX)
+                    order = (preferred, "agent" if preferred == "panel" else "panel")
+                    for name in order:
+                        processes[name].start()
+                        self.assertTrue(controls[name][0].wait(5))
+                        controls[name][1].set()
+                        processes[name].join(0.2)
+                        self.assertTrue(processes[name].is_alive())
+                    fcntl.flock(held_lock.fileno(), fcntl.LOCK_UN)
+                for process in processes.values():
+                    process.join(10)
+                    self.assertEqual(process.exitcode, 0)
 
-            self.assertEqual(sorted(results.get(timeout=1) for _ in processes), [False, True])
-            self.assertIn(path.read_text(), {"first", "second"})
-            self.assertEqual(path.stat().st_mode & 0o777, 0o640)
+                outcomes = dict(results.get(timeout=1) for _ in processes)
+                self.assertEqual(outcomes["agent"], 1)
+                self.assertEqual(outcomes["panel"], preferred == "panel")
+                final = path.read_text()
+                self.assertIn("建議：Agent advice", final)
+                expected_answer = "Panel answer" if preferred == "panel" else "Draft"
+                self.assertIn(f"答覆：{expected_answer}", final)
+                self.assertIn("## Q2 | r1 | pending", final)
+                self.assertEqual(path.stat().st_mode & 0o777, 0o640)
 
     def test_successful_panel_save_appends_a_journal_entry_but_conflict_does_not(self):
         panel = load_module()
@@ -196,6 +238,27 @@ class QuestionCliTests(unittest.TestCase):
         self.assertEqual(text.count("答覆：Original answer"), 1)
         self.assertEqual(text.count("批註：Original note"), 1)
 
+    def test_question_update_archives_markdown_headings_in_answer_and_annotation(self):
+        original_answer = "A\n### Reason\nKeep this explanation"
+        original_note = "Note\n### 使用者補充\nDo not remove this block"
+        self.questions.write_text(
+            "## Q1 | r2 | ready\n問題：Same\n選項：A or B\n建議：Old\n影響：Old\n"
+            f"答覆：{original_answer}\n批註：{original_note}\n"
+        )
+        section = self.root / "section.md"
+        section.write_text(
+            "## Q1 | r1 | pending\n問題：Changed\n選項：A or B\n建議：New\n影響：New\n"
+            "答覆：\n批註：\n"
+        )
+
+        result = self.cli("question", "upsert", "--id", "Q1", "--file", section)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = self.questions.read_text()
+        self.assertIn("### 舊版 r2（不套用至 r3）", text)
+        self.assertIn(f"答覆：{original_answer}\n", text)
+        self.assertIn(f"批註：{original_note}\n", text)
+
 
 class BindingCliTests(unittest.TestCase):
     def setUp(self):
@@ -305,6 +368,29 @@ class NotificationTests(unittest.TestCase):
                 (True, "delivered"),
             )
             self.assertFalse(panel.notification_is_pending(questions, state_dir=state_dir))
+
+    def test_successful_send_does_not_clear_a_newer_pending_change(self):
+        panel = load_module()
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            questions = root / "project/.lat/questions.md"
+            state_dir = root / "state"
+            binding = {"hcom_name": "alpha", "questions_path": str(questions)}
+            panel.mark_notification_pending(questions, state_dir=state_dir)
+
+            def deliver_after_new_change(command, **kwargs):
+                panel.mark_notification_pending(questions, state_dir=state_dir)
+                return subprocess.CompletedProcess(
+                    command, 0, json.dumps({"delivered_to": ["alpha"]}), ""
+                )
+
+            with patch.object(panel.subprocess, "run", side_effect=deliver_after_new_change):
+                result = panel.send_pending_notification(
+                    questions, binding, state_dir=state_dir,
+                )
+
+            self.assertEqual(result, (True, "delivered"))
+            self.assertTrue(panel.notification_is_pending(questions, state_dir=state_dir))
 
 
 if __name__ == "__main__":
