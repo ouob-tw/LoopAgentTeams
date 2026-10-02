@@ -118,6 +118,7 @@ class Panel(App):
     NOTIFY_DELAY = 2.0
     POLL_INTERVAL = 0.5
     NOTIFY_TIMEOUT = 10
+    ARCHIVE_AFTER = 300
     ENABLE_COMMAND_PALETTE = False
     CSS = """
     TextArea { height: 1fr; border: none; }
@@ -178,6 +179,7 @@ class Panel(App):
         self.render_status()
         if self.read_only:
             return
+        self.archive_recorded()
         self.set_interval(self.POLL_INTERVAL, self.check_external)
         if self.notification_pending():
             self.start_notification()
@@ -225,6 +227,8 @@ class Panel(App):
     def check_external(self):
         if self.conflict:
             return
+        if self.editor.text == self.saved:
+            self.archive_recorded()
         try:
             disk = self.path.read_text(encoding="utf-8")
         except (OSError, ValueError) as error:
@@ -240,6 +244,26 @@ class Panel(App):
             self.enter_conflict()
             return
         self.load(disk)
+
+    def archive_now(self):
+        return datetime.now().astimezone()
+
+    def archive_recorded(self):
+        """Archive overdue, unchanged sections without creating a notification."""
+        if self.read_only or self.conflict or self.editor.text != self.saved:
+            return
+        try:
+            archived = lat_panel.archive_recorded_questions(
+                self.path,
+                self.ARCHIVE_AFTER,
+                expected_text=self.saved,
+                now=self.archive_now(),
+            )
+            if archived:
+                self.load(self.path.read_text(encoding="utf-8"))
+            self.set_notice("archive", "")
+        except (OSError, ValueError) as error:
+            self.set_notice("archive", f"歸檔失敗：{error}")
 
     def load(self, text):
         """Show disk text without saving or notifying; resets undo history."""

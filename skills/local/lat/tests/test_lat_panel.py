@@ -1,5 +1,6 @@
 """LAT panel core contract tests; all files and processes are disposable."""
 import importlib.util
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import json
@@ -269,10 +270,125 @@ class QuestionCliTests(unittest.TestCase):
             json.loads(hash_result.stdout)["section_sha256"],
         )
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(
+        self.assertRegex(
             self.questions.read_text(),
-            original.replace("Q1 · r2 · 待答", "Q1 · r2 · 已記錄"),
+            r"Q1 · r2 · 已記錄 · \d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d",
         )
+
+    def test_recorded_question_is_archived_after_five_minutes_without_touching_others(self):
+        panel = load_module()
+        first = (
+            "## Answered?\nQ1 · r2 · 待答\n\nContext.\n\n"
+            "答覆：\nA\n\n- [x] 送出\n\n"
+            "### 舊版 r1（不套用至 r2）\n答覆：\nold\n\n- [x] 送出\n\n"
+        )
+        pending = (
+            "## Keep pending?\nQ2 · r1 · 待答\n\nKeep exactly.\n\n"
+            "答覆：\nDraft\n\n- [ ] 送出\n"
+        )
+        self.questions.write_text("# Decisions\n\n" + first + pending)
+        recorded_at = datetime(2026, 10, 2, 18, 5, tzinfo=timezone(timedelta(hours=8)))
+        expected_hash = panel._section_sha256(panel.parse_questions(self.questions.read_text())[0])
+
+        panel.set_question_status(
+            self.questions, "Q1", 2, "recorded", expected_hash, now=recorded_at,
+        )
+        recorded = self.questions.read_text()
+        self.assertIn("Q1 · r2 · 已記錄 · 2026-10-02T18:05:00+08:00", recorded)
+        self.assertEqual(
+            panel.archive_recorded_questions(
+                self.questions, 300, expected_text=recorded,
+                now=recorded_at + timedelta(seconds=300),
+            ),
+            [],
+        )
+
+        archived = panel.archive_recorded_questions(
+            self.questions, 300, expected_text=recorded,
+            now=recorded_at + timedelta(seconds=301),
+        )
+
+        self.assertEqual(archived, ["Q1"])
+        self.assertEqual(self.questions.read_text(), "# Decisions\n\n" + pending)
+        archive = self.questions.with_name("questions-archive.md")
+        self.assertEqual(archive.read_text(), first.replace(
+            "Q1 · r2 · 待答", "Q1 · r2 · 已記錄 · 2026-10-02T18:05:00+08:00",
+        ))
+        journal = [
+            json.loads(line)
+            for line in (self.questions.parent / "panel-journal.jsonl").read_text().splitlines()
+        ]
+        self.assertEqual([entry["kind"] for entry in journal], ["set-status", "archive-recorded"])
+        self.assertEqual(journal[-1]["archived_questions"], ["Q1"])
+        self.assertEqual(journal[-1]["archive_path"], str(archive))
+
+    def test_archive_is_conditional_append_only_and_leaves_post_recording_edits(self):
+        panel = load_module()
+        original = (
+            "## Answered?\nQ1 · r1 · 待答\n\nContext.\n\n"
+            "答覆：\nA\n\n- [x] 送出\n"
+        )
+        self.questions.write_text(original)
+        recorded_at = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc)
+        expected_hash = panel._section_sha256(panel.parse_questions(original)[0])
+        panel.set_question_status(
+            self.questions, "Q1", 1, "recorded", expected_hash, now=recorded_at,
+        )
+        recorded = self.questions.read_text()
+
+        self.assertIsNone(panel.archive_recorded_questions(
+            self.questions, 300, expected_text="stale snapshot",
+            now=recorded_at + timedelta(seconds=301),
+        ))
+        self.assertEqual(self.questions.read_text(), recorded)
+        self.assertFalse(self.questions.with_name("questions-archive.md").exists())
+
+        edited = recorded.replace("答覆：\nA", "答覆：\nA, with a later note")
+        self.assertTrue(panel.save_panel_edit(self.questions, recorded, edited))
+        self.assertEqual(panel.archive_recorded_questions(
+            self.questions, 300, expected_text=edited,
+            now=recorded_at + timedelta(seconds=301),
+        ), [])
+        self.assertEqual(self.questions.read_text(), edited)
+
+        self.questions.write_text(original)
+        panel.set_question_status(
+            self.questions, "Q1", 1, "recorded", expected_hash, now=recorded_at,
+        )
+        current = self.questions.read_text()
+        archive = self.questions.with_name("questions-archive.md")
+        archive.write_text("# Earlier archive\n\n")
+        self.assertEqual(panel.archive_recorded_questions(
+            self.questions, 300, expected_text=current,
+            now=recorded_at + timedelta(seconds=301),
+        ), ["Q1"])
+        self.assertTrue(archive.read_text().startswith("# Earlier archive\n\n"))
+        self.assertEqual(archive.read_text().count("## Answered?"), 1)
+
+    def test_archive_recorded_cli_uses_questions_derived_archive_path(self):
+        panel = load_module()
+        questions = self.questions.with_name("questions-controller-a.md")
+        original = (
+            "## Answered?\nQ1 · r1 · 待答\n\nContext.\n\n"
+            "答覆：\nA\n\n- [x] 送出\n"
+        )
+        questions.write_text(original)
+        expected_hash = panel._section_sha256(panel.parse_questions(original)[0])
+        panel.set_question_status(
+            questions, "Q1", 1, "recorded", expected_hash,
+            now=datetime.now().astimezone() - timedelta(seconds=1),
+        )
+
+        result = self.cli(
+            "question", "archive-recorded", "--questions", questions,
+            "--older-than", "0",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["archived"], ["Q1"])
+        self.assertFalse(panel.parse_questions(questions.read_text()))
+        archive = questions.with_name("questions-controller-a-archive.md")
+        self.assertIn("## Answered?", archive.read_text())
 
     def test_provenance_requires_checked_submit_and_survives_other_question_upsert(self):
         before = (

@@ -8,7 +8,7 @@
 
 ## 指令與變數
 
-`lat_dir`、`workspace`、`client` 與主控恢復程序相同。`workspace` 是存放 `.lat/` 的專案根目錄，問題檔固定為 `$workspace/.lat/questions.md`，面板紀錄為 `$workspace/.lat/panel-journal.jsonl`。
+`lat_dir`、`workspace`、`client` 與主控恢復程序相同。`workspace` 是存放 `.lat/` 的專案根目錄，問題檔固定為 `$workspace/.lat/questions.md`，面板紀錄為 `$workspace/.lat/panel-journal.jsonl`。歸檔檔名由問題檔推導：同目錄下的 `<問題檔名不含副檔名>-archive.md`，因此預設為 `$workspace/.lat/questions-archive.md`。
 
 ```bash
 lat_dir=/absolute/path/to/installed/lat
@@ -86,7 +86,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenan
    - 來源：面板，以及 `provenance` 輸出的面板紀錄路徑、行號、`time` 與 `section_sha256`；
    - 依答覆核准的方案與範圍。
 
-   寫入後才標為 `已記錄`，並傳入 `provenance` 輸出的區段雜湊。CLI 的 `--status recorded` 參數名稱為了相容性維持不變。版本或區段雜湊不符時，表示同一題在快照後已變更；不可把目前內容標成已記錄，重新讀檔處理：
+   寫入後才標為 `已記錄`，並傳入 `provenance` 輸出的區段雜湊。CLI 的 `--status recorded` 參數名稱為了相容性維持不變。成功後狀態列會寫成 `已記錄 · <ISO 8601 本機時間>`；完整日期、秒數與 UTC offset 用來可靠計算五分鐘，不受跨日或時區影響。版本或區段雜湊不符時，表示同一題在快照後已變更；不可把目前內容標成已記錄，重新讀檔處理：
 
    ```bash
    uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question set-status \
@@ -100,6 +100,21 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenan
 使用者在聊天回答 `<ID> r<版本>：…` 時，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄。標記前先對同一份快照執行 `question section-hash --questions "$snapshot" --id "<ID>"`，再把輸出的 `section_sha256` 傳給上述 `set-status`，讓面板反映狀態；不需要偽造面板來源。
 
 面板紀錄與檔案權限只是來源證據，不是防偽機制：能寫 `.lat/` 的 Agent 理論上能偽造答覆或紀錄。
+
+## 清理已記錄題目
+
+面板開啟時會立即檢查，開啟期間也會定期檢查；已記錄超過 300 秒且內容自記錄後未變的整題，連同題內的舊版區塊一起附加到衍生出的歸檔檔，並從問題檔移除。這次清理沿用問題檔鎖與條件式替換，寫入 `panel-journal.jsonl` 的 `archive-recorded` 紀錄，但不建立或送出 HCOM 通知。剛好 300 秒尚不搬移；必須超過 300 秒。
+
+若題目在標記後又被修改、面板仍有未存內容或衝突草稿，面板不會靜默搬移。舊資料只有 `已記錄`、沒有時間或缺少相符的 `set-status` 紀錄時也會安全保留，需由主控重新確認，不以檔案時間猜測。
+
+沒有開啟面板時，主控可執行同一套清理：
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question archive-recorded \
+  --questions "$workspace/.lat/questions.md" --older-than 300
+```
+
+指令輸出 JSON 的 `archived` 題號列表；問題檔若在快照後改變，指令拒絕寫入並要求重試。歸檔檔只做附加，不會改寫既有內容。
 
 ## 解除綁定
 
