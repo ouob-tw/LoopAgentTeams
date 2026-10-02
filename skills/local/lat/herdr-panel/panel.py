@@ -21,12 +21,15 @@ import tomllib
 
 if str(Path(__file__).resolve().parent) not in sys.path:
     sys.path.insert(0, str(Path(__file__).resolve().parent))
+import cjk_wrap
 import lat_panel
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual import events
 from textual.widgets import Static, TextArea
+
+cjk_wrap.install()
 
 PLUGIN_ID = "lat.panel"
 KEYS = "Ctrl+Q 關閉  Ctrl+Z 復原  Ctrl+Y 重做"
