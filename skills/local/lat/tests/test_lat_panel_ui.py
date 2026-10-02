@@ -190,6 +190,29 @@ class EditorTests(PanelTestCase):
                 (self.questions.parent / "panel-journal.jsonl").read_text().splitlines()
             ), 3)
 
+    async def test_mixed_cjk_lines_wrap_between_characters_and_stay_editable(self):
+        sample = "本機和 GitHub 都更新；repo 是公開的，程式碼會公開（已查過沒有本機路徑或個人資料）。"
+        self.questions.write_text(sample + "\n")
+        app = self.make_app(NOTIFY_DELAY=30)
+        async with app.run_test(size=(26, 10)) as pilot:
+            self.assertEqual(app.editor.wrap_width, 23)
+            self.assertEqual([app.editor.render_line(y).text.rstrip() for y in range(4)], [
+                "本機和 GitHub 都更新；",
+                "repo 是公開的，程式碼會",
+                "公開（已查過沒有本機路",
+                "徑或個人資料）。",
+            ])
+            await pilot.press("down")
+            self.assertEqual(app.editor.cursor_location, (0, 15))
+            await pilot.press("shift+down")
+            self.assertEqual(app.editor.selected_text, "repo 是公開的，程式碼會")
+            await pilot.press("right", "X")
+            await pilot.pause()
+            self.assertEqual(self.questions.read_text(), sample.replace("會公開", "會X公開") + "\n")
+            await pilot.press("ctrl+z")
+            await pilot.pause()
+            self.assertEqual(self.questions.read_text(), sample + "\n")
+
     async def test_external_update_loads_without_notification_and_resets_undo(self):
         app = self.make_app()
         async with app.run_test() as pilot:
