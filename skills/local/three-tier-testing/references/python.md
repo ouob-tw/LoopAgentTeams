@@ -55,9 +55,13 @@ def pytest_collection_modifyitems(items):
 
 ## 環境設定
 
-**Host（預設）：** `.env.test` 指向本機測試 DB。在 `tests/integration/conftest.py` 頂層（fixture 之前）呼叫 `load_dotenv(".env.test", override=True)`，可保證早於該目錄的 test module import。若 root conftest、pytest plugin 或應用 bootstrap 更早 import 設定模組，必須把 `.env.test` 載入移到更早的測試入口；不要宣稱 integration conftest 一定早於所有 import。
+檔名與 Compose 規則見 SKILL.md「Compose 與 .env 檔案」。單元與整合測試不讀任何 env 檔，也不能讓應用程式自己載入 `.env`。
 
-**Docker：** 建立 `docker-compose.test.yml`，服務使用非預設 port（如 Postgres 用 5433）。整合測試的 conftest 以 session scope autouse fixture 啟動／關閉容器。
+**Host（預設）：** 不建立 `.env.test`。在 `tests/integration/conftest.py` 頂層（fixture 之前）用 `os.environ[...] = ...` 寫入本機測試 DB 的值（遠端測試 DB 需要密鑰時，改由執行時的 `TEST_*` 環境變數提供）。這可保證早於該目錄的 test module import。若 root conftest、pytest plugin 或應用 bootstrap 更早 import 設定模組，必須把設定移到更早的測試入口；不要宣稱 integration conftest 一定早於所有 import。若應用 bootstrap 會載入 `.env`，測試入口必須停用該載入。
+
+**Docker：** 需要容器時建立 `compose.integration.yml`，值直接寫入；host 上的測試程式需要連入時才 publish 非預設 host port（如 Postgres 用 5433）。整合測試的 conftest 以 session scope autouse fixture 啟動／關閉容器，`-f`、`-p` 照 SKILL.md 的規則帶入。
+
+**E2E：** 若使用 `.env.e2e`，在 `tests/e2e/conftest.py`（驗收測試為 `tests/qa_e2e/conftest.py`）頂層呼叫 `load_dotenv(".env.e2e")`，必須早於應用設定被 import；不載入 `.env`。保留預設 `override=False`，CI 已注入的變數優先；CI 全部注入時不載入檔案。
 
 ## 執行指令
 

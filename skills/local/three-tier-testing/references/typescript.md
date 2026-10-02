@@ -31,9 +31,9 @@ npx playwright test tests/qa_e2e
 
 ## 環境設定
 
-**整合測試：** Playwright config 中設定 `webServer` 啟動開發 server，搭配 mock backend（MSW 或自訂 mock server）。
+**整合測試：** Playwright config 中設定 `webServer` 啟動開發 server，搭配 mock backend（MSW 或自訂 mock server），不讀任何 env 檔；需要容器時用 `compose.integration.yml`。
 
-**E2E：** Playwright config 中設定 `webServer` 啟動完整 stack（前端 + 真實後端），或連接已運行的 staging 環境。
+**E2E：** Playwright config 中設定 `webServer` 啟動完整 stack（前端 + 真實後端），或連接已運行的 staging 環境。用 Docker 啟動 stack 時遵守 SKILL.md「Compose 與 .env 檔案」。若使用 `.env.e2e`，Compose 加 `--env-file .env.e2e`，Playwright config 明確載入該檔（如 `dotenv.config({ path: '.env.e2e' })`）；CI 完全注入時不載入檔案。不載入 `.env`。驗收測試沿用同一套設定。
 
 ## 驗證
 

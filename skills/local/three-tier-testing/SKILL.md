@@ -34,9 +34,54 @@ description: Use when setting up test infrastructure, adding tests, reorganizing
 - 開發測試重用專案開發 image，掛載目前工作區的程式碼；與 production 共用 runtime 版本、依賴鎖定與 Dockerfile 階段，依賴變更時重建。
 - 正式 E2E／QA 使用 production Dockerfile 的正式 target 構建，不掛載原始碼；修改後重建受影響 image 並重新驗證。改到 Dockerfile、啟動、打包或檔案權限時，提前驗證正式 image。
 - 正常構建重用 build cache，不預設使用 `--no-cache`。
-- 每個任務使用獨立 Compose project 名稱或資源標籤，記錄自己建立的資源。
+- 每個任務使用獨立 Compose project 名稱（見下節），記錄自己建立的資源。自訂 label 不會隔離 Compose 操作。
 - 執行者先保存測試結果與必要 logs，再清理已無後續用途的任務專用 container、network、測試 volume 與 image；後續仍需使用的資源交接給接手者。
 - 保留共用 image、共用資料與 build cache，不執行全域 prune。Build cache 的容量與期限由主機 GC 政策管理。
+
+## Compose 與 .env 檔案
+
+只允許下列檔名，需要時才建立。不建立其他 `compose.*.yml` 或 `.env.*`（如 `.env.test`、`.env.integration`、`docker-compose.test.yml`、`compose.qa.yml`）。
+
+| 用途 | Compose 檔 | 環境變數檔 |
+| ---- | ---------- | ---------- |
+| 單元測試 | 無 | 無，不讀任何 env 檔 |
+| 整合測試 | `compose.integration.yml` | 無；測試值直接寫入，必要密鑰由執行時的 `TEST_*` 環境變數提供 |
+| E2E、驗收測試 | `compose.e2e.yml` | `.env.e2e`（不進 git） |
+| 正式環境 | `compose.yml` | `.env`（不進 git） |
+| 範本 | — | `.env.example`（進 git） |
+
+- `.env.example` 列出所有環境用到的 key。只有 E2E 用的 key 集中成一段，以註解 `# --- E2E only ---` 標明；不另建 `.env.e2e.example`。
+- E2E 打已部署環境或由 CI 注入變數時，不必建立 `compose.e2e.yml` 或 `.env.e2e`。
+- 測試 compose 檔獨立完整，不用 `-f compose.yml -f compose.e2e.yml` 疊加正式設定，以免繼承正式的服務、掛載、port 與 `env_file`。
+- 測試 compose 檔頂層寫 `name: <project>_integration` 或 `name: <project>_e2e`。名稱只用小寫字母、數字、`-`、`_`，開頭為字母或數字。
+- 測試 compose 檔不得出現：`container_name:`、`env_file: .env`、指定 `name:` 的 volume／network、`external: true` 的 volume／network、正式資料的掛載路徑。
+- `compose.integration.yml` 不使用變數替換（`${VAR}`、`$VAR`），也不使用 `env_file`，不用 `environment` 只列 key 或留空值的寫法從外部帶值；測試值直接寫入。
+- Port：只在容器之間連線的服務不對外 publish。需要 publish 時用非預設 host port（E2E 可由 `.env.e2e` 的變數指定）；同時跑多個任務時，每個任務用不同 port。
+
+測試的每條 Compose 指令都明確帶 `-f` 與 `-p`。使用 `.env.e2e` 時加 `--env-file .env.e2e`；E2E 變數完全由 CI 注入時，設定 `COMPOSE_DISABLE_ENV_FILE=1` 並清空 `COMPOSE_ENV_FILES`，停用預設 `.env` 載入。`up`、`logs`、`exec`、`down` 用同一組參數：
+
+```bash
+docker compose -f compose.integration.yml -p <project>_integration up -d
+docker compose -f compose.e2e.yml -p <project>_e2e --env-file .env.e2e up -d
+```
+
+同時跑多個任務（如多個 worktree）時，整合測試改用 `-p <project>_integration_<task>`，E2E 改用 `-p <project>_e2e_<task>`；`<task>` 轉成小寫，不合法的字元換成 `-`。
+
+### Gotchas
+
+- 正式與測試共用同一個 project name 時，彼此的容器會被當成 orphan，`--remove-orphans` 或 `COMPOSE_REMOVE_ORPHANS` 會把它們刪掉；service 同名時則可能直接操作或重建對方的容器。檔名不同不算隔離。
+- 只用 `-f` 指定測試檔，不會停用預設 `.env` 載入；Compose 仍可能讀入正式的 `.env`，用來替換變數，也用來讀 `COMPOSE_PROJECT_NAME`、`COMPOSE_PROFILES`、`COMPOSE_REMOVE_ORPHANS` 等自身設定，與 service 的 `env_file:` 無關。所以 `-p` 必帶：名稱優先順序是 `-p` > `COMPOSE_PROJECT_NAME` > 頂層 `name:`。
+- `--env-file` 改用指定檔案供 Compose 載入，shell 中的同名變數仍優先；它不影響 service 的 `env_file:`，也不影響程式自己載入的 dotenv。
+
+### 舊專案搬遷
+
+- [ ] 列出現有的 compose 與 env 檔，對照上表找出不合規的檔案
+- [ ] 舊測試 compose 檔改為 `compose.integration.yml` 或 `compose.e2e.yml`：加頂層 `name:`，移除禁止項，拆掉對 `compose.yml` 的疊加
+- [ ] 舊 env 檔：整合測試的一般值寫入 `compose.integration.yml` 或測試程式，必要密鑰改由執行時的 `TEST_*` 環境變數提供；E2E 的值併入 `.env.e2e`，key 補進 `.env.example`；確認搬遷後，含密鑰的舊檔用 shred 刪除，一般檔案用 trash
+- [ ] `.gitignore` 忽略 `.env`、`.env.e2e`，保留 `.env.example`
+- [ ] 更新腳本、CI、文件裡的檔名與指令（補上 `-f`、`-p`、`--env-file`）
+- [ ] 清理舊測試容器：先以容器 ID、labels、掛載與用途確認哪些是舊測試容器，只移除已確認的容器；與正式共用 project 時，不執行 `down` 或 `--remove-orphans`，也不以 service 名稱辨識
+- [ ] 驗證：對每個存在的測試 compose 檔，用搬遷後的同一組 `-f`／`-p`／env 參數執行 `config`，檢查展開後的名稱、port、環境變數不含正式值（輸出可能含密鑰，不貼進紀錄）；`docker compose ls` 顯示正式與測試分屬不同 project
 
 ## 測試範圍判斷
 
@@ -113,5 +158,5 @@ description: Use when setting up test infrastructure, adding tests, reorganizing
 ## 注意事項
 
 - 若測試 import 了真實外部服務，即使放在 `tests/unit/` 也是整合測試。正確做法是搬移檔案，不是 mock import。
-- Docker 模式使用非預設 port，避免與開發環境衝突。
+- Docker port 規則見「Compose 與 .env 檔案」。
 - Host 模式需確保外部服務在測試前已啟動。
