@@ -207,7 +207,7 @@ def _one_section(text, expected_id):
 
 def _archive_text(raw):
     marker = _ARCHIVE_HEADER.search(raw)
-    return raw[marker.start():].rstrip("\n") if marker else ""
+    return raw[marker.start():] if marker else ""
 
 
 def _render_section(question_id, revision, status, fields, archives=""):

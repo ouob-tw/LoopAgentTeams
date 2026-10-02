@@ -279,6 +279,33 @@ class QuestionCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn(original_user_text.rstrip("\n"), self.questions.read_text())
 
+    def test_advice_update_after_revision_keeps_the_following_section_byte_identical(self):
+        other = (
+            "## Q2 | r1 | ready\n問題：Keep\n選項：Yes\n建議：Keep\n"
+            "影響：Keep\n答覆：Answer\n批註：Note\n"
+        )
+        self.questions.write_text(
+            "## Q1 | r1 | ready\n問題：Old\n選項：A\n建議：Old\n影響：Impact\n"
+            "答覆：Answer\n批註：Note\n\n" + other
+        )
+        section = self.root / "section.md"
+        section.write_text(
+            "## Q1 | r1 | pending\n問題：New\n選項：A\n建議：First\n影響：Impact\n"
+            "答覆：\n批註：\n"
+        )
+        self.assertEqual(
+            self.cli("question", "upsert", "--id", "Q1", "--file", section).returncode,
+            0,
+        )
+        section.write_text(section.read_text().replace("建議：First", "建議：Second"))
+
+        result = self.cli("question", "upsert", "--id", "Q1", "--file", section)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.questions.read_text().endswith(other))
+        parsed = load_module().parse_questions(self.questions.read_text())
+        self.assertEqual([item["id"] for item in parsed], ["Q1", "Q2"])
+
 
 class BindingCliTests(unittest.TestCase):
     def setUp(self):
