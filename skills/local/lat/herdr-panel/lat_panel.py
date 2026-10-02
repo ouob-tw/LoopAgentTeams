@@ -241,6 +241,11 @@ def _section_sha256(section):
     return hashlib.sha256(_section_text(section).encode("utf-8")).hexdigest()
 
 
+def _full_section_sha256(section):
+    text = section["raw"].rstrip("\r\n") + "\n"
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
 def _question_section(document, question_id):
     matching = [item for item in _sections(document) if item["id"] == question_id]
     if len(matching) > 1:
@@ -413,7 +418,7 @@ def set_question_status(
                 "recorded_question": question_id,
                 "recorded_revision": revision,
                 "recorded_at": recorded_at,
-                "recorded_section_sha256": _section_sha256(recorded_section),
+                "recorded_section_sha256": _full_section_sha256(recorded_section),
             },
             now=now,
         )
@@ -479,7 +484,7 @@ def archive_recorded_questions(
             recorded_at = datetime.fromisoformat(section["recorded_at"])
             if (current_time - recorded_at).total_seconds() <= older_than:
                 continue
-            if recorded_hashes.get(section["id"]) != _section_sha256(section):
+            if recorded_hashes.get(section["id"]) != _full_section_sha256(section):
                 continue
             eligible.append(section)
         if not eligible:

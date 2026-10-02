@@ -365,6 +365,32 @@ class QuestionCliTests(unittest.TestCase):
         self.assertTrue(archive.read_text().startswith("# Earlier archive\n\n"))
         self.assertEqual(archive.read_text().count("## Answered?"), 1)
 
+    def test_archive_leaves_a_question_when_its_old_revision_changed_after_recording(self):
+        panel = load_module()
+        original = (
+            "## Answered?\nQ1 · r2 · 待答\n\nContext.\n\n"
+            "答覆：\nA\n\n- [x] 送出\n\n"
+            "### 舊版 r1（不套用至 r2）\n答覆：\nold\n\n- [x] 送出\n"
+        )
+        self.questions.write_text(original)
+        recorded_at = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc)
+        expected_hash = panel._section_sha256(panel.parse_questions(original)[0])
+        panel.set_question_status(
+            self.questions, "Q1", 2, "recorded", expected_hash, now=recorded_at,
+        )
+        recorded = self.questions.read_text()
+        edited = recorded.replace("答覆：\nold", "答覆：\nold, edited later")
+        self.questions.write_text(edited)
+
+        archived = panel.archive_recorded_questions(
+            self.questions, 300, expected_text=edited,
+            now=recorded_at + timedelta(seconds=301),
+        )
+
+        self.assertEqual(archived, [])
+        self.assertEqual(self.questions.read_text(), edited)
+        self.assertFalse(self.questions.with_name("questions-archive.md").exists())
+
     def test_archive_recorded_cli_uses_questions_derived_archive_path(self):
         panel = load_module()
         questions = self.questions.with_name("questions-controller-a.md")

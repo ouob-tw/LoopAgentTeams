@@ -225,7 +225,7 @@ class Panel(App):
         self.set_notice("conflict", CONFLICT)
 
     def check_external(self):
-        if self.conflict:
+        if not self.is_mounted or not self.is_running or self.conflict:
             return
         if self.editor.text == self.saved:
             self.archive_recorded()
