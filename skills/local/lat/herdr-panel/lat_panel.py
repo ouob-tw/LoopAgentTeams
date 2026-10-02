@@ -1,0 +1,589 @@
+#!/usr/bin/env python3
+"""Stdlib core and controller CLI for the LAT question panel.
+
+Public API used by the Textual panel and LAT controller:
+
+* ``locked_replace`` performs a conditional atomic UTF-8 replacement. Pass a
+  journal path for a panel save, or call ``save_panel_edit`` to use
+  ``<questions parent>/panel-journal.jsonl``.
+* ``parse_questions``, ``upsert_question``, and ``set_question_status`` model
+  and update ``## ID | rN | status`` sections without touching other sections.
+* ``bind_controller``, ``unbind_controller``, and ``resolve_binding`` manage
+  per-Herdr-workspace routing with the sole-binding fallback.
+* ``mark_notification_pending``, ``notification_is_pending``,
+  ``send_pending_notification``, and ``clear_pending_notification`` provide the
+  persisted notification lifecycle. ``send_pending_notification`` returns an
+  ``(ok, reason)`` pair and clears state only after target delivery.
+
+Controller CLI (run from the project root unless ``--questions`` is supplied)::
+
+  question upsert --id ID --file section.md
+  question set-status --id ID --revision N --status recorded
+  bind --hcom-name NAME --client CLIENT --session-id ID --workspace ROOT \
+       [--herdr-workspace ID]
+  unbind --session-id ID
+  resolve [--herdr-workspace ID]
+
+All commands are prefixed with ``uv run --no-project python lat_panel.py``.
+Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
+``herdr plugin config-dir lat.panel``, then the XDG config fallback. Pending
+state uses ``HERDR_PLUGIN_STATE_DIR`` or the XDG state fallback.
+"""
+
+from contextlib import contextmanager
+import argparse
+from datetime import datetime, timezone
+import fcntl
+import hashlib
+import json
+import os
+from pathlib import Path
+import re
+import stat
+import subprocess
+import sys
+import tempfile
+import uuid
+
+
+@contextmanager
+def _path_lock(path):
+    lock_path = path.with_name(f".{path.name}.lock")
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open("a", encoding="utf-8") as lock_file:
+        fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+
+def _replace_locked(path, text):
+    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, delete=False
+        ) as output:
+            temporary = Path(output.name)
+            os.fchmod(output.fileno(), mode)
+            output.write(text)
+            output.flush()
+            os.fsync(output.fileno())
+        os.replace(temporary, path)
+        directory_fd = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory_fd)
+        finally:
+            os.close(directory_fd)
+    finally:
+        if temporary is not None and temporary.exists():
+            temporary.unlink()
+
+
+def _question_changes(before, after):
+    before_by_id = {item["id"]: item for item in _sections(before)}
+    after_by_id = {item["id"]: item for item in _sections(after)}
+    changes = []
+    for question_id in sorted(before_by_id.keys() | after_by_id.keys()):
+        old = before_by_id.get(question_id)
+        new = after_by_id.get(question_id)
+        if old is None or new is None or old["raw"] != new["raw"]:
+            changes.append({
+                "id": question_id,
+                "before_status": old["status"] if old else None,
+                "after_status": new["status"] if new else None,
+            })
+    return changes
+
+
+def _append_journal(journal_path, before, after):
+    journal_path = Path(journal_path)
+    journal_path.parent.mkdir(parents=True, exist_ok=True)
+    entry = {
+        "time": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+        "before_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
+        "after_sha256": hashlib.sha256(after.encode("utf-8")).hexdigest(),
+        "changed_questions": _question_changes(before, after),
+    }
+    with journal_path.open("a", encoding="utf-8") as journal:
+        journal.write(json.dumps(entry, ensure_ascii=False, separators=(",", ":")) + "\n")
+        journal.flush()
+        os.fsync(journal.fileno())
+
+
+def locked_replace(path, expected_text, new_text, *, journal_path=None):
+    """Return true after an atomic replacement, or false on content conflict."""
+    path = Path(path)
+    with _path_lock(path):
+        try:
+            current = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            current = ""
+        if current != expected_text:
+            return False
+        _replace_locked(path, new_text)
+        if journal_path is not None:
+            _append_journal(journal_path, expected_text, new_text)
+        return True
+
+
+def save_panel_edit(questions_path, expected_text, new_text):
+    """Save panel text conditionally and append the standard panel journal."""
+    questions_path = Path(questions_path)
+    return locked_replace(
+        questions_path,
+        expected_text,
+        new_text,
+        journal_path=questions_path.parent / "panel-journal.jsonl",
+    )
+
+
+_SECTION_HEADER = re.compile(
+    r"^## (?P<id>[A-Za-z0-9][A-Za-z0-9._-]*) \| r(?P<revision>[1-9][0-9]*) "
+    r"\| (?P<status>pending|ready|recorded)[ \t]*$",
+    re.MULTILINE,
+)
+_ARCHIVE_HEADER = re.compile(
+    r"^### 舊版 r[1-9][0-9]*（不套用至 r[1-9][0-9]*）$", re.MULTILINE
+)
+_FIELD_NAMES = ("問題", "選項", "建議", "影響", "答覆", "批註")
+
+
+def _ordered_fields(text):
+    matches = []
+    cursor = 0
+    for name in _FIELD_NAMES:
+        match = re.search(rf"^{re.escape(name)}：", text[cursor:], re.MULTILINE)
+        if match is None:
+            continue
+        start = cursor + match.start()
+        end = cursor + match.end()
+        matches.append((name, start, end))
+        cursor = end
+    fields = {}
+    for index, (name, _start, value_start) in enumerate(matches):
+        value_end = matches[index + 1][1] if index + 1 < len(matches) else len(text)
+        fields[name] = text[value_start:value_end].rstrip("\n")
+    return fields, {name: start for name, start, _end in matches}
+
+
+def parse_questions(text):
+    """Return parsed question-section dictionaries while preserving raw spans."""
+    matches = list(_SECTION_HEADER.finditer(text))
+    sections = []
+    for index, match in enumerate(matches):
+        end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
+        raw = text[match.start():end]
+        archive = _ARCHIVE_HEADER.search(raw)
+        current_raw = raw[:archive.start()] if archive else raw
+        fields, field_starts = _ordered_fields(current_raw)
+        answer_start = field_starts.get("答覆")
+        sections.append({
+            "id": match.group("id"),
+            "revision": int(match.group("revision")),
+            "status": match.group("status"),
+            "start": match.start(),
+            "end": end,
+            "raw": raw,
+            "fields": fields,
+            "user_tail": current_raw[answer_start:] if answer_start is not None else "",
+        })
+    return sections
+
+
+_sections = parse_questions
+
+
+def _one_section(text, expected_id):
+    sections = _sections(text)
+    if len(sections) != 1 or sections[0]["id"] != expected_id:
+        raise ValueError("section file must contain exactly the requested question ID")
+    missing = [name for name in _FIELD_NAMES if name not in sections[0]["fields"]]
+    if missing:
+        raise ValueError(f"section is missing fields: {', '.join(missing)}")
+    return sections[0]
+
+
+def _archive_text(raw):
+    marker = _ARCHIVE_HEADER.search(raw)
+    return raw[marker.start():] if marker else ""
+
+
+def _render_section(question_id, revision, status, fields, archives=""):
+    lines = [f"## {question_id} | r{revision} | {status}"]
+    lines.extend(f"{name}：{fields[name]}" for name in _FIELD_NAMES)
+    if archives:
+        lines.extend(("", archives))
+    return "\n".join(lines) + "\n"
+
+
+def upsert_question(questions_path, question_id, section_text):
+    """Add or update one question under the shared lock; return its revision."""
+    questions_path = Path(questions_path)
+    incoming = _one_section(section_text, question_id)
+    with _path_lock(questions_path):
+        try:
+            document = questions_path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            document = ""
+        matching = [item for item in _sections(document) if item["id"] == question_id]
+        if len(matching) > 1:
+            raise ValueError(f"duplicate question ID: {question_id}")
+        existing = matching[0] if matching else None
+        fields = dict(incoming["fields"])
+        fields["答覆"] = ""
+        fields["批註"] = ""
+        if existing is None:
+            revision = incoming["revision"]
+            replacement = _render_section(
+                question_id, revision, incoming["status"], fields
+            )
+            separator = "" if not document or document.endswith("\n\n") else "\n"
+            updated = document + separator + replacement
+        else:
+            missing = [name for name in _FIELD_NAMES if name not in existing["fields"]]
+            if missing:
+                raise ValueError(f"existing section is missing fields: {', '.join(missing)}")
+            content_changed = any(
+                existing["fields"].get(name, "") != fields[name]
+                for name in ("問題", "選項")
+            )
+            if content_changed:
+                revision = existing["revision"] + 1
+                status = "pending"
+                prior_user_text = existing["user_tail"].rstrip("\n")
+                prior = (
+                    f"### 舊版 r{existing['revision']}（不套用至 r{revision}）\n"
+                    f"{prior_user_text}"
+                )
+                older = _archive_text(existing["raw"])
+                archives = prior + (f"\n\n{older}" if older else "")
+            else:
+                revision = existing["revision"]
+                status = existing["status"]
+                archives = _archive_text(existing["raw"])
+            if content_changed:
+                replacement = _render_section(
+                    question_id, revision, status, fields, archives
+                )
+            else:
+                prefix = [f"## {question_id} | r{revision} | {status}"]
+                prefix.extend(f"{name}：{fields[name]}" for name in _FIELD_NAMES[:4])
+                replacement = "\n".join(prefix) + "\n" + existing["user_tail"] + archives
+            updated = document[:existing["start"]] + replacement + document[existing["end"]:]
+        _replace_locked(questions_path, updated)
+        return revision
+
+
+def set_question_status(questions_path, question_id, revision, status):
+    """Set one question status when its current revision matches exactly."""
+    if status != "recorded":
+        raise ValueError("the controller may only set status to recorded")
+    questions_path = Path(questions_path)
+    with _path_lock(questions_path):
+        document = questions_path.read_text(encoding="utf-8")
+        matching = [item for item in _sections(document) if item["id"] == question_id]
+        if len(matching) > 1:
+            raise ValueError(f"duplicate question ID: {question_id}")
+        existing = matching[0] if matching else None
+        if existing is None:
+            raise ValueError(f"question not found: {question_id}")
+        if existing["revision"] != revision:
+            raise ValueError(
+                f"revision mismatch: expected r{revision}, found r{existing['revision']}"
+            )
+        header = _SECTION_HEADER.search(document, existing["start"], existing["end"])
+        updated_header = f"## {question_id} | r{revision} | {status}"
+        updated = document[:header.start()] + updated_header + document[header.end():]
+        _replace_locked(questions_path, updated)
+
+
+def plugin_directory(kind, env=None):
+    """Resolve the plugin config or state directory without contacting Herdr's server."""
+    env = os.environ if env is None else env
+    variable = f"HERDR_PLUGIN_{kind.upper()}_DIR"
+    if env.get(variable):
+        return Path(env[variable]).expanduser()
+    if kind == "config":
+        try:
+            result = subprocess.run(
+                ["herdr", "plugin", "config-dir", "lat.panel"],
+                text=True, capture_output=True, timeout=10, check=True, env=env,
+            )
+            if result.stdout.strip():
+                return Path(result.stdout.strip()).expanduser()
+        except (FileNotFoundError, subprocess.SubprocessError):
+            pass
+        base = Path(env.get("XDG_CONFIG_HOME", Path.home() / ".config"))
+    else:
+        base = Path(env.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    return base / "herdr/plugins/lat.panel" / kind
+
+
+def _bindings_path(config_dir=None):
+    directory = Path(config_dir) if config_dir else plugin_directory("config")
+    return directory / "bindings.json"
+
+
+def _read_bindings(path):
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("bindings", {}), dict):
+        raise ValueError("invalid bindings file")
+    return payload.get("bindings", {})
+
+
+def _write_bindings(path, bindings):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _replace_locked(path, json.dumps({"bindings": bindings}, ensure_ascii=False, indent=2) + "\n")
+
+
+def bind_controller(hcom_name, client, session_id, workspace, herdr_workspace, *, config_dir=None):
+    """Bind one Herdr workspace and return ``(binding, replaced_binding)``."""
+    if not herdr_workspace:
+        raise ValueError("Herdr workspace ID is required")
+    workspace = Path(workspace).expanduser().resolve()
+    binding = {
+        "hcom_name": hcom_name,
+        "client": client,
+        "session_id": session_id,
+        "workspace": str(workspace),
+        "questions_path": str(workspace / ".lat/questions.md"),
+        "herdr_workspace": herdr_workspace,
+    }
+    path = _bindings_path(config_dir)
+    with _path_lock(path):
+        bindings = _read_bindings(path)
+        replaced = bindings.get(herdr_workspace)
+        bindings[herdr_workspace] = binding
+        _write_bindings(path, bindings)
+    return binding, replaced
+
+
+def unbind_controller(session_id, *, config_dir=None):
+    """Remove only bindings owned by ``session_id`` and return their count."""
+    path = _bindings_path(config_dir)
+    with _path_lock(path):
+        bindings = _read_bindings(path)
+        kept = {
+            workspace_id: binding for workspace_id, binding in bindings.items()
+            if binding.get("session_id") != session_id
+        }
+        if kept != bindings:
+            _write_bindings(path, kept)
+        return len(bindings) - len(kept)
+
+
+def resolve_binding(herdr_workspace=None, *, config_dir=None):
+    """Resolve an exact workspace binding, or the sole machine-wide binding."""
+    path = _bindings_path(config_dir)
+    with _path_lock(path):
+        bindings = _read_bindings(path)
+    if herdr_workspace and herdr_workspace in bindings:
+        return bindings[herdr_workspace]
+    if len(bindings) == 1:
+        return next(iter(bindings.values()))
+    raise ValueError("no LAT controller is bound to this Herdr workspace")
+
+
+def _notification_path(state_dir=None):
+    directory = Path(state_dir) if state_dir else plugin_directory("state")
+    return directory / "pending-notifications.json"
+
+
+def _question_key(questions_path):
+    return str(Path(questions_path).expanduser().resolve())
+
+
+def _read_pending(path):
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        return {}
+    if not isinstance(payload, dict) or not isinstance(payload.get("pending", {}), dict):
+        raise ValueError("invalid pending notification file")
+    return payload.get("pending", {})
+
+
+def _write_pending(path, pending):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    _replace_locked(path, json.dumps({"pending": pending}, ensure_ascii=False, indent=2) + "\n")
+
+
+def mark_notification_pending(questions_path, *, state_dir=None):
+    """Persist a pending notification keyed by the absolute questions path."""
+    path = _notification_path(state_dir)
+    key = _question_key(questions_path)
+    with _path_lock(path):
+        pending = _read_pending(path)
+        generation = uuid.uuid4().hex
+        pending[key] = {
+            "questions_path": key,
+            "marked_at": datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            "generation": generation,
+        }
+        _write_pending(path, pending)
+    return generation
+
+
+def notification_is_pending(questions_path, *, state_dir=None):
+    """Return whether the questions path has a persisted pending notification."""
+    path = _notification_path(state_dir)
+    with _path_lock(path):
+        return _question_key(questions_path) in _read_pending(path)
+
+
+_UNCONDITIONAL_CLEAR = object()
+
+
+def clear_pending_notification(
+    questions_path, *, state_dir=None, expected_generation=_UNCONDITIONAL_CLEAR
+):
+    """Clear one pending notification, leaving other projects untouched."""
+    path = _notification_path(state_dir)
+    key = _question_key(questions_path)
+    with _path_lock(path):
+        pending = _read_pending(path)
+        current = pending.get(key)
+        generation_matches = (
+            expected_generation is _UNCONDITIONAL_CLEAR
+            or current and current.get("generation") == expected_generation
+        )
+        if current and generation_matches:
+            del pending[key]
+            _write_pending(path, pending)
+            return True
+        return False
+
+
+def _delivered_targets(payload):
+    targets = []
+    if isinstance(payload, dict):
+        delivered = payload.get("delivered_to")
+        if isinstance(delivered, str):
+            targets.append(delivered)
+        elif isinstance(delivered, list):
+            targets.extend(item for item in delivered if isinstance(item, str))
+        for value in payload.values():
+            targets.extend(_delivered_targets(value))
+    elif isinstance(payload, list):
+        for value in payload:
+            targets.extend(_delivered_targets(value))
+    return targets
+
+
+def send_pending_notification(questions_path, binding, *, state_dir=None, env=None, timeout=10):
+    """Send one persisted notification; return ``(ok, reason)`` and clear on success."""
+    questions_key = _question_key(questions_path)
+    state_path = _notification_path(state_dir)
+    with _path_lock(state_path):
+        pending = _read_pending(state_path).get(questions_key)
+    if not pending:
+        return True, "no pending notification"
+    generation = pending.get("generation")
+    if _question_key(binding.get("questions_path", "")) != questions_key:
+        return False, "binding does not match the questions path"
+    target = binding.get("hcom_name", "")
+    if not target:
+        return False, "binding has no HCOM name"
+    message = (
+        f"Questions file changed: {questions_key}. Re-read the file and apply the LAT "
+        "question-processing contract. This notification is not approval. Only an "
+        "unambiguous ready answer for the matching question ID and revision may be recorded."
+    )
+    command = [
+        "hcom", "send", f"@{target}", "--from", "lat-panel",
+        "--intent", "inform", "--json", "--", message,
+    ]
+    try:
+        result = subprocess.run(
+            command, text=True, capture_output=True, timeout=timeout,
+            env=os.environ if env is None else env,
+        )
+    except subprocess.TimeoutExpired:
+        return False, "notification timed out"
+    except OSError as error:
+        return False, str(error)
+    if result.returncode != 0:
+        return False, result.stderr.strip() or f"hcom exited {result.returncode}"
+    try:
+        payload = json.loads(result.stdout)
+    except json.JSONDecodeError:
+        return False, "invalid hcom JSON response"
+    delivered = {item.removeprefix("@") for item in _delivered_targets(payload)}
+    if target not in delivered:
+        return False, f"notification not delivered to {target}"
+    clear_pending_notification(
+        questions_path, state_dir=state_dir, expected_generation=generation
+    )
+    return True, "delivered"
+
+
+def _build_parser():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest="command", required=True)
+    question = commands.add_parser("question")
+    question_commands = question.add_subparsers(dest="question_command", required=True)
+    upsert = question_commands.add_parser("upsert")
+    upsert.add_argument("--questions", type=Path, default=Path(".lat/questions.md"))
+    upsert.add_argument("--id", required=True)
+    upsert.add_argument("--file", required=True, type=Path)
+    set_status = question_commands.add_parser("set-status")
+    set_status.add_argument("--questions", type=Path, default=Path(".lat/questions.md"))
+    set_status.add_argument("--id", required=True)
+    set_status.add_argument("--revision", required=True, type=int)
+    set_status.add_argument(
+        "--status", required=True, choices=("recorded",)
+    )
+    bind = commands.add_parser("bind")
+    bind.add_argument("--hcom-name", required=True)
+    bind.add_argument("--client", required=True)
+    bind.add_argument("--session-id", required=True)
+    bind.add_argument("--workspace", required=True, type=Path)
+    bind.add_argument("--herdr-workspace", default=os.environ.get("HERDR_WORKSPACE_ID"))
+    unbind = commands.add_parser("unbind")
+    unbind.add_argument("--session-id", required=True)
+    resolve = commands.add_parser("resolve")
+    resolve.add_argument("--herdr-workspace", default=os.environ.get("HERDR_WORKSPACE_ID"))
+    return parser
+
+
+def main(argv=None):
+    args = _build_parser().parse_args(argv)
+    try:
+        if args.command == "question" and args.question_command == "upsert":
+            revision = upsert_question(
+                args.questions, args.id, args.file.read_text(encoding="utf-8")
+            )
+            print(f"{args.id} r{revision}")
+            return 0
+        if args.command == "question" and args.question_command == "set-status":
+            set_question_status(
+                args.questions, args.id, args.revision, args.status
+            )
+            return 0
+        if args.command == "bind":
+            binding, replaced = bind_controller(
+                args.hcom_name, args.client, args.session_id, args.workspace,
+                args.herdr_workspace,
+            )
+            print(json.dumps({"binding": binding, "replaced": replaced}, ensure_ascii=False))
+            return 0
+        if args.command == "unbind":
+            removed = unbind_controller(args.session_id)
+            print(json.dumps({"removed": removed}))
+            return 0
+        if args.command == "resolve":
+            print(json.dumps(resolve_binding(args.herdr_workspace), ensure_ascii=False))
+            return 0
+    except (OSError, ValueError) as error:
+        print(f"lat-panel: {error}", file=sys.stderr)
+        return 1
+    return 2
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
