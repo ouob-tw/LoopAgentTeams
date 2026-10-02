@@ -374,10 +374,11 @@ class NotificationTests(PanelTestCase):
                 self.core, "mark_notification_pending", side_effect=OSError("disk full"),
             ):
                 await self.type_and_wait(app, pilot, "a", 0)
-                await pilot.press("ctrl+q")
-                await self.settle(app, pilot)
-            self.assertIsNone(app.return_code)
-            self.assertIn("無法記錄待送通知", self.status(app))
+                for _ in range(2):
+                    await pilot.press("ctrl+q")
+                    await self.settle(app, pilot)
+                    self.assertIsNone(app.return_code)
+                    self.assertIn("無法記錄待送通知", self.status(app))
             await pilot.press("ctrl+q")
             await self.settle(app, pilot)
             self.assertIsNotNone(app.return_code)
@@ -385,18 +386,22 @@ class NotificationTests(PanelTestCase):
         self.assertTrue(self.pending())
 
     async def test_editing_is_frozen_while_close_flush_is_in_flight(self):
-        self.set_hcom("slow")
-        app = self.make_app(NOTIFY_DELAY=30)
-        async with app.run_test() as pilot:
-            await self.type_and_wait(app, pilot, "a", 0)
-            await pilot.press("ctrl+q")
-            await pilot.pause(0.1)
-            await pilot.press("b")
-            await self.settle(app, pilot)
-            self.assertIsNotNone(app.return_code)
-        self.assertIn("答覆：a\n", self.questions.read_text())
-        self.assertFalse(self.pending())
-        self.assertEqual(len(self.calls()), 1)
+        for key in ("b", "ctrl+z"):
+            with self.subTest(key=key):
+                self.questions.write_text(QUESTIONS)
+                (self.hcom_dir / "calls.jsonl").unlink(missing_ok=True)
+                self.set_hcom("slow")
+                app = self.make_app(NOTIFY_DELAY=30)
+                async with app.run_test() as pilot:
+                    await self.type_and_wait(app, pilot, "a", 0)
+                    await pilot.press("ctrl+q")
+                    await pilot.pause(0.1)
+                    await pilot.press(key)
+                    await self.settle(app, pilot)
+                    self.assertIsNotNone(app.return_code)
+                self.assertIn("答覆：a\n", self.questions.read_text())
+                self.assertFalse(self.pending())
+                self.assertEqual(len(self.calls()), 1)
 
     async def test_pending_notification_is_resent_on_next_open(self):
         self.core.mark_notification_pending(self.questions)

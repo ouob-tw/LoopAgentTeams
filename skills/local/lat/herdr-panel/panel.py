@@ -41,7 +41,7 @@ def binding_error_text(error):
     return f"無法讀取 LAT 綁定：{error}"
 
 
-def failure_line(cause):
+def notify_failure_line(cause):
     return f"通知失敗：{cause}。Ctrl+N 重試；再按 Ctrl+Q 保留待送並關閉"
 
 
@@ -60,7 +60,7 @@ def notify_failure_text(reason, target):
         cause = "目前綁定的問題檔已不是這個檔案"
     else:
         cause = f"HCOM 錯誤：{reason}"
-    return failure_line(cause)
+    return notify_failure_line(cause)
 
 
 def herdr_theme(env, available):
@@ -257,7 +257,6 @@ class Panel(App):
             backup.write(text)
             backup.flush()
             os.fsync(backup.fileno())
-        return Path(backup.name)
 
     def action_reload_file(self):
         if self.read_only:
@@ -276,10 +275,12 @@ class Panel(App):
         self.render_status()
 
     def action_undo_edit(self):
-        self.editor.undo()
+        if not self.editor.read_only:
+            self.editor.undo()
 
     def action_redo_edit(self):
-        self.editor.redo()
+        if not self.editor.read_only:
+            self.editor.redo()
 
     def notification_pending(self):
         try:
@@ -294,7 +295,7 @@ class Panel(App):
         except (OSError, ValueError) as error:
             # Keep the obligation in memory so retry and close persist it first.
             self.unrecorded_notification = True
-            self.set_notice("notify", failure_line(f"無法記錄待送通知：{error}"))
+            self.set_notice("notify", notify_failure_line(f"無法記錄待送通知：{error}"))
             return
         self.unrecorded_notification = False
         if self.notify_timer:
@@ -312,7 +313,7 @@ class Panel(App):
                 try:
                     await asyncio.to_thread(lat_panel.mark_notification_pending, self.path)
                 except (OSError, ValueError) as error:
-                    self.set_notice("notify", failure_line(f"無法記錄待送通知：{error}"))
+                    self.set_notice("notify", notify_failure_line(f"無法記錄待送通知：{error}"))
                     return False
                 self.unrecorded_notification = False
             try:
@@ -354,8 +355,9 @@ class Panel(App):
             return
         if self.close_armed:
             if self.unrecorded_notification:
-                # Best effort: never trap the user in the popup over a disk error.
                 self.mark_pending()
+                if self.unrecorded_notification:
+                    return
             self.exit()
             return
         if self.notify_timer:
@@ -367,6 +369,8 @@ class Panel(App):
     async def flush_and_close(self):
         try:
             delivered = await self.send_notification()
+            if delivered and self.notification_pending():
+                delivered = await self.send_notification()
         finally:
             self.closing = False
         if delivered:
