@@ -178,7 +178,7 @@ _SECTION_HEADER = re.compile(
 _ARCHIVE_HEADER = re.compile(
     r"^### 舊版 r[1-9][0-9]*（不套用至 r[1-9][0-9]*）$", re.MULTILINE
 )
-_ANSWER_MARKER = re.compile(r"^答覆：[ \t]*$", re.MULTILINE)
+_ANSWER_MARKER = re.compile(r"^答覆：(?P<inline>[^\r\n]*)$", re.MULTILINE)
 _SUBMIT_MARKER = re.compile(r"^- \[(?P<checked>[ xX])\] 送出[ \t]*$", re.MULTILINE)
 
 
@@ -197,6 +197,13 @@ def parse_questions(text):
         archive = _archive_match(raw)
         current_raw = raw[:archive.start()] if archive else raw
         answer_marker = _ANSWER_MARKER.search(current_raw, status_end)
+        checked_submit = next(
+            (
+                marker for marker in _SUBMIT_MARKER.finditer(current_raw, status_end)
+                if marker.group("checked").lower() == "x"
+            ),
+            None,
+        )
         submit_marker = (
             _SUBMIT_MARKER.search(current_raw, answer_marker.end())
             if answer_marker
@@ -208,7 +215,15 @@ def parse_questions(text):
         checked = False
         if answer_marker and submit_marker and submit_marker.end() <= len(current_raw):
             body = raw[status_end:answer_marker.start()].strip("\n")
-            answer = raw[answer_marker.end():submit_marker.start()].strip("\n")
+            following_block = raw[answer_marker.end():submit_marker.start()]
+            inline_answer = answer_marker.group("inline")
+            if inline_answer.strip():
+                following_answer = following_block.removeprefix("\n").rstrip("\n")
+                answer = inline_answer + (
+                    f"\n{following_answer}" if following_answer else ""
+                )
+            else:
+                answer = following_block.strip("\n")
             answer_block = raw[answer_marker.start():submit_marker.end()]
             checked = submit_marker.group("checked").lower() == "x"
         status_label = match.group("status_label")
@@ -227,10 +242,20 @@ def parse_questions(text):
             "answer": answer,
             "answer_block": answer_block,
             "checked": checked,
+            "malformed_submission": bool(checked_submit and not checked),
             "status_start": match.start("status_label") - match.start(),
             "status_end": match.end() - match.start(),
         })
     return sections
+
+
+def malformed_submission_ids(text):
+    """Return pending question IDs with a checked but unparseable submission."""
+    return [
+        section["id"]
+        for section in parse_questions(text)
+        if section["status_label"] == "待答" and section["malformed_submission"]
+    ]
 
 
 _sections = parse_questions

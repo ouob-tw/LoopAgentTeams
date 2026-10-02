@@ -78,6 +78,8 @@ cp "$questions" "$snapshot"
 
 **面板來源核對**：對每個狀態為 `待答` 且已勾選 `- [x] 送出` 的題目執行下列指令，不自行解析區段或計算雜湊。未勾選時，`provenance` 會拒絕：
 
+`答覆：B` 會把 `B` 視為答覆第一行，後續行接在其後；`答覆：` 單獨一行的原格式仍可使用，`[x]` 與 `[X]` 都表示送出。待答題已勾選送出，但缺少可辨識的答覆標記或送出格式時，面板會持續顯示 `送出格式錯誤：<題號> 已勾選送出，但找不到完整的答覆格式`；這種題目維持草稿，不可記錄。
+
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenance \
   --questions "$snapshot" --source-questions "$questions" \

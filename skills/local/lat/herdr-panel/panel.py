@@ -45,6 +45,16 @@ def notify_failure_line(cause):
     return f"通知失敗：{cause}。Ctrl+N 重試；再按 Ctrl+Q 保留待送並關閉"
 
 
+def submission_error_text(text):
+    question_ids = lat_panel.malformed_submission_ids(text)
+    if not question_ids:
+        return ""
+    return (
+        f"送出格式錯誤：{'、'.join(question_ids)} 已勾選送出，"
+        "但找不到完整的答覆格式"
+    )
+
+
 def notify_failure_text(reason, target):
     reason = (reason.strip().splitlines() or ["未知錯誤"])[0]
     target = target or "中控"
@@ -205,6 +215,7 @@ class Panel(App):
                 error = f"無法讀取問題檔 {self.path}：{read_error}"
         self.read_only = bool(error) or self.picker_active
         self.notices["file"] = error
+        self.notices["submission"] = submission_error_text(self.saved) if not error else ""
 
     @classmethod
     def from_env(cls, env):
@@ -294,6 +305,7 @@ class Panel(App):
         self.picker_active = False
         self.read_only = bool(error)
         self.notices["file"] = error
+        self.notices["submission"] = submission_error_text(text) if not error else ""
         self.saved = text
         self.editor.load_text(text)
         self.editor.read_only = self.read_only
@@ -338,6 +350,7 @@ class Panel(App):
         self.saved = text
         self.close_armed = False
         self.notices["save"] = ""
+        self.notices["submission"] = submission_error_text(text)
         self.render_status()
         self.mark_pending()
         return True
@@ -396,6 +409,8 @@ class Panel(App):
         self.saved = text
         self.editor.load_text(text)
         self.editor.move_cursor(location)
+        self.notices["submission"] = submission_error_text(text)
+        self.render_status()
 
     def backup_draft(self, text):
         stamp = datetime.now().strftime("%Y%m%d-%H%M%S")

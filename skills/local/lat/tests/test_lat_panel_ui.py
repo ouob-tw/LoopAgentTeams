@@ -159,6 +159,17 @@ class EditorTests(PanelTestCase):
                     self.assertIn(expected, self.status(app))
                     self.assertIn("使用預設配色", self.status(app))
 
+    async def test_checked_malformed_submission_shows_persistent_status_error(self):
+        malformed = QUESTIONS.replace("答覆：\n\n- [ ] 送出", "- [X] 送出")
+        self.questions.write_text(malformed)
+        app = self.make_app()
+
+        async with app.run_test() as pilot:
+            expected = "送出格式錯誤：Q1 已勾選送出，但找不到完整的答覆格式"
+            self.assertEqual(self.status(app), expected)
+            await pilot.pause(0.2)
+            self.assertEqual(self.status(app), expected)
+
     async def test_typing_saves_immediately_with_journal_and_undo_redo(self):
         app = self.make_app(NOTIFY_DELAY=30)
         async with app.run_test() as pilot:
