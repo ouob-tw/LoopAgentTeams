@@ -97,6 +97,20 @@ class OptionParsingTests(unittest.TestCase):
         self.assertIn("沒有", missing.reason)
 
 
+    def test_context_drops_option_definitions_but_keeps_other_body_text(self):
+        panel = load_module()
+
+        single = panel.question_context(question(
+            "Context.\n\nA. First\n   First impact\nB. Second\n   Second impact\n\nAfter."
+        ))
+        multi = panel.question_context(question("Pick.\n\n- [ ] Alpha\n  Impact"))
+        text = panel.question_context(question("Free-form.\n   indented"))
+
+        self.assertEqual(single, "Context.\n\nAfter.")
+        self.assertEqual(multi, "Pick.")
+        self.assertEqual(text, "Free-form.\n   indented")
+
+
 class AnswerFormatTests(unittest.TestCase):
     def test_render_formats_single_multi_other_and_note(self):
         panel = load_module()
@@ -233,6 +247,28 @@ class AnswerWriteTests(unittest.TestCase):
         self.assertEqual(entry["kind"], "answer-write")
         self.assertEqual(entry["changed_questions"][0]["id"], "Q1")
         self.assertEqual(entry["changed_questions"][0]["section_sha256"], result["section_sha256"])
+
+    def test_write_none_clears_a_draft_back_to_an_empty_answer_area(self):
+        before = self.initial_text()
+        self.questions.write_text(before)
+        revision, section_hash = self.identity("Q1")
+        saved = self.panel.write_question_answer(
+            self.questions, "Q1", revision, section_hash,
+            self.panel.QuestionAnswer("single", ("B. Beta",), "", "note"),
+        )
+
+        cleared = self.panel.write_question_answer(
+            self.questions, "Q1", revision, saved["section_sha256"], None
+        )
+
+        self.assertEqual(cleared["status"], "saved")
+        self.assertEqual(
+            self.questions.read_text(),
+            before.replace("答覆：A. Alpha\n\n- [ ] 送出", "答覆：\n\n- [ ] 送出", 1),
+        )
+        self.assertIsNone(self.panel.parse_question_answer(
+            self.panel.parse_questions(self.questions.read_text())[0]
+        ))
 
     def test_write_refuses_a_submitted_question_without_an_unsubmit_path(self):
         before = self.initial_text(submitted=True)

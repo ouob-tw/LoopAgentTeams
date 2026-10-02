@@ -8,10 +8,11 @@ Public API used by the Textual panel and LAT controller:
   ``<questions parent>/panel-journal.jsonl``.
 * ``parse_questions``, ``upsert_question``, and ``set_question_status`` model
   and update natural-language question sections without touching other sections.
-* V2 selector UI flow: ``parse_question_options`` and
+* V2 selector UI flow: ``parse_question_options``, ``question_context``, and
   ``parse_question_answer`` read one ``parse_questions`` result;
   ``question_section_sha256`` captures its guarded-write identity;
-  ``write_question_answer`` saves a draft while the question is unchecked;
+  ``write_question_answer`` saves (or, with ``None``, clears) a draft while
+  the question is unchecked;
   ``submit_question_answers`` checks several answered drafts in one write; and
   ``mark_submit_notification_pending`` applies the submit-only notification
   policy. ``render_answer_area`` emits the canonical hand-editable Markdown.
@@ -357,6 +358,27 @@ def parse_question_options(question):
     return QuestionOptions(None, (), "題目沒有可解析的選項")
 
 
+def question_context(question):
+    """Return the body without the option lines and impacts the selector lists."""
+    lines = (question.get("body") or "").splitlines()
+    kind = parse_question_options(question).kind
+    if kind is None:
+        return "\n".join(lines).strip("\n")
+    pattern = _SINGLE_OPTION if kind == "single" else _MULTI_OPTION
+    kept = []
+    in_option = False
+    for line in lines:
+        if pattern.match(line):
+            in_option = True
+            continue
+        if in_option and line[:1].isspace():
+            continue
+        in_option = False
+        if line or (kept and kept[-1]):
+            kept.append(line)
+    return "\n".join(kept).strip("\n")
+
+
 class QuestionAnswer(NamedTuple):
     """One selector answer, including optional free-form text and note."""
 
@@ -478,6 +500,9 @@ def _question_section(document, question_id):
     return matching[0]
 
 
+_EMPTY_ANSWER_AREA = "答覆：\n\n- [ ] 送出"
+
+
 def _question_still_matches(section, revision, expected_section_sha256):
     return (
         section["revision"] == revision
@@ -496,6 +521,7 @@ def write_question_answer(
 
     Submitted or recorded questions are read-only. A stale revision or
     current-section hash returns a ``question_changed`` result without writing.
+    ``answer=None`` clears the draft back to an empty answer area.
     """
     questions_path = Path(questions_path)
     with _path_lock(questions_path):
@@ -512,7 +538,10 @@ def write_question_answer(
             raise ValueError(f"question has no writable answer area: {question_id}")
         if section["status_label"] == "已記錄" or section["checked"]:
             return {"status": "read_only", "id": question_id}
-        replacement = render_answer_area(answer, submitted=False)
+        replacement = (
+            render_answer_area(answer, submitted=False) if answer is not None
+            else _EMPTY_ANSWER_AREA
+        )
         start = section["start"] + section["answer_start"]
         end = section["start"] + section["answer_end"]
         updated = document[:start] + replacement + document[end:]
@@ -685,7 +714,7 @@ def _render_section(question_id, revision, title, body, answer_block=None, archi
     lines = [f"## {title}", f"{question_id} · r{revision} · 待答"]
     if body:
         lines.extend(("", body))
-    lines.extend(("", answer_block or "答覆：\n\n- [ ] 送出"))
+    lines.extend(("", answer_block or _EMPTY_ANSWER_AREA))
     if archives:
         lines.extend(("", archives))
     return "\n".join(lines) + "\n"
