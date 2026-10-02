@@ -188,14 +188,26 @@ _SECTION_HEADER = re.compile(
     r"^## (?P<title>[^\r\n]+)\r?\n"
     r"(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*) · r(?P<revision>[1-9][0-9]*) · "
     r"(?P<status_label>待答|已記錄)"
-    r"(?: · (?P<recorded_at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d))?[ \t]*$",
+    r"(?: · (?P<recorded_at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d))?"
+    r"[ \t]*\r?$",
     re.MULTILINE,
 )
 _ARCHIVE_HEADER = re.compile(
-    r"^### 舊版 r[1-9][0-9]*（不套用至 r[1-9][0-9]*）$", re.MULTILINE
+    r"^### 舊版 r[1-9][0-9]*（不套用至 r[1-9][0-9]*）\r?$", re.MULTILINE
 )
-_ANSWER_MARKER = re.compile(r"^答覆：(?P<inline>[^\r\n]*)$", re.MULTILINE)
-_SUBMIT_MARKER = re.compile(r"^- \[(?P<checked>[ xX])\] 送出[ \t]*$", re.MULTILINE)
+_ANSWER_MARKER = re.compile(r"^答覆：(?P<inline>[^\r\n]*)\r?$", re.MULTILINE)
+_SUBMIT_MARKER = re.compile(
+    r"^- \[(?P<checked>[ xX])\] 送出[ \t]*\r?$", re.MULTILINE
+)
+
+
+def _normalize_newlines(text):
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _read_text_exact(path):
+    with Path(path).open("r", encoding="utf-8", newline="") as source:
+        return source.read()
 
 
 def _archive_match(raw):
@@ -232,16 +244,20 @@ def parse_questions(text):
         answer_end = None
         checked = False
         if answer_marker and submit_marker and submit_marker.end() <= len(current_raw):
-            body = raw[status_end:answer_marker.start()].strip("\n")
+            body = _normalize_newlines(
+                raw[status_end:answer_marker.start()]
+            ).strip("\n")
             following_block = raw[answer_marker.end():submit_marker.start()]
             inline_answer = answer_marker.group("inline")
             if inline_answer.strip():
-                following_answer = following_block.removeprefix("\n").rstrip("\n")
+                following_answer = _normalize_newlines(
+                    following_block
+                ).removeprefix("\n").rstrip("\n")
                 answer = inline_answer + (
                     f"\n{following_answer}" if following_answer else ""
                 )
             else:
-                answer = following_block.strip("\n")
+                answer = _normalize_newlines(following_block).strip("\n")
             answer_block = raw[answer_marker.start():submit_marker.end()]
             answer_start = answer_marker.start()
             answer_end = submit_marker.end()
@@ -378,15 +394,20 @@ def parse_question_answer(question):
     if option_kind is None:
         return QuestionAnswer("text", (), answer_text, note)
     if option_kind == "multi":
-        selections = []
-        other = ""
-        for part in answer_text.split("；"):
-            value = part.strip()
-            if value.startswith("其他："):
-                other = value.removeprefix("其他：")
-            elif value:
-                selections.append(value)
-        return QuestionAnswer("multi", tuple(selections), other, note)
+        if answer_text.startswith("其他："):
+            selections = ()
+            other = answer_text.removeprefix("其他：")
+        elif "；其他：" in answer_text:
+            selection_text, other = answer_text.split("；其他：", 1)
+            selections = tuple(
+                part.strip() for part in selection_text.split("；") if part.strip()
+            )
+        else:
+            selections = tuple(
+                part.strip() for part in answer_text.split("；") if part.strip()
+            )
+            other = ""
+        return QuestionAnswer("multi", selections, other, note)
     if answer_text.startswith("其他："):
         return QuestionAnswer("other", (), answer_text.removeprefix("其他："), note)
     if option_kind == "single":
@@ -430,6 +451,7 @@ def _section_text(section):
     """Return the current-revision section without inter-section whitespace."""
     marker = _archive_match(section["raw"])
     current = section["raw"][:marker.start()] if marker else section["raw"]
+    current = _normalize_newlines(current)
     return current.rstrip("\n") + "\n"
 
 
@@ -477,7 +499,7 @@ def write_question_answer(
     """
     questions_path = Path(questions_path)
     with _path_lock(questions_path):
-        document = questions_path.read_text(encoding="utf-8")
+        document = _read_text_exact(questions_path)
         matches = [item for item in _sections(document) if item["id"] == question_id]
         if len(matches) > 1:
             raise ValueError(f"duplicate question ID: {question_id}")
@@ -526,7 +548,7 @@ def submit_question_answers(questions_path, expected_questions):
     """
     questions_path = Path(questions_path)
     with _path_lock(questions_path):
-        document = questions_path.read_text(encoding="utf-8")
+        document = _read_text_exact(questions_path)
         sections = _sections(document)
         by_id = {}
         for section in sections:
@@ -556,7 +578,10 @@ def submit_question_answers(questions_path, expected_questions):
         for section in sorted(selected, key=lambda item: item["start"], reverse=True):
             if section["checked"]:
                 continue
-            replacement = _SUBMIT_MARKER.sub("- [x] 送出", section["answer_block"])
+            replacement = _SUBMIT_MARKER.sub(
+                lambda match: match.group(0).replace("[ ]", "[x]", 1),
+                section["answer_block"],
+            )
             start = section["start"] + section["answer_start"]
             end = section["start"] + section["answer_end"]
             updated = updated[:start] + replacement + updated[end:]

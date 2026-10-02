@@ -127,7 +127,9 @@ class AnswerFormatTests(unittest.TestCase):
         panel = load_module()
         answers = (
             panel.QuestionAnswer("single", ("A. First",), "", "single note"),
-            panel.QuestionAnswer("multi", ("Alpha", "Beta"), "custom", "multi note"),
+            panel.QuestionAnswer(
+                "multi", ("Alpha", "Beta"), "custom； with separator", "multi note"
+            ),
             panel.QuestionAnswer("other", (), "custom", "other note"),
             panel.QuestionAnswer("text", (), "plain input", "text note"),
         )
@@ -367,6 +369,33 @@ class AnswerWriteTests(unittest.TestCase):
         self.assertEqual(result, {"status": "question_changed", "ids": ["Q2"]})
         self.assertEqual(self.questions.read_text(), before_submit)
         self.assertFalse((self.questions.parent / "panel-journal.jsonl").exists())
+
+    def test_write_and_batch_submit_preserve_crlf_in_untouched_sections(self):
+        original = self.initial_text().replace("\n", "\r\n")
+        second_before = original[original.index("## Second?"):]
+        self.questions.write_bytes(original.encode())
+        first = self.panel.parse_questions(original)[0]
+
+        saved = self.panel.write_question_answer(
+            self.questions,
+            "Q1",
+            first["revision"],
+            self.panel.question_section_sha256(first),
+            self.panel.QuestionAnswer("single", ("B. Beta",), "", ""),
+        )
+
+        self.assertEqual(saved["status"], "saved")
+        after_write = self.questions.read_bytes().decode()
+        self.assertTrue(after_write.endswith(second_before))
+        current_first = self.panel.parse_questions(after_write)[0]
+        submitted = self.panel.submit_question_answers(self.questions, {
+            "Q1": (
+                current_first["revision"],
+                self.panel.question_section_sha256(current_first),
+            ),
+        })
+        self.assertEqual(submitted["status"], "submitted")
+        self.assertTrue(self.questions.read_bytes().decode().endswith(second_before))
 
 
 if __name__ == "__main__":
