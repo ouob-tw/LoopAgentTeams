@@ -37,13 +37,16 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 依「使用者待決事項」先建立 `.lat/decisions/<ID>.md`，再把同一題寫入問題檔；題號即決策紀錄 ID。先將單題寫成暫存檔：
 
 ```markdown
-## <ID> | r<版本> | pending
-問題：
-選項：
-建議：
-影響：
-答覆：
-批註：
+## 正式版要怎麼併入？
+
+審查和驗收都通過了，本機也已經裝好，現在只差要不要把它併進 dev。
+
+A. 合併到 dev，不推送（建議）
+   本機安裝內容會與 dev 一致，但 GitHub 不會改變。
+B. 合併到 dev，並推送到 GitHub
+   本機與遠端都會更新。
+C. 先不合併
+   繼續保留在目前分支。
 ```
 
 ```bash
@@ -51,8 +54,9 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question upsert \
   --questions "$workspace/.lat/questions.md" --id "<ID>" --file /path/to/section.md
 ```
 
-- 一律透過 `question upsert` 寫入（與面板共用檔案鎖），不手動編輯 `questions.md`。暫存檔中的「答覆」「批註」會被忽略，使用者已填內容保留。
-- 新題依暫存檔的版本建立。既有題改了「問題」或「選項」時，指令自動升版、狀態回到 `pending`，舊版答覆與批註移入 `### 舊版 r<N>（不套用至 r<N+1>）`。只改「建議」「影響」不升版。
+- 一律透過 `question upsert` 寫入（與面板共用檔案鎖），不手動編輯 `questions.md`。暫存檔只放標題與自然書寫的內文；工具會加入題號、版本、`待答`、空白作答區與 `- [ ] 送出`。既有題的答覆與勾選狀態不會被 Agent 覆寫。
+- 標題直接寫問題本身。內文先用一句話交代背景，再逐項列出選項與影響；建議方案標在選項名稱上。選項前不加 `-`，選項之間不留空行，影響說明縮排三個空白。不使用「問題／選項／建議／影響／批註」等欄位名稱。
+- 新題從 r1 建立。既有題的標題或內文有任何改變時，指令自動升版、狀態回到 `待答`、清除送出勾選；舊版作答區移入 `### 舊版 r<N>（不套用至 r<N+1>）`。標題與內文完全相同時保留版本、答覆、狀態與勾選框。
 - 指令印出 `<ID> r<版本>`；以此版本更新決策紀錄。版本改變即為新提案，依「使用者待決事項」保留舊紀錄並重新待決。
 - 同時在聊天告知使用者題號與版本；使用者可在面板或聊天任一處作答。
 
@@ -67,7 +71,7 @@ cp "$workspace/.lat/questions.md" "$snapshot"
 
 處理完以 `shred -u "$snapshot"` 清除快照。只看各題目前版本區段，`### 舊版` 以下一律不套用。
 
-**面板來源核對**：對每個 `ready` 題目執行下列指令，不自行解析區段或計算雜湊：
+**面板來源核對**：對每個狀態為 `待答` 且已勾選 `- [x] 送出` 的題目執行下列指令，不自行解析區段或計算雜湊。未勾選時，`provenance` 會拒絕：
 
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenance \
@@ -76,13 +80,13 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenan
 
 成功時輸出 `"status": "ok"`、題號、面板紀錄路徑、行號、時間與 `section_sha256`。這表示快照中該題目前版本區段，與面板最後一次變更該題時記錄的區段相同；之後 Agent 修改其他題目不影響核對。沒有該題的面板紀錄、舊紀錄缺少逐題雜湊，或同一題之後又被修改時，指令失敗並說明原因，依第 2 點處理。
 
-1. **`ready`、版本與決策紀錄相同、答覆指向明確，且通過面板來源核對**：寫入 `.lat/decisions/<ID>.md`：
+1. **已勾選送出、版本與決策紀錄相同、答覆指向明確，且通過面板來源核對**：寫入 `.lat/decisions/<ID>.md`：
    - 「答覆：」欄位原文，逐字複製，不摘要、不改寫；
    - 題號與版本 `<ID> r<版本>`；
    - 來源：面板，以及 `provenance` 輸出的面板紀錄路徑、行號、`time` 與 `section_sha256`；
    - 依答覆核准的方案與範圍。
 
-   寫入後才標為 `recorded`，並傳入 `provenance` 輸出的區段雜湊。版本或區段雜湊不符時，表示同一題在快照後已變更；不可把目前內容標成已記錄，重新讀檔處理：
+   寫入後才標為 `已記錄`，並傳入 `provenance` 輸出的區段雜湊。CLI 的 `--status recorded` 參數名稱為了相容性維持不變。版本或區段雜湊不符時，表示同一題在快照後已變更；不可把目前內容標成已記錄，重新讀檔處理：
 
    ```bash
    uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question set-status \
@@ -90,8 +94,8 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenan
      --status recorded --expected-section-sha256 "<provenance 輸出的 section_sha256>"
    ```
 2. **未通過面板來源核對、版本不符、答覆有歧義，或一段答覆含糊涵蓋多題**：不放行，維持待決；在聊天說明不能採用的原因，請使用者釐清，或在面板再存檔一次、改在聊天回答。
-3. **`pending` 題的答覆、任何批註**：都是草稿，不是核准。批註作為討論輸入回應；需要時修改題目並依「寫題」升版。
-4. **沒有 `ready` 題的變更**：只更新理解，不改變授權；處理完結束回合等待。
+3. **未勾選送出的答覆**：包含使用者寫在作答區的任何批註，全部都是草稿，不是核准。內容可作為討論輸入回應；需要時修改題目並依「寫題」升版。
+4. **沒有已勾選送出的題目變更**：只更新理解，不改變授權；處理完結束回合等待。
 
 使用者在聊天回答 `<ID> r<版本>：…` 時，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄。標記前先對同一份快照執行 `question section-hash --questions "$snapshot" --id "<ID>"`，再把輸出的 `section_sha256` 傳給上述 `set-status`，讓面板反映狀態；不需要偽造面板來源。
 

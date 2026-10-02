@@ -7,7 +7,7 @@ Public API used by the Textual panel and LAT controller:
   journal path for a panel save, or call ``save_panel_edit`` to use
   ``<questions parent>/panel-journal.jsonl``.
 * ``parse_questions``, ``upsert_question``, and ``set_question_status`` model
-  and update ``## ID | rN | status`` sections without touching other sections.
+  and update natural-language question sections without touching other sections.
 * ``question_provenance`` checks one snapshot section against the latest panel
   journal entry that changed that question.
 * ``bind_controller``, ``unbind_controller``, and ``resolve_binding`` manage
@@ -148,32 +148,24 @@ def save_panel_edit(questions_path, expected_text, new_text):
 
 
 _SECTION_HEADER = re.compile(
-    r"^## (?P<id>[A-Za-z0-9][A-Za-z0-9._-]*) \| r(?P<revision>[1-9][0-9]*) "
-    r"\| (?P<status>pending|ready|recorded)[ \t]*$",
+    r"^## (?P<title>[^\r\n]+)\r?\n"
+    r"(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*) · r(?P<revision>[1-9][0-9]*) · "
+    r"(?P<status_label>待答|已記錄)[ \t]*$",
     re.MULTILINE,
 )
 _ARCHIVE_HEADER = re.compile(
     r"^### 舊版 r[1-9][0-9]*（不套用至 r[1-9][0-9]*）$", re.MULTILINE
 )
-_FIELD_NAMES = ("問題", "選項", "建議", "影響", "答覆", "批註")
+_ANSWER_MARKER = re.compile(r"^答覆：[ \t]*$", re.MULTILINE)
+_SUBMIT_MARKER = re.compile(r"^- \[(?P<checked>[ xX])\] 送出[ \t]*$", re.MULTILINE)
 
 
-def _ordered_fields(text):
-    matches = []
-    cursor = 0
-    for name in _FIELD_NAMES:
-        match = re.search(rf"^{re.escape(name)}：", text[cursor:], re.MULTILINE)
-        if match is None:
-            continue
-        start = cursor + match.start()
-        end = cursor + match.end()
-        matches.append((name, start, end))
-        cursor = end
-    fields = {}
-    for index, (name, _start, value_start) in enumerate(matches):
-        value_end = matches[index + 1][1] if index + 1 < len(matches) else len(text)
-        fields[name] = text[value_start:value_end].rstrip("\n")
-    return fields, {name: start for name, start, _end in matches}
+def _archive_match(raw, answer_marker=None, submit_marker=None):
+    answer_marker = answer_marker or _ANSWER_MARKER.search(raw)
+    submit_marker = submit_marker or (
+        _SUBMIT_MARKER.search(raw, answer_marker.end()) if answer_marker else None
+    )
+    return _ARCHIVE_HEADER.search(raw, submit_marker.end()) if submit_marker else None
 
 
 def parse_questions(text):
@@ -183,19 +175,39 @@ def parse_questions(text):
     for index, match in enumerate(matches):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         raw = text[match.start():end]
-        archive = _ARCHIVE_HEADER.search(raw)
+        status_end = match.end() - match.start()
+        answer_marker = _ANSWER_MARKER.search(raw, status_end)
+        submit_marker = (
+            _SUBMIT_MARKER.search(raw, answer_marker.end()) if answer_marker else None
+        )
+        archive = _archive_match(raw, answer_marker, submit_marker)
         current_raw = raw[:archive.start()] if archive else raw
-        fields, field_starts = _ordered_fields(current_raw)
-        answer_start = field_starts.get("答覆")
+        body = None
+        answer = None
+        answer_block = ""
+        checked = False
+        if answer_marker and submit_marker and submit_marker.end() <= len(current_raw):
+            body = raw[status_end:answer_marker.start()].strip("\n")
+            answer = raw[answer_marker.end():submit_marker.start()].strip("\n")
+            answer_block = raw[answer_marker.start():submit_marker.end()]
+            checked = submit_marker.group("checked").lower() == "x"
+        status_label = match.group("status_label")
+        status = "recorded" if status_label == "已記錄" else ("ready" if checked else "pending")
         sections.append({
             "id": match.group("id"),
+            "title": match.group("title"),
             "revision": int(match.group("revision")),
-            "status": match.group("status"),
+            "status": status,
+            "status_label": status_label,
             "start": match.start(),
             "end": end,
             "raw": raw,
-            "fields": fields,
-            "user_tail": current_raw[answer_start:] if answer_start is not None else "",
+            "body": body,
+            "answer": answer,
+            "answer_block": answer_block,
+            "checked": checked,
+            "status_start": match.start("status_label") - match.start(),
+            "status_end": match.end("status_label") - match.start(),
         })
     return sections
 
@@ -205,7 +217,7 @@ _sections = parse_questions
 
 def _section_text(section):
     """Return the current-revision section without inter-section whitespace."""
-    marker = _ARCHIVE_HEADER.search(section["raw"])
+    marker = _archive_match(section["raw"])
     current = section["raw"][:marker.start()] if marker else section["raw"]
     return current.rstrip("\n") + "\n"
 
@@ -226,7 +238,10 @@ def _question_section(document, question_id):
 def question_provenance(questions_path, journal_path, question_id):
     """Return panel provenance for one question in a questions snapshot."""
     document = Path(questions_path).read_text(encoding="utf-8")
-    section_sha256 = _section_sha256(_question_section(document, question_id))
+    section = _question_section(document, question_id)
+    if section["status"] != "ready":
+        raise ValueError(f"question is not submitted: {question_id}")
+    section_sha256 = _section_sha256(section)
     latest = None
     try:
         journal_lines = Path(journal_path).read_text(encoding="utf-8").splitlines()
@@ -263,24 +278,26 @@ def question_provenance(questions_path, journal_path, question_id):
     }
 
 
-def _one_section(text, expected_id):
-    sections = _sections(text)
-    if len(sections) != 1 or sections[0]["id"] != expected_id:
-        raise ValueError("section file must contain exactly the requested question ID")
-    missing = [name for name in _FIELD_NAMES if name not in sections[0]["fields"]]
-    if missing:
-        raise ValueError(f"section is missing fields: {', '.join(missing)}")
-    return sections[0]
+def _question_input(text):
+    match = re.match(r"\A## (?P<title>[^\r\n]+)(?:\r?\n(?P<body>[\s\S]*))?\Z", text)
+    if match is None:
+        raise ValueError("question file must start with one '## <question title>' heading")
+    return {
+        "title": match.group("title"),
+        "body": (match.group("body") or "").strip("\n"),
+    }
 
 
 def _archive_text(raw):
-    marker = _ARCHIVE_HEADER.search(raw)
+    marker = _archive_match(raw)
     return raw[marker.start():] if marker else ""
 
 
-def _render_section(question_id, revision, status, fields, archives=""):
-    lines = [f"## {question_id} | r{revision} | {status}"]
-    lines.extend(f"{name}：{fields[name]}" for name in _FIELD_NAMES)
+def _render_section(question_id, revision, title, body, answer_block=None, archives=""):
+    lines = [f"## {title}", f"{question_id} · r{revision} · 待答"]
+    if body:
+        lines.extend(("", body))
+    lines.extend(("", answer_block or "答覆：\n\n- [ ] 送出"))
     if archives:
         lines.extend(("", archives))
     return "\n".join(lines) + "\n"
@@ -289,7 +306,7 @@ def _render_section(question_id, revision, status, fields, archives=""):
 def upsert_question(questions_path, question_id, section_text):
     """Add or update one question under the shared lock; return its revision."""
     questions_path = Path(questions_path)
-    incoming = _one_section(section_text, question_id)
+    incoming = _question_input(section_text)
     with _path_lock(questions_path):
         try:
             document = questions_path.read_text(encoding="utf-8")
@@ -299,47 +316,45 @@ def upsert_question(questions_path, question_id, section_text):
         if len(matching) > 1:
             raise ValueError(f"duplicate question ID: {question_id}")
         existing = matching[0] if matching else None
-        fields = dict(incoming["fields"])
-        fields["答覆"] = ""
-        fields["批註"] = ""
         if existing is None:
-            revision = incoming["revision"]
+            revision = 1
             replacement = _render_section(
-                question_id, revision, incoming["status"], fields
+                question_id, revision, incoming["title"], incoming["body"]
             )
             separator = "" if not document or document.endswith("\n\n") else "\n"
             updated = document + separator + replacement
         else:
-            missing = [name for name in _FIELD_NAMES if name not in existing["fields"]]
-            if missing:
-                raise ValueError(f"existing section is missing fields: {', '.join(missing)}")
-            content_changed = any(
-                existing["fields"].get(name, "") != fields[name]
-                for name in ("問題", "選項")
+            if existing["body"] is None:
+                raise ValueError("existing section is missing answer or submit marker")
+            content_changed = (
+                existing["title"] != incoming["title"]
+                or existing["body"] != incoming["body"]
             )
             if content_changed:
                 revision = existing["revision"] + 1
-                status = "pending"
-                prior_user_text = existing["user_tail"].rstrip("\n")
                 prior = (
                     f"### 舊版 r{existing['revision']}（不套用至 r{revision}）\n"
-                    f"{prior_user_text}"
+                    f"{existing['answer_block'].rstrip()}"
                 )
                 older = _archive_text(existing["raw"])
                 archives = prior + (f"\n\n{older}" if older else "")
             else:
                 revision = existing["revision"]
-                status = existing["status"]
-                archives = _archive_text(existing["raw"])
             if content_changed:
                 replacement = _render_section(
-                    question_id, revision, status, fields, archives
+                    question_id,
+                    revision,
+                    incoming["title"],
+                    incoming["body"],
+                    archives=archives,
+                )
+                updated = (
+                    document[:existing["start"]]
+                    + replacement
+                    + document[existing["end"]:]
                 )
             else:
-                prefix = [f"## {question_id} | r{revision} | {status}"]
-                prefix.extend(f"{name}：{fields[name]}" for name in _FIELD_NAMES[:4])
-                replacement = "\n".join(prefix) + "\n" + existing["user_tail"] + archives
-            updated = document[:existing["start"]] + replacement + document[existing["end"]:]
+                return revision
         _replace_locked(questions_path, updated)
         return revision
 
@@ -364,9 +379,9 @@ def set_question_status(
                 f"section hash mismatch: expected {expected_section_sha256}, "
                 f"found {actual_section_sha256}"
             )
-        header = _SECTION_HEADER.search(document, existing["start"], existing["end"])
-        updated_header = f"## {question_id} | r{revision} | {status}"
-        updated = document[:header.start()] + updated_header + document[header.end():]
+        status_start = existing["start"] + existing["status_start"]
+        status_end = existing["start"] + existing["status_end"]
+        updated = document[:status_start] + "已記錄" + document[status_end:]
         _replace_locked(questions_path, updated)
 
 
@@ -569,7 +584,7 @@ def send_pending_notification(questions_path, binding, *, state_dir=None, env=No
     message = (
         f"Questions file changed: {questions_key}. Re-read the file and apply the LAT "
         "question-processing contract. This notification is not approval. Only an "
-        "unambiguous ready answer for the matching question ID and revision may be recorded."
+        "unambiguous checked submit answer for the matching question ID and revision may be recorded."
     )
     command = [
         "hcom", "send", f"@{target}", "--from", "lat-panel",
