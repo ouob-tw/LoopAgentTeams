@@ -40,7 +40,8 @@ elif mode == "slow":
 """
 
 QUESTIONS = (
-    "## Q1 | r1 | pending\n問題：Choose\n選項：A\n建議：A\n影響：None\n答覆：\n批註：\n"
+    "## Choose?\nQ1 · r1 · 待答\n\nA（建議）\n   No impact.\n\n"
+    "答覆：\n\n- [ ] 送出\n"
 )
 FAILURE_SUFFIX = "Ctrl+N 重試；再按 Ctrl+Q 保留待送並關閉"
 
@@ -158,10 +159,10 @@ class EditorTests(PanelTestCase):
     async def test_typing_saves_immediately_with_journal_and_undo_redo(self):
         app = self.make_app(NOTIFY_DELAY=30)
         async with app.run_test() as pilot:
-            app.editor.move_cursor((5, 3))
+            app.editor.move_cursor((7, 0))
             await pilot.press("B")
             await pilot.pause()
-            self.assertIn("答覆：B\n", self.questions.read_text())
+            self.assertIn("答覆：\nB\n", self.questions.read_text())
             self.assertEqual(self.status(app), "")
             journal = (self.questions.parent / "panel-journal.jsonl").read_text().splitlines()
             self.assertEqual(json.loads(journal[-1])["changed_questions"][0]["id"], "Q1")
@@ -170,7 +171,7 @@ class EditorTests(PanelTestCase):
             self.assertEqual(self.questions.read_text(), QUESTIONS)
             await pilot.press("ctrl+y")
             await pilot.pause()
-            self.assertIn("答覆：B\n", self.questions.read_text())
+            self.assertIn("答覆：\nB\n", self.questions.read_text())
             self.assertEqual(len(
                 (self.questions.parent / "panel-journal.jsonl").read_text().splitlines()
             ), 3)
@@ -178,8 +179,12 @@ class EditorTests(PanelTestCase):
     async def test_external_update_loads_without_notification_and_resets_undo(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            updated = QUESTIONS.replace("建議：A", "建議：B")
-            self.core.upsert_question(self.questions, "Q1", updated)
+            self.core.upsert_question(
+                self.questions,
+                "Q1",
+                "## Choose?\n\nA（建議）\n   Changed impact.\n",
+            )
+            updated = self.questions.read_text()
             await pilot.pause(0.4)
             self.assertEqual(app.editor.text, updated)
             await pilot.press("ctrl+z")
@@ -193,9 +198,9 @@ class EditorTests(PanelTestCase):
     async def test_conflict_pauses_saving_and_f5_backs_up_draft_then_loads_disk(self):
         app = self.make_app(POLL_INTERVAL=60, NOTIFY_DELAY=30)
         async with app.run_test() as pilot:
-            agent_text = QUESTIONS.replace("建議：A", "建議：Agent")
+            agent_text = QUESTIONS.replace("No impact.", "Agent impact.")
             self.questions.write_text(agent_text)
-            app.editor.move_cursor((5, 3))
+            app.editor.move_cursor((7, 0))
             await pilot.press("x")
             await pilot.pause()
             self.assertEqual(self.status(app), self.panel.CONFLICT)
@@ -210,12 +215,12 @@ class EditorTests(PanelTestCase):
             await pilot.press("f5")
             await pilot.pause()
             [backup] = self.questions.parent.glob("questions-draft-*.md")
-            self.assertIn("答覆：xy\n", backup.read_text())
+            self.assertIn("答覆：\nxy\n", backup.read_text())
             self.assertEqual(app.editor.text, agent_text)
             self.assertEqual(self.status(app), "")
             await pilot.press("z")
             await pilot.pause()
-            self.assertIn("建議：Agent", self.questions.read_text())
+            self.assertIn("Agent impact.", self.questions.read_text())
 
     async def test_missing_binding_or_file_opens_read_only_with_reason(self):
         for error, expected in (
@@ -273,7 +278,7 @@ class OpenActionTests(PanelTestCase):
 
 class NotificationTests(PanelTestCase):
     async def type_and_wait(self, app, pilot, keys, wait, gap=0.1):
-        app.editor.move_cursor((5, 3))
+        app.editor.move_cursor((7, 0))
         for key in keys:
             await pilot.press(key)
             await pilot.pause(gap)
@@ -356,7 +361,7 @@ class NotificationTests(PanelTestCase):
                 self.core, "mark_notification_pending", side_effect=OSError("disk full"),
             ):
                 await self.type_and_wait(app, pilot, "a", 0)
-            self.assertIn("答覆：a\n", self.questions.read_text())
+            self.assertIn("答覆：\na\n", self.questions.read_text())
             self.assertEqual(
                 self.status(app), "通知失敗：無法記錄待送通知：disk full。" + FAILURE_SUFFIX,
             )
@@ -399,7 +404,7 @@ class NotificationTests(PanelTestCase):
                     await pilot.press(key)
                     await self.settle(app, pilot)
                     self.assertIsNotNone(app.return_code)
-                self.assertIn("答覆：a\n", self.questions.read_text())
+                self.assertIn("答覆：\na\n", self.questions.read_text())
                 self.assertFalse(self.pending())
                 self.assertEqual(len(self.calls()), 1)
 
