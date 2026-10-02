@@ -8,6 +8,21 @@ Public API used by the Textual panel and LAT controller:
   ``<questions parent>/panel-journal.jsonl``.
 * ``parse_questions``, ``upsert_question``, and ``set_question_status`` model
   and update natural-language question sections without touching other sections.
+* V2 selector UI flow: ``parse_question_options`` and
+  ``parse_question_answer`` read one ``parse_questions`` result;
+  ``question_section_sha256`` captures its guarded-write identity;
+  ``write_question_answer`` saves a draft while the question is unchecked;
+  ``submit_question_answers`` checks several answered drafts in one write; and
+  ``mark_submit_notification_pending`` applies the submit-only notification
+  policy. ``render_answer_area`` emits the canonical hand-editable Markdown.
+  Write results are ``saved``, ``read_only``, or ``question_changed``; batch
+  results are ``submitted`` or ``question_changed``. V2-T2 should replace its
+  loaded identity with the hash returned by each successful draft save.
+  ``QuestionAnswer`` kinds are ``single`` (one keyed selection), ``multi``
+  (ordered label selections plus optional ``other``), ``other`` (the explicit
+  choice on a single-select question), and ``text`` (an input-only question).
+  Batch submit receives ``{question_id: (revision, section_sha256)}``; pass its
+  successful result to ``mark_submit_notification_pending``.
 * ``question_provenance`` checks one snapshot section against the latest panel
   journal entry that changed that question.
 * ``bind_controller``, ``unbind_controller``, and the binding lookup helpers
@@ -50,6 +65,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+from typing import NamedTuple
 import uuid
 
 
@@ -172,14 +188,26 @@ _SECTION_HEADER = re.compile(
     r"^## (?P<title>[^\r\n]+)\r?\n"
     r"(?P<id>[A-Za-z0-9][A-Za-z0-9._-]*) · r(?P<revision>[1-9][0-9]*) · "
     r"(?P<status_label>待答|已記錄)"
-    r"(?: · (?P<recorded_at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d))?[ \t]*$",
+    r"(?: · (?P<recorded_at>\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d))?"
+    r"[ \t]*\r?$",
     re.MULTILINE,
 )
 _ARCHIVE_HEADER = re.compile(
-    r"^### 舊版 r[1-9][0-9]*（不套用至 r[1-9][0-9]*）$", re.MULTILINE
+    r"^### 舊版 r[1-9][0-9]*（不套用至 r[1-9][0-9]*）\r?$", re.MULTILINE
 )
-_ANSWER_MARKER = re.compile(r"^答覆：(?P<inline>[^\r\n]*)$", re.MULTILINE)
-_SUBMIT_MARKER = re.compile(r"^- \[(?P<checked>[ xX])\] 送出[ \t]*$", re.MULTILINE)
+_ANSWER_MARKER = re.compile(r"^答覆：(?P<inline>[^\r\n]*)\r?$", re.MULTILINE)
+_SUBMIT_MARKER = re.compile(
+    r"^- \[(?P<checked>[ xX])\] 送出[ \t]*\r?$", re.MULTILINE
+)
+
+
+def _normalize_newlines(text):
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def _read_text_exact(path):
+    with Path(path).open("r", encoding="utf-8", newline="") as source:
+        return source.read()
 
 
 def _archive_match(raw):
@@ -212,19 +240,27 @@ def parse_questions(text):
         body = None
         answer = None
         answer_block = ""
+        answer_start = None
+        answer_end = None
         checked = False
         if answer_marker and submit_marker and submit_marker.end() <= len(current_raw):
-            body = raw[status_end:answer_marker.start()].strip("\n")
+            body = _normalize_newlines(
+                raw[status_end:answer_marker.start()]
+            ).strip("\n")
             following_block = raw[answer_marker.end():submit_marker.start()]
             inline_answer = answer_marker.group("inline")
             if inline_answer.strip():
-                following_answer = following_block.removeprefix("\n").rstrip("\n")
+                following_answer = _normalize_newlines(
+                    following_block
+                ).removeprefix("\n").rstrip("\n")
                 answer = inline_answer + (
                     f"\n{following_answer}" if following_answer else ""
                 )
             else:
-                answer = following_block.strip("\n")
+                answer = _normalize_newlines(following_block).strip("\n")
             answer_block = raw[answer_marker.start():submit_marker.end()]
+            answer_start = answer_marker.start()
+            answer_end = submit_marker.end()
             checked = submit_marker.group("checked").lower() == "x"
         status_label = match.group("status_label")
         status = "recorded" if status_label == "已記錄" else ("ready" if checked else "pending")
@@ -241,6 +277,8 @@ def parse_questions(text):
             "body": body,
             "answer": answer,
             "answer_block": answer_block,
+            "answer_start": answer_start,
+            "answer_end": answer_end,
             "checked": checked,
             "malformed_submission": bool(checked_submit and not checked),
             "status_start": match.start("status_label") - match.start(),
@@ -261,15 +299,169 @@ def malformed_submission_ids(text):
 _sections = parse_questions
 
 
+class QuestionOption(NamedTuple):
+    """One selector option parsed from a current question body."""
+
+    key: str | None
+    label: str
+    impact: str
+
+
+class QuestionOptions(NamedTuple):
+    """Selector mode, parsed options, and a fallback reason when unavailable."""
+
+    kind: str | None
+    options: tuple
+    reason: str | None
+
+
+_SINGLE_OPTION = re.compile(r"^(?P<key>[A-Z])\.\s+(?P<label>\S.*)$")
+_MULTI_OPTION = re.compile(r"^- \[[ xX]\]\s+(?P<label>\S.*)$")
+
+
+def _option_items(lines, pattern, *, keyed):
+    items = []
+    for index, line in enumerate(lines):
+        match = pattern.match(line)
+        if match is None:
+            continue
+        impact = []
+        for following in lines[index + 1:]:
+            if not following or not following[:1].isspace():
+                break
+            impact.append(following.strip())
+        items.append(QuestionOption(
+            match.group("key") if keyed else None,
+            match.group("label").strip(),
+            "\n".join(impact),
+        ))
+    return tuple(items)
+
+
+def parse_question_options(question):
+    """Parse selector options from one ``parse_questions`` result.
+
+    ``A.`` lines produce single-select options and checklist lines produce
+    multi-select options. Mixed or absent styles deliberately fall back to
+    free-form input and include a user-facing reason.
+    """
+    lines = (question.get("body") or "").splitlines()
+    single = _option_items(lines, _SINGLE_OPTION, keyed=True)
+    multi = _option_items(lines, _MULTI_OPTION, keyed=False)
+    if single and multi:
+        return QuestionOptions(None, (), "題目混用了單選與複選格式")
+    if single:
+        return QuestionOptions("single", single, None)
+    if multi:
+        return QuestionOptions("multi", multi, None)
+    return QuestionOptions(None, (), "題目沒有可解析的選項")
+
+
+class QuestionAnswer(NamedTuple):
+    """One selector answer, including optional free-form text and note."""
+
+    kind: str
+    selections: tuple
+    other: str
+    note: str
+
+
+_NOTE_LINE = re.compile(r"(?:\A|\n)備註：(?P<first>[^\n]*)(?P<rest>(?:\n[\s\S]*)?)\Z")
+
+
+def _answer_text_and_note(text):
+    match = _NOTE_LINE.search(text)
+    if match is None:
+        return text.strip("\n"), ""
+    answer_text = text[:match.start()].strip("\n")
+    note = match.group("first") + match.group("rest")
+    return answer_text, note.strip("\n")
+
+
+def parse_question_answer(question):
+    """Parse a current answer area into a ``QuestionAnswer`` or ``None``.
+
+    Both V1's next-line answer and V2's same-line answer are accepted because
+    ``parse_questions`` normalizes them into the question's ``answer`` value.
+    """
+    raw_answer = question.get("answer")
+    if raw_answer is None:
+        return None
+    answer_text, note = _answer_text_and_note(raw_answer)
+    if not answer_text:
+        return None
+    option_kind = parse_question_options(question).kind
+    if option_kind is None:
+        return QuestionAnswer("text", (), answer_text, note)
+    if option_kind == "multi":
+        if answer_text.startswith("其他："):
+            selections = ()
+            other = answer_text.removeprefix("其他：")
+        elif "；其他：" in answer_text:
+            selection_text, other = answer_text.split("；其他：", 1)
+            selections = tuple(
+                part.strip() for part in selection_text.split("；") if part.strip()
+            )
+        else:
+            selections = tuple(
+                part.strip() for part in answer_text.split("；") if part.strip()
+            )
+            other = ""
+        return QuestionAnswer("multi", selections, other, note)
+    if answer_text.startswith("其他："):
+        return QuestionAnswer("other", (), answer_text.removeprefix("其他："), note)
+    if option_kind == "single":
+        return QuestionAnswer("single", (answer_text,), "", note)
+    raise ValueError(f"unknown option kind: {option_kind}")
+
+
+def render_answer_area(answer, *, submitted=False):
+    """Render one answer and submit checkbox in the canonical V2 format."""
+    if answer.kind == "single":
+        if len(answer.selections) != 1 or answer.other:
+            raise ValueError("single answer requires exactly one selection")
+        value = answer.selections[0]
+    elif answer.kind == "multi":
+        parts = list(answer.selections)
+        if answer.other:
+            parts.append(f"其他：{answer.other}")
+        if not parts:
+            raise ValueError("multi answer requires a selection or other text")
+        value = "；".join(parts)
+    elif answer.kind == "other":
+        if answer.selections or not answer.other:
+            raise ValueError("other answer requires only free-form text")
+        value = f"其他：{answer.other}"
+    elif answer.kind == "text":
+        if answer.selections or not answer.other:
+            raise ValueError("text answer requires only free-form text")
+        value = answer.other
+    else:
+        raise ValueError(f"unknown answer kind: {answer.kind}")
+    lines = [f"答覆：{value}"]
+    if answer.note:
+        note_lines = answer.note.splitlines()
+        lines.append(f"備註：{note_lines[0]}")
+        lines.extend(note_lines[1:])
+    lines.extend(("", f"- [{'x' if submitted else ' '}] 送出"))
+    return "\n".join(lines)
+
+
 def _section_text(section):
     """Return the current-revision section without inter-section whitespace."""
     marker = _archive_match(section["raw"])
     current = section["raw"][:marker.start()] if marker else section["raw"]
+    current = _normalize_newlines(current)
     return current.rstrip("\n") + "\n"
 
 
 def _section_sha256(section):
     return hashlib.sha256(_section_text(section).encode("utf-8")).hexdigest()
+
+
+def question_section_sha256(question):
+    """Return the current-revision hash used by guarded panel writes."""
+    return _section_sha256(question)
 
 
 def _full_section_sha256(section):
@@ -284,6 +476,138 @@ def _question_section(document, question_id):
     if not matching:
         raise ValueError(f"question not found: {question_id}")
     return matching[0]
+
+
+def _question_still_matches(section, revision, expected_section_sha256):
+    return (
+        section["revision"] == revision
+        and _section_sha256(section) == expected_section_sha256
+    )
+
+
+def write_question_answer(
+    questions_path,
+    question_id,
+    revision,
+    expected_section_sha256,
+    answer,
+):
+    """Guard and write one answer area, preserving every other section byte-for-byte.
+
+    Submitted or recorded questions are read-only. A stale revision or
+    current-section hash returns a ``question_changed`` result without writing.
+    """
+    questions_path = Path(questions_path)
+    with _path_lock(questions_path):
+        document = _read_text_exact(questions_path)
+        matches = [item for item in _sections(document) if item["id"] == question_id]
+        if len(matches) > 1:
+            raise ValueError(f"duplicate question ID: {question_id}")
+        if not matches or not _question_still_matches(
+            matches[0], revision, expected_section_sha256
+        ):
+            return {"status": "question_changed", "id": question_id}
+        section = matches[0]
+        if section["answer_start"] is None:
+            raise ValueError(f"question has no writable answer area: {question_id}")
+        if section["status_label"] == "已記錄" or section["checked"]:
+            return {"status": "read_only", "id": question_id}
+        replacement = render_answer_area(answer, submitted=False)
+        start = section["start"] + section["answer_start"]
+        end = section["start"] + section["answer_end"]
+        updated = document[:start] + replacement + document[end:]
+        changed = updated != document
+        if changed:
+            _replace_locked(questions_path, updated)
+            _append_journal(
+                questions_path.parent / "panel-journal.jsonl",
+                document,
+                updated,
+                kind="answer-write",
+                details={
+                    "questions_path": _question_key(questions_path),
+                    "answer_question": question_id,
+                },
+            )
+        updated_section = _question_section(updated, question_id)
+        return {
+            "status": "saved",
+            "id": question_id,
+            "revision": revision,
+            "section_sha256": _section_sha256(updated_section),
+            "submitted": updated_section["checked"],
+            "changed": changed,
+        }
+
+
+def submit_question_answers(questions_path, expected_questions):
+    """Check several answered questions in one guarded write and journal entry.
+
+    ``expected_questions`` maps each question ID to ``(revision, section_hash)``.
+    If any question changed, nothing is written and all stale IDs are returned.
+    """
+    questions_path = Path(questions_path)
+    with _path_lock(questions_path):
+        document = _read_text_exact(questions_path)
+        sections = _sections(document)
+        by_id = {}
+        for section in sections:
+            if section["id"] in by_id:
+                raise ValueError(f"duplicate question ID: {section['id']}")
+            by_id[section["id"]] = section
+        stale = []
+        selected = []
+        for question_id, identity in expected_questions.items():
+            revision, section_hash = identity
+            section = by_id.get(question_id)
+            if (
+                section is None
+                or section["status_label"] != "待答"
+                or not _question_still_matches(section, revision, section_hash)
+            ):
+                stale.append(question_id)
+                continue
+            if section["answer_start"] is None or parse_question_answer(section) is None:
+                raise ValueError(f"question has no answer to submit: {question_id}")
+            selected.append(section)
+        if stale:
+            return {"status": "question_changed", "ids": stale}
+
+        updated = document
+        submitted_ids = []
+        for section in sorted(selected, key=lambda item: item["start"], reverse=True):
+            if section["checked"]:
+                continue
+            replacement = _SUBMIT_MARKER.sub(
+                lambda match: match.group(0).replace("[ ]", "[x]", 1),
+                section["answer_block"],
+            )
+            start = section["start"] + section["answer_start"]
+            end = section["start"] + section["answer_end"]
+            updated = updated[:start] + replacement + updated[end:]
+            submitted_ids.append(section["id"])
+        submitted_ids.sort()
+        if submitted_ids:
+            _replace_locked(questions_path, updated)
+            _append_journal(
+                questions_path.parent / "panel-journal.jsonl",
+                document,
+                updated,
+                kind="batch-submit",
+                details={
+                    "questions_path": _question_key(questions_path),
+                    "submitted_questions": submitted_ids,
+                },
+            )
+        updated_by_id = {item["id"]: item for item in _sections(updated)}
+        return {
+            "status": "submitted",
+            "question_ids": submitted_ids,
+            "section_sha256": {
+                question_id: _section_sha256(updated_by_id[question_id])
+                for question_id in submitted_ids
+            },
+        }
 
 
 def _journal_entry_matches_questions(entry, questions_path):
@@ -754,6 +1078,16 @@ def mark_notification_pending(questions_path, *, state_dir=None):
         }
         _write_pending(path, pending)
     return generation
+
+
+def mark_submit_notification_pending(questions_path, submit_result, *, state_dir=None):
+    """Mark notification state only for a successful, non-empty batch submit."""
+    if (
+        submit_result.get("status") != "submitted"
+        or not submit_result.get("question_ids")
+    ):
+        return None
+    return mark_notification_pending(questions_path, state_dir=state_dir)
 
 
 def notification_is_pending(questions_path, *, state_dir=None):

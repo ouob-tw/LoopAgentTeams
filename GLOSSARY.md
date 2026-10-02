@@ -6,7 +6,7 @@
 
 **主控**：
 LAT 流程中管理階段、派工、裁決與整合交付的 Agent。
-_Avoid_: 召喚者（僅限 hcom-spawn）
+_Avoid_: 召喚者（僅限 hcom-spawn）、中控
 
 **召喚者**：
 使用 hcom-spawn 透過 HCOM 召喚其他 Agent、交代任務並負責收尾的 Agent。
