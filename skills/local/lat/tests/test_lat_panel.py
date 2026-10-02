@@ -592,41 +592,88 @@ class BindingCliTests(unittest.TestCase):
             text=True, capture_output=True, env=self.env, cwd=self.root,
         )
 
-    def bind(self, name, session, workspace, herdr_workspace):
+    def bind(self, name, session, workspace, herdr_workspace, tab, pane):
         return self.cli(
             "bind", "--hcom-name", name, "--client", "codex",
             "--session-id", session, "--workspace", workspace,
             "--herdr-workspace", herdr_workspace,
+            "--herdr-tab", tab, "--herdr-pane", pane,
         )
 
-    def test_binding_resolution_replacement_and_session_scoped_unbind(self):
-        first = self.bind("alpha", "s1", self.first, "herdr-1")
-        second = self.bind("beta", "s2", self.second, "herdr-2")
+    def test_bindings_are_per_session_with_separate_sanitized_question_files(self):
+        first = self.bind("alpha", "s1", self.first, "herdr-1", "tab-1", "pane-1")
+        second = self.bind("beta", "s2", self.second, "herdr-1", "tab-2", "pane-2")
         self.assertEqual(first.returncode, 0, first.stderr)
         self.assertEqual(second.returncode, 0, second.stderr)
 
-        exact = self.cli("resolve", "--herdr-workspace", "herdr-1")
+        exact = self.cli("resolve", "--session-id", "s1")
         self.assertEqual(json.loads(exact.stdout)["hcom_name"], "alpha")
-        ambiguous = self.cli("resolve", "--herdr-workspace", "missing")
+        self.assertEqual(
+            json.loads(first.stdout)["binding"]["questions_path"],
+            str(self.first / ".lat/questions-alpha.md"),
+        )
+        ambiguous = self.cli("resolve", "--herdr-workspace", "herdr-1")
         self.assertNotEqual(ambiguous.returncode, 0)
-        self.assertIn("no LAT controller is bound", ambiguous.stderr)
+        self.assertIn("multiple LAT controllers", ambiguous.stderr)
 
         self.assertEqual(self.cli("unbind", "--session-id", "s2").returncode, 0)
-        unbound = self.cli("resolve", "--herdr-workspace", "missing")
-        self.assertNotEqual(unbound.returncode, 0)
-        self.assertIn("no LAT controller is bound", unbound.stderr)
+        self.assertEqual(
+            json.loads(self.cli("resolve", "--herdr-workspace", "herdr-1").stdout)["hcom_name"],
+            "alpha",
+        )
 
-        replaced = self.bind("gamma", "s3", self.second, "herdr-1")
-        payload = json.loads(replaced.stdout)
+        rebound = self.bind("gamma", "s1", self.second, "herdr-2", "tab-3", "pane-3")
+        payload = json.loads(rebound.stdout)
         self.assertEqual(payload["replaced"]["hcom_name"], "alpha")
         self.assertEqual(
             payload["binding"]["questions_path"],
-            str(self.second / ".lat/questions.md"),
+            str(self.second / ".lat/questions-gamma.md"),
         )
-        self.assertEqual(self.cli("unbind", "--session-id", "s1").returncode, 0)
+        self.assertEqual(payload["binding"]["herdr_tab"], "tab-3")
+        self.assertEqual(payload["binding"]["herdr_pane"], "pane-3")
+        missing = self.cli("resolve", "--herdr-workspace", "herdr-1")
+        self.assertNotEqual(missing.returncode, 0)
+        self.assertIn("no LAT controller is bound", missing.stderr)
+
+    def test_unbind_removes_only_its_session(self):
+        self.bind("alpha", "s1", self.first, "herdr-1", "tab-1", "pane-1")
+        self.bind("beta", "s2", self.second, "herdr-1", "tab-2", "pane-2")
+        removed = json.loads(self.cli("unbind", "--session-id", "s1").stdout)
+        self.assertEqual(removed["removed"], 1)
         self.assertEqual(
-            json.loads(self.cli("resolve", "--herdr-workspace", "herdr-1").stdout)["hcom_name"],
-            "gamma",
+            json.loads(self.cli("resolve", "--session-id", "s2").stdout)["hcom_name"],
+            "beta",
+        )
+
+    def test_legacy_workspace_bindings_are_ignored_and_reported_on_rebind(self):
+        self.config.mkdir(parents=True)
+        legacy_questions = self.first / ".lat/questions.md"
+        legacy_questions.parent.mkdir(parents=True)
+        legacy_questions.write_text("legacy questions stay here\n")
+        (self.config / "bindings.json").write_text(json.dumps({"bindings": {
+            "herdr-1": {"hcom_name": "old", "session_id": "old-session"},
+        }}))
+        stale = self.cli("resolve", "--herdr-workspace", "herdr-1")
+        self.assertNotEqual(stale.returncode, 0)
+        self.assertIn("legacy bindings ignored", stale.stderr)
+
+        rebound = self.bind("alpha", "s1", self.first, "herdr-1", "tab-1", "pane-1")
+        self.assertEqual(rebound.returncode, 0, rebound.stderr)
+        self.assertEqual(json.loads(rebound.stdout)["legacy_ignored"], 1)
+        saved = json.loads((self.config / "bindings.json").read_text())
+        self.assertEqual(saved["version"], 2)
+        self.assertEqual(list(saved["bindings"]), ["s1"])
+        self.assertEqual(legacy_questions.read_text(), "legacy questions stay here\n")
+
+    def test_hcom_name_is_sanitized_for_the_questions_filename_only(self):
+        result = self.bind(
+            "Alpha / Team", "s1", self.first, "herdr-1", "tab-1", "pane-1"
+        )
+        binding = json.loads(result.stdout)["binding"]
+        self.assertEqual(binding["hcom_name"], "Alpha / Team")
+        self.assertEqual(
+            binding["questions_path"],
+            str(self.first / ".lat/questions-alpha-team.md"),
         )
 
 

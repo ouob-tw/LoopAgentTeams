@@ -10,8 +10,8 @@ Public API used by the Textual panel and LAT controller:
   and update natural-language question sections without touching other sections.
 * ``question_provenance`` checks one snapshot section against the latest panel
   journal entry that changed that question.
-* ``bind_controller``, ``unbind_controller``, and ``resolve_binding`` manage
-  exact per-Herdr-workspace routing.
+* ``bind_controller``, ``unbind_controller``, and the binding lookup helpers
+  manage per-controller routing inside a Herdr workspace.
 * ``mark_notification_pending``, ``notification_is_pending``,
   ``send_pending_notification``, and ``clear_pending_notification`` provide the
   persisted notification lifecycle. ``send_pending_notification`` returns an
@@ -19,16 +19,16 @@ Public API used by the Textual panel and LAT controller:
 
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
-  question upsert --id ID --file section.md
-  question section-hash --id ID
-  question provenance --id ID --journal panel-journal.jsonl
-  question set-status --id ID --revision N --status recorded \
+  question upsert --questions PATH --id ID --file section.md
+  question section-hash --questions PATH --id ID
+  question provenance --questions PATH --id ID --journal panel-journal.jsonl
+  question set-status --questions PATH --id ID --revision N --status recorded \
       --expected-section-sha256 HASH
-  question archive-recorded --older-than 300
+  question archive-recorded --questions PATH --older-than 300
   bind --hcom-name NAME --client CLIENT --session-id ID --workspace ROOT \
-       [--herdr-workspace ID]
+       [--herdr-workspace ID] [--herdr-tab ID] [--herdr-pane ID]
   unbind --session-id ID
-  resolve [--herdr-workspace ID]
+  resolve (--session-id ID | [--herdr-workspace ID])
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
 Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
@@ -541,6 +541,14 @@ def _bindings_path(config_dir=None):
     return directory / "bindings.json"
 
 
+class LegacyBindingsError(ValueError):
+    def __init__(self, count):
+        self.count = count
+        super().__init__(
+            f"legacy bindings ignored ({count}); each LAT controller must rebind"
+        )
+
+
 def _read_bindings(path):
     try:
         payload = json.loads(path.read_text(encoding="utf-8"))
@@ -548,34 +556,66 @@ def _read_bindings(path):
         return {}
     if not isinstance(payload, dict) or not isinstance(payload.get("bindings", {}), dict):
         raise ValueError("invalid bindings file")
-    return payload.get("bindings", {})
+    bindings = payload.get("bindings", {})
+    if payload.get("version") != 2 and bindings:
+        raise LegacyBindingsError(len(bindings))
+    return bindings
 
 
 def _write_bindings(path, bindings):
     path.parent.mkdir(parents=True, exist_ok=True)
-    _replace_locked(path, json.dumps({"bindings": bindings}, ensure_ascii=False, indent=2) + "\n")
+    _replace_locked(
+        path,
+        json.dumps({"version": 2, "bindings": bindings}, ensure_ascii=False, indent=2)
+        + "\n",
+    )
 
 
-def bind_controller(hcom_name, client, session_id, workspace, herdr_workspace, *, config_dir=None):
-    """Bind one Herdr workspace and return ``(binding, replaced_binding)``."""
-    if not herdr_workspace:
-        raise ValueError("Herdr workspace ID is required")
+def _safe_controller_name(hcom_name):
+    safe = re.sub(r"[^A-Za-z0-9_-]+", "-", hcom_name).strip("-_").lower()
+    if not safe:
+        raise ValueError("HCOM name has no safe filename characters")
+    return safe
+
+
+def bind_controller(
+    hcom_name, client, session_id, workspace, herdr_workspace, herdr_tab, herdr_pane,
+    *, config_dir=None,
+):
+    """Bind one controller session and return its binding and prior state."""
+    missing = [
+        label for label, value in (
+            ("HCOM name", hcom_name), ("client", client), ("session ID", session_id),
+            ("Herdr workspace ID", herdr_workspace), ("Herdr tab ID", herdr_tab),
+            ("Herdr pane ID", herdr_pane),
+        ) if not value
+    ]
+    if missing:
+        raise ValueError(f"{', '.join(missing)} required")
     workspace = Path(workspace).expanduser().resolve()
+    questions_name = f"questions-{_safe_controller_name(hcom_name)}.md"
     binding = {
         "hcom_name": hcom_name,
         "client": client,
         "session_id": session_id,
         "workspace": str(workspace),
-        "questions_path": str(workspace / ".lat/questions.md"),
+        "questions_path": str(workspace / ".lat" / questions_name),
         "herdr_workspace": herdr_workspace,
+        "herdr_tab": herdr_tab,
+        "herdr_pane": herdr_pane,
     }
     path = _bindings_path(config_dir)
     with _path_lock(path):
-        bindings = _read_bindings(path)
-        replaced = bindings.get(herdr_workspace)
-        bindings[herdr_workspace] = binding
+        legacy_ignored = 0
+        try:
+            bindings = _read_bindings(path)
+        except LegacyBindingsError as error:
+            legacy_ignored = error.count
+            bindings = {}
+        replaced = bindings.get(session_id)
+        bindings[session_id] = binding
         _write_bindings(path, bindings)
-    return binding, replaced
+    return binding, replaced, legacy_ignored
 
 
 def unbind_controller(session_id, *, config_dir=None):
@@ -584,21 +624,45 @@ def unbind_controller(session_id, *, config_dir=None):
     with _path_lock(path):
         bindings = _read_bindings(path)
         kept = {
-            workspace_id: binding for workspace_id, binding in bindings.items()
-            if binding.get("session_id") != session_id
+            owner_session: binding for owner_session, binding in bindings.items()
+            if owner_session != session_id
         }
         if kept != bindings:
             _write_bindings(path, kept)
         return len(bindings) - len(kept)
 
 
-def resolve_binding(herdr_workspace=None, *, config_dir=None):
-    """Resolve only the exact Herdr workspace binding."""
+def list_bindings(herdr_workspace=None, *, config_dir=None):
+    """Return version-2 bindings, optionally restricted to one workspace."""
     path = _bindings_path(config_dir)
     with _path_lock(path):
         bindings = _read_bindings(path)
-    if herdr_workspace and herdr_workspace in bindings:
-        return bindings[herdr_workspace]
+    values = list(bindings.values())
+    if herdr_workspace is not None:
+        values = [
+            binding for binding in values
+            if binding.get("herdr_workspace") == herdr_workspace
+        ]
+    return sorted(values, key=lambda item: (item.get("hcom_name", ""), item.get("session_id", "")))
+
+
+def resolve_session_binding(session_id, *, config_dir=None):
+    """Resolve a controller's own binding without any workspace fallback."""
+    path = _bindings_path(config_dir)
+    with _path_lock(path):
+        binding = _read_bindings(path).get(session_id)
+    if binding:
+        return binding
+    raise ValueError(f"no LAT controller binding for session: {session_id}")
+
+
+def resolve_binding(herdr_workspace=None, *, config_dir=None):
+    """Resolve a workspace only when it has exactly one controller."""
+    bindings = list_bindings(herdr_workspace, config_dir=config_dir)
+    if len(bindings) == 1:
+        return bindings[0]
+    if len(bindings) > 1:
+        raise ValueError("multiple LAT controllers are bound to this Herdr workspace")
     raise ValueError("no LAT controller is bound to this Herdr workspace")
 
 
@@ -776,10 +840,13 @@ def _build_parser():
     bind.add_argument("--session-id", required=True)
     bind.add_argument("--workspace", required=True, type=Path)
     bind.add_argument("--herdr-workspace", default=os.environ.get("HERDR_WORKSPACE_ID"))
+    bind.add_argument("--herdr-tab", default=os.environ.get("HERDR_TAB_ID"))
+    bind.add_argument("--herdr-pane", default=os.environ.get("HERDR_PANE_ID"))
     unbind = commands.add_parser("unbind")
     unbind.add_argument("--session-id", required=True)
     resolve = commands.add_parser("resolve")
     resolve.add_argument("--herdr-workspace", default=os.environ.get("HERDR_WORKSPACE_ID"))
+    resolve.add_argument("--session-id")
     return parser
 
 
@@ -825,18 +892,26 @@ def main(argv=None):
             print(json.dumps({"archived": archived}, ensure_ascii=False))
             return 0
         if args.command == "bind":
-            binding, replaced = bind_controller(
+            binding, replaced, legacy_ignored = bind_controller(
                 args.hcom_name, args.client, args.session_id, args.workspace,
-                args.herdr_workspace,
+                args.herdr_workspace, args.herdr_tab, args.herdr_pane,
             )
-            print(json.dumps({"binding": binding, "replaced": replaced}, ensure_ascii=False))
+            print(json.dumps({
+                "binding": binding,
+                "replaced": replaced,
+                "legacy_ignored": legacy_ignored,
+            }, ensure_ascii=False))
             return 0
         if args.command == "unbind":
             removed = unbind_controller(args.session_id)
             print(json.dumps({"removed": removed}))
             return 0
         if args.command == "resolve":
-            print(json.dumps(resolve_binding(args.herdr_workspace), ensure_ascii=False))
+            binding = (
+                resolve_session_binding(args.session_id)
+                if args.session_id else resolve_binding(args.herdr_workspace)
+            )
+            print(json.dumps(binding, ensure_ascii=False))
             return 0
     except (OSError, ValueError) as error:
         print(f"lat-panel: {error}", file=sys.stderr)

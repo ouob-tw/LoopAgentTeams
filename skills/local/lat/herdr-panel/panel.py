@@ -4,11 +4,10 @@
 # ///
 """Herdr popup editor for the LAT questions file bound to the current workspace.
 
-``panel.py open`` is the ``lat.panel.open`` action: it resolves the binding for
-``HERDR_WORKSPACE_ID`` through ``lat_panel`` and opens the ``popup`` pane. The
-pane runs ``panel.py edit`` with the internal handoff variables
-``LAT_PANEL_FILE`` (resolved questions file), ``LAT_PANEL_HERDR_WORKSPACE`` and,
-when nothing can be opened, ``LAT_PANEL_ERROR`` (reason shown in the popup).
+``panel.py open`` is the ``lat.panel.open`` action: it resolves the current tab
+against controller panes from Herdr's 0.9.3 ``session.snapshot`` API, then opens
+the ``popup`` pane. With more than one unmatched controller, the popup receives
+``LAT_PANEL_CHOICES`` and lets the user choose before opening an editor.
 """
 import asyncio
 from datetime import datetime
@@ -26,6 +25,7 @@ import lat_panel
 
 from textual.app import App, ComposeResult
 from textual.binding import Binding
+from textual import events
 from textual.widgets import Static, TextArea
 
 PLUGIN_ID = "lat.panel"
@@ -99,13 +99,53 @@ def rpc(method, params, env):
     raise RuntimeError("Herdr closed the connection without a response")
 
 
+def _pane_tabs(request, env):
+    response = request("session.snapshot", {}, env)
+    panes = response["result"]["snapshot"]["panes"]
+    if not isinstance(panes, list):
+        raise ValueError("Herdr snapshot panes are invalid")
+    return {
+        pane["pane_id"]: pane["tab_id"]
+        for pane in panes
+        if isinstance(pane, dict) and pane.get("pane_id") and pane.get("tab_id")
+    }
+
+
+def _open_binding_env(binding, workspace):
+    return {
+        "LAT_PANEL_HERDR_WORKSPACE": workspace,
+        "LAT_PANEL_FILE": binding["questions_path"],
+        "LAT_PANEL_SESSION_ID": binding["session_id"],
+    }
+
+
 def open_popup(env=None, *, request=rpc):
-    """Resolve the workspace binding and open the popup pane; never guesses."""
+    """Route by live controller tab, then single binding, then a picker."""
     env = os.environ if env is None else env
     workspace = env.get("HERDR_WORKSPACE_ID", "")
+    current_tab = env.get("HERDR_TAB_ID", "")
     pane_env = {"LAT_PANEL_HERDR_WORKSPACE": workspace}
     try:
-        pane_env["LAT_PANEL_FILE"] = lat_panel.resolve_binding(workspace or None)["questions_path"]
+        bindings = lat_panel.list_bindings(workspace or None)
+        if not bindings:
+            raise ValueError("no LAT controller is bound to this Herdr workspace")
+        try:
+            pane_tabs = _pane_tabs(request, env)
+        except (KeyError, OSError, RuntimeError, TypeError, ValueError):
+            pane_tabs = None
+        matches = [
+            binding for binding in bindings
+            if current_tab and (
+                pane_tabs.get(binding.get("herdr_pane")) if pane_tabs is not None
+                else binding.get("herdr_tab")
+            ) == current_tab
+        ]
+        if len(matches) == 1:
+            pane_env = _open_binding_env(matches[0], workspace)
+        elif len(bindings) == 1:
+            pane_env = _open_binding_env(bindings[0], workspace)
+        else:
+            pane_env["LAT_PANEL_CHOICES"] = json.dumps(bindings, ensure_ascii=False)
     except (OSError, ValueError, KeyError) as error:
         pane_env["LAT_PANEL_ERROR"] = binding_error_text(error)
     return request("plugin.pane.open", {
@@ -121,6 +161,7 @@ class Panel(App):
     ARCHIVE_AFTER = 300
     ENABLE_COMMAND_PALETTE = False
     CSS = """
+    #picker { height: 1; padding: 0 1; }
     TextArea { height: 1fr; border: none; }
     #status { height: auto; padding: 0 1; color: $error; display: none; }
     #keys { height: 1; color: $text-muted; padding: 0 1; }
@@ -133,7 +174,9 @@ class Panel(App):
         Binding("f5", "reload_file", "備份草稿並載入", priority=True),
     ]
 
-    def __init__(self, path, herdr_workspace="", error="", env=None):
+    def __init__(
+        self, path, herdr_workspace="", error="", env=None, *, session_id="", choices=None,
+    ):
         super().__init__()
         theme, theme_notice = herdr_theme(os.environ if env is None else env, self.available_themes)
         if theme:
@@ -141,6 +184,9 @@ class Panel(App):
         self.notices = {"theme": theme_notice}
         self.path = Path(path) if path else None
         self.herdr_workspace = herdr_workspace or None
+        self.session_id = session_id or None
+        self.choices = choices or []
+        self.picker_active = bool(self.choices)
         self.saved = ""
         self.conflict = False
         self.close_armed = False
@@ -148,25 +194,38 @@ class Panel(App):
         self.notify_timer = None
         self.unrecorded_notification = False
         self.notify_lock = asyncio.Lock()
-        if not error:
+        if not error and not self.picker_active:
             try:
                 self.saved = self.path.read_text(encoding="utf-8")
             except FileNotFoundError:
                 error = f"問題檔不存在：{self.path}"
             except (OSError, ValueError) as read_error:
                 error = f"無法讀取問題檔 {self.path}：{read_error}"
-        self.read_only = bool(error)
+        self.read_only = bool(error) or self.picker_active
         self.notices["file"] = error
 
     @classmethod
     def from_env(cls, env):
+        try:
+            choices = json.loads(env.get("LAT_PANEL_CHOICES", "[]"))
+            if not isinstance(choices, list):
+                raise ValueError("choices must be a list")
+        except (json.JSONDecodeError, ValueError) as error:
+            choices = []
+            env = dict(env, LAT_PANEL_ERROR=f"無法讀取 LAT 選單：{error}")
         return cls(
             env.get("LAT_PANEL_FILE", ""), env.get("LAT_PANEL_HERDR_WORKSPACE", ""),
-            env.get("LAT_PANEL_ERROR", "") or ("" if env.get("LAT_PANEL_FILE") else NO_BINDING),
-            env,
+            env.get("LAT_PANEL_ERROR", "")
+            or ("" if env.get("LAT_PANEL_FILE") or choices else NO_BINDING),
+            env, session_id=env.get("LAT_PANEL_SESSION_ID", ""), choices=choices,
         )
 
     def compose(self) -> ComposeResult:
+        picker = "  ".join(
+            f"{index} {item.get('hcom_name', '')}（{Path(item.get('workspace', '')).name}）"
+            for index, item in enumerate(self.choices, 1)
+        )
+        yield Static(picker, id="picker", markup=False)
         yield TextArea(
             self.saved, soft_wrap=True, show_line_numbers=False,
             read_only=self.read_only, id="editor",
@@ -175,6 +234,50 @@ class Panel(App):
         yield Static(KEYS, id="keys", markup=False)
 
     def on_mount(self):
+        self.query_one("#picker", Static).display = self.picker_active
+        self.editor.display = not self.picker_active
+        if self.picker_active:
+            self.query_one("#keys", Static).update("Ctrl+Q 關閉")
+            self.render_status()
+            return
+        self.editor.focus()
+        self.render_status()
+        if self.read_only:
+            return
+        self.archive_recorded()
+        self.set_interval(self.POLL_INTERVAL, self.check_external)
+        if self.notification_pending():
+            self.start_notification()
+
+    def on_key(self, event: events.Key):
+        if not self.picker_active or not event.character or not event.character.isdigit():
+            return
+        choice_index = int(event.character) - 1
+        if 0 <= choice_index < len(self.choices):
+            event.stop()
+            self.select_choice(self.choices[choice_index])
+
+    def select_choice(self, binding):
+        self.path = Path(binding["questions_path"])
+        self.session_id = binding["session_id"]
+        try:
+            text = self.path.read_text(encoding="utf-8")
+            error = ""
+        except FileNotFoundError:
+            text = ""
+            error = f"問題檔不存在：{self.path}"
+        except (OSError, ValueError) as read_error:
+            text = ""
+            error = f"無法讀取問題檔 {self.path}：{read_error}"
+        self.picker_active = False
+        self.read_only = bool(error)
+        self.notices["file"] = error
+        self.saved = text
+        self.editor.load_text(text)
+        self.editor.read_only = self.read_only
+        self.query_one("#picker", Static).display = False
+        self.editor.display = True
+        self.query_one("#keys", Static).update(KEYS)
         self.editor.focus()
         self.render_status()
         if self.read_only:
@@ -344,7 +447,9 @@ class Panel(App):
                 if not await asyncio.to_thread(lat_panel.notification_is_pending, self.path):
                     self.set_notice("notify", "")
                     return True
-                binding = await asyncio.to_thread(lat_panel.resolve_binding, self.herdr_workspace)
+                binding = await asyncio.to_thread(
+                    lat_panel.resolve_session_binding, self.session_id
+                )
                 target = binding.get("hcom_name", "")
                 ok, reason = await asyncio.to_thread(
                     lat_panel.send_pending_notification, self.path, binding,
@@ -368,6 +473,9 @@ class Panel(App):
 
     def action_close_panel(self):
         if self.closing:
+            return
+        if self.picker_active:
+            self.exit()
             return
         if self.read_only:
             self.exit()

@@ -8,7 +8,7 @@
 
 ## 指令與變數
 
-`lat_dir`、`workspace`、`client` 與主控恢復程序相同。`workspace` 是存放 `.lat/` 的專案根目錄，問題檔固定為 `$workspace/.lat/questions.md`，面板紀錄為 `$workspace/.lat/panel-journal.jsonl`。歸檔檔名由問題檔推導：同目錄下的 `<問題檔名不含副檔名>-archive.md`，因此預設為 `$workspace/.lat/questions-archive.md`。
+`lat_dir`、`workspace`、`client` 與主控恢復程序相同。`workspace` 是存放 `.lat/` 的專案根目錄。每個主控各用一份 `$workspace/.lat/questions-<hcom-name>.md`；檔名會把 HCOM 名稱轉小寫，將英數字、`_`、`-` 以外的連續字元換成 `-`，並移除開頭與結尾的 `-`、`_`。正常 HCOM 名稱不會改變。面板紀錄為 `$workspace/.lat/panel-journal.jsonl`。歸檔檔名由問題檔推導為同目錄下的 `<問題檔名不含副檔名>-archive.md`。
 
 ```bash
 lat_dir=/absolute/path/to/installed/lat
@@ -16,13 +16,14 @@ workspace=/absolute/path/to/project-root
 client=codex           # Claude 主控改為 claude
 hcom_name=<主控自己的 HCOM 名稱>
 session_id="$CODEX_THREAD_ID"   # Claude：$CLAUDE_CODE_SESSION_ID
+questions="$workspace/.lat/questions-$hcom_name.md"  # 正常 HCOM 名稱；以 bind 輸出的 questions_path 為準
 ```
 
 shell 狀態不跨呼叫保留時，每次執行前重新設定上述變數。`question` 子指令一律加 `--questions`，不依賴目前目錄。
 
 ## 綁定
 
-activate 成功後立即綁定，讓目前 Herdr workspace 的 F2 面板開啟本專案問題檔並通知自己：
+activate 成功後立即綁定，記下目前主控所在的 Herdr workspace、tab 與 pane，讓 F2 面板依所在 tab 開啟對應主控的問題檔並通知該主控：
 
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
@@ -30,7 +31,11 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
   --session-id "$session_id" --workspace "$workspace"
 ```
 
-`--herdr-workspace` 預設取 `HERDR_WORKSPACE_ID`。F2 開啟與送出通知時都只採用目前 Herdr workspace 的綁定；沒有綁定就顯示「此 workspace 沒有綁定的 LAT 中控」，即使全機只有另一筆綁定也不借用。輸出 JSON 的 `replaced` 不是 `null` 時，表示取代了同一 workspace 的舊綁定；把舊綁定的 HCOM 名稱與 session 記入進度索引。session ID 缺少時不綁定、不猜測。Herdr server 重建使 workspace ID 改變時，重新執行綁定。
+`--herdr-workspace`、`--herdr-tab`、`--herdr-pane` 分別預設取 `HERDR_WORKSPACE_ID`、`HERDR_TAB_ID`、`HERDR_PANE_ID`。綁定以 session ID 為鍵；同一 session 重綁只更新自己，不會覆蓋同 workspace 的其他主控。輸出 JSON 的 `replaced` 不是 `null` 時，表示更新了自己上一筆綁定。任一必要 ID 缺少時不綁定、不猜測。
+
+按 F2 時，外掛先用 Herdr 0.9.3 的即時 pane/tab 快照找「主控 pane 現在位於目前 tab」的綁定；只有查詢失敗時才採用綁定時記下的 tab。若目前 tab 沒有主控，但 workspace 只有一個綁定，就直接開啟；有兩個以上則先顯示單行數字選單，按數字選檔，無效按鍵不動作，Ctrl+Q 關閉；完全沒有綁定才顯示「此 workspace 沒有綁定的 LAT 中控」。通知送出前會依問題檔自己的 session 再查一次綁定，不借用同 workspace 的其他主控。
+
+舊版 `bindings.json` 以 workspace 為鍵，正式版不會拿來路由；讀取時會回報 `legacy bindings ignored`。第一個主控重新綁定時會建立 v2 資料並回報 `legacy_ignored` 數量，其他主控再逐一綁定。既有 `.lat/questions.md` 不會自動搬移或刪除；由主控按實際待決內容手動移入自己的新問題檔。
 
 ## 寫題
 
@@ -51,10 +56,10 @@ C. 先不合併
 
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question upsert \
-  --questions "$workspace/.lat/questions.md" --id "<ID>" --file /path/to/section.md
+  --questions "$questions" --id "<ID>" --file /path/to/section.md
 ```
 
-- 一律透過 `question upsert` 寫入（與面板共用檔案鎖），不手動編輯 `questions.md`。暫存檔只放標題與自然書寫的內文；工具會加入題號、版本、`待答`、空白作答區與 `- [ ] 送出`。既有題的答覆與勾選狀態不會被 Agent 覆寫。
+- 一律透過 `question upsert` 寫入（與面板共用檔案鎖），不手動編輯 `$questions`。暫存檔只放標題與自然書寫的內文；工具會加入題號、版本、`待答`、空白作答區與 `- [ ] 送出`。既有題的答覆與勾選狀態不會被 Agent 覆寫。
 - 標題直接寫問題本身。內文先用一句話交代背景，再逐項列出選項與影響；建議方案標在選項名稱上。選項前不加 `-`，選項之間不留空行，影響說明縮排三個空白。不使用「問題／選項／建議／影響／批註」等欄位名稱。
 - 新題從 r1 建立。既有題的標題或內文有任何改變時，指令自動升版、狀態回到 `待答`、清除送出勾選；舊版作答區移入 `### 舊版 r<N>（不套用至 r<N+1>）`。標題與內文完全相同時保留版本、答覆、狀態與勾選框。
 - 指令印出 `<ID> r<版本>`；以此版本更新決策紀錄。版本改變即為新提案，依「使用者待決事項」保留舊紀錄並重新待決。
@@ -66,7 +71,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question upsert \
 
 ```bash
 snapshot=$(mktemp)
-cp "$workspace/.lat/questions.md" "$snapshot"
+cp "$questions" "$snapshot"
 ```
 
 處理完以 `shred -u "$snapshot"` 清除快照。只看各題目前版本區段，`### 舊版` 以下一律不套用。
@@ -90,7 +95,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenan
 
    ```bash
    uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question set-status \
-     --questions "$workspace/.lat/questions.md" --id "<ID>" --revision <版本> \
+     --questions "$questions" --id "<ID>" --revision <版本> \
      --status recorded --expected-section-sha256 "<provenance 輸出的 section_sha256>"
    ```
 2. **未通過面板來源核對、版本不符、答覆有歧義，或一段答覆含糊涵蓋多題**：不放行，維持待決；在聊天說明不能採用的原因，請使用者釐清，或在面板再存檔一次、改在聊天回答。
@@ -111,7 +116,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenan
 
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question archive-recorded \
-  --questions "$workspace/.lat/questions.md" --older-than 300
+  --questions "$questions" --older-than 300
 ```
 
 指令輸出 JSON 的 `archived` 題號列表；問題檔若在快照後改變，指令拒絕寫入並要求重試。歸檔檔只做附加，不會改寫既有內容。
@@ -124,7 +129,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question archive-
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" unbind --session-id "$session_id"
 ```
 
-`removed` 為 0 表示自己已無綁定（例如已被新中控取代），不去動其他 session 的綁定。
+`removed` 為 0 表示自己的 session 已無綁定；同一 workspace 的其他 session 不受影響。
 
 ## 安裝與更新
 
@@ -137,7 +142,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" unbind --session-
    herdr plugin list   # lat.panel 指向 $lat_dir/herdr-panel
    ```
 
-   以 `lat.panel` 取代舊版或原型外掛時，在 QA 驗收通過後的授權安裝任務中才執行 `herdr plugin unlink <舊外掛 ID>`；舊外掛的問題檔保留原樣不刪，`.lat/questions.md` 是另一份新檔。
+   以 `lat.panel` 取代舊版或原型外掛時，在 QA 驗收通過後的授權安裝任務中才執行 `herdr plugin unlink <舊外掛 ID>`；舊外掛與舊版 `.lat/questions.md` 都保留原樣，不自動刪除或搬移；正式使用的是各主控自己的 `.lat/questions-<hcom-name>.md`。
 
    更新技能檔案但安裝位置不變時，不需重新連結；搬動技能目錄後重新連結。
 2. 備份 Herdr 設定檔（`HERDR_CONFIG_PATH`，未設定時為 `~/.config/herdr/config.toml`）為同目錄的 `config.toml.lat-backup-<時間>`。
