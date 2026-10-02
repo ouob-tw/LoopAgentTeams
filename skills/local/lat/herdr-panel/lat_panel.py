@@ -316,9 +316,9 @@ def plugin_directory(kind, env=None):
         except (FileNotFoundError, subprocess.SubprocessError):
             pass
         base = Path(env.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-    else:
-        base = Path(env.get("XDG_STATE_HOME", Path.home() / ".local/state"))
-    return base / "herdr/plugins/lat.panel" / kind
+        return base / "herdr/plugins/config/lat.panel"
+    base = Path(env.get("XDG_STATE_HOME", Path.home() / ".local/state"))
+    return base / "herdr/plugins/lat.panel"
 
 
 def _bindings_path(config_dir=None):
