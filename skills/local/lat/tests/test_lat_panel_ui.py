@@ -70,7 +70,10 @@ class ManifestTests(unittest.TestCase):
             ("popup", "popup", "95%", "95%"),
         )
         self.assertEqual(pane["command"][-2:], ["panel.py", "edit"])
-        self.assertIn('dependencies = ["textual==8.2.8"]', (HERDR_PANEL / "panel.py").read_text())
+        panel_source = (HERDR_PANEL / "panel.py").read_text()
+        self.assertIn('dependencies = ["textual==8.2.8"]', panel_source)
+        self.assertIn('NO_BINDING = "此 workspace 沒有綁定的 LAT 主控"', panel_source)
+        self.assertNotIn("中控", panel_source)
 
 
 @unittest.skipUnless(HAS_TEXTUAL, "needs textual==8.2.8 (uv run --with textual==8.2.8)")

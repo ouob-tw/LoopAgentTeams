@@ -33,7 +33,7 @@ cjk_wrap.install()
 
 PLUGIN_ID = "lat.panel"
 KEYS = "Ctrl+Q 關閉  Ctrl+Z 復原  Ctrl+Y 重做"
-NO_BINDING = "此 workspace 沒有綁定的 LAT 中控"
+NO_BINDING = "此 workspace 沒有綁定的 LAT 主控"
 CONFLICT = "外部內容已變更，暫停儲存。F5：備份目前草稿並載入磁碟版本。"
 CONFLICT_CLOSE = "有未存的衝突草稿。先按 F5 備份草稿並載入磁碟版本，再關閉。"
 
@@ -60,7 +60,7 @@ def submission_error_text(text):
 
 def notify_failure_text(reason, target):
     reason = (reason.strip().splitlines() or ["未知錯誤"])[0]
-    target = target or "中控"
+    target = target or "主控"
     if "timed out" in reason:
         cause = "通知逾時"
     elif reason.startswith("notification not delivered"):
