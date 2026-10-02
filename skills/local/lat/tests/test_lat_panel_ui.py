@@ -8,6 +8,7 @@ from datetime import datetime, timedelta, timezone
 import json
 import os
 from pathlib import Path
+import shutil
 import tempfile
 import tomllib
 import unittest
@@ -41,9 +42,11 @@ elif mode == "slow":
 """
 
 QUESTIONS = (
-    "## Choose?\nQ1 · r1 · 待答\n\nA（建議）\n   No impact.\n\n"
-    "答覆：\n\n- [ ] 送出\n"
+    "## Choose?\nQ1 · r1 · 待答\n\nA. Yes（建議）\n   No impact.\n"
+    "B. No\n   Other impact.\n\n答覆：\n\n- [ ] 送出\n"
 )
+# Raw-editor line between 答覆： and - [ ] 送出 in QUESTIONS.
+ANSWER_LINE = 9
 FAILURE_SUFFIX = "Ctrl+N 重試；再按 Ctrl+Q 保留待送並關閉"
 
 
@@ -133,14 +136,27 @@ class PanelTestCase(unittest.IsolatedAsyncioTestCase):
         await app.workers.wait_for_complete()
         await pilot.pause()
 
+    async def raw(self, pilot):
+        """Switch the selector to the V1 raw-file editor (Ctrl+E)."""
+        await pilot.press("ctrl+e")
+        await pilot.pause()
 
-class EditorTests(PanelTestCase):
-    async def test_layout_is_editor_and_one_key_line_with_herdr_theme(self):
+    async def submit_first_option(self, app, pilot):
+        """Draft option 1 on the first tab, then 送出 from the review tab."""
+        await pilot.press("1", "right", "enter")
+        await pilot.pause()
+
+
+class RawEditorTests(PanelTestCase):
+    async def test_ctrl_e_shows_raw_file_with_one_key_line_and_herdr_theme(self):
         app = self.make_app()
         async with app.run_test() as pilot:
             self.assertEqual(app.theme, "catppuccin-latte")
+            self.assertFalse(app.editor.display)
+            await self.raw(pilot)
+            self.assertTrue(app.editor.display)
             self.assertEqual(app.editor.text, QUESTIONS)
-            self.assertEqual(str(app.query_one("#keys").render()), self.panel.KEYS)
+            self.assertEqual(str(app.query_one("#keys").render()), self.panel.RAW_KEYS)
             self.assertEqual(self.status(app), "")
             await pilot.press("ctrl+q")
             await self.settle(app, pilot)
@@ -176,7 +192,8 @@ class EditorTests(PanelTestCase):
     async def test_typing_saves_immediately_with_journal_and_undo_redo(self):
         app = self.make_app(NOTIFY_DELAY=30)
         async with app.run_test() as pilot:
-            app.editor.move_cursor((7, 0))
+            await self.raw(pilot)
+            app.editor.move_cursor((ANSWER_LINE, 0))
             await pilot.press("B")
             await pilot.pause()
             self.assertIn("答覆：\nB\n", self.questions.read_text())
@@ -198,6 +215,7 @@ class EditorTests(PanelTestCase):
         self.questions.write_text(sample + "\n")
         app = self.make_app(NOTIFY_DELAY=30)
         async with app.run_test(size=(26, 10)) as pilot:
+            await self.raw(pilot)
             self.assertEqual(app.editor.wrap_width, 23)
             self.assertEqual([app.editor.render_line(y).text.rstrip() for y in range(4)], [
                 "本機和 GitHub 都更新；",
@@ -219,10 +237,11 @@ class EditorTests(PanelTestCase):
     async def test_external_update_loads_without_notification_and_resets_undo(self):
         app = self.make_app()
         async with app.run_test() as pilot:
+            await self.raw(pilot)
             self.core.upsert_question(
                 self.questions,
                 "Q1",
-                "## Choose?\n\nA（建議）\n   Changed impact.\n",
+                "## Choose?\n\nA. Yes（建議）\n   Changed impact.\n",
             )
             updated = self.questions.read_text()
             await pilot.pause(0.4)
@@ -249,7 +268,8 @@ class EditorTests(PanelTestCase):
         )
 
         async with app.run_test():
-            self.assertNotIn("Q1 · r1", app.editor.text)
+            self.assertNotIn("Q1 · r1", app.saved)
+            self.assertEqual(app.tab_ids, [])
             self.assertIn(
                 "## Choose?", self.core._archive_path(self.questions).read_text()
             )
@@ -272,6 +292,7 @@ class EditorTests(PanelTestCase):
         )
 
         async with app.run_test() as pilot:
+            await self.raw(pilot)
             self.assertIn("Q1 · r1 · 已記錄", app.editor.text)
             self.assertFalse(self.core._archive_path(self.questions).exists())
             clock[0] = recorded_at + timedelta(seconds=301)
@@ -287,9 +308,10 @@ class EditorTests(PanelTestCase):
     async def test_conflict_pauses_saving_and_f5_backs_up_draft_then_loads_disk(self):
         app = self.make_app(POLL_INTERVAL=60, NOTIFY_DELAY=30)
         async with app.run_test() as pilot:
+            await self.raw(pilot)
             agent_text = QUESTIONS.replace("No impact.", "Agent impact.")
             self.questions.write_text(agent_text)
-            app.editor.move_cursor((7, 0))
+            app.editor.move_cursor((ANSWER_LINE, 0))
             await pilot.press("x")
             await pilot.pause()
             self.assertEqual(self.status(app), self.panel.CONFLICT)
@@ -319,6 +341,7 @@ class EditorTests(PanelTestCase):
         self.core.set_question_status(
             self.questions, "Q1", 1, "recorded", expected_hash, now=recorded_at,
         )
+        self.core.upsert_question(self.questions, "Q2", "## Other?\n\nFree text.\n")
         recorded = self.questions.read_text()
         clock = [recorded_at + timedelta(seconds=299)]
         app = self.make_app(
@@ -328,8 +351,10 @@ class EditorTests(PanelTestCase):
         )
 
         async with app.run_test() as pilot:
+            await self.raw(pilot)
             self.questions.write_text("# Agent note\n\n" + recorded)
-            app.editor.move_cursor((7, 0))
+            # Q1 is recorded and read-only; the conflicting draft goes into Q2.
+            app.editor.move_cursor((recorded.splitlines().index("Free text."), 0))
             await pilot.press("x")
             await pilot.pause()
             self.assertTrue(app.conflict)
@@ -459,7 +484,7 @@ class OpenActionTests(PanelTestCase):
             await pilot.pause()
             self.assertFalse(app.picker_active)
             self.assertEqual(app.session_id, "s-b")
-            self.assertIn("Q2", app.editor.text)
+            self.assertEqual(app.tab_ids, ["Q2"])
             await pilot.press("ctrl+q")
             await self.settle(app, pilot)
             self.assertIsNotNone(app.return_code)
@@ -489,24 +514,28 @@ class OpenActionTests(PanelTestCase):
             await pilot.press("1")
             await pilot.pause()
             self.assertEqual(app.session_id, "s-10")
-            self.assertIn("Q10", app.editor.text)
+            self.assertEqual(app.tab_ids, ["Q10"])
 
 
 class NotificationTests(PanelTestCase):
-    async def type_and_wait(self, app, pilot, keys, wait, gap=0.1):
-        app.editor.move_cursor((7, 0))
-        for key in keys:
-            await pilot.press(key)
-            await pilot.pause(gap)
-        await self.settle(app, pilot, wait)
-
-    async def test_idle_debounce_coalesces_typing_into_one_notification(self):
+    async def test_drafts_stay_silent_and_raw_submit_check_notifies_once_after_idle(self):
         app = self.make_app(NOTIFY_DELAY=1.0)
         async with app.run_test() as pilot:
-            # Typing spans longer than the idle delay; only the final pause sends.
-            await self.type_and_wait(app, pilot, "abcdefg", 0, gap=0.25)
+            await pilot.press("1", "tab", *"why", "escape")
+            await self.settle(app, pilot, 0.3)
+            await self.raw(pilot)
+            app.editor.move_cursor((ANSWER_LINE, 0))
+            for key in "more":
+                await pilot.press(key)
+                await pilot.pause(0.25)
+            await self.settle(app, pilot, 1.2)
             self.assertEqual(self.calls(), [])
+            self.assertFalse(self.pending())
+            submit_line = app.editor.text.splitlines().index("- [ ] 送出")
+            app.editor.replace("- [x] 送出", (submit_line, 0), (submit_line, 8))
+            await pilot.pause()
             self.assertTrue(self.pending())
+            self.assertEqual(self.calls(), [])
             await self.settle(app, pilot, 1.5)
             [call] = self.calls()
             self.assertEqual(call[:4], ["send", "@ctl-a", "--from", "lat-panel"])
@@ -522,7 +551,8 @@ class NotificationTests(PanelTestCase):
         self.assertNotEqual(second["questions_path"], str(self.questions))
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.type_and_wait(app, pilot, "a", 0.6)
+            await self.submit_first_option(app, pilot)
+            await self.settle(app, pilot, 0.2)
             self.assertEqual([call[1] for call in self.calls()], ["@ctl-a"])
 
     async def test_notification_does_not_use_another_workspaces_sole_binding(self):
@@ -532,19 +562,22 @@ class NotificationTests(PanelTestCase):
         )
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.type_and_wait(app, pilot, "a", 0.6)
+            await self.submit_first_option(app, pilot)
+            await self.settle(app, pilot, 0.2)
             self.assertEqual(self.calls(), [])
             self.assertTrue(self.pending())
             self.assertIn("no LAT controller binding for session: s-a", self.status(app))
 
-    async def test_close_flushes_pending_notification_before_exit(self):
+    async def test_close_after_submit_flushes_pending_notification_before_exit(self):
         app = self.make_app(NOTIFY_DELAY=30)
         async with app.run_test() as pilot:
-            await self.type_and_wait(app, pilot, "a", 0)
-            self.assertEqual(self.calls(), [])
+            self.set_hcom("offline")
+            await self.submit_first_option(app, pilot)
+            await self.settle(app, pilot)
+            self.set_hcom("deliver")
             await pilot.press("ctrl+q")
             await self.settle(app, pilot)
-            self.assertEqual(len(self.calls()), 1)
+            self.assertEqual(len(self.calls()), 2)
             self.assertFalse(self.pending())
             self.assertIsNotNone(app.return_code)
 
@@ -557,10 +590,12 @@ class NotificationTests(PanelTestCase):
         )
         for mode, expected in cases:
             with self.subTest(mode=mode):
+                self.questions.write_text(QUESTIONS)
                 self.set_hcom(mode)
                 app = self.make_app()
                 async with app.run_test() as pilot:
-                    await self.type_and_wait(app, pilot, "a", 0.6 if mode != "hang" else 1.5)
+                    await self.submit_first_option(app, pilot)
+                    await self.settle(app, pilot, 0.2 if mode != "hang" else 1.2)
                     self.assertEqual(self.status(app), expected + FAILURE_SUFFIX)
                     self.assertTrue(self.pending())
                     self.set_hcom("deliver")
@@ -570,20 +605,26 @@ class NotificationTests(PanelTestCase):
                     self.assertFalse(self.pending())
 
     async def test_failed_flush_closes_only_on_second_ctrl_q_and_keeps_pending(self):
-        self.set_hcom("offline")
-        app = self.make_app(NOTIFY_DELAY=30)
-        async with app.run_test() as pilot:
-            await self.type_and_wait(app, pilot, "a", 0)
-            await pilot.press("ctrl+q")
-            await self.settle(app, pilot)
-            self.assertIsNone(app.return_code)
-            self.assertIn("通知失敗：ctl-a 不在線", self.status(app))
-            self.assertTrue(self.pending())
-            await pilot.press("ctrl+q")
-            await self.settle(app, pilot)
-            self.assertIsNotNone(app.return_code)
-        self.assertEqual(len(self.calls()), 1)
-        self.assertTrue(self.pending())
+        for close_key in ("ctrl+q", "escape"):
+            with self.subTest(close_key=close_key):
+                self.questions.write_text(QUESTIONS)
+                (self.hcom_dir / "calls.jsonl").unlink(missing_ok=True)
+                shutil.rmtree(self.root / "plugin-state", ignore_errors=True)
+                self.set_hcom("offline")
+                app = self.make_app(NOTIFY_DELAY=30)
+                async with app.run_test() as pilot:
+                    await self.submit_first_option(app, pilot)
+                    await self.settle(app, pilot)
+                    await pilot.press(close_key)
+                    await self.settle(app, pilot)
+                    self.assertIsNone(app.return_code)
+                    self.assertIn("通知失敗：ctl-a 不在線", self.status(app))
+                    self.assertTrue(self.pending())
+                    await pilot.press(close_key)
+                    await self.settle(app, pilot)
+                    self.assertIsNotNone(app.return_code)
+                self.assertEqual(len(self.calls()), 2)
+                self.assertTrue(self.pending())
 
     async def test_failed_pending_persistence_is_retried_before_success_or_close(self):
         app = self.make_app(NOTIFY_DELAY=30)
@@ -591,8 +632,8 @@ class NotificationTests(PanelTestCase):
             with patch.object(
                 self.core, "mark_notification_pending", side_effect=OSError("disk full"),
             ):
-                await self.type_and_wait(app, pilot, "a", 0)
-            self.assertIn("答覆：\na\n", self.questions.read_text())
+                await self.submit_first_option(app, pilot)
+            self.assertIn("- [x] 送出", self.questions.read_text())
             self.assertEqual(
                 self.status(app), "通知失敗：無法記錄待送通知：disk full。" + FAILURE_SUFFIX,
             )
@@ -609,7 +650,7 @@ class NotificationTests(PanelTestCase):
             with patch.object(
                 self.core, "mark_notification_pending", side_effect=OSError("disk full"),
             ):
-                await self.type_and_wait(app, pilot, "a", 0)
+                await self.submit_first_option(app, pilot)
                 for _ in range(2):
                     await pilot.press("ctrl+q")
                     await self.settle(app, pilot)
@@ -622,22 +663,32 @@ class NotificationTests(PanelTestCase):
         self.assertTrue(self.pending())
 
     async def test_editing_is_frozen_while_close_flush_is_in_flight(self):
-        for key in ("b", "ctrl+z"):
-            with self.subTest(key=key):
+        for mode, keys in (("raw", ("b",)), ("raw", ("ctrl+z",)), ("selector", ("left", "2"))):
+            with self.subTest(mode=mode, keys=keys):
                 self.questions.write_text(QUESTIONS)
                 (self.hcom_dir / "calls.jsonl").unlink(missing_ok=True)
-                self.set_hcom("slow")
+                self.core.mark_notification_pending(self.questions)
+                self.set_hcom("offline")
                 app = self.make_app(NOTIFY_DELAY=30)
                 async with app.run_test() as pilot:
-                    await self.type_and_wait(app, pilot, "a", 0)
+                    await self.settle(app, pilot)
+                    if mode == "raw":
+                        await self.raw(pilot)
+                        app.editor.move_cursor((ANSWER_LINE, 0))
+                    await pilot.press("a" if mode == "raw" else "1")
+                    await pilot.pause()
+                    self.set_hcom("slow")
                     await pilot.press("ctrl+q")
                     await pilot.pause(0.1)
-                    await pilot.press(key)
+                    await pilot.press(*keys)
                     await self.settle(app, pilot)
                     self.assertIsNotNone(app.return_code)
-                self.assertIn("答覆：\na\n", self.questions.read_text())
+                if mode == "raw":
+                    self.assertIn("答覆：\na\n", self.questions.read_text())
+                else:
+                    self.assertIn("答覆：A. Yes\n", self.questions.read_text())
                 self.assertFalse(self.pending())
-                self.assertEqual(len(self.calls()), 1)
+                self.assertEqual(len(self.calls()), 2)
 
     async def test_pending_notification_is_resent_on_next_open(self):
         self.core.mark_notification_pending(self.questions)
