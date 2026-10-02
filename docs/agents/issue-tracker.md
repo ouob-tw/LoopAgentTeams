@@ -33,7 +33,7 @@ Issues and PRs live in different repos here, so a bare `#42` is ambiguous: resol
 
 ## When a skill says "publish to the issue tracker"
 
-Create a GitHub issue in `ouob-tw/LoopAgentTeams-work`.
+Create a GitHub issue in `ouob-tw/LoopAgentTeams-work`. A spec (from `/to-spec`) carries the `spec` label (color `#006B75`, meaning "Feature specification") and no triage state label.
 
 ## When a skill says "fetch the relevant ticket"
 
@@ -49,3 +49,13 @@ Used by `/wayfinder`. The **map** is a single issue with **child** issues as tic
 - **Frontier query**: list the map's open children (`gh issue list -R ouob-tw/LoopAgentTeams-work --state open`, scoped to the map's sub-issues / task list), drop any with an open blocker (`issue_dependencies_summary.blocked_by > 0`, or an open issue in the `Blocked by` line) or an assignee; first in map order wins.
 - **Claim**: `gh issue edit <n> -R ouob-tw/LoopAgentTeams-work --add-assignee @me`, the session's first write.
 - **Resolve**: `gh issue comment <n> -R ouob-tw/LoopAgentTeams-work --body "<answer>"`, then `gh issue close <n> -R ouob-tw/LoopAgentTeams-work`, then append a context pointer (gist + link) to the map's Decisions-so-far.
+
+Wayfinder labels and their fixed colors:
+
+| Label                 | Color     | Meaning                                  |
+| --------------------- | --------- | ---------------------------------------- |
+| `wayfinder:map`       | `#5319E7` | Wayfinder map of a large piece of work   |
+| `wayfinder:research`  | `#BFD4F2` | Look up facts a decision waits on        |
+| `wayfinder:prototype` | `#F9D0C4` | Build a rough artifact to react to       |
+| `wayfinder:grilling`  | `#E99695` | Settle a decision through conversation   |
+| `wayfinder:task`      | `#BFDADC` | Manual work that unblocks a decision     |

@@ -56,7 +56,7 @@ The maintainer invokes `/triage` and describes what they want in natural languag
 
 Query the issue tracker and present three buckets, oldest first:
 
-1. **Unlabeled**: never triaged.
+1. **Unlabeled**: issues with no labels at all, never triaged. An issue carrying only `spec` or `wayfinder:*` labels is not unlabeled.
 2. **`needs-triage`**: evaluation in progress.
 3. **`needs-info` with reporter activity since the last triage notes**: needs re-evaluation.
 

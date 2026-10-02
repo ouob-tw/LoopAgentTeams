@@ -53,7 +53,7 @@ If it is installed, ask exactly one question:
 
 > Do you want to keep the default triage labels? (recommended: **yes**)
 
-The defaults are the five canonical roles, each label string equal to its name: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. On **yes**, write them as-is. Only if the user says no, usually because their tracker already uses other names (e.g. `bug:triage` for `needs-triage`), collect the overrides so `triage` applies existing labels instead of creating duplicates.
+The defaults are the five canonical roles, each label string equal to its name: `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`, plus the category labels `bug` and `enhancement`. Each has a fixed color in [triage-labels.md](./triage-labels.md). On **yes**, write them as-is. Only if the user says no, usually because their tracker already uses other names (e.g. `bug:triage` for `needs-triage`), collect the overrides so `triage` applies existing labels instead of creating duplicates. Overrides change the label string only; keep the colors.
 
 **Section C: Domain docs.** Default to **single-context** (one `GLOSSARY.md` + `docs/adr/` at the repo root). This fits almost every repo; write it without asking.
 
@@ -109,6 +109,13 @@ Then write the docs files using the seed templates in this skill folder as a sta
 - [domain.md](./domain.md): domain doc consumer rules + layout
 
 For "other" issue trackers, write `docs/agents/issue-tracker.md` from scratch using the user's description.
+
+**Sync label colors** (only when the tracker is GitHub or GitLab). For the `spec` label and each row of the wayfinder label table in `docs/agents/issue-tracker.md`, and of `docs/agents/triage-labels.md` when Section B ran, create the label or repaint an existing one to the listed color and meaning. Target the tracker repo from `docs/agents/issue-tracker.md`, which may differ from the code checkout:
+
+- GitHub: `gh label create "<label>" -R "<owner/repo>" --color "<hex without #>" --description "<meaning>" --force`
+- GitLab: `glab label create -R "<group/project>" --name "<label>" --color "<#hex>" --description "<meaning>"`; if it already exists, `glab api -X PUT "projects/<URL-encoded group/project>/labels/<URL-encoded label>" -f color="<#hex>" -f description="<meaning>"` (add `--hostname <host>` for self-hosted GitLab)
+
+Report which labels were created and which were repainted.
 
 ### 5. Done
 
