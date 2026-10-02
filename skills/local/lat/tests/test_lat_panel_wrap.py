@@ -38,10 +38,10 @@ class CJKWrapTests(unittest.TestCase):
         bounds = [0, *offsets, len(text)]
         return [text[start:end] for start, end in zip(bounds, bounds[1:])]
 
-    def test_private_textual_hooks_are_pinned_and_installed_by_panel(self):
+    def test_private_textual_hook_is_pinned_and_installed_by_panel(self):
         import textual
 
-        # Fails loudly when the pinned Textual internals these hooks rely on change.
+        # Fails loudly when the pinned Textual internals this hook relies on change.
         self.assertEqual(textual.__version__, "8.2.8")
         self.assertEqual(self.textual_wrap.re_chunk.pattern, r"\S+\s*|\s+")
         self.assertIn("chunks", self.textual_wrap.compute_wrap_offsets.__code__.co_names)
@@ -116,7 +116,8 @@ class CJKWrapTests(unittest.TestCase):
                 self.assertEqual(self.wrap(text, width), expected)
         # From width 6 every character plus its glued marks fits on one line.
         for width in range(6, 30):
-            for text in (cases[0][0], cases[0][0] + "\t尾", "說明：" + "x" * 50 + "」，結束"):
+            for text in (cases[0][0], cases[0][0] + "\t尾", "abcdefghijklmnopqr\t）好",
+                         "abcde（\t" + "y" * 30, "說明：" + "x" * 50 + "」，結束"):
                 with self.subTest(text=text[:6], width=width):
                     lines = self.wrap(text, width)
                     self.assertEqual("".join(lines), text)
