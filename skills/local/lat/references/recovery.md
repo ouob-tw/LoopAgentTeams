@@ -21,8 +21,10 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" activate --client "
 
 activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；Claude：`CLAUDE_CODE_SESSION_ID`），不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑，紀錄 client、session、主控角色、工作區、active 狀態與恢復路徑。已有不同紀錄時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
 
-3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`，以及 `progress_path` 與 `decisions_path` 內的待決紀錄。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。
-4. 交付前停用為 completed；取消時停用為 cancelled。成功後紀錄保留，後續 compact／resume 不再提示。
+   activate 成功後，若 Herdr 已啟用 `lat.panel`，依 [待答問題面板](question-panel.md#綁定) 綁定；未啟用則略過。
+
+3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`，以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的 `.lat/questions-<hcom-name>.md`（尚未寫題時不存在，不算缺檔）。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。
+4. 已綁定面板時，先依 [待答問題面板](question-panel.md#解除綁定) 解除自己的綁定。交付前停用為 completed；取消時停用為 cancelled。成功後紀錄保留，後續 compact／resume 不再提示。
 
 ```bash
 uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client "$client" \

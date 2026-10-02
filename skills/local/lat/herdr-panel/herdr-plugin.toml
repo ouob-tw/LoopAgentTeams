@@ -1,0 +1,20 @@
+id = "lat.panel"
+name = "LAT questions"
+version = "1.0.0"
+min_herdr_version = "0.9.3"
+description = "Edit the LAT questions file bound to this workspace in a popup"
+platforms = ["linux", "macos"]
+
+[[actions]]
+id = "open"
+title = "LAT 待答問題"
+contexts = ["workspace"]
+command = ["uv", "run", "--script", "panel.py", "open"]
+
+[[panes]]
+id = "popup"
+title = "LAT 待答問題"
+placement = "popup"
+width = "95%"
+height = "95%"
+command = ["uv", "run", "--script", "panel.py", "edit"]
