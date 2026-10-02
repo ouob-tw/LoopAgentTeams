@@ -218,6 +218,7 @@ class QuestionCliTests(unittest.TestCase):
     def test_missing_current_markers_never_borrow_an_archived_submission(self):
         cases = (
             "答覆：\n\n",
+            "答覆：\n\n- [] 送出\n\n",
             "- [ ] 送出\n\n",
         )
         for current_area in cases:
