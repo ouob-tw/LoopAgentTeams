@@ -215,6 +215,34 @@ class QuestionCliTests(unittest.TestCase):
         self.assertEqual(parsed[0]["status"], "ready")
         self.assertEqual(parsed[1]["status"], "recorded")
 
+    def test_missing_current_markers_never_borrow_an_archived_submission(self):
+        cases = (
+            "答覆：\n\n",
+            "- [ ] 送出\n\n",
+        )
+        for current_area in cases:
+            with self.subTest(current_area=current_area):
+                document = (
+                    "## Revised?\nQ1 · r2 · 待答\n\nNew body.\n\n"
+                    f"{current_area}"
+                    "### 舊版 r1（不套用至 r2）\n答覆：\n"
+                    "Approve the old proposal\n\n- [x] 送出\n"
+                )
+                self.questions.write_text(document)
+
+                [parsed] = load_module().parse_questions(document)
+
+                self.assertEqual(parsed["status"], "pending")
+                self.assertFalse(parsed["checked"])
+                self.assertIsNone(parsed["answer"])
+                result = self.cli(
+                    "question", "provenance", "--questions", self.questions,
+                    "--journal", self.questions.parent / "panel-journal.jsonl",
+                    "--id", "Q1",
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("not submitted", result.stderr)
+
     def test_set_status_refuses_revision_or_section_mismatch_then_marks_recorded(self):
         original = (
             "Intro\n\n## Question?\nQ1 · r2 · 待答\n\nContext.\n\n"

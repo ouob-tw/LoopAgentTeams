@@ -160,12 +160,8 @@ _ANSWER_MARKER = re.compile(r"^答覆：[ \t]*$", re.MULTILINE)
 _SUBMIT_MARKER = re.compile(r"^- \[(?P<checked>[ xX])\] 送出[ \t]*$", re.MULTILINE)
 
 
-def _archive_match(raw, answer_marker=None, submit_marker=None):
-    answer_marker = answer_marker or _ANSWER_MARKER.search(raw)
-    submit_marker = submit_marker or (
-        _SUBMIT_MARKER.search(raw, answer_marker.end()) if answer_marker else None
-    )
-    return _ARCHIVE_HEADER.search(raw, submit_marker.end()) if submit_marker else None
+def _archive_match(raw):
+    return _ARCHIVE_HEADER.search(raw)
 
 
 def parse_questions(text):
@@ -176,12 +172,14 @@ def parse_questions(text):
         end = matches[index + 1].start() if index + 1 < len(matches) else len(text)
         raw = text[match.start():end]
         status_end = match.end() - match.start()
-        answer_marker = _ANSWER_MARKER.search(raw, status_end)
-        submit_marker = (
-            _SUBMIT_MARKER.search(raw, answer_marker.end()) if answer_marker else None
-        )
-        archive = _archive_match(raw, answer_marker, submit_marker)
+        archive = _archive_match(raw)
         current_raw = raw[:archive.start()] if archive else raw
+        answer_marker = _ANSWER_MARKER.search(current_raw, status_end)
+        submit_marker = (
+            _SUBMIT_MARKER.search(current_raw, answer_marker.end())
+            if answer_marker
+            else None
+        )
         body = None
         answer = None
         answer_block = ""
