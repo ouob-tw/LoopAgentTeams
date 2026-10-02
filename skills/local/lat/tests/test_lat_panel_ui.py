@@ -34,6 +34,9 @@ elif mode == "broken":
     sys.exit(1)
 elif mode == "hang":
     time.sleep(5)
+elif mode == "slow":
+    time.sleep(0.5)
+    print(json.dumps({"delivered_to": [target]}))
 """
 
 QUESTIONS = (
@@ -209,12 +212,10 @@ class EditorTests(PanelTestCase):
             [backup] = self.questions.parent.glob("questions-draft-*.md")
             self.assertIn("答覆：xy\n", backup.read_text())
             self.assertEqual(app.editor.text, agent_text)
-            self.assertNotIn(self.panel.CONFLICT, self.status(app))
-            self.assertIn(str(backup), self.status(app))
+            self.assertEqual(self.status(app), "")
             await pilot.press("z")
             await pilot.pause()
             self.assertIn("建議：Agent", self.questions.read_text())
-            self.assertEqual(self.status(app), "")
 
     async def test_missing_binding_or_file_opens_read_only_with_reason(self):
         for error, expected in (
@@ -230,7 +231,8 @@ class EditorTests(PanelTestCase):
                     self.assertTrue(app.editor.read_only)
                     await pilot.press("a")
                     await pilot.pause()
-                    self.assertFalse(self.questions.exists() and not error)
+                    self.assertEqual(app.editor.text, "")
+                    self.assertEqual(self.questions.exists(), bool(error))
                     await pilot.press("ctrl+q")
                     await pilot.pause()
                     self.assertIsNotNone(app.return_code)
@@ -278,13 +280,13 @@ class NotificationTests(PanelTestCase):
         await self.settle(app, pilot, wait)
 
     async def test_idle_debounce_coalesces_typing_into_one_notification(self):
-        app = self.make_app(NOTIFY_DELAY=0.6)
+        app = self.make_app(NOTIFY_DELAY=1.0)
         async with app.run_test() as pilot:
             # Typing spans longer than the idle delay; only the final pause sends.
             await self.type_and_wait(app, pilot, "abcdefg", 0, gap=0.25)
             self.assertEqual(self.calls(), [])
             self.assertTrue(self.pending())
-            await self.settle(app, pilot, 1.0)
+            await self.settle(app, pilot, 1.5)
             [call] = self.calls()
             self.assertEqual(call[:4], ["send", "@ctl-a", "--from", "lat-panel"])
             self.assertIn(str(self.questions), call[-1])
@@ -346,6 +348,55 @@ class NotificationTests(PanelTestCase):
             self.assertIsNotNone(app.return_code)
         self.assertEqual(len(self.calls()), 1)
         self.assertTrue(self.pending())
+
+    async def test_failed_pending_persistence_is_retried_before_success_or_close(self):
+        app = self.make_app(NOTIFY_DELAY=30)
+        async with app.run_test() as pilot:
+            with patch.object(
+                self.core, "mark_notification_pending", side_effect=OSError("disk full"),
+            ):
+                await self.type_and_wait(app, pilot, "a", 0)
+            self.assertIn("答覆：a\n", self.questions.read_text())
+            self.assertEqual(
+                self.status(app), "通知失敗：無法記錄待送通知：disk full。" + FAILURE_SUFFIX,
+            )
+            self.assertFalse(self.pending())
+            await pilot.press("ctrl+n")
+            await self.settle(app, pilot)
+            self.assertEqual(len(self.calls()), 1)
+            self.assertFalse(self.pending())
+            self.assertEqual(self.status(app), "")
+
+    async def test_failed_pending_persistence_blocks_first_close(self):
+        app = self.make_app(NOTIFY_DELAY=30)
+        async with app.run_test() as pilot:
+            with patch.object(
+                self.core, "mark_notification_pending", side_effect=OSError("disk full"),
+            ):
+                await self.type_and_wait(app, pilot, "a", 0)
+                await pilot.press("ctrl+q")
+                await self.settle(app, pilot)
+            self.assertIsNone(app.return_code)
+            self.assertIn("無法記錄待送通知", self.status(app))
+            await pilot.press("ctrl+q")
+            await self.settle(app, pilot)
+            self.assertIsNotNone(app.return_code)
+        self.assertEqual(self.calls(), [])
+        self.assertTrue(self.pending())
+
+    async def test_editing_is_frozen_while_close_flush_is_in_flight(self):
+        self.set_hcom("slow")
+        app = self.make_app(NOTIFY_DELAY=30)
+        async with app.run_test() as pilot:
+            await self.type_and_wait(app, pilot, "a", 0)
+            await pilot.press("ctrl+q")
+            await pilot.pause(0.1)
+            await pilot.press("b")
+            await self.settle(app, pilot)
+            self.assertIsNotNone(app.return_code)
+        self.assertIn("答覆：a\n", self.questions.read_text())
+        self.assertFalse(self.pending())
+        self.assertEqual(len(self.calls()), 1)
 
     async def test_pending_notification_is_resent_on_next_open(self):
         self.core.mark_notification_pending(self.questions)

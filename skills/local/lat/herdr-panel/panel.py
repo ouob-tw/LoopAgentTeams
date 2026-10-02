@@ -20,7 +20,8 @@ import sys
 import tempfile
 import tomllib
 
-sys.path.insert(0, str(Path(__file__).resolve().parent))
+if str(Path(__file__).resolve().parent) not in sys.path:
+    sys.path.insert(0, str(Path(__file__).resolve().parent))
 import lat_panel
 
 from textual.app import App, ComposeResult
@@ -40,6 +41,10 @@ def binding_error_text(error):
     return f"無法讀取 LAT 綁定：{error}"
 
 
+def failure_line(cause):
+    return f"通知失敗：{cause}。Ctrl+N 重試；再按 Ctrl+Q 保留待送並關閉"
+
+
 def notify_failure_text(reason, target):
     reason = (reason.strip().splitlines() or ["未知錯誤"])[0]
     target = target or "中控"
@@ -49,13 +54,13 @@ def notify_failure_text(reason, target):
         cause = f"{target} 未收到通知（不在線或未送達）"
     elif "No active agent" in reason:
         cause = f"{target} 不在線"
-    elif "no LAT controller is bound" in reason:
+    elif binding_error_text(reason) == NO_BINDING:
         cause = NO_BINDING
     elif "binding does not match" in reason:
         cause = "目前綁定的問題檔已不是這個檔案"
     else:
         cause = f"HCOM 錯誤：{reason}"
-    return f"通知失敗：{cause}。Ctrl+N 重試；再按 Ctrl+Q 保留待送並關閉"
+    return failure_line(cause)
 
 
 def herdr_theme(env, available):
@@ -77,12 +82,13 @@ def herdr_theme(env, available):
 def rpc(method, params, env):
     endpoint = env.get("HERDR_SOCKET_PATH")
     if env.get("HERDR_ENV") != "1" or not endpoint:
-        raise RuntimeError("run inside Herdr (HERDR_SOCKET_PATH is not set)")
+        raise RuntimeError("run inside Herdr (needs HERDR_ENV=1 and HERDR_SOCKET_PATH)")
     request_id = "lat-panel-open"
     with socket.socket(socket.AF_UNIX) as client:
         client.settimeout(5)
         client.connect(endpoint)
-        client.sendall((json.dumps({"id": request_id, "method": method, "params": params}) + "\n").encode())
+        request = {"id": request_id, "method": method, "params": params}
+        client.sendall((json.dumps(request) + "\n").encode())
         stream = client.makefile("rb")
         while line := stream.readline():
             response = json.loads(line)
@@ -139,6 +145,7 @@ class Panel(App):
         self.close_armed = False
         self.closing = False
         self.notify_timer = None
+        self.unrecorded_notification = False
         self.notify_lock = asyncio.Lock()
         if not error:
             try:
@@ -203,7 +210,7 @@ class Panel(App):
             return False
         self.saved = text
         self.close_armed = False
-        self.notices["save"] = self.notices["backup"] = ""
+        self.notices["save"] = ""
         self.render_status()
         self.mark_pending()
         return True
@@ -258,13 +265,13 @@ class Panel(App):
         draft = self.editor.text
         try:
             disk = self.path.read_text(encoding="utf-8")
-            backup = self.backup_draft(draft) if draft != self.saved else None
+            if draft != self.saved:
+                self.backup_draft(draft)
         except (OSError, ValueError) as error:
             self.set_notice("save", f"備份或載入失敗：{error}")
             return
         self.conflict = False
         self.notices["conflict"] = self.notices["save"] = ""
-        self.notices["backup"] = f"草稿已備份：{backup}" if backup else ""
         self.load(disk)
         self.render_status()
 
@@ -285,8 +292,11 @@ class Panel(App):
         try:
             lat_panel.mark_notification_pending(self.path)
         except (OSError, ValueError) as error:
-            self.set_notice("notify", notify_failure_text(str(error), ""))
+            # Keep the obligation in memory so retry and close persist it first.
+            self.unrecorded_notification = True
+            self.set_notice("notify", failure_line(f"無法記錄待送通知：{error}"))
             return
+        self.unrecorded_notification = False
         if self.notify_timer:
             self.notify_timer.stop()
         self.notify_timer = self.set_timer(self.NOTIFY_DELAY, self.start_notification)
@@ -298,6 +308,13 @@ class Panel(App):
         """Send the persisted pending notification; return whether none is left."""
         async with self.notify_lock:
             target = ""
+            if self.unrecorded_notification:
+                try:
+                    await asyncio.to_thread(lat_panel.mark_notification_pending, self.path)
+                except (OSError, ValueError) as error:
+                    self.set_notice("notify", failure_line(f"無法記錄待送通知：{error}"))
+                    return False
+                self.unrecorded_notification = False
             try:
                 if not await asyncio.to_thread(lat_panel.notification_is_pending, self.path):
                     self.set_notice("notify", "")
@@ -336,11 +353,15 @@ class Panel(App):
         if not self.save():
             return
         if self.close_armed:
+            if self.unrecorded_notification:
+                # Best effort: never trap the user in the popup over a disk error.
+                self.mark_pending()
             self.exit()
             return
         if self.notify_timer:
             self.notify_timer.stop()
         self.closing = True
+        self.editor.read_only = True
         self.run_worker(self.flush_and_close(), group="close")
 
     async def flush_and_close(self):
@@ -351,6 +372,7 @@ class Panel(App):
         if delivered:
             self.exit()
         else:
+            self.editor.read_only = False
             self.close_armed = True
 
 
