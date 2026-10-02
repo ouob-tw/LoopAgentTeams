@@ -215,16 +215,15 @@ def parse_questions(text):
         checked = False
         if answer_marker and submit_marker and submit_marker.end() <= len(current_raw):
             body = raw[status_end:answer_marker.start()].strip("\n")
-            following_answer = raw[
-                answer_marker.end():submit_marker.start()
-            ].strip("\n")
+            following_block = raw[answer_marker.end():submit_marker.start()]
             inline_answer = answer_marker.group("inline")
             if inline_answer.strip():
+                following_answer = following_block.removeprefix("\n").rstrip("\n")
                 answer = inline_answer + (
                     f"\n{following_answer}" if following_answer else ""
                 )
             else:
-                answer = following_answer
+                answer = following_block.strip("\n")
             answer_block = raw[answer_marker.start():submit_marker.end()]
             checked = submit_marker.group("checked").lower() == "x"
         status_label = match.group("status_label")

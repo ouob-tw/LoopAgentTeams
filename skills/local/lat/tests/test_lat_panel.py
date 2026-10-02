@@ -469,12 +469,12 @@ class QuestionCliTests(unittest.TestCase):
             "答覆：\n\n- [ ] 送出\n"
         )
         answered = pending.replace(
-            "答覆：\n\n- [ ] 送出", "答覆：B\nSecond line\n\n- [X] 送出"
+            "答覆：\n\n- [ ] 送出", "答覆：B\n\nSecond paragraph\n\n- [X] 送出"
         )
         self.questions.write_text(pending)
         self.assertTrue(panel.save_panel_edit(self.questions, pending, answered))
         [parsed] = panel.parse_questions(answered)
-        self.assertEqual(parsed["answer"], "B\nSecond line")
+        self.assertEqual(parsed["answer"], "B\n\nSecond paragraph")
         self.assertEqual(parsed["status"], "ready")
 
         proof = panel.question_provenance(
@@ -501,7 +501,7 @@ class QuestionCliTests(unittest.TestCase):
         )
         self.assertEqual(self.questions.read_text(), "")
         self.assertIn(
-            "答覆：B\nSecond line\n\n- [X] 送出",
+            "答覆：B\n\nSecond paragraph\n\n- [X] 送出",
             self.questions.with_name("questions-archive.md").read_text(),
         )
 
