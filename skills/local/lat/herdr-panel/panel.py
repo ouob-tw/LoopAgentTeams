@@ -250,6 +250,7 @@ class Draft:
         self.other = ""
         self.note = ""
         self.unmatched = ""
+        self.unsaved = False
         answer = lat_panel.parse_question_answer(section) if section["answer"] else None
         if answer is not None:
             self.restore(answer)
@@ -264,8 +265,11 @@ class Draft:
 
     @property
     def submittable(self):
-        """Editable with an answer the review tab shows in full."""
-        return self.editable and self.answer() is not None and not self.unmatched
+        """Editable with a saved answer the review tab shows in full."""
+        return (
+            self.editable and self.answer() is not None
+            and not self.unmatched and not self.unsaved
+        )
 
     def restore(self, answer):
         self.note = answer.note
@@ -327,6 +331,8 @@ class Draft:
     def summary(self):
         """Answer text shown on the review tab."""
         answer = self.answer()
+        if self.unsaved:
+            return "（未儲存：答覆或備註含不允許的行）"
         if answer is None:
             return self.unmatched or "（未作答）"
         area = lat_panel.render_answer_area(answer)
@@ -752,6 +758,8 @@ class Panel(App):
             and not self.raw_mode and not self.read_only
         )
         label = self.query_one("#input-label", Static)
+        # Focus only through open_input, so every focused input has a target.
+        self.input.can_focus = not shown
         if shown:
             label.update(f"{draft.id} 答覆（Enter 或直接輸入）")
             if self.input.text != draft.other:
@@ -880,6 +888,7 @@ class Panel(App):
         self.input.load_text(draft.note if target == "note" else draft.other)
         self.input.display = True
         self.input.read_only = False
+        self.input.can_focus = True
         self.input.focus()
         self.input.move_cursor(self.input.document.end)
         self.query_one("#keys", Static).update(INPUT_KEYS)
@@ -945,6 +954,7 @@ class Panel(App):
             )
         except lat_panel.AnswerFormatError:
             # Keep the typed text so the user can fix the offending line.
+            draft.unsaved = True
             self.notices["save"] = FORGED
             return False
         except (OSError, ValueError) as error:
@@ -954,6 +964,7 @@ class Panel(App):
         self.notices["save"] = ""
         if result["status"] == "saved":
             draft.hash = result["section_sha256"]
+            draft.unsaved = False
             if self.revised.pop(draft.id, None):
                 self.render_revised()
             return True

@@ -234,6 +234,14 @@ class InputOnlyTests(SelectorTestCase):
             await self.press(pilot, "escape", "left")
             self.assertFalse(app.input.display)
 
+    async def test_clicking_the_input_only_box_still_saves_what_is_typed(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "right")
+            await pilot.click("#input")
+            await self.press(pilot, *"hi")
+            self.assertTrue(self.text().endswith("答覆：hi\n\n- [ ] 送出\n"))
+
     async def test_text_that_would_forge_a_submit_box_is_not_saved(self):
         app = self.make_app()
         async with app.run_test() as pilot:
@@ -245,7 +253,11 @@ class InputOnlyTests(SelectorTestCase):
             self.assertIs(app.focused, app.input)
             self.assertTrue(self.text().endswith("答覆：x\n- [x] 送\n\n- [ ] 送出\n"))
             self.assertEqual(self.core.parse_questions(self.text())[-1]["status"], "pending")
-            await self.press(pilot, "backspace", "backspace", "escape")
+            await self.press(pilot, "escape", "right")
+            self.assertIn("☒ 還有什麼想法？\n  （未儲存：答覆或備註含不允許的行）", self.view(app))
+            await self.press(pilot, "enter")
+            self.assertIn("沒有可送出的答覆", self.status(app))
+            await self.press(pilot, "left", "enter", "backspace", "backspace", "escape")
             self.assertNotIn("沒有儲存", self.status(app))
             self.assertTrue(self.text().endswith("答覆：x\n- [x] \n\n- [ ] 送出\n"))
 
