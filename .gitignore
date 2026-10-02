@@ -1,2 +1,4 @@
 .lat/
 .worktrees/
+__pycache__/
+*.pyc

@@ -122,6 +122,7 @@ class LockedReplaceTests(unittest.TestCase):
                 "after_sha256": hashlib.sha256(after.encode()).hexdigest(),
                 "changed_questions": [{
                     "id": "Q1", "before_status": "pending", "after_status": "ready",
+                    "section_sha256": hashlib.sha256(after.encode()).hexdigest(),
                 }],
             })
 
@@ -176,7 +177,7 @@ class QuestionCliTests(unittest.TestCase):
         self.assertNotIn("agent note", text)
         self.assertTrue(text.endswith(other))
 
-    def test_set_status_refuses_revision_mismatch_then_updates_only_the_header(self):
+    def test_set_status_refuses_revision_or_section_mismatch_then_updates_only_the_header(self):
         original = (
             "Intro\n\n## Q1 | r2 | ready\n問題：Question\n選項：A\n建議：Advice\n"
             "影響：Impact\n答覆：Answer\n批註：Note\n"
@@ -185,21 +186,114 @@ class QuestionCliTests(unittest.TestCase):
 
         mismatch = self.cli(
             "question", "set-status", "--id", "Q1", "--revision", "1",
-            "--status", "recorded",
+            "--status", "recorded", "--expected-section-sha256", "unused",
         )
         self.assertNotEqual(mismatch.returncode, 0)
         self.assertIn("revision mismatch", mismatch.stderr)
         self.assertEqual(self.questions.read_text(), original)
 
+        hash_result = self.cli(
+            "question", "section-hash", "--questions", self.questions, "--id", "Q1",
+        )
+        self.assertEqual(hash_result.returncode, 0, hash_result.stderr)
         result = self.cli(
             "question", "set-status", "--id", "Q1", "--revision", "2",
-            "--status", "recorded",
+            "--status", "recorded", "--expected-section-sha256",
+            json.loads(hash_result.stdout)["section_sha256"],
         )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(
             self.questions.read_text(),
             original.replace("## Q1 | r2 | ready", "## Q1 | r2 | recorded"),
         )
+
+    def test_provenance_survives_an_agent_upsert_to_another_question(self):
+        before = (
+            "## Q1 | r1 | pending\n問題：Choose\n選項：A\n建議：\n影響：\n"
+            "答覆：\n批註：\n\n"
+            "## Q2 | r1 | pending\n問題：Other\n選項：B\n建議：Old\n影響：\n"
+            "答覆：\n批註：\n"
+        )
+        answered = before.replace("## Q1 | r1 | pending", "## Q1 | r1 | ready").replace(
+            "答覆：\n批註：", "答覆：A\n批註：", 1
+        )
+        self.questions.write_text(before)
+        panel = load_module()
+        self.assertTrue(panel.save_panel_edit(self.questions, before, answered))
+        section = self.root / "section.md"
+        section.write_text(
+            "## Q2 | r1 | pending\n問題：Other\n選項：B\n建議：New\n影響：\n"
+            "答覆：\n批註：\n"
+        )
+        self.assertEqual(
+            self.cli("question", "upsert", "--id", "Q2", "--file", section).returncode,
+            0,
+        )
+        snapshot = self.root / "snapshot.md"
+        snapshot.write_text(self.questions.read_text())
+
+        result = self.cli(
+            "question", "provenance", "--questions", snapshot,
+            "--journal", self.questions.parent / "panel-journal.jsonl", "--id", "Q1",
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        proof = json.loads(result.stdout)
+        self.assertEqual(proof["status"], "ok")
+        self.assertEqual(proof["id"], "Q1")
+        self.assertEqual(
+            proof["journal_path"], str(self.questions.parent / "panel-journal.jsonl")
+        )
+        self.assertEqual(proof["journal_line"], 1)
+        self.assertRegex(proof["time"], r"^\d{4}-\d\d-\d\dT.*Z$")
+        self.assertEqual(
+            proof["section_sha256"],
+            hashlib.sha256(
+                answered.split("\n\n## Q2", 1)[0].encode() + b"\n"
+            ).hexdigest(),
+        )
+
+    def test_provenance_refuses_legacy_entry_without_a_section_hash(self):
+        section = (
+            "## Q1 | r1 | ready\n問題：Choose\n選項：A\n建議：\n影響：\n"
+            "答覆：A\n批註：\n"
+        )
+        self.questions.write_text(section)
+        journal = self.questions.parent / "panel-journal.jsonl"
+        journal.write_text(json.dumps({
+            "time": "2026-10-02T00:00:00Z",
+            "after_sha256": hashlib.sha256(section.encode()).hexdigest(),
+            "changed_questions": [{
+                "id": "Q1", "before_status": "pending", "after_status": "ready",
+            }],
+        }) + "\n")
+
+        result = self.cli(
+            "question", "provenance", "--questions", self.questions,
+            "--journal", journal, "--id", "Q1",
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("has no per-question section hash", result.stderr)
+
+    def test_set_status_refuses_when_answer_changed_after_snapshot(self):
+        original = (
+            "## Q1 | r1 | ready\n問題：Choose\n選項：A\n建議：\n影響：\n"
+            "答覆：A\n批註：\n"
+        )
+        self.questions.write_text(original)
+        expected_hash = hashlib.sha256(original.encode()).hexdigest()
+        edited = original.replace("答覆：A", "答覆：B")
+        self.questions.write_text(edited)
+
+        result = self.cli(
+            "question", "set-status", "--id", "Q1", "--revision", "1",
+            "--status", "recorded", "--expected-section-sha256", expected_hash,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("section hash mismatch", result.stderr)
+        self.assertEqual(self.questions.read_text(), edited)
 
     def test_upsert_without_question_change_keeps_revision_status_answer_and_annotation(self):
         self.questions.write_text(
@@ -383,6 +477,42 @@ class PluginDirectoryTests(unittest.TestCase):
 
 
 class NotificationTests(unittest.TestCase):
+    def test_real_hcom_receipts_accept_exact_or_tagged_base_name_only(self):
+        panel = load_module()
+        cases = (
+            ("zone", ["zone"], True),
+            ("koma-qa-zone", ["zone"], True),
+            ("koma-qa-zone", ["koma"], False),
+        )
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            questions = root / "project/.lat/questions.md"
+            questions.parent.mkdir(parents=True)
+            questions.write_text("no answer content")
+            state_dir = root / "state"
+            for target, delivered_to, expected_ok in cases:
+                with self.subTest(target=target, delivered_to=delivered_to):
+                    panel.mark_notification_pending(questions, state_dir=state_dir)
+                    receipt = subprocess.CompletedProcess(
+                        ["hcom", "send"], 0,
+                        json.dumps({"delivered_to": delivered_to}), "",
+                    )
+                    binding = {
+                        "hcom_name": target,
+                        "questions_path": str(questions),
+                    }
+                    with patch.object(panel.subprocess, "run", return_value=receipt):
+                        ok, _reason = panel.send_pending_notification(
+                            questions, binding, state_dir=state_dir,
+                        )
+                    self.assertEqual(ok, expected_ok)
+                    self.assertEqual(
+                        panel.notification_is_pending(
+                            questions, state_dir=state_dir,
+                        ),
+                        not expected_ok,
+                    )
+
     def test_pending_state_survives_failed_delivery_and_clears_after_target_delivery(self):
         panel = load_module()
         with tempfile.TemporaryDirectory() as directory:

@@ -8,6 +8,12 @@
 uv run --no-project python -m unittest discover -s "$lat_dir/tests"
 ```
 
+在 `skills/local/lat` 執行包含 Textual 面板的完整測試：
+
+```bash
+uv run --no-project --with textual==8.2.8 python -m unittest discover -s tests
+```
+
 實機測試使用專用 Git 工作區、隔離 `CODEX_HOME`、技能副本與假進度／待決檔，保留原始 transcript 與 hook 設定。若複製 auth，限制權限為 0600，禁止輸出內容；測試完成以 `shred -u` 清除。測試程序結束後清理自己的非機密暫存資源。
 
 1. install preview → install → 正常 `/hooks` 信任；核對其他 command 保留。啟動 Codex 主控載入 `$lat`，讀設定後 activate，完整讀 references 與假進度。
