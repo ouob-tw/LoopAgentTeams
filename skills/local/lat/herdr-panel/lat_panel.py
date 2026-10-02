@@ -144,15 +144,28 @@ _SECTION_HEADER = re.compile(
     r"\| (?P<status>pending|ready|recorded)[ \t]*$",
     re.MULTILINE,
 )
-_FIELD = re.compile(
-    r"^(?P<name>問題|選項|建議|影響|答覆|批註)：(?P<value>.*?)"
-    r"(?=^(?:問題|選項|建議|影響|答覆|批註)：|\Z)",
-    re.MULTILINE | re.DOTALL,
-)
 _ARCHIVE_HEADER = re.compile(
     r"^### 舊版 r[1-9][0-9]*（不套用至 r[1-9][0-9]*）$", re.MULTILINE
 )
 _FIELD_NAMES = ("問題", "選項", "建議", "影響", "答覆", "批註")
+
+
+def _ordered_fields(text):
+    matches = []
+    cursor = 0
+    for name in _FIELD_NAMES:
+        match = re.search(rf"^{re.escape(name)}：", text[cursor:], re.MULTILINE)
+        if match is None:
+            continue
+        start = cursor + match.start()
+        end = cursor + match.end()
+        matches.append((name, start, end))
+        cursor = end
+    fields = {}
+    for index, (name, _start, value_start) in enumerate(matches):
+        value_end = matches[index + 1][1] if index + 1 < len(matches) else len(text)
+        fields[name] = text[value_start:value_end].rstrip("\n")
+    return fields, {name: start for name, start, _end in matches}
 
 
 def parse_questions(text):
@@ -164,10 +177,8 @@ def parse_questions(text):
         raw = text[match.start():end]
         archive = _ARCHIVE_HEADER.search(raw)
         current_raw = raw[:archive.start()] if archive else raw
-        fields = {
-            field.group("name"): field.group("value").rstrip("\n")
-            for field in _FIELD.finditer(current_raw)
-        }
+        fields, field_starts = _ordered_fields(current_raw)
+        answer_start = field_starts.get("答覆")
         sections.append({
             "id": match.group("id"),
             "revision": int(match.group("revision")),
@@ -176,6 +187,7 @@ def parse_questions(text):
             "end": end,
             "raw": raw,
             "fields": fields,
+            "user_tail": current_raw[answer_start:] if answer_start is not None else "",
         })
     return sections
 
@@ -240,20 +252,25 @@ def upsert_question(questions_path, question_id, section_text):
             if content_changed:
                 revision = existing["revision"] + 1
                 status = "pending"
+                prior_user_text = existing["user_tail"].rstrip("\n")
                 prior = (
                     f"### 舊版 r{existing['revision']}（不套用至 r{revision}）\n"
-                    f"答覆：{existing['fields'].get('答覆', '')}\n"
-                    f"批註：{existing['fields'].get('批註', '')}"
+                    f"{prior_user_text}"
                 )
                 older = _archive_text(existing["raw"])
                 archives = prior + (f"\n\n{older}" if older else "")
             else:
                 revision = existing["revision"]
                 status = existing["status"]
-                fields["答覆"] = existing["fields"].get("答覆", "")
-                fields["批註"] = existing["fields"].get("批註", "")
                 archives = _archive_text(existing["raw"])
-            replacement = _render_section(question_id, revision, status, fields, archives)
+            if content_changed:
+                replacement = _render_section(
+                    question_id, revision, status, fields, archives
+                )
+            else:
+                prefix = [f"## {question_id} | r{revision} | {status}"]
+                prefix.extend(f"{name}：{fields[name]}" for name in _FIELD_NAMES[:4])
+                replacement = "\n".join(prefix) + "\n" + existing["user_tail"] + archives
             updated = document[:existing["start"]] + replacement + document[existing["end"]:]
         _replace_locked(questions_path, updated)
         return revision

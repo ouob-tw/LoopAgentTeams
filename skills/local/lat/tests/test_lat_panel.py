@@ -259,6 +259,26 @@ class QuestionCliTests(unittest.TestCase):
         self.assertIn(f"答覆：{original_answer}\n", text)
         self.assertIn(f"批註：{original_note}\n", text)
 
+    def test_question_update_archives_field_like_lines_inside_the_user_answer(self):
+        original_user_text = (
+            "答覆：A\n建議：This line is part of the user answer\n"
+            "問題：This line is also part of the answer\n批註：User note\n"
+        )
+        self.questions.write_text(
+            "## Q1 | r1 | ready\n問題：Old\n選項：A\n建議：Agent advice\n影響：Impact\n"
+            + original_user_text
+        )
+        section = self.root / "section.md"
+        section.write_text(
+            "## Q1 | r1 | pending\n問題：New\n選項：A\n建議：New advice\n影響：Impact\n"
+            "答覆：\n批註：\n"
+        )
+
+        result = self.cli("question", "upsert", "--id", "Q1", "--file", section)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(original_user_text.rstrip("\n"), self.questions.read_text())
+
 
 class BindingCliTests(unittest.TestCase):
     def setUp(self):
