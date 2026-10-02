@@ -3,22 +3,21 @@
 Textual 8.2.8 has no public hook for TextArea wrapping. ``WrappedDocument``
 calls ``textual._wrap.compute_wrap_offsets``, which splits lines with the
 module-level ``chunks`` function at whitespace only, so a space-free CJK run
-moves to the next line as one word. ``install()`` replaces two private names
-used only by ``WrappedDocument``: ``textual._wrap.chunks`` with one that also
-allows breaks between CJK characters, and the document's
-``compute_wrap_offsets`` with a wrapper that moves a character fold of an
-over-wide word off a kinsoku position. Textual's own placement, folding, tab
-and cell-width logic stays in use. ``tests/test_lat_panel_wrap.py`` pins these
-hooks to textual==8.2.8.
+moves to the next line as one word. ``install()`` points the document's private
+``compute_wrap_offsets`` name at Textual's own function run with this module's
+``chunks``, which also breaks between CJK characters and pre-folds over-wide
+words at kinsoku-safe positions. Textual's placement, tab and cell-width logic
+stays in use; the ``textual._wrap`` module itself is not modified.
+``tests/test_lat_panel_wrap.py`` pins these internals to textual==8.2.8.
 """
+from types import FunctionType
 import re
 import unicodedata
 
+from rich.cells import cell_len, get_character_cell_size
 from textual import _wrap
 from textual.document import _wrapped_document
 
-TEXTUAL_CHUNKS = _wrap.chunks
-TEXTUAL_COMPUTE_WRAP_OFFSETS = _wrap.compute_wrap_offsets
 # Same chunks as Textual's ``re_chunk`` (``\S+\s*|\s+``), with the word captured.
 RE_CHUNK = re.compile(r"(\S+)\s*|\s+")
 
@@ -27,7 +26,9 @@ CJK_NO_START = frozenset("，。、；：！？）］｝〉》」』】〕〗〙
 # ... and these never end one.
 CJK_NO_END = frozenset("（［｛〈《「『【〔〖〘〝“‘")
 # ASCII closing/opening marks only matter next to CJK, where a new break would
-# otherwise appear (``GitHub）`` / ``中文)``); breaks at spaces keep Textual's rules.
+# otherwise appear (``GitHub）`` / ``中文)``); breaks at spaces and folds of
+# over-wide words keep Textual's behaviour for them.
+KINSOKU_MARKS = CJK_NO_START | CJK_NO_END
 NO_START = CJK_NO_START | frozenset(")]},.;:!?%")
 NO_END = CJK_NO_END | frozenset("([{")
 
@@ -43,58 +44,72 @@ def _break_between(before, after):
     return is_cjk(before) or is_cjk(after)
 
 
-def _kinsoku_blocks(text, position):
-    """Whether a break before ``text[position]`` violates CJK kinsoku; used at
-    spaces and folds, where ASCII marks keep Textual's behaviour."""
-    return (
-        text[position] in CJK_NO_START
-        or text[:position].rstrip()[-1:] in CJK_NO_END
-    )
+def _kinsoku_blocks(before, after):
+    """Whether a space break or fold between these non-space characters
+    violates CJK kinsoku."""
+    return after in CJK_NO_START or before in CJK_NO_END
 
 
-def chunks(text):
+def _fold(text, start, end, width):
+    """Cut positions folding the word ``text[start:end]`` to ``width`` like
+    Textual, moving a cut back off a kinsoku position when the line allows it."""
+    cuts = []
+    line_start, used = start, 0
+    for position in range(start, end):
+        size = get_character_cell_size(text[position])
+        if position > line_start and used + size > width:
+            cut = position
+            while cut > line_start and _kinsoku_blocks(text[cut - 1], text[cut]):
+                cut -= 1
+            line_start = cut if cut > line_start else position
+            cuts.append(line_start)
+            used = cell_len(text[line_start:position])
+        used += size
+    return cuts
+
+
+def chunks(text, width=None):
     """Yield ``(start, end, chunk)`` like ``textual._wrap.chunks``, split further
-    between CJK characters; trailing whitespace stays on the last piece."""
+    between CJK characters; trailing whitespace stays on the last piece. With
+    ``width``, words wider than it that hold CJK marks are cut where Textual
+    would fold them, kept off kinsoku positions."""
     if not text:
         return
     cuts = []
+    previous = ""  # last non-space character before the current chunk
     for match in RE_CHUNK.finditer(text):
         start = match.start()
-        if start and not _kinsoku_blocks(text, start):
+        if start and not _kinsoku_blocks(previous, text[start]):
             cuts.append(start)
         if match.group(1):
             cuts.extend(
                 position for position in range(start + 1, match.end(1))
                 if _break_between(text[position - 1], text[position])
             )
+            previous = text[match.end(1) - 1]
     bounds = [0, *cuts, len(text)]
     for start, end in zip(bounds, bounds[1:]):
-        yield start, end, text[start:end]
+        word = text[start:end].rstrip()
+        # Only words with CJK marks are pre-folded; others keep Textual's fold.
+        folds = (
+            _fold(text, start, start + len(word), width)
+            if width and cell_len(word) > width
+            and not KINSOKU_MARKS.isdisjoint(word) else []
+        )
+        for piece_start, piece_end in zip([start, *folds], [*folds, end]):
+            yield piece_start, piece_end, text[piece_start:piece_end]
 
 
 def compute_wrap_offsets(
     text, width, tab_size, fold=True, precomputed_tab_sections=None,
 ):
-    """Textual's offsets, with folds inside an over-wide chunk moved back so a
-    closing mark does not start a line nor an opening mark end one."""
-    offsets = TEXTUAL_COMPUTE_WRAP_OFFSETS(
-        text, width, tab_size, fold, precomputed_tab_sections
+    """``textual._wrap.compute_wrap_offsets`` run with this module's ``chunks``."""
+    textual_compute = FunctionType(
+        _wrap.compute_wrap_offsets.__code__,
+        {**vars(_wrap), "chunks": lambda line: chunks(line, width)},
     )
-    if "\t" in text:  # tab stops are relative to the document line; keep as is
-        return offsets
-    for index, offset in enumerate(offsets):
-        if not _kinsoku_blocks(text, offset):
-            continue
-        line_start = offsets[index - 1] if index else 0
-        moved = offset - 1
-        while moved > line_start and _kinsoku_blocks(text, moved):
-            moved -= 1
-        if moved > line_start:
-            rest = compute_wrap_offsets(text[moved:], width, tab_size, fold)
-            return [*offsets[:index], moved, *(moved + rest_offset for rest_offset in rest)]
-    return offsets
+    return textual_compute(text, width, tab_size, fold, precomputed_tab_sections)
 
 
 def install():
-    _wrap.chunks = chunks
     _wrapped_document.compute_wrap_offsets = compute_wrap_offsets
