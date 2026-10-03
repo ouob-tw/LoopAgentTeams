@@ -181,9 +181,32 @@ class SingleSelectTests(SelectorTestCase):
             self.assertIsNone(app.return_code)
             self.assertIsNone(app.focused)
             self.assertIn("其他（自己輸入）  ✔", self.view(app))
-            await self.press(pilot, "4", *["backspace"] * 5, "escape")
+            await self.press(pilot, "enter", *["backspace"] * 5, "escape")
             self.assertIn("答覆：\n\n- [ ] 送出", section(self.text(), "Q1"))
             self.assertNotIn("✔", self.view(app))
+
+    async def test_typing_on_the_other_row_goes_straight_into_its_text(self):
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await self.press(pilot, "down", "down", "down", "a")
+            self.assertIs(app.focused, app.input)
+            await self.press(pilot, "1", "space", "b")
+            self.assertEqual(app.input.text, "a1 b")
+            self.assertIn("答覆：其他：a1 b\n\n- [ ] 送出", self.text())
+            screen = self.screen(app)
+            self.assertIn("❯ 4. 其他（自己輸入）  ✔", screen)
+            self.assertIn("Q1 其他（自己輸入）", screen)
+            await self.press(pilot, "escape", "c")
+            self.assertEqual(app.input.text, "a1 bc")
+            await self.press(pilot, "escape", "up", "1")
+            self.assertIn("答覆：A. 合併到 dev，不推送\n", self.text())
+
+    async def test_typing_on_the_other_row_checks_it_in_multi_select(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "1", "down", "down", "down", "x", "space", "2")
+            self.assertEqual(app.input.text, "x 2")
+            self.assertIn("答覆：主控綁定；其他：x 2\n", self.text())
 
     async def test_tab_adds_a_note_after_an_answer_only(self):
         app = self.make_app()
@@ -219,7 +242,7 @@ class MultiSelectTests(SelectorTestCase):
             self.assertIn("- [ ] 主控綁定\n  綁定 tab。\n- [ ] 封存\n- [ ] 通知\n", self.text())
             await self.press(pilot, "4", *"自訂", "escape")
             self.assertIn("答覆：主控綁定；其他：自訂\n", self.text())
-            await self.press(pilot, "1")
+            await self.press(pilot, "up", "1")
             self.assertIn("答覆：其他：自訂\n", self.text())
             await self.press(pilot, "enter")
             self.assertEqual(app.current.id, "Q3")
@@ -655,7 +678,7 @@ class ReviewFixTests(SelectorTestCase):
             await self.press(pilot, "1", "tab", "n", "escape", "4", "escape")
             self.assertIn("答覆：A. 合併到 dev，不推送\n備註：n\n", self.text())
             self.assertEqual(app.current.selected, [0])
-            await self.press(pilot, "4", "x", "escape")
+            await self.press(pilot, "x", "escape")
             self.assertIn("答覆：其他：x\n備註：n\n", self.text())
 
     async def test_note_is_hidden_while_there_is_no_answer_to_keep_it(self):

@@ -528,7 +528,7 @@ class Panel(App):
             draft = self.current
             if (
                 self.focused is None and not self.raw_mode and not self.closing
-                and draft and draft.editable and draft.kind is None
+                and self.typing_target(draft)
                 and event.is_printable and event.character
             ):
                 event.stop()
@@ -821,10 +821,22 @@ class Panel(App):
                 self.input.load_text(draft.other)
         self.input.display = label.display = shown
 
+    def typing_target(self, draft):
+        """The input a printable key types into: input-only answer or the 其他 row."""
+        if not draft or not draft.editable:
+            return None
+        if draft.kind is None:
+            return "text"
+        return "other" if draft.cursor == draft.other_index else None
+
     def type_text(self, draft, character):
-        """Start typing an input-only answer with the key that was pressed."""
-        self.open_input("text")
+        """Start typing an answer or 其他 text with the key that was pressed."""
+        target = self.typing_target(draft)
+        self.open_input(target)
         self.input.insert(character)
+        if target == "other" and draft.kind == "multi" and draft.other_index not in draft.selected:
+            draft.unmatched = ""
+            draft.selected.append(draft.other_index)
         self.write_text_change(draft, self.input.text)
 
     def on_resize(self, _event):
@@ -872,7 +884,7 @@ class Panel(App):
         if self.picker_active:
             raise SkipAction()
         draft = self.selector_draft()
-        if draft and draft.editable and draft.kind is None:
+        if self.typing_target(draft):
             self.type_text(draft, str(digit))
             return
         if not draft or not draft.editable:
@@ -907,7 +919,7 @@ class Panel(App):
 
     def action_toggle(self):
         draft = self.selector_draft()
-        if draft and draft.editable and draft.kind is None:
+        if self.typing_target(draft):
             self.type_text(draft, " ")
             return
         if draft and draft.editable and draft.kind == "multi":
