@@ -353,6 +353,20 @@ class Draft:
         return "☒" if self.answer() is not None or self.unmatched else "☐"
 
 
+class Body(VerticalScroll):
+    """The scrolling question area; redraws once it has its new size."""
+
+    def on_resize(self, event):
+        self.app.on_resize(event)
+
+
+class View(Static):
+    """The question text; rewraps once it has its new width."""
+
+    def on_resize(self, event):
+        self.app.on_resize(event)
+
+
 class Panel(App):
     NOTIFY_DELAY = 2.0
     POLL_INTERVAL = 0.5
@@ -457,8 +471,8 @@ class Panel(App):
     def compose(self) -> ComposeResult:
         yield Static(self.picker_text(), id="picker", markup=False)
         yield Static("", id="tabs", markup=False)
-        with VerticalScroll(id="body"):
-            yield Static("", id="view", markup=False)
+        with Body(id="body"):
+            yield View("", id="view", markup=False)
         yield Static("", id="input-label", markup=False)
         yield TextArea("", soft_wrap=True, show_line_numbers=False, id="input")
         yield TextArea(
@@ -718,8 +732,8 @@ class Panel(App):
         if draft.note and draft.answer() is not None:
             rows.append(("備註：", draft.note, ""))
         if item is None:
-            # Nothing to point at: show the end, where the answer is.
-            item = (len(rows) - 1, len(rows))
+            # Nothing to point at: a typed answer is at the end, options start at the top.
+            item = (len(rows) - 1, len(rows)) if draft.kind is None else top
             return rows, item, item
         reveal = (
             0 if draft.cursor == 0 else item[0],
@@ -758,7 +772,7 @@ class Panel(App):
         body = self.query_one("#body")
         rows, item, reveal = self.view_rows()
         view = self.query_one("#view", Static)
-        width = max(view.size.width or self.size.width - 4, 20)
+        width = max(view.size.width or self.size.width - 4, 1)
         text, starts = wrap_rows(rows, width)
         view.update(text)
         draft = self.current
@@ -814,6 +828,8 @@ class Panel(App):
         self.write_text_change(draft, self.input.text)
 
     def on_resize(self, _event):
+        # Leave room for the tabs, two body lines, the input label and the footer.
+        self.input.styles.max_height = max(3, min(10, self.size.height - 6))
         if not self.raw_mode and not self.picker_active:
             self.refresh_view()
 

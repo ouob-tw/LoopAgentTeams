@@ -7,11 +7,6 @@ import json
 import unittest
 from unittest.mock import patch
 
-try:
-    from textual import events
-except ImportError:
-    events = None
-
 from test_lat_panel_ui import HAS_TEXTUAL, PanelTestCase
 
 SINGLE = (
@@ -743,17 +738,62 @@ class SmallTerminalTests(SelectorTestCase):
             self.assertIn("❯ 3. 不符合，先別結案  ✔", screen)
             self.assertIn("Q1 備註", screen)
 
+    async def test_focused_option_stays_on_screen_in_a_very_narrow_terminal(self):
+        app = self.make_app()
+        async with app.run_test(size=(20, 10)) as pilot:
+            await self.press(pilot, "down", "down", "down")
+            self.assertIn("❯ 4. 其他（自己", self.screen(app))
+
+    async def test_tall_note_leaves_the_chosen_option_and_footer_on_screen(self):
+        app = self.make_app()
+        async with app.run_test(size=(40, 8)) as pilot:
+            await self.press(pilot, "3", "tab", "a", "enter", "b", "enter", "c", "enter", "d")
+            screen = self.screen(app)
+            self.assertIn("❯ 3. 不符合，先別結案  ✔", screen)
+            self.assertIn("Enter 換行 · Esc 離開輸入框", screen)
+            self.assertEqual(app.current.note, "a\nb\nc\nd")
+
+    async def test_shrinking_the_terminal_keeps_the_focused_option_on_screen(self):
+        for size in ((40, 12), (30, 10)):
+            app = self.make_app()
+            async with app.run_test(size=(80, 24)) as pilot:
+                await self.press(pilot, "down", "down", "down")
+                await pilot.resize_terminal(*size)
+                await pilot.pause()
+                self.assertIn("❯ 4. 其他（自己輸入）", self.screen(app), size)
+
+    async def test_long_text_in_every_input_keeps_its_end_and_the_footer_on_screen(self):
+        for keys in (("3", "tab"), ("4",), ("right", "enter")):
+            self.questions.write_text(CHECK + "\n" + TEXT)
+            app = self.make_app()
+            async with app.run_test(size=(40, 8)) as pilot:
+                await self.press(pilot, *keys, *["n", "enter"] * 9, *"END")
+                screen = self.screen(app)
+                self.assertIn("END", screen, keys)
+                self.assertIn("Enter 換行 · Esc 離開輸入框", screen, keys)
+
+    async def test_submitted_question_opens_at_its_title(self):
+        self.questions.write_text(CHECK.replace(
+            "答覆：\n\n- [ ] 送出", "答覆：C. 不符合，先別結案\n備註：a\nb\nc\nd\ne\nf\n\n- [x] 送出",
+        ))
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)):
+            screen = self.screen(app)
+            self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", screen)
+            self.assertIn("已送出，等待記錄", screen)
+
     async def test_mouse_wheel_scrolls_the_body(self):
         app = self.make_app()
         async with app.run_test(size=(40, 12)) as pilot:
             await self.press(pilot, "down", "down", "down")
+            from textual import events
             body = app.query_one("#body")
             for _ in range(3):
                 body.post_message(events.MouseScrollUp(body, 5, 5, 0, 0, 0, False, False, False))
             await pilot.pause(0.5)
             self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
 
-    async def test_page_keys_scroll_the_question_and_the_review(self):
+    async def test_page_keys_scroll_the_question(self):
         app = self.make_app()
         async with app.run_test(size=(40, 8)) as pilot:
             self.assertNotIn("4. 其他（自己輸入）", self.screen(app))
@@ -762,6 +802,8 @@ class SmallTerminalTests(SelectorTestCase):
             self.assertEqual(app.current.cursor, 0)
             await self.press(pilot, "pageup", "pageup")
             self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
+
+    async def test_page_keys_scroll_the_review(self):
         self.questions.write_text("\n".join(
             CHECK.replace("Q1", f"Q{number}") for number in range(1, 6)
         ))
