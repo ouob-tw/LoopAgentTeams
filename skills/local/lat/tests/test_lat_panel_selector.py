@@ -246,6 +246,23 @@ class SingleSelectTests(SelectorTestCase):
             self.assertEqual(app.current.id, "Q2")
             self.assertIn("備註：why\nmore\n", section(self.text(), "Q1"))
 
+    async def test_enter_stays_on_the_question_when_the_choice_was_not_saved(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "tab", "n", "enter", *"- [x]", "space", *"送出", "escape")
+            self.assertIn("這次輸入沒有儲存", self.status(app))
+            await self.press(pilot, "down", "enter")
+            self.assertEqual(app.current.id, "Q1")
+            self.assertIn("答覆：A. 合併到 dev，不推送\n", self.text())
+
+    async def test_tab_on_the_other_row_needs_other_to_be_the_answer(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "down", "down", "down", "x", "escape", "up", "up", "up", "1")
+            await self.press(pilot, "down", "down", "down", "tab")
+            self.assertIsNone(app.focused)
+            self.assertIn("先選擇或輸入答覆", self.status(app))
+
     async def test_tab_on_the_other_row_needs_its_text_first(self):
         app = self.make_app()
         async with app.run_test() as pilot:
@@ -857,14 +874,24 @@ class SmallTerminalTests(SelectorTestCase):
     async def test_wrapped_notice_and_tall_note_leave_the_option_and_footer_on_screen(self):
         app = self.make_app()
         async with app.run_test(size=(40, 12)) as pilot:
-            await self.press(pilot, "3", "tab")
-            app.input.insert("a\nb\nc\nd\n- [x] 送出")
-            await pilot.pause()
-            await pilot.pause()
+            await self.press(
+                pilot, "3", "tab", *"a|b|c|d|".replace("|", " enter ").split(),
+                *"- [x]", "space", *"送出",
+            )
             screen = self.screen(app)
             self.assertIn("沒有儲存", screen)
+            self.assertIn("▊ - [x] 送出", screen)
             self.assertIn("❯ 3. 不符合，先別結案", screen)
             self.assertIn("Enter 換行 · Esc 離開輸入框", screen)
+
+    async def test_shrinking_the_terminal_keeps_the_text_being_typed_on_screen(self):
+        app = self.make_app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.press(pilot, "3", "tab", *["n", "enter"] * 12, *"END")
+            await pilot.resize_terminal(100, 15)
+            await pilot.pause()
+            await pilot.pause()
+            self.assertIn("END", self.screen(app))
 
     async def test_mouse_wheel_scrolls_the_body(self):
         app = self.make_app()

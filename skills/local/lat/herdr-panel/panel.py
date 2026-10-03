@@ -372,6 +372,13 @@ class Status(Relayout, Static):
     pass
 
 
+class Input(TextArea):
+    """The answer/note box; keeps its cursor in view when it is resized."""
+
+    def on_resize(self, event):
+        self.scroll_cursor_visible()
+
+
 class Panel(App):
     NOTIFY_DELAY = 2.0
     POLL_INTERVAL = 0.5
@@ -479,7 +486,7 @@ class Panel(App):
         with Body(id="body"):
             yield View("", id="view", markup=False)
         yield Static("", id="input-label", markup=False)
-        yield TextArea("", soft_wrap=True, show_line_numbers=False, id="input")
+        yield Input("", soft_wrap=True, show_line_numbers=False, id="input")
         yield TextArea(
             self.saved, soft_wrap=True, show_line_numbers=False,
             read_only=self.read_only, id="editor",
@@ -923,7 +930,10 @@ class Panel(App):
         else:
             self.select_option(draft, draft.cursor)
             # Move on once the choice is saved; 其他 stays to take its text.
-            if self.current is draft and self.input_target is None and draft.selected == [draft.cursor]:
+            if (
+                self.current is draft and self.input_target is None
+                and draft.selected == [draft.cursor] and not draft.unsaved
+            ):
                 self.tab += 1
         self.refresh_view()
 
@@ -939,7 +949,7 @@ class Panel(App):
     def action_note(self):
         draft = self.selector_draft()
         if draft and draft.editable:
-            # Tab on an option chooses it first; 其他 needs its text before a note.
+            # Tab on an option chooses it first; 其他 must already be the answer.
             if draft.kind is not None and draft.cursor != draft.other_index:
                 if draft.kind == "single":
                     self.select_option(draft, draft.cursor)
@@ -948,7 +958,7 @@ class Panel(App):
                 ready = self.current is draft and draft.cursor in draft.selected
             else:
                 ready = draft.answer() is not None and (
-                    draft.kind is None or bool(draft.other.strip())
+                    draft.kind is None or draft.other_index in draft.selected
                 )
             if ready:
                 self.open_input("note")
