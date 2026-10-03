@@ -4,7 +4,7 @@
 
 ## 是否啟用
 
-主控 shell 有 `HERDR_WORKSPACE_ID`，且 `herdr plugin list` 列出 `lat.panel` 時才啟用。任一條件不成立就跳過本檔，照舊在聊天提問與記錄答覆。
+主控 shell 有 `HERDR_WORKSPACE_ID`，且 `herdr plugin list` 成功列出已啟用的 `lat.panel` 時才啟用。沒有 workspace、找不到 `herdr` 指令，或外掛未啟用時照舊在聊天提問與記錄答覆；已有 workspace 但查詢失敗時停止並依錯誤處理，不得當成未啟用略過。
 
 ## 變數
 
@@ -32,7 +32,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
   --session-id "$session_id" --workspace "$workspace"
 ```
 
-- Herdr 的 workspace、tab、pane 預設取 `HERDR_WORKSPACE_ID`、`HERDR_TAB_ID`、`HERDR_PANE_ID`；缺任何一個就不綁定、不猜測。
+- Herdr 的 workspace、tab、pane 預設取 `HERDR_WORKSPACE_ID`、`HERDR_TAB_ID`、`HERDR_PANE_ID`；缺任何一個就報錯、不猜測，補齊後再執行錯誤印出的手動指令。
 - 綁定以 session ID 為鍵，重綁只更新自己。輸出的 `replaced` 不是 `null` 表示更新了自己上一筆綁定。
 - 輸出 `legacy bindings ignored` 或 `legacy_ignored` 表示有舊版綁定資料被略過；舊的 `.lat/questions.md` 不會自動搬移，仍待決的題目由主控重新寫入自己的問題檔。
 
@@ -69,7 +69,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
      --questions "$questions" --decisions "$decisions"
    ```
 
-   印出「沒有遺漏」才繼續。列出「遺漏待答題目」時先補題；列出「狀態不一致」表示決策仍是 pending，但題目已記錄或已歸檔，先核對並修正決策紀錄。
+   決策紀錄只以獨立一行 `- status: pending` 判定待決。印出「沒有遺漏」才繼續。列出「遺漏待答題目」時先補題；列出「狀態不一致」表示決策仍是 pending，但題目已記錄或已歸檔，先核對並修正決策紀錄。
 
 題目格式：
 

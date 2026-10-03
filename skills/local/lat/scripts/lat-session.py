@@ -51,9 +51,6 @@ def bind_command(args, workspace, sid):
         str(SKILL_DIR / 'herdr-panel/lat_panel.py'), 'bind',
         '--hcom-name', args.hcom_name, '--client', args.client,
         '--session-id', sid, '--workspace', str(workspace),
-        '--herdr-workspace', os.environ.get('HERDR_WORKSPACE_ID', ''),
-        '--herdr-tab', os.environ.get('HERDR_TAB_ID', ''),
-        '--herdr-pane', os.environ.get('HERDR_PANE_ID', ''),
     ])
 
 
@@ -154,7 +151,8 @@ def activate(args):
         except (OSError, ValueError) as error:
             raise ValueError(
                 f'自動綁定失敗：{error}；session 紀錄保持 active。'
-                f'請手動執行：{bind_command(args, workspace, sid)}'
+                '請先補齊 HERDR_WORKSPACE_ID、HERDR_TAB_ID、HERDR_PANE_ID，'
+                f'再手動執行：{bind_command(args, workspace, sid)}'
             ) from error
         print(json.dumps({
             'binding': binding,

@@ -869,6 +869,8 @@ def pending_question_gaps(questions_path, decisions_path):
     """Return missing and inconsistent panel entries for pending decisions."""
     questions_path = Path(questions_path)
     decisions_path = Path(decisions_path)
+    if not decisions_path.is_dir():
+        raise ValueError(f"decisions directory does not exist: {decisions_path}")
     pending_ids = []
     for decision in sorted(decisions_path.glob("*.md")):
         if "- status: pending" in decision.read_text(encoding="utf-8").splitlines():
@@ -1004,6 +1006,8 @@ def panel_enabled(env=None):
         payload = json.loads(result.stdout)
     except FileNotFoundError:
         return False
+    except OSError as error:
+        raise ValueError(f"cannot check lat.panel: {error}") from error
     except subprocess.CalledProcessError as error:
         reason = error.stderr.strip() or f"herdr plugin list exited {error.returncode}"
         raise ValueError(f"cannot check lat.panel: {reason}") from error
@@ -1013,8 +1017,15 @@ def panel_enabled(env=None):
         raise ValueError("cannot check lat.panel: invalid JSON from herdr plugin list") from error
     if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
         payload = payload["result"]
-    plugins = payload.get("plugins", []) if isinstance(payload, dict) else payload
-    return isinstance(plugins, list) and any(
+    if isinstance(payload, dict):
+        if "plugins" not in payload:
+            raise ValueError("cannot check lat.panel: missing plugins list")
+        plugins = payload["plugins"]
+    else:
+        plugins = payload
+    if not isinstance(plugins, list):
+        raise ValueError("cannot check lat.panel: invalid plugins list")
+    return any(
         isinstance(plugin, dict)
         and plugin.get("plugin_id") == "lat.panel"
         and plugin.get("enabled") is True

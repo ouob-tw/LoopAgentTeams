@@ -12,6 +12,7 @@ import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-session.py'
 SKILL = SCRIPT.parent.parent
+PANEL = SKILL / 'herdr-panel/lat_panel.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
 OTHER = '22222222-2222-4222-8222-222222222222'
 
@@ -153,6 +154,18 @@ class SessionTests(unittest.TestCase):
         self.assertIn('請修復 Herdr 後重新執行：uv run --no-project', result.stderr)
         self.assertFalse(self.record.exists())
 
+    def test_unexpected_plugin_list_json_is_loud_and_does_not_create_record(self):
+        env = self.panel_env('#!/bin/sh\nprintf \'%s\\n\' \'{}\'\n')
+        result = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--hcom-name', 'nifo-bind-lezo',
+            extra_env=env,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('missing plugins list', result.stderr)
+        self.assertFalse(self.record.exists())
+
     def test_bind_failure_keeps_active_record_and_prints_manual_command(self):
         env = self.panel_env()
         env.pop('HERDR_PANE_ID')
@@ -165,12 +178,22 @@ class SessionTests(unittest.TestCase):
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
         manual = (
-            f'uv run --no-project python {SKILL / "herdr-panel/lat_panel.py"} bind '
+            f'uv run --no-project python {PANEL} bind '
             f'--hcom-name nifo-bind-lezo --client codex --session-id {SESSION} '
-            f'--workspace {self.work} --herdr-workspace herdr-workspace '
-            f'--herdr-tab herdr-tab --herdr-pane \'\''
+            f'--workspace {self.work}'
         )
         self.assertIn(manual, result.stderr)
+        self.assertNotIn("--herdr-pane ''", result.stderr)
+
+        env['HERDR_PANE_ID'] = 'repaired-pane'
+        recovered = subprocess.run(
+            [sys.executable, str(PANEL), 'bind', '--hcom-name', 'nifo-bind-lezo',
+             '--client', 'codex', '--session-id', SESSION, '--workspace', self.work],
+            text=True, capture_output=True, env=env, cwd=self.work,
+        )
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        binding = json.loads(recovered.stdout)['binding']
+        self.assertEqual(binding['herdr_pane'], 'repaired-pane')
 
     def test_deactivate_unbinds_own_session_and_is_idempotent(self):
         env = self.panel_env()

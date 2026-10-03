@@ -827,6 +827,16 @@ class PendingCheckCliTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(result.stdout.strip(), '沒有遺漏')
 
+    def test_check_only_treats_the_specified_status_line_as_pending(self):
+        (self.decisions / 'DRAFT-FORMAT.md').write_text(
+            '# Draft\n\nstatus: pending\n'
+        )
+
+        result = self.check()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), '沒有遺漏')
+
     def test_check_reports_recorded_and_archived_questions_as_inconsistent(self):
         self.decision('RECORDED-Q', 'pending')
         self.decision('ARCHIVED-Q', 'pending')
@@ -856,6 +866,15 @@ class PendingCheckCliTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('面板未啟用，略過檢查', result.stdout)
+
+    def test_check_fails_when_decisions_directory_is_missing(self):
+        self.decisions.rmdir()
+
+        result = self.check()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('decisions directory does not exist', result.stderr)
+        self.assertNotIn('沒有遺漏', result.stdout)
 
 
 class PluginDirectoryTests(unittest.TestCase):
