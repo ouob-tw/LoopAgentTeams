@@ -37,6 +37,7 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual import events
 from textual.geometry import Region
+from textual.messages import InBandWindowResize
 from textual.widgets import Static, TextArea
 
 cjk_wrap.install()
@@ -479,6 +480,24 @@ class Panel(App):
             self.saved = ""
             return f"無法讀取問題檔 {self.path}：{read_error}"
         return ""
+
+    def get_driver_class(self):
+        """Keep mouse reports in cells: Herdr offers in-band resize, not pixel mouse.
+
+        Textual turns on SGR-pixel mouse once a terminal reports in-band resize
+        support and then divides every mouse position by the cell size. Herdr
+        keeps reporting cells, so the wheel landed in the top-left corner and
+        never reached the body. Without in-band resize Textual stays in cells
+        and follows window size changes through SIGWINCH as usual.
+        """
+        driver = super().get_driver_class()
+
+        class CellMouseDriver(driver):
+            def process_message(self, message):
+                if not isinstance(message, InBandWindowResize):
+                    super().process_message(message)
+
+        return CellMouseDriver
 
     def compose(self) -> ComposeResult:
         yield Static(self.picker_text(), id="picker", markup=False)

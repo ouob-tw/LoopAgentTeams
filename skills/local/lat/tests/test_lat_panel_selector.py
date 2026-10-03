@@ -3,11 +3,19 @@
 Run with Textual available:
   uv run --no-project --with textual==8.2.8 python -m unittest discover -s "$lat_dir/tests"
 """
+import fcntl
 import json
+import os
+import pty
+import select
+import struct
+import sys
+import termios
+import time
 import unittest
 from unittest.mock import patch
 
-from test_lat_panel_ui import HAS_TEXTUAL, PanelTestCase
+from test_lat_panel_ui import HAS_TEXTUAL, HERDR_PANEL, PanelTestCase
 
 SINGLE = (
     "## 正式版要怎麼併入？\nQ1 · r1 · 待答\n\n"
@@ -967,6 +975,91 @@ class SmallTerminalTests(SelectorTestCase):
             await self.press(pilot, "pageup")
             self.assertEqual(self.screen(app), before)
             self.assertIs(app.focused, app.input)
+
+
+class TerminalMouseTests(SelectorTestCase):
+    """The real panel process on a pty that answers the way a Herdr pane does."""
+
+    def setUp(self):
+        super().setUp()
+        self.questions.write_text(CHECK)
+
+    def run_panel(self, columns, rows):
+        environment = dict(
+            os.environ, LAT_PANEL_FILE=str(self.questions), LAT_PANEL_SESSION_ID="s-a",
+            LAT_PANEL_HERDR_WORKSPACE="ws-a", TERM="xterm-256color",
+        )
+        for name in ("LAT_PANEL_CHOICES", "LAT_PANEL_ERROR"):
+            environment.pop(name, None)
+        pid, terminal = pty.fork()
+        if pid == 0:
+            os.execve(
+                sys.executable, [sys.executable, str(HERDR_PANEL / "panel.py"), "edit"],
+                environment,
+            )
+        fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+
+        def stop():
+            try:
+                os.write(terminal, b"\x11")
+            except OSError:
+                pass
+            deadline = time.monotonic() + 5
+            while os.waitpid(pid, os.WNOHANG) == (0, 0):
+                if time.monotonic() > deadline:
+                    os.kill(pid, 9)
+                    os.waitpid(pid, 0)
+                    break
+                self.read(terminal, 0.1)
+            os.close(terminal)
+
+        self.addCleanup(stop)
+        return terminal
+
+    def read(self, terminal, seconds):
+        if not select.select([terminal], [], [], seconds)[0]:
+            return b""
+        try:
+            return os.read(terminal, 65536)
+        except OSError:
+            return b""
+
+    def read_until(self, terminal, wanted, output=b"", replies=()):
+        """Collect panel output until ``wanted`` appears, answering mode requests."""
+        replies = dict(replies)
+        deadline = time.monotonic() + 10
+        while wanted not in output and time.monotonic() < deadline:
+            output += self.read(terminal, 0.1)
+            for request in [request for request in replies if request in output]:
+                os.write(terminal, replies.pop(request))
+        return output
+
+    def test_wheel_scrolls_when_the_terminal_offers_in_band_resize(self):
+        terminal = self.run_panel(40, 12)
+        # Herdr reports in-band resize as supported, then keeps sending the
+        # wheel in cell coordinates even after SGR-pixel mouse is requested.
+        output = self.read_until(terminal, "符合，可以結案".encode(), replies={
+            b"\x1b[?2048$p": b"\x1b[?2048;2$y",
+            b"\x1b[?2048h": b"\x1b[48;12;40;936;1360t",
+        })
+        self.assertIn("符合，可以結案".encode(), output)
+        self.assertNotIn("其他（自己輸入）".encode(), output)
+        output += self.read(terminal, 0.5)
+        os.write(terminal, b"\x1b[<65;31;6M" * 4)
+        output = self.read_until(terminal, "其他（自己輸入）".encode(), output)
+        self.assertIn("其他（自己輸入）".encode(), output)
+        self.assertNotIn(b"\x1b[?1016h", output)
+
+    def test_growing_the_terminal_still_redraws_without_in_band_resize(self):
+        terminal = self.run_panel(40, 12)
+        output = self.read_until(terminal, "符合，可以結案".encode(), replies={
+            b"\x1b[?2048$p": b"\x1b[?2048;2$y",
+        })
+        self.assertNotIn("其他（自己輸入）".encode(), output)
+        fcntl.ioctl(terminal, termios.TIOCSWINSZ, struct.pack("HHHH", 24, 80, 0, 0))
+        output = self.read_until(terminal, "其他（自己輸入）".encode(), output)
+        self.assertIn("其他（自己輸入）".encode(), output)
+        self.assertNotIn(b"\x1b[?2048h", output)
 
 
 if __name__ == "__main__":
