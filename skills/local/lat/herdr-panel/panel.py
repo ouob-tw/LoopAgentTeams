@@ -37,7 +37,6 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual import events
-from textual.geometry import Region
 from textual.messages import InBandWindowResize
 from textual.widgets import Static, TextArea
 
@@ -55,8 +54,10 @@ LOCKED = "已送出或已記錄的題目不能修改；要改答案請在聊天�
 FORGED = "答覆或備註不能有單獨一行寫成「- [x] 送出」、「答覆：」或題目標題；這次輸入沒有儲存"
 TAB_TITLE_CELLS = 16
 RECOMMENDED = "（建議）"
-# Focus units: ("text", paragraph, chunk), ("option", index), ("post", name, chunk).
-FIRST_UNIT = ("text", 0, 0)
+# A focus unit is ``(kind, id, line, lines)``: a paragraph ("text", number), an
+# option ("option", index) or a row after the options ("post", name), then the
+# line within it where this part starts and how many lines the whole has.
+FIRST_UNIT = ("text", 0, 0, 1)
 NO_BINDING = "此 workspace 沒有綁定的 LAT 主控"
 CONFLICT = "外部內容已變更，暫停儲存。F5：備份目前草稿並載入磁碟版本。"
 CONFLICT_CLOSE = "有未存的衝突草稿。先按 F5 備份草稿並載入磁碟版本，再關閉。"
@@ -272,7 +273,7 @@ class Draft:
 
     @cursor.setter
     def cursor(self, index):
-        self.focus = ("option", index)
+        self.focus = ("option", index, 0, 1)
 
     @property
     def other_index(self):
@@ -769,7 +770,7 @@ class Panel(App):
         if self.read_only:
             return [], []
         if not self.drafts:
-            return [("", NO_QUESTIONS, "")], [("text", 0)]
+            return [("", NO_QUESTIONS, "")], [None]
         draft = self.current
         if draft is None:
             return self.review_rows()
@@ -783,7 +784,7 @@ class Panel(App):
         elif draft.status == "broken":
             rows.append(("", "題目格式錯誤：找不到答覆或送出標記。請按 Ctrl+E 修正", "bold"))
         keys += [("text", 0)] * (len(rows) - 1)
-        paragraphs = [text for text in re.split(r"\n{2,}", draft.context) if text]
+        paragraphs = [text for text in re.split(r"\n(?:[ \t]*\n)+", draft.context) if text]
         for number, paragraph in enumerate(paragraphs, 1):
             rows.extend((("", "", ""), ("", paragraph, "")))
             keys.extend((None, ("text", number)))
@@ -860,12 +861,12 @@ class Panel(App):
         else:
             self.review_focus = key
 
-    def build_units(self, keys, lines, chunk):
+    def build_units(self, keys, lines, height):
         """Return focus units ``(key, first_line, last_line)`` in reading order.
 
-        Rows that share a key form one unit. Any unit but an option that is
-        taller than ``chunk`` lines is split, so stepping through never jumps
-        over unread text.
+        Rows that share a key form one unit. Text taller than half the body,
+        and an option taller than the body, is split into parts, so stepping
+        through never jumps over unread text.
         """
         units = []
         for row, key in enumerate(keys):
@@ -875,27 +876,28 @@ class Panel(App):
                 units[-1] = (key, units[-1][1], lines[row + 1])
             else:
                 units.append((key, lines[row], lines[row + 1]))
-        split = []
+        half = max(height - height // 2, 1)
+        parts = []
         for key, first, last in units:
-            if key[0] == "option":
-                split.append((key, first, last))
-                continue
-            for part, start in enumerate(range(first, last, chunk)):
-                split.append(((*key, part), start, min(start + chunk, last)))
-        return split
+            size = height if key[0] == "option" else half
+            parts += [
+                ((*key, start - first, last - first), start, min(start + size, last))
+                for start in range(first, last, size)
+            ]
+        return parts
 
     def focus_index(self):
-        """Index in ``self.units`` of the focused unit, or the nearest one left."""
-        key = self.focus
-        keys = [unit[0] for unit in self.units]
-        if key in keys:
-            return keys.index(key)
-        if key[0] != "option":
-            # The chunk is gone after rewrapping: stay in the same paragraph.
-            same = [index for index, other in enumerate(keys) if other[:2] == key[:2]]
-            if same:
-                return same[-1]
-        return 0
+        """Index in ``self.units`` of the focused unit.
+
+        After rewrapping or a change of height the parts differ: pick the part
+        that holds the place the focus started at, so nothing unread is passed.
+        """
+        kind, name, line, lines = self.focus
+        best = 0
+        for index, (key, _first, _last) in enumerate(self.units):
+            if key[:2] == (kind, name) and key[2] * lines <= line * key[3]:
+                best = index
+        return best
 
     def refresh_view(self):
         if not self.is_mounted:
@@ -910,12 +912,8 @@ class Panel(App):
         width = max((view.size.width or self.size.width - 3) - 1, 1)
         text, starts = wrap_rows(rows, width)
         height = body.size.height or max(self.size.height - 2, 1)
-        self.units = self.build_units(
-            keys, [*starts, text.plain.count("\n") + 1], max(height - height // 2, 1),
-        )
+        self.units = self.build_units(keys, [*starts, text.plain.count("\n") + 1], height)
         first, last = self.units[self.focus_index()][1:] if self.units else (0, 0)
-        if self.units:
-            self.focus = self.units[self.focus_index()][0]
         accent = self.current_theme.primary if self.current_theme else "bold"
         shown = Text()
         for number, line in enumerate(text.split("\n", allow_blank=True) if rows else []):
