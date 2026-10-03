@@ -261,14 +261,14 @@ class SingleSelectTests(SelectorTestCase):
             await self.press(pilot, "down", "down", "down", "x", "escape", "up", "up", "up", "1")
             await self.press(pilot, "down", "down", "down", "tab")
             self.assertIsNone(app.focused)
-            self.assertIn("先選擇或輸入答覆", self.status(app))
+            self.assertEqual(self.status(app), "先在「其他」輸入內容，再按 Tab 加備註")
 
     async def test_tab_on_the_other_row_needs_its_text_first(self):
         app = self.make_app()
         async with app.run_test() as pilot:
             await self.press(pilot, "down", "down", "down", "tab")
             self.assertIsNone(app.focused)
-            self.assertIn("先選擇或輸入答覆", self.status(app))
+            self.assertEqual(self.status(app), "先在「其他」輸入內容，再按 Tab 加備註")
             await self.press(pilot, "x", "escape", "tab", "n", "escape")
             self.assertIn("答覆：其他：x\n備註：n\n", self.text())
 
@@ -304,6 +304,29 @@ class MultiSelectTests(SelectorTestCase):
         async with app.run_test() as pilot:
             await self.press(pilot, "right", "tab", "n", "escape", "tab", "2", "escape")
             self.assertIn("答覆：主控綁定\n備註：n2\n", self.text())
+
+    async def test_enter_on_the_other_row_always_opens_its_input(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "down", "down", "down", "enter")
+            self.assertIs(app.focused, app.input)
+            self.assertEqual(section(self.text(), "Q2"), MULTI + "\n")
+            await self.press(pilot, "x", "escape")
+            self.assertIn("答覆：其他：x\n", self.text())
+            await self.press(pilot, "enter")
+            self.assertIs(app.focused, app.input)
+            self.assertEqual(app.input.text, "x")
+            self.assertIn("答覆：其他：x\n", self.text())
+            await self.press(pilot, "backspace", "escape")
+            self.assertEqual(section(self.text(), "Q2"), MULTI + "\n")
+
+    async def test_blank_text_on_the_other_row_is_dropped_when_leaving(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "down", "down", "down", "space", "escape")
+            self.assertEqual(section(self.text(), "Q2"), MULTI + "\n")
+            await self.press(pilot, "x", "escape")
+            self.assertIn("答覆：其他：x\n", self.text())
 
     async def test_enter_toggles_the_option_and_stays_on_the_question(self):
         app = self.make_app()

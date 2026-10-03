@@ -375,7 +375,7 @@ class Status(Relayout, Static):
 class Input(TextArea):
     """The answer/note box; keeps its cursor in view when it is resized."""
 
-    def on_resize(self, event):
+    def on_resize(self, _event):
         self.scroll_cursor_visible()
 
 
@@ -846,9 +846,6 @@ class Panel(App):
         target = self.typing_target(draft)
         self.open_input(target)
         self.input.insert(character)
-        if target == "other" and draft.kind == "multi" and draft.other_index not in draft.selected:
-            draft.unmatched = ""
-            draft.selected.append(draft.other_index)
         self.write_text_change(draft, self.input.text)
 
     def on_resize(self, _event):
@@ -926,7 +923,10 @@ class Panel(App):
         if draft.kind is None:
             self.open_input("text")
         elif draft.kind == "multi":
-            self.toggle_option(draft, draft.cursor)
+            if draft.cursor == draft.other_index:
+                self.open_input("other")
+            else:
+                self.toggle_option(draft, draft.cursor)
         else:
             self.select_option(draft, draft.cursor)
             # Move on once the choice is saved; 其他 stays to take its text.
@@ -962,8 +962,10 @@ class Panel(App):
                 )
             if ready:
                 self.open_input("note")
-            elif self.current is draft and not self.notices["action"]:
+            elif draft.kind is None:
                 self.notices["action"] = "先選擇或輸入答覆，再按 Tab 加備註"
+            elif draft.cursor == draft.other_index:
+                self.notices["action"] = "先在「其他」輸入內容，再按 Tab 加備註"
         self.refresh_view()
 
     def select_option(self, draft, index):
@@ -1017,9 +1019,12 @@ class Panel(App):
         self.close_input()
         if (
             target == "other" and draft and not draft.other.strip()
-            and draft.other_index in draft.selected
+            and (draft.other or draft.other_index in draft.selected)
         ):
-            draft.selected.remove(draft.other_index)
+            # Blank 其他 text is no answer: drop it so later typing starts clean.
+            draft.other = ""
+            if draft.other_index in draft.selected:
+                draft.selected.remove(draft.other_index)
             self.write_draft(draft)
         self.refresh_view()
 
@@ -1043,6 +1048,10 @@ class Panel(App):
                 draft.unmatched = ""
             elif draft.selected == [draft.other_index]:
                 draft.selected = []
+        elif self.input_target == "other" and draft.kind == "multi":
+            if value.strip() and draft.other_index not in draft.selected:
+                draft.selected.append(draft.other_index)
+                draft.unmatched = ""
         self.write_draft(draft)
         self.refresh_view()
 
