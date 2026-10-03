@@ -3,6 +3,7 @@
 import argparse
 import copy
 import difflib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -18,6 +19,42 @@ SESSION_ENV = dict(codex='CODEX_THREAD_ID', claude='CLAUDE_CODE_SESSION_ID')
 MATCHER = '^(compact|resume)$'
 # Pre-rename installs used codex-lat-session.py; recognize them so install/uninstall migrate.
 COMMAND_NAMES = ('lat-session.py', 'codex-lat-session.py')
+
+
+def panel_module():
+    path = SKILL_DIR / 'herdr-panel/lat_panel.py'
+    spec = importlib.util.spec_from_file_location('lat_panel', path)
+    if spec is None or spec.loader is None:
+        raise ValueError(f'Cannot load LAT panel helper: {path}')
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def activate_command(args, workspace):
+    command = [
+        'uv', 'run', '--no-project', 'python', str(Path(__file__).resolve()),
+        'activate', '--client', args.client, '--workspace', str(workspace),
+        '--progress', str(args.progress.resolve()),
+        '--decisions', str(args.decisions.resolve()),
+    ]
+    if args.hcom_name:
+        command += ['--hcom-name', args.hcom_name]
+    else:
+        command += ['--hcom-name', '<主控-HCOM-名稱>']
+    return shlex.join(command)
+
+
+def bind_command(args, workspace, sid):
+    return shlex.join([
+        'uv', 'run', '--no-project', 'python',
+        str(SKILL_DIR / 'herdr-panel/lat_panel.py'), 'bind',
+        '--hcom-name', args.hcom_name, '--client', args.client,
+        '--session-id', sid, '--workspace', str(workspace),
+        '--herdr-workspace', os.environ.get('HERDR_WORKSPACE_ID', ''),
+        '--herdr-tab', os.environ.get('HERDR_TAB_ID', ''),
+        '--herdr-pane', os.environ.get('HERDR_PANE_ID', ''),
+    ])
 
 
 def session_id(value):
@@ -94,8 +131,39 @@ def activate(args):
     original = current_bytes(path)
     if path.exists() and read_json(path) != record:
         raise ValueError('Existing session record differs; do not reset or rebind it')
+    panel = panel_module()
+    try:
+        enabled = panel.panel_enabled()
+    except ValueError as error:
+        raise ValueError(
+            f'{error}；請修復 Herdr 後重新執行：{activate_command(args, workspace)}'
+        ) from error
+    if enabled and not args.hcom_name:
+        raise ValueError(
+            f'面板已啟用，缺少 --hcom-name；請重新執行：{activate_command(args, workspace)}'
+        )
     write_json(path, record, original)
     print(path)
+    if enabled:
+        try:
+            binding, replaced, legacy_ignored = panel.bind_controller(
+                args.hcom_name, args.client, sid, workspace,
+                os.environ.get('HERDR_WORKSPACE_ID'), os.environ.get('HERDR_TAB_ID'),
+                os.environ.get('HERDR_PANE_ID'),
+            )
+        except (OSError, ValueError) as error:
+            raise ValueError(
+                f'自動綁定失敗：{error}；session 紀錄保持 active。'
+                f'請手動執行：{bind_command(args, workspace, sid)}'
+            ) from error
+        print(json.dumps({
+            'binding': binding,
+            'replaced': replaced,
+            'legacy_ignored': legacy_ignored,
+        }, ensure_ascii=False))
+        print(f'問題檔：{binding["questions_path"]}')
+    else:
+        print('面板未啟用，略過綁定')
 
 
 def pointer(path):
@@ -119,9 +187,11 @@ def deactivate(args):
                     workspace=str(workspace))
     if any(record.get(key) != value for key, value in expected.items()):
         raise ValueError('Controller identity does not match; record unchanged')
+    removed = panel_module().unbind_controller(sid)
     record['status'] = args.status
     write_json(path, record, original)
     print(path)
+    print(json.dumps({'removed': removed}))
 
 
 def context(text):
@@ -270,6 +340,7 @@ def main():
     start.add_argument('--workspace', type=Path, required=True)
     start.add_argument('--progress', type=Path, required=True)
     start.add_argument('--decisions', type=Path, required=True)
+    start.add_argument('--hcom-name')
     stop = sub.add_parser('deactivate', help='Complete/cancel a controller, retaining its record')
     stop.add_argument('--workspace', type=Path, required=True)
     stop.add_argument('--status', choices=('completed', 'cancelled'), required=True)

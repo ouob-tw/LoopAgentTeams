@@ -764,6 +764,100 @@ class BindingCliTests(unittest.TestCase):
         )
 
 
+class PendingCheckCliTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.questions = self.root / '.lat/questions-alpha.md'
+        self.decisions = self.root / 'decisions'
+        self.decisions.mkdir()
+        binary = self.root / 'bin'
+        binary.mkdir()
+        herdr = binary / 'herdr'
+        herdr.write_text(
+            '#!/bin/sh\n'
+            'test "$*" = "plugin list --plugin lat.panel --json" || exit 91\n'
+            'printf \'%s\\n\' \'{"plugins":[{"plugin_id":"lat.panel","enabled":true}]}\'\n'
+        )
+        herdr.chmod(0o755)
+        self.env = dict(os.environ)
+        self.env.update({
+            'PATH': f'{binary}:{os.environ["PATH"]}',
+            'HERDR_WORKSPACE_ID': 'herdr-workspace',
+        })
+
+    def cli(self, *args, env=None):
+        return subprocess.run(
+            [sys.executable, str(MODULE), *map(str, args)],
+            text=True, capture_output=True, env=env or self.env, cwd=self.root,
+        )
+
+    def check(self, env=None):
+        return self.cli(
+            'question', 'check-pending', '--questions', self.questions,
+            '--decisions', self.decisions, env=env,
+        )
+
+    def decision(self, identifier, status):
+        (self.decisions / f'{identifier}.md').write_text(
+            f'# {identifier}\n\n- status: {status}\n'
+        )
+
+    def test_check_reports_pending_decision_missing_from_questions(self):
+        self.decision('MISSING-1', 'pending')
+
+        result = self.check()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('遺漏待答題目：', result.stdout)
+        self.assertIn('- MISSING-1', result.stdout)
+
+    def test_check_passes_when_every_pending_decision_has_pending_question(self):
+        self.decision('PENDING-1', 'pending')
+        self.decision('RECORDED-1', 'recorded')
+        self.decision('ARCHIVED-1', 'archived')
+        self.questions.parent.mkdir()
+        self.questions.write_text(
+            '## Choose?\nPENDING-1 · r2 · 待答\n\n答覆：\n\n- [ ] 送出\n'
+        )
+
+        result = self.check()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout.strip(), '沒有遺漏')
+
+    def test_check_reports_recorded_and_archived_questions_as_inconsistent(self):
+        self.decision('RECORDED-Q', 'pending')
+        self.decision('ARCHIVED-Q', 'pending')
+        self.questions.parent.mkdir()
+        self.questions.write_text(
+            '## Done?\nRECORDED-Q · r3 · 已記錄\n\n答覆：A\n\n- [x] 送出\n'
+        )
+        archive = self.questions.with_name('questions-alpha-archive.md')
+        archive.write_text(
+            '## Old?\nARCHIVED-Q · r1 · 已記錄\n\n答覆：B\n\n- [x] 送出\n'
+        )
+
+        result = self.check()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('狀態不一致（決策仍為 pending）：', result.stdout)
+        self.assertIn('- RECORDED-Q：問題檔已記錄', result.stdout)
+        self.assertIn('- ARCHIVED-Q：問題已歸檔', result.stdout)
+        self.assertNotIn('遺漏待答題目：', result.stdout)
+
+    def test_check_skips_when_panel_is_disabled(self):
+        self.decision('MISSING-1', 'pending')
+        env = dict(self.env)
+        env.pop('HERDR_WORKSPACE_ID')
+
+        result = self.check(env=env)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('面板未啟用，略過檢查', result.stdout)
+
+
 class PluginDirectoryTests(unittest.TestCase):
     def test_fallback_matches_herdr_plugin_directory_layout(self):
         panel = load_module()

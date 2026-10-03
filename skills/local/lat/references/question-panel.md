@@ -16,6 +16,7 @@ workspace=/absolute/path/to/project-root
 client=codex           # Claude 主控改為 claude
 hcom_name=<主控自己的 HCOM 名稱>
 session_id="$CODEX_THREAD_ID"   # Claude：$CLAUDE_CODE_SESSION_ID
+decisions=/absolute/path/to/shared/decisions
 questions="$workspace/.lat/questions-$hcom_name.md"  # 以 bind 輸出的 questions_path 為準
 ```
 
@@ -23,7 +24,7 @@ questions="$workspace/.lat/questions-$hcom_name.md"  # 以 bind 輸出的 questi
 
 ## 綁定
 
-activate 成功後立即綁定，面板才會開啟這個主控的問題檔並把通知送給它：
+`lat-session.py activate --hcom-name "$hcom_name"` 會自動綁定並印出問題檔路徑。只有自動綁定失敗且錯誤要求補做時，才執行下列備用指令：
 
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
@@ -61,6 +62,14 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
    ```
 
 4. 指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄，並在聊天告知使用者題號與版本。使用者可在面板或聊天作答。
+5. 發出 `DECIDE:` 前檢查所有 pending 決策都有待答題：
+
+   ```bash
+   uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pending \
+     --questions "$questions" --decisions "$decisions"
+   ```
+
+   印出「沒有遺漏」才繼續。列出「遺漏待答題目」時先補題；列出「狀態不一致」表示決策仍是 pending，但題目已記錄或已歸檔，先核對並修正決策紀錄。
 
 題目格式：
 
@@ -140,7 +149,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question archive-
 
 ## 解除綁定
 
-交付或取消前、deactivate 之前，解除自己的綁定：
+`lat-session.py deactivate` 會自動解除自己的綁定。只有需要單獨清除遺留綁定時才執行：
 
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" unbind --session-id "$session_id"
