@@ -1014,7 +1014,9 @@ class SmallTerminalTests(SelectorTestCase):
         async with app.run_test(size=(40, 10)) as pilot:
             await pilot.pause(0.3)
             seen = []
-            while app.current.cursor is None:
+            for _ in range(20):
+                if app.current.cursor is not None:
+                    break
                 await self.press(pilot, "down")
                 seen += [line for line in self.focused(app) if "說明" in line]
             self.assertEqual(seen, [f"▌說明第 {number} 行" for number in range(1, 21)])
@@ -1049,6 +1051,27 @@ class SmallTerminalTests(SelectorTestCase):
                 self.assertLessEqual(shown[0], reading, size)
                 self.assertGreaterEqual(shown[-1], reading, size)
 
+    async def test_unevenly_wrapped_text_keeps_its_reading_place_when_widened(self):
+        long = "\n".join(
+            [f"LONG{number:02}" + "x" * 100 for number in range(1, 21)]
+            + [f"SHORT{number:02}" for number in range(1, 41)]
+        )
+        self.questions.write_text(SINGLE.replace("審查和驗收都通過了，現在只差要不要把它併進 dev。", long))
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await pilot.pause(0.3)
+            for _ in range(60):
+                if self.focused(app) and self.focused(app)[0] == "▌SHORT01":
+                    break
+                await self.press(pilot, "down")
+            self.assertEqual(self.focused(app), [f"▌SHORT{number:02}" for number in range(1, 6)])
+            await pilot.resize_terminal(120, 12)
+            await pilot.pause(0.3)
+            self.assertIn("▌SHORT01", self.focused(app))
+            last = int(self.focused(app)[-1][-2:])
+            await self.press(pilot, "down")
+            self.assertEqual(self.focused(app)[0], f"▌SHORT{last + 1:02}")
+
     async def test_an_option_taller_than_the_screen_is_stepped_through_in_parts(self):
         impact = "".join(f"第{number:02}句說明文字放在這裡。" for number in range(1, 31))
         self.questions.write_text(SINGLE.replace("dev 有了面板程式。", impact))
@@ -1057,7 +1080,9 @@ class SmallTerminalTests(SelectorTestCase):
             await pilot.pause(0.3)
             await self.press(pilot, "@options")
             seen = ""
-            while app.current.cursor == 0:
+            for _ in range(20):
+                if app.current.cursor != 0:
+                    break
                 seen += "".join(line.lstrip("▌❯ ") for line in self.focused(app))
                 self.assertIn("❯ 1. 合併到 dev，不推送", self.view(app))
                 await self.press(pilot, "down")

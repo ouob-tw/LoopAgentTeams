@@ -54,10 +54,10 @@ LOCKED = "已送出或已記錄的題目不能修改；要改答案請在聊天�
 FORGED = "答覆或備註不能有單獨一行寫成「- [x] 送出」、「答覆：」或題目標題；這次輸入沒有儲存"
 TAB_TITLE_CELLS = 16
 RECOMMENDED = "（建議）"
-# A focus unit is ``(kind, id, line, lines)``: a paragraph ("text", number), an
-# option ("option", index) or a row after the options ("post", name), then the
-# line within it where this part starts and how many lines the whole has.
-FIRST_UNIT = ("text", 0, 0, 1)
+# A focus unit is ``(kind, id, start)``: a paragraph ("text", number), an option
+# ("option", index) or a row after the options ("post", name), then the offset
+# in its text where this part of it starts.
+FIRST_UNIT = ("text", 0, 0)
 NO_BINDING = "此 workspace 沒有綁定的 LAT 主控"
 CONFLICT = "外部內容已變更，暫停儲存。F5：備份目前草稿並載入磁碟版本。"
 CONFLICT_CLOSE = "有未存的衝突草稿。先按 F5 備份草稿並載入磁碟版本，再關閉。"
@@ -196,26 +196,29 @@ def open_popup(env=None, *, request=rpc):
 def wrap_rows(rows, width):
     """Wrap ``(first_prefix, text, style)`` rows CJK-aware with hanging indents.
 
-    Returns the Rich text and the first display line of every row.
+    Returns the Rich text, the first display line of every row, and for every
+    display line the offset in its row's text where it starts.
     """
     output = Text()
     starts = []
-    line_count = 0
+    chars = []
     for prefix, text, style in rows:
-        starts.append(line_count)
+        starts.append(len(chars))
         indent = " " * cell_len(prefix)
         available = max(width - len(indent), 1)
         lead = prefix
+        position = 0
         for paragraph in text.split("\n"):
             offsets = cjk_wrap.compute_wrap_offsets(paragraph, available, 4)
             bounds = [0, *offsets, len(paragraph)]
             for begin, finish in zip(bounds, bounds[1:]):
-                if line_count:
+                if chars:
                     output.append("\n")
                 output.append(lead + paragraph[begin:finish].rstrip(), style)
-                line_count += 1
+                chars.append(position + begin)
                 lead = indent
-    return output, starts
+            position += len(paragraph) + 1
+    return output, starts, chars
 
 
 def answer_label(label):
@@ -273,7 +276,7 @@ class Draft:
 
     @cursor.setter
     def cursor(self, index):
-        self.focus = ("option", index, 0, 1)
+        self.focus = ("option", index, 0)
 
     @property
     def other_index(self):
@@ -861,7 +864,7 @@ class Panel(App):
         else:
             self.review_focus = key
 
-    def build_units(self, keys, lines, height):
+    def build_units(self, rows, keys, lines, chars, height):
         """Return focus units ``(key, first_line, last_line)`` in reading order.
 
         Rows that share a key form one unit. Text taller than half the body,
@@ -873,16 +876,22 @@ class Panel(App):
             if key is None:
                 continue
             if units and units[-1][0] == key:
-                units[-1] = (key, units[-1][1], lines[row + 1])
+                units[-1][2].append(row)
             else:
-                units.append((key, lines[row], lines[row + 1]))
+                units.append((key, lines[row], [row]))
         half = max(height - height // 2, 1)
         parts = []
-        for key, first, last in units:
+        for key, first, unit_rows in units:
+            # Where each line starts in the unit's text, its rows end to end.
+            starts = []
+            before = 0
+            for row in unit_rows:
+                starts += [before + char for char in chars[lines[row]:lines[row + 1]]]
+                before += len(rows[row][1]) + 1
             size = height if key[0] == "option" else half
             parts += [
-                ((*key, start - first, last - first), start, min(start + size, last))
-                for start in range(first, last, size)
+                ((*key, starts[offset]), first + offset, first + min(offset + size, len(starts)))
+                for offset in range(0, len(starts), size)
             ]
         return parts
 
@@ -890,12 +899,12 @@ class Panel(App):
         """Index in ``self.units`` of the focused unit.
 
         After rewrapping or a change of height the parts differ: pick the part
-        that holds the place the focus started at, so nothing unread is passed.
+        that holds the text the focus started at, so nothing unread is passed.
         """
-        kind, name, line, lines = self.focus
+        kind, name, start = self.focus
         best = 0
         for index, (key, _first, _last) in enumerate(self.units):
-            if key[:2] == (kind, name) and key[2] * lines <= line * key[3]:
+            if key[:2] == (kind, name) and key[2] <= start:
                 best = index
         return best
 
@@ -910,9 +919,9 @@ class Panel(App):
         view = self.query_one("#view", Static)
         # One column is the focus bar.
         width = max((view.size.width or self.size.width - 3) - 1, 1)
-        text, starts = wrap_rows(rows, width)
+        text, starts, chars = wrap_rows(rows, width)
         height = body.size.height or max(self.size.height - 2, 1)
-        self.units = self.build_units(keys, [*starts, text.plain.count("\n") + 1], height)
+        self.units = self.build_units(rows, keys, [*starts, len(chars)], chars, height)
         first, last = self.units[self.focus_index()][1:] if self.units else (0, 0)
         accent = self.current_theme.primary if self.current_theme else "bold"
         shown = Text()
