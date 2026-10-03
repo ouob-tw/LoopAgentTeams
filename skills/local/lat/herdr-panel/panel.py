@@ -440,6 +440,7 @@ class Panel(App):
         self.drafts = {}
         self.tab = 0
         self.input_target = None
+        self.revealed = None
         self.revised = {}
         self.saved = ""
         self.conflict = False
@@ -814,18 +815,24 @@ class Panel(App):
         self.render_status()
         if self.input_target is None:
             self.show_text_input(draft)
-        if starts:
+        # Leave a scroll the user made alone until the view or the focus changes.
+        shown = (self.tab, self.input_target, text.plain)
+        scrolled_by_user = (
+            self.revealed is not None and self.revealed[0] == shown
+            and self.revealed[1] != body.scroll_y
+        )
+        if starts and not scrolled_by_user:
             lines = [*starts, text.plain.count("\n") + 1]
             self.call_after_refresh(
-                self.scroll_to_lines,
+                self.scroll_to_lines, shown,
                 *((lines[first], lines[last]) for first, last in (reveal, item)),
             )
 
-    def scroll_to_lines(self, *spans):
+    def scroll_to_lines(self, shown, *spans):
         """Scroll the body to each ``(first, last)`` view line span in turn.
 
         A later span wins when both cannot fit; a span taller than the body
-        shows its top.
+        shows its top. ``shown`` identifies the view this position belongs to.
         """
         body = self.query_one("#body")
         # Lines count from the view's text; the body scrolls its padding too.
@@ -836,6 +843,7 @@ class Panel(App):
                 Region(0, top, max(body.size.width, 1), padding + last - top),
                 animate=False, immediate=True,
             )
+        self.revealed = (shown, body.scroll_y)
 
     def show_text_input(self, draft):
         """Show an input-only question's answer box, unfocused, on its tab."""
@@ -889,7 +897,13 @@ class Panel(App):
     def action_move(self, step):
         draft = self.selector_draft()
         if draft and draft.editable and draft.kind is not None:
-            draft.cursor = min(max(draft.cursor + step, 0), draft.other_index)
+            cursor = min(max(draft.cursor + step, 0), draft.other_index)
+            if cursor != draft.cursor:
+                draft.cursor = cursor
+                self.refresh_view()
+                return
+        # Nothing further to move to: read on past the first or last item.
+        self.query_one("#body").scroll_relative(y=step, animate=False, immediate=True)
         self.refresh_view()
 
     def action_page(self, step):
@@ -966,6 +980,8 @@ class Panel(App):
             return
         if draft and draft.editable and draft.kind == "multi":
             self.toggle_option(draft, draft.cursor)
+        elif draft and draft.editable and draft.kind == "single":
+            self.select_option(draft, draft.cursor)
         self.refresh_view()
 
     def action_note(self):
