@@ -923,10 +923,13 @@ class Panel(App):
         if draft.kind is None:
             self.open_input("text")
         elif draft.kind == "multi":
-            if draft.cursor == draft.other_index:
-                self.open_input("other")
-            else:
+            # 其他 only opens its input; checking it when it has text opens it too.
+            if draft.cursor != draft.other_index or (
+                draft.other.strip() and draft.cursor not in draft.selected
+            ):
                 self.toggle_option(draft, draft.cursor)
+            else:
+                self.open_input("other")
         else:
             self.select_option(draft, draft.cursor)
             # Move on once the choice is saved; 其他 stays to take its text.

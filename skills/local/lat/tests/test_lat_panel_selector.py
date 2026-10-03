@@ -320,6 +320,16 @@ class MultiSelectTests(SelectorTestCase):
             await self.press(pilot, "backspace", "escape")
             self.assertEqual(section(self.text(), "Q2"), MULTI + "\n")
 
+    async def test_enter_checks_an_unchecked_other_row_that_still_has_text(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "1", "down", "down", "down", "x", "escape", "up", "4")
+            self.assertIn("答覆：主控綁定\n", self.text())
+            await self.press(pilot, "down", "enter")
+            self.assertIs(app.focused, app.input)
+            self.assertEqual(app.input.text, "x")
+            self.assertIn("答覆：主控綁定；其他：x\n", self.text())
+
     async def test_blank_text_on_the_other_row_is_dropped_when_leaving(self):
         app = self.make_app()
         async with app.run_test() as pilot:
