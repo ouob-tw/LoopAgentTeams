@@ -1010,6 +1010,61 @@ class SmallTerminalTests(SelectorTestCase):
             self.assertIn("通知失敗", self.screen(app))
             self.assertNotIn("❯", self.screen(app))
 
+    async def test_layout_changes_alone_never_leave_the_focused_option_off_screen(self):
+        app = self.make_app()
+        async with app.run_test(size=(40, 10)) as pilot:
+            await self.press(pilot, "down", "down", "down")
+            for size in ((40, 16), (40, 10), (40, 8)):
+                await pilot.resize_terminal(*size)
+                await pilot.pause(0.2)
+                self.assertIn("❯ 4. 其他（自己輸入）", self.screen(app), size)
+            await pilot.resize_terminal(40, 10)
+            for notice in ("通知失敗：ctl-a 不在線。", "", "通知失敗：ctl-a 不在線。"):
+                app.set_notice("notify", notice)
+                await pilot.pause(0.2)
+                self.assertIn("❯ 4. 其他（自己輸入）", self.screen(app), notice)
+
+    async def test_manual_scroll_survives_rewrapping_and_a_new_tab_before_it(self):
+        description = "\n".join(f"說明第 {number} 行" for number in range(1, 13))
+        self.questions.write_text(CHECK.replace("V2 已經裝好了。", description + "\nV2 已經裝好了。"))
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await pilot.pause(0.3)
+            await self.press(pilot, "pageup", "pageup", "pageup")
+            self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
+            await pilot.resize_terminal(60, 12)
+            await pilot.pause(0.3)
+            self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
+            self.questions.write_text(TEXT.replace("Q3", "Q0") + "\n" + self.text())
+            await pilot.pause(0.4)
+            self.assertEqual(app.tab_ids, ["Q0", "Q1"])
+            self.assertEqual(app.current.id, "Q1")
+            self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
+
+    async def test_wheel_scroll_survives_a_change_to_another_question(self):
+        from textual import events
+        self.questions.write_text(CHECK + "\n" + MULTI)
+        app = self.make_app()
+        async with app.run_test(size=(40, 10)) as pilot:
+            await pilot.pause(0.3)
+            body = app.query_one("#body")
+            for _ in range(3):
+                body.post_message(events.MouseScrollDown(body, 5, 5, 0, 0, 0, False, False, False))
+            await pilot.pause(0.3)
+            self.assertNotIn("❯", self.screen(app))
+            self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n")
+            await pilot.pause(0.4)
+            self.assertNotIn("❯", self.screen(app))
+
+    async def test_acting_on_the_focused_option_brings_it_back_on_screen(self):
+        app = self.make_app()
+        async with app.run_test(size=(40, 10)) as pilot:
+            await pilot.pause(0.3)
+            await self.press(pilot, "1", "pagedown")
+            self.assertNotIn("❯", self.screen(app))
+            await self.press(pilot, "1")
+            self.assertIn("❯ 1. 符合，可以結案（建議）  ✔", self.screen(app))
+
     async def test_change_to_the_open_question_brings_the_cursor_back(self):
         app = self.make_app()
         async with app.run_test(size=(40, 10)) as pilot:

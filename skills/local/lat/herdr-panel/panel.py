@@ -362,7 +362,22 @@ class Relayout:
 
 
 class Body(Relayout, VerticalScroll):
-    pass
+    """The scrolling question area; tells the panel when the user scrolls it."""
+
+    def on_mouse_scroll_up(self, _event):
+        self.app.keep_scroll()
+
+    def on_mouse_scroll_down(self, _event):
+        self.app.keep_scroll()
+
+    def on_scroll_up(self, _message):
+        self.app.keep_scroll()
+
+    def on_scroll_down(self, _message):
+        self.app.keep_scroll()
+
+    def on_scroll_to(self, _message):
+        self.app.keep_scroll()
 
 
 class View(Relayout, Static):
@@ -440,7 +455,7 @@ class Panel(App):
         self.drafts = {}
         self.tab = 0
         self.input_target = None
-        self.revealed = None
+        self.kept_scroll = None
         self.revised = {}
         self.saved = ""
         self.conflict = False
@@ -815,24 +830,29 @@ class Panel(App):
         self.render_status()
         if self.input_target is None:
             self.show_text_input(draft)
-        # Leave a scroll the user made alone until the view or the focus changes.
-        shown = (self.tab, self.input_target, text.plain)
-        scrolled_by_user = (
-            self.revealed is not None and self.revealed[0] == shown
-            and self.revealed[1] != body.scroll_y
-        )
-        if starts and not scrolled_by_user:
+        # A scroll the user made stays until they act or this question changes.
+        if starts and self.kept_scroll != (self.question_key(),):
+            self.kept_scroll = None
             lines = [*starts, text.plain.count("\n") + 1]
             self.call_after_refresh(
-                self.scroll_to_lines, shown,
+                self.scroll_to_lines,
                 *((lines[first], lines[last]) for first, last in (reveal, item)),
             )
 
-    def scroll_to_lines(self, shown, *spans):
+    def question_key(self):
+        """What the current tab shows, apart from its position and wrapping."""
+        draft = self.current
+        return (draft.id, draft.revision, draft.hash) if draft else None
+
+    def keep_scroll(self):
+        """Remember that the user scrolled what the current tab shows."""
+        self.kept_scroll = (self.question_key(),)
+
+    def scroll_to_lines(self, *spans):
         """Scroll the body to each ``(first, last)`` view line span in turn.
 
         A later span wins when both cannot fit; a span taller than the body
-        shows its top. ``shown`` identifies the view this position belongs to.
+        shows its top.
         """
         body = self.query_one("#body")
         # Lines count from the view's text; the body scrolls its padding too.
@@ -843,7 +863,6 @@ class Panel(App):
                 Region(0, top, max(body.size.width, 1), padding + last - top),
                 animate=False, immediate=True,
             )
-        self.revealed = (shown, body.scroll_y)
 
     def show_text_input(self, draft):
         """Show an input-only question's answer box, unfocused, on its tab."""
@@ -892,9 +911,11 @@ class Panel(App):
         if self.focused is not None:
             raise SkipAction()
         self.notices["action"] = ""
+        self.kept_scroll = None
         return self.current
 
     def action_move(self, step):
+        kept = self.kept_scroll
         draft = self.selector_draft()
         if draft and draft.editable and draft.kind is not None:
             cursor = min(max(draft.cursor + step, 0), draft.other_index)
@@ -903,7 +924,12 @@ class Panel(App):
                 self.refresh_view()
                 return
         # Nothing further to move to: read on past the first or last item.
-        self.query_one("#body").scroll_relative(y=step, animate=False, immediate=True)
+        body = self.query_one("#body")
+        before = body.scroll_y
+        body.scroll_relative(y=step, animate=False, immediate=True)
+        # Pressing on at the end of the text must not jump back to the cursor.
+        if body.scroll_y != before or kept == (self.question_key(),):
+            self.keep_scroll()
         self.refresh_view()
 
     def action_page(self, step):
@@ -915,6 +941,7 @@ class Panel(App):
             body.scroll_page_up(animate=False)
         else:
             body.scroll_page_down(animate=False)
+        self.keep_scroll()
 
     def action_switch_tab(self, step):
         if self.picker_active and self.focused is None:
@@ -1032,6 +1059,7 @@ class Panel(App):
     def open_input(self, target):
         draft = self.current
         self.input_target = target
+        self.kept_scroll = None
         label = {"other": OTHER_LABEL, "note": "備註", "text": "答覆"}[target]
         self.query_one("#input-label", Static).update(f"{draft.id} {label}")
         self.query_one("#input-label", Static).display = True
@@ -1046,6 +1074,7 @@ class Panel(App):
     def close_input(self):
         """Hide the input box without writing."""
         self.input_target = None
+        self.kept_scroll = None
         self.input.display = False
         self.query_one("#input-label", Static).display = False
         self.set_focus(None)
