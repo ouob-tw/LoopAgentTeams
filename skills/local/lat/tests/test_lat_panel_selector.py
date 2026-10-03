@@ -385,12 +385,41 @@ class SubmitTests(SelectorTestCase):
             self.assertIn("已送出，等待記錄", self.view(app))
             self.assertIn("沒有可送出的答覆", self.view(app))
 
+    async def test_successful_submit_closes_the_panel_after_one_notification(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "1", "right", "right", "right")
+            self.assertIsNone(app.return_code)
+            await self.press(pilot, "enter")
+            await self.settle(app, pilot)
+            self.assertIsNotNone(app.return_code)
+        self.assertEqual(len(self.calls()), 1)
+        self.assertFalse(self.pending())
+        self.assertIn("- [x] 送出", section(self.text(), "Q1"))
+
+    async def test_submit_stays_open_when_the_notification_fails(self):
+        self.set_hcom("offline")
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "1", "right", "right", "right", "enter")
+            await self.settle(app, pilot)
+            self.assertIsNone(app.return_code)
+            self.assertIn("通知失敗：ctl-a 不在線", self.status(app))
+            self.assertIn("已送出，等待記錄", self.view(app))
+            self.assertTrue(self.pending())
+            await self.press(pilot, "ctrl+q")
+            await self.settle(app, pilot)
+            self.assertIsNotNone(app.return_code)
+        self.assertEqual(len(self.calls()), 1)
+        self.assertTrue(self.pending())
+
     async def test_submitted_tab_is_read_only_until_recorded_then_shows_recorded(self):
         app = self.make_app()
         async with app.run_test() as pilot:
             await self.press(pilot, "1", "right", "right", "right", "enter")
             await self.settle(app, pilot)
-            await self.press(pilot, "left", "left", "left")
+        app = self.make_app()
+        async with app.run_test() as pilot:
             self.assertEqual(app.current.id, "Q1")
             self.assertIn("已送出，等待記錄", self.view(app))
             self.assertNotIn("❯", self.view(app))
@@ -561,6 +590,8 @@ class ReviewFixTests(SelectorTestCase):
         async with app.run_test() as pilot:
             await self.press(pilot, "1", "right", "right", "right", "enter")
             await self.settle(app, pilot)
+        app = self.make_app()
+        async with app.run_test() as pilot:
             submitted = self.text()
             await self.press(pilot, "ctrl+e")
             line = app.editor.text.splitlines().index("答覆：A. 合併到 dev，不推送")

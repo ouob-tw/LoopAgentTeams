@@ -1060,9 +1060,9 @@ class Panel(App):
             self.notices["notify"] = notify_failure_line(f"無法記錄待送通知：{error}")
             return
         self.unrecorded_notification = False
-        if self.notify_timer:
-            self.notify_timer.stop()
-        self.start_notification()
+        # Close through the normal path: notify first, stay open if that fails.
+        self.close_armed = False
+        self.action_close_panel()
 
     # Raw editor (V1) ------------------------------------------------------
 
