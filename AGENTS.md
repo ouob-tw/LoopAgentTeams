@@ -1,3 +1,5 @@
+如果你接收到修改Skills的任務，應在此專案內修改，非主機上安裝Skills的路徑。
+
 ## Agent skills
 
 ### Issue tracker
