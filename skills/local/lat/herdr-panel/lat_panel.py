@@ -866,7 +866,7 @@ def _archive_path(questions_path):
 
 
 def pending_question_gaps(questions_path, decisions_path):
-    """Return missing and inconsistent panel entries for pending decisions."""
+    """Return panel entries for pending decisions across controller files."""
     questions_path = Path(questions_path)
     decisions_path = Path(decisions_path)
     if not decisions_path.is_dir():
@@ -876,29 +876,43 @@ def pending_question_gaps(questions_path, decisions_path):
         if "- status: pending" in decision.read_text(encoding="utf-8").splitlines():
             pending_ids.append(decision.stem)
 
-    try:
-        questions = parse_questions(questions_path.read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        questions = []
-    try:
-        archived = parse_questions(_archive_path(questions_path).read_text(encoding="utf-8"))
-    except FileNotFoundError:
-        archived = []
-    current = {question["id"]: question for question in questions}
-    archived_ids = {question["id"] for question in archived}
+    question_files = sorted(
+        path for path in questions_path.parent.glob("questions-*.md")
+        if not path.stem.endswith("-archive")
+    )
+    current = {}
+    for path in question_files:
+        for question in parse_questions(path.read_text(encoding="utf-8")):
+            current.setdefault(question["id"], []).append((path, question))
+    archived = {}
+    for path in sorted(questions_path.parent.glob("questions-*-archive.md")):
+        for question in parse_questions(path.read_text(encoding="utf-8")):
+            archived.setdefault(question["id"], []).append((path, question))
+    present = []
     missing = []
     inconsistent = []
     for identifier in pending_ids:
-        question = current.get(identifier)
-        if question and question["status_label"] == "待答":
+        matches = current.get(identifier, [])
+        waiting = next(
+            ((path, question) for path, question in matches
+             if question["status_label"] == "待答"),
+            None,
+        )
+        if waiting:
+            present.append((identifier, waiting[0]))
             continue
-        if question and question["status_label"] == "已記錄":
-            inconsistent.append((identifier, "問題檔已記錄"))
-        elif identifier in archived_ids:
-            inconsistent.append((identifier, "問題已歸檔"))
+        recorded = next(
+            ((path, question) for path, question in matches
+             if question["status_label"] == "已記錄"),
+            None,
+        )
+        if recorded:
+            inconsistent.append((identifier, "問題檔已記錄", recorded[0]))
+        elif identifier in archived:
+            inconsistent.append((identifier, "問題已歸檔", archived[identifier][0][0]))
         else:
             missing.append(identifier)
-    return missing, inconsistent
+    return present, missing, inconsistent
 
 
 def _append_archive(path, sections):
@@ -1409,17 +1423,21 @@ def main(argv=None):
             if not panel_enabled():
                 print("面板未啟用，略過檢查")
                 return 0
-            missing, inconsistent = pending_question_gaps(
+            present, missing, inconsistent = pending_question_gaps(
                 args.questions, args.decisions
             )
+            if present:
+                print("已找到待答題目：")
+                for identifier, path in present:
+                    print(f"- {identifier}：{path}")
             if missing:
                 print("遺漏待答題目：")
                 for identifier in missing:
                     print(f"- {identifier}")
             if inconsistent:
                 print("狀態不一致（決策仍為 pending）：")
-                for identifier, reason in inconsistent:
-                    print(f"- {identifier}：{reason}")
+                for identifier, reason, path in inconsistent:
+                    print(f"- {identifier}：{reason}：{path}")
             if missing or inconsistent:
                 return 1
             print("沒有遺漏")

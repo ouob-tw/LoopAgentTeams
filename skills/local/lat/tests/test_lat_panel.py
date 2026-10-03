@@ -825,7 +825,23 @@ class PendingCheckCliTests(unittest.TestCase):
         result = self.check()
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), '沒有遺漏')
+        self.assertIn(f'- PENDING-1：{self.questions}', result.stdout)
+        self.assertIn('沒有遺漏', result.stdout)
+
+    def test_check_finds_pending_question_in_another_controllers_file(self):
+        self.decision('SHARED-1', 'pending')
+        other_questions = self.questions.with_name('questions-beta.md')
+        other_questions.parent.mkdir()
+        other_questions.write_text(
+            '## Other controller?\nSHARED-1 · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n'
+        )
+
+        result = self.check()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'- SHARED-1：{other_questions}', result.stdout)
+        self.assertIn('沒有遺漏', result.stdout)
+        self.assertNotIn('遺漏待答題目：', result.stdout)
 
     def test_check_only_treats_the_specified_status_line_as_pending(self):
         (self.decisions / 'DRAFT-FORMAT.md').write_text(
@@ -855,6 +871,23 @@ class PendingCheckCliTests(unittest.TestCase):
         self.assertIn('狀態不一致（決策仍為 pending）：', result.stdout)
         self.assertIn('- RECORDED-Q：問題檔已記錄', result.stdout)
         self.assertIn('- ARCHIVED-Q：問題已歸檔', result.stdout)
+        self.assertNotIn('遺漏待答題目：', result.stdout)
+
+    def test_check_finds_recorded_question_in_another_controllers_archive(self):
+        self.decision('OTHER-ARCHIVED', 'pending')
+        other_archive = self.questions.with_name('questions-beta-archive.md')
+        other_archive.parent.mkdir()
+        other_archive.write_text(
+            '## Old elsewhere?\nOTHER-ARCHIVED · r4 · 已記錄\n\n'
+            '答覆：A\n\n- [x] 送出\n'
+        )
+
+        result = self.check()
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn(
+            f'- OTHER-ARCHIVED：問題已歸檔：{other_archive}', result.stdout
+        )
         self.assertNotIn('遺漏待答題目：', result.stdout)
 
     def test_check_skips_when_panel_is_disabled(self):
