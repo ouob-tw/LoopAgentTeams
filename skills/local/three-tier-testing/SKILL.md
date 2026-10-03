@@ -46,7 +46,7 @@ description: Use when setting up test infrastructure, adding tests, reorganizing
 | ---- | ---------- | ---------- |
 | 單元測試 | 無 | 無，不讀任何 env 檔 |
 | 整合測試 | `compose.integration.yml` | 無；測試值直接寫入，必要密鑰由執行時的 `TEST_*` 環境變數提供 |
-| E2E、驗收測試 | `compose.e2e.yml` | `.env.e2e`（不進 git） |
+| E2E、驗收測試、人工檢查站 | `compose.e2e.yml` | `.env.e2e`（不進 git） |
 | 正式環境 | `compose.yml` | `.env`（不進 git） |
 | 範本 | — | `.env.example`（進 git） |
 
@@ -65,7 +65,25 @@ docker compose -f compose.integration.yml -p <project>_integration up -d
 docker compose -f compose.e2e.yml -p <project>_e2e --env-file .env.e2e up -d
 ```
 
-同時跑多個任務（如多個 worktree）時，整合測試改用 `-p <project>_integration_<task>`，E2E 改用 `-p <project>_e2e_<task>`；`<task>` 轉成小寫，不合法的字元換成 `-`。
+同時跑多個任務（如多個 worktree）時，整合測試改用 `-p <project>_integration_<task>`，E2E 改用 `-p <project>_e2e_<task>`；`<task>` 轉成小寫，不合法的字元換成 `-`，且不用 `review`（保留給人工檢查站）。
+
+### 人工檢查站（review）
+
+給人用瀏覽器做最後檢查、要連續開著好幾天的網站。它需要保留資料並對外 publish port，與自動化 E2E（跑完即 `down -v --remove-orphans`）相反，所以寫在同一個 compose 檔，但用獨立的 project 隔開。專案沒有這種網站時略過本節。
+
+- 服務寫在 `compose.e2e.yml`，命名為 `review-*`（如 `review-app`），並加上 `profiles: [review]`，讓自動化 E2E 的 `up` 不會啟動它；不另建 compose 檔。
+- 每條指令固定帶 `-p <project>_e2e_review` 與 `--profile review`：
+
+```bash
+docker compose -f compose.e2e.yml -p <project>_e2e_review --env-file .env.e2e --profile review up -d review-app
+```
+
+- 設定值放在 `.env.e2e` 的 `# --- review site ---` 段，host port 由變數指定（如 `E2E_REVIEW_PORT`）。檢查站專用的變數不用 `${VAR:?…}`：profile 未啟用時 Compose 仍會解析，缺值會讓自動化 E2E 失敗。
+- 檢查站只由 `--profile review` 啟用。`.env.e2e` 不設 `COMPOSE_PROFILES`，自動化 E2E 執行前也清除 shell／CI 的這個變數，否則一般的 `up` 會連檢查站一起啟動。
+- image 的構建規則同正式 E2E（正式 target、不掛載原始碼）。
+- 不掛載正式資料路徑，不連正式 DB。可以連共用的非正式測試 DB，但檢查站的 DB／schema 與資料路徑不給自動化 E2E 重設或清理，連線設定分開；變更 schema 前先備份，並用專案的 migration 工具執行。
+- 要保留的資料寫入檢查站 project 的 volume 或上述測試 DB，不放在容器可寫層（重建容器就會消失）。
+- 對檢查站的 project 不執行 `down -v`（會刪掉它的資料），任務結束的清理也不包含它。更新用 `up -d --build review-app`，停用用 `stop`。
 
 ### Gotchas
 
