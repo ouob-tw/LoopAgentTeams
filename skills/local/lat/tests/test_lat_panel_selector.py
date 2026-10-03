@@ -7,6 +7,11 @@ import json
 import unittest
 from unittest.mock import patch
 
+try:
+    from textual import events
+except ImportError:
+    events = None
+
 from test_lat_panel_ui import HAS_TEXTUAL, PanelTestCase
 
 SINGLE = (
@@ -23,6 +28,15 @@ MULTI = (
     "答覆：\n\n- [ ] 送出\n"
 )
 TEXT = "## 還有什麼想法？\nQ3 · r1 · 待答\n\n請自由回答。\n\n答覆：\n\n- [ ] 送出\n"
+# The question the real user answered when reporting that the view cannot scroll.
+CHECK = (
+    "## V2 選擇框用起來符合你要的樣子嗎？\nQ1 · r1 · 待答\n\n"
+    "V2 已經裝好了。這題是實際試用，請用 Ctrl+A → a 打開面板，用選擇框作答。\n\n"
+    "A. 符合，可以結案（建議）\n   我會收尾：清掉 V2 分支與暫存工作區、關閉 #27 與 #30。\n"
+    "B. 大致可以，但有地方想改\n   請按 Tab 在備註寫想改的地方；我會先整理成新的提案再問你。\n"
+    "C. 不符合，先別結案\n   請在備註寫原因。\n\n"
+    "答覆：\n\n- [ ] 送出\n"
+)
 RECORDED = (
     "## 舊題目\nQ0 · r1 · 已記錄 · 2026-10-02T09:00:00+00:00\n\n"
     "A. Done\n\n答覆：A. Done\n\n- [x] 送出\n"
@@ -44,6 +58,13 @@ class SelectorTestCase(PanelTestCase):
 
     def view(self, app):
         return str(app.query_one("#view").render())
+
+    def screen(self, app):
+        """The terminal rows as drawn, so scrolled-off content is absent."""
+        return "\n".join(
+            "".join(segment.text for segment in strip).rstrip()
+            for strip in app.screen._compositor.render_strips()
+        )
 
     def tabs(self, app):
         return str(app.query_one("#tabs").render())
@@ -639,6 +660,96 @@ class ReviewFixTests(SelectorTestCase):
             self.assertEqual(app.input.text, "自訂")
             await self.press(pilot, "escape", "tab")
             self.assertEqual(app.input.text, "說明")
+
+
+class SmallTerminalTests(SelectorTestCase):
+    def setUp(self):
+        super().setUp()
+        self.questions.write_text(CHECK)
+
+    async def test_moving_the_cursor_keeps_the_focused_option_on_screen(self):
+        for size in ((40, 12), (30, 10), (60, 9)):
+            app = self.make_app()
+            async with app.run_test(size=size) as pilot:
+                await self.press(pilot, "down")
+                self.assertIn("❯ 2. 大致可以", self.screen(app), size)
+                await self.press(pilot, "down")
+                self.assertIn("❯ 3. 不符合", self.screen(app), size)
+                self.assertIn("請在備註寫原因。", self.screen(app), size)
+                await self.press(pilot, "down")
+                self.assertIn("❯ 4. 其他（自己輸入）", self.screen(app), size)
+
+    async def test_returning_to_the_first_option_brings_the_title_back(self):
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await self.press(pilot, "down", "down", "down")
+            self.assertNotIn("V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
+            await self.press(pilot, "up", "up", "up")
+            screen = self.screen(app)
+            self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", screen)
+            self.assertIn("❯ 1. 符合，可以結案（建議）", screen)
+
+    async def test_first_option_stays_on_screen_when_the_text_above_is_too_tall(self):
+        app = self.make_app()
+        async with app.run_test(size=(30, 8)) as pilot:
+            await self.press(pilot, "down", "up")
+            self.assertNotIn("V2 選擇框用起來", self.screen(app).split("\n", 1)[1])
+            self.assertIn("❯ 1. 符合，可以結案", self.screen(app))
+
+    async def test_last_option_shows_the_note_below_it(self):
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await self.press(pilot, "3", "tab", *"note", "escape", "down")
+            screen = self.screen(app)
+            self.assertIn("❯ 4. 其他（自己輸入）", screen)
+            self.assertIn("備註：note", screen)
+
+    async def test_chosen_option_stays_on_screen_while_typing_a_note(self):
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await self.press(pilot, "3", "tab", *"note")
+            screen = self.screen(app)
+            self.assertIn("❯ 3. 不符合，先別結案  ✔", screen)
+            self.assertIn("Q1 備註", screen)
+
+    async def test_mouse_wheel_scrolls_the_body(self):
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await self.press(pilot, "down", "down", "down")
+            body = app.query_one("#body")
+            for _ in range(3):
+                body.post_message(events.MouseScrollUp(body, 5, 5, 0, 0, 0, False, False, False))
+            await pilot.pause(0.5)
+            self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
+
+    async def test_page_keys_scroll_the_question_and_the_review(self):
+        app = self.make_app()
+        async with app.run_test(size=(40, 8)) as pilot:
+            self.assertNotIn("4. 其他（自己輸入）", self.screen(app))
+            await self.press(pilot, "pagedown", "pagedown")
+            self.assertIn("4. 其他（自己輸入）", self.screen(app))
+            self.assertEqual(app.current.cursor, 0)
+            await self.press(pilot, "pageup", "pageup")
+            self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
+        self.questions.write_text("\n".join(
+            CHECK.replace("Q1", f"Q{number}") for number in range(1, 6)
+        ))
+        app = self.make_app()
+        async with app.run_test(size=(40, 8)) as pilot:
+            await self.press(pilot, *["right"] * 5)
+            self.assertIn("送出前檢查", self.screen(app))
+            self.assertNotIn("沒有可送出的答覆", self.screen(app))
+            await self.press(pilot, "pagedown", "pagedown", "pagedown")
+            self.assertIn("沒有可送出的答覆", self.screen(app))
+
+    async def test_page_keys_stay_with_the_input_while_typing(self):
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await self.press(pilot, "3", "tab", *"note")
+            before = self.screen(app)
+            await self.press(pilot, "pageup")
+            self.assertEqual(self.screen(app), before)
+            self.assertIs(app.focused, app.input)
 
 
 if __name__ == "__main__":

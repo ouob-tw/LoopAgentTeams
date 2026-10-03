@@ -382,6 +382,8 @@ class Panel(App):
         Binding("f5", "reload_file", "備份草稿並載入", priority=True),
         Binding("up", "move(-1)", priority=True, show=False),
         Binding("down", "move(1)", priority=True, show=False),
+        Binding("pageup", "page(-1)", priority=True, show=False),
+        Binding("pagedown", "page(1)", priority=True, show=False),
         Binding("left", "switch_tab(-1)", priority=True, show=False),
         Binding("right", "switch_tab(1)", priority=True, show=False),
         Binding("enter", "choose", priority=True, show=False),
@@ -662,14 +664,20 @@ class Panel(App):
         return bar
 
     def view_rows(self):
-        """Return ``(rows, focus_row)``; rows are ``(prefix, text, style)``."""
+        """Return ``(rows, item, reveal)``; rows are ``(prefix, text, style)``.
+
+        ``item`` and ``reveal`` are ``(first, last)`` row slices: the focused
+        item, and what to show with it when it fits. The first option reveals
+        the title and context above it, the last one whatever follows it.
+        """
+        top = (0, 1)
         if self.read_only:
-            return [], 0
+            return [], top, top
         if not self.drafts:
-            return [("", NO_QUESTIONS, "")], 0
+            return [("", NO_QUESTIONS, "")], top, top
         draft = self.current
         if draft is None:
-            return self.review_rows(), 0
+            return self.review_rows(), top, top
         accent = f"bold {self.current_theme.primary}" if self.current_theme else "bold"
         rows = [("", draft.title, "bold")]
         if draft.status == "submitted":
@@ -681,15 +689,14 @@ class Panel(App):
         if draft.context:
             rows.extend((("", "", ""), ("", draft.context, "")))
         rows.append(("", "", ""))
-        focus_row = len(rows)
+        item = None
         if draft.kind is None:
             if not draft.editable and draft.other:
                 rows.append(("答覆：", draft.other, ""))
         else:
             for index, label in enumerate([option.label for option in draft.options] + [OTHER_LABEL]):
                 focused = draft.editable and index == draft.cursor
-                if focused:
-                    focus_row = len(rows)
+                first = len(rows)
                 pointer = "❯ " if focused else "  "
                 checked = index in draft.selected
                 if draft.kind == "multi":
@@ -704,11 +711,21 @@ class Panel(App):
                     rows.append((indent, draft.options[index].impact, "dim"))
                 if index == draft.other_index and draft.other and checked:
                     rows.append((indent, draft.other, ""))
+                if focused:
+                    item = (first, len(rows))
         if draft.unmatched:
             rows.append(("", f"目前答覆無法對應選項：{draft.unmatched}", "dim"))
         if draft.note and draft.answer() is not None:
             rows.append(("備註：", draft.note, ""))
-        return rows, focus_row
+        if item is None:
+            # Nothing to point at: show the end, where the answer is.
+            item = (len(rows) - 1, len(rows))
+            return rows, item, item
+        reveal = (
+            0 if draft.cursor == 0 else item[0],
+            len(rows) if draft.cursor == draft.other_index else item[1],
+        )
+        return rows, item, reveal
 
     def review_rows(self):
         rows = [("", "送出前檢查", "bold"), ("", "", "")]
@@ -739,7 +756,7 @@ class Panel(App):
             self.tab_bar() if self.drafts and not self.read_only else ""
         )
         body = self.query_one("#body")
-        rows, focus_row = self.view_rows()
+        rows, item, reveal = self.view_rows()
         view = self.query_one("#view", Static)
         width = max(view.size.width or self.size.width - 4, 20)
         text, starts = wrap_rows(rows, width)
@@ -753,10 +770,26 @@ class Panel(App):
         if self.input_target is None:
             self.show_text_input(draft)
         if starts:
-            line = starts[min(focus_row, len(starts) - 1)]
+            lines = [*starts, text.plain.count("\n") + 1]
             self.call_after_refresh(
-                body.scroll_to_region, Region(0, line, max(body.size.width, 1), 1),
-                animate=False,
+                self.scroll_to_lines,
+                *((lines[first], lines[last]) for first, last in (reveal, item)),
+            )
+
+    def scroll_to_lines(self, *spans):
+        """Scroll the body to each ``(first, last)`` view line span in turn.
+
+        A later span wins when both cannot fit; a span taller than the body
+        shows its top.
+        """
+        body = self.query_one("#body")
+        # Lines count from the view's text; the body scrolls its padding too.
+        padding = self.query_one("#view").gutter.top
+        for first, last in spans:
+            top = padding + first if first else 0
+            body.scroll_to_region(
+                Region(0, top, max(body.size.width, 1), padding + last - top),
+                animate=False, immediate=True,
             )
 
     def show_text_input(self, draft):
@@ -800,6 +833,16 @@ class Panel(App):
         if draft and draft.editable and draft.kind is not None:
             draft.cursor = min(max(draft.cursor + step, 0), draft.other_index)
         self.refresh_view()
+
+    def action_page(self, step):
+        """Scroll the question or review text a page; the cursor stays put."""
+        if self.picker_active or self.raw_mode or self.focused is not None:
+            raise SkipAction()
+        body = self.query_one("#body")
+        if step < 0:
+            body.scroll_page_up(animate=False)
+        else:
+            body.scroll_page_down(animate=False)
 
     def action_switch_tab(self, step):
         if self.picker_active and self.focused is None:
