@@ -18,6 +18,7 @@ import asyncio
 from datetime import datetime
 import json
 import os
+import re
 from pathlib import Path
 import socket
 import sys
@@ -36,7 +37,6 @@ from textual.app import App, ComposeResult
 from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual import events
-from textual.geometry import Region
 from textual.messages import InBandWindowResize
 from textual.widgets import Static, TextArea
 
@@ -54,6 +54,10 @@ LOCKED = "已送出或已記錄的題目不能修改；要改答案請在聊天�
 FORGED = "答覆或備註不能有單獨一行寫成「- [x] 送出」、「答覆：」或題目標題；這次輸入沒有儲存"
 TAB_TITLE_CELLS = 16
 RECOMMENDED = "（建議）"
+# A focus unit is ``(kind, id, start)``: a paragraph ("text", number), an option
+# ("option", index) or a row after the options ("post", name), then the offset
+# in its text where this part of it starts.
+FIRST_UNIT = ("text", 0, 0)
 NO_BINDING = "此 workspace 沒有綁定的 LAT 主控"
 CONFLICT = "外部內容已變更，暫停儲存。F5：備份目前草稿並載入磁碟版本。"
 CONFLICT_CLOSE = "有未存的衝突草稿。先按 F5 備份草稿並載入磁碟版本，再關閉。"
@@ -192,26 +196,29 @@ def open_popup(env=None, *, request=rpc):
 def wrap_rows(rows, width):
     """Wrap ``(first_prefix, text, style)`` rows CJK-aware with hanging indents.
 
-    Returns the Rich text and the first display line of every row.
+    Returns the Rich text, the first display line of every row, and for every
+    display line the offset in its row's text where it starts.
     """
     output = Text()
     starts = []
-    line_count = 0
+    chars = []
     for prefix, text, style in rows:
-        starts.append(line_count)
+        starts.append(len(chars))
         indent = " " * cell_len(prefix)
         available = max(width - len(indent), 1)
         lead = prefix
+        position = 0
         for paragraph in text.split("\n"):
             offsets = cjk_wrap.compute_wrap_offsets(paragraph, available, 4)
             bounds = [0, *offsets, len(paragraph)]
             for begin, finish in zip(bounds, bounds[1:]):
-                if line_count:
+                if chars:
                     output.append("\n")
                 output.append(lead + paragraph[begin:finish].rstrip(), style)
-                line_count += 1
+                chars.append(position + begin)
                 lead = indent
-    return output, starts
+            position += len(paragraph) + 1
+    return output, starts, chars
 
 
 def answer_label(label):
@@ -252,7 +259,7 @@ class Draft:
             self.status = "broken"
         else:
             self.status = "draft"
-        self.cursor = 0
+        self.focus = FIRST_UNIT
         self.selected = []
         self.other = ""
         self.note = ""
@@ -261,6 +268,15 @@ class Draft:
         answer = lat_panel.parse_question_answer(section) if section["answer"] else None
         if answer is not None:
             self.restore(answer)
+
+    @property
+    def cursor(self):
+        """Index of the focused option, or ``None`` while reading other text."""
+        return self.focus[1] if self.focus[0] == "option" else None
+
+    @cursor.setter
+    def cursor(self, index):
+        self.focus = ("option", index, 0)
 
     @property
     def other_index(self):
@@ -381,7 +397,21 @@ class Body(Relayout, VerticalScroll):
 
 
 class View(Relayout, Static):
-    pass
+    """The question text; a click focuses or chooses the unit under it."""
+
+    def on_click(self, event):
+        offset = event.get_content_offset(self)
+        if offset is not None:
+            self.app.click_view(offset.y)
+
+
+class Tabs(Static):
+    """The tab bar; a click switches to the tab under it."""
+
+    def on_click(self, event):
+        offset = event.get_content_offset(self)
+        if offset is not None:
+            self.app.click_tab(offset.x)
 
 
 class Status(Relayout, Static):
@@ -407,7 +437,7 @@ class Panel(App):
     #picker { height: 1; padding: 0 1; }
     #tabs { height: 1; padding: 0 1; }
     #body { height: 1fr; scrollbar-gutter: stable; }
-    #view { padding: 1 1 0 1; }
+    #view { padding: 1 1 0 0; }
     #input-label { height: 1; padding: 0 1; color: $text-muted; }
     #input { height: auto; min-height: 3; max-height: 10; }
     #editor { height: 1fr; border: none; }
@@ -456,6 +486,9 @@ class Panel(App):
         self.tab = 0
         self.input_target = None
         self.kept_scroll = None
+        self.review_focus = FIRST_UNIT
+        self.units = []
+        self.tab_spans = []
         self.revised = {}
         self.saved = ""
         self.conflict = False
@@ -517,7 +550,7 @@ class Panel(App):
 
     def compose(self) -> ComposeResult:
         yield Static(self.picker_text(), id="picker", markup=False)
-        yield Static("", id="tabs", markup=False)
+        yield Tabs("", id="tabs", markup=False)
         with Body(id="body"):
             yield View("", id="view", markup=False)
         yield Static("", id="input-label", markup=False)
@@ -666,7 +699,9 @@ class Panel(App):
                 continue
             draft = Draft(section)
             if old is not None and old.revision == draft.revision:
-                draft.cursor = min(old.cursor, draft.other_index)
+                draft.focus = old.focus
+                if old.cursor is not None:
+                    draft.cursor = min(old.cursor, draft.other_index)
             elif old is not None and (
                 question_id == current_id or old.answer() is not None
             ):
@@ -717,43 +752,51 @@ class Panel(App):
         while first < self.tab and cell_len("   ".join(labels[first:self.tab + 1])) + 4 > width:
             first += 1
         bar = Text("← ")
+        # Cell ranges a click maps to a tab; the arrows step one tab.
+        self.tab_spans = [(0, 1, self.tab - 1)]
         for index in range(first, len(labels)):
             if index > first:
                 bar.append("   ")
+            start = bar.cell_len
             bar.append(labels[index], "reverse" if index == self.tab else "")
+            self.tab_spans.append((start, bar.cell_len, index))
         bar.append(" →")
+        self.tab_spans.append((bar.cell_len - 1, bar.cell_len, self.tab + 1))
         return bar
 
     def view_rows(self):
-        """Return ``(rows, item, reveal)``; rows are ``(prefix, text, style)``.
+        """Return ``(rows, keys)``; rows are ``(prefix, text, style)``.
 
-        ``item`` and ``reveal`` are ``(first, last)`` row slices: the focused
-        item, and what to show with it when it fits. The first option reveals
-        the title and context above it, the last one whatever follows it.
+        ``keys`` names the focus unit each row belongs to, ``None`` for the
+        blank rows between units.
         """
-        top = (0, 1)
         if self.read_only:
-            return [], top, top
+            return [], []
         if not self.drafts:
-            return [("", NO_QUESTIONS, "")], top, top
+            return [("", NO_QUESTIONS, "")], [None]
         draft = self.current
         if draft is None:
-            return self.review_rows(), top, top
+            return self.review_rows()
         accent = f"bold {self.current_theme.primary}" if self.current_theme else "bold"
         rows = [("", draft.title, "bold")]
+        keys = [("text", 0)]
         if draft.status == "submitted":
             rows.append(("", SUBMITTED, accent))
         elif draft.status == "recorded":
             rows.append(("", RECORDED, accent))
         elif draft.status == "broken":
             rows.append(("", "題目格式錯誤：找不到答覆或送出標記。請按 Ctrl+E 修正", "bold"))
-        if draft.context:
-            rows.extend((("", "", ""), ("", draft.context, "")))
+        keys += [("text", 0)] * (len(rows) - 1)
+        paragraphs = [text for text in re.split(r"\n(?:[ \t]*\n)+", draft.context) if text]
+        for number, paragraph in enumerate(paragraphs, 1):
+            rows.extend((("", "", ""), ("", paragraph, "")))
+            keys.extend((None, ("text", number)))
         rows.append(("", "", ""))
-        item = None
+        keys.append(None)
         if draft.kind is None:
             if not draft.editable and draft.other:
                 rows.append(("答覆：", draft.other, ""))
+                keys.append(("post", "answer"))
         else:
             for index, label in enumerate([option.label for option in draft.options] + [OTHER_LABEL]):
                 focused = draft.editable and index == draft.cursor
@@ -772,29 +815,24 @@ class Panel(App):
                     rows.append((indent, draft.options[index].impact, "dim"))
                 if index == draft.other_index and draft.other and checked:
                     rows.append((indent, draft.other, ""))
-                if focused:
-                    item = (first, len(rows))
+                keys += [("option", index)] * (len(rows) - first)
         if draft.unmatched:
             rows.append(("", f"目前答覆無法對應選項：{draft.unmatched}", "dim"))
+            keys.append(("post", "unmatched"))
         if draft.note and draft.answer() is not None:
             rows.append(("備註：", draft.note, ""))
-        if item is None:
-            # Nothing to point at: a typed answer is at the end, options start at the top.
-            item = (len(rows) - 1, len(rows)) if draft.kind is None else top
-            return rows, item, item
-        reveal = (
-            0 if draft.cursor == 0 else item[0],
-            len(rows) if draft.cursor == draft.other_index else item[1],
-        )
-        return rows, item, reveal
+            keys.append(("post", "note"))
+        return rows, keys
 
     def review_rows(self):
         rows = [("", "送出前檢查", "bold"), ("", "", "")]
+        keys = [("text", 0), None]
         ready = 0
-        for draft in self.drafts.values():
+        for number, draft in enumerate(self.drafts.values(), 1):
             rows.append((f"{draft.marker()} ", draft.title, ""))
             if draft.status == "recorded":
                 rows.append(("  ", "已記錄", "dim"))
+                keys += [("text", number)] * 2
                 continue
             text = draft.summary()
             if draft.status == "submitted":
@@ -802,13 +840,73 @@ class Panel(App):
             elif draft.submittable:
                 ready += 1
             rows.append(("  ", text, "" if draft.answer() is not None else "dim"))
+            keys += [("text", number)] * 2
         rows.append(("", "", ""))
         rows.append((
             "❯ " if ready else "",
             f"Enter 送出 {ready} 題" if ready else "沒有可送出的答覆",
             "bold" if ready else "dim",
         ))
-        return rows
+        keys += [None, ("post", "submit")]
+        return rows, keys
+
+    @property
+    def focus(self):
+        """Focus unit key of the current tab."""
+        draft = self.current
+        return draft.focus if draft else self.review_focus
+
+    @focus.setter
+    def focus(self, key):
+        draft = self.current
+        if draft:
+            draft.focus = key
+        else:
+            self.review_focus = key
+
+    def build_units(self, rows, keys, lines, chars, height):
+        """Return focus units ``(key, first_line, last_line)`` in reading order.
+
+        Rows that share a key form one unit. Text taller than half the body,
+        and an option taller than the body, is split into parts, so stepping
+        through never jumps over unread text.
+        """
+        units = []
+        for row, key in enumerate(keys):
+            if key is None:
+                continue
+            if units and units[-1][0] == key:
+                units[-1][2].append(row)
+            else:
+                units.append((key, lines[row], [row]))
+        half = max(height - height // 2, 1)
+        parts = []
+        for key, first, unit_rows in units:
+            # Where each line starts in the unit's text, its rows end to end.
+            starts = []
+            before = 0
+            for row in unit_rows:
+                starts += [before + char for char in chars[lines[row]:lines[row + 1]]]
+                before += len(rows[row][1]) + 1
+            size = height if key[0] == "option" else half
+            parts += [
+                ((*key, starts[offset]), first + offset, first + min(offset + size, len(starts)))
+                for offset in range(0, len(starts), size)
+            ]
+        return parts
+
+    def focus_index(self):
+        """Index in ``self.units`` of the focused unit.
+
+        After rewrapping or a change of height the parts differ: pick the part
+        that holds the text the focus started at, so nothing unread is passed.
+        """
+        kind, name, start = self.focus
+        best = 0
+        for index, (key, _first, _last) in enumerate(self.units):
+            if key[:2] == (kind, name) and key[2] <= start:
+                best = index
+        return best
 
     def refresh_view(self):
         if not self.is_mounted:
@@ -817,11 +915,22 @@ class Panel(App):
             self.tab_bar() if self.drafts and not self.read_only else ""
         )
         body = self.query_one("#body")
-        rows, item, reveal = self.view_rows()
+        rows, keys = self.view_rows()
         view = self.query_one("#view", Static)
-        width = max(view.size.width or self.size.width - 4, 1)
-        text, starts = wrap_rows(rows, width)
-        view.update(text)
+        # One column is the focus bar.
+        width = max((view.size.width or self.size.width - 3) - 1, 1)
+        text, starts, chars = wrap_rows(rows, width)
+        height = body.size.height or max(self.size.height - 2, 1)
+        self.units = self.build_units(rows, keys, [*starts, len(chars)], chars, height)
+        first, last = self.units[self.focus_index()][1:] if self.units else (0, 0)
+        accent = self.current_theme.primary if self.current_theme else "bold"
+        shown = Text()
+        for number, line in enumerate(text.split("\n", allow_blank=True) if rows else []):
+            if number:
+                shown.append("\n")
+            shown.append("▌" if first <= number < last else " ", accent)
+            shown.append_text(line)
+        view.update(shown)
         draft = self.current
         self.notices["options"] = (
             f"{draft.id}：{draft.reason}，只能輸入文字"
@@ -831,13 +940,9 @@ class Panel(App):
         if self.input_target is None:
             self.show_text_input(draft)
         # A scroll the user made stays until they act or this question changes.
-        if starts and self.kept_scroll != (self.question_key(),):
+        if self.units and self.kept_scroll != (self.question_key(),):
             self.kept_scroll = None
-            lines = [*starts, text.plain.count("\n") + 1]
-            self.call_after_refresh(
-                self.scroll_to_lines,
-                *((lines[first], lines[last]) for first, last in (reveal, item)),
-            )
+            self.call_after_refresh(self.scroll_to_focus, first, last)
 
     def question_key(self):
         """What the current tab shows, apart from its position and wrapping."""
@@ -848,21 +953,20 @@ class Panel(App):
         """Remember that the user scrolled what the current tab shows."""
         self.kept_scroll = (self.question_key(),)
 
-    def scroll_to_lines(self, *spans):
-        """Scroll the body to each ``(first, last)`` view line span in turn.
+    def scroll_to_focus(self, first, last):
+        """Scroll so the focused lines sit at the middle of the body.
 
-        A later span wins when both cannot fit; a span taller than the body
-        shows its top.
+        Near the start or end of the text the body cannot scroll that far, so
+        the focus moves on to the real edge. A unit taller than the space
+        below the middle is pulled up until it fits, its top staying in view.
         """
         body = self.query_one("#body")
         # Lines count from the view's text; the body scrolls its padding too.
         padding = self.query_one("#view").gutter.top
-        for first, last in spans:
-            top = padding + first if first else 0
-            body.scroll_to_region(
-                Region(0, top, max(body.size.width, 1), padding + last - top),
-                animate=False, immediate=True,
-            )
+        height = body.size.height
+        top = padding + first
+        target = max(top - height // 2, padding + last - height)
+        body.scroll_to(y=max(min(target, top), 0), animate=False, immediate=True)
 
     def show_text_input(self, draft):
         """Show an input-only question's answer box, unfocused, on its tab."""
@@ -915,21 +1019,10 @@ class Panel(App):
         return self.current
 
     def action_move(self, step):
-        kept = self.kept_scroll
-        draft = self.selector_draft()
-        if draft and draft.editable and draft.kind is not None:
-            cursor = min(max(draft.cursor + step, 0), draft.other_index)
-            if cursor != draft.cursor:
-                draft.cursor = cursor
-                self.refresh_view()
-                return
-        # Nothing further to move to: read on past the first or last item.
-        body = self.query_one("#body")
-        before = body.scroll_y
-        body.scroll_relative(y=step, animate=False, immediate=True)
-        # Pressing on at the end of the text must not jump back to the cursor.
-        if body.scroll_y != before or kept == (self.question_key(),):
-            self.keep_scroll()
+        self.selector_draft()
+        if self.units:
+            index = min(max(self.focus_index() + step, 0), len(self.units) - 1)
+            self.focus = self.units[index][0]
         self.refresh_view()
 
     def action_page(self, step):
@@ -982,14 +1075,10 @@ class Panel(App):
             return
         if draft.kind is None:
             self.open_input("text")
+        elif draft.cursor is None:
+            pass
         elif draft.kind == "multi":
-            # 其他 only opens its input; checking it when it has text opens it too.
-            if draft.cursor != draft.other_index or (
-                draft.other.strip() and draft.cursor not in draft.selected
-            ):
-                self.toggle_option(draft, draft.cursor)
-            else:
-                self.open_input("other")
+            self.choose_multi(draft)
         else:
             self.select_option(draft, draft.cursor)
             # Move on once the choice is saved; 其他 stays to take its text.
@@ -1000,12 +1089,24 @@ class Panel(App):
                 self.tab += 1
         self.refresh_view()
 
+    def choose_multi(self, draft):
+        """Enter or a click on a multi-select option."""
+        # 其他 only opens its input; checking it when it has text opens it too.
+        if draft.cursor != draft.other_index or (
+            draft.other.strip() and draft.cursor not in draft.selected
+        ):
+            self.toggle_option(draft, draft.cursor)
+        else:
+            self.open_input("other")
+
     def action_toggle(self):
         draft = self.selector_draft()
         if self.typing_target(draft):
             self.type_text(draft, " ")
             return
-        if draft and draft.editable and draft.kind == "multi":
+        if draft and draft.kind is not None and draft.cursor is None:
+            pass
+        elif draft and draft.editable and draft.kind == "multi":
             self.toggle_option(draft, draft.cursor)
         elif draft and draft.editable and draft.kind == "single":
             self.select_option(draft, draft.cursor)
@@ -1013,7 +1114,7 @@ class Panel(App):
 
     def action_note(self):
         draft = self.selector_draft()
-        if draft and draft.editable:
+        if draft and draft.editable and (draft.kind is None or draft.cursor is not None):
             # Tab on an option chooses it first; 其他 must already be the answer.
             if draft.kind is not None and draft.cursor != draft.other_index:
                 if draft.kind == "single":
@@ -1031,6 +1132,40 @@ class Panel(App):
                 self.notices["action"] = "先選擇或輸入答覆，再按 Tab 加備註"
             elif draft.cursor == draft.other_index:
                 self.notices["action"] = "先在「其他」輸入內容，再按 Tab 加備註"
+        self.refresh_view()
+
+    def click_tab(self, x):
+        """Switch to the tab drawn at cell ``x`` of the tab bar."""
+        if self.picker_active or self.raw_mode or self.read_only or self.closing:
+            return
+        for start, end, tab in self.tab_spans:
+            if start <= x < end and 0 <= tab <= len(self.drafts):
+                if self.focused is not None:
+                    self.leave_input()
+                self.notices["action"] = ""
+                self.kept_scroll = None
+                self.tab = tab
+                self.refresh_view()
+                return
+
+    def click_view(self, line):
+        """Focus the unit drawn at view ``line``; an option is chosen as well."""
+        if self.picker_active or self.raw_mode or self.read_only or self.closing:
+            return
+        key = next((key for key, first, last in self.units if first <= line < last), None)
+        if key is None:
+            return
+        if self.focused is not None:
+            self.leave_input()
+        self.notices["action"] = ""
+        self.kept_scroll = None
+        self.focus = key
+        draft = self.current
+        if draft and draft.editable and key[0] == "option":
+            if draft.kind == "multi":
+                self.choose_multi(draft)
+            else:
+                self.select_option(draft, draft.cursor)
         self.refresh_view()
 
     def select_option(self, draft, index):

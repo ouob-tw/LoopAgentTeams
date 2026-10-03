@@ -7,6 +7,7 @@ import fcntl
 import json
 import os
 import pty
+import re
 import select
 import struct
 import sys
@@ -60,7 +61,8 @@ class SelectorTestCase(PanelTestCase):
         self.questions.write_text("\n".join((RECORDED, SINGLE, MULTI, TEXT)))
 
     def view(self, app):
-        return str(app.query_one("#view").render())
+        """The question text without its focus-bar column."""
+        return "\n".join(line[1:] for line in str(app.query_one("#view").render()).split("\n"))
 
     def screen(self, app):
         """The terminal rows as drawn, so scrolled-off content is absent."""
@@ -68,6 +70,14 @@ class SelectorTestCase(PanelTestCase):
             "".join(segment.text for segment in strip).rstrip()
             for strip in app.screen._compositor.render_strips()
         )
+
+    def rows(self, app):
+        """Screen rows without the scrollbar thumb."""
+        return [re.sub(r"\s+[▁-█]+$", "", line) for line in self.screen(app).splitlines()]
+
+    def focused(self, app):
+        """Screen rows carrying the focus bar."""
+        return [line for line in self.rows(app) if line.startswith("▌")]
 
     def tabs(self, app):
         return str(app.query_one("#tabs").render())
@@ -83,7 +93,18 @@ class SelectorTestCase(PanelTestCase):
         return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     async def press(self, pilot, *keys):
-        await pilot.press(*keys)
+        """Press keys; ``@options`` steps the focus down to the first option."""
+        for key in keys:
+            if key != "@options":
+                await pilot.press(key)
+                continue
+            for _ in range(50):
+                if pilot.app.current.cursor is not None:
+                    break
+                await pilot.press("down")
+                await pilot.pause()
+            else:
+                self.fail("the focus never reached an option")
         await pilot.pause()
 
 
@@ -100,7 +121,7 @@ class LayoutTests(SelectorTestCase):
                 "",
                 "審查和驗收都通過了，現在只差要不要把它併進 dev。",
                 "",
-                "❯ 1. 合併到 dev，不推送",
+                "  1. 合併到 dev，不推送",
                 "     dev 有了面板程式。",
                 "  2. 合併到 dev，並推送到 GitHub（建議）",
                 "     repo 是公開的，程式碼會公開。",
@@ -154,11 +175,14 @@ class SingleSelectTests(SelectorTestCase):
         app = self.make_app()
         async with app.run_test() as pilot:
             before = self.text()
-            await self.press(pilot, "up", "down", "down", "up")
+            await self.press(pilot, "up", "@options", "down", "down", "up")
             self.assertEqual(app.current.cursor, 1)
             await self.press(pilot, "down", "down", "down", "down")
             self.assertEqual(app.current.cursor, 3)
             self.assertIn("❯ 4. 其他（自己輸入）", self.view(app))
+            await self.press(pilot, *["up"] * 8)
+            self.assertEqual(app.current.focus[:3], ("text", 0, 0))
+            self.assertNotIn("❯", self.view(app))
             self.assertEqual(self.text(), before)
 
     async def test_digit_and_enter_write_a_single_draft_that_replaces_the_last(self):
@@ -196,7 +220,7 @@ class SingleSelectTests(SelectorTestCase):
     async def test_typing_on_the_other_row_goes_straight_into_its_text(self):
         app = self.make_app()
         async with app.run_test(size=(40, 12)) as pilot:
-            await self.press(pilot, "down", "down", "down", "a")
+            await self.press(pilot, "@options", "down", "down", "down", "a")
             self.assertIs(app.focused, app.input)
             await self.press(pilot, "1", "space", "b")
             self.assertEqual(app.input.text, "a1 b")
@@ -219,7 +243,7 @@ class SingleSelectTests(SelectorTestCase):
     async def test_space_selects_the_option_and_stays_on_the_question(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "down", "space")
+            await self.press(pilot, "@options", "down", "space")
             self.assertIn("答覆：B. 合併到 dev，並推送到 GitHub\n", self.text())
             self.assertEqual(app.current.id, "Q1")
             self.assertIn("❯ 2. 合併到 dev，並推送到 GitHub（建議）  ✔", self.view(app))
@@ -227,7 +251,7 @@ class SingleSelectTests(SelectorTestCase):
     async def test_enter_selects_a_single_option_and_moves_to_the_next_tab(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "down", "enter")
+            await self.press(pilot, "@options", "down", "enter")
             self.assertIn("答覆：B. 合併到 dev，並推送到 GitHub\n", self.text())
             self.assertEqual(app.current.id, "Q2")
             await self.press(pilot, "left", "2")
@@ -240,7 +264,7 @@ class SingleSelectTests(SelectorTestCase):
         self.questions.write_text(SINGLE)
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "enter")
+            await self.press(pilot, "@options", "enter")
             self.assertIsNone(app.current)
             self.assertIn("❯ Enter 送出 1 題", self.view(app))
             self.assertIn("- [ ] 送出", self.text())
@@ -248,7 +272,7 @@ class SingleSelectTests(SelectorTestCase):
     async def test_tab_selects_the_option_and_opens_its_note(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "down", "tab")
+            await self.press(pilot, "@options", "down", "tab")
             self.assertIs(app.focused, app.input)
             self.assertIn("答覆：B. 合併到 dev，並推送到 GitHub\n", self.text())
             await self.press(pilot, *"why", "enter", *"more", "escape")
@@ -265,7 +289,7 @@ class SingleSelectTests(SelectorTestCase):
     async def test_enter_stays_on_the_question_when_the_choice_was_not_saved(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "tab", "n", "enter", *"- [x]", "space", *"送出", "escape")
+            await self.press(pilot, "@options", "tab", "n", "enter", *"- [x]", "space", *"送出", "escape")
             self.assertIn("這次輸入沒有儲存", self.status(app))
             await self.press(pilot, "down", "enter")
             self.assertEqual(app.current.id, "Q1")
@@ -274,7 +298,7 @@ class SingleSelectTests(SelectorTestCase):
     async def test_tab_on_the_other_row_needs_other_to_be_the_answer(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "down", "down", "down", "x", "escape", "up", "up", "up", "1")
+            await self.press(pilot, "@options", "down", "down", "down", "x", "escape", "up", "up", "up", "1")
             await self.press(pilot, "down", "down", "down", "tab")
             self.assertIsNone(app.focused)
             self.assertEqual(self.status(app), "先在「其他」輸入內容，再按 Tab 加備註")
@@ -282,15 +306,24 @@ class SingleSelectTests(SelectorTestCase):
     async def test_tab_on_the_other_row_needs_its_text_first(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "down", "down", "down", "tab")
+            await self.press(pilot, "@options", "down", "down", "down", "tab")
             self.assertIsNone(app.focused)
             self.assertEqual(self.status(app), "先在「其他」輸入內容，再按 Tab 加備註")
             await self.press(pilot, "x", "escape", "tab", "n", "escape")
             self.assertIn("答覆：其他：x\n備註：n\n", self.text())
 
-    async def test_cursor_starts_on_first_option_even_when_another_is_recommended(self):
+    async def test_focus_starts_on_the_title_where_choosing_keys_do_nothing(self):
         app = self.make_app()
         async with app.run_test() as pilot:
+            before = self.text()
+            self.assertEqual(app.current.focus[:3], ("text", 0, 0))
+            await self.press(pilot, "enter", "space", "tab")
+            self.assertEqual(self.text(), before)
+            self.assertEqual(app.current.id, "Q1")
+            self.assertIsNone(app.focused)
+            await self.press(pilot, "down")
+            self.assertEqual(app.current.focus[:3], ("text", 1, 0))
+            await self.press(pilot, "down")
             self.assertEqual(app.current.cursor, 0)
             await self.press(pilot, "enter")
             self.assertIn("答覆：A. 合併到 dev，不推送\n", self.text())
@@ -300,7 +333,7 @@ class MultiSelectTests(SelectorTestCase):
     async def test_space_and_digits_toggle_in_selection_order(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "right")
+            await self.press(pilot, "right", "@options")
             self.assertIn("❯ 1. [ ] 主控綁定", self.view(app))
             await self.press(pilot, "3", "up", "up", "space")
             self.assertIn("答覆：通知；主控綁定\n\n- [ ] 送出", section(self.text(), "Q2"))
@@ -318,13 +351,13 @@ class MultiSelectTests(SelectorTestCase):
     async def test_tab_checks_the_option_once_and_opens_the_note(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "right", "tab", "n", "escape", "tab", "2", "escape")
+            await self.press(pilot, "right", "@options", "tab", "n", "escape", "tab", "2", "escape")
             self.assertIn("答覆：主控綁定\n備註：n2\n", self.text())
 
     async def test_enter_on_the_other_row_always_opens_its_input(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "right", "down", "down", "down", "enter")
+            await self.press(pilot, "right", "@options", "down", "down", "down", "enter")
             self.assertIs(app.focused, app.input)
             self.assertEqual(section(self.text(), "Q2"), MULTI + "\n")
             await self.press(pilot, "x", "escape")
@@ -349,7 +382,7 @@ class MultiSelectTests(SelectorTestCase):
     async def test_blank_text_on_the_other_row_is_dropped_when_leaving(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "right", "down", "down", "down", "space", "escape")
+            await self.press(pilot, "right", "@options", "down", "down", "down", "space", "escape")
             self.assertEqual(section(self.text(), "Q2"), MULTI + "\n")
             await self.press(pilot, "x", "escape")
             self.assertIn("答覆：其他：x\n", self.text())
@@ -357,7 +390,7 @@ class MultiSelectTests(SelectorTestCase):
     async def test_enter_toggles_the_option_and_stays_on_the_question(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "right", "enter", "down", "enter")
+            await self.press(pilot, "right", "@options", "enter", "down", "enter")
             self.assertEqual(app.current.id, "Q2")
             self.assertIn("答覆：主控綁定；封存\n", self.text())
             await self.press(pilot, "enter")
@@ -625,7 +658,8 @@ class LiveUpdateTests(SelectorTestCase):
             self.assertIn("題目已更新：Q1 r2，這題的選擇已重設", self.status(app))
             self.assertEqual(app.current.revision, 2)
             self.assertEqual(app.current.selected, [])
-            self.assertIn("❯ 1. 只合併", self.view(app))
+            self.assertEqual(app.current.focus[:3], ("text", 0, 0))
+            self.assertIn("  1. 只合併", self.view(app))
             self.assertIn("☐ 正式版要怎麼併…", self.tabs(app))
             self.assertIn("### 舊版 r1（不套用至 r2）\n答覆：其他：舊答案", self.text())
             await self.press(pilot, "2")
@@ -835,7 +869,7 @@ class SmallTerminalTests(SelectorTestCase):
         for size in ((40, 12), (30, 10), (60, 9)):
             app = self.make_app()
             async with app.run_test(size=size) as pilot:
-                await self.press(pilot, "down")
+                await self.press(pilot, "@options", "down")
                 self.assertIn("❯ 2. 大致可以", self.screen(app), size)
                 await self.press(pilot, "down")
                 self.assertIn("❯ 3. 不符合", self.screen(app), size)
@@ -843,22 +877,20 @@ class SmallTerminalTests(SelectorTestCase):
                 await self.press(pilot, "down")
                 self.assertIn("❯ 4. 其他（自己輸入）", self.screen(app), size)
 
-    async def test_returning_to_the_first_option_brings_the_title_back(self):
+    async def test_stepping_back_up_brings_the_title_back(self):
         app = self.make_app()
         async with app.run_test(size=(40, 12)) as pilot:
-            await self.press(pilot, "down", "down", "down")
+            await self.press(pilot, "@options", "down", "down", "down")
             self.assertNotIn("V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
-            await self.press(pilot, "up", "up", "up")
-            screen = self.screen(app)
-            self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", screen)
-            self.assertIn("❯ 1. 符合，可以結案（建議）", screen)
+            await self.press(pilot, *["up"] * 5)
+            self.assertIn("▌V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
+            self.assertNotIn("❯", self.screen(app))
 
     async def test_first_option_stays_on_screen_when_the_text_above_is_too_tall(self):
         app = self.make_app()
         async with app.run_test(size=(30, 8)) as pilot:
-            await self.press(pilot, "down", "up")
-            self.assertNotIn("V2 選擇框用起來", self.screen(app).split("\n", 1)[1])
-            self.assertIn("❯ 1. 符合，可以結案", self.screen(app))
+            await self.press(pilot, "@options")
+            self.assertIn("▌❯ 1. 符合，可以結案", self.screen(app))
 
     async def test_last_option_shows_the_note_below_it(self):
         app = self.make_app()
@@ -879,8 +911,13 @@ class SmallTerminalTests(SelectorTestCase):
     async def test_focused_option_stays_on_screen_in_a_very_narrow_terminal(self):
         app = self.make_app()
         async with app.run_test(size=(20, 10)) as pilot:
-            await self.press(pilot, "down", "down", "down")
-            self.assertIn("❯ 4. 其他（自己", self.screen(app))
+            await self.press(pilot, "@options")
+            # Options taller than this body take more than one step each.
+            for _ in range(20):
+                if app.current.cursor == 3:
+                    break
+                await self.press(pilot, "down")
+            self.assertIn("▌❯ 4. 其他（自己", self.screen(app))
 
     async def test_tall_note_leaves_the_chosen_option_and_footer_on_screen(self):
         app = self.make_app()
@@ -895,7 +932,7 @@ class SmallTerminalTests(SelectorTestCase):
         for size in ((40, 12), (30, 10)):
             app = self.make_app()
             async with app.run_test(size=(80, 24)) as pilot:
-                await self.press(pilot, "down", "down", "down")
+                await self.press(pilot, "@options", "down", "down", "down")
                 await pilot.resize_terminal(*size)
                 await pilot.pause()
                 self.assertIn("❯ 4. 其他（自己輸入）", self.screen(app), size)
@@ -942,35 +979,139 @@ class SmallTerminalTests(SelectorTestCase):
             await pilot.pause()
             self.assertIn("END", self.screen(app))
 
-    async def test_up_on_the_first_option_scrolls_back_to_a_long_description(self):
-        description = "\n".join(f"說明第 {number} 行" for number in range(1, 13))
-        self.questions.write_text(SINGLE.replace("審查和驗收都通過了，現在只差要不要把它併進 dev。", description))
+    async def test_arrows_step_the_focus_through_every_paragraph_and_option(self):
+        paragraphs = "\n\n".join(
+            "\n".join(f"說明第 {first + line} 行" for line in range(3)) for first in (1, 4, 7, 10)
+        )
+        self.questions.write_text(SINGLE.replace("審查和驗收都通過了，現在只差要不要把它併進 dev。", paragraphs))
         app = self.make_app()
         async with app.run_test(size=(40, 10)) as pilot:
             await pilot.pause(0.3)
-            self.assertIn("❯ 1. 合併到 dev，不推送", self.screen(app))
-            self.assertNotIn("正式版要怎麼併入？", self.screen(app))
-            await self.press(pilot, *["up"] * 12)
-            self.assertIn("正式版要怎麼併入？", self.screen(app))
-            self.assertIn("說明第 1 行", self.screen(app))
-            self.assertEqual(app.current.cursor, 0)
-            await self.press(pilot, "up")
-            self.assertIn("正式版要怎麼併入？", self.screen(app))
+            self.assertEqual(self.rows(app)[2], "▌正式版要怎麼併入？")
+            focused = []
+            for _ in range(4):
+                await self.press(pilot, "down")
+                focused.append(self.focused(app))
+            self.assertEqual(focused, [
+                [f"▌說明第 {first + line} 行" for line in range(3)] for first in (1, 4, 7, 10)
+            ])
+            # Past the top of the text the focus stays on the middle row of the body.
+            self.assertEqual(self.rows(app)[5], "▌說明第 10 行")
             await self.press(pilot, "down")
-            self.assertIn("❯ 2. 合併到 dev，並推送到 GitHub", self.screen(app))
+            self.assertEqual(self.rows(app)[5], "▌❯ 1. 合併到 dev，不推送")
+            await self.press(pilot, *["down"] * 6)
+            self.assertEqual(app.current.cursor, 3)
+            self.assertIn("▌❯ 4. 其他（自己輸入）", self.screen(app))
+            await self.press(pilot, *["up"] * 4)
+            self.assertEqual(self.rows(app)[5], "▌說明第 10 行")
+            await self.press(pilot, *["up"] * 6)
+            self.assertEqual(self.rows(app)[2], "▌正式版要怎麼併入？")
 
-    async def test_down_on_the_last_option_scrolls_to_what_is_below_it(self):
+    async def test_a_paragraph_taller_than_the_screen_is_stepped_through_in_parts(self):
+        long = "\n".join(f"說明第 {number} 行" for number in range(1, 21))
+        self.questions.write_text(SINGLE.replace("審查和驗收都通過了，現在只差要不要把它併進 dev。", long))
+        app = self.make_app()
+        async with app.run_test(size=(40, 10)) as pilot:
+            await pilot.pause(0.3)
+            seen = []
+            for _ in range(20):
+                if app.current.cursor is not None:
+                    break
+                await self.press(pilot, "down")
+                seen += [line for line in self.focused(app) if "說明" in line]
+            self.assertEqual(seen, [f"▌說明第 {number} 行" for number in range(1, 21)])
+            self.assertEqual(app.current.cursor, 0)
+
+    async def test_resizing_keeps_the_reading_place_in_a_long_paragraph(self):
+        long = "\n".join(f"LINE{number:02}" for number in range(1, 81))
+        self.questions.write_text(SINGLE.replace("審查和驗收都通過了，現在只差要不要把它併進 dev。", long))
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await pilot.pause(0.3)
+            await self.press(pilot, *["down"] * 5)
+            self.assertEqual(self.focused(app), [f"▌LINE{number}" for number in range(21, 26)])
+            await pilot.resize_terminal(40, 22)
+            await pilot.pause(0.3)
+            self.assertEqual(self.focused(app), [f"▌LINE{number}" for number in range(21, 31)])
+            await self.press(pilot, "down")
+            self.assertEqual(self.focused(app)[0], "▌LINE31")
+
+    async def test_rewrapping_keeps_the_reading_place_in_a_long_paragraph(self):
+        words = " ".join(f"W{number:03}" for number in range(1, 121))
+        self.questions.write_text(SINGLE.replace("審查和驗收都通過了，現在只差要不要把它併進 dev。", words))
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await pilot.pause(0.3)
+            await self.press(pilot, *["down"] * 3)
+            reading = self.focused(app)[0].split()[0].lstrip("▌")
+            for size in ((70, 12), (30, 12), (40, 12)):
+                await pilot.resize_terminal(*size)
+                await pilot.pause(0.3)
+                shown = " ".join(self.focused(app)).replace("▌", "").split()
+                self.assertLessEqual(shown[0], reading, size)
+                self.assertGreaterEqual(shown[-1], reading, size)
+
+    async def test_unevenly_wrapped_text_keeps_its_reading_place_when_widened(self):
+        long = "\n".join(
+            [f"LONG{number:02}" + "x" * 100 for number in range(1, 21)]
+            + [f"SHORT{number:02}" for number in range(1, 41)]
+        )
+        self.questions.write_text(SINGLE.replace("審查和驗收都通過了，現在只差要不要把它併進 dev。", long))
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await pilot.pause(0.3)
+            for _ in range(60):
+                if self.focused(app) and self.focused(app)[0] == "▌SHORT01":
+                    break
+                await self.press(pilot, "down")
+            self.assertEqual(self.focused(app), [f"▌SHORT{number:02}" for number in range(1, 6)])
+            await pilot.resize_terminal(120, 12)
+            await pilot.pause(0.3)
+            self.assertIn("▌SHORT01", self.focused(app))
+            last = int(self.focused(app)[-1][-2:])
+            await self.press(pilot, "down")
+            self.assertEqual(self.focused(app)[0], f"▌SHORT{last + 1:02}")
+
+    async def test_an_option_taller_than_the_screen_is_stepped_through_in_parts(self):
+        impact = "".join(f"第{number:02}句說明文字放在這裡。" for number in range(1, 31))
+        self.questions.write_text(SINGLE.replace("dev 有了面板程式。", impact))
+        app = self.make_app()
+        async with app.run_test(size=(40, 10)) as pilot:
+            await pilot.pause(0.3)
+            await self.press(pilot, "@options")
+            seen = ""
+            for _ in range(20):
+                if app.current.cursor != 0:
+                    break
+                seen += "".join(line.lstrip("▌❯ ") for line in self.focused(app))
+                self.assertIn("❯ 1. 合併到 dev，不推送", self.view(app))
+                await self.press(pilot, "down")
+            self.assertIn(impact, seen)
+            self.assertEqual(app.current.cursor, 1)
+            await self.press(pilot, "up", "enter")
+            self.assertIn("答覆：A. 合併到 dev，不推送\n", self.text())
+
+    async def test_blank_lines_with_spaces_still_separate_paragraphs(self):
+        self.questions.write_text(SINGLE.replace("審查和驗收都通過了，現在只差要不要把它併進 dev。", "第一段\n \n第二段"))
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "down")
+            self.assertEqual(self.focused(app), ["▌第一段"])
+            await self.press(pilot, "down")
+            self.assertEqual(self.focused(app), ["▌第二段"])
+
+    async def test_stepping_down_past_the_options_reads_a_long_note(self):
         app = self.make_app()
         async with app.run_test(size=(40, 10)) as pilot:
             await self.press(pilot, "3", "tab", *"a|b|c|d|e|f|g|h|z".replace("|", " enter ").split())
             await self.press(pilot, "escape", "down")
-            self.assertIn("❯ 4. 其他（自己輸入）", self.screen(app))
+            self.assertIn("▌❯ 4. 其他（自己輸入）", self.screen(app))
             self.assertNotIn("z", self.screen(app))
-            await self.press(pilot, *["down"] * 9)
+            await self.press(pilot, *["down"] * 4)
             self.assertIn("z", self.screen(app))
-            self.assertEqual(app.current.cursor, 3)
-            await self.press(pilot, "up")
-            self.assertIn("❯ 3. 不符合，先別結案  ✔", self.screen(app))
+            self.assertIsNone(app.current.cursor)
+            await self.press(pilot, *["up"] * 4)
+            self.assertIn("▌❯ 3. 不符合，先別結案  ✔", self.screen(app))
 
     async def test_arrows_scroll_the_review(self):
         self.questions.write_text("\n".join(
@@ -992,28 +1133,28 @@ class SmallTerminalTests(SelectorTestCase):
             await pilot.pause(0.3)
             await self.press(pilot, "pagedown")
             before = self.screen(app).split("\n", 1)[1]
-            self.assertNotIn("❯", before)
+            self.assertNotIn("▌", before)
             self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n")
             await pilot.pause(0.4)
             self.assertEqual(self.screen(app).split("\n", 1)[1], before)
             await self.press(pilot, "down")
-            self.assertIn("❯ 2. 大致可以", self.screen(app))
+            self.assertIn("▌V2 已經裝好了。", self.screen(app))
 
     async def test_manual_scroll_survives_a_notice_appearing(self):
         app = self.make_app()
         async with app.run_test(size=(40, 10)) as pilot:
             await pilot.pause(0.3)
             await self.press(pilot, "pagedown")
-            self.assertNotIn("❯", self.screen(app))
+            self.assertNotIn("▌", self.screen(app))
             app.set_notice("notify", "通知失敗：ctl-a 不在線。")
             await pilot.pause(0.3)
             self.assertIn("通知失敗", self.screen(app))
-            self.assertNotIn("❯", self.screen(app))
+            self.assertNotIn("▌", self.screen(app))
 
     async def test_layout_changes_alone_never_leave_the_focused_option_off_screen(self):
         app = self.make_app()
         async with app.run_test(size=(40, 10)) as pilot:
-            await self.press(pilot, "down", "down", "down")
+            await self.press(pilot, "@options", "down", "down", "down")
             for size in ((40, 16), (40, 10), (40, 8)):
                 await pilot.resize_terminal(*size)
                 await pilot.pause(0.2)
@@ -1051,10 +1192,10 @@ class SmallTerminalTests(SelectorTestCase):
             for _ in range(3):
                 body.post_message(events.MouseScrollDown(body, 5, 5, 0, 0, 0, False, False, False))
             await pilot.pause(0.3)
-            self.assertNotIn("❯", self.screen(app))
+            self.assertNotIn("▌", self.screen(app))
             self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n")
             await pilot.pause(0.4)
-            self.assertNotIn("❯", self.screen(app))
+            self.assertNotIn("▌", self.screen(app))
 
     async def test_acting_on_the_focused_option_brings_it_back_on_screen(self):
         app = self.make_app()
@@ -1065,20 +1206,21 @@ class SmallTerminalTests(SelectorTestCase):
             await self.press(pilot, "1")
             self.assertIn("❯ 1. 符合，可以結案（建議）  ✔", self.screen(app))
 
-    async def test_change_to_the_open_question_brings_the_cursor_back(self):
+    async def test_change_to_the_open_question_brings_the_focus_back(self):
         app = self.make_app()
         async with app.run_test(size=(40, 10)) as pilot:
             await pilot.pause(0.3)
             await self.press(pilot, "pagedown")
-            self.assertNotIn("❯", self.screen(app))
+            self.assertNotIn("▌", self.screen(app))
             self.core.upsert_question(self.questions, "Q1", CHECK.split("\n", 2)[0] + "\n\nA. 新選項\n")
             await pilot.pause(0.4)
-            self.assertIn("❯ 1. 新選項", self.screen(app))
+            self.assertIn("▌V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
+            self.assertIn("1. 新選項", self.screen(app))
 
     async def test_mouse_wheel_scrolls_the_body(self):
         app = self.make_app()
         async with app.run_test(size=(40, 12)) as pilot:
-            await self.press(pilot, "down", "down", "down")
+            await self.press(pilot, "@options", "down", "down", "down")
             from textual import events
             body = app.query_one("#body")
             for _ in range(3):
@@ -1092,7 +1234,7 @@ class SmallTerminalTests(SelectorTestCase):
             self.assertNotIn("4. 其他（自己輸入）", self.screen(app))
             await self.press(pilot, "pagedown", "pagedown")
             self.assertIn("4. 其他（自己輸入）", self.screen(app))
-            self.assertEqual(app.current.cursor, 0)
+            self.assertEqual(app.current.focus[:3], ("text", 0, 0))
             await self.press(pilot, "pageup", "pageup")
             self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
 
@@ -1116,6 +1258,77 @@ class SmallTerminalTests(SelectorTestCase):
             await self.press(pilot, "pageup")
             self.assertEqual(self.screen(app), before)
             self.assertIs(app.focused, app.input)
+
+
+class ClickTests(SelectorTestCase):
+    async def click_row(self, app, pilot, text):
+        """Click the screen row that shows ``text``."""
+        row = next(number for number, line in enumerate(self.rows(app)) if text in line)
+        await pilot.click(offset=(6, row))
+        await pilot.pause()
+
+    async def test_clicking_a_tab_or_an_arrow_switches_question(self):
+        app = self.make_app()
+        from rich.cells import cell_len
+        async with app.run_test(size=(80, 24)) as pilot:
+            column = cell_len(self.tabs(app).split("☐ 還有什麼想法？")[0]) + 2
+            await pilot.click("#tabs", offset=(column, 0))
+            await pilot.pause()
+            self.assertEqual(app.current.id, "Q3")
+            await pilot.click("#tabs", offset=(1, 0))
+            await pilot.pause()
+            self.assertEqual(app.current.id, "Q2")
+            await pilot.click("#tabs", offset=(cell_len(self.tabs(app)), 0))
+            await pilot.pause()
+            self.assertEqual(app.current.id, "Q3")
+
+    async def test_clicking_a_single_option_selects_it_and_stays(self):
+        app = self.make_app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.click_row(app, pilot, "2. 合併到 dev，並推送到 GitHub")
+            self.assertIn("答覆：B. 合併到 dev，並推送到 GitHub\n", self.text())
+            self.assertEqual(app.current.id, "Q1")
+            self.assertIn("▌❯ 2. 合併到 dev，並推送到 GitHub（建議）  ✔", self.rows(app))
+            await self.click_row(app, pilot, "繼續保留在目前分支。")
+            self.assertIn("答覆：C. 先不合併\n", self.text())
+
+    async def test_clicking_a_multi_option_toggles_it(self):
+        app = self.make_app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.press(pilot, "right")
+            await self.click_row(app, pilot, "[ ] 封存")
+            await self.click_row(app, pilot, "[ ] 通知")
+            self.assertIn("答覆：封存；通知\n", self.text())
+            await self.click_row(app, pilot, "[x] 封存")
+            self.assertIn("答覆：通知\n", self.text())
+            self.assertEqual(app.current.id, "Q2")
+
+    async def test_clicking_other_opens_its_input(self):
+        app = self.make_app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            await self.click_row(app, pilot, "4. 其他（自己輸入）")
+            self.assertIs(app.focused, app.input)
+            self.assertEqual(self.keys(app), "Enter 換行 · Esc 離開輸入框")
+            await self.press(pilot, "x")
+            self.assertIn("答覆：其他：x\n", self.text())
+
+    async def test_clicking_a_paragraph_moves_the_focus_there_without_choosing(self):
+        app = self.make_app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            before = self.text()
+            await self.click_row(app, pilot, "審查和驗收都通過了")
+            self.assertEqual(app.current.focus[:3], ("text", 1, 0))
+            self.assertEqual(self.focused(app), ["▌審查和驗收都通過了，現在只差要不要把它併進 dev。"])
+            self.assertEqual(self.text(), before)
+
+    async def test_clicking_a_submitted_question_only_moves_the_focus(self):
+        self.questions.write_text(SINGLE.replace("答覆：\n\n- [ ] 送出", "答覆：A. 合併到 dev，不推送\n\n- [x] 送出"))
+        app = self.make_app()
+        async with app.run_test(size=(80, 24)) as pilot:
+            before = self.text()
+            await self.click_row(app, pilot, "3. 先不合併")
+            self.assertEqual(self.text(), before)
+            self.assertEqual(app.current.focus[:2], ("option", 2))
 
 
 class TerminalMouseTests(SelectorTestCase):
