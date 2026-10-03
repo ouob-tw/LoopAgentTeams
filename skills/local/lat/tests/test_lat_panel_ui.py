@@ -568,19 +568,6 @@ class NotificationTests(PanelTestCase):
             self.assertTrue(self.pending())
             self.assertIn("no LAT controller binding for session: s-a", self.status(app))
 
-    async def test_close_after_submit_flushes_pending_notification_before_exit(self):
-        app = self.make_app(NOTIFY_DELAY=30)
-        async with app.run_test() as pilot:
-            self.set_hcom("offline")
-            await self.submit_first_option(app, pilot)
-            await self.settle(app, pilot)
-            self.set_hcom("deliver")
-            await pilot.press("ctrl+q")
-            await self.settle(app, pilot)
-            self.assertEqual(len(self.calls()), 2)
-            self.assertFalse(self.pending())
-            self.assertIsNotNone(app.return_code)
-
     async def test_each_failure_kind_is_visible_and_ctrl_n_retries(self):
         cases = (
             ("offline", "通知失敗：ctl-a 不在線。"),
@@ -604,7 +591,7 @@ class NotificationTests(PanelTestCase):
                     self.assertEqual(self.status(app), "")
                     self.assertFalse(self.pending())
 
-    async def test_failed_flush_closes_only_on_second_ctrl_q_and_keeps_pending(self):
+    async def test_failed_submit_flush_closes_only_on_ctrl_q_and_keeps_pending(self):
         for close_key in ("ctrl+q", "escape"):
             with self.subTest(close_key=close_key):
                 self.questions.write_text(QUESTIONS)
@@ -615,15 +602,13 @@ class NotificationTests(PanelTestCase):
                 async with app.run_test() as pilot:
                     await self.submit_first_option(app, pilot)
                     await self.settle(app, pilot)
-                    await pilot.press(close_key)
-                    await self.settle(app, pilot)
                     self.assertIsNone(app.return_code)
                     self.assertIn("通知失敗：ctl-a 不在線", self.status(app))
                     self.assertTrue(self.pending())
                     await pilot.press(close_key)
                     await self.settle(app, pilot)
                     self.assertIsNotNone(app.return_code)
-                self.assertEqual(len(self.calls()), 2)
+                self.assertEqual(len(self.calls()), 1)
                 self.assertTrue(self.pending())
 
     async def test_failed_pending_persistence_is_retried_before_success_or_close(self):

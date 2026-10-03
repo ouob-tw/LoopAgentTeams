@@ -37,6 +37,7 @@ from textual.binding import Binding
 from textual.containers import VerticalScroll
 from textual import events
 from textual.geometry import Region
+from textual.messages import InBandWindowResize
 from textual.widgets import Static, TextArea
 
 cjk_wrap.install()
@@ -353,6 +354,32 @@ class Draft:
         return "☒" if self.answer() is not None or self.unmatched else "☐"
 
 
+class Relayout:
+    """Lay the selector out again once this widget has its new size."""
+
+    def on_resize(self, event):
+        self.app.on_resize(event)
+
+
+class Body(Relayout, VerticalScroll):
+    pass
+
+
+class View(Relayout, Static):
+    pass
+
+
+class Status(Relayout, Static):
+    pass
+
+
+class Input(TextArea):
+    """The answer/note box; keeps its cursor in view when it is resized."""
+
+    def on_resize(self, _event):
+        self.scroll_cursor_visible()
+
+
 class Panel(App):
     NOTIFY_DELAY = 2.0
     POLL_INTERVAL = 0.5
@@ -382,6 +409,8 @@ class Panel(App):
         Binding("f5", "reload_file", "備份草稿並載入", priority=True),
         Binding("up", "move(-1)", priority=True, show=False),
         Binding("down", "move(1)", priority=True, show=False),
+        Binding("pageup", "page(-1)", priority=True, show=False),
+        Binding("pagedown", "page(1)", priority=True, show=False),
         Binding("left", "switch_tab(-1)", priority=True, show=False),
         Binding("right", "switch_tab(1)", priority=True, show=False),
         Binding("enter", "choose", priority=True, show=False),
@@ -452,18 +481,36 @@ class Panel(App):
             return f"無法讀取問題檔 {self.path}：{read_error}"
         return ""
 
+    def get_driver_class(self):
+        """Keep mouse reports in cells: Herdr offers in-band resize, not pixel mouse.
+
+        Textual turns on SGR-pixel mouse once a terminal reports in-band resize
+        support and then divides every mouse position by the cell size. Herdr
+        keeps reporting cells, so the wheel landed in the top-left corner and
+        never reached the body. Without in-band resize Textual stays in cells
+        and follows window size changes through SIGWINCH as usual.
+        """
+        driver = super().get_driver_class()
+
+        class CellMouseDriver(driver):
+            def process_message(self, message):
+                if not isinstance(message, InBandWindowResize):
+                    super().process_message(message)
+
+        return CellMouseDriver
+
     def compose(self) -> ComposeResult:
         yield Static(self.picker_text(), id="picker", markup=False)
         yield Static("", id="tabs", markup=False)
-        with VerticalScroll(id="body"):
-            yield Static("", id="view", markup=False)
+        with Body(id="body"):
+            yield View("", id="view", markup=False)
         yield Static("", id="input-label", markup=False)
-        yield TextArea("", soft_wrap=True, show_line_numbers=False, id="input")
+        yield Input("", soft_wrap=True, show_line_numbers=False, id="input")
         yield TextArea(
             self.saved, soft_wrap=True, show_line_numbers=False,
             read_only=self.read_only, id="editor",
         )
-        yield Static("", id="status", markup=False)
+        yield Status("", id="status", markup=False)
         yield Static(KEYS, id="keys", markup=False)
 
     def on_mount(self):
@@ -512,7 +559,7 @@ class Panel(App):
             draft = self.current
             if (
                 self.focused is None and not self.raw_mode and not self.closing
-                and draft and draft.editable and draft.kind is None
+                and self.typing_target(draft)
                 and event.is_printable and event.character
             ):
                 event.stop()
@@ -662,14 +709,20 @@ class Panel(App):
         return bar
 
     def view_rows(self):
-        """Return ``(rows, focus_row)``; rows are ``(prefix, text, style)``."""
+        """Return ``(rows, item, reveal)``; rows are ``(prefix, text, style)``.
+
+        ``item`` and ``reveal`` are ``(first, last)`` row slices: the focused
+        item, and what to show with it when it fits. The first option reveals
+        the title and context above it, the last one whatever follows it.
+        """
+        top = (0, 1)
         if self.read_only:
-            return [], 0
+            return [], top, top
         if not self.drafts:
-            return [("", NO_QUESTIONS, "")], 0
+            return [("", NO_QUESTIONS, "")], top, top
         draft = self.current
         if draft is None:
-            return self.review_rows(), 0
+            return self.review_rows(), top, top
         accent = f"bold {self.current_theme.primary}" if self.current_theme else "bold"
         rows = [("", draft.title, "bold")]
         if draft.status == "submitted":
@@ -681,15 +734,14 @@ class Panel(App):
         if draft.context:
             rows.extend((("", "", ""), ("", draft.context, "")))
         rows.append(("", "", ""))
-        focus_row = len(rows)
+        item = None
         if draft.kind is None:
             if not draft.editable and draft.other:
                 rows.append(("答覆：", draft.other, ""))
         else:
             for index, label in enumerate([option.label for option in draft.options] + [OTHER_LABEL]):
                 focused = draft.editable and index == draft.cursor
-                if focused:
-                    focus_row = len(rows)
+                first = len(rows)
                 pointer = "❯ " if focused else "  "
                 checked = index in draft.selected
                 if draft.kind == "multi":
@@ -704,11 +756,21 @@ class Panel(App):
                     rows.append((indent, draft.options[index].impact, "dim"))
                 if index == draft.other_index and draft.other and checked:
                     rows.append((indent, draft.other, ""))
+                if focused:
+                    item = (first, len(rows))
         if draft.unmatched:
             rows.append(("", f"目前答覆無法對應選項：{draft.unmatched}", "dim"))
         if draft.note and draft.answer() is not None:
             rows.append(("備註：", draft.note, ""))
-        return rows, focus_row
+        if item is None:
+            # Nothing to point at: a typed answer is at the end, options start at the top.
+            item = (len(rows) - 1, len(rows)) if draft.kind is None else top
+            return rows, item, item
+        reveal = (
+            0 if draft.cursor == 0 else item[0],
+            len(rows) if draft.cursor == draft.other_index else item[1],
+        )
+        return rows, item, reveal
 
     def review_rows(self):
         rows = [("", "送出前檢查", "bold"), ("", "", "")]
@@ -739,9 +801,9 @@ class Panel(App):
             self.tab_bar() if self.drafts and not self.read_only else ""
         )
         body = self.query_one("#body")
-        rows, focus_row = self.view_rows()
+        rows, item, reveal = self.view_rows()
         view = self.query_one("#view", Static)
-        width = max(view.size.width or self.size.width - 4, 20)
+        width = max(view.size.width or self.size.width - 4, 1)
         text, starts = wrap_rows(rows, width)
         view.update(text)
         draft = self.current
@@ -753,10 +815,26 @@ class Panel(App):
         if self.input_target is None:
             self.show_text_input(draft)
         if starts:
-            line = starts[min(focus_row, len(starts) - 1)]
+            lines = [*starts, text.plain.count("\n") + 1]
             self.call_after_refresh(
-                body.scroll_to_region, Region(0, line, max(body.size.width, 1), 1),
-                animate=False,
+                self.scroll_to_lines,
+                *((lines[first], lines[last]) for first, last in (reveal, item)),
+            )
+
+    def scroll_to_lines(self, *spans):
+        """Scroll the body to each ``(first, last)`` view line span in turn.
+
+        A later span wins when both cannot fit; a span taller than the body
+        shows its top.
+        """
+        body = self.query_one("#body")
+        # Lines count from the view's text; the body scrolls its padding too.
+        padding = self.query_one("#view").gutter.top
+        for first, last in spans:
+            top = padding + first if first else 0
+            body.scroll_to_region(
+                Region(0, top, max(body.size.width, 1), padding + last - top),
+                animate=False, immediate=True,
             )
 
     def show_text_input(self, draft):
@@ -774,13 +852,26 @@ class Panel(App):
                 self.input.load_text(draft.other)
         self.input.display = label.display = shown
 
+    def typing_target(self, draft):
+        """The input a printable key types into: input-only answer or the 其他 row."""
+        if not draft or not draft.editable:
+            return None
+        if draft.kind is None:
+            return "text"
+        return "other" if draft.cursor == draft.other_index else None
+
     def type_text(self, draft, character):
-        """Start typing an input-only answer with the key that was pressed."""
-        self.open_input("text")
+        """Start typing an answer or 其他 text with the key that was pressed."""
+        target = self.typing_target(draft)
+        self.open_input(target)
         self.input.insert(character)
         self.write_text_change(draft, self.input.text)
 
     def on_resize(self, _event):
+        # Leave room for the tabs, input label, footer, notices and three body lines.
+        status = self.query_one("#status", Static)
+        notices = status.size.height if status.display else 0
+        self.input.styles.max_height = max(3, min(10, self.size.height - 6 - notices))
         if not self.raw_mode and not self.picker_active:
             self.refresh_view()
 
@@ -801,6 +892,16 @@ class Panel(App):
             draft.cursor = min(max(draft.cursor + step, 0), draft.other_index)
         self.refresh_view()
 
+    def action_page(self, step):
+        """Scroll the question or review text a page; the cursor stays put."""
+        if self.picker_active or self.raw_mode or self.focused is not None:
+            raise SkipAction()
+        body = self.query_one("#body")
+        if step < 0:
+            body.scroll_page_up(animate=False)
+        else:
+            body.scroll_page_down(animate=False)
+
     def action_switch_tab(self, step):
         if self.picker_active and self.focused is None:
             self.turn_picker_page(step)
@@ -813,7 +914,7 @@ class Panel(App):
         if self.picker_active:
             raise SkipAction()
         draft = self.selector_draft()
-        if draft and draft.editable and draft.kind is None:
+        if self.typing_target(draft):
             self.type_text(draft, str(digit))
             return
         if not draft or not draft.editable:
@@ -840,15 +941,27 @@ class Panel(App):
             return
         if draft.kind is None:
             self.open_input("text")
-        elif draft.kind == "single":
-            self.select_option(draft, draft.cursor)
+        elif draft.kind == "multi":
+            # 其他 only opens its input; checking it when it has text opens it too.
+            if draft.cursor != draft.other_index or (
+                draft.other.strip() and draft.cursor not in draft.selected
+            ):
+                self.toggle_option(draft, draft.cursor)
+            else:
+                self.open_input("other")
         else:
-            self.tab = min(self.tab + 1, len(self.drafts))
+            self.select_option(draft, draft.cursor)
+            # Move on once the choice is saved; 其他 stays to take its text.
+            if (
+                self.current is draft and self.input_target is None
+                and draft.selected == [draft.cursor] and not draft.unsaved
+            ):
+                self.tab += 1
         self.refresh_view()
 
     def action_toggle(self):
         draft = self.selector_draft()
-        if draft and draft.editable and draft.kind is None:
+        if self.typing_target(draft):
             self.type_text(draft, " ")
             return
         if draft and draft.editable and draft.kind == "multi":
@@ -858,10 +971,23 @@ class Panel(App):
     def action_note(self):
         draft = self.selector_draft()
         if draft and draft.editable:
-            if draft.answer() is None:
-                self.notices["action"] = "先選擇或輸入答覆，再按 Tab 加備註"
+            # Tab on an option chooses it first; 其他 must already be the answer.
+            if draft.kind is not None and draft.cursor != draft.other_index:
+                if draft.kind == "single":
+                    self.select_option(draft, draft.cursor)
+                elif draft.cursor not in draft.selected:
+                    self.toggle_option(draft, draft.cursor)
+                ready = self.current is draft and draft.cursor in draft.selected
             else:
+                ready = draft.answer() is not None and (
+                    draft.kind is None or draft.other_index in draft.selected
+                )
+            if ready:
                 self.open_input("note")
+            elif draft.kind is None:
+                self.notices["action"] = "先選擇或輸入答覆，再按 Tab 加備註"
+            elif draft.cursor == draft.other_index:
+                self.notices["action"] = "先在「其他」輸入內容，再按 Tab 加備註"
         self.refresh_view()
 
     def select_option(self, draft, index):
@@ -915,9 +1041,12 @@ class Panel(App):
         self.close_input()
         if (
             target == "other" and draft and not draft.other.strip()
-            and draft.other_index in draft.selected
+            and (draft.other or draft.other_index in draft.selected)
         ):
-            draft.selected.remove(draft.other_index)
+            # Blank 其他 text is no answer: drop it so later typing starts clean.
+            draft.other = ""
+            if draft.other_index in draft.selected:
+                draft.selected.remove(draft.other_index)
             self.write_draft(draft)
         self.refresh_view()
 
@@ -941,6 +1070,10 @@ class Panel(App):
                 draft.unmatched = ""
             elif draft.selected == [draft.other_index]:
                 draft.selected = []
+        elif self.input_target == "other" and draft.kind == "multi":
+            if value.strip() and draft.other_index not in draft.selected:
+                draft.selected.append(draft.other_index)
+                draft.unmatched = ""
         self.write_draft(draft)
         self.refresh_view()
 
@@ -1017,9 +1150,9 @@ class Panel(App):
             self.notices["notify"] = notify_failure_line(f"無法記錄待送通知：{error}")
             return
         self.unrecorded_notification = False
-        if self.notify_timer:
-            self.notify_timer.stop()
-        self.start_notification()
+        # Close through the normal path: notify first, stay open if that fails.
+        self.close_armed = False
+        self.action_close_panel()
 
     # Raw editor (V1) ------------------------------------------------------
 
