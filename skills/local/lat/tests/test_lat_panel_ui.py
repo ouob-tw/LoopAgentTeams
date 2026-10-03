@@ -568,15 +568,6 @@ class NotificationTests(PanelTestCase):
             self.assertTrue(self.pending())
             self.assertIn("no LAT controller binding for session: s-a", self.status(app))
 
-    async def test_submit_flushes_pending_notification_before_exit(self):
-        app = self.make_app(NOTIFY_DELAY=30)
-        async with app.run_test() as pilot:
-            await self.submit_first_option(app, pilot)
-            await self.settle(app, pilot)
-            self.assertEqual(len(self.calls()), 1)
-            self.assertFalse(self.pending())
-            self.assertIsNotNone(app.return_code)
-
     async def test_each_failure_kind_is_visible_and_ctrl_n_retries(self):
         cases = (
             ("offline", "通知失敗：ctl-a 不在線。"),

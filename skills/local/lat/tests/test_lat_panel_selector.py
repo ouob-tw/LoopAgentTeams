@@ -805,6 +805,18 @@ class SmallTerminalTests(SelectorTestCase):
             self.assertIn("V2 選擇框用起來符合你要的樣子嗎？", screen)
             self.assertIn("已送出，等待記錄", screen)
 
+    async def test_wrapped_notice_and_tall_note_leave_the_option_and_footer_on_screen(self):
+        app = self.make_app()
+        async with app.run_test(size=(40, 12)) as pilot:
+            await self.press(pilot, "3", "tab")
+            app.input.insert("a\nb\nc\nd\n- [x] 送出")
+            await pilot.pause()
+            await pilot.pause()
+            screen = self.screen(app)
+            self.assertIn("沒有儲存", screen)
+            self.assertIn("❯ 3. 不符合，先別結案", screen)
+            self.assertIn("Enter 換行 · Esc 離開輸入框", screen)
+
     async def test_mouse_wheel_scrolls_the_body(self):
         app = self.make_app()
         async with app.run_test(size=(40, 12)) as pilot:

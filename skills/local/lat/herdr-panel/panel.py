@@ -353,18 +353,23 @@ class Draft:
         return "☒" if self.answer() is not None or self.unmatched else "☐"
 
 
-class Body(VerticalScroll):
-    """The scrolling question area; redraws once it has its new size."""
+class Relayout:
+    """Lay the selector out again once this widget has its new size."""
 
     def on_resize(self, event):
         self.app.on_resize(event)
 
 
-class View(Static):
-    """The question text; rewraps once it has its new width."""
+class Body(Relayout, VerticalScroll):
+    pass
 
-    def on_resize(self, event):
-        self.app.on_resize(event)
+
+class View(Relayout, Static):
+    pass
+
+
+class Status(Relayout, Static):
+    pass
 
 
 class Panel(App):
@@ -479,7 +484,7 @@ class Panel(App):
             self.saved, soft_wrap=True, show_line_numbers=False,
             read_only=self.read_only, id="editor",
         )
-        yield Static("", id="status", markup=False)
+        yield Status("", id="status", markup=False)
         yield Static(KEYS, id="keys", markup=False)
 
     def on_mount(self):
@@ -840,8 +845,10 @@ class Panel(App):
         self.write_text_change(draft, self.input.text)
 
     def on_resize(self, _event):
-        # Leave room for the tabs, two body lines, the input label and the footer.
-        self.input.styles.max_height = max(3, min(10, self.size.height - 6))
+        # Leave room for the tabs, input label, footer, notices and three body lines.
+        status = self.query_one("#status", Static)
+        notices = status.size.height if status.display else 0
+        self.input.styles.max_height = max(3, min(10, self.size.height - 6 - notices))
         if not self.raw_mode and not self.picker_active:
             self.refresh_view()
 
