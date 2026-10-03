@@ -918,10 +918,13 @@ class Panel(App):
             return
         if draft.kind is None:
             self.open_input("text")
-        elif draft.kind == "single":
-            self.select_option(draft, draft.cursor)
+        elif draft.kind == "multi":
+            self.toggle_option(draft, draft.cursor)
         else:
-            self.tab = min(self.tab + 1, len(self.drafts))
+            self.select_option(draft, draft.cursor)
+            # Move on once the choice is saved; 其他 stays to take its text.
+            if self.current is draft and self.input_target is None and draft.selected == [draft.cursor]:
+                self.tab += 1
         self.refresh_view()
 
     def action_toggle(self):
@@ -936,10 +939,21 @@ class Panel(App):
     def action_note(self):
         draft = self.selector_draft()
         if draft and draft.editable:
-            if draft.answer() is None:
-                self.notices["action"] = "先選擇或輸入答覆，再按 Tab 加備註"
+            # Tab on an option chooses it first; 其他 needs its text before a note.
+            if draft.kind is not None and draft.cursor != draft.other_index:
+                if draft.kind == "single":
+                    self.select_option(draft, draft.cursor)
+                elif draft.cursor not in draft.selected:
+                    self.toggle_option(draft, draft.cursor)
+                ready = self.current is draft and draft.cursor in draft.selected
             else:
+                ready = draft.answer() is not None and (
+                    draft.kind is None or bool(draft.other.strip())
+                )
+            if ready:
                 self.open_input("note")
+            elif self.current is draft and not self.notices["action"]:
+                self.notices["action"] = "先選擇或輸入答覆，再按 Tab 加備註"
         self.refresh_view()
 
     def select_option(self, draft, index):

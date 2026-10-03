@@ -208,16 +208,52 @@ class SingleSelectTests(SelectorTestCase):
             self.assertEqual(app.input.text, "x 2")
             self.assertIn("答覆：主控綁定；其他：x 2\n", self.text())
 
-    async def test_tab_adds_a_note_after_an_answer_only(self):
+    async def test_enter_selects_a_single_option_and_moves_to_the_next_tab(self):
         app = self.make_app()
         async with app.run_test() as pilot:
-            await self.press(pilot, "tab")
-            self.assertIsNone(app.focused)
-            self.assertIn("先選擇或輸入答覆", self.status(app))
-            await self.press(pilot, "1", "tab", *"why", "enter", *"more", "escape")
-            self.assertIn("答覆：A. 合併到 dev，不推送\n備註：why\nmore\n\n- [ ] 送出", self.text())
+            await self.press(pilot, "down", "enter")
+            self.assertIn("答覆：B. 合併到 dev，並推送到 GitHub\n", self.text())
+            self.assertEqual(app.current.id, "Q2")
+            await self.press(pilot, "left", "2")
+            self.assertEqual(app.current.id, "Q1")
+            await self.press(pilot, "down", "down", "enter")
+            self.assertEqual(app.current.id, "Q1")
+            self.assertIs(app.focused, app.input)
+
+    async def test_enter_on_the_last_single_question_moves_to_the_review_tab(self):
+        self.questions.write_text(SINGLE)
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "enter")
+            self.assertIsNone(app.current)
+            self.assertIn("❯ Enter 送出 1 題", self.view(app))
+            self.assertIn("- [ ] 送出", self.text())
+
+    async def test_tab_selects_the_option_and_opens_its_note(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "down", "tab")
+            self.assertIs(app.focused, app.input)
+            self.assertIn("答覆：B. 合併到 dev，並推送到 GitHub\n", self.text())
+            await self.press(pilot, *"why", "enter", *"more", "escape")
+            self.assertIn(
+                "答覆：B. 合併到 dev，並推送到 GitHub\n備註：why\nmore\n\n- [ ] 送出", self.text(),
+            )
             self.assertIn("備註：why", self.view(app))
             self.assertEqual(self.status(app), "")
+            self.assertEqual(app.current.id, "Q1")
+            await self.press(pilot, "enter")
+            self.assertEqual(app.current.id, "Q2")
+            self.assertIn("備註：why\nmore\n", section(self.text(), "Q1"))
+
+    async def test_tab_on_the_other_row_needs_its_text_first(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "down", "down", "down", "tab")
+            self.assertIsNone(app.focused)
+            self.assertIn("先選擇或輸入答覆", self.status(app))
+            await self.press(pilot, "x", "escape", "tab", "n", "escape")
+            self.assertIn("答覆：其他：x\n備註：n\n", self.text())
 
     async def test_cursor_starts_on_first_option_even_when_another_is_recommended(self):
         app = self.make_app()
@@ -228,7 +264,7 @@ class SingleSelectTests(SelectorTestCase):
 
 
 class MultiSelectTests(SelectorTestCase):
-    async def test_space_and_digits_toggle_in_selection_order_and_enter_moves_on(self):
+    async def test_space_and_digits_toggle_in_selection_order(self):
         app = self.make_app()
         async with app.run_test() as pilot:
             await self.press(pilot, "right")
@@ -244,9 +280,22 @@ class MultiSelectTests(SelectorTestCase):
             self.assertIn("答覆：主控綁定；其他：自訂\n", self.text())
             await self.press(pilot, "up", "1")
             self.assertIn("答覆：其他：自訂\n", self.text())
-            await self.press(pilot, "enter")
-            self.assertEqual(app.current.id, "Q3")
         self.assertEqual(self.calls(), [])
+
+    async def test_tab_checks_the_option_once_and_opens_the_note(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "tab", "n", "escape", "tab", "2", "escape")
+            self.assertIn("答覆：主控綁定\n備註：n2\n", self.text())
+
+    async def test_enter_toggles_the_option_and_stays_on_the_question(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "enter", "down", "enter")
+            self.assertEqual(app.current.id, "Q2")
+            self.assertIn("答覆：主控綁定；封存\n", self.text())
+            await self.press(pilot, "enter")
+            self.assertIn("答覆：主控綁定\n", self.text())
 
     async def test_recommended_marker_is_display_only_and_old_answers_still_restore(self):
         self.questions.write_text(MULTI.replace("- [ ] 封存", "- [ ] 封存（建議）"))
