@@ -8,7 +8,7 @@ Issues live in the private GitHub repo `ouob-tw/LoopAgentTeams-work` (this code 
 
 ### Triage labels
 
-Default five-role vocabulary. See `docs/agents/triage-labels.md`.
+Default vocabulary: categories `bug`, `enhancement`; states `needs-triage`, `needs-info`, `ready-for-agent`, `ready-for-human`, `wontfix`. See `docs/agents/triage-labels.md`.
 
 ### Domain docs
 
