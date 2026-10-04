@@ -1151,5 +1151,117 @@ class WatchCliTests(unittest.TestCase):
                          [unittest.mock.call(60), unittest.mock.call(60)])
 
 
+    def test_failed_cycles_are_logged_rate_limited_and_the_loop_continues(self):
+        watch = load_watch()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        args = argparse.Namespace(workspace=self.work, tasks=self.tasks,
+                                  decisions=decisions, orchestrator='orch')
+        failures = [ValueError('hcom failed: busy'), ValueError('hcom failed: busy'),
+                    ValueError('hcom failed: busy'), OSError('disk'), None,
+                    ValueError('hcom failed: busy')]
+        clock = iter([0, 60, 3600, 3660, 3720, 3780])
+
+        def cycle(*_):
+            error = failures.pop(0)
+            if error:
+                raise error
+
+        stop = RuntimeError('stop test loop')
+        with patch.object(watch, 'run_cycle', side_effect=cycle) as runner, \
+                patch.object(watch.time, 'time', side_effect=lambda: next(clock)), \
+                patch.object(watch.time, 'sleep', side_effect=[None] * 5 + [stop]), \
+                patch('sys.stderr'):
+            with self.assertRaisesRegex(RuntimeError, 'stop test loop'):
+                watch.run_forever(args)
+
+        self.assertEqual(runner.call_count, 6)
+        self.assertEqual([(record['at'], record['error'], record.get('repeats'))
+                          for record in self.watch_records()],
+                         [(0, 'ValueError: hcom failed: busy', None),
+                          (3600, 'ValueError: hcom failed: busy', 2),
+                          (3660, 'OSError: disk', None),
+                          (3780, 'ValueError: hcom failed: busy', None)])
+        self.assertTrue(all(record['decision'] == 'cycle-failed'
+                            for record in self.watch_records()))
+
+    def test_real_cycle_exception_does_not_end_run_forever(self):
+        self.install_hcom('#!/bin/sh\necho down >&2\nexit 1\n')
+        watch = load_watch()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        args = argparse.Namespace(workspace=self.work, tasks=self.tasks,
+                                  decisions=decisions, orchestrator='orch')
+        stop = RuntimeError('stop test loop')
+
+        with patch.dict(os.environ, self.env), patch('sys.stderr'), \
+                patch.object(watch.time, 'sleep', side_effect=[None, stop]):
+            with self.assertRaisesRegex(RuntimeError, 'stop test loop'):
+                watch.run_forever(args)
+
+        failed = [record for record in self.watch_records()
+                  if record['decision'] == 'cycle-failed']
+        self.assertEqual([record['error'] for record in failed],
+                         ['ValueError: hcom failed: down'])
+
+    def test_corrupt_state_files_are_kept_aside_and_watching_continues(self):
+        watch_dir = self.work / '.lat/watch/orch'
+        watch_dir.mkdir(parents=True)
+        (watch_dir / 'state.json').write_text('{"orch": {"nudged": tru')
+        (watch_dir / 'skipped-cards.json').write_text('[]')
+        watch = load_watch()
+
+        self.run_cycles(watch, 0)
+
+        self.assertEqual((watch_dir / 'state.json.corrupt-0').read_text(),
+                         '{"orch": {"nudged": tru')
+        self.assertEqual((watch_dir / 'skipped-cards.json.corrupt-0').read_text(), '[]')
+        records = self.watch_records()
+        self.assertEqual(sorted((record['file'], record['kept']) for record in records
+                                if record.get('decision') == 'state-file-reset'),
+                         [('skipped-cards.json', 'skipped-cards.json.corrupt-0'),
+                          ('state.json', 'state.json.corrupt-0')])
+        self.assertEqual([record['agent'] for record in records if 'agent' in record],
+                         ['orch', 'worker-open'])
+        self.assertEqual(self.watch_state(), {})
+
+    def test_non_object_agent_state_is_reset_for_that_agent_only(self):
+        watch_dir = self.work / '.lat/watch/orch'
+        watch_dir.mkdir(parents=True)
+        (watch_dir / 'state.json').write_text(
+            '{"orch": [], "worker-open": {"nudged": true}}')
+        watch = load_watch()
+
+        with patch.object(watch, 'observe', side_effect=ValueError('not observed')):
+            self.run_cycles(watch, 0)
+
+        records = self.watch_records()
+        self.assertEqual([(record['agent'], record['decision']) for record in records],
+                         [('orch', 'agent-state-reset'), ('orch', 'observation-failed'),
+                          ('worker-open', 'observation-failed')])
+        self.assertEqual(self.watch_state(), {'worker-open': {'nudged': True}})
+
+    def test_missing_task_directory_watches_orchestrator_and_logs_once(self):
+        watch = load_watch()
+        missing = self.work / '.lat/no-tasks'
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+
+        with patch.dict(os.environ, self.env):
+            for now in (0, 60):
+                watch.run_cycle(self.work, missing, decisions, 'orch', now=now)
+            watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=120)
+            watch.run_cycle(self.work, missing, decisions, 'orch', now=180)
+
+        records = self.watch_records()
+        self.assertEqual([record['at'] for record in records
+                          if record.get('decision') == 'task-directory-missing'], [0, 180])
+        self.assertEqual([(record['at'], record['agent']) for record in records
+                          if 'observation' in record or
+                          record.get('decision') == 'observation-failed'],
+                         [(0, 'orch'), (60, 'orch'), (120, 'orch'), (120, 'worker-open'),
+                          (180, 'orch')])
+
+
 if __name__ == '__main__':
     unittest.main()
