@@ -321,16 +321,173 @@ class WatchDecisionTests(unittest.TestCase):
     def test_every_specified_wait_release_condition_is_recognized(self):
         watch = load_watch()
         declaration = {'agent': 'worker', 'target': 'reviewer'}
-        delivered = [{'type': 'message', 'data': {'delivered_to': ['worker']}}]
-        replied = [{'type': 'message', 'data': {'from': 'reviewer'}}]
+        delivered = [{'type': 'status', 'data': {'context': 'deliver:sender'}}]
 
-        self.assertEqual(watch.wait_release_reason(declaration, delivered, [], None),
+        self.assertEqual(watch.wait_release_reason(declaration, delivered, False, None),
                          'message-delivered')
-        self.assertEqual(watch.wait_release_reason(declaration, [], replied, None),
+        self.assertEqual(watch.wait_release_reason(declaration, [], True, None),
                          'target-replied')
-        self.assertEqual(watch.wait_release_reason(declaration, [], [], False),
+        self.assertEqual(watch.wait_release_reason(declaration, [], False, False),
                          'decision-resolved')
-        self.assertIsNone(watch.wait_release_reason(declaration, [], [], True))
+        self.assertIsNone(watch.wait_release_reason(declaration, [], False, True))
+
+    def test_real_session_status_shapes_release_canonical_agent_waits(self):
+        watch = load_watch()
+        declaration = {
+            'agent': 'nepa-qa-gima-claude-mova',
+            'target': 'nepa-qa-gima-orch2-file',
+        }
+        delivered = [{
+            'id': 72627, 'instance': 'mova', 'type': 'status',
+            'data': {
+                'context': 'deliver:nepa-qa-gima-orch2-file',
+                'session': 'bea32431-8599-4365-bde3-aea585d4b837',
+                'status': 'active',
+            },
+        }]
+        self.assertEqual(watch.wait_release_reason(
+            declaration, delivered, False, None), 'message-delivered')
+        self.assertEqual(watch.wait_release_reason(
+            declaration, [], True, None), 'target-replied')
+
+    def test_session_events_exclude_another_session_with_the_same_short_alias(self):
+        watch = load_watch()
+        watched = {
+            'name': 'nepa-qa-gima-handled-rebe',
+            'base_name': 'rebe',
+            'session_id': '01a10714-b7c1-7761-9c95-055eea581383',
+        }
+        owned = {
+            'id': 73007, 'instance': 'rebe', 'type': 'status',
+            'data': {'session': watched['session_id'], 'context': 'tool:Bash'},
+        }
+        collision = {
+            'id': 73002, 'instance': 'rebe', 'type': 'status',
+            'data': {
+                'session': '01a1071e-6244-7973-9a1b-67a822b04d05',
+                'context': 'tool:Bash',
+            },
+        }
+
+        with patch.object(watch, 'run_json_lines',
+                          return_value=[collision, owned]) as run_events:
+            events = watch.session_events('orch', watched, '--last', '1')
+
+        self.assertEqual(events, [owned])
+        command = run_events.call_args.args[0]
+        self.assertIn('--sql', command)
+        self.assertIn(watched['session_id'], command[command.index('--sql') + 1])
+
+    def test_successful_send_in_exact_claude_transcript_releases_wait(self):
+        watch = load_watch()
+        records = [
+            {'timestamp': '2026-10-04T14:01:41.176Z', 'type': 'assistant',
+             'message': {'content': [{'type': 'tool_use', 'id': 'tool-1',
+                                      'name': 'Bash', 'input': {
+                                          'command': "hcom send @worker --intent inform -- 'ok'"}}]}},
+            {'timestamp': '2026-10-04T14:01:41.273Z', 'type': 'user',
+             'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'tool-1',
+                                      'content': 'Sent to: worker', 'is_error': False}]}},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'claude.jsonl'
+            transcript.write_text(''.join(json.dumps(row) + '\n' for row in records))
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:01:40+00:00'))
+
+    def test_successful_send_in_exact_codex_transcript_releases_wait(self):
+        watch = load_watch()
+        record = {
+            'timestamp': '2026-10-04T14:00:59.400Z', 'type': 'event_msg',
+            'payload': {'type': 'item_completed', 'item': {
+                'type': 'CommandExecution',
+                'command': ['/bin/bash', '-lc',
+                            "hcom send @worker --intent inform -- 'ok'"],
+                'status': 'completed', 'exit_code': 0,
+                'stdout': 'Sent to: worker\n',
+            }},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'codex.jsonl'
+            transcript.write_text(json.dumps(record) + '\n')
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:00:58+00:00'))
+
+    def test_compound_send_to_third_agent_releases_wait(self):
+        watch = load_watch()
+        record = {
+            'timestamp': '2026-10-04T14:00:59.400Z', 'type': 'event_msg',
+            'payload': {'type': 'item_completed', 'item': {
+                'type': 'CommandExecution',
+                'command': ['/bin/bash', '-lc',
+                            "printf report > /tmp/report && hcom send @third --file /tmp/report"],
+                'status': 'completed', 'exit_code': 0,
+                'stdout': 'report prepared\nSent to: third\n',
+            }},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'codex.jsonl'
+            transcript.write_text(json.dumps(record) + '\n')
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:00:58+00:00'))
+
+    def test_multiline_report_then_send_releases_wait(self):
+        watch = load_watch()
+        record = {
+            'timestamp': '2026-10-04T14:00:59.400Z', 'type': 'event_msg',
+            'payload': {'type': 'item_completed', 'item': {
+                'type': 'CommandExecution',
+                'command': ['/bin/bash', '-lc',
+                            "cat > /tmp/report <<'EOF'\nreport\nEOF\nhcom send @third --file /tmp/report"],
+                'status': 'completed', 'exit_code': 0,
+                'stdout': 'Sent to: third\n',
+            }},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'codex.jsonl'
+            transcript.write_text(json.dumps(record) + '\n')
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:00:58+00:00'))
+
+    def test_claude_send_started_before_wait_and_completed_after_releases(self):
+        watch = load_watch()
+        records = [
+            {'timestamp': '2026-10-04T14:00:59.900Z', 'type': 'assistant',
+             'message': {'content': [{'type': 'tool_use', 'id': 'tool-crossing',
+                                      'name': 'Bash', 'input': {
+                                          'command': "cat /tmp/reply | hcom send @third --intent inform"}}]}},
+            {'timestamp': '2026-10-04T14:01:00.100Z', 'type': 'user',
+             'message': {'content': [{'type': 'tool_result',
+                                      'tool_use_id': 'tool-crossing',
+                                      'content': 'Sent to: third', 'is_error': False}]}},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'claude.jsonl'
+            transcript.write_text(''.join(json.dumps(row) + '\n' for row in records))
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:01:00+00:00'))
+
+    def test_failed_or_old_send_attempt_does_not_release_wait(self):
+        watch = load_watch()
+        records = [
+            {'timestamp': '2026-10-04T14:00:00Z', 'type': 'event_msg',
+             'payload': {'type': 'item_completed', 'item': {
+                 'type': 'CommandExecution',
+                 'command': ['/bin/bash', '-lc', 'hcom send --help'],
+                 'status': 'completed', 'exit_code': 0, 'stdout': 'Usage: hcom send',
+             }}},
+            {'timestamp': '2026-10-04T14:02:00Z', 'type': 'event_msg',
+             'payload': {'type': 'item_completed', 'item': {
+                 'type': 'CommandExecution',
+                 'command': ['/bin/bash', '-lc', "hcom send @missing -- 'ok'"],
+                 'status': 'failed', 'exit_code': 1, 'stdout': '',
+             }}},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'failed.jsonl'
+            transcript.write_text(''.join(json.dumps(row) + '\n' for row in records))
+            self.assertFalse(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:01:00+00:00'))
 
     def test_background_process_from_hcom_identity_blocks_idle_nudge(self):
         watch = load_watch()
@@ -732,6 +889,27 @@ class WatchCliTests(unittest.TestCase):
         self.assertNotIn(original, popup)
         self.assertEqual(result['reason'], 'prompt text backed up and cleared')
 
+    def test_prompt_recovery_waits_for_delayed_terminal_redraw_after_each_key(self):
+        watch = load_watch()
+        original = 'QA-TEST-STABLE-ORIGINAL'
+        visible = original
+        terminal_reads = []
+        for _ in original:
+            terminal_reads.extend((visible, visible[:-1]))
+            visible = visible[:-1]
+
+        with patch.object(watch, 'read_prompt_status', return_value=(original, 1)), \
+                patch.object(watch, 'run_command', return_value=''), \
+                patch.object(watch, 'read_terminal_input', side_effect=terminal_reads), \
+                patch.object(watch.time, 'sleep', return_value=None):
+            result = watch.perform(
+                watch.Action('recover-prompt', 'worker-open', text=original),
+                'orch', self.work,
+            )
+
+        self.assertEqual(result['reason'], 'prompt text backed up and cleared')
+        self.assertEqual(result['backspaces'], len(original))
+
     def test_prompt_backup_failure_does_not_clear_and_still_notifies(self):
         watch = load_watch()
         commands = []
@@ -767,7 +945,8 @@ class WatchCliTests(unittest.TestCase):
         with patch.object(watch, 'read_prompt_status',
                           return_value=('tool banner', 1)), \
                 patch.object(watch, 'run_command', side_effect=fake_run), \
-                patch.object(watch, 'read_terminal_input', return_value='tool banner'):
+                patch.object(watch, 'read_terminal_input', return_value='tool banner'), \
+                patch.object(watch, 'PROMPT_SETTLE_SECONDS', 0):
             result = watch.perform(
                 watch.Action('recover-prompt', 'worker-open', text='tool banner'),
                 'orch', self.work,
@@ -823,7 +1002,8 @@ class WatchCliTests(unittest.TestCase):
         with patch.object(watch, 'read_prompt_status', return_value=('ABC', 1)), \
                 patch.object(watch, 'run_command', return_value=''), \
                 patch.object(watch, 'read_terminal_input',
-                             side_effect=lambda _agent, _orch: next(terminal_reads)):
+                             side_effect=lambda _agent, _orch: next(terminal_reads)), \
+                patch.object(watch, 'PROMPT_SETTLE_SECONDS', 0):
             result = watch.perform(actions[0], 'orch', self.work)
         watch.apply_prompt_recovery_result(state, result, now=300)
 
@@ -1035,9 +1215,13 @@ class WatchCliTests(unittest.TestCase):
             '#!/bin/sh\n'
             'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
             'case " $* " in\n'
-            '  *" --participant worker-open "*)\n'
-            '    printf \'%s\\n\' \'{"type":"message","data":'
-            '{"from":"sender","delivered_to":["worker-open"]}}\' ;;\n'
+            '  *" list --json "*)\n'
+            '    printf \'%s\\n\' \'[{"name":"worker-open","base_name":"open",'
+            '"session_id":"worker-session"}]\' ;;\n'
+            '  *"worker-session"*)\n'
+            '    printf \'%s\\n\' \'{"id":72627,"instance":"open","type":"status",'
+            '"data":{"context":"deliver:sender","session":"worker-session",'
+            '"status":"active"}}\' ;;\n'
             'esac\n'
         )
         hcom.chmod(0o755)

@@ -18,6 +18,8 @@ from typing import NamedTuple
 IDLE_SECONDS = 10 * 60
 ACTIVE_SECONDS = 20 * 60
 PROMPT_SECONDS = 5 * 60
+PROMPT_SETTLE_SECONDS = 1
+PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
 FAILURE_REPEAT_SECONDS = 60 * 60
 NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
@@ -465,10 +467,11 @@ def event_value(event, name, nested):
     return None
 
 
-def message_event(event):
-    data = event.get('data', {})
-    return (event.get('type') == 'message' or isinstance(event.get('message'), dict)
-            or isinstance(data, dict) and isinstance(data.get('message'), dict))
+def status_context(event):
+    if event.get('type') != 'status':
+        return None
+    return event_value(event, 'status_context', 'status') or event_value(
+        event, 'context', 'status')
 
 
 def read_processes(proc_root=Path('/proc')):
@@ -559,20 +562,14 @@ def background_process_running(agent, info, processes, current_pid=None):
     return False
 
 
-def wait_release_reason(declaration, participant_events, target_events, decision_pending):
+def wait_release_reason(declaration, participant_events, target_replied, decision_pending):
     """Explain why a wait is no longer valid, or return None."""
-    agent = declaration['agent']
-    target = declaration['target']
     for event in participant_events:
-        delivered = (event_value(event, 'msg_delivered_to', 'message')
-                     or event_value(event, 'delivered_to', 'message') or [])
-        if message_event(event) and agent in delivered:
+        context = status_context(event)
+        if isinstance(context, str) and context.startswith('deliver:'):
             return 'message-delivered'
-    for event in target_events:
-        sender = (event_value(event, 'msg_from', 'message')
-                  or event_value(event, 'from', 'message'))
-        if message_event(event) and sender == target:
-            return 'target-replied'
+    if target_replied:
+        return 'target-replied'
     if decision_pending is False:
         return 'decision-resolved'
     return None
@@ -604,17 +601,124 @@ def hcom_events(orchestrator, *filters):
     return run_json_lines(['hcom', 'events', *filters, '--full', '--name', orchestrator])
 
 
-def release_wait_if_needed(workspace, decisions, orchestrator, declaration):
+def agent_info(agents, name):
+    """Resolve a canonical name, or an unambiguous base name, from hcom list."""
+    if name in agents:
+        return agents[name]
+    matches = [item for item in agents.values() if item.get('base_name') == name]
+    return matches[0] if len(matches) == 1 else None
+
+
+def session_events(orchestrator, info, *filters):
+    """Read only events carrying the exact session identity from hcom list."""
+    session_id = info.get('session_id') if isinstance(info, dict) else None
+    if not isinstance(session_id, str) or not session_id:
+        return []
+    quoted = session_id.replace("'", "''")
+    events = hcom_events(
+        orchestrator, *filters,
+        '--sql', f"json_extract(data, '$.session') = '{quoted}'",
+    )
+    return [event for event in events
+            if event_value(event, 'session', 'status') == session_id]
+
+
+def after_timestamp(value, threshold):
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        boundary = datetime.fromisoformat(threshold.replace('Z', '+00:00'))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    try:
+        return parsed >= boundary
+    except TypeError:
+        return False
+
+
+def hcom_send_command(value):
+    return (isinstance(value, str)
+            and re.search(r'(?:^|&&|\|\||[;|\r\n])\s*hcom\s+send(?:\s|$)', value)
+            is not None)
+
+
+def successful_send_output(value):
+    return (isinstance(value, str)
+            and re.search(r'^Sent to:', value, re.MULTILINE) is not None)
+
+
+def successful_hcom_send_since(transcript, declared_at):
+    """Find a completed hcom send in one exact agent transcript."""
+    claude_hcom_send_ids = set()
+    try:
+        lines = Path(transcript).open()
+    except (FileNotFoundError, OSError):
+        return False
+    with lines:
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            completed_after_wait = after_timestamp(record.get('timestamp'), declared_at)
+
+            message = record.get('message', {})
+            content = message.get('content', []) if isinstance(message, dict) else []
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    command = item.get('input', {}).get('command') \
+                        if isinstance(item.get('input'), dict) else None
+                    if (item.get('type') == 'tool_use' and item.get('name') == 'Bash'
+                            and isinstance(item.get('id'), str)
+                            and hcom_send_command(command)):
+                        claude_hcom_send_ids.add(item['id'])
+                    if (completed_after_wait and item.get('type') == 'tool_result'
+                            and item.get('tool_use_id') in claude_hcom_send_ids
+                            and item.get('is_error') is False
+                            and successful_send_output(item.get('content'))):
+                        return True
+
+            if not completed_after_wait:
+                continue
+
+            payload = record.get('payload', {})
+            item = payload.get('item', {}) if isinstance(payload, dict) else {}
+            if not isinstance(item, dict):
+                item = {}
+            command = item.get('command') if isinstance(item, dict) else None
+            shell_command = command[-1] if isinstance(command, list) and command else None
+            if (record.get('type') == 'event_msg'
+                    and payload.get('type') == 'item_completed'
+                    and item.get('type') == 'CommandExecution'
+                    and hcom_send_command(shell_command)
+                    and item.get('status') == 'completed'
+                    and item.get('exit_code') == 0
+                    and successful_send_output(item.get('stdout'))):
+                return True
+    return False
+
+
+def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agents=None):
     if not declaration or not declaration.get('active', True):
         return None
     after = declaration['declared_at_utc']
     agent = declaration['agent']
     target = declaration['target']
-    participant = hcom_events(orchestrator, '--after', after, '--participant', agent)
+    agents = list_hcom(orchestrator) if agents is None else agents
+    participant = session_events(
+        orchestrator, agent_info(agents, agent), '--after', after)
     decision = pending_decision(decisions, target)
-    target_events = [] if decision is not None else hcom_events(
-        orchestrator, '--after', after, '--from', target)
-    reason = wait_release_reason(declaration, participant, target_events, decision)
+    target_info = agent_info(agents, target)
+    transcript = target_info.get('transcript_path') if target_info else None
+    target_replied = bool(
+        decision is None and transcript
+        and successful_hcom_send_since(transcript, after))
+    reason = wait_release_reason(declaration, participant, target_replied, decision)
     if reason:
         updated = dict(declaration, active=False, released_reason=reason,
                        released_at_utc=datetime.now(timezone.utc).isoformat())
@@ -644,9 +748,8 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
             transcript_mtime_ns = stat.st_mtime_ns
         except FileNotFoundError:
             pass
-    own_events = hcom_events(orchestrator, '--agent', agent, '--last', '1')
-    participant_events = hcom_events(orchestrator, '--participant', agent, '--last', '1')
-    event_id = max(latest_event_id(own_events), latest_event_id(participant_events))
+    own_events = session_events(orchestrator, info, '--last', '1')
+    event_id = latest_event_id(own_events)
     declaration = read_object(wait_path(workspace, agent))
     released = release_wait_if_needed(
         workspace, decisions, orchestrator, declaration)
@@ -758,6 +861,16 @@ def read_terminal_input(agent, orchestrator):
     return text
 
 
+def wait_for_terminal_edit(agent, orchestrator, previous):
+    """Poll briefly for a keypress to appear in the terminal snapshot."""
+    deadline = time.monotonic() + PROMPT_SETTLE_SECONDS
+    while True:
+        current = read_terminal_input(agent, orchestrator)
+        if current != previous or time.monotonic() >= deadline:
+            return current
+        time.sleep(PROMPT_POLL_SECONDS)
+
+
 def read_prompt_status(agent, orchestrator):
     info = list_hcom(orchestrator).get(agent)
     if info is None:
@@ -831,7 +944,7 @@ def perform_prompt_recovery(action, orchestrator, workspace=None):
                 failure=f'hcom backspace failed for {action.agent}',
             )
             backspaces += 1
-            updated = read_terminal_input(action.agent, orchestrator)
+            updated = wait_for_terminal_edit(action.agent, orchestrator, current)
         except (OSError, ValueError) as error:
             uncertain = True
             reason = f'prompt clear could not be confirmed; no retry: {error}'
