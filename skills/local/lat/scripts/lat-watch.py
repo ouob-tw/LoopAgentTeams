@@ -639,7 +639,7 @@ def after_timestamp(value, threshold):
 
 def hcom_send_command(value):
     return (isinstance(value, str)
-            and re.search(r'(?:^|&&|\|\||[;|])\s*hcom\s+send(?:\s|$)', value)
+            and re.search(r'(?:^|&&|\|\||[;|\r\n])\s*hcom\s+send(?:\s|$)', value)
             is not None)
 
 

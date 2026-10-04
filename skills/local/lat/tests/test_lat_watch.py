@@ -431,6 +431,24 @@ class WatchDecisionTests(unittest.TestCase):
             self.assertTrue(watch.successful_hcom_send_since(
                 transcript, '2026-10-04T14:00:58+00:00'))
 
+    def test_multiline_report_then_send_releases_wait(self):
+        watch = load_watch()
+        record = {
+            'timestamp': '2026-10-04T14:00:59.400Z', 'type': 'event_msg',
+            'payload': {'type': 'item_completed', 'item': {
+                'type': 'CommandExecution',
+                'command': ['/bin/bash', '-lc',
+                            "cat > /tmp/report <<'EOF'\nreport\nEOF\nhcom send @third --file /tmp/report"],
+                'status': 'completed', 'exit_code': 0,
+                'stdout': 'Sent to: third\n',
+            }},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'codex.jsonl'
+            transcript.write_text(json.dumps(record) + '\n')
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:00:58+00:00'))
+
     def test_claude_send_started_before_wait_and_completed_after_releases(self):
         watch = load_watch()
         records = [
