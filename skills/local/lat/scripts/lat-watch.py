@@ -129,11 +129,12 @@ def write_object(path, value):
             temp.unlink(missing_ok=True)
 
 
-def run_command(command):
+def run_command(command, failure=None):
     result = subprocess.run(command, text=True, capture_output=True)
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
-        raise ValueError(f'{command[0]} failed: {detail}')
+        message = failure or f'{command[0]} failed'
+        raise ValueError(f'{message}: {detail}')
     return result.stdout
 
 
@@ -245,6 +246,7 @@ def background_process_running(agent, info, processes, current_pid=None):
                if process.starttime == client_starttime}
     if not clients:
         return False
+    process_by_pid = {process.pid: process for process in processes}
     parents = {process.pid: process.ppid for process in processes}
     current_pid = os.getpid() if current_pid is None else current_pid
     excluded = process_ancestors(current_pid, parents) | {current_pid}
@@ -252,17 +254,29 @@ def background_process_running(agent, info, processes, current_pid=None):
         excluded |= process_ancestors(client, parents)
     name_marker = f'HCOM_INSTANCE_NAME={agent}'
     ignored_commands = {'codex', 'claude', 'hcom', 'lat-watch.py'}
+    task_shells = {'bash', 'dash', 'fish', 'sh', 'zsh'}
+    # Long-lived client helpers are not evidence that a user command is running.
+    resident_helpers = {'node', 'python', 'python3'}
     for process in processes:
         if process.pid in clients or process.pid in excluded or process.state == 'Z':
             continue
-        descendants = process_ancestors(process.pid, parents)
+        ancestors = process_ancestors(process.pid, parents)
         same_agent = name_marker in process.environment
-        if not same_agent and not descendants.intersection(clients):
+        belongs_to_client = bool(ancestors.intersection(clients))
+        if not same_agent and not belongs_to_client:
             continue
         executable = Path(process.command[0]).name if process.command else ''
         if executable in ignored_commands:
             continue
-        return True
+        if belongs_to_client:
+            lineage = {process.pid} | ancestors
+            if any(Path(related.command[0]).name in task_shells
+                   for pid in lineage
+                   if (related := process_by_pid.get(pid)) and related.command):
+                return True
+            continue
+        if executable not in resident_helpers:
+            return True
     return False
 
 
@@ -376,13 +390,10 @@ def append_log(path, record):
 def perform(action, orchestrator):
     if action.kind != 'nudge':
         raise ValueError(f'Unsupported watch action: {action.kind}')
-    result = subprocess.run(
+    run_command(
         ['hcom', 'term', 'inject', action.agent, NUDGE, '--enter', '--name', orchestrator],
-        text=True, capture_output=True,
+        failure=f'hcom inject failed for {action.agent}',
     )
-    if result.returncode:
-        detail = result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
-        raise ValueError(f'hcom inject failed for {action.agent}: {detail}')
 
 
 def run_cycle(workspace, tasks, decisions, orchestrator, now=None):

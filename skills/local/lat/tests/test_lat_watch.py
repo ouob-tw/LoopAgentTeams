@@ -32,7 +32,7 @@ class WatchDecisionTests(unittest.TestCase):
 
         state, actions = watch.decide(None, first, now=0)
         self.assertEqual(actions, ())
-        state, actions = watch.decide(state, first, now=599)
+        state, actions = watch.decide(state, first, now=59)
         self.assertEqual(actions, ())
         heartbeat = first._replace(event_id=9155)
         state, actions = watch.decide(state, heartbeat, now=60)
@@ -115,13 +115,53 @@ class WatchDecisionTests(unittest.TestCase):
         watch = load_watch()
         info = {'launch_context': {'pid_identity': 'linux:boot-id:100'}}
         client = watch.Process(10, 1, 100, 'S', ('codex',), ('HCOM_INSTANCE_NAME=worker',))
-        command = watch.Process(11, 10, 101, 'S', ('uv', 'run', 'tests'),
+        shell = watch.Process(11, 10, 101, 'S', ('bash', '-lc', 'uv run tests'),
+                              ('HCOM_INSTANCE_NAME=worker',))
+        command = watch.Process(12, 11, 102, 'S', ('uv', 'run', 'tests'),
                                 ('HCOM_INSTANCE_NAME=worker',))
+        resident_helper = watch.Process(13, 10, 103, 'S', ('node', 'server.js'),
+                                        ('HCOM_INSTANCE_NAME=worker',))
+        reparented_command = watch.Process(14, 1, 104, 'S', ('uv', 'run', 'tests'),
+                                           ('HCOM_INSTANCE_NAME=worker',))
+        reparented_helper = watch.Process(15, 1, 105, 'S', ('python3', 'server.py'),
+                                          ('HCOM_INSTANCE_NAME=worker',))
 
         self.assertTrue(watch.background_process_running(
-            'worker', info, [client, command], current_pid=99))
+            'worker', info, [client, shell, command, resident_helper], current_pid=99))
         self.assertFalse(watch.background_process_running(
-            'worker', info, [client], current_pid=99))
+            'worker', info, [client, resident_helper], current_pid=99))
+        self.assertTrue(watch.background_process_running(
+            'worker', info, [client, reparented_command], current_pid=99))
+        self.assertFalse(watch.background_process_running(
+            'worker', info, [client, reparented_helper], current_pid=99))
+
+    def test_process_reader_decodes_proc_and_skips_disappeared_or_denied_entries(self):
+        watch = load_watch()
+        with tempfile.TemporaryDirectory() as temporary:
+            proc = Path(temporary)
+            valid = proc / '123'
+            valid.mkdir()
+            fields = ['S', '7', *(['0'] * 17), '456']
+            (valid / 'stat').write_text(f'123 (name with spaces) {" ".join(fields)}\n')
+            (valid / 'cmdline').write_bytes(b'uv\0run\0\xff\0')
+            (valid / 'environ').write_bytes(b'HCOM_INSTANCE_NAME=worker\0')
+            denied = proc / '124'
+            denied.mkdir()
+            (proc / 'not-a-pid').mkdir()
+            original_read_text = Path.read_text
+
+            def read_text(path, *args, **kwargs):
+                if path == denied / 'stat':
+                    raise PermissionError('denied')
+                return original_read_text(path, *args, **kwargs)
+
+            with patch.object(Path, 'read_text', read_text):
+                processes = watch.read_processes(proc)
+
+        self.assertEqual(processes, [watch.Process(
+            123, 7, 456, 'S', ('uv', 'run', '\ufffd'),
+            ('HCOM_INSTANCE_NAME=worker',),
+        )])
 
 
 class WatchCliTests(unittest.TestCase):
