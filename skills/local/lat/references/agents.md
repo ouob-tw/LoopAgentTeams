@@ -12,14 +12,14 @@ hcom-spawn 裡的「自身名稱」就是發起委派的那一方：主控派工
 
 ## 派工
 
-- 外部 Agent 的第一則任務訊息照 /hcom-spawn 的固定欄位寫，再補上 SKILL.md「交接」要求的項目。
+- 外部 Agent 的第一則任務訊息照 /hcom-spawn 的固定欄位寫，再補上 SKILL.md「交接」要求的項目，以及「做完才收工」規則和填好主控 `$lat_dir`、`$workspace` 絕對路徑的 `lat-watch wait` 指令（格式見 [停住監控](stall-watch.md#結束回合前)）。
 - /code-review 的 Spec 面向審查一律派給 `gpt-6-astra`，effort `medium`；使用者另行指定時從其指定。Standards 面向照 /hcom-spawn 預設選模型。
 - 每項任務用自己的 tag 主題，同一個 tag 不跨任務共用，關閉整組時才不會誤關其他任務的 Agents。
 - 執行 Agent 卡住時，由召喚它的一方（通常是主控）依 /hcom-spawn 的升級規則提高 effort 或換模型；升級路線走完仍卡住，交回主控決定新 context 或拆小任務。
 
 ## 存活與恢復
 
-- Agent 沉默時，先讀它的任務卡，確認已完成工作、下一步及資源歸屬，再依 /hcom-spawn 查執行狀態。
+- Agent 沉默時，先讀它的任務卡，確認已完成工作、下一步及資源歸屬，再依 /hcom-spawn 查執行狀態。停住監控已代為定時巡查、催醒狀態卡在 `active` 的 Agent 並往上通知；收到它的通知依 [停住監控](stall-watch.md#主控處理監控通知) 處理，不必另設計時器。
 - 內建 Agent 沒有 HCOM 畫面：查 client 提供的狀態與任務卡，仍不清楚就直接傳訊詢問，不讀取完整 subagent transcript 檔案，以免塞滿主控 context。
 - 主控的 HCOM 身分掉線時，依 /hcom-spawn 恢復並補讀漏掉的事件後，再核對任務卡與 `.lat/decisions/` 待決紀錄才續作。
 

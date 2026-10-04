@@ -6,7 +6,7 @@ Claude 壓縮後只重新附上每個技能前 5,000 tokens（合計 25,000）�
 
 ## 主控啟動與結束
 
-1. 讀完專案設定後，先選定既有進度索引與共用待決目錄。沒有索引時，先建立短檔案，指向 tracker／Spec 與現有整合摘要；不要重建清單。確認待決目錄存在。
+1. 讀完專案設定後，先選定既有進度索引、共用待決目錄與任務卡目錄。沒有索引時，先建立短檔案，指向 tracker／Spec 與現有整合摘要；不要重建清單。確認待決目錄與任務卡目錄存在（任務卡目錄可以是空的）。
 2. 在建立本次進度清單之前執行 activate。`lat_dir` 必須是本次實際載入的 LAT 技能目錄；以下路徑由專案設定取得，不照抄範例。
 
 ```bash
@@ -14,19 +14,20 @@ lat_dir=/absolute/path/to/installed/lat
 workspace=/absolute/path/to/git-worktree
 progress=/absolute/path/to/existing-progress.md
 decisions=/absolute/path/to/shared/decisions
+tasks=/absolute/path/to/shared/.lat/tasks
 client=codex  # Claude 主控改為 claude
 hcom_name=<主控自己的 HCOM 名稱>
 uv run --no-project python "$lat_dir/scripts/lat-session.py" activate --client "$client" \
   --workspace "$workspace" --progress "$progress" --decisions "$decisions" \
-  --hcom-name "$hcom_name"
+  --tasks "$tasks" --hcom-name "$hcom_name"
 ```
 
-activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；Claude：`CLAUDE_CODE_SESSION_ID`），不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。HCOM 名稱只接受明確的 `--hcom-name`，不讀 `HCOM_INSTANCE_NAME`。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑，紀錄 client、session、主控角色、工作區、active 狀態與恢復路徑。已有不同紀錄時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
+activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；Claude：`CLAUDE_CODE_SESSION_ID`），不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。`--workspace` 須是 Git worktree 根目錄。`--hcom-name` 一律必填，只接受明確值，不讀 `HCOM_INSTANCE_NAME`；缺少時不建立 session 紀錄，照錯誤中的完整指令補上名稱重跑。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑，紀錄 client、session、主控角色、工作區、active 狀態、HCOM 名稱與恢復路徑（含任務卡目錄），並在背景啟動停住監控 `lat-watch.py run`（pid 在 `.lat/watch/<session-id>.pid`，輸出在同名 `.log`）。已有不同紀錄時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
 
-   activate 會偵測 Herdr 的 `lat.panel`：已啟用時自動綁定並印出問題檔路徑；未啟用時印出「面板未啟用，略過綁定」。已啟用但缺 HCOM 名稱時不建立 session 紀錄，照錯誤中的完整指令重跑；外掛查詢失敗時修復 Herdr 後重跑。自動綁定失敗時 session 紀錄保持 active，依錯誤印出的完整手動 bind 指令補做。
+   activate 會偵測 Herdr 的 `lat.panel`：已啟用時自動綁定並印出問題檔路徑；未啟用時印出「面板未啟用，略過綁定」。外掛查詢失敗時修復 Herdr 後重跑。自動綁定失敗時 session 紀錄保持 active，但停住監控尚未啟動：依錯誤補齊 Herdr 環境變數後重跑同一個 activate，確認綁定成功且 `.lat/watch/<session-id>.pid` 存在。
 
-3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`，以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的 `.lat/questions-<hcom-name>.md`（尚未寫題時不存在，不算缺檔）。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。
-4. 交付前停用為 completed；取消時停用為 cancelled。deactivate 會自動解除自己的綁定，沒有綁定也不報錯；成功後紀錄保留，後續 compact／resume 不再提示。
+3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`，以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的 `.lat/questions-<hcom-name>.md`（尚未寫題時不存在，不算缺檔）。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。hook 發現紀錄仍 active 但停住監控沒在執行時，會在提示前自動重新啟動它。
+4. 交付前停用為 completed；取消時停用為 cancelled。deactivate 會停止自己的停住監控並解除自己的綁定，沒有綁定也不報錯；成功後紀錄保留，後續 compact／resume 不再提示。
 
 ```bash
 uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client "$client" \
