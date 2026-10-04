@@ -37,16 +37,14 @@ def panel_module():
     return module
 
 
-def activate_command(args, workspace):
+def activate_command(client, workspace, progress, decisions, tasks, hcom_name):
     command = [
         'uv', 'run', '--no-project', 'python', str(Path(__file__).resolve()),
-        'activate', '--client', args.client, '--workspace', str(workspace),
-        '--progress', str(args.progress.resolve()),
-        '--decisions', str(args.decisions.resolve()),
-        '--tasks', str(args.tasks.resolve()),
+        'activate', '--client', client, '--workspace', str(workspace),
+        '--progress', str(progress), '--decisions', str(decisions), '--tasks', str(tasks),
     ]
-    if args.hcom_name:
-        command += ['--hcom-name', args.hcom_name]
+    if hcom_name:
+        command += ['--hcom-name', hcom_name]
     else:
         command += ['--hcom-name', '<主控-HCOM-名稱>']
     return shlex.join(command)
@@ -134,14 +132,10 @@ def dependencies(record, *, require_watcher=True):
 
 
 def legacy_upgrade_command(record):
-    command = shlex.join([
-        'uv', 'run', '--no-project', 'python',
-        str(Path(record['skill_dir']) / 'scripts/lat-session.py'),
-        'activate', '--client', record['client'], '--workspace', record['workspace'],
-        '--progress', record['progress_path'], '--decisions', record['decisions_path'],
-    ])
-    return (f'{command} --tasks <task-card-directory> '
-            '--hcom-name <controller-HCOM-name>')
+    return activate_command(
+        record['client'], record['workspace'], record['progress_path'],
+        record['decisions_path'], '<task-card-directory>', '<controller-HCOM-name>',
+    )
 
 
 def watcher_paths(record):
@@ -292,11 +286,12 @@ def activate(args):
     if workspace_root(workspace) != workspace:
         raise ValueError('--workspace must be the Git worktree root')
     sid = session_id(os.environ.get(SESSION_ENV[args.client]))
+    command = activate_command(
+        args.client, workspace, args.progress.resolve(), args.decisions.resolve(),
+        args.tasks.resolve(), args.hcom_name,
+    )
     if not args.hcom_name or not HCOM_NAME.fullmatch(args.hcom_name):
-        raise ValueError(
-            'A valid explicit --hcom-name is required; rerun: '
-            f'{activate_command(args, workspace)}'
-        )
+        raise ValueError(f'A valid explicit --hcom-name is required; rerun: {command}')
     record = dict(client=args.client, session_id=sid, role='orchestrator',
                   workspace=str(workspace), status='active', skill_dir=str(SKILL_DIR),
                   progress_path=str(args.progress.resolve(strict=True)),
@@ -313,14 +308,16 @@ def activate(args):
             if any(existing.get(key) != value for key, value in expected.items()):
                 raise ValueError('Existing session record differs; do not reset or rebind it')
             record = dict(existing, tasks_path=record['tasks_path'], hcom_name=record['hcom_name'])
-        elif existing != record:
-            raise ValueError('Existing session record differs; do not reset or rebind it')
+        else:
+            if any(existing.get(key) != value for key, value in record.items()):
+                raise ValueError('Existing session record differs; do not reset or rebind it')
+            record = existing
     panel = panel_module()
     try:
         enabled = panel.panel_enabled()
     except ValueError as error:
         raise ValueError(
-            f'{error}；請修復 Herdr 後重新執行：{activate_command(args, workspace)}'
+            f'{error}；請修復 Herdr 後重新執行：{command}'
         ) from error
     write_json(path, record, original)
     print(path)

@@ -435,8 +435,8 @@ class SessionTests(unittest.TestCase):
         expected_command = (
             f'uv run --no-project python {SCRIPT} activate --client codex '
             f'--workspace {self.work} --progress {self.progress} '
-            f'--decisions {self.decisions} --tasks <task-card-directory> '
-            '--hcom-name <controller-HCOM-name>'
+            f'--decisions {self.decisions} --tasks \'<task-card-directory>\' '
+            '--hcom-name \'<controller-HCOM-name>\''
         )
 
         result = self.hook(source='resume')
@@ -464,7 +464,17 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(upgraded, dict(
             legacy, tasks_path=str(self.tasks), hcom_name='upgraded-orch',
         ))
-        self.assertTrue((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+        pid = self.watcher_pid()
+
+        retried = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--tasks', self.tasks,
+            '--hcom-name', 'upgraded-orch', watch_args=False,
+        )
+
+        self.assertEqual(retried.returncode, 0, retried.stderr)
+        self.assertEqual(json.loads(self.record.read_text()), upgraded)
+        self.assertEqual(self.watcher_pid(), pid)
 
     def test_deactivate_legacy_record_without_watcher(self):
         legacy = self.write_legacy_record(legacy_note='keep me')
