@@ -31,11 +31,16 @@ class Observation(NamedTuple):
     event_id: int
     wait_active: bool = False
     wait_released: bool = False
+    is_orchestrator: bool = False
+    task_card_revision: str = ''
+    task_card_updated_at: float = 0
+    orchestrator_wait_started_at: float = 0
 
 
 class Action(NamedTuple):
     kind: str
     agent: str
+    message: str = ''
 
 
 class Process(NamedTuple):
@@ -48,6 +53,31 @@ class Process(NamedTuple):
     environment: tuple
 
 
+def escalation_message(observation, state, now, recipient):
+    stalled_minutes = int((now - state['last_progress_at']) // 60)
+    nudged_minutes = int((now - state['nudged_at']) // 60)
+    reason = state.get('stall_reason', 'no progress after a terminal nudge')
+    if recipient == 'orchestrator':
+        action_needed = ('inspect the agent and either resume or stop it, update its task '
+                         'card, or declare a wait naming this agent.')
+        history = (f'Already done: one terminal nudge was injected '
+                   f'{nudged_minutes} minutes ago.')
+    elif observation.is_orchestrator:
+        action_needed = ('return to this orchestrator and resume the authorized work, or '
+                         'record exactly what it is waiting for.')
+        history = (f'Already done: one terminal nudge was injected '
+                   f'{nudged_minutes} minutes ago.')
+    else:
+        action_needed = ('check the orchestrator and decide whether to resume, stop, or '
+                         'reassign the stalled agent.')
+        orchestrator_minutes = int((now - state['orchestrator_notified_at']) // 60)
+        history = (f'Already done: one terminal nudge; the orchestrator was notified '
+                   f'{orchestrator_minutes} minutes ago.')
+    return (f'LAT stall watcher: agent {observation.agent} has made no progress for '
+            f'{stalled_minutes} minutes. Reason: {reason}. {history} '
+            f'Action needed: {action_needed}')
+
+
 def decide(previous, observation, now):
     """Return serializable state and requested actions for one observation."""
     fingerprint = [observation.transcript_size, observation.transcript_mtime_ns,
@@ -55,18 +85,77 @@ def decide(previous, observation, now):
     progressed = previous is None or previous.get('fingerprint') != fingerprint
     reset = progressed or observation.wait_released
     if reset:
-        state = {'fingerprint': fingerprint, 'last_progress_at': now, 'nudged': False}
+        state = {
+            'fingerprint': fingerprint,
+            'last_progress_at': now,
+            'nudged': False,
+            'orchestrator_notified': False,
+            'orchestrator_handled': False,
+            'user_notified': False,
+        }
     else:
         state = dict(previous)
+        state.setdefault('orchestrator_notified', False)
+        state.setdefault('orchestrator_handled', False)
+        state.setdefault('user_notified', False)
+        if state.get('nudged') and 'nudged_at' not in state:
+            state['nudged_at'] = now
     actions = ()
     stalled = now - state['last_progress_at'] >= IDLE_SECONDS
+    orchestrator_notified_at = state.get('orchestrator_notified_at', now + 1)
+    orchestrator_deadline = orchestrator_notified_at + IDLE_SECONDS
+    card_handled = (observation.task_card_revision
+                    != state.get('orchestrator_notice_task_revision', '')
+                    and orchestrator_notified_at <= observation.task_card_updated_at
+                    <= orchestrator_deadline)
+    wait_handled = (observation.orchestrator_wait_started_at > 0
+                    and orchestrator_notified_at
+                    <= observation.orchestrator_wait_started_at
+                    <= orchestrator_deadline)
+    orchestrator_handled = (state.get('orchestrator_notified')
+                            and not state.get('orchestrator_handled')
+                            and not observation.is_orchestrator
+                            and (card_handled or wait_handled))
+    if orchestrator_handled:
+        state['orchestrator_handled'] = True
     if (stalled and not observation.wait_active and not state['nudged']
             and observation.status == 'listening'
             and observation.prompt_empty and not observation.command_running):
         actions = (Action('nudge', observation.agent),)
         state['nudged'] = True
+        state['nudged_at'] = now
+        state['stall_reason'] = 'listening at an empty prompt with no command running'
+    elif (state['nudged'] and not observation.wait_active
+          and observation.prompt_empty and not observation.command_running
+          and now - state['nudged_at'] >= IDLE_SECONDS):
+        if observation.is_orchestrator and not state.get('user_notified'):
+            actions = (Action(
+                'notify-user', observation.agent,
+                escalation_message(observation, state, now, 'user'),
+            ),)
+            state['user_notified'] = True
+        elif (not observation.is_orchestrator
+              and not state.get('orchestrator_notified')):
+            actions = (Action(
+                'notify-orchestrator', observation.agent,
+                escalation_message(observation, state, now, 'orchestrator'),
+            ),)
+            state['orchestrator_notified'] = True
+            state['orchestrator_notified_at'] = now
+            state['orchestrator_notice_task_revision'] = observation.task_card_revision
+        elif (not observation.is_orchestrator
+              and not state.get('orchestrator_handled')
+              and not state.get('user_notified')
+              and now - state['orchestrator_notified_at'] >= IDLE_SECONDS):
+            actions = (Action(
+                'notify-user', observation.agent,
+                escalation_message(observation, state, now, 'user'),
+            ),)
+            state['user_notified'] = True
     if actions:
-        state['decision'] = 'nudge'
+        state['decision'] = actions[0].kind
+    elif state.get('orchestrator_handled'):
+        state['decision'] = 'orchestrator-handled'
     elif observation.wait_active:
         state['decision'] = 'valid-wait'
     elif observation.command_running:
@@ -156,7 +245,7 @@ def run_json_lines(command):
 def parse_task(path):
     fields = {}
     for line in path.read_text().splitlines():
-        match = re.fullmatch(r'-\s+(agent|orchestrator|status)：\s*(.*)', line)
+        match = re.fullmatch(r'-\s+(agent|orchestrator|status|next step)：\s*(.*)', line)
         if match:
             fields[match.group(1)] = match.group(2).strip()
     if not all(name in fields for name in ('agent', 'orchestrator', 'status')):
@@ -165,16 +254,27 @@ def parse_task(path):
     return fields
 
 
-def monitored_agents(tasks, orchestrator):
-    agents = [valid_name(orchestrator)]
+def monitored_task_cards(tasks, orchestrator):
+    cards = {}
     if not tasks.is_dir():
         raise ValueError(f'Missing task-card directory: {tasks}')
     for path in sorted(tasks.glob('*.md')):
         card = parse_task(path)
         if (card and card['orchestrator'] == orchestrator
-                and card['status'] != 'merged' and card['agent'] not in agents):
-            agents.append(valid_name(card['agent']))
-    return agents
+                and card['status'] != 'merged'):
+            card['_updated_at'] = path.stat().st_mtime
+            cards.setdefault(valid_name(card['agent']), card)
+    return cards
+
+
+def monitored_agents(tasks, orchestrator):
+    return [valid_name(orchestrator), *monitored_task_cards(tasks, orchestrator)]
+
+
+def task_card_revision(card):
+    if card is None:
+        return ''
+    return json.dumps([card['status'], card.get('next step', '')], ensure_ascii=False)
 
 
 def list_hcom(orchestrator):
@@ -354,7 +454,7 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration):
     return reason
 
 
-def observe(workspace, decisions, orchestrator, agent, info):
+def observe(workspace, decisions, orchestrator, agent, info, card=None):
     terminal = run_json(['hcom', 'term', agent, '--json', '--name', orchestrator])
     if not isinstance(terminal, dict):
         raise ValueError(f'hcom term returned invalid data for {agent}')
@@ -375,6 +475,13 @@ def observe(workspace, decisions, orchestrator, agent, info):
     released = release_wait_if_needed(
         workspace, decisions, orchestrator, declaration)
     active_wait = bool(declaration and declaration.get('active', True) and not released)
+    orchestrator_wait_started_at = 0
+    if agent != orchestrator:
+        orchestrator_wait = read_object(wait_path(workspace, orchestrator))
+        if orchestrator_wait and orchestrator_wait.get('target') == agent:
+            declared_at = orchestrator_wait.get('declared_at', 0)
+            if isinstance(declared_at, (int, float)):
+                orchestrator_wait_started_at = declared_at
     ready = terminal.get('ready') is True
     background_running = background_process_running(agent, info, read_processes())
     return Observation(
@@ -387,6 +494,10 @@ def observe(workspace, decisions, orchestrator, agent, info):
         event_id=event_id,
         wait_active=active_wait,
         wait_released=released is not None,
+        is_orchestrator=agent == orchestrator,
+        task_card_revision=task_card_revision(card),
+        task_card_updated_at=card.get('_updated_at', 0) if card else 0,
+        orchestrator_wait_started_at=orchestrator_wait_started_at,
     )
 
 
@@ -398,47 +509,128 @@ def append_log(path, record):
         os.fsync(stream.fileno())
 
 
-def perform(action, orchestrator):
-    if action.kind != 'nudge':
-        raise ValueError(f'Unsupported watch action: {action.kind}')
+def action_record(action):
+    record = {'kind': action.kind, 'agent': action.agent}
+    if action.message:
+        record['message'] = action.message
+    return record
+
+
+def perform_nudge(action, orchestrator):
     run_command(
-        ['hcom', 'term', 'inject', action.agent, NUDGE, '--enter', '--name', orchestrator],
+        ['hcom', 'term', 'inject', action.agent, NUDGE,
+         '--enter', '--name', orchestrator],
         failure=f'hcom inject failed for {action.agent}',
     )
+    return {'delivery': 'terminal'}
+
+
+def send_notification(action, orchestrator, intent):
+    run_command(
+        ['hcom', 'send', f'@{orchestrator}', '--intent', intent,
+         '--from', 'lat-watch', '--name', orchestrator, '--', action.message],
+        failure=f'hcom notification failed for {orchestrator}',
+    )
+
+
+def perform_notify_orchestrator(action, orchestrator):
+    send_notification(action, orchestrator, 'request')
+    return {'delivery': 'hcom'}
+
+
+def perform_notify_user(action, orchestrator):
+    send_notification(action, orchestrator, 'inform')
+    try:
+        run_command(
+            ['herdr', 'notification', 'show', 'LAT needs attention',
+             '--body', action.message, '--sound', 'request'],
+            failure='Herdr notification failed',
+        )
+    except (OSError, ValueError) as error:
+        return {'delivery': 'hcom-only', 'herdr_error': str(error)}
+    return {'delivery': 'hcom+herdr'}
+
+
+ACTION_POLICIES = {
+    'nudge': (perform_nudge, 'nudged', ('nudged_at',)),
+    'notify-orchestrator': (
+        perform_notify_orchestrator,
+        'orchestrator_notified',
+        ('orchestrator_notified_at', 'orchestrator_notice_task_revision'),
+    ),
+    'notify-user': (perform_notify_user, 'user_notified', ()),
+}
+
+
+def action_policy(kind):
+    try:
+        return ACTION_POLICIES[kind]
+    except KeyError as error:
+        raise ValueError(f'Unsupported watch action: {kind}') from error
+
+
+def perform(action, orchestrator):
+    handler, _flag, _cleanup_fields = action_policy(action.kind)
+    return handler(action, valid_name(orchestrator))
+
+
+def roll_back(action, state):
+    _handler, flag, cleanup_fields = action_policy(action.kind)
+    state[flag] = False
+    for field in cleanup_fields:
+        state.pop(field, None)
 
 
 def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     """Observe every owned agent once, execute actions, and persist state/logs."""
     now = time.time() if now is None else now
     orchestrator = valid_name(orchestrator)
-    agents = monitored_agents(tasks, orchestrator)
+    cards = monitored_task_cards(tasks, orchestrator)
+    agents = [orchestrator, *cards]
     hcom = list_hcom(orchestrator)
     path = state_path(workspace, orchestrator)
     states = read_object(path, {})
     log = path.with_name('watch.jsonl')
+    for agent in set(states) - set(agents):
+        append_log(log, {
+            'at': now, 'agent': agent,
+            'decision': 'orchestrator-handled-left-watch-set',
+            'actions': [],
+        })
+        states.pop(agent)
     for agent in agents:
         if agent not in hcom:
-            append_log(log, {
-                'at': now, 'agent': agent, 'decision': 'not-observable',
-                'actions': [], 'error': 'agent missing from hcom list',
-            })
+            state = states.get(agent)
+            if (agent != orchestrator and state
+                    and state.get('orchestrator_notified')):
+                append_log(log, {
+                    'at': now, 'agent': agent,
+                    'decision': 'orchestrator-handled-agent-stopped', 'actions': [],
+                })
+                states.pop(agent)
+            else:
+                append_log(log, {
+                    'at': now, 'agent': agent, 'decision': 'not-observable',
+                    'actions': [], 'error': 'agent missing from hcom list',
+                })
             continue
         try:
-            observation = observe(workspace, decisions, orchestrator, agent, hcom[agent])
+            observation = observe(
+                workspace, decisions, orchestrator, agent, hcom[agent], cards.get(agent))
             state, actions = decide(states.get(agent), observation, now)
             results = []
             for action in actions:
                 try:
-                    perform(action, orchestrator)
-                    results.append({'kind': action.kind, 'status': 'done'})
-                except ValueError as error:
-                    state['nudged'] = False
+                    delivery = perform(action, orchestrator)
+                    results.append({'kind': action.kind, 'status': 'done', **delivery})
+                except (OSError, ValueError) as error:
+                    roll_back(action, state)
                     results.append({'kind': action.kind, 'status': 'failed',
                                     'error': str(error)})
             states[agent] = state
             append_log(log, {
                 'at': now, 'agent': agent, 'observation': observation._asdict(),
-                'state': state, 'actions': [action._asdict() for action in actions],
+                'state': state, 'actions': [action_record(action) for action in actions],
                 'action_results': results,
             })
         except (OSError, ValueError, TypeError, KeyError) as error:

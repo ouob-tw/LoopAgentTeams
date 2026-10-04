@@ -42,7 +42,7 @@ class WatchDecisionTests(unittest.TestCase):
         state, actions = watch.decide(state, heartbeat, now=660)
         self.assertEqual(actions, (watch.Action('nudge', 'zero'),))
         state, actions = watch.decide(state, heartbeat, now=2400)
-        self.assertEqual(actions, ())
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
 
     def test_dune_new_event_resets_the_clock_and_allows_a_later_nudge(self):
         watch = load_watch()
@@ -60,6 +60,124 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertEqual(actions, ())
         state, actions = watch.decide(state, heartbeat, now=960)
         self.assertEqual(actions, (watch.Action('nudge', 'dune'),))
+
+    def test_dune_orchestrator_is_nudged_then_user_notified_once(self):
+        watch = load_watch()
+        idle = watch.Observation(
+            'dune', 'listening', True, False, 200, 2_000, 17726,
+            is_orchestrator=True,
+        )
+
+        state, _ = watch.decide(None, idle, now=0)
+        state, actions = watch.decide(state, idle, now=600)
+        self.assertEqual(actions, (watch.Action('nudge', 'dune'),))
+        state, actions = watch.decide(state, idle, now=1_199)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, idle, now=1_200)
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].kind, 'notify-user')
+        self.assertEqual(actions[0].agent, 'dune')
+        self.assertIn('20 minutes', actions[0].message)
+        self.assertIn('one terminal nudge', actions[0].message)
+        state, actions = watch.decide(state, idle, now=2_400)
+        self.assertEqual(actions, ())
+
+    def test_execution_agent_escalates_to_orchestrator_then_user_once(self):
+        watch = load_watch()
+        idle = watch.Observation(
+            'worker', 'listening', True, False, 100, 1_000, 10,
+            task_card_revision='in progress\nrun tests',
+        )
+
+        state, _ = watch.decide(None, idle, now=0)
+        state, _ = watch.decide(state, idle, now=600)
+        state, actions = watch.decide(state, idle, now=1_200)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+        self.assertIn('worker', actions[0].message)
+        self.assertIn('inspect the agent', actions[0].message)
+        state, actions = watch.decide(state, idle, now=1_799)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, idle, now=1_800)
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].kind, 'notify-user')
+        self.assertIn('orchestrator was notified 10 minutes ago', actions[0].message)
+        state, actions = watch.decide(state, idle, now=3_000)
+        self.assertEqual(actions, ())
+
+    def test_orchestrator_card_update_or_new_wait_handles_worker_escalation(self):
+        watch = load_watch()
+        idle = watch.Observation(
+            'worker', 'listening', True, False, 100, 1_000, 10,
+            task_card_revision='in progress\nrun tests',
+        )
+
+        state, _ = watch.decide(None, idle, now=0)
+        state, _ = watch.decide(state, idle, now=600)
+        state, _ = watch.decide(state, idle, now=1_200)
+        updated = idle._replace(
+            task_card_revision='in progress\ninspect failure',
+            task_card_updated_at=1_700,
+        )
+        state, actions = watch.decide(state, updated, now=1_800)
+        self.assertEqual(actions, ())
+        self.assertEqual(state['decision'], 'orchestrator-handled')
+
+        state, _ = watch.decide(None, idle, now=0)
+        state, _ = watch.decide(state, idle, now=600)
+        state, _ = watch.decide(state, idle, now=1_200)
+        waiting = idle._replace(orchestrator_wait_started_at=1_300)
+        state, actions = watch.decide(state, waiting, now=1_800)
+        self.assertEqual(actions, ())
+        self.assertEqual(state['decision'], 'orchestrator-handled')
+
+    def test_pre_escalation_nudged_state_waits_full_threshold_after_upgrade(self):
+        watch = load_watch()
+        idle = watch.Observation('worker', 'listening', True, False, 100, 1_000, 10)
+        legacy = {
+            'fingerprint': [100, 1_000, 10],
+            'last_progress_at': 0,
+            'nudged': True,
+        }
+
+        state, actions = watch.decide(legacy, idle, now=1_000)
+        self.assertEqual(actions, ())
+        self.assertEqual(state['nudged_at'], 1_000)
+        state, actions = watch.decide(state, idle, now=1_600)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+
+    def test_orchestrator_card_change_uses_change_time_not_observation_time(self):
+        watch = load_watch()
+        idle = watch.Observation(
+            'worker', 'listening', True, False, 100, 1_000, 10,
+            task_card_revision='in progress\nrun tests',
+        )
+
+        state, _ = watch.decide(None, idle, now=0)
+        state, _ = watch.decide(state, idle, now=600)
+        state, _ = watch.decide(state, idle, now=1_200)
+        timely = idle._replace(
+            task_card_revision='in progress\ntimely update',
+            task_card_updated_at=1_790,
+        )
+        state, actions = watch.decide(state, timely, now=1_801)
+
+        self.assertEqual(actions, ())
+        self.assertTrue(state['orchestrator_handled'])
+
+        state, _ = watch.decide(None, idle, now=0)
+        state, _ = watch.decide(state, idle, now=600)
+        state, _ = watch.decide(state, idle, now=1_200)
+        late = idle._replace(
+            task_card_revision='in progress\nlate update',
+            task_card_updated_at=1_801,
+        )
+        state, actions = watch.decide(state, late, now=1_801)
+
+        self.assertEqual(actions[0].kind, 'notify-user')
+        self.assertFalse(state['orchestrator_handled'])
 
     def test_damo_running_command_is_not_nudged_and_completion_restarts_clock(self):
         watch = load_watch()
@@ -189,6 +307,7 @@ class WatchCliTests(unittest.TestCase):
         binary = self.root / 'bin'
         binary.mkdir()
         self.hcom_log = self.root / 'hcom.log'
+        self.herdr_log = self.root / 'herdr.log'
         hcom = binary / 'hcom'
         hcom.write_text(
             '#!/bin/sh\n'
@@ -198,21 +317,53 @@ class WatchCliTests(unittest.TestCase):
             '{"name":"worker-merged","status":"listening"}]\'\n'
         )
         hcom.chmod(0o755)
+        herdr = binary / 'herdr'
+        herdr.write_text(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HERDR_LOG"\n'
+        )
+        herdr.chmod(0o755)
         self.env = dict(os.environ, PATH=f'{binary}:{os.environ["PATH"]}',
-                        FAKE_HCOM_LOG=str(self.hcom_log))
+                        FAKE_HCOM_LOG=str(self.hcom_log),
+                        FAKE_HERDR_LOG=str(self.herdr_log))
 
-    def write_task(self, relative, agent, orchestrator, status):
+    def write_task(self, relative, agent, orchestrator, status, next_step=''):
         path = self.tasks / relative
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(
             f'- agent：{agent} (Codex)\n'
             f'- orchestrator：{orchestrator}\n'
             f'- status：{status}\n'
+            f'- next step：{next_step}\n'
         )
 
     def cli(self, *args):
         return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
                               text=True, capture_output=True, cwd=self.work, env=self.env)
+
+    def fake_transcript(self):
+        path = self.root / 'transcript.jsonl'
+        path.write_text('unchanged\n')
+        return path
+
+    def install_hcom(self, script):
+        path = Path(self.env['PATH'].split(':', 1)[0]) / 'hcom'
+        path.write_text(script)
+        path.chmod(0o755)
+
+    def run_cycles(self, watch, *times):
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir(exist_ok=True)
+        with patch.dict(os.environ, self.env):
+            for now in times:
+                watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+
+    def watch_state(self):
+        return json.loads((self.work / '.lat/watch/orch/state.json').read_text())
+
+    def watch_records(self):
+        path = self.work / '.lat/watch/orch/watch.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()]
 
     def test_status_lists_only_orchestrator_and_owned_unfinished_agents(self):
         result = self.cli('status', '--workspace', self.work,
@@ -277,6 +428,171 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual([record['actions'] for record in records[-2:]],
                          [[{'kind': 'nudge', 'agent': 'orch'}],
                           [{'kind': 'nudge', 'agent': 'worker-open'}]])
+
+    def test_escalation_actions_use_hcom_and_request_sound_without_real_services(self):
+        watch = load_watch()
+
+        with patch.dict(os.environ, self.env):
+            orchestrator = watch.perform(
+                watch.Action(
+                    'notify-orchestrator', 'worker-open', 'orchestrator detail'), 'orch')
+            user = watch.perform(
+                watch.Action('notify-user', 'worker-open', 'user detail'), 'orch')
+
+        self.assertEqual(orchestrator, {'delivery': 'hcom'})
+        self.assertEqual(user, {'delivery': 'hcom+herdr'})
+        self.assertEqual(self.hcom_log.read_text().splitlines(), [
+            'send @orch --intent request --from lat-watch --name orch -- orchestrator detail',
+            'send @orch --intent inform --from lat-watch --name orch -- user detail',
+        ])
+        self.assertEqual(self.herdr_log.read_text().splitlines(), [
+            'notification show LAT needs attention --body user detail --sound request',
+        ])
+
+    def test_user_notification_degrades_to_hcom_and_reports_herdr_failure(self):
+        herdr = Path(self.env['PATH'].split(':', 1)[0]) / 'herdr'
+        herdr.write_text('#!/bin/sh\nprintf "unavailable\\n" >&2\nexit 7\n')
+        herdr.chmod(0o755)
+        watch = load_watch()
+
+        with patch.dict(os.environ, self.env):
+            result = watch.perform(
+                watch.Action('notify-user', 'worker-open', 'user detail'), 'orch')
+
+        self.assertEqual(result['delivery'], 'hcom-only')
+        self.assertIn('unavailable', result['herdr_error'])
+        self.assertEqual(self.hcom_log.read_text().splitlines(), [
+            'send @orch --intent inform --from lat-watch --name orch -- user detail',
+        ])
+
+    def test_run_cycle_logs_hcom_only_user_notification_degradation(self):
+        transcript = self.fake_transcript()
+        binary = Path(self.env['PATH'].split(':', 1)[0])
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = list ]; then\n'
+            f'  printf \'%s\\n\' \'[{{"name":"orch","status":"listening",'
+            f'"transcript_path":"{transcript}"}}]\'\n'
+            'elif [ "$1" = term ] && [ "$2" != inject ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":true,"prompt_empty":true}\'\n'
+            'elif [ "$1" = events ]; then\n'
+            '  printf \'%s\\n\' \'{"id":1,"type":"status"}\'\n'
+            'fi\n'
+        )
+        herdr = binary / 'herdr'
+        herdr.write_text('#!/bin/sh\nprintf "no display\\n" >&2\nexit 7\n')
+        herdr.chmod(0o755)
+        watch = load_watch()
+        self.run_cycles(watch, 0, 600, 1_200)
+
+        records = self.watch_records()
+        result = records[-2]['action_results'][0]
+        self.assertEqual(result['kind'], 'notify-user')
+        self.assertEqual(result['delivery'], 'hcom-only')
+        self.assertIn('no display', result['herdr_error'])
+
+    def test_task_update_and_orchestrator_wait_prevent_user_escalation(self):
+        self.write_task('open.md', 'worker-open', 'orch', 'in progress', 'run tests')
+        self.write_task('waiting.md', 'worker-wait', 'orch', 'in progress', 'review')
+        transcript = self.fake_transcript()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = list ]; then\n'
+            f'  printf \'%s\\n\' \'[{{"name":"orch","status":"listening",'
+            f'"transcript_path":"{transcript}"}},{{"name":"worker-open",'
+            f'"status":"listening","transcript_path":"{transcript}"}},'
+            f'{{"name":"worker-wait","status":"listening",'
+            f'"transcript_path":"{transcript}"}}]\'\n'
+            'elif [ "$1" = term ] && [ "$2" = orch ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":false,"prompt_empty":true}\'\n'
+            'elif [ "$1" = term ] && [ "$2" != inject ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":true,"prompt_empty":true}\'\n'
+            'elif [ "$1" = events ]; then\n'
+            '  printf \'%s\\n\' \'{"id":1,"type":"status"}\'\n'
+            'fi\n'
+        )
+        watch = load_watch()
+        self.run_cycles(watch, 0, 600, 1_200)
+        self.write_task(
+            'open.md', 'worker-open', 'orch', 'in progress', 'inspect failure')
+        os.utime(self.tasks / 'open.md', (1_700, 1_700))
+        watch.write_object(watch.wait_path(self.work, 'orch'), {
+            'agent': 'orch', 'target': 'worker-wait',
+            'reason': 'orchestrator handling',
+            'declared_at': 1_300, 'declared_at_utc': '2026-10-04T00:00:00+00:00',
+            'active': False, 'released_reason': 'message-delivered',
+        })
+        self.run_cycles(watch, 1_800)
+
+        state = self.watch_state()
+        self.assertTrue(state['worker-open']['orchestrator_handled'])
+        self.assertTrue(state['worker-wait']['orchestrator_handled'])
+        self.assertFalse(state['worker-open']['user_notified'])
+        self.assertFalse(state['worker-wait']['user_notified'])
+        self.assertFalse(self.herdr_log.exists())
+
+    def test_stopped_worker_counts_as_handled_after_orchestrator_notice(self):
+        transcript = self.fake_transcript()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'if [ "$1" = list ]; then\n'
+            f'  printf \'%s\\n\' \'[{{"name":"orch","status":"listening",'
+            f'"transcript_path":"{transcript}"}}]\'\n'
+            'elif [ "$1" = term ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":false,"prompt_empty":true}\'\n'
+            'elif [ "$1" = events ]; then\n'
+            '  printf \'%s\\n\' \'{"id":1,"type":"status"}\'\n'
+            'fi\n'
+        )
+        watch = load_watch()
+        state_file = watch.state_path(self.work, 'orch')
+        watch.write_object(state_file, {
+            'worker-open': {
+                'fingerprint': [10, 10, 1], 'last_progress_at': 0,
+                'nudged': True, 'nudged_at': 600, 'orchestrator_notified': True,
+                'orchestrator_notified_at': 1_200,
+                'orchestrator_handled': False,
+                'user_notified': False,
+            },
+        })
+
+        self.run_cycles(watch, 1_800)
+
+        state = json.loads(state_file.read_text())
+        self.assertNotIn('worker-open', state)
+        records = self.watch_records()
+        stopped = [record for record in records if record['agent'] == 'worker-open']
+        self.assertEqual(
+            stopped[-1]['decision'], 'orchestrator-handled-agent-stopped')
+
+    def test_failed_hcom_user_notification_retries_without_calling_herdr(self):
+        transcript = self.fake_transcript()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = list ]; then\n'
+            f'  printf \'%s\\n\' \'[{{"name":"orch","status":"listening",'
+            f'"transcript_path":"{transcript}"}}]\'\n'
+            'elif [ "$1" = term ] && [ "$2" != inject ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":true,"prompt_empty":true}\'\n'
+            'elif [ "$1" = events ]; then\n'
+            '  printf \'%s\\n\' \'{"id":1,"type":"status"}\'\n'
+            'elif [ "$1" = send ]; then\n'
+            '  printf "send failed\\n" >&2\n'
+            '  exit 8\n'
+            'fi\n'
+        )
+        watch = load_watch()
+        self.run_cycles(watch, 0, 600, 1_200, 1_260)
+
+        commands = self.hcom_log.read_text().splitlines()
+        sends = [command for command in commands if command.startswith('send ')]
+        self.assertEqual(len(sends), 2)
+        self.assertFalse(self.herdr_log.exists())
+        state = self.watch_state()
+        self.assertFalse(state['orch']['user_notified'])
 
     def test_real_event_shape_releases_and_persists_an_inactive_wait(self):
         hcom = Path(self.env['PATH'].split(':', 1)[0]) / 'hcom'
