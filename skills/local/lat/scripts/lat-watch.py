@@ -31,7 +31,6 @@ class Observation(NamedTuple):
     event_id: int
     wait_active: bool = False
     wait_released: bool = False
-    handled: bool = False
 
 
 class Action(NamedTuple):
@@ -39,12 +38,21 @@ class Action(NamedTuple):
     agent: str
 
 
+class Process(NamedTuple):
+    pid: int
+    ppid: int
+    starttime: int
+    state: str
+    command: tuple
+    environment: tuple
+
+
 def decide(previous, observation, now):
     """Return serializable state and requested actions for one observation."""
     fingerprint = [observation.transcript_size, observation.transcript_mtime_ns,
                    observation.event_id]
     progressed = previous is None or previous.get('fingerprint') != fingerprint
-    reset = progressed or observation.wait_released or observation.handled
+    reset = progressed or observation.wait_released
     if reset:
         state = {'fingerprint': fingerprint, 'last_progress_at': now, 'nudged': False}
     else:
@@ -121,24 +129,24 @@ def write_object(path, value):
             temp.unlink(missing_ok=True)
 
 
-def run_json(command):
+def run_command(command):
     result = subprocess.run(command, text=True, capture_output=True)
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
         raise ValueError(f'{command[0]} failed: {detail}')
+    return result.stdout
+
+
+def run_json(command):
     try:
-        return json.loads(result.stdout)
+        return json.loads(run_command(command))
     except json.JSONDecodeError as error:
         raise ValueError(f'{command[0]} returned invalid JSON') from error
 
 
 def run_json_lines(command):
-    result = subprocess.run(command, text=True, capture_output=True)
-    if result.returncode:
-        detail = result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
-        raise ValueError(f'{command[0]} failed: {detail}')
     try:
-        return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+        return [json.loads(line) for line in run_command(command).splitlines() if line.strip()]
     except json.JSONDecodeError as error:
         raise ValueError(f'{command[0]} returned invalid JSON Lines') from error
 
@@ -175,14 +183,87 @@ def list_hcom(orchestrator):
 
 
 def event_value(event, name, nested):
-    if name in event:
-        return event[name]
-    child = event.get(nested, {})
-    return child.get(name) if isinstance(child, dict) else None
+    data = event.get('data', {})
+    containers = [event, data]
+    for container in tuple(containers):
+        child = container.get(nested, {}) if isinstance(container, dict) else {}
+        if isinstance(child, dict):
+            containers.append(child)
+    for container in containers:
+        if isinstance(container, dict) and name in container:
+            return container[name]
+    return None
 
 
 def message_event(event):
-    return event.get('type') == 'message' or isinstance(event.get('message'), dict)
+    data = event.get('data', {})
+    return (event.get('type') == 'message' or isinstance(event.get('message'), dict)
+            or isinstance(data, dict) and isinstance(data.get('message'), dict))
+
+
+def read_processes(proc_root=Path('/proc')):
+    processes = []
+    for directory in proc_root.iterdir():
+        if not directory.name.isdigit():
+            continue
+        try:
+            _comm, separator, fields = (directory / 'stat').read_text().rpartition(') ')
+            if not separator:
+                continue
+            stat = fields.split()
+            command = tuple(
+                value.decode(errors='replace')
+                for value in (directory / 'cmdline').read_bytes().split(b'\0') if value
+            )
+            environment = tuple(
+                value.decode(errors='replace')
+                for value in (directory / 'environ').read_bytes().split(b'\0') if value
+            )
+            processes.append(Process(int(directory.name), int(stat[1]), int(stat[19]),
+                                     stat[0], command, environment))
+        except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, IndexError):
+            continue
+    return processes
+
+
+def process_ancestors(pid, parents):
+    ancestors = set()
+    while pid in parents and parents[pid] not in ancestors:
+        pid = parents[pid]
+        ancestors.add(pid)
+    return ancestors
+
+
+def background_process_running(agent, info, processes, current_pid=None):
+    """Detect a surviving command tied to the HCOM-bound client process."""
+    identity = info.get('launch_context', {}).get('pid_identity', '')
+    try:
+        client_starttime = int(identity.rsplit(':', 1)[1])
+    except (AttributeError, ValueError, IndexError):
+        return False
+    clients = {process.pid for process in processes
+               if process.starttime == client_starttime}
+    if not clients:
+        return False
+    parents = {process.pid: process.ppid for process in processes}
+    current_pid = os.getpid() if current_pid is None else current_pid
+    excluded = process_ancestors(current_pid, parents) | {current_pid}
+    for client in clients:
+        excluded |= process_ancestors(client, parents)
+    name_marker = f'HCOM_INSTANCE_NAME={agent}'
+    ignored_commands = {'codex', 'claude', 'hcom', 'lat-watch.py'}
+    for process in processes:
+        if process.pid in clients or process.pid in excluded or process.state == 'Z':
+            continue
+        descendants = process_ancestors(process.pid, parents)
+        same_agent = name_marker in process.environment
+        if not same_agent and not descendants.intersection(clients):
+            continue
+        executable = Path(process.command[0]).name if process.command else ''
+        if executable in ignored_commands:
+            continue
+        return True
+    return False
 
 
 def wait_release_reason(declaration, participant_events, target_events, decision_pending):
@@ -270,11 +351,12 @@ def observe(workspace, decisions, orchestrator, agent, info):
         workspace, decisions, orchestrator, declaration)
     active_wait = bool(declaration and declaration.get('active', True) and not released)
     ready = terminal.get('ready') is True
+    background_running = background_process_running(agent, info, read_processes())
     return Observation(
         agent=agent,
         status=info.get('status', 'missing'),
         prompt_empty=terminal.get('prompt_empty') is True,
-        command_running=not ready,
+        command_running=not ready or background_running,
         transcript_size=transcript_size,
         transcript_mtime_ns=transcript_mtime_ns,
         event_id=event_id,
