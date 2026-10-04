@@ -43,6 +43,7 @@ class Process(NamedTuple):
     ppid: int
     starttime: int
     state: str
+    session: int
     command: tuple
     environment: tuple
 
@@ -221,7 +222,7 @@ def read_processes(proc_root=Path('/proc')):
                 for value in (directory / 'environ').read_bytes().split(b'\0') if value
             )
             processes.append(Process(int(directory.name), int(stat[1]), int(stat[19]),
-                                     stat[0], command, environment))
+                                     stat[0], int(stat[3]), command, environment))
         except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, IndexError):
             continue
     return processes
@@ -233,6 +234,19 @@ def process_ancestors(pid, parents):
         pid = parents[pid]
         ancestors.add(pid)
     return ancestors
+
+
+def descendants_below(pid, parents, roots):
+    """Return (root, lineage below it), or None when unrelated."""
+    lineage = []
+    seen = set()
+    while pid in parents and pid not in seen:
+        if pid in roots:
+            return pid, lineage
+        seen.add(pid)
+        lineage.append(pid)
+        pid = parents[pid]
+    return (pid, lineage) if pid in roots else None
 
 
 def background_process_running(agent, info, processes, current_pid=None):
@@ -253,29 +267,26 @@ def background_process_running(agent, info, processes, current_pid=None):
     for client in clients:
         excluded |= process_ancestors(client, parents)
     name_marker = f'HCOM_INSTANCE_NAME={agent}'
-    ignored_commands = {'codex', 'claude', 'hcom', 'lat-watch.py'}
-    task_shells = {'bash', 'dash', 'fish', 'sh', 'zsh'}
-    # Long-lived client helpers are not evidence that a user command is running.
-    resident_helpers = {'node', 'python', 'python3'}
+    client_sessions = {process_by_pid[pid].session for pid in clients}
     for process in processes:
         if process.pid in clients or process.pid in excluded or process.state == 'Z':
             continue
-        ancestors = process_ancestors(process.pid, parents)
+        provenance = descendants_below(process.pid, parents, clients)
         same_agent = name_marker in process.environment
-        belongs_to_client = bool(ancestors.intersection(clients))
+        belongs_to_client = provenance is not None
         if not same_agent and not belongs_to_client:
             continue
-        executable = Path(process.command[0]).name if process.command else ''
-        if executable in ignored_commands:
-            continue
         if belongs_to_client:
-            lineage = {process.pid} | ancestors
-            if any(Path(related.command[0]).name in task_shells
-                   for pid in lineage
-                   if (related := process_by_pid.get(pid)) and related.command):
+            client, lineage = provenance
+            # Tool commands run in a separate session. Resident MCP/language-server
+            # helpers inherit the client session even when the client was shell-launched.
+            if any(process_by_pid[pid].session != process_by_pid[client].session
+                   for pid in lineage):
                 return True
             continue
-        if executable not in resident_helpers:
+        # A detached tool may be reparented after its shell exits; its HCOM marker
+        # and separate session retain provenance without guessing from executable names.
+        if process.session not in client_sessions:
             return True
     return False
 

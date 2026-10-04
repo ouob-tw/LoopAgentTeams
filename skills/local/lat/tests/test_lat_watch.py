@@ -114,26 +114,34 @@ class WatchDecisionTests(unittest.TestCase):
     def test_background_process_from_hcom_identity_blocks_idle_nudge(self):
         watch = load_watch()
         info = {'launch_context': {'pid_identity': 'linux:boot-id:100'}}
-        client = watch.Process(10, 1, 100, 'S', ('codex',), ('HCOM_INSTANCE_NAME=worker',))
-        shell = watch.Process(11, 10, 101, 'S', ('bash', '-lc', 'uv run tests'),
+        launcher = watch.Process(5, 1, 90, 'S', 5, ('bash',), ())
+        client = watch.Process(10, 5, 100, 'S', 5, ('codex',),
+                               ('HCOM_INSTANCE_NAME=worker',))
+        shell = watch.Process(11, 10, 101, 'S', 11, ('bash', '-lc', 'uv run tests'),
                               ('HCOM_INSTANCE_NAME=worker',))
-        command = watch.Process(12, 11, 102, 'S', ('uv', 'run', 'tests'),
+        command = watch.Process(12, 11, 102, 'S', 11, ('uv', 'run', 'tests'),
                                 ('HCOM_INSTANCE_NAME=worker',))
-        resident_helper = watch.Process(13, 10, 103, 'S', ('node', 'server.js'),
+        resident_helper = watch.Process(13, 10, 103, 'S', 5, ('node', 'server.js'),
                                         ('HCOM_INSTANCE_NAME=worker',))
-        reparented_command = watch.Process(14, 1, 104, 'S', ('uv', 'run', 'tests'),
+        reparented_command = watch.Process(14, 1, 104, 'S', 14,
+                                           ('python3', 'validate.py'),
                                            ('HCOM_INSTANCE_NAME=worker',))
-        reparented_helper = watch.Process(15, 1, 105, 'S', ('python3', 'server.py'),
+        reparented_helper = watch.Process(15, 1, 105, 'S', 5, ('node', 'server.js'),
                                           ('HCOM_INSTANCE_NAME=worker',))
+        reparented_node_command = watch.Process(16, 1, 106, 'S', 16,
+                                                ('node', 'test.js'),
+                                                ('HCOM_INSTANCE_NAME=worker',))
 
         self.assertTrue(watch.background_process_running(
-            'worker', info, [client, shell, command, resident_helper], current_pid=99))
+            'worker', info, [launcher, client, shell, command, resident_helper], current_pid=99))
         self.assertFalse(watch.background_process_running(
-            'worker', info, [client, resident_helper], current_pid=99))
+            'worker', info, [launcher, client, resident_helper], current_pid=99))
         self.assertTrue(watch.background_process_running(
             'worker', info, [client, reparented_command], current_pid=99))
         self.assertFalse(watch.background_process_running(
             'worker', info, [client, reparented_helper], current_pid=99))
+        self.assertTrue(watch.background_process_running(
+            'worker', info, [client, reparented_node_command], current_pid=99))
 
     def test_process_reader_decodes_proc_and_skips_disappeared_or_denied_entries(self):
         watch = load_watch()
@@ -159,7 +167,7 @@ class WatchDecisionTests(unittest.TestCase):
                 processes = watch.read_processes(proc)
 
         self.assertEqual(processes, [watch.Process(
-            123, 7, 456, 'S', ('uv', 'run', '\ufffd'),
+            123, 7, 456, 'S', 0, ('uv', 'run', '\ufffd'),
             ('HCOM_INSTANCE_NAME=worker',),
         )])
 
