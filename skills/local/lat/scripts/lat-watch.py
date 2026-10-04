@@ -1,0 +1,423 @@
+#!/usr/bin/env python3
+"""Watch explicitly registered LAT work for stalled agents (stdlib only)."""
+import argparse
+from datetime import datetime, timezone
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import time
+from typing import NamedTuple
+
+
+IDLE_SECONDS = 10 * 60
+CHECK_SECONDS = 60
+NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
+         'decisions. If nothing remains, declare exactly what you are waiting for '
+         'with lat-watch wait.')
+NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
+
+
+class Observation(NamedTuple):
+    agent: str
+    status: str
+    prompt_empty: bool
+    command_running: bool
+    transcript_size: int
+    transcript_mtime_ns: int
+    event_id: int
+    wait_active: bool = False
+    wait_released: bool = False
+    handled: bool = False
+
+
+class Action(NamedTuple):
+    kind: str
+    agent: str
+
+
+def decide(previous, observation, now):
+    """Return serializable state and requested actions for one observation."""
+    fingerprint = [observation.transcript_size, observation.transcript_mtime_ns,
+                   observation.event_id]
+    progressed = previous is None or previous.get('fingerprint') != fingerprint
+    reset = progressed or observation.wait_released or observation.handled
+    if reset:
+        state = {'fingerprint': fingerprint, 'last_progress_at': now, 'nudged': False}
+    else:
+        state = dict(previous)
+    actions = ()
+    stalled = now - state['last_progress_at'] >= IDLE_SECONDS
+    if (stalled and not observation.wait_active and not state['nudged']
+            and observation.status == 'listening'
+            and observation.prompt_empty and not observation.command_running):
+        actions = (Action('nudge', observation.agent),)
+        state['nudged'] = True
+    if actions:
+        state['decision'] = 'nudge'
+    elif observation.wait_active:
+        state['decision'] = 'valid-wait'
+    elif observation.command_running:
+        state['decision'] = 'command-running'
+    elif not observation.prompt_empty:
+        state['decision'] = 'prompt-not-empty'
+    elif observation.status != 'listening':
+        state['decision'] = 'not-listening'
+    elif reset:
+        state['decision'] = 'progress'
+    elif state['nudged']:
+        state['decision'] = 'already-nudged'
+    else:
+        state['decision'] = 'within-idle-threshold'
+    return state, actions
+
+
+def valid_name(value):
+    if not isinstance(value, str) or not NAME.fullmatch(value):
+        raise ValueError(f'Invalid HCOM name: {value!r}')
+    return value
+
+
+def watch_dir(workspace):
+    return workspace / '.lat/watch'
+
+
+def wait_path(workspace, agent):
+    return watch_dir(workspace) / 'waits' / f'{valid_name(agent)}.json'
+
+
+def state_path(workspace, orchestrator):
+    return watch_dir(workspace) / valid_name(orchestrator) / 'state.json'
+
+
+def read_object(path, default=None):
+    try:
+        value = json.loads(path.read_text())
+    except FileNotFoundError:
+        return default
+    if not isinstance(value, dict):
+        raise ValueError(f'Expected a JSON object: {path}')
+    return value
+
+
+def write_object(path, value):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    original = path.read_bytes() if path.exists() else None
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
+        temp = Path(stream.name)
+        try:
+            json.dump(value, stream, indent=2, ensure_ascii=False)
+            stream.write('\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+            current = path.read_bytes() if path.exists() else None
+            if current != original:
+                raise ValueError(f'Concurrent change detected: {path}')
+            temp.replace(path)
+        finally:
+            temp.unlink(missing_ok=True)
+
+
+def run_json(command):
+    result = subprocess.run(command, text=True, capture_output=True)
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
+        raise ValueError(f'{command[0]} failed: {detail}')
+    try:
+        return json.loads(result.stdout)
+    except json.JSONDecodeError as error:
+        raise ValueError(f'{command[0]} returned invalid JSON') from error
+
+
+def run_json_lines(command):
+    result = subprocess.run(command, text=True, capture_output=True)
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
+        raise ValueError(f'{command[0]} failed: {detail}')
+    try:
+        return [json.loads(line) for line in result.stdout.splitlines() if line.strip()]
+    except json.JSONDecodeError as error:
+        raise ValueError(f'{command[0]} returned invalid JSON Lines') from error
+
+
+def parse_task(path):
+    fields = {}
+    for line in path.read_text().splitlines():
+        match = re.fullmatch(r'-\s+(agent|orchestrator|status)：\s*(.*)', line)
+        if match:
+            fields[match.group(1)] = match.group(2).strip()
+    if not all(name in fields for name in ('agent', 'orchestrator', 'status')):
+        return None
+    fields['agent'] = fields['agent'].split(maxsplit=1)[0]
+    return fields
+
+
+def monitored_agents(tasks, orchestrator):
+    agents = [valid_name(orchestrator)]
+    if not tasks.is_dir():
+        raise ValueError(f'Missing task-card directory: {tasks}')
+    for path in sorted(tasks.glob('*.md')):
+        card = parse_task(path)
+        if (card and card['orchestrator'] == orchestrator
+                and card['status'] != 'merged' and card['agent'] not in agents):
+            agents.append(valid_name(card['agent']))
+    return agents
+
+
+def list_hcom(orchestrator):
+    value = run_json(['hcom', 'list', '--json', '--name', orchestrator])
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ValueError('hcom list returned an invalid agent list')
+    return {item.get('name'): item for item in value if isinstance(item.get('name'), str)}
+
+
+def event_value(event, name, nested):
+    if name in event:
+        return event[name]
+    child = event.get(nested, {})
+    return child.get(name) if isinstance(child, dict) else None
+
+
+def message_event(event):
+    return event.get('type') == 'message' or isinstance(event.get('message'), dict)
+
+
+def wait_release_reason(declaration, participant_events, target_events, decision_pending):
+    """Explain why a wait is no longer valid, or return None."""
+    agent = declaration['agent']
+    target = declaration['target']
+    for event in participant_events:
+        delivered = (event_value(event, 'msg_delivered_to', 'message')
+                     or event_value(event, 'delivered_to', 'message') or [])
+        if message_event(event) and agent in delivered:
+            return 'message-delivered'
+    for event in target_events:
+        sender = (event_value(event, 'msg_from', 'message')
+                  or event_value(event, 'from', 'message'))
+        if message_event(event) and sender == target:
+            return 'target-replied'
+    if decision_pending is False:
+        return 'decision-resolved'
+    return None
+
+
+def pending_decision(decisions, target):
+    matches = [path for path in decisions.glob(f'{target}*') if path.is_file()]
+    if not matches:
+        return None
+    for path in matches:
+        match = re.search(r'^- status:\s*(\S+)', path.read_text(), re.MULTILINE)
+        if match and match.group(1) == 'pending':
+            return True
+    return False
+
+
+def latest_event_id(events):
+    ids = []
+    for event in events:
+        value = event.get('id')
+        if isinstance(value, int):
+            ids.append(value)
+        elif isinstance(value, str) and value.isdigit():
+            ids.append(int(value))
+    return max(ids, default=0)
+
+
+def hcom_events(orchestrator, *filters):
+    return run_json_lines(['hcom', 'events', *filters, '--full', '--name', orchestrator])
+
+
+def release_wait_if_needed(workspace, decisions, orchestrator, declaration):
+    if not declaration or not declaration.get('active', True):
+        return None
+    after = declaration['declared_at_utc']
+    agent = declaration['agent']
+    target = declaration['target']
+    participant = hcom_events(orchestrator, '--after', after, '--participant', agent)
+    decision = pending_decision(decisions, target)
+    target_events = [] if decision is not None else hcom_events(
+        orchestrator, '--after', after, '--from', target)
+    reason = wait_release_reason(declaration, participant, target_events, decision)
+    if reason:
+        updated = dict(declaration, active=False, released_reason=reason,
+                       released_at_utc=datetime.now(timezone.utc).isoformat())
+        write_object(wait_path(workspace, agent), updated)
+    return reason
+
+
+def observe(workspace, decisions, orchestrator, agent, info):
+    terminal = run_json(['hcom', 'term', agent, '--json', '--name', orchestrator])
+    if not isinstance(terminal, dict):
+        raise ValueError(f'hcom term returned invalid data for {agent}')
+    transcript_size = 0
+    transcript_mtime_ns = 0
+    transcript = info.get('transcript_path')
+    if isinstance(transcript, str) and transcript:
+        try:
+            stat = Path(transcript).stat()
+            transcript_size = stat.st_size
+            transcript_mtime_ns = stat.st_mtime_ns
+        except FileNotFoundError:
+            pass
+    own_events = hcom_events(orchestrator, '--agent', agent, '--last', '1')
+    participant_events = hcom_events(orchestrator, '--participant', agent, '--last', '1')
+    event_id = max(latest_event_id(own_events), latest_event_id(participant_events))
+    declaration = read_object(wait_path(workspace, agent))
+    released = release_wait_if_needed(
+        workspace, decisions, orchestrator, declaration)
+    active_wait = bool(declaration and declaration.get('active', True) and not released)
+    ready = terminal.get('ready') is True
+    return Observation(
+        agent=agent,
+        status=info.get('status', 'missing'),
+        prompt_empty=terminal.get('prompt_empty') is True,
+        command_running=not ready,
+        transcript_size=transcript_size,
+        transcript_mtime_ns=transcript_mtime_ns,
+        event_id=event_id,
+        wait_active=active_wait,
+        wait_released=released is not None,
+    )
+
+
+def append_log(path, record):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with path.open('a') as stream:
+        stream.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
+        stream.flush()
+        os.fsync(stream.fileno())
+
+
+def perform(action, orchestrator):
+    if action.kind != 'nudge':
+        raise ValueError(f'Unsupported watch action: {action.kind}')
+    result = subprocess.run(
+        ['hcom', 'term', 'inject', action.agent, NUDGE, '--enter', '--name', orchestrator],
+        text=True, capture_output=True,
+    )
+    if result.returncode:
+        detail = result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
+        raise ValueError(f'hcom inject failed for {action.agent}: {detail}')
+
+
+def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
+    """Observe every owned agent once, execute actions, and persist state/logs."""
+    now = time.time() if now is None else now
+    orchestrator = valid_name(orchestrator)
+    agents = monitored_agents(tasks, orchestrator)
+    hcom = list_hcom(orchestrator)
+    path = state_path(workspace, orchestrator)
+    states = read_object(path, {})
+    log = path.with_name('watch.jsonl')
+    for agent in agents:
+        if agent not in hcom:
+            append_log(log, {
+                'at': now, 'agent': agent, 'decision': 'not-observable',
+                'actions': [], 'error': 'agent missing from hcom list',
+            })
+            continue
+        try:
+            observation = observe(workspace, decisions, orchestrator, agent, hcom[agent])
+            state, actions = decide(states.get(agent), observation, now)
+            results = []
+            for action in actions:
+                try:
+                    perform(action, orchestrator)
+                    results.append({'kind': action.kind, 'status': 'done'})
+                except ValueError as error:
+                    state['nudged'] = False
+                    results.append({'kind': action.kind, 'status': 'failed',
+                                    'error': str(error)})
+            states[agent] = state
+            append_log(log, {
+                'at': now, 'agent': agent, 'observation': observation._asdict(),
+                'state': state, 'actions': [action._asdict() for action in actions],
+                'action_results': results,
+            })
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            append_log(log, {
+                'at': now, 'agent': agent, 'decision': 'observation-failed',
+                'actions': [], 'error': str(error),
+            })
+    write_object(path, states)
+
+
+def run_forever(args):
+    workspace = args.workspace.resolve(strict=True)
+    tasks = args.tasks.resolve(strict=True)
+    decisions = args.decisions.resolve(strict=True)
+    while True:
+        run_cycle(workspace, tasks, decisions, args.orchestrator)
+        time.sleep(CHECK_SECONDS)
+
+
+def declare_wait(args):
+    workspace = args.workspace.resolve(strict=True)
+    declaration = {
+        'agent': valid_name(args.agent),
+        'target': valid_name(args.target),
+        'reason': args.reason.strip(),
+        'declared_at': time.time(),
+        'declared_at_utc': datetime.now(timezone.utc).isoformat(),
+        'active': True,
+    }
+    if not declaration['reason']:
+        raise ValueError('--reason must not be empty')
+    write_object(wait_path(workspace, args.agent), declaration)
+    print(json.dumps(declaration, ensure_ascii=False))
+
+
+def show_status(args):
+    workspace = args.workspace.resolve(strict=True)
+    agents = monitored_agents(args.tasks.resolve(strict=True), args.orchestrator)
+    hcom = list_hcom(args.orchestrator)
+    states = read_object(state_path(workspace, args.orchestrator), {})
+    target_rows = []
+    for agent in agents:
+        info = hcom.get(agent, {})
+        row = {'agent': agent, 'hcom_status': info.get('status', 'missing'),
+               'state': states.get(agent)}
+        declaration = read_object(wait_path(workspace, agent))
+        if declaration is not None:
+            row['wait'] = declaration
+        target_rows.append(row)
+    print(json.dumps({'orchestrator': args.orchestrator, 'targets': target_rows},
+                     indent=2, ensure_ascii=False))
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    commands = parser.add_subparsers(dest='command', required=True)
+    waiting = commands.add_parser('wait', help='Declare an agent wait condition')
+    waiting.add_argument('--workspace', type=Path, required=True)
+    waiting.add_argument('--agent', required=True)
+    waiting.add_argument('--for', dest='target', required=True)
+    waiting.add_argument('--reason', required=True)
+    status = commands.add_parser('status', help='List watched agents and current state')
+    status.add_argument('--workspace', type=Path, required=True)
+    status.add_argument('--orchestrator', required=True)
+    status.add_argument('--tasks', type=Path, required=True)
+    run = commands.add_parser('run', help='Run one watcher loop per orchestrator')
+    run.add_argument('--workspace', type=Path, required=True)
+    run.add_argument('--orchestrator', required=True)
+    run.add_argument('--tasks', type=Path, required=True)
+    run.add_argument('--decisions', type=Path, required=True)
+    args = parser.parse_args()
+    try:
+        if args.command == 'wait':
+            declare_wait(args)
+        elif args.command == 'status':
+            show_status(args)
+        else:
+            run_forever(args)
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        print(f'LAT watch error: {error}', file=sys.stderr)
+        return 1
+    return 0
+
+
+if __name__ == '__main__':
+    sys.exit(main())

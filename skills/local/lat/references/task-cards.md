@@ -10,6 +10,7 @@
 接續：無（重派時填上一張任務卡路徑）
 
 - agent：
+- orchestrator：
 - model：
 - branch：
 - worktree：
