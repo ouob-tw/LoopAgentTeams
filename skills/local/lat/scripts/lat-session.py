@@ -183,21 +183,34 @@ def write_pid(path, pid):
             temp.unlink(missing_ok=True)
 
 
-def ensure_watcher(record):
+def _ensure_watcher_locked(record):
     pid_path, lock_path, log_path = watcher_paths(record)
+    if watcher_running(record):
+        return read_pid(pid_path)
+    pid_path.unlink(missing_ok=True)
+    with log_path.open('ab') as output:
+        process = subprocess.Popen(
+            watcher_command(record), cwd=record['workspace'], stdin=subprocess.DEVNULL,
+            stdout=output, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
+        )
+    write_pid(pid_path, process.pid)
+    return process.pid
+
+
+def ensure_watcher(record, record_path):
+    _, lock_path, _ = watcher_paths(record)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if watcher_running(record):
-            return read_pid(pid_path)
-        pid_path.unlink(missing_ok=True)
-        with log_path.open('ab') as output:
-            process = subprocess.Popen(
-                watcher_command(record), cwd=record['workspace'], stdin=subprocess.DEVNULL,
-                stdout=output, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
-            )
-        write_pid(pid_path, process.pid)
-        return process.pid
+        latest = read_json(record_path)
+        expected = dict(client=record['client'], session_id=record['session_id'],
+                        role='orchestrator', workspace=record['workspace'], status='active')
+        if any(key in latest and latest[key] != value for key, value in expected.items()):
+            return None
+        if any(key not in latest for key in expected):
+            raise ValueError('Incomplete controller identity')
+        dependencies(latest)
+        return _ensure_watcher_locked(latest)
 
 
 def process_group_exists(pgid):
@@ -208,33 +221,30 @@ def process_group_exists(pgid):
         return False
 
 
-def stop_watcher(record):
-    pid_path, lock_path, _ = watcher_paths(record)
-    lock_path.parent.mkdir(parents=True, exist_ok=True)
-    with lock_path.open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        pid = read_pid(pid_path)
-        if pid is None or not watcher_running(record, pid):
-            pid_path.unlink(missing_ok=True)
-            return
-        try:
-            pgid = os.getpgid(pid)
-        except ProcessLookupError:
-            pid_path.unlink(missing_ok=True)
-            return
-        if pgid != pid:
-            raise ValueError(f'Watcher process group does not match pid {pid}; not stopping it')
-        try:
-            os.killpg(pid, signal.SIGTERM)
-        except ProcessLookupError:
-            pid_path.unlink(missing_ok=True)
-            return
-        deadline = time.monotonic() + 2
-        while process_group_exists(pid) and time.monotonic() < deadline:
-            time.sleep(0.05)
-        if process_group_exists(pid):
-            os.killpg(pid, signal.SIGKILL)
+def _stop_watcher_locked(record):
+    pid_path, _, _ = watcher_paths(record)
+    pid = read_pid(pid_path)
+    if pid is None or not watcher_running(record, pid):
         pid_path.unlink(missing_ok=True)
+        return
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        pid_path.unlink(missing_ok=True)
+        return
+    if pgid != pid:
+        raise ValueError(f'Watcher process group does not match pid {pid}; not stopping it')
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pid_path.unlink(missing_ok=True)
+        return
+    deadline = time.monotonic() + 2
+    while process_group_exists(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if process_group_exists(pid):
+        os.killpg(pid, signal.SIGKILL)
+    pid_path.unlink(missing_ok=True)
 
 
 def activate(args):
@@ -287,7 +297,8 @@ def activate(args):
         print(f'問題檔：{binding["questions_path"]}')
     else:
         print('面板未啟用，略過綁定')
-    ensure_watcher(record)
+    if ensure_watcher(record, path) is None:
+        raise ValueError('Session was deactivated while starting its watcher')
 
 
 def pointer(path):
@@ -305,16 +316,21 @@ def deactivate(args):
     workspace = args.workspace.resolve(strict=True)
     sid = session_id(args.session_id or os.environ.get(SESSION_ENV[args.client]))
     path = workspace / '.lat/sessions' / f'{sid}.json'
-    original = current_bytes(path)
-    record = read_json(path)
-    expected = dict(client=args.client, session_id=sid, role='orchestrator',
-                    workspace=str(workspace))
-    if any(record.get(key) != value for key, value in expected.items()):
-        raise ValueError('Controller identity does not match; record unchanged')
-    stop_watcher(record)
-    removed = panel_module().unbind_controller(sid)
-    record['status'] = args.status
-    write_json(path, record, original)
+    lock_record = dict(workspace=str(workspace), session_id=sid)
+    _, lock_path, _ = watcher_paths(lock_record)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        original = current_bytes(path)
+        record = read_json(path)
+        expected = dict(client=args.client, session_id=sid, role='orchestrator',
+                        workspace=str(workspace))
+        if any(record.get(key) != value for key, value in expected.items()):
+            raise ValueError('Controller identity does not match; record unchanged')
+        _stop_watcher_locked(record)
+        removed = panel_module().unbind_controller(sid)
+        record['status'] = args.status
+        write_json(path, record, original)
     print(path)
     print(json.dumps({'removed': removed}))
 
@@ -452,7 +468,8 @@ def hook(client):
         if any(key not in record for key in expected):
             raise ValueError('Incomplete controller identity')
         dependencies(record)
-        ensure_watcher(record)
+        if ensure_watcher(record, path) is None:
+            return
         context(pointer(path))
     except (OSError, ValueError, TypeError, KeyError):
         context(f'LAT recovery error: {path}. Record or recovery files are missing/corrupt. '

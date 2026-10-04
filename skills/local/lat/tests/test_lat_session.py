@@ -8,7 +8,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import time
+from types import SimpleNamespace
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-session.py'
@@ -94,6 +96,15 @@ class SessionTests(unittest.TestCase):
             except (FileNotFoundError, ProcessLookupError, ValueError):
                 pass
 
+    def terminate_process(self, process):
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(1)
+
     def hook(self, **overrides):
         payload = dict(hook_event_name='SessionStart', source='compact',
                        cwd=str(self.work), session_id=SESSION)
@@ -150,6 +161,24 @@ class SessionTests(unittest.TestCase):
         self.assertIn(remedy, result.stderr)
         self.assertFalse(self.record.exists())
         self.assertFalse((self.root / 'plugin-config/bindings.json').exists())
+
+    def test_activate_rejects_invalid_watcher_identity_and_task_directory(self):
+        invalid_name = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--tasks', self.tasks,
+            '--hcom-name', 'not/a-name', watch_args=False,
+        )
+        missing_tasks = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--tasks', self.work / 'missing-tasks',
+            '--hcom-name', 'orch', watch_args=False,
+        )
+
+        self.assertNotEqual(invalid_name.returncode, 0)
+        self.assertIn('valid explicit --hcom-name', invalid_name.stderr)
+        self.assertNotEqual(missing_tasks.returncode, 0)
+        self.assertIn('missing-tasks', missing_tasks.stderr)
+        self.assertFalse(self.record.exists())
 
     def test_activate_without_enabled_panel_keeps_working_and_explains_skip(self):
         result = self.cli(
@@ -285,6 +314,85 @@ class SessionTests(unittest.TestCase):
         self.wait_for(lambda: not self.process_exists(pid))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
 
+    def test_stale_pid_for_unrelated_process_is_replaced_without_signalling_it(self):
+        unrelated = subprocess.Popen(['sleep', '30'], start_new_session=True)
+        self.addCleanup(self.terminate_process, unrelated)
+        pid_path = self.work / '.lat/watch' / f'{SESSION}.pid'
+        pid_path.parent.mkdir(parents=True)
+        pid_path.write_text(f'{unrelated.pid}\n')
+
+        self.activate()
+
+        self.assertNotEqual(self.watcher_pid(), unrelated.pid)
+        self.assertIsNone(unrelated.poll())
+
+    def test_deactivate_refuses_matching_process_that_is_not_group_leader(self):
+        command = [
+            str(self.binary / 'uv'), 'run', '--no-project', 'python',
+            str(SKILL / 'scripts/lat-watch.py'), 'run', '--workspace', str(self.work),
+            '--orchestrator', 'orch', '--tasks', str(self.tasks),
+            '--decisions', str(self.decisions),
+        ]
+        env = dict(os.environ, FAKE_UV_LOG=str(self.fake_uv_log))
+        process = subprocess.Popen(command, cwd=self.work, env=env)
+        self.addCleanup(self.terminate_process, process)
+        self.wait_for(lambda: self.fake_uv_log.exists())
+        record = dict(
+            client='codex', session_id=SESSION, role='orchestrator',
+            workspace=str(self.work), status='active', skill_dir=str(SKILL),
+            progress_path=str(self.progress), decisions_path=str(self.decisions),
+            tasks_path=str(self.tasks), hcom_name='orch',
+        )
+        self.record.parent.mkdir(parents=True)
+        self.record.write_text(json.dumps(record))
+        pid_path = self.work / '.lat/watch' / f'{SESSION}.pid'
+        pid_path.parent.mkdir(parents=True)
+        pid_path.write_text(f'{process.pid}\n')
+
+        result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('process group does not match', result.stderr)
+        self.assertIsNone(process.poll())
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+        pid_path.unlink()
+
+    def test_deactivate_escalates_when_watcher_ignores_term(self):
+        uv = self.binary / 'uv'
+        uv.write_text(
+            '#!/bin/sh\n'
+            'printf \'%s\\n\' "$$ $*" >> "$FAKE_UV_LOG"\n'
+            'trap \'printf TERM\\n >> "$FAKE_TERM_LOG"\' TERM\n'
+            'while :; do sleep 0.05; done\n'
+        )
+        term_log = self.root / 'term.log'
+        activated = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions,
+            extra_env={'FAKE_TERM_LOG': str(term_log)},
+        )
+        self.assertEqual(activated.returncode, 0, activated.stderr)
+        pid = self.watcher_pid()
+
+        stopped = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        self.wait_for(lambda: not self.process_exists(pid))
+        self.assertTrue(term_log.exists())
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+
+    def test_zombie_pid_is_not_considered_a_running_watcher(self):
+        zombie = subprocess.Popen(['/bin/sh', '-c', 'exit 0'])
+        self.addCleanup(self.terminate_process, zombie)
+        stat_path = Path(f'/proc/{zombie.pid}/stat')
+        self.wait_for(lambda: stat_path.exists() and
+                      stat_path.read_text()[stat_path.read_text().rfind(')') + 2:].startswith('Z '))
+        spec = importlib.util.spec_from_file_location('lat_session_zombie', SCRIPT)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+
+        self.assertIsNone(helper.process_command(zombie.pid))
+
     def test_hook_restarts_a_dead_active_watcher_without_extra_output(self):
         self.activate()
         old_pid = self.watcher_pid()
@@ -299,6 +407,56 @@ class SessionTests(unittest.TestCase):
         new_pid = self.watcher_pid()
         self.assertNotEqual(new_pid, old_pid)
         self.wait_for(lambda: len(self.fake_uv_log.read_text().splitlines()) == 2)
+
+    def test_deactivate_serializes_status_change_against_waiting_hook(self):
+        self.activate()
+        spec = importlib.util.spec_from_file_location('lat_session_race', SCRIPT)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        real_stop = helper._stop_watcher_locked
+        watcher_stopped = threading.Event()
+        allow_status_write = threading.Event()
+        errors = []
+
+        def paused_stop(record):
+            real_stop(record)
+            watcher_stopped.set()
+            if not allow_status_write.wait(3):
+                raise AssertionError('test did not release deactivate')
+
+        def deactivate():
+            try:
+                args = argparse.Namespace(
+                    workspace=self.work, client='codex', session_id=SESSION,
+                    status='completed',
+                )
+                with patch('builtins.print'):
+                    helper.deactivate(args)
+            except BaseException as error:
+                errors.append(error)
+
+        hook_results = []
+        with patch.object(helper, '_stop_watcher_locked', side_effect=paused_stop), \
+                patch.object(helper, 'panel_module', return_value=SimpleNamespace(
+                    unbind_controller=lambda session_id: 0,
+                )):
+            deactivate_thread = threading.Thread(target=deactivate)
+            deactivate_thread.start()
+            self.assertTrue(watcher_stopped.wait(3))
+            hook_thread = threading.Thread(target=lambda: hook_results.append(self.hook()))
+            hook_thread.start()
+            time.sleep(0.1)
+            self.assertTrue(hook_thread.is_alive())
+            allow_status_write.set()
+            deactivate_thread.join(3)
+            hook_thread.join(3)
+
+        self.assertFalse(deactivate_thread.is_alive())
+        self.assertFalse(hook_thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'completed')
+        self.assert_silent(hook_results[0])
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
 
     def test_concurrent_sessions_stop_only_their_own_watchers(self):
         self.activate()
