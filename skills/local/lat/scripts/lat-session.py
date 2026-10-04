@@ -37,16 +37,14 @@ def panel_module():
     return module
 
 
-def activate_command(args, workspace):
+def activate_command(client, workspace, progress, decisions, tasks, hcom_name):
     command = [
         'uv', 'run', '--no-project', 'python', str(Path(__file__).resolve()),
-        'activate', '--client', args.client, '--workspace', str(workspace),
-        '--progress', str(args.progress.resolve()),
-        '--decisions', str(args.decisions.resolve()),
-        '--tasks', str(args.tasks.resolve()),
+        'activate', '--client', client, '--workspace', str(workspace),
+        '--progress', str(progress), '--decisions', str(decisions), '--tasks', str(tasks),
     ]
-    if args.hcom_name:
-        command += ['--hcom-name', args.hcom_name]
+    if hcom_name:
+        command += ['--hcom-name', hcom_name]
     else:
         command += ['--hcom-name', '<主控-HCOM-名稱>']
     return shlex.join(command)
@@ -106,10 +104,16 @@ def write_json(path, value, expected):
             temp.unlink(missing_ok=True)
 
 
-def dependencies(record):
+def legacy_record(record):
+    return 'tasks_path' not in record and 'hcom_name' not in record
+
+
+def dependencies(record, *, require_watcher=True):
     skill = Path(record['skill_dir'])
-    files = [skill / 'SKILL.md', skill / 'scripts/lat-watch.py', skill / 'references/agents.md',
+    files = [skill / 'SKILL.md', skill / 'references/agents.md',
              skill / 'references/task-cards.md', Path(record['progress_path'])]
+    if require_watcher:
+        files.append(skill / 'scripts/lat-watch.py')
     decisions = Path(record['decisions_path'])
     for path in [*files, decisions]:
         if not path.is_absolute():
@@ -119,11 +123,19 @@ def dependencies(record):
             raise ValueError(f'Missing recovery file: {path}')
     if not decisions.is_dir():
         raise ValueError(f'Missing decisions directory: {decisions}')
-    tasks = Path(record['tasks_path'])
-    if not tasks.is_absolute() or not tasks.is_dir():
-        raise ValueError(f'Missing task-card directory: {tasks}')
-    if not HCOM_NAME.fullmatch(record['hcom_name']):
-        raise ValueError('A valid explicit --hcom-name is required')
+    if require_watcher:
+        tasks = Path(record['tasks_path'])
+        if not tasks.is_absolute() or not tasks.is_dir():
+            raise ValueError(f'Missing task-card directory: {tasks}')
+        if not HCOM_NAME.fullmatch(record['hcom_name']):
+            raise ValueError('A valid explicit --hcom-name is required')
+
+
+def legacy_upgrade_command(record):
+    return activate_command(
+        record['client'], record['workspace'], record['progress_path'],
+        record['decisions_path'], '<task-card-directory>', '<controller-HCOM-name>',
+    )
 
 
 def watcher_paths(record):
@@ -274,11 +286,12 @@ def activate(args):
     if workspace_root(workspace) != workspace:
         raise ValueError('--workspace must be the Git worktree root')
     sid = session_id(os.environ.get(SESSION_ENV[args.client]))
+    command = activate_command(
+        args.client, workspace, args.progress.resolve(), args.decisions.resolve(),
+        args.tasks.resolve(), args.hcom_name,
+    )
     if not args.hcom_name or not HCOM_NAME.fullmatch(args.hcom_name):
-        raise ValueError(
-            'A valid explicit --hcom-name is required; rerun: '
-            f'{activate_command(args, workspace)}'
-        )
+        raise ValueError(f'A valid explicit --hcom-name is required; rerun: {command}')
     record = dict(client=args.client, session_id=sid, role='orchestrator',
                   workspace=str(workspace), status='active', skill_dir=str(SKILL_DIR),
                   progress_path=str(args.progress.resolve(strict=True)),
@@ -287,14 +300,24 @@ def activate(args):
     dependencies(record)
     path = workspace / '.lat/sessions' / f'{sid}.json'
     original = current_bytes(path)
-    if path.exists() and read_json(path) != record:
-        raise ValueError('Existing session record differs; do not reset or rebind it')
+    if path.exists():
+        existing = read_json(path)
+        if legacy_record(existing):
+            expected = {key: value for key, value in record.items()
+                        if key not in ('tasks_path', 'hcom_name')}
+            if any(existing.get(key) != value for key, value in expected.items()):
+                raise ValueError('Existing session record differs; do not reset or rebind it')
+            record = dict(existing, tasks_path=record['tasks_path'], hcom_name=record['hcom_name'])
+        else:
+            if any(existing.get(key) != value for key, value in record.items()):
+                raise ValueError('Existing session record differs; do not reset or rebind it')
+            record = existing
     panel = panel_module()
     try:
         enabled = panel.panel_enabled()
     except ValueError as error:
         raise ValueError(
-            f'{error}；請修復 Herdr 後重新執行：{activate_command(args, workspace)}'
+            f'{error}；請修復 Herdr 後重新執行：{command}'
         ) from error
     write_json(path, record, original)
     print(path)
@@ -489,6 +512,10 @@ def hook(client):
             return
         if any(key not in record for key in expected):
             raise ValueError('Incomplete controller identity')
+        if legacy_record(record):
+            dependencies(record, require_watcher=False)
+            context(f'{pointer(path)}\nLegacy session upgrade: {legacy_upgrade_command(record)}')
+            return
         dependencies(record)
         if ensure_watcher(record, path, rebind=True) is None:
             return
