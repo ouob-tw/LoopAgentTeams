@@ -345,24 +345,25 @@ class RawEditorTests(PanelTestCase):
         recorded = self.questions.read_text()
         clock = [recorded_at + timedelta(seconds=299)]
         app = self.make_app(
-            POLL_INTERVAL=0.05,
             ARCHIVE_AFTER=300,
             archive_now=lambda _self: clock[0],
         )
 
-        async with app.run_test() as pilot:
-            await self.raw(pilot)
-            self.questions.write_text("# Agent note\n\n" + recorded)
-            # Q1 is recorded and read-only; the conflicting draft goes into Q2.
-            app.editor.move_cursor((recorded.splitlines().index("Free text."), 0))
-            await pilot.press("x")
-            await pilot.pause()
-            self.assertTrue(app.conflict)
-            clock[0] = recorded_at + timedelta(seconds=301)
-            await pilot.pause(0.2)
-            self.assertEqual(self.questions.read_text(), "# Agent note\n\n" + recorded)
-            self.assertFalse(self.core._archive_path(self.questions).exists())
-            self.assertIn("外部內容已變更", self.status(app))
+        with patch.object(app, "set_interval", return_value=None):
+            async with app.run_test() as pilot:
+                await self.raw(pilot)
+                self.questions.write_text("# Agent note\n\n" + recorded)
+                # Q1 is recorded and read-only; the conflicting draft goes into Q2.
+                app.editor.move_cursor((recorded.splitlines().index("Free text."), 0))
+                await pilot.press("x")
+                await pilot.pause()
+                self.assertTrue(app.conflict)
+                clock[0] = recorded_at + timedelta(seconds=301)
+                app.check_external()
+                await pilot.pause()
+                self.assertEqual(self.questions.read_text(), "# Agent note\n\n" + recorded)
+                self.assertFalse(self.core._archive_path(self.questions).exists())
+                self.assertIn("外部內容已變更", self.status(app))
 
     async def test_missing_binding_or_file_opens_read_only_with_reason(self):
         for error, expected in (
