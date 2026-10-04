@@ -3,14 +3,18 @@
 import argparse
 import copy
 import difflib
+import fcntl
 import importlib.util
 import json
 import os
 from pathlib import Path
 import re
+import signal
 import shlex
+import subprocess
 import sys
 import tempfile
+import time
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 GROUP_NAME = 'lat-codex-recovery'
@@ -19,6 +23,8 @@ SESSION_ENV = dict(codex='CODEX_THREAD_ID', claude='CLAUDE_CODE_SESSION_ID')
 MATCHER = '^(compact|resume)$'
 # Pre-rename installs used codex-lat-session.py; recognize them so install/uninstall migrate.
 COMMAND_NAMES = ('lat-session.py', 'codex-lat-session.py')
+WATCH_SCRIPT = SKILL_DIR / 'scripts/lat-watch.py'
+HCOM_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
 
 
 def panel_module():
@@ -37,6 +43,7 @@ def activate_command(args, workspace):
         'activate', '--client', args.client, '--workspace', str(workspace),
         '--progress', str(args.progress.resolve()),
         '--decisions', str(args.decisions.resolve()),
+        '--tasks', str(args.tasks.resolve()),
     ]
     if args.hcom_name:
         command += ['--hcom-name', args.hcom_name]
@@ -101,7 +108,7 @@ def write_json(path, value, expected):
 
 def dependencies(record):
     skill = Path(record['skill_dir'])
-    files = [skill / 'SKILL.md', skill / 'references/agents.md',
+    files = [skill / 'SKILL.md', skill / 'scripts/lat-watch.py', skill / 'references/agents.md',
              skill / 'references/task-cards.md', Path(record['progress_path'])]
     decisions = Path(record['decisions_path'])
     for path in [*files, decisions]:
@@ -112,6 +119,132 @@ def dependencies(record):
             raise ValueError(f'Missing recovery file: {path}')
     if not decisions.is_dir():
         raise ValueError(f'Missing decisions directory: {decisions}')
+    tasks = Path(record['tasks_path'])
+    if not tasks.is_absolute() or not tasks.is_dir():
+        raise ValueError(f'Missing task-card directory: {tasks}')
+    if not HCOM_NAME.fullmatch(record['hcom_name']):
+        raise ValueError('A valid explicit --hcom-name is required')
+
+
+def watcher_paths(record):
+    root = Path(record['workspace']) / '.lat/watch'
+    sid = record['session_id']
+    return root / f'{sid}.pid', root / f'{sid}.lock', root / f'{sid}.log'
+
+
+def watcher_command(record):
+    return [
+        'uv', 'run', '--no-project', 'python', str(WATCH_SCRIPT), 'run',
+        '--workspace', record['workspace'], '--orchestrator', record['hcom_name'],
+        '--tasks', record['tasks_path'], '--decisions', record['decisions_path'],
+    ]
+
+
+def read_pid(path):
+    try:
+        value = int(path.read_text())
+    except (FileNotFoundError, ValueError):
+        return None
+    return value if value > 1 else None
+
+
+def process_command(pid):
+    try:
+        stat = Path(f'/proc/{pid}/stat').read_text()
+        if stat[stat.rfind(')') + 2:].split(maxsplit=1)[0] == 'Z':
+            return None
+        return tuple(part.decode() for part in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+                     if part)
+    except (FileNotFoundError, PermissionError, UnicodeDecodeError):
+        return None
+
+
+def watcher_running(record, pid=None):
+    pid_path, _, _ = watcher_paths(record)
+    pid = pid or read_pid(pid_path)
+    command = process_command(pid) if pid is not None else None
+    if command is None:
+        return False
+    expected = tuple(watcher_command(record)[4:])
+    return any(command[index:index + len(expected)] == expected
+               for index in range(len(command) - len(expected) + 1))
+
+
+def write_pid(path, pid):
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
+        temp = Path(stream.name)
+        try:
+            stream.write(f'{pid}\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+            temp.replace(path)
+        finally:
+            temp.unlink(missing_ok=True)
+
+
+def _ensure_watcher_locked(record):
+    pid_path, lock_path, log_path = watcher_paths(record)
+    if watcher_running(record):
+        return read_pid(pid_path)
+    pid_path.unlink(missing_ok=True)
+    with log_path.open('ab') as output:
+        process = subprocess.Popen(
+            watcher_command(record), cwd=record['workspace'], stdin=subprocess.DEVNULL,
+            stdout=output, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
+        )
+    write_pid(pid_path, process.pid)
+    return process.pid
+
+
+def ensure_watcher(record, record_path):
+    _, lock_path, _ = watcher_paths(record)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        latest = read_json(record_path)
+        expected = dict(client=record['client'], session_id=record['session_id'],
+                        role='orchestrator', workspace=record['workspace'], status='active')
+        if any(key in latest and latest[key] != value for key, value in expected.items()):
+            return None
+        if any(key not in latest for key in expected):
+            raise ValueError('Incomplete controller identity')
+        dependencies(latest)
+        return _ensure_watcher_locked(latest)
+
+
+def process_group_exists(pgid):
+    try:
+        os.killpg(pgid, 0)
+        return True
+    except ProcessLookupError:
+        return False
+
+
+def _stop_watcher_locked(record):
+    pid_path, _, _ = watcher_paths(record)
+    pid = read_pid(pid_path)
+    if pid is None or not watcher_running(record, pid):
+        pid_path.unlink(missing_ok=True)
+        return
+    try:
+        pgid = os.getpgid(pid)
+    except ProcessLookupError:
+        pid_path.unlink(missing_ok=True)
+        return
+    if pgid != pid:
+        raise ValueError(f'Watcher process group does not match pid {pid}; not stopping it')
+    try:
+        os.killpg(pid, signal.SIGTERM)
+    except ProcessLookupError:
+        pid_path.unlink(missing_ok=True)
+        return
+    deadline = time.monotonic() + 2
+    while process_group_exists(pid) and time.monotonic() < deadline:
+        time.sleep(0.05)
+    if process_group_exists(pid):
+        os.killpg(pid, signal.SIGKILL)
+    pid_path.unlink(missing_ok=True)
 
 
 def activate(args):
@@ -119,10 +252,16 @@ def activate(args):
     if workspace_root(workspace) != workspace:
         raise ValueError('--workspace must be the Git worktree root')
     sid = session_id(os.environ.get(SESSION_ENV[args.client]))
+    if not args.hcom_name or not HCOM_NAME.fullmatch(args.hcom_name):
+        raise ValueError(
+            'A valid explicit --hcom-name is required; rerun: '
+            f'{activate_command(args, workspace)}'
+        )
     record = dict(client=args.client, session_id=sid, role='orchestrator',
                   workspace=str(workspace), status='active', skill_dir=str(SKILL_DIR),
                   progress_path=str(args.progress.resolve(strict=True)),
-                  decisions_path=str(args.decisions.resolve(strict=True)))
+                  decisions_path=str(args.decisions.resolve(strict=True)),
+                  tasks_path=str(args.tasks.resolve(strict=True)), hcom_name=args.hcom_name)
     dependencies(record)
     path = workspace / '.lat/sessions' / f'{sid}.json'
     original = current_bytes(path)
@@ -135,10 +274,6 @@ def activate(args):
         raise ValueError(
             f'{error}；請修復 Herdr 後重新執行：{activate_command(args, workspace)}'
         ) from error
-    if enabled and not args.hcom_name:
-        raise ValueError(
-            f'面板已啟用，缺少 --hcom-name；請重新執行：{activate_command(args, workspace)}'
-        )
     write_json(path, record, original)
     print(path)
     if enabled:
@@ -162,6 +297,8 @@ def activate(args):
         print(f'問題檔：{binding["questions_path"]}')
     else:
         print('面板未啟用，略過綁定')
+    if ensure_watcher(record, path) is None:
+        raise ValueError('Session was deactivated while starting its watcher')
 
 
 def pointer(path):
@@ -179,15 +316,21 @@ def deactivate(args):
     workspace = args.workspace.resolve(strict=True)
     sid = session_id(args.session_id or os.environ.get(SESSION_ENV[args.client]))
     path = workspace / '.lat/sessions' / f'{sid}.json'
-    original = current_bytes(path)
-    record = read_json(path)
-    expected = dict(client=args.client, session_id=sid, role='orchestrator',
-                    workspace=str(workspace))
-    if any(record.get(key) != value for key, value in expected.items()):
-        raise ValueError('Controller identity does not match; record unchanged')
-    removed = panel_module().unbind_controller(sid)
-    record['status'] = args.status
-    write_json(path, record, original)
+    lock_record = dict(workspace=str(workspace), session_id=sid)
+    _, lock_path, _ = watcher_paths(lock_record)
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        original = current_bytes(path)
+        record = read_json(path)
+        expected = dict(client=args.client, session_id=sid, role='orchestrator',
+                        workspace=str(workspace))
+        if any(record.get(key) != value for key, value in expected.items()):
+            raise ValueError('Controller identity does not match; record unchanged')
+        _stop_watcher_locked(record)
+        removed = panel_module().unbind_controller(sid)
+        record['status'] = args.status
+        write_json(path, record, original)
     print(path)
     print(json.dumps({'removed': removed}))
 
@@ -325,6 +468,8 @@ def hook(client):
         if any(key not in record for key in expected):
             raise ValueError('Incomplete controller identity')
         dependencies(record)
+        if ensure_watcher(record, path) is None:
+            return
         context(pointer(path))
     except (OSError, ValueError, TypeError, KeyError):
         context(f'LAT recovery error: {path}. Record or recovery files are missing/corrupt. '
@@ -338,6 +483,7 @@ def main():
     start.add_argument('--workspace', type=Path, required=True)
     start.add_argument('--progress', type=Path, required=True)
     start.add_argument('--decisions', type=Path, required=True)
+    start.add_argument('--tasks', type=Path, required=True)
     start.add_argument('--hcom-name')
     stop = sub.add_parser('deactivate', help='Complete/cancel a controller, retaining its record')
     stop.add_argument('--workspace', type=Path, required=True)

@@ -8,6 +8,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
+import time
+from types import SimpleNamespace
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-session.py'
@@ -29,24 +32,89 @@ class SessionTests(unittest.TestCase):
         self.progress.write_text('Existing tracker links and progress\n')
         self.decisions = self.work / 'decisions'
         self.decisions.mkdir()
+        self.tasks = self.work / '.lat/tasks'
+        self.tasks.mkdir(parents=True)
         self.record = self.work / '.lat/sessions' / f'{SESSION}.json'
+        self.binary = self.root / 'bin'
+        self.binary.mkdir()
+        self.fake_uv_log = self.root / 'fake-uv.log'
+        uv = self.binary / 'uv'
+        uv.write_text(
+            '#!/bin/sh\n'
+            'printf \'%s\\n\' "$$ $*" >> "$FAKE_UV_LOG"\n'
+            "trap 'exit 0' TERM INT\n"
+            'while :; do sleep 0.05; done\n'
+        )
+        uv.chmod(0o755)
+        self.addCleanup(self.stop_fake_watchers)
 
-    def cli(self, *args, payload=None, session=SESSION, extra_env=None):
-        env = dict(os.environ, CODEX_THREAD_ID=session, CLAUDE_CODE_SESSION_ID='')
+    def cli(self, *args, payload=None, session=SESSION, claude_session='', extra_env=None,
+            watch_args=True):
+        args = list(args)
+        if args and args[0] == 'activate' and watch_args:
+            if '--hcom-name' not in args:
+                args += ['--hcom-name', 'orch']
+            if '--tasks' not in args:
+                args += ['--tasks', self.tasks]
+        env = self.cli_environment(session, claude_session, extra_env)
+        return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
+                              input=json.dumps(payload) if payload is not None else '',
+                              text=True, capture_output=True, env=env, cwd=self.work)
+
+    def cli_environment(self, session=SESSION, claude_session='', extra_env=None):
+        env = dict(os.environ, CODEX_THREAD_ID=session,
+                   CLAUDE_CODE_SESSION_ID=claude_session)
         for variable in ('HERDR_WORKSPACE_ID', 'HERDR_TAB_ID', 'HERDR_PANE_ID',
                          'HERDR_PLUGIN_CONFIG_DIR', 'HCOM_INSTANCE_NAME'):
             env.pop(variable, None)
         env['HERDR_PLUGIN_CONFIG_DIR'] = str(self.root / 'plugin-config')
+        env['FAKE_UV_LOG'] = str(self.fake_uv_log)
+        env['PATH'] = f'{self.binary}:{env["PATH"]}'
         env.update(extra_env or {})
-        return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
-                              input=json.dumps(payload) if payload is not None else '',
-                              text=True, capture_output=True, env=env, cwd=self.work)
+        return env
 
     def activate(self, session=SESSION):
         result = self.cli('activate', '--workspace', self.work,
                           '--progress', self.progress, '--decisions', self.decisions,
                           session=session)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def watcher_pid(self, session=SESSION):
+        return int((self.work / '.lat/watch' / f'{session}.pid').read_text())
+
+    def wait_for(self, predicate, timeout=3):
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            if predicate():
+                return
+            time.sleep(0.02)
+        self.fail('Timed out waiting for watcher process state')
+
+    def process_exists(self, pid):
+        return Path(f'/proc/{pid}').exists()
+
+    def stop_fake_watchers(self):
+        for path in (self.work / '.lat/watch').glob('*.pid'):
+            try:
+                os.killpg(int(path.read_text()), 15)
+            except (FileNotFoundError, ProcessLookupError, ValueError):
+                pass
+
+    def terminate_process(self, process):
+        if process.poll() is None:
+            process.terminate()
+            try:
+                process.wait(1)
+            except subprocess.TimeoutExpired:
+                process.kill()
+                process.wait(1)
+
+    def process_waits_for_lock(self, pid):
+        for line in Path('/proc/locks').read_text().splitlines():
+            fields = line.split()
+            if len(fields) > 5 and fields[1] == '->' and fields[5] == str(pid):
+                return True
+        return False
 
     def hook(self, **overrides):
         payload = dict(hook_event_name='SessionStart', source='compact',
@@ -55,9 +123,7 @@ class SessionTests(unittest.TestCase):
         return self.cli('hook', payload=payload, session=OTHER)
 
     def panel_env(self, herdr_body=None):
-        binary = self.root / 'bin'
-        binary.mkdir(exist_ok=True)
-        herdr = binary / 'herdr'
+        herdr = self.binary / 'herdr'
         herdr.write_text(herdr_body or (
             '#!/bin/sh\n'
             'test "$*" = "plugin list --plugin lat.panel --json" || exit 91\n'
@@ -65,7 +131,7 @@ class SessionTests(unittest.TestCase):
         ))
         herdr.chmod(0o755)
         return {
-            'PATH': f'{binary}:{os.environ["PATH"]}',
+            'PATH': f'{self.binary}:{os.environ["PATH"]}',
             'HERDR_WORKSPACE_ID': 'herdr-workspace',
             'HERDR_TAB_ID': 'herdr-tab',
             'HERDR_PANE_ID': 'herdr-pane',
@@ -92,18 +158,38 @@ class SessionTests(unittest.TestCase):
         env['HCOM_INSTANCE_NAME'] = 'stale-name-must-not-be-used'
         result = self.cli(
             'activate', '--workspace', self.work, '--progress', self.progress,
-            '--decisions', self.decisions, extra_env=env,
+            '--decisions', self.decisions, '--tasks', self.tasks, extra_env=env,
+            watch_args=False,
         )
 
         self.assertNotEqual(result.returncode, 0)
         remedy = (
             f'uv run --no-project python {SCRIPT} activate --client codex '
             f'--workspace {self.work} --progress {self.progress} '
-            f'--decisions {self.decisions} --hcom-name \'<主控-HCOM-名稱>\''
+            f'--decisions {self.decisions} --tasks {self.tasks} '
+            '--hcom-name \'<主控-HCOM-名稱>\''
         )
         self.assertIn(remedy, result.stderr)
         self.assertFalse(self.record.exists())
         self.assertFalse((self.root / 'plugin-config/bindings.json').exists())
+
+    def test_activate_rejects_invalid_watcher_identity_and_task_directory(self):
+        invalid_name = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--tasks', self.tasks,
+            '--hcom-name', 'not/a-name', watch_args=False,
+        )
+        missing_tasks = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--tasks', self.work / 'missing-tasks',
+            '--hcom-name', 'orch', watch_args=False,
+        )
+
+        self.assertNotEqual(invalid_name.returncode, 0)
+        self.assertIn('valid explicit --hcom-name', invalid_name.stderr)
+        self.assertNotEqual(missing_tasks.returncode, 0)
+        self.assertIn('missing-tasks', missing_tasks.stderr)
+        self.assertFalse(self.record.exists())
 
     def test_activate_without_enabled_panel_keeps_working_and_explains_skip(self):
         result = self.cli(
@@ -121,7 +207,8 @@ class SessionTests(unittest.TestCase):
         result = self.cli(
             'activate', '--workspace', self.work, '--progress', self.progress,
             '--decisions', self.decisions,
-            extra_env={'PATH': str(binary), 'HERDR_WORKSPACE_ID': 'herdr-workspace'},
+            extra_env={'PATH': f'{binary}:{self.binary}',
+                       'HERDR_WORKSPACE_ID': 'herdr-workspace'},
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -220,13 +307,203 @@ class SessionTests(unittest.TestCase):
         )['bindings']
         self.assertEqual(bindings, {})
 
+    def test_activate_starts_one_watcher_and_deactivate_stops_it(self):
+        self.activate()
+        pid = self.watcher_pid()
+        self.wait_for(lambda: self.fake_uv_log.exists())
+        first_log = self.fake_uv_log.read_text().splitlines()
+        self.assertEqual(len(first_log), 1)
+        self.assertIn('lat-watch.py run', first_log[0])
+        self.assertIn(f'--orchestrator orch --tasks {self.tasks}', first_log[0])
+
+        self.activate()
+        self.assertEqual(self.watcher_pid(), pid)
+        self.assertEqual(self.fake_uv_log.read_text().splitlines(), first_log)
+
+        result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_for(lambda: not self.process_exists(pid))
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+
+    def test_stale_pid_for_unrelated_process_is_replaced_without_signalling_it(self):
+        unrelated = subprocess.Popen(['sleep', '30'], start_new_session=True)
+        self.addCleanup(self.terminate_process, unrelated)
+        pid_path = self.work / '.lat/watch' / f'{SESSION}.pid'
+        pid_path.parent.mkdir(parents=True)
+        pid_path.write_text(f'{unrelated.pid}\n')
+
+        self.activate()
+
+        self.assertNotEqual(self.watcher_pid(), unrelated.pid)
+        self.assertIsNone(unrelated.poll())
+
+    def test_deactivate_refuses_matching_process_that_is_not_group_leader(self):
+        command = [
+            str(self.binary / 'uv'), 'run', '--no-project', 'python',
+            str(SKILL / 'scripts/lat-watch.py'), 'run', '--workspace', str(self.work),
+            '--orchestrator', 'orch', '--tasks', str(self.tasks),
+            '--decisions', str(self.decisions),
+        ]
+        env = dict(os.environ, FAKE_UV_LOG=str(self.fake_uv_log))
+        process = subprocess.Popen(command, cwd=self.work, env=env)
+        self.addCleanup(self.terminate_process, process)
+        self.wait_for(lambda: self.fake_uv_log.exists())
+        record = dict(
+            client='codex', session_id=SESSION, role='orchestrator',
+            workspace=str(self.work), status='active', skill_dir=str(SKILL),
+            progress_path=str(self.progress), decisions_path=str(self.decisions),
+            tasks_path=str(self.tasks), hcom_name='orch',
+        )
+        self.record.parent.mkdir(parents=True)
+        self.record.write_text(json.dumps(record))
+        pid_path = self.work / '.lat/watch' / f'{SESSION}.pid'
+        pid_path.parent.mkdir(parents=True)
+        pid_path.write_text(f'{process.pid}\n')
+
+        result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('process group does not match', result.stderr)
+        self.assertIsNone(process.poll())
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+        pid_path.unlink()
+
+    def test_deactivate_escalates_when_watcher_ignores_term(self):
+        uv = self.binary / 'uv'
+        uv.write_text(
+            '#!/bin/sh\n'
+            'printf \'%s\\n\' "$$ $*" >> "$FAKE_UV_LOG"\n'
+            'trap \'printf TERM\\n >> "$FAKE_TERM_LOG"\' TERM\n'
+            'while :; do sleep 0.05; done\n'
+        )
+        term_log = self.root / 'term.log'
+        activated = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions,
+            extra_env={'FAKE_TERM_LOG': str(term_log)},
+        )
+        self.assertEqual(activated.returncode, 0, activated.stderr)
+        pid = self.watcher_pid()
+
+        stopped = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        self.wait_for(lambda: not self.process_exists(pid))
+        self.assertTrue(term_log.exists())
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+
+    def test_zombie_pid_is_not_considered_a_running_watcher(self):
+        zombie = subprocess.Popen(['/bin/sh', '-c', 'exit 0'])
+        self.addCleanup(self.terminate_process, zombie)
+        stat_path = Path(f'/proc/{zombie.pid}/stat')
+        self.wait_for(lambda: stat_path.exists() and
+                      stat_path.read_text()[stat_path.read_text().rfind(')') + 2:].startswith('Z '))
+        spec = importlib.util.spec_from_file_location('lat_session_zombie', SCRIPT)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+
+        self.assertIsNone(helper.process_command(zombie.pid))
+
+    def test_hook_restarts_a_dead_active_watcher_without_extra_output(self):
+        self.activate()
+        old_pid = self.watcher_pid()
+        os.killpg(old_pid, 15)
+        self.wait_for(lambda: not self.process_exists(old_pid))
+
+        result = self.hook()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        context = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
+        self.assertEqual(context.count('LAT recovery record:'), 1)
+        new_pid = self.watcher_pid()
+        self.assertNotEqual(new_pid, old_pid)
+        self.wait_for(lambda: len(self.fake_uv_log.read_text().splitlines()) == 2)
+
+    def test_deactivate_serializes_status_change_against_waiting_hook(self):
+        self.activate()
+        spec = importlib.util.spec_from_file_location('lat_session_race', SCRIPT)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        real_stop = helper._stop_watcher_locked
+        watcher_stopped = threading.Event()
+        allow_status_write = threading.Event()
+        errors = []
+
+        def paused_stop(record):
+            real_stop(record)
+            watcher_stopped.set()
+            if not allow_status_write.wait(3):
+                raise AssertionError('test did not release deactivate')
+
+        def deactivate():
+            try:
+                args = argparse.Namespace(
+                    workspace=self.work, client='codex', session_id=SESSION,
+                    status='completed',
+                )
+                with patch('builtins.print'):
+                    helper.deactivate(args)
+            except BaseException as error:
+                errors.append(error)
+
+        with patch.object(helper, '_stop_watcher_locked', side_effect=paused_stop), \
+                patch.object(helper, 'panel_module', return_value=SimpleNamespace(
+                    unbind_controller=lambda session_id: 0,
+                )):
+            deactivate_thread = threading.Thread(target=deactivate)
+            deactivate_thread.start()
+            self.assertTrue(watcher_stopped.wait(3))
+            payload = dict(hook_event_name='SessionStart', source='compact',
+                           cwd=str(self.work), session_id=SESSION)
+            hook_process = subprocess.Popen(
+                [sys.executable, str(SCRIPT), 'hook'], cwd=self.work,
+                env=self.cli_environment(session=OTHER), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            self.addCleanup(self.terminate_process, hook_process)
+            hook_process.stdin.write(json.dumps(payload))
+            hook_process.stdin.close()
+            hook_process.stdin = None
+            self.wait_for(lambda: self.process_waits_for_lock(hook_process.pid))
+            allow_status_write.set()
+            deactivate_thread.join(3)
+            hook_stdout, hook_stderr = hook_process.communicate(timeout=3)
+
+        self.assertFalse(deactivate_thread.is_alive())
+        self.assertEqual(errors, [])
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'completed')
+        self.assertEqual((hook_process.returncode, hook_stdout, hook_stderr), (0, '', ''))
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+
+    def test_concurrent_sessions_stop_only_their_own_watchers(self):
+        self.activate()
+        second = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--hcom-name', 'orch-two', '--tasks', self.tasks,
+            session=OTHER,
+        )
+        self.assertEqual(second.returncode, 0, second.stderr)
+        first_pid = self.watcher_pid(SESSION)
+        second_pid = self.watcher_pid(OTHER)
+        self.assertNotEqual(first_pid, second_pid)
+
+        stopped = self.cli(
+            'deactivate', '--workspace', self.work, '--status', 'completed',
+            '--session-id', SESSION, session=OTHER,
+        )
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        self.wait_for(lambda: not self.process_exists(first_pid))
+        self.assertTrue(self.process_exists(second_pid))
+        self.assertTrue((self.work / '.lat/watch' / f'{OTHER}.pid').exists())
+
     def test_activate_then_compact_and_resume_from_subdirectory(self):
         self.activate()
         record = json.loads(self.record.read_text())
         self.assertEqual(record, dict(client='codex', session_id=SESSION,
                          role='orchestrator', workspace=str(self.work), status='active',
                          skill_dir=str(SKILL), progress_path=str(self.progress),
-                         decisions_path=str(self.decisions)))
+                         decisions_path=str(self.decisions), tasks_path=str(self.tasks),
+                         hcom_name='orch'))
         sub = self.work / 'src'
         sub.mkdir()
         for source in ('compact', 'resume', 'compact'):
@@ -427,15 +704,11 @@ class SessionTests(unittest.TestCase):
 
 
     def test_claude_controller_record_and_hook_are_client_scoped(self):
-        env = dict(os.environ, CODEX_THREAD_ID='', CLAUDE_CODE_SESSION_ID=SESSION)
-        for variable in ('HERDR_WORKSPACE_ID', 'HERDR_TAB_ID', 'HERDR_PANE_ID',
-                         'HCOM_INSTANCE_NAME'):
-            env.pop(variable, None)
-        env['HERDR_PLUGIN_CONFIG_DIR'] = str(self.root / 'plugin-config')
-        result = subprocess.run([sys.executable, str(SCRIPT), 'activate', '--client', 'claude',
-                                 '--workspace', self.work, '--progress', self.progress,
-                                 '--decisions', self.decisions],
-                                text=True, capture_output=True, env=env, cwd=self.work)
+        result = self.cli(
+            'activate', '--client', 'claude', '--workspace', self.work,
+            '--progress', self.progress, '--decisions', self.decisions,
+            session='', claude_session=SESSION,
+        )
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(self.record.read_text())['client'], 'claude')
         payload = dict(hook_event_name='SessionStart', source='compact',
