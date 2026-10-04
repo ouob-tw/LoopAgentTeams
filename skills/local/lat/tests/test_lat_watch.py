@@ -321,8 +321,8 @@ class WatchDecisionTests(unittest.TestCase):
     def test_every_specified_wait_release_condition_is_recognized(self):
         watch = load_watch()
         declaration = {'agent': 'worker', 'target': 'reviewer'}
-        delivered = [{'type': 'message', 'data': {'delivered_to': ['worker']}}]
-        replied = [{'type': 'message', 'data': {'from': 'reviewer'}}]
+        delivered = [{'type': 'status', 'data': {'context': 'deliver:sender'}}]
+        replied = [{'type': 'status', 'data': {'context': 'tool:send'}}]
 
         self.assertEqual(watch.wait_release_reason(declaration, delivered, [], None),
                          'message-delivered')
@@ -404,6 +404,45 @@ class WatchDecisionTests(unittest.TestCase):
         command = run_events.call_args.args[0]
         self.assertIn('--sql', command)
         self.assertIn(watched['session_id'], command[command.index('--sql') + 1])
+
+    def test_target_reply_uses_session_send_status_not_global_event_adjacency(self):
+        watch = load_watch()
+        declaration = {'agent': 'worker', 'target': 'reviewer-full-name'}
+        target_events = [{
+            'id': 10, 'instance': 'reviewer', 'type': 'status',
+            'data': {'context': 'tool:send', 'session': 'reviewer-session'},
+        }, {
+            'id': 11, 'instance': 'other', 'type': 'status',
+            'data': {'context': 'tool:Bash', 'session': 'other-session'},
+        }, {
+            'id': 12, 'instance': 'reviewer', 'type': 'message',
+            'data': {'from': 'reviewer', 'delivered_to': ['someone']},
+        }]
+
+        self.assertEqual(watch.wait_release_reason(
+            declaration, [], target_events, None), 'target-replied')
+
+    def test_short_alias_message_without_session_send_status_does_not_release_wait(self):
+        watch = load_watch()
+        declaration = {'agent': 'worker', 'target': 'reviewer'}
+        colliding_message = [{
+            'id': 20, 'instance': 'reviewer', 'type': 'message',
+            'data': {'from': 'reviewer', 'delivered_to': ['someone']},
+        }]
+
+        self.assertIsNone(watch.wait_release_reason(
+            declaration, [], colliding_message, None))
+
+    def test_short_alias_delivery_message_without_session_status_does_not_release_wait(self):
+        watch = load_watch()
+        declaration = {'agent': 'worker', 'target': 'reviewer'}
+        colliding_message = [{
+            'id': 21, 'instance': 'sender', 'type': 'message',
+            'data': {'from': 'sender', 'delivered_to': ['worker']},
+        }]
+
+        self.assertIsNone(watch.wait_release_reason(
+            declaration, colliding_message, [], None))
 
     def test_background_process_from_hcom_identity_blocks_idle_nudge(self):
         watch = load_watch()

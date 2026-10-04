@@ -467,12 +467,6 @@ def event_value(event, name, nested):
     return None
 
 
-def message_event(event):
-    data = event.get('data', {})
-    return (event.get('type') == 'message' or isinstance(event.get('message'), dict)
-            or isinstance(data, dict) and isinstance(data.get('message'), dict))
-
-
 def status_context(event):
     if event.get('type') != 'status':
         return None
@@ -480,11 +474,8 @@ def status_context(event):
         event, 'context', 'status')
 
 
-def status_sent_message(event, message_ids):
-    """Match a session-owned send action to its immediately emitted message."""
-    event_id = event.get('id')
-    if not isinstance(event_id, int) or event_id + 1 not in message_ids:
-        return False
+def session_send_event(event):
+    """Recognize a send action already filtered to one HCOM session."""
     context = status_context(event)
     if context == 'tool:send':
         return True
@@ -584,24 +575,12 @@ def background_process_running(agent, info, processes, current_pid=None):
 
 def wait_release_reason(declaration, participant_events, target_events, decision_pending):
     """Explain why a wait is no longer valid, or return None."""
-    agent = declaration['agent']
-    target = declaration['target']
     for event in participant_events:
         context = status_context(event)
         if isinstance(context, str) and context.startswith('deliver:'):
             return 'message-delivered'
-        delivered = (event_value(event, 'msg_delivered_to', 'message')
-                     or event_value(event, 'delivered_to', 'message') or [])
-        if message_event(event) and agent in delivered:
-            return 'message-delivered'
-    message_ids = {item.get('id') for item in target_events
-                   if message_event(item) and isinstance(item.get('id'), int)}
     for event in target_events:
-        if status_sent_message(event, message_ids):
-            return 'target-replied'
-        sender = (event_value(event, 'msg_from', 'message')
-                  or event_value(event, 'from', 'message'))
-        if message_event(event) and sender == target:
+        if session_send_event(event):
             return 'target-replied'
     if decision_pending is False:
         return 'decision-resolved'
@@ -672,10 +651,6 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     else:
         target_events = session_events(
             orchestrator, target_info, '--after', after)
-        base_name = target_info.get('base_name')
-        if isinstance(base_name, str) and base_name:
-            target_events.extend(hcom_events(
-                orchestrator, '--after', after, '--from', base_name))
     reason = wait_release_reason(declaration, participant, target_events, decision)
     if reason:
         updated = dict(declaration, active=False, released_reason=reason,
