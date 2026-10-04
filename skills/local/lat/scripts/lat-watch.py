@@ -18,6 +18,8 @@ from typing import NamedTuple
 IDLE_SECONDS = 10 * 60
 ACTIVE_SECONDS = 20 * 60
 PROMPT_SECONDS = 5 * 60
+PROMPT_SETTLE_SECONDS = 1
+PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
 FAILURE_REPEAT_SECONDS = 60 * 60
 NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
@@ -471,6 +473,27 @@ def message_event(event):
             or isinstance(data, dict) and isinstance(data.get('message'), dict))
 
 
+def status_context(event):
+    if event.get('type') != 'status':
+        return None
+    return event_value(event, 'status_context', 'status') or event_value(
+        event, 'context', 'status')
+
+
+def status_sent_message(event, message_ids):
+    """Match a session-owned send action to its immediately emitted message."""
+    event_id = event.get('id')
+    if not isinstance(event_id, int) or event_id + 1 not in message_ids:
+        return False
+    context = status_context(event)
+    if context == 'tool:send':
+        return True
+    detail = event_value(event, 'status_detail', 'status') or event_value(
+        event, 'detail', 'status')
+    return (context == 'tool:Bash' and isinstance(detail, str)
+            and re.match(r'\s*hcom\s+send(?:\s|$)', detail) is not None)
+
+
 def read_processes(proc_root=Path('/proc')):
     processes = []
     for directory in proc_root.iterdir():
@@ -564,11 +587,18 @@ def wait_release_reason(declaration, participant_events, target_events, decision
     agent = declaration['agent']
     target = declaration['target']
     for event in participant_events:
+        context = status_context(event)
+        if isinstance(context, str) and context.startswith('deliver:'):
+            return 'message-delivered'
         delivered = (event_value(event, 'msg_delivered_to', 'message')
                      or event_value(event, 'delivered_to', 'message') or [])
         if message_event(event) and agent in delivered:
             return 'message-delivered'
+    message_ids = {item.get('id') for item in target_events
+                   if message_event(item) and isinstance(item.get('id'), int)}
     for event in target_events:
+        if status_sent_message(event, message_ids):
+            return 'target-replied'
         sender = (event_value(event, 'msg_from', 'message')
                   or event_value(event, 'from', 'message'))
         if message_event(event) and sender == target:
@@ -604,16 +634,48 @@ def hcom_events(orchestrator, *filters):
     return run_json_lines(['hcom', 'events', *filters, '--full', '--name', orchestrator])
 
 
-def release_wait_if_needed(workspace, decisions, orchestrator, declaration):
+def agent_info(agents, name):
+    """Resolve a canonical name, or an unambiguous base name, from hcom list."""
+    if name in agents:
+        return agents[name]
+    matches = [item for item in agents.values() if item.get('base_name') == name]
+    return matches[0] if len(matches) == 1 else None
+
+
+def session_events(orchestrator, info, *filters):
+    """Read only events carrying the exact session identity from hcom list."""
+    session_id = info.get('session_id') if isinstance(info, dict) else None
+    if not isinstance(session_id, str) or not session_id:
+        return []
+    quoted = session_id.replace("'", "''")
+    events = hcom_events(
+        orchestrator, *filters,
+        '--sql', f"json_extract(data, '$.session') = '{quoted}'",
+    )
+    return [event for event in events
+            if event_value(event, 'session', 'status') == session_id]
+
+
+def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agents=None):
     if not declaration or not declaration.get('active', True):
         return None
     after = declaration['declared_at_utc']
     agent = declaration['agent']
     target = declaration['target']
-    participant = hcom_events(orchestrator, '--after', after, '--participant', agent)
+    agents = list_hcom(orchestrator) if agents is None else agents
+    participant = session_events(
+        orchestrator, agent_info(agents, agent), '--after', after)
     decision = pending_decision(decisions, target)
-    target_events = [] if decision is not None else hcom_events(
-        orchestrator, '--after', after, '--from', target)
+    target_info = agent_info(agents, target)
+    if decision is not None or target_info is None:
+        target_events = []
+    else:
+        target_events = session_events(
+            orchestrator, target_info, '--after', after)
+        base_name = target_info.get('base_name')
+        if isinstance(base_name, str) and base_name:
+            target_events.extend(hcom_events(
+                orchestrator, '--after', after, '--from', base_name))
     reason = wait_release_reason(declaration, participant, target_events, decision)
     if reason:
         updated = dict(declaration, active=False, released_reason=reason,
@@ -644,9 +706,8 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
             transcript_mtime_ns = stat.st_mtime_ns
         except FileNotFoundError:
             pass
-    own_events = hcom_events(orchestrator, '--agent', agent, '--last', '1')
-    participant_events = hcom_events(orchestrator, '--participant', agent, '--last', '1')
-    event_id = max(latest_event_id(own_events), latest_event_id(participant_events))
+    own_events = session_events(orchestrator, info, '--last', '1')
+    event_id = latest_event_id(own_events)
     declaration = read_object(wait_path(workspace, agent))
     released = release_wait_if_needed(
         workspace, decisions, orchestrator, declaration)
@@ -758,6 +819,16 @@ def read_terminal_input(agent, orchestrator):
     return text
 
 
+def wait_for_terminal_edit(agent, orchestrator, previous):
+    """Poll briefly for a keypress to appear in the terminal snapshot."""
+    deadline = time.monotonic() + PROMPT_SETTLE_SECONDS
+    while True:
+        current = read_terminal_input(agent, orchestrator)
+        if current != previous or time.monotonic() >= deadline:
+            return current
+        time.sleep(PROMPT_POLL_SECONDS)
+
+
 def read_prompt_status(agent, orchestrator):
     info = list_hcom(orchestrator).get(agent)
     if info is None:
@@ -831,7 +902,7 @@ def perform_prompt_recovery(action, orchestrator, workspace=None):
                 failure=f'hcom backspace failed for {action.agent}',
             )
             backspaces += 1
-            updated = read_terminal_input(action.agent, orchestrator)
+            updated = wait_for_terminal_edit(action.agent, orchestrator, current)
         except (OSError, ValueError) as error:
             uncertain = True
             reason = f'prompt clear could not be confirmed; no retry: {error}'

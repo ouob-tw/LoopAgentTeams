@@ -6,7 +6,7 @@
 
 監控對象是主控自己，加上 `$tasks` 下（不含 `done/`）`orchestrator` 欄等於該主控、status 還不是 `merged` 的任務卡所列 Agent。hcom-spawn 單獨召喚、沒有任務卡的 Agent 不在監控內。
 
-紀錄檔或 HCOM 事件有變動就算有進展，計時歸零。沒有進展時：
+紀錄檔或 HCOM 事件有變動就算有進展，計時歸零。HCOM 事件以 `hcom list --json` 提供的 session ID 歸屬，不會把其他同短名 Agent 的事件算進來。沒有進展時：
 
 | 狀態 | 門檻 | 監控的動作 |
 |---|---|---|
