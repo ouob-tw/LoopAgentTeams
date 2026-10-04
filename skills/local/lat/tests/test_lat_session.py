@@ -56,6 +56,12 @@ class SessionTests(unittest.TestCase):
                 args += ['--hcom-name', 'orch']
             if '--tasks' not in args:
                 args += ['--tasks', self.tasks]
+        env = self.cli_environment(session, claude_session, extra_env)
+        return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
+                              input=json.dumps(payload) if payload is not None else '',
+                              text=True, capture_output=True, env=env, cwd=self.work)
+
+    def cli_environment(self, session=SESSION, claude_session='', extra_env=None):
         env = dict(os.environ, CODEX_THREAD_ID=session,
                    CLAUDE_CODE_SESSION_ID=claude_session)
         for variable in ('HERDR_WORKSPACE_ID', 'HERDR_TAB_ID', 'HERDR_PANE_ID',
@@ -65,9 +71,7 @@ class SessionTests(unittest.TestCase):
         env['FAKE_UV_LOG'] = str(self.fake_uv_log)
         env['PATH'] = f'{self.binary}:{env["PATH"]}'
         env.update(extra_env or {})
-        return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
-                              input=json.dumps(payload) if payload is not None else '',
-                              text=True, capture_output=True, env=env, cwd=self.work)
+        return env
 
     def activate(self, session=SESSION):
         result = self.cli('activate', '--workspace', self.work,
@@ -104,6 +108,13 @@ class SessionTests(unittest.TestCase):
             except subprocess.TimeoutExpired:
                 process.kill()
                 process.wait(1)
+
+    def process_waits_for_lock(self, pid):
+        for line in Path('/proc/locks').read_text().splitlines():
+            fields = line.split()
+            if len(fields) > 5 and fields[1] == '->' and fields[5] == str(pid):
+                return True
+        return False
 
     def hook(self, **overrides):
         payload = dict(hook_event_name='SessionStart', source='compact',
@@ -435,7 +446,6 @@ class SessionTests(unittest.TestCase):
             except BaseException as error:
                 errors.append(error)
 
-        hook_results = []
         with patch.object(helper, '_stop_watcher_locked', side_effect=paused_stop), \
                 patch.object(helper, 'panel_module', return_value=SimpleNamespace(
                     unbind_controller=lambda session_id: 0,
@@ -443,19 +453,26 @@ class SessionTests(unittest.TestCase):
             deactivate_thread = threading.Thread(target=deactivate)
             deactivate_thread.start()
             self.assertTrue(watcher_stopped.wait(3))
-            hook_thread = threading.Thread(target=lambda: hook_results.append(self.hook()))
-            hook_thread.start()
-            time.sleep(0.1)
-            self.assertTrue(hook_thread.is_alive())
+            payload = dict(hook_event_name='SessionStart', source='compact',
+                           cwd=str(self.work), session_id=SESSION)
+            hook_process = subprocess.Popen(
+                [sys.executable, str(SCRIPT), 'hook'], cwd=self.work,
+                env=self.cli_environment(session=OTHER), stdin=subprocess.PIPE,
+                stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+            )
+            self.addCleanup(self.terminate_process, hook_process)
+            hook_process.stdin.write(json.dumps(payload))
+            hook_process.stdin.close()
+            hook_process.stdin = None
+            self.wait_for(lambda: self.process_waits_for_lock(hook_process.pid))
             allow_status_write.set()
             deactivate_thread.join(3)
-            hook_thread.join(3)
+            hook_stdout, hook_stderr = hook_process.communicate(timeout=3)
 
         self.assertFalse(deactivate_thread.is_alive())
-        self.assertFalse(hook_thread.is_alive())
         self.assertEqual(errors, [])
         self.assertEqual(json.loads(self.record.read_text())['status'], 'completed')
-        self.assert_silent(hook_results[0])
+        self.assertEqual((hook_process.returncode, hook_stdout, hook_stderr), (0, '', ''))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
 
     def test_concurrent_sessions_stop_only_their_own_watchers(self):
