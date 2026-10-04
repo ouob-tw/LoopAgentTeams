@@ -4,7 +4,7 @@
 
 ## 存活檢查
 
-Agent 久無回應時，依序：
+送出 `--intent request` 後替它設期限（審查或一般任務約 10 分鐘，長時間測試依預估延長），用 `hcom events sub --idle <名稱> --name <自身名稱>` 等它閒置；到期仍沒回覆、或閒置了卻沒回應，依序：
 
 1. `hcom list -v --name <自身名稱>` 看狀態與未讀數，分辨 active、listening、blocked。
 2. `hcom term <名稱> --name <自身名稱>` 看畫面，確認是在工作、停在確認畫面，還是本輪出現錯誤。
