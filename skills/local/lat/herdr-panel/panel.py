@@ -43,7 +43,7 @@ from textual.widgets import Static, TextArea
 cjk_wrap.install()
 
 PLUGIN_ID = "lat.panel"
-KEYS = "Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Tab 備註 · Esc 關閉"
+KEYS = "A–I／Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Tab 備註 · Esc 關閉"
 RAW_KEYS = "Ctrl+E 選擇框  Ctrl+Q 關閉  Ctrl+Z 復原  Ctrl+Y 重做"
 INPUT_KEYS = "Enter 換行 · Esc 離開輸入框"
 NO_QUESTIONS = "目前沒有待答問題"
@@ -287,8 +287,8 @@ class Draft:
         if self.kind == "single":
             keys = [option.key for option in self.options]
         else:
-            keys = [chr(ord("A") + index) for index in range(len(self.options))]
-        following = chr(max(map(ord, keys), default=ord("A") - 1) + 1)
+            keys = [chr(ord("A") + index) if index < 26 else "" for index in range(len(self.options))]
+        following = chr(max((ord(key) for key in keys if key), default=ord("A") - 1) + 1)
         return keys + [following if following <= "Z" else ""]
 
     @property

@@ -129,7 +129,7 @@ class LayoutTests(SelectorTestCase):
                 "     繼續保留在目前分支。",
                 "  D. 其他（自己輸入）",
             ])
-            self.assertEqual(self.keys(app), "Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Tab 備註 · Esc 關閉")
+            self.assertEqual(self.keys(app), "A–I／Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Tab 備註 · Esc 關閉")
             self.assertEqual(self.status(app), "")
 
     async def test_view_wraps_mixed_cjk_text_between_characters(self):
@@ -464,6 +464,35 @@ class LetterKeyTests(SelectorTestCase):
             self.assertIn("❯ A. [x] 主控綁定", self.view(app))
             await self.press(pilot, "a", "D", *"xy", "escape")
             self.assertIn("答覆：通知；其他：xy\n", section(self.text(), "Q2"))
+
+    async def test_each_letter_key_picks_its_own_row(self):
+        options = "".join(f"{chr(65 + index)}. 選項{index + 1}\n" for index in range(9))
+        self.questions.write_text(TEXT.replace("請自由回答。", options))
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            for index, key in enumerate("abcdefghiABCDEFGHI"):
+                await self.press(pilot, key)
+                letter = key.upper()
+                self.assertIn(f"答覆：{letter}. 選項{ord(letter) - 64}\n", self.text(), key)
+
+    async def test_raw_editor_keeps_letters_as_text(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "ctrl+e")
+            app.editor.move_cursor(app.editor.document.end)
+            await self.press(pilot, "a", "B")
+            self.assertTrue(app.editor.text.endswith("aB"))
+            self.assertIn("答覆：\n\n- [ ] 送出", section(app.editor.text, "Q1"))
+
+    async def test_multi_rows_past_z_have_no_letter(self):
+        options = "".join(f"- [ ] 選項{index + 1}\n" for index in range(27))
+        self.questions.write_text(TEXT.replace("請自由回答。", options))
+        app = self.make_app()
+        async with app.run_test(size=(80, 60)):
+            self.assertIn("  Z. [ ] 選項26", self.view(app))
+            self.assertIn("\n  [ ] 選項27", self.view(app))
+            self.assertIn("\n  [ ] 其他（自己輸入）", self.view(app))
+            self.assertNotIn("[.", self.view(app))
 
     async def test_input_only_question_types_letters(self):
         app = self.make_app()
