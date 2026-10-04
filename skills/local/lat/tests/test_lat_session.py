@@ -12,6 +12,7 @@ import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-session.py'
 SKILL = SCRIPT.parent.parent
+PANEL = SKILL / 'herdr-panel/lat_panel.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
 OTHER = '22222222-2222-4222-8222-222222222222'
 
@@ -30,8 +31,13 @@ class SessionTests(unittest.TestCase):
         self.decisions.mkdir()
         self.record = self.work / '.lat/sessions' / f'{SESSION}.json'
 
-    def cli(self, *args, payload=None, session=SESSION):
+    def cli(self, *args, payload=None, session=SESSION, extra_env=None):
         env = dict(os.environ, CODEX_THREAD_ID=session, CLAUDE_CODE_SESSION_ID='')
+        for variable in ('HERDR_WORKSPACE_ID', 'HERDR_TAB_ID', 'HERDR_PANE_ID',
+                         'HERDR_PLUGIN_CONFIG_DIR', 'HCOM_INSTANCE_NAME'):
+            env.pop(variable, None)
+        env['HERDR_PLUGIN_CONFIG_DIR'] = str(self.root / 'plugin-config')
+        env.update(extra_env or {})
         return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
                               input=json.dumps(payload) if payload is not None else '',
                               text=True, capture_output=True, env=env, cwd=self.work)
@@ -47,6 +53,172 @@ class SessionTests(unittest.TestCase):
                        cwd=str(self.work), session_id=SESSION)
         payload.update(overrides)
         return self.cli('hook', payload=payload, session=OTHER)
+
+    def panel_env(self, herdr_body=None):
+        binary = self.root / 'bin'
+        binary.mkdir(exist_ok=True)
+        herdr = binary / 'herdr'
+        herdr.write_text(herdr_body or (
+            '#!/bin/sh\n'
+            'test "$*" = "plugin list --plugin lat.panel --json" || exit 91\n'
+            'printf \'%s\\n\' \'{"result":{"plugins":[{"plugin_id":"lat.panel","enabled":true}]}}\'\n'
+        ))
+        herdr.chmod(0o755)
+        return {
+            'PATH': f'{binary}:{os.environ["PATH"]}',
+            'HERDR_WORKSPACE_ID': 'herdr-workspace',
+            'HERDR_TAB_ID': 'herdr-tab',
+            'HERDR_PANE_ID': 'herdr-pane',
+            'HERDR_PLUGIN_CONFIG_DIR': str(self.root / 'plugin-config'),
+        }
+
+    def test_activate_binds_enabled_panel_and_prints_questions_path(self):
+        result = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--hcom-name', 'nifo-bind-lezo',
+            extra_env=self.panel_env(),
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        questions = self.work / '.lat/questions-nifo-bind-lezo.md'
+        self.assertIn(str(questions), result.stdout)
+        bindings = json.loads(
+            (self.root / 'plugin-config/bindings.json').read_text()
+        )['bindings']
+        self.assertEqual(bindings[SESSION]['questions_path'], str(questions))
+
+    def test_enabled_panel_without_explicit_hcom_name_fails_before_record_creation(self):
+        env = self.panel_env()
+        env['HCOM_INSTANCE_NAME'] = 'stale-name-must-not-be-used'
+        result = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, extra_env=env,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        remedy = (
+            f'uv run --no-project python {SCRIPT} activate --client codex '
+            f'--workspace {self.work} --progress {self.progress} '
+            f'--decisions {self.decisions} --hcom-name \'<主控-HCOM-名稱>\''
+        )
+        self.assertIn(remedy, result.stderr)
+        self.assertFalse(self.record.exists())
+        self.assertFalse((self.root / 'plugin-config/bindings.json').exists())
+
+    def test_activate_without_enabled_panel_keeps_working_and_explains_skip(self):
+        result = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(self.record.exists())
+        self.assertIn('面板未啟用，略過綁定', result.stdout)
+
+    def test_missing_herdr_command_counts_as_disabled_even_inside_workspace(self):
+        binary = self.root / 'empty-bin'
+        binary.mkdir()
+        result = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions,
+            extra_env={'PATH': str(binary), 'HERDR_WORKSPACE_ID': 'herdr-workspace'},
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('面板未啟用，略過綁定', result.stdout)
+
+    def test_disabled_panel_list_entry_keeps_activation_unbound(self):
+        env = self.panel_env(
+            '#!/bin/sh\n'
+            'printf \'%s\\n\' \'{"plugins":[{"plugin_id":"lat.panel","enabled":false}]}\'\n'
+        )
+        result = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, extra_env=env,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('面板未啟用，略過綁定', result.stdout)
+        self.assertFalse((self.root / 'plugin-config/bindings.json').exists())
+
+    def test_plugin_list_failure_is_loud_and_does_not_create_record(self):
+        env = self.panel_env('#!/bin/sh\necho "socket unavailable" >&2\nexit 23\n')
+        result = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--hcom-name', 'nifo-bind-lezo',
+            extra_env=env,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('cannot check lat.panel: socket unavailable', result.stderr)
+        self.assertIn('請修復 Herdr 後重新執行：uv run --no-project', result.stderr)
+        self.assertFalse(self.record.exists())
+
+    def test_unexpected_plugin_list_json_is_loud_and_does_not_create_record(self):
+        env = self.panel_env('#!/bin/sh\nprintf \'%s\\n\' \'{}\'\n')
+        result = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--hcom-name', 'nifo-bind-lezo',
+            extra_env=env,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('missing plugins list', result.stderr)
+        self.assertFalse(self.record.exists())
+
+    def test_bind_failure_keeps_active_record_and_prints_manual_command(self):
+        env = self.panel_env()
+        env.pop('HERDR_PANE_ID')
+        result = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--hcom-name', 'nifo-bind-lezo',
+            extra_env=env,
+        )
+
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+        manual = (
+            f'uv run --no-project python {PANEL} bind '
+            f'--hcom-name nifo-bind-lezo --client codex --session-id {SESSION} '
+            f'--workspace {self.work}'
+        )
+        self.assertIn(manual, result.stderr)
+        self.assertNotIn("--herdr-pane ''", result.stderr)
+
+        env['HERDR_PANE_ID'] = 'repaired-pane'
+        recovered = subprocess.run(
+            [sys.executable, str(PANEL), 'bind', '--hcom-name', 'nifo-bind-lezo',
+             '--client', 'codex', '--session-id', SESSION, '--workspace', self.work],
+            text=True, capture_output=True, env=env, cwd=self.work,
+        )
+        self.assertEqual(recovered.returncode, 0, recovered.stderr)
+        binding = json.loads(recovered.stdout)['binding']
+        self.assertEqual(binding['herdr_pane'], 'repaired-pane')
+
+    def test_deactivate_unbinds_own_session_and_is_idempotent(self):
+        env = self.panel_env()
+        activated = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--hcom-name', 'nifo-bind-lezo',
+            extra_env=env,
+        )
+        self.assertEqual(activated.returncode, 0, activated.stderr)
+        deactivate_args = (
+            'deactivate', '--workspace', self.work, '--status', 'completed',
+            '--session-id', SESSION,
+        )
+
+        first = self.cli(*deactivate_args, session=OTHER, extra_env=env)
+        second = self.cli(*deactivate_args, session=OTHER, extra_env=env)
+
+        self.assertEqual(first.returncode, 0, first.stderr)
+        self.assertEqual(second.returncode, 0, second.stderr)
+        self.assertIn('"removed": 1', first.stdout)
+        self.assertIn('"removed": 0', second.stdout)
+        bindings = json.loads(
+            (self.root / 'plugin-config/bindings.json').read_text()
+        )['bindings']
+        self.assertEqual(bindings, {})
 
     def test_activate_then_compact_and_resume_from_subdirectory(self):
         self.activate()
@@ -256,6 +428,10 @@ class SessionTests(unittest.TestCase):
 
     def test_claude_controller_record_and_hook_are_client_scoped(self):
         env = dict(os.environ, CODEX_THREAD_ID='', CLAUDE_CODE_SESSION_ID=SESSION)
+        for variable in ('HERDR_WORKSPACE_ID', 'HERDR_TAB_ID', 'HERDR_PANE_ID',
+                         'HCOM_INSTANCE_NAME'):
+            env.pop(variable, None)
+        env['HERDR_PLUGIN_CONFIG_DIR'] = str(self.root / 'plugin-config')
         result = subprocess.run([sys.executable, str(SCRIPT), 'activate', '--client', 'claude',
                                  '--workspace', self.work, '--progress', self.progress,
                                  '--decisions', self.decisions],

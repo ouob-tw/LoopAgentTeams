@@ -43,6 +43,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   question set-status --questions PATH --id ID --revision N --status recorded \
       --expected-section-sha256 HASH
   question archive-recorded --questions PATH --older-than 300
+  question check-pending --questions PATH --decisions DIR
   bind --hcom-name NAME --client CLIENT --session-id ID --workspace ROOT \
        [--herdr-workspace ID] [--herdr-tab ID] [--herdr-pane ID]
   unbind --session-id ID
@@ -864,6 +865,56 @@ def _archive_path(questions_path):
     return questions_path.with_name(f"{questions_path.stem}-archive{questions_path.suffix}")
 
 
+def pending_question_gaps(questions_path, decisions_path):
+    """Return panel entries for pending decisions across controller files."""
+    questions_path = Path(questions_path)
+    decisions_path = Path(decisions_path)
+    if not decisions_path.is_dir():
+        raise ValueError(f"decisions directory does not exist: {decisions_path}")
+    pending_ids = []
+    for decision in sorted(decisions_path.glob("*.md")):
+        if "- status: pending" in decision.read_text(encoding="utf-8").splitlines():
+            pending_ids.append(decision.stem)
+
+    question_files = sorted(
+        path for path in questions_path.parent.glob("questions-*.md")
+        if not path.stem.endswith("-archive")
+    )
+    current = {}
+    for path in question_files:
+        for question in parse_questions(path.read_text(encoding="utf-8")):
+            current.setdefault(question["id"], []).append((path, question))
+    archived = {}
+    for path in sorted(questions_path.parent.glob("questions-*-archive.md")):
+        for question in parse_questions(path.read_text(encoding="utf-8")):
+            archived.setdefault(question["id"], []).append((path, question))
+    present = []
+    missing = []
+    inconsistent = []
+    for identifier in pending_ids:
+        matches = current.get(identifier, [])
+        waiting = next(
+            ((path, question) for path, question in matches
+             if question["status_label"] == "待答"),
+            None,
+        )
+        if waiting:
+            present.append((identifier, waiting[0]))
+            continue
+        recorded = next(
+            ((path, question) for path, question in matches
+             if question["status_label"] == "已記錄"),
+            None,
+        )
+        if recorded:
+            inconsistent.append((identifier, "問題檔已記錄", recorded[0]))
+        elif identifier in archived:
+            inconsistent.append((identifier, "問題已歸檔", archived[identifier][0][0]))
+        else:
+            missing.append(identifier)
+    return present, missing, inconsistent
+
+
 def _append_archive(path, sections):
     path.parent.mkdir(parents=True, exist_ok=True)
     existing = path.read_text(encoding="utf-8") if path.exists() else ""
@@ -954,6 +1005,46 @@ def plugin_directory(kind, env=None):
         return base / "herdr/plugins/config/lat.panel"
     base = Path(env.get("XDG_STATE_HOME", Path.home() / ".local/state"))
     return base / "herdr/plugins/lat.panel"
+
+
+def panel_enabled(env=None):
+    """Return whether this shell is in Herdr with the LAT panel enabled."""
+    env = os.environ if env is None else env
+    if not env.get("HERDR_WORKSPACE_ID"):
+        return False
+    try:
+        result = subprocess.run(
+            ["herdr", "plugin", "list", "--plugin", "lat.panel", "--json"],
+            text=True, capture_output=True, timeout=10, check=True, env=env,
+        )
+        payload = json.loads(result.stdout)
+    except FileNotFoundError:
+        return False
+    except OSError as error:
+        raise ValueError(f"cannot check lat.panel: {error}") from error
+    except subprocess.CalledProcessError as error:
+        reason = error.stderr.strip() or f"herdr plugin list exited {error.returncode}"
+        raise ValueError(f"cannot check lat.panel: {reason}") from error
+    except subprocess.TimeoutExpired as error:
+        raise ValueError("cannot check lat.panel: herdr plugin list timed out") from error
+    except json.JSONDecodeError as error:
+        raise ValueError("cannot check lat.panel: invalid JSON from herdr plugin list") from error
+    if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
+        payload = payload["result"]
+    if isinstance(payload, dict):
+        if "plugins" not in payload:
+            raise ValueError("cannot check lat.panel: missing plugins list")
+        plugins = payload["plugins"]
+    else:
+        plugins = payload
+    if not isinstance(plugins, list):
+        raise ValueError("cannot check lat.panel: invalid plugins list")
+    return any(
+        isinstance(plugin, dict)
+        and plugin.get("plugin_id") == "lat.panel"
+        and plugin.get("enabled") is True
+        for plugin in plugins
+    )
 
 
 def _bindings_path(config_dir=None):
@@ -1265,6 +1356,9 @@ def _build_parser():
         "--questions", type=Path, default=Path(".lat/questions.md")
     )
     archive_recorded.add_argument("--older-than", type=float, default=300)
+    check_pending = question_commands.add_parser("check-pending")
+    check_pending.add_argument("--questions", required=True, type=Path)
+    check_pending.add_argument("--decisions", required=True, type=Path)
     bind = commands.add_parser("bind")
     bind.add_argument("--hcom-name", required=True)
     bind.add_argument("--client", required=True)
@@ -1324,6 +1418,29 @@ def main(argv=None):
             if archived is None:
                 raise ValueError("questions changed while archiving; retry")
             print(json.dumps({"archived": archived}, ensure_ascii=False))
+            return 0
+        if args.command == "question" and args.question_command == "check-pending":
+            if not panel_enabled():
+                print("面板未啟用，略過檢查")
+                return 0
+            present, missing, inconsistent = pending_question_gaps(
+                args.questions, args.decisions
+            )
+            if present:
+                print("已找到待答題目：")
+                for identifier, path in present:
+                    print(f"- {identifier}：{path}")
+            if missing:
+                print("遺漏待答題目：")
+                for identifier in missing:
+                    print(f"- {identifier}")
+            if inconsistent:
+                print("狀態不一致（決策仍為 pending）：")
+                for identifier, reason, path in inconsistent:
+                    print(f"- {identifier}：{reason}：{path}")
+            if missing or inconsistent:
+                return 1
+            print("沒有遺漏")
             return 0
         if args.command == "bind":
             binding, replaced, legacy_ignored = bind_controller(
