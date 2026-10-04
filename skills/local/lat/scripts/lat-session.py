@@ -197,7 +197,25 @@ def _ensure_watcher_locked(record):
     return process.pid
 
 
-def ensure_watcher(record, record_path):
+def refresh_binding(record):
+    """Point the panel binding at the Herdr pane this process runs in; never raise.
+
+    A resumed session runs in a new Herdr tab and pane, so the IDs bound at
+    activate go stale. Without all three IDs the binding is left as it is.
+    """
+    herdr = [os.environ.get(f'HERDR_{name}_ID') for name in ('WORKSPACE', 'TAB', 'PANE')]
+    if not all(herdr):
+        return
+    try:
+        panel = panel_module()
+        if panel.panel_enabled():
+            panel.bind_controller(record['hcom_name'], record['client'], record['session_id'],
+                                  record['workspace'], *herdr)
+    except (OSError, ValueError):
+        pass
+
+
+def ensure_watcher(record, record_path, *, rebind=False):
     _, lock_path, _ = watcher_paths(record)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
     with lock_path.open('a') as lock:
@@ -210,7 +228,11 @@ def ensure_watcher(record, record_path):
         if any(key not in latest for key in expected):
             raise ValueError('Incomplete controller identity')
         dependencies(latest)
-        return _ensure_watcher_locked(latest)
+        pid = _ensure_watcher_locked(latest)
+        # Under the lock deactivate also holds, so a stopped session is not bound again.
+        if rebind:
+            refresh_binding(latest)
+        return pid
 
 
 def process_group_exists(pgid):
@@ -468,7 +490,7 @@ def hook(client):
         if any(key not in record for key in expected):
             raise ValueError('Incomplete controller identity')
         dependencies(record)
-        if ensure_watcher(record, path) is None:
+        if ensure_watcher(record, path, rebind=True) is None:
             return
         context(pointer(path))
     except (OSError, ValueError, TypeError, KeyError):

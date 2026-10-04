@@ -34,6 +34,8 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 
 - Herdr 的 workspace、tab、pane 預設取 `HERDR_WORKSPACE_ID`、`HERDR_TAB_ID`、`HERDR_PANE_ID`；缺任何一個就報錯、不猜測，補齊後再執行錯誤印出的手動指令。
 - 綁定以 session ID 為鍵，重綁只更新自己。輸出的 `replaced` 不是 `null` 表示更新了自己上一筆綁定。
+- compact／resume 時，恢復 hook 會以 hook 當下的 `HERDR_WORKSPACE_ID`、`HERDR_TAB_ID`、`HERDR_PANE_ID` 自動重綁自己（接回後 Herdr 的 tab／pane 編號會變）。三個缺任何一個、面板未啟用或查詢失敗時不改動綁定，也不輸出訊息。接回後面板仍落到選單時，才手動執行上方備用指令。
+- 使用者在沒有主控的 tab 開面板、而同 workspace 有多個主控時，面板顯示選單：一列一個主控，列出 HCOM 名稱、專案資料夾、所在 Herdr 分頁（有名稱顯示名稱）、待答題數與第一題標題；pane 已不存在的綁定標示「視窗已不存在」。使用者以 ↑↓／Enter 或數字鍵選擇。
 - 輸出 `legacy bindings ignored` 或 `legacy_ignored` 表示有舊版綁定資料被略過；舊的 `.lat/questions.md` 不會自動搬移，仍待決的題目由主控重新寫入自己的問題檔。
 
 ## 寫題

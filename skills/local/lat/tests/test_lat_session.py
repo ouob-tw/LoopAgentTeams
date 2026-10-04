@@ -116,11 +116,11 @@ class SessionTests(unittest.TestCase):
                 return True
         return False
 
-    def hook(self, **overrides):
+    def hook(self, extra_env=None, **overrides):
         payload = dict(hook_event_name='SessionStart', source='compact',
                        cwd=str(self.work), session_id=SESSION)
         payload.update(overrides)
-        return self.cli('hook', payload=payload, session=OTHER)
+        return self.cli('hook', payload=payload, session=OTHER, extra_env=extra_env)
 
     def panel_env(self, herdr_body=None):
         herdr = self.binary / 'herdr'
@@ -418,6 +418,85 @@ class SessionTests(unittest.TestCase):
         new_pid = self.watcher_pid()
         self.assertNotEqual(new_pid, old_pid)
         self.wait_for(lambda: len(self.fake_uv_log.read_text().splitlines()) == 2)
+
+    def activate_bound(self):
+        env = self.panel_env()
+        result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                          '--decisions', self.decisions, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return env
+
+    def binding(self, session=SESSION):
+        path = self.root / 'plugin-config/bindings.json'
+        return json.loads(path.read_text())['bindings'].get(session)
+
+    def assert_only_pointer(self, result):
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertEqual(len(result.stdout.splitlines()), 1)
+        context = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
+        self.assertTrue(context.startswith(f'LAT recovery record: {self.record}\n'))
+        for text in ('herdr', 'binding', '綁定'):
+            self.assertNotIn(text, context)
+
+    def test_hook_rebinds_resumed_controller_to_its_new_tab_and_pane(self):
+        env = self.activate_bound()
+        before = self.binding()
+        self.assertEqual((before['herdr_tab'], before['herdr_pane']),
+                         ('herdr-tab', 'herdr-pane'))
+        resumed = dict(env, HERDR_WORKSPACE_ID='moved-workspace', HERDR_TAB_ID='new-tab',
+                       HERDR_PANE_ID='new-pane')
+
+        for source in ('resume', 'compact'):
+            result = self.hook(extra_env=resumed, source=source)
+            self.assert_only_pointer(result)
+            self.assertEqual(self.binding(), dict(
+                before, herdr_workspace='moved-workspace', herdr_tab='new-tab',
+                herdr_pane='new-pane',
+            ))
+
+    def test_hook_keeps_binding_when_any_herdr_id_is_missing(self):
+        env = self.activate_bound()
+        before = self.binding()
+        resumed = dict(env, HERDR_WORKSPACE_ID='moved-workspace', HERDR_TAB_ID='new-tab',
+                       HERDR_PANE_ID='new-pane')
+        for missing in ('HERDR_WORKSPACE_ID', 'HERDR_TAB_ID', 'HERDR_PANE_ID'):
+            with self.subTest(missing=missing):
+                partial = {key: value for key, value in resumed.items() if key != missing}
+                self.assert_only_pointer(self.hook(extra_env=partial, source='resume'))
+                self.assertEqual(self.binding(), before)
+
+    def test_hook_rebind_failure_or_disabled_panel_stays_silent_and_unchanged(self):
+        env = self.activate_bound()
+        before = self.binding()
+        resumed = dict(env, HERDR_TAB_ID='new-tab', HERDR_PANE_ID='new-pane')
+        for name, herdr_body in (
+            ('server unavailable', '#!/bin/sh\necho "server unavailable" >&2\nexit 7\n'),
+            ('disabled', '#!/bin/sh\nprintf \'%s\\n\' \'{"result":{"plugins":'
+                         '[{"plugin_id":"lat.panel","enabled":false}]}}\'\n'),
+        ):
+            with self.subTest(name):
+                self.panel_env(herdr_body)
+                self.assert_only_pointer(self.hook(extra_env=resumed, source='resume'))
+                self.assertEqual(self.binding(), before)
+
+        (self.root / 'plugin-config/bindings.json').write_text('{broken')
+        self.panel_env()
+        self.assert_only_pointer(self.hook(extra_env=resumed, source='resume'))
+        self.assertEqual((self.root / 'plugin-config/bindings.json').read_text(), '{broken')
+
+    def test_hook_does_not_bind_a_deactivated_or_foreign_session(self):
+        env = self.activate_bound()
+        resumed = dict(env, HERDR_TAB_ID='new-tab', HERDR_PANE_ID='new-pane')
+        before = self.binding()
+        self.assert_silent(self.hook(extra_env=resumed, source='resume', session_id=OTHER))
+        self.assertEqual(self.binding(), before)
+        self.assertIsNone(self.binding(OTHER))
+
+        stopped = self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
+                           extra_env=env)
+        self.assertEqual(stopped.returncode, 0, stopped.stderr)
+        self.assert_silent(self.hook(extra_env=resumed, source='resume'))
+        self.assertIsNone(self.binding())
 
     def test_deactivate_serializes_status_change_against_waiting_hook(self):
         self.activate()

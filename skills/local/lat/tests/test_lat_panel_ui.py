@@ -387,7 +387,7 @@ class RawEditorTests(PanelTestCase):
 
 
 class OpenActionTests(PanelTestCase):
-    def open(self, workspace, tab, panes=None, *, snapshot_error=None):
+    def open(self, workspace, tab, panes=None, *, snapshot_error=None, tabs=None):
         requests = []
 
         def request(method, params, env):
@@ -396,7 +396,7 @@ class OpenActionTests(PanelTestCase):
                 if snapshot_error:
                     raise RuntimeError(snapshot_error)
                 return {"result": {"type": "session_snapshot", "snapshot": {
-                    "panes": panes or [],
+                    "panes": panes or [], **({} if tabs is None else {"tabs": tabs}),
                 }}}
             return {"result": "ok"}
 
@@ -438,6 +438,11 @@ class OpenActionTests(PanelTestCase):
         self.assertEqual([item["session_id"] for item in choices], ["s-a", "s-b"])
         self.assertNotIn("LAT_PANEL_FILE", picker)
 
+        self.assertEqual(
+            [(item["tab_name"], item["pane_missing"]) for item in choices],
+            [("tab-a", True), ("tab-b", True)],
+        )
+
         unbound = self.open("ws-unknown", "tab-z", [])
         self.assertNotIn("LAT_PANEL_FILE", unbound)
         self.assertEqual(unbound["LAT_PANEL_ERROR"], self.panel.NO_BINDING)
@@ -445,6 +450,115 @@ class OpenActionTests(PanelTestCase):
             self.panel.Panel.from_env({"LAT_PANEL_ERROR": self.panel.NO_BINDING}).notices["file"],
             self.panel.NO_BINDING,
         )
+
+    def test_picker_choices_carry_live_tab_name_and_missing_pane(self):
+        self.core.bind_controller(
+            "ctl-b", "codex", "s-b", self.root / "other", "ws-a", "old-tab", "pane-b"
+        )
+        self.core.bind_controller(
+            "ctl-c", "codex", "s-c", self.root / "third", "ws-a", "tab-c", "pane-gone"
+        )
+        panes = [
+            {"pane_id": "pane-a", "tab_id": "tab-a", "workspace_id": "ws-a"},
+            {"pane_id": "pane-b", "tab_id": "moved-tab", "workspace_id": "ws-a"},
+        ]
+        tabs = [
+            {"tab_id": "tab-a", "label": "規格"},
+            {"tab_id": "moved-tab", "label": " "},
+            {"tab_id": "tab-c", "label": "舊分頁"},
+        ]
+        choices = json.loads(
+            self.open("ws-a", "elsewhere", panes, tabs=tabs)["LAT_PANEL_CHOICES"]
+        )
+        self.assertEqual(
+            [(item["hcom_name"], item["tab_name"], item["pane_missing"]) for item in choices],
+            [("ctl-a", "規格", False), ("ctl-b", "moved-tab", False), ("ctl-c", "舊分頁", True)],
+        )
+        self.assertEqual(choices[1]["herdr_tab"], "old-tab")
+
+        fallback = json.loads(
+            self.open("ws-a", "elsewhere", snapshot_error="unavailable")["LAT_PANEL_CHOICES"]
+        )
+        self.assertTrue(all(
+            "tab_name" not in item and "pane_missing" not in item for item in fallback
+        ))
+
+    async def test_picker_rows_name_each_controller_and_arrows_enter_select(self):
+        other = self.root / "other"
+        other_questions = other / ".lat/questions-ctl-b.md"
+        other_questions.parent.mkdir(parents=True)
+        long_title = "這是一個非常非常長的待答問題標題需要截短"
+        other_questions.write_text(
+            QUESTIONS.replace("Q1", "Q2").replace("Choose?", long_title)
+            + QUESTIONS.replace("Q1", "Q3")
+            + QUESTIONS.replace("Q1", "Q4").replace("- [ ] 送出", "- [x] 送出")
+                .replace("答覆：\n", "答覆：A. Yes\n")
+            + QUESTIONS.replace("Q1 · r1 · 待答", "Q5 · r1 · 已記錄")
+        )
+        choices = [
+            {
+                "hcom_name": "ctl-a", "workspace": str(self.project),
+                "questions_path": str(self.questions), "session_id": "s-a",
+                "herdr_tab": "tab-a", "tab_name": "規格", "pane_missing": False,
+            },
+            {
+                "hcom_name": "ctl-b", "workspace": str(other),
+                "questions_path": str(other_questions), "session_id": "s-b",
+                "herdr_tab": "tab-b", "tab_name": "tab-b", "pane_missing": True,
+            },
+            {
+                "hcom_name": "ctl-c", "workspace": str(self.project),
+                "questions_path": str(self.root / "absent.md"), "session_id": "s-c",
+                "herdr_tab": "tab-c",
+            },
+        ]
+        app = self.panel.Panel.from_env({
+            "LAT_PANEL_HERDR_WORKSPACE": "ws-a",
+            "LAT_PANEL_CHOICES": json.dumps(choices),
+            "HERDR_CONFIG_PATH": str(self.config),
+        })
+        rows = [
+            "1 ctl-a｜project｜分頁 規格｜待答 1 題：Choose?",
+            f"2 ctl-b｜other｜分頁 tab-b｜待答 2 題：{self.panel.short_title(long_title)}"
+            "｜視窗已不存在",
+            "3 ctl-c｜project｜分頁 tab-c｜沒有待答",
+        ]
+
+        def picker(current):
+            return "\n".join([self.panel.PICKER_TITLE] + [
+                f"{'▶' if index == current else ' '} {row}" for index, row in enumerate(rows)
+            ])
+
+        async with app.run_test() as pilot:
+            self.assertLess(len(self.panel.short_title(long_title)), len(long_title))
+            self.assertEqual(str(app.query_one("#picker").render()), picker(0))
+            self.assertEqual(str(app.query_one("#keys").render()), self.panel.PICKER_KEYS)
+            for key in ("↑↓", "Enter", "1–9"):
+                self.assertIn(key, self.panel.PICKER_KEYS)
+            await pilot.press("up")
+            await pilot.pause()
+            self.assertEqual(str(app.query_one("#picker").render()), picker(0))
+            await pilot.press("down", "down", "down")
+            await pilot.pause()
+            self.assertEqual(str(app.query_one("#picker").render()), picker(2))
+            text = app.picker_text()
+            self.assertEqual(
+                [text.plain[span.start:span.end].strip() for span in text.spans
+                 if "reverse" in str(span.style)],
+                [f"▶ {rows[2]}"],
+            )
+            await pilot.press("up")
+            await pilot.pause()
+            self.assertEqual(str(app.query_one("#picker").render()), picker(1))
+            self.assertTrue(app.picker_active)
+            await pilot.press("enter")
+            await pilot.pause()
+            self.assertFalse(app.picker_active)
+            self.assertEqual(app.session_id, "s-b")
+            self.assertEqual(app.path, other_questions)
+            self.assertEqual(app.tab_ids, ["Q2", "Q3", "Q4"])
+            self.assertFalse(app.query_one("#picker").display)
+            self.assertEqual(str(app.query_one("#keys").render()), self.panel.KEYS)
 
     async def test_picker_accepts_digit_ignores_invalid_key_and_ctrl_q_closes(self):
         other = self.root / "other"
@@ -475,8 +589,11 @@ class OpenActionTests(PanelTestCase):
         app = self.panel.Panel.from_env(panel_env)
         async with app.run_test() as pilot:
             self.assertEqual(
-                str(app.query_one("#picker").render()),
-                "1 ctl-a（project）  2 ctl-b（other）",
+                str(app.query_one("#picker").render()).splitlines()[1:],
+                [
+                    "▶ 1 ctl-a｜project｜分頁 ｜待答 1 題：Choose?",
+                    "  2 ctl-b｜other｜分頁 ｜待答 1 題：Choose?",
+                ],
             )
             await pilot.press("x")
             await pilot.pause()
@@ -502,17 +619,45 @@ class OpenActionTests(PanelTestCase):
                 "questions_path": str(questions),
                 "session_id": f"s-{index}",
             })
-        app = self.panel.Panel.from_env({
+        panel_env = {
             "LAT_PANEL_HERDR_WORKSPACE": "ws-a",
             "LAT_PANEL_CHOICES": json.dumps(choices),
             "HERDR_CONFIG_PATH": str(self.config),
-        })
+        }
+        app = self.panel.Panel.from_env(dict(panel_env))
         async with app.run_test() as pilot:
-            self.assertIn("[1/2] ←/→ 換頁", str(app.query_one("#picker").render()))
-            await pilot.press("right")
+            def lines():
+                return str(app.query_one("#picker").render()).splitlines()
+
+            self.assertIn("[1/2] ←/→ 換頁", lines()[0])
+            self.assertEqual(len(lines()), 10)
+            await pilot.press("9")
             await pilot.pause()
-            self.assertIn("1 ctl-10（project-10）", str(app.query_one("#picker").render()))
-            await pilot.press("1")
+            self.assertEqual(app.session_id, "s-9")
+
+        app = self.panel.Panel.from_env(dict(panel_env))
+        async with app.run_test() as pilot:
+            for _ in range(9):
+                await pilot.press("down")
+            await pilot.pause()
+            self.assertEqual(
+                lines(), [f"{self.panel.PICKER_TITLE}  [2/2] ←/→ 換頁",
+                          "▶ 1 ctl-10｜project-10｜分頁 ｜待答 1 題：Choose?"],
+            )
+            await pilot.press("down", "up")
+            await pilot.pause()
+            self.assertIn("[1/2]", lines()[0])
+            self.assertTrue(lines()[9].startswith("▶ 9 ctl-9｜"))
+            await pilot.press("right", "right")
+            await pilot.pause()
+            self.assertTrue(lines()[1].startswith("▶ 1 ctl-10｜"))
+            await pilot.press("left", "left")
+            await pilot.pause()
+            self.assertTrue(lines()[1].startswith("▶ 1 ctl-1｜"))
+            await pilot.press("right", "2")
+            await pilot.pause()
+            self.assertTrue(app.picker_active)
+            await pilot.press("enter")
             await pilot.pause()
             self.assertEqual(app.session_id, "s-10")
             self.assertEqual(app.tab_ids, ["Q10"])
