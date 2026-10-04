@@ -249,30 +249,27 @@ def answer_label(label):
     return label.removesuffix(RECOMMENDED).rstrip()
 
 
-def short_title(title):
-    if cell_len(title) <= TAB_TITLE_CELLS:
+def short_title(title, cells=TAB_TITLE_CELLS):
+    if cell_len(title) <= cells:
         return title
     shortened = ""
     for character in title:
-        if cell_len(shortened + character) > TAB_TITLE_CELLS - 1:
+        if cell_len(shortened + character) > cells - 1:
             break
         shortened += character
     return shortened + "…"
 
 
-def pending_summary(questions_path):
-    """Say how many questions wait for an answer in a file, and name the first."""
+def pending_titles(questions_path):
+    """Return the titles of the questions waiting for an answer in a file."""
     try:
         text = Path(questions_path).read_text(encoding="utf-8")
     except (OSError, ValueError):
         text = ""
-    titles = [
+    return [
         section["title"] for section in lat_panel.parse_questions(text)
         if section["status"] == "pending"
     ]
-    if not titles:
-        return "沒有待答"
-    return f"待答 {len(titles)} 題：{short_title(titles[0])}"
 
 
 class Draft:
@@ -481,7 +478,7 @@ class Panel(App):
     ENABLE_COMMAND_PALETTE = False
     AUTO_FOCUS = None
     CSS = """
-    #picker { height: auto; padding: 0 1; }
+    #picker { height: auto; padding: 0 1; text-wrap: nowrap; }
     #tabs { height: 1; padding: 0 1; }
     #body { height: 1fr; scrollbar-gutter: stable; }
     #view { padding: 1 1 0 0; }
@@ -533,7 +530,7 @@ class Panel(App):
         self.picker_active = bool(self.choices)
         self.picker_cursor = 0
         self.picker_pending = [
-            pending_summary(item.get("questions_path", "")) for item in self.choices
+            pending_titles(item.get("questions_path", "")) for item in self.choices
         ]
         self.raw_mode = False
         self.drafts = {}
@@ -603,7 +600,7 @@ class Panel(App):
         return CellMouseDriver
 
     def compose(self) -> ComposeResult:
-        yield Static(self.picker_text(), id="picker", markup=False)
+        yield Static("", id="picker", markup=False)
         yield Tabs("", id="tabs", markup=False)
         with Body(id="body"):
             yield View("", id="view", markup=False)
@@ -626,6 +623,7 @@ class Panel(App):
             self.query_one("#tabs", Static).display = False
             self.query_one("#body").display = False
             self.query_one("#keys", Static).update(PICKER_KEYS)
+            self.query_one("#picker", Static).update(self.picker_text())
             self.render_status()
             return
         self.open_file()
@@ -646,30 +644,66 @@ class Panel(App):
             self.start_notification()
 
     @property
-    def picker_page(self):
-        return self.picker_cursor // self.PICKER_PAGE_SIZE
+    def picker_page_size(self):
+        """Up to nine rows, fewer when the pane cannot show the title, rows and keys."""
+        if not self.size.height:
+            return self.PICKER_PAGE_SIZE
+        status = self.query_one("#status", Static)
+        notices = status.size.height if status.display else 0
+        height = self.size.height
+        return max(1, min(self.PICKER_PAGE_SIZE, height - 2 - notices))
 
-    def picker_text(self):
-        """One controller per row; the row under the cursor is marked."""
-        start = self.picker_page * self.PICKER_PAGE_SIZE
-        text = Text(PICKER_TITLE, no_wrap=True, overflow="ellipsis")
-        page_count = (len(self.choices) + self.PICKER_PAGE_SIZE - 1) // self.PICKER_PAGE_SIZE
-        if page_count > 1:
-            text.append(f"  [{self.picker_page + 1}/{page_count}] ←/→ 換頁")
-        visible = self.choices[start:start + self.PICKER_PAGE_SIZE]
-        for index, item in enumerate(visible, start):
-            current = index == self.picker_cursor
-            parts = [
-                item.get("hcom_name", ""), Path(item.get("workspace", "")).name,
-                f"分頁 {item.get('tab_name') or item.get('herdr_tab', '')}",
-                self.picker_pending[index],
-            ]
+    @property
+    def picker_page(self):
+        return self.picker_cursor // self.picker_page_size
+
+    def picker_row(self, index, number, width):
+        """One display line naming a controller.
+
+        When the line is too wide the first pending title gives way first, down to
+        eight cells, then the longest of name, folder and tab, down to eight cells each.
+        """
+        item = self.choices[index]
+        names = [
+            item.get("hcom_name", ""), Path(item.get("workspace", "")).name,
+            item.get("tab_name") or item.get("herdr_tab", ""),
+        ]
+        titles = self.picker_pending[index]
+        marker = "▶" if index == self.picker_cursor else " "
+
+        def row(cells):
+            name, folder, tab = (short_title(text, size) for text, size in zip(names, cells))
+            parts = [name, folder, f"分頁 {tab}"]
             if item.get("pane_missing"):
                 parts.append(PANE_MISSING)
-            text.append(
-                f"\n{'▶' if current else ' '} {index - start + 1} {'｜'.join(parts)}",
-                "reverse" if current else "",
-            )
+            parts.append(f"待答 {len(titles)} 題：" if titles else "沒有待答")
+            return f"{marker} {number} {'｜'.join(parts)}"
+
+        cells = [cell_len(text) for text in names]
+        room = width - (8 if titles else 0)
+        while cell_len(row(cells)) > room and max(cells) > 8:
+            cells[cells.index(max(cells))] -= 1
+        line = row(cells)
+        if titles and cell_len(line) < width:
+            line += short_title(titles[0], width - cell_len(line))
+        text = Text(line, "reverse" if marker == "▶" else "")
+        text.truncate(width, overflow="ellipsis")
+        return text
+
+    def picker_text(self):
+        """One controller per line, cut to the pane width; the cursor row is marked."""
+        size = self.picker_page_size
+        start = self.picker_page * size
+        width = max(self.query_one("#picker", Static).size.width or self.size.width - 2, 20)
+        title = PICKER_TITLE
+        page_count = (len(self.choices) + size - 1) // size
+        if page_count > 1:
+            title += f"  [{self.picker_page + 1}/{page_count}] ←/→ 換頁"
+        text = Text(title)
+        text.truncate(width, overflow="ellipsis")
+        for index in range(start, min(start + size, len(self.choices))):
+            text.append("\n")
+            text.append_text(self.picker_row(index, index - start + 1, width))
         return text
 
     def on_key(self, event: events.Key):
@@ -686,8 +720,9 @@ class Panel(App):
         if not event.character or not event.character.isdigit():
             return
         choice_index = int(event.character) - 1
-        absolute_index = self.picker_page * self.PICKER_PAGE_SIZE + choice_index
-        if 0 <= choice_index < self.PICKER_PAGE_SIZE and absolute_index < len(self.choices):
+        size = self.picker_page_size
+        absolute_index = self.picker_page * size + choice_index
+        if 0 <= choice_index < size and absolute_index < len(self.choices):
             event.stop()
             self.select_choice(self.choices[absolute_index])
 
@@ -699,10 +734,11 @@ class Panel(App):
             self.query_one("#picker", Static).update(self.picker_text())
 
     def turn_picker_page(self, direction):
-        page_count = (len(self.choices) + self.PICKER_PAGE_SIZE - 1) // self.PICKER_PAGE_SIZE
+        size = self.picker_page_size
+        page_count = (len(self.choices) + size - 1) // size
         new_page = min(max(self.picker_page + direction, 0), page_count - 1)
         if new_page != self.picker_page:
-            self.move_picker(new_page * self.PICKER_PAGE_SIZE)
+            self.move_picker(new_page * size)
 
     def select_choice(self, binding):
         self.path = Path(binding["questions_path"])
@@ -1079,7 +1115,9 @@ class Panel(App):
         status = self.query_one("#status", Static)
         notices = status.size.height if status.display else 0
         self.input.styles.max_height = max(3, min(10, self.size.height - 6 - notices))
-        if not self.raw_mode and not self.picker_active:
+        if self.picker_active:
+            self.query_one("#picker", Static).update(self.picker_text())
+        elif not self.raw_mode:
             self.refresh_view()
 
     # Selector keys ----------------------------------------------------------

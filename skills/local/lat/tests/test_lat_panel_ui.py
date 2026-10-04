@@ -14,6 +14,8 @@ import tomllib
 import unittest
 from unittest.mock import patch
 
+from rich.cells import cell_len
+
 HERDR_PANEL = Path(__file__).resolve().parents[1] / "herdr-panel"
 HAS_TEXTUAL = importlib.util.find_spec("textual") is not None
 
@@ -519,8 +521,7 @@ class OpenActionTests(PanelTestCase):
         })
         rows = [
             "1 ctl-a｜project｜分頁 規格｜待答 1 題：Choose?",
-            f"2 ctl-b｜other｜分頁 tab-b｜待答 2 題：{self.panel.short_title(long_title)}"
-            "｜視窗已不存在",
+            f"2 ctl-b｜other｜分頁 tab-b｜視窗已不存在｜待答 2 題：{long_title}",
             "3 ctl-c｜project｜分頁 tab-c｜沒有待答",
         ]
 
@@ -529,8 +530,7 @@ class OpenActionTests(PanelTestCase):
                 f"{'▶' if index == current else ' '} {row}" for index, row in enumerate(rows)
             ])
 
-        async with app.run_test() as pilot:
-            self.assertLess(len(self.panel.short_title(long_title)), len(long_title))
+        async with app.run_test(size=(120, 24)) as pilot:
             self.assertEqual(str(app.query_one("#picker").render()), picker(0))
             self.assertEqual(str(app.query_one("#keys").render()), self.panel.PICKER_KEYS)
             for key in ("↑↓", "Enter", "1–9"):
@@ -559,6 +559,46 @@ class OpenActionTests(PanelTestCase):
             self.assertEqual(app.tab_ids, ["Q2", "Q3", "Q4"])
             self.assertFalse(app.query_one("#picker").display)
             self.assertEqual(str(app.query_one("#keys").render()), self.panel.KEYS)
+
+    async def test_picker_keeps_one_line_per_controller_in_a_small_pane(self):
+        choices = []
+        for index in range(1, 10):
+            questions = self.root / f"lat-panel-picker-{index}/.lat/questions.md"
+            questions.parent.mkdir(parents=True)
+            questions.write_text(QUESTIONS.replace("Choose?", "很長的待答問題標題" * 4))
+            choices.append({
+                "hcom_name": f"nepa-picker-tumo-{index}",
+                "workspace": str(questions.parent.parent),
+                "questions_path": str(questions), "session_id": f"s-{index}",
+                "herdr_tab": "019c3f2e-7d4b-7a10-9a7e-3f5d2c1b0a99", "pane_missing": True,
+            })
+        app = self.panel.Panel.from_env({
+            "LAT_PANEL_HERDR_WORKSPACE": "ws-a",
+            "LAT_PANEL_CHOICES": json.dumps(choices),
+            "HERDR_CONFIG_PATH": str(self.config),
+        })
+        async with app.run_test(size=(80, 8)) as pilot:
+            await pilot.pause()
+            picker = app.query_one("#picker")
+            lines = str(picker.render()).splitlines()
+            page_size = app.picker_page_size
+            self.assertEqual(page_size, 6)
+            self.assertEqual(len(lines), page_size + 1)
+            self.assertEqual(picker.size.height, page_size + 1)
+            self.assertIn("[1/2]", lines[0])
+            for line in lines[1:]:
+                self.assertLessEqual(cell_len(line), picker.size.width)
+                self.assertRegex(line, r"^. [1-6] nepa-pi\S*…｜lat-pan\S*…｜分頁 019c3f\S*…｜視窗已不存在｜待答 1 題：很長\S*…$")
+            for _ in range(page_size):
+                await pilot.press("down")
+            await pilot.pause()
+            lines = str(picker.render()).splitlines()
+            self.assertIn("[2/2]", lines[0])
+            self.assertTrue(lines[1].startswith("▶ 1 "))
+            self.assertEqual(app.picker_cursor, 6)
+            await pilot.press("3")
+            await pilot.pause()
+            self.assertEqual(app.session_id, "s-9")
 
     async def test_picker_accepts_digit_ignores_invalid_key_and_ctrl_q_closes(self):
         other = self.root / "other"
