@@ -190,8 +190,72 @@ class WatchDecisionTests(unittest.TestCase):
                                      transcript_size=350, event_id=41705)
         state, actions = watch.decide(state, completed, now=494)
         self.assertEqual(actions, ())
-        state, actions = watch.decide(state, completed, now=3600)
+        state, actions = watch.decide(state, completed, now=1_693)
         self.assertEqual(actions, ())
+        state, actions = watch.decide(state, completed, now=1_694)
+        self.assertEqual(actions, (watch.Action('nudge', 'damo'),))
+
+    def test_rezo_stale_active_empty_prompt_is_nudged_at_twenty_minutes(self):
+        watch = load_watch()
+        stale = watch.Observation(
+            'rezo', 'active', True, False, 400, 4_000, 62344,
+            task_card_revision='in progress\nreview round two',
+        )
+
+        state, _ = watch.decide(None, stale, now=0)
+        state, actions = watch.decide(state, stale, now=1_199)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, stale, now=1_200)
+        self.assertEqual(actions, (watch.Action('nudge', 'rezo'),))
+        self.assertIn('active', state['stall_reason'])
+        state, actions = watch.decide(state, stale, now=1_800)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+
+    def test_active_running_command_notifies_owner_once_without_nudge(self):
+        watch = load_watch()
+        running = watch.Observation(
+            'worker', 'active', True, True, 100, 1_000, 10,
+            task_card_revision='in progress\nrun tests',
+        )
+
+        state, _ = watch.decide(None, running, now=0)
+        state, actions = watch.decide(state, running, now=1_200)
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+        self.assertIn('possible hung command', actions[0].message)
+        self.assertFalse(state['nudged'])
+        state, actions = watch.decide(state, running, now=2_400)
+        self.assertEqual(actions, ())
+        self.assertFalse(state['user_notified'])
+
+        orchestrator = running._replace(agent='orch', is_orchestrator=True)
+        state, _ = watch.decide(None, orchestrator, now=0)
+        state, actions = watch.decide(state, orchestrator, now=1_200)
+        self.assertEqual(actions[0].kind, 'notify-user')
+        self.assertFalse(state['nudged'])
+
+    def test_blocked_notifies_owner_once_after_ten_minutes_without_nudge(self):
+        watch = load_watch()
+        blocked = watch.Observation(
+            'worker', 'blocked', True, False, 100, 1_000, 10,
+            task_card_revision='in progress\nwaiting for approval',
+        )
+
+        state, _ = watch.decide(None, blocked, now=0)
+        state, actions = watch.decide(state, blocked, now=599)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, blocked, now=600)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+        self.assertIn('approval', actions[0].message)
+        self.assertFalse(state['nudged'])
+        state, actions = watch.decide(state, blocked, now=1_200)
+        self.assertEqual(actions, ())
+
+        orchestrator = blocked._replace(agent='orch', is_orchestrator=True)
+        state, _ = watch.decide(None, orchestrator, now=0)
+        state, actions = watch.decide(state, orchestrator, now=600)
+        self.assertEqual(actions[0].kind, 'notify-user')
+        self.assertFalse(state['nudged'])
 
     def test_wait_declaration_suppresses_nudge_until_it_is_released(self):
         watch = load_watch()
@@ -428,6 +492,33 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual([record['actions'] for record in records[-2:]],
                          [[{'kind': 'nudge', 'agent': 'orch'}],
                           [{'kind': 'nudge', 'agent': 'worker-open'}]])
+
+    def test_reproduced_stale_active_term_shapes_inject_after_twenty_minutes(self):
+        transcript = self.fake_transcript()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = list ]; then\n'
+            f'  printf \'%s\\n\' \'[{{"name":"orch","status":"active",'
+            f'"context":"tool:send","transcript_path":"{transcript}"}},'
+            f'{{"name":"worker-open","status":"active","context":"tool:Bash",'
+            f'"transcript_path":"{transcript}"}}]\'\n'
+            'elif [ "$1" = term ] && [ "$2" != inject ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":true,"prompt_empty":true,'
+            '"input_text":""}\'\n'
+            'elif [ "$1" = events ]; then\n'
+            '  printf \'%s\\n\' \'{"id":1,"type":"status"}\'\n'
+            'fi\n'
+        )
+        watch = load_watch()
+        self.run_cycles(watch, 0, 1_199, 1_200)
+
+        injections = [command for command in self.hcom_log.read_text().splitlines()
+                      if command.startswith('term inject ')]
+        self.assertEqual(len(injections), 2)
+        self.assertTrue(any('term inject orch ' in command for command in injections))
+        self.assertTrue(any('term inject worker-open ' in command for command in injections))
+        self.assertTrue(all('--enter --name orch' in command for command in injections))
 
     def test_escalation_actions_use_hcom_and_request_sound_without_real_services(self):
         watch = load_watch()
@@ -670,6 +761,33 @@ class WatchCliTests(unittest.TestCase):
         state = json.loads((self.work / '.lat/watch/orch/state.json').read_text())
         self.assertFalse(state['orch']['nudged'])
         self.assertFalse(state['worker-open']['nudged'])
+
+    def test_missing_terminal_readiness_is_logged_and_takes_no_action(self):
+        transcript = self.fake_transcript()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = list ]; then\n'
+            f'  printf \'%s\\n\' \'[{{"name":"orch","status":"active",'
+            f'"transcript_path":"{transcript}"}}]\'\n'
+            'elif [ "$1" = term ]; then\n'
+            '  printf \'%s\\n\' \'{"input_text":""}\'\n'
+            'elif [ "$1" = events ]; then\n'
+            '  printf \'%s\\n\' \'{"id":1,"type":"status"}\'\n'
+            'fi\n'
+        )
+        watch = load_watch()
+        self.run_cycles(watch, 0, 1_200)
+
+        records = [record for record in self.watch_records()
+                   if record['agent'] == 'orch']
+        self.assertEqual([record['decision'] for record in records],
+                         ['observation-failed', 'observation-failed'])
+        self.assertTrue(all(record['actions'] == [] for record in records))
+        self.assertTrue(all('ready' in record['error'] for record in records))
+        commands = self.hcom_log.read_text().splitlines()
+        self.assertFalse(any(command.startswith('term inject ') for command in commands))
+        self.assertFalse(any(command.startswith('send ') for command in commands))
 
     def test_run_forever_uses_sixty_second_intervals(self):
         watch = load_watch()
