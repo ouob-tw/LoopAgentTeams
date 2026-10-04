@@ -59,7 +59,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" status --workspace "$
   --orchestrator <主控 HCOM 名稱> --tasks "$tasks"
 ```
 
-每次判斷與動作記在 `$workspace/.lat/watch/<主控 HCOM 名稱>/watch.jsonl`；監控程式本身的錯誤輸出在 `$workspace/.lat/watch/<session-id>.log`。查誤報或漏報時讀這兩份的最後幾行。
+每次判斷與動作記在 `$workspace/.lat/watch/<主控 HCOM 名稱>/watch.jsonl`，無法辨識而跳過的任務卡也記在這裡（`task-card-skipped`，卡片持續無法辨識期間同一內容只記一次；修好或移走後重新計算）。某一輪檢查出錯時記 `cycle-failed`（錯誤類型與訊息，同一錯誤連續發生時每小時最多記一次），下一分鐘照常再查；狀態檔損壞時改名為 `<原檔名>.corrupt-<時間>` 留存，記 `state-file-reset` 後從頭計時；只有個別 Agent 的狀態損壞時，複製一份同名留存檔，記 `agent-state-reset`，只讓該 Agent 從頭計時；任務卡目錄不存在時只盯主控，記一次 `task-directory-missing`。監控程式本身的錯誤輸出在 `$workspace/.lat/watch/<session-id>.log`。查誤報或漏報時讀這兩份的最後幾行。
 
 ## 通知使用者的情況
 

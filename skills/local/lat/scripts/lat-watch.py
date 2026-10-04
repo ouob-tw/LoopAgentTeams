@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -18,10 +19,13 @@ IDLE_SECONDS = 10 * 60
 ACTIVE_SECONDS = 20 * 60
 PROMPT_SECONDS = 5 * 60
 CHECK_SECONDS = 60
+FAILURE_REPEAT_SECONDS = 60 * 60
 NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
          'with lat-watch wait.')
-NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
+NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
+NAME = re.compile(NAME_PATTERN)
+CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
 
 
 class Observation(NamedTuple):
@@ -347,27 +351,92 @@ def parse_task(path):
         match = re.fullmatch(r'-\s+(agent|orchestrator|status|next step)：\s*(.*)', line)
         if match:
             fields[match.group(1)] = match.group(2).strip()
-    if not all(name in fields for name in ('agent', 'orchestrator', 'status')):
-        return None
-    fields['agent'] = fields['agent'].split(maxsplit=1)[0]
     return fields
 
 
+def task_agent(field):
+    match = CARD_AGENT.match(field)
+    if not match:
+        raise ValueError(f'agent field must start with an HCOM name: {field!r}')
+    return match.group(1)
+
+
+def card_digest(path, error):
+    try:
+        content = path.read_bytes()
+    except OSError:
+        content = str(error).encode()
+    return hashlib.sha256(content).hexdigest()
+
+
 def monitored_task_cards(tasks, orchestrator):
-    cards = {}
+    """Return (cards by agent, skipped {card name: (digest, error)})."""
+    cards, skipped = {}, {}
     if not tasks.is_dir():
         raise ValueError(f'Missing task-card directory: {tasks}')
     for path in sorted(tasks.glob('*.md')):
-        card = parse_task(path)
-        if (card and card['orchestrator'] == orchestrator
-                and card['status'] != 'merged'):
-            card['_updated_at'] = path.stat().st_mtime
-            cards.setdefault(valid_name(card['agent']), card)
-    return cards
+        try:
+            card = parse_task(path)
+            if card.get('orchestrator', orchestrator) != orchestrator:
+                continue
+            missing = [name for name in ('agent', 'orchestrator', 'status')
+                       if name not in card]
+            if missing:
+                raise ValueError(f'missing task-card fields: {", ".join(missing)}')
+            if card['status'] != 'merged':
+                card['agent'] = task_agent(card['agent'])
+                card['_updated_at'] = path.stat().st_mtime
+                cards.setdefault(card['agent'], card)
+        except (OSError, ValueError) as error:
+            skipped[path.name] = (card_digest(path, error), str(error))
+    return cards, skipped
 
 
 def monitored_agents(tasks, orchestrator):
-    return [valid_name(orchestrator), *monitored_task_cards(tasks, orchestrator)]
+    cards, _ = monitored_task_cards(tasks, orchestrator)
+    return [valid_name(orchestrator), *cards]
+
+
+def read_watch_file(path, log, now):
+    """Read a watcher-owned JSON object; move a corrupt file aside and start fresh."""
+    try:
+        return read_object(path, {})
+    except ValueError as error:
+        kept = path.with_name(f'{path.name}.corrupt-{int(now)}')
+        path.replace(kept)
+        append_log(log, {
+            'at': now, 'decision': 'state-file-reset', 'actions': [],
+            'file': path.name, 'kept': kept.name, 'error': str(error),
+        })
+        return {}
+
+
+def reset_agent_state(path, log, now, agent, error):
+    """Keep one copy of the state file for diagnosis, then log the agent's fresh start."""
+    kept = path.with_name(f'{path.name}.corrupt-{int(now)}')
+    if path.exists() and not kept.exists():
+        shutil.copy2(path, kept)
+    append_log(log, {
+        'at': now, 'agent': agent, 'decision': 'agent-state-reset', 'actions': [],
+        'kept': kept.name, 'error': error,
+    })
+
+
+def log_skipped_cards(path, log, skipped, now):
+    """Log each skipped card once per content; forget cards that are fixed or gone."""
+    logged = read_watch_file(path, log, now)
+    current = {}
+    for name, (digest, error) in skipped.items():
+        seen = logged.get(name, [])
+        if digest not in seen:
+            append_log(log, {
+                'at': now, 'card': name, 'decision': 'task-card-skipped',
+                'actions': [], 'error': error,
+            })
+            seen = [*seen, digest]
+        current[name] = seen
+    if current != logged:
+        write_object(path, current)
 
 
 def task_card_revision(card):
@@ -859,12 +928,29 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     """Observe every owned agent once, execute actions, and persist state/logs."""
     now = time.time() if now is None else now
     orchestrator = valid_name(orchestrator)
-    cards = monitored_task_cards(tasks, orchestrator)
-    agents = [orchestrator, *cards]
-    hcom = list_hcom(orchestrator)
     path = state_path(workspace, orchestrator)
-    states = read_object(path, {})
     log = path.with_name('watch.jsonl')
+    missing_tasks = path.with_name('tasks-missing')
+    if tasks.is_dir():
+        missing_tasks.unlink(missing_ok=True)
+        cards, skipped = monitored_task_cards(tasks, orchestrator)
+    else:
+        cards, skipped = {}, {}
+        if not missing_tasks.exists():
+            append_log(log, {
+                'at': now, 'decision': 'task-directory-missing', 'actions': [],
+                'error': f'Missing task-card directory: {tasks}',
+            })
+            missing_tasks.touch()
+    agents = [orchestrator, *cards]
+    log_skipped_cards(path.with_name('skipped-cards.json'), log, skipped, now)
+    hcom = list_hcom(orchestrator)
+    states = read_watch_file(path, log, now)
+    for agent, state in list(states.items()):
+        if not isinstance(state, dict):
+            reset_agent_state(path, log, now, agent,
+                              f'Expected a JSON object, got {type(state).__name__}')
+            states.pop(agent)
     for agent in set(states) - set(agents):
         append_log(log, {
             'at': now, 'agent': agent,
@@ -891,7 +977,14 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
         try:
             observation = observe(
                 workspace, decisions, orchestrator, agent, hcom[agent], cards.get(agent))
-            state, actions = decide(states.get(agent), observation, now)
+            previous = states.get(agent)
+            try:
+                state, actions = decide(previous, observation, now)
+            except (TypeError, ValueError, KeyError, AttributeError) as error:
+                if previous is None:
+                    raise
+                reset_agent_state(path, log, now, agent, f'{type(error).__name__}: {error}')
+                state, actions = decide(None, observation, now)
             results = []
             for action in actions:
                 try:
@@ -917,12 +1010,36 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     write_object(path, states)
 
 
+def log_cycle_failure(log, previous, error, now):
+    """Log a failed cycle; repeat an identical failure at most once per hour."""
+    message = f'{type(error).__name__}: {error}'
+    repeats = previous['repeats'] + 1 if previous and previous['error'] == message else 0
+    if repeats and now - previous['logged_at'] < FAILURE_REPEAT_SECONDS:
+        return {**previous, 'repeats': repeats}
+    record = {'at': now, 'decision': 'cycle-failed', 'actions': [], 'error': message}
+    if repeats:
+        record['repeats'] = repeats
+    print(f'LAT watch cycle failed: {message}', file=sys.stderr, flush=True)
+    try:
+        append_log(log, record)
+    except OSError as log_error:
+        print(f'LAT watch log failed: {log_error}', file=sys.stderr, flush=True)
+    return {'error': message, 'logged_at': now, 'repeats': repeats}
+
+
 def run_forever(args):
     workspace = args.workspace.resolve(strict=True)
-    tasks = args.tasks.resolve(strict=True)
+    tasks = args.tasks.resolve()
     decisions = args.decisions.resolve(strict=True)
+    log = state_path(workspace, args.orchestrator).with_name('watch.jsonl')
+    failure = None
     while True:
-        run_cycle(workspace, tasks, decisions, args.orchestrator)
+        now = time.time()
+        try:
+            run_cycle(workspace, tasks, decisions, args.orchestrator, now)
+            failure = None
+        except Exception as error:
+            failure = log_cycle_failure(log, failure, error, now)
         time.sleep(CHECK_SECONDS)
 
 
