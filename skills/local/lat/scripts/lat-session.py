@@ -106,10 +106,16 @@ def write_json(path, value, expected):
             temp.unlink(missing_ok=True)
 
 
-def dependencies(record):
+def legacy_record(record):
+    return 'tasks_path' not in record and 'hcom_name' not in record
+
+
+def dependencies(record, *, require_watcher=True):
     skill = Path(record['skill_dir'])
-    files = [skill / 'SKILL.md', skill / 'scripts/lat-watch.py', skill / 'references/agents.md',
+    files = [skill / 'SKILL.md', skill / 'references/agents.md',
              skill / 'references/task-cards.md', Path(record['progress_path'])]
+    if require_watcher:
+        files.append(skill / 'scripts/lat-watch.py')
     decisions = Path(record['decisions_path'])
     for path in [*files, decisions]:
         if not path.is_absolute():
@@ -119,11 +125,23 @@ def dependencies(record):
             raise ValueError(f'Missing recovery file: {path}')
     if not decisions.is_dir():
         raise ValueError(f'Missing decisions directory: {decisions}')
-    tasks = Path(record['tasks_path'])
-    if not tasks.is_absolute() or not tasks.is_dir():
-        raise ValueError(f'Missing task-card directory: {tasks}')
-    if not HCOM_NAME.fullmatch(record['hcom_name']):
-        raise ValueError('A valid explicit --hcom-name is required')
+    if require_watcher:
+        tasks = Path(record['tasks_path'])
+        if not tasks.is_absolute() or not tasks.is_dir():
+            raise ValueError(f'Missing task-card directory: {tasks}')
+        if not HCOM_NAME.fullmatch(record['hcom_name']):
+            raise ValueError('A valid explicit --hcom-name is required')
+
+
+def legacy_upgrade_command(record):
+    command = shlex.join([
+        'uv', 'run', '--no-project', 'python',
+        str(Path(record['skill_dir']) / 'scripts/lat-session.py'),
+        'activate', '--client', record['client'], '--workspace', record['workspace'],
+        '--progress', record['progress_path'], '--decisions', record['decisions_path'],
+    ])
+    return (f'{command} --tasks <task-card-directory> '
+            '--hcom-name <controller-HCOM-name>')
 
 
 def watcher_paths(record):
@@ -287,8 +305,16 @@ def activate(args):
     dependencies(record)
     path = workspace / '.lat/sessions' / f'{sid}.json'
     original = current_bytes(path)
-    if path.exists() and read_json(path) != record:
-        raise ValueError('Existing session record differs; do not reset or rebind it')
+    if path.exists():
+        existing = read_json(path)
+        if legacy_record(existing):
+            expected = {key: value for key, value in record.items()
+                        if key not in ('tasks_path', 'hcom_name')}
+            if any(existing.get(key) != value for key, value in expected.items()):
+                raise ValueError('Existing session record differs; do not reset or rebind it')
+            record = dict(existing, tasks_path=record['tasks_path'], hcom_name=record['hcom_name'])
+        elif existing != record:
+            raise ValueError('Existing session record differs; do not reset or rebind it')
     panel = panel_module()
     try:
         enabled = panel.panel_enabled()
@@ -489,6 +515,10 @@ def hook(client):
             return
         if any(key not in record for key in expected):
             raise ValueError('Incomplete controller identity')
+        if legacy_record(record):
+            dependencies(record, require_watcher=False)
+            context(f'{pointer(path)}\nLegacy session upgrade: {legacy_upgrade_command(record)}')
+            return
         dependencies(record)
         if ensure_watcher(record, path, rebind=True) is None:
             return

@@ -24,6 +24,8 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" activate --client "
 
 activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；Claude：`CLAUDE_CODE_SESSION_ID`），不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。`--workspace` 須是 Git worktree 根目錄。`--hcom-name` 一律必填，只接受明確值，不讀 `HCOM_INSTANCE_NAME`；缺少時不建立 session 紀錄，照錯誤中的完整指令補上名稱重跑。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑，紀錄 client、session、主控角色、工作區、active 狀態、HCOM 名稱與恢復路徑（含任務卡目錄），並在背景啟動停住監控 `lat-watch.py run`（pid 在 `.lat/watch/<session-id>.pid`，輸出在同名 `.log`）。已有不同紀錄時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
 
+   舊版 activate 建立的 active 紀錄沒有 `tasks_path` 與 `hcom_name`。恢復 hook 會照常提示讀取紀錄，但不會啟動停住監控；請將上方同一條 activate 指令的 `--tasks "$tasks" --hcom-name "$hcom_name"` 換成真實值後重跑。指令會在原紀錄補上這兩個欄位，保留其餘內容，然後啟動監控；不要刪除或重建 session 紀錄。
+
    activate 會偵測 Herdr 的 `lat.panel`：已啟用時自動綁定並印出問題檔路徑；未啟用時印出「面板未啟用，略過綁定」。外掛查詢失敗時修復 Herdr 後重跑。自動綁定失敗時 session 紀錄保持 active，但停住監控尚未啟動：依錯誤補齊 Herdr 環境變數後重跑同一個 activate，確認綁定成功且 `.lat/watch/<session-id>.pid` 存在。
 
 3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`，以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的 `.lat/questions-<hcom-name>.md`（尚未寫題時不存在，不算缺檔）。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。hook 發現紀錄仍 active 但停住監控沒在執行時，會在提示前自動重新啟動它。面板啟用且 hook 取得 Herdr workspace／tab／pane 編號時，也會把自己的面板綁定更新為目前位置；取不到就保持原綁定。

@@ -122,6 +122,17 @@ class SessionTests(unittest.TestCase):
         payload.update(overrides)
         return self.cli('hook', payload=payload, session=OTHER, extra_env=extra_env)
 
+    def write_legacy_record(self, **extra):
+        record = dict(
+            client='codex', session_id=SESSION, role='orchestrator',
+            workspace=str(self.work), status='active', skill_dir=str(SKILL),
+            progress_path=str(self.progress), decisions_path=str(self.decisions),
+        )
+        record.update(extra)
+        self.record.parent.mkdir(parents=True, exist_ok=True)
+        self.record.write_text(json.dumps(record))
+        return record
+
     def panel_env(self, herdr_body=None):
         herdr = self.binary / 'herdr'
         herdr.write_text(herdr_body or (
@@ -418,6 +429,53 @@ class SessionTests(unittest.TestCase):
         new_pid = self.watcher_pid()
         self.assertNotEqual(new_pid, old_pid)
         self.wait_for(lambda: len(self.fake_uv_log.read_text().splitlines()) == 2)
+
+    def test_hook_recovers_legacy_record_without_starting_watcher(self):
+        self.write_legacy_record()
+        expected_command = (
+            f'uv run --no-project python {SCRIPT} activate --client codex '
+            f'--workspace {self.work} --progress {self.progress} '
+            f'--decisions {self.decisions} --tasks <task-card-directory> '
+            '--hcom-name <controller-HCOM-name>'
+        )
+
+        result = self.hook(source='resume')
+
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertEqual(len(result.stdout.splitlines()), 1)
+        recovered = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
+        self.assertTrue(recovered.startswith(f'LAT recovery record: {self.record}\n'))
+        self.assertEqual(recovered.count('\nLegacy session upgrade: '), 1)
+        self.assertIn(expected_command, recovered)
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+        self.assertFalse(self.fake_uv_log.exists())
+
+    def test_activate_upgrades_legacy_record_in_place_and_preserves_other_fields(self):
+        legacy = self.write_legacy_record(legacy_note='keep me')
+
+        result = self.cli(
+            'activate', '--workspace', self.work, '--progress', self.progress,
+            '--decisions', self.decisions, '--tasks', self.tasks,
+            '--hcom-name', 'upgraded-orch', watch_args=False,
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        upgraded = json.loads(self.record.read_text())
+        self.assertEqual(upgraded, dict(
+            legacy, tasks_path=str(self.tasks), hcom_name='upgraded-orch',
+        ))
+        self.assertTrue((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+
+    def test_deactivate_legacy_record_without_watcher(self):
+        legacy = self.write_legacy_record(legacy_note='keep me')
+
+        result = self.cli(
+            'deactivate', '--workspace', self.work, '--status', 'completed',
+        )
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(self.record.read_text()), dict(legacy, status='completed'))
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
 
     def activate_bound(self):
         env = self.panel_env()
