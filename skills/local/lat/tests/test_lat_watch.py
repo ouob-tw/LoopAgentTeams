@@ -505,6 +505,8 @@ class WatchCliTests(unittest.TestCase):
         self.write_card('glued.md', 'poni:QA')
         (self.tasks / 'binary.md').write_bytes(b'- agent\xef\xbc\x9a\xff\xfe\n')
         self.write_card('foreign.md', '', orchestrator='somebody-else')
+        (self.tasks / 'blank.md').write_text('')
+        (self.tasks / 'no-status.md').write_text('- agent：sora\n- orchestrator：orch\n')
         watch = load_watch()
 
         self.run_cycles(watch, 0, 60)
@@ -516,8 +518,8 @@ class WatchCliTests(unittest.TestCase):
         records = self.watch_records()
         skipped = [(record['at'], record['card']) for record in records
                    if record.get('decision') == 'task-card-skipped']
-        self.assertEqual(skipped, [(0, 'binary.md'), (0, 'empty.md'), (0, 'glued.md'),
-                                   (120, 'empty.md')])
+        self.assertEqual(skipped, [(0, 'binary.md'), (0, 'blank.md'), (0, 'empty.md'),
+                                   (0, 'glued.md'), (0, 'no-status.md'), (120, 'empty.md')])
         self.assertTrue(all(record['error'] for record in records if 'card' in record))
         observed = [(record['at'], record['agent']) for record in records if 'agent' in record]
         self.assertEqual(observed, [(at, agent) for at in (0, 60, 120)
@@ -541,6 +543,19 @@ class WatchCliTests(unittest.TestCase):
                           if record.get('card') == card.name], [0, 120])
         self.assertIn((60, 'poni'), [(record['at'], record['agent'])
                                      for record in records if 'agent' in record])
+
+    def test_card_returning_to_earlier_malformed_content_is_not_logged_again(self):
+        card = self.write_card('flaky.md', '')
+        watch = load_watch()
+
+        self.run_cycles(watch, 0)
+        self.write_card('flaky.md', 'poni:QA')
+        self.run_cycles(watch, 60)
+        self.write_card('flaky.md', '')
+        self.run_cycles(watch, 120)
+
+        self.assertEqual([record['at'] for record in self.watch_records()
+                          if record.get('card') == card.name], [0, 60])
 
     def test_card_that_raises_during_parsing_does_not_stop_the_cycle(self):
         watch = load_watch()

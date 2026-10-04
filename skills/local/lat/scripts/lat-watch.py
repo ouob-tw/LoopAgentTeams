@@ -21,8 +21,9 @@ CHECK_SECONDS = 60
 NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
          'with lat-watch wait.')
-NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
-CARD_AGENT = re.compile(r'([A-Za-z0-9][A-Za-z0-9_-]{0,127})(?=$|[\s(（])')
+NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
+NAME = re.compile(NAME_PATTERN)
+CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
 
 
 class Observation(NamedTuple):
@@ -348,8 +349,6 @@ def parse_task(path):
         match = re.fullmatch(r'-\s+(agent|orchestrator|status|next step)：\s*(.*)', line)
         if match:
             fields[match.group(1)] = match.group(2).strip()
-    if not all(name in fields for name in ('agent', 'orchestrator', 'status')):
-        return None
     return fields
 
 
@@ -376,8 +375,13 @@ def monitored_task_cards(tasks, orchestrator):
     for path in sorted(tasks.glob('*.md')):
         try:
             card = parse_task(path)
-            if (card and card['orchestrator'] == orchestrator
-                    and card['status'] != 'merged'):
+            if card.get('orchestrator', orchestrator) != orchestrator:
+                continue
+            missing = [name for name in ('agent', 'orchestrator', 'status')
+                       if name not in card]
+            if missing:
+                raise ValueError(f'missing task-card fields: {", ".join(missing)}')
+            if card['status'] != 'merged':
                 card['agent'] = task_agent(card['agent'])
                 card['_updated_at'] = path.stat().st_mtime
                 cards.setdefault(card['agent'], card)
@@ -394,13 +398,16 @@ def monitored_agents(tasks, orchestrator):
 def log_skipped_cards(path, log, skipped, now):
     """Log each skipped card once per content; forget cards that are fixed or gone."""
     logged = read_object(path, {})
-    current = {name: digest for name, (digest, _) in skipped.items()}
+    current = {}
     for name, (digest, error) in skipped.items():
-        if logged.get(name) != digest:
+        seen = logged.get(name, [])
+        if digest not in seen:
             append_log(log, {
                 'at': now, 'card': name, 'decision': 'task-card-skipped',
                 'actions': [], 'error': error,
             })
+            seen = [*seen, digest]
+        current[name] = seen
     if current != logged:
         write_object(path, current)
 
