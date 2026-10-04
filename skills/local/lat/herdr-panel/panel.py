@@ -7,7 +7,8 @@
 ``panel.py open`` is the ``lat.panel.open`` action: it resolves the current tab
 against controller panes from Herdr's 0.9.3 ``session.snapshot`` API, then opens
 the ``popup`` pane. With more than one unmatched controller, the popup receives
-``LAT_PANEL_CHOICES`` and lets the user choose before opening the questions.
+``LAT_PANEL_CHOICES`` and lists one controller per row to choose from before
+opening the questions.
 
 The popup opens in selector mode: one tab per 待答 question plus a final 送出
 review tab. Every selection or input change is written as an unchecked draft
@@ -46,6 +47,9 @@ PLUGIN_ID = "lat.panel"
 KEYS = "A–I／Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Tab 備註 · Esc 關閉"
 RAW_KEYS = "Ctrl+E 選擇框  Ctrl+Q 關閉  Ctrl+Z 復原  Ctrl+Y 重做"
 INPUT_KEYS = "Enter 換行 · Esc 離開輸入框"
+PICKER_KEYS = "↑↓ 移動 · Enter 選定 · 1–9 直接選 · Esc 關閉"
+PICKER_TITLE = "選擇要回答哪個主控的問題"
+PANE_MISSING = "視窗已不存在"
 NO_QUESTIONS = "目前沒有待答問題"
 OTHER_LABEL = "其他（自己輸入）"
 SUBMITTED = "已送出，等待記錄"
@@ -138,16 +142,32 @@ def rpc(method, params, env):
     raise RuntimeError("Herdr closed the connection without a response")
 
 
-def _pane_tabs(request, env):
-    response = request("session.snapshot", {}, env)
-    panes = response["result"]["snapshot"]["panes"]
+def _live_tabs(request, env):
+    """Return ``(pane id -> tab id, tab id -> tab name)`` from Herdr's snapshot."""
+    snapshot = request("session.snapshot", {}, env)["result"]["snapshot"]
+    panes = snapshot["panes"]
     if not isinstance(panes, list):
         raise ValueError("Herdr snapshot panes are invalid")
+    tabs = snapshot.get("tabs")
     return {
         pane["pane_id"]: pane["tab_id"]
         for pane in panes
         if isinstance(pane, dict) and pane.get("pane_id") and pane.get("tab_id")
+    }, {
+        tab["tab_id"]: tab["label"]
+        for tab in (tabs if isinstance(tabs, list) else [])
+        if isinstance(tab, dict) and tab.get("tab_id")
+        and isinstance(tab.get("label"), str) and tab["label"].strip()
     }
+
+
+def _picker_choice(binding, pane_tabs, tab_names):
+    """Add what the picker shows about a binding's Herdr tab and pane."""
+    if pane_tabs is None:
+        return binding
+    live_tab = pane_tabs.get(binding.get("herdr_pane"))
+    tab = live_tab or binding.get("herdr_tab", "")
+    return dict(binding, tab_name=tab_names.get(tab, tab), pane_missing=live_tab is None)
 
 
 def _open_binding_env(binding, workspace):
@@ -169,9 +189,9 @@ def open_popup(env=None, *, request=rpc):
         if not bindings:
             raise ValueError("no LAT controller is bound to this Herdr workspace")
         try:
-            pane_tabs = _pane_tabs(request, env)
+            pane_tabs, tab_names = _live_tabs(request, env)
         except (KeyError, OSError, RuntimeError, TypeError, ValueError):
-            pane_tabs = None
+            pane_tabs, tab_names = None, {}
         matches = [
             binding for binding in bindings
             if current_tab and (
@@ -184,7 +204,10 @@ def open_popup(env=None, *, request=rpc):
         elif len(bindings) == 1:
             pane_env = _open_binding_env(bindings[0], workspace)
         else:
-            pane_env["LAT_PANEL_CHOICES"] = json.dumps(bindings, ensure_ascii=False)
+            pane_env["LAT_PANEL_CHOICES"] = json.dumps(
+                [_picker_choice(binding, pane_tabs, tab_names) for binding in bindings],
+                ensure_ascii=False,
+            )
     except (OSError, ValueError, KeyError) as error:
         pane_env["LAT_PANEL_ERROR"] = binding_error_text(error)
     return request("plugin.pane.open", {
@@ -226,15 +249,27 @@ def answer_label(label):
     return label.removesuffix(RECOMMENDED).rstrip()
 
 
-def short_title(title):
-    if cell_len(title) <= TAB_TITLE_CELLS:
+def short_title(title, cells=TAB_TITLE_CELLS):
+    if cell_len(title) <= cells:
         return title
     shortened = ""
     for character in title:
-        if cell_len(shortened + character) > TAB_TITLE_CELLS - 1:
+        if cell_len(shortened + character) > cells - 1:
             break
         shortened += character
     return shortened + "…"
+
+
+def pending_titles(questions_path):
+    """Return the titles of the questions waiting for an answer in a file."""
+    try:
+        text = Path(questions_path).read_text(encoding="utf-8")
+    except (OSError, ValueError):
+        text = ""
+    return [
+        section["title"] for section in lat_panel.parse_questions(text)
+        if section["status"] == "pending"
+    ]
 
 
 class Draft:
@@ -443,7 +478,7 @@ class Panel(App):
     ENABLE_COMMAND_PALETTE = False
     AUTO_FOCUS = None
     CSS = """
-    #picker { height: 1; padding: 0 1; }
+    #picker { height: auto; padding: 0 1; text-wrap: nowrap; }
     #tabs { height: 1; padding: 0 1; }
     #body { height: 1fr; scrollbar-gutter: stable; }
     #view { padding: 1 1 0 0; }
@@ -493,7 +528,12 @@ class Panel(App):
         self.session_id = session_id or None
         self.choices = choices or []
         self.picker_active = bool(self.choices)
-        self.picker_page = 0
+        self.picker_cursor = 0
+        # Rows per page as last drawn; digits and paging follow what is on screen.
+        self.picker_size = self.PICKER_PAGE_SIZE
+        self.picker_pending = [
+            pending_titles(item.get("questions_path", "")) for item in self.choices
+        ]
         self.raw_mode = False
         self.drafts = {}
         self.tab = 0
@@ -562,7 +602,7 @@ class Panel(App):
         return CellMouseDriver
 
     def compose(self) -> ComposeResult:
-        yield Static(self.picker_text(), id="picker", markup=False)
+        yield Static("", id="picker", markup=False)
         yield Tabs("", id="tabs", markup=False)
         with Body(id="body"):
             yield View("", id="view", markup=False)
@@ -584,7 +624,8 @@ class Panel(App):
         if self.picker_active:
             self.query_one("#tabs", Static).display = False
             self.query_one("#body").display = False
-            self.query_one("#keys", Static).update("Ctrl+Q 關閉")
+            self.query_one("#keys", Static).update(PICKER_KEYS)
+            self.query_one("#picker", Static).update(self.picker_text())
             self.render_status()
             return
         self.open_file()
@@ -604,16 +645,66 @@ class Panel(App):
         if self.notification_pending():
             self.start_notification()
 
+    def fitting_page_size(self):
+        """Up to nine rows, fewer when the pane cannot show the title, rows and keys."""
+        if not self.size.height:
+            return self.PICKER_PAGE_SIZE
+        status = self.query_one("#status", Static)
+        notices = status.size.height if status.display else 0
+        height = self.size.height
+        return max(1, min(self.PICKER_PAGE_SIZE, height - 2 - notices))
+
+    @property
+    def picker_page(self):
+        return self.picker_cursor // self.picker_size
+
+    def picker_row(self, index, number, width):
+        """One display line naming a controller.
+
+        When the line is too wide the first pending title gives way first, down to
+        eight cells, then the longest of name, folder and tab, down to eight cells each.
+        """
+        item = self.choices[index]
+        names = [
+            item.get("hcom_name", ""), Path(item.get("workspace", "")).name,
+            item.get("tab_name") or item.get("herdr_tab", ""),
+        ]
+        titles = self.picker_pending[index]
+        marker = "▶" if index == self.picker_cursor else " "
+
+        def row(cells):
+            name, folder, tab = (short_title(text, size) for text, size in zip(names, cells))
+            parts = [name, folder, f"分頁 {tab}"]
+            if item.get("pane_missing"):
+                parts.append(PANE_MISSING)
+            parts.append(f"待答 {len(titles)} 題：" if titles else "沒有待答")
+            return f"{marker} {number} {'｜'.join(parts)}"
+
+        cells = [cell_len(text) for text in names]
+        room = width - (8 if titles else 0)
+        while cell_len(row(cells)) > room and max(cells) > 8:
+            cells[cells.index(max(cells))] -= 1
+        line = row(cells)
+        if titles and cell_len(line) < width:
+            line += short_title(titles[0], width - cell_len(line))
+        text = Text(line, "reverse" if marker == "▶" else "")
+        text.truncate(width, overflow="ellipsis")
+        return text
+
     def picker_text(self):
-        start = self.picker_page * self.PICKER_PAGE_SIZE
-        visible = self.choices[start:start + self.PICKER_PAGE_SIZE]
-        text = "  ".join(
-            f"{index} {item.get('hcom_name', '')}（{Path(item.get('workspace', '')).name}）"
-            for index, item in enumerate(visible, 1)
-        )
-        page_count = (len(self.choices) + self.PICKER_PAGE_SIZE - 1) // self.PICKER_PAGE_SIZE
+        """One controller per line, cut to the pane width; the cursor row is marked."""
+        size = self.picker_size = self.fitting_page_size()
+        start = self.picker_page * size
+        width = max(self.query_one("#picker", Static).size.width or self.size.width - 2, 20)
+        title = PICKER_TITLE
+        page_count = (len(self.choices) + size - 1) // size
         if page_count > 1:
-            text += f"  [{self.picker_page + 1}/{page_count}] ←/→ 換頁"
+            title += f"  [{self.picker_page + 1}/{page_count}] ←/→ 換頁"
+        text = Text(title)
+        text.truncate(width, overflow="ellipsis")
+        for index in range(start, min(start + size, len(self.choices))):
+            text.append("\n")
+            text.append_text(self.picker_row(index, index - start + 1, width))
         return text
 
     def on_key(self, event: events.Key):
@@ -630,17 +721,25 @@ class Panel(App):
         if not event.character or not event.character.isdigit():
             return
         choice_index = int(event.character) - 1
-        absolute_index = self.picker_page * self.PICKER_PAGE_SIZE + choice_index
-        if 0 <= choice_index < self.PICKER_PAGE_SIZE and absolute_index < len(self.choices):
+        size = self.picker_size
+        absolute_index = self.picker_page * size + choice_index
+        if 0 <= choice_index < size and absolute_index < len(self.choices):
             event.stop()
             self.select_choice(self.choices[absolute_index])
 
+    def move_picker(self, cursor):
+        """Put the picker cursor on row ``cursor``, clamped to the list."""
+        cursor = min(max(cursor, 0), len(self.choices) - 1)
+        if cursor != self.picker_cursor:
+            self.picker_cursor = cursor
+            self.query_one("#picker", Static).update(self.picker_text())
+
     def turn_picker_page(self, direction):
-        page_count = (len(self.choices) + self.PICKER_PAGE_SIZE - 1) // self.PICKER_PAGE_SIZE
+        size = self.picker_size
+        page_count = (len(self.choices) + size - 1) // size
         new_page = min(max(self.picker_page + direction, 0), page_count - 1)
         if new_page != self.picker_page:
-            self.picker_page = new_page
-            self.query_one("#picker", Static).update(self.picker_text())
+            self.move_picker(new_page * size)
 
     def select_choice(self, binding):
         self.path = Path(binding["questions_path"])
@@ -1017,7 +1116,12 @@ class Panel(App):
         status = self.query_one("#status", Static)
         notices = status.size.height if status.display else 0
         self.input.styles.max_height = max(3, min(10, self.size.height - 6 - notices))
-        if not self.raw_mode and not self.picker_active:
+        if self.picker_active:
+            # Redraw once the new layout is in place, not with the old sizes.
+            self.call_after_refresh(
+                lambda: self.query_one("#picker", Static).update(self.picker_text())
+            )
+        elif not self.raw_mode:
             self.refresh_view()
 
     # Selector keys ----------------------------------------------------------
@@ -1033,6 +1137,9 @@ class Panel(App):
         return self.current
 
     def action_move(self, step):
+        if self.picker_active and self.focused is None:
+            self.move_picker(self.picker_cursor + step)
+            return
         self.selector_draft()
         if self.units:
             index = min(max(self.focus_index() + step, 0), len(self.units) - 1)
@@ -1089,6 +1196,9 @@ class Panel(App):
         self.refresh_view()
 
     def action_choose(self):
+        if self.picker_active and self.focused is None:
+            self.select_choice(self.choices[self.picker_cursor])
+            return
         draft = self.selector_draft()
         if draft is None:
             if self.drafts:
