@@ -23,7 +23,7 @@
 - deliverable commit：待 Orchestrator 從 Git 查證後填入
 ```
 
-不適用的欄位填「無」，不可省略資源歸屬或虛構 commit。status 使用 `dispatched / in progress / committed / merged`；受阻原因及恢復條件寫在 next step。
+agent 欄以 HCOM 名稱開頭（可在後面加括號說明）；orchestrator 填派工主控的 HCOM 名稱。[停住監控](stall-watch.md) 靠這兩欄找出每位主控要盯的 Agent，填錯或留空的卡不會被監控。不適用的欄位填「無」，不可省略資源歸屬或虛構 commit。status 使用 `dispatched / in progress / committed / merged`；受阻原因及恢復條件寫在 next step。
 
 ## 更新與歸檔
 
@@ -37,6 +37,6 @@
 
 - 清理任務卡列明且屬於本任務的資源；普通暫存檔用 trash-cli，含機密者先用 `shred -u`，再移除所在 worktree。
 - 以 `git worktree remove` 移除該任務的獨立 worktree，以 `git branch -d` 刪除任務分支；`-D` 僅限使用者明確確認放棄該分支。
-- 將任務卡移至 `.lat/tasks/done/`。
+- 將任務卡移至 `.lat/tasks/done/`；移走後停住監控不再盯該 Agent。
 
 只有任務卡明列待完成後續工作時可暫留，例如 QA 保留 worktree 供複驗；後續工作完成後立即收尾。

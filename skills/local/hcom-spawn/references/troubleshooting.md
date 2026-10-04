@@ -13,6 +13,25 @@ Agent 久無回應時，依序：
 
 判斷依據取自畫面上**本輪**的內容，歷史殘留訊息不算。
 
+### 訊息排隊送不進去
+
+對方久無回應，或 `hcom list --json` 的 `unread_count` 一直不歸零時，用 `hcom term <名稱> --json --name <自身名稱>` 看 `ready`、`prompt_empty`、`input_text`，分兩種情況。兩種情況下 HCOM 都不會把訊息送進去，重送訊息沒有用。
+
+**狀態卡在 `active`**：`hcom list --json` 顯示 `active`，紀錄卻很久沒變，畫面是 `ready=true`、`prompt_empty=true`。Agent 其實已停在空輸入框，只是 HCOM 沒收到回到閒置的事件。已知兩種觸發：
+
+- Codex 回合結束後自己跑記憶整理，整理用的工具把狀態改成 `active`，之後沒有事件改回來。
+- 回合中開的背景指令在回合結束後才執行 `hcom send`，把已經 `listening` 的狀態改成 `active tool:send`。
+
+用一句催促把它叫醒：
+
+```bash
+hcom term inject <名稱> 'You have unread hcom messages. Read them and continue.' --enter --name <自身名稱>
+```
+
+送出後用 `hcom term` 確認它開始新的一輪。這個問題已回報上游（aannoo/hcom issue 151）；HCOM 修好之前照此處理。
+
+**輸入框殘留文字**：`hcom list -v` 顯示 `listening: uncommitted text`，畫面 `prompt_empty=false`、`input_text` 有字。HCOM 為了不蓋掉使用者打的字而暫停投遞。先確認那段字不是使用者要送出的內容，必要時抄下原文，再每個字元送一次退格清空（`hcom term inject <名稱> $'\x7f' --name <自身名稱>`），清空後排隊的訊息會立刻送達。
+
 ## 卡住時升級 effort
 
 - 有進展就維持目前 effort；單次測試失敗不算卡住。同一問題試過兩種不同方法仍無新進展才算卡住。
