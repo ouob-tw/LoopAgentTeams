@@ -413,6 +413,42 @@ class WatchDecisionTests(unittest.TestCase):
             self.assertTrue(watch.successful_hcom_send_since(
                 transcript, '2026-10-04T14:00:58+00:00'))
 
+    def test_compound_send_to_third_agent_releases_wait(self):
+        watch = load_watch()
+        record = {
+            'timestamp': '2026-10-04T14:00:59.400Z', 'type': 'event_msg',
+            'payload': {'type': 'item_completed', 'item': {
+                'type': 'CommandExecution',
+                'command': ['/bin/bash', '-lc',
+                            "printf report > /tmp/report && hcom send @third --file /tmp/report"],
+                'status': 'completed', 'exit_code': 0,
+                'stdout': 'report prepared\nSent to: third\n',
+            }},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'codex.jsonl'
+            transcript.write_text(json.dumps(record) + '\n')
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:00:58+00:00'))
+
+    def test_claude_send_started_before_wait_and_completed_after_releases(self):
+        watch = load_watch()
+        records = [
+            {'timestamp': '2026-10-04T14:00:59.900Z', 'type': 'assistant',
+             'message': {'content': [{'type': 'tool_use', 'id': 'tool-crossing',
+                                      'name': 'Bash', 'input': {
+                                          'command': "cat /tmp/reply | hcom send @third --intent inform"}}]}},
+            {'timestamp': '2026-10-04T14:01:00.100Z', 'type': 'user',
+             'message': {'content': [{'type': 'tool_result',
+                                      'tool_use_id': 'tool-crossing',
+                                      'content': 'Sent to: third', 'is_error': False}]}},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'claude.jsonl'
+            transcript.write_text(''.join(json.dumps(row) + '\n' for row in records))
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:01:00+00:00'))
+
     def test_failed_or_old_send_attempt_does_not_release_wait(self):
         watch = load_watch()
         records = [

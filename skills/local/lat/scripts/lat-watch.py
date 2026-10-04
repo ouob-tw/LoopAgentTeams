@@ -639,16 +639,18 @@ def after_timestamp(value, threshold):
 
 def hcom_send_command(value):
     return (isinstance(value, str)
-            and re.match(r'\s*hcom\s+send(?:\s|$)', value) is not None)
+            and re.search(r'(?:^|&&|\|\||[;|])\s*hcom\s+send(?:\s|$)', value)
+            is not None)
 
 
 def successful_send_output(value):
-    return isinstance(value, str) and value.lstrip().startswith('Sent to:')
+    return (isinstance(value, str)
+            and re.search(r'^Sent to:', value, re.MULTILINE) is not None)
 
 
 def successful_hcom_send_since(transcript, declared_at):
     """Find a completed hcom send in one exact agent transcript."""
-    calls = set()
+    claude_hcom_send_ids = set()
     try:
         lines = Path(transcript).open()
     except (FileNotFoundError, OSError):
@@ -661,8 +663,7 @@ def successful_hcom_send_since(transcript, declared_at):
                 continue
             if not isinstance(record, dict):
                 continue
-            if not after_timestamp(record.get('timestamp'), declared_at):
-                continue
+            completed_after_wait = after_timestamp(record.get('timestamp'), declared_at)
 
             message = record.get('message', {})
             content = message.get('content', []) if isinstance(message, dict) else []
@@ -675,12 +676,15 @@ def successful_hcom_send_since(transcript, declared_at):
                     if (item.get('type') == 'tool_use' and item.get('name') == 'Bash'
                             and isinstance(item.get('id'), str)
                             and hcom_send_command(command)):
-                        calls.add(item['id'])
-                    if (item.get('type') == 'tool_result'
-                            and item.get('tool_use_id') in calls
+                        claude_hcom_send_ids.add(item['id'])
+                    if (completed_after_wait and item.get('type') == 'tool_result'
+                            and item.get('tool_use_id') in claude_hcom_send_ids
                             and item.get('is_error') is False
                             and successful_send_output(item.get('content'))):
                         return True
+
+            if not completed_after_wait:
+                continue
 
             payload = record.get('payload', {})
             item = payload.get('item', {}) if isinstance(payload, dict) else {}
