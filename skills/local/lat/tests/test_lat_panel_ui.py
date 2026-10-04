@@ -581,7 +581,7 @@ class OpenActionTests(PanelTestCase):
             await pilot.pause()
             picker = app.query_one("#picker")
             lines = str(picker.render()).splitlines()
-            page_size = app.picker_page_size
+            page_size = app.picker_size
             self.assertEqual(page_size, 6)
             self.assertEqual(len(lines), page_size + 1)
             self.assertEqual(picker.size.height, page_size + 1)
@@ -599,6 +599,41 @@ class OpenActionTests(PanelTestCase):
             await pilot.press("3")
             await pilot.pause()
             self.assertEqual(app.session_id, "s-9")
+
+    async def test_picker_digits_follow_the_rows_shown_after_a_resize(self):
+        choices = []
+        for index in range(10):
+            questions = self.root / f"p-{index}/.lat/questions.md"
+            questions.parent.mkdir(parents=True)
+            questions.write_text(QUESTIONS)
+            choices.append({
+                "hcom_name": f"ctl-{index}", "workspace": str(questions.parent.parent),
+                "questions_path": str(questions), "session_id": f"s-{index}",
+            })
+        panel_env = {
+            "LAT_PANEL_HERDR_WORKSPACE": "ws-a",
+            "LAT_PANEL_CHOICES": json.dumps(choices),
+            "HERDR_CONFIG_PATH": str(self.config),
+        }
+        for first, second, downs, shown in (
+            ((80, 8), (120, 24), 9, ["ctl-9"]),
+            ((120, 24), (80, 8), 7, ["ctl-6", "ctl-7", "ctl-8", "ctl-9"]),
+        ):
+            with self.subTest(first=first, second=second):
+                app = self.panel.Panel.from_env(dict(panel_env))
+                async with app.run_test(size=first) as pilot:
+                    for _ in range(downs):
+                        await pilot.press("down")
+                    await pilot.resize_terminal(*second)
+                    await pilot.pause()
+                    await pilot.pause()
+                    rows = str(app.query_one("#picker").render()).splitlines()[1:]
+                    self.assertEqual(app.picker_size, 9 if second[1] == 24 else 6)
+                    self.assertEqual([row.split("｜")[0].split()[-1] for row in rows], shown)
+                    expected = rows[0].split("｜")[0].split()[-1]
+                    await pilot.press("1")
+                    await pilot.pause()
+                    self.assertEqual(app.session_id, "s-" + expected.removeprefix("ctl-"))
 
     async def test_picker_accepts_digit_ignores_invalid_key_and_ctrl_q_closes(self):
         other = self.root / "other"

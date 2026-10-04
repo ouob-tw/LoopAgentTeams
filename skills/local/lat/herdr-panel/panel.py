@@ -529,6 +529,8 @@ class Panel(App):
         self.choices = choices or []
         self.picker_active = bool(self.choices)
         self.picker_cursor = 0
+        # Rows per page as last drawn; digits and paging follow what is on screen.
+        self.picker_size = self.PICKER_PAGE_SIZE
         self.picker_pending = [
             pending_titles(item.get("questions_path", "")) for item in self.choices
         ]
@@ -643,8 +645,7 @@ class Panel(App):
         if self.notification_pending():
             self.start_notification()
 
-    @property
-    def picker_page_size(self):
+    def fitting_page_size(self):
         """Up to nine rows, fewer when the pane cannot show the title, rows and keys."""
         if not self.size.height:
             return self.PICKER_PAGE_SIZE
@@ -655,7 +656,7 @@ class Panel(App):
 
     @property
     def picker_page(self):
-        return self.picker_cursor // self.picker_page_size
+        return self.picker_cursor // self.picker_size
 
     def picker_row(self, index, number, width):
         """One display line naming a controller.
@@ -692,7 +693,7 @@ class Panel(App):
 
     def picker_text(self):
         """One controller per line, cut to the pane width; the cursor row is marked."""
-        size = self.picker_page_size
+        size = self.picker_size = self.fitting_page_size()
         start = self.picker_page * size
         width = max(self.query_one("#picker", Static).size.width or self.size.width - 2, 20)
         title = PICKER_TITLE
@@ -720,7 +721,7 @@ class Panel(App):
         if not event.character or not event.character.isdigit():
             return
         choice_index = int(event.character) - 1
-        size = self.picker_page_size
+        size = self.picker_size
         absolute_index = self.picker_page * size + choice_index
         if 0 <= choice_index < size and absolute_index < len(self.choices):
             event.stop()
@@ -734,7 +735,7 @@ class Panel(App):
             self.query_one("#picker", Static).update(self.picker_text())
 
     def turn_picker_page(self, direction):
-        size = self.picker_page_size
+        size = self.picker_size
         page_count = (len(self.choices) + size - 1) // size
         new_page = min(max(self.picker_page + direction, 0), page_count - 1)
         if new_page != self.picker_page:
@@ -1116,7 +1117,10 @@ class Panel(App):
         notices = status.size.height if status.display else 0
         self.input.styles.max_height = max(3, min(10, self.size.height - 6 - notices))
         if self.picker_active:
-            self.query_one("#picker", Static).update(self.picker_text())
+            # Redraw once the new layout is in place, not with the old sizes.
+            self.call_after_refresh(
+                lambda: self.query_one("#picker", Static).update(self.picker_text())
+            )
         elif not self.raw_mode:
             self.refresh_view()
 
