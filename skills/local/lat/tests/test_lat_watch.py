@@ -322,15 +322,14 @@ class WatchDecisionTests(unittest.TestCase):
         watch = load_watch()
         declaration = {'agent': 'worker', 'target': 'reviewer'}
         delivered = [{'type': 'status', 'data': {'context': 'deliver:sender'}}]
-        replied = [{'type': 'status', 'data': {'context': 'tool:send'}}]
 
-        self.assertEqual(watch.wait_release_reason(declaration, delivered, [], None),
+        self.assertEqual(watch.wait_release_reason(declaration, delivered, False, None),
                          'message-delivered')
-        self.assertEqual(watch.wait_release_reason(declaration, [], replied, None),
+        self.assertEqual(watch.wait_release_reason(declaration, [], True, None),
                          'target-replied')
-        self.assertEqual(watch.wait_release_reason(declaration, [], [], False),
+        self.assertEqual(watch.wait_release_reason(declaration, [], False, False),
                          'decision-resolved')
-        self.assertIsNone(watch.wait_release_reason(declaration, [], [], True))
+        self.assertIsNone(watch.wait_release_reason(declaration, [], False, True))
 
     def test_real_session_status_shapes_release_canonical_agent_waits(self):
         watch = load_watch()
@@ -346,36 +345,10 @@ class WatchDecisionTests(unittest.TestCase):
                 'status': 'active',
             },
         }]
-        replied = [{
-            'id': 72625, 'instance': 'file', 'type': 'status',
-            'data': {
-                'context': 'tool:send',
-                'session': '01a10703-c28f-7c30-ba0f-d98747be8797',
-                'status': 'active',
-            },
-        }, {
-            'id': 72626, 'instance': 'file', 'type': 'message',
-            'data': {'from': 'file', 'delivered_to': ['mova'], 'text': 'reply'},
-        }]
-
         self.assertEqual(watch.wait_release_reason(
-            declaration, delivered, [], None), 'message-delivered')
+            declaration, delivered, False, None), 'message-delivered')
         self.assertEqual(watch.wait_release_reason(
-            declaration, [], replied, None), 'target-replied')
-
-        claude_replied = [{
-            'id': 74215, 'instance': 'nina', 'type': 'status',
-            'data': {
-                'context': 'tool:Bash',
-                'detail': "hcom send @nepa-qafix-miso --intent inform --name nina -- 'ok'",
-                'session': 'bd7120b8-c6d9-481e-a9df-4498de96b95b',
-            },
-        }, {
-            'id': 74216, 'instance': 'nina', 'type': 'message',
-            'data': {'from': 'nina', 'delivered_to': ['miso'], 'text': 'ok'},
-        }]
-        self.assertEqual(watch.wait_release_reason(
-            declaration, [], claude_replied, None), 'target-replied')
+            declaration, [], True, None), 'target-replied')
 
     def test_session_events_exclude_another_session_with_the_same_short_alias(self):
         watch = load_watch()
@@ -405,44 +378,62 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertIn('--sql', command)
         self.assertIn(watched['session_id'], command[command.index('--sql') + 1])
 
-    def test_target_reply_uses_session_send_status_not_global_event_adjacency(self):
+    def test_successful_send_in_exact_claude_transcript_releases_wait(self):
         watch = load_watch()
-        declaration = {'agent': 'worker', 'target': 'reviewer-full-name'}
-        target_events = [{
-            'id': 10, 'instance': 'reviewer', 'type': 'status',
-            'data': {'context': 'tool:send', 'session': 'reviewer-session'},
-        }, {
-            'id': 11, 'instance': 'other', 'type': 'status',
-            'data': {'context': 'tool:Bash', 'session': 'other-session'},
-        }, {
-            'id': 12, 'instance': 'reviewer', 'type': 'message',
-            'data': {'from': 'reviewer', 'delivered_to': ['someone']},
-        }]
+        records = [
+            {'timestamp': '2026-10-04T14:01:41.176Z', 'type': 'assistant',
+             'message': {'content': [{'type': 'tool_use', 'id': 'tool-1',
+                                      'name': 'Bash', 'input': {
+                                          'command': "hcom send @worker --intent inform -- 'ok'"}}]}},
+            {'timestamp': '2026-10-04T14:01:41.273Z', 'type': 'user',
+             'message': {'content': [{'type': 'tool_result', 'tool_use_id': 'tool-1',
+                                      'content': 'Sent to: worker', 'is_error': False}]}},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'claude.jsonl'
+            transcript.write_text(''.join(json.dumps(row) + '\n' for row in records))
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:01:40+00:00'))
 
-        self.assertEqual(watch.wait_release_reason(
-            declaration, [], target_events, None), 'target-replied')
-
-    def test_short_alias_message_without_session_send_status_does_not_release_wait(self):
+    def test_successful_send_in_exact_codex_transcript_releases_wait(self):
         watch = load_watch()
-        declaration = {'agent': 'worker', 'target': 'reviewer'}
-        colliding_message = [{
-            'id': 20, 'instance': 'reviewer', 'type': 'message',
-            'data': {'from': 'reviewer', 'delivered_to': ['someone']},
-        }]
+        record = {
+            'timestamp': '2026-10-04T14:00:59.400Z', 'type': 'event_msg',
+            'payload': {'type': 'item_completed', 'item': {
+                'type': 'CommandExecution',
+                'command': ['/bin/bash', '-lc',
+                            "hcom send @worker --intent inform -- 'ok'"],
+                'status': 'completed', 'exit_code': 0,
+                'stdout': 'Sent to: worker\n',
+            }},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'codex.jsonl'
+            transcript.write_text(json.dumps(record) + '\n')
+            self.assertTrue(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:00:58+00:00'))
 
-        self.assertIsNone(watch.wait_release_reason(
-            declaration, [], colliding_message, None))
-
-    def test_short_alias_delivery_message_without_session_status_does_not_release_wait(self):
+    def test_failed_or_old_send_attempt_does_not_release_wait(self):
         watch = load_watch()
-        declaration = {'agent': 'worker', 'target': 'reviewer'}
-        colliding_message = [{
-            'id': 21, 'instance': 'sender', 'type': 'message',
-            'data': {'from': 'sender', 'delivered_to': ['worker']},
-        }]
-
-        self.assertIsNone(watch.wait_release_reason(
-            declaration, colliding_message, [], None))
+        records = [
+            {'timestamp': '2026-10-04T14:00:00Z', 'type': 'event_msg',
+             'payload': {'type': 'item_completed', 'item': {
+                 'type': 'CommandExecution',
+                 'command': ['/bin/bash', '-lc', 'hcom send --help'],
+                 'status': 'completed', 'exit_code': 0, 'stdout': 'Usage: hcom send',
+             }}},
+            {'timestamp': '2026-10-04T14:02:00Z', 'type': 'event_msg',
+             'payload': {'type': 'item_completed', 'item': {
+                 'type': 'CommandExecution',
+                 'command': ['/bin/bash', '-lc', "hcom send @missing -- 'ok'"],
+                 'status': 'failed', 'exit_code': 1, 'stdout': '',
+             }}},
+        ]
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'failed.jsonl'
+            transcript.write_text(''.join(json.dumps(row) + '\n' for row in records))
+            self.assertFalse(watch.successful_hcom_send_since(
+                transcript, '2026-10-04T14:01:00+00:00'))
 
     def test_background_process_from_hcom_identity_blocks_idle_nudge(self):
         watch = load_watch()

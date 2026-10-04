@@ -474,17 +474,6 @@ def status_context(event):
         event, 'context', 'status')
 
 
-def session_send_event(event):
-    """Recognize a send action already filtered to one HCOM session."""
-    context = status_context(event)
-    if context == 'tool:send':
-        return True
-    detail = event_value(event, 'status_detail', 'status') or event_value(
-        event, 'detail', 'status')
-    return (context == 'tool:Bash' and isinstance(detail, str)
-            and re.match(r'\s*hcom\s+send(?:\s|$)', detail) is not None)
-
-
 def read_processes(proc_root=Path('/proc')):
     processes = []
     for directory in proc_root.iterdir():
@@ -573,15 +562,14 @@ def background_process_running(agent, info, processes, current_pid=None):
     return False
 
 
-def wait_release_reason(declaration, participant_events, target_events, decision_pending):
+def wait_release_reason(declaration, participant_events, target_replied, decision_pending):
     """Explain why a wait is no longer valid, or return None."""
     for event in participant_events:
         context = status_context(event)
         if isinstance(context, str) and context.startswith('deliver:'):
             return 'message-delivered'
-    for event in target_events:
-        if session_send_event(event):
-            return 'target-replied'
+    if target_replied:
+        return 'target-replied'
     if decision_pending is False:
         return 'decision-resolved'
     return None
@@ -635,6 +623,82 @@ def session_events(orchestrator, info, *filters):
             if event_value(event, 'session', 'status') == session_id]
 
 
+def after_timestamp(value, threshold):
+    if not isinstance(value, str):
+        return False
+    try:
+        parsed = datetime.fromisoformat(value.replace('Z', '+00:00'))
+        boundary = datetime.fromisoformat(threshold.replace('Z', '+00:00'))
+    except (AttributeError, TypeError, ValueError):
+        return False
+    try:
+        return parsed >= boundary
+    except TypeError:
+        return False
+
+
+def hcom_send_command(value):
+    return (isinstance(value, str)
+            and re.match(r'\s*hcom\s+send(?:\s|$)', value) is not None)
+
+
+def successful_send_output(value):
+    return isinstance(value, str) and value.lstrip().startswith('Sent to:')
+
+
+def successful_hcom_send_since(transcript, declared_at):
+    """Find a completed hcom send in one exact agent transcript."""
+    calls = set()
+    try:
+        lines = Path(transcript).open()
+    except (FileNotFoundError, OSError):
+        return False
+    with lines:
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except (json.JSONDecodeError, TypeError):
+                continue
+            if not isinstance(record, dict):
+                continue
+            if not after_timestamp(record.get('timestamp'), declared_at):
+                continue
+
+            message = record.get('message', {})
+            content = message.get('content', []) if isinstance(message, dict) else []
+            if isinstance(content, list):
+                for item in content:
+                    if not isinstance(item, dict):
+                        continue
+                    command = item.get('input', {}).get('command') \
+                        if isinstance(item.get('input'), dict) else None
+                    if (item.get('type') == 'tool_use' and item.get('name') == 'Bash'
+                            and isinstance(item.get('id'), str)
+                            and hcom_send_command(command)):
+                        calls.add(item['id'])
+                    if (item.get('type') == 'tool_result'
+                            and item.get('tool_use_id') in calls
+                            and item.get('is_error') is False
+                            and successful_send_output(item.get('content'))):
+                        return True
+
+            payload = record.get('payload', {})
+            item = payload.get('item', {}) if isinstance(payload, dict) else {}
+            if not isinstance(item, dict):
+                item = {}
+            command = item.get('command') if isinstance(item, dict) else None
+            shell_command = command[-1] if isinstance(command, list) and command else None
+            if (record.get('type') == 'event_msg'
+                    and payload.get('type') == 'item_completed'
+                    and item.get('type') == 'CommandExecution'
+                    and hcom_send_command(shell_command)
+                    and item.get('status') == 'completed'
+                    and item.get('exit_code') == 0
+                    and successful_send_output(item.get('stdout'))):
+                return True
+    return False
+
+
 def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agents=None):
     if not declaration or not declaration.get('active', True):
         return None
@@ -646,12 +710,11 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
         orchestrator, agent_info(agents, agent), '--after', after)
     decision = pending_decision(decisions, target)
     target_info = agent_info(agents, target)
-    if decision is not None or target_info is None:
-        target_events = []
-    else:
-        target_events = session_events(
-            orchestrator, target_info, '--after', after)
-    reason = wait_release_reason(declaration, participant, target_events, decision)
+    transcript = target_info.get('transcript_path') if target_info else None
+    target_replied = bool(
+        decision is None and transcript
+        and successful_hcom_send_since(transcript, after))
+    reason = wait_release_reason(declaration, participant, target_replied, decision)
     if reason:
         updated = dict(declaration, active=False, released_reason=reason,
                        released_at_utc=datetime.now(timezone.utc).isoformat())
