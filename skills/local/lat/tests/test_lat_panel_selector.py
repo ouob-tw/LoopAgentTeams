@@ -470,7 +470,7 @@ class LetterKeyTests(SelectorTestCase):
         self.questions.write_text(TEXT.replace("請自由回答。", options))
         app = self.make_app()
         async with app.run_test() as pilot:
-            for index, key in enumerate("abcdefghiABCDEFGHI"):
+            for key in "abcdefghiABCDEFGHI":
                 await self.press(pilot, key)
                 letter = key.upper()
                 self.assertIn(f"答覆：{letter}. 選項{ord(letter) - 64}\n", self.text(), key)
