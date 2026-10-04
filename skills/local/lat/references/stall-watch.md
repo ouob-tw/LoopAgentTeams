@@ -59,7 +59,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" status --workspace "$
   --orchestrator <主控 HCOM 名稱> --tasks "$tasks"
 ```
 
-每次判斷與動作記在 `$workspace/.lat/watch/<主控 HCOM 名稱>/watch.jsonl`；監控程式本身的錯誤輸出在 `$workspace/.lat/watch/<session-id>.log`。查誤報或漏報時讀這兩份的最後幾行。
+每次判斷與動作記在 `$workspace/.lat/watch/<主控 HCOM 名稱>/watch.jsonl`，無法辨識而跳過的任務卡也記在這裡（`task-card-skipped`，同一內容只記一次）；監控程式本身的錯誤輸出在 `$workspace/.lat/watch/<session-id>.log`。查誤報或漏報時讀這兩份的最後幾行。
 
 ## 通知使用者的情況
 

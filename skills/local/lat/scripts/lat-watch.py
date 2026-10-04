@@ -22,6 +22,7 @@ NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pendi
          'decisions. If nothing remains, declare exactly what you are waiting for '
          'with lat-watch wait.')
 NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
+CARD_AGENT = re.compile(r'([A-Za-z0-9][A-Za-z0-9_-]{0,127})(?=$|[\s(（])')
 
 
 class Observation(NamedTuple):
@@ -349,25 +350,59 @@ def parse_task(path):
             fields[match.group(1)] = match.group(2).strip()
     if not all(name in fields for name in ('agent', 'orchestrator', 'status')):
         return None
-    fields['agent'] = fields['agent'].split(maxsplit=1)[0]
     return fields
 
 
+def task_agent(field):
+    match = CARD_AGENT.match(field)
+    if not match:
+        raise ValueError(f'agent field must start with an HCOM name: {field!r}')
+    return match.group(1)
+
+
+def card_digest(path, error):
+    try:
+        content = path.read_bytes()
+    except OSError:
+        content = str(error).encode()
+    return hashlib.sha256(content).hexdigest()
+
+
 def monitored_task_cards(tasks, orchestrator):
-    cards = {}
+    """Return (cards by agent, skipped {card name: (digest, error)})."""
+    cards, skipped = {}, {}
     if not tasks.is_dir():
         raise ValueError(f'Missing task-card directory: {tasks}')
     for path in sorted(tasks.glob('*.md')):
-        card = parse_task(path)
-        if (card and card['orchestrator'] == orchestrator
-                and card['status'] != 'merged'):
-            card['_updated_at'] = path.stat().st_mtime
-            cards.setdefault(valid_name(card['agent']), card)
-    return cards
+        try:
+            card = parse_task(path)
+            if (card and card['orchestrator'] == orchestrator
+                    and card['status'] != 'merged'):
+                card['agent'] = task_agent(card['agent'])
+                card['_updated_at'] = path.stat().st_mtime
+                cards.setdefault(card['agent'], card)
+        except (OSError, ValueError) as error:
+            skipped[path.name] = (card_digest(path, error), str(error))
+    return cards, skipped
 
 
 def monitored_agents(tasks, orchestrator):
-    return [valid_name(orchestrator), *monitored_task_cards(tasks, orchestrator)]
+    cards, _ = monitored_task_cards(tasks, orchestrator)
+    return [valid_name(orchestrator), *cards]
+
+
+def log_skipped_cards(path, log, skipped, now):
+    """Log each skipped card once per content; forget cards that are fixed or gone."""
+    logged = read_object(path, {})
+    current = {name: digest for name, (digest, _) in skipped.items()}
+    for name, (digest, error) in skipped.items():
+        if logged.get(name) != digest:
+            append_log(log, {
+                'at': now, 'card': name, 'decision': 'task-card-skipped',
+                'actions': [], 'error': error,
+            })
+    if current != logged:
+        write_object(path, current)
 
 
 def task_card_revision(card):
@@ -859,12 +894,13 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     """Observe every owned agent once, execute actions, and persist state/logs."""
     now = time.time() if now is None else now
     orchestrator = valid_name(orchestrator)
-    cards = monitored_task_cards(tasks, orchestrator)
+    cards, skipped = monitored_task_cards(tasks, orchestrator)
     agents = [orchestrator, *cards]
-    hcom = list_hcom(orchestrator)
     path = state_path(workspace, orchestrator)
-    states = read_object(path, {})
     log = path.with_name('watch.jsonl')
+    log_skipped_cards(path.with_name('skipped-cards.json'), log, skipped, now)
+    hcom = list_hcom(orchestrator)
+    states = read_object(path, {})
     for agent in set(states) - set(agents):
         append_log(log, {
             'at': now, 'agent': agent,

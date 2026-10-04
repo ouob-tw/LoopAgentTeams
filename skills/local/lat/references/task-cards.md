@@ -23,7 +23,7 @@
 - deliverable commit：待 Orchestrator 從 Git 查證後填入
 ```
 
-agent 欄以 HCOM 名稱開頭，要加說明時先空一格（如 `<名稱> (HCOM tag ...)`）；orchestrator 填派工主控的 HCOM 名稱。[停住監控](stall-watch.md) 靠這兩欄找出每位主控要盯的 Agent；agent 欄留空或名稱後直接接全形括號會讓監控讀卡失敗而整輪停擺。不適用的欄位填「無」，不可省略資源歸屬或虛構 commit。status 使用 `dispatched / in progress / committed / merged`；受阻原因及恢復條件寫在 next step。
+agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括號（如 `<名稱> (HCOM tag ...)`、`<名稱>（QA）`）；orchestrator 填派工主控的 HCOM 名稱。[停住監控](stall-watch.md) 靠這兩欄找出每位主控要盯的 Agent；agent 欄留空或名稱後接其他符號的卡片無法辨識，監控會跳過並記錄，該 Agent 因此不受監控。不適用的欄位填「無」，不可省略資源歸屬或虛構 commit。status 使用 `dispatched / in progress / committed / merged`；受阻原因及恢復條件寫在 next step。
 
 ## 更新與歸檔
 

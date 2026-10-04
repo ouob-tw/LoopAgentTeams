@@ -480,6 +480,89 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual(self.hcom_log.read_text().splitlines(),
                          ['list --json --name orch'])
 
+    def write_card(self, relative, agent_field, orchestrator='orch', status='in progress'):
+        path = self.tasks / relative
+        path.write_text(f'- agent：{agent_field}\n- orchestrator：{orchestrator}\n'
+                        f'- status：{status}\n')
+        return path
+
+    def test_agent_name_may_be_followed_by_ascii_or_full_width_parentheses(self):
+        self.write_card('a-full.md', 'poni（QA）')
+        self.write_card('b-ascii.md', 'kemo(Codex)')
+        self.write_card('c-space.md', 'tabi\t(HCOM tag `t`)')
+        self.write_card('d-full-space.md', 'lune　（QA）')
+        self.write_card('e-bare.md', 'sora')
+
+        result = self.cli('status', '--workspace', self.work,
+                          '--orchestrator', 'orch', '--tasks', self.tasks)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([item['agent'] for item in json.loads(result.stdout)['targets']],
+                         ['orch', 'poni', 'kemo', 'tabi', 'lune', 'sora', 'worker-open'])
+
+    def test_malformed_cards_are_skipped_and_logged_once_per_content(self):
+        empty = self.write_card('empty.md', '')
+        self.write_card('glued.md', 'poni:QA')
+        (self.tasks / 'binary.md').write_bytes(b'- agent\xef\xbc\x9a\xff\xfe\n')
+        self.write_card('foreign.md', '', orchestrator='somebody-else')
+        watch = load_watch()
+
+        self.run_cycles(watch, 0, 60)
+        status = self.cli('status', '--workspace', self.work,
+                          '--orchestrator', 'orch', '--tasks', self.tasks)
+        empty.write_text(empty.read_text().replace('in progress', 'committed'))
+        self.run_cycles(watch, 120)
+
+        records = self.watch_records()
+        skipped = [(record['at'], record['card']) for record in records
+                   if record.get('decision') == 'task-card-skipped']
+        self.assertEqual(skipped, [(0, 'binary.md'), (0, 'empty.md'), (0, 'glued.md'),
+                                   (120, 'empty.md')])
+        self.assertTrue(all(record['error'] for record in records if 'card' in record))
+        observed = [(record['at'], record['agent']) for record in records if 'agent' in record]
+        self.assertEqual(observed, [(at, agent) for at in (0, 60, 120)
+                                    for agent in ('orch', 'worker-open')])
+        self.assertEqual(status.returncode, 0, status.stderr)
+        self.assertEqual([item['agent'] for item in json.loads(status.stdout)['targets']],
+                         ['orch', 'worker-open'])
+
+    def test_fixed_card_is_watched_and_logged_again_if_it_breaks_again(self):
+        card = self.write_card('flaky.md', '')
+        watch = load_watch()
+
+        self.run_cycles(watch, 0)
+        self.write_card('flaky.md', 'poni（QA）')
+        self.run_cycles(watch, 60)
+        self.write_card('flaky.md', '')
+        self.run_cycles(watch, 120)
+
+        records = self.watch_records()
+        self.assertEqual([record['at'] for record in records
+                          if record.get('card') == card.name], [0, 120])
+        self.assertIn((60, 'poni'), [(record['at'], record['agent'])
+                                     for record in records if 'agent' in record])
+
+    def test_card_that_raises_during_parsing_does_not_stop_the_cycle(self):
+        watch = load_watch()
+        parse_task = watch.parse_task
+        broken = self.tasks / 'open.md'
+
+        def parse_or_fail(path):
+            if path == broken:
+                raise OSError('simulated read failure')
+            return parse_task(path)
+
+        self.write_card('second.md', 'sora (Codex)')
+        with patch.object(watch, 'parse_task', parse_or_fail):
+            self.run_cycles(watch, 0)
+
+        records = self.watch_records()
+        self.assertEqual([(record['card'], record['error']) for record in records
+                          if 'card' in record],
+                         [('open.md', 'simulated read failure')])
+        self.assertEqual([record['agent'] for record in records if 'agent' in record],
+                         ['orch', 'sora'])
+
     def test_wait_writes_declaration_and_status_displays_it(self):
         waited = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'reviewer', '--reason', 'waiting for independent review')
