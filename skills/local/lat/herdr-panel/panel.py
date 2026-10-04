@@ -43,7 +43,7 @@ from textual.widgets import Static, TextArea
 cjk_wrap.install()
 
 PLUGIN_ID = "lat.panel"
-KEYS = "Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Tab 備註 · Esc 關閉"
+KEYS = "A–I／Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Tab 備註 · Esc 關閉"
 RAW_KEYS = "Ctrl+E 選擇框  Ctrl+Q 關閉  Ctrl+Z 復原  Ctrl+Y 重做"
 INPUT_KEYS = "Enter 換行 · Esc 離開輸入框"
 NO_QUESTIONS = "目前沒有待答問題"
@@ -282,6 +282,15 @@ class Draft:
     def other_index(self):
         return len(self.options)
 
+    def letters(self):
+        """Row letters: the file's keys for single, A, B, … for multi; 其他 takes the next."""
+        if self.kind == "single":
+            keys = [option.key for option in self.options]
+        else:
+            keys = [chr(ord("A") + index) if index < 26 else "" for index in range(len(self.options))]
+        following = chr(max((ord(key) for key in keys if key), default=ord("A") - 1) + 1)
+        return keys + [following if following <= "Z" else ""]
+
     @property
     def editable(self):
         return self.status == "draft"
@@ -464,6 +473,10 @@ class Panel(App):
         *(
             Binding(str(digit), f"digit({digit})", priority=True, show=False)
             for digit in range(1, 10)
+        ),
+        *(
+            Binding(key, f"letter('{key}')", priority=True, show=False)
+            for key in "abcdefghiABCDEFGHI"
         ),
     ]
 
@@ -798,15 +811,16 @@ class Panel(App):
                 rows.append(("答覆：", draft.other, ""))
                 keys.append(("post", "answer"))
         else:
+            letters = draft.letters()
             for index, label in enumerate([option.label for option in draft.options] + [OTHER_LABEL]):
                 focused = draft.editable and index == draft.cursor
                 first = len(rows)
                 pointer = "❯ " if focused else "  "
                 checked = index in draft.selected
+                prefix = f"{pointer}{letters[index]}. " if letters[index] else pointer
                 if draft.kind == "multi":
-                    prefix = f"{pointer}{index + 1}. [{'x' if checked else ' '}] "
+                    prefix += f"[{'x' if checked else ' '}] "
                 else:
-                    prefix = f"{pointer}{index + 1}. "
                     if checked:
                         label += "  ✔"
                 rows.append((prefix, label, accent if focused else ""))
@@ -1045,17 +1059,28 @@ class Panel(App):
         self.refresh_view()
 
     def action_digit(self, digit):
+        """Hidden alias kept from before letters: digit N picks row N."""
+        self.pick_row(str(digit), lambda draft: digit - 1)
+
+    def action_letter(self, key):
+        self.pick_row(key, lambda draft: next(
+            (index for index, letter in enumerate(draft.letters()) if letter == key.upper()),
+            None,
+        ))
+
+    def pick_row(self, character, row_index):
+        """Choose the option row ``row_index(draft)`` names, or type ``character``."""
         if self.picker_active:
             raise SkipAction()
         draft = self.selector_draft()
         if self.typing_target(draft):
-            self.type_text(draft, str(digit))
+            self.type_text(draft, character)
             return
         if not draft or not draft.editable:
             self.refresh_view()
             return
-        index = digit - 1
-        if index <= draft.other_index:
+        index = row_index(draft)
+        if index is not None and index <= draft.other_index:
             draft.cursor = index
             if draft.kind == "multi":
                 self.toggle_option(draft, index)
