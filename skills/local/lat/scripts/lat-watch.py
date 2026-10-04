@@ -2,6 +2,7 @@
 """Watch explicitly registered LAT work for stalled agents (stdlib only)."""
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -15,6 +16,7 @@ from typing import NamedTuple
 
 IDLE_SECONDS = 10 * 60
 ACTIVE_SECONDS = 20 * 60
+PROMPT_SECONDS = 5 * 60
 CHECK_SECONDS = 60
 NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
@@ -36,12 +38,15 @@ class Observation(NamedTuple):
     task_card_revision: str = ''
     task_card_updated_at: float = 0
     orchestrator_wait_started_at: float = 0
+    input_text: str = ''
+    unread_count: int = 0
 
 
 class Action(NamedTuple):
     kind: str
     agent: str
     message: str = ''
+    text: str = ''
 
 
 class Process(NamedTuple):
@@ -94,6 +99,18 @@ def owner_notice(observation, state, now, reason):
     return Action(kind, observation.agent, message)
 
 
+def prompt_digest(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def validated_unread_count(info, agent):
+    unread_count = info.get('unread_count', 0)
+    if (not isinstance(unread_count, int) or isinstance(unread_count, bool)
+            or unread_count < 0):
+        raise ValueError(f'hcom list returned invalid unread_count for {agent}')
+    return unread_count
+
+
 def decide(previous, observation, now):
     """Return serializable state and requested actions for one observation."""
     fingerprint = [observation.transcript_size, observation.transcript_mtime_ns,
@@ -116,6 +133,33 @@ def decide(previous, observation, now):
         state.setdefault('user_notified', False)
         if state.get('nudged') and 'nudged_at' not in state:
             state['nudged_at'] = now
+    queued_prompt = (not observation.prompt_empty and bool(observation.input_text)
+                     and observation.unread_count > 0)
+    prompt_hash = prompt_digest(observation.input_text)
+    previous_prompt_hash = previous.get('prompt_text_hash') if previous else None
+    if previous and previous_prompt_hash is None and 'prompt_text' in previous:
+        previous_prompt_hash = prompt_digest(previous['prompt_text'])
+    same_prompt = (queued_prompt and previous is not None
+                   and previous_prompt_hash == prompt_hash)
+    uncertain_recovery = (queued_prompt and previous is not None
+                          and previous.get('prompt_recovery_uncertain', False))
+    if queued_prompt:
+        state.pop('prompt_text', None)
+        state['prompt_text_hash'] = prompt_hash
+        state['prompt_text_since'] = (
+            previous.get('prompt_text_since', now) if same_prompt else now)
+        if uncertain_recovery:
+            state['prompt_recovery_attempted'] = True
+            state.pop('prompt_recovery_uncertain', None)
+        else:
+            state['prompt_recovery_attempted'] = (
+                previous.get('prompt_recovery_attempted', False) if same_prompt else False)
+    else:
+        state.pop('prompt_text', None)
+        state.pop('prompt_text_hash', None)
+        state.pop('prompt_text_since', None)
+        state.pop('prompt_recovery_attempted', None)
+        state.pop('prompt_recovery_uncertain', None)
     actions = ()
     stalled = now - state['last_progress_at'] >= IDLE_SECONDS
     active_stalled = now - state['last_progress_at'] >= ACTIVE_SECONDS
@@ -135,7 +179,13 @@ def decide(previous, observation, now):
                             and (card_handled or wait_handled))
     if orchestrator_handled:
         state['orchestrator_handled'] = True
-    if (stalled and not observation.wait_active and not state['nudged']
+    prompt_stalled = (queued_prompt
+                      and now - state['prompt_text_since'] >= PROMPT_SECONDS)
+    if prompt_stalled and not state['prompt_recovery_attempted']:
+        actions = (Action(
+            'recover-prompt', observation.agent, text=observation.input_text),)
+        state['prompt_recovery_attempted'] = True
+    elif (stalled and not observation.wait_active and not state['nudged']
             and observation.status == 'listening'
             and observation.prompt_empty and not observation.command_running):
         actions = (Action('nudge', observation.agent),)
@@ -205,6 +255,10 @@ def decide(previous, observation, now):
         state['decision'] = 'valid-wait'
     elif observation.command_running:
         state['decision'] = 'command-running'
+    elif queued_prompt and state.get('prompt_recovery_attempted'):
+        state['decision'] = 'prompt-recovery-attempted'
+    elif queued_prompt:
+        state['decision'] = 'prompt-text-wait'
     elif not observation.prompt_empty:
         state['decision'] = 'prompt-not-empty'
     elif observation.status != 'listening':
@@ -507,6 +561,10 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
         raise ValueError(f'hcom term omitted boolean ready for {agent}')
     if not isinstance(terminal.get('prompt_empty'), bool):
         raise ValueError(f'hcom term omitted boolean prompt_empty for {agent}')
+    input_text = terminal.get('input_text', '')
+    if not isinstance(input_text, str):
+        raise ValueError(f'hcom term returned invalid input_text for {agent}')
+    unread_count = validated_unread_count(info, agent)
     transcript_size = 0
     transcript_mtime_ns = 0
     transcript = info.get('transcript_path')
@@ -547,6 +605,8 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
         task_card_revision=task_card_revision(card),
         task_card_updated_at=card.get('_updated_at', 0) if card else 0,
         orchestrator_wait_started_at=orchestrator_wait_started_at,
+        input_text=input_text,
+        unread_count=unread_count,
     )
 
 
@@ -565,7 +625,7 @@ def action_record(action):
     return record
 
 
-def perform_nudge(action, orchestrator):
+def perform_nudge(action, orchestrator, workspace=None):
     run_command(
         ['hcom', 'term', 'inject', action.agent, NUDGE,
          '--enter', '--name', orchestrator],
@@ -582,12 +642,12 @@ def send_notification(action, orchestrator, intent):
     )
 
 
-def perform_notify_orchestrator(action, orchestrator):
+def perform_notify_orchestrator(action, orchestrator, workspace=None):
     send_notification(action, orchestrator, 'request')
     return {'delivery': 'hcom'}
 
 
-def perform_notify_user(action, orchestrator):
+def perform_notify_user(action, orchestrator, workspace=None):
     send_notification(action, orchestrator, 'inform')
     try:
         run_command(
@@ -600,6 +660,169 @@ def perform_notify_user(action, orchestrator):
     return {'delivery': 'hcom+herdr'}
 
 
+def backup_prompt_text(workspace, agent, text):
+    directory = watch_dir(workspace)
+    directory.mkdir(parents=True, exist_ok=True)
+    descriptor, name = tempfile.mkstemp(
+        dir=directory, prefix=f'prompt-{valid_name(agent)}-', suffix='.txt')
+    path = Path(name)
+    try:
+        os.fchmod(descriptor, 0o600)
+        with os.fdopen(descriptor, 'w') as stream:
+            descriptor = -1
+            stream.write(text)
+            stream.flush()
+            os.fsync(stream.fileno())
+    except BaseException:
+        if descriptor >= 0:
+            os.close(descriptor)
+        path.unlink(missing_ok=True)
+        raise
+    return path
+
+
+def read_terminal_input(agent, orchestrator):
+    terminal = run_json(['hcom', 'term', agent, '--json', '--name', orchestrator])
+    text = terminal.get('input_text') if isinstance(terminal, dict) else None
+    if not isinstance(text, str):
+        raise ValueError(f'hcom term omitted input_text for {agent}')
+    return text
+
+
+def read_prompt_status(agent, orchestrator):
+    info = list_hcom(orchestrator).get(agent)
+    if info is None:
+        raise ValueError(f'agent missing from hcom list: {agent}')
+    unread_count = validated_unread_count(info, agent)
+    text = read_terminal_input(agent, orchestrator)
+    return text, unread_count
+
+
+def prompt_excerpt(text, limit=20):
+    compact = ' '.join(text.splitlines())
+    return compact if len(compact) <= limit else compact[:limit] + '…'
+
+
+def send_prompt_notification(orchestrator, message, popup):
+    result = {}
+    try:
+        send_notification(Action('notify-user', orchestrator, message), orchestrator, 'inform')
+        result['hcom'] = 'done'
+    except (OSError, ValueError) as error:
+        result['hcom'] = 'failed'
+        result['hcom_error'] = str(error)
+    try:
+        run_command(
+            ['herdr', 'notification', 'show', 'LAT needs attention',
+             '--body', popup, '--sound', 'request'],
+            failure='Herdr notification failed',
+        )
+        result['herdr'] = 'done'
+    except (OSError, ValueError) as error:
+        result['herdr'] = 'failed'
+        result['herdr_error'] = str(error)
+    return result
+
+
+def perform_prompt_recovery(action, orchestrator, workspace=None):
+    if workspace is None:
+        raise ValueError('Prompt recovery requires a workspace')
+    excerpt = prompt_excerpt(action.text)
+    try:
+        saved = backup_prompt_text(workspace, action.agent, action.text)
+    except (OSError, ValueError) as error:
+        reason = 'prompt text backup failed; input not cleared'
+        message = (f'LAT stall watcher: agent {action.agent}. Reason: {reason}: {error}. '
+                   f'Original prompt text:\n{action.text}')
+        popup = (f'{action.agent}: backup failed; input not cleared. '
+                 f'Excerpt: {excerpt!r}. No saved file.')
+        return {'reason': reason, **send_prompt_notification(
+            orchestrator, message, popup)}
+
+    backspaces = 0
+    reason = 'prompt text backed up and cleared'
+    rearm = False
+    uncertain = False
+    try:
+        current, unread_count = read_prompt_status(action.agent, orchestrator)
+    except (OSError, ValueError) as error:
+        current = action.text
+        unread_count = 0
+        reason = f'prompt clear could not be confirmed; no retry: {error}'
+    if reason == 'prompt text backed up and cleared' and current != action.text:
+        reason = 'prompt text changed before clearing; not cleared'
+        rearm = True
+    elif reason == 'prompt text backed up and cleared' and unread_count == 0:
+        reason = 'queued messages no longer present; input not cleared'
+    while reason == 'prompt text backed up and cleared' and current:
+        try:
+            run_command(
+                ['hcom', 'term', 'inject', action.agent, '\x7f',
+                 '--name', orchestrator],
+                failure=f'hcom backspace failed for {action.agent}',
+            )
+            backspaces += 1
+            updated = read_terminal_input(action.agent, orchestrator)
+        except (OSError, ValueError) as error:
+            uncertain = True
+            reason = f'prompt clear could not be confirmed; no retry: {error}'
+            break
+        if len(updated) >= len(current):
+            reason = ('input text not editable (possible tool UI text)'
+                      if backspaces == 1 else 'prompt text did not clear; no retry')
+            break
+        if not current.startswith(updated):
+            reason = 'prompt text changed while clearing; stopped'
+            current = updated
+            break
+        current = updated
+
+    saved_text = str(saved)
+    message = (f'LAT stall watcher: agent {action.agent}. Reason: {reason}. '
+               f'Saved file: {saved_text}. Backspaces sent: {backspaces}. '
+               f'Original prompt text:\n{action.text}')
+    popup = (f'{action.agent}: {reason}. Excerpt: {excerpt!r}. '
+             f'Saved file: {saved_text}')
+    return {
+        'reason': reason,
+        'saved_path': saved_text,
+        'backspaces': backspaces,
+        '_remaining_input': current,
+        '_prompt_rearm': rearm,
+        '_prompt_uncertain': uncertain,
+        **send_prompt_notification(orchestrator, message, popup),
+    }
+
+
+def apply_prompt_recovery_result(state, result, now):
+    remaining = result.pop('_remaining_input', None)
+    rearm = result.pop('_prompt_rearm', False)
+    uncertain = result.pop('_prompt_uncertain', False)
+    if remaining is None:
+        return
+    if remaining:
+        state.pop('prompt_text', None)
+        state['prompt_text_hash'] = prompt_digest(remaining)
+        state['prompt_recovery_attempted'] = not rearm
+        if uncertain:
+            state['prompt_recovery_uncertain'] = True
+            state['prompt_recovery_attempted'] = True
+        if rearm:
+            state['prompt_text_since'] = now
+    else:
+        state.pop('prompt_text', None)
+        state.pop('prompt_text_hash', None)
+        state.pop('prompt_text_since', None)
+        state.pop('prompt_recovery_attempted', None)
+
+
+def observation_record(observation):
+    record = observation._asdict()
+    text = record.pop('input_text')
+    record['input_text_length'] = len(text)
+    return record
+
+
 ACTION_POLICIES = {
     'nudge': (perform_nudge, 'nudged', ('nudged_at',)),
     'notify-orchestrator': (
@@ -608,6 +831,7 @@ ACTION_POLICIES = {
         ('orchestrator_notified_at', 'orchestrator_notice_task_revision'),
     ),
     'notify-user': (perform_notify_user, 'user_notified', ()),
+    'recover-prompt': (perform_prompt_recovery, None, ()),
 }
 
 
@@ -618,14 +842,15 @@ def action_policy(kind):
         raise ValueError(f'Unsupported watch action: {kind}') from error
 
 
-def perform(action, orchestrator):
+def perform(action, orchestrator, workspace=None):
     handler, _flag, _cleanup_fields = action_policy(action.kind)
-    return handler(action, valid_name(orchestrator))
+    return handler(action, valid_name(orchestrator), workspace)
 
 
 def roll_back(action, state):
     _handler, flag, cleanup_fields = action_policy(action.kind)
-    state[flag] = False
+    if flag is not None:
+        state[flag] = False
     for field in cleanup_fields:
         state.pop(field, None)
 
@@ -670,7 +895,9 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             results = []
             for action in actions:
                 try:
-                    delivery = perform(action, orchestrator)
+                    delivery = perform(action, orchestrator, workspace)
+                    if action.kind == 'recover-prompt':
+                        apply_prompt_recovery_result(state, delivery, now)
                     results.append({'kind': action.kind, 'status': 'done', **delivery})
                 except (OSError, ValueError) as error:
                     roll_back(action, state)
@@ -678,7 +905,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                                     'error': str(error)})
             states[agent] = state
             append_log(log, {
-                'at': now, 'agent': agent, 'observation': observation._asdict(),
+                'at': now, 'agent': agent, 'observation': observation_record(observation),
                 'state': state, 'actions': [action_record(action) for action in actions],
                 'action_results': results,
             })

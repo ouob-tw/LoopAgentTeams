@@ -271,12 +271,51 @@ class WatchDecisionTests(unittest.TestCase):
         state, actions = watch.decide(state, released._replace(wait_released=False), now=4201)
         self.assertEqual(actions, (watch.Action('nudge', 'worker'),))
 
-    def test_uncommitted_prompt_text_is_untouched_by_this_ticket(self):
+    def test_nifo_queued_message_recovers_unchanged_prompt_after_five_minutes(self):
         watch = load_watch()
-        typed = watch.Observation('writer', 'listening', False, False, 10, 10, 1)
+        typed = watch.Observation(
+            'lat-v2-nifo', 'listening', False, False, 10, 10, 1,
+            input_text='A', unread_count=1,
+        )
         state, _ = watch.decide(None, typed, now=0)
 
-        state, actions = watch.decide(state, typed, now=3600)
+        state, actions = watch.decide(state, typed, now=299)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, typed, now=300)
+        self.assertEqual(actions, (
+            watch.Action('recover-prompt', 'lat-v2-nifo', text='A'),
+        ))
+        self.assertTrue(state['prompt_recovery_attempted'])
+        state, actions = watch.decide(state, typed, now=600)
+        self.assertEqual(actions, ())
+
+    def test_changed_prompt_text_restarts_five_minute_timer(self):
+        watch = load_watch()
+        typed = watch.Observation(
+            'writer', 'listening', False, False, 10, 10, 1,
+            input_text='draft', unread_count=1,
+        )
+        state, _ = watch.decide(None, typed, now=0)
+        changed = typed._replace(input_text='draft!')
+
+        state, actions = watch.decide(state, changed, now=299)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, changed, now=598)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, changed, now=599)
+        self.assertEqual(actions, (
+            watch.Action('recover-prompt', 'writer', text='draft!'),
+        ))
+
+    def test_prompt_text_without_queued_messages_is_never_cleared(self):
+        watch = load_watch()
+        typed = watch.Observation(
+            'writer', 'listening', False, False, 10, 10, 1,
+            input_text='keep me', unread_count=0,
+        )
+        state, _ = watch.decide(None, typed, now=0)
+
+        state, actions = watch.decide(state, typed, now=3_600)
         self.assertEqual(actions, ())
 
     def test_every_specified_wait_release_condition_is_recognized(self):
@@ -555,6 +594,213 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual(self.hcom_log.read_text().splitlines(), [
             'send @orch --intent inform --from lat-watch --name orch -- user detail',
         ])
+
+    def test_prompt_recovery_saves_0600_then_clears_and_notifies_with_full_text(self):
+        watch = load_watch()
+        original = 'A private draft\nwith another line'
+        terminal_reads = iter(['A private draft\nwith another lin', ''])
+        commands = []
+
+        def fake_run(command, failure=None):
+            commands.append(command)
+            if command[:3] == ['hcom', 'term', 'inject']:
+                backups = list((self.work / '.lat/watch').glob('prompt-worker-open-*.txt'))
+                self.assertEqual(len(backups), 1)
+                self.assertEqual(backups[0].read_text(), original)
+            return ''
+
+        with patch.object(watch, 'read_prompt_status', return_value=(original, 1)), \
+                patch.object(watch, 'run_command', side_effect=fake_run), \
+                patch.object(watch, 'read_terminal_input',
+                             side_effect=lambda _agent, _orch: next(terminal_reads)):
+            result = watch.perform(
+                watch.Action('recover-prompt', 'worker-open', text=original),
+                'orch', self.work,
+            )
+
+        saved = Path(result['saved_path'])
+        self.assertEqual(saved.read_text(), original)
+        self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+        injects = [command for command in commands if command[:3] ==
+                   ['hcom', 'term', 'inject']]
+        self.assertEqual(len(injects), 2)
+        hcom_note = next(command[-1] for command in commands
+                         if command[:2] == ['hcom', 'send'])
+        popup = next(command[command.index('--body') + 1] for command in commands
+                     if command[:3] == ['herdr', 'notification', 'show'])
+        self.assertIn(original, hcom_note)
+        self.assertIn(str(saved), hcom_note)
+        self.assertIn(str(saved), popup)
+        self.assertNotIn(original, popup)
+        self.assertEqual(result['reason'], 'prompt text backed up and cleared')
+
+    def test_prompt_backup_failure_does_not_clear_and_still_notifies(self):
+        watch = load_watch()
+        commands = []
+
+        def fake_run(command, failure=None):
+            commands.append(command)
+            return ''
+
+        with patch.object(watch, 'backup_prompt_text',
+                          side_effect=OSError('disk full')), \
+                patch.object(watch, 'run_command', side_effect=fake_run):
+            result = watch.perform(
+                watch.Action('recover-prompt', 'worker-open', text='do not lose'),
+                'orch', self.work,
+            )
+
+        self.assertEqual(result['reason'], 'prompt text backup failed; input not cleared')
+        self.assertFalse(any(command[:3] == ['hcom', 'term', 'inject']
+                             for command in commands))
+        note = next(command[-1] for command in commands
+                    if command[:2] == ['hcom', 'send'])
+        self.assertIn('do not lose', note)
+        self.assertIn('disk full', note)
+
+    def test_first_backspace_that_does_not_shorten_text_stops_without_retry(self):
+        watch = load_watch()
+        commands = []
+
+        def fake_run(command, failure=None):
+            commands.append(command)
+            return ''
+
+        with patch.object(watch, 'read_prompt_status',
+                          return_value=('tool banner', 1)), \
+                patch.object(watch, 'run_command', side_effect=fake_run), \
+                patch.object(watch, 'read_terminal_input', return_value='tool banner'):
+            result = watch.perform(
+                watch.Action('recover-prompt', 'worker-open', text='tool banner'),
+                'orch', self.work,
+            )
+
+        injects = [command for command in commands if command[:3] ==
+                   ['hcom', 'term', 'inject']]
+        self.assertEqual(len(injects), 1)
+        self.assertEqual(
+            result['reason'], 'input text not editable (possible tool UI text)')
+        note = next(command[-1] for command in commands
+                    if command[:2] == ['hcom', 'send'])
+        self.assertIn(result['reason'], note)
+
+    def test_prompt_change_before_first_backspace_is_not_cleared_and_rearms_timer(self):
+        watch = load_watch()
+        original = 'old draft'
+        typed = watch.Observation(
+            'worker-open', 'listening', False, False, 10, 10, 1,
+            input_text=original, unread_count=1,
+        )
+        state, _ = watch.decide(None, typed, now=0)
+        state, actions = watch.decide(state, typed, now=300)
+        commands = []
+
+        with patch.object(watch, 'read_prompt_status', return_value=('new draft', 1)), \
+                patch.object(watch, 'run_command',
+                             side_effect=lambda command, failure=None: commands.append(command)):
+            result = watch.perform(actions[0], 'orch', self.work)
+        watch.apply_prompt_recovery_result(state, result, now=300)
+
+        self.assertFalse(any(command[:3] == ['hcom', 'term', 'inject']
+                             for command in commands))
+        self.assertEqual(result['reason'], 'prompt text changed before clearing; not cleared')
+        changed = typed._replace(input_text='new draft')
+        state, actions = watch.decide(state, changed, now=599)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, changed, now=600)
+        self.assertEqual(actions, (
+            watch.Action('recover-prompt', 'worker-open', text='new draft'),
+        ))
+
+    def test_partial_failed_clear_does_not_rearm_on_its_own_residue(self):
+        watch = load_watch()
+        typed = watch.Observation(
+            'worker-open', 'listening', False, False, 10, 10, 1,
+            input_text='ABC', unread_count=1,
+        )
+        state, _ = watch.decide(None, typed, now=0)
+        state, actions = watch.decide(state, typed, now=300)
+        terminal_reads = iter(['AB', 'AB'])
+
+        with patch.object(watch, 'read_prompt_status', return_value=('ABC', 1)), \
+                patch.object(watch, 'run_command', return_value=''), \
+                patch.object(watch, 'read_terminal_input',
+                             side_effect=lambda _agent, _orch: next(terminal_reads)):
+            result = watch.perform(actions[0], 'orch', self.work)
+        watch.apply_prompt_recovery_result(state, result, now=300)
+
+        residue = typed._replace(input_text='AB')
+        state, later = watch.decide(state, residue, now=3_600)
+        self.assertEqual(later, ())
+        self.assertTrue(state['prompt_recovery_attempted'])
+
+    def test_failed_read_after_backspace_blocks_first_observed_residue(self):
+        watch = load_watch()
+        typed = watch.Observation(
+            'worker-open', 'listening', False, False, 10, 10, 1,
+            input_text='ABC', unread_count=1,
+        )
+        state, _ = watch.decide(None, typed, now=0)
+        state, actions = watch.decide(state, typed, now=300)
+
+        with patch.object(watch, 'read_prompt_status', return_value=('ABC', 1)), \
+                patch.object(watch, 'run_command', return_value=''), \
+                patch.object(watch, 'read_terminal_input',
+                             side_effect=ValueError('screen read failed')):
+            result = watch.perform(actions[0], 'orch', self.work)
+        watch.apply_prompt_recovery_result(state, result, now=300)
+
+        residue = typed._replace(input_text='AB')
+        state, later = watch.decide(state, residue, now=3_600)
+        self.assertEqual(later, ())
+        self.assertTrue(state['prompt_recovery_attempted'])
+        self.assertNotIn('prompt_recovery_uncertain', state)
+
+        user_edit = residue._replace(input_text='AB!')
+        state, later = watch.decide(state, user_edit, now=3_601)
+        self.assertEqual(later, ())
+        state, later = watch.decide(state, user_edit, now=3_901)
+        self.assertEqual(later, (
+            watch.Action('recover-prompt', 'worker-open', text='AB!'),
+        ))
+
+    def test_unexpected_shorter_replacement_stops_instead_of_clearing_it(self):
+        watch = load_watch()
+        commands = []
+
+        def fake_run(command, failure=None):
+            commands.append(command)
+            return ''
+
+        with patch.object(watch, 'read_prompt_status', return_value=('abcdef', 1)), \
+                patch.object(watch, 'run_command', side_effect=fake_run), \
+                patch.object(watch, 'read_terminal_input', return_value='x'):
+            result = watch.perform(
+                watch.Action('recover-prompt', 'worker-open', text='abcdef'),
+                'orch', self.work,
+            )
+
+        injects = [command for command in commands if command[:3] ==
+                   ['hcom', 'term', 'inject']]
+        self.assertEqual(len(injects), 1)
+        self.assertEqual(result['reason'], 'prompt text changed while clearing; stopped')
+
+    def test_queued_messages_are_rechecked_before_any_backspace(self):
+        watch = load_watch()
+        commands = []
+
+        with patch.object(watch, 'read_prompt_status', return_value=('keep me', 0)), \
+                patch.object(watch, 'run_command',
+                             side_effect=lambda command, failure=None: commands.append(command)):
+            result = watch.perform(
+                watch.Action('recover-prompt', 'worker-open', text='keep me'),
+                'orch', self.work,
+            )
+
+        self.assertFalse(any(command[:3] == ['hcom', 'term', 'inject']
+                             for command in commands))
+        self.assertEqual(
+            result['reason'], 'queued messages no longer present; input not cleared')
 
     def test_run_cycle_logs_hcom_only_user_notification_degradation(self):
         transcript = self.fake_transcript()
