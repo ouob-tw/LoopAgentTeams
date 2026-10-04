@@ -2,6 +2,7 @@
 """Watch explicitly registered LAT work for stalled agents (stdlib only)."""
 import argparse
 from datetime import datetime, timezone
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -122,16 +123,22 @@ def decide(previous, observation, now):
             state['nudged_at'] = now
     queued_prompt = (not observation.prompt_empty and bool(observation.input_text)
                      and observation.unread_count > 0)
+    prompt_hash = hashlib.sha256(observation.input_text.encode()).hexdigest()
+    previous_prompt_hash = previous.get('prompt_text_hash') if previous else None
+    if previous and previous_prompt_hash is None and 'prompt_text' in previous:
+        previous_prompt_hash = hashlib.sha256(previous['prompt_text'].encode()).hexdigest()
     same_prompt = (queued_prompt and previous is not None
-                   and previous.get('prompt_text') == observation.input_text)
+                   and previous_prompt_hash == prompt_hash)
     if queued_prompt:
-        state['prompt_text'] = observation.input_text
+        state.pop('prompt_text', None)
+        state['prompt_text_hash'] = prompt_hash
         state['prompt_text_since'] = (
             previous.get('prompt_text_since', now) if same_prompt else now)
         state['prompt_recovery_attempted'] = (
             previous.get('prompt_recovery_attempted', False) if same_prompt else False)
     else:
         state.pop('prompt_text', None)
+        state.pop('prompt_text_hash', None)
         state.pop('prompt_text_since', None)
         state.pop('prompt_recovery_attempted', None)
     actions = ()
@@ -666,6 +673,18 @@ def read_terminal_input(agent, orchestrator):
     return text
 
 
+def read_prompt_status(agent, orchestrator):
+    info = list_hcom(orchestrator).get(agent)
+    if info is None:
+        raise ValueError(f'agent missing from hcom list: {agent}')
+    unread_count = info.get('unread_count', 0)
+    if (not isinstance(unread_count, int) or isinstance(unread_count, bool)
+            or unread_count < 0):
+        raise ValueError(f'hcom list returned invalid unread_count for {agent}')
+    text = read_terminal_input(agent, orchestrator)
+    return text, unread_count
+
+
 def prompt_excerpt(text, limit=20):
     compact = ' '.join(text.splitlines())
     return compact if len(compact) <= limit else compact[:limit] + '…'
@@ -707,10 +726,21 @@ def perform_prompt_recovery(action, orchestrator, workspace=None):
         return {'reason': reason, **send_prompt_notification(
             orchestrator, message, popup)}
 
-    current = action.text
     backspaces = 0
     reason = 'prompt text backed up and cleared'
-    while current:
+    rearm = False
+    try:
+        current, unread_count = read_prompt_status(action.agent, orchestrator)
+    except (OSError, ValueError) as error:
+        current = action.text
+        unread_count = 0
+        reason = f'prompt clear could not be confirmed; no retry: {error}'
+    if reason == 'prompt text backed up and cleared' and current != action.text:
+        reason = 'prompt text changed before clearing; not cleared'
+        rearm = True
+    elif reason == 'prompt text backed up and cleared' and unread_count == 0:
+        reason = 'queued messages no longer present; input not cleared'
+    while reason == 'prompt text backed up and cleared' and current:
         try:
             run_command(
                 ['hcom', 'term', 'inject', action.agent, '\x7f',
@@ -726,6 +756,10 @@ def perform_prompt_recovery(action, orchestrator, workspace=None):
             reason = ('input text not editable (possible tool UI text)'
                       if backspaces == 1 else 'prompt text did not clear; no retry')
             break
+        if not current.startswith(updated):
+            reason = 'prompt text changed while clearing; stopped'
+            current = updated
+            break
         current = updated
 
     saved_text = str(saved)
@@ -738,8 +772,35 @@ def perform_prompt_recovery(action, orchestrator, workspace=None):
         'reason': reason,
         'saved_path': saved_text,
         'backspaces': backspaces,
+        '_remaining_input': current,
+        '_prompt_rearm': rearm,
         **send_prompt_notification(orchestrator, message, popup),
     }
+
+
+def apply_prompt_recovery_result(state, result, now):
+    remaining = result.pop('_remaining_input', None)
+    rearm = result.pop('_prompt_rearm', False)
+    if remaining is None:
+        return
+    if remaining:
+        state.pop('prompt_text', None)
+        state['prompt_text_hash'] = hashlib.sha256(remaining.encode()).hexdigest()
+        state['prompt_recovery_attempted'] = not rearm
+        if rearm:
+            state['prompt_text_since'] = now
+    else:
+        state.pop('prompt_text', None)
+        state.pop('prompt_text_hash', None)
+        state.pop('prompt_text_since', None)
+        state.pop('prompt_recovery_attempted', None)
+
+
+def observation_record(observation):
+    record = observation._asdict()
+    text = record.pop('input_text')
+    record['input_text_length'] = len(text)
+    return record
 
 
 ACTION_POLICIES = {
@@ -815,6 +876,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             for action in actions:
                 try:
                     delivery = perform(action, orchestrator, workspace)
+                    if action.kind == 'recover-prompt':
+                        apply_prompt_recovery_result(state, delivery, now)
                     results.append({'kind': action.kind, 'status': 'done', **delivery})
                 except (OSError, ValueError) as error:
                     roll_back(action, state)
@@ -822,7 +885,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                                     'error': str(error)})
             states[agent] = state
             append_log(log, {
-                'at': now, 'agent': agent, 'observation': observation._asdict(),
+                'at': now, 'agent': agent, 'observation': observation_record(observation),
                 'state': state, 'actions': [action_record(action) for action in actions],
                 'action_results': results,
             })
