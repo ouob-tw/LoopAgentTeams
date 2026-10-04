@@ -1225,11 +1225,11 @@ class WatchCliTests(unittest.TestCase):
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {})
 
-    def test_non_object_agent_state_is_reset_for_that_agent_only(self):
+    def test_non_object_agent_state_is_kept_aside_and_reset_for_that_agent_only(self):
         watch_dir = self.work / '.lat/watch/orch'
         watch_dir.mkdir(parents=True)
-        (watch_dir / 'state.json').write_text(
-            '{"orch": [], "worker-open": {"nudged": true}}')
+        original = '{"orch": [], "worker-open": {"nudged": true}}'
+        (watch_dir / 'state.json').write_text(original)
         watch = load_watch()
 
         with patch.object(watch, 'observe', side_effect=ValueError('not observed')):
@@ -1239,7 +1239,38 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual([(record['agent'], record['decision']) for record in records],
                          [('orch', 'agent-state-reset'), ('orch', 'observation-failed'),
                           ('worker-open', 'observation-failed')])
+        self.assertEqual(records[0]['kept'], 'state.json.corrupt-0')
+        self.assertEqual((watch_dir / 'state.json.corrupt-0').read_text(), original)
         self.assertEqual(self.watch_state(), {'worker-open': {'nudged': True}})
+
+    def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
+        watch_dir = self.work / '.lat/watch/orch'
+        watch_dir.mkdir(parents=True)
+        watch = load_watch()
+        observation = watch.Observation('orch', 'listening', True, False, 0, 0, 0)
+        healthy, _ = watch.decide(None, observation._replace(agent='worker-open'), 0)
+        original = json.dumps({
+            'orch': {'fingerprint': [0, 0, 0], 'last_progress_at': 'bad', 'nudged': False},
+            'worker-open': healthy,
+        })
+        (watch_dir / 'state.json').write_text(original)
+
+        def observe(workspace, decisions, orchestrator, agent, info, card=None):
+            return observation._replace(agent=agent)
+
+        with patch.object(watch, 'observe', side_effect=observe):
+            self.run_cycles(watch, 60, 120)
+
+        records = self.watch_records()
+        resets = [record for record in records if record.get('decision') == 'agent-state-reset']
+        self.assertEqual([(record['at'], record['agent']) for record in resets], [(60, 'orch')])
+        self.assertTrue(resets[0]['error'].startswith('TypeError'))
+        self.assertEqual((watch_dir / 'state.json.corrupt-60').read_text(), original)
+        self.assertFalse([record for record in records
+                          if record.get('decision') == 'observation-failed'])
+        state = self.watch_state()
+        self.assertEqual(state['orch']['last_progress_at'], 60)
+        self.assertEqual(state['worker-open']['last_progress_at'], 0)
 
     def test_missing_task_directory_watches_orchestrator_and_logs_once(self):
         watch = load_watch()

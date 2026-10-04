@@ -7,6 +7,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -408,6 +409,17 @@ def read_watch_file(path, log, now):
             'file': path.name, 'kept': kept.name, 'error': str(error),
         })
         return {}
+
+
+def reset_agent_state(path, log, now, agent, error):
+    """Keep one copy of the state file for diagnosis, then log the agent's fresh start."""
+    kept = path.with_name(f'{path.name}.corrupt-{int(now)}')
+    if path.exists() and not kept.exists():
+        shutil.copy2(path, kept)
+    append_log(log, {
+        'at': now, 'agent': agent, 'decision': 'agent-state-reset', 'actions': [],
+        'kept': kept.name, 'error': error,
+    })
 
 
 def log_skipped_cards(path, log, skipped, now):
@@ -936,10 +948,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     states = read_watch_file(path, log, now)
     for agent, state in list(states.items()):
         if not isinstance(state, dict):
-            append_log(log, {
-                'at': now, 'agent': agent, 'decision': 'agent-state-reset',
-                'actions': [], 'error': f'Expected a JSON object, got {type(state).__name__}',
-            })
+            reset_agent_state(path, log, now, agent,
+                              f'Expected a JSON object, got {type(state).__name__}')
             states.pop(agent)
     for agent in set(states) - set(agents):
         append_log(log, {
@@ -967,7 +977,14 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
         try:
             observation = observe(
                 workspace, decisions, orchestrator, agent, hcom[agent], cards.get(agent))
-            state, actions = decide(states.get(agent), observation, now)
+            previous = states.get(agent)
+            try:
+                state, actions = decide(previous, observation, now)
+            except (TypeError, ValueError, KeyError, AttributeError) as error:
+                if previous is None:
+                    raise
+                reset_agent_state(path, log, now, agent, f'{type(error).__name__}: {error}')
+                state, actions = decide(None, observation, now)
             results = []
             for action in actions:
                 try:
