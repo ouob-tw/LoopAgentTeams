@@ -14,6 +14,7 @@ from typing import NamedTuple
 
 
 IDLE_SECONDS = 10 * 60
+ACTIVE_SECONDS = 20 * 60
 CHECK_SECONDS = 60
 NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
@@ -78,6 +79,21 @@ def escalation_message(observation, state, now, recipient):
             f'Action needed: {action_needed}')
 
 
+def owner_notice(observation, state, now, reason):
+    stalled_minutes = int((now - state['last_progress_at']) // 60)
+    if reason == 'active-command':
+        detail = 'the screen still shows work running; this may be a possible hung command'
+        action_needed = 'inspect the running command and decide whether it should continue'
+    else:
+        detail = 'the agent is blocked at an approval prompt'
+        action_needed = 'open the agent and approve or reject the pending request'
+    message = (f'LAT stall watcher: agent {observation.agent} has made no progress for '
+               f'{stalled_minutes} minutes and {detail}. No terminal nudge was injected. '
+               f'Action needed: {action_needed}.')
+    kind = 'notify-user' if observation.is_orchestrator else 'notify-orchestrator'
+    return Action(kind, observation.agent, message)
+
+
 def decide(previous, observation, now):
     """Return serializable state and requested actions for one observation."""
     fingerprint = [observation.transcript_size, observation.transcript_mtime_ns,
@@ -102,6 +118,7 @@ def decide(previous, observation, now):
             state['nudged_at'] = now
     actions = ()
     stalled = now - state['last_progress_at'] >= IDLE_SECONDS
+    active_stalled = now - state['last_progress_at'] >= ACTIVE_SECONDS
     orchestrator_notified_at = state.get('orchestrator_notified_at', now + 1)
     orchestrator_deadline = orchestrator_notified_at + IDLE_SECONDS
     card_handled = (observation.task_card_revision
@@ -125,6 +142,13 @@ def decide(previous, observation, now):
         state['nudged'] = True
         state['nudged_at'] = now
         state['stall_reason'] = 'listening at an empty prompt with no command running'
+    elif (active_stalled and not observation.wait_active and not state['nudged']
+          and observation.status == 'active'
+          and observation.prompt_empty and not observation.command_running):
+        actions = (Action('nudge', observation.agent),)
+        state['nudged'] = True
+        state['nudged_at'] = now
+        state['stall_reason'] = 'active status but terminal ready at an empty prompt'
     elif (state['nudged'] and not observation.wait_active
           and observation.prompt_empty and not observation.command_running
           and now - state['nudged_at'] >= IDLE_SECONDS):
@@ -152,6 +176,27 @@ def decide(previous, observation, now):
                 escalation_message(observation, state, now, 'user'),
             ),)
             state['user_notified'] = True
+    elif (active_stalled and not observation.wait_active
+          and observation.status == 'active' and observation.command_running):
+        if observation.is_orchestrator and not state.get('user_notified'):
+            actions = (owner_notice(observation, state, now, 'active-command'),)
+            state['user_notified'] = True
+        elif (not observation.is_orchestrator
+              and not state.get('orchestrator_notified')):
+            actions = (owner_notice(observation, state, now, 'active-command'),)
+            state['orchestrator_notified'] = True
+            state['orchestrator_notified_at'] = now
+            state['orchestrator_notice_task_revision'] = observation.task_card_revision
+    elif (stalled and not observation.wait_active and observation.status == 'blocked'):
+        if observation.is_orchestrator and not state.get('user_notified'):
+            actions = (owner_notice(observation, state, now, 'blocked'),)
+            state['user_notified'] = True
+        elif (not observation.is_orchestrator
+              and not state.get('orchestrator_notified')):
+            actions = (owner_notice(observation, state, now, 'blocked'),)
+            state['orchestrator_notified'] = True
+            state['orchestrator_notified_at'] = now
+            state['orchestrator_notice_task_revision'] = observation.task_card_revision
     if actions:
         state['decision'] = actions[0].kind
     elif state.get('orchestrator_handled'):
@@ -458,6 +503,10 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
     terminal = run_json(['hcom', 'term', agent, '--json', '--name', orchestrator])
     if not isinstance(terminal, dict):
         raise ValueError(f'hcom term returned invalid data for {agent}')
+    if not isinstance(terminal.get('ready'), bool):
+        raise ValueError(f'hcom term omitted boolean ready for {agent}')
+    if not isinstance(terminal.get('prompt_empty'), bool):
+        raise ValueError(f'hcom term omitted boolean prompt_empty for {agent}')
     transcript_size = 0
     transcript_mtime_ns = 0
     transcript = info.get('transcript_path')
