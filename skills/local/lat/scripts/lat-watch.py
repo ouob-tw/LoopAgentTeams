@@ -99,6 +99,18 @@ def owner_notice(observation, state, now, reason):
     return Action(kind, observation.agent, message)
 
 
+def prompt_digest(text):
+    return hashlib.sha256(text.encode()).hexdigest()
+
+
+def validated_unread_count(info, agent):
+    unread_count = info.get('unread_count', 0)
+    if (not isinstance(unread_count, int) or isinstance(unread_count, bool)
+            or unread_count < 0):
+        raise ValueError(f'hcom list returned invalid unread_count for {agent}')
+    return unread_count
+
+
 def decide(previous, observation, now):
     """Return serializable state and requested actions for one observation."""
     fingerprint = [observation.transcript_size, observation.transcript_mtime_ns,
@@ -123,24 +135,31 @@ def decide(previous, observation, now):
             state['nudged_at'] = now
     queued_prompt = (not observation.prompt_empty and bool(observation.input_text)
                      and observation.unread_count > 0)
-    prompt_hash = hashlib.sha256(observation.input_text.encode()).hexdigest()
+    prompt_hash = prompt_digest(observation.input_text)
     previous_prompt_hash = previous.get('prompt_text_hash') if previous else None
     if previous and previous_prompt_hash is None and 'prompt_text' in previous:
-        previous_prompt_hash = hashlib.sha256(previous['prompt_text'].encode()).hexdigest()
+        previous_prompt_hash = prompt_digest(previous['prompt_text'])
     same_prompt = (queued_prompt and previous is not None
                    and previous_prompt_hash == prompt_hash)
+    uncertain_recovery = (queued_prompt and previous is not None
+                          and previous.get('prompt_recovery_uncertain', False))
     if queued_prompt:
         state.pop('prompt_text', None)
         state['prompt_text_hash'] = prompt_hash
         state['prompt_text_since'] = (
             previous.get('prompt_text_since', now) if same_prompt else now)
-        state['prompt_recovery_attempted'] = (
-            previous.get('prompt_recovery_attempted', False) if same_prompt else False)
+        if uncertain_recovery:
+            state['prompt_recovery_attempted'] = True
+            state.pop('prompt_recovery_uncertain', None)
+        else:
+            state['prompt_recovery_attempted'] = (
+                previous.get('prompt_recovery_attempted', False) if same_prompt else False)
     else:
         state.pop('prompt_text', None)
         state.pop('prompt_text_hash', None)
         state.pop('prompt_text_since', None)
         state.pop('prompt_recovery_attempted', None)
+        state.pop('prompt_recovery_uncertain', None)
     actions = ()
     stalled = now - state['last_progress_at'] >= IDLE_SECONDS
     active_stalled = now - state['last_progress_at'] >= ACTIVE_SECONDS
@@ -545,10 +564,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
     input_text = terminal.get('input_text', '')
     if not isinstance(input_text, str):
         raise ValueError(f'hcom term returned invalid input_text for {agent}')
-    unread_count = info.get('unread_count', 0)
-    if (not isinstance(unread_count, int) or isinstance(unread_count, bool)
-            or unread_count < 0):
-        raise ValueError(f'hcom list returned invalid unread_count for {agent}')
+    unread_count = validated_unread_count(info, agent)
     transcript_size = 0
     transcript_mtime_ns = 0
     transcript = info.get('transcript_path')
@@ -677,10 +693,7 @@ def read_prompt_status(agent, orchestrator):
     info = list_hcom(orchestrator).get(agent)
     if info is None:
         raise ValueError(f'agent missing from hcom list: {agent}')
-    unread_count = info.get('unread_count', 0)
-    if (not isinstance(unread_count, int) or isinstance(unread_count, bool)
-            or unread_count < 0):
-        raise ValueError(f'hcom list returned invalid unread_count for {agent}')
+    unread_count = validated_unread_count(info, agent)
     text = read_terminal_input(agent, orchestrator)
     return text, unread_count
 
@@ -729,6 +742,7 @@ def perform_prompt_recovery(action, orchestrator, workspace=None):
     backspaces = 0
     reason = 'prompt text backed up and cleared'
     rearm = False
+    uncertain = False
     try:
         current, unread_count = read_prompt_status(action.agent, orchestrator)
     except (OSError, ValueError) as error:
@@ -750,6 +764,7 @@ def perform_prompt_recovery(action, orchestrator, workspace=None):
             backspaces += 1
             updated = read_terminal_input(action.agent, orchestrator)
         except (OSError, ValueError) as error:
+            uncertain = True
             reason = f'prompt clear could not be confirmed; no retry: {error}'
             break
         if len(updated) >= len(current):
@@ -774,6 +789,7 @@ def perform_prompt_recovery(action, orchestrator, workspace=None):
         'backspaces': backspaces,
         '_remaining_input': current,
         '_prompt_rearm': rearm,
+        '_prompt_uncertain': uncertain,
         **send_prompt_notification(orchestrator, message, popup),
     }
 
@@ -781,12 +797,16 @@ def perform_prompt_recovery(action, orchestrator, workspace=None):
 def apply_prompt_recovery_result(state, result, now):
     remaining = result.pop('_remaining_input', None)
     rearm = result.pop('_prompt_rearm', False)
+    uncertain = result.pop('_prompt_uncertain', False)
     if remaining is None:
         return
     if remaining:
         state.pop('prompt_text', None)
-        state['prompt_text_hash'] = hashlib.sha256(remaining.encode()).hexdigest()
+        state['prompt_text_hash'] = prompt_digest(remaining)
         state['prompt_recovery_attempted'] = not rearm
+        if uncertain:
+            state['prompt_recovery_uncertain'] = True
+            state['prompt_recovery_attempted'] = True
         if rearm:
             state['prompt_text_since'] = now
     else:

@@ -734,6 +734,36 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual(later, ())
         self.assertTrue(state['prompt_recovery_attempted'])
 
+    def test_failed_read_after_backspace_blocks_first_observed_residue(self):
+        watch = load_watch()
+        typed = watch.Observation(
+            'worker-open', 'listening', False, False, 10, 10, 1,
+            input_text='ABC', unread_count=1,
+        )
+        state, _ = watch.decide(None, typed, now=0)
+        state, actions = watch.decide(state, typed, now=300)
+
+        with patch.object(watch, 'read_prompt_status', return_value=('ABC', 1)), \
+                patch.object(watch, 'run_command', return_value=''), \
+                patch.object(watch, 'read_terminal_input',
+                             side_effect=ValueError('screen read failed')):
+            result = watch.perform(actions[0], 'orch', self.work)
+        watch.apply_prompt_recovery_result(state, result, now=300)
+
+        residue = typed._replace(input_text='AB')
+        state, later = watch.decide(state, residue, now=3_600)
+        self.assertEqual(later, ())
+        self.assertTrue(state['prompt_recovery_attempted'])
+        self.assertNotIn('prompt_recovery_uncertain', state)
+
+        user_edit = residue._replace(input_text='AB!')
+        state, later = watch.decide(state, user_edit, now=3_601)
+        self.assertEqual(later, ())
+        state, later = watch.decide(state, user_edit, now=3_901)
+        self.assertEqual(later, (
+            watch.Action('recover-prompt', 'worker-open', text='AB!'),
+        ))
+
     def test_unexpected_shorter_replacement_stops_instead_of_clearing_it(self):
         watch = load_watch()
         commands = []
