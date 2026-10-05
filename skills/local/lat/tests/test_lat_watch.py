@@ -260,7 +260,7 @@ class WatchDecisionTests(unittest.TestCase):
     def test_quota_issue_notifies_owner_immediately_once_without_nudge(self):
         watch = load_watch()
         issue = watch.QuotaIssue(
-            'screen', "■ You've hit your usage limit · resets Oct 10, 2026",
+            'usage-limit', "■ You've hit your usage limit · resets Oct 10, 2026",
             'Oct 10, 2026',
         )
         exhausted = watch.Observation(
@@ -277,7 +277,8 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertIn('GPT-5.6-Sol', actions[0].message)
         self.assertIn(issue.line, actions[0].message)
         self.assertIn('Reset time: Oct 10, 2026', actions[0].message)
-        self.assertIn('switch account or model', actions[0].message)
+        self.assertIn('another subscribed account', actions[0].message)
+        self.assertIn('Do not switch to API billing', actions[0].message)
         self.assertFalse(state['nudged'])
 
         state, actions = watch.decide(state, exhausted, now=600)
@@ -292,7 +293,7 @@ class WatchDecisionTests(unittest.TestCase):
     def test_quota_issue_on_orchestrator_notifies_user_and_progress_rearms_it(self):
         watch = load_watch()
         issue = watch.QuotaIssue(
-            'screen', '⚠ Usage limit reached · limit resets 9:50pm', '9:50pm')
+            'usage-limit', '⚠ Usage limit reached · limit resets 9:50pm', '9:50pm')
         exhausted = watch.Observation(
             'orch', 'inactive', True, False, 100, 1_000, 10,
             is_orchestrator=True, client='claude', model='Opus 5.5',
@@ -881,7 +882,7 @@ class WatchCliTests(unittest.TestCase):
             '  GPT-6.1-Sol medium · ~/repo · 0% left',
         ], 'codex')
         claude_limit = watch.detect_screen_quota([
-            '', '', '', '', '', '',
+            '', '', '', '', '', '──────────',
             '  ⚠ Usage limit reached · limit resets 9:50pm',
             '    Continuing shortly · esc to cancel',
             '  Opus 5.5 medium · ~/repo · Context 20% used',
@@ -894,11 +895,19 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual(codex_limit.reset_time, 'Oct 10, 2026')
         self.assertEqual(claude_limit.reset_time, '9:50pm')
 
+        capacity_notice = watch.quota_notice(watch.Observation(
+            'worker', 'active', True, False, 1, 1, 1,
+            client='codex', model='GPT-5.6-Sol', quota_issue=capacity,
+        ))
+        self.assertIn('switch to another model', capacity_notice.message)
+        self.assertNotIn('subscribed account', capacity_notice.message)
+
         historical = watch.detect_screen_quota([
+            '', '', '', '', '', '', '', '',
             '■ Selected model is at capacity. Please try a different model.',
-            '', '', '', '', '', '', '',
+            '› Retry the previous request now',
             'Working (2m 41s · esc to interrupt)',
-            '', '', '› Ask Codex to do anything', '',
+            '', '› Ask Codex to do anything', '',
             '  GPT-5.6-Sol medium · ~/repo · Context 2% used',
         ], 'codex')
         quoted = watch.detect_screen_quota([
@@ -919,17 +928,47 @@ class WatchCliTests(unittest.TestCase):
         self.assertIsNone(quoted)
         self.assertIsNone(early_warning)
 
+        wrapped_current = watch.detect_screen_quota([
+            "■ You've hit your usage limit. Try again at",
+            'Oct 10, 2026 9:30 PM.',
+            'Additional current error detail.',
+            '', '', '', '', '', '', '', '', '',
+            '› Ask Codex to do anything', '',
+            '  GPT-5.6-Sol medium · ~/repo · 0% left',
+        ], 'codex')
+        self.assertEqual(wrapped_current.reset_time, 'Oct 10, 2026 9:30 PM')
+
     def test_claude_primary_quota_line_extracts_reset_time(self):
         watch = load_watch()
         issue = watch.detect_screen_quota([
-            '', '', '', '', '', '', '', '',
-            '● Usage limit reached · continuing automatically at 1:40am ·',
-            '  esc to cancel', '', '❯', '',
+            '● Usage limit reached · continuing automatically at',
+            '  1:40am · esc to cancel',
+            '', '──────────', '❯',
+            '──────────',
+            '  ⚠ Usage limit reached · limit resets 1:40am',
             '  Opus 5.5 medium · ~/repo',
         ], 'claude')
 
         self.assertIn('continuing automatically', issue.line)
         self.assertEqual(issue.reset_time, '1:40am')
+
+        quoted = watch.detect_screen_quota([
+            '● Usage limit reached · continuing automatically at 1:40am ·',
+            '  is the message shown by Claude.',
+            '', '──────────', '❯',
+            '──────────',
+            '  Opus 5.5 medium · ~/repo',
+        ], 'claude')
+        self.assertIsNone(quoted)
+
+        wrapped_footer = watch.detect_screen_quota([
+            '', '──────────', '❯',
+            '──────────',
+            '  ⚠ Usage limit reached · limit resets',
+            '    tomorrow at 9:50pm',
+            '  Opus 5.5 medium · ~/repo',
+        ], 'claude')
+        self.assertEqual(wrapped_footer.reset_time, 'tomorrow at 9:50pm')
 
     def test_inactive_rate_limit_notifies_once_even_when_term_is_unavailable(self):
         transcript = self.fake_transcript()
@@ -1029,6 +1068,7 @@ class WatchCliTests(unittest.TestCase):
 
         self.assertEqual(observation.input_text, '')
         self.assertFalse(observation.prompt_empty)
+        self.assertEqual(observation.model, 'GPT-5.6-Sol')
         self.assertIn('Selected model is at capacity', observation.quota_issue.line)
         state, actions = watch.decide(None, observation, now=0)
         self.assertEqual(actions[0].kind, 'notify-orchestrator')

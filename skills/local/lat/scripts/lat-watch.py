@@ -22,13 +22,38 @@ PROMPT_SETTLE_SECONDS = 1
 PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
 FAILURE_REPEAT_SECONDS = 60 * 60
-SCREEN_TAIL_LINES = 8
 NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
          'with lat-watch wait.')
 NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 NAME = re.compile(NAME_PATTERN)
 CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
+CLIENT_PROFILES = {
+    'codex': {
+        'error': re.compile(
+            r'^■\s+(?:(?P<capacity>Selected model is at capacity\b)|'
+            r"(?P<usage>You've hit your usage limit\b))", re.IGNORECASE),
+        'model': re.compile(
+            r'^\s*((?:GPT|o)[A-Za-z0-9. -]*?)\s+'
+            r'(?:minimal|low|medium|high|xhigh|max|ultra)\s+·', re.IGNORECASE),
+    },
+    'claude': {
+        'primary': re.compile(r'^●\s+Usage limit reached\b', re.IGNORECASE),
+        'footer': re.compile(r'^\s{2}⚠\s+Usage limit reached\b', re.IGNORECASE),
+        'model': re.compile(
+            r'^\s*((?:Opus|Sonnet|Haiku)[A-Za-z0-9. -]*?)\s+'
+            r'(?:low|medium|high|max)\s+·', re.IGNORECASE),
+    },
+}
+RECOVERY_ACTIONS = {
+    ('codex', 'model-capacity'): 'switch to another model',
+    ('codex', 'usage-limit'): (
+        'switch to another subscribed account with quota; Do not switch to API billing; '
+        'if no subscribed account is available, the user decides how to continue'),
+    ('codex', 'rate-limit'): (
+        'switch to another subscribed account with quota; Do not switch to API billing; '
+        'if no subscribed account is available, the user decides how to continue'),
+}
 
 
 class Observation(NamedTuple):
@@ -53,7 +78,7 @@ class Observation(NamedTuple):
 
 
 class QuotaIssue(NamedTuple):
-    source: str
+    kind: str
     line: str
     reset_time: object = None
 
@@ -119,25 +144,26 @@ def owner_notice(observation, state, now, reason):
 def quota_notice(observation):
     issue = observation.quota_issue
     reset = f' Reset time: {issue.reset_time}.' if issue.reset_time else ''
-    if observation.client.lower() == 'codex':
-        action_needed = ('switch account or model; if no subscribed account is available, '
-                         'the user decides how to continue')
-    else:
-        action_needed = 'the user decides whether to wait or choose another recovery action'
+    action_needed = RECOVERY_ACTIONS.get(
+        (observation.client.lower(), issue.kind),
+        'the user decides whether to wait or choose another recovery action',
+    )
+    line_end = '' if issue.line.endswith(('.', '!', '?')) else '.'
     message = (f'LAT stall watcher: quota or model-capacity issue for agent '
                f'{observation.agent}. Client: {observation.client}. Model: '
-               f'{observation.model}. Matched line: {issue.line}.{reset} '
+               f'{observation.model}. Matched line: {issue.line}{line_end}{reset} '
                f'No terminal nudge was injected. Action needed: {action_needed}.')
     kind = 'notify-user' if observation.is_orchestrator else 'notify-orchestrator'
     return Action(kind, observation.agent, message, category='quota')
 
 
 def quota_reset_time(line):
+    end = r'(?:\s+·|\s+Continuing shortly\b|\s+esc to cancel\b|\.(?:\s|$)|$)'
     patterns = (
-        r'\blimit resets\s+(.+?)(?:\s+·|$)',
-        r'\bresets\s+(.+?)(?:\s+·|$)',
-        r'\bcontinuing automatically at\s+(.+?)(?:\s+·|$)',
-        r'\btry again at\s+(.+?)(?:\s+·|$)',
+        rf'\blimit resets\s+(.+?){end}',
+        rf'\bresets\s+(.+?){end}',
+        rf'\bcontinuing automatically at\s+(.+?){end}',
+        rf'\btry again at\s+(.+?){end}',
     )
     for pattern in patterns:
         match = re.search(pattern, line, re.IGNORECASE)
@@ -146,23 +172,70 @@ def quota_reset_time(line):
     return None
 
 
-def detect_screen_quota(lines, client):
-    """Match client-owned quota UI in the bottom of the visible screen."""
+def screen_separator(line):
+    stripped = line.strip()
+    return len(stripped) >= 3 and set(stripped) == {'─'}
+
+
+def screen_message(lines, start):
+    """Join wrapped text until the next recognizable client UI boundary."""
+    parts = [lines[start].strip()]
+    model_patterns = tuple(profile['model'] for profile in CLIENT_PROFILES.values())
+    for line in lines[start + 1:start + 5]:
+        stripped = line.strip()
+        if (not stripped or screen_separator(line)
+                or stripped.startswith(('Working (', '• ', '› ', '■ ', '● ', '⚠ ', '✻ ', '⏵'))
+                or any(pattern.search(line) for pattern in model_patterns)):
+            break
+        parts.append(stripped)
+    return ' '.join(parts)
+
+
+def codex_error_is_current(lines, index):
+    for line in lines[index + 1:]:
+        stripped = line.strip()
+        if stripped.startswith('Working (') or line.startswith('• '):
+            return False
+        if line.startswith('› ') and stripped != '› Ask Codex to do anything':
+            return False
+    return True
+
+
+def detect_screen_quota(lines, client, rate_limited=False):
+    """Match quota UI in the current client turn/status region."""
     if not isinstance(lines, list) or any(not isinstance(line, str) for line in lines):
         raise ValueError('hcom term returned invalid screen lines')
-    client = client.lower()
-    if client == 'codex':
-        pattern = re.compile(
-            r'^■\s+(?:Selected model is at capacity\b|'
-            r"You've hit your usage limit\b)", re.IGNORECASE)
-    elif client == 'claude':
-        pattern = re.compile(
-            r'^(?:●|\s{2}⚠)\s+Usage limit reached\b', re.IGNORECASE)
-    else:
+    profile = CLIENT_PROFILES.get(client.lower())
+    if profile is None:
         return None
-    for line in reversed(lines[-SCREEN_TAIL_LINES:]):
-        if pattern.search(line):
-            return QuotaIssue('screen', line.strip(), quota_reset_time(line))
+    if 'error' in profile:
+        for index in range(len(lines) - 1, -1, -1):
+            match = profile['error'].search(lines[index])
+            if match and codex_error_is_current(lines, index):
+                message = screen_message(lines, index)
+                kind = 'model-capacity' if match.group('capacity') else 'usage-limit'
+                return QuotaIssue(kind, message, quota_reset_time(message))
+        return None
+
+    separators = [index for index, line in enumerate(lines) if screen_separator(line)]
+    status_start = separators[-1] if separators else len(lines)
+    footers = [index for index in range(status_start + 1, len(lines))
+               if profile['footer'].search(lines[index])]
+    footer = footers[-1] if footers else None
+    model_below_footer = (footer is not None
+                          and any(profile['model'].search(line)
+                                  for line in lines[footer + 1:]))
+    primaries = [index for index, line in enumerate(lines)
+                 if profile['primary'].search(line)]
+    if primaries and (model_below_footer or rate_limited):
+        message = screen_message(lines, primaries[-1])
+        reset = quota_reset_time(message)
+        if reset is None and footer is not None:
+            reset = quota_reset_time(screen_message(lines, footer))
+        return QuotaIssue('usage-limit', message, reset)
+    if model_below_footer:
+        message = screen_message(lines, footer)
+        return QuotaIssue('usage-limit', message, quota_reset_time(message))
     return None
 
 
@@ -171,25 +244,18 @@ def hcom_quota_issue(info):
     detail = info.get('status_detail', '')
     if (info.get('status') == 'inactive'
             and (context == 'failure:rate_limit' or detail == 'rate_limit')):
-        return QuotaIssue('hcom', 'inactive (failure:rate_limit)')
+        return QuotaIssue('rate-limit', 'inactive (failure:rate_limit)')
     return None
 
 
 def screen_model(lines, client):
     if not isinstance(lines, list):
         return 'unknown'
-    if client.lower() == 'codex':
-        pattern = re.compile(
-            r'^\s*((?:GPT|o)[A-Za-z0-9. -]*?)\s+'
-            r'(?:minimal|low|medium|high|xhigh|max|ultra)\s+·', re.IGNORECASE)
-    elif client.lower() == 'claude':
-        pattern = re.compile(
-            r'^\s*((?:Opus|Sonnet|Haiku)[A-Za-z0-9. -]*?)\s+'
-            r'(?:low|medium|high|max)\s+·', re.IGNORECASE)
-    else:
+    profile = CLIENT_PROFILES.get(client.lower())
+    if profile is None:
         return 'unknown'
     for line in reversed(lines):
-        match = pattern.search(line)
+        match = profile['model'].search(line)
         if match:
             return match.group(1).strip()
     return 'unknown'
@@ -851,7 +917,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
     client = info.get('tool', 'unknown')
     if not isinstance(client, str):
         client = 'unknown'
-    screen_issue = detect_screen_quota(lines, client)
+    screen_issue = detect_screen_quota(lines, client, rate_limited=status_issue is not None)
     prompt_empty = terminal.get('prompt_empty')
     if not isinstance(prompt_empty, bool):
         if info.get('status') == 'blocked' or screen_issue or status_issue:
