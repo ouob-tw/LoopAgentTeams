@@ -541,6 +541,67 @@ class WatchDecisionTests(unittest.TestCase):
             self.assertFalse(watch.successful_hcom_send_since(
                 transcript, '2026-10-04T14:01:00+00:00'))
 
+    def release_wait_after_target_send(self, recipient, participant_events=()):
+        watch = load_watch()
+        declaration = {
+            'agent': 'waiting-agent', 'target': 'target-agent',
+            'declared_at_utc': '2026-10-04T14:00:58+00:00', 'active': True,
+        }
+        record = {
+            'timestamp': '2026-10-04T14:00:59.400Z', 'type': 'event_msg',
+            'payload': {'type': 'item_completed', 'item': {
+                'type': 'CommandExecution',
+                'command': ['/bin/bash', '-lc',
+                            f"hcom send @{recipient} --intent inform -- 'ok'"],
+                'status': 'completed', 'exit_code': 0,
+                'stdout': f'Sent to: ◉ {recipient}\n',
+            }},
+        }
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            transcript = root / 'target.jsonl'
+            transcript.write_text(json.dumps(record) + '\n')
+            decisions = root / 'decisions'
+            decisions.mkdir()
+            agents = {
+                'waiting-agent': {
+                    'name': 'waiting-agent', 'base_name': 'waiter',
+                    'session_id': 'waiting-session',
+                },
+                'target-agent': {
+                    'name': 'target-agent', 'base_name': 'target',
+                    'session_id': 'target-session',
+                    'transcript_path': str(transcript),
+                },
+            }
+            with patch.object(
+                    watch, 'session_events', return_value=list(participant_events)):
+                return watch.release_wait_if_needed(
+                    root, decisions, 'orch', declaration, agents=agents)
+
+    def test_target_message_to_third_party_does_not_release_wait(self):
+        self.assertIsNone(self.release_wait_after_target_send('third-agent'))
+
+    def test_target_message_addressed_to_waiter_releases_before_delivery(self):
+        self.assertEqual(
+            self.release_wait_after_target_send('waiting-agent'),
+            'target-replied',
+        )
+
+    def test_same_alias_delivery_does_not_turn_third_party_send_into_target_reply(self):
+        collision = [{
+            'id': 82309, 'instance': 'waiter', 'type': 'status',
+            'data': {
+                'context': 'deliver:target',
+                'msg_ts': '2026-10-04T14:00:59.400Z',
+                'session': 'waiting-session', 'status': 'active',
+            },
+        }]
+        self.assertEqual(
+            self.release_wait_after_target_send('third-agent', collision),
+            'message-delivered',
+        )
+
     def test_background_process_from_hcom_identity_blocks_idle_nudge(self):
         watch = load_watch()
         info = {'launch_context': {'pid_identity': 'linux:boot-id:100'}}
