@@ -945,7 +945,6 @@ class WatchCliTests(unittest.TestCase):
             '  1:40am · esc to cancel',
             '', '──────────', '❯',
             '──────────',
-            '  ⚠ Usage limit reached · limit resets 1:40am',
             '  Opus 5.5 medium · ~/repo',
         ], 'claude')
 
@@ -954,7 +953,7 @@ class WatchCliTests(unittest.TestCase):
 
         quoted = watch.detect_screen_quota([
             '● Usage limit reached · continuing automatically at 1:40am ·',
-            '  is the message shown by Claude.',
+            '  esc to cancel is the message shown by Claude.',
             '', '──────────', '❯',
             '──────────',
             '  Opus 5.5 medium · ~/repo',
@@ -969,6 +968,26 @@ class WatchCliTests(unittest.TestCase):
             '  Opus 5.5 medium · ~/repo',
         ], 'claude')
         self.assertEqual(wrapped_footer.reset_time, 'tomorrow at 9:50pm')
+
+        footer_without_model = watch.detect_screen_quota([
+            '', '──────────', '❯',
+            '──────────',
+            '  ⚠ Usage limit reached · limit resets 9:50pm',
+            '    Continuing shortly · esc to cancel',
+        ], 'claude')
+        self.assertEqual(footer_without_model.reset_time, '9:50pm')
+
+        current_footer_after_old_primary = watch.detect_screen_quota([
+            '● Usage limit reached · continuing automatically at 1:40am ·',
+            '  esc to cancel',
+            '● Later ordinary response completed a newer turn.',
+            '', '──────────', '❯',
+            '──────────',
+            '  ⚠ Usage limit reached · limit resets 9:50pm',
+            '  Opus 5.5 medium · ~/repo',
+        ], 'claude')
+        self.assertTrue(current_footer_after_old_primary.line.startswith('⚠'))
+        self.assertEqual(current_footer_after_old_primary.reset_time, '9:50pm')
 
     def test_inactive_rate_limit_notifies_once_even_when_term_is_unavailable(self):
         transcript = self.fake_transcript()

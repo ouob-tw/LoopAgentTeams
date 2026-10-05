@@ -38,7 +38,9 @@ CLIENT_PROFILES = {
             r'(?:minimal|low|medium|high|xhigh|max|ultra)\s+·', re.IGNORECASE),
     },
     'claude': {
-        'primary': re.compile(r'^●\s+Usage limit reached\b', re.IGNORECASE),
+        'primary': re.compile(
+            r'^●\s+Usage limit reached\s+·\s+continuing automatically at\b',
+            re.IGNORECASE),
         'footer': re.compile(r'^\s{2}⚠\s+Usage limit reached\b', re.IGNORECASE),
         'model': re.compile(
             r'^\s*((?:Opus|Sonnet|Haiku)[A-Za-z0-9. -]*?)\s+'
@@ -201,6 +203,10 @@ def codex_error_is_current(lines, index):
     return True
 
 
+def claude_primary_is_current(lines, index):
+    return not any(line.startswith('● ') for line in lines[index + 1:])
+
+
 def detect_screen_quota(lines, client, rate_limited=False):
     """Match quota UI in the current client turn/status region."""
     if not isinstance(lines, list) or any(not isinstance(line, str) for line in lines):
@@ -222,20 +228,20 @@ def detect_screen_quota(lines, client, rate_limited=False):
     footers = [index for index in range(status_start + 1, len(lines))
                if profile['footer'].search(lines[index])]
     footer = footers[-1] if footers else None
-    model_below_footer = (footer is not None
-                          and any(profile['model'].search(line)
-                                  for line in lines[footer + 1:]))
-    primaries = [index for index, line in enumerate(lines)
-                 if profile['primary'].search(line)]
-    if primaries and (model_below_footer or rate_limited):
-        message = screen_message(lines, primaries[-1])
-        reset = quota_reset_time(message)
-        if reset is None and footer is not None:
-            reset = quota_reset_time(screen_message(lines, footer))
-        return QuotaIssue('usage-limit', message, reset)
-    if model_below_footer:
+    if footer is not None:
         message = screen_message(lines, footer)
         return QuotaIssue('usage-limit', message, quota_reset_time(message))
+
+    primaries = [index for index, line in enumerate(lines)
+                 if profile['primary'].search(line)
+                 and claude_primary_is_current(lines, index)]
+    if primaries:
+        message = screen_message(lines, primaries[-1])
+        reset = quota_reset_time(message)
+        current_ui = reset is not None and re.search(
+            r'\besc to cancel$', message, re.IGNORECASE)
+        if current_ui or rate_limited:
+            return QuotaIssue('usage-limit', message, reset)
     return None
 
 
