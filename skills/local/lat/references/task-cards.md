@@ -40,3 +40,5 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 - 將任務卡移至 `.lat/tasks/done/`；移走後停住監控不再盯該 Agent。
 
 只有任務卡明列待完成後續工作時可暫留，例如 QA 保留 worktree 供複驗；後續工作完成後立即收尾。
+
+[Spec 文件審查](spec-review.md#收尾) 沒有 commit，不適用上述合併門檻：使用者確認或放棄該 Spec 後，主控關閉審查者，deliverable commit 填「無（證據為 issue 留言）」，任務卡移至 `.lat/tasks/done/`。
