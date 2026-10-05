@@ -22,12 +22,44 @@ PROMPT_SETTLE_SECONDS = 1
 PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
 FAILURE_REPEAT_SECONDS = 60 * 60
+TRANSCRIPT_TAIL_BYTES = 256 * 1024
 NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
          'with lat-watch wait.')
 NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 NAME = re.compile(NAME_PATTERN)
 CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
+CLIENT_PROFILES = {
+    'codex': {
+        'error': re.compile(
+            r'^■\s+(?:(?P<capacity>Selected model is at capacity\b)|'
+            r"(?P<usage>You've hit your usage limit\b))", re.IGNORECASE),
+        'model': re.compile(
+            r'^\s*((?:GPT|o)[A-Za-z0-9. -]*?)\s+'
+            r'(?:minimal|low|medium|high|xhigh|max|ultra)\s+·', re.IGNORECASE),
+    },
+    'claude': {
+        'primary': re.compile(
+            r'^●\s+Usage limit reached\s+·\s+continuing automatically at\b',
+            re.IGNORECASE),
+        'notice': re.compile(
+            r'^Usage limit reached\s+·\s+continuing automatically at\b.*'
+            r'·\s+esc to cancel$', re.IGNORECASE),
+        'footer': re.compile(r'^\s{2}⚠\s+Usage limit reached\b', re.IGNORECASE),
+        'model': re.compile(
+            r'^\s*((?:Opus|Sonnet|Haiku)[A-Za-z0-9. -]*?)\s+'
+            r'(?:low|medium|high|max)\s+·', re.IGNORECASE),
+    },
+}
+RECOVERY_ACTIONS = {
+    ('codex', 'model-capacity'): 'switch to another model',
+    ('codex', 'usage-limit'): (
+        'switch to another subscribed account with quota; Do not switch to API billing; '
+        'if no subscribed account is available, the user decides how to continue'),
+    ('codex', 'rate-limit'): (
+        'switch to another subscribed account with quota; Do not switch to API billing; '
+        'if no subscribed account is available, the user decides how to continue'),
+}
 
 
 class Observation(NamedTuple):
@@ -46,6 +78,15 @@ class Observation(NamedTuple):
     orchestrator_wait_started_at: float = 0
     input_text: str = ''
     unread_count: int = 0
+    client: str = 'unknown'
+    model: str = 'unknown'
+    quota_issue: object = None
+
+
+class QuotaIssue(NamedTuple):
+    kind: str
+    line: str
+    reset_time: object = None
 
 
 class Action(NamedTuple):
@@ -53,6 +94,7 @@ class Action(NamedTuple):
     agent: str
     message: str = ''
     text: str = ''
+    category: str = ''
 
 
 class Process(NamedTuple):
@@ -105,6 +147,173 @@ def owner_notice(observation, state, now, reason):
     return Action(kind, observation.agent, message)
 
 
+def quota_notice(observation):
+    issue = observation.quota_issue
+    reset = f' Reset time: {issue.reset_time}.' if issue.reset_time else ''
+    action_needed = RECOVERY_ACTIONS.get(
+        (observation.client.lower(), issue.kind),
+        'the user decides whether to wait or choose another recovery action',
+    )
+    line_end = '' if issue.line.endswith(('.', '!', '?')) else '.'
+    message = (f'LAT stall watcher: quota or model-capacity issue for agent '
+               f'{observation.agent}. Client: {observation.client}. Model: '
+               f'{observation.model}. Matched line: {issue.line}{line_end}{reset} '
+               f'No terminal nudge was injected. Action needed: {action_needed}.')
+    kind = 'notify-user' if observation.is_orchestrator else 'notify-orchestrator'
+    return Action(kind, observation.agent, message, category='quota')
+
+
+def quota_reset_time(line):
+    end = r'(?:\s+·|\s+Continuing shortly\b|\s+esc to cancel\b|\.(?:\s|$)|$)'
+    patterns = (
+        rf'\blimit resets\s+(.+?){end}',
+        rf'\bresets\s+(.+?){end}',
+        rf'\bcontinuing automatically at\s+(.+?){end}',
+        rf'\btry again at\s+(.+?){end}',
+    )
+    for pattern in patterns:
+        match = re.search(pattern, line, re.IGNORECASE)
+        if match:
+            return match.group(1).strip().rstrip('.')
+    return None
+
+
+def screen_separator(line):
+    stripped = line.strip()
+    return len(stripped) >= 3 and set(stripped) == {'─'}
+
+
+def screen_message(lines, start):
+    """Join wrapped text until the next recognizable client UI boundary."""
+    parts = [lines[start].strip()]
+    model_patterns = tuple(profile['model'] for profile in CLIENT_PROFILES.values())
+    for line in lines[start + 1:start + 5]:
+        stripped = line.strip()
+        if (not stripped or screen_separator(line)
+                or stripped.startswith(('Working (', '• ', '› ', '■ ', '● ', '⚠ ', '✻ ', '⏵'))
+                or any(pattern.search(line) for pattern in model_patterns)):
+            break
+        parts.append(stripped)
+    return ' '.join(parts)
+
+
+def codex_error_is_current(lines, index):
+    for line in lines[index + 1:]:
+        stripped = line.strip()
+        if stripped.startswith('Working (') or line.startswith('• '):
+            return False
+        if line.startswith('› ') and stripped != '› Ask Codex to do anything':
+            return False
+    return True
+
+
+def claude_primary_is_current(lines, index):
+    for line in lines[index + 1:]:
+        stripped = line.strip()
+        if line.startswith('● ') or stripped.startswith('Working'):
+            return False
+        if line.startswith('❯ ') and stripped != '❯':
+            return False
+    return True
+
+
+def current_claude_quota_notice(transcript):
+    """Return an unsuperseded Claude system quota notice near transcript EOF."""
+    if not isinstance(transcript, (str, Path)):
+        return None
+    path = Path(transcript)
+    try:
+        with path.open('rb') as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            start = max(0, size - TRANSCRIPT_TAIL_BYTES)
+            stream.seek(start)
+            data = stream.read()
+    except (FileNotFoundError, OSError):
+        return None
+    lines = data.splitlines()
+    if start:
+        lines = lines[1:]
+    notice = None
+    pattern = CLIENT_PROFILES['claude']['notice']
+    for raw in lines:
+        try:
+            record = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        content = record.get('content')
+        if (record.get('type') == 'system'
+                and record.get('subtype') == 'informational'
+                and record.get('level') == 'notice'
+                and isinstance(content, str) and pattern.search(content)):
+            notice = content
+        elif notice is not None and record.get('type') in ('user', 'assistant'):
+            notice = None
+    return notice
+
+
+def detect_screen_quota(lines, client, claude_notice=None):
+    """Match quota UI in the current client turn/status region."""
+    if not isinstance(lines, list) or any(not isinstance(line, str) for line in lines):
+        raise ValueError('hcom term returned invalid screen lines')
+    profile = CLIENT_PROFILES.get(client.lower())
+    if profile is None:
+        return None
+    if 'error' in profile:
+        for index in range(len(lines) - 1, -1, -1):
+            match = profile['error'].search(lines[index])
+            if match and codex_error_is_current(lines, index):
+                message = screen_message(lines, index)
+                kind = 'model-capacity' if match.group('capacity') else 'usage-limit'
+                return QuotaIssue(kind, message, quota_reset_time(message))
+        return None
+
+    separators = [index for index, line in enumerate(lines) if screen_separator(line)]
+    status_start = separators[-1] if separators else len(lines)
+    footers = [index for index in range(status_start + 1, len(lines))
+               if profile['footer'].search(lines[index])]
+    footer = footers[-1] if footers else None
+    if footer is not None:
+        message = screen_message(lines, footer)
+        return QuotaIssue('usage-limit', message, quota_reset_time(message))
+
+    primaries = [index for index, line in enumerate(lines)
+                 if profile['primary'].search(line)
+                 and claude_primary_is_current(lines, index)]
+    if primaries:
+        message = screen_message(lines, primaries[-1])
+        reset = quota_reset_time(message)
+        visible_notice = re.sub(r'^●\s+', '', message)
+        if (isinstance(claude_notice, str)
+                and ' '.join(visible_notice.split()) == ' '.join(claude_notice.split())):
+            return QuotaIssue('usage-limit', message, reset)
+    return None
+
+
+def hcom_quota_issue(info):
+    context = info.get('status_context', info.get('context', ''))
+    detail = info.get('status_detail', '')
+    if (info.get('status') == 'inactive'
+            and (context == 'failure:rate_limit' or detail == 'rate_limit')):
+        return QuotaIssue('rate-limit', 'inactive (failure:rate_limit)')
+    return None
+
+
+def screen_model(lines, client):
+    if not isinstance(lines, list):
+        return 'unknown'
+    profile = CLIENT_PROFILES.get(client.lower())
+    if profile is None:
+        return 'unknown'
+    for line in reversed(lines):
+        match = profile['model'].search(line)
+        if match:
+            return match.group(1).strip()
+    return 'unknown'
+
+
 def prompt_digest(text):
     return hashlib.sha256(text.encode()).hexdigest()
 
@@ -122,7 +331,9 @@ def decide(previous, observation, now):
     fingerprint = [observation.transcript_size, observation.transcript_mtime_ns,
                    observation.event_id]
     progressed = previous is None or previous.get('fingerprint') != fingerprint
-    reset = progressed or observation.wait_released
+    quota_cleared = bool(previous and previous.get('quota_active')
+                         and observation.quota_issue is None)
+    reset = progressed or observation.wait_released or quota_cleared
     if reset:
         state = {
             'fingerprint': fingerprint,
@@ -131,12 +342,16 @@ def decide(previous, observation, now):
             'orchestrator_notified': False,
             'orchestrator_handled': False,
             'user_notified': False,
+            'quota_notified': False,
+            'quota_active': observation.quota_issue is not None,
         }
     else:
         state = dict(previous)
         state.setdefault('orchestrator_notified', False)
         state.setdefault('orchestrator_handled', False)
         state.setdefault('user_notified', False)
+        state.setdefault('quota_notified', False)
+        state['quota_active'] = observation.quota_issue is not None
         if state.get('nudged') and 'nudged_at' not in state:
             state['nudged_at'] = now
     queued_prompt = (not observation.prompt_empty and bool(observation.input_text)
@@ -167,6 +382,8 @@ def decide(previous, observation, now):
         state.pop('prompt_recovery_attempted', None)
         state.pop('prompt_recovery_uncertain', None)
     actions = ()
+    if observation.quota_issue is None:
+        state['quota_notified'] = False
     stalled = now - state['last_progress_at'] >= IDLE_SECONDS
     active_stalled = now - state['last_progress_at'] >= ACTIVE_SECONDS
     orchestrator_notified_at = state.get('orchestrator_notified_at', now + 1)
@@ -187,7 +404,12 @@ def decide(previous, observation, now):
         state['orchestrator_handled'] = True
     prompt_stalled = (queued_prompt
                       and now - state['prompt_text_since'] >= PROMPT_SECONDS)
-    if prompt_stalled and not state['prompt_recovery_attempted']:
+    if observation.quota_issue is not None and not state['quota_notified']:
+        actions = (quota_notice(observation),)
+        state['quota_notified'] = True
+    elif observation.quota_issue is not None:
+        pass
+    elif prompt_stalled and not state['prompt_recovery_attempted']:
         actions = (Action(
             'recover-prompt', observation.agent, text=observation.input_text),)
         state['prompt_recovery_attempted'] = True
@@ -254,7 +476,8 @@ def decide(previous, observation, now):
             state['orchestrator_notified_at'] = now
             state['orchestrator_notice_task_revision'] = observation.task_card_revision
     if actions:
-        state['decision'] = actions[0].kind
+        state['decision'] = ('quota-issue' if actions[0].category == 'quota'
+                             else actions[0].kind)
     elif state.get('orchestrator_handled'):
         state['decision'] = 'orchestrator-handled'
     elif observation.wait_active:
@@ -727,20 +950,41 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
 
 
 def observe(workspace, decisions, orchestrator, agent, info, card=None):
-    terminal = run_json(['hcom', 'term', agent, '--json', '--name', orchestrator])
+    status_issue = hcom_quota_issue(info)
+    try:
+        terminal = run_json(['hcom', 'term', agent, '--json', '--name', orchestrator])
+    except (OSError, ValueError):
+        if status_issue is None:
+            raise
+        terminal = {'ready': True, 'prompt_empty': True, 'input_text': '', 'lines': []}
     if not isinstance(terminal, dict):
         raise ValueError(f'hcom term returned invalid data for {agent}')
     if not isinstance(terminal.get('ready'), bool):
         raise ValueError(f'hcom term omitted boolean ready for {agent}')
-    if not isinstance(terminal.get('prompt_empty'), bool):
-        raise ValueError(f'hcom term omitted boolean prompt_empty for {agent}')
     input_text = terminal.get('input_text', '')
-    if not isinstance(input_text, str):
+    if input_text is None:
+        input_text = ''
+    elif not isinstance(input_text, str):
         raise ValueError(f'hcom term returned invalid input_text for {agent}')
+    lines = terminal.get('lines', [])
+    client = info.get('tool', 'unknown')
+    if not isinstance(client, str):
+        client = 'unknown'
+    transcript = info.get('transcript_path')
+    claude_notice = current_claude_quota_notice(transcript)
+    screen_issue = detect_screen_quota(lines, client, claude_notice=claude_notice)
+    prompt_empty = terminal.get('prompt_empty')
+    if not isinstance(prompt_empty, bool):
+        if info.get('status') == 'blocked' or screen_issue or status_issue:
+            prompt_empty = False
+        else:
+            raise ValueError(f'hcom term omitted boolean prompt_empty for {agent}')
+    model = info.get('model')
+    if not isinstance(model, str) or not model:
+        model = screen_model(lines, client)
     unread_count = validated_unread_count(info, agent)
     transcript_size = 0
     transcript_mtime_ns = 0
-    transcript = info.get('transcript_path')
     if isinstance(transcript, str) and transcript:
         try:
             stat = Path(transcript).stat()
@@ -766,7 +1010,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
     return Observation(
         agent=agent,
         status=info.get('status', 'missing'),
-        prompt_empty=terminal.get('prompt_empty') is True,
+        prompt_empty=prompt_empty,
         command_running=not ready or background_running,
         transcript_size=transcript_size,
         transcript_mtime_ns=transcript_mtime_ns,
@@ -779,6 +1023,9 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
         orchestrator_wait_started_at=orchestrator_wait_started_at,
         input_text=input_text,
         unread_count=unread_count,
+        client=client,
+        model=model,
+        quota_issue=screen_issue or status_issue,
     )
 
 
@@ -794,6 +1041,8 @@ def action_record(action):
     record = {'kind': action.kind, 'agent': action.agent}
     if action.message:
         record['message'] = action.message
+    if action.category:
+        record['category'] = action.category
     return record
 
 
@@ -1031,6 +1280,9 @@ def perform(action, orchestrator, workspace=None):
 
 def roll_back(action, state):
     _handler, flag, cleanup_fields = action_policy(action.kind)
+    if action.category == 'quota':
+        state['quota_notified'] = False
+        return
     if flag is not None:
         state[flag] = False
     for field in cleanup_fields:
