@@ -450,13 +450,10 @@ def configure(args):
                     group['matcher'] = MATCHER
                 else:
                     group.pop('matcher', None)
-            elif args.client == 'codex':
-                group = dict(name=GROUP_NAME, hooks=[handler])
-                if event == 'SessionStart':
-                    group['matcher'] = MATCHER
-                groups.append(group)
             else:
                 group = dict(hooks=[handler])
+                if args.client == 'codex':
+                    group['name'] = GROUP_NAME
                 if event == 'SessionStart':
                     group['matcher'] = MATCHER
                 groups.append(group)
@@ -510,7 +507,7 @@ def stop_check(record, payload):
     identifiers = set(re.findall(
         r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', message, re.MULTILINE))
     identifiers.update(re.findall(
-        r'(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)[ \t]+r([0-9]+)(?![A-Za-z0-9_.-])',
+        r'(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)[ \t]+r([0-9]+)(?![A-Za-z0-9_])',
         last[len('DECIDE:'):]))
     problems = []
     if not identifiers:

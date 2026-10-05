@@ -125,7 +125,8 @@ class SessionTests(unittest.TestCase):
         for message in ('DECIDE: check-pending', 'Other LAT-A r1\nDECIDE: check-pending'):
             self.assert_stop_block(self.stop_hook(message), '沒有寫出題號')
         for message in ('❓ **LAT-A r1** title\n❓ **LAT-NEW r2** title\nDECIDE: check-pending',
-                        'DECIDE: LAT-A r1, LAT-NEW r2'):
+                        'DECIDE: LAT-A r1, LAT-NEW r2',
+                        'DECIDE: LAT-A r1, LAT-NEW r2.'):
             self.assert_stop_block(self.stop_hook(message), 'LAT-NEW r2')
         self.decisions.joinpath('A_B.2-3.md').write_text('- status: pending\n')
         self.assert_silent(self.stop_hook('DECIDE: A_B.2-3 r12'))
