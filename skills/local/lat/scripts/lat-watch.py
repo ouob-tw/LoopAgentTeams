@@ -27,6 +27,8 @@ PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
 FAILURE_REPEAT_SECONDS = 60 * 60
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
+# Successful deliveries awaiting a session-record save; retained across retry cycles.
+RULE_DELIVERIES = {}
 NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
          'with lat-watch wait.')
@@ -1337,7 +1339,9 @@ def check_rule_changes(workspace, orchestrator, log, now):
                 if any(record.get(key) != value for key, value in expected.items()):
                     continue
                 current = rule_fingerprint(Path(record['skill_dir']))
-                baseline = record.get('rule_fingerprint')
+                delivery_key = (str(path), record['skill_dir'])
+                delivery = RULE_DELIVERIES.get(delivery_key)
+                baseline = delivery['fingerprint'] if delivery else record.get('rule_fingerprint')
                 if baseline is None:
                     record['rule_fingerprint'] = current
                     write_object(path, record, expected=original)
@@ -1346,20 +1350,24 @@ def check_rule_changes(workspace, orchestrator, log, now):
                     raise ValueError('Expected a rule fingerprint object')
                 changed = sorted(name for name in baseline.keys() | current.keys()
                                  if baseline.get(name) != current.get(name))
-                if not changed:
+                if not changed and delivery_key not in RULE_DELIVERIES:
                     continue
-                message = ('LAT skill rules updated. Changed files: '
-                           + ', '.join(changed)
-                           + '. Please re-read SKILL.md and the changed references in '
-                           + record['skill_dir']
-                           + '; removed files are no longer available. Continue without '
-                           'asking the user to re-enter /lat.')
-                send_notification(Action('notify-orchestrator', orchestrator, message),
-                                  orchestrator, 'request')
+                if changed:
+                    message = ('LAT skill rules updated. Changed files: '
+                               + ', '.join(changed)
+                               + '. Please re-read SKILL.md and the changed references in '
+                               + record['skill_dir']
+                               + '; removed files are no longer available. Continue without '
+                               'asking the user to re-enter /lat.')
+                    send_notification(Action('notify-orchestrator', orchestrator, message),
+                                      orchestrator, 'request')
+                    RULE_DELIVERIES[delivery_key] = {'fingerprint': current, 'changed_files': changed}
                 record['rule_fingerprint'] = current
                 write_object(path, record, expected=original)
+                delivered = RULE_DELIVERIES.pop(delivery_key)
                 append_log(log, {'at': now, 'agent': orchestrator,
-                                 'decision': 'skill-rules-updated', 'changed_files': changed,
+                                 'decision': 'skill-rules-updated',
+                                 'changed_files': delivered['changed_files'],
                                  'session_id': path.stem, 'actions': []})
         except (OSError, ValueError, TypeError, KeyError) as error:
             append_log(log, {'at': now, 'agent': orchestrator,

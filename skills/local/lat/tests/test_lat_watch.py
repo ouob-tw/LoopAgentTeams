@@ -751,6 +751,72 @@ class WatchCliTests(unittest.TestCase):
         self.assertIn('references/new.txt', fingerprint)
         self.assertNotIn('references/nested/guide.md', fingerprint)
 
+    def test_delivered_notice_is_not_resent_when_fingerprint_save_fails(self):
+        skill, record = self.rule_session()
+        watch = load_watch()
+        self.run_cycles(watch, 0)
+        original = record.read_text()
+        # The fake send denies saves after delivery, leaving reads and stall checks working.
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = send ] && [ -e "$FAIL_SAVE" ]; then\n'
+            '  chmod 500 "$RULE_DIR"\n'
+            'fi\n'
+            'printf \'%s\\n\' \'[]\'\n'
+        )
+        failure = self.root / 'fail-save'
+        failure.touch()
+        self.env.update(FAIL_SAVE=str(failure), RULE_DIR=str(record.parent))
+        self.addCleanup(record.parent.chmod, 0o700)
+        (skill / 'SKILL.md').write_text('delivered rules')
+        self.run_cycles(watch, 60)
+        self.assertEqual(len(self.rule_notices()), 1)
+        self.assertEqual(record.read_text(), original)
+        self.run_cycles(watch, 120)
+        self.assertEqual(len(self.rule_notices()), 1)
+        self.assertEqual(record.read_text(), original)
+        failure.unlink()
+        (skill / 'references/nested/guide.md').write_text('independent guide update')
+        self.run_cycles(watch, 150, 160)
+        self.assertEqual(len(self.rule_notices()), 2)
+        self.assertEqual(record.read_text(), original)
+        record.parent.chmod(0o700)
+        self.run_cycles(watch, 180, 240)
+        self.assertEqual(len(self.rule_notices()), 2)
+        self.assertNotEqual(record.read_text(), original)
+        (skill / 'SKILL.md').write_text('next independent update')
+        self.run_cycles(watch, 300, 360)
+        self.assertEqual(len(self.rule_notices()), 3)
+
+    def test_failed_legacy_baseline_save_retries_without_notice(self):
+        _, record = self.rule_session()
+        original = record.read_text()
+        self.addCleanup(record.parent.chmod, 0o700)
+        record.parent.chmod(0o500)
+        self.run_cycles(load_watch(), 0, 60)
+        self.assertEqual(record.read_text(), original)
+        self.assertEqual(self.rule_notices(), [])
+        record.parent.chmod(0o700)
+        self.run_cycles(load_watch(), 120)
+        self.assertIn('SKILL.md', json.loads(record.read_text())['rule_fingerprint'])
+        self.assertEqual(self.rule_notices(), [])
+
+    def test_removed_skill_file_and_reference_subtree_are_listed(self):
+        skill, record = self.rule_session()
+        self.run_cycles(load_watch(), 0)
+        (skill / 'SKILL.md').unlink()
+        self.run_cycles(load_watch(), 60, 120)
+        self.assertEqual(len(self.rule_notices()), 1)
+        self.assertIn('SKILL.md', self.rule_notices()[0])
+        (skill / 'references/nested/guide.md').unlink()
+        (skill / 'references/nested').rmdir()
+        (skill / 'references').rmdir()
+        self.run_cycles(load_watch(), 180, 240)
+        self.assertEqual(len(self.rule_notices()), 2)
+        self.assertIn('references/nested/guide.md', self.rule_notices()[1])
+        self.assertEqual(json.loads(record.read_text())['rule_fingerprint'], {})
+
     def test_program_cache_and_timestamp_changes_do_not_notify(self):
         skill, record = self.rule_session()
         self.run_cycles(load_watch(), 0)
