@@ -1161,6 +1161,45 @@ class WatchCliTests(unittest.TestCase):
         self.assertIn('somebody-else', result.stderr)
         self.assertFalse((self.work / '.lat/watch/waits/worker-open.json').exists())
 
+    def test_wait_skips_incomplete_active_sessions_and_still_checks_valid_owner(self):
+        decisions = self.wait_session()
+        sessions = self.work / '.lat/sessions'
+        record = json.loads((sessions / 'orch.json').read_text())
+        for missing in ('hcom_name', 'tasks_path', 'decisions_path'):
+            incomplete = dict(record)
+            incomplete.pop(missing)
+            (sessions / 'a-legacy.json').write_text(json.dumps(incomplete))
+            for status in ('pending', 'approved'):
+                with self.subTest(missing=missing, status=status):
+                    (decisions / 'HELP.md').write_text(f'- status: {status}\n')
+                    result = self.cli('wait', '--workspace', self.work,
+                                      '--agent', 'worker-open', '--for', 'HELP',
+                                      '--reason', 'waiting')
+                    if status == 'pending':
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertTrue(json.loads(result.stdout)['active'])
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('HELP.md: approved', result.stderr)
+
+    def test_wait_skips_corrupt_sessions_and_still_checks_valid_owner(self):
+        decisions = self.wait_session()
+        invalid = self.work / '.lat/sessions/a-corrupt.json'
+        for content in (b'{broken', b'[]', b'\xff'):
+            invalid.write_bytes(content)
+            for status in ('pending', 'approved'):
+                with self.subTest(content=content, status=status):
+                    (decisions / 'HELP.md').write_text(f'- status: {status}\n')
+                    result = self.cli('wait', '--workspace', self.work,
+                                      '--agent', 'worker-open', '--for', 'HELP',
+                                      '--reason', 'waiting')
+                    if status == 'pending':
+                        self.assertEqual(result.returncode, 0, result.stderr)
+                        self.assertTrue(json.loads(result.stdout)['active'])
+                    else:
+                        self.assertNotEqual(result.returncode, 0)
+                        self.assertIn('HELP.md: approved', result.stderr)
+
     def test_run_cycle_injects_enter_once_and_logs_every_decision(self):
         transcript = self.root / 'transcript.jsonl'
         transcript.write_text('unchanged\n')

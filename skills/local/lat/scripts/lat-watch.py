@@ -1522,10 +1522,16 @@ def declare_wait(args):
     if not declaration['reason']:
         raise ValueError('--reason must not be empty')
     for path in sorted((workspace / '.lat/sessions').glob('*.json')):
-        record = read_object(path, {})
+        try:
+            record = read_object(path, {})
+        except (OSError, ValueError):
+            continue
         if (record.get('role') != 'orchestrator'
                 or record.get('status') != 'active'
                 or record.get('workspace') != str(workspace)):
+            continue
+        if any(not isinstance(record.get(key), str) or not record[key]
+               for key in ('hcom_name', 'tasks_path', 'decisions_path')):
             continue
         owner = record['hcom_name']
         if owner != args.agent:
