@@ -87,4 +87,4 @@ Spec 寫好之後、請使用者確認之前，由獨立審查者拿使用者的
 
 ## 收尾
 
-文件審查沒有 commit，不適用 [任務收尾](task-cards.md#任務收尾) 的合併門檻。使用者確認 Spec，或決定放棄這份 Spec 後，主控依 [Agent 設定](agents.md#收尾) 關閉審查者，任務卡 deliverable commit 填「無（證據為 issue 留言）」並移到 `.lat/tasks/done/`。
+文件審查沒有 commit，不適用 [任務收尾](task-cards.md#任務收尾) 的合併門檻。使用者確認 Spec，或決定放棄這份 Spec 後，主控依 [Agent 設定](agents.md#收尾) 關閉審查者，任務卡 status 改為 `completed`、deliverable commit 填「無（證據為 issue 留言）」並移到 `.lat/tasks/done/`。
