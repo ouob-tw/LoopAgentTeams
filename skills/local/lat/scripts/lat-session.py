@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Codex/Claude LAT controller records and SessionStart recovery (stdlib only)."""
+"""Codex/Claude LAT controller records, recovery and DECIDE checks (stdlib only)."""
 import argparse
 import copy
 import difflib
@@ -15,6 +15,9 @@ import subprocess
 import sys
 import tempfile
 import time
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lat_decision_status import read_decision_status
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 GROUP_NAME = 'lat-codex-recovery'
@@ -399,61 +402,69 @@ def configure(args):
     config = json.loads(original) if original is not None else {}
     if not isinstance(config, dict) or not isinstance(config.get('hooks', {}), dict):
         raise ValueError('Expected hooks.json object with a hooks object')
+    if args.action == 'uninstall' and 'hooks' not in config:
+        print('No changes')
+        return
     updated = copy.deepcopy(config)
     events = updated.setdefault('hooks', {})
-    groups = events.setdefault('SessionStart', [])
-    if not isinstance(groups, list) or any(not isinstance(g, dict) for g in groups):
-        raise ValueError('Expected SessionStart matcher groups')
-    if args.client == 'codex':
-        owned = [g for g in groups if g.get('name') == GROUP_NAME]
-    else:
-        # Claude settings groups have no name field; own the group holding our command.
-        owned = [g for g in groups if isinstance(g.get('hooks'), list)
-                 and any(is_lat_command(h) for h in g['hooks'])]
-    if args.action == 'install':
-        command = ['uv', 'run', '--no-project', 'python',
-                   str(SKILL_DIR / 'scripts/lat-session.py'), 'hook']
-        if args.client == 'claude':
-            command += ['--client', 'claude']
-        command = shlex.join(command)
-        handler = dict(type='command', command=command)
-        if owned:
-            # Own only our command, preserving unknown fields and added third-party handlers.
-            if len(owned) != 1:
-                raise ValueError('Duplicate LAT groups; inspect hooks.json')
-            group = owned[0]
-            handlers = group.get('hooks')
-            if not isinstance(handlers, list):
-                raise ValueError('Invalid LAT command group')
-            lat_handlers = [h for h in handlers if is_lat_command(h)]
-            # An unnamed Claude group may be shared; resetting its matcher would
-            # change when the other handlers run.
-            if args.client == 'claude' and len(lat_handlers) != len(handlers):
-                raise ValueError('LAT hook shares a SessionStart group with other handlers; '
-                                 'move them to their own group and retry')
-            if len(lat_handlers) > 1:
-                raise ValueError('LAT group ownership is ambiguous; inspect hooks.json')
-            if lat_handlers:
-                lat_handlers[0].update(handler)
-            else:
-                handlers.append(handler)
-            group['matcher'] = MATCHER
-        elif args.client == 'codex':
-            group = dict(name=GROUP_NAME, matcher=MATCHER, hooks=[handler])
-            groups.append(group)
+    for event in ('SessionStart', 'Stop'):
+        if args.action == 'uninstall' and event not in events:
+            continue
+        groups = events.setdefault(event, [])
+        if not isinstance(groups, list) or any(not isinstance(g, dict) for g in groups):
+            raise ValueError(f'Expected {event} matcher groups')
+        if args.client == 'codex':
+            owned = [g for g in groups if g.get('name') == GROUP_NAME]
         else:
-            group = dict(matcher=MATCHER, hooks=[handler])
-            groups.append(group)
-    else:
-        for group in owned:
-            handlers = group.get('hooks')
-            if not isinstance(handlers, list):
-                raise ValueError('Invalid LAT command group')
-            group['hooks'] = [h for h in handlers if not is_lat_command(h)]
-            if not group['hooks'] and set(group) <= {'name', 'matcher', 'hooks'}:
-                groups.remove(group)
-        if not owned:
-            updated = config
+            # Claude settings groups have no name field; own the group holding our command.
+            owned = [g for g in groups if isinstance(g.get('hooks'), list)
+                     and any(is_lat_command(h) for h in g['hooks'])]
+        if args.action == 'install':
+            command = ['uv', 'run', '--no-project', 'python',
+                       str(SKILL_DIR / 'scripts/lat-session.py'), 'hook']
+            if args.client == 'claude':
+                command += ['--client', 'claude']
+            command = shlex.join(command)
+            handler = dict(type='command', command=command)
+            if owned:
+                # Own only our command, preserving unknown fields and added third-party handlers.
+                if len(owned) != 1:
+                    raise ValueError('Duplicate LAT groups; inspect hooks.json')
+                group = owned[0]
+                handlers = group.get('hooks')
+                if not isinstance(handlers, list):
+                    raise ValueError('Invalid LAT command group')
+                lat_handlers = [h for h in handlers if is_lat_command(h)]
+                # An unnamed Claude group may be shared; resetting its matcher would
+                # change when the other handlers run.
+                if args.client == 'claude' and len(lat_handlers) != len(handlers):
+                    raise ValueError(f'LAT hook shares a {event} group with other handlers; '
+                                     'move them to their own group and retry')
+                if len(lat_handlers) > 1:
+                    raise ValueError('LAT group ownership is ambiguous; inspect hooks.json')
+                if lat_handlers:
+                    lat_handlers[0].update(handler)
+                else:
+                    handlers.append(handler)
+                if event == 'SessionStart':
+                    group['matcher'] = MATCHER
+                else:
+                    group.pop('matcher', None)
+            else:
+                group = dict(hooks=[handler])
+                if args.client == 'codex':
+                    group['name'] = GROUP_NAME
+                if event == 'SessionStart':
+                    group['matcher'] = MATCHER
+                groups.append(group)
+        else:
+            for group in owned:
+                handlers = group.get('hooks')
+                if not isinstance(handlers, list):
+                    raise ValueError('Invalid LAT command group')
+                group['hooks'] = [h for h in handlers if not is_lat_command(h)]
+                if not group['hooks'] and set(group) <= {'name', 'matcher', 'hooks'}:
+                    groups.remove(group)
     if updated == config:
         print('No changes')
         return
@@ -490,13 +501,76 @@ def is_lat_command(handler):
         return False
 
 
+def stop_check(record, payload):
+    message = payload['last_assistant_message']
+    last = [line for line in message.splitlines() if line.strip()][-1]
+    identifiers = set(re.findall(
+        r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', message, re.MULTILINE))
+    identifiers.update(re.findall(
+        r'(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)[ \t]+r([0-9]+)(?![A-Za-z0-9_])',
+        last[len('DECIDE:'):]))
+    problems = []
+    if not identifiers:
+        problems.append('沒有寫出題號與版本')
+    decisions = Path(record['decisions_path'])
+    if not decisions.is_dir():
+        raise ValueError(f'待決目錄不存在：{decisions}')
+    statuses = {}
+    for path in sorted(decisions.glob('*.md')):
+        status = read_decision_status(path)
+        statuses[path.stem] = status
+        if status.error:
+            problems.append(f'{path.name}：讀不出狀態（{status.error}）')
+    for identifier, revision in sorted(identifiers):
+        status = statuses.get(identifier)
+        if status is None:
+            problems.append(f'{identifier} r{revision}：沒有待決紀錄')
+        elif status.error is None and status.status != 'pending':
+            problems.append(f'{identifier} r{revision}：紀錄不是 pending')
+    panel = panel_module()
+    binding = next((item for item in panel.list_bindings()
+                    if item.get('session_id') == record['session_id']), None)
+    if binding is not None:
+        if binding.get('client') != record['client'] or binding.get('workspace') != record['workspace']:
+            raise ValueError('面板綁定與主控紀錄不符')
+        questions_path = Path(binding['questions_path'])
+        questions = panel.parse_questions(questions_path.read_text(encoding='utf-8')) if questions_path.exists() else []
+        for identifier, revision in sorted(identifiers):
+            if not any(question['id'] == identifier and question['status_label'] == '待答'
+                       and question['revision'] == int(revision) for question in questions):
+                problems.append(f'{identifier} r{revision}：自己的面板缺少同版本待答題目')
+        _, missing, inconsistent, unreadable = panel.pending_question_gaps(questions_path, decisions)
+        problems.extend(f'{identifier}：遺漏檢查缺少面板題目' for identifier in missing)
+        problems.extend(f'{identifier}：遺漏檢查不一致（{reason}）'
+                        for identifier, reason, _ in inconsistent)
+        problems.extend(f'{path.name}：遺漏檢查讀不出狀態（{reason}）'
+                        for path, reason in unreadable
+                        if path.stem not in statuses or not statuses[path.stem].error)
+    if not problems:
+        return
+    reason = 'LAT DECIDE 檢查未通過：' + '；'.join(problems) + (
+        '。補做順序：寫待決紀錄 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重列題目。')
+    if payload.get('stop_hook_active'):
+        print(json.dumps({'systemMessage': reason + ' 本回合已繼續過，不再攔下。'}, ensure_ascii=False))
+    else:
+        print(json.dumps({'decision': 'block', 'reason': reason}, ensure_ascii=False))
+
+
 def hook(client):
     # Hook payload IDs are authoritative: the hook process has no client session env.
     try:
         payload = json.load(sys.stdin)
-        if not isinstance(payload, dict) or payload.get('hook_event_name') != 'SessionStart':
+        if not isinstance(payload, dict):
             return
-        if payload.get('source') not in ('compact', 'resume'):
+        event = payload.get('hook_event_name')
+        if event == 'Stop':
+            message = payload.get('last_assistant_message')
+            if not isinstance(message, str):
+                return
+            lines = [line for line in message.splitlines() if line.strip()]
+            if not lines or not lines[-1].startswith('DECIDE:'):
+                return
+        elif event != 'SessionStart' or payload.get('source') not in ('compact', 'resume'):
             return
         sid = session_id(payload.get('session_id'))
         cwd = Path(payload['cwd'])
@@ -517,6 +591,9 @@ def hook(client):
             return
         if any(key not in record for key in expected):
             raise ValueError('Incomplete controller identity')
+        if event == 'Stop':
+            stop_check(record, payload)
+            return
         if legacy_record(record):
             dependencies(record, require_watcher=False)
             context(f'{pointer(path)}\nLegacy session upgrade: {legacy_upgrade_command(record)}')
@@ -525,7 +602,10 @@ def hook(client):
         if ensure_watcher(record, path, rebind=True) is None:
             return
         context(pointer(path))
-    except (OSError, ValueError, TypeError, KeyError):
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        if event == 'Stop':
+            print(json.dumps({'systemMessage': f'LAT DECIDE 檢查發生錯誤，未攔下：{exc}'}, ensure_ascii=False))
+            return
         context(f'LAT recovery error: {path}. Record or recovery files are missing/corrupt. '
                 'Stop dependent work and report; do not infer authorization or recreate progress.')
 
@@ -543,7 +623,7 @@ def main():
     stop.add_argument('--workspace', type=Path, required=True)
     stop.add_argument('--status', choices=('completed', 'cancelled'), required=True)
     stop.add_argument('--session-id', help='Explicit ID for manual stale-record deactivation')
-    sub.add_parser('hook', help='Read SessionStart payload on stdin')
+    sub.add_parser('hook', help='Read SessionStart or Stop payload on stdin')
     for action in ('install', 'uninstall'):
         config = sub.add_parser(action, help=f'{action.title()} the independent LAT hook group')
         config.add_argument('--codex-home', type=Path,
