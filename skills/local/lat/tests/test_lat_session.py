@@ -79,6 +79,31 @@ class SessionTests(unittest.TestCase):
                           session=session)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def test_activate_records_rule_fingerprint_and_identical_rerun_succeeds(self):
+        self.activate()
+        first = json.loads(self.record.read_text())
+        self.assertEqual(first['skill_dir'], str(SKILL))
+        self.assertIn('SKILL.md', first['rule_fingerprint'])
+        self.assertIn('references/recovery.md', first['rule_fingerprint'])
+        self.assertTrue(all(name == 'SKILL.md' or name.startswith('references/')
+                            for name in first['rule_fingerprint']))
+        self.activate()
+        self.assertEqual(json.loads(self.record.read_text()), first)
+
+    def test_activate_preserves_unnotified_baseline_and_upgrades_records_without_one(self):
+        self.activate()
+        record = json.loads(self.record.read_text())
+        record['rule_fingerprint'] = {'SKILL.md': 'previous-rule-content'}
+        self.record.write_text(json.dumps(record))
+        self.activate()
+        self.assertEqual(json.loads(self.record.read_text())['rule_fingerprint'],
+                         record['rule_fingerprint'])
+        del record['rule_fingerprint']
+        self.record.write_text(json.dumps(record))
+        self.activate()
+        self.assertIn('references/recovery.md',
+                      json.loads(self.record.read_text())['rule_fingerprint'])
+
     def watcher_pid(self, session=SESSION):
         return int((self.work / '.lat/watch' / f'{session}.pid').read_text())
 
@@ -461,8 +486,10 @@ class SessionTests(unittest.TestCase):
 
         self.assertEqual(result.returncode, 0, result.stderr)
         upgraded = json.loads(self.record.read_text())
+        self.assertIn('SKILL.md', upgraded['rule_fingerprint'])
         self.assertEqual(upgraded, dict(
             legacy, tasks_path=str(self.tasks), hcom_name='upgraded-orch',
+            rule_fingerprint=upgraded['rule_fingerprint'],
         ))
         pid = self.watcher_pid()
 
@@ -650,7 +677,7 @@ class SessionTests(unittest.TestCase):
                          role='orchestrator', workspace=str(self.work), status='active',
                          skill_dir=str(SKILL), progress_path=str(self.progress),
                          decisions_path=str(self.decisions), tasks_path=str(self.tasks),
-                         hcom_name='orch'))
+                         hcom_name='orch', rule_fingerprint=record['rule_fingerprint']))
         sub = self.work / 'src'
         sub.mkdir()
         for source in ('compact', 'resume', 'compact'):

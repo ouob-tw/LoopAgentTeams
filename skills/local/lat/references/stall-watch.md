@@ -2,6 +2,14 @@
 
 主控 activate 時，`lat-session.py` 自動在背景啟動 `scripts/lat-watch.py run`；deactivate 停止它，compact／resume 發現它不在時重新啟動（見 [主控恢復程序](recovery.md)）。每個主控一支，每分鐘檢查一次。以下 `$lat_dir`、`$workspace`、`$tasks` 是主控 activate 時用的 LAT 技能目錄、工作區根目錄與任務卡目錄絕對路徑。
 
+## 技能文字更新通知
+
+activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（`SKILL.md`、`references/` 各檔案的內容指紋，含子目錄）。監控每輪只比對該主控 active 紀錄中的技能目錄；程式、面板、快取與檔案時間變動不會觸發通知。舊紀錄沒有指紋時，以監控首次檢查時的內容建立基準，不追溯通知。
+
+文字改變、references 檔案新增或移除時，監控以 HCOM 傳一則 `LAT skill rules updated` 給該主控，列出變動檔案，請它重讀 `SKILL.md` 與變動的 references（移除的檔案不再讀取），不必請使用者重新輸入 `/lat`。傳送成功後才更新紀錄中的基準，同一次變動不重複通知；之後再有變動會再通知。重跑 activate 保留已有基準，避免漏掉尚未通知的變動。
+
+讀取或傳送失敗時保持原基準，記錄 `skill-rules-check-failed`，下一輪重試；成功通知記錄 `skill-rules-updated` 與變動清單，位置同下方的 `watch.jsonl`。
+
 ## 監控誰、何時出手
 
 監控對象是主控自己，加上 `$tasks` 下（不含 `done/`）`orchestrator` 欄等於該主控、status 還不是 `merged` 的任務卡所列 Agent。hcom-spawn 單獨召喚、沒有任務卡的 Agent 不在監控內。

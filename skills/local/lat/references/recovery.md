@@ -39,6 +39,10 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client
 
 手動停用遺留的 active 紀錄：確認指定對話已結束／取消，再加 `--session-id <record-session-id>`，只改該筆紀錄。沒有列舉／自動清理功能。
 
+## 技能文字更新
+
+activate 也在紀錄中保存技能文字指紋；已有指紋時重跑會保留原基準。停住監控依自己的 `skill_dir` 比對並用 HCOM 通知主控重讀，舊紀錄沒有指紋時由監控建立基準，詳見 [技能文字更新通知](stall-watch.md#技能文字更新通知)。這項提醒不需要重新啟用 LAT，也不代替 compact／resume 的恢復提示。
+
 ## Hook 安裝與移除
 
 技能檔案安裝不會註冊 hook。安裝／移除 hook、搬動技能或修改 command，以及排查 hook 啟用／信任問題前，先讀 [Hook 設定程序](hook-setup.md)。Codex 須透過 `/hooks` 信任 command；Claude 使用者層級 hook 不需信任步驟，重啟後在 `/hooks` 確認。
@@ -50,4 +54,4 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client
 - 沒有該 ID 的紀錄或已知條件不符：exit 0、零輸出。精確 ID 的紀錄損壞，或匹配後所需檔案缺失：輸出短恢復錯誤，不推定授權。
 - `/clear` 與 fork／新 session 不繼承標記。`/clear` 不改舊紀錄；日後 resume 舊對話仍可恢復，直到明確停用。沒有 clear handler；SessionEnd 也不刪紀錄。SubagentStart／Stop 不掛此 hook（其 payload ID 是父 session）。
 - 每次 compact／resume 都重新匹配，不設永久「已提示」旗標；不累積全文、不呼叫模型、不掃 transcript、不連網、不觸發 compact。
-- 啟用前發生的壓縮無法恢復；遺漏停用可能留下 active。移動工作區、session 移交、版本漂移偵測與 plugin 包裝不在 v1。
+- 啟用前發生的壓縮無法恢復；遺漏停用可能留下 active。移動工作區、session 移交與 plugin 包裝不在 v1。

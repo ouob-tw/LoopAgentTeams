@@ -677,6 +677,134 @@ class WatchCliTests(unittest.TestCase):
         path = self.work / '.lat/watch/orch/watch.jsonl'
         return [json.loads(line) for line in path.read_text().splitlines()]
 
+    def rule_session(self, name='orch', sid='rules', **overrides):
+        skill = self.root / f'skill-{name}'
+        (skill / 'references').mkdir(parents=True, exist_ok=True)
+        (skill / 'SKILL.md').write_text('original rules')
+        (skill / 'references/nested').mkdir(exist_ok=True)
+        (skill / 'references/nested/guide.md').write_text('original guide')
+        record = dict(session_id=sid, role='orchestrator', status='active',
+                      workspace=str(self.work), hcom_name=name, skill_dir=str(skill))
+        record.update(overrides)
+        path = self.work / '.lat/sessions' / f'{sid}.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record))
+        return skill, path
+
+    def rule_notices(self):
+        return [line for line in self.hcom_log.read_text().splitlines()
+                if line.startswith('send ') and 'LAT skill rules updated' in line]
+
+    def test_legacy_baseline_then_rule_change_notifies_once_and_survives_restart(self):
+        skill, record = self.rule_session()
+        self.run_cycles(load_watch(), 0)
+        baseline = json.loads(record.read_text())['rule_fingerprint']
+        self.assertEqual(set(baseline), {'SKILL.md', 'references/nested/guide.md'})
+        self.assertEqual(self.rule_notices(), [])
+        (skill / 'references/nested/guide.md').write_text('updated guide')
+        self.run_cycles(load_watch(), 60, 120)
+        notices = self.rule_notices()
+        self.assertEqual(len(notices), 1)
+        self.assertIn('@orch', notices[0])
+        self.assertIn('references/nested/guide.md', notices[0])
+        self.assertIn('re-read SKILL.md', notices[0])
+        self.assertNotEqual(json.loads(record.read_text())['rule_fingerprint'], baseline)
+
+    def test_failed_rule_notice_retains_baseline_and_retries_next_cycle(self):
+        skill, record = self.rule_session()
+        self.run_cycles(load_watch(), 0)
+        baseline = record.read_text()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = send ] && [ -e "$FAIL_SEND" ]; then exit 1; fi\n'
+            'printf \'%s\\n\' \'[]\'\n'
+        )
+        failure = self.root / 'fail-send'
+        failure.touch()
+        self.env['FAIL_SEND'] = str(failure)
+        (skill / 'SKILL.md').write_text('second rules')
+        self.run_cycles(load_watch(), 60)
+        self.assertEqual(record.read_text(), baseline)
+        self.assertEqual(len(self.rule_notices()), 1)
+        self.assertTrue(any(row.get('decision') == 'skill-rules-check-failed'
+                            for row in self.watch_records()))
+        failure.unlink()
+        self.run_cycles(load_watch(), 120, 180)
+        self.assertEqual(len(self.rule_notices()), 2)
+        self.assertNotEqual(record.read_text(), baseline)
+
+    def test_independent_changes_additions_and_removals_each_get_one_notice(self):
+        skill, record = self.rule_session()
+        self.run_cycles(load_watch(), 0)
+        (skill / 'SKILL.md').write_text('second rules')
+        self.run_cycles(load_watch(), 60, 120)
+        self.assertEqual(len(self.rule_notices()), 1)
+        (skill / 'references/new.txt').write_text('new reference')
+        (skill / 'references/nested/guide.md').unlink()
+        self.run_cycles(load_watch(), 180, 240)
+        notices = self.rule_notices()
+        self.assertEqual(len(notices), 2)
+        self.assertIn('references/new.txt', notices[1])
+        self.assertIn('references/nested/guide.md', notices[1])
+        fingerprint = json.loads(record.read_text())['rule_fingerprint']
+        self.assertIn('references/new.txt', fingerprint)
+        self.assertNotIn('references/nested/guide.md', fingerprint)
+
+    def test_program_cache_and_timestamp_changes_do_not_notify(self):
+        skill, record = self.rule_session()
+        self.run_cycles(load_watch(), 0)
+        baseline = record.read_text()
+        for relative in ('scripts/program.py', 'herdr-panel/panel.js',
+                         '.cache/value', 'references/__pycache__/guide.pyc',
+                         'references/.cache/value', 'references/guide.pyc'):
+            path = skill / relative
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text('changed program or cache')
+        os.utime(skill / 'SKILL.md', (100, 100))
+        self.run_cycles(load_watch(), 60, 120)
+        self.assertEqual(self.rule_notices(), [])
+        self.assertEqual(record.read_text(), baseline)
+
+    def test_coordinators_only_compare_their_own_active_session_skill_directory(self):
+        own_skill, own_record = self.rule_session()
+        other_skill, other_record = self.rule_session('other', 'other-rules')
+        _, worker = self.rule_session('orch', 'worker-rules', role='worker')
+        _, inactive = self.rule_session('orch', 'inactive-rules', status='completed')
+        _, foreign = self.rule_session('orch', 'foreign-rules', workspace=str(self.root))
+        self.run_cycles(load_watch(), 0)
+        self.assertNotIn('rule_fingerprint', json.loads(other_record.read_text()))
+        for path in (worker, inactive, foreign):
+            self.assertNotIn('rule_fingerprint', json.loads(path.read_text()))
+        decisions = self.work / '.lat/decisions'
+        with patch.dict(os.environ, self.env):
+            load_watch().run_cycle(self.work, self.tasks, decisions, 'other', now=0)
+        (other_skill / 'SKILL.md').write_text('other update')
+        self.run_cycles(load_watch(), 60)
+        self.assertEqual(self.rule_notices(), [])
+        with patch.dict(os.environ, self.env):
+            load_watch().run_cycle(self.work, self.tasks, decisions, 'other', now=60)
+        self.assertEqual(len(self.rule_notices()), 1)
+        self.assertIn('@other', self.rule_notices()[0])
+        (own_skill / 'SKILL.md').write_text('own update')
+        self.run_cycles(load_watch(), 120)
+        self.assertEqual(len(self.rule_notices()), 2)
+        self.assertIn('@orch', self.rule_notices()[1])
+
+    def test_missing_skill_directory_keeps_baseline_and_recovers_next_cycle(self):
+        skill, record = self.rule_session()
+        self.run_cycles(load_watch(), 0)
+        baseline = record.read_text()
+        moved = skill.with_name('temporarily-moved')
+        skill.rename(moved)
+        self.run_cycles(load_watch(), 60)
+        self.assertEqual(record.read_text(), baseline)
+        self.assertEqual(self.rule_notices(), [])
+        moved.rename(skill)
+        (skill / 'SKILL.md').write_text('reinstalled rules')
+        self.run_cycles(load_watch(), 120, 180)
+        self.assertEqual(len(self.rule_notices()), 1)
+
     def test_status_lists_only_orchestrator_and_owned_unfinished_agents(self):
         result = self.cli('status', '--workspace', self.work,
                           '--orchestrator', 'orch', '--tasks', self.tasks)
