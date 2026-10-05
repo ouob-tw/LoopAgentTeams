@@ -20,6 +20,7 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 |---|---|---|
 | `listening`，輸入框空，沒有有效等待聲明 | 10 分鐘 | 在它的視窗輸入一則催促（每段停住只催一次） |
 | `active`，畫面其實停在空輸入框（狀態卡在 `active`） | 20 分鐘 | 同上 |
+| Codex 紀錄顯示回合已結束，但仍 `active`、輸入框空、沒有有效等待聲明（即使有背景程序） | 20 分鐘 | 同上；催後升級也不因背景程序而停止 |
 | 催促後仍沒進展 | 10 分鐘 | 執行 Agent：通知主控；主控：通知使用者 |
 | 主控收到通知後該 Agent 仍沒被處理 | 10 分鐘 | 通知使用者 |
 | `active`，畫面仍在執行指令 | 20 分鐘 | 通知上一層一次，不催 |
@@ -27,7 +28,7 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 | 輸入框有字、有訊息排隊，字 5 分鐘沒變 | 5 分鐘 | 存檔、清空輸入框、通知使用者 |
 | 當前畫面顯示額度用完或模型滿載，或 HCOM 為 `inactive (failure:rate_limit)` | 立即 | 通知上一層一次，不催 |
 
-「上一層」對執行 Agent 是它的主控，對主控是使用者。背景指令還在跑時不算停住。
+「上一層」對執行 Agent 是它的主控，對主控是使用者。背景指令還在跑時不算停住；但 Codex 紀錄顯示回合已結束、之後沒有新回合或使用者輸入，狀態卻仍是 `active` 時，依上表催促與升級。晚到的同回合完成事件不會推翻回合已結束的判斷，但紀錄變動仍會讓計時歸零。紀錄讀不到或末段找不到回合邊界時，維持原本判斷；Claude 不變。
 等核准與其他非輸入框畫面可能在 `hcom term --json` 回傳 `input_text=null`；監控會把它當成「沒有輸入文字」，不會因此略過 `blocked` 通知。
 
 額度與滿載辨識只看 `hcom term --json` 當前可見畫面的 client UI 結構，不以固定行數猜測本輪邊界。Codex 的 `■` 錯誤後若已出現更新的 `Working`、Agent 回覆或非空白新提示，就當作舊輪。Claude 的 `● Usage limit reached` 除了畫面上完整的自動繼續時間與 `esc to cancel`，還必須對得上 Claude 紀錄檔末端未被新 user/assistant 回合取代的 system notice；畫面後面有新的回覆、非空白使用者提示或 `Working` 也會判為舊輪。最後一條輸入區分隔線下的 `⚠ Usage limit reached` 則本身就是當前狀態，不依賴模型列。當前狀態列與舊的主錯誤同時出現時，以狀態列的重置時間為準。這些條件不會把舊畫面或 Agent 回覆引用的同段文字當成錯誤。錯誤與重置時間換行時會先合併再辨識。通知附 Agent、client、畫面可辨識的模型、符合行與重置時間（畫面有寫時）。同一段狀況只通知一次；該畫面消失或 Agent 有新進展後才重新計算。不會對「已用 90%」之類的提前警告發通知。
@@ -45,7 +46,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" wait --workspace "$wo
 - `--for` 只能填一個對象：主控 activate 時 `--decisions` 目錄裡有檔名以它開頭的紀錄就當決策 ID，否則當 Agent 名稱。每個 Agent 只保留最後一筆聲明；同時等多個對象時，填最先需要回音的那個，其餘寫在 `--reason`。
 - `wait` 依工作區內 active 主控 session 紀錄，找出負責監控 `--agent` 的主控：主控本人，或其任務卡目錄（不含 `done/`）裡未 `merged` 且列名的 Agent。只查各自的決策目錄，不跨主控合併；找不到負責的主控時照常接受。若任一負責主控的同前綴紀錄全部已非 `pending`，指令以非零結束碼拒絕，stderr 列出紀錄及狀態，不寫入也不改動原聲明。有任一待決紀錄或讀不出狀態時照常接受。要等使用者回覆或手動操作，先把它記成待決紀錄，再等那個 ID。
 - 聲明在三種情況失效：自己收到任何新訊息、等待的決策不再是 `pending`、等待的 Agent 成功把訊息傳給自己。監控以雙方在 `hcom list --json` 的確切 session 歸屬核對傳送成功；該 Agent 傳給其他人、可能撞名的短名或僅嘗試傳送都不算回報。失效後若仍在等，處理完新訊息再重新聲明。
-- 等核准的工具呼叫或背景指令還在跑時，不需要聲明。
+- 等核准的工具呼叫或背景指令還在跑時，不需要聲明；但 Codex 回合已結束、狀態仍 `active` 時是例外，此時若真的只剩等待，仍須聲明等待。
 
 ## 收到催促時
 
@@ -72,6 +73,8 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" wait --workspace "$wo
 uv run --no-project python "$lat_dir/scripts/lat-watch.py" status --workspace "$workspace" \
   --orchestrator <主控 HCOM 名稱> --tasks "$tasks"
 ```
+
+Codex 的觀察紀錄以 `codex_turn_finished` 表示回合已結束（`true`）、未結束（`false`）或未知（`null`）；因回合已結束但狀態仍 `active` 而催促時，停住原因為 `Codex turn finished but status active`。
 
 每次判斷與動作記在 `$workspace/.lat/watch/<主控 HCOM 名稱>/watch.jsonl`，無法辨識而跳過的任務卡也記在這裡（`task-card-skipped`，卡片持續無法辨識期間同一內容只記一次；修好或移走後重新計算）。某一輪檢查出錯時記 `cycle-failed`（錯誤類型與訊息，同一錯誤連續發生時每小時最多記一次），下一分鐘照常再查；狀態檔損壞時改名為 `<原檔名>.corrupt-<時間>` 留存，記 `state-file-reset` 後從頭計時；只有個別 Agent 的狀態損壞時，複製一份同名留存檔，記 `agent-state-reset`，只讓該 Agent 從頭計時；任務卡目錄不存在時只盯主控，記一次 `task-directory-missing`。監控程式本身的錯誤輸出在 `$workspace/.lat/watch/<session-id>.log`。查誤報或漏報時讀這兩份的最後幾行。
 

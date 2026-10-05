@@ -87,6 +87,7 @@ class Observation(NamedTuple):
     client: str = 'unknown'
     model: str = 'unknown'
     quota_issue: object = None
+    codex_turn_finished: object = None
 
 
 class QuotaIssue(NamedTuple):
@@ -223,6 +224,44 @@ def claude_primary_is_current(lines, index):
     return True
 
 
+def codex_turn_finished(transcript):
+    """Read the last Codex turn boundary; unavailable/corrupt tails are unknown."""
+    if not isinstance(transcript, (str, Path)) or not transcript:
+        return None
+    try:
+        with Path(transcript).open('rb') as stream:
+            stream.seek(0, os.SEEK_END)
+            start = max(0, stream.tell() - TRANSCRIPT_TAIL_BYTES)
+            stream.seek(start)
+            lines = stream.read().splitlines()
+    except OSError:
+        return None
+    if start:
+        lines = lines[1:]
+    finished = None
+    for raw in lines:
+        try:
+            record = json.loads(raw)
+        except (ValueError, RecursionError):
+            return None
+        if not isinstance(record, dict):
+            return None
+        payload = record.get('payload', {})
+        if not isinstance(payload, dict):
+            return None
+        if record.get('type') == 'event_msg':
+            if payload.get('type') == 'task_complete':
+                finished = True
+            elif payload.get('type') == 'task_started':
+                finished = False
+            elif payload.get('type') == 'user_message' and finished is not None:
+                finished = False
+        elif (record.get('type') == 'response_item' and payload.get('role') == 'user'
+              and finished is not None):
+            finished = False
+    return finished
+
+
 def current_claude_quota_notice(transcript):
     """Return an unsuperseded Claude system quota notice near transcript EOF."""
     if not isinstance(transcript, (str, Path)):
@@ -245,7 +284,7 @@ def current_claude_quota_notice(transcript):
     for raw in lines:
         try:
             record = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             continue
         if not isinstance(record, dict):
             continue
@@ -392,6 +431,9 @@ def decide(previous, observation, now):
         state['quota_notified'] = False
     stalled = now - state['last_progress_at'] >= IDLE_SECONDS
     active_stalled = now - state['last_progress_at'] >= ACTIVE_SECONDS
+    finished_active = (observation.client.lower() == 'codex'
+                       and observation.codex_turn_finished is True
+                       and observation.status == 'active' and observation.prompt_empty)
     orchestrator_notified_at = state.get('orchestrator_notified_at', now + 1)
     orchestrator_deadline = orchestrator_notified_at + IDLE_SECONDS
     card_handled = (observation.task_card_revision
@@ -428,13 +470,16 @@ def decide(previous, observation, now):
         state['stall_reason'] = 'listening at an empty prompt with no command running'
     elif (active_stalled and not observation.wait_active and not state['nudged']
           and observation.status == 'active'
-          and observation.prompt_empty and not observation.command_running):
+          and observation.prompt_empty
+          and (not observation.command_running or finished_active)):
         actions = (Action('nudge', observation.agent),)
         state['nudged'] = True
         state['nudged_at'] = now
-        state['stall_reason'] = 'active status but terminal ready at an empty prompt'
+        state['stall_reason'] = ('Codex turn finished but status active' if finished_active
+                                 else 'active status but terminal ready at an empty prompt')
     elif (state['nudged'] and not observation.wait_active
-          and observation.prompt_empty and not observation.command_running
+          and observation.prompt_empty
+          and (not observation.command_running or finished_active)
           and now - state['nudged_at'] >= IDLE_SECONDS):
         if observation.is_orchestrator and not state.get('user_notified'):
             actions = (Action(
@@ -461,7 +506,8 @@ def decide(previous, observation, now):
             ),)
             state['user_notified'] = True
     elif (active_stalled and not observation.wait_active
-          and observation.status == 'active' and observation.command_running):
+          and observation.status == 'active' and observation.command_running
+          and not finished_active):
         if observation.is_orchestrator and not state.get('user_notified'):
             actions = (owner_notice(observation, state, now, 'active-command'),)
             state['user_notified'] = True
@@ -1036,7 +1082,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
             stat = Path(transcript).stat()
             transcript_size = stat.st_size
             transcript_mtime_ns = stat.st_mtime_ns
-        except FileNotFoundError:
+        except OSError:
             pass
     own_events = session_events(orchestrator, info, '--last', '1')
     event_id = latest_event_id(own_events)
@@ -1072,6 +1118,8 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
         client=client,
         model=model,
         quota_issue=screen_issue or status_issue,
+        codex_turn_finished=(codex_turn_finished(transcript)
+                             if client.lower() == 'codex' else None),
     )
 
 
