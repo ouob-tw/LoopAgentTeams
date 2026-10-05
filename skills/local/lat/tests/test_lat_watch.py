@@ -1266,6 +1266,213 @@ class WatchCliTests(unittest.TestCase):
         self.assertTrue(any('term inject worker-open ' in command for command in injections))
         self.assertTrue(all('--enter --name orch' in command for command in injections))
 
+    def finished_codex_fixture(self, client='codex'):
+        transcript = self.root / 'finished.jsonl'
+        # Real incident shape: completion precedes late items of the same turn.
+        rows = [
+            {'type': 'event_msg', 'payload': {'type': 'task_started', 'turn_id': 'turn-1'}},
+            {'type': 'event_msg', 'payload': {'type': 'task_complete', 'turn_id': 'turn-1'}},
+            {'type': 'event_msg', 'payload': {'type': 'item_completed', 'turn_id': 'turn-1'}},
+            {'type': 'event_msg', 'payload': {'type': 'token_count'}},
+        ]
+        transcript.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        agents = [{'name': name, 'status': 'active', 'tool': client,
+                   'transcript_path': str(transcript),
+                   'launch_context': {'pid_identity': 'linux:boot:100'}}
+                  for name in ('orch', 'worker-open')]
+        listing = self.root / 'agents.json'
+        listing.write_text(json.dumps(agents))
+        terminal = self.root / 'terminal.json'
+        terminal.write_text(json.dumps({'ready': True, 'prompt_empty': True,
+                                        'input_text': '', 'lines': []}))
+        self.env.update(FAKE_AGENTS=str(listing), FAKE_TERMINAL=str(terminal))
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = list ]; then cat "$FAKE_AGENTS";\n'
+            'elif [ "$1" = term ] && [ "$2" != inject ]; then cat "$FAKE_TERMINAL";\n'
+            'elif [ "$1" = events ]; then printf \'%s\\n\' \'{"id":1,"type":"status"}\'; fi\n'
+        )
+        return transcript
+
+    def run_finished_cycles(self, watch, *times):
+        # The OS process list is an external observation seam, like fake hcom.
+        processes = [watch.Process(10, 1, 100, 'S', 10, ('codex',), ()),
+                     watch.Process(11, 10, 101, 'S', 11, ('sh', 'background-send'), ())]
+        with patch.object(watch, 'read_processes', return_value=processes):
+            self.run_cycles(watch, *times)
+
+    def injections(self):
+        return [line for line in self.hcom_log.read_text().splitlines()
+                if line.startswith('term inject ')]
+
+    def test_finished_codex_with_background_process_nudges_once_at_twenty_minutes(self):
+        self.finished_codex_fixture()
+        watch = load_watch()
+        self.run_finished_cycles(watch, 0, 1_199)
+        self.assertEqual(self.injections(), [])
+        self.run_finished_cycles(watch, 1_200, 1_201)
+        self.assertEqual(len(self.injections()), 2)
+        self.assertTrue(all('[lat-watch] Read any unread HCOM messages' in line
+                            for line in self.injections()))
+        for row in self.watch_records():
+            self.assertTrue(row['observation']['command_running'])
+            self.assertTrue(row['observation']['codex_turn_finished'])
+            if row['actions']:
+                self.assertEqual(row['state']['stall_reason'],
+                                 'Codex turn finished but status active')
+
+    def test_finished_codex_escalates_despite_background_process(self):
+        self.finished_codex_fixture()
+        watch = load_watch()
+        self.run_finished_cycles(watch, 0, 1_200, 1_799)
+        self.assertFalse(any(row['actions'] and row['actions'][0]['kind'].startswith('notify')
+                             for row in self.watch_records()))
+        self.run_finished_cycles(watch, 1_800, 1_801, 2_399)
+        notices = [(row['agent'], row['actions'][0]['kind']) for row in self.watch_records()
+                   if row['actions'] and row['actions'][0]['kind'].startswith('notify')]
+        self.assertEqual(notices, [('orch', 'notify-user'),
+                                  ('worker-open', 'notify-orchestrator')])
+        self.run_finished_cycles(watch, 2_400, 2_401)
+        notices = [(row['agent'], row['actions'][0]['kind']) for row in self.watch_records()
+                   if row['actions'] and row['actions'][0]['kind'].startswith('notify')]
+        self.assertEqual(notices[-1], ('worker-open', 'notify-user'))
+        self.assertEqual(len(notices), 3)
+        self.assertEqual(len(self.injections()), 2)
+
+    def test_new_codex_turn_after_nudge_resets_clock_and_prevents_escalation(self):
+        transcript = self.finished_codex_fixture()
+        watch = load_watch()
+        self.run_finished_cycles(watch, 0, 1_200)
+        with transcript.open('a') as stream:
+            stream.write(json.dumps({'type': 'event_msg', 'payload': {
+                'type': 'task_started', 'turn_id': 'turn-2'}}) + '\n')
+        self.run_finished_cycles(watch, 1_300, 1_800, 2_499)
+        self.assertEqual(len(self.injections()), 2)
+        for state in self.watch_state().values():
+            self.assertEqual(state['last_progress_at'], 1_300)
+            self.assertFalse(state['nudged'])
+            self.assertFalse(state['orchestrator_notified'])
+            self.assertFalse(state['user_notified'])
+        for row in self.watch_records()[-2:]:
+            self.assertFalse(row['observation']['codex_turn_finished'])
+            self.assertEqual(row['actions'], [])
+
+    def test_finished_codex_valid_pending_wait_suppresses_nudge_and_escalation(self):
+        self.finished_codex_fixture()
+        decisions = self.wait_session()
+        (decisions / 'HELP.md').write_text('- status: pending\n')
+        for agent in ('orch', 'worker-open'):
+            result = self.cli('wait', '--workspace', self.work, '--agent', agent,
+                              '--for', 'HELP', '--reason', 'waiting for user')
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.run_finished_cycles(load_watch(), 0, 1_200, 1_800, 2_400)
+        self.assertEqual(self.injections(), [])
+        self.assertTrue(all(row['observation']['wait_active'] for row in self.watch_records()))
+        self.assertTrue(all(row['actions'] == [] for row in self.watch_records()))
+
+    def test_unfinished_codex_with_process_notifies_once_without_nudge(self):
+        transcript = self.finished_codex_fixture()
+        transcript.write_text(json.dumps({'type': 'event_msg', 'payload': {
+            'type': 'task_started', 'turn_id': 'turn-2'}}) + '\n')
+        self.run_finished_cycles(load_watch(), 0, 1_199, 1_200, 1_800, 2_400)
+        self.assertEqual(self.injections(), [])
+        notices = [row for row in self.watch_records() if row['actions']]
+        self.assertEqual(len(notices), 2)
+        self.assertTrue(all('possible hung command' in row['actions'][0]['message']
+                            for row in notices))
+        self.assertTrue(all(row['observation']['codex_turn_finished'] is False
+                            for row in self.watch_records()))
+
+    def test_new_user_input_after_completion_preserves_running_command_behavior(self):
+        for new_input in (
+                {'type': 'event_msg', 'payload': {'type': 'user_message', 'message': 'next'}},
+                {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user'}}):
+            with self.subTest(new_input=new_input):
+                transcript = self.finished_codex_fixture()
+                with transcript.open('a') as stream:
+                    stream.write(json.dumps(new_input) + '\n')
+                self.run_finished_cycles(load_watch(), 0, 1_200)
+                self.assertEqual(self.injections(), [])
+                self.assertTrue(all(row['observation']['codex_turn_finished'] is False
+                                    for row in self.watch_records()[-2:]))
+
+    def test_unknown_codex_tail_preserves_running_behavior_and_other_observations(self):
+        for content in (b'', b'{broken\n', b'\xff\n', b'[]\n',
+                        b'{"type":"event_msg","payload":null}\n',
+                        b'{"type":"event_msg","payload":{"type":"token_count"}}\n'):
+            with self.subTest(content=content):
+                transcript = self.finished_codex_fixture()
+                transcript.write_bytes(content)
+                self.run_finished_cycles(load_watch(), 0, 1_200)
+                self.assertEqual(self.injections(), [])
+                for row in self.watch_records()[-2:]:
+                    self.assertIsNone(row['observation']['codex_turn_finished'])
+                    self.assertIn('possible hung command', row['actions'][0]['message'])
+
+    def test_missing_and_unreadable_codex_tail_recovers_without_losing_other_agents(self):
+        transcript = self.finished_codex_fixture()
+        original = transcript.read_bytes()
+        watch = load_watch()
+        transcript.unlink()
+        self.run_finished_cycles(watch, 0, 1_200)
+        for row in self.watch_records():
+            self.assertIsNone(row['observation']['codex_turn_finished'])
+        transcript.write_bytes(original)
+        original_open = Path.open
+
+        def denied(path, *args, **kwargs):
+            if path == transcript:
+                raise PermissionError('transcript inaccessible')
+            return original_open(path, *args, **kwargs)
+
+        with patch.object(Path, 'open', denied):
+            self.run_finished_cycles(watch, 1_300)
+        self.assertTrue(all(row['observation']['codex_turn_finished'] is None
+                            for row in self.watch_records()[-2:]))
+        with transcript.open('a') as stream:
+            stream.write(json.dumps({'type': 'event_msg', 'payload': {
+                'type': 'token_count'}}) + '\n')
+        self.run_finished_cycles(watch, 1_400, 2_599)
+        self.assertEqual(self.injections(), [])
+        self.run_finished_cycles(watch, 2_600)
+        self.assertEqual(len(self.injections()), 2)
+
+    def test_codex_boundary_outside_tail_is_unknown(self):
+        transcript = self.finished_codex_fixture()
+        with transcript.open('a') as stream:
+            stream.write(json.dumps({'type': 'event_msg', 'payload': {
+                'type': 'token_count', 'padding': 'x' * 300_000}}) + '\n')
+        self.run_finished_cycles(load_watch(), 0, 1_200)
+        self.assertEqual(self.injections(), [])
+        self.assertTrue(all(row['observation']['codex_turn_finished'] is None
+                            for row in self.watch_records()))
+
+    def test_late_same_turn_event_resets_progress_without_reopening_codex_turn(self):
+        transcript = self.finished_codex_fixture()
+        watch = load_watch()
+        self.run_finished_cycles(watch, 0, 1_199)
+        with transcript.open('a') as stream:
+            stream.write(json.dumps({'type': 'event_msg', 'payload': {
+                'type': 'item_completed', 'turn_id': 'turn-1'}}) + '\n')
+        self.run_finished_cycles(watch, 1_200, 2_399)
+        self.assertEqual(self.injections(), [])
+        self.run_finished_cycles(watch, 2_400)
+        self.assertEqual(len(self.injections()), 2)
+        self.assertTrue(all(row['observation']['codex_turn_finished']
+                            for row in self.watch_records()))
+
+    def test_claude_completed_shape_with_process_keeps_current_behavior(self):
+        self.finished_codex_fixture(client='claude')
+        self.run_finished_cycles(load_watch(), 0, 1_200, 1_800, 2_400)
+        self.assertEqual(self.injections(), [])
+        notices = [row for row in self.watch_records() if row['actions']]
+        self.assertEqual(len(notices), 2)
+        self.assertTrue(all('possible hung command' in row['actions'][0]['message']
+                            for row in notices))
+        self.assertTrue(all(row['observation']['codex_turn_finished'] is None
+                            for row in self.watch_records()))
+
     def test_quota_screen_matchers_use_only_current_bottom_ui_lines(self):
         watch = load_watch()
 
