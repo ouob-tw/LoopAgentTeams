@@ -12,6 +12,7 @@ LoopAgentTeams 以 Agent Skills 形式發布：流程、角色分工與交接規
 - **跨模型、跨 client 分工**：依任務性質指派模型與 effort，例如前端交給 Claude、後端交給 Codex；內建 Subagent 能套用所選模型、effort 與權限時優先使用，否則透過 [HCOM](https://github.com/aannoo/hcom) 啟動外部 Agent。
 - **實作與驗收職責分離**：每張 Ticket 經獨立 Code Review；QA 依需求獨立設計測試情境，UI 驗收須透過真實介面操作。必要驗證未執行時，不宣告完成。
 - **以證據為準的整合**：合併前從 Git 核對交付 commit，在整合後版本核對驗收條件與有效證據，不直接採信 Agent 的成功回報。
+- **停住監控**：每個 LAT 主控帶一支背景監控（lat-watch）。Agent 有未完成工作卻閒置 10 分鐘就催促；抓出 HCOM 狀態卡在 `active` 的停住、清除擋住訊息的輸入框殘留文字（先備份）、回報停在等核准或額度用完、模型滿載的 Agent，並依 Agent → 主控 → 使用者逐層上報。Agent 只是在等待時，以 `lat-watch wait` 聲明。
 - **完整流程與輕量協作兩種入口**：完整交付使用 LAT；只需召喚另一個 Agent 查資料、實作或交叉審查時，使用 hcom-spawn。
 
 ## 工作流程
@@ -109,7 +110,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install --codex-hom
 uv run --no-project python "$lat_dir/scripts/lat-session.py" install --codex-home "$codex_home"
 ```
 
-確認 preview 只新增 LAT 的 hook 後再安裝；原本的 `hooks.json` 會先備份，其他 hooks 保留。重新啟動 Codex，在 `/hooks` 的 `SessionStart` 只信任 command 結尾為 `lat-session.py hook` 的項目。Codex 更新或重設 hooks 後，再到 `/hooks` 確認它仍受信任。使用方式、舊版 `codex-lat-session.py` 的升級、停用遺留紀錄與移除步驟見 [LAT 壓縮後恢復](docs/lat-recovery.md)。
+確認 preview 只新增 LAT 的 hook 後再安裝；原本的 `hooks.json` 會先備份，其他 hooks 保留。重新啟動 Codex，在 `/hooks` 的 `SessionStart` 只信任 command 結尾為 `lat-session.py hook` 的項目。Codex 更新或重設 hooks 後，再到 `/hooks` 確認它仍受信任。activate 同時啟動停住監控，須帶 `--hcom-name` 與 `--tasks`，指令見[主控恢復](skills/local/lat/references/recovery.md#主控啟動與結束)；舊版啟用的主控在接回時會收到一行升級提示。使用方式、舊版 `codex-lat-session.py` 的升級、停用遺留紀錄與移除步驟見 [LAT 壓縮後恢復](docs/lat-recovery.md)。
 
 Claude Code 寫入使用者層級的 `~/.claude/settings.json`，不需信任步驟，重啟 Claude Code 後生效：
 
@@ -126,7 +127,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client cl
 
 ## 可選工具
 
-- **[HERDR](docs/hcom-herdr-setup.md)**：集中監看多個 Agent，包括透過 HCOM 啟動的外部 Agent，並以 workspace 整理工作視窗；整合方式見連結說明。
+- **[HERDR](docs/hcom-herdr-setup.md)**：集中監看多個 Agent，包括透過 HCOM 啟動的外部 Agent，並以 workspace 整理工作視窗；整合方式見連結說明。LAT 問題面板（Herdr 外掛，`prefix+a`）以 A./B./C. 列選項、按字母鍵作答。Herdr 彈出通知經 SSH 送到外層終端機，需設定 `[ui.toast] delivery = "terminal"`；提示音在執行 Herdr client 的機器上播放，透過 SSH 時聽不到。
 - **[codex-multi-auth](https://github.com/ndycode/codex-multi-auth)**：管理多個 Codex 帳號與額度，以 `codex-multi-auth switch <n>` 切換帳號；額度檢查與換帳號後接續工作的方式，見 hcom-spawn 的[額度與換帳號說明](skills/local/hcom-spawn/references/troubleshooting.md#codex-額度與換帳號)。
 
   ```bash
@@ -145,6 +146,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client cl
 ## 文件
 
 - [LAT 流程與規則](skills/local/lat/SKILL.md)
+- [LAT 停住監控](skills/local/lat/references/stall-watch.md)、[設計取捨](docs/adr/0001-lat-stall-watcher.md)
 - [LAT 的派工與收尾規則](skills/local/lat/references/agents.md)
 - [hcom-spawn：召喚 Agent 協作](skills/local/hcom-spawn/SKILL.md)
 - [三層測試](skills/local/three-tier-testing/SKILL.md)
