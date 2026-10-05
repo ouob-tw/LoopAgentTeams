@@ -22,6 +22,7 @@ PROMPT_SETTLE_SECONDS = 1
 PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
 FAILURE_REPEAT_SECONDS = 60 * 60
+TRANSCRIPT_TAIL_BYTES = 256 * 1024
 NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
          'with lat-watch wait.')
@@ -41,6 +42,9 @@ CLIENT_PROFILES = {
         'primary': re.compile(
             r'^●\s+Usage limit reached\s+·\s+continuing automatically at\b',
             re.IGNORECASE),
+        'notice': re.compile(
+            r'^Usage limit reached\s+·\s+continuing automatically at\b.*'
+            r'·\s+esc to cancel$', re.IGNORECASE),
         'footer': re.compile(r'^\s{2}⚠\s+Usage limit reached\b', re.IGNORECASE),
         'model': re.compile(
             r'^\s*((?:Opus|Sonnet|Haiku)[A-Za-z0-9. -]*?)\s+'
@@ -204,10 +208,53 @@ def codex_error_is_current(lines, index):
 
 
 def claude_primary_is_current(lines, index):
-    return not any(line.startswith('● ') for line in lines[index + 1:])
+    for line in lines[index + 1:]:
+        stripped = line.strip()
+        if line.startswith('● ') or stripped.startswith('Working'):
+            return False
+        if line.startswith('❯ ') and stripped != '❯':
+            return False
+    return True
 
 
-def detect_screen_quota(lines, client, rate_limited=False):
+def current_claude_quota_notice(transcript):
+    """Return an unsuperseded Claude system quota notice near transcript EOF."""
+    if not isinstance(transcript, (str, Path)):
+        return None
+    path = Path(transcript)
+    try:
+        with path.open('rb') as stream:
+            stream.seek(0, os.SEEK_END)
+            size = stream.tell()
+            start = max(0, size - TRANSCRIPT_TAIL_BYTES)
+            stream.seek(start)
+            data = stream.read()
+    except (FileNotFoundError, OSError):
+        return None
+    lines = data.splitlines()
+    if start:
+        lines = lines[1:]
+    notice = None
+    pattern = CLIENT_PROFILES['claude']['notice']
+    for raw in lines:
+        try:
+            record = json.loads(raw)
+        except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+            continue
+        if not isinstance(record, dict):
+            continue
+        content = record.get('content')
+        if (record.get('type') == 'system'
+                and record.get('subtype') == 'informational'
+                and record.get('level') == 'notice'
+                and isinstance(content, str) and pattern.search(content)):
+            notice = content
+        elif notice is not None and record.get('type') in ('user', 'assistant'):
+            notice = None
+    return notice
+
+
+def detect_screen_quota(lines, client, claude_notice=None):
     """Match quota UI in the current client turn/status region."""
     if not isinstance(lines, list) or any(not isinstance(line, str) for line in lines):
         raise ValueError('hcom term returned invalid screen lines')
@@ -238,9 +285,9 @@ def detect_screen_quota(lines, client, rate_limited=False):
     if primaries:
         message = screen_message(lines, primaries[-1])
         reset = quota_reset_time(message)
-        current_ui = reset is not None and re.search(
-            r'\besc to cancel$', message, re.IGNORECASE)
-        if current_ui or rate_limited:
+        visible_notice = re.sub(r'^●\s+', '', message)
+        if (isinstance(claude_notice, str)
+                and ' '.join(visible_notice.split()) == ' '.join(claude_notice.split())):
             return QuotaIssue('usage-limit', message, reset)
     return None
 
@@ -923,7 +970,9 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
     client = info.get('tool', 'unknown')
     if not isinstance(client, str):
         client = 'unknown'
-    screen_issue = detect_screen_quota(lines, client, rate_limited=status_issue is not None)
+    transcript = info.get('transcript_path')
+    claude_notice = current_claude_quota_notice(transcript)
+    screen_issue = detect_screen_quota(lines, client, claude_notice=claude_notice)
     prompt_empty = terminal.get('prompt_empty')
     if not isinstance(prompt_empty, bool):
         if info.get('status') == 'blocked' or screen_issue or status_issue:
@@ -936,7 +985,6 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
     unread_count = validated_unread_count(info, agent)
     transcript_size = 0
     transcript_mtime_ns = 0
-    transcript = info.get('transcript_path')
     if isinstance(transcript, str) and transcript:
         try:
             stat = Path(transcript).stat()

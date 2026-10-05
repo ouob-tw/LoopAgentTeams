@@ -946,14 +946,16 @@ class WatchCliTests(unittest.TestCase):
             '', '──────────', '❯',
             '──────────',
             '  Opus 5.5 medium · ~/repo',
-        ], 'claude')
+        ], 'claude', claude_notice=(
+            'Usage limit reached · continuing automatically at 1:40am · '
+            'esc to cancel'))
 
         self.assertIn('continuing automatically', issue.line)
         self.assertEqual(issue.reset_time, '1:40am')
 
         quoted = watch.detect_screen_quota([
             '● Usage limit reached · continuing automatically at 1:40am ·',
-            '  esc to cancel is the message shown by Claude.',
+            '  esc to cancel',
             '', '──────────', '❯',
             '──────────',
             '  Opus 5.5 medium · ~/repo',
@@ -988,6 +990,35 @@ class WatchCliTests(unittest.TestCase):
         ], 'claude')
         self.assertTrue(current_footer_after_old_primary.line.startswith('⚠'))
         self.assertEqual(current_footer_after_old_primary.reset_time, '9:50pm')
+
+        newer_turn = watch.detect_screen_quota([
+            '● Usage limit reached · continuing automatically at 1:40am ·',
+            '  esc to cancel', '', '❯ Continue now',
+            'Working…', '', '──────────', '❯',
+            '──────────',
+            '  Opus 5.5 medium · ~/repo',
+        ], 'claude', claude_notice=(
+            'Usage limit reached · continuing automatically at 1:40am · '
+            'esc to cancel'))
+        self.assertIsNone(newer_turn)
+
+    def test_current_claude_quota_notice_requires_latest_system_record(self):
+        watch = load_watch()
+        transcript = self.root / 'claude.jsonl'
+        notice = 'Usage limit reached · continuing automatically at 1:40am · esc to cancel'
+        transcript.write_text(json.dumps({
+            'type': 'system', 'subtype': 'informational', 'level': 'notice',
+            'content': notice,
+        }) + '\n')
+
+        self.assertEqual(watch.current_claude_quota_notice(transcript), notice)
+
+        with transcript.open('a') as stream:
+            stream.write(json.dumps({
+                'type': 'assistant',
+                'message': {'role': 'assistant', 'content': notice},
+            }) + '\n')
+        self.assertIsNone(watch.current_claude_quota_notice(transcript))
 
     def test_inactive_rate_limit_notifies_once_even_when_term_is_unavailable(self):
         transcript = self.fake_transcript()
