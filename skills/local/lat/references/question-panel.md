@@ -71,7 +71,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
      --questions "$questions" --decisions "$decisions"
    ```
 
-   決策紀錄只以獨立一行 `- status: pending` 判定待決。檢查會搜尋 `--questions` 同目錄下所有 `questions-*.md` 與 `questions-*-archive.md`，並列出找到每個題號的檔案。印出「沒有遺漏」才繼續。列出「遺漏待答題目」時先補題；列出「狀態不一致」表示決策仍是 pending，但題目已記錄或已歸檔，先依列出的檔案核對並修正決策紀錄。
+   決策紀錄與停住監控共用同一種狀態讀法：取第一行以 `- status:` 開頭的行，鍵名不分大小寫、冒號後空白可多可少；值的第一個字不分大小寫，只有 `pending` 是待決，其餘視為已處理。沒有狀態行、值為空或只有空白、第一個字不是 `pending` 但後面含有 `pending`，都屬於「讀不出狀態」：檢查會逐檔列出原因、以非零結束碼結束，不印「沒有遺漏」；停住監控則視為仍在待決，並在監控紀錄留說明。檢查會搜尋 `--questions` 同目錄下所有 `questions-*.md` 與 `questions-*-archive.md`，並列出找到每個題號的檔案。印出「沒有遺漏」才繼續。列出「遺漏待答題目」時先補題；列出「狀態不一致」表示決策仍是 pending，但題目已記錄或已歸檔，先依列出的檔案核對並修正決策紀錄；列出「讀不出狀態」時先依原因修正決策紀錄，再重跑檢查。
 
 題目格式：
 

@@ -71,6 +71,9 @@ import tempfile
 from typing import NamedTuple
 import uuid
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
+from lat_decision_status import read_decision_status
+
 
 @contextmanager
 def _path_lock(path):
@@ -872,8 +875,12 @@ def pending_question_gaps(questions_path, decisions_path):
     if not decisions_path.is_dir():
         raise ValueError(f"decisions directory does not exist: {decisions_path}")
     pending_ids = []
+    unreadable = []
     for decision in sorted(decisions_path.glob("*.md")):
-        if "- status: pending" in decision.read_text(encoding="utf-8").splitlines():
+        status = read_decision_status(decision)
+        if status.error:
+            unreadable.append((decision, status.error))
+        elif status.status == "pending":
             pending_ids.append(decision.stem)
 
     question_files = sorted(
@@ -912,7 +919,7 @@ def pending_question_gaps(questions_path, decisions_path):
             inconsistent.append((identifier, "問題已歸檔", archived[identifier][0][0]))
         else:
             missing.append(identifier)
-    return present, missing, inconsistent
+    return present, missing, inconsistent, unreadable
 
 
 def _append_archive(path, sections):
@@ -1423,7 +1430,7 @@ def main(argv=None):
             if not panel_enabled():
                 print("面板未啟用，略過檢查")
                 return 0
-            present, missing, inconsistent = pending_question_gaps(
+            present, missing, inconsistent, unreadable = pending_question_gaps(
                 args.questions, args.decisions
             )
             if present:
@@ -1438,7 +1445,11 @@ def main(argv=None):
                 print("狀態不一致（決策仍為 pending）：")
                 for identifier, reason, path in inconsistent:
                     print(f"- {identifier}：{reason}：{path}")
-            if missing or inconsistent:
+            if unreadable:
+                print("讀不出狀態：")
+                for path, reason in unreadable:
+                    print(f"- {path}：{reason}")
+            if missing or inconsistent or unreadable:
                 return 1
             print("沒有遺漏")
             return 0

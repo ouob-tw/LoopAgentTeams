@@ -1209,6 +1209,52 @@ class WatchCliTests(unittest.TestCase):
         state = self.watch_state()
         self.assertFalse(state['orch']['user_notified'])
 
+    def test_cycle_keeps_unreadable_wait_and_releases_it_after_record_is_fixed(self):
+        transcript = self.fake_transcript()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'if [ "$1" = list ]; then\n'
+            f'  printf \'%s\\n\' \'[{{"name":"orch","status":"listening",'
+            f'"transcript_path":"{transcript}"}},'
+            f'{{"name":"worker-open","status":"listening",'
+            f'"transcript_path":"{transcript}"}}]\'\n'
+            'elif [ "$1" = term ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":true,"prompt_empty":true}\'\n'
+            'fi\n'
+        )
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        record = decisions / 'CHOICE.md'
+        record.write_text('- Status: still pending overall\n')
+        declaration = {
+            'agent': 'worker-open', 'target': 'CHOICE', 'reason': 'decision',
+            'declared_at': 0,
+            'declared_at_utc': '2026-10-05T00:00:00+00:00', 'active': True,
+        }
+        watch = load_watch()
+        wait_file = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(wait_file, declaration)
+
+        self.run_cycles(watch, 0)
+
+        self.assertEqual(json.loads(wait_file.read_text()), declaration)
+        self.assertEqual(self.watch_state()['worker-open']['decision'], 'valid-wait')
+        diagnostics = [entry for entry in self.watch_records()
+                       if entry.get('decision') == 'decision-status-unreadable']
+        self.assertEqual(len(diagnostics), 1)
+        self.assertEqual(diagnostics[0]['file'], str(record))
+        self.assertIn('第一個字不是 pending', diagnostics[0]['error'])
+
+        record.write_text('- STATUS: APPROVED\n')
+        self.run_cycles(watch, 60)
+
+        saved = json.loads(wait_file.read_text())
+        self.assertFalse(saved['active'])
+        self.assertEqual(saved['released_reason'], 'decision-resolved')
+        self.assertNotEqual(self.watch_state()['worker-open']['decision'], 'valid-wait')
+        self.assertEqual(sum(entry.get('decision') == 'decision-status-unreadable'
+                             for entry in self.watch_records()), 1)
+
     def test_real_event_shape_releases_and_persists_an_inactive_wait(self):
         hcom = Path(self.env['PATH'].split(':', 1)[0]) / 'hcom'
         hcom.write_text(
