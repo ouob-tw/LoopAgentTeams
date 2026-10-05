@@ -843,15 +843,116 @@ class PendingCheckCliTests(unittest.TestCase):
         self.assertIn('沒有遺漏', result.stdout)
         self.assertNotIn('遺漏待答題目：', result.stdout)
 
-    def test_check_only_treats_the_specified_status_line_as_pending(self):
-        (self.decisions / 'DRAFT-FORMAT.md').write_text(
-            '# Draft\n\nstatus: pending\n'
-        )
+    def test_check_recognizes_case_and_spacing_in_the_first_status_line(self):
+        for identifier, record in {
+            'UPPER': '- Status: PENDING\n',
+            'COMPACT': '- status:pending\n',
+            'SPACES': '- STATUS: \tPeNdInG extra context\n',
+            'FIRST': '- Status: pending\n- status: approved\n',
+        }.items():
+            (self.decisions / f'{identifier}.md').write_text(record)
 
         result = self.check()
 
-        self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(result.stdout.strip(), '沒有遺漏')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        for identifier in ('UPPER', 'COMPACT', 'SPACES', 'FIRST'):
+            self.assertIn(f'- {identifier}\n', result.stdout)
+        self.assertNotIn('沒有遺漏', result.stdout)
+
+    def test_check_fails_and_lists_each_unreadable_record_without_pending_gaps(self):
+        for identifier, record in {
+            'NO-LINE': '# Decision\n',
+            'EMPTY': '- status:\n',
+            'WHITESPACE': '- Status: \t \n',
+            'FREE-TEXT': '- Status: still pending overall\n',
+        }.items():
+            (self.decisions / f'{identifier}.md').write_text(record)
+
+        result = self.check()
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('讀不出狀態：', result.stdout)
+        for identifier in ('NO-LINE', 'EMPTY', 'WHITESPACE', 'FREE-TEXT'):
+            self.assertIn(str(self.decisions / f'{identifier}.md'), result.stdout)
+        self.assertNotIn('沒有遺漏', result.stdout)
+        self.assertNotIn('遺漏待答題目：', result.stdout)
+
+    def test_check_and_wait_release_agree_on_the_same_decision_records(self):
+        # HCOM is the only external service replaced; record reading and wait
+        # persistence use the real tools and disposable files.
+        hcom = self.root / 'bin/hcom'
+        hcom.write_text('#!/bin/sh\nexit 0\n')
+        hcom.chmod(0o755)
+        records = {
+            'UPPER': ('- Status: PENDING\n', 'pending'),
+            'COMPACT': ('- status:pending\n', 'pending'),
+            'SPACES': ('- STATUS:\tPeNdInG details\n', 'pending'),
+            'FIRST': ('- status: pending\n- Status: approved\n', 'pending'),
+            'FREE': ('- Status: still pending overall\n', 'unreadable'),
+            'MISSING': ('status: pending\n', 'unreadable'),
+            'EMPTY': ('- status:\n- blocks: review\n', 'unreadable'),
+            'BLANK': ('- Status: \t  \n', 'unreadable'),
+            'LATER': ('- status: Approved but PENDING elsewhere\n', 'unreadable'),
+            'APPROVED': ('- status: approved\n- status: pending\n', 'resolved'),
+            'ANSWERED': ('- Status: ANSWERED\n', 'resolved'),
+            'CLOSED': ('- status:closed\n', 'resolved'),
+            'DECIDED': ('- status: decided\n', 'resolved'),
+            'DEFERRED': ('- status: deferred\n', 'resolved'),
+            'RECORDED': ('- status: recorded\n', 'resolved'),
+            'ARCHIVED': ('- status: archived\n', 'resolved'),
+            'CUSTOM': ('- status: custom-result explanation\n', 'resolved'),
+        }
+        for identifier, (record, _) in records.items():
+            (self.decisions / f'{identifier}.md').write_text(record)
+
+        result = self.check()
+
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('讀不出狀態：', result.stdout)
+        self.assertNotIn('沒有遺漏', result.stdout)
+        for identifier, (_, classification) in records.items():
+            if classification == 'pending':
+                self.assertIn(f'- {identifier}\n', result.stdout)
+            elif classification == 'unreadable':
+                self.assertIn(str(self.decisions / f'{identifier}.md'), result.stdout)
+            else:
+                self.assertNotIn(identifier, result.stdout)
+        self.assertIn('沒有狀態行', result.stdout)
+        self.assertIn('狀態值為空或只有空白', result.stdout)
+        self.assertIn('第一個字不是 pending', result.stdout)
+
+        script = MODULE.parents[1] / 'scripts/lat-watch.py'
+        spec = importlib.util.spec_from_file_location('lat_watch', script)
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+        for identifier, (_, classification) in records.items():
+            with self.subTest(identifier=identifier), patch.dict(os.environ, self.env):
+                declaration = {
+                    'agent': 'worker', 'target': identifier, 'reason': 'decision',
+                    'declared_at_utc': '2026-10-05T00:00:00+00:00', 'active': True,
+                }
+                path = watch.wait_path(self.root, 'worker')
+                watch.write_object(path, declaration)
+                reason = watch.release_wait_if_needed(
+                    self.root, self.decisions, 'orch', declaration,
+                    agents={'worker': {'session_id': 'worker-session'}})
+                saved = json.loads(path.read_text())
+                if classification == 'resolved':
+                    self.assertEqual(reason, 'decision-resolved')
+                    self.assertFalse(saved['active'])
+                else:
+                    self.assertIsNone(reason)
+                    self.assertEqual(saved, declaration)
+        log = self.root / '.lat/watch/orch/watch.jsonl'
+        entries = [json.loads(line) for line in log.read_text().splitlines()]
+        self.assertEqual(len(entries), 5)
+        self.assertEqual({entry['target'] for entry in entries},
+                         {'FREE', 'MISSING', 'EMPTY', 'BLANK', 'LATER'})
+        for entry in entries:
+            self.assertEqual(entry['decision'], 'decision-status-unreadable')
+            self.assertTrue(entry['treated_as_pending'])
+            self.assertIn(entry['file'], result.stdout)
+            self.assertIn(entry['error'], result.stdout)
 
     def test_check_reports_recorded_and_archived_questions_as_inconsistent(self):
         self.decision('RECORDED-Q', 'pending')

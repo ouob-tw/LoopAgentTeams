@@ -14,6 +14,9 @@ import tempfile
 import time
 from typing import NamedTuple
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from lat_decision_status import read_decision_status
+
 
 IDLE_SECONDS = 10 * 60
 ACTIVE_SECONDS = 20 * 60
@@ -798,15 +801,25 @@ def wait_release_reason(declaration, participant_events, target_replied, decisio
     return None
 
 
-def pending_decision(decisions, target):
+def pending_decision(decisions, target, *, log=None, agent=None):
     matches = [path for path in decisions.glob(f'{target}*') if path.is_file()]
     if not matches:
         return None
+    pending = False
     for path in matches:
-        match = re.search(r'^- status:\s*(\S+)', path.read_text(), re.MULTILINE)
-        if match and match.group(1) == 'pending':
-            return True
-    return False
+        status = read_decision_status(path)
+        if status.error:
+            pending = True
+            if log is not None:
+                append_log(log, {
+                    'at': time.time(), 'agent': agent,
+                    'decision': 'decision-status-unreadable', 'actions': [],
+                    'file': str(path), 'error': status.error,
+                    'target': target, 'treated_as_pending': True,
+                })
+        elif status.status == 'pending':
+            pending = True
+    return pending
 
 
 def latest_event_id(events):
@@ -935,7 +948,9 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     agents = list_hcom(orchestrator) if agents is None else agents
     participant = session_events(
         orchestrator, agent_info(agents, agent), '--after', after)
-    decision = pending_decision(decisions, target)
+    decision = pending_decision(
+        decisions, target,
+        log=state_path(workspace, orchestrator).with_name('watch.jsonl'), agent=agent)
     target_info = agent_info(agents, target)
     transcript = target_info.get('transcript_path') if target_info else None
     target_replied = bool(
