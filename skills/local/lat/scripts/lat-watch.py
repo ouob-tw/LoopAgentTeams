@@ -16,7 +16,7 @@ import time
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lat_decision_status import read_decision_status
+from lat_decision_status import DecisionStatus, read_decision_status
 
 
 IDLE_SECONDS = 10 * 60
@@ -29,7 +29,7 @@ FAILURE_REPEAT_SECONDS = 60 * 60
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 # Successful deliveries awaiting a session-record save; retained across retry cycles.
 RULE_DELIVERIES = {}
-NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
+NUDGE = ('[lat-watch] Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
          'with lat-watch wait.')
 NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
@@ -824,7 +824,10 @@ def pending_decision(decisions, target, *, log=None, agent=None):
         return None
     pending = False
     for path in matches:
-        status = read_decision_status(path)
+        try:
+            status = read_decision_status(path)
+        except (OSError, UnicodeError) as error:
+            status = DecisionStatus(None, str(error))
         if status.error:
             pending = True
             if log is not None:
@@ -1518,6 +1521,36 @@ def declare_wait(args):
     }
     if not declaration['reason']:
         raise ValueError('--reason must not be empty')
+    for path in sorted((workspace / '.lat/sessions').glob('*.json')):
+        try:
+            record = read_object(path, {})
+        except (OSError, ValueError):
+            continue
+        if (record.get('role') != 'orchestrator'
+                or record.get('status') != 'active'
+                or record.get('workspace') != str(workspace)):
+            continue
+        if any(not isinstance(record.get(key), str) or not record[key]
+               for key in ('hcom_name', 'tasks_path', 'decisions_path')):
+            continue
+        owner = record['hcom_name']
+        if owner != args.agent:
+            tasks = Path(record['tasks_path'])
+            if not tasks.is_dir():
+                continue
+            cards, _ = monitored_task_cards(tasks, owner)
+            if args.agent not in cards:
+                continue
+        decisions = Path(record['decisions_path'])
+        if pending_decision(decisions, args.target) is False:
+            matches = sorted(path for path in decisions.glob(f'{args.target}*')
+                             if path.is_file())
+            statuses = ', '.join(f'{path}: {read_decision_status(path).status}'
+                                 for path in matches)
+            raise ValueError(
+                f'Cannot wait on {args.target}: no pending decision for {owner}; '
+                f'matching records: {statuses}. To wait on the user\'s reply or a '
+                'manual step, record it as a pending decision and wait on that ID.')
     write_object(wait_path(workspace, args.agent), declaration)
     print(json.dumps(declaration, ensure_ascii=False))
 
