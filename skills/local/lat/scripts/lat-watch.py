@@ -16,7 +16,7 @@ import time
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lat_decision_status import read_decision_status
+from lat_decision_status import DecisionStatus, read_decision_status
 
 
 IDLE_SECONDS = 10 * 60
@@ -824,7 +824,10 @@ def pending_decision(decisions, target, *, log=None, agent=None):
         return None
     pending = False
     for path in matches:
-        status = read_decision_status(path)
+        try:
+            status = read_decision_status(path)
+        except (OSError, UnicodeError) as error:
+            status = DecisionStatus(None, str(error))
         if status.error:
             pending = True
             if log is not None:

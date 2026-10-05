@@ -1128,6 +1128,16 @@ class WatchCliTests(unittest.TestCase):
                     expected = own_status if agent in ('orch', 'worker-open') else other_status
                     self.assertEqual(result.returncode == 0, expected == 'pending', result.stderr)
 
+    def test_wait_accepts_decision_whose_content_cannot_be_decoded(self):
+        decisions = self.wait_session()
+        (decisions / 'HELP.md').write_bytes(b'- status: \xff\n')
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'HELP', '--reason', 'waiting')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stored = json.loads((self.work / '.lat/watch/waits/worker-open.json').read_text())
+        self.assertEqual(stored['target'], 'HELP')
+        self.assertTrue(stored['active'])
+
     def test_wait_without_owning_active_coordinator_keeps_existing_behavior(self):
         own = self.wait_session(status='completed')
         other = self.wait_session('somebody-else')
