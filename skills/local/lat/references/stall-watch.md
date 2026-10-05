@@ -6,7 +6,7 @@
 
 activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（`SKILL.md`、`references/` 各檔案的內容指紋，含子目錄）。監控每輪只比對該主控 active 紀錄中的技能目錄；程式、面板、快取與檔案時間變動不會觸發通知。舊紀錄沒有指紋時，以監控首次檢查時的內容建立基準，不追溯通知。
 
-文字改變、references 檔案新增或移除時，監控以 HCOM 傳一則 `LAT skill rules updated` 給該主控，列出變動檔案，請它重讀 `SKILL.md` 與變動的 references（移除的檔案不再讀取），不必請使用者重新輸入 `/lat`。傳送成功後才更新紀錄中的基準，同一次變動不重複通知；之後再有變動會再通知。重跑 activate 保留已有基準，避免漏掉尚未通知的變動。
+文字改變、references 檔案新增或移除時，監控以 HCOM 傳一則 `LAT skill rules updated` 給該主控，列出變動檔案，請它重讀 `SKILL.md` 與變動的 references（移除的檔案不再讀取），不必請使用者重新輸入 `/lat`。傳送成功後才更新紀錄中的基準，監控程序持續執行時，同一次變動不重複通知；之後再有變動會再通知。重跑 activate 保留已有基準，避免漏掉尚未通知的變動。若監控在傳送成功後、保存新基準前當機，重啟後可能再收到一次相同通知。
 
 讀取或傳送失敗時保持原基準，記錄 `skill-rules-check-failed`，下一輪重試。傳送成功但寫回紀錄失敗時，執行中的監控暫存已送達的指紋，下一輪重試寫回，不重送同一則通知；後續變動以已送達的版本比對。成功寫回記錄 `skill-rules-updated` 與變動清單，位置同下方的 `watch.jsonl`。
 
