@@ -257,6 +257,57 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertEqual(actions[0].kind, 'notify-user')
         self.assertFalse(state['nudged'])
 
+    def test_quota_issue_notifies_owner_immediately_once_without_nudge(self):
+        watch = load_watch()
+        issue = watch.QuotaIssue(
+            'screen', "■ You've hit your usage limit · resets Oct 10, 2026",
+            'Oct 10, 2026',
+        )
+        exhausted = watch.Observation(
+            'worker', 'listening', True, False, 100, 1_000, 10,
+            client='codex', model='GPT-5.6-Sol', quota_issue=issue,
+        )
+
+        state, actions = watch.decide(None, exhausted, now=0)
+
+        self.assertEqual(len(actions), 1)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+        self.assertIn('worker', actions[0].message)
+        self.assertIn('codex', actions[0].message)
+        self.assertIn('GPT-5.6-Sol', actions[0].message)
+        self.assertIn(issue.line, actions[0].message)
+        self.assertIn('Reset time: Oct 10, 2026', actions[0].message)
+        self.assertIn('switch account or model', actions[0].message)
+        self.assertFalse(state['nudged'])
+
+        state, actions = watch.decide(state, exhausted, now=600)
+        self.assertEqual(actions, ())
+
+        cleared = exhausted._replace(quota_issue=None)
+        state, actions = watch.decide(state, cleared, now=601)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, exhausted, now=602)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+
+    def test_quota_issue_on_orchestrator_notifies_user_and_progress_rearms_it(self):
+        watch = load_watch()
+        issue = watch.QuotaIssue(
+            'screen', '⚠ Usage limit reached · limit resets 9:50pm', '9:50pm')
+        exhausted = watch.Observation(
+            'orch', 'inactive', True, False, 100, 1_000, 10,
+            is_orchestrator=True, client='claude', model='Opus 5.5',
+            quota_issue=issue,
+        )
+
+        state, actions = watch.decide(None, exhausted, now=0)
+        self.assertEqual(actions[0].kind, 'notify-user')
+        self.assertIn('user decides', actions[0].message)
+        self.assertFalse(state['nudged'])
+
+        progressed = exhausted._replace(transcript_size=101)
+        state, actions = watch.decide(state, progressed, now=1)
+        self.assertEqual(actions[0].kind, 'notify-user')
+
     def test_wait_declaration_suppresses_nudge_until_it_is_released(self):
         watch = load_watch()
         waiting = watch.Observation('worker', 'listening', True, False, 10, 10, 1,
@@ -813,6 +864,175 @@ class WatchCliTests(unittest.TestCase):
         self.assertTrue(any('term inject orch ' in command for command in injections))
         self.assertTrue(any('term inject worker-open ' in command for command in injections))
         self.assertTrue(all('--enter --name orch' in command for command in injections))
+
+    def test_quota_screen_matchers_use_only_current_bottom_ui_lines(self):
+        watch = load_watch()
+
+        capacity = watch.detect_screen_quota([
+            '', '', '', '', '', '', '', '',
+            '■ Selected model is at capacity. Please try a different model.',
+            '', '', '› Ask Codex to do anything', '',
+            '  GPT-5.6-Sol medium · ~/repo · Context 0% used',
+        ], 'codex')
+        codex_limit = watch.detect_screen_quota([
+            '', '', '', '', '', '', '', '',
+            "■ You've hit your usage limit · resets Oct 10, 2026",
+            '', '', '› Ask Codex to do anything', '',
+            '  GPT-6.1-Sol medium · ~/repo · 0% left',
+        ], 'codex')
+        claude_limit = watch.detect_screen_quota([
+            '', '', '', '', '', '',
+            '  ⚠ Usage limit reached · limit resets 9:50pm',
+            '    Continuing shortly · esc to cancel',
+            '  Opus 5.5 medium · ~/repo · Context 20% used',
+            '  ⏵⏵ bypass permissions on',
+        ], 'claude')
+
+        self.assertIn('Selected model is at capacity', capacity.line)
+        self.assertIsNone(capacity.reset_time)
+        self.assertIn("You've hit your usage limit", codex_limit.line)
+        self.assertEqual(codex_limit.reset_time, 'Oct 10, 2026')
+        self.assertEqual(claude_limit.reset_time, '9:50pm')
+
+        historical = watch.detect_screen_quota([
+            '■ Selected model is at capacity. Please try a different model.',
+            '', '', '', '', '', '', '',
+            'Working (2m 41s · esc to interrupt)',
+            '', '', '› Ask Codex to do anything', '',
+            '  GPT-5.6-Sol medium · ~/repo · Context 2% used',
+        ], 'codex')
+        quoted = watch.detect_screen_quota([
+            '', '', '', '', '', '', '', '',
+            '• The test quotes "Selected model is at capacity" and',
+            "  ■ You've hit your usage limit inside a quoted code block.",
+            '', '› Ask Codex to do anything', '',
+            '  GPT-5.6-Sol medium · ~/repo · Context 2% used',
+        ], 'codex')
+        early_warning = watch.detect_screen_quota([
+            '', '', '', '', '', '', '', '',
+            "  You've used 92% of your session limit · resets 10:20pm",
+            '', '', '❯', '',
+            '  Opus 5.5 medium · ~/repo',
+        ], 'claude')
+
+        self.assertIsNone(historical)
+        self.assertIsNone(quoted)
+        self.assertIsNone(early_warning)
+
+    def test_claude_primary_quota_line_extracts_reset_time(self):
+        watch = load_watch()
+        issue = watch.detect_screen_quota([
+            '', '', '', '', '', '', '', '',
+            '● Usage limit reached · continuing automatically at 1:40am ·',
+            '  esc to cancel', '', '❯', '',
+            '  Opus 5.5 medium · ~/repo',
+        ], 'claude')
+
+        self.assertIn('continuing automatically', issue.line)
+        self.assertEqual(issue.reset_time, '1:40am')
+
+    def test_inactive_rate_limit_notifies_once_even_when_term_is_unavailable(self):
+        transcript = self.fake_transcript()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = list ]; then\n'
+            f'  printf \'%s\\n\' \'[{{"name":"orch","status":"listening",'
+            f'"tool":"claude","transcript_path":"{transcript}"}},'
+            f'{{"name":"worker-open","status":"inactive",'
+            f'"status_context":"failure:rate_limit","status_detail":"rate_limit",'
+            f'"tool":"claude","transcript_path":"{transcript}"}}]\'\n'
+            'elif [ "$1" = term ] && [ "$2" = worker-open ]; then\n'
+            '  printf "inactive terminal unavailable\\n" >&2\n'
+            '  exit 8\n'
+            'elif [ "$1" = term ] && [ "$2" != inject ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":true,"prompt_empty":true,'
+            '"input_text":"","lines":["",">","  Opus 5.5 medium · ~/repo"]}\'\n'
+            'elif [ "$1" = events ]; then\n'
+            '  printf \'%s\\n\' \'{"id":1,"type":"status"}\'\n'
+            'fi\n'
+        )
+        watch = load_watch()
+
+        self.run_cycles(watch, 0, 60)
+
+        commands = self.hcom_log.read_text().splitlines()
+        sends = [line for line in commands if line.startswith('send ')]
+        injections = [line for line in commands if line.startswith('term inject ')]
+        self.assertEqual(len(sends), 1)
+        self.assertIn('--intent request', sends[0])
+        self.assertIn('inactive (failure:rate_limit)', sends[0])
+        self.assertIn('claude', sends[0])
+        self.assertEqual(injections, [])
+        state = self.watch_state()['worker-open']
+        self.assertTrue(state['quota_notified'])
+
+    def test_blocked_approval_with_null_input_notifies_once_without_keys(self):
+        transcript = self.fake_transcript()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = list ]; then\n'
+            f'  printf \'%s\\n\' \'[{{"name":"orch","status":"listening",'
+            f'"tool":"codex","transcript_path":"{transcript}"}},'
+            f'{{"name":"worker-open","status":"blocked",'
+            f'"status_context":"approval","tool":"claude",'
+            f'"transcript_path":"{transcript}"}}]\'\n'
+            'elif [ "$1" = term ] && [ "$2" = worker-open ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":false,"prompt_empty":false,'
+            '"input_text":null,"lines":["Do you want to proceed?",'
+            '"  1. Yes","  2. No"]}\'\n'
+            'elif [ "$1" = term ] && [ "$2" != inject ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":false,"prompt_empty":true,'
+            '"input_text":"","lines":[]}\'\n'
+            'elif [ "$1" = events ]; then\n'
+            '  printf \'%s\\n\' \'{"id":1,"type":"status"}\'\n'
+            'fi\n'
+        )
+        watch = load_watch()
+
+        self.run_cycles(watch, 0, 599, 600, 1_200)
+
+        commands = self.hcom_log.read_text().splitlines()
+        sends = [line for line in commands if line.startswith('send ')]
+        injections = [line for line in commands if line.startswith('term inject ')]
+        self.assertEqual(len(sends), 1)
+        self.assertIn('--intent request', sends[0])
+        self.assertIn('approval prompt', sends[0])
+        self.assertEqual(injections, [])
+        records = [record for record in self.watch_records()
+                   if record.get('agent') == 'worker-open']
+        self.assertFalse(any(record.get('decision') == 'observation-failed'
+                             for record in records))
+        self.assertTrue(records[-1]['state']['orchestrator_notified'])
+
+    def test_quota_screen_with_null_input_and_missing_prompt_empty_is_valid(self):
+        watch = load_watch()
+        terminal = {
+            'ready': True,
+            'input_text': None,
+            'lines': [
+                '', '', '', '', '', '', '', '',
+                '■ Selected model is at capacity. Please try a different model.',
+                '', '', '› Ask Codex to do anything', '',
+                '  GPT-5.6-Sol medium · ~/repo',
+            ],
+        }
+        info = {'status': 'active', 'tool': 'codex', 'unread_count': 0}
+
+        with patch.object(watch, 'run_json', return_value=terminal), \
+                patch.object(watch, 'session_events', return_value=[]), \
+                patch.object(watch, 'release_wait_if_needed', return_value=None), \
+                patch.object(watch, 'read_processes', return_value=[]):
+            observation = watch.observe(
+                self.work, self.work / '.lat/decisions', 'orch', 'worker-open', info)
+
+        self.assertEqual(observation.input_text, '')
+        self.assertFalse(observation.prompt_empty)
+        self.assertIn('Selected model is at capacity', observation.quota_issue.line)
+        state, actions = watch.decide(None, observation, now=0)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+        self.assertFalse(state['nudged'])
 
     def test_escalation_actions_use_hcom_and_request_sound_without_real_services(self):
         watch = load_watch()
