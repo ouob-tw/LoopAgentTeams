@@ -79,6 +79,159 @@ class SessionTests(unittest.TestCase):
                           session=session)
         self.assertEqual(result.returncode, 0, result.stderr)
 
+    def stop_hook(self, message='DECIDE: LAT-A r1', client='codex', **overrides):
+        payload = dict(hook_event_name='Stop', cwd=str(self.work), session_id=SESSION,
+                       stop_hook_active=False, last_assistant_message=message)
+        payload.update(overrides)
+        return self.cli('hook', '--client', client, payload=payload, session=OTHER)
+
+    def test_stop_unrecorded_decision_blocks_then_corrected_reask_passes(self):
+        self.write_legacy_record()
+        result = self.stop_hook()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('LAT-A', output['reason'])
+        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
+        self.assert_silent(self.stop_hook(stop_hook_active=True))
+
+    def bind_stop_panel(self, client='codex', session=SESSION, name='orch'):
+        result = subprocess.run(
+            [sys.executable, str(PANEL), 'bind', '--client', client,
+             '--session-id', session, '--workspace', str(self.work), '--hcom-name', name],
+            text=True, capture_output=True,
+            env=self.cli_environment(extra_env=self.panel_env()), cwd=self.work)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return Path(json.loads(result.stdout)['binding']['questions_path'])
+
+    def assert_stop_block(self, result, *details):
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output['decision'], 'block')
+        for detail in details:
+            self.assertIn(detail, output['reason'])
+        self.assertIn('寫待決紀錄 → 寫入面板', output['reason'])
+        self.assertIn('遺漏檢查 → 依聊天提問格式重列題目', output['reason'])
+        self.assertNotIn('systemMessage', output)
+
+    def test_stop_message_extraction_and_last_nonempty_line(self):
+        self.write_legacy_record()
+        self.decisions.joinpath('LAT-A.md').write_text('- Status: PENDING\n')
+        for message in ('hello', 'DECIDE: LAT-A r1\nfinished', '', '   ',
+                        'Other LAT-MISSING r1\nDECIDE: LAT-A r1\n \n',
+                        'DECIDE: **LAT-A r1** check-pending'):
+            with self.subTest(message=message):
+                self.assert_silent(self.stop_hook(message))
+        for message in ('DECIDE: check-pending', 'Other LAT-A r1\nDECIDE: check-pending'):
+            self.assert_stop_block(self.stop_hook(message), '沒有寫出題號')
+        for message in ('❓ **LAT-A r1** title\n❓ **LAT-NEW r2** title\nDECIDE: check-pending',
+                        'DECIDE: LAT-A r1, LAT-NEW r2'):
+            self.assert_stop_block(self.stop_hook(message), 'LAT-NEW r2')
+        self.decisions.joinpath('A_B.2-3.md').write_text('- status: pending\n')
+        self.assert_silent(self.stop_hook('DECIDE: A_B.2-3 r12'))
+
+    def test_stop_shared_status_fixtures_hold_bound_and_unbound_for_both_clients(self):
+        malformed = {'NO-LINE': '# decision\n', 'EMPTY': '- status:\n',
+                     'WHITESPACE': '- Status: \t \n',
+                     'FREE-TEXT': '- Status: still pending overall\n'}
+        for client in ('codex', 'claude'):
+            self.write_legacy_record(client=client)
+            questions = self.bind_stop_panel(client)
+            for bound in (False, True):
+                binding_path = self.root / 'plugin-config/bindings.json'
+                original = binding_path.read_text()
+                if not bound:
+                    binding_path.write_text('{"version": 2, "bindings": {}}')
+                for identifier, text in malformed.items():
+                    with self.subTest(client=client, bound=bound, fixture=identifier):
+                        path = self.decisions / f'{identifier}.md'
+                        path.write_text(text)
+                        questions.write_text(f'## Question\n{identifier} · r1 · 待答\n')
+                        self.assert_stop_block(self.stop_hook(f'DECIDE: {identifier} r1', client),
+                                               identifier, '讀不出狀態')
+                        path.unlink()
+                binding_path.write_text(original)
+
+    def test_stop_resolved_and_unrelated_unreadable_records(self):
+        self.write_legacy_record()
+        path = self.decisions / 'LAT-A.md'
+        for status in ('approved', 'ANSWERED', 'rejected', 'resolved', 'other'):
+            path.write_text(f'- Status: {status}\n')
+            self.assert_stop_block(self.stop_hook(), 'LAT-A', '不是 pending')
+        path.write_text('- STATUS: pending\n- status: approved\n')
+        self.assert_silent(self.stop_hook())
+        self.decisions.joinpath('BROKEN.md').write_text('# no status\n')
+        self.assert_stop_block(self.stop_hook(), 'BROKEN.md', '讀不出狀態')
+        questions = self.bind_stop_panel()
+        questions.write_text('## Question\nLAT-A · r1 · 待答\n')
+        self.assert_stop_block(self.stop_hook(), 'BROKEN.md', '讀不出狀態')
+
+    def test_stop_panel_own_question_revision_and_omission_check(self):
+        self.write_legacy_record()
+        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
+        questions = self.bind_stop_panel()
+        other = self.bind_stop_panel(session=OTHER, name='other')
+        other.write_text('## Question\nLAT-A · r1 · 待答\n')
+        self.assert_stop_block(self.stop_hook(), '自己的面板')
+        for text in ('## Question\nLAT-A · r2 · 待答\n',
+                     '## Question\nLAT-A · r1 · 已記錄\n'):
+            questions.write_text(text)
+            self.assert_stop_block(self.stop_hook(), '自己的面板')
+        questions.write_text('## Question\nLAT-A · r1 · 待答\n')
+        self.assert_silent(self.stop_hook())
+        self.decisions.joinpath('LAT-B.md').write_text('- status: pending\n')
+        self.assert_stop_block(self.stop_hook(), 'LAT-B', '遺漏檢查')
+        self.assert_stop_block(self.stop_hook('❓ **LAT-A r2** Question\nDECIDE: LAT-A r1'),
+                               'LAT-A r2')
+        questions.write_text(questions.read_text() + '\n## Next\nLAT-B · r1 · 待答\n')
+        self.assert_silent(self.stop_hook(stop_hook_active=True))
+
+    def test_stop_once_per_turn_warning_and_error_outputs_for_both_clients(self):
+        for client in ('codex', 'claude'):
+            self.write_legacy_record(client=client)
+            self.assert_stop_block(self.stop_hook(client=client), 'LAT-A')
+            warning = json.loads(self.stop_hook(client=client, stop_hook_active=True).stdout)
+            self.assertEqual(set(warning), {'systemMessage'})
+            self.assertIn('LAT-A', warning['systemMessage'])
+            self.assert_stop_block(self.stop_hook(client=client), 'LAT-A')
+            self.record.write_text('{broken')
+            error = json.loads(self.stop_hook(client=client).stdout)
+            self.assertEqual(set(error), {'systemMessage'})
+            self.assertIn('發生錯誤', error['systemMessage'])
+            self.write_legacy_record(client=client, decisions_path=str(self.root / 'missing'))
+            self.assertIn('systemMessage', json.loads(self.stop_hook(client=client).stdout))
+
+    def test_stop_corrupt_binding_and_failed_file_read_warn_without_hold(self):
+        self.write_legacy_record()
+        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
+        self.bind_stop_panel()
+        path = self.root / 'plugin-config/bindings.json'
+        path.write_text('{"version": 2, "bindings": {"bad": 3}}')
+        result = self.stop_hook()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(json.loads(result.stdout)), {'systemMessage'})
+        path.write_text('{"version": 2, "bindings": {}}')
+        self.decisions.joinpath('LAT-A.md').write_bytes(b'\xff')
+        result = self.stop_hook()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(set(json.loads(result.stdout)), {'systemMessage'})
+
+    def test_stop_known_identity_mismatches_and_other_sessions_are_silent(self):
+        self.assert_silent(self.stop_hook())
+        for key, value in (('client', 'claude'), ('session_id', OTHER), ('role', 'worker'),
+                           ('workspace', str(self.root)), ('status', 'completed')):
+            self.write_legacy_record(**{key: value})
+            self.assert_silent(self.stop_hook())
+        self.write_legacy_record()
+        self.assert_silent(self.stop_hook(session_id=OTHER))
+        self.assert_silent(self.stop_hook(cwd=str(self.root)))
+        self.assert_silent(self.stop_hook(hook_event_name='SubagentStop'))
+        child = self.work / 'child'
+        child.mkdir()
+        self.assert_stop_block(self.stop_hook(cwd=str(child)), 'LAT-A')
+        child.joinpath('.git').mkdir()
+        self.assert_silent(self.stop_hook(cwd=str(child)))
+
     def test_activate_records_rule_fingerprint_and_identical_rerun_succeeds(self):
         self.activate()
         first = json.loads(self.record.read_text())
@@ -792,7 +945,9 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(installed.returncode, 0, installed.stderr)
         merged = json.loads(hooks.read_text())
         self.assertEqual(merged['unknown'], original['unknown'])
-        self.assertEqual(merged['hooks']['Stop'], original['hooks']['Stop'])
+        self.assertEqual(merged['hooks']['Stop'][0], original['hooks']['Stop'][0])
+        self.assertEqual(len(merged['hooks']['Stop']), 2)
+        self.assertNotIn('matcher', merged['hooks']['Stop'][1])
         self.assertEqual(merged['hooks']['SessionStart'][0], original['hooks']['SessionStart'][0])
         self.assertEqual(len(merged['hooks']['SessionStart']), 2)
         backups = list(home.glob('hooks.json.lat-backup-*'))
@@ -922,7 +1077,9 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.cli('install', *flags).returncode, 0)
         merged = json.loads(settings.read_text())
         self.assertEqual(merged['permissions'], original['permissions'])
-        self.assertEqual(merged['hooks']['Stop'], original['hooks']['Stop'])
+        self.assertEqual(merged['hooks']['Stop'][0], original['hooks']['Stop'][0])
+        self.assertEqual(len(merged['hooks']['Stop']), 2)
+        self.assertNotIn('matcher', merged['hooks']['Stop'][1])
         groups = merged['hooks']['SessionStart']
         self.assertEqual(groups[0], hcom)
         self.assertEqual(groups[1]['matcher'], '^(compact|resume)$')
@@ -950,6 +1107,100 @@ class SessionTests(unittest.TestCase):
         self.assertIn('shares a SessionStart group', result.stderr)
         self.assertEqual(settings.read_bytes(), before)
 
+
+    def test_stop_install_preview_no_file_and_uninstall_noop_for_both_clients(self):
+        for client in ('claude', 'codex'):
+            path = self.root / client / ('settings.json' if client == 'claude' else 'hooks.json')
+            flags = ('--client', client, '--claude-settings', path) if client == 'claude' else (
+                '--codex-home', path.parent)
+            result = self.cli('install', *flags, '--preview')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn('Stop', result.stdout)
+            self.assertFalse(path.parent.exists())
+            path.parent.mkdir()
+            path.write_text('{"keep": true}')
+            original = path.read_bytes()
+            self.assertEqual(self.cli('uninstall', *flags).returncode, 0)
+            self.assertEqual(path.read_bytes(), original)
+            result = self.cli('install', *flags)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            if client == 'codex':
+                self.assertIn('/hooks', result.stdout)
+            self.assertEqual(len(list(path.parent.glob('*.lat-backup-*'))), 1)
+            for event in ('SessionStart', 'Stop'):
+                group = json.loads(path.read_text())['hooks'][event][0]
+                self.assertEqual(len(group['hooks']), 1)
+            self.assertEqual(self.cli('uninstall', *flags).returncode, 0)
+            removed = path.read_bytes()
+            backups = list(path.parent.glob('*.lat-backup-*'))
+            self.assertEqual(self.cli('uninstall', *flags).returncode, 0)
+            self.assertEqual(path.read_bytes(), removed)
+            self.assertEqual(list(path.parent.glob('*.lat-backup-*')), backups)
+
+    def test_stop_group_preserves_other_handlers_on_uninstall_for_both_clients(self):
+        for client in ('codex', 'claude'):
+            path = self.root / client / ('hooks.json' if client == 'codex' else 'settings.json')
+            flags = ('--client', client, '--claude-settings', path) if client == 'claude' else (
+                '--codex-home', path.parent)
+            self.assertEqual(self.cli('install', *flags).returncode, 0)
+            config = json.loads(path.read_text())
+            group = config['hooks']['Stop'][0]
+            group['future'] = 42
+            group['hooks'][0]['timeout'] = 20
+            extra = {'type': 'command', 'command': 'echo third-party'}
+            group['hooks'].append(extra)
+            path.write_text(json.dumps(config))
+            before = path.read_bytes()
+            installed = self.cli('install', *flags)
+            if client == 'claude':
+                self.assertNotEqual(installed.returncode, 0)
+                self.assertIn('shares a Stop group', installed.stderr)
+                self.assertEqual(path.read_bytes(), before)
+            else:
+                self.assertEqual(installed.returncode, 0, installed.stderr)
+                updated = json.loads(path.read_text())['hooks']['Stop'][0]
+                self.assertEqual(updated['future'], 42)
+                self.assertEqual(updated['hooks'][0]['timeout'], 20)
+                self.assertEqual(updated['hooks'][1], extra)
+            self.assertEqual(self.cli('uninstall', *flags).returncode, 0)
+            updated = json.loads(path.read_text())['hooks']['Stop'][0]
+            self.assertEqual(updated['hooks'], [extra])
+            self.assertEqual(updated['future'], 42)
+
+    def test_paired_install_aborts_on_invalid_stop_groups_without_writes(self):
+        for client in ('claude', 'codex'):
+            path = self.root / client / ('settings.json' if client == 'claude' else 'hooks.json')
+            path.parent.mkdir()
+            path.write_text('{"hooks": {"SessionStart": [], "Stop": {}}}')
+            flags = ('--client', client, '--claude-settings', path) if client == 'claude' else (
+                '--codex-home', path.parent)
+            original = path.read_bytes()
+            result = self.cli('install', *flags)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual(path.read_bytes(), original)
+            self.assertEqual(list(path.parent.iterdir()), [path])
+
+    def test_claude_paired_install_concurrent_edit_aborts_without_backup(self):
+        spec = importlib.util.spec_from_file_location('lat_session', SCRIPT)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        path = self.root / 'settings.json'
+        path.write_text('{}')
+        real_read = helper.current_bytes
+        calls = 0
+        def competing_read(target):
+            nonlocal calls
+            calls += 1
+            if calls == 2:
+                path.write_text('{"external": true}')
+            return real_read(target)
+        args = argparse.Namespace(claude_settings=path, action='install', preview=False,
+                                  client='claude')
+        with patch.object(helper, 'current_bytes', side_effect=competing_read):
+            with self.assertRaisesRegex(ValueError, 'Concurrent'):
+                helper.configure(args)
+        self.assertEqual(json.loads(path.read_text()), {'external': True})
+        self.assertFalse(list(self.root.glob('settings.json.lat-backup-*')))
 
     def test_install_migrates_pre_rename_codex_command(self):
         home = self.root / 'config'
