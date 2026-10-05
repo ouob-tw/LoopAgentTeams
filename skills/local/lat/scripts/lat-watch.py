@@ -242,7 +242,7 @@ def codex_turn_finished(transcript):
     for raw in lines:
         try:
             record = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError):
+        except (ValueError, RecursionError):
             return None
         if not isinstance(record, dict):
             return None
@@ -284,7 +284,7 @@ def current_claude_quota_notice(transcript):
     for raw in lines:
         try:
             record = json.loads(raw)
-        except (UnicodeDecodeError, json.JSONDecodeError, TypeError):
+        except (ValueError, TypeError, RecursionError):
             continue
         if not isinstance(record, dict):
             continue
@@ -1082,7 +1082,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
             stat = Path(transcript).stat()
             transcript_size = stat.st_size
             transcript_mtime_ns = stat.st_mtime_ns
-        except FileNotFoundError:
+        except OSError:
             pass
     own_events = session_events(orchestrator, info, '--last', '1')
     event_id = latest_event_id(own_events)

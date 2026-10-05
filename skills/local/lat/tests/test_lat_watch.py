@@ -1410,6 +1410,28 @@ class WatchCliTests(unittest.TestCase):
                     self.assertIsNone(row['observation']['codex_turn_finished'])
                     self.assertIn('possible hung command', row['actions'][0]['message'])
 
+    def test_decoder_limit_corruption_is_unknown_and_healthy_agent_still_nudges(self):
+        for content in (b'[' * 10_000 + b']' * 10_000,
+                        b'{"number":' + b'9' * 5_000 + b'}'):
+            with self.subTest(content_length=len(content)):
+                corrupt = self.finished_codex_fixture()
+                healthy = self.root / 'healthy.jsonl'
+                healthy.write_bytes(corrupt.read_bytes())
+                listing = self.root / 'agents.json'
+                agents = json.loads(listing.read_text())
+                agents[1]['transcript_path'] = str(healthy)
+                listing.write_text(json.dumps(agents))
+                corrupt.write_bytes(content + b'\n')
+                watch = load_watch()
+                self.run_finished_cycles(watch, 0, 1_200)
+                rows = self.watch_records()[-2:]
+                self.assertEqual([row['agent'] for row in rows], ['orch', 'worker-open'])
+                self.assertIsNone(rows[0]['observation']['codex_turn_finished'])
+                self.assertIn('possible hung command', rows[0]['actions'][0]['message'])
+                self.assertTrue(rows[1]['observation']['codex_turn_finished'])
+                self.assertEqual(rows[1]['actions'], [{'kind': 'nudge', 'agent': 'worker-open'}])
+                self.assertTrue(all('worker-open' in line for line in self.injections()))
+
     def test_missing_and_unreadable_codex_tail_recovers_without_losing_other_agents(self):
         transcript = self.finished_codex_fixture()
         original = transcript.read_bytes()
@@ -1437,6 +1459,35 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual(self.injections(), [])
         self.run_finished_cycles(watch, 2_600)
         self.assertEqual(len(self.injections()), 2)
+
+    def test_unreadable_codex_stat_is_unknown_and_other_agent_observation_survives(self):
+        corrupt = self.finished_codex_fixture()
+        healthy = self.root / 'healthy.jsonl'
+        healthy.write_bytes(corrupt.read_bytes())
+        listing = self.root / 'agents.json'
+        agents = json.loads(listing.read_text())
+        agents[1]['transcript_path'] = str(healthy)
+        listing.write_text(json.dumps(agents))
+        original_open = Path.open
+        original_stat = Path.stat
+
+        def denied_open(path, *args, **kwargs):
+            if path == corrupt:
+                raise PermissionError('transcript parent inaccessible')
+            return original_open(path, *args, **kwargs)
+
+        def denied_stat(path, *args, **kwargs):
+            if path == corrupt:
+                raise PermissionError('transcript parent inaccessible')
+            return original_stat(path, *args, **kwargs)
+
+        with patch.object(Path, 'open', denied_open), patch.object(Path, 'stat', denied_stat):
+            self.run_finished_cycles(load_watch(), 0, 1_200)
+        rows = self.watch_records()[-2:]
+        self.assertIsNone(rows[0]['observation']['codex_turn_finished'])
+        self.assertEqual(rows[0]['observation']['transcript_size'], 0)
+        self.assertTrue(rows[1]['observation']['codex_turn_finished'])
+        self.assertEqual(rows[1]['actions'], [{'kind': 'nudge', 'agent': 'worker-open'}])
 
     def test_codex_boundary_outside_tail_is_unknown(self):
         transcript = self.finished_codex_fixture()
