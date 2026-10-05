@@ -2,6 +2,7 @@
 """Watch explicitly registered LAT work for stalled agents (stdlib only)."""
 import argparse
 from datetime import datetime, timezone
+import fcntl
 import hashlib
 import json
 import os
@@ -26,6 +27,8 @@ PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
 FAILURE_REPEAT_SECONDS = 60 * 60
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
+# Successful deliveries awaiting a session-record save; retained across retry cycles.
+RULE_DELIVERIES = {}
 NUDGE = ('Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
          'with lat-watch wait.')
@@ -532,9 +535,23 @@ def read_object(path, default=None):
     return value
 
 
-def write_object(path, value):
+def rule_fingerprint(skill_dir):
+    """Hash rule-file contents by relative name, excluding generated caches."""
+    skill_dir = skill_dir.resolve(strict=True)
+    files = [skill_dir / 'SKILL.md']
+    caches = {'__pycache__', '.cache', '.pytest_cache', '.mypy_cache', '.ruff_cache'}
+    for path in (skill_dir / 'references').rglob('*'):
+        relative = path.relative_to(skill_dir)
+        if (path.is_file() and not caches.intersection(relative.parts)
+                and path.suffix not in ('.pyc', '.pyo')):
+            files.append(path)
+    return {path.relative_to(skill_dir).as_posix(): hashlib.sha256(path.read_bytes()).hexdigest()
+            for path in sorted(files) if path.is_file()}
+
+
+def write_object(path, value, *, expected=None):
     path.parent.mkdir(parents=True, exist_ok=True)
-    original = path.read_bytes() if path.exists() else None
+    original = expected if expected is not None else (path.read_bytes() if path.exists() else None)
     with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
         temp = Path(stream.name)
         try:
@@ -1304,12 +1321,67 @@ def roll_back(action, state):
         state.pop(field, None)
 
 
+def check_rule_changes(workspace, orchestrator, log, now):
+    """Advance each owning session's rule baseline only after delivery succeeds."""
+    for path in sorted((workspace / '.lat/sessions').glob('*.json')):
+        try:
+            lock_path = watch_dir(workspace) / f'{path.stem}.lock'
+            lock_path.parent.mkdir(parents=True, exist_ok=True)
+            with lock_path.open('a') as lock:
+                fcntl.flock(lock, fcntl.LOCK_EX)
+                original = path.read_bytes()
+                record = json.loads(original)
+                if not isinstance(record, dict):
+                    raise ValueError(f'Expected a JSON object: {path}')
+                expected = dict(role='orchestrator', status='active',
+                                workspace=str(workspace), hcom_name=orchestrator,
+                                session_id=path.stem)
+                if any(record.get(key) != value for key, value in expected.items()):
+                    continue
+                current = rule_fingerprint(Path(record['skill_dir']))
+                delivery_key = (str(path), record['skill_dir'])
+                delivery = RULE_DELIVERIES.get(delivery_key)
+                baseline = delivery['fingerprint'] if delivery else record.get('rule_fingerprint')
+                if baseline is None:
+                    record['rule_fingerprint'] = current
+                    write_object(path, record, expected=original)
+                    continue
+                if not isinstance(baseline, dict):
+                    raise ValueError('Expected a rule fingerprint object')
+                changed = sorted(name for name in baseline.keys() | current.keys()
+                                 if baseline.get(name) != current.get(name))
+                if not changed and delivery_key not in RULE_DELIVERIES:
+                    continue
+                if changed:
+                    message = ('LAT skill rules updated. Changed files: '
+                               + ', '.join(changed)
+                               + '. Please re-read SKILL.md and the changed references in '
+                               + record['skill_dir']
+                               + '; removed files are no longer available. Continue without '
+                               'asking the user to re-enter /lat.')
+                    send_notification(Action('notify-orchestrator', orchestrator, message),
+                                      orchestrator, 'request')
+                    RULE_DELIVERIES[delivery_key] = {'fingerprint': current, 'changed_files': changed}
+                record['rule_fingerprint'] = current
+                write_object(path, record, expected=original)
+                delivered = RULE_DELIVERIES.pop(delivery_key)
+                append_log(log, {'at': now, 'agent': orchestrator,
+                                 'decision': 'skill-rules-updated',
+                                 'changed_files': delivered['changed_files'],
+                                 'session_id': path.stem, 'actions': []})
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            append_log(log, {'at': now, 'agent': orchestrator,
+                             'decision': 'skill-rules-check-failed', 'session_id': path.stem,
+                             'actions': [], 'error': str(error)})
+
+
 def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     """Observe every owned agent once, execute actions, and persist state/logs."""
     now = time.time() if now is None else now
     orchestrator = valid_name(orchestrator)
     path = state_path(workspace, orchestrator)
     log = path.with_name('watch.jsonl')
+    check_rule_changes(workspace, orchestrator, log, now)
     missing_tasks = path.with_name('tasks-missing')
     if tasks.is_dir():
         missing_tasks.unlink(missing_ok=True)
