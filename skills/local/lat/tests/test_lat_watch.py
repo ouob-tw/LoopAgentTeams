@@ -1057,6 +1057,100 @@ class WatchCliTests(unittest.TestCase):
         targets = {item['agent']: item for item in json.loads(status.stdout)['targets']}
         self.assertEqual(targets['worker-open']['wait']['target'], 'reviewer')
 
+    def wait_session(self, name='orch', status='active'):
+        decisions = self.work / f'decisions-{name}'
+        decisions.mkdir(exist_ok=True)
+        sessions = self.work / '.lat/sessions'
+        sessions.mkdir(exist_ok=True)
+        (sessions / f'{name}.json').write_text(json.dumps({
+            'role': 'orchestrator', 'status': status, 'hcom_name': name,
+            'workspace': str(self.work), 'tasks_path': str(self.tasks),
+            'decisions_path': str(decisions),
+        }))
+        return decisions
+
+    def test_wait_refuses_resolved_decision_without_writing_or_replacing_declaration(self):
+        decisions = self.wait_session()
+        (decisions / 'HELP-r1.md').write_text('- status: approved\n')
+        (decisions / 'HELP-r2.md').write_text('- status: rejected\n')
+        declaration = self.work / '.lat/watch/waits/worker-open.json'
+        for previous in (None, b'{"active": true, "target": "reviewer"}\n'):
+            with self.subTest(previous=previous):
+                if previous is not None:
+                    declaration.parent.mkdir(parents=True, exist_ok=True)
+                    declaration.write_bytes(previous)
+                result = self.cli('wait', '--workspace', self.work,
+                                  '--agent', 'worker-open', '--for', 'HELP',
+                                  '--reason', 'waiting for manual step')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(result.stdout, '')
+                for text in ('HELP-r1.md', 'approved', 'HELP-r2.md', 'rejected',
+                             'pending decision', 'manual step'):
+                    self.assertIn(text, result.stderr)
+                if previous is None:
+                    self.assertFalse(declaration.exists())
+                else:
+                    self.assertEqual(declaration.read_bytes(), previous)
+
+    def test_wait_accepts_pending_unreadable_prefix_and_agent_targets(self):
+        decisions = self.wait_session()
+        cases = {
+            'PENDING': [('PENDING.md', '- status: pending\n')],
+            'PREFIX': [('PREFIX-r1.md', '- status: approved\n'),
+                       ('PREFIX-r2.md', '- status: pending\n')],
+            'UNKNOWN': [('UNKNOWN.md', '# no status\n')],
+            'MALFORMED': [('MALFORMED.md', '- status: approved pending\n')],
+            'reviewer': [],
+        }
+        for target, records in cases.items():
+            with self.subTest(target=target):
+                for name, content in records:
+                    (decisions / name).write_text(content)
+                result = self.cli('wait', '--workspace', self.work,
+                                  '--agent', 'worker-open', '--for', target,
+                                  '--reason', 'waiting')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                stored = json.loads((self.work / '.lat/watch/waits/worker-open.json')
+                                    .read_text())
+                self.assertEqual(stored['target'], target)
+                self.assertTrue(stored['active'])
+
+    def test_wait_uses_only_owning_coordinator_for_self_and_task_agents(self):
+        own = self.wait_session()
+        other = self.wait_session('somebody-else')
+        for own_status, other_status in [('approved', 'pending'), ('pending', 'approved')]:
+            (own / 'HELP.md').write_text(f'- status: {own_status}\n')
+            (other / 'HELP.md').write_text(f'- status: {other_status}\n')
+            for agent in ('orch', 'worker-open', 'somebody-else', 'worker-other'):
+                with self.subTest(own_status=own_status, agent=agent):
+                    result = self.cli('wait', '--workspace', self.work,
+                                      '--agent', agent, '--for', 'HELP', '--reason', 'waiting')
+                    expected = own_status if agent in ('orch', 'worker-open') else other_status
+                    self.assertEqual(result.returncode == 0, expected == 'pending', result.stderr)
+
+    def test_wait_without_owning_active_coordinator_keeps_existing_behavior(self):
+        own = self.wait_session(status='completed')
+        other = self.wait_session('somebody-else')
+        for decisions in (own, other):
+            (decisions / 'HELP.md').write_text('- status: approved\n')
+        for agent in ('orch', 'worker-open', 'worker-merged', 'worker-done', 'unlisted'):
+            with self.subTest(agent=agent):
+                result = self.cli('wait', '--workspace', self.work, '--agent', agent,
+                                  '--for', 'HELP', '--reason', 'waiting')
+                self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_wait_refuses_if_any_owning_coordinator_has_no_pending_decision(self):
+        own = self.wait_session()
+        other = self.wait_session('somebody-else')
+        self.write_card('shared.md', 'worker-open', orchestrator='somebody-else')
+        (own / 'HELP.md').write_text('- status: pending\n')
+        (other / 'HELP.md').write_text('- status: approved\n')
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'HELP', '--reason', 'waiting')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('somebody-else', result.stderr)
+        self.assertFalse((self.work / '.lat/watch/waits/worker-open.json').exists())
+
     def test_run_cycle_injects_enter_once_and_logs_every_decision(self):
         transcript = self.root / 'transcript.jsonl'
         transcript.write_text('unchanged\n')
@@ -1087,6 +1181,8 @@ class WatchCliTests(unittest.TestCase):
         injections = [line for line in commands if line.startswith('term inject ')]
         self.assertEqual(len(injections), 2)
         self.assertTrue(all('--enter --name orch' in line for line in injections))
+        self.assertTrue(all(f'term inject {agent} [lat-watch] Read any unread HCOM messages '
+                            in line for agent, line in zip(('orch', 'worker-open'), injections)))
         records = [json.loads(line) for line in
                    (self.work / '.lat/watch/orch/watch.jsonl').read_text().splitlines()]
         self.assertEqual(len(records), 4)
