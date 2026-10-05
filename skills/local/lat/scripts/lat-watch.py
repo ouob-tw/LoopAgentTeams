@@ -807,12 +807,12 @@ def background_process_running(agent, info, processes, current_pid=None):
 
 def wait_release_reason(declaration, participant_events, target_replied, decision_pending):
     """Explain why a wait is no longer valid, or return None."""
+    if target_replied:
+        return 'target-replied'
     for event in participant_events:
         context = status_context(event)
         if isinstance(context, str) and context.startswith('deliver:'):
             return 'message-delivered'
-    if target_replied:
-        return 'target-replied'
     if decision_pending is False:
         return 'decision-resolved'
     return None
@@ -896,12 +896,19 @@ def hcom_send_command(value):
             is not None)
 
 
-def successful_send_output(value):
-    return (isinstance(value, str)
-            and re.search(r'^Sent to:', value, re.MULTILINE) is not None)
+def successful_send_output(value, recipient=None):
+    if not isinstance(value, str):
+        return False
+    matches = re.findall(r'^Sent to:\s*(.+)$', value, re.MULTILINE)
+    if recipient is None:
+        return bool(matches)
+    if not isinstance(recipient, str) or not recipient:
+        return False
+    pattern = rf'(?<![A-Za-z0-9_-]){re.escape(recipient)}(?![A-Za-z0-9_-])'
+    return any(re.search(pattern, recipients) for recipients in matches)
 
 
-def successful_hcom_send_since(transcript, declared_at):
+def successful_hcom_send_since(transcript, declared_at, recipient=None):
     """Find a completed hcom send in one exact agent transcript."""
     claude_hcom_send_ids = set()
     try:
@@ -933,7 +940,8 @@ def successful_hcom_send_since(transcript, declared_at):
                     if (completed_after_wait and item.get('type') == 'tool_result'
                             and item.get('tool_use_id') in claude_hcom_send_ids
                             and item.get('is_error') is False
-                            and successful_send_output(item.get('content'))):
+                            and successful_send_output(
+                                item.get('content'), recipient=recipient)):
                         return True
 
             if not completed_after_wait:
@@ -951,7 +959,8 @@ def successful_hcom_send_since(transcript, declared_at):
                     and hcom_send_command(shell_command)
                     and item.get('status') == 'completed'
                     and item.get('exit_code') == 0
-                    and successful_send_output(item.get('stdout'))):
+                    and successful_send_output(
+                        item.get('stdout'), recipient=recipient)):
                 return True
     return False
 
@@ -963,16 +972,18 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
     agent = declaration['agent']
     target = declaration['target']
     agents = list_hcom(orchestrator) if agents is None else agents
+    waiting_info = agent_info(agents, agent)
     participant = session_events(
-        orchestrator, agent_info(agents, agent), '--after', after)
+        orchestrator, waiting_info, '--after', after)
     decision = pending_decision(
         decisions, target,
         log=state_path(workspace, orchestrator).with_name('watch.jsonl'), agent=agent)
     target_info = agent_info(agents, target)
     transcript = target_info.get('transcript_path') if target_info else None
+    waiting_name = waiting_info.get('name') if waiting_info else None
     target_replied = bool(
-        decision is None and transcript
-        and successful_hcom_send_since(transcript, after))
+        decision is None and transcript and waiting_name
+        and successful_hcom_send_since(transcript, after, waiting_name))
     reason = wait_release_reason(declaration, participant, target_replied, decision)
     if reason:
         updated = dict(declaration, active=False, released_reason=reason,

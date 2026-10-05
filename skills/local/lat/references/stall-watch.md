@@ -43,7 +43,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" wait --workspace "$wo
 
 - `--workspace` 必須是主控 activate 時的工作區；執行 Agent 在自己的 worktree 工作時也填主控的路徑，否則監控讀不到聲明。
 - `--for` 只能填一個對象：主控 activate 時 `--decisions` 目錄裡有檔名以它開頭的紀錄就當決策 ID，否則當 Agent 名稱。每個 Agent 只保留最後一筆聲明；同時等多個對象時，填最先需要回音的那個，其餘寫在 `--reason`。
-- 聲明在三種情況失效：自己收到任何新訊息、等待的決策不再是 `pending`、等待的 Agent 成功送出訊息。監控以該 Agent 的確切 session 與紀錄檔核對傳送成功，不以可能撞名的短名或僅嘗試傳送來判定。失效後若仍在等，處理完新訊息再重新聲明。
+- 聲明在三種情況失效：自己收到任何新訊息、等待的決策不再是 `pending`、等待的 Agent 成功把訊息傳給自己。監控以雙方在 `hcom list --json` 的確切 session 歸屬核對傳送成功；該 Agent 傳給其他人、可能撞名的短名或僅嘗試傳送都不算回報。失效後若仍在等，處理完新訊息再重新聲明。
 - 等核准的工具呼叫或背景指令還在跑時，不需要聲明。
 
 ## 收到催促時
