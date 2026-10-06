@@ -1387,6 +1387,153 @@ class WatchCliTests(unittest.TestCase):
         return [line for line in self.hcom_log.read_text().splitlines()
                 if line.startswith('term inject ')]
 
+    def test_nudge_echo_and_client_error_escalate_without_restarting_episode(self):
+        for client in ('claude', 'codex'):
+            with self.subTest(client=client):
+                transcript = self.finished_codex_fixture(client)
+                watch = load_watch()
+                self.run_cycles(watch, 0, 1_200)
+                if client == 'claude':
+                    rows = [
+                        {'type': 'user', 'message': {'role': 'user', 'content': watch.NUDGE}},
+                        {'type': 'attachment', 'attachment': {'type': 'total_tokens_reminder'}},
+                        {'type': 'assistant', 'isApiErrorMessage': True,
+                         'error': 'authentication_failed', 'message': {'role': 'assistant',
+                         'content': [{'type': 'text', 'text': 'Login expired · Please run /login'}]}},
+                        {'type': 'assistant', 'message': {'role': 'assistant',
+                         'content': [{'type': 'text', 'text': watch.NUDGE}]}},
+                        {'type': 'assistant', 'message': {'role': 'assistant',
+                         'content': [{'type': 'text', 'text': 'Acknowledged.'}]}},
+                        {'type': 'system', 'subtype': 'turn_duration'},
+                    ]
+                else:
+                    rows = [
+                        {'type': 'event_msg', 'payload': {'type': 'task_started'}},
+                        {'type': 'event_msg', 'payload': {'type': 'user_message', 'message': watch.NUDGE}},
+                        {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
+                         'content': [{'type': 'input_text', 'text': watch.NUDGE}]}},
+                        {'type': 'event_msg', 'payload': {'type': 'error', 'message': 'Authentication failed'}},
+                        {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': watch.NUDGE}},
+                        {'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant',
+                         'content': [{'type': 'output_text', 'text': watch.NUDGE}]}},
+                        {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': 'ok.'}},
+                        {'type': 'event_msg', 'payload': {'type': 'task_complete', 'last_agent_message': watch.NUDGE}},
+                    ]
+                with transcript.open('a') as stream:
+                    stream.write(''.join(json.dumps(row) + '\n' for row in rows))
+                self.run_cycles(watch, 1_260, 1_799)
+                self.assertTrue(all(state['nudged'] for state in self.watch_state().values()))
+                self.assertTrue(all(state['last_progress_at'] == 0
+                                    for state in self.watch_state().values()))
+                self.run_cycles(watch, 1_800)
+                notices = [(row['agent'], action['kind']) for row in self.watch_records()[-2:]
+                           if row.get('at') == 1_800 for action in row.get('actions', [])]
+                self.assertEqual(notices, [('orch', 'notify-user'),
+                                          ('worker-open', 'notify-orchestrator')])
+                nudge_count = len(self.injections())
+                self.run_cycles(watch, 2_400, 2_401, 3_000)
+                self.assertEqual(len(self.injections()), nudge_count)
+                later = [(row['agent'], action['kind'])
+                         for row in self.watch_records()[-6:]
+                         for action in row.get('actions', [])]
+                self.assertEqual(later, [('worker-open', 'notify-user')])
+                # Start the next client with a fresh persisted episode.
+                (self.work / '.lat/watch/orch/state.json').unlink()
+
+    def test_nudge_lifecycle_events_do_not_hide_incoming_messages_or_outgoing_work(self):
+        transcript = self.finished_codex_fixture('claude')
+        watch = load_watch()
+        agents_path = Path(self.env['FAKE_AGENTS'])
+        agents = json.loads(agents_path.read_text())
+        for agent in agents:
+            agent['session_id'] = agent['name'] + '-session'
+        agents_path.write_text(json.dumps(agents))
+        events_path = self.root / 'events.jsonl'
+        events_path.write_text('')
+        self.env['FAKE_EVENTS'] = str(events_path)
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = list ]; then cat "$FAKE_AGENTS";\n'
+            'elif [ "$1" = term ] && [ "$2" != inject ]; then cat "$FAKE_TERMINAL";\n'
+            'elif [ "$1" = events ]; then cat "$FAKE_EVENTS"; fi\n'
+        )
+        self.run_cycles(watch, 0, 1_200)
+        with transcript.open('a') as stream:
+            stream.write(json.dumps({'type': 'user', 'message': {
+                'role': 'user', 'content': watch.NUDGE}}) + '\n')
+        # Actual Claude incident lifecycle, including an empty ready context.
+        events = [{'id': index + 1, 'type': 'status', 'data': {
+            'session': agent['session_id'], 'context': context}}
+            for index, (agent, context) in enumerate(
+                (agent, context) for agent in agents for context in
+                ('prompt', 'failure:authentication_failed', ''))]
+        events_path.write_text(''.join(json.dumps(row) + '\n' for row in events))
+        self.run_cycles(watch, 1_260)
+        self.assertTrue(all(state['nudged'] for state in self.watch_state().values()))
+        # Another agent's message still counts, even when a later status is latest.
+        events.extend([
+            {'id': 7, 'type': 'message', 'data': {'session': 'worker-open-session',
+             'from': 'other', 'text': 'incoming message'}},
+            {'id': 8, 'type': 'status', 'data': {'session': 'worker-open-session', 'context': ''}},
+            {'id': 9, 'type': 'status', 'data': {'session': 'orch-session', 'context': 'tool:send'}},
+        ])
+        events_path.write_text(''.join(json.dumps(row) + '\n' for row in events))
+        self.run_cycles(watch, 1_300)
+        for state in self.watch_state().values():
+            self.assertEqual(state['last_progress_at'], 1_300)
+            self.assertFalse(state['nudged'])
+
+    def test_real_assistant_or_tool_work_after_nudge_restarts_episode(self):
+        cases = [
+            ('claude', {'type': 'assistant', 'message': {'role': 'assistant',
+             'content': [{'type': 'text', 'text': 'The defect is caused by the reset branch.'}]}}),
+            ('claude', {'type': 'assistant', 'message': {'role': 'assistant',
+             'content': [{'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'rg reset'}}]}}),
+            ('codex', {'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant',
+             'content': [{'type': 'output_text', 'text': 'The defect is caused by the reset branch.'}]}}),
+            ('codex', {'type': 'response_item', 'payload': {'type': 'function_call',
+             'name': 'exec_command', 'arguments': '{"cmd":"rg reset"}'}}),
+        ]
+        for client, work in cases:
+            with self.subTest(client=client, work=work):
+                state_path = self.work / '.lat/watch/orch/state.json'
+                state_path.unlink(missing_ok=True)
+                transcript = self.finished_codex_fixture(client)
+                watch = load_watch()
+                self.run_cycles(watch, 0, 1_200)
+                nudge = ({'type': 'user', 'message': {'role': 'user', 'content': watch.NUDGE}}
+                         if client == 'claude' else {'type': 'event_msg', 'payload': {
+                             'type': 'user_message', 'message': watch.NUDGE}})
+                with transcript.open('a') as stream:
+                    stream.write(json.dumps(nudge) + '\n')
+                self.run_cycles(watch, 1_260)
+                self.assertTrue(all(state['nudged'] for state in self.watch_state().values()))
+                with transcript.open('a') as stream:
+                    stream.write(json.dumps(work) + '\n')
+                self.run_cycles(watch, 1_300, 1_800)
+                for state in self.watch_state().values():
+                    self.assertEqual(state['last_progress_at'], 1_300)
+                    self.assertFalse(state['nudged'])
+                    self.assertFalse(state['orchestrator_notified'])
+                    self.assertFalse(state['user_notified'])
+
+    def test_unrecognized_or_corrupt_nudge_suffix_keeps_original_progress_rule(self):
+        for suffix in ('not-json\n', json.dumps({'type': 'user', 'message': {
+                'role': 'user', 'content': 'A new task from another agent'}}) + '\n'):
+            with self.subTest(suffix=suffix):
+                (self.work / '.lat/watch/orch/state.json').unlink(missing_ok=True)
+                transcript = self.finished_codex_fixture('claude')
+                watch = load_watch()
+                self.run_cycles(watch, 0, 1_200)
+                with transcript.open('a') as stream:
+                    stream.write(json.dumps({'type': 'user', 'message': {
+                        'role': 'user', 'content': watch.NUDGE}}) + '\n' + suffix)
+                self.run_cycles(watch, 1_260)
+                for state in self.watch_state().values():
+                    self.assertEqual(state['last_progress_at'], 1_260)
+                    self.assertFalse(state['nudged'])
+
     def test_finished_codex_with_background_process_nudges_once_at_twenty_minutes(self):
         self.finished_codex_fixture()
         watch = load_watch()
