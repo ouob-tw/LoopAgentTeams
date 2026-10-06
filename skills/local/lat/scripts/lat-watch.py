@@ -677,6 +677,7 @@ def monitored_task_cards(tasks, orchestrator):
             if card['status'] != 'merged':
                 card['agent'] = task_agent(card['agent'])
                 card['_updated_at'] = path.stat().st_mtime
+                card['_path'] = str(path)
                 cards.setdefault(card['agent'], card)
         except (OSError, ValueError) as error:
             skipped[path.name] = (card_digest(path, error), str(error))
@@ -1461,9 +1462,16 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     hcom = list_hcom(orchestrator)
     states = read_watch_file(path, log, now)
     for agent, state in list(states.items()):
-        if not isinstance(state, dict):
-            reset_agent_state(path, log, now, agent,
-                              f'Expected a JSON object, got {type(state).__name__}')
+        try:
+            if not isinstance(state, dict):
+                raise ValueError(f'Expected a JSON object, got {type(state).__name__}')
+            count = state.get('missing_cycles', 0)
+            if type(count) is not int or count < 0:
+                raise ValueError('missing_cycles must be a nonnegative integer')
+            if 'last_seen_at' in state:
+                datetime.fromtimestamp(state['last_seen_at'], timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError) as error:
+            reset_agent_state(path, log, now, agent, f'{type(error).__name__}: {error}')
             states.pop(agent)
     for agent in set(states) - set(agents):
         append_log(log, {
@@ -1473,20 +1481,53 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
         })
         states.pop(agent)
     for agent in agents:
-        if agent not in hcom:
-            state = states.get(agent)
-            if (agent != orchestrator and state
-                    and state.get('orchestrator_notified')):
-                append_log(log, {
-                    'at': now, 'agent': agent,
-                    'decision': 'orchestrator-handled-agent-stopped', 'actions': [],
-                })
-                states.pop(agent)
-            else:
-                append_log(log, {
-                    'at': now, 'agent': agent, 'decision': 'not-observable',
-                    'actions': [], 'error': 'agent missing from hcom list',
-                })
+        info = hcom.get(agent)
+        previous = states.get(agent, {})
+        if info is not None:
+            previous['last_seen_status'] = info.get('status', 'unknown')
+            previous['last_seen_at'] = now
+            states[agent] = previous
+        disappeared = (info is None or (
+            info.get('status') == 'inactive' and hcom_quota_issue(info) is None))
+        if agent != orchestrator and disappeared:
+            state = dict(previous)
+            state['missing_cycles'] = state.get('missing_cycles', 0) + 1
+            actions, results = [], []
+            if state['missing_cycles'] >= 2 and not state.get('disappearance_notified'):
+                seen_at = state.get('last_seen_at')
+                seen_time = (datetime.fromtimestamp(seen_at, timezone.utc).isoformat()
+                             if seen_at is not None else 'unknown')
+                message = (
+                    f'LAT stall watcher: agent {agent} disappeared for two consecutive '
+                    f'checks ({"missing from HCOM list" if info is None else "inactive"}). '
+                    f'Task card: {cards[agent]["_path"]}; '
+                    f'last seen status: {state.get("last_seen_status", "unknown")}; '
+                    f'last seen time: {seen_time}. No nudge was sent. '
+                    'Verify liveness, resume the same agent if possible, otherwise '
+                    'replace it and resend its task, then declare any remaining wait.')
+                action = Action('notify-orchestrator', agent, message,
+                                category='agent-disappeared')
+                actions.append(action_record(action))
+                try:
+                    delivery = perform(action, orchestrator, workspace)
+                    state['disappearance_notified'] = True
+                    results.append({'kind': action.kind, 'status': 'done', **delivery})
+                except (OSError, ValueError) as error:
+                    results.append({'kind': action.kind, 'status': 'failed',
+                                    'error': str(error)})
+            states[agent] = state
+            append_log(log, {
+                'at': now, 'agent': agent, 'decision': 'agent-disappeared',
+                'state': state, 'actions': actions, 'action_results': results,
+            })
+            continue
+        previous.pop('missing_cycles', None)
+        previous.pop('disappearance_notified', None)
+        if info is None:
+            append_log(log, {
+                'at': now, 'agent': agent, 'decision': 'not-observable',
+                'actions': [], 'error': 'agent missing from hcom list',
+            })
             continue
         try:
             observation = observe(
@@ -1510,6 +1551,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                     roll_back(action, state)
                     results.append({'kind': action.kind, 'status': 'failed',
                                     'error': str(error)})
+            state['last_seen_status'] = info.get('status', 'unknown')
+            state['last_seen_at'] = now
             states[agent] = state
             append_log(log, {
                 'at': now, 'agent': agent, 'observation': observation_record(observation),

@@ -23,7 +23,7 @@
 - deliverable commit：待 Orchestrator 從 Git 查證後填入
 ```
 
-agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括號（如 `<名稱> (HCOM tag ...)`、`<名稱>（QA）`）；orchestrator 填派工主控的 HCOM 名稱。[停住監控](stall-watch.md) 靠這兩欄找出每位主控要盯的 Agent；缺少 agent、orchestrator、status 任一欄，或 agent 欄留空、名稱後接其他符號的卡片無法辨識，監控會跳過並記錄，該 Agent 因此不受監控。不適用的欄位填「無」，不可省略資源歸屬或虛構 commit。status 使用 `dispatched / in progress / committed / merged`，沒有 commit 的 Spec 文件審查以 `completed` 結束；受阻原因及恢復條件寫在 next step。
+agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括號（如 `<名稱> (HCOM tag ...)`、`<名稱>（QA）`）；orchestrator 填派工主控的 HCOM 名稱。[停住監控](stall-watch.md) 靠這兩欄找出每位主控要盯的 Agent；缺少 agent、orchestrator、status 任一欄，或 agent 欄留空、名稱後接其他符號的卡片無法辨識，監控會跳過並記錄，該 Agent 因此不受監控。不適用的欄位填「無」，不可省略資源歸屬或虛構 commit。status 使用 `dispatched / in progress / committed / merged`，沒有 commit 的 Spec 文件審查與參謀以 `completed` 結束；受阻原因及恢復條件寫在 next step。
 
 ## 更新與歸檔
 
@@ -37,8 +37,10 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 
 - 清理任務卡列明且屬於本任務的資源；普通暫存檔用 trash-cli，含機密者先用 `shred -u`，再移除所在 worktree。
 - 以 `git worktree remove` 移除該任務的獨立 worktree，以 `git branch -d` 刪除任務分支；`-D` 僅限使用者明確確認放棄該分支。
-- 將任務卡移至 `.lat/tasks/done/`；移走後停住監控不再盯該 Agent。
+- **先**將任務卡移至 `.lat/tasks/done/`，**再**關閉 Agent；移走後停住監控不再盯該 Agent。卡片仍在而 Agent 消失會被視為意外消失並通知主控。
 
 只有任務卡明列待完成後續工作時可暫留，例如 QA 保留 worktree 供複驗；後續工作完成後立即收尾。
 
-[Spec 文件審查](spec-review.md#收尾) 沒有 commit，不適用上述合併門檻：使用者確認或放棄該 Spec 後，主控關閉審查者，status 改為 `completed`，deliverable commit 填「無（證據為 issue 留言）」，任務卡移至 `.lat/tasks/done/`。
+[Spec 文件審查](spec-review.md#收尾) 沒有 commit，不適用上述合併門檻：使用者確認或放棄該 Spec 後，主控先將 status 改為 `completed`、deliverable commit 填「無（證據為 issue 留言）」並把任務卡移至 `.lat/tasks/done/`，再關閉審查者。
+
+參謀沒有 commit：階段交界、任務交付或取消時，主控將 status 改為 `completed`、deliverable commit 填「無（參謀無提交）」，先移卡至 `.lat/tasks/done/`，再關閉 Agent。
