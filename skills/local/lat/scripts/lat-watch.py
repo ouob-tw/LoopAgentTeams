@@ -1602,8 +1602,23 @@ def run_forever(args):
 
 def declare_wait(args):
     workspace = args.workspace.resolve(strict=True)
+    agent = valid_name(args.agent)
+    try:
+        agents = list_hcom(agent)
+    except (OSError, ValueError) as error:
+        print(f'LAT watch warning: hcom list failed; accepting --agent {agent} '
+              f'as given: {error}', file=sys.stderr)
+    else:
+        if agent not in agents:
+            matches = sorted(name for name in agents if name.endswith(f'-{agent}'))
+            if not matches:
+                raise ValueError(f'Unknown HCOM agent: {agent}')
+            if len(matches) > 1:
+                raise ValueError(f'Ambiguous HCOM agent {agent}: {", ".join(matches)}; '
+                                 'use the full HCOM name')
+            agent = matches[0]
     declaration = {
-        'agent': valid_name(args.agent),
+        'agent': agent,
         'target': valid_name(args.target),
         'reason': args.reason.strip(),
         'declared_at': time.time(),
@@ -1625,12 +1640,12 @@ def declare_wait(args):
                for key in ('hcom_name', 'tasks_path', 'decisions_path')):
             continue
         owner = record['hcom_name']
-        if owner != args.agent:
+        if owner != agent:
             tasks = Path(record['tasks_path'])
             if not tasks.is_dir():
                 continue
             cards, _ = monitored_task_cards(tasks, owner)
-            if args.agent not in cards:
+            if agent not in cards:
                 continue
         decisions = Path(record['decisions_path'])
         if pending_decision(decisions, args.target) is False:
@@ -1642,7 +1657,7 @@ def declare_wait(args):
                 f'Cannot wait on {args.target}: no pending decision for {owner}; '
                 f'matching records: {statuses}. To wait on the user\'s reply or a '
                 'manual step, record it as a pending decision and wait on that ID.')
-    write_object(wait_path(workspace, args.agent), declaration)
+    write_object(wait_path(workspace, agent), declaration)
     print(json.dumps(declaration, ensure_ascii=False))
 
 
