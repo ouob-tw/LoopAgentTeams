@@ -1678,6 +1678,120 @@ class WatchCliTests(unittest.TestCase):
             }) + '\n')
         self.assertIsNone(watch.current_claude_quota_notice(transcript))
 
+    def disappearance_hcom(self, status=None, **fields):
+        agents = [{'name': 'orch', 'status': 'listening', 'session_id': 'orch-id'}]
+        if status is not None:
+            agents.append(dict(name='worker-open', status=status, **fields))
+        listing = self.root / 'agents.json'
+        listing.write_text(json.dumps(agents))
+        delivered = self.root / 'delivered'
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            f'if [ "$1" = list ]; then cat "{listing}"\n'
+            'elif [ "$1" = term ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":true,"prompt_empty":true}\'\n'
+            f'elif [ "$1" = send ]; then touch "{delivered}"\n'
+            f'elif [ "$1" = events ] && [ -f "{delivered}" ]; then\n'
+            '  printf \'%s\\n\' \'{"id":2,"type":"status",'
+            '"data":{"session":"orch-id","status_context":"deliver:lat-watch"}}\'\n'
+            'fi\n'
+        )
+
+    def disappearance_notices(self):
+        return [action for record in self.watch_records()
+                for action in record.get('actions', [])
+                if action.get('category') == 'agent-disappeared']
+
+    def test_two_missing_cycles_notify_once_without_nudge(self):
+        self.disappearance_hcom()
+        self.run_cycles(load_watch(), 0)
+        self.assertEqual(self.disappearance_notices(), [])
+        self.run_cycles(load_watch(), 60, 120)
+        notices = self.disappearance_notices()
+        self.assertEqual(len(notices), 1)
+        self.assertIn('worker-open', notices[0]['message'])
+        self.assertIn('open.md', notices[0]['message'])
+        self.assertIn('last seen status: unknown', notices[0]['message'])
+        self.assertIn('last seen time: unknown', notices[0]['message'])
+        commands = self.hcom_log.read_text().splitlines()
+        self.assertEqual(len([line for line in commands if line.startswith('send ')]), 1)
+        self.assertFalse(any(line.startswith('term inject ') for line in commands))
+
+    def test_one_missing_cycle_then_reappearance_does_not_notify(self):
+        self.disappearance_hcom()
+        self.run_cycles(load_watch(), 0)
+        self.disappearance_hcom('listening')
+        self.run_cycles(load_watch(), 60)
+        self.disappearance_hcom()
+        self.run_cycles(load_watch(), 120)
+        self.assertEqual(self.disappearance_notices(), [])
+
+    def test_inactive_cycles_notify_once_without_terminal_or_nudge(self):
+        self.disappearance_hcom('inactive', status_context='exit:unexpected')
+        self.run_cycles(load_watch(), 0)
+        self.assertEqual(self.disappearance_notices(), [])
+        self.run_cycles(load_watch(), 60, 120)
+        notices = self.disappearance_notices()
+        self.assertEqual(len(notices), 1)
+        self.assertIn('last seen status: inactive', notices[0]['message'])
+        self.assertIn('1970-01-01T00:01:00+00:00', notices[0]['message'])
+        self.assertFalse(any(line.startswith('term worker-open') or
+                             line.startswith('term inject worker-open')
+                             for line in self.hcom_log.read_text().splitlines()))
+
+    def test_reappearance_resets_episode_and_preserves_last_seen(self):
+        self.disappearance_hcom()
+        self.run_cycles(load_watch(), 0, 60, 120)
+        self.disappearance_hcom('listening')
+        self.run_cycles(load_watch(), 180)
+        self.disappearance_hcom()
+        self.run_cycles(load_watch(), 240)
+        self.assertEqual(len(self.disappearance_notices()), 1)
+        self.run_cycles(load_watch(), 300, 360)
+        notices = self.disappearance_notices()
+        self.assertEqual(len(notices), 2)
+        self.assertIn('last seen status: listening', notices[-1]['message'])
+        self.assertIn('1970-01-01T00:03:00+00:00', notices[-1]['message'])
+
+    def test_card_archived_before_shutdown_does_not_notify(self):
+        self.disappearance_hcom('listening')
+        self.run_cycles(load_watch(), 0)
+        (self.tasks / 'open.md').rename(self.tasks / 'done/open.md')
+        self.disappearance_hcom()
+        self.run_cycles(load_watch(), 60, 120)
+        self.assertEqual(self.disappearance_notices(), [])
+        self.assertNotIn('worker-open', self.watch_state())
+
+    def test_notification_releases_orchestrator_wait_via_message_delivery(self):
+        watch = load_watch()
+        declaration = {
+            'agent': 'orch', 'target': 'worker-open', 'active': True,
+            'declared_at': 0, 'declared_at_utc': '1970-01-01T00:00:00+00:00',
+        }
+        path = watch.wait_path(self.work, 'orch')
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(declaration))
+        self.disappearance_hcom()
+        self.run_cycles(watch, 0, 60, 120)
+        released = json.loads(path.read_text())
+        self.assertFalse(released['active'])
+        self.assertEqual(released['released_reason'], 'message-delivered')
+
+    def test_disappearance_delivery_failure_retries_then_deduplicates(self):
+        watch = load_watch()
+        self.disappearance_hcom()
+        self.run_cycles(watch, 0)
+        with patch.object(watch, 'perform', side_effect=ValueError('send failed')):
+            self.run_cycles(watch, 60)
+        self.run_cycles(watch, 120, 180)
+        results = [result for record in self.watch_records()
+                   for result in record.get('action_results', [])]
+        self.assertEqual([result['status'] for result in results], ['failed', 'done'])
+        sends = [line for line in self.hcom_log.read_text().splitlines()
+                 if line.startswith('send ')]
+        self.assertEqual(len(sends), 1)
+
     def test_inactive_rate_limit_notifies_once_even_when_term_is_unavailable(self):
         transcript = self.fake_transcript()
         self.install_hcom(
@@ -1711,6 +1825,7 @@ class WatchCliTests(unittest.TestCase):
         self.assertIn('inactive (failure:rate_limit)', sends[0])
         self.assertIn('claude', sends[0])
         self.assertEqual(injections, [])
+        self.assertEqual(self.disappearance_notices(), [])
         state = self.watch_state()['worker-open']
         self.assertTrue(state['quota_notified'])
 
@@ -2116,7 +2231,7 @@ class WatchCliTests(unittest.TestCase):
         self.assertFalse(state['worker-wait']['user_notified'])
         self.assertFalse(self.herdr_log.exists())
 
-    def test_stopped_worker_counts_as_handled_after_orchestrator_notice(self):
+    def test_stopped_worker_still_counts_disappearance_after_stall_notice(self):
         transcript = self.fake_transcript()
         self.install_hcom(
             '#!/bin/sh\n'
@@ -2144,13 +2259,14 @@ class WatchCliTests(unittest.TestCase):
         self.run_cycles(watch, 1_800)
 
         state = json.loads(state_file.read_text())
-        self.assertNotIn('worker-open', state)
+        self.assertEqual(state['worker-open']['missing_cycles'], 1)
         records = self.watch_records()
         stopped = [record for record in records if record['agent'] == 'worker-open']
         self.assertEqual(
-            stopped[-1]['decision'], 'orchestrator-handled-agent-stopped')
+            stopped[-1]['decision'], 'agent-disappeared')
 
     def test_failed_hcom_user_notification_retries_without_calling_herdr(self):
+        (self.tasks / 'open.md').rename(self.tasks / 'done/open.md')
         transcript = self.fake_transcript()
         self.install_hcom(
             '#!/bin/sh\n'
@@ -2294,7 +2410,7 @@ class WatchCliTests(unittest.TestCase):
         records = [json.loads(line) for line in
                    (self.work / '.lat/watch/orch/watch.jsonl').read_text().splitlines()]
         self.assertEqual(len([record for record in records
-                              if record.get('decision') == 'not-observable']), 3)
+                              if record.get('decision') == 'agent-disappeared']), 3)
         self.assertEqual(len([record for record in records
                               if record.get('decision') == 'observation-failed']), 3)
         failures = [result for record in records for result in record.get('action_results', [])
@@ -2305,6 +2421,7 @@ class WatchCliTests(unittest.TestCase):
         self.assertFalse(state['worker-open']['nudged'])
 
     def test_missing_terminal_readiness_is_logged_and_takes_no_action(self):
+        (self.tasks / 'open.md').rename(self.tasks / 'done/open.md')
         transcript = self.fake_transcript()
         self.install_hcom(
             '#!/bin/sh\n'
@@ -2421,7 +2538,10 @@ class WatchCliTests(unittest.TestCase):
                           ('state.json', 'state.json.corrupt-0')])
         self.assertEqual([record['agent'] for record in records if 'agent' in record],
                          ['orch', 'worker-open'])
-        self.assertEqual(self.watch_state(), {})
+        self.assertEqual(self.watch_state(), {
+            name: {'last_seen_status': 'listening', 'last_seen_at': 0}
+            for name in ('orch', 'worker-open')
+        })
 
     def test_non_object_agent_state_is_kept_aside_and_reset_for_that_agent_only(self):
         watch_dir = self.work / '.lat/watch/orch'
@@ -2439,7 +2559,11 @@ class WatchCliTests(unittest.TestCase):
                           ('worker-open', 'observation-failed')])
         self.assertEqual(records[0]['kept'], 'state.json.corrupt-0')
         self.assertEqual((watch_dir / 'state.json.corrupt-0').read_text(), original)
-        self.assertEqual(self.watch_state(), {'worker-open': {'nudged': True}})
+        self.assertEqual(self.watch_state(), {
+            'worker-open': {'nudged': True, 'last_seen_status': 'listening',
+                            'last_seen_at': 0},
+            'orch': {'last_seen_status': 'listening', 'last_seen_at': 0},
+        })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
         watch_dir = self.work / '.lat/watch/orch'
