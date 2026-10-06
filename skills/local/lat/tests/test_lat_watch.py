@@ -1401,6 +1401,8 @@ class WatchCliTests(unittest.TestCase):
                          'error': 'authentication_failed', 'message': {'role': 'assistant',
                          'content': [{'type': 'text', 'text': 'Login expired · Please run /login'}]}},
                         {'type': 'assistant', 'message': {'role': 'assistant',
+                         'content': [{'type': 'text', 'text': watch.NUDGE}]}},
+                        {'type': 'assistant', 'message': {'role': 'assistant',
                          'content': [{'type': 'text', 'text': 'Acknowledged.'}]}},
                         {'type': 'system', 'subtype': 'turn_duration'},
                     ]
@@ -1411,10 +1413,11 @@ class WatchCliTests(unittest.TestCase):
                         {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
                          'content': [{'type': 'input_text', 'text': watch.NUDGE}]}},
                         {'type': 'event_msg', 'payload': {'type': 'error', 'message': 'Authentication failed'}},
-                        {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': 'OK'}},
+                        {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': watch.NUDGE}},
                         {'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant',
-                         'content': [{'type': 'output_text', 'text': 'OK'}]}},
-                        {'type': 'event_msg', 'payload': {'type': 'task_complete', 'last_agent_message': 'OK'}},
+                         'content': [{'type': 'output_text', 'text': watch.NUDGE}]}},
+                        {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': 'ok.'}},
+                        {'type': 'event_msg', 'payload': {'type': 'task_complete', 'last_agent_message': watch.NUDGE}},
                     ]
                 with transcript.open('a') as stream:
                     stream.write(''.join(json.dumps(row) + '\n' for row in rows))
@@ -1427,6 +1430,13 @@ class WatchCliTests(unittest.TestCase):
                            if row.get('at') == 1_800 for action in row.get('actions', [])]
                 self.assertEqual(notices, [('orch', 'notify-user'),
                                           ('worker-open', 'notify-orchestrator')])
+                nudge_count = len(self.injections())
+                self.run_cycles(watch, 2_400, 2_401, 3_000)
+                self.assertEqual(len(self.injections()), nudge_count)
+                later = [(row['agent'], action['kind'])
+                         for row in self.watch_records()[-6:]
+                         for action in row.get('actions', [])]
+                self.assertEqual(later, [('worker-open', 'notify-user')])
                 # Start the next client with a fresh persisted episode.
                 (self.work / '.lat/watch/orch/state.json').unlink()
 

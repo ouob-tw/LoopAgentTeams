@@ -283,7 +283,7 @@ def nudge_transcript_only(transcript, offset, size, client):
         return False
     saw_nudge = False
     # Exact acknowledgement/echo only; free-form assistant work remains progress.
-    echoes = {NUDGE, 'OK', 'Okay', 'Acknowledged', 'Understood'}
+    echoes = {NUDGE.rstrip('.!').casefold(), 'ok', 'okay', 'acknowledged', 'understood'}
     for record in records:
         if not isinstance(record, dict):
             return False
@@ -319,7 +319,7 @@ def nudge_transcript_only(transcript, offset, size, client):
                 saw_nudge = True
             elif not saw_nudge:
                 return False
-            elif not record.get('isApiErrorMessage') and content.strip().rstrip('.!') not in echoes:
+            elif not record.get('isApiErrorMessage') and content.strip().rstrip('.!').casefold() not in echoes:
                 return False
         elif client.lower() == 'claude':
             if kind == 'system' and record.get('subtype') == 'turn_duration':
