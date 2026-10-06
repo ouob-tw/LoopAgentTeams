@@ -40,9 +40,10 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 
 ```bash
 uv run --no-project python "$lat_dir/scripts/lat-watch.py" wait --workspace "$workspace" \
-  --agent <自己的 HCOM 名稱> --for <決策 ID 或 Agent 名稱> --reason '<一句原因>'
+  --agent <自己的完整 HCOM 名稱> --for <決策 ID 或 Agent 名稱> --reason '<一句原因>'
 ```
 
+- `--agent` 填完整 HCOM 名稱（含 tag）。`wait` 使用監控同一個 `hcom list --json` 清單：完整名稱原樣保留，短名解析為唯一以 `-<短名>` 結尾的完整名稱，等待紀錄以完整名稱儲存；撞名或查無名稱時以非零結束碼拒絕，stderr 說明原因，不寫入也不改動原聲明。清單讀取失敗時在 stderr 警告並沿用輸入。
 - `--workspace` 必須是主控 activate 時的工作區；執行 Agent 在自己的 worktree 工作時也填主控的路徑，否則監控讀不到聲明。
 - `--for` 只能填一個對象：主控 activate 時 `--decisions` 目錄裡有檔名以它開頭的紀錄就當決策 ID，否則當 Agent 名稱。每個 Agent 只保留最後一筆聲明；同時等多個對象時，填最先需要回音的那個，其餘寫在 `--reason`。
 - `wait` 依工作區內 active 主控 session 紀錄，找出負責監控 `--agent` 的主控：主控本人，或其任務卡目錄（不含 `done/`）裡未 `merged` 且列名的 Agent。只查各自的決策目錄，不跨主控合併；找不到負責的主控時照常接受。若任一負責主控的同前綴紀錄全部已非 `pending`，指令以非零結束碼拒絕，stderr 列出紀錄及狀態，不寫入也不改動原聲明。有任一待決紀錄或讀不出狀態時照常接受。要等使用者回覆或手動操作，先把它記成待決紀錄，再等那個 ID。

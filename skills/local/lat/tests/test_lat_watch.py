@@ -1057,6 +1057,77 @@ class WatchCliTests(unittest.TestCase):
         targets = {item['agent']: item for item in json.loads(status.stdout)['targets']}
         self.assertEqual(targets['worker-open']['wait']['target'], 'reviewer')
 
+    def test_wait_resolves_base_name_and_watcher_recognizes_valid_wait(self):
+        transcript = self.fake_transcript()
+        self.write_task('advisor.md', 'team-advisor', 'orch', 'in progress')
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'if [ "$1" = list ]; then\n'
+            f'  printf \'%s\\n\' \'[{{"name":"orch","status":"listening"}},'
+            f'{{"name":"team-advisor","base_name":"advisor","status":"listening",'
+            f'"transcript_path":"{transcript}"}}]\'\n'
+            'elif [ "$1" = term ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":true,"prompt_empty":true}\'\n'
+            'fi\n'
+        )
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'advisor',
+                          '--for', 'orch', '--reason', 'standby')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['agent'], 'team-advisor')
+        stored = self.work / '.lat/watch/waits/team-advisor.json'
+        self.assertEqual(json.loads(stored.read_text())['agent'], 'team-advisor')
+        self.assertFalse((stored.parent / 'advisor.json').exists())
+        self.run_cycles(load_watch(), 0, 3600)
+        self.assertEqual(self.watch_state()['team-advisor']['decision'], 'valid-wait')
+        self.assertFalse(any(row['actions'] for row in self.watch_records()
+                             if row.get('agent') == 'team-advisor'))
+
+    def test_wait_rejects_ambiguous_and_unknown_names_without_writing(self):
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf \'%s\\n\' \'[{"name":"team-advisor"},'
+            '{"name":"other-advisor"}]\'\n'
+        )
+        for agent, message in (('advisor', 'ambiguous'), ('missing', 'unknown')):
+            for previous in (None, b'{"active": true}\n'):
+                with self.subTest(agent=agent, previous=previous):
+                    path = self.work / '.lat/watch/waits' / f'{agent}.json'
+                    if previous is not None:
+                        path.parent.mkdir(parents=True, exist_ok=True)
+                        path.write_bytes(previous)
+                    result = self.cli('wait', '--workspace', self.work, '--agent', agent,
+                                      '--for', 'orch', '--reason', 'standby')
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(message, result.stderr.lower())
+                    self.assertIn(agent, result.stderr)
+                    self.assertEqual(result.stdout, '')
+                    if previous is None:
+                        self.assertFalse(path.exists())
+                    else:
+                        self.assertEqual(path.read_bytes(), previous)
+        self.assertEqual(sorted(p.name for p in path.parent.iterdir()),
+                         ['advisor.json', 'missing.json'])
+
+    def test_wait_resolved_name_still_checks_owning_coordinator(self):
+        decisions = self.wait_session()
+        (decisions / 'HELP.md').write_text('- status: approved\n')
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'open',
+                          '--for', 'HELP', '--reason', 'standby')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no pending decision for orch', result.stderr)
+        self.assertFalse((self.work / '.lat/watch/waits').exists())
+
+    def test_wait_listing_failure_accepts_given_name_with_warning(self):
+        self.install_hcom('#!/bin/sh\necho unavailable >&2\nexit 1\n')
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'advisor',
+                          '--for', 'orch', '--reason', 'standby')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('hcom list', result.stderr)
+        self.assertIn('advisor', result.stderr)
+        self.assertEqual(json.loads(result.stdout)['agent'], 'advisor')
+        path = self.work / '.lat/watch/waits/advisor.json'
+        self.assertEqual(json.loads(path.read_text())['agent'], 'advisor')
+
     def wait_session(self, name='orch', status='active'):
         decisions = self.work / f'decisions-{name}'
         decisions.mkdir(exist_ok=True)
@@ -1116,6 +1187,11 @@ class WatchCliTests(unittest.TestCase):
                 self.assertTrue(stored['active'])
 
     def test_wait_uses_only_owning_coordinator_for_self_and_task_agents(self):
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf \'%s\\n\' \'[{"name":"orch"},{"name":"worker-open"},'
+            '{"name":"somebody-else"},{"name":"worker-other"}]\'\n'
+        )
         own = self.wait_session()
         other = self.wait_session('somebody-else')
         for own_status, other_status in [('approved', 'pending'), ('pending', 'approved')]:
@@ -1143,6 +1219,11 @@ class WatchCliTests(unittest.TestCase):
         other = self.wait_session('somebody-else')
         for decisions in (own, other):
             (decisions / 'HELP.md').write_text('- status: approved\n')
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf \'%s\\n\' \'[{"name":"orch"},{"name":"worker-open"},'
+            '{"name":"worker-merged"},{"name":"worker-done"},{"name":"unlisted"}]\'\n'
+        )
         for agent in ('orch', 'worker-open', 'worker-merged', 'worker-done', 'unlisted'):
             with self.subTest(agent=agent):
                 result = self.cli('wait', '--workspace', self.work, '--agent', agent,
