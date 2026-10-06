@@ -88,6 +88,7 @@ class Observation(NamedTuple):
     model: str = 'unknown'
     quota_issue: object = None
     codex_turn_finished: object = None
+    nudge_only: bool = False
 
 
 class QuotaIssue(NamedTuple):
@@ -262,6 +263,108 @@ def codex_turn_finished(transcript):
     return finished
 
 
+def nudge_transcript_only(transcript, offset, size, client):
+    """Recognize an exact watcher prompt plus client bookkeeping/error/echo only.
+
+    Unknown, replaced, oversized or corrupt data keeps the old progress behavior.
+    A tool, substantive assistant text, or any other user input is progress.
+    """
+    if (client.lower() not in ('claude', 'codex') or not transcript
+            or size <= offset or size - offset > TRANSCRIPT_TAIL_BYTES):
+        return False
+    try:
+        with Path(transcript).open('rb') as stream:
+            stream.seek(offset)
+            data = stream.read(size - offset)
+        if len(data) != size - offset or not data.endswith(b'\n'):
+            return False
+        records = [json.loads(line) for line in data.splitlines()]
+    except (OSError, ValueError, RecursionError):
+        return False
+    saw_nudge = False
+    # Exact acknowledgement/echo only; free-form assistant work remains progress.
+    echoes = {NUDGE, 'OK', 'Okay', 'Acknowledged', 'Understood'}
+    for record in records:
+        if not isinstance(record, dict):
+            return False
+        kind = record.get('type')
+        payload = record.get('payload', {})
+        if not isinstance(payload, dict):
+            return False
+        message = record.get('message', {}) if client.lower() == 'claude' else payload
+        if not isinstance(message, dict):
+            return False
+        role = message.get('role', kind if client.lower() == 'claude' else None)
+        if kind == 'event_msg' and payload.get('type') in ('user_message', 'agent_message'):
+            role = 'user' if payload['type'] == 'user_message' else 'assistant'
+            content = payload.get('message')
+        elif (kind == 'event_msg' and payload.get('type') == 'task_complete'
+              and payload.get('last_agent_message')):
+            role = 'assistant'
+            content = payload['last_agent_message']
+        else:
+            content = message.get('content', [])
+        if role in ('user', 'assistant'):
+            if isinstance(content, list):
+                if any(not isinstance(item, dict) or item.get('type') not in
+                       ('text', 'input_text', 'output_text')
+                       or not isinstance(item.get('text'), str) for item in content):
+                    return False
+                content = ''.join(item.get('text', '') for item in content)
+            if not isinstance(content, str):
+                return False
+            if role == 'user':
+                if content != NUDGE:
+                    return False
+                saw_nudge = True
+            elif not saw_nudge:
+                return False
+            elif not record.get('isApiErrorMessage') and content.strip().rstrip('.!') not in echoes:
+                return False
+        elif client.lower() == 'claude':
+            if kind == 'system' and record.get('subtype') == 'turn_duration':
+                continue
+            if kind == 'attachment' and saw_nudge:
+                continue
+            return False
+        elif kind == 'event_msg' and payload.get('type') in (
+                'task_started', 'task_complete', 'token_count', 'error'):
+            continue
+        elif kind == 'turn_context':
+            continue
+        else:
+            return False
+    return saw_nudge
+
+
+def nudge_only_observation(previous, observation, info, orchestrator):
+    """Exclude only the injected prompt's transcript and lifecycle events."""
+    if not previous or not previous.get('nudged'):
+        return observation
+    fingerprint = [observation.transcript_size, observation.transcript_mtime_ns,
+                   observation.event_id]
+    if previous.get('fingerprint') == fingerprint:
+        return observation
+    baseline = previous.get('nudge_fingerprint', previous.get('fingerprint'))
+    if (not isinstance(baseline, list) or len(baseline) != 3
+            or any(not isinstance(value, int) or value < 0 for value in baseline)):
+        return observation
+    if not nudge_transcript_only(info.get('transcript_path'), baseline[0],
+                                 observation.transcript_size, observation.client):
+        return observation
+    if observation.event_id != baseline[2]:
+        events = session_events(orchestrator, info, '--last', '1000', after_id=baseline[2])
+        # Never hide another agent's messages, including ones followed by status.
+        lifecycle = {'', 'prompt', 'stop', 'ready_observed', 'turn_complete',
+                     'failure:authentication_failed'}
+        if (not events or len(events) >= 1000
+                or latest_event_id(events) != observation.event_id
+                or any(event.get('type') != 'status' or status_context(event) not in lifecycle
+                       for event in events)):
+            return observation
+    return observation._replace(nudge_only=True)
+
+
 def current_claude_quota_notice(transcript):
     """Return an unsuperseded Claude system quota notice near transcript EOF."""
     if not isinstance(transcript, (str, Path)):
@@ -375,7 +478,9 @@ def decide(previous, observation, now):
     """Return serializable state and requested actions for one observation."""
     fingerprint = [observation.transcript_size, observation.transcript_mtime_ns,
                    observation.event_id]
-    progressed = previous is None or previous.get('fingerprint') != fingerprint
+    progressed = (previous is None or previous.get('fingerprint') != fingerprint)
+    if previous and previous.get('nudged') and observation.nudge_only:
+        progressed = False
     quota_cleared = bool(previous and previous.get('quota_active')
                          and observation.quota_issue is None)
     reset = progressed or observation.wait_released or quota_cleared
@@ -392,6 +497,7 @@ def decide(previous, observation, now):
         }
     else:
         state = dict(previous)
+        state['fingerprint'] = fingerprint
         state.setdefault('orchestrator_notified', False)
         state.setdefault('orchestrator_handled', False)
         state.setdefault('user_notified', False)
@@ -467,6 +573,7 @@ def decide(previous, observation, now):
         actions = (Action('nudge', observation.agent),)
         state['nudged'] = True
         state['nudged_at'] = now
+        state['nudge_fingerprint'] = fingerprint
         state['stall_reason'] = 'listening at an empty prompt with no command running'
     elif (active_stalled and not observation.wait_active and not state['nudged']
           and observation.status == 'active'
@@ -475,6 +582,7 @@ def decide(previous, observation, now):
         actions = (Action('nudge', observation.agent),)
         state['nudged'] = True
         state['nudged_at'] = now
+        state['nudge_fingerprint'] = fingerprint
         state['stall_reason'] = ('Codex turn finished but status active' if finished_active
                                  else 'active status but terminal ready at an empty prompt')
     elif (state['nudged'] and not observation.wait_active
@@ -912,16 +1020,16 @@ def agent_info(agents, name):
     return matches[0] if len(matches) == 1 else None
 
 
-def session_events(orchestrator, info, *filters):
+def session_events(orchestrator, info, *filters, after_id=None):
     """Read only events carrying the exact session identity from hcom list."""
     session_id = info.get('session_id') if isinstance(info, dict) else None
     if not isinstance(session_id, str) or not session_id:
         return []
     quoted = session_id.replace("'", "''")
-    events = hcom_events(
-        orchestrator, *filters,
-        '--sql', f"json_extract(data, '$.session') = '{quoted}'",
-    )
+    query = f"json_extract(data, '$.session') = '{quoted}'"
+    if after_id is not None:
+        query += f" AND id > {int(after_id)}"
+    events = hcom_events(orchestrator, *filters, '--sql', query)
     return [event for event in events
             if event_value(event, 'session', 'status') == session_id]
 
@@ -1533,6 +1641,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             observation = observe(
                 workspace, decisions, orchestrator, agent, hcom[agent], cards.get(agent))
             previous = states.get(agent)
+            observation = nudge_only_observation(previous, observation, hcom[agent], orchestrator)
             try:
                 state, actions = decide(previous, observation, now)
             except (TypeError, ValueError, KeyError, AttributeError) as error:
