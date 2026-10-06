@@ -17,7 +17,7 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lat_decision_status import read_decision_status
+from lat_decision_status import read_advisor_error, read_decision_status
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 GROUP_NAME = 'lat-codex-recovery'
@@ -527,6 +527,10 @@ def stop_check(record, payload):
             problems.append(f'{identifier} r{revision}：沒有待決紀錄')
         elif status.error is None and status.status != 'pending':
             problems.append(f'{identifier} r{revision}：紀錄不是 pending')
+        if status is not None:
+            advisor_error = read_advisor_error(decisions / f'{identifier}.md')
+            if advisor_error:
+                problems.append(f'{identifier} r{revision}：{advisor_error}')
     panel = panel_module()
     binding = next((item for item in panel.list_bindings()
                     if item.get('session_id') == record['session_id']), None)
@@ -549,7 +553,7 @@ def stop_check(record, payload):
     if not problems:
         return
     reason = 'LAT DECIDE 檢查未通過：' + '；'.join(problems) + (
-        '。補做順序：寫待決紀錄 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重列題目。')
+        '。補做順序：寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重列題目。')
     if payload.get('stop_hook_active'):
         print(json.dumps({'systemMessage': reason + ' 本回合已繼續過，不再攔下。'}, ensure_ascii=False))
     else:

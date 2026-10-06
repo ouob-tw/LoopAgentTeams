@@ -85,6 +85,78 @@ class SessionTests(unittest.TestCase):
         payload.update(overrides)
         return self.cli('hook', '--client', client, payload=payload, session=OTHER)
 
+    def test_stop_missing_advisor_blocks_then_consulted_reask_passes(self):
+        self.write_legacy_record()
+        path = self.decisions / 'LAT-A.md'
+        path.write_text('- status: pending\n')
+        result = self.stop_hook()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('LAT-A r1', output['reason'])
+        self.assertIn('沒有參謀行', output['reason'])
+        warning = json.loads(self.stop_hook(stop_hook_active=True).stdout)
+        self.assertEqual(set(warning), {'systemMessage'})
+        path.write_text('- status: pending\n- advisor: needs-human\n')
+        self.assert_silent(self.stop_hook(stop_hook_active=True))
+
+    def test_stop_advisor_lines_for_both_clients_bound_and_unbound(self):
+        valid = ('needs-human', 'needs-human same-family-degraded',
+                 'exempt spec-confirmation', 'exempt requirement-discussion',
+                 'exempt account-quota', 'late needs-human', 'late resolved',
+                 'late self-check', '  NEEDS-HUMAN  ',
+                 '\tExEmPt\tACCOUNT-QUOTA   note', ' LATE  SELF-CHECK ')
+        invalid = (('', '沒有參謀行'), ('- advisor:   ', '沒有結論'),
+                   ('- advisor: resolved', '未知參謀結論'),
+                   ('- advisor: exempt', '缺少第二個字'),
+                   ('- advisor: exempt other', '不在清單內'),
+                   ('- advisor: late', '缺少第二個字'),
+                   ('- advisor: late other', '不在清單內'),
+                   ('- advisor: invalid\n- advisor: needs-human', '未知參謀結論'))
+        for client in ('codex', 'claude'):
+            self.write_legacy_record(client=client)
+            questions = self.bind_stop_panel(client)
+            binding_path = self.root / 'plugin-config/bindings.json'
+            original = binding_path.read_text()
+            for bound in (False, True):
+                binding_path.write_text(original if bound else '{"version": 2, "bindings": {}}')
+                questions.write_text('## Question\nLAT-A · r1 · 待答\n')
+                path = self.decisions / 'LAT-A.md'
+                for value in valid:
+                    with self.subTest(client=client, bound=bound, advisor=value):
+                        path.write_text(f'- status: pending\n- AdViSoR:{value}\n- advisor: invalid\n')
+                        self.assert_silent(self.stop_hook(client=client))
+                for line, reason in invalid:
+                    with self.subTest(client=client, bound=bound, advisor=line):
+                        path.write_text(f'- status: pending\n{line}\n')
+                        self.assert_stop_block(self.stop_hook(client=client), 'LAT-A r1', reason)
+                        warning = json.loads(self.stop_hook(client=client, stop_hook_active=True).stdout)
+                        self.assertEqual(set(warning), {'systemMessage'})
+                        self.assertIn(reason, warning['systemMessage'])
+                path.write_text('- status: pending\n- advisor: late resolved\n')
+                if bound:
+                    questions.write_text('## Question\nLAT-A · r2 · 待答\n')
+                    self.assert_stop_block(self.stop_hook(client=client), '同版本待答')
+                path.write_text('- status: advisor-resolved\n- advisor: late resolved\n')
+                self.assert_stop_block(self.stop_hook(client=client), '不是 pending')
+            binding_path.write_text(original)
+
+    def test_stop_reports_each_advisor_gap_and_ignores_unreferenced_advisor_states(self):
+        for client in ('codex', 'claude'):
+            self.write_legacy_record(client=client)
+            questions = self.bind_stop_panel(client)
+            questions.write_text('## Question\nLAT-A · r1 · 待答\n')
+            self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
+            for status in ('advising', 'advisor-resolved'):
+                self.decisions.joinpath('LAT-B.md').write_text(f'- status: {status}\n')
+                self.assert_silent(self.stop_hook(client=client))
+                self.assert_stop_block(self.stop_hook('DECIDE: LAT-A r1, LAT-B r1', client),
+                                       'LAT-B r1：紀錄不是 pending', 'LAT-B r1：沒有參謀行')
+            self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
+            self.decisions.joinpath('LAT-B.md').write_text('- status: pending\n- advisor: exempt other\n')
+            self.assert_stop_block(self.stop_hook('DECIDE: LAT-A r1, LAT-B r1', client),
+                                   'LAT-A r1：沒有參謀行', 'LAT-B r1：參謀 exempt', '補做順序')
+
     def test_stop_unrecorded_decision_blocks_then_corrected_reask_passes(self):
         self.write_legacy_record()
         result = self.stop_hook()
@@ -92,7 +164,7 @@ class SessionTests(unittest.TestCase):
         output = json.loads(result.stdout)
         self.assertEqual(output['decision'], 'block')
         self.assertIn('LAT-A', output['reason'])
-        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
+        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
         self.assert_silent(self.stop_hook(stop_hook_active=True))
 
     def bind_stop_panel(self, client='codex', session=SESSION, name='orch'):
@@ -110,13 +182,13 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(output['decision'], 'block')
         for detail in details:
             self.assertIn(detail, output['reason'])
-        self.assertIn('寫待決紀錄 → 寫入面板', output['reason'])
+        self.assertIn('寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板', output['reason'])
         self.assertIn('遺漏檢查 → 依聊天提問格式重列題目', output['reason'])
         self.assertNotIn('systemMessage', output)
 
     def test_stop_message_extraction_and_last_nonempty_line(self):
         self.write_legacy_record()
-        self.decisions.joinpath('LAT-A.md').write_text('- Status: PENDING\n')
+        self.decisions.joinpath('LAT-A.md').write_text('- Status: PENDING\n- advisor: needs-human\n')
         for message in ('hello', 'DECIDE: LAT-A r1\nfinished', '', '   ',
                         'Other LAT-MISSING r1\nDECIDE: LAT-A r1\n \n',
                         'DECIDE: **LAT-A r1** check-pending'):
@@ -128,7 +200,7 @@ class SessionTests(unittest.TestCase):
                         'DECIDE: LAT-A r1, LAT-NEW r2',
                         'DECIDE: LAT-A r1, LAT-NEW r2.'):
             self.assert_stop_block(self.stop_hook(message), 'LAT-NEW r2')
-        self.decisions.joinpath('A_B.2-3.md').write_text('- status: pending\n')
+        self.decisions.joinpath('A_B.2-3.md').write_text('- status: pending\n- advisor: needs-human\n')
         self.assert_silent(self.stop_hook('DECIDE: A_B.2-3 r12'))
 
     def test_stop_shared_status_fixtures_hold_bound_and_unbound_for_both_clients(self):
@@ -159,7 +231,7 @@ class SessionTests(unittest.TestCase):
         for status in ('approved', 'ANSWERED', 'rejected', 'resolved', 'other'):
             path.write_text(f'- Status: {status}\n')
             self.assert_stop_block(self.stop_hook(), 'LAT-A', '不是 pending')
-        path.write_text('- STATUS: pending\n- status: approved\n')
+        path.write_text('- STATUS: pending\n- advisor: needs-human\n- status: approved\n')
         self.assert_silent(self.stop_hook())
         self.decisions.joinpath('BROKEN.md').write_text('# no status\n')
         self.assert_stop_block(self.stop_hook(), 'BROKEN.md', '讀不出狀態')
@@ -169,7 +241,7 @@ class SessionTests(unittest.TestCase):
 
     def test_stop_panel_own_question_revision_and_omission_check(self):
         self.write_legacy_record()
-        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
+        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
         questions = self.bind_stop_panel()
         other = self.bind_stop_panel(session=OTHER, name='other')
         other.write_text('## Question\nLAT-A · r1 · 待答\n')
@@ -180,7 +252,7 @@ class SessionTests(unittest.TestCase):
             self.assert_stop_block(self.stop_hook(), '自己的面板')
         questions.write_text('## Question\nLAT-A · r1 · 待答\n')
         self.assert_silent(self.stop_hook())
-        self.decisions.joinpath('LAT-B.md').write_text('- status: pending\n')
+        self.decisions.joinpath('LAT-B.md').write_text('- status: pending\n- advisor: needs-human\n')
         self.assert_stop_block(self.stop_hook(), 'LAT-B', '遺漏檢查')
         self.assert_stop_block(self.stop_hook('❓ **LAT-A r2** Question\nDECIDE: LAT-A r1'),
                                'LAT-A r2')
@@ -204,7 +276,7 @@ class SessionTests(unittest.TestCase):
 
     def test_stop_corrupt_binding_and_failed_file_read_warn_without_hold(self):
         self.write_legacy_record()
-        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
+        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
         self.bind_stop_panel()
         path = self.root / 'plugin-config/bindings.json'
         path.write_text('{"version": 2, "bindings": {"bad": 3}}')
