@@ -51,7 +51,7 @@ Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 都只檢�
 
 每個寫出的題號還須有參謀行，取第一行以 `- advisor:` 開頭的行，鍵名不分大小寫，值去除前後空白並以空白分詞。第一字接受 `needs-human`；`exempt` 的第二字限 `spec-confirmation`、`requirement-discussion`、`account-quota`；`late` 的第二字限 `needs-human`、`resolved`、`self-check`。後續字詞可加註記（如 `same-family-degraded`）。缺行、空值、未知第一字或缺少／未知第二字，都逐題列出原因。未被 DECIDE 引用的 `advising`／`advisor-resolved` 紀錄不算面板漏題；被引用仍須符合 pending 與面板版本檢查。
 
-已寫入面板或問過使用者的題目補做諮詢後，維持 pending 並寫 `- advisor: late <結論>`；參謀建議定案或自行查證時，重列題目的 ➡️ 行附建議與授權來源，由真人解除待答，詳見 [參謀](advisors.md)。
+已寫入面板或問過使用者的題目補做諮詢後，維持 pending 並寫 `- advisor: late <結論>`；參謀建議定案或自行查證時，重列題目的 ➡️ 行附建議與授權來源，由真人解除待答。
 
 首次未通過會輸出原因並要求主控繼續，補做順序是：寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重列題目。若 payload 的 `stop_hook_active` 表示本回合已因 hook 繼續，不再攔下，只以 `systemMessage` 留使用者可見的警告；修正後重列能通過，不留舊警告，新回合可再次攔下。紀錄損壞、檔案讀取失敗等工具錯誤也只警告，讓回合結束。
 
