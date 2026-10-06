@@ -51,7 +51,7 @@
 - 待決目錄：<決策目錄絕對路徑>（含先前參謀的結論與真人答覆）
 - 授權規則：<LAT 技能目錄絕對路徑>/SKILL.md 的「確認與自動推進」「使用者待決事項」；結論格式見同目錄 references/advisors.md 的「參謀結論」
 - 限制：只讀不改，不修改程式、Spec、待決紀錄或任務卡；不聯絡使用者；只回覆主控。
-- 回覆格式：第一行 `<ID> r<版本>: resolved <選項或做法>`、`needs-human` 或 `self-check`，下一行起寫理由；resolved 必須引用已確認 Spec 的具體段落，或含真人答覆證據的待決紀錄 ID 與版本。
+- 回覆格式：第一行 `<ID> r<版本>: resolved <選項或做法>`、`needs-human` 或 `self-check`，下一行起寫理由；resolved 必須引用已確認 Spec 的具體段落，或含真人答覆證據的待決紀錄 ID 與版本。以 `hcom send` 回覆主控時一律用 `--intent inform`：結論不需主控回覆，主控需要更多時會再諮詢；用 `--intent request` 而主控沒回，HCOM 會送來「未回應」通知，讓你的待命被提前解除並被催促。
 - 回覆後：以 `lat-watch wait --workspace <主控工作區> --agent <你的完整 HCOM 名稱> --for <主控完整 HCOM 名稱> --reason '<一句>'` 聲明待命再結束回合；完整名稱含 tag，短名會依 `hcom list --json` 唯一解析，撞名或查無名稱時拒絕寫入，清單讀取失敗時會警告並沿用輸入。
 ```
 
