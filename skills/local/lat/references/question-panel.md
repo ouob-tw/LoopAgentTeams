@@ -78,7 +78,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 
 ### 聊天提問格式
 
-標題、背景句、選項文字（含結尾「（建議）」）與影響說明照題目原文，不改寫、不改成項目符號；字母依「題目格式」。建議理由只寫在 `➡️` 那一行。多題用 `---` 分隔：
+標題、背景句、選項文字（含結尾「（建議）」）與影響說明照題目原文，不改寫、不改成項目符號；字母依「題目格式」。建議理由只寫在 `➡️` 那一行。補做諮詢的參謀結論為 `late resolved` 或 `late self-check` 時，`➡️` 行另附參謀的建議做法與引用的授權來源。多題用 `---` 分隔：
 
 ```markdown
 ❓ **<ID> r<版本>** - **<標題>**
@@ -122,6 +122,8 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
 - 取第一行以 `- status:` 開頭的行；鍵名不分大小寫、冒號後空白可多可少。
 - 值的第一個字不分大小寫：`pending` 是待決，其餘視為已處理。
 - 沒有狀態行、值為空或只有空白，或第一個字不是 `pending` 但後面含有 `pending`，均為「讀不出狀態」。停住監控將其視為仍在待決，並在監控紀錄留說明。
+
+參謀諮詢中的 `advising` 與參謀結案的 `advisor-resolved` 都不是 `pending`，不寫面板；`pending` 紀錄發出 `DECIDE:` 前須先有參謀行，見 [參謀](advisors.md#待決紀錄的狀態與參謀行)。
 
 ## 答覆格式
 
