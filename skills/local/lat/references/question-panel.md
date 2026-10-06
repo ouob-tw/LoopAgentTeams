@@ -174,13 +174,13 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
    - **草稿**：依「草稿、送出與重答」處理，不記錄。
    - **沒有已勾選送出的題目**：只更新理解，結束回合等待。
 
-### 聊天答覆與更正
+面板紀錄是來源證據，不是防偽機制：能寫 `.lat/` 的 Agent 理論上能偽造答覆或紀錄。
 
-使用者在聊天回答 `<ID> r<版本>：…` 時，依上方步驟建立快照，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄。標記前對同一份快照執行 `question section-hash --questions "$snapshot" --id "<ID>"`，把輸出的 `section_sha256` 傳給上述 `set-status`。
+## 聊天答覆與更正
+
+使用者在聊天回答 `<ID> r<版本>：…` 時，依「收到 `lat-panel` 通知」的步驟 1 建立快照，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄。標記前對同一份快照執行 `question section-hash --questions "$snapshot" --id "<ID>"`，把輸出的 `section_sha256` 傳給上述 `set-status`。
 
 使用者在面板送出後又於聊天要求改答案時，舊紀錄保持原樣：新增一筆更正，保存聊天原文與來源，並把舊答案標為「已由更正項目取代」；更正只依聊天答覆的授權範圍生效。
-
-面板紀錄是來源證據，不是防偽機制：能寫 `.lat/` 的 Agent 理論上能偽造答覆或紀錄。
 
 ## 清理已記錄題目
 
