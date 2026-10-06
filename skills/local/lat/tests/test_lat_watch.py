@@ -1395,6 +1395,8 @@ class WatchCliTests(unittest.TestCase):
                 self.run_cycles(watch, 0, 1_200)
                 if client == 'claude':
                     rows = [
+                        {'type': 'file-history-snapshot', 'snapshot': {'trackedFileBackups': {}},
+                         'isSnapshotUpdate': False},
                         {'type': 'user', 'message': {'role': 'user', 'content': watch.NUDGE}},
                         {'type': 'attachment', 'attachment': {'type': 'total_tokens_reminder'}},
                         {'type': 'assistant', 'isApiErrorMessage': True,
@@ -1403,12 +1405,19 @@ class WatchCliTests(unittest.TestCase):
                         {'type': 'assistant', 'message': {'role': 'assistant',
                          'content': [{'type': 'text', 'text': watch.NUDGE}]}},
                         {'type': 'assistant', 'message': {'role': 'assistant',
-                         'content': [{'type': 'text', 'text': 'Acknowledged.'}]}},
+                         'content': [{'type': 'text', 'text': 'OK'}]}},
+                        {'type': 'assistant', 'message': {'role': 'assistant',
+                         'content': [{'type': 'text', 'text': 'Nothing to do'}]}},
+                        {'type': 'system', 'subtype': 'stop_hook_summary', 'hookCount': 2,
+                         'hookErrors': [], 'preventedContinuation': False},
                         {'type': 'system', 'subtype': 'turn_duration'},
+                        {'type': 'last-prompt', 'lastPrompt': watch.NUDGE},
                     ]
                 else:
                     rows = [
                         {'type': 'event_msg', 'payload': {'type': 'task_started'}},
+                        {'type': 'world_state', 'payload': {'full': False, 'state': {}}},
+                        {'type': 'turn_context', 'payload': {'model': 'test'}},
                         {'type': 'event_msg', 'payload': {'type': 'user_message', 'message': watch.NUDGE}},
                         {'type': 'response_item', 'payload': {'type': 'message', 'role': 'user',
                          'content': [{'type': 'input_text', 'text': watch.NUDGE}]}},
@@ -1416,7 +1425,11 @@ class WatchCliTests(unittest.TestCase):
                         {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': watch.NUDGE}},
                         {'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant',
                          'content': [{'type': 'output_text', 'text': watch.NUDGE}]}},
-                        {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': 'ok.'}},
+                        {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': 'Nothing to do'}},
+                        {'type': 'response_item', 'payload': {'type': 'reasoning', 'summary': []}},
+                        {'type': 'token_usage_record', 'payload': {'usage': {}}},
+                        {'type': 'event_msg', 'payload': {'type': 'item_completed', 'item': {
+                         'type': 'AgentMessage', 'content': [{'type': 'Text', 'text': 'OK'}]}}},
                         {'type': 'event_msg', 'payload': {'type': 'task_complete', 'last_agent_message': watch.NUDGE}},
                     ]
                 with transcript.open('a') as stream:
@@ -1464,19 +1477,28 @@ class WatchCliTests(unittest.TestCase):
                 'role': 'user', 'content': watch.NUDGE}}) + '\n')
         # Actual Claude incident lifecycle, including an empty ready context.
         events = [{'id': index + 1, 'type': 'status', 'data': {
-            'session': agent['session_id'], 'context': context}}
+            'session': agent['session_id'], 'context': context,
+            'status': 'listening' if context == '' else 'active'}}
             for index, (agent, context) in enumerate(
                 (agent, context) for agent in agents for context in
                 ('prompt', 'failure:authentication_failed', ''))]
         events_path.write_text(''.join(json.dumps(row) + '\n' for row in events))
         self.run_cycles(watch, 1_260)
         self.assertTrue(all(state['nudged'] for state in self.watch_state().values()))
+        # Delayed same-session listening observation without transcript growth.
+        events.extend([{'id': 7 + index, 'type': 'status', 'data': {
+            'session': agent['session_id'], 'context': '', 'status': 'listening'}}
+            for index, agent in enumerate(agents)])
+        events_path.write_text(''.join(json.dumps(row) + '\n' for row in events))
+        self.run_cycles(watch, 1_280)
+        self.assertTrue(all(state['last_progress_at'] == 0
+                            for state in self.watch_state().values()))
         # Another agent's message still counts, even when a later status is latest.
         events.extend([
-            {'id': 7, 'type': 'message', 'data': {'session': 'worker-open-session',
+            {'id': 9, 'type': 'message', 'data': {'session': 'worker-open-session',
              'from': 'other', 'text': 'incoming message'}},
-            {'id': 8, 'type': 'status', 'data': {'session': 'worker-open-session', 'context': ''}},
-            {'id': 9, 'type': 'status', 'data': {'session': 'orch-session', 'context': 'tool:send'}},
+            {'id': 10, 'type': 'status', 'data': {'session': 'worker-open-session', 'context': ''}},
+            {'id': 11, 'type': 'status', 'data': {'session': 'orch-session', 'context': 'tool:send'}},
         ])
         events_path.write_text(''.join(json.dumps(row) + '\n' for row in events))
         self.run_cycles(watch, 1_300)
@@ -1487,11 +1509,11 @@ class WatchCliTests(unittest.TestCase):
     def test_real_assistant_or_tool_work_after_nudge_restarts_episode(self):
         cases = [
             ('claude', {'type': 'assistant', 'message': {'role': 'assistant',
-             'content': [{'type': 'text', 'text': 'The defect is caused by the reset branch.'}]}}),
+             'content': [{'type': 'text', 'text': 'The defect is caused by the reset branch. ' * 6}]}}),
             ('claude', {'type': 'assistant', 'message': {'role': 'assistant',
              'content': [{'type': 'tool_use', 'name': 'Bash', 'input': {'command': 'rg reset'}}]}}),
             ('codex', {'type': 'response_item', 'payload': {'type': 'message', 'role': 'assistant',
-             'content': [{'type': 'output_text', 'text': 'The defect is caused by the reset branch.'}]}}),
+             'content': [{'type': 'output_text', 'text': 'The defect is caused by the reset branch. ' * 6}]}}),
             ('codex', {'type': 'response_item', 'payload': {'type': 'function_call',
              'name': 'exec_command', 'arguments': '{"cmd":"rg reset"}'}}),
         ]
@@ -1517,6 +1539,40 @@ class WatchCliTests(unittest.TestCase):
                     self.assertFalse(state['nudged'])
                     self.assertFalse(state['orchestrator_notified'])
                     self.assertFalse(state['user_notified'])
+
+    def test_short_reply_boundary_and_real_work_record_shapes(self):
+        watch = load_watch()
+        cases = [
+            ('claude', {'type': 'assistant', 'message': {'role': 'assistant',
+             'content': [{'type': 'text', 'text': 'x' * 200}]}}, True),
+            ('claude', {'type': 'assistant', 'message': {'role': 'assistant',
+             'content': [{'type': 'text', 'text': 'x' * 201}]}}, False),
+            ('claude', {'type': 'file-history-delta', 'trackingPath': 'example.py'}, False),
+            ('claude', {'type': 'assistant', 'message': {'role': 'assistant',
+             'content': [{'type': 'text', 'text': 'OK'}, {'type': 'tool_use',
+                          'name': 'Edit', 'input': {'file_path': 'example.py'}}]}}, False),
+            ('codex', {'type': 'event_msg', 'payload': {'type': 'item_completed',
+             'item': {'type': 'UserMessage', 'content': [
+                 {'type': 'text', 'text': watch.NUDGE}]}}}, True),
+            ('codex', {'type': 'event_msg', 'payload': {'type': 'item_completed',
+             'item': {'type': 'Reasoning', 'summary_text': []}}}, True),
+            ('codex', {'type': 'event_msg', 'payload': {'type': 'item_completed',
+             'item': {'type': 'CommandExecution', 'command': ['hcom', 'send']}}}, False),
+            ('codex', {'type': 'event_msg', 'payload': {'type': 'item_completed',
+             'item': {'type': 'FileChange', 'changes': {'example.py': {'type': 'update'}}}}}, False),
+            ('codex', {'type': 'response_item', 'payload': {'type': 'custom_tool_call',
+             'name': 'exec', 'input': 'edit a file'}}, False),
+        ]
+        with tempfile.TemporaryDirectory() as directory:
+            transcript = Path(directory) / 'transcript.jsonl'
+            for client, record, expected in cases:
+                with self.subTest(client=client, record=record):
+                    nudge = ({'type': 'user', 'message': {'role': 'user', 'content': watch.NUDGE}}
+                             if client == 'claude' else {'type': 'event_msg', 'payload': {
+                                 'type': 'user_message', 'message': watch.NUDGE}})
+                    transcript.write_text(json.dumps(nudge) + '\n' + json.dumps(record) + '\n')
+                    self.assertEqual(watch.nudge_transcript_only(
+                        transcript, 0, transcript.stat().st_size, client), expected)
 
     def test_unrecognized_or_corrupt_nudge_suffix_keeps_original_progress_rule(self):
         for suffix in ('not-json\n', json.dumps({'type': 'user', 'message': {
