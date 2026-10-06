@@ -1462,9 +1462,16 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     hcom = list_hcom(orchestrator)
     states = read_watch_file(path, log, now)
     for agent, state in list(states.items()):
-        if not isinstance(state, dict):
-            reset_agent_state(path, log, now, agent,
-                              f'Expected a JSON object, got {type(state).__name__}')
+        try:
+            if not isinstance(state, dict):
+                raise ValueError(f'Expected a JSON object, got {type(state).__name__}')
+            count = state.get('missing_cycles', 0)
+            if type(count) is not int or count < 0:
+                raise ValueError('missing_cycles must be a nonnegative integer')
+            if 'last_seen_at' in state:
+                datetime.fromtimestamp(state['last_seen_at'], timezone.utc)
+        except (TypeError, ValueError, OverflowError, OSError) as error:
+            reset_agent_state(path, log, now, agent, f'{type(error).__name__}: {error}')
             states.pop(agent)
     for agent in set(states) - set(agents):
         append_log(log, {

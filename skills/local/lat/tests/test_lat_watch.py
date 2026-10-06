@@ -1778,6 +1778,34 @@ class WatchCliTests(unittest.TestCase):
         self.assertFalse(released['active'])
         self.assertEqual(released['released_reason'], 'message-delivered')
 
+    def test_corrupt_disappearance_state_resets_only_that_agent_and_recovers(self):
+        for corrupt in ({'missing_cycles': 'bad'},
+                        {'missing_cycles': -1},
+                        {'missing_cycles': 1, 'last_seen_at': 'bad'},
+                        {'missing_cycles': 1, 'last_seen_at': 10 ** 30}):
+            with self.subTest(state=corrupt):
+                watch = load_watch()
+                self.disappearance_hcom()
+                self.write_task('z-healthy.md', 'worker-z', 'orch', 'in progress')
+                listing = self.root / 'agents.json'
+                agents = json.loads(listing.read_text())
+                agents.append({'name': 'worker-z', 'status': 'listening'})
+                listing.write_text(json.dumps(agents))
+                watch.write_object(watch.state_path(self.work, 'orch'), {
+                    'worker-open': corrupt,
+                })
+                self.run_cycles(watch, 0)
+                self.assertEqual(self.disappearance_notices(), [])
+                self.assertIn('orch', self.watch_state())
+                self.assertIn('worker-z', self.watch_state())
+                self.run_cycles(watch, 60, 120)
+                self.assertEqual(len(self.disappearance_notices()), 1)
+                self.assertTrue(any(record.get('decision') == 'agent-state-reset'
+                                    for record in self.watch_records()))
+                self.assertTrue(list(watch.state_path(self.work, 'orch').parent.glob(
+                    'state.json.corrupt-*')))
+                watch.state_path(self.work, 'orch').with_name('watch.jsonl').write_text('')
+
     def test_disappearance_delivery_failure_retries_then_deduplicates(self):
         watch = load_watch()
         self.disappearance_hcom()
