@@ -1,4 +1,5 @@
 如果你接收到修改Skills的任務，應在此專案內修改，非主機上安裝Skills的路徑。
+更新主機上安裝的 Skills 時，不要在 `~/.agents/` 或各 client 的 Skills 目錄留下備份副本；需要還原時以 git 版本為準。
 
 ## Agent skills
 
