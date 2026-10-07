@@ -285,6 +285,7 @@ class Draft:
         self.options = parsed.options
         self.reason = parsed.reason
         self.context = lat_panel.question_context(section)
+        self.recommendation = lat_panel.question_recommendation(section)
         self.malformed_submission = section["malformed_submission"]
         if section["status_label"] == "已記錄":
             self.status = "recorded"
@@ -905,11 +906,7 @@ class Panel(App):
             keys.extend((None, ("text", number)))
         rows.append(("", "", ""))
         keys.append(None)
-        if draft.kind is None:
-            if not draft.editable and draft.other:
-                rows.append(("答覆：", draft.other, ""))
-                keys.append(("post", "answer"))
-        else:
+        if draft.kind is not None:
             letters = draft.letters()
             for index, label in enumerate([option.label for option in draft.options] + [OTHER_LABEL]):
                 focused = draft.editable and index == draft.cursor
@@ -929,6 +926,12 @@ class Panel(App):
                 if index == draft.other_index and draft.other and checked:
                     rows.append((indent, draft.other, ""))
                 keys += [("option", index)] * (len(rows) - first)
+        if draft.recommendation:
+            rows.extend((("", "", ""), ("", draft.recommendation, "")))
+            keys.extend((None, ("post", "recommendation")))
+        if draft.kind is None and not draft.editable and draft.other:
+            rows.append(("答覆：", draft.other, ""))
+            keys.append(("post", "answer"))
         if draft.unmatched:
             rows.append(("", f"目前答覆無法對應選項：{draft.unmatched}", "dim"))
             keys.append(("post", "unmatched"))

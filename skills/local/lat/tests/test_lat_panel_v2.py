@@ -51,6 +51,41 @@ def revision_upsert_worker(path, ready, start, results):
 
 
 class OptionParsingTests(unittest.TestCase):
+    def test_recommendation_is_separate_from_context_and_option_definitions(self):
+        panel = load_module()
+        footer = (
+            "➡️ A：Keep the original reason.\nA. This is advice, not an option.\n"
+            "- [ ] Advice checklist, not a selection.\n\nMore advice."
+        )
+        for body, kind in (
+            ("Context.\n\nA. Alpha\n   Impact\nB. Beta", "single"),
+            ("Context.\n\n- [ ] Alpha\n- [ ] Beta", "multi"),
+            ("Context.", None),
+            ("Context.\n\nA. Alpha\n- [ ] Beta", None),
+        ):
+            with self.subTest(kind=kind, body=body):
+                item = question(f"{body}\n\n{footer}")
+                self.assertEqual(panel.question_recommendation(item), footer)
+                self.assertNotIn("➡️", panel.question_context(item))
+                parsed = panel.parse_question_options(item)
+                self.assertEqual(parsed.kind, kind)
+                self.assertEqual(len(parsed.options), 2 if kind else 0)
+                self.assertEqual(item["body"], f"{body}\n\n{footer}")
+
+    def test_no_recommendation_keeps_existing_context(self):
+        panel = load_module()
+        item = question("Context mentioning ➡️ inline.\n\nA. Alpha")
+        self.assertEqual(panel.question_recommendation(item), "")
+        self.assertEqual(panel.question_context(item), "Context mentioning ➡️ inline.")
+
+    def test_arrow_in_option_impact_keeps_all_legacy_options(self):
+        panel = load_module()
+        item = question("Context.\n\nA. Alpha\n   ➡️ Consequence\nB. Beta")
+        parsed = panel.parse_question_options(item)
+        self.assertEqual([option.key for option in parsed.options], ["A", "B"])
+        self.assertEqual(parsed.options[0].impact, "➡️ Consequence")
+        self.assertEqual(panel.question_recommendation(item), "")
+
     def test_single_options_include_indented_impact(self):
         panel = load_module()
 
@@ -237,6 +272,30 @@ class AnswerWriteTests(unittest.TestCase):
             if item["id"] == question_id
         )
         return section["revision"], self.panel.question_section_sha256(section)
+
+    def test_recommendation_rewrite_preserves_answer_and_revision_change_archives_it(self):
+        body = "## Choose?\n\nA. Alpha\nB. Beta\n\n➡️ A：Original reason.\n"
+        self.assertEqual(self.panel.upsert_question(self.questions, "Q1", body), 1)
+        revision, section_hash = self.identity("Q1")
+        saved = self.panel.write_question_answer(
+            self.questions, "Q1", revision, section_hash,
+            self.panel.QuestionAnswer("single", ("B. Beta",), "", "User note"),
+        )
+        self.assertEqual(saved["status"], "saved")
+        self.panel.submit_question_answers(
+            self.questions, {"Q1": (revision, saved["section_sha256"])},
+        )
+        before = self.questions.read_text()
+        self.assertEqual(self.panel.upsert_question(self.questions, "Q1", body), 1)
+        self.assertEqual(self.questions.read_text(), before)
+        changed = body.replace("Original reason.", "Changed reason.")
+        self.assertEqual(self.panel.upsert_question(self.questions, "Q1", changed), 2)
+        [current] = self.panel.parse_questions(self.questions.read_text())
+        self.assertEqual(current["answer"], "")
+        self.assertFalse(current["checked"])
+        self.assertIn("Changed reason.", current["body"])
+        self.assertIn("### 舊版 r1", current["raw"])
+        self.assertIn("答覆：B. Beta", current["raw"])
 
     def test_write_replaces_only_one_draft_answer(self):
         before = self.initial_text()

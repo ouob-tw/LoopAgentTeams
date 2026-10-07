@@ -109,6 +109,71 @@ class SelectorTestCase(PanelTestCase):
 
 
 class LayoutTests(SelectorTestCase):
+    async def test_recommendation_follows_all_options_without_selecting(self):
+        footer = "➡️ B：Keep this original reason.\nMore advice."
+        self.questions.write_text(SINGLE.replace("\n答覆：", f"\n{footer}\n\n答覆："))
+        app = self.make_app()
+        async with app.run_test(size=(80, 30)):
+            text = self.view(app)
+            self.assertLess(text.index("其他（自己輸入）"), text.index("➡️ B："))
+            self.assertEqual(text.count("➡️ B："), 1)
+            self.assertIn("More advice.", text)
+            self.assertEqual(app.current.selected, [])
+            self.assertFalse(app.current.submittable)
+            self.assertEqual(self.journal(), [])
+
+    async def test_recommendation_in_multi_and_text_before_answer_and_note(self):
+        footer = "➡️ A：Original advice.\nA. Advice continuation."
+        for raw, kind in ((MULTI, "multi"), (TEXT, None)):
+            with self.subTest(kind=kind):
+                self.questions.write_text(raw.replace("\n答覆：", f"\n{footer}\n\n答覆："))
+                app = self.make_app()
+                async with app.run_test(size=(80, 30)):
+                    draft = app.current
+                    self.assertEqual(draft.kind, kind)
+                    self.assertEqual(draft.selected, [])
+                    self.assertIsNone(draft.answer())
+                    rows, keys = app.view_rows()
+                    text = "\n".join(row[1] for row in rows)
+                    self.assertEqual(text.count(footer), 1)
+                    if kind:
+                        self.assertEqual(len(draft.options), 3)
+                        self.assertLess(text.index("其他（自己輸入）"), text.index(footer))
+                    else:
+                        draft.status = "submitted"
+                        draft.other = "User answer"
+                    draft.note = "User note"
+                    if kind:
+                        draft.selected = [0]
+                    rows, keys = app.view_rows()
+                    texts = [row[1] for row in rows]
+                    self.assertLess(texts.index(footer), texts.index("User note"))
+                    if not kind:
+                        self.assertLess(texts.index(footer), texts.index("User answer"))
+
+    async def test_long_recommendation_wraps_and_keyboard_reads_to_end(self):
+        footer = "➡️ B：" + "很長的建議理由，完整保留原文。" * 30 + "\n最後一行。"
+        self.questions.write_text(SINGLE.replace("\n答覆：", f"\n{footer}\n\n答覆："))
+        app = self.make_app()
+        async with app.run_test(size=(27, 12)) as pilot:
+            seen = []
+            for _ in range(150):
+                seen.append(self.screen(app))
+                await pilot.press("down")
+                if "最後一行。" in self.screen(app):
+                    break
+            self.assertIn("➡️ B：", "\n".join(seen))
+            self.assertIn("最後一行。", self.screen(app))
+            self.assertEqual(app.current.selected, [])
+            self.assertEqual(self.journal(), [])
+            # Choosing an answer opposite to the advice still saves that answer.
+            await self.press(pilot, "a")
+            self.assertEqual(app.current.selected, [0])
+            await self.press(pilot, "right", "enter")
+            self.assertIn("答覆：A. 合併到 dev，不推送", self.text())
+            self.assertIn("- [x] 送出", self.text())
+            self.assertIn(footer, self.text())
+
     async def test_opens_on_pending_tabs_with_options_impacts_and_footer(self):
         app = self.make_app()
         async with app.run_test(size=(80, 30)):

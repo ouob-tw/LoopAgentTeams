@@ -8,7 +8,8 @@ Public API used by the Textual panel and LAT controller:
   ``<questions parent>/panel-journal.jsonl``.
 * ``parse_questions``, ``upsert_question``, and ``set_question_status`` model
   and update natural-language question sections without touching other sections.
-* V2 selector UI flow: ``parse_question_options``, ``question_context``, and
+* V2 selector UI flow: ``parse_question_options``, ``question_context``,
+  ``question_recommendation``, and
   ``parse_question_answer`` read one ``parse_questions`` result;
   ``question_section_sha256`` captures its guarded-write identity;
   ``write_question_answer`` saves (or, with ``None``, clears) a draft while
@@ -323,6 +324,21 @@ class QuestionOptions(NamedTuple):
 
 _SINGLE_OPTION = re.compile(r"^(?P<key>[A-Z])\.\s+(?P<label>\S.*)$")
 _MULTI_OPTION = re.compile(r"^- \[[ xX]\]\s+(?P<label>\S.*)$")
+_RECOMMENDATION = re.compile(r"(?:\A|(?<=\n\n))➡\ufe0f?")
+
+
+def _question_display_parts(question):
+    """Split an unindented arrow paragraph from selectable content."""
+    body = question.get("body") or ""
+    marker = _RECOMMENDATION.search(body)
+    if marker is None:
+        return body, ""
+    return body[:marker.start()].rstrip("\n"), body[marker.start():].strip("\n")
+
+
+def question_recommendation(question):
+    """Read the original trailing recommendation, without changing stored text."""
+    return _question_display_parts(question)[1]
 
 
 def _option_items(lines, pattern, *, keyed):
@@ -351,7 +367,7 @@ def parse_question_options(question):
     multi-select options. Mixed or absent styles deliberately fall back to
     free-form input and include a user-facing reason.
     """
-    lines = (question.get("body") or "").splitlines()
+    lines = _question_display_parts(question)[0].splitlines()
     single = _option_items(lines, _SINGLE_OPTION, keyed=True)
     multi = _option_items(lines, _MULTI_OPTION, keyed=False)
     if single and multi:
@@ -365,7 +381,7 @@ def parse_question_options(question):
 
 def question_context(question):
     """Return the body without the option lines and impacts the selector lists."""
-    lines = (question.get("body") or "").splitlines()
+    lines = _question_display_parts(question)[0].splitlines()
     kind = parse_question_options(question).kind
     if kind is None:
         return "\n".join(lines).strip("\n")
