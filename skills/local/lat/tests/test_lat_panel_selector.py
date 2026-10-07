@@ -109,6 +109,20 @@ class SelectorTestCase(PanelTestCase):
 
 
 class LayoutTests(SelectorTestCase):
+    async def test_recommendation_after_whitespace_blank_line_keeps_selector(self):
+        footer = "➡️ B：Original advice.\n- [ ] Advice checklist."
+        for blank in (" ", "\t"):
+            with self.subTest(blank=blank):
+                self.questions.write_text(SINGLE.replace("\n答覆：", f"{blank}\n{footer}\n\n答覆："))
+                app = self.make_app()
+                async with app.run_test(size=(80, 30)):
+                    self.assertEqual(app.current.kind, "single")
+                    self.assertEqual(len(app.current.options), 3)
+                    text = self.view(app)
+                    self.assertLess(text.index("其他（自己輸入）"), text.index("➡️ B："))
+                    self.assertEqual(text.count("➡️ B："), 1)
+                    self.assertEqual(app.current.selected, [])
+
     async def test_recommendation_follows_all_options_without_selecting(self):
         footer = "➡️ B：Keep this original reason.\nMore advice."
         self.questions.write_text(SINGLE.replace("\n答覆：", f"\n{footer}\n\n答覆："))

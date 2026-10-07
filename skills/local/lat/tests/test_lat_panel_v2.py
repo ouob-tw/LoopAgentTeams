@@ -78,6 +78,16 @@ class OptionParsingTests(unittest.TestCase):
         self.assertEqual(panel.question_recommendation(item), "")
         self.assertEqual(panel.question_context(item), "Context mentioning ➡️ inline.")
 
+    def test_whitespace_only_blank_lines_separate_recommendation(self):
+        panel = load_module()
+        footer = "➡️ A：Reason.\n- [ ] Advice, not an option."
+        for blank in (" ", "\t", " \t "):
+            with self.subTest(blank=blank):
+                item = question(f"Context.\n\nA. Alpha\nB. Beta\n{blank}\n{footer}")
+                self.assertEqual(panel.parse_question_options(item).kind, "single")
+                self.assertEqual(panel.question_context(item), "Context.")
+                self.assertEqual(panel.question_recommendation(item), footer)
+
     def test_arrow_in_option_impact_keeps_all_legacy_options(self):
         panel = load_module()
         item = question("Context.\n\nA. Alpha\n   ➡️ Consequence\nB. Beta")

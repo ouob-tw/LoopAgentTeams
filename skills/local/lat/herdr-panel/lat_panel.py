@@ -324,7 +324,7 @@ class QuestionOptions(NamedTuple):
 
 _SINGLE_OPTION = re.compile(r"^(?P<key>[A-Z])\.\s+(?P<label>\S.*)$")
 _MULTI_OPTION = re.compile(r"^- \[[ xX]\]\s+(?P<label>\S.*)$")
-_RECOMMENDATION = re.compile(r"(?:\A|(?<=\n\n))➡\ufe0f?")
+_RECOMMENDATION = re.compile(r"(?:\A|\n[ \t]*\n)(?P<recommendation>➡\ufe0f?)")
 
 
 def _question_display_parts(question):
@@ -333,7 +333,10 @@ def _question_display_parts(question):
     marker = _RECOMMENDATION.search(body)
     if marker is None:
         return body, ""
-    return body[:marker.start()].rstrip("\n"), body[marker.start():].strip("\n")
+    return (
+        body[:marker.start()].rstrip("\n"),
+        body[marker.start("recommendation"):].strip("\n"),
+    )
 
 
 def question_recommendation(question):
