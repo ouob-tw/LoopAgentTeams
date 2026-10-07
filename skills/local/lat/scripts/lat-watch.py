@@ -267,7 +267,7 @@ def nudge_transcript_only(transcript, offset, size, client):
     """Recognize an exact watcher prompt plus client bookkeeping/error/echo only.
 
     Unknown, replaced, oversized or corrupt data keeps the old progress behavior.
-    A tool, substantive assistant text, or any other user input is progress.
+    A tool, assistant text longer than 200 characters, or other user input is progress.
     """
     if (client.lower() not in ('claude', 'codex') or not transcript
             or size <= offset or size - offset > TRANSCRIPT_TAIL_BYTES):
@@ -282,8 +282,6 @@ def nudge_transcript_only(transcript, offset, size, client):
     except (OSError, ValueError, RecursionError):
         return False
     saw_nudge = False
-    # Exact acknowledgement/echo only; free-form assistant work remains progress.
-    echoes = {NUDGE.rstrip('.!').casefold(), 'ok', 'okay', 'acknowledged', 'understood'}
     for record in records:
         if not isinstance(record, dict):
             return False
@@ -295,7 +293,17 @@ def nudge_transcript_only(transcript, offset, size, client):
         if not isinstance(message, dict):
             return False
         role = message.get('role', kind if client.lower() == 'claude' else None)
-        if kind == 'event_msg' and payload.get('type') in ('user_message', 'agent_message'):
+        if kind == 'event_msg' and payload.get('type') == 'item_completed':
+            item = payload.get('item', {})
+            if not isinstance(item, dict):
+                return False
+            if item.get('type') == 'Reasoning':
+                continue
+            if item.get('type') not in ('UserMessage', 'AgentMessage'):
+                return False
+            role = 'user' if item['type'] == 'UserMessage' else 'assistant'
+            content = item.get('content', [])
+        elif kind == 'event_msg' and payload.get('type') in ('user_message', 'agent_message'):
             role = 'user' if payload['type'] == 'user_message' else 'assistant'
             content = payload.get('message')
         elif (kind == 'event_msg' and payload.get('type') == 'task_complete'
@@ -307,7 +315,7 @@ def nudge_transcript_only(transcript, offset, size, client):
         if role in ('user', 'assistant'):
             if isinstance(content, list):
                 if any(not isinstance(item, dict) or item.get('type') not in
-                       ('text', 'input_text', 'output_text')
+                       ('text', 'Text', 'input_text', 'output_text')
                        or not isinstance(item.get('text'), str) for item in content):
                     return False
                 content = ''.join(item.get('text', '') for item in content)
@@ -319,18 +327,26 @@ def nudge_transcript_only(transcript, offset, size, client):
                 saw_nudge = True
             elif not saw_nudge:
                 return False
-            elif not record.get('isApiErrorMessage') and content.strip().rstrip('.!').casefold() not in echoes:
+            elif not record.get('isApiErrorMessage') and len(content.strip()) > 200:
                 return False
         elif client.lower() == 'claude':
-            if kind == 'system' and record.get('subtype') == 'turn_duration':
+            # Snapshots also precede the injected user record; deltas still reset.
+            if kind in ('file-history-snapshot', 'mode', 'atis-latch', 'last-prompt',
+                        'ai-title', 'permission-mode', 'cost-state'):
+                continue
+            if kind == 'system' and record.get('subtype') in (
+                    'turn_duration', 'stop_hook_summary', 'away_summary', 'informational'):
                 continue
             if kind == 'attachment' and saw_nudge:
                 continue
             return False
         elif kind == 'event_msg' and payload.get('type') in (
-                'task_started', 'task_complete', 'token_count', 'error'):
+                'task_started', 'task_complete', 'token_count', 'error',
+                'thread_settings_applied', 'turn_aborted'):
             continue
-        elif kind == 'turn_context':
+        elif kind in ('turn_context', 'world_state', 'token_usage_record'):
+            continue
+        elif kind == 'response_item' and payload.get('type') == 'reasoning':
             continue
         else:
             return False
