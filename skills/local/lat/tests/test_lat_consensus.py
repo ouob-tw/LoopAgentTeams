@@ -64,6 +64,7 @@ class ConsensusTests(unittest.TestCase):
             '**共識 v2**\n- **主題**：結論（v3 改）',
             '**共識 v2**\n- **主題**：結論（v2改）',
             '**共識 v2**\n- **主題**：結論（v2 改）尾巴',
+            '**共識 v2**\n- **主題**：結論（v2 改）「尾巴」',
             '**共識 v2**\n- **主題**：結論(v2 改)',
         ]
         before = self.record.read_bytes()

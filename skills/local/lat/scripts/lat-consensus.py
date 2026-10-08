@@ -47,10 +47,10 @@ def check_consensus(text, last_confirmed=None):
         if reason:
             problems.append(f'第 {i + 1} 行：{reason}')
         # A version-shaped annotation must be the one canonical marker at the line end.
-        annotation = re.sub(r'「[^」]*」|`[^`]*`', '', line)
+        annotation = re.sub(r'「[^」]*」|`[^`]*`', lambda match: ' ' * len(match[0]), line)
         starts = list(re.finditer(r'[（(]v', annotation))
         if starts:
-            marker = re.search(r'（v([1-9][0-9]*) 改）$', annotation)
+            marker = re.search(r'（v([1-9][0-9]*) 改）$', line)
             if not marker or len(starts) != 1:
                 problems.append(f'第 {i + 1} 行：變動記號須在行尾，格式為 （v<M> 改）')
             else:
