@@ -28,9 +28,9 @@ Designer 用 /to-spec 整理正文後、發布或更新 tracker 前，在 issue 
 ```bash
 uv run --no-project python "$lat_dir/scripts/lat-consensus.py" \
   --spec "$spec_body" --decisions "$decisions" --decision-id "$question_id"
-# 省略 --decision-id：只檢查，不寫任何檔案；--spec -：讀標準輸入。
-# 已有真人確認版本時另加 --last-confirmed-version <版本數字>。
 ```
+
+省略 `--decision-id` 時只檢查，不寫任何檔案；`--spec -` 讀標準輸入。已有真人確認版本時另加 `--last-confirmed-version <版本數字>`。
 
 不合格會列出原因與行號、非零結束，待決紀錄不變。通過印出並寫入唯一一行 `- consensus: v<N> <sha256>`；同內容可重跑，內容變更會更新。雜湊去除每行行尾空白與區塊前後空行；紀錄不存在時報錯，不建立檔案。Spec 每次修改都重跑。
 
