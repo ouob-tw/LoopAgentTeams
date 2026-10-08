@@ -9,7 +9,7 @@
 
   | 類別 | 適用 |
   |---|---|
-  | `spec-confirmation` | Spec 確認題，含確認後實質改版的再確認。 |
+  | `spec-confirmation` | Spec 確認題，含確認後實質改版的再確認；須依 [Spec 共識](consensus.md) 跑工具並寫明版本。 |
   | `requirement-discussion` | Spec 確認前的需求討論題。 |
   | `account-quota` | 沒有可用訂閱帳號、Claude 額度用完等規則明定由使用者決定的事。參謀本身缺一家時依「模型與降級」自動處理，不屬此例外。 |
 

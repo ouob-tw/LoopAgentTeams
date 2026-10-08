@@ -85,6 +85,48 @@ class SessionTests(unittest.TestCase):
         payload.update(overrides)
         return self.cli('hook', '--client', client, payload=payload, session=OTHER)
 
+    def test_stop_spec_confirmation_consensus_contract_and_recovery(self):
+        receipt = '- consensus: v3 ' + 'a' * 64 + '\n'
+        message = ('❓ **LAT-A r1** 確認 Spec\n'
+                   'Spec：https://example.test/issues/83，共識 v3。\n'
+                   'Spec 審查：通過；未解決項目：無。\n'
+                   'A. 照共識做\nB. 調整\nDECIDE: LAT-A r1 請選 A／B。')
+        failures = [
+            ('', message, '缺共識行'),
+            ('- consensus: v3 wrong\n', message, '共識行格式錯'),
+            (receipt + receipt, message, '共識行格式錯'),
+            (receipt, message.replace('共識 v3', '共識'), '訊息沒寫共識版本'),
+            (receipt, message.replace('共識 v3', '共識 v2'), '版本與檢查過的不同'),
+            (receipt, message.replace('共識 v3', '共識 v3、共識 v2'), '出現多個不同共識版本'),
+        ]
+        for client in ('codex', 'claude'):
+            self.write_legacy_record(client=client)
+            questions = self.bind_stop_panel(client)
+            questions.write_text('## 確認 Spec\nLAT-A · r1 · 待答\n')
+            binding_path = self.root / 'plugin-config/bindings.json'
+            original = binding_path.read_text()
+            for bound in (False, True):
+                binding_path.write_text(original if bound else '{"version": 2, "bindings": {}}')
+                path = self.decisions / 'LAT-A.md'
+                prefix = '- status: pending\n- AdViSoR: ExEmPt SPEC-CONFIRMATION note\n'
+                for record, invalid_message, reason in failures:
+                    with self.subTest(client=client, bound=bound, reason=reason):
+                        path.write_text(prefix + record)
+                        self.assert_stop_block(self.stop_hook(invalid_message, client), reason)
+                        warning = json.loads(self.stop_hook(invalid_message, client, stop_hook_active=True).stdout)
+                        self.assertEqual(set(warning), {'systemMessage'})
+                        self.assertIn(reason, warning['systemMessage'])
+                        path.write_text(prefix + receipt)
+                        self.assert_silent(self.stop_hook(message, client, stop_hook_active=True))
+                path.write_bytes(b'\xff')
+                warning = json.loads(self.stop_hook(message, client).stdout)
+                self.assertEqual(set(warning), {'systemMessage'})
+                self.assertIn('檢查發生錯誤，未攔下', warning['systemMessage'])
+                for advisor in ('exempt requirement-discussion', 'needs-human', 'late needs-human'):
+                    path.write_text(f'- status: pending\n- advisor: {advisor}\n')
+                    self.assert_silent(self.stop_hook(message.replace('共識 v3', '共識'), client))
+            binding_path.write_text(original)
+
     def test_stop_missing_advisor_blocks_then_consulted_reask_passes(self):
         self.write_legacy_record()
         path = self.decisions / 'LAT-A.md'
@@ -102,7 +144,7 @@ class SessionTests(unittest.TestCase):
 
     def test_stop_advisor_lines_for_both_clients_bound_and_unbound(self):
         valid = ('needs-human', 'needs-human same-family-degraded',
-                 'exempt spec-confirmation', 'exempt requirement-discussion',
+                 'exempt requirement-discussion',
                  'exempt account-quota', 'late needs-human', 'late resolved',
                  'late self-check', '  NEEDS-HUMAN  ',
                  '\tExEmPt\tACCOUNT-QUOTA   note', ' LATE  SELF-CHECK ')

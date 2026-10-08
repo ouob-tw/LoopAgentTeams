@@ -23,3 +23,12 @@ uv run --no-project --with textual==8.2.8 python -m unittest discover -s tests
 5. 行為核對：已授權工作繼續；沒有真人答覆的 pending 仍阻擋；缺獨立 review 不宣告完成。負向核對同 repo 的 no-LAT session、執行 Agent、completed session 零注入。記錄 PASS／FAIL／UNPROVEN／NOT_EXECUTED。
 
 提示 token 數以 `o200k_base` 為代理，目標 ≤300；計入實際紀錄路徑。tokenizer 僅供驗證，不是 helper 依賴。hook 契約與信任機制見 [Codex 官方 hooks 文件](https://learn.chatgpt.com/docs/hooks)；已實測基準為 Codex 0.158.0。
+
+共識工具與回合結束檢查（命令入口、暫存紀錄與 hook payload；不呼叫模型）：
+
+```bash
+uv run --no-project python -m unittest discover -s "$lat_dir/tests" -p test_lat_consensus.py
+uv run --no-project python -m unittest discover -s "$lat_dir/tests" -p test_lat_session.py
+```
+
+真實 Spec 另依 tracker 設定取得最新內文，執行 `lat-consensus.py --spec <內文檔案>`（只檢查）；再以故意改壞的副本確認非零結束與行號。這項證據不由暫存範例取代；待決紀錄的寫入用有授權的紀錄或隔離測試目錄驗證。

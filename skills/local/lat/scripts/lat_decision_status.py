@@ -46,3 +46,26 @@ def read_advisor_error(path):
             return f'參謀 {words[0]} 的第二個字不在清單內：{words[1]}'
         return None
     return '沒有參謀行（- advisor:）'
+
+
+def read_spec_consensus_error(path, message):
+    """Check the receipt and message only for the first spec-confirmation advisor line."""
+    lines = Path(path).read_text(encoding='utf-8').splitlines()
+    advisor = next((line.split(':', 1)[1].strip().lower().split()
+                    for line in lines if re.match(r'^- advisor:', line, re.IGNORECASE)), [])
+    if advisor[:2] != ['exempt', 'spec-confirmation']:
+        return None
+    receipts = [line for line in lines if re.match(r'^- consensus:', line, re.IGNORECASE)]
+    if not receipts:
+        return '缺共識行；請先跑共識檢查工具'
+    receipt = re.fullmatch(r'- consensus: v([1-9][0-9]*) [0-9a-f]{64}', receipts[0])
+    if len(receipts) != 1 or not receipt:
+        return '共識行格式錯；須只有一行 - consensus: v<N> <sha256>'
+    versions = set(re.findall(r'共識 v([1-9][0-9]*)(?![0-9A-Za-z_])', message))
+    if not versions:
+        return '訊息沒寫共識版本（共識 v<N>）'
+    if len(versions) > 1:
+        return '訊息出現多個不同共識版本'
+    if versions != {receipt[1]}:
+        return '訊息版本與檢查過的不同'
+    return None
