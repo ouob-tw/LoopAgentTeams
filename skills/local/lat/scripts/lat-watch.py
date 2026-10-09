@@ -25,6 +25,7 @@ PROMPT_SECONDS = 5 * 60
 PROMPT_SETTLE_SECONDS = 1
 PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
+QUOTA_CLEAR_ROUNDS = 2
 FAILURE_REPEAT_SECONDS = 60 * 60
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 # Successful deliveries awaiting a session-record save; retained across retry cycles.
@@ -103,6 +104,7 @@ class Action(NamedTuple):
     message: str = ''
     text: str = ''
     category: str = ''
+    label: str = ''
 
 
 class Process(NamedTuple):
@@ -152,7 +154,8 @@ def owner_notice(observation, state, now, reason):
                f'{stalled_minutes} minutes and {detail}. No terminal nudge was injected. '
                f'Action needed: {action_needed}.')
     kind = 'notify-user' if observation.is_orchestrator else 'notify-orchestrator'
-    return Action(kind, observation.agent, message)
+    return Action(kind, observation.agent, message,
+                  label='待核准' if reason == 'blocked' else '')
 
 
 def quota_notice(observation):
@@ -168,7 +171,27 @@ def quota_notice(observation):
                f'{observation.model}. Matched line: {issue.line}{line_end}{reset} '
                f'No terminal nudge was injected. Action needed: {action_needed}.')
     kind = 'notify-user' if observation.is_orchestrator else 'notify-orchestrator'
-    return Action(kind, observation.agent, message, category='quota')
+    return Action(kind, observation.agent, message, category='quota',
+                  label='模型滿載' if issue.kind == 'model-capacity' else '額度不足')
+
+
+def quota_dedupe(previous, issue):
+    """Keep one notice per quota episode; progress alone never re-arms it."""
+    previous = previous or {}
+    notified = previous.get('quota_notified', False)
+    reset_time = previous.get('quota_reset_time')
+    clear_rounds = 0
+    if issue is None:
+        if notified:
+            clear_rounds = previous.get('quota_clear_rounds', 0) + 1
+        if clear_rounds >= QUOTA_CLEAR_ROUNDS:
+            notified, reset_time, clear_rounds = False, None, 0
+    else:
+        if issue.reset_time and reset_time and issue.reset_time != reset_time:
+            notified = False
+        reset_time = issue.reset_time or reset_time
+    return {'quota_notified': notified, 'quota_reset_time': reset_time,
+            'quota_clear_rounds': clear_rounds}
 
 
 def quota_reset_time(line):
@@ -508,7 +531,6 @@ def decide(previous, observation, now):
             'orchestrator_notified': False,
             'orchestrator_handled': False,
             'user_notified': False,
-            'quota_notified': False,
             'quota_active': observation.quota_issue is not None,
         }
     else:
@@ -517,7 +539,6 @@ def decide(previous, observation, now):
         state.setdefault('orchestrator_notified', False)
         state.setdefault('orchestrator_handled', False)
         state.setdefault('user_notified', False)
-        state.setdefault('quota_notified', False)
         state['quota_active'] = observation.quota_issue is not None
         if state.get('nudged') and 'nudged_at' not in state:
             state['nudged_at'] = now
@@ -549,8 +570,7 @@ def decide(previous, observation, now):
         state.pop('prompt_recovery_attempted', None)
         state.pop('prompt_recovery_uncertain', None)
     actions = ()
-    if observation.quota_issue is None:
-        state['quota_notified'] = False
+    state.update(quota_dedupe(previous, observation.quota_issue))
     stalled = now - state['last_progress_at'] >= IDLE_SECONDS
     active_stalled = now - state['last_progress_at'] >= ACTIVE_SECONDS
     finished_active = (observation.client.lower() == 'codex'
@@ -1287,14 +1307,38 @@ def perform_notify_orchestrator(action, orchestrator, workspace=None):
     return {'delivery': 'hcom'}
 
 
+def herdr_label(kind, identifier):
+    result = run_json(['herdr', kind, 'get', identifier])['result'][kind]
+    return result['label'], result
+
+
+def popup_title(agent, orchestrator, label):
+    """One short line for the Herdr popup: client, reason, then where the agent is."""
+    client = ''
+    place = []
+    try:
+        info = list_hcom(orchestrator)[agent]
+        client = info.get('tool') or ''
+        _label, pane = herdr_label('pane', info['launch_context']['pane_id'])
+        tab_label, tab = herdr_label('tab', pane['tab_id'])
+        place = [herdr_label('workspace', tab['workspace_id'])[0], tab_label]
+    except (OSError, ValueError, KeyError, TypeError):
+        pass
+    return ' '.join([f'{client}{label}:', *map(str, place), agent])
+
+
+def show_popup(agent, orchestrator, label):
+    run_command(
+        ['herdr', 'notification', 'show', popup_title(agent, orchestrator, label),
+         '--sound', 'request'],
+        failure='Herdr notification failed',
+    )
+
+
 def perform_notify_user(action, orchestrator, workspace=None):
     send_notification(action, orchestrator, 'inform')
     try:
-        run_command(
-            ['herdr', 'notification', 'show', 'LAT needs attention',
-             '--body', action.message, '--sound', 'request'],
-            failure='Herdr notification failed',
-        )
+        show_popup(action.agent, orchestrator, action.label or '停住')
     except (OSError, ValueError) as error:
         return {'delivery': 'hcom-only', 'herdr_error': str(error)}
     return {'delivery': 'hcom+herdr'}
@@ -1348,12 +1392,7 @@ def read_prompt_status(agent, orchestrator):
     return text, unread_count
 
 
-def prompt_excerpt(text, limit=20):
-    compact = ' '.join(text.splitlines())
-    return compact if len(compact) <= limit else compact[:limit] + '…'
-
-
-def send_prompt_notification(orchestrator, message, popup):
+def send_prompt_notification(agent, orchestrator, message):
     result = {}
     try:
         send_notification(Action('notify-user', orchestrator, message), orchestrator, 'inform')
@@ -1362,11 +1401,7 @@ def send_prompt_notification(orchestrator, message, popup):
         result['hcom'] = 'failed'
         result['hcom_error'] = str(error)
     try:
-        run_command(
-            ['herdr', 'notification', 'show', 'LAT needs attention',
-             '--body', popup, '--sound', 'request'],
-            failure='Herdr notification failed',
-        )
+        show_popup(agent, orchestrator, '輸入未送出')
         result['herdr'] = 'done'
     except (OSError, ValueError) as error:
         result['herdr'] = 'failed'
@@ -1377,17 +1412,14 @@ def send_prompt_notification(orchestrator, message, popup):
 def perform_prompt_recovery(action, orchestrator, workspace=None):
     if workspace is None:
         raise ValueError('Prompt recovery requires a workspace')
-    excerpt = prompt_excerpt(action.text)
     try:
         saved = backup_prompt_text(workspace, action.agent, action.text)
     except (OSError, ValueError) as error:
         reason = 'prompt text backup failed; input not cleared'
         message = (f'LAT stall watcher: agent {action.agent}. Reason: {reason}: {error}. '
                    f'Original prompt text:\n{action.text}')
-        popup = (f'{action.agent}: backup failed; input not cleared. '
-                 f'Excerpt: {excerpt!r}. No saved file.')
         return {'reason': reason, **send_prompt_notification(
-            orchestrator, message, popup)}
+            action.agent, orchestrator, message)}
 
     backspaces = 0
     reason = 'prompt text backed up and cleared'
@@ -1431,8 +1463,6 @@ def perform_prompt_recovery(action, orchestrator, workspace=None):
     message = (f'LAT stall watcher: agent {action.agent}. Reason: {reason}. '
                f'Saved file: {saved_text}. Backspaces sent: {backspaces}. '
                f'Original prompt text:\n{action.text}')
-    popup = (f'{action.agent}: {reason}. Excerpt: {excerpt!r}. '
-             f'Saved file: {saved_text}')
     return {
         'reason': reason,
         'saved_path': saved_text,
@@ -1440,7 +1470,7 @@ def perform_prompt_recovery(action, orchestrator, workspace=None):
         '_remaining_input': current,
         '_prompt_rearm': rearm,
         '_prompt_uncertain': uncertain,
-        **send_prompt_notification(orchestrator, message, popup),
+        **send_prompt_notification(action.agent, orchestrator, message),
     }
 
 

@@ -288,9 +288,14 @@ class WatchDecisionTests(unittest.TestCase):
         state, actions = watch.decide(state, cleared, now=601)
         self.assertEqual(actions, ())
         state, actions = watch.decide(state, exhausted, now=602)
+        self.assertEqual(actions, ())
+
+        state, _ = watch.decide(state, cleared, now=603)
+        state, _ = watch.decide(state, cleared, now=604)
+        state, actions = watch.decide(state, exhausted, now=605)
         self.assertEqual(actions[0].kind, 'notify-orchestrator')
 
-    def test_quota_issue_on_orchestrator_notifies_user_and_progress_rearms_it(self):
+    def test_quota_issue_on_orchestrator_notifies_user_once_despite_progress(self):
         watch = load_watch()
         issue = watch.QuotaIssue(
             'usage-limit', '⚠ Usage limit reached · limit resets 9:50pm', '9:50pm')
@@ -305,8 +310,14 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertIn('user decides', actions[0].message)
         self.assertFalse(state['nudged'])
 
-        progressed = exhausted._replace(transcript_size=101)
+        self.assertEqual(actions[0].label, '額度不足')
+
+        progressed = exhausted._replace(transcript_size=101, event_id=11)
         state, actions = watch.decide(state, progressed, now=1)
+        self.assertEqual(actions, ())
+
+        later = progressed._replace(quota_issue=issue._replace(reset_time='2:50am'))
+        state, actions = watch.decide(state, later, now=2)
         self.assertEqual(actions[0].kind, 'notify-user')
 
     def test_wait_declaration_suppresses_nudge_until_it_is_released(self):
@@ -2224,10 +2235,38 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual(self.hcom_log.read_text().splitlines(), [
             'send @orch --intent request --from lat-watch --name orch -- orchestrator detail',
             'send @orch --intent inform --from lat-watch --name orch -- user detail',
+            'list --json --name orch',
         ])
         self.assertEqual(self.herdr_log.read_text().splitlines(), [
-            'notification show LAT needs attention --body user detail --sound request',
+            'notification show 停住: worker-open --sound request',
         ])
+
+    def test_user_popup_is_one_line_with_client_workspace_tab_and_agent(self):
+        watch = load_watch()
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf \'%s\\n\' \'[{"name":"orch","tool":"claude",'
+            '"launch_context":{"pane_id":"w1:p1"}}]\'\n'
+        )
+        herdr = Path(self.env['PATH'].split(':', 1)[0]) / 'herdr'
+        herdr.write_text(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HERDR_LOG"\n'
+            'case "$1" in\n'
+            '  pane) printf \'%s\\n\' \'{"result":{"pane":{"label":"p","tab_id":"w1:t1"}}}\';;\n'
+            '  tab) printf \'%s\\n\' \'{"result":{"tab":{"label":"STUDY",'
+            '"workspace_id":"w1"}}}\';;\n'
+            '  workspace) printf \'%s\\n\' \'{"result":{"workspace":{"label":"LAT"}}}\';;\n'
+            'esac\n'
+        )
+        herdr.chmod(0o755)
+
+        with patch.dict(os.environ, self.env):
+            watch.perform(watch.Action('notify-user', 'orch', 'long detail',
+                                       category='quota', label='額度不足'), 'orch')
+
+        self.assertEqual(self.herdr_log.read_text().splitlines()[-1],
+                         'notification show claude額度不足: LAT STUDY orch --sound request')
 
     def test_user_notification_degrades_to_hcom_and_reports_herdr_failure(self):
         herdr = Path(self.env['PATH'].split(':', 1)[0]) / 'herdr'
@@ -2243,6 +2282,7 @@ class WatchCliTests(unittest.TestCase):
         self.assertIn('unavailable', result['herdr_error'])
         self.assertEqual(self.hcom_log.read_text().splitlines(), [
             'send @orch --intent inform --from lat-watch --name orch -- user detail',
+            'list --json --name orch',
         ])
 
     def test_prompt_recovery_saves_0600_then_clears_and_notifies_with_full_text(self):
@@ -2276,12 +2316,11 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual(len(injects), 2)
         hcom_note = next(command[-1] for command in commands
                          if command[:2] == ['hcom', 'send'])
-        popup = next(command[command.index('--body') + 1] for command in commands
+        popup = next(command[3] for command in commands
                      if command[:3] == ['herdr', 'notification', 'show'])
         self.assertIn(original, hcom_note)
         self.assertIn(str(saved), hcom_note)
-        self.assertIn(str(saved), popup)
-        self.assertNotIn(original, popup)
+        self.assertEqual(popup, '輸入未送出: worker-open')
         self.assertEqual(result['reason'], 'prompt text backed up and cleared')
 
     def test_prompt_recovery_waits_for_delayed_terminal_redraw_after_each_key(self):
