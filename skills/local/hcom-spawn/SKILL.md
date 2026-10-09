@@ -11,7 +11,7 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 ## 選模型與 effort
 
-使用者指定的模型與 effort 優先。使用者只說「Codex」或「Claude」時，用該 client 的預設模型。未指定時：前端任務用 Claude，簡單的用 `claude-sonnet-5-5`、複雜的用 `claude-opus-5-5`；後端任務用 Codex（`gpt-6.1-sol`，簡單複雜都從 `medium` 起）；其他或混合任務依任務內容選。
+使用者指定的模型與 effort 優先。使用者只說「Codex」或「Claude」時，用該 client 的預設模型。未指定時：前端任務用 Claude，簡單、中等、中高的用 `claude-sonnet-5-5`、複雜的用 `claude-opus-5-5`；後端任務用 Codex（`gpt-6.1-sol`，簡單複雜都從 `medium` 起）；其他或混合任務依任務內容選。
 
 | 模型 | 起始 effort |
 | --- | --- |
@@ -83,6 +83,7 @@ hcom send @<agent> --intent request --name <自身名稱> --file <訊息檔路�
 溝通語言：Agent 之間的所有溝通（hcom 訊息、交接、回報）一律使用英文
 
 回報方式：`hcom send @<自身名稱> --name <你的名稱>`。忘記語法就跑 `hcom <指令> --help`，不要猜。
+訊息一律指定對象：`@<名稱>` 給個人、`@<tag>-` 給一組。不帶 `@` 的 `hcom send` 會發給所有 Agent，禁止使用。
 "沒有人看你的對話視窗，不需要在視窗輸出說明，所有回報都用 `hcom send`"，此規則務必完整轉達。
 ```
 
@@ -146,6 +147,10 @@ HCOM 0.7.27 / Codex CLI 0.159.3 實測：未附 effort 接回保留原 low，附
 - Claude CLI 啟動時不驗證模型 ID，打錯的 ID 照樣啟動並顯示在畫面上。啟動成功不代表 ID 正確，表外模型一定要先查證。
 - 不是每個模型都在畫面或 transcript 顯示 effort，實測 Haiku 4.5 就沒有顯示。
 - 忘記語法先跑 `hcom <指令> --help`，不要猜參數。
+
+## 禁止全員廣播
+
+`hcom send` 不帶 `@` 對象會發給主機上所有 Agent，包含其他流程的。自己也只發給個人或 `@<tag>-` 群組。主機裝有攔截 hook 時，這類指令會被擋下並提示改法；安裝方式見 [references/broadcast-guard.md](references/broadcast-guard.md)。
 
 ## Agent 沉默、卡住或額度耗盡
 
