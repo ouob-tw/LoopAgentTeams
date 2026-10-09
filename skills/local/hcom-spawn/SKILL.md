@@ -11,20 +11,28 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 ## 選模型與 effort
 
-使用者指定的模型與 effort 優先。使用者只說「Codex」或「Claude」時，用該 client 的預設模型。未指定時：前端任務用 Claude，簡單、中等、中高的用 `claude-sonnet-5-5`、複雜的用 `claude-opus-5-5`；後端任務用 Codex（`gpt-6.1-sol`，簡單複雜都從 `medium` 起）；其他或混合任務依任務內容選。
+使用者沒指定時，依任務查下表。前後端分工只看任務，不因為目前 client 的內建 Agent 做不到就改分工。
 
-| 模型 | 起始 effort |
-| --- | --- |
-| `gpt-6.1-sol`（後端預設） | `medium` |
-| `gpt-6-astra` | 簡單任務 `low`、複雜任務 `medium` |
-| `gpt-5.6-sol`、`claude-opus-5-5`、`claude-sonnet-5-5`、其他 | `medium` |
+| 任務 | 模型 | 起始 effort | 卡住時依序升級 |
+| --- | --- | --- | --- |
+| 前端，複雜以外 | `claude-sonnet-5-5` | `medium` | 換 `claude-opus-5-5` `medium` → `high` → `xhigh` |
+| 前端，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` |
+| 後端，不分難度 | `gpt-6.1-sol` | `medium` | `high` → 換 `gpt-6-astra` `high` |
+| 其他或混合 | 依任務內容選上面一列 | | |
+| 使用者或呼叫的技能指定的模型 | 照指定 | 照指定，沒說就 `medium` | 不換模型，沿 `low` → `medium` → `high` → `xhigh` 一次升一級 |
 
-**簡單任務**：查資料、讀文件或程式碼回答問題、跑指令收集結果、單一檔案小修改、照明確指示改文字。
-**複雜任務**：跨檔案實作、除錯、設計、審查、需自行權衡方案。
+**複雜任務**：跨檔案實作、除錯、設計、審查、需自行權衡方案。其餘都不算複雜。
 
-上表是常用預設，不是白名單。使用者指定表外模型時，先用工具查該 client 的可用模型，必要時查官方文件，確認正確 ID、可用性與支援的 effort。能唯一對應就用；有歧義或無法使用才詢問，不擅自換模型。表外模型從 `medium` 起；不支援時用已查證的可用級別並說明。
+只用該模型支援的 effort。升級到最後一格、該模型最高可用級別或使用者給的上限仍卡住，就回報使用者。怎樣算卡住、升級與換模型的操作步驟，見 [references/troubleshooting.md](references/troubleshooting.md) 的「卡住時升級 effort」。
 
-啟動時明確傳入模型 ID 與 effort，不依賴隱含預設。前後端分工只看任務，不因為目前 client 的內建 Agent 做不到就改分工。
+使用者的指定優先於上表：
+
+- 只說「Codex」時用 `gpt-6.1-sol` `medium`；只說「Claude」時，複雜任務用 `claude-opus-5-5` `medium`，其餘用 `claude-sonnet-5-5` `medium`。不論任務是前端或後端，升級都照該模型在表中的那一列。
+- 指定了 effort 上限時，升級不超過它。
+- 指定表外模型時，先用工具查該 client 的可用模型，必要時查官方文件，確認正確 ID、可用性與支援的 effort。能唯一對應就用；有歧義或無法使用才詢問，不擅自換模型。不支援 `medium` 時用已查證的可用級別並說明。
+- Claude CLI 啟動時不驗證模型 ID，打錯的 ID 照樣啟動並顯示在畫面上，所以啟動成功不代表 ID 正確。
+
+啟動時明確傳入模型 ID 與 effort，不依賴隱含預設。
 
 ### 用自己 client 的內建 Agent 時
 
@@ -131,7 +139,7 @@ hcom r <名稱或session-ID> --go --name <自身名稱> -c 'model_reasoning_effo
 hcom r <名稱或session-ID> --go --name <自身名稱> --effort <目標 effort>                       # Claude
 ```
 
-HCOM 0.7.27 / Codex CLI 0.159.3 實測：未附 effort 接回保留原 low，附上 high 後生效。Claude 的沿用原 effort 與附上 high 覆寫行為僅在 HCOM 0.7.26 / Claude Code 2.1.284 測過，未在 0.7.27 重測。這些結果限於已測版本，更新後重新核對。
+HCOM 0.7.27 / Codex CLI 0.159.3 實測：未附 effort 接回保留原 low，附上 high 後生效。Claude 的沿用原 effort 與附上 high 覆寫行為僅在 HCOM 0.7.26 / Claude Code 2.1.284 測過，未在 0.7.27 重測。`xhigh` 未實測。這些結果限於已測版本，更新後重新核對。
 
 接回後照「啟動後核對」看畫面，再核對 session ID、工作目錄與 transcript：Codex 看新一輪的 `turn_context`（model、effort、approval_policy、sandbox_policy），Claude 看新一輪的 `message.model`、`effort`／`perTurnEffort` 及使用者訊息的 `permissionMode`。確認目標 effort、原模型與權限，並讓 Agent 接續關閉前的對話；啟動參數或「啟動成功」本身不算驗證。無法確認的項目標為未確認。
 
@@ -144,8 +152,6 @@ HCOM 0.7.27 / Codex CLI 0.159.3 實測：未附 effort 接回保留原 low，附
 - 新啟動（`hcom N <client>`）和帶 client 參數的 `r`／`f` 預設只印 `LAUNCH PREVIEW`，不加 `--go` 什麼都不會發生。不帶參數的 `hcom r <名稱>` 和 `hcom kill` 直接執行，不需要 `--go`。
 - 所有 hcom 指令都要帶 `--name <自身名稱>`，否則身分對不上。
 - `--dir` 只設程序的工作目錄，不會選 HERDR workspace。
-- Claude CLI 啟動時不驗證模型 ID，打錯的 ID 照樣啟動並顯示在畫面上。啟動成功不代表 ID 正確，表外模型一定要先查證。
-- 不是每個模型都在畫面或 transcript 顯示 effort，實測 Haiku 4.5 就沒有顯示。
 - 忘記語法先跑 `hcom <指令> --help`，不要猜參數。
 
 ## 禁止全員廣播

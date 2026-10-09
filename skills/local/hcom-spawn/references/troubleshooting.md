@@ -35,10 +35,10 @@ hcom term inject <名稱> 'You have unread hcom messages. Read them and continue
 ## 卡住時升級 effort
 
 - 有進展就維持目前 effort；單次測試失敗不算卡住。同一問題試過兩種不同方法仍無新進展才算卡住。
-- 後端預設（`gpt-6.1-sol`）卡住時：`medium` → `high`（接回同一個 session），`high` 仍卡住就換 `gpt-6-astra` `high`，不先試 Sol 更高級別。換模型照下方「換模型交接」。Astra `high` 仍卡住，回報使用者決定換新上下文或拆小任務。
-- 其他模型卡住時升一級：`low → medium → high → xhigh`，只用該模型支援的級別。`xhigh` 或最高可用級別仍卡住，回報使用者決定換模型、換新上下文或拆小任務。
-- 使用者指定的模型不自行替換，指定的 effort 上限優先。
-- 缺資訊、帳號、權限或環境問題，先處理阻礙，不靠加 thinking 重試。新任務回到起始 effort；使用者明定的 effort 上限優先。
+- 卡住時照 [SKILL.md 的「選模型與 effort」](../SKILL.md#選模型與-effort) 表格中該模型那一列的升級欄走下一格，不跳格，也不試該列沒列的級別。只用該模型支援的 effort。
+- 下一格只改 effort 時，照下方步驟接回同一個 session；下一格要換模型時，照「換模型交接」。
+- 走到最後一格、該模型最高可用級別或使用者給的上限仍卡住，回報使用者決定換模型、換新上下文或拆小任務。
+- 缺資訊、帳號、權限或環境問題，先處理阻礙，不靠加 thinking 重試。新任務回到起始 effort。
 
 選定更高 effort 後，由召喚者保留原對話升級：
 
