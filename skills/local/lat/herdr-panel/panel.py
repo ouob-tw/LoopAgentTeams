@@ -16,6 +16,7 @@ through ``lat_panel.write_question_answer``; only 送出 checks questions and
 notifies the controller. Ctrl+E toggles the V1 raw-file editor.
 """
 import asyncio
+import dataclasses
 from datetime import datetime
 import json
 import os
@@ -522,6 +523,11 @@ class Panel(App):
         super().__init__()
         theme, theme_notice = herdr_theme(os.environ if env is None else env, self.available_themes)
         if theme:
+            if not self.available_themes[theme].dark:
+                # Light themes get a pure white background instead of the theme's tint.
+                self.register_theme(dataclasses.replace(
+                    self.available_themes[theme], background="#ffffff",
+                ))
             self.theme = theme
         self.notices = {"theme": theme_notice}
         self.path = Path(path) if path else None

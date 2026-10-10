@@ -154,6 +154,7 @@ class RawEditorTests(PanelTestCase):
         app = self.make_app()
         async with app.run_test() as pilot:
             self.assertEqual(app.theme, "catppuccin-latte")
+            self.assertEqual(app.current_theme.background, "#ffffff")
             self.assertFalse(app.editor.display)
             await self.raw(pilot)
             self.assertTrue(app.editor.display)
