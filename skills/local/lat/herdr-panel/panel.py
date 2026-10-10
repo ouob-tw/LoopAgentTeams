@@ -935,7 +935,16 @@ class Panel(App):
         if draft.recommendation:
             rows.extend((("", "", ""), ("", draft.recommendation, "")))
             keys.extend((None, ("post", "recommendation")))
-        if draft.kind is None and not draft.editable and draft.other:
+        if draft.kind is None and draft.editable:
+            # The answer sits at the end of the text; Enter opens its input.
+            focused = self.focus[:2] == ("post", "answer")
+            rows.append((
+                "❯ 答覆：" if focused else "  答覆：",
+                draft.other or "（按 Enter 輸入）",
+                accent if focused else ("" if draft.other else "dim"),
+            ))
+            keys.append(("post", "answer"))
+        elif draft.kind is None and draft.other:
             rows.append(("答覆：", draft.other, ""))
             keys.append(("post", "answer"))
         if draft.unmatched:
@@ -1060,9 +1069,12 @@ class Panel(App):
         )
         self.render_status()
         if self.input_target is None:
-            self.show_text_input(draft)
+            self.show_text_input()
         # A scroll the user made stays until they act or this question changes.
-        if self.units and self.kept_scroll != (self.question_key(),):
+        # While a text answer is typed, the text stays where it is being read.
+        if self.input_target == "text":
+            self.keep_scroll()
+        elif self.units and self.kept_scroll != (self.question_key(),):
             self.kept_scroll = None
             self.call_after_refresh(self.scroll_to_focus, first, last)
 
@@ -1090,20 +1102,10 @@ class Panel(App):
         target = max(top - height // 2, padding + last - height)
         body.scroll_to(y=max(min(target, top), 0), animate=False, immediate=True)
 
-    def show_text_input(self, draft):
-        """Show an input-only question's answer box, unfocused, on its tab."""
-        shown = bool(
-            draft and draft.editable and draft.kind is None
-            and not self.raw_mode and not self.read_only
-        )
+    def show_text_input(self):
+        """Keep the answer box hidden until Enter or typing opens it."""
         label = self.query_one("#input-label", Static)
-        # Focus only through open_input, so every focused input has a target.
-        self.input.can_focus = not shown
-        if shown:
-            label.update(f"{draft.id} 答覆（Enter 或直接輸入）")
-            if self.input.text != draft.other:
-                self.input.load_text(draft.other)
-        self.input.display = label.display = shown
+        self.input.display = label.display = False
 
     def typing_target(self, draft):
         """The input a printable key types into: input-only answer or the 其他 row."""
@@ -1305,7 +1307,9 @@ class Panel(App):
         self.kept_scroll = None
         self.focus = key
         draft = self.current
-        if draft and draft.editable and key[0] == "option":
+        if draft and draft.editable and draft.kind is None and key[:2] == ("post", "answer"):
+            self.open_input("text")
+        elif draft and draft.editable and key[0] == "option":
             if draft.kind == "multi":
                 self.choose_multi(draft)
             else:
@@ -1339,7 +1343,7 @@ class Panel(App):
         draft = self.current
         self.input_target = target
         self.kept_scroll = None
-        label = {"other": OTHER_LABEL, "note": "備註", "text": "答覆"}[target]
+        label ={"other": OTHER_LABEL, "note": "備註", "text": "答覆"}[target]
         self.query_one("#input-label", Static).update(f"{draft.id} {label}")
         self.query_one("#input-label", Static).display = True
         self.input.load_text(draft.note if target == "note" else draft.other)
@@ -1363,6 +1367,8 @@ class Panel(App):
         draft = self.current
         target = self.input_target
         self.close_input()
+        if target == "text":
+            self.keep_scroll()
         if (
             target == "other" and draft and not draft.other.strip()
             and (draft.other or draft.other_index in draft.selected)

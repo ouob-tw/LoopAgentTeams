@@ -595,29 +595,40 @@ class LetterKeyTests(SelectorTestCase):
 
 
 class InputOnlyTests(SelectorTestCase):
-    async def test_input_only_question_shows_the_box_and_typing_starts_the_answer(self):
+    async def test_input_only_question_ends_with_an_answer_row_and_typing_starts_the_answer(self):
         app = self.make_app()
         async with app.run_test() as pilot:
             await self.press(pilot, "right", "right")
-            self.assertTrue(app.input.display)
-            self.assertIsNone(app.focused)
+            self.assertFalse(app.input.display)
+            self.assertIn("請自由回答。\n\n  答覆：（按 Enter 輸入）", self.view(app))
             self.assertEqual(self.status(app), "Q3：題目沒有可解析的選項，只能輸入文字")
             await self.press(pilot, *"想法", "1", "space", "enter", "x", "escape")
             self.assertTrue(self.text().endswith("答覆：想法1 \nx\n\n- [ ] 送出\n"))
             self.assertIsNone(app.focused)
-            self.assertTrue(app.input.display)
+            self.assertFalse(app.input.display)
+            self.assertIn("  答覆：想法1\n", self.view(app))
             await self.press(pilot, "enter")
             self.assertIs(app.focused, app.input)
+            self.assertTrue(app.input.display)
             await self.press(pilot, "escape", "left")
             self.assertFalse(app.input.display)
 
-    async def test_clicking_the_input_only_box_still_saves_what_is_typed(self):
+    async def test_enter_on_a_long_input_only_question_keeps_the_text_in_view(self):
+        body = "\n\n".join(f"第 {n} 段背景。" for n in range(1, 30))
+        self.questions.write_text(TEXT.replace("請自由回答。", body))
         app = self.make_app()
-        async with app.run_test() as pilot:
-            await self.press(pilot, "right", "right")
-            await pilot.click("#input")
-            await self.press(pilot, *"hi")
-            self.assertTrue(self.text().endswith("答覆：hi\n\n- [ ] 送出\n"))
+        async with app.run_test(size=(80, 16)) as pilot:
+            self.assertNotIn("答覆：", "\n".join(self.rows(app)))
+            await self.press(pilot, "pagedown")
+            reading = self.rows(app)[2]
+            await self.press(pilot, "enter")
+            self.assertIs(app.focused, app.input)
+            self.assertEqual(self.rows(app)[2], reading)
+            await self.press(pilot, *"ab")
+            self.assertEqual(self.rows(app)[2], reading)
+            await self.press(pilot, "escape")
+            self.assertEqual(self.rows(app)[2], reading)
+            self.assertNotIn("答覆：（按 Enter 輸入）", "\n".join(self.rows(app)))
 
     async def test_text_that_would_forge_a_submit_box_is_not_saved(self):
         app = self.make_app()
@@ -664,7 +675,9 @@ class DraftRestoreTests(SelectorTestCase):
             self.assertEqual(app.current.selected, [2, 0, 3])
             self.assertIn("D. [x] 其他（自己輸入）\n         x", self.view(app))
             await self.press(pilot, "right")
-            self.assertTrue(app.input.display)
+            self.assertFalse(app.input.display)
+            self.assertIn("答覆：line1\n", self.view(app))
+            await self.press(pilot, "enter")
             self.assertEqual(app.input.text, "line1\nline2")
             await pilot.press("escape")
             await self.settle(app, pilot)
@@ -1438,6 +1451,15 @@ class ClickTests(SelectorTestCase):
         row = next(number for number, line in enumerate(self.rows(app)) if text in line)
         await pilot.click(offset=(6, row))
         await pilot.pause()
+
+    async def test_clicking_the_answer_row_opens_the_input_and_saves_typing(self):
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "right", "right")
+            await self.click_row(app, pilot, "答覆：（按 Enter 輸入）")
+            self.assertIs(app.focused, app.input)
+            await self.press(pilot, *"hi")
+            self.assertTrue(self.text().endswith("答覆：hi\n\n- [ ] 送出\n"))
 
     async def test_clicking_a_tab_or_an_arrow_switches_question(self):
         app = self.make_app()
