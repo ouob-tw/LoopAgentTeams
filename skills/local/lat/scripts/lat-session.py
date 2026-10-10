@@ -230,6 +230,23 @@ def refresh_binding(record):
         pass
 
 
+def ensure_tab_label(hcom_name):
+    """Label the Herdr tab this process runs in `lat-<hcom_name>`; never raise."""
+    tab = os.environ.get('HERDR_TAB_ID')
+    if not tab:
+        return
+    label = f'lat-{hcom_name}'
+    try:
+        result = subprocess.run(['herdr', 'tab', 'get', tab], capture_output=True, text=True,
+                                timeout=5, check=True)
+        if json.loads(result.stdout)['result']['tab']['label'] == label:
+            return
+        subprocess.run(['herdr', 'tab', 'rename', tab, label], capture_output=True,
+                       timeout=5, check=True)
+    except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
+        pass
+
+
 def ensure_watcher(record, record_path, *, rebind=False):
     _, lock_path, _ = watcher_paths(record)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -244,9 +261,10 @@ def ensure_watcher(record, record_path, *, rebind=False):
             raise ValueError('Incomplete controller identity')
         dependencies(latest)
         pid = _ensure_watcher_locked(latest)
-        # Under the lock deactivate also holds, so a stopped session is not bound again.
+        # Under the lock deactivate also holds, so a stopped session is not bound or labeled.
         if rebind:
             refresh_binding(latest)
+        ensure_tab_label(latest['hcom_name'])
         return pid
 
 
