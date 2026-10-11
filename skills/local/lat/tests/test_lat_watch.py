@@ -574,6 +574,7 @@ class WatchDecisionTests(unittest.TestCase):
             transcript.write_text(json.dumps(record) + '\n')
             decisions = root / 'decisions'
             decisions.mkdir()
+            watch.write_object(watch.wait_path(root, 'waiting-agent'), declaration)
             agents = {
                 'waiting-agent': {
                     'name': 'waiting-agent', 'base_name': 'waiter',
@@ -1138,6 +1139,80 @@ class WatchCliTests(unittest.TestCase):
                          [('open.md', 'simulated read failure')])
         self.assertEqual([record['agent'] for record in records if 'agent' in record],
                          ['orch', 'sora'])
+
+    def test_failed_expiry_popup_retries_without_duplicate_conversation_note(self):
+        self.install_hcom("""#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_HCOM_LOG"
+case "$1" in
+list) printf '%s\\n' '[{"name":"orch","status":"listening","session_id":"orch-session"},{"name":"worker-open","status":"listening"}]';;
+term) if [ "$2" != inject ]; then printf '%s\\n' '{"ready":true,"prompt_empty":true,"lines":[]}'; fi;;
+events) if [ -f "$FAKE_HCOM_LOG.delivered" ]; then printf '%s\\n' '{"id":1,"type":"status","data":{"context":"deliver:lat-watch","session":"orch-session"}}';
+        else :; fi;;
+send) touch "$FAKE_HCOM_LOG.delivered";;
+esac
+""")
+        herdr = Path(self.env['PATH'].split(':', 1)[0]) / 'herdr'
+        herdr.write_text("""#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_HERDR_LOG"
+if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
+""")
+        failed = Path(str(self.herdr_log) + '.fail')
+        failed.touch()
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'orch')
+        watch.write_object(path, dict(agent='orch', target='absent', declared_at=3600,
+                                     declared_at_utc='1970-01-01T01:00:00+00:00', active=True,
+                                     expiry_count=1,
+                                     expiry_declared_at=['1970-01-01T00:00:00+00:00']))
+        self.run_cycles(watch, 7200)
+        self.assertFalse(json.loads(path.read_text()).get('expiry_notified', False))
+        failed.unlink()
+        self.run_cycles(load_watch(), 7260, 7320)
+        self.assertTrue(json.loads(path.read_text())['expiry_notified'])
+        self.assertEqual(sum(line.startswith('send ') for line in
+                             self.hcom_log.read_text().splitlines()), 1)
+        self.assertEqual(sum(line.startswith('notification show ') for line in
+                             self.herdr_log.read_text().splitlines()), 2)
+
+    def test_reply_before_same_target_redeclaration_resets_history(self):
+        self.wait_session()
+        self.install_hcom("""#!/bin/sh
+case "$1" in
+list) printf '%s\\n' '[{"name":"worker-open","base_name":"open","session_id":"worker-session"}]';;
+events) printf '%s\\n' '{"id":1,"type":"status","data":{"context":"deliver:sender","session":"worker-session","status":"active"}}';;
+esac
+""")
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(agent='worker-open', target='absent', declared_at=0,
+                                     declared_at_utc='1970-01-01T00:00:00+00:00', active=False,
+                                     released_reason='expired', expiry_count=1,
+                                     expiry_declared_at=['1970-01-01T00:00:00+00:00']))
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'absent', '--reason', 'new work')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['expiry_count'], 0)
+
+    def test_new_wait_during_expiry_delivery_is_not_overwritten(self):
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(agent='worker-open', target='absent', declared_at=0,
+                                     declared_at_utc='1970-01-01T00:00:00+00:00', active=True))
+        replacement = dict(agent='worker-open', target='new-target', declared_at=3600,
+                           declared_at_utc='1970-01-01T01:00:00+00:00', active=True)
+        def external_command(command, *args, **kwargs):
+            output = ''
+            if command[:2] == ['hcom', 'list']:
+                output = json.dumps([dict(name=name, status='listening')
+                                     for name in ('orch', 'worker-open')])
+            elif command[:2] == ['hcom', 'term'] and command[2] != 'inject':
+                output = json.dumps(dict(ready=True, prompt_empty=True, lines=[]))
+            if command[:3] == ['hcom', 'term', 'inject']:
+                watch.write_object(path, replacement)
+            return subprocess.CompletedProcess(command, 0, stdout=output, stderr='')
+        with patch.object(watch.subprocess, 'run', side_effect=external_command):
+            self.run_cycles(watch, 3600)
+        self.assertEqual(json.loads(path.read_text()), replacement)
 
     def test_cycle_extends_only_until_monitored_target_declares_wait(self):
         self.write_task('target.md', 'worker-target', 'orch', 'in progress')
