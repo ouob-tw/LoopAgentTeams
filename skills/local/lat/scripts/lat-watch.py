@@ -286,7 +286,7 @@ def codex_turn_finished(transcript):
     return finished
 
 
-def nudge_transcript_only(transcript, offset, size, client):
+def nudge_transcript_only(transcript, offset, size, client, nudge=NUDGE):
     """Recognize an exact watcher prompt plus client bookkeeping/error/echo only.
 
     Unknown, replaced, oversized or corrupt data keeps the old progress behavior.
@@ -345,7 +345,7 @@ def nudge_transcript_only(transcript, offset, size, client):
             if not isinstance(content, str):
                 return False
             if role == 'user':
-                if content != NUDGE:
+                if content != nudge:
                     return False
                 saw_nudge = True
             elif not saw_nudge:
@@ -389,7 +389,8 @@ def nudge_only_observation(previous, observation, info, orchestrator):
             or any(not isinstance(value, int) or value < 0 for value in baseline)):
         return observation
     if not nudge_transcript_only(info.get('transcript_path'), baseline[0],
-                                 observation.transcript_size, observation.client):
+                                 observation.transcript_size, observation.client,
+                                 previous.get('nudge_text', NUDGE)):
         return observation
     if observation.event_id != baseline[2]:
         events = session_events(orchestrator, info, '--last', '1000', after_id=baseline[2])
@@ -1009,6 +1010,46 @@ def wait_release_reason(declaration, participant_events, target_replied, decisio
     return None
 
 
+def decide_wait(declaration, observation, target_observation, target_state, now):
+    """Return a deadline declaration, delivery requests and lifecycle log events."""
+    if not declaration or declaration.get('kind') == 'decision':
+        return declaration, [], []
+    saved = dict(declaration)
+    actions, events = [], []
+    deadline = saved.setdefault('deadline_at', saved['declared_at'] + 60 * 60)
+    if saved.get('active', True) and now >= deadline:
+        extending = (target_observation is not None and not target_observation.wait_active
+                     and (target_observation.command_running
+                          or (target_state is not None
+                              and now - target_state['last_progress_at'] < ACTIVE_SECONDS)))
+        if extending:
+            if not saved.get('deadline_extended'):
+                events.append('wait-extended')
+                saved['deadline_extended'] = True
+            return saved, [], events
+        saved.update(active=False, released_reason='expired',
+                     released_at_utc=datetime.fromtimestamp(now, timezone.utc).isoformat(),
+                     expiry_nudge_pending=True,
+                     expiry_count=saved.get('expiry_count', 0) + 1)
+        times = [*saved.get('expiry_declared_at', []), saved['declared_at_utc']][:2]
+        saved['expiry_declared_at'] = times
+        events.append('wait-expired')
+    if saved.get('expiry_nudge_pending') and observation.prompt_empty and not observation.command_running:
+        minutes = int((now - saved['declared_at']) // 60)
+        text = (f"[lat-watch] Your wait for {saved['target']} expired after {minutes} minutes. "
+                'Check that agent status, continue your work or declare a new wait.')
+        actions.append(Action('nudge', observation.agent, text=text, category='wait-expiry'))
+    if saved.get('expiry_count', 0) >= 2 and not saved.get('expiry_notified'):
+        times = saved['expiry_declared_at']
+        message = (f"LAT stall watcher: agent {observation.agent} has consecutive expired waits "
+                   f"for {saved['target']}; declarations: {times[0]}, {times[1]}. "
+                   'Check the awaited agent and decide how to continue.')
+        actions.append(Action('notify-user' if observation.is_orchestrator
+                              else 'notify-orchestrator', observation.agent, message,
+                              category='wait-expiry'))
+    return saved, actions, events
+
+
 def pending_decision(decisions, target, *, log=None, agent=None):
     matches = [path for path in decisions.glob(f'{target}*') if path.is_file()]
     if not matches:
@@ -1160,7 +1201,8 @@ def successful_hcom_send_since(transcript, declared_at, recipient=None):
 
 
 def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agents=None):
-    if not declaration or not declaration.get('active', True):
+    if not declaration or (not declaration.get('active', True)
+                           and declaration.get('released_reason') != 'expired'):
         return None
     after = declaration['declared_at_utc']
     agent = declaration['agent']
@@ -1180,7 +1222,8 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
         and successful_hcom_send_since(transcript, after, waiting_name))
     reason = wait_release_reason(declaration, participant, target_replied, decision)
     if reason:
-        updated = dict(declaration, active=False, released_reason=reason,
+        updated = dict(declaration, active=False, expiry_count=0, expiry_declared_at=[],
+                       expiry_notified=False, expiry_nudge_pending=False, released_reason=reason,
                        released_at_utc=datetime.now(timezone.utc).isoformat())
         write_object(wait_path(workspace, agent), updated)
     return reason
@@ -1287,7 +1330,7 @@ def action_record(action):
 
 def perform_nudge(action, orchestrator, workspace=None):
     run_command(
-        ['hcom', 'term', 'inject', action.agent, NUDGE,
+        ['hcom', 'term', 'inject', action.agent, action.text or NUDGE,
          '--enter', '--name', orchestrator],
         failure=f'hcom inject failed for {action.agent}',
     )
@@ -1634,6 +1677,15 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             'actions': [],
         })
         states.pop(agent)
+    observations = {}
+
+    def current_observation(agent):
+        if agent not in observations:
+            observed = observe(workspace, decisions, orchestrator, agent, hcom[agent], cards.get(agent))
+            observations[agent] = nudge_only_observation(
+                states.get(agent), observed, hcom[agent], orchestrator)
+        return observations[agent]
+
     for agent in agents:
         info = hcom.get(agent)
         previous = states.get(agent, {})
@@ -1684,10 +1736,36 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             })
             continue
         try:
-            observation = observe(
-                workspace, decisions, orchestrator, agent, hcom[agent], cards.get(agent))
+            observation = current_observation(agent)
             previous = states.get(agent)
-            observation = nudge_only_observation(previous, observation, hcom[agent], orchestrator)
+            declaration = read_object(wait_path(workspace, agent))
+            if declaration and 'kind' not in declaration:
+                declaration['kind'] = ('decision' if pending_decision(decisions, declaration['target'])
+                                       is not None else 'agent')
+            target_observation, target_state = None, None
+            if (declaration and declaration.get('kind') == 'agent'
+                    and declaration.get('active', True)
+                    and now >= declaration.get('deadline_at', declaration['declared_at'] + 3600)):
+                target = declaration['target']
+                target_info = agent_info(hcom, target)
+                if target_info:
+                    target = target_info['name']
+                if target in agents and target in hcom and hcom[target].get('status') != 'inactive':
+                    try:
+                        target_observation = current_observation(target)
+                        target_state, _ = decide(states.get(target), target_observation, now)
+                    except (OSError, ValueError, TypeError, KeyError):
+                        target_observation, target_state = None, None
+            saved_wait, wait_actions, wait_events = decide_wait(
+                declaration, observation, target_observation, target_state, now)
+            if saved_wait is not None:
+                observation = observation._replace(
+                    wait_active=saved_wait.get('active', True),
+                    wait_released=observation.wait_released or 'wait-expired' in wait_events)
+                write_object(wait_path(workspace, agent), saved_wait)
+            for event in wait_events:
+                append_log(log, {'at': now, 'agent': agent, 'decision': event,
+                                 'target': saved_wait['target'], 'deadline_at': saved_wait['deadline_at']})
             try:
                 state, actions = decide(previous, observation, now)
             except (TypeError, ValueError, KeyError, AttributeError) as error:
@@ -1695,17 +1773,34 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                     raise
                 reset_agent_state(path, log, now, agent, f'{type(error).__name__}: {error}')
                 state, actions = decide(None, observation, now)
+            if saved_wait and saved_wait.get('expiry_nudge_pending'):
+                actions = [action for action in actions if action.kind != 'nudge']
+            actions = [*wait_actions, *actions]
             results = []
             for action in actions:
                 try:
                     delivery = perform(action, orchestrator, workspace)
+                    if action.category == 'wait-expiry':
+                        if action.kind == 'nudge':
+                            saved_wait['expiry_nudge_pending'] = False
+                            state.update(nudged=True, nudged_at=now, nudge_text=action.text,
+                                         nudge_fingerprint=state['fingerprint'])
+                        else:
+                            saved_wait['expiry_notified'] = True
+                            append_log(log, {'at': now, 'agent': agent,
+                                             'decision': 'wait-expiry-notified',
+                                             'target': saved_wait['target']})
+                        write_object(wait_path(workspace, agent), saved_wait)
                     if action.kind == 'recover-prompt':
                         apply_prompt_recovery_result(state, delivery, now)
                     results.append({'kind': action.kind, 'status': 'done', **delivery})
                 except (OSError, ValueError) as error:
-                    roll_back(action, state)
+                    if action.category != 'wait-expiry':
+                        roll_back(action, state)
                     results.append({'kind': action.kind, 'status': 'failed',
                                     'error': str(error)})
+            if saved_wait:
+                state['wait'] = saved_wait
             state['last_seen_status'] = info.get('status', 'unknown')
             state['last_seen_at'] = now
             states[agent] = state
@@ -1719,6 +1814,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 'at': now, 'agent': agent, 'decision': 'observation-failed',
                 'actions': [], 'error': str(error),
             })
+    states.setdefault(orchestrator, {})['feature_versions'] = {'wait_deadline': 1}
     write_object(path, states)
 
 
@@ -1758,6 +1854,7 @@ def run_forever(args):
 def declare_wait(args):
     workspace = args.workspace.resolve(strict=True)
     agent = valid_name(args.agent)
+    agents = {}
     try:
         agents = list_hcom(agent)
     except (OSError, ValueError) as error:
@@ -1782,6 +1879,7 @@ def declare_wait(args):
     }
     if not declaration['reason']:
         raise ValueError('--reason must not be empty')
+    decision_target = False
     for path in sorted((workspace / '.lat/sessions').glob('*.json')):
         try:
             record = read_object(path, {})
@@ -1803,7 +1901,9 @@ def declare_wait(args):
             if agent not in cards:
                 continue
         decisions = Path(record['decisions_path'])
-        if pending_decision(decisions, args.target) is False:
+        decision = pending_decision(decisions, args.target)
+        decision_target = decision_target or decision is not None
+        if decision is False:
             matches = sorted(path for path in decisions.glob(f'{args.target}*')
                              if path.is_file())
             statuses = ', '.join(f'{path}: {read_decision_status(path).status}'
@@ -1812,6 +1912,27 @@ def declare_wait(args):
                 f'Cannot wait on {args.target}: no pending decision for {owner}; '
                 f'matching records: {statuses}. To wait on the user\'s reply or a '
                 'manual step, record it as a pending decision and wait on that ID.')
+    declaration['kind'] = 'decision' if decision_target else 'agent'
+    if decision_target and args.minutes is not None:
+        raise ValueError('--minutes is not allowed for a decision target')
+    if not decision_target:
+        target = declaration['target']
+        matches = [name for name in agents if name.endswith(f'-{target}')]
+        if target not in agents and len(matches) > 1:
+            raise ValueError(f'Ambiguous HCOM target {target}; use the full HCOM name')
+        target_info = agents.get(target) or (agents[matches[0]] if len(matches) == 1 else None)
+        if target_info:
+            declaration['target'] = target_info['name']
+        if declaration['target'] == agent:
+            raise ValueError('Cannot wait on yourself; use lat-watch alarm instead')
+        declaration['deadline_at'] = declaration['declared_at'] + (args.minutes or 60) * 60
+    previous = read_object(wait_path(workspace, agent), {})
+    same_target = previous.get('target') == declaration['target']
+    declaration['expiry_count'] = previous.get('expiry_count', 0) if same_target else 0
+    if same_target:
+        for key in ('expiry_declared_at', 'expiry_notified'):
+            if key in previous:
+                declaration[key] = previous[key]
     write_object(wait_path(workspace, agent), declaration)
     print(json.dumps(declaration, ensure_ascii=False))
 
@@ -1842,6 +1963,8 @@ def main():
     waiting.add_argument('--agent', required=True)
     waiting.add_argument('--for', dest='target', required=True)
     waiting.add_argument('--reason', required=True)
+    waiting.add_argument('--minutes', type=int, choices=range(1, 721),
+                         metavar='1..720', help='Agent wait deadline (default: 60 minutes)')
     status = commands.add_parser('status', help='List watched agents and current state')
     status.add_argument('--workspace', type=Path, required=True)
     status.add_argument('--orchestrator', required=True)
