@@ -646,6 +646,88 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertTrue(watch.background_process_running(
             'worker', info, [client, reparented_node_command], current_pid=99))
 
+    def test_same_starttime_clients_only_attribute_their_own_background_work(self):
+        watch = load_watch()
+        idle_info = {'launch_context': {
+            'pid_identity': 'linux:boot-id:100', 'process_id': 'idle-id'}}
+        busy_info = {'launch_context': {
+            'pid_identity': 'linux:boot-id:100', 'process_id': 'busy-id'}}
+        idle_client = watch.Process(10, 1, 100, 'S', 10, ('codex',),
+                                    ('HCOM_PROCESS_ID=idle-id',))
+        busy_client = watch.Process(20, 1, 100, 'S', 20, ('codex',),
+                                    ('HCOM_PROCESS_ID=busy-id',))
+        busy_command = watch.Process(21, 20, 101, 'S', 21, ('uv', 'run', 'tests'),
+                                     ('HCOM_PROCESS_ID=busy-id',))
+        processes = [idle_client, busy_client, busy_command]
+
+        self.assertFalse(watch.background_process_running(
+            'batch-idle', idle_info, processes, current_pid=99))
+        self.assertTrue(watch.background_process_running(
+            'batch-busy', busy_info, processes, current_pid=99))
+
+    def test_tagged_detached_tool_is_attributed_by_process_id(self):
+        watch = load_watch()
+        info = {'base_name': 'worker', 'launch_context': {
+            'pid_identity': 'linux:boot-id:100', 'process_id': 'worker-id'}}
+        client = watch.Process(10, 1, 100, 'S', 10, ('codex',),
+                               ('HCOM_PROCESS_ID=worker-id',))
+        detached = watch.Process(11, 1, 101, 'S', 11, ('uv', 'run', 'tests'),
+                                 ('HCOM_PROCESS_ID=worker-id',
+                                  'HCOM_INSTANCE_NAME=worker'))
+
+        self.assertTrue(watch.background_process_running(
+            'batch-worker', info, [client, detached], current_pid=99))
+
+    def test_tagged_detached_tool_without_process_id_uses_short_name(self):
+        watch = load_watch()
+        client = watch.Process(10, 1, 100, 'S', 10, ('codex',), ())
+        detached = watch.Process(11, 1, 101, 'S', 11, ('uv', 'run', 'tests'),
+                                 ('HCOM_INSTANCE_NAME=worker',))
+        for base_name in ('worker', 'registered', None):
+            with self.subTest(base_name=base_name):
+                info = {'launch_context': {'pid_identity': 'linux:boot-id:100'}}
+                if base_name:
+                    info['base_name'] = base_name
+                tool = detached._replace(environment=(
+                    f'HCOM_INSTANCE_NAME={base_name or "worker"}',))
+                self.assertTrue(watch.background_process_running(
+                    'batch-worker', info, [client, tool], current_pid=99))
+
+    def test_without_process_id_retains_same_starttime_collision_limitation(self):
+        watch = load_watch()
+        info = {'launch_context': {'pid_identity': 'linux:boot-id:100'}}
+        idle_client = watch.Process(10, 1, 100, 'S', 10, ('codex',),
+                                    ('HCOM_PROCESS_ID=idle-id',))
+        busy_client = watch.Process(20, 1, 100, 'S', 20, ('codex',),
+                                    ('HCOM_PROCESS_ID=busy-id',))
+        busy_command = watch.Process(21, 20, 101, 'S', 21, ('uv', 'run', 'tests'),
+                                     ('HCOM_PROCESS_ID=busy-id',))
+
+        # Legacy root selection still sees both clients; this is a known limitation.
+        self.assertTrue(watch.background_process_running(
+            'batch-idle', info, [idle_client, busy_client, busy_command], current_pid=99))
+
+    def test_unrelated_detached_tools_are_not_attributed(self):
+        watch = load_watch()
+        client = watch.Process(10, 1, 100, 'S', 10, ('codex',),
+                               ('HCOM_PROCESS_ID=worker-id',))
+        other_client = watch.Process(20, 1, 200, 'S', 20, ('codex',),
+                                     ('HCOM_PROCESS_ID=other-id',))
+        other_command = watch.Process(21, 20, 201, 'S', 21, ('uv', 'run', 'tests'),
+                                      ('HCOM_PROCESS_ID=other-id',))
+        for process_id in ('worker-id', None):
+            with self.subTest(process_id=process_id):
+                info = {'base_name': 'worker', 'launch_context': {
+                    'pid_identity': 'linux:boot-id:100', 'process_id': process_id}}
+                # With an id, even a matching short name cannot override the id.
+                name = 'worker' if process_id else 'other'
+                detached = watch.Process(22, 1, 202, 'S', 22, ('uv', 'run', 'tests'),
+                                         ('HCOM_PROCESS_ID=other-id',
+                                          f'HCOM_INSTANCE_NAME={name}'))
+                self.assertFalse(watch.background_process_running(
+                    'batch-worker', info,
+                    [client, other_client, other_command, detached], current_pid=99))
+
     def test_process_reader_decodes_proc_and_skips_disappeared_or_denied_entries(self):
         watch = load_watch()
         with tempfile.TemporaryDirectory() as temporary:
