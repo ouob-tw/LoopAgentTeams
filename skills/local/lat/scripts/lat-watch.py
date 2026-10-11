@@ -93,6 +93,7 @@ class Observation(NamedTuple):
     codex_turn_finished: object = None
     nudge_only: bool = False
     terminal_ready: object = None
+    screen_working: bool = False
 
 
 class QuotaIssue(NamedTuple):
@@ -627,8 +628,8 @@ def decide(previous, observation, now):
                                  else 'active status but terminal ready at an empty prompt')
     elif (state['nudged'] and not observation.wait_active
           and observation.prompt_empty
-          and (not observation.command_running or finished_active
-               or (state.get('stall_reason') == 'alarm rang' and observation.terminal_ready))
+          and (idle_prompt(observation) if state.get('stall_reason') == 'alarm rang'
+               else not observation.command_running or finished_active)
           and now - state['nudged_at'] >= IDLE_SECONDS):
         if observation.is_orchestrator and not state.get('user_notified'):
             actions = (Action(
@@ -1027,6 +1028,19 @@ def wait_release_reason(declaration, participant_events, target_replied, decisio
     return None
 
 
+def idle_prompt(observation):
+    """An empty ready terminal is usable only after the agent's turn ends."""
+    ready = (observation.terminal_ready if observation.terminal_ready is not None
+             else not observation.command_running)
+    if not observation.prompt_empty or not ready or observation.screen_working:
+        return False
+    if observation.client.lower() == 'codex' and observation.codex_turn_finished is False:
+        return False
+    return (observation.status == 'listening'
+            or (observation.status == 'active' and observation.client.lower() == 'codex'
+                and observation.codex_turn_finished is True))
+
+
 def expire_alarm(saved, now, failure):
     saved.update(active=False, released_reason='undelivered', delivery_failure=failure,
                  released_at_utc=datetime.fromtimestamp(now, timezone.utc).isoformat())
@@ -1054,15 +1068,13 @@ def decide_alarm(declaration, observation, condition_met, now):
         due = saved.get('due_at')
         if due is not None and now >= due:
             saved.setdefault('outcome', 'condition met')
-            ready = (observation.terminal_ready if observation.terminal_ready is not None
-                     else not observation.command_running)
-            if observation.prompt_empty and ready:
+            if idle_prompt(observation):
                 text = (f"[lat-watch] Your alarm {saved['outcome']}: {saved['reason']}. "
                         'Continue your work.')
                 actions.append(Action('nudge', observation.agent, text=text, category='alarm-ring'))
             elif now >= due + IDLE_SECONDS:
                 failure = ('window unavailable' if observation.status == 'unavailable' else
-                           'command running' if not ready else 'input prompt not empty')
+                           'input prompt not empty' if not observation.prompt_empty else 'command running')
                 expire_alarm(saved, now, failure)
                 events.append('alarm-undelivered')
     if saved.get('released_reason') == 'undelivered' and not saved.get('alarm_notified'):
@@ -1094,7 +1106,7 @@ def decide_wait(declaration, observation, target_observation, target_state, now)
             times = [*saved.get('expiry_declared_at', []), saved['declared_at_utc']][:2]
             saved['expiry_declared_at'] = times
             events.append('wait-expired')
-    if saved.get('expiry_nudge_pending') and observation.prompt_empty and not observation.command_running:
+    if saved.get('expiry_nudge_pending') and idle_prompt(observation):
         minutes = int((now - saved['declared_at']) // 60)
         text = (f"[lat-watch] Your wait for {saved['target']} expired after {minutes} minutes. "
                 'Check that agent status, continue your work or declare a new wait.')
@@ -1368,6 +1380,10 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
         prompt_empty=prompt_empty,
         command_running=not ready or background_running,
         terminal_ready=ready,
+        screen_working=any(
+            isinstance(line, str) and re.search(
+                r'^(?:Working\s*\(|[✢✳✶✻✽·*]\s+).*esc to interrupt', line.strip(), re.IGNORECASE)
+            for line in lines),
         transcript_size=transcript_size,
         transcript_mtime_ns=transcript_mtime_ns,
         event_id=event_id,
