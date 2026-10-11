@@ -735,6 +735,31 @@ class WaitDeadlineDecisionTests(unittest.TestCase):
         self.assertFalse(saved['active'])
         self.assertEqual(events, ['wait-expired'])
 
+    def test_extension_does_not_delay_a_previous_pending_notice(self):
+        watch = load_watch()
+        waiter = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        target = waiter._replace(agent='reviewer', command_running=True)
+        declaration = dict(agent='worker', target='reviewer', declared_at=0,
+                           declared_at_utc='1970-01-01T00:00:00+00:00', active=True,
+                           expiry_notice=dict(target='reviewer', declared_at=['old1', 'old2'],
+                                              conversation_delivered=True, delivered=False,
+                                              episode_reset=True))
+        saved, actions, events = watch.decide_wait(declaration, waiter, target,
+                                                  {'last_progress_at': 3500}, 3600)
+        self.assertTrue(saved['active'])
+        self.assertEqual(events, ['wait-extended'])
+        self.assertEqual([action.category for action in actions], ['wait-expiry-popup'])
+        for now in (3660, 3720):
+            saved, actions, events = load_watch().decide_wait(
+                json.loads(json.dumps(saved)), waiter, target, {'last_progress_at': 3500}, now)
+            self.assertTrue(saved['active'])
+            self.assertEqual(events, [])
+            self.assertEqual([action.category for action in actions], ['wait-expiry-popup'])
+        saved['expiry_notice']['conversation_delivered'] = False
+        _, actions, _ = watch.decide_wait(saved, waiter, target,
+                                          {'last_progress_at': 3500}, 3780)
+        self.assertEqual([action.category for action in actions], ['wait-expiry'])
+
     def test_second_and_later_expiry_notifies_only_until_success(self):
         watch = load_watch()
         idle = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
@@ -1191,6 +1216,23 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
                              self.hcom_log.read_text().splitlines()), 1)
         self.assertEqual(sum(line.startswith('notification show ') for line in
                              self.herdr_log.read_text().splitlines()), 2)
+        # A new same-target streak after normal release gets its own notification.
+        Path(str(self.hcom_log) + '.delivered').unlink()
+        new_times = []
+        for _ in range(2):
+            result = self.cli('wait', '--workspace', self.work, '--agent', 'orch',
+                              '--for', 'absent', '--reason', 'new streak', '--minutes', '1')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            declaration = json.loads(result.stdout)
+            new_times.append(declaration['declared_at_utc'])
+            self.run_cycles(load_watch(), declaration['deadline_at'])
+        sends = [line for line in self.hcom_log.read_text().splitlines()
+                 if line.startswith('send ')]
+        self.assertEqual(len(sends), 2)
+        for declared_at in new_times:
+            self.assertIn(declared_at, sends[-1])
+        self.assertEqual(sum(row.get('decision') == 'wait-expiry-notified'
+                             for row in self.watch_records()), 2)
 
     def test_reply_before_same_target_redeclaration_resets_history(self):
         self.wait_session()

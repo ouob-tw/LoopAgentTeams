@@ -1040,14 +1040,14 @@ def decide_wait(declaration, observation, target_observation, target_state, now)
             if not saved.get('deadline_extended'):
                 events.append('wait-extended')
                 saved['deadline_extended'] = True
-            return saved, [], events
-        saved.update(active=False, released_reason='expired',
-                     released_at_utc=datetime.fromtimestamp(now, timezone.utc).isoformat(),
-                     expiry_nudge_pending=True,
-                     expiry_count=saved.get('expiry_count', 0) + 1)
-        times = [*saved.get('expiry_declared_at', []), saved['declared_at_utc']][:2]
-        saved['expiry_declared_at'] = times
-        events.append('wait-expired')
+        else:
+            saved.update(active=False, released_reason='expired',
+                         released_at_utc=datetime.fromtimestamp(now, timezone.utc).isoformat(),
+                         expiry_nudge_pending=True,
+                         expiry_count=saved.get('expiry_count', 0) + 1)
+            times = [*saved.get('expiry_declared_at', []), saved['declared_at_utc']][:2]
+            saved['expiry_declared_at'] = times
+            events.append('wait-expired')
     if saved.get('expiry_nudge_pending') and observation.prompt_empty and not observation.command_running:
         minutes = int((now - saved['declared_at']) // 60)
         text = (f"[lat-watch] Your wait for {saved['target']} expired after {minutes} minutes. "
