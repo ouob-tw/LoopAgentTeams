@@ -1250,6 +1250,10 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
         updated = dict(declaration, active=False, expiry_count=0, expiry_declared_at=[],
                        expiry_notified=False, expiry_nudge_pending=False, released_reason=reason,
                        released_at_utc=datetime.now(timezone.utc).isoformat())
+        if updated.get('expiry_notice', {}).get('delivered'):
+            updated.pop('expiry_notice', None)
+        elif updated.get('expiry_notice'):
+            updated['expiry_notice'] = {**updated['expiry_notice'], 'episode_reset': True}
         write_object(wait_path(workspace, agent), updated, expected=expected)
     return reason
 
@@ -1817,8 +1821,11 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                             notice['conversation_delivered'] = True
                             notice['delivered'] = (not delivery.get('herdr_error')
                                                    or shutil.which('herdr') is None)
-                            saved_wait['expiry_notified'] = notice['delivered']
+                            saved_wait['expiry_notified'] = (notice['delivered']
+                                                            and not notice.get('episode_reset'))
                             if notice['delivered']:
+                                if notice.get('episode_reset'):
+                                    saved_wait.pop('expiry_notice', None)
                                 append_log(log, {'at': now, 'agent': agent,
                                                  'decision': 'wait-expiry-notified',
                                                  'target': notice['target']})
@@ -1973,10 +1980,12 @@ def declare_wait(args):
     previous = previous or {}
     same_target = previous.get('target') == declaration['target']
     declaration['expiry_count'] = previous.get('expiry_count', 0) if same_target else 0
-    if same_target:
+    if same_target and declaration['expiry_count']:
         for key in ('expiry_declared_at', 'expiry_notified', 'expiry_notice'):
             if key in previous:
                 declaration[key] = previous[key]
+    elif same_target and previous.get('expiry_notice') and not previous['expiry_notice']['delivered']:
+        declaration['expiry_notice'] = previous['expiry_notice']
     write_object(wait_path(workspace, agent), declaration, expected=wait_original)
     print(json.dumps(declaration, ensure_ascii=False))
 

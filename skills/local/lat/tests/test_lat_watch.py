@@ -1140,6 +1140,22 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual([record['agent'] for record in records if 'agent' in record],
                          ['orch', 'sora'])
 
+    def test_normal_release_rearms_completed_expiry_notification(self):
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(agent='worker-open', target='absent', declared_at=0,
+                                     declared_at_utc='1970-01-01T00:00:00+00:00', active=False,
+                                     released_reason='message-delivered', expiry_count=0,
+                                     expiry_notified=True,
+                                     expiry_notice=dict(target='absent', declared_at=['old', 'old2'],
+                                                        conversation_delivered=True, delivered=True)))
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'absent', '--reason', 'new episode')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = json.loads(result.stdout)
+        self.assertFalse(saved.get('expiry_notified', False))
+        self.assertNotIn('expiry_notice', saved)
+
     def test_failed_expiry_popup_retries_without_duplicate_conversation_note(self):
         self.install_hcom("""#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_HCOM_LOG"
@@ -1168,7 +1184,9 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertFalse(json.loads(path.read_text()).get('expiry_notified', False))
         failed.unlink()
         self.run_cycles(load_watch(), 7260, 7320)
-        self.assertTrue(json.loads(path.read_text())['expiry_notified'])
+        self.assertNotIn('expiry_notice', json.loads(path.read_text()))
+        self.assertEqual(sum(row.get('decision') == 'wait-expiry-notified'
+                             for row in self.watch_records()), 1)
         self.assertEqual(sum(line.startswith('send ') for line in
                              self.hcom_log.read_text().splitlines()), 1)
         self.assertEqual(sum(line.startswith('notification show ') for line in
