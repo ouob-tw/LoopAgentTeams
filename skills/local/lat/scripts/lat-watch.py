@@ -980,8 +980,11 @@ def background_process_running(agent, info, processes, current_pid=None):
         client_starttime = int(identity.rsplit(':', 1)[1])
     except (AttributeError, ValueError, IndexError):
         return False
+    process_id = info.get('launch_context', {}).get('process_id')
+    process_marker = f'HCOM_PROCESS_ID={process_id}'
     clients = {process.pid for process in processes
-               if process.starttime == client_starttime}
+               if process.starttime == client_starttime
+               and (not process_id or process_marker in process.environment)}
     if not clients:
         return False
     process_by_pid = {process.pid: process for process in processes}
@@ -990,13 +993,14 @@ def background_process_running(agent, info, processes, current_pid=None):
     excluded = process_ancestors(current_pid, parents) | {current_pid}
     for client in clients:
         excluded |= process_ancestors(client, parents)
-    name_marker = f'HCOM_INSTANCE_NAME={agent}'
+    base_name = info.get('base_name') or agent.rsplit('-', 1)[-1]
+    owner_marker = process_marker if process_id else f'HCOM_INSTANCE_NAME={base_name}'
     client_sessions = {process_by_pid[pid].session for pid in clients}
     for process in processes:
         if process.pid in clients or process.pid in excluded or process.state == 'Z':
             continue
         provenance = descendants_below(process.pid, parents, clients)
-        same_agent = name_marker in process.environment
+        same_agent = owner_marker in process.environment
         belongs_to_client = provenance is not None
         if not same_agent and not belongs_to_client:
             continue
