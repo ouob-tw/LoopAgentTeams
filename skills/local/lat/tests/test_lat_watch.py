@@ -574,6 +574,7 @@ class WatchDecisionTests(unittest.TestCase):
             transcript.write_text(json.dumps(record) + '\n')
             decisions = root / 'decisions'
             decisions.mkdir()
+            watch.write_object(watch.wait_path(root, 'waiting-agent'), declaration)
             agents = {
                 'waiting-agent': {
                     'name': 'waiting-agent', 'base_name': 'waiter',
@@ -673,6 +674,117 @@ class WatchDecisionTests(unittest.TestCase):
             ('HCOM_INSTANCE_NAME=worker',),
         )])
 
+
+class WaitDeadlineDecisionTests(unittest.TestCase):
+    def test_expiry_is_inactive_and_busy_window_defers_one_nudge(self):
+        watch = load_watch()
+        declaration = dict(agent='worker', target='reviewer', declared_at=0,
+                           declared_at_utc='1970-01-01T00:00:00+00:00', active=True)
+        busy = watch.Observation('worker', 'active', False, True, 10, 10, 1)
+        saved, actions, events = watch.decide_wait(declaration, busy, None, None, 3600)
+        self.assertFalse(saved['active'])
+        self.assertEqual(saved['released_reason'], 'expired')
+        self.assertEqual(saved['expiry_count'], 1)
+        self.assertEqual(actions, [])
+        self.assertEqual(events, ['wait-expired'])
+        idle = busy._replace(prompt_empty=True, command_running=False)
+        saved, actions, events = watch.decide_wait(saved, idle, None, None, 3660)
+        self.assertEqual([a.kind for a in actions], ['nudge'])
+        self.assertTrue(actions[0].text.startswith('[lat-watch] '))
+        self.assertIn('reviewer', actions[0].text)
+        self.assertIn('61 minutes', actions[0].text)
+
+    def test_expiry_nudge_echo_is_not_progress(self):
+        watch = load_watch()
+        observation = watch.Observation('worker', 'listening', True, False, 0, 0, 1,
+                                        client='codex')
+        state, _ = watch.decide(None, observation, 0)
+        text = '[lat-watch] Your wait for reviewer expired after 60 minutes. Check that agent status.'
+        state.update(nudged=True, nudged_at=3600, nudge_text=text)
+        with tempfile.TemporaryDirectory() as temporary:
+            transcript = Path(temporary) / 'transcript.jsonl'
+            transcript.write_text(json.dumps(dict(type='response_item', payload=dict(
+                role='user', content=[dict(type='input_text', text=text)]))) + '\n')
+            observed = observation._replace(transcript_size=transcript.stat().st_size,
+                                            transcript_mtime_ns=1)
+            observed = watch.nudge_only_observation(state, observed,
+                                                    {'transcript_path': str(transcript)}, 'orch')
+        saved, _ = watch.decide(state, observed, 3660)
+        self.assertEqual(saved['last_progress_at'], 0)
+        self.assertTrue(saved['nudged'])
+
+    def test_extension_uses_monitored_progress_but_never_a_valid_wait(self):
+        watch = load_watch()
+        waiter = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        target = waiter._replace(agent='reviewer')
+        declaration = dict(agent='worker', target='reviewer', declared_at=0, active=True,
+                           declared_at_utc='1970-01-01T00:00:00+00:00')
+        saved, actions, events = watch.decide_wait(
+            declaration, waiter, target, {'last_progress_at': 2500}, 3600)
+        self.assertTrue(saved['active'])
+        self.assertEqual(actions, [])
+        self.assertEqual(events, ['wait-extended'])
+        saved, actions, events = watch.decide_wait(
+            saved, waiter, target._replace(command_running=True),
+            {'last_progress_at': 0}, 4800)
+        self.assertTrue(saved['active'])
+        self.assertEqual(events, [])
+        saved, actions, events = watch.decide_wait(
+            saved, waiter, target._replace(wait_active=True, command_running=True),
+            {'last_progress_at': 4800}, 4860)
+        self.assertFalse(saved['active'])
+        self.assertEqual(events, ['wait-expired'])
+
+    def test_extension_does_not_delay_a_previous_pending_notice(self):
+        watch = load_watch()
+        waiter = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        target = waiter._replace(agent='reviewer', command_running=True)
+        declaration = dict(agent='worker', target='reviewer', declared_at=0,
+                           declared_at_utc='1970-01-01T00:00:00+00:00', active=True,
+                           expiry_notice=dict(target='reviewer', declared_at=['old1', 'old2'],
+                                              conversation_delivered=True, delivered=False,
+                                              episode_reset=True))
+        saved, actions, events = watch.decide_wait(declaration, waiter, target,
+                                                  {'last_progress_at': 3500}, 3600)
+        self.assertTrue(saved['active'])
+        self.assertEqual(events, ['wait-extended'])
+        self.assertEqual([action.category for action in actions], ['wait-expiry-popup'])
+        for now in (3660, 3720):
+            saved, actions, events = load_watch().decide_wait(
+                json.loads(json.dumps(saved)), waiter, target, {'last_progress_at': 3500}, now)
+            self.assertTrue(saved['active'])
+            self.assertEqual(events, [])
+            self.assertEqual([action.category for action in actions], ['wait-expiry-popup'])
+        saved['expiry_notice']['conversation_delivered'] = False
+        _, actions, _ = watch.decide_wait(saved, waiter, target,
+                                          {'last_progress_at': 3500}, 3780)
+        self.assertEqual([action.category for action in actions], ['wait-expiry'])
+
+    def test_second_and_later_expiry_notifies_only_until_success(self):
+        watch = load_watch()
+        idle = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        declaration = dict(agent='worker', target='reviewer', declared_at=3600,
+                           declared_at_utc='1970-01-01T01:00:00+00:00', active=True,
+                           expiry_count=1, expiry_declared_at=['1970-01-01T00:00:00+00:00'])
+        saved, actions, _ = watch.decide_wait(declaration, idle, None, None, 7200)
+        self.assertEqual([a.kind for a in actions], ['nudge', 'notify-orchestrator'])
+        self.assertIn('1970-01-01T00:00:00+00:00', actions[1].message)
+        self.assertIn('1970-01-01T01:00:00+00:00', actions[1].message)
+        # A failed delivery leaves the saved pending flags, including after restart.
+        saved, actions, _ = load_watch().decide_wait(
+            json.loads(json.dumps(saved)), idle, None, None, 7260)
+        self.assertEqual([a.kind for a in actions], ['nudge', 'notify-orchestrator'])
+        saved.update(expiry_nudge_pending=False, expiry_notified=True)
+        saved, actions, _ = watch.decide_wait(saved, idle, None, None, 7320)
+        self.assertEqual(actions, [])
+        declaration.update(expiry_count=2, expiry_notified=True)
+        saved, actions, _ = watch.decide_wait(declaration, idle._replace(is_orchestrator=True),
+                                             None, None, 7200)
+        self.assertEqual([a.kind for a in actions], ['nudge'])
+        declaration.update(expiry_count=1, expiry_notified=False)
+        _, actions, _ = watch.decide_wait(declaration, idle._replace(is_orchestrator=True),
+                                          None, None, 7200)
+        self.assertEqual(actions[1].kind, 'notify-user')
 
 class WatchCliTests(unittest.TestCase):
     def setUp(self):
@@ -1052,6 +1164,227 @@ class WatchCliTests(unittest.TestCase):
                          [('open.md', 'simulated read failure')])
         self.assertEqual([record['agent'] for record in records if 'agent' in record],
                          ['orch', 'sora'])
+
+    def test_normal_release_rearms_completed_expiry_notification(self):
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(agent='worker-open', target='absent', declared_at=0,
+                                     declared_at_utc='1970-01-01T00:00:00+00:00', active=False,
+                                     released_reason='message-delivered', expiry_count=0,
+                                     expiry_notified=True,
+                                     expiry_notice=dict(target='absent', declared_at=['old', 'old2'],
+                                                        conversation_delivered=True, delivered=True)))
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'absent', '--reason', 'new episode')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = json.loads(result.stdout)
+        self.assertFalse(saved.get('expiry_notified', False))
+        self.assertNotIn('expiry_notice', saved)
+
+    def test_failed_expiry_popup_retries_without_duplicate_conversation_note(self):
+        self.install_hcom("""#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_HCOM_LOG"
+case "$1" in
+list) printf '%s\\n' '[{"name":"orch","status":"listening","session_id":"orch-session"},{"name":"worker-open","status":"listening"}]';;
+term) if [ "$2" != inject ]; then printf '%s\\n' '{"ready":true,"prompt_empty":true,"lines":[]}'; fi;;
+events) if [ -f "$FAKE_HCOM_LOG.delivered" ]; then printf '%s\\n' '{"id":1,"type":"status","data":{"context":"deliver:lat-watch","session":"orch-session"}}';
+        else :; fi;;
+send) touch "$FAKE_HCOM_LOG.delivered";;
+esac
+""")
+        herdr = Path(self.env['PATH'].split(':', 1)[0]) / 'herdr'
+        herdr.write_text("""#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_HERDR_LOG"
+if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
+""")
+        failed = Path(str(self.herdr_log) + '.fail')
+        failed.touch()
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'orch')
+        watch.write_object(path, dict(agent='orch', target='absent', declared_at=3600,
+                                     declared_at_utc='1970-01-01T01:00:00+00:00', active=True,
+                                     expiry_count=1,
+                                     expiry_declared_at=['1970-01-01T00:00:00+00:00']))
+        self.run_cycles(watch, 7200)
+        self.assertFalse(json.loads(path.read_text()).get('expiry_notified', False))
+        failed.unlink()
+        self.run_cycles(load_watch(), 7260, 7320)
+        self.assertNotIn('expiry_notice', json.loads(path.read_text()))
+        self.assertEqual(sum(row.get('decision') == 'wait-expiry-notified'
+                             for row in self.watch_records()), 1)
+        self.assertEqual(sum(line.startswith('send ') for line in
+                             self.hcom_log.read_text().splitlines()), 1)
+        self.assertEqual(sum(line.startswith('notification show ') for line in
+                             self.herdr_log.read_text().splitlines()), 2)
+        # A new same-target streak after normal release gets its own notification.
+        Path(str(self.hcom_log) + '.delivered').unlink()
+        new_times = []
+        for _ in range(2):
+            result = self.cli('wait', '--workspace', self.work, '--agent', 'orch',
+                              '--for', 'absent', '--reason', 'new streak', '--minutes', '1')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            declaration = json.loads(result.stdout)
+            new_times.append(declaration['declared_at_utc'])
+            self.run_cycles(load_watch(), declaration['deadline_at'])
+        sends = [line for line in self.hcom_log.read_text().splitlines()
+                 if line.startswith('send ')]
+        self.assertEqual(len(sends), 2)
+        for declared_at in new_times:
+            self.assertIn(declared_at, sends[-1])
+        self.assertEqual(sum(row.get('decision') == 'wait-expiry-notified'
+                             for row in self.watch_records()), 2)
+
+    def test_reply_before_same_target_redeclaration_resets_history(self):
+        self.wait_session()
+        self.install_hcom("""#!/bin/sh
+case "$1" in
+list) printf '%s\\n' '[{"name":"worker-open","base_name":"open","session_id":"worker-session"}]';;
+events) printf '%s\\n' '{"id":1,"type":"status","data":{"context":"deliver:sender","session":"worker-session","status":"active"}}';;
+esac
+""")
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(agent='worker-open', target='absent', declared_at=0,
+                                     declared_at_utc='1970-01-01T00:00:00+00:00', active=False,
+                                     released_reason='expired', expiry_count=1,
+                                     expiry_declared_at=['1970-01-01T00:00:00+00:00']))
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'absent', '--reason', 'new work')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['expiry_count'], 0)
+
+    def test_new_wait_during_expiry_delivery_is_not_overwritten(self):
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(agent='worker-open', target='absent', declared_at=0,
+                                     declared_at_utc='1970-01-01T00:00:00+00:00', active=True))
+        replacement = dict(agent='worker-open', target='new-target', declared_at=3600,
+                           declared_at_utc='1970-01-01T01:00:00+00:00', active=True)
+        def external_command(command, *args, **kwargs):
+            output = ''
+            if command[:2] == ['hcom', 'list']:
+                output = json.dumps([dict(name=name, status='listening')
+                                     for name in ('orch', 'worker-open')])
+            elif command[:2] == ['hcom', 'term'] and command[2] != 'inject':
+                output = json.dumps(dict(ready=True, prompt_empty=True, lines=[]))
+            if command[:3] == ['hcom', 'term', 'inject']:
+                watch.write_object(path, replacement)
+            return subprocess.CompletedProcess(command, 0, stdout=output, stderr='')
+        with patch.object(watch.subprocess, 'run', side_effect=external_command):
+            self.run_cycles(watch, 3600)
+        self.assertEqual(json.loads(path.read_text()), replacement)
+
+    def test_cycle_extends_only_until_monitored_target_declares_wait(self):
+        self.write_task('target.md', 'worker-target', 'orch', 'in progress')
+        self.install_hcom("""#!/bin/sh
+case "$1" in
+list) printf '%s\\n' '[{"name":"orch","status":"listening"},{"name":"worker-open","status":"listening"},{"name":"worker-target","status":"active"}]';;
+term) if [ "$2" = worker-target ]; then printf '%s\\n' '{"ready":false,"prompt_empty":true,"lines":[]}';
+      elif [ "$2" != inject ]; then printf '%s\\n' '{"ready":true,"prompt_empty":true,"lines":[]}'; fi;;
+events) printf '%s\\n' '[]';;
+esac
+""")
+        watch = load_watch()
+        waiter = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(waiter, dict(agent='worker-open', target='worker-target',
+                                       declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
+                                       active=True))
+        self.run_cycles(watch, 0, 3600, 3660)
+        self.assertTrue(json.loads(waiter.read_text())['active'])
+        self.assertEqual(sum(r.get('decision') == 'wait-extended'
+                             for r in self.watch_records()), 1)
+        watch.write_object(watch.wait_path(self.work, 'worker-target'),
+                           dict(agent='worker-target', target='absent', declared_at=3660,
+                                declared_at_utc='1970-01-01T01:01:00+00:00', active=True))
+        self.run_cycles(load_watch(), 3720)
+        self.assertFalse(json.loads(waiter.read_text())['active'])
+        self.assertEqual(json.loads(waiter.read_text())['released_reason'], 'expired')
+
+    def test_expiry_delivery_restart_and_counter_reset(self):
+        self.install_hcom('''#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_HCOM_LOG"
+case "$1" in
+list) printf '%s\\n' '[{"name":"orch","status":"listening"},{"name":"worker-open","status":"listening"}]';;
+term) if [ "$2" != inject ]; then printf '%s\\n' '{"ready":true,"prompt_empty":true,"lines":[]}';
+      elif [ -f "$FAKE_HCOM_LOG.fail" ]; then exit 1; fi;;
+send) if [ -f "$FAKE_HCOM_LOG.fail" ]; then exit 1; fi;;
+events) printf '%s\\n' '[]';;
+esac
+''')
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(agent='worker-open', target='absent',
+                                     declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
+                                     active=True))
+        self.run_cycles(watch, 0, 3600)
+        saved = json.loads(path.read_text())
+        self.assertFalse(saved['active'])
+        self.assertFalse(saved['expiry_nudge_pending'])
+        self.assertEqual(saved['expiry_count'], 1)
+        self.assertEqual(self.watch_state()['orch']['feature_versions']['wait_deadline'], 1)
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'absent', '--reason', 'again', '--minutes', '1')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        deadline = json.loads(result.stdout)['deadline_at']
+        failed = Path(str(self.hcom_log) + '.fail')
+        failed.touch()
+        self.run_cycles(load_watch(), deadline)
+        saved = json.loads(path.read_text())
+        self.assertEqual(saved['expiry_count'], 2)
+        self.assertTrue(saved['expiry_nudge_pending'])
+        self.assertFalse(saved.get('expiry_notified', False))
+        failed.unlink()
+        self.run_cycles(load_watch(), deadline + 60, deadline + 120)
+        saved = json.loads(path.read_text())
+        self.assertFalse(saved['expiry_nudge_pending'])
+        self.assertTrue(saved['expiry_notified'])
+        successful = [r for r in self.watch_records()
+                      if r.get('decision') == 'wait-expiry-notified']
+        self.assertEqual(len(successful), 1)
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'other', '--reason', 'different')
+        self.assertEqual(json.loads(result.stdout)['expiry_count'], 0)
+
+    def test_wait_deadline_range_and_decision_rejection(self):
+        decisions = self.wait_session()
+        (decisions / 'HELP.md').write_text('- status: pending\n')
+        for minutes in ('0', '721', 'no', '1.5'):
+            result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                              '--for', 'reviewer', '--reason', 'review',
+                              '--minutes', minutes)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertFalse((self.work / '.lat/watch/waits').exists())
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'HELP', '--reason', 'decision', '--minutes', '1')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('decision', result.stderr)
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'HELP', '--reason', 'decision')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('deadline_at', json.loads(result.stdout))
+        for minutes, seconds in (('1', 60), ('720', 43200)):
+            result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                              '--for', 'reviewer', '--reason', 'review',
+                              '--minutes', minutes)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            saved = json.loads(result.stdout)
+            self.assertEqual(saved['deadline_at'] - saved['declared_at'], seconds)
+
+    def test_wait_default_deadline_and_self_wait_contract(self):
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'reviewer', '--reason', 'review')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = json.loads(result.stdout)
+        self.assertEqual(saved['kind'], 'agent')
+        self.assertEqual(saved['deadline_at'] - saved['declared_at'], 3600)
+        path = self.work / '.lat/watch/waits/worker-open.json'
+        before = path.read_bytes()
+        for target in ('worker-open', 'open'):
+            result = self.cli('wait', '--workspace', self.work, '--agent', 'open',
+                              '--for', target, '--reason', 'self')
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn('alarm', result.stderr)
+            self.assertEqual(path.read_bytes(), before)
 
     def test_wait_writes_declaration_and_status_displays_it(self):
         waited = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
@@ -2672,7 +3005,7 @@ class WatchCliTests(unittest.TestCase):
 
         self.run_cycles(watch, 0)
 
-        self.assertEqual(json.loads(wait_file.read_text()), declaration)
+        self.assertEqual(json.loads(wait_file.read_text()), {**declaration, 'kind': 'decision'})
         self.assertEqual(self.watch_state()['worker-open']['decision'], 'valid-wait')
         diagnostics = [entry for entry in self.watch_records()
                        if entry.get('decision') == 'decision-status-unreadable']
@@ -2712,6 +3045,8 @@ class WatchCliTests(unittest.TestCase):
         declaration = {
             'agent': 'worker-open', 'target': 'reviewer', 'reason': 'review',
             'declared_at_utc': '2026-10-04T00:00:00+00:00', 'active': True,
+            'expiry_count': 2, 'expiry_notified': True,
+            'released_reason': 'expired',
         }
         watch.write_object(watch.wait_path(self.work, 'worker-open'), declaration)
 
@@ -2723,6 +3058,15 @@ class WatchCliTests(unittest.TestCase):
         saved = json.loads(watch.wait_path(self.work, 'worker-open').read_text())
         self.assertFalse(saved['active'])
         self.assertEqual(saved['released_reason'], 'message-delivered')
+        self.assertEqual(saved['expiry_count'], 0)
+        self.assertFalse(saved['expiry_notified'])
+        declaration['active'] = False
+        watch.write_object(watch.wait_path(self.work, 'worker-open'), declaration)
+        with patch.dict(os.environ, self.env):
+            reason = watch.release_wait_if_needed(self.work, decisions, 'orch', declaration)
+        self.assertEqual(reason, 'message-delivered')
+        self.assertEqual(json.loads(watch.wait_path(self.work, 'worker-open').read_text())
+                         ['expiry_count'], 0)
 
     def test_run_cycle_logs_missing_observation_failure_and_retries_failed_nudge(self):
         self.write_task('broken.md', 'worker-broken', 'orch', 'in progress')
@@ -2890,8 +3234,9 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual([record['agent'] for record in records if 'agent' in record],
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
-            name: {'last_seen_status': 'listening', 'last_seen_at': 0}
-            for name in ('orch', 'worker-open')
+            'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
+                     'feature_versions': {'wait_deadline': 1}},
+            'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
     def test_non_object_agent_state_is_kept_aside_and_reset_for_that_agent_only(self):
@@ -2913,7 +3258,8 @@ class WatchCliTests(unittest.TestCase):
         self.assertEqual(self.watch_state(), {
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
-            'orch': {'last_seen_status': 'listening', 'last_seen_at': 0},
+            'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
+                     'feature_versions': {'wait_deadline': 1}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):

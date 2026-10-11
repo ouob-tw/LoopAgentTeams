@@ -47,8 +47,24 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" wait --workspace "$wo
 - `--workspace` 必須是主控 activate 時的工作區；執行 Agent 在自己的 worktree 工作時也填主控的路徑，否則監控讀不到聲明。
 - `--for` 只能填一個對象：主控 activate 時 `--decisions` 目錄裡有檔名以它開頭的紀錄就當決策 ID，否則當 Agent 名稱。每個 Agent 只保留最後一筆聲明；同時等多個對象時，填最先需要回音的那個，其餘寫在 `--reason`。
 - `wait` 依工作區內 active 主控 session 紀錄，找出負責監控 `--agent` 的主控：主控本人，或其任務卡目錄（不含 `done/`）裡未 `merged` 且列名的 Agent。只查各自的決策目錄，不跨主控合併；找不到負責的主控時照常接受。若任一負責主控的同前綴紀錄全部已非 `pending`，指令以非零結束碼拒絕，stderr 列出紀錄及狀態，不寫入也不改動原聲明。有任一待決紀錄或讀不出狀態時照常接受。要等使用者回覆或手動操作，先把它記成待決紀錄，再等那個 ID。
-- 聲明在三種情況失效：自己收到任何新訊息、等待的決策不再是 `pending`、等待的 Agent 成功把訊息傳給自己。監控以雙方在 `hcom list --json` 的確切 session 歸屬核對傳送成功；該 Agent 傳給其他人、可能撞名的短名或僅嘗試傳送都不算回報。失效後若仍在等，處理完新訊息再重新聲明。
+- 聲明在下列情況失效：等待 Agent 的期限到期，或原有三種條件成立：自己收到任何新訊息、等待的決策不再是 `pending`、等待的 Agent 成功把訊息傳給自己。監控以雙方在 `hcom list --json` 的確切 session 歸屬核對傳送成功；該 Agent 傳給其他人、可能撞名的短名或僅嘗試傳送都不算回報。失效後若仍在等，處理完新訊息再重新聲明。
 - 等核准的工具呼叫或背景指令還在跑時，不需要聲明；但 Codex 回合已結束、狀態仍 `active` 時是例外，此時若真的只剩等待，仍須聲明等待。
+
+## 等待期限與連續到期
+
+等待 Agent 預設 60 分鐘，可在 `wait` 加上 `--minutes 1..720` 指定分鐘數。決策等待沒有期限，指定 `--minutes` 會被拒絕。`--for` 的 Agent 名稱依清單解析成完整名稱；解析後是自己時拒絕，保留原聲明，提示改用 `alarm`（鬧鐘由後續功能提供）。
+
+期限到時，被等的 Agent 必須同屬這支監控的對象，而且最近 20 分鐘有進展或畫面仍在執行指令，才延長到下一輪判斷；它自己處於有效等待不算有進展。每筆聲明只記錄第一次延長。否則聲明立刻失效，原因為 `expired`，監控在等待者視窗輸入 `[lat-watch] ` 催促，寫明對象、已等多久，請它查看對方狀態後繼續工作或重新聲明。視窗忙碌或輸入框有字時下一輪再試，送達後回到原有停住處理。
+
+同一對象連續第二次到期，另通知上一層一次，附等待者、對象與兩筆聲明時間：執行 Agent 通知主控，主控則通知使用者並在主控對話留說明。第三次以後只催促等待者，直到原有條件正常解除等待或下一筆換對象，計數才歸零。通知失敗下一輪重試，成功後不重送。有 Herdr 但彈出通知暫時失敗時，保留已送達的對話說明，只重試彈出通知；沒有 Herdr 時沿用只留對話說明的方式。
+
+舊格式 Agent 聲明以 `declared_at` 加 60 分鐘為期限；決策聲明仍不設期限。到期狀態、連續次數與待送催促存在等待聲明檔，並保存於主控監控狀態；重啟後保留。監控每輪在主控狀態的 `feature_versions.wait_deadline` 寫入 `1`，表示支援等待期限；鬧鐘支援另行標記。新的聲明取代舊的；監控保存時核對原先讀取的版本，避免催促後寫回舊聲明蓋掉新聲明。重新聲明前也核對上一筆是否已因新訊息或回報正常解除，避免延續舊計數。輸入成功與存檔之間當機，重啟後可能重送一次。
+
+## 更新監控程式後重啟
+
+安裝新檔案不會替換執行中的監控；重跑 activate 若監控仍在也不會換新。必須由擁有監控的主控自己確認其 `$workspace/.lat/watch/<session-id>.pid` 內的 PID 與程序身分，停止自己的監控程序，再重跑自己原本的同一條 `lat-session.py activate` 指令。保留 session 紀錄、面板綁定、等待聲明及監控狀態，不執行 deactivate，不刪檔。
+
+啟用會讀取執行者自己的 session 與 Herdr 位置，不得替其他主控執行。安裝時只重啟自己的監控；其他主控以 HCOM 通知，由各自重啟。重啟前維持舊行為，重啟後新期限生效，超過 60 分鐘的舊 Agent 等待會到期。
 
 ## 收到催促時
 
@@ -70,7 +86,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" wait --workspace "$wo
 - **額度用完、模型滿載**：只通知一次，不催。Codex 模型滿載時改用其他模型；Codex 額度用完時改用另一個還有額度的訂閱帳號，不改用 API 計費帳號。沒有可用訂閱帳號，或 Claude 遇到額度限制時，由使用者決定。監控本身不會換帳號、換模型或重開 Agent。
 - **輸入框殘留文字處理結果**：通知寫明結果（已存檔清除，或存檔失敗、文字有變動、排隊訊息已消失、清除無法確認而未清），並附原文與存檔位置；先看結果再判斷輸入框是否已清空，未清就依 /hcom-spawn 的排查程序人工處理。原文不是真人答覆證據；看起來像使用者打到一半的答覆時，在聊天請使用者重新送出。
 
-需要總覽時查目前監控對象、各自狀態與等待聲明：
+需要總覽時查目前監控對象、各自狀態與等待聲明（`deadline_at` 為期限，`expiry_count` 為連續到期次數）：
 
 ```bash
 uv run --no-project python "$lat_dir/scripts/lat-watch.py" status --workspace "$workspace" \
@@ -79,7 +95,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" status --workspace "$
 
 Codex 的觀察紀錄以 `codex_turn_finished` 表示回合已結束（`true`）、未結束（`false`）或未知（`null`）；因回合已結束但狀態仍 `active` 而催促時，停住原因為 `Codex turn finished but status active`。
 
-每次判斷與動作記在 `$workspace/.lat/watch/<主控 HCOM 名稱>/watch.jsonl`，無法辨識而跳過的任務卡也記在這裡（`task-card-skipped`，卡片持續無法辨識期間同一內容只記一次；修好或移走後重新計算）。某一輪檢查出錯時記 `cycle-failed`（錯誤類型與訊息，同一錯誤連續發生時每小時最多記一次），下一分鐘照常再查；狀態檔損壞時改名為 `<原檔名>.corrupt-<時間>` 留存，記 `state-file-reset` 後從頭計時；只有個別 Agent 的狀態損壞時，複製一份同名留存檔，記 `agent-state-reset`，只讓該 Agent 從頭計時；任務卡目錄不存在時只盯主控，記一次 `task-directory-missing`。監控程式本身的錯誤輸出在 `$workspace/.lat/watch/<session-id>.log`。查誤報或漏報時讀這兩份的最後幾行。
+等待生命週期也記錄 `wait-expired`、`wait-extended`（每筆第一次）、`wait-expiry-notified`（成功後）。每次判斷與動作記在 `$workspace/.lat/watch/<主控 HCOM 名稱>/watch.jsonl`，無法辨識而跳過的任務卡也記在這裡（`task-card-skipped`，卡片持續無法辨識期間同一內容只記一次；修好或移走後重新計算）。某一輪檢查出錯時記 `cycle-failed`（錯誤類型與訊息，同一錯誤連續發生時每小時最多記一次），下一分鐘照常再查；狀態檔損壞時改名為 `<原檔名>.corrupt-<時間>` 留存，記 `state-file-reset` 後從頭計時；只有個別 Agent 的狀態損壞時，複製一份同名留存檔，記 `agent-state-reset`，只讓該 Agent 從頭計時；任務卡目錄不存在時只盯主控，記一次 `task-directory-missing`。監控程式本身的錯誤輸出在 `$workspace/.lat/watch/<session-id>.log`。查誤報或漏報時讀這兩份的最後幾行。
 
 ## 通知使用者的情況
 
@@ -90,6 +106,7 @@ Codex 的觀察紀錄以 `codex_turn_finished` 表示回合已結束（`true`）
 3. 主控自己催過沒恢復。
 4. 主控自己的指令疑似掛住，或停在等核准畫面（上表的「上一層」通知）。
 5. 主控自己遇到額度用完或模型滿載。
+6. 主控對同一 Agent 的等待連續第二次到期。
 
 彈出通知只有一行：`<client><原因>: <workspace> <分頁> <Agent 名稱>`，原因為「額度不足」「模型滿載」「停住」「待核准」「輸入未送出」之一，例如 `claude額度不足: LAT 1 vare`；查不到 Herdr 位置時省略 workspace 與分頁。細節只寫在主控對話的說明裡。
 
