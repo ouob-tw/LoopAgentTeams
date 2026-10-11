@@ -675,6 +675,63 @@ class WatchDecisionTests(unittest.TestCase):
         )])
 
 
+class AlarmDecisionTests(unittest.TestCase):
+    def test_due_alarm_requests_terminal_ring_and_busy_defers(self):
+        watch = load_watch()
+        alarm = dict(agent='worker', kind='alarm', reason='read results', active=True,
+                     declared_at=0, due_at=60, condition={'kind': 'time', 'minutes': 1})
+        idle = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        saved, actions, events = watch.decide_alarm(alarm, idle, False, 59)
+        self.assertEqual(actions, [])
+        saved, actions, events = watch.decide_alarm(saved, idle, False, 60)
+        self.assertEqual([a.kind for a in actions], ['nudge'])
+        self.assertTrue(actions[0].text.startswith('[lat-watch] '))
+        self.assertIn('alarm', actions[0].text)
+        self.assertIn('condition met', actions[0].text)
+        self.assertIn('read results', actions[0].text)
+        self.assertTrue(saved['active'])  # Only successful delivery completes it.
+        busy = idle._replace(command_running=True, prompt_empty=False)
+        saved, actions, events = watch.decide_alarm(saved, busy, False, 61)
+        self.assertEqual(actions, [])
+        self.assertEqual(saved['due_at'], 60)
+
+    def test_condition_observation_and_timeout_freeze_due_time(self):
+        watch = load_watch()
+        idle = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        for met, now, due, outcome in [(True, 40, 40, 'condition met'),
+                                      (False, 120, 60, 'timed out')]:
+            alarm = dict(agent='worker', kind='alarm', reason='results', active=True,
+                         declared_at=0, timeout_at=60, condition={'kind': 'file', 'path': '/result'})
+            saved, actions, events = watch.decide_alarm(alarm, idle, met, now)
+            self.assertEqual(saved['due_at'], due)
+            self.assertIn(outcome, actions[0].text)
+            again, _, _ = watch.decide_alarm(saved, idle, True, now + 60)
+            self.assertEqual(again['due_at'], due)
+            self.assertEqual(again['outcome'], outcome)
+            self.assertEqual(events, ['alarm-timeout'] if not met else [])
+
+    def test_deadline_recovery_rings_idle_but_expires_busy_and_retries_notice(self):
+        watch = load_watch()
+        idle = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        alarm = dict(agent='worker', kind='alarm', reason='resume', active=True,
+                     declared_at=0, due_at=60, condition={'kind': 'time', 'minutes': 1})
+        saved, actions, _ = watch.decide_alarm(alarm, idle, False, 1000)
+        self.assertEqual([a.kind for a in actions], ['nudge'])
+        for busy in [idle._replace(prompt_empty=False, input_text='draft'),
+                     idle._replace(command_running=True)]:
+            saved, actions, events = watch.decide_alarm(alarm, busy, False, 1000)
+            self.assertFalse(saved['active'])
+            self.assertEqual(saved['released_reason'], 'undelivered')
+            self.assertEqual(events, ['alarm-undelivered'])
+            self.assertEqual([a.kind for a in actions], ['notify-orchestrator'])
+            self.assertIn('resume', actions[0].message)
+            self.assertIn('worker', actions[0].message)
+            _, retry, _ = watch.decide_alarm(saved, idle, False, 1060)
+            self.assertEqual([a.kind for a in retry], ['notify-orchestrator'])
+            saved['alarm_notified'] = True
+            _, done, _ = watch.decide_alarm(saved, idle, False, 1120)
+            self.assertEqual(done, [])
+
 class WaitDeadlineDecisionTests(unittest.TestCase):
     def test_expiry_is_inactive_and_busy_window_defers_one_nudge(self):
         watch = load_watch()
@@ -878,6 +935,455 @@ class WatchCliTests(unittest.TestCase):
     def rule_notices(self):
         return [line for line in self.hcom_log.read_text().splitlines()
                 if line.startswith('send ') and 'LAT skill rules updated' in line]
+
+    def alarm_monitor(self):
+        self.wait_session()
+        path = self.work / '.lat/sessions/orch.json'
+        record = json.loads(path.read_text())
+        record['session_id'] = 'orch'
+        path.write_text(json.dumps(record))
+        # A harmless process with the watcher command identity; no live HCOM used.
+        process = subprocess.Popen([
+            sys.executable, '-c', 'import time; time.sleep(120)', str(SCRIPT), 'run',
+            '--workspace', str(self.work), '--orchestrator', 'orch',
+            '--tasks', str(self.tasks), '--decisions', record['decisions_path'],
+        ])
+        self.addCleanup(process.wait)
+        self.addCleanup(process.terminate)
+        root = self.work / '.lat/watch'
+        root.mkdir(exist_ok=True)
+        (root / 'orch.pid').write_text(str(process.pid))
+        (root / 'orch').mkdir(exist_ok=True)
+        (root / 'orch/state.json').write_text(json.dumps({
+            'orch': {'feature_versions': {'wait_deadline': 1, 'alarm': 1}}}))
+        return process
+
+    def alarm_cli(self, *condition, agent='open'):
+        return self.cli('alarm', '--workspace', self.work, '--agent', agent,
+                        '--reason', 'resume result check', *condition)
+
+    def test_alarm_file_and_process_registration(self):
+        process = self.alarm_monitor()
+        for flags, kind in [(('--file', self.root / 'result', '--timeout', 2), 'file'),
+                            (('--pid', process.pid), 'process'), (('--pid', 99999999), 'process')]:
+            result = self.alarm_cli(*flags)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            saved = json.loads(result.stdout)
+            self.assertEqual(saved['condition']['kind'], kind)
+            self.assertEqual(saved['timeout_at'], saved['declared_at'] + (120 if kind == 'file' else 3600))
+            if kind == 'process':
+                self.assertEqual(saved['condition']['starttime'] is None, flags[1] == 99999999)
+
+    def alarm_cycle_environment(self):
+        self.install_hcom('''#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_HCOM_LOG"
+case "$1" in
+list) printf '%s\\n' '[{"name":"orch","status":"listening"},{"name":"worker-open","status":"listening","session_id":"worker-session"}]';;
+term) if [ "$2" != inject ]; then
+        if [ -f "$FAKE_HCOM_LOG.busy" ]; then printf '%s\\n' '{"ready":true,"prompt_empty":false,"input_text":"draft","lines":[]}';
+        else printf '%s\\n' '{"ready":true,"prompt_empty":true,"lines":[]}'; fi
+      elif [ -f "$FAKE_HCOM_LOG.fail" ]; then exit 1; fi;;
+send) if [ -f "$FAKE_HCOM_LOG.fail" ]; then exit 1; fi;;
+events) printf '%s\\n' '{"id":1,"type":"status","data":{"context":"deliver:sender","session":"worker-session"}}';;
+esac
+''')
+
+    def save_alarm(self, watch, **fields):
+        saved = dict(agent='worker-open', kind='alarm', reason='read results', active=True,
+                     declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
+                     due_at=60, condition={'kind': 'time', 'minutes': 1})
+        saved.update(fields)
+        path = watch.wait_path(self.work, saved['agent'])
+        watch.write_object(path, saved)
+        return path
+
+    def test_alarm_failed_input_restart_and_message_do_not_cancel(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        self.run_cycles(watch, 0)
+        self.assertTrue(json.loads(path.read_text())['active'])
+        failed = Path(str(self.hcom_log) + '.fail')
+        failed.touch()
+        self.run_cycles(watch, 60)
+        self.assertTrue(json.loads(path.read_text())['active'])
+        failed.unlink()
+        self.run_cycles(load_watch(), 120, 180)
+        saved = json.loads(path.read_text())
+        self.assertFalse(saved['active'])
+        self.assertEqual(saved['released_reason'], 'rang')
+        state = self.watch_state()['worker-open']
+        self.assertTrue(state['nudged'])
+        self.assertEqual(state['nudged_at'], 120)
+        self.assertEqual(state['last_progress_at'], 0)
+        self.assertEqual(sum(r.get('decision') == 'alarm-ring' for r in self.watch_records()), 1)
+        # Alarm is the only nudge for this stall; escalate after ten minutes.
+        self.run_cycles(load_watch(), 720, 780)
+        lines = self.hcom_log.read_text().splitlines()
+        self.assertEqual(sum(line.startswith('term inject worker-open') for line in lines), 2)
+        self.assertEqual(sum(line.startswith('send ') and 'agent worker-open' in line for line in lines), 1)
+
+    def test_alarm_undelivered_busy_and_input_failure_retry_notification(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        self.run_cycles(watch, 0)
+        failed = Path(str(self.hcom_log) + '.fail')
+        failed.touch()
+        self.run_cycles(load_watch(), 1000)
+        saved = json.loads(path.read_text())
+        self.assertFalse(saved['active'])
+        self.assertEqual(saved['released_reason'], 'undelivered')
+        self.assertEqual(saved['delivery_failure'], 'input failed')
+        self.assertFalse(saved.get('alarm_notified', False))
+        failed.unlink()
+        self.run_cycles(load_watch(), 1060, 1120)
+        self.assertTrue(json.loads(path.read_text())['alarm_notified'])
+        self.assertEqual(sum(r.get('decision') == 'alarm-undelivered' for r in self.watch_records()), 1)
+        notices = [line for line in self.hcom_log.read_text().splitlines()
+                   if line.startswith('send ') and 'alarm was undelivered' in line]
+        self.assertEqual(len(notices), 2)
+
+    def test_alarm_cli_rejections_preserve_previous_declaration(self):
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        original = path.read_bytes()
+        result = self.alarm_cli('--after', 1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('no active orchestrator', result.stderr)
+        self.wait_session()
+        result = self.alarm_cli('--after', 1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('restart', result.stderr)
+        self.alarm_monitor()
+        state = self.work / '.lat/watch/orch/state.json'
+        state.write_text('{}')
+        result = self.alarm_cli('--after', 1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('restart', result.stderr)
+        state.write_text(json.dumps({'orch': {'feature_versions': {'alarm': 1}}}))
+        for flags in [(), ('--after', 1, '--file', '/result'), ('--after', 0),
+                      ('--after', 721), ('--after', '1.5'), ('--file', 'relative'),
+                      ('--pid', 0), ('--pid', -1), ('--file', '/result', '--timeout', 0),
+                      ('--pid', 10, '--timeout', 721), ('--after', 1, '--timeout', 1)]:
+            result = self.alarm_cli(*flags)
+            self.assertNotEqual(result.returncode, 0, flags)
+            self.assertTrue(result.stderr)
+            self.assertEqual(path.read_bytes(), original)
+        result = self.cli('alarm', '--workspace', self.work, '--agent', 'open',
+                          '--reason', ' ', '--after', 1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(path.read_bytes(), original)
+        # A PID for an unrelated live process is not a running watcher.
+        (self.work / '.lat/watch/orch.pid').write_text(str(os.getpid()))
+        result = self.alarm_cli('--after', 1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(path.read_bytes(), original)
+
+    def test_alarm_file_process_and_timeout_ring_and_new_declaration_replaces(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        result_file = self.root / 'result'
+        cases = [({'kind': 'file', 'path': str(result_file)}, True, 'condition met'),
+                 ({'kind': 'file', 'path': str(self.root / 'absent')}, False, 'timed out'),
+                 ({'kind': 'process', 'pid': 99999999, 'starttime': None}, False, 'condition met'),
+                 ({'kind': 'process', 'pid': os.getpid(), 'starttime': -1}, False, 'condition met')]
+        for condition, exists, wording in cases:
+            with self.subTest(condition=condition):
+                if exists:
+                    result_file.touch()
+                path = self.save_alarm(watch, due_at=None, timeout_at=60, condition=condition)
+                self.run_cycles(load_watch(), 60)
+                saved = json.loads(path.read_text())
+                self.assertFalse(saved['active'])
+                self.assertEqual(saved['outcome'], wording)
+                self.assertEqual(saved['released_reason'], 'rang')
+        self.assertTrue(any(r.get('decision') == 'alarm-timeout' for r in self.watch_records()))
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
+                          '--for', 'absent', '--reason', 'new wait')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)['kind'], 'agent')
+        self.assertNotIn('condition', json.loads(path.read_text()))
+
+    def test_alarm_live_process_waits_until_exit(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(120)'])
+        self.addCleanup(process.wait)
+        self.addCleanup(lambda: process.terminate() if process.poll() is None else None)
+        starttime = int(Path(f'/proc/{process.pid}/stat').read_text().rpartition(') ')[2].split()[19])
+        path = self.save_alarm(watch, due_at=None, timeout_at=3600,
+                               condition=dict(kind='process', pid=process.pid, starttime=starttime))
+        self.run_cycles(watch, 0, 60)
+        self.assertTrue(json.loads(path.read_text())['active'])
+        process.terminate()
+        process.wait()
+        self.run_cycles(load_watch(), 120, 180)
+        self.assertEqual(json.loads(path.read_text())['due_at'], 120)
+        self.assertEqual(json.loads(path.read_text())['released_reason'], 'rang')
+
+    def test_alarm_busy_defers_then_recovery_expires_without_sliding(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        busy = Path(str(self.hcom_log) + '.busy')
+        busy.touch()
+        self.run_cycles(watch, 0, 60, 600)
+        self.assertTrue(json.loads(path.read_text())['active'])
+        self.assertEqual(json.loads(path.read_text())['due_at'], 60)
+        self.run_cycles(load_watch(), 1000, 1060)
+        saved = json.loads(path.read_text())
+        self.assertFalse(saved['active'])
+        self.assertTrue(saved['alarm_notified'])
+        self.assertEqual(saved['delivery_failure'], 'input prompt not empty')
+        self.assertNotIn('term inject worker-open', self.hcom_log.read_text())
+        # A distinct alarm delivered on the first idle recovery cycle after the deadline.
+        path = self.save_alarm(watch)
+        busy.unlink()
+        self.run_cycles(load_watch(), 2000, 2060)
+        self.assertEqual(json.loads(path.read_text())['released_reason'], 'rang')
+
+    def test_alarm_upgrade_old_state_rejects_then_cycle_expires_old_wait(self):
+        process = self.alarm_monitor()
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        state = watch.state_path(self.work, 'orch')
+        state.write_text('{}')
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(agent='worker-open', target='absent', reason='legacy',
+                                     declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00', active=True))
+        original = path.read_bytes()
+        result = self.alarm_cli('--after', 1)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(path.read_bytes(), original)
+        # Upgrade with no incoming events: old waits get the default deadline.
+        script = Path(self.env['PATH'].split(':', 1)[0]) / 'hcom'
+        script.write_text(script.read_text().replace("events) printf", "events) :;; unused) printf"))
+        self.run_cycles(load_watch(), 4000)
+        self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
+        self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 1, 'alarm': 1})
+        result = self.alarm_cli('--after', 1, agent='worker-open')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
+
+    def test_new_wait_during_alarm_ring_is_not_overwritten(self):
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        replacement = dict(agent='worker-open', target='new-target', declared_at=60,
+                           declared_at_utc='1970-01-01T00:01:00+00:00', active=True)
+        def external_command(command, *args, **kwargs):
+            output = ''
+            if command[:2] == ['hcom', 'list']:
+                output = json.dumps([dict(name=name, status='listening')
+                                     for name in ('orch', 'worker-open')])
+            elif command[:2] == ['hcom', 'term'] and command[2] != 'inject':
+                output = json.dumps(dict(ready=True, prompt_empty=True, lines=[]))
+            if command[:3] == ['hcom', 'term', 'inject']:
+                watch.write_object(path, replacement)
+            return subprocess.CompletedProcess(command, 0, stdout=output, stderr='')
+        with patch.object(watch.subprocess, 'run', side_effect=external_command):
+            self.run_cycles(watch, 60)
+        self.assertEqual(json.loads(path.read_text()), replacement)
+
+    def test_orchestrator_alarm_popup_failure_retries_without_duplicate_note(self):
+        self.alarm_cycle_environment()
+        herdr = Path(self.env['PATH'].split(':', 1)[0]) / 'herdr'
+        herdr.write_text('''#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_HERDR_LOG"
+if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
+''')
+        failed = Path(str(self.herdr_log) + '.fail')
+        busy = Path(str(self.hcom_log) + '.busy')
+        failed.touch()
+        busy.touch()
+        watch = load_watch()
+        path = self.save_alarm(watch, agent='orch')
+        self.run_cycles(watch, 1000)
+        self.assertFalse(json.loads(path.read_text())['alarm_notified'])
+        self.assertTrue(json.loads(path.read_text())['alarm_conversation_delivered'])
+        failed.unlink()
+        self.run_cycles(load_watch(), 1060, 1120)
+        self.assertTrue(json.loads(path.read_text())['alarm_notified'])
+        self.assertEqual(sum(line.startswith('send ') and 'alarm was undelivered' in line
+                             for line in self.hcom_log.read_text().splitlines()), 1)
+        self.assertEqual(sum(line.startswith('notification show ')
+                             for line in self.herdr_log.read_text().splitlines()), 2)
+
+    def test_alarm_successful_ring_save_failure_does_not_ring_again(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        original_write = watch.write_object
+        failed = False
+        def fail_once(destination, value, **kwargs):
+            nonlocal failed
+            if destination == path and value.get('released_reason') == 'rang' and not failed:
+                failed = True
+                raise OSError('temporary save failure')
+            return original_write(destination, value, **kwargs)
+        with patch.object(watch, 'write_object', side_effect=fail_once):
+            self.run_cycles(watch, 60, 120, 180)
+        self.assertTrue(failed)
+        self.assertEqual(sum(line.startswith('term inject worker-open')
+                             for line in self.hcom_log.read_text().splitlines()), 1)
+        self.assertEqual(json.loads(path.read_text())['released_reason'], 'rang')
+        self.assertEqual(sum(row.get('decision') == 'alarm-ring' for row in self.watch_records()), 1)
+
+    def test_alarm_successful_notice_save_failure_does_not_send_again(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        Path(str(self.hcom_log) + '.busy').touch()
+        original_write = watch.write_object
+        failed = False
+        def fail_once(destination, value, **kwargs):
+            nonlocal failed
+            if destination == path and value.get('alarm_notified') and not failed:
+                failed = True
+                raise OSError('temporary save failure')
+            return original_write(destination, value, **kwargs)
+        with patch.object(watch, 'write_object', side_effect=fail_once):
+            self.run_cycles(watch, 660, 720, 780)
+        self.assertTrue(failed)
+        self.assertEqual(sum(line.startswith('send ') and 'alarm was undelivered' in line
+                             for line in self.hcom_log.read_text().splitlines()), 1)
+        self.assertTrue(json.loads(path.read_text())['alarm_notified'])
+
+    def test_alarm_deadline_applies_when_agent_missing_or_terminal_unreadable(self):
+        for unavailable in ('missing', 'inactive', 'terminal-error'):
+            with self.subTest(unavailable=unavailable):
+                self.alarm_cycle_environment()
+                script = Path(self.env['PATH'].split(':', 1)[0]) / 'hcom'
+                content = script.read_text()
+                if unavailable == 'missing':
+                    content = content.replace(',{"name":"worker-open","status":"listening","session_id":"worker-session"}', '')
+                elif unavailable == 'inactive':
+                    content = content.replace('"name":"worker-open","status":"listening"', '"name":"worker-open","status":"inactive"')
+                else:
+                    content = content.replace('term) if', 'term) if [ "$2" = worker-open ]; then exit 1; fi; if')
+                script.write_text(content)
+                watch = load_watch()
+                path = self.save_alarm(watch)
+                self.run_cycles(watch, 60)
+                self.assertTrue(json.loads(path.read_text())['active'])
+                self.run_cycles(load_watch(), 660, 720)
+                saved = json.loads(path.read_text())
+                self.assertFalse(saved['active'])
+                self.assertEqual(saved['released_reason'], 'undelivered')
+                self.assertIn('unavailable', saved['delivery_failure'])
+                self.assertTrue(saved['alarm_notified'])
+
+    def test_alarm_empty_terminal_rings_despite_surviving_background_process(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch, due_at=None, timeout_at=60,
+                               condition=dict(kind='file', path=str(self.root / 'absent')))
+        # The observer reports terminal readiness separately from background liveness.
+        with patch.object(watch, 'background_process_running', return_value=True):
+            self.run_cycles(watch, 60, 660)
+        saved = json.loads(path.read_text())
+        self.assertEqual(saved['released_reason'], 'rang')
+        self.assertEqual(saved['outcome'], 'timed out')
+        self.assertEqual(sum(line.startswith('term inject worker-open')
+                             for line in self.hcom_log.read_text().splitlines()), 1)
+
+    def test_alarm_final_state_save_failure_restores_nudge_after_restart(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        self.run_cycles(watch, 0)
+        state_path = watch.state_path(self.work, 'orch')
+        original_write = watch.write_object
+        def fail_state(destination, value, **kwargs):
+            if destination == state_path:
+                raise OSError('temporary state save failure')
+            return original_write(destination, value, **kwargs)
+        with patch.object(watch, 'write_object', side_effect=fail_state):
+            with self.assertRaises(OSError):
+                self.run_cycles(watch, 60)
+        self.assertEqual(json.loads(path.read_text())['released_reason'], 'rang')
+        self.run_cycles(load_watch(), 660, 720)
+        lines = self.hcom_log.read_text().splitlines()
+        self.assertEqual(sum(line.startswith('term inject worker-open') for line in lines), 1)
+        self.assertEqual(sum(line.startswith('send ') and 'agent worker-open' in line for line in lines), 1)
+        state = self.watch_state()['worker-open']
+        self.assertEqual(state['nudged_at'], 60)
+        self.assertEqual(state['last_progress_at'], 0)
+
+    def test_alarm_background_work_still_escalates_ten_minutes_after_ring(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        self.save_alarm(watch)
+        with patch.object(watch, 'background_process_running', return_value=True):
+            self.run_cycles(watch, 0, 60, 659)
+            self.assertNotIn('send ', self.hcom_log.read_text())
+            self.run_cycles(watch, 660, 1260)
+        lines = self.hcom_log.read_text().splitlines()
+        self.assertEqual(sum(line.startswith('term inject worker-open') for line in lines), 1)
+        self.assertEqual(sum(line.startswith('send ') and '--intent request' in line and 'agent worker-open' in line for line in lines), 1)
+
+    def test_alarm_new_progress_prevents_restoring_the_old_ring_nudge(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        self.save_alarm(watch)
+        self.run_cycles(watch, 0, 60)
+        script = Path(self.env['PATH'].split(':', 1)[0]) / 'hcom'
+        script.write_text(script.read_text().replace('"id":1', '"id":2'))
+        self.run_cycles(load_watch(), 120, 180)
+        self.assertFalse(self.watch_state()['worker-open']['nudged'])
+        self.assertEqual(self.watch_state()['worker-open']['last_progress_at'], 120)
+        self.run_cycles(load_watch(), 720)
+        self.assertEqual(sum(line.startswith('term inject worker-open')
+                             for line in self.hcom_log.read_text().splitlines()), 2)
+
+    def test_alarm_recovery_uses_newer_ring_after_progress_in_ringing_cycle(self):
+        for old_nudge in (False, True):
+            with self.subTest(old_nudge=old_nudge):
+                self.alarm_cycle_environment()
+                self.hcom_log.write_text('')
+                watch = load_watch()
+                path = self.save_alarm(watch)
+                self.run_cycles(watch, 0)
+                state_path = watch.state_path(self.work, 'orch')
+                if old_nudge:
+                    states = json.loads(state_path.read_text())
+                    states['worker-open'].update(nudged=True, nudged_at=0,
+                                                 orchestrator_notified=True, user_notified=True)
+                    state_path.write_text(json.dumps(states))
+                # New progress is observed BEFORE ringing; the older state file stays at event1.
+                script = Path(self.env['PATH'].split(':', 1)[0]) / 'hcom'
+                script.write_text(script.read_text().replace('"id":1', '"id":2'))
+                original_write = watch.write_object
+                def fail_state(destination, value, **kwargs):
+                    if destination == state_path:
+                        raise OSError('temporary final state failure')
+                    return original_write(destination, value, **kwargs)
+                with patch.object(watch, 'write_object', side_effect=fail_state):
+                    with self.assertRaises(OSError):
+                        self.run_cycles(watch, 60)
+                self.assertEqual(json.loads(path.read_text())['released_reason'], 'rang')
+                self.run_cycles(load_watch(), 660, 1260)
+                lines = self.hcom_log.read_text().splitlines()
+                self.assertEqual(sum(line.startswith('term inject worker-open') for line in lines), 1)
+                notices = [line for line in lines if line.startswith('send ') and '--intent request' in line
+                           and 'agent worker-open' in line]
+                self.assertEqual(len(notices), 1)
+                self.assertEqual(self.watch_state()['worker-open']['nudged_at'], 60)
+
+    def test_alarm_time_registration_and_status(self):
+        self.alarm_monitor()
+        result = self.alarm_cli('--after', 3)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = json.loads(result.stdout)
+        self.assertEqual(saved['agent'], 'worker-open')
+        self.assertEqual(saved['kind'], 'alarm')
+        self.assertEqual(saved['condition'], {'kind': 'time', 'minutes': 3})
+        self.assertEqual(saved['due_at'], saved['declared_at'] + 180)
+        status = self.cli('status', '--workspace', self.work, '--orchestrator', 'orch',
+                          '--tasks', self.tasks)
+        row = next(r for r in json.loads(status.stdout)['targets'] if r['agent'] == 'worker-open')
+        self.assertEqual(row['wait'], saved)
 
     def test_legacy_baseline_then_rule_change_notifies_once_and_survives_restart(self):
         skill, record = self.rule_session()
@@ -3235,7 +3741,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 1}},
+                     'feature_versions': {'wait_deadline': 1, 'alarm': 1}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -3259,7 +3765,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 1}},
+                     'feature_versions': {'wait_deadline': 1, 'alarm': 1}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):

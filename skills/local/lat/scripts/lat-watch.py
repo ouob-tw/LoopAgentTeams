@@ -30,6 +30,7 @@ FAILURE_REPEAT_SECONDS = 60 * 60
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 # Successful deliveries awaiting a session-record save; retained across retry cycles.
 RULE_DELIVERIES = {}
+ALARM_DELIVERIES = {}
 _UNSET = object()
 NUDGE = ('[lat-watch] Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
@@ -91,6 +92,7 @@ class Observation(NamedTuple):
     quota_issue: object = None
     codex_turn_finished: object = None
     nudge_only: bool = False
+    terminal_ready: object = None
 
 
 class QuotaIssue(NamedTuple):
@@ -625,7 +627,8 @@ def decide(previous, observation, now):
                                  else 'active status but terminal ready at an empty prompt')
     elif (state['nudged'] and not observation.wait_active
           and observation.prompt_empty
-          and (not observation.command_running or finished_active)
+          and (not observation.command_running or finished_active
+               or (state.get('stall_reason') == 'alarm rang' and observation.terminal_ready))
           and now - state['nudged_at'] >= IDLE_SECONDS):
         if observation.is_orchestrator and not state.get('user_notified'):
             actions = (Action(
@@ -1024,9 +1027,52 @@ def wait_release_reason(declaration, participant_events, target_replied, decisio
     return None
 
 
+def expire_alarm(saved, now, failure):
+    saved.update(active=False, released_reason='undelivered', delivery_failure=failure,
+                 released_at_utc=datetime.fromtimestamp(now, timezone.utc).isoformat())
+
+
+def alarm_notification(saved, observation):
+    message = (f"LAT stall watcher: agent {observation.agent} alarm was undelivered: "
+               f"{saved['reason']}; {saved['delivery_failure']}. Check the agent and continue.")
+    return Action('notify-user' if observation.is_orchestrator else 'notify-orchestrator',
+                  observation.agent, message,
+                  category='alarm-popup' if saved.get('alarm_conversation_delivered') else 'alarm-notice')
+
+
+def decide_alarm(declaration, observation, condition_met, now):
+    """Decide alarm delivery without marking unconfirmed input as delivered."""
+    saved = dict(declaration)
+    actions, events = [], []
+    if saved.get('active', True):
+        if saved.get('due_at') is None:
+            if condition_met:
+                saved.update(due_at=now, outcome='condition met')
+            elif now >= saved['timeout_at']:
+                saved.update(due_at=saved['timeout_at'], outcome='timed out')
+                events.append('alarm-timeout')
+        due = saved.get('due_at')
+        if due is not None and now >= due:
+            saved.setdefault('outcome', 'condition met')
+            ready = (observation.terminal_ready if observation.terminal_ready is not None
+                     else not observation.command_running)
+            if observation.prompt_empty and ready:
+                text = (f"[lat-watch] Your alarm {saved['outcome']}: {saved['reason']}. "
+                        'Continue your work.')
+                actions.append(Action('nudge', observation.agent, text=text, category='alarm-ring'))
+            elif now >= due + IDLE_SECONDS:
+                failure = ('window unavailable' if observation.status == 'unavailable' else
+                           'command running' if not ready else 'input prompt not empty')
+                expire_alarm(saved, now, failure)
+                events.append('alarm-undelivered')
+    if saved.get('released_reason') == 'undelivered' and not saved.get('alarm_notified'):
+        actions.append(alarm_notification(saved, observation))
+    return saved, actions, events
+
+
 def decide_wait(declaration, observation, target_observation, target_state, now):
     """Return a deadline declaration, delivery requests and lifecycle log events."""
-    if not declaration or declaration.get('kind') == 'decision':
+    if not declaration or declaration.get('kind') in ('decision', 'alarm'):
         return declaration, [], []
     saved = dict(declaration)
     actions, events = [], []
@@ -1222,7 +1268,7 @@ def successful_hcom_send_since(transcript, declared_at, recipient=None):
 
 def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agents=None,
                            *, expected=_UNSET):
-    if not declaration or (not declaration.get('active', True)
+    if not declaration or declaration.get('kind') == 'alarm' or (not declaration.get('active', True)
                            and declaration.get('released_reason') != 'expired'):
         return None
     if expected is _UNSET:
@@ -1321,6 +1367,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
         status=info.get('status', 'missing'),
         prompt_empty=prompt_empty,
         command_running=not ready or background_running,
+        terminal_ready=ready,
         transcript_size=transcript_size,
         transcript_mtime_ns=transcript_mtime_ns,
         event_id=event_id,
@@ -1408,7 +1455,7 @@ def show_popup(agent, orchestrator, label):
 
 
 def perform_notify_user(action, orchestrator, workspace=None):
-    if action.category != 'wait-expiry-popup':
+    if action.category not in ('wait-expiry-popup', 'alarm-popup'):
         send_notification(action, orchestrator, 'inform')
     try:
         show_popup(action.agent, orchestrator, action.label or '停住')
@@ -1665,6 +1712,74 @@ def check_rule_changes(workspace, orchestrator, log, now):
                              'actions': [], 'error': str(error)})
 
 
+def restore_alarm_nudge(previous, declaration):
+    """Recover a delivered alarm even if the separate watcher-state save failed."""
+    if not declaration or declaration.get('released_reason') != 'rang':
+        return previous
+    nudge = declaration.get('ring_nudge')
+    if not nudge:
+        return previous
+    previous = previous or {}
+    if (previous.get('last_progress_at', 0) <= declaration['rang_at']
+            and (not previous.get('nudged') or previous.get('nudged_at', 0) < declaration['rang_at'])):
+        return {**previous, **nudge}
+    return previous
+
+
+def read_alarm_wait(path):
+    declaration, original = read_wait(path)
+    pending = ALARM_DELIVERIES.get(str(path))
+    if pending:
+        expected, delivered = pending
+        if original == expected:
+            declaration = dict(delivered)
+        else:
+            # A replacement declaration always wins over a pending old save.
+            ALARM_DELIVERIES.pop(str(path))
+    return declaration, original
+
+
+def save_alarm_delivery(path, declaration, original):
+    """Keep a successful input/notice across recoverable persistence failures."""
+    ALARM_DELIVERIES[str(path)] = (original, dict(declaration))
+    saved = write_object(path, declaration, expected=original)
+    ALARM_DELIVERIES.pop(str(path), None)
+    return saved
+
+
+def deliver_alarm_notice(action, declaration, path, original, orchestrator, workspace):
+    delivery = perform(action, orchestrator, workspace)
+    declaration['alarm_conversation_delivered'] = True
+    declaration['alarm_notified'] = (not delivery.get('herdr_error') or shutil.which('herdr') is None)
+    original = save_alarm_delivery(path, declaration, original)
+    return delivery, original
+
+
+def unavailable_alarm(workspace, orchestrator, agent, state, now, log):
+    """Keep the fixed deadline even when HCOM cannot observe the window."""
+    path = wait_path(workspace, agent)
+    try:
+        declaration, original = read_alarm_wait(path)
+        if not declaration or declaration.get('kind') != 'alarm':
+            return
+        observation = Observation(agent, 'unavailable', False, False, 0, 0, 0,
+                                  is_orchestrator=agent == orchestrator, terminal_ready=False)
+        met = (alarm_condition_met(declaration) if declaration.get('active', True)
+               and declaration.get('due_at') is None else False)
+        saved, actions, events = decide_alarm(declaration, observation, met, now)
+        original = write_object(path, saved, expected=original)
+        ALARM_DELIVERIES.pop(str(path), None)
+        state['wait'] = saved
+        for event in events:
+            append_log(log, {'at': now, 'agent': agent, 'decision': event, 'wait': saved})
+        for action in actions:
+            delivery, original = deliver_alarm_notice(action, saved, path, original, orchestrator, workspace)
+            append_log(log, {'at': now, 'agent': agent, 'decision': 'alarm-notified',
+                             'delivery': delivery})
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        append_log(log, {'at': now, 'agent': agent, 'decision': 'alarm-check-failed', 'error': str(error)})
+
+
 def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     """Observe every owned agent once, execute actions, and persist state/logs."""
     now = time.time() if now is None else now
@@ -1711,6 +1826,10 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
 
     def current_observation(agent):
         if agent not in observations:
+            declaration, _ = read_alarm_wait(wait_path(workspace, agent))
+            restored = restore_alarm_nudge(states.get(agent), declaration)
+            if restored is not None:
+                states[agent] = restored
             observed = observe(workspace, decisions, orchestrator, agent, hcom[agent], cards.get(agent))
             observations[agent] = nudge_only_observation(
                 states.get(agent), observed, hcom[agent], orchestrator)
@@ -1725,6 +1844,9 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             states[agent] = previous
         disappeared = (info is None or (
             info.get('status') == 'inactive' and hcom_quota_issue(info) is None))
+        if disappeared:
+            unavailable_alarm(workspace, orchestrator, agent, previous, now, log)
+            states[agent] = previous
         if agent != orchestrator and disappeared:
             state = dict(previous)
             state['missing_cycles'] = state.get('missing_cycles', 0) + 1
@@ -1766,9 +1888,13 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             })
             continue
         try:
-            observation = current_observation(agent)
+            try:
+                observation = current_observation(agent)
+            except (OSError, ValueError, TypeError, KeyError):
+                unavailable_alarm(workspace, orchestrator, agent, previous, now, log)
+                raise
             previous = states.get(agent)
-            declaration, wait_original = read_wait(wait_path(workspace, agent))
+            declaration, wait_original = read_alarm_wait(wait_path(workspace, agent))
             if declaration and 'kind' not in declaration:
                 declaration['kind'] = ('decision' if pending_decision(decisions, declaration['target'])
                                        is not None else 'agent')
@@ -1786,17 +1912,23 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                         target_state, _ = decide(states.get(target), target_observation, now)
                     except (OSError, ValueError, TypeError, KeyError):
                         target_observation, target_state = None, None
-            saved_wait, wait_actions, wait_events = decide_wait(
-                declaration, observation, target_observation, target_state, now)
+            if declaration and declaration.get('kind') == 'alarm':
+                met = (alarm_condition_met(declaration) if declaration.get('active', True)
+                       and declaration.get('due_at') is None else False)
+                saved_wait, wait_actions, wait_events = decide_alarm(declaration, observation, met, now)
+            else:
+                saved_wait, wait_actions, wait_events = decide_wait(
+                    declaration, observation, target_observation, target_state, now)
             if saved_wait is not None:
                 observation = observation._replace(
                     wait_active=saved_wait.get('active', True),
                     wait_released=observation.wait_released or 'wait-expired' in wait_events)
                 wait_original = write_object(wait_path(workspace, agent), saved_wait,
                                              expected=wait_original)
+                ALARM_DELIVERIES.pop(str(wait_path(workspace, agent)), None)
             for event in wait_events:
                 append_log(log, {'at': now, 'agent': agent, 'decision': event,
-                                 'target': saved_wait['target'], 'deadline_at': saved_wait['deadline_at']})
+                                 'wait': saved_wait})
             try:
                 state, actions = decide(previous, observation, now)
             except (TypeError, ValueError, KeyError, AttributeError) as error:
@@ -1804,13 +1936,44 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                     raise
                 reset_agent_state(path, log, now, agent, f'{type(error).__name__}: {error}')
                 state, actions = decide(None, observation, now)
-            if saved_wait and saved_wait.get('expiry_nudge_pending'):
+            if saved_wait and (saved_wait.get('expiry_nudge_pending')
+                               or (saved_wait.get('kind') == 'alarm'
+                                   and (saved_wait.get('active', True) or wait_actions))):
                 actions = [action for action in actions if action.kind != 'nudge']
             actions = [*wait_actions, *actions]
             results = []
             for action in actions:
                 try:
-                    delivery = perform(action, orchestrator, workspace)
+                    if action.category == 'alarm-ring':
+                        try:
+                            delivery = perform(action, orchestrator, workspace)
+                        except (OSError, ValueError):
+                            if now >= saved_wait['due_at'] + IDLE_SECONDS:
+                                expire_alarm(saved_wait, now, 'input failed')
+                                wait_original = write_object(wait_path(workspace, agent), saved_wait,
+                                                             expected=wait_original)
+                                append_log(log, {'at': now, 'agent': agent,
+                                                 'decision': 'alarm-undelivered', 'wait': saved_wait})
+                                actions.append(alarm_notification(saved_wait, observation))
+                            raise
+                        saved_wait.update(active=False, released_reason='rang', rang_at=now)
+                        state.update(nudged=True, nudged_at=now, nudge_text=action.text,
+                                     nudge_fingerprint=state['fingerprint'], stall_reason='alarm rang')
+                        saved_wait['ring_nudge'] = {key: state[key] for key in (
+                            'fingerprint', 'last_progress_at', 'nudged', 'nudged_at',
+                            'nudge_text', 'nudge_fingerprint', 'stall_reason',
+                            'orchestrator_notified', 'orchestrator_handled', 'user_notified')}
+                        ALARM_DELIVERIES[str(wait_path(workspace, agent))] = (wait_original, dict(saved_wait))
+                        append_log(log, {'at': now, 'agent': agent, 'decision': 'alarm-ring',
+                                         'wait': saved_wait})
+                        wait_original = save_alarm_delivery(
+                            wait_path(workspace, agent), saved_wait, wait_original)
+                    elif action.category in ('alarm-notice', 'alarm-popup'):
+                        delivery, wait_original = deliver_alarm_notice(
+                            action, saved_wait, wait_path(workspace, agent), wait_original,
+                            orchestrator, workspace)
+                    else:
+                        delivery = perform(action, orchestrator, workspace)
                     if action.category.startswith('wait-expiry'):
                         if action.kind == 'nudge':
                             saved_wait['expiry_nudge_pending'] = False
@@ -1835,7 +1998,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                         apply_prompt_recovery_result(state, delivery, now)
                     results.append({'kind': action.kind, 'status': 'done', **delivery})
                 except (OSError, ValueError) as error:
-                    if not action.category.startswith('wait-expiry'):
+                    if not action.category.startswith(('wait-expiry', 'alarm-')):
                         roll_back(action, state)
                     results.append({'kind': action.kind, 'status': 'failed',
                                     'error': str(error)})
@@ -1854,7 +2017,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 'at': now, 'agent': agent, 'decision': 'observation-failed',
                 'actions': [], 'error': str(error),
             })
-    states.setdefault(orchestrator, {})['feature_versions'] = {'wait_deadline': 1}
+    states.setdefault(orchestrator, {})['feature_versions'] = {'wait_deadline': 1, 'alarm': 1}
     write_object(path, states)
 
 
@@ -1904,6 +2067,96 @@ def resolve_agent_name(agents, name, *, required):
     if required:
         raise ValueError(f'Unknown HCOM agent: {name}')
     return name
+
+
+def alarm_condition_met(declaration):
+    condition = declaration['condition']
+    if condition['kind'] == 'file':
+        return Path(condition['path']).exists()
+    if condition['kind'] == 'process':
+        return (condition['starttime'] is None
+                or process_starttime(condition['pid']) != condition['starttime'])
+    return False
+
+
+def process_starttime(pid):
+    try:
+        fields = Path(f'/proc/{pid}/stat').read_text().rpartition(') ')[2].split()
+        return None if fields[0] == 'Z' else int(fields[19])
+    except (FileNotFoundError, ProcessLookupError):
+        return None
+
+
+def alarm_watcher_running(workspace, record):
+    """Verify the PID belongs to this session's watcher, not a reused PID."""
+    try:
+        pid = int((watch_dir(workspace) / f"{record['session_id']}.pid").read_text())
+        if process_starttime(pid) is None:
+            return False
+        command = tuple(part.decode() for part in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
+                        if part)
+    except (OSError, ValueError, KeyError, IndexError):
+        return False
+    expected = ('run', '--workspace', str(workspace), '--orchestrator', record['hcom_name'],
+                '--tasks', record['tasks_path'], '--decisions', record['decisions_path'])
+    return any(Path(command[i]).name == 'lat-watch.py'
+               and command[i + 1:i + 1 + len(expected)] == expected
+               for i in range(len(command)))
+
+
+def declare_alarm(args):
+    workspace = args.workspace.resolve(strict=True)
+    agent = resolve_agent_name(list_hcom(valid_name(args.agent)), args.agent, required=True)
+    reason = args.reason.strip()
+    if not reason:
+        raise ValueError('--reason must not be empty')
+    owners = []
+    for path in sorted((workspace / '.lat/sessions').glob('*.json')):
+        try:
+            record = read_object(path, {})
+            if (record.get('role') != 'orchestrator' or record.get('status') != 'active'
+                    or record.get('workspace') != str(workspace)):
+                continue
+            owner = record['hcom_name']
+            if owner != agent and agent not in monitored_agents(Path(record['tasks_path']), owner):
+                continue
+            owners.append(record)
+        except (OSError, ValueError, KeyError, TypeError):
+            continue
+    if not owners:
+        raise ValueError('Cannot register alarm: no active orchestrator monitors this agent')
+    for record in owners:
+        if not alarm_watcher_running(workspace, record):
+            continue
+        state = read_object(state_path(workspace, record['hcom_name']), {})
+        if state.get(record['hcom_name'], {}).get('feature_versions', {}).get('alarm') == 1:
+            break
+    else:
+        raise ValueError('Cannot register alarm: watcher is stopped or lacks alarm support; '
+                         'ask its orchestrator to restart the watcher')
+    now = time.time()
+    declaration = dict(agent=agent, kind='alarm', reason=reason, active=True,
+                       declared_at=now, declared_at_utc=datetime.fromtimestamp(now, timezone.utc).isoformat())
+    if args.after is not None:
+        if args.timeout is not None:
+            raise ValueError('--timeout is only allowed with --file or --pid')
+        declaration.update(condition=dict(kind='time', minutes=args.after), due_at=now + args.after * 60)
+    elif args.file is not None:
+        if not args.file.is_absolute():
+            raise ValueError('--file must be an absolute path')
+        declaration['condition'] = dict(kind='file', path=str(args.file))
+    else:
+        if args.pid < 1:
+            raise ValueError('--pid must be positive')
+        declaration['condition'] = dict(kind='process', pid=args.pid,
+                                        starttime=process_starttime(args.pid))
+    if args.after is None:
+        declaration['timeout_at'] = now + (args.timeout or 60) * 60
+    _, original = read_wait(wait_path(workspace, agent))
+    write_object(wait_path(workspace, agent), declaration, expected=original)
+    append_log(state_path(workspace, record['hcom_name']).with_name('watch.jsonl'),
+               {'at': now, 'agent': agent, 'decision': 'alarm-registered', 'wait': declaration})
+    print(json.dumps(declaration, ensure_ascii=False))
 
 
 def declare_wait(args):
@@ -2018,7 +2271,16 @@ def main():
     waiting.add_argument('--reason', required=True)
     waiting.add_argument('--minutes', type=int, choices=range(1, 721),
                          metavar='1..720', help='Agent wait deadline (default: 60 minutes)')
-    status = commands.add_parser('status', help='List watched agents and current state')
+    alarm = commands.add_parser('alarm', help='Register a watcher-owned wake-up alarm')
+    alarm.add_argument('--workspace', type=Path, required=True)
+    alarm.add_argument('--agent', required=True)
+    alarm.add_argument('--reason', required=True)
+    condition = alarm.add_mutually_exclusive_group(required=True)
+    condition.add_argument('--after', type=int, choices=range(1, 721), metavar='1..720')
+    condition.add_argument('--file', type=Path)
+    condition.add_argument('--pid', type=int)
+    alarm.add_argument('--timeout', type=int, choices=range(1, 721), metavar='1..720')
+    status = commands.add_parser('status' , help='List watched agents and current state')
     status.add_argument('--workspace', type=Path, required=True)
     status.add_argument('--orchestrator', required=True)
     status.add_argument('--tasks', type=Path, required=True)
@@ -2031,6 +2293,8 @@ def main():
     try:
         if args.command == 'wait':
             declare_wait(args)
+        elif args.command == 'alarm':
+            declare_alarm(args)
         elif args.command == 'status':
             show_status(args)
         else:
