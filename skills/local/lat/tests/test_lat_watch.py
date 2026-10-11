@@ -695,6 +695,47 @@ class AlarmDecisionTests(unittest.TestCase):
         self.assertEqual(actions, [])
         self.assertEqual(saved['due_at'], 60)
 
+    def test_post_ring_escalation_does_not_treat_active_work_as_idle(self):
+        watch = load_watch()
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                idle = watch.Observation('worker', 'listening', True, True, 10, 10, 1,
+                                         client=client, terminal_ready=True,
+                                         codex_turn_finished=True if client == 'codex' else None)
+                state, _ = watch.decide(None, idle, 0)
+                state.update(nudged=True, nudged_at=60, nudge_fingerprint=state['fingerprint'],
+                             stall_reason='alarm rang')
+                busy = idle._replace(status='active', codex_turn_finished=False
+                                     if client == 'codex' else None)
+                state, actions = watch.decide(state, busy, 660)
+                self.assertEqual(actions, ())
+                _, actions = watch.decide(state, idle, 720)
+                self.assertEqual([a.kind for a in actions], ['notify-orchestrator'])
+
+    def test_real_a07_ready_empty_active_foreground_defers_until_turn_finishes(self):
+        watch = load_watch()
+        alarm = dict(agent='worker', kind='alarm', reason='read results', active=True,
+                     declared_at=0, due_at=60, condition={'kind': 'time', 'minutes': 1})
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                # Exact real A07 observation: ready/empty does not mean the turn ended.
+                busy = watch.Observation('worker', 'active', True, True, 10, 10, 1,
+                                         client=client, terminal_ready=True,
+                                         codex_turn_finished=False if client == 'codex' else None)
+                saved, actions, _ = watch.decide_alarm(alarm, busy, False, 60)
+                self.assertEqual(actions, [])
+                self.assertTrue(saved['active'])
+                self.assertEqual(saved['due_at'], 60)
+                completed = busy._replace(status='listening', codex_turn_finished=True
+                                          if client == 'codex' else None)
+                _, actions, _ = watch.decide_alarm(saved, completed, False, 120)
+                self.assertEqual([a.kind for a in actions], ['nudge'])
+                expired, actions, _ = watch.decide_alarm(saved, busy, False, 660)
+                self.assertFalse(expired['active'])
+                self.assertEqual(expired['released_reason'], 'undelivered')
+                self.assertEqual(expired['delivery_failure'], 'command running')
+                self.assertEqual([a.kind for a in actions], ['notify-orchestrator'])
+
     def test_condition_observation_and_timeout_freeze_due_time(self):
         watch = load_watch()
         idle = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
@@ -744,12 +785,32 @@ class WaitDeadlineDecisionTests(unittest.TestCase):
         self.assertEqual(saved['expiry_count'], 1)
         self.assertEqual(actions, [])
         self.assertEqual(events, ['wait-expired'])
-        idle = busy._replace(prompt_empty=True, command_running=False)
+        idle = busy._replace(status='listening', prompt_empty=True, command_running=False)
         saved, actions, events = watch.decide_wait(saved, idle, None, None, 3660)
         self.assertEqual([a.kind for a in actions], ['nudge'])
         self.assertTrue(actions[0].text.startswith('[lat-watch] '))
         self.assertIn('reviewer', actions[0].text)
         self.assertIn('61 minutes', actions[0].text)
+
+    def test_real_w01_finished_ready_empty_owner_gets_expiry_nudge_despite_process(self):
+        watch = load_watch()
+        declaration = dict(agent='owner', target='reviewer', declared_at=0,
+                           declared_at_utc='1970-01-01T00:00:00+00:00', active=True)
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                idle = watch.Observation('owner', 'listening', True, True, 10, 10, 1,
+                                         is_orchestrator=True, client=client, terminal_ready=True,
+                                         codex_turn_finished=True if client == 'codex' else None)
+                saved, actions, _ = watch.decide_wait(declaration, idle, None, None, 3600)
+                self.assertEqual(saved['expiry_count'], 1)
+                self.assertTrue(saved['expiry_nudge_pending'])
+                self.assertEqual([a.category for a in actions], ['wait-expiry'])
+                busy = idle._replace(status='active', codex_turn_finished=False
+                                     if client == 'codex' else None)
+                _, actions, _ = watch.decide_wait(saved, busy, None, None, 3660)
+                self.assertEqual(actions, [])
+                _, actions, _ = watch.decide_wait(saved, idle._replace(prompt_empty=False), None, None, 3720)
+                self.assertEqual(actions, [])
 
     def test_expiry_nudge_echo_is_not_progress(self):
         watch = load_watch()
@@ -2225,6 +2286,81 @@ esac
             'elif [ "$1" = events ]; then printf \'%s\\n\' \'{"id":1,"type":"status"}\'; fi\n'
         )
         return transcript
+
+    def test_working_screen_defers_alarm_and_expiry_despite_ready_empty_prompt(self):
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                self.finished_codex_fixture(client)
+                listing = Path(self.env['FAKE_AGENTS'])
+                agents = json.loads(listing.read_text())
+                for agent in agents:
+                    agent['status'] = 'listening'
+                listing.write_text(json.dumps(agents))
+                terminal = Path(self.env['FAKE_TERMINAL'])
+                screen = json.loads(terminal.read_text())
+                screen['lines'] = (['Working (56s • esc to interrupt) · 1 background terminal running']
+                                   if client == 'codex' else ['✻ Working… (56s · esc to interrupt)'])
+                terminal.write_text(json.dumps(screen))
+                self.hcom_log.write_text('')
+                watch = load_watch()
+                alarm_path = self.save_alarm(watch)
+                wait_path = watch.wait_path(self.work, 'orch')
+                watch.write_object(wait_path, dict(agent='orch', kind='agent', target='absent',
+                                   declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
+                                   deadline_at=60, active=True))
+                self.run_finished_cycles(watch, 0, 60)
+                self.assertEqual(self.injections(), [])
+                self.assertTrue(json.loads(alarm_path.read_text())['active'])
+                self.assertTrue(json.loads(wait_path.read_text())['expiry_nudge_pending'])
+                screen['lines'] = []
+                terminal.write_text(json.dumps(screen))
+                self.run_finished_cycles(watch, 120)
+                self.assertEqual(len(self.injections()), 2)
+                self.assertEqual(json.loads(alarm_path.read_text())['released_reason'], 'rang')
+                self.assertFalse(json.loads(wait_path.read_text())['expiry_nudge_pending'])
+
+    def test_real_a07_cycle_preserves_alarm_during_foreground_work(self):
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                transcript = self.finished_codex_fixture(client)
+                with transcript.open('a') as stream:
+                    stream.write(json.dumps({'type': 'event_msg', 'payload': {'type': 'task_started'}}) + '\n')
+                self.hcom_log.write_text('')
+                watch = load_watch()
+                path = self.save_alarm(watch)
+                self.run_finished_cycles(watch, 0, 60)
+                row = next(r for r in reversed(self.watch_records()) if r.get('agent') == 'worker-open')
+                observed = row['observation']
+                self.assertEqual(observed['status'], 'active')
+                self.assertTrue(observed['command_running'])
+                self.assertTrue(observed['terminal_ready'])
+                self.assertTrue(observed['prompt_empty'])
+                self.assertEqual(self.injections(), [])
+                self.assertTrue(json.loads(path.read_text())['active'])
+                if client == 'codex':
+                    with transcript.open('a') as stream:
+                        stream.write(json.dumps({'type': 'event_msg', 'payload': {'type': 'task_complete'}}) + '\n')
+                else:
+                    listing = Path(self.env['FAKE_AGENTS'])
+                    agents = json.loads(listing.read_text())
+                    for agent in agents:
+                        agent['status'] = 'listening'
+                    listing.write_text(json.dumps(agents))
+                self.run_finished_cycles(watch, 120, 180)
+                self.assertEqual(len(self.injections()), 1)
+                self.assertEqual(json.loads(path.read_text())['released_reason'], 'rang')
+
+    def test_stale_active_finished_codex_can_ring_and_nudge_expiry_with_background(self):
+        self.finished_codex_fixture()
+        watch = load_watch()
+        alarm_path = self.save_alarm(watch)
+        wait_path = watch.wait_path(self.work, 'orch')
+        watch.write_object(wait_path, dict(agent='orch', kind='agent', target='absent', declared_at=0,
+                           declared_at_utc='1970-01-01T00:00:00+00:00', deadline_at=60, active=True))
+        self.run_finished_cycles(watch, 0, 60)
+        self.assertEqual(len(self.injections()), 2)
+        self.assertEqual(json.loads(alarm_path.read_text())['released_reason'], 'rang')
+        self.assertFalse(json.loads(wait_path.read_text())['expiry_nudge_pending'])
 
     def run_finished_cycles(self, watch, *times):
         # The OS process list is an external observation seam, like fake hcom.
