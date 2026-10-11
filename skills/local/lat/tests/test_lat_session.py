@@ -358,6 +358,54 @@ class SessionTests(unittest.TestCase):
         self.activate()
         self.assertEqual(json.loads(self.record.read_text()), first)
 
+    def test_finished_session_starts_new_round_with_fresh_paths_and_fingerprint(self):
+        self.activate()
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work,
+                                 '--status', 'completed').returncode, 0)
+        previous = json.loads(self.record.read_text())
+        previous['rule_fingerprint'] = {'SKILL.md': 'previous-rule-content'}
+        self.record.write_text(json.dumps(previous))
+        progress = self.work / 'next-progress.md'
+        progress.write_text('Next round tracker links\n')
+        decisions = self.work / 'next-decisions'
+        decisions.mkdir()
+        tasks = self.work / 'next-tasks'
+        tasks.mkdir()
+        env, log = self.tab_env()
+        result = self.cli('activate', '--workspace', self.work, '--progress', progress,
+                          '--decisions', decisions, '--tasks', tasks,
+                          '--hcom-name', 'next-orch', extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(str(self.record), result.stdout.splitlines())
+        self.assertIn('已開始第 2 輪', result.stdout.splitlines())
+        current = json.loads(self.record.read_text())
+        self.assertEqual(current['history'], [previous])
+        self.assertEqual(current['status'], 'active')
+        self.assertEqual(current['progress_path'], str(progress))
+        self.assertEqual(current['decisions_path'], str(decisions))
+        self.assertEqual(current['tasks_path'], str(tasks))
+        self.assertEqual(current['hcom_name'], 'next-orch')
+        self.assertNotEqual(current['rule_fingerprint'], previous['rule_fingerprint'])
+        self.assertIn('references/recovery.md', current['rule_fingerprint'])
+        bindings = json.loads((self.root / 'plugin-config/bindings.json').read_text())
+        self.assertEqual(bindings['bindings'][SESSION]['hcom_name'], 'next-orch')
+        self.assertEqual(self.tab_calls(log),
+                         ['tab get herdr-tab', 'tab rename herdr-tab lat-orch'])
+        self.wait_for(self.fake_uv_log.exists)
+        self.assertIn(f'--orchestrator next-orch --tasks {tasks} --decisions {decisions}',
+                      self.fake_uv_log.read_text())
+        self.assertTrue(self.process_exists(self.watcher_pid()))
+
+        rerun = self.cli('activate', '--workspace', self.work, '--progress', progress,
+                         '--decisions', decisions, '--tasks', tasks,
+                         '--hcom-name', 'next-orch', extra_env=env)
+        self.assertEqual(rerun.returncode, 0, rerun.stderr)
+        self.assertEqual(json.loads(self.record.read_text()), current)
+        refused = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                           '--decisions', self.decisions)
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(json.loads(self.record.read_text()), current)
+
     def test_activate_preserves_unnotified_baseline_and_upgrades_records_without_one(self):
         self.activate()
         record = json.loads(self.record.read_text())
@@ -371,6 +419,152 @@ class SessionTests(unittest.TestCase):
         self.activate()
         self.assertIn('references/recovery.md',
                       json.loads(self.record.read_text())['rule_fingerprint'])
+
+    def test_two_finished_rounds_preserve_order_and_shared_workspace_files(self):
+        self.activate()
+        shared = [self.progress, self.decisions / 'decision.md', self.tasks / 'task.md',
+                  self.work / '.lat/watch/state.json', self.work / '.lat/watch/waits.json']
+        for path in shared[1:]:
+            path.write_text('Shared workspace content\n')
+        original = {path: path.read_bytes() for path in shared}
+        archived = []
+        for status, number in (('completed', 2), ('cancelled', 3)):
+            result = self.cli('deactivate', '--workspace', self.work, '--status', status)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            previous = json.loads(self.record.read_text())
+            archived.append({key: value for key, value in previous.items() if key != 'history'})
+            result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                              '--decisions', self.decisions)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertIn(f'已開始第 {number} 輪', result.stdout.splitlines())
+            current = json.loads(self.record.read_text())
+            self.assertEqual(current['history'], archived)
+            pid = self.watcher_pid()
+            rerun = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                             '--decisions', self.decisions)
+            self.assertEqual(rerun.returncode, 0, rerun.stderr)
+            self.assertIn(f'已開始第 {number} 輪', rerun.stdout.splitlines())
+            self.assertEqual(json.loads(self.record.read_text()), current)
+            self.assertEqual(self.watcher_pid(), pid)
+        self.assertEqual({path: path.read_bytes() for path in shared}, original)
+
+    def test_unrecognizable_finished_record_is_refused_without_changes(self):
+        self.activate()
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work,
+                                 '--status', 'cancelled').returncode, 0)
+        valid = json.loads(self.record.read_text())
+        broken = [dict(valid, status='unknown'), dict(valid, client='claude'),
+                  dict(valid, session_id=OTHER), dict(valid, role='worker'),
+                  dict(valid, workspace=str(self.root)), dict(valid, history={}),
+                  dict(valid, history=[42]), dict(valid, skill_dir=None),
+                  dict(valid, progress_path='relative.md'), dict(valid, hcom_name=42)]
+        broken.append({key: value for key, value in valid.items() if key != 'decisions_path'})
+        for record in broken:
+            with self.subTest(record=record):
+                self.record.write_text(json.dumps(record))
+                original = self.record.read_bytes()
+                result = self.cli('activate', '--workspace', self.work,
+                                  '--progress', self.progress, '--decisions', self.decisions)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(self.record.read_bytes(), original)
+
+    def test_new_round_partial_failure_retry_does_not_archive_twice(self):
+        self.activate()
+        for failure, number in (('binding', 2), ('watcher', 3)):
+            with self.subTest(failure=failure):
+                result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                env, log = self.tab_env()
+                failed_env = dict(env)
+                uv = self.binary / 'uv'
+                launcher = uv.read_bytes()
+                if failure == 'binding':
+                    failed_env['HERDR_PANE_ID'] = ''
+                else:
+                    uv.write_text('#!/missing-test-interpreter\n')
+                    failed_env['PATH'] = str(self.binary)
+                args = ('activate', '--workspace', self.work, '--progress', self.progress,
+                        '--decisions', self.decisions)
+                failed = self.cli(*args, extra_env=failed_env)
+                self.assertNotEqual(failed.returncode, 0)
+                self.assertIn('自動綁定失敗' if failure == 'binding' else 'No such file',
+                              failed.stderr)
+                current = json.loads(self.record.read_text())
+                self.assertEqual(current['status'], 'active')
+                self.assertEqual(len(current['history']), number - 1)
+                self.assertIn(f'已開始第 {number} 輪', failed.stdout.splitlines())
+                self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+                uv.write_bytes(launcher)
+                retry = self.cli(*args, extra_env=env)
+                self.assertEqual(retry.returncode, 0, retry.stderr)
+                self.assertIn(f'已開始第 {number} 輪', retry.stdout.splitlines())
+                self.assertEqual(json.loads(self.record.read_text()), current)
+                self.assertTrue(self.process_exists(self.watcher_pid()))
+                binding = json.loads((self.root / 'plugin-config/bindings.json').read_text())
+                self.assertEqual(binding['bindings'][SESSION]['herdr_pane'], 'herdr-pane')
+                self.assertIn('tab rename herdr-tab lat-orch', self.tab_calls(log))
+
+    def test_new_round_recovery_stop_and_deactivate_use_only_current_fields(self):
+        self.activate()
+        self.decisions.joinpath('LAT-A.md').write_text('- status: approved\n')
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work,
+                                 '--status', 'completed').returncode, 0)
+        previous = json.loads(self.record.read_text())
+        progress = self.work / 'new-progress.md'
+        progress.write_text('New progress\n')
+        decisions = self.work / 'new-decisions'
+        decisions.mkdir()
+        decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
+        result = self.cli('activate', '--workspace', self.work, '--progress', progress,
+                          '--decisions', decisions)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.progress.unlink()
+        for source in ('compact', 'resume'):
+            recovered = self.hook(source=source)
+            self.assertEqual(recovered.returncode, 0, recovered.stderr)
+            pointer = json.loads(recovered.stdout)['hookSpecificOutput']['additionalContext']
+            self.assertIn(f'LAT recovery record: {self.record}', pointer)
+            self.assertNotIn('recovery error', pointer)
+            current = json.loads(self.record.read_text())
+            self.assertEqual(current['progress_path'], str(progress))
+            self.assertEqual(current['decisions_path'], str(decisions))
+            self.assertEqual(current['history'], [previous])
+        self.assert_silent(self.stop_hook())
+        decisions.joinpath('LAT-A.md').write_text('- status: approved\n')
+        self.assert_stop_block(self.stop_hook(), '不是 pending')
+        pid = self.watcher_pid()
+        result = self.cli('deactivate', '--workspace', self.work, '--status', 'cancelled')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        current = json.loads(self.record.read_text())
+        self.assertEqual(current['status'], 'cancelled')
+        self.assertEqual(current['history'], [previous])
+        self.assert_silent(self.hook())
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+        self.wait_for(lambda: not self.process_exists(pid))
+
+    def test_claude_cancelled_legacy_round_uses_current_skill_and_fresh_fingerprint(self):
+        previous = self.write_legacy_record(client='claude', status='cancelled',
+                                           skill_dir=str(self.root / 'old-skill'),
+                                           rule_fingerprint={'SKILL.md': 'old-content'})
+        env, log = self.tab_env()
+        args = ('activate', '--client', 'claude', '--workspace', self.work,
+                '--progress', self.progress, '--decisions', self.decisions)
+        result = self.cli(*args, claude_session=SESSION, extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('已開始第 2 輪', result.stdout.splitlines())
+        current = json.loads(self.record.read_text())
+        self.assertEqual(current['history'], [previous])
+        self.assertEqual(current['skill_dir'], str(SKILL))
+        self.assertEqual(current['client'], 'claude')
+        self.assertEqual(current['tasks_path'], str(self.tasks))
+        self.assertIn('references/recovery.md', current['rule_fingerprint'])
+        self.assertTrue(self.process_exists(self.watcher_pid()))
+        self.assertIn('tab rename herdr-tab lat-orch', self.tab_calls(log))
+        bindings = json.loads((self.root / 'plugin-config/bindings.json').read_text())
+        self.assertEqual(bindings['bindings'][SESSION]['client'], 'claude')
+        rerun = self.cli(*args, claude_session=SESSION, extra_env=env)
+        self.assertEqual(rerun.returncode, 0, rerun.stderr)
+        self.assertEqual(json.loads(self.record.read_text()), current)
 
     def watcher_pid(self, session=SESSION):
         return int((self.work / '.lat/watch' / f'{session}.pid').read_text())
@@ -1116,14 +1310,14 @@ class SessionTests(unittest.TestCase):
                 self.assert_silent(self.hook())
                 self.assert_silent(self.hook(source='resume'))
 
-    def test_activation_requires_environment_id_and_does_not_reset_record(self):
+    def test_activation_requires_environment_id_and_does_not_reset_active_record(self):
         result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
                           '--decisions', self.decisions, session='')
         self.assertNotEqual(result.returncode, 0)
         self.assertFalse(self.record.exists())
         self.activate()
         record = json.loads(self.record.read_text())
-        record['status'] = 'completed'
+        record['progress_path'] = str(self.work / 'other-progress.md')
         self.record.write_text(json.dumps(record))
         before = self.record.read_bytes()
         result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,

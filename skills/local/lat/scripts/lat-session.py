@@ -327,7 +327,27 @@ def activate(args):
     original = current_bytes(path)
     if path.exists():
         existing = read_json(path)
-        if legacy_record(existing):
+        if existing.get('status') in ('completed', 'cancelled'):
+            identity = ('client', 'session_id', 'role', 'workspace')
+            required = set(record) - {'tasks_path', 'hcom_name'} if legacy_record(existing) else set(record)
+            if (any(existing.get(key) != record[key] for key in identity)
+                    or not required.issubset(existing)):
+                raise ValueError('Existing session record differs; do not reset or rebind it')
+            paths = ('skill_dir', 'progress_path', 'decisions_path')
+            if not legacy_record(existing):
+                paths += ('tasks_path',)
+                name = existing['hcom_name']
+                if not isinstance(name, str) or not HCOM_NAME.fullmatch(name):
+                    raise ValueError('Invalid finished controller name; do not reset or rebind it')
+            if any(not isinstance(existing[key], str) or not Path(existing[key]).is_absolute()
+                   for key in paths):
+                raise ValueError('Invalid finished recovery paths; do not reset or rebind it')
+            history = existing.get('history', [])
+            if not isinstance(history, list) or any(not isinstance(item, dict) for item in history):
+                raise ValueError('Invalid session history; do not reset or rebind it')
+            record['history'] = [*history, {key: value for key, value in existing.items()
+                                          if key != 'history'}]
+        elif legacy_record(existing):
             expected = {key: value for key, value in record.items()
                         if key not in ('tasks_path', 'hcom_name')}
             if any(existing.get(key) != value for key, value in expected.items()):
@@ -347,6 +367,7 @@ def activate(args):
         ) from error
     write_json(path, record, original)
     print(path)
+    print(f'已開始第 {len(record.get("history", [])) + 1} 輪')
     if enabled:
         try:
             binding, replaced, legacy_ignored = panel.bind_controller(
