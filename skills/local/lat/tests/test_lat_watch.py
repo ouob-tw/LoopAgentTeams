@@ -1288,6 +1288,55 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertEqual(sum(line.startswith('term inject worker-open')
                              for line in self.hcom_log.read_text().splitlines()), 1)
 
+    def test_alarm_final_state_save_failure_restores_nudge_after_restart(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        self.run_cycles(watch, 0)
+        state_path = watch.state_path(self.work, 'orch')
+        original_write = watch.write_object
+        def fail_state(destination, value, **kwargs):
+            if destination == state_path:
+                raise OSError('temporary state save failure')
+            return original_write(destination, value, **kwargs)
+        with patch.object(watch, 'write_object', side_effect=fail_state):
+            with self.assertRaises(OSError):
+                self.run_cycles(watch, 60)
+        self.assertEqual(json.loads(path.read_text())['released_reason'], 'rang')
+        self.run_cycles(load_watch(), 660, 720)
+        lines = self.hcom_log.read_text().splitlines()
+        self.assertEqual(sum(line.startswith('term inject worker-open') for line in lines), 1)
+        self.assertEqual(sum(line.startswith('send ') and 'agent worker-open' in line for line in lines), 1)
+        state = self.watch_state()['worker-open']
+        self.assertEqual(state['nudged_at'], 60)
+        self.assertEqual(state['last_progress_at'], 0)
+
+    def test_alarm_background_work_still_escalates_ten_minutes_after_ring(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        self.save_alarm(watch)
+        with patch.object(watch, 'background_process_running', return_value=True):
+            self.run_cycles(watch, 0, 60, 659)
+            self.assertNotIn('send ', self.hcom_log.read_text())
+            self.run_cycles(watch, 660, 1260)
+        lines = self.hcom_log.read_text().splitlines()
+        self.assertEqual(sum(line.startswith('term inject worker-open') for line in lines), 1)
+        self.assertEqual(sum(line.startswith('send ') and '--intent request' in line and 'agent worker-open' in line for line in lines), 1)
+
+    def test_alarm_new_progress_prevents_restoring_the_old_ring_nudge(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        self.save_alarm(watch)
+        self.run_cycles(watch, 0, 60)
+        script = Path(self.env['PATH'].split(':', 1)[0]) / 'hcom'
+        script.write_text(script.read_text().replace('"id":1', '"id":2'))
+        self.run_cycles(load_watch(), 120, 180)
+        self.assertFalse(self.watch_state()['worker-open']['nudged'])
+        self.assertEqual(self.watch_state()['worker-open']['last_progress_at'], 120)
+        self.run_cycles(load_watch(), 720)
+        self.assertEqual(sum(line.startswith('term inject worker-open')
+                             for line in self.hcom_log.read_text().splitlines()), 2)
+
     def test_alarm_time_registration_and_status(self):
         self.alarm_monitor()
         result = self.alarm_cli('--after', 3)

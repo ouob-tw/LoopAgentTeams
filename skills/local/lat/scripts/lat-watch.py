@@ -627,7 +627,8 @@ def decide(previous, observation, now):
                                  else 'active status but terminal ready at an empty prompt')
     elif (state['nudged'] and not observation.wait_active
           and observation.prompt_empty
-          and (not observation.command_running or finished_active)
+          and (not observation.command_running or finished_active
+               or (state.get('stall_reason') == 'alarm rang' and observation.terminal_ready))
           and now - state['nudged_at'] >= IDLE_SECONDS):
         if observation.is_orchestrator and not state.get('user_notified'):
             actions = (Action(
@@ -1711,6 +1712,21 @@ def check_rule_changes(workspace, orchestrator, log, now):
                              'actions': [], 'error': str(error)})
 
 
+def restore_alarm_nudge(previous, declaration):
+    """Recover a delivered alarm even if the separate watcher-state save failed."""
+    if not declaration or declaration.get('released_reason') != 'rang':
+        return previous
+    nudge = declaration.get('ring_nudge')
+    if not nudge:
+        return previous
+    previous = previous or {}
+    if (previous.get('last_progress_at', 0) <= declaration['rang_at']
+            and previous.get('fingerprint', nudge['fingerprint']) == nudge['fingerprint']
+            and not previous.get('nudged')):
+        return {**previous, **nudge}
+    return previous
+
+
 def read_alarm_wait(path):
     declaration, original = read_wait(path)
     pending = ALARM_DELIVERIES.get(str(path))
@@ -1811,6 +1827,10 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
 
     def current_observation(agent):
         if agent not in observations:
+            declaration, _ = read_alarm_wait(wait_path(workspace, agent))
+            restored = restore_alarm_nudge(states.get(agent), declaration)
+            if restored is not None:
+                states[agent] = restored
             observed = observe(workspace, decisions, orchestrator, agent, hcom[agent], cards.get(agent))
             observations[agent] = nudge_only_observation(
                 states.get(agent), observed, hcom[agent], orchestrator)
@@ -1940,6 +1960,9 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                         saved_wait.update(active=False, released_reason='rang', rang_at=now)
                         state.update(nudged=True, nudged_at=now, nudge_text=action.text,
                                      nudge_fingerprint=state['fingerprint'], stall_reason='alarm rang')
+                        saved_wait['ring_nudge'] = {key: state[key] for key in (
+                            'fingerprint', 'last_progress_at', 'nudged', 'nudged_at',
+                            'nudge_text', 'nudge_fingerprint', 'stall_reason')}
                         ALARM_DELIVERIES[str(wait_path(workspace, agent))] = (wait_original, dict(saved_wait))
                         append_log(log, {'at': now, 'agent': agent, 'decision': 'alarm-ring',
                                          'wait': saved_wait})
