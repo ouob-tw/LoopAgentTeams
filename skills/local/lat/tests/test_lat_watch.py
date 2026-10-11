@@ -1210,6 +1210,84 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertEqual(sum(line.startswith('notification show ')
                              for line in self.herdr_log.read_text().splitlines()), 2)
 
+    def test_alarm_successful_ring_save_failure_does_not_ring_again(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        original_write = watch.write_object
+        failed = False
+        def fail_once(destination, value, **kwargs):
+            nonlocal failed
+            if destination == path and value.get('released_reason') == 'rang' and not failed:
+                failed = True
+                raise OSError('temporary save failure')
+            return original_write(destination, value, **kwargs)
+        with patch.object(watch, 'write_object', side_effect=fail_once):
+            self.run_cycles(watch, 60, 120, 180)
+        self.assertTrue(failed)
+        self.assertEqual(sum(line.startswith('term inject worker-open')
+                             for line in self.hcom_log.read_text().splitlines()), 1)
+        self.assertEqual(json.loads(path.read_text())['released_reason'], 'rang')
+        self.assertEqual(sum(row.get('decision') == 'alarm-ring' for row in self.watch_records()), 1)
+
+    def test_alarm_successful_notice_save_failure_does_not_send_again(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        Path(str(self.hcom_log) + '.busy').touch()
+        original_write = watch.write_object
+        failed = False
+        def fail_once(destination, value, **kwargs):
+            nonlocal failed
+            if destination == path and value.get('alarm_notified') and not failed:
+                failed = True
+                raise OSError('temporary save failure')
+            return original_write(destination, value, **kwargs)
+        with patch.object(watch, 'write_object', side_effect=fail_once):
+            self.run_cycles(watch, 660, 720, 780)
+        self.assertTrue(failed)
+        self.assertEqual(sum(line.startswith('send ') and 'alarm was undelivered' in line
+                             for line in self.hcom_log.read_text().splitlines()), 1)
+        self.assertTrue(json.loads(path.read_text())['alarm_notified'])
+
+    def test_alarm_deadline_applies_when_agent_missing_or_terminal_unreadable(self):
+        for unavailable in ('missing', 'inactive', 'terminal-error'):
+            with self.subTest(unavailable=unavailable):
+                self.alarm_cycle_environment()
+                script = Path(self.env['PATH'].split(':', 1)[0]) / 'hcom'
+                content = script.read_text()
+                if unavailable == 'missing':
+                    content = content.replace(',{"name":"worker-open","status":"listening","session_id":"worker-session"}', '')
+                elif unavailable == 'inactive':
+                    content = content.replace('"name":"worker-open","status":"listening"', '"name":"worker-open","status":"inactive"')
+                else:
+                    content = content.replace('term) if', 'term) if [ "$2" = worker-open ]; then exit 1; fi; if')
+                script.write_text(content)
+                watch = load_watch()
+                path = self.save_alarm(watch)
+                self.run_cycles(watch, 60)
+                self.assertTrue(json.loads(path.read_text())['active'])
+                self.run_cycles(load_watch(), 660, 720)
+                saved = json.loads(path.read_text())
+                self.assertFalse(saved['active'])
+                self.assertEqual(saved['released_reason'], 'undelivered')
+                self.assertIn('unavailable', saved['delivery_failure'])
+                self.assertTrue(saved['alarm_notified'])
+
+    def test_alarm_empty_terminal_rings_despite_surviving_background_process(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch, due_at=None, timeout_at=60,
+                               condition=dict(kind='file', path=str(self.root / 'absent')))
+        # The observer reports terminal readiness separately from background liveness.
+        with patch.object(watch, 'background_process_running', return_value=True):
+            self.run_cycles(watch, 60, 660)
+        saved = json.loads(path.read_text())
+        self.assertEqual(saved['released_reason'], 'rang')
+        self.assertEqual(saved['outcome'], 'timed out')
+        self.assertEqual(sum(line.startswith('term inject worker-open')
+                             for line in self.hcom_log.read_text().splitlines()), 1)
+
     def test_alarm_time_registration_and_status(self):
         self.alarm_monitor()
         result = self.alarm_cli('--after', 3)
