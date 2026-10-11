@@ -1337,6 +1337,40 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertEqual(sum(line.startswith('term inject worker-open')
                              for line in self.hcom_log.read_text().splitlines()), 2)
 
+    def test_alarm_recovery_uses_newer_ring_after_progress_in_ringing_cycle(self):
+        for old_nudge in (False, True):
+            with self.subTest(old_nudge=old_nudge):
+                self.alarm_cycle_environment()
+                self.hcom_log.write_text('')
+                watch = load_watch()
+                path = self.save_alarm(watch)
+                self.run_cycles(watch, 0)
+                state_path = watch.state_path(self.work, 'orch')
+                if old_nudge:
+                    states = json.loads(state_path.read_text())
+                    states['worker-open'].update(nudged=True, nudged_at=0,
+                                                 orchestrator_notified=True, user_notified=True)
+                    state_path.write_text(json.dumps(states))
+                # New progress is observed BEFORE ringing; the older state file stays at event1.
+                script = Path(self.env['PATH'].split(':', 1)[0]) / 'hcom'
+                script.write_text(script.read_text().replace('"id":1', '"id":2'))
+                original_write = watch.write_object
+                def fail_state(destination, value, **kwargs):
+                    if destination == state_path:
+                        raise OSError('temporary final state failure')
+                    return original_write(destination, value, **kwargs)
+                with patch.object(watch, 'write_object', side_effect=fail_state):
+                    with self.assertRaises(OSError):
+                        self.run_cycles(watch, 60)
+                self.assertEqual(json.loads(path.read_text())['released_reason'], 'rang')
+                self.run_cycles(load_watch(), 660, 1260)
+                lines = self.hcom_log.read_text().splitlines()
+                self.assertEqual(sum(line.startswith('term inject worker-open') for line in lines), 1)
+                notices = [line for line in lines if line.startswith('send ') and '--intent request' in line
+                           and 'agent worker-open' in line]
+                self.assertEqual(len(notices), 1)
+                self.assertEqual(self.watch_state()['worker-open']['nudged_at'], 60)
+
     def test_alarm_time_registration_and_status(self):
         self.alarm_monitor()
         result = self.alarm_cli('--after', 3)

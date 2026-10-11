@@ -1721,8 +1721,7 @@ def restore_alarm_nudge(previous, declaration):
         return previous
     previous = previous or {}
     if (previous.get('last_progress_at', 0) <= declaration['rang_at']
-            and previous.get('fingerprint', nudge['fingerprint']) == nudge['fingerprint']
-            and not previous.get('nudged')):
+            and (not previous.get('nudged') or previous.get('nudged_at', 0) < declaration['rang_at'])):
         return {**previous, **nudge}
     return previous
 
@@ -1962,7 +1961,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                                      nudge_fingerprint=state['fingerprint'], stall_reason='alarm rang')
                         saved_wait['ring_nudge'] = {key: state[key] for key in (
                             'fingerprint', 'last_progress_at', 'nudged', 'nudged_at',
-                            'nudge_text', 'nudge_fingerprint', 'stall_reason')}
+                            'nudge_text', 'nudge_fingerprint', 'stall_reason',
+                            'orchestrator_notified', 'orchestrator_handled', 'user_notified')}
                         ALARM_DELIVERIES[str(wait_path(workspace, agent))] = (wait_original, dict(saved_wait))
                         append_log(log, {'at': now, 'agent': agent, 'decision': 'alarm-ring',
                                          'wait': saved_wait})
