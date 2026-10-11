@@ -847,7 +847,7 @@ class SessionTests(unittest.TestCase):
         self.assert_only_pointer(self.hook(extra_env=resumed, source='resume'))
         self.assertEqual((self.root / 'plugin-config/bindings.json').read_text(), '{broken')
 
-    def tab_env(self, label='1', fail_rename=False):
+    def tab_env(self, label='1', fail_rename=False, fail_get=False):
         """Fake herdr: panel enabled, `tab get` reports label, calls logged."""
         log = self.root / 'herdr.log'
         env = self.panel_env(
@@ -856,7 +856,8 @@ class SessionTests(unittest.TestCase):
             'case "$*" in\n'
             '"plugin list --plugin lat.panel --json") printf \'%s\\n\' '
             '\'{"result":{"plugins":[{"plugin_id":"lat.panel","enabled":true}]}}\' ;;\n'
-            f'"tab get "*) printf \'%s\\n\' \'{{"result":{{"tab":{{"label":"{label}"}}}}}}\' ;;\n'
+            f'"tab get "*) printf \'%s\\n\' \'{{"result":{{"tab":{{"label":"{label}"}}}}}}\'; '
+            f'exit {7 if fail_get else 0} ;;\n'
             f'"tab rename "*) exit {7 if fail_rename else 0} ;;\n'
             '*) exit 91 ;;\n'
             'esac\n'
@@ -881,6 +882,26 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.tab_calls(log), ['tab get herdr-tab'])
 
+    def test_tagged_controller_uses_short_tab_label_on_activate_and_resume(self):
+        env, log = self.tab_env()
+        result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                          '--decisions', self.decisions, '--hcom-name', 'team-task-orch',
+                          extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.tab_calls(log),
+                         ['tab get herdr-tab', 'tab rename herdr-tab lat-orch'])
+
+        for label, expected in (
+            ('1', ['tab get new-tab', 'tab rename new-tab lat-orch']),
+            ('lat-orch', ['tab get new-tab']),
+        ):
+            with self.subTest(label=label):
+                env, log = self.tab_env(label=label)
+                log.unlink()
+                resumed = dict(env, HERDR_TAB_ID='new-tab', HERDR_PANE_ID='new-pane')
+                self.assert_only_pointer(self.hook(extra_env=resumed, source='resume'))
+                self.assertEqual(self.tab_calls(log), expected)
+
     def test_hook_renames_resumed_tab_and_ignores_rename_failure(self):
         self.activate_bound()
         for fail in (False, True):
@@ -891,6 +912,21 @@ class SessionTests(unittest.TestCase):
                 self.assert_only_pointer(self.hook(extra_env=resumed, source='resume'))
                 self.assertEqual(self.tab_calls(log),
                                  ['tab get new-tab', 'tab rename new-tab lat-orch'])
+
+    def test_tagged_controller_activation_ignores_tab_errors(self):
+        for fail_get in (True, False):
+            with self.subTest(fail_get=fail_get):
+                env, log = self.tab_env(fail_get=fail_get, fail_rename=True)
+                log.unlink(missing_ok=True)
+                result = self.cli('activate', '--workspace', self.work,
+                                  '--progress', self.progress, '--decisions', self.decisions,
+                                  '--hcom-name', 'team-task-orch', extra_env=env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+                expected = ['tab get herdr-tab']
+                if not fail_get:
+                    expected.append('tab rename herdr-tab lat-orch')
+                self.assertEqual(self.tab_calls(log), expected)
 
     def test_hook_does_not_rename_tab_of_deactivated_session(self):
         env = self.activate_bound()

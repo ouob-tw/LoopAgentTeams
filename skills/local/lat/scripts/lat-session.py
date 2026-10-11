@@ -231,11 +231,11 @@ def refresh_binding(record):
 
 
 def ensure_tab_label(hcom_name):
-    """Label the Herdr tab this process runs in `lat-<hcom_name>`; never raise."""
+    """Label this Herdr tab `lat-<name after the last hyphen>`; never raise."""
     tab = os.environ.get('HERDR_TAB_ID')
     if not tab:
         return
-    label = f'lat-{hcom_name}'
+    label = f'lat-{hcom_name.rsplit("-", 1)[-1]}'
     try:
         result = subprocess.run(['herdr', 'tab', 'get', tab], capture_output=True, text=True,
                                 timeout=5, check=True)
