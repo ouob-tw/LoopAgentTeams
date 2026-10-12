@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
-"""Print which side gets a simple backend task: one line, `claude: <reason>` or `gpt: <reason>`."""
+"""Print who gets a simple backend task: one line `claude: <reason>` or `gpt: <reason>`,
+or in auto mode a usage table of every account for the spawner to judge."""
 import json
 import subprocess
 import sys
+import time
 import tomllib
+from datetime import datetime
 from pathlib import Path
 
 CONFIG = Path.home() / '.config/hcom-spawn/config.toml'
-WEEK_MINUTES = 7 * 24 * 60
 
 
 def query(*command):
@@ -15,15 +17,42 @@ def query(*command):
     return json.loads(result.stdout)
 
 
-def claude_used():
-    return float(query('claude-swap', 'status', '--json')['active']['usage']['sevenDay']['pct'])
+def span(seconds):
+    days, rest = divmod(max(int(seconds), 0) // 60, 24 * 60)
+    hours, minutes = divmod(rest, 60)
+    if days:
+        return f'{days}d{hours}h' if hours else f'{days}d'
+    if hours:
+        return f'{hours}h{minutes}m' if minutes else f'{hours}h'
+    return f'{minutes}m'
 
 
-def gpt_used():
-    accounts = query('codex-multi-auth', 'limits', '--json')['accounts']
-    quota = next(a for a in accounts if a.get('current'))['quota']
-    return float(next(w['usedPercent'] for w in (quota['primary'], quota['secondary'])
-                      if w['windowMinutes'] == WEEK_MINUTES))
+def row(name, windows, age):
+    """windows: (length in seconds, used percent, reset as epoch seconds or None)."""
+    cells = [f'{span(length)} {used:g}%' + (f' resets in {span(reset - time.time())}' if reset else '')
+             for length, used, reset in windows]
+    return f"{name}: {', '.join(cells)}, data {span(age)} old"
+
+
+def claude_rows():
+    for account in query('claude-swap', 'list', '--json')['accounts']:
+        windows = [(length, window['pct'],
+                    'resetsAt' in window and datetime.fromisoformat(window['resetsAt']).timestamp())
+                   for key, length in (('fiveHour', 5 * 3600), ('sevenDay', 7 * 86400))
+                   if (window := account['usage'].get(key))]
+        yield row(f"claude {account['number']}{'*' * account['active']}", windows,
+                  account['usageAgeSeconds'])
+
+
+def gpt_rows():
+    for account in query('codex-multi-auth', 'limits', '--json')['accounts']:
+        quota = account['quota']
+        windows = [(window['windowMinutes'] * 60, window['usedPercent'],
+                    window['resetAtMs'] and window['resetAtMs'] / 1000)
+                   for window in (quota['primary'], quota['secondary']) if window['windowMinutes']]
+        name = f"gpt {account['index']}{'*' * account['current']} {quota['planType']}"
+        yield row(name + ' disabled' * (not account['enabled']), windows,
+                  time.time() - quota['updatedAt'] / 1000)
 
 
 def main():
@@ -38,11 +67,10 @@ def main():
     if setting != 'auto':
         sys.exit(f'{CONFIG}: backend = {setting!r} is not valid; use "claude", "split" or "auto"')
     try:
-        claude, gpt = claude_used(), gpt_used()
+        rows = [*claude_rows(), *gpt_rows()]
     except Exception as error:
         return f'claude: auto, usage query failed ({type(error).__name__})'
-    side = 'gpt' if gpt < claude else 'claude'
-    return f'{side}: auto, 7-day used claude {claude:g}% vs gpt {gpt:g}%'
+    return '\n'.join(['auto: you decide from the usage below (* = account in use)', *rows])
 
 
 if __name__ == '__main__':
