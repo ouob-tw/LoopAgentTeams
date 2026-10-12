@@ -45,7 +45,7 @@ def revision_upsert_worker(path, ready, start, results):
     ready.set()
     start.wait()
     revision = panel.upsert_question(
-        Path(path), "Q1", "## First updated?\n\nA. New\n   New impact\n"
+        Path(path), "Q1", "## First updated?\n\nA. New\n   New impact\n", decisions_path=Path(path).parent
     )
     results.put(("agent", revision))
 
@@ -285,7 +285,7 @@ class AnswerWriteTests(unittest.TestCase):
 
     def test_recommendation_rewrite_preserves_answer_and_revision_change_archives_it(self):
         body = "## Choose?\n\nA. Alpha\nB. Beta\n\n➡️ A：Original reason.\n"
-        self.assertEqual(self.panel.upsert_question(self.questions, "Q1", body), 1)
+        self.assertEqual(self.panel.upsert_question(self.questions, "Q1", body, decisions_path=self.questions.parent), 1)
         revision, section_hash = self.identity("Q1")
         saved = self.panel.write_question_answer(
             self.questions, "Q1", revision, section_hash,
@@ -296,10 +296,10 @@ class AnswerWriteTests(unittest.TestCase):
             self.questions, {"Q1": (revision, saved["section_sha256"])},
         )
         before = self.questions.read_text()
-        self.assertEqual(self.panel.upsert_question(self.questions, "Q1", body), 1)
+        self.assertEqual(self.panel.upsert_question(self.questions, "Q1", body, decisions_path=self.questions.parent), 1)
         self.assertEqual(self.questions.read_text(), before)
         changed = body.replace("Original reason.", "Changed reason.")
-        self.assertEqual(self.panel.upsert_question(self.questions, "Q1", changed), 2)
+        self.assertEqual(self.panel.upsert_question(self.questions, "Q1", changed, decisions_path=self.questions.parent), 2)
         [current] = self.panel.parse_questions(self.questions.read_text())
         self.assertEqual(current["answer"], "")
         self.assertFalse(current["checked"])
@@ -377,7 +377,7 @@ class AnswerWriteTests(unittest.TestCase):
         self.questions.write_text(self.initial_text())
         q1_revision, q1_hash = self.identity("Q1")
         self.panel.upsert_question(
-            self.questions, "Q2", "## Second updated?\n\nA. New\n   New impact\n"
+            self.questions, "Q2", "## Second updated?\n\nA. New\n   New impact\n", decisions_path=self.questions.parent
         )
 
         saved = self.panel.write_question_answer(
@@ -392,7 +392,7 @@ class AnswerWriteTests(unittest.TestCase):
         self.assertIn("Q2 · r2 · 待答", self.questions.read_text())
         latest_hash = saved["section_sha256"]
         self.panel.upsert_question(
-            self.questions, "Q1", "## First updated?\n\nA. New\n   New impact\n"
+            self.questions, "Q1", "## First updated?\n\nA. New\n   New impact\n", decisions_path=self.questions.parent
         )
         changed_text = self.questions.read_text()
 
@@ -482,15 +482,17 @@ class AnswerWriteTests(unittest.TestCase):
             question_id: self.identity(question_id) for question_id in ("Q1", "Q2")
         }
         self.panel.upsert_question(
-            self.questions, "Q2", "## Second updated?\n\nA. New\n   New impact\n"
+            self.questions, "Q2", "## Second updated?\n\nA. New\n   New impact\n", decisions_path=self.questions.parent
         )
         before_submit = self.questions.read_text()
+        journal = self.questions.parent / "panel-journal.jsonl"
+        before_journal = journal.read_bytes()
 
         result = self.panel.submit_question_answers(self.questions, expected)
 
         self.assertEqual(result, {"status": "question_changed", "ids": ["Q2"]})
         self.assertEqual(self.questions.read_text(), before_submit)
-        self.assertFalse((self.questions.parent / "panel-journal.jsonl").exists())
+        self.assertEqual(journal.read_bytes(), before_journal)
 
     def test_write_and_batch_submit_preserve_crlf_in_untouched_sections(self):
         original = self.initial_text().replace("\n", "\r\n")

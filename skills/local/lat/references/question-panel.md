@@ -62,10 +62,10 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 
    ```bash
    uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question upsert \
-     --questions "$questions" --id "<ID>" --file /path/to/section.md
+     --questions "$questions" --decisions "$decisions" --id "<ID>" --file /path/to/section.md
    ```
 
-4. 指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。升版規則見下方「版本」。
+4. 寫入前會自動清理同一份問題檔，條件見下方「清理題目」；正在寫入的同一題號保留，維持升版行為。`--decisions` 必填，缺少或目錄不存在時拒絕寫入。指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。升版規則見下方「版本」。
 5. 發出 `DECIDE:` 前完成下方「待決題目檢查」，通過後依「聊天提問格式」列出題目；使用者可在面板或聊天作答。
 
 ### 題目格式
@@ -110,13 +110,15 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
   --questions "$questions" --decisions "$decisions"
 ```
 
-檢查會搜尋 `--questions` 同目錄下所有 `questions-*.md` 與 `questions-*-archive.md`，並列出找到每個題號的檔案。依輸出處理，修正後重跑；只有印出「沒有遺漏」才繼續提問：
+檢查會搜尋 `--questions` 同目錄下所有 `questions-*.md` 與 `questions-*-archive.md`，確認 pending 決策都有待答題；反向檢查只看 `--questions` 指定的問題檔，列出待答題的決策已非 pending 或找不到決策紀錄。回合結束的 DECIDE 檢查沿用相同結果。有問題時以非零結束，不印「沒有遺漏」；依輸出處理後重跑：
 
 | 輸出 | 處理 |
 | --- | --- |
-| 沒有遺漏 | 所有 pending 決策都有待答題，可繼續。 |
+| 沒有遺漏 | 所有 pending 決策都有待答題，自己的待答題也沒有反向問題，可繼續。 |
 | 遺漏待答題目 | 先補題。 |
 | 狀態不一致 | 決策仍是 pending，但題目已記錄或已歸檔；依列出的檔案核對並修正決策紀錄。 |
+| 待答題目需處理：決策已非 pending | 未送出者執行下方 `question cleanup`；已勾選送出者先處理使用者答覆，再標為已記錄。 |
+| 待答題目需處理：找不到決策紀錄 | 補同名決策紀錄；已勾選送出者同時核對並處理使用者答覆。 |
 | 讀不出狀態 | 依逐檔列出的原因修正決策紀錄；指令以非零結束碼結束，不印「沒有遺漏」。 |
 
 決策紀錄與停住監控共用以下狀態讀法：
@@ -186,16 +188,39 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
 
 使用者在面板送出後又於聊天要求改答案時，舊紀錄保持原樣：新增一筆更正，保存聊天原文與來源，並把舊答案標為「已由更正項目取代」；更正只依聊天答覆的授權範圍生效。
 
-## 清理已記錄題目
+## 清理題目
 
-面板開啟期間會自動把已記錄超過 300 秒且之後未變動的題目搬到歸檔檔。面板沒開時，主控執行同一套清理：
+`question upsert` 每次寫題前只清理 `--questions` 指定的檔案：已記錄且有時間與相符 `set-status` 雜湊的題目立即歸檔；待答題則只在同名決策紀錄可讀且狀態不是 `pending` 時歸檔。歸檔保留題目原文，不以時間讓未答題過期。每次清理都在 `panel-journal.jsonl` 寫一筆 `cleanup`，記錄搬走的題號與原因。
+
+不寫新題時可單獨清理：
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question cleanup \
+  --questions "$questions" --decisions "$decisions"
+```
+
+輸出 JSON 的 `archived`、`kept` 各列出 `id` 與 `reason`：
+
+| reason | 處理結果 |
+| --- | --- |
+| `recorded` | 已記錄且雜湊相符，搬到歸檔檔。 |
+| `decision-not-pending` | 決策已非待決，搬到歸檔檔。 |
+| `pending` | 決策仍待決，保留。 |
+| `missing-decision`／`unreadable-decision` | 找不到同名決策紀錄或讀不出狀態，保留；補齊或修正紀錄。 |
+| `submitted-not-recorded` | 已勾選送出但未記錄，保留；先核對並處理答覆。 |
+| `unverified-recorded` | 已記錄但缺時間或相符雜湊，保留；重新確認後再處理。 |
+| `same-id` | 正在 upsert 的同一題號，保留；只出現在面板紀錄。 |
+
+問題檔在清理期間被改動時拒絕寫入，重新讀檔後重試。
+
+面板開啟期間的自動歸檔維持原樣：只搬走已記錄超過 300 秒且之後未變動的題目。手動執行相同流程仍可用：
 
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question archive-recorded \
   --questions "$questions" --older-than 300
 ```
 
-輸出 JSON 的 `archived` 是搬走的題號。問題檔在執行中被改動時指令拒絕寫入，重試即可。只有 `已記錄` 卻沒有時間或沒有相符 `set-status` 紀錄的舊題會被保留，由主控重新確認後再處理。
+這個舊指令輸出的 `archived` 是題號清單，只處理已記錄題。
 
 ## 解除綁定
 

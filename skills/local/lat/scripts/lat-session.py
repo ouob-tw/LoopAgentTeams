@@ -588,10 +588,11 @@ def stop_check(record, payload):
             if not any(question['id'] == identifier and question['status_label'] == '待答'
                        and question['revision'] == int(revision) for question in questions):
                 problems.append(f'{identifier} r{revision}：自己的面板缺少同版本待答題目')
-        _, missing, inconsistent, unreadable = panel.pending_question_gaps(questions_path, decisions)
+        _, missing, inconsistent, unreadable, reverse = panel.pending_question_gaps(questions_path, decisions)
         problems.extend(f'{identifier}：遺漏檢查缺少面板題目' for identifier in missing)
         problems.extend(f'{identifier}：遺漏檢查不一致（{reason}）'
                         for identifier, reason, _ in inconsistent)
+        problems.extend(f'{identifier}：{reason}' for identifier, reason, _ in reverse)
         problems.extend(f'{path.name}：遺漏檢查讀不出狀態（{reason}）'
                         for path, reason in unreadable
                         if path.stem not in statuses or not statuses[path.stem].error)

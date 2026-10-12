@@ -380,6 +380,24 @@ class SessionTests(unittest.TestCase):
         questions.write_text('## Question\nLAT-A · r1 · 待答\n')
         self.assert_stop_block(self.stop_hook(), 'BROKEN.md', '讀不出狀態')
 
+    def test_stop_reuses_reverse_panel_checks_for_both_clients(self):
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                self.write_legacy_record(client=client)
+                self.decisions.joinpath('LAT-A.md').write_text(
+                    '- status: pending\n- advisor: needs-human\n')
+                self.decisions.joinpath('OLD.md').write_text('- status: resolved\n')
+                questions = self.bind_stop_panel(client)
+                current = '## Current?\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n\n'
+                questions.write_text(current +
+                    '## Old?\nOLD · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n\n'
+                    '## Missing?\nMISSING · r1 · 待答\n\n答覆：A\n\n- [x] 送出\n')
+                self.assert_stop_block(self.stop_hook(client=client),
+                    'OLD', '決策已非 pending', 'question cleanup',
+                    'MISSING', '找不到決策紀錄', '處理使用者已送出的答覆')
+                questions.write_text(current)
+                self.assert_silent(self.stop_hook(client=client))
+
     def test_stop_panel_own_question_revision_and_omission_check(self):
         self.write_legacy_record()
         self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
