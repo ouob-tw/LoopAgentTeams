@@ -9,7 +9,7 @@ LoopAgentTeams 以 Agent Skills 形式發布：流程、角色分工與交接規
 ## 特點
 
 - **單一確認點，其後自主推進**：使用者確認 Spec 後，Orchestrator 在已授權範圍內完成拆票、派工、審查、修正與交付，不在每個階段交接處等待指示。
-- **跨模型、跨 client 分工**：依任務性質指派模型與 effort，例如前端交給 Claude、後端交給 Codex；內建 Subagent 能套用所選模型、effort 與權限時優先使用，否則透過 [HCOM](https://github.com/aannoo/hcom) 啟動外部 Agent。
+- **跨模型、跨 client 分工**：依任務性質指派模型與 effort，例如實作交給 Claude、審查與 QA 交給 Codex；內建 Subagent 能套用所選模型、effort 與權限時優先使用，否則透過 [HCOM](https://github.com/aannoo/hcom) 啟動外部 Agent。
 - **實作與驗收職責分離**：每張 Ticket 經獨立 Code Review；QA 依需求獨立設計測試情境，UI 驗收須透過真實介面操作。必要驗證未執行時，不宣告完成。
 - **問使用者前先問參謀**：每個 LAT 主控配兩位參謀（一位 Claude、一位 Codex）。主控要向使用者提問前，先交給兩位參謀判斷：在既有授權內的事由參謀定案、主控照辦，參謀認定需要真人才問使用者。參謀唯讀、只回覆主控，不能放寬授權。
 - **以證據為準的整合**：合併前從 Git 核對交付 commit，在整合後版本核對驗收條件與有效證據，不直接採信 Agent 的成功回報。
