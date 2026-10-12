@@ -38,6 +38,7 @@ NUDGE = ('[lat-watch] Read any unread HCOM messages and finish all work not bloc
 NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 NAME = re.compile(NAME_PATTERN)
 CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
+ENVELOPE_FIELDS = ('live actions', 'preflight')
 CLIENT_PROFILES = {
     'codex': {
         'error': re.compile(
@@ -800,9 +801,11 @@ def run_json_lines(command):
 
 
 def parse_task(path):
-    fields = {}
-    for line in path.read_text().splitlines():
-        match = re.fullmatch(r'-\s+(agent|orchestrator|status|next step)：\s*(.*)', line)
+    content = path.read_bytes()
+    fields = {'_digest': hashlib.sha256(content).hexdigest()}
+    for line in content.decode().splitlines():
+        match = re.fullmatch(
+            r'-\s+(agent|orchestrator|status|next step|live actions|preflight)：\s*(.*)', line)
         if match:
             fields[match.group(1)] = match.group(2).strip()
     return fields
@@ -823,8 +826,12 @@ def card_digest(path, error):
     return hashlib.sha256(content).hexdigest()
 
 
-def monitored_task_cards(tasks, orchestrator):
-    """Return (cards by agent, skipped {card name: (digest, error)})."""
+def monitored_task_cards(tasks, orchestrator, incomplete=None):
+    """Return (cards by agent, skipped {card name: (digest, error)}).
+
+    When given, `incomplete` collects {card name: (digest, agent, missing envelope fields)}
+    for monitored cards; those cards stay in the returned cards.
+    """
     cards, skipped = {}, {}
     if not tasks.is_dir():
         raise ValueError(f'Missing task-card directory: {tasks}')
@@ -842,6 +849,9 @@ def monitored_task_cards(tasks, orchestrator):
                 card['_updated_at'] = path.stat().st_mtime
                 card['_path'] = str(path)
                 cards.setdefault(card['agent'], card)
+                unfilled = [name for name in ENVELOPE_FIELDS if not card.get(name)]
+                if unfilled and incomplete is not None:
+                    incomplete[path.name] = (card['_digest'], card['agent'], unfilled)
         except (OSError, ValueError) as error:
             skipped[path.name] = (card_digest(path, error), str(error))
     return cards, skipped
@@ -891,6 +901,38 @@ def log_skipped_cards(path, log, skipped, now):
             seen = [*seen, digest]
         current[name] = seen
     if current != logged:
+        write_object(path, current)
+
+
+def notify_incomplete_cards(path, log, incomplete, orchestrator, workspace, now):
+    """Ask the orchestrator once per card content to fill in missing envelope fields."""
+    notified = read_watch_file(path, log, now)
+    current = {}
+    for name, (digest, agent, fields) in incomplete.items():
+        seen = notified.get(name, [])
+        if digest not in seen:
+            action = Action(
+                'notify-orchestrator', agent,
+                f'LAT stall watcher: task card {name} has missing or empty required field(s): '
+                f'{", ".join(fields)}. Add each as a `- <field>：<value>` line; write 無 '
+                'when the task has no live actions, otherwise fill them in as described in '
+                'references/task-cards.md. The agent stays monitored; this reminder is '
+                'sent once per card content.',
+                category='task-card-fields-missing')
+            try:
+                delivery = perform(action, orchestrator, workspace)
+                seen = [*seen, digest]
+                result = {'kind': action.kind, 'status': 'done', **delivery}
+            except (OSError, ValueError) as error:
+                result = {'kind': action.kind, 'status': 'failed', 'error': str(error)}
+            append_log(log, {
+                'at': now, 'card': name, 'decision': 'task-card-fields-missing',
+                'fields': fields, 'actions': [action_record(action)],
+                'action_results': [result],
+            })
+        if seen:
+            current[name] = seen
+    if current != notified:
         write_object(path, current)
 
 
@@ -1808,9 +1850,10 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     log = path.with_name('watch.jsonl')
     check_rule_changes(workspace, orchestrator, log, now)
     missing_tasks = path.with_name('tasks-missing')
+    incomplete = {}
     if tasks.is_dir():
         missing_tasks.unlink(missing_ok=True)
-        cards, skipped = monitored_task_cards(tasks, orchestrator)
+        cards, skipped = monitored_task_cards(tasks, orchestrator, incomplete)
     else:
         cards, skipped = {}, {}
         if not missing_tasks.exists():
@@ -1821,6 +1864,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             missing_tasks.touch()
     agents = [orchestrator, *cards]
     log_skipped_cards(path.with_name('skipped-cards.json'), log, skipped, now)
+    notify_incomplete_cards(path.with_name('incomplete-cards.json'), log, incomplete,
+                            orchestrator, workspace, now)
     hcom = list_hcom(orchestrator)
     states = read_watch_file(path, log, now)
     for agent, state in list(states.items()):
