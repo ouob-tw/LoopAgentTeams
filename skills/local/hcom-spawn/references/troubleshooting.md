@@ -61,11 +61,13 @@ HCOM 接回同一個 session 時換模型尚未驗證，所以換模型改用新
 
 ## Codex 額度與換帳號
 
-- **查額度與帳號**：`codex-multi-auth check` 查即時額度，`codex-multi-auth status` 核對 current／pinned 帳號。要確認受影響的 Agent 用的是哪個帳號，不能把目前的全域選擇當成它啟動時的帳號。
-- **辨識額度耗盡**：`hcom term <名稱>` 的畫面上，Codex 本輪出現 `You've hit your usage limit` 就是額度用完；Claude 本輪錯誤含 `usage limit` 同樣視為額度耗盡。
+- **額度警訊**：`hcom term <名稱>` 的 Codex 畫面出現 `You've hit your usage limit`／`0% left`，只作為觸發下方即時查證的訊號，不能單獨作為換帳號依據。召喚者即使自己也曾額度用完、閒置後才回來，畫面仍可能保留額度重置前的錯誤。Claude 本輪錯誤含 `usage limit` 則視為額度耗盡。
 - **確認停止**：畫面同時出現 `0% left` 與 `usage limit` 才算確認停工。只有 `0% left` 或 HCOM 顯示 idle 時，還要核對本輪與工具執行狀態；還在工作就繼續等，無法確認就不切換也不重啟。
-- **Codex 自動換帳號**：額度耗盡時不必等使用者選擇，直接換到另一個還有額度的訂閱帳號（`status` 標為 `OAUTH`）並續接，換完再回報使用者換了哪個帳號。不換到 API 計費帳號；不執行 `resets redeem`，也不把 `resets auto` 改成自動，兌換 reset 由使用者決定。
-- **換帳號續接**（僅 Codex 外部 Agent）：本輪已明確停止、任務未完成且確認是額度造成時，先記下 session ID、工作目錄、未提交成果與原本的 model／effort／權限參數；`hcom kill <名稱> --name <自身名稱>` 結束舊程序並確認退出，再 `codex-multi-auth switch <n>` 並核對帳號，然後依 SKILL.md 的「接回已關閉的 Agent」以原 session ID 續接。
-- **同帳號補到額度**：確認額度恢復後，把接續位置傳給停工的 Agent，先試直接續作。
+- **Codex 自動換帳號**：完成下方切換前查證、確認額度確實為 0 時，不必等使用者選擇，換到另一個還有額度的訂閱帳號（`status` 標為 `OAUTH`）並續接，換完再回報使用者換了哪個帳號。不換到 API 計費帳號；不執行 `resets redeem`，也不把 `resets auto` 改成自動，兌換 reset 由使用者決定。
+- **換帳號續接**（僅 Codex 外部 Agent）：本輪已明確停止、任務未完成且疑似額度造成時，依序：
+  1. 切換前先執行 `codex-multi-auth status`，確認目前 current／pinned 帳號及受影響的 Agent 使用的帳號；不能把目前的全域選擇當成它啟動時的帳號。
+  2. 再執行 `codex-multi-auth check` 即時查證該帳號的額度。步驟 1 的帳號確認與此步驟的額度為 0 兩項都成立，才可切換；無法確認就不切換也不重啟。若額度已恢復，改走「同帳號補到額度」，不換帳號。
+  3. 記下 session ID、工作目錄、未提交成果與原本的 model／effort／權限參數；`hcom kill <名稱> --name <自身名稱>` 結束舊程序並確認退出，再 `codex-multi-auth switch <n>` 並核對帳號，然後依 [SKILL.md 的「接回已關閉的 Agent」](../SKILL.md#接回已關閉的-agent) 以原 session ID 續接。
+- **同帳號補到額度**：確認額度恢復後，不換帳號，把接續位置傳給停工的 Agent，先試直接續作。
 - 兩種恢復方式都要確認實際工作進展，不能只看額度數字。
 - **全部訂閱帳號都沒額度，或 Claude 額度耗盡**：保留成果並回報使用者，由使用者決定等待、兌換 reset 或其他做法。
