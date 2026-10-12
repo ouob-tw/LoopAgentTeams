@@ -127,7 +127,7 @@ Grilling 時與使用者共同討論。Spec 或短流程確認後，在已確認
 
 Matt skills 中其他流程性的使用者確認，由 Orchestrator 根據既有決策處理：/to-spec 的測試切入點併入 Spec 確認；/to-tickets 的粒度、依賴與拆合由 Orchestrator 核對，不再逐項詢問使用者。
 
-執行 Agent 卡住時先調查與嘗試解決，再將阻礙交給 Orchestrator 協調。Agent 沉默、主控 HCOM 身分掉線或額度警訊時，依 /hcom-spawn 與 [Agent 設定](references/agents.md#存活與恢復) 查證；Codex 額度耗盡依 /hcom-spawn 自動換帳號；無可用訂閱帳號或 Claude 額度耗盡時，等待或替代方案由使用者決定；參謀缺一家時改用同家參謀、不問使用者，見 [參謀](references/advisors.md#模型與降級)。需要使用者時依下方「使用者待決事項」提問，並說明卡在哪裡、已嘗試什麼及需要的協助。
+執行 Agent 卡住時先調查與嘗試解決，再將阻礙交給 Orchestrator 協調。Agent 沉默、主控 HCOM 身分掉線或額度警訊時，依 /hcom-spawn 與 [Agent 設定](references/agents.md#存活與恢復) 查證；Codex 額度耗盡依 /hcom-spawn 自動換帳號；無可用訂閱帳號或 Claude 額度耗盡時，等待或替代方案由使用者決定，唯一例外是 Claude 後端實作任務依 /hcom-spawn 自動改派 GPT 並事後回報；參謀缺一家時改用同家參謀、不問使用者，見 [參謀](references/advisors.md#模型與降級)。需要使用者時依下方「使用者待決事項」提問，並說明卡在哪裡、已嘗試什麼及需要的協助。
 
 ### 使用者待決事項
 
