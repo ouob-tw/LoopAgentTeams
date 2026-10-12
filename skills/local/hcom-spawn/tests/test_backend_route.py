@@ -29,6 +29,7 @@ def usage():
          'usageAgeSeconds': 8.3},
         {'number': 3, 'active': False, 'email': 'six@example.test', 'organizationUuid': 'org-3',
          'usage': {'sevenDay': {'pct': 5}}},
+        {'number': 4, 'active': False, 'email': 'eight@example.test', 'usage': None},
     ]})
 
     def window(used, minutes, left=None):
@@ -105,12 +106,12 @@ class BackendRouteTests(unittest.TestCase):
         lines = self.table()
         self.assertTrue(lines[0].startswith('auto: '), lines[0])
         self.assertEqual([line.split(':')[0] for line in lines[1:]],
-                         ['claude 1', 'claude 2*', 'claude 3',
+                         ['claude 1', 'claude 2*', 'claude 3', 'claude 4',
                           'gpt 0 prolite', 'gpt 1* plus', 'gpt 2 free', 'gpt 3'])
         self.assertEqual(
             lines[2], 'claude 2*: 5h 28% resets in 2d3h, 7d 15% resets in 2d3h, data 0m old')
         self.assertEqual(
-            lines[5], 'gpt 1* plus: 5h 40% resets in 1h30m, 7d 17% resets in 6d1h, data 10m old')
+            lines[6], 'gpt 1* plus: 5h 40% resets in 1h30m, 7d 17% resets in 6d1h, data 10m old')
         for identity in ('example.test', 'Acme'):
             self.assertNotIn(identity, '\n'.join(lines))
 
@@ -120,15 +121,16 @@ class BackendRouteTests(unittest.TestCase):
     def test_a_window_the_source_lacks_is_not_printed(self):
         lines = self.table()
         self.assertEqual(lines[1], 'claude 1: 5h 0%, 7d 92% resets in 2d3h, data 7m old')
-        self.assertEqual(lines[4], 'gpt 0 prolite: 7d 79% resets in 6d1h, data 10m old')
+        self.assertEqual(lines[5], 'gpt 0 prolite: 7d 79% resets in 6d1h, data 10m old')
 
     def test_an_account_whose_source_has_no_age_or_no_usage_still_gets_a_row(self):
         lines = self.table()
         self.assertEqual(lines[3], 'claude 3: 7d 5%')
-        self.assertEqual(lines[7], 'gpt 3: no usage data')
+        self.assertEqual(lines[4], 'claude 4: no usage data')
+        self.assertEqual(lines[8], 'gpt 3: no usage data')
 
     def test_a_window_of_another_length_is_printed_with_its_own_length(self):
-        self.assertEqual(self.table()[6], 'gpt 2 free: 30d 3% resets in 20d1h, data 10m old')
+        self.assertEqual(self.table()[7], 'gpt 2 free: 30d 3% resets in 20d1h, data 10m old')
 
     def test_the_active_claude_account_shows_the_plan_of_the_same_organization(self):
         lines = self.table(oauth={'organizationUuid': 'org-2', 'organizationType': 'claude_max',
@@ -143,8 +145,9 @@ class BackendRouteTests(unittest.TestCase):
     def test_no_plan_and_the_same_rows_when_the_claude_code_file_is_missing(self):
         with_plan = self.table(
             oauth={'organizationUuid': 'org-2', 'organizationType': 'claude_max'})
-        self.assertEqual(with_plan[2].replace(' claude_max', ''), self.table()[2])
-        self.assertEqual(with_plan[:2] + with_plan[3:], self.table()[:2] + self.table()[3:])
+        plain = self.table()
+        self.assertEqual(with_plan[2].replace(' claude_max', ''), plain[2])
+        self.assertEqual(with_plan[:2] + with_plan[3:], plain[:2] + plain[3:])
 
 
 if __name__ == '__main__':

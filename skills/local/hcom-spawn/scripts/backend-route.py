@@ -44,20 +44,20 @@ def claude_plan(organization):
         oauth = json.loads((Path.home() / '.claude.json').read_text()).get('oauthAccount') or {}
     except FileNotFoundError:
         return ''
-    if oauth.get('organizationUuid') != organization:
+    if not organization or oauth.get('organizationUuid') != organization:
         return ''
     return oauth.get('organizationRateLimitTier') or oauth.get('organizationType') or ''
 
 
 def claude_rows():
     for account in query('claude-swap', 'list', '--json')['accounts']:
-        windows = [(length, window['pct'], 'resetsAt' in window
-                    and datetime.fromisoformat(window['resetsAt']).timestamp())
+        windows = [(length, window['pct'], datetime.fromisoformat(window['resetsAt']).timestamp()
+                    if 'resetsAt' in window else None)
                    for key, length in (('fiveHour', 5 * 3600), ('sevenDay', 7 * 86400))
                    if (window := (account.get('usage') or {}).get(key))]
         name = f"claude {account['number']}"
         if account['active']:
-            name = f"{name}* {claude_plan(account['organizationUuid'])}".rstrip()
+            name = f"{name}* {claude_plan(account.get('organizationUuid'))}".rstrip()
         yield row(name, windows, account.get('usageAgeSeconds'))
 
 
@@ -70,7 +70,7 @@ def gpt_rows():
                    if (window := quota.get(key)) and window['windowMinutes']]
         name = f"gpt {account['index']}{'*' * account['current']} {quota.get('planType', '')}"
         yield row(name.rstrip(), windows,
-                  'updatedAt' in quota and time.time() - quota['updatedAt'] / 1000 or None)
+                  time.time() - quota['updatedAt'] / 1000 if 'updatedAt' in quota else None)
 
 
 def main():
