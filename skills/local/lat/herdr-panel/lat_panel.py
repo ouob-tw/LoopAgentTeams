@@ -957,7 +957,7 @@ def _cleanup_locked(questions_path, decisions_path, document, *, exclude_id=None
         raise ValueError("questions changed while cleaning; retry")
     archive_path = _archive_path(questions_path)
     if eligible:
-        _append_archive(archive_path, [section["raw"] for section in eligible])
+        _append_archive(archive_path, [section["raw"] for section in eligible], exact_match=True)
         _replace_locked(questions_path, updated)
     _append_journal(
         journal_path, document, updated, kind="cleanup",
@@ -1042,9 +1042,11 @@ def pending_question_gaps(questions_path, decisions_path):
     return present, missing, inconsistent, unreadable, reverse
 
 
-def _append_archive(path, sections):
+def _append_archive(path, sections, *, exact_match=False):
     path.parent.mkdir(parents=True, exist_ok=True)
-    existing = path.read_text(encoding="utf-8") if path.exists() else ""
+    existing = ""
+    if path.exists():
+        existing = _read_text_exact(path) if exact_match else path.read_text(encoding="utf-8")
     additions = [section for section in sections if section not in existing]
     if not additions:
         return

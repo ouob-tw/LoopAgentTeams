@@ -485,12 +485,14 @@ class AnswerWriteTests(unittest.TestCase):
             self.questions, "Q2", "## Second updated?\n\nA. New\n   New impact\n", decisions_path=self.questions.parent
         )
         before_submit = self.questions.read_text()
+        journal = self.questions.parent / "panel-journal.jsonl"
+        before_journal = journal.read_bytes()
 
         result = self.panel.submit_question_answers(self.questions, expected)
 
         self.assertEqual(result, {"status": "question_changed", "ids": ["Q2"]})
         self.assertEqual(self.questions.read_text(), before_submit)
-        self.assertFalse((self.questions.parent / "panel-journal.jsonl").exists())
+        self.assertEqual(journal.read_bytes(), before_journal)
 
     def test_write_and_batch_submit_preserve_crlf_in_untouched_sections(self):
         original = self.initial_text().replace("\n", "\r\n")

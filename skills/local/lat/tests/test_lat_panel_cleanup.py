@@ -166,3 +166,18 @@ class CleanupTests(unittest.TestCase):
         self.assertEqual(result['archived'], [{'id': 'OLD', 'reason': 'decision-not-pending'}])
         self.assertEqual(self.questions.read_bytes(), pending)
         self.assertEqual((self.root / 'questions-own-archive.md').read_bytes(), stale)
+
+    def test_cleanup_does_not_deduplicate_against_normalized_archive_text(self):
+        raw = '## Old?\nOLD · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n\n'.encode()
+        archived_crlf = raw.replace(b'\n', b'\r\n')
+        archive = self.root / 'questions-own-archive.md'
+        archive.write_bytes(archived_crlf)
+        self.questions.write_bytes(raw)
+        (self.decisions / 'OLD.md').write_text('- status: answered\n')
+
+        result = self.panel.cleanup_questions(self.questions, self.decisions)
+
+        self.assertEqual(result['archived'], [{'id': 'OLD', 'reason': 'decision-not-pending'}])
+        self.assertEqual(self.questions.read_bytes(), b'')
+        self.assertTrue(archive.read_bytes().startswith(archived_crlf))
+        self.assertIn(raw, archive.read_bytes())

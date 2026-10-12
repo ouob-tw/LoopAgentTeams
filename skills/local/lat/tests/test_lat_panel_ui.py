@@ -337,6 +337,7 @@ class RawEditorTests(PanelTestCase):
             self.assertIn("Agent impact.", self.questions.read_text())
 
     async def test_periodic_archive_leaves_a_recorded_section_with_conflict_draft(self):
+        self.core.upsert_question(self.questions, "Q2", "## Other?\n\nFree text.\n", decisions_path=self.questions.parent)
         recorded_at = datetime(2026, 10, 2, 9, 0, tzinfo=timezone.utc)
         expected_hash = self.core._section_sha256(
             self.core.parse_questions(self.questions.read_text())[0]
@@ -344,7 +345,6 @@ class RawEditorTests(PanelTestCase):
         self.core.set_question_status(
             self.questions, "Q1", 1, "recorded", expected_hash, now=recorded_at,
         )
-        self.core.upsert_question(self.questions, "Q2", "## Other?\n\nFree text.\n", decisions_path=self.questions.parent)
         recorded = self.questions.read_text()
         clock = [recorded_at + timedelta(seconds=299)]
         app = self.make_app(
