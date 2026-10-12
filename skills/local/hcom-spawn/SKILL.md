@@ -89,6 +89,7 @@ hcom send @<agent> --intent request --name <自身名稱> --file <訊息檔路�
 完成時回報：成果位置、測試結果、未完成事項
 回報對象：<自身名稱>
 溝通語言：Agent 之間的所有溝通（hcom 訊息、交接、回報）一律使用英文
+卡住回報：同一個驗收目標連續 3 輪「修正 → 部署 → 驗證」（沒有部署步驟就「修正 → 驗證」）都沒通過，第 3 輪失敗時立刻回報我，附失敗證據與下一個待驗證假設；目標通過或改變就歸零重算
 <僅限操作使用者已登入瀏覽器的任務，否則刪掉這行：貼上下節「瀏覽器任務的真人驗證」的規則>
 
 回報方式：`hcom send @<自身名稱> --name <你的名稱>`。忘記語法就跑 `hcom <指令> --help`，不要猜。
@@ -172,4 +173,4 @@ HCOM 0.7.27 / Codex CLI 0.159.3 實測：未附 effort 接回保留原 low，附
 
 ## Agent 沉默、卡住或額度耗盡
 
-Agent 久無回應、同一問題反覆失敗、疑似額度用完，或你自己的 HCOM 身分掉線時，讀 [references/troubleshooting.md](references/troubleshooting.md)。
+Agent 久無回應、同一問題反覆失敗（含同一目標連續 3 輪沒通過的卡住回報）、疑似額度用完，或你自己的 HCOM 身分掉線時，讀 [references/troubleshooting.md](references/troubleshooting.md)。
