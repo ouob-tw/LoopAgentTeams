@@ -148,8 +148,9 @@ def watcher_paths(record):
 
 
 def watcher_command(record):
+    script = Path(record['skill_dir']) / 'scripts/lat-watch.py'
     return [
-        'uv', 'run', '--no-project', 'python', str(WATCH_SCRIPT), 'run',
+        'uv', 'run', '--no-project', 'python', str(script), 'run',
         '--workspace', record['workspace'], '--orchestrator', record['hcom_name'],
         '--tasks', record['tasks_path'], '--decisions', record['decisions_path'],
     ]
@@ -180,9 +181,10 @@ def watcher_running(record, pid=None):
     command = process_command(pid) if pid is not None else None
     if command is None:
         return False
-    expected = tuple(watcher_command(record)[4:])
-    return any(command[index:index + len(expected)] == expected
-               for index in range(len(command) - len(expected) + 1))
+    expected = tuple(watcher_command(record)[5:])
+    return any(Path(command[index]).name == 'lat-watch.py'
+               and command[index + 1:index + 1 + len(expected)] == expected
+               for index in range(len(command) - len(expected)))
 
 
 def write_pid(path, pid):

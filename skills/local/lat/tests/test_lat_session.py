@@ -6,6 +6,7 @@ from unittest.mock import patch
 import os
 from pathlib import Path
 import subprocess
+import shutil
 import sys
 import tempfile
 import threading
@@ -49,7 +50,7 @@ class SessionTests(unittest.TestCase):
         self.addCleanup(self.stop_fake_watchers)
 
     def cli(self, *args, payload=None, session=SESSION, claude_session='', extra_env=None,
-            watch_args=True):
+            watch_args=True, script=SCRIPT):
         args = list(args)
         if args and args[0] == 'activate' and watch_args:
             if '--hcom-name' not in args:
@@ -57,7 +58,7 @@ class SessionTests(unittest.TestCase):
             if '--tasks' not in args:
                 args += ['--tasks', self.tasks]
         env = self.cli_environment(session, claude_session, extra_env)
-        return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)],
+        return subprocess.run([sys.executable, str(script), *map(str, args)],
                               input=json.dumps(payload) if payload is not None else '',
                               text=True, capture_output=True, env=env, cwd=self.work)
 
@@ -78,6 +79,104 @@ class SessionTests(unittest.TestCase):
                           '--progress', self.progress, '--decisions', self.decisions,
                           session=session)
         self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_hook_and_deactivate_keep_ownership_after_helper_directory_changes(self):
+        installed = self.root / 'installed-lat'
+        shutil.copytree(SKILL, installed)
+        installed_script = installed / 'scripts/lat-session.py'
+        self.activate()
+        pid = self.watcher_pid()
+        self.addCleanup(self.stop_process_group, pid)
+        self.wait_for(self.fake_uv_log.exists)
+        for source in ('compact', 'resume'):
+            result = self.cli('hook', script=installed_script, payload=dict(
+                hook_event_name='SessionStart', source=source, cwd=str(self.work),
+                session_id=SESSION))
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('recovery error', result.stdout)
+            self.assertEqual(self.watcher_pid(), pid)
+        self.assertEqual(len(self.fake_uv_log.read_text().splitlines()), 1)
+        result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
+                          script=installed_script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_for(lambda: not self.process_exists(pid))
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+
+    def stop_process_group(self, pid):
+        try:
+            os.killpg(pid, 15)
+        except ProcessLookupError:
+            pass
+
+    def test_recovery_restart_uses_record_skill_directory_from_another_helper(self):
+        installed = self.root / 'installed-lat'
+        shutil.copytree(SKILL, installed)
+        self.activate()
+        pid = self.watcher_pid()
+        self.stop_process_group(pid)
+        self.wait_for(lambda: not self.process_exists(pid))
+        self.fake_uv_log.write_text('')
+        result = self.cli('hook', script=installed / 'scripts/lat-session.py', payload=dict(
+            hook_event_name='SessionStart', source='resume', cwd=str(self.work),
+            session_id=SESSION))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('recovery error', result.stdout)
+        self.assertNotEqual(self.watcher_pid(), pid)
+        self.wait_for(lambda: bool(self.fake_uv_log.read_text()))
+        self.assertIn(str(SKILL / 'scripts/lat-watch.py'), self.fake_uv_log.read_text())
+        self.assertNotIn(str(installed), self.fake_uv_log.read_text())
+
+    def start_watcher_command(self, script, **overrides):
+        values = dict(workspace=str(self.work), orchestrator='orch',
+                      tasks=str(self.tasks), decisions=str(self.decisions))
+        values.update(overrides)
+        command = [str(self.binary / 'uv'), 'run', '--no-project', 'python', str(script), 'run']
+        for key, value in values.items():
+            command += [f'--{key}', value]
+        process = subprocess.Popen(command, env=self.cli_environment(),
+                                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
+                                   start_new_session=True)
+        self.addCleanup(self.terminate_process, process)
+        self.work.joinpath('.lat/watch', f'{SESSION}.pid').write_text(str(process.pid))
+        return process
+
+    def test_activate_keeps_existing_watcher_from_another_directory(self):
+        installed = self.root / 'installed-lat'
+        shutil.copytree(SKILL, installed)
+        script = installed / 'scripts/lat-session.py'
+        args = ('activate', '--workspace', self.work, '--progress', self.progress,
+                '--decisions', self.decisions)
+        result = self.cli(*args, script=script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        pid = self.watcher_pid()
+        self.stop_process_group(pid)
+        self.wait_for(lambda: not self.process_exists(pid))
+        process = self.start_watcher_command(SKILL / 'scripts/lat-watch.py')
+        rerun = self.cli(*args, script=script)
+        self.assertEqual(rerun.returncode, 0, rerun.stderr)
+        self.assertEqual(self.watcher_pid(), process.pid)
+        result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
+                          script=script)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        process.wait(timeout=3)
+
+    def test_deactivate_does_not_stop_unrelated_watcher_arguments_or_script(self):
+        self.activate()
+        pid = self.watcher_pid()
+        self.stop_process_group(pid)
+        self.wait_for(lambda: not self.process_exists(pid))
+        for changed in ('workspace', 'orchestrator', 'tasks', 'decisions', 'script'):
+            with self.subTest(changed=changed):
+                script = SKILL / 'scripts/lat-watch.py'
+                overrides = {changed: 'unrelated'} if changed != 'script' else {}
+                if changed == 'script':
+                    script = SKILL / 'scripts/other-watch.py'
+                process = self.start_watcher_command(script, **overrides)
+                result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIsNone(process.poll())
+                self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+                self.terminate_process(process)
 
     def stop_hook(self, message='DECIDE: LAT-A r1', client='codex', **overrides):
         payload = dict(hook_event_name='Stop', cwd=str(self.work), session_id=SESSION,
