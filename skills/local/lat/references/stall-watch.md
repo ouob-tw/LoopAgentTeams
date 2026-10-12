@@ -32,6 +32,8 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 「上一層」對執行 Agent 是它的主控，對主控是使用者。背景指令還在跑時不算停住；但 Codex 紀錄顯示回合已結束、之後沒有新回合或使用者輸入，狀態卻仍是 `active` 時，依上表催促與升級。晚到的同回合完成事件不會推翻回合已結束的判斷，但紀錄變動仍會讓計時歸零。紀錄讀不到或末段找不到回合邊界時，維持原本判斷；Claude 不變。
 等核准與其他非輸入框畫面可能在 `hcom term --json` 回傳 `input_text=null`；監控會把它當成「沒有輸入文字」，不會因此略過 `blocked` 通知。
 
+以獨立的 Claude 設定目錄（`CLAUDE_CONFIG_DIR`）啟動測試用 Agent 時，該目錄的 `settings.json` 須設定 `"promptSuggestionEnabled": false`。否則 Claude 的建議提示灰字會被 `hcom term --json` 當成輸入框有字，監控不會催促該 Agent。
+
 額度與滿載辨識只看 `hcom term --json` 當前可見畫面的 client UI 結構，不以固定行數猜測本輪邊界。Codex 的 `■` 錯誤後若已出現更新的 `Working`、Agent 回覆或非空白新提示，就當作舊輪。Claude 的 `● Usage limit reached` 除了畫面上完整的自動繼續時間與 `esc to cancel`，還必須對得上 Claude 紀錄檔末端未被新 user/assistant 回合取代的 system notice；畫面後面有新的回覆、非空白使用者提示或 `Working` 也會判為舊輪。最後一條輸入區分隔線下的 `⚠ Usage limit reached` 則本身就是當前狀態，不依賴模型列。當前狀態列與舊的主錯誤同時出現時，以狀態列的重置時間為準。這些條件不會把舊畫面或 Agent 回覆引用的同段文字當成錯誤。錯誤與重置時間換行時會先合併再辨識。通知附 Agent、client、畫面可辨識的模型、符合行與重置時間（畫面有寫時）。同一段狀況只通知一次，Agent 有新進展或收到新訊息都不會重發；額度畫面連續兩輪消失，或畫面上的重置時間改變，才重新計算。不會對「已用 90%」之類的提前警告發通知。
 
 ## 結束回合前
