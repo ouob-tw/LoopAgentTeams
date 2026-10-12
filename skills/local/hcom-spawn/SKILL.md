@@ -17,7 +17,7 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 | --- | --- | --- | --- |
 | 前端，複雜以外 | `claude-sonnet-5-5` | `medium` | 換 `claude-opus-5-5` `medium` → `high` → `xhigh` |
 | 前端，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` |
-| 後端，不分難度 | `gpt-6.1-sol` | `medium` | `high` → 換 `gpt-6-astra` `high` |
+| 後端，不分難度 | `gpt-6.1-sol` | `medium` | `high` → 換 `gpt-6-astra` `medium` |
 | 其他或混合 | 依任務內容選上面一列 | | |
 | 使用者或呼叫的技能指定的模型 | 照指定 | 照指定，沒說就 `medium` | 不換模型，沿 `low` → `medium` → `high` → `xhigh` 一次升一級 |
 
