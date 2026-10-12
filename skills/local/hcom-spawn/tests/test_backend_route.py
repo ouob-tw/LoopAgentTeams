@@ -15,15 +15,20 @@ DAY = 24 * HOUR
 
 
 def usage():
-    """Fake quota output: two Claude accounts and three GPT accounts, with made-up identities."""
+    """Fake quota output of several accounts on each side, with made-up identities."""
     reset = time.strftime('%Y-%m-%dT%H:%M:%S+00:00', time.gmtime(NOW + 2 * DAY + 3.5 * HOUR))
     claude = json.dumps({'activeAccountNumber': 2, 'accounts': [
         {'number': 1, 'active': False, 'email': 'one@example.test', 'organizationName': 'Acme Org',
+         'organizationUuid': 'org-1',
          'usage': {'fiveHour': {'pct': 0}, 'sevenDay': {'pct': 92, 'resetsAt': reset}},
          'usageAgeSeconds': 420.4},
         {'number': 2, 'active': True, 'email': 'two@example.test', 'organizationName': 'Acme Org',
-         'usage': {'fiveHour': {'pct': 28, 'resetsAt': reset}, 'sevenDay': {'pct': 15, 'resetsAt': reset}},
+         'organizationUuid': 'org-2',
+         'usage': {'fiveHour': {'pct': 28, 'resetsAt': reset},
+                   'sevenDay': {'pct': 15, 'resetsAt': reset}},
          'usageAgeSeconds': 8.3},
+        {'number': 3, 'active': False, 'email': 'six@example.test', 'organizationUuid': 'org-3',
+         'usage': {'sevenDay': {'pct': 5}}},
     ]})
 
     def window(used, minutes, left=None):
@@ -41,14 +46,18 @@ def usage():
         {'index': 2, 'current': False, 'enabled': True, 'email': 'five@example.test',
          'quota': {'updatedAt': int((NOW - 600.5) * 1000), 'planType': 'free',
                    'primary': window(3, 43200, 20 * DAY + 1.5 * HOUR), 'secondary': window(0, 0)}},
+        {'index': 3, 'current': False, 'enabled': True, 'email': 'seven@example.test',
+         'quota': None},
     ]})
     return f"echo '{claude}'", f"echo '{gpt}'"
 
 
-def route(config, claude_swap=FAIL, codex_multi_auth=FAIL):
+def route(config, claude_swap=FAIL, codex_multi_auth=FAIL, oauth=None):
     """Run the helper with a temp home and fake quota commands on PATH."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
+        if oauth is not None:
+            (tmp / '.claude.json').write_text(json.dumps({'oauthAccount': oauth}))
         if config is not None:
             (tmp / '.config/hcom-spawn').mkdir(parents=True)
             (tmp / '.config/hcom-spawn/config.toml').write_text(config)
@@ -67,8 +76,8 @@ class BackendRouteTests(unittest.TestCase):
         self.assertEqual(len(result.stdout.splitlines()), 1)
         self.assertTrue(result.stdout.startswith(f'{expected}: '), result.stdout)
 
-    def table(self, config='backend = "auto"\n'):
-        result = route(config, *usage())
+    def table(self, config='backend = "auto"\n', oauth=None):
+        result = route(config, *usage(), oauth=oauth)
         self.assertEqual(result.returncode, 0, result.stderr)
         return result.stdout.splitlines()
 
@@ -96,9 +105,12 @@ class BackendRouteTests(unittest.TestCase):
         lines = self.table()
         self.assertTrue(lines[0].startswith('auto: '), lines[0])
         self.assertEqual([line.split(':')[0] for line in lines[1:]],
-                         ['claude 1', 'claude 2*', 'gpt 0 prolite', 'gpt 1* plus', 'gpt 2 free'])
-        self.assertEqual(lines[2], 'claude 2*: 5h 28% resets in 2d3h, 7d 15% resets in 2d3h, data 0m old')
-        self.assertEqual(lines[4], 'gpt 1* plus: 5h 40% resets in 1h30m, 7d 17% resets in 6d1h, data 10m old')
+                         ['claude 1', 'claude 2*', 'claude 3',
+                          'gpt 0 prolite', 'gpt 1* plus', 'gpt 2 free', 'gpt 3'])
+        self.assertEqual(
+            lines[2], 'claude 2*: 5h 28% resets in 2d3h, 7d 15% resets in 2d3h, data 0m old')
+        self.assertEqual(
+            lines[5], 'gpt 1* plus: 5h 40% resets in 1h30m, 7d 17% resets in 6d1h, data 10m old')
         for identity in ('example.test', 'Acme'):
             self.assertNotIn(identity, '\n'.join(lines))
 
@@ -108,10 +120,31 @@ class BackendRouteTests(unittest.TestCase):
     def test_a_window_the_source_lacks_is_not_printed(self):
         lines = self.table()
         self.assertEqual(lines[1], 'claude 1: 5h 0%, 7d 92% resets in 2d3h, data 7m old')
-        self.assertEqual(lines[3], 'gpt 0 prolite: 7d 79% resets in 6d1h, data 10m old')
+        self.assertEqual(lines[4], 'gpt 0 prolite: 7d 79% resets in 6d1h, data 10m old')
+
+    def test_an_account_whose_source_has_no_age_or_no_usage_still_gets_a_row(self):
+        lines = self.table()
+        self.assertEqual(lines[3], 'claude 3: 7d 5%')
+        self.assertEqual(lines[7], 'gpt 3: no usage data')
 
     def test_a_window_of_another_length_is_printed_with_its_own_length(self):
-        self.assertEqual(self.table()[5], 'gpt 2 free: 30d 3% resets in 20d1h, data 10m old')
+        self.assertEqual(self.table()[6], 'gpt 2 free: 30d 3% resets in 20d1h, data 10m old')
+
+    def test_the_active_claude_account_shows_the_plan_of_the_same_organization(self):
+        lines = self.table(oauth={'organizationUuid': 'org-2', 'organizationType': 'claude_max',
+                                  'organizationRateLimitTier': 'default_claude_max_5x'})
+        self.assertTrue(lines[1].startswith('claude 1: '), lines[1])
+        self.assertTrue(lines[2].startswith('claude 2* default_claude_max_5x: 5h 28% '), lines[2])
+
+    def test_no_plan_when_claude_code_is_logged_in_to_another_organization(self):
+        lines = self.table(oauth={'organizationUuid': 'org-1', 'organizationType': 'claude_max'})
+        self.assertTrue(lines[2].startswith('claude 2*: '), lines[2])
+
+    def test_no_plan_and_the_same_rows_when_the_claude_code_file_is_missing(self):
+        with_plan = self.table(
+            oauth={'organizationUuid': 'org-2', 'organizationType': 'claude_max'})
+        self.assertEqual(with_plan[2].replace(' claude_max', ''), self.table()[2])
+        self.assertEqual(with_plan[:2] + with_plan[3:], self.table()[:2] + self.table()[3:])
 
 
 if __name__ == '__main__':

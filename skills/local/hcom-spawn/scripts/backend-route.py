@@ -17,7 +17,7 @@ def query(*command):
     return json.loads(result.stdout)
 
 
-def span(seconds):
+def duration(seconds):
     days, rest = divmod(max(int(seconds), 0) // 60, 24 * 60)
     hours, minutes = divmod(rest, 60)
     if days:
@@ -28,31 +28,49 @@ def span(seconds):
 
 
 def row(name, windows, age):
-    """windows: (length in seconds, used percent, reset as epoch seconds or None)."""
-    cells = [f'{span(length)} {used:g}%' + (f' resets in {span(reset - time.time())}' if reset else '')
+    """windows: (length in seconds, used percent, reset as epoch seconds or falsy);
+    age: seconds since the source fetched the data, or None."""
+    cells = [f'{duration(length)} {used:g}%'
+             + (f' resets in {duration(reset - time.time())}' if reset else '')
              for length, used, reset in windows]
-    return f"{name}: {', '.join(cells)}, data {span(age)} old"
+    if age is not None:
+        cells.append(f'data {duration(age)} old')
+    return f"{name}: {', '.join(cells) or 'no usage data'}"
+
+
+def claude_plan(organization):
+    """Plan of the account Claude Code is logged in to, when it belongs to this organization."""
+    try:
+        oauth = json.loads((Path.home() / '.claude.json').read_text()).get('oauthAccount') or {}
+    except FileNotFoundError:
+        return ''
+    if oauth.get('organizationUuid') != organization:
+        return ''
+    return oauth.get('organizationRateLimitTier') or oauth.get('organizationType') or ''
 
 
 def claude_rows():
     for account in query('claude-swap', 'list', '--json')['accounts']:
-        windows = [(length, window['pct'],
-                    'resetsAt' in window and datetime.fromisoformat(window['resetsAt']).timestamp())
+        windows = [(length, window['pct'], 'resetsAt' in window
+                    and datetime.fromisoformat(window['resetsAt']).timestamp())
                    for key, length in (('fiveHour', 5 * 3600), ('sevenDay', 7 * 86400))
-                   if (window := account['usage'].get(key))]
-        yield row(f"claude {account['number']}{'*' * account['active']}", windows,
-                  account['usageAgeSeconds'])
+                   if (window := (account.get('usage') or {}).get(key))]
+        name = f"claude {account['number']}"
+        if account['active']:
+            name = f"{name}* {claude_plan(account['organizationUuid'])}".rstrip()
+        yield row(name, windows, account.get('usageAgeSeconds'))
 
 
 def gpt_rows():
     for account in query('codex-multi-auth', 'limits', '--json')['accounts']:
-        quota = account['quota']
+        quota = account.get('quota') or {}
         windows = [(window['windowMinutes'] * 60, window['usedPercent'],
                     window['resetAtMs'] and window['resetAtMs'] / 1000)
-                   for window in (quota['primary'], quota['secondary']) if window['windowMinutes']]
-        name = f"gpt {account['index']}{'*' * account['current']} {quota['planType']}"
-        yield row(name + ' disabled' * (not account['enabled']), windows,
-                  time.time() - quota['updatedAt'] / 1000)
+                   for key in ('primary', 'secondary')
+                   if (window := quota.get(key)) and window['windowMinutes']]
+        name = f"gpt {account['index']}{'*' * account['current']} {quota.get('planType', '')}"
+        yield row(name.rstrip(), windows,
+                  'updatedAt' in quota and time.time() - quota['updatedAt'] / 1000 or None)
 
 
 def main():
