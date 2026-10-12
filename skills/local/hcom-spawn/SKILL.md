@@ -15,13 +15,34 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 | 任務 | 模型 | 起始 effort | 卡住時依序升級 |
 | --- | --- | --- | --- |
-| 前端，複雜以外 | `claude-sonnet-5-5` | `medium` | 換 `claude-opus-5-5` `medium` → `high` → `xhigh` |
-| 前端，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` |
-| 後端，不分難度 | `gpt-6.1-sol` | `medium` | `high` → 換 `gpt-6-astra` `medium` |
+| 前端，複雜以外 | `claude-sonnet-5-5` | `medium` | 換 `claude-opus-5-5` `medium` → `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
+| 前端，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
+| 後端實作，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
+| 後端實作，複雜以外 | 分配結果 `claude`：`claude-sonnet-5-5`<br>分配結果 `gpt`：`gpt-6.1-sol` | `medium` | Sonnet：同「前端，複雜以外」<br>GPT：`high` → 換 `gpt-6-astra` `medium` |
 | 其他或混合 | 依任務內容選上面一列 | | |
 | 使用者或呼叫的技能指定的模型 | 照指定 | 照指定，沒說就 `medium` | 不換模型，沿 `low` → `medium` → `high` → `xhigh` 一次升一級 |
 
 **複雜任務**：跨檔案實作、除錯、設計、審查、需自行權衡方案。其餘都不算複雜。
+
+後端的審查與 QA 給 `gpt-6.1-sol` `medium`，升級照表中 GPT 那一段。
+
+**後端分配**：派「後端實作，複雜以外」的任務前，先跑小工具取得分配結果，只讀它印出的那一行，不自己查兩家額度：
+
+```bash
+uv run --no-project python <skill_dir>/scripts/backend-route.py
+```
+
+`<skill_dir>` 是本技能安裝目錄的絕對路徑。輸出是 `claude: <原因>` 或 `gpt: <原因>`。分配方式寫在 `~/.config/hcom-spawn/config.toml` 的 `backend`：
+
+| `backend` | 複雜以外的後端實作給誰 |
+| --- | --- |
+| `claude` | Claude |
+| `split` | GPT |
+| `auto`（檔案不存在時的預設） | 兩家使用中帳號七天已用比例較低的一家；比例相同或任一查詢失敗給 Claude |
+
+設定值無法辨識時小工具報錯並列出可用值，此時回報使用者修正，不自行猜測。
+
+`claude-fable-5-1` 只當升級終點，沒有任務預設用它。
 
 只用該模型支援的 effort。升級到最後一格、該模型最高可用級別或使用者給的上限仍卡住，就回報使用者。怎樣算卡住、升級與換模型的操作步驟，見 [references/troubleshooting.md](references/troubleshooting.md) 的「卡住時升級 effort」。
 
