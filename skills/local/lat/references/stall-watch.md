@@ -34,6 +34,18 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 
 額度與滿載辨識只看 `hcom term --json` 當前可見畫面的 client UI 結構，不以固定行數猜測本輪邊界。Codex 的 `■` 錯誤後若已出現更新的 `Working`、Agent 回覆或非空白新提示，就當作舊輪。Claude 的 `● Usage limit reached` 除了畫面上完整的自動繼續時間與 `esc to cancel`，還必須對得上 Claude 紀錄檔末端未被新 user/assistant 回合取代的 system notice；畫面後面有新的回覆、非空白使用者提示或 `Working` 也會判為舊輪。最後一條輸入區分隔線下的 `⚠ Usage limit reached` 則本身就是當前狀態，不依賴模型列。當前狀態列與舊的主錯誤同時出現時，以狀態列的重置時間為準。這些條件不會把舊畫面或 Agent 回覆引用的同段文字當成錯誤。錯誤與重置時間換行時會先合併再辨識。通知附 Agent、client、畫面可辨識的模型、符合行與重置時間（畫面有寫時）。同一段狀況只通知一次，Agent 有新進展或收到新訊息都不會重發；額度畫面連續兩輪消失，或畫面上的重置時間改變，才重新計算。不會對「已用 90%」之類的提前警告發通知。
 
+## 任務卡必填欄位檢查
+
+監控每輪檢查上述監控對象的任務卡（`orchestrator` 欄等於該主控、不在 `done/`、status 不是 `merged`）：`live actions` 或 `preflight` 缺少或值為空時，以 HCOM 傳一則 `LAT stall watcher: task card <檔名>` 開頭的英文訊息給該主控（`--intent request`），寫明卡片檔名與缺少的欄位。只給主控，不通知使用者，10 分鐘內未處理也不升級。
+
+- 這類卡片的 Agent 照常受停住監控，不會被跳過；缺 agent、orchestrator、status 而無法辨識的卡片維持「跳過並記錄」，不做這項檢查。
+- 同一張卡片同一內容只通知一次；內容改變後仍缺欄位會再通知；補齊、移到 `done/` 或標為 `merged` 後不再通知，之後再缺才重新計算。
+- 已通知的內容指紋保存在 `$workspace/.lat/watch/<主控 HCOM 名稱>/incomplete-cards.json`，監控重啟後不重複通知。通知失敗時下一輪重試，成功後才記為已通知。
+- 每次通知（含失敗）在 `watch.jsonl` 記一筆 `task-card-fields-missing`，含卡片檔名 `card`、缺少的欄位 `fields` 與傳送結果。
+- 監控只檢查欄位有沒有填，不解析額度內容，不計算已用額度，也不判斷 `live actions` 是否該填「無」。
+
+主控收到後依 [任務卡](task-cards.md#現場動作額度) 補上兩欄，並把補上的內容傳給該執行 Agent。
+
 ## 結束回合前
 
 主控與執行 Agent 結束回合前，先做完所有不受待決事項影響的工作並回報。真的只剩等待時，寫明在等什麼再結束：
@@ -106,7 +118,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 
 ## 主控處理監控通知
 
-監控以寄件者 `lat-watch` 傳 HCOM 訊息到主控對話，開頭是 `LAT stall watcher: agent <名稱>`，寫明停了多久、判斷原因、已做過什麼和需要的處理。
+監控以寄件者 `lat-watch` 傳 HCOM 訊息到主控對話，開頭是 `LAT stall watcher: agent <名稱>`，寫明停了多久、判斷原因、已做過什麼和需要的處理。開頭是 `LAT stall watcher: task card <檔名>` 的訊息依 [任務卡必填欄位檢查](#任務卡必填欄位檢查) 處理。
 
 - **執行 Agent 催過仍沒恢復**（`--intent request`）：10 分鐘內依 /hcom-spawn 的排查程序查看它，再做下列其中一項，否則監控通知使用者：讓它恢復進展、更新它的任務卡 status 或 next step、收尾（卡片移到 `done/` 或關閉 Agent），或對它聲明 `lat-watch wait --for <該 Agent>`。
 - **可能掛住的指令、等核准**：只通知這一次，不催。查看指令是否該繼續，或處理核准畫面。

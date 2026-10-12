@@ -1030,6 +1030,8 @@ class WatchCliTests(unittest.TestCase):
             f'- agent：{agent} (Codex)\n'
             f'- orchestrator：{orchestrator}\n'
             f'- status：{status}\n'
+            f'- live actions：無\n'
+            f'- preflight：無\n'
             f'- next step：{next_step}\n'
         )
 
@@ -1716,11 +1718,166 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertEqual(self.hcom_log.read_text().splitlines(),
                          ['list --json --name orch'])
 
-    def write_card(self, relative, agent_field, orchestrator='orch', status='in progress'):
+    def write_card(self, relative, agent_field, orchestrator='orch', status='in progress',
+                   fields='- live actions：無\n- preflight：無\n'):
         path = self.tasks / relative
         path.write_text(f'- agent：{agent_field}\n- orchestrator：{orchestrator}\n'
-                        f'- status：{status}\n')
+                        f'- status：{status}\n{fields}')
         return path
+
+    def write_fields_card(self, relative, agent, fields='', **card):
+        return self.write_card(relative, agent, fields=fields, **card)
+
+    def field_notices(self):
+        if not self.hcom_log.exists():
+            return []
+        return [line for line in self.hcom_log.read_text().splitlines()
+                if line.startswith('send ') and 'required field' in line]
+
+    def field_records(self):
+        return [(record['at'], record['card'], record['fields'])
+                for record in self.watch_records()
+                if record.get('decision') == 'task-card-fields-missing']
+
+    def test_cards_with_both_envelope_fields_are_not_reported(self):
+        self.write_fields_card('filled.md', 'poni', '- live actions：重建 2 次；請求 50 個\n'
+                                                   '- preflight：帳號已核對\n')
+
+        self.run_cycles(load_watch(), 0, 60)
+
+        self.assertEqual(self.field_notices(), [])
+        self.assertEqual(self.field_records(), [])
+
+    def test_missing_or_empty_envelope_fields_notify_the_orchestrator_once(self):
+        self.write_fields_card('a-none.md', 'poni')
+        self.write_fields_card('b-no-preflight.md', 'kemo', '- live actions：無\n')
+        self.write_fields_card('c-empty.md', 'tabi', '- live actions：  \n- preflight：無\n')
+
+        self.run_cycles(load_watch(), 0, 60)
+
+        self.assertEqual(self.field_records(), [
+            (0, 'a-none.md', ['live actions', 'preflight']),
+            (0, 'b-no-preflight.md', ['preflight']),
+            (0, 'c-empty.md', ['live actions']),
+        ])
+        notices = self.field_notices()
+        self.assertEqual(len(notices), 3)
+        self.assertTrue(all('@orch --intent request --from lat-watch --name orch -- '
+                            'LAT stall watcher: task card ' in line for line in notices))
+        self.assertIn('a-none.md', notices[0])
+        self.assertIn('field(s): live actions, preflight. ', notices[0])
+        self.assertIn('b-no-preflight.md', notices[1])
+        self.assertIn('field(s): preflight. ', notices[1])
+        self.assertIn('c-empty.md', notices[2])
+        self.assertIn('field(s): live actions. ', notices[2])
+        self.assertEqual(self.herdr_log.exists(), False)
+
+    def test_agents_of_cards_missing_envelope_fields_stay_monitored(self):
+        self.write_fields_card('a-none.md', 'poni')
+
+        self.run_cycles(load_watch(), 0)
+        status = self.cli('status', '--workspace', self.work,
+                          '--orchestrator', 'orch', '--tasks', self.tasks)
+
+        self.assertEqual([record['agent'] for record in self.watch_records()
+                          if 'agent' in record], ['orch', 'poni', 'worker-open'])
+        self.assertEqual([item['agent'] for item in json.loads(status.stdout)['targets']],
+                         ['orch', 'poni', 'worker-open'])
+        self.assertEqual([record['card'] for record in self.watch_records()
+                          if record.get('decision') == 'task-card-skipped'], [])
+
+    def test_envelope_reminder_repeats_only_when_the_card_content_changes(self):
+        self.write_fields_card('card.md', 'poni')
+        watch = load_watch()
+
+        self.run_cycles(watch, 0, 60)
+        self.write_fields_card('card.md', 'poni', '- next step：probe\n')
+        self.run_cycles(watch, 120, 180)
+        self.write_fields_card('card.md', 'poni')
+        self.run_cycles(watch, 240)
+        self.write_fields_card('card.md', 'poni', '- live actions：無\n- preflight：無\n')
+        self.run_cycles(watch, 300, 360)
+
+        self.assertEqual([at for at, _, _ in self.field_records()], [0, 120])
+        self.assertEqual(len(self.field_notices()), 2)
+
+        self.write_fields_card('card.md', 'poni')
+        self.run_cycles(watch, 420)
+        self.assertEqual([at for at, _, _ in self.field_records()], [0, 120, 420])
+
+    def test_envelope_reminder_stops_after_the_card_is_merged_or_moved_to_done(self):
+        merged = self.write_fields_card('merged-later.md', 'poni')
+        moved = self.write_fields_card('moved-later.md', 'kemo')
+        watch = load_watch()
+
+        self.run_cycles(watch, 0)
+        merged.write_text(merged.read_text().replace('in progress', 'merged'))
+        moved.rename(self.tasks / 'done' / moved.name)
+        self.run_cycles(watch, 60, 120)
+
+        self.assertEqual([at for at, _, _ in self.field_records()], [0, 0])
+        self.assertEqual(len(self.field_notices()), 2)
+
+    def test_done_merged_and_foreign_cards_are_not_checked_for_envelope_fields(self):
+        self.write_fields_card('done/old.md', 'poni')
+        self.write_fields_card('merged-old.md', 'kemo', status='merged')
+        self.write_fields_card('foreign.md', 'tabi', orchestrator='somebody-else')
+
+        self.run_cycles(load_watch(), 0)
+
+        self.assertEqual(self.field_notices(), [])
+        self.assertEqual(self.field_records(), [])
+
+    def test_failed_envelope_reminder_is_retried_next_cycle(self):
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            'if [ "$1" = send ] && [ -e "$FAKE_HCOM_LOG.fail" ]; then\n'
+            '  echo down >&2; exit 1\n'
+            'fi\n'
+            'printf \'%s\\n\' \'[{"name":"orch","status":"listening"},'
+            '{"name":"poni","status":"listening"},'
+            '{"name":"worker-open","status":"listening"}]\'\n'
+        )
+        self.write_fields_card('card.md', 'poni')
+        failed = Path(str(self.hcom_log) + '.fail')
+        failed.touch()
+        watch = load_watch()
+
+        self.run_cycles(watch, 0)
+        failed.unlink()
+        self.run_cycles(watch, 60, 120)
+
+        records = [record for record in self.watch_records()
+                   if record.get('decision') == 'task-card-fields-missing']
+        self.assertEqual([(record['at'], record['action_results'][0]['status'])
+                          for record in records], [(0, 'failed'), (60, 'done')])
+        self.assertEqual(len(self.field_notices()), 2)
+        self.assertIn('poni', [record['agent'] for record in self.watch_records()
+                               if record.get('at') == 0 and 'agent' in record])
+
+    def test_envelope_reminder_is_not_repeated_after_a_watcher_restart(self):
+        self.write_fields_card('card.md', 'poni')
+
+        self.run_cycles(load_watch(), 0)
+        self.run_cycles(load_watch(), 60)
+
+        self.assertEqual(len(self.field_notices()), 1)
+
+    def test_unrecognized_cards_are_still_skipped_without_an_envelope_reminder(self):
+        (self.tasks / 'no-agent.md').write_text('- orchestrator：orch\n- status：dispatched\n')
+        (self.tasks / 'no-orchestrator.md').write_text('- agent：sora\n- status：dispatched\n')
+        (self.tasks / 'no-status.md').write_text('- agent：sora\n- orchestrator：orch\n')
+
+        self.run_cycles(load_watch(), 0)
+
+        self.assertEqual([record['card'] for record in self.watch_records()
+                          if record.get('decision') == 'task-card-skipped'],
+                         ['no-agent.md', 'no-orchestrator.md', 'no-status.md'])
+        self.assertEqual(self.field_notices(), [])
+        self.assertEqual(self.field_records(), [])
+        self.assertEqual([record['agent'] for record in self.watch_records()
+                          if 'agent' in record], ['orch', 'worker-open'])
 
     def test_agent_name_may_be_followed_by_ascii_or_full_width_parentheses(self):
         self.write_card('a-full.md', 'poni（QA）')
