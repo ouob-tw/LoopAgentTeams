@@ -82,6 +82,8 @@ Orchestrator 處理重複、缺口與衝突；補足既有需求可直接推進�
 
 QA 逐項記錄 `PASS`（證據支持）、`FAIL`（結果不符）、`UNPROVEN`（證據不足）或 `NOT_EXECUTED`（未執行），附證據或原因。
 
+以獨立的 Claude 設定目錄（`CLAUDE_CONFIG_DIR`）啟動測試用 Agent 前，須在該目錄的 `settings.json` 設定 `"promptSuggestionEnabled": false`；否則建議提示的灰字會被當成輸入框有字，停住監控不會催促它。
+
 ## 按需委派
 
 每次委派前呼叫 /hcom-spawn 選定模型、effort 與權限並核對生效，再讀 [Agent 設定](references/agents.md) 的 LAT 補充規則；原生 Subagent、HCOM 與各階段內部再委派都適用。
