@@ -1718,18 +1718,15 @@ if [ "$1" = notification ] && [ -f "$FAKE_HERDR_LOG.fail" ]; then exit 1; fi
         self.assertEqual(self.hcom_log.read_text().splitlines(),
                          ['list --json --name orch'])
 
-    def write_card(self, relative, agent_field, orchestrator='orch', status='in progress'):
+    def write_card(self, relative, agent_field, orchestrator='orch', status='in progress',
+                   fields='- live actions：無\n- preflight：無\n'):
         path = self.tasks / relative
         path.write_text(f'- agent：{agent_field}\n- orchestrator：{orchestrator}\n'
-                        f'- status：{status}\n- live actions：無\n- preflight：無\n')
-        return path
-
-    def write_fields_card(self, relative, agent, fields='', orchestrator='orch',
-                          status='in progress'):
-        path = self.tasks / relative
-        path.write_text(f'- agent：{agent}\n- orchestrator：{orchestrator}\n'
                         f'- status：{status}\n{fields}')
         return path
+
+    def write_fields_card(self, relative, agent, fields='', **card):
+        return self.write_card(relative, agent, fields=fields, **card)
 
     def field_notices(self):
         if not self.hcom_log.exists():
