@@ -15,24 +15,24 @@ def usage(claude_pct, gpt_pct):
     gpt = json.dumps({'accounts': [
         {'current': False, 'quota': {'primary': {'usedPercent': 1, 'windowMinutes': 10080},
                                      'secondary': {'usedPercent': 0, 'windowMinutes': 0}}},
-        {'current': True, 'quota': {'primary': {'usedPercent': gpt_pct, 'windowMinutes': 10080},
-                                    'secondary': {'usedPercent': 0, 'windowMinutes': 0}}},
+        {'current': True, 'quota': {'primary': {'usedPercent': 99, 'windowMinutes': 300},
+                                    'secondary': {'usedPercent': gpt_pct, 'windowMinutes': 10080}}},
     ]})
     return f"echo '{claude}'", f"echo '{gpt}'"
 
 
 def route(config, claude_swap=FAIL, codex_multi_auth=FAIL):
-    """Run the helper with a temp config dir and fake quota commands on PATH."""
+    """Run the helper with a temp home and fake quota commands on PATH."""
     with tempfile.TemporaryDirectory() as tmp:
         tmp = Path(tmp)
         if config is not None:
-            (tmp / 'hcom-spawn').mkdir()
-            (tmp / 'hcom-spawn/config.toml').write_text(config)
+            (tmp / '.config/hcom-spawn').mkdir(parents=True)
+            (tmp / '.config/hcom-spawn/config.toml').write_text(config)
         for name, body in (('claude-swap', claude_swap), ('codex-multi-auth', codex_multi_auth)):
             fake = tmp / name
             fake.write_text(f'#!/bin/sh\n{body}\n')
             fake.chmod(0o755)
-        env = {'XDG_CONFIG_HOME': str(tmp), 'PATH': f"{tmp}:{os.environ['PATH']}"}
+        env = {'HOME': str(tmp), 'PATH': f"{tmp}:{os.environ['PATH']}"}
         return subprocess.run([sys.executable, str(SCRIPT)], env=env,
                               text=True, capture_output=True)
 
@@ -44,10 +44,10 @@ class BackendRouteTests(unittest.TestCase):
         self.assertTrue(result.stdout.startswith(f'{expected}: '), result.stdout)
 
     def test_claude_setting_routes_to_claude_without_querying(self):
-        self.assert_route(route('backend = "claude"\n'), 'claude')
+        self.assert_route(route('backend = "claude"\n', *usage(40, 13)), 'claude')
 
     def test_split_setting_routes_to_gpt_without_querying(self):
-        self.assert_route(route('backend = "split"\n'), 'gpt')
+        self.assert_route(route('backend = "split"\n', *usage(13, 40)), 'gpt')
 
     def test_auto_setting_routes_to_the_side_with_lower_seven_day_usage(self):
         self.assert_route(route('backend = "auto"\n', *usage(13, 40)), 'claude')

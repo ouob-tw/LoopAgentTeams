@@ -1,19 +1,18 @@
 #!/usr/bin/env python3
 """Print which side gets a simple backend task: one line, `claude: <reason>` or `gpt: <reason>`."""
 import json
-import os
 import subprocess
 import sys
 import tomllib
 from pathlib import Path
 
-CONFIG = Path(os.environ.get('XDG_CONFIG_HOME') or Path.home() / '.config') / 'hcom-spawn/config.toml'
+CONFIG = Path.home() / '.config/hcom-spawn/config.toml'
 WEEK_MINUTES = 7 * 24 * 60
 
 
 def query(*command):
-    done = subprocess.run(command, capture_output=True, text=True, check=True, timeout=60)
-    return json.loads(done.stdout)
+    result = subprocess.run(command, capture_output=True, text=True, check=True, timeout=60)
+    return json.loads(result.stdout)
 
 
 def claude_used():

@@ -17,22 +17,24 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 | --- | --- | --- | --- |
 | 前端，複雜以外 | `claude-sonnet-5-5` | `medium` | 換 `claude-opus-5-5` `medium` → `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
 | 前端，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
-| 後端，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
-| 後端，複雜以外 | 分配結果 `claude`：`claude-sonnet-5-5`<br>分配結果 `gpt`：`gpt-6.1-sol` | `medium` | Sonnet：同「前端，複雜以外」<br>GPT：`high` → 換 `gpt-6-astra` `medium` |
+| 後端實作，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
+| 後端實作，複雜以外 | 分配結果 `claude`：`claude-sonnet-5-5`<br>分配結果 `gpt`：`gpt-6.1-sol` | `medium` | Sonnet：同「前端，複雜以外」<br>GPT：`high` → 換 `gpt-6-astra` `medium` |
 | 其他或混合 | 依任務內容選上面一列 | | |
 | 使用者或呼叫的技能指定的模型 | 照指定 | 照指定，沒說就 `medium` | 不換模型，沿 `low` → `medium` → `high` → `xhigh` 一次升一級 |
 
 **複雜任務**：跨檔案實作、除錯、設計、審查、需自行權衡方案。其餘都不算複雜。
 
-**後端分配**：派「後端，複雜以外」的任務前，先跑小工具取得分配結果，只讀它印出的那一行，不自己查兩家額度：
+後端的審查與 QA 仍給 `gpt-6.1-sol` `medium`，升級照表中 GPT 那一段。
+
+**後端分配**：派「後端實作，複雜以外」的任務前，先跑小工具取得分配結果，只讀它印出的那一行，不自己查兩家額度：
 
 ```bash
 uv run --no-project python <skill_dir>/scripts/backend-route.py
 ```
 
-`<skill_dir>` 是本技能安裝目錄的絕對路徑。輸出是 `claude: <原因>` 或 `gpt: <原因>`。分配方式寫在 `~/.config/hcom-spawn/config.toml` 的 `backend`，沒有專案層級的覆蓋：
+`<skill_dir>` 是本技能安裝目錄的絕對路徑。輸出是 `claude: <原因>` 或 `gpt: <原因>`。分配方式寫在 `~/.config/hcom-spawn/config.toml` 的 `backend`：
 
-| `backend` | 簡單後端給誰 |
+| `backend` | 複雜以外的後端實作給誰 |
 | --- | --- |
 | `claude` | Claude |
 | `split` | GPT |
