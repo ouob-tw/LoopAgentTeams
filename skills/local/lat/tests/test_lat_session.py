@@ -1733,6 +1733,25 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(groups[0]['hooks'], [{'type': 'command', 'command':
                          f'uv run --no-project python {SCRIPT} hook'}])
 
+    def test_stop_ticket_confirmation_without_consensus_for_both_clients(self):
+        for client in ('codex', 'claude'):
+            self.write_legacy_record(client=client)
+            questions = self.bind_stop_panel(client)
+            questions.write_text('## 確認短流程\nLAT-A · r1 · 待答\n')
+            binding_path = self.root / 'plugin-config/bindings.json'
+            original = binding_path.read_text()
+            for bound in (False, True):
+                with self.subTest(client=client, bound=bound):
+                    binding_path.write_text(original if bound else '{"version": 2, "bindings": {}}')
+                    path = self.decisions / 'LAT-A.md'
+                    path.write_text('- status: pending\n- advisor: exempt ticket-confirmation\n')
+                    self.assert_silent(self.stop_hook(client=client))
+                    path.write_text('- status: pending\n- advisor: exempt ticket-confirmatio\n')
+                    self.assert_stop_block(self.stop_hook(client=client), '不在清單內')
+                    path.write_text('- status: pending\n- advisor: exempt ticket-confirmation\n')
+                    self.assert_silent(self.stop_hook(client=client, stop_hook_active=True))
+            binding_path.write_text(original)
+
 
 if __name__ == '__main__':
     unittest.main()

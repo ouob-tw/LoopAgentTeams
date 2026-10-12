@@ -36,7 +36,8 @@ def read_advisor_error(path):
             return '參謀行沒有結論'
         if words[0] == 'needs-human':
             return None
-        allowed = {'exempt': ('spec-confirmation', 'requirement-discussion', 'account-quota'),
+        allowed = {'exempt': ('spec-confirmation', 'ticket-confirmation',
+                               'requirement-discussion', 'account-quota'),
                    'late': ('needs-human', 'resolved', 'self-check')}
         if words[0] not in allowed:
             return f'未知參謀結論：{words[0]}'

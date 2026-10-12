@@ -10,7 +10,8 @@
   | 類別 | 適用 |
   |---|---|
   | `spec-confirmation` | Spec 確認題，含確認後實質改版的再確認；須依 [Spec 共識](consensus.md) 跑工具並寫明版本。 |
-  | `requirement-discussion` | Spec 確認前的需求討論題。 |
+  | `ticket-confirmation` | 短流程確認題，確認改走短流程與 issue 的驗收條件；不要求 Spec 共識行。 |
+  | `requirement-discussion` | Spec 或短流程確認前的需求討論題。 |
   | `account-quota` | 沒有可用訂閱帳號、Claude 額度用完等規則明定由使用者決定的事。參謀本身缺一家時依「模型與降級」自動處理，不屬此例外。 |
 
 - 參謀只處理原本要問使用者的事。執行 Agent 卡住回報給主控、主控在授權內本可自行裁決的事，仍由主控處理，不諮詢。

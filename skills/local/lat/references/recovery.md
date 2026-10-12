@@ -55,7 +55,7 @@ Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 都只檢�
 
 沒寫題號、任一題號沒有同名待決紀錄或狀態不是 pending、任何決策紀錄讀不出狀態，都會不通過。狀態使用遺漏檢查的共用讀法；缺狀態行、空值、純空白、第一字不是 pending 但後面含 pending，都算讀不出狀態。已有自己的 session 面板綁定時，另逐題核對自己的問題檔中有同版本「待答」題目，並要求遺漏檢查通過；未綁定時不要求面板。
 
-每個寫出的題號還須有參謀行，取第一行以 `- advisor:` 開頭的行，鍵名不分大小寫，值去除前後空白並以空白分詞。第一字接受 `needs-human`；`exempt` 的第二字限 `spec-confirmation`、`requirement-discussion`、`account-quota`；`late` 的第二字限 `needs-human`、`resolved`、`self-check`。後續字詞可加註記（如 `same-family-degraded`）。缺行、空值、未知第一字或缺少／未知第二字，都逐題列出原因。未被 DECIDE 引用的 `advising`／`advisor-resolved` 紀錄不算面板漏題；被引用仍須符合 pending 與面板版本檢查。
+每個寫出的題號還須有參謀行，取第一行以 `- advisor:` 開頭的行，鍵名不分大小寫，值去除前後空白並以空白分詞。第一字接受 `needs-human`；`exempt` 的第二字限 `spec-confirmation`、`ticket-confirmation`、`requirement-discussion`、`account-quota`；`late` 的第二字限 `needs-human`、`resolved`、`self-check`。後續字詞可加註記（如 `same-family-degraded`）。缺行、空值、未知第一字或缺少／未知第二字，都逐題列出原因。未被 DECIDE 引用的 `advising`／`advisor-resolved` 紀錄不算面板漏題；被引用仍須符合 pending 與面板版本檢查。
 
 參謀行為 `exempt spec-confirmation` 時，另要求唯一一行格式正確的 `- consensus: v<N> <64 位小寫十六進位 sha256>`，且最後一則訊息出現相同版本的 `共識 v<N>`；缺共識行、格式錯、訊息沒寫版本、版本不同或出現多個不同版本，皆逐題列出原因。其他類別不要求共識。舊紀錄重新提問也適用；[Spec 共識](consensus.md) 說明適用範圍。
 
