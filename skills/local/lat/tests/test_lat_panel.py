@@ -35,7 +35,7 @@ def question_upsert_worker(path, section_text, ready, start, results):
     panel = load_module()
     ready.set()
     start.wait()
-    results.put(("agent", panel.upsert_question(Path(path), "Q1", section_text)))
+    results.put(("agent", panel.upsert_question(Path(path), "Q1", section_text, decisions_path=Path(path).parent)))
 
 
 class LockedReplaceTests(unittest.TestCase):
@@ -162,6 +162,8 @@ class QuestionCliTests(unittest.TestCase):
         self.questions.parent.mkdir()
 
     def cli(self, *args):
+        if args[:2] == ("question", "upsert"):
+            args = (*args, "--decisions", self.questions.parent)
         return subprocess.run(
             [sys.executable, str(MODULE), *map(str, args)],
             text=True,
@@ -803,6 +805,26 @@ class PendingCheckCliTests(unittest.TestCase):
         (self.decisions / f'{identifier}.md').write_text(
             f'# {identifier}\n\n- status: {status}\n'
         )
+
+    def test_reverse_check_reports_only_own_stale_and_missing_decisions(self):
+        self.questions.parent.mkdir()
+        self.questions.write_text(
+            '## Old?\nOLD · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n\n'
+            '## Missing?\nMISSING · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n\n'
+            '## Sent?\nSENT · r1 · 待答\n\n答覆：A\n\n- [x] 送出\n'
+        )
+        self.questions.with_name('questions-other.md').write_text(
+            '## Other?\nOTHER · r1 · 待答\n')
+        self.decision('OLD', 'answered')
+        self.decision('SENT', 'resolved')
+        result = self.check()
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('OLD：題目待答但決策已非 pending', result.stdout)
+        self.assertIn('question cleanup --questions', result.stdout)
+        self.assertIn('MISSING：題目待答但找不到決策紀錄；補決策紀錄', result.stdout)
+        self.assertIn('SENT：題目待答但決策已非 pending；處理使用者已送出的答覆', result.stdout)
+        self.assertNotIn('OTHER', result.stdout)
+        self.assertNotIn('沒有遺漏', result.stdout)
 
     def test_check_reports_pending_decision_missing_from_questions(self):
         self.decision('MISSING-1', 'pending')

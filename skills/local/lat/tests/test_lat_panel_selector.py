@@ -804,7 +804,7 @@ class SubmitTests(SelectorTestCase):
         app = self.make_app(POLL_INTERVAL=60)
         async with app.run_test() as pilot:
             await self.press(pilot, "1", "right", "1")
-            self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n")
+            self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n", decisions_path=self.questions.parent)
             await self.press(pilot, "right", "right", "enter")
             await self.settle(app, pilot)
             self.assertNotIn("[x] 送出", self.text().replace(RECORDED, ""))
@@ -818,8 +818,8 @@ class LiveUpdateTests(SelectorTestCase):
         async with app.run_test() as pilot:
             await self.press(pilot, "2")
             draft = section(self.text(), "Q1")
-            self.core.upsert_question(self.questions, "Q4", "## 新題目\n\nA. Yes\nB. No\n")
-            self.core.upsert_question(self.questions, "Q3", "## 還有什麼想法？\n\n改過的說明。\n")
+            self.core.upsert_question(self.questions, "Q4", "## 新題目\n\nA. Yes\nB. No\n", decisions_path=self.questions.parent)
+            self.core.upsert_question(self.questions, "Q3", "## 還有什麼想法？\n\n改過的說明。\n", decisions_path=self.questions.parent)
             await pilot.pause(0.3)
             self.assertEqual(app.tab_ids, ["Q1", "Q2", "Q3", "Q4"])
             self.assertIn("☐ 新題目", self.tabs(app))
@@ -837,7 +837,7 @@ class LiveUpdateTests(SelectorTestCase):
         async with app.run_test() as pilot:
             await self.press(pilot, "4", *"舊答案", "escape")
             self.core.upsert_question(
-                self.questions, "Q1", "## 正式版要怎麼併入？\n\nA. 只合併\nB. 不合併\n",
+                self.questions, "Q1", "## 正式版要怎麼併入？\n\nA. 只合併\nB. 不合併\n", decisions_path=self.questions.parent
             )
             await pilot.pause(0.3)
             self.assertIn("題目已更新：Q1 r2，這題的選擇已重設", self.status(app))
@@ -855,7 +855,7 @@ class LiveUpdateTests(SelectorTestCase):
         app = self.make_app(POLL_INTERVAL=0.05)
         async with app.run_test() as pilot:
             await self.press(pilot, "4", *"abc")
-            self.core.upsert_question(self.questions, "Q1", "## 正式版要怎麼併入？\n\nA. 只合併\n")
+            self.core.upsert_question(self.questions, "Q1", "## 正式版要怎麼併入？\n\nA. 只合併\n", decisions_path=self.questions.parent)
             await pilot.pause(0.3)
             self.assertIsNone(app.focused)
             self.assertFalse(app.input.display)
@@ -997,7 +997,7 @@ class ReviewFixTests(SelectorTestCase):
         app = self.make_app()
         async with app.run_test() as pilot:
             await self.press(pilot, "right", "1", "left")
-            self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n")
+            self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n", decisions_path=self.questions.parent)
             await pilot.pause(0.3)
             notice = "題目已更新：Q2 r2，這題的選擇已重設"
             self.assertIn(notice, self.status(app))
@@ -1319,7 +1319,7 @@ class SmallTerminalTests(SelectorTestCase):
             await self.press(pilot, "pagedown")
             before = self.screen(app).split("\n", 1)[1]
             self.assertNotIn("▌", before)
-            self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n")
+            self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n", decisions_path=self.questions.parent)
             await pilot.pause(0.4)
             self.assertEqual(self.screen(app).split("\n", 1)[1], before)
             await self.press(pilot, "down")
@@ -1378,7 +1378,7 @@ class SmallTerminalTests(SelectorTestCase):
                 body.post_message(events.MouseScrollDown(body, 5, 5, 0, 0, 0, False, False, False))
             await pilot.pause(0.3)
             self.assertNotIn("▌", self.screen(app))
-            self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n")
+            self.core.upsert_question(self.questions, "Q2", "## 要開哪些功能？\n\n- [ ] 只剩一個\n", decisions_path=self.questions.parent)
             await pilot.pause(0.4)
             self.assertNotIn("▌", self.screen(app))
 
@@ -1397,7 +1397,7 @@ class SmallTerminalTests(SelectorTestCase):
             await pilot.pause(0.3)
             await self.press(pilot, "pagedown")
             self.assertNotIn("▌", self.screen(app))
-            self.core.upsert_question(self.questions, "Q1", CHECK.split("\n", 2)[0] + "\n\nA. 新選項\n")
+            self.core.upsert_question(self.questions, "Q1", CHECK.split("\n", 2)[0] + "\n\nA. 新選項\n", decisions_path=self.questions.parent)
             await pilot.pause(0.4)
             self.assertIn("▌V2 選擇框用起來符合你要的樣子嗎？", self.screen(app))
             self.assertIn("A. 新選項", self.screen(app))

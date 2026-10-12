@@ -37,12 +37,13 @@ Public API used by the Textual panel and LAT controller:
 
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
-  question upsert --questions PATH --id ID --file section.md
+  question upsert --questions PATH --decisions DIR --id ID --file section.md
   question section-hash --questions PATH --id ID
   question provenance --questions SNAPSHOT --source-questions PATH --id ID \
       --journal panel-journal.jsonl
   question set-status --questions PATH --id ID --revision N --status recorded \
       --expected-section-sha256 HASH
+  question cleanup --questions PATH --decisions DIR
   question archive-recorded --questions PATH --older-than 300
   question check-pending --questions PATH --decisions DIR
   bind --hcom-name NAME --client CLIENT --session-id ID --workspace ROOT \
@@ -760,19 +761,28 @@ def _render_section(question_id, revision, title, body, answer_block=None, archi
     return "\n".join(lines) + "\n"
 
 
-def upsert_question(questions_path, question_id, section_text):
+def upsert_question(questions_path, question_id, section_text, *, decisions_path):
     """Add or update one question under the shared lock; return its revision."""
     questions_path = Path(questions_path)
     incoming = _question_input(section_text)
+    if not Path(decisions_path).is_dir():
+        raise ValueError(f"decisions directory does not exist: {decisions_path}")
     with _path_lock(questions_path):
         try:
-            document = questions_path.read_text(encoding="utf-8")
+            document = _read_text_exact(questions_path)
         except FileNotFoundError:
             document = ""
         matching = [item for item in _sections(document) if item["id"] == question_id]
         if len(matching) > 1:
             raise ValueError(f"duplicate question ID: {question_id}")
         existing = matching[0] if matching else None
+        if existing is not None and existing["body"] is None:
+            raise ValueError("existing section is missing answer or submit marker")
+        document, _ = _cleanup_locked(
+            questions_path, decisions_path, document, exclude_id=question_id
+        )
+        existing = next((item for item in _sections(document)
+                         if item["id"] == question_id), None)
         if existing is None:
             revision = 1
             replacement = _render_section(
@@ -781,8 +791,6 @@ def upsert_question(questions_path, question_id, section_text):
             separator = "" if not document or document.endswith("\n\n") else "\n"
             updated = document + separator + replacement
         else:
-            if existing["body"] is None:
-                raise ValueError("existing section is missing answer or submit marker")
             content_changed = (
                 existing["title"] != incoming["title"]
                 or existing["body"] != incoming["body"]
@@ -887,8 +895,80 @@ def _archive_path(questions_path):
     return questions_path.with_name(f"{questions_path.stem}-archive{questions_path.suffix}")
 
 
+def cleanup_questions(questions_path, decisions_path, *, expected_text=None):
+    """Archive eligible sections in one file; refuse a changed snapshot."""
+    questions_path = Path(questions_path)
+    if not Path(decisions_path).is_dir():
+        raise ValueError(f"decisions directory does not exist: {decisions_path}")
+    if expected_text is None:
+        expected_text = _read_text_exact(questions_path)
+    with _path_lock(questions_path):
+        document = _read_text_exact(questions_path)
+        if document != expected_text:
+            raise ValueError("questions changed while cleaning; retry")
+        _, result = _cleanup_locked(questions_path, decisions_path, document)
+        return result
+
+
+def _decision_state(decision_path):
+    try:
+        status = read_decision_status(decision_path)
+    except FileNotFoundError:
+        return "missing-decision"
+    except (OSError, UnicodeError):
+        return "unreadable-decision"
+    if status.error:
+        return "unreadable-decision"
+    return "pending" if status.status == "pending" else "decision-not-pending"
+
+
+def _cleanup_locked(questions_path, decisions_path, document, *, exclude_id=None):
+    """Clean a snapshot while the caller holds the questions-file lock."""
+    journal_path = questions_path.parent / "panel-journal.jsonl"
+    recorded_hashes = _recorded_hashes(journal_path, questions_path)
+    eligible = []
+    result = {"archived": [], "kept": []}
+    for section in _sections(document):
+        identifier = section["id"]
+        if identifier == exclude_id:
+            reason = "same-id"
+        elif section["status"] == "recorded":
+            reason = ("recorded" if section["recorded_at"] and
+                      recorded_hashes.get(identifier) == _full_section_sha256(section)
+                      else "unverified-recorded")
+        elif section["checked"] or section["malformed_submission"]:
+            reason = "submitted-not-recorded"
+        else:
+            reason = _decision_state(Path(decisions_path) / f"{identifier}.md")
+        if reason in ("recorded", "decision-not-pending"):
+            eligible.append(section)
+            result["archived"].append({"id": identifier, "reason": reason})
+        else:
+            result["kept"].append({"id": identifier, "reason": reason})
+    kept = []
+    cursor = 0
+    for section in eligible:
+        kept.append(document[cursor:section["start"]])
+        cursor = section["end"]
+    kept.append(document[cursor:])
+    updated = "".join(kept)
+    current = _read_text_exact(questions_path) if questions_path.exists() else ""
+    if current != document:
+        raise ValueError("questions changed while cleaning; retry")
+    archive_path = _archive_path(questions_path)
+    if eligible:
+        _append_archive(archive_path, [section["raw"] for section in eligible])
+        _replace_locked(questions_path, updated)
+    _append_journal(
+        journal_path, document, updated, kind="cleanup",
+        details={"questions_path": _question_key(questions_path),
+                 "archive_path": str(archive_path), **result},
+    )
+    return updated, result
+
+
 def pending_question_gaps(questions_path, decisions_path):
-    """Return panel entries for pending decisions across controller files."""
+    """Check pending decisions across controllers and stale questions in this file."""
     questions_path = Path(questions_path)
     decisions_path = Path(decisions_path)
     if not decisions_path.is_dir():
@@ -896,7 +976,11 @@ def pending_question_gaps(questions_path, decisions_path):
     pending_ids = []
     unreadable = []
     for decision in sorted(decisions_path.glob("*.md")):
-        status = read_decision_status(decision)
+        try:
+            status = read_decision_status(decision)
+        except (OSError, UnicodeError) as error:
+            unreadable.append((decision, str(error)))
+            continue
         if status.error:
             unreadable.append((decision, status.error))
         elif status.status == "pending":
@@ -938,7 +1022,24 @@ def pending_question_gaps(questions_path, decisions_path):
             inconsistent.append((identifier, "問題已歸檔", archived[identifier][0][0]))
         else:
             missing.append(identifier)
-    return present, missing, inconsistent, unreadable
+    reverse = []
+    if questions_path.exists():
+        for question in parse_questions(_read_text_exact(questions_path)):
+            if question["status_label"] != "待答":
+                continue
+            state = _decision_state(decisions_path / f"{question['id']}.md")
+            if state == "missing-decision":
+                reason = "題目待答但找不到決策紀錄；補決策紀錄"
+            elif state == "decision-not-pending":
+                reason = "題目待答但決策已非 pending"
+            else:
+                continue
+            if question["checked"] or question["malformed_submission"]:
+                reason += "；處理使用者已送出的答覆，再標為已記錄"
+            elif state == "decision-not-pending":
+                reason += "；執行 question cleanup --questions <此問題檔> --decisions <決策目錄>"
+            reverse.append((question["id"], reason, questions_path))
+    return present, missing, inconsistent, unreadable, reverse
 
 
 def _append_archive(path, sections):
@@ -1359,6 +1460,7 @@ def _build_parser():
     question_commands = question.add_subparsers(dest="question_command", required=True)
     upsert = question_commands.add_parser("upsert")
     upsert.add_argument("--questions", type=Path, default=Path(".lat/questions.md"))
+    upsert.add_argument("--decisions", required=True, type=Path)
     upsert.add_argument("--id", required=True)
     upsert.add_argument("--file", required=True, type=Path)
     provenance = question_commands.add_parser("provenance")
@@ -1382,6 +1484,9 @@ def _build_parser():
         "--questions", type=Path, default=Path(".lat/questions.md")
     )
     archive_recorded.add_argument("--older-than", type=float, default=300)
+    cleanup = question_commands.add_parser("cleanup")
+    cleanup.add_argument("--questions", required=True, type=Path)
+    cleanup.add_argument("--decisions", required=True, type=Path)
     check_pending = question_commands.add_parser("check-pending")
     check_pending.add_argument("--questions", required=True, type=Path)
     check_pending.add_argument("--decisions", required=True, type=Path)
@@ -1406,7 +1511,8 @@ def main(argv=None):
     try:
         if args.command == "question" and args.question_command == "upsert":
             revision = upsert_question(
-                args.questions, args.id, args.file.read_text(encoding="utf-8")
+                args.questions, args.id, args.file.read_text(encoding="utf-8"),
+                decisions_path=args.decisions
             )
             print(f"{args.id} r{revision}")
             return 0
@@ -1445,11 +1551,14 @@ def main(argv=None):
                 raise ValueError("questions changed while archiving; retry")
             print(json.dumps({"archived": archived}, ensure_ascii=False))
             return 0
+        if args.command == "question" and args.question_command == "cleanup":
+            print(json.dumps(cleanup_questions(args.questions, args.decisions), ensure_ascii=False))
+            return 0
         if args.command == "question" and args.question_command == "check-pending":
             if not panel_enabled():
                 print("面板未啟用，略過檢查")
                 return 0
-            present, missing, inconsistent, unreadable = pending_question_gaps(
+            present, missing, inconsistent, unreadable, reverse = pending_question_gaps(
                 args.questions, args.decisions
             )
             if present:
@@ -1468,7 +1577,11 @@ def main(argv=None):
                 print("讀不出狀態：")
                 for path, reason in unreadable:
                     print(f"- {path}：{reason}")
-            if missing or inconsistent or unreadable:
+            if reverse:
+                print("待答題目需處理：")
+                for identifier, reason, path in reverse:
+                    print(f"- {identifier}：{reason}：{path}")
+            if missing or inconsistent or unreadable or reverse:
                 return 1
             print("沒有遺漏")
             return 0
