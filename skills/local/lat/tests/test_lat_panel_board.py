@@ -386,11 +386,37 @@ class AskedAtTests(BoardTestCase):
         )
         proof = self.provenance()
         self.assertEqual(proof.returncode, 1)
-        self.assertEqual(proof.stdout, "")
+        self.assertEqual(proof.stderr, "lat-panel: no panel journal entry touched question: Q1\n")
+
+    def test_upsert_that_carries_its_own_checked_answer_is_not_a_panel_answer(self):
+        self.upsert("A. 看板\n\n答覆：A. 看板\n\n- [x] 送出")
+        self.assertEqual(self.listed()["status"], "submitted")
+        proof = self.provenance()
+        self.assertEqual(proof.returncode, 1)
+        self.assertEqual(proof.stderr, "lat-panel: no panel journal entry touched question: Q1\n")
+
+    def test_snapshot_of_an_answered_revision_still_proves_itself_after_a_bump(self):
+        self.upsert("A. 看板\nB. 儀表板")
+        self.answer(self.questions, "Q1", 1, "--select", "1")
+        snapshot = self.root / "snapshot.md"
+        snapshot.write_text(self.questions.read_text())
+        self.upsert("A. 看板\nB. 儀表板\nC. 面板")
+        proof = self.run_cli(
+            "question", "provenance", "--questions", snapshot,
+            "--source-questions", self.questions, "--journal", self.journal_path, "--id", "Q1",
+        )
+        self.assertEqual(proof.returncode, 0, proof.stderr)
+        self.assertEqual(json.loads(proof.stdout)["status"], "ok")
 
     def test_missing_or_unreadable_journal_gives_no_time_and_no_error(self):
         self.upsert("A. 看板\nB. 儀表板")
-        self.journal_path.write_text("not json\n[]\n" + self.journal_path.read_text())
+        damaged = json.dumps({
+            "kind": "upsert", "questions_path": str(self.questions),
+            "upsert_question": ["Q1"], "revision": {}, "time": "never",
+        })
+        self.journal_path.write_text(
+            f"not json\n[]\n{damaged}\n" + self.journal_path.read_text()
+        )
         self.assertIsNotNone(self.listed()["asked_at"])
         self.journal_path.write_bytes(b"\xff\xfe")
         self.assertIsNone(self.listed()["asked_at"])

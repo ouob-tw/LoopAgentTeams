@@ -147,7 +147,9 @@ def _iso_time(now=None):
     return value.isoformat(timespec="seconds")
 
 
-def _append_journal(journal_path, before, after, *, kind=None, details=None, now=None):
+def _append_journal(
+    journal_path, before, after, *, kind=None, details=None, now=None, panel_write=True,
+):
     journal_path = Path(journal_path)
     journal_path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
@@ -157,7 +159,8 @@ def _append_journal(journal_path, before, after, *, kind=None, details=None, now
         ),
         "before_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
         "after_sha256": hashlib.sha256(after.encode("utf-8")).hexdigest(),
-        "changed_questions": _question_changes(before, after),
+        # Provenance reads these hashes as proof of a panel write; an upsert must not supply one.
+        "changed_questions": _question_changes(before, after) if panel_write else [],
     }
     if kind is not None:
         entry["kind"] = kind
@@ -842,17 +845,22 @@ def upsert_question(questions_path, question_id, section_text, *, decisions_path
             else:
                 return revision
         _replace_locked(questions_path, updated)
-        _append_journal(
-            questions_path.parent / "panel-journal.jsonl",
-            document,
-            updated,
-            kind="upsert",
-            details={
-                "questions_path": _question_key(questions_path),
-                "upsert_question": question_id,
-                "revision": revision,
-            },
-        )
+        try:
+            _append_journal(
+                questions_path.parent / "panel-journal.jsonl",
+                document,
+                updated,
+                kind="upsert",
+                details={
+                    "questions_path": _question_key(questions_path),
+                    "upsert_question": question_id,
+                    "revision": revision,
+                },
+                panel_write=False,
+            )
+        except OSError:
+            # The question is written; only the board's asked time is lost.
+            pass
         return revision
 
 
@@ -1512,9 +1520,11 @@ def _asked_times(questions_path):
         if (
             isinstance(entry, dict)
             and entry.get("kind") == "upsert"
+            and isinstance(entry.get("upsert_question"), str)
+            and isinstance(entry.get("revision"), int)
             and _journal_entry_matches_questions(entry, questions_path)
         ):
-            times[entry.get("upsert_question"), entry.get("revision")] = entry.get("time")
+            times[entry["upsert_question"], entry["revision"]] = entry.get("time")
     return times
 
 
