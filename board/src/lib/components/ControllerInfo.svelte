@@ -122,6 +122,9 @@
 		font-size: 1.1rem;
 	}
 	.handle {
+		/* The full name, however long: it wraps instead of being cut. */
+		min-width: 0;
+		overflow-wrap: anywhere;
 		font-family: var(--mono);
 		font-size: 0.8rem;
 		color: var(--muted);

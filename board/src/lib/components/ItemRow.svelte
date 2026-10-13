@@ -124,4 +124,24 @@
 		margin-left: auto;
 		white-space: nowrap;
 	}
+
+	/* Light theme: what still wants attention has a frame, the open row a heavy one; an unread
+	   report's label is outlined and a question's is filled, so they differ without colour. */
+	:global(:root[data-theme='light']) .row.fresh {
+		border-color: var(--line);
+	}
+	:global(:root[data-theme='light']) .row.current {
+		border-color: var(--text);
+		outline: 2px solid var(--text);
+		outline-offset: -3px;
+	}
+	:global(:root[data-theme='light']) .fresh .kind[data-kind='report'] {
+		background: var(--bg);
+		border-color: var(--text);
+		color: var(--text);
+		font-weight: 600;
+	}
+	:global(:root[data-theme='light']) button.owner {
+		text-decoration: underline;
+	}
 </style>

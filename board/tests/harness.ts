@@ -96,6 +96,8 @@ export interface Fixture {
 	refresh(cookie: string): Promise<BoardSnapshot>;
 	/** Set the board's clock; the board notices at its next read. */
 	setClock(time: number): void;
+	/** Write the user stylesheet in the board's config directory; null removes it. */
+	userStyle(css: string | null): void;
 	markRead(cookie: string, key: string): Promise<Response>;
 	archive(cookie: string): Promise<InboxReport[]>;
 	watch(cookie: string): Watch;
@@ -139,6 +141,7 @@ export async function startFixture(
 		LAT_BOARD_STATE_DIR: join(dir, 'board-state'),
 		LAT_REPORTS_DIR: reportsDir,
 		LAT_BOARD_CLOCK_FILE: join(dir, 'clock'),
+		LAT_BOARD_CONFIG_DIR: join(dir, 'board-config'),
 		LAT_BOARD_HELPER_COMMAND: JSON.stringify(['node', join(ROOT, 'tests/fake-helper.mjs'), dir]),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,
 		HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state'),
@@ -224,6 +227,12 @@ export async function startFixture(
 		board: async (cookie) => (await fixture.fetch('/api/board', { cookie })).json(),
 		refresh: async (cookie) => (await fixture.fetch('/api/refresh', { method: 'POST', headers: { 'content-type': 'application/json' }, cookie })).json(),
 		setClock: (time) => writeFileSync(join(dir, 'clock'), new Date(time).toISOString()),
+		userStyle(css) {
+			const file = join(dir, 'board-config/user.css');
+			if (css === null) return rmSync(file, { force: true });
+			mkdirSync(join(dir, 'board-config'), { recursive: true });
+			writeFileSync(file, css);
+		},
 		markRead: (cookie, key) =>
 			fixture.fetch('/api/inbox/read', {
 				method: 'POST',

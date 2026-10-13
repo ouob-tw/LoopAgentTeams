@@ -1,19 +1,30 @@
 <script lang="ts">
-	// One shape per status, so the four can be told apart without colour:
-	// ▲ 等你, ● 進行中, ■ 已交付, □ 已結束.
+	// One shape per status, in both themes, so the four can be told apart without colour:
+	// ▲ 等你, ● 進行中, ■ 已交付, □ 已結束. `--mark-size` sets the size.
 	import { STATUS_LABEL, type ControllerStatus } from '#lib/board/types.ts';
 
-	let { status }: { status: ControllerStatus } = $props();
+	let {
+		status,
+		decorative = false
+	}: {
+		status: ControllerStatus;
+		/** The surrounding control already says the status: no label and no tooltip of its own. */
+		decorative?: boolean;
+	} = $props();
 </script>
 
-<i class="mark" data-status={status} role="img" aria-label={STATUS_LABEL[status]} title={STATUS_LABEL[status]}></i>
+{#if decorative}
+	<i class="mark" data-status={status} aria-hidden="true"></i>
+{:else}
+	<i class="mark" data-status={status} role="img" aria-label={STATUS_LABEL[status]} title={STATUS_LABEL[status]}></i>
+{/if}
 
 <style>
 	.mark {
 		display: inline-block;
 		flex: none;
-		width: 0.7rem;
-		height: 0.7rem;
+		width: var(--mark-size, 0.7rem);
+		height: var(--mark-size, 0.7rem);
 		background: var(--status-working);
 		border-radius: 50%;
 	}

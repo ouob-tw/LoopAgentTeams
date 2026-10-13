@@ -43,10 +43,11 @@ bun run board revoke <ID>     # 撤銷一台裝置，它會回到配對畫面
 | `LAT_BOARD_FALLBACK_SECONDS` | 漏掉檔案變動時，最慢幾秒內補上（從變動到畫面更新）；5 到 60 | `60` |
 | `LAT_BOARD_HELPER_TIMEOUT_SECONDS` | 輔助工具多久沒回應就放棄；最多是上一項的一半 | `15` |
 | `LAT_BOARD_PAIRING_TTL_SECONDS` | 配對碼有效時間 | `300` |
+| `LAT_BOARD_CONFIG_DIR` | 看板的設定目錄，放使用者樣式檔 `user.css` | `$XDG_CONFIG_HOME/lat/board` |
 | `LAT_BOARD_INJECT_COMMAND` | 傳話用的輸入指令（JSON 字串陣列），看板會在後面加上 `<HCOM 名稱> <文字> --enter` | `["hcom","term","inject"]` |
 | `LAT_BOARD_INJECT_TIMEOUT_SECONDS` | 輸入指令多久沒結束就放棄 | `15` |
 
-`XDG_STATE_HOME` 未設定時是 `~/.local/state`。
+`XDG_STATE_HOME` 未設定時是 `~/.local/state`，`XDG_CONFIG_HOME` 未設定時是 `~/.config`。
 
 ## 信箱
 
@@ -80,6 +81,39 @@ bun run board revoke <ID>     # 撤銷一台裝置，它會回到配對畫面
 - 每次傳話不論成敗都記在狀態目錄的 `sent-log.jsonl`，在該主控的資訊頁可以看到，所有已配對裝置看到的相同。
 - 多行文字以一則訊息送出：行與行之間送的是換行字元（LF），最後才送出 Enter（CR）。文字裡的 CR 會先換成 LF，否則會提早送出。
 - 畫面寬度 760px 以下，或只有觸控、沒有滑鼠或觸控板的裝置：Enter 換行，按按鈕送出。其他情況 Enter 送出、Shift+Enter 換行。輸入法選字時的 Enter 不會送出。
+
+## 版面與外觀
+
+- 電腦版面（寬度超過 760px）：名冊頂端的「«」把名冊收成窄直條，直條上每個主控一個狀態標記與待決題數。點標記開啟該主控且維持收起，點直條其他位置展開；滑鼠停留或觸控長按標記會顯示專案、主控名稱、狀態與目前階段。
+- 名冊與信箱的右邊界可以拖曳調整寬度，連按兩下還原。名冊 170 到 440px、信箱 260 到 720px；視窗較窄時另外不超過視窗寬度的 30% 與 42%。
+- 「設定」（電腦在名冊頂端，手機在頂端列）可以切換深色與淺色主題，並調整整體大小（80% 到 150%，文字與間距一起縮放，可還原預設）。淺色主題是白底黑字、不用半透明，狀態靠形狀分辨：▲ 等你、● 進行中、■ 已交付、□ 已結束。
+- 排序方式、名冊收合、兩欄寬度、主題與整體大小記在各自裝置的瀏覽器裡；瀏覽器不允許儲存時一切照常運作，只是不記憶。
+
+### 自訂樣式
+
+把自己的樣式寫在設定目錄的 `user.css`（預設 `~/.config/lat/board/user.css`）。它在內建樣式之後載入，所有已配對裝置重新載入頁面就會套用；刪掉檔案就恢復預設，不需要重啟看板。
+
+顏色、圓角與字型都是 CSS 變數，寫在 `:root` 就能覆蓋，深色與淺色主題都會生效：
+
+```css
+:root {
+	--accent: #ff8a3d;
+	--radius: 2px;
+	--sans: 'Noto Sans TC', sans-serif;
+}
+```
+
+| 變數 | 用途 |
+| --- | --- |
+| `--bg`、`--surface`、`--line` | 底色、卡片底色、邊框 |
+| `--text`、`--muted` | 文字、次要文字 |
+| `--accent`、`--warn`、`--ok`、`--danger` | 強調、待決與求助、交付、錯誤 |
+| `--status-waiting`、`--status-working`、`--status-delivered`、`--status-ended` | 四種狀態標記的顏色 |
+| `--selected-bg`、`--selected-text` | 選中的控制項 |
+| `--radius`、`--radius-pill` | 圓角 |
+| `--sans`、`--mono` | 字型 |
+
+只想改其中一個主題時，用 `:root[data-theme='light']` 或 `:root[data-theme='dark']`。內建淺色主題的顏色在白底上的對比都不低於 7:1；自己覆蓋的顏色不會被檢查。
 
 ## 開發與測試
 
