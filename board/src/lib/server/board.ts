@@ -6,7 +6,7 @@ import type { BoardSnapshot, HelperController, InboxReport } from '../board/type
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
 import { listControllers } from './helper.ts';
-import { loadInboxState, saveInboxState } from './inbox-state.ts';
+import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { archiveDue, archivedReports, buildSnapshot, markRead, type MarkReadResult, type Sources } from './model.ts';
 import { createReportReader } from './reports.ts';
 import { helperDirectories } from './sources.ts';
@@ -109,13 +109,32 @@ function createBoard(): Board {
 	/** Bring the archive up to date, optionally mark one report read, and push the result. */
 	function publish(from: Sources, readKey?: string): MarkReadResult | null {
 		const now = config.now();
-		const state = loadInboxState(config.stateDir);
+		// A state file that cannot be used must not hide the roster: the board carries on with every
+		// report unread, says so, and leaves the file alone. Marking read fails outright instead.
+		let state: InboxState;
+		let problem: string | null = null;
+		try {
+			state = loadInboxState(config.stateDir);
+		} catch (error) {
+			if (readKey !== undefined) throw error;
+			state = { read: {}, archived: {} };
+			problem = `已讀與封存紀錄讀不出來，暫時把所有回報當成未讀：${(error as Error).message}`;
+		}
 		// Archive first: a report that is already due can no longer be marked read.
 		const archived = archiveDue(from, state, now);
 		const marked = readKey === undefined ? null : markRead(from, state, readKey, now);
-		if (archived || marked === 'marked') saveInboxState(config.stateDir, state);
+		if (!problem && (archived || marked === 'marked')) {
+			try {
+				saveInboxState(config.stateDir, state);
+			} catch (error) {
+				if (marked === 'marked') throw error;
+				// Nothing is lost: the same reports are due again at the next read.
+				problem = `已讀與封存紀錄寫不進去：${(error as Error).message}`;
+			}
+		}
 
 		const next = buildSnapshot(from, state, now);
+		if (problem) next.errors.push(problem);
 		const changed = !snapshot || comparable(snapshot) !== comparable(next);
 		snapshot = next;
 		if (changed) for (const stream of streams) stream.send('board', JSON.stringify(next));

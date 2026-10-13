@@ -113,7 +113,10 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		},
 		async archive() {
 			const response = await request('/api/archive');
-			if (response.status === 401) unpaired();
+			if (response.status === 401) {
+				unpaired();
+				return [];
+			}
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			return (await response.json()).reports;
 		},

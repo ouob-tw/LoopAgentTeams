@@ -1,6 +1,6 @@
 // Archive rules, checked at each point in time with the board's clock set by the test.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BoardSnapshot, InboxReport } from '../src/lib/board/types.ts';
 import { DAY, named, startFixture, titled, type Fixture } from './harness.ts';
@@ -150,4 +150,31 @@ test('reports of an active controller are archived by the same rules, and it sta
 	expect(titled(snapshot, '啟用中主控的舊回報')).toBeUndefined();
 	expect(named(snapshot, 'active-one')).toMatchObject({ status: 'delivered' });
 	expect(((await archived('啟用中主控的舊回報')) as InboxReport).controllerId).toBe(luna.session_id);
+});
+
+test('an unusable state file is reported without hiding the board, and is not overwritten', async () => {
+	const luna = fixture.bound('epsilon', 'steady');
+	fixture.report(luna.session_id, { tag: 'DONE', summary: '狀態檔壞掉時的回報', time: iso(ISSUED + 80 * DAY), hcom_name: 'steady', workspace: luna.workspace });
+	fixture.list([luna]);
+	const { key } = titled(await on(ISSUED + 81 * DAY), '狀態檔壞掉時的回報')!;
+	await fixture.markRead(cookie, key);
+	const stateFile = join(fixture.dir, 'board-state', 'inbox.json');
+	const good = readFileSync(stateFile, 'utf8');
+
+	writeFileSync(stateFile, '{ not json');
+	const broken = await fixture.refresh(cookie);
+
+	expect(named(broken, 'steady')).toBeDefined();
+	expect(titled(broken, '狀態檔壞掉時的回報')).toMatchObject({ readAt: null });
+	expect(broken.errors.join()).toContain('已讀與封存紀錄讀不出來');
+	expect((await fixture.markRead(cookie, key)).status).toBe(500);
+	expect((await fixture.fetch('/api/archive', { cookie })).status).toBe(500);
+	expect(readFileSync(stateFile, 'utf8')).toBe('{ not json');
+
+	// Putting the file back brings the read marks and the archive back.
+	writeFileSync(stateFile, good);
+	const repaired = await fixture.refresh(cookie);
+	expect(repaired.errors).toEqual([]);
+	expect(titled(repaired, '狀態檔壞掉時的回報')).toMatchObject({ readAt: iso(ISSUED + 81 * DAY) });
+	expect(await archived('一直沒讀')).toBeDefined();
 });

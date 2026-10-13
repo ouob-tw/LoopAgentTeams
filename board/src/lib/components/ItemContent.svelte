@@ -39,7 +39,7 @@
 			<span class="id">{item.question.id} r{item.question.revision}</span>
 			<span>{KIND_TEXT[item.question.kind] ?? item.question.kind}</span>
 		{/if}
-		<time>{formatTime(item.time)}</time>
+		<time datetime={item.time}>{formatTime(item.time)}</time>
 	</header>
 	<h2>{item.title || '（沒有標題）'}</h2>
 

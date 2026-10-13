@@ -38,9 +38,11 @@
 	const inbox = $derived(board.snapshot.inbox);
 	const archivedCount = $derived(board.snapshot.archivedCount);
 
-	// The archive is fetched when its view is open, and again whenever a report moves into it.
+	// The archive is fetched when its view is open, and again with every new snapshot: a report may
+	// have moved into it, and a manual refresh retries a fetch that failed.
 	$effect(() => {
-		if (showArchive && archivedCount >= 0) void board.loadArchive();
+		void board.snapshot;
+		if (showArchive) void board.loadArchive();
 	});
 
 	const openKey = $derived(view?.kind === 'item' ? view.item.key : null);
@@ -68,6 +70,8 @@
 		await tick();
 		// New content starts at its top; going back returns to the same place in the list.
 		detail.scrollTop = 0;
+		// On a phone the button that was just pressed is hidden now; keep the keyboard on screen.
+		if (next !== null) detail.focus({ preventScroll: true });
 		window.scrollTo(0, next === null ? listScroll : 0);
 	}
 	const openItem = (next: InboxItem) => show({ kind: 'item', item: next });
@@ -114,13 +118,16 @@
 				{archivedCount}
 				currentKey={openKey}
 				onsort={setSort}
-				onarchive={() => (showArchive = true)}
+				onarchive={() => {
+					showArchive = true;
+					void board.loadArchive();
+				}}
 				onopen={openItem}
 				oncontroller={openController}
 			/>
 		</section>
 
-		<section class="detail" bind:this={detail}>
+		<section class="detail" bind:this={detail} tabindex="-1">
 			{#if view === null}
 				<p class="empty">從信箱選一則，或點主控名稱看它的資訊。</p>
 			{:else}
@@ -144,7 +151,9 @@
 						<p class="empty">這個主控已經不在名冊上：它已結束，回報也都封存了。</p>
 					{/if}
 				{:else if item}
-					<ItemContent {item} {inInbox} onread={(key) => board.markRead(key)} />
+					{#key item.key}
+						<ItemContent {item} {inInbox} onread={(key) => board.markRead(key)} />
+					{/key}
 					{#if controller}
 						<button class="context" onclick={() => openController(controller.id)}>
 							{item.project} · @{item.hcomName}　看主控資訊 →
@@ -239,6 +248,9 @@
 		flex-direction: column;
 		gap: 1rem;
 		padding: 1.5rem;
+	}
+	.detail:focus {
+		outline: none;
 	}
 	.detail > :global(*) {
 		flex: none;

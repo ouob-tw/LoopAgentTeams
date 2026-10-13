@@ -10,6 +10,7 @@ export class LiveBoard {
 	/** Archived reports, newest first; null until loaded, 'failed' when they could not be read. */
 	archive = $state<InboxReport[] | 'failed' | null>(null);
 	#connection: Connection | undefined;
+	#archiveLoads = 0;
 
 	constructor(initial: BoardSnapshot) {
 		this.snapshot = $state(initial);
@@ -32,11 +33,15 @@ export class LiveBoard {
 	}
 
 	async loadArchive(): Promise<void> {
+		// Loads can overlap; only the answer to the latest one is kept.
+		const load = ++this.#archiveLoads;
+		let loaded: typeof this.archive;
 		try {
-			this.archive = (await this.#connection?.archive()) ?? null;
+			loaded = (await this.#connection?.archive()) ?? null;
 		} catch {
-			this.archive = 'failed';
+			loaded = 'failed';
 		}
+		if (load === this.#archiveLoads) this.archive = loaded;
 	}
 
 	async refresh(): Promise<void> {

@@ -48,7 +48,7 @@
 
 {#if showArchive}
 	{#if archive === null}
-		<p class="none">讀取中…</p>
+		<p class="none" role="status">讀取中…</p>
 	{:else if archive === 'failed'}
 		<p class="none" role="alert">已封存的回報讀不出來，請重新整理。</p>
 	{:else}

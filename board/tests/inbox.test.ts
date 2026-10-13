@@ -1,7 +1,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { groupByProject, sortByTime } from '../src/lib/board/inbox.ts';
 import type { InboxQuestion, InboxReport } from '../src/lib/board/types.ts';
-import { named, question, startFixture, titled, until, type Fixture } from './harness.ts';
+import { named, question, sleep, startFixture, titled, until, type Fixture } from './harness.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -165,6 +165,8 @@ test('a report marked read on one device is read on another paired device within
 	const { key } = titled(await fixture.refresh(cookie), '兩台裝置都會看到')!;
 	const other = fixture.watch(await fixture.pair('second-device'));
 	await until(() => titled(other.latest(), '兩台裝置都會看到'), 5_000, 'the report on the second device');
+	// Let the re-read that the new report file triggered finish before counting helper runs.
+	await sleep(500);
 	const calls = fixture.helperCalls();
 
 	const response = await fixture.markRead(cookie, key);

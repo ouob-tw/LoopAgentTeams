@@ -1,6 +1,7 @@
 <script lang="ts">
 	// A controller's information page: the basic block, then its questions and its reports that
 	// are still in the inbox.
+	import { formatTime } from '#lib/board/format.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { phaseText, STATUS_LABEL, type Controller, type InboxItem } from '#lib/board/types.ts';
 	import ItemRow from './ItemRow.svelte';
@@ -21,7 +22,6 @@
 	const questions = $derived(sorted.filter((item) => item.kind === 'question'));
 	const reports = $derived(sorted.filter((item) => item.kind === 'report'));
 
-	const time = (iso: string) => new Date(iso).toLocaleString('zh-TW', { hour12: false });
 </script>
 
 <article class="profile">
@@ -50,7 +50,7 @@
 		<dt>待決題</dt>
 		<dd>{controller.pendingCount} 題</dd>
 		<dt>最新回報</dt>
-		<dd>{controller.lastReportAt ? time(controller.lastReportAt) : '尚無回報'}</dd>
+		<dd>{controller.lastReportAt ? formatTime(controller.lastReportAt) : '尚無回報'}</dd>
 	</dl>
 </article>
 

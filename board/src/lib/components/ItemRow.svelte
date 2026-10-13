@@ -27,7 +27,7 @@
 </script>
 
 <div class="row" class:fresh class:current data-item={item.key}>
-	<button class="main" onclick={() => onopen(item)}>
+	<button class="main" aria-current={current ? 'true' : undefined} onclick={() => onopen(item)}>
 		<span class="kind" data-kind={kind}>{itemLabel(item)}</span>
 		<span class="title">{item.title || '（沒有標題）'}</span>
 	</button>
@@ -44,7 +44,7 @@
 		{:else if item.kind === 'report'}
 			<span>{archived ? '已封存' : item.readAt === null ? '未讀' : '已讀'}</span>
 		{/if}
-		<time>{formatTime(item.time)}</time>
+		<time datetime={item.time}>{formatTime(item.time)}</time>
 	</div>
 </div>
 
