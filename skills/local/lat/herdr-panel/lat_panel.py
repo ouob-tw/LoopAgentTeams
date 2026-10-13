@@ -842,6 +842,17 @@ def upsert_question(questions_path, question_id, section_text, *, decisions_path
             else:
                 return revision
         _replace_locked(questions_path, updated)
+        _append_journal(
+            questions_path.parent / "panel-journal.jsonl",
+            document,
+            updated,
+            kind="upsert",
+            details={
+                "questions_path": _question_key(questions_path),
+                "upsert_question": question_id,
+                "revision": revision,
+            },
+        )
         return revision
 
 
@@ -1484,7 +1495,30 @@ def _answer_label(label):
     return label.removesuffix(_RECOMMENDED).rstrip()
 
 
-def _board_question(section):
+def _asked_times(questions_path):
+    """Map ``(question ID, revision)`` to the time its upsert was journaled."""
+    times = {}
+    try:
+        lines = (
+            Path(questions_path).parent / "panel-journal.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return times
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(entry, dict)
+            and entry.get("kind") == "upsert"
+            and _journal_entry_matches_questions(entry, questions_path)
+        ):
+            times[entry.get("upsert_question"), entry.get("revision")] = entry.get("time")
+    return times
+
+
+def _board_question(section, asked_times):
     parsed = parse_question_options(section)
     if parsed.kind == "single":
         letters = [option.key for option in parsed.options]
@@ -1513,6 +1547,8 @@ def _board_question(section):
         "recommendation": question_recommendation(section),
         "answer": answer,
         "note": note,
+        "asked_at": asked_times.get((section["id"], section["revision"])),
+        "recorded_at": section["recorded_at"],
         "section_sha256": _section_sha256(section),
     }
 
@@ -1532,7 +1568,10 @@ def _board_questions(binding):
         document = Path(binding["questions_path"]).read_text(encoding="utf-8")
     except FileNotFoundError:
         return []
-    return [_board_question(section) for section in _unique_sections(document)]
+    asked_times = _asked_times(binding["questions_path"])
+    return [
+        _board_question(section, asked_times) for section in _unique_sections(document)
+    ]
 
 
 def board_controllers(*, config_dir=None, state_dir=None):

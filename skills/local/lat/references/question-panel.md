@@ -65,7 +65,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
      --questions "$questions" --decisions "$decisions" --id "<ID>" --file /path/to/section.md
    ```
 
-4. 寫入前會自動清理同一份問題檔，條件見下方「清理題目」；正在寫入的同一題號保留，維持升版行為。`--decisions` 必填，缺少或目錄不存在時拒絕寫入。指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。升版規則見下方「版本」。
+4. 寫入前會自動清理同一份問題檔，條件見下方「清理題目」；正在寫入的同一題號保留，維持升版行為。`--decisions` 必填，缺少或目錄不存在時拒絕寫入。指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。實際寫入新題或升版時，另在 `panel-journal.jsonl` 寫一筆 `upsert`，記錄題號、版本與時間；內容相同而沒有寫入時不寫。升版規則見下方「版本」。
 5. 發出 `DECIDE:` 前完成下方「待決題目檢查」，通過後依「聊天提問格式」列出題目；使用者可在面板或聊天作答。
 
 ### 題目格式
@@ -263,6 +263,8 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board list
 | `options` | 依題目順序；每項有 `letter`（依「題目格式」的選項字母，複選第 27 項起為空字串）、`label`（不含「（建議）」）、`impact`、`recommended`。 |
 | `recommendation` | 題末 `➡️` 推薦段落原文，沒有時為空字串。 |
 | `answer`、`note` | 目前答覆區的答覆與備註（含未送出的草稿），沒有時為空字串。 |
+| `asked_at` | 目前版本由 `question upsert` 寫入的時間（UTC，ISO 8601），取自面板紀錄的 `upsert`；面板紀錄沒有對應項目（較早寫入的題目）、不存在或讀不出來時為 `null`。作答、送出與記錄都不會改變它。 |
+| `recorded_at` | 標為已記錄的時間，未記錄時為 `null`。 |
 | `section_sha256` | 作答時要帶回的區段雜湊。 |
 
 綁定登記或待送通知檔本身讀不出來時，輸出 `{"status": "error", "reason": "…"}`，結束碼 1。

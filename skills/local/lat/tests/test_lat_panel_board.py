@@ -4,6 +4,7 @@ The Herdr comparison needs Textual:
   uv run --no-project --with textual==8.2.8 python -m unittest discover -s "$lat_dir/tests"
 """
 import asyncio
+from datetime import datetime, timezone
 import importlib.util
 import json
 import os
@@ -196,6 +197,8 @@ class ListTests(BoardTestCase):
                 "recommendation": "➡️ A：先讓本機版本一致。",
                 "answer": "",
                 "note": "",
+                "asked_at": None,
+                "recorded_at": None,
                 "section_sha256": self.section_hash(self.questions, "Q1"),
             },
             {
@@ -213,6 +216,8 @@ class ListTests(BoardTestCase):
                 "recommendation": "",
                 "answer": "主控綁定；其他：再加一項",
                 "note": "先這樣\n第二行",
+                "asked_at": None,
+                "recorded_at": None,
                 "section_sha256": self.section_hash(self.questions, "Q2"),
             },
             {
@@ -226,6 +231,8 @@ class ListTests(BoardTestCase):
                 "recommendation": "",
                 "answer": "沒有",
                 "note": "",
+                "asked_at": None,
+                "recorded_at": None,
                 "section_sha256": self.section_hash(self.questions, "Q3"),
             },
             {
@@ -239,6 +246,8 @@ class ListTests(BoardTestCase):
                 "recommendation": "",
                 "answer": "A. Done",
                 "note": "",
+                "asked_at": None,
+                "recorded_at": "2026-10-02T09:00:00+00:00",
                 "section_sha256": self.section_hash(self.questions, "Q0"),
             },
         ])
@@ -288,6 +297,107 @@ class ListTests(BoardTestCase):
         result = self.board("list", code=1)
         self.assertEqual(result["status"], "error")
         self.assertTrue(result["reason"])
+
+
+class AskedAtTests(BoardTestCase):
+    def setUp(self):
+        super().setUp()
+        self.questions.unlink()
+        self.decisions = self.root / "decisions"
+        self.decisions.mkdir()
+        (self.decisions / "Q1.md").write_text("- status: pending\n")
+        self.journal_path = self.questions.parent / "panel-journal.jsonl"
+
+    def upsert(self, body):
+        """Ask Q1 with the controller's command; return when it ran as (before, after)."""
+        section = self.root / "section.md"
+        section.write_text(f"## 要用哪個名稱？\n\n{body}\n")
+        before = datetime.now(timezone.utc)
+        result = self.run_cli(
+            "question", "upsert", "--questions", self.questions,
+            "--decisions", self.decisions, "--id", "Q1", "--file", section,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return before, datetime.now(timezone.utc), result.stdout
+
+    def listed(self):
+        [controller] = self.board("list")["controllers"]
+        self.assertIsNone(controller["error"])
+        [question] = controller["questions"]
+        return question
+
+    def asked_at(self):
+        value = self.listed()["asked_at"]
+        self.assertTrue(value.endswith("Z"), value)
+        return datetime.fromisoformat(value.replace("Z", "+00:00"))
+
+    def provenance(self):
+        return self.run_cli(
+            "question", "provenance", "--questions", self.questions,
+            "--journal", self.journal_path, "--id", "Q1",
+        )
+
+    def test_asked_at_is_when_the_current_revision_was_written(self):
+        before, after, output = self.upsert("A. 看板\nB. 儀表板")
+        self.assertEqual(output, "Q1 r1\n")
+        first = self.asked_at()
+        self.assertTrue(before <= first <= after, (before, first, after))
+
+        self.upsert("A. 看板\nB. 儀表板")  # same content: no new revision
+        self.assertEqual(self.listed()["revision"], 1)
+        self.assertEqual(self.asked_at(), first)
+
+        before, after, output = self.upsert("A. 看板\nB. 儀表板\nC. 面板")
+        self.assertEqual(output, "Q1 r2\n")
+        second = self.asked_at()
+        self.assertTrue(first < before <= second <= after, (first, before, second, after))
+
+    def test_answering_and_recording_keep_asked_at(self):
+        self.upsert("A. 看板\nB. 儀表板")
+        asked = self.listed()["asked_at"]
+        self.assertIsNone(self.listed()["recorded_at"])
+        self.answer(self.questions, "Q1", 1, "--select", "1")
+        self.assertEqual(self.listed()["asked_at"], asked)
+        proof = self.provenance()
+        self.assertEqual(proof.returncode, 0, proof.stderr)
+        recorded = self.run_cli(
+            "question", "set-status", "--questions", self.questions, "--id", "Q1",
+            "--revision", 1, "--status", "recorded",
+            "--expected-section-sha256", json.loads(proof.stdout)["section_sha256"],
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        question = self.listed()
+        self.assertEqual(question["status"], "recorded")
+        self.assertEqual(question["asked_at"], asked)
+        datetime.fromisoformat(question["recorded_at"])
+
+    def test_submitted_answer_of_an_older_revision_does_not_prove_the_new_one(self):
+        self.upsert("A. 看板\nB. 儀表板")
+        self.answer(self.questions, "Q1", 1, "--select", "1")
+        self.upsert("A. 看板\nB. 儀表板\nC. 面板")
+        proof = self.provenance()
+        self.assertEqual(proof.returncode, 1)
+        self.assertEqual(proof.stderr, "lat-panel: question is not submitted: Q1\n")
+
+    def test_submit_written_outside_the_panel_still_fails_the_source_check(self):
+        self.upsert("A. 看板\nB. 儀表板")
+        self.questions.write_text(
+            self.questions.read_text().replace("答覆：\n\n- [ ]", "答覆：A. 看板\n\n- [x]")
+        )
+        proof = self.provenance()
+        self.assertEqual(proof.returncode, 1)
+        self.assertEqual(proof.stdout, "")
+
+    def test_missing_or_unreadable_journal_gives_no_time_and_no_error(self):
+        self.upsert("A. 看板\nB. 儀表板")
+        self.journal_path.write_text("not json\n[]\n" + self.journal_path.read_text())
+        self.assertIsNotNone(self.listed()["asked_at"])
+        self.journal_path.write_bytes(b"\xff\xfe")
+        self.assertIsNone(self.listed()["asked_at"])
+        self.journal_path.unlink()
+        self.assertIsNone(self.listed()["asked_at"])
+        self.journal_path.mkdir()
+        self.assertIsNone(self.listed()["asked_at"])
 
 
 class AnswerTests(BoardTestCase):
