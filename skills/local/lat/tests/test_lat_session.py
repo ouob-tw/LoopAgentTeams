@@ -327,6 +327,79 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(len(self.reports()), 1)
         self.assertEqual(self.reports()[0]['hcom_name'], 'orch')
 
+    def test_reports_check_error_release_and_exact_last_line_tags(self):
+        self.activate()
+        self.decisions.rmdir()
+        released = self.stop_hook()
+        self.assertIn('systemMessage', json.loads(released.stdout))
+        self.assertEqual(len(self.reports()), 1)
+        for message in ('DONE: earlier\nplain last line', 'DONEISH: text', '', '  HELP: indented'):
+            self.assert_silent(self.stop_hook(message))
+            self.assertEqual(self.reports()[-1]['tag'], '')
+            self.assertEqual(self.reports()[-1]['summary'], '')
+            self.assertEqual(self.reports()[-1]['message'], message)
+
+    def test_corrupt_record_keeps_non_decide_stop_stdout_silent(self):
+        self.activate()
+        self.record.write_text('{broken')
+        result = self.stop_hook('DONE: finished')
+        self.assertEqual((result.returncode, result.stdout), (0, ''))
+        self.assertEqual(self.reports(), [])
+        self.assertIn('systemMessage', json.loads(self.stop_hook().stdout))
+
+    def test_partial_report_tail_and_non_objects_do_not_block_later_rounds(self):
+        self.activate()
+        directory = self.root / 'reports'
+        directory.mkdir()
+        path = directory / f'{SESSION}.jsonl'
+        original = b'[]\nnull\n{"time":"partial'
+        path.write_bytes(original)
+        self.assert_silent(self.stop_hook('HELP: recovered active report'))
+        self.assertTrue(path.read_bytes().startswith(original + b'\n'))
+        active = json.loads(path.read_bytes().splitlines()[-1])
+        self.assertFalse(active['final'])
+        for status in ('completed', 'cancelled'):
+            self.assertEqual(self.cli('deactivate', '--workspace', self.work,
+                                      '--status', status).returncode, 0)
+            self.assert_silent(self.stop_hook('DONE: final recovery'))
+            previous = path.read_bytes()
+            self.assertTrue(json.loads(previous.splitlines()[-1])['final'])
+            self.assert_silent(self.stop_hook('DONE: later'))
+            self.assertEqual(path.read_bytes(), previous)
+            self.activate()
+
+    def test_final_report_sync_failure_retries_sync_without_appending_duplicate(self):
+        self.activate()
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work,
+                                  '--status', 'completed').returncode, 0)
+        shim = self.root / 'sync-fault.py'
+        calls = self.root / 'sync-calls'
+        shim.write_text(
+            'import importlib.util, os\n'
+            f'spec = importlib.util.spec_from_file_location("lat_session", {str(SCRIPT)!r})\n'
+            'helper = importlib.util.module_from_spec(spec)\n'
+            'spec.loader.exec_module(helper)\n'
+            f'calls = {str(calls)!r}\n'
+            'original_sync = os.fsync\n'
+            'def sync(fd):\n'
+            '    existed = os.path.exists(calls)\n'
+            '    with open(calls, "a") as stream: stream.write("sync\\n")\n'
+            '    if not existed: raise OSError("simulated sync failure")\n'
+            '    original_sync(fd)\n'
+            'os.fsync = sync\n'
+            'raise SystemExit(helper.main())\n')
+        payload = dict(hook_event_name='Stop', session_id=SESSION, cwd=str(self.work),
+                       last_assistant_message='DONE: committed')
+        failed = self.cli('hook', payload=payload, script=shim)
+        self.assertEqual((failed.returncode, failed.stdout), (0, ''))
+        self.assertIn('LAT report warning:', failed.stderr)
+        path = self.root / 'reports' / f'{SESSION}.jsonl'
+        previous = path.read_bytes()
+        self.assert_silent(self.cli('hook', payload=payload, script=shim))
+        self.assertEqual(path.read_bytes(), previous)
+        self.assertEqual(len(self.reports()), 1)
+        self.assertEqual(calls.read_text().splitlines(), ['sync', 'sync'])
+
     def test_stop_spec_confirmation_consensus_contract_and_recovery(self):
         receipt = '- consensus: v3 ' + 'a' * 64 + '\n'
         message = ('❓ **LAT-A r1** 確認 Spec\n'

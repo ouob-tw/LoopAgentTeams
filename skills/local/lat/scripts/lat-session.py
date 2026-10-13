@@ -636,13 +636,24 @@ def append_report(record, message):
     path = directory / f'{record["session_id"]}.jsonl'
     with (directory / f'{record["session_id"]}.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
-        if final and path.exists():
-            with path.open(encoding='utf-8') as stream:
-                if any(item.get('round') == round_number and item.get('final')
-                       for item in (json.loads(line) for line in stream)):
-                    return
-        with path.open('a', encoding='utf-8') as stream:
-            stream.write(json.dumps(report, ensure_ascii=False) + '\n')
+        with path.open('a+b') as stream:
+            if final:
+                stream.seek(0)
+                for line in stream:
+                    try:
+                        item = json.loads(line)
+                    except (ValueError, UnicodeDecodeError):
+                        continue
+                    if (isinstance(item, dict) and item.get('round') == round_number
+                            and item.get('final')):
+                        os.fsync(stream.fileno())
+                        return
+            stream.seek(0, os.SEEK_END)
+            if stream.tell():
+                stream.seek(-1, os.SEEK_END)
+                if stream.read(1) != b'\n':
+                    stream.write(b'\n')
+            stream.write((json.dumps(report, ensure_ascii=False) + '\n').encode('utf-8'))
             stream.flush()
             os.fsync(stream.fileno())
 
@@ -713,7 +724,12 @@ def hook(client):
         context(pointer(path))
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         if event == 'Stop':
-            print(json.dumps({'systemMessage': f'LAT DECIDE 檢查發生錯誤，未攔下：{exc}'}, ensure_ascii=False))
+            lines = [line for line in message.splitlines() if line.strip()]
+            if lines and lines[-1].startswith('DECIDE:'):
+                print(json.dumps({'systemMessage': f'LAT DECIDE 檢查發生錯誤，未攔下：{exc}'},
+                                 ensure_ascii=False))
+            else:
+                print(f'LAT report warning: {exc}', file=sys.stderr)
             return
         context(f'LAT recovery error: {path}. Record or recovery files are missing/corrupt. '
                 'Stop dependent work and report; do not infer authorization or recreate progress.')
