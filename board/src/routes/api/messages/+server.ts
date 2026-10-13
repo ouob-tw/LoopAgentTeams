@@ -19,5 +19,6 @@ export const POST: RequestHandler = async ({ request }) => {
 export const GET: RequestHandler = ({ url }) => {
 	const controllerId = url.searchParams.get('controller');
 	if (!controllerId) return json({ error: 'missing_controller' }, { status: 400 });
-	return json({ entries: readSent(getBoard().config.stateDir, controllerId) });
+	const board = getBoard();
+	return json({ entries: readSent(board.config.stateDir, controllerId), logError: board.sentLogError() });
 };

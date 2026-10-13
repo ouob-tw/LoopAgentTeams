@@ -21,22 +21,29 @@ class Messaging {
 	/** Sent log by controller ID, newest first; a controller is missing until its log is loaded. */
 	sent = $state<Record<string, SentEntry[]>>({});
 	loadFailed = $state<Record<string, boolean>>({});
+	/** Why the server could not bring the sent log up to date, by controller ID: what the list shows
+	 *  of an answer's state may then be out of date. */
+	logError = $state<Record<string, string | null>>({});
 	/** The latest load started per controller; an older one that answers later is dropped. */
 	#loads: Record<string, number> = {};
 
 	async load(controllerId: string): Promise<void> {
 		const load = (this.#loads[controllerId] = (this.#loads[controllerId] ?? 0) + 1);
 		let entries: SentEntry[] | undefined;
+		let logError: string | null = null;
 		try {
 			const response = await fetch(`/api/messages?controller=${encodeURIComponent(controllerId)}`);
 			if (response.status === 401) return location.reload();
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			entries = (await response.json()).entries;
+			const body = await response.json();
+			entries = body.entries;
+			logError = body.logError ?? null;
 		} catch {
 			// Reported below, unless a newer load has taken over.
 		}
 		if (load !== this.#loads[controllerId]) return;
 		if (entries) this.sent[controllerId] = entries;
+		this.logError[controllerId] = entries ? logError : null;
 		this.loadFailed[controllerId] = !entries;
 	}
 

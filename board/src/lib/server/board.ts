@@ -28,6 +28,8 @@ export interface Board {
 	current(): Promise<BoardSnapshot>;
 	/** Re-read every source now; resolves with a snapshot read after the call. */
 	refresh(): Promise<BoardSnapshot>;
+	/** Why the last read could not bring the sent log up to date, or null. */
+	sentLogError(): string | null;
 	/** Mark an inbox report read for every paired device. */
 	markRead(key: string): Promise<MarkReadResult>;
 	/** The archived reports, newest first. */
@@ -52,6 +54,7 @@ function createBoard(): Board {
 	let debounce: ReturnType<typeof setTimeout> | undefined;
 	let fallback: ReturnType<typeof setTimeout> | undefined;
 	let closed = false;
+	let sentLogError: string | null = null;
 
 	const comparable = (value: BoardSnapshot) => JSON.stringify({ ...value, generatedAt: '' });
 
@@ -94,9 +97,10 @@ function createBoard(): Board {
 		if (helper.ok) {
 			lastActive = helper.controllers;
 			try {
-				await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path));
-			} catch {
+				sentLogError = await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path));
+			} catch (error) {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
+				sentLogError = (error as Error).message;
 			}
 		}
 		sources = {
@@ -201,6 +205,7 @@ function createBoard(): Board {
 		config,
 		current: async () => snapshot ?? (await (running ?? refresh())),
 		refresh,
+		sentLogError: () => sentLogError,
 		markRead: async (key) => publish(await readSources(), key)!,
 		archive: async () => archivedReports(await readSources(), loadInboxState(config.stateDir)),
 		subscribe(stream) {

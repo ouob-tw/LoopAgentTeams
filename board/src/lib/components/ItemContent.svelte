@@ -225,6 +225,11 @@
 			{:else}
 				<p class="state">{ANSWER_STATE_TEXT.waiting}。</p>
 			{/if}
+			{#if submitted?.logError}
+				<p class="state failed" role="alert">
+					答覆已經送出，但送出紀錄寫入失敗：{submitted.logError}。看板的送出紀錄裡不會有這一筆。
+				</p>
+			{/if}
 			{#if item.notifyFailed || submitted?.notifyFailed || notice}
 				<div class="actions">
 					<button onclick={notify} disabled={notifying}>{notifying ? '通知中…' : '重新通知'}</button>

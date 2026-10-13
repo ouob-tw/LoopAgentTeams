@@ -42,6 +42,8 @@ export interface Submitted {
 	 *  may already have been resent from elsewhere. Only this page knows of the failure. */
 	notifyFailed: boolean;
 	reason: string | null;
+	/** The answer was sent, but the board's sent log could not take its line. */
+	logError: string | null;
 }
 
 const EMPTY: Draft = { select: [], other: false, text: '', note: '', base: null };
@@ -137,7 +139,8 @@ class Answering {
 				answer: answerText(question, draft.select, text),
 				note: draft.note.trim(),
 				notifyFailed: body.notified !== true && !body.pendingListed,
-				reason: body.reason
+				reason: body.reason,
+				logError: body.logError
 			};
 			delete this.drafts[key];
 			void messaging.load(item.controllerId);
