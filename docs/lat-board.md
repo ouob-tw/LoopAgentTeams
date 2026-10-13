@@ -6,8 +6,8 @@ LAT 看板是跑在主機上的網頁服務。電腦與手機用同一個網址�
 
 ## 需要什麼
 
-- Node 22 以上：伺服器一律用 Node 執行，建置也要它。
-- Bun：用來安裝套件和執行 `board` 指令，沒有 Bun 也行。沒有 Bun 時，需要 Node 22.18 以上，並把 `bun install` 換成 `npm install`、`bun run build` 換成 `npm run build`、`bun run board` 換成 `node src/cli.ts`。
+- Node 22.18 以上：伺服器一律用 Node 執行，建置也要它。
+- Bun：用來安裝套件和執行 `board` 指令，沒有 Bun 也行。沒有 Bun 時，把 `bun install` 換成 `npm install`、`bun run build` 換成 `npm run build`、`bun run board` 換成 `node src/cli.ts`。
 - 已安裝的 LAT 技能，以及它一直在用的 `uv` 與 Python：看板不自己讀寫問題檔，一律呼叫技能裡的面板輔助工具。
 - 傳話要用到 `hcom`。
 
@@ -49,7 +49,7 @@ bun run board revoke <裝置 ID>   # 撤銷一台裝置，它會回到配對畫�
 
    ```bash
    mkdir -p ~/.config/systemd/user
-   cp board/lat-board.service ~/.config/systemd/user/
+   cp lat-board.service ~/.config/systemd/user/   # 在 board 目錄執行
    ```
 
 3. 啟用，並讓它在沒登入時也跑：
@@ -62,13 +62,13 @@ bun run board revoke <裝置 ID>   # 撤銷一台裝置，它會回到配對畫�
 
 4. 查狀態與紀錄：`systemctl --user status lat-board`、`journalctl --user -u lat-board`。
 
-要改位址或連接埠，改範例檔裡的 `HOST`、`PORT`；其他設定用同樣方式加一行 `Environment=`，改完 `systemctl --user daemon-reload && systemctl --user restart lat-board`。
+要改位址或連接埠，改已複製的 `~/.config/systemd/user/lat-board.service` 裡的 `HOST`、`PORT`（改專案裡的範例檔不會生效）；其他設定用同樣方式加一行 `Environment=`，改完 `systemctl --user daemon-reload && systemctl --user restart lat-board`。
 
 用背景服務時，主機上的 `pair`、`devices`、`revoke` 仍照上一節手動執行。若你改了狀態目錄（`LAT_BOARD_STATE_DIR`）或其他設定，這些指令要用相同的環境變數，否則改到另一份資料。
 
 ## 自訂樣式
 
-把自己的樣式寫在 `~/.config/lat/board/user.css`（設定目錄可用 `LAT_BOARD_CONFIG_DIR` 改）。它在內建樣式之後載入，所有已配對裝置重新載入頁面就會套用；刪掉檔案就恢復預設，不需要重啟看板。
+把自己的樣式寫在設定目錄的 `user.css`。設定目錄預設是 `$XDG_CONFIG_HOME/lat/board`，沒設定 `XDG_CONFIG_HOME` 時是 `~/.config/lat/board`；也可用 `LAT_BOARD_CONFIG_DIR` 直接指定。它在內建樣式之後載入，所有已配對裝置重新載入頁面就會套用；刪掉檔案就恢復預設，不需要重啟看板。
 
 顏色、圓角與字型都是 CSS 變數，例如：
 

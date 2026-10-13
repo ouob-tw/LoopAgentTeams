@@ -8,7 +8,7 @@
 
 安裝、啟動、配對、背景常駐、自訂樣式與更新，見[使用說明](../docs/lat-board.md)。本檔放開發者需要的細節。
 
-需要 Node 22 以上（伺服器與建置）、Bun（可省略），以及已安裝的 LAT 技能與它使用的 `uv`、Python。
+需要 Node 22.18 以上（伺服器與建置）、Bun（可省略），以及已安裝的 LAT 技能與它使用的 `uv`、Python。
 
 ## 設定
 
@@ -22,7 +22,7 @@
 | `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已配對裝置、配對碼、回報的已讀與封存、送出紀錄） | `$XDG_STATE_HOME/lat/board` |
 | `LAT_REPORTS_DIR` | 主控回報紀錄目錄，須與 LAT hook 寫入的位置相同 | `$XDG_STATE_HOME/lat/reports` |
 | `LAT_BOARD_FALLBACK_SECONDS` | 漏掉檔案變動時，最慢幾秒內補上（從變動到畫面更新）；5 到 60 | `60` |
-| `LAT_BOARD_HELPER_TIMEOUT_SECONDS` | 輔助工具多久沒回應就放棄；最多是上一項的一半 | `15` |
+| `LAT_BOARD_HELPER_TIMEOUT_SECONDS` | 輔助工具多久沒回應就放棄；最多是（上一項 − 1）秒的一半 | `15` |
 | `LAT_BOARD_PAIRING_TTL_SECONDS` | 配對碼有效時間 | `300` |
 | `LAT_BOARD_CONFIG_DIR` | 看板的設定目錄，放使用者樣式檔 `user.css` | `$XDG_CONFIG_HOME/lat/board` |
 | `LAT_BOARD_INJECT_COMMAND` | 傳話用的輸入指令（JSON 字串陣列），看板會在後面加上 `<HCOM 名稱> <文字> --enter` | `["hcom","term","inject"]` |
