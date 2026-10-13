@@ -263,7 +263,41 @@ class ListTests(BoardTestCase):
         self.assertEqual(silent["questions"], [])
 
 
+    def test_duplicate_question_ids_mark_only_their_own_controller(self):
+        self.questions.write_text("\n".join((TEXT, TEXT)))
+        other = self.bind("ctl-b", "s-b", "project-b")
+        other.write_text(TEXT)
+        broken, healthy = self.board("list")["controllers"]
+        self.assertIn("duplicate question ID: Q3", broken["error"])
+        self.assertEqual(broken["questions"], [])
+        self.assertEqual([item["id"] for item in healthy["questions"]], ["Q3"])
+
+    def test_multi_options_past_z_have_no_letter(self):
+        options = "".join(f"- [ ] 選項{number}\n" for number in range(1, 28))
+        self.questions.write_text(
+            f"## 很多選項？\nQ5 · r1 · 待答\n\n{options}\n答覆：\n\n- [ ] 送出\n"
+        )
+        [controller] = self.board("list")["controllers"]
+        letters = [option["letter"] for option in controller["questions"][0]["options"]]
+        self.assertEqual(letters[24:], ["Y", "Z", ""])
+        self.answer(self.questions, "Q5", 1, "--select", "27")
+        self.assertIn("答覆：選項27\n\n- [x] 送出", self.questions.read_text())
+
+    def test_unreadable_binding_registry_is_reported_as_json(self):
+        (self.config / "bindings.json").write_text("not json")
+        result = self.board("list", code=1)
+        self.assertEqual(result["status"], "error")
+        self.assertTrue(result["reason"])
+
+
 class AnswerTests(BoardTestCase):
+    def test_multi_select_takes_other_text_alone_or_after_selections(self):
+        self.answer(self.questions, "Q2", 1, "--select", "2", "--text", "再加一項")
+        self.assertIn("答覆：封存；其他：再加一項\n\n- [x] 送出", self.questions.read_text())
+        self.questions.write_text(MULTI)
+        self.answer(self.questions, "Q2", 1, "--text", "都不要")
+        self.assertIn("答覆：其他：都不要\n\n- [x] 送出", self.questions.read_text())
+
     def test_each_question_kind_is_written_submitted_and_notified(self):
         for question_id, revision, answer in FOUR_ANSWERS:
             result = self.answer(self.questions, question_id, revision, *answer)
@@ -359,6 +393,9 @@ class AnswerTests(BoardTestCase):
     def test_unexpected_failure_is_reported_as_json_without_writing(self):
         self.questions.write_text("## Broken?\nQ1 · r1 · 待答\n\nNo answer area.\n")
         self.assert_refused("error", "Q1", 1, "--text", "好")
+        # Another question appears twice: the submit step would fail after the draft write.
+        self.questions.write_text("\n".join((SINGLE, TEXT, TEXT)))
+        self.assert_refused("error", "Q1", 2, "--select", "1")
         missing = self.board(
             "answer", "--questions", self.root / "missing.md", "--id", "Q1", "--revision", 1,
             "--expected-section-sha256", "0" * 64, "--text", "好", code=1,
@@ -425,6 +462,15 @@ class NotificationTests(BoardTestCase):
         self.assertTrue(self.pending())
         failed = self.board("notify", "--questions", self.questions, code=1)
         self.assertEqual(failed["status"], "failed")
+
+    def test_answer_is_kept_when_the_pending_notification_cannot_be_stored(self):
+        self.state.write_text("")  # a file where the state directory should be
+        result = self.answer(self.questions, "Q3", 1, "--text", "想法")
+        self.assertEqual(result["status"], "submitted")
+        self.assertFalse(result["notified"])
+        self.assertTrue(result["reason"])
+        self.assertIn("答覆：想法\n\n- [x] 送出", self.questions.read_text())
+        self.assertEqual(self.calls(), [])
 
     def test_resend_reaches_only_the_controller_of_that_questions_file(self):
         other = self.bind("ctl-b", "s-b", "project-b")

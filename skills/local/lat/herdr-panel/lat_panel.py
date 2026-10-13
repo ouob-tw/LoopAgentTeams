@@ -62,7 +62,8 @@ All commands are prefixed with ``uv run --no-project python lat_panel.py``.
 Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
 ``herdr plugin config-dir lat.panel``, then the XDG config fallback. Pending
 state uses ``HERDR_PLUGIN_STATE_DIR`` or the XDG state fallback. ``board``
-commands always print one JSON object, including on failure.
+commands print one JSON object, including on failure; only a usage error
+prints argparse's message on stderr and exits 2.
 """
 
 from contextlib import contextmanager
@@ -1516,21 +1517,22 @@ def _board_question(section):
     }
 
 
-def _board_questions(binding):
-    questions_path = binding.get("questions_path")
-    if not questions_path:
-        raise ValueError("binding has no questions path")
-    try:
-        document = Path(questions_path).read_text(encoding="utf-8")
-    except FileNotFoundError:
-        return []
+def _unique_sections(document):
     sections = _sections(document)
     seen = set()
     for section in sections:
         if section["id"] in seen:
             raise ValueError(f"duplicate question ID: {section['id']}")
         seen.add(section["id"])
-    return [_board_question(section) for section in sections]
+    return sections
+
+
+def _board_questions(binding):
+    try:
+        document = Path(binding["questions_path"]).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    return [_board_question(section) for section in _unique_sections(document)]
 
 
 def board_controllers(*, config_dir=None, state_dir=None):
@@ -1546,9 +1548,7 @@ def board_controllers(*, config_dir=None, state_dir=None):
     for binding in list_bindings(config_dir=config_dir):
         controller = {
             **binding,
-            "notification_pending": (
-                _question_key(binding.get("questions_path") or "") in pending
-            ),
+            "notification_pending": _question_key(binding["questions_path"]) in pending,
             "error": None,
             "questions": [],
         }
@@ -1612,9 +1612,10 @@ def answer_question(
 
     with _path_lock(questions_path):
         document = _read_text_exact(questions_path)
-        matches = [item for item in _sections(document) if item["id"] == question_id]
-        if len(matches) > 1:
-            raise ValueError(f"duplicate question ID: {question_id}")
+        # The submit step rejects any duplicate ID; find it before the draft is written.
+        matches = [
+            item for item in _unique_sections(document) if item["id"] == question_id
+        ]
         if not matches:
             return refused("question_changed", "question is no longer in the file")
         section = matches[0]
@@ -1651,7 +1652,7 @@ def answer_question(
         }
 
 
-def notify_controller(questions_path, *, config_dir=None, state_dir=None, env=None, timeout=10):
+def notify_controller(questions_path, *, config_dir=None, state_dir=None):
     """Send the pending notification of one questions file to its bound controller.
 
     Returns ``delivered``, ``no_pending``, or ``failed`` with a ``reason``; a
@@ -1663,15 +1664,13 @@ def notify_controller(questions_path, *, config_dir=None, state_dir=None, env=No
     binding = next(
         (
             binding for binding in list_bindings(config_dir=config_dir)
-            if _question_key(binding.get("questions_path") or "") == questions_key
+            if _question_key(binding["questions_path"]) == questions_key
         ),
         None,
     )
     if binding is None:
         return {"status": "failed", "reason": "no LAT controller is bound to this questions file"}
-    ok, reason = send_pending_notification(
-        questions_path, binding, state_dir=state_dir, env=env, timeout=timeout
-    )
+    ok, reason = send_pending_notification(questions_path, binding, state_dir=state_dir)
     if not ok:
         return {"status": "failed", "reason": reason}
     return {"status": "delivered" if reason == "delivered" else "no_pending"}

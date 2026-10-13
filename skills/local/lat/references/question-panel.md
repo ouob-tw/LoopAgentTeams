@@ -234,7 +234,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" unbind --session-
 
 ## 看板指令
 
-給 LAT 看板呼叫，主控不需執行。看板不自行解析或寫入問題檔，一律透過這三個指令；綁定登記與待送通知的位置和其他指令相同。三個指令都只在標準輸出印一個 JSON 物件，失敗時也是。
+給 LAT 看板呼叫，主控不需執行。看板不自行解析或寫入問題檔，一律透過這三個指令；綁定登記與待送通知的位置和其他指令相同。三個指令都只在標準輸出印一個 JSON 物件，失敗時也是；唯一例外是參數錯誤（缺少必要參數、版本或序號不是整數），此時標準輸出沒有內容，用法說明在標準錯誤，結束碼 2。
 
 ### 列出看板資料
 
@@ -290,7 +290,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board answer \
 | `invalid_answer` | 1 | 答覆不符合題型、序號超出範圍或重複，或文字含有會被讀成問題檔結構的行。 |
 | `error` | 1 | 其他失敗，例如問題檔讀不到或題目缺少作答區。 |
 
-結束碼 1 的結果都附 `reason`，問題檔與面板紀錄沒有改變。通知失敗而待送通知也記不下來時（`reason` 會說明），`board list` 的 `notification_pending` 是 `false`，重送通知無法補送，須由使用者在聊天告知主控。
+結束碼 1 的結果都附 `reason`。`question_changed`、`not_pending`、`invalid_answer` 時問題檔與面板紀錄沒有改變；`error` 多半也沒有寫入，但寫檔途中失敗（例如面板紀錄寫不進去）可能已留下草稿或已送出的答案，須重新列出資料確認。通知失敗而待送通知也記不下來時（`reason` 會說明），`board list` 的 `notification_pending` 是 `false`，重送通知無法補送，須由使用者在聊天告知主控。
 
 ### 重送通知
 
