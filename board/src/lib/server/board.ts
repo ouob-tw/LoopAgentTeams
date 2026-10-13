@@ -9,6 +9,7 @@ import { listControllers } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { archiveDue, archivedReports, buildSnapshot, markRead, type MarkReadResult, type Sources } from './model.ts';
 import { createReportReader } from './reports.ts';
+import { settleAnswers } from './sent-log.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 
@@ -90,7 +91,14 @@ function createBoard(): Board {
 
 	async function read(): Promise<BoardSnapshot> {
 		const [helper, reports] = await Promise.all([listControllers(config), readReports()]);
-		if (helper.ok) lastActive = helper.controllers;
+		if (helper.ok) {
+			lastActive = helper.controllers;
+			try {
+				settleAnswers(config.stateDir, helper.controllers, config.now());
+			} catch {
+				// A sent log that cannot be read or written must not stop the board; its own view says so.
+			}
+		}
 		sources = {
 			active: lastActive,
 			helperError: helper.ok ? null : helper.reason,
@@ -176,6 +184,7 @@ function createBoard(): Board {
 					generatedAt: new Date().toISOString(),
 					controllers: [],
 					inbox: [],
+					recordedKeys: [],
 					archivedCount: 0,
 					errors: [`讀取資料失敗：${error.message}`]
 				};
