@@ -1,12 +1,27 @@
 <script lang="ts">
-	// A controller's information page. This is the basic block; questions, reports and sent
-	// messages are separate sections added below it.
-	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
+	// A controller's information page: the basic block, then its questions and its reports that
+	// are still in the inbox.
+	import { formatTime } from '#lib/board/format.ts';
+	import { sortByTime } from '#lib/board/inbox.ts';
+	import { phaseText, STATUS_LABEL, type Controller, type InboxItem } from '#lib/board/types.ts';
+	import ItemRow from './ItemRow.svelte';
 	import StatusMark from './StatusMark.svelte';
 
-	let { controller }: { controller: Controller } = $props();
+	let {
+		controller,
+		items,
+		onopen
+	}: {
+		controller: Controller;
+		/** This controller's inbox items. */
+		items: InboxItem[];
+		onopen: (item: InboxItem) => void;
+	} = $props();
 
-	const time = (iso: string) => new Date(iso).toLocaleString('zh-TW', { hour12: false });
+	const sorted = $derived(sortByTime(items));
+	const questions = $derived(sorted.filter((item) => item.kind === 'question'));
+	const reports = $derived(sorted.filter((item) => item.kind === 'report'));
+
 </script>
 
 <article class="profile">
@@ -35,11 +50,49 @@
 		<dt>待決題</dt>
 		<dd>{controller.pendingCount} 題</dd>
 		<dt>最新回報</dt>
-		<dd>{controller.lastReportAt ? time(controller.lastReportAt) : '尚無回報'}</dd>
+		<dd>{controller.lastReportAt ? formatTime(controller.lastReportAt) : '尚無回報'}</dd>
 	</dl>
 </article>
 
+<section class="block" data-block="questions">
+	<h3>待決題</h3>
+	{#each questions as item (item.key)}
+		<ItemRow {item} showOwner={false} {onopen} />
+	{:else}
+		<p class="none">{controller.status === 'ended' ? '主控已結束，它的待決題不能再作答。' : '沒有待決題。'}</p>
+	{/each}
+</section>
+
+<section class="block" data-block="reports">
+	<h3>近期回報</h3>
+	{#each reports as item (item.key)}
+		<ItemRow {item} showOwner={false} {onopen} />
+	{:else}
+		<p class="none">信箱裡沒有它的回報。</p>
+	{/each}
+</section>
+
+<!-- Mount point (ticket 111): the "sent" log block for this controller goes here. -->
+
+<!-- Mount point (ticket 111): the reply box for this controller goes here, last on the page. -->
+
 <style>
+	.block {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+	h3 {
+		margin: 0;
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--muted);
+	}
+	.none {
+		margin: 0;
+		font-size: 0.85rem;
+		color: var(--muted);
+	}
 	.profile {
 		background: var(--surface);
 		border: 1px solid var(--line);

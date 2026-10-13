@@ -91,9 +91,55 @@ export interface Controller {
 	error: string | null;
 }
 
+/** Where an inbox item comes from. The owner is carried by the item itself, so an archived
+ *  report still shows it after its controller has left the roster. */
+interface ItemOwner {
+	/** Unique among everything the board lists; safe to use as a list key. */
+	key: string;
+	/** The owning controller's session ID. */
+	controllerId: string;
+	hcomName: string;
+	project: string;
+	workspace: string;
+}
+
+/** A question of an active controller that the controller has not recorded yet. */
+export interface InboxQuestion extends ItemOwner {
+	kind: 'question';
+	/** When it was asked; null for a question written before the helper recorded that. */
+	time: string | null;
+	title: string;
+	/** Still waiting for an answer to be sent. */
+	unsent: boolean;
+	question: HelperQuestion;
+}
+
+/** A DONE or HELP report. */
+export interface InboxReport extends ItemOwner {
+	kind: 'report';
+	tag: 'DONE' | 'HELP';
+	time: string;
+	/** The summary of the tag line. */
+	title: string;
+	message: string;
+	/** When it was marked read on any device; null while unread. */
+	readAt: string | null;
+}
+
+export type InboxItem = InboxQuestion | InboxReport;
+
+export function itemLabel(item: InboxItem): string {
+	if (item.kind === 'question') return '待決';
+	return item.tag === 'HELP' ? '求助' : '回報';
+}
+
 export interface BoardSnapshot {
 	generatedAt: string;
 	controllers: Controller[];
+	/** Questions and unarchived reports, in source order; the page sorts them. */
+	inbox: InboxItem[];
+	/** How many reports are in the archive; they are fetched separately. */
+	archivedCount: number;
 	/** Source failures that cannot be attributed to one controller. */
 	errors: string[];
 }
