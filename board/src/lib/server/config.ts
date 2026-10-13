@@ -6,13 +6,16 @@ import { isAbsolute, join } from 'node:path';
 type Env = Record<string, string | undefined>;
 
 export interface BoardConfig {
-	/** Where the board keeps its own state (paired devices, pairing codes). */
+	/** Where the board keeps its own state (paired devices, pairing codes, sent log). */
 	stateDir: string;
 	/** Where the turn-end hook appends controller report records. */
 	reportsDir: string;
 	/** Command that runs the LAT panel helper; the board appends `board <command>`. */
 	helperCommand: string[];
 	helperTimeoutMs: number;
+	/** Command that types into a controller's client; the board appends `<HCOM name> <text> --enter`. */
+	injectCommand: string[];
+	injectTimeoutMs: number;
 	/** Longest a change the file watch missed may take to be read and pushed to the pages. */
 	fallbackMs: number;
 	debounceMs: number;
@@ -37,14 +40,19 @@ function seconds(value: string | undefined, fallback: number): number {
 	return value && Number.isFinite(parsed) && parsed > 0 ? parsed * 1000 : fallback;
 }
 
-function helperCommand(env: Env): string[] {
-	if (env.LAT_BOARD_HELPER_COMMAND) {
-		const parsed: unknown = JSON.parse(env.LAT_BOARD_HELPER_COMMAND);
-		if (!Array.isArray(parsed) || !parsed.length || parsed.some((part) => typeof part !== 'string')) {
-			throw new Error('LAT_BOARD_HELPER_COMMAND must be a JSON array of strings');
-		}
-		return parsed;
+/** A command given as a JSON array of strings; undefined when the variable is not set. */
+function commandFrom(env: Env, name: string): string[] | undefined {
+	if (!env[name]) return undefined;
+	const parsed: unknown = JSON.parse(env[name]);
+	if (!Array.isArray(parsed) || !parsed.length || parsed.some((part) => typeof part !== 'string')) {
+		throw new Error(`${name} must be a JSON array of strings`);
 	}
+	return parsed;
+}
+
+function helperCommand(env: Env): string[] {
+	const given = commandFrom(env, 'LAT_BOARD_HELPER_COMMAND');
+	if (given) return given;
 	const latDir = env.LAT_BOARD_LAT_DIR || join(homedir(), '.agents/skills/lat');
 	return ['uv', 'run', '--no-project', 'python', join(latDir, 'herdr-panel/lat_panel.py')];
 }
@@ -75,6 +83,9 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		// A missed change may wait out one read and then need a second one; both must fit in the
 		// fallback deadline, so the helper never gets more than half of it.
 		helperTimeoutMs: Math.min(seconds(env.LAT_BOARD_HELPER_TIMEOUT_SECONDS, 15_000), (fallbackMs - READ_SLACK_MS) / 2),
+		injectCommand: commandFrom(env, 'LAT_BOARD_INJECT_COMMAND') ?? ['hcom', 'term', 'inject'],
+		// The command itself waits up to 2 seconds for the client to show the text before submitting.
+		injectTimeoutMs: seconds(env.LAT_BOARD_INJECT_TIMEOUT_SECONDS, 15_000),
 		fallbackMs,
 		debounceMs: 200,
 		pairingTtlMs: seconds(env.LAT_BOARD_PAIRING_TTL_SECONDS, 300_000),

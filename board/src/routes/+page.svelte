@@ -6,9 +6,11 @@
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
 	import { remember, remembered } from '#lib/board/prefs.ts';
 	import type { InboxItem } from '#lib/board/types.ts';
+	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
 	import ItemContent from '#lib/components/ItemContent.svelte';
+	import ReplyBox from '#lib/components/ReplyBox.svelte';
 	import Roster from '#lib/components/Roster.svelte';
 
 	let { data } = $props();
@@ -158,8 +160,7 @@
 						<button class="context" onclick={() => openController(controller.id)}>
 							{item.project} · @{item.hcomName}　看主控資訊 →
 						</button>
-						<!-- Mount point (ticket 111): the reply box for `controller` goes here, under the
-						     item's content. It is not shown when the controller has left the roster. -->
+						<ReplyBox {controller} />
 					{:else}
 						<p class="context">{item.project} · @{item.hcomName}（已不在名冊上）</p>
 					{/if}
@@ -168,8 +169,8 @@
 		</section>
 	</div>
 
-	<!-- Mount point (ticket 111): the command line of the wide layout goes here, after `.shell`.
-	     `.page` is a full-height column above 760px, so an element here stays at the bottom. -->
+	<!-- `.page` is a full-height column above 760px, so the command line stays at the bottom. -->
+	<CommandLine {controllers} target={controller} />
 </div>
 
 <style>
