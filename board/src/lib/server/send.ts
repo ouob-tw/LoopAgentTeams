@@ -19,8 +19,25 @@ export function typedText(text: string): string {
 	return text.replace(/\r\n?/g, '\n');
 }
 
-/** Runs the input command once; resolves with why it failed, or null when it succeeded. */
-function inject(config: BoardConfig, hcomName: string, text: string): Promise<string | null> {
+// The input command reads these as its own flags when one is a whole argument, wherever it stands
+// (there is no way to mark an argument as text: after `--` the `--` itself is typed too). `--enter`
+// is dropped, `--help` and `-h` print usage and type nothing, `--name` takes the next argument and
+// `--go` is swallowed. Any other text, option-like or not, is typed as given.
+const OWN_FLAGS = new Set(['--help', '-h', '--name', '--go', '--enter']);
+
+/**
+ * The input command's argument lists, in order, that together type the text and submit once. The
+ * text is one argument and one call, except text that is exactly one of the command's own flags:
+ * its first character goes first, then the rest with the submit, so the client's input box ends up
+ * holding the very same characters.
+ */
+export function injectCalls(text: string): string[][] {
+	if (!OWN_FLAGS.has(text)) return [[text, '--enter']];
+	return [[text.slice(0, 1)], [text.slice(1), '--enter']];
+}
+
+/** Runs one call of the input command; resolves with why it failed, or null when it succeeded. */
+function runInject(config: BoardConfig, hcomName: string, args: string[]): Promise<string | null> {
 	const [command, ...prefix] = config.injectCommand;
 	const timeout = config.injectTimeoutMs;
 	const failed = (detail: string) => `輸入到 @${hcomName} 的分頁失敗：${detail}`;
@@ -34,12 +51,22 @@ function inject(config: BoardConfig, hcomName: string, text: string): Promise<st
 			resolve(failed(stdout.trim().split('\n')[0] || stderr.trim().split('\n').at(-1) || error.message));
 		};
 		try {
-			execFile(command, [...prefix, hcomName, text, '--enter'], { timeout }, done);
+			execFile(command, [...prefix, hcomName, ...args], { timeout }, done);
 		} catch (error) {
 			// Text that cannot be a command argument at all, such as one holding a NUL character.
 			resolve(failed((error as Error).message));
 		}
 	});
+}
+
+/** Types the text into the controller's input box and submits it. One attempt per call, and no
+ *  call after one that failed. Resolves with why it failed, or null when it succeeded. */
+async function inject(config: BoardConfig, hcomName: string, text: string): Promise<string | null> {
+	for (const args of injectCalls(text)) {
+		const reason = await runInject(config, hcomName, args);
+		if (reason) return reason;
+	}
+	return null;
 }
 
 // Two messages typed into one input box at the same time would mix, so the sends to one
@@ -78,9 +105,6 @@ async function attempt(board: Board, controllerId: string, rawText: string) {
 		const known = (await board.refresh()).controllers.find((candidate) => candidate.id === controllerId);
 		hcomName = known?.hcomName ?? '';
 		reason = known ? ENDED_REASON : '看板目前的資料裡沒有這個主控，沒有送出。';
-	} else if (/^--\S*$/.test(text)) {
-		// The command takes its options from anywhere on its command line.
-		reason = `「${text}」會被輸入指令當成選項而不是文字，沒有送出。`;
 	} else {
 		reason = await inject(board.config, hcomName, text);
 		status = reason ? 502 : 200;

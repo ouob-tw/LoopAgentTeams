@@ -18,6 +18,10 @@ import type {
 const ROOT = join(import.meta.dir, '..');
 export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
 
+/** What runs the server and the fake commands: Node when the host has it, otherwise the Bun that
+ *  runs the tests, so the same tests pass on a host that has only Bun. */
+export const NODE = Bun.which('node') ?? process.execPath;
+
 export const DAY = 24 * 60 * 60 * 1000;
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -142,7 +146,7 @@ export async function startFixture(
 		LAT_REPORTS_DIR: reportsDir,
 		LAT_BOARD_CLOCK_FILE: join(dir, 'clock'),
 		LAT_BOARD_CONFIG_DIR: join(dir, 'board-config'),
-		LAT_BOARD_HELPER_COMMAND: JSON.stringify(['node', join(ROOT, 'tests/fake-helper.mjs'), dir]),
+		LAT_BOARD_HELPER_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-helper.mjs'), dir]),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,
 		HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state'),
 		...options.env
@@ -260,7 +264,7 @@ export async function startFixture(
 			return watch;
 		},
 		async start() {
-			server = spawn('node', [join(ROOT, 'build/index.js')], { env, stdio: ['ignore', 'inherit', 'inherit'] });
+			server = spawn(NODE, [join(ROOT, 'build/index.js')], { env, stdio: ['ignore', 'inherit', 'inherit'] });
 			const deadline = Date.now() + 10_000;
 			for (;;) {
 				try {
