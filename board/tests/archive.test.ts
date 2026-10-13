@@ -152,29 +152,47 @@ test('reports of an active controller are archived by the same rules, and it sta
 	expect(((await archived('啟用中主控的舊回報')) as InboxReport).controllerId).toBe(luna.session_id);
 });
 
-test('an unusable state file is reported without hiding the board, and is not overwritten', async () => {
-	const luna = fixture.bound('epsilon', 'steady');
-	fixture.report(luna.session_id, { tag: 'DONE', summary: '狀態檔壞掉時的回報', time: iso(ISSUED + 80 * DAY), hcom_name: 'steady', workspace: luna.workspace });
-	fixture.list([luna]);
-	const { key } = titled(await on(ISSUED + 81 * DAY), '狀態檔壞掉時的回報')!;
-	await fixture.markRead(cookie, key);
+test('an unusable state file is reported without making up which reports are read or archived', async () => {
+	const workspace = `${fixture.dir}/workspaces/epsilon`;
+	const start = ISSUED + 80 * DAY;
+	const steady = fixture.bound('epsilon', 'steady');
+	fixture.list([steady]);
+	// Read on day 0 and archived by day 4; its ended controller has left the roster.
+	fixture.report('session-early', { tag: 'DONE', summary: '早讀已封存', time: iso(start), hcom_name: 'early', workspace });
+	// Read on day 6, so on day 8 it is still in the inbox although it is older than 7 days.
+	fixture.report('session-late', { tag: 'DONE', summary: '晚讀仍保留', time: iso(start), hcom_name: 'late', workspace });
+	await fixture.markRead(cookie, titled(await on(start), '早讀已封存')!.key);
+	await fixture.markRead(cookie, titled(await on(start + 6 * DAY), '晚讀仍保留')!.key);
+	const before = await on(start + 8 * DAY);
+	expect(titled(before, '早讀已封存')).toBeUndefined();
+	expect(named(before, 'early')).toBeUndefined();
+	expect(titled(before, '晚讀仍保留')).toMatchObject({ readAt: iso(start + 6 * DAY) });
 	const stateFile = join(fixture.dir, 'board-state', 'inbox.json');
 	const good = readFileSync(stateFile, 'utf8');
 
+	// While running, the board keeps the state it last read.
 	writeFileSync(stateFile, '{ not json');
-	const broken = await fixture.refresh(cookie);
-
-	expect(named(broken, 'steady')).toBeDefined();
-	expect(titled(broken, '狀態檔壞掉時的回報')).toMatchObject({ readAt: null });
-	expect(broken.errors.join()).toContain('已讀與封存紀錄讀不出來');
-	expect((await fixture.markRead(cookie, key)).status).toBe(500);
+	const stale = await fixture.refresh(cookie);
+	expect(stale.errors.join()).toContain('回報沿用上次讀到的狀態');
+	expect({ ...stale, errors: [] as string[], generatedAt: '' }).toEqual({ ...before, generatedAt: '' });
+	expect((await fixture.markRead(cookie, titled(stale, '晚讀仍保留')!.key)).status).toBe(500);
 	expect((await fixture.fetch('/api/archive', { cookie })).status).toBe(500);
+	expect(readFileSync(stateFile, 'utf8')).toBe('{ not json');
+
+	// Started without ever having read it, the board lists no report rather than guessing.
+	await fixture.stop();
+	await fixture.start();
+	const cold = await fixture.board(cookie);
+	expect(cold.errors.join()).toContain('回報暫時不列出');
+	expect(cold.inbox.filter((item) => item.kind === 'report')).toEqual([]);
+	expect(cold.archivedCount).toBe(0);
+	expect(named(cold, 'steady')).toBeDefined();
+	expect(named(cold, 'early')).toBeUndefined();
 	expect(readFileSync(stateFile, 'utf8')).toBe('{ not json');
 
 	// Putting the file back brings the read marks and the archive back.
 	writeFileSync(stateFile, good);
 	const repaired = await fixture.refresh(cookie);
-	expect(repaired.errors).toEqual([]);
-	expect(titled(repaired, '狀態檔壞掉時的回報')).toMatchObject({ readAt: iso(ISSUED + 81 * DAY) });
-	expect(await archived('一直沒讀')).toBeDefined();
+	expect({ ...repaired, generatedAt: '' }).toEqual({ ...before, generatedAt: '' });
+	expect(await archived('早讀已封存')).toBeDefined();
 });

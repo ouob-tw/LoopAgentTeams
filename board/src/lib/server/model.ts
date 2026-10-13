@@ -156,10 +156,11 @@ function endedController(file: ReportFile): Controller {
 	};
 }
 
-/** `state` must already have had `archiveDue` applied for `now`. */
-export function buildSnapshot(sources: Sources, state: InboxState, now: number): BoardSnapshot {
-	const reports = reportItems(sources, state);
-	const inboxReports = reports.filter((item) => !(item.key in state.archived));
+/** `state` must already have had `archiveDue` applied for `now`. When it is null nothing is known
+ *  about which reports are read or archived, so no report is listed at all. */
+export function buildSnapshot(sources: Sources, state: InboxState | null, now: number): BoardSnapshot {
+	const reports = state ? reportItems(sources, state) : [];
+	const inboxReports = reports.filter((item) => !(item.key in state!.archived));
 	const withInboxReport = new Set(inboxReports.map((item) => item.controllerId));
 	const files = new Map(sources.reportFiles.map((file) => [file.sessionId, file]));
 	const errors = [sources.reportsError].filter((error): error is string => error !== null);

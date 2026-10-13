@@ -44,6 +44,8 @@ function createBoard(): Board {
 	let lastActive: HelperController[] = [];
 	/** What the last read found; read state changes rebuild the snapshot from it. */
 	let sources: Sources | null = null;
+	/** The read and archive state as last read from, or written to, its file. */
+	let lastState: InboxState | null = null;
 	let running: Promise<BoardSnapshot> | null = null;
 	let queued: Promise<BoardSnapshot> | null = null;
 	let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -109,21 +111,23 @@ function createBoard(): Board {
 	/** Bring the archive up to date, optionally mark one report read, and push the result. */
 	function publish(from: Sources, readKey?: string): MarkReadResult | null {
 		const now = config.now();
-		// A state file that cannot be used must not hide the roster: the board carries on with every
-		// report unread, says so, and leaves the file alone. Marking read fails outright instead.
-		let state: InboxState;
+		// A state file that cannot be used must not hide the roster, and must not make up which
+		// reports are unread or archived either: the board carries on with the state it last read,
+		// or without listing reports when it never read one, says so, and leaves the file alone.
+		// Marking read fails outright instead.
+		let state: InboxState | null;
 		let problem: string | null = null;
 		try {
 			state = loadInboxState(config.stateDir);
 		} catch (error) {
 			if (readKey !== undefined) throw error;
-			state = { read: {}, archived: {} };
-			problem = `已讀與封存紀錄讀不出來，暫時把所有回報當成未讀：${(error as Error).message}`;
+			state = structuredClone(lastState);
+			problem = `已讀與封存紀錄讀不出來，${state ? '回報沿用上次讀到的狀態' : '回報暫時不列出'}：${(error as Error).message}`;
 		}
 		// Archive first: a report that is already due can no longer be marked read.
-		const archived = archiveDue(from, state, now);
-		const marked = readKey === undefined ? null : markRead(from, state, readKey, now);
-		if (!problem && (archived || marked === 'marked')) {
+		const archived = state !== null && archiveDue(from, state, now);
+		const marked = state === null || readKey === undefined ? null : markRead(from, state, readKey, now);
+		if (state && !problem && (archived || marked === 'marked')) {
 			try {
 				saveInboxState(config.stateDir, state);
 			} catch (error) {
@@ -132,6 +136,8 @@ function createBoard(): Board {
 				problem = `已讀與封存紀錄寫不進去：${(error as Error).message}`;
 			}
 		}
+
+		if (!problem) lastState = state;
 
 		const next = buildSnapshot(from, state, now);
 		if (problem) next.errors.push(problem);
