@@ -41,6 +41,10 @@ test('the fallback deadline is 60 seconds unless set shorter', () => {
 	expect(loadConfig({}).fallbackMs).toBe(60_000);
 	expect(loadConfig({ LAT_BOARD_FALLBACK_SECONDS: '600' }).fallbackMs).toBe(60_000);
 	expect(loadConfig({ LAT_BOARD_FALLBACK_SECONDS: '10' }).fallbackMs).toBe(10_000);
+	// Too short a deadline would leave the helper no time at all.
+	const shortest = loadConfig({ LAT_BOARD_FALLBACK_SECONDS: '0.5' });
+	expect(shortest.fallbackMs).toBe(5_000);
+	expect(shortest.helperTimeoutMs).toBe(2_000);
 	// Two helper runs in a row must fit inside the deadline.
 	expect(loadConfig({ LAT_BOARD_HELPER_TIMEOUT_SECONDS: '45' }).helperTimeoutMs).toBeLessThan(30_000);
 });

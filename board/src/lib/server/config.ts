@@ -19,6 +19,8 @@ export interface BoardConfig {
 }
 
 const MAX_FALLBACK_MS = 60_000;
+/** Below this there is no room left for the helper to run twice. */
+const MIN_FALLBACK_MS = 5_000;
 /** Allowed for reading the report files and pushing the snapshot once the helper has answered. */
 export const READ_SLACK_MS = 1_000;
 
@@ -45,7 +47,10 @@ function helperCommand(env: Env): string[] {
 }
 
 export function loadConfig(env: Env = process.env): BoardConfig {
-	const fallbackMs = Math.min(seconds(env.LAT_BOARD_FALLBACK_SECONDS, MAX_FALLBACK_MS), MAX_FALLBACK_MS);
+	const fallbackMs = Math.max(
+		MIN_FALLBACK_MS,
+		Math.min(seconds(env.LAT_BOARD_FALLBACK_SECONDS, MAX_FALLBACK_MS), MAX_FALLBACK_MS)
+	);
 	return {
 		stateDir: env.LAT_BOARD_STATE_DIR || join(stateHome(env), 'lat/board'),
 		reportsDir: env.LAT_REPORTS_DIR || join(stateHome(env), 'lat/reports'),
