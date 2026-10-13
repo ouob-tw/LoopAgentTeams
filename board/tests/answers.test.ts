@@ -654,7 +654,10 @@ const sentLogView = async (controllerId: string) => {
 	return (await response.json()) as { entries: SentEntry[]; logError: string | null };
 };
 
-test('an answer whose sent-log line cannot be written is still submitted and notified, and the response says why the log failed', async () => {
+// A read-only file does not stop root, so these two cannot make the log unwritable there.
+const unwritable = process.getuid?.() === 0 ? test.skip : test;
+
+unwritable('an answer whose sent-log line cannot be written is still submitted and notified, and the response says why the log failed', async () => {
 	const asked = text({ title: '紀錄寫不進去的題' });
 	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
 	fixture.list([luna]);
@@ -674,7 +677,7 @@ test('an answer whose sent-log line cannot be written is still submitted and not
 	expect(fixture.helperArgs('answer')).toHaveLength(1);
 });
 
-test('when the sent log cannot be updated to recorded the controller page says so, and it shows recorded once the log is writable again', async () => {
+unwritable('when the sent log cannot be updated to recorded the controller page says so, and it shows recorded once the log is writable again', async () => {
 	const asked = text({ title: '紀錄更新不了的題' });
 	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
 	fixture.list([luna]);
