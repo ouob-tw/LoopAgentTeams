@@ -73,13 +73,15 @@ export async function submitAnswer(board: Board, request: AnswerRequest): Promis
 			time: new Date().toISOString(),
 			controllerId: request.controllerId,
 			hcomName: binding.hcom_name,
+			questionsPath: binding.questions_path,
 			questionId: request.questionId,
 			revision: request.revision,
 			title: question?.title ?? '',
 			answer: answerText(question ?? { kind: 'text', options: [] }, request.select, request.text),
 			note: request.note.trim()
 		};
-		const entry: SentAnswer = { ...stored, state: 'waiting', settledAt: null };
+		const { questionsPath: _, ...sent } = stored;
+		const entry: SentAnswer = { ...sent, state: 'waiting', settledAt: null };
 		let logError: string | null = null;
 		try {
 			appendSent(board.config.stateDir, stored);

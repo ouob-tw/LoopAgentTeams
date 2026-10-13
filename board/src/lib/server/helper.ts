@@ -1,6 +1,6 @@
 // The only way the board reads and writes question files: the LAT panel helper's `board` commands.
 import { execFile } from 'node:child_process';
-import type { HelperController } from '../board/types.ts';
+import type { HelperController, HelperQuestion } from '../board/types.ts';
 import type { BoardConfig } from './config.ts';
 
 export type HelperList =
@@ -62,6 +62,19 @@ export async function listControllers(config: BoardConfig): Promise<HelperList> 
 		return { ok: false, reason: reason ?? '輔助工具的輸出缺少主控清單' };
 	}
 	return { ok: true, controllers: payload.controllers };
+}
+
+/** The questions one question file holds now, whether or not its controller is still bound; null
+ *  when the helper could not read it. */
+export async function readQuestions(config: BoardConfig, questionsPath: string): Promise<HelperQuestion[] | null> {
+	const { stdout, failure } = await run(config, ['questions', `--questions=${questionsPath}`]);
+	if (failure) return null;
+	try {
+		const questions = JSON.parse(stdout)?.questions;
+		return Array.isArray(questions) ? questions : null;
+	} catch {
+		return null;
+	}
 }
 
 /** What `board answer` and `board notify` print: one JSON object with a status. */

@@ -27,7 +27,7 @@
 						<p class="meta">
 							<time datetime={entry.time}>{formatTime(entry.time)}</time>
 							<span>答覆 {entry.questionId} r{entry.revision}</span>
-							<span class:failed={entry.state === 'superseded'}>
+							<span class:failed={entry.state !== 'waiting' && entry.state !== 'recorded'}>
 								{entry.state === 'recorded' ? '✓ ' : ''}{ANSWER_STATE_TEXT[entry.state]}
 							</span>
 						</p>
