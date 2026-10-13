@@ -39,6 +39,12 @@ class Messaging {
 		this.loadFailed[controllerId] = !entries;
 	}
 
+	#unknown(controllerId: string): Outcome {
+		// The log tells whether the attempt was made, if the server can be reached again.
+		void this.load(controllerId);
+		return { ok: false, reason: UNKNOWN_OUTCOME };
+	}
+
 	/** One attempt; the caller keeps the text when it fails. */
 	async send(controllerId: string, text: string): Promise<Outcome> {
 		let response: Response;
@@ -49,7 +55,7 @@ class Messaging {
 				body: JSON.stringify({ controllerId, text })
 			});
 		} catch {
-			return { ok: false, reason: UNKNOWN_OUTCOME };
+			return this.#unknown(controllerId);
 		}
 		if (response.status === 401) {
 			location.reload();
@@ -57,7 +63,7 @@ class Messaging {
 		}
 		const body: SendResponse | null = await response.json().catch(() => null);
 		if (response.status === 400) return { ok: false, reason: '看板伺服器不接受這則訊息，沒有送出。' };
-		if (!body?.entry) return { ok: false, reason: UNKNOWN_OUTCOME };
+		if (!body?.entry) return this.#unknown(controllerId);
 
 		// The server's log is what every device sees, so read it again rather than patch the list.
 		void this.load(controllerId);

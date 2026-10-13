@@ -56,7 +56,7 @@
 	{:else if outcome?.ok}
 		<p class="note" role="status">✓ 已送出{outcome.reason ?? ''}</p>
 	{:else if outcome}
-		<p class="note failed" role="alert">✗ 沒有送達：{outcome.reason}（文字還在輸入框裡）</p>
+		<p class="note failed" role="alert">✗ {outcome.reason}（文字還在輸入框裡）</p>
 	{/if}
 </form>
 
