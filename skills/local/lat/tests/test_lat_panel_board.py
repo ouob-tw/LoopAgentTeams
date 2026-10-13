@@ -786,6 +786,14 @@ class DeliveredNotificationTests(BoardTestCase):
         self.assertEqual(self.board("notify", "--questions", self.questions), {"status": "no_pending"})
         self.assertEqual(len(self.calls()), 1)
 
+    def test_delivery_record_that_cannot_be_used_costs_a_repeat_not_a_lost_notification(self):
+        self.answer(self.questions, "Q3", 1, "--text", "想法")
+        (self.state / "delivered-notifications.json").write_text('{"delivered": {}, "since": "garbage"}')
+        [controller] = self.board("list")["controllers"]
+        self.assertTrue(controller["notification_pending"])
+        self.assertEqual(self.board("notify", "--questions", self.questions), {"status": "delivered"})
+        self.assertEqual(self.board("notify", "--questions", self.questions), {"status": "no_pending"})
+
     def test_answer_lost_before_deliveries_were_noted_is_still_owed(self):
         self.answer(self.questions, "Q3", 1, "--text", "想法")
         (self.state / "delivered-notifications.json").unlink()

@@ -1474,10 +1474,11 @@ def _read_delivered(path):
     if not isinstance(delivered, dict):
         return {}, None
     since = payload.get("since")
-    return (
-        {key: value for key, value in delivered.items() if isinstance(value, list)},
-        since if isinstance(since, str) else None,
-    )
+    try:
+        datetime.fromisoformat(since)
+    except (TypeError, ValueError):
+        since = None
+    return {key: value for key, value in delivered.items() if isinstance(value, list)}, since
 
 
 def _submitted_after(submitted, since):
