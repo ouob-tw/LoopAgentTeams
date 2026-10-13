@@ -9,7 +9,9 @@
 
 	const ended = $derived(controller.status === 'ended');
 	const text = $derived(messaging.drafts[controller.id] ?? '');
-	let sending = $state(false);
+	// Both by controller ID: the box is reused when another controller is opened.
+	let inFlight = $state<Record<string, boolean>>({});
+	const sending = $derived(inFlight[controller.id] ?? false);
 	let outcomes = $state<Record<string, Outcome>>({});
 	const outcome = $derived(outcomes[controller.id]);
 
@@ -22,10 +24,10 @@
 		if (sending || ended || !text.trim()) return;
 		const id = controller.id;
 		const sentText = text;
-		sending = true;
+		inFlight[id] = true;
 		delete outcomes[id];
 		const result = await messaging.send(id, sentText);
-		sending = false;
+		inFlight[id] = false;
 		// Only what was delivered leaves the box; anything typed meanwhile stays too.
 		if (result.ok && messaging.drafts[id] === sentText) messaging.drafts[id] = '';
 		outcomes[id] = result;

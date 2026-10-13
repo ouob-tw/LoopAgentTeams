@@ -38,7 +38,7 @@ bun run board revoke <ID>     # 撤銷一台裝置，它會回到配對畫面
 | `HOST`、`PORT` | 監聽位址與連接埠（也可用 `start` 的 `--host`、`--port`） | `0.0.0.0`、`7100` |
 | `LAT_BOARD_LAT_DIR` | LAT 技能目錄 | `~/.agents/skills/lat` |
 | `LAT_BOARD_HELPER_COMMAND` | 直接指定輔助工具指令（JSON 字串陣列），看板會在後面加上 `board list` 等參數 | 由技能目錄組出 |
-| `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已配對裝置、配對碼、回報的已讀與封存） | `$XDG_STATE_HOME/lat/board` |
+| `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已配對裝置、配對碼、回報的已讀與封存、送出紀錄） | `$XDG_STATE_HOME/lat/board` |
 | `LAT_REPORTS_DIR` | 主控回報紀錄目錄，須與 LAT hook 寫入的位置相同 | `$XDG_STATE_HOME/lat/reports` |
 | `LAT_BOARD_FALLBACK_SECONDS` | 漏掉檔案變動時，最慢幾秒內補上（從變動到畫面更新）；5 到 60 | `60` |
 | `LAT_BOARD_HELPER_TIMEOUT_SECONDS` | 輔助工具多久沒回應就放棄；最多是上一項的一半 | `15` |

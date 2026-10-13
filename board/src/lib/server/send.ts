@@ -5,85 +5,84 @@ import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { ENDED_REASON, type SendResponse, type SentMessage } from '../board/messages.ts';
 import type { Board } from './board.ts';
+import type { BoardConfig } from './config.ts';
+import { listControllers } from './helper.ts';
 import { appendSent } from './sent-log.ts';
-
-type Env = Record<string, string | undefined>;
-
-/** The input command; the board appends `<HCOM name> <text> --enter`. */
-function injectCommand(env: Env): string[] {
-	if (!env.LAT_BOARD_INJECT_COMMAND) return ['hcom', 'term', 'inject'];
-	const parsed: unknown = JSON.parse(env.LAT_BOARD_INJECT_COMMAND);
-	if (!Array.isArray(parsed) || !parsed.length || parsed.some((part) => typeof part !== 'string')) {
-		throw new Error('LAT_BOARD_INJECT_COMMAND must be a JSON array of strings');
-	}
-	return parsed;
-}
-
-function injectTimeoutMs(env: Env): number {
-	const seconds = Number(env.LAT_BOARD_INJECT_TIMEOUT_SECONDS);
-	// The command itself waits up to 2 seconds for the client to show the text before submitting.
-	return Number.isFinite(seconds) && seconds > 0 ? seconds * 1000 : 15_000;
-}
 
 /**
  * The text as it is typed: the command writes it to the terminal unchanged and then sends a
  * carriage return to submit. A line feed inside the text is a new line in the client's input box;
  * a carriage return would submit early and split the message, so none may be left in it.
+ * Nothing else is changed.
  */
 export function typedText(text: string): string {
-	return text.replace(/\r\n?/g, '\n').trimEnd();
+	return text.replace(/\r\n?/g, '\n');
 }
 
 /** Runs the input command once; resolves with why it failed, or null when it succeeded. */
-function inject(hcomName: string, text: string, env: Env): Promise<string | null> {
-	const [command, ...prefix] = injectCommand(env);
-	const timeout = injectTimeoutMs(env);
+function inject(config: BoardConfig, hcomName: string, text: string): Promise<string | null> {
+	const [command, ...prefix] = config.injectCommand;
+	const timeout = config.injectTimeoutMs;
+	const failed = (detail: string) => `輸入到 @${hcomName} 的分頁失敗：${detail}`;
 	return new Promise((resolve) => {
-		execFile(command, [...prefix, hcomName, text, '--enter'], { timeout }, (error, stdout, stderr) => {
+		const done = (error: (Error & { killed?: boolean }) | null, stdout: string, stderr: string) => {
 			if (!error) return resolve(null);
 			if (error.killed) {
 				return resolve(`輸入指令逾時（${timeout / 1000} 秒），文字可能已經打進輸入框但沒有送出。`);
 			}
 			// The command prints its reason on standard output; standard error may only hold notices.
-			const detail = stdout.trim().split('\n')[0] || stderr.trim().split('\n').at(-1) || error.message;
-			resolve(`輸入到 @${hcomName} 的分頁失敗：${detail}`);
-		});
+			resolve(failed(stdout.trim().split('\n')[0] || stderr.trim().split('\n').at(-1) || error.message));
+		};
+		try {
+			execFile(command, [...prefix, hcomName, text, '--enter'], { timeout }, done);
+		} catch (error) {
+			// Text that cannot be a command argument at all, such as one holding a NUL character.
+			resolve(failed((error as Error).message));
+		}
 	});
 }
 
-// Two messages typed into one input box at the same time would mix, so sends run one at a time.
-let queue: Promise<unknown> = Promise.resolve();
+// Two messages typed into one input box at the same time would mix, so the sends to one
+// controller run one after another. Nothing is held back for later: each is attempted once.
+const lastSend = new Map<string, Promise<unknown>>();
 
 export function sendMessage(
 	board: Board,
 	controllerId: string,
-	rawText: string,
-	env: Env = process.env
+	rawText: string
 ): Promise<{ status: number; body: SendResponse }> {
-	const result = queue.then(() => attempt(board, controllerId, rawText, env));
-	queue = result.catch(() => {});
+	const attempted = attempt.bind(null, board, controllerId, rawText);
+	const result = (lastSend.get(controllerId) ?? Promise.resolve()).then(attempted, attempted);
+	lastSend.set(controllerId, result);
+	const forget = () => {
+		if (lastSend.get(controllerId) === result) lastSend.delete(controllerId);
+	};
+	result.then(forget, forget);
 	return result;
 }
 
-async function attempt(board: Board, controllerId: string, rawText: string, env: Env) {
+async function attempt(board: Board, controllerId: string, rawText: string) {
 	const text = typedText(rawText);
-	// Re-read the sources first: the target must still be bound now, not when the page last heard.
-	const snapshot = await board.refresh();
-	const controller = snapshot.controllers.find((candidate) => candidate.id === controllerId);
+	// Ask the binding registry now: the target must still be bound at this moment, whatever the
+	// board's last snapshot says. A registry that cannot be read confirms nothing.
+	const registry = await listControllers(board.config);
+	const binding = registry.ok ? registry.controllers.find((candidate) => candidate.session_id === controllerId) : undefined;
+	let hcomName = binding?.hcom_name ?? '';
 
 	let status = 409;
 	let reason: string | null;
-	if (!controller) {
-		reason = snapshot.errors.length
-			? `無法確認主控是否仍啟用，沒有送出：${snapshot.errors.join('；')}`
-			: '看板目前的資料裡沒有這個主控，沒有送出。';
-	} else if (controller.status === 'ended') {
-		reason = ENDED_REASON;
+	if (!registry.ok) {
+		reason = `無法確認主控是否仍啟用，沒有送出：${registry.reason}`;
+	} else if (!binding) {
+		// The pages may still show it as running; the re-read also tells them otherwise.
+		const known = (await board.refresh()).controllers.find((candidate) => candidate.id === controllerId);
+		hcomName = known?.hcomName ?? '';
+		reason = known ? ENDED_REASON : '看板目前的資料裡沒有這個主控，沒有送出。';
 	} else if (/^--\S*$/.test(text)) {
 		// The command takes its options from anywhere on its command line.
 		reason = `「${text}」會被輸入指令當成選項而不是文字，沒有送出。`;
 	} else {
-		reason = await inject(controller.hcomName, text, env);
+		reason = await inject(board.config, hcomName, text);
 		status = reason ? 502 : 200;
 	}
 
@@ -92,7 +91,7 @@ async function attempt(board: Board, controllerId: string, rawText: string, env:
 		kind: 'message',
 		time: new Date().toISOString(),
 		controllerId,
-		hcomName: controller?.hcomName ?? '',
+		hcomName,
 		text,
 		ok: reason === null,
 		error: reason

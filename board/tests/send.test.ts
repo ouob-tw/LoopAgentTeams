@@ -82,7 +82,8 @@ test('line endings that would submit early are turned into plain new lines', asy
 
 	await send(luna.session_id, 'a\r\nb\rc\n\n');
 
-	expect(calls()).toEqual([['luna', 'a\nb\nc', '--enter']]);
+	// Nothing else changes, trailing blank lines included.
+	expect(calls()).toEqual([['luna', 'a\nb\nc\n\n', '--enter']]);
 });
 
 test('a closed pane: the reason comes back, the failure is logged, nobody else gets the text and nothing is retried', async () => {
@@ -142,6 +143,32 @@ test('a controller that was unbound after the page last heard of it is refused',
 	expect(status).toBe(409);
 	expect(body.reason).toBe('這個主控已結束，無法傳話。');
 	expect(calls()).toEqual([]);
+});
+
+test('while the binding registry cannot be read, nothing is sent, not even to a controller last seen running', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+	await fixture.refresh(cookie);
+	fixture.setHelper({ output: { status: 'error', reason: 'invalid bindings file' }, exit: 1 });
+
+	const { status, body } = await send(luna.session_id, '你好');
+
+	expect(status).toBe(409);
+	expect(body.reason).toContain('無法確認主控是否仍啟用');
+	expect(body.reason).toContain('invalid bindings file');
+	expect(calls()).toEqual([]);
+	expect(await sentTo(luna.session_id)).toMatchObject([{ hcomName: '', text: '你好', ok: false }]);
+});
+
+test('text that cannot be passed to the input command is a logged failure, not a server error', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+
+	const { status, body } = await send(luna.session_id, 'a\u0000b');
+
+	expect(status).toBe(502);
+	expect(body.ok).toBe(false);
+	expect(await sentTo(luna.session_id)).toMatchObject([{ ok: false, error: body.reason }]);
 });
 
 test('a controller the board does not know is refused and logged', async () => {
