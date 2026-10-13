@@ -1,0 +1,125 @@
+/* Every colour, radius and font is a variable so a user stylesheet can override it. */
+:root {
+	--bg: #101214;
+	--surface: #181b1f;
+	--line: #2a2f36;
+	--text: #e6e3dc;
+	--muted: #8b919a;
+	--accent: #6cb6ff;
+	--warn: #f0b429;
+	--ok: #57c785;
+	--danger: #ff7b72;
+	--status-waiting: var(--warn);
+	--status-working: var(--accent);
+	--status-delivered: var(--ok);
+	--status-ended: var(--muted);
+	/* A chosen control: a pressed toggle, a picked option. */
+	--selected-bg: var(--accent);
+	--selected-text: var(--bg);
+	--disabled-opacity: 0.4;
+	--radius: 8px;
+	--radius-pill: 99px;
+	--mono: ui-monospace, 'JetBrains Mono', 'Cascadia Code', monospace;
+	--sans: system-ui, 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+	color-scheme: dark;
+}
+
+/* Light theme, for e-ink and bright screens: black on white, hard borders, nothing translucent.
+   Every colour here has a contrast of at least 7:1 on white (tests/prefs.test.ts), and state is
+   carried by shape and fill, not by hue. `:where` keeps this rule as specific as a plain `:root`,
+   so a user stylesheet's `:root` rule wins in both themes. */
+:root:where([data-theme='light']) {
+	--bg: #fff;
+	--surface: #fff;
+	--line: #111;
+	--text: #000;
+	--muted: #3a3a3a;
+	--accent: #0b3d91;
+	--warn: #9a3412;
+	--ok: #14532d;
+	--danger: #8b0000;
+	--selected-bg: var(--text);
+	--disabled-opacity: 1;
+	color-scheme: light;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+/* The overall size from the settings: everything is sized in rem, so text and spacing follow. */
+html {
+	font-size: calc(100% * var(--ui-scale, 1));
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--sans);
+	line-height: 1.5;
+}
+
+input,
+textarea,
+button {
+	font: inherit;
+	color: inherit;
+	border-radius: var(--radius);
+}
+
+input,
+textarea {
+	background: var(--bg);
+	border: 1px solid var(--line);
+	padding: 0.5rem 0.6rem;
+}
+
+input[type='radio'],
+input[type='checkbox'] {
+	accent-color: var(--selected-bg);
+}
+
+button {
+	background: var(--surface);
+	border: 1px solid var(--line);
+	padding: 0.5rem 0.8rem;
+	cursor: pointer;
+}
+
+button.primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--bg);
+	font-weight: 600;
+}
+
+button[aria-pressed='true'] {
+	background: var(--selected-bg);
+	border-color: var(--selected-bg);
+	color: var(--selected-text);
+	font-weight: 600;
+}
+
+:focus-visible {
+	outline: 2px solid var(--accent);
+	outline-offset: 1px;
+}
+
+button:disabled,
+input:disabled,
+textarea:disabled {
+	opacity: var(--disabled-opacity);
+	cursor: default;
+}
+
+/* Without translucency a disabled control is told apart by its grey frame and text, and a
+   button also by its struck-through label. */
+:root[data-theme='light'] :is(button, input, textarea):disabled {
+	background: var(--bg);
+	border: 1px solid var(--muted);
+	color: var(--muted);
+}
+:root[data-theme='light'] button:disabled {
+	text-decoration: line-through;
+}

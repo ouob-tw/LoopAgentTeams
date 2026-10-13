@@ -33,7 +33,12 @@ Public API used by the Textual panel and LAT controller:
 * ``mark_notification_pending``, ``notification_is_pending``,
   ``send_pending_notification``, and ``clear_pending_notification`` provide the
   persisted notification lifecycle. ``send_pending_notification`` returns an
-  ``(ok, reason)`` pair and clears state only after target delivery.
+  ``(ok, reason)`` pair and clears state only after target delivery; it also
+  notes which submitted answers that delivery covered.
+* ``board_controllers``, ``board_questions``, ``answer_and_notify``, and
+  ``notify_controller`` back the ``board`` commands: the LAT board reads and
+  answers question files only through them. ``answer_question`` is the write
+  half of ``answer_and_notify``.
 
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
@@ -50,11 +55,18 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
        [--herdr-workspace ID] [--herdr-tab ID] [--herdr-pane ID]
   unbind --session-id ID
   resolve (--session-id ID | [--herdr-workspace ID])
+  board list
+  board questions --questions PATH
+  board answer --questions PATH --id ID --revision N \
+      --expected-section-sha256 HASH [--select N]... [--text TEXT] [--note TEXT]
+  board notify --questions PATH
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
 Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
 ``herdr plugin config-dir lat.panel``, then the XDG config fallback. Pending
-state uses ``HERDR_PLUGIN_STATE_DIR`` or the XDG state fallback.
+state uses ``HERDR_PLUGIN_STATE_DIR`` or the XDG state fallback. ``board``
+commands print one JSON object, including on failure; only a usage error
+prints argparse's message on stderr and exits 2.
 """
 
 from contextlib import contextmanager
@@ -138,7 +150,9 @@ def _iso_time(now=None):
     return value.isoformat(timespec="seconds")
 
 
-def _append_journal(journal_path, before, after, *, kind=None, details=None, now=None):
+def _append_journal(
+    journal_path, before, after, *, kind=None, details=None, now=None, panel_write=True,
+):
     journal_path = Path(journal_path)
     journal_path.parent.mkdir(parents=True, exist_ok=True)
     entry = {
@@ -148,7 +162,8 @@ def _append_journal(journal_path, before, after, *, kind=None, details=None, now
         ),
         "before_sha256": hashlib.sha256(before.encode("utf-8")).hexdigest(),
         "after_sha256": hashlib.sha256(after.encode("utf-8")).hexdigest(),
-        "changed_questions": _question_changes(before, after),
+        # Provenance reads these hashes as proof of a panel write; an upsert must not supply one.
+        "changed_questions": _question_changes(before, after) if panel_write else [],
     }
     if kind is not None:
         entry["kind"] = kind
@@ -566,48 +581,56 @@ def write_question_answer(
     """
     questions_path = Path(questions_path)
     with _path_lock(questions_path):
-        document = _read_text_exact(questions_path)
-        matches = [item for item in _sections(document) if item["id"] == question_id]
-        if len(matches) > 1:
-            raise ValueError(f"duplicate question ID: {question_id}")
-        if not matches or not _question_still_matches(
-            matches[0], revision, expected_section_sha256
-        ):
-            return {"status": "question_changed", "id": question_id}
-        section = matches[0]
-        if section["answer_start"] is None:
-            raise ValueError(f"question has no writable answer area: {question_id}")
-        if section["status_label"] == "已記錄" or section["checked"]:
-            return {"status": "read_only", "id": question_id}
-        replacement = (
-            render_answer_area(answer, submitted=False) if answer is not None
-            else _EMPTY_ANSWER_AREA
+        return _write_question_answer_locked(
+            questions_path, question_id, revision, expected_section_sha256, answer
         )
-        start = section["start"] + section["answer_start"]
-        end = section["start"] + section["answer_end"]
-        updated = document[:start] + replacement + document[end:]
-        changed = updated != document
-        if changed:
-            _replace_locked(questions_path, updated)
-            _append_journal(
-                questions_path.parent / "panel-journal.jsonl",
-                document,
-                updated,
-                kind="answer-write",
-                details={
-                    "questions_path": _question_key(questions_path),
-                    "answer_question": question_id,
-                },
-            )
-        updated_section = _question_section(updated, question_id)
-        return {
-            "status": "saved",
-            "id": question_id,
-            "revision": revision,
-            "section_sha256": _section_sha256(updated_section),
-            "submitted": updated_section["checked"],
-            "changed": changed,
-        }
+
+
+def _write_question_answer_locked(
+    questions_path, question_id, revision, expected_section_sha256, answer
+):
+    document = _read_text_exact(questions_path)
+    matches = [item for item in _sections(document) if item["id"] == question_id]
+    if len(matches) > 1:
+        raise ValueError(f"duplicate question ID: {question_id}")
+    if not matches or not _question_still_matches(
+        matches[0], revision, expected_section_sha256
+    ):
+        return {"status": "question_changed", "id": question_id}
+    section = matches[0]
+    if section["answer_start"] is None:
+        raise ValueError(f"question has no writable answer area: {question_id}")
+    if section["status_label"] == "已記錄" or section["checked"]:
+        return {"status": "read_only", "id": question_id}
+    replacement = (
+        render_answer_area(answer, submitted=False) if answer is not None
+        else _EMPTY_ANSWER_AREA
+    )
+    start = section["start"] + section["answer_start"]
+    end = section["start"] + section["answer_end"]
+    updated = document[:start] + replacement + document[end:]
+    changed = updated != document
+    if changed:
+        _replace_locked(questions_path, updated)
+        _append_journal(
+            questions_path.parent / "panel-journal.jsonl",
+            document,
+            updated,
+            kind="answer-write",
+            details={
+                "questions_path": _question_key(questions_path),
+                "answer_question": question_id,
+            },
+        )
+    updated_section = _question_section(updated, question_id)
+    return {
+        "status": "saved",
+        "id": question_id,
+        "revision": revision,
+        "section_sha256": _section_sha256(updated_section),
+        "submitted": updated_section["checked"],
+        "changed": changed,
+    }
 
 
 def submit_question_answers(questions_path, expected_questions):
@@ -618,66 +641,70 @@ def submit_question_answers(questions_path, expected_questions):
     """
     questions_path = Path(questions_path)
     with _path_lock(questions_path):
-        document = _read_text_exact(questions_path)
-        sections = _sections(document)
-        by_id = {}
-        for section in sections:
-            if section["id"] in by_id:
-                raise ValueError(f"duplicate question ID: {section['id']}")
-            by_id[section["id"]] = section
-        stale = []
-        selected = []
-        for question_id, identity in expected_questions.items():
-            revision, section_hash = identity
-            section = by_id.get(question_id)
-            if (
-                section is None
-                or section["status_label"] != "待答"
-                or not _question_still_matches(section, revision, section_hash)
-            ):
-                stale.append(question_id)
-                continue
-            if section["answer_start"] is None or parse_question_answer(section) is None:
-                raise ValueError(f"question has no answer to submit: {question_id}")
-            selected.append(section)
-        if stale:
-            return {"status": "question_changed", "ids": stale}
+        return _submit_question_answers_locked(questions_path, expected_questions)
 
-        updated = document
-        submitted_ids = []
-        for section in sorted(selected, key=lambda item: item["start"], reverse=True):
-            if section["checked"]:
-                continue
-            replacement = _SUBMIT_MARKER.sub(
-                lambda match: match.group(0).replace("[ ]", "[x]", 1),
-                section["answer_block"],
-            )
-            start = section["start"] + section["answer_start"]
-            end = section["start"] + section["answer_end"]
-            updated = updated[:start] + replacement + updated[end:]
-            submitted_ids.append(section["id"])
-        submitted_ids.sort()
-        if submitted_ids:
-            _replace_locked(questions_path, updated)
-            _append_journal(
-                questions_path.parent / "panel-journal.jsonl",
-                document,
-                updated,
-                kind="batch-submit",
-                details={
-                    "questions_path": _question_key(questions_path),
-                    "submitted_questions": submitted_ids,
-                },
-            )
-        updated_by_id = {item["id"]: item for item in _sections(updated)}
-        return {
-            "status": "submitted",
-            "question_ids": submitted_ids,
-            "section_sha256": {
-                question_id: _section_sha256(updated_by_id[question_id])
-                for question_id in submitted_ids
+
+def _submit_question_answers_locked(questions_path, expected_questions):
+    document = _read_text_exact(questions_path)
+    sections = _sections(document)
+    by_id = {}
+    for section in sections:
+        if section["id"] in by_id:
+            raise ValueError(f"duplicate question ID: {section['id']}")
+        by_id[section["id"]] = section
+    stale = []
+    selected = []
+    for question_id, identity in expected_questions.items():
+        revision, section_hash = identity
+        section = by_id.get(question_id)
+        if (
+            section is None
+            or section["status_label"] != "待答"
+            or not _question_still_matches(section, revision, section_hash)
+        ):
+            stale.append(question_id)
+            continue
+        if section["answer_start"] is None or parse_question_answer(section) is None:
+            raise ValueError(f"question has no answer to submit: {question_id}")
+        selected.append(section)
+    if stale:
+        return {"status": "question_changed", "ids": stale}
+
+    updated = document
+    submitted_ids = []
+    for section in sorted(selected, key=lambda item: item["start"], reverse=True):
+        if section["checked"]:
+            continue
+        replacement = _SUBMIT_MARKER.sub(
+            lambda match: match.group(0).replace("[ ]", "[x]", 1),
+            section["answer_block"],
+        )
+        start = section["start"] + section["answer_start"]
+        end = section["start"] + section["answer_end"]
+        updated = updated[:start] + replacement + updated[end:]
+        submitted_ids.append(section["id"])
+    submitted_ids.sort()
+    if submitted_ids:
+        _replace_locked(questions_path, updated)
+        _append_journal(
+            questions_path.parent / "panel-journal.jsonl",
+            document,
+            updated,
+            kind="batch-submit",
+            details={
+                "questions_path": _question_key(questions_path),
+                "submitted_questions": submitted_ids,
             },
-        }
+        )
+    updated_by_id = {item["id"]: item for item in _sections(updated)}
+    return {
+        "status": "submitted",
+        "question_ids": submitted_ids,
+        "section_sha256": {
+            question_id: _section_sha256(updated_by_id[question_id])
+            for question_id in submitted_ids
+        },
+    }
 
 
 def _journal_entry_matches_questions(entry, questions_path):
@@ -821,6 +848,22 @@ def upsert_question(questions_path, question_id, section_text, *, decisions_path
             else:
                 return revision
         _replace_locked(questions_path, updated)
+        try:
+            _append_journal(
+                questions_path.parent / "panel-journal.jsonl",
+                document,
+                updated,
+                kind="upsert",
+                details={
+                    "questions_path": _question_key(questions_path),
+                    "upsert_question": question_id,
+                    "revision": revision,
+                },
+                panel_write=False,
+            )
+        except OSError:
+            # The question is written; only the board's asked time is lost.
+            pass
         return revision
 
 
@@ -1327,6 +1370,11 @@ def _read_pending(path):
 
 def _write_pending(path, pending):
     path.parent.mkdir(parents=True, exist_ok=True)
+    # The delivery record dates its start by this file's last change, so it has to exist before
+    # the file changes again: otherwise this write would pass for the earlier state.
+    delivered_path = _delivered_path(path.parent)
+    with _path_lock(delivered_path):
+        _read_delivered(delivered_path)
     _replace_locked(path, json.dumps({"pending": pending}, ensure_ascii=False, indent=2) + "\n")
 
 
@@ -1386,6 +1434,120 @@ def clear_pending_notification(
         return False
 
 
+def _delivered_path(state_dir=None):
+    return _notification_path(state_dir).with_name("delivered-notifications.json")
+
+
+def _write_delivered(path, delivered, since):
+    _replace_locked(
+        path,
+        json.dumps({"delivered": delivered, "since": since}, ensure_ascii=False, indent=2) + "\n",
+    )
+
+
+def _read_delivered(path):
+    """Return ``(delivered, since)`` from the delivery record, starting it if there is none.
+
+    ``delivered`` maps each questions path to the answer hashes its last
+    delivery covered. Notifications sent before the record existed left no
+    trace in it, so the record starts with ``since``, the last time the pending
+    notifications changed: an answer submitted before that was handled by the
+    stored notifications alone and is owed nothing more. ``since`` is ``None``
+    when there was no earlier state.
+
+    Content that cannot be used counts as an empty record: the cost is one
+    repeated notification, where refusing would block every later one.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        try:
+            changed = path.with_name("pending-notifications.json").stat().st_mtime
+            since = datetime.fromtimestamp(changed, timezone.utc).isoformat()
+        except FileNotFoundError:
+            since = None
+        _write_delivered(path, {}, since)
+        return {}, since
+    except ValueError:
+        return {}, None
+    delivered = payload.get("delivered") if isinstance(payload, dict) else None
+    if not isinstance(delivered, dict):
+        return {}, None
+    since = payload.get("since")
+    try:
+        datetime.fromisoformat(since)
+    except (TypeError, ValueError):
+        since = None
+    return {key: value for key, value in delivered.items() if isinstance(value, list)}, since
+
+
+def _submitted_after(submitted, since):
+    """Whether an answer journaled at ``submitted`` came after the record's start."""
+    if since is None:
+        return True
+    try:
+        submitted = datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+        return submitted > datetime.fromisoformat(since)
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _submitted_answers(questions_path):
+    """Map the section hash of each panel-submitted, unrecorded answer to its journal time.
+
+    These are the answers a notification is owed for, whether or not a pending
+    notification was ever stored. A submit the panel journal does not prove is
+    left out: the controller could not record it either.
+    """
+    questions_path = Path(questions_path)
+    journal_path = questions_path.parent / "panel-journal.jsonl"
+    try:
+        sections = _sections(questions_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    answers = {}
+    for section in sections:
+        if section["status"] != "ready":
+            continue
+        try:
+            proof = question_provenance(questions_path, journal_path, section["id"])
+        except (OSError, ValueError, AttributeError, TypeError):
+            # The last two: a journal line that is JSON but not an entry.
+            continue
+        answers[proof["section_sha256"]] = proof["time"]
+    return answers
+
+
+def _record_delivered(questions_path, answers, *, state_dir=None):
+    """Note the submitted answers that a delivered notification covered."""
+    path = _delivered_path(state_dir)
+    key = _question_key(questions_path)
+    with _path_lock(path):
+        delivered, since = _read_delivered(path)
+        if not answers and key not in delivered:
+            return
+        if answers:
+            delivered[key] = sorted(answers)
+        else:
+            del delivered[key]
+        _write_delivered(path, delivered, since)
+
+
+def _undelivered_answers(questions_path, *, state_dir=None):
+    """Return the hashes of submitted answers that no delivered notification has covered."""
+    answers = _submitted_answers(questions_path)
+    if not answers:
+        return set()
+    path = _delivered_path(state_dir)
+    with _path_lock(path):
+        delivered, since = _read_delivered(path)
+    covered = delivered.get(_question_key(questions_path), [])
+    return {
+        answer for answer, submitted in answers.items()
+        if answer not in covered and _submitted_after(submitted, since)
+    }
+
+
 def _delivered_targets(payload):
     targets = []
     if isinstance(payload, dict):
@@ -1410,18 +1572,34 @@ def _hcom_receipt_names(target):
 
 def send_pending_notification(questions_path, binding, *, state_dir=None, env=None, timeout=10):
     """Send one persisted notification; return ``(ok, reason)`` and clear on success."""
-    questions_key = _question_key(questions_path)
     state_path = _notification_path(state_dir)
     with _path_lock(state_path):
-        pending = _read_pending(state_path).get(questions_key)
+        pending = _read_pending(state_path).get(_question_key(questions_path))
     if not pending:
         return True, "no pending notification"
-    generation = pending.get("generation")
+    ok, reason = _send_notification(
+        questions_path, binding, state_dir=state_dir, env=env, timeout=timeout
+    )
+    if ok:
+        clear_pending_notification(
+            questions_path, state_dir=state_dir, expected_generation=pending.get("generation")
+        )
+    return ok, reason
+
+
+def _send_notification(questions_path, binding, *, state_dir=None, env=None, timeout=10):
+    """Tell the bound controller to re-read its questions file; return ``(ok, reason)``.
+
+    A delivery is noted with the submitted answers it covered.
+    """
+    questions_key = _question_key(questions_path)
     if _question_key(binding.get("questions_path", "")) != questions_key:
         return False, "binding does not match the questions path"
     target = binding.get("hcom_name", "")
     if not target:
         return False, "binding has no HCOM name"
+    # Read before sending: an answer submitted while the message is under way is not covered.
+    covered = _submitted_answers(questions_path)
     message = (
         f"Questions file changed: {questions_key}. Re-read the file and apply the LAT "
         "question-processing contract. This notification is not approval. Only an "
@@ -1449,10 +1627,315 @@ def send_pending_notification(questions_path, binding, *, state_dir=None, env=No
     delivered = {item.removeprefix("@") for item in _delivered_targets(payload)}
     if _hcom_receipt_names(target).isdisjoint(delivered):
         return False, f"notification not delivered to {target}"
-    clear_pending_notification(
-        questions_path, state_dir=state_dir, expected_generation=generation
-    )
+    _record_delivered(questions_path, covered, state_dir=state_dir)
     return True, "delivered"
+
+
+_RECOMMENDED = "（建議）"
+
+
+def _answer_label(label):
+    """Option text as the panel writes it to the answer area, without 建議."""
+    return label.removesuffix(_RECOMMENDED).rstrip()
+
+
+def _asked_times(questions_path):
+    """Map ``(question ID, revision)`` to the time its upsert was journaled."""
+    times = {}
+    try:
+        lines = (
+            Path(questions_path).parent / "panel-journal.jsonl"
+        ).read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        return times
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if (
+            isinstance(entry, dict)
+            and entry.get("kind") == "upsert"
+            and isinstance(entry.get("upsert_question"), str)
+            and isinstance(entry.get("revision"), int)
+            and _journal_entry_matches_questions(entry, questions_path)
+        ):
+            times[entry["upsert_question"], entry["revision"]] = entry.get("time")
+    return times
+
+
+def _board_question(section, asked_times):
+    parsed = parse_question_options(section)
+    if parsed.kind == "single":
+        letters = [option.key for option in parsed.options]
+    else:
+        letters = [
+            chr(ord("A") + index) if index < 26 else ""
+            for index in range(len(parsed.options))
+        ]
+    answer, note = _answer_text_and_note(section["answer"] or "")
+    return {
+        "id": section["id"],
+        "revision": section["revision"],
+        "status": "submitted" if section["status"] == "ready" else section["status"],
+        "title": section["title"],
+        "context": question_context(section),
+        "kind": parsed.kind or "text",
+        "options": [
+            {
+                "letter": letter,
+                "label": _answer_label(option.label),
+                "impact": option.impact,
+                "recommended": option.label.endswith(_RECOMMENDED),
+            }
+            for letter, option in zip(letters, parsed.options)
+        ],
+        "recommendation": question_recommendation(section),
+        "answer": answer,
+        "note": note,
+        "asked_at": asked_times.get((section["id"], section["revision"])),
+        "recorded_at": section["recorded_at"],
+        "section_sha256": _section_sha256(section),
+    }
+
+
+def _unique_sections(document):
+    sections = _sections(document)
+    seen = set()
+    for section in sections:
+        if section["id"] in seen:
+            raise ValueError(f"duplicate question ID: {section['id']}")
+        seen.add(section["id"])
+    return sections
+
+
+def board_questions(questions_path):
+    """Return the current revision of each question in one questions file.
+
+    The file need not belong to a bound controller: the board reads what an
+    ended controller left behind this way. A file that does not exist has no
+    questions.
+    """
+    try:
+        document = Path(questions_path).read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return []
+    asked_times = _asked_times(questions_path)
+    return [
+        _board_question(section, asked_times) for section in _unique_sections(document)
+    ]
+
+
+def _notification_owed(questions_path, state_dir):
+    try:
+        return bool(_undelivered_answers(questions_path, state_dir=state_dir))
+    except OSError:
+        # Nothing can show that a notification was delivered.
+        return bool(_submitted_answers(questions_path))
+
+
+def board_controllers(*, config_dir=None, state_dir=None):
+    """Return every bound controller with the current revision of each question.
+
+    A questions file that cannot be read sets only its own controller's
+    ``error``; a controller that has not asked anything yet has no questions.
+    ``notification_pending`` is true for a stored pending notification and for
+    a submitted answer that no delivered notification covers, so an answer
+    whose pending notification could not be stored still shows as not notified.
+    """
+    state_path = _notification_path(state_dir)
+    try:
+        with _path_lock(state_path):
+            pending = _read_pending(state_path)
+    except OSError:
+        # The state cannot be used at all; the question files still tell what is owed.
+        pending = {}
+    controllers = []
+    for binding in list_bindings(config_dir=config_dir):
+        controller = {
+            **binding,
+            "notification_pending": (
+                _question_key(binding["questions_path"]) in pending
+                or _notification_owed(binding["questions_path"], state_dir)
+            ),
+            "error": None,
+            "questions": [],
+        }
+        try:
+            controller["questions"] = board_questions(binding["questions_path"])
+        except (OSError, ValueError) as error:
+            controller["error"] = str(error)
+        controllers.append(controller)
+    return controllers
+
+
+def _board_answer(section, selections, text, note):
+    """Build the panel's ``QuestionAnswer`` for a board reply, or raise ``ValueError``."""
+    parsed = parse_question_options(section)
+    has_text = bool(text.strip())
+    if parsed.kind is None:
+        if selections or not has_text:
+            raise ValueError("a text question takes text and no selection")
+        return QuestionAnswer("text", (), text, note)
+    if len(set(selections)) != len(selections) or not all(
+        1 <= number <= len(parsed.options) for number in selections
+    ):
+        raise ValueError(
+            f"selections must be distinct option numbers from 1 to {len(parsed.options)}"
+        )
+    options = [parsed.options[number - 1] for number in selections]
+    if parsed.kind == "multi":
+        if not options and not has_text:
+            raise ValueError("a multi-select question takes a selection or other text")
+        return QuestionAnswer(
+            "multi",
+            tuple(_answer_label(option.label) for option in options),
+            text if has_text else "",
+            note,
+        )
+    if has_text and not options:
+        return QuestionAnswer("other", (), text, note)
+    if has_text or len(options) != 1:
+        raise ValueError("a single-select question takes one selection or other text")
+    return QuestionAnswer(
+        "single", (f"{options[0].key}. {_answer_label(options[0].label)}",), "", note
+    )
+
+
+def answer_question(
+    questions_path, question_id, revision, expected_section_sha256,
+    *, selections=(), text="", note="",
+):
+    """Write and submit one answer exactly as the Herdr panel would.
+
+    ``selections`` are 1-based option numbers in the order chosen; ``text`` is
+    the whole answer of a text question and the 其他 text of the others. Returns
+    ``submitted``, or refuses without writing as ``question_changed`` (stale
+    revision or section hash), ``not_pending`` (already submitted or recorded)
+    or ``invalid_answer`` (does not fit the question kind).
+    """
+    questions_path = Path(questions_path)
+
+    def refused(status, reason):
+        return {"status": status, "id": question_id, "reason": reason}
+
+    with _path_lock(questions_path):
+        document = _read_text_exact(questions_path)
+        # The submit step rejects any duplicate ID; find it before the draft is written.
+        matches = [
+            item for item in _unique_sections(document) if item["id"] == question_id
+        ]
+        if not matches:
+            return refused("question_changed", "question is no longer in the file")
+        section = matches[0]
+        if section["revision"] != revision:
+            return refused(
+                "question_changed", f"question is now at revision {section['revision']}"
+            )
+        if section["status_label"] != "待答" or section["checked"]:
+            return refused("not_pending", "question is already submitted or recorded")
+        if _section_sha256(section) != expected_section_sha256:
+            return refused("question_changed", "question changed since it was loaded")
+        if section["answer_start"] is None:
+            raise ValueError(f"question has no writable answer area: {question_id}")
+        try:
+            answer = _board_answer(section, tuple(selections), text, note)
+            start = section["start"] + section["answer_start"]
+            end = section["start"] + section["answer_end"]
+            draft = document[:start] + render_answer_area(answer) + document[end:]
+            if parse_question_answer(_question_section(draft, question_id)) is None:
+                raise ValueError("answer would be read back as empty")
+        except ValueError as error:
+            return refused("invalid_answer", str(error))
+        saved = _write_question_answer_locked(
+            questions_path, question_id, revision, expected_section_sha256, answer
+        )
+        submitted = _submit_question_answers_locked(
+            questions_path, {question_id: (revision, saved["section_sha256"])}
+        )
+        return {
+            "status": "submitted",
+            "id": question_id,
+            "revision": revision,
+            "section_sha256": submitted["section_sha256"][question_id],
+        }
+
+
+def notify_controller(questions_path, *, config_dir=None, state_dir=None):
+    """Send the pending notification of one questions file to its bound controller.
+
+    Returns ``delivered``, ``no_pending``, or ``failed`` with a ``reason``; a
+    failed notification stays pending. A submitted answer that no delivered
+    notification covers is notified even when no pending notification was
+    stored for it; that one is owed only until the answer is recorded or the
+    question is asked again, so nothing is stored for it here either.
+    """
+    pending = notification_is_pending(questions_path, state_dir=state_dir)
+    if not pending and not _undelivered_answers(questions_path, state_dir=state_dir):
+        return {"status": "no_pending"}
+    questions_key = _question_key(questions_path)
+    binding = next(
+        (
+            binding for binding in list_bindings(config_dir=config_dir)
+            if _question_key(binding["questions_path"]) == questions_key
+        ),
+        None,
+    )
+    if binding is None:
+        return {"status": "failed", "reason": "no LAT controller is bound to this questions file"}
+    send = send_pending_notification if pending else _send_notification
+    ok, reason = send(questions_path, binding, state_dir=state_dir)
+    if not ok:
+        return {"status": "failed", "reason": reason}
+    return {"status": "delivered" if reason == "delivered" else "no_pending"}
+
+
+def answer_and_notify(
+    questions_path, question_id, revision, expected_section_sha256,
+    *, selections=(), text="", note="", config_dir=None, state_dir=None,
+):
+    """Answer one question and notify its controller, as a panel submit does.
+
+    A written answer stays submitted when the notification fails; the result
+    then has ``notified`` false with a ``reason`` and the notification stays
+    pending for ``notify_controller``.
+    """
+    result = answer_question(
+        questions_path, question_id, revision, expected_section_sha256,
+        selections=selections, text=text, note=note,
+    )
+    if result["status"] != "submitted":
+        return result
+    try:
+        mark_notification_pending(questions_path, state_dir=state_dir)
+        notice = notify_controller(questions_path, config_dir=config_dir, state_dir=state_dir)
+    except (OSError, ValueError) as error:
+        notice = {"status": "failed", "reason": str(error)}
+    result["notified"] = notice["status"] != "failed"
+    if not result["notified"]:
+        result["reason"] = notice["reason"]
+    return result
+
+
+def _run_board(args):
+    try:
+        if args.board_command == "list":
+            result, code = {"controllers": board_controllers()}, 0
+        elif args.board_command == "questions":
+            result, code = {"questions": board_questions(args.questions)}, 0
+        elif args.board_command == "answer":
+            result = answer_and_notify(
+                args.questions, args.id, args.revision, args.expected_section_sha256,
+                selections=args.select, text=args.text, note=args.note,
+            )
+            code = 0 if result["status"] == "submitted" else 1
+        else:
+            result = notify_controller(args.questions)
+            code = 1 if result["status"] == "failed" else 0
+    except (OSError, ValueError) as error:
+        result, code = {"status": "error", "reason": str(error)}, 1
+    print(json.dumps(result, ensure_ascii=False))
+    return code
 
 
 def _build_parser():
@@ -1505,11 +1988,28 @@ def _build_parser():
     resolve = commands.add_parser("resolve")
     resolve.add_argument("--herdr-workspace", default=os.environ.get("HERDR_WORKSPACE_ID"))
     resolve.add_argument("--session-id")
+    board = commands.add_parser("board")
+    board_commands = board.add_subparsers(dest="board_command", required=True)
+    board_commands.add_parser("list")
+    board_questions_parser = board_commands.add_parser("questions")
+    board_questions_parser.add_argument("--questions", required=True, type=Path)
+    answer = board_commands.add_parser("answer")
+    answer.add_argument("--questions", required=True, type=Path)
+    answer.add_argument("--id", required=True)
+    answer.add_argument("--revision", required=True, type=int)
+    answer.add_argument("--expected-section-sha256", required=True)
+    answer.add_argument("--select", type=int, action="append", default=[])
+    answer.add_argument("--text", default="")
+    answer.add_argument("--note", default="")
+    notify = board_commands.add_parser("notify")
+    notify.add_argument("--questions", required=True, type=Path)
     return parser
 
 
 def main(argv=None):
     args = _build_parser().parse_args(argv)
+    if args.command == "board":
+        return _run_board(args)
     try:
         if args.command == "question" and args.question_command == "upsert":
             revision = upsert_question(

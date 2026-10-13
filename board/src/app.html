@@ -1,0 +1,38 @@
+<!doctype html>
+<html lang="zh-Hant" data-theme="dark">
+	<head>
+		<meta charset="utf-8" />
+		<meta name="viewport" content="width=device-width, initial-scale=1" />
+		<title>LAT 看板</title>
+		<script>
+			// This device's appearance, applied before the first paint so a reload does not flash the
+			// defaults. Keys and limits are those of src/lib/board/prefs.ts; anything else is ignored.
+			(function () {
+				try {
+					var root = document.documentElement;
+					var store = localStorage;
+					var number = function (key, min, max) {
+						var saved = store.getItem(key);
+						var value = Number(saved);
+						return saved !== null && saved.trim() !== '' && value >= min && value <= max ? value : null;
+					};
+					root.dataset.theme = store.getItem('lat-board-theme') === 'light' ? 'light' : 'dark';
+					if (store.getItem('lat-board-roster-folded') === '1') root.dataset.roster = 'folded';
+					var scale = number('lat-board-scale', 80, 150);
+					if (scale !== null) root.style.setProperty('--ui-scale', String(scale / 100));
+					var roster = number('lat-board-roster-width', 170, 440);
+					if (roster !== null) root.style.setProperty('--roster-w', roster + 'px');
+					var inbox = number('lat-board-inbox-width', 260, 720);
+					if (inbox !== null) root.style.setProperty('--inbox-w', inbox + 'px');
+				} catch (error) {
+					// Storage is blocked: the board looks the default way and does not remember.
+				}
+			})();
+		</script>
+		%sveltekit.head%
+		%lat.user-style%
+	</head>
+	<body>
+		<div style="display: contents">%sveltekit.body%</div>
+	</body>
+</html>

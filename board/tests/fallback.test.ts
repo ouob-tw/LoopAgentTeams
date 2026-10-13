@@ -1,0 +1,50 @@
+import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { loadConfig } from '../src/lib/server/config.ts';
+import { named, sleep, startFixture, until, type Fixture } from './harness.ts';
+
+let fixture: Fixture;
+let cookie: string;
+// A short deadline keeps the test quick; the product default and ceiling are checked below.
+const DEADLINE_MS = 6_000;
+
+beforeAll(async () => {
+	fixture = await startFixture(3, {
+		env: { LAT_BOARD_FALLBACK_SECONDS: '6', LAT_BOARD_HELPER_TIMEOUT_SECONDS: '2' }
+	});
+	cookie = await fixture.pair();
+});
+afterAll(() => fixture.cleanup());
+
+test('a change the file watch missed is on the page within the fallback deadline, slow helper included', async () => {
+	fixture.list([fixture.bound('alpha', 'luna')]);
+	await fixture.refresh(cookie);
+	const page = fixture.watch(cookie);
+	await until(() => named(page.latest(), 'luna'), 5_000, 'the first snapshot');
+
+	// The worst case: the change lands just after a read began, so that read misses it, and the
+	// helper takes a while to answer. No watched file changes, so no watch event fires.
+	fixture.setHelper({ output: { controllers: [fixture.bound('alpha', 'luna')] }, sleepMs: 1_500 });
+	const reading = fixture.refresh(cookie);
+	await sleep(300);
+	fixture.setHelper({
+		output: { controllers: [fixture.bound('alpha', 'luna'), fixture.bound('beta', 'missed')] },
+		sleepMs: 1_500
+	});
+	const changedAt = Date.now();
+	expect(named(await reading, 'missed')).toBeUndefined();
+
+	await until(() => named(page.latest(), 'missed'), DEADLINE_MS, 'the fallback re-read');
+	expect(Date.now() - changedAt).toBeLessThanOrEqual(DEADLINE_MS);
+});
+
+test('the fallback deadline is 60 seconds unless set shorter', () => {
+	expect(loadConfig({}).fallbackMs).toBe(60_000);
+	expect(loadConfig({ LAT_BOARD_FALLBACK_SECONDS: '600' }).fallbackMs).toBe(60_000);
+	expect(loadConfig({ LAT_BOARD_FALLBACK_SECONDS: '10' }).fallbackMs).toBe(10_000);
+	// Too short a deadline would leave the helper no time at all.
+	const shortest = loadConfig({ LAT_BOARD_FALLBACK_SECONDS: '0.5' });
+	expect(shortest.fallbackMs).toBe(5_000);
+	expect(shortest.helperTimeoutMs).toBe(2_000);
+	// Two helper runs in a row must fit inside the deadline.
+	expect(loadConfig({ LAT_BOARD_HELPER_TIMEOUT_SECONDS: '45' }).helperTimeoutMs).toBeLessThan(30_000);
+});

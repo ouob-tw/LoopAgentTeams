@@ -65,7 +65,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
      --questions "$questions" --decisions "$decisions" --id "<ID>" --file /path/to/section.md
    ```
 
-4. 寫入前會自動清理同一份問題檔，條件見下方「清理題目」；正在寫入的同一題號保留，維持升版行為。`--decisions` 必填，缺少或目錄不存在時拒絕寫入。指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。升版規則見下方「版本」。
+4. 寫入前會自動清理同一份問題檔，條件見下方「清理題目」；正在寫入的同一題號保留，維持升版行為。`--decisions` 必填，缺少或目錄不存在時拒絕寫入。指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。實際寫入新題或升版時，另在 `panel-journal.jsonl` 寫一筆 `upsert`，記錄題號、版本與時間；內容相同而沒有寫入時不寫。升版規則見下方「版本」。
 5. 發出 `DECIDE:` 前完成下方「待決題目檢查」，通過後依「聊天提問格式」列出題目；使用者可在面板或聊天作答。
 
 ### 題目格式
@@ -231,6 +231,91 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" unbind --session-
 ```
 
 `removed` 為 0 表示自己的 session 已無綁定。
+
+## 看板指令
+
+給 LAT 看板呼叫，主控不需執行。看板不自行解析或寫入問題檔，一律透過這三個指令；綁定登記與待送通知的位置和其他指令相同。三個指令都只在標準輸出印一個 JSON 物件，失敗時也是；唯一例外是參數錯誤（缺少必要參數、版本或序號不是整數），此時標準輸出沒有內容，用法說明在標準錯誤，結束碼 2。
+
+### 列出看板資料
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board list
+```
+
+輸出 `{"controllers": [...]}`，一個已綁定主控一筆，依 HCOM 名稱排序，結束碼 0：
+
+| 欄位 | 內容 |
+| --- | --- |
+| `hcom_name`、`client`、`session_id`、`workspace`、`questions_path` | 綁定登記的原值。 |
+| `herdr_workspace`、`herdr_tab`、`herdr_pane` | 主控所在的 Herdr 工作區、分頁、窗格。 |
+| `notification_pending` | 這份問題檔是否有尚未送達的 `lat-panel` 通知：有待送通知，或有經面板或看板送出、主控尚未記錄、也沒有送達紀錄的答覆（待送通知當初沒存下來也算）。 |
+| `error` | 問題檔讀不出來時的原因，此時 `questions` 為空陣列；正常為 `null`。只影響這個主控，其他主控照常輸出。 |
+| `questions` | 問題檔中每一題的目前版本，依檔案順序；問題檔還不存在時為空陣列。 |
+
+每一題的欄位：
+
+| 欄位 | 內容 |
+| --- | --- |
+| `id`、`revision`、`title` | 題號、版本、標題。 |
+| `status` | `pending`（待答）、`submitted`（已送出未記錄）、`recorded`（已記錄）。 |
+| `context` | 背景文字，不含選項與推薦段落。 |
+| `kind` | `single`、`multi`、`text`；混用格式或沒有選項的題目是 `text`。 |
+| `options` | 依題目順序；每項有 `letter`（依「題目格式」的選項字母，複選第 27 項起為空字串）、`label`（不含「（建議）」）、`impact`、`recommended`。 |
+| `recommendation` | 題末 `➡️` 推薦段落原文，沒有時為空字串。 |
+| `answer`、`note` | 目前答覆區的答覆與備註（含未送出的草稿），沒有時為空字串。 |
+| `asked_at` | 目前版本由 `question upsert` 寫入的時間（UTC，ISO 8601），取自面板紀錄的 `upsert`；面板紀錄沒有對應項目（較早寫入的題目）、不存在或讀不出來時為 `null`。作答、送出與記錄都不會改變它。 |
+| `recorded_at` | 標為已記錄的時間，未記錄時為 `null`。 |
+| `section_sha256` | 作答時要帶回的區段雜湊。 |
+
+綁定登記讀不出來，或待送通知檔的內容不是預期格式時，輸出 `{"status": "error", "reason": "…"}`，結束碼 1。通知狀態目錄無法使用（例如沒有權限）時照常列出，`notification_pending` 只依問題檔判斷：有已送出未記錄的面板答覆就是 `true`。
+
+### 讀取單一問題檔
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board questions --questions "$questions"
+```
+
+輸出 `{"questions": [...]}`，每一題的欄位與 `board list` 相同，結束碼 0；不需要有綁定的主控，看板用它讀已結束主控留下的問題檔。檔案不存在時 `questions` 為空陣列；讀不出來或題號重複時輸出 `{"status": "error", "reason": "…"}`，結束碼 1。不寫入任何檔案。
+
+### 寫入並送出答案
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board answer \
+  --questions "$questions" --id "<ID>" --revision <版本> \
+  --expected-section-sha256 "<列出資料的 section_sha256>" \
+  [--select <選項序號>]... [--text "<文字>"] [--note "<備註>"]
+```
+
+- `--select` 是選項在 `options` 中的序號，從 1 開始；複選題重複給，順序就是選取順序。
+- `--text` 在純文字題是答覆本身，在單選與複選題是「其他」的內容；只有空白視為沒有給。
+- 單選題給一個 `--select`，或只給 `--text`；複選題至少給一個 `--select` 或 `--text`；純文字題只給 `--text`。`--note` 可搭配任何答覆。
+
+效果與使用者在 Herdr 面板作答並送出相同：以「答覆格式」寫入答覆區並勾選送出、寫面板紀錄、送 `lat-panel` 通知；主控照「收到 `lat-panel` 通知」處理。原有的草稿會被這次的答覆取代。
+
+| `status` | 結束碼 | 意義 |
+| --- | --- | --- |
+| `submitted` | 0 | 已寫入並送出，另附 `id`、`revision`、新的 `section_sha256`。`notified` 為 `true` 表示通知已送達；為 `false` 表示已寫入但通知失敗，`reason` 是原因，答案保留為已送出，通常可用重送通知補送。 |
+| `question_changed` | 1 | 題目不存在、版本不同，或區段雜湊不符；重新列出資料後再作答。 |
+| `not_pending` | 1 | 題目已送出或已記錄。 |
+| `invalid_answer` | 1 | 答覆不符合題型、序號超出範圍或重複，或文字含有會被讀成問題檔結構的行。 |
+| `error` | 1 | 其他失敗，例如問題檔讀不到或題目缺少作答區。 |
+
+結束碼 1 的結果都附 `reason`。`question_changed`、`not_pending`、`invalid_answer` 時問題檔與面板紀錄沒有改變；`error` 多半也沒有寫入，但寫檔途中失敗（例如面板紀錄寫不進去）可能已留下草稿或已送出的答案，須重新列出資料確認。通知失敗而待送通知也記不下來時（`reason` 會說明），答案仍算有通知要送：`board list` 的 `notification_pending` 為 `true`，狀態目錄恢復可用後重送通知會補送。重送通知補送不了時，須由使用者在聊天告知主控。
+
+### 重送通知
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board notify --questions "$questions"
+```
+
+只重送這份問題檔尚未送達的通知，不改寫答案與面板紀錄。Herdr 面板原有的重送照舊，同一則通知由任一邊送達後即清除。沒有待送通知時以問題檔為準：經面板或看板送出（面板紀錄可核對來源）、主控尚未記錄的答覆，若沒有送達紀錄就補送一次；已記錄或已升版的題目不會再送。送達紀錄存在狀態目錄的 `delivered-notifications.json`；這份紀錄在第一次需要時建立（`board list` 也會建立），建立時會記下待送通知檔最後變動的時間，在那之前送出的答覆只看待送通知，不依問題檔補送。
+
+| `status` | 結束碼 | 意義 |
+| --- | --- | --- |
+| `delivered` | 0 | 通知已送達並清除。 |
+| `no_pending` | 0 | 沒有待送通知，也沒有未通知的已送出答覆。 |
+| `failed` | 1 | 仍未送達，`reason` 是原因（主控不在線、問題檔沒有綁定的主控等），待送通知保留；依問題檔補送的那一種不另存待送通知，答覆未記錄前都可再重送。 |
+| `error` | 1 | 綁定登記、待送通知檔或送達紀錄讀寫不了。 |
 
 ## 安裝與更新
 
