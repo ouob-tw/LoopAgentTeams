@@ -5,7 +5,15 @@ import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { connectBoard, type LinkState } from '../src/lib/board/client.ts';
-import type { BoardSnapshot, Controller, HelperController, HelperQuestion, Report } from '../src/lib/board/types.ts';
+import type {
+	BoardSnapshot,
+	Controller,
+	HelperController,
+	HelperQuestion,
+	InboxItem,
+	InboxReport,
+	Report
+} from '../src/lib/board/types.ts';
 
 const ROOT = join(import.meta.dir, '..');
 const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
@@ -64,6 +72,10 @@ export interface Fixture {
 	fetch(path: string, init?: RequestInit & { cookie?: string }): Promise<Response>;
 	board(cookie: string): Promise<BoardSnapshot>;
 	refresh(cookie: string): Promise<BoardSnapshot>;
+	/** Set the board's clock; the board notices at its next read. */
+	setClock(time: number): void;
+	markRead(cookie: string, key: string): Promise<Response>;
+	archive(cookie: string): Promise<InboxReport[]>;
 	watch(cookie: string): Watch;
 	start(): Promise<void>;
 	stop(): Promise<void>;
@@ -80,6 +92,10 @@ export interface Watch {
 
 export const named = (snapshot: BoardSnapshot | undefined, name: string): Controller | undefined =>
 	snapshot?.controllers.find((controller) => controller.hcomName === name);
+
+/** The inbox item with this title; titles are unique within a test. */
+export const titled = (snapshot: BoardSnapshot | undefined, title: string): InboxItem | undefined =>
+	snapshot?.inbox.find((item) => item.title === title);
 
 export async function startFixture(
 	portOffset: number,
@@ -100,6 +116,7 @@ export async function startFixture(
 		PORT: String(port),
 		LAT_BOARD_STATE_DIR: join(dir, 'board-state'),
 		LAT_REPORTS_DIR: reportsDir,
+		LAT_BOARD_CLOCK_FILE: join(dir, 'clock'),
 		LAT_BOARD_HELPER_COMMAND: JSON.stringify(['node', join(ROOT, 'tests/fake-helper.mjs'), dir]),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,
 		HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state'),
@@ -177,6 +194,15 @@ export async function startFixture(
 		},
 		board: async (cookie) => (await fixture.fetch('/api/board', { cookie })).json(),
 		refresh: async (cookie) => (await fixture.fetch('/api/refresh', { method: 'POST', headers: { 'content-type': 'application/json' }, cookie })).json(),
+		setClock: (time) => writeFileSync(join(dir, 'clock'), new Date(time).toISOString()),
+		markRead: (cookie, key) =>
+			fixture.fetch('/api/inbox/read', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ key }),
+				cookie
+			}),
+		archive: async (cookie) => (await (await fixture.fetch('/api/archive', { cookie })).json()).reports,
 		watch(cookie) {
 			const watch: Watch = {
 				snapshots: [],

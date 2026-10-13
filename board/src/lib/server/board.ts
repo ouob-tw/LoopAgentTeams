@@ -2,11 +2,12 @@
 // it to every connected page.
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { BoardSnapshot, HelperController } from '../board/types.ts';
+import type { BoardSnapshot, HelperController, InboxReport } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
 import { listControllers } from './helper.ts';
-import { buildSnapshot } from './model.ts';
+import { loadInboxState, saveInboxState } from './inbox-state.ts';
+import { archiveDue, archivedReports, buildSnapshot, markRead, type MarkReadResult, type Sources } from './model.ts';
 import { createReportReader } from './reports.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
@@ -26,6 +27,10 @@ export interface Board {
 	current(): Promise<BoardSnapshot>;
 	/** Re-read every source now; resolves with a snapshot read after the call. */
 	refresh(): Promise<BoardSnapshot>;
+	/** Mark an inbox report read for every paired device. */
+	markRead(key: string): Promise<MarkReadResult>;
+	/** The archived reports, newest first. */
+	archive(): Promise<InboxReport[]>;
 	subscribe(stream: Stream): () => void;
 	close(): void;
 }
@@ -37,6 +42,8 @@ function createBoard(): Board {
 	const streams = new Set<Stream>();
 	let snapshot: BoardSnapshot | null = null;
 	let lastActive: HelperController[] = [];
+	/** What the last read found; read state changes rebuild the snapshot from it. */
+	let sources: Sources | null = null;
 	let running: Promise<BoardSnapshot> | null = null;
 	let queued: Promise<BoardSnapshot> | null = null;
 	let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -82,12 +89,12 @@ function createBoard(): Board {
 	async function read(): Promise<BoardSnapshot> {
 		const [helper, reports] = await Promise.all([listControllers(config), readReports()]);
 		if (helper.ok) lastActive = helper.controllers;
-		const next = buildSnapshot({
+		sources = {
 			active: lastActive,
 			helperError: helper.ok ? null : helper.reason,
 			reportFiles: reports.files,
 			reportsError: reports.error
-		});
+		};
 
 		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
 		addFile(targets, join(helperDirs.config, 'bindings.json'));
@@ -95,10 +102,31 @@ function createBoard(): Board {
 		for (const controller of lastActive) addFile(targets, controller.questions_path);
 		if (!closed) sourceWatcher.sync(targets);
 
+		publish(sources);
+		return snapshot!;
+	}
+
+	/** Bring the archive up to date, optionally mark one report read, and push the result. */
+	function publish(from: Sources, readKey?: string): MarkReadResult | null {
+		const now = config.now();
+		const state = loadInboxState(config.stateDir);
+		// Archive first: a report that is already due can no longer be marked read.
+		const archived = archiveDue(from, state, now);
+		const marked = readKey === undefined ? null : markRead(from, state, readKey, now);
+		if (archived || marked === 'marked') saveInboxState(config.stateDir, state);
+
+		const next = buildSnapshot(from, state, now);
 		const changed = !snapshot || comparable(snapshot) !== comparable(next);
 		snapshot = next;
 		if (changed) for (const stream of streams) stream.send('board', JSON.stringify(next));
-		return next;
+		return marked;
+	}
+
+	/** The sources as last read, reading them first if nothing has been read yet. */
+	async function readSources(): Promise<Sources> {
+		if (!sources) await (running ?? refresh());
+		if (!sources) throw new Error('the sources could not be read');
+		return sources;
 	}
 
 	function refresh(): Promise<BoardSnapshot> {
@@ -119,7 +147,13 @@ function createBoard(): Board {
 		running = read()
 			.catch((error: Error) => {
 				// Unexpected source data must not take the server down or leave pages without an answer.
-				snapshot = { generatedAt: new Date().toISOString(), controllers: [], errors: [`讀取資料失敗：${error.message}`] };
+				snapshot = {
+					generatedAt: new Date().toISOString(),
+					controllers: [],
+					inbox: [],
+					archivedCount: 0,
+					errors: [`讀取資料失敗：${error.message}`]
+				};
 				for (const stream of streams) stream.send('board', JSON.stringify(snapshot));
 				return snapshot;
 			})
@@ -133,6 +167,8 @@ function createBoard(): Board {
 		config,
 		current: async () => snapshot ?? (await (running ?? refresh())),
 		refresh,
+		markRead: async (key) => publish(await readSources(), key)!,
+		archive: async () => archivedReports(await readSources(), loadInboxState(config.stateDir)),
 		subscribe(stream) {
 			if (closed) stream.close();
 			else streams.add(stream);

@@ -1,7 +1,7 @@
 // The page's live link to the server: reads the event stream, reports when it drops and keeps
 // reconnecting. Uses fetch rather than EventSource so a revoked device (401) can be told apart
 // from a server that is down.
-import type { BoardSnapshot } from './types.ts';
+import type { BoardSnapshot, InboxReport } from './types.ts';
 
 export type LinkState = 'connecting' | 'live' | 'offline';
 
@@ -20,6 +20,10 @@ const SILENCE_MS = 40_000;
 export interface Connection {
 	/** Ask the server to re-read every source now. */
 	refresh(): Promise<void>;
+	/** Mark an inbox report read; every device gets the new state through the stream. */
+	markRead(key: string): Promise<void>;
+	/** The archived reports, newest first. */
+	archive(): Promise<InboxReport[]>;
 	close(): void;
 }
 
@@ -96,6 +100,22 @@ export function connectBoard(options: ConnectionOptions): Connection {
 			if (response.status === 401) return unpaired();
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			options.onSnapshot(await response.json());
+		},
+		async markRead(key) {
+			const response = await request('/api/inbox/read', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ key })
+			});
+			if (response.status === 401) return unpaired();
+			// 409: it was archived in the meantime, which the next snapshot shows.
+			if (!response.ok && response.status !== 409) throw new Error(`HTTP ${response.status}`);
+		},
+		async archive() {
+			const response = await request('/api/archive');
+			if (response.status === 401) unpaired();
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			return (await response.json()).reports;
 		},
 		close() {
 			closed = true;

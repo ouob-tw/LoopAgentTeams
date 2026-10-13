@@ -1,12 +1,14 @@
 // The board as the page sees it: the latest snapshot plus the state of the link to the server.
 import { connectBoard, type Connection, type LinkState } from './client.ts';
-import type { BoardSnapshot } from './types.ts';
+import type { BoardSnapshot, InboxReport } from './types.ts';
 
 export class LiveBoard {
 	snapshot: BoardSnapshot;
 	link = $state<LinkState>('connecting');
 	refreshing = $state(false);
 	refreshFailed = $state(false);
+	/** Archived reports, newest first; null until loaded, 'failed' when they could not be read. */
+	archive = $state<InboxReport[] | 'failed' | null>(null);
 	#connection: Connection | undefined;
 
 	constructor(initial: BoardSnapshot) {
@@ -22,6 +24,19 @@ export class LiveBoard {
 			onUnpaired: () => location.reload()
 		});
 		return () => this.#connection?.close();
+	}
+
+	async markRead(key: string): Promise<void> {
+		if (!this.#connection) throw new Error('not connected');
+		await this.#connection.markRead(key);
+	}
+
+	async loadArchive(): Promise<void> {
+		try {
+			this.archive = (await this.#connection?.archive()) ?? null;
+		} catch {
+			this.archive = 'failed';
+		}
 	}
 
 	async refresh(): Promise<void> {

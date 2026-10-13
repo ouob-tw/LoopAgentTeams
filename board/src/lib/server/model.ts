@@ -1,7 +1,15 @@
 // Turns the three LAT sources (binding registry and question files through the helper, report
 // records) into the board's data model. Herdr's agent status is never consulted.
 import { basename } from 'node:path';
-import type { BoardSnapshot, Controller, ControllerStatus, HelperController, Report } from '../board/types.ts';
+import type {
+	BoardSnapshot,
+	Controller,
+	ControllerStatus,
+	HelperController,
+	InboxQuestion,
+	InboxReport
+} from '../board/types.ts';
+import type { InboxState } from './inbox-state.ts';
 import type { ReportFile } from './reports.ts';
 
 export interface Sources {
@@ -13,12 +21,91 @@ export interface Sources {
 	reportsError: string | null;
 }
 
-const UNREAD_ARCHIVE_MS = 7 * 24 * 60 * 60 * 1000;
+const DAY_MS = 24 * 60 * 60 * 1000;
+/** An unread report is archived this long after it was issued. */
+const UNREAD_ARCHIVE_MS = 7 * DAY_MS;
+/** A read report is archived this long after it was marked read, whenever it was issued. */
+const READ_ARCHIVE_MS = 3 * DAY_MS;
 
-/** Whether a report is an inbox item that has not been archived yet. */
-function inInbox(report: Report, now: number): boolean {
-	// Read state arrives with the inbox; until then every report counts as unread.
-	return (report.tag === 'DONE' || report.tag === 'HELP') && now - Date.parse(report.time) < UNREAD_ARCHIVE_MS;
+/** Every DONE and HELP report, archived or not, in file order. */
+function reportItems(sources: Sources, state: InboxState): InboxReport[] {
+	const bound = new Map(sources.active.map((binding) => [binding.session_id, binding]));
+	const items: InboxReport[] = [];
+	for (const file of sources.reportFiles) {
+		const binding = bound.get(file.sessionId);
+		file.reports.forEach((report, index) => {
+			if (report.tag !== 'DONE' && report.tag !== 'HELP') return;
+			// Report files only grow, so a report's position in its file identifies it for good.
+			const key = `${file.sessionId}#${index}`;
+			const workspace = binding?.workspace ?? report.workspace;
+			items.push({
+				kind: 'report',
+				key,
+				controllerId: file.sessionId,
+				hcomName: binding?.hcom_name ?? report.hcom_name,
+				project: basename(workspace),
+				workspace,
+				tag: report.tag,
+				time: report.time,
+				title: report.summary,
+				message: report.message,
+				readAt: state.read[key] ?? null
+			});
+		});
+	}
+	return items;
+}
+
+/** Move every report that is due into the archive. Returns whether the state changed. */
+export function archiveDue(sources: Sources, state: InboxState, now: number): boolean {
+	let changed = false;
+	for (const item of reportItems(sources, state)) {
+		if (item.key in state.archived) continue;
+		const due = item.readAt
+			? now - Date.parse(item.readAt) >= READ_ARCHIVE_MS
+			: now - Date.parse(item.time) >= UNREAD_ARCHIVE_MS;
+		if (due) {
+			state.archived[item.key] = new Date(now).toISOString();
+			changed = true;
+		}
+	}
+	return changed;
+}
+
+export type MarkReadResult = 'marked' | 'already-read' | 'archived' | 'unknown';
+
+/** Mark an inbox report read. The first mark counts: marking again does not restart the 3 days. */
+export function markRead(sources: Sources, state: InboxState, key: string, now: number): MarkReadResult {
+	if (!reportItems(sources, state).some((item) => item.key === key)) return 'unknown';
+	if (key in state.archived) return 'archived';
+	if (key in state.read) return 'already-read';
+	state.read[key] = new Date(now).toISOString();
+	return 'marked';
+}
+
+/** The archive view: archived reports, newest first. */
+export function archivedReports(sources: Sources, state: InboxState): InboxReport[] {
+	return reportItems(sources, state)
+		.filter((item) => item.key in state.archived)
+		.sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+}
+
+function questionItems(binding: HelperController): InboxQuestion[] {
+	const workspace = binding.workspace;
+	return binding.questions
+		.filter((question) => question.status !== 'recorded')
+		.map((question) => ({
+			kind: 'question',
+			key: `q:${binding.session_id}:${question.id}`,
+			controllerId: binding.session_id,
+			hcomName: binding.hcom_name,
+			project: basename(workspace),
+			workspace,
+			time: question.asked_at ?? null,
+			title: question.title,
+			unsent: question.status === 'pending',
+			question
+		}));
 }
 
 function reportError(file: ReportFile | undefined): string | null {
@@ -69,7 +156,11 @@ function endedController(file: ReportFile): Controller {
 	};
 }
 
-export function buildSnapshot(sources: Sources, now = Date.now()): BoardSnapshot {
+/** `state` must already have had `archiveDue` applied for `now`. */
+export function buildSnapshot(sources: Sources, state: InboxState, now: number): BoardSnapshot {
+	const reports = reportItems(sources, state);
+	const inboxReports = reports.filter((item) => !(item.key in state.archived));
+	const withInboxReport = new Set(inboxReports.map((item) => item.controllerId));
 	const files = new Map(sources.reportFiles.map((file) => [file.sessionId, file]));
 	const errors = [sources.reportsError].filter((error): error is string => error !== null);
 
@@ -86,7 +177,7 @@ export function buildSnapshot(sources: Sources, now = Date.now()): BoardSnapshot
 	// Whatever is left belongs to controllers that are no longer bound: they have ended, and stay
 	// on the roster only while the inbox still holds one of their reports.
 	for (const file of files.values()) {
-		if (file.reports.some((report) => inInbox(report, now))) {
+		if (withInboxReport.has(file.sessionId)) {
 			const controller = endedController(file);
 			if (sources.helperError) {
 				// Without the registry there is no telling whether it has really ended.
@@ -109,5 +200,12 @@ export function buildSnapshot(sources: Sources, now = Date.now()): BoardSnapshot
 			a.hcomName.localeCompare(b.hcomName) ||
 			a.id.localeCompare(b.id)
 	);
-	return { generatedAt: new Date(now).toISOString(), controllers, errors };
+	return {
+		generatedAt: new Date(now).toISOString(),
+		controllers,
+		// An ended controller's questions cannot be answered any more, so only bound ones are listed.
+		inbox: [...sources.active.flatMap(questionItems), ...inboxReports],
+		archivedCount: reports.length - inboxReports.length,
+		errors
+	};
 }
