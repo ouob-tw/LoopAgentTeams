@@ -1,0 +1,210 @@
+import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import type { SendResponse, SentMessage } from '../src/lib/board/messages.ts';
+import { startFixture, type Fixture } from './harness.ts';
+
+// The fake input command's plan and call log live outside the fixture directory, because the
+// command line has to be known before the fixture creates its own.
+const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-inject-'));
+const callLog = join(injectDir, 'inject-calls.jsonl');
+
+let fixture: Fixture;
+let cookie: string;
+
+beforeAll(async () => {
+	fixture = await startFixture(9, {
+		env: {
+			LAT_BOARD_INJECT_COMMAND: JSON.stringify(['node', join(import.meta.dir, 'fake-inject.mjs'), injectDir]),
+			LAT_BOARD_INJECT_TIMEOUT_SECONDS: '1'
+		}
+	});
+	cookie = await fixture.pair();
+});
+afterAll(async () => {
+	await fixture.cleanup();
+	rmSync(injectDir, { recursive: true, force: true });
+});
+beforeEach(() => {
+	rmSync(callLog, { force: true });
+	plan({});
+});
+
+type Plan = Record<string, { exit?: number; stdout?: string; stderr?: string; sleepMs?: number }>;
+const plan = (value: Plan) => writeFileSync(join(injectDir, 'inject.json'), JSON.stringify(value));
+
+/** Every call of the input command so far, as its argument list. */
+function calls(): string[][] {
+	if (!existsSync(callLog)) return [];
+	return readFileSync(callLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+}
+
+async function send(controllerId: unknown, text: unknown, as = cookie): Promise<{ status: number; body: SendResponse }> {
+	const response = await fixture.fetch('/api/messages', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ controllerId, text }),
+		cookie: as
+	});
+	return { status: response.status, body: await response.json() };
+}
+
+async function sentTo(controllerId: string, as = cookie): Promise<SentMessage[]> {
+	const response = await fixture.fetch(`/api/messages?controller=${encodeURIComponent(controllerId)}`, { cookie: as });
+	return (await response.json()).entries;
+}
+
+test('a two-line message is typed into a Claude and a Codex controller as one message each', async () => {
+	const claude = fixture.bound('alpha', 'luna', { client: 'claude' });
+	const codex = fixture.bound('beta', 'nova', { client: 'codex' });
+	fixture.list([claude, codex]);
+
+	const first = await send(claude.session_id, '第一行\n第二行');
+	const second = await send(codex.session_id, 'line one\nline two');
+
+	expect(first).toMatchObject({ status: 200, body: { ok: true, reason: null } });
+	expect(second).toMatchObject({ status: 200, body: { ok: true, reason: null } });
+	// One call per message: the whole text is a single argument, submitted once at the end.
+	expect(calls()).toEqual([
+		['luna', '第一行\n第二行', '--enter'],
+		['nova', 'line one\nline two', '--enter']
+	]);
+	expect(await sentTo(claude.session_id)).toMatchObject([
+		{ kind: 'message', controllerId: claude.session_id, hcomName: 'luna', text: '第一行\n第二行', ok: true, error: null }
+	]);
+	expect(await sentTo(codex.session_id)).toMatchObject([{ hcomName: 'nova', text: 'line one\nline two', ok: true }]);
+});
+
+test('line endings that would submit early are turned into plain new lines', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+
+	await send(luna.session_id, 'a\r\nb\rc\n\n');
+
+	expect(calls()).toEqual([['luna', 'a\nb\nc', '--enter']]);
+});
+
+test('a closed pane: the reason comes back, the failure is logged, nobody else gets the text and nothing is retried', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	const nova = fixture.bound('beta', 'nova');
+	fixture.list([luna, nova]);
+	plan({ luna: { exit: 1, stdout: "No agent named 'luna'\n  Active: hcom list  |  Stopped: hcom list --stopped\n", stderr: 'update available\n' } });
+
+	const { status, body } = await send(luna.session_id, '還在嗎');
+
+	expect(status).toBe(502);
+	expect(body.ok).toBe(false);
+	expect(body.reason).toContain("No agent named 'luna'");
+	expect(body.reason).not.toContain('update available');
+	expect(calls()).toEqual([['luna', '還在嗎', '--enter']]);
+	expect(await sentTo(luna.session_id)).toMatchObject([{ text: '還在嗎', ok: false, error: body.reason }]);
+	expect(await sentTo(nova.session_id)).toEqual([]);
+});
+
+test('an input command that hangs is cut off and reported as a failure', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+	plan({ luna: { sleepMs: 10_000 } });
+
+	const started = Date.now();
+	const { status, body } = await send(luna.session_id, '你好');
+
+	expect(Date.now() - started).toBeLessThan(5_000);
+	expect(status).toBe(502);
+	expect(body.reason).toContain('逾時');
+	expect(calls()).toHaveLength(1);
+});
+
+test('an ended controller is refused without running the input command', async () => {
+	const workspace = `${fixture.dir}/workspaces/gamma`;
+	fixture.report('session-ended', { tag: 'DONE', summary: '交付', hcom_name: 'orin', workspace, final: true });
+	fixture.list([]);
+
+	const { status, body } = await send('session-ended', '再改一下');
+
+	expect(status).toBe(409);
+	expect(body).toMatchObject({ ok: false, reason: '這個主控已結束，無法傳話。' });
+	expect(calls()).toEqual([]);
+	expect(await sentTo('session-ended')).toMatchObject([{ hcomName: 'orin', text: '再改一下', ok: false }]);
+});
+
+test('a controller that was unbound after the page last heard of it is refused', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.report(luna.session_id, { tag: 'DONE', summary: '交付', hcom_name: 'luna', workspace: luna.workspace });
+	fixture.list([luna]);
+	await fixture.refresh(cookie);
+	// Changing the helper's answer alone is not a watched change: the board's data still says active.
+	fixture.list([]);
+
+	const { status, body } = await send(luna.session_id, '你好');
+
+	expect(status).toBe(409);
+	expect(body.reason).toBe('這個主控已結束，無法傳話。');
+	expect(calls()).toEqual([]);
+});
+
+test('a controller the board does not know is refused and logged', async () => {
+	fixture.list([]);
+
+	const { status, body } = await send('no-such-session', '你好');
+
+	expect(status).toBe(409);
+	expect(body.ok).toBe(false);
+	expect(calls()).toEqual([]);
+	expect(await sentTo('no-such-session')).toMatchObject([{ ok: false, text: '你好' }]);
+});
+
+test('text the input command would read as its own option is refused', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+
+	const { status, body } = await send(luna.session_id, '--enter');
+
+	expect(status).toBe(409);
+	expect(body.ok).toBe(false);
+	expect(calls()).toEqual([]);
+});
+
+test('an empty message or a malformed request is rejected and not logged', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+
+	expect((await send(luna.session_id, '  \n ')).status).toBe(400);
+	expect((await send(luna.session_id, 42)).status).toBe(400);
+	expect((await send(undefined, '你好')).status).toBe(400);
+	const notJson = await fixture.fetch('/api/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{', cookie });
+	expect(notJson.status).toBe(400);
+	expect((await fixture.fetch('/api/messages', { cookie })).status).toBe(400);
+
+	expect(calls()).toEqual([]);
+	expect(await sentTo(luna.session_id)).toEqual([]);
+});
+
+test('the sent log is the same on every paired device, newest first, one controller at a time', async () => {
+	const luna = fixture.bound('alpha', 'vela');
+	const nova = fixture.bound('beta', 'mira');
+	fixture.list([luna, nova]);
+	const phone = await fixture.pair('phone');
+
+	await send(luna.session_id, '第一則');
+	await send(nova.session_id, '給另一個主控');
+	await send(luna.session_id, '第二則', phone);
+
+	const onPhone = await sentTo(luna.session_id, phone);
+	expect(onPhone.map((entry) => entry.text)).toEqual(['第二則', '第一則']);
+	expect(await sentTo(luna.session_id)).toEqual(onPhone);
+	expect(new Set(onPhone.map((entry) => entry.id)).size).toBe(2);
+});
+
+test('an unpaired browser can neither send nor read the sent log', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+
+	const post = await send(luna.session_id, '你好', '');
+	const get = await fixture.fetch(`/api/messages?controller=${luna.session_id}`);
+
+	expect(post.status).toBe(401);
+	expect(get.status).toBe(401);
+	expect(calls()).toEqual([]);
+});
