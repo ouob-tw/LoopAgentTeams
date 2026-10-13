@@ -12,6 +12,8 @@ import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 
 const HEARTBEAT_MS = 15_000;
+/** Allowed for reading the report files and pushing the snapshot once the helper has answered. */
+const READ_SLACK_MS = 1_000;
 
 export interface Stream {
 	/** Token of the paired device that opened the stream. */
@@ -30,7 +32,8 @@ export interface Board {
 	close(): void;
 }
 
-export function createBoard(config: BoardConfig = loadConfig()): Board {
+function createBoard(): Board {
+	const config = loadConfig();
 	const readReports = createReportReader(config.reportsDir);
 	const helperDirs = helperDirectories();
 	const streams = new Set<Stream>();
@@ -69,10 +72,12 @@ export function createBoard(config: BoardConfig = loadConfig()): Board {
 	// Created up front so the device list can be watched before the first device is paired.
 	mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
 	const deviceWatcher = createSourceWatcher(dropRevoked);
-	deviceWatcher.sync(new Map([[config.stateDir, new Set([DEVICES_FILE])]]));
+	const deviceTargets: WatchTargets = new Map([[config.stateDir, new Set([DEVICES_FILE])]]);
+	deviceWatcher.sync(deviceTargets);
 
 	const heartbeat = setInterval(() => {
 		dropRevoked();
+		deviceWatcher.sync(deviceTargets);
 		for (const stream of streams) stream.send('ping', '{}');
 	}, HEARTBEAT_MS);
 
@@ -104,9 +109,15 @@ export function createBoard(config: BoardConfig = loadConfig()): Board {
 		return start();
 	}
 
+	// A change can land just after a read began and be missed by it, and the read that picks it up
+	// may take as long as the helper is allowed to. Both fit inside the fallback deadline when reads
+	// start this far apart.
+	const fallbackGapMs = Math.max(1_000, config.fallbackMs - config.helperTimeoutMs - READ_SLACK_MS);
+
 	function start(): Promise<BoardSnapshot> {
 		queued = null;
 		clearTimeout(fallback);
+		if (!closed) fallback = setTimeout(() => void refresh(), fallbackGapMs);
 		running = read()
 			.catch((error: Error) => {
 				// Unexpected source data must not take the server down or leave pages without an answer.
@@ -116,7 +127,6 @@ export function createBoard(config: BoardConfig = loadConfig()): Board {
 			})
 			.finally(() => {
 				running = null;
-				if (!closed) fallback = setTimeout(() => void refresh(), config.fallbackMs);
 			});
 		return running;
 	}
@@ -126,7 +136,8 @@ export function createBoard(config: BoardConfig = loadConfig()): Board {
 		current: async () => snapshot ?? (await (running ?? refresh())),
 		refresh,
 		subscribe(stream) {
-			streams.add(stream);
+			if (closed) stream.close();
+			else streams.add(stream);
 			return () => streams.delete(stream);
 		},
 		close() {

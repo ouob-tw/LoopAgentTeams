@@ -10,6 +10,12 @@ export const STATUS_LABEL: Record<ControllerStatus, string> = {
 	working: '進行中'
 };
 
+/** What the roster shows as a controller's current phase. */
+export function phaseText(controller: Pick<Controller, 'phase'>): string {
+	if (controller.phase === null) return '尚無回報';
+	return controller.phase || '（最新回報沒有摘要）';
+}
+
 export type ReportTag = 'DECIDE' | 'HELP' | 'DONE' | 'NO REPLY' | '';
 
 /** One line of a controller report record, as the turn-end hook wrote it. */

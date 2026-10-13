@@ -1,6 +1,6 @@
 <script lang="ts">
 	// The controller roster: three-line cards on a wide screen, a strip of two-line tags on a phone.
-	import type { Controller } from '#lib/board/types.ts';
+	import { phaseText, type Controller } from '#lib/board/types.ts';
 	import StatusMark from './StatusMark.svelte';
 
 	let {
@@ -29,7 +29,7 @@
 					<span class="error" title={controller.error}>⚠ 錯誤</span>
 				{/if}
 			</span>
-			<span class="phase">{controller.phase === null ? '尚無回報' : controller.phase || '（最新回報沒有摘要）'}</span>
+			<span class="phase">{phaseText(controller)}</span>
 		</button>
 	{:else}
 		<p class="none">目前沒有主控。</p>
@@ -75,7 +75,7 @@
 	.badge {
 		flex: none;
 		padding: 0 0.4rem;
-		border-radius: 99px;
+		border-radius: var(--radius-pill);
 		background: var(--status-waiting);
 		color: var(--bg);
 		font-family: var(--mono);

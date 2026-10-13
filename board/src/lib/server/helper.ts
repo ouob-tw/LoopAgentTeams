@@ -17,7 +17,9 @@ function run(config: BoardConfig, args: string[]): Promise<{ stdout: string; fai
 			(error, stdout, stderr) => {
 				let failure: string | null = null;
 				if (error) {
-					failure = error.killed
+					// Exceeding the output limit also kills the helper, so `killed` alone is not a timeout.
+					const timedOut = error.killed && error.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
+					failure = timedOut
 						? `輔助工具逾時（${config.helperTimeoutMs / 1000} 秒）`
 						: stderr.trim().split('\n').at(-1) || error.message;
 				}
@@ -35,7 +37,9 @@ function isController(value: unknown): value is HelperController {
 		typeof item.session_id === 'string' &&
 		typeof item.hcom_name === 'string' &&
 		typeof item.workspace === 'string' &&
-		Array.isArray(item.questions)
+		typeof item.questions_path === 'string' &&
+		Array.isArray(item.questions) &&
+		item.questions.every((question) => typeof question === 'object' && question !== null)
 	);
 }
 
@@ -48,8 +52,8 @@ export async function listControllers(config: BoardConfig): Promise<HelperList> 
 		return { ok: false, reason: failure ?? '輔助工具的輸出不是 JSON' };
 	}
 	// The helper prints one JSON object even when it fails; its reason is the useful one.
-	if (!Array.isArray(payload?.controllers) || !payload.controllers.every(isController)) {
-		const reason = typeof payload?.reason === 'string' ? payload.reason : failure;
+	const reason = typeof payload?.reason === 'string' ? payload.reason : failure;
+	if (failure || !Array.isArray(payload?.controllers) || !payload.controllers.every(isController)) {
 		return { ok: false, reason: reason ?? '輔助工具的輸出缺少主控清單' };
 	}
 	return { ok: true, controllers: payload.controllers };

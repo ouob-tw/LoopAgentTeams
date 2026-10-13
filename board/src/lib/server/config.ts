@@ -12,7 +12,7 @@ export interface BoardConfig {
 	/** Command that runs the LAT panel helper; the board appends `board <command>`. */
 	helperCommand: string[];
 	helperTimeoutMs: number;
-	/** Longest wait between two re-reads when no file change was seen. */
+	/** Longest a change the file watch missed may take to be read and pushed to the pages. */
 	fallbackMs: number;
 	debounceMs: number;
 	pairingTtlMs: number;

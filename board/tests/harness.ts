@@ -57,6 +57,8 @@ export interface Fixture {
 	report(sessionId: string, fields: Partial<Report> & { tag: Report['tag'] }): void;
 	appendRaw(sessionId: string, text: string): void;
 	cli(...args: string[]): { code: number; stdout: string; stderr: string };
+	/** Ask the host command for a pairing code. */
+	newCode(): string;
 	/** Pair a new device and return its cookie header. */
 	pair(userAgent?: string): Promise<string>;
 	fetch(path: string, init?: RequestInit & { cookie?: string }): Promise<Response>;
@@ -156,8 +158,9 @@ export async function startFixture(
 			const result = spawnSync('bun', [join(ROOT, 'src/cli.ts'), ...args], { env, encoding: 'utf8' });
 			return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
 		},
+		newCode: () => /配對碼：(\S+)/.exec(fixture.cli('pair').stdout)![1],
 		async pair(userAgent = 'test-device') {
-			const code = /配對碼：(\S+)/.exec(fixture.cli('pair').stdout)![1];
+			const code = fixture.newCode();
 			const response = await fixture.fetch('/api/pair', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json', 'user-agent': userAgent },

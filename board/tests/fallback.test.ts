@@ -1,30 +1,43 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { loadConfig } from '../src/lib/server/config.ts';
-import { named, startFixture, until, type Fixture } from './harness.ts';
+import { named, sleep, startFixture, until, type Fixture } from './harness.ts';
 
 let fixture: Fixture;
 let cookie: string;
+// A short deadline keeps the test quick; the product default and ceiling are checked below.
+const DEADLINE_MS = 6_000;
 
 beforeAll(async () => {
-	// A short fallback keeps the test quick; the product default and ceiling are checked below.
-	fixture = await startFixture(3, { env: { LAT_BOARD_FALLBACK_SECONDS: '3' } });
+	fixture = await startFixture(3, {
+		env: { LAT_BOARD_FALLBACK_SECONDS: '6', LAT_BOARD_HELPER_TIMEOUT_SECONDS: '2' }
+	});
 	cookie = await fixture.pair();
 });
 afterAll(() => fixture.cleanup());
 
-test('a change the file watch missed still reaches the page by the fallback re-read', async () => {
+test('a change the file watch missed is on the page within the fallback deadline, slow helper included', async () => {
 	fixture.list([fixture.bound('alpha', 'luna')]);
 	await fixture.refresh(cookie);
 	const page = fixture.watch(cookie);
 	await until(() => named(page.latest(), 'luna'), 5_000, 'the first snapshot');
 
-	// Only the helper's answer changes; no watched file does, so no watch event fires.
-	fixture.list([fixture.bound('alpha', 'luna'), fixture.bound('beta', 'missed')]);
+	// The worst case: the change lands just after a read began, so that read misses it, and the
+	// helper takes a while to answer. No watched file changes, so no watch event fires.
+	fixture.setHelper({ output: { controllers: [fixture.bound('alpha', 'luna')] }, sleepMs: 1_500 });
+	const reading = fixture.refresh(cookie);
+	await sleep(300);
+	fixture.setHelper({
+		output: { controllers: [fixture.bound('alpha', 'luna'), fixture.bound('beta', 'missed')] },
+		sleepMs: 1_500
+	});
+	const changedAt = Date.now();
+	expect(named(await reading, 'missed')).toBeUndefined();
 
-	await until(() => named(page.latest(), 'missed'), 3_000 + 2_000, 'the fallback re-read');
+	await until(() => named(page.latest(), 'missed'), DEADLINE_MS, 'the fallback re-read');
+	expect(Date.now() - changedAt).toBeLessThanOrEqual(DEADLINE_MS);
 });
 
-test('the fallback re-read is never more than 60 seconds apart', () => {
+test('the fallback deadline is 60 seconds unless set shorter', () => {
 	expect(loadConfig({}).fallbackMs).toBe(60_000);
 	expect(loadConfig({ LAT_BOARD_FALLBACK_SECONDS: '600' }).fallbackMs).toBe(60_000);
 	expect(loadConfig({ LAT_BOARD_FALLBACK_SECONDS: '10' }).fallbackMs).toBe(10_000);

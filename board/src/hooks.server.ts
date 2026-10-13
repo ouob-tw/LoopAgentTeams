@@ -17,7 +17,6 @@ const OPEN_PATHS = new Set(['/pair', '/api/pair']);
 export const handle: Handle = async ({ event, resolve }) => {
 	const token = event.cookies.get(DEVICE_COOKIE);
 	const device = token ? findDevice(getBoard().config.stateDir, token) : null;
-	event.locals.deviceId = device?.id;
 
 	const path = event.url.pathname;
 	if (!device && !OPEN_PATHS.has(path)) {

@@ -12,9 +12,10 @@ export interface ConnectionOptions {
 	onUnpaired(): void;
 	fetch?: typeof fetch;
 	retryMs?: number;
-	/** The server pings every 15 seconds; longer silence means the connection is dead. */
-	silenceMs?: number;
 }
+
+/** The server pings every 15 seconds; longer silence means the connection is dead. */
+const SILENCE_MS = 40_000;
 
 export interface Connection {
 	/** Ask the server to re-read every source now. */
@@ -25,7 +26,6 @@ export interface Connection {
 export function connectBoard(options: ConnectionOptions): Connection {
 	const request = options.fetch ?? fetch;
 	const retryMs = options.retryMs ?? 2_000;
-	const silenceMs = options.silenceMs ?? 40_000;
 	let closed = false;
 	let attempt: AbortController | undefined;
 	let retry: ReturnType<typeof setTimeout> | undefined;
@@ -35,7 +35,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		options.onUnpaired();
 	}
 
-	function handle(block: string): void {
+	function receive(block: string): void {
 		let event = 'message';
 		let data = '';
 		for (const line of block.split('\n')) {
@@ -54,7 +54,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		let silence: ReturnType<typeof setTimeout> | undefined;
 		const heard = () => {
 			clearTimeout(silence);
-			silence = setTimeout(() => attempt?.abort(), silenceMs);
+			silence = setTimeout(() => attempt?.abort(), SILENCE_MS);
 		};
 		try {
 			heard();
@@ -70,7 +70,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 				buffer += value;
 				let end: number;
 				while (!closed && (end = buffer.indexOf('\n\n')) >= 0) {
-					handle(buffer.slice(0, end));
+					receive(buffer.slice(0, end));
 					buffer = buffer.slice(end + 2);
 				}
 			}

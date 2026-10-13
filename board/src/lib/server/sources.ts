@@ -4,10 +4,9 @@ import { execFileSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 
-type Env = Record<string, string | undefined>;
-
 /** Mirrors the helper's own lookup order for its config and state directories. */
-export function helperDirectories(env: Env = process.env): { config: string; state: string } {
+export function helperDirectories(): { config: string; state: string } {
+	const env = process.env;
 	let config = env.HERDR_PLUGIN_CONFIG_DIR;
 	if (!config) {
 		try {

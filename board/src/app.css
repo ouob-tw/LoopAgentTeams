@@ -6,7 +6,6 @@
 	--text: #e6e3dc;
 	--muted: #8b919a;
 	--accent: #6cb6ff;
-	--accent-soft: rgb(108 182 255 / 0.12);
 	--warn: #f0b429;
 	--ok: #57c785;
 	--danger: #ff7b72;
@@ -15,6 +14,7 @@
 	--status-delivered: var(--ok);
 	--status-ended: var(--muted);
 	--radius: 8px;
+	--radius-pill: 99px;
 	--mono: ui-monospace, 'JetBrains Mono', 'Cascadia Code', monospace;
 	--sans: system-ui, 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
 }

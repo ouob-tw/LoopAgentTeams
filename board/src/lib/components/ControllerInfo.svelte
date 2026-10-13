@@ -1,7 +1,7 @@
 <script lang="ts">
 	// A controller's information page. This is the basic block; questions, reports and sent
 	// messages are separate sections added below it.
-	import { STATUS_LABEL, type Controller } from '#lib/board/types.ts';
+	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
 	import StatusMark from './StatusMark.svelte';
 
 	let { controller }: { controller: Controller } = $props();
@@ -15,7 +15,7 @@
 		<h2>{controller.project}</h2>
 		<span class="handle">@{controller.hcomName}</span>
 	</header>
-	<p class="phase">{controller.phase === null ? '尚無回報' : controller.phase || '（最新回報沒有摘要）'}</p>
+	<p class="phase">{phaseText(controller)}</p>
 	{#if controller.error}
 		<p class="error" role="alert">⚠ {controller.error}</p>
 	{/if}
@@ -27,10 +27,10 @@
 			{#if controller.herdr}
 				工作區 {controller.herdr.workspace}・分頁 {controller.herdr.tab}・窗格 {controller.herdr.pane}
 			{:else}
-				主控已結束，不在任何分頁
+				已不在面板綁定登記中，位置不明
 			{/if}
 		</dd>
-		<dt>Client</dt>
+		<dt>客戶端</dt>
 		<dd>{controller.client}</dd>
 		<dt>待決題</dt>
 		<dd>{controller.pendingCount} 題</dd>
@@ -58,7 +58,7 @@
 		gap: 0.35rem;
 		padding: 0.1rem 0.5rem;
 		border: 1px solid var(--line);
-		border-radius: 99px;
+		border-radius: var(--radius-pill);
 		font-size: 0.75rem;
 		white-space: nowrap;
 	}

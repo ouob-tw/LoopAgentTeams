@@ -4,9 +4,7 @@ import { sleep, startFixture, until, type Fixture } from './harness.ts';
 let fixture: Fixture;
 const json = { 'content-type': 'application/json' };
 
-function newCode(): string {
-	return /配對碼：(\S+)/.exec(fixture.cli('pair').stdout)![1];
-}
+const newCode = () => fixture.newCode();
 
 function tryPair(code: string): Promise<Response> {
 	return fixture.fetch('/api/pair', { method: 'POST', headers: json, body: JSON.stringify({ code }) });

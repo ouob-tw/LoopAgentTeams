@@ -27,11 +27,14 @@ function parseReport(line: string): Report | null {
 		value !== null &&
 		typeof value.time === 'string' &&
 		!Number.isNaN(Date.parse(value.time)) &&
+		typeof value.session_id === 'string' &&
 		typeof value.hcom_name === 'string' &&
 		typeof value.workspace === 'string' &&
 		typeof value.client === 'string' &&
 		typeof value.summary === 'string' &&
 		typeof value.message === 'string' &&
+		typeof value.round === 'number' &&
+		typeof value.final === 'boolean' &&
 		TAGS.has(value.tag);
 	return complete ? value : null;
 }

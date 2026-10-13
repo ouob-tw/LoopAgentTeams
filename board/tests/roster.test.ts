@@ -134,12 +134,12 @@ test('an unbound controller leaves the roster once no report of it is left in th
 	expect(named(snapshot, 'recent')).toMatchObject({ status: 'ended' });
 });
 
-test('a controller that started a new round is judged by that round only', async () => {
+test('a controller bound again after its final report keeps that report as its latest until a new one', async () => {
 	const luna = fixture.bound('alpha', 'luna');
 	fixture.report(luna.session_id, { tag: 'DONE', summary: '上一輪交付', hcom_name: 'luna', workspace: luna.workspace, final: true });
 	fixture.list([luna]);
 
-	expect(named(await fixture.refresh(cookie), 'luna')).toMatchObject({ status: 'working', phase: null });
+	expect(named(await fixture.refresh(cookie), 'luna')).toMatchObject({ status: 'delivered', phase: '上一輪交付' });
 
 	fixture.report(luna.session_id, { tag: 'NO REPLY', summary: '第二輪開始', hcom_name: 'luna', workspace: luna.workspace, round: 2 });
 

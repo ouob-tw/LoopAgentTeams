@@ -27,18 +27,19 @@
 	<p class="offline" role="status">連線中斷，正在重新連線…</p>
 {/if}
 
+{#if board.refreshFailed}
+	<p class="problem" role="alert">重新整理失敗，請稍後再試。</p>
+{/if}
+{#each board.snapshot.errors as error (error)}
+	<p class="problem" role="alert">⚠ {error}</p>
+{/each}
+
 <div class="shell" class:viewing={open !== undefined}>
 	<nav class="roster">
 		<header class="summary">
 			<span>{controllers.length} 個主控</span>
 			{@render refresh()}
 		</header>
-		{#if board.refreshFailed}
-			<p class="problem" role="alert">重新整理失敗，請稍後再試。</p>
-		{/if}
-		{#each board.snapshot.errors as error (error)}
-			<p class="problem" role="alert">⚠ {error}</p>
-		{/each}
 		<Roster {controllers} currentId={openId} onopen={(id) => (openId = id)} />
 	</nav>
 
@@ -96,7 +97,9 @@
 		color: var(--text);
 	}
 	.problem {
-		margin: 0 0 0.6rem;
+		margin: 0;
+		padding: 0.4rem 1rem;
+		border-bottom: 1px solid var(--line);
 		font-size: 0.8rem;
 		color: var(--danger);
 		overflow-wrap: anywhere;

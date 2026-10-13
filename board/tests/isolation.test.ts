@@ -1,5 +1,6 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { named, question, startFixture, type Fixture } from './harness.ts';
+import { mkdirSync, rmSync } from 'node:fs';
+import { named, question, startFixture, until, type Fixture } from './harness.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -54,7 +55,7 @@ test('a cut-off line does not hide an ended controller', async () => {
 	expect(controller.error).toContain('1 行');
 });
 
-test('when the helper fails, the last known controllers stay, marked, and ended controllers are unaffected', async () => {
+test('when the helper fails, the last known controllers stay and every controller says its data is uncertain', async () => {
 	const luna = fixture.bound('alpha', 'luna');
 	fixture.report(luna.session_id, { tag: 'NO REPLY', summary: '實作中', hcom_name: 'luna', workspace: luna.workspace });
 	fixture.report('session-ended-ok', { tag: 'DONE', summary: '已交付', hcom_name: 'orin', workspace: `${fixture.dir}/workspaces/gamma` });
@@ -66,12 +67,15 @@ test('when the helper fails, the last known controllers stay, marked, and ended 
 
 	expect(named(failed, 'luna')).toMatchObject({ status: 'working', phase: '實作中' });
 	expect(named(failed, 'luna')!.error).toContain('invalid bindings file');
-	expect(named(failed, 'orin')).toMatchObject({ status: 'ended', error: null });
+	// Whether an unbound controller has really ended cannot be told without the registry.
+	expect(named(failed, 'orin')!.status).toBe('ended');
+	expect(named(failed, 'orin')!.error).toContain('invalid bindings file');
 	expect(failed.errors.join()).toContain('invalid bindings file');
 
 	fixture.list([luna]);
 	const recovered = await fixture.refresh(cookie);
 	expect(named(recovered, 'luna')!.error).toBeNull();
+	expect(named(recovered, 'orin')!.error).toBeNull();
 	expect(recovered.errors).toEqual([]);
 });
 
@@ -87,6 +91,42 @@ test('a helper that hangs is cut off and reported instead of blocking the board'
 
 test('helper output that is not JSON is reported as a source error', async () => {
 	fixture.setHelper({ raw: 'Traceback (most recent call last):', exit: 1 });
+
+	const snapshot = await fixture.refresh(cookie);
+
+	expect(snapshot.errors).toHaveLength(1);
+});
+
+test('a report line that is valid JSON but lacks required fields is skipped like a cut-off line', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.report(luna.session_id, { tag: 'NO REPLY', summary: '完整的回報', hcom_name: 'luna', workspace: luna.workspace });
+	fixture.appendRaw(luna.session_id, '{"time": "2026-10-13T10:00:00Z", "tag": "DONE", "summary": "缺欄位"}\n');
+	fixture.list([luna]);
+
+	const controller = named(await fixture.refresh(cookie), 'luna')!;
+
+	expect(controller).toMatchObject({ status: 'working', phase: '完整的回報' });
+	expect(controller.error).toContain('1 行');
+});
+
+test('a watched directory that is deleted and created again is watched again', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+	await fixture.refresh(cookie);
+	const page = fixture.watch(cookie);
+	await until(() => named(page.latest(), 'luna'), 5_000, 'the first snapshot');
+
+	rmSync(fixture.reportsDir, { recursive: true });
+	mkdirSync(fixture.reportsDir);
+	// The board notices the new directory at its next re-read.
+	await fixture.refresh(cookie);
+	fixture.report(luna.session_id, { tag: 'NO REPLY', summary: '目錄重建後的回報', hcom_name: 'luna', workspace: luna.workspace });
+
+	await until(() => named(page.latest(), 'luna')?.phase === '目錄重建後的回報', 5_000, 'the report written after the directory came back');
+});
+
+test('a helper that exits with a failure is not trusted even when it printed a controller list', async () => {
+	fixture.setHelper({ output: { controllers: [] }, exit: 1 });
 
 	const snapshot = await fixture.refresh(cookie);
 

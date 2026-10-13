@@ -71,4 +71,9 @@ function main(argv: string[]): number {
 	return 2;
 }
 
-process.exitCode = main(process.argv.slice(2));
+try {
+	process.exitCode = main(process.argv.slice(2));
+} catch (error) {
+	console.error(`看板指令失敗：${(error as Error).message}`);
+	process.exitCode = 1;
+}

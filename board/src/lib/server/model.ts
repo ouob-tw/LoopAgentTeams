@@ -16,7 +16,7 @@ export interface Sources {
 const UNREAD_ARCHIVE_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Whether a report is an inbox item that has not been archived yet. */
-export function inInbox(report: Report, now: number): boolean {
+function inInbox(report: Report, now: number): boolean {
 	// Read state arrives with the inbox; until then every report counts as unread.
 	return (report.tag === 'DONE' || report.tag === 'HELP') && now - Date.parse(report.time) < UNREAD_ARCHIVE_MS;
 }
@@ -30,10 +30,7 @@ function reportError(file: ReportFile | undefined): string | null {
 const joinErrors = (...errors: (string | null)[]) => errors.filter(Boolean).join('；') || null;
 
 function activeController(binding: HelperController, file: ReportFile | undefined): Controller {
-	// A report marked final closed an earlier round; the round running now starts after it.
-	const reports = file?.reports ?? [];
-	const round = reports.slice(reports.findLastIndex((report) => report.final) + 1);
-	const latest = round.at(-1);
+	const latest = file?.reports.at(-1);
 	const pendingCount = binding.questions.filter((question) => question.status === 'pending').length;
 
 	let status: ControllerStatus = 'working';
@@ -89,8 +86,17 @@ export function buildSnapshot(sources: Sources, now = Date.now()): BoardSnapshot
 	// Whatever is left belongs to controllers that are no longer bound: they have ended, and stay
 	// on the roster only while the inbox still holds one of their reports.
 	for (const file of files.values()) {
-		if (file.reports.some((report) => inInbox(report, now))) controllers.push(endedController(file));
-		else if (!file.reports.length && (file.error || file.invalidLines)) {
+		if (file.reports.some((report) => inInbox(report, now))) {
+			const controller = endedController(file);
+			if (sources.helperError) {
+				// Without the registry there is no telling whether it has really ended.
+				controller.error = joinErrors(
+					`無法確認這個主控是否仍啟用，輔助工具失敗：${sources.helperError}`,
+					controller.error
+				);
+			}
+			controllers.push(controller);
+		} else if (!file.reports.length && (file.error || file.invalidLines)) {
 			errors.push(`回報紀錄 ${file.sessionId} 讀不出任何一筆回報`);
 		}
 	}

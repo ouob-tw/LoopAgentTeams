@@ -1,6 +1,6 @@
 <script lang="ts">
 	let code = $state('');
-	let failed = $state(false);
+	let failure = $state('');
 	let sending = $state(false);
 
 	async function pair(event: SubmitEvent) {
@@ -13,10 +13,13 @@
 				body: JSON.stringify({ code })
 			});
 			if (response.ok) return void (location.href = '/');
+			failure =
+				response.status === 400
+					? '配對失敗：配對碼不正確、已經用過或已過期。請在主機上重新產生一組。'
+					: `配對失敗：看板伺服器回報錯誤（${response.status}）。`;
 		} catch {
-			// Shown as a failed attempt below.
+			failure = '配對失敗：連不上看板伺服器。';
 		}
-		failed = true;
 		sending = false;
 	}
 </script>
@@ -29,8 +32,8 @@
 		<input id="code" bind:value={code} autocomplete="off" autocapitalize="characters" spellcheck="false" required />
 		<button class="primary" disabled={sending || !code.trim()}>配對</button>
 	</form>
-	{#if failed}
-		<p class="failed" role="alert">配對失敗：配對碼不正確、已經用過或已過期。請在主機上重新產生一組。</p>
+	{#if failure}
+		<p class="failed" role="alert">{failure}</p>
 	{/if}
 </main>
 

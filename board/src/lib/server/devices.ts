@@ -28,7 +28,7 @@ const STALE_LOCK_MS = 5_000;
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
 
-export const normalizeCode = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, '');
+const normalizeCode = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 function readJson<T>(path: string): T[] {
 	let text: string;
@@ -74,11 +74,8 @@ function withLock<T>(stateDir: string, action: () => T): T {
 	}
 }
 
-export function createPairingCode(
-	stateDir: string,
-	ttlMs: number,
-	now = Date.now()
-): { code: string; expiresAt: number } {
+export function createPairingCode(stateDir: string, ttlMs: number): { code: string; expiresAt: number } {
+	const now = Date.now();
 	let code = '';
 	for (let i = 0; i < CODE_LENGTH; i++) code += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
 	const expiresAt = now + ttlMs;
@@ -91,17 +88,16 @@ export function createPairingCode(
 }
 
 /** Use up a pairing code and register the device; null when the code is unknown, used or expired. */
-export function pairDevice(
-	stateDir: string,
-	code: string,
-	label: string,
-	now = Date.now()
-): { token: string; device: Device } | null {
+export function pairDevice(stateDir: string, code: string, label: string): { token: string; device: Device } | null {
+	const now = Date.now();
 	const codeHash = sha256(normalizeCode(code));
 	return withLock(stateDir, () => {
 		const codesPath = join(stateDir, CODES_FILE);
 		const live = readJson<StoredCode>(codesPath).filter((entry) => entry.expiresAt > now);
 		if (!live.some((entry) => entry.codeHash === codeHash)) return null;
+		// Read the device list before using up the code: if it cannot be read, the code stays valid.
+		const devicesPath = join(stateDir, DEVICES_FILE);
+		const devices = readJson<StoredDevice>(devicesPath);
 		writeJson(codesPath, live.filter((entry) => entry.codeHash !== codeHash));
 
 		const token = randomBytes(32).toString('base64url');
@@ -110,8 +106,7 @@ export function pairDevice(
 			label: label.slice(0, 200),
 			pairedAt: new Date(now).toISOString()
 		};
-		const devicesPath = join(stateDir, DEVICES_FILE);
-		writeJson(devicesPath, [...readJson<StoredDevice>(devicesPath), { ...device, tokenHash: sha256(token) }]);
+		writeJson(devicesPath, [...devices, { ...device, tokenHash: sha256(token) }]);
 		return { token, device };
 	});
 }
