@@ -1,0 +1,64 @@
+/* Every colour, radius and font is a variable so a user stylesheet can override it. */
+:root {
+	--bg: #101214;
+	--surface: #181b1f;
+	--line: #2a2f36;
+	--text: #e6e3dc;
+	--muted: #8b919a;
+	--accent: #6cb6ff;
+	--accent-soft: rgb(108 182 255 / 0.12);
+	--warn: #f0b429;
+	--ok: #57c785;
+	--danger: #ff7b72;
+	--status-waiting: var(--warn);
+	--status-working: var(--accent);
+	--status-delivered: var(--ok);
+	--status-ended: var(--muted);
+	--radius: 8px;
+	--mono: ui-monospace, 'JetBrains Mono', 'Cascadia Code', monospace;
+	--sans: system-ui, 'Noto Sans TC', 'PingFang TC', 'Microsoft JhengHei', sans-serif;
+}
+
+* {
+	box-sizing: border-box;
+}
+
+body {
+	margin: 0;
+	background: var(--bg);
+	color: var(--text);
+	font-family: var(--sans);
+	line-height: 1.5;
+}
+
+input,
+button {
+	font: inherit;
+	color: inherit;
+	border-radius: var(--radius);
+}
+
+input {
+	background: var(--bg);
+	border: 1px solid var(--line);
+	padding: 0.5rem 0.6rem;
+}
+
+button {
+	background: var(--surface);
+	border: 1px solid var(--line);
+	padding: 0.5rem 0.8rem;
+	cursor: pointer;
+}
+
+button.primary {
+	background: var(--accent);
+	border-color: var(--accent);
+	color: var(--bg);
+	font-weight: 600;
+}
+
+button:disabled {
+	opacity: 0.4;
+	cursor: default;
+}
