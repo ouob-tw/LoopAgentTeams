@@ -1,7 +1,8 @@
 // What the page keeps about messages to controllers: unsent drafts, the sent log of the
 // controllers it has opened, and whether Enter sends on this device.
 import { MediaQuery } from 'svelte/reactivity';
-import { ENTER_NEWLINE_QUERY, type SendResponse, type SentMessage } from './messages.ts';
+import type { SentEntry } from './answers.ts';
+import { ENTER_NEWLINE_QUERY, type SendResponse } from './messages.ts';
 
 /** True when Enter makes a new line and only the button sends. */
 export const enterMakesNewline = new MediaQuery(ENTER_NEWLINE_QUERY, false);
@@ -18,14 +19,14 @@ class Messaging {
 	/** Text typed for a controller and not sent yet, by controller ID. It survives a failed send. */
 	drafts = $state<Record<string, string>>({});
 	/** Sent log by controller ID, newest first; a controller is missing until its log is loaded. */
-	sent = $state<Record<string, SentMessage[]>>({});
+	sent = $state<Record<string, SentEntry[]>>({});
 	loadFailed = $state<Record<string, boolean>>({});
 	/** The latest load started per controller; an older one that answers later is dropped. */
 	#loads: Record<string, number> = {};
 
 	async load(controllerId: string): Promise<void> {
 		const load = (this.#loads[controllerId] = (this.#loads[controllerId] ?? 0) + 1);
-		let entries: SentMessage[] | undefined;
+		let entries: SentEntry[] | undefined;
 		try {
 			const response = await fetch(`/api/messages?controller=${encodeURIComponent(controllerId)}`);
 			if (response.status === 401) return location.reload();

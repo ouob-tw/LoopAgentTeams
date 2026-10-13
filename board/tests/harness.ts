@@ -50,6 +50,24 @@ export function question(overrides: Partial<HelperQuestion> = {}): HelperQuestio
 	};
 }
 
+interface FixedOutput {
+	output?: unknown;
+	raw?: string;
+	exit?: number;
+	sleepMs?: number;
+}
+
+/** What the fake helper does: `board list` prints the plan's own output; `answer` and `notify`
+ *  act on the listed controllers unless a fixed output is given for them. */
+export interface HelperPlan extends FixedOutput {
+	answer?: FixedOutput;
+	notify?: FixedOutput;
+	/** Notifying the controller fails with this reason; the answer is still written. */
+	notifyFails?: string;
+	/** The controller records an answer the moment it is written. */
+	recordOnAnswer?: boolean;
+}
+
 export interface Fixture {
 	url: string;
 	dir: string;
@@ -57,9 +75,13 @@ export interface Fixture {
 	/** A bound controller as the helper would list it; its workspace directory is created. */
 	bound(project: string, name: string, overrides?: Partial<HelperController>): HelperController;
 	/** Change what the helper prints. Not a watched file, so the board does not notice by itself. */
-	setHelper(plan: { output?: unknown; raw?: string; exit?: number; sleepMs?: number }): void;
+	setHelper(plan: HelperPlan): void;
 	list(controllers: HelperController[]): void;
+	/** The controllers the helper lists right now, with whatever its answer command wrote. */
+	listed(): HelperController[];
 	helperCalls(): number;
+	/** The argument list of every helper call so far that ran this `board` command. */
+	helperArgs(command: 'list' | 'answer' | 'notify'): string[][];
 	/** Rewrite the binding registry file, the way a controller binding or unbinding does. */
 	touchRegistry(): void;
 	report(sessionId: string, fields: Partial<Report> & { tag: Report['tag'] }): void;
@@ -150,6 +172,13 @@ export async function startFixture(
 		},
 		setHelper: (plan) => writeFileSync(join(dir, 'helper.json'), JSON.stringify(plan)),
 		list: (controllers) => fixture.setHelper({ output: { controllers } }),
+		listed: () => JSON.parse(readFileSync(join(dir, 'helper.json'), 'utf8')).output.controllers,
+		helperArgs(command) {
+			const log = join(dir, 'helper-calls.jsonl');
+			if (!existsSync(log)) return [];
+			const calls: string[][] = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+			return calls.filter((args) => args[1] === command);
+		},
 		helperCalls: () => {
 			const log = join(dir, 'helper-calls.log');
 			return existsSync(log) ? readFileSync(log, 'utf8').trim().split('\n').length : 0;

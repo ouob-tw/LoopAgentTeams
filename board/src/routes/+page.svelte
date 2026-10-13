@@ -154,7 +154,12 @@
 					{/if}
 				{:else if item}
 					{#key item.key}
-						<ItemContent {item} {inInbox} onread={(key) => board.markRead(key)} />
+						<ItemContent
+							{item}
+							{inInbox}
+							recorded={board.snapshot.recordedKeys.includes(item.key)}
+							onread={(key) => board.markRead(key)}
+						/>
 					{/key}
 					{#if controller}
 						<button class="context" onclick={() => openController(controller.id)}>

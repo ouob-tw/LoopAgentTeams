@@ -6,6 +6,7 @@ import type {
 	Controller,
 	ControllerStatus,
 	HelperController,
+	HelperQuestion,
 	InboxQuestion,
 	InboxReport
 } from '../board/types.ts';
@@ -90,13 +91,15 @@ export function archivedReports(sources: Sources, state: InboxState): InboxRepor
 		.sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
 }
 
+const questionKey = (binding: HelperController, question: HelperQuestion) => `q:${binding.session_id}:${question.id}`;
+
 function questionItems(binding: HelperController): InboxQuestion[] {
 	const workspace = binding.workspace;
 	return binding.questions
 		.filter((question) => question.status !== 'recorded')
 		.map((question) => ({
 			kind: 'question',
-			key: `q:${binding.session_id}:${question.id}`,
+			key: questionKey(binding, question),
 			controllerId: binding.session_id,
 			hcomName: binding.hcom_name,
 			project: basename(workspace),
@@ -104,6 +107,8 @@ function questionItems(binding: HelperController): InboxQuestion[] {
 			time: question.asked_at ?? null,
 			title: question.title,
 			unsent: question.status === 'pending',
+			// The pending notification belongs to the question file, so to every answer sent from it.
+			notifyFailed: question.status === 'submitted' && binding.notification_pending === true,
 			question
 		}));
 }
@@ -206,6 +211,9 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		controllers,
 		// An ended controller's questions cannot be answered any more, so only bound ones are listed.
 		inbox: [...sources.active.flatMap(questionItems), ...inboxReports],
+		recordedKeys: sources.active.flatMap((binding) =>
+			binding.questions.filter((question) => question.status === 'recorded').map((question) => questionKey(binding, question))
+		),
 		archivedCount: reports.length - inboxReports.length,
 		errors
 	};

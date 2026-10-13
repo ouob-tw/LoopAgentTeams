@@ -111,6 +111,8 @@ export interface InboxQuestion extends ItemOwner {
 	title: string;
 	/** Still waiting for an answer to be sent. */
 	unsent: boolean;
+	/** The answer is sent, but the notification to the controller has not been delivered. */
+	notifyFailed: boolean;
 	question: HelperQuestion;
 }
 
@@ -138,6 +140,8 @@ export interface BoardSnapshot {
 	controllers: Controller[];
 	/** Questions and unarchived reports, in source order; the page sorts them. */
 	inbox: InboxItem[];
+	/** Keys of the active controllers' questions that are recorded, and so no longer in the inbox. */
+	recordedKeys: string[];
 	/** How many reports are in the archive; they are fetched separately. */
 	archivedCount: number;
 	/** Source failures that cannot be attributed to one controller. */

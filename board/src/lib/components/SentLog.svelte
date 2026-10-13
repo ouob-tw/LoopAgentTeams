@@ -1,5 +1,7 @@
 <script lang="ts">
-	// What the user sent to this controller from the board, on any paired device.
+	// What the user sent to this controller from the board, on any paired device: messages typed
+	// into its client, and answers to its questions.
+	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
@@ -7,32 +9,46 @@
 	let { controller }: { controller: Controller } = $props();
 
 	const entries = $derived(messaging.sent[controller.id]);
+	// Read again with every new board data: that is when an answer goes from sent to recorded.
 	$effect(() => void messaging.load(controller.id));
 </script>
 
 <section class="sent">
-	<h3>你傳給 @{controller.hcomName} 的訊息</h3>
+	<h3>你傳給 @{controller.hcomName} 的訊息與答覆</h3>
 	{#if messaging.loadFailed[controller.id]}
 		<p class="failed" role="alert">送出紀錄讀取失敗。</p>
 	{/if}
 	{#if entries?.length}
 		<ol>
 			{#each entries as entry (entry.id)}
-				<li>
-					<p class="meta">
-						<time datetime={entry.time}>{formatTime(entry.time)}</time>
-						{#if entry.ok}
-							<span>✓ 已送出</span>
-						{:else}
-							<span class="failed">✗ 沒有送達：{entry.error}</span>
-						{/if}
-					</p>
-					<p class="text">{entry.text}</p>
+				<li data-kind={entry.kind}>
+					{#if entry.kind === 'answer'}
+						<p class="meta">
+							<time datetime={entry.time}>{formatTime(entry.time)}</time>
+							<span>答覆 {entry.questionId} r{entry.revision}</span>
+							<span class:failed={entry.state === 'superseded'}>
+								{entry.state === 'recorded' ? '✓ ' : ''}{ANSWER_STATE_TEXT[entry.state]}
+							</span>
+						</p>
+						<p class="title">{entry.title || '（沒有標題）'}</p>
+						<p class="text">{entry.answer}</p>
+						{#if entry.note}<p class="text note">備註：{entry.note}</p>{/if}
+					{:else}
+						<p class="meta">
+							<time datetime={entry.time}>{formatTime(entry.time)}</time>
+							{#if entry.ok}
+								<span>✓ 已送出</span>
+							{:else}
+								<span class="failed">✗ 沒有送達：{entry.error}</span>
+							{/if}
+						</p>
+						<p class="text">{entry.text}</p>
+					{/if}
 				</li>
 			{/each}
 		</ol>
 	{:else if entries}
-		<p class="empty">還沒有傳過訊息。</p>
+		<p class="empty">還沒有傳過訊息或答覆。</p>
 	{/if}
 </section>
 
@@ -74,6 +90,15 @@
 	.text {
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
+	}
+	.title {
+		font-size: 0.85rem;
+		color: var(--muted);
+		overflow-wrap: anywhere;
+	}
+	.note {
+		font-size: 0.85rem;
+		color: var(--muted);
 	}
 	.failed {
 		color: var(--danger);
