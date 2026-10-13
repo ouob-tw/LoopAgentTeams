@@ -40,8 +40,13 @@ for (const host of hosts) {
 				HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state')
 			};
 		});
-		afterAll(() => {
-			server?.kill('SIGKILL');
+		afterAll(async () => {
+			// SIGTERM, so the command passes it on to the server it started; SIGKILL would leave that running.
+			if (server && server.exitCode === null) {
+				const exited = new Promise((resolve) => server!.once('exit', resolve));
+				server.kill('SIGTERM');
+				await exited;
+			}
 			rmSync(dir, { recursive: true, force: true });
 		});
 
