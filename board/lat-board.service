@@ -8,13 +8,14 @@ Wants=network-online.target
 [Service]
 # 專案裡的 board 目錄（已執行過 install 與 build）
 WorkingDirectory=<專案目錄>/board
-# 服務的 PATH 很短，須含 node、uv、hcom 所在的目錄（用 command -v 查）
+# 服務的 PATH 很短，須含 node、uv、hcom 所在的目錄（用 command -v 查）；只有 Bun 的主機把 node 換成 bun
 Environment=PATH=<node 所在目錄>:<uv 與 hcom 所在目錄>:/usr/local/bin:/usr/bin:/bin
 # 監聽位址與連接埠；想只給本機用就改成 127.0.0.1
 Environment=HOST=0.0.0.0
 Environment=PORT=7100
 # 其他設定（見 board/README.md）需要時再加，例如：
 # Environment=LAT_BOARD_STATE_DIR=<目錄>
+# 只有 Bun 的主機改成：ExecStart=/usr/bin/env bun build/index.js
 ExecStart=/usr/bin/env node build
 Restart=on-failure
 RestartSec=5
