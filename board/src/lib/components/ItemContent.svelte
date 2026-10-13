@@ -336,7 +336,7 @@
 		border-radius: var(--radius);
 	}
 	.options li.chosen {
-		border: 2px solid var(--accent);
+		border: 2px solid var(--selected-bg);
 		padding: calc(0.5rem - 1px) calc(0.7rem - 1px);
 	}
 	.options label {
@@ -459,5 +459,18 @@
 	.failed {
 		color: var(--danger);
 		font-size: 0.85rem;
+	}
+
+	/* Light theme: solid borders only, and a chosen option stands out without colour, by its
+	   heavy frame and bold text next to the filled radio or checkbox mark. */
+	:global(:root[data-theme='light']) .recommendation {
+		border-style: solid;
+	}
+	:global(:root[data-theme='light']) .options li.chosen {
+		border-width: 3px;
+		padding: calc(0.5rem - 2px) calc(0.7rem - 2px);
+	}
+	:global(:root[data-theme='light']) .options li.chosen .option {
+		font-weight: 700;
 	}
 </style>
