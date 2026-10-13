@@ -1,6 +1,6 @@
 <script lang="ts">
-	// The command line fixed at the bottom of the wide layout: `@name message` goes to that
-	// controller, a line without a name to the controller that is open.
+	// The command line at the bottom of the wide layout: `@name message` goes to that controller,
+	// a line without a name to the controller that is open.
 	import { parseCommand } from '#lib/board/messages.ts';
 	import { enterMakesNewline, messaging, type Outcome } from '#lib/board/messaging.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
@@ -56,11 +56,6 @@
 
 <style>
 	.cmd {
-		position: fixed;
-		left: 0;
-		right: 0;
-		bottom: 0;
-		z-index: 10;
 		display: grid;
 		grid-template-columns: auto 1fr auto;
 		gap: 0.6rem;

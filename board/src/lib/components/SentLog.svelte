@@ -1,5 +1,6 @@
 <script lang="ts">
 	// What the user sent to this controller from the board, on any paired device.
+	import { formatTime } from '#lib/board/format.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
 
@@ -7,8 +8,6 @@
 
 	const entries = $derived(messaging.sent[controller.id]);
 	$effect(() => void messaging.load(controller.id));
-
-	const time = (iso: string) => new Date(iso).toLocaleString('zh-TW', { hour12: false });
 </script>
 
 <section class="sent">
@@ -21,7 +20,7 @@
 			{#each entries as entry (entry.id)}
 				<li>
 					<p class="meta">
-						<time datetime={entry.time}>{time(entry.time)}</time>
+						<time datetime={entry.time}>{formatTime(entry.time)}</time>
 						{#if entry.ok}
 							<span>✓ 已送出</span>
 						{:else}
@@ -38,9 +37,16 @@
 </section>
 
 <style>
+	.sent {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
 	h3 {
-		margin: 0 0 0.5rem;
-		font-size: 0.9rem;
+		margin: 0;
+		font-size: 0.8rem;
+		font-weight: 600;
+		color: var(--muted);
 	}
 	ol {
 		display: grid;

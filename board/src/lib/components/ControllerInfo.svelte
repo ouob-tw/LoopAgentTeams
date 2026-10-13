@@ -5,6 +5,8 @@
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { phaseText, STATUS_LABEL, type Controller, type InboxItem } from '#lib/board/types.ts';
 	import ItemRow from './ItemRow.svelte';
+	import ReplyBox from './ReplyBox.svelte';
+	import SentLog from './SentLog.svelte';
 	import StatusMark from './StatusMark.svelte';
 
 	let {
@@ -72,9 +74,9 @@
 	{/each}
 </section>
 
-<!-- Mount point (ticket 111): the "sent" log block for this controller goes here. -->
+<SentLog {controller} />
 
-<!-- Mount point (ticket 111): the reply box for this controller goes here, last on the page. -->
+<ReplyBox {controller} />
 
 <style>
 	.block {
