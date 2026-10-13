@@ -106,4 +106,6 @@ bun run test        # 先 build，再以暫存目錄與假的輔助工具啟動�
 
 測試不讀寫真實的 `.lat/`、綁定登記或回報紀錄，也不會對真實的主控輸入文字或送出答案。測試伺服器使用 7110 起的連接埠，可用 `LAT_BOARD_TEST_PORT_BASE` 更改。
 
+瀏覽器擴充功能（例如 Dark Reader）會在頁面啟動前，在樣式表旁邊插入或搬動節點。`bun run build && bun run repro:hydration` 用無頭 Chrome 模擬這些改動，確認看板照常載入、使用者樣式檔仍排在最後；任何一種改動讓看板壞掉就以 1 結束。需要本機有 Chrome 或 Chromium（可用 `CHROME` 指定），使用測試連接埠起算的第 12、13 個。`bun run repro:hydration --serve none` 只啟動已配對的假資料看板，讓你用裝了真實擴充功能的瀏覽器開啟。因此樣式表一律放在 `<head>`，不放進頁面元件的範本。
+
 封存的期限用看板的時鐘計算。測試以 `LAT_BOARD_CLOCK_FILE` 指定一個檔案，內容是一個 ISO 時間，看板就把它當成現在；沒有設定或檔案讀不出時間時用系統時間。

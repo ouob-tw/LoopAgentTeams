@@ -142,11 +142,6 @@
 	></div>
 {/snippet}
 
-<!-- The user's own stylesheet. In the body, so it comes after every built-in style, and before
-     the content, so nothing is painted without it. The server answers with an empty sheet when
-     there is none. -->
-<link rel="stylesheet" href="/user.css" />
-
 <div class="page">
 	{#if board.link === 'offline'}
 		<p class="offline" role="status">連線中斷，正在重新連線…</p>
