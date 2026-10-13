@@ -157,11 +157,12 @@ test('an unusable state file is reported without making up which reports are rea
 	const start = ISSUED + 80 * DAY;
 	const steady = fixture.bound('epsilon', 'steady');
 	fixture.list([steady]);
-	// Read on day 0 and archived by day 4; its ended controller has left the roster.
-	fixture.report('session-early', { tag: 'DONE', summary: '早讀已封存', time: iso(start), hcom_name: 'early', workspace });
+	// Issued and read on day 4, so on day 8 it is archived although it is only 4 days old; its
+	// ended controller has left the roster.
+	fixture.report('session-early', { tag: 'DONE', summary: '早讀已封存', time: iso(start + 4 * DAY), hcom_name: 'early', workspace });
 	// Read on day 6, so on day 8 it is still in the inbox although it is older than 7 days.
 	fixture.report('session-late', { tag: 'DONE', summary: '晚讀仍保留', time: iso(start), hcom_name: 'late', workspace });
-	await fixture.markRead(cookie, titled(await on(start), '早讀已封存')!.key);
+	await fixture.markRead(cookie, titled(await on(start + 4 * DAY), '早讀已封存')!.key);
 	await fixture.markRead(cookie, titled(await on(start + 6 * DAY), '晚讀仍保留')!.key);
 	const before = await on(start + 8 * DAY);
 	expect(titled(before, '早讀已封存')).toBeUndefined();
