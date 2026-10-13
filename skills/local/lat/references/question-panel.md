@@ -232,6 +232,81 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" unbind --session-
 
 `removed` 為 0 表示自己的 session 已無綁定。
 
+## 看板指令
+
+給 LAT 看板呼叫，主控不需執行。看板不自行解析或寫入問題檔，一律透過這三個指令；綁定登記與待送通知的位置和其他指令相同。三個指令都只在標準輸出印一個 JSON 物件，失敗時也是。
+
+### 列出看板資料
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board list
+```
+
+輸出 `{"controllers": [...]}`，一個已綁定主控一筆，依 HCOM 名稱排序，結束碼 0：
+
+| 欄位 | 內容 |
+| --- | --- |
+| `hcom_name`、`client`、`session_id`、`workspace`、`questions_path` | 綁定登記的原值。 |
+| `herdr_workspace`、`herdr_tab`、`herdr_pane` | 主控所在的 Herdr 工作區、分頁、窗格。 |
+| `notification_pending` | 這份問題檔是否有尚未送達的 `lat-panel` 通知。 |
+| `error` | 問題檔讀不出來時的原因，此時 `questions` 為空陣列；正常為 `null`。只影響這個主控，其他主控照常輸出。 |
+| `questions` | 問題檔中每一題的目前版本，依檔案順序；問題檔還不存在時為空陣列。 |
+
+每一題的欄位：
+
+| 欄位 | 內容 |
+| --- | --- |
+| `id`、`revision`、`title` | 題號、版本、標題。 |
+| `status` | `pending`（待答）、`submitted`（已送出未記錄）、`recorded`（已記錄）。 |
+| `context` | 背景文字，不含選項與推薦段落。 |
+| `kind` | `single`、`multi`、`text`；混用格式或沒有選項的題目是 `text`。 |
+| `options` | 依題目順序；每項有 `letter`（依「題目格式」的選項字母，複選第 27 項起為空字串）、`label`（不含「（建議）」）、`impact`、`recommended`。 |
+| `recommendation` | 題末 `➡️` 推薦段落原文，沒有時為空字串。 |
+| `answer`、`note` | 目前答覆區的答覆與備註（含未送出的草稿），沒有時為空字串。 |
+| `section_sha256` | 作答時要帶回的區段雜湊。 |
+
+綁定登記或待送通知檔本身讀不出來時，輸出 `{"status": "error", "reason": "…"}`，結束碼 1。
+
+### 寫入並送出答案
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board answer \
+  --questions "$questions" --id "<ID>" --revision <版本> \
+  --expected-section-sha256 "<列出資料的 section_sha256>" \
+  [--select <選項序號>]... [--text "<文字>"] [--note "<備註>"]
+```
+
+- `--select` 是選項在 `options` 中的序號，從 1 開始；複選題重複給，順序就是選取順序。
+- `--text` 在純文字題是答覆本身，在單選與複選題是「其他」的內容；只有空白視為沒有給。
+- 單選題給一個 `--select`，或只給 `--text`；複選題至少給一個 `--select` 或 `--text`；純文字題只給 `--text`。`--note` 可搭配任何答覆。
+
+效果與使用者在 Herdr 面板作答並送出相同：以「答覆格式」寫入答覆區並勾選送出、寫面板紀錄、送 `lat-panel` 通知；主控照「收到 `lat-panel` 通知」處理。原有的草稿會被這次的答覆取代。
+
+| `status` | 結束碼 | 意義 |
+| --- | --- | --- |
+| `submitted` | 0 | 已寫入並送出，另附 `id`、`revision`、新的 `section_sha256`。`notified` 為 `true` 表示通知已送達；為 `false` 表示已寫入但通知失敗，`reason` 是原因，答案保留為已送出，通常可用重送通知補送。 |
+| `question_changed` | 1 | 題目不存在、版本不同，或區段雜湊不符；重新列出資料後再作答。 |
+| `not_pending` | 1 | 題目已送出或已記錄。 |
+| `invalid_answer` | 1 | 答覆不符合題型、序號超出範圍或重複，或文字含有會被讀成問題檔結構的行。 |
+| `error` | 1 | 其他失敗，例如問題檔讀不到或題目缺少作答區。 |
+
+結束碼 1 的結果都附 `reason`，問題檔與面板紀錄沒有改變。通知失敗而待送通知也記不下來時（`reason` 會說明），`board list` 的 `notification_pending` 是 `false`，重送通知無法補送，須由使用者在聊天告知主控。
+
+### 重送通知
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board notify --questions "$questions"
+```
+
+只重送這份問題檔尚未送達的通知，不改寫答案與面板紀錄。Herdr 面板原有的重送照舊，同一則通知由任一邊送達後即清除。
+
+| `status` | 結束碼 | 意義 |
+| --- | --- | --- |
+| `delivered` | 0 | 通知已送達並清除。 |
+| `no_pending` | 0 | 沒有待送通知。 |
+| `failed` | 1 | 仍未送達，`reason` 是原因（主控不在線、問題檔沒有綁定的主控等），待送通知保留。 |
+| `error` | 1 | 綁定登記或待送通知檔讀不出來。 |
+
 ## 安裝與更新
 
 只在使用者授權的安裝或更新任務中執行。外掛位於 `$lat_dir/herdr-panel/`，只從技能的安裝位置連結。
