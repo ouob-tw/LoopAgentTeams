@@ -33,7 +33,7 @@ beforeEach(() => {
 	plan({});
 });
 
-type Plan = Record<string, { exit?: number; stdout?: string; stderr?: string; sleepMs?: number }>;
+type Plan = Record<string, { exit?: number; failFrom?: number; stdout?: string; stderr?: string; sleepMs?: number }>;
 const plan = (value: Plan) => writeFileSync(join(injectDir, 'inject.json'), JSON.stringify(value));
 
 /** Every call of the input command so far, as its argument list. */
@@ -234,6 +234,20 @@ test('a failure while delivering option-like text in pieces is reported and logg
 	expect(body.reason).toContain("No agent named 'luna'");
 	// The first piece failed, so nothing more is tried.
 	expect(calls()).toHaveLength(1);
+	expect(await sentTo(luna.session_id)).toMatchObject([{ text: '--help', ok: false }]);
+});
+
+test('a failure of the second piece is reported and logged, and nothing is retried', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+	plan({ luna: { exit: 1, failFrom: 2, stdout: "No agent named 'luna'\n" } });
+
+	const { status, body } = await send(luna.session_id, '--help');
+
+	expect(status).toBe(502);
+	expect(body.ok).toBe(false);
+	expect(body.reason).toContain("No agent named 'luna'");
+	expect(calls()).toEqual([['luna', '-'], ['luna', '-help', '--enter']]);
 	expect(await sentTo(luna.session_id)).toMatchObject([{ text: '--help', ok: false }]);
 });
 

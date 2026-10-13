@@ -13,6 +13,9 @@ const [dir, ...args] = process.argv.slice(2);
 appendFileSync(join(dir, 'inject-calls.jsonl'), JSON.stringify(args) + '\n');
 const planFile = join(dir, 'inject.json');
 const plan = (existsSync(planFile) ? JSON.parse(readFileSync(planFile, 'utf8')) : {})[args[0]] ?? {};
+// `failFrom: n` makes the n-th call so far (counted from the log) and every later one fail.
+const callNumber = readFileSync(join(dir, 'inject-calls.jsonl'), 'utf8').trim().split('\n').length;
+const failing = plan.failFrom ? callNumber >= plan.failFrom : true;
 
 const rest = [];
 let enter = false;
@@ -29,7 +32,7 @@ if (!help && (rest.length > 1 || enter)) {
 }
 
 setTimeout(() => {
-	process.stdout.write(help ? 'Usage:\n  hcom term inject <name> [text]\n' : (plan.stdout ?? `Injected text + enter to ${args[0]}\n`));
-	process.stderr.write(plan.stderr ?? '');
-	process.exitCode = plan.exit ?? 0;
+	process.stdout.write(help ? 'Usage:\n  hcom term inject <name> [text]\n' : ((failing && plan.stdout) || `Injected text + enter to ${args[0]}\n`));
+	process.stderr.write((failing && plan.stderr) || '');
+	process.exitCode = failing ? (plan.exit ?? 0) : 0;
 }, plan.sleepMs ?? 0);
