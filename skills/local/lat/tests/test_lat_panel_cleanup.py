@@ -39,8 +39,8 @@ class CleanupTests(unittest.TestCase):
         self.assertNotIn('OLD ·', self.questions.read_text())
         self.assertEqual((self.root / 'questions-own-archive.md').read_text(), recorded)
         journal = [json.loads(line) for line in (self.root / 'panel-journal.jsonl').read_text().splitlines()]
-        self.assertEqual(journal[-1]['kind'], 'cleanup')
-        self.assertEqual(journal[-1]['archived'], [{'id': 'OLD', 'reason': 'recorded'}])
+        self.assertEqual(journal[-2]['kind'], 'cleanup')
+        self.assertEqual(journal[-2]['archived'], [{'id': 'OLD', 'reason': 'recorded'}])
 
     def test_upsert_cleans_only_resolved_unsubmitted_questions_and_keeps_original_text(self):
         cases = {
@@ -73,7 +73,7 @@ class CleanupTests(unittest.TestCase):
         self.assertTrue(actual.startswith('# Questions\n\n'))
         self.assertEqual((self.root / 'questions-own-archive.md').read_text(), sections['RESOLVED'])
         self.assertEqual(sibling.read_text(), sections['RESOLVED'])
-        cleanup = json.loads((self.root / 'panel-journal.jsonl').read_text().splitlines()[-1])
+        cleanup = json.loads((self.root / 'panel-journal.jsonl').read_text().splitlines()[-2])
         self.assertEqual(cleanup['archived'], [{'id': 'RESOLVED', 'reason': 'decision-not-pending'}])
         self.assertEqual({item['id']: item['reason'] for item in cleanup['kept']}, {
             'PENDING': 'pending', 'MISSING': 'missing-decision',
