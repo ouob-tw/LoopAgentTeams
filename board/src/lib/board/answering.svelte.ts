@@ -18,6 +18,9 @@ export interface Draft {
 	other: boolean;
 	text: string;
 	note: string;
+	/** The version of the question the user was looking at when they started answering; the
+	 *  answer is sent for that version, so one filled in for an older version is refused. */
+	base: { revision: number; sectionSha256: string } | null;
 }
 
 /** `unknown`: no answer came back, so the answer may or may not have been written. */
@@ -35,15 +38,21 @@ export interface NotifyOutcome {
 export interface Submitted {
 	answer: string;
 	note: string;
-	/** The controller was not notified, as far as this page was told. */
+	/** The controller was not notified and the board's data does not show a notification waiting
+	 *  to be resent, so this page is the only place that knows. */
 	notifyFailed: boolean;
 	reason: string | null;
 }
 
-const EMPTY: Draft = { select: [], other: false, text: '', note: '' };
+const EMPTY: Draft = { select: [], other: false, text: '', note: '', base: null };
 
 /** The text that goes with the answer: all of a text question's, the 其他 text of a choice one. */
 const answerTextOf = (question: HelperQuestion, draft: Draft) => (question.kind === 'text' || draft.other ? draft.text : '');
+
+/** The question on screen is not the version the draft was filled in for. */
+export function outdated(question: HelperQuestion, draft: Draft): boolean {
+	return draft.base !== null && (draft.base.revision !== question.revision || draft.base.sectionSha256 !== question.section_sha256);
+}
 
 /** Whether the draft is an answer the question's kind allows; the helper has the last word. */
 export function complete(question: HelperQuestion, draft: Draft): boolean {
@@ -75,33 +84,45 @@ class Answering {
 	outcomes = $state<Record<string, AnswerOutcome>>({});
 	submitted = $state<Record<string, Submitted>>({});
 	/** The result of the last 重新通知, by inbox item key. */
-	notices = $state<Record<string, NotifyOutcome>>({});
+	notifyResults = $state<Record<string, NotifyOutcome>>({});
+	/** Requests under way, by inbox item key: they outlive the content being closed and reopened. */
+	sending = $state<Record<string, boolean>>({});
+	notifying = $state<Record<string, boolean>>({});
 
 	draft(key: string): Draft {
 		return this.drafts[key] ?? EMPTY;
 	}
 
-	edit(key: string, change: Partial<Draft>): void {
-		this.drafts[key] = { ...this.draft(key), ...change };
-		delete this.outcomes[key];
+	edit(item: InboxQuestion, change: Partial<Omit<Draft, 'base'>>): void {
+		const draft = this.draft(item.key);
+		const base = draft.base ?? { revision: item.question.revision, sectionSha256: item.question.section_sha256 };
+		this.drafts[item.key] = { ...draft, ...change, base };
+		delete this.outcomes[item.key];
+		// A question that can be edited again is a new version; what was sent before is history.
+		delete this.submitted[item.key];
+		delete this.notifyResults[item.key];
 	}
 
 	/** One attempt. The draft is kept unless the answer was written. */
 	async submit(item: InboxQuestion): Promise<void> {
 		const { key, question } = item;
+		if (this.sending[key]) return;
 		const draft = this.draft(key);
 		const text = answerTextOf(question, draft);
 		const request: AnswerRequest = {
 			controllerId: item.controllerId,
 			questionId: question.id,
-			revision: question.revision,
-			sectionSha256: question.section_sha256,
+			// A live update may have replaced the question under the draft; the draft's version is sent.
+			revision: draft.base?.revision ?? question.revision,
+			sectionSha256: draft.base?.sectionSha256 ?? question.section_sha256,
 			select: draft.select,
 			text,
 			note: draft.note
 		};
 		delete this.outcomes[key];
+		this.sending[key] = true;
 		const response = await post<AnswerResponse>('/api/answers', request);
+		delete this.sending[key];
 		const body = response?.body;
 		if (!response || typeof body?.status !== 'string') {
 			this.outcomes[key] = {
@@ -115,14 +136,15 @@ class Answering {
 			this.submitted[key] = {
 				answer: answerText(question, draft.select, text),
 				note: draft.note.trim(),
-				notifyFailed: body.notified !== true,
+				notifyFailed: body.notified !== true && !body.pendingListed,
 				reason: body.reason
 			};
 			delete this.drafts[key];
 			void messaging.load(item.controllerId);
 		} else if (body.status === 'question_changed') {
-			// Positions may mean other options now; what was typed is still the user's.
-			this.drafts[key] = { ...draft, select: [], other: draft.other && question.kind !== 'text' };
+			// Positions may mean other options now; what was typed is still the user's, and goes
+			// with whichever version is on screen when they touch the answer again.
+			this.drafts[key] = { ...this.draft(key), select: [], base: null };
 		} else if (body.status === 'not_pending') {
 			delete this.drafts[key];
 		}
@@ -130,15 +152,20 @@ class Answering {
 
 	/** Ask the server to resend the notification once. Never called except from the button. */
 	async notify(item: InboxQuestion): Promise<void> {
+		if (this.notifying[item.key]) return;
+		this.notifying[item.key] = true;
 		const response = await post<NotifyResponse>('/api/answers/notify', { controllerId: item.controllerId });
+		delete this.notifying[item.key];
 		const body = response?.body;
 		if (typeof body?.status !== 'string') {
-			this.notices[item.key] = { status: 'unknown', reason: null };
+			this.notifyResults[item.key] = { status: 'unknown', reason: null };
 			return;
 		}
-		this.notices[item.key] = { status: body.status, reason: body.reason };
+		this.notifyResults[item.key] = { status: body.status, reason: body.reason };
+		// Only a delivery clears a failure this page alone knows of: `no_pending` says nothing is
+		// waiting to be resent, not that the controller was ever told.
 		const sent = this.submitted[item.key];
-		if (sent && (body.status === 'delivered' || body.status === 'no_pending')) sent.notifyFailed = false;
+		if (sent && body.status === 'delivered') sent.notifyFailed = false;
 	}
 }
 

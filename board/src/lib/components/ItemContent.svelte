@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The full content of one inbox item. A question that is still waiting can be answered here.
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
-	import { answering, complete } from '#lib/board/answering.svelte.ts';
+	import { answering, complete, outdated } from '#lib/board/answering.svelte.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { itemLabel, type HelperOption, type InboxItem } from '#lib/board/types.ts';
 
@@ -48,34 +48,30 @@
 	const draft = $derived(answering.draft(item.key));
 	const outcome = $derived(answering.outcomes[item.key]);
 	const submitted = $derived(answering.submitted[item.key]);
-	const notice = $derived(answering.notices[item.key]);
-	let sending = $state(false);
-	let notifying = $state(false);
+	const notice = $derived(answering.notifyResults[item.key]);
+	const sending = $derived(answering.sending[item.key] ?? false);
+	const notifying = $derived(answering.notifying[item.key] ?? false);
 
 	function choose(position: number, single: boolean) {
-		if (single) return answering.edit(item.key, { select: [position], other: false });
+		if (item.kind !== 'question') return;
+		if (single) return answering.edit(item, { select: [position], other: false });
 		const select = draft.select.includes(position)
 			? draft.select.filter((chosen) => chosen !== position)
 			: [...draft.select, position];
-		answering.edit(item.key, { select });
+		answering.edit(item, { select });
 	}
 
 	function chooseOther(single: boolean) {
-		answering.edit(item.key, single ? { select: [], other: true } : { other: !draft.other });
+		if (item.kind !== 'question') return;
+		answering.edit(item, single ? { select: [], other: true } : { other: !draft.other });
 	}
 
-	async function submit() {
-		if (item.kind !== 'question' || sending) return;
-		sending = true;
-		await answering.submit(item);
-		sending = false;
+	function submit() {
+		if (item.kind === 'question') void answering.submit(item);
 	}
 
-	async function notify() {
-		if (item.kind !== 'question' || notifying) return;
-		notifying = true;
-		await answering.notify(item);
-		notifying = false;
+	function notify() {
+		if (item.kind === 'question') void answering.notify(item);
 	}
 </script>
 
@@ -109,7 +105,11 @@
 		{:else if !inInbox}
 			<p class="notice" role="status">這一題已經不在信箱：主控已結束，或題目已被移除。不能再作答。</p>
 		{/if}
-		{#if outcome?.status === 'question_changed' && inInbox}
+		{#if answerable && outdated(question, draft)}
+			<p class="notice failed" role="alert">
+				主控在你作答途中改了這一題，下面是目前的版本。你填的是舊版的答覆，送出會被拒絕；請對照後重新作答。
+			</p>
+		{:else if outcome?.status === 'question_changed' && inInbox}
 			<p class="notice failed" role="alert">
 				題目已變更，剛才的答覆沒有送出。下面是目前的版本{answerable ? '，請確認後重新作答' : ''}。
 			</p>
@@ -158,7 +158,7 @@
 								aria-label="其他的內容"
 								placeholder="其他：請寫下你的答覆"
 								disabled={sending}
-								bind:value={() => draft.text, (text) => answering.edit(item.key, { text })}
+								bind:value={() => draft.text, (text) => answering.edit(item, { text })}
 							></textarea>
 						{/if}
 					</li>
@@ -177,7 +177,7 @@
 				class="answer"
 				onsubmit={(event) => {
 					event.preventDefault();
-					void submit();
+					submit();
 				}}
 			>
 				{#if !choice}
@@ -186,7 +186,7 @@
 						<textarea
 							rows="3"
 							disabled={sending}
-							bind:value={() => draft.text, (text) => answering.edit(item.key, { text })}
+							bind:value={() => draft.text, (text) => answering.edit(item, { text })}
 						></textarea>
 					</label>
 				{/if}
@@ -195,7 +195,7 @@
 					<textarea
 						rows="2"
 						disabled={sending}
-						bind:value={() => draft.note, (note) => answering.edit(item.key, { note })}
+						bind:value={() => draft.note, (note) => answering.edit(item, { note })}
 					></textarea>
 				</label>
 				<div class="actions">
@@ -218,7 +218,9 @@
 		{:else if inInbox}
 			{#if item.notifyFailed || submitted?.notifyFailed}
 				<p class="state failed" role="alert">
-					已送出，但通知主控失敗{submitted?.notifyFailed && submitted.reason ? `：${submitted.reason}` : ''}。答覆已經寫入，主控還不知道。
+					已送出，但通知主控失敗{submitted?.notifyFailed && submitted.reason ? `：${submitted.reason}` : ''}。答覆已經寫入，主控還不知道。{submitted?.notifyFailed
+						? '這則通知可能沒有留下來等待重送；重新通知也送不到時，請在聊天告訴主控。'
+						: ''}
 				</p>
 			{:else}
 				<p class="state">{ANSWER_STATE_TEXT.waiting}。</p>
@@ -229,7 +231,7 @@
 					{#if notice?.status === 'delivered'}
 						<span role="status">✓ 通知已送達主控。</span>
 					{:else if notice?.status === 'no_pending'}
-						<span role="status">沒有待送的通知：主控已經收到了。</span>
+						<span role="status">沒有待送的通知。{submitted?.notifyFailed ? '這不代表主控已經收到，請在聊天告訴主控。' : ''}</span>
 					{:else if notice?.status === 'failed'}
 						<span class="failed" role="alert">仍未送達：{notice.reason}</span>
 					{:else if notice?.status === 'unknown'}
@@ -348,7 +350,6 @@
 	.options input {
 		flex: none;
 		margin: 0;
-		accent-color: var(--accent);
 	}
 	textarea {
 		display: block;

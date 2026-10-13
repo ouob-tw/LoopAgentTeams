@@ -9,7 +9,8 @@
 	let { controller }: { controller: Controller } = $props();
 
 	const entries = $derived(messaging.sent[controller.id]);
-	// Read again with every new board data: that is when an answer goes from sent to recorded.
+	// Each new board data hands this component a new `controller` object, so the log is read again
+	// then: that is when an answer goes from sent to recorded.
 	$effect(() => void messaging.load(controller.id));
 </script>
 

@@ -72,7 +72,7 @@ export interface HelperResult {
 	notified: boolean | null;
 }
 
-async function command(config: BoardConfig, args: string[]): Promise<HelperResult> {
+async function writeCommand(config: BoardConfig, args: string[]): Promise<HelperResult> {
 	const { stdout, failure } = await run(config, args);
 	let payload: { status?: unknown; reason?: unknown; notified?: unknown } | null;
 	try {
@@ -114,10 +114,10 @@ export function answerQuestion(config: BoardConfig, answer: HelperAnswer): Promi
 	];
 	if (answer.text.trim()) args.push(`--text=${answer.text}`);
 	if (answer.note.trim()) args.push(`--note=${answer.note}`);
-	return command(config, args);
+	return writeCommand(config, args);
 }
 
 /** Resend the pending notification of one question file. Rewrites no answer. */
 export function notifyController(config: BoardConfig, questionsPath: string): Promise<HelperResult> {
-	return command(config, ['notify', `--questions=${questionsPath}`]);
+	return writeCommand(config, ['notify', `--questions=${questionsPath}`]);
 }

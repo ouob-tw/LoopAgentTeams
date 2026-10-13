@@ -248,7 +248,7 @@ test('a written answer whose notification failed says so on every device, is nev
 	const { status, body } = await answer(luna, asked, { select: [1], note: '備註' });
 
 	expect(status).toBe(200);
-	expect(body).toMatchObject({ status: 'submitted', notified: false, reason: 'controller pane is gone' });
+	expect(body).toMatchObject({ status: 'submitted', notified: false, pendingListed: true, reason: 'controller pane is gone' });
 	const written = listedQuestion(luna, 'S-1');
 	expect(written).toMatchObject({ status: 'submitted', answer: 'A. 維持現狀', note: '備註' });
 	// Another device, and this one after a reload, get the same state from the list data.
@@ -282,6 +282,19 @@ test('a written answer whose notification failed says so on every device, is nev
 	const again = await notify(luna);
 	expect(again).toEqual({ status: 200, body: { status: 'no_pending', reason: null } });
 	expect(listedQuestion(luna, 'S-1')).toEqual(written);
+});
+
+test('a failed notification that could not even be kept for resending is reported as not listed', async () => {
+	const asked = text({ title: '待送通知也記不下來的題' });
+	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
+	// The answer is written, but the list never shows a pending notification for it.
+	const output = { status: 'submitted', id: 'T-1', revision: 1, section_sha256: 'f'.repeat(64), notified: false, reason: 'cannot store the pending notification' };
+	fixture.setHelper({ output: { controllers: [{ ...luna, questions: [{ ...asked, status: 'submitted', answer: '好' }] }] }, answer: { output } });
+
+	const { status, body } = await answer(luna, asked, { text: '好' });
+
+	expect(status).toBe(200);
+	expect(body).toMatchObject({ status: 'submitted', notified: false, pendingListed: false, reason: 'cannot store the pending notification' });
 });
 
 test('a pending notification left by the Herdr panel shows as a failed notification too, only on sent questions', async () => {

@@ -55,6 +55,9 @@ export interface AnswerResponse {
 	status: AnswerStatus;
 	/** Whether the controller was notified; null unless `submitted`. */
 	notified: boolean | null;
+	/** After a failed notification: whether the board's data now shows it as waiting to be resent.
+	 *  When it does, every device shows the failure from that data, this page included. */
+	pendingListed: boolean;
 	reason: string | null;
 	entry: SentAnswer | null;
 	/** Set when a submitted answer could not be written to the sent log. */

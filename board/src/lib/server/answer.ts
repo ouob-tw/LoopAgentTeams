@@ -45,6 +45,7 @@ export async function submitAnswer(board: Board, request: AnswerRequest): Promis
 	const refused = (status: AnswerStatus, reason: string | null): AnswerResponse => ({
 		status,
 		notified: null,
+		pendingListed: false,
 		reason,
 		entry: null,
 		logError: null
@@ -87,7 +88,7 @@ export async function submitAnswer(board: Board, request: AnswerRequest): Promis
 			logError = (error as Error).message;
 		}
 		// Anything but an explicit `true` is shown as a failed notification: it can be sent again.
-		body = { status: 'submitted', notified: result.notified === true, reason: result.reason, entry, logError };
+		body = { status: 'submitted', notified: result.notified === true, pendingListed: false, reason: result.reason, entry, logError };
 	} else {
 		const status = result.status in ANSWER_HTTP ? (result.status as AnswerStatus) : 'error';
 		body = refused(status, result.reason ?? `輔助工具回報 ${result.status}`);
@@ -95,7 +96,14 @@ export async function submitAnswer(board: Board, request: AnswerRequest): Promis
 	// Whatever happened, the pages get the question as it is now: the answer just sent, the newer
 	// version that refused it, or what a failed write left behind. This read also notes in the sent
 	// log an answer the controller has already recorded.
-	await board.refresh();
+	const fresh = await board.refresh();
+	body.pendingListed = fresh.inbox.some(
+		(item) =>
+			item.kind === 'question' &&
+			item.controllerId === request.controllerId &&
+			item.question.id === request.questionId &&
+			item.notifyFailed
+	);
 	return { status: ANSWER_HTTP[body.status] ?? 502, body };
 }
 
