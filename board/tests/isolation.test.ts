@@ -100,13 +100,20 @@ test('helper output that is not JSON is reported as a source error', async () =>
 test('a report line that is valid JSON but lacks required fields is skipped like a cut-off line', async () => {
 	const luna = fixture.bound('alpha', 'luna');
 	fixture.report(luna.session_id, { tag: 'NO REPLY', summary: '完整的回報', hcom_name: 'luna', workspace: luna.workspace });
-	fixture.appendRaw(luna.session_id, '{"time": "2026-10-13T10:00:00Z", "tag": "DONE", "summary": "缺欄位"}\n');
+	// Each line is a complete report except for one required field.
+	const complete = { time: new Date().toISOString(), session_id: luna.session_id, hcom_name: 'luna', client: 'claude', workspace: luna.workspace, round: 1, tag: 'DONE', summary: '缺欄位', message: '', final: false };
+	const { session_id: _s, ...noSession } = complete;
+	const { round: _r, ...noRound } = complete;
+	const { final: _f, ...noFinal } = complete;
+	for (const line of [noSession, noRound, noFinal, { ...complete, final: 'yes' }]) {
+		fixture.appendRaw(luna.session_id, JSON.stringify(line) + '\n');
+	}
 	fixture.list([luna]);
 
 	const controller = named(await fixture.refresh(cookie), 'luna')!;
 
 	expect(controller).toMatchObject({ status: 'working', phase: '完整的回報' });
-	expect(controller.error).toContain('1 行');
+	expect(controller.error).toContain('4 行');
 });
 
 test('a watched directory that is deleted and created again is watched again', async () => {

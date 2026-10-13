@@ -41,7 +41,7 @@ bun run board revoke <ID>     # 撤銷一台裝置，它會回到配對畫面
 | `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已配對裝置、配對碼） | `$XDG_STATE_HOME/lat/board` |
 | `LAT_REPORTS_DIR` | 主控回報紀錄目錄，須與 LAT hook 寫入的位置相同 | `$XDG_STATE_HOME/lat/reports` |
 | `LAT_BOARD_FALLBACK_SECONDS` | 漏掉檔案變動時，最慢幾秒內補上（從變動到畫面更新）；上限 60 | `60` |
-| `LAT_BOARD_HELPER_TIMEOUT_SECONDS` | 輔助工具多久沒回應就放棄 | `15` |
+| `LAT_BOARD_HELPER_TIMEOUT_SECONDS` | 輔助工具多久沒回應就放棄；最多是上一項的一半 | `15` |
 | `LAT_BOARD_PAIRING_TTL_SECONDS` | 配對碼有效時間 | `300` |
 
 `XDG_STATE_HOME` 未設定時是 `~/.local/state`。

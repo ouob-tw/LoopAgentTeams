@@ -19,6 +19,8 @@ export interface BoardConfig {
 }
 
 const MAX_FALLBACK_MS = 60_000;
+/** Allowed for reading the report files and pushing the snapshot once the helper has answered. */
+export const READ_SLACK_MS = 1_000;
 
 function stateHome(env: Env): string {
 	const value = env.XDG_STATE_HOME;
@@ -43,12 +45,15 @@ function helperCommand(env: Env): string[] {
 }
 
 export function loadConfig(env: Env = process.env): BoardConfig {
+	const fallbackMs = Math.min(seconds(env.LAT_BOARD_FALLBACK_SECONDS, MAX_FALLBACK_MS), MAX_FALLBACK_MS);
 	return {
 		stateDir: env.LAT_BOARD_STATE_DIR || join(stateHome(env), 'lat/board'),
 		reportsDir: env.LAT_REPORTS_DIR || join(stateHome(env), 'lat/reports'),
 		helperCommand: helperCommand(env),
-		helperTimeoutMs: seconds(env.LAT_BOARD_HELPER_TIMEOUT_SECONDS, 15_000),
-		fallbackMs: Math.min(seconds(env.LAT_BOARD_FALLBACK_SECONDS, MAX_FALLBACK_MS), MAX_FALLBACK_MS),
+		// A missed change may wait out one read and then need a second one; both must fit in the
+		// fallback deadline, so the helper never gets more than half of it.
+		helperTimeoutMs: Math.min(seconds(env.LAT_BOARD_HELPER_TIMEOUT_SECONDS, 15_000), (fallbackMs - READ_SLACK_MS) / 2),
+		fallbackMs,
 		debounceMs: 200,
 		pairingTtlMs: seconds(env.LAT_BOARD_PAIRING_TTL_SECONDS, 300_000)
 	};

@@ -3,7 +3,7 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { BoardSnapshot, HelperController } from '../board/types.ts';
-import { loadConfig, type BoardConfig } from './config.ts';
+import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
 import { listControllers } from './helper.ts';
 import { buildSnapshot } from './model.ts';
@@ -12,8 +12,6 @@ import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 
 const HEARTBEAT_MS = 15_000;
-/** Allowed for reading the report files and pushing the snapshot once the helper has answered. */
-const READ_SLACK_MS = 1_000;
 
 export interface Stream {
 	/** Token of the paired device that opened the stream. */
@@ -112,7 +110,7 @@ function createBoard(): Board {
 	// A change can land just after a read began and be missed by it, and the read that picks it up
 	// may take as long as the helper is allowed to. Both fit inside the fallback deadline when reads
 	// start this far apart.
-	const fallbackGapMs = Math.max(1_000, config.fallbackMs - config.helperTimeoutMs - READ_SLACK_MS);
+	const fallbackGapMs = config.fallbackMs - config.helperTimeoutMs - READ_SLACK_MS;
 
 	function start(): Promise<BoardSnapshot> {
 		queued = null;
