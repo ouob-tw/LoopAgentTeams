@@ -1370,6 +1370,11 @@ def _read_pending(path):
 
 def _write_pending(path, pending):
     path.parent.mkdir(parents=True, exist_ok=True)
+    # The delivery record dates its start by this file's last change, so it has to exist before
+    # the file changes again: otherwise this write would pass for the earlier state.
+    delivered_path = _delivered_path(path.parent)
+    with _path_lock(delivered_path):
+        _read_delivered(delivered_path)
     _replace_locked(path, json.dumps({"pending": pending}, ensure_ascii=False, indent=2) + "\n")
 
 

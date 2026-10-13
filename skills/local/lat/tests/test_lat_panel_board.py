@@ -725,6 +725,18 @@ class LostNotificationTests(BoardTestCase):
         self.assertEqual(self.notify(), {"status": "no_pending"})
         self.assertEqual(self.calls(), [])
 
+    def test_another_controller_notified_first_does_not_hide_the_lost_notification(self):
+        self.state.unlink()
+        other = self.bind("ctl-b", "s-b", "project-b")
+        other.write_text(TEXT)
+        self.assertTrue(self.answer(other, "Q3", 1, "--text", "別題")["notified"])
+
+        first, second = self.board("list")["controllers"]
+        self.assertTrue(first["notification_pending"])
+        self.assertFalse(second["notification_pending"])
+        self.assertEqual(self.notify(), {"status": "delivered"})
+        self.assertEqual([call[1] for call in self.calls()], ["@ctl-b", "@ctl-a"])
+
     def test_later_answer_is_owed_its_own_notification(self):
         self.state.unlink()
         self.assertEqual(self.notify(), {"status": "delivered"})
