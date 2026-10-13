@@ -1467,7 +1467,8 @@ def _submitted_answers(questions_path):
             continue
         try:
             proof = question_provenance(questions_path, journal_path, section["id"])
-        except (OSError, ValueError):
+        except (OSError, ValueError, AttributeError, TypeError):
+            # The last two: a journal line that is JSON but not an entry.
             continue
         answers.add(proof["section_sha256"])
     return answers
@@ -1525,13 +1526,27 @@ def _hcom_receipt_names(target):
 
 def send_pending_notification(questions_path, binding, *, state_dir=None, env=None, timeout=10):
     """Send one persisted notification; return ``(ok, reason)`` and clear on success."""
-    questions_key = _question_key(questions_path)
     state_path = _notification_path(state_dir)
     with _path_lock(state_path):
-        pending = _read_pending(state_path).get(questions_key)
+        pending = _read_pending(state_path).get(_question_key(questions_path))
     if not pending:
         return True, "no pending notification"
-    generation = pending.get("generation")
+    ok, reason = _send_notification(
+        questions_path, binding, state_dir=state_dir, env=env, timeout=timeout
+    )
+    if ok:
+        clear_pending_notification(
+            questions_path, state_dir=state_dir, expected_generation=pending.get("generation")
+        )
+    return ok, reason
+
+
+def _send_notification(questions_path, binding, *, state_dir=None, env=None, timeout=10):
+    """Tell the bound controller to re-read its questions file; return ``(ok, reason)``.
+
+    A delivery is noted with the submitted answers it covered.
+    """
+    questions_key = _question_key(questions_path)
     if _question_key(binding.get("questions_path", "")) != questions_key:
         return False, "binding does not match the questions path"
     target = binding.get("hcom_name", "")
@@ -1567,9 +1582,6 @@ def send_pending_notification(questions_path, binding, *, state_dir=None, env=No
     if _hcom_receipt_names(target).isdisjoint(delivered):
         return False, f"notification not delivered to {target}"
     _record_delivered(questions_path, covered, state_dir=state_dir)
-    clear_pending_notification(
-        questions_path, state_dir=state_dir, expected_generation=generation
-    )
     return True, "delivered"
 
 
@@ -1809,12 +1821,12 @@ def notify_controller(questions_path, *, config_dir=None, state_dir=None):
     Returns ``delivered``, ``no_pending``, or ``failed`` with a ``reason``; a
     failed notification stays pending. A submitted answer that no delivered
     notification covers is notified even when no pending notification was
-    stored for it.
+    stored for it; that one is owed only until the answer is recorded or the
+    question is asked again, so nothing is stored for it here either.
     """
-    if not notification_is_pending(questions_path, state_dir=state_dir):
-        if not _undelivered_answers(questions_path, state_dir=state_dir):
-            return {"status": "no_pending"}
-        mark_notification_pending(questions_path, state_dir=state_dir)
+    pending = notification_is_pending(questions_path, state_dir=state_dir)
+    if not pending and not _undelivered_answers(questions_path, state_dir=state_dir):
+        return {"status": "no_pending"}
     questions_key = _question_key(questions_path)
     binding = next(
         (
@@ -1825,7 +1837,8 @@ def notify_controller(questions_path, *, config_dir=None, state_dir=None):
     )
     if binding is None:
         return {"status": "failed", "reason": "no LAT controller is bound to this questions file"}
-    ok, reason = send_pending_notification(questions_path, binding, state_dir=state_dir)
+    send = send_pending_notification if pending else _send_notification
+    ok, reason = send(questions_path, binding, state_dir=state_dir)
     if not ok:
         return {"status": "failed", "reason": reason}
     return {"status": "delivered" if reason == "delivered" else "no_pending"}

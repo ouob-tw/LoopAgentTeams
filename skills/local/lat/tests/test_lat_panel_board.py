@@ -666,14 +666,23 @@ class LostNotificationTests(BoardTestCase):
         self.assertEqual([call[:4] for call in self.calls()], [["send", "@ctl-a", "--from", "lat-panel"]])
         self.assertFalse(self.listed()["notification_pending"])
         self.assertEqual(self.notify(), {"status": "no_pending"})
+        # Resending rewrote neither the answer nor the journal.
+        self.assertEqual(self.questions.read_bytes(), written)
+        self.assertEqual(self.journal(), journal)
         self.record()
         self.assertEqual(self.notify(), {"status": "no_pending"})
         self.assertFalse(self.listed()["notification_pending"])
         self.assertEqual(len(self.calls()), 1)
-        # Resending wrote nothing but the controller's own status change.
-        self.assertEqual(self.journal().count("\n"), journal.count("\n") + 1)
-        self.assertIn("答覆：想法\n\n- [x] 送出", self.questions.read_text())
-        self.assertNotEqual(self.questions.read_bytes(), written)
+
+    def test_resend_that_failed_is_not_repeated_once_the_answer_is_recorded(self):
+        self.state.unlink()
+        self.set_hcom("offline")
+        self.assertEqual(self.notify(code=1)["status"], "failed")
+        self.set_hcom("deliver")
+        self.record()
+        self.assertFalse(self.listed()["notification_pending"])
+        self.assertEqual(self.notify(), {"status": "no_pending"})
+        self.assertEqual(len(self.calls()), 1)
 
     def test_resend_that_fails_stays_pending_and_delivers_later(self):
         self.state.unlink()
@@ -746,6 +755,14 @@ class DeliveredNotificationTests(BoardTestCase):
         self.assertFalse(controller["notification_pending"])
         self.assertEqual(self.board("notify", "--questions", self.questions), {"status": "no_pending"})
         self.assertEqual(len(self.calls()), 1)
+
+    def test_journal_line_that_is_not_an_entry_does_not_break_the_list(self):
+        self.answer(self.questions, "Q3", 1, "--text", "想法")
+        with (self.questions.parent / "panel-journal.jsonl").open("a") as journal:
+            journal.write("[]\n")
+        [controller] = self.board("list")["controllers"]
+        self.assertIsNone(controller["error"])
+        self.assertEqual(controller["questions"][2]["status"], "submitted")
 
     def test_submit_checked_outside_the_panel_is_owed_no_notification(self):
         self.questions.write_text(TEXT.replace("答覆：\n\n- [ ]", "答覆：沒有\n\n- [x]"))
