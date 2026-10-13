@@ -100,10 +100,18 @@ export async function settleAnswers(
 	const lines = readLines(stateDir);
 	const marks = marksOf(lines);
 	const bound = new Map(controllers.map((controller) => [controller.session_id, controller]));
-	const left = new Map<string, Promise<HelperQuestion[] | null>>();
+	const stateOf = (answer: StoredAnswer) => marks.get(answer.id)?.state ?? 'waiting';
+	// Every file is asked for at once, so a read of the sources waits for one helper call, not many.
+	const endedPaths = new Set<string>();
+	for (const line of lines) {
+		if (line.kind === 'answer' && line.questionsPath && stateOf(line) === 'waiting' && !bound.has(line.controllerId)) {
+			endedPaths.add(line.questionsPath);
+		}
+	}
+	const left = new Map(await Promise.all([...endedPaths].map(async (path) => [path, await readEnded(path)] as const)));
 	for (const line of lines) {
 		if (line.kind !== 'answer') continue;
-		const current = marks.get(line.id)?.state ?? 'waiting';
+		const current = stateOf(line);
 		if (current === 'recorded' || current === 'superseded') continue;
 		const controller = bound.get(line.controllerId);
 		let found: ReturnType<typeof stateIn>;
@@ -112,9 +120,7 @@ export async function settleAnswers(
 			found = stateIn(controller.questions, line);
 			state = found?.state ?? current;
 		} else if (current === 'waiting') {
-			const path = line.questionsPath;
-			if (path && !left.has(path)) left.set(path, readEnded(path));
-			found = stateIn(path ? await left.get(path) : null, line);
+			found = stateIn(left.get(line.questionsPath ?? ''), line);
 			state = !found ? 'unknown' : found.state === 'waiting' ? 'ended' : found.state;
 		} else continue;
 		if (state === current) continue;

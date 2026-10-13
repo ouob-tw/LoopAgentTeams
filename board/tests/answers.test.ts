@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
-import { rmSync } from 'node:fs';
+import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ANSWER_STATE_TEXT, type AnswerRequest, type AnswerResponse, type NotifyResponse, type SentAnswer, type SentEntry } from '../src/lib/board/answers.ts';
 import type { HelperController, HelperQuestion, InboxQuestion } from '../src/lib/board/types.ts';
@@ -297,6 +297,30 @@ test('a failed notification that could not even be kept for resending is reporte
 	expect(body).toMatchObject({ status: 'submitted', notified: false, pendingListed: false, reason: 'cannot store the pending notification' });
 });
 
+test('an answer whose pending notification could not be stored still shows as not notified, and is resent once when storing works again', async () => {
+	const asked = text({ title: '待送通知存不下來的題' });
+	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
+	// The helper lists such an answer as owed a notification, from the question file alone.
+	fixture.setHelper({ output: { controllers: [luna] }, notifyFails: 'Permission denied: pending-notifications.json' });
+	const phone = await fixture.pair('phone');
+
+	const { body } = await answer(luna, asked, { text: '好' });
+
+	expect(body).toMatchObject({ status: 'submitted', notified: false, pendingListed: true });
+	expect(titled(await fixture.board(phone), '待送通知存不下來的題')).toMatchObject({ unsent: false, notifyFailed: true });
+	expect(listedQuestion(luna, 'T-1')).toMatchObject({ status: 'submitted', answer: '好' });
+
+	// The state can be stored again.
+	fixture.list(fixture.listed());
+	expect(await notify(luna, phone)).toEqual({ status: 200, body: { status: 'delivered', reason: null } });
+	expect(titled(await fixture.board(cookie), '待送通知存不下來的題')).toMatchObject({ notifyFailed: false });
+	record('T-1');
+	await fixture.refresh(cookie);
+	expect(await notify(luna)).toEqual({ status: 200, body: { status: 'no_pending', reason: null } });
+	expect(await sentAnswers(luna.session_id)).toMatchObject([{ state: 'recorded' }]);
+	expect(fixture.helperArgs('answer')).toHaveLength(1);
+});
+
 test('a pending notification left by the Herdr panel shows as a failed notification too, only on sent questions', async () => {
 	const luna = fixture.bound('alpha', 'luna', {
 		notification_pending: true,
@@ -529,6 +553,24 @@ test('an ended controller that is bound again has its answer waiting again, and 
 	record('T-1');
 	await fixture.refresh(cookie);
 	expect(await sentAnswers(luna.session_id)).toMatchObject([{ state: 'recorded' }]);
+});
+
+test('an answer logged without its question file, as older boards did, is unconfirmed once its controller ends', async () => {
+	const asked = text({ title: '舊紀錄的題' });
+	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
+	fixture.list([luna]);
+	const { body } = await answer(luna, asked, { text: '好' });
+	// Rewrite the log line the way it was written before the file's path was kept.
+	const log = join(fixture.dir, 'board-state/sent-log.jsonl');
+	const lines = readFileSync(log, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+	const kept = lines.map((line) => (line.id === body.entry!.id ? { ...line, questionsPath: undefined } : line));
+	writeFileSync(log, kept.map((line) => JSON.stringify(line) + '\n').join(''));
+
+	end(luna, [{ ...listedQuestion(luna, 'T-1'), status: 'recorded', recorded_at: '2026-03-02T10:00:00.000Z' }]);
+	await fixture.refresh(cookie);
+
+	expect(await sentAnswers(luna.session_id)).toMatchObject([{ state: 'unknown' }]);
+	expect(questionsReads(luna)).toEqual([]);
 });
 
 test('while the binding registry cannot be read no answer is taken for one of an ended controller', async () => {

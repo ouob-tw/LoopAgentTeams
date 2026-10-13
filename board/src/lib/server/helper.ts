@@ -71,7 +71,8 @@ export async function readQuestions(config: BoardConfig, questionsPath: string):
 	if (failure) return null;
 	try {
 		const questions = JSON.parse(stdout)?.questions;
-		return Array.isArray(questions) ? questions : null;
+		const usable = Array.isArray(questions) && questions.every((question) => typeof question === 'object' && question !== null);
+		return usable ? questions : null;
 	} catch {
 		return null;
 	}
