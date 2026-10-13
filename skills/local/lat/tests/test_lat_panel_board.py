@@ -619,6 +619,181 @@ class NotificationTests(BoardTestCase):
         self.assertFalse(self.pending(other))
 
 
+class LostNotificationTests(BoardTestCase):
+    """The answer is written, but the pending notification could not be stored."""
+
+    def setUp(self):
+        super().setUp()
+        self.state.write_text("")  # a file where the state directory should be
+        result = self.answer(self.questions, "Q3", 1, "--text", "想法")
+        self.assertEqual((result["status"], result["notified"]), ("submitted", False))
+        self.assertEqual(self.calls(), [])
+
+    def listed(self):
+        [controller] = self.board("list")["controllers"]
+        self.assertIsNone(controller["error"])
+        return controller
+
+    def notify(self, code=0):
+        return self.board("notify", "--questions", self.questions, code=code)
+
+    def record(self, question_id="Q3", revision=1):
+        result = self.run_cli(
+            "question", "set-status", "--questions", self.questions, "--id", question_id,
+            "--revision", revision, "--status", "recorded",
+            "--expected-section-sha256", self.section_hash(self.questions, question_id),
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_list_says_written_and_not_notified_while_the_state_is_unusable(self):
+        controller = self.listed()
+        self.assertEqual(controller["questions"][2]["status"], "submitted")
+        self.assertEqual(controller["questions"][2]["answer"], "想法")
+        self.assertTrue(controller["notification_pending"])
+        failed = self.notify(code=1)
+        self.assertEqual(failed["status"], "error")
+        self.assertTrue(failed["reason"])
+        self.assertEqual(self.calls(), [])
+
+    def test_resend_delivers_once_after_the_state_is_usable_again(self):
+        self.state.unlink()
+        written = self.questions.read_bytes()
+        journal = self.journal()
+        self.assertTrue(self.listed()["notification_pending"])
+
+        self.assertEqual(self.notify(), {"status": "delivered"})
+
+        self.assertEqual([call[:4] for call in self.calls()], [["send", "@ctl-a", "--from", "lat-panel"]])
+        self.assertFalse(self.listed()["notification_pending"])
+        self.assertEqual(self.notify(), {"status": "no_pending"})
+        self.record()
+        self.assertEqual(self.notify(), {"status": "no_pending"})
+        self.assertFalse(self.listed()["notification_pending"])
+        self.assertEqual(len(self.calls()), 1)
+        # Resending wrote nothing but the controller's own status change.
+        self.assertEqual(self.journal().count("\n"), journal.count("\n") + 1)
+        self.assertIn("答覆：想法\n\n- [x] 送出", self.questions.read_text())
+        self.assertNotEqual(self.questions.read_bytes(), written)
+
+    def test_resend_that_fails_stays_pending_and_delivers_later(self):
+        self.state.unlink()
+        self.set_hcom("offline")
+        self.assertEqual(self.notify(code=1)["status"], "failed")
+        self.assertTrue(self.listed()["notification_pending"])
+        self.set_hcom("deliver")
+        self.assertEqual(self.notify(), {"status": "delivered"})
+        self.assertEqual(self.notify(), {"status": "no_pending"})
+        self.assertEqual(len(self.calls()), 2)
+
+    def test_answer_the_controller_already_recorded_is_not_notified(self):
+        self.state.unlink()
+        self.record()
+        self.assertFalse(self.listed()["notification_pending"])
+        self.assertEqual(self.notify(), {"status": "no_pending"})
+        self.assertEqual(self.calls(), [])
+
+    def test_answer_to_a_version_the_controller_replaced_is_not_notified(self):
+        self.state.unlink()
+        decisions = self.root / "decisions"
+        decisions.mkdir()
+        (decisions / "Q3.md").write_text("- status: pending\n")
+        section = self.root / "section.md"
+        section.write_text("## 還有什麼想法？\n\n請再想一次。\n")
+        result = self.run_cli(
+            "question", "upsert", "--questions", self.questions,
+            "--decisions", decisions, "--id", "Q3", "--file", section,
+        )
+        self.assertEqual(result.stdout.strip(), "Q3 r2", result.stderr)
+        self.assertFalse(self.listed()["notification_pending"])
+        self.assertEqual(self.notify(), {"status": "no_pending"})
+        self.assertEqual(self.calls(), [])
+
+    def test_later_answer_is_owed_its_own_notification(self):
+        self.state.unlink()
+        self.assertEqual(self.notify(), {"status": "delivered"})
+        self.state.chmod(0o500)  # readable, but nothing new can be stored
+        self.addCleanup(self.state.chmod, 0o700)
+        later = self.answer(self.questions, "Q1", 2, "--select", "1")
+        self.assertFalse(later["notified"])
+        self.assertTrue(self.listed()["notification_pending"])
+        self.state.chmod(0o700)
+        self.assertTrue(self.listed()["notification_pending"])
+        self.assertEqual(self.notify(), {"status": "delivered"})
+        self.assertEqual(self.notify(), {"status": "no_pending"})
+        self.assertEqual(len(self.calls()), 2)
+
+
+class DeliveredNotificationTests(BoardTestCase):
+    def test_answer_submitted_and_delivered_through_the_panel_api_is_not_pending(self):
+        question = self.core.parse_questions(self.questions.read_text())[2]
+        saved = self.core.write_question_answer(
+            self.questions, "Q3", 1, self.core.question_section_sha256(question),
+            self.core.QuestionAnswer("text", (), "想法", ""),
+        )
+        submitted = self.core.submit_question_answers(
+            self.questions, {"Q3": (1, saved["section_sha256"])}
+        )
+        self.core.mark_submit_notification_pending(self.questions, submitted, state_dir=self.state)
+        [binding] = self.core.list_bindings(config_dir=self.config)
+        self.assertEqual(
+            self.core.send_pending_notification(
+                self.questions, binding, state_dir=self.state, env=self.env
+            ),
+            (True, "delivered"),
+        )
+
+        [controller] = self.board("list")["controllers"]
+        self.assertFalse(controller["notification_pending"])
+        self.assertEqual(self.board("notify", "--questions", self.questions), {"status": "no_pending"})
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_submit_checked_outside_the_panel_is_owed_no_notification(self):
+        self.questions.write_text(TEXT.replace("答覆：\n\n- [ ]", "答覆：沒有\n\n- [x]"))
+        [controller] = self.board("list")["controllers"]
+        self.assertFalse(controller["notification_pending"])
+        self.assertEqual(self.board("notify", "--questions", self.questions), {"status": "no_pending"})
+        self.assertEqual(self.calls(), [])
+
+
+class QuestionsTests(BoardTestCase):
+    def test_questions_of_one_file_are_listed_as_board_list_gives_them(self):
+        self.answer(self.questions, "Q3", 1, "--text", "想法")
+        [controller] = self.board("list")["controllers"]
+        self.assertEqual(
+            self.board("questions", "--questions", self.questions),
+            {"questions": controller["questions"]},
+        )
+
+    def test_questions_file_of_an_unbound_controller_can_still_be_read(self):
+        self.answer(self.questions, "Q3", 1, "--text", "想法")
+        recorded = self.run_cli(
+            "question", "set-status", "--questions", self.questions, "--id", "Q3",
+            "--revision", 1, "--status", "recorded",
+            "--expected-section-sha256", self.section_hash(self.questions, "Q3"),
+        )
+        self.assertEqual(recorded.returncode, 0, recorded.stderr)
+        self.core.unbind_controller("s-a", config_dir=self.config)
+        before = self.questions.read_bytes()
+
+        self.assertEqual(self.board("list"), {"controllers": []})
+        questions = self.board("questions", "--questions", self.questions)["questions"]
+
+        self.assertEqual([item["id"] for item in questions], ["Q1", "Q2", "Q3", "Q4"])
+        self.assertEqual(questions[2]["status"], "recorded")
+        self.assertEqual(questions[2]["answer"], "想法")
+        self.assertTrue(questions[2]["recorded_at"])
+        self.assertEqual(self.questions.read_bytes(), before)
+
+    def test_missing_file_has_no_questions_and_an_unreadable_one_is_an_error(self):
+        self.assertEqual(
+            self.board("questions", "--questions", self.root / "missing.md"), {"questions": []}
+        )
+        self.questions.write_text("\n".join((TEXT, TEXT)))
+        result = self.board("questions", "--questions", self.questions, code=1)
+        self.assertEqual(result["status"], "error")
+        self.assertIn("duplicate question ID: Q3", result["reason"])
+
+
 if HAS_TEXTUAL:
     from test_lat_panel_selector import SelectorTestCase
 

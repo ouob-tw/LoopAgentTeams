@@ -248,7 +248,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board list
 | --- | --- |
 | `hcom_name`、`client`、`session_id`、`workspace`、`questions_path` | 綁定登記的原值。 |
 | `herdr_workspace`、`herdr_tab`、`herdr_pane` | 主控所在的 Herdr 工作區、分頁、窗格。 |
-| `notification_pending` | 這份問題檔是否有尚未送達的 `lat-panel` 通知。 |
+| `notification_pending` | 這份問題檔是否有尚未送達的 `lat-panel` 通知：有待送通知，或有經面板或看板送出、主控尚未記錄、也沒有送達紀錄的答覆（待送通知當初沒存下來也算）。 |
 | `error` | 問題檔讀不出來時的原因，此時 `questions` 為空陣列；正常為 `null`。只影響這個主控，其他主控照常輸出。 |
 | `questions` | 問題檔中每一題的目前版本，依檔案順序；問題檔還不存在時為空陣列。 |
 
@@ -267,7 +267,15 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board list
 | `recorded_at` | 標為已記錄的時間，未記錄時為 `null`。 |
 | `section_sha256` | 作答時要帶回的區段雜湊。 |
 
-綁定登記或待送通知檔本身讀不出來時，輸出 `{"status": "error", "reason": "…"}`，結束碼 1。
+綁定登記讀不出來，或待送通知檔的內容不是預期格式時，輸出 `{"status": "error", "reason": "…"}`，結束碼 1。通知狀態目錄無法使用（例如沒有權限）時照常列出，`notification_pending` 只依問題檔判斷：有已送出未記錄的面板答覆就是 `true`。
+
+### 讀取單一問題檔
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board questions --questions "$questions"
+```
+
+輸出 `{"questions": [...]}`，每一題的欄位與 `board list` 相同，結束碼 0；不需要有綁定的主控，看板用它讀已結束主控留下的問題檔。檔案不存在時 `questions` 為空陣列；讀不出來或題號重複時輸出 `{"status": "error", "reason": "…"}`，結束碼 1。不寫入任何檔案。
 
 ### 寫入並送出答案
 
@@ -292,7 +300,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board answer \
 | `invalid_answer` | 1 | 答覆不符合題型、序號超出範圍或重複，或文字含有會被讀成問題檔結構的行。 |
 | `error` | 1 | 其他失敗，例如問題檔讀不到或題目缺少作答區。 |
 
-結束碼 1 的結果都附 `reason`。`question_changed`、`not_pending`、`invalid_answer` 時問題檔與面板紀錄沒有改變；`error` 多半也沒有寫入，但寫檔途中失敗（例如面板紀錄寫不進去）可能已留下草稿或已送出的答案，須重新列出資料確認。通知失敗而待送通知也記不下來時（`reason` 會說明），不保證留有待送通知，`board list` 也可能因待送通知檔讀不出來而回報 `error`；重送通知補送不了時，須由使用者在聊天告知主控。
+結束碼 1 的結果都附 `reason`。`question_changed`、`not_pending`、`invalid_answer` 時問題檔與面板紀錄沒有改變；`error` 多半也沒有寫入，但寫檔途中失敗（例如面板紀錄寫不進去）可能已留下草稿或已送出的答案，須重新列出資料確認。通知失敗而待送通知也記不下來時（`reason` 會說明），答案仍算有通知要送：`board list` 的 `notification_pending` 為 `true`，狀態目錄恢復可用後重送通知會補送。重送通知補送不了時，須由使用者在聊天告知主控。
 
 ### 重送通知
 
@@ -300,14 +308,14 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board answer \
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board notify --questions "$questions"
 ```
 
-只重送這份問題檔尚未送達的通知，不改寫答案與面板紀錄。Herdr 面板原有的重送照舊，同一則通知由任一邊送達後即清除。
+只重送這份問題檔尚未送達的通知，不改寫答案與面板紀錄。Herdr 面板原有的重送照舊，同一則通知由任一邊送達後即清除。沒有待送通知時以問題檔為準：經面板或看板送出（面板紀錄可核對來源）、主控尚未記錄的答覆，若沒有送達紀錄就補送一次；已記錄或已升版的題目不會再送。送達紀錄存在狀態目錄的 `delivered-notifications.json`。
 
 | `status` | 結束碼 | 意義 |
 | --- | --- | --- |
 | `delivered` | 0 | 通知已送達並清除。 |
-| `no_pending` | 0 | 沒有待送通知。 |
+| `no_pending` | 0 | 沒有待送通知，也沒有未通知的已送出答覆。 |
 | `failed` | 1 | 仍未送達，`reason` 是原因（主控不在線、問題檔沒有綁定的主控等），待送通知保留。 |
-| `error` | 1 | 綁定登記或待送通知檔讀不出來。 |
+| `error` | 1 | 綁定登記、待送通知檔或送達紀錄讀寫不了。 |
 
 ## 安裝與更新
 
