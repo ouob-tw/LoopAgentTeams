@@ -11,12 +11,12 @@
 // Exits 1 when a change breaks the board. `--serve none` is for a browser with a real extension.
 //
 // CHROME names the browser to run; LAT_BOARD_TEST_PORT_BASE moves the two ports (base + 12, 13);
-// HOST is the address the proxy listens on (127.0.0.1).
+// LAT_BOARD_REPRO_HOST is the address the proxy listens on (127.0.0.1).
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { question, startFixture } from '../tests/harness.ts';
+import { PORT_BASE, question, startFixture } from '../tests/harness.ts';
 
 /** What the stand-in extension does, to every stylesheet <link> as it is parsed unless it says otherwise. */
 const CHANGES = {
@@ -74,8 +74,8 @@ function contentScript(change: Change, expect: { accent: string; project: string
 		if (tag === 'style') node.textContent = '/* extension */';
 		return node;
 	};
-	function touch(link: HTMLLinkElement) {
-		if (seen.has(link)) return;
+	function touch(link: HTMLElement) {
+		if (change === 'none' || change.endsWith('-edges') || seen.has(link)) return;
 		seen.add(link);
 		const inBody = link.closest('body') !== null;
 		if (change === 'move-to-head' && !inBody) return;
@@ -94,8 +94,9 @@ function contentScript(change: Change, expect: { accent: string; project: string
 		}
 		if (change === 'replace') {
 			const style = added('style');
-			style.dataset.href = link.href;
-			style.textContent = `@import url(${JSON.stringify(link.href)});`;
+			const href = (link as HTMLLinkElement).href;
+			style.dataset.href = href;
+			style.textContent = `@import url(${JSON.stringify(href)});`;
 			link.replaceWith(style);
 		}
 		if (change === 'reinsert') {
@@ -110,7 +111,7 @@ function contentScript(change: Change, expect: { accent: string; project: string
 	function sweep() {
 		if (change === 'dark-reader') {
 			// Its sync style follows <style> elements too, not only links.
-			for (const style of document.querySelectorAll<HTMLLinkElement>('style:not([data-extension])')) touch(style);
+			for (const style of document.querySelectorAll<HTMLElement>('style:not([data-extension])')) touch(style);
 			if (document.head && !edges.head) {
 				edges.head = true;
 				const names = ['fallback', 'user-agent', 'text', 'invert', 'inline', 'override', 'variables', 'root-vars'];
@@ -120,9 +121,7 @@ function contentScript(change: Change, expect: { accent: string; project: string
 				document.head.append(meta);
 			}
 		}
-		if (['dark-reader', 'style-after', 'style-before', 'wrap', 'replace', 'reinsert', 'move-to-head'].includes(change)) {
-			for (const link of document.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"]')) touch(link);
-		}
+		for (const link of document.querySelectorAll<HTMLLinkElement>('link[rel~="stylesheet"]')) touch(link);
 		if (change === 'head-edges' && document.body && !edges.head) {
 			edges.head = true;
 			touched.head += 2;
@@ -195,7 +194,7 @@ const serve = args.includes('--serve');
 const chosen = args.filter((arg) => arg !== '--serve');
 const unknown = chosen.filter((name) => !(name in CHANGES));
 if (unknown.length || (serve && chosen.length !== 1)) {
-	console.error(`usage: hydration-repro.ts [--serve] [change...]\nchanges:`);
+	console.error(`usage: hydration-repro.ts [change...] | --serve <change>\nchanges:`);
 	for (const [name, what] of Object.entries(CHANGES)) console.error(`  ${name.padEnd(14)}${what}`);
 	process.exit(2);
 }
@@ -212,8 +211,8 @@ await fixture.refresh(cookie);
 let change: Change = changes[0];
 let received: (report: Report) => void = () => {};
 const proxy = Bun.serve({
-	hostname: process.env.HOST ?? '127.0.0.1',
-	port: Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110) + 13,
+	hostname: process.env.LAT_BOARD_REPRO_HOST ?? '127.0.0.1',
+	port: PORT_BASE + 13,
 	idleTimeout: 0,
 	async fetch(request) {
 		const url = new URL(request.url);
@@ -247,11 +246,15 @@ async function visit(): Promise<Report | null> {
 		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', `--user-data-dir=${profile}`, '--window-size=1280,900', address],
 		{ stdio: 'ignore' }
 	);
-	const report = await new Promise<Report | null>((resolve) => {
+	const exited = new Promise<null>((resolve) => chrome.once('exit', () => resolve(null)));
+	let giveUp: ReturnType<typeof setTimeout>;
+	const reported = new Promise<Report | null>((resolve) => {
 		received = resolve;
-		setTimeout(() => resolve(null), 30_000);
+		giveUp = setTimeout(() => resolve(null), 30_000);
 	});
-	const exited = new Promise((resolve) => chrome.once('exit', resolve));
+	// A browser that quits by itself never reports.
+	const report = await Promise.race([reported, exited]);
+	clearTimeout(giveUp!);
 	chrome.kill('SIGKILL');
 	await exited;
 	rmSync(profile, { recursive: true, force: true });
