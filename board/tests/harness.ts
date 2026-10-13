@@ -62,11 +62,14 @@ interface FixedOutput {
 	sleepMs?: number;
 }
 
-/** What the fake helper does: `board list` prints the plan's own output; `answer` and `notify`
- *  act on the listed controllers unless a fixed output is given for them. */
+/** What the fake helper does: `board list` prints the plan's own output; `answer`, `notify` and
+ *  `questions` act on the listed controllers unless a fixed output is given for them. */
 export interface HelperPlan extends FixedOutput {
 	answer?: FixedOutput;
 	notify?: FixedOutput;
+	questions?: FixedOutput;
+	/** What `board questions` prints for question files no listed controller has, by path. */
+	files?: Record<string, HelperQuestion[]>;
 	/** Notifying the controller fails with this reason; the answer is still written. */
 	notifyFails?: string;
 	/** The controller records an answer the moment it is written. */
@@ -86,7 +89,7 @@ export interface Fixture {
 	listed(): HelperController[];
 	helperCalls(): number;
 	/** The argument list of every helper call so far that ran this `board` command. */
-	helperArgs(command: 'list' | 'answer' | 'notify'): string[][];
+	helperArgs(command: 'list' | 'questions' | 'answer' | 'notify'): string[][];
 	/** Rewrite the binding registry file, the way a controller binding or unbinding does. */
 	touchRegistry(): void;
 	report(sessionId: string, fields: Partial<Report> & { tag: Report['tag'] }): void;

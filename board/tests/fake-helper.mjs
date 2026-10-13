@@ -1,8 +1,9 @@
 // Stands in for the LAT panel helper, so tests never run the real helper or touch real data.
 // `board list` prints whatever <dir>/helper.json tells it to. `board answer` and `board notify`
 // behave like the real commands against the controllers that file lists, and write the result back
-// into it; a plan entry named after the command (`answer`, `notify`) replaces that with a fixed
-// output. Each call is logged to <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
+// into it; `board questions` prints a listed controller's questions, or the plan's `files` entry
+// for that path. A plan entry named after the command (`answer`, `notify`, `questions`) replaces
+// that with a fixed output. Each call is logged to <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
 import { createHash } from 'node:crypto';
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -101,7 +102,14 @@ function notify() {
 	return { output: { status: 'delivered' } };
 }
 
-const result = command === 'list' ? plan : (plan[command] ?? (command === 'answer' ? answer() : notify()));
+/** One question file, whether or not a listed controller has it. */
+function questions() {
+	const path = options().questions?.[0] ?? '';
+	return { output: { questions: listed(path)?.questions ?? plan.files?.[path] ?? [] } };
+}
+
+const act = command === 'answer' ? answer : command === 'questions' ? questions : notify;
+const result = command === 'list' ? plan : (plan[command] ?? act());
 setTimeout(() => {
 	process.stdout.write(result.raw ?? JSON.stringify(result.output));
 	process.exitCode = result.exit ?? 0;

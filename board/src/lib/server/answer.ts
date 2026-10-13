@@ -15,7 +15,7 @@ import {
 import type { HelperController } from '../board/types.ts';
 import type { Board } from './board.ts';
 import { answerQuestion, listControllers, notifyController } from './helper.ts';
-import { appendSent, type StoredAnswer } from './sent-log.ts';
+import { appendSent } from './sent-log.ts';
 
 const ANSWER_HTTP: Record<string, number> = {
 	submitted: 200,
@@ -67,7 +67,7 @@ export async function submitAnswer(board: Board, request: AnswerRequest): Promis
 	let body: AnswerResponse;
 	if (result.status === 'submitted') {
 		const question = binding.questions.find((candidate) => candidate.id === request.questionId);
-		const stored: StoredAnswer = {
+		const sent: Omit<SentAnswer, 'state' | 'settledAt'> = {
 			id: randomUUID(),
 			kind: 'answer',
 			time: new Date().toISOString(),
@@ -79,10 +79,10 @@ export async function submitAnswer(board: Board, request: AnswerRequest): Promis
 			answer: answerText(question ?? { kind: 'text', options: [] }, request.select, request.text),
 			note: request.note.trim()
 		};
-		const entry: SentAnswer = { ...stored, state: 'waiting', settledAt: null };
+		const entry: SentAnswer = { ...sent, state: 'waiting', settledAt: null };
 		let logError: string | null = null;
 		try {
-			appendSent(board.config.stateDir, stored);
+			appendSent(board.config.stateDir, { ...sent, questionsPath: binding.questions_path });
 		} catch (error) {
 			// The answer is in the question file either way; that outcome is what the page must show.
 			logError = (error as Error).message;

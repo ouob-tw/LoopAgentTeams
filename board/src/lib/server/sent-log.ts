@@ -5,18 +5,21 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AnswerState, SentAnswer, SentEntry } from '../board/answers.ts';
 import type { SentMessage } from '../board/messages.ts';
-import type { HelperController } from '../board/types.ts';
+import type { HelperController, HelperQuestion } from '../board/types.ts';
 
 const SENT_LOG_FILE = 'sent-log.jsonl';
 
 /** An answer as its line holds it: where it stands is not part of the line. */
-export type StoredAnswer = Omit<SentAnswer, 'state' | 'settledAt'>;
+export type StoredAnswer = Omit<SentAnswer, 'state' | 'settledAt'> & {
+	/** The controller's question file, kept for when the controller has ended. Never sent to a page. */
+	questionsPath?: string;
+};
 
-/** What became of the answer with this ID. */
+/** What became of the answer with this ID; the latest line for an answer is the one that counts. */
 interface AnswerMark {
 	kind: 'answer-state';
 	answerId: string;
-	state: Exclude<AnswerState, 'waiting'>;
+	state: AnswerState;
 	time: string;
 }
 
@@ -59,36 +62,71 @@ export function readSent(stateDir: string, controllerId: string): SentEntry[] {
 		if (line.kind === 'answer-state' || line.controllerId !== controllerId) continue;
 		if (line.kind === 'message') entries.push(line);
 		else if (line.kind === 'answer') {
+			const { questionsPath: _, ...answer } = line;
 			const mark = marks.get(line.id);
-			entries.push({ ...line, state: mark?.state ?? 'waiting', settledAt: mark?.time ?? null });
+			const state = mark?.state ?? 'waiting';
+			entries.push({ ...answer, state, settledAt: state === 'waiting' ? null : mark!.time });
 		}
 	}
 	return entries.reverse();
 }
 
+/** Where the question's current version puts an answer; null when the question is not there. */
+function stateIn(questions: HelperQuestion[] | null | undefined, answer: StoredAnswer): { state: AnswerState; question: HelperQuestion } | null {
+	const question = questions?.find((candidate) => candidate.id === answer.questionId);
+	if (!question) return null;
+	if (question.revision > answer.revision) return { state: 'superseded', question };
+	if (question.revision === answer.revision && question.status === 'recorded') return { state: 'recorded', question };
+	return { state: 'waiting', question };
+}
+
 /**
- * Note which waiting answers the controllers have dealt with since: recorded, or asked again as a
- * newer version. Called with every fresh list, so an answer recorded between two reads is caught
- * by the next one. An answer whose controller is no longer bound stays as it is.
+ * Note what the controllers have done with the answers since: recorded them, or asked the question
+ * again as a newer version. Called with every fresh list, so an answer recorded between two reads
+ * is caught by the next one.
+ *
+ * A controller that is no longer bound may have recorded an answer just before it ended, so the
+ * question file it left behind is read once, through `readEnded`, for each answer still waiting:
+ * the answer ends up recorded, superseded, `ended` (the file shows it was not recorded) or
+ * `unknown` (the file, or the question in it, cannot be read). Those last two are looked at again
+ * only if the controller is bound again.
  */
-export function settleAnswers(stateDir: string, controllers: HelperController[], now: number): void {
+export async function settleAnswers(
+	stateDir: string,
+	controllers: HelperController[],
+	now: number,
+	readEnded: (questionsPath: string) => Promise<HelperQuestion[] | null>
+): Promise<void> {
 	const lines = readLines(stateDir);
 	const marks = marksOf(lines);
 	const bound = new Map(controllers.map((controller) => [controller.session_id, controller]));
+	const stateOf = (answer: StoredAnswer) => marks.get(answer.id)?.state ?? 'waiting';
+	// Every file is asked for at once, so a read of the sources waits for one helper call, not many.
+	const endedPaths = new Set<string>();
 	for (const line of lines) {
-		if (line.kind !== 'answer' || marks.has(line.id)) continue;
-		const question = bound.get(line.controllerId)?.questions.find((candidate) => candidate.id === line.questionId);
-		if (!question) continue;
-		let mark: AnswerMark | undefined;
-		if (question.revision > line.revision) {
-			mark = { kind: 'answer-state', answerId: line.id, state: 'superseded', time: new Date(now).toISOString() };
-		} else if (question.revision === line.revision && question.status === 'recorded') {
-			const time = question.recorded_at ?? new Date(now).toISOString();
-			mark = { kind: 'answer-state', answerId: line.id, state: 'recorded', time };
+		if (line.kind === 'answer' && line.questionsPath && stateOf(line) === 'waiting' && !bound.has(line.controllerId)) {
+			endedPaths.add(line.questionsPath);
 		}
-		if (mark) {
-			appendSent(stateDir, mark);
-			marks.set(line.id, mark);
-		}
+	}
+	const left = new Map(await Promise.all([...endedPaths].map(async (path) => [path, await readEnded(path)] as const)));
+	for (const line of lines) {
+		if (line.kind !== 'answer') continue;
+		const current = stateOf(line);
+		if (current === 'recorded' || current === 'superseded') continue;
+		const controller = bound.get(line.controllerId);
+		let found: ReturnType<typeof stateIn>;
+		let state: AnswerState;
+		if (controller) {
+			found = stateIn(controller.questions, line);
+			state = found?.state ?? current;
+		} else if (current === 'waiting') {
+			found = stateIn(line.questionsPath ? left.get(line.questionsPath) : null, line);
+			state = !found ? 'unknown' : found.state === 'waiting' ? 'ended' : found.state;
+		} else continue;
+		if (state === current) continue;
+		const time = (state === 'recorded' && found?.question.recorded_at) || new Date(now).toISOString();
+		const mark: AnswerMark = { kind: 'answer-state', answerId: line.id, state, time };
+		appendSent(stateDir, mark);
+		marks.set(line.id, mark);
 	}
 }

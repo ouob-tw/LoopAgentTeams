@@ -38,8 +38,8 @@ export interface NotifyOutcome {
 export interface Submitted {
 	answer: string;
 	note: string;
-	/** The notification failed and the board's data did not show one waiting to be resent: it was
-	 *  either not kept or already resent from elsewhere. Only this page knows, and cannot tell which. */
+	/** The notification failed and the board's data did not show one waiting to be resent, so it
+	 *  may already have been resent from elsewhere. Only this page knows of the failure. */
 	notifyFailed: boolean;
 	reason: string | null;
 }

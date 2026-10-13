@@ -17,13 +17,16 @@ export interface AnswerRequest {
 	note: string;
 }
 
-/** Where an answer sent from the board stands. */
-export type AnswerState = 'waiting' | 'recorded' | 'superseded';
+/** Where an answer sent from the board stands. `ended`: the controller ended and its question
+ *  file shows the answer was never recorded; `unknown`: it ended and the file does not tell. */
+export type AnswerState = 'waiting' | 'recorded' | 'superseded' | 'ended' | 'unknown';
 
 export const ANSWER_STATE_TEXT: Record<AnswerState, string> = {
 	waiting: '已送出，等主控記錄',
 	recorded: '已記錄',
-	superseded: '題目已改版，這份答覆沒有被記錄'
+	superseded: '題目已改版，這份答覆沒有被記錄',
+	ended: '主控已結束，沒有記錄這份答覆',
+	unknown: '主控已結束，無法確認這份答覆有沒有被記錄'
 };
 
 /** One answer in the board's sent log. Only answers the helper accepted are logged. */
@@ -40,7 +43,7 @@ export interface SentAnswer {
 	answer: string;
 	note: string;
 	state: AnswerState;
-	/** When the controller recorded it, or the board saw the newer version; null while waiting. */
+	/** When the controller recorded it, or the board saw what else became of it; null while waiting. */
 	settledAt: string | null;
 }
 

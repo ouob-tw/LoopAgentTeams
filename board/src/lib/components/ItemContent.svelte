@@ -220,7 +220,7 @@
 				<p class="state failed" role="alert">
 					已送出，但通知主控失敗{submitted?.notifyFailed && submitted.reason ? `：${submitted.reason}` : ''}。{item.notifyFailed
 						? '答覆已經寫入，主控還不知道。'
-						: '答覆已經寫入；看板的資料裡沒有等待重送的通知，可能已經由別處補送，也可能沒有留下來。不確定主控是否知道時，請在聊天告訴主控。'}
+						: '答覆已經寫入；看板的資料裡沒有等待重送的通知，可能已經由別處補送。不確定主控是否知道時，請在聊天告訴主控。'}
 				</p>
 			{:else}
 				<p class="state">{ANSWER_STATE_TEXT.waiting}。</p>

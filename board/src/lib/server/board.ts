@@ -5,7 +5,7 @@ import { join } from 'node:path';
 import type { BoardSnapshot, HelperController, InboxReport } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
-import { listControllers } from './helper.ts';
+import { listControllers, readQuestions } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { archiveDue, archivedReports, buildSnapshot, markRead, type MarkReadResult, type Sources } from './model.ts';
 import { createReportReader } from './reports.ts';
@@ -94,7 +94,7 @@ function createBoard(): Board {
 		if (helper.ok) {
 			lastActive = helper.controllers;
 			try {
-				settleAnswers(config.stateDir, helper.controllers, config.now());
+				await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path));
 			} catch {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
 			}

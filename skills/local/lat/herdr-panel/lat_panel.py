@@ -33,10 +33,12 @@ Public API used by the Textual panel and LAT controller:
 * ``mark_notification_pending``, ``notification_is_pending``,
   ``send_pending_notification``, and ``clear_pending_notification`` provide the
   persisted notification lifecycle. ``send_pending_notification`` returns an
-  ``(ok, reason)`` pair and clears state only after target delivery.
-* ``board_controllers``, ``answer_and_notify``, and ``notify_controller`` back
-  the ``board`` commands: the LAT board reads and answers question files only
-  through them. ``answer_question`` is the write half of ``answer_and_notify``.
+  ``(ok, reason)`` pair and clears state only after target delivery; it also
+  notes which submitted answers that delivery covered.
+* ``board_controllers``, ``board_questions``, ``answer_and_notify``, and
+  ``notify_controller`` back the ``board`` commands: the LAT board reads and
+  answers question files only through them. ``answer_question`` is the write
+  half of ``answer_and_notify``.
 
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
@@ -54,6 +56,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   unbind --session-id ID
   resolve (--session-id ID | [--herdr-workspace ID])
   board list
+  board questions --questions PATH
   board answer --questions PATH --id ID --revision N \
       --expected-section-sha256 HASH [--select N]... [--text TEXT] [--note TEXT]
   board notify --questions PATH
@@ -1367,6 +1370,11 @@ def _read_pending(path):
 
 def _write_pending(path, pending):
     path.parent.mkdir(parents=True, exist_ok=True)
+    # The delivery record dates its start by this file's last change, so it has to exist before
+    # the file changes again: otherwise this write would pass for the earlier state.
+    delivered_path = _delivered_path(path.parent)
+    with _path_lock(delivered_path):
+        _read_delivered(delivered_path)
     _replace_locked(path, json.dumps({"pending": pending}, ensure_ascii=False, indent=2) + "\n")
 
 
@@ -1426,6 +1434,120 @@ def clear_pending_notification(
         return False
 
 
+def _delivered_path(state_dir=None):
+    return _notification_path(state_dir).with_name("delivered-notifications.json")
+
+
+def _write_delivered(path, delivered, since):
+    _replace_locked(
+        path,
+        json.dumps({"delivered": delivered, "since": since}, ensure_ascii=False, indent=2) + "\n",
+    )
+
+
+def _read_delivered(path):
+    """Return ``(delivered, since)`` from the delivery record, starting it if there is none.
+
+    ``delivered`` maps each questions path to the answer hashes its last
+    delivery covered. Notifications sent before the record existed left no
+    trace in it, so the record starts with ``since``, the last time the pending
+    notifications changed: an answer submitted before that was handled by the
+    stored notifications alone and is owed nothing more. ``since`` is ``None``
+    when there was no earlier state.
+
+    Content that cannot be used counts as an empty record: the cost is one
+    repeated notification, where refusing would block every later one.
+    """
+    try:
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        try:
+            changed = path.with_name("pending-notifications.json").stat().st_mtime
+            since = datetime.fromtimestamp(changed, timezone.utc).isoformat()
+        except FileNotFoundError:
+            since = None
+        _write_delivered(path, {}, since)
+        return {}, since
+    except ValueError:
+        return {}, None
+    delivered = payload.get("delivered") if isinstance(payload, dict) else None
+    if not isinstance(delivered, dict):
+        return {}, None
+    since = payload.get("since")
+    try:
+        datetime.fromisoformat(since)
+    except (TypeError, ValueError):
+        since = None
+    return {key: value for key, value in delivered.items() if isinstance(value, list)}, since
+
+
+def _submitted_after(submitted, since):
+    """Whether an answer journaled at ``submitted`` came after the record's start."""
+    if since is None:
+        return True
+    try:
+        submitted = datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+        return submitted > datetime.fromisoformat(since)
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
+def _submitted_answers(questions_path):
+    """Map the section hash of each panel-submitted, unrecorded answer to its journal time.
+
+    These are the answers a notification is owed for, whether or not a pending
+    notification was ever stored. A submit the panel journal does not prove is
+    left out: the controller could not record it either.
+    """
+    questions_path = Path(questions_path)
+    journal_path = questions_path.parent / "panel-journal.jsonl"
+    try:
+        sections = _sections(questions_path.read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return {}
+    answers = {}
+    for section in sections:
+        if section["status"] != "ready":
+            continue
+        try:
+            proof = question_provenance(questions_path, journal_path, section["id"])
+        except (OSError, ValueError, AttributeError, TypeError):
+            # The last two: a journal line that is JSON but not an entry.
+            continue
+        answers[proof["section_sha256"]] = proof["time"]
+    return answers
+
+
+def _record_delivered(questions_path, answers, *, state_dir=None):
+    """Note the submitted answers that a delivered notification covered."""
+    path = _delivered_path(state_dir)
+    key = _question_key(questions_path)
+    with _path_lock(path):
+        delivered, since = _read_delivered(path)
+        if not answers and key not in delivered:
+            return
+        if answers:
+            delivered[key] = sorted(answers)
+        else:
+            del delivered[key]
+        _write_delivered(path, delivered, since)
+
+
+def _undelivered_answers(questions_path, *, state_dir=None):
+    """Return the hashes of submitted answers that no delivered notification has covered."""
+    answers = _submitted_answers(questions_path)
+    if not answers:
+        return set()
+    path = _delivered_path(state_dir)
+    with _path_lock(path):
+        delivered, since = _read_delivered(path)
+    covered = delivered.get(_question_key(questions_path), [])
+    return {
+        answer for answer, submitted in answers.items()
+        if answer not in covered and _submitted_after(submitted, since)
+    }
+
+
 def _delivered_targets(payload):
     targets = []
     if isinstance(payload, dict):
@@ -1450,18 +1572,34 @@ def _hcom_receipt_names(target):
 
 def send_pending_notification(questions_path, binding, *, state_dir=None, env=None, timeout=10):
     """Send one persisted notification; return ``(ok, reason)`` and clear on success."""
-    questions_key = _question_key(questions_path)
     state_path = _notification_path(state_dir)
     with _path_lock(state_path):
-        pending = _read_pending(state_path).get(questions_key)
+        pending = _read_pending(state_path).get(_question_key(questions_path))
     if not pending:
         return True, "no pending notification"
-    generation = pending.get("generation")
+    ok, reason = _send_notification(
+        questions_path, binding, state_dir=state_dir, env=env, timeout=timeout
+    )
+    if ok:
+        clear_pending_notification(
+            questions_path, state_dir=state_dir, expected_generation=pending.get("generation")
+        )
+    return ok, reason
+
+
+def _send_notification(questions_path, binding, *, state_dir=None, env=None, timeout=10):
+    """Tell the bound controller to re-read its questions file; return ``(ok, reason)``.
+
+    A delivery is noted with the submitted answers it covered.
+    """
+    questions_key = _question_key(questions_path)
     if _question_key(binding.get("questions_path", "")) != questions_key:
         return False, "binding does not match the questions path"
     target = binding.get("hcom_name", "")
     if not target:
         return False, "binding has no HCOM name"
+    # Read before sending: an answer submitted while the message is under way is not covered.
+    covered = _submitted_answers(questions_path)
     message = (
         f"Questions file changed: {questions_key}. Re-read the file and apply the LAT "
         "question-processing contract. This notification is not approval. Only an "
@@ -1489,9 +1627,7 @@ def send_pending_notification(questions_path, binding, *, state_dir=None, env=No
     delivered = {item.removeprefix("@") for item in _delivered_targets(payload)}
     if _hcom_receipt_names(target).isdisjoint(delivered):
         return False, f"notification not delivered to {target}"
-    clear_pending_notification(
-        questions_path, state_dir=state_dir, expected_generation=generation
-    )
+    _record_delivered(questions_path, covered, state_dir=state_dir)
     return True, "delivered"
 
 
@@ -1573,15 +1709,29 @@ def _unique_sections(document):
     return sections
 
 
-def _board_questions(binding):
+def board_questions(questions_path):
+    """Return the current revision of each question in one questions file.
+
+    The file need not belong to a bound controller: the board reads what an
+    ended controller left behind this way. A file that does not exist has no
+    questions.
+    """
     try:
-        document = Path(binding["questions_path"]).read_text(encoding="utf-8")
+        document = Path(questions_path).read_text(encoding="utf-8")
     except FileNotFoundError:
         return []
-    asked_times = _asked_times(binding["questions_path"])
+    asked_times = _asked_times(questions_path)
     return [
         _board_question(section, asked_times) for section in _unique_sections(document)
     ]
+
+
+def _notification_owed(questions_path, state_dir):
+    try:
+        return bool(_undelivered_answers(questions_path, state_dir=state_dir))
+    except OSError:
+        # Nothing can show that a notification was delivered.
+        return bool(_submitted_answers(questions_path))
 
 
 def board_controllers(*, config_dir=None, state_dir=None):
@@ -1589,20 +1739,30 @@ def board_controllers(*, config_dir=None, state_dir=None):
 
     A questions file that cannot be read sets only its own controller's
     ``error``; a controller that has not asked anything yet has no questions.
+    ``notification_pending`` is true for a stored pending notification and for
+    a submitted answer that no delivered notification covers, so an answer
+    whose pending notification could not be stored still shows as not notified.
     """
     state_path = _notification_path(state_dir)
-    with _path_lock(state_path):
-        pending = _read_pending(state_path)
+    try:
+        with _path_lock(state_path):
+            pending = _read_pending(state_path)
+    except OSError:
+        # The state cannot be used at all; the question files still tell what is owed.
+        pending = {}
     controllers = []
     for binding in list_bindings(config_dir=config_dir):
         controller = {
             **binding,
-            "notification_pending": _question_key(binding["questions_path"]) in pending,
+            "notification_pending": (
+                _question_key(binding["questions_path"]) in pending
+                or _notification_owed(binding["questions_path"], state_dir)
+            ),
             "error": None,
             "questions": [],
         }
         try:
-            controller["questions"] = _board_questions(binding)
+            controller["questions"] = board_questions(binding["questions_path"])
         except (OSError, ValueError) as error:
             controller["error"] = str(error)
         controllers.append(controller)
@@ -1705,9 +1865,13 @@ def notify_controller(questions_path, *, config_dir=None, state_dir=None):
     """Send the pending notification of one questions file to its bound controller.
 
     Returns ``delivered``, ``no_pending``, or ``failed`` with a ``reason``; a
-    failed notification stays pending.
+    failed notification stays pending. A submitted answer that no delivered
+    notification covers is notified even when no pending notification was
+    stored for it; that one is owed only until the answer is recorded or the
+    question is asked again, so nothing is stored for it here either.
     """
-    if not notification_is_pending(questions_path, state_dir=state_dir):
+    pending = notification_is_pending(questions_path, state_dir=state_dir)
+    if not pending and not _undelivered_answers(questions_path, state_dir=state_dir):
         return {"status": "no_pending"}
     questions_key = _question_key(questions_path)
     binding = next(
@@ -1719,7 +1883,8 @@ def notify_controller(questions_path, *, config_dir=None, state_dir=None):
     )
     if binding is None:
         return {"status": "failed", "reason": "no LAT controller is bound to this questions file"}
-    ok, reason = send_pending_notification(questions_path, binding, state_dir=state_dir)
+    send = send_pending_notification if pending else _send_notification
+    ok, reason = send(questions_path, binding, state_dir=state_dir)
     if not ok:
         return {"status": "failed", "reason": reason}
     return {"status": "delivered" if reason == "delivered" else "no_pending"}
@@ -1756,6 +1921,8 @@ def _run_board(args):
     try:
         if args.board_command == "list":
             result, code = {"controllers": board_controllers()}, 0
+        elif args.board_command == "questions":
+            result, code = {"questions": board_questions(args.questions)}, 0
         elif args.board_command == "answer":
             result = answer_and_notify(
                 args.questions, args.id, args.revision, args.expected_section_sha256,
@@ -1824,6 +1991,8 @@ def _build_parser():
     board = commands.add_parser("board")
     board_commands = board.add_subparsers(dest="board_command", required=True)
     board_commands.add_parser("list")
+    board_questions_parser = board_commands.add_parser("questions")
+    board_questions_parser.add_argument("--questions", required=True, type=Path)
     answer = board_commands.add_parser("answer")
     answer.add_argument("--questions", required=True, type=Path)
     answer.add_argument("--id", required=True)
