@@ -90,13 +90,16 @@ function stateIn(questions: HelperQuestion[] | null | undefined, answer: StoredA
  * the answer ends up recorded, superseded, `ended` (the file shows it was not recorded) or
  * `unknown` (the file, or the question in it, cannot be read). Those last two are looked at again
  * only if the controller is bound again.
+ *
+ * Returns why the log could not be brought up to date, or null: an answer then keeps showing the
+ * state of its last line until a later call can write the new one.
  */
 export async function settleAnswers(
 	stateDir: string,
 	controllers: HelperController[],
 	now: number,
 	readEnded: (questionsPath: string) => Promise<HelperQuestion[] | null>
-): Promise<void> {
+): Promise<string | null> {
 	const lines = readLines(stateDir);
 	const marks = marksOf(lines);
 	const bound = new Map(controllers.map((controller) => [controller.session_id, controller]));
@@ -126,7 +129,12 @@ export async function settleAnswers(
 		if (state === current) continue;
 		const time = (state === 'recorded' && found?.question.recorded_at) || new Date(now).toISOString();
 		const mark: AnswerMark = { kind: 'answer-state', answerId: line.id, state, time };
-		appendSent(stateDir, mark);
+		try {
+			appendSent(stateDir, mark);
+		} catch (error) {
+			return (error as Error).message;
+		}
 		marks.set(line.id, mark);
 	}
+	return null;
 }

@@ -1,5 +1,5 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { ANSWER_STATE_TEXT, type AnswerRequest, type AnswerResponse, type NotifyResponse, type SentAnswer, type SentEntry } from '../src/lib/board/answers.ts';
 import type { HelperController, HelperQuestion, InboxQuestion } from '../src/lib/board/types.ts';
@@ -645,4 +645,64 @@ test('an unpaired browser can neither answer nor resend a notification', async (
 	expect(fixture.helperArgs('answer')).toEqual([]);
 	expect(fixture.helperArgs('notify')).toEqual([]);
 	expect(listedQuestion(luna, 'T-1')).toEqual(asked);
+});
+
+const SENT_LOG = () => join(fixture.dir, 'board-state/sent-log.jsonl');
+const logLines = () => (existsSync(SENT_LOG()) ? readFileSync(SENT_LOG(), 'utf8').split('\n').filter(Boolean) : []);
+const sentLogView = async (controllerId: string) => {
+	const response = await fixture.fetch(`/api/messages?controller=${encodeURIComponent(controllerId)}`, { cookie });
+	return (await response.json()) as { entries: SentEntry[]; logError: string | null };
+};
+
+// A read-only file does not stop root, so these two cannot make the log unwritable there.
+const unwritable = process.getuid?.() === 0 ? test.skip : test;
+
+unwritable('an answer whose sent-log line cannot be written is still submitted and notified, and the response says why the log failed', async () => {
+	const asked = text({ title: '紀錄寫不進去的題' });
+	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
+	fixture.list([luna]);
+	writeFileSync(SENT_LOG(), logLines().map((line) => line + '\n').join(''));
+	chmodSync(SENT_LOG(), 0o444);
+	let result: Awaited<ReturnType<typeof answer>>;
+	try {
+		result = await answer(luna, asked, { text: '好' });
+	} finally {
+		chmodSync(SENT_LOG(), 0o600);
+	}
+
+	expect(result.status).toBe(200);
+	expect(result.body).toMatchObject({ status: 'submitted', notified: true });
+	expect(result.body.logError).toBeTruthy();
+	expect(listedQuestion(luna, 'T-1')).toMatchObject({ status: 'submitted', answer: '好' });
+	expect(fixture.helperArgs('answer')).toHaveLength(1);
+});
+
+unwritable('when the sent log cannot be updated to recorded the controller page says so, and it shows recorded once the log is writable again', async () => {
+	const asked = text({ title: '紀錄更新不了的題' });
+	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
+	fixture.list([luna]);
+	await answer(luna, asked, { text: '好' });
+	const before = logLines();
+	expect(await sentLogView(luna.session_id)).toMatchObject({ logError: null });
+
+	record('T-1');
+	chmodSync(SENT_LOG(), 0o444);
+	try {
+		await fixture.refresh(cookie);
+		const stale = await sentLogView(luna.session_id);
+		expect(stale.entries.filter((entry) => entry.kind === 'answer')).toMatchObject([{ state: 'waiting' }]);
+		expect(stale.logError).toBeTruthy();
+		expect(logLines()).toEqual(before);
+	} finally {
+		chmodSync(SENT_LOG(), 0o600);
+	}
+
+	await fixture.refresh(cookie);
+	const view = await sentLogView(luna.session_id);
+	expect(view.logError).toBeNull();
+	expect(view.entries.filter((entry) => entry.kind === 'answer')).toMatchObject([{ state: 'recorded' }]);
+	// One answer line and one state line, no duplicates, nothing lost.
+	expect(logLines()).toHaveLength(before.length + 1);
+	await fixture.refresh(cookie);
+	expect(logLines()).toHaveLength(before.length + 1);
 });

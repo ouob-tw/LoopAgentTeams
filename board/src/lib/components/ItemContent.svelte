@@ -105,6 +105,12 @@
 		{:else if !inInbox}
 			<p class="notice" role="status">這一題已經不在信箱：主控已結束，或題目已被移除。不能再作答。</p>
 		{/if}
+		<!-- Shown whatever became of the question since: the answer was sent either way. -->
+		{#if submitted?.logError}
+			<p class="notice failed" role="alert">
+				答覆已經送出，但送出紀錄寫入失敗：{submitted.logError}。看板的送出紀錄裡不會有這一筆。
+			</p>
+		{/if}
 		{#if answerable && outdated(question, draft)}
 			<p class="notice failed" role="alert">
 				主控在你作答途中改了這一題，下面是目前的版本。你填的是舊版的答覆，送出會被拒絕；請對照後重新作答。

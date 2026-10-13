@@ -19,6 +19,11 @@
 	{#if messaging.loadFailed[controller.id]}
 		<p class="failed" role="alert">送出紀錄讀取失敗。</p>
 	{/if}
+	{#if messaging.logError[controller.id]}
+		<p class="failed" role="alert">
+			送出紀錄寫入失敗，答覆的狀態可能不是最新的：{messaging.logError[controller.id]}
+		</p>
+	{/if}
 	{#if entries?.length}
 		<ol>
 			{#each entries as entry (entry.id)}
