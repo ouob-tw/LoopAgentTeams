@@ -1,10 +1,12 @@
 <script lang="ts">
-	// Wide: roster, inbox and content side by side. Narrow: the roster strip above the inbox, and
-	// one content screen at a time once something is opened.
+	// Wide: roster, inbox and content side by side, the roster foldable into a rail and both
+	// column borders draggable. Narrow: the roster strip above the inbox, and one content screen
+	// at a time once something is opened.
 	import { onMount, tick } from 'svelte';
 	import type { InboxSort } from '#lib/board/inbox.ts';
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
-	import { remember, remembered } from '#lib/board/prefs.ts';
+	import { appearance } from '#lib/board/appearance.svelte.ts';
+	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import type { InboxItem } from '#lib/board/types.ts';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
@@ -12,6 +14,8 @@
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import ReplyBox from '#lib/components/ReplyBox.svelte';
 	import Roster from '#lib/components/Roster.svelte';
+	import RosterRail from '#lib/components/RosterRail.svelte';
+	import Settings from '#lib/components/Settings.svelte';
 
 	let { data } = $props();
 
@@ -25,6 +29,30 @@
 		sort = remembered(SORT_KEY, ['time', 'project'], 'time');
 	});
 	let showArchive = $state(false);
+
+	onMount(() => appearance.restore());
+	let settings: Settings;
+
+	/** Drag a column's right border. Only a real move changes the width, so a double click is free to reset it. */
+	function drag(event: PointerEvent, column: Column) {
+		if (event.button !== 0) return;
+		const handle = event.currentTarget as HTMLElement;
+		const pane = handle.previousElementSibling as HTMLElement;
+		const startX = event.clientX;
+		const startWidth = pane.getBoundingClientRect().width;
+		const move = (moved: PointerEvent) => {
+			const asked = appearance.setWidth(column, startWidth + moved.clientX - startX);
+			// A narrow window caps the column below its upper limit; keep what is shown, so the
+			// border follows the pointer again as soon as it turns back.
+			const shown = Math.floor(pane.getBoundingClientRect().width);
+			if (shown < asked) appearance.setWidth(column, shown);
+		};
+		handle.setPointerCapture(event.pointerId);
+		handle.addEventListener('pointermove', move);
+		handle.addEventListener('lostpointercapture', () => handle.removeEventListener('pointermove', move), {
+			once: true
+		});
+	}
 
 	function setSort(next: InboxSort) {
 		sort = next;
@@ -83,11 +111,39 @@
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
 </script>
 
-{#snippet refresh()}
-	<button class="refresh" onclick={() => board.refresh()} disabled={board.refreshing} title="立即重新讀取所有資料">
-		{board.refreshing ? '讀取中…' : '重新整理'}
+{#snippet refresh(short = false)}
+	<button
+		class="tool"
+		onclick={() => board.refresh()}
+		disabled={board.refreshing}
+		aria-label={short ? '重新整理' : undefined}
+		title="立即重新讀取所有資料"
+	>
+		{short ? '重整' : board.refreshing ? '讀取中…' : '重新整理'}
 	</button>
 {/snippet}
+
+{#snippet openSettings()}
+	<button class="tool" onclick={() => settings.open()} title="主題與整體大小">設定</button>
+{/snippet}
+
+{#snippet resize(column: Column)}
+	<!-- Pointer only: the widths are a convenience, and every column stays usable at its default. -->
+	<div
+		class="resize"
+		data-column={column}
+		role="separator"
+		aria-orientation="vertical"
+		title="拖曳調整寬度，連按兩下還原"
+		onpointerdown={(event) => drag(event, column)}
+		ondblclick={() => appearance.resetWidth(column)}
+	></div>
+{/snippet}
+
+<!-- The user's own stylesheet. In the body, so it comes after every built-in style, and before
+     the content, so nothing is painted without it. The server answers with an empty sheet when
+     there is none. -->
+<link rel="stylesheet" href="/user.css" />
 
 <div class="page">
 	{#if board.link === 'offline'}
@@ -103,12 +159,37 @@
 
 	<div class="shell" class:viewing={view !== null}>
 		<nav class="roster">
-			<header class="summary">
-				<span><b>{pending}</b> 待決　<b>{unread}</b> 未讀　{controllers.length} 個主控</span>
-				{@render refresh()}
-			</header>
-			<Roster {controllers} currentId={view?.kind === 'controller' ? view.id : null} onopen={openController} />
+			<div class="folded">
+				<RosterRail
+					{controllers}
+					currentId={view?.kind === 'controller' ? view.id : null}
+					onopen={openController}
+					onexpand={() => appearance.setFolded(false)}
+				>
+					{#snippet tools()}
+						{@render refresh(true)}
+						{@render openSettings()}
+					{/snippet}
+				</RosterRail>
+			</div>
+			<div class="unfolded">
+				<header class="summary">
+					<span><b>{pending}</b> 待決　<b>{unread}</b> 未讀　{controllers.length} 個主控</span>
+					<span class="tools">
+						{@render refresh()}
+						{@render openSettings()}
+						<button
+							class="tool fold"
+							onclick={() => appearance.setFolded(true)}
+							aria-label="收起主控名冊"
+							title="收起主控名冊">«</button
+						>
+					</span>
+				</header>
+				<Roster {controllers} currentId={view?.kind === 'controller' ? view.id : null} onopen={openController} />
+			</div>
 		</nav>
+		{@render resize('roster')}
 
 		<section class="inbox">
 			<Inbox
@@ -128,6 +209,7 @@
 				oncontroller={openController}
 			/>
 		</section>
+		{@render resize('inbox')}
 
 		<section class="detail" bind:this={detail} tabindex="-1">
 			{#if view === null}
@@ -136,10 +218,15 @@
 				<div class="topbar">
 					<button onclick={() => show(null)} aria-label="返回">←</button>
 					{#if owner}
-						<strong>{owner.project}</strong>
-						<span class="handle">@{owner.hcomName}</span>
+						<span class="whose" title="{owner.project} @{owner.hcomName}">
+							<strong>{owner.project}</strong>
+							<span class="handle">@{owner.hcomName}</span>
+						</span>
 					{/if}
-					{@render refresh()}
+					<span class="tools">
+						{@render refresh()}
+						{@render openSettings()}
+					</span>
 				</div>
 
 				{#if view.kind === 'controller'}
@@ -178,6 +265,8 @@
 	<CommandLine {controllers} target={controller} />
 </div>
 
+<Settings bind:this={settings} />
+
 <style>
 	.offline {
 		position: sticky;
@@ -196,13 +285,37 @@
 		height: 100dvh;
 	}
 	.shell {
-		--roster-w: 272px;
-		--inbox-w: 400px;
+		/* `--roster-w` and `--inbox-w` are this device's dragged widths, set on the root element.
+		   The vw caps keep the content column usable in a narrower window. */
+		--col-roster: min(var(--roster-w, 272px), 30vw);
+		--col-inbox: min(var(--inbox-w, 400px), 42vw);
+		position: relative;
 		flex: 1;
 		display: grid;
-		/* The vw caps keep the content column usable in a narrower window. */
-		grid-template-columns: min(var(--roster-w), 30vw) min(var(--inbox-w), 42vw) 1fr;
+		grid-template-columns: var(--col-roster) var(--col-inbox) 1fr;
 		min-height: 0;
+	}
+	.folded {
+		display: none;
+	}
+	/* The handles lie over the column borders, outside the columns' own scrolling. */
+	.resize {
+		position: absolute;
+		top: 0;
+		bottom: 0;
+		left: var(--col-roster);
+		z-index: 6;
+		width: 9px;
+		margin-left: -5px;
+		cursor: col-resize;
+		touch-action: none;
+	}
+	.resize[data-column='inbox'] {
+		left: calc(var(--col-roster) + var(--col-inbox));
+	}
+	.resize:hover,
+	.resize:active {
+		background: var(--accent);
 	}
 	.roster,
 	.inbox,
@@ -222,9 +335,10 @@
 	}
 	.summary {
 		display: flex;
+		flex-wrap: wrap;
 		justify-content: space-between;
 		align-items: center;
-		gap: 0.5rem;
+		gap: 0.4rem 0.5rem;
 		margin-bottom: 0.8rem;
 		font-size: 0.8rem;
 		color: var(--muted);
@@ -234,12 +348,21 @@
 		font-size: 1rem;
 		color: var(--text);
 	}
-	.refresh {
+	.tools {
+		display: flex;
+		flex: none;
+		gap: 0.3rem;
 		margin-left: auto;
+	}
+	.tool {
 		padding: 0.15rem 0.6rem;
 		font-size: 0.8rem;
 		color: var(--text);
 		white-space: nowrap;
+	}
+	.folded .tool {
+		padding: 0.15rem 0.2rem;
+		font-size: 0.7rem;
 	}
 	.problem {
 		margin: 0;
@@ -295,22 +418,45 @@
 		background: var(--bg);
 		border-bottom: 1px solid var(--line);
 	}
-	.topbar strong {
+	/* Two lines like a roster tag, project on top, so both names keep the width the buttons leave. */
+	.whose {
+		display: flex;
+		flex-direction: column;
 		min-width: 0;
+		line-height: 1.25;
+	}
+	.topbar strong {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 	}
 	.handle {
-		/* The project name gives way first, so the controller name stays readable. */
-		flex: none;
-		max-width: 45%;
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		font-family: var(--mono);
 		font-size: 0.8rem;
 		color: var(--muted);
+	}
+
+	/* The folded roster exists only in the wide layout; a phone always shows the tag strip. */
+	@media (min-width: 761px) {
+		:global(:root[data-roster='folded']) .shell {
+			--col-roster: 2.75rem;
+		}
+		:global(:root[data-roster='folded']) .roster {
+			display: flex;
+			padding: 0;
+		}
+		/* The rail fills the column, so a click anywhere below the marks still unfolds. */
+		:global(:root[data-roster='folded']) .folded {
+			display: flex;
+			flex: 1;
+		}
+		:global(:root[data-roster='folded']) .unfolded,
+		:global(:root[data-roster='folded']) .resize[data-column='roster'] {
+			display: none;
+		}
 	}
 
 	@media (max-width: 760px) {
@@ -320,6 +466,10 @@
 		}
 		.shell {
 			display: block;
+		}
+		.resize,
+		.fold {
+			display: none;
 		}
 		.roster,
 		.inbox,

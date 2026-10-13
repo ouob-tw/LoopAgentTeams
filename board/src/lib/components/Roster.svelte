@@ -1,6 +1,7 @@
 <script lang="ts">
 	// The controller roster: three-line cards on a wide screen, a strip of two-line tags on a phone.
-	import { phaseText, type Controller } from '#lib/board/types.ts';
+	// Every line is cut to one line with an ellipsis; the card's tooltip has all of it.
+	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
 	import StatusMark from './StatusMark.svelte';
 
 	let {
@@ -16,6 +17,8 @@
 			class="person"
 			class:current={controller.id === currentId}
 			data-controller={controller.hcomName}
+			title="{controller.project} @{controller.hcomName}
+{STATUS_LABEL[controller.status]}：{phaseText(controller)}"
 			onclick={() => onopen(controller.id)}
 		>
 			<strong class="project">{controller.project}</strong>
@@ -68,6 +71,7 @@
 	.handle {
 		overflow: hidden;
 		text-overflow: ellipsis;
+		white-space: nowrap;
 		font-family: var(--mono);
 		font-size: 0.8rem;
 		color: var(--muted);
@@ -93,6 +97,12 @@
 	.none {
 		margin: 0;
 		color: var(--muted);
+	}
+
+	:global(:root[data-theme='light']) .person.current {
+		border-color: var(--text);
+		outline: 2px solid var(--text);
+		outline-offset: -3px;
 	}
 
 	@media (max-width: 760px) {

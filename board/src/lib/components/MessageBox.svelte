@@ -44,7 +44,4 @@
 		border-radius: var(--radius);
 		padding: 0.5rem 0.6rem;
 	}
-	textarea:disabled {
-		opacity: 0.5;
-	}
 </style>

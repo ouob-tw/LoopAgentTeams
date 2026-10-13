@@ -116,10 +116,7 @@
 		border-radius: 0 var(--radius) var(--radius) 0;
 	}
 	.toggle button[aria-pressed='true'] {
-		border-color: var(--accent);
-		box-shadow: inset 0 -2px 0 var(--accent);
-		color: var(--text);
-		font-weight: 600;
+		color: var(--selected-text);
 	}
 	h3 {
 		margin: 0.9rem 0 0.1rem;
@@ -140,7 +137,8 @@
 		text-align: left;
 		overflow-wrap: anywhere;
 	}
-	.owner:hover {
+	.owner:hover,
+	:global(:root[data-theme='light']) .owner {
 		text-decoration: underline;
 	}
 	.nest {

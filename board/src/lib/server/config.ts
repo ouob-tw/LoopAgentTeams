@@ -10,6 +10,8 @@ export interface BoardConfig {
 	stateDir: string;
 	/** Where the turn-end hook appends controller report records. */
 	reportsDir: string;
+	/** The user's own stylesheet, loaded after the built-in styles on every device. May not exist. */
+	userStylePath: string;
 	/** Command that runs the LAT panel helper; the board appends `board <command>`. */
 	helperCommand: string[];
 	helperTimeoutMs: number;
@@ -33,6 +35,11 @@ export const READ_SLACK_MS = 1_000;
 function stateHome(env: Env): string {
 	const value = env.XDG_STATE_HOME;
 	return value && isAbsolute(value) ? value : join(homedir(), '.local/state');
+}
+
+function configHome(env: Env): string {
+	const value = env.XDG_CONFIG_HOME;
+	return value && isAbsolute(value) ? value : join(homedir(), '.config');
 }
 
 function seconds(value: string | undefined, fallback: number): number {
@@ -79,6 +86,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 	return {
 		stateDir: env.LAT_BOARD_STATE_DIR || join(stateHome(env), 'lat/board'),
 		reportsDir: env.LAT_REPORTS_DIR || join(stateHome(env), 'lat/reports'),
+		userStylePath: join(env.LAT_BOARD_CONFIG_DIR || join(configHome(env), 'lat/board'), 'user.css'),
 		helperCommand: helperCommand(env),
 		// A missed change may wait out one read and then need a second one; both must fit in the
 		// fallback deadline, so the helper never gets more than half of it.
