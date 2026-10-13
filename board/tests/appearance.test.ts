@@ -73,9 +73,18 @@ test('the board page loads the user stylesheet after every built-in style', asyn
 	);
 	expect(builtIn.length).toBeGreaterThan(0);
 	for (const style of builtIn) expect(style.index).toBeLessThan(user);
-	// It sits in the body ahead of the content, so the content is never painted without it.
-	expect(user).toBeGreaterThan(html.indexOf('<body'));
-	expect(user).toBeLessThan(html.indexOf('class="page'));
+	// It is the last thing in the head, so the content is never painted without it.
+	expect(html.slice(user)).toMatch(/^<link rel="stylesheet" href="\/user\.css" \/>\s*<\/head>/);
+});
+
+test('no stylesheet sits inside the markup the page takes over', async () => {
+	// Extensions add and move nodes next to stylesheets before the page starts; inside the markup
+	// the page takes over, that breaks the board (a 500 page). See scripts/hydration-repro.ts.
+	for (const html of [await page(), await page('/pair', false)]) {
+		const body = html.slice(html.indexOf('<body'));
+		expect(body).toContain('<div style="display: contents">');
+		expect(body).not.toMatch(/<link\b|<style[\s>]/);
+	}
 });
 
 test('an unpaired device gets neither the user stylesheet nor a reference to it', async () => {

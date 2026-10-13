@@ -16,7 +16,7 @@ import type {
 } from '../src/lib/board/types.ts';
 
 const ROOT = join(import.meta.dir, '..');
-const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
+export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
 
 export const DAY = 24 * 60 * 60 * 1000;
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

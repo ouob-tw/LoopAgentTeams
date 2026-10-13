@@ -10,7 +10,8 @@
 		"board": "bun src/cli.ts",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"test": "vite build && bun test"
+		"test": "vite build && bun test",
+		"repro:hydration": "bun scripts/hydration-repro.ts"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-node": "^6.0.0",
