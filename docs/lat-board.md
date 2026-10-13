@@ -6,8 +6,10 @@ LAT 看板是跑在主機上的網頁服務。電腦與手機用同一個網址�
 
 ## 需要什麼
 
-- Node 22.18 以上：伺服器一律用 Node 執行，建置也要它。
-- Bun：用來安裝套件和執行 `board` 指令，沒有 Bun 也行。沒有 Bun 時，把 `bun install` 換成 `npm install`、`bun run build` 換成 `npm run build`、`bun run board` 換成 `node src/cli.ts`。
+- 一個執行環境，Bun 或 Node 擇一即可，兩個都有也行：
+  - **Bun**（實測 1.3.14）：安裝、建置、啟動、配對都只用 Bun，主機不需要 Node。
+  - **Node 22.17 以上**（實測 22.17.0）：用 npm 安裝與建置；`board` 指令改用 `node --experimental-strip-types src/cli.ts <指令>`（Node 22.18 以上可省略 `--experimental-strip-types`）。以下的 `bun install` 換成 `npm install`、`bun run build` 換成 `npm run build`、`bun run board <指令>` 換成上面那行。
+  - 兩者都有時，伺服器用 Node 執行；只有 Bun 時由 Bun 執行。
 - 已安裝的 LAT 技能，以及它一直在用的 `uv` 與 Python：看板不自己讀寫問題檔，一律呼叫技能裡的面板輔助工具。
 - 傳話要用到 `hcom`。
 
@@ -44,7 +46,7 @@ bun run board revoke <裝置 ID>   # 撤銷一台裝置，它會回到配對畫�
 
 範例檔 [board/lat-board.service](../board/lat-board.service) 是 systemd 使用者服務，登出與重開機後都會自動恢復。
 
-1. 先確認 `bun run build` 已完成，並用 `command -v node uv hcom` 查出這三個指令所在的目錄。
+1. 先確認 `bun run build` 已完成，並用 `command -v node uv hcom` 查出這三個指令所在的目錄（只有 Bun 的主機把 `node` 換成 `bun`，並把範例檔的 `ExecStart` 改成 `/usr/bin/env bun build/index.js`）。
 2. 複製範例檔並把 `<...>` 換成實際值：`WorkingDirectory` 填專案裡的 `board` 目錄；`PATH` 要含上面查到的目錄，因為服務的 PATH 很短，找不到 `uv` 或 `hcom` 時，待決題與傳話會失敗。
 
    ```bash

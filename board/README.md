@@ -8,7 +8,7 @@
 
 安裝、啟動、配對、背景常駐、自訂樣式與更新，見[使用說明](../docs/lat-board.md)。本檔放開發者需要的細節。
 
-需要 Node 22.18 以上（伺服器與建置）、Bun（可省略），以及已安裝的 LAT 技能與它使用的 `uv`、Python。
+需要 Bun（實測 1.3.14）或 Node 22.17 以上（實測 22.17.0）擇一，以及已安裝的 LAT 技能與它使用的 `uv`、Python。只有 Bun 時，建置、`start`、`pair` 都由 Bun 執行；只有 Node 時用 npm 建置，`board` 指令用 `node --experimental-strip-types src/cli.ts`（22.18 以上可省略旗標）。細節見[使用說明](../docs/lat-board.md#需要什麼)。
 
 ## 設定
 
@@ -25,7 +25,7 @@
 | `LAT_BOARD_HELPER_TIMEOUT_SECONDS` | 輔助工具多久沒回應就放棄；最多是（上一項 − 1）秒的一半 | `15` |
 | `LAT_BOARD_PAIRING_TTL_SECONDS` | 配對碼有效時間 | `300` |
 | `LAT_BOARD_CONFIG_DIR` | 看板的設定目錄，放使用者樣式檔 `user.css` | `$XDG_CONFIG_HOME/lat/board` |
-| `LAT_BOARD_INJECT_COMMAND` | 傳話用的輸入指令（JSON 字串陣列），看板會在後面加上 `<HCOM 名稱> <文字> --enter` | `["hcom","term","inject"]` |
+| `LAT_BOARD_INJECT_COMMAND` | 傳話用的輸入指令（JSON 字串陣列），看板會在後面加上 `<HCOM 名稱> <文字> --enter`；文字剛好是 `--help`、`-h`、`--name`、`--go`、`--enter` 這五個之一時，輸入指令會當成自己的選項，所以改分兩次呼叫（第一個字元，再接其餘字元與 `--enter`），輸入框收到的字元不變（這種訊息送出最多慢約 2 秒） | `["hcom","term","inject"]` |
 | `LAT_BOARD_INJECT_TIMEOUT_SECONDS` | 輸入指令多久沒結束就放棄 | `15` |
 
 `XDG_STATE_HOME` 未設定時是 `~/.local/state`，`XDG_CONFIG_HOME` 未設定時是 `~/.config`。
@@ -104,7 +104,7 @@ bun run check
 bun run test        # 先 build，再以暫存目錄與假的輔助工具啟動伺服器
 ```
 
-測試不讀寫真實的 `.lat/`、綁定登記或回報紀錄，也不會對真實的主控輸入文字或送出答案。測試伺服器使用 7110 起的連接埠，可用 `LAT_BOARD_TEST_PORT_BASE` 更改。
+測試不讀寫真實的 `.lat/`、綁定登記或回報紀錄，也不會對真實的主控輸入文字或送出答案。測試用 Node 啟動伺服器，PATH 上沒有 Node 時改用執行測試的 Bun，所以只有 Bun 的主機也能跑完整套（`bun run test`）。測試伺服器使用 7110 起的連接埠，可用 `LAT_BOARD_TEST_PORT_BASE` 更改。
 
 瀏覽器擴充功能（例如 Dark Reader）會在頁面啟動前，在樣式表旁邊插入或搬動節點；樣式表放在頁面元件的範本裡就會讓首頁變成錯誤頁，所以一律放在 `<head>`。
 

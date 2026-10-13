@@ -3,12 +3,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SendResponse, SentMessage } from '../src/lib/board/messages.ts';
-import { startFixture, type Fixture } from './harness.ts';
+import { NODE, startFixture, type Fixture } from './harness.ts';
 
 // The fake input command's plan and call log live outside the fixture directory, because the
 // command line has to be known before the fixture creates its own.
 const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-inject-'));
 const callLog = join(injectDir, 'inject-calls.jsonl');
+const typedLog = join(injectDir, 'inject-typed.jsonl');
 
 let fixture: Fixture;
 let cookie: string;
@@ -16,7 +17,7 @@ let cookie: string;
 beforeAll(async () => {
 	fixture = await startFixture(9, {
 		env: {
-			LAT_BOARD_INJECT_COMMAND: JSON.stringify(['node', join(import.meta.dir, 'fake-inject.mjs'), injectDir]),
+			LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-inject.mjs'), injectDir]),
 			LAT_BOARD_INJECT_TIMEOUT_SECONDS: '1'
 		}
 	});
@@ -28,16 +29,25 @@ afterAll(async () => {
 });
 beforeEach(() => {
 	rmSync(callLog, { force: true });
+	rmSync(typedLog, { force: true });
 	plan({});
 });
 
-type Plan = Record<string, { exit?: number; stdout?: string; stderr?: string; sleepMs?: number }>;
+type Plan = Record<string, { exit?: number; failFrom?: number; stdout?: string; stderr?: string; sleepMs?: number }>;
 const plan = (value: Plan) => writeFileSync(join(injectDir, 'inject.json'), JSON.stringify(value));
 
 /** Every call of the input command so far, as its argument list. */
 function calls(): string[][] {
 	if (!existsSync(callLog)) return [];
 	return readFileSync(callLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+}
+
+/** What the input command put into the client's input box, as the fake reads its arguments:
+ *  the text typed in all, and how many times it was submitted. */
+function typed(): { text: string; submits: number } {
+	if (!existsSync(typedLog)) return { text: '', submits: 0 };
+	const lines: { text: string; enter: boolean }[] = readFileSync(typedLog, 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+	return { text: lines.map((line) => line.text).join(''), submits: lines.filter((line) => line.enter).length };
 }
 
 async function send(controllerId: unknown, text: unknown, as = cookie): Promise<{ status: number; body: SendResponse }> {
@@ -182,15 +192,63 @@ test('a controller the board does not know is refused and logged', async () => {
 	expect(await sentTo('no-such-session')).toMatchObject([{ ok: false, text: '你好' }]);
 });
 
-test('text the input command would read as its own option is refused', async () => {
+// The messages are free text, so text that looks like a command option goes through unchanged.
+// Checked with the board's own request path against a fake that reads arguments like the real command.
+const optionLike = ['--help', '--enter', '-x', '-h', '--go', '--name', '--', '--foo', '-', '--enter x', '--help\nsecond line', '--a\n--b\n--c'];
+for (const text of optionLike) {
+	test(`option-like text ${JSON.stringify(text)} reaches the input box unchanged and is submitted once`, async () => {
+		const luna = fixture.bound('alpha', 'luna');
+		fixture.list([luna]);
+
+		const { status, body } = await send(luna.session_id, text);
+
+		expect(status).toBe(200);
+		expect(body).toMatchObject({ ok: true, reason: null });
+		expect(typed()).toEqual({ text, submits: 1 });
+		expect(await sentTo(luna.session_id)).toMatchObject([{ text, ok: true, error: null }]);
+	});
+}
+
+test('ordinary and two-line text still go out as one call with the text as one argument', async () => {
 	const luna = fixture.bound('alpha', 'luna');
 	fixture.list([luna]);
 
-	const { status, body } = await send(luna.session_id, '--enter');
+	await send(luna.session_id, 'hello');
+	await send(luna.session_id, 'a\nb');
 
-	expect(status).toBe(409);
+	expect(calls()).toEqual([
+		['luna', 'hello', '--enter'],
+		['luna', 'a\nb', '--enter']
+	]);
+});
+
+test('a failure while delivering option-like text in pieces is reported and logged, with the text kept', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+	plan({ luna: { exit: 1, stdout: "No agent named 'luna'\n" } });
+
+	const { status, body } = await send(luna.session_id, '--help');
+
+	expect(status).toBe(502);
 	expect(body.ok).toBe(false);
-	expect(calls()).toEqual([]);
+	expect(body.reason).toContain("No agent named 'luna'");
+	// The first piece failed, so nothing more is tried.
+	expect(calls()).toHaveLength(1);
+	expect(await sentTo(luna.session_id)).toMatchObject([{ text: '--help', ok: false }]);
+});
+
+test('a failure of the second piece is reported and logged, and nothing is retried', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.list([luna]);
+	plan({ luna: { exit: 1, failFrom: 2, stdout: "No agent named 'luna'\n" } });
+
+	const { status, body } = await send(luna.session_id, '--help');
+
+	expect(status).toBe(502);
+	expect(body.ok).toBe(false);
+	expect(body.reason).toContain("No agent named 'luna'");
+	expect(calls()).toEqual([['luna', '-'], ['luna', '-help', '--enter']]);
+	expect(await sentTo(luna.session_id)).toMatchObject([{ text: '--help', ok: false }]);
 });
 
 test('an empty message or a malformed request is rejected and not logged', async () => {

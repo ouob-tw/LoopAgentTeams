@@ -27,6 +27,13 @@ test('an unknown @name is not sent to anyone, not even the open controller', () 
 	expect(result).toEqual({ ok: false, reason: '找不到主控 @nobody，沒有送出。' });
 });
 
+test('@name followed by text that looks like a command option sends that text unchanged', () => {
+	for (const text of ['--help', '--enter', '-x', '-h', '--a\n--b']) {
+		expect(parseCommand(`@luna ${text}`, all, undefined)).toEqual({ ok: true, controller: luna, text });
+		expect(parseCommand(text, all, luna)).toEqual({ ok: true, controller: luna, text });
+	}
+});
+
 test('a name must match completely', () => {
 	expect(parseCommand('@nova 你好', all, luna).ok).toBe(false);
 	expect(parseCommand('@lun 你好', all, luna).ok).toBe(false);

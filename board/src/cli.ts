@@ -1,5 +1,5 @@
 // Host commands for the board: start the built server, hand out pairing codes, list and revoke
-// paired devices. Runs under Bun, or under Node 22.18+ (which runs TypeScript directly).
+// paired devices. Runs under Bun, or under Node 22.18+ (22.17 with --experimental-strip-types).
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -13,6 +13,12 @@ const USAGE = `用法：
   revoke <裝置 ID>                          撤銷一台裝置`;
 
 const DEFAULT_PORT = '7100';
+
+/** What runs the built server: Node when the host has it (the way it has always run), the runtime
+ *  running this command otherwise, which is Bun on a host without Node. */
+function serverRuntime(): string {
+	return 'Bun' in globalThis ? (Bun.which('node') ?? process.execPath) : process.execPath;
+}
 
 function option(args: string[], name: string): string | undefined {
 	const index = args.indexOf(name);
@@ -35,7 +41,7 @@ function main(argv: string[]): number {
 			PORT: option(args, '--port') ?? process.env.PORT ?? DEFAULT_PORT
 		};
 		console.log(`LAT 看板啟動於 http://${env.HOST}:${env.PORT}（只應在內網或私人網路使用）`);
-		const server = spawn('node', [entry], { env, stdio: 'inherit' });
+		const server = spawn(serverRuntime(), [entry], { env, stdio: 'inherit' });
 		for (const signal of ['SIGINT', 'SIGTERM'] as const) process.on(signal, () => server.kill(signal));
 		server.on('exit', (code) => process.exit(code ?? 1));
 		return 0;
