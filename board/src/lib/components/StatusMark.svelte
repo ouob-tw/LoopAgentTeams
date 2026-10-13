@@ -38,7 +38,7 @@
 		border-radius: 0;
 	}
 	.mark[data-status='ended'] {
-		background: none;
+		background: transparent;
 		border: 2px solid var(--status-ended);
 		border-radius: 0;
 	}

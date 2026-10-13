@@ -2,6 +2,8 @@
 // that restores a device's settings, and the markup the roster's explanations are made of.
 // How it looks and behaves in a browser is checked by hand and by QA.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { mkdirSync, rmSync } from 'node:fs';
+import { join } from 'node:path';
 import { FOLDED_KEY, SCALE, THEME_KEY, WIDTHS } from '../src/lib/board/prefs.ts';
 import { question, startFixture, type Fixture } from './harness.ts';
 
@@ -48,6 +50,17 @@ test('a user stylesheet is served to every paired device, and edits and removal 
 	const removed = await fixture.fetch('/user.css', { cookie });
 	expect(removed.status).toBe(200);
 	expect(await removed.text()).toBe('');
+});
+
+test('a user stylesheet that cannot be read is served as an empty one', async () => {
+	fixture.userStyle(null);
+	mkdirSync(join(fixture.dir, 'board-config/user.css'), { recursive: true });
+
+	const response = await fixture.fetch('/user.css', { cookie });
+
+	expect(response.status).toBe(200);
+	expect(await response.text()).toBe('');
+	rmSync(join(fixture.dir, 'board-config/user.css'), { recursive: true });
 });
 
 test('the board page loads the user stylesheet after every built-in style', async () => {
@@ -131,15 +144,16 @@ test('the startup script accepts the limits of prefs.ts and nothing beyond them'
 		'--inbox-w': `${WIDTHS.inbox.min}px`
 	});
 
-	const beyond = await startUp({
-		[THEME_KEY]: 'sepia',
-		[SCALE.key]: String(SCALE.max + 1),
-		[FOLDED_KEY]: 'yes',
-		[WIDTHS.roster.key]: String(WIDTHS.roster.min - 1),
-		[WIDTHS.inbox.key]: 'wide'
-	});
-	expect(beyond.dataset).toEqual({ theme: 'dark' });
-	expect(beyond.style).toEqual({});
+	const beyond: Record<string, string>[] = [
+		{ [THEME_KEY]: 'sepia', [FOLDED_KEY]: 'yes', [SCALE.key]: 'big', [WIDTHS.roster.key]: '', [WIDTHS.inbox.key]: 'wide' },
+		{ [SCALE.key]: String(SCALE.max + 1), [WIDTHS.roster.key]: String(WIDTHS.roster.max + 1), [WIDTHS.inbox.key]: String(WIDTHS.inbox.max + 1) },
+		{ [SCALE.key]: String(SCALE.min - 1), [WIDTHS.roster.key]: String(WIDTHS.roster.min - 1), [WIDTHS.inbox.key]: String(WIDTHS.inbox.min - 1) }
+	];
+	for (const saved of beyond) {
+		const root = await startUp(saved);
+		expect(root.dataset).toEqual({ theme: 'dark' });
+		expect(root.style).toEqual({});
+	}
 });
 
 test('with nothing saved the startup script leaves the defaults', async () => {

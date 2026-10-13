@@ -56,5 +56,3 @@ export function forget(key: string): void {
 		// Private mode or blocked storage.
 	}
 }
-
-export const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));

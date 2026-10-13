@@ -61,7 +61,6 @@ body {
 }
 
 input,
-select,
 textarea,
 button {
 	font: inherit;
@@ -70,7 +69,6 @@ button {
 }
 
 input,
-select,
 textarea {
 	background: var(--bg);
 	border: 1px solid var(--line);
@@ -110,15 +108,18 @@ button[aria-pressed='true'] {
 
 button:disabled,
 input:disabled,
-select:disabled,
 textarea:disabled {
 	opacity: var(--disabled-opacity);
 	cursor: default;
 }
 
-/* Without translucency a disabled control is told apart by its outline. */
-:root[data-theme='light'] :is(button, input, select, textarea):disabled {
+/* Without translucency a disabled control is told apart by its grey frame and text, and a
+   button also by its struck-through label. */
+:root[data-theme='light'] :is(button, input, textarea):disabled {
 	background: var(--bg);
-	border: 1px dashed var(--muted);
+	border: 1px solid var(--muted);
 	color: var(--muted);
+}
+:root[data-theme='light'] button:disabled {
+	text-decoration: line-through;
 }

@@ -47,6 +47,12 @@
 		tip = null;
 	}
 
+	/** The explanation a long press showed has had its time; so has the click it was to swallow. */
+	function expire() {
+		longPressed = false;
+		dismiss();
+	}
+
 	function down(event: PointerEvent, id: string) {
 		longPressed = false;
 		clearTimeout(pressTimer);
@@ -62,16 +68,39 @@
 	function release(event: PointerEvent) {
 		if (event.pointerType !== 'touch') return;
 		clearTimeout(pressTimer);
-		if (longPressed) hideTimer = setTimeout(dismiss, LINGER_MS);
+		if (!longPressed) return;
+		hideTimer = setTimeout(expire, LINGER_MS);
+		// No click follows a cancelled touch, so there is none to swallow.
+		if (event.type === 'pointercancel') longPressed = false;
 	}
 
-	function click(id: string) {
-		if (longPressed) {
+	function click(event: MouseEvent, id: string) {
+		// `detail` is 0 for a click made with the keyboard, which never ends a long press.
+		if (longPressed && event.detail !== 0) {
 			longPressed = false;
 			return;
 		}
+		longPressed = false;
 		dismiss();
 		onopen(id);
+	}
+
+	function hover(event: PointerEvent & { currentTarget: HTMLElement }, id: string) {
+		if (event.pointerType !== 'touch') explain(event.currentTarget, id);
+	}
+
+	function leave(event: PointerEvent) {
+		if (event.pointerType !== 'touch') dismiss();
+	}
+
+	/** Keyboard focus explains the mark too; focus that a click or tap gave does not. */
+	function focus(event: FocusEvent & { currentTarget: HTMLElement }, id: string) {
+		if (event.currentTarget.matches(':focus-visible')) explain(event.currentTarget, id);
+	}
+
+	/** A click on the rail unfolds the roster, unless it was on a mark or a tool. */
+	function expand(event: MouseEvent) {
+		if (!(event.target as Element).closest('.entry, .tools')) onexpand();
 	}
 
 	const label = (controller: Controller) =>
@@ -81,7 +110,7 @@
 
 <!-- The grip is the keyboard's way to unfold; a click anywhere else on the rail does the same. -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
-<div class="rail" onclick={(event) => (event.target as Element).closest('.entry, .tools') || onexpand()}>
+<div class="rail" onclick={expand}>
 	<button class="grip" aria-label="展開主控名冊" title="展開主控名冊">»</button>
 	{#each controllers as controller (controller.id)}
 		<button
@@ -89,13 +118,14 @@
 			class:current={controller.id === currentId}
 			data-controller={controller.hcomName}
 			aria-label={label(controller)}
-			onclick={() => click(controller.id)}
-			onpointerenter={(event) => event.pointerType === 'touch' || explain(event.currentTarget, controller.id)}
-			onpointerleave={(event) => event.pointerType === 'touch' || dismiss()}
+			aria-describedby={tip?.id === controller.id ? 'rail-tip' : undefined}
+			onclick={(event) => click(event, controller.id)}
+			onpointerenter={(event) => hover(event, controller.id)}
+			onpointerleave={leave}
 			onpointerdown={(event) => down(event, controller.id)}
 			onpointerup={release}
 			onpointercancel={release}
-			onfocus={(event) => event.currentTarget.matches(':focus-visible') && explain(event.currentTarget, controller.id)}
+			onfocus={(event) => focus(event, controller.id)}
 			onblur={dismiss}
 			oncontextmenu={(event) => event.preventDefault()}
 		>
@@ -110,6 +140,7 @@
 
 {#if tip && explained}
 	<div
+		id="rail-tip"
 		class="tip"
 		role="tooltip"
 		style:left="{tip.left}px"

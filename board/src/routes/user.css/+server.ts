@@ -8,7 +8,7 @@ export const GET = async () => {
 		css = await readFile(getBoard().config.userStylePath, 'utf8');
 	} catch (error) {
 		// No stylesheet is the normal case: the built-in look stands.
-		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.warn(`user stylesheet not readable: ${error}`);
+		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') console.warn(`使用者樣式檔讀不出來：${error}`);
 	}
 	return new Response(css, { headers: { 'content-type': 'text/css; charset=utf-8', 'cache-control': 'no-store' } });
 };

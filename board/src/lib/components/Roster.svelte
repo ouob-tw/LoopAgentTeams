@@ -9,6 +9,9 @@
 		currentId,
 		onopen
 	}: { controllers: Controller[]; currentId: string | null; onopen: (id: string) => void } = $props();
+
+	const tooltip = (controller: Controller) =>
+		`${controller.project} @${controller.hcomName}\n${STATUS_LABEL[controller.status]}：${phaseText(controller)}`;
 </script>
 
 <div class="people">
@@ -17,8 +20,7 @@
 			class="person"
 			class:current={controller.id === currentId}
 			data-controller={controller.hcomName}
-			title="{controller.project} @{controller.hcomName}
-{STATUS_LABEL[controller.status]}：{phaseText(controller)}"
+			title={tooltip(controller)}
 			onclick={() => onopen(controller.id)}
 		>
 			<strong class="project">{controller.project}</strong>

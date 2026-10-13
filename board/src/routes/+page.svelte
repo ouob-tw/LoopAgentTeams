@@ -40,18 +40,20 @@
 		const pane = handle.previousElementSibling as HTMLElement;
 		const startX = event.clientX;
 		const startWidth = pane.getBoundingClientRect().width;
+		let asked: number | undefined;
 		const move = (moved: PointerEvent) => {
-			const asked = appearance.setWidth(column, startWidth + moved.clientX - startX);
-			// A narrow window caps the column below its upper limit; keep what is shown, so the
-			// border follows the pointer again as soon as it turns back.
-			const shown = Math.floor(pane.getBoundingClientRect().width);
-			if (shown < asked) appearance.setWidth(column, shown);
+			asked = appearance.showWidth(column, startWidth + moved.clientX - startX);
+		};
+		const end = () => {
+			handle.removeEventListener('pointermove', move);
+			if (asked === undefined) return;
+			// A narrow window caps the column below its upper limit; remember what is shown, not
+			// a width that would only appear once the window is wider.
+			appearance.setWidth(column, Math.min(asked, Math.floor(pane.getBoundingClientRect().width)));
 		};
 		handle.setPointerCapture(event.pointerId);
 		handle.addEventListener('pointermove', move);
-		handle.addEventListener('lostpointercapture', () => handle.removeEventListener('pointermove', move), {
-			once: true
-		});
+		handle.addEventListener('lostpointercapture', end, { once: true });
 	}
 
 	function setSort(next: InboxSort) {
