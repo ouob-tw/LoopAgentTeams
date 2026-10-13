@@ -1433,23 +1433,61 @@ def _delivered_path(state_dir=None):
     return _notification_path(state_dir).with_name("delivered-notifications.json")
 
 
-def _read_delivered(path):
-    """Map each questions path to the answer hashes its last delivery covered.
+def _write_delivered(path, delivered, since):
+    _replace_locked(
+        path,
+        json.dumps({"delivered": delivered, "since": since}, ensure_ascii=False, indent=2) + "\n",
+    )
 
-    Content that cannot be used counts as no record: the cost is one repeated
-    notification, where refusing would block every later one.
+
+def _read_delivered(path):
+    """Return ``(delivered, since)`` from the delivery record, starting it if there is none.
+
+    ``delivered`` maps each questions path to the answer hashes its last
+    delivery covered. Notifications sent before the record existed left no
+    trace in it, so the record starts with ``since``, the last time the pending
+    notifications changed: an answer submitted before that was handled by the
+    stored notifications alone and is owed nothing more. ``since`` is ``None``
+    when there was no earlier state.
+
+    Content that cannot be used counts as an empty record: the cost is one
+    repeated notification, where refusing would block every later one.
     """
     try:
-        delivered = json.loads(path.read_text(encoding="utf-8"))["delivered"]
-    except (FileNotFoundError, ValueError, KeyError, TypeError):
-        return {}
+        payload = json.loads(path.read_text(encoding="utf-8"))
+    except FileNotFoundError:
+        try:
+            changed = path.with_name("pending-notifications.json").stat().st_mtime
+            since = datetime.fromtimestamp(changed, timezone.utc).isoformat()
+        except FileNotFoundError:
+            since = None
+        _write_delivered(path, {}, since)
+        return {}, since
+    except ValueError:
+        return {}, None
+    delivered = payload.get("delivered") if isinstance(payload, dict) else None
     if not isinstance(delivered, dict):
-        return {}
-    return {key: value for key, value in delivered.items() if isinstance(value, list)}
+        return {}, None
+    since = payload.get("since")
+    return (
+        {key: value for key, value in delivered.items() if isinstance(value, list)},
+        since if isinstance(since, str) else None,
+    )
+
+
+def _submitted_after(submitted, since):
+    """Whether an answer journaled at ``submitted`` came after the record's start."""
+    if since is None:
+        return True
+    try:
+        submitted = datetime.fromisoformat(submitted.replace("Z", "+00:00"))
+        return submitted > datetime.fromisoformat(since)
+    except (AttributeError, TypeError, ValueError):
+        return False
 
 
 def _submitted_answers(questions_path):
-    """Return the section hashes of panel-submitted answers that are not recorded yet.
+    """Map the section hash of each panel-submitted, unrecorded answer to its journal time.
 
     These are the answers a notification is owed for, whether or not a pending
     notification was ever stored. A submit the panel journal does not prove is
@@ -1460,8 +1498,8 @@ def _submitted_answers(questions_path):
     try:
         sections = _sections(questions_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return set()
-    answers = set()
+        return {}
+    answers = {}
     for section in sections:
         if section["status"] != "ready":
             continue
@@ -1470,7 +1508,7 @@ def _submitted_answers(questions_path):
         except (OSError, ValueError, AttributeError, TypeError):
             # The last two: a journal line that is JSON but not an entry.
             continue
-        answers.add(proof["section_sha256"])
+        answers[proof["section_sha256"]] = proof["time"]
     return answers
 
 
@@ -1479,27 +1517,29 @@ def _record_delivered(questions_path, answers, *, state_dir=None):
     path = _delivered_path(state_dir)
     key = _question_key(questions_path)
     with _path_lock(path):
-        delivered = _read_delivered(path)
+        delivered, since = _read_delivered(path)
         if not answers and key not in delivered:
             return
         if answers:
             delivered[key] = sorted(answers)
         else:
             del delivered[key]
-        _replace_locked(
-            path, json.dumps({"delivered": delivered}, ensure_ascii=False, indent=2) + "\n"
-        )
+        _write_delivered(path, delivered, since)
 
 
 def _undelivered_answers(questions_path, *, state_dir=None):
-    """Return submitted answers that no delivered notification has covered."""
+    """Return the hashes of submitted answers that no delivered notification has covered."""
     answers = _submitted_answers(questions_path)
     if not answers:
-        return answers
+        return set()
     path = _delivered_path(state_dir)
     with _path_lock(path):
-        covered = _read_delivered(path).get(_question_key(questions_path), [])
-    return answers - {item for item in covered if isinstance(item, str)}
+        delivered, since = _read_delivered(path)
+    covered = delivered.get(_question_key(questions_path), [])
+    return {
+        answer for answer, submitted in answers.items()
+        if answer not in covered and _submitted_after(submitted, since)
+    }
 
 
 def _delivered_targets(payload):

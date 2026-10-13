@@ -297,7 +297,7 @@ test('a failed notification that could not even be kept for resending is reporte
 	expect(body).toMatchObject({ status: 'submitted', notified: false, pendingListed: false, reason: 'cannot store the pending notification' });
 });
 
-test('an answer whose pending notification could not be stored still shows as not notified, and is resent once when storing works again', async () => {
+test('an answer the helper lists as owed a notification after a storage failure shows as not notified, is resent on request and not again once recorded', async () => {
 	const asked = text({ title: '待送通知存不下來的題' });
 	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
 	// The helper lists such an answer as owed a notification, from the question file alone.
@@ -319,6 +319,8 @@ test('an answer whose pending notification could not be stored still shows as no
 	expect(await notify(luna)).toEqual({ status: 200, body: { status: 'no_pending', reason: null } });
 	expect(await sentAnswers(luna.session_id)).toMatchObject([{ state: 'recorded' }]);
 	expect(fixture.helperArgs('answer')).toHaveLength(1);
+	// The board asks the helper each time; whether anything is owed is the helper's call.
+	expect(fixture.helperArgs('notify')).toHaveLength(2);
 });
 
 test('a pending notification left by the Herdr panel shows as a failed notification too, only on sent questions', async () => {

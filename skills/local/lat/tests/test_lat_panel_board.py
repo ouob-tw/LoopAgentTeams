@@ -292,6 +292,14 @@ class ListTests(BoardTestCase):
         self.answer(self.questions, "Q5", 1, "--select", "27")
         self.assertIn("答覆：選項27\n\n- [x] 送出", self.questions.read_text())
 
+    def test_journal_line_that_is_not_an_entry_does_not_break_the_list(self):
+        self.answer(self.questions, "Q3", 1, "--text", "想法")
+        with (self.questions.parent / "panel-journal.jsonl").open("a") as journal:
+            journal.write("[]\n")
+        [controller] = self.board("list")["controllers"]
+        self.assertIsNone(controller["error"])
+        self.assertEqual(controller["questions"][2]["status"], "submitted")
+
     def test_unreadable_binding_registry_is_reported_as_json(self):
         (self.config / "bindings.json").write_text("not json")
         result = self.board("list", code=1)
@@ -756,13 +764,30 @@ class DeliveredNotificationTests(BoardTestCase):
         self.assertEqual(self.board("notify", "--questions", self.questions), {"status": "no_pending"})
         self.assertEqual(len(self.calls()), 1)
 
-    def test_journal_line_that_is_not_an_entry_does_not_break_the_list(self):
+    def test_answer_delivered_before_deliveries_were_noted_is_not_notified_again(self):
         self.answer(self.questions, "Q3", 1, "--text", "想法")
-        with (self.questions.parent / "panel-journal.jsonl").open("a") as journal:
-            journal.write("[]\n")
+        # As an earlier helper left it: the notification came and went, nothing noted the delivery.
+        (self.state / "delivered-notifications.json").unlink()
+
         [controller] = self.board("list")["controllers"]
-        self.assertIsNone(controller["error"])
-        self.assertEqual(controller["questions"][2]["status"], "submitted")
+        self.assertFalse(controller["notification_pending"])
+        self.assertEqual(self.board("notify", "--questions", self.questions), {"status": "no_pending"})
+        self.assertEqual(len(self.calls()), 1)
+
+    def test_answer_lost_before_deliveries_were_noted_is_still_owed(self):
+        self.answer(self.questions, "Q3", 1, "--text", "想法")
+        (self.state / "delivered-notifications.json").unlink()
+        self.state.chmod(0o500)  # readable, but nothing new can be stored
+        self.addCleanup(self.state.chmod, 0o700)
+        lost = self.answer(self.questions, "Q1", 2, "--select", "1")
+        self.assertFalse(lost["notified"])
+        self.state.chmod(0o700)
+
+        [controller] = self.board("list")["controllers"]
+        self.assertTrue(controller["notification_pending"])
+        self.assertEqual(self.board("notify", "--questions", self.questions), {"status": "delivered"})
+        self.assertEqual(self.board("notify", "--questions", self.questions), {"status": "no_pending"})
+        self.assertEqual(len(self.calls()), 2)
 
     def test_submit_checked_outside_the_panel_is_owed_no_notification(self):
         self.questions.write_text(TEXT.replace("答覆：\n\n- [ ]", "答覆：沒有\n\n- [x]"))

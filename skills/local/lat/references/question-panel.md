@@ -308,7 +308,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board answer \
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board notify --questions "$questions"
 ```
 
-只重送這份問題檔尚未送達的通知，不改寫答案與面板紀錄。Herdr 面板原有的重送照舊，同一則通知由任一邊送達後即清除。沒有待送通知時以問題檔為準：經面板或看板送出（面板紀錄可核對來源）、主控尚未記錄的答覆，若沒有送達紀錄就補送一次；已記錄或已升版的題目不會再送。送達紀錄存在狀態目錄的 `delivered-notifications.json`；在有這份紀錄之前就已送達、主控還沒記錄的答覆，會被當成尚未通知一次，重送或主控記錄後即恢復正常。
+只重送這份問題檔尚未送達的通知，不改寫答案與面板紀錄。Herdr 面板原有的重送照舊，同一則通知由任一邊送達後即清除。沒有待送通知時以問題檔為準：經面板或看板送出（面板紀錄可核對來源）、主控尚未記錄的答覆，若沒有送達紀錄就補送一次；已記錄或已升版的題目不會再送。送達紀錄存在狀態目錄的 `delivered-notifications.json`；這份紀錄建立時會記下待送通知檔最後變動的時間，在那之前送出的答覆只看待送通知，不依問題檔補送。
 
 | `status` | 結束碼 | 意義 |
 | --- | --- | --- |

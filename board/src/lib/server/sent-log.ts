@@ -120,7 +120,7 @@ export async function settleAnswers(
 			found = stateIn(controller.questions, line);
 			state = found?.state ?? current;
 		} else if (current === 'waiting') {
-			found = stateIn(left.get(line.questionsPath ?? ''), line);
+			found = stateIn(line.questionsPath ? left.get(line.questionsPath) : null, line);
 			state = !found ? 'unknown' : found.state === 'waiting' ? 'ended' : found.state;
 		} else continue;
 		if (state === current) continue;
