@@ -3,6 +3,7 @@
 import argparse
 import copy
 import difflib
+from datetime import datetime, timezone
 import fcntl
 import importlib.util
 import json
@@ -423,6 +424,8 @@ def deactivate(args):
             raise ValueError('Controller identity does not match; record unchanged')
         _stop_watcher_locked(record)
         removed = panel_module().unbind_controller(sid)
+        if record['status'] == 'active' and not legacy_record(record):
+            record['final_report_pending'] = True
         record['status'] = args.status
         write_json(path, record, original)
     print(path)
@@ -604,6 +607,60 @@ def stop_check(record, payload):
         print(json.dumps({'systemMessage': reason + ' 本回合已繼續過，不再攔下。'}, ensure_ascii=False))
     else:
         print(json.dumps({'decision': 'block', 'reason': reason}, ensure_ascii=False))
+        return True
+
+
+def append_report(record, message):
+    """Append one allowed Stop; the report log also guards the final record."""
+    if legacy_record(record):
+        return
+    override = os.environ.get('LAT_REPORTS_DIR')
+    state = os.environ.get('XDG_STATE_HOME')
+    directory = (Path(override) if override else
+                 (Path(state) if state and Path(state).is_absolute() else
+                  Path.home() / '.local/state') / 'lat/reports')
+    if not directory.is_absolute():
+        raise ValueError('LAT_REPORTS_DIR must be absolute')
+    final = record['status'] in ('completed', 'cancelled')
+    if final and not record.get('final_report_pending'):
+        return
+    round_number = len(record.get('history', [])) + 1
+    lines = [line for line in message.splitlines() if line.strip()]
+    match = re.fullmatch(r'(DECIDE|HELP|DONE|NO REPLY):[ \t]*(.*)', lines[-1]) if lines else None
+    report = dict(time=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z'),
+                  session_id=record['session_id'], hcom_name=record['hcom_name'],
+                  client=record['client'], workspace=record['workspace'], round=round_number,
+                  tag=match[1] if match else '', summary=match[2] if match else '',
+                  message=message, final=final)
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    path = directory / f'{record["session_id"]}.jsonl'
+    with (directory / f'{record["session_id"]}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if final and path.exists():
+            with path.open(encoding='utf-8') as stream:
+                if any(item.get('round') == round_number and item.get('final')
+                       for item in (json.loads(line) for line in stream)):
+                    return
+        with path.open('a', encoding='utf-8') as stream:
+            stream.write(json.dumps(report, ensure_ascii=False) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+
+
+def report_stop(record, payload):
+    if record['status'] == 'active':
+        lines = [line for line in payload['last_assistant_message'].splitlines() if line.strip()]
+        if lines and lines[-1].startswith('DECIDE:'):
+            try:
+                if stop_check(record, payload):
+                    return
+            except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+                print(json.dumps({'systemMessage': f'LAT DECIDE 檢查發生錯誤，未攔下：{exc}'},
+                                 ensure_ascii=False))
+    try:
+        append_report(record, payload['last_assistant_message'])
+    except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        print(f'LAT report warning: {exc}', file=sys.stderr)
 
 
 def hook(client):
@@ -616,9 +673,6 @@ def hook(client):
         if event == 'Stop':
             message = payload.get('last_assistant_message')
             if not isinstance(message, str):
-                return
-            lines = [line for line in message.splitlines() if line.strip()]
-            if not lines or not lines[-1].startswith('DECIDE:'):
                 return
         elif event != 'SessionStart' or payload.get('source') not in ('compact', 'resume'):
             return
@@ -635,14 +689,19 @@ def hook(client):
     try:
         record = read_json(path)
         expected = dict(client=client, session_id=sid, role='orchestrator',
-                        workspace=str(root), status='active')
+                        workspace=str(root))
+        if event != 'Stop':
+            expected['status'] = 'active'
         # Reject known mismatches before checking broken dependencies.
         if any(key in record and record[key] != value for key, value in expected.items()):
             return
         if any(key not in record for key in expected):
             raise ValueError('Incomplete controller identity')
         if event == 'Stop':
-            stop_check(record, payload)
+            if 'status' not in record:
+                raise ValueError('Incomplete controller identity')
+            if record.get('status') in ('active', 'completed', 'cancelled'):
+                report_stop(record, payload)
             return
         if legacy_record(record):
             dependencies(record, require_watcher=False)

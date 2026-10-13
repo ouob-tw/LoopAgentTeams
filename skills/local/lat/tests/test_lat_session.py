@@ -70,6 +70,7 @@ class SessionTests(unittest.TestCase):
             env.pop(variable, None)
         env['HERDR_PLUGIN_CONFIG_DIR'] = str(self.root / 'plugin-config')
         env['FAKE_UV_LOG'] = str(self.fake_uv_log)
+        env['LAT_REPORTS_DIR'] = str(self.root / 'reports')
         env['PATH'] = f'{self.binary}:{env["PATH"]}'
         env.update(extra_env or {})
         return env
@@ -183,6 +184,148 @@ class SessionTests(unittest.TestCase):
                        stop_hook_active=False, last_assistant_message=message)
         payload.update(overrides)
         return self.cli('hook', '--client', client, payload=payload, session=OTHER)
+
+    def reports(self):
+        path = self.root / 'reports' / f'{SESSION}.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+    def test_reports_all_tags_and_plain_messages_for_both_clients(self):
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                self.activate()
+                record = json.loads(self.record.read_text())
+                record['client'] = client
+                self.record.write_text(json.dumps(record))
+                self.decisions.joinpath('LAT-A.md').write_text(
+                    '- status: pending\n- advisor: exempt requirement-discussion\n')
+                messages = [('DECIDE', 'LAT-A r1'), ('HELP', 'need assistance'),
+                            ('DONE', 'delivered'), ('NO REPLY', 'waiting'), ('', '')]
+                for tag, summary in messages:
+                    message = f'Full message\n{tag}: {summary}\n\n' if tag else 'Plain message\n'
+                    before = len(self.reports())
+                    result = self.stop_hook(message, client)
+                    self.assert_silent(result)
+                    report = self.reports()[-1]
+                    self.assertEqual(len(self.reports()), before + 1)
+                    self.assertEqual(report['session_id'], SESSION)
+                    self.assertEqual(report['client'], client)
+                    self.assertEqual(report['hcom_name'], 'orch')
+                    self.assertEqual(report['workspace'], str(self.work))
+                    self.assertEqual(report['round'], 1)
+                    self.assertEqual(report['tag'], tag)
+                    self.assertEqual(report['summary'], summary)
+                    self.assertEqual(report['message'], message)
+                    self.assertFalse(report['final'])
+                    self.assertTrue(report['time'].endswith('Z'))
+                self.record.unlink()
+
+    def test_reports_blocked_stop_warning_release_and_append_only(self):
+        self.activate()
+        self.assert_stop_block(self.stop_hook(), 'LAT-A')
+        self.assertEqual(self.reports(), [])
+        warning = self.stop_hook(stop_hook_active=True)
+        self.assertIn('systemMessage', json.loads(warning.stdout))
+        self.assertEqual(len(self.reports()), 1)
+        path = self.root / 'reports' / f'{SESSION}.jsonl'
+        previous = path.read_bytes()
+        self.assert_silent(self.stop_hook('DONE: all finished'))
+        self.assertTrue(path.read_bytes().startswith(previous))
+        self.assertEqual(len(self.reports()), 2)
+
+    def test_final_report_once_after_each_finished_status_and_new_round(self):
+        self.activate()
+        for round_number, status in enumerate(('completed', 'cancelled'), 1):
+            args = ('deactivate', '--workspace', self.work, '--status', status)
+            self.assertEqual(self.cli(*args).returncode, 0)
+            self.assert_silent(self.stop_hook('DONE: delivery'))
+            self.assertEqual(len(self.reports()), round_number * 2 - 1)
+            report = self.reports()[-1]
+            self.assertTrue(report['final'])
+            self.assertEqual(report['round'], round_number)
+            self.assertEqual(self.cli(*args).returncode, 0)
+            self.assert_silent(self.stop_hook('HELP: later conversation'))
+            self.assertEqual(len(self.reports()), round_number * 2 - 1)
+            self.activate()
+            self.assert_silent(self.stop_hook('NO REPLY: working'))
+            self.assertEqual(len(self.reports()), round_number * 2)
+            self.assertFalse(self.reports()[-1]['final'])
+            self.assertEqual(self.reports()[-1]['round'], round_number + 1)
+
+    def test_report_write_failure_does_not_change_stop_results(self):
+        self.activate()
+        destination = self.root / 'not-a-directory'
+        destination.write_text('occupied')
+        env = {'LAT_REPORTS_DIR': str(destination)}
+        def stop(message, **values):
+            return self.cli('hook', payload=dict(
+                hook_event_name='Stop', session_id=SESSION, cwd=str(self.work),
+                last_assistant_message=message, **values), extra_env=env)
+        self.assert_stop_block(stop('DECIDE: LAT-A r1'), 'LAT-A')
+        self.assertEqual(stop('DONE: complete').stdout, '')
+        self.assertIn('LAT report warning:', stop('DONE: complete').stderr)
+        warning = stop('DECIDE: LAT-A r1', stop_hook_active=True)
+        self.assertIn('systemMessage', json.loads(warning.stdout))
+        self.assertIn('LAT report warning:', warning.stderr)
+        self.assertEqual(self.reports(), [])
+
+    def test_non_controller_and_foreign_identity_do_not_write_reports(self):
+        self.assert_silent(self.stop_hook('DONE: not LAT'))
+        self.activate()
+        original = json.loads(self.record.read_text())
+        for key, value in (('role', 'worker'), ('client', 'claude'),
+                           ('workspace', str(self.root)), ('session_id', OTHER)):
+            record = dict(original, **{key: value})
+            self.record.write_text(json.dumps(record))
+            self.assert_silent(self.stop_hook('DONE: foreign'))
+        self.assertEqual(self.reports(), [])
+
+    def test_reports_use_xdg_state_and_home_fallback_outside_projects(self):
+        self.activate()
+        for state, directory in ((str(self.root / 'state'), self.root / 'state/lat/reports'),
+                                 ('', self.root / '.local/state/lat/reports'),
+                                 ('relative', self.root / '.local/state/lat/reports')):
+            result = self.cli('hook', payload=dict(
+                hook_event_name='Stop', session_id=SESSION, cwd=str(self.work),
+                last_assistant_message='DONE: result'), extra_env={
+                    'LAT_REPORTS_DIR': '', 'XDG_STATE_HOME': state, 'HOME': str(self.root)})
+            self.assert_silent(result)
+            self.assertTrue((directory / f'{SESSION}.jsonl').is_file())
+        self.assertFalse((self.work / '.lat/reports').exists())
+
+    def test_final_report_failure_can_retry_and_concurrent_hooks_write_once(self):
+        self.activate()
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work,
+                                  '--status', 'completed').returncode, 0)
+        destination = self.root / 'reports'
+        destination.write_text('blocked')
+        failed = self.stop_hook('DONE: delivery')
+        self.assertEqual(failed.stdout, '')
+        self.assertIn('LAT report warning:', failed.stderr)
+        destination.unlink()
+        results = []
+        threads = [threading.Thread(target=lambda: results.append(
+            self.stop_hook('DONE: delivery'))) for _ in range(4)]
+        for thread in threads:
+            thread.start()
+        for thread in threads:
+            thread.join(5)
+            self.assertFalse(thread.is_alive())
+        for result in results:
+            self.assert_silent(result)
+        self.assertEqual(len(self.reports()), 1)
+        self.assertTrue(self.reports()[0]['final'])
+
+    def test_legacy_stop_stays_silent_until_activate_upgrades_identity(self):
+        self.write_legacy_record()
+        self.assert_silent(self.stop_hook('DONE: legacy'))
+        self.decisions.joinpath('LAT-A.md').write_text(
+            '- status: pending\n- advisor: exempt requirement-discussion\n')
+        self.assert_silent(self.stop_hook())
+        self.assertEqual(self.reports(), [])
+        self.activate()
+        self.assert_silent(self.stop_hook('DONE: upgraded'))
+        self.assertEqual(len(self.reports()), 1)
+        self.assertEqual(self.reports()[0]['hcom_name'], 'orch')
 
     def test_stop_spec_confirmation_consensus_contract_and_recovery(self):
         receipt = '- consensus: v3 ' + 'a' * 64 + '\n'

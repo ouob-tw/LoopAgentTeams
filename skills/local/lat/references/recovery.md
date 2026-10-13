@@ -26,7 +26,7 @@ activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；C
 
    同一對話在上一輪停用為 completed 或 cancelled 後，可在同一工作區用上方 activate 指令與本輪的路徑、HCOM 名稱開始新一輪。上一輪的狀態、技能目錄、恢復路徑、HCOM 名稱與技能文字指紋依序保存在紀錄的 `history` 清單；目前欄位換成本輪內容，重新計算指紋，照常綁定面板、啟動監控與設定分頁名稱。deactivate、恢復 hook 與回合結束檢查只讀目前欄位；不清除或搬移共用的待決紀錄、任務卡、監控狀態與等待聲明。其他狀態或無法辨識的紀錄仍拒絕；不要刪除或手動重建 session 紀錄。
 
-   舊版 activate 建立的 active 紀錄沒有 `tasks_path` 與 `hcom_name`。恢復 hook 會照常提示讀取紀錄，但不會啟動停住監控；請將上方同一條 activate 指令的 `--tasks "$tasks" --hcom-name "$hcom_name"` 換成真實值後重跑。指令會在原紀錄補上這兩個欄位，保留其餘內容，然後啟動監控；不要刪除或重建 session 紀錄。
+   舊版 activate 建立的 active 紀錄沒有 `tasks_path` 與 `hcom_name`。恢復 hook 會照常提示讀取紀錄，但不會啟動停住監控；請將上方同一條 activate 指令的 `--tasks "$tasks" --hcom-name "$hcom_name"` 換成真實值後重跑。指令會在原紀錄補上這兩個欄位，保留其餘內容，然後啟動監控；不要刪除或重建 session 紀錄。舊紀錄在升級前維持原有待決檢查，不寫主控回報；升級後才開始記錄，不推測 HCOM 名稱。
 
    activate 會偵測 Herdr 的 `lat.panel`：已啟用時自動綁定並印出問題檔路徑；未啟用時印出「面板未啟用，略過綁定」。外掛查詢失敗時修復 Herdr 後重跑。自動綁定失敗時 session 紀錄保持 active，但停住監控尚未啟動：依錯誤補齊 Herdr 環境變數後重跑同一個 activate，確認綁定成功且 `.lat/watch/<session-id>.pid` 存在。
 
@@ -65,6 +65,18 @@ Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 都只檢�
 
 Stop 在訊息已顯示後才執行，無法撤回原訊息。檢查不連網、不讀對話紀錄，無法發現工具通過後 tracker 上的 Spec 又被修改；每次修改 Spec 都須重跑工具。檢查只核對寫出的題號，無法判斷提問內容是否真的對應該題；寫了既有待答題號卻問別的事仍會通過。
 
+## 主控回報紀錄
+
+Claude 與 Codex 主控的既有 Stop hook 會在回合真正結束時自動追加回報，不需主控另跑指令。回報放在使用者層級的 `$XDG_STATE_HOME/lat/reports/`；未設定 XDG_STATE_HOME 或其值不是絕對路徑時，使用 `~/.local/state/lat/reports/`。不放在專案 `.lat/`。`LAT_REPORTS_DIR` 可指定另一個絕對目錄（測試必須指定暫存目錄）。
+
+每個對話一份 `<session-id>.jsonl`，每行是一個 JSON 物件：`time`（UTC 時間）、`session_id`、`hcom_name`、`client`、`workspace`、`round`（第幾輪，從 1 開始）、`tag`、`summary`、`message`（最後一則訊息全文）、`final`（是否為本輪停用後最後一筆）。最後一個非空行符合 `DECIDE:`、`HELP:`、`DONE:` 或 `NO REPLY:` 時，`tag` 記錄該標籤，`summary` 記錄冒號後去除開頭空白的文字；不符合時兩欄都是空字串，全文照存。空訊息也照存。
+
+待決檢查攔下並要求繼續的 Stop 不寫回報；通過、只警告放行或檢查工具出錯放行的 Stop 才追加一筆。寫入失敗只在標準錯誤輸出留一則警告，不改變原本檢查結果。回報只追加，不改寫或刪除；同目錄的 `<session-id>.lock` 防止同時追加互相干擾。
+
+deactivate 保留本輪最後回報的資格，completed 或 cancelled 後第一次 Stop 仍追加 `final: true`，之後不再追加；重跑 deactivate 不會重新取得資格。若寫入失敗，下一次 Stop 可重試。activate 開始新一輪後恢復記錄，舊回報保持原樣。非主控角色、沒有 LAT 紀錄或身分不符的對話不產生回報。舊版紀錄缺少 HCOM 名稱時，須先照上方說明重跑 activate 升級，才開始記錄，不推測名稱。
+
+回報可能含本機路徑或私人訊息，目錄應留在專案之外。此紀錄只代表 hook 收到的回合結束訊息；暫存目錄測試不等於已驗證真實 client 的 hook 輸入。
+
 ## Hook 安裝與移除
 
 技能檔案安裝不會註冊 hook。安裝／移除 hook、搬動技能或修改 command，以及排查 hook 啟用／信任問題前，先讀 [Hook 設定程序](hook-setup.md)。Codex 須透過 `/hooks` 信任 command；Claude 使用者層級 hook 不需信任步驟，重啟後在 `/hooks` 確認。
@@ -75,5 +87,5 @@ Stop 在訊息已顯示後才執行，無法撤回原訊息。檢查不連網、
 - hook 使用 payload `session_id`（hook process 沒有主控的 session 環境變數），只匹配自己的紀錄。client 與 hook 的 `--client` 相同、role=orchestrator、workspace、session_id、active 全部相符才提示。這是流程提醒，不是防惡意 Agent 的安全門禁。
 - 沒有該 ID 的紀錄或已知條件不符：exit 0、零輸出。精確 ID 的紀錄損壞，或匹配後所需檔案缺失：輸出短恢復錯誤，不推定授權。
 - `/clear` 與 fork／新 session 不繼承標記。`/clear` 不改舊紀錄；日後 resume 舊對話仍可恢復，直到明確停用。沒有 clear handler；SessionEnd 也不刪紀錄。SubagentStart／SubagentStop 不掛此 hook（其 payload ID 是父 session）；主控 Stop 使用上述回合結束檢查。
-- 每次 compact／resume 都重新匹配，不設永久「已提示」旗標；不累積全文、不呼叫模型、不掃 transcript、不連網、不觸發 compact。
+- 每次 compact／resume 都重新匹配，不設永久「已提示」旗標；恢復提示不累積全文、不呼叫模型、不掃 transcript、不連網、不觸發 compact。
 - 啟用前發生的壓縮無法恢復；遺漏停用可能留下 active。移動工作區、session 移交與 plugin 包裝不在 v1。
