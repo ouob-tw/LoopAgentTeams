@@ -127,4 +127,11 @@ bun run repro:hydration --serve none       # 只啟動已登入的假資料看�
 
 需要本機有 Chrome 或 Chromium（可用 `CHROME` 指定），使用測試連接埠起點加 12 與加 13 的兩個連接埠。
 
+寬版底部指令列的版面規則：單行時目標標籤、輸入框文字與送出按鈕的垂直中心相差不超過 2px；輸入框隨多行內容長高時，標籤與按鈕都貼齊輸入框最下面一行，位置不跳動。量測（深色與淺色、整體大小 80／100／150 %）：
+
+```bash
+bun run build && bun run measure:commandline   # 無頭 Chrome；違反規則就以 1 結束；使用測試連接埠起點加 16 與加 17
+bun scripts/measure-commandline.ts --serve     # 啟動已配對的假資料看板，再用 scripts/measure-commandline.py 以 WebKit 量同樣的案例
+```
+
 封存的期限用看板的時鐘計算。測試以 `LAT_BOARD_CLOCK_FILE` 指定一個檔案，內容是一個 ISO 時間，看板就把它當成現在；沒有設定或檔案讀不出時間時用系統時間。
