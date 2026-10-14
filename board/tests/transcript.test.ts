@@ -1,7 +1,7 @@
 // The conversation history on a controller's information page, read through a fake helper that
 // pages <dir>/transcripts/<session>.jsonl the way the real one pages a client's record.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { appendFileSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { withEarlier, withLatest, type TranscriptText, type TranscriptTool, type TranscriptUpdate } from '../src/lib/board/transcript.ts';
 import { named, sleep, startFixture, until, type Fixture } from './harness.ts';
@@ -40,10 +40,11 @@ function follow(controllerId: string, device = cookie) {
 	const { updates } = feed;
 	const abort = new AbortController();
 	void (async () => {
-		const response = await fixture.fetch(`/api/transcript/events?controller=${encodeURIComponent(controllerId)}`, {
-			cookie: device,
-			signal: abort.signal
-		});
+		const response = await fixture
+			.fetch(`/api/transcript/events?controller=${encodeURIComponent(controllerId)}`, { cookie: device, signal: abort.signal })
+			// Closed before the first event arrived.
+			.catch(() => null);
+		if (!response) return void (feed.ended = true);
 		const reader = response.body!.getReader();
 		const decoder = new TextDecoder();
 		let buffer = '';
@@ -163,6 +164,33 @@ test('a change that leaves the page as it was pushes nothing, and a closed page 
 	append(vela.session_id, [said('assistant', '二')]);
 	await sleep(1_500);
 	expect(reads()).toBe(closed);
+});
+
+test('closing the page ends the helper and the process it was waiting on', async () => {
+	const pika = await bind('theta', 'pika');
+	const pidFile = join(fixture.dir, 'transcript-child.pid');
+	rmSync(pidFile, { force: true });
+	const plan = JSON.parse(readFileSync(join(fixture.dir, 'helper.json'), 'utf8'));
+	fixture.setHelper({ ...plan, transcriptChildMs: 20_000 });
+	const alive = (pid: number) => {
+		try {
+			process.kill(pid, 0);
+			return true;
+		} catch {
+			return false;
+		}
+	};
+	try {
+		const feed = follow(pika.session_id);
+		const pid = Number(await until(() => existsSync(pidFile) && readFileSync(pidFile, 'utf8'), 5_000, 'the helper child'));
+		expect(alive(pid)).toBe(true);
+
+		feed.close();
+
+		await until(() => !alive(pid), 1_000, 'the helper child to exit');
+	} finally {
+		fixture.setHelper(plan);
+	}
 });
 
 test('a record that cannot be found shows why, appears once written, and leaves the rest alone', async () => {

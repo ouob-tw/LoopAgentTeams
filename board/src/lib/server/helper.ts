@@ -1,6 +1,6 @@
 // The only way the board reads and writes question files, and reads a controller's conversation:
 // the LAT panel helper's `board` commands.
-import { execFile } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
 import type { BoardConfig } from './config.ts';
@@ -9,30 +9,58 @@ export type HelperList =
 	| { ok: true; controllers: HelperController[] }
 	| { ok: false; reason: string };
 
+const MAX_OUTPUT = 64 * 1024 * 1024;
+
+/** Run one `board` command. Aborting `signal` ends the helper and everything it started: the
+ *  helper command is a wrapper (`uv run`) whose Python child would otherwise keep running. */
 function run(config: BoardConfig, args: string[], signal?: AbortSignal): Promise<{ stdout: string; failure: string | null }> {
 	const [command, ...prefix] = config.helperCommand;
 	return new Promise((resolve) => {
+		let child: ChildProcess;
 		try {
-			execFile(
-				command,
-				[...prefix, 'board', ...args],
-				{ timeout: config.helperTimeoutMs, maxBuffer: 64 * 1024 * 1024, signal },
-				(error, stdout, stderr) => {
-					let failure: string | null = null;
-					if (error) {
-						// Exceeding the output limit also kills the helper, so `killed` alone is not a timeout.
-						const timedOut = error.killed && error.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-						failure = timedOut
-							? `輔助工具逾時（${config.helperTimeoutMs / 1000} 秒）`
-							: stderr.trim().split('\n').at(-1) || error.message;
-					}
-					resolve({ stdout, failure });
-				}
-			);
+			// Only an abortable run leads its own process group, so the whole group can be ended.
+			child = spawn(command, [...prefix, 'board', ...args], { detached: signal !== undefined, stdio: ['ignore', 'pipe', 'pipe'] });
 		} catch (error) {
 			// An argument that cannot be passed to a command at all, such as one holding a NUL character.
-			resolve({ stdout: '', failure: (error as Error).message });
+			return resolve({ stdout: '', failure: (error as Error).message });
 		}
+		let stdout = '';
+		let stderr = '';
+		let failure: string | null = null;
+		const fail = (reason: string) => {
+			failure ??= reason;
+			child.kill();
+		};
+		child.stdout!.setEncoding('utf8').on('data', (chunk: string) => {
+			stdout += chunk;
+			if (stdout.length > MAX_OUTPUT) fail('輔助工具的輸出太大');
+		});
+		child.stderr!.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
+		const timer = setTimeout(() => fail(`輔助工具逾時（${config.helperTimeoutMs / 1000} 秒）`), config.helperTimeoutMs);
+		const stop = () => {
+			failure ??= '已取消';
+			try {
+				process.kill(-child.pid!, 'SIGKILL');
+			} catch {
+				// Already gone.
+			}
+		};
+		child.on('error', (error) => {
+			// A helper that could not start may never close.
+			clearTimeout(timer);
+			resolve({ stdout, failure: failure ?? error.message });
+		});
+		child.on('close', (code, killedBy) => {
+			clearTimeout(timer);
+			signal?.removeEventListener('abort', stop);
+			if (code !== 0 && !failure) {
+				failure = stderr.trim().split('\n').at(-1) || `輔助工具結束碼 ${code ?? killedBy}`;
+			}
+			resolve({ stdout, failure });
+		});
+		if (!signal || child.pid === undefined) return;
+		if (signal.aborted) stop();
+		else signal.addEventListener('abort', stop, { once: true });
 	});
 }
 
