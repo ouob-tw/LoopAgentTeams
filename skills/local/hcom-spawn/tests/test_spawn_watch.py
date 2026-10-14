@@ -200,9 +200,32 @@ class SpawnWatchTests(unittest.TestCase):
             if len(polls) == 20:  # the Sonnet watch claims its batch meanwhile
                 self.assertTrue(self.watch.claim('b1'))
         self.watch.sleep = sleep
-        found, _ = self.watch.find_batch('vare', 'claude', '', 99, 'claude-opus-5-5', 'low')
+        watched = {}
+        found, _ = self.watch.find_batch('vare', 'claude', '', 99, 'claude-opus-5-5', 'low',
+                                         watched)
         self.assertIsNone(found)
         self.assertGreater(len(polls), 20)
+        self.assertEqual(list(watched), ['mona'])  # approval prompts watched all along
+
+    def test_unattributed_agent_that_blocks_at_once_is_reported_within_a_minute(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=500)
+        fake.blocked_early = True
+        sends = []
+        real = fake.__call__
+
+        def call(*args, timeout=30):
+            if args[0] == 'send':
+                sends.append((fake.now, args))
+            return real(*args, timeout=timeout)
+        self.watch.process_ids = lambda: {'kilo': 'kilo'}
+        self.watch.launched_with = lambda tool, process_id: ('claude-haiku-5-5', 'low')
+        self.watch.hcom, self.watch.clock, self.watch.sleep = call, fake.clock, fake.sleep
+        self.watch.main(['--spawner', 'vare', '--tool', 'claude', '--model', 'claude-opus-5-5',
+                         '--effort', 'low', '--after-id', '99'])
+        self.assertIn(('events', 'sub', '--blocked', 'kilo', '--for', 'vare'), fake.calls)
+        first = sends[0]
+        self.assertLess(first[0], 60)
+        self.assertIn('is waiting for approval', first[1][-1])
 
     def test_a_batch_taken_by_another_watch_is_not_checked_twice(self):
         first = FakeHcom(screens=[CLAUDE_START], stop_after=50)

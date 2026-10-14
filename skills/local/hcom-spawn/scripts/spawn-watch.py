@@ -118,8 +118,33 @@ def launched_with(tool, process_id):
     return None
 
 
-def find_batch(spawner, tool, tag, after_id, model, effort):
+def full_name(data, name):
+    return f"{data['tag']}-{name}" if data.get('tag') else name
+
+
+def watch_blocked(event, watched):
+    """Subscribe the batch's spawner to its agents' approval prompts, once per batch and
+    as soon as any watcher sees it, whether or not the batch is attributed yet."""
+    data = event['data']
+    if not claim(f"{data.get('batch_id') or event['id']}.blocked"):
+        return
+    spawner = data.get('by')
+    if not spawner or not NAME.match(spawner):
+        return
+    for name in data['instances']:
+        if NAME.match(name):
+            watched[name] = (subscribe(name, spawner, event['id']), event['id'])
+            if (not stopped_since(name, event['id'])
+                    and events('--type', 'status', '--status', 'blocked', '--agent', name,
+                               '--sql', f"id > {event['id']}")):
+                notify(spawner, f'{full_name(data, name)} is waiting for approval (blocked); '
+                                f'look at it with `hcom term {full_name(data, name)}`.')
+
+
+def find_batch(spawner, tool, tag, after_id, model, effort, watched):
     """The batch this command launched, and why it could not be attributed (None if it was).
+
+    Every candidate seen also gets its approval-prompt subscription (watch_blocked).
 
     Candidates are batches by this spawner with this tool (and tag, when given) after
     after_id that no other watcher has taken. One whose agent was started with this model
@@ -143,6 +168,7 @@ def find_batch(spawner, tool, tag, after_id, model, effort):
                          key=lambda event: event['id'])
         processes = process_ids() if batches else {}
         for event in batches:
+            watch_blocked(event, watched)
             batch_id = str(event['data'].get('batch_id') or event['id'])
             if (state_dir() / 'claims' / batch_id).exists():
                 continue
@@ -304,26 +330,27 @@ def report(tool, full, expected, seen, reason, unattributed=None):
             + f'. Look at it with `hcom term {full}`; it was not stopped.')
 
 
-def release_stopped(subs, launch_id):
-    """Unsubscribe agents that stopped since the launch; return their names."""
-    stopped = [name for name in subs if stopped_since(name, launch_id)]
-    for name in stopped:
-        if subs[name]:
-            unsubscribe(subs[name])
-        del subs[name]
-    return stopped
+def release_stopped(watched):
+    """Unsubscribe watched agents that stopped since their launch."""
+    for name, (sub, launch_id) in list(watched.items()):
+        if stopped_since(name, launch_id):
+            if sub:
+                unsubscribe(sub)
+            del watched[name]
 
 
-def check(tool, agents, expected, subs, launch_id, start, unattributed=None):
+def check(tool, agents, expected, watched, launch_id, start, unattributed=None):
     """Read screens (then session logs) until every item is known or time runs out.
 
-    Agents that stop meanwhile are released and get no report.
+    Agents that stop meanwhile get no report.
     """
     seen = {name: {} for name in agents}
     reasons = {name: 'agent did not become ready' for name in agents}
-    ready_at, logs, pending = {}, {}, set(agents)
+    ready_at, logs, pending, stopped = {}, {}, set(agents), set()
     while pending and clock() - start < DEADLINE:
-        pending -= set(release_stopped(subs, launch_id))
+        release_stopped(watched)
+        stopped |= {name for name in pending if stopped_since(name, launch_id)}
+        pending -= stopped
         for name in sorted(pending):
             full = agents[name]
             code, out = hcom('term', full, '--json', timeout=10)
@@ -350,10 +377,10 @@ def check(tool, agents, expected, subs, launch_id, start, unattributed=None):
             if all(item in seen[name] for item in ITEMS):
                 pending.discard(name)
         sleep(POLL)
-    release_stopped(subs, launch_id)
+    stopped |= {name for name in agents if stopped_since(name, launch_id)}
     return {name: report(tool, agents[name], expected, seen[name],
                          f'{reasons[name]} within {DEADLINE}s', unattributed)
-            for name in agents if name in subs}
+            for name in agents if name not in stopped}
 
 
 def notify(spawner, text):
@@ -372,33 +399,24 @@ def main(argv=None):
     if not NAME.match(args.spawner):
         return 1
     sweep()
+    watched = {}
     batch, unattributed = find_batch(args.spawner, args.tool, args.tag, args.after_id,
-                                     args.model, args.effort)
-    if not batch:
-        return 0
-    start = clock()
-    data, launch_id = batch['data'], batch['id']
-    spawner = data.get('by') or args.spawner
-    names = [name for name in data['instances'] if NAME.match(name)]
-    agents = {name: f"{data['tag']}-{name}" if data.get('tag') else name for name in names}
-    subs = {name: subscribe(name, spawner, launch_id) for name in names}
-    release_stopped(subs, launch_id)
-    for name in subs:
-        if events('--type', 'status', '--status', 'blocked', '--agent', name,
-                  '--sql', f'id > {launch_id}'):
-            notify(spawner, f'{agents[name]} is waiting for approval (blocked); '
-                                 f'look at it with `hcom term {agents[name]}`.')
-    expected = {'model': None if unattributed else args.model,
-                'effort': None if unattributed else args.effort,
-                'permission': EXPECTED_PERMISSION[args.tool]}
-    for text in check(args.tool, agents, expected, subs, launch_id, start, unattributed).values():
-        if text:
-            notify(spawner, text)
-    while subs:
+                                     args.model, args.effort, watched)
+    if batch:
+        start = clock()
+        data, launch_id = batch['data'], batch['id']
+        agents = {name: full_name(data, name) for name in data['instances'] if NAME.match(name)}
+        expected = {'model': None if unattributed else args.model,
+                    'effort': None if unattributed else args.effort,
+                    'permission': EXPECTED_PERMISSION[args.tool]}
+        for text in check(args.tool, agents, expected, watched, launch_id, start,
+                          unattributed).values():
+            if text:
+                notify(data.get('by') or args.spawner, text)
+    while watched:
         sleep(STOP_POLL)
-        release_stopped(subs, launch_id)
+        release_stopped(watched)
     return 0
-
 
 if __name__ == '__main__':
     sys.exit(main())
