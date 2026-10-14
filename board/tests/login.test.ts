@@ -216,6 +216,25 @@ test('revoking an unknown device fails without touching the others', async () =>
 	expect(fixture.cli('devices').stdout).toBe(before);
 });
 
+test('an unreadable password file is reported on the login screen and logs nothing in', async () => {
+	const path = join(fixture.dir, 'board-state/password.json');
+	const saved = readFileSync(path, 'utf8');
+	writeFileSync(path, 'not json');
+	try {
+		const page = await fixture.fetch('/login');
+		expect(page.status).toBe(200);
+		expect(await page.text()).toContain('密碼檔讀不出來');
+
+		const response = await fixture.tryLogin(PASSWORD);
+		expect(response.status).toBe(500);
+		expect(await response.json()).toEqual({ error: 'password_unreadable' });
+		expect(response.headers.getSetCookie()).toEqual([]);
+	} finally {
+		writeFileSync(path, saved);
+	}
+	expect((await fixture.tryLogin(PASSWORD)).status).toBe(200);
+});
+
 describe('before a password is set', () => {
 	let fresh: Fixture;
 	beforeAll(async () => {

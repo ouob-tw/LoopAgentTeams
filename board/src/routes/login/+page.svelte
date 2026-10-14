@@ -44,6 +44,7 @@
 				lockedFor(Number(body.retryAfterSeconds) || 60);
 				failure = '密碼連續輸錯太多次，請稍候再試。';
 			} else if (response.status === 401) failure = '密碼不正確。';
+			else if (body.error === 'password_unreadable') failure = `登入失敗：看板的密碼檔讀不出來，請在主機上重新執行 ${SET_COMMAND}。`;
 			else if (response.status === 409) failure = `還沒設定密碼，請先在主機上執行 ${SET_COMMAND}。`;
 			else failure = `登入失敗：看板伺服器回報錯誤（${response.status}）。`;
 		} catch {
@@ -60,7 +61,7 @@
 
 <main>
 	<h1>LAT 看板</h1>
-	{#if data.passwordSet}
+	{#if data.password === 'set'}
 		<p>請輸入看板密碼。</p>
 		<form onsubmit={login}>
 			<label for="password">密碼</label>
@@ -80,7 +81,9 @@
 			</p>
 		{/if}
 	{:else}
-		<p>看板還沒設定密碼，目前無法登入。請在主機上的看板目錄執行：</p>
+		<p>
+			{data.password === 'unset' ? '看板還沒設定密碼' : '看板的密碼檔讀不出來'}，目前無法登入。請在主機上的看板目錄執行：
+		</p>
 		<pre><code>{SET_COMMAND}</code></pre>
 		<p>設定好之後重新載入這個畫面。</p>
 	{/if}
