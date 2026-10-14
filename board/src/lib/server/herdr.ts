@@ -83,3 +83,15 @@ export async function chooseWorkspace(config: BoardConfig, scope: string): Promi
 	if (typeof id !== 'string') return { ok: false, reason: '建立 Herdr 工作區失敗：輸出缺少工作區編號' };
 	return { ok: true, id, label, created: true };
 }
+
+/** Whether a pane with this ID is open in Herdr, or why that cannot be told. Only that it exists
+ *  counts, never what Herdr says the agent in it is doing. */
+export async function paneExists(config: BoardConfig, paneId: string): Promise<{ exists: boolean } | { reason: string }> {
+	const panes = await herdr(config, ['pane', 'list']);
+	if ('reason' in panes) return { reason: `讀不到 Herdr 的窗格清單：${panes.reason}` };
+	const paneList = panes.result.panes;
+	if (!Array.isArray(paneList) || !paneList.every((pane) => typeof pane?.pane_id === 'string')) {
+		return { reason: '讀不到 Herdr 的窗格清單：輸出不是預期的格式' };
+	}
+	return { exists: paneList.some((pane) => pane.pane_id === paneId) };
+}

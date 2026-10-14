@@ -20,5 +20,5 @@ export const GET: RequestHandler = ({ url }) => {
 	const controllerId = url.searchParams.get('controller');
 	if (!controllerId) return json({ error: 'missing_controller' }, { status: 400 });
 	const board = getBoard();
-	return json({ entries: readSent(board.config.stateDir, controllerId), logError: board.sentLogError() });
+	return json({ entries: readSent(board.config.stateDir, controllerId, board.config.now(), board.config.launchWaitMs), logError: board.sentLogError() });
 };

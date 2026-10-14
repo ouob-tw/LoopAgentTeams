@@ -61,7 +61,7 @@ function runInject(config: BoardConfig, hcomName: string, args: string[]): Promi
 
 /** Types the text into the controller's input box and submits it. One attempt per call, and no
  *  call after one that failed. Resolves with why it failed, or null when it succeeded. */
-async function inject(config: BoardConfig, hcomName: string, text: string): Promise<string | null> {
+export async function inject(config: BoardConfig, hcomName: string, text: string): Promise<string | null> {
 	for (const args of injectCalls(text)) {
 		const reason = await runInject(config, hcomName, args);
 		if (reason) return reason;
@@ -69,16 +69,13 @@ async function inject(config: BoardConfig, hcomName: string, text: string): Prom
 	return null;
 }
 
-// Two messages typed into one input box at the same time would mix, so the sends to one
-// controller run one after another. Nothing is held back for later: each is attempted once.
+// Two messages typed into one input box at the same time would mix, and two wakes could resume
+// one conversation twice, so the sends and wakes of one controller run one after another. Nothing
+// is held back for later: each is attempted once.
 const lastSend = new Map<string, Promise<unknown>>();
 
-export function sendMessage(
-	board: Board,
-	controllerId: string,
-	rawText: string
-): Promise<{ status: number; body: SendResponse }> {
-	const attempted = attempt.bind(null, board, controllerId, rawText);
+/** Run `attempted` after everything already queued for this controller has finished. */
+export function queued<T>(controllerId: string, attempted: () => Promise<T>): Promise<T> {
 	const result = (lastSend.get(controllerId) ?? Promise.resolve()).then(attempted, attempted);
 	lastSend.set(controllerId, result);
 	const forget = () => {
@@ -86,6 +83,14 @@ export function sendMessage(
 	};
 	result.then(forget, forget);
 	return result;
+}
+
+export function sendMessage(
+	board: Board,
+	controllerId: string,
+	rawText: string
+): Promise<{ status: number; body: SendResponse }> {
+	return queued(controllerId, () => attempt(board, controllerId, rawText));
 }
 
 async function attempt(board: Board, controllerId: string, rawText: string) {

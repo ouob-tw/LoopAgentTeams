@@ -1,13 +1,15 @@
 // The board's sent log: one JSON line per attempt to send a message to a controller, per
-// answer the helper accepted and per attempt to start a new controller, kept in the board's state
+// answer the helper accepted, per attempt to start a new controller and per attempt to wake one, kept in the board's state
 // directory so every logged-in device sees the same history. Lines are only appended; what became
-// of an answer or a launch is a later line of its own.
+// of an answer, a launch or a resume is a later line of its own.
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AnswerState, SentAnswer, SentEntry } from '../board/answers.ts';
 import type { LaunchState, LaunchView, SentLaunch } from '../board/launch.ts';
 import type { SentMessage } from '../board/messages.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
+import type { ResumeClose, SentWake, WakeView } from '../board/wake.ts';
+import type { HcomAgent } from './hcom.ts';
 import type { ReportFile } from './reports.ts';
 
 const SENT_LOG_FILE = 'sent-log.jsonl';
@@ -34,7 +36,23 @@ interface LaunchMark {
 	time: string;
 }
 
-type Line = SentMessage | StoredAnswer | AnswerMark | SentLaunch | LaunchMark;
+/** How an open resume attempt was closed. Written once. */
+export interface ResumeMark {
+	kind: 'resume-closed';
+	wakeId: string;
+	result: ResumeClose;
+	time: string;
+}
+
+/** The Herdr pane a resume attempt runs in, learned after the attempt was logged. */
+interface ResumePane {
+	kind: 'resume-pane';
+	wakeId: string;
+	pane: string;
+	time: string;
+}
+
+type Line = SentMessage | StoredAnswer | AnswerMark | SentLaunch | LaunchMark | SentWake | ResumeMark | ResumePane;
 
 export function appendSent(stateDir: string, entry: Line): void {
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -67,19 +85,46 @@ const marksOf = (lines: Line[]) =>
 const boundOf = (lines: Line[]) =>
 	new Map(lines.filter((line) => line.kind === 'launch-bound').map((mark) => [mark.launchId, mark.controllerId]));
 
+/** Every wake as it stands at `now`, in log order. A resume stays open until a line closes it. */
+function wakesOf(lines: Line[], now: number, waitMs: number): WakeView[] {
+	const closes = new Map<string, ResumeMark>();
+	const panes = new Map<string, string>();
+	for (const line of lines) {
+		if (line.kind === 'resume-closed' && !closes.has(line.wakeId)) closes.set(line.wakeId, line);
+		if (line.kind === 'resume-pane') panes.set(line.wakeId, line.pane);
+	}
+	return lines
+		.filter((line) => line.kind === 'wake')
+		.map((wake) => {
+			const close = closes.get(wake.id);
+			const open = wake.route === 'resume' && (wake.outcome === 'started' || wake.outcome === 'pending') && !close;
+			return {
+				...wake,
+				pane: wake.pane ?? panes.get(wake.id) ?? null,
+				open,
+				closed: close?.result ?? null,
+				closedAt: close?.time ?? null,
+				overdue: open && now - Date.parse(wake.time) >= waitMs
+			};
+		});
+}
+
 /** What was sent to one controller, newest first: a launch counts once it became this controller. */
-export function readSent(stateDir: string, controllerId: string): SentEntry[] {
+export function readSent(stateDir: string, controllerId: string, now: number, waitMs: number): SentEntry[] {
 	const lines = readLines(stateDir);
 	const marks = marksOf(lines);
 	const bound = boundOf(lines);
+	const wakes = new Map(wakesOf(lines, now, waitMs).map((wake) => [wake.id, wake]));
 	const entries: SentEntry[] = [];
 	for (const line of lines) {
 		if (line.kind === 'launch') {
 			if (bound.get(line.id) === controllerId) entries.push({ ...line, state: 'active', controllerId });
 			continue;
 		}
-		if (line.kind === 'answer-state' || line.kind === 'launch-bound' || line.controllerId !== controllerId) continue;
-		if (line.kind === 'message') entries.push(line);
+		if (line.kind === 'answer-state' || line.kind === 'launch-bound' || line.kind === 'resume-closed' || line.kind === 'resume-pane') continue;
+		if (line.controllerId !== controllerId) continue;
+		if (line.kind === 'wake') entries.push(wakes.get(line.id)!);
+		else if (line.kind === 'message') entries.push(line);
 		else if (line.kind === 'answer') {
 			const { questionsPath: _, ...answer } = line;
 			const mark = marks.get(line.id);
@@ -207,6 +252,43 @@ export function settleLaunches(stateDir: string, controllers: HelperController[]
 		if (!controllerId) continue;
 		try {
 			appendSent(stateDir, { kind: 'launch-bound', launchId: line.id, controllerId, time: new Date(now).toISOString() });
+		} catch (error) {
+			return (error as Error).message;
+		}
+	}
+	return null;
+}
+
+/** The open resume attempts, oldest first. */
+export function openResumes(stateDir: string, now: number, waitMs: number): WakeView[] {
+	return wakesOf(readLines(stateDir), now, waitMs).filter((wake) => wake.open);
+}
+
+/** The controller's open resume attempt, or null. There is at most one: a wake checks it first. */
+export function openResume(stateDir: string, controllerId: string, now: number, waitMs: number): WakeView | null {
+	return openResumes(stateDir, now, waitMs).findLast((wake) => wake.controllerId === controllerId) ?? null;
+}
+
+export function closeResume(stateDir: string, wakeId: string, result: ResumeClose, now: number): void {
+	appendSent(stateDir, { kind: 'resume-closed', wakeId, result, time: new Date(now).toISOString() });
+}
+
+/**
+ * Close every open resume whose session is in hcom's agent list now, and note the Herdr pane of
+ * those hcom shows under their session or HCOM name. Called with every fresh read while any
+ * resume is open, so a wake shows as succeeded without the user waking it again.
+ *
+ * Returns why the log could not be brought up to date, or null.
+ */
+export function settleResumes(stateDir: string, agents: HcomAgent[], now: number, waitMs: number): string | null {
+	for (const wake of openResumes(stateDir, now, waitMs)) {
+		const running = agents.find((agent) => agent.sessionId === wake.controllerId);
+		const seen = running ?? agents.find((agent) => agent.name === wake.hcomName);
+		try {
+			if (!wake.pane && seen?.pane) {
+				appendSent(stateDir, { kind: 'resume-pane', wakeId: wake.id, pane: seen.pane, time: new Date(now).toISOString() });
+			}
+			if (running) closeResume(stateDir, wake.id, 'succeeded', now);
 		} catch (error) {
 			return (error as Error).message;
 		}
