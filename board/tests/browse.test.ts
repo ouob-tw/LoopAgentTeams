@@ -90,6 +90,24 @@ needsPlain('marks each level and folder as in a Git project or not', async () =>
 	expect(inside.entries.map((entry) => [entry.name, entry.git])).toEqual([['src', true]]);
 });
 
+needsPlain('Git status follows where a link leads, not the link path', async () => {
+	const repo = join(home, 'crossrepo');
+	mkdirSync(join(repo, '.git'), { recursive: true });
+	mkdirSync(join(repo, 'src'));
+	const plain = join(plainDir!, 'cross');
+	mkdirSync(plain, { recursive: true });
+	symlinkSync(plain, join(repo, 'to-plain'));
+	symlinkSync(join(repo, 'src'), join(plain, 'to-src'));
+	// A link inside a Git project that leads out of it: a launch there needs git init.
+	const inside = await browse(repo);
+	expect(inside.entries.find((entry) => entry.name === 'to-plain')!.git).toBe(false);
+	expect((await browse(join(repo, 'to-plain'))).git).toBe(false);
+	// A link outside any Git project that leads into one: a launch there is fine.
+	const outside = await browse(plain);
+	expect(outside.entries.map((entry) => [entry.name, entry.git])).toEqual([['to-src', true]]);
+	expect((await browse(join(plain, 'to-src'))).git).toBe(true);
+});
+
 test('a folder that cannot be read answers with the reason, and so does one that is not there', async () => {
 	const locked = join(home, 'locked');
 	mkdirSync(locked);

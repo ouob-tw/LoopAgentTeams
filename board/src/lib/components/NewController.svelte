@@ -34,8 +34,11 @@
 	const projects = $derived(launching.list?.projects ?? []);
 	const launches = $derived(launching.list?.launches ?? []);
 	const selected = $derived(projects.find((project) => project.path === launching.folder));
+	// A folder chosen by browsing is judged by the browser's answer, which resolves links like a launch does.
 	const needsInit = $derived(
-		selected ? selected.exists && !selected.git : launching.folder !== '' && launching.browsedGit === false
+		launching.browsedGit !== null
+			? launching.browsedGit === false
+			: selected !== undefined && selected.exists && !selected.git
 	);
 
 	let sending = $state(false);
@@ -148,7 +151,10 @@
 						<div class="nav">
 							<button type="button" disabled={level.parent === null || launching.browsing} onclick={() => void launching.open(level.parent!)}>↑ 上一層</button>
 							<button type="button" disabled={level.path === level.home || launching.browsing} onclick={() => void launching.open()}>⌂ 家目錄</button>
-							<button type="button" class="use" disabled={launching.folder === level.path} onclick={() => pick(level.path, level.git)}>
+							<button type="button" class="use" disabled={launching.folder === level.path} onclick={() => {
+									pick(level.path, level.git);
+									browserOpen = false;
+								}}>
 								{launching.folder === level.path ? '已選這個資料夾' : '選這個資料夾'}
 							</button>
 						</div>
