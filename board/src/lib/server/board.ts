@@ -9,7 +9,7 @@ import { listControllers, readQuestions } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { archiveDue, archivedReports, buildSnapshot, markRead, type MarkReadResult, type Sources } from './model.ts';
 import { createReportReader } from './reports.ts';
-import { settleAnswers } from './sent-log.ts';
+import { settleAnswers, settleLaunches } from './sent-log.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 
@@ -30,6 +30,8 @@ export interface Board {
 	refresh(): Promise<BoardSnapshot>;
 	/** Why the last read could not bring the sent log up to date, or null. */
 	sentLogError(): string | null;
+	/** The sources as last read, reading them first if nothing has been read yet. */
+	sources(): Promise<Sources>;
 	/** Mark an inbox report read for every logged-in device. */
 	markRead(key: string): Promise<MarkReadResult>;
 	/** The archived reports, newest first. */
@@ -97,7 +99,9 @@ function createBoard(): Board {
 		if (helper.ok) {
 			lastActive = helper.controllers;
 			try {
-				sentLogError = await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path));
+				const answersError = await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path));
+				const launchesError = settleLaunches(config.stateDir, helper.controllers, reports.files, config.now());
+				sentLogError = answersError ?? launchesError;
 			} catch (error) {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
 				sentLogError = (error as Error).message;
@@ -206,6 +210,7 @@ function createBoard(): Board {
 		current: async () => snapshot ?? (await (running ?? refresh())),
 		refresh,
 		sentLogError: () => sentLogError,
+		sources: readSources,
 		markRead: async (key) => publish(await readSources(), key)!,
 		archive: async () => archivedReports(await readSources(), loadInboxState(config.stateDir)),
 		subscribe(stream) {
