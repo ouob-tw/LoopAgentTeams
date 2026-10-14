@@ -256,3 +256,9 @@ export async function modelLock(
 	if (!read.ok) return { lock: 'unknown', reason: read.reason };
 	return { lock: fixedModel(read.args) ? 'fixed' : 'free', reason: null };
 }
+
+/** The model and effort of the controller's latest turn; null when they cannot be read. */
+export async function readCurrent(config: BoardConfig, client: string, sessionId: string): Promise<CurrentSettings | null> {
+	const read = await readTranscript(config, client, sessionId);
+	return read.ok ? (read.page.current ?? null) : null;
+}

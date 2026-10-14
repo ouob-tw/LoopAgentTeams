@@ -2,7 +2,7 @@
 	// Sends a message to one controller, or wakes an ended one. The text stays in the box unless it
 	// was delivered.
 	import { enterMakesNewline, messaging, type Outcome } from '#lib/board/messaging.svelte.ts';
-	import { FIXED_MODEL_REASON, LOCK_UNKNOWN_TEXT } from '#lib/board/models.ts';
+	import { EFFORT_UNKNOWN_TEXT, FIXED_MODEL_REASON, LOCK_UNKNOWN_TEXT } from '#lib/board/models.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
@@ -112,6 +112,9 @@
 					</select>
 				</label>
 			</div>
+			{#if model[controller.id] && status.lock !== 'fixed' && !effort[controller.id] && !switching.current[controller.id]?.effort}
+				<p class="note">{EFFORT_UNKNOWN_TEXT}。</p>
+			{/if}
 			{#if status.lock === 'fixed'}
 				<p class="note">{FIXED_MODEL_REASON}。</p>
 			{:else if status.lock === 'unknown'}

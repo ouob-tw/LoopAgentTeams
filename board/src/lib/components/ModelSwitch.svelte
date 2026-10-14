@@ -1,10 +1,11 @@
 <script lang="ts">
 	// The controller's model and effort on its information page: what the latest turn used, whether
-	// the last switch took, an open Codex switch to continue, and the form to change them.
+	// the last switch took, an open switch to continue, and the form to change them.
 	import { messaging, type Outcome } from '#lib/board/messaging.svelte.ts';
 	import {
 		BUSY_REASON,
 		choiceText,
+		EFFORT_UNKNOWN_TEXT,
 		FIXED_MODEL_REASON,
 		lastApplied,
 		LOCK_UNKNOWN_TEXT,
@@ -114,7 +115,7 @@
 		{:else if !editing[id]}
 			{#if status.running === null}
 				<p class="note">{status.reason}</p>
-			{:else if codex && status.status !== 'listening' && !open}
+			{:else if status.status !== 'listening' && !open}
 				<p class="note">{BUSY_REASON}。</p>
 			{/if}
 			<button type="button" onclick={() => (editing[id] = true)}>修改</button>
@@ -149,9 +150,10 @@
 				{:else if status.lock === 'unknown'}
 					<p class="note">{LOCK_UNKNOWN_TEXT}（{status.lockReason}），送出後以下一回合核對結果。</p>
 				{/if}
-				{#if codex}
-					<p class="note">Codex 會關掉原本的分頁，用新設定在新分頁接回同一段對話；只在主控等待時可以改。</p>
+				{#if model[id] && !effort[id] && !current?.effort}
+					<p class="note">{EFFORT_UNKNOWN_TEXT}。</p>
 				{/if}
+				<p class="note">看板會關掉原本的分頁，用新設定在新分頁接回同一段對話；只在主控等待時可以改。</p>
 				<div class="actions">
 					<button class="primary" disabled={sending || !chosen}>{sending ? '送出中…' : '送出切換'}</button>
 					<button type="button" onclick={() => (editing[id] = false)}>取消</button>

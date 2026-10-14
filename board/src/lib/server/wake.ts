@@ -9,8 +9,10 @@ import { isLaunchClient, latCommand } from '../board/launch.ts';
 import {
 	chose,
 	FIXED_MODEL_REASON,
+	carriesEffort,
 	modelArgs,
 	NOT_OFFERED_REASON,
+	resumeChoice,
 	offered,
 	SWITCH_UNSETTLED_REASON,
 	WAKE_RUNNING_CHOICE_REASON,
@@ -32,7 +34,7 @@ import type { Board } from './board.ts';
 import { findAgent, listAgents, resumeAgent, type HcomAgent } from './hcom.ts';
 import { chooseWorkspace, paneExists } from './herdr.ts';
 import { inject, queued, typedText } from './send.ts';
-import { modelLock } from './helper.ts';
+import { modelLock, readCurrent } from './helper.ts';
 import { appendSent, closeResume, openResume, openSwitch, type ResumeResult } from './sent-log.ts';
 
 /** Where a model switch has stopped its client without seeing it gone. */
@@ -110,7 +112,10 @@ async function deliver(board: Board, controller: Controller | undefined, request
 			if (client === 'codex' && choice.model !== null && (await modelLock(board.config, controller.id)).lock === 'fixed') {
 				return refuse(FIXED_MODEL_REASON);
 			}
-			entry.extraArgs = modelArgs(client, choice);
+			// A new model with the effort kept takes the effort the latest turn used.
+			const sent = carriesEffort(choice) ? resumeChoice(choice, await readCurrent(board.config, client, controller.id)) : choice;
+			entry.carriedEffort = carriesEffort(choice) ? sent.effort : null;
+			entry.extraArgs = modelArgs(client, sent);
 		}
 		return resume(board, controller, entry);
 	}

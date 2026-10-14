@@ -184,62 +184,134 @@ test('a Claude controller is never asked about its launch arguments, and one not
 	expect(fixture.helperArgs('launch-args')).toHaveLength(before);
 });
 
-// --- Claude: typed into the conversation ------------------------------------------------------------
+// --- Claude: stopped and resumed like Codex, never typed into --------------------------------------
 
-test('Claude gets /model and then /effort typed into its input box, logged with what the last turn used', async () => {
+test('a listening Claude is stopped, seen gone, and resumed by session with --model and --effort; nothing is typed in', async () => {
 	const target = await running('claude');
+	hcomPlan({ agents: [target.self], resumed: agent(target.name, target.id, 'listening', 'wP:new') });
 
 	const { status, body } = await change(target.id, 'claude-sonnet-5-5', 'high');
 
 	expect(status).toBe(200);
-	expect(body.ok).toBe(true);
-	expect(typed()).toEqual([
-		[target.name, '/model claude-sonnet-5-5', '--enter'],
-		[target.name, '/effort high', '--enter']
-	]);
-	expect(kills()).toEqual([]);
-	const [logged] = await switches(target.id);
-	expect(logged).toMatchObject({
-		route: 'inject',
-		state: 'sent',
-		open: false,
+	expect(body.entry).toMatchObject({
+		route: 'restart',
+		state: 'resuming',
+		open: true,
+		pane: target.pane,
 		to: { model: 'claude-sonnet-5-5', effort: 'high' },
 		from: { model: 'claude-opus-5-5', effort: 'medium' }
 	});
+	expect(typed()).toEqual([]);
+	expect(kills()).toEqual([['kill', target.name]]);
+	expect(resumes()).toEqual([
+		['r', target.id, '--terminal', 'herdr', '--no-run-here', '--go', '--model', 'claude-sonnet-5-5', '--effort', 'high']
+	]);
+	await fixture.refresh(cookie);
+	expect((await switches(target.id))[0]).toMatchObject({ state: 'done', open: false });
 });
 
-test('only what was chosen is typed: keeping the model sends /effort alone', async () => {
+test('only what was chosen is passed: keeping the model sends --effort alone', async () => {
 	const target = await running('claude');
+	hcomPlan({ agents: [target.self], resumed: agent(target.name, target.id) });
 
 	await change(target.id, null, 'xhigh');
 
-	expect(typed()).toEqual([[target.name, '/effort xhigh', '--enter']]);
-});
-
-test('a Claude controller whose client is not running is told to choose when waking, and nothing is typed', async () => {
-	const target = await running('claude');
-	hcomPlan({ agents: [agent('other', 'someone-else')] });
-
-	const { status, body } = await change(target.id, 'claude-haiku-5-5', null);
-
-	expect(status).toBe(409);
-	expect(body.reason).toBe(NOT_RUNNING_REASON);
+	expect(resumes()[0].slice(6)).toEqual(['--effort', 'xhigh']);
 	expect(typed()).toEqual([]);
-	expect((await switches(target.id))[0]).toMatchObject({ state: 'refused', error: NOT_RUNNING_REASON });
 });
 
-test('typing that fails is reported; nothing chosen, or a value the lists do not offer, is refused', async () => {
+test('a Claude that is working, blocked, gone, in the board\'s own pane, or whose state cannot be read is not touched', async () => {
+	for (const state of ['active', 'blocked', 'unknown']) {
+		const target = await running('claude', state);
+		expect((await change(target.id, null, 'low')).body.reason).toBe(BUSY_REASON);
+	}
+	const gone = await running('claude');
+	hcomPlan({ agents: [agent('other', 'someone-else')] });
+	expect((await change(gone.id, 'claude-haiku-5-5', null)).body.reason).toBe(NOT_RUNNING_REASON);
+
+	const own = await running('claude');
+	hcomPlan({ agents: [agent(own.name, own.id, 'listening', AGENT_SHELL_ENV.HERDR_PANE_ID)] });
+	expect((await change(own.id, 'claude-haiku-5-5', null)).body.reason).toBe(OWN_PANE_REASON);
+
+	const unreadable = await running('claude');
+	hcomPlan({ listFail: { exit: 1, stderr: 'database locked' } });
+	expect((await change(unreadable.id, null, 'low')).body.reason).toContain('database locked');
+
+	expect(kills()).toEqual([]);
+	expect(resumes()).toEqual([]);
+	expect(typed()).toEqual([]);
+});
+
+test('a Claude started with an explicit model can still switch its model: Claude takes the last --model', async () => {
 	const target = await running('claude');
-	writeFileSync(join(commandDir, 'inject.json'), JSON.stringify({ [target.name]: { exit: 1, stdout: 'pane gone', failFrom: 2 } }));
+	launchArgs(target.id, ['--model', 'claude-opus-5-5']);
+	hcomPlan({ agents: [target.self], resumed: agent(target.name, target.id) });
+	expect((await offer(target.id)).lock).toBe(null);
 
-	const failed = await change(target.id, 'claude-haiku-5-5', 'low');
-	expect(failed.status).toBe(502);
-	expect(failed.body.reason).toContain('/effort low');
-	expect(failed.body.reason).toContain('pane gone');
+	const { body } = await change(target.id, 'claude-haiku-5-5', 'low');
 
-	expect((await change(target.id, null, null)).body.reason).toBe('沒有選要改的模型或思考強度。');
-	expect((await change(target.id, 'gpt-6-astra', null)).body.reason).toBe(NOT_OFFERED_REASON);
-	expect(typed()).toHaveLength(2);
+	expect(body.ok).toBe(true);
+	expect(resumes()[0].slice(-4)).toEqual(['--model', 'claude-haiku-5-5', '--effort', 'low']);
+});
+
+test('a Claude stop that fails stays open; once client and pane are gone, 繼續切換 resumes with --model', async () => {
+	const target = await running('claude');
+	hcomPlan({ agents: [target.self], kill: { exit: 1, stderr: 'no such process' } });
+	const first = await change(target.id, 'claude-sonnet-5-5', 'low');
+	expect(first.body.entry).toMatchObject({ state: 'stop-failed', open: true });
+
+	// Still running and working: refused, the attempt kept.
+	hcomPlan({ agents: [{ ...target.self, status: 'active' }] });
+	expect((await resumeSwitch(target.id)).body.reason).toContain(BUSY_REASON);
+
+	hcomPlan({ agents: [], resumed: agent(target.name, target.id) });
+	herdrPanes([{ workspace_id: 'wP', cwd: target.workspace, pane_id: 'wP:shell' }]);
+	const continued = await resumeSwitch(target.id);
+	expect(continued.body.entry).toMatchObject({ id: first.body.entry!.id, state: 'resuming' });
+	expect(resumes()).toEqual([['r', target.id, '--terminal', 'herdr', '--no-run-here', '--go', '--model', 'claude-sonnet-5-5', '--effort', 'low']]);
+	expect(typed()).toEqual([]);
+});
+
+test('an open switch comes before 「主控目前沒有在跑」 for both clients: 繼續切換 picks it up although the client is gone', async () => {
+	for (const client of ['claude', 'codex'] as const) {
+		const target = await running(client);
+		hcomPlan({ agents: [target.self], exit: 1, stderr: 'resume broke' });
+		expect((await change(target.id, null, 'low')).body.entry).toMatchObject({ state: 'resume-failed', open: true });
+
+		// The client is not running; the switch is open, so it is continued rather than refused.
+		hcomPlan({ agents: [], resumed: agent(target.name, target.id) });
+		expect((await offer(target.id)).running).toBe(false);
+		const continued = await resumeSwitch(target.id);
+		expect(continued.body.reason).toBe(null);
+		expect(continued.body.entry).toMatchObject({ state: 'resuming' });
+	}
+});
+
+// --- Keeping the effort while the model changes --------------------------------------------------------
+
+test('a new model with the effort kept carries the latest turn\'s effort: Claude --effort, Codex -c', async () => {
+	const claude = await running('claude');
+	hcomPlan({ agents: [claude.self], resumed: agent(claude.name, claude.id) });
+	const switched = await change(claude.id, 'claude-haiku-5-5', null);
+	expect(resumes().at(-1)?.slice(6)).toEqual(['--model', 'claude-haiku-5-5', '--effort', 'medium']);
+	// The carried effort is not a choice of the user's.
+	expect(switched.body.entry?.to).toEqual({ model: 'claude-haiku-5-5', effort: null });
+	expect((await sent(claude.id)).find((entry): entry is WakeView => entry.kind === 'wake')).toMatchObject({ carriedEffort: 'medium' });
+
+	const codex = await running('codex');
+	hcomPlan({ agents: [codex.self], resumed: agent(codex.name, codex.id) });
+	await change(codex.id, 'gpt-6-astra', null);
+	expect(resumes().at(-1)?.slice(6)).toEqual(['-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="medium"']);
+});
+
+test('an unknown current effort is not guessed: only the model is passed', async () => {
+	for (const client of ['claude', 'codex'] as const) {
+		const target = await running(client);
+		lastTurn(target.id, null);
+		hcomPlan({ agents: [target.self], resumed: agent(target.name, target.id) });
+		await change(target.id, client === 'claude' ? 'claude-haiku-5-5' : 'gpt-6-astra', null);
+		expect(resumes().at(-1)?.slice(6)).toEqual(client === 'claude' ? ['--model', 'claude-haiku-5-5'] : ['-c', 'model="gpt-6-astra"']);
+	}
 });
 
 // --- Codex: stopped and resumed -----------------------------------------------------------------------
@@ -337,7 +409,7 @@ test('arguments that cannot be read do not stop a model switch', async () => {
 	hcomPlan({ agents: [target.self], resumed: agent(target.name, target.id) });
 
 	expect((await change(target.id, 'gpt-6-astra', null)).body.ok).toBe(true);
-	expect(resumes()[0].slice(-2)).toEqual(['-c', 'model="gpt-6-astra"']);
+	expect(resumes()[0].slice(-4)).toEqual(['-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="medium"']);
 });
 
 test('a stop that fails is not resumed, and stays open with the old and new settings', async () => {
@@ -439,9 +511,10 @@ test('a resume that fails shows the error and 繼續切換 resumes again with th
 	hcomPlan({ agents: [], resumed: agent(target.name, target.id) });
 	const again = await resumeSwitch(target.id);
 	expect(again.body.ok).toBe(true);
-	expect(resumes().map((args) => args.slice(-2))).toEqual([
-		['-c', 'model="gpt-6-astra"'],
-		['-c', 'model="gpt-6-astra"']
+	// The effort of the turn before the switch is carried both times.
+	expect(resumes().map((args) => args.slice(-4))).toEqual([
+		['-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="medium"'],
+		['-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="medium"']
 	]);
 	expect(kills()).toHaveLength(1);
 });
@@ -587,9 +660,14 @@ test('an open switch is read back after the board restarts', async () => {
 
 test('two switches, and a switch and a message, are handled one after another', async () => {
 	const claude = await running('claude');
-	writeFileSync(join(commandDir, 'inject.json'), JSON.stringify({ [claude.name]: { sleepMs: 150 } }));
-	await Promise.all([change(claude.id, 'claude-haiku-5-5', 'low'), change(claude.id, 'claude-opus-5-5', null)]);
-	expect(typed().map((args) => args[1])).toEqual(['/model claude-haiku-5-5', '/effort low', '/model claude-opus-5-5']);
+	hcomPlan({ agents: [claude.self], resumed: agent(claude.name, claude.id, 'listening', 'wP:new'), kill: { sleepMs: 150 } });
+	await Promise.all([change(claude.id, 'claude-haiku-5-5', 'low'), change(claude.id, 'claude-opus-5-5', 'high')]);
+	// The second waited for the first: it found the client resumed, ended that switch and ran its own.
+	expect(kills()).toEqual([['kill', claude.name], ['kill', claude.name]]);
+	expect(resumes().map((args) => args.slice(6))).toEqual([
+		['--model', 'claude-haiku-5-5', '--effort', 'low'],
+		['--model', 'claude-opus-5-5', '--effort', 'high']
+	]);
 
 	const codex = await running('codex');
 	hcomPlan({ agents: [codex.self], resumed: agent(codex.name, codex.id), kill: { sleepMs: 300 } });
@@ -603,8 +681,8 @@ test('two switches, and a switch and a message, are handled one after another', 
 	});
 	// The message was typed only once the switch had stopped and resumed the client.
 	expect(message.status).toBe(200);
-	expect(kills()).toHaveLength(1);
-	expect(resumes()).toHaveLength(1);
+	expect(kills().filter((args) => args[1] === codex.name)).toHaveLength(1);
+	expect(resumes().filter((args) => args[1] === codex.id)).toHaveLength(1);
 	expect((await switched).body.ok).toBe(true);
 });
 
@@ -717,6 +795,25 @@ test('a wake of a Codex started with an explicit model refuses a model change an
 
 	expect((await wake(target.id, null, 'high')).body.ok).toBe(true);
 	expect(resumes()[0].slice(-2)).toEqual(['-c', 'model_reasoning_effort="high"']);
+});
+
+test('a wake with a new model and the effort kept carries the latest turn\'s effort, or nothing when it is not known', async () => {
+	const claude = await ended('claude');
+	lastTurn(claude.id, { model: 'claude-opus-5-5', effort: 'xhigh', time: '2026-10-14T09:00:00Z' });
+	const codex = await ended('codex');
+	lastTurn(codex.id, { model: 'gpt-6.1-sol', effort: 'low', time: '2026-10-14T09:00:00Z' });
+	const unknown = await ended('claude');
+	hcomPlan({});
+
+	expect((await wake(claude.id, 'claude-sonnet-5-5', null)).body.entry).toMatchObject({ choice: { model: 'claude-sonnet-5-5', effort: null }, carriedEffort: 'xhigh' });
+	await wake(codex.id, 'gpt-6-astra', null);
+	expect((await wake(unknown.id, 'claude-haiku-5-5', null)).body.entry).toMatchObject({ carriedEffort: null });
+
+	expect(resumes().map((args) => args.slice(8))).toEqual([
+		['--model', 'claude-sonnet-5-5', '--effort', 'xhigh'],
+		['-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="low"'],
+		['--model', 'claude-haiku-5-5']
+	]);
 });
 
 // --- What the latest turn used ---------------------------------------------------------------------------
