@@ -29,7 +29,7 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(22, { env: commandEnv });
+	fixture = await startFixture(19, { env: commandEnv });
 	cookie = await fixture.login();
 });
 afterAll(async () => {
