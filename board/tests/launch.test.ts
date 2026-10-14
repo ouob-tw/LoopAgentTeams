@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { LaunchList, LaunchResponse, LaunchView } from '../src/lib/board/launch.ts';
 import { gitRoot } from '../src/lib/server/git.ts';
-import { DAY, NODE, startFixture, type Fixture } from './harness.ts';
+import { AGENT_SHELL_ENV, DAY, keptAgentShellEnv, NODE, startFixture, type Fixture } from './harness.ts';
 
 // The fakes' plans and call logs live outside the fixture directory, because the command lines
 // have to be known before the fixture creates its own.
@@ -26,7 +26,8 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(20, { env: { ...commandEnv, LAT_BOARD_HCOM_TIMEOUT_SECONDS: '2' } });
+	// Started as from inside an agent's shell, the way QA starts a test board.
+	fixture = await startFixture(20, { env: { ...AGENT_SHELL_ENV, ...commandEnv, LAT_BOARD_HCOM_TIMEOUT_SECONDS: '2' } });
 	cookie = await fixture.login();
 });
 afterAll(async () => {
@@ -35,7 +36,7 @@ afterAll(async () => {
 	if (plainDir) rmSync(plainDir, { recursive: true, force: true });
 });
 beforeEach(() => {
-	for (const name of ['hcom-calls.jsonl', 'herdr-calls.jsonl', 'hcom.json', 'herdr.json']) rmSync(join(commandDir, name), { force: true });
+	for (const name of ['hcom-calls.jsonl', 'hcom-env.jsonl', 'herdr-calls.jsonl', 'hcom.json', 'herdr.json']) rmSync(join(commandDir, name), { force: true });
 	rmSync(join(fixture.dir, 'clock'), { force: true });
 	fixture.list([]);
 });
@@ -124,14 +125,16 @@ test('Codex gets $lat in front of the first message', async () => {
 	expect(hcomCalls().map((call) => call.args)).toEqual([['codex', '--dir', repo, '--terminal', 'herdr', '--go', '--hcom-prompt', '$lat fix the tests']]);
 });
 
-test('a group tag in the board environment is not passed on, so the printed name is the whole name', async () => {
-	// The fixture's environment has no HCOM_TAG; the fake reports what it was given.
+test('a board started inside an agent shell launches without that agent\'s identity, keeping hcom\'s data folder', async () => {
+	// The fixture's environment has an agent's HCOM_TAG, HCOM_INSTANCE_NAME, CLAUDE_CODE_* and more.
 	const repo = folder('tagless', true);
 	herdrPlan({ panes: [{ workspace_id: 'wT', cwd: repo }], workspaces: [['wT', 1, 'tagless']] });
 
 	await launch({ folder: repo });
 
+	// No group tag either, so the printed name is the whole name.
 	expect(hcomCalls()[0].tag).toBeNull();
+	expect(readLog('hcom-env.jsonl')).toEqual([keptAgentShellEnv(fixture)]);
 });
 
 // --- Herdr workspace ----------------------------------------------------------------------------
