@@ -42,10 +42,24 @@ export const AGENT_SHELL_ENV: Record<string, string> = {
 	CODEX_THREAD_ID: 'thread-of-the-caller',
 	AI_AGENT: 'claude-code',
 	HCOM_DIR: '/nonexistent/hcom-dir',
-	CODEX_HOME: '/nonexistent/codex-home'
+	CODEX_HOME: '/nonexistent/codex-home',
+	HERDR_SOCKET_PATH: '/nonexistent/herdr.sock'
 };
-/** Of those, what hcom may still be given when it starts or resumes an agent. */
-export const KEPT_AGENT_SHELL_ENV = ['CODEX_HOME', 'HCOM_DIR'];
+
+/** What the fake hcom must have been given when it starts or resumes an agent for a board started
+ *  with AGENT_SHELL_ENV: none of the agent's identity, and the settings it needs unchanged. */
+export function keptAgentShellEnv(fixture: Fixture) {
+	return {
+		agentLike: ['CODEX_HOME', 'HCOM_DIR'],
+		kept: {
+			HCOM_DIR: AGENT_SHELL_ENV.HCOM_DIR,
+			CODEX_HOME: AGENT_SHELL_ENV.CODEX_HOME,
+			HERDR_SOCKET_PATH: AGENT_SHELL_ENV.HERDR_SOCKET_PATH,
+			HOME: join(fixture.dir, 'home'),
+			PATH: process.env.PATH ?? ''
+		}
+	};
+}
 /** The board password every fixture sets unless told not to. A test value, not a real password. */
 export const PASSWORD = 'test-password-一二三';
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));

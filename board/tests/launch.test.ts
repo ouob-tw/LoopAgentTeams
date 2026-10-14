@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { LaunchList, LaunchResponse, LaunchView } from '../src/lib/board/launch.ts';
 import { gitRoot } from '../src/lib/server/git.ts';
-import { AGENT_SHELL_ENV, DAY, KEPT_AGENT_SHELL_ENV, NODE, startFixture, type Fixture } from './harness.ts';
+import { AGENT_SHELL_ENV, DAY, keptAgentShellEnv, NODE, startFixture, type Fixture } from './harness.ts';
 
 // The fakes' plans and call logs live outside the fixture directory, because the command lines
 // have to be known before the fixture creates its own.
@@ -134,7 +134,7 @@ test('a board started inside an agent shell launches without that agent\'s ident
 
 	// No group tag either, so the printed name is the whole name.
 	expect(hcomCalls()[0].tag).toBeNull();
-	expect(readLog<string[]>('hcom-env.jsonl')).toEqual([KEPT_AGENT_SHELL_ENV]);
+	expect(readLog('hcom-env.jsonl')).toEqual([keptAgentShellEnv(fixture)]);
 });
 
 // --- Herdr workspace ----------------------------------------------------------------------------

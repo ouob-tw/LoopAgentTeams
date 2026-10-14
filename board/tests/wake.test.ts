@@ -15,7 +15,7 @@ import {
 	type WakeResponse,
 	type WakeView
 } from '../src/lib/board/wake.ts';
-import { AGENT_SHELL_ENV, KEPT_AGENT_SHELL_ENV, named, NODE, startFixture, until, type Fixture } from './harness.ts';
+import { AGENT_SHELL_ENV, keptAgentShellEnv, named, NODE, startFixture, until, type Fixture } from './harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-wake-'));
 const commandEnv = {
@@ -197,7 +197,7 @@ test('a client that is gone is resumed by session ID in a Herdr tab of its proje
 		{ args: ['r', target.id, '--terminal', 'herdr', '--go', '--hcom-prompt', '接著做\n細節'], workspace: 'wP', tag: null }
 	]);
 	// The board runs inside an agent's shell here; none of that agent's identity reaches the resume.
-	expect(readLog<string[]>('hcom-env.jsonl')).toEqual([KEPT_AGENT_SHELL_ENV]);
+	expect(readLog('hcom-env.jsonl')).toEqual([keptAgentShellEnv(fixture)]);
 	expect(injects()).toEqual([]);
 });
 
