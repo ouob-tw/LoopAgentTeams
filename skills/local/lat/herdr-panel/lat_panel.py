@@ -38,7 +38,9 @@ Public API used by the Textual panel and LAT controller:
 * ``board_controllers``, ``board_questions``, ``answer_and_notify``, and
   ``notify_controller`` back the ``board`` commands: the LAT board reads and
   answers question files only through them. ``answer_question`` is the write
-  half of ``answer_and_notify``.
+  half of ``answer_and_notify``. ``board_transcript`` reads one page of a
+  controller's conversation from the Claude or Codex session record that
+  ``transcript_path`` finds.
 
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
@@ -60,6 +62,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   board answer --questions PATH --id ID --revision N \
       --expected-section-sha256 HASH [--select N]... [--text TEXT] [--note TEXT]
   board notify --questions PATH
+  board transcript --client (claude|codex) --session-id ID [--before SEQ]
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
 Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
@@ -1917,6 +1920,338 @@ def answer_and_notify(
     return result
 
 
+# --- Conversation history for the board ------------------------------------
+
+TRANSCRIPT_PAGE_TEXTS = 50
+_SUMMARY_LIMIT = 80
+_SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
+# Text that arrives as user input but was put there by a tool, not typed by a person.
+_INJECTED_INPUT = re.compile(
+    r"\s*(<hcom[\s>]|\[lat-watch\]|(read (any|your) unread hcom|you have unread hcom))",
+    re.IGNORECASE,
+)
+# What HCOM delivers inside a hook: `<hcom>…` or `[request #12] sender → receiver: …`.
+_HCOM_DELIVERY = re.compile(r"\s*(<hcom>|\[(?:\d+ )?(?:new message|request|inform|ack)\b[^\]]*\])")
+_COMMAND_WRAPPER = re.compile(
+    r"<command-name>/?([^<]*)</command-name>(?:.*?<command-args>(.*?)</command-args>)?", re.DOTALL
+)
+
+
+def _transcript_root(env, name, default):
+    value = env.get(name)
+    return Path(value) if value else Path.home() / default
+
+
+def transcript_path(client, session_id, *, env=None):
+    """Find the client's own record of one session, or raise ``FileNotFoundError``.
+
+    Claude keeps ``projects/<project>/<session>.jsonl`` under ``CLAUDE_CONFIG_DIR``
+    (default ``~/.claude``); Codex keeps ``sessions/YYYY/MM/DD/rollout-*-<session>.jsonl``
+    under ``CODEX_HOME`` (default ``~/.codex``), and moves old ones to
+    ``archived_sessions``.
+    """
+    env = os.environ if env is None else env
+    if not _SESSION_ID.fullmatch(session_id or ""):
+        raise ValueError(f"not a session ID: {session_id!r}")
+    if client == "claude":
+        root = _transcript_root(env, "CLAUDE_CONFIG_DIR", ".claude")
+        found = sorted(root.glob(f"projects/*/{session_id}.jsonl"))
+        label = "Claude 的 session 紀錄檔"
+    elif client == "codex":
+        root = _transcript_root(env, "CODEX_HOME", ".codex")
+        found = sorted(root.glob(f"sessions/*/*/*/rollout-*-{session_id}.jsonl")) or sorted(
+            root.glob(f"archived_sessions/rollout-*-{session_id}.jsonl")
+        )
+        label = "Codex 的 rollout 紀錄檔"
+    else:
+        raise ValueError(f"對話紀錄只支援 Claude 與 Codex，這個主控的 client 是 {client}")
+    if not found:
+        raise FileNotFoundError(f"在 {root} 找不到 session {session_id} 的{label}")
+    # A session the client wrote more than once keeps growing in its newest file.
+    return max(found, key=lambda path: path.stat().st_mtime)
+
+
+def _read_records(path):
+    """Parse every complete JSON line; return the records and how many lines were unusable.
+
+    A last line without its newline may still be being written, so it is neither
+    used nor counted until it is complete.
+    """
+    records, skipped = [], 0
+    lines = path.read_bytes().split(b"\n")
+    for line in lines[:-1]:
+        if not line.strip():
+            continue
+        try:
+            record = json.loads(line)
+        except ValueError:
+            skipped += 1
+            continue
+        if isinstance(record, dict):
+            records.append(record)
+        else:
+            skipped += 1
+    return records, skipped
+
+
+def _one_line(text, limit=_SUMMARY_LIMIT):
+    text = " ".join(str(text).split())
+    return text if len(text) <= limit else text[: limit - 1] + "…"
+
+
+def _command_summary(command):
+    """First line of a shell command, cut before a heredoc, at most 80 characters."""
+    lines = str(command).strip().splitlines()
+    first = lines[0] if lines else ""
+    return _one_line(first.split("<<", 1)[0].strip())
+
+
+def _shown_path(path, cwd):
+    path = str(path).removeprefix("file://")
+    if cwd and path.startswith(cwd.rstrip("/") + "/"):
+        path = path[len(cwd.rstrip("/")) + 1:]
+    return _one_line(path)
+
+
+def _tool(time, name, label, detail="", error=False):
+    return {"kind": "tool", "time": time, "name": name, "label": label,
+            "detail": detail, "error": error}
+
+
+def _notice(time, text):
+    """An HCOM delivery, a LAT watch reminder or a hook's prompt, by what it says; never its content."""
+    if text.lstrip().startswith("[lat-watch]"):
+        return _tool(time, "lat-watch", "收到 lat-watch 提醒")
+    if _HCOM_DELIVERY.match(text) or _INJECTED_INPUT.match(text):
+        return _tool(time, "hcom", "收到 hcom 通知")
+    return _tool(time, "hook", "hook 提示")
+
+
+# Claude tools whose main argument is safe to show: (label, input key, is a path).
+_CLAUDE_TOOLS = {
+    "Bash": ("執行指令", "command", False),
+    "Read": ("讀檔", "file_path", True),
+    "Write": ("寫檔", "file_path", True),
+    "Edit": ("改檔", "file_path", True),
+    "MultiEdit": ("改檔", "file_path", True),
+    "NotebookEdit": ("改檔", "notebook_path", True),
+    "Grep": ("搜尋", "pattern", False),
+    "Glob": ("找檔", "pattern", False),
+    "WebSearch": ("搜尋網頁", "query", False),
+    "WebFetch": ("讀網頁", "url", False),
+    "Skill": ("使用技能", "skill", False),
+    "Agent": ("召喚子 Agent", "description", False),
+    "Task": ("召喚子 Agent", "description", False),
+}
+
+
+def _claude_tool(block, time, cwd):
+    name = str(block.get("name") or "工具")
+    known = _CLAUDE_TOOLS.get(name)
+    arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
+    if not known or not isinstance(arguments.get(known[1]), str):
+        return _tool(time, name, name)
+    label, key, is_path = known
+    value = arguments[key]
+    if name == "Bash":
+        detail = _command_summary(value)
+    elif is_path:
+        detail = _shown_path(value, cwd)
+    else:
+        detail = _one_line(value)
+    return _tool(time, name, label, detail)
+
+
+def _claude_user_text(content):
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return "\n".join(
+            block["text"] for block in content
+            if isinstance(block, dict) and block.get("type") == "text"
+            and isinstance(block.get("text"), str)
+        )
+    return ""
+
+
+def _claude_human_text(record, text):
+    """What a person typed, or None for input the client or a tool put there."""
+    if record.get("isMeta") or record.get("isCompactSummary") or record.get("isVisibleInTranscriptOnly"):
+        return None
+    if "origin" in record:
+        human = isinstance(record["origin"], dict) and record["origin"].get("kind") == "human"
+    else:
+        # Older records have no origin: anything wrapped in a tag is the client's own.
+        human = not text.lstrip().startswith(("<", "[Request interrupted"))
+    if not human or _INJECTED_INPUT.match(text):
+        return None
+    wrapped = _COMMAND_WRAPPER.search(text)
+    if wrapped:
+        # A slash command the person typed, such as `/lat 繼續`.
+        command = "/" + wrapped.group(1).strip().lstrip("/")
+        arguments = (wrapped.group(2) or "").strip()
+        return f"{command} {arguments}" if arguments else command
+    return text
+
+
+def _claude_items(records):
+    items, tools, seen = [], {}, set()
+    for record in records:
+        uuid_ = record.get("uuid")
+        if uuid_ in seen or record.get("isSidechain"):
+            continue
+        if uuid_:
+            seen.add(uuid_)
+        time, kind = record.get("timestamp"), record.get("type")
+        message = record.get("message") if isinstance(record.get("message"), dict) else {}
+        content = message.get("content")
+        if kind == "assistant" and message.get("model") != "<synthetic>" and isinstance(content, list):
+            for block in content:
+                if not isinstance(block, dict):
+                    continue
+                if block.get("type") == "text" and str(block.get("text") or "").strip():
+                    items.append({"kind": "assistant", "time": time, "text": block["text"]})
+                elif block.get("type") == "tool_use":
+                    item = _claude_tool(block, time, record.get("cwd"))
+                    tools[block.get("id")] = item
+                    items.append(item)
+        elif kind == "user":
+            if isinstance(content, list):
+                for block in content:
+                    if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("is_error"):
+                        if block.get("tool_use_id") in tools:
+                            tools[block["tool_use_id"]]["error"] = True
+            text = _claude_user_text(content)
+            if not text.strip():
+                continue
+            if text.startswith("Stop hook feedback"):
+                items.append(_tool(time, "hook", "hook 提示"))
+                continue
+            human = _claude_human_text(record, text)
+            if human is not None:
+                items.append({"kind": "user", "time": time, "text": human})
+            elif _INJECTED_INPUT.match(text) and text.strip() != "<hcom>":
+                # A bare `<hcom>` only wakes the client; the delivery arrives through a hook.
+                items.append(_notice(time, text))
+        elif kind == "attachment" and isinstance(record.get("attachment"), dict):
+            attachment = record["attachment"]
+            kind = attachment.get("type")
+            if kind == "queued_command":
+                # Typed while the client was busy; recorded only here.
+                text = _claude_user_text(attachment.get("prompt"))
+                origin = attachment.get("origin")
+                human = isinstance(origin, dict) and origin.get("kind") == "human"
+                if attachment.get("commandMode") != "prompt" or not human or not text.strip():
+                    continue
+                if not _INJECTED_INPUT.match(text):
+                    items.append({"kind": "user", "time": time, "text": text})
+                elif text.strip() != "<hcom>":
+                    items.append(_notice(time, text))
+            elif kind in ("hook_additional_context", "hook_system_message"):
+                value = attachment.get("content")
+                text = "\n".join(map(str, value)) if isinstance(value, list) else str(value or "")
+                items.append(_notice(time, text))
+    return items
+
+
+def _codex_text(content):
+    if not isinstance(content, list):
+        return ""
+    return "".join(
+        str(part.get("text") or "") for part in content if isinstance(part, dict)
+    )
+
+
+def _codex_item(item, time, cwd):
+    kind = item.get("type")
+    if kind == "UserMessage":
+        text = _codex_text(item.get("content"))
+        if not text.strip():
+            return None
+        if _INJECTED_INPUT.match(text):
+            # The wake-up HCOM types; the message itself arrives as a developer message.
+            return None if text.strip() == "<hcom>" else _notice(time, text)
+        return {"kind": "user", "time": time, "text": text}
+    if kind == "AgentMessage":
+        text = _codex_text(item.get("content"))
+        return {"kind": "assistant", "time": time, "text": text} if text.strip() else None
+    failed = item.get("status") in ("failed", "declined")
+    if kind == "CommandExecution":
+        command = item.get("command")
+        if isinstance(command, list):
+            command = command[-1] if command else ""
+        error = failed or item.get("exit_code") not in (0, None)
+        return _tool(time, "exec", "執行指令", _command_summary(command or ""), error)
+    if kind == "FileChange":
+        changes = item.get("changes") if isinstance(item.get("changes"), dict) else {}
+        paths = [_shown_path(path, cwd) for path in changes]
+        detail = paths[0] if len(paths) == 1 else (f"{paths[0]} 等 {len(paths)} 個檔案" if paths else "")
+        return _tool(time, "apply_patch", "改檔", detail, failed)
+    if kind == "ImageView" and isinstance(item.get("path"), str):
+        return _tool(time, "view_image", "看圖", _shown_path(item["path"], cwd))
+    if kind == "McpToolCall":
+        name = f"{item.get('server')}.{item.get('tool')}"
+        return _tool(time, "mcp", "MCP 工具", _one_line(name), failed)
+    if kind == "HookPrompt":
+        return _tool(time, "hook", "hook 提示")
+    if kind in ("Reasoning", "SubAgentActivity", None):
+        return None
+    return _tool(time, str(kind), str(kind), "", failed)
+
+
+def _codex_items(records):
+    items, cwd = [], None
+    for record in records:
+        payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
+        time = record.get("timestamp")
+        if record.get("type") == "session_meta":
+            cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else None
+            if isinstance(payload.get("source"), dict) and "subagent" in payload["source"]:
+                # A sub-agent's own thread: none of it is the person's conversation.
+                return []
+        elif record.get("type") == "event_msg" and payload.get("type") == "item_completed":
+            item = payload.get("item")
+            entry = _codex_item(item, time, cwd) if isinstance(item, dict) else None
+            if entry:
+                items.append(entry)
+        elif (
+            record.get("type") == "response_item" and payload.get("type") == "message"
+            and payload.get("role") == "developer"
+        ):
+            text = _codex_text(payload.get("content"))
+            if text.lstrip().startswith("<hcom>"):
+                items.append(_tool(time, "hcom", "收到 hcom 通知"))
+    return items
+
+
+def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_TEXTS, env=None):
+    """One page of a session's conversation, read from the client's own record.
+
+    Items are the person's messages (``user``), the controller's text replies
+    (``assistant``) and one line per operation in between (``tool``), oldest
+    first; each has ``seq``, its position in the whole conversation. A page holds
+    the last ``limit`` text items before ``before`` (the end when None) and every
+    operation after the first of them, so pages never overlap or leave a gap.
+    ``before`` in the result is the cursor for the page just earlier, or None
+    when this one starts the conversation. ``skipped`` counts unusable lines.
+    """
+    path = transcript_path(client, session_id, env=env)
+    records, skipped = _read_records(path)
+    items = _claude_items(records) if client == "claude" else _codex_items(records)
+    for seq, item in enumerate(items):
+        item["seq"] = seq
+    end = len(items) if before is None else max(0, min(before, len(items)))
+    texts = [item["seq"] for item in items[:end] if item["kind"] != "tool"]
+    start = texts[-limit] if len(texts) > limit else 0
+    return {
+        "status": "ok",
+        "path": str(path),
+        "items": items[start:end],
+        "before": start or None,
+        "skipped": skipped,
+    }
+
+
 def _run_board(args):
     try:
         if args.board_command == "list":
@@ -1929,6 +2264,12 @@ def _run_board(args):
                 selections=args.select, text=args.text, note=args.note,
             )
             code = 0 if result["status"] == "submitted" else 1
+        elif args.board_command == "transcript":
+            try:
+                result = board_transcript(args.client, args.session_id, before=args.before)
+                code = 0
+            except FileNotFoundError as error:
+                result, code = {"status": "not_found", "reason": str(error)}, 1
         else:
             result = notify_controller(args.questions)
             code = 1 if result["status"] == "failed" else 0
@@ -2003,6 +2344,10 @@ def _build_parser():
     answer.add_argument("--note", default="")
     notify = board_commands.add_parser("notify")
     notify.add_argument("--questions", required=True, type=Path)
+    transcript = board_commands.add_parser("transcript")
+    transcript.add_argument("--client", required=True)
+    transcript.add_argument("--session-id", required=True)
+    transcript.add_argument("--before", type=int)
     return parser
 
 

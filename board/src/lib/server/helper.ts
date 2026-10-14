@@ -1,6 +1,7 @@
 // The only way the board reads and writes question files: the LAT panel helper's `board` commands.
 import { execFile } from 'node:child_process';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
+import type { TranscriptPage } from '../board/transcript.ts';
 import type { BoardConfig } from './config.ts';
 
 export type HelperList =
@@ -134,4 +135,38 @@ export function answerQuestion(config: BoardConfig, answer: HelperAnswer): Promi
 /** Resend the pending notification of one question file. Rewrites no answer. */
 export function notifyController(config: BoardConfig, questionsPath: string): Promise<HelperResult> {
 	return writeCommand(config, ['notify', `--questions=${questionsPath}`]);
+}
+
+export type HelperTranscript = { ok: true; page: TranscriptPage } | { ok: false; reason: string };
+
+/** One page of a controller's conversation, read by the helper from the client's own record:
+ *  the latest page, or the one just before the `before` cursor. */
+export async function readTranscript(
+	config: BoardConfig,
+	client: string,
+	sessionId: string,
+	before: number | null = null
+): Promise<HelperTranscript> {
+	const args = ['transcript', `--client=${client}`, `--session-id=${sessionId}`];
+	if (before !== null) args.push(`--before=${before}`);
+	const { stdout, failure } = await run(config, args);
+	let payload: Partial<TranscriptPage> & { status?: unknown; reason?: unknown };
+	try {
+		payload = JSON.parse(stdout);
+	} catch {
+		return { ok: false, reason: failure ?? '輔助工具的輸出不是 JSON' };
+	}
+	if (payload?.status !== 'ok' || !Array.isArray(payload.items) || typeof payload.path !== 'string') {
+		const reason = typeof payload?.reason === 'string' ? payload.reason : failure;
+		return { ok: false, reason: reason ?? '輔助工具的輸出缺少對話紀錄' };
+	}
+	return {
+		ok: true,
+		page: {
+			path: payload.path,
+			items: payload.items,
+			before: typeof payload.before === 'number' ? payload.before : null,
+			skipped: typeof payload.skipped === 'number' ? payload.skipped : 0
+		}
+	};
 }
