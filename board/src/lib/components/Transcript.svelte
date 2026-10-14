@@ -47,19 +47,19 @@
 	});
 
 	async function loadEarlier(): Promise<void> {
-		const from = view;
-		if (!from || from.before === null || loadingEarlier) return;
+		const requested = view?.before;
+		if (requested === null || requested === undefined || loadingEarlier) return;
 		const controllerId = id;
 		loadingEarlier = true;
 		earlierFailed = null;
 		try {
 			const response = await fetch(
-				`/api/transcript?controller=${encodeURIComponent(controllerId)}&before=${from.before}`
+				`/api/transcript?controller=${encodeURIComponent(controllerId)}&before=${requested}`
 			);
 			if (response.status === 401) return location.reload();
 			const update: TranscriptUpdate = await response.json();
 			if (controllerId !== id || !view) return;
-			if (update.ok) view = withEarlier(view, update.page);
+			if (update.ok) view = withEarlier(view, update.page, requested);
 			else earlierFailed = update.reason;
 		} catch {
 			if (controllerId === id) earlierFailed = '沒有收到看板伺服器的回應。';

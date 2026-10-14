@@ -1932,6 +1932,12 @@ _INJECTED_INPUT = re.compile(
 )
 # What HCOM delivers inside a hook: `<hcom>…` or `[request #12] sender → receiver: …`.
 _HCOM_DELIVERY = re.compile(r"\s*(<hcom>|\[(?:\d+ )?(?:new message|request|inform|ack)\b[^\]]*\])")
+# What the client itself wraps around output it puts into the conversation (older records
+# have no `origin` to tell typed text apart).
+_CLIENT_WRAPPER = re.compile(
+    r"\s*(<(local-command-[a-z]+|bash-(input|stdout|stderr)|task-notification|system-reminder)>"
+    r"|\[Request interrupted|Caveat: )"
+)
 _COMMAND_WRAPPER = re.compile(
     r"<command-name>/?([^<]*)</command-name>(?:.*?<command-args>(.*?)</command-args>)?", re.DOTALL
 )
@@ -1994,6 +2000,17 @@ def _read_records(path):
     return records, skipped
 
 
+class _RecordError(Exception):
+    """A record the client would not have written: one of its fields has the wrong type."""
+
+
+def _text_field(value):
+    """A field that must be text when present."""
+    if value is None or isinstance(value, str):
+        return value
+    raise _RecordError(f"expected text, got {type(value).__name__}")
+
+
 def _one_line(text, limit=_SUMMARY_LIMIT):
     text = " ".join(str(text).split())
     return text if len(text) <= limit else text[: limit - 1] + "…"
@@ -2052,7 +2069,7 @@ _CLAUDE_TOOLS = {
 
 
 def _claude_tool(block, time, cwd):
-    name = str(block.get("name") or "工具")
+    name = _text_field(block.get("name")) or "工具"
     known = _CLAUDE_TOOLS.get(name)
     arguments = block.get("input") if isinstance(block.get("input"), dict) else {}
     if not known or not isinstance(arguments.get(known[1]), str):
@@ -2083,15 +2100,18 @@ def _claude_user_text(content):
     return ""
 
 
-def _claude_human_text(record, text):
-    """What a person typed, or None for input the client or a tool put there."""
+def _claude_human_text(record, text, marks_origin):
+    """What a person typed, or None for input the client or a tool put there. ``marks_origin``
+    tells whether this client version records the origin of what the person typed."""
     if record.get("isMeta") or record.get("isCompactSummary") or record.get("isVisibleInTranscriptOnly"):
         return None
-    if "origin" in record:
-        human = isinstance(record["origin"], dict) and record["origin"].get("kind") == "human"
+    if marks_origin:
+        # Typed text carries its origin; the client's own commands, such as `/copy`, carry none.
+        origin = record.get("origin")
+        human = isinstance(origin, dict) and origin.get("kind") == "human"
     else:
-        # Older records have no origin: anything wrapped in a tag is the client's own.
-        human = not text.lstrip().startswith(("<", "[Request interrupted"))
+        # Older versions record no origin: only the client's own wrappers are not typed text.
+        human = not _CLIENT_WRAPPER.match(text)
     if not human or _INJECTED_INPUT.match(text):
         return None
     wrapped = _COMMAND_WRAPPER.search(text)
@@ -2103,40 +2123,56 @@ def _claude_human_text(record, text):
     return text
 
 
-def _claude_items(records):
-    items, tools, seen = [], {}, set()
+def _each_record(records, handle):
+    """Turn records into items with ``handle(record, items)``; return the items and how many records
+    were dropped. A record whose fields have unexpected types is dropped whole, keeping the rest."""
+    items, dropped = [], 0
     for record in records:
-        record_id = record.get("uuid")
+        kept = len(items)
+        try:
+            handle(record, items)
+        except (_RecordError, TypeError, AttributeError, KeyError, ValueError):
+            del items[kept:]
+            dropped += 1
+    return items, dropped
+
+
+def _claude_items(records):
+    tools, seen = {}, set()
+    marks_origin = any(record.get("type") == "user" and "origin" in record for record in records)
+
+    def handle(record, items):
+        record_id = _text_field(record.get("uuid"))
         if record_id in seen or record.get("isSidechain"):
-            continue
+            return
         if record_id:
             seen.add(record_id)
-        time, kind = record.get("timestamp"), record.get("type")
+        time, kind = _text_field(record.get("timestamp")), record.get("type")
         message = record.get("message") if isinstance(record.get("message"), dict) else {}
         content = message.get("content")
         if kind == "assistant" and message.get("model") != "<synthetic>" and isinstance(content, list):
             for block in content:
                 if not isinstance(block, dict):
                     continue
-                if block.get("type") == "text" and str(block.get("text") or "").strip():
+                if block.get("type") == "text" and (_text_field(block.get("text")) or "").strip():
                     items.append({"kind": "assistant", "time": time, "text": block["text"]})
                 elif block.get("type") == "tool_use":
-                    item = _claude_tool(block, time, record.get("cwd"))
-                    tools[block.get("id")] = item
+                    item = _claude_tool(block, time, _text_field(record.get("cwd")))
+                    tools[_text_field(block.get("id"))] = item
                     items.append(item)
         elif kind == "user":
             if isinstance(content, list):
                 for block in content:
                     if isinstance(block, dict) and block.get("type") == "tool_result" and block.get("is_error"):
-                        if block.get("tool_use_id") in tools:
+                        if _text_field(block.get("tool_use_id")) in tools:
                             tools[block["tool_use_id"]]["error"] = True
             text = _claude_user_text(content)
             if not text.strip():
-                continue
+                return
             if text.startswith("Stop hook feedback"):
                 items.append(_tool(time, "hook", "hook 提示"))
-                continue
-            human = _claude_human_text(record, text)
+                return
+            human = _claude_human_text(record, text, marks_origin)
             if human is not None:
                 items.append({"kind": "user", "time": time, "text": human})
             elif _INJECTED_INPUT.match(text) and (notice := _injected(time, text)):
@@ -2150,7 +2186,7 @@ def _claude_items(records):
                 origin = attachment.get("origin")
                 human = isinstance(origin, dict) and origin.get("kind") == "human"
                 if attachment.get("commandMode") != "prompt" or not human or not text.strip():
-                    continue
+                    return
                 if not _INJECTED_INPUT.match(text):
                     items.append({"kind": "user", "time": time, "text": text})
                 elif notice := _injected(time, text):
@@ -2159,14 +2195,15 @@ def _claude_items(records):
                 value = attachment.get("content")
                 text = "\n".join(map(str, value)) if isinstance(value, list) else str(value or "")
                 items.append(_notice(time, text))
-    return items
+
+    return _each_record(records, handle)
 
 
 def _codex_text(content):
     if not isinstance(content, list):
         return ""
     return "".join(
-        str(part.get("text") or "") for part in content if isinstance(part, dict)
+        _text_field(part.get("text")) or "" for part in content if isinstance(part, dict)
     )
 
 
@@ -2187,6 +2224,7 @@ def _codex_item(item, time, cwd):
         command = item.get("command")
         if isinstance(command, list):
             command = command[-1] if command else ""
+        command = _text_field(command)
         error = failed or item.get("exit_code") not in (0, None)
         return _tool(time, "exec", "執行指令", _command_summary(command or ""), error)
     if kind == "FileChange":
@@ -2197,25 +2235,31 @@ def _codex_item(item, time, cwd):
     if kind == "ImageView" and isinstance(item.get("path"), str):
         return _tool(time, "view_image", "看圖", _shown_path(item["path"], cwd))
     if kind == "McpToolCall":
-        name = f"{item.get('server')}.{item.get('tool')}"
+        name = f"{_text_field(item.get('server'))}.{_text_field(item.get('tool'))}"
         return _tool(time, "mcp", "MCP 工具", _one_line(name), failed)
     if kind == "HookPrompt":
         return _tool(time, "hook", "hook 提示")
     if kind in ("Reasoning", "SubAgentActivity", None):
         return None
-    return _tool(time, str(kind), str(kind), "", failed)
+    kind = _text_field(kind)
+    return _tool(time, kind, kind, "", failed)
+
+
+class _SubAgentThread(Exception):
+    """The rollout is a sub-agent's own thread, not a conversation with the person."""
 
 
 def _codex_items(records):
-    items, cwd = [], None
-    for record in records:
+    cwd = None
+
+    def handle(record, items):
+        nonlocal cwd
         payload = record.get("payload") if isinstance(record.get("payload"), dict) else {}
-        time = record.get("timestamp")
+        time = _text_field(record.get("timestamp"))
         if record.get("type") == "session_meta":
-            cwd = payload.get("cwd") if isinstance(payload.get("cwd"), str) else None
             if isinstance(payload.get("source"), dict) and "subagent" in payload["source"]:
-                # A sub-agent's own thread: none of it is the person's conversation.
-                return []
+                raise _SubAgentThread
+            cwd = _text_field(payload.get("cwd"))
         elif record.get("type") == "event_msg" and payload.get("type") == "item_completed":
             item = payload.get("item")
             entry = _codex_item(item, time, cwd) if isinstance(item, dict) else None
@@ -2225,10 +2269,13 @@ def _codex_items(records):
             record.get("type") == "response_item" and payload.get("type") == "message"
             and payload.get("role") == "developer"
         ):
-            text = _codex_text(payload.get("content"))
-            if text.lstrip().startswith("<hcom>"):
+            if _codex_text(payload.get("content")).lstrip().startswith("<hcom>"):
                 items.append(_tool(time, "hcom", "收到 hcom 通知"))
-    return items
+
+    try:
+        return _each_record(records, handle)
+    except _SubAgentThread:
+        return [], 0
 
 
 def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_TEXTS, env=None):
@@ -2240,11 +2287,13 @@ def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_T
     the last ``limit`` text items before ``before`` (the end when None) and every
     operation after the first of them, so pages never overlap or leave a gap.
     ``before`` in the result is the cursor for the page just earlier, or None
-    when this one starts the conversation. ``skipped`` counts unusable lines.
+    when this one starts the conversation. ``skipped`` counts unusable lines:
+    ones that are not JSON objects, and records whose fields have the wrong types.
     """
     path = transcript_path(client, session_id, env=env)
     records, skipped = _read_records(path)
-    items = _claude_items(records) if client == "claude" else _codex_items(records)
+    items, dropped = _claude_items(records) if client == "claude" else _codex_items(records)
+    skipped += dropped
     for seq, item in enumerate(items):
         item["seq"] = seq
     end = len(items) if before is None else max(0, min(before, len(items)))

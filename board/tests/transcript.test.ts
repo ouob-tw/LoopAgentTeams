@@ -113,7 +113,7 @@ test('loading earlier pages shows every text once and none is missing', async ()
 	while (view.before !== null) {
 		const earlier = await page(nova.session_id, view.before);
 		if (!earlier.ok) throw new Error(earlier.reason);
-		view = withEarlier(view, earlier.page);
+		view = withEarlier(view, earlier.page, view.before);
 	}
 
 	const texts = view.items.flatMap((item) => (item.kind === 'tool' ? [] : [item.text]));

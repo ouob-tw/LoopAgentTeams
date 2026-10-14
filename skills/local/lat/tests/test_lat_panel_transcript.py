@@ -66,29 +66,31 @@ class ClaudeSampleTests(TranscriptTestCase):
         shutil.copy(FIXTURES / "claude-session.jsonl", self.claude_file())
         self.page = self.transcript("claude", CLAUDE_SESSION)
 
+    EXPECTED = [
+        ("tool", "hook 提示"),
+        ("user", "幫我看一下登入頁為什麼會轉圈"),
+        ("assistant", "我先看登入頁的程式。"),
+        ("tool", "讀檔：src/login.ts"),
+        ("tool", "搜尋：spinner"),
+        ("tool", "執行指令：cat > notes.txt"),
+        ("tool", "✗ 執行指令：npm test"),
+        ("assistant", "測試失敗了，原因是逾時。\n\n我接著改設定。"),
+        ("tool", "收到 hcom 通知"),
+        ("tool", "寫檔：src/config.ts"),
+        ("tool", "改檔：/elsewhere/other.ts"),
+        ("tool", "mcp__demo__lookup"),
+        ("user", "順便看一下登出"),
+        ("tool", "召喚子 Agent：查登出流程"),
+        ("assistant", "改好了，登出也正常。"),
+        ("tool", "收到 hcom 通知"),
+        ("assistant", "收到 nova 的訊息。"),
+        ("user", "/lat 開新一輪"),
+        ("tool", "hook 提示"),
+        ("assistant", "好，開始新一輪。"),
+    ]
+
     def test_texts_and_operations_come_in_the_order_they_happened(self):
-        self.assertEqual([shown(item) for item in self.page["items"]], [
-            ("tool", "hook 提示"),
-            ("user", "幫我看一下登入頁為什麼會轉圈"),
-            ("assistant", "我先看登入頁的程式。"),
-            ("tool", "讀檔：src/login.ts"),
-            ("tool", "搜尋：spinner"),
-            ("tool", "執行指令：cat > notes.txt"),
-            ("tool", "✗ 執行指令：npm test"),
-            ("assistant", "測試失敗了，原因是逾時。\n\n我接著改設定。"),
-            ("tool", "收到 hcom 通知"),
-            ("tool", "寫檔：src/config.ts"),
-            ("tool", "改檔：/elsewhere/other.ts"),
-            ("tool", "mcp__demo__lookup"),
-            ("user", "順便看一下登出"),
-            ("tool", "召喚子 Agent：查登出流程"),
-            ("assistant", "改好了，登出也正常。"),
-            ("tool", "收到 hcom 通知"),
-            ("assistant", "收到 nova 的訊息。"),
-            ("user", "/lat 開新一輪"),
-            ("tool", "hook 提示"),
-            ("assistant", "好，開始新一輪。"),
-        ])
+        self.assertEqual([shown(item) for item in self.page["items"]], self.EXPECTED)
         self.assertEqual([item["seq"] for item in self.page["items"]], list(range(20)))
         self.assertIsNone(self.page["before"])
         self.assertEqual(self.page["path"], str(self.claude_file()))
@@ -120,23 +122,25 @@ class CodexSampleTests(TranscriptTestCase):
         shutil.copy(FIXTURES / "codex-rollout.jsonl", self.codex_file())
         self.page = self.transcript("codex", CODEX_SESSION)
 
+    EXPECTED = [
+        ("user", "$lat 修好匯出功能"),
+        ("assistant", "我先找匯出的程式。"),
+        ("tool", "執行指令：rg -n export src"),
+        ("tool", "執行指令：python -"),
+        ("tool", "✗ 執行指令：npm test -- " + "x" * 67 + "…"),
+        ("tool", "收到 hcom 通知"),
+        ("assistant", "找到了，問題在日期格式。"),
+        ("tool", "改檔：src/export.ts"),
+        ("tool", "改檔：a.ts 等 2 個檔案"),
+        ("tool", "MCP 工具：context7.query-docs"),
+        ("tool", "hook 提示"),
+        ("assistant", "改好了，\n匯出正常。"),
+        ("tool", "收到 lat-watch 提醒"),
+        ("user", "還有一件事"),
+    ]
+
     def test_texts_and_operations_come_in_the_order_they_happened(self):
-        self.assertEqual([shown(item) for item in self.page["items"]], [
-            ("user", "$lat 修好匯出功能"),
-            ("assistant", "我先找匯出的程式。"),
-            ("tool", "執行指令：rg -n export src"),
-            ("tool", "執行指令：python -"),
-            ("tool", "✗ 執行指令：npm test -- " + "x" * 67 + "…"),
-            ("tool", "收到 hcom 通知"),
-            ("assistant", "找到了，問題在日期格式。"),
-            ("tool", "改檔：src/export.ts"),
-            ("tool", "改檔：a.ts 等 2 個檔案"),
-            ("tool", "MCP 工具：context7.query-docs"),
-            ("tool", "hook 提示"),
-            ("assistant", "改好了，\n匯出正常。"),
-            ("tool", "收到 lat-watch 提醒"),
-            ("user", "還有一件事"),
-        ])
+        self.assertEqual([shown(item) for item in self.page["items"]], self.EXPECTED)
         self.assertIsNone(self.page["before"])
 
     def test_no_content_output_system_prompt_or_broken_line_reaches_the_board(self):
@@ -230,16 +234,78 @@ class LookupTests(TranscriptTestCase):
 
 class RecordVariantTests(TranscriptTestCase):
     def test_older_claude_records_without_origin_still_tell_typed_text_from_client_text(self):
+        typed = [
+            "舊版打的字",
+            "<div>這段 HTML 是我打的</div>",
+            "<command-message>lat</command-message>\n<command-name>/lat</command-name>\n<command-args>開新一輪</command-args>",
+        ]
+        client = [
+            "<local-command-stdout>SECRET</local-command-stdout>",
+            "<local-command-caveat>Caveat: SECRET</local-command-caveat>",
+            "<bash-input>SECRET</bash-input>",
+            "<bash-stdout>SECRET</bash-stdout>",
+            "<task-notification>SECRET</task-notification>",
+            "[Request interrupted by user]",
+        ]
         records = [
-            {"type": "user", "uuid": "1", "timestamp": "t", "message": {"role": "user", "content": "舊版打的字"}},
-            {"type": "user", "uuid": "2", "timestamp": "t",
-             "message": {"role": "user", "content": "<local-command-stdout>SECRET</local-command-stdout>"}},
-            {"type": "user", "uuid": "3", "timestamp": "t",
-             "message": {"role": "user", "content": "[Request interrupted by user]"}},
+            {"type": "user", "uuid": str(index), "timestamp": "t", "message": {"role": "user", "content": text}}
+            for index, text in enumerate(typed + client)
         ]
         self.claude_file().write_text("".join(json.dumps(record) + "\n" for record in records))
         items = self.transcript("claude", CLAUDE_SESSION)["items"]
-        self.assertEqual([shown(item) for item in items], [("user", "舊版打的字")])
+        self.assertEqual([shown(item) for item in items], [
+            ("user", "舊版打的字"), ("user", "<div>這段 HTML 是我打的</div>"), ("user", "/lat 開新一輪"),
+        ])
+
+    def test_current_claude_records_count_only_typed_origin_as_the_person(self):
+        records = [
+            {"type": "user", "uuid": "1", "timestamp": "t", "origin": {"kind": "human"},
+             "message": {"role": "user", "content": "<div>我打的</div>"}},
+            {"type": "user", "uuid": "2", "timestamp": "t",
+             "message": {"role": "user", "content": "<command-name>/copy</command-name>"}},
+        ]
+        self.claude_file().write_text("".join(json.dumps(record) + "\n" for record in records))
+        items = self.transcript("claude", CLAUDE_SESSION)["items"]
+        self.assertEqual([shown(item) for item in items], [("user", "<div>我打的</div>")])
+
+    def test_a_claude_record_with_fields_of_the_wrong_type_is_dropped_alone(self):
+        good = (FIXTURES / "claude-session.jsonl").read_text().splitlines()
+        odd = [
+            {"type": "user", "uuid": [], "origin": {"kind": "human"}, "message": {"role": "user", "content": "SECRET_1"}},
+            {"type": "assistant", "uuid": "x1", "timestamp": 5,
+             "message": {"model": "m", "content": [{"type": "text", "text": "SECRET_2"}]}},
+            {"type": "assistant", "uuid": "x2", "timestamp": "t",
+             "message": {"model": "m", "content": [{"type": "text", "text": {"SECRET_3": 1}}]}},
+            {"type": "assistant", "uuid": "x3", "timestamp": "t",
+             "message": {"model": "m", "content": [{"type": "tool_use", "id": "i", "name": {"SECRET_4": 1}, "input": {}}]}},
+        ]
+        # Records of no interest whose fields look odd are not broken lines.
+        unrelated = [{"type": "mode", "mode": [1, 2]}, {"type": "file-history-snapshot", "uuid": None}]
+        lines = good[:5] + [json.dumps(record) for record in odd + unrelated] + good[5:]
+        self.claude_file().write_text("\n".join(lines) + "\n")
+        page = self.transcript("claude", CLAUDE_SESSION)
+        expected = ClaudeSampleTests.EXPECTED
+        self.assertEqual([shown(item) for item in page["items"]], expected)
+        self.assertEqual(page["skipped"], 1 + len(odd))
+        self.assertNotIn("SECRET", json.dumps(page, ensure_ascii=False))
+
+    def test_a_codex_record_with_fields_of_the_wrong_type_is_dropped_alone(self):
+        good = (FIXTURES / "codex-rollout.jsonl").read_text().splitlines()
+        def completed(item, time="t"):
+            return {"timestamp": time, "type": "event_msg", "payload": {"type": "item_completed", "item": item}}
+        odd = [
+            completed({"type": "CommandExecution", "command": ["bash", "-lc", {"SECRET_1": 1}], "exit_code": 0}),
+            completed({"type": "AgentMessage", "content": [{"type": "Text", "text": ["SECRET_2"]}]}),
+            completed({"type": "UserMessage", "content": [{"type": "text", "text": "SECRET_3"}]}, time=7),
+            completed({"type": "McpToolCall", "server": {"SECRET_4": 1}, "tool": "x"}),
+            completed({"type": ["SECRET_5"]}),
+        ]
+        lines = good[:6] + [json.dumps(record) for record in odd] + good[6:]
+        self.codex_file().write_text("\n".join(lines) + "\n")
+        page = self.transcript("codex", CODEX_SESSION)
+        self.assertEqual([shown(item) for item in page["items"]], CodexSampleTests.EXPECTED)
+        self.assertEqual(page["skipped"], 1 + len(odd))
+        self.assertNotIn("SECRET", json.dumps(page, ensure_ascii=False))
 
     def test_a_codex_sub_agent_thread_has_no_conversation_of_the_person(self):
         lines = (FIXTURES / "codex-rollout.jsonl").read_text().splitlines()

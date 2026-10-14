@@ -59,8 +59,10 @@ export function withLatest(view: TranscriptView | null, page: TranscriptPage): T
 	return { items: [...kept, ...page.items], before: kept.length ? view.before : page.before, skipped: page.skipped };
 }
 
-/** Put a page loaded with the view's cursor in front of it. */
-export function withEarlier(view: TranscriptView, page: TranscriptPage): TranscriptView {
+/** Put a page loaded with the cursor `requested` in front of the view. A page that answers an
+ *  older cursor is dropped: the view has moved since, and joining it would leave a gap. */
+export function withEarlier(view: TranscriptView, page: TranscriptPage, requested: number): TranscriptView {
+	if (view.before !== requested) return view;
 	const first = view.items[0]?.seq ?? Infinity;
 	return { ...view, items: [...page.items.filter((item) => item.seq < first), ...view.items], before: page.before };
 }
