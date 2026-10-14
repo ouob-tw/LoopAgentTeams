@@ -91,7 +91,7 @@ export interface Fixture {
 	listed(): HelperController[];
 	helperCalls(): number;
 	/** The argument list of every helper call so far that ran this `board` command. */
-	helperArgs(command: 'list' | 'questions' | 'answer' | 'notify'): string[][];
+	helperArgs(command: 'list' | 'questions' | 'answer' | 'notify' | 'transcript'): string[][];
 	/** Rewrite the binding registry file, the way a controller binding or unbinding does. */
 	touchRegistry(): void;
 	report(sessionId: string, fields: Partial<Report> & { tag: Report['tag'] }): void;

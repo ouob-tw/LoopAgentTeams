@@ -1,6 +1,6 @@
 <script lang="ts">
-	// A controller's information page: the basic block, then its questions and its reports that
-	// are still in the inbox.
+	// A controller's information page: the basic block, then its questions, its reports that are
+	// still in the inbox and its conversation history.
 	import { formatTime } from '#lib/board/format.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { phaseText, STATUS_LABEL, type Controller, type InboxItem } from '#lib/board/types.ts';
@@ -8,6 +8,7 @@
 	import ReplyBox from './ReplyBox.svelte';
 	import SentLog from './SentLog.svelte';
 	import StatusMark from './StatusMark.svelte';
+	import Transcript from './Transcript.svelte';
 
 	let {
 		controller,
@@ -73,6 +74,8 @@
 		<p class="none">信箱裡沒有它的回報。</p>
 	{/each}
 </section>
+
+<Transcript {controller} />
 
 <SentLog {controller} />
 
