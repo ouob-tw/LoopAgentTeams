@@ -79,7 +79,7 @@ hcom 1 claude --tag <自身名稱>-<主題> --go --name <自身名稱> \
   --model claude-opus-5-5 --effort medium --dangerously-skip-permissions
 ```
 
-Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，讓被召喚的 Agent 不會停在確認畫面卡住協作。`--yolo` 同時關掉確認與 sandbox。這些啟動參數不擴大任務授權範圍，任務邊界寫在第一則訊息裡。
+Codex 預設加 `--yolo`，Claude 預設加 `--dangerously-skip-permissions`，讓被召喚的 Agent 不會停在確認畫面卡住協作。`--yolo` 同時關掉確認與 sandbox。這些啟動參數不擴大任務授權範圍，任務邊界寫在第一則訊息裡。主機裝有派工把關 hook 時，缺這些參數的派工指令會被擋下，放行的派工會在背景自動核對，不符或 Agent 停在確認畫面時通知你；安裝方式見 [references/spawn-guard.md](references/spawn-guard.md)。
 
 使用者指定 HERDR workspace 時，先 `herdr workspace list` 查目標 ID，再 `HERDR_WORKSPACE_ID=<目標ID> hcom 1 <client> --terminal herdr ...`。未指定就照常執行，Agent 會開在呼叫端所在的 workspace。
 
