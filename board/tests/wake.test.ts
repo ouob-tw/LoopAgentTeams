@@ -1,6 +1,6 @@
 // Waking an ended controller from the board, against fake hcom, Herdr and input commands. Nothing
 // here types into, resumes or opens anything real.
-import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -15,7 +15,7 @@ import {
 	type WakeResponse,
 	type WakeView
 } from '../src/lib/board/wake.ts';
-import { AGENT_SHELL_ENV, keptAgentShellEnv, named, NODE, startFixture, until, type Fixture } from './harness.ts';
+import { AGENT_SHELL_ENV, checkRunHere, keptAgentShellEnv, named, NODE, startFixture, until, type Fixture } from './harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-wake-'));
 const commandEnv = {
@@ -37,6 +37,8 @@ afterAll(async () => {
 	await fixture.cleanup();
 	rmSync(commandDir, { recursive: true, force: true });
 });
+// Whatever a test did, hcom was only ever asked to open agents in a Herdr tab.
+afterEach(() => checkRunHere(commandDir));
 beforeEach(() => {
 	for (const name of [
 		'hcom-calls.jsonl',
@@ -194,7 +196,7 @@ test('a client that is gone is resumed by session ID in a Herdr tab of its proje
 		extraArgs: []
 	});
 	expect(resumes()).toEqual([
-		{ args: ['r', target.id, '--terminal', 'herdr', '--go', '--hcom-prompt', '接著做\n細節'], workspace: 'wP', tag: null }
+		{ args: ['r', target.id, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '接著做\n細節'], workspace: 'wP', tag: null }
 	]);
 	// The board runs inside an agent's shell here; none of that agent's identity reaches the resume.
 	expect(readLog('hcom-env.jsonl')).toEqual([keptAgentShellEnv(fixture, 'r')]);
@@ -207,7 +209,7 @@ test('a resume with a ticked box has the LAT start command in its first message'
 
 	await wake(target.id, '開始', true);
 
-	expect(resumes()[0].args).toEqual(['r', target.id, '--terminal', 'herdr', '--go', '--hcom-prompt', '$lat 開始']);
+	expect(resumes()[0].args).toEqual(['r', target.id, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '$lat 開始']);
 });
 
 test('the sent log says 已喚醒, or 已喚醒，等主控啟用 for a new round', async () => {

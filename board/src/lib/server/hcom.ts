@@ -57,13 +57,22 @@ export function launchResult(run: ExternalResult, action = '啟動'): LaunchResu
 	return { outcome: 'failed', hcomName, reason: `hcom ${action}失敗：${run.failure}` };
 }
 
+/**
+ * Where hcom puts the agent: always a new Herdr tab. hcom does not go by `--terminal` when it
+ * decides whether to run a single agent inside the calling process; from a shell that is not an
+ * agent's (the background service, or the board with the caller's identity removed) it would run
+ * it inside the board's own child process, with no tab, until the board gave up waiting.
+ * `--no-run-here` is accepted although `hcom <client> --help` does not list it.
+ */
+const IN_A_HERDR_TAB = ['--terminal', 'herdr', '--no-run-here'];
+
 /** Start one agent of this client in the folder, with this first message, in a new Herdr tab of
  *  the workspace. `extraArgs` go to the client, after hcom's own flags. */
 export async function launchAgent(
 	config: BoardConfig,
 	launch: { client: LaunchClient; folder: string; herdrWorkspace: string; prompt: string; extraArgs: string[] }
 ): Promise<LaunchResult> {
-	const args = [launch.client, '--dir', launch.folder, '--terminal', 'herdr', '--go', '--hcom-prompt', launch.prompt, ...launch.extraArgs];
+	const args = [launch.client, '--dir', launch.folder, ...IN_A_HERDR_TAB, '--go', '--hcom-prompt', launch.prompt, ...launch.extraArgs];
 	const run = await runExternal(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
 		env: hcomEnv(launch.herdrWorkspace)
@@ -78,7 +87,7 @@ export async function resumeAgent(
 	resume: { sessionId: string; herdrWorkspace: string; prompt: string; extraArgs: string[] }
 ): Promise<LaunchResult> {
 	const prompt = resume.prompt ? ['--hcom-prompt', resume.prompt] : [];
-	const args = ['r', resume.sessionId, '--terminal', 'herdr', '--go', ...prompt, ...resume.extraArgs];
+	const args = ['r', resume.sessionId, ...IN_A_HERDR_TAB, '--go', ...prompt, ...resume.extraArgs];
 	const run = await runExternal(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
 		env: hcomEnv(resume.herdrWorkspace)
