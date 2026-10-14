@@ -149,6 +149,8 @@ function transcript() {
 const act = command === 'answer' ? answer : command === 'questions' ? questions : command === 'transcript' ? transcript : notify;
 const result = command === 'list' ? plan : (plan[command] ?? act());
 setTimeout(() => {
-	process.stdout.write(result.raw ?? JSON.stringify(result.output));
+	// `stderrBytes` and `padBytes` make the output too large: spaces before the real output.
+	if (result.stderrBytes) process.stderr.write(' '.repeat(result.stderrBytes));
+	process.stdout.write(' '.repeat(result.padBytes ?? 0) + (result.raw ?? JSON.stringify(result.output)));
 	process.exitCode = result.exit ?? 0;
 }, result.sleepMs ?? 0);

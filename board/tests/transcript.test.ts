@@ -193,6 +193,31 @@ test('closing the page ends the helper and the process it was waiting on', async
 	}
 });
 
+test('helper output past 64 MiB on either stream is refused, as before', async () => {
+	const rona = await bind('iota', 'rona');
+	const plan = JSON.parse(readFileSync(join(fixture.dir, 'helper.json'), 'utf8'));
+	const valid = { status: 'ok', path: '/x.jsonl', items: [], before: null, skipped: 0 };
+	const over = 65 * 1024 * 1024;
+	try {
+		fixture.setHelper({ ...plan, transcript: { output: valid, padBytes: over } });
+		expect(await page(rona.session_id)).toEqual({ ok: false, reason: 'stdout maxBuffer length exceeded' });
+
+		fixture.setHelper({ ...plan, transcript: { output: valid, stderrBytes: over } });
+		expect(await page(rona.session_id)).toEqual({ ok: false, reason: 'stderr maxBuffer length exceeded' });
+
+		// The same through the live feed, whose helper leads its own process group.
+		const feed = follow(rona.session_id);
+		try {
+			const update = await until(() => feed.updates[0], 10_000, 'the first update');
+			expect(update).toEqual({ ok: false, reason: 'stderr maxBuffer length exceeded' });
+		} finally {
+			feed.close();
+		}
+	} finally {
+		fixture.setHelper(plan);
+	}
+}, 30_000);
+
 test('a record that cannot be found shows why, appears once written, and leaves the rest alone', async () => {
 	const mira = await bind('delta', 'mira');
 	rmSync(recordPath(mira.session_id), { force: true });

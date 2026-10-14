@@ -24,39 +24,46 @@ function run(config: BoardConfig, args: string[], signal?: AbortSignal): Promise
 			// An argument that cannot be passed to a command at all, such as one holding a NUL character.
 			return resolve({ stdout: '', failure: (error as Error).message });
 		}
-		let stdout = '';
-		let stderr = '';
+		const output = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
+		const bytes = { stdout: 0, stderr: 0 };
 		let failure: string | null = null;
-		const fail = (reason: string) => {
-			failure ??= reason;
-			child.kill();
-		};
-		child.stdout!.setEncoding('utf8').on('data', (chunk: string) => {
-			stdout += chunk;
-			if (stdout.length > MAX_OUTPUT) fail('輔助工具的輸出太大');
-		});
-		child.stderr!.setEncoding('utf8').on('data', (chunk: string) => (stderr += chunk));
-		const timer = setTimeout(() => fail(`輔助工具逾時（${config.helperTimeoutMs / 1000} 秒）`), config.helperTimeoutMs);
-		const stop = () => {
-			failure ??= '已取消';
+		/** End the helper: its whole group when it leads one. */
+		const kill = () => {
 			try {
-				process.kill(-child.pid!, 'SIGKILL');
+				if (signal) process.kill(-child.pid!, 'SIGKILL');
+				else child.kill();
 			} catch {
 				// Already gone.
 			}
 		};
+		const fail = (reason: string) => {
+			failure ??= reason;
+			kill();
+		};
+		const text = (stream: 'stdout' | 'stderr') => Buffer.concat(output[stream]).toString('utf8');
+		for (const stream of ['stdout', 'stderr'] as const) {
+			child[stream]!.on('data', (chunk: Buffer) => {
+				if (bytes[stream] > MAX_OUTPUT) return;
+				bytes[stream] += chunk.length;
+				if (bytes[stream] <= MAX_OUTPUT) return void output[stream].push(chunk);
+				// As before: the last line of what stderr had said, or which stream ran over.
+				fail(text('stderr').trim().split('\n').at(-1) || `${stream} maxBuffer length exceeded`);
+			});
+		}
+		const timer = setTimeout(() => fail(`輔助工具逾時（${config.helperTimeoutMs / 1000} 秒）`), config.helperTimeoutMs);
+		const stop = () => fail('已取消');
 		child.on('error', (error) => {
 			// A helper that could not start may never close.
 			clearTimeout(timer);
-			resolve({ stdout, failure: failure ?? error.message });
+			resolve({ stdout: text('stdout'), failure: failure ?? error.message });
 		});
 		child.on('close', (code, killedBy) => {
 			clearTimeout(timer);
 			signal?.removeEventListener('abort', stop);
 			if (code !== 0 && !failure) {
-				failure = stderr.trim().split('\n').at(-1) || `輔助工具結束碼 ${code ?? killedBy}`;
+				failure = text('stderr').trim().split('\n').at(-1) || `輔助工具結束碼 ${code ?? killedBy}`;
 			}
-			resolve({ stdout, failure });
+			resolve({ stdout: text('stdout'), failure });
 		});
 		if (!signal || child.pid === undefined) return;
 		if (signal.aborted) stop();
@@ -194,7 +201,7 @@ export async function readTranscript(
 	} catch {
 		return { ok: false, reason: failure ?? '輔助工具的輸出不是 JSON' };
 	}
-	if (payload?.status !== 'ok' || !Array.isArray(payload.items) || !payload.items.every(isItem) || typeof payload.path !== 'string') {
+	if (failure || payload?.status !== 'ok' || !Array.isArray(payload.items) || !payload.items.every(isItem) || typeof payload.path !== 'string') {
 		const reason = typeof payload?.reason === 'string' ? payload.reason : failure;
 		return { ok: false, reason: reason ?? '輔助工具的輸出缺少對話紀錄' };
 	}
