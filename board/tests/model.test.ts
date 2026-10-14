@@ -1,6 +1,6 @@
 // Switching a controller's model and effort from the board, against fake hcom, Herdr, input and
 // helper commands. Nothing here types into, stops, resumes or opens anything real.
-import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -21,7 +21,7 @@ import {
 } from '../src/lib/board/models.ts';
 import type { TranscriptUpdate } from '../src/lib/board/transcript.ts';
 import type { WakeResponse, WakeView } from '../src/lib/board/wake.ts';
-import { AGENT_SHELL_ENV, keptAgentShellEnv, NODE, startFixture, until, type Fixture } from './harness.ts';
+import { AGENT_SHELL_ENV, checkRunHere, keptAgentShellEnv, NODE, startFixture, until, type Fixture } from './harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-model-'));
 const commandEnv = {
@@ -45,6 +45,8 @@ afterAll(async () => {
 	await fixture.cleanup();
 	rmSync(commandDir, { recursive: true, force: true });
 });
+// Whatever a test did, hcom was only ever asked to open agents in a Herdr tab.
+afterEach(() => checkRunHere(commandDir));
 beforeEach(() => {
 	for (const name of [
 		'hcom-calls.jsonl',
@@ -264,7 +266,7 @@ test('a listening Codex is stopped, seen gone, and resumed by session with -c ov
 	expect(body.entry).toMatchObject({ route: 'restart', state: 'resuming', open: true, pane: target.pane, from: { model: 'gpt-6.1-sol', effort: 'medium' } });
 	expect(kills()).toEqual([['kill', target.name]]);
 	expect(resumes()).toEqual([
-		['r', target.id, '--terminal', 'herdr', '--go', '-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="xhigh"']
+		['r', target.id, '--terminal', 'herdr', '--no-run-here', '--go', '-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="xhigh"']
 	]);
 	const resumed = readLog<{ args: string[]; workspace: string }>('hcom-calls.jsonl').find((call) => call.args[0] === 'r');
 	expect(resumed?.workspace).toBe('wP');
@@ -376,7 +378,7 @@ test('a stop that runs out of time is not resumed; once client and pane are gone
 
 	expect(continued.body.ok).toBe(true);
 	expect(continued.body.entry).toMatchObject({ id: first.body.entry!.id, state: 'resuming' });
-	expect(resumes()).toEqual([['r', target.id, '--terminal', 'herdr', '--go', '-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="high"']]);
+	expect(resumes()).toEqual([['r', target.id, '--terminal', 'herdr', '--no-run-here', '--go', '-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="high"']]);
 });
 
 test('繼續切換 on a client that is still running: refused unless listening, then stopped again', async () => {
@@ -421,7 +423,7 @@ test('new settings chosen while continuing replace the switch\'s own', async () 
 	const changed = await change(target.id, null, 'xhigh');
 
 	expect(changed.body.entry).toMatchObject({ to: { model: null, effort: 'xhigh' } });
-	expect(resumes()[0].slice(5)).toEqual(['-c', 'model_reasoning_effort="xhigh"']);
+	expect(resumes()[0].slice(6)).toEqual(['-c', 'model_reasoning_effort="xhigh"']);
 	expect(await switches(target.id)).toHaveLength(1);
 });
 
@@ -658,8 +660,8 @@ test('a resume on wake carries the chosen model and effort: Claude --model and -
 	await wake(codex.id, 'gpt-6-astra', null);
 
 	expect(resumes()).toEqual([
-		['r', claude.id, '--terminal', 'herdr', '--go', '--hcom-prompt', '接著做', '--model', 'claude-sonnet-5-5', '--effort', 'high'],
-		['r', codex.id, '--terminal', 'herdr', '--go', '--hcom-prompt', '接著做', '-c', 'model="gpt-6-astra"']
+		['r', claude.id, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '接著做', '--model', 'claude-sonnet-5-5', '--effort', 'high'],
+		['r', codex.id, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '接著做', '-c', 'model="gpt-6-astra"']
 	]);
 });
 
@@ -667,7 +669,7 @@ test('a wake that keeps the settings adds nothing, and a running client with a c
 	const kept = await ended('claude');
 	hcomPlan({});
 	await wake(kept.id, null, null);
-	expect(resumes()[0]).toEqual(['r', kept.id, '--terminal', 'herdr', '--go', '--hcom-prompt', '接著做']);
+	expect(resumes()[0]).toEqual(['r', kept.id, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '接著做']);
 
 	const alive = await ended('claude');
 	hcomPlan({ agents: [agent(alive.name, alive.id)] });

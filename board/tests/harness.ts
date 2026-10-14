@@ -72,6 +72,29 @@ export function keptAgentShellEnv(fixture: Fixture, command: string) {
 		}
 	};
 }
+/**
+ * Every call the fake commands in `commandDir` logged: hcom starts and resumes (a client name or
+ * `r`) carry `--no-run-here`, so hcom opens a Herdr tab instead of running the agent inside the
+ * board; nothing else does (`kill`, `list`, the input command). Throws on the first that breaks it.
+ */
+export function checkRunHere(commandDir: string): void {
+	const lines = (name: string): string[][] => {
+		const file = join(commandDir, name);
+		if (!existsSync(file)) return [];
+		return readFileSync(file, 'utf8').trim().split('\n').map((line) => {
+			const value = JSON.parse(line);
+			return Array.isArray(value) ? value : value.args;
+		});
+	};
+	for (const args of lines('hcom-calls.jsonl')) {
+		const starts = args[0] === 'r' || args[0] === 'claude' || args[0] === 'codex';
+		if (args.includes('--no-run-here') !== starts) throw new Error(`--no-run-here ${starts ? 'missing from' : 'given to'} hcom ${args.join(' ')}`);
+	}
+	for (const args of [...lines('hcom-list-calls.jsonl'), ...lines('inject-calls.jsonl')]) {
+		if (args.includes('--no-run-here')) throw new Error(`--no-run-here given to ${args.join(' ')}`);
+	}
+}
+
 /** The board password every fixture sets unless told not to. A test value, not a real password. */
 export const PASSWORD = 'test-password-一二三';
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
