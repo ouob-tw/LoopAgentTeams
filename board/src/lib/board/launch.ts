@@ -106,3 +106,26 @@ export interface LaunchResponse {
 }
 
 export const NOT_GIT_REASON = '這個資料夾不在 Git 專案裡，主控在這裡不能啟用；勾選「先 git init 再開」才能送出。';
+
+/** One folder in a browse listing. */
+export interface BrowseEntry {
+	name: string;
+	/** The folder's path as listed, a symbolic link's own path included. */
+	path: string;
+	/** Whether it is in a Git project. */
+	git: boolean;
+}
+
+/** What `GET /api/browse` answers: the folders directly under `path`. */
+export interface BrowseResult {
+	path: string;
+	/** The folder one level up; null at the root. */
+	parent: string | null;
+	/** Where browsing starts: the home folder of the user running the board. */
+	home: string;
+	/** Whether `path` is in a Git project. */
+	git: boolean;
+	entries: BrowseEntry[];
+	/** Why the folder could not be read; the listing is then empty. */
+	error: string | null;
+}
