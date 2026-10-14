@@ -117,6 +117,8 @@ export interface HelperPlan extends FixedOutput {
 	/** `board transcript` waits this long on a child process instead of reading, writing the
 	 *  child's PID to transcript-child.pid. */
 	transcriptChildMs?: number;
+	/** The same for `board launch-args`, writing launch-args-child.pid. */
+	launchArgsChildMs?: number;
 	/** The controller records an answer the moment it is written. */
 	recordOnAnswer?: boolean;
 }

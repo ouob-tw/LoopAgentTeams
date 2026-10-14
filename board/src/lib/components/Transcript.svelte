@@ -2,6 +2,7 @@
 	// The controller's conversation as its client recorded it: every message the user typed and every
 	// text reply, with the operations between two texts folded into one line until opened. Kept up
 	// to date while the page is open; earlier parts are loaded on request.
+	import { EarlierReads } from '#lib/board/earlier.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import {
 		segments,
@@ -26,6 +27,7 @@
 	let earlierFailed = $state<string | null>(null);
 
 	const id = $derived(controller.id);
+	const earlier = new EarlierReads();
 	const shown = $derived(view ? segments(view.items) : []);
 
 	$effect(() => {
@@ -33,6 +35,7 @@
 		view = null;
 		problem = null;
 		opened = {};
+		loadingEarlier = false;
 		earlierFailed = null;
 		const source = new EventSource(`/api/transcript/events?controller=${encodeURIComponent(controllerId)}`);
 		source.addEventListener('transcript', (event) => {
@@ -46,7 +49,11 @@
 				problem = update.reason;
 			}
 		});
-		return () => source.close();
+		// Leaving the page or opening another controller ends both reads on the server too.
+		return () => {
+			source.close();
+			earlier.cancel();
+		};
 	});
 
 	async function loadEarlier(): Promise<void> {
@@ -55,20 +62,15 @@
 		const controllerId = id;
 		loadingEarlier = true;
 		earlierFailed = null;
-		try {
-			const response = await fetch(
-				`/api/transcript?controller=${encodeURIComponent(controllerId)}&before=${requested}`
-			);
-			if (response.status === 401) return location.reload();
-			const update: TranscriptUpdate = await response.json();
-			if (controllerId !== id || !view) return;
-			if (update.ok) view = withEarlier(view, update.page, requested);
-			else earlierFailed = update.reason;
-		} catch {
-			if (controllerId === id) earlierFailed = '沒有收到看板伺服器的回應。';
-		} finally {
-			loadingEarlier = false;
-		}
+		const result = await earlier.read(controllerId, requested);
+		// Cancelled with its controller: what shows now belongs to another one.
+		if (result.kind === 'cancelled') return;
+		loadingEarlier = false;
+		if (result.kind === 'unpaired') return location.reload();
+		if (controllerId !== id || !view) return;
+		if (result.kind === 'failed') earlierFailed = '沒有收到看板伺服器的回應。';
+		else if (result.update.ok) view = withEarlier(view, result.update.page, requested);
+		else earlierFailed = result.update.reason;
 	}
 </script>
 

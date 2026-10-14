@@ -45,8 +45,8 @@ const STOP_CHECK_MS = 400;
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** What the information page needs before offering a switch: the lists, whether the client runs,
- *  and for Codex whether its model can change. */
-export async function modelStatus(board: Board, controller: Controller): Promise<ModelStatus> {
+ *  and for Codex whether its model can change. Aborting `signal` ends the helper read. */
+export async function modelStatus(board: Board, controller: Controller, signal?: AbortSignal): Promise<ModelStatus> {
 	const client = controller.client;
 	const status: ModelStatus = {
 		client,
@@ -59,7 +59,7 @@ export async function modelStatus(board: Board, controller: Controller): Promise
 	};
 	const [list, lock] = await Promise.all([
 		listAgents(board.config),
-		client === 'codex' ? modelLock(board.config, controller.id) : Promise.resolve(null)
+		client === 'codex' ? modelLock(board.config, controller.id, signal) : Promise.resolve(null)
 	]);
 	if (list.ok) {
 		const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);

@@ -1,4 +1,5 @@
-// A browser that goes away mid-read must end the history helper and everything it started, under
+// A browser that goes away mid-read must end the helper reads it started (the conversation history,
+// and the model switch's status) and everything they started, under
 // Node and under Bun alike: Bun's HTTP server tells only the request, not the response, that the
 // connection closed. The connection is dropped at the socket, as a closed tab or a navigation does.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -15,10 +16,11 @@ const fixtures: Record<string, { fixture: Fixture; cookie: string; sessionId: st
 
 beforeAll(async () => {
 	for (const { name, runtime, offset } of runtimes) {
-		const fixture = await startFixture(offset, { runtime });
+		// hcom is never run for real: a command that answers nothing stands in for it.
+		const fixture = await startFixture(offset, { runtime, env: { LAT_BOARD_HCOM_COMMAND: JSON.stringify(['true']) } });
 		const cookie = await fixture.login();
-		const controller = fixture.bound('alpha', 'luna');
-		fixture.setHelper({ output: { controllers: [controller] }, transcriptChildMs: 20_000 });
+		const controller = fixture.bound('alpha', 'luna', { client: 'codex' });
+		fixture.setHelper({ output: { controllers: [controller] }, transcriptChildMs: 20_000, launchArgsChildMs: 20_000 });
 		await fixture.refresh(cookie);
 		fixtures[name] = { fixture, cookie, sessionId: controller.session_id };
 	}
@@ -46,14 +48,15 @@ function request(fixture: Fixture, cookie: string, path: string): Socket {
 }
 
 for (const { name } of runtimes) {
-	for (const [what, path] of [
-		['the live feed', '/api/transcript/events'],
-		['a page read', '/api/transcript'],
-		['an earlier page read', '/api/transcript']
+	for (const [what, path, helper] of [
+		['the live feed', '/api/transcript/events', 'transcript'],
+		['a page read', '/api/transcript', 'transcript'],
+		['an earlier page read', '/api/transcript', 'transcript'],
+		['the model switch status read', '/api/model', 'launch-args']
 	] as const) {
 		test(`${name}: dropping the connection during ${what} ends the helper and its child`, async () => {
 			const { fixture, cookie, sessionId } = fixtures[name];
-			const pidFile = join(fixture.dir, 'transcript-child.pid');
+			const pidFile = join(fixture.dir, `${helper}-child.pid`);
 			rmSync(pidFile, { force: true });
 			const before = what === 'an earlier page read' ? '&before=10' : '';
 			const socket = request(fixture, cookie, `${path}?controller=${encodeURIComponent(sessionId)}${before}`);

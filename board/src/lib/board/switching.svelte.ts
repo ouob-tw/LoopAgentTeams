@@ -14,18 +14,20 @@ class Switching {
 	current = $state<Record<string, CurrentSettings | null>>({});
 	#loads: Record<string, number> = {};
 
-	async load(controllerId: string): Promise<void> {
+	/** Aborting `signal` (the page left, or another controller opened) ends the read on the server
+	 *  too, and leaves everything as it was. */
+	async load(controllerId: string, signal?: AbortSignal): Promise<void> {
 		const load = (this.#loads[controllerId] = (this.#loads[controllerId] ?? 0) + 1);
 		let status: ModelStatus | undefined;
 		try {
-			const response = await fetch(`/api/model?controller=${encodeURIComponent(controllerId)}`);
+			const response = await fetch(`/api/model?controller=${encodeURIComponent(controllerId)}`, { signal });
 			if (response.status === 401) return location.reload();
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			status = await response.json();
 		} catch {
 			// Reported below, unless a newer load has taken over.
 		}
-		if (load !== this.#loads[controllerId]) return;
+		if (signal?.aborted || load !== this.#loads[controllerId]) return;
 		if (status) this.status[controllerId] = status;
 		this.loadFailed[controllerId] = !status;
 	}

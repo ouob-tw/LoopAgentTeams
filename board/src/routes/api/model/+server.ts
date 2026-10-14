@@ -4,14 +4,15 @@ import { modelStatus, switchModel } from '#lib/server/switch.ts';
 import { findController } from '#lib/server/wake.ts';
 import type { RequestHandler } from './$types';
 
-/** What a switch of this controller's model and effort may offer right now. */
-export const GET: RequestHandler = async ({ url }) => {
+/** What a switch of this controller's model and effort may offer right now. A browser that goes
+ *  away ends the helper read. */
+export const GET: RequestHandler = async ({ url, request }) => {
 	const controllerId = url.searchParams.get('controller');
 	if (!controllerId) return json({ error: 'missing_controller' }, { status: 400 });
 	const board = getBoard();
 	const controller = await findController(board, controllerId);
 	if (!controller) return json({ error: 'unknown_controller' }, { status: 404 });
-	return json(await modelStatus(board, controller));
+	return json(await modelStatus(board, controller, request.signal));
 };
 
 /** Switch a controller's model and effort, or continue its open switch. Every attempt answers
