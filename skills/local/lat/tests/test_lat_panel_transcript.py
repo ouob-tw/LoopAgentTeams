@@ -169,7 +169,7 @@ class ToolSummaryTests(TranscriptTestCase):
         return shown(item)[1]
 
     def test_command_shows_its_first_line_at_80_characters(self):
-        self.assertEqual(self.tool_line("Bash", {"command": "git status\ngit diff"}), "執行指令：git status")
+        self.assertEqual(self.tool_line("Bash", {"command": "git status"}), "執行指令：git status")
         summary = self.tool_line("Bash", {"command": "echo " + "y" * 200})
         self.assertEqual(len(summary.removeprefix("執行指令：")), 80)
         self.assertTrue(summary.endswith("…"))
@@ -194,39 +194,38 @@ class ToolSummaryTests(TranscriptTestCase):
         self.assertEqual(self.tool_line("Read", {"file_path": ["not", "a", "path"]}), "Read")
 
 
-# Commands that may carry what they write to a file, as QA wrote them, and what they show.
-WRITING_COMMANDS = (
-    ("printf QA_FILE_CONTENT_SENTINEL > file.txt", "printf …"),
-    ("echo QA_FILE_CONTENT_SENTINEL >> file.txt", "echo …"),
-    ("echo QA_FILE_CONTENT_SENTINEL >| file.txt", "echo …"),
-    ("printf QA_FILE_CONTENT_SENTINEL &> file.txt", "printf …"),
-    ("printf QA_FILE_CONTENT_SENTINEL 1> file.txt", "printf …"),
-    ("printf QA_FILE_CONTENT_SENTINEL 2>file.txt", "printf …"),
-    ("printf QA_FILE_CONTENT_SENTINEL >&file.txt", "printf …"),
-    ("echo QA_FILE_CONTENT_SENTINEL | tee file.txt", "echo …"),
-    ("echo QA_FILE_CONTENT_SENTINEL | sudo /usr/bin/tee -a file.txt", "echo …"),
-    ("printf QA_FILE_CONTENT_SENTINEL | dd of=file.txt status=none", "printf …"),
-    ("cat <<'EOF' > file.txt\nQA_FILE_CONTENT_SENTINEL\nEOF", "cat …"),
-    ("python - <<'PY'  # QA_FILE_CONTENT_SENTINEL\nprint(1)\nPY", "python …"),
-    ("LANG=C printf QA_FILE_CONTENT_SENTINEL>file.txt", "printf …"),
-    # An open quote leaves no way to tell what is written: the safe side.
-    ("echo 'QA_FILE_CONTENT_SENTINEL > file.txt", "echo …"),
-    ("printf QA_FILE_CONTENT_SENTINEL > '/dev/null'", "printf …"),
+# Commands that could carry what they write, as QA and the reviewers wrote them, and what they show.
+S = "QA_FILE_CONTENT_SENTINEL"
+LEAKY_COMMANDS = (
+    (f"printf {S} > file.txt", "printf …"),
+    (f"echo {S} >> file.txt", "echo …"),
+    (f"echo {S} >| file.txt", "echo …"),
+    (f"printf {S} &> file.txt", "printf …"),
+    (f"printf {S} 2>file.txt", "printf …"),
+    (f"echo {S} | tee file.txt", "echo …"),
+    (f"printf {S} | dd of=file.txt status=none", "printf …"),
+    (f"cat <<'EOF' > file.txt\n{S}\nEOF", "cat …"),
+    (f"python - <<'PY'  # {S}\nprint(1)\nPY", "python …"),
+    (f'echo "$(printf {S} >file.txt)"', "echo …"),
+    (f'echo "`printf {S} >file.txt`"', "echo …"),
+    (f'printf {S} | "tee" file.txt', "printf …"),
+    (f"printf {S} | /bin/dd of=file.txt", "printf …"),
+    (f'printf {S} | dd "of=file.txt"', "printf …"),
+    (f"printf $'{S}\\'x' >file.txt # '", "printf …"),
+    (f"/usr/bin/printf {S}>file.txt", "printf …"),
+    (f"LANG=C printf {S}>file.txt", "printf …"),
+    # No program name can be told apart, so nothing but the label shows.
+    (f"printf${{IFS}}{S}>file.txt", ""),
+    (f"'printf' {S} > file.txt", ""),
+    # Continued on the next line.
+    (f"printf {S} \\\n> file.txt", "printf …"),
+    (f"printf {S} |\ntee file.txt", "printf …"),
+    # The safe side: also commands that write nothing.
+    ("git log | head", "git …"),
+    ("npm test 2>&1", "npm …"),
 )
-# Commands that write no file keep their first line.
-OTHER_COMMANDS = (
-    "npm test 2>&1",
-    "npm test >&2",
-    "npm test > /dev/null",
-    "npm test >/dev/null 2>&1",
-    "npm test 2>/dev/null",
-    "npm test &>/dev/null",
-    "npm test >> /dev/null",
-    "grep '>' file.txt",
-    'grep ">" file.txt',
-    "echo 'a > b' | wc -c",
-    "rg 'tee' src",
-)
+# Commands of only safe characters on one line show in full.
+SAFE_COMMANDS = ("git status", "ls -la src/lib", "uv run pytest -q", "npm run test -- --port=7300")
 
 
 class WritingCommandTests(TranscriptTestCase):
@@ -250,17 +249,27 @@ class WritingCommandTests(TranscriptTestCase):
             page = self.transcript("codex", CODEX_SESSION)
         return [item["detail"] for item in page["items"]]
 
-    def test_a_command_that_writes_a_file_shows_only_its_program(self):
+    def test_a_command_that_could_carry_content_shows_at_most_its_program(self):
         for client in ("claude", "codex"):
             with self.subTest(client=client):
-                shown_details = self.summaries(client, [command for command, _ in WRITING_COMMANDS])
-                self.assertEqual(shown_details, [summary for _, summary in WRITING_COMMANDS])
-                self.assertNotIn("QA_FILE_CONTENT_SENTINEL", json.dumps(shown_details))
+                shown_details = self.summaries(client, [command for command, _ in LEAKY_COMMANDS])
+                self.assertEqual(shown_details, [summary for _, summary in LEAKY_COMMANDS])
+                self.assertNotIn(S, json.dumps(shown_details))
 
-    def test_a_command_that_writes_no_file_keeps_its_first_line(self):
+    def test_a_one_line_command_of_safe_characters_shows_in_full(self):
         for client in ("claude", "codex"):
             with self.subTest(client=client):
-                self.assertEqual(self.summaries(client, OTHER_COMMANDS), list(OTHER_COMMANDS))
+                self.assertEqual(self.summaries(client, SAFE_COMMANDS), list(SAFE_COMMANDS))
+
+    def test_a_codex_command_that_is_not_shell_wrapped_is_judged_as_its_joined_arguments(self):
+        records = [{
+            "timestamp": "t", "type": "event_msg", "payload": {"type": "item_completed", "item": {
+                "type": "CommandExecution", "command": command, "exit_code": 0,
+            }},
+        } for command in (["git", "status"], ["printf", f"{S}>file.txt"], ["/bin/zsh", "-c", f"printf {S} > f"])]
+        self.codex_file().write_text("".join(json.dumps(record) + "\n" for record in records))
+        details = [item["detail"] for item in self.transcript("codex", CODEX_SESSION)["items"]]
+        self.assertEqual(details, ["git status", "printf …", "printf …"])
 
 
 class LookupTests(TranscriptTestCase):

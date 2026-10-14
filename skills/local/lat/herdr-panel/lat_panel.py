@@ -2016,56 +2016,38 @@ def _one_line(text, limit=_SUMMARY_LIMIT):
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
-def _unquoted(line):
-    """The line with every quoted or escaped character replaced by ``x``, so only the shell's own
-    syntax is left; None when a quote is left open."""
-    out, quote, escaped = [], None, False
-    for char in line:
-        if escaped:
-            escaped = False
-        elif char == "\\" and quote != "'":
-            escaped = True
-        elif quote:
-            quote = None if char == quote else quote
-        elif char in "'\"":
-            quote = char
-        else:
-            out.append(char)
-            continue
-        out.append("x")
-    return None if quote else "".join(out)
-
-
-# After `>`: `&2` or `&-` only duplicates a descriptor, and /dev/null keeps nothing.
-_NOT_A_FILE = re.compile(r"(&(\d+|-)|[>|]?\s*/dev/null)(?=$|[\s;|&)])")
-
-
-def _writes_file(line):
-    """Whether a command line may carry what it writes to a file: an output redirection to a
-    file, ``tee``, ``dd of=`` or a heredoc. When unsure, it does."""
-    plain = _unquoted(line)
-    if plain is None or "<<" in plain:
-        return True
-    for position, char in enumerate(plain):
-        if char == ">" and plain[position - 1:position] != ">" and not _NOT_A_FILE.match(plain, position + 1):
-            return True
-    words = re.split(r"[\s|;&()]+", plain)
-    return any(word == "tee" or word.endswith("/tee") for word in words) or (
-        "dd" in words and any(word.startswith("of=") for word in words)
-    )
+# A command made only of these characters cannot carry quoted text, expansions or redirections,
+# so it is safe to show as it is.
+_SAFE_COMMAND = re.compile(r"[A-Za-z0-9 \-_./:=,@+%]+")
+_SAFE_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9\-_./:=,@+%]*")
+_PROGRAM = re.compile(r"[A-Za-z0-9_./+-]+")
+_SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
 
 
 def _command_summary(command):
-    """First line of a shell command, at most 80 characters. A line that may carry what it
-    writes to a file shows only its program."""
-    lines = str(command).strip().splitlines()
-    first = lines[0].strip() if lines else ""
-    if not _writes_file(first):
-        return _one_line(first)
-    # The first word that is not a variable assignment, up to any shell syntax.
-    words = [word for word in first.split() if not re.match(r"[A-Za-z_]\w*=", word)]
-    program = re.match(r"[^\s<>|;&]*", words[0] if words else "").group()
-    return _one_line(f"{program} …" if program else "…")
+    """What a shell command shows, failing closed so that nothing it writes can show: a one-line
+    command of only safe characters in full (at most 80); otherwise its program's name; otherwise
+    nothing."""
+    text = str(command).strip()
+    if "\n" not in text and "\r" not in text and _SAFE_COMMAND.fullmatch(text):
+        return _one_line(text)
+    words = text.split()
+    while words and _SAFE_ASSIGNMENT.fullmatch(words[0]):
+        words.pop(0)
+    program = os.path.basename(words[0]) if words and _PROGRAM.fullmatch(words[0]) else ""
+    return _one_line(f"{program} …") if program else ""
+
+
+def _codex_command(command):
+    """The script of a shell-wrapped Codex command, or its arguments joined with spaces."""
+    if isinstance(command, str):
+        return command
+    argv = [_text_field(part) or "" for part in command]
+    if len(argv) >= 3 and os.path.basename(argv[0]) in _SHELLS:
+        for position, flag in enumerate(argv[1:-1], start=1):
+            if re.fullmatch(r"-[a-z]*c[a-z]*", flag):
+                return argv[position + 1]
+    return " ".join(argv)
 
 
 def _shown_path(path, cwd):
@@ -2268,9 +2250,7 @@ def _codex_item(item, time, cwd):
     failed = item.get("status") in ("failed", "declined")
     if kind == "CommandExecution":
         command = item.get("command")
-        if isinstance(command, list):
-            command = command[-1] if command else ""
-        command = _text_field(command)
+        command = _codex_command(command) if isinstance(command, (str, list)) else _text_field(command)
         error = failed or item.get("exit_code") not in (0, None)
         return _tool(time, "exec", "執行指令", _command_summary(command or ""), error)
     if kind == "FileChange":
