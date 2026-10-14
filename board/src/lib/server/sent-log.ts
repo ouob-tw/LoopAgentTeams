@@ -1,11 +1,13 @@
-// The board's sent log: one JSON line per attempt to send a message to a controller and per
-// answer the helper accepted, kept in the board's state directory so every logged-in device sees the
+// The board's sent log: one JSON line per attempt to send a message to a controller, per
+// answer the helper accepted and per attempt to start a new controller, kept in the board's state directory so every logged-in device sees the
 // same history. Lines are only appended; what became of an answer is a later line of its own.
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AnswerState, SentAnswer, SentEntry } from '../board/answers.ts';
+import type { LaunchState, LaunchView, SentLaunch } from '../board/launch.ts';
 import type { SentMessage } from '../board/messages.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
+import type { ReportFile } from './reports.ts';
 
 const SENT_LOG_FILE = 'sent-log.jsonl';
 
@@ -23,7 +25,15 @@ interface AnswerMark {
 	time: string;
 }
 
-type Line = SentMessage | StoredAnswer | AnswerMark;
+/** The controller a launch became: a binding with the launch's HCOM name appeared. Written once. */
+interface LaunchMark {
+	kind: 'launch-bound';
+	launchId: string;
+	controllerId: string;
+	time: string;
+}
+
+type Line = SentMessage | StoredAnswer | AnswerMark | SentLaunch | LaunchMark;
 
 export function appendSent(stateDir: string, entry: Line): void {
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -53,13 +63,21 @@ function readLines(stateDir: string): Line[] {
 const marksOf = (lines: Line[]) =>
 	new Map(lines.filter((line) => line.kind === 'answer-state').map((mark) => [mark.answerId, mark]));
 
-/** What was sent to one controller, newest first. */
+const boundOf = (lines: Line[]) =>
+	new Map(lines.filter((line) => line.kind === 'launch-bound').map((mark) => [mark.launchId, mark.controllerId]));
+
+/** What was sent to one controller, newest first: a launch counts once it became this controller. */
 export function readSent(stateDir: string, controllerId: string): SentEntry[] {
 	const lines = readLines(stateDir);
 	const marks = marksOf(lines);
+	const bound = boundOf(lines);
 	const entries: SentEntry[] = [];
 	for (const line of lines) {
-		if (line.kind === 'answer-state' || line.controllerId !== controllerId) continue;
+		if (line.kind === 'launch') {
+			if (bound.get(line.id) === controllerId) entries.push({ ...line, state: 'active', controllerId });
+			continue;
+		}
+		if (line.kind === 'answer-state' || line.kind === 'launch-bound' || line.controllerId !== controllerId) continue;
 		if (line.kind === 'message') entries.push(line);
 		else if (line.kind === 'answer') {
 			const { questionsPath: _, ...answer } = line;
@@ -135,6 +153,58 @@ export async function settleAnswers(
 			return (error as Error).message;
 		}
 		marks.set(line.id, mark);
+	}
+	return null;
+}
+
+function launchState(launch: SentLaunch, controllerId: string | undefined, now: number, waitMs: number): LaunchState {
+	if (launch.outcome === 'failed') return 'failed';
+	if (controllerId) return 'active';
+	if (!launch.hcomName) return 'uncertain';
+	return now - Date.parse(launch.time) >= waitMs ? 'overdue' : 'starting';
+}
+
+/** The most recent launches, newest first, each with where it stands at `now`. */
+export function readLaunches(stateDir: string, now: number, waitMs: number, limit: number): LaunchView[] {
+	const lines = readLines(stateDir);
+	const bound = boundOf(lines);
+	const launches: LaunchView[] = [];
+	for (const line of lines) {
+		if (line.kind !== 'launch') continue;
+		const controllerId = bound.get(line.id);
+		launches.push({ ...line, state: launchState(line, controllerId, now, waitMs), controllerId: controllerId ?? null });
+	}
+	return launches.reverse().slice(0, limit);
+}
+
+/**
+ * Note which launches have become a controller: a binding with the launch's HCOM name, or a
+ * report record with that name written since the launch (the controller may have bound and ended
+ * between two reads). The folder is never compared, so two launches in one folder each find their
+ * own. A name hcom hands out again later belongs to the newest launch that has it.
+ *
+ * Returns why the log could not be brought up to date, or null.
+ */
+export function settleLaunches(stateDir: string, controllers: HelperController[], reportFiles: ReportFile[]): string | null {
+	const lines = readLines(stateDir);
+	const bound = boundOf(lines);
+	const seen = new Set<string>();
+	for (const line of lines.toReversed()) {
+		if (line.kind !== 'launch' || !line.hcomName || line.outcome === 'failed' || seen.has(line.hcomName)) continue;
+		seen.add(line.hcomName);
+		if (bound.has(line.id)) continue;
+		const since = Date.parse(line.time);
+		const controllerId =
+			controllers.find((controller) => controller.hcom_name === line.hcomName)?.session_id ??
+			reportFiles.find((file) =>
+				file.reports.some((report) => report.hcom_name === line.hcomName && Date.parse(report.time) >= since)
+			)?.sessionId;
+		if (!controllerId) continue;
+		try {
+			appendSent(stateDir, { kind: 'launch-bound', launchId: line.id, controllerId, time: new Date().toISOString() });
+		} catch (error) {
+			return (error as Error).message;
+		}
 	}
 	return null;
 }

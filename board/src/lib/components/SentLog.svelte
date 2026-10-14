@@ -1,8 +1,9 @@
 <script lang="ts">
 	// What the user sent to this controller from the board, on any logged-in device: messages typed
-	// into its client, and answers to its questions.
+	// into its client, answers to its questions, and the launch that started it.
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { formatTime } from '#lib/board/format.ts';
+	import { CLIENT_LABEL, latCommand } from '#lib/board/launch.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
 
@@ -39,6 +40,14 @@
 						<p class="title">{entry.title || '（沒有標題）'}</p>
 						<p class="text">{entry.answer}</p>
 						{#if entry.note}<p class="text note">備註：{entry.note}</p>{/if}
+					{:else if entry.kind === 'launch'}
+						<p class="meta">
+							<time datetime={entry.time}>{formatTime(entry.time)}</time>
+							<span>從看板新建（{CLIENT_LABEL[entry.client]}）</span>
+							<span>✓ 已啟用</span>
+						</p>
+						<p class="title">{entry.folder}</p>
+						<p class="text">{latCommand(entry.client, entry.text)}</p>
 					{:else}
 						<p class="meta">
 							<time datetime={entry.time}>{formatTime(entry.time)}</time>

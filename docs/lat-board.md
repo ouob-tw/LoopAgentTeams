@@ -1,6 +1,6 @@
 # LAT 看板：安裝與使用
 
-LAT 看板是跑在主機上的網頁服務。電腦與手機用同一個網址，就能看到所有專案的 LAT 主控目前做到哪、收它們的交付與求助回報、回答待決題，並直接傳話給主控。
+LAT 看板是跑在主機上的網頁服務。電腦與手機用同一個網址，就能看到所有專案的 LAT 主控目前做到哪、收它們的交付與求助回報、回答待決題、直接傳話給主控，也可以新建主控。
 
 它不顯示終端畫面，也不管 LAT 主控以外的 Agent，不做手機推播。Herdr 的待答面板照舊可用，兩邊可以同時使用。開發者與設定細節見 [board/README.md](../board/README.md)。
 
@@ -11,7 +11,7 @@ LAT 看板是跑在主機上的網頁服務。電腦與手機用同一個網址�
   - **Node 22.17 以上**（實測 22.17.0）：用 npm 安裝與建置；`board` 指令改用 `node --experimental-strip-types src/cli.ts <指令>`（Node 22.18 以上可省略 `--experimental-strip-types`）。以下的 `bun install` 換成 `npm install`、`bun run build` 換成 `npm run build`、`bun run board <指令>` 換成上面那行。
   - 兩者都有時，伺服器用 Node 執行；只有 Bun 時由 Bun 執行。
 - 已安裝的 LAT 技能，以及它一直在用的 `uv` 與 Python：看板不自己讀寫問題檔，一律呼叫技能裡的面板輔助工具。
-- 傳話要用到 `hcom`。
+- 傳話要用到 `hcom`。新建主控還要用到 `herdr` 與 `git`，而且看板要連得到正在執行的 Herdr（它的 socket）。
 
 ## 安裝與建置
 
@@ -63,8 +63,8 @@ bun run board revoke <裝置 ID>   # 撤銷一台裝置，它會回到登入畫�
 
 範例檔 [board/lat-board.service](../board/lat-board.service) 是 systemd 使用者服務，登出與重開機後都會自動恢復。
 
-1. 先確認 `bun run build` 已完成，並用 `command -v node uv hcom` 查出這三個指令所在的目錄（只有 Bun 的主機把 `node` 換成 `bun`，並把範例檔的 `ExecStart` 改成 `/usr/bin/env bun build/index.js`）。
-2. 複製範例檔並把 `<...>` 換成實際值：`WorkingDirectory` 填專案裡的 `board` 目錄；`PATH` 要含上面查到的目錄，因為服務的 PATH 很短，找不到 `uv` 或 `hcom` 時，待決題與傳話會失敗。
+1. 先確認 `bun run build` 已完成，並用 `command -v node uv hcom herdr git` 查出這些指令所在的目錄（只有 Bun 的主機把 `node` 換成 `bun`，並把範例檔的 `ExecStart` 改成 `/usr/bin/env bun build/index.js`）。
+2. 複製範例檔並把 `<...>` 換成實際值：`WorkingDirectory` 填專案裡的 `board` 目錄；`PATH` 要含上面查到的目錄，因為服務的 PATH 很短，找不到 `uv` 或 `hcom` 時，待決題與傳話會失敗；找不到 `hcom`、`herdr` 或 `git` 時，新建主控會失敗。Herdr 的 socket 不在預設位置時，另外加一行 `Environment=HERDR_SOCKET_PATH=<socket 路徑>`（在 Herdr 分頁裡執行 `echo $HERDR_SOCKET_PATH` 可以查到）。
 
    ```bash
    mkdir -p ~/.config/systemd/user
@@ -84,6 +84,17 @@ bun run board revoke <裝置 ID>   # 撤銷一台裝置，它會回到登入畫�
 要改位址或連接埠，改已複製的 `~/.config/systemd/user/lat-board.service` 裡的 `HOST`、`PORT`（改專案裡的範例檔不會生效）；其他設定用同樣方式加一行 `Environment=`，改完 `systemctl --user daemon-reload && systemctl --user restart lat-board`。
 
 用背景服務時，主機上的 `password`、`devices`、`revoke` 仍照「登入」一節手動執行。若你改了狀態目錄（`LAT_BOARD_STATE_DIR`）或其他設定，這些指令要用相同的環境變數，否則改到另一份資料。
+
+## 新建主控
+
+按名冊頂端的「＋ 新建」（收起的名冊是「＋」），選 client（Claude 或 Codex）、資料夾與第一句話後送出。看板會在該專案的 Herdr 工作區開一個新分頁，用 hcom 在那個資料夾啟動 client，第一則訊息是 LAT 啟動指令加上你的話：Claude 是 `/lat 你的話`，Codex 是 `$lat 你的話`。不指定模型或 effort，用該 client 平常的預設設定。主控啟用後會自動出現在名冊上。
+
+- **資料夾**：列出曾經開過主控的專案（從主控回報紀錄整理，最近使用的在前）。
+- **不在 Git 專案裡的資料夾**：主控在那裡不能啟用，所以要勾選「先 git init 再開」才能送出。勾選後看板先在該資料夾執行一次 `git init`，成功才啟動主控；失敗會顯示原因，不會啟動。Git 專案裡的子資料夾可以直接開，主控在該子資料夾啟動。
+- **開在哪個 Herdr 工作區**：以專案為準，Git 專案看整個專案（根目錄），不在 Git 專案裡的看資料夾本身。看板找出已經有分頁停在這個專案裡的工作區，有好幾個時取分頁最多的、再取編號最小的；都沒有就以專案資料夾的名稱新建一個工作區（不會切換你的畫面）。
+- **送出後**：新建主控頁下方列出最近的新建紀錄與狀態，所有已登入裝置看到的相同，重新載入後仍在。狀態有：啟動中、已啟用（可以點進主控資訊頁）、「已開分頁，但主控尚未啟用，請到 Herdr 分頁查看」（等了 3 分鐘還沒啟用時）、「結果不確定，請到 Herdr 分頁查看」（看板沒拿到新主控的名稱時），以及失敗與原因。主控啟用後，這筆紀錄也會出現在它的資訊頁的送出紀錄。
+- **失敗時**（資料夾不存在、Herdr 或 hcom 執行失敗）：畫面顯示原因，表單內容保留，可以修正後再送。看板不會自動重試。
+- **要留意**：每次新建都會在 Herdr 多開分頁，主控開始後就會用到額度。第一次在某個資料夾開 Claude 時，Claude 可能先問「是否信任這個資料夾」，這要到 Herdr 分頁按；看板只會在等太久時提示你去看。
 
 ## 自訂樣式
 

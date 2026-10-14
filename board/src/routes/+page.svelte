@@ -12,6 +12,7 @@
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
 	import ItemContent from '#lib/components/ItemContent.svelte';
+	import NewController from '#lib/components/NewController.svelte';
 	import ReplyBox from '#lib/components/ReplyBox.svelte';
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
@@ -63,7 +64,7 @@
 	}
 
 	// The item is kept as it was when opened, so the content stays up after it leaves the inbox.
-	type View = { kind: 'item'; item: InboxItem } | { kind: 'controller'; id: string } | null;
+	type View = { kind: 'item'; item: InboxItem } | { kind: 'controller'; id: string } | { kind: 'launch' } | null;
 	let view = $state<View>(null);
 
 	const controllers = $derived(board.snapshot.controllers);
@@ -108,6 +109,7 @@
 	}
 	const openItem = (next: InboxItem) => show({ kind: 'item', item: next });
 	const openController = (id: string) => show({ kind: 'controller', id });
+	const openLaunch = () => show({ kind: 'launch' });
 
 	const pending = $derived(inbox.filter((entry) => entry.kind === 'question' && entry.unsent).length);
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
@@ -122,6 +124,18 @@
 		title="立即重新讀取所有資料"
 	>
 		{short ? '重整' : board.refreshing ? '讀取中…' : '重新整理'}
+	</button>
+{/snippet}
+
+{#snippet newController(short = false)}
+	<button
+		class="tool"
+		class:current={view?.kind === 'launch'}
+		onclick={openLaunch}
+		aria-label={short ? '新建主控' : undefined}
+		title="選 client、資料夾與第一句話，在 Herdr 開一個新的主控"
+	>
+		{short ? '＋' : '＋ 新建'}
 	</button>
 {/snippet}
 
@@ -164,6 +178,7 @@
 					onexpand={() => appearance.setFolded(false)}
 				>
 					{#snippet tools()}
+						{@render newController(true)}
 						{@render refresh(true)}
 						{@render openSettings()}
 					{/snippet}
@@ -173,6 +188,7 @@
 				<header class="summary">
 					<span><b>{pending}</b> 待決　<b>{unread}</b> 未讀　{controllers.length} 個主控</span>
 					<span class="tools">
+						{@render newController()}
 						{@render refresh()}
 						{@render openSettings()}
 						<button
@@ -226,7 +242,9 @@
 					</span>
 				</div>
 
-				{#if view.kind === 'controller'}
+				{#if view.kind === 'launch'}
+					<NewController {controllers} stamp={board.snapshot.generatedAt} onopen={openController} />
+				{:else if view.kind === 'controller'}
 					{#if controller}
 						<ControllerInfo
 							{controller}
@@ -356,6 +374,10 @@
 		font-size: 0.8rem;
 		color: var(--text);
 		white-space: nowrap;
+	}
+	.tool.current {
+		background: var(--selected-bg);
+		color: var(--selected-text);
 	}
 	.folded .tool {
 		padding: 0.15rem 0.2rem;

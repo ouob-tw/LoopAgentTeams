@@ -18,6 +18,15 @@ export interface BoardConfig {
 	/** Command that types into a controller's client; the board appends `<HCOM name> <text> --enter`. */
 	injectCommand: string[];
 	injectTimeoutMs: number;
+	/** Command that runs hcom; the board appends e.g. `claude --dir <folder> ...` to start a controller. */
+	hcomCommand: string[];
+	/** How long an hcom launch may take, its own wait for the client to be ready included. */
+	hcomTimeoutMs: number;
+	/** Command that runs the Herdr CLI; the board appends e.g. `pane list`. */
+	herdrCommand: string[];
+	herdrTimeoutMs: number;
+	/** How long a new controller may take to bind before its launch record asks the user to look in Herdr. */
+	launchWaitMs: number;
 	/** Longest a change the file watch missed may take to be read and pushed to the pages. */
 	fallbackMs: number;
 	debounceMs: number;
@@ -95,6 +104,12 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		injectCommand: commandFrom(env, 'LAT_BOARD_INJECT_COMMAND') ?? ['hcom', 'term', 'inject'],
 		// The command itself waits up to 2 seconds for the client to show the text before submitting.
 		injectTimeoutMs: seconds(env.LAT_BOARD_INJECT_TIMEOUT_SECONDS, 15_000),
+		hcomCommand: commandFrom(env, 'LAT_BOARD_HCOM_COMMAND') ?? ['hcom'],
+		// hcom itself waits for the client to report ready before it answers.
+		hcomTimeoutMs: seconds(env.LAT_BOARD_HCOM_TIMEOUT_SECONDS, 60_000),
+		herdrCommand: commandFrom(env, 'LAT_BOARD_HERDR_COMMAND') ?? ['herdr'],
+		herdrTimeoutMs: seconds(env.LAT_BOARD_HERDR_TIMEOUT_SECONDS, 10_000),
+		launchWaitMs: seconds(env.LAT_BOARD_LAUNCH_WAIT_SECONDS, 180_000),
 		fallbackMs,
 		debounceMs: 200,
 		loginLockMs: seconds(env.LAT_BOARD_LOGIN_LOCK_SECONDS, 60_000),
