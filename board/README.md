@@ -2,13 +2,13 @@
 
 在一個網頁看所有專案的 LAT 主控：名冊、狀態、目前階段與待決題數，以及收待決題、交付與求助回報的信箱，資料變動後自動更新。電腦與手機共用同一個網址。
 
-連線沒有加密，只應在內網或私人網路使用。
+連線沒有加密，登入密碼也以明文傳送，只應在內網或私人網路使用。
 
 ## 安裝與使用
 
-安裝、啟動、配對、背景常駐、自訂樣式與更新，見[使用說明](../docs/lat-board.md)。本檔放開發者需要的細節。
+安裝、啟動、登入、背景常駐、自訂樣式與更新，見[使用說明](../docs/lat-board.md)。本檔放開發者需要的細節。
 
-需要 Bun（實測 1.3.14）或 Node 22.17 以上（實測 22.17.0）擇一，以及已安裝的 LAT 技能與它使用的 `uv`、Python。只有 Bun 時，建置、`start`、`pair` 都由 Bun 執行；只有 Node 時用 npm 建置，`board` 指令用 `node --experimental-strip-types src/cli.ts`（22.18 以上可省略旗標）。細節見[使用說明](../docs/lat-board.md#需要什麼)。
+需要 Bun（實測 1.3.14）或 Node 22.17 以上（實測 22.17.0）擇一，以及已安裝的 LAT 技能與它使用的 `uv`、Python。只有 Bun 時，建置、`start`、`password` 都由 Bun 執行；只有 Node 時用 npm 建置，`board` 指令用 `node --experimental-strip-types src/cli.ts`（22.18 以上可省略旗標）。細節見[使用說明](../docs/lat-board.md#需要什麼)。
 
 ## 設定
 
@@ -19,22 +19,33 @@
 | `HOST`、`PORT` | 監聽位址與連接埠（也可用 `start` 的 `--host`、`--port`） | `0.0.0.0`、`7100` |
 | `LAT_BOARD_LAT_DIR` | LAT 技能目錄 | `~/.agents/skills/lat` |
 | `LAT_BOARD_HELPER_COMMAND` | 直接指定輔助工具指令（JSON 字串陣列），看板會在後面加上 `board list` 等參數 | 由技能目錄組出 |
-| `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已配對裝置、配對碼、回報的已讀與封存、送出紀錄） | `$XDG_STATE_HOME/lat/board` |
+| `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已登入裝置、密碼雜湊、回報的已讀與封存、送出紀錄） | `$XDG_STATE_HOME/lat/board` |
 | `LAT_REPORTS_DIR` | 主控回報紀錄目錄，須與 LAT hook 寫入的位置相同 | `$XDG_STATE_HOME/lat/reports` |
 | `LAT_BOARD_FALLBACK_SECONDS` | 漏掉檔案變動時，最慢幾秒內補上（從變動到畫面更新）；5 到 60 | `60` |
 | `LAT_BOARD_HELPER_TIMEOUT_SECONDS` | 輔助工具多久沒回應就放棄；最多是（上一項 − 1）秒的一半 | `15` |
-| `LAT_BOARD_PAIRING_TTL_SECONDS` | 配對碼有效時間 | `300` |
+| `LAT_BOARD_LOGIN_LOCK_SECONDS` | 同一來源連續輸錯 5 次密碼後拒絕登入的秒數 | `60` |
+| `ADDRESS_HEADER`、`XFF_DEPTH` | 放在反向代理後面時，從哪個標頭讀真正的來源位址（輸錯次數依來源計算） | 不設定：用連線的位址 |
 | `LAT_BOARD_CONFIG_DIR` | 看板的設定目錄，放使用者樣式檔 `user.css` | `$XDG_CONFIG_HOME/lat/board` |
 | `LAT_BOARD_INJECT_COMMAND` | 傳話用的輸入指令（JSON 字串陣列），看板會在後面加上 `<HCOM 名稱> <文字> --enter`；文字剛好是 `--help`、`-h`、`--name`、`--go`、`--enter` 這五個之一時，輸入指令會當成自己的選項，所以改分兩次呼叫（第一個字元，再接其餘字元與 `--enter`），輸入框收到的字元不變（這種訊息送出最多慢約 2 秒） | `["hcom","term","inject"]` |
 | `LAT_BOARD_INJECT_TIMEOUT_SECONDS` | 輸入指令多久沒結束就放棄 | `15` |
 
 `XDG_STATE_HOME` 未設定時是 `~/.local/state`，`XDG_CONFIG_HOME` 未設定時是 `~/.config`。
 
+## 登入
+
+設定、變更、忘記密碼與輸錯的限制，見[使用說明](../docs/lat-board.md#登入)。實作上：
+
+- `bun run board password` 在終端機輸入時不回顯；標準輸入不是終端機時，改讀前兩行（測試用這個方式）。
+- 密碼以 scrypt（N=2^15、r=8、p=1，16 位元組隨機鹽）雜湊後存在狀態目錄的 `password.json`，權限 600，不存明文。伺服器每次登入都重讀這個檔，所以變更立即生效。
+- 登入成功就在 `devices.json` 登記一台裝置，瀏覽器拿到 400 天的 HttpOnly cookie；配對碼版本留下的裝置格式相同，升級後照常有效。
+- 連續輸錯的計數依 `getClientAddress()` 的來源位址，只存在記憶體，重啟看板就清除。
+- 登入畫面與 `/api/login` 之外的路徑都要登入；`/api/*` 與事件串流未登入時回 401，其他頁面轉到 `/login`。
+
 ## 信箱
 
 信箱列出啟用中主控還沒被記錄的待決題，以及所有主控的交付（`DONE`）與求助（`HELP`）回報；其他回報只更新名冊上的目前階段。可依時間或依專案排序，選擇記在各自的裝置上。
 
-- 回報要自己按「標為已讀」；已讀狀態所有已配對裝置共用。
+- 回報要自己按「標為已讀」；已讀狀態所有已登入裝置共用。
 - 回報會自動移到「已封存」：未讀的自發出起滿 7 天，已讀的自標為已讀起滿 3 天。封存後仍可開啟全文，但不能移回信箱，也沒有手動封存。回報紀錄檔不會被刪除。
 - 已結束的主控只要信箱裡還有它的回報就留在名冊上，全部封存後才消失。
 
@@ -60,7 +71,7 @@
 
 - 你同時在那個分頁打字時，兩邊的文字可能混在一起送出。
 - 送出前會重讀資料，確認主控仍啟用；已結束的主控不能傳話。失敗時畫面顯示原因，文字留在輸入框，不會自動重試，也不會改走別的管道。
-- 每次傳話不論成敗都記在狀態目錄的 `sent-log.jsonl`，在該主控的資訊頁可以看到，所有已配對裝置看到的相同。
+- 每次傳話不論成敗都記在狀態目錄的 `sent-log.jsonl`，在該主控的資訊頁可以看到，所有已登入裝置看到的相同。
 - 多行文字以一則訊息送出：行與行之間送的是換行字元（LF），最後才送出 Enter（CR）。文字裡的 CR 會先換成 LF，否則會提早送出。
 - 畫面寬度 760px 以下，或只有觸控、沒有滑鼠或觸控板的裝置：Enter 換行，按按鈕送出。其他情況 Enter 送出、Shift+Enter 換行。輸入法選字時的 Enter 不會送出。
 
@@ -73,7 +84,7 @@
 
 ### 自訂樣式
 
-把自己的樣式寫在設定目錄的 `user.css`（預設 `~/.config/lat/board/user.css`）。它在內建樣式之後載入，所有已配對裝置重新載入頁面就會套用；刪掉檔案就恢復預設，不需要重啟看板。
+把自己的樣式寫在設定目錄的 `user.css`（預設 `~/.config/lat/board/user.css`）。它在內建樣式之後載入，所有已登入裝置重新載入頁面就會套用；刪掉檔案就恢復預設，不需要重啟看板。
 
 顏色、圓角與字型都是 CSS 變數，寫在 `:root` 就能覆蓋，深色與淺色主題都會生效：
 
@@ -111,7 +122,7 @@ bun run test        # 先 build，再以暫存目錄與假的輔助工具啟動�
 
 ```bash
 bun run build && bun run repro:hydration   # 無頭 Chrome 模擬這些改動；有一種讓看板壞掉就以 1 結束
-bun run repro:hydration --serve none       # 只啟動已配對的假資料看板，給裝了真實擴充功能的瀏覽器開
+bun run repro:hydration --serve none       # 只啟動已登入的假資料看板，給裝了真實擴充功能的瀏覽器開
 ```
 
 需要本機有 Chrome 或 Chromium（可用 `CHROME` 指定），使用測試連接埠起點加 12 與加 13 的兩個連接埠。

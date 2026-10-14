@@ -72,7 +72,7 @@ async function post<T>(path: string, body: unknown): Promise<{ status: number; b
 			headers: { 'content-type': 'application/json' },
 			body: JSON.stringify(body)
 		});
-		// The server sends an unpaired browser to the pairing screen.
+		// The server sends a browser that is not logged in to the login screen.
 		if (response.status === 401) location.reload();
 		return { status: response.status, body: await response.json().catch(() => null) };
 	} catch {

@@ -16,7 +16,7 @@ import type {
 } from '../src/lib/board/types.ts';
 
 const ROOT = join(import.meta.dir, '..');
-// Each test file takes its own offsets from this base; the highest one in use is 17.
+// Each test file takes its own offsets from this base; the highest one in use is 18.
 export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
 
 /** What runs the server and the fake commands: Node when the host has it, otherwise the Bun that
@@ -24,6 +24,8 @@ export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
 export const NODE = Bun.which('node') ?? process.execPath;
 
 export const DAY = 24 * 60 * 60 * 1000;
+/** The board password every fixture sets unless told not to. A test value, not a real password. */
+export const PASSWORD = 'test-password-一二三';
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function until<T>(read: () => T | undefined | false | null, timeoutMs: number, what: string): Promise<T> {
@@ -95,10 +97,14 @@ export interface Fixture {
 	report(sessionId: string, fields: Partial<Report> & { tag: Report['tag'] }): void;
 	appendRaw(sessionId: string, text: string): void;
 	cli(...args: string[]): { code: number; stdout: string; stderr: string };
-	/** Ask the host command for a pairing code. */
-	newCode(): string;
-	/** Pair a new device and return its cookie header. */
-	pair(userAgent?: string): Promise<string>;
+	/** Run a host command with this text on its standard input. */
+	cliWithInput(input: string, ...args: string[]): { code: number; stdout: string; stderr: string };
+	/** Set the board password through the host command, typed twice. */
+	setPassword(password: string): void;
+	/** Try to log in; the response as the server gave it. */
+	tryLogin(password: string, userAgent?: string): Promise<Response>;
+	/** Log a new device in with the fixture's password and return its cookie header. */
+	login(userAgent?: string): Promise<string>;
 	fetch(path: string, init?: RequestInit & { cookie?: string }): Promise<Response>;
 	board(cookie: string): Promise<BoardSnapshot>;
 	refresh(cookie: string): Promise<BoardSnapshot>;
@@ -112,6 +118,8 @@ export interface Fixture {
 	start(): Promise<void>;
 	stop(): Promise<void>;
 	cleanup(): Promise<void>;
+	/** Everything the server has written to its standard output and error so far. */
+	serverOutput(): string;
 }
 
 export interface Watch {
@@ -131,7 +139,7 @@ export const titled = (snapshot: BoardSnapshot | undefined, title: string): Inbo
 
 export async function startFixture(
 	portOffset: number,
-	options: { env?: Record<string, string> } = {}
+	options: { env?: Record<string, string>; password?: string | null } = {}
 ): Promise<Fixture> {
 	if (!existsSync(join(ROOT, 'build/index.js'))) throw new Error('build/ is missing: run `bun run build` first');
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-test-'));
@@ -156,6 +164,7 @@ export async function startFixture(
 		...options.env
 	};
 	let server: ChildProcess | undefined;
+	let output = '';
 	let sessions = 0;
 	const watches: Watch[] = [];
 
@@ -211,19 +220,24 @@ export async function startFixture(
 			appendFileSync(join(reportsDir, `${sessionId}.jsonl`), JSON.stringify(record) + '\n');
 		},
 		appendRaw: (sessionId, text) => appendFileSync(join(reportsDir, `${sessionId}.jsonl`), text),
-		cli(...args) {
-			const result = spawnSync('bun', [join(ROOT, 'src/cli.ts'), ...args], { env, encoding: 'utf8' });
+		cli: (...args) => fixture.cliWithInput('', ...args),
+		cliWithInput(input, ...args) {
+			const result = spawnSync('bun', [join(ROOT, 'src/cli.ts'), ...args], { env, input, encoding: 'utf8' });
 			return { code: result.status ?? -1, stdout: result.stdout, stderr: result.stderr };
 		},
-		newCode: () => /配對碼：(\S+)/.exec(fixture.cli('pair').stdout)![1],
-		async pair(userAgent = 'test-device') {
-			const code = fixture.newCode();
-			const response = await fixture.fetch('/api/pair', {
+		setPassword(password) {
+			const result = fixture.cliWithInput(`${password}\n${password}\n`, 'password');
+			if (result.code !== 0) throw new Error(`setting the password failed: ${result.stderr}`);
+		},
+		tryLogin: (password, userAgent = 'test-device') =>
+			fixture.fetch('/api/login', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json', 'user-agent': userAgent },
-				body: JSON.stringify({ code })
-			});
-			if (!response.ok) throw new Error(`pairing failed: ${response.status}`);
+				body: JSON.stringify({ password })
+			}),
+		async login(userAgent = 'test-device') {
+			const response = await fixture.tryLogin(PASSWORD, userAgent);
+			if (!response.ok) throw new Error(`login failed: ${response.status}`);
 			return response.headers.getSetCookie()[0].split(';')[0];
 		},
 		fetch(path, init = {}) {
@@ -268,11 +282,13 @@ export async function startFixture(
 			return watch;
 		},
 		async start() {
-			server = spawn(NODE, [join(ROOT, 'build/index.js')], { env, stdio: ['ignore', 'inherit', 'inherit'] });
+			server = spawn(NODE, [join(ROOT, 'build/index.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+			server.stdout!.on('data', (chunk) => ((output += chunk), process.stdout.write(chunk)));
+			server.stderr!.on('data', (chunk) => ((output += chunk), process.stderr.write(chunk)));
 			const deadline = Date.now() + 10_000;
 			for (;;) {
 				try {
-					await fetch(`${url}/pair`);
+					await fetch(`${url}/login`);
 					return;
 				} catch {
 					if (server.exitCode !== null) throw new Error(`board server exited with ${server.exitCode}`);
@@ -287,6 +303,7 @@ export async function startFixture(
 			server.kill('SIGKILL');
 			await exited;
 		},
+		serverOutput: () => output,
 		async cleanup() {
 			for (const watch of watches) watch.close();
 			await fixture.stop();
@@ -295,6 +312,7 @@ export async function startFixture(
 	};
 
 	fixture.list([]);
+	if (options.password !== null) fixture.setPassword(options.password ?? PASSWORD);
 	await fixture.start();
 	return fixture;
 }

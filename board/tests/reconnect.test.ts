@@ -9,7 +9,7 @@ beforeAll(async () => {
 afterAll(() => fixture.cleanup());
 
 test('the page reports a lost connection, then reconnects by itself and shows the new data', async () => {
-	const cookie = await fixture.pair();
+	const cookie = await fixture.login();
 	fixture.list([fixture.bound('alpha', 'luna')]);
 	await fixture.refresh(cookie);
 	const page = fixture.watch(cookie);

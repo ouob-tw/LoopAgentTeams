@@ -1,9 +1,9 @@
 // The host commands on a host with only one of the two runtimes: a PATH that holds that runtime
-// and nothing else. Runs the real `pair` and `start` commands (the other command, `build`, is
+// and nothing else. Runs the real `password` and `start` commands (the other command, `build`, is
 // covered by running the whole suite this way, see the README).
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
-import { mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PORT_BASE, sleep } from './harness.ts';
@@ -52,13 +52,14 @@ for (const host of hosts) {
 
 		const command = (...args: string[]) => [...host.args, join(ROOT, 'src/cli.ts'), ...args];
 
-		test('pair prints a code', () => {
+		test('password sets the password', () => {
 			const other = host.cmd === 'bun' ? 'node' : 'bun';
 			expect(Bun.which(other, { PATH: env.PATH })).toBeNull();
 
-			const result = spawnSync(run, command('pair'), { env, encoding: 'utf8' });
+			const result = spawnSync(run, command('password'), { env, input: 'pw-1\npw-1\n', encoding: 'utf8' });
 
-			expect(result.stdout).toMatch(/配對碼：\S{4}-\S{4}/);
+			expect(result.stdout).toContain('已設定密碼');
+			expect(existsSync(join(env.LAT_BOARD_STATE_DIR, 'password.json'))).toBe(true);
 		});
 
 		test('start serves the board', async () => {
@@ -73,7 +74,7 @@ for (const host of hosts) {
 			const deadline = Date.now() + 10_000;
 			for (;;) {
 				try {
-					const page = await fetch(`http://127.0.0.1:${port}/pair`);
+					const page = await fetch(`http://127.0.0.1:${port}/login`);
 					expect(page.status).toBe(200);
 					return;
 				} catch (error) {
@@ -86,16 +87,21 @@ for (const host of hosts) {
 	});
 }
 
-test('pair also works through `bun run board` with no node on the PATH', () => {
+test('password also works through `bun run board` with no node on the PATH', () => {
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-runtime-'));
 	try {
 		mkdirSync(join(dir, 'bin'));
 		symlinkSync(process.execPath, join(dir, 'bin/bun'));
 		const env = { PATH: join(dir, 'bin'), HOME: dir, LAT_BOARD_STATE_DIR: join(dir, 'state') };
 
-		const result = spawnSync(join(dir, 'bin/bun'), ['run', 'board', 'pair'], { cwd: ROOT, env, encoding: 'utf8' });
+		const result = spawnSync(join(dir, 'bin/bun'), ['run', 'board', 'password'], {
+			cwd: ROOT,
+			env,
+			input: 'pw-1\npw-1\n',
+			encoding: 'utf8'
+		});
 
-		expect(result.stdout).toMatch(/配對碼：\S{4}-\S{4}/);
+		expect(result.stdout).toContain('已設定密碼');
 	} finally {
 		rmSync(dir, { recursive: true, force: true });
 	}

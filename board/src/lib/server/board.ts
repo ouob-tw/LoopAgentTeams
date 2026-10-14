@@ -16,7 +16,7 @@ import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 const HEARTBEAT_MS = 15_000;
 
 export interface Stream {
-	/** Token of the paired device that opened the stream. */
+	/** Token of the logged-in device that opened the stream. */
 	token: string;
 	send(event: string, data: string): void;
 	close(): void;
@@ -30,7 +30,7 @@ export interface Board {
 	refresh(): Promise<BoardSnapshot>;
 	/** Why the last read could not bring the sent log up to date, or null. */
 	sentLogError(): string | null;
-	/** Mark an inbox report read for every paired device. */
+	/** Mark an inbox report read for every logged-in device. */
 	markRead(key: string): Promise<MarkReadResult>;
 	/** The archived reports, newest first. */
 	archive(): Promise<InboxReport[]>;
@@ -80,7 +80,7 @@ function createBoard(): Board {
 			void refresh();
 		}, config.debounceMs);
 	});
-	// Created up front so the device list can be watched before the first device is paired.
+	// Created up front so the device list can be watched before the first device logs in.
 	mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
 	const deviceWatcher = createSourceWatcher(dropRevoked);
 	const deviceTargets: WatchTargets = new Map([[config.stateDir, new Set([DEVICES_FILE])]]);

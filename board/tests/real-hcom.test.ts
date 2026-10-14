@@ -53,7 +53,7 @@ beforeAll(async () => {
 	fixture = await startFixture(14, {
 		env: { HCOM_DIR: hcomDir, LAT_BOARD_INJECT_COMMAND: JSON.stringify(['hcom', 'term', 'inject']), LAT_BOARD_INJECT_TIMEOUT_SECONDS: '10' }
 	});
-	cookie = await fixture.pair();
+	cookie = await fixture.login();
 });
 afterAll(async () => {
 	terminal?.stop(true);

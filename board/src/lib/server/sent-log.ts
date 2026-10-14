@@ -1,5 +1,5 @@
 // The board's sent log: one JSON line per attempt to send a message to a controller and per
-// answer the helper accepted, kept in the board's state directory so every paired device sees the
+// answer the helper accepted, kept in the board's state directory so every logged-in device sees the
 // same history. Lines are only appended; what became of an answer is a later line of its own.
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';

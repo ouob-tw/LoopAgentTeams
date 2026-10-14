@@ -3,7 +3,7 @@ import { getBoard } from '#lib/server/board.ts';
 import type { RequestHandler } from './$types';
 
 /** Event stream: `board` carries a full snapshot, `ping` keeps the connection alive, `unpaired`
- *  tells a revoked device to go back to the pairing screen. */
+ *  tells a revoked device to go back to the login screen. */
 export const GET: RequestHandler = async ({ cookies }) => {
 	const board = getBoard();
 	const encoder = new TextEncoder();

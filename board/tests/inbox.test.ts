@@ -10,7 +10,7 @@ const titles = (items: { title: string }[]) => items.map((item) => item.title);
 
 beforeAll(async () => {
 	fixture = await startFixture(7);
-	cookie = await fixture.pair();
+	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());
 
@@ -163,7 +163,7 @@ test('a report marked read on one device is read on another paired device within
 	fixture.report(luna.session_id, { tag: 'DONE', summary: '兩台裝置都會看到', hcom_name: 'luna', workspace: luna.workspace });
 	fixture.list([luna]);
 	const { key } = titled(await fixture.refresh(cookie), '兩台裝置都會看到')!;
-	const other = fixture.watch(await fixture.pair('second-device'));
+	const other = fixture.watch(await fixture.login('second-device'));
 	await until(() => titled(other.latest(), '兩台裝置都會看到'), 5_000, 'the report on the second device');
 	// Let the re-read that the new report file triggered finish before counting helper runs.
 	await sleep(500);

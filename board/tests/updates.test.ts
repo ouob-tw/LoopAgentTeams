@@ -7,7 +7,7 @@ let cookie: string;
 beforeAll(async () => {
 	// The default fallback of 60 seconds stays: anything faster below is the file watch at work.
 	fixture = await startFixture(1);
-	cookie = await fixture.pair();
+	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());
 
@@ -16,7 +16,7 @@ test('a NO REPLY turn end reaches connected pages as the new phase within 5 seco
 	fixture.list([luna]);
 	await fixture.refresh(cookie);
 	const page = fixture.watch(cookie);
-	const other = fixture.watch(await fixture.pair('second-device'));
+	const other = fixture.watch(await fixture.login('second-device'));
 	await until(() => named(page.latest(), 'luna') && named(other.latest(), 'luna'), 5_000, 'the first snapshot');
 	expect(named(page.latest(), 'luna')!.phase).toBeNull();
 
