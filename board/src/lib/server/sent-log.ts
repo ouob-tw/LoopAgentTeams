@@ -76,6 +76,8 @@ export interface SwitchStep {
 	to?: ModelChoice;
 	/** The pane of a later stop, which replaces the one the switch was logged with. */
 	pane?: string | null;
+	/** The effort carried, resolved again with new settings or a later stop. */
+	carriedEffort?: string | null;
 	time: string;
 }
 
@@ -175,6 +177,7 @@ function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
 				if (step.error !== undefined) view.error = step.error;
 				if (step.to) view.to = step.to;
 				if (step.pane !== undefined) view.pane = step.pane;
+				if (step.carriedEffort !== undefined) view.carriedEffort = step.carriedEffort;
 			}
 			const wake = resumes.get(logged.id);
 			if (wake && wake.outcome !== 'failed' && wake.outcome !== 'refused') view.appliedAt = wake.time;

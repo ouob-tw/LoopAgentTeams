@@ -7,6 +7,8 @@ import { join } from 'node:path';
 import type { SentEntry } from '../src/lib/board/answers.ts';
 import {
 	BUSY_REASON,
+	carryNote,
+	EFFORT_UNKNOWN_TEXT,
 	FIXED_MODEL_REASON,
 	lastApplied,
 	NOT_OFFERED_REASON,
@@ -302,6 +304,74 @@ test('a new model with the effort kept carries the latest turn\'s effort: Claude
 	hcomPlan({ agents: [codex.self], resumed: agent(codex.name, codex.id) });
 	await change(codex.id, 'gpt-6-astra', null);
 	expect(resumes().at(-1)?.slice(6)).toEqual(['-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="medium"']);
+});
+
+test('settings chosen again on an open switch carry the effort of the record at that time, for both clients', async () => {
+	for (const client of ['claude', 'codex'] as const) {
+		const target = await running(client);
+		hcomPlan({ agents: [target.self], kill: { exit: 1 } });
+		expect((await change(target.id, null, 'low')).body.entry).toMatchObject({ state: 'stop-failed' });
+
+		// Newer turns ran at high effort before the user chose a new model with the effort kept.
+		lastTurn(target.id, { model: null, effort: 'high', time: '2026-10-14T09:30:00Z' });
+		hcomPlan({ agents: [], resumed: agent(target.name, target.id) });
+		herdrPanes([{ workspace_id: 'wP', cwd: target.workspace, pane_id: 'wP:shell' }]);
+		const model = client === 'claude' ? 'claude-haiku-5-5' : 'gpt-6-astra';
+		const continued = await change(target.id, model, null);
+
+		expect(continued.body.entry).toMatchObject({ to: { model, effort: null }, carriedEffort: 'high', from: { effort: 'medium' } });
+		expect(resumes().at(-1)?.slice(6)).toEqual(
+			client === 'claude' ? ['--model', model, '--effort', 'high'] : ['-c', `model="${model}"`, '-c', 'model_reasoning_effort="high"']
+		);
+	}
+});
+
+test('an effort unknown when the model was chosen is read again when the client is stopped again', async () => {
+	for (const client of ['claude', 'codex'] as const) {
+		const target = await running(client);
+		lastTurn(target.id, null);
+		hcomPlan({ agents: [target.self], kill: { exit: 1 } });
+		const model = client === 'claude' ? 'claude-haiku-5-5' : 'gpt-6-astra';
+		const first = await change(target.id, model, null);
+		expect(first.body.entry).toMatchObject({ state: 'stop-failed', carriedEffort: null });
+
+		lastTurn(target.id, { model: null, effort: 'xhigh', time: '2026-10-14T09:30:00Z' });
+		hcomPlan({ agents: [target.self], resumed: agent(target.name, target.id) });
+		const again = await resumeSwitch(target.id);
+
+		expect(again.body.entry).toMatchObject({ state: 'resuming', carriedEffort: 'xhigh' });
+		expect(resumes().at(-1)?.slice(-2)).toEqual(client === 'claude' ? ['--effort', 'xhigh'] : ['-c', 'model_reasoning_effort="xhigh"']);
+	}
+});
+
+test('a resume retry with nothing chosen again sends the effort resolved before', async () => {
+	const target = await running('claude');
+	hcomPlan({ agents: [target.self], exit: 1, stderr: 'resume broke' });
+	await change(target.id, 'claude-haiku-5-5', null);
+
+	lastTurn(target.id, { model: null, effort: 'low', time: '2026-10-14T09:30:00Z' });
+	hcomPlan({ agents: [], resumed: agent(target.name, target.id) });
+	await resumeSwitch(target.id);
+
+	expect(resumes().map((args) => args.slice(-4))).toEqual([
+		['--model', 'claude-haiku-5-5', '--effort', 'medium'],
+		['--model', 'claude-haiku-5-5', '--effort', 'medium']
+	]);
+});
+
+test('an open switch read back on any device says what effort 繼續切換 will carry, or that it is not known', async () => {
+	const target = await running('codex');
+	lastTurn(target.id, null);
+	hcomPlan({ agents: [target.self], kill: { exit: 1 } });
+	await change(target.id, 'gpt-6-astra', null);
+
+	const [open] = await switches(target.id);
+	expect(open).toMatchObject({ open: true, carriedEffort: null });
+	expect(carryNote(open)).toBe(EFFORT_UNKNOWN_TEXT);
+	expect(carryNote({ ...open, carriedEffort: 'high' })).toBe('思考強度沿用上一回合的 high');
+	expect(carryNote({ ...open, to: { model: 'gpt-6-astra', effort: 'low' } })).toBe(null);
+	// Logged before the carried effort was kept: the effort before the switch.
+	expect(carryNote({ ...open, carriedEffort: undefined, from: { model: 'x', effort: 'medium', time: null } })).toBe('思考強度沿用上一回合的 medium');
 });
 
 test('an unknown current effort is not guessed: only the model is passed', async () => {

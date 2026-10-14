@@ -4,6 +4,7 @@
 	import { messaging, type Outcome } from '#lib/board/messaging.svelte.ts';
 	import {
 		BUSY_REASON,
+		carryNote,
 		choiceText,
 		EFFORT_UNKNOWN_TEXT,
 		FIXED_MODEL_REASON,
@@ -99,6 +100,7 @@
 			{#if open.error}<p class="failed">{open.error}</p>{/if}
 			<p class="note">舊設定：{open.from ? settingsText(open.from) : '不明'}</p>
 			<p class="note">新設定：{choiceText(open.to)}</p>
+			{#if carryNote(open)}<p class="note">{carryNote(open)}</p>{/if}
 			<button type="button" class="primary" disabled={sending} onclick={() => submit(true)}>
 				{sending ? '處理中…' : '繼續切換'}
 			</button>

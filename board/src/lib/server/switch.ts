@@ -15,7 +15,7 @@ import {
 	FIXED_MODEL_REASON,
 	carriesEffort,
 	modelArgs,
-	resumeChoice,
+	switchResumeChoice,
 	NO_CHOICE,
 	NOT_OFFERED_REASON,
 	NOT_RUNNING_REASON,
@@ -144,6 +144,7 @@ async function startSwitch(board: Board, controller: Controller, entry: SentSwit
 		return refused(FIXED_MODEL_REASON);
 	}
 	entry.from = await readCurrent(board.config, controller.client, controller.id);
+	if (carriesEffort(entry.to)) entry.carriedEffort = entry.from?.effort ?? null;
 	return restartSwitch(board, controller, entry, agent);
 }
 
@@ -228,8 +229,9 @@ async function continueSwitch(board: Board, controller: Controller, open: Switch
 	if (open.state !== 'stopping' && open.state !== 'stop-failed' && open.state !== 'stop-unknown') {
 		return resumeSwitch(board, controller, open.id, choice);
 	}
+	const to = chose(choice) ? choice : open.to;
 	if (chose(choice)) {
-		const logError = step(board, open.id, { to: choice });
+		const logError = step(board, open.id, { to: choice, ...(await carried(board, controller, choice)) });
 		if (logError) return respondLogged(board, open.id, { reason: `寫不進送出紀錄，沒有繼續切換：${logError}`, status: 500 }, logError);
 	}
 	const list = await listAgents(board.config);
@@ -243,7 +245,8 @@ async function continueSwitch(board: Board, controller: Controller, open: Switch
 		if ('refuse' in ready) return respondLogged(board, open.id, { reason: ready.refuse, status: 409 }, null);
 		// In the log before the stop runs, like a first stop: a board stopped meanwhile, or a result
 		// that cannot be written, must leave this stop's pane to check, not the earlier one.
-		const logError = step(board, open.id, { state: 'stopping', error: null, pane: ready.agent.pane });
+		// Stopped again later than the settings were chosen: the effort to carry is the latest one.
+		const logError = step(board, open.id, { state: 'stopping', error: null, pane: ready.agent.pane, ...(await carried(board, controller, to)) });
 		if (logError) return respondLogged(board, open.id, { reason: `寫不進送出紀錄，沒有停止：${logError}`, status: 500 }, logError);
 		return stopThenResume(board, controller, open.id, ready.agent);
 	}
@@ -276,12 +279,12 @@ async function resumeSwitch(board: Board, controller: Controller, switchId: stri
 		return respondLogged(board, switchId, { reason: logError && `寫不進送出紀錄：${logError}`, status: 500 }, logError);
 	}
 	if (chose(choice)) {
-		const logError = step(board, switchId, { to: choice });
+		const logError = step(board, switchId, { to: choice, ...(await carried(board, controller, choice)) });
 		if (logError) return respondLogged(board, switchId, { reason: `寫不進送出紀錄，沒有接回：${logError}`, status: 500 }, logError);
 	}
 	const view = switchView(stateDir, switchId, board.config.now(), launchWaitMs)!;
-	// The effort before the switch, carried when only the model changes.
-	const sent = resumeChoice(view.to, view.from);
+	// A retry that chose nothing new sends what was resolved before.
+	const sent = switchResumeChoice(view);
 	const wake: SentWake = {
 		id: randomUUID(),
 		kind: 'wake',
@@ -315,6 +318,12 @@ async function resumeSwitch(board: Board, controller: Controller, switchId: stri
 	}
 	const failed = wake.outcome === 'failed' || wake.outcome === 'refused';
 	return respondLogged(board, switchId, { reason: failed ? wake.error : null, status: failed ? 502 : 200 }, logError);
+}
+
+/** The effort to carry for these settings, read from the record now; nothing when they carry none. */
+async function carried(board: Board, controller: Controller, to: ModelChoice): Promise<{ carriedEffort?: string | null }> {
+	if (!carriesEffort(to)) return { carriedEffort: null };
+	return { carriedEffort: (await readCurrent(board.config, controller.client, controller.id))?.effort ?? null };
 }
 
 /** Append one step of an open switch; returns why it could not be written, or null. */

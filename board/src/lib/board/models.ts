@@ -71,6 +71,19 @@ export function resumeChoice(choice: ModelChoice, current: CurrentSettings | nul
 /** Whether a choice changes the model and keeps the effort, so the current effort is carried. */
 export const carriesEffort = (choice: ModelChoice) => choice.model !== null && choice.effort === null;
 
+/** What a switch's resume sends: its choice, with the carried effort when it keeps the effort. */
+export function switchResumeChoice(view: Pick<SentSwitch, 'to' | 'from' | 'carriedEffort'>): ModelChoice {
+	if (!carriesEffort(view.to)) return view.to;
+	return { model: view.to.model, effort: view.carriedEffort !== undefined ? view.carriedEffort : (view.from?.effort ?? null) };
+}
+
+/** What an open switch's 繼續切換 says about the effort it will carry; null when it carries none. */
+export function carryNote(view: Pick<SentSwitch, 'to' | 'from' | 'carriedEffort'>): string | null {
+	if (!carriesEffort(view.to)) return null;
+	const effort = switchResumeChoice(view).effort;
+	return effort === null ? EFFORT_UNKNOWN_TEXT : `思考強度沿用上一回合的 ${effort}`;
+}
+
 export const EFFORT_UNKNOWN_TEXT = '無法確認目前的思考強度，換模型後可能改用該模型的預設';
 
 /** Whether Codex launch arguments name a model outright (`--model`, `-m`, `--model=…`, `--oss`):
@@ -145,6 +158,10 @@ export interface SentSwitch {
 	error: string | null;
 	/** The Herdr pane the Codex client ran in before the stop: it must be gone before a resume. */
 	pane: string | null;
+	/** The effort the resume carries because `to` changes the model and keeps the effort, read from
+	 *  the record when the settings were chosen or the client was last stopped; null when it could
+	 *  not be read. Missing when nothing is carried, and on switches logged before this was kept. */
+	carriedEffort?: string | null;
 }
 
 export interface SwitchView extends SentSwitch {
