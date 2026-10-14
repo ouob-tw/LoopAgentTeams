@@ -86,7 +86,7 @@
 						</p>
 						{#if entry.text}<p class="text">{entry.text}</p>{/if}
 						{#if entry.choice && (entry.choice.model || entry.choice.effort)}
-							<p class="title">{choiceText(entry.choice)}</p>
+							<p class="title">{choiceText(entry.choice)}{entry.carriedEffort ? `（思考強度沿用 ${entry.carriedEffort}）` : ''}</p>
 						{/if}
 					{:else}
 						<p class="meta">

@@ -58,6 +58,34 @@ export function modelArgs(client: LaunchClient, choice: ModelChoice): string[] {
 	return args;
 }
 
+/**
+ * The settings a resume carries: the choice, and when it changes the model but keeps the effort,
+ * the effort the latest turn used, so the new model does not fall back to its own default. That
+ * carried effort is not something the user chose. Left out when it is not known.
+ */
+export function resumeChoice(choice: ModelChoice, current: CurrentSettings | null): ModelChoice {
+	if (choice.model === null || choice.effort !== null) return choice;
+	return { model: choice.model, effort: current?.effort ?? null };
+}
+
+/** Whether a choice changes the model and keeps the effort, so the current effort is carried. */
+export const carriesEffort = (choice: ModelChoice) => choice.model !== null && choice.effort === null;
+
+/** What a switch's resume sends: its choice, with the carried effort when it keeps the effort. */
+export function switchResumeChoice(view: Pick<SentSwitch, 'to' | 'from' | 'carriedEffort'>): ModelChoice {
+	if (!carriesEffort(view.to)) return view.to;
+	return { model: view.to.model, effort: view.carriedEffort !== undefined ? view.carriedEffort : (view.from?.effort ?? null) };
+}
+
+/** What an open switch's 繼續切換 says about the effort it will carry; null when it carries none. */
+export function carryNote(view: Pick<SentSwitch, 'to' | 'from' | 'carriedEffort'>): string | null {
+	if (!carriesEffort(view.to)) return null;
+	const effort = switchResumeChoice(view).effort;
+	return effort === null ? EFFORT_UNKNOWN_TEXT : `思考強度沿用上一回合的 ${effort}`;
+}
+
+export const EFFORT_UNKNOWN_TEXT = '無法確認目前的思考強度，換模型後可能改用該模型的預設';
+
 /** Whether Codex launch arguments name a model outright (`--model`, `-m`, `--model=…`, `--oss`):
  *  hcom repeats them on every resume, and they beat any `-c model=`, so its model cannot change. */
 export function fixedModel(args: string[]): boolean {
@@ -93,12 +121,13 @@ export interface ModelStatus {
 }
 
 /**
- * Where a switch stands. Claude: `sent` both commands typed in; `failed` typing failed. Codex, which
- * is stopped and resumed with the new settings: `stopping` logged before the stop ran; `stop-failed`
+ * Where a switch stands. The client is stopped and resumed with the new settings: `stopping` logged
+ * before the stop ran; `stop-failed`
  * the stop command failed; `stop-unknown` it ran out of time or the client could not be seen to be
  * gone; `stopped` gone, not resumed yet; `resuming` resumed, its session not seen yet;
  * `resume-failed` the resume failed or was found over without the session showing up; `done` the
- * session showed up again. `refused` nothing was done.
+ * session showed up again. `refused` nothing was done. `sent` and `failed` are only on switches
+ * logged before Claude was switched this way, when `/model` and `/effort` were typed in.
  */
 export type SwitchState =
 	| 'sent'
@@ -123,12 +152,16 @@ export interface SentSwitch {
 	/** What the latest turn used before the switch; null when it could not be read. */
 	from: CurrentSettings | null;
 	to: ModelChoice;
-	/** `inject` typed into the client (Claude); `restart` stopped and resumed (Codex); null refused. */
+	/** `restart` stopped and resumed; null refused. `inject` only on older Claude switches, typed in. */
 	route: 'inject' | 'restart' | null;
 	state: SwitchState;
 	error: string | null;
 	/** The Herdr pane the Codex client ran in before the stop: it must be gone before a resume. */
 	pane: string | null;
+	/** The effort the resume carries because `to` changes the model and keeps the effort, read from
+	 *  the record when the settings were chosen or the client was last stopped; null when it could
+	 *  not be read. Missing when nothing is carried, and on switches logged before this was kept. */
+	carriedEffort?: string | null;
 }
 
 export interface SwitchView extends SentSwitch {

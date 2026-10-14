@@ -40,6 +40,9 @@ export interface SentWake {
 	extraArgs: string[];
 	/** The model and effort chosen for a resume; missing on wakes logged before there was a choice. */
 	choice?: ModelChoice;
+	/** The effort the latest turn used, passed along because the choice changed the model and kept
+	 *  the effort; null when it was not known. Missing when nothing was carried. */
+	carriedEffort?: string | null;
 	/** The model switch this resume carries out; it has no text then. Null or missing for a wake. */
 	switchId?: string | null;
 	outcome: WakeOutcome;
