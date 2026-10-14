@@ -86,7 +86,9 @@ const evaluate = async (expression: string) => {
 	return result.result.value;
 };
 
-/** Runs in the page: the vertical centres and edges of the label, the box and the button. */
+/** Runs in the page: the vertical centres of the label's, the button's and the box's own text
+ *  (placeholder when empty), found by laying the same text out in a hidden copy of the box, and
+ *  the rectangles of all three. */
 const MEASURE = `(() => {
 	const form = document.querySelector('form.cmd');
 	const textCentre = (node) => {
@@ -95,22 +97,31 @@ const MEASURE = `(() => {
 		const rect = range.getBoundingClientRect();
 		return (rect.top + rect.bottom) / 2;
 	};
+	const rect = (node) => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
 	const label = form.querySelector('.to');
 	const box = form.querySelector('textarea');
 	const button = form.querySelector('button');
-	const edges = (node) => { const r = node.getBoundingClientRect(); return { top: r.top, bottom: r.bottom }; };
-	const box_ = box.getBoundingClientRect();
+	const b = box.getBoundingClientRect();
+	const cs = getComputedStyle(box);
+	const mirror = document.createElement('div');
+	for (const key of ['fontFamily', 'fontSize', 'fontWeight', 'lineHeight', 'letterSpacing', 'paddingTop', 'paddingBottom', 'paddingLeft', 'paddingRight', 'borderTopWidth', 'borderBottomWidth', 'borderLeftWidth', 'borderRightWidth']) mirror.style[key] = cs[key];
+	mirror.style.cssText += ';position:fixed;visibility:hidden;white-space:pre-wrap;box-sizing:border-box;border-style:solid;border-color:transparent;width:' + b.width + 'px;left:' + b.left + 'px;top:' + b.top + 'px';
+	mirror.textContent = box.value || box.placeholder;
+	document.body.append(mirror);
+	const text = textCentre(mirror);
+	mirror.remove();
 	return {
 		label: textCentre(label),
-		box: (box_.top + box_.bottom) / 2,
+		box: text,
 		button: textCentre(button),
-		labelEdges: edges(label), boxEdges: edges(box), buttonEdges: edges(button),
-		lastLineCentre: box_.bottom - 1 - parseFloat(getComputedStyle(box).paddingBottom) - parseFloat(getComputedStyle(box).lineHeight) / 2
+		labelRect: rect(label), boxRect: rect(box), buttonRect: rect(button),
+		lastLineCentre: b.bottom - 1 - parseFloat(cs.paddingBottom) - parseFloat(cs.lineHeight) / 2
 	};
 })()`;
 
-type Measure = Record<'label' | 'box' | 'button' | 'lastLineCentre', number> &
-	Record<'labelEdges' | 'boxEdges' | 'buttonEdges', { top: number; bottom: number }>;
+type Rect = { left: number; right: number; top: number; bottom: number };
+type Measure = Record<'label' | 'box' | 'button' | 'lastLineCentre', number> & Record<'labelRect' | 'boxRect' | 'buttonRect', Rect>;
+const overlap = (a: Rect, b: Rect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 
 await send('Page.enable');
 await send('Emulation.setDeviceMetricsOverride', { width: 1400, height: 900, deviceScaleFactor: 1, mobile: false });
@@ -148,13 +159,16 @@ for (const theme of THEMES) {
 				const spread = Math.max(m.label, m.box, m.button) - Math.min(m.label, m.box, m.button);
 				if (spread > TOLERANCE) failures.push(`${tag}: centres differ by ${fmt(spread)}px`);
 			} else {
-				// Bottom-aligned: level with the last line, same distance from the bottom edge as with one line.
-				for (const [what, centre] of [['label', m.label], ['button', m.button]] as const) {
+				// Bottom-aligned: level with the last line, and as far from the box's bottom edge as with
+				// one line (so nothing jumps), without touching the box.
+				for (const [what, centre, rect] of [['label', m.label, m.labelRect], ['button', m.button, m.buttonRect]] as const) {
 					if (Math.abs(centre - m.lastLineCentre) > TOLERANCE) failures.push(`${tag}: ${what} is ${fmt(centre - m.lastLineCentre)}px from the last line`);
+					const before = single![what === 'label' ? 'labelRect' : 'buttonRect'];
+					const moved = (single!.boxRect.bottom - before.bottom) - (m.boxRect.bottom - rect.bottom);
+					if (Math.abs(moved) > TOLERANCE) failures.push(`${tag}: ${what} moved ${fmt(moved)}px relative to the box's bottom edge`);
+					if (overlap(rect, m.boxRect)) failures.push(`${tag}: ${what} overlaps the box`);
 				}
-				const edges = [m.labelEdges, m.buttonEdges];
-				if (edges.some((e) => e.bottom > m.boxEdges.bottom + TOLERANCE || e.top < m.boxEdges.top)) failures.push(`${tag}: label or button leaves the box's height`);
-				if (m.boxEdges.bottom - m.boxEdges.top <= single!.boxEdges.bottom - single!.boxEdges.top) failures.push(`${tag}: the box did not grow`);
+				if (m.boxRect.bottom - m.boxRect.top <= single!.boxRect.bottom - single!.boxRect.top) failures.push(`${tag}: the box did not grow`);
 			}
 			if (shotsAt) {
 				const shot = await send('Page.captureScreenshot', { format: 'png', clip: { x: 0, y: 900 - 220, width: 1400, height: 220, scale: 1 } });
