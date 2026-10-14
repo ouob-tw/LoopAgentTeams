@@ -67,6 +67,9 @@ class SpawnGuardTests(unittest.TestCase):
             ('hcom --name=meru claude --effort high --dangerously-skip-permissions', '--model <id>'),
             ('HERDR_WORKSPACE_ID=w1 hcom --name meru 2 codex --go -c model_reasoning_effort="low"', '--yolo'),
             ('env X=1 hcom --go --name meru 1 claude --model m --dangerously-skip-permissions', '--effort <level>'),
+            ('hcom --tag codex 1 claude --go --model m --effort low', '--dangerously-skip-permissions'),
+            ('hcom --hcom-prompt claude codex --go --yolo --model gpt-6.1-sol', 'model_reasoning_effort'),
+            ('hcom --unknown value 1 claude --go', '--dangerously-skip-permissions'),
         ):
             with self.subTest(command=command):
                 result = run_hook(command)
@@ -93,6 +96,13 @@ class SpawnGuardTests(unittest.TestCase):
             'hcom --name vare r kilo --go',
             '/usr/bin/hcom --name vare ' + CLAUDE[5:],
             'HERDR_WORKSPACE_ID=w1 hcom --name vare ' + CODEX[5:],
+            'hcom --tag claude 1 gemini --go',
+            'hcom --tag claude 1 ' + CODEX[7:],
+            'hcom --hcom-prompt codex 1 ' + CLAUDE[7:],
+            'hcom --name claude send @luna -- hi',
+            'hcom --tag codex 1 claude --go --model claude-opus-5-5 --effort medium '
+            '--dangerously-skip-permissions',
+            'hcom --name claude ' + CODEX[5:],
             'hcom list --name vare',
             'hcom 1 gemini --go --name vare',
             'hcom 1 opencode --go',

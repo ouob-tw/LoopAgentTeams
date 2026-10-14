@@ -93,19 +93,25 @@ def missing(launch):
 def hcom_launch(args):
     """Launch arguments when args (the words after `hcom`) start a new claude or codex agent.
 
-    hcom accepts global options before the count and client (`hcom --name x 1 claude`), so
-    every word before the client must be an option, the value right after one, or the count
-    right before the client. Options there count as launch arguments too.
+    hcom accepts global options before the count and client (`hcom --name x 1 claude`).
+    Reading left to right, an option takes the next word as its value when it is a known
+    hcom value option, or when that word is not an option, count or client; the first word
+    left over must be the client, optionally after a count. Options before the client count
+    as launch arguments too.
     """
-    for index, word in enumerate(args):
+    index = 0
+    while index < len(args):
+        word, following = args[index], args[index + 1:index + 2]
         if word in CLIENTS:
-            before = args[:index - 1] if index and args[index - 1].isdigit() else args[:index]
-            if all(part.startswith('-') or (position and before[position - 1].startswith('-'))
-                   for position, part in enumerate(before)):
-                return read_launch(word, before + args[index + 1:])
-            return None
-        if not word.startswith('-') and not word.isdigit() and not (
-                index and args[index - 1].startswith('-')):
+            return read_launch(word, args[:index] + args[index + 1:])
+        if word.isdigit() and following and following[0] in CLIENTS:
+            index += 1
+        elif word.startswith('-'):
+            takes_value = '=' not in word and (word in HCOM_VALUE_OPTIONS or (
+                following and not following[0].startswith('-')
+                and not following[0].isdigit() and following[0] not in CLIENTS))
+            index += 2 if takes_value else 1
+        else:
             return None
     return None
 
