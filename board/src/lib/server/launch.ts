@@ -5,6 +5,7 @@
 import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { latCommand, NOT_GIT_REASON, type LaunchList, type LaunchRequest, type LaunchResponse, type Project, type SentLaunch } from '../board/launch.ts';
+import type { HelperController } from '../board/types.ts';
 import type { Board } from './board.ts';
 import { gitInit, gitRoot } from './git.ts';
 import { listControllers } from './helper.ts';
@@ -90,8 +91,6 @@ async function attempt(board: Board, request: LaunchRequest): Promise<{ status: 
 	}
 	if ('reason' in prepared) entry.error = prepared.reason;
 	else {
-		// Read before hcom runs, so the new controller cannot be among them yet.
-		const before = await listControllers(config);
 		const launched = await launchAgent(config, {
 			client: entry.client,
 			folder: prepared.startIn,
@@ -101,11 +100,9 @@ async function attempt(board: Board, request: LaunchRequest): Promise<{ status: 
 		entry.outcome = launched.outcome;
 		entry.hcomName = launched.hcomName;
 		entry.error = launched.reason;
-		if (before.ok) {
-			entry.earlierSessions = before.controllers
-				.filter((controller) => controller.hcom_name === launched.hcomName)
-				.map((controller) => controller.session_id);
-		}
+		entry.earlierSessions = prepared.bound
+			.filter((controller) => controller.hcom_name === launched.hcomName)
+			.map((controller) => controller.session_id);
 	}
 
 	let logError: string | null = null;
@@ -128,8 +125,12 @@ async function attempt(board: Board, request: LaunchRequest): Promise<{ status: 
 type Stop = { reason: string; refused?: true };
 
 /** Everything before hcom runs. Fills in the entry as it goes; resolves with why it cannot go on,
- *  or the folder to start in with its symbolic links resolved. */
-async function prepare(board: Board, request: LaunchRequest, entry: SentLaunch): Promise<Stop | { startIn: string }> {
+ *  or the folder to start in with its symbolic links resolved and the bindings before the launch. */
+async function prepare(
+	board: Board,
+	request: LaunchRequest,
+	entry: SentLaunch
+): Promise<Stop | { startIn: string; bound: HelperController[] }> {
 	let folder: string;
 	try {
 		folder = realpathSync(request.folder);
@@ -137,6 +138,10 @@ async function prepare(board: Board, request: LaunchRequest, entry: SentLaunch):
 	} catch {
 		return { reason: `資料夾不存在：${request.folder}` };
 	}
+	// The bindings as they are before anything runs: one already under the name hcom will print is
+	// not the new controller. Without them a launch could not be told from an earlier agent's.
+	const before = await listControllers(board.config);
+	if (!before.ok) return { reason: `讀不到面板綁定登記，沒有啟動主控：${before.reason}` };
 	let scope = gitRoot(folder);
 	if (!scope) {
 		if (!request.gitInit) return { reason: NOT_GIT_REASON, refused: true };
@@ -151,5 +156,5 @@ async function prepare(board: Board, request: LaunchRequest, entry: SentLaunch):
 	entry.herdrWorkspace = workspace.id;
 	entry.herdrWorkspaceLabel = workspace.label;
 	entry.workspaceCreated = workspace.created;
-	return { startIn: folder };
+	return { startIn: folder, bound: before.controllers };
 }

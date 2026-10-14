@@ -35,7 +35,9 @@ async function herdr(config: BoardConfig, args: string[]): Promise<{ result: Rec
 const isPane = (value: unknown): value is Pane =>
 	typeof (value as Pane)?.workspace_id === 'string' && typeof (value as Pane)?.cwd === 'string';
 const isWorkspace = (value: unknown): value is Workspace =>
-	typeof (value as Workspace)?.workspace_id === 'string' && typeof (value as Workspace)?.number === 'number';
+	typeof (value as Workspace)?.workspace_id === 'string' &&
+	typeof (value as Workspace)?.number === 'number' &&
+	typeof (value as Workspace)?.label === 'string';
 
 /** Whether a pane's working folder is the scope or inside it. */
 function inScope(cwd: string, scope: string): boolean {
@@ -52,17 +54,27 @@ export async function chooseWorkspace(config: BoardConfig, scope: string): Promi
 	const [panes, workspaces] = await Promise.all([herdr(config, ['pane', 'list']), herdr(config, ['workspace', 'list'])]);
 	if ('reason' in panes) return { ok: false, reason: `讀不到 Herdr 的窗格清單：${panes.reason}` };
 	if ('reason' in workspaces) return { ok: false, reason: `讀不到 Herdr 的工作區清單：${workspaces.reason}` };
-	const paneList = Array.isArray(panes.result.panes) ? panes.result.panes.filter(isPane) : [];
-	const workspaceList = Array.isArray(workspaces.result.workspaces) ? workspaces.result.workspaces.filter(isWorkspace) : [];
+	// A list that is not in the expected shape tells nothing about where the project's panes are:
+	// taking it as empty would create a workspace the project may already have.
+	const paneList = panes.result.panes;
+	const workspaceList = workspaces.result.workspaces;
+	if (!Array.isArray(paneList) || !paneList.every(isPane)) return { ok: false, reason: '讀不到 Herdr 的窗格清單：輸出不是預期的格式' };
+	if (!Array.isArray(workspaceList) || !workspaceList.every(isWorkspace)) {
+		return { ok: false, reason: '讀不到 Herdr 的工作區清單：輸出不是預期的格式' };
+	}
 
 	const counts = new Map<string, number>();
 	for (const pane of paneList) {
 		if (inScope(pane.cwd, scope)) counts.set(pane.workspace_id, (counts.get(pane.workspace_id) ?? 0) + 1);
 	}
+	const listed = new Set(workspaceList.map((workspace) => workspace.workspace_id));
+	if ([...counts.keys()].some((id) => !listed.has(id))) {
+		return { ok: false, reason: '讀不到 Herdr 的工作區清單：窗格所在的工作區不在清單裡，請再試一次' };
+	}
 	const best = workspaceList
 		.filter((workspace) => counts.has(workspace.workspace_id))
 		.sort((a, b) => counts.get(b.workspace_id)! - counts.get(a.workspace_id)! || a.number - b.number)[0];
-	if (best) return { ok: true, id: best.workspace_id, label: best.label ?? '', created: false };
+	if (best) return { ok: true, id: best.workspace_id, label: best.label, created: false };
 
 	const label = basename(scope) || scope;
 	const created = await herdr(config, ['workspace', 'create', '--cwd', scope, '--label', label, '--no-focus']);

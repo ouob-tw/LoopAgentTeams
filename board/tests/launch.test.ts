@@ -210,6 +210,29 @@ test('Herdr output that cannot be used stops the launch with the reason', async 
 	expect(hcomCalls()).toEqual([]);
 });
 
+test('Herdr lists in an unexpected shape stop the launch: no workspace is created and nothing is started', async () => {
+	const repo = folder('misshapen', true);
+	const cases: { plan: Parameters<typeof herdrPlan>[0]; reason: string }[] = [
+		{ plan: { raw: { 'pane list': JSON.stringify({ result: { wrong_field: [] } }) } }, reason: '窗格清單' },
+		{ plan: { raw: { 'workspace list': JSON.stringify({ result: { wrong_field: [] } }) } }, reason: '工作區清單' },
+		{ plan: { raw: { 'pane list': JSON.stringify({ result: { panes: [{ workspace_id: 'wA', cwd: repo }, { workspace_id: 'wB' }] } }) } }, reason: '窗格清單' },
+		{ plan: { raw: { 'workspace list': JSON.stringify({ result: { workspaces: [{ workspace_id: 'wA', label: 'a' }] } }) } }, reason: '工作區清單' },
+		// A pane in the project whose workspace the list does not have.
+		{ plan: { panes: [{ workspace_id: 'wGone', cwd: repo }], workspaces: [['wA', 1, 'a']] }, reason: '工作區清單' }
+	];
+	for (const { plan, reason } of cases) {
+		herdrPlan(plan);
+
+		const { status, body } = await launch({ folder: repo });
+
+		expect(status).toBe(502);
+		expect(body.reason).toContain(reason);
+		expect(await launchOf(body.entry!.id)).toMatchObject({ state: 'failed' });
+	}
+	expect(herdrCalls().some((args) => args[0] === 'workspace' && args[1] === 'create')).toBe(false);
+	expect(hcomCalls()).toEqual([]);
+});
+
 // --- Folders and git init -----------------------------------------------------------------------
 
 needsPlain('a folder outside any Git project is refused without the box ticked: nothing runs, changes or is logged', async () => {
@@ -391,6 +414,26 @@ test('a binding left under the same name from before the launch is not the launc
 	fixture.list([stale, fresh]);
 	await fixture.refresh(cookie);
 	expect(await launchOf(body.entry!.id)).toMatchObject({ state: 'active', controllerId: fresh.session_id });
+});
+
+needsPlain('without the bindings from before the launch nothing runs, and a same-name binding seen later never makes it active', async () => {
+	const plain = folder('nobaseline', false);
+	herdrPlan({ panes: [{ workspace_id: 'wA', cwd: plain }], workspaces: [['wA', 1, 'a']] });
+	hcomPlan({ names: ['pemi'] });
+	fixture.setHelper({ output: { status: 'error', reason: 'invalid bindings file' }, exit: 1 });
+
+	const { status, body } = await launch({ folder: plain, gitInit: true });
+
+	expect(status).toBe(502);
+	expect(body.reason).toContain('讀不到面板綁定登記');
+	expect(body.reason).toContain('invalid bindings file');
+	expect(existsSync(join(plain, '.git'))).toBe(false);
+	expect(herdrCalls()).toEqual([]);
+	expect(hcomCalls()).toEqual([]);
+
+	fixture.list([fixture.bound('p', 'pemi', { workspace: plain })]);
+	await fixture.refresh(cookie);
+	expect(await launchOf(body.entry!.id)).toMatchObject({ state: 'failed', hcomName: null, controllerId: null });
 });
 
 test('when hcom hands out a name again, the binding belongs to the newest launch with it', async () => {
