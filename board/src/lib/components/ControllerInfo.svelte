@@ -1,10 +1,11 @@
 <script lang="ts">
-	// A controller's information page: the basic block, then its questions, its reports that are
-	// still in the inbox and its conversation history.
+	// A controller's information page: the basic block and its model and effort, then its
+	// questions, its reports that are still in the inbox and its conversation history.
 	import { formatTime } from '#lib/board/format.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { phaseText, STATUS_LABEL, type Controller, type InboxItem } from '#lib/board/types.ts';
 	import ItemRow from './ItemRow.svelte';
+	import ModelSwitch from './ModelSwitch.svelte';
 	import ReplyBox from './ReplyBox.svelte';
 	import SentLog from './SentLog.svelte';
 	import StatusMark from './StatusMark.svelte';
@@ -56,6 +57,8 @@
 		<dd>{controller.lastReportAt ? formatTime(controller.lastReportAt) : '尚無回報'}</dd>
 	</dl>
 </article>
+
+<ModelSwitch {controller} />
 
 <section class="block" data-block="questions">
 	<h3>待決題</h3>

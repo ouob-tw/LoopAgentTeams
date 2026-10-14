@@ -40,7 +40,9 @@ Public API used by the Textual panel and LAT controller:
   answers question files only through them. ``answer_question`` is the write
   half of ``answer_and_notify``. ``board_transcript`` reads one page of a
   controller's conversation from the Claude or Codex session record that
-  ``transcript_path`` finds.
+  ``transcript_path`` finds, with the model and effort of the latest turn
+  (``current_settings``). ``board_launch_args`` reads the arguments hcom
+  stored for an agent's launch, read-only from hcom's own database.
 
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
@@ -63,6 +65,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
       --expected-section-sha256 HASH [--select N]... [--text TEXT] [--note TEXT]
   board notify --questions PATH
   board transcript --client (claude|codex) --session-id ID [--before SEQ]
+  board launch-args --session-id ID
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
 Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
@@ -81,6 +84,7 @@ import json
 import os
 from pathlib import Path
 import re
+import sqlite3
 import stat
 import subprocess
 import sys
@@ -2279,6 +2283,53 @@ def _codex_items(records):
         return [], 0
 
 
+def _claude_current(records):
+    """The last reply's model and effort; its turn starts at the prompt before it."""
+    current, prompt_time = None, None
+    for record in records:
+        if record.get("isSidechain"):
+            continue
+        time = record.get("timestamp") if isinstance(record.get("timestamp"), str) else None
+        message = record.get("message") if isinstance(record.get("message"), dict) else {}
+        if record.get("type") == "user":
+            content = message.get("content")
+            is_result = isinstance(content, list) and any(
+                isinstance(block, dict) and block.get("type") == "tool_result" for block in content
+            )
+            if not is_result:
+                prompt_time = time
+        elif record.get("type") == "assistant":
+            model = message.get("model")
+            if not isinstance(model, str) or not model or model == "<synthetic>":
+                continue
+            effort = record.get("effort")
+            current = {"model": model, "effort": effort if isinstance(effort, str) else None,
+                       "time": prompt_time or time}
+    return current
+
+
+def _codex_current(records):
+    """The last turn context's model and effort; the turn starts when it was written."""
+    current = None
+    for record in records:
+        payload = record.get("payload")
+        if record.get("type") != "turn_context" or not isinstance(payload, dict):
+            continue
+        model, effort = payload.get("model"), payload.get("effort")
+        if not isinstance(model, str) or not model:
+            continue
+        time = record.get("timestamp")
+        current = {"model": model, "effort": effort if isinstance(effort, str) else None,
+                   "time": time if isinstance(time, str) else None}
+    return current
+
+
+def current_settings(client, records):
+    """The model and effort the latest turn ran with, and when that turn started; None when
+    the record has no turn yet. A record with a field of the wrong type is passed over."""
+    return _claude_current(records) if client == "claude" else _codex_current(records)
+
+
 def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_TEXTS, env=None):
     """One page of a session's conversation, read from the client's own record.
 
@@ -2290,6 +2341,7 @@ def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_T
     ``before`` in the result is the cursor for the page just earlier, or None
     when this one starts the conversation. ``skipped`` counts unusable lines:
     ones that are not JSON objects, and records whose fields have the wrong types.
+    ``current`` is ``current_settings`` of the whole record, whatever the page.
     """
     path = transcript_path(client, session_id, env=env)
     records, skipped = _read_records(path)
@@ -2306,7 +2358,46 @@ def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_T
         "items": items[start:end],
         "before": start or None,
         "skipped": skipped,
+        "current": current_settings(client, records),
     }
+
+
+def board_launch_args(session_id, *, env=None):
+    """The arguments hcom stored for the launch of the agent with this session ID.
+
+    hcom 0.7.29 keeps them as a JSON list in the ``launch_args`` column of its
+    ``instances`` table, in ``hcom.db`` under ``HCOM_DIR`` (default ``~/.hcom``).
+    That is hcom's internal data, so it is opened read-only, and anything not in
+    that shape is reported as unknown rather than guessed at.
+    """
+    env = os.environ if env is None else env
+    root = Path(env["HCOM_DIR"]) if env.get("HCOM_DIR") else Path.home() / ".hcom"
+    path = root / "hcom.db"
+    unknown = lambda reason: {"status": "unknown", "reason": reason}
+    if not path.is_file():
+        return unknown(f"找不到 hcom 的資料庫 {path}")
+    try:
+        connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
+        try:
+            row = connection.execute(
+                "select launch_args from instances where session_id = ?", (session_id,)
+            ).fetchone()
+        finally:
+            connection.close()
+    except sqlite3.Error as error:
+        return unknown(f"hcom 的資料庫讀不出來：{error}")
+    if row is None:
+        return unknown(f"hcom 沒有 session {session_id} 的 Agent")
+    value = row[0]
+    if value in (None, ""):
+        return {"status": "ok", "args": []}
+    try:
+        args = json.loads(value) if isinstance(value, str) else None
+    except ValueError:
+        args = None
+    if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
+        return unknown("hcom 記下的啟動參數不是預期的格式")
+    return {"status": "ok", "args": args}
 
 
 def _run_board(args):
@@ -2327,6 +2418,9 @@ def _run_board(args):
                 code = 0
             except FileNotFoundError as error:
                 result, code = {"status": "not_found", "reason": str(error)}, 1
+        elif args.board_command == "launch-args":
+            result = board_launch_args(args.session_id)
+            code = 0 if result["status"] == "ok" else 1
         else:
             result = notify_controller(args.questions)
             code = 1 if result["status"] == "failed" else 0
@@ -2405,6 +2499,8 @@ def _build_parser():
     transcript.add_argument("--client", required=True)
     transcript.add_argument("--session-id", required=True)
     transcript.add_argument("--before", type=int)
+    launch_args = board_commands.add_parser("launch-args")
+    launch_args.add_argument("--session-id", required=True)
     return parser
 
 

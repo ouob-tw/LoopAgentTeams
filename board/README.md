@@ -28,9 +28,10 @@
 | `LAT_BOARD_CONFIG_DIR` | 看板的設定目錄，放使用者樣式檔 `user.css` | `$XDG_CONFIG_HOME/lat/board` |
 | `LAT_BOARD_INJECT_COMMAND` | 傳話用的輸入指令（JSON 字串陣列），看板會在後面加上 `<HCOM 名稱> <文字> --enter`；文字剛好是 `--help`、`-h`、`--name`、`--go`、`--enter` 這五個之一時，輸入指令會當成自己的選項，所以改分兩次呼叫（第一個字元，再接其餘字元與 `--enter`），輸入框收到的字元不變（這種訊息送出最多慢約 2 秒） | `["hcom","term","inject"]` |
 | `LAT_BOARD_INJECT_TIMEOUT_SECONDS` | 輸入指令多久沒結束就放棄 | `15` |
-| `LAT_BOARD_HCOM_COMMAND` | hcom 指令（JSON 字串陣列）。新建時看板在後面加上 `<client> --dir <資料夾> --terminal herdr --go --hcom-prompt <第一則訊息>`，喚醒接回時加上 `r <session ID> --terminal herdr --go --hcom-prompt <第一則訊息>`，判斷 client 是否還在時加上 `list --json` | `["hcom"]` |
+| `LAT_BOARD_HCOM_COMMAND` | hcom 指令（JSON 字串陣列）。新建時看板在後面加上 `<client> --dir <資料夾> --terminal herdr --go --hcom-prompt <第一則訊息>`，喚醒接回時加上 `r <session ID> --terminal herdr --go --hcom-prompt <第一則訊息>`（切換 Codex 模型的接回沒有第一則訊息），兩者之後再接選定的模型與思考強度參數；判斷 client 是否還在時加上 `list --json`，切換 Codex 模型時加上 `kill <HCOM 名稱>` | `["hcom"]` |
 | `LAT_BOARD_HCOM_TIMEOUT_SECONDS` | hcom 啟動或接回指令多久沒結束就不再等（含 hcom 自己等 client 就緒的時間）；逾時算「仍在啟動」，不算失敗 | `60` |
-| `LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS` | `hcom list --json` 多久沒結束就當成讀不到（此時喚醒不送出） | `15` |
+| `LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS` | `hcom list --json` 多久沒結束就當成讀不到（此時喚醒不送出）；`hcom kill` 也用這個時間，逾時算「停止結果不明」 | `15` |
+| `LAT_BOARD_MODEL_OPTIONS` | 表單提供的模型與思考強度（JSON），例如 `{"codex":{"models":["gpt-6.1-sol"]}}`；只取代有寫到的 client 與清單，其餘用內建清單 | 內建清單 |
 | `LAT_BOARD_HERDR_COMMAND` | Herdr 指令（JSON 字串陣列），看板會在後面加上 `pane list`、`workspace list` 或 `workspace create --cwd <專案> --label <名稱> --no-focus` | `["herdr"]` |
 | `LAT_BOARD_HERDR_TIMEOUT_SECONDS` | 每個 Herdr 指令多久沒結束就放棄 | `10` |
 | `LAT_BOARD_LAUNCH_WAIT_SECONDS` | 新建後多久還沒出現綁定，就在新建紀錄提示「已開分頁，但主控尚未啟用」；喚醒接回後多久還沒在 hcom 清單出現，就在送出紀錄提示「接回後仍未出現」 | `180` |
@@ -98,12 +99,24 @@
 
 - `POST /api/wake`（`controllerId`、`text`、`newRound`）喚醒一次；`POST /api/wake/abandon`（`controllerId`、`wakeId`）放棄一筆未結案的接回。兩者都要登入，並與傳話排在同一個主控的隊伍裡依序處理，所以同時按兩次也只會接回一次。
 - client 是否還在只看 `hcom list --json` 裡有沒有這個主控的 session ID，不看 Herdr 的 Agent 狀態。在就用傳話的輸入指令打進它的輸入框；不在就用 `hcom r <session ID>` 接回，工作區照新建的規則選（專案範圍是主控回報裡的工作區路徑）。清單讀不到就什麼都不做。
-- 每次喚醒都寫一行 `sent-log.jsonl`（`kind: wake`），欄位有走的路（輸入框或接回）、送出的文字、是否開新一輪、目標工作區、接回輸出的 HCOM 名稱、接回的窗格、結果與原因；`extraArgs` 是接在 `hcom r` 旗標後面、給 client 的額外參數，目前一律是空的。
+- 每次喚醒都寫一行 `sent-log.jsonl`（`kind: wake`），欄位有走的路（輸入框或接回）、送出的文字、是否開新一輪、目標工作區、接回輸出的 HCOM 名稱、接回的窗格、結果與原因；`extraArgs` 是接在 `hcom r` 旗標後面、給 client 的額外參數，也就是喚醒時選的模型與思考強度（`choice`）；`switchId` 不為空的是 Codex 切換模型時的接回。
 - 接回前先寫一行 `wake`（`pending`，未結案），寫不進去就不執行 hcom；hcom 結束後再追加一行 `resume-result` 記結果。看板在 hcom 執行中停掉，或結果那行寫不進去，這筆接回就維持未結案，由下一次喚醒查證。
 - 接回結果：結束碼 0 記 `started`、結束碼 2 或逾時記 `pending`，兩者都是「未結案」；其他結束碼記 `failed`，直接結案。接回後看板再讀一次 hcom 清單，記下同 session 或同名 Agent 的 `launch_context.pane_id`。
 - 未結案的接回由後來追加的行結案：`resume-closed` 記結果（`succeeded`、`ended`、`abandoned`），`resume-pane` 補記後來才查到的窗格。有未結案接回時，每次讀取資料都會問一次 hcom 清單，session 出現就結案為成功。
 - 再次喚醒前的查證依序是：session 在 hcom 清單上 → 結案為成功，改走輸入框；清單上有主控原本的名稱或接回輸出的名稱（含還沒綁定的 Agent）或記下的窗格還在 `herdr pane list` 裡 → 拒絕；記下的窗格已不在 → 結案為已結束，照常接回；沒記到窗格 → 拒絕並回傳可放棄的那一筆（`abandon`）。窗格清單讀不到也拒絕。等待時間只用來顯示提示，不會放行。
 - 測試以 `tests/fake-hcom.mjs`（`list --json` 與 `r`）、`tests/fake-herdr.mjs`、`tests/fake-inject.mjs` 代替真的指令。
+
+## 模型與思考強度
+
+使用方式見[使用說明](../docs/lat-board.md#模型與思考強度)。實作上：
+
+- 參數：Claude 用 `--model <模型>`、`--effort <強度>`；Codex 只用 `-c model="<模型>"`、`-c model_reasoning_effort="<強度>"`，從不用 `--model`／`-m`，因為 Codex 0.162.1 明確的 `--model` 優先於任何 `-c model`，而同一鍵的多個 `-c` 以最後一個為準。新建與喚醒接回都把它們接在 hcom 旗標之後；只帶有選的那一項。
+- 目前設定：`board transcript` 的輸出多一個 `current`（`model`、`effort`、`time`），從整份紀錄讀，不管是哪一頁。Claude 取最後一則不是 `<synthetic>`、不是子 Agent 的主控訊息的 `message.model` 與紀錄上的 `effort`，`time` 是那個回合開頭（它之前最後一則不是工具結果的使用者紀錄）；Codex 取最後一個 `turn_context` 的 `model`、`effort` 與時間。頁面以「最新送出的切換」（Claude 已打入、Codex 已接回，或喚醒接回時帶了選擇）的時間比對：`current.time` 比它晚才算下一回合，有選的項目都相符就清掉提示，否則顯示「切換沒有生效」。
+- 啟動參數：`board launch-args --session-id <ID>` 以唯讀方式開 hcom 的資料庫（`$HCOM_DIR/hcom.db`，預設 `~/.hcom`），讀 `instances` 表該 session 的 `launch_args`（JSON 字串陣列，空字串算沒有參數）。這是 hcom 0.7.29 的內部資料，讀取只在這個輔助工具指令裡，hcom 改版時改這裡即可。看板在第一個 `--` 之前找 `--model`、`--model=…`、`-m`（含 `-m<值>`）、`--oss`；有就停用模型欄，伺服器也拒絕換模型；讀不到則照常允許，畫面提示無法確認。
+- `GET /api/model?controller=<ID>` 回傳選項、client 是否在 hcom 清單上與它的狀態、Codex 的啟動參數判斷；`POST /api/model`（`controllerId`、`model`、`effort`，null 表示保持目前）切換一次，兩個都是 null 時繼續未結案的 Codex 切換。都要登入，並與傳話、喚醒排在同一個主控的隊伍裡。值不在該 client 的清單裡就拒絕。
+- 每次切換寫一行 `sent-log.jsonl`（`kind: switch`），欄位有切換前的設定（`from`，讀不到時為 null）、新設定（`to`）、走的路（`inject` 或 `restart`）、狀態與原因。Codex 先寫這行（`stopping`）才執行 `hcom kill`，寫不進去就不停止；之後的進展追加 `switch-step` 行（`stop-failed`、`stop-unknown`、`stopped`，或繼續時改選的 `to`）。停止後的接回是一行 `wake`（`switchId` 指向這筆切換、沒有文字），所以沿用接回的未結案紀錄與再次喚醒前的查證；切換的狀態由這筆接回推得：未結案是 `resuming`，結案為成功是 `done`，其他是 `resume-failed`。
+- 停止後的核對：`hcom list --json` 查無該 session，而且停止前記下的窗格不在 `herdr pane list` 裡，最多查 5 次、每次隔 0.4 秒。`hcom kill` 失敗記 `stop-failed`，逾時或核對不到記 `stop-unknown`，兩者都不接回。
+- 測試以 `tests/fake-hcom.mjs`（多了 `kill` 與 `listSeries`）、`tests/fake-helper.mjs`（`current` 與 `launch-args`）代替真的指令；輔助工具的部分在 `skills/local/lat/tests/test_lat_panel_model.py`。
 
 ## 新建主控
 
@@ -115,7 +128,7 @@
 - 選工作區時只用 `herdr pane list` 的 `cwd` 與 `workspace_id`、`herdr workspace list` 的 `number`，不看 Herdr 的 Agent 狀態。兩份清單只要有一筆不是預期的格式，或專案裡的窗格所在的工作區不在清單上，就當成讀不到而停下，不會新建工作區。看板服務本身不在任何 Herdr 工作區裡，所以呼叫 hcom 時以環境變數 `HERDR_WORKSPACE_ID` 指定目標工作區（hcom 的 herdr 終端在該工作區開分頁），並拿掉 `HCOM_TAG`，讓啟動輸出的 `Names:` 就是完整的 HCOM 名稱。
 - 執行任何指令前先讀一次面板綁定登記；讀不到就不啟動，因為之後無法分辨新主控與先前同名的 Agent。
 - hcom 結束碼 0 記為已啟動，結束碼 2 或逾時記為仍在啟動（都不算失敗、不重試），其他結束碼記為失敗。啟動輸出沒有剛好一個名稱時，記為結果不確定，不去猜哪個綁定是它。
-- 新建紀錄寫在 `sent-log.jsonl`（`kind: launch`），欄位有 client、所選資料夾、專案範圍、HCOM 名稱、目標工作區、是否先 git init、結果與原因。之後每次讀取資料時，出現 HCOM 名稱相同的綁定，或該名稱在新建之後寫的回報紀錄，就追加一行 `launch-bound` 記下它成為哪個主控；不比對資料夾，所以同一資料夾連開兩次也各自對應。新建前就已經用這個名稱綁定的 session（前一個同名 Agent 留下的）不算；同一個名稱之後被 hcom 再用時，只算給最新那一筆。
+- 新建紀錄寫在 `sent-log.jsonl`（`kind: launch`），欄位有 client、所選資料夾、專案範圍、選定的模型與思考強度（null 是 client 預設）、HCOM 名稱、目標工作區、是否先 git init、結果與原因。`GET /api/launches` 另外回傳 `modelOptions`。之後每次讀取資料時，出現 HCOM 名稱相同的綁定，或該名稱在新建之後寫的回報紀錄，就追加一行 `launch-bound` 記下它成為哪個主控；不比對資料夾，所以同一資料夾連開兩次也各自對應。新建前就已經用這個名稱綁定的 session（前一個同名 Agent 留下的）不算；同一個名稱之後被 hcom 再用時，只算給最新那一筆。
 - 「尚未啟用」的等待時間用看板的時鐘計算（測試可用 `LAT_BOARD_CLOCK_FILE` 調整）；新建主控頁開著時每 15 秒重讀一次紀錄，所以時間到了不必重新整理。
 - 測試以 `tests/fake-hcom.mjs`、`tests/fake-herdr.mjs` 代替真的 hcom 與 Herdr；不在 Git 專案裡的測試資料夾放在上層沒有 `.git` 的暫存目錄。
 

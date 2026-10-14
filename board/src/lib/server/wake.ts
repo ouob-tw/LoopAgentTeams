@@ -6,6 +6,7 @@
 // twice. Wakes share the per-controller queue of messages.
 import { randomUUID } from 'node:crypto';
 import { isLaunchClient, latCommand } from '../board/launch.ts';
+import { chose, modelArgs, NOT_OFFERED_REASON, offered, WAKE_RUNNING_CHOICE_REASON } from '../board/models.ts';
 import { UNKNOWN_CONTROLLER_REASON } from '../board/messages.ts';
 import type { Controller } from '../board/types.ts';
 import {
@@ -49,18 +50,18 @@ export function abandonResume(board: Board, controllerId: string, wakeId: string
 	});
 }
 
-async function findController(board: Board, controllerId: string): Promise<Controller | undefined> {
+export async function findController(board: Board, controllerId: string): Promise<Controller | undefined> {
 	const known = (await board.current()).controllers.find((controller) => controller.id === controllerId);
 	return known ?? (await board.refresh()).controllers.find((controller) => controller.id === controllerId);
 }
 
 /** What stops this wake, or the running client to type into (null: resume). */
-type Plan = { refuse: string; abandon?: string } | { agent: HcomAgent | null };
+export type Plan = { refuse: string; abandon?: string } | { agent: HcomAgent | null };
 
 /** How a wake was handled: the open resume attempt the user may give up when that is what stopped
  *  it; whether the entry is already in the sent log (a resume logs itself before hcom runs); why
  *  something could not be written. */
-interface Delivery {
+export interface Delivery {
 	abandon: string | null;
 	logged: boolean;
 	logError: string | null;
@@ -75,9 +76,19 @@ async function deliver(board: Board, controller: Controller | undefined, request
 		if (!isLaunchClient(client)) return refuse(`不知道 ${client || '這個 client'} 的 LAT 啟動指令，沒有送出。`);
 		entry.text = latCommand(client, entry.text);
 	}
-	const plan: Plan = await check(board, entry).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有送出：${error.message}` }));
+	const choice = { model: request.model, effort: request.effort };
+	if (chose(choice)) {
+		if (!isLaunchClient(client)) return refuse(`不知道怎麼替 ${client || '這個 client'} 選模型與思考強度，沒有送出。`);
+		if (!offered(board.config.modelOptions[client], choice)) return refuse(NOT_OFFERED_REASON);
+	}
+	const plan: Plan = await check(board, entry.controllerId).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有送出：${error.message}` }));
 	if ('refuse' in plan) return refuse(plan.refuse, plan.abandon);
-	if (!plan.agent) return resume(board, controller, entry);
+	if (!plan.agent) {
+		if (chose(choice) && isLaunchClient(client)) entry.extraArgs = modelArgs(client, choice);
+		return resume(board, controller, entry);
+	}
+	// A running client keeps its settings: the information page's 修改 changes them.
+	if (chose(choice)) return refuse(WAKE_RUNNING_CHOICE_REASON);
 	entry.route = 'inject';
 	entry.error = await inject(board.config, plan.agent.name, entry.text);
 	entry.outcome = entry.error ? 'failed' : 'sent';
@@ -103,6 +114,8 @@ async function attempt(board: Board, request: WakeRequest): Promise<Result<WakeR
 		resumedName: null,
 		pane: null,
 		extraArgs: [],
+		choice: { model: request.model, effort: request.effort },
+		switchId: null,
 		outcome: 'refused',
 		error: null
 	};
@@ -138,13 +151,13 @@ async function attempt(board: Board, request: WakeRequest): Promise<Result<WakeR
  * still in Herdr, means it is not over; its recorded pane gone settles it as ended; with no pane
  * recorded nothing can be told, and only the user can give it up.
  */
-async function check(board: Board, entry: SentWake): Promise<Plan> {
+export async function check(board: Board, controllerId: string): Promise<Plan> {
 	const { stateDir, launchWaitMs } = board.config;
 	const now = board.config.now();
 	const list = await listAgents(board.config);
 	if (!list.ok) return { refuse: `${WAKE_UNKNOWN_REASON}：${list.reason}` };
-	const running = list.agents.find((agent) => agent.sessionId === entry.controllerId) ?? null;
-	const open = openResume(stateDir, entry.controllerId, now, launchWaitMs);
+	const running = list.agents.find((agent) => agent.sessionId === controllerId) ?? null;
+	const open = openResume(stateDir, controllerId, now, launchWaitMs);
 	if (open) {
 		if (running) closeResume(stateDir, open.id, 'succeeded', now);
 		else if (findAgent(list.agents, open.controllerId, [open.hcomName, open.resumedName])) return { refuse: RESUME_BUSY_REASON };
@@ -165,7 +178,7 @@ async function check(board: Board, entry: SentWake): Promise<Plan> {
  * while hcom starts the client, or a result that cannot be written, leaves it open for the next
  * wake to check. Nothing else would stop that wake from resuming the conversation a second time.
  */
-async function resume(board: Board, controller: Controller, entry: SentWake): Promise<Delivery> {
+export async function resume(board: Board, controller: Controller, entry: SentWake): Promise<Delivery> {
 	const { stateDir } = board.config;
 	entry.route = 'resume';
 	entry.outcome = 'failed';

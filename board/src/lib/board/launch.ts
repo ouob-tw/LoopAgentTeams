@@ -1,5 +1,6 @@
 // Starting a new controller from the board: the shapes shared by the server and the page, and the
 // LAT start command its first message begins with.
+import type { ModelOptions } from './models.ts';
 
 export const LAUNCH_CLIENTS = ['claude', 'codex'] as const;
 export type LaunchClient = (typeof LAUNCH_CLIENTS)[number];
@@ -22,6 +23,9 @@ export interface LaunchRequest {
 	text: string;
 	/** Run `git init` first when the folder is not in a Git project. */
 	gitInit: boolean;
+	/** Null: the client's own default, and no argument for it. */
+	model: string | null;
+	effort: string | null;
 }
 
 /** How the hcom launch command ended: exit 0, exit 2 or a timeout, anything else. */
@@ -39,6 +43,9 @@ export interface SentLaunch {
 	 *  launch failed before that was known. */
 	scope: string | null;
 	text: string;
+	/** What the form chose; null for the client's own default. Missing on launches logged before. */
+	model?: string | null;
+	effort?: string | null;
 	/** Whether the board ran `git init` in the folder for this launch. */
 	gitInit: boolean;
 	herdrWorkspace: string | null;
@@ -94,6 +101,8 @@ export interface LaunchList {
 	launches: LaunchView[];
 	/** Why the sent log could not be read; the list is empty then. */
 	logError: string | null;
+	/** What the model and effort fields offer each client. */
+	modelOptions: ModelOptions;
 }
 
 /** What `POST /api/launches` answers. A refusal starts nothing and logs nothing: `entry` is null. */

@@ -3,6 +3,7 @@
 import { MediaQuery } from 'svelte/reactivity';
 import type { SentEntry } from './answers.ts';
 import { ENTER_NEWLINE_QUERY, type SendResponse } from './messages.ts';
+import { NO_CHOICE, type ModelChoice } from './models.ts';
 import { wakeText, type AbandonResponse, type WakeResponse } from './wake.ts';
 
 /** True when Enter makes a new line and only the button sends. */
@@ -84,14 +85,15 @@ class Messaging {
 		return { ok: body.ok, reason: body.ok ? logNote || null : body.reason + logNote };
 	}
 
-	/** One wake of an ended controller; the caller keeps the text when it fails. */
-	async wake(controllerId: string, text: string, newRound: boolean): Promise<Outcome> {
+	/** One wake of an ended controller; the caller keeps the text when it fails. The model and
+	 *  effort apply only when the conversation is resumed. */
+	async wake(controllerId: string, text: string, newRound: boolean, choice: ModelChoice = NO_CHOICE): Promise<Outcome> {
 		let response: Response;
 		try {
 			response = await fetch('/api/wake', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ controllerId, text, newRound })
+				body: JSON.stringify({ controllerId, text, newRound, ...choice })
 			});
 		} catch {
 			return this.#unknown(controllerId);

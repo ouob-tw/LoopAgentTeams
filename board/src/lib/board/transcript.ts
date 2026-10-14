@@ -1,5 +1,6 @@
 // A controller's conversation history: the shapes the panel helper's `board transcript` prints,
 // and the rules the page applies to them (joining pages, folding operations into one line).
+import type { CurrentSettings } from './models.ts';
 
 /** The person's message or the controller's text reply. */
 export interface TranscriptText {
@@ -32,6 +33,8 @@ export interface TranscriptPage {
 	before: number | null;
 	/** Lines of the record that could not be read and were left out. */
 	skipped: number;
+	/** The model and effort of the latest turn in the whole record, whatever the page. */
+	current?: CurrentSettings | null;
 }
 
 /** What the server answers for a page, and pushes for an open information page. */

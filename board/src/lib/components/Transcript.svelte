@@ -12,6 +12,7 @@
 		type TranscriptUpdate,
 		type TranscriptView
 	} from '#lib/board/transcript.ts';
+	import { switching } from '#lib/board/switching.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
 
 	let { controller }: { controller: Controller } = $props();
@@ -38,6 +39,8 @@
 			const update: TranscriptUpdate = JSON.parse((event as MessageEvent).data);
 			if (update.ok) {
 				view = withLatest(view, update.page);
+				// The model and effort block shows what the latest turn used.
+				switching.current[controllerId] = update.page.current ?? null;
 				problem = null;
 			} else {
 				problem = update.reason;

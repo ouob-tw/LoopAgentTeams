@@ -2,6 +2,7 @@
 // and the text an answer is shown as. The answer itself is written by the panel helper.
 import type { LaunchView } from './launch.ts';
 import type { SentMessage } from './messages.ts';
+import type { SwitchView } from './models.ts';
 import type { HelperQuestion } from './types.ts';
 import type { WakeView } from './wake.ts';
 
@@ -50,7 +51,7 @@ export interface SentAnswer {
 }
 
 /** A launch is listed under the controller it became, so it is always `active` there. */
-export type SentEntry = SentMessage | SentAnswer | LaunchView | WakeView;
+export type SentEntry = SentMessage | SentAnswer | LaunchView | WakeView | SwitchView;
 
 /** The helper's own statuses, plus `ended` when the controller is no longer bound. */
 export type AnswerStatus = 'submitted' | 'question_changed' | 'not_pending' | 'invalid_answer' | 'error' | 'ended';

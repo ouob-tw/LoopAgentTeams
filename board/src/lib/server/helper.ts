@@ -2,6 +2,7 @@
 // the LAT panel helper's `board` commands.
 import { execFile } from 'node:child_process';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
+import type { CurrentSettings } from '../board/models.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
 import type { BoardConfig } from './config.ts';
 
@@ -176,7 +177,35 @@ export async function readTranscript(
 		page: {
 			items: payload.items,
 			before: typeof payload.before === 'number' ? payload.before : null,
-			skipped: typeof payload.skipped === 'number' ? payload.skipped : 0
+			skipped: typeof payload.skipped === 'number' ? payload.skipped : 0,
+			current: currentFrom(payload.current)
 		}
 	};
+}
+
+const textOrNull = (value: unknown) => (typeof value === 'string' && value ? value : null);
+
+/** The latest turn's settings as the helper printed them; null when there are none to show. */
+function currentFrom(value: unknown): CurrentSettings | null {
+	if (typeof value !== 'object' || value === null) return null;
+	const given = value as Record<string, unknown>;
+	const current = { model: textOrNull(given.model), effort: textOrNull(given.effort), time: textOrNull(given.time) };
+	return current.model || current.effort ? current : null;
+}
+
+export type LaunchArgs = { ok: true; args: string[] } | { ok: false; reason: string };
+
+/** The arguments hcom stored for the launch of the agent with this session ID, read by the helper
+ *  from hcom's own data; hcom repeats them on every resume. */
+export async function readLaunchArgs(config: BoardConfig, sessionId: string): Promise<LaunchArgs> {
+	const { stdout, failure } = await run(config, ['launch-args', `--session-id=${sessionId}`]);
+	let payload: { status?: unknown; reason?: unknown; args?: unknown } | null;
+	try {
+		payload = JSON.parse(stdout);
+	} catch {
+		payload = null;
+	}
+	const args = payload?.args;
+	if (payload?.status === 'ok' && Array.isArray(args) && args.every((arg) => typeof arg === 'string')) return { ok: true, args };
+	return { ok: false, reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出不是預期的格式' };
 }

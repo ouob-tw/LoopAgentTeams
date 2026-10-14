@@ -2,6 +2,7 @@
 // texts a wake is shown with. While its client is still running the text is typed into its input
 // box; once the client is gone, hcom resumes the conversation in a new Herdr tab with the text as
 // its first message.
+import type { ModelChoice } from './models.ts';
 
 /** How the text was delivered: typed into the running client, or as the first message of a resume. */
 export type WakeRoute = 'inject' | 'resume';
@@ -35,8 +36,12 @@ export interface SentWake {
 	resumedName: string | null;
 	/** The Herdr pane the resumed client runs in, when hcom's agent list showed one. */
 	pane: string | null;
-	/** Client arguments added after the resume's own flags; none so far. */
+	/** Client arguments added after the resume's own flags: the model and effort chosen. */
 	extraArgs: string[];
+	/** The model and effort chosen for a resume; missing on wakes logged before there was a choice. */
+	choice?: ModelChoice;
+	/** The model switch this resume carries out; it has no text then. Null or missing for a wake. */
+	switchId?: string | null;
 	outcome: WakeOutcome;
 	/** Why it failed or was refused, or what hcom said about a resume not known to be ready. */
 	error: string | null;
@@ -64,6 +69,9 @@ export interface WakeRequest {
 	/** The user's text, without the LAT start command. */
 	text: string;
 	newRound: boolean;
+	/** Used only when the conversation is resumed; null keeps what the controller had. */
+	model: string | null;
+	effort: string | null;
 }
 
 /** What `POST /api/wake` answers. */

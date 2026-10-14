@@ -4,7 +4,10 @@
 // into it; `board questions` prints a listed controller's questions, or the plan's `files` entry
 // for that path. A plan entry named after the command (`answer`, `notify`, `questions`) replaces
 // that with a fixed output. `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
-// item per line, the way the real command pages a client's record. Each call is logged to <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
+// item per line, the way the real command pages a client's record, with the latest turn's settings
+// from <dir>/transcripts/<session>.current.json when there is one. `board launch-args` prints what
+// <dir>/launch-args.json holds for the session: a list of arguments, or `{ "unknown": reason }`.
+// Each call is logged to <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
 import { createHash } from 'node:crypto';
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -134,10 +137,30 @@ function transcript() {
 	const end = given.before ? Math.min(Number(given.before[0]), items.length) : items.length;
 	const texts = items.slice(0, end).filter((item) => item.kind !== 'tool');
 	const start = texts.length > 50 ? texts[texts.length - 50].seq : 0;
-	return { output: { status: 'ok', path, items: items.slice(start, end), before: start || null, skipped } };
+	let current = null;
+	try {
+		current = JSON.parse(readFileSync(join(dir, 'transcripts', `${session}.current.json`), 'utf8'));
+	} catch {
+		// No turn yet.
+	}
+	return { output: { status: 'ok', path, items: items.slice(start, end), before: start || null, skipped, current } };
 }
 
-const act = command === 'answer' ? answer : command === 'questions' ? questions : command === 'transcript' ? transcript : notify;
+/** What <dir>/launch-args.json holds for the session. */
+function launchArgs() {
+	const session = options()['session-id']?.[0] ?? '';
+	let stored;
+	try {
+		stored = JSON.parse(readFileSync(join(dir, 'launch-args.json'), 'utf8'))[session];
+	} catch {
+		stored = undefined;
+	}
+	if (Array.isArray(stored)) return { output: { status: 'ok', args: stored } };
+	return { output: { status: 'unknown', reason: stored?.unknown ?? `hcom 沒有 session ${session} 的 Agent` }, exit: 1 };
+}
+
+const act =
+	command === 'answer' ? answer : command === 'questions' ? questions : command === 'transcript' ? transcript : command === 'launch-args' ? launchArgs : notify;
 const result = command === 'list' ? plan : (plan[command] ?? act());
 setTimeout(() => {
 	process.stdout.write(result.raw ?? JSON.stringify(result.output));

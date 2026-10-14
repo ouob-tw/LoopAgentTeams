@@ -7,8 +7,9 @@ import { join } from 'node:path';
 import type { AnswerState, SentAnswer, SentEntry } from '../board/answers.ts';
 import type { LaunchState, LaunchView, SentLaunch } from '../board/launch.ts';
 import type { SentMessage } from '../board/messages.ts';
+import type { ModelChoice, SentSwitch, SwitchState, SwitchView } from '../board/models.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
-import type { ResumeClose, SentWake, WakeView } from '../board/wake.ts';
+import { RESUME_CLOSE_TEXT, type ResumeClose, type SentWake, type WakeView } from '../board/wake.ts';
 import { findAgent, type HcomAgent } from './hcom.ts';
 import type { ReportFile } from './reports.ts';
 
@@ -64,7 +65,32 @@ interface ResumePane {
 	time: string;
 }
 
-type Line = SentMessage | StoredAnswer | AnswerMark | SentLaunch | LaunchMark | SentWake | ResumeMark | ResumeResult | ResumePane;
+/** A later step of a Codex model switch: where its stop got to, or new settings the user chose
+ *  when continuing it. */
+export interface SwitchStep {
+	kind: 'switch-step';
+	switchId: string;
+	state?: SwitchState;
+	error?: string | null;
+	to?: ModelChoice;
+	time: string;
+}
+
+type Line =
+	| SentMessage
+	| StoredAnswer
+	| AnswerMark
+	| SentLaunch
+	| LaunchMark
+	| SentWake
+	| ResumeMark
+	| ResumeResult
+	| ResumePane
+	| SentSwitch
+	| SwitchStep;
+
+/** Lines that only add to an entry of their own kind. */
+const FOLLOW_UP = new Set(['answer-state', 'launch-bound', 'resume-closed', 'resume-result', 'resume-pane', 'switch-step']);
 
 export function appendSent(stateDir: string, entry: Line): void {
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -127,21 +153,70 @@ function wakesOf(lines: Line[], now: number, waitMs: number): WakeView[] {
 		});
 }
 
+/**
+ * Every model switch as it stands, in log order. A Codex switch moves on with its steps; once it
+ * is stopped, its latest resume tells the rest: open is `resuming`, its session seen is `done`,
+ * anything else is `resume-failed`.
+ */
+function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
+	const steps = new Map<string, SwitchStep[]>();
+	for (const line of lines) if (line.kind === 'switch-step') steps.set(line.switchId, [...(steps.get(line.switchId) ?? []), line]);
+	const resumes = new Map<string, WakeView>();
+	for (const wake of wakes) if (wake.switchId) resumes.set(wake.switchId, wake);
+	return lines
+		.filter((line) => line.kind === 'switch')
+		.map((logged) => {
+			const view: SwitchView = { ...logged, open: false, wakeId: null };
+			for (const step of steps.get(logged.id) ?? []) {
+				if (step.state) view.state = step.state;
+				if (step.error !== undefined) view.error = step.error;
+				if (step.to) view.to = step.to;
+			}
+			const wake = resumes.get(logged.id);
+			if (view.state === 'stopped' && wake) {
+				view.wakeId = wake.id;
+				if (wake.open) view.state = 'resuming';
+				else if (wake.closed === 'succeeded') view.state = 'done';
+				else {
+					view.state = 'resume-failed';
+					view.error = wake.outcome === 'failed' ? wake.error : `接回沒有成功：${wake.closed ? RESUME_CLOSE_TEXT[wake.closed] : '結果不明'}`;
+				}
+			}
+			view.open = view.route === 'restart' && view.state !== 'done' && view.state !== 'refused';
+			return view;
+		});
+}
+
+/** The controller's open model switch, or null. There is at most one: a switch continues it first. */
+export function openSwitch(stateDir: string, controllerId: string, now: number, waitMs: number): SwitchView | null {
+	const lines = readLines(stateDir);
+	return switchesOf(lines, wakesOf(lines, now, waitMs)).findLast((view) => view.controllerId === controllerId && view.open) ?? null;
+}
+
+/** The switch with this ID as it stands now. */
+export function switchView(stateDir: string, switchId: string, now: number, waitMs: number): SwitchView | null {
+	const lines = readLines(stateDir);
+	return switchesOf(lines, wakesOf(lines, now, waitMs)).find((view) => view.id === switchId) ?? null;
+}
+
 /** What was sent to one controller, newest first: a launch counts once it became this controller. */
 export function readSent(stateDir: string, controllerId: string, now: number, waitMs: number): SentEntry[] {
 	const lines = readLines(stateDir);
 	const marks = marksOf(lines);
 	const bound = boundOf(lines);
-	const wakes = new Map(wakesOf(lines, now, waitMs).map((wake) => [wake.id, wake]));
+	const wakeViews = wakesOf(lines, now, waitMs);
+	const wakes = new Map(wakeViews.map((wake) => [wake.id, wake]));
+	const switches = new Map(switchesOf(lines, wakeViews).map((view) => [view.id, view]));
 	const entries: SentEntry[] = [];
 	for (const line of lines) {
 		if (line.kind === 'launch') {
 			if (bound.get(line.id) === controllerId) entries.push({ ...line, state: 'active', controllerId });
 			continue;
 		}
-		if (line.kind === 'answer-state' || line.kind === 'launch-bound' || line.kind === 'resume-closed' || line.kind === 'resume-result' || line.kind === 'resume-pane') continue;
+		if (FOLLOW_UP.has(line.kind) || !('controllerId' in line)) continue;
 		if (line.controllerId !== controllerId) continue;
 		if (line.kind === 'wake') entries.push(wakes.get(line.id)!);
+		else if (line.kind === 'switch') entries.push(switches.get(line.id)!);
 		else if (line.kind === 'message') entries.push(line);
 		else if (line.kind === 'answer') {
 			const { questionsPath: _, ...answer } = line;
