@@ -90,7 +90,7 @@ def find_batch(spawner, tool, after_id):
             if (data.get('tool') == tool and data.get('instances')
                     and claim(str(data.get('batch_id') or event['id']))):
                 return event
-        sleep(1)
+        sleep(POLL)
     return None
 
 
