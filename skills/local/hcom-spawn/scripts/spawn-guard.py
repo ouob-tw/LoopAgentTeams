@@ -43,19 +43,23 @@ def option_value(words, index, names):
 
 
 def read_launch(client, args):
-    """What the launch arguments set: permission flag, model, effort, plus hcom's --name.
+    """What the launch arguments set: permission flag, model, effort, plus hcom's --name,
+    --tag and --go.
 
     None when the arguments ask for help instead of launching.
     """
-    found = {'client': client, 'permission': False, 'model': '', 'effort': '', 'name': ''}
+    found = {'client': client, 'permission': False, 'model': '', 'effort': '', 'name': '',
+             'tag': '', 'go': False}
     index = 0
     while index < len(args):
         word = args[index]
         if word in ('--help', '-h'):
             return None
-        name = option_value(args, index, ['--name'])
-        if name is not None:
-            found['name'] = name
+        for option in ('name', 'tag'):
+            value = option_value(args, index, ['--' + option])
+            if value is not None:
+                found[option] = value
+        found['go'] |= word == '--go'
         if word.split('=', 1)[0] in HCOM_VALUE_OPTIONS:
             index += 1 if '=' in word else 2
             continue
@@ -126,7 +130,8 @@ def latest_event_id():
 
 
 def start_watch(launch, after_id, ordinal):
-    """Start spawn-watch.py for the ordinal-th launch with this client in the command.
+    """Start spawn-watch.py for the ordinal-th launch of the command that it can tell apart
+    by client (and --tag when given).
 
     Each run also appends after_id to runs/<spawner>, so a watcher whose launch never
     happened (a preview or a failed launch) cannot take the batch of a later command.
@@ -148,7 +153,7 @@ def start_watch(launch, after_id, ordinal):
             [sys.executable, str(HERE / 'spawn-watch.py'), '--spawner', spawner,
              '--tool', launch['client'], '--model', launch['model'],
              '--effort', launch['effort'], '--after-id', str(after_id),
-             '--ordinal', str(ordinal)],
+             '--ordinal', str(ordinal)] + (['--tag', launch['tag']] if launch['tag'] else []),
             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
 
 
@@ -178,10 +183,13 @@ def main():
                  for launch, gaps in problems]
         print('\n'.join(lines), file=sys.stderr)
         return 2
-    if found:
+    started = [launch for launch in found if launch['go']]  # without --go hcom only previews
+    if started:
         after_id = latest_event_id()
-        for index, launch in enumerate(found):
-            ordinal = sum(other['client'] == launch['client'] for other in found[:index])
+        for index, launch in enumerate(started):
+            ordinal = sum(other['client'] == launch['client']
+                          and (not launch['tag'] or other['tag'] == launch['tag'])
+                          for other in started[:index])
             try:
                 start_watch(launch, after_id, ordinal)
             except OSError as error:  # the launch itself is fine; only its check is lost

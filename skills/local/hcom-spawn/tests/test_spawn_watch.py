@@ -89,11 +89,17 @@ class SpawnWatchTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.watch = load()
 
-    def run_watch(self, fake, tool='claude', model='claude-sonnet-5-5', effort='low', ordinal=0):
+    def run_watch(self, fake, tool='claude', model='claude-sonnet-5-5', effort='low', ordinal=0,
+                  tag=None):
         self.watch.hcom, self.watch.clock, self.watch.sleep = fake, fake.clock, fake.sleep
         return self.watch.main(['--spawner', 'vare', '--tool', tool, '--model', model,
                                 '--effort', effort, '--after-id', '99',
-                                '--ordinal', str(ordinal)])
+                                '--ordinal', str(ordinal)] + (['--tag', tag] if tag else []))
+
+    def write_runs(self, *runs):
+        path = Path(self.state.name) / 'hcom-spawn/runs'
+        path.mkdir(parents=True, exist_ok=True)
+        (path / 'vare').write_text(''.join(f'{run}\n' for run in runs))
 
     def add_batch(self, fake, event_id, name):
         batch = json.loads(json.dumps(fake.batch))
@@ -187,9 +193,7 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertNotIn(('events', 'sub', '--blocked', 'kilo', '--for', 'vare'), fake.calls)
 
     def test_batches_of_a_later_command_are_not_taken(self):
-        runs = Path(self.state.name) / 'hcom-spawn/runs'
-        runs.mkdir(parents=True)
-        (runs / 'vare').write_text('99\n110\n')
+        self.write_runs(99, 110)
         fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
         self.add_batch(fake, 120, 'mona')
         fake.batches.pop(0)
@@ -197,6 +201,27 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertEqual(fake.subs, {})
         self.assertEqual(fake.sent, [])
         self.assertLess(fake.now, 5)
+
+    def test_batch_at_the_next_commands_starting_event_is_still_ours(self):
+        self.write_runs(99, 100)
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        self.run_watch(fake)
+        self.assertIn(('events', 'sub', '--blocked', 'kilo', '--for', 'vare'), fake.calls)
+
+    def test_tag_given_on_the_command_selects_that_tags_batch(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        self.add_batch(fake, 120, 'mona')
+        fake.batches[1]['data']['tag'] = 'vare-docs'
+        self.run_watch(fake, tag='vare-docs')
+        self.assertIn(('events', 'sub', '--blocked', 'mona', '--for', 'vare'), fake.calls)
+        self.assertNotIn(('events', 'sub', '--blocked', 'kilo', '--for', 'vare'), fake.calls)
+
+    def test_agent_already_stopped_gets_no_waiting_for_approval_notice(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=0)
+        fake.blocked_early = True
+        self.run_watch(fake)
+        self.assertEqual(fake.sent, [])
+        self.assertEqual(fake.subs, {})
 
     def test_agent_that_stops_during_the_check_gets_no_report_and_loses_its_sub(self):
         fake = FakeHcom(screens=[], stop_after=10)

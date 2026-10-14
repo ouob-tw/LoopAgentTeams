@@ -114,7 +114,7 @@ class SpawnGuardTests(unittest.TestCase):
         self.assertTrue(argv[1].endswith('spawn-watch.py'))
         self.assertEqual(argv[2:], ['--spawner', 'vare', '--tool', 'codex', '--model',
                                     'gpt-6.1-sol', '--effort', 'medium', '--after-id', '41',
-                                    '--ordinal', '0'])
+                                    '--ordinal', '0', '--tag', 'vare-review'])
 
     def test_one_command_starts_watches_with_per_client_launch_order_and_records_the_run(self):
         guard = load()
@@ -127,11 +127,27 @@ class SpawnGuardTests(unittest.TestCase):
                 mock.patch.object(guard.subprocess, 'Popen') as popen:
             self.assertEqual(guard.main(), 0)
             runs = Path(state, 'hcom-spawn/runs/vare').read_text().split()
-        started = [(call.args[0][5], call.args[0][7], call.args[0][-1])
+        started = [(call.args[0][5], call.args[0][7], call.args[0][13])
                    for call in popen.call_args_list]
         self.assertEqual(started, [('claude', 'claude-opus-5-5', '0'), ('codex', 'gpt-6.1-sol', '0'),
                                    ('claude', 'claude-sonnet-5-5', '1')])
         self.assertEqual(runs, ['55'])
+
+    def test_previews_start_no_watch_and_tags_split_the_launch_order(self):
+        guard = load()
+        preview = CLAUDE.replace(' --go', '')
+        docs = CLAUDE.replace('vare-review', 'vare-docs')
+        command = '; '.join([preview, CLAUDE, docs, CLAUDE.replace('--tag vare-review ', '')])
+        payload = json.dumps({'tool_input': {'command': command}})
+        with tempfile.TemporaryDirectory() as state, \
+                mock.patch.dict(os.environ, {'XDG_STATE_HOME': state}), \
+                mock.patch.object(guard, 'latest_event_id', return_value=55), \
+                mock.patch.object(guard.sys, 'stdin', io.StringIO(payload)), \
+                mock.patch.object(guard.subprocess, 'Popen') as popen:
+            self.assertEqual(guard.main(), 0)
+        started = [call.args[0][2:] for call in popen.call_args_list]
+        self.assertEqual([argv[11:] for argv in started],
+                         [['0', '--tag', 'vare-review'], ['0', '--tag', 'vare-docs'], ['2']])
 
     def test_failing_to_start_the_watch_does_not_block_the_launch(self):
         guard = load()

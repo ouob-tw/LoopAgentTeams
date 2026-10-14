@@ -77,11 +77,12 @@ def next_run(spawner, after_id):
     return min(later, default=None)
 
 
-def find_batch(spawner, tool, after_id, ordinal):
-    """The ordinal-th batch with this tool that this spawner's command launched.
+def find_batch(spawner, tool, tag, after_id, ordinal):
+    """The ordinal-th batch with this tool (and tag, when given) that this spawner's
+    command launched.
 
-    Batches between after_id and the spawner's next guarded command belong to this
-    command, in launch order. hcom records the spawner by base name, so
+    Batches after after_id, up to and including the event id the spawner's next guarded
+    command started from, belong to this command, in launch order. hcom records the spawner by base name, so
     `--name <tag>-<base>` matches `by: <base>`.
     """
     start = clock()
@@ -92,7 +93,8 @@ def find_batch(spawner, tool, after_id, ordinal):
                     '--sql', f"id > {after_id} AND (life_by = '{spawner}' "
                              f"OR '{spawner}' LIKE '%-' || life_by)")
                 if event.get('data', {}).get('tool') == tool
-                and (upper is None or event['id'] < upper)]
+                and (not tag or event['data'].get('tag') == tag)
+                and (upper is None or event['id'] <= upper)]
         mine.sort(key=lambda event: event['id'])
         if len(mine) > ordinal:
             return mine[ordinal] if mine[ordinal]['data'].get('instances') else None
@@ -290,11 +292,12 @@ def main(argv=None):
     parser.add_argument('--effort', required=True)
     parser.add_argument('--after-id', required=True, type=int)
     parser.add_argument('--ordinal', type=int, default=0)
+    parser.add_argument('--tag', default='')
     args = parser.parse_args(argv)
     if not NAME.match(args.spawner):
         return 1
     sweep()
-    batch = find_batch(args.spawner, args.tool, args.after_id, args.ordinal)
+    batch = find_batch(args.spawner, args.tool, args.tag, args.after_id, args.ordinal)
     if not batch:
         return 0
     start = clock()
@@ -303,7 +306,8 @@ def main(argv=None):
     names = [name for name in data['instances'] if NAME.match(name)]
     agents = {name: f"{data['tag']}-{name}" if data.get('tag') else name for name in names}
     subs = {name: subscribe(name, spawner, launch_id) for name in names}
-    for name in names:
+    release_stopped(subs, launch_id)
+    for name in subs:
         if events('--type', 'status', '--status', 'blocked', '--agent', name,
                   '--sql', f'id > {launch_id}'):
             notify(spawner, f'{agents[name]} is waiting for approval (blocked); '
