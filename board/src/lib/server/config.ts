@@ -32,6 +32,8 @@ export interface BoardConfig {
 	herdrTimeoutMs: number;
 	/** How long a new controller may take to bind before its launch record asks the user to look in Herdr. */
 	launchWaitMs: number;
+	/** The Herdr pane the board itself runs in, when it was started inside one; null otherwise. */
+	ownPane: string | null;
 	/** Longest a change the file watch missed may take to be read and pushed to the pages. */
 	fallbackMs: number;
 	debounceMs: number;
@@ -117,6 +119,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		herdrCommand: commandFrom(env, 'LAT_BOARD_HERDR_COMMAND') ?? ['herdr'],
 		herdrTimeoutMs: seconds(env.LAT_BOARD_HERDR_TIMEOUT_SECONDS, 10_000),
 		launchWaitMs: seconds(env.LAT_BOARD_LAUNCH_WAIT_SECONDS, 180_000),
+		ownPane: env.HERDR_PANE_ID || null,
 		fallbackMs,
 		debounceMs: 200,
 		loginLockMs: seconds(env.LAT_BOARD_LOGIN_LOCK_SECONDS, 60_000),

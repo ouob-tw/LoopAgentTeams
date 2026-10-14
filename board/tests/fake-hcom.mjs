@@ -7,9 +7,10 @@
 //   - `resumed`: an agent a resume adds to the agent list, as `list --json` prints one.
 //   - `readOnly`: a file a resume makes read-only while it runs, so the board cannot write it.
 // Each launch or resume also logs to <dir>/hcom-env.jsonl the names of the variables it got that
-// look like an agent's or hcom's own (HCOM_*, CLAUDE*, CODEX_*, AI_AGENT), and the values of those
-// it must still get (HCOM_DIR, CODEX_HOME, HERDR_SOCKET_PATH, HOME, PATH), so tests can check what
-// of a calling agent's shell reaches hcom.
+// look like an agent's, hcom's or Herdr's own (HCOM_*, CLAUDE*, CODEX_*, HERDR_*, AI_AGENT), and
+// the values of those it must still get (HCOM_DIR, CODEX_HOME, HERDR_SOCKET_PATH, HOME, PATH), with
+// the command it ran (`r`, `kill`, or the client launched), so tests can check what of a calling
+// agent's shell reaches hcom.
 // `list --json` is logged to <dir>/hcom-list-calls.jsonl instead and prints `agents` plus those
 // resumes added; `listFail: { exit, stderr }` acts out a failure. `listSeries` gives the agents of
 // the first lists in turn, before `agents` takes over.
@@ -39,9 +40,9 @@ if (args[0] === 'list') {
 
 const log = join(dir, 'hcom-calls.jsonl');
 appendFileSync(log, JSON.stringify({ args, workspace: process.env.HERDR_WORKSPACE_ID ?? null, tag: process.env.HCOM_TAG ?? null }) + '\n');
-const agentLike = Object.keys(process.env).filter((name) => /^(HCOM_|CLAUDE|CODEX_|AI_AGENT$)/.test(name)).sort();
+const agentLike = Object.keys(process.env).filter((name) => /^(HCOM_|CLAUDE|CODEX_|HERDR_|AI_AGENT$)/.test(name)).sort();
 const kept = Object.fromEntries(['HCOM_DIR', 'CODEX_HOME', 'HERDR_SOCKET_PATH', 'HOME', 'PATH'].map((name) => [name, process.env[name] ?? null]));
-appendFileSync(join(dir, 'hcom-env.jsonl'), JSON.stringify({ agentLike, kept }) + '\n');
+appendFileSync(join(dir, 'hcom-env.jsonl'), JSON.stringify({ command: args[0], agentLike, kept }) + '\n');
 
 if (args[0] === 'kill') {
 	const kill = plan.kill ?? {};

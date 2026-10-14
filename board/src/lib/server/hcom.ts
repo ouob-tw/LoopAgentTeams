@@ -22,16 +22,24 @@ export function launchedName(stdout: string): string | null {
  * with a line asking to report back to it. Only HCOM_DIR, where hcom keeps its data, is kept; that
  * also drops HCOM_TAG, so the name hcom prints is the agent's whole name. CODEX_HOME is the
  * client's settings folder, not a session, so it is kept.
+ *
+ * A board started inside a Herdr pane also carries that pane's own place (HERDR_PANE_ID,
+ * HERDR_TAB_ID, HERDR_ENV and the like): hcom's herdr terminal would record the new agent as
+ * running in the caller's pane, so stopping the agent later would close it. Only how Herdr is
+ * reached is kept: its socket and, when set, its config file.
  */
+const HERDR_KEPT = new Set(['HERDR_SOCKET_PATH', 'HERDR_CONFIG_PATH']);
+
 function agentIdentity(name: string): boolean {
 	if (name.startsWith('HCOM_')) return name !== 'HCOM_DIR';
 	if (name.startsWith('CODEX_')) return name !== 'CODEX_HOME';
+	if (name.startsWith('HERDR_')) return !HERDR_KEPT.has(name);
 	return name === 'CLAUDECODE' || name === 'CLAUDE_PID' || name === 'CLAUDE_EFFORT' || name === 'AI_AGENT' || name.startsWith('CLAUDE_CODE_');
 }
 
 /** The environment hcom starts or resumes an agent in: the board's own, as the background service
- *  has it even when the board was started from inside an agent's shell, with Herdr's tab opening
- *  in this workspace (the board itself is in none). */
+ *  has it even when the board was started from inside an agent's shell or a Herdr pane, with
+ *  Herdr's tab opening in this workspace. */
 export function hcomEnv(herdrWorkspace: string): NodeJS.ProcessEnv {
 	const env: NodeJS.ProcessEnv = {};
 	for (const [name, value] of Object.entries(process.env)) if (!agentIdentity(name)) env[name] = value;

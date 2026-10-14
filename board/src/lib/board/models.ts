@@ -158,6 +158,8 @@ export interface SwitchResponse {
 
 export const NOT_RUNNING_REASON = '主控目前沒有在跑，請在喚醒時一起選';
 export const BUSY_REASON = '主控正在工作或狀態不明，等這回合結束再改';
+export const OWN_PANE_REASON =
+	'hcom 記的主控窗格就是看板自己所在的 Herdr 窗格，停止會關掉看板的窗格，沒有切換；請到 Herdr 查看主控實際在哪個分頁';
 export const FIXED_MODEL_REASON = '這個 Codex 主控啟動時指定了模型，接回後無法換模型，只能改思考強度';
 export const LOCK_UNKNOWN_TEXT = '無法確認這個主控能否換模型';
 export const NOT_OFFERED_REASON = '這個模型或思考強度不在這個 client 的選項裡，沒有送出';
