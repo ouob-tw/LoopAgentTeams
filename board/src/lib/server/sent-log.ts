@@ -169,7 +169,7 @@ function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
 	return lines
 		.filter((line) => line.kind === 'switch')
 		.map((logged) => {
-			const view: SwitchView = { ...logged, open: false, wakeId: null };
+			const view: SwitchView = { ...logged, open: false, wakeId: null, appliedAt: logged.route === 'inject' ? logged.time : null };
 			for (const step of steps.get(logged.id) ?? []) {
 				if (step.state) view.state = step.state;
 				if (step.error !== undefined) view.error = step.error;
@@ -177,6 +177,7 @@ function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
 				if (step.pane !== undefined) view.pane = step.pane;
 			}
 			const wake = resumes.get(logged.id);
+			if (wake && wake.outcome !== 'failed' && wake.outcome !== 'refused') view.appliedAt = wake.time;
 			if (view.state === 'stopped' && wake) {
 				view.wakeId = wake.id;
 				if (wake.open) view.state = 'resuming';

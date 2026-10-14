@@ -12,7 +12,6 @@ import {
 	BUSY_REASON,
 	chose,
 	FIXED_MODEL_REASON,
-	fixedModel,
 	modelArgs,
 	NO_CHOICE,
 	NOT_OFFERED_REASON,
@@ -30,7 +29,7 @@ import {
 import type { Controller } from '../board/types.ts';
 import { WAKE_UNKNOWN_REASON, type SentWake } from '../board/wake.ts';
 import type { Board } from './board.ts';
-import { readLaunchArgs, readTranscript } from './helper.ts';
+import { modelLock, readTranscript } from './helper.ts';
 import { killAgent, listAgents, type HcomAgent } from './hcom.ts';
 import { paneExists } from './herdr.ts';
 import { inject, queued } from './send.ts';
@@ -44,13 +43,6 @@ const STOP_CHECKS = 5;
 const STOP_CHECK_MS = 400;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
-
-/** Whether a Codex controller's launch fixes its model; for the information page and the switch. */
-export async function modelLock(board: Board, sessionId: string): Promise<{ lock: 'free' | 'fixed' | 'unknown'; reason: string | null }> {
-	const read = await readLaunchArgs(board.config, sessionId);
-	if (!read.ok) return { lock: 'unknown', reason: read.reason };
-	return { lock: fixedModel(read.args) ? 'fixed' : 'free', reason: null };
-}
 
 /** What the information page needs before offering a switch: the lists, whether the client runs,
  *  and for Codex whether its model can change. */
@@ -67,7 +59,7 @@ export async function modelStatus(board: Board, controller: Controller): Promise
 	};
 	const [list, lock] = await Promise.all([
 		listAgents(board.config),
-		client === 'codex' ? modelLock(board, controller.id) : Promise.resolve(null)
+		client === 'codex' ? modelLock(board.config, controller.id) : Promise.resolve(null)
 	]);
 	if (list.ok) {
 		const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);
@@ -150,7 +142,7 @@ async function startSwitch(board: Board, controller: Controller, entry: SentSwit
 	if (controller.client === 'claude') return claudeSwitch(board, controller, entry, agent);
 
 	if (agent.status !== 'listening') return refused(BUSY_REASON);
-	if (entry.to.model !== null && (await modelLock(board, controller.id)).lock === 'fixed') return refused(FIXED_MODEL_REASON);
+	if (entry.to.model !== null && (await modelLock(board.config, controller.id)).lock === 'fixed') return refused(FIXED_MODEL_REASON);
 	entry.from = await currentOf(board, controller);
 	return codexSwitch(board, controller, entry, agent);
 }
@@ -208,8 +200,7 @@ async function recheck(board: Board, controller: Controller, name: string): Prom
 /** Stop the client, log how that went and resume once it is gone. The switch is already logged. */
 async function stopThenResume(board: Board, controller: Controller, switchId: string, agent: HcomAgent): Promise<Result<SwitchResponse>> {
 	const stopped = await stop(board, controller.id, agent);
-	// The pane of this stop: a later 「繼續切換」 checks that one is gone.
-	const logError = step(board, switchId, { state: stopped.state, error: stopped.error, pane: agent.pane });
+	const logError = step(board, switchId, { state: stopped.state, error: stopped.error });
 	if (stopped.state !== 'stopped') return respondLogged(board, switchId, { reason: stopped.error, status: 502 }, logError);
 	if (logError) return respondLogged(board, switchId, { reason: `寫不進送出紀錄，沒有接回：${logError}`, status: 500 }, logError);
 	return resumeSwitch(board, controller, switchId, NO_CHOICE);
@@ -248,7 +239,7 @@ async function isGone(board: Board, sessionId: string, pane: string | null): Pro
  * same checks as a second wake.
  */
 async function continueSwitch(board: Board, controller: Controller, open: SwitchView, choice: ModelChoice): Promise<Result<SwitchResponse>> {
-	if (choice.model !== null && (await modelLock(board, controller.id)).lock === 'fixed') {
+	if (choice.model !== null && (await modelLock(board.config, controller.id)).lock === 'fixed') {
 		return respondLogged(board, open.id, { reason: FIXED_MODEL_REASON, status: 409 }, null);
 	}
 	if (open.state !== 'stopping' && open.state !== 'stop-failed' && open.state !== 'stop-unknown') {
@@ -267,6 +258,10 @@ async function continueSwitch(board: Board, controller: Controller, open: Switch
 		}
 		const ready = await recheck(board, controller, agent.name);
 		if ('refuse' in ready) return respondLogged(board, open.id, { reason: ready.refuse, status: 409 }, null);
+		// In the log before the stop runs, like a first stop: a board stopped meanwhile, or a result
+		// that cannot be written, must leave this stop's pane to check, not the earlier one.
+		const logError = step(board, open.id, { state: 'stopping', error: null, pane: ready.agent.pane });
+		if (logError) return respondLogged(board, open.id, { reason: `寫不進送出紀錄，沒有停止：${logError}`, status: 500 }, logError);
 		return stopThenResume(board, controller, open.id, ready.agent);
 	}
 	const gone = await isGone(board, controller.id, open.pane);
@@ -372,7 +367,7 @@ function finish(board: Board, entry: SentSwitch, outcome: Outcome): Result<Switc
 
 /** The response for a switch that is over at once. */
 function respond(entry: SentSwitch, outcome: Outcome, logError: string | null): Result<SwitchResponse> {
-	return answer({ ...entry, open: false, wakeId: null }, outcome, logError);
+	return answer({ ...entry, open: false, wakeId: null, appliedAt: entry.route === 'inject' ? entry.time : null }, outcome, logError);
 }
 
 function answer(entry: SwitchView | null, outcome: Outcome, logError: string | null): Result<SwitchResponse> {

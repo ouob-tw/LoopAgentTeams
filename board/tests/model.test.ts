@@ -11,6 +11,7 @@ import {
 	lastApplied,
 	NOT_OFFERED_REASON,
 	NOT_RUNNING_REASON,
+	SWITCH_UNSETTLED_REASON,
 	switchCheck,
 	WAKE_RUNNING_CHOICE_REASON,
 	type ModelStatus,
@@ -19,7 +20,7 @@ import {
 } from '../src/lib/board/models.ts';
 import type { TranscriptUpdate } from '../src/lib/board/transcript.ts';
 import type { WakeResponse, WakeView } from '../src/lib/board/wake.ts';
-import { NODE, startFixture, type Fixture } from './harness.ts';
+import { NODE, startFixture, until, type Fixture } from './harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-model-'));
 const commandEnv = {
@@ -57,6 +58,7 @@ beforeEach(() => {
 		rmSync(join(commandDir, name), { force: true });
 	}
 	rmSync(join(fixture.dir, 'launch-args.json'), { force: true });
+	rmSync(join(fixture.dir, 'clock'), { force: true });
 	fixture.list([]);
 });
 
@@ -473,6 +475,64 @@ test('a second stop is checked against the pane of that stop', async () => {
 	expect(again.body.entry).toMatchObject({ state: 'stop-unknown', pane: 'wP:moved' });
 });
 
+test('a continued switch is checked against turns after its settings went out, not after it was first asked for', async () => {
+	const target = await running('codex');
+	fixture.setClock(Date.parse('2026-10-14T10:00:00Z'));
+	hcomPlan({ agents: [target.self], exit: 1 });
+	expect((await change(target.id, 'gpt-6-astra', null)).body.entry).toMatchObject({ state: 'resume-failed' });
+
+	fixture.setClock(Date.parse('2026-10-14T10:20:00Z'));
+	hcomPlan({ agents: [], resumed: agent(target.name, target.id) });
+	expect((await resumeSwitch(target.id)).body.ok).toBe(true);
+
+	const applied = lastApplied(await sent(target.id));
+	expect(applied?.time).toBe('2026-10-14T10:20:00.000Z');
+	// A turn on the old model in between does not count against the switch.
+	expect(switchCheck(applied, { model: 'gpt-6.1-sol', effort: 'medium', time: '2026-10-14T10:10:00Z' })).toBe('waiting');
+	expect(switchCheck(applied, { model: 'gpt-6-astra', effort: 'medium', time: '2026-10-14T10:21:00Z' })).toBe('took');
+});
+
+test('a board stopped during a second stop keeps that stop\'s pane to check', async () => {
+	const target = await running('codex');
+	hcomPlan({ agents: [target.self], kill: { exit: 1 } });
+	await change(target.id, null, 'low');
+
+	const moved = { ...target.self, launch_context: { pane_id: 'wP:moved' } };
+	hcomPlan({ agents: [moved], kill: { sleepMs: 800, stays: true } });
+	const pending = resumeSwitch(target.id).catch(() => null);
+	await until(() => kills().length === 2, 3_000, 'the second stop');
+	await fixture.stop();
+	await pending;
+	await fixture.start();
+	cookie = await fixture.login();
+
+	const [logged] = await switches(target.id);
+	expect(logged).toMatchObject({ state: 'stopping', pane: 'wP:moved', open: true });
+	// Gone from hcom's list, but the pane of this stop is still open: nothing is resumed.
+	hcomPlan({ agents: [] });
+	herdrPanes([{ workspace_id: 'wP', cwd: target.workspace, pane_id: 'wP:moved' }]);
+	const kept = await resumeSwitch(target.id);
+	expect(kept.status).toBe(409);
+	expect(resumes()).toEqual([]);
+});
+
+test('a second stop that cannot be written to the sent log first does not run', async () => {
+	const target = await running('codex');
+	hcomPlan({ agents: [target.self], kill: { exit: 1 } });
+	await change(target.id, null, 'low');
+	hcomPlan({ agents: [target.self] });
+	const log = join(fixture.dir, 'board-state', 'sent-log.jsonl');
+	chmodSync(log, 0o444);
+	try {
+		const { status, body } = await resumeSwitch(target.id);
+		expect(status).toBe(500);
+		expect(body.reason).toContain('沒有停止');
+		expect(kills()).toHaveLength(1);
+	} finally {
+		chmodSync(log, 0o644);
+	}
+});
+
 test('an open switch is read back after the board restarts', async () => {
 	const target = await running('codex');
 	hcomPlan({ agents: [target.self], kill: { exit: 1 } });
@@ -582,6 +642,45 @@ test('a wake that keeps the settings adds nothing, and a running client with a c
 	expect((await wake(alive.id, 'gpt-6-astra', null)).body.reason).toBe(NOT_OFFERED_REASON);
 });
 
+test('a wake does not resume a client a switch stopped without seeing it gone, also after a restart', async () => {
+	const target = await running('codex');
+	hcomPlan({ agents: [target.self], kill: { sleepMs: 3_000 } });
+	expect((await change(target.id, null, 'high')).body.entry).toMatchObject({ state: 'stop-unknown' });
+	// Out of hcom's list, but its pane is still open in Herdr.
+	hcomPlan({ agents: [] });
+
+	const refused = await wake(target.id, null, null);
+	expect(refused.status).toBe(409);
+	expect(refused.body.reason).toBe(SWITCH_UNSETTLED_REASON);
+
+	await fixture.stop();
+	await fixture.start();
+	cookie = await fixture.login();
+	expect((await wake(target.id, null, null)).body.reason).toBe(SWITCH_UNSETTLED_REASON);
+	expect(resumes()).toEqual([]);
+
+	// Once it is gone, 繼續切換 settles it and resumes.
+	herdrPanes([{ workspace_id: 'wP', cwd: target.workspace, pane_id: 'wP:shell' }]);
+	hcomPlan({ agents: [], resumed: agent(target.name, target.id) });
+	expect((await resumeSwitch(target.id)).body.ok).toBe(true);
+	expect(resumes()).toHaveLength(1);
+});
+
+test('a wake of a Codex started with an explicit model refuses a model change and takes an effort', async () => {
+	const target = await ended('codex');
+	launchArgs(target.id, ['--model', 'gpt-6.1-sol']);
+	hcomPlan({});
+	expect((await offer(target.id)).lock).toBe('fixed');
+
+	const model = await wake(target.id, 'gpt-6-astra', null);
+	expect(model.status).toBe(409);
+	expect(model.body.reason).toBe(FIXED_MODEL_REASON);
+	expect(resumes()).toEqual([]);
+
+	expect((await wake(target.id, null, 'high')).body.ok).toBe(true);
+	expect(resumes()[0].slice(-2)).toEqual(['-c', 'model_reasoning_effort="high"']);
+});
+
 // --- What the latest turn used ---------------------------------------------------------------------------
 
 test('the conversation page carries what the latest turn used, as the helper read it', async () => {
@@ -605,7 +704,7 @@ test('a switch waits for the next turn, then clears when it took and says so whe
 });
 
 test('the latest settings sent are the newest switch that went out, or a resume that carried a choice', () => {
-	const base = { controllerId: 'c', hcomName: 'n', client: 'codex', from: null, error: null, pane: null, open: false, wakeId: null };
+	const base = { controllerId: 'c', hcomName: 'n', client: 'codex', from: null, error: null, pane: null, open: false, wakeId: null, appliedAt: null };
 	const entries = [
 		{ ...base, id: 's3', kind: 'switch', time: '2026-10-14T10:03:00Z', to: { model: null, effort: 'high' }, route: 'restart', state: 'stop-failed', open: true },
 		{ ...base, id: 's2', kind: 'switch', time: '2026-10-14T10:02:00Z', to: { model: 'b', effort: null }, route: 'restart', state: 'done' },

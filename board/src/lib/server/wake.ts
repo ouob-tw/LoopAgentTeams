@@ -6,7 +6,16 @@
 // twice. Wakes share the per-controller queue of messages.
 import { randomUUID } from 'node:crypto';
 import { isLaunchClient, latCommand } from '../board/launch.ts';
-import { chose, modelArgs, NOT_OFFERED_REASON, offered, WAKE_RUNNING_CHOICE_REASON } from '../board/models.ts';
+import {
+	chose,
+	FIXED_MODEL_REASON,
+	modelArgs,
+	NOT_OFFERED_REASON,
+	offered,
+	SWITCH_UNSETTLED_REASON,
+	WAKE_RUNNING_CHOICE_REASON,
+	type SwitchState
+} from '../board/models.ts';
 import { UNKNOWN_CONTROLLER_REASON } from '../board/messages.ts';
 import type { Controller } from '../board/types.ts';
 import {
@@ -23,7 +32,11 @@ import type { Board } from './board.ts';
 import { findAgent, listAgents, resumeAgent, type HcomAgent } from './hcom.ts';
 import { chooseWorkspace, paneExists } from './herdr.ts';
 import { inject, queued, typedText } from './send.ts';
-import { appendSent, closeResume, openResume, type ResumeResult } from './sent-log.ts';
+import { modelLock } from './helper.ts';
+import { appendSent, closeResume, openResume, openSwitch, type ResumeResult } from './sent-log.ts';
+
+/** Where a model switch has stopped its client without seeing it gone. */
+const UNSETTLED_STOP = new Set<SwitchState>(['stopping', 'stop-failed', 'stop-unknown']);
 
 type Result<T> = { status: number; body: T };
 
@@ -84,7 +97,21 @@ async function deliver(board: Board, controller: Controller | undefined, request
 	const plan: Plan = await check(board, entry.controllerId).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有送出：${error.message}` }));
 	if ('refuse' in plan) return refuse(plan.refuse, plan.abandon);
 	if (!plan.agent) {
-		if (chose(choice) && isLaunchClient(client)) entry.extraArgs = modelArgs(client, choice);
+		// A model switch that stopped this client without seeing it gone may have left it running:
+		// resuming now could make a second copy, so 繼續切換 has to settle it first.
+		let switching;
+		try {
+			switching = openSwitch(board.config.stateDir, controller.id, board.config.now(), board.config.launchWaitMs);
+		} catch (error) {
+			return refuse(`讀不到送出紀錄，沒有送出：${(error as Error).message}`);
+		}
+		if (switching && UNSETTLED_STOP.has(switching.state)) return refuse(SWITCH_UNSETTLED_REASON);
+		if (chose(choice) && isLaunchClient(client)) {
+			if (client === 'codex' && choice.model !== null && (await modelLock(board.config, controller.id)).lock === 'fixed') {
+				return refuse(FIXED_MODEL_REASON);
+			}
+			entry.extraArgs = modelArgs(client, choice);
+		}
 		return resume(board, controller, entry);
 	}
 	// A running client keeps its settings: the information page's 修改 changes them.

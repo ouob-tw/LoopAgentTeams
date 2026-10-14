@@ -2,7 +2,7 @@
 // the LAT panel helper's `board` commands.
 import { execFile } from 'node:child_process';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
-import type { CurrentSettings } from '../board/models.ts';
+import { fixedModel, type CurrentSettings } from '../board/models.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
 import type { BoardConfig } from './config.ts';
 
@@ -208,4 +208,11 @@ export async function readLaunchArgs(config: BoardConfig, sessionId: string): Pr
 	const args = payload?.args;
 	if (payload?.status === 'ok' && Array.isArray(args) && args.every((arg) => typeof arg === 'string')) return { ok: true, args };
 	return { ok: false, reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出不是預期的格式' };
+}
+
+/** Whether a Codex controller's launch fixes its model, from the arguments hcom stored for it. */
+export async function modelLock(config: BoardConfig, sessionId: string): Promise<{ lock: 'free' | 'fixed' | 'unknown'; reason: string | null }> {
+	const read = await readLaunchArgs(config, sessionId);
+	if (!read.ok) return { lock: 'unknown', reason: read.reason };
+	return { lock: fixedModel(read.args) ? 'fixed' : 'free', reason: null };
 }

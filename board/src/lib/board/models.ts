@@ -134,6 +134,9 @@ export interface SentSwitch {
 export interface SwitchView extends SentSwitch {
 	/** A Codex switch that is not over: 「繼續切換」 picks it up again. */
 	open: boolean;
+	/** When the settings last went out: typed in, or the latest resume that carried them. Only a
+	 *  turn after this can show whether they took. Null while nothing went out. */
+	appliedAt: string | null;
 	/** The resume that carries this switch's settings, the latest one. */
 	wakeId: string | null;
 }
@@ -158,6 +161,7 @@ export const BUSY_REASON = '主控正在工作或狀態不明，等這回合結�
 export const FIXED_MODEL_REASON = '這個 Codex 主控啟動時指定了模型，接回後無法換模型，只能改思考強度';
 export const LOCK_UNKNOWN_TEXT = '無法確認這個主控能否換模型';
 export const NOT_OFFERED_REASON = '這個模型或思考強度不在這個 client 的選項裡，沒有送出';
+export const SWITCH_UNSETTLED_REASON = '這個主控有一次模型切換還沒確認已停止，請先到資訊頁按「繼續切換」，沒有送出';
 export const WAKE_RUNNING_CHOICE_REASON = '主控還在跑，模型與思考強度請改用資訊頁的「修改」，沒有送出';
 
 export const SWITCH_STATE_TEXT: Record<SwitchState, string> = {
@@ -185,7 +189,7 @@ export const choiceText = (choice: ModelChoice) =>
 export function lastApplied(entries: readonly SentEntry[]): { time: string; to: ModelChoice } | null {
 	for (const entry of entries) {
 		if (entry.kind === 'switch' && (entry.state === 'sent' || entry.state === 'resuming' || entry.state === 'done')) {
-			return { time: entry.time, to: entry.to };
+			return { time: entry.appliedAt ?? entry.time, to: entry.to };
 		}
 		if (
 			entry.kind === 'wake' &&
