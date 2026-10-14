@@ -129,31 +129,18 @@ def latest_event_id():
         return None
 
 
-def start_watch(launch, after_id, ordinal):
-    """Start spawn-watch.py for the ordinal-th launch of the command that it can tell apart
-    by client (and --tag when given).
-
-    Each run also appends after_id to runs/<spawner>, so a watcher whose launch never
-    happened (a preview or a failed launch) cannot take the batch of a later command.
-    """
+def start_watch(launch, after_id):
     spawner = launch['name'] or os.environ.get('HCOM_INSTANCE_NAME', '')
     if not spawner or after_id is None or not SPAWNER.match(spawner):
         return
     state = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'hcom-spawn'
-    (state / 'runs').mkdir(parents=True, exist_ok=True)
-    runs = state / 'runs' / spawner
-    try:
-        kept = runs.read_text().split()[-50:]
-    except OSError:
-        kept = []
-    if str(after_id) not in kept:
-        runs.write_text('\n'.join(kept + [str(after_id)]) + '\n')
+    state.mkdir(parents=True, exist_ok=True)
     with open(state / 'watch.log', 'a') as log:
         subprocess.Popen(
             [sys.executable, str(HERE / 'spawn-watch.py'), '--spawner', spawner,
              '--tool', launch['client'], '--model', launch['model'],
-             '--effort', launch['effort'], '--after-id', str(after_id),
-             '--ordinal', str(ordinal)] + (['--tag', launch['tag']] if launch['tag'] else []),
+             '--effort', launch['effort'], '--after-id', str(after_id)]
+            + (['--tag', launch['tag']] if launch['tag'] else []),
             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
 
 
@@ -186,12 +173,9 @@ def main():
     started = [launch for launch in found if launch['go']]  # without --go hcom only previews
     if started:
         after_id = latest_event_id()
-        for index, launch in enumerate(started):
-            ordinal = sum(other['client'] == launch['client']
-                          and (not launch['tag'] or other['tag'] == launch['tag'])
-                          for other in started[:index])
+        for launch in started:
             try:
-                start_watch(launch, after_id, ordinal)
+                start_watch(launch, after_id)
             except OSError as error:  # the launch itself is fine; only its check is lost
                 print(f'hcom-spawn: background check not started: {error}', file=sys.stderr)
     return 0

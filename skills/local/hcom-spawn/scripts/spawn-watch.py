@@ -7,6 +7,7 @@ the spawner about any mismatch or anything it could not confirm, and removes the
 subscriptions once the agents stop.
 """
 import argparse
+import importlib.util
 import json
 import os
 import re
@@ -15,9 +16,15 @@ import sys
 import time
 from pathlib import Path
 
+_spec = importlib.util.spec_from_file_location(
+    'spawn_guard', Path(__file__).resolve().parent / 'spawn-guard.py')
+guard = importlib.util.module_from_spec(_spec)
+_spec.loader.exec_module(guard)
+
 NAME = re.compile(r'^[A-Za-z0-9_-]+$')
 SENDER = 'hcom-spawn'
 BATCH_WAIT = 90        # seconds to wait for the launch to show up in hcom events
+ARGS_WAIT = 10         # seconds to wait for a new agent's command line to be readable
 SCREEN_WINDOW = 20     # seconds of screen reading after the agent is ready
 DEADLINE = 180         # seconds after the launch to give up on confirming
 POLL = 0.3
@@ -64,42 +71,83 @@ def state_dir():
     base = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state'))
     path = base / 'hcom-spawn'
     (path / 'subs').mkdir(parents=True, exist_ok=True)
+    (path / 'claims').mkdir(parents=True, exist_ok=True)
     return path
 
 
-def next_run(spawner, after_id):
-    """after_id of the spawner's next guarded command; its batches are not ours."""
+def claim(batch_id):
     try:
-        later = [int(run) for run in (state_dir() / 'runs' / spawner).read_text().split()
-                 if run.isdigit() and int(run) > after_id]
-    except OSError:
-        later = []
-    return min(later, default=None)
+        os.close(os.open(state_dir() / 'claims' / batch_id, os.O_CREAT | os.O_EXCL))
+        return True
+    except FileExistsError:
+        return False
 
 
-def find_batch(spawner, tool, tag, after_id, ordinal):
-    """The ordinal-th batch with this tool (and tag, when given) that this spawner's
-    command launched.
+def process_ids():
+    """hcom process id of each running agent, by base name."""
+    _, out = hcom('list', '--json')
+    try:
+        return {agent['base_name']: agent['launch_context']['process_id']
+                for agent in json.loads(out)}
+    except (ValueError, KeyError, TypeError):
+        return {}
 
-    Batches after after_id, up to and including the event id the spawner's next guarded
-    command started from, belong to this command, in launch order. hcom records the spawner by base name, so
-    `--name <tag>-<base>` matches `by: <base>`.
+
+def launched_with(tool, process_id):
+    """(model, effort) on the command line of the agent process hcom started, or None.
+
+    hcom puts HCOM_PROCESS_ID in the agent's environment, so the agent's own process
+    tells which launch it came from.
     """
-    start = clock()
+    if not process_id:
+        return None
+    marker = f'HCOM_PROCESS_ID={process_id}'.encode()
+    for proc in Path('/proc').glob('[0-9]*'):
+        try:
+            if marker not in (proc / 'environ').read_bytes().split(b'\0'):
+                continue
+            argv = (proc / 'cmdline').read_bytes().decode(errors='replace').split('\0')
+        except OSError:
+            continue
+        names = [word.rsplit('/', 1)[-1] for word in argv]
+        if tool in names:
+            launch = guard.read_launch(tool, argv[names.index(tool) + 1:])
+            if launch and launch['model']:
+                return launch['model'], launch['effort'].lower()
+    return None
+
+
+def find_batch(spawner, tool, tag, after_id, model, effort):
+    """The batch this command launched: by this spawner, tool (and tag, when given), after
+    after_id, not taken by another watcher, whose agent was started with this model and
+    effort. When the agent's command line stays unreadable for ARGS_WAIT seconds, the
+    earliest such batch is taken instead.
+
+    hcom records the spawner by base name, so `--name <tag>-<base>` matches `by: <base>`.
+    """
+    start, first_seen = clock(), {}
     while clock() - start < BATCH_WAIT:
-        upper = next_run(spawner, after_id)
-        mine = [event for event in events(
-                    '--type', 'life', '--action', 'batch_launched',
-                    '--sql', f"id > {after_id} AND (life_by = '{spawner}' "
-                             f"OR '{spawner}' LIKE '%-' || life_by)")
-                if event.get('data', {}).get('tool') == tool
-                and (not tag or event['data'].get('tag') == tag)
-                and (upper is None or event['id'] <= upper)]
-        mine.sort(key=lambda event: event['id'])
-        if len(mine) > ordinal:
-            return mine[ordinal] if mine[ordinal]['data'].get('instances') else None
-        if upper is not None:
-            return None
+        batches = sorted((event for event in events(
+                              '--type', 'life', '--action', 'batch_launched',
+                              '--sql', f"id > {after_id} AND (life_by = '{spawner}' "
+                                       f"OR '{spawner}' LIKE '%-' || life_by)")
+                          if event.get('data', {}).get('tool') == tool
+                          and event['data'].get('instances')
+                          and (not tag or event['data'].get('tag') == tag)),
+                         key=lambda event: event['id'])
+        processes = process_ids() if batches else {}
+        for event in batches:
+            batch_id = str(event['data'].get('batch_id') or event['id'])
+            if (state_dir() / 'claims' / batch_id).exists():
+                continue
+            args = launched_with(tool, processes.get(event['data']['instances'][0], ''))
+            if args is None:
+                if clock() - first_seen.setdefault(batch_id, clock()) < ARGS_WAIT:
+                    continue
+            elif args != (model, effort.lower()):
+                continue
+            if claim(batch_id):
+                return event
         sleep(POLL)
     return None
 
@@ -131,7 +179,14 @@ def unsubscribe(sub):
 
 
 def sweep():
-    """Remove subscriptions left by a watcher that died before its agents stopped."""
+    """Remove subscriptions left by a watcher that died before its agents stopped, and
+    batch claims older than a day."""
+    for path in (state_dir() / 'claims').iterdir():
+        try:
+            if path.stat().st_mtime < time.time() - 86400:
+                path.unlink()
+        except OSError:
+            continue
     for path in (state_dir() / 'subs').glob('*.json'):
         try:
             record = json.loads(path.read_text())
@@ -291,13 +346,12 @@ def main(argv=None):
     parser.add_argument('--model', required=True)
     parser.add_argument('--effort', required=True)
     parser.add_argument('--after-id', required=True, type=int)
-    parser.add_argument('--ordinal', type=int, default=0)
     parser.add_argument('--tag', default='')
     args = parser.parse_args(argv)
     if not NAME.match(args.spawner):
         return 1
     sweep()
-    batch = find_batch(args.spawner, args.tool, args.tag, args.after_id, args.ordinal)
+    batch = find_batch(args.spawner, args.tool, args.tag, args.after_id, args.model, args.effort)
     if not batch:
         return 0
     start = clock()

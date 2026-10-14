@@ -89,17 +89,18 @@ class SpawnWatchTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.watch = load()
 
-    def run_watch(self, fake, tool='claude', model='claude-sonnet-5-5', effort='low', ordinal=0,
-                  tag=None):
+    def run_watch(self, fake, tool='claude', model='claude-sonnet-5-5', effort='low', tag=None,
+                  launched=None):
+        """launched maps agent base name -> (model, effort) on its command line; by default
+        every agent was started with this watch's model and effort."""
         self.watch.hcom, self.watch.clock, self.watch.sleep = fake, fake.clock, fake.sleep
+        self.watch.process_ids = lambda: {name: name for batch in fake.batches
+                                          for name in batch['data']['instances']}
+        self.watch.launched_with = lambda tool, process_id: (
+            (launched or {}).get(process_id, (model, effort)))
         return self.watch.main(['--spawner', 'vare', '--tool', tool, '--model', model,
-                                '--effort', effort, '--after-id', '99',
-                                '--ordinal', str(ordinal)] + (['--tag', tag] if tag else []))
-
-    def write_runs(self, *runs):
-        path = Path(self.state.name) / 'hcom-spawn/runs'
-        path.mkdir(parents=True, exist_ok=True)
-        (path / 'vare').write_text(''.join(f'{run}\n' for run in runs))
+                                '--effort', effort, '--after-id', '99']
+                               + (['--tag', tag] if tag else []))
 
     def add_batch(self, fake, event_id, name):
         batch = json.loads(json.dumps(fake.batch))
@@ -184,35 +185,50 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertEqual(fake.subs, {})
         self.assertEqual(fake.sent, [])
 
-    def test_launches_in_one_command_are_matched_in_launch_order(self):
+    def test_each_watch_takes_the_batch_started_with_its_own_model_and_effort(self):
+        # `false && hcom ... model A; hcom ... model B`: only B's batch exists.
         fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
-        self.add_batch(fake, 120, 'mona')
-        fake.batches.reverse()
-        self.run_watch(fake, ordinal=1)
-        self.assertIn(('events', 'sub', '--blocked', 'mona', '--for', 'vare'), fake.calls)
-        self.assertNotIn(('events', 'sub', '--blocked', 'kilo', '--for', 'vare'), fake.calls)
-
-    def test_batches_of_a_later_command_are_not_taken(self):
-        self.write_runs(99, 110)
-        fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
-        self.add_batch(fake, 120, 'mona')
-        fake.batches.pop(0)
-        self.assertEqual(self.run_watch(fake), 0)
+        fake.batches[0]['data']['instances'] = ['mona']
+        launched = {'mona': ('claude-sonnet-5-5', 'low')}
+        self.run_watch(fake, model='claude-opus-5-5', launched=launched)
         self.assertEqual(fake.subs, {})
         self.assertEqual(fake.sent, [])
-        self.assertLess(fake.now, 5)
+        second = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        second.batches = fake.batches
+        self.run_watch(second, launched=launched)
+        self.assertIn(('events', 'sub', '--blocked', 'mona', '--for', 'vare'), second.calls)
 
-    def test_batch_at_the_next_commands_starting_event_is_still_ours(self):
-        self.write_runs(99, 100)
+    def test_a_batch_taken_by_another_watch_is_not_checked_twice(self):
+        first = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        self.run_watch(first)
+        second = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
+        self.run_watch(second)
+        self.assertEqual(second.subs, {})
+        self.assertEqual(second.sent, [])
+
+    def test_unreadable_command_line_falls_back_to_the_earliest_batch(self):
         fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
-        self.run_watch(fake)
+        self.run_watch(fake, launched={'kilo': None})
         self.assertIn(('events', 'sub', '--blocked', 'kilo', '--for', 'vare'), fake.calls)
+        self.assertGreaterEqual(fake.now, self.watch.ARGS_WAIT)
+
+    def test_old_claims_are_cleared(self):
+        claims = Path(self.state.name) / 'hcom-spawn/claims'
+        claims.mkdir(parents=True)
+        (claims / 'old').touch()
+        os.utime(claims / 'old', (0, 0))
+        (claims / 'new').touch()
+        fake = FakeHcom()
+        fake.batches = []
+        self.run_watch(fake)
+        self.assertEqual(sorted(path.name for path in claims.iterdir()), ['new'])
 
     def test_tag_given_on_the_command_selects_that_tags_batch(self):
         fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
         self.add_batch(fake, 120, 'mona')
         fake.batches[1]['data']['tag'] = 'vare-docs'
         self.run_watch(fake, tag='vare-docs')
+        self.assertTrue((Path(self.state.name) / 'hcom-spawn/claims/b120').exists())
         self.assertIn(('events', 'sub', '--blocked', 'mona', '--for', 'vare'), fake.calls)
         self.assertNotIn(('events', 'sub', '--blocked', 'kilo', '--for', 'vare'), fake.calls)
 
