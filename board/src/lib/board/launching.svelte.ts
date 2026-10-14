@@ -2,7 +2,7 @@
 // launch and leaving the page), the folders to choose from and the recent launches.
 import type { LaunchClient, LaunchList, LaunchResponse } from './launch.ts';
 
-export interface LaunchOutcome {
+export interface StartResult {
 	ok: boolean;
 	reason: string | null;
 }
@@ -37,7 +37,7 @@ class Launching {
 	}
 
 	/** One attempt with the form as it is; the form is kept when it fails. */
-	async start(): Promise<LaunchOutcome> {
+	async start(): Promise<StartResult> {
 		let response: Response;
 		try {
 			response = await fetch('/api/launches', {

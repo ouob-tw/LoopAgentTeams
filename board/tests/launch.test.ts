@@ -58,7 +58,7 @@ interface PaneSpec {
 	workspace_id: string;
 	cwd: string;
 }
-function herdrPlan(plan: { panes?: PaneSpec[]; workspaces?: [string, number, string][]; created?: string; fail?: object }) {
+function herdrPlan(plan: { panes?: PaneSpec[]; workspaces?: [string, number, string][]; created?: string | null; fail?: object; raw?: object }) {
 	const workspaces = (plan.workspaces ?? []).map(([workspace_id, number, label]) => ({ workspace_id, number, label }));
 	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify({ ...plan, workspaces }));
 }
@@ -196,6 +196,20 @@ test('Herdr failures stop the launch with the reason, keep nothing running, and 
 	expect(hcomCalls()).toEqual([]);
 });
 
+test('Herdr output that cannot be used stops the launch with the reason', async () => {
+	const repo = folder('garbled', true);
+	herdrPlan({ raw: { 'pane list': 'not json' } });
+	const garbled = await launch({ folder: repo });
+	expect(garbled.status).toBe(502);
+	expect(garbled.body.reason).toContain('窗格清單');
+
+	herdrPlan({ created: null });
+	const noId = await launch({ folder: repo });
+	expect(noId.status).toBe(502);
+	expect(noId.body.reason).toContain('缺少工作區編號');
+	expect(hcomCalls()).toEqual([]);
+});
+
 // --- Folders and git init -----------------------------------------------------------------------
 
 needsPlain('a folder outside any Git project is refused without the box ticked: nothing runs, changes or is logged', async () => {
@@ -264,6 +278,17 @@ test('a folder that does not exist is reported and logged, and nothing runs', as
 	expect(herdrCalls()).toEqual([]);
 });
 
+test('a path that is a file, not a folder, is reported and nothing runs', async () => {
+	const file = join(fixture.dir, 'projects', 'a-file');
+	writeFileSync(file, '');
+
+	const { status, body } = await launch({ folder: file });
+
+	expect(status).toBe(502);
+	expect(body.reason).toBe(`這不是資料夾：${file}`);
+	expect(hcomCalls()).toEqual([]);
+});
+
 // --- hcom's three results -----------------------------------------------------------------------
 
 test('hcom failing is a failed launch with its reason', async () => {
@@ -317,6 +342,17 @@ test('without an HCOM name in the output the result is uncertain, and no binding
 	expect(await launchOf(body.entry!.id)).toMatchObject({ state: 'uncertain', controllerId: null });
 });
 
+test('still launching without an HCOM name is uncertain too', async () => {
+	const repo = folder('nameless-slow', true);
+	herdrPlan({ panes: [{ workspace_id: 'wA', cwd: repo }], workspaces: [['wA', 1, 'a']] });
+	hcomPlan({ exit: 2, names: [null] });
+
+	const { status, body } = await launch({ folder: repo });
+
+	expect(status).toBe(200);
+	expect(body.entry).toMatchObject({ outcome: 'pending', hcomName: null, state: 'uncertain' });
+});
+
 // --- Following a launch -------------------------------------------------------------------------
 
 test('two launches in one folder each find their own binding by HCOM name, and show in that controller\'s sent log', async () => {
@@ -338,6 +374,36 @@ test('two launches in one folder each find their own binding by HCOM name, and s
 
 	const sent = await (await fixture.fetch(`/api/messages?controller=${encodeURIComponent(vemo)}`, { cookie })).json();
 	expect(sent.entries).toMatchObject([{ kind: 'launch', id: first.id, text: '第一個', client: 'claude', state: 'active' }]);
+});
+
+test('a binding left under the same name from before the launch is not the launch\'s controller', async () => {
+	const repo = folder('reused', true);
+	herdrPlan({ panes: [{ workspace_id: 'wA', cwd: repo }], workspaces: [['wA', 1, 'a']] });
+	hcomPlan({ names: ['lodi'] });
+	const stale = fixture.bound('p', 'lodi', { workspace: repo });
+	fixture.list([stale]);
+
+	const { body } = await launch({ folder: repo });
+	await fixture.refresh(cookie);
+	expect(await launchOf(body.entry!.id)).toMatchObject({ state: 'starting', controllerId: null });
+
+	const fresh = fixture.bound('p', 'lodi', { workspace: repo });
+	fixture.list([stale, fresh]);
+	await fixture.refresh(cookie);
+	expect(await launchOf(body.entry!.id)).toMatchObject({ state: 'active', controllerId: fresh.session_id });
+});
+
+test('when hcom hands out a name again, the binding belongs to the newest launch with it', async () => {
+	const repo = folder('again', true);
+	herdrPlan({ panes: [{ workspace_id: 'wA', cwd: repo }], workspaces: [['wA', 1, 'a']] });
+	hcomPlan({ names: ['mavu', 'mavu'] });
+
+	const older = (await launch({ folder: repo })).body.entry!;
+	const newer = (await launch({ folder: repo })).body.entry!;
+	await bind({ name: 'mavu', workspace: repo });
+
+	expect(await launchOf(newer.id)).toMatchObject({ state: 'active' });
+	expect(await launchOf(older.id)).toMatchObject({ state: 'starting', controllerId: null });
 });
 
 test('a launch in a Git subfolder is active once its controller binds at the project root', async () => {

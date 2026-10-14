@@ -1,6 +1,6 @@
 import { isAbsolute } from 'node:path';
 import { json } from '@sveltejs/kit';
-import type { LaunchRequest } from '#lib/board/launch.ts';
+import { isLaunchClient, type LaunchRequest } from '#lib/board/launch.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { listLaunches, startController } from '#lib/server/launch.ts';
 import { typedText } from '#lib/server/send.ts';
@@ -11,7 +11,7 @@ export const POST: RequestHandler = async ({ request }) => {
 	const body: Partial<Record<keyof LaunchRequest, unknown>> | null = await request.json().catch(() => null);
 	const { client, folder, text, gitInit } = body ?? {};
 	if (
-		(client !== 'claude' && client !== 'codex') ||
+		!isLaunchClient(client) ||
 		typeof folder !== 'string' ||
 		!isAbsolute(folder) ||
 		typeof text !== 'string' ||

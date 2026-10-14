@@ -1,6 +1,7 @@
 // The board's sent log: one JSON line per attempt to send a message to a controller, per
-// answer the helper accepted and per attempt to start a new controller, kept in the board's state directory so every logged-in device sees the
-// same history. Lines are only appended; what became of an answer is a later line of its own.
+// answer the helper accepted and per attempt to start a new controller, kept in the board's state
+// directory so every logged-in device sees the same history. Lines are only appended; what became
+// of an answer or a launch is a later line of its own.
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AnswerState, SentAnswer, SentEntry } from '../board/answers.ts';
@@ -181,11 +182,12 @@ export function readLaunches(stateDir: string, now: number, waitMs: number, limi
  * Note which launches have become a controller: a binding with the launch's HCOM name, or a
  * report record with that name written since the launch (the controller may have bound and ended
  * between two reads). The folder is never compared, so two launches in one folder each find their
- * own. A name hcom hands out again later belongs to the newest launch that has it.
+ * own. A session already bound under the name when the launch began is not it. A name hcom hands
+ * out again later belongs to the newest launch that has it.
  *
  * Returns why the log could not be brought up to date, or null.
  */
-export function settleLaunches(stateDir: string, controllers: HelperController[], reportFiles: ReportFile[]): string | null {
+export function settleLaunches(stateDir: string, controllers: HelperController[], reportFiles: ReportFile[], now: number): string | null {
 	const lines = readLines(stateDir);
 	const bound = boundOf(lines);
 	const seen = new Set<string>();
@@ -194,14 +196,17 @@ export function settleLaunches(stateDir: string, controllers: HelperController[]
 		seen.add(line.hcomName);
 		if (bound.has(line.id)) continue;
 		const since = Date.parse(line.time);
+		const earlier = new Set(line.earlierSessions);
 		const controllerId =
-			controllers.find((controller) => controller.hcom_name === line.hcomName)?.session_id ??
-			reportFiles.find((file) =>
-				file.reports.some((report) => report.hcom_name === line.hcomName && Date.parse(report.time) >= since)
+			controllers.find((controller) => controller.hcom_name === line.hcomName && !earlier.has(controller.session_id))?.session_id ??
+			reportFiles.find(
+				(file) =>
+					!earlier.has(file.sessionId) &&
+					file.reports.some((report) => report.hcom_name === line.hcomName && Date.parse(report.time) >= since)
 			)?.sessionId;
 		if (!controllerId) continue;
 		try {
-			appendSent(stateDir, { kind: 'launch-bound', launchId: line.id, controllerId, time: new Date().toISOString() });
+			appendSent(stateDir, { kind: 'launch-bound', launchId: line.id, controllerId, time: new Date(now).toISOString() });
 		} catch (error) {
 			return (error as Error).message;
 		}

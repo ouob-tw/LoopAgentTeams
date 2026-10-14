@@ -1,7 +1,7 @@
 // Starting agents through hcom, in a Herdr tab of a workspace the board picks.
 import type { LaunchClient, LaunchOutcome } from '../board/launch.ts';
 import type { BoardConfig } from './config.ts';
-import { runExternal } from './external.ts';
+import { runExternal, type ExternalResult } from './external.ts';
 
 export interface LaunchResult {
 	outcome: LaunchOutcome;
@@ -25,7 +25,7 @@ export function hcomEnv(herdrWorkspace: string): NodeJS.ProcessEnv {
 }
 
 /** What one hcom run that opens a client ended as: ready, still starting (exit 2 or out of time) or failed. */
-export function launchResult(run: Awaited<ReturnType<typeof runExternal>>): LaunchResult {
+export function launchResult(run: ExternalResult): LaunchResult {
 	const hcomName = launchedName(run.stdout);
 	if (run.code === 0) return { outcome: 'started', hcomName, reason: null };
 	if (run.code === 2) return { outcome: 'pending', hcomName, reason: 'hcom 回報主控仍在啟動，或在等你到 Herdr 分頁處理' };

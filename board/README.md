@@ -88,7 +88,7 @@
 - 是否在 Git 專案裡，與 LAT 啟用時找專案根目錄的方式相同：從資料夾往上找第一個有 `.git` 的目錄。
 - 選工作區時只用 `herdr pane list` 的 `cwd` 與 `workspace_id`、`herdr workspace list` 的 `number`，不看 Herdr 的 Agent 狀態。看板服務本身不在任何 Herdr 工作區裡，所以呼叫 hcom 時以環境變數 `HERDR_WORKSPACE_ID` 指定目標工作區（hcom 的 herdr 終端在該工作區開分頁），並拿掉 `HCOM_TAG`，讓啟動輸出的 `Names:` 就是完整的 HCOM 名稱。
 - hcom 結束碼 0 記為已啟動，結束碼 2 或逾時記為仍在啟動（都不算失敗、不重試），其他結束碼記為失敗。啟動輸出沒有剛好一個名稱時，記為結果不確定，不去猜哪個綁定是它。
-- 新建紀錄寫在 `sent-log.jsonl`（`kind: launch`），欄位有 client、所選資料夾、專案範圍、HCOM 名稱、目標工作區、是否先 git init、結果與原因。之後每次讀取資料時，出現 HCOM 名稱相同的綁定，或該名稱在新建之後寫的回報紀錄，就追加一行 `launch-bound` 記下它成為哪個主控；不比對資料夾，所以同一資料夾連開兩次也各自對應。同一個名稱之後被 hcom 再用時，只算給最新那一筆。
+- 新建紀錄寫在 `sent-log.jsonl`（`kind: launch`），欄位有 client、所選資料夾、專案範圍、HCOM 名稱、目標工作區、是否先 git init、結果與原因。之後每次讀取資料時，出現 HCOM 名稱相同的綁定，或該名稱在新建之後寫的回報紀錄，就追加一行 `launch-bound` 記下它成為哪個主控；不比對資料夾，所以同一資料夾連開兩次也各自對應。新建前就已經用這個名稱綁定的 session（前一個同名 Agent 留下的）不算；同一個名稱之後被 hcom 再用時，只算給最新那一筆。
 - 「尚未啟用」的等待時間用看板的時鐘計算（測試可用 `LAT_BOARD_CLOCK_FILE` 調整）；新建主控頁開著時每 15 秒重讀一次紀錄，所以時間到了不必重新整理。
 - 測試以 `tests/fake-hcom.mjs`、`tests/fake-herdr.mjs` 代替真的 hcom 與 Herdr；不在 Git 專案裡的測試資料夾放在上層沒有 `.git` 的暫存目錄。
 

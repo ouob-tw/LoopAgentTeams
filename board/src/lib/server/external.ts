@@ -1,5 +1,6 @@
-// Runs the outside commands the board starts controllers with (hcom, Herdr, git). Every one is
-// given as an argument list from the config, so tests can put fakes in their place.
+// Runs the outside commands the board starts controllers with (hcom, Herdr, git). hcom and Herdr
+// are argument lists from the config, so tests put fakes in their place; tests run the real
+// `git init`, in temporary folders only.
 import { execFile } from 'node:child_process';
 
 export interface ExternalResult {

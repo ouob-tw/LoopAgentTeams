@@ -2,8 +2,8 @@
 	// The new-controller page: pick the client, a folder controllers have run in and the first
 	// message, then follow the recent launches below until each controller is running.
 	import { formatTime } from '#lib/board/format.ts';
-	import { CLIENT_LABEL, LAUNCH_STATE_TEXT, latCommand, type LaunchClient, type LaunchView } from '#lib/board/launch.ts';
-	import { launching, type LaunchOutcome } from '#lib/board/launching.svelte.ts';
+	import { CLIENT_LABEL, LAUNCH_CLIENTS, LAUNCH_STATE_TEXT, latCommand, type LaunchView } from '#lib/board/launch.ts';
+	import { launching, type StartResult } from '#lib/board/launching.svelte.ts';
 	import { enterMakesNewline } from '#lib/board/messaging.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import MessageBox from './MessageBox.svelte';
@@ -37,7 +37,7 @@
 	const needsInit = $derived(selected !== undefined && selected.exists && !selected.git);
 
 	let sending = $state(false);
-	let outcome = $state<LaunchOutcome | null>(null);
+	let outcome = $state<StartResult | null>(null);
 	const ready = $derived(!sending && launching.folder !== '' && launching.text.trim() !== '' && (!needsInit || launching.gitInit));
 
 	const name = (path: string) => path.split('/').filter(Boolean).at(-1) ?? path;
@@ -67,7 +67,8 @@
 	function stateText(launch: LaunchView): string {
 		if (launch.state === 'failed') return `✗ 失敗：${launch.error ?? '原因不明'}`;
 		const text = LAUNCH_STATE_TEXT[launch.state];
-		return launch.state !== 'active' && launch.error ? `${text}（${launch.error}）` : text;
+		// Without a name nothing more can be said than to look in Herdr.
+		return launch.state === 'starting' && launch.error ? `${text}（${launch.error}）` : text;
 	}
 	const onRoster = (id: string | null) => id !== null && controllers.some((controller) => controller.id === id);
 </script>
@@ -82,10 +83,10 @@
 	>
 		<fieldset class="clients">
 			<legend>Client</legend>
-			{#each ['claude', 'codex'] as const as client (client)}
+			{#each LAUNCH_CLIENTS as client (client)}
 				<label>
 					<input type="radio" name="client" value={client} bind:group={launching.client} />
-					{CLIENT_LABEL[client as LaunchClient]}
+					{CLIENT_LABEL[client]}
 				</label>
 			{/each}
 		</fieldset>
@@ -94,6 +95,8 @@
 			<legend>資料夾（曾開過主控的專案，最近使用的在前）</legend>
 			{#if launching.loadFailed && !launching.list}
 				<p class="failed" role="alert">專案清單讀取失敗。</p>
+			{:else if launching.list?.projectsError}
+				<p class="failed" role="alert">專案清單讀取失敗：{launching.list.projectsError}</p>
 			{/if}
 			{#each projects as project (project.path)}
 				<label class="project">

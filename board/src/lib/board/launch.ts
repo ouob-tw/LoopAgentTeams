@@ -1,12 +1,15 @@
 // Starting a new controller from the board: the shapes shared by the server and the page, and the
 // LAT start command its first message begins with.
 
-export type LaunchClient = 'claude' | 'codex';
+export const LAUNCH_CLIENTS = ['claude', 'codex'] as const;
+export type LaunchClient = (typeof LAUNCH_CLIENTS)[number];
+
+export const isLaunchClient = (value: unknown): value is LaunchClient => LAUNCH_CLIENTS.includes(value as LaunchClient);
 
 export const CLIENT_LABEL: Record<LaunchClient, string> = { claude: 'Claude', codex: 'Codex' };
 
 /** The text that starts a LAT round in this client: Claude's slash command, Codex's skill mention. */
-export function latCommand(client: string, text: string): string {
+export function latCommand(client: LaunchClient, text: string): string {
 	return `${client === 'codex' ? '$lat' : '/lat'} ${text}`;
 }
 
@@ -30,7 +33,7 @@ export interface SentLaunch {
 	kind: 'launch';
 	time: string;
 	client: LaunchClient;
-	/** The folder as chosen, with symbolic links resolved once it was found. */
+	/** The folder as chosen. */
 	folder: string;
 	/** The Git project root of the folder, or the folder itself when it is not in one; null when the
 	 *  launch failed before that was known. */
@@ -44,6 +47,9 @@ export interface SentLaunch {
 	workspaceCreated: boolean;
 	/** The new agent's HCOM name from the launch output; null when it could not be read. */
 	hcomName: string | null;
+	/** Sessions already bound under that name when the launch began: a binding left behind by an
+	 *  earlier agent of the same name is not this launch's controller. */
+	earlierSessions: string[];
 	outcome: LaunchOutcome;
 	/** Why it failed, or what hcom said about a launch that is not known to be ready; null otherwise. */
 	error: string | null;
@@ -82,6 +88,8 @@ export interface Project {
 /** What `GET /api/launches` answers. */
 export interface LaunchList {
 	projects: Project[];
+	/** Why the folders could not be listed; `projects` is empty then. */
+	projectsError: string | null;
 	/** Newest first. */
 	launches: LaunchView[];
 	/** Why the sent log could not be read; the list is empty then. */

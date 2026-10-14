@@ -3,7 +3,7 @@
 	// into its client, answers to its questions, and the launch that started it.
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { formatTime } from '#lib/board/format.ts';
-	import { CLIENT_LABEL, latCommand } from '#lib/board/launch.ts';
+	import { CLIENT_LABEL, LAUNCH_STATE_TEXT, latCommand } from '#lib/board/launch.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
 
@@ -44,7 +44,7 @@
 						<p class="meta">
 							<time datetime={entry.time}>{formatTime(entry.time)}</time>
 							<span>從看板新建（{CLIENT_LABEL[entry.client]}）</span>
-							<span>✓ 已啟用</span>
+							<span>✓ {LAUNCH_STATE_TEXT.active}</span>
 						</p>
 						<p class="title">{entry.folder}</p>
 						<p class="text">{latCommand(entry.client, entry.text)}</p>

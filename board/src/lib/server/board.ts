@@ -99,9 +99,9 @@ function createBoard(): Board {
 		if (helper.ok) {
 			lastActive = helper.controllers;
 			try {
-				sentLogError =
-					(await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path))) ??
-					settleLaunches(config.stateDir, helper.controllers, reports.files);
+				const answersError = await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path));
+				const launchesError = settleLaunches(config.stateDir, helper.controllers, reports.files, config.now());
+				sentLogError = answersError ?? launchesError;
 			} catch (error) {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
 				sentLogError = (error as Error).message;

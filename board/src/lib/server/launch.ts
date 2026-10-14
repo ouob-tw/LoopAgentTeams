@@ -7,6 +7,7 @@ import { realpathSync, statSync } from 'node:fs';
 import { latCommand, NOT_GIT_REASON, type LaunchList, type LaunchRequest, type LaunchResponse, type Project, type SentLaunch } from '../board/launch.ts';
 import type { Board } from './board.ts';
 import { gitInit, gitRoot } from './git.ts';
+import { listControllers } from './helper.ts';
 import { launchAgent } from './hcom.ts';
 import { chooseWorkspace } from './herdr.ts';
 import { typedText } from './send.ts';
@@ -39,11 +40,17 @@ export async function listProjects(board: Board): Promise<Project[]> {
 
 export async function listLaunches(board: Board): Promise<LaunchList> {
 	const { stateDir, launchWaitMs } = board.config;
-	const projects = await listProjects(board);
+	let projects: Project[] = [];
+	let projectsError: string | null = null;
 	try {
-		return { projects, launches: readLaunches(stateDir, board.config.now(), launchWaitMs, LISTED_LAUNCHES), logError: null };
+		projects = await listProjects(board);
 	} catch (error) {
-		return { projects, launches: [], logError: (error as Error).message };
+		projectsError = (error as Error).message;
+	}
+	try {
+		return { projects, projectsError, launches: readLaunches(stateDir, board.config.now(), launchWaitMs, LISTED_LAUNCHES), logError: null };
+	} catch (error) {
+		return { projects, projectsError, launches: [], logError: (error as Error).message };
 	}
 }
 
@@ -71,26 +78,34 @@ async function attempt(board: Board, request: LaunchRequest): Promise<{ status: 
 		herdrWorkspaceLabel: null,
 		workspaceCreated: false,
 		hcomName: null,
+		earlierSessions: [],
 		outcome: 'failed',
 		error: null
 	};
 
-	const failure = await prepare(board, request, entry);
-	if (failure === NOT_GIT_REASON) {
+	const prepared = await prepare(board, request, entry);
+	if ('refused' in prepared) {
 		// The form does not allow this; nothing was started or changed, so nothing is logged.
-		return { status: 409, body: { ok: false, reason: failure, entry: null, logError: null } };
+		return { status: 409, body: { ok: false, reason: prepared.reason, entry: null, logError: null } };
 	}
-	if (failure) entry.error = failure;
+	if ('reason' in prepared) entry.error = prepared.reason;
 	else {
+		// Read before hcom runs, so the new controller cannot be among them yet.
+		const before = await listControllers(config);
 		const launched = await launchAgent(config, {
 			client: entry.client,
-			folder: entry.folder,
+			folder: prepared.startIn,
 			herdrWorkspace: entry.herdrWorkspace!,
 			prompt: latCommand(entry.client, entry.text)
 		});
 		entry.outcome = launched.outcome;
 		entry.hcomName = launched.hcomName;
 		entry.error = launched.reason;
+		if (before.ok) {
+			entry.earlierSessions = before.controllers
+				.filter((controller) => controller.hcom_name === launched.hcomName)
+				.map((controller) => controller.session_id);
+		}
 	}
 
 	let logError: string | null = null;
@@ -108,27 +123,33 @@ async function attempt(board: Board, request: LaunchRequest): Promise<{ status: 
 	};
 }
 
-/** Everything before hcom runs. Fills in the entry as it goes; resolves with why it cannot go on. */
-async function prepare(board: Board, request: LaunchRequest, entry: SentLaunch): Promise<string | null> {
+/** Why a launch cannot go on: `refused` when the request breaks the form's own rules, so nothing
+ *  was tried; otherwise it is a failure to log. */
+type Stop = { reason: string; refused?: true };
+
+/** Everything before hcom runs. Fills in the entry as it goes; resolves with why it cannot go on,
+ *  or the folder to start in with its symbolic links resolved. */
+async function prepare(board: Board, request: LaunchRequest, entry: SentLaunch): Promise<Stop | { startIn: string }> {
+	let folder: string;
 	try {
-		entry.folder = realpathSync(request.folder);
-		if (!statSync(entry.folder).isDirectory()) return `這不是資料夾：${request.folder}`;
+		folder = realpathSync(request.folder);
+		if (!statSync(folder).isDirectory()) return { reason: `這不是資料夾：${request.folder}` };
 	} catch {
-		return `資料夾不存在：${request.folder}`;
+		return { reason: `資料夾不存在：${request.folder}` };
 	}
-	let scope = gitRoot(entry.folder);
+	let scope = gitRoot(folder);
 	if (!scope) {
-		if (!request.gitInit) return NOT_GIT_REASON;
-		const initFailure = await gitInit(entry.folder);
-		if (initFailure) return `git init 失敗，沒有啟動主控：${initFailure}`;
+		if (!request.gitInit) return { reason: NOT_GIT_REASON, refused: true };
+		const initFailure = await gitInit(folder);
+		if (initFailure) return { reason: `git init 失敗，沒有啟動主控：${initFailure}` };
 		entry.gitInit = true;
-		scope = entry.folder;
+		scope = folder;
 	}
 	entry.scope = scope;
 	const workspace = await chooseWorkspace(board.config, scope);
-	if (!workspace.ok) return workspace.reason;
+	if (!workspace.ok) return { reason: workspace.reason };
 	entry.herdrWorkspace = workspace.id;
 	entry.herdrWorkspaceLabel = workspace.label;
 	entry.workspaceCreated = workspace.created;
-	return null;
+	return { startIn: folder };
 }
