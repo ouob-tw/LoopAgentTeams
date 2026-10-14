@@ -64,8 +64,13 @@
 		background: var(--surface);
 		border-top: 1px solid var(--line);
 	}
+	/* Bottom-aligned like the send button: as tall as a one-line box (its line, padding and border),
+	   so the text sits level with the box's last line and does not move when the box grows. */
 	.to {
-		padding-bottom: 0.5rem;
+		display: flex;
+		align-items: center;
+		box-sizing: border-box;
+		height: calc(1.5rem + 1rem + 2px);
 		font-family: var(--mono);
 		font-size: 0.8rem;
 		color: var(--muted);

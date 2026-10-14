@@ -11,7 +11,8 @@
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
 		"test": "vite build && bun test",
-		"repro:hydration": "bun scripts/hydration-repro.ts"
+		"repro:hydration": "bun scripts/hydration-repro.ts",
+		"measure:commandline": "bun scripts/measure-commandline.ts"
 	},
 	"devDependencies": {
 		"@sveltejs/adapter-node": "^6.0.0",
