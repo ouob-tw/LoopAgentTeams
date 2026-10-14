@@ -1,6 +1,6 @@
 // What the page keeps about starting new controllers: the form as filled in (it survives a failed
 // launch and leaving the page), the folders to choose from and the recent launches.
-import type { LaunchClient, LaunchList, LaunchResponse } from './launch.ts';
+import type { BrowseResult, LaunchClient, LaunchList, LaunchResponse } from './launch.ts';
 
 export interface StartResult {
 	ok: boolean;
@@ -19,6 +19,33 @@ class Launching {
 	list = $state<LaunchList | null>(null);
 	loadFailed = $state(false);
 	#loads = 0;
+	/** Whether the folder was chosen by browsing, and if so whether it is in a Git project. */
+	browsedGit = $state<boolean | null>(null);
+	/** The level of the folder browser; null until the first one is read. */
+	browse = $state<BrowseResult | null>(null);
+	browsing = $state(false);
+	browseFailed = $state(false);
+	#browses = 0;
+
+	/** Read the folders under a path (the home folder when left out). A failed read keeps the level shown. */
+	async open(path?: string): Promise<void> {
+		const browse = ++this.#browses;
+		this.browsing = true;
+		let result: BrowseResult | undefined;
+		try {
+			const query = path === undefined ? '' : `?path=${encodeURIComponent(path)}`;
+			const response = await fetch(`/api/browse${query}`);
+			if (response.status === 401) return location.reload();
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			result = await response.json();
+		} catch {
+			// Reported below, unless a newer read has taken over.
+		}
+		if (browse !== this.#browses) return;
+		this.browsing = false;
+		if (result) this.browse = result;
+		this.browseFailed = !result;
+	}
 
 	async load(): Promise<void> {
 		const load = ++this.#loads;

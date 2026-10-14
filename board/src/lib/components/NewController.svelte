@@ -34,7 +34,9 @@
 	const projects = $derived(launching.list?.projects ?? []);
 	const launches = $derived(launching.list?.launches ?? []);
 	const selected = $derived(projects.find((project) => project.path === launching.folder));
-	const needsInit = $derived(selected !== undefined && selected.exists && !selected.git);
+	const needsInit = $derived(
+		selected ? selected.exists && !selected.git : launching.folder !== '' && launching.browsedGit === false
+	);
 
 	let sending = $state(false);
 	let outcome = $state<StartResult | null>(null);
@@ -42,11 +44,18 @@
 
 	const name = (path: string) => path.split('/').filter(Boolean).at(-1) ?? path;
 
-	function pick(path: string) {
+	function pick(path: string, browsedGit: boolean | null = null) {
 		launching.folder = path;
+		launching.browsedGit = browsedGit;
 		// Consent to `git init` is for one folder only.
 		launching.gitInit = false;
 		outcome = null;
+	}
+
+	let browserOpen = $state(false);
+	function toggleBrowser() {
+		browserOpen = !browserOpen;
+		if (browserOpen && !launching.browse) void launching.open();
 	}
 
 	async function submit() {
@@ -118,6 +127,49 @@
 			{:else}
 				{#if launching.list}<p class="none">還沒有主控回報過的專案。</p>{/if}
 			{/each}
+		</fieldset>
+
+		<fieldset class="browser">
+			<legend>其他資料夾</legend>
+			{#if launching.folder && !selected}
+				<p class="chosen">已選：<span class="path">{launching.folder}</span></p>
+			{/if}
+			<button type="button" class="toggle" aria-expanded={browserOpen} onclick={toggleBrowser}>
+				{browserOpen ? '收起瀏覽' : '從家目錄逐層瀏覽…'}
+			</button>
+			{#if browserOpen}
+				{#if launching.browseFailed}
+					<p class="failed" role="alert">資料夾清單讀取失敗，請再試一次。</p>
+				{/if}
+				{#if launching.browse}
+					{@const level = launching.browse}
+					<div class="level" class:busy={launching.browsing}>
+						<p class="path here">{level.path}{level.git ? '・在 Git 專案裡' : '・不在 Git 專案裡'}</p>
+						<div class="nav">
+							<button type="button" disabled={level.parent === null || launching.browsing} onclick={() => void launching.open(level.parent!)}>↑ 上一層</button>
+							<button type="button" disabled={level.path === level.home || launching.browsing} onclick={() => void launching.open()}>⌂ 家目錄</button>
+							<button type="button" class="use" disabled={launching.folder === level.path} onclick={() => pick(level.path, level.git)}>
+								{launching.folder === level.path ? '已選這個資料夾' : '選這個資料夾'}
+							</button>
+						</div>
+						{#if level.error}
+							<p class="failed" role="alert">讀不到這個資料夾：{level.error}</p>
+						{:else}
+							<ul>
+								{#each level.entries as entry (entry.path)}
+									<li>
+										<button type="button" onclick={() => void launching.open(entry.path)}>
+											<span>{entry.name}</span>{#if entry.git}<span class="tag">Git</span>{/if}
+										</button>
+									</li>
+								{:else}
+									<li class="none">這裡沒有可見的資料夾。</li>
+								{/each}
+							</ul>
+						{/if}
+					</div>
+				{/if}
+			{/if}
 		</fieldset>
 
 		{#if needsInit}
@@ -242,6 +294,63 @@
 	}
 	.path {
 		font-family: var(--mono);
+	}
+	.chosen {
+		font-size: 0.85rem;
+	}
+	.toggle,
+	.nav button,
+	.level li button {
+		padding: 0.5rem 0.7rem;
+		min-height: 2.5rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: none;
+		color: inherit;
+		text-align: left;
+	}
+	.toggle {
+		align-self: flex-start;
+	}
+	.level {
+		display: flex;
+		flex-direction: column;
+		gap: 0.5rem;
+	}
+	.level.busy {
+		opacity: 0.6;
+	}
+	.here {
+		overflow-wrap: anywhere;
+	}
+	.nav {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.4rem;
+	}
+	.level ul {
+		display: flex;
+		flex-direction: column;
+		gap: 0.3rem;
+		margin: 0;
+		padding: 0;
+		list-style: none;
+		max-height: 50vh;
+		overflow-y: auto;
+	}
+	.level li button {
+		display: flex;
+		justify-content: space-between;
+		gap: 0.6rem;
+		width: 100%;
+		overflow-wrap: anywhere;
+	}
+	.tag {
+		font-size: 0.75rem;
+		color: var(--muted);
+	}
+	button:disabled {
+		opacity: 0.5;
 	}
 	.init {
 		padding: 0.5rem 0.7rem;
