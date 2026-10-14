@@ -26,6 +26,7 @@ export function followTranscript(
 ): () => void {
 	const { config } = board;
 	let closed = false;
+	const abort = new AbortController();
 	let running = false;
 	let again = false;
 	let last = '';
@@ -44,12 +45,12 @@ export function followTranscript(
 		if (running) return void (again = true);
 		running = true;
 		clearTimeout(timer);
-		const result = await readTranscript(config, source.client, source.sessionId);
+		const result = await readTranscript(config, source.client, source.sessionId, null, abort.signal);
 		running = false;
 		if (closed) return;
-		const update: TranscriptUpdate = result.ok ? { ok: true, page: result.page } : { ok: false, reason: result.reason };
+		const update: TranscriptUpdate = result.ok ? { ok: true, page: result.page } : result;
 		const targets: WatchTargets = new Map();
-		if (result.ok) addFile(targets, result.page.path);
+		if (result.ok) addFile(targets, result.path);
 		watcher.sync(targets);
 		// A missed watch event is caught by the board's own fallback interval; an unreadable record
 		// is retried sooner so it appears soon after the client writes it.
@@ -68,6 +69,7 @@ export function followTranscript(
 	void read();
 	return () => {
 		closed = true;
+		abort.abort();
 		clearTimeout(debounce);
 		clearTimeout(timer);
 		watcher.close();

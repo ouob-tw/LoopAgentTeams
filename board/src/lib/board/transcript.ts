@@ -27,8 +27,6 @@ export type TranscriptItem = TranscriptText | TranscriptTool;
 /** Up to 50 texts and every operation after the first of them. `seq` is an item's position in the
  *  whole conversation, so pages join without overlap. */
 export interface TranscriptPage {
-	/** The client's record file. */
-	path: string;
 	items: TranscriptItem[];
 	/** Cursor for the page just earlier; null when this one starts the conversation. */
 	before: number | null;
@@ -36,7 +34,7 @@ export interface TranscriptPage {
 	skipped: number;
 }
 
-/** What the server pushes for an open information page. */
+/** What the server answers for a page, and pushes for an open information page. */
 export type TranscriptUpdate = { ok: true; page: TranscriptPage } | { ok: false; reason: string };
 
 /** What the page holds: everything loaded so far, oldest first. */

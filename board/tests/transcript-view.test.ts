@@ -23,7 +23,7 @@ const op = (seq: number, overrides: Partial<TranscriptTool> = {}): TranscriptToo
 	error: false,
 	...overrides
 });
-const page = (items: TranscriptItem[], before: number | null = null): TranscriptPage => ({ path: '/x.jsonl', items, before, skipped: 0 });
+const page = (items: TranscriptItem[], before: number | null = null): TranscriptPage => ({ items, before, skipped: 0 });
 const seqs = (items: TranscriptItem[]) => items.map((item) => item.seq);
 
 test('the operations between two texts fold into one line that counts them', () => {

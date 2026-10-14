@@ -1,4 +1,5 @@
 import { json } from '@sveltejs/kit';
+import type { TranscriptUpdate } from '#lib/board/transcript.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { readTranscript } from '#lib/server/helper.ts';
 import { transcriptSource } from '#lib/server/transcript.ts';
@@ -14,5 +15,5 @@ export const GET: RequestHandler = async ({ url }) => {
 	const source = await transcriptSource(board, controllerId);
 	if (!source) return json({ error: 'unknown_controller' }, { status: 404 });
 	const result = await readTranscript(board.config, source.client, source.sessionId, before === null ? null : Number(before));
-	return json(result);
+	return json((result.ok ? { ok: true, page: result.page } : result) satisfies TranscriptUpdate);
 };

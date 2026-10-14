@@ -182,6 +182,12 @@ class ToolSummaryTests(TranscriptTestCase):
             "改檔：b.md",
         )
 
+    def test_a_web_address_is_shown_without_its_query_string(self):
+        self.assertEqual(
+            self.tool_line("WebFetch", {"url": "https://example.com/a?token=SECRET#x", "prompt": "SECRET"}),
+            "讀網頁：https://example.com/a",
+        )
+
     def test_a_tool_whose_arguments_are_not_known_to_be_safe_shows_only_its_name(self):
         self.assertEqual(self.tool_line("TodoWrite", {"todos": [{"content": "SECRET"}]}), "TodoWrite")
         self.assertEqual(self.tool_line("Read", {"file_path": ["not", "a", "path"]}), "Read")
@@ -220,6 +226,36 @@ class LookupTests(TranscriptTestCase):
         path.write_text(line + "\n")
         self.assertEqual([shown(item) for item in self.transcript("claude", CLAUDE_SESSION)["items"]],
                          [("assistant", "寫到一半")])
+
+
+class RecordVariantTests(TranscriptTestCase):
+    def test_older_claude_records_without_origin_still_tell_typed_text_from_client_text(self):
+        records = [
+            {"type": "user", "uuid": "1", "timestamp": "t", "message": {"role": "user", "content": "舊版打的字"}},
+            {"type": "user", "uuid": "2", "timestamp": "t",
+             "message": {"role": "user", "content": "<local-command-stdout>SECRET</local-command-stdout>"}},
+            {"type": "user", "uuid": "3", "timestamp": "t",
+             "message": {"role": "user", "content": "[Request interrupted by user]"}},
+        ]
+        self.claude_file().write_text("".join(json.dumps(record) + "\n" for record in records))
+        items = self.transcript("claude", CLAUDE_SESSION)["items"]
+        self.assertEqual([shown(item) for item in items], [("user", "舊版打的字")])
+
+    def test_a_codex_sub_agent_thread_has_no_conversation_of_the_person(self):
+        lines = (FIXTURES / "codex-rollout.jsonl").read_text().splitlines()
+        meta = json.loads(lines[0])
+        meta["payload"]["source"] = {"subagent": {"thread_spawn": {"parent_thread_id": "p"}}}
+        self.codex_file().write_text("\n".join([json.dumps(meta), *lines[1:]]) + "\n")
+        self.assertEqual(self.transcript("codex", CODEX_SESSION)["items"], [])
+
+    def test_the_newest_of_several_records_of_one_session_is_read(self):
+        older = self.claude_file()
+        newer = self.claude.joinpath("projects/-work-other", f"{CLAUDE_SESSION}.jsonl")
+        newer.parent.mkdir(parents=True)
+        shutil.copy(FIXTURES / "claude-session.jsonl", older)
+        newer.write_text("")
+        os.utime(older, (1, 1))
+        self.assertEqual(self.transcript("claude", CLAUDE_SESSION)["path"], str(newer))
 
 
 class PagingTests(TranscriptTestCase):

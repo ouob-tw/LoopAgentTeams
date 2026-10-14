@@ -2018,6 +2018,12 @@ def _tool(time, name, label, detail="", error=False):
             "detail": detail, "error": error}
 
 
+def _injected(time, text):
+    """How input a tool typed shows: a bare `<hcom>` only wakes the client and shows nothing
+    (the delivery arrives separately); anything else is one notice."""
+    return None if text.strip() == "<hcom>" else _notice(time, text)
+
+
 def _notice(time, text):
     """An HCOM delivery, a LAT watch reminder or a hook's prompt, by what it says; never its content."""
     if text.lstrip().startswith("[lat-watch]"):
@@ -2055,6 +2061,9 @@ def _claude_tool(block, time, cwd):
     value = arguments[key]
     if name == "Bash":
         detail = _command_summary(value)
+    elif name == "WebFetch":
+        # The query string may carry a token.
+        detail = _one_line(value.split("?", 1)[0].split("#", 1)[0])
     elif is_path:
         detail = _shown_path(value, cwd)
     else:
@@ -2097,11 +2106,11 @@ def _claude_human_text(record, text):
 def _claude_items(records):
     items, tools, seen = [], {}, set()
     for record in records:
-        uuid_ = record.get("uuid")
-        if uuid_ in seen or record.get("isSidechain"):
+        record_id = record.get("uuid")
+        if record_id in seen or record.get("isSidechain"):
             continue
-        if uuid_:
-            seen.add(uuid_)
+        if record_id:
+            seen.add(record_id)
         time, kind = record.get("timestamp"), record.get("type")
         message = record.get("message") if isinstance(record.get("message"), dict) else {}
         content = message.get("content")
@@ -2130,13 +2139,12 @@ def _claude_items(records):
             human = _claude_human_text(record, text)
             if human is not None:
                 items.append({"kind": "user", "time": time, "text": human})
-            elif _INJECTED_INPUT.match(text) and text.strip() != "<hcom>":
-                # A bare `<hcom>` only wakes the client; the delivery arrives through a hook.
-                items.append(_notice(time, text))
+            elif _INJECTED_INPUT.match(text) and (notice := _injected(time, text)):
+                items.append(notice)
         elif kind == "attachment" and isinstance(record.get("attachment"), dict):
             attachment = record["attachment"]
-            kind = attachment.get("type")
-            if kind == "queued_command":
+            attached = attachment.get("type")
+            if attached == "queued_command":
                 # Typed while the client was busy; recorded only here.
                 text = _claude_user_text(attachment.get("prompt"))
                 origin = attachment.get("origin")
@@ -2145,9 +2153,9 @@ def _claude_items(records):
                     continue
                 if not _INJECTED_INPUT.match(text):
                     items.append({"kind": "user", "time": time, "text": text})
-                elif text.strip() != "<hcom>":
-                    items.append(_notice(time, text))
-            elif kind in ("hook_additional_context", "hook_system_message"):
+                elif notice := _injected(time, text):
+                    items.append(notice)
+            elif attached in ("hook_additional_context", "hook_system_message"):
                 value = attachment.get("content")
                 text = "\n".join(map(str, value)) if isinstance(value, list) else str(value or "")
                 items.append(_notice(time, text))
@@ -2169,8 +2177,7 @@ def _codex_item(item, time, cwd):
         if not text.strip():
             return None
         if _INJECTED_INPUT.match(text):
-            # The wake-up HCOM types; the message itself arrives as a developer message.
-            return None if text.strip() == "<hcom>" else _notice(time, text)
+            return _injected(time, text)
         return {"kind": "user", "time": time, "text": text}
     if kind == "AgentMessage":
         text = _codex_text(item.get("content"))
