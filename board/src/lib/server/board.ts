@@ -9,7 +9,8 @@ import { listControllers, readQuestions } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { archiveDue, archivedReports, buildSnapshot, markRead, type MarkReadResult, type Sources } from './model.ts';
 import { createReportReader } from './reports.ts';
-import { settleAnswers, settleLaunches } from './sent-log.ts';
+import { listAgents } from './hcom.ts';
+import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 
@@ -38,6 +39,14 @@ export interface Board {
 	archive(): Promise<InboxReport[]>;
 	subscribe(stream: Stream): () => void;
 	close(): void;
+}
+
+/** Close the resumes whose session hcom now lists. hcom is asked only while one is open; a list
+ *  that cannot be read leaves them open until a later read. */
+async function settleWakes(config: BoardConfig): Promise<string | null> {
+	if (!openResumes(config.stateDir, config.now(), config.launchWaitMs).length) return null;
+	const list = await listAgents(config);
+	return list.ok ? settleResumes(config.stateDir, list.agents, config.now(), config.launchWaitMs) : null;
 }
 
 function createBoard(): Board {
@@ -101,7 +110,7 @@ function createBoard(): Board {
 			try {
 				const answersError = await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path));
 				const launchesError = settleLaunches(config.stateDir, helper.controllers, reports.files, config.now());
-				sentLogError = answersError ?? launchesError;
+				sentLogError = answersError ?? launchesError ?? (await settleWakes(config));
 			} catch (error) {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
 				sentLogError = (error as Error).message;

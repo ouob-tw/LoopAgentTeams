@@ -3,6 +3,7 @@
 import type { LaunchView } from './launch.ts';
 import type { SentMessage } from './messages.ts';
 import type { HelperQuestion } from './types.ts';
+import type { WakeView } from './wake.ts';
 
 /** What the page sends to `POST /api/answers`. */
 export interface AnswerRequest {
@@ -49,7 +50,7 @@ export interface SentAnswer {
 }
 
 /** A launch is listed under the controller it became, so it is always `active` there. */
-export type SentEntry = SentMessage | SentAnswer | LaunchView;
+export type SentEntry = SentMessage | SentAnswer | LaunchView | WakeView;
 
 /** The helper's own statuses, plus `ended` when the controller is no longer bound. */
 export type AnswerStatus = 'submitted' | 'question_changed' | 'not_pending' | 'invalid_answer' | 'error' | 'ended';

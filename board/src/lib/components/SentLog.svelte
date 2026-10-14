@@ -1,11 +1,12 @@
 <script lang="ts">
 	// What the user sent to this controller from the board, on any logged-in device: messages typed
-	// into its client, answers to its questions, and the launch that started it.
+	// into its client, answers to its questions, the launch that started it, and its wakes.
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { CLIENT_LABEL, LAUNCH_STATE_TEXT, latCommand } from '#lib/board/launch.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
+	import { RESUME_CLOSE_TEXT, RESUME_OVERDUE_TEXT, wakeText } from '#lib/board/wake.ts';
 
 	let { controller }: { controller: Controller } = $props();
 
@@ -48,6 +49,24 @@
 						</p>
 						<p class="title">{entry.folder}</p>
 						<p class="text">{latCommand(entry.client, entry.text)}</p>
+					{:else if entry.kind === 'wake'}
+						<p class="meta">
+							<time datetime={entry.time}>{formatTime(entry.time)}</time>
+							<span>
+								喚醒{entry.route === 'inject' ? '（輸入框）' : entry.route === 'resume' ? `（接回${entry.herdrWorkspaceLabel ? `，Herdr 工作區 ${entry.herdrWorkspaceLabel}` : ''}）` : ''}
+							</span>
+							{#if entry.outcome === 'failed' || entry.outcome === 'refused'}
+								<span class="failed">✗ {entry.outcome === 'refused' ? entry.error : `沒有送達：${entry.error}`}</span>
+							{:else}
+								<span>✓ {wakeText(entry)}</span>
+							{/if}
+							{#if entry.closed}
+								<span>{RESUME_CLOSE_TEXT[entry.closed]}</span>
+							{:else if entry.overdue}
+								<span class="failed">{RESUME_OVERDUE_TEXT}</span>
+							{/if}
+						</p>
+						<p class="text">{entry.text}</p>
 					{:else}
 						<p class="meta">
 							<time datetime={entry.time}>{formatTime(entry.time)}</time>

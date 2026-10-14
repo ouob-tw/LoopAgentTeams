@@ -1,36 +1,55 @@
 <script lang="ts">
-	// Sends a message to one controller. The text stays in the box unless it was delivered.
-	import { ENDED_REASON } from '#lib/board/messages.ts';
+	// Sends a message to one controller, or wakes an ended one. The text stays in the box unless it
+	// was delivered.
 	import { enterMakesNewline, messaging, type Outcome } from '#lib/board/messaging.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
+	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
 
 	let { controller }: { controller: Controller } = $props();
 
 	const ended = $derived(controller.status === 'ended');
 	const text = $derived(messaging.drafts[controller.id] ?? '');
-	// Both by controller ID: the box is reused when another controller is opened.
+	// All by controller ID: the box is reused when another controller is opened.
 	let inFlight = $state<Record<string, boolean>>({});
 	const sending = $derived(inFlight[controller.id] ?? false);
 	let outcomes = $state<Record<string, Outcome>>({});
 	const outcome = $derived(outcomes[controller.id]);
+	// 「開新一輪 LAT」 starts unticked and is not remembered once a wake went through.
+	let newRound = $state<Record<string, boolean>>({});
+	/** The resume attempt whose abandon confirmation is open. */
+	let confirming = $state<Record<string, string>>({});
+	let abandoned = $state<Record<string, Outcome>>({});
 
 	function edit(value: string) {
 		messaging.drafts[controller.id] = value;
 		delete outcomes[controller.id];
+		delete abandoned[controller.id];
 	}
 
 	async function submit() {
-		if (sending || ended || !text.trim()) return;
+		if (sending || !text.trim()) return;
 		const id = controller.id;
 		const sentText = text;
+		const waking = ended;
 		inFlight[id] = true;
 		delete outcomes[id];
-		const result = await messaging.send(id, sentText);
+		delete confirming[id];
+		delete abandoned[id];
+		const result = waking ? await messaging.wake(id, sentText, newRound[id] ?? false) : await messaging.send(id, sentText);
 		inFlight[id] = false;
 		// Only what was delivered leaves the box; anything typed meanwhile stays too.
 		if (result.ok && messaging.drafts[id] === sentText) messaging.drafts[id] = '';
+		if (result.ok) delete newRound[id];
 		outcomes[id] = result;
+	}
+
+	async function abandon(wakeId: string) {
+		const id = controller.id;
+		delete confirming[id];
+		const result = await messaging.abandon(id, wakeId);
+		abandoned[id] = result;
+		if (result.ok) delete outcomes[id];
 	}
 </script>
 
@@ -43,20 +62,46 @@
 >
 	<MessageBox
 		bind:value={() => text, edit}
-		label="傳話給 @{controller.hcomName}"
-		placeholder={ended
-			? ENDED_REASON
-			: `傳話給 @${controller.hcomName}（${enterMakesNewline.current ? 'Enter 換行，按鈕送出' : 'Enter 送出，Shift+Enter 換行'}）`}
-		disabled={ended}
+		label="{ended ? '喚醒' : '傳話給'} @{controller.hcomName}"
+		placeholder="{ended ? '喚醒' : '傳話給'} @{controller.hcomName}（{enterMakesNewline.current
+			? 'Enter 換行，按鈕送出'
+			: 'Enter 送出，Shift+Enter 換行'}）"
 		onsend={submit}
 	/>
-	<button class="primary" disabled={ended || sending || !text.trim()}>{sending ? '送出中…' : '送出'}</button>
+	<button class="primary" disabled={sending || !text.trim()}>
+		{sending ? '送出中…' : ended ? '喚醒並送出' : '送出'}
+	</button>
 	{#if ended}
-		<p class="note">{ENDED_REASON}</p>
-	{:else if outcome?.ok}
-		<p class="note" role="status">✓ 已送出{outcome.reason ?? ''}</p>
+		<label class="round">
+			<input type="checkbox" bind:checked={() => newRound[controller.id] ?? false, (value) => (newRound[controller.id] = value)} />
+			開新一輪 LAT
+		</label>
+		<p class="note">
+			主控已結束。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪 LAT」會在前面加上 LAT
+			啟動指令。
+		</p>
+	{/if}
+	{#if outcome?.ok}
+		<p class="note" role="status">✓ {outcome.woke ? '' : '已送出'}{outcome.reason ?? ''}</p>
 	{:else if outcome}
 		<p class="note failed" role="alert">✗ {outcome.reason}（文字還在輸入框裡）</p>
+		{#if outcome.abandon && confirming[controller.id] !== outcome.abandon}
+			<button type="button" class="abandon" onclick={() => (confirming[controller.id] = outcome.abandon!)}>放棄前一次接回</button>
+		{/if}
+	{/if}
+	{#if confirming[controller.id]}
+		<div class="confirm" role="alertdialog" aria-label="放棄前一次接回">
+			<p>{ABANDON_CONFIRM_TEXT}</p>
+			<div class="actions">
+				<button type="button" class="danger" onclick={() => abandon(confirming[controller.id])}>確認放棄</button>
+				<button type="button" onclick={() => delete confirming[controller.id]}>取消</button>
+			</div>
+		</div>
+	{/if}
+	{#if abandoned[controller.id]?.ok}
+		<p class="note" role="status">✓ 已放棄前一次接回，可以再按「喚醒並送出」。</p>
+	{:else if abandoned[controller.id]}
+		<p class="note failed" role="alert">✗ {abandoned[controller.id].reason}</p>
 	{/if}
 </form>
 
@@ -67,14 +112,46 @@
 		gap: 0.5rem;
 		align-items: end;
 	}
-	.note {
+	.note,
+	.round,
+	.abandon,
+	.confirm {
 		grid-column: 1 / -1;
+	}
+	.note {
 		margin: 0;
 		font-size: 0.8rem;
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
+	.round {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
+		font-size: 0.85rem;
+	}
+	.abandon {
+		justify-self: start;
+	}
+	.confirm {
+		border: 1px solid var(--danger);
+		border-radius: var(--radius);
+		padding: 0.6rem 0.7rem;
+	}
+	.confirm p {
+		margin: 0 0 0.5rem;
+		overflow-wrap: anywhere;
+	}
+	.actions {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem;
+	}
 	.failed {
 		color: var(--danger);
+	}
+	button.danger {
+		color: var(--danger);
+		border-color: var(--danger);
 	}
 </style>

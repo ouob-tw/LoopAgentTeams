@@ -3,6 +3,7 @@
 import { MediaQuery } from 'svelte/reactivity';
 import type { SentEntry } from './answers.ts';
 import { ENTER_NEWLINE_QUERY, type SendResponse } from './messages.ts';
+import { wakeText, type AbandonResponse, type WakeResponse } from './wake.ts';
 
 /** True when Enter makes a new line and only the button sends. */
 export const enterMakesNewline = new MediaQuery(ENTER_NEWLINE_QUERY, false);
@@ -10,6 +11,10 @@ export const enterMakesNewline = new MediaQuery(ENTER_NEWLINE_QUERY, false);
 export interface Outcome {
 	ok: boolean;
 	reason: string | null;
+	/** After a refused wake: the open resume attempt the user may give up. */
+	abandon?: string | null;
+	/** A wake went through; `reason` says how it stands. */
+	woke?: boolean;
 }
 
 /** No answer came back, so the message may or may not have been typed into the client. */
@@ -77,6 +82,51 @@ class Messaging {
 		void this.load(controllerId);
 		const logNote = body.logError ? `（送出紀錄寫入失敗：${body.logError}）` : '';
 		return { ok: body.ok, reason: body.ok ? logNote || null : body.reason + logNote };
+	}
+
+	/** One wake of an ended controller; the caller keeps the text when it fails. */
+	async wake(controllerId: string, text: string, newRound: boolean): Promise<Outcome> {
+		let response: Response;
+		try {
+			response = await fetch('/api/wake', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ controllerId, text, newRound })
+			});
+		} catch {
+			return this.#unknown(controllerId);
+		}
+		if (response.status === 401) {
+			location.reload();
+			return { ok: false, reason: '這台裝置已不是登入狀態，沒有送出。' };
+		}
+		const body: WakeResponse | null = await response.json().catch(() => null);
+		if (response.status === 400) return { ok: false, reason: '看板伺服器不接受這則訊息，沒有送出。' };
+		if (!body?.entry) return this.#unknown(controllerId);
+
+		void this.load(controllerId);
+		const logNote = body.logError ? `（送出紀錄寫入失敗：${body.logError}）` : '';
+		if (body.ok) return { ok: true, reason: wakeText(body.entry) + logNote, woke: true };
+		return { ok: false, reason: body.reason + logNote, abandon: body.abandon };
+	}
+
+	/** Give up an open resume attempt, after the user confirmed it. */
+	async abandon(controllerId: string, wakeId: string): Promise<Outcome> {
+		let body: AbandonResponse | null = null;
+		try {
+			const response = await fetch('/api/wake/abandon', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ controllerId, wakeId })
+			});
+			if (response.status === 401) location.reload();
+			body = await response.json();
+		} catch {
+			// Reported below.
+		}
+		void this.load(controllerId);
+		if (!body || typeof body.ok !== 'boolean') return { ok: false, reason: '沒有收到看板伺服器的回應，請看送出紀錄確認是否已放棄。' };
+		return { ok: body.ok, reason: body.ok ? null : `${body.reason}${body.logError ? `：${body.logError}` : ''}` };
 	}
 }
 
