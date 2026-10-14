@@ -40,6 +40,7 @@ CODEX_BANNER = re.compile(rf'model:\s+(\S+)\s+({EFFORTS})\b')
 CODEX_PERMISSION = re.compile(r'permissions:\s+(.+?)\s*(?:│|$)')
 
 clock, sleep = time.monotonic, time.sleep
+PROC = Path('/proc')
 
 
 def hcom(*args, timeout=30):
@@ -102,7 +103,7 @@ def launched_with(tool, process_id):
     if not process_id:
         return None
     marker = f'HCOM_PROCESS_ID={process_id}'.encode()
-    for proc in Path('/proc').glob('[0-9]*'):
+    for proc in PROC.glob('[0-9]*'):
         try:
             if marker not in (proc / 'environ').read_bytes().split(b'\0'):
                 continue
@@ -118,15 +119,20 @@ def launched_with(tool, process_id):
 
 
 def find_batch(spawner, tool, tag, after_id, model, effort):
-    """The batch this command launched: by this spawner, tool (and tag, when given), after
-    after_id, not taken by another watcher, whose agent was started with this model and
-    effort. When the agent's command line stays unreadable for ARGS_WAIT seconds, the
-    earliest such batch is taken instead.
+    """The batch this command launched, and why it could not be attributed (None if it was).
+
+    Candidates are batches by this spawner with this tool (and tag, when given) after
+    after_id that no other watcher has taken. One whose agent was started with this model
+    and effort is ours. One whose agent's command line stays unreadable for ARGS_WAIT
+    seconds, or that no watcher has taken by the end of BATCH_WAIT, is taken unattributed:
+    its approval prompts and permission are still checked, but its model and effort are
+    not compared with this command's.
 
     hcom records the spawner by base name, so `--name <tag>-<base>` matches `by: <base>`.
     """
-    start, first_seen = clock(), {}
-    while clock() - start < BATCH_WAIT:
+    start, first_seen, last = clock(), {}, False
+    while not last:
+        last = clock() - start >= BATCH_WAIT
         batches = sorted((event for event in events(
                               '--type', 'life', '--action', 'batch_launched',
                               '--sql', f"id > {after_id} AND (life_by = '{spawner}' "
@@ -141,15 +147,19 @@ def find_batch(spawner, tool, tag, after_id, model, effort):
             if (state_dir() / 'claims' / batch_id).exists():
                 continue
             args = launched_with(tool, processes.get(event['data']['instances'][0], ''))
-            if args is None:
-                if clock() - first_seen.setdefault(batch_id, clock()) < ARGS_WAIT:
-                    continue
-            elif args != (model, effort.lower()):
+            if args == (model, effort.lower()):
+                why = None
+            elif args is None and clock() - first_seen.setdefault(batch_id, clock()) >= ARGS_WAIT:
+                why = 'its command line could not be read'
+            elif last and args is not None:
+                why = f'it was started with model {args[0]}, effort {args[1]}'
+            else:
                 continue
             if claim(batch_id):
-                return event
-        sleep(POLL)
-    return None
+                return event, why
+        if not last:
+            sleep(POLL)
+    return None, None
 
 
 def stopped_since(name, after_id):
@@ -172,8 +182,8 @@ def unsubscribe(sub):
     """Remove the subscription; keep its record for the next sweep if hcom still has it."""
     code, _ = hcom('events', 'unsub', sub)
     if code:
-        _, listed = hcom('events', 'sub', 'list')
-        if re.search(rf'^{re.escape(sub)}\s', listed, re.M):
+        code, listed = hcom('events', 'sub', 'list')
+        if code or re.search(rf'^{re.escape(sub)}\s', listed, re.M):
             return
     (state_dir() / 'subs' / f'{sub}.json').unlink(missing_ok=True)
 
@@ -268,17 +278,27 @@ def matches(tool, item, expected, actual):
     return 'YOLO' in actual
 
 
-def report(tool, full, expected, seen, reason):
-    """Message text for the spawner, or None when everything matched."""
+def report(tool, full, expected, seen, reason, unattributed=None):
+    """Message text for the spawner, or None when everything matched.
+
+    Unattributed agents have no expected model or effort: those are listed as seen.
+    """
     problems = []
     for item in ITEMS:
-        if item not in seen:
+        if expected[item] is None:
+            value, source = seen.get(item, ('nothing', 'screen'))
+            problems.append(f'{item}: launch command unknown, {source} shows {value}')
+        elif item not in seen:
             problems.append(f'{item}: expected {expected[item]}, could not confirm ({reason})')
         elif not matches(tool, item, expected[item], seen[item][0]):
             value, source = seen[item]
             problems.append(f'{item}: expected {expected[item]}, {source} shows {value}')
     if not problems:
         return None
+    if unattributed:
+        return (f'hcom-spawn launch check: could not tell which launch command started {full} '
+                f'({tool}): {unattributed}. ' + '; '.join(problems)
+                + f'. Look at it with `hcom term {full}`; it was not stopped.')
     return (f'hcom-spawn launch check: {full} ({tool}) does not match its launch command. '
             + '; '.join(problems)
             + f'. Look at it with `hcom term {full}`; it was not stopped.')
@@ -294,7 +314,7 @@ def release_stopped(subs, launch_id):
     return stopped
 
 
-def check(tool, agents, expected, subs, launch_id, start):
+def check(tool, agents, expected, subs, launch_id, start, unattributed=None):
     """Read screens (then session logs) until every item is known or time runs out.
 
     Agents that stop meanwhile are released and get no report.
@@ -332,7 +352,8 @@ def check(tool, agents, expected, subs, launch_id, start):
         sleep(POLL)
     release_stopped(subs, launch_id)
     return {name: report(tool, agents[name], expected, seen[name],
-                         f'{reasons[name]} within {DEADLINE}s') for name in agents if name in subs}
+                         f'{reasons[name]} within {DEADLINE}s', unattributed)
+            for name in agents if name in subs}
 
 
 def notify(spawner, text):
@@ -351,7 +372,8 @@ def main(argv=None):
     if not NAME.match(args.spawner):
         return 1
     sweep()
-    batch = find_batch(args.spawner, args.tool, args.tag, args.after_id, args.model, args.effort)
+    batch, unattributed = find_batch(args.spawner, args.tool, args.tag, args.after_id,
+                                     args.model, args.effort)
     if not batch:
         return 0
     start = clock()
@@ -366,9 +388,10 @@ def main(argv=None):
                   '--sql', f'id > {launch_id}'):
             notify(spawner, f'{agents[name]} is waiting for approval (blocked); '
                                  f'look at it with `hcom term {agents[name]}`.')
-    expected = {'model': args.model, 'effort': args.effort,
+    expected = {'model': None if unattributed else args.model,
+                'effort': None if unattributed else args.effort,
                 'permission': EXPECTED_PERMISSION[args.tool]}
-    for text in check(args.tool, agents, expected, subs, launch_id, start).values():
+    for text in check(args.tool, agents, expected, subs, launch_id, start, unattributed).values():
         if text:
             notify(spawner, text)
     while subs:

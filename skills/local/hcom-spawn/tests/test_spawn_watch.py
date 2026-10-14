@@ -185,18 +185,24 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertEqual(fake.subs, {})
         self.assertEqual(fake.sent, [])
 
-    def test_each_watch_takes_the_batch_started_with_its_own_model_and_effort(self):
-        # `false && hcom ... model A; hcom ... model B`: only B's batch exists.
-        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+    def test_a_watch_skips_a_batch_started_with_another_model_while_its_owner_takes_it(self):
+        # `false && hcom ... opus; hcom ... sonnet`: only the Sonnet batch exists.
+        fake = FakeHcom(stop_after=50)
         fake.batches[0]['data']['instances'] = ['mona']
-        launched = {'mona': ('claude-sonnet-5-5', 'low')}
-        self.run_watch(fake, model='claude-opus-5-5', launched=launched)
-        self.assertEqual(fake.subs, {})
-        self.assertEqual(fake.sent, [])
-        second = FakeHcom(screens=[CLAUDE_START], stop_after=50)
-        second.batches = fake.batches
-        self.run_watch(second, launched=launched)
-        self.assertIn(('events', 'sub', '--blocked', 'mona', '--for', 'vare'), second.calls)
+        self.watch.hcom, self.watch.clock = fake, fake.clock
+        self.watch.process_ids = lambda: {'mona': 'mona'}
+        self.watch.launched_with = lambda tool, process_id: ('claude-sonnet-5-5', 'low')
+        polls = []
+
+        def sleep(seconds):
+            fake.sleep(seconds)
+            polls.append(seconds)
+            if len(polls) == 20:  # the Sonnet watch claims its batch meanwhile
+                self.assertTrue(self.watch.claim('b1'))
+        self.watch.sleep = sleep
+        found, _ = self.watch.find_batch('vare', 'claude', '', 99, 'claude-opus-5-5', 'low')
+        self.assertIsNone(found)
+        self.assertGreater(len(polls), 20)
 
     def test_a_batch_taken_by_another_watch_is_not_checked_twice(self):
         first = FakeHcom(screens=[CLAUDE_START], stop_after=50)
@@ -206,11 +212,56 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertEqual(second.subs, {})
         self.assertEqual(second.sent, [])
 
-    def test_unreadable_command_line_falls_back_to_the_earliest_batch(self):
-        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
-        self.run_watch(fake, launched={'kilo': None})
+    def test_unreadable_command_line_is_checked_without_borrowing_expectations(self):
+        fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
+        self.run_watch(fake, model='claude-sonnet-5-5', launched={'kilo': None})
         self.assertIn(('events', 'sub', '--blocked', 'kilo', '--for', 'vare'), fake.calls)
         self.assertGreaterEqual(fake.now, self.watch.ARGS_WAIT)
+        text = fake.sent[0][-1]
+        self.assertIn('could not tell which launch command started vare-review-kilo', text)
+        self.assertIn('its command line could not be read', text)
+        self.assertIn('model: launch command unknown, screen shows Opus 5.5', text)
+        self.assertIn('permission: expected bypass permissions on, screen shows auto mode on', text)
+        self.assertNotIn('expected claude-sonnet-5-5', text)
+
+    def test_batch_no_watch_claims_is_taken_unattributed_at_the_end(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=500)
+        self.run_watch(fake, model='claude-opus-5-5',
+                       launched={'kilo': ('claude-haiku-5-5', 'low')})
+        self.assertGreaterEqual(fake.now, self.watch.BATCH_WAIT)
+        text = fake.sent[0][-1]
+        self.assertIn('it was started with model claude-haiku-5-5, effort low', text)
+        self.assertNotIn('expected claude-opus-5-5', text)
+        self.assertNotIn('permission', text.split('): ')[1].split('. ')[1])
+
+    def test_agent_process_is_found_by_its_hcom_process_id(self):
+        proc = Path(self.state.name) / 'proc'
+        for pid, env, argv in (
+                ('10', b'HCOM_PROCESS_ID=other', [b'codex', b'--model', b'x']),
+                ('11', b'HOME=/h\0HCOM_PROCESS_ID=p1', [b'hcom', b'pty', b'codex',
+                        b'--hcom-tool-path', b'/bin/codex', b'--model', b'gpt-6.1-sol', b'-c',
+                        b'model_reasoning_effort="Low"', b'--yolo']),
+                ('12', b'HCOM_PROCESS_ID=p1', [b'bash', b'-l'])):
+            (proc / pid).mkdir(parents=True)
+            (proc / pid / 'environ').write_bytes(env + b'\0')
+            (proc / pid / 'cmdline').write_bytes(b'\0'.join(argv) + b'\0')
+        self.watch.PROC = proc
+        self.assertEqual(self.watch.launched_with('codex', 'p1'), ('gpt-6.1-sol', 'low'))
+        self.assertIsNone(self.watch.launched_with('codex', 'p2'))
+        self.assertIsNone(self.watch.launched_with('codex', ''))
+
+    def test_unsubscribe_keeps_the_record_when_hcom_cannot_list_subs(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.unsub_fails = True
+        real = fake.__call__
+        fake_call = lambda *args, timeout=30: ((1, '') if args[:3] == ('events', 'sub', 'list')
+                                              else real(*args, timeout=timeout))
+        self.watch.process_ids = lambda: {}
+        self.watch.launched_with = lambda tool, process_id: ('claude-sonnet-5-5', 'low')
+        self.watch.hcom, self.watch.clock, self.watch.sleep = fake_call, fake.clock, fake.sleep
+        self.watch.main(['--spawner', 'vare', '--tool', 'claude', '--model', 'claude-sonnet-5-5',
+                         '--effort', 'low', '--after-id', '99'])
+        self.assertEqual(len(list((Path(self.state.name) / 'hcom-spawn/subs').iterdir())), 1)
 
     def test_old_claims_are_cleared(self):
         claims = Path(self.state.name) / 'hcom-spawn/claims'
