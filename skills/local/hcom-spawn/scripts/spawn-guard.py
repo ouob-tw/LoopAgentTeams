@@ -24,25 +24,35 @@ EXAMPLES = {
               "--model gpt-6.1-sol -c 'model_reasoning_effort=\"medium\"' --yolo"),
 }
 UNREADABLE = re.compile(r'\bhcom\s+(\d+\s+)?(claude|codex)\b')
+SPAWNER = re.compile(r'^[A-Za-z0-9_-]+$')
 
 
 def option_value(words, index, names):
-    """Value of `--opt value` or `--opt=value` at index, or None when words[index] is not one."""
+    """Value of `--opt value` or `--opt=value` at index, or None when words[index] is not one.
+
+    A following word that is itself an option is not taken as the value: the value is ''.
+    """
     word = words[index]
     for name in names:
         if word == name:
-            return words[index + 1] if index + 1 < len(words) else ''
+            value = words[index + 1] if index + 1 < len(words) else ''
+            return '' if value.startswith('-') else value
         if word.startswith(name + '=') and name.startswith('--'):
             return word[len(name) + 1:]
     return None
 
 
 def read_launch(client, args):
-    """What the launch arguments set: permission flag, model, effort, plus hcom's --name."""
+    """What the launch arguments set: permission flag, model, effort, plus hcom's --name.
+
+    None when the arguments ask for help instead of launching.
+    """
     found = {'client': client, 'permission': False, 'model': '', 'effort': '', 'name': ''}
     index = 0
     while index < len(args):
         word = args[index]
+        if word in ('--help', '-h'):
+            return None
         name = option_value(args, index, ['--name'])
         if name is not None:
             found['name'] = name
@@ -80,7 +90,7 @@ def hcom_launch(args):
     """Launch arguments when args (the words after `hcom`) start a new claude or codex agent."""
     if args[:1] and args[0].isdigit():
         args = args[1:]
-    if args[:1] and args[0] in CLIENTS and not {'--help', '-h'} & set(args):
+    if args[:1] and args[0] in CLIENTS:
         return read_launch(args[0], args[1:])
     return None
 
@@ -115,17 +125,30 @@ def latest_event_id():
         return None
 
 
-def start_watch(launch, after_id):
+def start_watch(launch, after_id, ordinal):
+    """Start spawn-watch.py for the ordinal-th launch with this client in the command.
+
+    Each run also appends after_id to runs/<spawner>, so a watcher whose launch never
+    happened (a preview or a failed launch) cannot take the batch of a later command.
+    """
     spawner = launch['name'] or os.environ.get('HCOM_INSTANCE_NAME', '')
-    if not spawner or after_id is None:
+    if not spawner or after_id is None or not SPAWNER.match(spawner):
         return
     state = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state')) / 'hcom-spawn'
-    state.mkdir(parents=True, exist_ok=True)
+    (state / 'runs').mkdir(parents=True, exist_ok=True)
+    runs = state / 'runs' / spawner
+    try:
+        kept = runs.read_text().split()[-50:]
+    except OSError:
+        kept = []
+    if str(after_id) not in kept:
+        runs.write_text('\n'.join(kept + [str(after_id)]) + '\n')
     with open(state / 'watch.log', 'a') as log:
         subprocess.Popen(
             [sys.executable, str(HERE / 'spawn-watch.py'), '--spawner', spawner,
              '--tool', launch['client'], '--model', launch['model'],
-             '--effort', launch['effort'], '--after-id', str(after_id)],
+             '--effort', launch['effort'], '--after-id', str(after_id),
+             '--ordinal', str(ordinal)],
             stdin=subprocess.DEVNULL, stdout=log, stderr=log, start_new_session=True)
 
 
@@ -157,8 +180,12 @@ def main():
         return 2
     if found:
         after_id = latest_event_id()
-        for launch in found:
-            start_watch(launch, after_id)
+        for index, launch in enumerate(found):
+            ordinal = sum(other['client'] == launch['client'] for other in found[:index])
+            try:
+                start_watch(launch, after_id, ordinal)
+            except OSError as error:  # the launch itself is fine; only its check is lost
+                print(f'hcom-spawn: background check not started: {error}', file=sys.stderr)
     return 0
 
 

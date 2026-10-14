@@ -64,32 +64,40 @@ def state_dir():
     base = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state'))
     path = base / 'hcom-spawn'
     (path / 'subs').mkdir(parents=True, exist_ok=True)
-    (path / 'claims').mkdir(parents=True, exist_ok=True)
     return path
 
 
-def claim(batch_id):
+def next_run(spawner, after_id):
+    """after_id of the spawner's next guarded command; its batches are not ours."""
     try:
-        os.close(os.open(state_dir() / 'claims' / batch_id, os.O_CREAT | os.O_EXCL))
-        return True
-    except FileExistsError:
-        return False
+        later = [int(run) for run in (state_dir() / 'runs' / spawner).read_text().split()
+                 if run.isdigit() and int(run) > after_id]
+    except OSError:
+        later = []
+    return min(later, default=None)
 
 
-def find_batch(spawner, tool, after_id):
-    """The first unclaimed batch this spawner launched with this tool after after_id.
+def find_batch(spawner, tool, after_id, ordinal):
+    """The ordinal-th batch with this tool that this spawner's command launched.
 
-    hcom records the spawner by base name, so `--name <tag>-<base>` matches `by: <base>`.
+    Batches between after_id and the spawner's next guarded command belong to this
+    command, in launch order. hcom records the spawner by base name, so
+    `--name <tag>-<base>` matches `by: <base>`.
     """
     start = clock()
     while clock() - start < BATCH_WAIT:
-        for event in events('--type', 'life', '--action', 'batch_launched',
-                            '--sql', f"id > {after_id} AND (life_by = '{spawner}' "
-                                     f"OR '{spawner}' LIKE '%-' || life_by)"):
-            data = event.get('data', {})
-            if (data.get('tool') == tool and data.get('instances')
-                    and claim(str(data.get('batch_id') or event['id']))):
-                return event
+        upper = next_run(spawner, after_id)
+        mine = [event for event in events(
+                    '--type', 'life', '--action', 'batch_launched',
+                    '--sql', f"id > {after_id} AND (life_by = '{spawner}' "
+                             f"OR '{spawner}' LIKE '%-' || life_by)")
+                if event.get('data', {}).get('tool') == tool
+                and (upper is None or event['id'] < upper)]
+        mine.sort(key=lambda event: event['id'])
+        if len(mine) > ordinal:
+            return mine[ordinal] if mine[ordinal]['data'].get('instances') else None
+        if upper is not None:
+            return None
         sleep(POLL)
     return None
 
@@ -111,7 +119,12 @@ def subscribe(name, spawner, launch_id):
 
 
 def unsubscribe(sub):
-    hcom('events', 'unsub', sub)
+    """Remove the subscription; keep its record for the next sweep if hcom still has it."""
+    code, _ = hcom('events', 'unsub', sub)
+    if code:
+        _, listed = hcom('events', 'sub', 'list')
+        if re.search(rf'^{re.escape(sub)}\s', listed, re.M):
+            return
     (state_dir() / 'subs' / f'{sub}.json').unlink(missing_ok=True)
 
 
@@ -120,11 +133,14 @@ def sweep():
     for path in (state_dir() / 'subs').glob('*.json'):
         try:
             record = json.loads(path.read_text())
-        except ValueError:
+            agent, launch_id, sub = record['agent'], int(record['launch_id']), record['sub']
+        except FileNotFoundError:  # another watcher removed it meanwhile
+            continue
+        except (OSError, ValueError, KeyError, TypeError):
             path.unlink(missing_ok=True)
             continue
-        if stopped_since(record['agent'], record['launch_id']):
-            unsubscribe(record['sub'])
+        if NAME.match(str(agent)) and stopped_since(agent, launch_id):
+            unsubscribe(sub)
 
 
 def norm_model(text):
@@ -187,7 +203,7 @@ def read_session_log(tool, path, seen):
 
 def matches(tool, item, expected, actual):
     if item == 'model':
-        return norm_model(actual).startswith(norm_model(expected))
+        return norm_model(actual) == norm_model(expected)
     if item == 'effort':
         return actual.lower() == expected.lower()
     if tool == 'claude':
@@ -211,13 +227,26 @@ def report(tool, full, expected, seen, reason):
             + f'. Look at it with `hcom term {full}`; it was not stopped.')
 
 
-def check(tool, agents, expected):
-    """Read screens (then session logs) until every item is known or time runs out."""
+def release_stopped(subs, launch_id):
+    """Unsubscribe agents that stopped since the launch; return their names."""
+    stopped = [name for name in subs if stopped_since(name, launch_id)]
+    for name in stopped:
+        if subs[name]:
+            unsubscribe(subs[name])
+        del subs[name]
+    return stopped
+
+
+def check(tool, agents, expected, subs, launch_id, start):
+    """Read screens (then session logs) until every item is known or time runs out.
+
+    Agents that stop meanwhile are released and get no report.
+    """
     seen = {name: {} for name in agents}
     reasons = {name: 'agent did not become ready' for name in agents}
     ready_at, logs, pending = {}, {}, set(agents)
-    start = clock()
     while pending and clock() - start < DEADLINE:
+        pending -= set(release_stopped(subs, launch_id))
         for name in sorted(pending):
             full = agents[name]
             code, out = hcom('term', full, '--json', timeout=10)
@@ -244,8 +273,9 @@ def check(tool, agents, expected):
             if all(item in seen[name] for item in ITEMS):
                 pending.discard(name)
         sleep(POLL)
+    release_stopped(subs, launch_id)
     return {name: report(tool, agents[name], expected, seen[name],
-                         f'{reasons[name]} within {DEADLINE}s') for name in agents}
+                         f'{reasons[name]} within {DEADLINE}s') for name in agents if name in subs}
 
 
 def notify(spawner, text):
@@ -259,13 +289,15 @@ def main(argv=None):
     parser.add_argument('--model', required=True)
     parser.add_argument('--effort', required=True)
     parser.add_argument('--after-id', required=True, type=int)
+    parser.add_argument('--ordinal', type=int, default=0)
     args = parser.parse_args(argv)
     if not NAME.match(args.spawner):
         return 1
     sweep()
-    batch = find_batch(args.spawner, args.tool, args.after_id)
+    batch = find_batch(args.spawner, args.tool, args.after_id, args.ordinal)
     if not batch:
         return 0
+    start = clock()
     data, launch_id = batch['data'], batch['id']
     spawner = data.get('by') or args.spawner
     names = [name for name in data['instances'] if NAME.match(name)]
@@ -278,17 +310,12 @@ def main(argv=None):
                                  f'look at it with `hcom term {agents[name]}`.')
     expected = {'model': args.model, 'effort': args.effort,
                 'permission': EXPECTED_PERMISSION[args.tool]}
-    for name, text in check(args.tool, agents, expected).items():
+    for text in check(args.tool, agents, expected, subs, launch_id, start).values():
         if text:
             notify(spawner, text)
     while subs:
-        for name in list(subs):
-            if stopped_since(name, launch_id):
-                if subs[name]:
-                    unsubscribe(subs[name])
-                del subs[name]
-        if subs:
-            sleep(STOP_POLL)
+        sleep(STOP_POLL)
+        release_stopped(subs, launch_id)
     return 0
 
 

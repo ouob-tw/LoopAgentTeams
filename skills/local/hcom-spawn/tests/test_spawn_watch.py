@@ -34,7 +34,9 @@ class FakeHcom:
         self.batch = {'id': 100, 'type': 'life', 'instance': 'vare', 'data': {
             'action': 'batch_launched', 'by': 'vare', 'batch_id': 'b1', 'tool': tool,
             'tag': 'vare-review', 'instances': ['kilo']}}
+        self.batches = [self.batch]
         self.blocked_early = False
+        self.unsub_fails = False
 
     def clock(self):
         return self.now
@@ -44,16 +46,20 @@ class FakeHcom:
 
     def __call__(self, *args, timeout=30):
         self.calls.append(args)
-        if args[:2] == ('events', 'sub'):
+        if args[:2] == ('events', 'sub') and args[2:3] != ('list',):
             sub = f'sub-{len(self.subs) + 1:08x}'
             self.subs[sub] = args
             return 0, f'Subscription {sub} created\n'
         if args[:2] == ('events', 'unsub'):
+            if self.unsub_fails:
+                return 1, ''
             self.subs.pop(args[2], None)
             return 0, f'Removed {args[2]}\n'
+        if args[:3] == ('events', 'sub', 'list'):
+            return 0, ''.join(f'{sub}         vare     continuous {{}}\n' for sub in self.subs)
         if args[0] == 'events':
             if 'batch_launched' in args:
-                return 0, json.dumps(self.batch) + '\n'
+                return 0, ''.join(json.dumps(batch) + '\n' for batch in self.batches)
             if 'stopped' in args:
                 stopped = self.stop_after is not None and self.now >= self.stop_after
                 return 0, ('{"id": 300, "data": {"action": "stopped"}}\n' if stopped else '')
@@ -83,10 +89,17 @@ class SpawnWatchTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.watch = load()
 
-    def run_watch(self, fake, tool='claude', model='claude-sonnet-5-5', effort='low'):
+    def run_watch(self, fake, tool='claude', model='claude-sonnet-5-5', effort='low', ordinal=0):
         self.watch.hcom, self.watch.clock, self.watch.sleep = fake, fake.clock, fake.sleep
         return self.watch.main(['--spawner', 'vare', '--tool', tool, '--model', model,
-                                '--effort', effort, '--after-id', '99'])
+                                '--effort', effort, '--after-id', '99',
+                                '--ordinal', str(ordinal)])
+
+    def add_batch(self, fake, event_id, name):
+        batch = json.loads(json.dumps(fake.batch))
+        batch['id'], batch['data']['instances'] = event_id, [name]
+        batch['data']['batch_id'] = f'b{event_id}'
+        fake.batches.append(batch)
 
     def write_log(self, entries):
         path = Path(self.state.name) / 'session.jsonl'
@@ -165,13 +178,55 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertEqual(fake.subs, {})
         self.assertEqual(fake.sent, [])
 
-    def test_a_batch_claimed_by_another_watch_is_not_checked_twice(self):
-        first = FakeHcom(screens=[CLAUDE_START], stop_after=50)
-        self.run_watch(first)
-        second = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
-        self.run_watch(second)
-        self.assertEqual(second.subs, {})
-        self.assertEqual(second.sent, [])
+    def test_launches_in_one_command_are_matched_in_launch_order(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        self.add_batch(fake, 120, 'mona')
+        fake.batches.reverse()
+        self.run_watch(fake, ordinal=1)
+        self.assertIn(('events', 'sub', '--blocked', 'mona', '--for', 'vare'), fake.calls)
+        self.assertNotIn(('events', 'sub', '--blocked', 'kilo', '--for', 'vare'), fake.calls)
+
+    def test_batches_of_a_later_command_are_not_taken(self):
+        runs = Path(self.state.name) / 'hcom-spawn/runs'
+        runs.mkdir(parents=True)
+        (runs / 'vare').write_text('99\n110\n')
+        fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
+        self.add_batch(fake, 120, 'mona')
+        fake.batches.pop(0)
+        self.assertEqual(self.run_watch(fake), 0)
+        self.assertEqual(fake.subs, {})
+        self.assertEqual(fake.sent, [])
+        self.assertLess(fake.now, 5)
+
+    def test_agent_that_stops_during_the_check_gets_no_report_and_loses_its_sub(self):
+        fake = FakeHcom(screens=[], stop_after=10)
+        self.run_watch(fake)
+        self.assertEqual(fake.sent, [])
+        self.assertEqual(fake.subs, {})
+        self.assertLess(fake.now, 20)
+
+    def test_failed_unsubscribe_keeps_the_record_for_the_next_sweep(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.unsub_fails = True
+        self.run_watch(fake)
+        subs = Path(self.state.name) / 'hcom-spawn/subs'
+        self.assertEqual(len(list(subs.iterdir())), 1)
+        fake.unsub_fails = False
+        fake.batches = []
+        self.run_watch(fake)
+        self.assertEqual(list(subs.iterdir()), [])
+        self.assertEqual(fake.subs, {})
+
+    def test_sweep_drops_malformed_records_and_keeps_going(self):
+        subs = Path(self.state.name) / 'hcom-spawn/subs'
+        subs.mkdir(parents=True)
+        (subs / 'sub-1.json').write_text('{}')
+        (subs / 'sub-2.json').write_text('[1]')
+        (subs / 'sub-3.json').write_text('not json')
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        self.run_watch(fake)
+        self.assertEqual(list(subs.iterdir()), [])
+        self.assertEqual(fake.sent, [])
 
     def test_sweep_removes_subs_whose_agent_stopped(self):
         subs = Path(self.state.name) / 'hcom-spawn/subs'
@@ -199,6 +254,7 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertTrue(matches('codex', 'model', 'gpt-6.1-sol', 'GPT-6.1-Sol'))
         self.assertFalse(matches('claude', 'model', 'claude-opus-5-5', 'Sonnet 5.5'))
         self.assertFalse(matches('codex', 'model', 'gpt-6.1-sol', 'gpt-6-astra'))
+        self.assertFalse(matches('codex', 'model', 'gpt-6.1-sol', 'gpt-6.1-sol-mini'))
 
 
 if __name__ == '__main__':
