@@ -54,6 +54,11 @@ class BlockBroadcastTests(unittest.TestCase):
             '! hcom send -- hello',
             "env bash <<'EOF'\nhcom send --name pula -- hello\nEOF",
             "cat <<< 'hcom send --name pula -- hello' | bash",
+            'hcom --name vare send -- hello everyone',
+            'hcom --name=vare send -- hello',
+            'X=1 hcom --name vare send --intent inform -- hello',
+            'env X=1 hcom --go --name vare send -- hello',
+            'hcom --tag vare-x send -- hello',
         ):
             with self.subTest(command=command):
                 result = run_hook(command)
@@ -83,6 +88,10 @@ class BlockBroadcastTests(unittest.TestCase):
             "printf '%s\\n' hcom send",
             "cat <<'EOF'\nhcom send -- hi\nEOF",
             "bash <<'EOF'\nhcom send @luna -- hi\nEOF",
+            'hcom --name vare send @luna -- hi',
+            'hcom --name vare send --thread plan -- next',
+            'hcom --name vare list',
+            'hcom --name send list',
         ):
             with self.subTest(command=command):
                 result = run_hook(command)
