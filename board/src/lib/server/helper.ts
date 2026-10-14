@@ -1,6 +1,6 @@
 // The only way the board reads and writes question files, and reads a controller's conversation:
 // the LAT panel helper's `board` commands.
-import { execFile } from 'node:child_process';
+import { spawn, type ChildProcess } from 'node:child_process';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
 import type { BoardConfig } from './config.ts';
@@ -9,30 +9,65 @@ export type HelperList =
 	| { ok: true; controllers: HelperController[] }
 	| { ok: false; reason: string };
 
+const MAX_OUTPUT = 64 * 1024 * 1024;
+
+/** Run one `board` command. Aborting `signal` ends the helper and everything it started: the
+ *  helper command is a wrapper (`uv run`) whose Python child would otherwise keep running. */
 function run(config: BoardConfig, args: string[], signal?: AbortSignal): Promise<{ stdout: string; failure: string | null }> {
 	const [command, ...prefix] = config.helperCommand;
 	return new Promise((resolve) => {
+		let child: ChildProcess;
 		try {
-			execFile(
-				command,
-				[...prefix, 'board', ...args],
-				{ timeout: config.helperTimeoutMs, maxBuffer: 64 * 1024 * 1024, signal },
-				(error, stdout, stderr) => {
-					let failure: string | null = null;
-					if (error) {
-						// Exceeding the output limit also kills the helper, so `killed` alone is not a timeout.
-						const timedOut = error.killed && error.code !== 'ERR_CHILD_PROCESS_STDIO_MAXBUFFER';
-						failure = timedOut
-							? `輔助工具逾時（${config.helperTimeoutMs / 1000} 秒）`
-							: stderr.trim().split('\n').at(-1) || error.message;
-					}
-					resolve({ stdout, failure });
-				}
-			);
+			// Only an abortable run leads its own process group, so the whole group can be ended.
+			child = spawn(command, [...prefix, 'board', ...args], { detached: signal !== undefined, stdio: ['ignore', 'pipe', 'pipe'] });
 		} catch (error) {
 			// An argument that cannot be passed to a command at all, such as one holding a NUL character.
-			resolve({ stdout: '', failure: (error as Error).message });
+			return resolve({ stdout: '', failure: (error as Error).message });
 		}
+		const output = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
+		const bytes = { stdout: 0, stderr: 0 };
+		let failure: string | null = null;
+		/** End the helper: its whole group when it leads one. */
+		const kill = () => {
+			try {
+				if (signal) process.kill(-child.pid!, 'SIGKILL');
+				else child.kill();
+			} catch {
+				// Already gone.
+			}
+		};
+		const fail = (reason: string) => {
+			failure ??= reason;
+			kill();
+		};
+		const text = (stream: 'stdout' | 'stderr') => Buffer.concat(output[stream]).toString('utf8');
+		for (const stream of ['stdout', 'stderr'] as const) {
+			child[stream]!.on('data', (chunk: Buffer) => {
+				if (bytes[stream] > MAX_OUTPUT) return;
+				bytes[stream] += chunk.length;
+				if (bytes[stream] <= MAX_OUTPUT) return void output[stream].push(chunk);
+				// As before: the last line of what stderr had said, or which stream ran over.
+				fail(text('stderr').trim().split('\n').at(-1) || `${stream} maxBuffer length exceeded`);
+			});
+		}
+		const timer = setTimeout(() => fail(`輔助工具逾時（${config.helperTimeoutMs / 1000} 秒）`), config.helperTimeoutMs);
+		const stop = () => fail('已取消');
+		child.on('error', (error) => {
+			// A helper that could not start may never close.
+			clearTimeout(timer);
+			resolve({ stdout: text('stdout'), failure: failure ?? error.message });
+		});
+		child.on('close', (code, killedBy) => {
+			clearTimeout(timer);
+			signal?.removeEventListener('abort', stop);
+			if (code !== 0 && !failure) {
+				failure = text('stderr').trim().split('\n').at(-1) || `輔助工具結束碼 ${code ?? killedBy}`;
+			}
+			resolve({ stdout: text('stdout'), failure });
+		});
+		if (!signal || child.pid === undefined) return;
+		if (signal.aborted) stop();
+		else signal.addEventListener('abort', stop, { once: true });
 	});
 }
 
@@ -166,7 +201,7 @@ export async function readTranscript(
 	} catch {
 		return { ok: false, reason: failure ?? '輔助工具的輸出不是 JSON' };
 	}
-	if (payload?.status !== 'ok' || !Array.isArray(payload.items) || !payload.items.every(isItem) || typeof payload.path !== 'string') {
+	if (failure || payload?.status !== 'ok' || !Array.isArray(payload.items) || !payload.items.every(isItem) || typeof payload.path !== 'string') {
 		const reason = typeof payload?.reason === 'string' ? payload.reason : failure;
 		return { ok: false, reason: reason ?? '輔助工具的輸出缺少對話紀錄' };
 	}

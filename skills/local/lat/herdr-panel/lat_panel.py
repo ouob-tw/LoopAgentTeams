@@ -2016,11 +2016,38 @@ def _one_line(text, limit=_SUMMARY_LIMIT):
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+# A command made only of these characters cannot carry quoted text, expansions or redirections,
+# so it is safe to show as it is.
+_SAFE_COMMAND = re.compile(r"[A-Za-z0-9 \-_./:=,@+%]+")
+_SAFE_ASSIGNMENT = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=[A-Za-z0-9\-_./:=,@+%]*")
+_PROGRAM = re.compile(r"[A-Za-z0-9_./+-]+")
+_SHELLS = {"sh", "bash", "zsh", "dash", "ksh"}
+
+
 def _command_summary(command):
-    """First line of a shell command, cut before a heredoc, at most 80 characters."""
-    lines = str(command).strip().splitlines()
-    first = lines[0] if lines else ""
-    return _one_line(first.split("<<", 1)[0].strip())
+    """What a shell command shows, failing closed so that nothing it writes can show: a one-line
+    command of only safe characters in full (at most 80); otherwise its program's name; otherwise
+    nothing."""
+    text = str(command).strip()
+    if "\n" not in text and "\r" not in text and _SAFE_COMMAND.fullmatch(text):
+        return _one_line(text)
+    words = text.split()
+    while words and _SAFE_ASSIGNMENT.fullmatch(words[0]):
+        words.pop(0)
+    program = os.path.basename(words[0]) if words and _PROGRAM.fullmatch(words[0]) else ""
+    return _one_line(f"{program} …") if program else ""
+
+
+def _codex_command(command):
+    """The script of a shell-wrapped Codex command, or its arguments joined with spaces."""
+    if isinstance(command, str):
+        return command
+    argv = [_text_field(part) or "" for part in command]
+    if len(argv) >= 3 and os.path.basename(argv[0]) in _SHELLS:
+        for position, flag in enumerate(argv[1:-1], start=1):
+            if re.fullmatch(r"-[a-z]*c[a-z]*", flag):
+                return argv[position + 1]
+    return " ".join(argv)
 
 
 def _shown_path(path, cwd):
@@ -2223,9 +2250,7 @@ def _codex_item(item, time, cwd):
     failed = item.get("status") in ("failed", "declined")
     if kind == "CommandExecution":
         command = item.get("command")
-        if isinstance(command, list):
-            command = command[-1] if command else ""
-        command = _text_field(command)
+        command = _codex_command(command) if isinstance(command, (str, list)) else _text_field(command)
         error = failed or item.get("exit_code") not in (0, None)
         return _tool(time, "exec", "執行指令", _command_summary(command or ""), error)
     if kind == "FileChange":

@@ -98,6 +98,10 @@ interface FixedOutput {
 	raw?: string;
 	exit?: number;
 	sleepMs?: number;
+	/** Spaces written to standard error before the output. */
+	stderrBytes?: number;
+	/** Spaces written to standard output before the output. */
+	padBytes?: number;
 }
 
 /** What the fake helper does: `board list` prints the plan's own output; `answer`, `notify` and
