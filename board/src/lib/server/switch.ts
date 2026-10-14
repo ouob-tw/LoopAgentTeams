@@ -16,6 +16,7 @@ import {
 	NO_CHOICE,
 	NOT_OFFERED_REASON,
 	NOT_RUNNING_REASON,
+	OWN_PANE_REASON,
 	offered,
 	type CurrentSettings,
 	type ModelChoice,
@@ -194,6 +195,8 @@ async function recheck(board: Board, controller: Controller, name: string): Prom
 	if (!agent) return { refuse: NOT_RUNNING_REASON };
 	if (agent.name !== name) return { refuse: `主控的 HCOM 名稱剛剛變了（@${name} → @${agent.name}），沒有切換，請再試一次` };
 	if (agent.status !== 'listening') return { refuse: BUSY_REASON };
+	// Stopping closes the pane hcom has for the client; never the one the board itself runs in.
+	if (agent.pane !== null && agent.pane === board.config.ownPane) return { refuse: OWN_PANE_REASON };
 	return { agent };
 }
 

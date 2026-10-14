@@ -197,7 +197,7 @@ test('a client that is gone is resumed by session ID in a Herdr tab of its proje
 		{ args: ['r', target.id, '--terminal', 'herdr', '--go', '--hcom-prompt', '接著做\n細節'], workspace: 'wP', tag: null }
 	]);
 	// The board runs inside an agent's shell here; none of that agent's identity reaches the resume.
-	expect(readLog('hcom-env.jsonl')).toEqual([keptAgentShellEnv(fixture)]);
+	expect(readLog('hcom-env.jsonl')).toEqual([keptAgentShellEnv(fixture, 'r')]);
 	expect(injects()).toEqual([]);
 });
 

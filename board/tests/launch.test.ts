@@ -188,7 +188,7 @@ test('a board started inside an agent shell launches without that agent\'s ident
 
 	// No group tag either, so the printed name is the whole name.
 	expect(hcomCalls()[0].tag).toBeNull();
-	expect(readLog('hcom-env.jsonl')).toEqual([keptAgentShellEnv(fixture)]);
+	expect(readLog('hcom-env.jsonl')).toEqual([keptAgentShellEnv(fixture, 'claude')]);
 });
 
 // --- Herdr workspace ----------------------------------------------------------------------------

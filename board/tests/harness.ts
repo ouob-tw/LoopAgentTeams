@@ -25,15 +25,25 @@ export const NODE = Bun.which('node') ?? process.execPath;
 
 export const DAY = 24 * 60 * 60 * 1000;
 
-/** What a board started from inside an agent's shell inherits: that agent's hcom and client
- *  identity, plus the two folders that are settings, not identity. Test values only. */
+/** What a board started from inside an agent's shell in a Herdr pane inherits (the names a QA
+ *  board really had): that agent's hcom and client identity, the pane's own place in Herdr, plus
+ *  the settings that are not identity. Test values only. */
 export const AGENT_SHELL_ENV: Record<string, string> = {
 	HCOM_INSTANCE_NAME: 'rape',
 	HCOM_PROCESS_ID: '00000000-0000-0000-0000-000000000000',
 	HCOM_LAUNCHED: '1',
 	HCOM_LAUNCHED_BY: 'nabo',
+	HCOM_LAUNCHED_PRESET: 'herdr',
+	HCOM_LAUNCH_BATCH_ID: 'batch-of-the-caller',
+	HCOM_LAUNCH_EVENT_ID: '1',
 	HCOM_TAG: 'nabo-qa',
 	HCOM_TOOL: 'codex',
+	HERDR_AGENT: 'codex',
+	HERDR_BIN_PATH: '/nonexistent/herdr',
+	HERDR_ENV: '1',
+	HERDR_PANE_ID: 'wQ:pCaller',
+	HERDR_TAB_ID: 'wQ:tCaller',
+	HERDR_WORKSPACE_ID: 'wQ',
 	CLAUDECODE: '1',
 	CLAUDE_CODE_SESSION_ID: 'session-of-the-caller',
 	CLAUDE_CODE_ENTRYPOINT: 'cli',
@@ -46,11 +56,13 @@ export const AGENT_SHELL_ENV: Record<string, string> = {
 	HERDR_SOCKET_PATH: '/nonexistent/herdr.sock'
 };
 
-/** What the fake hcom must have been given when it starts or resumes an agent for a board started
- *  with AGENT_SHELL_ENV: none of the agent's identity, and the settings it needs unchanged. */
-export function keptAgentShellEnv(fixture: Fixture) {
+/** What the fake hcom must have been given when it starts or resumes an agent (`command`: `r` or
+ *  the client) for a board started with AGENT_SHELL_ENV: none of the agent's identity or pane, the
+ *  board's own HERDR_WORKSPACE_ID (checked by the calls' `workspace`), and the settings it needs. */
+export function keptAgentShellEnv(fixture: Fixture, command: string) {
 	return {
-		agentLike: ['CODEX_HOME', 'HCOM_DIR'],
+		command,
+		agentLike: ['CODEX_HOME', 'HCOM_DIR', 'HERDR_SOCKET_PATH', 'HERDR_WORKSPACE_ID'],
 		kept: {
 			HCOM_DIR: AGENT_SHELL_ENV.HCOM_DIR,
 			CODEX_HOME: AGENT_SHELL_ENV.CODEX_HOME,

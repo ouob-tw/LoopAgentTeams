@@ -11,6 +11,7 @@ import {
 	lastApplied,
 	NOT_OFFERED_REASON,
 	NOT_RUNNING_REASON,
+	OWN_PANE_REASON,
 	SWITCH_UNSETTLED_REASON,
 	switchCheck,
 	WAKE_RUNNING_CHOICE_REASON,
@@ -20,7 +21,7 @@ import {
 } from '../src/lib/board/models.ts';
 import type { TranscriptUpdate } from '../src/lib/board/transcript.ts';
 import type { WakeResponse, WakeView } from '../src/lib/board/wake.ts';
-import { NODE, startFixture, until, type Fixture } from './harness.ts';
+import { AGENT_SHELL_ENV, keptAgentShellEnv, NODE, startFixture, until, type Fixture } from './harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-model-'));
 const commandEnv = {
@@ -36,7 +37,8 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(24, { env: commandEnv });
+	// Started as from inside an agent's shell in a Herdr pane, the way QA starts a test board.
+	fixture = await startFixture(24, { env: { ...AGENT_SHELL_ENV, ...commandEnv } });
 	cookie = await fixture.login();
 });
 afterAll(async () => {
@@ -46,6 +48,7 @@ afterAll(async () => {
 beforeEach(() => {
 	for (const name of [
 		'hcom-calls.jsonl',
+		'hcom-env.jsonl',
 		'hcom-list-calls.jsonl',
 		'hcom-added.json',
 		'herdr-calls.jsonl',
@@ -239,6 +242,18 @@ test('typing that fails is reported; nothing chosen, or a value the lists do not
 
 // --- Codex: stopped and resumed -----------------------------------------------------------------------
 
+test('a Codex whose recorded pane is the one the board itself runs in is not stopped', async () => {
+	const target = await running('codex');
+	hcomPlan({ agents: [agent(target.name, target.id, 'listening', AGENT_SHELL_ENV.HERDR_PANE_ID)] });
+
+	const { status, body } = await change(target.id, 'gpt-6-astra', null);
+
+	expect(status).toBe(409);
+	expect(body.reason).toBe(OWN_PANE_REASON);
+	expect(kills()).toEqual([]);
+	expect(resumes()).toEqual([]);
+});
+
 test('a listening Codex is stopped, seen gone, and resumed by session with -c overrides only, in its project workspace', async () => {
 	const target = await running('codex');
 	hcomPlan({ agents: [target.self], resumed: agent(target.name, target.id, 'listening', 'wP:new') });
@@ -253,6 +268,8 @@ test('a listening Codex is stopped, seen gone, and resumed by session with -c ov
 	]);
 	const resumed = readLog<{ args: string[]; workspace: string }>('hcom-calls.jsonl').find((call) => call.args[0] === 'r');
 	expect(resumed?.workspace).toBe('wP');
+	// The board runs inside an agent's Herdr pane here; neither that agent nor its pane reaches the resume.
+	expect(readLog<{ command: string }>('hcom-env.jsonl').filter((call) => call.command === 'r')).toEqual([keptAgentShellEnv(fixture, 'r')]);
 	const resumeWake = (await sent(target.id)).find((entry): entry is WakeView => entry.kind === 'wake');
 	expect(resumeWake).toMatchObject({ switchId: body.entry!.id, text: '', choice: { model: 'gpt-6-astra', effort: 'xhigh' } });
 
@@ -474,6 +491,25 @@ test('a second stop is checked against the pane of that stop', async () => {
 
 	expect(again.body.entry).toMatchObject({ state: 'stop-unknown', pane: 'wP:moved' });
 });
+
+for (const [state, kill] of [['stop-failed', { exit: 1 }], ['stop-unknown', { sleepMs: 3_000 }]] as const) {
+	test(`繼續切換 on a ${state} switch does not stop a client whose pane is now the board's own`, async () => {
+		const target = await running('codex');
+		hcomPlan({ agents: [target.self], kill });
+		const first = await change(target.id, null, 'low');
+		expect(first.body.entry).toMatchObject({ state, open: true });
+		const before = kills().length;
+
+		hcomPlan({ agents: [agent(target.name, target.id, 'listening', AGENT_SHELL_ENV.HERDR_PANE_ID)] });
+		const again = await resumeSwitch(target.id);
+
+		expect(again.status).toBe(409);
+		expect(again.body.reason).toBe(OWN_PANE_REASON);
+		expect(kills()).toHaveLength(before);
+		expect(resumes()).toEqual([]);
+		expect((await switches(target.id))[0]).toMatchObject({ id: first.body.entry!.id, state, open: true });
+	});
+}
 
 test('a continued switch is checked against turns after its settings went out, not after it was first asked for', async () => {
 	const target = await running('codex');
