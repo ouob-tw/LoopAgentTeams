@@ -91,7 +91,13 @@ async function main(argv: string[]): Promise<number> {
 	}
 
 	if (command === 'password') {
-		const changing = hasPassword(config.stateDir);
+		let changing = true;
+		try {
+			changing = hasPassword(config.stateDir);
+		} catch (error) {
+			// A damaged password file is replaced; this command is the way to repair it.
+			console.error(`現有的密碼檔讀不出來（${(error as Error).message}），這次設定會取代它。`);
+		}
 		const read = passwordReader();
 		const first = await read(changing ? '新密碼：' : '密碼：');
 		if (!first) {

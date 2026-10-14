@@ -1,6 +1,7 @@
 // Wrong-password limit per source address, kept in memory: a restart of the board clears it.
 export const MAX_FAILURES = 5;
-// Beyond this many sources the oldest ones that are neither locked nor mid-check are forgotten.
+// Past this many sources a new one makes room by forgetting the oldest that are neither locked nor
+// mid-check; locked ones stay, so the list can briefly grow beyond it.
 const MAX_SOURCES = 10_000;
 
 interface Source {
@@ -50,13 +51,15 @@ export function createLoginLimit(lockMs: number, now: () => number = Date.now): 
 		return entry;
 	}
 
-	/** Ends one admitted attempt; forgets the source once nothing about it is left to remember. */
+	/** Ends one admitted attempt. */
 	function settle(source: string): Source {
-		const entry = entryFor(source);
+		const entry = sources.get(source);
+		if (!entry) throw new Error('a login attempt ended that was never admitted');
 		entry.pending = Math.max(0, entry.pending - 1);
 		return entry;
 	}
 
+	/** Forgets the source once nothing about it is left to remember. */
 	function forgetIfClear(source: string, entry: Source): void {
 		if (!entry.failures && !entry.pending && !waitSeconds(entry)) sources.delete(source);
 	}

@@ -229,8 +229,14 @@ test('an unreadable password file is reported on the login screen and logs nothi
 		expect(response.status).toBe(500);
 		expect(await response.json()).toEqual({ error: 'password_unreadable' });
 		expect(response.headers.getSetCookie()).toEqual([]);
+
+		// What the screen says to do repairs it.
+		const repaired = fixture.cliWithInput(`${PASSWORD}\n${PASSWORD}\n`, 'password');
+		expect(repaired.code).toBe(0);
+		expect(repaired.stderr).toContain('讀不出來');
+		expect(repaired.stdout).toContain('已變更密碼');
 	} finally {
-		writeFileSync(path, saved);
+		if (readFileSync(path, 'utf8') === 'not json') writeFileSync(path, saved);
 	}
 	expect((await fixture.tryLogin(PASSWORD)).status).toBe(200);
 });
