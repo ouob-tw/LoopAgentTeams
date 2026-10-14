@@ -285,6 +285,17 @@ test('the client is checked again right before the stop: one that started workin
 	expect((await switches(target.id))[0]).toMatchObject({ state: 'refused', open: false });
 });
 
+test('a client whose HCOM name changed just before the stop is not stopped', async () => {
+	const target = await running('codex');
+	hcomPlan({ listSeries: [[target.self], [{ ...target.self, name: 'someone-new' }]], agents: [target.self] });
+
+	const { status, body } = await change(target.id, null, 'high');
+
+	expect(status).toBe(409);
+	expect(body.reason).toContain('HCOM 名稱');
+	expect(kills()).toEqual([]);
+});
+
 test('a Codex started with an explicit model cannot be switched to another model, but its effort can', async () => {
 	const target = await running('codex');
 	launchArgs(target.id, ['--model', 'gpt-6.1-sol']);
@@ -412,6 +423,54 @@ test('a resume that fails shows the error and 繼續切換 resumes again with th
 		['-c', 'model="gpt-6-astra"']
 	]);
 	expect(kills()).toHaveLength(1);
+});
+
+test('a switch whose session is running again however it got there is over, and new settings then start a switch of their own', async () => {
+	const target = await running('codex');
+	hcomPlan({ agents: [target.self], exit: 1, stderr: 'resume broke' });
+	const failed = await change(target.id, 'gpt-6-astra', null);
+	expect(failed.body.entry).toMatchObject({ state: 'resume-failed', open: true });
+
+	// The client came back anyway, e.g. hcom started it after all.
+	hcomPlan({ agents: [target.self] });
+	const over = await resumeSwitch(target.id);
+	expect(over.body.ok).toBe(true);
+	expect(over.body.entry).toMatchObject({ id: failed.body.entry!.id, state: 'done', open: false });
+
+	hcomPlan({ agents: [target.self], exit: 1 });
+	const broken = await change(target.id, 'gpt-6-astra', null);
+	hcomPlan({ agents: [target.self], resumed: agent(target.name, target.id) });
+	const fresh = await change(target.id, null, 'low');
+	expect(fresh.body.ok).toBe(true);
+	expect(fresh.body.entry?.id).not.toBe(broken.body.entry!.id);
+	expect(fresh.body.entry).toMatchObject({ to: { model: null, effort: 'low' }, state: 'resuming' });
+	expect((await switches(target.id)).find((entry) => entry.id === broken.body.entry!.id)).toMatchObject({ state: 'done', to: { model: 'gpt-6-astra' } });
+	expect(resumes().at(-1)?.slice(-2)).toEqual(['-c', 'model_reasoning_effort="low"']);
+});
+
+test('new settings while the resume is still on its way are not put on that resume', async () => {
+	const target = await running('codex');
+	hcomPlan({ agents: [target.self], resumed: agent(target.name, null, 'listening', 'wP:new') });
+	const first = await change(target.id, 'gpt-6-astra', null);
+	expect(first.body.entry).toMatchObject({ state: 'resuming' });
+
+	// The resumed agent is listed under its name but has not reported its session yet.
+	const busy = await change(target.id, null, 'xhigh');
+	expect(busy.status).toBe(409);
+	expect((await switches(target.id))[0]).toMatchObject({ id: first.body.entry!.id, to: { model: 'gpt-6-astra', effort: null } });
+	expect(resumes()).toHaveLength(1);
+});
+
+test('a second stop is checked against the pane of that stop', async () => {
+	const target = await running('codex');
+	hcomPlan({ agents: [target.self], kill: { exit: 1 } });
+	await change(target.id, null, 'low');
+
+	const moved = { ...target.self, launch_context: { pane_id: 'wP:moved' } };
+	hcomPlan({ agents: [moved], kill: { stays: true } });
+	const again = await resumeSwitch(target.id);
+
+	expect(again.body.entry).toMatchObject({ state: 'stop-unknown', pane: 'wP:moved' });
 });
 
 test('an open switch is read back after the board restarts', async () => {

@@ -6,7 +6,7 @@
 // checks where an open one got to and goes on from there. Switches share the per-controller queue of
 // messages and wakes.
 import { randomUUID } from 'node:crypto';
-import { isLaunchClient, type LaunchClient } from '../board/launch.ts';
+import { isLaunchClient } from '../board/launch.ts';
 import { UNKNOWN_CONTROLLER_REASON } from '../board/messages.ts';
 import {
 	BUSY_REASON,
@@ -14,6 +14,7 @@ import {
 	FIXED_MODEL_REASON,
 	fixedModel,
 	modelArgs,
+	NO_CHOICE,
 	NOT_OFFERED_REASON,
 	NOT_RUNNING_REASON,
 	offered,
@@ -101,20 +102,7 @@ async function attempt(board: Board, request: SwitchRequest): Promise<Result<Swi
 	const config = board.config;
 	const controller = await findController(board, request.controllerId);
 	const choice: ModelChoice = { model: request.model, effort: request.effort };
-	const entry: SentSwitch = {
-		id: randomUUID(),
-		kind: 'switch',
-		time: new Date(config.now()).toISOString(),
-		controllerId: request.controllerId,
-		hcomName: controller?.hcomName ?? '',
-		client: controller?.client ?? '',
-		from: null,
-		to: choice,
-		route: null,
-		state: 'refused',
-		error: null,
-		pane: null
-	};
+	const entry = newEntry(board, request.controllerId, controller, choice);
 	const refused = (reason: string) => finish(board, entry, { reason });
 
 	if (!controller) return refused(UNKNOWN_CONTROLLER_REASON);
@@ -131,18 +119,40 @@ async function attempt(board: Board, request: SwitchRequest): Promise<Result<Swi
 		}
 		if (open) return continueSwitch(board, controller, open, choice);
 	}
-	if (!chose(choice)) return refused('沒有選要改的模型或思考強度。');
+	return startSwitch(board, controller, entry);
+}
 
-	const list = await listAgents(config);
+function newEntry(board: Board, controllerId: string, controller: Controller | undefined, choice: ModelChoice): SentSwitch {
+	return {
+		id: randomUUID(),
+		kind: 'switch',
+		time: new Date(board.config.now()).toISOString(),
+		controllerId,
+		hcomName: controller?.hcomName ?? '',
+		client: controller?.client ?? '',
+		from: null,
+		to: choice,
+		route: null,
+		state: 'refused',
+		error: null,
+		pane: null
+	};
+}
+
+/** A switch with no open one before it: typed in for Claude, stopped and resumed for Codex. */
+async function startSwitch(board: Board, controller: Controller, entry: SentSwitch): Promise<Result<SwitchResponse>> {
+	const refused = (reason: string) => finish(board, entry, { reason });
+	if (!chose(entry.to)) return refused('沒有選要改的模型或思考強度。');
+	const list = await listAgents(board.config);
 	if (!list.ok) return refused(`${WAKE_UNKNOWN_REASON}：${list.reason}`);
 	const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);
 	if (!agent) return refused(NOT_RUNNING_REASON);
-	if (client === 'claude') return claudeSwitch(board, controller, entry, agent);
+	if (controller.client === 'claude') return claudeSwitch(board, controller, entry, agent);
 
 	if (agent.status !== 'listening') return refused(BUSY_REASON);
-	if (choice.model !== null && (await modelLock(board, controller.id)).lock === 'fixed') return refused(FIXED_MODEL_REASON);
+	if (entry.to.model !== null && (await modelLock(board, controller.id)).lock === 'fixed') return refused(FIXED_MODEL_REASON);
 	entry.from = await currentOf(board, controller);
-	return codexSwitch(board, controller, entry);
+	return codexSwitch(board, controller, entry, agent);
 }
 
 /** Type `/model` and then `/effort` into the running Claude client, each only when chosen. */
@@ -166,8 +176,8 @@ async function claudeSwitch(board: Board, controller: Controller, entry: SentSwi
 
 /** A first Codex switch: check the client once more, log the switch, stop the client and, once it
  *  is seen to be gone, resume the conversation with the new settings. */
-async function codexSwitch(board: Board, controller: Controller, entry: SentSwitch): Promise<Result<SwitchResponse>> {
-	const ready = await recheck(board, controller);
+async function codexSwitch(board: Board, controller: Controller, entry: SentSwitch, seen: HcomAgent): Promise<Result<SwitchResponse>> {
+	const ready = await recheck(board, controller, seen.name);
 	if ('refuse' in ready) return finish(board, entry, { reason: ready.refuse });
 	entry.route = 'restart';
 	entry.state = 'stopping';
@@ -183,13 +193,14 @@ async function codexSwitch(board: Board, controller: Controller, entry: SentSwit
 	return stopThenResume(board, controller, entry.id, ready.agent);
 }
 
-/** The client again just before it is stopped: still this session under the same name, and still
- *  `listening`. */
-async function recheck(board: Board, controller: Controller): Promise<{ agent: HcomAgent } | { refuse: string }> {
+/** The client again just before it is stopped: still this session under the name it had a moment
+ *  ago, and still `listening`. */
+async function recheck(board: Board, controller: Controller, name: string): Promise<{ agent: HcomAgent } | { refuse: string }> {
 	const list = await listAgents(board.config);
 	if (!list.ok) return { refuse: `${WAKE_UNKNOWN_REASON}：${list.reason}` };
 	const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);
 	if (!agent) return { refuse: NOT_RUNNING_REASON };
+	if (agent.name !== name) return { refuse: `主控的 HCOM 名稱剛剛變了（@${name} → @${agent.name}），沒有切換，請再試一次` };
 	if (agent.status !== 'listening') return { refuse: BUSY_REASON };
 	return { agent };
 }
@@ -197,10 +208,11 @@ async function recheck(board: Board, controller: Controller): Promise<{ agent: H
 /** Stop the client, log how that went and resume once it is gone. The switch is already logged. */
 async function stopThenResume(board: Board, controller: Controller, switchId: string, agent: HcomAgent): Promise<Result<SwitchResponse>> {
 	const stopped = await stop(board, controller.id, agent);
-	const logError = step(board, switchId, { state: stopped.state, error: stopped.error });
-	if (stopped.state !== 'stopped') return current(board, switchId, { reason: stopped.error, status: 502 }, logError);
-	if (logError) return current(board, switchId, { reason: `寫不進送出紀錄，沒有接回：${logError}`, status: 500 }, logError);
-	return resumeSwitch(board, controller, switchId);
+	// The pane of this stop: a later 「繼續切換」 checks that one is gone.
+	const logError = step(board, switchId, { state: stopped.state, error: stopped.error, pane: agent.pane });
+	if (stopped.state !== 'stopped') return respondLogged(board, switchId, { reason: stopped.error, status: 502 }, logError);
+	if (logError) return respondLogged(board, switchId, { reason: `寫不進送出紀錄，沒有接回：${logError}`, status: 500 }, logError);
+	return resumeSwitch(board, controller, switchId, NO_CHOICE);
 }
 
 /** Run `hcom kill` and check the client is gone: no longer in hcom's list, and its pane closed. */
@@ -236,44 +248,60 @@ async function isGone(board: Board, sessionId: string, pane: string | null): Pro
  * same checks as a second wake.
  */
 async function continueSwitch(board: Board, controller: Controller, open: SwitchView, choice: ModelChoice): Promise<Result<SwitchResponse>> {
+	if (choice.model !== null && (await modelLock(board, controller.id)).lock === 'fixed') {
+		return respondLogged(board, open.id, { reason: FIXED_MODEL_REASON, status: 409 }, null);
+	}
+	if (open.state !== 'stopping' && open.state !== 'stop-failed' && open.state !== 'stop-unknown') {
+		return resumeSwitch(board, controller, open.id, choice);
+	}
 	if (chose(choice)) {
-		if (choice.model !== null && (await modelLock(board, controller.id)).lock === 'fixed') {
-			return current(board, open.id, { reason: FIXED_MODEL_REASON, status: 409 }, null);
-		}
 		const logError = step(board, open.id, { to: choice });
-		if (logError) return current(board, open.id, { reason: `寫不進送出紀錄，沒有繼續切換：${logError}`, status: 500 }, logError);
+		if (logError) return respondLogged(board, open.id, { reason: `寫不進送出紀錄，沒有繼續切換：${logError}`, status: 500 }, logError);
 	}
-	if (open.state === 'stopping' || open.state === 'stop-failed' || open.state === 'stop-unknown') {
-		const list = await listAgents(board.config);
-		if (!list.ok) return current(board, open.id, { reason: `${WAKE_UNKNOWN_REASON}：${list.reason}`, status: 409 }, null);
-		const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);
-		if (agent) {
-			if (agent.status !== 'listening') return current(board, open.id, { reason: `主控還在跑，而且不是等待狀態，沒有繼續切換。${BUSY_REASON}`, status: 409 }, null);
-			const ready = await recheck(board, controller);
-			if ('refuse' in ready) return current(board, open.id, { reason: ready.refuse, status: 409 }, null);
-			return stopThenResume(board, controller, open.id, ready.agent);
+	const list = await listAgents(board.config);
+	if (!list.ok) return respondLogged(board, open.id, { reason: `${WAKE_UNKNOWN_REASON}：${list.reason}`, status: 409 }, null);
+	const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);
+	if (agent) {
+		if (agent.status !== 'listening') {
+			return respondLogged(board, open.id, { reason: `主控還在跑，而且不是等待狀態，沒有繼續切換。${BUSY_REASON}`, status: 409 }, null);
 		}
-		const gone = await isGone(board, controller.id, open.pane);
-		if (gone !== true) {
-			return current(board, open.id, { reason: `無法確認前一次停止已完成，請到 Herdr 查看：${gone}`, status: 409 }, null);
-		}
-		const logError = step(board, open.id, { state: 'stopped', error: null });
-		if (logError) return current(board, open.id, { reason: `寫不進送出紀錄，沒有接回：${logError}`, status: 500 }, logError);
+		const ready = await recheck(board, controller, agent.name);
+		if ('refuse' in ready) return respondLogged(board, open.id, { reason: ready.refuse, status: 409 }, null);
+		return stopThenResume(board, controller, open.id, ready.agent);
 	}
-	return resumeSwitch(board, controller, open.id);
+	const gone = await isGone(board, controller.id, open.pane);
+	if (gone !== true) {
+		return respondLogged(board, open.id, { reason: `無法確認前一次停止已完成，請到 Herdr 查看：${gone}`, status: 409 }, null);
+	}
+	const logError = step(board, open.id, { state: 'stopped', error: null });
+	if (logError) return respondLogged(board, open.id, { reason: `寫不進送出紀錄，沒有接回：${logError}`, status: 500 }, logError);
+	return resumeSwitch(board, controller, open.id, NO_CHOICE);
 }
 
-/** Resume a stopped Codex switch with its settings, after the checks a second wake goes through. */
-async function resumeSwitch(board: Board, controller: Controller, switchId: string): Promise<Result<SwitchResponse>> {
+/**
+ * Resume a stopped Codex switch, after the checks a second wake goes through. A session already
+ * running again ends the switch; new settings chosen then start a switch of their own, so the
+ * page never takes settings that were not sent for ones that were. Otherwise new settings replace
+ * the switch's own before the resume.
+ */
+async function resumeSwitch(board: Board, controller: Controller, switchId: string, choice: ModelChoice): Promise<Result<SwitchResponse>> {
 	const { stateDir, launchWaitMs } = board.config;
 	const plan = await check(board, controller.id).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有接回：${error.message}` }));
 	if ('refuse' in plan) {
 		const abandon = 'abandon' in plan ? (plan.abandon ?? null) : null;
-		return current(board, switchId, { reason: plan.refuse, abandon, status: 409 }, null);
+		return respondLogged(board, switchId, { reason: plan.refuse, abandon, status: 409 }, null);
+	}
+	if (plan.agent) {
+		// The session is in hcom's list again, however it got there: the switch is over.
+		const logError = step(board, switchId, { state: 'done', error: null });
+		if (chose(choice) && !logError) return startSwitch(board, controller, newEntry(board, controller.id, controller, choice));
+		return respondLogged(board, switchId, { reason: logError && `寫不進送出紀錄：${logError}`, status: 500 }, logError);
+	}
+	if (chose(choice)) {
+		const logError = step(board, switchId, { to: choice });
+		if (logError) return respondLogged(board, switchId, { reason: `寫不進送出紀錄，沒有接回：${logError}`, status: 500 }, logError);
 	}
 	const view = switchView(stateDir, switchId, board.config.now(), launchWaitMs)!;
-	// Its resume showed up in the list: the switch is over.
-	if (plan.agent) return current(board, switchId, { reason: null }, null);
 	const wake: SentWake = {
 		id: randomUUID(),
 		kind: 'wake',
@@ -288,7 +316,7 @@ async function resumeSwitch(board: Board, controller: Controller, switchId: stri
 		workspaceCreated: false,
 		resumedName: null,
 		pane: null,
-		extraArgs: modelArgs(controller.client as LaunchClient, view.to),
+		extraArgs: modelArgs('codex', view.to),
 		choice: view.to,
 		switchId,
 		outcome: 'refused',
@@ -305,7 +333,7 @@ async function resumeSwitch(board: Board, controller: Controller, switchId: stri
 		}
 	}
 	const failed = wake.outcome === 'failed' || wake.outcome === 'refused';
-	return current(board, switchId, { reason: failed ? wake.error : null, status: failed ? 502 : 200 }, logError);
+	return respondLogged(board, switchId, { reason: failed ? wake.error : null, status: failed ? 502 : 200 }, logError);
 }
 
 /** Append one step of an open switch; returns why it could not be written, or null. */
@@ -319,7 +347,7 @@ function step(board: Board, switchId: string, fields: Omit<SwitchStep, 'kind' | 
 }
 
 /** The response for a logged switch, as the log has it now. */
-function current(board: Board, switchId: string, outcome: Outcome, logError: string | null): Result<SwitchResponse> {
+function respondLogged(board: Board, switchId: string, outcome: Outcome, logError: string | null): Result<SwitchResponse> {
 	const { stateDir, launchWaitMs } = board.config;
 	let view: SwitchView | null = null;
 	try {
@@ -327,11 +355,7 @@ function current(board: Board, switchId: string, outcome: Outcome, logError: str
 	} catch (error) {
 		logError ??= (error as Error).message;
 	}
-	const ok = outcome.reason === null;
-	return {
-		status: ok ? 200 : (outcome.status ?? 409),
-		body: { ok, reason: outcome.reason, entry: view, abandon: outcome.abandon ?? null, logError }
-	};
+	return answer(view, outcome, logError);
 }
 
 /** Log a switch that is over at once (Claude's, or one refused before anything ran) and answer. */
@@ -346,10 +370,15 @@ function finish(board: Board, entry: SentSwitch, outcome: Outcome): Result<Switc
 	return respond(entry, outcome, logError);
 }
 
+/** The response for a switch that is over at once. */
 function respond(entry: SentSwitch, outcome: Outcome, logError: string | null): Result<SwitchResponse> {
+	return answer({ ...entry, open: false, wakeId: null }, outcome, logError);
+}
+
+function answer(entry: SwitchView | null, outcome: Outcome, logError: string | null): Result<SwitchResponse> {
 	const ok = outcome.reason === null;
 	return {
 		status: ok ? 200 : (outcome.status ?? 409),
-		body: { ok, reason: outcome.reason, entry: { ...entry, open: false, wakeId: null }, abandon: null, logError }
+		body: { ok, reason: outcome.reason, entry, abandon: outcome.abandon ?? null, logError }
 	};
 }

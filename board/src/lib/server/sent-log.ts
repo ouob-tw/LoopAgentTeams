@@ -65,14 +65,17 @@ interface ResumePane {
 	time: string;
 }
 
-/** A later step of a Codex model switch: where its stop got to, or new settings the user chose
- *  when continuing it. */
+/** A later step of a Codex model switch: where its stop got to, that it is over (`done`, when its
+ *  session is found running again outside its own resume), or new settings the user chose when
+ *  continuing it. */
 export interface SwitchStep {
 	kind: 'switch-step';
 	switchId: string;
 	state?: SwitchState;
 	error?: string | null;
 	to?: ModelChoice;
+	/** The pane of a later stop, which replaces the one the switch was logged with. */
+	pane?: string | null;
 	time: string;
 }
 
@@ -171,6 +174,7 @@ function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
 				if (step.state) view.state = step.state;
 				if (step.error !== undefined) view.error = step.error;
 				if (step.to) view.to = step.to;
+				if (step.pane !== undefined) view.pane = step.pane;
 			}
 			const wake = resumes.get(logged.id);
 			if (view.state === 'stopped' && wake) {

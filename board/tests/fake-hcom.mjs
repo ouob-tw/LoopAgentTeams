@@ -40,15 +40,15 @@ if (args[0] === 'kill') {
 	const kill = plan.kill ?? {};
 	setTimeout(() => {
 		if (!kill.exit && !kill.stays) {
-			const gone = [...(plan.agents ?? []), ...added()].filter((agent) => agent.name === args[1]);
-			plan.agents = (plan.agents ?? []).filter((agent) => agent.name !== args[1]);
+			const gone = [...(plan.agents ?? []), ...added()].filter((/** @type {any} */ agent) => agent.name === args[1]);
+			plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.name !== args[1]);
 			writeFileSync(planFile, JSON.stringify(plan));
-			writeFileSync(addedFile, JSON.stringify(added().filter((agent) => agent.name !== args[1])));
+			writeFileSync(addedFile, JSON.stringify(added().filter((/** @type {any} */ agent) => agent.name !== args[1])));
 			const herdrFile = join(dir, 'herdr.json');
-			const panes = gone.map((agent) => agent.launch_context?.pane_id).filter(Boolean);
+			const panes = gone.map((/** @type {any} */ agent) => agent.launch_context?.pane_id).filter(Boolean);
 			if (existsSync(herdrFile) && panes.length) {
 				const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
-				herdr.panes = (herdr.panes ?? []).filter((pane) => !panes.includes(pane.pane_id));
+				herdr.panes = (herdr.panes ?? []).filter((/** @type {any} */ pane) => !panes.includes(pane.pane_id));
 				writeFileSync(herdrFile, JSON.stringify(herdr));
 			}
 		}

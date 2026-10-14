@@ -2362,6 +2362,10 @@ def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_T
     }
 
 
+def _unknown_args(reason):
+    return {"status": "unknown", "reason": reason}
+
+
 def board_launch_args(session_id, *, env=None):
     """The arguments hcom stored for the launch of the agent with this session ID.
 
@@ -2373,9 +2377,8 @@ def board_launch_args(session_id, *, env=None):
     env = os.environ if env is None else env
     root = Path(env["HCOM_DIR"]) if env.get("HCOM_DIR") else Path.home() / ".hcom"
     path = root / "hcom.db"
-    unknown = lambda reason: {"status": "unknown", "reason": reason}
     if not path.is_file():
-        return unknown(f"找不到 hcom 的資料庫 {path}")
+        return _unknown_args(f"找不到 hcom 的資料庫 {path}")
     try:
         connection = sqlite3.connect(f"{path.as_uri()}?mode=ro", uri=True)
         try:
@@ -2385,9 +2388,9 @@ def board_launch_args(session_id, *, env=None):
         finally:
             connection.close()
     except sqlite3.Error as error:
-        return unknown(f"hcom 的資料庫讀不出來：{error}")
+        return _unknown_args(f"hcom 的資料庫讀不出來：{error}")
     if row is None:
-        return unknown(f"hcom 沒有 session {session_id} 的 Agent")
+        return _unknown_args(f"hcom 沒有 session {session_id} 的 Agent")
     value = row[0]
     if value in (None, ""):
         return {"status": "ok", "args": []}
@@ -2396,7 +2399,7 @@ def board_launch_args(session_id, *, env=None):
     except ValueError:
         args = None
     if not isinstance(args, list) or not all(isinstance(arg, str) for arg in args):
-        return unknown("hcom 記下的啟動參數不是預期的格式")
+        return _unknown_args("hcom 記下的啟動參數不是預期的格式")
     return {"status": "ok", "args": args}
 
 

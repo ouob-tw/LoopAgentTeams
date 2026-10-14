@@ -56,12 +56,12 @@ export async function findController(board: Board, controllerId: string): Promis
 }
 
 /** What stops this wake, or the running client to type into (null: resume). */
-export type Plan = { refuse: string; abandon?: string } | { agent: HcomAgent | null };
+type Plan = { refuse: string; abandon?: string } | { agent: HcomAgent | null };
 
 /** How a wake was handled: the open resume attempt the user may give up when that is what stopped
  *  it; whether the entry is already in the sent log (a resume logs itself before hcom runs); why
  *  something could not be written. */
-export interface Delivery {
+interface Delivery {
 	abandon: string | null;
 	logged: boolean;
 	logError: string | null;
