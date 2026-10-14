@@ -91,11 +91,22 @@ def missing(launch):
 
 
 def hcom_launch(args):
-    """Launch arguments when args (the words after `hcom`) start a new claude or codex agent."""
-    if args[:1] and args[0].isdigit():
-        args = args[1:]
-    if args[:1] and args[0] in CLIENTS:
-        return read_launch(args[0], args[1:])
+    """Launch arguments when args (the words after `hcom`) start a new claude or codex agent.
+
+    hcom accepts global options before the count and client (`hcom --name x 1 claude`), so
+    every word before the client must be an option, the value right after one, or the count
+    right before the client. Options there count as launch arguments too.
+    """
+    for index, word in enumerate(args):
+        if word in CLIENTS:
+            before = args[:index - 1] if index and args[index - 1].isdigit() else args[:index]
+            if all(part.startswith('-') or (position and before[position - 1].startswith('-'))
+                   for position, part in enumerate(before)):
+                return read_launch(word, before + args[index + 1:])
+            return None
+        if not word.startswith('-') and not word.isdigit() and not (
+                index and args[index - 1].startswith('-')):
+            return None
     return None
 
 
