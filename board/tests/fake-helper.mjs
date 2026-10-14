@@ -3,7 +3,8 @@
 // behave like the real commands against the controllers that file lists, and write the result back
 // into it; `board questions` prints a listed controller's questions, or the plan's `files` entry
 // for that path. A plan entry named after the command (`answer`, `notify`, `questions`) replaces
-// that with a fixed output. Each call is logged to <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
+// that with a fixed output. `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
+// item per line, the way the real command pages a client's record. Each call is logged to <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
 import { createHash } from 'node:crypto';
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -108,7 +109,35 @@ function questions() {
 	return { output: { questions: listed(path)?.questions ?? plan.files?.[path] ?? [] } };
 }
 
-const act = command === 'answer' ? answer : command === 'questions' ? questions : notify;
+/** One page of <dir>/transcripts/<session>.jsonl: the last 50 texts before the cursor and every
+ *  operation after the first of them. A line that is not JSON is skipped and counted. */
+function transcript() {
+	const given = options();
+	const session = given['session-id']?.[0] ?? '';
+	const path = join(dir, 'transcripts', `${session}.jsonl`);
+	let lines;
+	try {
+		lines = readFileSync(path, 'utf8').split('\n').slice(0, -1);
+	} catch {
+		return { output: { status: 'not_found', reason: `找不到 session ${session} 的對話紀錄檔` }, exit: 1 };
+	}
+	/** @type {any[]} */
+	const items = [];
+	let skipped = 0;
+	for (const line of lines) {
+		try {
+			items.push({ ...JSON.parse(line), seq: items.length });
+		} catch {
+			skipped += 1;
+		}
+	}
+	const end = given.before ? Math.min(Number(given.before[0]), items.length) : items.length;
+	const texts = items.slice(0, end).filter((item) => item.kind !== 'tool');
+	const start = texts.length > 50 ? texts[texts.length - 50].seq : 0;
+	return { output: { status: 'ok', path, items: items.slice(start, end), before: start || null, skipped } };
+}
+
+const act = command === 'answer' ? answer : command === 'questions' ? questions : command === 'transcript' ? transcript : notify;
 const result = command === 'list' ? plan : (plan[command] ?? act());
 setTimeout(() => {
 	process.stdout.write(result.raw ?? JSON.stringify(result.output));
