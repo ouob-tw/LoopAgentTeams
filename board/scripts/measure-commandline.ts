@@ -7,9 +7,10 @@
 // Rules checked (exit 1 when broken):
 //   one line     the three centres are within 2px of each other;
 //   several      label and button stay level with the box's last line (bottom-aligned), do not
-//                move compared with one line, and do not overlap the box.
+//                keep their distance from the box's bottom edge compared with one line (no jump),
+//                and do not overlap the box.
 //
-// CHROME names the browser; LAT_BOARD_TEST_PORT_BASE moves the board's port (base + 14).
+// CHROME names the browser; LAT_BOARD_TEST_PORT_BASE moves the board's port (base + 16, Chrome debugging base + 17).
 // --serve only starts the board (already paired) and prints its address and cookie, for
 // scripts/measure-commandline.py, which measures the same cases in WebKit.
 // --shots <dir> saves a screenshot of every case there.
@@ -33,7 +34,7 @@ function findChrome(): string {
 const shotsAt = process.argv.includes('--shots') ? process.argv[process.argv.indexOf('--shots') + 1] : undefined;
 if (shotsAt) mkdirSync(shotsAt, { recursive: true });
 
-const fixture = await startFixture(14);
+const fixture = await startFixture(16);
 const cookie = await fixture.pair('measure-commandline');
 fixture.list([fixture.bound('alpha', 'luna')]);
 await fixture.refresh(cookie);
@@ -44,7 +45,7 @@ if (process.argv.includes('--serve')) {
 }
 
 const profile = mkdtempSync(join(tmpdir(), 'lat-board-b120-chrome-'));
-const debugPort = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110) + 15;
+const debugPort = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110) + 17;
 const chrome = spawn(
 	findChrome(),
 	['--headless=new', '--no-sandbox', '--disable-gpu', `--user-data-dir=${profile}`, `--remote-debugging-port=${debugPort}`, 'about:blank'],
