@@ -1,12 +1,13 @@
-// Paired devices and pairing codes, kept as files in the board's state directory.
+// Logged-in devices, kept as a file in the board's state directory.
 // The host command and the server both use this, so every change takes the directory lock.
-import { createHash, randomBytes, randomInt } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdirSync, readFileSync, renameSync, rmdirSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 export interface Device {
 	id: string;
 	label: string;
+	/** When the device logged in; devices from before password login keep their pairing time. */
 	pairedAt: string;
 }
 
@@ -14,21 +15,10 @@ interface StoredDevice extends Device {
 	tokenHash: string;
 }
 
-interface StoredCode {
-	codeHash: string;
-	expiresAt: number;
-}
-
 export const DEVICES_FILE = 'devices.json';
-const CODES_FILE = 'pairing-codes.json';
-// No 0/O, 1/I/L: the code is read off a terminal and typed on a phone.
-const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-const CODE_LENGTH = 8;
 const STALE_LOCK_MS = 5_000;
 
 const sha256 = (value: string) => createHash('sha256').update(value).digest('hex');
-
-const normalizeCode = (code: string) => code.toUpperCase().replace(/[^A-Z0-9]/g, '');
 
 function readJson<T>(path: string): T[] {
 	let text: string;
@@ -74,39 +64,18 @@ function withLock<T>(stateDir: string, action: () => T): T {
 	}
 }
 
-export function createPairingCode(stateDir: string, ttlMs: number): { code: string; expiresAt: number } {
-	const now = Date.now();
-	let code = '';
-	for (let i = 0; i < CODE_LENGTH; i++) code += CODE_ALPHABET[randomInt(CODE_ALPHABET.length)];
-	const expiresAt = now + ttlMs;
-	withLock(stateDir, () => {
-		const path = join(stateDir, CODES_FILE);
-		const live = readJson<StoredCode>(path).filter((entry) => entry.expiresAt > now);
-		writeJson(path, [...live, { codeHash: sha256(code), expiresAt }]);
-	});
-	return { code, expiresAt };
-}
-
-/** Use up a pairing code and register the device; null when the code is unknown, used or expired. */
-export function pairDevice(stateDir: string, code: string, label: string): { token: string; device: Device } | null {
-	const now = Date.now();
-	const codeHash = sha256(normalizeCode(code));
+/** Register a device that has just logged in and return the token its cookie carries. */
+export function registerDevice(stateDir: string, label: string): { token: string; device: Device } {
 	return withLock(stateDir, () => {
-		const codesPath = join(stateDir, CODES_FILE);
-		const live = readJson<StoredCode>(codesPath).filter((entry) => entry.expiresAt > now);
-		if (!live.some((entry) => entry.codeHash === codeHash)) return null;
-		// Read the device list before using up the code: if it cannot be read, the code stays valid.
-		const devicesPath = join(stateDir, DEVICES_FILE);
-		const devices = readJson<StoredDevice>(devicesPath);
-		writeJson(codesPath, live.filter((entry) => entry.codeHash !== codeHash));
-
+		const path = join(stateDir, DEVICES_FILE);
+		const devices = readJson<StoredDevice>(path);
 		const token = randomBytes(32).toString('base64url');
 		const device: Device = {
 			id: randomBytes(4).toString('hex'),
 			label: label.slice(0, 200),
-			pairedAt: new Date(now).toISOString()
+			pairedAt: new Date().toISOString()
 		};
-		writeJson(devicesPath, [...devices, { ...device, tokenHash: sha256(token) }]);
+		writeJson(path, [...devices, { ...device, tokenHash: sha256(token) }]);
 		return { token, device };
 	});
 }

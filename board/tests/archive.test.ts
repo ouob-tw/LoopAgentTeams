@@ -22,8 +22,8 @@ const unread = (snapshot: BoardSnapshot) =>
 
 beforeAll(async () => {
 	fixture = await startFixture(8);
-	cookie = await fixture.pair();
-	other = await fixture.pair('second-device');
+	cookie = await fixture.login();
+	other = await fixture.login('second-device');
 	fixture.setClock(ISSUED);
 });
 afterAll(() => fixture.cleanup());

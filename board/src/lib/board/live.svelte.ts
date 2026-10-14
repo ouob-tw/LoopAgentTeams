@@ -21,7 +21,7 @@ export class LiveBoard {
 		this.#connection = connectBoard({
 			onSnapshot: (snapshot) => (this.snapshot = snapshot),
 			onState: (state) => (this.link = state),
-			// The server sends an unpaired browser to the pairing screen.
+			// The server sends a browser that is not logged in to the login screen.
 			onUnpaired: () => location.reload()
 		});
 		return () => this.#connection?.close();

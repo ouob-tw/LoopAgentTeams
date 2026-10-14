@@ -21,7 +21,7 @@ beforeAll(async () => {
 			LAT_BOARD_INJECT_TIMEOUT_SECONDS: '1'
 		}
 	});
-	cookie = await fixture.pair();
+	cookie = await fixture.login();
 });
 afterAll(async () => {
 	await fixture.cleanup();
@@ -270,7 +270,7 @@ test('the sent log is the same on every paired device, newest first, one control
 	const luna = fixture.bound('alpha', 'vela');
 	const nova = fixture.bound('beta', 'mira');
 	fixture.list([luna, nova]);
-	const phone = await fixture.pair('phone');
+	const phone = await fixture.login('phone');
 
 	await send(luna.session_id, '第一則');
 	await send(nova.session_id, '給另一個主控');

@@ -1,5 +1,5 @@
 <script lang="ts">
-	// What the user sent to this controller from the board, on any paired device: messages typed
+	// What the user sent to this controller from the board, on any logged-in device: messages typed
 	// into its client, and answers to its questions.
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { formatTime } from '#lib/board/format.ts';

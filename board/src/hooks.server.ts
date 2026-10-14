@@ -11,8 +11,8 @@ export const init: ServerInit = () => {
 	for (const signal of ['SIGINT', 'SIGTERM'] as const) process.once(signal, () => board.close());
 };
 
-// Everything except the pairing screen and its one endpoint needs a paired device.
-const OPEN_PATHS = new Set(['/pair', '/api/pair']);
+// Everything except the login screen and its one endpoint needs a logged-in device.
+const OPEN_PATHS = new Set(['/login', '/api/login']);
 
 // The user's own stylesheet: the last thing in the head, so it comes after every built-in style and
 // nothing is painted without it. It is not part of the page's own markup: browser extensions add
@@ -27,10 +27,10 @@ export const handle: Handle = async ({ event, resolve }) => {
 	const path = event.url.pathname;
 	if (!device && !OPEN_PATHS.has(path)) {
 		if (path.startsWith('/api/')) return json({ error: 'unpaired' }, { status: 401 });
-		redirect(303, '/pair');
+		redirect(303, '/login');
 	}
-	if (device && path === '/pair') redirect(303, '/');
-	// Only a paired device can fetch the stylesheet, so only its pages refer to it.
+	if (device && path === '/login') redirect(303, '/');
+	// Only a logged-in device can fetch the stylesheet, so only its pages refer to it.
 	return resolve(event, {
 		transformPageChunk: ({ html }) => html.replace('%lat.user-style%', device ? USER_STYLE : '')
 	});

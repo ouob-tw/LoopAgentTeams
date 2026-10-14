@@ -1,15 +1,16 @@
-// Host commands for the board: start the built server, hand out pairing codes, list and revoke
-// paired devices. Runs under Bun, or under Node 22.18+ (22.17 with --experimental-strip-types).
+// Host commands for the board: start the built server, set the login password, list and revoke
+// logged-in devices. Runs under Bun, or under Node 22.18+ (22.17 with --experimental-strip-types).
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './lib/server/config.ts';
-import { createPairingCode, listDevices, revokeDevice } from './lib/server/devices.ts';
+import { listDevices, revokeDevice } from './lib/server/devices.ts';
+import { hasPassword, setPassword } from './lib/server/password.ts';
 
 const USAGE = `用法：
   start [--host <位址>] [--port <連接埠>]   啟動看板（需先 build）
-  pair                                      產生一組配對碼（一次有效）
-  devices                                   列出已配對的裝置
+  password                                  設定或變更登入密碼（輸入兩次）
+  devices                                   列出已登入的裝置
   revoke <裝置 ID>                          撤銷一台裝置`;
 
 const DEFAULT_PORT = '7100';
@@ -25,7 +26,49 @@ function option(args: string[], name: string): string | undefined {
 	return index >= 0 ? args[index + 1] : undefined;
 }
 
-function main(argv: string[]): number {
+/** Read the passwords to set: typed without echo on a terminal, otherwise one per line of input. */
+function passwordReader(): (prompt: string) => Promise<string> {
+	const stdin = process.stdin;
+	if (stdin.isTTY) {
+		return (prompt) =>
+			new Promise((resolve, reject) => {
+				process.stderr.write(prompt);
+				let typed = '';
+				stdin.setRawMode(true);
+				stdin.resume();
+				stdin.setEncoding('utf8');
+				const finish = (error?: Error) => {
+					stdin.off('data', onData);
+					stdin.setRawMode(false);
+					stdin.pause();
+					process.stderr.write('\n');
+					if (error) reject(error);
+					else resolve(typed);
+				};
+				const onData = (chunk: string) => {
+					for (const char of chunk) {
+						if (char === '\r' || char === '\n') return finish();
+						if (char === '\u0003') return finish(new Error('已取消，密碼沒有變更。'));
+						if (char === '\u007f' || char === '\b') typed = [...typed].slice(0, -1).join('');
+						else if (char >= ' ') typed += char;
+					}
+				};
+				stdin.on('data', onData);
+			});
+	}
+	let lines: Promise<string[]> | undefined;
+	let next = 0;
+	return async () => {
+		lines ??= (async () => {
+			let text = '';
+			for await (const chunk of stdin) text += chunk;
+			return text.split(/\r?\n/);
+		})();
+		return (await lines)[next++] ?? '';
+	};
+}
+
+async function main(argv: string[]): Promise<number> {
 	const [command, ...args] = argv;
 	const config = loadConfig();
 
@@ -47,19 +90,36 @@ function main(argv: string[]): number {
 		return 0;
 	}
 
-	if (command === 'pair') {
-		const { code, expiresAt } = createPairingCode(config.stateDir, config.pairingTtlMs);
-		const minutes = Math.round(config.pairingTtlMs / 60_000);
-		console.log(`配對碼：${code.slice(0, 4)}-${code.slice(4)}`);
+	if (command === 'password') {
+		let changing = true;
+		try {
+			changing = hasPassword(config.stateDir);
+		} catch (error) {
+			// A damaged password file is replaced; this command is the way to repair it.
+			console.error(`現有的密碼檔讀不出來（${(error as Error).message}），這次設定會取代它。`);
+		}
+		const read = passwordReader();
+		const first = await read(changing ? '新密碼：' : '密碼：');
+		if (!first) {
+			console.error('密碼不能是空的，密碼沒有變更。');
+			return 1;
+		}
+		if ((await read('再輸入一次：')) !== first) {
+			console.error('兩次輸入不一致，密碼沒有變更。');
+			return 1;
+		}
+		setPassword(config.stateDir, first);
 		console.log(
-			`只能用一次，${minutes >= 1 ? `${minutes} 分鐘` : `${config.pairingTtlMs / 1000} 秒`}內有效（到 ${new Date(expiresAt).toLocaleTimeString('zh-TW', { hour12: false })}）。`
+			changing
+				? '已變更密碼，舊密碼不能再登入。已登入的裝置維持登入；要讓某台登出，用 devices 查 ID 再 revoke。'
+				: '已設定密碼。在瀏覽器打開看板、輸入密碼即可登入。'
 		);
 		return 0;
 	}
 
 	if (command === 'devices') {
 		const devices = listDevices(config.stateDir);
-		if (!devices.length) console.log('沒有已配對的裝置。');
+		if (!devices.length) console.log('沒有已登入的裝置。');
 		for (const device of devices) console.log(`${device.id}\t${device.pairedAt}\t${device.label}`);
 		return 0;
 	}
@@ -78,7 +138,7 @@ function main(argv: string[]): number {
 }
 
 try {
-	process.exitCode = main(process.argv.slice(2));
+	process.exitCode = await main(process.argv.slice(2));
 } catch (error) {
 	console.error(`看板指令失敗：${(error as Error).message}`);
 	process.exitCode = 1;

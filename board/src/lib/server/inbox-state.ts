@@ -1,4 +1,4 @@
-// When each report was marked read and when it was archived. Board state, shared by every paired
+// When each report was marked read and when it was archived. Board state, shared by every logged-in
 // device, kept as one file in the board's state directory.
 import { readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';

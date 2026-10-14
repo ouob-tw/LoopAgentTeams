@@ -67,7 +67,7 @@ class Messaging {
 		}
 		if (response.status === 401) {
 			location.reload();
-			return { ok: false, reason: '這台裝置已不是配對裝置，沒有送出。' };
+			return { ok: false, reason: '這台裝置已不是登入狀態，沒有送出。' };
 		}
 		const body: SendResponse | null = await response.json().catch(() => null);
 		if (response.status === 400) return { ok: false, reason: '看板伺服器不接受這則訊息，沒有送出。' };

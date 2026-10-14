@@ -7,7 +7,7 @@ let cookie: string;
 
 beforeAll(async () => {
 	fixture = await startFixture(4, { env: { LAT_BOARD_HELPER_TIMEOUT_SECONDS: '1' } });
-	cookie = await fixture.pair();
+	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());
 

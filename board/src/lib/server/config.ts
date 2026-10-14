@@ -6,7 +6,7 @@ import { isAbsolute, join } from 'node:path';
 type Env = Record<string, string | undefined>;
 
 export interface BoardConfig {
-	/** Where the board keeps its own state (paired devices, pairing codes, sent log). */
+	/** Where the board keeps its own state (logged-in devices, password hash, sent log). */
 	stateDir: string;
 	/** Where the turn-end hook appends controller report records. */
 	reportsDir: string;
@@ -21,7 +21,8 @@ export interface BoardConfig {
 	/** Longest a change the file watch missed may take to be read and pushed to the pages. */
 	fallbackMs: number;
 	debounceMs: number;
-	pairingTtlMs: number;
+	/** How long a source address is refused after too many wrong passwords in a row. */
+	loginLockMs: number;
 	/** The current time in milliseconds. Read state and archiving use this, never `Date.now()`. */
 	now(): number;
 }
@@ -96,7 +97,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		injectTimeoutMs: seconds(env.LAT_BOARD_INJECT_TIMEOUT_SECONDS, 15_000),
 		fallbackMs,
 		debounceMs: 200,
-		pairingTtlMs: seconds(env.LAT_BOARD_PAIRING_TTL_SECONDS, 300_000),
+		loginLockMs: seconds(env.LAT_BOARD_LOGIN_LOCK_SECONDS, 60_000),
 		now: clock(env)
 	};
 }

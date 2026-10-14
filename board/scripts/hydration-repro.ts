@@ -1,6 +1,6 @@
 // Reproduces a browser extension changing the page before it takes over the server's markup.
 // Starts the built board on fake data (the test harness: temporary directories, fake helper),
-// puts a proxy in front of it that is already paired and adds a script at the top of <head>
+// puts a proxy in front of it that is already logged in and adds a script at the top of <head>
 // standing in for an extension's content script, opens the page in headless Chrome once per
 // kind of change, and reports whether the board still came up.
 //
@@ -201,7 +201,7 @@ if (unknown.length || (serve && chosen.length !== 1)) {
 const changes = (chosen.length ? chosen : Object.keys(CHANGES).filter((name) => name !== 'replace')) as Change[];
 
 const fixture = await startFixture(12);
-const cookie = await fixture.pair('hydration-repro');
+const cookie = await fixture.login('hydration-repro');
 const bound = fixture.bound(PROJECT, NAME, { questions: [question({ id: 'Q-1', title: TITLE })] });
 fixture.report(bound.session_id, { tag: 'NO REPLY', summary: '實作第二張票', hcom_name: NAME, workspace: bound.workspace });
 fixture.list([bound]);
@@ -264,7 +264,7 @@ async function visit(): Promise<Report | null> {
 let failed = 0;
 try {
 	if (serve) {
-		console.log(`${change}: ${CHANGES[change]}\nopen ${address} (already paired); Ctrl+C stops`);
+		console.log(`${change}: ${CHANGES[change]}\nopen ${address} (already logged in); Ctrl+C stops`);
 		received = (report) => console.log(ok(report) ? 'ok' : 'BROKEN', JSON.stringify(report, null, 2));
 		await new Promise((resolve) => process.once('SIGINT', resolve));
 	} else {

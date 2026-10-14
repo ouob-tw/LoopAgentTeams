@@ -12,7 +12,7 @@ let cookie: string;
 
 beforeAll(async () => {
 	fixture = await startFixture(10);
-	cookie = await fixture.pair();
+	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());
 
@@ -32,7 +32,7 @@ test('without a user stylesheet the board serves an empty one, not an error', as
 });
 
 test('a user stylesheet is served to every paired device, and edits and removal show at the next load', async () => {
-	const other = await fixture.pair('second-device');
+	const other = await fixture.login('second-device');
 	fixture.userStyle(':root { --accent: #ff00aa; --radius: 0; }');
 
 	for (const device of [cookie, other]) {
@@ -80,7 +80,7 @@ test('the board page loads the user stylesheet after every built-in style', asyn
 test('no stylesheet sits inside the markup the page takes over', async () => {
 	// Extensions add and move nodes next to stylesheets before the page starts; inside the markup
 	// the page takes over, that breaks the board (a 500 page). See scripts/hydration-repro.ts.
-	for (const html of [await page(), await page('/pair', false)]) {
+	for (const html of [await page(), await page('/login', false)]) {
 		const body = html.slice(html.indexOf('<body'));
 		expect(body).toContain('<div style="display: contents">');
 		expect(body).not.toMatch(/<link\b|<style[\s>]/);
@@ -94,7 +94,7 @@ test('an unpaired device gets neither the user stylesheet nor a reference to it'
 
 	expect(response.status).toBe(303);
 	expect(await response.text()).not.toContain('#ff00aa');
-	expect(await page('/pair', false)).not.toContain('user.css');
+	expect(await page('/login', false)).not.toContain('user.css');
 	fixture.userStyle(null);
 });
 
@@ -102,7 +102,7 @@ test('an unpaired device gets neither the user stylesheet nor a reference to it'
 
 /** Run the page's startup script against a stand-in for the browser. */
 async function startUp(saved: Record<string, string> | 'blocked' | 'throwing') {
-	const script = /<script>([\s\S]*?)<\/script>/.exec(await page('/pair', false))?.[1];
+	const script = /<script>([\s\S]*?)<\/script>/.exec(await page('/login', false))?.[1];
 	if (!script) throw new Error('the page has no inline startup script');
 	const root = { dataset: {} as Record<string, string>, style: {} as Record<string, string> };
 	const style = { setProperty: (name: string, value: string) => void (root.style[name] = value) };

@@ -10,7 +10,7 @@ let cookie: string;
 
 beforeAll(async () => {
 	fixture = await startFixture(11);
-	cookie = await fixture.pair();
+	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());
 beforeEach(() => rmSync(join(fixture.dir, 'helper-calls.jsonl'), { force: true }));
@@ -159,7 +159,7 @@ test('a page that is open gets the sent state, and then the recorded state, thro
 	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
 	fixture.list([luna]);
 	await fixture.refresh(cookie);
-	const page = fixture.watch(await fixture.pair('second-device'));
+	const page = fixture.watch(await fixture.login('second-device'));
 	const key = ((await until(() => titled(page.latest(), '開著的題'), 5_000, 'the open question')) as InboxQuestion).key;
 
 	await answer(luna, asked, { text: '好' });
@@ -227,7 +227,7 @@ test('of two answers to one question the first stands: a second device with the 
 	const asked = single({ title: '兩邊同時答的題' });
 	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
 	fixture.list([luna]);
-	const phone = await fixture.pair('phone');
+	const phone = await fixture.login('phone');
 
 	const first = await answer(luna, asked, { select: [1] });
 	const second = await answer(luna, asked, { select: [2] }, phone);
@@ -243,7 +243,7 @@ test('a written answer whose notification failed says so on every device, is nev
 	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
 	fixture.setHelper({ output: { controllers: [luna] }, notifyFails: 'controller pane is gone' });
 	await fixture.refresh(cookie);
-	const phone = await fixture.pair('phone');
+	const phone = await fixture.login('phone');
 
 	const { status, body } = await answer(luna, asked, { select: [1], note: '備註' });
 
@@ -302,7 +302,7 @@ test('an answer the helper lists as owed a notification after a storage failure 
 	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
 	// The helper lists such an answer as owed a notification, from the question file alone.
 	fixture.setHelper({ output: { controllers: [luna] }, notifyFails: 'Permission denied: pending-notifications.json' });
-	const phone = await fixture.pair('phone');
+	const phone = await fixture.login('phone');
 
 	const { body } = await answer(luna, asked, { text: '好' });
 
