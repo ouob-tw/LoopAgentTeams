@@ -155,7 +155,7 @@ function transcript() {
 	} catch {
 		// No turn yet.
 	}
-	return { output: { status: 'ok', path, items: items.slice(start, end), before: start || null, skipped, current } };
+	return { output: { status: 'ok', path, items: items.slice(start, end), before: start || null, skipped, current }, sleepMs: plan.transcriptDelayMs ?? 0 };
 }
 
 /** What <dir>/launch-args.json holds for the session. */

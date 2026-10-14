@@ -241,12 +241,14 @@ async function continueSwitch(board: Board, controller: Controller, open: Switch
 		if (agent.status !== 'listening') {
 			return respondLogged(board, open.id, { reason: `主控還在跑，而且不是等待狀態，沒有繼續切換。${BUSY_REASON}`, status: 409 }, null);
 		}
+		// Stopped again later than the settings were chosen: the effort to carry is the latest one.
+		// Read before the last check, so nothing is awaited between that check and the stop.
+		const carry = await carried(board, controller, to);
 		const ready = await recheck(board, controller, agent.name);
 		if ('refuse' in ready) return respondLogged(board, open.id, { reason: ready.refuse, status: 409 }, null);
 		// In the log before the stop runs, like a first stop: a board stopped meanwhile, or a result
 		// that cannot be written, must leave this stop's pane to check, not the earlier one.
-		// Stopped again later than the settings were chosen: the effort to carry is the latest one.
-		const logError = step(board, open.id, { state: 'stopping', error: null, pane: ready.agent.pane, ...(await carried(board, controller, to)) });
+		const logError = step(board, open.id, { state: 'stopping', error: null, pane: ready.agent.pane, ...carry });
 		if (logError) return respondLogged(board, open.id, { reason: `寫不進送出紀錄，沒有停止：${logError}`, status: 500 }, logError);
 		return stopThenResume(board, controller, open.id, ready.agent);
 	}

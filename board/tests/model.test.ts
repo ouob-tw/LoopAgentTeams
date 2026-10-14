@@ -344,6 +344,32 @@ test('an effort unknown when the model was chosen is read again when the client 
 	}
 });
 
+test('a client that starts working, or changes its name, while the effort to carry is read is not stopped again', async () => {
+	for (const change_ of ['status', 'name'] as const) {
+		for (const client of ['claude', 'codex'] as const) {
+			const target = await running(client);
+			hcomPlan({ agents: [target.self], kill: { exit: 1 } });
+			await change(target.id, client === 'claude' ? 'claude-haiku-5-5' : 'gpt-6-astra', null);
+			const killsBefore = kills().length;
+
+			// The record is slow to read; meanwhile the client starts a turn, or comes back under another name.
+			fixture.setHelper({ output: { controllers: fixture.listed() }, transcriptDelayMs: 800 } as never);
+			hcomPlan({ agents: [target.self] });
+			const readsBefore = fixture.helperArgs('transcript').length;
+			const pending = resumeSwitch(target.id);
+			await until(() => fixture.helperArgs('transcript').length > readsBefore, 3_000, 'the effort read');
+			hcomPlan({ agents: [change_ === 'status' ? { ...target.self, status: 'active' } : { ...target.self, name: 'someone-new' }] });
+			const { status, body } = await pending;
+			fixture.setHelper({ output: { controllers: fixture.listed() } });
+
+			expect(status).toBe(409);
+			expect(body.reason).toContain(change_ === 'status' ? BUSY_REASON : 'HCOM 名稱');
+			expect(kills()).toHaveLength(killsBefore);
+			expect(resumes().filter((args) => args[1] === target.id)).toEqual([]);
+		}
+	}
+});
+
 test('a resume retry with nothing chosen again sends the effort resolved before', async () => {
 	const target = await running('claude');
 	hcomPlan({ agents: [target.self], exit: 1, stderr: 'resume broke' });
