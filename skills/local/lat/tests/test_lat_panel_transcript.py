@@ -72,7 +72,7 @@ class ClaudeSampleTests(TranscriptTestCase):
         ("assistant", "我先看登入頁的程式。"),
         ("tool", "讀檔：src/login.ts"),
         ("tool", "搜尋：spinner"),
-        ("tool", "執行指令：cat > notes.txt"),
+        ("tool", "執行指令：cat …"),
         ("tool", "✗ 執行指令：npm test"),
         ("assistant", "測試失敗了，原因是逾時。\n\n我接著改設定。"),
         ("tool", "收到 hcom 通知"),
@@ -127,7 +127,7 @@ class CodexSampleTests(TranscriptTestCase):
         ("user", "$lat 修好匯出功能"),
         ("assistant", "我先找匯出的程式。"),
         ("tool", "執行指令：rg -n export src"),
-        ("tool", "執行指令：python -"),
+        ("tool", "執行指令：python …"),
         ("tool", "✗ 執行指令：npm test -- " + "x" * 67 + "…"),
         ("tool", "收到 hcom 通知"),
         ("assistant", "找到了，問題在日期格式。"),
@@ -168,12 +168,8 @@ class ToolSummaryTests(TranscriptTestCase):
         (item,) = self.transcript("claude", CLAUDE_SESSION)["items"]
         return shown(item)[1]
 
-    def test_command_shows_its_first_line_cut_before_a_heredoc_and_at_80_characters(self):
+    def test_command_shows_its_first_line_at_80_characters(self):
         self.assertEqual(self.tool_line("Bash", {"command": "git status\ngit diff"}), "執行指令：git status")
-        self.assertEqual(
-            self.tool_line("Bash", {"command": "uv run python - <<'PY'\nprint('SECRET')\nPY"}),
-            "執行指令：uv run python -",
-        )
         summary = self.tool_line("Bash", {"command": "echo " + "y" * 200})
         self.assertEqual(len(summary.removeprefix("執行指令：")), 80)
         self.assertTrue(summary.endswith("…"))
@@ -196,6 +192,75 @@ class ToolSummaryTests(TranscriptTestCase):
     def test_a_tool_whose_arguments_are_not_known_to_be_safe_shows_only_its_name(self):
         self.assertEqual(self.tool_line("TodoWrite", {"todos": [{"content": "SECRET"}]}), "TodoWrite")
         self.assertEqual(self.tool_line("Read", {"file_path": ["not", "a", "path"]}), "Read")
+
+
+# Commands that may carry what they write to a file, as QA wrote them, and what they show.
+WRITING_COMMANDS = (
+    ("printf QA_FILE_CONTENT_SENTINEL > file.txt", "printf …"),
+    ("echo QA_FILE_CONTENT_SENTINEL >> file.txt", "echo …"),
+    ("echo QA_FILE_CONTENT_SENTINEL >| file.txt", "echo …"),
+    ("printf QA_FILE_CONTENT_SENTINEL &> file.txt", "printf …"),
+    ("printf QA_FILE_CONTENT_SENTINEL 1> file.txt", "printf …"),
+    ("printf QA_FILE_CONTENT_SENTINEL 2>file.txt", "printf …"),
+    ("printf QA_FILE_CONTENT_SENTINEL >&file.txt", "printf …"),
+    ("echo QA_FILE_CONTENT_SENTINEL | tee file.txt", "echo …"),
+    ("echo QA_FILE_CONTENT_SENTINEL | sudo /usr/bin/tee -a file.txt", "echo …"),
+    ("printf QA_FILE_CONTENT_SENTINEL | dd of=file.txt status=none", "printf …"),
+    ("cat <<'EOF' > file.txt\nQA_FILE_CONTENT_SENTINEL\nEOF", "cat …"),
+    ("python - <<'PY'  # QA_FILE_CONTENT_SENTINEL\nprint(1)\nPY", "python …"),
+    ("LANG=C printf QA_FILE_CONTENT_SENTINEL>file.txt", "printf …"),
+    # An open quote leaves no way to tell what is written: the safe side.
+    ("echo 'QA_FILE_CONTENT_SENTINEL > file.txt", "echo …"),
+    ("printf QA_FILE_CONTENT_SENTINEL > '/dev/null'", "printf …"),
+)
+# Commands that write no file keep their first line.
+OTHER_COMMANDS = (
+    "npm test 2>&1",
+    "npm test >&2",
+    "npm test > /dev/null",
+    "npm test >/dev/null 2>&1",
+    "npm test 2>/dev/null",
+    "npm test &>/dev/null",
+    "npm test >> /dev/null",
+    "grep '>' file.txt",
+    'grep ">" file.txt',
+    "echo 'a > b' | wc -c",
+    "rg 'tee' src",
+)
+
+
+class WritingCommandTests(TranscriptTestCase):
+    def summaries(self, client, commands):
+        if client == "claude":
+            records = [{
+                "type": "assistant", "uuid": f"u{index}", "timestamp": "t",
+                "message": {"model": "m", "role": "assistant", "content": [
+                    {"type": "tool_use", "id": f"t{index}", "name": "Bash", "input": {"command": command}},
+                ]},
+            } for index, command in enumerate(commands)]
+            self.claude_file().write_text("".join(json.dumps(record) + "\n" for record in records))
+            page = self.transcript("claude", CLAUDE_SESSION)
+        else:
+            records = [{
+                "timestamp": "t", "type": "event_msg", "payload": {"type": "item_completed", "item": {
+                    "type": "CommandExecution", "command": ["/bin/bash", "-lc", command], "exit_code": 0,
+                }},
+            } for command in commands]
+            self.codex_file().write_text("".join(json.dumps(record) + "\n" for record in records))
+            page = self.transcript("codex", CODEX_SESSION)
+        return [item["detail"] for item in page["items"]]
+
+    def test_a_command_that_writes_a_file_shows_only_its_program(self):
+        for client in ("claude", "codex"):
+            with self.subTest(client=client):
+                shown_details = self.summaries(client, [command for command, _ in WRITING_COMMANDS])
+                self.assertEqual(shown_details, [summary for _, summary in WRITING_COMMANDS])
+                self.assertNotIn("QA_FILE_CONTENT_SENTINEL", json.dumps(shown_details))
+
+    def test_a_command_that_writes_no_file_keeps_its_first_line(self):
+        for client in ("claude", "codex"):
+            with self.subTest(client=client):
+                self.assertEqual(self.summaries(client, OTHER_COMMANDS), list(OTHER_COMMANDS))
 
 
 class LookupTests(TranscriptTestCase):

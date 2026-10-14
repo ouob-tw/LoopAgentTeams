@@ -2016,11 +2016,56 @@ def _one_line(text, limit=_SUMMARY_LIMIT):
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+def _unquoted(line):
+    """The line with every quoted or escaped character replaced by ``x``, so only the shell's own
+    syntax is left; None when a quote is left open."""
+    out, quote, escaped = [], None, False
+    for char in line:
+        if escaped:
+            escaped = False
+        elif char == "\\" and quote != "'":
+            escaped = True
+        elif quote:
+            quote = None if char == quote else quote
+        elif char in "'\"":
+            quote = char
+        else:
+            out.append(char)
+            continue
+        out.append("x")
+    return None if quote else "".join(out)
+
+
+# After `>`: `&2` or `&-` only duplicates a descriptor, and /dev/null keeps nothing.
+_NOT_A_FILE = re.compile(r"(&(\d+|-)|[>|]?\s*/dev/null)(?=$|[\s;|&)])")
+
+
+def _writes_file(line):
+    """Whether a command line may carry what it writes to a file: an output redirection to a
+    file, ``tee``, ``dd of=`` or a heredoc. When unsure, it does."""
+    plain = _unquoted(line)
+    if plain is None or "<<" in plain:
+        return True
+    for position, char in enumerate(plain):
+        if char == ">" and plain[position - 1:position] != ">" and not _NOT_A_FILE.match(plain, position + 1):
+            return True
+    words = re.split(r"[\s|;&()]+", plain)
+    return any(word == "tee" or word.endswith("/tee") for word in words) or (
+        "dd" in words and any(word.startswith("of=") for word in words)
+    )
+
+
 def _command_summary(command):
-    """First line of a shell command, cut before a heredoc, at most 80 characters."""
+    """First line of a shell command, at most 80 characters. A line that may carry what it
+    writes to a file shows only its program."""
     lines = str(command).strip().splitlines()
-    first = lines[0] if lines else ""
-    return _one_line(first.split("<<", 1)[0].strip())
+    first = lines[0].strip() if lines else ""
+    if not _writes_file(first):
+        return _one_line(first)
+    # The first word that is not a variable assignment, up to any shell syntax.
+    words = [word for word in first.split() if not re.match(r"[A-Za-z_]\w*=", word)]
+    program = re.match(r"[^\s<>|;&]*", words[0] if words else "").group()
+    return _one_line(f"{program} …" if program else "…")
 
 
 def _shown_path(path, cwd):
