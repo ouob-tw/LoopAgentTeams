@@ -15,7 +15,7 @@ import {
 	type WakeResponse,
 	type WakeView
 } from '../src/lib/board/wake.ts';
-import { named, NODE, startFixture, until, type Fixture } from './harness.ts';
+import { AGENT_SHELL_ENV, KEPT_AGENT_SHELL_ENV, named, NODE, startFixture, until, type Fixture } from './harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-wake-'));
 const commandEnv = {
@@ -29,7 +29,8 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(19, { env: commandEnv });
+	// Started as from inside an agent's shell, the way QA starts a test board.
+	fixture = await startFixture(19, { env: { ...AGENT_SHELL_ENV, ...commandEnv } });
 	cookie = await fixture.login();
 });
 afterAll(async () => {
@@ -39,6 +40,7 @@ afterAll(async () => {
 beforeEach(() => {
 	for (const name of [
 		'hcom-calls.jsonl',
+		'hcom-env.jsonl',
 		'hcom-list-calls.jsonl',
 		'hcom-added.json',
 		'herdr-calls.jsonl',
@@ -194,6 +196,8 @@ test('a client that is gone is resumed by session ID in a Herdr tab of its proje
 	expect(resumes()).toEqual([
 		{ args: ['r', target.id, '--terminal', 'herdr', '--go', '--hcom-prompt', '接著做\n細節'], workspace: 'wP', tag: null }
 	]);
+	// The board runs inside an agent's shell here; none of that agent's identity reaches the resume.
+	expect(readLog<string[]>('hcom-env.jsonl')).toEqual([KEPT_AGENT_SHELL_ENV]);
 	expect(injects()).toEqual([]);
 });
 

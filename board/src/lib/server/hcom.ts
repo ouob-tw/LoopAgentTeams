@@ -16,11 +16,26 @@ export function launchedName(stdout: string): string | null {
 	return names.length === 1 ? names[0] : null;
 }
 
-/** The environment hcom runs in: Herdr's tab opens in this workspace (the board itself is in none),
- *  and no group tag, so the name hcom prints is the agent's whole name. */
+/**
+ * Whether a variable carries the identity of an agent the board may have been started from. hcom
+ * treats the caller as that agent: it would make the new agent its child and end the first message
+ * with a line asking to report back to it. Only HCOM_DIR, where hcom keeps its data, is kept; that
+ * also drops HCOM_TAG, so the name hcom prints is the agent's whole name. CODEX_HOME is the
+ * client's settings folder, not a session, so it is kept.
+ */
+function agentIdentity(name: string): boolean {
+	if (name.startsWith('HCOM_')) return name !== 'HCOM_DIR';
+	if (name.startsWith('CODEX_')) return name !== 'CODEX_HOME';
+	return name === 'CLAUDECODE' || name === 'CLAUDE_PID' || name === 'CLAUDE_EFFORT' || name === 'AI_AGENT' || name.startsWith('CLAUDE_CODE_');
+}
+
+/** The environment hcom starts or resumes an agent in: the board's own, as the background service
+ *  has it even when the board was started from inside an agent's shell, with Herdr's tab opening
+ *  in this workspace (the board itself is in none). */
 export function hcomEnv(herdrWorkspace: string): NodeJS.ProcessEnv {
-	const env: NodeJS.ProcessEnv = { ...process.env, HERDR_WORKSPACE_ID: herdrWorkspace };
-	delete env.HCOM_TAG;
+	const env: NodeJS.ProcessEnv = {};
+	for (const [name, value] of Object.entries(process.env)) if (!agentIdentity(name)) env[name] = value;
+	env.HERDR_WORKSPACE_ID = herdrWorkspace;
 	return env;
 }
 

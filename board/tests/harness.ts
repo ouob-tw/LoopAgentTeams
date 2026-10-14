@@ -24,6 +24,28 @@ export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
 export const NODE = Bun.which('node') ?? process.execPath;
 
 export const DAY = 24 * 60 * 60 * 1000;
+
+/** What a board started from inside an agent's shell inherits: that agent's hcom and client
+ *  identity, plus the two folders that are settings, not identity. Test values only. */
+export const AGENT_SHELL_ENV: Record<string, string> = {
+	HCOM_INSTANCE_NAME: 'rape',
+	HCOM_PROCESS_ID: '00000000-0000-0000-0000-000000000000',
+	HCOM_LAUNCHED: '1',
+	HCOM_LAUNCHED_BY: 'nabo',
+	HCOM_TAG: 'nabo-qa',
+	HCOM_TOOL: 'codex',
+	CLAUDECODE: '1',
+	CLAUDE_CODE_SESSION_ID: 'session-of-the-caller',
+	CLAUDE_CODE_ENTRYPOINT: 'cli',
+	CLAUDE_PID: '1',
+	CLAUDE_EFFORT: 'high',
+	CODEX_THREAD_ID: 'thread-of-the-caller',
+	AI_AGENT: 'claude-code',
+	HCOM_DIR: '/nonexistent/hcom-dir',
+	CODEX_HOME: '/nonexistent/codex-home'
+};
+/** Of those, what hcom may still be given when it starts or resumes an agent. */
+export const KEPT_AGENT_SHELL_ENV = ['CODEX_HOME', 'HCOM_DIR'];
 /** The board password every fixture sets unless told not to. A test value, not a real password. */
 export const PASSWORD = 'test-password-一二三';
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
