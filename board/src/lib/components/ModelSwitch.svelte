@@ -47,7 +47,9 @@
 	// Read again when another controller is opened, or this one starts or ends.
 	$effect(() => {
 		void controller.status;
-		void switching.load(id);
+		const abort = new AbortController();
+		void switching.load(id, abort.signal);
+		return () => abort.abort();
 	});
 
 	/** Send the form, or continue the open switch as it is when nothing is chosen. */

@@ -8,7 +8,7 @@ import type { RequestHandler } from './$types';
 /** Event stream for one open information page: `transcript` carries the latest page of the
  *  controller's conversation, or why it cannot be read; `ping` keeps the connection alive. A device
  *  revoked meanwhile gets `unpaired` and the stream ends. */
-export const GET: RequestHandler = async ({ url, cookies }) => {
+export const GET: RequestHandler = async ({ url, cookies, request }) => {
 	const controllerId = url.searchParams.get('controller');
 	if (!controllerId) return json({ error: 'missing_controller' }, { status: 400 });
 	const board = getBoard();
@@ -55,6 +55,18 @@ export const GET: RequestHandler = async ({ url, cookies }) => {
 				unfollow();
 				clearInterval(ping);
 			};
+			// The request's signal is what tells that the browser went away: under Bun the response
+			// never reports it, so the stream's own cancel may never come.
+			const gone = () => {
+				stop();
+				try {
+					controller.close();
+				} catch {
+					// Already closed.
+				}
+			};
+			if (request.signal.aborted) gone();
+			else request.signal.addEventListener('abort', gone, { once: true });
 		},
 		cancel: () => stop()
 	});

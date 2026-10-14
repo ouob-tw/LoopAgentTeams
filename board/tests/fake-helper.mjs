@@ -7,7 +7,7 @@
 // item per line, the way the real command pages a client's record, with the latest turn's settings
 // from <dir>/transcripts/<session>.current.json when there is one; with `transcriptChildMs` in the
 // plan it instead waits that long on a child process, writing the child's PID to
-// transcript-child.pid. `board launch-args` prints what <dir>/launch-args.json holds for the
+// transcript-child.pid (`launchArgsChildMs` does the same for `board launch-args`). `board launch-args` prints what <dir>/launch-args.json holds for the
 // session: a list of arguments, or `{ "unknown": reason }`. Each call is logged to
 // <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
 import { spawn } from 'node:child_process';
@@ -117,13 +117,16 @@ function questions() {
 
 /** One page of <dir>/transcripts/<session>.jsonl: the last 50 texts before the cursor and every
  *  operation after the first of them. A line that is not JSON is skipped and counted. */
+/** Like `uv run`, wait on a child that does the work; its PID, in <dir>/<name>-child.pid, tells
+ *  the test whether it is gone. @param {string} name @param {number} ms */
+function waitOnChild(name, ms) {
+	const child = spawn(process.execPath, ['-e', `setTimeout(() => {}, ${ms})`], { stdio: 'ignore' });
+	writeFileSync(join(dir, `${name}-child.pid`), String(child.pid));
+	return { output: { status: 'error', reason: 'child finished' }, sleepMs: ms };
+}
+
 function transcript() {
-	if (plan.transcriptChildMs) {
-		// Like `uv run`, wait on a child that does the work; its PID tells the test whether it is gone.
-		const child = spawn(process.execPath, ['-e', `setTimeout(() => {}, ${plan.transcriptChildMs})`], { stdio: 'ignore' });
-		writeFileSync(join(dir, 'transcript-child.pid'), String(child.pid));
-		return { output: { status: 'error', reason: 'child finished' }, sleepMs: plan.transcriptChildMs };
-	}
+	if (plan.transcriptChildMs) return waitOnChild('transcript', plan.transcriptChildMs);
 	const given = options();
 	const session = given['session-id']?.[0] ?? '';
 	const path = join(dir, 'transcripts', `${session}.jsonl`);
@@ -157,6 +160,7 @@ function transcript() {
 
 /** What <dir>/launch-args.json holds for the session. */
 function launchArgs() {
+	if (plan.launchArgsChildMs) return waitOnChild('launch-args', plan.launchArgsChildMs);
 	const session = options()['session-id']?.[0] ?? '';
 	let stored;
 	try {

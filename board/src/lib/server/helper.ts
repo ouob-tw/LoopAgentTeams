@@ -232,8 +232,8 @@ export type LaunchArgs = { ok: true; args: string[] } | { ok: false; reason: str
 
 /** The arguments hcom stored for the launch of the agent with this session ID, read by the helper
  *  from hcom's own data; hcom repeats them on every resume. */
-export async function readLaunchArgs(config: BoardConfig, sessionId: string): Promise<LaunchArgs> {
-	const { stdout, failure } = await run(config, ['launch-args', `--session-id=${sessionId}`]);
+export async function readLaunchArgs(config: BoardConfig, sessionId: string, signal?: AbortSignal): Promise<LaunchArgs> {
+	const { stdout, failure } = await run(config, ['launch-args', `--session-id=${sessionId}`], signal);
 	let payload: { status?: unknown; reason?: unknown; args?: unknown } | null;
 	try {
 		payload = JSON.parse(stdout);
@@ -245,9 +245,14 @@ export async function readLaunchArgs(config: BoardConfig, sessionId: string): Pr
 	return { ok: false, reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出不是預期的格式' };
 }
 
-/** Whether a Codex controller's launch fixes its model, from the arguments hcom stored for it. */
-export async function modelLock(config: BoardConfig, sessionId: string): Promise<{ lock: 'free' | 'fixed' | 'unknown'; reason: string | null }> {
-	const read = await readLaunchArgs(config, sessionId);
+/** Whether a Codex controller's launch fixes its model, from the arguments hcom stored for it.
+ *  Aborting `signal` ends the helper reading them. */
+export async function modelLock(
+	config: BoardConfig,
+	sessionId: string,
+	signal?: AbortSignal
+): Promise<{ lock: 'free' | 'fixed' | 'unknown'; reason: string | null }> {
+	const read = await readLaunchArgs(config, sessionId, signal);
 	if (!read.ok) return { lock: 'unknown', reason: read.reason };
 	return { lock: fixedModel(read.args) ? 'fixed' : 'free', reason: null };
 }
