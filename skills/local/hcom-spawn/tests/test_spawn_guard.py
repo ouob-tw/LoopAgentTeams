@@ -62,6 +62,14 @@ class SpawnGuardTests(unittest.TestCase):
             ("hcom 1 claude --go --hcom-prompt -h --model m --effort low", '--dangerously-skip-permissions'),
             ('hcom 1 claude --model --effort medium --dangerously-skip-permissions', '--model <id>'),
             ('hcom 1 codex --yolo -m -c model_reasoning_effort=low', '--model <id>'),
+            ('hcom --name meru 1 claude --tag t --model opus --effort high', '--dangerously-skip-permissions'),
+            ('hcom --name meru 1 codex --tag t --model gpt-6.1-sol --yolo', 'model_reasoning_effort'),
+            ('hcom --name=meru claude --effort high --dangerously-skip-permissions', '--model <id>'),
+            ('HERDR_WORKSPACE_ID=w1 hcom --name meru 2 codex --go -c model_reasoning_effort="low"', '--yolo'),
+            ('env X=1 hcom --go --name meru 1 claude --model m --dangerously-skip-permissions', '--effort <level>'),
+            ('hcom --tag codex 1 claude --go --model m --effort low', '--dangerously-skip-permissions'),
+            ('hcom --hcom-prompt claude codex --go --yolo --model gpt-6.1-sol', 'model_reasoning_effort'),
+            ('hcom --unknown value 1 claude --go', '--dangerously-skip-permissions'),
         ):
             with self.subTest(command=command):
                 result = run_hook(command)
@@ -84,6 +92,17 @@ class SpawnGuardTests(unittest.TestCase):
             'hcom f vare-review-kilo --go --name vare --effort high',
             'hcom r kilo --go --name vare -c \'model_reasoning_effort="high"\'',
             'hcom send @luna --name vare -- hcom 1 claude --go',
+            'hcom --name vare send @luna -- 1 claude',
+            'hcom --name vare r kilo --go',
+            '/usr/bin/hcom --name vare ' + CLAUDE[5:],
+            'HERDR_WORKSPACE_ID=w1 hcom --name vare ' + CODEX[5:],
+            'hcom --tag claude 1 gemini --go',
+            'hcom --tag claude 1 ' + CODEX[7:],
+            'hcom --hcom-prompt codex 1 ' + CLAUDE[7:],
+            'hcom --name claude send @luna -- hi',
+            'hcom --tag codex 1 claude --go --model claude-opus-5-5 --effort medium '
+            '--dangerously-skip-permissions',
+            'hcom --name claude ' + CODEX[5:],
             'hcom list --name vare',
             'hcom 1 gemini --go --name vare',
             'hcom 1 opencode --go',
@@ -115,6 +134,21 @@ class SpawnGuardTests(unittest.TestCase):
         self.assertEqual(argv[2:], ['--spawner', 'vare', '--tool', 'codex', '--model',
                                     'gpt-6.1-sol', '--effort', 'medium', '--after-id', '41',
                                     '--tag', 'vare-review'])
+
+    def test_global_options_before_the_client_still_start_the_watch(self):
+        guard = load()
+        command = ("hcom --name meru 1 codex --tag t --go --model gpt-6.1-sol "
+                   "-c 'model_reasoning_effort=\"low\"' --yolo")
+        payload = json.dumps({'tool_input': {'command': command}})
+        with tempfile.TemporaryDirectory() as state, \
+                mock.patch.dict(os.environ, {'XDG_STATE_HOME': state}), \
+                mock.patch.object(guard, 'latest_event_id', return_value=55), \
+                mock.patch.object(guard.sys, 'stdin', io.StringIO(payload)), \
+                mock.patch.object(guard.subprocess, 'Popen') as popen:
+            self.assertEqual(guard.main(), 0)
+        self.assertEqual(popen.call_args.args[0][2:], [
+            '--spawner', 'meru', '--tool', 'codex', '--model', 'gpt-6.1-sol', '--effort', 'low',
+            '--after-id', '55', '--tag', 't'])
 
     def test_previews_start_no_watch(self):
         guard = load()
