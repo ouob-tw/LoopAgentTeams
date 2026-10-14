@@ -44,6 +44,18 @@ export interface ResumeMark {
 	time: string;
 }
 
+/** How the hcom resume of an attempt ended. The attempt is logged before hcom runs, as `pending`,
+ *  so a board that stops meanwhile, or this line failing to be written, leaves it open. */
+export interface ResumeResult {
+	kind: 'resume-result';
+	wakeId: string;
+	outcome: 'started' | 'pending' | 'failed';
+	error: string | null;
+	resumedName: string | null;
+	pane: string | null;
+	time: string;
+}
+
 /** The Herdr pane a resume attempt runs in, learned after the attempt was logged. */
 interface ResumePane {
 	kind: 'resume-pane';
@@ -52,7 +64,7 @@ interface ResumePane {
 	time: string;
 }
 
-type Line = SentMessage | StoredAnswer | AnswerMark | SentLaunch | LaunchMark | SentWake | ResumeMark | ResumePane;
+type Line = SentMessage | StoredAnswer | AnswerMark | SentLaunch | LaunchMark | SentWake | ResumeMark | ResumeResult | ResumePane;
 
 export function appendSent(stateDir: string, entry: Line): void {
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -89,13 +101,19 @@ const boundOf = (lines: Line[]) =>
 function wakesOf(lines: Line[], now: number, waitMs: number): WakeView[] {
 	const closes = new Map<string, ResumeMark>();
 	const panes = new Map<string, string>();
+	const results = new Map<string, ResumeResult>();
 	for (const line of lines) {
 		if (line.kind === 'resume-closed' && !closes.has(line.wakeId)) closes.set(line.wakeId, line);
 		if (line.kind === 'resume-pane') panes.set(line.wakeId, line.pane);
+		if (line.kind === 'resume-result' && !results.has(line.wakeId)) results.set(line.wakeId, line);
 	}
 	return lines
 		.filter((line) => line.kind === 'wake')
-		.map((wake) => {
+		.map((logged) => {
+			const result = results.get(logged.id);
+			const wake: SentWake = result
+				? { ...logged, outcome: result.outcome, error: result.error, resumedName: result.resumedName, pane: result.pane }
+				: logged;
 			const close = closes.get(wake.id);
 			const open = wake.route === 'resume' && (wake.outcome === 'started' || wake.outcome === 'pending') && !close;
 			return {
@@ -121,7 +139,7 @@ export function readSent(stateDir: string, controllerId: string, now: number, wa
 			if (bound.get(line.id) === controllerId) entries.push({ ...line, state: 'active', controllerId });
 			continue;
 		}
-		if (line.kind === 'answer-state' || line.kind === 'launch-bound' || line.kind === 'resume-closed' || line.kind === 'resume-pane') continue;
+		if (line.kind === 'answer-state' || line.kind === 'launch-bound' || line.kind === 'resume-closed' || line.kind === 'resume-result' || line.kind === 'resume-pane') continue;
 		if (line.controllerId !== controllerId) continue;
 		if (line.kind === 'wake') entries.push(wakes.get(line.id)!);
 		else if (line.kind === 'message') entries.push(line);

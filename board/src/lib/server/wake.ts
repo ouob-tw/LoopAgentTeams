@@ -22,7 +22,7 @@ import type { Board } from './board.ts';
 import { findAgent, listAgents, resumeAgent, type HcomAgent } from './hcom.ts';
 import { chooseWorkspace, paneExists } from './herdr.ts';
 import { inject, queued, typedText } from './send.ts';
-import { appendSent, closeResume, openResume } from './sent-log.ts';
+import { appendSent, closeResume, openResume, type ResumeResult } from './sent-log.ts';
 
 type Result<T> = { status: number; body: T };
 
@@ -57,10 +57,18 @@ async function findController(board: Board, controllerId: string): Promise<Contr
 /** What stops this wake, or the running client to type into (null: resume). */
 type Plan = { refuse: string; abandon?: string } | { agent: HcomAgent | null };
 
-/** Type the text in or resume, filling in the entry; resolves with the open resume attempt the
- *  user may give up when that is what stopped the wake. */
-async function deliver(board: Board, controller: Controller | undefined, request: WakeRequest, entry: SentWake): Promise<string | null> {
-	const refuse = (reason: string, abandon: string | null = null) => ((entry.error = reason), abandon);
+/** How a wake was handled: the open resume attempt the user may give up when that is what stopped
+ *  it; whether the entry is already in the sent log (a resume logs itself before hcom runs); why
+ *  something could not be written. */
+interface Delivery {
+	abandon: string | null;
+	logged: boolean;
+	logError: string | null;
+}
+
+/** Type the text in or resume, filling in the entry. */
+async function deliver(board: Board, controller: Controller | undefined, request: WakeRequest, entry: SentWake): Promise<Delivery> {
+	const refuse = (reason: string, abandon: string | null = null): Delivery => ((entry.error = reason), { abandon, logged: false, logError: null });
 	if (!controller) return refuse(UNKNOWN_CONTROLLER_REASON);
 	const client = controller.client;
 	if (request.newRound) {
@@ -69,12 +77,11 @@ async function deliver(board: Board, controller: Controller | undefined, request
 	}
 	const plan: Plan = await check(board, entry).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有送出：${error.message}` }));
 	if ('refuse' in plan) return refuse(plan.refuse, plan.abandon);
-	if (plan.agent) {
-		entry.route = 'inject';
-		entry.error = await inject(board.config, plan.agent.name, entry.text);
-		entry.outcome = entry.error ? 'failed' : 'sent';
-	} else await resume(board, controller, entry);
-	return null;
+	if (!plan.agent) return resume(board, controller, entry);
+	entry.route = 'inject';
+	entry.error = await inject(board.config, plan.agent.name, entry.text);
+	entry.outcome = entry.error ? 'failed' : 'sent';
+	return { abandon: null, logged: false, logError: null };
 }
 
 async function attempt(board: Board, request: WakeRequest): Promise<Result<WakeResponse>> {
@@ -100,19 +107,21 @@ async function attempt(board: Board, request: WakeRequest): Promise<Result<WakeR
 		error: null
 	};
 
-	const abandon = await deliver(board, controller, request, entry);
-
-	let logError: string | null = null;
-	try {
-		appendSent(config.stateDir, entry);
-	} catch (error) {
-		// What happened to the wake is what the page must show either way.
-		logError = (error as Error).message;
+	const { abandon, logged, ...delivery } = await deliver(board, controller, request, entry);
+	let logError = delivery.logError;
+	if (!logged && !logError) {
+		try {
+			appendSent(config.stateDir, entry);
+		} catch (error) {
+			// What happened to the wake is what the page must show either way.
+			logError = (error as Error).message;
+		}
 	}
 	const ok = entry.outcome === 'sent' || entry.outcome === 'started' || entry.outcome === 'pending';
 	const view: WakeView = {
 		...entry,
-		open: entry.route === 'resume' && ok,
+		// A resume whose result could not be written stays open in the log, whatever hcom answered.
+		open: logged && (ok || logError !== null),
 		closed: null,
 		closedAt: null,
 		overdue: false
@@ -150,18 +159,32 @@ async function check(board: Board, entry: SentWake): Promise<Plan> {
 	return { agent: running };
 }
 
-/** Resume the conversation in the Herdr workspace of the controller's project. */
-async function resume(board: Board, controller: Controller, entry: SentWake): Promise<void> {
+/**
+ * Resume the conversation in the Herdr workspace of the controller's project. The attempt is in
+ * the sent log, still open, before hcom runs, and hcom does not run unless it is: a board stopped
+ * while hcom starts the client, or a result that cannot be written, leaves it open for the next
+ * wake to check. Nothing else would stop that wake from resuming the conversation a second time.
+ */
+async function resume(board: Board, controller: Controller, entry: SentWake): Promise<Delivery> {
+	const { stateDir } = board.config;
 	entry.route = 'resume';
 	entry.outcome = 'failed';
 	const workspace = await chooseWorkspace(board.config, controller.workspace);
 	if (!workspace.ok) {
 		entry.error = workspace.reason;
-		return;
+		return { abandon: null, logged: false, logError: null };
 	}
 	entry.herdrWorkspace = workspace.id;
 	entry.herdrWorkspaceLabel = workspace.label;
 	entry.workspaceCreated = workspace.created;
+	entry.outcome = 'pending';
+	try {
+		appendSent(stateDir, entry);
+	} catch (error) {
+		entry.outcome = 'refused';
+		entry.error = `寫不進送出紀錄，沒有接回：${(error as Error).message}`;
+		return { abandon: null, logged: false, logError: (error as Error).message };
+	}
 	const resumed = await resumeAgent(board.config, {
 		sessionId: entry.controllerId,
 		herdrWorkspace: workspace.id,
@@ -171,8 +194,25 @@ async function resume(board: Board, controller: Controller, entry: SentWake): Pr
 	entry.outcome = resumed.outcome;
 	entry.error = resumed.reason;
 	entry.resumedName = resumed.hcomName;
-	if (resumed.outcome === 'failed') return;
-	// The pane the resumed client runs in, so a later wake can tell when it is gone.
-	const list = await listAgents(board.config);
-	if (list.ok) entry.pane = findAgent(list.agents, entry.controllerId, [entry.hcomName, entry.resumedName])?.pane ?? null;
+	if (resumed.outcome !== 'failed') {
+		// The pane the resumed client runs in, so a later wake can tell when it is gone.
+		const list = await listAgents(board.config);
+		if (list.ok) entry.pane = findAgent(list.agents, entry.controllerId, [entry.hcomName, entry.resumedName])?.pane ?? null;
+	}
+	const result: ResumeResult = {
+		kind: 'resume-result',
+		wakeId: entry.id,
+		outcome: resumed.outcome,
+		error: entry.error,
+		resumedName: entry.resumedName,
+		pane: entry.pane,
+		time: new Date(board.config.now()).toISOString()
+	};
+	try {
+		appendSent(stateDir, result);
+	} catch (error) {
+		// The attempt stays open as logged; the next wake checks it like any other open one.
+		return { abandon: null, logged: true, logError: (error as Error).message };
+	}
+	return { abandon: null, logged: true, logError: null };
 }

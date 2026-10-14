@@ -1,7 +1,7 @@
 // Waking an ended controller from the board, against fake hcom, Herdr and input commands. Nothing
 // here types into, resumes or opens anything real.
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SentEntry } from '../src/lib/board/answers.ts';
@@ -15,7 +15,7 @@ import {
 	type WakeResponse,
 	type WakeView
 } from '../src/lib/board/wake.ts';
-import { named, NODE, startFixture, type Fixture } from './harness.ts';
+import { named, NODE, startFixture, until, type Fixture } from './harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-wake-'));
 const commandEnv = {
@@ -74,7 +74,7 @@ const agent = (name: string, sessionId: string | null, pane?: string): Agent => 
 });
 /** The agents earlier resumes added leave hcom's list. */
 const leaveList = () => rmSync(join(commandDir, 'hcom-added.json'), { force: true });
-const hcomPlan = (plan: { agents?: Agent[]; resumed?: Agent; exit?: number; sleepMs?: number; stderr?: string; listFail?: object; names?: (string | null)[] }) =>
+const hcomPlan = (plan: { agents?: Agent[]; resumed?: Agent; exit?: number; sleepMs?: number; stderr?: string; listFail?: object; names?: (string | null)[]; readOnly?: string }) =>
 	writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
 function herdrPlan(plan: { panes?: { workspace_id: string; cwd: string; pane_id?: string }[]; workspaces?: [string, number, string][]; fail?: object }) {
 	const workspaces = (plan.workspaces ?? []).map(([workspace_id, number, label]) => ({ workspace_id, number, label }));
@@ -355,6 +355,68 @@ test('a resumed agent under a new name that the resume printed, not yet bound, r
 
 	expect(second.body).toMatchObject({ ok: false, reason: RESUME_BUSY_REASON, abandon: null });
 	expect(resumes()).toHaveLength(1);
+});
+
+test('a board stopped while hcom is still resuming keeps the attempt open, and the next wake does not resume again', async () => {
+	const target = await ended();
+	hcomPlan({ sleepMs: 5_000 });
+	const first = wake(target.id, '第一次').catch(() => null);
+	await until(() => resumes().length === 1, 5_000, 'the resume to start');
+	await fixture.stop();
+	await first;
+	await fixture.start();
+	hcomPlan({});
+
+	expect((await wakes(target.id))[0]).toMatchObject({ route: 'resume', outcome: 'pending', open: true });
+	const second = await wake(target.id, '第二次');
+	expect(second.body).toMatchObject({ ok: false, reason: RESUME_UNCONFIRMED_REASON });
+	expect(resumes()).toHaveLength(1);
+});
+
+/** Make the sent log read-only (or writable again), so the board's writes to it fail. */
+const sentLog = () => join(fixture.dir, 'board-state', 'sent-log.jsonl');
+
+test('an attempt that cannot be written to the sent log first is not resumed at all', async () => {
+	const target = await ended();
+	chmodSync(sentLog(), 0o444);
+	try {
+		const { status, body } = await wake(target.id, '在嗎');
+
+		expect(status).toBe(409);
+		expect(body.ok).toBe(false);
+		expect(body.reason).toStartWith('寫不進送出紀錄，沒有接回');
+		expect(body.logError).not.toBeNull();
+		expect(resumes()).toEqual([]);
+	} finally {
+		chmodSync(sentLog(), 0o600);
+	}
+});
+
+test('a resume whose result cannot be written stays open, even when hcom failed, and the next wake is checked against it', async () => {
+	const target = await ended();
+	hcomPlan({ exit: 1, stderr: 'boom', readOnly: sentLog() });
+	try {
+		const first = await wake(target.id, '第一次');
+		expect(first.body.reason).toBe('hcom 接回失敗：boom');
+		expect(first.body.logError).not.toBeNull();
+		expect(first.body.entry).toMatchObject({ outcome: 'failed', open: true });
+	} finally {
+		chmodSync(sentLog(), 0o600);
+	}
+	hcomPlan({});
+
+	expect((await wakes(target.id))[0]).toMatchObject({ outcome: 'pending', open: true });
+	const second = await wake(target.id, '第二次');
+	expect(second.body.reason).toBe(RESUME_UNCONFIRMED_REASON);
+	expect(resumes()).toHaveLength(1);
+});
+
+test('the result of a resume is a line of its own: a failed resume read back is closed', async () => {
+	const target = await ended();
+	hcomPlan({ exit: 1, stderr: 'nope' });
+	await wake(target.id, '第一次');
+
+	expect((await wakes(target.id))[0]).toMatchObject({ outcome: 'failed', open: false, error: 'hcom 接回失敗：nope' });
 });
 
 test('the recorded pane still open in Herdr refuses a second resume', async () => {
