@@ -10,6 +10,7 @@ import {
 	RESUME_BUSY_REASON,
 	RESUME_UNCONFIRMED_REASON,
 	WAKE_UNKNOWN_REASON,
+	wakeText,
 	type AbandonResponse,
 	type WakeResponse,
 	type WakeView
@@ -71,6 +72,8 @@ const agent = (name: string, sessionId: string | null, pane?: string): Agent => 
 	session_id: sessionId,
 	launch_context: pane ? { pane_id: pane } : {}
 });
+/** The agents earlier resumes added leave hcom's list. */
+const leaveList = () => rmSync(join(commandDir, 'hcom-added.json'), { force: true });
 const hcomPlan = (plan: { agents?: Agent[]; resumed?: Agent; exit?: number; sleepMs?: number; stderr?: string; listFail?: object; names?: (string | null)[] }) =>
 	writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
 function herdrPlan(plan: { panes?: { workspace_id: string; cwd: string; pane_id?: string }[]; workspaces?: [string, number, string][]; fail?: object }) {
@@ -209,7 +212,6 @@ test('the sent log says 已喚醒, or 已喚醒，等主控啟用 for a new roun
 	const round = await ended();
 	await wake(round.id, '做下一輪', true);
 
-	const { wakeText } = await import('../src/lib/board/wake.ts');
 	expect(wakeText((await wakes(plain.id))[0])).toBe('已喚醒');
 	expect(wakeText((await wakes(round.id))[0])).toBe('已喚醒，等主控啟用');
 });
@@ -299,7 +301,6 @@ test('hcom exit 2 is still starting: not a failure, and a second wake does not r
 	const first = await wake(target.id, '第一次');
 	expect(first.status).toBe(200);
 	expect(first.body.entry).toMatchObject({ outcome: 'pending', open: true, pane: 'wP:p4' });
-	const { wakeText } = await import('../src/lib/board/wake.ts');
 	expect(wakeText(first.body.entry!)).toBe('已開始接回，結果尚未確定，請到 Herdr 分頁查看');
 
 	const second = await wake(target.id, '第二次');
@@ -333,6 +334,7 @@ test('after the wait the attempt asks to look in Herdr, and a second wake is sti
 
 test('an open attempt is read back after the board restarts and still refuses a second resume', async () => {
 	const target = await openAttempt({ resumed: agent('x', null, 'wP:p5'), names: ['x'] });
+	leaveList();
 	await fixture.stop();
 	await fixture.start();
 	hcomPlan({});
@@ -344,8 +346,20 @@ test('an open attempt is read back after the board restarts and still refuses a 
 	expect(resumes()).toHaveLength(1);
 });
 
+test('a resumed agent under a new name that the resume printed, not yet bound, refuses a second resume', async () => {
+	const target = await openAttempt({ names: ['newname'] });
+	expect(target.first.resumedName).toBe('newname');
+	hcomPlan({ agents: [agent('newname', null)] });
+
+	const second = await wake(target.id, '第二次');
+
+	expect(second.body).toMatchObject({ ok: false, reason: RESUME_BUSY_REASON, abandon: null });
+	expect(resumes()).toHaveLength(1);
+});
+
 test('the recorded pane still open in Herdr refuses a second resume', async () => {
 	const target = await openAttempt({ resumed: agent('elsewhere', null, 'wP:p6'), names: ['elsewhere'] });
+	leaveList();
 	hcomPlan({});
 	herdrPlan({ panes: [{ workspace_id: 'wP', cwd: target.workspace, pane_id: 'wP:p6' }], workspaces: [['wP', 1, 'p']] });
 
@@ -357,6 +371,7 @@ test('the recorded pane still open in Herdr refuses a second resume', async () =
 
 test('the recorded pane gone and no trace in hcom ends the attempt, and the conversation is resumed again', async () => {
 	const target = await openAttempt({ resumed: agent('elsewhere', null, 'wP:p8'), names: ['elsewhere'] });
+	leaveList();
 	hcomPlan({});
 	herdrPlan({ panes: [{ workspace_id: 'wP', cwd: target.workspace, pane_id: 'wP:p1' }], workspaces: [['wP', 1, 'p']] });
 
@@ -370,6 +385,7 @@ test('the recorded pane gone and no trace in hcom ends the attempt, and the conv
 
 test('a Herdr pane list that cannot be read does not let a second resume through', async () => {
 	const target = await openAttempt({ resumed: agent('elsewhere', null, 'wP:p8'), names: ['elsewhere'] });
+	leaveList();
 	hcomPlan({});
 	herdrPlan({ fail: { 'pane list': { exit: 1, stderr: 'herdr down' } } });
 

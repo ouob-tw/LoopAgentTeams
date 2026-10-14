@@ -30,6 +30,9 @@ export interface SentWake {
 	herdrWorkspace: string | null;
 	herdrWorkspaceLabel: string | null;
 	workspaceCreated: boolean;
+	/** The name the resume output gave the agent, when it gave one: hcom keeps the controller's
+	 *  name when it had one, so this is usually the same. */
+	resumedName: string | null;
 	/** The Herdr pane the resumed client runs in, when hcom's agent list showed one. */
 	pane: string | null;
 	/** Client arguments added after the resume's own flags; none so far. */

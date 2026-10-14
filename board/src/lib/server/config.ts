@@ -20,8 +20,10 @@ export interface BoardConfig {
 	injectTimeoutMs: number;
 	/** Command that runs hcom; the board appends e.g. `claude --dir <folder> ...` to start a controller. */
 	hcomCommand: string[];
-	/** How long an hcom launch may take, its own wait for the client to be ready included. */
+	/** How long an hcom launch or resume may take, its own wait for the client to be ready included. */
 	hcomTimeoutMs: number;
+	/** How long `hcom list --json` may take; it answers at once, not waiting for any client. */
+	hcomListTimeoutMs: number;
 	/** Command that runs the Herdr CLI; the board appends e.g. `pane list`. */
 	herdrCommand: string[];
 	herdrTimeoutMs: number;
@@ -107,6 +109,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		hcomCommand: commandFrom(env, 'LAT_BOARD_HCOM_COMMAND') ?? ['hcom'],
 		// hcom itself waits for the client to report ready before it answers.
 		hcomTimeoutMs: seconds(env.LAT_BOARD_HCOM_TIMEOUT_SECONDS, 60_000),
+		hcomListTimeoutMs: seconds(env.LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS, 15_000),
 		herdrCommand: commandFrom(env, 'LAT_BOARD_HERDR_COMMAND') ?? ['herdr'],
 		herdrTimeoutMs: seconds(env.LAT_BOARD_HERDR_TIMEOUT_SECONDS, 10_000),
 		launchWaitMs: seconds(env.LAT_BOARD_LAUNCH_WAIT_SECONDS, 180_000),

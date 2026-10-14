@@ -26,6 +26,7 @@ export interface SendResponse {
 }
 
 export const ENDED_REASON = '這個主控已結束，無法傳話。';
+export const UNKNOWN_CONTROLLER_REASON = '看板目前的資料裡沒有這個主控，沒有送出。';
 
 /**
  * Enter makes a new line (and only the button sends) on the narrow layout, or when the main input

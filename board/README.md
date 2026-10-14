@@ -29,7 +29,8 @@
 | `LAT_BOARD_INJECT_COMMAND` | 傳話用的輸入指令（JSON 字串陣列），看板會在後面加上 `<HCOM 名稱> <文字> --enter`；文字剛好是 `--help`、`-h`、`--name`、`--go`、`--enter` 這五個之一時，輸入指令會當成自己的選項，所以改分兩次呼叫（第一個字元，再接其餘字元與 `--enter`），輸入框收到的字元不變（這種訊息送出最多慢約 2 秒） | `["hcom","term","inject"]` |
 | `LAT_BOARD_INJECT_TIMEOUT_SECONDS` | 輸入指令多久沒結束就放棄 | `15` |
 | `LAT_BOARD_HCOM_COMMAND` | hcom 指令（JSON 字串陣列）。新建時看板在後面加上 `<client> --dir <資料夾> --terminal herdr --go --hcom-prompt <第一則訊息>`，喚醒接回時加上 `r <session ID> --terminal herdr --go --hcom-prompt <第一則訊息>`，判斷 client 是否還在時加上 `list --json` | `["hcom"]` |
-| `LAT_BOARD_HCOM_TIMEOUT_SECONDS` | hcom 啟動或接回指令多久沒結束就不再等（含 hcom 自己等 client 就緒的時間）；逾時算「仍在啟動」，不算失敗。`list --json` 最多等 15 秒 | `60` |
+| `LAT_BOARD_HCOM_TIMEOUT_SECONDS` | hcom 啟動或接回指令多久沒結束就不再等（含 hcom 自己等 client 就緒的時間）；逾時算「仍在啟動」，不算失敗 | `60` |
+| `LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS` | `hcom list --json` 多久沒結束就當成讀不到（此時喚醒不送出） | `15` |
 | `LAT_BOARD_HERDR_COMMAND` | Herdr 指令（JSON 字串陣列），看板會在後面加上 `pane list`、`workspace list` 或 `workspace create --cwd <專案> --label <名稱> --no-focus` | `["herdr"]` |
 | `LAT_BOARD_HERDR_TIMEOUT_SECONDS` | 每個 Herdr 指令多久沒結束就放棄 | `10` |
 | `LAT_BOARD_LAUNCH_WAIT_SECONDS` | 新建後多久還沒出現綁定，就在新建紀錄提示「已開分頁，但主控尚未啟用」；喚醒接回後多久還沒在 hcom 清單出現，就在送出紀錄提示「接回後仍未出現」 | `180` |
@@ -86,10 +87,10 @@
 
 - `POST /api/wake`（`controllerId`、`text`、`newRound`）喚醒一次；`POST /api/wake/abandon`（`controllerId`、`wakeId`）放棄一筆未結案的接回。兩者都要登入，並與傳話排在同一個主控的隊伍裡依序處理，所以同時按兩次也只會接回一次。
 - client 是否還在只看 `hcom list --json` 裡有沒有這個主控的 session ID，不看 Herdr 的 Agent 狀態。在就用傳話的輸入指令打進它的輸入框；不在就用 `hcom r <session ID>` 接回，工作區照新建的規則選（專案範圍是主控回報裡的工作區路徑）。清單讀不到就什麼都不做。
-- 每次喚醒都寫一行 `sent-log.jsonl`（`kind: wake`），欄位有走的路（輸入框或接回）、送出的文字、是否開新一輪、目標工作區、接回的窗格、結果與原因；`extraArgs` 是接在 `hcom r` 旗標後面、給 client 的額外參數，目前一律是空的。
+- 每次喚醒都寫一行 `sent-log.jsonl`（`kind: wake`），欄位有走的路（輸入框或接回）、送出的文字、是否開新一輪、目標工作區、接回輸出的 HCOM 名稱、接回的窗格、結果與原因；`extraArgs` 是接在 `hcom r` 旗標後面、給 client 的額外參數，目前一律是空的。
 - 接回結果：結束碼 0 記 `started`、結束碼 2 或逾時記 `pending`，兩者都是「未結案」；其他結束碼記 `failed`，直接結案。接回後看板再讀一次 hcom 清單，記下同 session 或同名 Agent 的 `launch_context.pane_id`。
 - 未結案的接回由後來追加的行結案：`resume-closed` 記結果（`succeeded`、`ended`、`abandoned`），`resume-pane` 補記後來才查到的窗格。有未結案接回時，每次讀取資料都會問一次 hcom 清單，session 出現就結案為成功。
-- 再次喚醒前的查證依序是：session 在 hcom 清單上 → 結案為成功，改走輸入框；清單上有同名 Agent（含還沒綁定的）或記下的窗格還在 `herdr pane list` 裡 → 拒絕；記下的窗格已不在 → 結案為已結束，照常接回；沒記到窗格 → 拒絕並回傳可放棄的那一筆（`abandon`）。窗格清單讀不到也拒絕。等待時間只用來顯示提示，不會放行。
+- 再次喚醒前的查證依序是：session 在 hcom 清單上 → 結案為成功，改走輸入框；清單上有主控原本的名稱或接回輸出的名稱（含還沒綁定的 Agent）或記下的窗格還在 `herdr pane list` 裡 → 拒絕；記下的窗格已不在 → 結案為已結束，照常接回；沒記到窗格 → 拒絕並回傳可放棄的那一筆（`abandon`）。窗格清單讀不到也拒絕。等待時間只用來顯示提示，不會放行。
 - 測試以 `tests/fake-hcom.mjs`（`list --json` 與 `r`）、`tests/fake-herdr.mjs`、`tests/fake-inject.mjs` 代替真的指令。
 
 ## 新建主控

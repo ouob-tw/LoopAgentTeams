@@ -3,7 +3,7 @@
 // treats it as the user typing in that tab. One attempt, no retry, no other channel.
 import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { ENDED_REASON, type SendResponse, type SentMessage } from '../board/messages.ts';
+import { ENDED_REASON, UNKNOWN_CONTROLLER_REASON, type SendResponse, type SentMessage } from '../board/messages.ts';
 import type { Board } from './board.ts';
 import type { BoardConfig } from './config.ts';
 import { listControllers } from './helper.ts';
@@ -109,7 +109,7 @@ async function attempt(board: Board, controllerId: string, rawText: string) {
 		// The pages may still show it as running; the re-read also tells them otherwise.
 		const known = (await board.refresh()).controllers.find((candidate) => candidate.id === controllerId);
 		hcomName = known?.hcomName ?? '';
-		reason = known ? ENDED_REASON : '看板目前的資料裡沒有這個主控，沒有送出。';
+		reason = known ? ENDED_REASON : UNKNOWN_CONTROLLER_REASON;
 	} else {
 		reason = await inject(board.config, hcomName, text);
 		status = reason ? 502 : 200;

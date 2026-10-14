@@ -62,8 +62,6 @@ export async function resumeAgent(
 	return launchResult(run, '接回');
 }
 
-const LIST_TIMEOUT_MS = 15_000;
-
 /** One agent in hcom's list: the running ones and those still starting, bound or not. */
 export interface HcomAgent {
 	name: string;
@@ -73,12 +71,16 @@ export interface HcomAgent {
 	pane: string | null;
 }
 
+/** The agent with this session ID, or else one with any of these names. */
+export function findAgent(agents: HcomAgent[], sessionId: string, names: (string | null)[]): HcomAgent | undefined {
+	return agents.find((agent) => agent.sessionId === sessionId) ?? agents.find((agent) => agent.name && names.includes(agent.name));
+}
+
 export type AgentList = { ok: true; agents: HcomAgent[] } | { ok: false; reason: string };
 
 /** hcom's list of agents. Whether a client is still running is told by its session ID in it. */
 export async function listAgents(config: BoardConfig): Promise<AgentList> {
-	// A list answers at once; only a launch or resume waits for the client.
-	const run = await runExternal(config.hcomCommand, ['list', '--json'], { timeoutMs: Math.min(config.hcomTimeoutMs, LIST_TIMEOUT_MS) });
+	const run = await runExternal(config.hcomCommand, ['list', '--json'], { timeoutMs: config.hcomListTimeoutMs });
 	if (run.failure) return { ok: false, reason: `hcom 的 Agent 清單讀不到：${run.failure}` };
 	let parsed: unknown;
 	try {

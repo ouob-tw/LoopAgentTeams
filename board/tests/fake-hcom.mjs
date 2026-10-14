@@ -6,7 +6,7 @@
 //   - `sleepMs`: wait this long after printing, before exiting.
 //   - `resumed`: an agent a resume adds to the agent list, as `list --json` prints one.
 // `list --json` is logged to <dir>/hcom-list-calls.jsonl instead and prints `agents` plus those
-// resumes added; `listFail: { exit, stderr }` acts out a failure, `listRaw` is printed as is.
+// resumes added; `listFail: { exit, stderr }` acts out a failure.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -22,7 +22,7 @@ if (args[0] === 'list') {
 		process.stderr.write(plan.listFail.stderr ?? '');
 		process.exit(plan.listFail.exit ?? 1);
 	}
-	process.stdout.write(plan.listRaw ?? JSON.stringify([...(plan.agents ?? []), ...added()]));
+	process.stdout.write(JSON.stringify([...(plan.agents ?? []), ...added()]));
 	process.exit(0);
 }
 

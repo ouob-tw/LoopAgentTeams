@@ -1,6 +1,6 @@
 // The board's sent log: one JSON line per attempt to send a message to a controller, per
-// answer the helper accepted, per attempt to start a new controller and per attempt to wake one, kept in the board's state
-// directory so every logged-in device sees the same history. Lines are only appended; what became
+// answer the helper accepted, per attempt to start a new controller and per attempt to wake one,
+// kept in the board's state directory so every logged-in device sees the same history. Lines are only appended; what became
 // of an answer, a launch or a resume is a later line of its own.
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -9,7 +9,7 @@ import type { LaunchState, LaunchView, SentLaunch } from '../board/launch.ts';
 import type { SentMessage } from '../board/messages.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import type { ResumeClose, SentWake, WakeView } from '../board/wake.ts';
-import type { HcomAgent } from './hcom.ts';
+import { findAgent, type HcomAgent } from './hcom.ts';
 import type { ReportFile } from './reports.ts';
 
 const SENT_LOG_FILE = 'sent-log.jsonl';
@@ -283,7 +283,7 @@ export function closeResume(stateDir: string, wakeId: string, result: ResumeClos
 export function settleResumes(stateDir: string, agents: HcomAgent[], now: number, waitMs: number): string | null {
 	for (const wake of openResumes(stateDir, now, waitMs)) {
 		const running = agents.find((agent) => agent.sessionId === wake.controllerId);
-		const seen = running ?? agents.find((agent) => agent.name === wake.hcomName);
+		const seen = findAgent(agents, wake.controllerId, [wake.hcomName, wake.resumedName]);
 		try {
 			if (!wake.pane && seen?.pane) {
 				appendSent(stateDir, { kind: 'resume-pane', wakeId: wake.id, pane: seen.pane, time: new Date(now).toISOString() });

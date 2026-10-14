@@ -6,6 +6,7 @@
 // twice. Wakes share the per-controller queue of messages.
 import { randomUUID } from 'node:crypto';
 import { isLaunchClient, latCommand } from '../board/launch.ts';
+import { UNKNOWN_CONTROLLER_REASON } from '../board/messages.ts';
 import type { Controller } from '../board/types.ts';
 import {
 	RESUME_BUSY_REASON,
@@ -18,7 +19,7 @@ import {
 	type WakeView
 } from '../board/wake.ts';
 import type { Board } from './board.ts';
-import { listAgents, resumeAgent, type HcomAgent } from './hcom.ts';
+import { findAgent, listAgents, resumeAgent, type HcomAgent } from './hcom.ts';
 import { chooseWorkspace, paneExists } from './herdr.ts';
 import { inject, queued, typedText } from './send.ts';
 import { appendSent, closeResume, openResume } from './sent-log.ts';
@@ -56,46 +57,50 @@ async function findController(board: Board, controllerId: string): Promise<Contr
 /** What stops this wake, or the running client to type into (null: resume). */
 type Plan = { refuse: string; abandon?: string } | { agent: HcomAgent | null };
 
+/** Type the text in or resume, filling in the entry; resolves with the open resume attempt the
+ *  user may give up when that is what stopped the wake. */
+async function deliver(board: Board, controller: Controller | undefined, request: WakeRequest, entry: SentWake): Promise<string | null> {
+	const refuse = (reason: string, abandon: string | null = null) => ((entry.error = reason), abandon);
+	if (!controller) return refuse(UNKNOWN_CONTROLLER_REASON);
+	const client = controller.client;
+	if (request.newRound) {
+		if (!isLaunchClient(client)) return refuse(`不知道 ${client || '這個 client'} 的 LAT 啟動指令，沒有送出。`);
+		entry.text = latCommand(client, entry.text);
+	}
+	const plan: Plan = await check(board, entry).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有送出：${error.message}` }));
+	if ('refuse' in plan) return refuse(plan.refuse, plan.abandon);
+	if (plan.agent) {
+		entry.route = 'inject';
+		entry.error = await inject(board.config, plan.agent.name, entry.text);
+		entry.outcome = entry.error ? 'failed' : 'sent';
+	} else await resume(board, controller, entry);
+	return null;
+}
+
 async function attempt(board: Board, request: WakeRequest): Promise<Result<WakeResponse>> {
 	const config = board.config;
 	const now = config.now();
 	const controller = await findController(board, request.controllerId);
-	const text = typedText(request.text);
 	const entry: SentWake = {
 		id: randomUUID(),
 		kind: 'wake',
 		time: new Date(now).toISOString(),
 		controllerId: request.controllerId,
 		hcomName: controller?.hcomName ?? '',
-		text,
+		text: typedText(request.text),
 		newRound: request.newRound,
 		route: null,
 		herdrWorkspace: null,
 		herdrWorkspaceLabel: null,
 		workspaceCreated: false,
+		resumedName: null,
 		pane: null,
 		extraArgs: [],
 		outcome: 'refused',
 		error: null
 	};
 
-	let abandon: string | null = null;
-	const plan: Plan = !controller
-		? { refuse: '看板目前的資料裡沒有這個主控，沒有送出。' }
-		: request.newRound && !isLaunchClient(controller.client)
-			? { refuse: `不知道 ${controller.client || '這個 client'} 的 LAT 啟動指令，沒有送出。` }
-			: await check(board, entry).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有送出：${error.message}` }));
-	if ('refuse' in plan) {
-		entry.error = plan.refuse;
-		abandon = plan.abandon ?? null;
-	} else {
-		if (request.newRound) entry.text = latCommand(controller!.client as 'claude' | 'codex', text);
-		if (plan.agent) {
-			entry.route = 'inject';
-			entry.error = await inject(config, plan.agent.name, entry.text);
-			entry.outcome = entry.error ? 'failed' : 'sent';
-		} else await resume(board, controller!, entry);
-	}
+	const abandon = await deliver(board, controller, request, entry);
 
 	let logError: string | null = null;
 	try {
@@ -133,7 +138,7 @@ async function check(board: Board, entry: SentWake): Promise<Plan> {
 	const open = openResume(stateDir, entry.controllerId, now, launchWaitMs);
 	if (open) {
 		if (running) closeResume(stateDir, open.id, 'succeeded', now);
-		else if (list.agents.some((agent) => agent.name === open.hcomName)) return { refuse: RESUME_BUSY_REASON };
+		else if (findAgent(list.agents, open.controllerId, [open.hcomName, open.resumedName])) return { refuse: RESUME_BUSY_REASON };
 		else if (!open.pane) return { refuse: RESUME_UNCONFIRMED_REASON, abandon: open.id };
 		else {
 			const pane = await paneExists(board.config, open.pane);
@@ -165,14 +170,9 @@ async function resume(board: Board, controller: Controller, entry: SentWake): Pr
 	});
 	entry.outcome = resumed.outcome;
 	entry.error = resumed.reason;
+	entry.resumedName = resumed.hcomName;
 	if (resumed.outcome === 'failed') return;
 	// The pane the resumed client runs in, so a later wake can tell when it is gone.
 	const list = await listAgents(board.config);
-	if (list.ok) {
-		const names = new Set([resumed.hcomName, entry.hcomName]);
-		const agent =
-			list.agents.find((candidate) => candidate.sessionId === entry.controllerId) ??
-			list.agents.find((candidate) => names.has(candidate.name));
-		entry.pane = agent?.pane ?? null;
-	}
+	if (list.ok) entry.pane = findAgent(list.agents, entry.controllerId, [entry.hcomName, entry.resumedName])?.pane ?? null;
 }
