@@ -1,10 +1,12 @@
 <script lang="ts">
 	// What the user sent to this controller from the board, on any logged-in device: messages typed
-	// into its client, answers to its questions, the launch that started it, and its wakes.
+	// into its client, answers to its questions, the launch that started it, its wakes and its
+	// model switches.
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { CLIENT_LABEL, LAUNCH_STATE_TEXT, latCommand } from '#lib/board/launch.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
+	import { choiceText, settingsText, SWITCH_STATE_TEXT } from '#lib/board/models.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import { RESUME_CLOSE_TEXT, RESUME_OVERDUE_TEXT, wakeText } from '#lib/board/wake.ts';
 
@@ -48,12 +50,28 @@
 							<span>✓ {LAUNCH_STATE_TEXT.active}</span>
 						</p>
 						<p class="title">{entry.folder}</p>
+						{#if entry.model || entry.effort}
+							<p class="title">模型 {entry.model ?? 'client 預設'}・思考強度 {entry.effort ?? 'client 預設'}</p>
+						{/if}
 						<p class="text">{latCommand(entry.client, entry.text)}</p>
+					{:else if entry.kind === 'switch'}
+						<p class="meta">
+							<time datetime={entry.time}>{formatTime(entry.time)}</time>
+							<span>切換模型與思考強度{entry.route === 'restart' ? '（停止再接回）' : entry.route === 'inject' ? '（輸入框）' : ''}</span>
+							{#if entry.state === 'refused' || entry.state === 'failed'}
+								<span class="failed">✗ {entry.error}</span>
+							{:else}
+								<span class:failed={entry.open && entry.state !== 'resuming'}>{entry.open ? '' : '✓ '}{SWITCH_STATE_TEXT[entry.state]}</span>
+							{/if}
+						</p>
+						<p class="text">改為 {choiceText(entry.to)}</p>
+						{#if entry.from}<p class="title">切換前 {settingsText(entry.from)}</p>{/if}
+						{#if entry.open && entry.error}<p class="title failed">{entry.error}</p>{/if}
 					{:else if entry.kind === 'wake'}
 						<p class="meta">
 							<time datetime={entry.time}>{formatTime(entry.time)}</time>
 							<span>
-								喚醒{entry.route === 'inject' ? '（輸入框）' : entry.route === 'resume' ? `（接回${entry.herdrWorkspaceLabel ? `，Herdr 工作區 ${entry.herdrWorkspaceLabel}` : ''}）` : ''}
+								{entry.switchId ? '切換模型時接回' : '喚醒'}{entry.route === 'inject' ? '（輸入框）' : entry.route === 'resume' ? `（接回${entry.herdrWorkspaceLabel ? `，Herdr 工作區 ${entry.herdrWorkspaceLabel}` : ''}）` : ''}
 							</span>
 							{#if entry.outcome === 'failed' || entry.outcome === 'refused'}
 								<span class="failed">✗ {entry.outcome === 'refused' ? entry.error : `沒有送達：${entry.error}`}</span>
@@ -66,7 +84,10 @@
 								<span class="failed">{RESUME_OVERDUE_TEXT}</span>
 							{/if}
 						</p>
-						<p class="text">{entry.text}</p>
+						{#if entry.text}<p class="text">{entry.text}</p>{/if}
+						{#if entry.choice && (entry.choice.model || entry.choice.effort)}
+							<p class="title">{choiceText(entry.choice)}</p>
+						{/if}
 					{:else}
 						<p class="meta">
 							<time datetime={entry.time}>{formatTime(entry.time)}</time>

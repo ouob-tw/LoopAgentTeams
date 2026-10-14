@@ -2,7 +2,7 @@
 	// The new-controller page: pick the client, a folder controllers have run in and the first
 	// message, then follow the recent launches below until each controller is running.
 	import { formatTime } from '#lib/board/format.ts';
-	import { CLIENT_LABEL, LAUNCH_CLIENTS, LAUNCH_STATE_TEXT, latCommand, type LaunchView } from '#lib/board/launch.ts';
+	import { CLIENT_LABEL, LAUNCH_CLIENTS, LAUNCH_STATE_TEXT, latCommand, type LaunchClient, type LaunchView } from '#lib/board/launch.ts';
 	import { launching, type StartResult } from '#lib/board/launching.svelte.ts';
 	import { enterMakesNewline } from '#lib/board/messaging.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
@@ -32,6 +32,15 @@
 	});
 
 	const projects = $derived(launching.list?.projects ?? []);
+	const options = $derived(launching.list?.modelOptions[launching.client]);
+
+	/** The lists differ per client, so a choice made for the other one is dropped. */
+	function chooseClient(client: LaunchClient) {
+		if (client === launching.client) return;
+		launching.client = client;
+		launching.model = '';
+		launching.effort = '';
+	}
 	const launches = $derived(launching.list?.launches ?? []);
 	const selected = $derived(projects.find((project) => project.path === launching.folder));
 	// A folder chosen by browsing is judged by the browser's answer, which resolves links like a launch does.
@@ -97,10 +106,32 @@
 			<legend>Client</legend>
 			{#each LAUNCH_CLIENTS as client (client)}
 				<label>
-					<input type="radio" name="client" value={client} bind:group={launching.client} />
+					<input type="radio" name="client" value={client} checked={launching.client === client} onchange={() => chooseClient(client)} />
 					{CLIENT_LABEL[client]}
 				</label>
 			{/each}
+		</fieldset>
+
+		<fieldset class="settings">
+			<legend>模型與思考強度</legend>
+			<label>
+				模型
+				<select bind:value={launching.model}>
+					<option value="">client 預設</option>
+					{#each options?.models ?? [] as option (option)}
+						<option value={option}>{option}</option>
+					{/each}
+				</select>
+			</label>
+			<label>
+				思考強度
+				<select bind:value={launching.effort}>
+					<option value="">client 預設</option>
+					{#each options?.efforts ?? [] as option (option)}
+						<option value={option}>{option}</option>
+					{/each}
+				</select>
+			</label>
 		</fieldset>
 
 		<fieldset class="folders">
@@ -225,6 +256,9 @@
 						{#if launch.gitInit}<span>已 git init</span>{/if}
 					</p>
 					<p class="title">{launch.folder}</p>
+					{#if launch.model || launch.effort}
+						<p class="title">模型 {launch.model ?? 'client 預設'}・思考強度 {launch.effort ?? 'client 預設'}</p>
+					{/if}
 					<p class="state" class:failed={launch.state === 'failed'} class:warn={launch.state === 'overdue' || launch.state === 'uncertain'}>
 						{stateText(launch)}
 					</p>
@@ -269,14 +303,22 @@
 		border: 0;
 		min-width: 0;
 	}
-	.clients {
+	.clients,
+	.settings {
 		flex-direction: row;
 		flex-wrap: wrap;
 		gap: 0.35rem 1.2rem;
 	}
-	.clients legend {
+	.clients legend,
+	.settings legend {
 		width: 100%;
 		margin-bottom: 0.35rem;
+	}
+	.settings label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		font-size: 0.85rem;
 	}
 	.project {
 		display: flex;

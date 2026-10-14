@@ -15,6 +15,9 @@ class Launching {
 	folder = $state('');
 	text = $state('');
 	gitInit = $state(false);
+	/** '' starts the client with its own default. */
+	model = $state('');
+	effort = $state('');
 	/** Null until the list is loaded. */
 	list = $state<LaunchList | null>(null);
 	loadFailed = $state(false);
@@ -70,7 +73,14 @@ class Launching {
 			response = await fetch('/api/launches', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ client: this.client, folder: this.folder, text: this.text, gitInit: this.gitInit })
+				body: JSON.stringify({
+					client: this.client,
+					folder: this.folder,
+					text: this.text,
+					gitInit: this.gitInit,
+					model: this.model || null,
+					effort: this.effort || null
+				})
 			});
 		} catch {
 			void this.load();

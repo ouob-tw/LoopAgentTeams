@@ -2,6 +2,8 @@
 	// Sends a message to one controller, or wakes an ended one. The text stays in the box unless it
 	// was delivered.
 	import { enterMakesNewline, messaging, type Outcome } from '#lib/board/messaging.svelte.ts';
+	import { FIXED_MODEL_REASON, LOCK_UNKNOWN_TEXT } from '#lib/board/models.ts';
+	import { switching } from '#lib/board/switching.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
@@ -20,6 +22,12 @@
 	/** The resume attempt whose abandon confirmation is open. */
 	let confirming = $state<Record<string, string>>({});
 	let abandoned = $state<Record<string, Outcome>>({});
+	// A resume may take a new model and effort; '' keeps the current one. Only offered when the
+	// client is known not to be running: a running one is typed into and keeps its settings.
+	let model = $state<Record<string, string>>({});
+	let effort = $state<Record<string, string>>({});
+	const status = $derived(switching.status[controller.id]);
+	const resumes = $derived(ended && status?.running === false && status.options !== null);
 
 	function edit(value: string) {
 		messaging.drafts[controller.id] = value;
@@ -36,11 +44,18 @@
 		delete outcomes[id];
 		delete confirming[id];
 		delete abandoned[id];
-		const result = waking ? await messaging.wake(id, sentText, newRound[id] ?? false) : await messaging.send(id, sentText);
+		const choice = resumes
+			? { model: status?.lock === 'fixed' ? null : model[id] || null, effort: effort[id] || null }
+			: { model: null, effort: null };
+		const result = waking ? await messaging.wake(id, sentText, newRound[id] ?? false, choice) : await messaging.send(id, sentText);
 		inFlight[id] = false;
 		// Only what was delivered leaves the box; anything typed meanwhile stays too.
 		if (result.ok && messaging.drafts[id] === sentText) messaging.drafts[id] = '';
-		if (result.ok) delete newRound[id];
+		if (result.ok) {
+			delete newRound[id];
+			delete model[id];
+			delete effort[id];
+		}
 		outcomes[id] = result;
 	}
 
@@ -76,6 +91,33 @@
 			<input type="checkbox" bind:checked={() => newRound[controller.id] ?? false, (value) => (newRound[controller.id] = value)} />
 			開新一輪 LAT
 		</label>
+		{#if resumes && status?.options}
+			<div class="choice">
+				<label>
+					模型
+					<select bind:value={() => model[controller.id] ?? '', (value) => (model[controller.id] = value)} disabled={status.lock === 'fixed'}>
+						<option value="">保持目前</option>
+						{#each status.options.models as option (option)}
+							<option value={option}>{option}</option>
+						{/each}
+					</select>
+				</label>
+				<label>
+					思考強度
+					<select bind:value={() => effort[controller.id] ?? '', (value) => (effort[controller.id] = value)}>
+						<option value="">保持目前</option>
+						{#each status.options.efforts as option (option)}
+							<option value={option}>{option}</option>
+						{/each}
+					</select>
+				</label>
+			</div>
+			{#if status.lock === 'fixed'}
+				<p class="note">{FIXED_MODEL_REASON}。</p>
+			{:else if status.lock === 'unknown'}
+				<p class="note">{LOCK_UNKNOWN_TEXT}（{status.lockReason}），接回後以下一回合核對結果。</p>
+			{/if}
+		{/if}
 		<p class="note">
 			主控已結束。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪 LAT」會在前面加上 LAT
 			啟動指令。
@@ -114,9 +156,21 @@
 	}
 	.note,
 	.round,
+	.choice,
 	.abandon,
 	.confirm {
 		grid-column: 1 / -1;
+	}
+	.choice {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0.5rem 1rem;
+	}
+	.choice label {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		font-size: 0.85rem;
 	}
 	.note {
 		margin: 0;

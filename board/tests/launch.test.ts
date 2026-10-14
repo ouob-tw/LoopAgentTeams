@@ -125,6 +125,60 @@ test('Codex gets $lat in front of the first message', async () => {
 	expect(hcomCalls().map((call) => call.args)).toEqual([['codex', '--dir', repo, '--terminal', 'herdr', '--go', '--hcom-prompt', '$lat fix the tests']]);
 });
 
+test('a chosen model and effort go to Claude as --model and --effort after hcom\'s own flags, and are logged', async () => {
+	const repo = folder('modelled', true);
+	herdrPlan({ panes: [{ workspace_id: 'wM', cwd: repo }], workspaces: [['wM', 1, 'modelled']] });
+
+	const { status, body } = await launch({ client: 'claude', folder: repo, model: 'claude-sonnet-5-5', effort: 'xhigh' });
+
+	expect(status).toBe(200);
+	expect(body.entry).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'xhigh' });
+	expect(hcomCalls().map((call) => call.args)).toEqual([
+		['claude', '--dir', repo, '--terminal', 'herdr', '--go', '--hcom-prompt', '/lat 做一件事', '--model', 'claude-sonnet-5-5', '--effort', 'xhigh']
+	]);
+	expect((await launchOf(body.entry!.id))).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'xhigh' });
+});
+
+test('Codex gets the model and effort only as -c overrides, never --model or -m', async () => {
+	const repo = folder('codex-modelled', true);
+	herdrPlan({ panes: [{ workspace_id: 'wN', cwd: repo }], workspaces: [['wN', 1, 'codex-modelled']] });
+
+	expect((await launch({ client: 'codex', folder: repo, model: 'gpt-6-astra', effort: 'low' })).status).toBe(200);
+	const [call] = hcomCalls();
+	expect(call.args.slice(-4)).toEqual(['-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="low"']);
+	expect(call.args.some((arg) => arg === '--model' || arg === '-m' || arg.startsWith('--model='))).toBe(false);
+});
+
+test('only what was chosen is passed: client default leaves the other one out', async () => {
+	const repo = folder('half', true);
+	herdrPlan({ panes: [{ workspace_id: 'wH', cwd: repo }], workspaces: [['wH', 1, 'half']] });
+
+	await launch({ client: 'codex', folder: repo, model: null, effort: 'high' });
+	await launch({ client: 'claude', folder: repo, model: 'claude-haiku-5-5', effort: null });
+
+	expect(hcomCalls().map((call) => call.args.slice(7))).toEqual([
+		['$lat 做一件事', '-c', 'model_reasoning_effort="high"'],
+		['/lat 做一件事', '--model', 'claude-haiku-5-5']
+	]);
+});
+
+test('the lists are offered with the launches, and a value they do not offer is rejected without running anything', async () => {
+	const repo = folder('unlisted', true);
+	const { modelOptions } = await list();
+	expect(modelOptions.claude.models).toEqual(['claude-opus-5-5', 'claude-sonnet-5-5', 'claude-haiku-5-5', 'claude-fable-5-1']);
+	expect(modelOptions.codex).toEqual({ models: ['gpt-6.1-sol', 'gpt-6-astra'], efforts: ['low', 'medium', 'high', 'xhigh'] });
+
+	for (const body of [
+		{ client: 'claude', model: 'gpt-6-astra' },
+		{ client: 'codex', model: 'claude-opus-5-5' },
+		{ client: 'codex', effort: 'max' },
+		{ client: 'claude', model: 3 }
+	]) {
+		expect((await launch({ folder: repo, ...body })).status).toBe(400);
+	}
+	expect(hcomCalls()).toEqual([]);
+});
+
 test('a board started inside an agent shell launches without that agent\'s identity, keeping hcom\'s data folder', async () => {
 	// The fixture's environment has an agent's HCOM_TAG, HCOM_INSTANCE_NAME, CLAUDE_CODE_* and more.
 	const repo = folder('tagless', true);
@@ -567,6 +621,19 @@ test('a browser that is not logged in can neither launch nor see the folders and
 	expect((await launch({ folder: repo }, '')).status).toBe(401);
 	expect((await fixture.fetch('/api/launches')).status).toBe(401);
 	expect(hcomCalls()).toEqual([]);
+});
+
+test('LAT_BOARD_MODEL_OPTIONS replaces the lists it names and keeps the others', async () => {
+	const options = { codex: { models: ['gpt-test-1'] } };
+	const other = await startFixture(23, { env: { ...commandEnv, LAT_BOARD_MODEL_OPTIONS: JSON.stringify(options) } });
+	try {
+		const otherCookie = await other.login();
+		const listed: LaunchList = await (await other.fetch('/api/launches', { cookie: otherCookie })).json();
+		expect(listed.modelOptions.codex).toEqual({ models: ['gpt-test-1'], efforts: ['low', 'medium', 'high', 'xhigh'] });
+		expect(listed.modelOptions.claude.models).toContain('claude-opus-5-5');
+	} finally {
+		await other.cleanup();
+	}
 });
 
 test('the wait can be changed with LAT_BOARD_LAUNCH_WAIT_SECONDS', async () => {

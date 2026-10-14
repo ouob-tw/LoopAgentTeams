@@ -50,12 +50,12 @@ export function launchResult(run: ExternalResult, action = '啟動'): LaunchResu
 }
 
 /** Start one agent of this client in the folder, with this first message, in a new Herdr tab of
- *  the workspace. No model or effort is given: the client's own defaults apply. */
+ *  the workspace. `extraArgs` go to the client, after hcom's own flags. */
 export async function launchAgent(
 	config: BoardConfig,
-	launch: { client: LaunchClient; folder: string; herdrWorkspace: string; prompt: string }
+	launch: { client: LaunchClient; folder: string; herdrWorkspace: string; prompt: string; extraArgs: string[] }
 ): Promise<LaunchResult> {
-	const args = [launch.client, '--dir', launch.folder, '--terminal', 'herdr', '--go', '--hcom-prompt', launch.prompt];
+	const args = [launch.client, '--dir', launch.folder, '--terminal', 'herdr', '--go', '--hcom-prompt', launch.prompt, ...launch.extraArgs];
 	const run = await runExternal(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
 		env: hcomEnv(launch.herdrWorkspace)
@@ -64,12 +64,13 @@ export async function launchAgent(
 }
 
 /** Resume the conversation with this session ID in a new Herdr tab of the workspace, with this
- *  first message. `extraArgs` go to the client, after hcom's own flags. */
+ *  first message (none when it is empty). `extraArgs` go to the client, after hcom's own flags. */
 export async function resumeAgent(
 	config: BoardConfig,
 	resume: { sessionId: string; herdrWorkspace: string; prompt: string; extraArgs: string[] }
 ): Promise<LaunchResult> {
-	const args = ['r', resume.sessionId, '--terminal', 'herdr', '--go', '--hcom-prompt', resume.prompt, ...resume.extraArgs];
+	const prompt = resume.prompt ? ['--hcom-prompt', resume.prompt] : [];
+	const args = ['r', resume.sessionId, '--terminal', 'herdr', '--go', ...prompt, ...resume.extraArgs];
 	const run = await runExternal(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
 		env: hcomEnv(resume.herdrWorkspace)
@@ -84,6 +85,8 @@ export interface HcomAgent {
 	sessionId: string | null;
 	/** The Herdr pane it runs in, when hcom knows it. */
 	pane: string | null;
+	/** hcom's status, e.g. `listening` or `active`; null when it gave none. */
+	status: string | null;
 }
 
 /** The agent with this session ID, or else one with any of these names. */
@@ -113,10 +116,17 @@ export async function listAgents(config: BoardConfig): Promise<AgentList> {
 	if (!valid) return { ok: false, reason: 'hcom 的 Agent 清單不是預期的格式' };
 	return {
 		ok: true,
-		agents: (parsed as { name: string; session_id?: string | null; launch_context?: { pane_id?: unknown } | null }[]).map((agent) => ({
+		agents: (parsed as { name: string; session_id?: string | null; status?: unknown; launch_context?: { pane_id?: unknown } | null }[]).map((agent) => ({
 			name: agent.name,
 			sessionId: agent.session_id || null,
-			pane: typeof agent.launch_context?.pane_id === 'string' ? agent.launch_context.pane_id : null
+			pane: typeof agent.launch_context?.pane_id === 'string' ? agent.launch_context.pane_id : null,
+			status: typeof agent.status === 'string' ? agent.status : null
 		}))
 	};
+}
+
+/** Stop one agent's process; hcom closes its terminal pane too. Whether it is gone is for the
+ *  caller to check: the command's own answer does not say. */
+export function killAgent(config: BoardConfig, name: string): Promise<ExternalResult> {
+	return runExternal(config.hcomCommand, ['kill', name], { timeoutMs: config.hcomListTimeoutMs });
 }

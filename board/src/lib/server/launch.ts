@@ -4,6 +4,7 @@
 // own rules is logged, and followed until a binding with its HCOM name appears.
 import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
+import { modelArgs } from '../board/models.ts';
 import { latCommand, NOT_GIT_REASON, type LaunchList, type LaunchRequest, type LaunchResponse, type Project, type SentLaunch } from '../board/launch.ts';
 import type { HelperController } from '../board/types.ts';
 import type { Board } from './board.ts';
@@ -49,9 +50,10 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 		projectsError = (error as Error).message;
 	}
 	try {
-		return { projects, projectsError, launches: readLaunches(stateDir, board.config.now(), launchWaitMs, LISTED_LAUNCHES), logError: null };
+		const launches = readLaunches(stateDir, board.config.now(), launchWaitMs, LISTED_LAUNCHES);
+		return { projects, projectsError, launches, logError: null, modelOptions: board.config.modelOptions };
 	} catch (error) {
-		return { projects, projectsError, launches: [], logError: (error as Error).message };
+		return { projects, projectsError, launches: [], logError: (error as Error).message, modelOptions: board.config.modelOptions };
 	}
 }
 
@@ -74,6 +76,8 @@ async function attempt(board: Board, request: LaunchRequest): Promise<{ status: 
 		folder: request.folder,
 		scope: null,
 		text: typedText(request.text),
+		model: request.model,
+		effort: request.effort,
 		gitInit: false,
 		herdrWorkspace: null,
 		herdrWorkspaceLabel: null,
@@ -95,7 +99,8 @@ async function attempt(board: Board, request: LaunchRequest): Promise<{ status: 
 			client: entry.client,
 			folder: prepared.startIn,
 			herdrWorkspace: entry.herdrWorkspace!,
-			prompt: latCommand(entry.client, entry.text)
+			prompt: latCommand(entry.client, entry.text),
+			extraArgs: modelArgs(entry.client, request)
 		});
 		entry.outcome = launched.outcome;
 		entry.hcomName = launched.hcomName;
