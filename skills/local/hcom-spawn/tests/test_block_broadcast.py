@@ -59,6 +59,9 @@ class BlockBroadcastTests(unittest.TestCase):
             'X=1 hcom --name vare send --intent inform -- hello',
             'env X=1 hcom --go --name vare send -- hello',
             'hcom --tag vare-x send -- hello',
+            'hcom --dir @luna send -- hello',
+            'hcom --tag @luna send -- hello',
+            'hcom --name @luna send -- hello',
         ):
             with self.subTest(command=command):
                 result = run_hook(command)
@@ -92,6 +95,8 @@ class BlockBroadcastTests(unittest.TestCase):
             'hcom --name vare send --thread plan -- next',
             'hcom --name vare list',
             'hcom --name send list',
+            'hcom --thread plan send -- next',
+            'hcom --dir @x send @luna -- hi',
         ):
             with self.subTest(command=command):
                 result = run_hook(command)

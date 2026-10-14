@@ -235,14 +235,15 @@ def broadcasts(words):
     for index, word in enumerate(words):
         name = word.rsplit('/', 1)[-1]
         following = words[index + 1:]
-        command = following if name == 'hcom' else []
+        command, thread = (following if name == 'hcom' else []), False
         while command[:1] and command[0].startswith('-'):  # global options before `send`
+            thread = thread or command[0].split('=', 1)[0] == '--thread'
             takes_value = '=' not in command[0] and (command[0] in VALUE_OPTIONS or (
                 command[1:2] and command[1] != 'send' and not command[1].startswith('-')))
             command = command[2:] if takes_value else command[1:]
         if command[:1] == ['send']:
             # The rest of the line is this send's options and message text.
-            return send_broadcasts(following[:len(following) - len(command)] + command[1:])
+            return not thread and send_broadcasts(command[1:])
         shell_seen = shell_seen or name in SHELLS
         shell_flag = (shell_seen and word.startswith('-') and not word.startswith('--')
                       and 'c' in word)
