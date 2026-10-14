@@ -16,7 +16,7 @@ import type {
 } from '../src/lib/board/types.ts';
 
 const ROOT = join(import.meta.dir, '..');
-// Each test file takes its own offsets from this base; the highest one in use is 24.
+// Each test file takes its own offsets from this base; the highest one in use is 26.
 export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
 
 /** What runs the server and the fake commands: Node when the host has it, otherwise the Bun that
@@ -114,6 +114,9 @@ export interface HelperPlan extends FixedOutput {
 	files?: Record<string, HelperQuestion[]>;
 	/** Notifying the controller fails with this reason; the answer is still written. */
 	notifyFails?: string;
+	/** `board transcript` waits this long on a child process instead of reading, writing the
+	 *  child's PID to transcript-child.pid. */
+	transcriptChildMs?: number;
 	/** The controller records an answer the moment it is written. */
 	recordOnAnswer?: boolean;
 }
@@ -179,7 +182,12 @@ export const titled = (snapshot: BoardSnapshot | undefined, title: string): Inbo
 
 export async function startFixture(
 	portOffset: number,
-	options: { env?: Record<string, string>; password?: string | null } = {}
+	options: {
+		env?: Record<string, string>;
+		password?: string | null;
+		/** What runs the server instead of `NODE`, such as the Bun that runs the tests. */
+		runtime?: string;
+	} = {}
 ): Promise<Fixture> {
 	if (!existsSync(join(ROOT, 'build/index.js'))) throw new Error('build/ is missing: run `bun run build` first');
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-test-'));
@@ -322,7 +330,7 @@ export async function startFixture(
 			return watch;
 		},
 		async start() {
-			server = spawn(NODE, [join(ROOT, 'build/index.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
+			server = spawn(options.runtime ?? NODE, [join(ROOT, 'build/index.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
 			server.stdout!.on('data', (chunk) => ((output += chunk), process.stdout.write(chunk)));
 			server.stderr!.on('data', (chunk) => ((output += chunk), process.stderr.write(chunk)));
 			const deadline = Date.now() + 10_000;
