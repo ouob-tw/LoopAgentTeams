@@ -30,6 +30,8 @@ bun run board start
 
 預設監聽 `0.0.0.0:7100`。用 `--host`、`--port` 改位址與連接埠，例如 `bun run board start --host 127.0.0.1 --port 7200`；也可以用環境變數 `HOST`、`PORT`。之後用 `http://<主機位址>:7100` 開啟。其他設定（狀態目錄、技能位置等）都是環境變數，見 [board/README.md](../board/README.md) 的設定表。
 
+在某個 Agent 的終端機裡啟動看板也可以：看板新建或喚醒主控時，不會把那個 Agent 的身分（hcom 名稱、client 的 session 等環境變數）傳給 hcom，所以新主控不會變成那個 Agent 的子 Agent，第一則訊息也不會多出「把結果回傳給它」的句子，效果與背景服務相同。
+
 ## 登入
 
 看板用一組密碼登入。沒登入的瀏覽器只看到登入畫面，什麼資料都拿不到。

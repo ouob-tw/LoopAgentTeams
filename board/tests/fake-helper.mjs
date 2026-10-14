@@ -5,9 +5,12 @@
 // for that path. A plan entry named after the command (`answer`, `notify`, `questions`) replaces
 // that with a fixed output. `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
 // item per line, the way the real command pages a client's record, with the latest turn's settings
-// from <dir>/transcripts/<session>.current.json when there is one. `board launch-args` prints what
-// <dir>/launch-args.json holds for the session: a list of arguments, or `{ "unknown": reason }`.
-// Each call is logged to <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
+// from <dir>/transcripts/<session>.current.json when there is one; with `transcriptChildMs` in the
+// plan it instead waits that long on a child process, writing the child's PID to
+// transcript-child.pid. `board launch-args` prints what <dir>/launch-args.json holds for the
+// session: a list of arguments, or `{ "unknown": reason }`. Each call is logged to
+// <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
+import { spawn } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -115,6 +118,12 @@ function questions() {
 /** One page of <dir>/transcripts/<session>.jsonl: the last 50 texts before the cursor and every
  *  operation after the first of them. A line that is not JSON is skipped and counted. */
 function transcript() {
+	if (plan.transcriptChildMs) {
+		// Like `uv run`, wait on a child that does the work; its PID tells the test whether it is gone.
+		const child = spawn(process.execPath, ['-e', `setTimeout(() => {}, ${plan.transcriptChildMs})`], { stdio: 'ignore' });
+		writeFileSync(join(dir, 'transcript-child.pid'), String(child.pid));
+		return { output: { status: 'error', reason: 'child finished' }, sleepMs: plan.transcriptChildMs };
+	}
 	const given = options();
 	const session = given['session-id']?.[0] ?? '';
 	const path = join(dir, 'transcripts', `${session}.jsonl`);
@@ -163,6 +172,8 @@ const act =
 	command === 'answer' ? answer : command === 'questions' ? questions : command === 'transcript' ? transcript : command === 'launch-args' ? launchArgs : notify;
 const result = command === 'list' ? plan : (plan[command] ?? act());
 setTimeout(() => {
-	process.stdout.write(result.raw ?? JSON.stringify(result.output));
+	// `stderrBytes` and `padBytes` make the output too large: spaces before the real output.
+	if (result.stderrBytes) process.stderr.write(' '.repeat(result.stderrBytes));
+	process.stdout.write(' '.repeat(result.padBytes ?? 0) + (result.raw ?? JSON.stringify(result.output)));
 	process.exitCode = result.exit ?? 0;
 }, result.sleepMs ?? 0);
