@@ -2100,17 +2100,19 @@ def _claude_user_text(content):
     return ""
 
 
-def _claude_human_text(record, text, marks_origin):
-    """What a person typed, or None for input the client or a tool put there. ``marks_origin``
-    tells whether this client version records the origin of what the person typed."""
+def _claude_human_text(record, text):
+    """What a person typed, or None for input the client or a tool put there."""
     if record.get("isMeta") or record.get("isCompactSummary") or record.get("isVisibleInTranscriptOnly"):
         return None
-    if marks_origin:
-        # Typed text carries its origin; the client's own commands, such as `/copy`, carry none.
-        origin = record.get("origin")
-        human = isinstance(origin, dict) and origin.get("kind") == "human"
+    origin = record.get("origin")
+    if origin is not None and not isinstance(origin, dict):
+        raise _RecordError("origin is not an object")
+    if origin is not None:
+        human = origin.get("kind") == "human"
     else:
-        # Older versions record no origin: only the client's own wrappers are not typed text.
+        # Decided per record, since a resumed session can mix client versions: without an origin
+        # only the client's own wrappers are not typed text. A built-in command such as `/copy`
+        # then shows, which is still something the person typed.
         human = not _CLIENT_WRAPPER.match(text)
     if not human or _INJECTED_INPUT.match(text):
         return None
@@ -2139,7 +2141,6 @@ def _each_record(records, handle):
 
 def _claude_items(records):
     tools, seen = {}, set()
-    marks_origin = any(record.get("type") == "user" and "origin" in record for record in records)
 
     def handle(record, items):
         record_id = _text_field(record.get("uuid"))
@@ -2172,7 +2173,7 @@ def _claude_items(records):
             if text.startswith("Stop hook feedback"):
                 items.append(_tool(time, "hook", "hook 提示"))
                 return
-            human = _claude_human_text(record, text, marks_origin)
+            human = _claude_human_text(record, text)
             if human is not None:
                 items.append({"kind": "user", "time": time, "text": human})
             elif _INJECTED_INPUT.match(text) and (notice := _injected(time, text)):

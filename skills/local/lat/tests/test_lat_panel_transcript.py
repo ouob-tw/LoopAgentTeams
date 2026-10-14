@@ -84,6 +84,7 @@ class ClaudeSampleTests(TranscriptTestCase):
         ("assistant", "改好了，登出也正常。"),
         ("tool", "收到 hcom 通知"),
         ("assistant", "收到 nova 的訊息。"),
+        ("user", "/copy"),
         ("user", "/lat 開新一輪"),
         ("tool", "hook 提示"),
         ("assistant", "好，開始新一輪。"),
@@ -91,16 +92,16 @@ class ClaudeSampleTests(TranscriptTestCase):
 
     def test_texts_and_operations_come_in_the_order_they_happened(self):
         self.assertEqual([shown(item) for item in self.page["items"]], self.EXPECTED)
-        self.assertEqual([item["seq"] for item in self.page["items"]], list(range(20)))
+        self.assertEqual([item["seq"] for item in self.page["items"]], list(range(21)))
         self.assertIsNone(self.page["before"])
         self.assertEqual(self.page["path"], str(self.claude_file()))
         self.assertEqual(self.page["items"][1]["time"], "2026-10-14T09:00:01.000Z")
 
     def test_only_what_a_person_typed_is_a_user_message(self):
         users = [item["text"] for item in self.page["items"] if item["kind"] == "user"]
-        # Typed, typed while the controller was busy, and a slash command; not the HCOM
+        # Typed, typed while the controller was busy, and slash commands; not the HCOM
         # wake-up, a task notification, a skill body, a compact summary or hook feedback.
-        self.assertEqual(users, ["幫我看一下登入頁為什麼會轉圈", "順便看一下登出", "/lat 開新一輪"])
+        self.assertEqual(users, ["幫我看一下登入頁為什麼會轉圈", "順便看一下登出", "/copy", "/lat 開新一輪"])
 
     def test_no_content_output_sub_agent_or_broken_line_reaches_the_board(self):
         self.assertNotIn("SECRET", json.dumps(self.page, ensure_ascii=False))
@@ -215,7 +216,7 @@ class LookupTests(TranscriptTestCase):
         path = home / ".codex/sessions/2026/10/14" / f"rollout-x-{CODEX_SESSION}.jsonl"
         path.parent.mkdir(parents=True)
         shutil.copy(FIXTURES / "codex-rollout.jsonl", path)
-        self.assertEqual(len(self.transcript("claude", CLAUDE_SESSION)["items"]), 20)
+        self.assertEqual(len(self.transcript("claude", CLAUDE_SESSION)["items"]), 21)
         self.assertEqual(self.transcript("codex", CODEX_SESSION)["path"], str(path))
 
     def test_a_line_still_being_written_is_neither_shown_nor_counted_as_broken(self):
@@ -257,16 +258,41 @@ class RecordVariantTests(TranscriptTestCase):
             ("user", "舊版打的字"), ("user", "<div>這段 HTML 是我打的</div>"), ("user", "/lat 開新一輪"),
         ])
 
-    def test_current_claude_records_count_only_typed_origin_as_the_person(self):
+    def test_each_claude_record_is_judged_by_its_own_origin_in_a_mixed_version_session(self):
         records = [
-            {"type": "user", "uuid": "1", "timestamp": "t", "origin": {"kind": "human"},
-             "message": {"role": "user", "content": "<div>我打的</div>"}},
+            # Written by an older version before the session was resumed.
+            {"type": "user", "uuid": "1", "timestamp": "t", "message": {"role": "user", "content": "舊版打的字"}},
             {"type": "user", "uuid": "2", "timestamp": "t",
-             "message": {"role": "user", "content": "<command-name>/copy</command-name>"}},
+             "message": {"role": "user", "content": "<local-command-stdout>SECRET</local-command-stdout>"}},
+            # Written by the newer version.
+            {"type": "user", "uuid": "3", "timestamp": "t", "origin": {"kind": "human"},
+             "message": {"role": "user", "content": "<div>新版打的</div>"}},
+            {"type": "user", "uuid": "4", "timestamp": "t", "origin": {"kind": "task-notification"},
+             "message": {"role": "user", "content": "SECRET_TASK"}},
         ]
         self.claude_file().write_text("".join(json.dumps(record) + "\n" for record in records))
-        items = self.transcript("claude", CLAUDE_SESSION)["items"]
-        self.assertEqual([shown(item) for item in items], [("user", "<div>我打的</div>")])
+        page = self.transcript("claude", CLAUDE_SESSION)
+        self.assertEqual([shown(item) for item in page["items"]], [
+            ("user", "舊版打的字"), ("user", "<div>新版打的</div>"),
+        ])
+
+    def test_a_malformed_record_with_an_origin_changes_nothing_else(self):
+        records = [
+            {"type": "user", "uuid": "1", "timestamp": "t", "message": {"role": "user", "content": "舊版打的字"}},
+            {"type": "user", "uuid": [], "timestamp": "t", "origin": {"kind": "human"},
+             "message": {"role": "user", "content": "SECRET_1"}},
+            {"type": "user", "uuid": "2", "timestamp": "t", "origin": "human",
+             "message": {"role": "user", "content": "SECRET_2"}},
+            {"type": "user", "uuid": "3", "timestamp": "t", "isSidechain": True, "origin": {"kind": "human"},
+             "message": {"role": "user", "content": "SECRET_3"}},
+            {"type": "user", "uuid": "4", "timestamp": "t", "message": {"role": "user", "content": "<div>再一句</div>"}},
+        ]
+        self.claude_file().write_text("".join(json.dumps(record) + "\n" for record in records))
+        page = self.transcript("claude", CLAUDE_SESSION)
+        self.assertEqual([shown(item) for item in page["items"]], [
+            ("user", "舊版打的字"), ("user", "<div>再一句</div>"),
+        ])
+        self.assertEqual(page["skipped"], 2)
 
     def test_a_claude_record_with_fields_of_the_wrong_type_is_dropped_alone(self):
         good = (FIXTURES / "claude-session.jsonl").read_text().splitlines()
