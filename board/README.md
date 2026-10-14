@@ -131,7 +131,7 @@ bun run repro:hydration --serve none       # 只啟動已登入的假資料看�
 
 ```bash
 bun run build && bun run measure:commandline   # 無頭 Chrome；違反規則就以 1 結束；使用測試連接埠起點加 16 與加 17
-bun scripts/measure-commandline.ts --serve     # 啟動已配對的假資料看板，再用 scripts/measure-commandline.py 以 WebKit 量同樣的案例
+bun scripts/measure-commandline.ts --serve     # 啟動已登入的假資料看板，再用 scripts/measure-commandline.py 以 WebKit 量同樣的案例
 ```
 
 封存的期限用看板的時鐘計算。測試以 `LAT_BOARD_CLOCK_FILE` 指定一個檔案，內容是一個 ISO 時間，看板就把它當成現在；沒有設定或檔案讀不出時間時用系統時間。

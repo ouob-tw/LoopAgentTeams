@@ -11,7 +11,7 @@
 //                and do not overlap the box.
 //
 // CHROME names the browser; LAT_BOARD_TEST_PORT_BASE moves the board's port (base + 16, Chrome debugging base + 17).
-// --serve only starts the board (already paired) and prints its address and cookie, for
+// --serve only starts the board (already logged in) and prints its address and cookie, for
 // scripts/measure-commandline.py, which measures the same cases in WebKit.
 // --shots <dir> saves a screenshot of every case there.
 import { spawn } from 'node:child_process';
@@ -35,7 +35,7 @@ const shotsAt = process.argv.includes('--shots') ? process.argv[process.argv.ind
 if (shotsAt) mkdirSync(shotsAt, { recursive: true });
 
 const fixture = await startFixture(16);
-const cookie = await fixture.pair('measure-commandline');
+const cookie = await fixture.login('measure-commandline');
 fixture.list([fixture.bound('alpha', 'luna')]);
 await fixture.refresh(cookie);
 
