@@ -28,7 +28,8 @@
 	let effort = $state<Record<string, string>>({});
 	/** The resume attempt that stopped the last wake and may be given up, by controller ID. */
 	let abandonable = $state<Record<string, string>>({});
-	let confirming = $state(false);
+	/** Controllers whose abandon confirmation is open. */
+	let confirming = $state<Record<string, boolean>>({});
 
 	const id = $derived(recipient?.id ?? '');
 	const status = $derived(waking ? switching.status[id] : undefined);
@@ -36,11 +37,14 @@
 	// is typed into and keeps its settings.
 	const resumes = $derived(waking && status?.running === false && status.options !== null);
 
+	// The pop-up belongs to one recipient: another one closes it.
+	$effect.pre(() => {
+		void id;
+		optionsOpen = false;
+	});
+
 	$effect(() => {
-		if (!waking) {
-			optionsOpen = false;
-			return;
-		}
+		if (!waking) return;
 		const abort = new AbortController();
 		void switching.load(id, abort.signal);
 		return () => abort.abort();
@@ -78,10 +82,11 @@
 	}
 
 	async function abandon() {
-		const wakeId = abandonable[id];
-		confirming = false;
-		const result = await messaging.abandon(id, wakeId);
-		if (result.ok) delete abandonable[id];
+		const target = id;
+		const wakeId = abandonable[target];
+		delete confirming[target];
+		const result = await messaging.abandon(target, wakeId);
+		if (result.ok) delete abandonable[target];
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? '已放棄前一次接回，可以再按「喚醒並送出」。' : (result.reason ?? '放棄失敗'));
 	}
 </script>
@@ -157,14 +162,14 @@
 				@{recipient.hcomName} 已結束。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。
 			</p>
 			{#if abandonable[id]}
-				{#if confirming}
+				{#if confirming[id]}
 					<p class="warn">{ABANDON_CONFIRM_TEXT}</p>
 					<div class="actions">
 						<button type="button" class="danger" onclick={abandon}>確認放棄</button>
-						<button type="button" onclick={() => (confirming = false)}>取消</button>
+						<button type="button" onclick={() => delete confirming[id]}>取消</button>
 					</div>
 				{:else}
-					<button type="button" onclick={() => (confirming = true)}>放棄前一次接回</button>
+					<button type="button" onclick={() => (confirming[id] = true)}>放棄前一次接回</button>
 				{/if}
 			{/if}
 		</div>

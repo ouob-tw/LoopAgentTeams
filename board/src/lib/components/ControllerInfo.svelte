@@ -36,14 +36,18 @@
 	let places = $state<Record<string, Place | string>>({});
 	const place = $derived(places[controller.id]);
 
-	// Read again when another controller is opened or this one moves to another tab.
+	// Read again with every new board data: each hands this page a new `controller` object, and
+	// tabs may have moved since, the board's own move of a resumed tab included.
 	$effect(() => {
 		const id = controller.id;
-		const tab = controller.herdr?.tab;
-		if (!tab) return;
+		if (!controller.herdr) return;
 		const abort = new AbortController();
 		fetch(`/api/herdr-place?controller=${encodeURIComponent(id)}`, { signal: abort.signal })
-			.then((response) => response.json())
+			.then((response) => {
+				// The server sends a browser that is not logged in to the login screen.
+				if (response.status === 401) location.reload();
+				return response.json();
+			})
 			.then((body) => (places[id] = body.ok ? body.place : (body.reason ?? '讀不到位置')))
 			.catch(() => {
 				if (!abort.signal.aborted) places[id] = '沒有收到看板伺服器的回應';

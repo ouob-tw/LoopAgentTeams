@@ -42,7 +42,6 @@
 	let inFlight = $state<Record<string, boolean>>({});
 	let outcomes = $state<Record<string, Outcome>>({});
 	let confirming = $state<Record<string, string>>({});
-	let abandoned = $state<Record<string, Outcome>>({});
 	const sending = $derived(inFlight[id] ?? false);
 	const outcome = $derived(outcomes[id]);
 	const chosen = $derived(!!(model[id] || effort[id]));
@@ -63,7 +62,6 @@
 		inFlight[target] = true;
 		delete outcomes[target];
 		delete confirming[target];
-		delete abandoned[target];
 		const result = await switching.switch(target, choice);
 		inFlight[target] = false;
 		outcomes[target] = result;
@@ -78,12 +76,9 @@
 	async function abandon(wakeId: string) {
 		const target = id;
 		delete confirming[target];
-		abandoned[target] = await messaging.abandon(target, wakeId);
-		if (abandoned[target].ok) delete outcomes[target];
-		toasts.show(
-			abandoned[target].ok ? 'ok' : 'failed',
-			abandoned[target].ok ? '已放棄前一次接回，可以再按「繼續切換」。' : (abandoned[target].reason ?? '放棄失敗')
-		);
+		const result = await messaging.abandon(target, wakeId);
+		if (result.ok) delete outcomes[target];
+		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? '已放棄前一次接回，可以再按「繼續切換」。' : (result.reason ?? '放棄失敗'));
 	}
 </script>
 

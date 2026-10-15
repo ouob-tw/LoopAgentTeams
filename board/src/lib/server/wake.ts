@@ -243,8 +243,6 @@ export async function resume(board: Board, controller: Controller, entry: SentWa
 		// The pane the resumed client runs in, so a later wake can tell when it is gone.
 		const list = await listAgents(board.config);
 		if (list.ok) entry.pane = findAgent(list.agents, entry.controllerId, [entry.hcomName, entry.resumedName])?.pane ?? null;
-		// The new tab goes first in its workspace; where it ends up does not change the outcome.
-		if (entry.pane) await tabToFront(board.config, entry.pane);
 	}
 	const result: ResumeResult = {
 		kind: 'resume-result',
@@ -261,5 +259,8 @@ export async function resume(board: Board, controller: Controller, entry: SentWa
 		// The attempt stays open as logged; the next wake checks it like any other open one.
 		return { abandon: null, logged: true, logError: (error as Error).message };
 	}
+	// The new tab goes first in its workspace. Not waited for: where it ends up does not change
+	// the outcome, and a slow Herdr must not hold up the answer.
+	if (entry.pane) void tabToFront(board.config, entry.pane);
 	return { abandon: null, logged: true, logError: null };
 }

@@ -150,14 +150,21 @@ function socketRequest(config: BoardConfig, method: string, params: object): Pro
 		const timer = setTimeout(() => finish({ reason: '逾時沒有回應' }), config.herdrTimeoutMs);
 		socket.on('error', (error) => finish({ reason: error.message }));
 		socket.on('connect', () => socket.write(JSON.stringify({ id: 'lat-board', method, params }) + '\n'));
+		// One JSON object per line; lines that are not the answer to this request are skipped.
 		socket.on('data', (chunk) => {
 			answer += chunk.toString();
-			if (!answer.includes('\n')) return;
-			try {
-				const body = JSON.parse(answer);
-				finish('result' in body ? { result: body.result } : { reason: body.error?.message ?? '回應裡沒有結果' });
-			} catch {
-				finish({ reason: '回應不是預期的 JSON' });
+			let end: number;
+			while ((end = answer.indexOf('\n')) >= 0) {
+				const line = answer.slice(0, end);
+				answer = answer.slice(end + 1);
+				let body;
+				try {
+					body = JSON.parse(line);
+				} catch {
+					return finish({ reason: '回應不是預期的 JSON' });
+				}
+				if (body?.id !== 'lat-board') continue;
+				return finish('result' in body ? { result: body.result } : { reason: body.error?.message ?? '回應裡沒有結果' });
 			}
 		});
 	});
@@ -165,8 +172,8 @@ function socketRequest(config: BoardConfig, method: string, params: object): Pro
 
 /**
  * Move the tab holding this pane to the front of its workspace. A resumed controller opens in a
- * new tab, which Herdr adds at the end; putting it first, rather than back where the old tab was,
- * leaves the place of every other tab as it was. Returns why it did not move, or null.
+ * new tab, which Herdr adds at the end; the user wants resumed tabs first, where they are easy to
+ * find. The other tabs keep their order. Returns why it did not move, or null.
  */
 export async function tabToFront(config: BoardConfig, paneId: string): Promise<string | null> {
 	const panes = await herdr(config, ['pane', 'list']);

@@ -31,11 +31,11 @@
 </div>
 
 <style>
-	/* Above the command line in the wide layout, which is about 3.5rem tall with a one-line box. */
+	/* Placed just above the command line by the page; see `.dock` there. */
 	.toasts {
-		position: fixed;
+		position: absolute;
 		right: 1rem;
-		bottom: 4.5rem;
+		bottom: calc(100% + 0.5rem);
 		z-index: 50;
 		display: flex;
 		flex-direction: column;
@@ -81,6 +81,7 @@
 	/* A phone has its message box low on the screen; the notices sit under the top bar instead. */
 	@media (max-width: 760px) {
 		.toasts {
+			position: fixed;
 			top: 4rem;
 			bottom: auto;
 		}

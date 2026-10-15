@@ -2,7 +2,8 @@
 // scheme is not safe are dropped by markdown-it's own check. Single line breaks stay line breaks.
 import MarkdownIt from 'markdown-it';
 
-const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
+// Images are off: text from a controller must not make the browser fetch other hosts.
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true }).disable('image');
 
 // Links open in a new tab, so following one does not leave the board.
 const renderLink = md.renderer.rules.link_open ?? ((tokens, index, options, _env, self) => self.renderToken(tokens, index, options));

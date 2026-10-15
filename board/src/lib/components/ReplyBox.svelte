@@ -22,7 +22,6 @@
 	let newRound = $state<Record<string, boolean>>({});
 	/** The resume attempt whose abandon confirmation is open. */
 	let confirming = $state<Record<string, string>>({});
-	let abandoned = $state<Record<string, Outcome>>({});
 	// A resume may take a new model and effort; '' keeps the current one. Only offered when the
 	// client is known not to be running: a running one is typed into and keeps its settings.
 	let model = $state<Record<string, string>>({});
@@ -33,7 +32,6 @@
 	function edit(value: string) {
 		messaging.drafts[controller.id] = value;
 		delete outcomes[controller.id];
-		delete abandoned[controller.id];
 	}
 
 	async function submit() {
@@ -44,7 +42,6 @@
 		inFlight[id] = true;
 		delete outcomes[id];
 		delete confirming[id];
-		delete abandoned[id];
 		const choice = resumes
 			? { model: status?.lock === 'fixed' ? null : model[id] || null, effort: effort[id] || null }
 			: { model: null, effort: null };
@@ -68,7 +65,6 @@
 		const id = controller.id;
 		delete confirming[id];
 		const result = await messaging.abandon(id, wakeId);
-		abandoned[id] = result;
 		if (result.ok) delete outcomes[id];
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? '已放棄前一次接回，可以再按「喚醒並送出」。' : (result.reason ?? '放棄失敗'));
 	}

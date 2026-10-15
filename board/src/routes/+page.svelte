@@ -275,7 +275,8 @@
 						<button class="context" onclick={() => openController(controller.id)}>
 							{item.project} · @{item.hcomName}　看主控資訊 →
 						</button>
-						<ReplyBox {controller} />
+						<!-- The wide layout sends and wakes through the command line at the bottom. -->
+						<div class="phone-only"><ReplyBox {controller} /></div>
 					{:else}
 						<p class="context">{item.project} · @{item.hcomName}（已不在名冊上）</p>
 					{/if}
@@ -284,19 +285,25 @@
 		</section>
 	</div>
 
-	<!-- `.page` is a full-height column above 760px, so the command line stays at the bottom. -->
-	<CommandLine {controllers} target={controller} />
+	<!-- `.page` is a full-height column above 760px, so the command line stays at the bottom. The
+	     notices float just above it, however tall its box has grown. -->
+	<div class="dock">
+		<Toasts
+			standing={[
+				...(board.link === 'offline' ? [{ kind: 'failed' as const, text: '連線中斷，正在重新連線…' }] : []),
+				...board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))
+			]}
+		/>
+		<CommandLine {controllers} target={controller} />
+	</div>
 </div>
 
 <Settings bind:this={settings} />
-<Toasts
-	standing={[
-		...(board.link === 'offline' ? [{ kind: 'failed' as const, text: '連線中斷，正在重新連線…' }] : []),
-		...board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))
-	]}
-/>
 
 <style>
+	.dock {
+		position: relative;
+	}
 	.page {
 		display: flex;
 		flex-direction: column;
@@ -440,6 +447,11 @@
 	.empty {
 		margin: 0;
 		color: var(--muted);
+	}
+	@media (min-width: 761px) {
+		.phone-only {
+			display: none;
+		}
 	}
 	.context {
 		margin: 0;

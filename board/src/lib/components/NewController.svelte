@@ -3,8 +3,9 @@
 	// message, then follow the recent launches below until each controller is running.
 	import { formatTime } from '#lib/board/format.ts';
 	import { CLIENT_LABEL, LAUNCH_CLIENTS, LAUNCH_STATE_TEXT, latCommand, type LaunchClient, type LaunchView } from '#lib/board/launch.ts';
-	import { launching, type StartResult } from '#lib/board/launching.svelte.ts';
+	import { launching } from '#lib/board/launching.svelte.ts';
 	import { enterMakesNewline } from '#lib/board/messaging.svelte.ts';
+	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import MessageBox from './MessageBox.svelte';
 
@@ -51,7 +52,6 @@
 	);
 
 	let sending = $state(false);
-	let outcome = $state<StartResult | null>(null);
 	const ready = $derived(!sending && launching.folder !== '' && launching.text.trim() !== '' && (!needsInit || launching.gitInit));
 
 	const name = (path: string) => path.split('/').filter(Boolean).at(-1) ?? path;
@@ -61,7 +61,6 @@
 		launching.browsedGit = browsedGit;
 		// Consent to `git init` is for one folder only.
 		launching.gitInit = false;
-		outcome = null;
 	}
 
 	let browserOpen = $state(false);
@@ -74,7 +73,6 @@
 		if (!ready) return;
 		const sentText = launching.text;
 		sending = true;
-		outcome = null;
 		const result = await launching.start();
 		sending = false;
 		// Only a launch that was made clears the message; anything typed meanwhile stays too.
@@ -82,7 +80,10 @@
 			launching.text = '';
 			launching.gitInit = false;
 		}
-		outcome = result;
+		toasts.show(
+			result.ok ? 'ok' : 'failed',
+			result.ok ? `已開始新建${result.reason ?? ''}，狀態見最近新建。` : `${result.reason}（表單內容保留著）`
+		);
 	}
 
 	function stateText(launch: LaunchView): string {
@@ -229,11 +230,6 @@
 		</div>
 
 		<button class="primary" disabled={!ready}>{sending ? '新建中…' : '新建主控'}</button>
-		{#if outcome?.ok}
-			<p class="note" role="status">✓ 已開始新建{outcome.reason ?? ''}，狀態見下方的新建紀錄。</p>
-		{:else if outcome}
-			<p class="note failed" role="alert">✗ {outcome.reason}（表單內容保留著）</p>
-		{/if}
 	</form>
 </section>
 

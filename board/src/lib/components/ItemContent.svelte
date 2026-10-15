@@ -46,7 +46,6 @@
 	}
 
 	const draft = $derived(answering.draft(item.key));
-	const outcome = $derived(answering.outcomes[item.key]);
 	const submitted = $derived(answering.submitted[item.key]);
 	const notice = $derived(answering.notifyResults[item.key]);
 	const sending = $derived(answering.sending[item.key] ?? false);
@@ -71,7 +70,13 @@
 		const key = item.key;
 		await answering.submit(item);
 		const result = answering.outcomes[key];
-		if (result?.status === 'invalid_answer') {
+		const logError = answering.submitted[key]?.logError;
+		if (logError) toasts.show('failed', `答覆已經送出，但送出紀錄寫入失敗：${logError}。看板的送出紀錄裡不會有這一筆。`);
+		if (result?.status === 'question_changed') {
+			toasts.show('failed', '題目已變更，剛才的答覆沒有送出。畫面上是目前的版本，請確認後重新作答。');
+		} else if (result?.status === 'not_pending') {
+			toasts.show('info', '這一題已經送出過答覆（例如在 Herdr 待答面板），不能再作答。');
+		} else if (result?.status === 'invalid_answer') {
 			toasts.show('failed', `答覆不符合這一題的格式，沒有送出：${result.reason}（你填的內容還在）`);
 		} else if (result?.status === 'error') {
 			toasts.show('failed', `送出失敗：${result.reason}（你填的內容還在；這一題目前的狀態以畫面為準，重送前請先確認）`);
@@ -127,22 +132,11 @@
 		{:else if !inInbox}
 			<p class="notice" role="status">這一題已經不在信箱：主控已結束，或題目已被移除。不能再作答。</p>
 		{/if}
-		<!-- Shown whatever became of the question since: the answer was sent either way. -->
-		{#if submitted?.logError}
-			<p class="notice failed" role="alert">
-				答覆已經送出，但送出紀錄寫入失敗：{submitted.logError}。看板的送出紀錄裡不會有這一筆。
-			</p>
-		{/if}
+		<!-- The question's own state, not a notice: it stays while the draft is outdated. -->
 		{#if answerable && outdated(question, draft)}
 			<p class="notice failed" role="alert">
 				主控在你作答途中改了這一題，下面是目前的版本。你填的是舊版的答覆，送出會被拒絕；請對照後重新作答。
 			</p>
-		{:else if outcome?.status === 'question_changed' && inInbox}
-			<p class="notice failed" role="alert">
-				題目已變更，剛才的答覆沒有送出。下面是目前的版本{answerable ? '，請確認後重新作答' : ''}。
-			</p>
-		{:else if outcome?.status === 'not_pending'}
-			<p class="notice" role="status">這一題已經送出過答覆（例如在 Herdr 待答面板），不能再作答。</p>
 		{/if}
 		{#if question.context}
 			<div class="text md">{@html renderMarkdown(question.context)}</div>
