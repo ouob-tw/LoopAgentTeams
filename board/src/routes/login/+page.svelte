@@ -4,6 +4,7 @@
 	const SET_COMMAND = 'bun run board password';
 
 	let password = $state('');
+	let input = $state<HTMLInputElement>();
 	let failure = $state('');
 	let sending = $state(false);
 	let waitUntil = $state(0);
@@ -27,8 +28,14 @@
 		waitUntil = now + seconds * 1000;
 	}
 
+	function syncFromBox() {
+		if (input) ({ value: password } = input);
+	}
+
 	async function login(event: SubmitEvent) {
 		event.preventDefault();
+		// A password manager can fill the box without an input event; what counts is what is in it.
+		syncFromBox();
 		if (sending || waitLeft || !password) return;
 		sending = true;
 		try {
@@ -69,11 +76,14 @@
 				id="password"
 				type="password"
 				bind:value={password}
+				bind:this={input}
 				onkeydown={keydown}
 				autocomplete="current-password"
 				required
 			/>
-			<button class="primary" disabled={sending || waitLeft > 0 || !password}>登入</button>
+			<!-- Not disabled for an empty box: an autofilled password may not have reached `password`
+			     yet, and `required` already stops an empty submit. -->
+			<button class="primary" disabled={sending || waitLeft > 0}>登入</button>
 		</form>
 		{#if failure}
 			<p class="failed" role="alert">
