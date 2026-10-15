@@ -6,6 +6,7 @@
 	import { formatTime } from '#lib/board/format.ts';
 	import { CLIENT_LABEL, LAUNCH_STATE_TEXT, latCommand } from '#lib/board/launch.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
+	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { choiceText, settingsText, SWITCH_STATE_TEXT } from '#lib/board/models.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import { RESUME_CLOSE_TEXT, RESUME_OVERDUE_TEXT, wakeText } from '#lib/board/wake.ts';
@@ -16,18 +17,22 @@
 	// Each new board data hands this component a new `controller` object, so the log is read again
 	// then: that is when an answer goes from sent to recorded.
 	$effect(() => void messaging.load(controller.id));
+
+	// Shown while the problem lasts, without pushing the log down.
+	$effect(() => {
+		const id = controller.id;
+		toasts.stand(`sent-read:${id}`, 'failed', messaging.loadFailed[id] ? `@${controller.hcomName} 的送出紀錄讀取失敗。` : null);
+		const logError = messaging.logError[id];
+		toasts.stand(`sent-write:${id}`, 'failed', logError ? `送出紀錄寫入失敗，答覆的狀態可能不是最新的：${logError}` : null);
+		return () => {
+			toasts.stand(`sent-read:${id}`, 'failed', null);
+			toasts.stand(`sent-write:${id}`, 'failed', null);
+		};
+	});
 </script>
 
 <section class="sent">
 	<h3>你傳給 @{controller.hcomName} 的訊息與答覆</h3>
-	{#if messaging.loadFailed[controller.id]}
-		<p class="failed" role="alert">送出紀錄讀取失敗。</p>
-	{/if}
-	{#if messaging.logError[controller.id]}
-		<p class="failed" role="alert">
-			送出紀錄寫入失敗，答覆的狀態可能不是最新的：{messaging.logError[controller.id]}
-		</p>
-	{/if}
 	{#if entries?.length}
 		<ol>
 			{#each entries as entry (entry.id)}

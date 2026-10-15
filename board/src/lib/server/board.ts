@@ -44,11 +44,13 @@ export interface Board {
 
 /** Close the resumes whose session hcom now lists. hcom is asked only while one is open; a list
  *  that cannot be read leaves them open until a later read. */
-async function settleWakes(config: BoardConfig): Promise<string | null> {
+async function settleWakes(config: BoardConfig, refresh: () => unknown): Promise<string | null> {
 	if (!openResumes(config.stateDir, config.now(), config.launchWaitMs).length) return null;
 	const list = await listAgents(config);
-	// A resume's pane found only now: its new tab is moved to the front like one found at once.
-	return list.ok ? settleResumes(config.stateDir, list.agents, config.now(), config.launchWaitMs, (pane) => void tabToFront(config, pane)) : null;
+	// A resume's pane found only now: its new tab is moved to the front like one found at once,
+	// then read again so pages show the new position.
+	const onPane = (pane: string) => void tabToFront(config, pane).then(refresh);
+	return list.ok ? settleResumes(config.stateDir, list.agents, config.now(), config.launchWaitMs, onPane) : null;
 }
 
 function createBoard(): Board {
@@ -112,7 +114,7 @@ function createBoard(): Board {
 			try {
 				const answersError = await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path));
 				const launchesError = settleLaunches(config.stateDir, helper.controllers, reports.files, config.now());
-				sentLogError = answersError ?? launchesError ?? (await settleWakes(config));
+				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, refresh));
 			} catch (error) {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
 				sentLogError = (error as Error).message;

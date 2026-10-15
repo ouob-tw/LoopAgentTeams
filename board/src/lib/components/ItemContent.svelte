@@ -65,6 +65,14 @@
 		answering.edit(item, single ? { select: [], other: true } : { other: !draft.other });
 	}
 
+	// A floating notice while the draft is for an older version, so the form does not move.
+	$effect(() => {
+		const key = `outdated:${item.key}`;
+		const stale = item.kind === 'question' && inInbox && item.unsent && outdated(item.question, draft);
+		toasts.stand(key, 'failed', stale ? '主控在你作答途中改了這一題，畫面上是目前的版本。你填的是舊版的答覆，送出會被拒絕；請對照後重新作答。' : null);
+		return () => toasts.stand(key, 'failed', null);
+	});
+
 	async function submit() {
 		if (item.kind !== 'question') return;
 		const key = item.key;
@@ -131,12 +139,6 @@
 			<p class="notice recorded" role="status">✓ {ANSWER_STATE_TEXT.recorded}：主控已記錄這一題的答覆。</p>
 		{:else if !inInbox}
 			<p class="notice" role="status">這一題已經不在信箱：主控已結束，或題目已被移除。不能再作答。</p>
-		{/if}
-		<!-- The question's own state, not a notice: it stays while the draft is outdated. -->
-		{#if answerable && outdated(question, draft)}
-			<p class="notice failed" role="alert">
-				主控在你作答途中改了這一題，下面是目前的版本。你填的是舊版的答覆，送出會被拒絕；請對照後重新作答。
-			</p>
 		{/if}
 		{#if question.context}
 			<div class="text md">{@html renderMarkdown(question.context)}</div>
@@ -438,7 +440,6 @@
 	.notice.recorded {
 		border-color: var(--ok);
 	}
-	.notice.failed,
 	.state.failed {
 		border-color: var(--danger);
 		color: var(--danger);
