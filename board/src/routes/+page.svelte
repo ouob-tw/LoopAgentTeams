@@ -556,9 +556,21 @@
 		.roster {
 			padding-bottom: 0;
 		}
+		/* Cards run to the screen edges; plain text keeps the cards' own inner indent. */
+		.roster,
+		.inbox {
+			padding-left: 0;
+			padding-right: 0;
+		}
+		.summary,
+		.inbox > :global(:not(.row, .nest)),
+		.detail > :global(:not(article, .topbar)) {
+			padding-left: 0.6rem;
+			padding-right: 0.6rem;
+		}
 		.detail {
 			display: none;
-			padding: 1rem;
+			padding: 1rem 0;
 		}
 		.viewing .roster,
 		.viewing .inbox {
@@ -569,6 +581,7 @@
 		}
 		.topbar {
 			display: flex;
+			margin: -1rem 0 0;
 			/* The bar spans the screen and keeps its natural width rules. */
 			width: auto;
 			max-width: none;

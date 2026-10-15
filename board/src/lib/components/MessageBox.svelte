@@ -14,11 +14,29 @@
 
 	let box: HTMLTextAreaElement;
 
-	$effect(() => {
-		void value;
+	function fit() {
+		// A hidden box (the command line in the phone layout) measures 0; it is fitted when shown.
+		if (!box.clientWidth) return;
 		box.style.height = 'auto';
 		// The border is not part of scrollHeight; without it the last line would be clipped.
 		box.style.height = `${box.scrollHeight + box.offsetHeight - box.clientHeight}px`;
+	}
+
+	$effect(() => {
+		void value;
+		fit();
+	});
+
+	// A new width (shown again, or the window resized) can change how many lines the text takes.
+	$effect(() => {
+		let width = box.clientWidth;
+		const observer = new ResizeObserver(() => {
+			if (box.clientWidth === width) return;
+			width = box.clientWidth;
+			fit();
+		});
+		observer.observe(box);
+		return () => observer.disconnect();
 	});
 
 	function keydown(event: KeyboardEvent) {

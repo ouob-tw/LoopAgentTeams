@@ -28,8 +28,12 @@
 
 <div class="row" class:fresh class:current data-item={item.key}>
 	<button class="main" aria-current={current ? 'true' : undefined} onclick={() => onopen(item)}>
-		<span class="kind" data-kind={kind}>{itemLabel(item)}</span>
-		<span class="title">{item.title || '（沒有標題）'}</span>
+		<!-- The label leads the title's first line and the title wraps under it; at most three
+		     lines show here, the whole title is in the content. -->
+		<span class="clamp">
+			<span class="kind" data-kind={kind}>{itemLabel(item)}</span>
+			<span class="title">{item.title || '（沒有標題）'}</span>
+		</span>
 	</button>
 	<div class="under">
 		{#if showOwner}
@@ -66,22 +70,26 @@
 		border-color: var(--accent);
 	}
 	.main {
-		display: flex;
-		gap: 0.6rem;
-		align-items: baseline;
+		display: block;
 		width: 100%;
 		padding: 0;
 		background: none;
 		border: 0;
 		text-align: left;
 	}
-	.title {
-		min-width: 0;
+	.clamp {
+		display: -webkit-box;
+		-webkit-box-orient: vertical;
+		-webkit-line-clamp: 3;
+		line-clamp: 3;
+		overflow: hidden;
 		overflow-wrap: anywhere;
 	}
 	.kind {
-		flex: none;
-		padding: 0.1rem 0.45rem;
+		display: inline-block;
+		margin-right: 0.5rem;
+		padding: 0 0.45rem;
+		line-height: 1.6;
 		border: 1px solid var(--line);
 		border-radius: var(--radius-pill);
 		font-size: max(0.7rem, var(--min-font, 0px));
