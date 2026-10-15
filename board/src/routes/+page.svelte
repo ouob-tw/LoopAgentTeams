@@ -578,6 +578,12 @@
 			padding-left: 0.6rem;
 			padding-right: 0.6rem;
 		}
+		/* Cards inside those sections (inbox rows, history and sent-log entries) take the indent
+		   back, so they too sit 3px from the edges. */
+		.detail > :global(section) :global(:is(.row, ol > li:not(.tools))) {
+			margin-left: -0.6rem;
+			margin-right: -0.6rem;
+		}
 		.detail {
 			display: none;
 			padding: 1rem 3px;
