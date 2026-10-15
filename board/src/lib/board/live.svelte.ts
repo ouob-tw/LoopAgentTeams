@@ -7,6 +7,8 @@ export class LiveBoard {
 	snapshot: BoardSnapshot;
 	link = $state<LinkState>('connecting');
 	refreshing = $state(false);
+	/** Counts the Herdr tab moves the server announced, so pages showing a position read it again. */
+	tabMoves = $state(0);
 	/** Archived reports, newest first; null until loaded, 'failed' when they could not be read. */
 	archive = $state<InboxReport[] | 'failed' | null>(null);
 	#connection: Connection | undefined;
@@ -21,6 +23,7 @@ export class LiveBoard {
 		this.#connection = connectBoard({
 			onSnapshot: (snapshot) => (this.snapshot = snapshot),
 			onState: (state) => (this.link = state),
+			onTabMoved: () => this.tabMoves++,
 			// The server sends a browser that is not logged in to the login screen.
 			onUnpaired: () => location.reload()
 		});

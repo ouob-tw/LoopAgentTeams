@@ -255,6 +255,7 @@
 				{:else if view.kind === 'controller'}
 					{#if controller}
 						<ControllerInfo
+							tabMoves={board.tabMoves}
 							{controller}
 							items={inbox.filter((entry) => entry.controllerId === controller.id)}
 							onopen={openItem}

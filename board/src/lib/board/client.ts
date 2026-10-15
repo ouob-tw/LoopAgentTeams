@@ -10,6 +10,8 @@ export interface ConnectionOptions {
 	onState(state: LinkState): void;
 	/** The server no longer accepts this device. */
 	onUnpaired(): void;
+	/** A Herdr tab moved; tab positions are not in the snapshot. */
+	onTabMoved?(): void;
 	fetch?: typeof fetch;
 	retryMs?: number;
 }
@@ -50,6 +52,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		options.onState('live');
 		if (event === 'board') options.onSnapshot(JSON.parse(data));
 		else if (event === 'unpaired') unpaired();
+		else if (event === 'tab-moved') options.onTabMoved?.();
 	}
 
 	async function listen(): Promise<void> {

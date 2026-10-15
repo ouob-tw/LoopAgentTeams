@@ -15,10 +15,13 @@
 
 	let {
 		controller,
+		tabMoves = 0,
 		items,
 		onopen
 	}: {
 		controller: Controller;
+		/** Changes when the server announces a Herdr tab move. */
+		tabMoves?: number;
 		/** This controller's inbox items. */
 		items: InboxItem[];
 		onopen: (item: InboxItem) => void;
@@ -36,31 +39,16 @@
 	let places = $state<Record<string, Place | string>>({});
 	const place = $derived(places[controller.id]);
 
-	/** How long after a new tab the place is read once more: the board moves a resumed
-	 *  controller's tab to the front just after it appears, and that move changes no board data. */
-	const MOVE_SETTLE_MS = 3_000;
-
 	// Read again with every new board data (each hands this page a new `controller` object), as
-	// tabs may have moved since, and once more a little after the tab itself changed.
+	// tabs may have moved since, and whenever the server announces a tab move, which changes no
+	// board data: the board moves a resumed controller's tab to the front.
 	$effect(() => {
 		const id = controller.id;
+		void tabMoves;
 		if (!controller.herdr) return;
 		const abort = new AbortController();
 		read(id, abort.signal);
 		return () => abort.abort();
-	});
-	// A string, so it changes only when the tab does, not with every new `controller` object.
-	const tab = $derived(controller.herdr?.tab);
-	const controllerId = $derived(controller.id);
-	$effect(() => {
-		const id = controllerId;
-		if (!tab) return;
-		const abort = new AbortController();
-		const timer = setTimeout(() => read(id, abort.signal), MOVE_SETTLE_MS);
-		return () => {
-			clearTimeout(timer);
-			abort.abort();
-		};
 	});
 
 	function read(id: string, signal: AbortSignal) {

@@ -39,16 +39,18 @@ export interface Board {
 	/** The archived reports, newest first. */
 	archive(): Promise<InboxReport[]>;
 	subscribe(stream: Stream): () => void;
+	/** Tell every open page that a Herdr tab moved: nothing in the snapshot shows tab order. */
+	tabMoved(): void;
 	close(): void;
 }
 
 /** Close the resumes whose session hcom now lists. hcom is asked only while one is open; a list
  *  that cannot be read leaves them open until a later read. */
-async function settleWakes(config: BoardConfig): Promise<string | null> {
+async function settleWakes(config: BoardConfig, moved: () => void): Promise<string | null> {
 	if (!openResumes(config.stateDir, config.now(), config.launchWaitMs).length) return null;
 	const list = await listAgents(config);
 	// A resume's pane found only now: its new tab is moved to the front like one found at once.
-	const onPane = (pane: string) => void tabToFront(config, pane);
+	const onPane = (pane: string) => void tabToFront(config, pane).then((reason) => reason === null && moved());
 	return list.ok ? settleResumes(config.stateDir, list.agents, config.now(), config.launchWaitMs, onPane) : null;
 }
 
@@ -113,7 +115,7 @@ function createBoard(): Board {
 			try {
 				const answersError = await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path));
 				const launchesError = settleLaunches(config.stateDir, helper.controllers, reports.files, config.now());
-				sentLogError = answersError ?? launchesError ?? (await settleWakes(config));
+				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, tabMoved));
 			} catch (error) {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
 				sentLogError = (error as Error).message;
@@ -182,6 +184,10 @@ function createBoard(): Board {
 		return sources;
 	}
 
+	function tabMoved(): void {
+		for (const stream of streams) stream.send('tab-moved', '{}');
+	}
+
 	function refresh(): Promise<BoardSnapshot> {
 		// A read already under way may have started before the change the caller knows about.
 		if (running) return (queued ??= running.then(start, start));
@@ -230,6 +236,7 @@ function createBoard(): Board {
 			else streams.add(stream);
 			return () => streams.delete(stream);
 		},
+		tabMoved,
 		close() {
 			closed = true;
 			clearTimeout(debounce);
