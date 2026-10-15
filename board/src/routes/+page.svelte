@@ -531,9 +531,14 @@
 		.shell {
 			display: block;
 		}
+		/* A phone has no folded roster, so nothing for the fold control to switch. `.tool.fold`
+		   outweighs `.tool.icon`, which would otherwise show it again. */
 		.resize,
-		.fold {
+		.tool.fold {
 			display: none;
+		}
+		.counts {
+			gap: 0;
 		}
 		.roster,
 		.inbox,
