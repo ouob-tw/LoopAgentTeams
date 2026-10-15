@@ -260,8 +260,8 @@ export async function resume(board: Board, controller: Controller, entry: SentWa
 		return { abandon: null, logged: true, logError: (error as Error).message };
 	}
 	// The new tab goes first in its workspace. Not waited for: where it ends up does not change
-	// the outcome, and a slow Herdr must not hold up the answer. The move changes no watched
-	// source, so the board reads again once it is done and pages show the new position.
-	if (entry.pane) void tabToFront(board.config, entry.pane).then(() => board.refresh());
+	// the outcome, and a slow Herdr must not hold up the answer. The information page reads the
+	// position again a little after the tab changed.
+	if (entry.pane) void tabToFront(board.config, entry.pane);
 	return { abandon: null, logged: true, logError: null };
 }

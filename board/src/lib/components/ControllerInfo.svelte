@@ -36,13 +36,32 @@
 	let places = $state<Record<string, Place | string>>({});
 	const place = $derived(places[controller.id]);
 
-	// Read again with every new board data: each hands this page a new `controller` object, and
-	// tabs may have moved since, the board's own move of a resumed tab included.
+	/** How long after a new tab the place is read once more: the board moves a resumed
+	 *  controller's tab to the front just after it appears, and that move changes no board data. */
+	const MOVE_SETTLE_MS = 3_000;
+
+	// Read again with every new board data (each hands this page a new `controller` object), as
+	// tabs may have moved since, and once more a little after the tab itself changed.
 	$effect(() => {
 		const id = controller.id;
 		if (!controller.herdr) return;
 		const abort = new AbortController();
-		fetch(`/api/herdr-place?controller=${encodeURIComponent(id)}`, { signal: abort.signal })
+		read(id, abort.signal);
+		return () => abort.abort();
+	});
+	$effect(() => {
+		const id = controller.id;
+		if (!controller.herdr?.tab) return;
+		const abort = new AbortController();
+		const timer = setTimeout(() => read(id, abort.signal), MOVE_SETTLE_MS);
+		return () => {
+			clearTimeout(timer);
+			abort.abort();
+		};
+	});
+
+	function read(id: string, signal: AbortSignal) {
+		fetch(`/api/herdr-place?controller=${encodeURIComponent(id)}`, { signal })
 			.then((response) => {
 				// The server sends a browser that is not logged in to the login screen.
 				if (response.status === 401) location.reload();
@@ -50,10 +69,9 @@
 			})
 			.then((body) => (places[id] = body.ok ? body.place : (body.reason ?? '讀不到位置')))
 			.catch(() => {
-				if (!abort.signal.aborted) places[id] = '沒有收到看板伺服器的回應';
+				if (!signal.aborted) places[id] = '沒有收到看板伺服器的回應';
 			});
-		return () => abort.abort();
-	});
+	}
 </script>
 
 <article class="profile">
