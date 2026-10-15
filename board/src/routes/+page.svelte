@@ -580,7 +580,8 @@
 		}
 		/* Cards inside those sections (inbox rows, history and sent-log entries) take the indent
 		   back, so they too sit 3px from the edges. */
-		.detail > :global(section) :global(:is(.row, ol > li:not(.tools))) {
+		.detail > :global(section) > :global(.row),
+		.detail > :global(section) > :global(ol) > :global(li:not(.tools)) {
 			margin-left: -0.6rem;
 			margin-right: -0.6rem;
 		}
