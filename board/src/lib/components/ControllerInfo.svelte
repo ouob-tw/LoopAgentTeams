@@ -49,9 +49,12 @@
 		read(id, abort.signal);
 		return () => abort.abort();
 	});
+	// A string, so it changes only when the tab does, not with every new `controller` object.
+	const tab = $derived(controller.herdr?.tab);
+	const controllerId = $derived(controller.id);
 	$effect(() => {
-		const id = controller.id;
-		if (!controller.herdr?.tab) return;
+		const id = controllerId;
+		if (!tab) return;
 		const abort = new AbortController();
 		const timer = setTimeout(() => read(id, abort.signal), MOVE_SETTLE_MS);
 		return () => {
