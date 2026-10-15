@@ -2,6 +2,7 @@
 	// The folded roster of the wide layout: one status mark per controller. A mark opens its
 	// controller and leaves the roster folded; anywhere else on the rail unfolds it. Hovering a
 	// mark, or pressing and holding it on a touch screen, explains it.
+	import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
 	import type { Snippet } from 'svelte';
 	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
 	import StatusMark from './StatusMark.svelte';
@@ -111,7 +112,7 @@
 <!-- The grip is the keyboard's way to unfold; a click anywhere else on the rail does the same. -->
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div class="rail" onclick={expand}>
-	<button class="grip" aria-label="展開主控名冊" title="展開主控名冊">»</button>
+	<button class="grip" aria-label="展開主控名冊" title="展開主控名冊"><PanelLeftOpen size="1.1em" /></button>
 	{#each controllers as controller (controller.id)}
 		<button
 			class="entry"
@@ -167,6 +168,7 @@
 		cursor: pointer;
 	}
 	.grip {
+		display: flex;
 		padding: 0 0.5rem;
 		background: none;
 		border: 0;
@@ -199,7 +201,7 @@
 		background: var(--status-waiting);
 		color: var(--bg);
 		font-family: var(--mono);
-		font-size: 0.7rem;
+		font-size: max(0.7rem, var(--min-font, 0px));
 		font-weight: 700;
 		line-height: 1.3;
 	}
@@ -223,7 +225,7 @@
 		background: var(--bg);
 		border: 1px solid var(--text);
 		border-radius: var(--radius);
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		overflow-wrap: anywhere;
 		pointer-events: none;
 	}

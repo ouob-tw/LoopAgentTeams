@@ -1,9 +1,12 @@
 <script lang="ts">
 	// The controller's conversation as its client recorded it: every message the user typed and every
-	// text reply, with the operations between two texts folded into one line until opened. Kept up
-	// to date while the page is open; earlier parts are loaded on request.
+	// text reply, with the operations between two texts folded into one line until opened. Newest
+	// first and kept up to date while the page is open; earlier parts load when the end of the list
+	// scrolls into view, or with the button.
 	import { EarlierReads } from '#lib/board/earlier.ts';
 	import { formatTime } from '#lib/board/format.ts';
+	import { renderMarkdown } from '#lib/board/markdown.ts';
+	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import {
 		segments,
 		toolLine,
@@ -25,10 +28,11 @@
 	let opened = $state<Record<string, boolean>>({});
 	let loadingEarlier = $state(false);
 	let earlierFailed = $state<string | null>(null);
+	let end = $state<HTMLElement>();
 
 	const id = $derived(controller.id);
 	const earlier = new EarlierReads();
-	const shown = $derived(view ? segments(view.items) : []);
+	const shown = $derived(view ? segments(view.items).toReversed() : []);
 
 	$effect(() => {
 		const controllerId = id;
@@ -46,6 +50,7 @@
 				switching.current[controllerId] = update.page.current ?? null;
 				problem = null;
 			} else {
+				if (update.reason !== problem) toasts.show('failed', `對話紀錄讀不到：${update.reason}`);
 				problem = update.reason;
 			}
 		});
@@ -71,25 +76,26 @@
 		if (result.kind === 'failed') earlierFailed = '沒有收到看板伺服器的回應。';
 		else if (result.update.ok) view = withEarlier(view, result.update.page, requested);
 		else earlierFailed = result.update.reason;
+		if (earlierFailed) toasts.show('failed', `更早的紀錄載入失敗：${earlierFailed}`);
 	}
+
+	// Watched again after every load, so an end that is still in view loads the next part. After a
+	// failure only the button retries.
+	$effect(() => {
+		if (!end || view?.before == null || earlierFailed) return;
+		const observer = new IntersectionObserver((entries) => {
+			if (entries.some((entry) => entry.isIntersecting)) void loadEarlier();
+		});
+		observer.observe(end);
+		return () => observer.disconnect();
+	});
 </script>
 
 <section class="history" data-block="transcript">
 	<h3>對話紀錄</h3>
-	{#if problem}
-		<p class="failed" role="alert">對話紀錄讀不到：{problem}</p>
-	{/if}
 	{#if view}
 		{#if view.skipped}
 			<p class="note">有 {view.skipped} 行紀錄讀不出來，已略過。</p>
-		{/if}
-		{#if view.before !== null}
-			<button class="earlier" onclick={loadEarlier} disabled={loadingEarlier}>
-				{loadingEarlier ? '載入中…' : '載入更早'}
-			</button>
-		{/if}
-		{#if earlierFailed}
-			<p class="failed" role="alert">更早的紀錄載入失敗：{earlierFailed}</p>
 		{/if}
 		{#if shown.length}
 			<ol>
@@ -102,7 +108,7 @@
 									<time datetime={segment.item.time}>{formatTime(segment.item.time)}</time>
 								{/if}
 							</p>
-							<p class="text">{segment.item.text}</p>
+							<div class="text md">{@html renderMarkdown(segment.item.text)}</div>
 						</li>
 					{:else}
 						<li class="tools">
@@ -127,7 +133,14 @@
 		{:else}
 			<p class="empty">還沒有對話。</p>
 		{/if}
-	{:else if !problem}
+		{#if view.before !== null}
+			<button class="earlier" bind:this={end} onclick={loadEarlier} disabled={loadingEarlier}>
+				{loadingEarlier ? '載入中…' : '載入更早'}
+			</button>
+		{/if}
+	{:else if problem}
+		<p class="failed">對話紀錄讀不到。</p>
+	{:else}
 		<p class="empty">讀取中…</p>
 	{/if}
 </section>
@@ -140,7 +153,7 @@
 	}
 	h3 {
 		margin: 0;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		font-weight: 600;
 		color: var(--muted);
 	}
@@ -166,13 +179,11 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.2rem 0.8rem;
-		font-size: 0.75rem;
+		font-size: max(0.75rem, var(--min-font, 0px));
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
-	/* Same as a report's full text: the reply's own line breaks, long words wrapped. */
 	.text {
-		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 	}
 	.fold {
@@ -181,7 +192,7 @@
 		background: none;
 		color: var(--muted);
 		font: inherit;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		text-align: left;
 		cursor: pointer;
 	}
@@ -191,7 +202,7 @@
 		margin: 0.2rem 0 0.2rem 0.8rem;
 		padding: 0;
 		list-style: none;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
@@ -203,7 +214,7 @@
 	}
 	.note,
 	.empty {
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 </style>

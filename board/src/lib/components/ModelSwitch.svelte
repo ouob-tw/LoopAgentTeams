@@ -19,6 +19,7 @@
 		type SwitchView
 	} from '#lib/board/models.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
+	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 
@@ -66,6 +67,7 @@
 		const result = await switching.switch(target, choice);
 		inFlight[target] = false;
 		outcomes[target] = result;
+		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已送出切換${result.reason ?? ''}` : (result.reason ?? '切換失敗'));
 		if (result.ok) {
 			editing[target] = false;
 			delete model[target];
@@ -78,13 +80,17 @@
 		delete confirming[target];
 		abandoned[target] = await messaging.abandon(target, wakeId);
 		if (abandoned[target].ok) delete outcomes[target];
+		toasts.show(
+			abandoned[target].ok ? 'ok' : 'failed',
+			abandoned[target].ok ? '已放棄前一次接回，可以再按「繼續切換」。' : (abandoned[target].reason ?? '放棄失敗')
+		);
 	}
 </script>
 
 <section class="model" data-block="model">
 	<h3>模型與思考強度</h3>
 	<p class="current">
-		上一回合使用：{current === undefined ? '讀取中…' : current ? settingsText(current) : '不明'}
+		{current === undefined ? '讀取中…' : current ? settingsText(current) : '不明'}
 	</p>
 	{#if check === 'waiting'}
 		<p class="note" role="status">{SWITCH_WAITING_TEXT}</p>
@@ -157,20 +163,15 @@
 				{/if}
 				<p class="note">看板會關掉原本的分頁，用新設定在新分頁接回同一段對話；只在主控等待時可以改。</p>
 				<div class="actions">
-					<button class="primary" disabled={sending || !chosen}>{sending ? '送出中…' : '送出切換'}</button>
+					<button class="primary" disabled={sending || !chosen}>{sending ? '切換中…' : '切換'}</button>
 					<button type="button" onclick={() => (editing[id] = false)}>取消</button>
 				</div>
 			</form>
 		{/if}
 	{/if}
 
-	{#if outcome?.ok}
-		<p class="note" role="status">✓ {open ? SWITCH_STATE_TEXT[open.state] : '已送出切換'}{outcome.reason ?? ''}</p>
-	{:else if outcome}
-		<p class="failed" role="alert">✗ {outcome.reason}</p>
-		{#if outcome.abandon && confirming[id] !== outcome.abandon}
-			<button type="button" onclick={() => (confirming[id] = outcome.abandon!)}>放棄前一次接回</button>
-		{/if}
+	{#if outcome && !outcome.ok && outcome.abandon && confirming[id] !== outcome.abandon}
+		<button type="button" onclick={() => (confirming[id] = outcome.abandon!)}>放棄前一次接回</button>
 	{/if}
 	{#if confirming[id]}
 		<div class="confirm" role="alertdialog" aria-label="放棄前一次接回">
@@ -180,11 +181,6 @@
 				<button type="button" onclick={() => delete confirming[id]}>取消</button>
 			</div>
 		</div>
-	{/if}
-	{#if abandoned[id]?.ok}
-		<p class="note" role="status">✓ 已放棄前一次接回，可以再按「繼續切換」。</p>
-	{:else if abandoned[id]}
-		<p class="failed" role="alert">✗ {abandoned[id].reason}</p>
 	{/if}
 </section>
 
@@ -197,7 +193,7 @@
 	}
 	h3 {
 		margin: 0;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		font-weight: 600;
 		color: var(--muted);
 	}
@@ -206,7 +202,7 @@
 		overflow-wrap: anywhere;
 	}
 	.note {
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.failed {
@@ -234,7 +230,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.2rem;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	.edit .note {
 		flex-basis: 100%;

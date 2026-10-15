@@ -57,6 +57,9 @@ body {
 	background: var(--bg);
 	color: var(--text);
 	font-family: var(--sans);
+	/* `--min-font` is the smallest text size from the settings; every size in the board is
+	   written as max(size, var(--min-font, 0px)) so it can be raised. */
+	font-size: max(1rem, var(--min-font, 0px));
 	line-height: 1.5;
 }
 
@@ -122,4 +125,64 @@ textarea:disabled {
 }
 :root[data-theme='light'] button:disabled {
 	text-decoration: line-through;
+}
+
+/* Markdown rendered by `renderMarkdown`: the block keeps the size and colour of where it sits. */
+.md {
+	overflow-wrap: anywhere;
+}
+.md > :first-child {
+	margin-top: 0;
+}
+.md > :last-child {
+	margin-bottom: 0;
+}
+.md :is(p, ul, ol, pre, blockquote, table) {
+	margin: 0 0 0.6em;
+}
+.md :is(h1, h2, h3, h4, h5, h6) {
+	margin: 0.8em 0 0.4em;
+	font-size: max(1em, var(--min-font, 0px));
+}
+.md :is(ul, ol) {
+	padding-left: 1.4em;
+}
+.md code {
+	font-family: var(--mono);
+	font-size: max(0.9em, var(--min-font, 0px));
+	padding: 0 0.25em;
+	border: 1px solid var(--line);
+	border-radius: 4px;
+}
+.md pre {
+	overflow-x: auto;
+	padding: 0.5em 0.7em;
+	border: 1px solid var(--line);
+	border-radius: var(--radius);
+	background: var(--bg);
+}
+.md pre code {
+	padding: 0;
+	border: 0;
+}
+.md blockquote {
+	padding-left: 0.8em;
+	border-left: 3px solid var(--line);
+	color: var(--muted);
+}
+.md table {
+	display: block;
+	overflow-x: auto;
+	border-collapse: collapse;
+}
+.md :is(th, td) {
+	padding: 0.2em 0.6em;
+	border: 1px solid var(--line);
+}
+.md a {
+	color: var(--accent);
+}
+.md hr {
+	border: 0;
+	border-top: 1px solid var(--line);
 }

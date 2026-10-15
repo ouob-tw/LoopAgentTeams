@@ -213,7 +213,7 @@ export const SWITCH_STATE_TEXT: Record<SwitchState, string> = {
 };
 
 export const settingsText = (settings: Partial<ModelChoice> | null | undefined) =>
-	`模型 ${settings?.model ?? '不明'}・思考強度 ${settings?.effort ?? '不明'}`;
+	`${settings?.model ?? '模型不明'}・${settings?.effort ?? '思考強度不明'}`;
 
 /** A choice as a switch shows it: what it changes, and that the rest is kept. */
 export const choiceText = (choice: ModelChoice) =>

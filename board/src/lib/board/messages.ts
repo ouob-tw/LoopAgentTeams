@@ -51,9 +51,10 @@ export type Command<T extends Target> = { ok: true; controller: T; text: string 
 
 /**
  * Who a command line is for: a leading `@name` picks that controller, otherwise the one that is
- * open. Never falls back to another controller.
+ * open. Never falls back to another controller. An ended controller is refused unless the caller
+ * `wakes` it instead of sending.
  */
-export function parseCommand<T extends Target>(input: string, controllers: T[], open: T | undefined): Command<T> {
+export function parseCommand<T extends Target>(input: string, controllers: T[], open: T | undefined, wakes = false): Command<T> {
 	const addressed = /^@(\S*)\s*([\s\S]*)$/.exec(input.trimStart());
 	let controller = open;
 	let text = input;
@@ -66,7 +67,7 @@ export function parseCommand<T extends Target>(input: string, controllers: T[], 
 		text = addressed[2];
 	}
 	if (!controller) return { ok: false, reason: '請用 @名稱 指定主控，或先點開一個主控。' };
-	if (controller.status === 'ended') return { ok: false, reason: `@${controller.hcomName} 已結束，無法傳話。` };
+	if (controller.status === 'ended' && !wakes) return { ok: false, reason: `@${controller.hcomName} 已結束，無法傳話。` };
 	if (!text.trim()) return { ok: false, reason: '請輸入要傳的訊息。' };
 	return { ok: true, controller, text };
 }

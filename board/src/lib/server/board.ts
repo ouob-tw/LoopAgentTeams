@@ -11,6 +11,7 @@ import { archiveDue, archivedReports, buildSnapshot, markRead, type MarkReadResu
 import { createReportReader } from './reports.ts';
 import { listAgents } from './hcom.ts';
 import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
+import { tabToFront } from './herdr.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 
@@ -46,7 +47,8 @@ export interface Board {
 async function settleWakes(config: BoardConfig): Promise<string | null> {
 	if (!openResumes(config.stateDir, config.now(), config.launchWaitMs).length) return null;
 	const list = await listAgents(config);
-	return list.ok ? settleResumes(config.stateDir, list.agents, config.now(), config.launchWaitMs) : null;
+	// A resume's pane found only now: its new tab is moved to the front like one found at once.
+	return list.ok ? settleResumes(config.stateDir, list.agents, config.now(), config.launchWaitMs, (pane) => void tabToFront(config, pane)) : null;
 }
 
 function createBoard(): Board {

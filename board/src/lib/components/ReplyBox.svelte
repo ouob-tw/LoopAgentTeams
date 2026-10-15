@@ -4,6 +4,7 @@
 	import { enterMakesNewline, messaging, type Outcome } from '#lib/board/messaging.svelte.ts';
 	import { EFFORT_UNKNOWN_TEXT, FIXED_MODEL_REASON, LOCK_UNKNOWN_TEXT } from '#lib/board/models.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
+	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
@@ -57,6 +58,10 @@
 			delete effort[id];
 		}
 		outcomes[id] = result;
+		toasts.show(
+			result.ok ? 'ok' : 'failed',
+			result.ok ? `${result.woke ? '' : '已送出'}${result.reason ?? ''}` : `${result.reason}（文字還在輸入框裡）`
+		);
 	}
 
 	async function abandon(wakeId: string) {
@@ -65,6 +70,7 @@
 		const result = await messaging.abandon(id, wakeId);
 		abandoned[id] = result;
 		if (result.ok) delete outcomes[id];
+		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? '已放棄前一次接回，可以再按「喚醒並送出」。' : (result.reason ?? '放棄失敗'));
 	}
 </script>
 
@@ -126,13 +132,8 @@
 			啟動指令。
 		</p>
 	{/if}
-	{#if outcome?.ok}
-		<p class="note" role="status">✓ {outcome.woke ? '' : '已送出'}{outcome.reason ?? ''}</p>
-	{:else if outcome}
-		<p class="note failed" role="alert">✗ {outcome.reason}（文字還在輸入框裡）</p>
-		{#if outcome.abandon && confirming[controller.id] !== outcome.abandon}
-			<button type="button" class="abandon" onclick={() => (confirming[controller.id] = outcome.abandon!)}>放棄前一次接回</button>
-		{/if}
+	{#if outcome && !outcome.ok && outcome.abandon && confirming[controller.id] !== outcome.abandon}
+		<button type="button" class="abandon" onclick={() => (confirming[controller.id] = outcome.abandon!)}>放棄前一次接回</button>
 	{/if}
 	{#if confirming[controller.id]}
 		<div class="confirm" role="alertdialog" aria-label="放棄前一次接回">
@@ -142,11 +143,6 @@
 				<button type="button" onclick={() => delete confirming[controller.id]}>取消</button>
 			</div>
 		</div>
-	{/if}
-	{#if abandoned[controller.id]?.ok}
-		<p class="note" role="status">✓ 已放棄前一次接回，可以再按「喚醒並送出」。</p>
-	{:else if abandoned[controller.id]}
-		<p class="note failed" role="alert">✗ {abandoned[controller.id].reason}</p>
 	{/if}
 </form>
 
@@ -173,11 +169,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.2rem;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	.note {
 		margin: 0;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
@@ -185,7 +181,7 @@
 		display: inline-flex;
 		align-items: center;
 		gap: 0.4rem;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	.abandon {
 		justify-self: start;
@@ -203,9 +199,6 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.5rem;
-	}
-	.failed {
-		color: var(--danger);
 	}
 	button.danger {
 		color: var(--danger);

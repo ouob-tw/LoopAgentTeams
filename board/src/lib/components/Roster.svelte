@@ -75,7 +75,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		font-family: var(--mono);
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.badge {
@@ -85,15 +85,15 @@
 		background: var(--status-waiting);
 		color: var(--bg);
 		font-family: var(--mono);
-		font-size: 0.7rem;
+		font-size: max(0.7rem, var(--min-font, 0px));
 	}
 	.error {
 		flex: none;
-		font-size: 0.75rem;
+		font-size: max(0.75rem, var(--min-font, 0px));
 		color: var(--danger);
 	}
 	.phase {
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.none {
@@ -120,7 +120,7 @@
 			padding: 0.45rem 0.6rem;
 		}
 		.project {
-			font-size: 0.9rem;
+			font-size: max(0.9rem, var(--min-font, 0px));
 		}
 		.phase {
 			display: none;

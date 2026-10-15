@@ -97,7 +97,7 @@
 	}
 	h1 {
 		margin: 0 0 0.5rem;
-		font-size: 1.3rem;
+		font-size: max(1.3rem, var(--min-font, 0px));
 	}
 	form {
 		display: flex;

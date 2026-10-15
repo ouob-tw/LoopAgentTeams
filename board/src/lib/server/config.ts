@@ -30,6 +30,8 @@ export interface BoardConfig {
 	/** Command that runs the Herdr CLI; the board appends e.g. `pane list`. */
 	herdrCommand: string[];
 	herdrTimeoutMs: number;
+	/** Herdr's socket, for the requests its CLI does not offer (moving a tab). */
+	herdrSocket: string;
 	/** How long a new controller may take to bind before its launch record asks the user to look in Herdr. */
 	launchWaitMs: number;
 	/** The Herdr pane the board itself runs in, when it was started inside one; null otherwise. */
@@ -118,6 +120,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		modelOptions: parseModelOptions(env.LAT_BOARD_MODEL_OPTIONS),
 		herdrCommand: commandFrom(env, 'LAT_BOARD_HERDR_COMMAND') ?? ['herdr'],
 		herdrTimeoutMs: seconds(env.LAT_BOARD_HERDR_TIMEOUT_SECONDS, 10_000),
+		herdrSocket: env.HERDR_SOCKET_PATH || join(configHome(env), 'herdr/herdr.sock'),
 		launchWaitMs: seconds(env.LAT_BOARD_LAUNCH_WAIT_SECONDS, 180_000),
 		ownPane: env.HERDR_PANE_ID || null,
 		fallbackMs,

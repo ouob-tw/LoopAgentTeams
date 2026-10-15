@@ -1,6 +1,8 @@
 <script lang="ts">
 	// A controller's information page: the basic block and its model and effort, then its
-	// questions, its reports that are still in the inbox and its conversation history.
+	// questions, its reports that are still in the inbox and its conversation history. Messages and
+	// wakes go through the command line at the bottom of the wide layout; the reply box above the
+	// history stands in for it on a phone.
 	import { formatTime } from '#lib/board/format.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { phaseText, STATUS_LABEL, type Controller, type InboxItem } from '#lib/board/types.ts';
@@ -26,6 +28,28 @@
 	const questions = $derived(sorted.filter((item) => item.kind === 'question'));
 	const reports = $derived(sorted.filter((item) => item.kind === 'report'));
 
+	type Place = {
+		workspace: { label: string; number: number } | null;
+		tab: { label: string; position: number } | null;
+	};
+	/** The Herdr names and places, by controller ID; a string says why they are unknown. */
+	let places = $state<Record<string, Place | string>>({});
+	const place = $derived(places[controller.id]);
+
+	// Read again when another controller is opened or this one moves to another tab.
+	$effect(() => {
+		const id = controller.id;
+		const tab = controller.herdr?.tab;
+		if (!tab) return;
+		const abort = new AbortController();
+		fetch(`/api/herdr-place?controller=${encodeURIComponent(id)}`, { signal: abort.signal })
+			.then((response) => response.json())
+			.then((body) => (places[id] = body.ok ? body.place : (body.reason ?? '讀不到位置')))
+			.catch(() => {
+				if (!abort.signal.aborted) places[id] = '沒有收到看板伺服器的回應';
+			});
+		return () => abort.abort();
+	});
 </script>
 
 <article class="profile">
@@ -44,7 +68,15 @@
 		<dt>Herdr 位置</dt>
 		<dd>
 			{#if controller.herdr}
-				工作區 {controller.herdr.workspace}・分頁 {controller.herdr.tab}・窗格 {controller.herdr.pane}
+				{#if place === undefined}
+					讀取中…
+				{:else if typeof place === 'string'}
+					位置不明（{place}）
+				{:else}
+					{place.workspace ? `${place.workspace.label}（第 ${place.workspace.number} 個工作區）` : '工作區已不在 Herdr'}・{place.tab
+						? `${place.tab.label}（第 ${place.tab.position} 個分頁）`
+						: '分頁已不在 Herdr'}
+				{/if}
 			{:else}
 				已不在面板綁定登記中，位置不明
 			{/if}
@@ -78,11 +110,13 @@
 	{/each}
 </section>
 
+<div class="reply">
+	<ReplyBox {controller} />
+</div>
+
 <Transcript {controller} />
 
 <SentLog {controller} />
-
-<ReplyBox {controller} />
 
 <style>
 	.block {
@@ -92,13 +126,13 @@
 	}
 	h3 {
 		margin: 0;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		font-weight: 600;
 		color: var(--muted);
 	}
 	.none {
 		margin: 0;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.profile {
@@ -120,19 +154,19 @@
 		padding: 0.1rem 0.5rem;
 		border: 1px solid var(--line);
 		border-radius: var(--radius-pill);
-		font-size: 0.75rem;
+		font-size: max(0.75rem, var(--min-font, 0px));
 		white-space: nowrap;
 	}
 	h2 {
 		margin: 0;
-		font-size: 1.1rem;
+		font-size: max(1.1rem, var(--min-font, 0px));
 	}
 	.handle {
 		/* The full name, however long: it wraps instead of being cut. */
 		min-width: 0;
 		overflow-wrap: anywhere;
 		font-family: var(--mono);
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.phase {
@@ -147,7 +181,7 @@
 		grid-template-columns: auto 1fr;
 		gap: 0.2rem 1rem;
 		margin: 0.7rem 0 0;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	dt {
 		color: var(--muted);
@@ -155,5 +189,10 @@
 	dd {
 		margin: 0;
 		overflow-wrap: anywhere;
+	}
+	@media (min-width: 761px) {
+		.reply {
+			display: none;
+		}
 	}
 </style>

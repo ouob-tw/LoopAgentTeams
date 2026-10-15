@@ -1,7 +1,7 @@
 <script lang="ts">
-	// The settings of this device: theme and overall size.
+	// The settings of this device: theme, overall size and smallest text size.
 	import { appearance } from '#lib/board/appearance.svelte.ts';
-	import { SCALE } from '#lib/board/prefs.ts';
+	import { MIN_FONT, SCALE } from '#lib/board/prefs.ts';
 
 	let dialog: HTMLDialogElement;
 
@@ -51,6 +51,26 @@
 			</div>
 			<p class="note">文字與間距一起縮放，範圍 {SCALE.min}% 到 {SCALE.max}%。</p>
 		</section>
+
+		<section>
+			<h3>最小字體</h3>
+			<div class="choices" role="group" aria-label="最小字體">
+				<button
+					aria-label="調小"
+					disabled={appearance.minFont === null || appearance.minFont <= MIN_FONT.min}
+					onclick={() => appearance.setMinFont(appearance.minFont! - MIN_FONT.step)}>－</button
+				>
+				<output aria-live="polite">{appearance.minFont === null ? '不限' : `${appearance.minFont}px`}</output>
+				<button
+					aria-label="調大"
+					disabled={appearance.minFont !== null && appearance.minFont >= MIN_FONT.max}
+					onclick={() => appearance.setMinFont(appearance.minFont === null ? MIN_FONT.start : appearance.minFont + MIN_FONT.step)}
+					>＋</button
+				>
+				<button disabled={appearance.minFont === null} onclick={() => appearance.resetMinFont()}>不限</button>
+			</div>
+			<p class="note">比這個小的字一律放大到這個大小，範圍 {MIN_FONT.min}px 到 {MIN_FONT.max}px。</p>
+		</section>
 	</div>
 </dialog>
 
@@ -81,11 +101,11 @@
 	h2,
 	h3 {
 		margin: 0;
-		font-size: 1rem;
+		font-size: max(1rem, var(--min-font, 0px));
 	}
 	h3 {
 		margin-bottom: 0.35rem;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.choices {
@@ -101,7 +121,7 @@
 	}
 	.note {
 		margin: 0.35rem 0 0;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	header + .note {

@@ -1,10 +1,11 @@
-// This device's appearance: theme, overall size, whether the roster is folded and the two column
+// This device's appearance: theme, overall size, smallest text size, whether the roster is folded and the two column
 // widths. Each is a variable or attribute on the root element, which the styles read, and is
 // remembered in the browser; the startup script in `src/app.html` puts it back before first paint.
 // Only what the settings dialog shows is also kept as state here.
 import {
 	FOLDED_KEY,
 	forget,
+	MIN_FONT,
 	remember,
 	remembered,
 	rememberedNumber,
@@ -23,11 +24,14 @@ class Appearance {
 	theme = $state<Theme>('dark');
 	/** Overall size in percent. */
 	scale = $state<number>(SCALE.base);
+	/** Smallest text size in px; null when there is no floor. */
+	minFont = $state<number | null>(null);
 
 	/** Take over what the startup script applied. */
 	restore(): void {
 		this.theme = remembered(THEME_KEY, THEMES, 'dark');
 		this.scale = rememberedNumber(SCALE.key, SCALE.min, SCALE.max) ?? SCALE.base;
+		this.minFont = rememberedNumber(MIN_FONT.key, MIN_FONT.min, MIN_FONT.max);
 	}
 
 	setTheme(theme: Theme): void {
@@ -46,6 +50,19 @@ class Appearance {
 		this.scale = SCALE.base;
 		document.documentElement.style.removeProperty('--ui-scale');
 		forget(SCALE.key);
+	}
+
+	setMinFont(px: number): void {
+		const value = clamp(px, MIN_FONT.min, MIN_FONT.max);
+		this.minFont = value;
+		document.documentElement.style.setProperty('--min-font', `${value}px`);
+		remember(MIN_FONT.key, String(value));
+	}
+
+	resetMinFont(): void {
+		this.minFont = null;
+		document.documentElement.style.removeProperty('--min-font');
+		forget(MIN_FONT.key);
 	}
 
 	setFolded(folded: boolean): void {

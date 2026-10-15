@@ -1,5 +1,6 @@
 // Which Herdr workspace a controller's new tab opens in. Only where Herdr's panes are matters,
 // never the agent state Herdr shows for them.
+import { createConnection } from 'node:net';
 import { basename } from 'node:path';
 import type { BoardConfig } from './config.ts';
 import { runExternal } from './external.ts';
@@ -94,4 +95,86 @@ export async function paneExists(config: BoardConfig, paneId: string): Promise<{
 		return { reason: '讀不到 Herdr 的窗格清單：輸出不是預期的格式' };
 	}
 	return { exists: paneList.some((pane) => pane.pane_id === paneId) };
+}
+
+/** Where a pane's workspace and tab sit in Herdr, by name and by their place in its lists. */
+export interface HerdrPlace {
+	workspace: { label: string; number: number } | null;
+	/** `position` counts from 1 among the workspace's tabs. */
+	tab: { label: string; position: number } | null;
+}
+
+/** The names and places of a workspace and a tab, or why they cannot be told. One that is no
+ *  longer in Herdr is null. */
+export async function describePlace(
+	config: BoardConfig,
+	workspaceId: string,
+	tabId: string
+): Promise<{ place: HerdrPlace } | { reason: string }> {
+	const [workspaces, tabs] = await Promise.all([
+		herdr(config, ['workspace', 'list']),
+		herdr(config, ['tab', 'list', '--workspace', workspaceId])
+	]);
+	if ('reason' in workspaces) return { reason: `讀不到 Herdr 的工作區清單：${workspaces.reason}` };
+	if ('reason' in tabs) return { reason: `讀不到 Herdr 的分頁清單：${tabs.reason}` };
+	const workspaceList = workspaces.result.workspaces;
+	const tabList = tabs.result.tabs;
+	if (!Array.isArray(workspaceList) || !workspaceList.every(isWorkspace)) {
+		return { reason: '讀不到 Herdr 的工作區清單：輸出不是預期的格式' };
+	}
+	if (!Array.isArray(tabList) || !tabList.every((tab) => typeof tab?.tab_id === 'string' && typeof tab?.label === 'string')) {
+		return { reason: '讀不到 Herdr 的分頁清單：輸出不是預期的格式' };
+	}
+	const workspace = workspaceList.find((candidate) => candidate.workspace_id === workspaceId);
+	// Herdr lists a workspace's tabs in the order it shows them.
+	const ownTabs = tabList.filter((tab) => tab.workspace_id === undefined || tab.workspace_id === workspaceId);
+	const index = ownTabs.findIndex((tab) => tab.tab_id === tabId);
+	return {
+		place: {
+			workspace: workspace ? { label: workspace.label, number: workspace.number } : null,
+			tab: index < 0 ? null : { label: ownTabs[index].label, position: index + 1 }
+		}
+	};
+}
+
+/** Sends one request over Herdr's socket and returns its `result`, or why there is none. */
+function socketRequest(config: BoardConfig, method: string, params: object): Promise<{ result: unknown } | { reason: string }> {
+	return new Promise((resolve) => {
+		const socket = createConnection(config.herdrSocket);
+		let answer = '';
+		const finish = (value: { result: unknown } | { reason: string }) => {
+			clearTimeout(timer);
+			socket.destroy();
+			resolve(value);
+		};
+		const timer = setTimeout(() => finish({ reason: '逾時沒有回應' }), config.herdrTimeoutMs);
+		socket.on('error', (error) => finish({ reason: error.message }));
+		socket.on('connect', () => socket.write(JSON.stringify({ id: 'lat-board', method, params }) + '\n'));
+		socket.on('data', (chunk) => {
+			answer += chunk.toString();
+			if (!answer.includes('\n')) return;
+			try {
+				const body = JSON.parse(answer);
+				finish('result' in body ? { result: body.result } : { reason: body.error?.message ?? '回應裡沒有結果' });
+			} catch {
+				finish({ reason: '回應不是預期的 JSON' });
+			}
+		});
+	});
+}
+
+/**
+ * Move the tab holding this pane to the front of its workspace. A resumed controller opens in a
+ * new tab, which Herdr adds at the end; putting it first, rather than back where the old tab was,
+ * leaves the place of every other tab as it was. Returns why it did not move, or null.
+ */
+export async function tabToFront(config: BoardConfig, paneId: string): Promise<string | null> {
+	const panes = await herdr(config, ['pane', 'list']);
+	if ('reason' in panes) return `讀不到 Herdr 的窗格清單：${panes.reason}`;
+	const paneList = panes.result.panes;
+	const pane = Array.isArray(paneList) ? paneList.find((candidate) => candidate?.pane_id === paneId) : undefined;
+	if (typeof pane?.tab_id !== 'string') return '找不到窗格所在的分頁';
+	// The insert index counts the tab being moved too; 0 is always the front.
+	const moved = await socketRequest(config, 'tab.move', { tab_id: pane.tab_id, insert_index: 0 });
+	return 'reason' in moved ? `移動分頁失敗：${moved.reason}` : null;
 }

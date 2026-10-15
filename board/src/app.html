@@ -20,6 +20,8 @@
 					if (store.getItem('lat-board-roster-folded') === '1') root.dataset.roster = 'folded';
 					var scale = number('lat-board-scale', 80, 150);
 					if (scale !== null) root.style.setProperty('--ui-scale', String(scale / 100));
+					var minFont = number('lat-board-min-font', 10, 24);
+					if (minFont !== null) root.style.setProperty('--min-font', minFont + 'px');
 					var roster = number('lat-board-roster-width', 170, 440);
 					if (roster !== null) root.style.setProperty('--roster-w', roster + 'px');
 					var inbox = number('lat-board-inbox-width', 260, 720);

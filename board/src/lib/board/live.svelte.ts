@@ -1,12 +1,12 @@
 // The board as the page sees it: the latest snapshot plus the state of the link to the server.
 import { connectBoard, type Connection, type LinkState } from './client.ts';
+import { toasts } from './toasts.svelte.ts';
 import type { BoardSnapshot, InboxReport } from './types.ts';
 
 export class LiveBoard {
 	snapshot: BoardSnapshot;
 	link = $state<LinkState>('connecting');
 	refreshing = $state(false);
-	refreshFailed = $state(false);
 	/** Archived reports, newest first; null until loaded, 'failed' when they could not be read. */
 	archive = $state<InboxReport[] | 'failed' | null>(null);
 	#connection: Connection | undefined;
@@ -48,9 +48,8 @@ export class LiveBoard {
 		this.refreshing = true;
 		try {
 			await this.#connection?.refresh();
-			this.refreshFailed = false;
 		} catch {
-			this.refreshFailed = true;
+			toasts.show('failed', '重新整理失敗，請稍後再試。');
 		} finally {
 			this.refreshing = false;
 		}

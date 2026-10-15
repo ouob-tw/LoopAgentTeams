@@ -3,6 +3,8 @@
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { answering, complete, outdated } from '#lib/board/answering.svelte.ts';
 	import { formatTime } from '#lib/board/format.ts';
+	import { renderMarkdown } from '#lib/board/markdown.ts';
+	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { itemLabel, type HelperOption, type InboxItem } from '#lib/board/types.ts';
 
 	let {
@@ -31,15 +33,13 @@
 	const item = $derived(inInbox ? current : lastListed);
 
 	let marking = $state(false);
-	let failed = $state(false);
 
 	async function read() {
 		marking = true;
-		failed = false;
 		try {
 			await onread(item.key);
 		} catch {
-			failed = true;
+			toasts.show('failed', '沒有標記成功，請再試一次。');
 		} finally {
 			marking = false;
 		}
@@ -66,12 +66,34 @@
 		answering.edit(item, single ? { select: [], other: true } : { other: !draft.other });
 	}
 
-	function submit() {
-		if (item.kind === 'question') void answering.submit(item);
+	async function submit() {
+		if (item.kind !== 'question') return;
+		const key = item.key;
+		await answering.submit(item);
+		const result = answering.outcomes[key];
+		if (result?.status === 'invalid_answer') {
+			toasts.show('failed', `答覆不符合這一題的格式，沒有送出：${result.reason}（你填的內容還在）`);
+		} else if (result?.status === 'error') {
+			toasts.show('failed', `送出失敗：${result.reason}（你填的內容還在；這一題目前的狀態以畫面為準，重送前請先確認）`);
+		} else if (result?.status === 'unknown') {
+			toasts.show('failed', '沒有收到看板伺服器的回應，不確定有沒有送出；請按「重新整理」確認這一題的狀態（你填的內容還在）。');
+		} else if (result?.status === 'ended') {
+			toasts.show('failed', result.reason ?? '主控已結束，沒有送出。');
+		}
 	}
 
-	function notify() {
-		if (item.kind === 'question') void answering.notify(item);
+	async function notify() {
+		if (item.kind !== 'question') return;
+		const key = item.key;
+		const wasFailed = !!answering.submitted[key]?.notifyFailed;
+		await answering.notify(item);
+		const result = answering.notifyResults[key];
+		if (result?.status === 'delivered') toasts.show('ok', '通知已送達主控。');
+		else if (result?.status === 'no_pending') {
+			toasts.show('info', `沒有待送的通知。${wasFailed ? '這不代表主控已經收到，請在聊天告訴主控。' : ''}`);
+		} else if (result?.status === 'failed') toasts.show('failed', `仍未送達：${result.reason}`);
+		else if (result?.status === 'unknown') toasts.show('failed', '沒有收到看板伺服器的回應，不確定有沒有通知到。');
+		else if (result) toasts.show('failed', `沒有通知：${result.reason}`);
 	}
 </script>
 
@@ -123,7 +145,7 @@
 			<p class="notice" role="status">這一題已經送出過答覆（例如在 Herdr 待答面板），不能再作答。</p>
 		{/if}
 		{#if question.context}
-			<p class="text">{question.context}</p>
+			<div class="text md">{@html renderMarkdown(question.context)}</div>
 		{/if}
 		{#if question.options.length}
 			<ul class="options">
@@ -174,7 +196,7 @@
 		{#if question.recommendation}
 			<section class="recommendation">
 				<h3>推薦</h3>
-				<p class="text">{question.recommendation}</p>
+				<div class="text md">{@html renderMarkdown(question.recommendation)}</div>
 			</section>
 		{/if}
 
@@ -206,19 +228,6 @@
 				</label>
 				<div class="actions">
 					<button class="primary" disabled={sending || !complete(question, draft)}>{sending ? '送出中…' : '送出答覆'}</button>
-					{#if outcome?.status === 'invalid_answer'}
-						<span class="failed" role="alert">答覆不符合這一題的格式，沒有送出：{outcome.reason}（你填的內容還在）</span>
-					{:else if outcome?.status === 'error'}
-						<span class="failed" role="alert">
-							送出失敗：{outcome.reason}（你填的內容還在；這一題目前的狀態以畫面為準，重送前請先確認）
-						</span>
-					{:else if outcome?.status === 'unknown'}
-						<span class="failed" role="alert">
-							沒有收到看板伺服器的回應，不確定有沒有送出；請按「重新整理」確認這一題的狀態（你填的內容還在）。
-						</span>
-					{:else if outcome?.status === 'ended'}
-						<span class="failed" role="alert">{outcome.reason}</span>
-					{/if}
 				</div>
 			</form>
 		{:else if inInbox}
@@ -234,17 +243,6 @@
 			{#if item.notifyFailed || submitted?.notifyFailed || notice}
 				<div class="actions">
 					<button onclick={notify} disabled={notifying}>{notifying ? '通知中…' : '重新通知'}</button>
-					{#if notice?.status === 'delivered'}
-						<span role="status">✓ 通知已送達主控。</span>
-					{:else if notice?.status === 'no_pending'}
-						<span role="status">沒有待送的通知。{submitted?.notifyFailed ? '這不代表主控已經收到，請在聊天告訴主控。' : ''}</span>
-					{:else if notice?.status === 'failed'}
-						<span class="failed" role="alert">仍未送達：{notice.reason}</span>
-					{:else if notice?.status === 'unknown'}
-						<span class="failed" role="alert">沒有收到看板伺服器的回應，不確定有沒有通知到。</span>
-					{:else if notice}
-						<span class="failed" role="alert">沒有通知：{notice.reason}</span>
-					{/if}
 				</div>
 			{/if}
 		{/if}
@@ -254,7 +252,11 @@
 			{@render answered(submitted.answer, submitted.note)}
 		{/if}
 	{:else}
-		<p class="text message">{item.message || '（這筆回報沒有內容）'}</p>
+		{#if item.message}
+			<div class="text message md">{@html renderMarkdown(item.message)}</div>
+		{:else}
+			<p class="text message">（這筆回報沒有內容）</p>
+		{/if}
 		<footer>
 			{#if !inInbox}
 				<span class="state">已封存{item.readAt ? `，${formatTime(item.readAt)} 標為已讀` : ''}</span>
@@ -262,7 +264,6 @@
 				<span class="state">已讀（{formatTime(item.readAt)}）</span>
 			{:else}
 				<button class="primary" onclick={read} disabled={marking}>標為已讀</button>
-				{#if failed}<span class="failed" role="alert">沒有標記成功，請再試一次。</span>{/if}
 			{/if}
 		</footer>
 	{/if}
@@ -295,7 +296,7 @@
 		flex-wrap: wrap;
 		gap: 0.6rem;
 		align-items: baseline;
-		font-size: 0.75rem;
+		font-size: max(0.75rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.label {
@@ -312,18 +313,22 @@
 	}
 	h2 {
 		margin: 0.4rem 0 0.5rem;
-		font-size: 1.1rem;
+		font-size: max(1.1rem, var(--min-font, 0px));
 		overflow-wrap: anywhere;
 	}
 	h3 {
 		margin: 0 0 0.2rem;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.text {
 		margin: 0 0 0.7rem;
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
+	}
+	/* Markdown already turned the line breaks into elements. */
+	.text.md {
+		white-space: normal;
 	}
 	.options {
 		display: flex;
@@ -377,11 +382,11 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.2rem;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.field textarea {
-		font-size: 1rem;
+		font-size: max(1rem, var(--min-font, 0px));
 		color: var(--text);
 	}
 	.actions {
@@ -390,7 +395,7 @@
 		gap: 0.6rem;
 		align-items: center;
 		margin-top: 0.4rem;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		overflow-wrap: anywhere;
 	}
 	.letter {
@@ -405,14 +410,14 @@
 		padding: 0 0.4rem;
 		border: 1px solid var(--accent);
 		border-radius: var(--radius-pill);
-		font-size: 0.7rem;
+		font-size: max(0.7rem, var(--min-font, 0px));
 		font-style: normal;
 		color: var(--accent);
 		white-space: nowrap;
 	}
 	.impact {
 		margin: 0.15rem 0 0;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
@@ -427,7 +432,7 @@
 	}
 	.state {
 		margin: 0;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.notice {
@@ -464,7 +469,7 @@
 	}
 	.failed {
 		color: var(--danger);
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 
 	/* Light theme: solid borders only, and a chosen option stands out without colour, by its

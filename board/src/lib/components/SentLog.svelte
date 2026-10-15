@@ -115,7 +115,7 @@
 	}
 	h3 {
 		margin: 0;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		font-weight: 600;
 		color: var(--muted);
 	}
@@ -138,7 +138,7 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.2rem 0.8rem;
-		font-size: 0.75rem;
+		font-size: max(0.75rem, var(--min-font, 0px));
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
@@ -147,19 +147,19 @@
 		overflow-wrap: anywhere;
 	}
 	.title {
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
 	.note {
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.failed {
 		color: var(--danger);
 	}
 	.empty {
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 </style>

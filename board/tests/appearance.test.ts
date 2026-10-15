@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { mkdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
-import { FOLDED_KEY, SCALE, THEME_KEY, WIDTHS } from '../src/lib/board/prefs.ts';
+import { FOLDED_KEY, MIN_FONT, SCALE, THEME_KEY, WIDTHS } from '../src/lib/board/prefs.ts';
 import { question, startFixture, type Fixture } from './harness.ts';
 
 let fixture: Fixture;
@@ -122,13 +122,14 @@ test('the startup script puts back the theme, overall size, folded roster and co
 	const root = await startUp({
 		[THEME_KEY]: 'light',
 		[SCALE.key]: '120',
+		[MIN_FONT.key]: '14',
 		[FOLDED_KEY]: '1',
 		[WIDTHS.roster.key]: '300',
 		[WIDTHS.inbox.key]: '520'
 	});
 
 	expect(root.dataset).toEqual({ theme: 'light', roster: 'folded' });
-	expect(root.style).toEqual({ '--ui-scale': '1.2', '--roster-w': '300px', '--inbox-w': '520px' });
+	expect(root.style).toEqual({ '--ui-scale': '1.2', '--min-font': '14px', '--roster-w': '300px', '--inbox-w': '520px' });
 });
 
 test('the startup script accepts the limits of prefs.ts and nothing beyond them', async () => {
@@ -155,8 +156,8 @@ test('the startup script accepts the limits of prefs.ts and nothing beyond them'
 
 	const beyond: Record<string, string>[] = [
 		{ [THEME_KEY]: 'sepia', [FOLDED_KEY]: 'yes', [SCALE.key]: 'big', [WIDTHS.roster.key]: '', [WIDTHS.inbox.key]: 'wide' },
-		{ [SCALE.key]: String(SCALE.max + 1), [WIDTHS.roster.key]: String(WIDTHS.roster.max + 1), [WIDTHS.inbox.key]: String(WIDTHS.inbox.max + 1) },
-		{ [SCALE.key]: String(SCALE.min - 1), [WIDTHS.roster.key]: String(WIDTHS.roster.min - 1), [WIDTHS.inbox.key]: String(WIDTHS.inbox.min - 1) }
+		{ [MIN_FONT.key]: String(MIN_FONT.max + 1), [SCALE.key]: String(SCALE.max + 1), [WIDTHS.roster.key]: String(WIDTHS.roster.max + 1), [WIDTHS.inbox.key]: String(WIDTHS.inbox.max + 1) },
+		{ [MIN_FONT.key]: String(MIN_FONT.min - 1), [SCALE.key]: String(SCALE.min - 1), [WIDTHS.roster.key]: String(WIDTHS.roster.min - 1), [WIDTHS.inbox.key]: String(WIDTHS.inbox.min - 1) }
 	];
 	for (const saved of beyond) {
 		const root = await startUp(saved);
@@ -200,10 +201,12 @@ test('a long controller name is whole in the tooltips and the rail explanation',
 test('the page offers the settings entry, the fold control and both column handles', async () => {
 	const html = await page();
 
-	expect(html).toContain('title="主題與整體大小"');
+	expect(html).toContain('aria-label="設定"');
 	expect(html).toContain('aria-label="收起主控名冊"');
 	expect(html).toContain('aria-label="展開主控名冊"');
 	expect(html.match(/role="separator"/g)).toHaveLength(2);
 	// The settings dialog offers both themes and the overall size with a way back to the default.
 	for (const text of ['深色', '淺色（高對比）', 'aria-label="縮小"', 'aria-label="放大"', '還原預設']) expect(html).toContain(text);
+	// And a floor for the text size, off until it is raised.
+	for (const text of ['最小字體', 'aria-label="調小"', 'aria-label="調大"']) expect(html).toContain(text);
 });

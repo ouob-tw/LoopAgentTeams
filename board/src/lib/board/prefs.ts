@@ -11,6 +11,9 @@ export const THEME_KEY = 'lat-board-theme';
 /** Overall size, in percent of the browser's own text size. */
 export const SCALE = { key: 'lat-board-scale', min: 80, max: 150, step: 10, base: 100 } as const;
 
+/** The smallest text size in px; nothing saved means no floor. */
+export const MIN_FONT = { key: 'lat-board-min-font', min: 10, max: 24, step: 1, start: 12 } as const;
+
 /** '1' while the wide layout's roster is folded into the rail. */
 export const FOLDED_KEY = 'lat-board-roster-folded';
 

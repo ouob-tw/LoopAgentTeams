@@ -3,6 +3,9 @@
 	// column borders draggable. Narrow: the roster strip above the inbox, and one content screen
 	// at a time once something is opened.
 	import { onMount, tick } from 'svelte';
+	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
+	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
+	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import type { InboxSort } from '#lib/board/inbox.ts';
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
@@ -17,12 +20,18 @@
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
 	import Settings from '#lib/components/Settings.svelte';
+	import Toasts from '#lib/components/Toasts.svelte';
 
 	let { data } = $props();
 
 	// svelte-ignore state_referenced_locally
 	const board = new LiveBoard(data.snapshot);
-	onMount(() => board.connect());
+	onMount(() => {
+		const close = board.connect();
+		// A reload of the page also re-reads every source, like the refresh button.
+		void board.refresh();
+		return close;
+	});
 
 	const SORT_KEY = 'lat-board-inbox-sort';
 	let sort = $state<InboxSort>('time');
@@ -115,15 +124,16 @@
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
 </script>
 
-{#snippet refresh(short = false)}
+{#snippet refresh()}
 	<button
-		class="tool"
+		class="tool icon"
+		class:spinning={board.refreshing}
 		onclick={() => board.refresh()}
 		disabled={board.refreshing}
-		aria-label={short ? '重新整理' : undefined}
+		aria-label={board.refreshing ? '讀取中' : '重新整理'}
 		title="立即重新讀取所有資料"
 	>
-		{short ? '重整' : board.refreshing ? '讀取中…' : '重新整理'}
+		<RefreshCw size="1.1em" />
 	</button>
 {/snippet}
 
@@ -140,7 +150,9 @@
 {/snippet}
 
 {#snippet openSettings()}
-	<button class="tool" onclick={() => settings.open()} title="主題與整體大小">設定</button>
+	<button class="tool icon" onclick={() => settings.open()} aria-label="設定" title="設定：主題、整體大小與最小字體">
+		<SettingsIcon size="1.1em" />
+	</button>
 {/snippet}
 
 {#snippet resize(column: Column)}
@@ -157,17 +169,6 @@
 {/snippet}
 
 <div class="page">
-	{#if board.link === 'offline'}
-		<p class="offline" role="status">連線中斷，正在重新連線…</p>
-	{/if}
-
-	{#if board.refreshFailed}
-		<p class="problem" role="alert">重新整理失敗，請稍後再試。</p>
-	{/if}
-	{#each board.snapshot.errors as error (error)}
-		<p class="problem" role="alert">⚠ {error}</p>
-	{/each}
-
 	<div class="shell" class:viewing={view !== null}>
 		<nav class="roster">
 			<div class="folded">
@@ -179,24 +180,31 @@
 				>
 					{#snippet tools()}
 						{@render newController(true)}
-						{@render refresh(true)}
+						{@render refresh()}
 						{@render openSettings()}
 					{/snippet}
 				</RosterRail>
 			</div>
 			<div class="unfolded">
 				<header class="summary">
-					<span><b>{pending}</b> 待決　<b>{unread}</b> 未讀　{controllers.length} 個主控</span>
+					<span class="counts">
+						<button
+							class="tool icon fold"
+							onclick={() => appearance.setFolded(true)}
+							aria-label="收起主控名冊"
+							title="收起主控名冊"
+						>
+							<PanelLeftClose size="1.1em" />
+						</button>
+						<span class="stats">
+							<span class="stat"><b>{pending}</b> 待決</span>
+							<span class="stat"><b>{unread}</b> 未讀</span>
+						</span>
+					</span>
 					<span class="tools">
 						{@render newController()}
 						{@render refresh()}
 						{@render openSettings()}
-						<button
-							class="tool fold"
-							onclick={() => appearance.setFolded(true)}
-							aria-label="收起主控名冊"
-							title="收起主控名冊">«</button
-						>
 					</span>
 				</header>
 				<Roster {controllers} currentId={view?.kind === 'controller' ? view.id : null} onopen={openController} />
@@ -281,19 +289,14 @@
 </div>
 
 <Settings bind:this={settings} />
+<Toasts
+	standing={[
+		...(board.link === 'offline' ? [{ kind: 'failed' as const, text: '連線中斷，正在重新連線…' }] : []),
+		...board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))
+	]}
+/>
 
 <style>
-	.offline {
-		position: sticky;
-		top: 0;
-		z-index: 20;
-		margin: 0;
-		padding: 0.4rem 1rem;
-		background: var(--danger);
-		color: var(--bg);
-		font-weight: 600;
-		text-align: center;
-	}
 	.page {
 		display: flex;
 		flex-direction: column;
@@ -355,12 +358,31 @@
 		align-items: center;
 		gap: 0.4rem 0.5rem;
 		margin-bottom: 0.8rem;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
+	}
+	/* The fold control leads the first line, before the counts; the tools take the second. */
+	.counts {
+		display: flex;
+		align-items: center;
+		gap: 0.9rem;
+	}
+	.summary .tools {
+		flex-basis: 100%;
+		justify-content: flex-start;
+	}
+	/* Each number stays with its word: a narrow column wraps between the pairs, never inside one. */
+	.stats {
+		display: flex;
+		flex-wrap: wrap;
+		gap: 0 0.8rem;
+	}
+	.stat {
+		white-space: nowrap;
 	}
 	.summary b {
 		font-family: var(--mono);
-		font-size: 1rem;
+		font-size: max(1rem, var(--min-font, 0px));
 		color: var(--text);
 	}
 	.tools {
@@ -371,7 +393,7 @@
 	}
 	.tool {
 		padding: 0.15rem 0.6rem;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--text);
 		white-space: nowrap;
 	}
@@ -379,17 +401,27 @@
 		background: var(--selected-bg);
 		color: var(--selected-text);
 	}
+	.tool.icon {
+		display: inline-flex;
+		align-items: center;
+		padding: 0.25rem 0.4rem;
+	}
+	.spinning :global(svg) {
+		animation: spin 1s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.spinning :global(svg) {
+			animation: none;
+		}
+	}
 	.folded .tool {
 		padding: 0.15rem 0.2rem;
-		font-size: 0.7rem;
-	}
-	.problem {
-		margin: 0;
-		padding: 0.4rem 1rem;
-		border-bottom: 1px solid var(--line);
-		font-size: 0.8rem;
-		color: var(--danger);
-		overflow-wrap: anywhere;
+		font-size: max(0.7rem, var(--min-font, 0px));
 	}
 	.detail {
 		display: flex;
@@ -414,7 +446,7 @@
 		padding: 0;
 		background: none;
 		border: 0;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
 		text-align: left;
 		overflow-wrap: anywhere;
@@ -454,7 +486,7 @@
 		text-overflow: ellipsis;
 		white-space: nowrap;
 		font-family: var(--mono);
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 

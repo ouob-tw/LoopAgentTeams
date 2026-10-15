@@ -15,11 +15,14 @@
 		"measure:commandline": "bun scripts/measure-commandline.ts"
 	},
 	"devDependencies": {
+		"@lucide/svelte": "^1.57.0",
 		"@sveltejs/adapter-node": "^6.0.0",
 		"@sveltejs/kit": "^3.0.0",
 		"@sveltejs/vite-plugin-svelte": "^7.2.0",
 		"@types/bun": "^1.4.3",
+		"@types/markdown-it": "^14.2.0",
 		"@types/node": "^22",
+		"markdown-it": "^15.0.2",
 		"svelte": "^5.57.1",
 		"svelte-check": "^4.6.0",
 		"typescript": "^6.0.3",

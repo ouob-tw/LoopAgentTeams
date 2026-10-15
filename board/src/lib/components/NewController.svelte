@@ -284,13 +284,13 @@
 	}
 	h2 {
 		margin: 0;
-		font-size: 1.1rem;
+		font-size: max(1.1rem, var(--min-font, 0px));
 	}
 	h3,
 	legend {
 		margin: 0;
 		padding: 0;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		font-weight: 600;
 		color: var(--muted);
 	}
@@ -318,7 +318,7 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.2rem;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	.project {
 		display: flex;
@@ -336,7 +336,7 @@
 	}
 	.path,
 	.when {
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
@@ -344,7 +344,7 @@
 		font-family: var(--mono);
 	}
 	.chosen {
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	.toggle,
 	.nav button,
@@ -394,7 +394,7 @@
 		overflow-wrap: anywhere;
 	}
 	.tag {
-		font-size: 0.75rem;
+		font-size: max(0.75rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	button:disabled {
@@ -407,14 +407,14 @@
 	}
 	.init p {
 		margin: 0 0 0.35rem;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	p {
 		margin: 0;
 	}
 	.note,
 	.none {
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
@@ -445,18 +445,18 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.2rem 0.8rem;
-		font-size: 0.75rem;
+		font-size: max(0.75rem, var(--min-font, 0px));
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
 	.title {
 		font-family: var(--mono);
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
 	.state {
-		font-size: 0.9rem;
+		font-size: max(0.9rem, var(--min-font, 0px));
 		overflow-wrap: anywhere;
 	}
 	.text {
@@ -468,7 +468,7 @@
 		padding: 0;
 		background: none;
 		border: 0;
-		font-size: 0.85rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--accent);
 	}
 	.open:hover {

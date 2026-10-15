@@ -381,13 +381,20 @@ export function closeResume(stateDir: string, wakeId: string, result: ResumeClos
  *
  * Returns why the log could not be brought up to date, or null.
  */
-export function settleResumes(stateDir: string, agents: HcomAgent[], now: number, waitMs: number): string | null {
+export function settleResumes(
+	stateDir: string,
+	agents: HcomAgent[],
+	now: number,
+	waitMs: number,
+	onPane: (pane: string) => void = () => {}
+): string | null {
 	for (const wake of openResumes(stateDir, now, waitMs)) {
 		const running = agents.find((agent) => agent.sessionId === wake.controllerId);
 		const seen = findAgent(agents, wake.controllerId, [wake.hcomName, wake.resumedName]);
 		try {
 			if (!wake.pane && seen?.pane) {
 				appendSent(stateDir, { kind: 'resume-pane', wakeId: wake.id, pane: seen.pane, time: new Date(now).toISOString() });
+				onPane(seen.pane);
 			}
 			if (running) closeResume(stateDir, wake.id, 'succeeded', now);
 		} catch (error) {

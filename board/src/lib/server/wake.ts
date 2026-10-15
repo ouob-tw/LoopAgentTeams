@@ -32,7 +32,7 @@ import {
 } from '../board/wake.ts';
 import type { Board } from './board.ts';
 import { findAgent, listAgents, resumeAgent, type HcomAgent } from './hcom.ts';
-import { chooseWorkspace, paneExists } from './herdr.ts';
+import { chooseWorkspace, paneExists, tabToFront } from './herdr.ts';
 import { inject, queued, typedText } from './send.ts';
 import { modelLock, readCurrent } from './helper.ts';
 import { appendSent, closeResume, openResume, openSwitch, type ResumeResult } from './sent-log.ts';
@@ -243,6 +243,8 @@ export async function resume(board: Board, controller: Controller, entry: SentWa
 		// The pane the resumed client runs in, so a later wake can tell when it is gone.
 		const list = await listAgents(board.config);
 		if (list.ok) entry.pane = findAgent(list.agents, entry.controllerId, [entry.hcomName, entry.resumedName])?.pane ?? null;
+		// The new tab goes first in its workspace; where it ends up does not change the outcome.
+		if (entry.pane) await tabToFront(board.config, entry.pane);
 	}
 	const result: ResumeResult = {
 		kind: 'resume-result',

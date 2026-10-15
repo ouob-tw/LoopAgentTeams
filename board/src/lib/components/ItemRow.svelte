@@ -84,7 +84,7 @@
 		padding: 0.1rem 0.45rem;
 		border: 1px solid var(--line);
 		border-radius: var(--radius-pill);
-		font-size: 0.7rem;
+		font-size: max(0.7rem, var(--min-font, 0px));
 		white-space: nowrap;
 	}
 	.fresh .kind {
@@ -104,7 +104,7 @@
 		gap: 0.2rem 0.6rem;
 		align-items: center;
 		margin-top: 0.2rem;
-		font-size: 0.75rem;
+		font-size: max(0.75rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.owner {

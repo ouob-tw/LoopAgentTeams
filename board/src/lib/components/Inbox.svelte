@@ -94,7 +94,7 @@
 	}
 	h2 {
 		margin: 0;
-		font-size: 1rem;
+		font-size: max(1rem, var(--min-font, 0px));
 	}
 	.toggle {
 		display: flex;
@@ -102,7 +102,7 @@
 	.toggle button {
 		padding: 0.25rem 0.7rem;
 		border-radius: 0;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 		white-space: nowrap;
 	}
@@ -120,7 +120,7 @@
 	}
 	h3 {
 		margin: 0.9rem 0 0.1rem;
-		font-size: 0.8rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		font-weight: 600;
 		color: var(--muted);
 		overflow-wrap: anywhere;
@@ -132,7 +132,7 @@
 		padding: 0;
 		background: none;
 		border: 0;
-		font-size: 0.75rem;
+		font-size: max(0.75rem, var(--min-font, 0px));
 		color: var(--accent);
 		text-align: left;
 		overflow-wrap: anywhere;

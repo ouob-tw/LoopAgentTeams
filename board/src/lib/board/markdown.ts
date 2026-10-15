@@ -1,0 +1,15 @@
+// Markdown as the board shows it: raw HTML in the text is escaped, never run, and links whose
+// scheme is not safe are dropped by markdown-it's own check. Single line breaks stay line breaks.
+import MarkdownIt from 'markdown-it';
+
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true });
+
+// Links open in a new tab, so following one does not leave the board.
+const renderLink = md.renderer.rules.link_open ?? ((tokens, index, options, _env, self) => self.renderToken(tokens, index, options));
+md.renderer.rules.link_open = (tokens, index, options, env, self) => {
+	tokens[index].attrSet('target', '_blank');
+	tokens[index].attrSet('rel', 'noopener noreferrer');
+	return renderLink(tokens, index, options, env, self);
+};
+
+export const renderMarkdown = (text: string) => md.render(text);
