@@ -540,6 +540,10 @@
 		.counts {
 			gap: 0;
 		}
+		/* The counts and the tools share one line while it is wide enough, then the tools wrap. */
+		.summary .tools {
+			flex-basis: auto;
+		}
 		.roster,
 		.inbox,
 		.detail {
