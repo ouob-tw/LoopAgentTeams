@@ -52,6 +52,23 @@ html {
 	font-size: calc(100% * var(--ui-scale, 1));
 }
 
+/* Scrollbars over a transparent track, so the columns' own background shows through. */
+* {
+	scrollbar-color: var(--muted) transparent;
+}
+/* Safari reads only these. */
+::-webkit-scrollbar {
+	width: 10px;
+	height: 10px;
+	background: transparent;
+}
+::-webkit-scrollbar-thumb {
+	background: var(--muted);
+	border: 3px solid transparent;
+	border-radius: var(--radius-pill);
+	background-clip: padding-box;
+}
+
 body {
 	margin: 0;
 	background: var(--bg);

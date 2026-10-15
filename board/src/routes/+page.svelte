@@ -453,6 +453,14 @@
 		.phone-only {
 			display: none;
 		}
+		/* Tighter gaps between the three columns. */
+		.roster,
+		.inbox {
+			padding: 0.6rem;
+		}
+		.detail {
+			padding: 0.9rem;
+		}
 	}
 	.context {
 		margin: 0;
