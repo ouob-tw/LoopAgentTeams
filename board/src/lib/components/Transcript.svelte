@@ -157,8 +157,11 @@
 		font-weight: 600;
 		color: var(--muted);
 	}
+	/* minmax(0, …): a wide code block or table must not widen the list past its column; it
+	   scrolls sideways in its own box instead. */
 	ol {
 		display: grid;
+		grid-template-columns: minmax(0, 1fr);
 		gap: 0.4rem;
 		margin: 0;
 		padding: 0;

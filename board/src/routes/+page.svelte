@@ -516,7 +516,9 @@
 		:global(:root[data-roster='folded']) .shell {
 			--col-roster: 2.75rem;
 		}
+		/* A vertical scrollbar narrows the rail; it never scrolls sideways. */
 		:global(:root[data-roster='folded']) .roster {
+			overflow-x: hidden;
 			display: flex;
 			padding: 0;
 		}

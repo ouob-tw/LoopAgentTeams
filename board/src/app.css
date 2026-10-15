@@ -171,7 +171,9 @@ textarea:disabled {
 	border: 1px solid var(--line);
 	border-radius: 4px;
 }
+/* Wide blocks scroll sideways in their own box instead of widening the page. */
 .md pre {
+	max-width: 100%;
 	overflow-x: auto;
 	padding: 0.5em 0.7em;
 	border: 1px solid var(--line);
@@ -189,6 +191,7 @@ textarea:disabled {
 }
 .md table {
 	display: block;
+	max-width: 100%;
 	overflow-x: auto;
 	border-collapse: collapse;
 }

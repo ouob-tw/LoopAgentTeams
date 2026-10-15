@@ -179,7 +179,8 @@
 		display: grid;
 		justify-items: center;
 		gap: 0.2rem;
-		width: 2.25rem;
+		/* Narrower when a vertical scrollbar takes part of the rail. */
+		width: min(2.25rem, 100%);
 		padding: 0.35rem 0;
 		background: none;
 		border-color: transparent;
