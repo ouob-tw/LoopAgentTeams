@@ -2,3 +2,5 @@
 .worktrees/
 __pycache__/
 *.pyc
+
+.patchright-cli
