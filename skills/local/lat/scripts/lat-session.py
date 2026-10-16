@@ -675,7 +675,17 @@ def report_stop(record, payload):
 
 
 CLAUDE_LAT_COMMAND = '<command-name>/lat</command-name>'
-CODEX_LAT_SKILL = re.compile(r'\s*<skill>\s*<name>lat</name>')
+CODEX_LAT_NAME = '<name>lat</name>'
+CODEX_LAT_SKILL = re.compile(r'\s*<skill>\s*' + re.escape(CODEX_LAT_NAME))
+# Raw-line prefilter: every line invoked_lat can accept contains one of these.
+LAT_MARKERS = dict(claude=(CLAUDE_LAT_COMMAND, '"Skill"'), codex=(CODEX_LAT_NAME,))
+
+
+def transcript_record(client, record):
+    """Whether a parsed line has the shape of this client's transcript records."""
+    if client == 'claude':
+        return isinstance(record.get('type'), str) and 'sessionId' in record
+    return isinstance(record.get('type'), str) and isinstance(record.get('payload'), dict)
 
 
 def invoked_lat(client, record):
@@ -721,8 +731,8 @@ def lat_transcript(client, payload, sid):
         path = panel_module().transcript_path(client, sid)
     elif not isinstance(path, str) or not Path(path).is_absolute():
         raise ValueError(f'transcript_path is not an absolute path: {path!r}')
-    # Transcripts can be large: parse one line to confirm the format, then only marker lines.
-    markers = ('/lat</command-name>', '"Skill"') if client == 'claude' else ('<name>lat</name>',)
+    # Transcripts can be large: parse lines until one confirms the format, then only marker lines.
+    markers = LAT_MARKERS[client]
     records = False
     with open(path, encoding='utf-8') as stream:
         for line in stream:
@@ -732,7 +742,7 @@ def lat_transcript(client, payload, sid):
                 record = json.loads(line)
             except ValueError:
                 continue
-            if isinstance(record, dict):
+            if isinstance(record, dict) and transcript_record(client, record):
                 records = True
                 if invoked_lat(client, record):
                     return True

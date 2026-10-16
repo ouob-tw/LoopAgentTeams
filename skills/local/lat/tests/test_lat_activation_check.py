@@ -113,7 +113,7 @@ class ActivationCheckTests(unittest.TestCase):
         transcript = self.write_transcript([
             claude_tool_use('Skill', skill='implement'),
             claude_tool_use('Skill', skill='lat-extra'),
-            dict(type='user', message=dict(role='user', content=(
+            dict(type='user', sessionId=SESSION, message=dict(role='user', content=(
                 '<command-message>latte</command-message>\n'
                 '<command-name>/latte</command-name>'))),
         ])
@@ -125,8 +125,8 @@ class ActivationCheckTests(unittest.TestCase):
 
     def test_no_invocation_does_not_block(self):
         claude = self.write_transcript([
-            dict(type='user', message=dict(role='user', content='hello')),
-            dict(type='assistant', message=dict(role='assistant', content=[
+            dict(type='user', sessionId=SESSION, message=dict(role='user', content='hello')),
+            dict(type='assistant', sessionId=SESSION, message=dict(role='assistant', content=[
                 dict(type='text', text='hi')]))], 'claude.jsonl')
         codex = self.write_transcript([
             codex_message('user', '$lat'), codex_message('assistant', 'hi')], 'codex.jsonl')
@@ -212,11 +212,17 @@ class ActivationCheckTests(unittest.TestCase):
         binary = self.root / 'binary.jsonl'
         binary.write_bytes(b'\xff\xfe\x00')
         garbage = self.write_transcript(['not json', '[1, 2]'], 'garbage.jsonl')
+        unrelated = self.write_transcript([{'unrelated': 'not a client transcript record'}],
+                                          'unrelated.jsonl')
         for client in ('claude', 'codex'):
             cases = dict(missing_path=self.payload(client, self.root / 'missing.jsonl'),
                          directory=self.payload(client, directory),
                          binary=self.payload(client, binary),
                          no_records=self.payload(client, garbage),
+                         other_format=self.payload(client, unrelated),
+                         other_client=self.payload(client, self.codex_skill_transcript()
+                                                   if client == 'claude' else
+                                                   self.claude_command_transcript()),
                          lookup_fails=self.payload(client),
                          relative=self.payload(client, 'relative.jsonl'))
             for case, payload in cases.items():

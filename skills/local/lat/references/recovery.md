@@ -65,7 +65,7 @@ Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 的 DECIDE 
 
 **啟用檢查**：工作區沒有本 session 的 `.lat/sessions/<session-id>.json` 時，Stop hook 改查對話紀錄。紀錄裡有叫出 LAT 技能就擋下並要求依本程序 activate：Claude 是使用者訊息含 `<command-name>/lat</command-name>`，或主控用 Skill 工具叫出 `lat`／`<命名空間>:lat`；Codex 是使用者打 `$lat` 時注入、`<name>lat</name>` 的 `<skill>` 區塊。用讀檔或指令看 SKILL.md 不算，所以 Codex 自行讀技能檔不會被擋。只是閱讀或審查技能而被擋時，在回覆說明原因即可結束。
 
-以下情況不擋：紀錄檔存在（不論狀態或內容能否辨識，照舊只做上方的身分比對與 DECIDE 檢查）、不在 Git 專案內、`HCOM_LAUNCHED_BY` 不是空值或 `user`（被其他 Agent 派出的執行 Agent）、`stop_hook_active` 為 true（同一回合只擋一次，下一回合結束會再擋）。對話紀錄優先用 payload 的 `transcript_path`，沒有時依 session ID 找 `CLAUDE_CONFIG_DIR`（預設 `~/.claude`）的 `projects/*/<session>.jsonl` 或 `CODEX_HOME`（預設 `~/.codex`）的 `sessions/`、`archived_sessions/`；找不到、讀不出或沒有任何紀錄行時不擋，只在標準錯誤留一則 `LAT activation check warning:`。
+以下情況不擋：紀錄檔存在（不論狀態或內容能否辨識，照舊只做上方的身分比對與 DECIDE 檢查）、不在 Git 專案內、`HCOM_LAUNCHED_BY` 不是空值或 `user`（被其他 Agent 派出的執行 Agent）、`stop_hook_active` 為 true（同一回合只擋一次，下一回合結束會再擋）。對話紀錄優先用 payload 的 `transcript_path`，沒有時依 session ID 找 `CLAUDE_CONFIG_DIR`（預設 `~/.claude`）的 `projects/*/<session>.jsonl` 或 `CODEX_HOME`（預設 `~/.codex`）的 `sessions/`、`archived_sessions/`；找不到、讀不出或沒有一行符合該 client 的紀錄格式時不擋，只在標準錯誤留一則 `LAT activation check warning:`。
 
 Stop 在訊息已顯示後才執行，無法撤回原訊息。DECIDE 檢查不連網、不讀對話紀錄，無法發現工具通過後 tracker 上的 Spec 又被修改；每次修改 Spec 都須重跑工具。檢查只核對寫出的題號，無法判斷提問內容是否真的對應該題；寫了既有待答題號卻問別的事仍會通過。
 
