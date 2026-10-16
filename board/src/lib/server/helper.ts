@@ -1,7 +1,6 @@
 // The only way the board reads and writes question files, and reads a controller's conversation:
 // the LAT panel helper's `board` commands.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { join } from 'node:path';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import { fixedModel, type CurrentSettings } from '../board/models.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
@@ -265,25 +264,20 @@ export async function readCurrent(config: BoardConfig, client: string, sessionId
 }
 
 /** Why some report file due could not be deleted; null when every one was, or was left for a busy
- *  lock. What was deleted is in the receipts. */
+ *  lock. */
 export type PruneResult = { reason: string | null };
 
 const isFailure = (value: unknown): value is { session_id: string; reason: string } =>
 	typeof (value as { session_id?: unknown })?.session_id === 'string' && typeof (value as { reason?: unknown }).reason === 'string';
 
-/** Where the helper writes, before deleting a report file, a receipt named after its session that
- *  says which file it is: a run cut short still tells the board. The board removes one once the
- *  read and archive state is saved without that session. */
-export const pruneReceipts = (config: BoardConfig) => join(config.stateDir, 'pruned');
-
-/** Delete the report files whose newest report was issued 30 days or more before `now`, through
- *  the helper: only it can take the lock the turn-end hook appends under. */
-export async function pruneReports(config: BoardConfig, now: number): Promise<PruneResult> {
+/** Delete these sessions' report files when their newest report was issued 30 days or more before
+ *  `now`, through the helper: only it can take the lock the turn-end hook appends under. */
+export async function pruneReports(config: BoardConfig, now: number, sessionIds: string[]): Promise<PruneResult> {
 	const { stdout, failure } = await run(config, [
 		'prune-reports',
 		`--reports-dir=${config.reportsDir}`,
 		`--now=${new Date(now).toISOString()}`,
-		`--receipts=${pruneReceipts(config)}`
+		...sessionIds.map((sessionId) => `--session-id=${sessionId}`)
 	]);
 	let payload: { status?: unknown; reason?: unknown; deleted?: unknown; failed?: unknown } | null;
 	try {

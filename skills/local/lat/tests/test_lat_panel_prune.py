@@ -80,6 +80,11 @@ class PruneTestCase(unittest.TestCase):
         if lock:
             (self.reports / f"{session}.lock").touch()
 
+    def prune(self, *sessions):
+        """Prune the named sessions, or every report file there is."""
+        named = list(sessions) or sorted(path.stem for path in self.reports.glob("*.jsonl"))
+        return self.core.prune_reports(self.reports, NOW, named)
+
     def exists(self, session, suffix=".jsonl"):
         return (self.reports / f"{session}{suffix}").exists()
 
@@ -97,7 +102,7 @@ class RetentionTests(PruneTestCase):
         self.write("s-bad-time", record(NOW - RETENTION, time="yesterday"))
         self.write("s-bad-tag", record(NOW - RETENTION, tag=[]), record(NOW - RETENTION, tag={"DONE": 1}))
 
-        deleted = self.core.prune_reports(self.reports, NOW)[0]
+        deleted = self.prune()[0]
 
         self.assertEqual(sorted(deleted), ["s-day-31", "s-exact", "s-old-then-broken"])
         for session in deleted:
@@ -107,13 +112,27 @@ class RetentionTests(PruneTestCase):
         for session in ("s-young", "s-newer-first", "s-only-broken", "s-bad-time", "s-bad-tag"):
             self.assertTrue(self.exists(session), session)
 
+    def test_only_the_named_sessions_are_looked_at(self):
+        self.write("s-named", record(NOW - RETENTION))
+        self.write("s-other", record(NOW - RETENTION))
+        self.assertEqual(self.prune("s-named", "s-missing"), (["s-named"], []))
+        self.assertTrue(self.exists("s-other"))
+
+    def test_a_name_that_is_not_a_report_file_is_refused(self):
+        outside = self.root / "outside.jsonl"
+        outside.write_text(record(NOW - RETENTION) + "\n")
+        deleted, failed = self.prune("../outside", ".hidden", "")
+        self.assertEqual(deleted, [])
+        self.assertEqual([item["session_id"] for item in failed], ["../outside", ".hidden", ""])
+        self.assertTrue(outside.exists())
+
     def test_a_busy_lock_leaves_the_file_for_a_later_run(self):
         self.write("s-old", record(NOW - RETENTION - timedelta(days=2)))
         with (self.reports / "s-old.lock").open("a") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            self.assertEqual(self.core.prune_reports(self.reports, NOW)[0], [])
+            self.assertEqual(self.prune()[0], [])
             self.assertTrue(self.exists("s-old"))
-        self.assertEqual(self.core.prune_reports(self.reports, NOW)[0], ["s-old"])
+        self.assertEqual(self.prune()[0], ["s-old"])
         self.assertTrue(self.exists("s-old", ".lock"))
 
     def test_a_file_that_cannot_be_read_is_reported_and_the_others_still_go(self):
@@ -125,7 +144,7 @@ class RetentionTests(PruneTestCase):
         if os.access(self.reports / "s-b.jsonl", os.R_OK):
             self.skipTest("running as a user that reads any file")
 
-        deleted, failed = self.core.prune_reports(self.reports, NOW)
+        deleted, failed = self.prune()
 
         self.assertEqual(deleted, ["s-a", "s-c"])
         self.assertEqual([item["session_id"] for item in failed], ["s-b"])
@@ -147,7 +166,7 @@ class RetentionTests(PruneTestCase):
             return expired
 
         with mock.patch.object(self.core, "_report_expired", checked):
-            self.assertEqual(self.core.prune_reports(self.reports, NOW)[0], [])
+            self.assertEqual(self.prune()[0], [])
         self.assertEqual(calls, [True, False])
         self.assertEqual(len((self.reports / "s-old.jsonl").read_text().splitlines()), 2)
 
@@ -188,7 +207,7 @@ class RetentionTests(PruneTestCase):
             return real(path, now)
 
         with mock.patch.object(self.core, "_report_expired", checked):
-            self.assertEqual(self.core.prune_reports(self.reports, NOW)[0], ["s-old"])
+            self.assertEqual(self.prune()[0], ["s-old"])
 
         # The first hook gets the lock once the old file is gone, and writes a new one.
         wait_for("first in-lock")
@@ -223,89 +242,29 @@ class CommandTests(PruneTestCase):
         self.write("s-young", record(NOW - timedelta(days=29)))
         now = NOW.isoformat().replace("+00:00", "Z")
 
-        self.assertEqual(self.board("--reports-dir", self.reports, "--now", now), {"status": "ok", "deleted": ["s-old"], "failed": []})
-        self.assertEqual(self.board("--reports-dir", self.reports, "--now", now), {"status": "ok", "deleted": [], "failed": []})
+        self.assertEqual(self.board("--reports-dir", self.reports, "--now", now, "--session-id", "s-old", "--session-id", "s-young"), {"status": "ok", "deleted": ["s-old"], "failed": []})
+        self.assertEqual(self.board("--reports-dir", self.reports, "--now", now, "--session-id", "s-old"), {"status": "ok", "deleted": [], "failed": []})
         self.assertTrue(self.exists("s-young"))
         self.assertTrue(self.exists("s-old", ".lock"))
 
-    def test_the_receipt_names_the_file_before_it_is_deleted(self):
-        self.write("s-old", record(NOW - RETENTION))
-        report = self.reports / "s-old.jsonl"
-        info = report.stat()
-        receipts = self.root / "receipts"
-        real_unlink = Path.unlink
-        seen = {}
-
-        def unlink(path, *args, **kwargs):
-            if path == report:
-                # Cut off here, this is what the board would find.
-                seen["receipt"] = json.loads((receipts / "s-old").read_text())
-            return real_unlink(path, *args, **kwargs)
-
-        with mock.patch.object(Path, "unlink", unlink):
-            self.assertEqual(self.core.prune_reports(self.reports, NOW, receipts), (["s-old"], []))
-        self.assertEqual(seen["receipt"], {"dev": str(info.st_dev), "ino": str(info.st_ino)})
-        self.assertEqual(json.loads((receipts / "s-old").read_text()), seen["receipt"])
-        self.assertEqual(sorted(item.name for item in receipts.iterdir()), ["s-old"])
-        self.assertEqual(oct(receipts.stat().st_mode & 0o777), "0o700")
-
-    def test_a_run_killed_before_the_deletion_leaves_a_receipt_for_a_file_still_there(self):
-        self.write("s-old", record(NOW - RETENTION))
-        report = self.reports / "s-old.jsonl"
-        receipts = self.root / "receipts"
-        real_unlink = Path.unlink
-
-        def killed(path, *args, **kwargs):
-            if path == report:
-                raise KeyboardInterrupt
-            return real_unlink(path, *args, **kwargs)
-
-        with mock.patch.object(Path, "unlink", killed), self.assertRaises(KeyboardInterrupt):
-            self.core.prune_reports(self.reports, NOW, receipts)
-        # The same file is still there: the receipt shows the deletion was not done.
-        receipt = json.loads((receipts / "s-old").read_text())
-        self.assertEqual(receipt["ino"], str(report.stat().st_ino))
-        # The next run deletes it and keeps the receipt.
-        self.assertEqual(self.core.prune_reports(self.reports, NOW, receipts), (["s-old"], []))
-        self.assertFalse(report.exists())
-        self.assertTrue((receipts / "s-old").exists())
-
-    def test_a_deletion_that_fails_takes_its_receipt_back(self):
-        self.write("s-old", record(NOW - RETENTION))
-        report = self.reports / "s-old.jsonl"
-        receipts = self.root / "receipts"
-        real_unlink = Path.unlink
-
-        def refused(path, *args, **kwargs):
-            if path == report:
-                raise PermissionError("refused")
-            return real_unlink(path, *args, **kwargs)
-
-        with mock.patch.object(Path, "unlink", refused):
-            deleted, failed = self.core.prune_reports(self.reports, NOW, receipts)
-        self.assertEqual((deleted, [item["session_id"] for item in failed]), ([], ["s-old"]))
-        self.assertTrue(report.exists())
-        self.assertEqual(list(receipts.iterdir()), [])
-
-    def test_a_receipt_that_cannot_be_written_keeps_the_file(self):
-        self.write("s-old", record(NOW - RETENTION))
-        receipts = self.root / "receipts"
-        receipts.write_text("not a directory")
-
-        deleted, failed = self.core.prune_reports(self.reports, NOW, receipts)
-
-        self.assertEqual((deleted, [item["session_id"] for item in failed]), ([], ["s-old"]))
-        self.assertTrue(self.exists("s-old"))
-
     def test_a_missing_directory_deletes_nothing(self):
         self.assertEqual(
-            self.board("--reports-dir", self.root / "none", "--now", NOW.isoformat()),
+            self.board("--reports-dir", self.root / "none", "--now", NOW.isoformat(), "--session-id", "s-old"),
             {"status": "ok", "deleted": [], "failed": []},
         )
 
+    def test_the_sessions_must_be_named(self):
+        self.write("s-old", record(NOW - RETENTION))
+        result = subprocess.run(
+            [sys.executable, str(MODULE), "board", "prune-reports", "--reports-dir", str(self.reports), "--now", NOW.isoformat()],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 2)
+        self.assertTrue(self.exists("s-old"))
+
     def test_a_time_without_a_zone_is_refused(self):
         self.write("s-old", record(NOW - RETENTION))
-        result = self.board("--reports-dir", self.reports, "--now", "2026-06-01T12:00:00", code=1)
+        result = self.board("--reports-dir", self.reports, "--now", "2026-06-01T12:00:00", "--session-id", "s-old", code=1)
         self.assertEqual(result["status"], "error")
         self.assertTrue(self.exists("s-old"))
 

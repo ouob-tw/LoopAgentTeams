@@ -2,7 +2,7 @@
 // files past retention are deleted by the real helper command, on this test's reports directory.
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HelperController, InboxReport } from '../src/lib/board/types.ts';
 import { DAY, named, startFixture, titled, until, uvPython, type Fixture } from './harness.ts';
@@ -19,7 +19,10 @@ async function on(time: number) {
 }
 /** List these controllers, with prune-reports run by the real helper. */
 const list = (controllers: HelperController[]) => fixture.setHelper({ output: { controllers }, realPrune: python });
-const inboxState = () => JSON.parse(readFileSync(join(fixture.dir, 'board-state/inbox.json'), 'utf8'));
+const inboxState = () => {
+	const file = join(fixture.dir, 'board-state/inbox.json');
+	return existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : { read: {}, archived: {} };
+};
 const has = (session: string, suffix = '.jsonl') => existsSync(join(fixture.reportsDir, `${session}${suffix}`));
 
 beforeAll(async () => {
@@ -32,7 +35,6 @@ beforeEach(() => {
 	rmSync(fixture.reportsDir, { recursive: true, force: true });
 	mkdirSync(fixture.reportsDir);
 	rmSync(join(fixture.dir, 'board-state/inbox.json'), { force: true });
-	rmSync(join(fixture.dir, 'board-state/pruned'), { recursive: true, force: true });
 	list([]);
 });
 
@@ -107,10 +109,8 @@ test('the archive lists reports for 30 days; a file is deleted when its newest r
 		'prune-reports',
 		`--reports-dir=${fixture.reportsDir}`,
 		`--now=${iso(T0 + 32 * DAY)}`,
-		`--receipts=${join(fixture.dir, 'board-state/pruned')}`
+		'--session-id=session-ended'
 	]);
-	// The helper's receipt is gone once the state was saved without the session.
-	expect(readdirSync(join(fixture.dir, 'board-state/pruned'))).toEqual([]);
 
 	// A report written again for that session starts over: unread in the inbox, not archived.
 	fixture.report('session-ended', { tag: 'DONE', summary: '回來了', time: iso(T0 + 32 * DAY), hcom_name: 'vega', workspace });
@@ -129,8 +129,13 @@ test('a file whose lock is held is left until a later read', async () => {
 	try {
 		await until(() => said.includes('locked'), 10_000, 'the lock to be held');
 		const inode = statSync(lock).ino;
-		expect((await on(T0 + 40 * DAY)).errors).toEqual([]);
+		const held = await on(T0 + 40 * DAY);
+		expect(held.errors).toEqual([]);
 		expect(has('session-busy')).toBe(true);
+		// Left for later, but past retention: listed nowhere, its state already cleared.
+		expect(held.archivedCount).toBe(0);
+		expect(titled(held, '鎖住了')).toBeUndefined();
+		expect(Object.keys(inboxState().archived).filter((key) => key.startsWith('session-busy#'))).toEqual([]);
 
 		holder.kill();
 		await until(() => holder.exitCode !== null || holder.signalCode !== null, 10_000, 'the lock holder to end');
@@ -165,73 +170,60 @@ test('after pruning, a bound running controller shows as usual and a closed one 
 	fixture.setHcom({});
 });
 
-const receiptsDir = () => join(fixture.dir, 'board-state/pruned');
-/** A receipt the helper writes before deleting this report file, as it names that file. */
-function receipt(session: string): void {
-	const file = statSync(join(fixture.reportsDir, `${session}.jsonl`), { bigint: true });
-	mkdirSync(receiptsDir(), { recursive: true });
-	writeFileSync(join(receiptsDir(), session), JSON.stringify({ dev: String(file.dev), ino: String(file.ino) }));
-}
-const failingPrune = () =>
-	fixture.setHelper({ output: { controllers: [] }, 'prune-reports': { output: { status: 'error', reason: '輔助工具逾時' }, exit: 1 } });
+const stateDir = () => join(fixture.dir, 'board-state');
 
-test('a receipt left by a helper run cut short, or before a restart, clears that session once its file is gone', async () => {
+test('when the read and archive state cannot be saved first, nothing is deleted', async () => {
 	const workspace = `${fixture.dir}/workspaces/alpha`;
-	fixture.report('session-cut', { tag: 'DONE', summary: '舊的', time: iso(T0), hcom_name: 'vega', workspace });
+	fixture.report('session-unsaved', { tag: 'DONE', summary: '存不了', time: iso(T0), hcom_name: 'vega', workspace });
 	await on(T0 + 10 * DAY);
-	expect(Object.keys(inboxState().archived)).toContain('session-cut#0');
-
-	// Killed after writing the receipt, before deleting: the very file is still there, nothing is done.
-	receipt('session-cut');
-	failingPrune();
-	await on(T0 + 10 * DAY);
-	expect(Object.keys(inboxState().archived)).toContain('session-cut#0');
-	expect(readdirSync(receiptsDir())).toEqual(['session-cut']);
-
-	// Killed after deleting, before printing anything: the receipt alone clears the session.
-	rmSync(join(fixture.reportsDir, 'session-cut.jsonl'));
-	await on(T0 + 10 * DAY);
-	expect(Object.keys(inboxState().archived)).not.toContain('session-cut#0');
-	expect(readdirSync(receiptsDir())).toEqual([]);
-
-	// The session's next report starts over in the inbox, unread.
-	list([]);
-	fixture.report('session-cut', { tag: 'DONE', summary: '新的', time: iso(T0 + 10 * DAY), hcom_name: 'vega', workspace });
-	expect(titled(await on(T0 + 10 * DAY), '新的')).toMatchObject({ key: 'session-cut#0', readAt: null });
+	const asked = fixture.helperArgs('prune-reports').length;
+	chmodSync(stateDir(), 0o500);
+	try {
+		const snapshot = await on(T0 + 31 * DAY);
+		expect(snapshot.errors.some((error) => error.startsWith('超過 30 天的回報紀錄沒有刪除，下次重讀再試：已讀與封存紀錄沒辦法先清掉'))).toBe(true);
+		expect(fixture.helperArgs('prune-reports')).toHaveLength(asked);
+		expect(has('session-unsaved')).toBe(true);
+		// Past retention it is listed nowhere in the meantime.
+		expect(snapshot.archivedCount).toBe(0);
+		expect(titled(snapshot, '存不了')).toBeUndefined();
+	} finally {
+		chmodSync(stateDir(), 0o700);
+	}
+	await on(T0 + 31 * DAY);
+	expect(has('session-unsaved')).toBe(false);
+	expect(Object.keys(inboxState().archived).filter((key) => key.startsWith('session-unsaved#'))).toEqual([]);
 });
 
-test('a receipt that cannot be removed is applied once: a report written again keeps its read state', async () => {
+test('a report marked read while the helper runs does not give the deleted reports state back', async () => {
 	const workspace = `${fixture.dir}/workspaces/alpha`;
-	fixture.report('session-stuck', { tag: 'DONE', summary: '舊的', time: iso(T0), hcom_name: 'vega', workspace });
+	fixture.report('session-race', { tag: 'DONE', summary: '要刪的', time: iso(T0), hcom_name: 'vega', workspace });
+	fixture.report('session-other', { tag: 'DONE', summary: '還在信箱', time: iso(T0 + 26 * DAY), hcom_name: 'luna', workspace });
 	await on(T0 + 10 * DAY);
-	receipt('session-stuck');
-	rmSync(join(fixture.reportsDir, 'session-stuck.jsonl'));
-	failingPrune();
-	chmodSync(receiptsDir(), 0o500);
-	try {
-		const stuck = await on(T0 + 10 * DAY);
-		expect(stuck.errors.some((error) => error.startsWith('刪除回報檔的收據移不掉'))).toBe(true);
-		expect(Object.keys(inboxState().archived)).not.toContain('session-stuck#0');
+	expect(Object.keys(inboxState().archived)).toContain('session-race#0');
 
-		fixture.report('session-stuck', { tag: 'DONE', summary: '回來了', time: iso(T0 + 10 * DAY), hcom_name: 'vega', workspace });
-		const { key } = titled(await on(T0 + 10 * DAY), '回來了')!;
-		expect((await fixture.markRead(cookie, key)).status).toBe(200);
-		await on(T0 + 10 * DAY);
-		expect(titled(await on(T0 + 10 * DAY), '回來了')).toMatchObject({ readAt: iso(T0 + 10 * DAY) });
-	} finally {
-		chmodSync(receiptsDir(), 0o700);
-	}
-	const after = await on(T0 + 10 * DAY);
-	expect(after.errors).toEqual(['超過 30 天的回報紀錄沒有刪除，下次重讀再試：輔助工具逾時']);
-	expect(readdirSync(receiptsDir())).toEqual([]);
-	expect(titled(await on(T0 + 10 * DAY), '回來了')).toMatchObject({ readAt: iso(T0 + 10 * DAY) });
-	expect(inboxState().pruned).toEqual({});
+	// The helper takes a while and deletes the file, as the real one would.
+	fixture.setHelper({ output: { controllers: [] }, 'prune-reports': { output: { status: 'ok', deleted: ['session-race'], failed: [] }, sleepMs: 1500 } });
+	fixture.setClock(T0 + 30 * DAY);
+	const reading = fixture.refresh(cookie);
+	await until(() => !Object.keys(inboxState().archived).includes('session-race#0'), 10_000, 'the state to be cleared first');
+	const other = titled(await fixture.board(cookie), '還在信箱')!;
+	expect((await fixture.markRead(cookie, other.key)).status).toBe(200);
+	expect(Object.keys(inboxState().archived)).not.toContain('session-race#0');
+	expect(inboxState().read).toHaveProperty(other.key);
+	rmSync(join(fixture.reportsDir, 'session-race.jsonl'));
+	await reading;
+	expect(Object.keys(inboxState().archived)).not.toContain('session-race#0');
+
+	// Written again, the session's first report is unread in the inbox.
 	list([]);
+	fixture.report('session-race', { tag: 'DONE', summary: '新的', time: iso(T0 + 30 * DAY), hcom_name: 'vega', workspace });
+	expect(titled(await on(T0 + 30 * DAY), '新的')).toMatchObject({ key: 'session-race#0', readAt: null });
 });
 
 test('a failed prune is shown and tried again at the next read', async () => {
+	fixture.report('session-old', { tag: 'DONE', summary: '舊的', time: iso(T0), hcom_name: 'vega', workspace: `${fixture.dir}/workspaces/alpha` });
 	fixture.setHelper({ output: { controllers: [] }, 'prune-reports': { output: { status: 'error', reason: '磁碟壞了' }, exit: 1 } });
-	const failed = await on(T0);
+	const failed = await on(T0 + 31 * DAY);
 	expect(failed.errors).toEqual(['超過 30 天的回報紀錄沒有刪除，下次重讀再試：磁碟壞了']);
 
 	// A file that could not be deleted does not hide the ones that were.
@@ -239,8 +231,9 @@ test('a failed prune is shown and tried again at the next read', async () => {
 		output: { controllers: [] },
 		'prune-reports': { output: { status: 'ok', deleted: ['session-gone'], failed: [{ session_id: 'session-stuck', reason: '權限不足' }] } }
 	});
-	expect((await on(T0)).errors).toEqual(['超過 30 天的回報紀錄沒有刪除，下次重讀再試：session-stuck：權限不足']);
+	expect((await on(T0 + 31 * DAY)).errors).toEqual(['超過 30 天的回報紀錄沒有刪除，下次重讀再試：session-stuck：權限不足']);
 
 	list([]);
-	expect((await on(T0)).errors).toEqual([]);
+	expect((await on(T0 + 31 * DAY)).errors).toEqual([]);
+	expect(has('session-old')).toBe(false);
 });

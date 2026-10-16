@@ -40,14 +40,17 @@ export function isClosed(sources: Sources, sessionId: string): boolean {
 /** A report is archived this long after it was issued, read or not. */
 const ARCHIVE_MS = 7 * DAY_MS;
 
-/** Every DONE and HELP report, archived or not, in file order. */
-function reportItems(sources: Sources, state: InboxState): InboxReport[] {
+/** Every DONE and HELP report, archived or not, in file order. A report issued 30 days or more
+ *  before `now` is not one at all: nothing lists it or gives it a read or archive state again, so
+ *  the state a report file's deletion clears stays clear. */
+function reportItems(sources: Sources, state: InboxState, now: number): InboxReport[] {
 	const bound = new Map(sources.active.map((binding) => [binding.session_id, binding]));
 	const items: InboxReport[] = [];
 	for (const file of sources.reportFiles) {
 		const binding = bound.get(file.sessionId);
 		file.reports.forEach((report, index) => {
 			if (report.tag !== 'DONE' && report.tag !== 'HELP') return;
+			if (now - Date.parse(report.time) >= RETAIN_MS) return;
 			// Report files only grow, so a report's position in its file identifies it for good.
 			const key = `${file.sessionId}#${index}`;
 			const workspace = binding?.workspace ?? report.workspace;
@@ -72,7 +75,7 @@ function reportItems(sources: Sources, state: InboxState): InboxReport[] {
 /** Move every report that is due into the archive. Returns whether the state changed. */
 export function archiveDue(sources: Sources, state: InboxState, now: number): boolean {
 	let changed = false;
-	for (const item of reportItems(sources, state)) {
+	for (const item of reportItems(sources, state, now)) {
 		if (item.key in state.archived) continue;
 		if (now - Date.parse(item.time) >= ARCHIVE_MS) {
 			state.archived[item.key] = new Date(now).toISOString();
@@ -86,7 +89,7 @@ export type MarkResult = 'marked' | 'already-read' | 'already-unread' | 'archive
 
 /** Mark an inbox report read or unread. Marking read again keeps the time it was first read. */
 export function mark(sources: Sources, state: InboxState, key: string, read: boolean, now: number): MarkResult {
-	if (!reportItems(sources, state).some((item) => item.key === key)) return 'unknown';
+	if (!reportItems(sources, state, now).some((item) => item.key === key)) return 'unknown';
 	if (key in state.archived) return 'archived';
 	if (read === key in state.read) return read ? 'already-read' : 'already-unread';
 	if (read) state.read[key] = new Date(now).toISOString();
@@ -94,39 +97,34 @@ export function mark(sources: Sources, state: InboxState, key: string, read: boo
 	return 'marked';
 }
 
-/** Whether an archived report is still listed: only for 30 days after it was issued. */
-const retained = (item: InboxReport, now: number) => now - Date.parse(item.time) < RETAIN_MS;
-
-/** One page of the archive view: archived reports still retained, newest first, starting just
- *  after the `before` cursor. Throws on a cursor that is not one. */
+/** One page of the archive view: archived reports, newest first, starting just after the `before`
+ *  cursor. Throws on a cursor that is not one. */
 export function archivedReports(sources: Sources, state: InboxState, now: number, before: string | null): ArchivePage {
-	const listed = reportItems(sources, state).filter((item) => item.key in state.archived && retained(item, now));
+	const listed = reportItems(sources, state, now).filter((item) => item.key in state.archived);
 	return archivePage(sortArchive(listed), before);
 }
 
-/** Apply the helper's receipts for report files it deleted, session ID → receipt: forget the read
- *  and archive state of every report of that session, so a file written again for it starts its
- *  keys over. Each receipt is applied once; one no longer listed is forgotten. Null when the
- *  receipts could not be listed: nothing changes. Returns whether the state changed. */
-export function applyReceipts(state: InboxState, receipts: Map<string, string> | null): boolean {
-	if (!receipts) return false;
+/** The sessions whose report file is due for deletion at `now`: its newest report was issued
+ *  30 days or more before. */
+export function expiredSessions(files: ReportFile[], now: number): string[] {
+	return files
+		.filter((file) => file.reports.length && now - Math.max(...file.reports.map((report) => Date.parse(report.time))) >= RETAIN_MS)
+		.map((file) => file.sessionId);
+}
+
+/** Forget the read and archive state of every report of these sessions, before their report files
+ *  are deleted: a file written again for one of them starts its keys over. Returns whether it
+ *  changed. */
+export function dropSessions(state: InboxState, sessionIds: string[]): boolean {
+	const prefixes = sessionIds.map((sessionId) => `${sessionId}#`);
 	let changed = false;
-	for (const sessionId of Object.keys(state.pruned)) {
-		if (!receipts.has(sessionId)) {
-			delete state.pruned[sessionId];
-			changed = true;
-		}
-	}
-	for (const [sessionId, receipt] of receipts) {
-		if (state.pruned[sessionId] === receipt) continue;
-		const prefix = `${sessionId}#`;
-		for (const times of [state.read, state.archived]) {
-			for (const key of Object.keys(times)) {
-				if (key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length))) delete times[key];
+	for (const times of [state.read, state.archived]) {
+		for (const key of Object.keys(times)) {
+			if (prefixes.some((prefix) => key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length)))) {
+				delete times[key];
+				changed = true;
 			}
 		}
-		state.pruned[sessionId] = receipt;
-		changed = true;
 	}
 	return changed;
 }
@@ -209,7 +207,7 @@ function endedController(file: ReportFile): Controller {
 /** `state` must already have had `archiveDue` applied for `now`. When it is null nothing is known
  *  about which reports are read or archived, so no report is listed at all. */
 export function buildSnapshot(sources: Sources, state: InboxState | null, now: number): BoardSnapshot {
-	const reports = state ? reportItems(sources, state) : [];
+	const reports = state ? reportItems(sources, state, now) : [];
 	const inboxReports = reports.filter((item) => !(item.key in state!.archived));
 	const withInboxReport = new Set(inboxReports.map((item) => item.controllerId));
 	const files = new Map(sources.reportFiles.map((file) => [file.sessionId, file]));
@@ -271,7 +269,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		recordedKeys: live.flatMap((binding) =>
 			binding.questions.filter((question) => question.status === 'recorded').map((question) => questionKey(binding, question))
 		),
-		archivedCount: reports.filter((item) => item.key in state!.archived && retained(item, now)).length,
+		archivedCount: reports.length - inboxReports.length,
 		errors
 	};
 }

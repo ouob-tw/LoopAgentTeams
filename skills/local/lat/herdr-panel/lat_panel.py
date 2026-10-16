@@ -43,8 +43,8 @@ Public API used by the Textual panel and LAT controller:
   ``transcript_path`` finds, with the model and effort of the latest turn
   (``current_settings``). ``board_launch_args`` reads the arguments hcom
   stored for an agent's launch, read-only from hcom's own database.
-  ``prune_reports`` deletes the controller report files whose newest record
-  is past the board's retention, under the same lock the turn-end hook
+  ``prune_reports`` deletes the named controller report files whose newest
+  record is past the board's retention, under the same lock the turn-end hook
   appends with.
 
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
@@ -69,7 +69,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   board notify --questions PATH
   board transcript --client (claude|codex) --session-id ID [--before SEQ]
   board launch-args --session-id ID
-  board prune-reports --reports-dir DIR --now TIME [--receipts DIR]
+  board prune-reports --reports-dir DIR --now TIME --session-id ID...
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
 Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
@@ -2471,23 +2471,11 @@ def _report_expired(path, now):
     return bool(times) and now - max(times) >= REPORT_RETENTION
 
 
-def _write_receipt(receipts, path):
-    """Record, before ``path`` is deleted, which file that is: ``{"dev", "ino"}`` of
-    it as strings, in ``receipts/<session-id>``, written whole or not at all. The
-    deletion is done once no file, or another file, is at ``path``; while the same
-    file is still there it is not, and the receipt must be left alone."""
-    receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
-    info = path.stat()
-    receipt = receipts / path.stem
-    temporary = receipts / f".{path.stem}.tmp"
-    temporary.write_text(json.dumps({"dev": str(info.st_dev), "ino": str(info.st_ino)}))
-    temporary.replace(receipt)
-    return receipt
-
-
-def prune_reports(directory, now, receipts=None):
-    """Delete each ``<session-id>.jsonl`` report file in ``directory`` whose newest
-    complete record was issued ``REPORT_RETENTION`` or more before ``now``.
+def prune_reports(directory, now, sessions):
+    """Delete the ``<session-id>.jsonl`` report file in ``directory`` of each of
+    ``sessions`` whose newest complete record was issued ``REPORT_RETENTION`` or
+    more before ``now``. Only the sessions the caller names are looked at: the
+    board clears their read and archive state before it asks.
 
     Each file is checked again while holding ``<session-id>.lock`` without
     waiting, the lock the turn-end hook appends under; a busy lock leaves the file
@@ -2496,18 +2484,14 @@ def prune_reports(directory, now, receipts=None):
     the session IDs whose file was deleted, and ``{"session_id", "reason"}`` for
     each file that could not be read, locked or deleted for another reason; those
     are left for a later run and do not stop the others.
-
-    With ``receipts``, a receipt named after the session is written to that
-    directory before each file is deleted (see ``_write_receipt``), so a run cut
-    short before it returns still tells the caller what it deleted; the caller
-    removes a receipt once it has dealt with it. A receipt whose deletion failed is
-    removed again.
     """
     directory = Path(directory)
     deleted, failed = [], []
-    if not directory.is_dir():
-        return deleted, failed
-    for path in sorted(directory.glob("*.jsonl")):
+    for session_id in sessions:
+        path = directory / f"{session_id}.jsonl"
+        if path.parent != directory or not session_id or session_id.startswith("."):
+            failed.append({"session_id": session_id, "reason": "not a report file name"})
+            continue
         try:
             if not _report_expired(path, now):
                 continue
@@ -2517,16 +2501,10 @@ def prune_reports(directory, now, receipts=None):
                 except BlockingIOError:
                     continue
                 if _report_expired(path, now):
-                    receipt = None if receipts is None else _write_receipt(Path(receipts), path)
-                    try:
-                        path.unlink()
-                    except OSError:
-                        if receipt:
-                            receipt.unlink(missing_ok=True)
-                        raise
-                    deleted.append(path.stem)
+                    path.unlink()
+                    deleted.append(session_id)
         except OSError as error:
-            failed.append({"session_id": path.stem, "reason": str(error)})
+            failed.append({"session_id": session_id, "reason": str(error)})
     return deleted, failed
 
 
@@ -2555,7 +2533,7 @@ def _run_board(args):
             now = datetime.fromisoformat(args.now)
             if now.tzinfo is None:
                 raise ValueError("--now must include a time zone")
-            deleted, failed = prune_reports(args.reports_dir, now, args.receipts)
+            deleted, failed = prune_reports(args.reports_dir, now, args.session_id)
             result, code = {"status": "ok", "deleted": deleted, "failed": failed}, 0
         else:
             result = notify_controller(args.questions)
@@ -2640,7 +2618,7 @@ def _build_parser():
     prune = board_commands.add_parser("prune-reports")
     prune.add_argument("--reports-dir", required=True, type=Path)
     prune.add_argument("--now", required=True)
-    prune.add_argument("--receipts", type=Path)
+    prune.add_argument("--session-id", required=True, action="append")
     return parser
 
 

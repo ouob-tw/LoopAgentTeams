@@ -8,9 +8,6 @@ export interface InboxState {
 	read: Record<string, string>;
 	/** Report key → when it was archived. Removed only with its report file. */
 	archived: Record<string, string>;
-	/** Session ID → the helper's receipt for deleting its report file, once its keys were removed:
-	 *  each receipt is applied once, even when it cannot be removed afterwards. */
-	pruned: Record<string, string>;
 }
 
 const FILE = 'inbox.json';
@@ -28,14 +25,12 @@ export function loadInboxState(stateDir: string): InboxState {
 	try {
 		text = readFileSync(path, 'utf8');
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { read: {}, archived: {}, pruned: {} };
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { read: {}, archived: {} };
 		throw error;
 	}
 	const parsed = JSON.parse(text) as Partial<InboxState> | null;
-	const pruned = parsed?.pruned ?? {};
-	const isTexts = typeof pruned === 'object' && pruned !== null && !Array.isArray(pruned) && Object.values(pruned).every((text) => typeof text === 'string');
-	if (!isTimes(parsed?.read) || !isTimes(parsed?.archived) || !isTexts) throw new Error(`${path} 的格式不正確`);
-	return { read: parsed.read, archived: parsed.archived, pruned };
+	if (!isTimes(parsed?.read) || !isTimes(parsed?.archived)) throw new Error(`${path} 的格式不正確`);
+	return { read: parsed.read, archived: parsed.archived };
 }
 
 export function saveInboxState(stateDir: string, state: InboxState): void {
