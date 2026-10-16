@@ -262,3 +262,32 @@ export async function readCurrent(config: BoardConfig, client: string, sessionId
 	const read = await readTranscript(config, client, sessionId);
 	return read.ok ? (read.page.current ?? null) : null;
 }
+
+/** Why some report file due could not be deleted; null when every one was, or was left for a busy
+ *  lock. */
+export type PruneResult = { reason: string | null };
+
+const isFailure = (value: unknown): value is { session_id: string; reason: string } =>
+	typeof (value as { session_id?: unknown })?.session_id === 'string' && typeof (value as { reason?: unknown }).reason === 'string';
+
+/** Delete these sessions' report files when their newest report was issued 30 days or more before
+ *  `now`, through the helper: only it can take the lock the turn-end hook appends under. */
+export async function pruneReports(config: BoardConfig, now: number, sessionIds: string[]): Promise<PruneResult> {
+	const { stdout, failure } = await run(config, [
+		'prune-reports',
+		`--reports-dir=${config.reportsDir}`,
+		`--now=${new Date(now).toISOString()}`,
+		...sessionIds.map((sessionId) => `--session-id=${sessionId}`)
+	]);
+	let payload: { status?: unknown; reason?: unknown; deleted?: unknown; failed?: unknown } | null;
+	try {
+		payload = JSON.parse(stdout);
+	} catch {
+		payload = null;
+	}
+	const { deleted, failed } = payload ?? {};
+	if (payload?.status === 'ok' && Array.isArray(deleted) && deleted.every((id) => typeof id === 'string') && Array.isArray(failed) && failed.every(isFailure)) {
+		return { reason: failed.map((item) => `${item.session_id}：${item.reason}`).join('；') || null };
+	}
+	return { reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出不是預期的格式' };
+}

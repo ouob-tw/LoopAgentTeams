@@ -6,7 +6,7 @@ import { join } from 'node:path';
 export interface InboxState {
 	/** Report key → when it was marked read. */
 	read: Record<string, string>;
-	/** Report key → when it was archived. Never removed: there is no way back from the archive. */
+	/** Report key → when it was archived. Removed only with its report file. */
 	archived: Record<string, string>;
 }
 

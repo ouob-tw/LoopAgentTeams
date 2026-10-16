@@ -2,7 +2,7 @@
 	// Wide: roster, inbox and content side by side, the roster foldable into a rail and both
 	// column borders draggable. Narrow: the roster strip above the inbox, and one content screen
 	// at a time once something is opened.
-	import { onMount, tick } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
@@ -82,17 +82,17 @@
 	const archivedCount = $derived(board.snapshot.archivedCount);
 
 	// The archive is fetched when its view is open, and again with every new snapshot: a report may
-	// have moved into it, and a manual refresh retries a fetch that failed.
+	// have moved into it. A fetch that failed is retried only with its button.
 	$effect(() => {
 		void board.snapshot;
-		if (showArchive) void board.loadArchive();
+		if (showArchive && untrack(() => board.archive) !== 'failed') void board.loadArchive();
 	});
 
 	const openKey = $derived(view?.kind === 'item' ? view.item.key : null);
 	const inInbox = $derived(inbox.some((item) => item.key === openKey));
 	const item = $derived.by(() => {
 		if (view?.kind !== 'item') return undefined;
-		const archive = Array.isArray(board.archive) ? board.archive : [];
+		const archive = typeof board.archive === 'object' ? (board.archive?.reports ?? []) : [];
 		return [...inbox, ...archive].find((candidate) => candidate.key === openKey) ?? view.item;
 	});
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
@@ -228,6 +228,9 @@
 				{sort}
 				{showArchive}
 				archive={board.archive}
+				earlier={board.archiveEarlier}
+				onearlier={() => void board.loadEarlier()}
+				onretry={() => void board.loadArchive()}
 				{archivedCount}
 				currentKey={openKey}
 				onsort={setSort}

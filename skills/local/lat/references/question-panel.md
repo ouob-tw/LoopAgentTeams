@@ -317,6 +317,15 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board notify --qu
 | `failed` | 1 | 仍未送達，`reason` 是原因（主控不在線、問題檔沒有綁定的主控等），待送通知保留；依問題檔補送的那一種不另存待送通知，答覆未記錄前都可再重送。 |
 | `error` | 1 | 綁定登記、待送通知檔或送達紀錄讀寫不了。 |
 
+### 刪除過期的回報紀錄
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board prune-reports \
+  --reports-dir "$reports_dir" --now "$now" --session-id "$session_id" [--session-id …]
+```
+
+`--now` 是帶時區的 ISO 時間（看板傳入自己的時間）；`--session-id` 至少一個，只看這些 session（看板會先清掉它們的已讀與封存狀態）。對每個 session，最新一筆有效紀錄（看板讀得出來的完整回報）已發出滿 30 天時刪除 `$reports_dir/<session-id>.jsonl`：先不等待地取得同名 `<session-id>.lock` 的鎖（hook 追加回報用的同一把），在鎖內再確認一次才刪。鎖被佔用、檔案不存在或沒有任何有效紀錄時不刪；鎖檔一律保留。輸出 `{"status": "ok", "deleted": [<session-id>...], "failed": [{"session_id": "…", "reason": "…"}...]}`，結束碼 0；讀不出來、鎖不了、刪不掉或不是合法檔名的 session 列在 `failed`、留到下次，不影響其他 session。`--now` 沒有時區時輸出 `{"status": "error", "reason": "…"}`，結束碼 1。
+
 ## 安裝與更新
 
 只在使用者授權的安裝或更新任務中執行。外掛位於 `$lat_dir/herdr-panel/`，只從技能的安裝位置連結。

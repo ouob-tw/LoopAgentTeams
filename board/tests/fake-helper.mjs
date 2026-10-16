@@ -8,9 +8,11 @@
 // from <dir>/transcripts/<session>.current.json when there is one; with `transcriptChildMs` in the
 // plan it instead waits that long on a child process, writing the child's PID to
 // transcript-child.pid (`launchArgsChildMs` does the same for `board launch-args`). `board launch-args` prints what <dir>/launch-args.json holds for the
-// session: a list of arguments, or `{ "unknown": reason }`. Each call is logged to
+// session: a list of arguments, or `{ "unknown": reason }`. `board prune-reports` deletes nothing,
+// unless the plan sets `realPrune` to a Python interpreter: then that runs the real helper's command,
+// on the test's own reports directory that the board passes it. Each call is logged to
 // <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
-import { spawn } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -172,8 +174,26 @@ function launchArgs() {
 	return { output: { status: 'unknown', reason: stored?.unknown ?? `hcom 沒有 session ${session} 的 Agent` }, exit: 1 };
 }
 
+/** The real helper's `board prune-reports`, with the arguments the board gave. */
+function prune() {
+	if (!plan.realPrune) return { output: { status: 'ok', deleted: [], failed: [] } };
+	const helper = join(import.meta.dirname, '../../skills/local/lat/herdr-panel/lat_panel.py');
+	const run = spawnSync(plan.realPrune, [helper, ...args], { encoding: 'utf8' });
+	return { raw: run.stdout, exit: run.status ?? 1 };
+}
+
 const act =
-	command === 'answer' ? answer : command === 'questions' ? questions : command === 'transcript' ? transcript : command === 'launch-args' ? launchArgs : notify;
+	command === 'answer'
+		? answer
+		: command === 'questions'
+			? questions
+			: command === 'transcript'
+				? transcript
+				: command === 'launch-args'
+					? launchArgs
+					: command === 'prune-reports'
+						? prune
+						: notify;
 const result = command === 'list' ? plan : (plan[command] ?? act());
 setTimeout(() => {
 	// `stderrBytes` and `padBytes` make the output too large: spaces before the real output.

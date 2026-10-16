@@ -2,13 +2,14 @@
 // it to every connected page.
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { BoardSnapshot, HelperController, InboxReport } from '../board/types.ts';
+import type { ArchivePage } from '../board/archive.ts';
+import type { BoardSnapshot, HelperController } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
-import { listControllers, readQuestions } from './helper.ts';
+import { listControllers, pruneReports, readQuestions } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
-import { archiveDue, archivedReports, buildSnapshot, mark, type MarkResult, type Sources } from './model.ts';
-import { createReportReader } from './reports.ts';
+import { archiveDue, archivedReports, buildSnapshot, dropSessions, expiredSessions, mark, type MarkResult, type Sources } from './model.ts';
+import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
 import { tabToFront } from './herdr.ts';
@@ -36,8 +37,9 @@ export interface Board {
 	sources(): Promise<Sources>;
 	/** Mark one inbox report read or unread for every logged-in device. */
 	mark(key: string, read: boolean): Promise<MarkResult>;
-	/** The archived reports, newest first. */
-	archive(): Promise<InboxReport[]>;
+	/** One page of the archive, newest first: the newest page, or the one after the `before`
+	 *  cursor. Throws on a cursor that is not one. */
+	archive(before: string | null): Promise<ArchivePage>;
 	subscribe(stream: Stream): () => void;
 	/** Tell every open page that a Herdr tab moved: nothing in the snapshot shows tab order. */
 	tabMoved(): void;
@@ -109,6 +111,61 @@ function createBoard(): Board {
 		for (const stream of streams) stream.send('ping', '{}');
 	}, HEARTBEAT_MS);
 
+	/** Delete the report files past retention. Their sessions' read and archive state is cleared and
+	 *  saved first, so a file written again for one starts its keys over; the reports themselves are
+	 *  past retention and listed nowhere, so nothing gives them state back meanwhile. When that
+	 *  state cannot be read or saved nothing is deleted. Returns why something was not deleted, or
+	 *  null; a state file that cannot be read is reported by every read already. */
+	async function prune(files: ReportFile[]): Promise<string | null> {
+		const now = config.now();
+		const due = expiredSessions(files, now);
+		if (!due.length) return null;
+		let state: InboxState;
+		try {
+			state = loadInboxState(config.stateDir);
+		} catch {
+			// Every read already says the state file cannot be read; nothing is deleted meanwhile.
+			return null;
+		}
+		try {
+			if (dropSessions(state, due)) saveInboxState(config.stateDir, state);
+		} catch (error) {
+			return `已讀與封存紀錄沒辦法先清掉：${(error as Error).message}`;
+		}
+		return (await pruneReports(config, now, due)).reason;
+	}
+
+	/** Whether a prune is under way; one runs at a time. */
+	let pruning = false;
+	/** The report files of a read made while a prune was under way: pruned next. */
+	let pruneNext: ReportFile[] | null = null;
+	/** Why the last prune did not delete everything due; shown until one does. */
+	let pruneError: string | null = null;
+
+	/** Prune after a read rather than within it: the reports due are listed nowhere already, so no
+	 *  snapshot waits for the helper, and the file watch reads the deletions in. A changed reason is
+	 *  read in at once. */
+	function pruneAfter(files: ReportFile[]): void {
+		if (closed) return;
+		if (pruning) {
+			pruneNext = files;
+			return;
+		}
+		pruning = true;
+		void prune(files)
+			.catch((error: Error) => error.message)
+			.then((reason) => {
+				pruning = false;
+				if (reason !== pruneError) {
+					pruneError = reason;
+					if (!closed) void refresh();
+				}
+				const next = pruneNext;
+				pruneNext = null;
+				if (next) pruneAfter(next);
+			});
+	}
+
 	async function read(): Promise<BoardSnapshot> {
 		const [helper, reports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(config)]);
 		// A list that cannot be read must not close every controller: the last one read stands in.
@@ -130,7 +187,8 @@ function createBoard(): Board {
 			reportFiles: reports.files,
 			reportsError: reports.error,
 			running: lastRunning,
-			hcomError: agents.ok ? null : agents.reason
+			hcomError: agents.ok ? null : agents.reason,
+			pruneError
 		};
 
 		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
@@ -140,6 +198,7 @@ function createBoard(): Board {
 		if (!closed) sourceWatcher.sync(targets);
 
 		publish(sources);
+		pruneAfter(reports.files);
 		return snapshot!;
 	}
 
@@ -237,7 +296,7 @@ function createBoard(): Board {
 		sentLogError: () => sentLogError,
 		sources: readSources,
 		mark: async (key, read) => publish(await readSources(), { key, read })!,
-		archive: async () => archivedReports(await readSources(), loadInboxState(config.stateDir)),
+		archive: async (before) => archivedReports(await readSources(), loadInboxState(config.stateDir), config.now(), before),
 		subscribe(stream) {
 			if (closed) stream.close();
 			else streams.add(stream);

@@ -43,6 +43,9 @@ Public API used by the Textual panel and LAT controller:
   ``transcript_path`` finds, with the model and effort of the latest turn
   (``current_settings``). ``board_launch_args`` reads the arguments hcom
   stored for an agent's launch, read-only from hcom's own database.
+  ``prune_reports`` deletes the named controller report files whose newest
+  record is past the board's retention, under the same lock the turn-end hook
+  appends with.
 
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
@@ -66,6 +69,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   board notify --questions PATH
   board transcript --client (claude|codex) --session-id ID [--before SEQ]
   board launch-args --session-id ID
+  board prune-reports --reports-dir DIR --now TIME --session-id ID...
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
 Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
@@ -77,7 +81,7 @@ prints argparse's message on stderr and exits 2.
 
 from contextlib import contextmanager
 import argparse
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import fcntl
 import hashlib
 import json
@@ -2428,6 +2432,82 @@ def board_launch_args(session_id, *, env=None):
     return {"status": "ok", "args": args}
 
 
+REPORT_RETENTION = timedelta(days=30)
+_REPORT_TAGS = {"DECIDE", "HELP", "DONE", "NO REPLY", ""}
+_REPORT_TEXT_FIELDS = ("session_id", "hcom_name", "workspace", "client", "summary", "message")
+
+
+def _report_time(line):
+    """When a complete report record was issued, as the board reads it; None otherwise."""
+    try:
+        item = json.loads(line)
+    except (ValueError, UnicodeDecodeError):
+        return None
+    if not (
+        isinstance(item, dict)
+        and isinstance(item.get("time"), str)
+        and all(isinstance(item.get(field), str) for field in _REPORT_TEXT_FIELDS)
+        and type(item.get("round")) in (int, float)
+        and isinstance(item.get("final"), bool)
+        and isinstance(item.get("tag"), str)
+        and item["tag"] in _REPORT_TAGS
+    ):
+        return None
+    try:
+        time = datetime.fromisoformat(item["time"])
+    except ValueError:
+        return None
+    return time if time.tzinfo else time.replace(tzinfo=timezone.utc)
+
+
+def _report_expired(path, now):
+    """Whether the newest complete record in a report file is past retention. A file
+    without one, or one that is gone, is not; one that cannot be read raises OSError."""
+    try:
+        with path.open("rb") as stream:
+            times = [time for time in map(_report_time, stream) if time is not None]
+    except FileNotFoundError:
+        return False
+    return bool(times) and now - max(times) >= REPORT_RETENTION
+
+
+def prune_reports(directory, now, sessions):
+    """Delete the ``<session-id>.jsonl`` report file in ``directory`` of each of
+    ``sessions`` whose newest complete record was issued ``REPORT_RETENTION`` or
+    more before ``now``. Only the sessions the caller names are looked at: the
+    board clears their read and archive state before it asks.
+
+    Each file is checked again while holding ``<session-id>.lock`` without
+    waiting, the lock the turn-end hook appends under; a busy lock leaves the file
+    for a later run. The lock file is never deleted: a hook already waiting on it
+    and one arriving after the deletion must keep sharing the one lock. Returns
+    the session IDs whose file was deleted, and ``{"session_id", "reason"}`` for
+    each file that could not be read, locked or deleted for another reason; those
+    are left for a later run and do not stop the others.
+    """
+    directory = Path(directory)
+    deleted, failed = [], []
+    for session_id in sessions:
+        path = directory / f"{session_id}.jsonl"
+        if path.parent != directory or not session_id or session_id.startswith("."):
+            failed.append({"session_id": session_id, "reason": "not a report file name"})
+            continue
+        try:
+            if not _report_expired(path, now):
+                continue
+            with path.with_suffix(".lock").open("a") as lock:
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
+                if _report_expired(path, now):
+                    path.unlink()
+                    deleted.append(session_id)
+        except OSError as error:
+            failed.append({"session_id": session_id, "reason": str(error)})
+    return deleted, failed
+
+
 def _run_board(args):
     try:
         if args.board_command == "list":
@@ -2449,6 +2529,12 @@ def _run_board(args):
         elif args.board_command == "launch-args":
             result = board_launch_args(args.session_id)
             code = 0 if result["status"] == "ok" else 1
+        elif args.board_command == "prune-reports":
+            now = datetime.fromisoformat(args.now)
+            if now.tzinfo is None:
+                raise ValueError("--now must include a time zone")
+            deleted, failed = prune_reports(args.reports_dir, now, args.session_id)
+            result, code = {"status": "ok", "deleted": deleted, "failed": failed}, 0
         else:
             result = notify_controller(args.questions)
             code = 1 if result["status"] == "failed" else 0
@@ -2529,6 +2615,10 @@ def _build_parser():
     transcript.add_argument("--before", type=int)
     launch_args = board_commands.add_parser("launch-args")
     launch_args.add_argument("--session-id", required=True)
+    prune = board_commands.add_parser("prune-reports")
+    prune.add_argument("--reports-dir", required=True, type=Path)
+    prune.add_argument("--now", required=True)
+    prune.add_argument("--session-id", required=True, action="append")
     return parser
 
 
