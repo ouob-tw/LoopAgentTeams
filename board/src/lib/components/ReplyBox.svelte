@@ -1,17 +1,17 @@
 <script lang="ts">
-	// Sends a message to one controller, or wakes an ended one. The text stays in the box unless it
-	// was delivered.
+	// Sends a message to one controller, or wakes an ended or closed one. The text stays in the box
+	// unless it was delivered.
 	import { enterMakesNewline, messaging, type Outcome } from '#lib/board/messaging.svelte.ts';
 	import { EFFORT_UNKNOWN_TEXT, FIXED_MODEL_REASON, LOCK_UNKNOWN_TEXT } from '#lib/board/models.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
-	import type { Controller } from '#lib/board/types.ts';
+	import { isInactive, type Controller } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
 
 	let { controller }: { controller: Controller } = $props();
 
-	const ended = $derived(controller.status === 'ended');
+	const inactive = $derived(isInactive(controller.status));
 	const text = $derived(messaging.drafts[controller.id] ?? '');
 	// All by controller ID: the box is reused when another controller is opened.
 	let inFlight = $state<Record<string, boolean>>({});
@@ -27,7 +27,7 @@
 	let model = $state<Record<string, string>>({});
 	let effort = $state<Record<string, string>>({});
 	const status = $derived(switching.status[controller.id]);
-	const resumes = $derived(ended && status?.running === false && status.options !== null);
+	const resumes = $derived(inactive && status?.running === false && status.options !== null);
 
 	function edit(value: string) {
 		messaging.drafts[controller.id] = value;
@@ -38,7 +38,7 @@
 		if (sending || !text.trim()) return;
 		const id = controller.id;
 		const sentText = text;
-		const waking = ended;
+		const waking = inactive;
 		inFlight[id] = true;
 		delete outcomes[id];
 		delete confirming[id];
@@ -79,16 +79,16 @@
 >
 	<MessageBox
 		bind:value={() => text, edit}
-		label="{ended ? '喚醒' : '傳話給'} @{controller.hcomName}"
-		placeholder="{ended ? '喚醒' : '傳話給'} @{controller.hcomName}（{enterMakesNewline.current
+		label="{inactive ? '喚醒' : '傳話給'} @{controller.hcomName}"
+		placeholder="{inactive ? '喚醒' : '傳話給'} @{controller.hcomName}（{enterMakesNewline.current
 			? 'Enter 換行，按鈕送出'
 			: 'Enter 送出，Shift+Enter 換行'}）"
 		onsend={submit}
 	/>
 	<button class="primary" disabled={sending || !text.trim()}>
-		{sending ? '送出中…' : ended ? '喚醒並送出' : '送出'}
+		{sending ? '送出中…' : inactive ? '喚醒並送出' : '送出'}
 	</button>
-	{#if ended}
+	{#if inactive}
 		<label class="round">
 			<input type="checkbox" bind:checked={() => newRound[controller.id] ?? false, (value) => (newRound[controller.id] = value)} />
 			開新一輪 LAT

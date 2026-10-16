@@ -164,6 +164,9 @@ export interface Fixture {
 	reportsDir: string;
 	/** A bound controller as the helper would list it; its workspace directory is created. */
 	bound(project: string, name: string, overrides?: Partial<HelperController>): HelperController;
+	/** Change what the fake hcom does (see fake-hcom.mjs); without a plan, every controller ever
+	 *  bound through `setHelper` or `list` is running. Not a watched file either. */
+	setHcom(plan: object): void;
 	/** Change what the helper prints. Not a watched file, so the board does not notice by itself. */
 	setHelper(plan: HelperPlan): void;
 	list(controllers: HelperController[]): void;
@@ -244,6 +247,8 @@ export async function startFixture(
 		LAT_BOARD_CLOCK_FILE: join(dir, 'clock'),
 		LAT_BOARD_CONFIG_DIR: join(dir, 'board-config'),
 		LAT_BOARD_HELPER_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-helper.mjs'), dir]),
+		// Every read asks hcom which clients still run; never the real one.
+		LAT_BOARD_HCOM_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-hcom.mjs'), dir]),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,
 		HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state'),
 		...options.env
@@ -275,7 +280,19 @@ export async function startFixture(
 				...overrides
 			};
 		},
-		setHelper: (plan) => writeFileSync(join(dir, 'helper.json'), JSON.stringify(plan)),
+		setHcom: (plan) => writeFileSync(join(dir, 'hcom.json'), JSON.stringify(plan)),
+		setHelper(plan) {
+			writeFileSync(join(dir, 'helper.json'), JSON.stringify(plan));
+			// What the fake hcom lists unless a test plans otherwise: every controller ever bound runs.
+			const runningFile = join(dir, 'hcom-running.json');
+			const known: { name: string; session_id: string }[] = existsSync(runningFile) ? JSON.parse(readFileSync(runningFile, 'utf8')) : [];
+			const listed = (plan.output as { controllers?: unknown } | undefined)?.controllers;
+			const controllers: HelperController[] = Array.isArray(listed) ? listed : [];
+			for (const binding of controllers) {
+				if (!known.some((agent) => agent.session_id === binding.session_id)) known.push({ name: binding.hcom_name, session_id: binding.session_id });
+			}
+			writeFileSync(runningFile, JSON.stringify(known));
+		},
 		list: (controllers) => fixture.setHelper({ output: { controllers } }),
 		listed: () => JSON.parse(readFileSync(join(dir, 'helper.json'), 'utf8')).output.controllers,
 		helperArgs(command) {

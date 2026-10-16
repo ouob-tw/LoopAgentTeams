@@ -13,7 +13,8 @@
 // agent's shell reaches hcom.
 // `list --json` is logged to <dir>/hcom-list-calls.jsonl instead and prints `agents` plus those
 // resumes added; `listFail: { exit, stderr }` acts out a failure. `listSeries` gives the agents of
-// the first lists in turn, before `agents` takes over.
+// the next lists after it was written in turn, before `agents` takes over. Without either, <dir>/hcom-running.json is listed: the
+// test fixture keeps every controller it ever bound there, so none is closed unless a test says so.
 // `kill <name>` is logged to hcom-calls.jsonl like a launch and follows `kill`: `exit`, `stderr`,
 // `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane leaves the
 // fake Herdr's <dir>/herdr.json, the way hcom closes it.
@@ -26,14 +27,22 @@ const plan = existsSync(planFile) ? JSON.parse(readFileSync(planFile, 'utf8')) :
 const addedFile = join(dir, 'hcom-added.json');
 const added = () => (existsSync(addedFile) ? JSON.parse(readFileSync(addedFile, 'utf8')) : []);
 
+/** Running by default: every controller the test fixture has had the fake helper list. */
+function defaultAgents() {
+	const runningFile = join(dir, 'hcom-running.json');
+	return existsSync(runningFile) ? JSON.parse(readFileSync(runningFile, 'utf8')) : [];
+}
+
 if (args[0] === 'list') {
 	appendFileSync(join(dir, 'hcom-list-calls.jsonl'), JSON.stringify(args) + '\n');
 	if (plan.listFail) {
 		process.stderr.write(plan.listFail.stderr ?? '');
 		process.exit(plan.listFail.exit ?? 1);
 	}
-	const listCall = readFileSync(join(dir, 'hcom-list-calls.jsonl'), 'utf8').trim().split('\n').length;
-	const listed = plan.listSeries?.[listCall - 1] ?? plan.agents ?? [];
+	// Taken from the plan as they are used: the board lists on every read too, so only lists after
+	// the plan was written count.
+	const listed = plan.listSeries?.length ? plan.listSeries.shift() : (plan.agents ?? defaultAgents());
+	if (plan.listSeries) writeFileSync(planFile, JSON.stringify(plan));
 	process.stdout.write(JSON.stringify([...listed, ...added()]));
 	process.exit(0);
 }

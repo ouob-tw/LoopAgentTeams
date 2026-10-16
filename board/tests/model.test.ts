@@ -368,7 +368,8 @@ test('a client that starts working, or changes its name, while the effort to car
 			expect(resumes().filter((args) => args[1] === target.id)).toEqual([]);
 		}
 	}
-});
+	// Four rounds, each with a slow record read, and hcom listed at every board read.
+}, 15_000);
 
 test('a resume retry with nothing chosen again sends the effort resolved before', async () => {
 	const target = await running('claude');
@@ -533,6 +534,8 @@ test('a client still listed after the stop is a result not known: nothing is res
 
 test('a stop that runs out of time is not resumed; once client and pane are gone, 繼續切換 resumes with the new settings', async () => {
 	const target = await running('codex');
+	// A report in the inbox keeps it on the roster once it is out of hcom's list and closed.
+	fixture.report(target.id, { tag: 'DONE', summary: '交付', hcom_name: target.name, client: 'codex', workspace: target.workspace });
 	hcomPlan({ agents: [target.self], kill: { sleepMs: 3_000 } });
 
 	const first = await change(target.id, 'gpt-6-astra', 'high');
@@ -856,6 +859,8 @@ test('a wake that keeps the settings adds nothing, and a running client with a c
 
 test('a wake does not resume a client a switch stopped without seeing it gone, also after a restart', async () => {
 	const target = await running('codex');
+	// A report in the inbox keeps it on the roster once it is out of hcom's list and closed.
+	fixture.report(target.id, { tag: 'DONE', summary: '交付', hcom_name: target.name, client: 'codex', workspace: target.workspace });
 	hcomPlan({ agents: [target.self], kill: { sleepMs: 3_000 } });
 	expect((await change(target.id, null, 'high')).body.entry).toMatchObject({ state: 'stop-unknown' });
 	// Out of hcom's list, but its pane is still open in Herdr.
