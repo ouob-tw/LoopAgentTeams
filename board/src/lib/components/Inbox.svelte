@@ -1,7 +1,8 @@
 <script lang="ts">
 	// The inbox list: by time, by project, or the archive.
 	import { groupByProject, sortByTime, type InboxSort } from '#lib/board/inbox.ts';
-	import type { Controller, InboxItem, InboxReport } from '#lib/board/types.ts';
+	import type { ArchivePage } from '#lib/board/archive.ts';
+	import type { Controller, InboxItem } from '#lib/board/types.ts';
 	import ItemRow from './ItemRow.svelte';
 	import StatusMark from './StatusMark.svelte';
 
@@ -11,10 +12,12 @@
 		sort,
 		showArchive,
 		archive,
+		earlier,
 		archivedCount,
 		currentKey,
 		onsort,
 		onarchive,
+		onearlier,
 		onopen,
 		oncontroller
 	}: {
@@ -22,12 +25,16 @@
 		controllers: Controller[];
 		sort: InboxSort;
 		showArchive: boolean;
-		/** Archived reports, newest first; null while loading, 'failed' when they could not be read. */
-		archive: InboxReport[] | 'failed' | null;
+		/** Archived reports loaded so far, newest first; null while loading, 'failed' when they could
+		 *  not be read. */
+		archive: ArchivePage | 'failed' | null;
+		/** Loading the page after the loaded ones. */
+		earlier: 'idle' | 'loading' | 'failed';
 		archivedCount: number;
 		currentKey: string | null;
 		onsort: (sort: InboxSort) => void;
 		onarchive: () => void;
+		onearlier: () => void;
 		onopen: (item: InboxItem) => void;
 		oncontroller: (id: string) => void;
 	} = $props();
@@ -35,6 +42,18 @@
 	const byId = $derived(new Map(controllers.map((controller) => [controller.id, controller])));
 	// The label opens the information page only while the controller is on the roster.
 	const owner = (item: InboxItem) => (byId.has(item.controllerId) ? () => oncontroller(item.controllerId) : undefined);
+
+	let end = $state<HTMLElement>();
+	// Watched again after every load, so an end that is still in view loads the next page. After a
+	// failure only the button retries.
+	$effect(() => {
+		if (!showArchive || !end || earlier !== 'idle' || typeof archive !== 'object' || !archive?.before) return;
+		const observer = new IntersectionObserver((entries) => {
+			if (entries.some((entry) => entry.isIntersecting)) onearlier();
+		});
+		observer.observe(end);
+		return () => observer.disconnect();
+	});
 </script>
 
 <header>
@@ -52,11 +71,16 @@
 	{:else if archive === 'failed'}
 		<p class="none" role="alert">已封存的回報讀不出來，請重新整理。</p>
 	{:else}
-		{#each archive as item (item.key)}
+		{#each archive.reports as item (item.key)}
 			<ItemRow {item} archived current={item.key === currentKey} {onopen} onowner={owner(item)} />
 		{:else}
 			<p class="none">沒有已封存的回報。</p>
 		{/each}
+		{#if archive.before !== null}
+			<button class="earlier" bind:this={end} onclick={onearlier} disabled={earlier === 'loading'}>
+				{earlier === 'loading' ? '載入中…' : '載入更早'}
+			</button>
+		{/if}
 	{/if}
 {:else if sort === 'time'}
 	{#each sortByTime(items) as item (item.key)}
@@ -152,5 +176,9 @@
 	.none {
 		margin: 0.5rem 0;
 		color: var(--muted);
+	}
+	.earlier {
+		align-self: flex-start;
+		margin-top: 0.4rem;
 	}
 </style>

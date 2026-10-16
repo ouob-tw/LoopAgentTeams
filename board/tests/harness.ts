@@ -16,7 +16,7 @@ import type {
 } from '../src/lib/board/types.ts';
 
 const ROOT = join(import.meta.dir, '..');
-// Each test file takes its own offsets from this base; the highest one in use is 26.
+// Each test file takes its own offsets from this base; the highest one in use is 27.
 export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
 
 /** What runs the server and the fake commands: Node when the host has it, otherwise the Bun that
@@ -95,6 +95,14 @@ export function checkRunHere(commandDir: string): void {
 	}
 }
 
+/** The interpreter `uv run --no-project python` picks, found with the test's own home directory:
+ *  the board's helper runs with a temporary one. */
+export function uvPython(): string {
+	const found = spawnSync('uv', ['run', '--no-project', 'python', '-c', 'import sys; print(sys.executable)'], { encoding: 'utf8' });
+	if (found.status !== 0) throw new Error(`uv cannot run Python: ${found.stderr}`);
+	return found.stdout.trim();
+}
+
 /** The board password every fixture sets unless told not to. A test value, not a real password. */
 export const PASSWORD = 'test-password-一二三';
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
@@ -156,6 +164,10 @@ export interface HelperPlan extends FixedOutput {
 	launchArgsChildMs?: number;
 	/** The controller records an answer the moment it is written. */
 	recordOnAnswer?: boolean;
+	/** The Python interpreter that runs the real helper's `board prune-reports` instead of
+	 *  deleting nothing; see `uvPython`. */
+	realPrune?: string;
+	'prune-reports'?: FixedOutput;
 }
 
 export interface Fixture {
@@ -174,7 +186,7 @@ export interface Fixture {
 	listed(): HelperController[];
 	helperCalls(): number;
 	/** The argument list of every helper call so far that ran this `board` command. */
-	helperArgs(command: 'list' | 'questions' | 'answer' | 'notify' | 'transcript' | 'launch-args'): string[][];
+	helperArgs(command: 'list' | 'questions' | 'answer' | 'notify' | 'transcript' | 'launch-args' | 'prune-reports'): string[][];
 	/** Rewrite the binding registry file, the way a controller binding or unbinding does. */
 	touchRegistry(): void;
 	report(sessionId: string, fields: Partial<Report> & { tag: Report['tag'] }): void;
@@ -197,7 +209,10 @@ export interface Fixture {
 	userStyle(css: string | null): void;
 	markRead(cookie: string, key: string): Promise<Response>;
 	markUnread(cookie: string, key: string): Promise<Response>;
+	/** Every archived report, newest first, read page by page. */
 	archive(cookie: string): Promise<InboxReport[]>;
+	/** One page of the archive as the server sends it: the newest, or the one after `before`. */
+	archivePage(cookie: string, before?: string | null): Promise<Response>;
 	watch(cookie: string): Watch;
 	start(): Promise<void>;
 	stop(): Promise<void>;
@@ -372,7 +387,20 @@ export async function startFixture(
 				body: JSON.stringify({ key }),
 				cookie
 			}),
-		archive: async (cookie) => (await (await fixture.fetch('/api/archive', { cookie })).json()).reports,
+		archivePage: (cookie, before = null) =>
+			fixture.fetch(before === null ? '/api/archive' : `/api/archive?before=${encodeURIComponent(before)}`, { cookie }),
+		async archive(cookie) {
+			const reports: InboxReport[] = [];
+			let before: string | null = null;
+			do {
+				const response = await fixture.archivePage(cookie, before);
+				if (!response.ok) throw new Error(`archive page: HTTP ${response.status}`);
+				const page: { reports: InboxReport[]; before: string | null } = await response.json();
+				reports.push(...page.reports);
+				before = page.before;
+			} while (before !== null);
+			return reports;
+		},
 		watch(cookie) {
 			const watch: Watch = {
 				snapshots: [],

@@ -12,6 +12,7 @@ import type {
 	InboxReport
 } from '../board/types.ts';
 import { isInactive } from '../board/types.ts';
+import { archivePage, DAY_MS, RETAIN_MS, sortArchive, type ArchivePage } from '../board/archive.ts';
 import type { InboxState } from './inbox-state.ts';
 import type { ReportFile } from './reports.ts';
 
@@ -26,6 +27,8 @@ export interface Sources {
 	running: Set<string> | null;
 	/** Set when `running` is not from this read: why hcom's list could not be read. */
 	hcomError: string | null;
+	/** Why the report files past retention could not be deleted at this read; null when they were. */
+	pruneError: string | null;
 }
 
 /** Whether this controller was bound at the last read and its client is gone from hcom's list.
@@ -34,7 +37,6 @@ export function isClosed(sources: Sources, sessionId: string): boolean {
 	return sources.running !== null && !sources.running.has(sessionId) && sources.active.some((binding) => binding.session_id === sessionId);
 }
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 /** A report is archived this long after it was issued, read or not. */
 const ARCHIVE_MS = 7 * DAY_MS;
 
@@ -92,11 +94,30 @@ export function mark(sources: Sources, state: InboxState, key: string, read: boo
 	return 'marked';
 }
 
-/** The archive view: archived reports, newest first. */
-export function archivedReports(sources: Sources, state: InboxState): InboxReport[] {
-	return reportItems(sources, state)
-		.filter((item) => item.key in state.archived)
-		.sort((a, b) => Date.parse(b.time) - Date.parse(a.time));
+/** Whether an archived report is still listed: only for 30 days after it was issued. */
+const retained = (item: InboxReport, now: number) => now - Date.parse(item.time) < RETAIN_MS;
+
+/** One page of the archive view: archived reports still retained, newest first, starting just
+ *  after the `before` cursor. Throws on a cursor that is not one. */
+export function archivedReports(sources: Sources, state: InboxState, now: number, before: string | null): ArchivePage {
+	const listed = reportItems(sources, state).filter((item) => item.key in state.archived && retained(item, now));
+	return archivePage(sortArchive(listed), before);
+}
+
+/** Forget the read and archive state of every report of these sessions, whose report files were
+ *  deleted: a file written again for one of them starts its keys over. Returns whether it changed. */
+export function dropSessions(state: InboxState, sessionIds: Iterable<string>): boolean {
+	const prefixes = [...sessionIds].map((sessionId) => `${sessionId}#`);
+	let changed = false;
+	for (const times of [state.read, state.archived]) {
+		for (const key of Object.keys(times)) {
+			if (prefixes.some((prefix) => key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length)))) {
+				delete times[key];
+				changed = true;
+			}
+		}
+	}
+	return changed;
 }
 
 const questionKey = (binding: HelperController, question: HelperQuestion) => `q:${binding.session_id}:${question.id}`;
@@ -202,6 +223,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 	if (sources.hcomError) {
 		errors.push(`${sources.hcomError}，${sources.running ? '已關閉的主控沿用上次讀到的清單判斷' : '主控暫時都顯示為啟用中'}`);
 	}
+	if (sources.pruneError) errors.push(`超過 30 天的回報紀錄沒有刪除，下次重讀再試：${sources.pruneError}`);
 
 	// Whatever is left belongs to controllers that are no longer bound: they have ended, and stay
 	// on the roster only while the inbox still holds one of their reports.
@@ -238,7 +260,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		recordedKeys: live.flatMap((binding) =>
 			binding.questions.filter((question) => question.status === 'recorded').map((question) => questionKey(binding, question))
 		),
-		archivedCount: reports.length - inboxReports.length,
+		archivedCount: reports.filter((item) => item.key in state!.archived && retained(item, now)).length,
 		errors
 	};
 }

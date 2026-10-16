@@ -2,12 +2,13 @@
 // it to every connected page.
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
-import type { BoardSnapshot, HelperController, InboxReport } from '../board/types.ts';
+import type { ArchivePage } from '../board/archive.ts';
+import type { BoardSnapshot, HelperController } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
-import { listControllers, readQuestions } from './helper.ts';
+import { listControllers, pruneReports, readQuestions } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
-import { archiveDue, archivedReports, buildSnapshot, mark, type MarkResult, type Sources } from './model.ts';
+import { archiveDue, archivedReports, buildSnapshot, dropSessions, mark, type MarkResult, type Sources } from './model.ts';
 import { createReportReader } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
@@ -36,8 +37,9 @@ export interface Board {
 	sources(): Promise<Sources>;
 	/** Mark one inbox report read or unread for every logged-in device. */
 	mark(key: string, read: boolean): Promise<MarkResult>;
-	/** The archived reports, newest first. */
-	archive(): Promise<InboxReport[]>;
+	/** One page of the archive, newest first: the newest page, or the one after the `before`
+	 *  cursor. Throws on a cursor that is not one. */
+	archive(before: string | null): Promise<ArchivePage>;
 	subscribe(stream: Stream): () => void;
 	/** Tell every open page that a Herdr tab moved: nothing in the snapshot shows tab order. */
 	tabMoved(): void;
@@ -66,6 +68,9 @@ function createBoard(): Board {
 	let sources: Sources | null = null;
 	/** The read and archive state as last read from, or written to, its file. */
 	let lastState: InboxState | null = null;
+	/** Sessions whose report file was deleted and whose read and archive state is not yet saved
+	 *  without them. */
+	const pruned = new Set<string>();
 	let running: Promise<BoardSnapshot> | null = null;
 	let queued: Promise<BoardSnapshot> | null = null;
 	let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -110,7 +115,10 @@ function createBoard(): Board {
 	}, HEARTBEAT_MS);
 
 	async function read(): Promise<BoardSnapshot> {
-		const [helper, reports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(config)]);
+		// Report files past retention go first, so this read no longer finds them.
+		const [helper, agents, prune] = await Promise.all([listControllers(config), listAgents(config), pruneReports(config, config.now())]);
+		if (prune.ok) for (const sessionId of prune.deleted) pruned.add(sessionId);
+		const reports = await readReports();
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {
@@ -130,7 +138,8 @@ function createBoard(): Board {
 			reportFiles: reports.files,
 			reportsError: reports.error,
 			running: lastRunning,
-			hcomError: agents.ok ? null : agents.reason
+			hcomError: agents.ok ? null : agents.reason,
+			pruneError: prune.ok ? null : prune.reason
 		};
 
 		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
@@ -159,10 +168,12 @@ function createBoard(): Board {
 			state = structuredClone(lastState);
 			problem = `已讀與封存紀錄讀不出來，${state ? '回報沿用上次讀到的狀態' : '回報暫時不列出'}：${(error as Error).message}`;
 		}
+		// A deleted report file's keys go before anything else: a file written again starts them over.
+		const dropped = state !== null && dropSessions(state, pruned);
 		// Archive first: a report that is already due can no longer be marked read or unread.
 		const archived = state !== null && archiveDue(from, state, now);
 		const marked = state === null || !change ? null : mark(from, state, change.key, change.read, now);
-		if (state && !problem && (archived || marked === 'marked')) {
+		if (state && !problem && (dropped || archived || marked === 'marked')) {
 			try {
 				saveInboxState(config.stateDir, state);
 			} catch (error) {
@@ -172,7 +183,10 @@ function createBoard(): Board {
 			}
 		}
 
-		if (!problem) lastState = state;
+		if (!problem) {
+			lastState = state;
+			pruned.clear();
+		}
 
 		const next = buildSnapshot(from, state, now);
 		if (problem) next.errors.push(problem);
@@ -237,7 +251,7 @@ function createBoard(): Board {
 		sentLogError: () => sentLogError,
 		sources: readSources,
 		mark: async (key, read) => publish(await readSources(), { key, read })!,
-		archive: async () => archivedReports(await readSources(), loadInboxState(config.stateDir)),
+		archive: async (before) => archivedReports(await readSources(), loadInboxState(config.stateDir), config.now(), before),
 		subscribe(stream) {
 			if (closed) stream.close();
 			else streams.add(stream);

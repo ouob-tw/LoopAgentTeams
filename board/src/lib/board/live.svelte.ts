@@ -1,7 +1,8 @@
 // The board as the page sees it: the latest snapshot plus the state of the link to the server.
 import { connectBoard, type Connection, type LinkState } from './client.ts';
 import { toasts } from './toasts.svelte.ts';
-import type { BoardSnapshot, InboxReport } from './types.ts';
+import { withEarlier, withNewest, type ArchivePage } from './archive.ts';
+import type { BoardSnapshot } from './types.ts';
 
 export class LiveBoard {
 	snapshot: BoardSnapshot;
@@ -9,8 +10,11 @@ export class LiveBoard {
 	refreshing = $state(false);
 	/** Counts the Herdr tab moves the server announced, so pages showing a position read it again. */
 	tabMoves = $state(0);
-	/** Archived reports, newest first; null until loaded, 'failed' when they could not be read. */
-	archive = $state<InboxReport[] | 'failed' | null>(null);
+	/** The archived reports loaded so far, newest first; null until loaded, 'failed' when the newest
+	 *  page could not be read. */
+	archive = $state<ArchivePage | 'failed' | null>(null);
+	/** Loading the page after the loaded ones; after a failure only the button tries again. */
+	archiveEarlier = $state<'idle' | 'loading' | 'failed'>('idle');
 	#connection: Connection | undefined;
 	#archiveLoads = 0;
 
@@ -35,16 +39,38 @@ export class LiveBoard {
 		await this.#connection.mark(key, read);
 	}
 
+	/** Read the newest page again, keeping the earlier pages already loaded below it. */
 	async loadArchive(): Promise<void> {
 		// Loads can overlap; only the answer to the latest one is kept.
 		const load = ++this.#archiveLoads;
-		let loaded: typeof this.archive;
+		let loaded: ArchivePage | 'failed' | null;
 		try {
 			loaded = (await this.#connection?.archive()) ?? null;
 		} catch {
 			loaded = 'failed';
 		}
-		if (load === this.#archiveLoads) this.archive = loaded;
+		if (load !== this.#archiveLoads) return;
+		const current = typeof this.archive === 'object' ? this.archive : null;
+		// The server's clock: reports it no longer keeps leave the earlier pages too.
+		this.archive = loaded === null || loaded === 'failed' ? loaded : withNewest(current, loaded, Date.parse(this.snapshot.generatedAt));
+	}
+
+	/** Add the page after the loaded ones. */
+	async loadEarlier(): Promise<void> {
+		const before = typeof this.archive === 'object' ? this.archive?.before : null;
+		if (!before || this.archiveEarlier === 'loading') return;
+		this.archiveEarlier = 'loading';
+		let page: ArchivePage;
+		try {
+			page = (await this.#connection?.archive(before)) ?? { reports: [], before };
+		} catch {
+			this.archiveEarlier = 'failed';
+			toasts.show('failed', '更早的封存回報載入失敗，請按「載入更早」再試一次。');
+			return;
+		}
+		this.archiveEarlier = 'idle';
+		// The newest page was read again meanwhile and let these go: the page belongs to nothing shown.
+		if (typeof this.archive === 'object' && this.archive?.before === before) this.archive = withEarlier(this.archive, page);
 	}
 
 	async refresh(): Promise<void> {

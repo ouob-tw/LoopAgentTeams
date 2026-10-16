@@ -92,7 +92,7 @@
 	const inInbox = $derived(inbox.some((item) => item.key === openKey));
 	const item = $derived.by(() => {
 		if (view?.kind !== 'item') return undefined;
-		const archive = Array.isArray(board.archive) ? board.archive : [];
+		const archive = typeof board.archive === 'object' ? (board.archive?.reports ?? []) : [];
 		return [...inbox, ...archive].find((candidate) => candidate.key === openKey) ?? view.item;
 	});
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
@@ -228,6 +228,8 @@
 				{sort}
 				{showArchive}
 				archive={board.archive}
+				earlier={board.archiveEarlier}
+				onearlier={() => void board.loadEarlier()}
 				{archivedCount}
 				currentKey={openKey}
 				onsort={setSort}

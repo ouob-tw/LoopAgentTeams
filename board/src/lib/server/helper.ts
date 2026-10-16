@@ -262,3 +262,21 @@ export async function readCurrent(config: BoardConfig, client: string, sessionId
 	const read = await readTranscript(config, client, sessionId);
 	return read.ok ? (read.page.current ?? null) : null;
 }
+
+export type PruneResult = { ok: true; deleted: string[] } | { ok: false; reason: string };
+
+/** Delete the report files whose newest report was issued 30 days or more before `now`, through
+ *  the helper: only it can take the lock the turn-end hook appends under. Lists the session IDs
+ *  whose file it deleted. */
+export async function pruneReports(config: BoardConfig, now: number): Promise<PruneResult> {
+	const { stdout, failure } = await run(config, ['prune-reports', `--reports-dir=${config.reportsDir}`, `--now=${new Date(now).toISOString()}`]);
+	let payload: { status?: unknown; reason?: unknown; deleted?: unknown } | null;
+	try {
+		payload = JSON.parse(stdout);
+	} catch {
+		payload = null;
+	}
+	const deleted = payload?.deleted;
+	if (payload?.status === 'ok' && Array.isArray(deleted) && deleted.every((id) => typeof id === 'string')) return { ok: true, deleted };
+	return { ok: false, reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出不是預期的格式' };
+}
