@@ -180,7 +180,7 @@ test('a report marked read on one device is read on another paired device within
 	// Read state is the board's own; it does not take a helper run to publish it.
 	expect(fixture.helperCalls()).toBe(calls);
 
-	// Marking again keeps the first time, so the 3 days are not restarted.
+	// Marking again keeps the first time.
 	expect(await (await fixture.markRead(cookie, key)).json()).toEqual({ result: 'already-read' });
 	expect((titled(await fixture.board(cookie), '兩台裝置都會看到') as InboxReport).readAt).toBe(seen);
 });
@@ -208,6 +208,43 @@ test('marking read is refused for an unknown report, a report that is not an inb
 	expect((await fixture.fetch('/api/inbox/read', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', cookie })).status).toBe(400);
 	expect((await fixture.markRead('', `${luna.session_id}#0`)).status).toBe(401);
 	expect((await fixture.fetch('/api/archive')).status).toBe(401);
+});
+
+test('a report marked unread on one device is unread on another, and can be marked read again', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.report(luna.session_id, { tag: 'HELP', summary: '標回未讀', hcom_name: 'luna', workspace: luna.workspace });
+	fixture.list([luna]);
+	const { key } = titled(await fixture.refresh(cookie), '標回未讀')!;
+	await fixture.markRead(cookie, key);
+	const other = fixture.watch(await fixture.login('second-device'));
+	await until(() => (titled(other.latest(), '標回未讀') as InboxReport | undefined)?.readAt, 5_000, 'the read mark on the second device');
+
+	const response = await fixture.markUnread(cookie, key);
+
+	expect(response.status).toBe(200);
+	expect(await response.json()).toEqual({ result: 'marked' });
+	await until(() => (titled(other.latest(), '標回未讀') as InboxReport).readAt === null, 5_000, 'unread on the second device');
+	expect(await (await fixture.markUnread(cookie, key)).json()).toEqual({ result: 'already-unread' });
+	other.close();
+
+	// Unread survives a restart, and reading it again records the new time.
+	await fixture.stop();
+	await fixture.start();
+	expect((titled(await fixture.board(cookie), '標回未讀') as InboxReport).readAt).toBeNull();
+	expect(await (await fixture.markRead(cookie, key)).json()).toEqual({ result: 'marked' });
+	expect((titled(await fixture.board(cookie), '標回未讀') as InboxReport).readAt).not.toBeNull();
+});
+
+test('marking unread is refused for an unknown report, a report that is not an inbox item, and an unpaired device', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.report(luna.session_id, { tag: 'NO REPLY', summary: '只是進度', hcom_name: 'luna', workspace: luna.workspace });
+	fixture.list([luna]);
+	await fixture.refresh(cookie);
+
+	expect((await fixture.markUnread(cookie, 'no-such-session#0')).status).toBe(404);
+	expect((await fixture.markUnread(cookie, `${luna.session_id}#0`)).status).toBe(404);
+	expect((await fixture.fetch('/api/inbox/unread', { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}', cookie })).status).toBe(400);
+	expect((await fixture.markUnread('', `${luna.session_id}#0`)).status).toBe(401);
 });
 
 // The spec's two sorting examples, with the times they give.

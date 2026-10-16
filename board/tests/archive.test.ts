@@ -51,32 +51,31 @@ test('an unread report stays 7 days from when it was issued, then moves to the a
 	expect(existsSync(join(fixture.reportsDir, 'session-unread.jsonl'))).toBe(true);
 });
 
-test('a report read on day 6 is kept until 3 days after it was read, not archived on day 7', async () => {
+test('a report read on the day it was issued is archived exactly 7 days after it was issued, not at 3', async () => {
 	const workspace = `${fixture.dir}/workspaces/alpha`;
-	fixture.report('session-read-late', { tag: 'HELP', summary: '第六天才讀', time: iso(ISSUED), hcom_name: 'miro', workspace });
+	fixture.report('session-read-early', { tag: 'HELP', summary: '當天就讀', time: iso(ISSUED), hcom_name: 'nova', workspace });
+
+	const { key } = titled(await on(ISSUED), '當天就讀')!;
+	expect((await fixture.markRead(cookie, key)).status).toBe(200);
+
+	// Being read no longer shortens its stay: day 3 and day 4 pass without archiving.
+	expect(titled(await on(ISSUED + 3 * DAY), '當天就讀')).toMatchObject({ readAt: iso(ISSUED) });
+	expect(titled(await on(ISSUED + 4 * DAY), '當天就讀')).toBeDefined();
+	expect(titled(await on(ISSUED + 7 * DAY - 1), '當天就讀')).toBeDefined();
+	expect(titled(await on(ISSUED + 7 * DAY), '當天就讀')).toBeUndefined();
+	expect(await archived('當天就讀')).toMatchObject({ tag: 'HELP', project: 'alpha', hcomName: 'nova', readAt: iso(ISSUED) });
+});
+
+test('a report read on day 6 is archived on day 7 like an unread one', async () => {
+	const workspace = `${fixture.dir}/workspaces/alpha`;
+	fixture.report('session-read-late', { tag: 'DONE', summary: '第六天才讀', time: iso(ISSUED), hcom_name: 'miro', workspace });
 
 	const { key } = titled(await on(ISSUED + 6 * DAY), '第六天才讀')!;
 	expect((await fixture.markRead(cookie, key)).status).toBe(200);
 
-	// Once read, only the read time counts: day 7 from issue passes without archiving.
-	expect(titled(await on(ISSUED + 8 * DAY), '第六天才讀')).toMatchObject({ readAt: iso(ISSUED + 6 * DAY) });
-	expect(titled(await on(ISSUED + 9 * DAY - 1), '第六天才讀')).toBeDefined();
-	expect(titled(await on(ISSUED + 9 * DAY), '第六天才讀')).toBeUndefined();
-	expect(titled(await on(ISSUED + 10 * DAY), '第六天才讀')).toBeUndefined();
-	expect(await archived('第六天才讀')).toMatchObject({ tag: 'HELP', project: 'alpha', hcomName: 'miro', readAt: iso(ISSUED + 6 * DAY) });
-});
-
-test('a report read on the day it was issued is archived 3 days later, well before day 7', async () => {
-	const workspace = `${fixture.dir}/workspaces/alpha`;
-	fixture.report('session-read-early', { tag: 'DONE', summary: '當天就讀', time: iso(ISSUED), hcom_name: 'nova', workspace });
-
-	const { key } = titled(await on(ISSUED), '當天就讀')!;
-	await fixture.markRead(cookie, key);
-
-	expect(titled(await on(ISSUED + 2 * DAY), '當天就讀')).toBeDefined();
-	expect(titled(await on(ISSUED + 3 * DAY - 1), '當天就讀')).toBeDefined();
-	expect(titled(await on(ISSUED + 4 * DAY), '當天就讀')).toBeUndefined();
-	expect(await archived('當天就讀')).toBeDefined();
+	expect(titled(await on(ISSUED + 7 * DAY - 1), '第六天才讀')).toBeDefined();
+	expect(titled(await on(ISSUED + 7 * DAY), '第六天才讀')).toBeUndefined();
+	expect(await archived('第六天才讀')).toMatchObject({ readAt: iso(ISSUED + 6 * DAY) });
 });
 
 test('an ended controller stays on the roster until its last report is archived; the reports still open', async () => {
@@ -110,13 +109,14 @@ test('the archive lists newest first and is the same on another paired device', 
 	expect(there).toEqual(here);
 });
 
-test('an archived report cannot be marked read and never returns to the inbox', async () => {
+test('an archived report cannot be marked read or unread and never returns to the inbox', async () => {
 	const workspace = `${fixture.dir}/workspaces/alpha`;
 	fixture.report('session-sticky', { tag: 'DONE', summary: '封存後不回信箱', time: iso(ISSUED + 20 * DAY), hcom_name: 'luna', workspace });
 	const { key } = titled(await on(ISSUED + 21 * DAY), '封存後不回信箱')!;
 	await on(ISSUED + 28 * DAY);
 
 	expect((await fixture.markRead(cookie, key)).status).toBe(409);
+	expect((await fixture.markUnread(cookie, key)).status).toBe(409);
 	expect((await archived('封存後不回信箱'))!.readAt).toBeNull();
 
 	// Even with the clock back before the deadline, and across a restart.
@@ -157,17 +157,16 @@ test('an unusable state file is reported without making up which reports are rea
 	const start = ISSUED + 80 * DAY;
 	const steady = fixture.bound('epsilon', 'steady');
 	fixture.list([steady]);
-	// Issued and read on day 4, so on day 8 it is archived although it is only 4 days old; its
-	// ended controller has left the roster.
-	fixture.report('session-early', { tag: 'DONE', summary: '早讀已封存', time: iso(start + 4 * DAY), hcom_name: 'early', workspace });
-	// Read on day 6, so on day 8 it is still in the inbox although it is older than 7 days.
-	fixture.report('session-late', { tag: 'DONE', summary: '晚讀仍保留', time: iso(start), hcom_name: 'late', workspace });
-	await fixture.markRead(cookie, titled(await on(start + 4 * DAY), '早讀已封存')!.key);
-	await fixture.markRead(cookie, titled(await on(start + 6 * DAY), '晚讀仍保留')!.key);
+	// Issued on day 0, so on day 8 it is archived; its ended controller has left the roster.
+	fixture.report('session-early', { tag: 'DONE', summary: '早發已封存', time: iso(start), hcom_name: 'early', workspace });
+	// Issued on day 4 and read on day 6, so on day 8 it is still in the inbox, read.
+	fixture.report('session-late', { tag: 'DONE', summary: '晚發仍保留', time: iso(start + 4 * DAY), hcom_name: 'late', workspace });
+	await fixture.markRead(cookie, titled(await on(start + 4 * DAY), '早發已封存')!.key);
+	await fixture.markRead(cookie, titled(await on(start + 6 * DAY), '晚發仍保留')!.key);
 	const before = await on(start + 8 * DAY);
-	expect(titled(before, '早讀已封存')).toBeUndefined();
+	expect(titled(before, '早發已封存')).toBeUndefined();
 	expect(named(before, 'early')).toBeUndefined();
-	expect(titled(before, '晚讀仍保留')).toMatchObject({ readAt: iso(start + 6 * DAY) });
+	expect(titled(before, '晚發仍保留')).toMatchObject({ readAt: iso(start + 6 * DAY) });
 	const stateFile = join(fixture.dir, 'board-state', 'inbox.json');
 	const good = readFileSync(stateFile, 'utf8');
 
@@ -176,7 +175,7 @@ test('an unusable state file is reported without making up which reports are rea
 	const stale = await fixture.refresh(cookie);
 	expect(stale.errors.join()).toContain('回報沿用上次讀到的狀態');
 	expect({ ...stale, errors: [] as string[], generatedAt: '' }).toEqual({ ...before, generatedAt: '' });
-	expect((await fixture.markRead(cookie, titled(stale, '晚讀仍保留')!.key)).status).toBe(500);
+	expect((await fixture.markRead(cookie, titled(stale, '晚發仍保留')!.key)).status).toBe(500);
 	expect((await fixture.fetch('/api/archive', { cookie })).status).toBe(500);
 	expect(readFileSync(stateFile, 'utf8')).toBe('{ not json');
 
@@ -195,5 +194,5 @@ test('an unusable state file is reported without making up which reports are rea
 	writeFileSync(stateFile, good);
 	const repaired = await fixture.refresh(cookie);
 	expect({ ...repaired, generatedAt: '' }).toEqual({ ...before, generatedAt: '' });
-	expect(await archived('早讀已封存')).toBeDefined();
+	expect(await archived('早發已封存')).toBeDefined();
 });

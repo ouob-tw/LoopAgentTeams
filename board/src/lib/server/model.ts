@@ -35,10 +35,8 @@ export function isClosed(sources: Sources, sessionId: string): boolean {
 }
 
 const DAY_MS = 24 * 60 * 60 * 1000;
-/** An unread report is archived this long after it was issued. */
-const UNREAD_ARCHIVE_MS = 7 * DAY_MS;
-/** A read report is archived this long after it was marked read, whenever it was issued. */
-const READ_ARCHIVE_MS = 3 * DAY_MS;
+/** A report is archived this long after it was issued, read or not. */
+const ARCHIVE_MS = 7 * DAY_MS;
 
 /** Every DONE and HELP report, archived or not, in file order. */
 function reportItems(sources: Sources, state: InboxState): InboxReport[] {
@@ -74,10 +72,7 @@ export function archiveDue(sources: Sources, state: InboxState, now: number): bo
 	let changed = false;
 	for (const item of reportItems(sources, state)) {
 		if (item.key in state.archived) continue;
-		const due = item.readAt
-			? now - Date.parse(item.readAt) >= READ_ARCHIVE_MS
-			: now - Date.parse(item.time) >= UNREAD_ARCHIVE_MS;
-		if (due) {
+		if (now - Date.parse(item.time) >= ARCHIVE_MS) {
 			state.archived[item.key] = new Date(now).toISOString();
 			changed = true;
 		}
@@ -85,14 +80,15 @@ export function archiveDue(sources: Sources, state: InboxState, now: number): bo
 	return changed;
 }
 
-export type MarkReadResult = 'marked' | 'already-read' | 'archived' | 'unknown';
+export type MarkResult = 'marked' | 'already-read' | 'already-unread' | 'archived' | 'unknown';
 
-/** Mark an inbox report read. The first mark counts: marking again does not restart the 3 days. */
-export function markRead(sources: Sources, state: InboxState, key: string, now: number): MarkReadResult {
+/** Mark an inbox report read or unread. Marking read again keeps the time it was first read. */
+export function mark(sources: Sources, state: InboxState, key: string, read: boolean, now: number): MarkResult {
 	if (!reportItems(sources, state).some((item) => item.key === key)) return 'unknown';
 	if (key in state.archived) return 'archived';
-	if (key in state.read) return 'already-read';
-	state.read[key] = new Date(now).toISOString();
+	if (read === key in state.read) return read ? 'already-read' : 'already-unread';
+	if (read) state.read[key] = new Date(now).toISOString();
+	else delete state.read[key];
 	return 'marked';
 }
 

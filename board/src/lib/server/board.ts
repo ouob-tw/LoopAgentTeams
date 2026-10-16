@@ -7,7 +7,7 @@ import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
 import { listControllers, readQuestions } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
-import { archiveDue, archivedReports, buildSnapshot, markRead, type MarkReadResult, type Sources } from './model.ts';
+import { archiveDue, archivedReports, buildSnapshot, mark, type MarkResult, type Sources } from './model.ts';
 import { createReportReader } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
@@ -34,8 +34,8 @@ export interface Board {
 	sentLogError(): string | null;
 	/** The sources as last read, reading them first if nothing has been read yet. */
 	sources(): Promise<Sources>;
-	/** Mark an inbox report read for every logged-in device. */
-	markRead(key: string): Promise<MarkReadResult>;
+	/** Mark one inbox report read or unread for every logged-in device. */
+	mark(key: string, read: boolean): Promise<MarkResult>;
 	/** The archived reports, newest first. */
 	archive(): Promise<InboxReport[]>;
 	subscribe(stream: Stream): () => void;
@@ -143,25 +143,25 @@ function createBoard(): Board {
 		return snapshot!;
 	}
 
-	/** Bring the archive up to date, optionally mark one report read, and push the result. */
-	function publish(from: Sources, readKey?: string): MarkReadResult | null {
+	/** Bring the archive up to date, optionally mark one report read or unread, and push the result. */
+	function publish(from: Sources, change?: { key: string; read: boolean }): MarkResult | null {
 		const now = config.now();
 		// A state file that cannot be used must not hide the roster, and must not make up which
 		// reports are unread or archived either: the board carries on with the state it last read,
 		// or without listing reports when it never read one, says so, and leaves the file alone.
-		// Marking read fails outright instead.
+		// Marking read or unread fails outright instead.
 		let state: InboxState | null;
 		let problem: string | null = null;
 		try {
 			state = loadInboxState(config.stateDir);
 		} catch (error) {
-			if (readKey !== undefined) throw error;
+			if (change) throw error;
 			state = structuredClone(lastState);
 			problem = `已讀與封存紀錄讀不出來，${state ? '回報沿用上次讀到的狀態' : '回報暫時不列出'}：${(error as Error).message}`;
 		}
-		// Archive first: a report that is already due can no longer be marked read.
+		// Archive first: a report that is already due can no longer be marked read or unread.
 		const archived = state !== null && archiveDue(from, state, now);
-		const marked = state === null || readKey === undefined ? null : markRead(from, state, readKey, now);
+		const marked = state === null || !change ? null : mark(from, state, change.key, change.read, now);
 		if (state && !problem && (archived || marked === 'marked')) {
 			try {
 				saveInboxState(config.stateDir, state);
@@ -236,7 +236,7 @@ function createBoard(): Board {
 		refresh,
 		sentLogError: () => sentLogError,
 		sources: readSources,
-		markRead: async (key) => publish(await readSources(), key)!,
+		mark: async (key, read) => publish(await readSources(), { key, read })!,
 		archive: async () => archivedReports(await readSources(), loadInboxState(config.stateDir)),
 		subscribe(stream) {
 			if (closed) stream.close();
