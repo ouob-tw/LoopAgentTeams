@@ -228,24 +228,74 @@ class CommandTests(PruneTestCase):
         self.assertTrue(self.exists("s-young"))
         self.assertTrue(self.exists("s-old", ".lock"))
 
-    def test_each_deletion_leaves_a_receipt_at_once(self):
+    def test_the_receipt_names_the_file_before_it_is_deleted(self):
         self.write("s-old", record(NOW - RETENTION))
-        self.write("s-later", record(NOW - RETENTION))
+        report = self.reports / "s-old.jsonl"
+        info = report.stat()
         receipts = self.root / "receipts"
-        seen = []
-        real = self.core._report_expired
+        real_unlink = Path.unlink
+        seen = {}
 
-        def checked(path, now):
-            # Before each file: what the receipts say so far, as a caller cut off here would see it.
-            seen.append(sorted(item.name for item in receipts.iterdir()) if receipts.exists() else [])
-            return real(path, now)
+        def unlink(path, *args, **kwargs):
+            if path == report:
+                # Cut off here, this is what the board would find.
+                seen["receipt"] = json.loads((receipts / "s-old").read_text())
+            return real_unlink(path, *args, **kwargs)
 
-        with mock.patch.object(self.core, "_report_expired", checked):
-            self.assertEqual(self.core.prune_reports(self.reports, NOW, receipts), (["s-later", "s-old"], []))
-        # The first file is checked twice, the second twice: its receipt was there before the second.
-        self.assertEqual(seen, [[], [], ["s-later"], ["s-later"]])
-        self.assertEqual(sorted(item.name for item in receipts.iterdir()), ["s-later", "s-old"])
+        with mock.patch.object(Path, "unlink", unlink):
+            self.assertEqual(self.core.prune_reports(self.reports, NOW, receipts), (["s-old"], []))
+        self.assertEqual(seen["receipt"], {"dev": str(info.st_dev), "ino": str(info.st_ino)})
+        self.assertEqual(json.loads((receipts / "s-old").read_text()), seen["receipt"])
+        self.assertEqual(sorted(item.name for item in receipts.iterdir()), ["s-old"])
         self.assertEqual(oct(receipts.stat().st_mode & 0o777), "0o700")
+
+    def test_a_run_killed_before_the_deletion_leaves_a_receipt_for_a_file_still_there(self):
+        self.write("s-old", record(NOW - RETENTION))
+        report = self.reports / "s-old.jsonl"
+        receipts = self.root / "receipts"
+        real_unlink = Path.unlink
+
+        def killed(path, *args, **kwargs):
+            if path == report:
+                raise KeyboardInterrupt
+            return real_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", killed), self.assertRaises(KeyboardInterrupt):
+            self.core.prune_reports(self.reports, NOW, receipts)
+        # The same file is still there: the receipt shows the deletion was not done.
+        receipt = json.loads((receipts / "s-old").read_text())
+        self.assertEqual(receipt["ino"], str(report.stat().st_ino))
+        # The next run deletes it and keeps the receipt.
+        self.assertEqual(self.core.prune_reports(self.reports, NOW, receipts), (["s-old"], []))
+        self.assertFalse(report.exists())
+        self.assertTrue((receipts / "s-old").exists())
+
+    def test_a_deletion_that_fails_takes_its_receipt_back(self):
+        self.write("s-old", record(NOW - RETENTION))
+        report = self.reports / "s-old.jsonl"
+        receipts = self.root / "receipts"
+        real_unlink = Path.unlink
+
+        def refused(path, *args, **kwargs):
+            if path == report:
+                raise PermissionError("refused")
+            return real_unlink(path, *args, **kwargs)
+
+        with mock.patch.object(Path, "unlink", refused):
+            deleted, failed = self.core.prune_reports(self.reports, NOW, receipts)
+        self.assertEqual((deleted, [item["session_id"] for item in failed]), ([], ["s-old"]))
+        self.assertTrue(report.exists())
+        self.assertEqual(list(receipts.iterdir()), [])
+
+    def test_a_receipt_that_cannot_be_written_keeps_the_file(self):
+        self.write("s-old", record(NOW - RETENTION))
+        receipts = self.root / "receipts"
+        receipts.write_text("not a directory")
+
+        deleted, failed = self.core.prune_reports(self.reports, NOW, receipts)
+
+        self.assertEqual((deleted, [item["session_id"] for item in failed]), ([], ["s-old"]))
+        self.assertTrue(self.exists("s-old"))
 
     def test_a_missing_directory_deletes_nothing(self):
         self.assertEqual(

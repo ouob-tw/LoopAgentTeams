@@ -104,18 +104,29 @@ export function archivedReports(sources: Sources, state: InboxState, now: number
 	return archivePage(sortArchive(listed), before);
 }
 
-/** Forget the read and archive state of every report of these sessions, whose report files were
- *  deleted: a file written again for one of them starts its keys over. Returns whether it changed. */
-export function dropSessions(state: InboxState, sessionIds: Iterable<string>): boolean {
-	const prefixes = [...sessionIds].map((sessionId) => `${sessionId}#`);
+/** Apply the helper's receipts for report files it deleted, session ID → receipt: forget the read
+ *  and archive state of every report of that session, so a file written again for it starts its
+ *  keys over. Each receipt is applied once; one no longer listed is forgotten. Null when the
+ *  receipts could not be listed: nothing changes. Returns whether the state changed. */
+export function applyReceipts(state: InboxState, receipts: Map<string, string> | null): boolean {
+	if (!receipts) return false;
 	let changed = false;
-	for (const times of [state.read, state.archived]) {
-		for (const key of Object.keys(times)) {
-			if (prefixes.some((prefix) => key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length)))) {
-				delete times[key];
-				changed = true;
+	for (const sessionId of Object.keys(state.pruned)) {
+		if (!receipts.has(sessionId)) {
+			delete state.pruned[sessionId];
+			changed = true;
+		}
+	}
+	for (const [sessionId, receipt] of receipts) {
+		if (state.pruned[sessionId] === receipt) continue;
+		const prefix = `${sessionId}#`;
+		for (const times of [state.read, state.archived]) {
+			for (const key of Object.keys(times)) {
+				if (key.startsWith(prefix) && /^\d+$/.test(key.slice(prefix.length))) delete times[key];
 			}
 		}
+		state.pruned[sessionId] = receipt;
+		changed = true;
 	}
 	return changed;
 }

@@ -1,6 +1,6 @@
 // The running board: re-reads the sources when they change, keeps the latest snapshot and pushes
 // it to every connected page.
-import { mkdirSync, readdirSync, rmSync } from 'node:fs';
+import { mkdirSync, readdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ArchivePage } from '../board/archive.ts';
 import type { BoardSnapshot, HelperController } from '../board/types.ts';
@@ -8,7 +8,7 @@ import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
 import { listControllers, pruneReceipts, pruneReports, readQuestions } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
-import { archiveDue, archivedReports, buildSnapshot, dropSessions, mark, type MarkResult, type Sources } from './model.ts';
+import { applyReceipts, archiveDue, archivedReports, buildSnapshot, mark, type MarkResult, type Sources } from './model.ts';
 import { createReportReader } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
@@ -68,18 +68,39 @@ function createBoard(): Board {
 	let sources: Sources | null = null;
 	/** The read and archive state as last read from, or written to, its file. */
 	let lastState: InboxState | null = null;
-	/** Sessions whose report file was deleted and whose read and archive state is not yet saved
-	 *  without them: the helper's receipts, kept until then, plus what it printed. */
-	const pruned = new Set<string>();
+	/** The helper's receipts, as last read, for report files it has deleted: session ID → receipt.
+	 *  Null when they could not be listed. */
+	let receipts: Map<string, string> | null = new Map();
 
-	/** Add the receipts the helper left, including those of a run that was cut short or of an
-	 *  earlier board process. */
-	function readReceipts(): void {
+	/** The receipts whose report file is deleted, including those of a run that was cut short or
+	 *  of an earlier board process. A receipt is written before its file is deleted, so one whose
+	 *  very file is still there is not done yet; another file in its place was written again later. */
+	function readReceipts(): Map<string, string> | null {
+		const dir = pruneReceipts(config);
+		let names: string[];
 		try {
-			for (const sessionId of readdirSync(pruneReceipts(config))) pruned.add(sessionId);
-		} catch {
-			// None yet; one that cannot be listed is listed again at the next read.
+			names = readdirSync(dir);
+		} catch (error) {
+			return (error as NodeJS.ErrnoException).code === 'ENOENT' ? new Map() : null;
 		}
+		const done = new Map<string, string>();
+		for (const name of names) {
+			if (name.startsWith('.')) continue;
+			try {
+				const receipt = readFileSync(join(dir, name), 'utf8');
+				const { dev, ino } = JSON.parse(receipt);
+				let file: { dev: bigint; ino: bigint } | null = null;
+				try {
+					file = statSync(join(config.reportsDir, `${name}.jsonl`), { bigint: true });
+				} catch (error) {
+					if ((error as NodeJS.ErrnoException).code !== 'ENOENT') continue;
+				}
+				if (!file || String(file.dev) !== dev || String(file.ino) !== ino) done.set(name, receipt);
+			} catch {
+				// Unreadable: looked at again at the next read.
+			}
+		}
+		return done;
 	}
 	let running: Promise<BoardSnapshot> | null = null;
 	let queued: Promise<BoardSnapshot> | null = null;
@@ -127,8 +148,7 @@ function createBoard(): Board {
 	async function read(): Promise<BoardSnapshot> {
 		// Report files past retention go first, so this read no longer finds them.
 		const [helper, agents, prune] = await Promise.all([listControllers(config), listAgents(config), pruneReports(config, config.now())]);
-		for (const sessionId of prune.deleted) pruned.add(sessionId);
-		readReceipts();
+		receipts = readReceipts();
 		const reports = await readReports();
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
@@ -180,7 +200,7 @@ function createBoard(): Board {
 			problem = `已讀與封存紀錄讀不出來，${state ? '回報沿用上次讀到的狀態' : '回報暫時不列出'}：${(error as Error).message}`;
 		}
 		// A deleted report file's keys go before anything else: a file written again starts them over.
-		const dropped = state !== null && dropSessions(state, pruned);
+		const dropped = state !== null && applyReceipts(state, receipts);
 		// Archive first: a report that is already due can no longer be marked read or unread.
 		const archived = state !== null && archiveDue(from, state, now);
 		const marked = state === null || !change ? null : mark(from, state, change.key, change.read, now);
@@ -194,20 +214,25 @@ function createBoard(): Board {
 			}
 		}
 
+		let receiptError: string | null = null;
 		if (!problem) {
 			lastState = state;
-			for (const sessionId of pruned) {
+			// Saved without those sessions: their receipts are done with. One that cannot be removed
+			// is not applied again, the saved state says it was.
+			for (const [sessionId, receipt] of receipts ?? []) {
+				const path = join(pruneReceipts(config), sessionId);
 				try {
-					rmSync(join(pruneReceipts(config), sessionId), { force: true });
-					pruned.delete(sessionId);
-				} catch {
-					// Dropped again next time; its keys are already gone.
+					// A newer receipt for the same session is left for the next read.
+					if (readFileSync(path, 'utf8') === receipt) rmSync(path, { force: true });
+				} catch (error) {
+					receiptError = `刪除回報檔的收據移不掉：${(error as Error).message}`;
 				}
 			}
 		}
 
 		const next = buildSnapshot(from, state, now);
 		if (problem) next.errors.push(problem);
+		if (receiptError) next.errors.push(receiptError);
 		const changed = !snapshot || comparable(snapshot) !== comparable(next);
 		snapshot = next;
 		if (changed) for (const stream of streams) stream.send('board', JSON.stringify(next));

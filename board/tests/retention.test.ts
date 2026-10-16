@@ -2,7 +2,7 @@
 // files past retention are deleted by the real helper command, on this test's reports directory.
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { HelperController, InboxReport } from '../src/lib/board/types.ts';
 import { DAY, named, startFixture, titled, until, uvPython, type Fixture } from './harness.ts';
@@ -32,6 +32,7 @@ beforeEach(() => {
 	rmSync(fixture.reportsDir, { recursive: true, force: true });
 	mkdirSync(fixture.reportsDir);
 	rmSync(join(fixture.dir, 'board-state/inbox.json'), { force: true });
+	rmSync(join(fixture.dir, 'board-state/pruned'), { recursive: true, force: true });
 	list([]);
 });
 
@@ -164,25 +165,68 @@ test('after pruning, a bound running controller shows as usual and a closed one 
 	fixture.setHcom({});
 });
 
-test('a receipt left by a helper run cut short, or before a restart, still clears that session', async () => {
+const receiptsDir = () => join(fixture.dir, 'board-state/pruned');
+/** A receipt the helper writes before deleting this report file, as it names that file. */
+function receipt(session: string): void {
+	const file = statSync(join(fixture.reportsDir, `${session}.jsonl`), { bigint: true });
+	mkdirSync(receiptsDir(), { recursive: true });
+	writeFileSync(join(receiptsDir(), session), JSON.stringify({ dev: String(file.dev), ino: String(file.ino) }));
+}
+const failingPrune = () =>
+	fixture.setHelper({ output: { controllers: [] }, 'prune-reports': { output: { status: 'error', reason: '輔助工具逾時' }, exit: 1 } });
+
+test('a receipt left by a helper run cut short, or before a restart, clears that session once its file is gone', async () => {
 	const workspace = `${fixture.dir}/workspaces/alpha`;
 	fixture.report('session-cut', { tag: 'DONE', summary: '舊的', time: iso(T0), hcom_name: 'vega', workspace });
 	await on(T0 + 10 * DAY);
 	expect(Object.keys(inboxState().archived)).toContain('session-cut#0');
 
-	// The helper deleted the file and left its receipt, then was killed before printing anything.
+	// Killed after writing the receipt, before deleting: the very file is still there, nothing is done.
+	receipt('session-cut');
+	failingPrune();
+	await on(T0 + 10 * DAY);
+	expect(Object.keys(inboxState().archived)).toContain('session-cut#0');
+	expect(readdirSync(receiptsDir())).toEqual(['session-cut']);
+
+	// Killed after deleting, before printing anything: the receipt alone clears the session.
 	rmSync(join(fixture.reportsDir, 'session-cut.jsonl'));
-	mkdirSync(join(fixture.dir, 'board-state/pruned'), { recursive: true });
-	writeFileSync(join(fixture.dir, 'board-state/pruned/session-cut'), '');
-	fixture.setHelper({ output: { controllers: [] }, 'prune-reports': { output: { status: 'error', reason: '輔助工具逾時' }, exit: 1 } });
 	await on(T0 + 10 * DAY);
 	expect(Object.keys(inboxState().archived)).not.toContain('session-cut#0');
-	expect(readdirSync(join(fixture.dir, 'board-state/pruned'))).toEqual([]);
+	expect(readdirSync(receiptsDir())).toEqual([]);
 
 	// The session's next report starts over in the inbox, unread.
 	list([]);
 	fixture.report('session-cut', { tag: 'DONE', summary: '新的', time: iso(T0 + 10 * DAY), hcom_name: 'vega', workspace });
 	expect(titled(await on(T0 + 10 * DAY), '新的')).toMatchObject({ key: 'session-cut#0', readAt: null });
+});
+
+test('a receipt that cannot be removed is applied once: a report written again keeps its read state', async () => {
+	const workspace = `${fixture.dir}/workspaces/alpha`;
+	fixture.report('session-stuck', { tag: 'DONE', summary: '舊的', time: iso(T0), hcom_name: 'vega', workspace });
+	await on(T0 + 10 * DAY);
+	receipt('session-stuck');
+	rmSync(join(fixture.reportsDir, 'session-stuck.jsonl'));
+	failingPrune();
+	chmodSync(receiptsDir(), 0o500);
+	try {
+		const stuck = await on(T0 + 10 * DAY);
+		expect(stuck.errors.some((error) => error.startsWith('刪除回報檔的收據移不掉'))).toBe(true);
+		expect(Object.keys(inboxState().archived)).not.toContain('session-stuck#0');
+
+		fixture.report('session-stuck', { tag: 'DONE', summary: '回來了', time: iso(T0 + 10 * DAY), hcom_name: 'vega', workspace });
+		const { key } = titled(await on(T0 + 10 * DAY), '回來了')!;
+		expect((await fixture.markRead(cookie, key)).status).toBe(200);
+		await on(T0 + 10 * DAY);
+		expect(titled(await on(T0 + 10 * DAY), '回來了')).toMatchObject({ readAt: iso(T0 + 10 * DAY) });
+	} finally {
+		chmodSync(receiptsDir(), 0o700);
+	}
+	const after = await on(T0 + 10 * DAY);
+	expect(after.errors).toEqual(['超過 30 天的回報紀錄沒有刪除，下次重讀再試：輔助工具逾時']);
+	expect(readdirSync(receiptsDir())).toEqual([]);
+	expect(titled(await on(T0 + 10 * DAY), '回來了')).toMatchObject({ readAt: iso(T0 + 10 * DAY) });
+	expect(inboxState().pruned).toEqual({});
+	list([]);
 });
 
 test('a failed prune is shown and tried again at the next read', async () => {

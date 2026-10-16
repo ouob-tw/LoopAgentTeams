@@ -2471,6 +2471,20 @@ def _report_expired(path, now):
     return bool(times) and now - max(times) >= REPORT_RETENTION
 
 
+def _write_receipt(receipts, path):
+    """Record, before ``path`` is deleted, which file that is: ``{"dev", "ino"}`` of
+    it as strings, in ``receipts/<session-id>``, written whole or not at all. The
+    deletion is done once no file, or another file, is at ``path``; while the same
+    file is still there it is not, and the receipt must be left alone."""
+    receipts.mkdir(parents=True, exist_ok=True, mode=0o700)
+    info = path.stat()
+    receipt = receipts / path.stem
+    temporary = receipts / f".{path.stem}.tmp"
+    temporary.write_text(json.dumps({"dev": str(info.st_dev), "ino": str(info.st_ino)}))
+    temporary.replace(receipt)
+    return receipt
+
+
 def prune_reports(directory, now, receipts=None):
     """Delete each ``<session-id>.jsonl`` report file in ``directory`` whose newest
     complete record was issued ``REPORT_RETENTION`` or more before ``now``.
@@ -2483,10 +2497,11 @@ def prune_reports(directory, now, receipts=None):
     each file that could not be read, locked or deleted for another reason; those
     are left for a later run and do not stop the others.
 
-    With ``receipts``, each deletion also leaves an empty file named after the
-    session in that directory as soon as it happens, so a run cut short before it
-    returns still tells the caller what it deleted; the caller removes a receipt
-    once it has dealt with it.
+    With ``receipts``, a receipt named after the session is written to that
+    directory before each file is deleted (see ``_write_receipt``), so a run cut
+    short before it returns still tells the caller what it deleted; the caller
+    removes a receipt once it has dealt with it. A receipt whose deletion failed is
+    removed again.
     """
     directory = Path(directory)
     deleted, failed = [], []
@@ -2502,11 +2517,14 @@ def prune_reports(directory, now, receipts=None):
                 except BlockingIOError:
                     continue
                 if _report_expired(path, now):
-                    path.unlink()
+                    receipt = None if receipts is None else _write_receipt(Path(receipts), path)
+                    try:
+                        path.unlink()
+                    except OSError:
+                        if receipt:
+                            receipt.unlink(missing_ok=True)
+                        raise
                     deleted.append(path.stem)
-                    if receipts is not None:
-                        Path(receipts).mkdir(parents=True, exist_ok=True, mode=0o700)
-                        (Path(receipts) / path.stem).touch()
         except OSError as error:
             failed.append({"session_id": path.stem, "reason": str(error)})
     return deleted, failed

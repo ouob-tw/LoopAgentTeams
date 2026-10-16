@@ -324,7 +324,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board prune-repor
   --reports-dir "$reports_dir" --now "$now" [--receipts "$receipts_dir"]
 ```
 
-`--now` 是帶時區的 ISO 時間（看板傳入自己的時間）。刪除 `$reports_dir` 中最新一筆有效紀錄（看板讀得出來的完整回報）已發出滿 30 天的 `<session-id>.jsonl`：先不等待地取得同名 `<session-id>.lock` 的鎖（hook 追加回報用的同一把），在鎖內再確認一次才刪。鎖被佔用或沒有任何有效紀錄的檔案不刪；鎖檔一律保留。輸出 `{"status": "ok", "deleted": [<session-id>...], "failed": [{"session_id": "…", "reason": "…"}...]}`，結束碼 0；讀不出來、鎖不了或刪不掉的檔案列在 `failed`、留到下次，不影響其他檔案；目錄不存在時兩者都是空的。有 `--receipts` 時，每刪一個檔就立刻在該目錄建立以 session ID 命名的空檔，執行中途被中斷也留得下刪了哪些；由呼叫端處理完後自行刪除。`--now` 沒有時區時輸出 `{"status": "error", "reason": "…"}`，結束碼 1。
+`--now` 是帶時區的 ISO 時間（看板傳入自己的時間）。刪除 `$reports_dir` 中最新一筆有效紀錄（看板讀得出來的完整回報）已發出滿 30 天的 `<session-id>.jsonl`：先不等待地取得同名 `<session-id>.lock` 的鎖（hook 追加回報用的同一把），在鎖內再確認一次才刪。鎖被佔用或沒有任何有效紀錄的檔案不刪；鎖檔一律保留。輸出 `{"status": "ok", "deleted": [<session-id>...], "failed": [{"session_id": "…", "reason": "…"}...]}`，結束碼 0；讀不出來、鎖不了或刪不掉的檔案列在 `failed`、留到下次，不影響其他檔案；目錄不存在時兩者都是空的。有 `--receipts` 時，刪每個檔之前先在該目錄整份寫入以 session ID 命名的收據 `{"dev": "…", "ino": "…"}`（該回報檔的裝置與 inode 編號，字串），執行中途被中斷也留得下要刪哪個檔：原路徑已沒有檔案或換成另一個檔，表示已刪除；同一個檔還在，表示還沒刪，收據要留著。刪除失敗時收據會移除；寫不進收據時不刪該檔，列在 `failed`。收據由呼叫端處理完後自行刪除。`--now` 沒有時區時輸出 `{"status": "error", "reason": "…"}`，結束碼 1。
 
 ## 安裝與更新
 

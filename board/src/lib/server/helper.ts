@@ -264,16 +264,16 @@ export async function readCurrent(config: BoardConfig, client: string, sessionId
 	return read.ok ? (read.page.current ?? null) : null;
 }
 
-/** The session IDs whose report file was deleted, and why some file could not be; null when every
- *  file due was deleted or left for a busy lock. */
-export type PruneResult = { deleted: string[]; reason: string | null };
+/** Why some report file due could not be deleted; null when every one was, or was left for a busy
+ *  lock. What was deleted is in the receipts. */
+export type PruneResult = { reason: string | null };
 
 const isFailure = (value: unknown): value is { session_id: string; reason: string } =>
 	typeof (value as { session_id?: unknown })?.session_id === 'string' && typeof (value as { reason?: unknown }).reason === 'string';
 
-/** Where the helper leaves an empty file named after each session whose report file it deleted,
- *  the moment it does: a run cut short still tells the board. The board removes one once the read
- *  and archive state is saved without that session. */
+/** Where the helper writes, before deleting a report file, a receipt named after its session that
+ *  says which file it is: a run cut short still tells the board. The board removes one once the
+ *  read and archive state is saved without that session. */
 export const pruneReceipts = (config: BoardConfig) => join(config.stateDir, 'pruned');
 
 /** Delete the report files whose newest report was issued 30 days or more before `now`, through
@@ -293,7 +293,7 @@ export async function pruneReports(config: BoardConfig, now: number): Promise<Pr
 	}
 	const { deleted, failed } = payload ?? {};
 	if (payload?.status === 'ok' && Array.isArray(deleted) && deleted.every((id) => typeof id === 'string') && Array.isArray(failed) && failed.every(isFailure)) {
-		return { deleted, reason: failed.map((item) => `${item.session_id}：${item.reason}`).join('；') || null };
+		return { reason: failed.map((item) => `${item.session_id}：${item.reason}`).join('；') || null };
 	}
-	return { deleted: [], reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出不是預期的格式' };
+	return { reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出不是預期的格式' };
 }
