@@ -1,6 +1,7 @@
 // The only way the board reads and writes question files, and reads a controller's conversation:
 // the LAT panel helper's `board` commands.
 import { spawn, type ChildProcess } from 'node:child_process';
+import { join } from 'node:path';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import { fixedModel, type CurrentSettings } from '../board/models.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
@@ -270,10 +271,20 @@ export type PruneResult = { deleted: string[]; reason: string | null };
 const isFailure = (value: unknown): value is { session_id: string; reason: string } =>
 	typeof (value as { session_id?: unknown })?.session_id === 'string' && typeof (value as { reason?: unknown }).reason === 'string';
 
+/** Where the helper leaves an empty file named after each session whose report file it deleted,
+ *  the moment it does: a run cut short still tells the board. The board removes one once the read
+ *  and archive state is saved without that session. */
+export const pruneReceipts = (config: BoardConfig) => join(config.stateDir, 'pruned');
+
 /** Delete the report files whose newest report was issued 30 days or more before `now`, through
  *  the helper: only it can take the lock the turn-end hook appends under. */
 export async function pruneReports(config: BoardConfig, now: number): Promise<PruneResult> {
-	const { stdout, failure } = await run(config, ['prune-reports', `--reports-dir=${config.reportsDir}`, `--now=${new Date(now).toISOString()}`]);
+	const { stdout, failure } = await run(config, [
+		'prune-reports',
+		`--reports-dir=${config.reportsDir}`,
+		`--now=${new Date(now).toISOString()}`,
+		`--receipts=${pruneReceipts(config)}`
+	]);
 	let payload: { status?: unknown; reason?: unknown; deleted?: unknown; failed?: unknown } | null;
 	try {
 		payload = JSON.parse(stdout);

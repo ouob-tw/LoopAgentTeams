@@ -69,7 +69,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   board notify --questions PATH
   board transcript --client (claude|codex) --session-id ID [--before SEQ]
   board launch-args --session-id ID
-  board prune-reports --reports-dir DIR --now TIME
+  board prune-reports --reports-dir DIR --now TIME [--receipts DIR]
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
 Binding data uses ``HERDR_PLUGIN_CONFIG_DIR``, then
@@ -2471,7 +2471,7 @@ def _report_expired(path, now):
     return bool(times) and now - max(times) >= REPORT_RETENTION
 
 
-def prune_reports(directory, now):
+def prune_reports(directory, now, receipts=None):
     """Delete each ``<session-id>.jsonl`` report file in ``directory`` whose newest
     complete record was issued ``REPORT_RETENTION`` or more before ``now``.
 
@@ -2482,6 +2482,11 @@ def prune_reports(directory, now):
     the session IDs whose file was deleted, and ``{"session_id", "reason"}`` for
     each file that could not be read, locked or deleted for another reason; those
     are left for a later run and do not stop the others.
+
+    With ``receipts``, each deletion also leaves an empty file named after the
+    session in that directory as soon as it happens, so a run cut short before it
+    returns still tells the caller what it deleted; the caller removes a receipt
+    once it has dealt with it.
     """
     directory = Path(directory)
     deleted, failed = [], []
@@ -2499,6 +2504,9 @@ def prune_reports(directory, now):
                 if _report_expired(path, now):
                     path.unlink()
                     deleted.append(path.stem)
+                    if receipts is not None:
+                        Path(receipts).mkdir(parents=True, exist_ok=True, mode=0o700)
+                        (Path(receipts) / path.stem).touch()
         except OSError as error:
             failed.append({"session_id": path.stem, "reason": str(error)})
     return deleted, failed
@@ -2529,7 +2537,7 @@ def _run_board(args):
             now = datetime.fromisoformat(args.now)
             if now.tzinfo is None:
                 raise ValueError("--now must include a time zone")
-            deleted, failed = prune_reports(args.reports_dir, now)
+            deleted, failed = prune_reports(args.reports_dir, now, args.receipts)
             result, code = {"status": "ok", "deleted": deleted, "failed": failed}, 0
         else:
             result = notify_controller(args.questions)
@@ -2614,6 +2622,7 @@ def _build_parser():
     prune = board_commands.add_parser("prune-reports")
     prune.add_argument("--reports-dir", required=True, type=Path)
     prune.add_argument("--now", required=True)
+    prune.add_argument("--receipts", type=Path)
     return parser
 
 

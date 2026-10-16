@@ -1,12 +1,12 @@
 // The running board: re-reads the sources when they change, keeps the latest snapshot and pushes
 // it to every connected page.
-import { mkdirSync } from 'node:fs';
+import { mkdirSync, readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ArchivePage } from '../board/archive.ts';
 import type { BoardSnapshot, HelperController } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
-import { listControllers, pruneReports, readQuestions } from './helper.ts';
+import { listControllers, pruneReceipts, pruneReports, readQuestions } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { archiveDue, archivedReports, buildSnapshot, dropSessions, mark, type MarkResult, type Sources } from './model.ts';
 import { createReportReader } from './reports.ts';
@@ -69,8 +69,18 @@ function createBoard(): Board {
 	/** The read and archive state as last read from, or written to, its file. */
 	let lastState: InboxState | null = null;
 	/** Sessions whose report file was deleted and whose read and archive state is not yet saved
-	 *  without them. */
+	 *  without them: the helper's receipts, kept until then, plus what it printed. */
 	const pruned = new Set<string>();
+
+	/** Add the receipts the helper left, including those of a run that was cut short or of an
+	 *  earlier board process. */
+	function readReceipts(): void {
+		try {
+			for (const sessionId of readdirSync(pruneReceipts(config))) pruned.add(sessionId);
+		} catch {
+			// None yet; one that cannot be listed is listed again at the next read.
+		}
+	}
 	let running: Promise<BoardSnapshot> | null = null;
 	let queued: Promise<BoardSnapshot> | null = null;
 	let debounce: ReturnType<typeof setTimeout> | undefined;
@@ -118,6 +128,7 @@ function createBoard(): Board {
 		// Report files past retention go first, so this read no longer finds them.
 		const [helper, agents, prune] = await Promise.all([listControllers(config), listAgents(config), pruneReports(config, config.now())]);
 		for (const sessionId of prune.deleted) pruned.add(sessionId);
+		readReceipts();
 		const reports = await readReports();
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
@@ -185,7 +196,14 @@ function createBoard(): Board {
 
 		if (!problem) {
 			lastState = state;
-			pruned.clear();
+			for (const sessionId of pruned) {
+				try {
+					rmSync(join(pruneReceipts(config), sessionId), { force: true });
+					pruned.delete(sessionId);
+				} catch {
+					// Dropped again next time; its keys are already gone.
+				}
+			}
 		}
 
 		const next = buildSnapshot(from, state, now);

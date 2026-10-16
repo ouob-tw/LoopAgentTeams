@@ -228,6 +228,25 @@ class CommandTests(PruneTestCase):
         self.assertTrue(self.exists("s-young"))
         self.assertTrue(self.exists("s-old", ".lock"))
 
+    def test_each_deletion_leaves_a_receipt_at_once(self):
+        self.write("s-old", record(NOW - RETENTION))
+        self.write("s-later", record(NOW - RETENTION))
+        receipts = self.root / "receipts"
+        seen = []
+        real = self.core._report_expired
+
+        def checked(path, now):
+            # Before each file: what the receipts say so far, as a caller cut off here would see it.
+            seen.append(sorted(item.name for item in receipts.iterdir()) if receipts.exists() else [])
+            return real(path, now)
+
+        with mock.patch.object(self.core, "_report_expired", checked):
+            self.assertEqual(self.core.prune_reports(self.reports, NOW, receipts), (["s-later", "s-old"], []))
+        # The first file is checked twice, the second twice: its receipt was there before the second.
+        self.assertEqual(seen, [[], [], ["s-later"], ["s-later"]])
+        self.assertEqual(sorted(item.name for item in receipts.iterdir()), ["s-later", "s-old"])
+        self.assertEqual(oct(receipts.stat().st_mode & 0o777), "0o700")
+
     def test_a_missing_directory_deletes_nothing(self):
         self.assertEqual(
             self.board("--reports-dir", self.root / "none", "--now", NOW.isoformat()),
