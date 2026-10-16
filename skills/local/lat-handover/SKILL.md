@@ -1,0 +1,26 @@
+---
+name: lat-handover
+description: "把 LAT 主控換成新的 Agent 時手動觸發：整理交接文件、用 HCOM 開新主控接手，確認接手後通知協作者、停用自己的 LAT 紀錄並關閉自己。"
+disable-model-invocation: true
+---
+
+# LAT 主控換班
+
+只有 LAT 主控執行。
+
+依序執行，任一步失敗就停下並向使用者回報，不要跳到關閉自己。
+
+1. **暫停派發**：不再派新工作、不開新議題。進行中的執行 Agent 照常工作，等交接完成後改向新主控回報。
+2. **寫交接文件**：用 /handoff 寫成文件，記下完整絕對路徑。內容除 /handoff 的要求外，必須包含 /lat「交接」一節要求的項目，以及：
+   - 自己的 LAT session 紀錄路徑（`.lat/sessions/<session-id>.json`），以及其中的工作區、進度索引、待決目錄、任務卡目錄，讓新主控用相同路徑 activate。
+   - 目前執行 Agent 的 HCOM 名稱、角色、進行中的工作與等待中的回覆。
+   - 換班原因與使用者對新主控的指示。
+3. **開新主控**：依 /hcom-spawn 召喚新主控。client、模型、herdr 工作區沒有另外指定時，沿用自己的設定（同一工作區時帶 `HERDR_WORKSPACE_ID="$HERDR_WORKSPACE_ID"`）。任務交代寫明：
+   - 讀交接文件（附絕對路徑）與其中引用的文件。
+   - 呼叫 /lat，依主控恢復程序以自己的 session 與 HCOM 名稱 activate，沿用交接文件中的路徑。
+   - 完成後用 HCOM 回覆你：新 HCOM 名稱、activate 結果，以及交接文件中不清楚或缺少的地方。
+4. **確認接手**：結束回合等待回覆。新主控提出疑問就補充交接文件並回覆，直到它確認已接手。啟動失敗或遲遲沒有回覆時，不關閉自己，向使用者回報並繼續擔任主控。
+5. **通知協作者**：用 HCOM 通知所有參謀與執行 Agent：主控已換成新名稱，之後的回報、提問與審查結果一律送給新主控。
+6. **停用自己的 LAT 紀錄**：依 /lat 主控恢復程序執行 deactivate，加上 `--successor <新主控 HCOM 名稱>`。
+7. **向使用者回報**：新主控名稱、交接文件路徑、尚未解決的事項。
+8. **關閉自己**（必須是最後一個動作）：先用 `herdr tab get "$HERDR_TAB_ID"` 查看 `pane_count`。只有 1（只有自己）時執行 `herdr tab close "$HERDR_TAB_ID"`；還有其他窗格時只執行 `herdr pane close "$HERDR_PANE_ID"`，不要關掉別人的窗格。沒有 `HERDR_TAB_ID`／`HERDR_PANE_ID` 時不關閉，請使用者自行結束本對話。
