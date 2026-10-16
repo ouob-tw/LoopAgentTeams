@@ -51,7 +51,7 @@ activate 也在紀錄中保存技能文字指紋；active 紀錄已有指紋時�
 
 ## 回合結束檢查
 
-Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 都只檢查 active、client／session／角色／工作區相符的紀錄。最後一則訊息的最後一個非空行以 `DECIDE:` 開頭時，擷取每個 `❓ **<ID> r<版本>**` 標題行，以及 DECIDE 行後的 `<ID> r<數字>`。ID 由英數字與 `-_.` 組成；其他位置提到的題號及沒接版本的字詞不算。
+Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 的 DECIDE 檢查只看 active、client／session／角色／工作區相符的紀錄。最後一則訊息的最後一個非空行以 `DECIDE:` 開頭時，擷取每個 `❓ **<ID> r<版本>**` 標題行，以及 DECIDE 行後的 `<ID> r<數字>`。ID 由英數字與 `-_.` 組成；其他位置提到的題號及沒接版本的字詞不算。
 
 沒寫題號、任一題號沒有同名待決紀錄或狀態不是 pending、任何決策紀錄讀不出狀態，都會不通過。狀態使用遺漏檢查的共用讀法；缺狀態行、空值、純空白、第一字不是 pending 但後面含 pending，都算讀不出狀態。已有自己的 session 面板綁定時，另逐題核對自己的問題檔中有同版本「待答」題目，並要求遺漏檢查通過；未綁定時不要求面板。
 
@@ -63,7 +63,11 @@ Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 都只檢�
 
 首次未通過會輸出原因並要求主控繼續，補做順序是：寫待決紀錄 → 諮詢參謀或註明例外 → 更新 Spec 共識 → 跑檢查工具 → 確認題寫明共識版本（以上三步限 Spec 確認題） → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重列題目。若 payload 的 `stop_hook_active` 表示本回合已因 hook 繼續，不再攔下，只以 `systemMessage` 留使用者可見的警告；修正後重列能通過，不留舊警告，新回合可再次攔下。紀錄損壞、檔案讀取失敗等工具錯誤也只警告，讓回合結束。
 
-Stop 在訊息已顯示後才執行，無法撤回原訊息。檢查不連網、不讀對話紀錄，無法發現工具通過後 tracker 上的 Spec 又被修改；每次修改 Spec 都須重跑工具。檢查只核對寫出的題號，無法判斷提問內容是否真的對應該題；寫了既有待答題號卻問別的事仍會通過。
+**啟用檢查**：工作區沒有本 session 的 `.lat/sessions/<session-id>.json` 時，Stop hook 改查對話紀錄。紀錄裡有叫出 LAT 技能就擋下並要求依本程序 activate：Claude 是使用者訊息含 `<command-name>/lat</command-name>`，或主控用 Skill 工具叫出 `lat`／`<命名空間>:lat`；Codex 是使用者打 `$lat` 時注入、`<name>lat</name>` 的 `<skill>` 區塊。用讀檔或指令看 SKILL.md 不算，所以 Codex 自行讀技能檔不會被擋。只是閱讀或審查技能而被擋時，在回覆說明原因即可結束。
+
+以下情況不擋：紀錄檔存在（不論狀態或內容能否辨識，照舊只做上方的身分比對與 DECIDE 檢查）、不在 Git 專案內、`HCOM_LAUNCHED_BY` 不是空值或 `user`（被其他 Agent 派出的執行 Agent）、`stop_hook_active` 為 true（同一回合只擋一次，下一回合結束會再擋）。對話紀錄優先用 payload 的 `transcript_path`，沒有時依 session ID 找 `CLAUDE_CONFIG_DIR`（預設 `~/.claude`）的 `projects/*/<session>.jsonl` 或 `CODEX_HOME`（預設 `~/.codex`）的 `sessions/`、`archived_sessions/`；找不到、讀不出或沒有一行符合該 client 的紀錄格式時不擋，只在標準錯誤留一則 `LAT activation check warning:`。
+
+Stop 在訊息已顯示後才執行，無法撤回原訊息。DECIDE 檢查不連網、不讀對話紀錄，無法發現工具通過後 tracker 上的 Spec 又被修改；每次修改 Spec 都須重跑工具。檢查只核對寫出的題號，無法判斷提問內容是否真的對應該題；寫了既有待答題號卻問別的事仍會通過。
 
 ## 主控回報紀錄
 

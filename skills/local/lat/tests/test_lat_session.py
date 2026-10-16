@@ -72,6 +72,8 @@ class SessionTests(unittest.TestCase):
         env['FAKE_UV_LOG'] = str(self.fake_uv_log)
         env['LAT_REPORTS_DIR'] = str(self.root / 'reports')
         env['PATH'] = f'{self.binary}:{env["PATH"]}'
+        # The activation check for unregistered sessions has its own tests.
+        env['HCOM_LAUNCHED_BY'] = 'tester'
         env.update(extra_env or {})
         return env
 
