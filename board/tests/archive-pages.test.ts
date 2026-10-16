@@ -1,6 +1,6 @@
 // How the archive view joins its pages: the newest page read again on top of the earlier ones.
 import { expect, test } from 'bun:test';
-import { archivePage, DAY_MS, RETAIN_MS, sortArchive, withEarlier, withNewest } from '../src/lib/board/archive.ts';
+import { archivePage, DAY_MS, reaches, RETAIN_MS, sortArchive, withEarlier, withNewest } from '../src/lib/board/archive.ts';
 import type { InboxReport } from '../src/lib/board/types.ts';
 
 const T0 = Date.parse('2026-03-01T00:00:00.000Z');
@@ -53,12 +53,21 @@ test('earlier pages not loaded yet are still reached through the cursor', () => 
 	expect(titles(joined)).toEqual(titles({ reports: now }));
 });
 
-test('more new reports than a page lets the earlier pages go rather than leave a gap', () => {
-	const loaded = archivePage(reports(10), null, 5);
-	const now = reports(20);
-	const joined = withNewest(loaded, archivePage(now, null, 5), NOW);
-	expect(titles(joined)).toEqual(titles({ reports: now.slice(0, 5) }));
-	expect(joined.before).not.toBeNull();
+test('more new reports than a page: the pages read on down to the loaded ones leave nothing out', () => {
+	const loaded = loadAll(reports(10), 5);
+	const now = reports(23);
+	// What the view does: read the next page while the new ones do not reach the loaded ones yet.
+	let newest = archivePage(now, null, 5);
+	expect(reaches(newest, loaded)).toBe(false);
+	while (!reaches(newest, loaded)) newest = withEarlier(newest, archivePage(now, newest.before, 5));
+	const joined = withNewest(loaded, newest, NOW);
+	expect(titles(joined)).toEqual(titles({ reports: now }));
+	expect(joined.before).toBeNull();
+
+	// Joining pages that do not reach lets the earlier ones go rather than leave a gap.
+	const gap = withNewest(loaded, archivePage(now, null, 5), NOW);
+	expect(titles(gap)).toEqual(titles({ reports: now.slice(0, 5) }));
+	expect(gap.before).not.toBeNull();
 });
 
 test('reports past retention drop out of the earlier pages', () => {

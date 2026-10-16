@@ -45,14 +45,20 @@ export function archivePage(sorted: InboxReport[], before: string | null, size =
 	return { reports, before: start + size < sorted.length ? cursorOf(reports.at(-1)!) : null };
 }
 
-/** What the archive view shows after the newest page was read again: that page, then the earlier
- *  reports already loaded below it that are still kept at `now`. When the new page does not reach
+/** Whether pages read from the newest on reach down to the newest report already loaded, so that
+ *  joining them leaves nothing out in between. */
+export function reaches(newest: ArchivePage, loaded: ArchivePage | null): boolean {
+	const last = newest.reports.at(-1);
+	const first = loaded?.reports[0];
+	return newest.before === null || !last || !first || compare(position(first), position(last)) <= 0;
+}
+
+/** What the archive view shows after the newest pages were read again: those, then the earlier
+ *  reports already loaded below them that are still kept at `now`. When the new pages do not reach
  *  down to what was loaded, the earlier reports are let go rather than leaving a gap. */
 export function withNewest(loaded: ArchivePage | null, newest: ArchivePage, now: number): ArchivePage {
 	const last = newest.reports.at(-1);
-	if (!loaded || !last || newest.before === null) return newest;
-	const first = loaded.reports[0];
-	if (!first || compare(position(first), position(last)) > 0) return newest;
+	if (!loaded || !last || newest.before === null || !reaches(newest, loaded)) return newest;
 	const earlier = loaded.reports.filter(
 		(report) => compare(position(last), position(report)) < 0 && now - Date.parse(report.time) < RETAIN_MS
 	);

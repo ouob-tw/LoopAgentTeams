@@ -1,7 +1,7 @@
 // The board as the page sees it: the latest snapshot plus the state of the link to the server.
 import { connectBoard, type Connection, type LinkState } from './client.ts';
 import { toasts } from './toasts.svelte.ts';
-import { withEarlier, withNewest, type ArchivePage } from './archive.ts';
+import { reaches, withEarlier, withNewest, type ArchivePage } from './archive.ts';
 import type { BoardSnapshot } from './types.ts';
 
 export class LiveBoard {
@@ -11,7 +11,7 @@ export class LiveBoard {
 	/** Counts the Herdr tab moves the server announced, so pages showing a position read it again. */
 	tabMoves = $state(0);
 	/** The archived reports loaded so far, newest first; null until loaded, 'failed' when the newest
-	 *  page could not be read. */
+	 *  page could not be read: then only the retry button, or opening the archive again, reads it. */
 	archive = $state<ArchivePage | 'failed' | null>(null);
 	/** Loading the page after the loaded ones; after a failure only the button tries again. */
 	archiveEarlier = $state<'idle' | 'loading' | 'failed'>('idle');
@@ -43,16 +43,21 @@ export class LiveBoard {
 	async loadArchive(): Promise<void> {
 		// Loads can overlap; only the answer to the latest one is kept.
 		const load = ++this.#archiveLoads;
+		const shown = () => (typeof this.archive === 'object' ? this.archive : null);
 		let loaded: ArchivePage | 'failed' | null;
 		try {
 			loaded = (await this.#connection?.archive()) ?? null;
+			// More reports were archived than one page holds: read on down to the ones already shown,
+			// so none in between is left out.
+			while (loaded?.before && load === this.#archiveLoads && !reaches(loaded, shown())) {
+				loaded = withEarlier(loaded, await this.#connection!.archive(loaded.before));
+			}
 		} catch {
 			loaded = 'failed';
 		}
 		if (load !== this.#archiveLoads) return;
-		const current = typeof this.archive === 'object' ? this.archive : null;
 		// The server's clock: reports it no longer keeps leave the earlier pages too.
-		this.archive = loaded === null || loaded === 'failed' ? loaded : withNewest(current, loaded, Date.parse(this.snapshot.generatedAt));
+		this.archive = loaded === null || loaded === 'failed' ? loaded : withNewest(shown(), loaded, Date.parse(this.snapshot.generatedAt));
 	}
 
 	/** Add the page after the loaded ones. */

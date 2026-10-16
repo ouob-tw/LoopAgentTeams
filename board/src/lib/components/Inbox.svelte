@@ -18,6 +18,7 @@
 		onsort,
 		onarchive,
 		onearlier,
+		onretry,
 		onopen,
 		oncontroller
 	}: {
@@ -35,6 +36,8 @@
 		onsort: (sort: InboxSort) => void;
 		onarchive: () => void;
 		onearlier: () => void;
+		/** Read the archive again after it could not be read. */
+		onretry: () => void;
 		onopen: (item: InboxItem) => void;
 		oncontroller: (id: string) => void;
 	} = $props();
@@ -69,7 +72,8 @@
 	{#if archive === null}
 		<p class="none" role="status">讀取中…</p>
 	{:else if archive === 'failed'}
-		<p class="none" role="alert">已封存的回報讀不出來，請重新整理。</p>
+		<p class="none" role="alert">已封存的回報讀不出來。</p>
+		<button class="earlier" onclick={onretry}>再試一次</button>
 	{:else}
 		{#each archive.reports as item (item.key)}
 			<ItemRow {item} archived current={item.key === currentKey} {onopen} onowner={owner(item)} />

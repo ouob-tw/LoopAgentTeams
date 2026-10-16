@@ -263,20 +263,26 @@ export async function readCurrent(config: BoardConfig, client: string, sessionId
 	return read.ok ? (read.page.current ?? null) : null;
 }
 
-export type PruneResult = { ok: true; deleted: string[] } | { ok: false; reason: string };
+/** The session IDs whose report file was deleted, and why some file could not be; null when every
+ *  file due was deleted or left for a busy lock. */
+export type PruneResult = { deleted: string[]; reason: string | null };
+
+const isFailure = (value: unknown): value is { session_id: string; reason: string } =>
+	typeof (value as { session_id?: unknown })?.session_id === 'string' && typeof (value as { reason?: unknown }).reason === 'string';
 
 /** Delete the report files whose newest report was issued 30 days or more before `now`, through
- *  the helper: only it can take the lock the turn-end hook appends under. Lists the session IDs
- *  whose file it deleted. */
+ *  the helper: only it can take the lock the turn-end hook appends under. */
 export async function pruneReports(config: BoardConfig, now: number): Promise<PruneResult> {
 	const { stdout, failure } = await run(config, ['prune-reports', `--reports-dir=${config.reportsDir}`, `--now=${new Date(now).toISOString()}`]);
-	let payload: { status?: unknown; reason?: unknown; deleted?: unknown } | null;
+	let payload: { status?: unknown; reason?: unknown; deleted?: unknown; failed?: unknown } | null;
 	try {
 		payload = JSON.parse(stdout);
 	} catch {
 		payload = null;
 	}
-	const deleted = payload?.deleted;
-	if (payload?.status === 'ok' && Array.isArray(deleted) && deleted.every((id) => typeof id === 'string')) return { ok: true, deleted };
-	return { ok: false, reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出不是預期的格式' };
+	const { deleted, failed } = payload ?? {};
+	if (payload?.status === 'ok' && Array.isArray(deleted) && deleted.every((id) => typeof id === 'string') && Array.isArray(failed) && failed.every(isFailure)) {
+		return { deleted, reason: failed.map((item) => `${item.session_id}：${item.reason}`).join('；') || null };
+	}
+	return { deleted: [], reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出不是預期的格式' };
 }

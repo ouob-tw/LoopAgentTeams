@@ -176,7 +176,7 @@ function launchArgs() {
 
 /** The real helper's `board prune-reports`, with the arguments the board gave. */
 function prune() {
-	if (!plan.realPrune) return { output: { status: 'ok', deleted: [] } };
+	if (!plan.realPrune) return { output: { status: 'ok', deleted: [], failed: [] } };
 	const helper = join(import.meta.dirname, '../../skills/local/lat/herdr-panel/lat_panel.py');
 	const run = spawnSync(plan.realPrune, [helper, ...args], { encoding: 'utf8' });
 	return { raw: run.stdout, exit: run.status ?? 1 };

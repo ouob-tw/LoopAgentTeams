@@ -117,7 +117,7 @@ function createBoard(): Board {
 	async function read(): Promise<BoardSnapshot> {
 		// Report files past retention go first, so this read no longer finds them.
 		const [helper, agents, prune] = await Promise.all([listControllers(config), listAgents(config), pruneReports(config, config.now())]);
-		if (prune.ok) for (const sessionId of prune.deleted) pruned.add(sessionId);
+		for (const sessionId of prune.deleted) pruned.add(sessionId);
 		const reports = await readReports();
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
@@ -139,7 +139,7 @@ function createBoard(): Board {
 			reportsError: reports.error,
 			running: lastRunning,
 			hcomError: agents.ok ? null : agents.reason,
-			pruneError: prune.ok ? null : prune.reason
+			pruneError: prune.reason
 		};
 
 		const targets: WatchTargets = new Map([[config.reportsDir, null]]);

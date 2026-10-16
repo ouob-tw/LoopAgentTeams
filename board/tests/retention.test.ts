@@ -166,6 +166,13 @@ test('a failed prune is shown and tried again at the next read', async () => {
 	const failed = await on(T0);
 	expect(failed.errors).toEqual(['超過 30 天的回報紀錄沒有刪除，下次重讀再試：磁碟壞了']);
 
+	// A file that could not be deleted does not hide the ones that were.
+	fixture.setHelper({
+		output: { controllers: [] },
+		'prune-reports': { output: { status: 'ok', deleted: ['session-gone'], failed: [{ session_id: 'session-stuck', reason: '權限不足' }] } }
+	});
+	expect((await on(T0)).errors).toEqual(['超過 30 天的回報紀錄沒有刪除，下次重讀再試：session-stuck：權限不足']);
+
 	list([]);
 	expect((await on(T0)).errors).toEqual([]);
 });

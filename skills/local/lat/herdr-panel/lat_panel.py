@@ -2449,7 +2449,8 @@ def _report_time(line):
         and all(isinstance(item.get(field), str) for field in _REPORT_TEXT_FIELDS)
         and type(item.get("round")) in (int, float)
         and isinstance(item.get("final"), bool)
-        and item.get("tag") in _REPORT_TAGS
+        and isinstance(item.get("tag"), str)
+        and item["tag"] in _REPORT_TAGS
     ):
         return None
     try:
@@ -2461,11 +2462,11 @@ def _report_time(line):
 
 def _report_expired(path, now):
     """Whether the newest complete record in a report file is past retention. A file
-    without one, or one that cannot be read, is not."""
+    without one, or one that is gone, is not; one that cannot be read raises OSError."""
     try:
         with path.open("rb") as stream:
             times = [time for time in map(_report_time, stream) if time is not None]
-    except OSError:
+    except FileNotFoundError:
         return False
     return bool(times) and now - max(times) >= REPORT_RETENTION
 
@@ -2477,27 +2478,30 @@ def prune_reports(directory, now):
     Each file is checked again while holding ``<session-id>.lock`` without
     waiting, the lock the turn-end hook appends under; a busy lock leaves the file
     for a later run. The lock file is never deleted: a hook already waiting on it
-    and one arriving after the deletion must keep sharing the one lock. A file
-    that cannot be read or locked is left alone too. Returns the session IDs whose
-    file was deleted.
+    and one arriving after the deletion must keep sharing the one lock. Returns
+    the session IDs whose file was deleted, and ``{"session_id", "reason"}`` for
+    each file that could not be read, locked or deleted for another reason; those
+    are left for a later run and do not stop the others.
     """
     directory = Path(directory)
+    deleted, failed = [], []
     if not directory.is_dir():
-        return []
-    deleted = []
+        return deleted, failed
     for path in sorted(directory.glob("*.jsonl")):
-        if not _report_expired(path, now):
-            continue
         try:
+            if not _report_expired(path, now):
+                continue
             with path.with_suffix(".lock").open("a") as lock:
-                fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                try:
+                    fcntl.flock(lock.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+                except BlockingIOError:
+                    continue
                 if _report_expired(path, now):
                     path.unlink()
                     deleted.append(path.stem)
-        except OSError:
-            # A busy lock included: the file is left for a later run.
-            continue
-    return deleted
+        except OSError as error:
+            failed.append({"session_id": path.stem, "reason": str(error)})
+    return deleted, failed
 
 
 def _run_board(args):
@@ -2525,7 +2529,8 @@ def _run_board(args):
             now = datetime.fromisoformat(args.now)
             if now.tzinfo is None:
                 raise ValueError("--now must include a time zone")
-            result, code = {"status": "ok", "deleted": prune_reports(args.reports_dir, now)}, 0
+            deleted, failed = prune_reports(args.reports_dir, now)
+            result, code = {"status": "ok", "deleted": deleted, "failed": failed}, 0
         else:
             result = notify_controller(args.questions)
             code = 1 if result["status"] == "failed" else 0

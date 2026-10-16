@@ -95,25 +95,42 @@ class RetentionTests(PruneTestCase):
         self.write("s-old-then-broken", record(NOW - RETENTION), '{"time": "' + NOW.isoformat() + '"}', "not json")
         self.write("s-only-broken", "not json", json.dumps({"time": (NOW - RETENTION * 2).isoformat()}))
         self.write("s-bad-time", record(NOW - RETENTION, time="yesterday"))
+        self.write("s-bad-tag", record(NOW - RETENTION, tag=[]), record(NOW - RETENTION, tag={"DONE": 1}))
 
-        deleted = self.core.prune_reports(self.reports, NOW)
+        deleted = self.core.prune_reports(self.reports, NOW)[0]
 
         self.assertEqual(sorted(deleted), ["s-day-31", "s-exact", "s-old-then-broken"])
         for session in deleted:
             self.assertFalse(self.exists(session))
             # The lock file is never deleted.
             self.assertTrue(self.exists(session, ".lock"))
-        for session in ("s-young", "s-newer-first", "s-only-broken", "s-bad-time"):
+        for session in ("s-young", "s-newer-first", "s-only-broken", "s-bad-time", "s-bad-tag"):
             self.assertTrue(self.exists(session), session)
 
     def test_a_busy_lock_leaves_the_file_for_a_later_run(self):
         self.write("s-old", record(NOW - RETENTION - timedelta(days=2)))
         with (self.reports / "s-old.lock").open("a") as lock:
             fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
-            self.assertEqual(self.core.prune_reports(self.reports, NOW), [])
+            self.assertEqual(self.core.prune_reports(self.reports, NOW)[0], [])
             self.assertTrue(self.exists("s-old"))
-        self.assertEqual(self.core.prune_reports(self.reports, NOW), ["s-old"])
+        self.assertEqual(self.core.prune_reports(self.reports, NOW)[0], ["s-old"])
         self.assertTrue(self.exists("s-old", ".lock"))
+
+    def test_a_file_that_cannot_be_read_is_reported_and_the_others_still_go(self):
+        self.write("s-a", record(NOW - RETENTION))
+        self.write("s-b", record(NOW - RETENTION))
+        self.write("s-c", record(NOW - RETENTION))
+        (self.reports / "s-b.jsonl").chmod(0)
+        self.addCleanup((self.reports / "s-b.jsonl").chmod, 0o600)
+        if os.access(self.reports / "s-b.jsonl", os.R_OK):
+            self.skipTest("running as a user that reads any file")
+
+        deleted, failed = self.core.prune_reports(self.reports, NOW)
+
+        self.assertEqual(deleted, ["s-a", "s-c"])
+        self.assertEqual([item["session_id"] for item in failed], ["s-b"])
+        self.assertIn("Permission denied", failed[0]["reason"])
+        self.assertTrue(self.exists("s-b"))
 
     def test_a_record_appended_before_the_lock_is_taken_keeps_the_file(self):
         self.write("s-old", record(NOW - RETENTION - timedelta(days=2)))
@@ -130,7 +147,7 @@ class RetentionTests(PruneTestCase):
             return expired
 
         with mock.patch.object(self.core, "_report_expired", checked):
-            self.assertEqual(self.core.prune_reports(self.reports, NOW), [])
+            self.assertEqual(self.core.prune_reports(self.reports, NOW)[0], [])
         self.assertEqual(calls, [True, False])
         self.assertEqual(len((self.reports / "s-old.jsonl").read_text().splitlines()), 2)
 
@@ -171,7 +188,7 @@ class RetentionTests(PruneTestCase):
             return real(path, now)
 
         with mock.patch.object(self.core, "_report_expired", checked):
-            self.assertEqual(self.core.prune_reports(self.reports, NOW), ["s-old"])
+            self.assertEqual(self.core.prune_reports(self.reports, NOW)[0], ["s-old"])
 
         # The first hook gets the lock once the old file is gone, and writes a new one.
         wait_for("first in-lock")
@@ -206,15 +223,15 @@ class CommandTests(PruneTestCase):
         self.write("s-young", record(NOW - timedelta(days=29)))
         now = NOW.isoformat().replace("+00:00", "Z")
 
-        self.assertEqual(self.board("--reports-dir", self.reports, "--now", now), {"status": "ok", "deleted": ["s-old"]})
-        self.assertEqual(self.board("--reports-dir", self.reports, "--now", now), {"status": "ok", "deleted": []})
+        self.assertEqual(self.board("--reports-dir", self.reports, "--now", now), {"status": "ok", "deleted": ["s-old"], "failed": []})
+        self.assertEqual(self.board("--reports-dir", self.reports, "--now", now), {"status": "ok", "deleted": [], "failed": []})
         self.assertTrue(self.exists("s-young"))
         self.assertTrue(self.exists("s-old", ".lock"))
 
     def test_a_missing_directory_deletes_nothing(self):
         self.assertEqual(
             self.board("--reports-dir", self.root / "none", "--now", NOW.isoformat()),
-            {"status": "ok", "deleted": []},
+            {"status": "ok", "deleted": [], "failed": []},
         )
 
     def test_a_time_without_a_zone_is_refused(self):
