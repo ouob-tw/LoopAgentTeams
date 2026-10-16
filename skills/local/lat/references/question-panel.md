@@ -40,7 +40,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 
 ## 寫題
 
-1. 依「使用者待決事項」建立 `.lat/decisions/<ID>.md`；題號就是決策紀錄 ID。
+1. 依「使用者待決事項」建立 `.lat/decisions/<ID>.md`；題號就是決策紀錄 ID。求助題（HELP）在紀錄加 `- kind: help`。
 2. 依下方「題目格式」把這一題寫成暫存檔，只放標題與內文：
 
    ```markdown
@@ -66,7 +66,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
    ```
 
 4. 寫入前會自動清理同一份問題檔，條件見下方「清理題目」；正在寫入的同一題號保留，維持升版行為。`--decisions` 必填，缺少或目錄不存在時拒絕寫入。指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。實際寫入新題或升版時，另在 `panel-journal.jsonl` 寫一筆 `upsert`，記錄題號、版本與時間；內容相同而沒有寫入時不寫。升版規則見下方「版本」。
-5. 發出 `DECIDE:` 前完成下方「待決題目檢查」，通過後依「聊天提問格式」列出題目；使用者可在面板或聊天作答。
+5. 發出 `DECIDE:`／`HELP:` 前完成下方「待決題目檢查」，通過後依「聊天提問格式」列出題目；使用者可在面板或聊天作答。
 
 ### 題目格式
 
@@ -77,6 +77,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 - **選項字母**：面板與聊天使用相同字母。單選題用題目檔的字母，複選題依順序標 `A.`、`B.`…，最後一列「其他（自己輸入）」接續下一個字母。使用者按字母鍵 A–I（不分大小寫）選擇；游標在「其他」列或輸入框中時，字母照常當文字輸入。
 - 每題盡量不超過九個選項（A–I），使用者才能直接按字母選；超過的選項仍可用方向鍵選。字母只到 Z：複選題第 27 項起與之後的「其他」列不標字母。
 - 工具自動加入題號、版本、`待答`、空白作答區與 `- [ ] 送出`；既有題的答覆與勾選狀態不會被覆寫。
+- **求助題**：紀錄有 `- kind: help` 時，題目須是單選題且有一個選項文字是 `已完成`（可加「（建議）」），否則 `question upsert` 拒絕寫入；使用者做不到或改變主意時寫在自動加入的「其他」。
 
 ### 聊天提問格式
 
@@ -110,7 +111,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
   --questions "$questions" --decisions "$decisions"
 ```
 
-檢查會搜尋 `--questions` 同目錄下所有 `questions-*.md` 與 `questions-*-archive.md`，確認 pending 決策都有待答題；反向檢查只看 `--questions` 指定的問題檔，列出待答題的決策已非 pending 或找不到決策紀錄。回合結束的 DECIDE 檢查沿用相同結果。有問題時以非零結束，不印「沒有遺漏」；依輸出處理後重跑：
+檢查會搜尋 `--questions` 同目錄下所有 `questions-*.md` 與 `questions-*-archive.md`，確認 pending 決策都有待答題；反向檢查只看 `--questions` 指定的問題檔，列出待答題的決策已非 pending 或找不到決策紀錄。回合結束的 DECIDE／HELP 檢查沿用相同結果。有問題時以非零結束，不印「沒有遺漏」；依輸出處理後重跑：
 
 | 輸出 | 處理 |
 | --- | --- |
@@ -127,7 +128,27 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
 - 值的第一個字不分大小寫：`pending` 是待決，其餘視為已處理。
 - 沒有狀態行、值為空或只有空白，或第一個字不是 `pending` 但後面含有 `pending`，均為「讀不出狀態」。停住監控將其視為仍在待決，並在監控紀錄留說明。
 
-參謀諮詢中的 `advising` 與參謀結案的 `advisor-resolved` 都不是 `pending`，不寫面板；`pending` 紀錄發出 `DECIDE:` 前須先有參謀行，見 [參謀](advisors.md#待決紀錄的狀態與參謀行)。
+參謀諮詢中的 `advising` 與參謀結案的 `advisor-resolved` 都不是 `pending`，不寫面板；`pending` 紀錄發出 `DECIDE:`／`HELP:` 前須先有參謀行，見 [參謀](advisors.md#待決紀錄的狀態與參謀行)。
+
+## 側欄與通知
+
+`question upsert`、`set-status`、`cleanup`、`resolve-help`，以及 activate、恢復時重綁與 deactivate，都會自動更新綁定窗格在 Herdr 側欄的名稱，主控不需另外執行：
+
+- 有待答時顯示 `<HCOM 名稱> ⚠待答{n}求助{n}`，數字是自己問題檔中狀態為「待答」、決策紀錄仍未結案的題目，依 `- kind: help` 分成求助與其他；兩者都是 0 或 deactivate 後恢復原名。
+- `question upsert` 寫入新題或升版時，另發一則同樣文字的 Herdr 內建通知；Herdr 因發太快或忙碌沒顯示時不重試。
+- 問題檔沒有綁定，或 shell 不在 Herdr workspace、`lat.panel` 未啟用時略過；改綁到新窗格時，舊窗格先恢復原名；Herdr 呼叫失敗只在標準錯誤留一行 `lat-panel: sidebar not updated: …`，題目照常寫入。
+
+## 求助題結案
+
+主控能自行確認使用者已完成（例如檢查檔案、試連線）時，執行：
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question resolve-help \
+  --questions "$questions" --decisions "$decisions" --id "<ID>" \
+  --evidence "<查到的內容>" --location "<查證的檔案、指令或網址>"
+```
+
+只接受仍為 `pending` 的 `- kind: help` 紀錄：狀態改為 `self-verified`，在紀錄末尾加 `## 主控查證`（查證、位置、時間），再清理問題檔並更新側欄。清理失敗時紀錄已結案、指令以非零結束，依錯誤重跑 `question cleanup`。查不到時不執行，題目維持待答，等使用者在面板選「已完成」或在聊天說明，再依「收到 `lat-panel` 通知」或「聊天答覆與更正」記錄。
 
 ## 答覆格式
 
@@ -224,7 +245,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question archive-
 
 ## 解除綁定
 
-`lat-session.py deactivate` 會自動解除自己的綁定。只有需要單獨清除遺留綁定時才執行：
+`lat-session.py deactivate` 會自動解除自己的綁定並恢復側欄原名。只有需要單獨清除遺留綁定時才執行：
 
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" unbind --session-id "$session_id"

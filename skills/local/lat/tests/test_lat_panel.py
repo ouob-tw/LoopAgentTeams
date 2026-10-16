@@ -168,7 +168,8 @@ class QuestionCliTests(unittest.TestCase):
             [sys.executable, str(MODULE), *map(str, args)],
             text=True,
             capture_output=True,
-            env=dict(os.environ),
+            # Question commands look up the sidebar binding; keep that lookup off the real Herdr.
+            env=dict(os.environ, HERDR_PLUGIN_CONFIG_DIR=str(self.root / "plugin-config")),
             cwd=self.root,
         )
 

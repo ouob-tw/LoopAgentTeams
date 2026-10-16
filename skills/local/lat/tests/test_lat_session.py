@@ -5,6 +5,7 @@ import importlib.util
 from unittest.mock import patch
 import os
 from pathlib import Path
+import re
 import subprocess
 import shutil
 import sys
@@ -200,7 +201,9 @@ class SessionTests(unittest.TestCase):
                 self.record.write_text(json.dumps(record))
                 self.decisions.joinpath('LAT-A.md').write_text(
                     '- status: pending\n- advisor: exempt requirement-discussion\n')
-                messages = [('DECIDE', 'LAT-A r1'), ('HELP', 'need assistance'),
+                self.decisions.joinpath('LAT-H.md').write_text(
+                    '- status: pending\n- advisor: needs-human\n- kind: help\n')
+                messages = [('DECIDE', 'LAT-A r1'), ('HELP', 'LAT-H r1 need assistance'),
                             ('DONE', 'delivered'), ('NO REPLY', 'waiting'), ('', '')]
                 for tag, summary in messages:
                     message = f'Full message\n{tag}: {summary}\n\n' if tag else 'Plain message\n'
@@ -220,6 +223,7 @@ class SessionTests(unittest.TestCase):
                     self.assertFalse(report['final'])
                     self.assertTrue(report['time'].endswith('Z'))
                 self.record.unlink()
+                (self.root / 'reports' / f'{SESSION}.jsonl').unlink()
 
     def test_reports_blocked_stop_warning_release_and_append_only(self):
         self.activate()
@@ -356,7 +360,7 @@ class SessionTests(unittest.TestCase):
         path = directory / f'{SESSION}.jsonl'
         original = b'[]\nnull\n{"time":"partial'
         path.write_bytes(original)
-        self.assert_silent(self.stop_hook('HELP: recovered active report'))
+        self.assert_silent(self.stop_hook('NO REPLY: recovered active report'))
         self.assertTrue(path.read_bytes().startswith(original + b'\n'))
         active = json.loads(path.read_bytes().splitlines()[-1])
         self.assertFalse(active['final'])
@@ -1511,6 +1515,8 @@ class SessionTests(unittest.TestCase):
         with patch.object(helper, '_stop_watcher_locked', side_effect=paused_stop), \
                 patch.object(helper, 'panel_module', return_value=SimpleNamespace(
                     unbind_controller=lambda session_id: 0,
+                    resolve_session_binding=lambda session_id: {'herdr_pane': 'pane'},
+                    clear_status_display=lambda binding: (True, ''),
                 )):
             deactivate_thread = threading.Thread(target=deactivate)
             deactivate_thread.start()
@@ -1969,6 +1975,123 @@ class SessionTests(unittest.TestCase):
                     path.write_text('- status: pending\n- advisor: exempt ticket-confirmation\n')
                     self.assert_silent(self.stop_hook(client=client, stop_hook_active=True))
             binding_path.write_text(original)
+
+    def activate_as(self, client):
+        self.activate()
+        record = json.loads(self.record.read_text())
+        record['client'] = client
+        self.record.write_text(json.dumps(record))
+
+    def test_stop_repeated_question_tag_blocks_once_and_new_or_revised_pass(self):
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                self.activate_as(client)
+                for name, kind in (('LAT-A', ''), ('LAT-B', ''), ('LAT-H', '- kind: help\n')):
+                    self.decisions.joinpath(f'{name}.md').write_text(
+                        f'- status: pending\n- advisor: needs-human\n{kind}')
+                self.assert_silent(self.stop_hook('❓ **LAT-A r1** 標題\nDECIDE: LAT-A r1 請選', client))
+                for repeat in ('DECIDE: LAT-A r1 還在等', '❓ **LAT-A r1** 標題\nDECIDE: 請選'):
+                    result = self.stop_hook(repeat, client)
+                    output = json.loads(result.stdout)
+                    self.assertEqual(output['decision'], 'block')
+                    for detail in ('LAT-A r1', '已在先前訊息', '`NO REPLY: `'):
+                        self.assertIn(detail, output['reason'])
+                warning = json.loads(self.stop_hook('DECIDE: LAT-A r1', client,
+                                                    stop_hook_active=True).stdout)
+                self.assertEqual(set(warning), {'systemMessage'})
+                self.assertIn('不再攔下', warning['systemMessage'])
+                self.assert_silent(self.stop_hook('NO REPLY: 等你回答 LAT-A r1', client))
+                # A new question only in a heading does not excuse an old-only tag line.
+                self.assertIn('最後一行只列出 LAT-A r1', json.loads(self.stop_hook(
+                    '❓ **LAT-B r1** 新題\nDECIDE: LAT-A r1', client).stdout)['reason'])
+                self.assert_silent(self.stop_hook('DECIDE: LAT-A r1, LAT-B r1', client))
+                self.assert_silent(self.stop_hook('DECIDE: LAT-A r2 改版', client))
+                self.assert_silent(self.stop_hook('HELP: LAT-H r1 請登入', client))
+                self.assertIn('已在先前訊息',
+                              json.loads(self.stop_hook('HELP: LAT-H r1', client).stdout)['reason'])
+                # A blocked Stop is not reported, so it does not count as asked.
+                self.decisions.joinpath('LAT-C.md').write_text('- status: pending\n')
+                self.assert_stop_block(self.stop_hook('DECIDE: LAT-C r1', client), '沒有參謀行')
+                self.decisions.joinpath('LAT-C.md').write_text(
+                    '- status: pending\n- advisor: needs-human\n')
+                self.assert_silent(self.stop_hook('DECIDE: LAT-C r1', client))
+                self.record.unlink()
+                (self.root / 'reports' / f'{SESSION}.jsonl').unlink()
+
+    def test_stop_help_gets_the_same_id_status_and_panel_checks(self):
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                self.write_legacy_record(client=client)
+                path = self.decisions / 'LAT-H.md'
+                self.assert_stop_block(self.stop_hook('HELP: 請登入', client), '沒有寫出題號')
+                self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '沒有待決紀錄')
+                path.write_text('- status: pending\n- advisor: needs-human\n')
+                self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '- kind: help')
+                path.write_text('- status: answered\n- advisor: needs-human\n- kind: help\n')
+                self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '不是 pending')
+                path.write_text('- status: pending\n- kind: help\n')
+                self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '沒有參謀行')
+                path.write_text('- status: pending\n- advisor: needs-human\n- Kind: Help\n')
+                self.assert_silent(self.stop_hook('HELP: LAT-H r1 請登入', client))
+                self.assertIn('LAT HELP 檢查未通過',
+                              json.loads(self.stop_hook('HELP: X r1', client).stdout)['reason'])
+                questions = self.bind_stop_panel(client)
+                self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '自己的面板')
+                questions.write_text('## 請登入\nLAT-H · r1 · 待答\n')
+                self.assert_silent(self.stop_hook('HELP: LAT-H r1', client))
+                (self.root / 'plugin-config/bindings.json').write_text(
+                    '{"version": 2, "bindings": {}}')
+                path.write_bytes(b'\xff')
+                warning = json.loads(self.stop_hook('HELP: LAT-H r1', client).stdout)
+                self.assertIn('LAT HELP 檢查發生錯誤，未攔下', warning['systemMessage'])
+                path.unlink()
+                questions.unlink()
+
+    def sidebar_env(self):
+        """Fake herdr: panel enabled; other calls succeed and are logged one per line."""
+        log = self.root / 'herdr.log'
+        env = self.panel_env(
+            '#!/bin/sh\n'
+            f'printf \'%s\\n\' "$*" >> {log}\n'
+            'case "$*" in\n'
+            '"plugin list --plugin lat.panel --json") printf \'%s\\n\' '
+            '\'{"result":{"plugins":[{"plugin_id":"lat.panel","enabled":true}]}}\' ;;\n'
+            '"tab get "*) printf \'%s\\n\' \'{"result":{"tab":{"label":"lat-orch"}}}\' ;;\n'
+            'esac\n'
+        )
+        return env, log
+
+    def sidebar_calls(self, log):
+        return [re.sub(r'--seq [0-9]+ ', '', line) for line in log.read_text().splitlines()
+                if line.startswith('pane report-metadata')]
+
+    def test_activate_resume_and_deactivate_keep_the_sidebar_in_step(self):
+        env, log = self.sidebar_env()
+        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
+        questions = self.work / '.lat/questions-orch.md'
+        questions.parent.mkdir(parents=True, exist_ok=True)
+        questions.write_text('## Q\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
+        self.assertEqual(self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                                  '--decisions', self.decisions, extra_env=env).returncode, 0)
+        shown = 'pane report-metadata {} --source lat.panel.status --display-agent orch ⚠待答1求助0'
+        self.assertEqual(self.sidebar_calls(log), [shown.format('herdr-pane')])
+        resumed = dict(env, HERDR_WORKSPACE_ID='w2', HERDR_TAB_ID='t2', HERDR_PANE_ID='p2')
+        self.assert_only_pointer(self.hook(extra_env=resumed, source='resume'))
+        self.assertEqual(self.sidebar_calls(log)[-2:], [
+            'pane report-metadata herdr-pane --source lat.panel.status --clear-display-agent',
+            shown.format('p2')])
+        self.assert_only_pointer(self.hook(extra_env=resumed, source='resume'))
+        self.assertEqual(self.sidebar_calls(log)[-1], shown.format('p2'))
+        self.assertNotIn('herdr-pane', self.sidebar_calls(log)[-2])
+        result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
+                          extra_env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.sidebar_calls(log)[-1],
+                         'pane report-metadata p2 --source lat.panel.status --clear-display-agent')
+        calls = len(self.sidebar_calls(log))
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
+                                  extra_env=env).returncode, 0)
+        self.assertEqual(len(self.sidebar_calls(log)), calls)
 
 
 if __name__ == '__main__':

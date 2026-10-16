@@ -58,6 +58,8 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   question cleanup --questions PATH --decisions DIR
   question archive-recorded --questions PATH --older-than 300
   question check-pending --questions PATH --decisions DIR
+  question resolve-help --questions PATH --decisions DIR --id ID \
+      --evidence TEXT --location TEXT
   bind --hcom-name NAME --client CLIENT --session-id ID --workspace ROOT \
        [--herdr-workspace ID] [--herdr-tab ID] [--herdr-pane ID]
   unbind --session-id ID
@@ -93,11 +95,12 @@ import stat
 import subprocess
 import sys
 import tempfile
+import time
 from typing import NamedTuple
 import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from lat_decision_status import read_decision_status
+from lat_decision_status import read_decision_kind, read_decision_status
 
 
 @contextmanager
@@ -799,12 +802,40 @@ def _render_section(question_id, revision, title, body, answer_block=None, archi
     return "\n".join(lines) + "\n"
 
 
+_DONE_OPTION = "已完成"
+
+
+def _check_help_question(decisions_path, question_id, incoming):
+    """A help question must let the user answer with a single-choice 已完成 option."""
+    try:
+        kind = read_decision_kind(Path(decisions_path) / f"{question_id}.md")
+    except FileNotFoundError:
+        return
+    if kind != "help":
+        return
+    options = parse_question_options({"body": incoming["body"]})
+    if options.kind != "single" or not any(
+        _answer_label(option.label) == _DONE_OPTION for option in options.options
+    ):
+        raise ValueError(
+            f"help question {question_id} needs a single-choice option: <letter>. {_DONE_OPTION}"
+        )
+
+
 def upsert_question(questions_path, question_id, section_text, *, decisions_path):
     """Add or update one question under the shared lock; return its revision."""
+    return upsert_question_written(
+        questions_path, question_id, section_text, decisions_path=decisions_path
+    )[0]
+
+
+def upsert_question_written(questions_path, question_id, section_text, *, decisions_path):
+    """Like ``upsert_question``; also return whether a new question or revision was written."""
     questions_path = Path(questions_path)
     incoming = _question_input(section_text)
     if not Path(decisions_path).is_dir():
         raise ValueError(f"decisions directory does not exist: {decisions_path}")
+    _check_help_question(decisions_path, question_id, incoming)
     with _path_lock(questions_path):
         try:
             document = _read_text_exact(questions_path)
@@ -857,7 +888,7 @@ def upsert_question(questions_path, question_id, section_text, *, decisions_path
                     + document[existing["end"]:]
                 )
             else:
-                return revision
+                return revision, False
         _replace_locked(questions_path, updated)
         try:
             _append_journal(
@@ -875,7 +906,7 @@ def upsert_question(questions_path, question_id, section_text, *, decisions_path
         except OSError:
             # The question is written; only the board's asked time is lost.
             pass
-        return revision
+        return revision, True
 
 
 def set_question_status(
@@ -1358,6 +1389,133 @@ def resolve_binding(herdr_workspace=None, *, config_dir=None):
     if len(bindings) > 1:
         raise ValueError("multiple LAT controllers are bound to this Herdr workspace")
     raise ValueError("no LAT controller is bound to this Herdr workspace")
+
+
+STATUS_SOURCE = "lat.panel.status"
+
+
+def status_counts(questions_path, decisions_path):
+    """Count waiting questions in one file whose decision is still open: ``(decide, help)``."""
+    try:
+        document = _read_text_exact(Path(questions_path))
+    except FileNotFoundError:
+        return 0, 0
+    counts = {"decide": 0, "help": 0}
+    for question in parse_questions(document):
+        if question["status_label"] != "待答":
+            continue
+        decision = Path(decisions_path) / f"{question['id']}.md"
+        if _decision_state(decision) == "decision-not-pending":
+            continue
+        try:
+            kind = read_decision_kind(decision)
+        except (OSError, UnicodeError):
+            kind = "decide"
+        counts[kind] += 1
+    return counts["decide"], counts["help"]
+
+
+def _run_herdr(arguments, env=None, timeout=5):
+    """Run one herdr CLI call; return ``(ok, stdout or failure reason)``."""
+    try:
+        result = subprocess.run(
+            ["herdr", *arguments], text=True, capture_output=True, timeout=timeout,
+            env=os.environ if env is None else env,
+        )
+    except subprocess.TimeoutExpired:
+        return False, f"herdr {arguments[0]} timed out"
+    except OSError as error:
+        return False, str(error)
+    if result.returncode != 0:
+        return False, result.stderr.strip() or f"herdr exited {result.returncode}"
+    return True, result.stdout
+
+
+def _report_display(pane, text, seq, env=None):
+    display = ["--display-agent", text] if text else ["--clear-display-agent"]
+    return _run_herdr([
+        "pane", "report-metadata", pane, "--source", STATUS_SOURCE, "--seq", str(seq), *display,
+    ], env)
+
+
+def _show_notification(text, env=None):
+    """Send one notification and return Herdr's reason; never retry."""
+    ok, output = _run_herdr(["notification", "show", text, "--sound", "none"], env)
+    if not ok:
+        return output
+    try:
+        payload = json.loads(output)
+        payload = payload.get("result", payload)
+        return str(payload["reason"])
+    except (ValueError, AttributeError, KeyError, TypeError):
+        return "unknown"
+
+
+def refresh_status_display(questions_path, *, notify=False, config_dir=None, env=None):
+    """Show the bound controller's waiting counts on its Herdr sidebar row; never raise.
+
+    Returns ``status`` ``unbound`` (no binding owns this file), ``disabled`` (no
+    Herdr workspace or ``lat.panel`` not enabled), ``shown``, ``cleared`` or
+    ``failed`` with a ``reason``. With ``notify`` and a
+    nonzero count, one notification is sent and Herdr's reason kept as
+    ``notification``; a rate-limited or busy notification is not retried.
+    """
+    try:
+        key = _question_key(questions_path)
+        binding = next((
+            item for item in list_bindings(config_dir=config_dir)
+            if _question_key(item.get("questions_path", "")) == key
+        ), None)
+        if binding is None:
+            return {"status": "unbound"}
+        if not panel_enabled(env):
+            return {"status": "disabled"}
+        record_path = (Path(binding["workspace"]) / ".lat/sessions"
+                       / f"{binding['session_id']}.json")
+        decisions_path = json.loads(record_path.read_text(encoding="utf-8"))["decisions_path"]
+        # Count under the file lock; the sequence number lets Herdr drop an older count.
+        with _path_lock(Path(questions_path)):
+            decide, help_count = status_counts(questions_path, decisions_path)
+            seq = time.time_ns()
+        pane = binding["herdr_pane"]
+        name = binding["hcom_name"]
+    except (OSError, ValueError, KeyError, TypeError) as error:
+        return {"status": "failed", "reason": str(error)}
+    text = f"{name} ⚠待答{decide}求助{help_count}" if decide or help_count else ""
+    ok, output = _report_display(pane, text, seq, env)
+    result = {"status": ("shown" if text else "cleared") if ok else "failed", "text": text}
+    if not ok:
+        result["reason"] = output
+    if notify and text:
+        result["notification"] = _show_notification(text, env)
+    return result
+
+
+def clear_status_display(binding, *, env=None):
+    """Restore the sidebar name of one binding's pane; return ``(ok, reason)``."""
+    return _report_display(binding["herdr_pane"], "", time.time_ns(), env)
+
+
+def resolve_help(decisions_path, question_id, evidence, location, *, now=None):
+    """Close a pending help record the controller verified itself."""
+    path = Path(decisions_path) / f"{question_id}.md"
+    if not evidence.strip() or not location.strip():
+        raise ValueError("--evidence and --location must not be empty")
+    if read_decision_kind(path) != "help":
+        raise ValueError(f"{question_id} is not a help record (- kind: help)")
+    status = read_decision_status(path)
+    if status.error or status.status != "pending":
+        raise ValueError(f"{question_id} is not pending")
+    with _path_lock(path):
+        text = _read_text_exact(path)
+        status_line = re.search(r"^- status:.*$", text, re.MULTILINE | re.IGNORECASE)
+        updated = (
+            text[:status_line.start()] + "- status: self-verified" + text[status_line.end():]
+        ).rstrip("\n") + (
+            f"\n\n## 主控查證\n- 查證：{evidence.strip()}\n- 位置：{location.strip()}\n"
+            f"- 時間：{_iso_time(now)}\n"
+        )
+        _replace_locked(path, updated)
 
 
 def _notification_path(state_dir=None):
@@ -2578,6 +2736,12 @@ def _build_parser():
     cleanup = question_commands.add_parser("cleanup")
     cleanup.add_argument("--questions", required=True, type=Path)
     cleanup.add_argument("--decisions", required=True, type=Path)
+    resolve_help_parser = question_commands.add_parser("resolve-help")
+    resolve_help_parser.add_argument("--questions", required=True, type=Path)
+    resolve_help_parser.add_argument("--decisions", required=True, type=Path)
+    resolve_help_parser.add_argument("--id", required=True)
+    resolve_help_parser.add_argument("--evidence", required=True)
+    resolve_help_parser.add_argument("--location", required=True)
     check_pending = question_commands.add_parser("check-pending")
     check_pending.add_argument("--questions", required=True, type=Path)
     check_pending.add_argument("--decisions", required=True, type=Path)
@@ -2622,17 +2786,23 @@ def _build_parser():
     return parser
 
 
+def _warn_display(result):
+    if result["status"] == "failed":
+        print(f"lat-panel: sidebar not updated: {result['reason']}", file=sys.stderr)
+
+
 def main(argv=None):
     args = _build_parser().parse_args(argv)
     if args.command == "board":
         return _run_board(args)
     try:
         if args.command == "question" and args.question_command == "upsert":
-            revision = upsert_question(
+            revision, written = upsert_question_written(
                 args.questions, args.id, args.file.read_text(encoding="utf-8"),
                 decisions_path=args.decisions
             )
             print(f"{args.id} r{revision}")
+            _warn_display(refresh_status_display(args.questions, notify=written))
             return 0
         if args.command == "question" and args.question_command == "provenance":
             print(json.dumps(
@@ -2657,6 +2827,7 @@ def main(argv=None):
                 args.questions, args.id, args.revision, args.status,
                 args.expected_section_sha256,
             )
+            _warn_display(refresh_status_display(args.questions))
             return 0
         if args.command == "question" and args.question_command == "archive-recorded":
             if args.older_than < 0:
@@ -2671,6 +2842,22 @@ def main(argv=None):
             return 0
         if args.command == "question" and args.question_command == "cleanup":
             print(json.dumps(cleanup_questions(args.questions, args.decisions), ensure_ascii=False))
+            _warn_display(refresh_status_display(args.questions))
+            return 0
+        if args.command == "question" and args.question_command == "resolve-help":
+            resolve_help(args.decisions, args.id, args.evidence, args.location)
+            try:
+                cleanup = (cleanup_questions(args.questions, args.decisions)
+                           if args.questions.exists() else None)
+            except (OSError, ValueError) as error:
+                # The record is already closed; a rerun of resolve-help would refuse it.
+                _warn_display(refresh_status_display(args.questions))
+                print(f"lat-panel: {args.id} is self-verified but cleanup failed: {error}; "
+                      "rerun question cleanup", file=sys.stderr)
+                return 1
+            print(json.dumps({"id": args.id, "status": "self-verified", "cleanup": cleanup},
+                             ensure_ascii=False))
+            _warn_display(refresh_status_display(args.questions))
             return 0
         if args.command == "question" and args.question_command == "check-pending":
             if not panel_enabled():

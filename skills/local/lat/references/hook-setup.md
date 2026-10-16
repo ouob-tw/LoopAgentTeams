@@ -29,4 +29,4 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" uninstall \
 
 移除兩個事件中的 LAT command，保留其他 handlers／未知欄位；不刪 session 紀錄、備份或信任設定。
 
-Stop 在主控訊息顯示後才執行；未通過 DECIDE 檢查會要求主控繼續補做，原訊息仍在。再次未通過與工具錯誤只留使用者可見的警告；判斷範圍與補做順序見 [回合結束檢查](recovery.md#回合結束檢查)。
+Stop 在主控訊息顯示後才執行；未通過 DECIDE／HELP 檢查會要求主控繼續補做，原訊息仍在。再次未通過與工具錯誤只留使用者可見的警告；判斷範圍與補做順序見 [回合結束檢查](recovery.md#回合結束檢查)。

@@ -1,10 +1,12 @@
 """Same-file cleanup contracts; only disposable files and fake Herdr are used."""
 import json
+import os
 import subprocess
 import sys
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 
 from test_lat_panel import MODULE, load_module
 
@@ -18,6 +20,10 @@ class CleanupTests(unittest.TestCase):
         self.decisions = self.root / 'decisions'
         self.decisions.mkdir()
         self.panel = load_module()
+        # Question commands look up the sidebar binding; keep that lookup off the real Herdr.
+        environment = patch.dict(os.environ, HERDR_PLUGIN_CONFIG_DIR=str(self.root / 'plugin-config'))
+        environment.start()
+        self.addCleanup(environment.stop)
 
     def test_upsert_immediately_archives_hash_verified_recorded_question(self):
         self.questions.write_text('## Old?\nOLD · r1 · 待答\n\n答覆：A\n\n- [x] 送出\n')
