@@ -61,6 +61,8 @@ function createBoard(): Board {
 	const streams = new Set<Stream>();
 	let snapshot: BoardSnapshot | null = null;
 	let lastActive: HelperController[] = [];
+	/** Session IDs in hcom's last list that could be read; null until one could. */
+	let lastRunning: Set<string> | null = null;
 	/** What the last read found; read state changes rebuild the snapshot from it. */
 	let sources: Sources | null = null;
 	/** The read and archive state as last read from, or written to, its file. */
@@ -109,7 +111,9 @@ function createBoard(): Board {
 	}, HEARTBEAT_MS);
 
 	async function read(): Promise<BoardSnapshot> {
-		const [helper, reports] = await Promise.all([listControllers(config), readReports()]);
+		const [helper, reports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(listConfig)]);
+		// A list that cannot be read must not close every controller: the last one read stands in.
+		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {
 			lastActive = helper.controllers;
 			try {
@@ -125,7 +129,9 @@ function createBoard(): Board {
 			active: lastActive,
 			helperError: helper.ok ? null : helper.reason,
 			reportFiles: reports.files,
-			reportsError: reports.error
+			reportsError: reports.error,
+			running: lastRunning,
+			hcomError: agents.ok ? null : agents.reason
 		};
 
 		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
@@ -198,6 +204,8 @@ function createBoard(): Board {
 	// may take as long as the helper is allowed to. Both fit inside the fallback deadline when reads
 	// start this far apart.
 	const fallbackGapMs = config.fallbackMs - config.helperTimeoutMs - READ_SLACK_MS;
+	// hcom's list is read alongside the helper, so it gets no longer than the helper to answer.
+	const listConfig = { ...config, hcomListTimeoutMs: Math.min(config.hcomListTimeoutMs, config.helperTimeoutMs) };
 
 	function start(): Promise<BoardSnapshot> {
 		queued = null;

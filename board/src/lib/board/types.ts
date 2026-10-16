@@ -1,14 +1,24 @@
 // The board's data model, shared by the server and the UI.
 
 /** Checked top to bottom; the first row that holds wins. */
-export type ControllerStatus = 'ended' | 'waiting' | 'delivered' | 'working';
+export type ControllerStatus = 'ended' | 'closed' | 'waiting' | 'delivered' | 'working';
 
 export const STATUS_LABEL: Record<ControllerStatus, string> = {
 	ended: '已結束',
+	closed: '已關閉',
 	waiting: '等你',
 	delivered: '已交付',
 	working: '進行中'
 };
+
+/**
+ * Whether the controller is no longer running: 已結束 (no longer bound) or 已關閉 (still bound, but
+ * its client is gone from hcom's list). Both are handled alike: woken instead of typed into, their
+ * questions not listed, on the roster only while the inbox holds one of their reports.
+ */
+export function isEnded(status: ControllerStatus): boolean {
+	return status === 'ended' || status === 'closed';
+}
 
 /** What the roster shows as a controller's current phase. */
 export function phaseText(controller: Pick<Controller, 'phase'>): string {
@@ -84,7 +94,7 @@ export interface Controller {
 	phase: string | null;
 	/** Questions waiting for an answer that has not been sent. */
 	pendingCount: number;
-	/** Where the controller runs in Herdr; null once it has ended. */
+	/** Where the controller runs in Herdr; null once it has ended or closed. */
 	herdr: { workspace: string; tab: string; pane: string } | null;
 	lastReportAt: string | null;
 	/** Why some of this controller's sources could not be read; null when all were. */

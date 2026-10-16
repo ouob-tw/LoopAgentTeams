@@ -1,6 +1,6 @@
 // Messages the user sends to a controller from the board: the shared shapes, and the two rules
 // the page applies before anything is sent (who a command line is for, what Enter does).
-import type { Controller } from './types.ts';
+import { isEnded, STATUS_LABEL, type Controller } from './types.ts';
 
 /** One line of the board's sent log: an attempt to type a message into a controller's client. */
 export interface SentMessage {
@@ -26,6 +26,7 @@ export interface SendResponse {
 }
 
 export const ENDED_REASON = '這個主控已結束，無法傳話。';
+export const CLOSED_REASON = '這個主控已關閉，無法傳話。';
 export const UNKNOWN_CONTROLLER_REASON = '看板目前的資料裡沒有這個主控，沒有送出。';
 
 /**
@@ -51,8 +52,8 @@ export type Command<T extends Target> = { ok: true; controller: T; text: string 
 
 /**
  * Who a command line is for: a leading `@name` picks that controller, otherwise the one that is
- * open. Never falls back to another controller. An ended controller is refused unless the caller
- * `wakes` it instead of sending.
+ * open. Never falls back to another controller. An ended or closed controller is refused unless
+ * the caller `wakes` it instead of sending.
  */
 export function parseCommand<T extends Target>(input: string, controllers: T[], open: T | undefined, wakes = false): Command<T> {
 	const addressed = /^@(\S*)\s*([\s\S]*)$/.exec(input.trimStart());
@@ -62,12 +63,14 @@ export function parseCommand<T extends Target>(input: string, controllers: T[], 
 		const name = addressed[1];
 		const matches = controllers.filter((candidate) => candidate.hcomName === name);
 		// A name can be reused after a controller ended; the one still running is the one meant.
-		controller = matches.find((candidate) => candidate.status !== 'ended') ?? matches[0];
+		controller = matches.find((candidate) => !isEnded(candidate.status)) ?? matches[0];
 		if (!controller) return { ok: false, reason: `找不到主控 @${name}，沒有送出。` };
 		text = addressed[2];
 	}
 	if (!controller) return { ok: false, reason: '請用 @名稱 指定主控，或先點開一個主控。' };
-	if (controller.status === 'ended' && !wakes) return { ok: false, reason: `@${controller.hcomName} 已結束，無法傳話。` };
+	if (isEnded(controller.status) && !wakes) {
+		return { ok: false, reason: `@${controller.hcomName} ${STATUS_LABEL[controller.status]}，無法傳話。` };
+	}
 	if (!text.trim()) return { ok: false, reason: '請輸入要傳的訊息。' };
 	return { ok: true, controller, text };
 }

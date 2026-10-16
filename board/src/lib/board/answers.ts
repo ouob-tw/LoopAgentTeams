@@ -80,6 +80,7 @@ export interface NotifyResponse {
 }
 
 export const ENDED_ANSWER_REASON = '這個主控已結束，它的待決題不能再作答。';
+export const CLOSED_ANSWER_REASON = '這個主控已關閉，它的待決題不能再作答。';
 
 /** The answer as the question file's answer format words it, for the sent log. */
 export function answerText(question: Pick<HelperQuestion, 'kind' | 'options'>, select: number[], text: string): string {

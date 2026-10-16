@@ -4,6 +4,7 @@
 import { randomUUID } from 'node:crypto';
 import {
 	answerText,
+	CLOSED_ANSWER_REASON,
 	ENDED_ANSWER_REASON,
 	type AnswerRequest,
 	type AnswerResponse,
@@ -15,6 +16,7 @@ import {
 import type { HelperController } from '../board/types.ts';
 import type { Board } from './board.ts';
 import { answerQuestion, listControllers, notifyController } from './helper.ts';
+import { isClosed } from './model.ts';
 import { appendSent } from './sent-log.ts';
 
 const ANSWER_HTTP: Record<string, number> = {
@@ -27,14 +29,15 @@ const NOTIFY_HTTP: Record<string, number> = { delivered: 200, no_pending: 200 };
 
 type Bound = { binding: HelperController } | { binding: null; reason: string; status: 'ended' | 'error' };
 
-/** Ask the binding registry now: only a controller that is bound at this moment can be answered,
- *  whatever the board's last snapshot says. A registry that cannot be read confirms nothing. */
+/** Ask the binding registry now: only a controller that is bound at this moment, and not closed
+ *  by hcom's last list, can be answered, whatever the board's last snapshot says. A registry that cannot be read confirms nothing. */
 async function boundNow(board: Board, controllerId: string): Promise<Bound> {
 	const registry = await listControllers(board.config);
 	if (!registry.ok) {
 		return { binding: null, status: 'error', reason: `無法確認主控是否仍啟用，沒有送出：${registry.reason}` };
 	}
 	const binding = registry.controllers.find((candidate) => candidate.session_id === controllerId);
+	if (binding && isClosed(await board.sources(), controllerId)) return { binding: null, status: 'ended', reason: CLOSED_ANSWER_REASON };
 	if (binding) return { binding };
 	// The pages may still show it as running; the re-read also tells them otherwise.
 	const known = (await board.refresh()).controllers.some((candidate) => candidate.id === controllerId);

@@ -1,17 +1,17 @@
 <script lang="ts">
-	// Sends a message to one controller, or wakes an ended one. The text stays in the box unless it
+	// Sends a message to one controller, or wakes an ended or closed one. The text stays in the box unless it
 	// was delivered.
 	import { enterMakesNewline, messaging, type Outcome } from '#lib/board/messaging.svelte.ts';
 	import { EFFORT_UNKNOWN_TEXT, FIXED_MODEL_REASON, LOCK_UNKNOWN_TEXT } from '#lib/board/models.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
-	import type { Controller } from '#lib/board/types.ts';
+	import { isEnded, type Controller } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
 
 	let { controller }: { controller: Controller } = $props();
 
-	const ended = $derived(controller.status === 'ended');
+	const ended = $derived(isEnded(controller.status));
 	const text = $derived(messaging.drafts[controller.id] ?? '');
 	// All by controller ID: the box is reused when another controller is opened.
 	let inFlight = $state<Record<string, boolean>>({});

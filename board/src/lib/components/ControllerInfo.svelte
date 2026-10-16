@@ -5,7 +5,7 @@
 	// history stands in for it on a phone.
 	import { formatTime } from '#lib/board/format.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
-	import { phaseText, STATUS_LABEL, type Controller, type InboxItem } from '#lib/board/types.ts';
+	import { isEnded, phaseText, STATUS_LABEL, type Controller, type InboxItem } from '#lib/board/types.ts';
 	import ItemRow from './ItemRow.svelte';
 	import ModelSwitch from './ModelSwitch.svelte';
 	import ReplyBox from './ReplyBox.svelte';
@@ -90,6 +90,8 @@
 						? `${place.tab.label}（第 ${place.tab.position} 個分頁）`
 						: '分頁已不在 Herdr'}
 				{/if}
+			{:else if controller.status === 'closed'}
+				client 已不在 hcom 清單上，位置不明
 			{:else}
 				已不在面板綁定登記中，位置不明
 			{/if}
@@ -110,7 +112,7 @@
 	{#each questions as item (item.key)}
 		<ItemRow {item} showOwner={false} {onopen} />
 	{:else}
-		<p class="none">{controller.status === 'ended' ? '主控已結束，它的待決題不能再作答。' : '沒有待決題。'}</p>
+		<p class="none">{isEnded(controller.status) ? `主控${STATUS_LABEL[controller.status]}，它的待決題不能再作答。` : '沒有待決題。'}</p>
 	{/each}
 </section>
 
