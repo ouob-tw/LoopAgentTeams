@@ -2073,7 +2073,7 @@ class SessionTests(unittest.TestCase):
         questions.write_text('## Q\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
         self.assertEqual(self.cli('activate', '--workspace', self.work, '--progress', self.progress,
                                   '--decisions', self.decisions, extra_env=env).returncode, 0)
-        shown = 'pane report-metadata {} --source lat.panel.status --display-agent orch ⚠待答1求助0'
+        shown = 'pane report-metadata {} --source lat.panel.status --display-agent orch ⚠待答1'
         self.assertEqual(self.sidebar_calls(log), [shown.format('herdr-pane')])
         resumed = dict(env, HERDR_WORKSPACE_ID='w2', HERDR_TAB_ID='t2', HERDR_PANE_ID='p2')
         self.assert_only_pointer(self.hook(extra_env=resumed, source='resume'))
