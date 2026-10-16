@@ -107,6 +107,12 @@ test('a closed controller\'s question cannot be answered and a message is refuse
 	expect(wake.body).toMatchObject({ ok: true, entry: { route: 'resume' } });
 	expect(resumes().map((call) => call.args.slice(0, 2))).toEqual([['r', orin.session_id]]);
 	expect(injects()).toEqual([]);
+
+	// The resume is still open: a read settles it with the same list it judges the roster by.
+	const lists = () => readLog<string[]>(fixture.dir, 'hcom-list-calls.jsonl').length;
+	const before = lists();
+	await fixture.refresh(cookie);
+	expect(lists() - before).toBe(1);
 });
 
 test('closed, then the list cannot be read, then it can again: the last list stands in meanwhile', async () => {

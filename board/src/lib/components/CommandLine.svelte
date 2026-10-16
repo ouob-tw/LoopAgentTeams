@@ -9,7 +9,7 @@
 	import { EFFORT_UNKNOWN_TEXT, FIXED_MODEL_REASON, LOCK_UNKNOWN_TEXT } from '#lib/board/models.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
-	import { isEnded, type Controller } from '#lib/board/types.ts';
+	import { isInactive, type Controller } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
 
@@ -20,7 +20,7 @@
 	let optionsOpen = $state(false);
 	const command = $derived(parseCommand(text, controllers, target, true));
 	const recipient = $derived(command.ok ? command.controller : text.trimStart().startsWith('@') ? undefined : target);
-	const waking = $derived(recipient !== undefined && isEnded(recipient.status));
+	const waking = $derived(recipient !== undefined && isInactive(recipient.status));
 
 	// The wake's options, by controller ID. '' keeps the current model or effort.
 	let newRound = $state<Record<string, boolean>>({});
@@ -56,7 +56,7 @@
 		const parsed = command;
 		if (!parsed.ok) return toasts.show('failed', parsed.reason);
 		const to = parsed.controller;
-		const wake = isEnded(to.status);
+		const wake = isInactive(to.status);
 		const sentText = text;
 		sending = true;
 		const choice = wake && resumes

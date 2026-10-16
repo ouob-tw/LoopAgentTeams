@@ -16,7 +16,7 @@ export const STATUS_LABEL: Record<ControllerStatus, string> = {
  * its client is gone from hcom's list). Both are handled alike: woken instead of typed into, their
  * questions not listed, on the roster only while the inbox holds one of their reports.
  */
-export function isEnded(status: ControllerStatus): boolean {
+export function isInactive(status: ControllerStatus): boolean {
 	return status === 'ended' || status === 'closed';
 }
 

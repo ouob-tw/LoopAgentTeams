@@ -9,7 +9,7 @@ import { listControllers, readQuestions } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { archiveDue, archivedReports, buildSnapshot, markRead, type MarkReadResult, type Sources } from './model.ts';
 import { createReportReader } from './reports.ts';
-import { listAgents } from './hcom.ts';
+import { listAgents, type AgentList } from './hcom.ts';
 import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
 import { tabToFront } from './herdr.ts';
 import { helperDirectories } from './sources.ts';
@@ -44,11 +44,10 @@ export interface Board {
 	close(): void;
 }
 
-/** Close the resumes whose session hcom now lists. hcom is asked only while one is open; a list
- *  that cannot be read leaves them open until a later read. */
-async function settleWakes(config: BoardConfig, moved: () => void): Promise<string | null> {
+/** Close the resumes whose session hcom's list of this read holds; a list that could not be read
+ *  leaves them open until a later read. */
+async function settleWakes(config: BoardConfig, list: AgentList, moved: () => void): Promise<string | null> {
 	if (!openResumes(config.stateDir, config.now(), config.launchWaitMs).length) return null;
-	const list = await listAgents(config);
 	// A resume's pane found only now: its new tab is moved to the front like one found at once.
 	const onPane = (pane: string) => void tabToFront(config, pane).then((reason) => reason === null && moved());
 	return list.ok ? settleResumes(config.stateDir, list.agents, config.now(), config.launchWaitMs, onPane) : null;
@@ -111,7 +110,7 @@ function createBoard(): Board {
 	}, HEARTBEAT_MS);
 
 	async function read(): Promise<BoardSnapshot> {
-		const [helper, reports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(listConfig)]);
+		const [helper, reports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(config)]);
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {
@@ -119,7 +118,7 @@ function createBoard(): Board {
 			try {
 				const answersError = await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path));
 				const launchesError = settleLaunches(config.stateDir, helper.controllers, reports.files, config.now());
-				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, tabMoved));
+				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, agents, tabMoved));
 			} catch (error) {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
 				sentLogError = (error as Error).message;
@@ -201,11 +200,11 @@ function createBoard(): Board {
 	}
 
 	// A change can land just after a read began and be missed by it, and the read that picks it up
-	// may take as long as the helper is allowed to. Both fit inside the fallback deadline when reads
-	// start this far apart.
-	const fallbackGapMs = config.fallbackMs - config.helperTimeoutMs - READ_SLACK_MS;
-	// hcom's list is read alongside the helper, so it gets no longer than the helper to answer.
-	const listConfig = { ...config, hcomListTimeoutMs: Math.min(config.hcomListTimeoutMs, config.helperTimeoutMs) };
+	// may take as long as the helper or hcom's list, read alongside it, is allowed to. Both fit inside
+	// the fallback deadline when reads start this far apart; a list timeout too long for the deadline
+	// still leaves a short gap rather than none.
+	const readMs = Math.max(config.helperTimeoutMs, config.hcomListTimeoutMs);
+	const fallbackGapMs = Math.max(config.fallbackMs - readMs - READ_SLACK_MS, READ_SLACK_MS);
 
 	function start(): Promise<BoardSnapshot> {
 		queued = null;

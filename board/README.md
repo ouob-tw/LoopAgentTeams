@@ -30,7 +30,7 @@
 | `LAT_BOARD_INJECT_TIMEOUT_SECONDS` | 輸入指令多久沒結束就放棄 | `15` |
 | `LAT_BOARD_HCOM_COMMAND` | hcom 指令（JSON 字串陣列）。新建時看板在後面加上 `<client> --dir <資料夾> --terminal herdr --go --hcom-prompt <第一則訊息>`，喚醒接回時加上 `r <session ID> --terminal herdr --go --hcom-prompt <第一則訊息>`（切換 Codex 模型的接回沒有第一則訊息），兩者之後再接選定的模型與思考強度參數；判斷 client 是否還在（每次讀取資料與喚醒前）時加上 `list --json`，切換 Codex 模型時加上 `kill <HCOM 名稱>` | `["hcom"]` |
 | `LAT_BOARD_HCOM_TIMEOUT_SECONDS` | hcom 啟動或接回指令多久沒結束就不再等（含 hcom 自己等 client 就緒的時間）；逾時算「仍在啟動」，不算失敗 | `60` |
-| `LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS` | `hcom list --json` 多久沒結束就當成讀不到（此時喚醒不送出，名冊沿用上次的清單）；讀取資料時另外不超過 `LAT_BOARD_HELPER_TIMEOUT_SECONDS`；`hcom kill` 也用這個時間，逾時算「停止結果不明」 | `15` |
+| `LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS` | `hcom list --json` 多久沒結束就當成讀不到（此時喚醒不送出，名冊沿用上次的清單）；`hcom kill` 也用這個時間，逾時算「停止結果不明」 | `15` |
 | `LAT_BOARD_MODEL_OPTIONS` | 表單提供的模型與思考強度（JSON），例如 `{"codex":{"models":["gpt-6.1-sol"]}}`；只取代有寫到的 client 與清單，其餘用內建清單 | 內建清單 |
 | `LAT_BOARD_HERDR_COMMAND` | Herdr 指令（JSON 字串陣列），看板會在後面加上 `pane list`、`workspace list` 或 `workspace create --cwd <專案> --label <名稱> --no-focus` | `["herdr"]` |
 | `LAT_BOARD_HERDR_TIMEOUT_SECONDS` | 每個 Herdr 指令多久沒結束就放棄 | `10` |
@@ -56,7 +56,7 @@
 - 回報會自動移到「已封存」：未讀的自發出起滿 7 天，已讀的自標為已讀起滿 3 天。封存後仍可開啟全文，但不能移回信箱，也沒有手動封存。回報紀錄檔不會被刪除。
 - 已結束的主控只要信箱裡還有它的回報就留在名冊上，全部封存後才消失。
 - 看板每次讀取資料（檔案變動、保底重讀、手動重新整理、載入頁面）都讀一次 `hcom list --json`。有面板綁定、但 session ID 不在清單上的主控是「已關閉」：和已結束一樣排在後面、只在信箱還有它的回報時留在名冊、待決題不列入信箱也不能作答（伺服器同樣拒絕），傳話改走喚醒（伺服器拒絕直接打進輸入框）。之後又出現在清單上就恢復為啟用中。面板綁定不會被修改。
-- hcom 清單讀不到（逾時、結束碼非 0、格式不符）時，以讀取錯誤的浮動通知顯示原因，並沿用上一次讀到的清單判斷；看板啟動後還沒讀到過時，所有綁定都顯示為啟用中。這次讀取等 hcom 的時間不超過輔助工具的逾時，所以保底重讀的時限不變。
+- hcom 清單讀不到（逾時、結束碼非 0、格式不符）時，以讀取錯誤的浮動通知顯示原因，並沿用上一次讀到的清單判斷；看板啟動後還沒讀到過時，所有綁定都顯示為啟用中。每次讀取的輔助工具與 hcom 清單同時進行，保底重讀的間隔扣掉兩者逾時中較長的那個；`LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS` 設得比保底重讀時限還長時，時限就保證不了。有未結案的接回時，同一次讀到的清單也用來結案，不會再讀第二次。
 
 ## 回答待決題
 
@@ -111,7 +111,7 @@
 - 接回前先寫一行 `wake`（`pending`，未結案），寫不進去就不執行 hcom；hcom 結束後再追加一行 `resume-result` 記結果。看板在 hcom 執行中停掉，或結果那行寫不進去，這筆接回就維持未結案，由下一次喚醒查證。
 - 接回結果：結束碼 0 記 `started`、結束碼 2 或逾時記 `pending`，兩者都是「未結案」；其他結束碼記 `failed`，直接結案。接回後看板再讀一次 hcom 清單，記下同 session 或同名 Agent 的 `launch_context.pane_id`。
 - 接回開出的新分頁會移到該工作區的最前面（喚醒與切換模型都一樣）：窗格一查到（接回當下，或之後補記 `resume-pane` 時），看板從 `herdr pane list` 找出它的分頁，再經 Herdr 的連線介面送 `tab.move`（`insert_index: 0`；Herdr 0.9.3 的 CLI 沒有移動分頁的指令）。連線介面預設是 `~/.config/herdr/herdr.sock`，可用 `HERDR_SOCKET_PATH` 指定。移動在結果寫進紀錄之後才做、不等它完成，失敗也不影響接回。
-- 未結案的接回由後來追加的行結案：`resume-closed` 記結果（`succeeded`、`ended`、`abandoned`），`resume-pane` 補記後來才查到的窗格。有未結案接回時，每次讀取資料都會問一次 hcom 清單，session 出現就結案為成功。
+- 未結案的接回由後來追加的行結案：`resume-closed` 記結果（`succeeded`、`ended`、`abandoned`），`resume-pane` 補記後來才查到的窗格。每次讀取資料讀到的 hcom 清單上出現該 session，就結案為成功。
 - 再次喚醒前的查證依序是：session 在 hcom 清單上 → 結案為成功，改走輸入框；清單上有主控原本的名稱或接回輸出的名稱（含還沒綁定的 Agent）或記下的窗格還在 `herdr pane list` 裡 → 拒絕；記下的窗格已不在 → 結案為已結束，照常接回；沒記到窗格 → 拒絕並回傳可放棄的那一筆（`abandon`）。窗格清單讀不到也拒絕。等待時間只用來顯示提示，不會放行。
 - 已關閉的主控（見「信箱」）同樣由這裡喚醒。
 - 測試以 `tests/fake-hcom.mjs`（`list --json` 與 `r`）、`tests/fake-herdr.mjs`、`tests/fake-inject.mjs` 代替真的指令。

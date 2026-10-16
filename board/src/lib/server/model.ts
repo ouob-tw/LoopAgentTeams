@@ -11,7 +11,7 @@ import type {
 	InboxQuestion,
 	InboxReport
 } from '../board/types.ts';
-import { isEnded } from '../board/types.ts';
+import { isInactive } from '../board/types.ts';
 import type { InboxState } from './inbox-state.ts';
 import type { ReportFile } from './reports.ts';
 
@@ -225,7 +225,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		}
 	}
 
-	const ended = (controller: Controller) => Number(isEnded(controller.status));
+	const ended = (controller: Controller) => Number(isInactive(controller.status));
 	controllers.sort(
 		(a, b) =>
 			ended(a) - ended(b) ||

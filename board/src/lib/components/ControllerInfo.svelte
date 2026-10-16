@@ -5,7 +5,7 @@
 	// history stands in for it on a phone.
 	import { formatTime } from '#lib/board/format.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
-	import { isEnded, phaseText, STATUS_LABEL, type Controller, type InboxItem } from '#lib/board/types.ts';
+	import { isInactive, phaseText, STATUS_LABEL, type Controller, type InboxItem } from '#lib/board/types.ts';
 	import ItemRow from './ItemRow.svelte';
 	import ModelSwitch from './ModelSwitch.svelte';
 	import ReplyBox from './ReplyBox.svelte';
@@ -112,7 +112,7 @@
 	{#each questions as item (item.key)}
 		<ItemRow {item} showOwner={false} {onopen} />
 	{:else}
-		<p class="none">{isEnded(controller.status) ? `主控${STATUS_LABEL[controller.status]}，它的待決題不能再作答。` : '沒有待決題。'}</p>
+		<p class="none">{isInactive(controller.status) ? `主控${STATUS_LABEL[controller.status]}，它的待決題不能再作答。` : '沒有待決題。'}</p>
 	{/each}
 </section>
 

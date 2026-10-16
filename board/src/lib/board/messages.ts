@@ -1,6 +1,6 @@
 // Messages the user sends to a controller from the board: the shared shapes, and the two rules
 // the page applies before anything is sent (who a command line is for, what Enter does).
-import { isEnded, STATUS_LABEL, type Controller } from './types.ts';
+import { isInactive, STATUS_LABEL, type Controller } from './types.ts';
 
 /** One line of the board's sent log: an attempt to type a message into a controller's client. */
 export interface SentMessage {
@@ -63,12 +63,12 @@ export function parseCommand<T extends Target>(input: string, controllers: T[], 
 		const name = addressed[1];
 		const matches = controllers.filter((candidate) => candidate.hcomName === name);
 		// A name can be reused after a controller ended; the one still running is the one meant.
-		controller = matches.find((candidate) => !isEnded(candidate.status)) ?? matches[0];
+		controller = matches.find((candidate) => !isInactive(candidate.status)) ?? matches[0];
 		if (!controller) return { ok: false, reason: `找不到主控 @${name}，沒有送出。` };
 		text = addressed[2];
 	}
 	if (!controller) return { ok: false, reason: '請用 @名稱 指定主控，或先點開一個主控。' };
-	if (isEnded(controller.status) && !wakes) {
+	if (isInactive(controller.status) && !wakes) {
 		return { ok: false, reason: `@${controller.hcomName} ${STATUS_LABEL[controller.status]}，無法傳話。` };
 	}
 	if (!text.trim()) return { ok: false, reason: '請輸入要傳的訊息。' };
