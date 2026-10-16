@@ -142,7 +142,7 @@ export type InboxItem = InboxQuestion | InboxReport;
 
 export function itemLabel(item: InboxItem): string {
 	if (item.kind === 'question') return '待決';
-	return item.tag === 'HELP' ? '求助' : '回報';
+	return item.tag === 'HELP' ? '求助' : '完成';
 }
 
 export interface BoardSnapshot {
