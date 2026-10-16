@@ -1,11 +1,14 @@
 // The archive's pages and the 30-day retention, with the board's clock set by the test. Report
 // files past retention are deleted by the real helper command, on this test's reports directory.
-import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
+import { afterAll, beforeAll, beforeEach, expect, setDefaultTimeout, test } from 'bun:test';
 import { spawn } from 'node:child_process';
 import { chmodSync, existsSync, mkdirSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { join } from 'node:path';
-import type { HelperController, InboxReport } from '../src/lib/board/types.ts';
-import { DAY, named, startFixture, titled, until, uvPython, type Fixture } from './harness.ts';
+import type { BoardSnapshot, HelperController, InboxReport } from '../src/lib/board/types.ts';
+import { DAY, named, sleep, startFixture, titled, until, uvPython, type Fixture } from './harness.ts';
+
+// Pruning runs after a read; several tests wait for it, or for a slow helper.
+setDefaultTimeout(30_000);
 
 let fixture: Fixture;
 let cookie: string;
@@ -16,6 +19,16 @@ const iso = (time: number) => new Date(time).toISOString();
 async function on(time: number) {
 	fixture.setClock(time);
 	return fixture.refresh(cookie);
+}
+/** Read again until `check` holds: pruning runs after a read, not within it. */
+async function eventually(check: (snapshot: BoardSnapshot) => boolean, what: string): Promise<BoardSnapshot> {
+	const deadline = Date.now() + 15_000;
+	for (;;) {
+		const snapshot = await fixture.refresh(cookie);
+		if (check(snapshot)) return snapshot;
+		if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+		await sleep(100);
+	}
 }
 /** List these controllers, with prune-reports run by the real helper. */
 const list = (controllers: HelperController[]) => fixture.setHelper({ output: { controllers }, realPrune: python });
@@ -100,7 +113,7 @@ test('the archive lists reports for 30 days; a file is deleted when its newest r
 
 	expect((await on(T0 + 32 * DAY)).archivedCount).toBe(0);
 	expect(await titles()).toEqual([]);
-	expect(has('session-ended')).toBe(false);
+	await eventually(() => !has('session-ended'), 'the file to be deleted');
 	// The lock file stays: a hook waiting on it and one arriving later must share the one lock.
 	expect(has('session-ended', '.lock')).toBe(true);
 	expect(Object.keys(inboxState().archived).filter((key) => key.startsWith('session-ended#'))).toEqual([]);
@@ -129,7 +142,10 @@ test('a file whose lock is held is left until a later read', async () => {
 	try {
 		await until(() => said.includes('locked'), 10_000, 'the lock to be held');
 		const inode = statSync(lock).ino;
+		const asked = fixture.helperArgs('prune-reports').length;
 		const held = await on(T0 + 40 * DAY);
+		await until(() => fixture.helperArgs('prune-reports').length > asked, 10_000, 'the helper to be asked');
+		await sleep(1_500);
 		expect(held.errors).toEqual([]);
 		expect(has('session-busy')).toBe(true);
 		// Left for later, but past retention: listed nowhere, its state already cleared.
@@ -139,8 +155,7 @@ test('a file whose lock is held is left until a later read', async () => {
 
 		holder.kill();
 		await until(() => holder.exitCode !== null || holder.signalCode !== null, 10_000, 'the lock holder to end');
-		await on(T0 + 40 * DAY);
-		expect(has('session-busy')).toBe(false);
+		await eventually(() => !has('session-busy'), 'the file to be deleted');
 		expect(statSync(lock).ino).toBe(inode);
 	} finally {
 		holder.kill();
@@ -160,9 +175,12 @@ test('after pruning, a bound running controller shows as usual and a closed one 
 	expect(named(before, 'orin')).toBeUndefined();
 	expect(before.archivedCount).toBe(2);
 
-	const after = await on(T0 + 30 * DAY);
-	expect(has(luna.session_id)).toBe(false);
-	expect(has(orin.session_id)).toBe(false);
+	await on(T0 + 30 * DAY);
+	// Read after both files are gone.
+	const after = await eventually(
+		(next) => !has(luna.session_id) && !has(orin.session_id) && named(next, 'luna')?.phase === null,
+		'both files to be deleted and read in'
+	);
 	expect(after.errors).toEqual([]);
 	expect(named(after, 'luna')).toMatchObject({ status: 'working', phase: null, lastReportAt: null, error: null, pendingCount: 0 });
 	expect(named(after, 'orin')).toBeUndefined();
@@ -179,8 +197,11 @@ test('when the read and archive state cannot be saved first, nothing is deleted'
 	const asked = fixture.helperArgs('prune-reports').length;
 	chmodSync(stateDir(), 0o500);
 	try {
-		const snapshot = await on(T0 + 31 * DAY);
-		expect(snapshot.errors.some((error) => error.startsWith('超過 30 天的回報紀錄沒有刪除，下次重讀再試：已讀與封存紀錄沒辦法先清掉'))).toBe(true);
+		fixture.setClock(T0 + 31 * DAY);
+		const snapshot = await eventually(
+			(next) => next.errors.some((error) => error.startsWith('超過 30 天的回報紀錄沒有刪除，下次重讀再試：已讀與封存紀錄沒辦法先清掉')),
+			'the save failure to be shown'
+		);
 		expect(fixture.helperArgs('prune-reports')).toHaveLength(asked);
 		expect(has('session-unsaved')).toBe(true);
 		// Past retention it is listed nowhere in the meantime.
@@ -189,8 +210,7 @@ test('when the read and archive state cannot be saved first, nothing is deleted'
 	} finally {
 		chmodSync(stateDir(), 0o700);
 	}
-	await on(T0 + 31 * DAY);
-	expect(has('session-unsaved')).toBe(false);
+	await eventually(() => !has('session-unsaved'), 'the file to be deleted');
 	expect(Object.keys(inboxState().archived).filter((key) => key.startsWith('session-unsaved#'))).toEqual([]);
 });
 
@@ -204,14 +224,15 @@ test('a report marked read while the helper runs does not give the deleted repor
 	// The helper takes a while and deletes the file, as the real one would.
 	fixture.setHelper({ output: { controllers: [] }, 'prune-reports': { output: { status: 'ok', deleted: ['session-race'], failed: [] }, sleepMs: 1500 } });
 	fixture.setClock(T0 + 30 * DAY);
-	const reading = fixture.refresh(cookie);
+	await fixture.refresh(cookie);
 	await until(() => !Object.keys(inboxState().archived).includes('session-race#0'), 10_000, 'the state to be cleared first');
 	const other = titled(await fixture.board(cookie), '還在信箱')!;
 	expect((await fixture.markRead(cookie, other.key)).status).toBe(200);
 	expect(Object.keys(inboxState().archived)).not.toContain('session-race#0');
 	expect(inboxState().read).toHaveProperty(other.key);
 	rmSync(join(fixture.reportsDir, 'session-race.jsonl'));
-	await reading;
+	await sleep(2_000);
+	await fixture.refresh(cookie);
 	expect(Object.keys(inboxState().archived)).not.toContain('session-race#0');
 
 	// Written again, the session's first report is unread in the inbox.
@@ -223,17 +244,30 @@ test('a report marked read while the helper runs does not give the deleted repor
 test('a failed prune is shown and tried again at the next read', async () => {
 	fixture.report('session-old', { tag: 'DONE', summary: '舊的', time: iso(T0), hcom_name: 'vega', workspace: `${fixture.dir}/workspaces/alpha` });
 	fixture.setHelper({ output: { controllers: [] }, 'prune-reports': { output: { status: 'error', reason: '磁碟壞了' }, exit: 1 } });
-	const failed = await on(T0 + 31 * DAY);
-	expect(failed.errors).toEqual(['超過 30 天的回報紀錄沒有刪除，下次重讀再試：磁碟壞了']);
+	fixture.setClock(T0 + 31 * DAY);
+	await eventually((next) => next.errors.join() === '超過 30 天的回報紀錄沒有刪除，下次重讀再試：磁碟壞了', 'the failure to be shown');
 
 	// A file that could not be deleted does not hide the ones that were.
 	fixture.setHelper({
 		output: { controllers: [] },
 		'prune-reports': { output: { status: 'ok', deleted: ['session-gone'], failed: [{ session_id: 'session-stuck', reason: '權限不足' }] } }
 	});
-	expect((await on(T0 + 31 * DAY)).errors).toEqual(['超過 30 天的回報紀錄沒有刪除，下次重讀再試：session-stuck：權限不足']);
+	await eventually((next) => next.errors.join() === '超過 30 天的回報紀錄沒有刪除，下次重讀再試：session-stuck：權限不足', 'the partial failure');
 
 	list([]);
-	expect((await on(T0 + 31 * DAY)).errors).toEqual([]);
-	expect(has('session-old')).toBe(false);
+	await eventually((next) => next.errors.length === 0 && !has('session-old'), 'the error to clear and the file to go');
+});
+
+test('a slow helper does not hold up the snapshot', async () => {
+	fixture.report('session-slow', { tag: 'DONE', summary: '慢慢刪', time: iso(T0), hcom_name: 'vega', workspace: `${fixture.dir}/workspaces/alpha` });
+	fixture.setHelper({ output: { controllers: [] }, 'prune-reports': { output: { status: 'ok', deleted: [], failed: [] }, sleepMs: 4_000 } });
+	const asked = fixture.helperArgs('prune-reports').length;
+	fixture.setClock(T0 + 31 * DAY);
+	const started = Date.now();
+	await fixture.refresh(cookie);
+	await until(() => fixture.helperArgs('prune-reports').length > asked, 10_000, 'the helper to be asked');
+	await fixture.refresh(cookie);
+	expect(Date.now() - started).toBeLessThan(3_000);
+	await sleep(3_000);
+	list([]);
 });

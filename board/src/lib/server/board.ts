@@ -114,13 +114,20 @@ function createBoard(): Board {
 	/** Delete the report files past retention. Their sessions' read and archive state is cleared and
 	 *  saved first, so a file written again for one starts its keys over; the reports themselves are
 	 *  past retention and listed nowhere, so nothing gives them state back meanwhile. When that
-	 *  state cannot be saved nothing is deleted. Returns why something was not deleted, or null. */
+	 *  state cannot be read or saved nothing is deleted. Returns why something was not deleted, or
+	 *  null; a state file that cannot be read is reported by every read already. */
 	async function prune(files: ReportFile[]): Promise<string | null> {
 		const now = config.now();
 		const due = expiredSessions(files, now);
 		if (!due.length) return null;
+		let state: InboxState;
 		try {
-			const state = loadInboxState(config.stateDir);
+			state = loadInboxState(config.stateDir);
+		} catch {
+			// Every read already says the state file cannot be read; nothing is deleted meanwhile.
+			return null;
+		}
+		try {
 			if (dropSessions(state, due)) saveInboxState(config.stateDir, state);
 		} catch (error) {
 			return `已讀與封存紀錄沒辦法先清掉：${(error as Error).message}`;
@@ -128,11 +135,39 @@ function createBoard(): Board {
 		return (await pruneReports(config, now, due)).reason;
 	}
 
+	/** Whether a prune is under way; one runs at a time. */
+	let pruning = false;
+	/** The report files of a read made while a prune was under way: pruned next. */
+	let pruneNext: ReportFile[] | null = null;
+	/** Why the last prune did not delete everything due; shown until one does. */
+	let pruneError: string | null = null;
+
+	/** Prune after a read rather than within it: the reports due are listed nowhere already, so no
+	 *  snapshot waits for the helper, and the file watch reads the deletions in. A changed reason is
+	 *  read in at once. */
+	function pruneAfter(files: ReportFile[]): void {
+		if (closed) return;
+		if (pruning) {
+			pruneNext = files;
+			return;
+		}
+		pruning = true;
+		void prune(files)
+			.catch((error: Error) => error.message)
+			.then((reason) => {
+				pruning = false;
+				if (reason !== pruneError) {
+					pruneError = reason;
+					if (!closed) void refresh();
+				}
+				const next = pruneNext;
+				pruneNext = null;
+				if (next) pruneAfter(next);
+			});
+	}
+
 	async function read(): Promise<BoardSnapshot> {
-		const [helper, firstReports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(config)]);
-		const pruneError = await prune(firstReports.files);
-		// Without the files just deleted; only the changed files are read again.
-		const reports = await readReports();
+		const [helper, reports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(config)]);
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {
@@ -163,6 +198,7 @@ function createBoard(): Board {
 		if (!closed) sourceWatcher.sync(targets);
 
 		publish(sources);
+		pruneAfter(reports.files);
 		return snapshot!;
 	}
 
