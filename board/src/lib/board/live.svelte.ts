@@ -30,9 +30,9 @@ export class LiveBoard {
 		return () => this.#connection?.close();
 	}
 
-	async markRead(key: string): Promise<void> {
+	async mark(key: string, read: boolean): Promise<void> {
 		if (!this.#connection) throw new Error('not connected');
-		await this.#connection.markRead(key);
+		await this.#connection.mark(key, read);
 	}
 
 	async loadArchive(): Promise<void> {

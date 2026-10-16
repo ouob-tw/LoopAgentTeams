@@ -196,6 +196,7 @@ export interface Fixture {
 	/** Write the user stylesheet in the board's config directory; null removes it. */
 	userStyle(css: string | null): void;
 	markRead(cookie: string, key: string): Promise<Response>;
+	markUnread(cookie: string, key: string): Promise<Response>;
 	archive(cookie: string): Promise<InboxReport[]>;
 	watch(cookie: string): Watch;
 	start(): Promise<void>;
@@ -359,6 +360,13 @@ export async function startFixture(
 		},
 		markRead: (cookie, key) =>
 			fixture.fetch('/api/inbox/read', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ key }),
+				cookie
+			}),
+		markUnread: (cookie, key) =>
+			fixture.fetch('/api/inbox/unread', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ key }),

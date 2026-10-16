@@ -22,8 +22,8 @@ const SILENCE_MS = 40_000;
 export interface Connection {
 	/** Ask the server to re-read every source now. */
 	refresh(): Promise<void>;
-	/** Mark an inbox report read; every device gets the new state through the stream. */
-	markRead(key: string): Promise<void>;
+	/** Mark an inbox report read or unread; every device gets the new state through the stream. */
+	mark(key: string, read: boolean): Promise<void>;
 	/** The archived reports, newest first. */
 	archive(): Promise<InboxReport[]>;
 	close(): void;
@@ -104,8 +104,8 @@ export function connectBoard(options: ConnectionOptions): Connection {
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			options.onSnapshot(await response.json());
 		},
-		async markRead(key) {
-			const response = await request('/api/inbox/read', {
+		async mark(key, read) {
+			const response = await request(read ? '/api/inbox/read' : '/api/inbox/unread', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ key })

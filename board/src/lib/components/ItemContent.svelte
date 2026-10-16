@@ -11,14 +11,14 @@
 		item: current,
 		inInbox,
 		recorded = false,
-		onread
+		onunread
 	}: {
 		item: InboxItem;
 		/** False once the item has left the inbox: an archived report, or a question that is gone. */
 		inInbox: boolean;
 		/** The question left the inbox because its controller recorded the answer. */
 		recorded?: boolean;
-		onread: (key: string) => Promise<void>;
+		onunread: (key: string) => Promise<void>;
 	} = $props();
 
 	const KIND_TEXT = { single: '單選', multi: '複選', text: '純文字' };
@@ -34,10 +34,10 @@
 
 	let marking = $state(false);
 
-	async function read() {
+	async function unread() {
 		marking = true;
 		try {
-			await onread(item.key);
+			await onunread(item.key);
 		} catch {
 			toasts.show('failed', '沒有標記成功，請再試一次。');
 		} finally {
@@ -258,8 +258,9 @@
 				<span class="state">已封存{item.readAt ? `，${formatTime(item.readAt)} 標為已讀` : ''}</span>
 			{:else if item.readAt}
 				<span class="state">已讀（{formatTime(item.readAt)}）</span>
+				<button onclick={unread} disabled={marking}>標為未讀</button>
 			{:else}
-				<button class="primary" onclick={read} disabled={marking}>標為已讀</button>
+				<span class="state">未讀</span>
 			{/if}
 		</footer>
 	{/if}

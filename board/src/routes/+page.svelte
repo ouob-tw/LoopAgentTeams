@@ -10,6 +10,7 @@
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
+	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { InboxItem } from '#lib/board/types.ts';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
@@ -116,7 +117,15 @@
 		if (next !== null) detail.focus({ preventScroll: true });
 		window.scrollTo(0, next === null ? listScroll : 0);
 	}
-	const openItem = (next: InboxItem) => show({ kind: 'item', item: next });
+	function openItem(next: InboxItem) {
+		void show({ kind: 'item', item: next });
+		// Opening an inbox report reads it. Only opening does: a report marked unread stays unread
+		// while it is still open. An archived report keeps the read state it had.
+		const listed = inbox.find((entry) => entry.key === next.key);
+		if (listed?.kind === 'report' && listed.readAt === null) {
+			board.mark(listed.key, true).catch(() => toasts.show('failed', '沒有標為已讀，請重新點開再試一次。'));
+		}
+	}
 	const openController = (id: string) => show({ kind: 'controller', id });
 	const openLaunch = () => show({ kind: 'launch' });
 
@@ -269,7 +278,7 @@
 							{item}
 							{inInbox}
 							recorded={board.snapshot.recordedKeys.includes(item.key)}
-							onread={(key) => board.markRead(key)}
+							onunread={(key) => board.mark(key, false)}
 						/>
 					{/key}
 					{#if controller}
