@@ -674,6 +674,91 @@ def report_stop(record, payload):
         print(f'LAT report warning: {exc}', file=sys.stderr)
 
 
+CLAUDE_LAT_COMMAND = '<command-name>/lat</command-name>'
+CODEX_LAT_SKILL = re.compile(r'\s*<skill>\s*<name>lat</name>')
+
+
+def invoked_lat(client, record):
+    """Whether one transcript record is the client calling up the LAT skill.
+
+    Claude: the user's /lat command, or a Skill tool call for ``lat``/``<ns>:lat``.
+    Codex: the ``<skill>`` block Codex injects when the user types ``$lat``.
+    Reading SKILL.md with a tool leaves neither, so it never counts.
+    """
+    if client == 'claude':
+        message = record.get('message')
+        if not isinstance(message, dict):
+            return False
+        content = message.get('content')
+        if record.get('type') == 'user':
+            if isinstance(content, str):
+                return CLAUDE_LAT_COMMAND in content
+            return isinstance(content, list) and any(
+                isinstance(block, dict) and block.get('type') == 'text'
+                and CLAUDE_LAT_COMMAND in str(block.get('text', '')) for block in content)
+        if record.get('type') == 'assistant' and isinstance(content, list):
+            for block in content:
+                if (isinstance(block, dict) and block.get('type') == 'tool_use'
+                        and block.get('name') == 'Skill' and isinstance(block.get('input'), dict)):
+                    skill = block['input'].get('skill')
+                    if isinstance(skill, str) and skill.rsplit(':', 1)[-1] == 'lat':
+                        return True
+        return False
+    payload = record.get('payload')
+    if (record.get('type') != 'response_item' or not isinstance(payload, dict)
+            or payload.get('type') != 'message' or payload.get('role') != 'user'
+            or not isinstance(payload.get('content'), list)):
+        return False
+    return any(isinstance(block, dict) and block.get('type') == 'input_text'
+               and CODEX_LAT_SKILL.match(str(block.get('text', '')))
+               for block in payload['content'])
+
+
+def lat_transcript(client, payload, sid):
+    """Read the conversation's transcript; True when it shows the LAT skill was called up."""
+    path = payload.get('transcript_path')
+    if path is None:
+        path = panel_module().transcript_path(client, sid)
+    elif not isinstance(path, str) or not Path(path).is_absolute():
+        raise ValueError(f'transcript_path is not an absolute path: {path!r}')
+    # Transcripts can be large: parse one line to confirm the format, then only marker lines.
+    markers = ('/lat</command-name>', '"Skill"') if client == 'claude' else ('<name>lat</name>',)
+    records = False
+    with open(path, encoding='utf-8') as stream:
+        for line in stream:
+            if records and not any(marker in line for marker in markers):
+                continue
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if isinstance(record, dict):
+                records = True
+                if invoked_lat(client, record):
+                    return True
+    if not records:
+        raise ValueError(f'no transcript records in {path}')
+    return False
+
+
+def activation_check(client, payload, sid):
+    """Block the Stop of a conversation started with the LAT skill that never activated."""
+    if os.environ.get('HCOM_LAUNCHED_BY', '') not in ('', 'user') or payload.get('stop_hook_active'):
+        return
+    try:
+        if not lat_transcript(client, payload, sid):
+            return
+    except (OSError, ValueError, TypeError, UnicodeDecodeError) as exc:
+        print(f'LAT activation check warning: {exc}', file=sys.stderr)
+        return
+    recovery = SKILL_DIR / 'references/recovery.md'
+    print(json.dumps({'decision': 'block', 'reason': (
+        'LAT 啟用檢查未通過：這段對話以 LAT 技能啟動，但這個工作區還沒有本 session 的 LAT 紀錄。'
+        f'請依主控恢復程序（{recovery}）執行 activate。'
+        '只是閱讀或審查技能時，在回覆中說明原因即可結束。')},
+        ensure_ascii=False))
+
+
 def hook(client):
     # Hook payload IDs are authoritative: the hook process has no client session env.
     try:
@@ -694,6 +779,8 @@ def hook(client):
         root = workspace_root(cwd.resolve(strict=True))
         path = root / '.lat/sessions' / f'{sid}.json'
         if not path.exists():
+            if event == 'Stop':
+                activation_check(client, payload, sid)
             return
     except (OSError, ValueError, TypeError, KeyError):
         return
