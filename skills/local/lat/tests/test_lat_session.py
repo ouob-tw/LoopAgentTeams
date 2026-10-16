@@ -2001,6 +2001,9 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(set(warning), {'systemMessage'})
                 self.assertIn('不再攔下', warning['systemMessage'])
                 self.assert_silent(self.stop_hook('NO REPLY: 等你回答 LAT-A r1', client))
+                # A new question only in a heading does not excuse an old-only tag line.
+                self.assertIn('最後一行只列出 LAT-A r1', json.loads(self.stop_hook(
+                    '❓ **LAT-B r1** 新題\nDECIDE: LAT-A r1', client).stdout)['reason'])
                 self.assert_silent(self.stop_hook('DECIDE: LAT-A r1, LAT-B r1', client))
                 self.assert_silent(self.stop_hook('DECIDE: LAT-A r2 改版', client))
                 self.assert_silent(self.stop_hook('HELP: LAT-H r1 請登入', client))
@@ -2074,7 +2077,12 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.sidebar_calls(log), [shown.format('herdr-pane')])
         resumed = dict(env, HERDR_WORKSPACE_ID='w2', HERDR_TAB_ID='t2', HERDR_PANE_ID='p2')
         self.assert_only_pointer(self.hook(extra_env=resumed, source='resume'))
+        self.assertEqual(self.sidebar_calls(log)[-2:], [
+            'pane report-metadata herdr-pane --source lat.panel.status --clear-display-agent',
+            shown.format('p2')])
+        self.assert_only_pointer(self.hook(extra_env=resumed, source='resume'))
         self.assertEqual(self.sidebar_calls(log)[-1], shown.format('p2'))
+        self.assertNotIn('herdr-pane', self.sidebar_calls(log)[-2])
         result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
                           extra_env=env)
         self.assertEqual(result.returncode, 0, result.stderr)

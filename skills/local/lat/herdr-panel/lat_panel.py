@@ -1454,8 +1454,9 @@ def _show_notification(text, env=None):
 def refresh_status_display(questions_path, *, notify=False, config_dir=None, env=None):
     """Show the bound controller's waiting counts on its Herdr sidebar row; never raise.
 
-    Returns ``status`` ``unbound`` (no binding owns this file: panel not in use),
-    ``shown``, ``cleared`` or ``failed`` with a ``reason``. With ``notify`` and a
+    Returns ``status`` ``unbound`` (no binding owns this file), ``disabled`` (no
+    Herdr workspace or ``lat.panel`` not enabled), ``shown``, ``cleared`` or
+    ``failed`` with a ``reason``. With ``notify`` and a
     nonzero count, one notification is sent and Herdr's reason kept as
     ``notification``; a rate-limited or busy notification is not retried.
     """
@@ -1467,6 +1468,8 @@ def refresh_status_display(questions_path, *, notify=False, config_dir=None, env
         ), None)
         if binding is None:
             return {"status": "unbound"}
+        if not panel_enabled(env):
+            return {"status": "disabled"}
         record_path = (Path(binding["workspace"]) / ".lat/sessions"
                        / f"{binding['session_id']}.json")
         decisions_path = json.loads(record_path.read_text(encoding="utf-8"))["decisions_path"]
@@ -2843,8 +2846,15 @@ def main(argv=None):
             return 0
         if args.command == "question" and args.question_command == "resolve-help":
             resolve_help(args.decisions, args.id, args.evidence, args.location)
-            cleanup = (cleanup_questions(args.questions, args.decisions)
-                       if args.questions.exists() else None)
+            try:
+                cleanup = (cleanup_questions(args.questions, args.decisions)
+                           if args.questions.exists() else None)
+            except (OSError, ValueError) as error:
+                # The record is already closed; a rerun of resolve-help would refuse it.
+                _warn_display(refresh_status_display(args.questions))
+                print(f"lat-panel: {args.id} is self-verified but cleanup failed: {error}; "
+                      "rerun question cleanup", file=sys.stderr)
+                return 1
             print(json.dumps({"id": args.id, "status": "self-verified", "cleanup": cleanup},
                              ensure_ascii=False))
             _warn_display(refresh_status_display(args.questions))

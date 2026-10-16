@@ -53,7 +53,7 @@ activate 也在紀錄中保存技能文字指紋；active 紀錄已有指紋時�
 
 Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 的 DECIDE／HELP 檢查只看 active、client／session／角色／工作區相符的紀錄。最後一則訊息的最後一個非空行以 `DECIDE:` 或 `HELP:` 開頭時，擷取每個 `❓ **<ID> r<版本>**` 標題行，以及標籤後的 `<ID> r<數字>`；兩種標籤做相同的檢查。ID 由英數字與 `-_.` 組成；其他位置提到的題號及沒接版本的字詞不算。
 
-沒寫題號、任一題號沒有同名待決紀錄或狀態不是 pending、任何決策紀錄讀不出狀態，都會不通過；`HELP:` 列出的題號紀錄另須有 `- kind: help`。以上都通過、但擷取到的題號與版本全都已在本 session 先前的 `DECIDE:`／`HELP:` 回報（見下方「主控回報紀錄」）出現過時，同樣擋下，要求這則改以 `NO REPLY:` 結尾；有任一新題或新版本就通過。回報紀錄讀不到時視為沒問過。狀態使用遺漏檢查的共用讀法；缺狀態行、空值、純空白、第一字不是 pending 但後面含 pending，都算讀不出狀態。已有自己的 session 面板綁定時，另逐題核對自己的問題檔中有同版本「待答」題目，並要求遺漏檢查通過；未綁定時不要求面板。
+沒寫題號、任一題號沒有同名待決紀錄或狀態不是 pending、任何決策紀錄讀不出狀態，都會不通過；`HELP:` 列出的題號紀錄另須有 `- kind: help`。以上都通過、但最後一行列出的題號與版本（沒列時改看標題行）全都已在本 session 先前的 `DECIDE:`／`HELP:` 回報（見下方「主控回報紀錄」）出現過時，同樣擋下，要求把新題號寫進最後一行，或改以 `NO REPLY:` 結尾；有任一新題或新版本就通過。回報紀錄讀不到時視為沒問過。狀態使用遺漏檢查的共用讀法；缺狀態行、空值、純空白、第一字不是 pending 但後面含 pending，都算讀不出狀態。已有自己的 session 面板綁定時，另逐題核對自己的問題檔中有同版本「待答」題目，並要求遺漏檢查通過；未綁定時不要求面板。
 
 每個寫出的題號還須有參謀行，取第一行以 `- advisor:` 開頭的行，鍵名不分大小寫，值去除前後空白並以空白分詞。第一字接受 `needs-human`；`exempt` 的第二字限 `spec-confirmation`、`ticket-confirmation`、`requirement-discussion`、`account-quota`；`late` 的第二字限 `needs-human`、`resolved`、`self-check`。後續字詞可加註記（如 `same-family-degraded`）。缺行、空值、未知第一字或缺少／未知第二字，都逐題列出原因。未被 DECIDE／HELP 引用的 `advising`／`advisor-resolved` 紀錄不算面板漏題；被引用仍須符合 pending 與面板版本檢查。
 

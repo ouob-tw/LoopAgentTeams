@@ -46,6 +46,8 @@ class StatusDisplayTests(unittest.TestCase):
             f"printf '%s\\037' \"$@\" >> {self.log}\n"
             f"printf '\\n' >> {self.log}\n"
             'case "$1 $2" in\n'
+            '"plugin list") printf \'{"result":{"plugins":[{"plugin_id":"lat.panel",'
+            '"enabled":%s}]}}\\n\' "${FAKE_PANEL_ENABLED:-true}" ;;\n'
             '"pane report-metadata") exit "${FAKE_REPORT_EXIT:-0}" ;;\n'
             '"notification show") printf \'{"result":{"type":"notification_show",'
             '"shown":false,"reason":"%s"}}\\n\' "${FAKE_NOTIFY_REASON:-shown}" ;;\n'
@@ -57,6 +59,7 @@ class StatusDisplayTests(unittest.TestCase):
             os.environ, PATH=f"{self.bin}:{os.environ['PATH']}",
             HERDR_PLUGIN_CONFIG_DIR=str(self.root / "plugin-config"),
             HERDR_PLUGIN_STATE_DIR=str(self.root / "plugin-state"),
+            HERDR_WORKSPACE_ID="w1",
         )
         bound = self.cli(
             "bind", "--hcom-name", "zono", "--client", "claude", "--session-id", SESSION,
@@ -211,6 +214,19 @@ class StatusDisplayTests(unittest.TestCase):
                       record)
         self.assertEqual(self.displays()[-1], ["--clear-display-agent"])
 
+    def test_resolve_help_cleanup_failure_keeps_record_closed_and_says_to_rerun(self):
+        self.decision("H1", kind="help")
+        self.upsert("H1", HELP_SECTION)
+        (self.questions.parent / "panel-journal.jsonl").write_text("{broken\n")
+        result = self.cli("question", "resolve-help", "--questions", self.questions,
+                          "--decisions", self.decisions, "--id", "H1",
+                          "--evidence", "ok", "--location", "here")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("self-verified but cleanup failed", result.stderr)
+        self.assertIn("rerun question cleanup", result.stderr)
+        self.assertIn("- status: self-verified", (self.decisions / "H1.md").read_text())
+        self.assertEqual(self.displays()[-1], ["--clear-display-agent"])
+
     def test_resolve_help_refuses_decide_records_non_pending_and_empty_evidence(self):
         self.decision("D1")
         self.decision("H2", kind="help", status="answered")
@@ -237,12 +253,19 @@ class StatusDisplayTests(unittest.TestCase):
                           self.decisions, "--id", "D1", "--file", section)
         self.assertEqual((result.returncode, result.stdout, result.stderr), (0, "D1 r1\n", ""))
         self.assertEqual(self.calls(), [])
+
+    def test_disabled_panel_skips_sidebar_and_notification_for_a_bound_file(self):
+        self.decision("D1")
         no_herdr = self.root / "empty-bin"
         no_herdr.mkdir()
-        result = self.upsert("D1", DECIDE_SECTION, PATH=f"{no_herdr}:/usr/bin:/bin")
-        self.assertEqual(result.returncode, 0)
-        self.assertEqual(result.stdout, "D1 r1\n")
-        self.assertIn("sidebar not updated", result.stderr)
+        for env in ({"PATH": f"{no_herdr}:/usr/bin:/bin"}, {"HERDR_WORKSPACE_ID": ""},
+                    {"FAKE_PANEL_ENABLED": "false"}):
+            with self.subTest(env=env):
+                result = self.upsert("D1", DECIDE_SECTION, **env)
+                self.assertEqual((result.returncode, result.stdout, result.stderr),
+                                 (0, "D1 r1\n", ""))
+        self.assertEqual(self.displays(), [])
+        self.assertEqual(self.notifications(), [])
 
     def test_failed_report_is_a_warning_and_the_question_is_still_written(self):
         self.decision("D1")

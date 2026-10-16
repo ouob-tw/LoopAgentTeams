@@ -218,6 +218,13 @@ def _ensure_watcher_locked(record):
     return process.pid
 
 
+def move_status_display(panel, binding, replaced):
+    """Restore the pane this session was bound to before, then show counts on the new one."""
+    if replaced and replaced.get('herdr_pane') and replaced['herdr_pane'] != binding['herdr_pane']:
+        panel.clear_status_display(replaced)
+    return panel.refresh_status_display(binding['questions_path'])
+
+
 def refresh_binding(record):
     """Point the panel binding at the Herdr pane this process runs in; never raise.
 
@@ -230,10 +237,10 @@ def refresh_binding(record):
     try:
         panel = panel_module()
         if panel.panel_enabled():
-            binding, _, _ = panel.bind_controller(
+            binding, replaced, _ = panel.bind_controller(
                 record['hcom_name'], record['client'], record['session_id'],
                 record['workspace'], *herdr)
-            panel.refresh_status_display(binding['questions_path'])
+            move_status_display(panel, binding, replaced)
     except (OSError, ValueError):
         pass
 
@@ -395,7 +402,7 @@ def activate(args):
             'legacy_ignored': legacy_ignored,
         }, ensure_ascii=False))
         print(f'問題檔：{binding["questions_path"]}')
-        display = panel.refresh_status_display(binding['questions_path'])
+        display = move_status_display(panel, binding, replaced)
         if display['status'] == 'failed':
             print(f'側欄未更新：{display["reason"]}')
     else:
@@ -564,15 +571,19 @@ def question_tag(message):
     return next((tag[:-1] for tag in QUESTION_TAGS if lines and lines[-1].startswith(tag)), None)
 
 
-def question_identifiers(message):
-    """`❓ **<ID> r<N>**` headings plus `<ID> r<N>` on the last line's tag."""
+def tag_line_identifiers(message):
+    """`<ID> r<N>` written after the last line's DECIDE/HELP tag."""
     last = [line for line in message.splitlines() if line.strip()][-1]
-    identifiers = set(re.findall(
-        r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', message, re.MULTILINE))
-    identifiers.update(re.findall(
+    return set(re.findall(
         r'(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)[ \t]+r([0-9]+)(?![A-Za-z0-9_])',
         last.split(':', 1)[1]))
-    return identifiers
+
+
+def question_identifiers(message):
+    """`❓ **<ID> r<N>**` headings plus `<ID> r<N>` on the last line's tag."""
+    return set(re.findall(
+        r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', message, re.MULTILINE)
+    ) | tag_line_identifiers(message)
 
 
 def announced_questions(record):
@@ -659,13 +670,15 @@ def stop_check(record, payload):
                         for path, reason in unreadable
                         if path.stem not in statuses or not statuses[path.stem].error)
     if not problems:
-        if identifiers <= announced_questions(record):
-            listed = '、'.join(f'{identifier} r{revision}'
-                              for identifier, revision in sorted(identifiers))
+        # The tag line decides; headings count only when the tag line names no question.
+        listed = tag_line_identifiers(message) or identifiers
+        if listed <= announced_questions(record):
+            names = '、'.join(f'{identifier} r{revision}'
+                              for identifier, revision in sorted(listed))
             return hold_once(payload, (
-                f'LAT {tag} 檢查未通過：{listed} 已在先前訊息以 DECIDE／HELP 問過，版本沒變。'
-                '這則訊息的最後一行改以 `NO REPLY: ` 開頭；題目仍待答，側欄會持續顯示。'
-                '只有新題或改版才再標 DECIDE／HELP。'))
+                f'LAT {tag} 檢查未通過：最後一行只列出 {names}，已在先前訊息以 DECIDE／HELP 問過，版本沒變。'
+                '這則有新題或改版時，把它的題號寫進最後一行；沒有時改以 `NO REPLY: ` 開頭，'
+                '題目仍待答，側欄會持續顯示。'))
         return
     return hold_once(payload, f'LAT {tag} 檢查未通過：' + '；'.join(problems) + (
         '。Spec 確認題先更新 Spec 共識 → 跑檢查工具 → 確認題寫明共識版本。補做順序：寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重列題目。'))

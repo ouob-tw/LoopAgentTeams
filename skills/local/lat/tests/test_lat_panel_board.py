@@ -124,6 +124,8 @@ class BoardTestCase(BoardCli, unittest.TestCase):
             LAT_TEST_HCOM_DIR=str(self.hcom_dir),
             HERDR_PLUGIN_CONFIG_DIR=str(self.config),
             HERDR_PLUGIN_STATE_DIR=str(self.state),
+            # Question commands refresh the bound pane's sidebar; outside Herdr they skip it.
+            HERDR_WORKSPACE_ID="",
         )
         self.core = load_module()
         self.questions = self.bind("ctl-a", "s-a", "project-a")

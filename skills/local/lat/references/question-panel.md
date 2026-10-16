@@ -136,7 +136,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
 
 - 有待答時顯示 `<HCOM 名稱> ⚠待答{n}求助{n}`，數字是自己問題檔中狀態為「待答」、決策紀錄仍未結案的題目，依 `- kind: help` 分成求助與其他；兩者都是 0 或 deactivate 後恢復原名。
 - `question upsert` 寫入新題或升版時，另發一則同樣文字的 Herdr 內建通知；Herdr 因發太快或忙碌沒顯示時不重試。
-- 問題檔沒有綁定（面板未啟用）時略過；Herdr 呼叫失敗只在標準錯誤留一行 `lat-panel: sidebar not updated: …`，題目照常寫入。
+- 問題檔沒有綁定，或 shell 不在 Herdr workspace、`lat.panel` 未啟用時略過；改綁到新窗格時，舊窗格先恢復原名；Herdr 呼叫失敗只在標準錯誤留一行 `lat-panel: sidebar not updated: …`，題目照常寫入。
 
 ## 求助題結案
 
@@ -148,7 +148,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question resolve-
   --evidence "<查到的內容>" --location "<查證的檔案、指令或網址>"
 ```
 
-只接受仍為 `pending` 的 `- kind: help` 紀錄：狀態改為 `self-verified`，在紀錄末尾加 `## 主控查證`（查證、位置、時間），再清理問題檔並更新側欄。查不到時不執行，題目維持待答，等使用者在面板選「已完成」或在聊天說明，再依「收到 `lat-panel` 通知」或「聊天答覆與更正」記錄。
+只接受仍為 `pending` 的 `- kind: help` 紀錄：狀態改為 `self-verified`，在紀錄末尾加 `## 主控查證`（查證、位置、時間），再清理問題檔並更新側欄。清理失敗時紀錄已結案、指令以非零結束，依錯誤重跑 `question cleanup`。查不到時不執行，題目維持待答，等使用者在面板選「已完成」或在聊天說明，再依「收到 `lat-panel` 通知」或「聊天答覆與更正」記錄。
 
 ## 答覆格式
 
