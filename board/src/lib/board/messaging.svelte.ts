@@ -14,8 +14,6 @@ export interface Outcome {
 	reason: string | null;
 	/** After a refused wake: the open resume attempt the user may give up. */
 	abandon?: string | null;
-	/** A wake went through; `reason` says how it stands. */
-	woke?: boolean;
 }
 
 /** No answer came back, so the message may or may not have been typed into the client. */
@@ -108,7 +106,7 @@ class Messaging {
 
 		void this.load(controllerId);
 		const logNote = body.logError ? `（送出紀錄寫入失敗：${body.logError}）` : '';
-		if (body.ok) return { ok: true, reason: wakeText(body.entry) + logNote, woke: true };
+		if (body.ok) return { ok: true, reason: wakeText(body.entry) + logNote };
 		return { ok: false, reason: body.reason + logNote, abandon: body.abandon };
 	}
 

@@ -8,6 +8,7 @@
 	import { isInactive, type Controller } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
+	import SendButton from './SendButton.svelte';
 
 	let { controller }: { controller: Controller } = $props();
 
@@ -16,6 +17,8 @@
 	// All by controller ID: the box is reused when another controller is opened.
 	let inFlight = $state<Record<string, boolean>>({});
 	const sending = $derived(inFlight[controller.id] ?? false);
+	/** Sends that went through while their controller was open, for the button's check. */
+	let sent = $state(0);
 	let outcomes = $state<Record<string, Outcome>>({});
 	const outcome = $derived(outcomes[controller.id]);
 	// 「開新一輪 LAT」 starts unticked and is not remembered once a wake went through.
@@ -55,10 +58,10 @@
 			delete effort[id];
 		}
 		outcomes[id] = result;
-		toasts.show(
-			result.ok ? 'ok' : 'failed',
-			result.ok ? `${result.woke ? '' : '已送出'}${result.reason ?? ''}` : `${result.reason}（文字還在輸入框裡）`
-		);
+		// The button shows it went through; the sent log has the wake's state and any log error.
+		if (result.ok) {
+			if (id === controller.id) sent++;
+		} else toasts.show('failed', `${result.reason}（文字還在輸入框裡）`);
 	}
 
 	async function abandon(wakeId: string) {
@@ -85,9 +88,7 @@
 			: 'Enter 送出，Shift+Enter 換行'}）"
 		onsend={submit}
 	/>
-	<button class="primary" disabled={sending || !text.trim()}>
-		{sending ? '送出中…' : inactive ? '喚醒並送出' : '送出'}
-	</button>
+	<SendButton label={inactive ? '喚醒並送出' : '送出'} {sending} {sent} disabled={!text.trim()} />
 	{#if inactive}
 		<label class="round">
 			<input type="checkbox" bind:checked={() => newRound[controller.id] ?? false, (value) => (newRound[controller.id] = value)} />

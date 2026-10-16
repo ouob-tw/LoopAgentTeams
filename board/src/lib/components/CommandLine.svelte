@@ -12,11 +12,13 @@
 	import { isInactive, type Controller } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
+	import SendButton from './SendButton.svelte';
 
 	let { controllers, target }: { controllers: Controller[]; target: Controller | undefined } = $props();
 
 	let text = $state('');
 	let sending = $state(false);
+	let sent = $state(0);
 	let optionsOpen = $state(false);
 	const command = $derived(parseCommand(text, controllers, target, true));
 	const recipient = $derived(command.ok ? command.controller : text.trimStart().startsWith('@') ? undefined : target);
@@ -73,12 +75,15 @@
 			delete effort[to.id];
 			delete abandonable[to.id];
 			optionsOpen = false;
-		} else if (result.abandon) {
+			// The button shows it went through; the sent log has the wake's state and any log error.
+			sent++;
+			return;
+		}
+		if (result.abandon) {
 			abandonable[to.id] = result.abandon;
 			optionsOpen = true;
 		}
-		const done = wake ? `${result.reason ?? ''}` : `已送給 @${to.hcomName}${result.reason ?? ''}`;
-		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? done : `${result.reason}（文字還在輸入框裡）`);
+		toasts.show('failed', `${result.reason}（文字還在輸入框裡）`);
 	}
 
 	async function abandon() {
@@ -118,9 +123,7 @@
 	>
 		<SlidersHorizontal size="1.1em" />
 	</button>
-	<button class="primary send" disabled={sending || !text.trim()}>
-		{sending ? '送出中…' : waking ? '喚醒並送出' : '送出'}
-	</button>
+	<SendButton class="send" label={waking ? '喚醒並送出' : '送出'} {sending} {sent} disabled={!text.trim()} />
 
 	{#if optionsOpen && waking && recipient}
 		<div class="popup" role="group" aria-label="喚醒選項">
@@ -205,7 +208,7 @@
 		padding: 0 0.6rem;
 	}
 	/* Wide enough for 「喚醒並送出」, so the label change does not move the box. */
-	.send {
+	.cmd :global(.send) {
 		min-width: 7.5em;
 	}
 	/* Floats above the line; opening it moves nothing. */
