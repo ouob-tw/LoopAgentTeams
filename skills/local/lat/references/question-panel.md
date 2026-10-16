@@ -134,7 +134,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
 
 `question upsert`、`set-status`、`cleanup`、`resolve-help`，以及 activate、恢復時重綁與 deactivate，都會自動更新綁定窗格在 Herdr 側欄的名稱，主控不需另外執行：
 
-- 有待答時顯示 `<HCOM 名稱> ⚠待答{n}求助{n}`，數字是自己問題檔中狀態為「待答」、決策紀錄仍未結案的題目，依 `- kind: help` 分成求助與其他；兩者都是 0 或 deactivate 後恢復原名。
+- 有待答時顯示 `<短名> ⚠待答{n}求助{n}`，短名是 HCOM 名稱最後一個連字號後的部分（與分頁名稱 `lat-<短名>` 相同，沒有連字號時用全名）；數字是自己問題檔中狀態為「待答」、決策紀錄仍未結案的題目，依 `- kind: help` 分成求助與其他，數字為 0 的那一項不顯示（例：`tene ⚠待答1`、`tene ⚠求助2`）；兩者都是 0 或 deactivate 後恢復原名。
 - `question upsert` 寫入新題或升版時，另發一則同樣文字的 Herdr 內建通知；Herdr 因發太快或忙碌沒顯示時不重試。
 - 問題檔沒有綁定，或 shell 不在 Herdr workspace、`lat.panel` 未啟用時略過；改綁到新窗格時，舊窗格先恢復原名；Herdr 呼叫失敗只在標準錯誤留一行 `lat-panel: sidebar not updated: …`，題目照常寫入。
 

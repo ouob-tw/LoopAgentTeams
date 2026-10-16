@@ -1415,6 +1415,17 @@ def status_counts(questions_path, decisions_path):
     return counts["decide"], counts["help"]
 
 
+def status_text(hcom_name, decide, help_count):
+    """Sidebar text such as ``tene ⚠待答1``; empty when nothing is waiting.
+
+    The name is the part after the last hyphen, as in the ``lat-<name>`` tab
+    label, and a count of 0 is left out so the text fits the sidebar.
+    """
+    parts = "".join(f"{label}{count}" for label, count in (("待答", decide), ("求助", help_count))
+                    if count)
+    return f"{hcom_name.rsplit('-', 1)[-1]} ⚠{parts}" if parts else ""
+
+
 def _run_herdr(arguments, env=None, timeout=5):
     """Run one herdr CLI call; return ``(ok, stdout or failure reason)``."""
     try:
@@ -1481,7 +1492,7 @@ def refresh_status_display(questions_path, *, notify=False, config_dir=None, env
         name = binding["hcom_name"]
     except (OSError, ValueError, KeyError, TypeError) as error:
         return {"status": "failed", "reason": str(error)}
-    text = f"{name} ⚠待答{decide}求助{help_count}" if decide or help_count else ""
+    text = status_text(name, decide, help_count)
     ok, output = _report_display(pane, text, seq, env)
     result = {"status": ("shown" if text else "cleared") if ok else "failed", "text": text}
     if not ok:

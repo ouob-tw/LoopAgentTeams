@@ -112,9 +112,9 @@ class StatusDisplayTests(unittest.TestCase):
         self.assertEqual(self.upsert("D1", DECIDE_SECTION).stdout, "D1 r1\n")
         self.decision("H1", kind="help")
         self.assertEqual(self.upsert("H1", HELP_SECTION).returncode, 0)
-        self.assertEqual(self.displays(), [["--display-agent", "zono ⚠待答1求助0"],
+        self.assertEqual(self.displays(), [["--display-agent", "zono ⚠待答1"],
                                            ["--display-agent", "zono ⚠待答1求助1"]])
-        self.assertEqual(self.notifications(), [["zono ⚠待答1求助0", "--sound", "none"],
+        self.assertEqual(self.notifications(), [["zono ⚠待答1", "--sound", "none"],
                                                 ["zono ⚠待答1求助1", "--sound", "none"]])
         # Same content: the sidebar is refreshed but no new notification.
         self.assertEqual(self.upsert("D1", DECIDE_SECTION).stdout, "D1 r1\n")
@@ -122,6 +122,22 @@ class StatusDisplayTests(unittest.TestCase):
         self.assertEqual(self.displays()[-1], ["--display-agent", "zono ⚠待答1求助1"])
         self.assertEqual(self.upsert("D1", DECIDE_SECTION + "\n補充。\n").stdout, "D1 r2\n")
         self.assertEqual(len(self.notifications()), 3)
+
+    def test_status_text_uses_the_short_name_and_leaves_out_zero_counts(self):
+        panel = load_module()
+        for name, decide, help_count, text in (
+                ("zono-qa-kave-claude-tene", 1, 0, "tene ⚠待答1"),
+                ("team-task-orch", 0, 2, "orch ⚠求助2"),
+                ("zono", 1, 2, "zono ⚠待答1求助2"),
+                ("zono-impl-sezo", 0, 0, "")):
+            with self.subTest(name=name):
+                self.assertEqual(panel.status_text(name, decide, help_count), text)
+
+    def test_only_help_waiting_shows_the_help_count_alone(self):
+        self.decision("H1", kind="help")
+        self.upsert("H1", HELP_SECTION)
+        self.assertEqual(self.displays(), [["--display-agent", "zono ⚠求助1"]])
+        self.assertEqual(self.notifications(), [["zono ⚠求助1", "--sound", "none"]])
 
     def test_sequence_numbers_increase_so_herdr_keeps_the_latest_count(self):
         self.decision("D1")
@@ -140,7 +156,7 @@ class StatusDisplayTests(unittest.TestCase):
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertEqual(result.stderr, "")
         self.assertEqual(len(self.notifications()), 2)
-        self.assertEqual(self.displays()[-1], ["--display-agent", "zono ⚠待答2求助0"])
+        self.assertEqual(self.displays()[-1], ["--display-agent", "zono ⚠待答2"])
 
     def test_record_cleanup_and_zero_counts_restore_the_name(self):
         panel = load_module()
