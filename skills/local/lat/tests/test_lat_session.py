@@ -100,7 +100,7 @@ class SessionTests(unittest.TestCase):
             self.assertNotIn('recovery error', result.stdout)
             self.assertEqual(self.watcher_pid(), pid)
         self.assertEqual(len(self.fake_uv_log.read_text().splitlines()), 1)
-        result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
+        result = self.cli('deactivate', '--workspace', self.work,
                           script=installed_script)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.wait_for(lambda: not self.process_exists(pid))
@@ -159,7 +159,7 @@ class SessionTests(unittest.TestCase):
         rerun = self.cli(*args, script=script)
         self.assertEqual(rerun.returncode, 0, rerun.stderr)
         self.assertEqual(self.watcher_pid(), process.pid)
-        result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
+        result = self.cli('deactivate', '--workspace', self.work,
                           script=script)
         self.assertEqual(result.returncode, 0, result.stderr)
         process.wait(timeout=3)
@@ -176,7 +176,7 @@ class SessionTests(unittest.TestCase):
                 if changed == 'script':
                     script = SKILL / 'scripts/other-watch.py'
                 process = self.start_watcher_command(script, **overrides)
-                result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+                result = self.cli('deactivate', '--workspace', self.work)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIsNone(process.poll())
                 self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
@@ -300,8 +300,7 @@ class SessionTests(unittest.TestCase):
 
     def test_final_report_failure_can_retry_and_concurrent_hooks_write_once(self):
         self.activate()
-        self.assertEqual(self.cli('deactivate', '--workspace', self.work,
-                                  '--status', 'completed').returncode, 0)
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
         destination = self.root / 'reports'
         destination.write_text('blocked')
         failed = self.stop_hook('DONE: delivery')
@@ -376,8 +375,7 @@ class SessionTests(unittest.TestCase):
 
     def test_final_report_sync_failure_retries_sync_without_appending_duplicate(self):
         self.activate()
-        self.assertEqual(self.cli('deactivate', '--workspace', self.work,
-                                  '--status', 'completed').returncode, 0)
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
         shim = self.root / 'sync-fault.py'
         calls = self.root / 'sync-calls'
         shim.write_text(
@@ -699,8 +697,7 @@ class SessionTests(unittest.TestCase):
 
     def test_finished_session_starts_new_round_with_fresh_paths_and_fingerprint(self):
         self.activate()
-        self.assertEqual(self.cli('deactivate', '--workspace', self.work,
-                                 '--status', 'completed').returncode, 0)
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
         previous = json.loads(self.record.read_text())
         previous['rule_fingerprint'] = {'SKILL.md': 'previous-rule-content'}
         self.record.write_text(json.dumps(previous))
@@ -789,8 +786,7 @@ class SessionTests(unittest.TestCase):
 
     def test_unrecognizable_finished_record_is_refused_without_changes(self):
         self.activate()
-        self.assertEqual(self.cli('deactivate', '--workspace', self.work,
-                                 '--status', 'cancelled').returncode, 0)
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
         valid = json.loads(self.record.read_text())
         broken = [dict(valid, status='unknown'), dict(valid, client='claude'),
                   dict(valid, session_id=OTHER), dict(valid, role='worker'),
@@ -811,7 +807,7 @@ class SessionTests(unittest.TestCase):
         self.activate()
         for failure, number in (('binding', 2), ('watcher', 3)):
             with self.subTest(failure=failure):
-                result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+                result = self.cli('deactivate', '--workspace', self.work)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 env, log = self.tab_env()
                 failed_env = dict(env)
@@ -846,8 +842,7 @@ class SessionTests(unittest.TestCase):
     def test_new_round_recovery_stop_and_deactivate_use_only_current_fields(self):
         self.activate()
         self.decisions.joinpath('LAT-A.md').write_text('- status: approved\n')
-        self.assertEqual(self.cli('deactivate', '--workspace', self.work,
-                                 '--status', 'completed').returncode, 0)
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
         previous = json.loads(self.record.read_text())
         progress = self.work / 'new-progress.md'
         progress.write_text('New progress\n')
@@ -872,10 +867,10 @@ class SessionTests(unittest.TestCase):
         decisions.joinpath('LAT-A.md').write_text('- status: approved\n')
         self.assert_stop_block(self.stop_hook(), '不是 pending')
         pid = self.watcher_pid()
-        result = self.cli('deactivate', '--workspace', self.work, '--status', 'cancelled')
+        result = self.cli('deactivate', '--workspace', self.work)
         self.assertEqual(result.returncode, 0, result.stderr)
         current = json.loads(self.record.read_text())
-        self.assertEqual(current['status'], 'cancelled')
+        self.assertEqual(current['status'], 'ended')
         self.assertEqual(current['history'], [previous])
         self.assert_silent(self.hook())
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
@@ -1128,7 +1123,7 @@ class SessionTests(unittest.TestCase):
         )
         self.assertEqual(activated.returncode, 0, activated.stderr)
         deactivate_args = (
-            'deactivate', '--workspace', self.work, '--status', 'completed',
+            'deactivate', '--workspace', self.work,
             '--session-id', SESSION,
         )
 
@@ -1157,7 +1152,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.watcher_pid(), pid)
         self.assertEqual(self.fake_uv_log.read_text().splitlines(), first_log)
 
-        result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+        result = self.cli('deactivate', '--workspace', self.work)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.wait_for(lambda: not self.process_exists(pid))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
@@ -1197,7 +1192,7 @@ class SessionTests(unittest.TestCase):
         pid_path.parent.mkdir(parents=True)
         pid_path.write_text(f'{process.pid}\n')
 
-        result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+        result = self.cli('deactivate', '--workspace', self.work)
 
         self.assertNotEqual(result.returncode, 0)
         self.assertIn('process group does not match', result.stderr)
@@ -1222,7 +1217,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(activated.returncode, 0, activated.stderr)
         pid = self.watcher_pid()
 
-        stopped = self.cli('deactivate', '--workspace', self.work, '--status', 'completed')
+        stopped = self.cli('deactivate', '--workspace', self.work)
 
         self.assertEqual(stopped.returncode, 0, stopped.stderr)
         self.wait_for(lambda: not self.process_exists(pid))
@@ -1308,11 +1303,11 @@ class SessionTests(unittest.TestCase):
         legacy = self.write_legacy_record(legacy_note='keep me')
 
         result = self.cli(
-            'deactivate', '--workspace', self.work, '--status', 'completed',
+            'deactivate', '--workspace', self.work,
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(self.record.read_text()), dict(legacy, status='completed'))
+        self.assertEqual(json.loads(self.record.read_text()), dict(legacy, status='ended'))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
 
     def activate_bound(self):
@@ -1463,7 +1458,7 @@ class SessionTests(unittest.TestCase):
 
     def test_hook_does_not_rename_tab_of_deactivated_session(self):
         env = self.activate_bound()
-        stopped = self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
+        stopped = self.cli('deactivate', '--workspace', self.work,
                            extra_env=env)
         self.assertEqual(stopped.returncode, 0, stopped.stderr)
         env, log = self.tab_env()
@@ -1479,7 +1474,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(self.binding(), before)
         self.assertIsNone(self.binding(OTHER))
 
-        stopped = self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
+        stopped = self.cli('deactivate', '--workspace', self.work,
                            extra_env=env)
         self.assertEqual(stopped.returncode, 0, stopped.stderr)
         self.assert_silent(self.hook(extra_env=resumed, source='resume'))
@@ -1505,7 +1500,7 @@ class SessionTests(unittest.TestCase):
             try:
                 args = argparse.Namespace(
                     workspace=self.work, client='codex', session_id=SESSION,
-                    status='completed',
+                    successor=None,
                 )
                 with patch('builtins.print'):
                     helper.deactivate(args)
@@ -1539,7 +1534,7 @@ class SessionTests(unittest.TestCase):
 
         self.assertFalse(deactivate_thread.is_alive())
         self.assertEqual(errors, [])
-        self.assertEqual(json.loads(self.record.read_text())['status'], 'completed')
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'ended')
         self.assertEqual((hook_process.returncode, hook_stdout, hook_stderr), (0, '', ''))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
 
@@ -1556,7 +1551,7 @@ class SessionTests(unittest.TestCase):
         self.assertNotEqual(first_pid, second_pid)
 
         stopped = self.cli(
-            'deactivate', '--workspace', self.work, '--status', 'completed',
+            'deactivate', '--workspace', self.work,
             '--session-id', SESSION, session=OTHER,
         )
         self.assertEqual(stopped.returncode, 0, stopped.stderr)
@@ -1607,7 +1602,8 @@ class SessionTests(unittest.TestCase):
         original = json.loads(self.record.read_text())
         for field, value in (('client', 'claude'), ('session_id', OTHER),
                              ('role', 'executor'), ('workspace', str(self.root)),
-                             ('status', 'completed'), ('status', 'cancelled'),
+                             ('status', 'ended'), ('status', 'completed'),
+                             ('status', 'cancelled'),
                              ('status', 'cleared')):
             record = dict(original, progress_path='/missing')
             record[field] = value
@@ -1638,18 +1634,46 @@ class SessionTests(unittest.TestCase):
             self.assertNotIn(other, text)
 
     def test_deactivate_preserves_record_and_stops_recovery(self):
+        for extra, successor in (((), None), (('--successor', 'nova'), 'nova'),
+                                 (('--status', 'completed'), None),
+                                 (('--status', 'cancelled'), None)):
+            with self.subTest(extra=extra):
+                if self.record.exists():
+                    self.record.unlink()
+                self.activate()
+                result = self.cli('deactivate', '--workspace', self.work, *extra,
+                                  '--session-id', SESSION, session=OTHER)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                record = json.loads(self.record.read_text())
+                self.assertEqual(record['status'], 'ended')
+                self.assertEqual(record.get('successor'), successor)
+                self.assert_silent(self.hook())
+                self.assert_silent(self.hook(source='resume'))
+
+    def test_deactivate_rejects_invalid_successor_without_changes(self):
+        self.activate()
+        original = self.record.read_bytes()
+        pid = self.watcher_pid()
+        result = self.cli('deactivate', '--workspace', self.work, '--successor', 'bad name')
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('Invalid successor', result.stderr)
+        self.assertEqual(self.record.read_bytes(), original)
+        self.assertEqual(self.watcher_pid(), pid)
+
+    def test_older_finished_statuses_still_start_a_new_round(self):
         for status in ('completed', 'cancelled'):
             with self.subTest(status=status):
                 if self.record.exists():
                     self.record.unlink()
                 self.activate()
-                result = self.cli('deactivate', '--workspace', self.work,
-                                  '--status', status, '--session-id', SESSION,
-                                  session=OTHER)
-                self.assertEqual(result.returncode, 0, result.stderr)
-                self.assertEqual(json.loads(self.record.read_text())['status'], status)
+                self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+                previous = dict(json.loads(self.record.read_text()), status=status)
+                self.record.write_text(json.dumps(previous))
                 self.assert_silent(self.hook())
-                self.assert_silent(self.hook(source='resume'))
+                self.activate()
+                current = json.loads(self.record.read_text())
+                self.assertEqual(current['status'], 'active')
+                self.assertEqual(current['history'][-1]['status'], status)
 
     def test_activation_requires_environment_id_and_does_not_reset_active_record(self):
         result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
@@ -1791,8 +1815,7 @@ class SessionTests(unittest.TestCase):
                                         payload=dict(payload, **changes)))
         # A Codex hook never answers a Claude record.
         self.assert_silent(self.cli('hook', payload=payload))
-        result = self.cli('deactivate', '--client', 'claude', '--workspace', self.work,
-                          '--status', 'completed', '--session-id', SESSION, session=OTHER)
+        result = self.cli('deactivate', '--client', 'claude', '--workspace', self.work, '--session-id', SESSION, session=OTHER)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_silent(self.cli('hook', '--client', 'claude', payload=payload))
 
@@ -2083,13 +2106,13 @@ class SessionTests(unittest.TestCase):
         self.assert_only_pointer(self.hook(extra_env=resumed, source='resume'))
         self.assertEqual(self.sidebar_calls(log)[-1], shown.format('p2'))
         self.assertNotIn('herdr-pane', self.sidebar_calls(log)[-2])
-        result = self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
+        result = self.cli('deactivate', '--workspace', self.work,
                           extra_env=env)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(self.sidebar_calls(log)[-1],
                          'pane report-metadata p2 --source lat.panel.status --clear-display-agent')
         calls = len(self.sidebar_calls(log))
-        self.assertEqual(self.cli('deactivate', '--workspace', self.work, '--status', 'completed',
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work,
                                   extra_env=env).returncode, 0)
         self.assertEqual(len(self.sidebar_calls(log)), calls)
 

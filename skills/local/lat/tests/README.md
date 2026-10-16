@@ -20,7 +20,7 @@ uv run --no-project --with textual==8.2.8 python -m unittest discover -s tests
 2. `/compact` 後要求繼續。從工具紀錄核對：首個相依動作之前完整重讀紀錄、SKILL、兩份 references、進度與待決紀錄，並核對 tracker；截斷讀取與模型自稱記得均不算通過。
 3. 同 session 再 compact 一次，確認同樣恢復並有進度，沒有全文累積或無進度迴圈。完成後 deactivate，再 compact／resume 應零注入。
 4. 另一次真實 auto compact：僅對測試程序設定 `-c model_auto_compact_token_limit=<基礎context加餘量>`，用有限假工具輸出跨過門檻；確認真實 auto boundary 的提示在當次 continuation 前，以及首個相依動作前重讀。無法觸發記 NOT_EXECUTED，不用模擬 hook 取代。
-5. 行為核對：已授權工作繼續；沒有真人答覆的 pending 仍阻擋；缺獨立 review 不宣告完成。負向核對同 repo 的 no-LAT session、執行 Agent、completed session 零注入。記錄 PASS／FAIL／UNPROVEN／NOT_EXECUTED。
+5. 行為核對：已授權工作繼續；沒有真人答覆的 pending 仍阻擋；缺獨立 review 不宣告完成。負向核對同 repo 的 no-LAT session、執行 Agent、已停用（ended）session 零注入。記錄 PASS／FAIL／UNPROVEN／NOT_EXECUTED。
 
 提示 token 數以 `o200k_base` 為代理，目標 ≤300；計入實際紀錄路徑。tokenizer 僅供驗證，不是 helper 依賴。hook 契約與信任機制見 [Codex 官方 hooks 文件](https://learn.chatgpt.com/docs/hooks)；已實測基準為 Codex 0.158.0。
 

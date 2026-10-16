@@ -30,6 +30,8 @@ MATCHER = '^(compact|resume)$'
 COMMAND_NAMES = ('lat-session.py', 'codex-lat-session.py')
 WATCH_SCRIPT = SKILL_DIR / 'scripts/lat-watch.py'
 HCOM_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
+# Older records stored 'completed' or 'cancelled'; all three mean the round ended.
+ENDED = ('ended', 'completed', 'cancelled')
 # A last line with one of these tags asks the user a recorded question.
 QUESTION_TAGS = ('DECIDE:', 'HELP:')
 
@@ -342,7 +344,7 @@ def activate(args):
     original = current_bytes(path)
     if path.exists():
         existing = read_json(path)
-        if existing.get('status') in ('completed', 'cancelled'):
+        if existing.get('status') in ENDED:
             identity = ('client', 'session_id', 'role', 'workspace')
             required = set(record) - {'tasks_path', 'hcom_name'} if legacy_record(existing) else set(record)
             if (any(existing.get(key) != record[key] for key in identity)
@@ -423,6 +425,8 @@ def pointer(path):
 
 
 def deactivate(args):
+    if args.successor and not HCOM_NAME.fullmatch(args.successor):
+        raise ValueError('Invalid successor HCOM name; record unchanged')
     workspace = args.workspace.resolve(strict=True)
     sid = session_id(args.session_id or os.environ.get(SESSION_ENV[args.client]))
     path = workspace / '.lat/sessions' / f'{sid}.json'
@@ -446,7 +450,9 @@ def deactivate(args):
         removed = panel.unbind_controller(sid)
         if record['status'] == 'active' and not legacy_record(record):
             record['final_report_pending'] = True
-        record['status'] = args.status
+        record['status'] = 'ended'
+        if args.successor:
+            record['successor'] = args.successor
         write_json(path, record, original)
     print(path)
     print(json.dumps({'removed': removed}))
@@ -701,7 +707,7 @@ def append_report(record, message):
         return
     path = reports_path(record)
     directory = path.parent
-    final = record['status'] in ('completed', 'cancelled')
+    final = record['status'] in ENDED
     if final and not record.get('final_report_pending'):
         return
     round_number = len(record.get('history', [])) + 1
@@ -887,7 +893,7 @@ def hook(client):
         if event == 'Stop':
             if 'status' not in record:
                 raise ValueError('Incomplete controller identity')
-            if record.get('status') in ('active', 'completed', 'cancelled'):
+            if record.get('status') == 'active' or record.get('status') in ENDED:
                 report_stop(record, payload)
             return
         if legacy_record(record):
@@ -920,9 +926,11 @@ def main():
     start.add_argument('--decisions', type=Path, required=True)
     start.add_argument('--tasks', type=Path, required=True)
     start.add_argument('--hcom-name')
-    stop = sub.add_parser('deactivate', help='Complete/cancel a controller, retaining its record')
+    stop = sub.add_parser('deactivate', help='End a controller, retaining its record')
     stop.add_argument('--workspace', type=Path, required=True)
-    stop.add_argument('--status', choices=('completed', 'cancelled'), required=True)
+    stop.add_argument('--successor', help='HCOM name of the controller taking over')
+    # Accepted for older callers; every deactivation ends as 'ended'.
+    stop.add_argument('--status', choices=('completed', 'cancelled'), help=argparse.SUPPRESS)
     stop.add_argument('--session-id', help='Explicit ID for manual stale-record deactivation')
     sub.add_parser('hook', help='Read SessionStart or Stop payload on stdin')
     for action in ('install', 'uninstall'):
