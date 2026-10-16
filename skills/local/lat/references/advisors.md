@@ -27,7 +27,7 @@
 | `pending` | 交給使用者，只有真人答覆能解除。 | `- advisor: needs-human`、`- advisor: exempt <類別>` 或 `- advisor: late <結論>` |
 
 - 參謀行讀法比照狀態行：取第一行以 `- advisor:` 開頭的行，鍵名與值都不分大小寫；第一個字決定結論，`exempt`、`late` 的第二個字決定類別或結論，其後可接註記。同家降級時在結論後加 `same-family-degraded`，例如 `- advisor: needs-human same-family-degraded`。
-- 結束回合的 DECIDE 檢查要求每個寫出的題號都有 `needs-human`、`exempt <spec-confirmation｜ticket-confirmation｜requirement-discussion｜account-quota>` 或 `late <needs-human｜resolved｜self-check>` 參謀行；缺少或寫錯就攔下，補做順序見 [主控恢復程序](recovery.md) 的「回合結束檢查」。HELP 沒有題號，不受工具檢查，仍須先諮詢。
+- 結束回合的 DECIDE／HELP 檢查要求每個寫出的題號都有 `needs-human`、`exempt <spec-confirmation｜ticket-confirmation｜requirement-discussion｜account-quota>` 或 `late <needs-human｜resolved｜self-check>` 參謀行；缺少或寫錯就攔下，補做順序見 [主控恢復程序](recovery.md) 的「回合結束檢查」。
 
 `## 參謀意見` 每位參謀一行：`<HCOM 名稱>（<client> <模型>）：<結論>；<理由與引用>`；再議時另起一行寫第二輪。`advisor-resolved` 紀錄另寫 `- authority:` 行，列出引用的授權來源。
 
@@ -77,11 +77,11 @@
 
 - 參謀定案不是真人核准，而是「這件事已在既有真人授權內」的判斷；`advisor-resolved` 的效力完全來自它引用的授權來源。
 - 主控與執行 Agent 的「雙方核對」：引用的是已確認 Spec 段落，或確有真人答覆證據的待決紀錄，就視為既有授權內，可以放行。引用缺失、引用的紀錄沒有真人答覆，或該事項先前已是送交真人的 `pending`，都停止相依工作並回報。
-- `advising` 只用於還沒問過使用者的事。已寫進面板，或已用 DECIDE／HELP 問過使用者的 `pending` 事項，只有真人答覆能解除；參謀意見不能把它改成 `advisor-resolved` 或其他狀態。
+- `advising` 只用於還沒問過使用者的事。已寫進面板，或已用 DECIDE／HELP 問過使用者的 `pending` 事項，只有真人答覆能解除；參謀意見不能把它改成 `advisor-resolved` 或其他狀態。例外是求助題由主控自行查證完成，依 [待答問題面板](question-panel.md#求助題結案) 結案。
 
 ### 補做諮詢
 
-主控漏了參謀就先寫面板或發出 DECIDE（例如被 DECIDE 檢查攔下）時，仍須補做諮詢，但題目維持 `pending`，參謀行寫 `- advisor: late <結論>`：
+主控漏了參謀就先寫面板或發出 DECIDE／HELP（例如被回合結束檢查攔下）時，仍須補做諮詢，但題目維持 `pending`，參謀行寫 `- advisor: late <結論>`：
 
 - `late needs-human`：照常重列題目。
 - `late resolved`／`late self-check`：題目不撤回；重列時在 `➡️` 行附參謀的建議做法與引用的授權來源，讓使用者可以直接採納，仍以真人答覆為準。

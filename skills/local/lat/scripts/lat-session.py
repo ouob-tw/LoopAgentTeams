@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Codex/Claude LAT controller records, recovery and DECIDE checks (stdlib only)."""
+"""Codex/Claude LAT controller records, recovery and DECIDE/HELP checks (stdlib only)."""
 import argparse
 import copy
 import difflib
@@ -18,7 +18,8 @@ import tempfile
 import time
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lat_decision_status import read_advisor_error, read_decision_status, read_spec_consensus_error
+from lat_decision_status import (read_advisor_error, read_decision_kind, read_decision_status,
+                                 read_spec_consensus_error)
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 GROUP_NAME = 'lat-codex-recovery'
@@ -29,6 +30,8 @@ MATCHER = '^(compact|resume)$'
 COMMAND_NAMES = ('lat-session.py', 'codex-lat-session.py')
 WATCH_SCRIPT = SKILL_DIR / 'scripts/lat-watch.py'
 HCOM_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
+# A last line with one of these tags asks the user a recorded question.
+QUESTION_TAGS = ('DECIDE:', 'HELP:')
 
 
 def panel_module():
@@ -227,8 +230,10 @@ def refresh_binding(record):
     try:
         panel = panel_module()
         if panel.panel_enabled():
-            panel.bind_controller(record['hcom_name'], record['client'], record['session_id'],
-                                  record['workspace'], *herdr)
+            binding, _, _ = panel.bind_controller(
+                record['hcom_name'], record['client'], record['session_id'],
+                record['workspace'], *herdr)
+            panel.refresh_status_display(binding['questions_path'])
     except (OSError, ValueError):
         pass
 
@@ -390,6 +395,9 @@ def activate(args):
             'legacy_ignored': legacy_ignored,
         }, ensure_ascii=False))
         print(f'問題檔：{binding["questions_path"]}')
+        display = panel.refresh_status_display(binding['questions_path'])
+        if display['status'] == 'failed':
+            print(f'側欄未更新：{display["reason"]}')
     else:
         print('面板未啟用，略過綁定')
     if ensure_watcher(record, path) is None:
@@ -423,7 +431,12 @@ def deactivate(args):
         if any(record.get(key) != value for key, value in expected.items()):
             raise ValueError('Controller identity does not match; record unchanged')
         _stop_watcher_locked(record)
-        removed = panel_module().unbind_controller(sid)
+        panel = panel_module()
+        try:
+            panel.clear_status_display(panel.resolve_session_binding(sid))
+        except (OSError, ValueError, KeyError):
+            pass
+        removed = panel.unbind_controller(sid)
         if record['status'] == 'active' and not legacy_record(record):
             record['final_report_pending'] = True
         record['status'] = args.status
@@ -545,14 +558,57 @@ def is_lat_command(handler):
         return False
 
 
-def stop_check(record, payload):
-    message = payload['last_assistant_message']
+def question_tag(message):
+    """The DECIDE/HELP tag that starts the last nonblank line, or None."""
+    lines = [line for line in message.splitlines() if line.strip()]
+    return next((tag[:-1] for tag in QUESTION_TAGS if lines and lines[-1].startswith(tag)), None)
+
+
+def question_identifiers(message):
+    """`❓ **<ID> r<N>**` headings plus `<ID> r<N>` on the last line's tag."""
     last = [line for line in message.splitlines() if line.strip()][-1]
     identifiers = set(re.findall(
         r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', message, re.MULTILINE))
     identifiers.update(re.findall(
         r'(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)[ \t]+r([0-9]+)(?![A-Za-z0-9_])',
-        last[len('DECIDE:'):]))
+        last.split(':', 1)[1]))
+    return identifiers
+
+
+def announced_questions(record):
+    """Question IDs and revisions this session already asked in a reported DECIDE/HELP.
+
+    An unreadable report log counts as nothing asked; the report write warns about it.
+    """
+    announced = set()
+    try:
+        lines = reports_path(record).read_bytes().splitlines()
+    except OSError:
+        return announced
+    for line in lines:
+        try:
+            item = json.loads(line)
+        except (ValueError, UnicodeDecodeError):
+            continue
+        if (isinstance(item, dict) and item.get('tag') in ('DECIDE', 'HELP')
+                and isinstance(item.get('message'), str) and question_tag(item['message'])):
+            announced |= question_identifiers(item['message'])
+    return announced
+
+
+def hold_once(payload, reason):
+    """Block the first Stop of a turn; later ones only leave a visible warning."""
+    if payload.get('stop_hook_active'):
+        print(json.dumps({'systemMessage': reason + ' 本回合已繼續過，不再攔下。'}, ensure_ascii=False))
+        return False
+    print(json.dumps({'decision': 'block', 'reason': reason}, ensure_ascii=False))
+    return True
+
+
+def stop_check(record, payload):
+    message = payload['last_assistant_message']
+    tag = question_tag(message)
+    identifiers = question_identifiers(message)
     problems = []
     if not identifiers:
         problems.append('沒有寫出題號與版本')
@@ -571,6 +627,9 @@ def stop_check(record, payload):
             problems.append(f'{identifier} r{revision}：沒有待決紀錄')
         elif status.error is None and status.status != 'pending':
             problems.append(f'{identifier} r{revision}：紀錄不是 pending')
+        if status is not None and tag == 'HELP' and read_decision_kind(
+                decisions / f'{identifier}.md') != 'help':
+            problems.append(f'{identifier} r{revision}：HELP 題的紀錄沒有 `- kind: help`')
         if status is not None:
             advisor_error = read_advisor_error(decisions / f'{identifier}.md')
             if advisor_error:
@@ -600,20 +659,19 @@ def stop_check(record, payload):
                         for path, reason in unreadable
                         if path.stem not in statuses or not statuses[path.stem].error)
     if not problems:
+        if identifiers <= announced_questions(record):
+            listed = '、'.join(f'{identifier} r{revision}'
+                              for identifier, revision in sorted(identifiers))
+            return hold_once(payload, (
+                f'LAT {tag} 檢查未通過：{listed} 已在先前訊息以 DECIDE／HELP 問過，版本沒變。'
+                '這則訊息的最後一行改以 `NO REPLY: ` 開頭；題目仍待答，側欄會持續顯示。'
+                '只有新題或改版才再標 DECIDE／HELP。'))
         return
-    reason = 'LAT DECIDE 檢查未通過：' + '；'.join(problems) + (
-        '。Spec 確認題先更新 Spec 共識 → 跑檢查工具 → 確認題寫明共識版本。補做順序：寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重列題目。')
-    if payload.get('stop_hook_active'):
-        print(json.dumps({'systemMessage': reason + ' 本回合已繼續過，不再攔下。'}, ensure_ascii=False))
-    else:
-        print(json.dumps({'decision': 'block', 'reason': reason}, ensure_ascii=False))
-        return True
+    return hold_once(payload, f'LAT {tag} 檢查未通過：' + '；'.join(problems) + (
+        '。Spec 確認題先更新 Spec 共識 → 跑檢查工具 → 確認題寫明共識版本。補做順序：寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重列題目。'))
 
 
-def append_report(record, message):
-    """Append one allowed Stop; the report log also guards the final record."""
-    if legacy_record(record):
-        return
+def reports_path(record):
     override = os.environ.get('LAT_REPORTS_DIR')
     state = os.environ.get('XDG_STATE_HOME')
     directory = (Path(override) if override else
@@ -621,6 +679,15 @@ def append_report(record, message):
                   Path.home() / '.local/state') / 'lat/reports')
     if not directory.is_absolute():
         raise ValueError('LAT_REPORTS_DIR must be absolute')
+    return directory / f'{record["session_id"]}.jsonl'
+
+
+def append_report(record, message):
+    """Append one allowed Stop; the report log also guards the final record."""
+    if legacy_record(record):
+        return
+    path = reports_path(record)
+    directory = path.parent
     final = record['status'] in ('completed', 'cancelled')
     if final and not record.get('final_report_pending'):
         return
@@ -633,7 +700,6 @@ def append_report(record, message):
                   tag=match[1] if match else '', summary=match[2] if match else '',
                   message=message, final=final)
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
-    path = directory / f'{record["session_id"]}.jsonl'
     with (directory / f'{record["session_id"]}.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         with path.open('a+b') as stream:
@@ -660,13 +726,13 @@ def append_report(record, message):
 
 def report_stop(record, payload):
     if record['status'] == 'active':
-        lines = [line for line in payload['last_assistant_message'].splitlines() if line.strip()]
-        if lines and lines[-1].startswith('DECIDE:'):
+        tag = question_tag(payload['last_assistant_message'])
+        if tag:
             try:
                 if stop_check(record, payload):
                     return
             except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
-                print(json.dumps({'systemMessage': f'LAT DECIDE 檢查發生錯誤，未攔下：{exc}'},
+                print(json.dumps({'systemMessage': f'LAT {tag} 檢查發生錯誤，未攔下：{exc}'},
                                  ensure_ascii=False))
     try:
         append_report(record, payload['last_assistant_message'])
@@ -821,9 +887,9 @@ def hook(client):
         context(pointer(path))
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         if event == 'Stop':
-            lines = [line for line in message.splitlines() if line.strip()]
-            if lines and lines[-1].startswith('DECIDE:'):
-                print(json.dumps({'systemMessage': f'LAT DECIDE 檢查發生錯誤，未攔下：{exc}'},
+            tag = question_tag(message)
+            if tag:
+                print(json.dumps({'systemMessage': f'LAT {tag} 檢查發生錯誤，未攔下：{exc}'},
                                  ensure_ascii=False))
             else:
                 print(f'LAT report warning: {exc}', file=sys.stderr)
