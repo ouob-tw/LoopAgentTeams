@@ -162,7 +162,7 @@
 		if (type !== 'enter') return;
 		move((trail, depth) => arrive(addressed(), depth, trail));
 		// After the first writes, which may put the list in front of the address for a moment.
-		if (view?.kind === 'missing') queue(() => restore(addressed()));
+		if (view?.kind === 'missing') queue(() => void restore(addressed()));
 	});
 	/** Set while the archive is read for an item the address names, so it is not called missing
 	 *  before then; the first render is such a case too. */
