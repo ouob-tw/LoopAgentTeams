@@ -132,9 +132,17 @@
 		menu = null;
 	});
 
-	function toggle(kind: Kind) {
-		if (reason(kind)) return;
-		menu = menu === kind ? null : kind;
+	/** Opening a menu reads whether the controller can switch now: the status kept for the label
+	 *  may be up to 30 s old, and a turn can end without the roster changing. A part that looked
+	 *  blocked opens once the fresh read clears it. */
+	async function toggle(kind: Kind) {
+		if (menu === kind) return close();
+		if (!controller) return;
+		const target = id;
+		const read = switching.load(target);
+		if (reason(kind)) await read;
+		if (target !== id || reason(kind)) return;
+		menu = kind;
 	}
 
 	function close(focus = false) {
@@ -177,8 +185,11 @@
 
 	/** Send both staged values as one switch; a guard that holds now keeps them staged. */
 	async function apply() {
-		if (blocked) return toasts.show('failed', `${blocked}，沒有送出（選好的值還留著）`);
 		const target = id;
+		// Checked against a fresh read, not the label's kept one.
+		if (controller) await switching.load(target);
+		if (target !== id) return;
+		if (blocked) return toasts.show('failed', `${blocked}，沒有送出（選好的值還留著）`);
 		const choice = { model: staged[target]?.model ?? null, effort: staged[target]?.effort ?? null };
 		const result = await switching.request(target, choice);
 		if (result?.ok) delete staged[target];
