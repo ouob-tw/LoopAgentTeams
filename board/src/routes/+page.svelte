@@ -178,10 +178,10 @@
 		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && (board.archive === null || board.earlierFrom)) {
 			seeking = true;
 			if (board.archive === null) await board.loadArchive();
-			// Each round must get further back; one that fails or does not stops. A page the view is
-			// already reading is left to it.
+			// Each round must get further back; one that fails or does not stops. A page the archive
+			// view is already reading counts as a round.
 			let from = board.earlierFrom;
-			while (own === restores && viewAt(place)?.kind === 'missing' && from && board.archiveEarlier !== 'loading') {
+			while (own === restores && viewAt(place)?.kind === 'missing' && from) {
 				await board.loadEarlier();
 				if (board.archiveEarlier === 'failed' || board.earlierFrom === from) break;
 				from = board.earlierFrom;
