@@ -183,10 +183,10 @@
 
 	const applyText = $derived(`切換為 ${short('model', shown('model'))}・${short('effort', shown('effort'))}，會重開主控一次`);
 
-	/** Send both staged values as one switch; a guard that holds now keeps them staged. */
 	/** Set from the first click until the switch is answered, so a second click sends nothing. */
 	let applying = false;
 
+	/** Send both staged values as one switch; a guard that holds now keeps them staged. */
 	async function apply() {
 		if (applying) return;
 		applying = true;
