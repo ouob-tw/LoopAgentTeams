@@ -35,15 +35,6 @@ export function samePlace(a: Place, b: Place): boolean {
 	return searchOf(a) === searchOf(b);
 }
 
-/** The place a missing screen stands for is still the address, so it is never compared. */
-export function placeOf(view: View): Place | undefined {
-	if (view === null) return null;
-	if (view.kind === 'item') return { kind: 'item', key: view.item.key };
-	if (view.kind === 'controller') return { kind: 'controller', id: view.id };
-	if (view.kind === 'launch') return view;
-	return undefined;
-}
-
 /** The screen for a place: an item from the copies opened before on this page, then from the inbox
  *  and the loaded archive. */
 export function viewOf(
@@ -72,13 +63,13 @@ export interface Trail {
  * names a screen but has no depth was typed or opened from elsewhere: the list goes in behind it,
  * so going back reaches the list before leaving the board.
  */
-export function enter(place: Place, depth: number | undefined, trail: Trail): void {
+export function arrive(place: Place, depth: number | undefined, trail: Trail): void {
 	if (depth !== undefined) return;
 	trail.replace(null, 0);
 	if (place !== null) trail.push(place, 1);
 }
 
 /** Open a screen from the one at `here`. Opening the open screen again adds nothing to go back to. */
-export function open(next: Place, here: { place: Place; depth: number }, trail: Trail): void {
+export function advance(next: Place, here: { place: Place; depth: number }, trail: Trail): void {
 	if (!samePlace(next, here.place)) trail.push(next, here.depth + 1);
 }

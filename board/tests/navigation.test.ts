@@ -3,10 +3,9 @@
 // its first one, and whose reload keeps every entry with its depth.
 import { expect, test } from 'bun:test';
 import {
-	enter,
-	open,
+	advance,
+	arrive,
 	placeIn,
-	placeOf,
 	samePlace,
 	searchOf,
 	viewOf,
@@ -43,10 +42,10 @@ class BrowserHistory implements Trail {
 }
 
 /** The board on a page: what it shows, from the history's current entry. */
-function board(history: BrowserHistory) {
-	enter(history.place, history.depth, history);
+function boardOn(history: BrowserHistory) {
+	arrive(history.place, history.depth, history);
 	return {
-		open: (next: Place) => open(next, { place: history.place, depth: history.depth ?? 0 }, history),
+		open: (next: Place) => advance(next, { place: history.place, depth: history.depth ?? 0 }, history),
 		/** The board's "←", which the page shows on every screen but the list. */
 		back: () => {
 			expect(history.place).not.toBeNull();
@@ -78,13 +77,13 @@ test('every place survives the address, keys with any characters included', () =
 
 test('question, its controller, back to the question, back to the list, then back leaves the board', () => {
 	const history = new BrowserHistory();
-	const page = board(history);
-	page.open(QUESTION);
-	page.open(CONTROLLER);
+	const screen = boardOn(history);
+	screen.open(QUESTION);
+	screen.open(CONTROLLER);
 
-	page.back();
+	screen.back();
 	expect(history.place).toEqual(QUESTION);
-	page.back();
+	screen.back();
 	expect(history.place).toBeNull();
 	expect(history.left).toBe(false);
 	history.back();
@@ -93,9 +92,9 @@ test('question, its controller, back to the question, back to the list, then bac
 
 test("a controller's report goes back to the controller, the same by the phone's back", () => {
 	const history = new BrowserHistory();
-	const page = board(history);
-	page.open(CONTROLLER);
-	page.open(REPORT);
+	const screen = boardOn(history);
+	screen.open(CONTROLLER);
+	screen.open(REPORT);
 	history.back();
 	expect(history.place).toEqual(CONTROLLER);
 	history.back();
@@ -105,30 +104,30 @@ test("a controller's report goes back to the controller, the same by the phone's
 
 test('opening the open screen again adds nothing to go back to', () => {
 	const history = new BrowserHistory();
-	const page = board(history);
-	page.open(REPORT);
-	page.open(REPORT);
-	page.back();
+	const screen = boardOn(history);
+	screen.open(REPORT);
+	screen.open(REPORT);
+	screen.back();
 	expect(history.place).toBeNull();
 });
 
 test('a new controller opened from the form goes back to the form', () => {
 	const history = new BrowserHistory();
-	const page = board(history);
-	page.open({ kind: 'launch' });
-	page.open(CONTROLLER);
-	page.back();
+	const screen = boardOn(history);
+	screen.open({ kind: 'launch' });
+	screen.open(CONTROLLER);
+	screen.back();
 	expect(history.place).toEqual({ kind: 'launch' });
 });
 
 test('a reload keeps the screen and the way back', () => {
 	const history = new BrowserHistory();
-	const page = board(history);
-	page.open(QUESTION);
-	page.open(CONTROLLER);
+	const screen = boardOn(history);
+	screen.open(QUESTION);
+	screen.open(CONTROLLER);
 
 	// The browser keeps the entries; the page starts again on the last one.
-	const reloaded = board(history);
+	const reloaded = boardOn(history);
 	expect(history.place).toEqual(CONTROLLER);
 	expect(history.entries).toHaveLength(3);
 	reloaded.back();
@@ -140,9 +139,9 @@ test('a reload keeps the screen and the way back', () => {
 
 test('an address opened from elsewhere gets the list behind it', () => {
 	const history = new BrowserHistory(searchOf(REPORT));
-	const page = board(history);
+	const screen = boardOn(history);
 	expect(history.place).toEqual(REPORT);
-	page.back();
+	screen.back();
 	expect(history.place).toBeNull();
 	expect(history.left).toBe(false);
 	history.back();
@@ -151,8 +150,8 @@ test('an address opened from elsewhere gets the list behind it', () => {
 
 test('a plain address is the list, and a reload of the list adds nothing', () => {
 	const history = new BrowserHistory();
-	board(history);
-	board(history);
+	boardOn(history);
+	boardOn(history);
 	expect(history.entries).toEqual([{ search: '', depth: 0 }]);
 });
 
@@ -176,10 +175,4 @@ test('a screen comes back from the copy opened on this page, then the inbox, els
 	});
 	expect(viewOf({ kind: 'launch' }, { kept: new Map(), items: [], controllers: [] })).toEqual({ kind: 'launch' });
 	expect(viewOf(null, { kept: new Map(), items: [], controllers: [] })).toBeNull();
-});
-
-test('a missing screen stands for no place of its own', () => {
-	expect(placeOf({ kind: 'missing', what: 'item' })).toBeUndefined();
-	expect(placeOf(null)).toBeNull();
-	expect(placeOf({ kind: 'item', item: { key: 'k' } as InboxItem })).toEqual({ kind: 'item', key: 'k' });
 });

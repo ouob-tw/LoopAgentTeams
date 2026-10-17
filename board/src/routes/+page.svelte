@@ -11,7 +11,7 @@
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import type { InboxSort } from '#lib/board/inbox.ts';
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
-	import { enter, open, placeIn, placeOf, samePlace, searchOf, viewOf, type Place, type Trail, type View } from '#lib/board/navigation.ts';
+	import { advance, arrive, placeIn, samePlace, searchOf, viewOf, type Place, type Trail, type View } from '#lib/board/navigation.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -82,16 +82,12 @@
 
 	/** Items as they were when opened on this page, so going back shows one that has left the inbox since. */
 	const kept = new Map<string, InboxItem>();
-	const find = (place: Place) =>
-		viewOf(place, {
-			kept,
-			items: [...inbox, ...(typeof board.archive === 'object' ? (board.archive?.reports ?? []) : [])],
-			controllers
-		});
+	const archived = $derived(typeof board.archive === 'object' ? (board.archive?.reports ?? []) : []);
+	const viewAt = (place: Place) => viewOf(place, { kept, items: [...inbox, ...archived], controllers });
 	/** The screen the address names; a reload opens it again. */
 	const addressed = () => placeIn(new URLSearchParams(location.search));
 	// svelte-ignore state_referenced_locally
-	let view = $state<View>(find(placeIn(page.url.searchParams)));
+	let view = $state<View>(viewAt(placeIn(page.url.searchParams)));
 
 	// The archive is fetched when its view is open, and again with every new snapshot: a report may
 	// have moved into it. A fetch that failed is retried only with its button.
@@ -104,8 +100,7 @@
 	const inInbox = $derived(inbox.some((item) => item.key === openKey));
 	const item = $derived.by(() => {
 		if (view?.kind !== 'item') return undefined;
-		const archive = typeof board.archive === 'object' ? (board.archive?.reports ?? []) : [];
-		return [...inbox, ...archive].find((candidate) => candidate.key === openKey) ?? view.item;
+		return [...inbox, ...archived].find((candidate) => candidate.key === openKey) ?? view.item;
 	});
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
 	// Undefined for an archived report whose controller has left the roster.
@@ -161,27 +156,28 @@
 	}
 	afterNavigate(({ type }) => {
 		if (type !== 'enter') return;
-		move((trail, depth) => enter(addressed(), depth, trail));
+		move((trail, depth) => arrive(addressed(), depth, trail));
 		if (view?.kind === 'missing') void restore(addressed());
 	});
 	/** The screen of an address arrived at by going back or forward, or by a reload. A report not in
 	 *  the inbox may be in the archive, which is read first. */
 	async function restore(place: Place) {
-		if (find(place)?.kind === 'missing' && place?.kind === 'item' && board.archive === null) {
+		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && board.archive === null) {
 			await board.loadArchive();
 			if (!samePlace(place, addressed())) return;
 		}
-		await show(find(place));
+		await present(viewAt(place));
 	}
 	onMount(() => {
 		const popped = () => void restore(addressed());
 		addEventListener('popstate', popped);
 		return () => removeEventListener('popstate', popped);
 	});
-	/** Open a screen from the one shown, one history entry further. */
-	function go(next: Exclude<View, { kind: 'missing' }>) {
-		move((trail, depth) => open(placeOf(next)!, { place: addressed(), depth: depth ?? 0 }, trail));
-		return show(next);
+	/** Open a screen from the one shown, one history entry further. It is shown once the address
+	 *  names it, so a back pressed meanwhile can never leave the two apart. */
+	function go(next: Place) {
+		move((trail, depth) => advance(next, { place: addressed(), depth: depth ?? 0 }, trail));
+		moving = moving.then(() => present(viewAt(next)));
 	}
 	/** The top bar's "←": every screen but the list has a board entry behind it. */
 	const back = () => (moving = moving.then(() => history.back()));
@@ -197,13 +193,18 @@
 		if (next !== null) detail.focus({ preventScroll: true });
 		window.scrollTo(0, next === null ? listScroll : 0);
 	}
-	/** Counts openings, so opening the open report again scrolls back to it. */
+	/** Counts openings, so opening the open report again, or going back to it, scrolls back to it. */
 	let opens = $state(0);
+	function present(next: View) {
+		if (next?.kind === 'item') {
+			opens++;
+			locate(next.item.kind === 'report' && controllers.some((candidate) => candidate.id === next.item.controllerId));
+		}
+		return show(next);
+	}
 	function openItem(next: InboxItem) {
-		opens++;
-		locate(next.kind === 'report' && controllers.some((candidate) => candidate.id === next.controllerId));
 		kept.set(next.key, next);
-		void go({ kind: 'item', item: next });
+		go({ kind: 'item', key: next.key });
 		// Opening an inbox report reads it. Only opening does: a report marked unread stays unread
 		// while it is still open. An archived report keeps the read state it had.
 		const listed = inbox.find((entry) => entry.key === next.key);
@@ -349,7 +350,10 @@
 				</div>
 
 				{#if view.kind === 'missing'}
-					<p class="empty">{view.what === 'item' ? '這一則已不存在。' : '這個主控已不存在。'}</p>
+					<!-- An item may still be found in the archive once it is read. -->
+					{#if view.what === 'controller' || board.archive !== null}
+						<p class="empty">{view.what === 'item' ? '這一則已不存在。' : '這個主控已不存在。'}</p>
+					{/if}
 				{:else if view.kind === 'launch'}
 					<NewController {controllers} stamp={board.snapshot.generatedAt} onopen={openController} />
 				{:else if view.kind === 'controller'}
