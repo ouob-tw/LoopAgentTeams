@@ -169,15 +169,14 @@
 	let seeking = $state(view?.kind === 'missing' && view.what === 'item');
 	/** The screen of an address arrived at by going back or forward, or by a reload. A report not in
 	 *  the inbox may be in the archive, which is read first. */
+	let restores = 0;
 	async function restore(place: Place) {
+		// Only the latest restore shows its screen, and ends the seeking.
+		const own = ++restores;
 		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && board.archive === null) {
 			seeking = true;
-			try {
-				await board.loadArchive();
-			} finally {
-				seeking = false;
-			}
-			if (!samePlace(place, addressed())) return;
+			await board.loadArchive();
+			if (own !== restores || !samePlace(place, addressed())) return;
 		}
 		seeking = false;
 		await present(viewAt(place));

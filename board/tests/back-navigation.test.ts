@@ -16,10 +16,12 @@ class Tab {
 	#socket: WebSocket;
 	#next = 0;
 	#waiting = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>();
+	#listening: ((method: string) => void)[] = [];
 	constructor(socket: WebSocket) {
 		this.#socket = socket;
 		socket.addEventListener('message', (event) => {
 			const message = JSON.parse(String(event.data));
+			if (message.method) for (const heard of this.#listening.splice(0)) heard(message.method);
 			this.#waiting.get(message.id)?.(message);
 			this.#waiting.delete(message.id);
 		});
@@ -49,11 +51,20 @@ class Tab {
 		if (exceptionDetails) throw new Error(`${expression}: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
 		return result.value;
 	}
+	/** Load a new document and wait until it has loaded. */
+	async navigate(url: string) {
+		const loaded = new Promise<void>((resolve) => {
+			const heard = (method: string) => (method === 'Page.loadEventFired' ? resolve() : this.#listening.push(heard));
+			this.#listening.push(heard);
+		});
+		await this.send('Page.navigate', { url });
+		await loaded;
+	}
 	/** Wait for an expression in the page to be true. */
 	async until(expression: string, what = expression) {
 		const deadline = Date.now() + 10_000;
 		while (!(await this.eval(expression).catch(() => false))) {
-			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}; the page shows ${JSON.stringify(await this.eval(SCREEN))}`);
 			await sleep(50);
 		}
 	}
@@ -96,6 +107,7 @@ beforeAll(async () => {
 	tab = await Tab.open(debugPort);
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.enable');
+	await tab.send('Page.enable');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 }, 30_000);
 
@@ -106,15 +118,17 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-/** A fresh tab history: about:blank, then the board at `search` in a window `width` wide. */
+/** The page before the board in every visit; going back to it is leaving the board. */
+const START = 'data:text/html,start';
+const LEFT = `location.protocol === 'data:'`;
+/** A fresh tab history: the start page, then the board at `search` in a window `width` wide. */
 async function visit(width: number, search = '') {
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
-	await tab.send('Page.navigate', { url: 'about:blank' });
-	await tab.until(`location.href === 'about:blank'`);
-	await tab.send('Page.navigate', { url: `${fixture.url}/${search}` });
+	await tab.navigate(START);
+	await tab.navigate(`${fixture.url}/${search}`);
 	await tab.until(`document.querySelector('.inbox button') !== null`, 'the board');
 	// Started: the board's first history write is done.
-	await tab.until(`history.state && Object.keys(history.state).length > 0`, 'the first history entry');
+	await tab.until(`JSON.stringify(history.state).includes('depth')`, "the board's first history entry");
 }
 const screen = () => tab.eval<{ search: string; text: string }>(SCREEN);
 const back = () => tab.eval(`history.back()`);
@@ -151,7 +165,7 @@ test.skipIf(!CHROME)('phone: question, its controller, "←" back to the questio
 	await tab.until(`Math.abs(scrollY - ${scrolled}) <= 1`, `the list scrolled back to ${scrolled}`);
 
 	await back();
-	await tab.until(`location.href === 'about:blank'`, 'leaving the board');
+	await tab.until(LEFT, 'leaving the board');
 }, 30_000);
 
 test.skipIf(!CHROME)("phone: a controller's question goes back to the controller by the browser's back, and back to a report finds it again", async () => {
@@ -179,7 +193,7 @@ test.skipIf(!CHROME)("phone: a controller's question goes back to the controller
 	await back();
 	await showsList();
 	await back();
-	await tab.until(`location.href === 'about:blank'`, 'leaving the board');
+	await tab.until(LEFT, 'leaving the board');
 }, 30_000);
 
 test.skipIf(!CHROME)('a reload keeps the open screen and the way back', async () => {
@@ -198,7 +212,7 @@ test.skipIf(!CHROME)('a reload keeps the open screen and the way back', async ()
 	await back();
 	await showsList();
 	await back();
-	await tab.until(`location.href === 'about:blank'`, 'leaving the board');
+	await tab.until(LEFT, 'leaving the board');
 }, 30_000);
 
 test.skipIf(!CHROME)('the new-controller form comes back after a reload', async () => {
@@ -217,7 +231,7 @@ test.skipIf(!CHROME)('a reloaded screen that no longer exists says so, and back 
 	await tab.eval(ARROW);
 	await showsList();
 	await back();
-	await tab.until(`location.href === 'about:blank'`, 'leaving the board');
+	await tab.until(LEFT, 'leaving the board');
 
 	await visit(390, '?controller=nobody');
 	await shows('?controller=nobody', '這個主控已不存在');
