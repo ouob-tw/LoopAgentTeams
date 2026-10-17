@@ -5,7 +5,9 @@ import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
+import { ARCHIVE_PAGE } from '../src/lib/board/archive.ts';
+import type { InboxReport } from '../src/lib/board/types.ts';
+import { DAY, PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
 
 const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
 	(path) => path && existsSync(path)
@@ -17,8 +19,10 @@ class Tab {
 	#next = 0;
 	#waiting = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>();
 	#listening: ((method: string) => void)[] = [];
-	constructor(socket: WebSocket) {
+	#closeTarget: () => Promise<unknown>;
+	constructor(socket: WebSocket, closeTarget: () => Promise<unknown>) {
 		this.#socket = socket;
+		this.#closeTarget = closeTarget;
 		socket.addEventListener('message', (event) => {
 			const message = JSON.parse(String(event.data));
 			if (message.method) for (const heard of this.#listening.splice(0)) heard(message.method);
@@ -26,18 +30,23 @@ class Tab {
 			this.#waiting.delete(message.id);
 		});
 	}
+	/** A new tab, so nothing a tab before it still had under way can reach into it. */
 	static async open(debugPort: number): Promise<Tab> {
 		const deadline = Date.now() + 10_000;
-		let target: { webSocketDebuggerUrl: string } | undefined;
+		let target: { id: string; webSocketDebuggerUrl: string } | undefined;
 		while (!target) {
 			if (Date.now() > deadline) throw new Error('timed out waiting for Chrome to listen');
-			const targets = await fetch(`http://127.0.0.1:${debugPort}/json/list`).then((response) => response.json(), () => []);
-			target = targets.find((candidate: { type: string }) => candidate.type === 'page');
+			target = await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`, { method: 'PUT' }).then(
+				(response) => response.json(),
+				() => undefined
+			);
 			if (!target) await sleep(100);
 		}
 		const socket = new WebSocket(target.webSocketDebuggerUrl);
 		await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-		return new Tab(socket);
+		const tab = new Tab(socket, () => fetch(`http://127.0.0.1:${debugPort}/json/close/${target.id}`));
+		await tab.send('Page.enable');
+		return tab;
 	}
 	send(method: string, params: object = {}): Promise<any> {
 		const id = ++this.#next;
@@ -68,8 +77,9 @@ class Tab {
 			await sleep(50);
 		}
 	}
-	close() {
+	async close() {
 		this.#socket.close();
+		await this.#closeTarget();
 	}
 }
 
@@ -84,8 +94,10 @@ let fixture: Fixture;
 let chrome: ChildProcess;
 let profile: string;
 let tab: Tab;
+let debugPort: number;
 let luna: ReturnType<Fixture['bound']>;
 let cookie: string;
+let oldest: InboxReport;
 const questions = Array.from({ length: 30 }, (_, index) => question({ id: `Q-${index + 1}`, title: `題目 ${index + 1}` }));
 
 beforeAll(async () => {
@@ -94,11 +106,19 @@ beforeAll(async () => {
 	cookie = await fixture.login('back-navigation');
 	luna = fixture.bound('alpha', 'luna', { questions });
 	fixture.report(luna.session_id, { tag: 'DONE', summary: '交付第二張票', hcom_name: 'luna', workspace: luna.workspace });
+	// More archived reports than the archive's first page holds, of a controller long gone: past
+	// the inbox's 7 days, inside the archive's 30.
+	const gone = join(fixture.dir, 'workspaces', 'gone');
+	for (let index = 0; index < ARCHIVE_PAGE + 10; index++) {
+		const time = new Date(Date.now() - 8 * DAY - index * 60_000).toISOString();
+		fixture.report('session-gone', { tag: 'DONE', summary: `封存回報 ${index}`, time, hcom_name: 'vega', workspace: gone });
+	}
 	fixture.list([luna]);
 	await fixture.refresh(cookie);
+	oldest = (await fixture.archive(cookie)).at(-1)!;
 
 	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const debugPort = PORT_BASE + 30;
+	debugPort = PORT_BASE + 30;
 	chrome = spawn(
 		CHROME,
 		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', `--user-data-dir=${profile}`, `--remote-debugging-port=${debugPort}`, 'about:blank'],
@@ -106,13 +126,11 @@ beforeAll(async () => {
 	);
 	tab = await Tab.open(debugPort);
 	const [name, value] = cookie.split('=');
-	await tab.send('Network.enable');
-	await tab.send('Page.enable');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 }, 30_000);
 
 afterAll(async () => {
-	tab?.close();
+	await tab?.close();
 	chrome?.kill('SIGKILL');
 	if (profile) rmSync(profile, { recursive: true, force: true });
 	await fixture?.cleanup();
@@ -121,21 +139,25 @@ afterAll(async () => {
 /** The page before the board in every visit; going back to it is leaving the board. */
 const START = 'data:text/html,start';
 const LEFT = `location.protocol === 'data:'`;
-/** A fresh tab history: the start page, then the board at `search` in a window `width` wide. */
+/** A new tab: the start page, then the board at `search` in a window `width` wide. */
 async function visit(width: number, search = '') {
+	await tab.close();
+	tab = await Tab.open(debugPort);
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
 	await tab.navigate(START);
 	await tab.navigate(`${fixture.url}/${search}`);
-	await tab.until(`document.querySelector('.inbox button') !== null`, 'the board');
+	await tab.until(STARTED, 'the board to start');
 	// Started: the board's first history write is done.
 	await tab.until(`JSON.stringify(history.state).includes('depth')`, "the board's first history entry");
 }
 const screen = () => tab.eval<{ search: string; text: string }>(SCREEN);
 const back = () => tab.eval(`history.back()`);
+/** The board has started in this document: once mounted it reads every source, which is done. */
+const STARTED = `!window.beforeReload && performance.getEntriesByType('resource').some((entry) => entry.name.endsWith('/api/refresh'))`;
 async function reload() {
+	await tab.eval('window.beforeReload = true');
 	await tab.send('Page.reload');
-	await tab.until(`document.readyState === 'complete' && document.querySelector('.inbox button') !== null`, 'the reloaded board');
-	await sleep(300);
+	await tab.until(STARTED, 'the reloaded board to start');
 }
 async function shows(search: string, text: string) {
 	await tab.until(`location.search === ${JSON.stringify(search)} && document.querySelector('.detail')?.innerText.includes(${JSON.stringify(text)})`, `${search} showing ${text}`);
@@ -255,3 +277,35 @@ test.skipIf(!CHROME)('wide: the browser back goes to the screen before', async (
 	await tab.until(`location.search === ''`, 'the list');
 	expect((await screen()).text).toContain('從信箱選一則');
 }, 30_000);
+
+test.skipIf(!CHROME)('a reload on an archived report past the first archive page opens it again', async () => {
+	expect(oldest.title).toBe(`封存回報 ${ARCHIVE_PAGE + 9}`);
+	const search = `?item=${encodeURIComponent(oldest.key)}`;
+	await visit(390, search);
+	await shows(search, oldest.title);
+	await reload();
+	await shows(search, oldest.title);
+	await back();
+	await showsList();
+}, 30_000);
+
+test.skipIf(!CHROME)('phone: the list comes back where it was scrolled after a reload, by "←" and by the browser back', async () => {
+	for (const goBack of [() => tab.eval(ARROW), back]) {
+		await visit(390);
+		await tab.eval(`[...document.querySelectorAll('.inbox button')].find((b) => b.innerText.includes('題目 25')).scrollIntoView()`);
+		const scrolled = await tab.eval<number>('Math.round(scrollY)');
+		expect(scrolled).toBeGreaterThan(500);
+		await tab.eval(click('.inbox', '題目 25'));
+		await shows(QUESTION(25), '題目 25');
+		await tab.eval(click('.detail', '看主控資訊'));
+		await shows(CONTROLLER(), '@luna');
+
+		await reload();
+		await shows(CONTROLLER(), '@luna');
+		await goBack();
+		await shows(QUESTION(25), '題目 25');
+		await goBack();
+		await showsList();
+		await tab.until(`Math.abs(scrollY - ${scrolled}) <= 1`, `the list scrolled back to ${scrolled}`);
+	}
+}, 60_000);

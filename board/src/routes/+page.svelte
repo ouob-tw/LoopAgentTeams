@@ -129,6 +129,7 @@
 	});
 	/** Where the phone's list was scrolled to before a content screen replaced it. */
 	let listScroll = 0;
+	const LIST_SCROLL = 'lat-board-list-scroll';
 
 	/** Set while an opened report is being found in its conversation: a copy of its card covers
 	 *  the content where the report will be, so the page never shows its top first. */
@@ -169,14 +170,19 @@
 	// svelte-ignore state_referenced_locally
 	let seeking = $state(view?.kind === 'missing' && view.what === 'item');
 	/** The screen of an address arrived at by going back or forward, or by a reload. A report not in
-	 *  the inbox may be in the archive, which is read first. */
+	 *  the inbox may be in the archive, which is read first, page after page until it is found or
+	 *  the archive ends. */
 	let restores = 0;
 	async function restore(place: Place) {
 		// Only the latest restore shows its screen, and ends the seeking.
 		const own = ++restores;
-		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && board.archive === null) {
+		const more = () => typeof board.archive === 'object' && !!board.archive?.before && board.archiveEarlier === 'idle';
+		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && (board.archive === null || more())) {
 			seeking = true;
-			await board.loadArchive();
+			if (board.archive === null) await board.loadArchive();
+			while (own === restores && viewAt(place)?.kind === 'missing' && more()) {
+				await board.loadEarlier();
+			}
 			if (own !== restores) return;
 			seeking = false;
 			if (!samePlace(place, addressed())) return;
@@ -185,14 +191,25 @@
 		await present(viewAt(place));
 	}
 	onMount(() => {
-		const popped = () => void restore(addressed());
+		const popped = (event: PopStateEvent) => {
+			const saved = event.state?.[LIST_SCROLL];
+			if (typeof saved === 'number') listScroll = saved;
+			void restore(addressed());
+		};
 		addEventListener('popstate', popped);
 		return () => removeEventListener('popstate', popped);
 	});
 	/** Open a screen from the one shown, one history entry further. It is shown once the address
 	 *  names it, so a back pressed meanwhile can never leave the two apart. */
 	function go(next: Place) {
-		move((trail, depth) => advance(next, { place: addressed(), depth: depth ?? 0 }, trail));
+		move((trail, depth) => {
+			const here = addressed();
+			// The list's entry keeps where it was scrolled, so going back to it finds the place after a
+			// reload too. Written beside SvelteKit's own fields, which it keeps: its page.state comes
+			// only after the board's popstate has run.
+			if (here === null) history.replaceState({ ...history.state, [LIST_SCROLL]: Math.round(window.scrollY) }, '');
+			advance(next, { place: here, depth: depth ?? 0 }, trail);
+		});
 		queue(() => present(viewAt(next)));
 	}
 	/** The top bar's "←": every screen but the list has a board entry behind it. */
@@ -368,7 +385,7 @@
 				{#if view.kind === 'missing'}
 					{#if view.what === 'controller'}
 						<p class="empty">這個主控已不存在。</p>
-					{:else if board.archive === 'failed'}
+					{:else if board.archive === 'failed' || board.archiveEarlier === 'failed'}
 						<p class="empty">信箱裡沒有這一則，封存也讀不出來；可以重新整理再試一次。</p>
 					{:else if !seeking}
 						<p class="empty">這一則已不存在。</p>
