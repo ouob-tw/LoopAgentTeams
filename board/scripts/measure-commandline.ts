@@ -6,9 +6,10 @@
 //
 // Rules checked (exit 1 when broken):
 //   one line     the three centres are within 2px of each other;
-//   several      label and button stay level with the box's last line (bottom-aligned), do not
-//                keep their distance from the box's bottom edge compared with one line (no jump),
-//                and do not overlap the box.
+//   several      label and button stay level with the box's last line (bottom-aligned) and
+//                keep their distance from the box's bottom edge compared with one line (no jump);
+//                the label stays outside the box, the send button inside its frame with the
+//                box's text kept clear of it (its right padding is wider than the button).
 //
 // CHROME names the browser; LAT_BOARD_TEST_PORT_BASE moves the board's port (base + 16, Chrome debugging base + 17).
 // --serve only starts the board (already logged in) and prints its address and cookie, for
@@ -116,12 +117,13 @@ const MEASURE = `(() => {
 		box: text,
 		button: textCentre(button),
 		labelRect: rect(label), boxRect: rect(box), buttonRect: rect(button),
-		lastLineCentre: b.bottom - 1 - parseFloat(cs.paddingBottom) - parseFloat(cs.lineHeight) / 2
+		lastLineCentre: b.bottom - 1 - parseFloat(cs.paddingBottom) - parseFloat(cs.lineHeight) / 2,
+		textRight: b.right - parseFloat(cs.paddingRight)
 	};
 })()`;
 
 type Rect = { left: number; right: number; top: number; bottom: number };
-type Measure = Record<'label' | 'box' | 'button' | 'lastLineCentre', number> & Record<'labelRect' | 'boxRect' | 'buttonRect', Rect>;
+type Measure = Record<'label' | 'box' | 'button' | 'lastLineCentre' | 'textRight', number> & Record<'labelRect' | 'boxRect' | 'buttonRect', Rect>;
 const overlap = (a: Rect, b: Rect) => a.left < b.right && b.left < a.right && a.top < b.bottom && b.top < a.bottom;
 
 await send('Page.enable');
@@ -167,7 +169,12 @@ for (const theme of THEMES) {
 					const before = single![what === 'label' ? 'labelRect' : 'buttonRect'];
 					const moved = (single!.boxRect.bottom - before.bottom) - (m.boxRect.bottom - rect.bottom);
 					if (Math.abs(moved) > TOLERANCE) failures.push(`${tag}: ${what} moved ${fmt(moved)}px relative to the box's bottom edge`);
-					if (overlap(rect, m.boxRect)) failures.push(`${tag}: ${what} overlaps the box`);
+					if (what === 'label' && overlap(rect, m.boxRect)) failures.push(`${tag}: label overlaps the box`);
+					if (what === 'button') {
+						const inside = rect.left >= m.boxRect.left && rect.right <= m.boxRect.right && rect.top >= m.boxRect.top && rect.bottom <= m.boxRect.bottom;
+						if (!inside) failures.push(`${tag}: button is not inside the box`);
+						if (m.textRight > rect.left) failures.push(`${tag}: the box's text runs under the button`);
+					}
 				}
 				if (m.boxRect.bottom - m.boxRect.top <= single!.boxRect.bottom - single!.boxRect.top) failures.push(`${tag}: the box did not grow`);
 			}

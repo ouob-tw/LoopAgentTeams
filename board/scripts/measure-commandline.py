@@ -23,9 +23,10 @@ MEASURE = """() => {
   document.body.append(mirror);
   const text = centre(mirror);
   mirror.remove();
-  return { label: centre(form.querySelector('.to')), box: text, button: centre(form.querySelector('button')),
-    labelRect: rect(form.querySelector('.to')), boxRect: rect(box), buttonRect: rect(form.querySelector('button')),
-    last: b.bottom - 1 - parseFloat(cs.paddingBottom) - parseFloat(cs.lineHeight) / 2 };
+  return { label: centre(form.querySelector('.to')), box: text, button: centre(form.querySelector('button.send')),
+    labelRect: rect(form.querySelector('.to')), boxRect: rect(box), buttonRect: rect(form.querySelector('button.send')),
+    last: b.bottom - 1 - parseFloat(cs.paddingBottom) - parseFloat(cs.lineHeight) / 2,
+    textRight: b.right - parseFloat(cs.paddingRight) };
 }"""
 overlap = lambda a, b: a["left"] < b["right"] and b["left"] < a["right"] and a["top"] < b["bottom"] and b["top"] < a["bottom"]
 failures = []
@@ -62,8 +63,14 @@ with sync_playwright() as p:
                         moved = (single["boxRect"]["bottom"] - before["bottom"]) - (m["boxRect"]["bottom"] - rect["bottom"])
                         if abs(moved) > TOL:
                             failures.append(f"{tag}: {what} moved {moved:.1f}px relative to the box's bottom edge")
-                        if overlap(rect, m["boxRect"]):
-                            failures.append(f"{tag}: {what} overlaps the box")
+                        box = m["boxRect"]
+                        if what == "label" and overlap(rect, box):
+                            failures.append(f"{tag}: label overlaps the box")
+                        if what == "button":
+                            if not (rect["left"] >= box["left"] and rect["right"] <= box["right"] and rect["top"] >= box["top"] and rect["bottom"] <= box["bottom"]):
+                                failures.append(f"{tag}: button is not inside the box")
+                            if m["textRight"] > rect["left"]:
+                                failures.append(f"{tag}: the box's text runs under the button")
                     if m["boxRect"]["bottom"] - m["boxRect"]["top"] <= single["boxRect"]["bottom"] - single["boxRect"]["top"]:
                         failures.append(f"{tag}: the box did not grow")
     browser.close()

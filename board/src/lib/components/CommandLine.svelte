@@ -26,6 +26,8 @@
 	let sending = $state(false);
 	let sent = $state(0);
 	let optionsOpen = $state(false);
+	/** The send button's width, kept clear at the right of the box's text. */
+	let sendWidth = $state(0);
 	/** Put away on a phone; the wide layout ignores it. */
 	let hidden = $state(false);
 	let form: HTMLFormElement;
@@ -125,34 +127,41 @@
 		<ChevronDown size="1.1em" />
 	</button>
 	<span class="to" class:other={recipient !== undefined && recipient.id !== target?.id}>→ {recipient ? `@${recipient.hcomName}` : '@名稱'}</span>
-	<div class="box">
+	<!-- The send button sits inside the box at its right edge; the box keeps its text clear of it. -->
+	<div class="box" style:--send-w="{sendWidth}px">
 		<MessageBox
 			bind:value={() => text, (value) => (text = value)}
 			label={recipient ? `指令列：${waking ? '喚醒' : '傳話給'} @${recipient.hcomName}` : '指令列'}
 			placeholder="@名稱 指定主控・{enterMakesNewline.current ? 'Enter 換行・按鈕送出' : 'Enter 送出・Shift+Enter 換行'}"
 			onsend={submit}
 		/>
+		<!-- A wake keeps its word: it brings a controller back and spends quota. One button either
+		     way, so its check stays through the change. -->
+		<span class="send-slot" bind:clientWidth={sendWidth}>
+			<SendButton class="send" label={waking ? '喚醒' : '送出'} icon={waking ? undefined : sendIcon} {sending} {sent} disabled={!text.trim()} />
+		</span>
 	</div>
-	<ModelPicker
-		controller={recipient}
-		chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }}
-		onchoose={(kind, value) => ((kind === 'model' ? model : effort)[id] = value)}
-	/>
-	{#if waking}
-		<button
-			type="button"
-			class="options"
-			aria-label="喚醒選項"
-			title="喚醒選項：開新一輪 LAT"
-			aria-expanded={optionsOpen}
-			onclick={() => (optionsOpen = !optionsOpen)}
-		>
-			<SlidersHorizontal size="1.1em" />
-		</button>
-	{/if}
-	<!-- A wake keeps its word: it brings a controller back and spends quota. One button either way,
-	     so its check stays through the change. -->
-	<SendButton class="send" label={waking ? '喚醒' : '送出'} icon={waking ? undefined : sendIcon} {sending} {sent} disabled={!text.trim()} />
+	<div class="pill-slot">
+		<ModelPicker
+			controller={recipient}
+			chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }}
+			onchoose={(kind, value) => ((kind === 'model' ? model : effort)[id] = value)}
+		/>
+	</div>
+	<!-- Always there on a wide screen, so the box keeps its width whoever it is for; a phone shows
+	     it only for a wake. -->
+	<button
+		type="button"
+		class="options"
+		class:idle={!waking}
+		aria-label="喚醒選項"
+		title={waking ? '喚醒選項：開新一輪 LAT' : '只有已結束的主控有喚醒選項'}
+		aria-expanded={optionsOpen}
+		disabled={!waking}
+		onclick={() => (optionsOpen = !optionsOpen)}
+	>
+		<SlidersHorizontal size="1.1em" />
+	</button>
 
 	{#if optionsOpen && waking && recipient}
 		<div class="popup" role="group" aria-label="喚醒選項">
@@ -179,9 +188,15 @@
 	{/if}
 </form>
 {#if hidden}
-	<button type="button" class="reopen" aria-label="展開輸入列" title="展開輸入列" onclick={() => setHidden(false)}>
+	<button
+		type="button"
+		class="reopen"
+		aria-label={text.trim() ? '展開輸入列（有未送出的文字）' : '展開輸入列'}
+		title="展開輸入列"
+		onclick={() => setHidden(false)}
+	>
 		<MessageSquare size="1.3em" />
-		{#if text.trim()}<span class="dot" aria-label="有尚未送出的文字"></span>{/if}
+		{#if text.trim()}<span class="dot" aria-hidden="true"></span>{/if}
 	</button>
 {/if}
 
@@ -208,6 +223,12 @@
 		font-family: var(--mono);
 		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
+	}
+	/* As tall as a one-line box, so the label stays level with its last line as it grows. */
+	.pill-slot {
+		display: flex;
+		align-items: center;
+		height: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
 	}
 	.options {
 		display: inline-flex;
@@ -256,16 +277,41 @@
 		color: var(--danger);
 		border-color: var(--danger);
 	}
-	/* The narrow layout has no command line. */
+	/* The box's frame holds the send button at its right, bottom-aligned as it grows; its text and
+	   tips stop short of the button. */
+	.box {
+		position: relative;
+		min-width: 0;
+	}
+	.box :global(textarea) {
+		padding-right: calc(var(--send-w, 0px) + 0.6rem + 4px);
+	}
+	.send-slot {
+		position: absolute;
+		right: 4px;
+		bottom: 4px;
+		display: flex;
+	}
+	.box :global(.send) {
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		height: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px - 8px);
+		padding: 0 0.7rem;
+		line-height: 1;
+	}
+	.box :global(.send.square) {
+		width: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px - 8px);
+		padding: 0;
+		border-radius: calc(var(--radius) - 2px);
+	}
+	/* Only a phone puts the line away behind a floating button. */
 	.hide,
 	.reopen {
 		display: none;
 	}
 	/* A phone: the box takes its own row, the recipient and the controls the row under it. */
 	@media (max-width: 760px) {
-		.cmd {
-			pointer-events: auto;
-		}
 		.cmd.hidden {
 			display: none;
 		}
@@ -308,6 +354,10 @@
 			align-items: center;
 			gap: 0.5rem;
 			padding: 0.5rem 0.6rem calc(0.5rem + env(safe-area-inset-bottom, 0px));
+			pointer-events: auto;
+		}
+		.options.idle {
+			display: none;
 		}
 		.box {
 			order: -1;
