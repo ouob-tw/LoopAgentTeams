@@ -101,7 +101,7 @@ const MEASURE = `(() => {
 	const rect = (node) => { const r = node.getBoundingClientRect(); return { left: r.left, right: r.right, top: r.top, bottom: r.bottom }; };
 	const label = form.querySelector('.to');
 	const box = form.querySelector('textarea');
-	const button = form.querySelector('button');
+	const button = form.querySelector('button.send');
 	const b = box.getBoundingClientRect();
 	const cs = getComputedStyle(box);
 	const mirror = document.createElement('div');

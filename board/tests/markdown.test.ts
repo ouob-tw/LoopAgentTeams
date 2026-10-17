@@ -1,7 +1,7 @@
 // Text from controllers is shown as Markdown, never as live HTML.
 import { expect, test } from 'bun:test';
 import { formatTime } from '../src/lib/board/format.ts';
-import { renderMarkdown } from '../src/lib/board/markdown.ts';
+import { renderLinks, renderMarkdown } from '../src/lib/board/markdown.ts';
 
 test('markdown is rendered, raw HTML is escaped and unsafe links are dropped', () => {
 	expect(renderMarkdown('**粗體**\n第二行')).toBe('<p><strong>粗體</strong><br>\n第二行</p>\n');
@@ -12,4 +12,12 @@ test('markdown is rendered, raw HTML is escaped and unsafe links are dropped', (
 
 test('times are shown without the year', () => {
 	expect(formatTime('2026-10-15T05:06:07Z')).not.toContain('2026');
+});
+
+test('a title gets links for its web addresses and nothing else', () => {
+	expect(renderLinks('見 http://192.168.31.129:7110/ 看 *粗* _斜_')).toBe(
+		'見 <a href="http://192.168.31.129:7110/" target="_blank" rel="noopener noreferrer">http://192.168.31.129:7110/</a> 看 *粗* _斜_'
+	);
+	expect(renderLinks('<b>x</b> & [a](javascript:alert(1))')).toBe('&lt;b&gt;x&lt;/b&gt; &amp; [a](javascript:alert(1))');
+	expect(renderLinks('javascript:alert(1) file:///etc/passwd')).not.toContain('<a');
 });
