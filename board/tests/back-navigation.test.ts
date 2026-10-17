@@ -174,6 +174,8 @@ test.skipIf(!CHROME)("phone: a controller's question goes back to the controller
 	await back();
 	await shows(report, '交付第二張票');
 	await tab.until(`document.querySelector('.placeholder') === null`, 'the report placed in its conversation');
+	await reload();
+	await shows(report, '交付第二張票');
 	await back();
 	await showsList();
 	await back();

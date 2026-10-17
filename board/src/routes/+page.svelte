@@ -141,10 +141,14 @@
 		if (on) locateTimer = setTimeout(() => locate(false), 8_000);
 	}
 
-	/** History writes, one after another: each reads the entry the one before has left. */
-	let moving = Promise.resolve();
+	/** History writes and the screens shown after them, one after another: each reads the entry the
+	 *  one before has left. One that fails does not stop the ones after it. */
+	let moving: Promise<unknown> = Promise.resolve();
+	function queue(step: () => unknown) {
+		moving = moving.then(step).catch((error) => console.error(error));
+	}
 	function move(step: (trail: Trail, depth: number | undefined) => void) {
-		moving = moving.then(async () => {
+		queue(async () => {
 			const writes: (() => Promise<void>)[] = [];
 			const write = (replace: boolean) => (place: Place, depth: number) =>
 				void writes.push(() =>
@@ -159,13 +163,23 @@
 		move((trail, depth) => arrive(addressed(), depth, trail));
 		if (view?.kind === 'missing') void restore(addressed());
 	});
+	/** Set while the archive is read for an item the address names, so it is not called missing
+	 *  before then; the first render is such a case too. */
+	// svelte-ignore state_referenced_locally
+	let seeking = $state(view?.kind === 'missing' && view.what === 'item');
 	/** The screen of an address arrived at by going back or forward, or by a reload. A report not in
 	 *  the inbox may be in the archive, which is read first. */
 	async function restore(place: Place) {
 		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && board.archive === null) {
-			await board.loadArchive();
+			seeking = true;
+			try {
+				await board.loadArchive();
+			} finally {
+				seeking = false;
+			}
 			if (!samePlace(place, addressed())) return;
 		}
+		seeking = false;
 		await present(viewAt(place));
 	}
 	onMount(() => {
@@ -177,10 +191,10 @@
 	 *  names it, so a back pressed meanwhile can never leave the two apart. */
 	function go(next: Place) {
 		move((trail, depth) => advance(next, { place: addressed(), depth: depth ?? 0 }, trail));
-		moving = moving.then(() => present(viewAt(next)));
+		queue(() => present(viewAt(next)));
 	}
 	/** The top bar's "←": every screen but the list has a board entry behind it. */
-	const back = () => (moving = moving.then(() => history.back()));
+	const back = () => queue(() => history.back());
 
 	async function show(next: View) {
 		if (next?.kind !== 'item') locate(false);
@@ -350,9 +364,12 @@
 				</div>
 
 				{#if view.kind === 'missing'}
-					<!-- An item may still be found in the archive once it is read. -->
-					{#if view.what === 'controller' || board.archive !== null}
-						<p class="empty">{view.what === 'item' ? '這一則已不存在。' : '這個主控已不存在。'}</p>
+					{#if view.what === 'controller'}
+						<p class="empty">這個主控已不存在。</p>
+					{:else if board.archive === 'failed'}
+						<p class="empty">信箱裡沒有這一則，封存也讀不出來；可以重新整理再試一次。</p>
+					{:else if !seeking}
+						<p class="empty">這一則已不存在。</p>
 					{/if}
 				{:else if view.kind === 'launch'}
 					<NewController {controllers} stamp={board.snapshot.generatedAt} onopen={openController} />
