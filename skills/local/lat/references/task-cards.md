@@ -19,6 +19,7 @@
 - owned resources：ports、containers、images、sandbox prefix
 - live actions：無（有現場動作時寫額度，見「現場動作額度」）
 - preflight：無（有現場動作時寫動手前的核對事項）
+- 預計檢查數：無（派 QA 時寫預計的檢查數量級，如約 10 項）
 - temp paths：逐項列路徑；含機密者標記 `secret → shred -u`，不記錄機密內容
 - done so far：
 - next step：
