@@ -5,6 +5,9 @@ import type { CurrentSettings, ModelChoice, ModelStatus, SwitchResponse } from '
 import { toasts } from './toasts.svelte.ts';
 import type { TranscriptUpdate } from './transcript.ts';
 
+/** How long a status read stays good for a recipient shown again in the same state. */
+const FRESH_MS = 30_000;
+
 /** No answer came back, so the switch may or may not have started. */
 const UNKNOWN_OUTCOME = '沒有收到看板伺服器的回應，不確定有沒有開始切換；重送前請先看該主控的送出紀錄。';
 
@@ -18,19 +21,35 @@ class Switching {
 	sending = $state<Record<string, boolean>>({});
 	/** The last switch asked for from the page, by controller ID. */
 	outcomes = $state<Record<string, Outcome>>({});
+	/** Open conversations by controller ID: their live feed keeps `current` up to date. */
+	watched = $state<Record<string, number>>({});
 	#loads: Record<string, number> = {};
+	/** When each controller's status was last read, and for which of its states. */
+	#read: Record<string, { key: string; at: number }> = {};
 
-	/** Read the latest settings from the conversation's latest page, for a controller whose
-	 *  conversation is not open; an open one keeps them current itself. */
-	async loadCurrent(controllerId: string, signal?: AbortSignal): Promise<void> {
+	/**
+	 * Read the latest settings from the conversation's latest page, for a controller whose
+	 * conversation is not open: once while they are unknown, or again with `again` (a switch waits
+	 * for its next turn). A failed read keeps what is shown.
+	 */
+	async loadCurrent(controllerId: string, again = false, signal?: AbortSignal): Promise<void> {
 		try {
 			const response = await fetch(`/api/transcript?controller=${encodeURIComponent(controllerId)}`, { signal });
+			if (response.status === 401) return location.reload();
 			if (!response.ok) return;
 			const update: TranscriptUpdate = await response.json();
-			if (update.ok && this.current[controllerId] === undefined) this.current[controllerId] = update.page.current ?? null;
+			if (update.ok && (again || this.current[controllerId] === undefined)) this.current[controllerId] = update.page.current ?? null;
 		} catch {
-			// Shown as not known.
+			// What is shown stays.
 		}
+	}
+
+	/** `load`, unless the status was read for the same state of the controller in the last 30 s. */
+	async loadFresh(controllerId: string, state: string, signal?: AbortSignal): Promise<void> {
+		const last = this.#read[controllerId];
+		if (last?.key === state && Date.now() - last.at < FRESH_MS && this.status[controllerId]) return;
+		this.#read[controllerId] = { key: state, at: Date.now() };
+		await this.load(controllerId, signal);
 	}
 
 	/** Ask for a switch from a form or a menu: one at a time per controller, its outcome kept and

@@ -197,7 +197,7 @@ export const FIXED_MODEL_REASON = '這個 Codex 主控啟動時指定了模型�
 export const LOCK_UNKNOWN_TEXT = '無法確認這個主控能否換模型';
 export const NOT_OFFERED_REASON = '這個模型或思考強度不在這個 client 的選項裡，沒有送出';
 export const SWITCH_UNSETTLED_REASON = '這個主控有一次模型切換還沒確認已停止，請先按指令列模型標籤旁的 ⚠，再按「繼續切換」，沒有送出';
-export const WAKE_RUNNING_CHOICE_REASON = '主控還在跑，模型與思考強度請改用資訊頁的「修改」，沒有送出';
+export const WAKE_RUNNING_CHOICE_REASON = '主控還在跑，模型與思考強度請直接在指令列的模型標籤上切換，沒有送出';
 
 export const SWITCH_STATE_TEXT: Record<SwitchState, string> = {
 	sent: '已送出切換',

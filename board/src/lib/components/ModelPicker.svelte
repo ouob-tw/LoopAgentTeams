@@ -48,6 +48,8 @@
 	} = $props();
 
 	const PLACEHOLDER: Record<Kind, string> = { model: '模型', effort: '強度' };
+	/** What the server's refusal asks for, said before it has to refuse. */
+	const UNSETTLED_TEXT = SWITCH_UNSETTLED_REASON.replace(/，沒有送出$/, '');
 	const NAME: Record<Kind, string> = { model: '模型', effort: '思考強度' };
 
 	const id = $derived(controller?.id ?? '');
@@ -61,28 +63,34 @@
 	const abandon = $derived(switching.outcomes[id]?.ok === false ? switching.outcomes[id]?.abandon : null);
 	const check = $derived(controller ? switchCheck(lastApplied(entries), switching.current[id] ?? null) : null);
 	/** Something about the last switch the user has to see. */
-	const alerting = $derived(!!controller && !waking && (unsettled || !!abandon || check === 'missed'));
+	const alerting = $derived(!!controller && (unsettled || !!abandon || check === 'missed'));
 	let confirming = $state(false);
 	/** The latest turn's settings, or what a switch sent while its next turn is still to come. */
 	const shownNow = $derived(controller ? shownSettings(lastApplied(entries), switching.current[id]) : { settings: undefined, waiting: false });
 	const current = $derived(shownNow.settings);
 
-	// Read again for another recipient, or when this one starts or ends. The settings come from
-	// its conversation, which keeps them current while its information page is open.
+	// What can be switched: read for another recipient, or when this one starts or ends, unless
+	// read for that state moments ago. The settings come from its conversation, which keeps them
+	// current while its information page is open.
 	$effect(() => {
 		if (!controller) return;
 		const target = controller.id;
-		void controller.status;
+		const state = controller.status;
 		const abort = new AbortController();
-		void switching.load(target, abort.signal);
-		if (untrack(() => switching.current[target]) === undefined) void switching.loadCurrent(target, abort.signal);
+		void switching.loadFresh(target, state, abort.signal);
+		if (untrack(() => switching.current[target]) === undefined) void switching.loadCurrent(target, false, abort.signal);
 		return () => abort.abort();
 	});
-	// The sent log tells a switch that is waiting for its next turn. Read again with every new board
-	// data (each hands a new `controller` object), as the information page's log does: that is when
-	// a resume's result comes in.
+	// With every new board data (each hands a new `controller` object), which is when a resume's
+	// result or the next turn comes in: the sent log while it is not read yet or a switch is still
+	// open or waiting, and the settings while a switch waits and no open conversation feeds them.
 	$effect(() => {
-		if (controller) void messaging.load(controller.id);
+		if (!controller) return;
+		const target = controller.id;
+		untrack(() => {
+			if (messaging.sent[target] === undefined || unsettled || shownNow.waiting) void messaging.load(target);
+			if (shownNow.waiting && !switching.watched[target]) void switching.loadCurrent(target, true);
+		});
 	});
 
 	/** Why neither part can be picked from now; null when both can (the model may still be fixed). */
@@ -90,11 +98,11 @@
 		if (!controller) return '先指定主控';
 		if (!status) return switching.loadFailed[id] ? '讀不到能不能切換，請重新整理' : '讀取中…';
 		if (!status.options) return `看板不會切換 ${controller.client} 主控的模型與思考強度`;
+		if (unsettled) return UNSETTLED_TEXT;
 		if (waking) {
 			if (status.running === false) return null;
 			return status.running ? '主控還在跑，喚醒只會把訊息打進去，不能換模型與思考強度' : (status.reason ?? '無法確認主控有沒有在跑');
 		}
-		if (unsettled) return '有一次模型切換還沒完成，請先按旁邊的 ⚠ 處理';
 		if (status.running === false) return NOT_RUNNING_REASON;
 		if (status.running === null) return status.reason ?? '無法確認主控有沒有在跑';
 		if (status.status !== 'listening') return BUSY_REASON;
@@ -296,23 +304,26 @@
 	{:else if menu && status?.options}
 		{@const kind = menu}
 		{@const values = kind === 'model' ? status.options.models : status.options.efforts}
-		<div class="menu" role="menu" aria-label={NAME[kind]} tabindex="-1" onkeydown={keys} {@attach focusChosen}>
-			{#if waking}
-				<button type="button" role="menuitemradio" aria-checked={!chosen[kind]} onclick={() => pick(kind, '')}>
-					保持目前
-					{#if current?.[kind]}<small title={current[kind]}>{short(kind, current[kind])}</small>{/if}
-				</button>
-			{/if}
-			{#each values as value (value)}
-				<button
-					type="button"
-					role="menuitemradio"
-					aria-checked={(pending(kind) || current?.[kind]) === value}
-					onclick={() => pick(kind, value)}
-				>
-					{short(kind, value)}<small>{value}</small>
-				</button>
-			{/each}
+		<!-- The choices are the menu; the notes under it are read as text. -->
+		<div class="menu">
+			<div class="items" role="menu" aria-label={NAME[kind]} tabindex="-1" onkeydown={keys} {@attach focusChosen}>
+				{#if waking}
+					<button type="button" role="menuitemradio" aria-checked={!chosen[kind]} onclick={() => pick(kind, '')}>
+						保持目前
+						{#if current?.[kind]}<small title={current[kind]}>{short(kind, current[kind])}</small>{/if}
+					</button>
+				{/if}
+				{#each values as value (value)}
+					<button
+						type="button"
+						role="menuitemradio"
+						aria-checked={(pending(kind) || current?.[kind]) === value}
+						onclick={() => pick(kind, value)}
+					>
+						{short(kind, value)}<small>{value}</small>
+					</button>
+				{/each}
+			</div>
 			<p class="note">
 				{waking
 					? '只用在這次喚醒，送出時才套用。'
@@ -418,6 +429,13 @@
 		border: 2px solid var(--text);
 		border-radius: var(--radius);
 		box-shadow: 0 4px 16px rgb(0 0 0 / 0.35);
+	}
+	.items {
+		display: flex;
+		flex-direction: column;
+	}
+	.items:focus {
+		outline: none;
 	}
 	.menu button {
 		display: flex;

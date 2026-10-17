@@ -127,11 +127,12 @@
 		loadingEarlier = false;
 		earlierFailed = null;
 		const source = new EventSource(`/api/transcript/events?controller=${encodeURIComponent(controllerId)}`);
+		untrack(() => (switching.watched[controllerId] = (switching.watched[controllerId] ?? 0) + 1));
 		source.addEventListener('transcript', (event) => {
 			const update: TranscriptUpdate = JSON.parse((event as MessageEvent).data);
 			if (update.ok) {
 				view = withLatest(view, update.page);
-				// The model and effort block shows what the latest turn used.
+				// The command line's label shows what the latest turn used.
 				switching.current[controllerId] = update.page.current ?? null;
 				problem = null;
 			} else {
@@ -143,6 +144,7 @@
 		return () => {
 			source.close();
 			earlier.cancel();
+			switching.watched[controllerId] -= 1;
 		};
 	});
 
@@ -196,7 +198,7 @@
 						{#if index < shown.length - 1 || view.before !== null}
 							<li class="guide"><ArrowDown size="1em" />較早的訊息</li>
 						{/if}
-				{:else if segment.kind === 'text'}
+					{:else if segment.kind === 'text'}
 						{@const marked = reported.get(segment.item.seq)}
 						<li class="said" class:reported={!!marked} data-kind={segment.item.kind}>
 							<p class="meta">
