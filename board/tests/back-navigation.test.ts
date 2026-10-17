@@ -18,22 +18,21 @@ class Tab {
 	#socket: WebSocket;
 	#next = 0;
 	#waiting = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>();
-	#listening: ((method: string) => void)[] = [];
-	#closeTarget: () => Promise<unknown>;
-	constructor(socket: WebSocket, closeTarget: () => Promise<unknown>) {
+	/** The documents that have loaded, by the loader that loaded them. */
+	#loaded = new Set<string>();
+	constructor(socket: WebSocket) {
 		this.#socket = socket;
-		this.#closeTarget = closeTarget;
 		socket.addEventListener('message', (event) => {
 			const message = JSON.parse(String(event.data));
-			if (message.method) for (const heard of this.#listening.splice(0)) heard(message.method);
+			if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') this.#loaded.add(message.params.loaderId);
 			this.#waiting.get(message.id)?.(message);
 			this.#waiting.delete(message.id);
 		});
 	}
-	/** A new tab, so nothing a tab before it still had under way can reach into it. */
+	/** A new tab of the Chrome listening on `debugPort`. */
 	static async open(debugPort: number): Promise<Tab> {
 		const deadline = Date.now() + 10_000;
-		let target: { id: string; webSocketDebuggerUrl: string } | undefined;
+		let target: { webSocketDebuggerUrl: string } | undefined;
 		while (!target) {
 			if (Date.now() > deadline) throw new Error('timed out waiting for Chrome to listen');
 			target = await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`, { method: 'PUT' }).then(
@@ -44,8 +43,10 @@ class Tab {
 		}
 		const socket = new WebSocket(target.webSocketDebuggerUrl);
 		await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-		const tab = new Tab(socket, () => fetch(`http://127.0.0.1:${debugPort}/json/close/${target.id}`));
+		const tab = new Tab(socket);
 		await tab.send('Page.enable');
+		await tab.send('Page.setLifecycleEventsEnabled', { enabled: true });
+		await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: COUNT_POPSTATE });
 		return tab;
 	}
 	send(method: string, params: object = {}): Promise<any> {
@@ -62,12 +63,14 @@ class Tab {
 	}
 	/** Load a new document and wait until it has loaded. */
 	async navigate(url: string) {
-		const loaded = new Promise<void>((resolve) => {
-			const heard = (method: string) => (method === 'Page.loadEventFired' ? resolve() : this.#listening.push(heard));
-			this.#listening.push(heard);
-		});
-		await this.send('Page.navigate', { url });
-		await loaded;
+		// The load of this navigation's own document: the tab's first, empty one also fires a load.
+		const { loaderId, errorText } = await this.send('Page.navigate', { url });
+		if (errorText) throw new Error(`${url}: ${errorText}`);
+		const deadline = Date.now() + 10_000;
+		while (!this.#loaded.has(loaderId)) {
+			if (Date.now() > deadline) throw new Error(`timed out loading ${url}`);
+			await sleep(20);
+		}
 	}
 	/** Wait for an expression in the page to be true. */
 	async until(expression: string, what = expression) {
@@ -77,14 +80,13 @@ class Tab {
 			await sleep(50);
 		}
 	}
-	async close() {
+	close() {
 		this.#socket.close();
-		await this.#closeTarget();
 	}
 }
 
 /** What the page shows: the address's query and the start of the content column's text. */
-const SCREEN = `({ search: location.search, text: document.querySelector('.detail')?.innerText ?? '' })`;
+const SCREEN = `({ search: location.search, listeners: window.popstateListeners, notices: document.querySelector('.dock')?.innerText ?? '', text: document.querySelector('.detail')?.innerText ?? '' })`;
 /** Click the first button in `scope` whose text includes `text`. */
 const click = (scope: string, text: string) =>
 	`[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.innerText.includes(${JSON.stringify(text)})).click()`;
@@ -94,7 +96,6 @@ let fixture: Fixture;
 let chrome: ChildProcess;
 let profile: string;
 let tab: Tab;
-let debugPort: number;
 let luna: ReturnType<Fixture['bound']>;
 let cookie: string;
 let oldest: InboxReport;
@@ -116,37 +117,59 @@ beforeAll(async () => {
 	fixture.list([luna]);
 	await fixture.refresh(cookie);
 	oldest = (await fixture.archive(cookie)).at(-1)!;
-
-	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	debugPort = PORT_BASE + 30;
-	chrome = spawn(
-		CHROME,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', `--user-data-dir=${profile}`, `--remote-debugging-port=${debugPort}`, 'about:blank'],
-		{ stdio: 'ignore' }
-	);
-	tab = await Tab.open(debugPort);
-	const [name, value] = cookie.split('=');
-	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 }, 30_000);
 
 afterAll(async () => {
-	await tab?.close();
-	chrome?.kill('SIGKILL');
-	if (profile) rmSync(profile, { recursive: true, force: true });
+	await stopChrome();
 	await fixture?.cleanup();
 });
 
-/** The page before the board in every visit; going back to it is leaving the board. */
-const START = 'data:text/html,start';
-const LEFT = `location.protocol === 'data:'`;
-/** The board has started in this document: once mounted it reads every source, which is done. */
-const STARTED = `!window.beforeReload && performance.getEntriesByType('resource').some((entry) => entry.name.endsWith('/api/refresh'))`;
-/** A new tab: the start page, then the board at `search` in a window `width` wide. */
+/** A new Chrome with nothing in it but the board's login, so nothing an earlier visit still had
+ *  under way can reach into the next: with one Chrome for all of them, now and then every request
+ *  of a new page was cancelled, in a new tab or in the same one. */
+async function startChrome() {
+	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
+	chrome = spawn(
+		CHROME!,
+		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', `--user-data-dir=${profile}`, `--remote-debugging-port=${PORT_BASE + 30}`, 'about:blank'],
+		{ stdio: 'ignore' }
+	);
+	tab = await Tab.open(PORT_BASE + 30);
+	const [name, value] = cookie.split('=');
+	await tab.send('Network.setCookie', { name, value, url: fixture.url });
+}
+async function stopChrome() {
+	if (!chrome || chrome.exitCode !== null || chrome.signalCode !== null) return;
+	tab.close();
+	const exited = new Promise((resolve) => chrome.once('exit', resolve));
+	chrome.kill('SIGKILL');
+	await exited;
+	rmSync(profile, { recursive: true, force: true });
+}
+
+/** The page before the board in every visit; going back to it is leaving the board. A page of the
+ *  board's own server: a page of another origin before it (a data: URL) made Chrome, about once in
+ *  some hundred loads, cancel every file the board's page asked for, so it never started. */
+const START = () => `${fixture.url}/user.css`;
+const LEFT = `location.pathname === '/user.css'`;
+/** Runs first in every document: counts the listeners for the browser's back. */
+const COUNT_POPSTATE = `(() => {
+	const add = window.addEventListener;
+	window.popstateListeners = 0;
+	window.addEventListener = function (type, ...rest) {
+		if (type === 'popstate') window.popstateListeners++;
+		return add.call(this, type, ...rest);
+	};
+})()`;
+/** The board has started in this document: SvelteKit's router and the mounted board both listen
+ *  for the back, so a click, "←" and the browser's back all reach it. Nothing on the network. */
+const STARTED = `!window.beforeReload && window.popstateListeners >= 2`;
+/** A new Chrome: the start page, then the board at `search` in a window `width` wide. */
 async function visit(width: number, search = '') {
-	await tab.close();
-	tab = await Tab.open(debugPort);
+	await stopChrome();
+	await startChrome();
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
-	await tab.navigate(START);
+	await tab.navigate(START());
 	await tab.navigate(`${fixture.url}/${search}`);
 	await tab.until(STARTED, 'the board to start');
 	// Started: the board's first history write is done.
