@@ -4,7 +4,8 @@
 import { DAY_MS } from './archive.ts';
 import type { Controller } from './types.ts';
 
-const reportedAt = (controller: Controller) => (controller.lastReportAt ? Date.parse(controller.lastReportAt) : -Infinity);
+/** When a controller last reported, earliest of all when it never has. */
+export const reportedAt = (controller: Controller) => (controller.lastReportAt ? Date.parse(controller.lastReportAt) : -Infinity);
 
 /** Runs of one status in the order given, the ended ones that reported within a day last and
  *  newest first; and the older ended ones, which the roster keeps out of its list. */

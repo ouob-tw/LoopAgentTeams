@@ -12,6 +12,7 @@ import type {
 	InboxReport
 } from '../board/types.ts';
 import { archivePage, DAY_MS, RETAIN_MS, sortArchive, type ArchivePage } from '../board/archive.ts';
+import { reportedAt } from '../board/roster.ts';
 import type { InboxState } from './inbox-state.ts';
 import type { ReportFile } from './reports.ts';
 
@@ -256,11 +257,10 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 
 	// Who needs the user first, then by latest report, newest first; no report goes last.
 	const group = (controller: Controller) => STATUS_ORDER.indexOf(controller.status);
-	const reported = (controller: Controller) => (controller.lastReportAt ? Date.parse(controller.lastReportAt) : -Infinity);
 	controllers.sort(
 		(a, b) =>
 			group(a) - group(b) ||
-			reported(b) - reported(a) ||
+			reportedAt(b) - reportedAt(a) ||
 			a.project.localeCompare(b.project) ||
 			a.hcomName.localeCompare(b.hcomName) ||
 			a.id.localeCompare(b.id)

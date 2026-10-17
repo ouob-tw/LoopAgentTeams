@@ -80,7 +80,12 @@
 		aria-expanded={open}
 		aria-label="已結束的主控 {ended.length} 個"
 		title="已結束的主控"
-		onclick={() => (open ? close() : show())}
+		onclick={(event) => {
+			// Its own control: a click on it is not one on the rail around it, which would unfold.
+			event.stopPropagation();
+			if (open) close();
+			else void show();
+		}}
 	>
 		<StatusMark status="ended" decorative />
 		{#if rail}
@@ -93,8 +98,10 @@
 {/if}
 
 {#if open}
+	<!-- svelte-ignore a11y_click_events_have_key_events -->
 	<div
 		bind:this={panel}
+		onclick={(event) => event.stopPropagation()}
 		class="panel"
 		role="dialog"
 		aria-label="已結束的主控"

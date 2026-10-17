@@ -106,7 +106,7 @@
 
 	/** A click on the rail unfolds the roster, unless it was on a mark or a tool. */
 	function expand(event: MouseEvent) {
-		if (!(event.target as Element).closest('.entry, .tools, .trigger, .panel')) onexpand();
+		if (!(event.target as Element).closest('.entry, .tools')) onexpand();
 	}
 
 	const label = (controller: Controller) =>

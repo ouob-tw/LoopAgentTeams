@@ -364,7 +364,6 @@
 			<CommandLine {controllers} target={controller} />
 		</div>
 	</div>
-
 </div>
 
 <Settings bind:this={settings} />
