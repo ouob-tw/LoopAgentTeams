@@ -16,7 +16,7 @@ import type {
 } from '../src/lib/board/types.ts';
 
 const ROOT = join(import.meta.dir, '..');
-// Each test file takes its own offsets from this base; the highest one in use is 27.
+// Each test file takes its own offsets from this base; the highest one in use is 28.
 export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
 
 /** What runs the server and the fake commands: Node when the host has it, otherwise the Bun that
@@ -260,6 +260,7 @@ export async function startFixture(
 		PORT: String(port),
 		LAT_BOARD_STATE_DIR: join(dir, 'board-state'),
 		LAT_REPORTS_DIR: reportsDir,
+		LAT_USAGE_DIR: join(dir, 'usage'),
 		LAT_BOARD_CLOCK_FILE: join(dir, 'clock'),
 		LAT_BOARD_CONFIG_DIR: join(dir, 'board-config'),
 		LAT_BOARD_HELPER_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-helper.mjs'), dir]),

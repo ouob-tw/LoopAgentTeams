@@ -1,6 +1,7 @@
 <script lang="ts">
 	// A controller's information page: one line of who and where it stands with its latest phase
-	// (the details behind a disclosure), a bar for each question waiting for an answer, then its
+	// and, while it runs, its context use, quota and prompt cache in small print (the details
+	// behind a disclosure), a bar for each question waiting for an answer, then its
 	// conversation, its reports in the inbox and what was sent to it, one tab at a time. Its model
 	// and effort, and messages and wakes, go through the command line at the bottom of the screen.
 	// Opened for a report, the conversation shows that report where it is in the history.
@@ -19,6 +20,7 @@
 		type InboxQuestion,
 		type InboxReport
 	} from '#lib/board/types.ts';
+	import { usageParts, type Usage } from '#lib/board/usage.ts';
 	import ItemRow from './ItemRow.svelte';
 	import SentLog from './SentLog.svelte';
 	import StatusMark from './StatusMark.svelte';
@@ -53,6 +55,24 @@
 	const questions = $derived(sorted.filter((item): item is InboxQuestion => item.kind === 'question'));
 	const reports = $derived(sorted.filter((item): item is InboxReport => item.kind === 'report'));
 	const inactive = $derived(isInactive(controller.status));
+
+	/** As the conversation's live feed last told; shown only while the controller runs. */
+	let usage = $state<Usage | null>(null);
+	let now = $state(Date.now());
+	const usageLine = $derived(usage && !inactive ? usageParts(usage, now) : []);
+	// The cache countdown moves on as each minute of it passes, and stops once it has expired.
+	$effect(() => {
+		const expires = usage?.cache?.expires;
+		if (!expires) return;
+		let timer: ReturnType<typeof setTimeout> | undefined;
+		const tick = () => {
+			now = Date.now();
+			const left = expires - now;
+			if (left > 0) timer = setTimeout(tick, (left % 60_000) + 1);
+		};
+		tick();
+		return () => clearTimeout(timer);
+	});
 
 	let details = $state(false);
 	onMount(() => {
@@ -135,6 +155,11 @@
 		</button>
 	</header>
 	<p class="phase">{phaseText(controller)}</p>
+	{#if usageLine.length}
+		<p class="usage">
+			{#each usageLine as part, index (index)}<span class={part.level}>{part.text}</span>{/each}
+		</p>
+	{/if}
 	{#if controller.error}
 		<p class="error" role="alert">⚠ {controller.error}</p>
 	{/if}
@@ -198,7 +223,7 @@
 
 <!-- All three stay mounted, so the conversation keeps its place and its live feed. -->
 <div class="tabpanel" role="tabpanel" id="panel-transcript" aria-labelledby="tab-transcript" hidden={tab !== 'transcript'}>
-	<Transcript {controller} {reports} {report} {opens} {onplaced} {card} />
+	<Transcript {controller} {reports} {report} {opens} {onplaced} {card} bind:usage />
 </div>
 <div class="tabpanel" role="tabpanel" id="panel-reports" aria-labelledby="tab-reports" hidden={tab !== 'reports'}>
 	{#each reports as item (item.key)}
@@ -279,6 +304,26 @@
 	.phase {
 		margin: 0.4rem 0 0;
 		overflow-wrap: anywhere;
+	}
+	/* Small print, its parts apart by a dot; a part that needs a look in the warning colours. */
+	.usage {
+		display: flex;
+		flex-wrap: wrap;
+		margin: 0.3rem 0 0;
+		font-family: var(--mono);
+		font-size: max(0.75rem, var(--min-font, 0px));
+		color: var(--muted);
+	}
+	.usage span + span::before {
+		content: '·';
+		margin: 0 0.45rem;
+		color: var(--muted);
+	}
+	.usage .warn {
+		color: var(--warn);
+	}
+	.usage .danger {
+		color: var(--danger);
 	}
 	.error {
 		margin: 0.4rem 0 0;
@@ -368,6 +413,10 @@
 	}
 	:global(:root[data-theme='light']) .tabs button[aria-selected='true'] {
 		border-bottom-color: var(--text);
+	}
+	/* Hue alone may not show on e-ink: a part that needs a look is also bold. */
+	:global(:root[data-theme='light']) .usage :is(.warn, .danger) {
+		font-weight: 700;
 	}
 
 	/* A phone: the tabs share the width. */

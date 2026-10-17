@@ -21,6 +21,7 @@
 | `LAT_BOARD_HELPER_COMMAND` | 直接指定輔助工具指令（JSON 字串陣列），看板會在後面加上 `board list` 等參數 | 由技能目錄組出 |
 | `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已登入裝置、密碼雜湊、回報的已讀與封存、送出紀錄） | `$XDG_STATE_HOME/lat/board` |
 | `LAT_REPORTS_DIR` | 主控回報紀錄目錄，須與 LAT hook 寫入的位置相同 | `$XDG_STATE_HOME/lat/reports` |
+| `LAT_USAGE_DIR` | Claude 主控用量檔的目錄，須與狀態列記錄程式寫入的位置相同（見「用量與快取」） | `$XDG_STATE_HOME/lat/usage` |
 | `LAT_BOARD_FALLBACK_SECONDS` | 漏掉檔案變動時，最慢幾秒內補上（從變動到畫面更新）；5 到 60 | `60` |
 | `LAT_BOARD_HELPER_TIMEOUT_SECONDS` | 輔助工具多久沒回應就放棄；最多是（上一項 − 1）秒的一半 | `15` |
 | `LAT_BOARD_LOGIN_LOCK_SECONDS` | 同一來源連續輸錯 5 次密碼後拒絕登入的秒數 | `60` |
@@ -92,6 +93,32 @@
 - 一頁是最後 50 段文字（你的訊息加主控文字）和其間的操作；捲到清單底部時自動取再早的 50 段，底部的「載入更早」按鈕也可以手動載入，載入失敗後只能用按鈕重試。每個項目帶著它在整段對話裡的位置（`seq`），頁與頁之間不重複也不漏。
 - 頁面開著時，伺服器監看那個紀錄檔，有變動 5 秒內推送最新一頁（`/api/transcript/events`）；一次多出超過 50 段時只留新的一頁，更早的可再載入。紀錄檔找不到或讀不出來時，以浮動通知顯示原因，資訊頁其他區塊不受影響，之後每幾秒再試。關掉頁面時，還在讀的輔助工具連同它開的 Python 一起結束。
 - 讀不出來的行會略過，這一區上方註明「有 N 行紀錄讀不出來，已略過」：不是 JSON 物件的行，以及欄位型別不對的紀錄（只略過那一筆，前後照常）；client 還在寫的最後一行不算。
+
+## 用量與快取
+
+主控資訊頁的目前階段下方有一行小字，例如 `Ctx 42% used · 5h 剩 63% · 7d 剩 80% · 快取 命中 97% · 38 分後過期`，跟主控終端機的狀態列同一組數字。已結束與已關閉的主控不顯示；某項讀不到只省略那一項，全部讀不到就整行不顯示。
+
+- Ctx 是上下文已用的比例；額度是「剩」多少（100 − 已用），依期間標成 `5h`、`7d` 這類名稱；快取命中是最近一次請求從快取讀的比例，快取冷時只顯示「快取 冷」。過期倒數只有 Claude 主控有，算法同狀態列（剩餘秒數 ÷ 60 取整數），每過一分鐘自動更新，過期後顯示「已過期」。
+- 變黃：Ctx ≥ 80%、任一額度剩不到 20%、快取剩 5 分鐘以內；已過期用紅色。淺色主題另加粗。
+- Codex 主控：輔助工具的 `board transcript` 從 rollout 最後的 `token_count` 事件算出 `usage`：Ctx = 最後一次請求的 `input_tokens` ÷ `model_context_window`，快取命中 = `cached_input_tokens` ÷ `input_tokens`，額度取 `rate_limits` 的 `primary`／`secondary`（有幾個就顯示幾個，依 `window_minutes` 命名）。
+- Claude 主控：這些數字只有狀態列指令拿得到，所以要在狀態列指令前面串上 `scripts/usage-recorder.sh`。它每次狀態列更新時讀標準輸入，把 `context_window.used_percentage`、`rate_limits` 的 `five_hour`／`seven_day`（`used_percentage`、`resets_at`）、`prompt_cache`（`caching_observed`、`warm`、`hit_ratio`、`expires_at`）與寫入時間存成 `$LAT_USAGE_DIR/<session ID>.json`（先寫暫存檔再改名），不存訊息、路徑或憑證；接著把同一份輸入原封不動交給後面的指令，印出它的輸出。記錄失敗（例如沒有 `jq`、目錄寫不進去、輸入不是 JSON）一律略過，不影響狀態列。需要 `bash` 與 `jq`。
+- 頁面開著時，用量跟著對話紀錄的推送（`/api/transcript/events` 的 `page.usage`）更新：Codex 隨紀錄檔變動；Claude 另外監看用量檔，只有它變了時只重讀這個檔、不重跑輔助工具。用量檔讀不出來時當成沒有，不影響其他區塊。
+
+安裝：在 `~/.claude/settings.json` 的 `statusLine.command` 原本的指令前面加上 `bash <看板目錄>/scripts/usage-recorder.sh `，其餘不動。例如原本是
+
+```json
+"statusLine": { "type": "command", "command": "bash ~/.claude/statusline-command.sh" }
+```
+
+改成
+
+```json
+"statusLine": { "type": "command", "command": "bash /path/to/LoopAgentTeams/board/scripts/usage-recorder.sh bash ~/.claude/statusline-command.sh" }
+```
+
+後面的指令照樣由 shell 拆成程式與參數，引號寫法不用改。只想記錄、不要狀態列時，後面可以不接指令。新的設定在下一次狀態列更新時生效，不用重啟 client。你改了 `LAT_USAGE_DIR` 時，狀態列與看板服務都要設定相同的值。
+
+移除：把 `statusLine.command` 前面加上的那段刪掉，再視需要刪除 `$XDG_STATE_HOME/lat/usage`（沒設定 `XDG_STATE_HOME` 時是 `~/.local/state/lat/usage`）。
 
 ## 傳話給主控
 

@@ -11,6 +11,8 @@ export interface BoardConfig {
 	stateDir: string;
 	/** Where the turn-end hook appends controller report records. */
 	reportsDir: string;
+	/** Where the status line recorder keeps each Claude session's context use, quota and cache. */
+	usageDir: string;
 	/** The user's own stylesheet, loaded after the built-in styles on every device. May not exist. */
 	userStylePath: string;
 	/** Command that runs the LAT panel helper; the board appends `board <command>`. */
@@ -105,6 +107,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 	return {
 		stateDir: env.LAT_BOARD_STATE_DIR || join(stateHome(env), 'lat/board'),
 		reportsDir: env.LAT_REPORTS_DIR || join(stateHome(env), 'lat/reports'),
+		usageDir: env.LAT_USAGE_DIR || join(stateHome(env), 'lat/usage'),
 		userStylePath: join(env.LAT_BOARD_CONFIG_DIR || join(configHome(env), 'lat/board'), 'user.css'),
 		helperCommand: helperCommand(env),
 		// A missed change may wait out one read and then need a second one; both must fit in the

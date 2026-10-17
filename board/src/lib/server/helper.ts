@@ -4,6 +4,7 @@ import { spawn, type ChildProcess } from 'node:child_process';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import { fixedModel, type CurrentSettings } from '../board/models.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
+import { usageFrom } from '../board/usage.ts';
 import type { BoardConfig } from './config.ts';
 
 export type HelperList =
@@ -213,7 +214,9 @@ export async function readTranscript(
 			items: payload.items,
 			before: typeof payload.before === 'number' ? payload.before : null,
 			skipped: typeof payload.skipped === 'number' ? payload.skipped : 0,
-			current: currentFrom(payload.current)
+			current: currentFrom(payload.current),
+			// A Codex record's; an older helper prints none.
+			usage: usageFrom(payload.usage)
 		}
 	};
 }

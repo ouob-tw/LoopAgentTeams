@@ -22,6 +22,7 @@
 	} from '#lib/board/transcript.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
 	import { itemLabel, type Controller, type InboxReport } from '#lib/board/types.ts';
+	import type { Usage } from '#lib/board/usage.ts';
 	import { untrack, type Snippet } from 'svelte';
 
 	let {
@@ -30,7 +31,8 @@
 		report,
 		opens = 0,
 		onplaced,
-		card
+		card,
+		usage = $bindable(null)
 	}: {
 		controller: Controller;
 		/** This controller's reports in the inbox: the texts they carry are marked as reports. */
@@ -42,6 +44,8 @@
 		/** Called once the report is scrolled to, or shown above the conversation instead. */
 		onplaced?: () => void;
 		card?: Snippet;
+		/** Context use, quota and prompt cache, as the live feed last told; null when unknown. */
+		usage?: Usage | null;
 	} = $props();
 
 	let view = $state<TranscriptView | null>(null);
@@ -153,6 +157,7 @@
 	$effect(() => {
 		const controllerId = id;
 		view = null;
+		usage = null;
 		problem = null;
 		opened = {};
 		loadingEarlier = false;
@@ -167,6 +172,7 @@
 				view = withLatest(view, update.page);
 				// The command line's label shows what the latest turn used.
 				switching.current[controllerId] = update.page.current ?? null;
+				usage = update.page.usage ?? null;
 				problem = null;
 			} else {
 				if (update.reason !== problem) toasts.show('failed', `對話紀錄讀不到：${update.reason}`);
