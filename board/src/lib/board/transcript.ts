@@ -100,13 +100,16 @@ export function toolLine(item: TranscriptTool): string {
 /** How long before a report its text may have been written, for a report whose text does not
  *  match any word for word. */
 const NEAR_MS = 5 * 60_000;
+/** How far back the text equal to a report is looked for before the near one is taken: well
+ *  beyond any turn's last text, without reading a whole long conversation. */
+const SEARCH_MS = 60 * 60_000;
 
 /**
  * Where a report's text is in the conversation, as the text's `seq`. A report carries the
  * controller's last text of its turn, so the text that equals it is taken, the one nearest the
- * report's time when several do; failing that, the controller's last text in the few minutes
- * before the report. Undefined while the pages loaded so far may not reach back far enough to
- * tell; null once they do and nothing fits.
+ * report's time when several do; failing that, once the pages loaded reach an hour before the
+ * report (or the start), the controller's last text in the few minutes before it. Undefined while
+ * they do not reach that far; null once they do and nothing fits.
  */
 export function reportPlace(view: TranscriptView, report: { time: string; message: string }): number | null | undefined {
 	const at = Date.parse(report.time);
@@ -116,7 +119,7 @@ export function reportPlace(view: TranscriptView, report: { time: string; messag
 	const same = texts.filter((item) => item.text.trim() === message);
 	if (same.length) return same.reduce((best, item) => (gap(item) < gap(best) ? item : best)).seq;
 	const first = view.items[0]?.time;
-	if (view.before !== null && !(first && Date.parse(first) < at - NEAR_MS)) return undefined;
+	if (view.before !== null && !(first && Date.parse(first) < at - SEARCH_MS)) return undefined;
 	const near = texts.findLast((item) => item.time && Date.parse(item.time) <= at && at - Date.parse(item.time) <= NEAR_MS);
 	return near?.seq ?? null;
 }

@@ -21,9 +21,14 @@ test('without an equal text, the last assistant text in the five minutes before 
 	expect(reportPlace(view([text(1, '2026-10-17T09:50:00Z', '太早了')]), report)).toBeNull();
 });
 
-test('still unknown while earlier pages may hold it; found once they reach back far enough', () => {
+test('still unknown while earlier pages may hold an equal text; the near one once they reach an hour back', () => {
 	const recent = [text(10, '2026-10-17T09:58:00Z', '別的話')];
 	expect(reportPlace(view(recent, 9), report)).toBeUndefined();
-	const reachesBack = [text(5, '2026-10-17T09:00:00Z', '更早'), ...recent];
-	expect(reportPlace(view(reachesBack, 4), report)).toBe(10);
+	// Past the five minutes but not the hour: an equal text may still be further back.
+	const pastNear = [text(8, '2026-10-17T09:30:00Z', '更早'), ...recent];
+	expect(reportPlace(view(pastNear, 7), report)).toBeUndefined();
+	const withEqual = [text(6, '2026-10-17T09:20:00Z', 'DONE: 做完了'), ...pastNear];
+	expect(reportPlace(view(withEqual, 5), report)).toBe(6);
+	const reachesHour = [text(5, '2026-10-17T08:50:00Z', '更早'), ...pastNear];
+	expect(reportPlace(view(reachesHour, 4), report)).toBe(10);
 });
