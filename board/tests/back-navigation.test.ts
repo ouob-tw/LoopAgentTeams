@@ -13,6 +13,15 @@ const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium
 	(path) => path && existsSync(path)
 );
 
+/** Runs first in every document: counts the listeners for the browser's back. */
+const COUNT_POPSTATE = `(() => {
+	const add = window.addEventListener;
+	window.popstateListeners = 0;
+	window.addEventListener = function (type, ...rest) {
+		if (type === 'popstate') window.popstateListeners++;
+		return add.call(this, type, ...rest);
+	};
+})()`;
 /** One Chrome tab, spoken to over the DevTools protocol. */
 class Tab {
 	#socket: WebSocket;
@@ -85,7 +94,8 @@ class Tab {
 	}
 }
 
-/** What the page shows: the address's query and the start of the content column's text. */
+/** What the page shows: the address's query and the content column's text, plus, for a wait that
+ *  times out, how many listeners for the back are in and the notices above the command line. */
 const SCREEN = `({ search: location.search, listeners: window.popstateListeners, notices: document.querySelector('.dock')?.innerText ?? '', text: document.querySelector('.detail')?.innerText ?? '' })`;
 /** Click the first button in `scope` whose text includes `text`. */
 const click = (scope: string, text: string) =>
@@ -152,15 +162,6 @@ async function stopChrome() {
  *  some hundred loads, cancel every file the board's page asked for, so it never started. */
 const START = () => `${fixture.url}/user.css`;
 const LEFT = `location.pathname === '/user.css'`;
-/** Runs first in every document: counts the listeners for the browser's back. */
-const COUNT_POPSTATE = `(() => {
-	const add = window.addEventListener;
-	window.popstateListeners = 0;
-	window.addEventListener = function (type, ...rest) {
-		if (type === 'popstate') window.popstateListeners++;
-		return add.call(this, type, ...rest);
-	};
-})()`;
 /** The board has started in this document: SvelteKit's router and the mounted board both listen
  *  for the back, so a click, "←" and the browser's back all reach it. Nothing on the network. */
 const STARTED = `!window.beforeReload && window.popstateListeners >= 2`;
@@ -175,7 +176,7 @@ async function visit(width: number, search = '') {
 	// Started: the board's first history write is done.
 	await tab.until(`JSON.stringify(history.state).includes('depth')`, "the board's first history entry");
 }
-const screen = () => tab.eval<{ search: string; text: string }>(SCREEN);
+const screen = () => tab.eval<{ search: string; listeners: number; notices: string; text: string }>(SCREEN);
 const back = () => tab.eval(`history.back()`);
 async function reload() {
 	await tab.eval('window.beforeReload = true');
