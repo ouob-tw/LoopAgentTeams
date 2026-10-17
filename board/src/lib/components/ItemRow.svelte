@@ -160,24 +160,33 @@
 		text-decoration: underline;
 	}
 
-	/* Light theme: what still wants attention has a frame, the open row a heavy one; an unread
-	   report's label is outlined and a question's is filled, so they differ without colour. */
+	/* Light theme (e-ink): no unread dot and no gutter for it. What still wants attention has a
+	   frame and its label filled with the theme's dark green (完成) or dark orange (求助, 待決), near
+	   black on e-ink and still coloured on a screen, at least 7:1 against the white text. A read one
+	   keeps the outlined label; the open row has a heavy frame. */
+	:global(:root[data-theme='light']) .row {
+		padding-left: 0.6rem;
+	}
 	:global(:root[data-theme='light']) .row.fresh {
 		border-color: var(--line);
 	}
 	:global(:root[data-theme='light']) .row.fresh::before {
-		background: var(--text);
+		content: none;
 	}
 	:global(:root[data-theme='light']) .row.current {
 		border-color: var(--text);
 		outline: 2px solid var(--text);
 		outline-offset: -3px;
 	}
-	:global(:root[data-theme='light']) .fresh .kind[data-kind='report'] {
-		background: var(--bg);
-		border-color: var(--text);
-		color: var(--text);
+	:global(:root[data-theme='light']) .fresh .kind {
+		background: var(--ok);
+		border-color: var(--ok);
+		color: var(--bg);
 		font-weight: 600;
+	}
+	:global(:root[data-theme='light']) .fresh .kind:is([data-kind='question'], [data-kind='help']) {
+		background: var(--warn);
+		border-color: var(--warn);
 	}
 	:global(:root[data-theme='light']) button.owner {
 		text-decoration: underline;
