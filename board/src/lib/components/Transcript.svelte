@@ -136,10 +136,12 @@
 		const port = page ? window.innerHeight : scroller!.clientHeight;
 		const portTop = page ? 0 : scroller!.getBoundingClientRect().top;
 		const scrolled = page ? window.scrollY : scroller!.scrollTop;
+		// Measured with the space at a full screen, so the content overflows: a container's scroll
+		// height never reports less than its own height, which would hide how short the content is.
+		tail.style.height = `${port}px`;
 		const height = page ? document.documentElement.scrollHeight : scroller!.scrollHeight;
-		const current = tail.offsetHeight;
-		// What follows the card's top, without the space added before.
-		const below = height - current - (scrolled + element.getBoundingClientRect().top - portTop);
+		// What follows the card's top, without the space.
+		const below = height - port - (scrolled + element.getBoundingClientRect().top - portTop);
 		const margin = parseFloat(getComputedStyle(element).scrollMarginTop) || 0;
 		tail.style.height = `${Math.max(0, Math.ceil(port - margin - below))}px`;
 	}
