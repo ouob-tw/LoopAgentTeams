@@ -1,17 +1,23 @@
 <script lang="ts">
-	// The command line at the bottom of the wide layout: `@name message` goes to that controller,
-	// a line without a name to the controller that is open. An ended or closed controller is woken
-	// instead; the wake's options sit in a pop-up behind a button that is always there, so the line
-	// keeps its size whoever it is for.
+	// The command line at the bottom of the screen: `@name message` goes to that controller, a line
+	// without a name to the controller that is open. The recipient's model and effort sit beside the
+	// send button. An ended or closed controller is woken instead; its other wake options sit in a
+	// pop-up behind a button that shows only then. A phone can put the line away behind a floating
+	// button, to read more of the page; what was typed stays.
+	import ArrowUp from '@lucide/svelte/icons/arrow-up';
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import MessageSquare from '@lucide/svelte/icons/message-square';
 	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
+	import { onMount, tick } from 'svelte';
+	import { COMMAND_HIDDEN_KEY, remember, remembered } from '#lib/board/prefs.ts';
 	import { parseCommand } from '#lib/board/messages.ts';
 	import { enterMakesNewline, messaging } from '#lib/board/messaging.svelte.ts';
-	import { EFFORT_UNKNOWN_TEXT, FIXED_MODEL_REASON, LOCK_UNKNOWN_TEXT } from '#lib/board/models.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { isInactive, type Controller } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
+	import ModelPicker from './ModelPicker.svelte';
 	import SendButton from './SendButton.svelte';
 
 	let { controllers, target }: { controllers: Controller[]; target: Controller | undefined } = $props();
@@ -20,6 +26,21 @@
 	let sending = $state(false);
 	let sent = $state(0);
 	let optionsOpen = $state(false);
+	/** Put away on a phone; the wide layout ignores it. */
+	let hidden = $state(false);
+	let form: HTMLFormElement;
+	onMount(() => {
+		hidden = remembered(COMMAND_HIDDEN_KEY, ['1', '0'], '0') === '1';
+	});
+
+	async function setHidden(next: boolean) {
+		hidden = next;
+		optionsOpen = false;
+		remember(COMMAND_HIDDEN_KEY, next ? '1' : '0');
+		if (next) return;
+		await tick();
+		form.querySelector('textarea')?.focus();
+	}
 	const command = $derived(parseCommand(text, controllers, target, true));
 	const recipient = $derived(command.ok ? command.controller : text.trimStart().startsWith('@') ? undefined : target);
 	const waking = $derived(recipient !== undefined && isInactive(recipient.status));
@@ -43,13 +64,6 @@
 	$effect.pre(() => {
 		void id;
 		optionsOpen = false;
-	});
-
-	$effect(() => {
-		if (!waking) return;
-		const abort = new AbortController();
-		void switching.load(id, abort.signal);
-		return () => abort.abort();
 	});
 
 	async function submit() {
@@ -92,38 +106,53 @@
 		delete confirming[target];
 		const result = await messaging.abandon(target, wakeId);
 		if (result.ok) delete abandonable[target];
-		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? '已放棄前一次接回，可以再按「喚醒並送出」。' : (result.reason ?? '放棄失敗'));
+		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? '已放棄前一次接回，可以再按「喚醒」。' : (result.reason ?? '放棄失敗'));
 	}
 </script>
 
+{#snippet sendIcon()}<ArrowUp size="1.2em" />{/snippet}
+
 <form
+	bind:this={form}
 	class="cmd"
+	class:hidden
 	onsubmit={(event) => {
 		event.preventDefault();
 		void submit();
 	}}
 >
-	<span class="to">→ {recipient ? `@${recipient.hcomName}` : '@名稱'}</span>
-	<MessageBox
-		bind:value={() => text, (value) => (text = value)}
-		label="指令列"
-		placeholder="{waking ? `喚醒 @${recipient?.hcomName}` : '直接下指示；用 @名稱 指定主控'}（{enterMakesNewline.current
-			? 'Enter 換行，按鈕送出'
-			: 'Enter 送出，Shift+Enter 換行'}）"
-		onsend={submit}
-	/>
-	<button
-		type="button"
-		class="options"
-		aria-label="喚醒選項"
-		title={waking ? '喚醒選項：開新一輪 LAT、模型與思考強度' : '只有已結束的主控有喚醒選項'}
-		aria-expanded={optionsOpen}
-		disabled={!waking}
-		onclick={() => (optionsOpen = !optionsOpen)}
-	>
-		<SlidersHorizontal size="1.1em" />
+	<button type="button" class="hide" aria-label="收起輸入列" title="收起輸入列" onclick={() => setHidden(true)}>
+		<ChevronDown size="1.1em" />
 	</button>
-	<SendButton class="send" label={waking ? '喚醒並送出' : '送出'} {sending} {sent} disabled={!text.trim()} />
+	<span class="to" class:other={recipient !== undefined && recipient.id !== target?.id}>→ {recipient ? `@${recipient.hcomName}` : '@名稱'}</span>
+	<div class="box">
+		<MessageBox
+			bind:value={() => text, (value) => (text = value)}
+			label={recipient ? `指令列：${waking ? '喚醒' : '傳話給'} @${recipient.hcomName}` : '指令列'}
+			placeholder="@名稱 指定主控・{enterMakesNewline.current ? 'Enter 換行・按鈕送出' : 'Enter 送出・Shift+Enter 換行'}"
+			onsend={submit}
+		/>
+	</div>
+	<ModelPicker
+		controller={recipient}
+		chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }}
+		onchoose={(kind, value) => ((kind === 'model' ? model : effort)[id] = value)}
+	/>
+	{#if waking}
+		<button
+			type="button"
+			class="options"
+			aria-label="喚醒選項"
+			title="喚醒選項：開新一輪 LAT"
+			aria-expanded={optionsOpen}
+			onclick={() => (optionsOpen = !optionsOpen)}
+		>
+			<SlidersHorizontal size="1.1em" />
+		</button>
+	{/if}
+	<!-- A wake keeps its word: it brings a controller back and spends quota. One button either way,
+	     so its check stays through the change. -->
+	<SendButton class="send" label={waking ? '喚醒' : '送出'} icon={waking ? undefined : sendIcon} {sending} {sent} disabled={!text.trim()} />
 
 	{#if optionsOpen && waking && recipient}
 		<div class="popup" role="group" aria-label="喚醒選項">
@@ -131,38 +160,9 @@
 				<input type="checkbox" bind:checked={() => newRound[id] ?? false, (value) => (newRound[id] = value)} />
 				開新一輪 LAT
 			</label>
-			{#if resumes && status?.options}
-				<div class="choice">
-					<label>
-						模型
-						<select bind:value={() => model[id] ?? '', (value) => (model[id] = value)} disabled={status.lock === 'fixed'}>
-							<option value="">保持目前</option>
-							{#each status.options.models as option (option)}
-								<option value={option}>{option}</option>
-							{/each}
-						</select>
-					</label>
-					<label>
-						思考強度
-						<select bind:value={() => effort[id] ?? '', (value) => (effort[id] = value)}>
-							<option value="">保持目前</option>
-							{#each status.options.efforts as option (option)}
-								<option value={option}>{option}</option>
-							{/each}
-						</select>
-					</label>
-				</div>
-				{#if model[id] && status.lock !== 'fixed' && !effort[id] && !switching.current[id]?.effort}
-					<p class="note">{EFFORT_UNKNOWN_TEXT}。</p>
-				{/if}
-				{#if status.lock === 'fixed'}
-					<p class="note">{FIXED_MODEL_REASON}。</p>
-				{:else if status.lock === 'unknown'}
-					<p class="note">{LOCK_UNKNOWN_TEXT}（{status.lockReason}），接回後以下一回合核對結果。</p>
-				{/if}
-			{/if}
 			<p class="note">
-				@{recipient.hcomName} 已結束。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。
+				@{recipient.hcomName} 已結束。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪
+				LAT」會在前面加上 LAT 啟動指令。
 			</p>
 			{#if abandonable[id]}
 				{#if confirming[id]}
@@ -178,12 +178,20 @@
 		</div>
 	{/if}
 </form>
+{#if hidden}
+	<button type="button" class="reopen" aria-label="展開輸入列" title="展開輸入列" onclick={() => setHidden(false)}>
+		<MessageSquare size="1.3em" />
+		{#if text.trim()}<span class="dot" aria-label="有尚未送出的文字"></span>{/if}
+	</button>
+{/if}
 
 <style>
 	.cmd {
 		position: relative;
 		display: grid;
-		grid-template-columns: auto 1fr auto auto;
+		grid-template-columns: auto 1fr;
+		grid-auto-columns: auto;
+		grid-auto-flow: column;
 		gap: 0.6rem;
 		align-items: end;
 		padding: 0.6rem 1rem;
@@ -196,7 +204,7 @@
 		display: flex;
 		align-items: center;
 		box-sizing: border-box;
-		height: calc(1.5rem + 1rem + 2px);
+		height: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
 		font-family: var(--mono);
 		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
@@ -204,12 +212,8 @@
 	.options {
 		display: inline-flex;
 		align-items: center;
-		height: calc(1.5rem + 1rem + 2px);
+		height: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
 		padding: 0 0.6rem;
-	}
-	/* Wide enough for 「喚醒並送出」, so the label change does not move the box. */
-	.cmd :global(.send) {
-		min-width: 7.5em;
 	}
 	/* Floats above the line; opening it moves nothing. */
 	.popup {
@@ -234,17 +238,6 @@
 		gap: 0.4rem;
 		font-size: max(0.85rem, var(--min-font, 0px));
 	}
-	.choice {
-		display: flex;
-		flex-wrap: wrap;
-		gap: 0.5rem 1rem;
-	}
-	.choice label {
-		display: flex;
-		flex-direction: column;
-		gap: 0.2rem;
-		font-size: max(0.85rem, var(--min-font, 0px));
-	}
 	.note,
 	.warn {
 		margin: 0;
@@ -264,9 +257,77 @@
 		border-color: var(--danger);
 	}
 	/* The narrow layout has no command line. */
+	.hide,
+	.reopen {
+		display: none;
+	}
+	/* A phone: the box takes its own row, the recipient and the controls the row under it. */
 	@media (max-width: 760px) {
 		.cmd {
+			pointer-events: auto;
+		}
+		.cmd.hidden {
 			display: none;
+		}
+		.hide {
+			display: inline-flex;
+			align-items: center;
+			padding: 0.3rem;
+			border: 0;
+			background: none;
+			color: var(--muted);
+		}
+		/* Bottom right, over the page; the dock around it lets touches through elsewhere. */
+		.reopen {
+			position: relative;
+			display: flex;
+			align-items: center;
+			justify-content: center;
+			width: 44px;
+			height: 44px;
+			margin: 0 0.8rem calc(0.8rem + env(safe-area-inset-bottom, 0px)) auto;
+			padding: 0;
+			border: 0;
+			border-radius: var(--radius-pill);
+			background: color-mix(in srgb, var(--text) 10%, var(--bg));
+			box-shadow: 0 2px 10px rgb(0 0 0 / 0.3);
+			pointer-events: auto;
+		}
+		.dot {
+			position: absolute;
+			top: 7px;
+			right: 7px;
+			width: 9px;
+			height: 9px;
+			border-radius: var(--radius-pill);
+			background: var(--accent);
+		}
+		.cmd {
+			display: flex;
+			flex-wrap: wrap;
+			align-items: center;
+			gap: 0.5rem;
+			padding: 0.5rem 0.6rem calc(0.5rem + env(safe-area-inset-bottom, 0px));
+		}
+		.box {
+			order: -1;
+			flex-basis: 100%;
+		}
+		/* The top bar already names the open controller; the line names its recipient only when it
+		   is someone else, in full on a short row above the box, so it is never cut. */
+		.hide {
+			margin-right: auto;
+		}
+		.to {
+			display: none;
+		}
+		.to.other {
+			display: block;
+			order: -2;
+			flex-basis: 100%;
+			height: auto;
+			overflow-wrap: anywhere;
+			color: var(--accent);
 		}
 	}
 </style>

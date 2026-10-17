@@ -164,6 +164,20 @@ textarea:disabled {
 .md :is(ul, ol) {
 	padding-left: 1.4em;
 }
+/* Set outright: inside a list of the page, such as the conversation, a browser would take the
+   block's own lists for nested ones and change their marks. */
+.md ul {
+	list-style: disc;
+}
+.md ul ul {
+	list-style: circle;
+}
+.md ul ul ul {
+	list-style: square;
+}
+.md ol {
+	list-style: decimal;
+}
 .md code {
 	font-family: var(--mono);
 	font-size: max(0.9em, var(--min-font, 0px));

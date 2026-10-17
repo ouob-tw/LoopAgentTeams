@@ -62,4 +62,16 @@
 		border-radius: var(--radius);
 		padding: 0.5rem 0.6rem;
 	}
+	/* The tips stay on one line, cut with an ellipsis, so an empty box is one line tall; typed
+	   text wraps and grows the box as before. */
+	textarea:placeholder-shown {
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
+	textarea::placeholder {
+		overflow: hidden;
+		white-space: nowrap;
+		text-overflow: ellipsis;
+	}
 </style>

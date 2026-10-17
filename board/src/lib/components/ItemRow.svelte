@@ -28,7 +28,7 @@
 
 <div class="row" class:fresh class:current data-item={item.key}>
 	<button class="main" aria-current={current ? 'true' : undefined} onclick={() => onopen(item)}>
-		<!-- The label leads the title's first line and the title wraps under it; at most three
+		<!-- The label leads the title's first line and the title wraps under it; at most two
 		     lines show here, the whole title is in the content. -->
 		<span class="clamp">
 			<span class="kind" data-kind={kind}>{itemLabel(item)}</span>
@@ -38,17 +38,19 @@
 	<div class="under">
 		{#if showOwner}
 			{#if onowner}
-				<button class="owner" onclick={onowner}>{item.project} · @{item.hcomName}</button>
+				<button class="owner" title="{item.project} · @{item.hcomName}" onclick={onowner}>{item.project} · @{item.hcomName}</button>
 			{:else}
-				<span class="owner">{item.project} · @{item.hcomName}</span>
+				<span class="owner" title="{item.project} · @{item.hcomName}">{item.project} · @{item.hcomName}</span>
 			{/if}
 		{/if}
-		{#if item.kind === 'question' && !item.unsent}
-			<span>已送出</span>
-		{:else if item.kind === 'report'}
-			<span>{archived ? '已封存' : item.readAt === null ? '未讀' : '已讀'}</span>
-		{/if}
-		<time datetime={item.time}>{formatTime(item.time)}</time>
+		<span class="meta">
+			{#if item.kind === 'question' && !item.unsent}
+				<span>已送出</span>
+			{:else if item.kind === 'report'}
+				<span>{archived ? '已封存' : item.readAt === null ? '未讀' : '已讀'}</span>
+			{/if}
+			<time datetime={item.time}>{formatTime(item.time)}</time>
+		</span>
 	</div>
 </div>
 
@@ -56,15 +58,31 @@
 	.row {
 		border: 1px solid transparent;
 		border-radius: var(--radius);
-		padding: 0.5rem 0.6rem;
+		position: relative;
+		padding: 0.5rem 0.6rem 0.5rem 1.2rem;
 		color: var(--muted);
+	}
+	/* Unread marker in the left padding, level with the label on the first title line: the label
+	   sits on the text's baseline, a little below the middle of the line (0.75em), under the 1px border. */
+	.row.fresh::before {
+		content: '';
+		position: absolute;
+		left: 0.5rem;
+		top: calc(0.5rem + 1px + 0.9em - 3.5px);
+		width: 7px;
+		height: 7px;
+		border-radius: 50%;
+		background: var(--accent);
+	}
+	.row.fresh:has(.kind[data-kind='question'])::before {
+		background: var(--warn);
 	}
 	.row.fresh {
 		background: var(--surface);
 		color: var(--text);
 	}
 	.row.fresh .title {
-		font-weight: 600;
+		font-weight: 500;
 	}
 	.row.current {
 		border-color: var(--accent);
@@ -80,8 +98,8 @@
 	.clamp {
 		display: -webkit-box;
 		-webkit-box-orient: vertical;
-		-webkit-line-clamp: 3;
-		line-clamp: 3;
+		-webkit-line-clamp: 2;
+		line-clamp: 2;
 		overflow: hidden;
 		overflow-wrap: anywhere;
 	}
@@ -115,8 +133,21 @@
 		font-size: max(0.75rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
+	/* Fits: owner, status, then time at the far right. Otherwise the owner sits alone on line 1
+	   (cut with an ellipsis if even that is too wide) and line 2 has status left, time right. */
 	.owner {
-		overflow-wrap: anywhere;
+		flex: 0 1 auto;
+		min-width: 0;
+		overflow: hidden;
+		text-overflow: ellipsis;
+		white-space: nowrap;
+	}
+	.meta {
+		display: flex;
+		flex: 1 0 auto;
+		justify-content: space-between;
+		gap: 0.6rem;
+		white-space: nowrap;
 	}
 	button.owner {
 		padding: 0;
@@ -128,15 +159,14 @@
 	button.owner:hover {
 		text-decoration: underline;
 	}
-	time {
-		margin-left: auto;
-		white-space: nowrap;
-	}
 
 	/* Light theme: what still wants attention has a frame, the open row a heavy one; an unread
 	   report's label is outlined and a question's is filled, so they differ without colour. */
 	:global(:root[data-theme='light']) .row.fresh {
 		border-color: var(--line);
+	}
+	:global(:root[data-theme='light']) .row.fresh::before {
+		background: var(--text);
 	}
 	:global(:root[data-theme='light']) .row.current {
 		border-color: var(--text);

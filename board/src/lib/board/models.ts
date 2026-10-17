@@ -196,7 +196,7 @@ export const OWN_PANE_REASON =
 export const FIXED_MODEL_REASON = '這個 Codex 主控啟動時指定了模型，接回後無法換模型，只能改思考強度';
 export const LOCK_UNKNOWN_TEXT = '無法確認這個主控能否換模型';
 export const NOT_OFFERED_REASON = '這個模型或思考強度不在這個 client 的選項裡，沒有送出';
-export const SWITCH_UNSETTLED_REASON = '這個主控有一次模型切換還沒確認已停止，請先到資訊頁按「繼續切換」，沒有送出';
+export const SWITCH_UNSETTLED_REASON = '這個主控有一次模型切換還沒確認已停止，請先按指令列模型標籤旁的 ⚠，再按「繼續切換」，沒有送出';
 export const WAKE_RUNNING_CHOICE_REASON = '主控還在跑，模型與思考強度請改用資訊頁的「修改」，沒有送出';
 
 export const SWITCH_STATE_TEXT: Record<SwitchState, string> = {
@@ -251,6 +251,22 @@ export function switchCheck(applied: { time: string; to: ModelChoice } | null, c
 }
 
 export const SWITCH_WAITING_TEXT = '已送出切換，等下一回合確認';
+
+/**
+ * The settings to show as the controller's: the latest turn's, except while the latest settings
+ * sent wait for a turn after them (the switch took the client down and back up, but the record
+ * still ends with the turn before). Then what was sent, with `waiting`, the rest from that turn.
+ */
+export function shownSettings(
+	applied: { time: string; to: ModelChoice } | null,
+	current: CurrentSettings | null | undefined
+): { settings: CurrentSettings | null | undefined; waiting: boolean } {
+	if (!applied || switchCheck(applied, current ?? null) !== 'waiting') return { settings: current, waiting: false };
+	return {
+		settings: { model: applied.to.model ?? current?.model ?? null, effort: applied.to.effort ?? current?.effort ?? null, time: current?.time ?? null },
+		waiting: true
+	};
+}
 export const SWITCH_MISSED_TEXT = '切換沒有生效';
 
 /** The lists as `LAT_BOARD_MODEL_OPTIONS` gives them: a JSON object with `claude` and `codex`
@@ -275,4 +291,28 @@ export function parseModelOptions(text: string | undefined): ModelOptions {
 		}
 	}
 	return result;
+}
+
+const capital = (word: string) => word.charAt(0).toUpperCase() + word.slice(1);
+
+/** A model as a short name, as Claude Code's status line shows it: `claude-opus-5-5` as
+ *  `Opus 5.5`, `gpt-6.1-sol` as `GPT-6.1 Sol`. A date or `[…]` suffix is dropped; an id of
+ *  another shape stays as it is. */
+export function modelShort(id: string): string {
+	const bare = id.replace(/\[[^\]]*\]$/, '').replace(/-\d{8}$/, '');
+	const claude = /^claude-([a-z]+)-(\d+(?:-\d+)*)$/.exec(bare);
+	if (claude) return `${capital(claude[1])} ${claude[2].replaceAll('-', '.')}`;
+	const gpt = /^gpt-(\d+(?:\.\d+)*)((?:-[a-z]+)*)$/.exec(bare);
+	if (gpt) return [`GPT-${gpt[1]}`, ...gpt[2].split('-').filter(Boolean).map(capital)].join(' ');
+	return id;
+}
+
+const EFFORT_SHORT: Record<string, string> = { low: 'L', medium: 'M', high: 'H', xhigh: 'XH', max: 'MX' };
+
+/** An effort as one or two letters: `high` as `H`, `xhigh` as `XH`. Another level takes its first
+ *  letter, or its first two when that letter is taken (`minimal` as `Mi`). */
+export function effortShort(level: string): string {
+	if (EFFORT_SHORT[level]) return EFFORT_SHORT[level];
+	const letter = level.charAt(0).toUpperCase();
+	return Object.values(EFFORT_SHORT).some((short) => short.startsWith(letter)) ? capital(level.slice(0, 2)) : letter;
 }

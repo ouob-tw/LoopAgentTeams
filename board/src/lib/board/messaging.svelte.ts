@@ -1,5 +1,5 @@
-// What the page keeps about messages to controllers: unsent drafts, the sent log of the
-// controllers it has opened, and whether Enter sends on this device.
+// What the page keeps about messages to controllers: the sent log of the controllers it has
+// opened, and whether Enter sends on this device.
 import { MediaQuery } from 'svelte/reactivity';
 import type { SentEntry } from './answers.ts';
 import { ENTER_NEWLINE_QUERY, type SendResponse } from './messages.ts';
@@ -20,8 +20,6 @@ export interface Outcome {
 const UNKNOWN_OUTCOME = '沒有收到看板伺服器的回應，不確定有沒有送出；重送前請先看該主控的送出紀錄。';
 
 class Messaging {
-	/** Text typed for a controller and not sent yet, by controller ID. It survives a failed send. */
-	drafts = $state<Record<string, string>>({});
 	/** Sent log by controller ID, newest first; a controller is missing until its log is loaded. */
 	sent = $state<Record<string, SentEntry[]>>({});
 	loadFailed = $state<Record<string, boolean>>({});

@@ -3,7 +3,7 @@
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { answering, complete, outdated } from '#lib/board/answering.svelte.ts';
 	import { formatTime } from '#lib/board/format.ts';
-	import { renderMarkdown } from '#lib/board/markdown.ts';
+	import { renderLinks, renderMarkdown } from '#lib/board/markdown.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { itemLabel, type HelperOption, type InboxItem } from '#lib/board/types.ts';
 
@@ -11,6 +11,7 @@
 		item: current,
 		inInbox,
 		recorded = false,
+		handle,
 		onunread
 	}: {
 		item: InboxItem;
@@ -18,6 +19,8 @@
 		inInbox: boolean;
 		/** The question left the inbox because its controller recorded the answer. */
 		recorded?: boolean;
+		/** The controller's name, shown before the time where the item stands among its messages. */
+		handle?: string;
 		onunread: (key: string) => Promise<void>;
 	} = $props();
 
@@ -126,9 +129,10 @@
 			<span class="id">{item.question.id} r{item.question.revision}</span>
 			<span>{KIND_TEXT[item.question.kind] ?? item.question.kind}</span>
 		{/if}
+		{#if handle}<span class="handle">@{handle}</span>{/if}
 		<time datetime={item.time}>{formatTime(item.time)}</time>
 	</header>
-	<h2>{item.title || '（沒有標題）'}</h2>
+	<h2>{@html item.title ? renderLinks(item.title) : '（沒有標題）'}</h2>
 
 	{#if item.kind === 'question'}
 		{@const question = item.question}
@@ -305,13 +309,24 @@
 	.id {
 		font-family: var(--mono);
 	}
-	time {
+	time,
+	.handle {
 		margin-left: auto;
+	}
+	.handle {
+		overflow-wrap: anywhere;
+	}
+	.handle + time {
+		margin-left: 0;
 	}
 	h2 {
 		margin: 0.4rem 0 0.5rem;
 		font-size: max(1.1rem, var(--min-font, 0px));
 		overflow-wrap: anywhere;
+	}
+	/* Like the links in markdown. */
+	h2 :global(a) {
+		color: var(--accent);
 	}
 	h3 {
 		margin: 0 0 0.2rem;

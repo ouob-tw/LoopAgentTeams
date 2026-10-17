@@ -11,7 +11,6 @@ import type {
 	InboxQuestion,
 	InboxReport
 } from '../board/types.ts';
-import { isInactive } from '../board/types.ts';
 import { archivePage, DAY_MS, RETAIN_MS, sortArchive, type ArchivePage } from '../board/archive.ts';
 import type { InboxState } from './inbox-state.ts';
 import type { ReportFile } from './reports.ts';
@@ -36,6 +35,9 @@ export interface Sources {
 export function isClosed(sources: Sources, sessionId: string): boolean {
 	return sources.running !== null && !sources.running.has(sessionId) && sources.active.some((binding) => binding.session_id === sessionId);
 }
+
+/** The roster's order of status groups. */
+const STATUS_ORDER: ControllerStatus[] = ['waiting', 'working', 'delivered', 'closed', 'ended'];
 
 /** A report is archived this long after it was issued, read or not. */
 const ARCHIVE_MS = 7 * DAY_MS;
@@ -252,10 +254,13 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		}
 	}
 
-	const ended = (controller: Controller) => Number(isInactive(controller.status));
+	// Who needs the user first, then by latest report, newest first; no report goes last.
+	const group = (controller: Controller) => STATUS_ORDER.indexOf(controller.status);
+	const reported = (controller: Controller) => (controller.lastReportAt ? Date.parse(controller.lastReportAt) : -Infinity);
 	controllers.sort(
 		(a, b) =>
-			ended(a) - ended(b) ||
+			group(a) - group(b) ||
+			reported(b) - reported(a) ||
 			a.project.localeCompare(b.project) ||
 			a.hcomName.localeCompare(b.hcomName) ||
 			a.id.localeCompare(b.id)

@@ -4,6 +4,7 @@
 	// at a time once something is opened.
 	import { onMount, tick, untrack } from 'svelte';
 	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
+	import Plus from '@lucide/svelte/icons/plus';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import type { InboxSort } from '#lib/board/inbox.ts';
@@ -17,7 +18,6 @@
 	import Inbox from '#lib/components/Inbox.svelte';
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import NewController from '#lib/components/NewController.svelte';
-	import ReplyBox from '#lib/components/ReplyBox.svelte';
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
 	import Settings from '#lib/components/Settings.svelte';
@@ -104,10 +104,38 @@
 	);
 
 	let detail: HTMLElement;
+	/** The command line's height, kept clear at the end of a phone's page. */
+	let dockHeight = $state(0);
+	/** How far the on-screen keyboard reaches over the page; the phone's command line sits above it. */
+	let keyboard = $state(0);
+	onMount(() => {
+		const viewport = window.visualViewport;
+		if (!viewport) return;
+		const place = () => (keyboard = Math.max(0, Math.round(window.innerHeight - viewport.height - viewport.offsetTop)));
+		viewport.addEventListener('resize', place);
+		viewport.addEventListener('scroll', place);
+		place();
+		return () => {
+			viewport.removeEventListener('resize', place);
+			viewport.removeEventListener('scroll', place);
+		};
+	});
 	/** Where the phone's list was scrolled to before a content screen replaced it. */
 	let listScroll = 0;
 
+	/** Set while an opened report is being found in its conversation: a copy of its card covers
+	 *  the content where the report will be, so the page never shows its top first. */
+	let locating = $state(false);
+	let locateTimer: ReturnType<typeof setTimeout> | undefined;
+	function locate(on: boolean) {
+		clearTimeout(locateTimer);
+		locating = on;
+		// Taken away after a while anyway, so it can never stay.
+		if (on) locateTimer = setTimeout(() => locate(false), 8_000);
+	}
+
 	async function show(next: View) {
+		if (next?.kind !== 'item') locate(false);
 		if (view === null) listScroll = window.scrollY;
 		view = next;
 		await tick();
@@ -117,7 +145,11 @@
 		if (next !== null) detail.focus({ preventScroll: true });
 		window.scrollTo(0, next === null ? listScroll : 0);
 	}
+	/** Counts openings, so opening the open report again scrolls back to it. */
+	let opens = $state(0);
 	function openItem(next: InboxItem) {
+		opens++;
+		locate(next.kind === 'report' && controllers.some((candidate) => candidate.id === next.controllerId));
 		void show({ kind: 'item', item: next });
 		// Opening an inbox report reads it. Only opening does: a report marked unread stays unread
 		// while it is still open. An archived report keeps the read state it had.
@@ -149,12 +181,13 @@
 {#snippet newController(short = false)}
 	<button
 		class="tool"
+		class:icon={short}
 		class:current={view?.kind === 'launch'}
 		onclick={openLaunch}
 		aria-label={short ? '新建主控' : undefined}
 		title="選 client、資料夾與第一句話，在 Herdr 開一個新的主控"
 	>
-		{short ? '＋' : '＋ 新建'}
+		<Plus size="1.1em" />{short ? '' : '新建'}
 	</button>
 {/snippet}
 
@@ -177,7 +210,7 @@
 	></div>
 {/snippet}
 
-<div class="page">
+<div class="page" style:--dock-h="{dockHeight}px">
 	<div class="shell" class:viewing={view !== null}>
 		<nav class="roster">
 			<div class="folded">
@@ -275,6 +308,23 @@
 					{:else}
 						<p class="empty">這個主控已經不在名冊上：它已結束，回報也都封存了。</p>
 					{/if}
+				{:else if item?.kind === 'report' && controller}
+					<!-- A report is the controller's last text of its turn: shown in its conversation. -->
+					<ControllerInfo
+						tabMoves={board.tabMoves}
+						{controller}
+						items={inbox.filter((entry) => entry.controllerId === controller.id)}
+						onopen={openItem}
+						report={item}
+						{opens}
+						onplaced={() => locate(false)}
+					>
+						{#snippet card()}
+							{#key item.key}
+								<ItemContent {item} {inInbox} handle={item.hcomName} onunread={(key) => board.mark(key, false)} />
+							{/key}
+						{/snippet}
+					</ControllerInfo>
 				{:else if item}
 					{#key item.key}
 						<ItemContent
@@ -288,27 +338,33 @@
 						<button class="context" onclick={() => openController(controller.id)}>
 							{item.project} · @{item.hcomName}　看主控資訊 →
 						</button>
-						<!-- The wide layout sends and wakes through the command line at the bottom. -->
-						<div class="phone-only"><ReplyBox {controller} /></div>
 					{:else}
 						<p class="context">{item.project} · @{item.hcomName}（已不在名冊上）</p>
 					{/if}
 				{/if}
 			{/if}
 		</section>
+		{#if locating && item}
+			<!-- Where the report's card will be once its conversation is scrolled to it. -->
+			<div class="placeholder" inert aria-hidden="true">
+				<div><ItemContent {item} {inInbox} handle={item.hcomName} onunread={async () => {}} /></div>
+			</div>
+		{/if}
+
+		<!-- Above 760px the command line is the grid's bottom row under the inbox and the content, the
+		     roster running the full height beside it; on a phone it is fixed to the bottom, above the
+		     on-screen keyboard. The notices float just above it, however tall its box has grown. -->
+		<div class="dock" bind:clientHeight={dockHeight} style:--keyboard="{keyboard}px">
+			<Toasts
+				standing={[
+					...(board.link === 'offline' ? [{ kind: 'failed' as const, text: '連線中斷，正在重新連線…' }] : []),
+					...board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))
+				]}
+			/>
+			<CommandLine {controllers} target={controller} />
+		</div>
 	</div>
 
-	<!-- `.page` is a full-height column above 760px, so the command line stays at the bottom. The
-	     notices float just above it, however tall its box has grown. -->
-	<div class="dock">
-		<Toasts
-			standing={[
-				...(board.link === 'offline' ? [{ kind: 'failed' as const, text: '連線中斷，正在重新連線…' }] : []),
-				...board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))
-			]}
-		/>
-		<CommandLine {controllers} target={controller} />
-	</div>
 </div>
 
 <Settings bind:this={settings} />
@@ -316,6 +372,8 @@
 <style>
 	.dock {
 		position: relative;
+		grid-area: 2 / 2 / 3 / 4;
+		min-width: 0;
 	}
 	.page {
 		display: flex;
@@ -331,7 +389,17 @@
 		flex: 1;
 		display: grid;
 		grid-template-columns: var(--col-roster) var(--col-inbox) 1fr;
+		grid-template-rows: minmax(0, 1fr) auto;
 		min-height: 0;
+	}
+	.roster {
+		grid-area: 1 / 1 / 3 / 2;
+	}
+	.inbox {
+		grid-area: 1 / 2;
+	}
+	.detail {
+		grid-area: 1 / 3;
 	}
 	.folded {
 		display: none;
@@ -348,7 +416,9 @@
 		cursor: col-resize;
 		touch-action: none;
 	}
+	/* The roster's border runs the full height; the inbox's stops at the command line. */
 	.resize[data-column='inbox'] {
+		bottom: var(--dock-h, 0px);
 		left: calc(var(--col-roster) + var(--col-inbox));
 	}
 	.resize:hover,
@@ -411,9 +481,19 @@
 		gap: 0.3rem;
 		margin-left: auto;
 	}
+	/* Every tool of the roster and the top bar: as tall as it is wide when it is only an icon, and
+	   that tall with words too, sized from the smallest text size so they grow together. */
 	.tool {
-		padding: 0.15rem 0.6rem;
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		gap: 0.3em;
+		box-sizing: border-box;
+		height: 2em;
+		min-width: 2em;
+		padding: 0 0.55em;
 		font-size: max(0.8rem, var(--min-font, 0px));
+		line-height: 1;
 		color: var(--text);
 		white-space: nowrap;
 	}
@@ -422,9 +502,8 @@
 		color: var(--selected-text);
 	}
 	.tool.icon {
-		display: inline-flex;
-		align-items: center;
-		padding: 0.25rem 0.4rem;
+		width: 2em;
+		padding: 0;
 	}
 	.spinning :global(svg) {
 		animation: spin 1s linear infinite;
@@ -439,10 +518,6 @@
 			animation: none;
 		}
 	}
-	.folded .tool {
-		padding: 0.15rem 0.2rem;
-		font-size: max(0.7rem, var(--min-font, 0px));
-	}
 	.detail {
 		display: flex;
 		flex-direction: column;
@@ -451,6 +526,27 @@
 	}
 	.detail:focus {
 		outline: none;
+	}
+	/* Over the content column only, laid out like it: the card sits where the transcript's
+	   scroll puts the real one, a scroll margin below the column's top. A scrollbar gutter like
+	   the column's keeps the card as wide. */
+	.placeholder {
+		/* Out of the grid's flow, which would otherwise move the columns. */
+		position: absolute;
+		top: 0;
+		right: 0;
+		/* The measured height is whole pixels; the extra one keeps clear of the line's top border. */
+		bottom: calc(var(--dock-h, 0px) + 1px);
+		left: calc(var(--col-roster) + var(--col-inbox));
+		z-index: 4;
+		min-width: 0;
+		overflow-y: scroll;
+		padding: 1rem 0.9rem;
+		background: var(--bg);
+		pointer-events: none;
+	}
+	.placeholder > div {
+		max-width: 46rem;
 	}
 	.detail > :global(*) {
 		flex: none;
@@ -462,9 +558,6 @@
 		color: var(--muted);
 	}
 	@media (min-width: 761px) {
-		.phone-only {
-			display: none;
-		}
 		/* Tighter gaps between the three columns. */
 		.roster,
 		.inbox {
@@ -549,6 +642,17 @@
 		.page {
 			display: block;
 			height: auto;
+			/* The end of every screen stays clear of the fixed command line. */
+			padding-bottom: var(--dock-h, 0px);
+		}
+		.dock {
+			position: fixed;
+			right: 0;
+			bottom: var(--keyboard, 0px);
+			left: 0;
+			z-index: 30;
+			/* Only what it shows takes touches: the floating button's row lets the page through. */
+			pointer-events: none;
 		}
 		.shell {
 			display: block;
@@ -590,10 +694,11 @@
 			padding-left: 0.6rem;
 			padding-right: 0.6rem;
 		}
-		/* Cards inside those sections (inbox rows, history and sent-log entries) take the indent
-		   back, so they too sit 3px from the edges. */
-		.detail > :global(section) > :global(.row),
-		.detail > :global(section) > :global(ol) > :global(li:not(.tools)) {
+		/* Cards inside those sections (question bars, report rows, history and sent-log entries)
+		   take the indent back, so they too sit 3px from the edges. */
+		.detail > :global(.questions) > :global(.question),
+		.detail > :global(.tabpanel) > :global(.row),
+		.detail > :global(.tabpanel) > :global(section) > :global(ol) > :global(li:not(.tools)) {
 			margin-left: -0.6rem;
 			margin-right: -0.6rem;
 		}
@@ -607,6 +712,13 @@
 		}
 		.viewing .detail {
 			display: flex;
+		}
+		/* Below the bar, which stays on top. */
+		.placeholder {
+			position: fixed;
+			inset: 0;
+			overflow: hidden;
+			padding: 5rem 3px 0;
 		}
 		.topbar {
 			display: flex;

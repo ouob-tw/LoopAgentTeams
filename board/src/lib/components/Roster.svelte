@@ -1,8 +1,11 @@
 <script lang="ts">
-	// The controller roster: three-line cards on a wide screen, a strip of two-line tags on a phone.
-	// Every line is cut to one line with an ellipsis; the card's tooltip has all of it.
-	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
-	import StatusMark from './StatusMark.svelte';
+	// The controller roster: three-line cards on a wide screen, a strip of two-line tags on a phone,
+	// a faint line between the runs of one status. Ended controllers that reported within a day are
+	// the last run; the older ones are one row at the end that opens their list.
+	import { splitRoster } from '#lib/board/roster.ts';
+	import type { Controller } from '#lib/board/types.ts';
+	import EndedRoster from './EndedRoster.svelte';
+	import RosterCard from './RosterCard.svelte';
 
 	let {
 		controllers,
@@ -10,35 +13,24 @@
 		onopen
 	}: { controllers: Controller[]; currentId: string | null; onopen: (id: string) => void } = $props();
 
-	const tooltip = (controller: Controller) =>
-		`${controller.project} @${controller.hcomName}\n${STATUS_LABEL[controller.status]}：${phaseText(controller)}`;
+	// Read again with every new board data, which hands a new list.
+	const parts = $derived(splitRoster(controllers, Date.now()));
 </script>
 
 <div class="people">
-	{#each controllers as controller (controller.id)}
-		<button
-			class="person"
-			class:current={controller.id === currentId}
-			data-controller={controller.hcomName}
-			title={tooltip(controller)}
-			onclick={() => onopen(controller.id)}
-		>
-			<strong class="project">{controller.project}</strong>
-			<span class="who">
-				<StatusMark status={controller.status} />
-				<span class="handle">@{controller.hcomName}</span>
-				{#if controller.pendingCount}
-					<span class="badge" title="待決題數">{controller.pendingCount}</span>
-				{/if}
-				{#if controller.error}
-					<span class="error" title={controller.error}>⚠ 錯誤</span>
-				{/if}
-			</span>
-			<span class="phase">{phaseText(controller)}</span>
-		</button>
-	{:else}
-		<p class="none">目前沒有主控。</p>
+	{#each parts.groups as group, index (group[0].id)}
+		{#if index > 0}<hr class="sep" />{/if}
+		{#each group as controller (controller.id)}
+			<RosterCard {controller} current={controller.id === currentId} {onopen} />
+		{/each}
 	{/each}
+	{#if parts.older.length}
+		{#if parts.groups.length}<hr class="sep" />{/if}
+		<EndedRoster ended={parts.older} {currentId} {onopen} />
+	{/if}
+	{#if !controllers.length}
+		<p class="none">目前沒有主控。</p>
+	{/if}
 </div>
 
 <style>
@@ -47,64 +39,17 @@
 		flex-direction: column;
 		gap: 0.4rem;
 	}
-	.person {
-		display: flex;
-		flex-direction: column;
-		gap: 0.15rem;
-		min-width: 0;
-		text-align: left;
-		padding: 0.55rem 0.6rem;
-	}
-	.person.current {
-		border-color: var(--accent);
-	}
-	.project,
-	.phase {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-	}
-	.who {
-		display: flex;
-		align-items: center;
-		gap: 0.4rem;
-		min-width: 0;
-	}
-	.handle {
-		overflow: hidden;
-		text-overflow: ellipsis;
-		white-space: nowrap;
-		font-family: var(--mono);
-		font-size: max(0.8rem, var(--min-font, 0px));
-		color: var(--muted);
-	}
-	.badge {
+	/* Between two runs of one status. */
+	.sep {
 		flex: none;
-		padding: 0 0.4rem;
-		border-radius: var(--radius-pill);
-		background: var(--status-waiting);
-		color: var(--bg);
-		font-family: var(--mono);
-		font-size: max(0.7rem, var(--min-font, 0px));
-	}
-	.error {
-		flex: none;
-		font-size: max(0.75rem, var(--min-font, 0px));
-		color: var(--danger);
-	}
-	.phase {
-		font-size: max(0.8rem, var(--min-font, 0px));
-		color: var(--muted);
+		align-self: stretch;
+		margin: 0.15rem 0;
+		border: 0;
+		border-top: 1px solid color-mix(in srgb, var(--text) 15%, var(--bg));
 	}
 	.none {
 		margin: 0;
 		color: var(--muted);
-	}
-
-	:global(:root[data-theme='light']) .person.current {
-		border-color: var(--text);
-		outline: 2px solid var(--text);
-		outline-offset: -3px;
 	}
 
 	@media (max-width: 760px) {
@@ -113,16 +58,22 @@
 			overflow-x: auto;
 			padding-bottom: 0.4rem;
 		}
-		.person {
+		/* Upright between the tags. */
+		.sep {
+			margin: 0.3rem 0.1rem;
+			border-top: 0;
+			border-left: 1px solid color-mix(in srgb, var(--text) 15%, var(--bg));
+		}
+		.people > :global(.person) {
 			flex: 0 0 auto;
 			min-width: 6.5rem;
 			max-width: 11rem;
 			padding: 0.45rem 0.6rem;
 		}
-		.project {
+		.people > :global(.person) :global(.project) {
 			font-size: max(0.9rem, var(--min-font, 0px));
 		}
-		.phase {
+		.people > :global(.person) :global(.phase) {
 			display: none;
 		}
 	}

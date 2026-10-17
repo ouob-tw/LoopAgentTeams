@@ -1,14 +1,25 @@
 <script lang="ts">
-	// A controller's information page: the basic block and its model and effort, then its
-	// questions, its reports that are still in the inbox and its conversation history. Messages and
-	// wakes go through the command line at the bottom of the wide layout; the reply box above the
-	// history stands in for it on a phone.
+	// A controller's information page: one line of who and where it stands with its latest phase
+	// (the details behind a disclosure), a bar for each question waiting for an answer, then its
+	// conversation, its reports in the inbox and what was sent to it, one tab at a time. Its model
+	// and effort, and messages and wakes, go through the command line at the bottom of the screen.
+	// Opened for a report, the conversation shows that report where it is in the history.
+	import ChevronDown from '@lucide/svelte/icons/chevron-down';
+	import { onMount, type Snippet } from 'svelte';
 	import { formatTime } from '#lib/board/format.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
-	import { isInactive, phaseText, STATUS_LABEL, type Controller, type InboxItem } from '#lib/board/types.ts';
+	import { messaging } from '#lib/board/messaging.svelte.ts';
+	import { INFO_DETAILS_KEY, remember, remembered } from '#lib/board/prefs.ts';
+	import {
+		isInactive,
+		phaseText,
+		STATUS_LABEL,
+		type Controller,
+		type InboxItem,
+		type InboxQuestion,
+		type InboxReport
+	} from '#lib/board/types.ts';
 	import ItemRow from './ItemRow.svelte';
-	import ModelSwitch from './ModelSwitch.svelte';
-	import ReplyBox from './ReplyBox.svelte';
 	import SentLog from './SentLog.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import Transcript from './Transcript.svelte';
@@ -17,7 +28,11 @@
 		controller,
 		tabMoves = 0,
 		items,
-		onopen
+		onopen,
+		report,
+		opens = 0,
+		onplaced,
+		card
 	}: {
 		controller: Controller;
 		/** Changes when the server announces a Herdr tab move. */
@@ -25,11 +40,55 @@
 		/** This controller's inbox items. */
 		items: InboxItem[];
 		onopen: (item: InboxItem) => void;
+		/** The report this page was opened for, and how it is shown in the history. */
+		report?: InboxReport;
+		/** Changes with every opening of a report, the same one again too. */
+		opens?: number;
+		/** Called once the report is scrolled to, or shown above the conversation instead. */
+		onplaced?: () => void;
+		card?: Snippet;
 	} = $props();
 
 	const sorted = $derived(sortByTime(items));
-	const questions = $derived(sorted.filter((item) => item.kind === 'question'));
-	const reports = $derived(sorted.filter((item) => item.kind === 'report'));
+	const questions = $derived(sorted.filter((item): item is InboxQuestion => item.kind === 'question'));
+	const reports = $derived(sorted.filter((item): item is InboxReport => item.kind === 'report'));
+	const inactive = $derived(isInactive(controller.status));
+
+	let details = $state(false);
+	onMount(() => {
+		details = remembered(INFO_DETAILS_KEY, ['1', '0'], '0') === '1';
+	});
+	function toggleDetails() {
+		details = !details;
+		remember(INFO_DETAILS_KEY, details ? '1' : '0');
+	}
+
+	const TABS = [
+		{ id: 'transcript', label: '對話紀錄' },
+		{ id: 'reports', label: '回報' },
+		{ id: 'sent', label: '送出紀錄' }
+	] as const;
+	type Tab = (typeof TABS)[number]['id'];
+	let tab = $state<Tab>('transcript');
+	const counts = $derived<Record<Tab, number | null>>({
+		transcript: null,
+		reports: reports.length,
+		sent: messaging.sent[controller.id]?.length ?? null
+	});
+	// Opening a report, the same one again too, shows it in the conversation.
+	$effect.pre(() => {
+		void opens;
+		if (report) tab = 'transcript';
+	});
+
+	function tabKeys(event: KeyboardEvent) {
+		const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
+		if (!step) return;
+		event.preventDefault();
+		const at = TABS.findIndex((entry) => entry.id === tab);
+		tab = TABS[(at + step + TABS.length) % TABS.length].id;
+		(event.currentTarget as HTMLElement).querySelector<HTMLElement>(`[data-tab="${tab}"]`)?.focus();
+	}
 
 	type Place = {
 		workspace: { label: string; number: number } | null;
@@ -70,81 +129,89 @@
 		<span class="status"><StatusMark status={controller.status} />{STATUS_LABEL[controller.status]}</span>
 		<h2>{controller.project}</h2>
 		<span class="handle">@{controller.hcomName}</span>
+		<span class="chip">{controller.client}・最新回報 {controller.lastReportAt ? formatTime(controller.lastReportAt) : '尚無'}</span>
+		<button type="button" class="more" aria-expanded={details} onclick={toggleDetails}>
+			詳細資料<span class="chevron" class:open={details}><ChevronDown size="1em" /></span>
+		</button>
 	</header>
 	<p class="phase">{phaseText(controller)}</p>
 	{#if controller.error}
 		<p class="error" role="alert">⚠ {controller.error}</p>
 	{/if}
-	<dl>
-		<dt>專案路徑</dt>
-		<dd>{controller.workspace}</dd>
-		<dt>Herdr 位置</dt>
-		<dd>
-			{#if controller.herdr}
-				{#if place === undefined}
-					讀取中…
-				{:else if typeof place === 'string'}
-					位置不明（{place}）
+	{#if details}
+		<dl>
+			<dt>專案路徑</dt>
+			<dd>{controller.workspace}</dd>
+			<dt>Herdr 位置</dt>
+			<dd>
+				{#if controller.herdr}
+					{#if place === undefined}
+						讀取中…
+					{:else if typeof place === 'string'}
+						位置不明（{place}）
+					{:else}
+						{place.workspace ? `${place.workspace.label}（工作區#${place.workspace.number}）` : '工作區已不在 Herdr'}・{place.tab
+							? `${place.tab.label}（分頁#${place.tab.position}）`
+							: '分頁已不在 Herdr'}
+					{/if}
+				{:else if controller.status === 'closed'}
+					client 已不在 hcom 清單上，位置不明
 				{:else}
-					{place.workspace ? `${place.workspace.label}（第 ${place.workspace.number} 個工作區）` : '工作區已不在 Herdr'}・{place.tab
-						? `${place.tab.label}（第 ${place.tab.position} 個分頁）`
-						: '分頁已不在 Herdr'}
+					已不在面板綁定登記中，位置不明
 				{/if}
-			{:else if controller.status === 'closed'}
-				client 已不在 hcom 清單上，位置不明
-			{:else}
-				已不在面板綁定登記中，位置不明
-			{/if}
-		</dd>
-		<dt>客戶端</dt>
-		<dd>{controller.client}</dd>
-		<dt>待決題</dt>
-		<dd>{controller.pendingCount} 題</dd>
-		<dt>最新回報</dt>
-		<dd>{controller.lastReportAt ? formatTime(controller.lastReportAt) : '尚無回報'}</dd>
-	</dl>
+			</dd>
+		</dl>
+	{/if}
 </article>
 
-<ModelSwitch {controller} />
+{#if questions.length}
+	<div class="questions">
+		{#each questions as item (item.key)}
+			<button type="button" class="question" onclick={() => onopen(item)}>
+				<span class="title">▲ <b>待決</b>：{item.title || '（沒有標題）'}</span>
+				<span class="answer">{inactive || !item.unsent ? '查看' : '作答'} ›</span>
+			</button>
+		{/each}
+		{#if inactive}
+			<p class="none">主控{STATUS_LABEL[controller.status]}，它的待決題不能再作答。</p>
+		{/if}
+	</div>
+{/if}
 
-<section class="block" data-block="questions">
-	<h3>待決題</h3>
-	{#each questions as item (item.key)}
-		<ItemRow {item} showOwner={false} {onopen} />
-	{:else}
-		<p class="none">{isInactive(controller.status) ? `主控${STATUS_LABEL[controller.status]}，它的待決題不能再作答。` : '沒有待決題。'}</p>
+<!-- svelte-ignore a11y_interactive_supports_focus -->
+<div class="tabs" role="tablist" aria-label="主控的紀錄" onkeydown={tabKeys}>
+	{#each TABS as entry (entry.id)}
+		<button
+			type="button"
+			role="tab"
+			id="tab-{entry.id}"
+			data-tab={entry.id}
+			aria-selected={tab === entry.id}
+			aria-controls="panel-{entry.id}"
+			tabindex={tab === entry.id ? 0 : -1}
+			onclick={() => (tab = entry.id)}
+		>
+			{entry.label}{#if counts[entry.id] !== null}<small>{counts[entry.id]}</small>{/if}
+		</button>
 	{/each}
-</section>
+</div>
 
-<section class="block" data-block="reports">
-	<h3>近期回報</h3>
+<!-- All three stay mounted, so the conversation keeps its place and its live feed. -->
+<div class="tabpanel" role="tabpanel" id="panel-transcript" aria-labelledby="tab-transcript" hidden={tab !== 'transcript'}>
+	<Transcript {controller} {reports} {report} {opens} {onplaced} {card} />
+</div>
+<div class="tabpanel" role="tabpanel" id="panel-reports" aria-labelledby="tab-reports" hidden={tab !== 'reports'}>
 	{#each reports as item (item.key)}
 		<ItemRow {item} showOwner={false} {onopen} />
 	{:else}
 		<p class="none">信箱裡沒有它的回報。</p>
 	{/each}
-</section>
-
-<div class="reply">
-	<ReplyBox {controller} />
+</div>
+<div class="tabpanel" role="tabpanel" id="panel-sent" aria-labelledby="tab-sent" hidden={tab !== 'sent'}>
+	<SentLog {controller} />
 </div>
 
-<Transcript {controller} />
-
-<SentLog {controller} />
-
 <style>
-	.block {
-		display: flex;
-		flex-direction: column;
-		gap: 0.35rem;
-	}
-	h3 {
-		margin: 0;
-		font-size: max(0.8rem, var(--min-font, 0px));
-		font-weight: 600;
-		color: var(--muted);
-	}
 	.none {
 		margin: 0;
 		font-size: max(0.85rem, var(--min-font, 0px));
@@ -154,12 +221,13 @@
 		background: var(--surface);
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
-		padding: 0.9rem 1rem;
+		padding: 0.7rem 0.9rem;
 	}
+	/* One line while it fits: status, project, name, client and latest report, details at the end. */
 	header {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.6rem;
+		gap: 0.3rem 0.6rem;
 		align-items: center;
 	}
 	.status {
@@ -174,7 +242,7 @@
 	}
 	h2 {
 		margin: 0;
-		font-size: max(1.1rem, var(--min-font, 0px));
+		font-size: max(1.05rem, var(--min-font, 0px));
 	}
 	.handle {
 		/* The full name, however long: it wraps instead of being cut. */
@@ -184,18 +252,43 @@
 		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
+	.chip {
+		font-size: max(0.8rem, var(--min-font, 0px));
+		color: var(--muted);
+		white-space: nowrap;
+	}
+	.more {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.2rem;
+		margin-left: auto;
+		padding: 0;
+		border: 0;
+		background: none;
+		font-size: max(0.8rem, var(--min-font, 0px));
+		color: var(--accent);
+		white-space: nowrap;
+	}
+	.chevron {
+		display: inline-flex;
+		transition: transform 0.15s;
+	}
+	.chevron.open {
+		transform: rotate(180deg);
+	}
 	.phase {
-		margin: 0.5rem 0 0;
+		margin: 0.4rem 0 0;
+		overflow-wrap: anywhere;
 	}
 	.error {
-		margin: 0.5rem 0 0;
+		margin: 0.4rem 0 0;
 		color: var(--danger);
 	}
 	dl {
 		display: grid;
 		grid-template-columns: auto 1fr;
 		gap: 0.2rem 1rem;
-		margin: 0.7rem 0 0;
+		margin: 0.6rem 0 0;
 		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	dt {
@@ -205,9 +298,84 @@
 		margin: 0;
 		overflow-wrap: anywhere;
 	}
-	@media (min-width: 761px) {
-		.reply {
-			display: none;
+	.questions {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	/* A question waiting for an answer: warn-coloured, its title and the way to it. */
+	.question {
+		display: flex;
+		gap: 0.8rem;
+		align-items: baseline;
+		padding: 0.5rem 0.7rem;
+		border: 1px solid color-mix(in srgb, var(--warn) 60%, var(--bg));
+		background: color-mix(in srgb, var(--warn) 10%, var(--bg));
+		text-align: left;
+	}
+	.question .title {
+		flex: 1;
+		min-width: 0;
+		overflow-wrap: anywhere;
+	}
+	.answer {
+		flex: none;
+		color: var(--accent);
+	}
+	.tabs {
+		display: flex;
+		gap: 0.2rem;
+		border-bottom: 1px solid var(--line);
+	}
+	.tabs button {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		margin-bottom: -1px;
+		padding: 0.4rem 0.8rem;
+		border: 0;
+		border-bottom: 2px solid transparent;
+		border-radius: 0;
+		background: none;
+		font-size: max(0.85rem, var(--min-font, 0px));
+		color: var(--muted);
+	}
+	.tabs button[aria-selected='true'] {
+		border-bottom-color: var(--accent);
+		color: var(--text);
+		font-weight: 600;
+	}
+	.tabs small {
+		padding: 0 0.4rem;
+		border-radius: var(--radius-pill);
+		background: color-mix(in srgb, var(--text) 10%, var(--bg));
+		font-size: max(0.7rem, var(--min-font, 0px));
+		font-weight: 400;
+	}
+	.tabpanel {
+		display: flex;
+		flex-direction: column;
+		gap: 0.35rem;
+	}
+	.tabpanel[hidden] {
+		display: none;
+	}
+
+	/* Light theme: no tints; the bar is framed in the text colour, the open tab underlined in it. */
+	:global(:root[data-theme='light']) .question {
+		border-color: var(--text);
+		background: var(--bg);
+	}
+	:global(:root[data-theme='light']) .tabs button[aria-selected='true'] {
+		border-bottom-color: var(--text);
+	}
+
+	/* A phone: the tabs share the width. */
+	@media (max-width: 760px) {
+		.tabs button {
+			flex: 1;
+			justify-content: center;
+			padding: 0.5rem 0.3rem;
 		}
 	}
 </style>

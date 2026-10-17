@@ -2,6 +2,8 @@
 // may offer right now, and the latest settings read from its conversation record.
 import { messaging, type Outcome } from './messaging.svelte.ts';
 import type { CurrentSettings, ModelChoice, ModelStatus, SwitchResponse } from './models.ts';
+import { toasts } from './toasts.svelte.ts';
+import type { TranscriptUpdate } from './transcript.ts';
 
 /** No answer came back, so the switch may or may not have started. */
 const UNKNOWN_OUTCOME = '沒有收到看板伺服器的回應，不確定有沒有開始切換；重送前請先看該主控的送出紀錄。';
@@ -12,7 +14,37 @@ class Switching {
 	loadFailed = $state<Record<string, boolean>>({});
 	/** The latest turn's settings, by controller ID, as the conversation feed last told. */
 	current = $state<Record<string, CurrentSettings | null>>({});
+	/** A switch asked for from the page and not answered yet, by controller ID. */
+	sending = $state<Record<string, boolean>>({});
+	/** The last switch asked for from the page, by controller ID. */
+	outcomes = $state<Record<string, Outcome>>({});
 	#loads: Record<string, number> = {};
+
+	/** Read the latest settings from the conversation's latest page, for a controller whose
+	 *  conversation is not open; an open one keeps them current itself. */
+	async loadCurrent(controllerId: string, signal?: AbortSignal): Promise<void> {
+		try {
+			const response = await fetch(`/api/transcript?controller=${encodeURIComponent(controllerId)}`, { signal });
+			if (!response.ok) return;
+			const update: TranscriptUpdate = await response.json();
+			if (update.ok && this.current[controllerId] === undefined) this.current[controllerId] = update.page.current ?? null;
+		} catch {
+			// Shown as not known.
+		}
+	}
+
+	/** Ask for a switch from a form or a menu: one at a time per controller, its outcome kept and
+	 *  told in a notice. Null when one is already on its way. */
+	async request(controllerId: string, choice: ModelChoice): Promise<Outcome | null> {
+		if (this.sending[controllerId]) return null;
+		this.sending[controllerId] = true;
+		delete this.outcomes[controllerId];
+		const result = await this.switch(controllerId, choice);
+		this.sending[controllerId] = false;
+		this.outcomes[controllerId] = result;
+		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已送出切換${result.reason ?? ''}` : (result.reason ?? '切換失敗'));
+		return result;
+	}
 
 	/** Aborting `signal` (the page left, or another controller opened) ends the read on the server
 	 *  too, and leaves everything as it was. */

@@ -17,6 +17,12 @@ export const MIN_FONT = { key: 'lat-board-min-font', min: 10, max: 24, step: 1, 
 /** '1' while the wide layout's roster is folded into the rail. */
 export const FOLDED_KEY = 'lat-board-roster-folded';
 
+/** '1' while a phone's command line is put away behind its floating button. */
+export const COMMAND_HIDDEN_KEY = 'lat-board-command-hidden';
+
+/** '1' while an information page shows its details (path, Herdr place). */
+export const INFO_DETAILS_KEY = 'lat-board-info-details';
+
 /** Column widths of the wide layout in px. The defaults live in the page's styles. */
 export const WIDTHS = {
 	roster: { key: 'lat-board-roster-width', min: 170, max: 440 },

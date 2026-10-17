@@ -32,7 +32,6 @@
 </script>
 
 <section class="sent">
-	<h3>你傳給 @{controller.hcomName} 的訊息與答覆</h3>
 	{#if entries?.length}
 		<ol>
 			{#each entries as entry (entry.id)}
@@ -117,12 +116,6 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
-	}
-	h3 {
-		margin: 0;
-		font-size: max(0.8rem, var(--min-font, 0px));
-		font-weight: 600;
-		color: var(--muted);
 	}
 	ol {
 		display: grid;

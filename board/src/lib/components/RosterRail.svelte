@@ -4,7 +4,9 @@
 	// mark, or pressing and holding it on a touch screen, explains it.
 	import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
 	import type { Snippet } from 'svelte';
+	import { splitRoster } from '#lib/board/roster.ts';
 	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
+	import EndedRoster from './EndedRoster.svelte';
 	import StatusMark from './StatusMark.svelte';
 
 	let {
@@ -30,6 +32,9 @@
 	 *  from the nearer edge of the window. Fixed coordinates, so the rail's scrolling does not clip it. */
 	let tip = $state<{ id: string; left: number; top: number | null; bottom: number | null } | null>(null);
 	const explained = $derived(controllers.find((controller) => controller.id === tip?.id));
+	/** Runs of one status with a short line between them; ended ones older than a day are one mark
+	 *  that opens their list. */
+	const parts = $derived(splitRoster(controllers, Date.now()));
 
 	let pressTimer: ReturnType<typeof setTimeout> | undefined;
 	let hideTimer: ReturnType<typeof setTimeout> | undefined;
@@ -101,7 +106,7 @@
 
 	/** A click on the rail unfolds the roster, unless it was on a mark or a tool. */
 	function expand(event: MouseEvent) {
-		if (!(event.target as Element).closest('.entry, .tools')) onexpand();
+		if (!(event.target as Element).closest('.entry, .tools, .trigger, .panel')) onexpand();
 	}
 
 	const label = (controller: Controller) =>
@@ -113,29 +118,36 @@
 <!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_static_element_interactions -->
 <div class="rail" onclick={expand}>
 	<button class="grip" aria-label="展開主控名冊" title="展開主控名冊"><PanelLeftOpen size="1.1em" /></button>
-	{#each controllers as controller (controller.id)}
-		<button
-			class="entry"
-			class:current={controller.id === currentId}
-			data-controller={controller.hcomName}
-			aria-label={label(controller)}
-			aria-describedby={tip?.id === controller.id ? 'rail-tip' : undefined}
-			onclick={(event) => click(event, controller.id)}
-			onpointerenter={(event) => hover(event, controller.id)}
-			onpointerleave={leave}
-			onpointerdown={(event) => down(event, controller.id)}
-			onpointerup={release}
-			onpointercancel={release}
-			onfocus={(event) => focus(event, controller.id)}
-			onblur={dismiss}
-			oncontextmenu={(event) => event.preventDefault()}
-		>
-			<StatusMark status={controller.status} decorative />
-			{#if controller.pendingCount}
-				<span class="count">{controller.pendingCount}</span>
-			{/if}
-		</button>
+	{#each parts.groups as group, index (group[0].id)}
+		{#if index > 0}<hr class="sep" />{/if}
+		{#each group as controller (controller.id)}
+			<button
+				class="entry"
+				class:current={controller.id === currentId}
+				data-controller={controller.hcomName}
+				aria-label={label(controller)}
+				aria-describedby={tip?.id === controller.id ? 'rail-tip' : undefined}
+				onclick={(event) => click(event, controller.id)}
+				onpointerenter={(event) => hover(event, controller.id)}
+				onpointerleave={leave}
+				onpointerdown={(event) => down(event, controller.id)}
+				onpointerup={release}
+				onpointercancel={release}
+				onfocus={(event) => focus(event, controller.id)}
+				onblur={dismiss}
+				oncontextmenu={(event) => event.preventDefault()}
+			>
+				<StatusMark status={controller.status} decorative />
+				{#if controller.pendingCount}
+					<span class="count">{controller.pendingCount}</span>
+				{/if}
+			</button>
+		{/each}
 	{/each}
+	{#if parts.older.length}
+		{#if parts.groups.length}<hr class="sep" />{/if}
+		<EndedRoster ended={parts.older} {currentId} {onopen} rail />
+	{/if}
 	<div class="tools">{@render tools()}</div>
 </div>
 
@@ -163,16 +175,22 @@
 		align-items: center;
 		gap: 0.45rem;
 		flex: 1;
-		padding: 0.8rem 0;
+		padding: 0.8rem 0 0;
 		background: var(--surface);
 		cursor: pointer;
 	}
+	/* Framed and sized like the tools at the foot of the rail. */
 	.grip {
-		display: flex;
-		padding: 0 0.5rem;
-		background: none;
-		border: 0;
-		color: var(--muted);
+		display: inline-flex;
+		align-items: center;
+		justify-content: center;
+		flex: none;
+		box-sizing: border-box;
+		width: 2em;
+		height: 2em;
+		padding: 0;
+		font-size: max(0.8rem, var(--min-font, 0px));
+		color: var(--text);
 	}
 	.entry {
 		--mark-size: 1.05rem;
@@ -196,6 +214,13 @@
 	.entry.current {
 		border-color: var(--accent);
 	}
+	.sep {
+		flex: none;
+		width: 1.4rem;
+		margin: 0.1rem 0;
+		border: 0;
+		border-top: 1px solid color-mix(in srgb, var(--text) 20%, var(--bg));
+	}
 	.count {
 		padding: 0 0.35rem;
 		border-radius: var(--radius-pill);
@@ -206,12 +231,18 @@
 		font-weight: 700;
 		line-height: 1.3;
 	}
+	/* Always at the foot of the window, the marks scrolling above them however many there are. */
 	.tools {
+		position: sticky;
+		bottom: 0;
 		display: flex;
 		flex-direction: column;
+		align-self: stretch;
+		align-items: center;
 		gap: 0.35rem;
 		margin-top: auto;
-		padding-top: 0.6rem;
+		padding: 0.6rem 0 0.8rem;
+		background: var(--surface);
 		cursor: default;
 	}
 	.tip {
