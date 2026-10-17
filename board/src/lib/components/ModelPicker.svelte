@@ -184,15 +184,26 @@
 	const applyText = $derived(`切換為 ${short('model', shown('model'))}・${short('effort', shown('effort'))}，會重開主控一次`);
 
 	/** Send both staged values as one switch; a guard that holds now keeps them staged. */
+	/** Set from the first click until the switch is answered, so a second click sends nothing. */
+	let applying = false;
+
 	async function apply() {
-		const target = id;
-		// Checked against a fresh read, not the label's kept one.
-		if (controller) await switching.load(target);
-		if (target !== id) return;
-		if (blocked) return toasts.show('failed', `${blocked}，沒有送出（選好的值還留著）`);
-		const choice = { model: staged[target]?.model ?? null, effort: staged[target]?.effort ?? null };
-		const result = await switching.request(target, choice);
-		if (result?.ok) delete staged[target];
+		if (applying) return;
+		applying = true;
+		try {
+			const target = id;
+			// Checked against a fresh read, not the label's kept one.
+			if (controller) await switching.load(target);
+			if (target !== id) return;
+			if (blocked) return toasts.show('failed', `${blocked}，沒有送出（選好的值還留著）`);
+			const choice = { model: staged[target]?.model ?? null, effort: staged[target]?.effort ?? null };
+			// Nothing staged would continue an open switch instead; that is the ⚠'s job.
+			if (choice.model === null && choice.effort === null) return;
+			const result = await switching.request(target, choice);
+			if (result?.ok) delete staged[target];
+		} finally {
+			applying = false;
+		}
 	}
 
 	/** Opens with the chosen item in focus, so the arrow keys start from it. */

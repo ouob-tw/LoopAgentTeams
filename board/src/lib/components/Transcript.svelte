@@ -119,6 +119,13 @@
 	/** Empty space after the conversation, only while a report is shown in it. */
 	let tail = $state<HTMLElement>();
 
+	// Earlier parts loaded under the placed card take the place of the room made for it.
+	$effect(() => {
+		void view;
+		const element = untrack(() => tail && list?.querySelector<HTMLElement>('.placed'));
+		if (element) makeRoom(element);
+	});
+
 	/** Let the report's card reach the top of the visible area however little follows it: the
 	 *  space after the conversation grows to what is missing (none when enough follows). */
 	function makeRoom(element: HTMLElement) {
@@ -148,6 +155,8 @@
 		opened = {};
 		loadingEarlier = false;
 		earlierFailed = null;
+		// Another controller's conversation: the room made for the last report goes.
+		if (untrack(() => tail)) tail!.style.height = '';
 		const source = new EventSource(`/api/transcript/events?controller=${encodeURIComponent(controllerId)}`);
 		untrack(() => (switching.watched[controllerId] = (switching.watched[controllerId] ?? 0) + 1));
 		source.addEventListener('transcript', (event) => {
