@@ -99,9 +99,10 @@
 			for (const type of USER_SCROLL) removeEventListener(type, stop, true);
 		};
 		const step = () => {
-			const element = within.querySelector(selector);
+			const element = within.querySelector<HTMLElement>(selector);
 			const top = element?.getBoundingClientRect().top;
 			if (element && top !== last) {
+				makeRoom(element);
 				element.scrollIntoView({ block: 'start' });
 				if (last === undefined) onplaced?.();
 				last = element.getBoundingClientRect().top;
@@ -114,6 +115,27 @@
 		stopAligning = stop;
 	}
 	$effect(() => () => stopAligning());
+
+	/** Empty space after the conversation, only while a report is shown in it. */
+	let tail = $state<HTMLElement>();
+
+	/** Let the report's card reach the top of the visible area however little follows it: the
+	 *  space after the conversation grows to what is missing (none when enough follows). */
+	function makeRoom(element: HTMLElement) {
+		if (!tail || !element.offsetParent) return;
+		let scroller: HTMLElement | null = element.parentElement;
+		while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+		const page = !scroller;
+		const port = page ? window.innerHeight : scroller!.clientHeight;
+		const portTop = page ? 0 : scroller!.getBoundingClientRect().top;
+		const scrolled = page ? window.scrollY : scroller!.scrollTop;
+		const height = page ? document.documentElement.scrollHeight : scroller!.scrollHeight;
+		const current = tail.offsetHeight;
+		// What follows the card's top, without the space added before.
+		const below = height - current - (scrolled + element.getBoundingClientRect().top - portTop);
+		const margin = parseFloat(getComputedStyle(element).scrollMarginTop) || 0;
+		tail.style.height = `${Math.max(0, Math.ceil(port - margin - below))}px`;
+	}
 	// Earlier parts until the report's text is found or the conversation starts.
 	$effect(() => {
 		if (report && view && place === undefined && !loadingEarlier && !earlierFailed) untrack(() => void loadEarlier());
@@ -243,6 +265,7 @@
 	{:else}
 		<p class="empty">讀取中…</p>
 	{/if}
+	{#if report}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
 </section>
 
 <style>
