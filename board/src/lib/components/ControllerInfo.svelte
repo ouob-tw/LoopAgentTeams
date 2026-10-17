@@ -56,10 +56,10 @@
 	const reports = $derived(sorted.filter((item): item is InboxReport => item.kind === 'report'));
 	const inactive = $derived(isInactive(controller.status));
 
-	/** As the conversation's live feed last told; shown only while the controller runs. */
+	/** As the conversation's live feed last told; shown only while the client runs. */
 	let usage = $state<Usage | null>(null);
 	let now = $state(Date.now());
-	const usageLine = $derived(usage && !inactive ? usageParts(usage, now) : []);
+	const usageLine = $derived(usage && controller.running ? usageParts(usage, now) : []);
 	// The cache countdown moves on as each minute of it passes, and stops once it has expired.
 	$effect(() => {
 		const expires = usage?.cache?.expires;

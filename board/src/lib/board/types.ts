@@ -94,6 +94,9 @@ export interface Controller {
 	phase: string | null;
 	/** Questions waiting for an answer that has not been sent. */
 	pendingCount: number;
+	/** Whether its client is running: bound and not closed, or ended in LAT but still in hcom's
+	 *  list, as a woken one is until it binds again. */
+	running: boolean;
 	/** Where the controller runs in Herdr; null once it has ended or closed. */
 	herdr: { workspace: string; tab: string; pane: string } | null;
 	lastReportAt: string | null;

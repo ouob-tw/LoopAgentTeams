@@ -177,6 +177,7 @@ function activeController(binding: HelperController, file: ReportFile | undefine
 		workspace: binding.workspace,
 		client: binding.client,
 		status,
+		running: true,
 		phase: latest ? latest.summary : null,
 		pendingCount,
 		herdr: { workspace: binding.herdr_workspace, tab: binding.herdr_tab, pane: binding.herdr_pane },
@@ -187,10 +188,10 @@ function activeController(binding: HelperController, file: ReportFile | undefine
 
 /** A bound controller whose client is gone: shown like an ended one, from its binding. */
 function closedController(binding: HelperController, file: ReportFile | undefined): Controller {
-	return { ...activeController(binding, file), status: 'closed', pendingCount: 0, herdr: null, error: reportError(file) };
+	return { ...activeController(binding, file), status: 'closed', running: false, pendingCount: 0, herdr: null, error: reportError(file) };
 }
 
-function endedController(file: ReportFile): Controller {
+function endedController(file: ReportFile, running: boolean): Controller {
 	const latest = file.reports.at(-1)!;
 	return {
 		id: file.sessionId,
@@ -199,6 +200,7 @@ function endedController(file: ReportFile): Controller {
 		workspace: latest.workspace,
 		client: latest.client,
 		status: 'ended',
+		running,
 		phase: latest.summary,
 		pendingCount: 0,
 		herdr: null,
@@ -241,7 +243,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 	// on the roster only while the inbox still holds one of their reports.
 	for (const file of files.values()) {
 		if (withInboxReport.has(file.sessionId)) {
-			const controller = endedController(file);
+			const controller = endedController(file, sources.running?.has(file.sessionId) ?? false);
 			if (sources.helperError) {
 				// Without the registry there is no telling whether it has really ended.
 				controller.error = joinErrors(

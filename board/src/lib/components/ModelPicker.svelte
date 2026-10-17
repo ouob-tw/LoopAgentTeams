@@ -32,7 +32,7 @@
 	} from '#lib/board/models.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
-	import { isInactive, type Controller } from '#lib/board/types.ts';
+	import type { Controller } from '#lib/board/types.ts';
 
 	type Kind = 'model' | 'effort';
 
@@ -53,7 +53,8 @@
 	const NAME: Record<Kind, string> = { model: '模型', effort: '思考強度' };
 
 	const id = $derived(controller?.id ?? '');
-	const waking = $derived(!!controller && isInactive(controller.status));
+	// An ended controller woken outside LAT runs again, and is switched like a running one.
+	const waking = $derived(!!controller && !controller.running);
 	const status = $derived(controller ? switching.status[id] : undefined);
 	const entries = $derived(messaging.sent[id] ?? []);
 	/** A switch that stopped the client and has not brought it back yet. */
@@ -75,7 +76,7 @@
 	$effect(() => {
 		if (!controller) return;
 		const target = controller.id;
-		const state = controller.status;
+		const state = `${controller.status}/${controller.running}`;
 		const abort = new AbortController();
 		void switching.loadFresh(target, state, abort.signal);
 		if (untrack(() => switching.current[target]) === undefined) void switching.loadCurrent(target, false, abort.signal);
