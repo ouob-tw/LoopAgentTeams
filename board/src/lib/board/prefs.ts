@@ -20,6 +20,9 @@ export const FOLDED_KEY = 'lat-board-roster-folded';
 /** '1' while a phone's command line is put away behind its floating button. */
 export const COMMAND_HIDDEN_KEY = 'lat-board-command-hidden';
 
+/** What is typed in the command line and not sent yet, so a reload keeps it. */
+export const COMMAND_DRAFT_KEY = 'lat-board-command-draft';
+
 /** '1' while an information page shows its details (path, Herdr place). */
 export const INFO_DETAILS_KEY = 'lat-board-info-details';
 
@@ -47,6 +50,15 @@ export function rememberedNumber(key: string, min: number, max: number): number 
 		return saved !== null && saved.trim() !== '' && value >= min && value <= max ? value : null;
 	} catch {
 		return null;
+	}
+}
+
+/** The saved text as it is, or '' when nothing is saved. */
+export function rememberedText(key: string): string {
+	try {
+		return localStorage.getItem(key) ?? '';
+	} catch {
+		return '';
 	}
 }
 

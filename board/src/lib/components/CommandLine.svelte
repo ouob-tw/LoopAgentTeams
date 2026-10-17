@@ -3,13 +3,13 @@
 	// without a name to the controller that is open. The recipient's model and effort sit beside the
 	// send button. An ended or closed controller is woken instead; its other wake options sit in a
 	// pop-up behind a button that shows only then. A phone can put the line away behind a floating
-	// button, to read more of the page; what was typed stays.
+	// button, to read more of the page; what was typed stays, also across a reload.
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import MessageSquare from '@lucide/svelte/icons/message-square';
 	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
 	import { onMount, tick } from 'svelte';
-	import { COMMAND_HIDDEN_KEY, remember, remembered } from '#lib/board/prefs.ts';
+	import { COMMAND_DRAFT_KEY, COMMAND_HIDDEN_KEY, forget, remember, remembered, rememberedText } from '#lib/board/prefs.ts';
 	import { parseCommand } from '#lib/board/messages.ts';
 	import { enterMakesNewline, messaging } from '#lib/board/messaging.svelte.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
@@ -31,8 +31,18 @@
 	/** Put away on a phone; the wide layout ignores it. */
 	let hidden = $state(false);
 	let form: HTMLFormElement;
+	/** Set once the saved draft is read back, so the empty start does not erase it first. */
+	let restored = false;
 	onMount(() => {
 		hidden = remembered(COMMAND_HIDDEN_KEY, ['1', '0'], '0') === '1';
+		text = rememberedText(COMMAND_DRAFT_KEY);
+		restored = true;
+	});
+	$effect(() => {
+		const draft = text;
+		if (!restored) return;
+		if (draft) remember(COMMAND_DRAFT_KEY, draft);
+		else forget(COMMAND_DRAFT_KEY);
 	});
 
 	async function setHidden(next: boolean) {
