@@ -139,6 +139,8 @@ afterAll(async () => {
 /** The page before the board in every visit; going back to it is leaving the board. */
 const START = 'data:text/html,start';
 const LEFT = `location.protocol === 'data:'`;
+/** The board has started in this document: once mounted it reads every source, which is done. */
+const STARTED = `!window.beforeReload && performance.getEntriesByType('resource').some((entry) => entry.name.endsWith('/api/refresh'))`;
 /** A new tab: the start page, then the board at `search` in a window `width` wide. */
 async function visit(width: number, search = '') {
 	await tab.close();
@@ -152,8 +154,6 @@ async function visit(width: number, search = '') {
 }
 const screen = () => tab.eval<{ search: string; text: string }>(SCREEN);
 const back = () => tab.eval(`history.back()`);
-/** The board has started in this document: once mounted it reads every source, which is done. */
-const STARTED = `!window.beforeReload && performance.getEntriesByType('resource').some((entry) => entry.name.endsWith('/api/refresh'))`;
 async function reload() {
 	await tab.eval('window.beforeReload = true');
 	await tab.send('Page.reload');

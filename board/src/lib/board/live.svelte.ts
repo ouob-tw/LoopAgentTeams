@@ -15,6 +15,10 @@ export class LiveBoard {
 	archive = $state<ArchivePage | 'failed' | null>(null);
 	/** Loading the page after the loaded ones; after a failure only the button tries again. */
 	archiveEarlier = $state<'idle' | 'loading' | 'failed'>('idle');
+	/** Where the loaded archive stops while it goes on further back; null once it reaches the end. */
+	get earlierFrom(): string | null {
+		return typeof this.archive === 'object' ? (this.archive?.before ?? null) : null;
+	}
 	#connection: Connection | undefined;
 	#archiveLoads = 0;
 

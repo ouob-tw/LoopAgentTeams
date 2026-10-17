@@ -5,10 +5,12 @@ import { expect, test } from 'bun:test';
 import {
 	advance,
 	arrive,
+	listScrollIn,
 	placeIn,
 	samePlace,
 	searchOf,
 	viewOf,
+	withListScroll,
 	type Place,
 	type Trail
 } from '../src/lib/board/navigation.ts';
@@ -175,4 +177,16 @@ test('a screen comes back from the copy opened on this page, then the inbox, els
 	});
 	expect(viewOf({ kind: 'launch' }, { kept: new Map(), items: [], controllers: [] })).toEqual({ kind: 'launch' });
 	expect(viewOf(null, { kept: new Map(), items: [], controllers: [] })).toBeNull();
+});
+
+test("the list's scroll goes into its history entry beside the fields already there", () => {
+	const kit = { 'sveltekit:history': { historyIndex: 3 } };
+	const state = withListScroll(kit, 1427.6);
+	expect(state).toMatchObject(kit);
+	expect(listScrollIn(state)).toBe(1428);
+	expect(listScrollIn(withListScroll(null, 0))).toBe(0);
+	// An entry the board never scrolled from, and one of another page.
+	expect(listScrollIn(kit)).toBeUndefined();
+	expect(listScrollIn(null)).toBeUndefined();
+	expect(listScrollIn({ boardListScroll: 'far' })).toBeUndefined();
 });

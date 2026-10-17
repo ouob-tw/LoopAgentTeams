@@ -51,6 +51,18 @@ export function viewOf(
 	return item ? { kind: 'item', item } : { kind: 'missing', what: 'item' };
 }
 
+/** Where the list was scrolled, kept in the list's own history entry beside SvelteKit's fields, so
+ *  going back to the list finds the place after a reload too. Raw history state, because SvelteKit's
+ *  page.state reaches the page only after the board's popstate has run. */
+const LIST_SCROLL = 'boardListScroll';
+export function withListScroll(state: unknown, scrollY: number): object {
+	return { ...(state as object | null), [LIST_SCROLL]: Math.round(scrollY) };
+}
+export function listScrollIn(state: unknown): number | undefined {
+	const saved = (state as Record<string, unknown> | null)?.[LIST_SCROLL];
+	return typeof saved === 'number' ? saved : undefined;
+}
+
 /** The browser's history as the board writes it. `depth` is how many of the board's own entries
  *  lie behind this one: 0 for the list, which is always the first. */
 export interface Trail {

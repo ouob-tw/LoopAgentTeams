@@ -11,7 +11,7 @@
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import type { InboxSort } from '#lib/board/inbox.ts';
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
-	import { advance, arrive, placeIn, samePlace, searchOf, viewOf, type Place, type Trail, type View } from '#lib/board/navigation.ts';
+	import { advance, arrive, listScrollIn, placeIn, samePlace, searchOf, viewOf, withListScroll, type Place, type Trail, type View } from '#lib/board/navigation.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -129,7 +129,6 @@
 	});
 	/** Where the phone's list was scrolled to before a content screen replaced it. */
 	let listScroll = 0;
-	const LIST_SCROLL = 'lat-board-list-scroll';
 
 	/** Set while an opened report is being found in its conversation: a copy of its card covers
 	 *  the content where the report will be, so the page never shows its top first. */
@@ -176,12 +175,16 @@
 	async function restore(place: Place) {
 		// Only the latest restore shows its screen, and ends the seeking.
 		const own = ++restores;
-		const more = () => typeof board.archive === 'object' && !!board.archive?.before && board.archiveEarlier === 'idle';
-		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && (board.archive === null || more())) {
+		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && (board.archive === null || board.earlierFrom)) {
 			seeking = true;
 			if (board.archive === null) await board.loadArchive();
-			while (own === restores && viewAt(place)?.kind === 'missing' && more()) {
+			// Each round must get further back; one that fails or does not stops. A page the view is
+			// already reading is left to it.
+			let from = board.earlierFrom;
+			while (own === restores && viewAt(place)?.kind === 'missing' && from && board.archiveEarlier !== 'loading') {
 				await board.loadEarlier();
+				if (board.archiveEarlier === 'failed' || board.earlierFrom === from) break;
+				from = board.earlierFrom;
 			}
 			if (own !== restores) return;
 			seeking = false;
@@ -192,8 +195,7 @@
 	}
 	onMount(() => {
 		const popped = (event: PopStateEvent) => {
-			const saved = event.state?.[LIST_SCROLL];
-			if (typeof saved === 'number') listScroll = saved;
+			listScroll = listScrollIn(event.state) ?? listScroll;
 			void restore(addressed());
 		};
 		addEventListener('popstate', popped);
@@ -204,10 +206,7 @@
 	function go(next: Place) {
 		move((trail, depth) => {
 			const here = addressed();
-			// The list's entry keeps where it was scrolled, so going back to it finds the place after a
-			// reload too. Written beside SvelteKit's own fields, which it keeps: its page.state comes
-			// only after the board's popstate has run.
-			if (here === null) history.replaceState({ ...history.state, [LIST_SCROLL]: Math.round(window.scrollY) }, '');
+			if (here === null) history.replaceState(withListScroll(history.state, window.scrollY), '');
 			advance(next, { place: here, depth: depth ?? 0 }, trail);
 		});
 		queue(() => present(viewAt(next)));
@@ -385,7 +384,7 @@
 				{#if view.kind === 'missing'}
 					{#if view.what === 'controller'}
 						<p class="empty">這個主控已不存在。</p>
-					{:else if board.archive === 'failed' || board.archiveEarlier === 'failed'}
+					{:else if board.archive === 'failed' || (board.archiveEarlier === 'failed' && board.earlierFrom)}
 						<p class="empty">信箱裡沒有這一則，封存也讀不出來；可以重新整理再試一次。</p>
 					{:else if !seeking}
 						<p class="empty">這一則已不存在。</p>
