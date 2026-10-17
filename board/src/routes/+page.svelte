@@ -161,7 +161,8 @@
 	afterNavigate(({ type }) => {
 		if (type !== 'enter') return;
 		move((trail, depth) => arrive(addressed(), depth, trail));
-		if (view?.kind === 'missing') void restore(addressed());
+		// After the first writes, which may put the list in front of the address for a moment.
+		if (view?.kind === 'missing') queue(() => restore(addressed()));
 	});
 	/** Set while the archive is read for an item the address names, so it is not called missing
 	 *  before then; the first render is such a case too. */
@@ -176,7 +177,9 @@
 		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && board.archive === null) {
 			seeking = true;
 			await board.loadArchive();
-			if (own !== restores || !samePlace(place, addressed())) return;
+			if (own !== restores) return;
+			seeking = false;
+			if (!samePlace(place, addressed())) return;
 		}
 		seeking = false;
 		await present(viewAt(place));
