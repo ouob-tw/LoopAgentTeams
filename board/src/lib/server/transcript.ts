@@ -48,13 +48,15 @@ export function followTranscript(
 			void read();
 		}, config.debounceMs);
 	});
-	const usageWatcher = createSourceWatcher(() => {
-		usageDebounce ??= setTimeout(() => {
-			usageDebounce = undefined;
-			usage = readClaudeUsage(config, source.sessionId);
-			send();
-		}, config.debounceMs);
-	});
+	const usageWatcher = claude
+		? createSourceWatcher(() => {
+				usageDebounce ??= setTimeout(() => {
+					usageDebounce = undefined;
+					usage = readClaudeUsage(config, source.sessionId);
+					send();
+				}, config.debounceMs);
+			})
+		: null;
 
 	function send(): void {
 		if (!latest) return;
@@ -78,7 +80,7 @@ export function followTranscript(
 		const targets: WatchTargets = new Map();
 		if (result.ok) addFile(targets, result.path);
 		watcher.sync(targets);
-		if (claude) {
+		if (usageWatcher) {
 			// Read with every record read too, which also covers a missed watch event.
 			usage = readClaudeUsage(config, source.sessionId);
 			const usageTargets: WatchTargets = new Map();
@@ -103,6 +105,6 @@ export function followTranscript(
 		clearTimeout(usageDebounce);
 		clearTimeout(timer);
 		watcher.close();
-		usageWatcher.close();
+		usageWatcher?.close();
 	};
 }

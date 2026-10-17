@@ -197,6 +197,12 @@ class CodexUsageTests(ModelTestCase):
         self.assertEqual(usage["context"], 10.0)
         self.assertEqual(usage["limits"], [{"minutes": 300, "used": 41.0}])
 
+    def test_another_limit_after_the_plan_s_does_not_replace_its_quota(self):
+        premium = token_count((100, 50, 1000))
+        premium["payload"]["rate_limits"] = {"limit_id": "premium", "primary": None, "secondary": None}
+        usage = self.usage([token_count((100, 50, 1000), (40.0, 300)), premium])
+        self.assertEqual(usage["limits"], [{"minutes": 300, "used": 40.0}])
+
     def test_missing_or_mistyped_fields_leave_only_that_part_out(self):
         record = token_count((100, 50, 0), (True, 300), ("x", 10080))
         self.assertEqual(self.usage([record]), {

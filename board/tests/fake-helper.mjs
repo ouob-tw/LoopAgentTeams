@@ -6,9 +6,8 @@
 // that with a fixed output. `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
 // item per line, the way the real command pages a client's record, with the latest turn's settings
 // from <dir>/transcripts/<session>.current.json and its usage from <session>.usage.json when there
-// are; with `transcriptChildMs` in the
-// plan it instead waits that long on a child process, writing the child's PID to
-// transcript-child.pid (`launchArgsChildMs` does the same for `board launch-args`). `board launch-args` prints what <dir>/launch-args.json holds for the
+// are; with `transcriptChildMs` in the plan it instead waits that long on a child process, writing
+// the child's PID to transcript-child.pid (`launchArgsChildMs` does the same for `board launch-args`). `board launch-args` prints what <dir>/launch-args.json holds for the
 // session: a list of arguments, or `{ "unknown": reason }`. `board prune-reports` deletes nothing,
 // unless the plan sets `realPrune` to a Python interpreter: then that runs the real helper's command,
 // on the test's own reports directory that the board passes it. Each call is logged to

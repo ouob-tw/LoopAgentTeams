@@ -96,11 +96,11 @@
 
 ## 用量與快取
 
-主控資訊頁的目前階段下方有一行小字，例如 `Ctx 42% used · 5h 剩 63% · 7d 剩 80% · 快取 命中 97% · 38 分後過期`，跟主控終端機的狀態列同一組數字。已結束與已關閉的主控不顯示；某項讀不到只省略那一項，全部讀不到就整行不顯示。
+主控資訊頁的目前階段下方有一行小字，例如 `Ctx 42% used · 5h 剩 63% · 7d 剩 80% · 快取 命中 97% · 38 分後過期`，Claude 主控跟它終端機的狀態列同一組數字（四捨五入也一樣，剛好 .5 時取偶數）。已結束與已關閉的主控不顯示；某項讀不到只省略那一項，全部讀不到就整行不顯示。
 
 - Ctx 是上下文已用的比例；額度是「剩」多少（100 − 已用），依期間標成 `5h`、`7d` 這類名稱；快取命中是最近一次請求從快取讀的比例，快取冷時只顯示「快取 冷」。過期倒數只有 Claude 主控有，算法同狀態列（剩餘秒數 ÷ 60 取整數），每過一分鐘自動更新，過期後顯示「已過期」。
 - 變黃：Ctx ≥ 80%、任一額度剩不到 20%、快取剩 5 分鐘以內；已過期用紅色。淺色主題另加粗。
-- Codex 主控：輔助工具的 `board transcript` 從 rollout 最後的 `token_count` 事件算出 `usage`：Ctx = 最後一次請求的 `input_tokens` ÷ `model_context_window`，快取命中 = `cached_input_tokens` ÷ `input_tokens`，額度取 `rate_limits` 的 `primary`／`secondary`（有幾個就顯示幾個，依 `window_minutes` 命名）。
+- Codex 主控：輔助工具的 `board transcript` 從 rollout 最後的 `token_count` 事件算出 `usage`，是看板自己的算法，不一定等於 Codex 畫面上的「context left」：Ctx = 最後一次請求的 `input_tokens` ÷ `model_context_window`，快取命中 = `cached_input_tokens` ÷ `input_tokens`，額度取最後一筆方案額度（`limit_id` 為 `codex` 或沒有）的 `rate_limits` 的 `primary`／`secondary`（有幾個就顯示幾個，依 `window_minutes` 命名）；`premium` 這類其他額度的事件不算。
 - Claude 主控：這些數字只有狀態列指令拿得到，所以要在狀態列指令前面串上 `scripts/usage-recorder.sh`。它每次狀態列更新時讀標準輸入，把 `context_window.used_percentage`、`rate_limits` 的 `five_hour`／`seven_day`（`used_percentage`、`resets_at`）、`prompt_cache`（`caching_observed`、`warm`、`hit_ratio`、`expires_at`）與寫入時間存成 `$LAT_USAGE_DIR/<session ID>.json`（先寫暫存檔再改名），不存訊息、路徑或憑證；接著把同一份輸入原封不動交給後面的指令，印出它的輸出。記錄失敗（例如沒有 `jq`、目錄寫不進去、輸入不是 JSON）一律略過，不影響狀態列。需要 `bash` 與 `jq`。
 - 頁面開著時，用量跟著對話紀錄的推送（`/api/transcript/events` 的 `page.usage`）更新：Codex 隨紀錄檔變動；Claude 另外監看用量檔，只有它變了時只重讀這個檔、不重跑輔助工具。用量檔讀不出來時當成沒有，不影響其他區塊。
 
@@ -116,7 +116,7 @@
 "statusLine": { "type": "command", "command": "bash /path/to/LoopAgentTeams/board/scripts/usage-recorder.sh bash ~/.claude/statusline-command.sh" }
 ```
 
-後面的指令照樣由 shell 拆成程式與參數，引號寫法不用改。只想記錄、不要狀態列時，後面可以不接指令。新的設定在下一次狀態列更新時生效，不用重啟 client。你改了 `LAT_USAGE_DIR` 時，狀態列與看板服務都要設定相同的值。
+後面的指令照樣由 shell 拆成程式與參數，引號寫法不用改。但原本的指令若以環境變數設定開頭（例如 `FOO=1 cmd`），或用了 `|`、`&&`、`;` 這類組合，要整段包成 `bash -c '<原指令>'` 再接在後面，否則狀態列會變空白。只想記錄、不要狀態列時，後面可以不接指令。新的設定在下一次狀態列更新時生效，不用重啟 client。你改了 `LAT_USAGE_DIR` 時，狀態列與看板服務都要設定相同的值。
 
 移除：把 `statusLine.command` 前面加上的那段刪掉，再視需要刪除 `$XDG_STATE_HOME/lat/usage`（沒設定 `XDG_STATE_HOME` 時是 `~/.local/state/lat/usage`）。
 

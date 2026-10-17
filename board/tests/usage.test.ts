@@ -79,6 +79,12 @@ describe('the line', () => {
 		expect(texts({ ...full, cache: { warm: false, hit: 0.97, expires: NOW + MINUTE } })).toBe('Ctx 42% used · 5h 剩 63% · 7d 剩 80% · 快取 冷');
 	});
 
+	test('an exact half rounds to the even number, as the status line’s printf does', () => {
+		const usage: Usage = { context: 42.5, limits: [{ minutes: 300, used: 21.5 }, { minutes: 10080, used: 20.5 }], cache: null };
+		expect(texts(usage)).toBe('Ctx 42% used · 5h 剩 78% · 7d 剩 80%');
+		expect(texts({ ...usage, context: 43.5, limits: [] })).toBe('Ctx 44% used');
+	});
+
 	test('a Codex controller’s: windows named by length, one only, and no countdown', () => {
 		const codex: Usage = { context: 9.68, limits: [{ minutes: 10080, used: 29 }], cache: { warm: true, hit: 0.9905, expires: null } };
 		expect(texts(codex)).toBe('Ctx 10% used · 7d 剩 71% · 快取 命中 99%');
@@ -161,6 +167,9 @@ describe('the recorder', () => {
 		expect(readClaudeUsage(config, 'claude-session-1')).toEqual({ context: 42, limits: [], cache: null });
 		record(JSON.stringify(statusInput({ prompt_cache: { caching_observed: true, warm: false } })));
 		expect(readClaudeUsage(config, 'claude-session-1')?.cache).toEqual({ warm: false, hit: null, expires: null });
+		// Warm without a ratio: 0%, as the status line shows it.
+		record(JSON.stringify(statusInput({ prompt_cache: { caching_observed: true, warm: true } })));
+		expect(readClaudeUsage(config, 'claude-session-1')?.cache).toEqual({ warm: true, hit: 0, expires: null });
 		expect(readClaudeUsage(config, 'no-such-session')).toBeNull();
 		writeFileSync(join(dir, 'usage/broken.json'), '{');
 		expect(readClaudeUsage(config, 'broken')).toBeNull();

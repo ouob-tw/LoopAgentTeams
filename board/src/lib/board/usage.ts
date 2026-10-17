@@ -45,6 +45,12 @@ export function windowLabel(minutes: number): string {
 	return `${minutes}m`;
 }
 
+/** Rounded as the status line's `printf '%.0f'` does: an exact half goes to the even number. */
+function rounded(value: number): number {
+	const whole = Math.round(value);
+	return Math.abs(value % 1) === 0.5 && whole % 2 !== 0 ? whole - 1 : whole;
+}
+
 /**
  * The line's parts at `now`, e.g. `Ctx 42% used`, `5h 剩 63%`, `快取 命中 97%`, `38 分後過期`.
  * Yellow from 80% context used, under 20% of a quota left and 5 minutes or less of cache left; an
@@ -53,11 +59,11 @@ export function windowLabel(minutes: number): string {
 export function usageParts(usage: Usage, now: number): UsagePart[] {
 	const parts: UsagePart[] = [];
 	if (usage.context !== null) {
-		const used = Math.round(usage.context);
+		const used = rounded(usage.context);
 		parts.push({ text: `Ctx ${used}% used`, level: used >= 80 ? 'warn' : 'normal' });
 	}
 	for (const limit of usage.limits.toSorted((a, b) => a.minutes - b.minutes)) {
-		const left = Math.max(0, Math.round(100 - limit.used));
+		const left = rounded(Math.max(0, 100 - limit.used));
 		parts.push({ text: `${windowLabel(limit.minutes)} 剩 ${left}%`, level: left < 20 ? 'warn' : 'normal' });
 	}
 	const cache = usage.cache;

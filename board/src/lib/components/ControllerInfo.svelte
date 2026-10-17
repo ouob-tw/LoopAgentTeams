@@ -1,7 +1,7 @@
 <script lang="ts">
 	// A controller's information page: one line of who and where it stands with its latest phase
-	// and, while it runs, its context use, quota and prompt cache in small print (the details
-	// behind a disclosure), a bar for each question waiting for an answer, then its
+	// (the details behind a disclosure) and, while it runs, its context use, quota and prompt cache
+	// in small print, a bar for each question waiting for an answer, then its
 	// conversation, its reports in the inbox and what was sent to it, one tab at a time. Its model
 	// and effort, and messages and wakes, go through the command line at the bottom of the screen.
 	// Opened for a report, the conversation shows that report where it is in the history.
@@ -66,8 +66,10 @@
 		if (!expires) return;
 		let timer: ReturnType<typeof setTimeout> | undefined;
 		const tick = () => {
-			now = Date.now();
-			const left = expires - now;
+			// Not read back from `now`, so the effect does not depend on what it writes.
+			const current = Date.now();
+			now = current;
+			const left = expires - current;
 			if (left > 0) timer = setTimeout(tick, (left % 60_000) + 1);
 		};
 		tick();

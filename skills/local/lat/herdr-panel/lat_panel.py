@@ -2539,8 +2539,10 @@ def _codex_usage(records):
             continue
         if isinstance(payload.get("info"), dict):
             info = payload["info"]
-        if isinstance(payload.get("rate_limits"), dict):
-            limits = payload["rate_limits"]
+        # Other limits, such as ``premium``, come with their own events and are not the plan's quota.
+        given = payload.get("rate_limits")
+        if isinstance(given, dict) and given.get("limit_id") in (None, "codex"):
+            limits = given
     usage = {"context": None, "limits": [], "cache": None}
     last = info.get("last_token_usage") if info else None
     if isinstance(last, dict):
