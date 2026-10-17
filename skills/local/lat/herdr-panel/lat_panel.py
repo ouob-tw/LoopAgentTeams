@@ -2522,6 +2522,45 @@ def _codex_current(records):
     return current
 
 
+def _amount(value):
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _codex_usage(records):
+    """Context use, quota and prompt cache from the last ``token_count`` events: the context is
+    the last request's input over the model's window, the cache hit its cached share of that
+    input, and each quota window is named by its length. None when there is nothing to show."""
+    info, limits = None, None
+    for record in records:
+        payload = record.get("payload")
+        if record.get("type") != "event_msg" or not isinstance(payload, dict):
+            continue
+        if payload.get("type") != "token_count":
+            continue
+        if isinstance(payload.get("info"), dict):
+            info = payload["info"]
+        if isinstance(payload.get("rate_limits"), dict):
+            limits = payload["rate_limits"]
+    usage = {"context": None, "limits": [], "cache": None}
+    last = info.get("last_token_usage") if info else None
+    if isinstance(last, dict):
+        given, cached = _amount(last.get("input_tokens")), _amount(last.get("cached_input_tokens"))
+        window = _amount(info.get("model_context_window"))
+        if given is not None and window:
+            usage["context"] = given / window * 100
+        if given and cached is not None:
+            # Codex does not tell when its cache expires.
+            usage["cache"] = {"warm": True, "hit": cached / given, "expires": None}
+    for name in ("primary", "secondary"):
+        limit = limits.get(name) if limits else None
+        if not isinstance(limit, dict):
+            continue
+        minutes, used = _amount(limit.get("window_minutes")), _amount(limit.get("used_percent"))
+        if minutes and used is not None:
+            usage["limits"].append({"minutes": minutes, "used": used})
+    return usage if usage["context"] is not None or usage["limits"] or usage["cache"] else None
+
+
 def current_settings(client, records):
     """The model and effort the latest turn ran with, and when that turn started; None when
     the record has no turn yet. A record with a field of the wrong type is passed over."""
@@ -2540,6 +2579,8 @@ def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_T
     when this one starts the conversation. ``skipped`` counts unusable lines:
     ones that are not JSON objects, and records whose fields have the wrong types.
     ``current`` is ``current_settings`` of the whole record, whatever the page.
+    ``usage`` is a Codex record's context use, quota and prompt cache
+    (``_codex_usage``); None for Claude, whose record does not hold them.
     """
     path = transcript_path(client, session_id, env=env)
     records, skipped = _read_records(path)
@@ -2557,6 +2598,7 @@ def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_T
         "before": start or None,
         "skipped": skipped,
         "current": current_settings(client, records),
+        "usage": _codex_usage(records) if client == "codex" else None,
     }
 
 

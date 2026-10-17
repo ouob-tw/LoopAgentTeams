@@ -1,5 +1,6 @@
-"""`board transcript` current settings and `board launch-args`: what the LAT board shows as a
-controller's model and effort, and whether a Codex controller was started with a fixed model.
+"""`board transcript` current settings and usage, and `board launch-args`: what the LAT board
+shows as a controller's model and effort, its context use, quota and prompt cache, and whether a
+Codex controller was started with a fixed model.
 
 Records keep the shapes of real Claude session and Codex rollout lines, cut down to the fields
 these commands read.
@@ -74,10 +75,10 @@ class ModelTestCase(unittest.TestCase):
         self.write(self.root / "claude-config/projects/-work-demo" / f"{CLAUDE_SESSION}.jsonl", records, tail)
         return self.board("transcript", "--client", "claude", "--session-id", CLAUDE_SESSION)["current"]
 
-    def codex(self, records, tail=""):
+    def codex(self, records, tail="", field="current"):
         path = self.root / "codex-home/sessions/2026/10/14" / f"rollout-2026-10-14T09-00-00-{CODEX_SESSION}.jsonl"
         self.write(path, records, tail)
-        return self.board("transcript", "--client", "codex", "--session-id", CODEX_SESSION)["current"]
+        return self.board("transcript", "--client", "codex", "--session-id", CODEX_SESSION)[field]
 
 
 class ClaudeCurrentTests(ModelTestCase):
@@ -150,6 +151,68 @@ class CodexCurrentTests(ModelTestCase):
         current = self.codex([codex_turn("2026-10-14T09:00:01Z", "gpt-6-astra", None)])
         self.assertEqual(current["effort"], None)
         self.assertEqual(current["model"], "gpt-6-astra")
+
+
+def token_count(info=None, primary=None, secondary=None):
+    """A Codex ``token_count`` event; ``info`` is (input, cached, window), a limit is
+    (used percent, window minutes)."""
+    payload = {"type": "token_count", "info": None, "rate_limits": None}
+    if info:
+        given, cached, window = info
+        payload["info"] = {
+            "total_token_usage": {"input_tokens": given * 10, "cached_input_tokens": cached * 10},
+            "last_token_usage": {"input_tokens": given, "cached_input_tokens": cached, "output_tokens": 5},
+            "model_context_window": window,
+        }
+    if primary or secondary:
+        limit = lambda pair: pair and {"used_percent": pair[0], "window_minutes": pair[1], "resets_at": 1792666034}
+        payload["rate_limits"] = {"limit_id": "codex", "primary": limit(primary), "secondary": limit(secondary)}
+    return {"type": "event_msg", "timestamp": "2026-10-14T09:05:01Z", "payload": payload}
+
+
+class CodexUsageTests(ModelTestCase):
+    def usage(self, records):
+        return self.codex(records, field="usage")
+
+    def test_the_last_token_count_gives_context_quota_and_cache_hit(self):
+        usage = self.usage([
+            token_count((10_000, 0, 400_000), (10.0, 300), (5.0, 10080)),
+            token_count((200_000, 190_000, 400_000), (37.0, 300), (20.0, 10080)),
+        ])
+        self.assertEqual(usage, {
+            "context": 50.0,
+            "limits": [{"minutes": 300, "used": 37.0}, {"minutes": 10080, "used": 20.0}],
+            "cache": {"warm": True, "hit": 0.95, "expires": None},
+        })
+
+    def test_a_plan_with_only_a_weekly_window_has_one_limit(self):
+        usage = self.usage([token_count((46_003, 45_568, 475_000), (29.0, 10080), None)])
+        self.assertEqual(usage["limits"], [{"minutes": 10080, "used": 29.0}])
+
+    def test_quota_and_tokens_are_taken_from_their_own_last_events(self):
+        usage = self.usage([
+            token_count((100, 50, 1000), (40.0, 300)),
+            token_count(None, (41.0, 300)),
+        ])
+        self.assertEqual(usage["context"], 10.0)
+        self.assertEqual(usage["limits"], [{"minutes": 300, "used": 41.0}])
+
+    def test_missing_or_mistyped_fields_leave_only_that_part_out(self):
+        record = token_count((100, 50, 0), (True, 300), ("x", 10080))
+        self.assertEqual(self.usage([record]), {
+            "context": None, "limits": [], "cache": {"warm": True, "hit": 0.5, "expires": None},
+        })
+
+    def test_no_token_count_yet_is_null(self):
+        self.assertIsNone(self.usage([codex_turn("2026-10-14T09:00:01Z", "gpt-6-astra", "low")]))
+
+    def test_a_claude_record_has_none(self):
+        page = self.claude([
+            claude_user("2026-10-14T09:00:00Z", "first"),
+            claude_reply("2026-10-14T09:00:01Z", "claude-opus-5-5", "high"),
+        ])
+        self.assertIsNotNone(page)
+        self.assertIsNone(self.board("transcript", "--client", "claude", "--session-id", CLAUDE_SESSION)["usage"])
 
 
 class LaunchArgsTests(ModelTestCase):
