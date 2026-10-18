@@ -12,7 +12,7 @@ import {
 } from '../board/agent-actions.ts';
 import type { Agent } from '../board/types.ts';
 import type { Board } from './board.ts';
-import { killAgent } from './hcom.ts';
+import { killAgent, listAgents } from './hcom.ts';
 import { agentCommand, closePane, paneExists, type HerdrAct } from './herdr.ts';
 import { inject, queued, typedText } from './send.ts';
 import { appendSent } from './sent-log.ts';
@@ -118,7 +118,8 @@ export function interruptAgent(board: Board, agentId: string) {
 
 /**
  * Close the agent and its Herdr pane: `hcom kill` when it is linked, `herdr pane close` when it is
- * not. Refused for the pane the board itself runs in, and while hcom cannot tell which applies.
+ * not. Refused for the pane the board itself runs in, Herdr's or hcom's, and while hcom cannot
+ * tell which applies.
  * Done only once its pane is gone; the list is read again then, so it leaves the tab at once.
  * Queued like a send.
  */
@@ -126,6 +127,7 @@ export function closeAgent(board: Board, agentId: string) {
 	return queued(agentId, () =>
 		attempt(board, agentId, 'close', null, async (agent) => {
 			const pane = agent.herdr.pane;
+			// Neither the pane Herdr lists it in nor the one hcom has for it may be the board's own.
 			if (pane === board.config.ownPane) return { route: null, reason: AGENT_OWN_PANE_REASON };
 			if (agent.hcom === 'unknown') return { route: null, reason: AGENT_HCOM_UNKNOWN_CLOSE_REASON };
 			let route: AgentAction['route'];
@@ -134,6 +136,12 @@ export function closeAgent(board: Board, agentId: string) {
 				// `hcom kill` reads `all` and `tag:…` as many agents, never one name.
 				const name = agent.hcomName!;
 				if (name === 'all' || name.startsWith('tag:')) return { route: null, reason: `HCOM 名稱 ${name} 會被 hcom kill 當成多個 Agent，沒有關閉。` };
+				// hcom kill closes the pane hcom has for it, which may not be the one Herdr lists it in.
+				const list = await listAgents(board.config);
+				if (!list.ok) return { route: null, reason: `讀不到 hcom 的 Agent 清單，無法確認 hcom kill 會關哪個窗格，沒有關閉：${list.reason}` };
+				const target = list.agents.find((candidate) => candidate.name === name);
+				if (!target) return { route: null, reason: `hcom 的 Agent 清單裡已經沒有 @${name}，沒有關閉。` };
+				if (target.pane === board.config.ownPane) return { route: null, reason: AGENT_OWN_PANE_REASON };
 				const run = await killAgent(board.config, name);
 				if (run.timedOut) return { route, reason: `hcom kill ${run.failure}，結果不明；請到 Herdr 查看。` };
 				if (run.failure) return { route, reason: `hcom kill 失敗：${run.failure}` };

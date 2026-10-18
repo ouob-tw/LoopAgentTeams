@@ -109,6 +109,17 @@ test('the agent in the pane the board itself runs in is not closed', async () =>
 	expect((await record('s-board')).entries[0]).toMatchObject({ action: 'close', ok: false, error: refused.body.reason });
 });
 
+test('an agent whose hcom pane is the board\'s own is not closed, though Herdr lists it in another pane', async () => {
+	// Paired by session ID, so hcom's pane for it need not be the one Herdr lists it in.
+	setHerdr(['s-linked', 's-plain']);
+	fixture.setHcom({ agents: [{ ...hcomAgent('lino', 's-linked'), launch_context: { pane_id: 'wA:p-s-board' } }] });
+	const refused = await close('s-linked');
+	expect(refused.status).toBe(409);
+	expect(refused.body.reason).toContain('看板自己所在的窗格');
+	expect(hcomCalls()).toEqual([]);
+	expect(herdrCalls()).toEqual([]);
+});
+
 test('an agent Herdr no longer lists, or a Herdr list that cannot be read, is not closed', async () => {
 	setHerdr(['s-linked', 's-board']);
 	const gone = await close('s-plain');
