@@ -237,7 +237,7 @@
 			<button
 				type="button"
 				class="usage-info"
-				aria-label="用量明細"
+				aria-label="執行狀況明細"
 				aria-describedby={usageTip ? 'usage-tip' : undefined}
 				bind:this={usageButton}
 				onclick={() => (usagePinned = !usagePinned)}
@@ -288,7 +288,7 @@
 				{/if}
 			</dd>
 			{#if usageFull.length}
-				<dt>用量</dt>
+				<dt>執行狀況</dt>
 				<dd class="line">{@render line(usageFull)}</dd>
 			{/if}
 		</dl>
