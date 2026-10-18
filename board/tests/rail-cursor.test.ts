@@ -13,6 +13,7 @@ const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium
 	(path) => path && existsSync(path)
 );
 
+// Offsets 15 and 30 are only an inject port and a Chrome of other files, which never run together with this one.
 let fixture: Fixture;
 let chrome: ChildProcess;
 let profile: string;
@@ -41,7 +42,7 @@ async function until(expression: string) {
 
 beforeAll(async () => {
 	if (!CHROME) return;
-	fixture = await startFixture(31);
+	fixture = await startFixture(15);
 	const cookie = await fixture.login('rail-cursor');
 	// One controller waiting for the user, then two at work: two runs, with a line between them.
 	const [luna, sol, vega] = ['luna', 'sol', 'vega'].map((name) => fixture.bound('alpha', name));
@@ -49,7 +50,7 @@ beforeAll(async () => {
 	fixture.list([luna, sol, vega]);
 	await fixture.refresh(cookie);
 	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const port = PORT_BASE + 32;
+	const port = PORT_BASE + 30;
 	chrome = spawn(
 		CHROME!,
 		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, 'about:blank'],
