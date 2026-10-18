@@ -752,3 +752,94 @@ for (const width of [390, 1400]) {
 		expect(await placedTop()).toBe(moved);
 	}, 30_000);
 }
+
+/** The conversation's question cards, each with the title it shows. */
+const ASKING_TITLES = `[...document.querySelectorAll('.history .asking .asked')].map((card) => card.innerText)`;
+const asking = (title: string) => `${ASKING_TITLES}.some((text) => text.includes(${JSON.stringify(title)}))`;
+const saidIncludes = (text: string) => `[...document.querySelectorAll('.history .said')].some((li) => li.innerText.includes(${JSON.stringify(text)}))`;
+/** From now on, `window.shownAsText` is set once the conversation shows a text that includes `text`. */
+const watchText = (text: string) =>
+	`(() => { window.shownAsText = false; const seen = () => { if (${saidIncludes(text)}) window.shownAsText = true; }; new MutationObserver(seen).observe(document.body, { subtree: true, childList: true, characterData: true }); seen(); })()`;
+const say = (text: string) => appendFileSync(solTranscript(), JSON.stringify({ kind: 'assistant', time: minutesAgo(0), text }) + '\n');
+
+for (const width of [390, 1400]) {
+	test.skipIf(!CHROME)(`${width}px: on the controller's page, a new message asking a question already in the inbox is its card from the start`, async () => {
+		const id = `CQ-${width}`;
+		const title = `先到的題目 ${width}`;
+		fixture.list([luna, { ...sol, questions: [...sol.questions, question({ id, revision: 1, title, kind: 'single', options: OPTIONS, asked_at: minutesAgo(0.1) })] }]);
+		await fixture.refresh(cookie);
+		await visit(width, `?controller=${sol.session_id}`);
+		await shows(`?controller=${sol.session_id}`, title);
+		await tab.until(`!!document.querySelector('.history .said')`, 'the conversation');
+		// The messages already in it: one asking two questions is their cards one after another, in
+		// its order; the r1 message of a question now at r2 stays text.
+		await tab.until(asking('一起問的甲題'), 'the cards of the message asking two questions');
+		const group = await tab.eval<number>(
+			`[...document.querySelectorAll('.history .asking')].find((li) => li.innerText.includes('一起問的甲題')).querySelectorAll('.asked').length`
+		);
+		expect(group).toBe(2);
+		const titles = (await tab.eval<string[]>(ASKING_TITLES)).map((text) => text.match(/一起問的.題/)?.[0]).filter(Boolean);
+		expect(titles).toEqual(['一起問的乙題', '一起問的甲題']);
+		expect(await tab.eval(saidIncludes('這兩題一起問。'))).toBe(false);
+		expect(await tab.eval(saidIncludes('DQ-1 r1'))).toBe(true);
+
+		await tab.eval(watchText(`先到的提問 ${width}。`));
+		await sleep(LOST_WATCH_READ);
+		say(`先到的提問 ${width}。\n\nDECIDE: ${id} r1 · 先到的題目 · 回答面板上的題目`);
+		await tab.until(asking(title), `${title} as its card`);
+		expect(await tab.eval('window.shownAsText')).toBe(false);
+		expect(await tab.eval(`${ASKING_TITLES}.find((text) => text.includes(${JSON.stringify(title)}))`)).toContain('送出答覆');
+		fixture.list([luna, sol]);
+		await fixture.refresh(cookie);
+	}, 30_000);
+}
+
+test.skipIf(!CHROME)('phone: a message whose question is not in the inbox stays text, and is replaced by its card once the question arrives', async () => {
+	const id = 'AQ-1';
+	const title = '後到的題目';
+	fixture.list([luna, sol]);
+	await fixture.refresh(cookie);
+	await visit(390, `?controller=${sol.session_id}`);
+	await tab.until(`!!document.querySelector('.history .said')`, 'the conversation');
+	const askedAt = minutesAgo(0.1);
+	await sleep(LOST_WATCH_READ);
+	say(`題目還沒到。\n\nDECIDE: ${id} r1 · 後到的題目 · 回答面板上的題目`);
+	await tab.until(saidIncludes('題目還沒到。'), 'the message as text');
+	await sleep(500);
+	expect(await tab.eval(saidIncludes('題目還沒到。'))).toBe(true);
+
+	fixture.list([luna, { ...sol, questions: [...sol.questions, question({ id, revision: 1, title, kind: 'single', options: OPTIONS, asked_at: askedAt })] }]);
+	await fixture.refresh(cookie);
+	await tab.until(asking(title), `${title} as its card`);
+	expect(await tab.eval(saidIncludes('題目還沒到。'))).toBe(false);
+	fixture.list([luna, sol]);
+	await fixture.refresh(cookie);
+}, 30_000);
+
+test.skipIf(!CHROME)('1400px: opened at a question, its conversation shows the other asking messages as their cards, a new one too', async () => {
+	const id = 'OQ-1';
+	const title = '打開時新問的題目';
+	fixture.list([luna, sol]);
+	await fixture.refresh(cookie);
+	await visit(1400);
+	await tab.eval(click('.inbox', '有原訊息的求助題'));
+	await placedAt(SOL_QUESTION('HQ-1'), '有原訊息的求助題');
+	// The opened one at its place; the others its controller asked at theirs.
+	await tab.until(asking('有原訊息的待決題'), 'the other question as its card');
+	expect(await tab.eval(asking('一起問的乙題'))).toBe(true);
+	expect(await tab.eval(asking('有原訊息的求助題'))).toBe(false);
+	expect(await tab.eval(`document.querySelectorAll('.history .placed').length`)).toBe(1);
+
+	fixture.list([luna, { ...sol, questions: [...sol.questions, question({ id, revision: 1, title, kind: 'single', options: OPTIONS, asked_at: minutesAgo(0.1) })] }]);
+	await fixture.refresh(cookie);
+	await tab.until(`document.querySelector('.detail').innerText.includes(${JSON.stringify(title)})`, `${title} on the page`);
+	await tab.eval(watchText('打開時新問的提問。'));
+	await sleep(LOST_WATCH_READ);
+	say(`打開時新問的提問。\n\nDECIDE: ${id} r1 · 打開時新問 · 回答面板上的題目`);
+	await tab.until(asking(title), `${title} as its card`);
+	expect(await tab.eval('window.shownAsText')).toBe(false);
+	// Still at the opened one.
+	expect(await tab.eval(`${PLACED}.innerText`)).toContain('有原訊息的求助題');
+	fixture.list([luna, sol]);
+	await fixture.refresh(cookie);
+}, 30_000);

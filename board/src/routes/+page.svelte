@@ -17,7 +17,7 @@
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { askedTogether } from '#lib/board/question-message.ts';
 	import { reportPlace, withLatest, type PlacedMessage, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
-	import type { InboxItem } from '#lib/board/types.ts';
+	import type { InboxItem, InboxQuestion } from '#lib/board/types.ts';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
@@ -336,6 +336,12 @@
 	/>
 {/snippet}
 
+{#snippet askedCards(entries: InboxQuestion[])}
+	{#each entries as entry (entry.key)}
+		<div class="asked">{@render placedCard(entry)}</div>
+	{/each}
+{/snippet}
+
 {#snippet refresh()}
 	<button
 		class="tool icon"
@@ -491,6 +497,7 @@
 							{controller}
 							items={inbox.filter((entry) => entry.controllerId === controller.id)}
 							onopen={openItem}
+							cards={askedCards}
 						/>
 					{:else}
 						<p class="empty">這個主控已經不在名冊上：它已結束，回報也都封存了。</p>
@@ -508,6 +515,7 @@
 						{copy}
 						onplaced={() => locate(false)}
 						onunplaced={item.kind === 'question' ? () => lose(item.key) : undefined}
+						cards={askedCards}
 					>
 						{#snippet card()}
 							<!-- The opened one is scrolled to; the others the same message asked are answerable too. -->

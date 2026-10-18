@@ -3,10 +3,12 @@
 	// text reply, with the operations between two texts folded into one line until opened. Newest
 	// first and kept up to date while the page is open; earlier parts load when the end of the list
 	// scrolls into view, or with the button. Opened for a report, it shows the report in place of
-	// the text it carries and scrolls to it, loading earlier parts until it is found.
+	// the text it carries and scrolls to it, loading earlier parts until it is found. A message
+	// that asked questions still in the inbox shows their cards in its place.
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import { EarlierReads } from '#lib/board/earlier.ts';
+	import { askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { renderMarkdown } from '#lib/board/markdown.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -18,17 +20,20 @@
 		withEarlier,
 		withLatest,
 		type PlacedMessage,
+		type TranscriptText,
 		type TranscriptUpdate,
 		type TranscriptView
 	} from '#lib/board/transcript.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
-	import { itemLabel, type Controller, type InboxReport } from '#lib/board/types.ts';
+	import { itemLabel, type Controller, type InboxQuestion, type InboxReport } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
 	import { untrack, type Snippet } from 'svelte';
 
 	let {
 		controller,
 		reports = [],
+		questions = [],
+		cards,
 		target,
 		opens = 0,
 		onplaced,
@@ -40,6 +45,10 @@
 		controller: Controller;
 		/** This controller's reports in the inbox: the texts they carry are marked as reports. */
 		reports?: InboxReport[];
+		/** This controller's questions in the inbox: a message that asked some shows their cards. */
+		questions?: InboxQuestion[];
+		/** The cards of the questions one message asked, in its order. */
+		cards?: Snippet<[InboxQuestion[]]>;
 		/** The report, or a question's asking message, this page was opened at, and how it is shown. */
 		target?: PlacedMessage;
 		/** Changes with every opening of the target, the same one again too. */
@@ -83,6 +92,16 @@
 			if (typeof seq === 'number' && !found.has(seq)) found.set(seq, entry);
 		}
 		return found;
+	});
+	/** The inbox questions a text asked, by `seq`, shown as their cards in its place. Those the
+	 *  target's card shows, its own question and the others its message asked, are left to it. */
+	const asking = $derived.by(() => {
+		if (!view || !cards) return new Map<number, InboxQuestion[]>();
+		const atTarget = (question: InboxQuestion) =>
+			!!target &&
+			(question.key === target.key || (question.askedIn?.time === target.time && question.askedIn.message === target.message));
+		const texts = view.items.filter((item): item is TranscriptText => item.kind === 'assistant');
+		return askingTexts(texts, questions.filter((question) => !atTarget(question)));
 	});
 	/** Not found, or the record cannot be read: the target's card is shown above the conversation. */
 	const unplaced = $derived(!!target && (place === null || (place === undefined && !!(problem || earlierFailed))));
@@ -288,6 +307,8 @@
 						{#if index < shown.length - 1 || view.before !== null}
 							<li class="guide"><ArrowDown size="1em" />較早的訊息</li>
 						{/if}
+					{:else if segment.kind === 'text' && cards && asking.has(segment.item.seq)}
+						<li class="asking" data-seq={segment.item.seq}>{@render cards(asking.get(segment.item.seq)!)}</li>
 					{:else if segment.kind === 'text'}
 						{@const marked = reported.get(segment.item.seq)}
 						<li class="said" class:reported={!!marked} data-kind={segment.item.kind}>
