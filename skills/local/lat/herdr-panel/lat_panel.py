@@ -9,7 +9,8 @@ Public API used by the Textual panel and LAT controller:
 * ``parse_questions``, ``upsert_question``, and ``set_question_status`` model
   and update natural-language question sections without touching other sections.
 * V2 selector UI flow: ``parse_question_options``, ``question_context``,
-  ``question_recommendation``, and
+  ``question_details``, ``question_recommendation``, ``question_chat_parts``
+  (the text chat must repeat, checked at turn end), and
   ``parse_question_answer`` read one ``parse_questions`` result;
   ``question_section_sha256`` captures its guarded-write identity;
   ``write_question_answer`` saves (or, with ``None``, clears) a draft while
@@ -355,11 +356,51 @@ class QuestionOptions(NamedTuple):
 _SINGLE_OPTION = re.compile(r"^(?P<key>[A-Z])\.\s+(?P<label>\S.*)$")
 _MULTI_OPTION = re.compile(r"^- \[[ xX]\]\s+(?P<label>\S.*)$")
 _RECOMMENDATION = re.compile(r"(?:\A|\n[ \t]*\n)(?P<recommendation>➡\ufe0f?)")
+_DETAILS_START = "【詳細資訊】"
+_DETAILS_END = "【詳細資訊結束】"
+_DETAILS_MARKER = re.compile(
+    rf"^(?P<marker>{_DETAILS_START}|{_DETAILS_END})[ \t]*$", re.MULTILINE
+)
+
+
+def _split_details(body):
+    """Return ``(body without the details block, details or None)``.
+
+    An unbalanced or out-of-order marker pair is left in the body as text;
+    ``question upsert`` refuses such input before it is written.
+    """
+    markers = list(_DETAILS_MARKER.finditer(body))
+    if (
+        len(markers) != 2
+        or markers[0].group("marker") != _DETAILS_START
+        or markers[1].group("marker") != _DETAILS_END
+    ):
+        return body, None
+    start, end = markers
+    details = body[start.end():end.start()].strip("\n")
+    before = body[:start.start()].rstrip("\n")
+    after = body[end.end():].lstrip("\n")
+    return (before + "\n\n" + after if before and after else before or after), details
+
+
+def _check_details_markers(body):
+    markers = [marker.group("marker") for marker in _DETAILS_MARKER.finditer(body)]
+    if markers and markers != [_DETAILS_START, _DETAILS_END]:
+        raise ValueError(
+            f"details block needs one {_DETAILS_START} line followed by one {_DETAILS_END} line"
+        )
+    if markers and not _split_details(body)[1].strip():
+        raise ValueError(f"details block between {_DETAILS_START} and {_DETAILS_END} is empty")
+
+
+def question_details(question):
+    """Read the text inside the details markers, or ``None`` without a block."""
+    return _split_details(question.get("body") or "")[1]
 
 
 def _question_display_parts(question):
     """Split an unindented arrow paragraph from selectable content."""
-    body = question.get("body") or ""
+    body = _split_details(question.get("body") or "")[0]
     marker = _RECOMMENDATION.search(body)
     if marker is None:
         return body, ""
@@ -431,6 +472,27 @@ def question_context(question):
         if line or (kept and kept[-1]):
             kept.append(line)
     return "\n".join(kept).strip("\n")
+
+
+def question_chat_parts(question):
+    """The question text that chat must repeat, as ordered ``(part name, text)`` pairs."""
+    parts = [("標題", question["title"])]
+    context = question_context(question)
+    if context:
+        parts.append(("背景", context))
+    details = question_details(question)
+    if details is not None:
+        parts.append(("詳細資訊", details))
+    parsed = parse_question_options(question)
+    for index, (letter, option) in enumerate(zip(_option_letters(parsed), parsed.options), 1):
+        name = f"選項 {letter}" if letter else f"第 {index} 個選項"
+        parts.append((name, f"{letter}. {option.label}" if letter else option.label))
+        if option.impact:
+            parts.append((f"{name} 的影響", option.impact))
+    recommendation = question_recommendation(question)
+    if recommendation:
+        parts.append(("推薦段落", recommendation))
+    return parts
 
 
 class QuestionAnswer(NamedTuple):
@@ -781,10 +843,9 @@ def _question_input(text):
     match = re.match(r"\A## (?P<title>[^\r\n]+)(?:\r?\n(?P<body>[\s\S]*))?\Z", text)
     if match is None:
         raise ValueError("question file must start with one '## <question title>' heading")
-    return {
-        "title": match.group("title"),
-        "body": (match.group("body") or "").strip("\n"),
-    }
+    body = (match.group("body") or "").strip("\n")
+    _check_details_markers(body)
+    return {"title": match.group("title"), "body": body}
 
 
 def _archive_text(raw):
@@ -1844,15 +1905,19 @@ def _asked_times(questions_path):
     return times
 
 
+def _option_letters(parsed):
+    """Option letters per 題目格式: the file's keys, or A, B, … with none past Z."""
+    if parsed.kind == "single":
+        return [option.key for option in parsed.options]
+    return [
+        chr(ord("A") + index) if index < 26 else ""
+        for index in range(len(parsed.options))
+    ]
+
+
 def _board_question(section, asked_times):
     parsed = parse_question_options(section)
-    if parsed.kind == "single":
-        letters = [option.key for option in parsed.options]
-    else:
-        letters = [
-            chr(ord("A") + index) if index < 26 else ""
-            for index in range(len(parsed.options))
-        ]
+    letters = _option_letters(parsed)
     answer, note = _answer_text_and_note(section["answer"] or "")
     return {
         "id": section["id"],
@@ -1860,6 +1925,7 @@ def _board_question(section, asked_times):
         "status": "submitted" if section["status"] == "ready" else section["status"],
         "title": section["title"],
         "context": question_context(section),
+        "details": question_details(section),
         "kind": parsed.kind or "text",
         "options": [
             {

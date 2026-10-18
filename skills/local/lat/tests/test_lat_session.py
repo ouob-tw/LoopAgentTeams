@@ -182,7 +182,7 @@ class SessionTests(unittest.TestCase):
                 self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
                 self.terminate_process(process)
 
-    def stop_hook(self, message='DECIDE: LAT-A r1', client='codex', **overrides):
+    def stop_hook(self, message='Question\nDECIDE: LAT-A r1', client='codex', **overrides):
         payload = dict(hook_event_name='Stop', cwd=str(self.work), session_id=SESSION,
                        stop_hook_active=False, last_assistant_message=message)
         payload.update(overrides)
@@ -608,7 +608,7 @@ class SessionTests(unittest.TestCase):
                     '- status: pending\n- advisor: needs-human\n')
                 self.decisions.joinpath('OLD.md').write_text('- status: resolved\n')
                 questions = self.bind_stop_panel(client)
-                current = '## Current?\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n\n'
+                current = '## Question\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n\n'
                 questions.write_text(current +
                     '## Old?\nOLD · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n\n'
                     '## Missing?\nMISSING · r1 · 待答\n\n答覆：A\n\n- [x] 送出\n')
@@ -637,6 +637,35 @@ class SessionTests(unittest.TestCase):
                                'LAT-A r2')
         questions.write_text(questions.read_text() + '\n## Next\nLAT-B · r1 · 待答\n')
         self.assert_silent(self.stop_hook(stop_hook_active=True))
+
+    def test_stop_requires_each_tag_line_question_copied_in_full(self):
+        self.write_legacy_record()
+        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
+        questions = self.bind_stop_panel()
+        questions.write_text(
+            '## 要怎麼做？\nLAT-A · r1 · 待答\n\n背景一句話。\n\n'
+            '【詳細資訊】\n來由：上次漏寫。\n方法：照抄。\n【詳細資訊結束】\n\n'
+            'A. 甲（建議）\n   影響甲\nB. 乙\n   影響乙\n\n'
+            '➡️ A：理由一。\n理由二。\n\n答覆：\n\n- [ ] 送出\n')
+        full = ('❓ **LAT-A r1** - **要怎麼做？**\n\n背景一句話。\n\n'
+                '【詳細資訊】\n來由：上次漏寫。\n方法：照抄。\n【詳細資訊結束】\n\n'
+                'A. 甲（建議）\n   影響甲\nB. 乙\n   影響乙\n\n'
+                '➡️ A：理由一。\n理由二。\n\nDECIDE: LAT-A r1')
+        for part, name in (('方法：照抄。', '詳細資訊'), ('背景一句話。', '背景'),
+                           ('   影響乙', '選項 B 的影響'), ('理由二。', '推薦段落'),
+                           ('**要怎麼做？**', '標題'), ('B. 乙', '選項 B')):
+            with self.subTest(name=name):
+                self.assert_stop_block(self.stop_hook(full.replace(part, '', 1)),
+                                       'LAT-A r1：訊息沒有照抄題目原文，缺少' + name)
+        # The tag line does not count as a copy of the title.
+        self.assert_stop_block(self.stop_hook(full.replace('**要怎麼做？**', '', 1) + ' 要怎麼做？'),
+                               '缺少標題')
+        # Only whitespace differs: the markers are optional, line breaks and indents are not compared.
+        spaced = full.replace('   影響甲', '影響甲').replace('來由：上次漏寫。\n', '來由： 上次 漏寫。 ')
+        self.assert_silent(self.stop_hook(spaced.replace('【詳細資訊】', '').replace('【詳細資訊結束】', '')))
+        # Unbound sessions have no question file to compare against.
+        (self.root / 'plugin-config/bindings.json').write_text('{"version": 2, "bindings": {}}')
+        self.assert_silent(self.stop_hook('DECIDE: LAT-A r2'))
 
     def test_stop_once_per_turn_warning_and_error_outputs_for_both_clients(self):
         for client in ('codex', 'claude'):
@@ -1984,7 +2013,7 @@ class SessionTests(unittest.TestCase):
         for client in ('codex', 'claude'):
             self.write_legacy_record(client=client)
             questions = self.bind_stop_panel(client)
-            questions.write_text('## 確認短流程\nLAT-A · r1 · 待答\n')
+            questions.write_text('## Question\nLAT-A · r1 · 待答\n')
             binding_path = self.root / 'plugin-config/bindings.json'
             original = binding_path.read_text()
             for bound in (False, True):
@@ -2029,7 +2058,7 @@ class SessionTests(unittest.TestCase):
                     '❓ **LAT-B r1** 新題\nDECIDE: LAT-A r1', client).stdout)['reason'])
                 self.assert_silent(self.stop_hook('DECIDE: LAT-A r1, LAT-B r1', client))
                 self.assert_silent(self.stop_hook('DECIDE: LAT-A r2 改版', client))
-                self.assert_silent(self.stop_hook('HELP: LAT-H r1 請登入', client))
+                self.assert_silent(self.stop_hook('請登入\nHELP: LAT-H r1', client))
                 self.assertIn('已在先前訊息',
                               json.loads(self.stop_hook('HELP: LAT-H r1', client).stdout)['reason'])
                 # A blocked Stop is not reported, so it does not count as asked.
@@ -2055,13 +2084,13 @@ class SessionTests(unittest.TestCase):
                 path.write_text('- status: pending\n- kind: help\n')
                 self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '沒有參謀行')
                 path.write_text('- status: pending\n- advisor: needs-human\n- Kind: Help\n')
-                self.assert_silent(self.stop_hook('HELP: LAT-H r1 請登入', client))
+                self.assert_silent(self.stop_hook('請登入\nHELP: LAT-H r1', client))
                 self.assertIn('LAT HELP 檢查未通過',
                               json.loads(self.stop_hook('HELP: X r1', client).stdout)['reason'])
                 questions = self.bind_stop_panel(client)
                 self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '自己的面板')
                 questions.write_text('## 請登入\nLAT-H · r1 · 待答\n')
-                self.assert_silent(self.stop_hook('HELP: LAT-H r1', client))
+                self.assert_silent(self.stop_hook('請登入\nHELP: LAT-H r1', client))
                 (self.root / 'plugin-config/bindings.json').write_text(
                     '{"version": 2, "bindings": {}}')
                 path.write_bytes(b'\xff')

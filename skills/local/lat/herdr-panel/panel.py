@@ -54,6 +54,7 @@ PANE_MISSING = "視窗已不存在"
 NO_QUESTIONS = "目前沒有待答問題"
 OTHER_LABEL = "其他（自己輸入）"
 SUBMITTED = "已送出，等待記錄"
+DETAILS_LABEL = "詳細資訊"
 RECORDED = "✔ 已記錄"
 LOCKED = "已送出或已記錄的題目不能修改；要改答案請在聊天告訴主控"
 FORGED = "答覆或備註不能有單獨一行寫成「- [x] 送出」、「答覆：」或題目標題；這次輸入沒有儲存"
@@ -286,6 +287,7 @@ class Draft:
         self.options = parsed.options
         self.reason = parsed.reason
         self.context = lat_panel.question_context(section)
+        self.details = lat_panel.question_details(section)
         self.recommendation = lat_panel.question_recommendation(section)
         self.malformed_submission = section["malformed_submission"]
         if section["status_label"] == "已記錄":
@@ -907,8 +909,14 @@ class Panel(App):
             rows.append(("", "題目格式錯誤：找不到答覆或送出標記。請按 Ctrl+E 修正", "bold"))
         keys += [("text", 0)] * (len(rows) - 1)
         paragraphs = [text for text in re.split(r"\n(?:[ \t]*\n)+", draft.context) if text]
+        label_number = None
+        if draft.details is not None:
+            # The details block follows the background under its own dim label.
+            label_number = len(paragraphs) + 1
+            paragraphs.append(DETAILS_LABEL)
+            paragraphs += [text for text in re.split(r"\n(?:[ \t]*\n)+", draft.details) if text]
         for number, paragraph in enumerate(paragraphs, 1):
-            rows.extend((("", "", ""), ("", paragraph, "")))
+            rows.extend((("", "", ""), ("", paragraph, "dim" if number == label_number else "")))
             keys.extend((None, ("text", number)))
         rows.append(("", "", ""))
         keys.append(None)
