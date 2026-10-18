@@ -1,6 +1,7 @@
 // Which chat message asked a panel question. LAT asks a question with a DECIDE or HELP message
 // whose last line names it as `<ID> r<N>`, and the turn-end hook records that message as a
-// report. The cases are shared with the Herdr side panel: tests/fixtures/question-message-match.json.
+// report; the conversation reads the same line from the message itself, before any report is
+// written. The cases are shared with the Herdr side panel: tests/fixtures/question-message-match.json.
 import type { InboxItem, InboxQuestion } from './types.ts';
 
 /** The `<ID> r<N>` pairs a tag line names, bounded as LAT's turn-end check reads them. */
@@ -56,8 +57,41 @@ export function askedTogether(question: InboxQuestion, inbox: InboxItem[]): Inbo
 			entry.askedIn?.time === message.time &&
 			entry.askedIn.message === message.message
 	);
-	const order = named(message.message);
+	return inNamedOrder(message.message, [question, ...others]);
+}
+
+/** The questions in the order the message's tag line names them. */
+function inNamedOrder(message: string, questions: InboxQuestion[]): InboxQuestion[] {
+	const order = named(message);
 	const position = (entry: InboxQuestion) =>
 		order.findIndex((pair) => pair.id === entry.question.id && pair.revision === entry.question.revision);
-	return [question, ...others].sort((a, b) => position(a) - position(b));
+	return questions.toSorted((a, b) => position(a) - position(b));
+}
+
+/**
+ * The questions each of the controller's own texts (oldest first) asked, by the text's `seq`, in the order it
+ * names them: a text asks one as a report does for `askingReport`, its tag read from its own last
+ * line, and not earlier than the question was asked (when both times are known). A question goes
+ * to the latest text that asked it; a text that asked none is left out.
+ */
+export function askingTexts(
+	texts: { seq: number; time: string | null; text: string }[],
+	questions: InboxQuestion[]
+): Map<number, InboxQuestion[]> {
+	const found = new Map<number, InboxQuestion[]>();
+	for (const question of questions) {
+		const asked = question.time ? Date.parse(question.time) : NaN;
+		const { id, revision } = question.question;
+		const text = texts.findLast(
+			(text) =>
+				!(text.time && Date.parse(text.time) < asked) &&
+				(asks(text.text, 'DECIDE', id, revision) || asks(text.text, 'HELP', id, revision))
+		);
+		if (text) found.set(text.seq, [...(found.get(text.seq) ?? []), question]);
+	}
+	for (const text of texts) {
+		const asked = found.get(text.seq);
+		if (asked) found.set(text.seq, inNamedOrder(text.text, asked));
+	}
+	return found;
 }

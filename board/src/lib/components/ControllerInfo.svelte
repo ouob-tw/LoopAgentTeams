@@ -5,7 +5,8 @@
 	// conversation, its reports in the inbox and what was sent to it, one tab at a time. Its model
 	// and effort, and messages and wakes, go through the command line at the bottom of the screen.
 	// Opened for a report, the conversation shows that report where it is in the history; opened
-	// for a question, the question where the message that asked it is.
+	// for a question, the question where the message that asked it is. Any message that asked
+	// questions still in the inbox shows their cards in its place.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import Info from '@lucide/svelte/icons/info';
 	import { onMount, type Snippet } from 'svelte';
@@ -22,7 +23,7 @@
 		type InboxQuestion,
 		type InboxReport
 	} from '#lib/board/types.ts';
-	import type { PlacedMessage } from '#lib/board/transcript.ts';
+	import type { PlacedTarget } from '#lib/board/transcript.ts';
 	import { usageDetails, usageParts, type Usage, type UsagePart } from '#lib/board/usage.ts';
 	import ItemRow from './ItemRow.svelte';
 	import SentLog from './SentLog.svelte';
@@ -39,7 +40,8 @@
 		onplaced,
 		onunplaced,
 		card,
-		copy
+		copy,
+		questionCards
 	}: {
 		controller: Controller;
 		/** Changes when the server announces a Herdr tab move. */
@@ -47,9 +49,8 @@
 		/** This controller's inbox items. */
 		items: InboxItem[];
 		onopen: (item: InboxItem) => void;
-		/** The report, or a question's asking message, this page was opened at, and how it is
-		 *  shown in the history. */
-		target?: PlacedMessage;
+		/** The report or question this page was opened at, shown where it is in the history. */
+		target?: PlacedTarget;
 		/** Changes with every opening of the target, the same one again too. */
 		opens?: number;
 		/** Called once the target is scrolled to, or shown above the conversation instead. */
@@ -59,6 +60,8 @@
 		card?: Snippet;
 		/** A box over the page with a copy of the target's card until it is placed; see Transcript. */
 		copy?: HTMLElement | null;
+		/** The cards of the questions one message asked, in its order; see Transcript. */
+		questionCards?: Snippet<[InboxQuestion[]]>;
 	} = $props();
 
 	const sorted = $derived(sortByTime(items));
@@ -335,7 +338,7 @@
 
 <!-- All three stay mounted, so the conversation keeps its place and its live feed. -->
 <div class="tabpanel" role="tabpanel" id="panel-transcript" aria-labelledby="tab-transcript" hidden={tab !== 'transcript'}>
-	<Transcript {controller} {reports} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
+	<Transcript {controller} {reports} {questions} {questionCards} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
 </div>
 <div class="tabpanel" role="tabpanel" id="panel-reports" aria-labelledby="tab-reports" hidden={tab !== 'reports'}>
 	{#each reports as item (item.key)}

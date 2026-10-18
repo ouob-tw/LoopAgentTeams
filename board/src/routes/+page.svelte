@@ -16,8 +16,8 @@
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { askedTogether } from '#lib/board/question-message.ts';
-	import { reportPlace, withLatest, type PlacedMessage, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
-	import type { InboxItem } from '#lib/board/types.ts';
+	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
+	import type { InboxItem, InboxQuestion } from '#lib/board/types.ts';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
@@ -108,14 +108,12 @@
 	});
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
 
-	/** Where an opened item is shown in its controller's conversation: a report is its own message,
-	 *  a question is shown at the message that asked it. Null when there is no such message. */
-	const placedAt = (entry: InboxItem): PlacedMessage | null =>
-		entry.kind === 'report' ? entry : entry.askedIn && { key: entry.key, ...entry.askedIn, exact: true };
 	/** The question whose asking message is not found in its conversation, or the conversation
 	 *  cannot be read, at this opening: it is shown as if no message had asked it. */
 	let lost = $state<string | null>(null);
-	const placed = $derived(item && item.key !== lost ? placedAt(item) : null);
+	/** An opened item is shown in its controller's conversation: a report at its own message, a
+	 *  question at the message that asked it, or where that message will come. */
+	const placed = $derived(item && item.key !== lost ? item : null);
 	/** The cards shown at the asking message: every question of the inbox it asked, in its order. */
 	const together = $derived(item?.kind === 'question' ? askedTogether(item, inbox) : item ? [item] : []);
 	function lose(key: string) {
@@ -144,8 +142,9 @@
 	// Checked again when the question changes too: a revised question is asked in a new message,
 	// which may have come before the revision did.
 	$effect(() => {
-		const target = lostController && item && placedAt(item);
-		if (target && lostSeen && typeof reportPlace(lostSeen, target) === 'number') lost = null;
+		if (!lostController || item?.kind !== 'question' || !lostSeen) return;
+		const place = questionPlace(lostSeen, item, controller?.lastReportAt ?? null);
+		if (typeof place === 'number' || place === 'pending') lost = null;
 	});
 
 	/** Containers of the unfolded roster whose own surface, not a card or control, was clicked. */
@@ -292,7 +291,7 @@
 		if (next?.kind === 'item') {
 			opens++;
 			lost = null;
-			locate(!!placedAt(next.item) && controllers.some((candidate) => candidate.id === next.item.controllerId));
+			locate(controllers.some((candidate) => candidate.id === next.item.controllerId));
 		}
 		return show(next);
 	}
@@ -334,6 +333,13 @@
 		handle={item.hcomName}
 		onunread={copy ? async () => {} : (key) => board.mark(key, false)}
 	/>
+{/snippet}
+
+{#snippet askedCards(entries: InboxQuestion[])}
+	<!-- An opened one among them is the one scrolled to. -->
+	{#each entries as entry (entry.key)}
+		<div class="asked" data-opened={entry.key === openKey || undefined}>{@render placedCard(entry)}</div>
+	{/each}
 {/snippet}
 
 {#snippet refresh()}
@@ -491,6 +497,7 @@
 							{controller}
 							items={inbox.filter((entry) => entry.controllerId === controller.id)}
 							onopen={openItem}
+							questionCards={askedCards}
 						/>
 					{:else}
 						<p class="empty">這個主控已經不在名冊上：它已結束，回報也都封存了。</p>
@@ -508,6 +515,7 @@
 						{copy}
 						onplaced={() => locate(false)}
 						onunplaced={item.kind === 'question' ? () => lose(item.key) : undefined}
+						questionCards={askedCards}
 					>
 						{#snippet card()}
 							<!-- The opened one is scrolled to; the others the same message asked are answerable too. -->

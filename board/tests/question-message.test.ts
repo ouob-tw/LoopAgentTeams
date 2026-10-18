@@ -1,13 +1,25 @@
 // Which chat message asked a panel question, from the cases shared with the Herdr side panel.
 import { expect, test } from 'bun:test';
 import fixture from './fixtures/question-message-match.json';
-import { askedTogether, askingReport } from '../src/lib/board/question-message.ts';
+import { askedTogether, askingReport, askingTexts } from '../src/lib/board/question-message.ts';
 import type { InboxItem, InboxQuestion } from '../src/lib/board/types.ts';
 
 for (const entry of fixture.cases) {
 	test(entry.name, () => {
 		const found = askingReport(entry.session_id, entry.question, entry.reports);
 		expect(found).toBe(entry.expected === null ? null : entry.reports[entry.expected]);
+	});
+	// The same message read from the controller's own conversation, in its order, before any report.
+	test(`conversation: ${entry.name}`, () => {
+		const own = entry.reports
+			.map((report, index) => ({ report, index }))
+			.filter(({ report }) => report.session_id === entry.session_id)
+			.toSorted((a, b) => Date.parse(a.report.time) - Date.parse(b.report.time));
+		const texts = own.map(({ report, index }) => ({ seq: index, time: report.time, text: report.message }));
+		const { id, revision, asked_at } = entry.question;
+		const question = { kind: 'question', key: 'q', time: asked_at, question: { id, revision } } as unknown as InboxQuestion;
+		const found = [...askingTexts(texts, [question])].map(([seq, asked]) => [seq, asked.length]);
+		expect(found).toEqual(entry.expected === null ? [] : [[entry.expected, 1]]);
 	});
 }
 
@@ -30,4 +42,22 @@ test('the questions one message asked come together in its order; others of the 
 	expect(askedTogether(a, [a])).toEqual([a]);
 	const lone = asked('D-1', 1, null as never);
 	expect(askedTogether(lone, [lone, a])).toEqual([lone]);
+});
+
+test("a conversation's texts each show the inbox questions they asked, in the order they name them", () => {
+	const at = (seq: number, text: string, time: string | null = null) => ({ seq, time, text });
+	const [a, b, c] = [asked('A-1', 1), asked('B-1', 2), asked('C-1', 1)];
+	const texts = [
+		at(1, message.message),
+		at(2, '後來又問一次。\n\nHELP: C-1 r1 · 一題'),
+		at(4, '只是提到 C-1 r1。'),
+		at(6, '再問一次。\n\nHELP: C-1 r1 · 一題')
+	];
+	// A question goes to the latest text that asked it; a question no text asked is in none.
+	expect([...askingTexts(texts, [a, c, b, asked('D-1', 1)])]).toEqual([
+		[1, [b, a]],
+		[6, [c]]
+	]);
+	// Not in the inbox: the text asked nothing that is shown.
+	expect(askingTexts(texts, []).size).toBe(0);
 });

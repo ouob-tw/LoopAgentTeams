@@ -3,32 +3,45 @@
 	// text reply, with the operations between two texts folded into one line until opened. Newest
 	// first and kept up to date while the page is open; earlier parts load when the end of the list
 	// scrolls into view, or with the button. Opened for a report, it shows the report in place of
-	// the text it carries and scrolls to it, loading earlier parts until it is found.
+	// the text it carries and scrolls to it, loading earlier parts until it is found; opened for a
+	// question, its card where the message that asked it is, or where that message will come. A
+	// message that asked questions still in the inbox shows their cards in its place.
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import { EarlierReads } from '#lib/board/earlier.ts';
+	import { askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { renderMarkdown } from '#lib/board/markdown.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import {
+		isQuestion,
+		questionPlace,
 		reportPlace,
 		segments,
+		turnEnded,
 		toolLine,
 		toolsSummary,
 		withEarlier,
 		withLatest,
-		type PlacedMessage,
+		type PlacedTarget,
+		type Segment,
+		type TranscriptText,
 		type TranscriptUpdate,
 		type TranscriptView
 	} from '#lib/board/transcript.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
-	import { itemLabel, type Controller, type InboxReport } from '#lib/board/types.ts';
+	import { itemLabel, type Controller, type InboxQuestion, type InboxReport } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
 	import { untrack, type Snippet } from 'svelte';
+
+	/** How long a question not found waits for the next page before it is judged without one. */
+	const JUDGE_WITHOUT_PAGE_MS = 5_000;
 
 	let {
 		controller,
 		reports = [],
+		questions = [],
+		questionCards,
 		target,
 		opens = 0,
 		onplaced,
@@ -40,8 +53,12 @@
 		controller: Controller;
 		/** This controller's reports in the inbox: the texts they carry are marked as reports. */
 		reports?: InboxReport[];
-		/** The report, or a question's asking message, this page was opened at, and how it is shown. */
-		target?: PlacedMessage;
+		/** This controller's questions in the inbox: a message that asked some shows their cards. */
+		questions?: InboxQuestion[];
+		/** The cards of the questions one message asked, in its order. */
+		questionCards?: Snippet<[InboxQuestion[]]>;
+		/** The report or question this page was opened at. */
+		target?: PlacedTarget;
 		/** Changes with every opening of the target, the same one again too. */
 		opens?: number;
 		/** Called once the target is scrolled to, or shown above the conversation instead, or the
@@ -69,11 +86,40 @@
 
 	const id = $derived(controller.id);
 	const earlier = new EarlierReads();
-	const shown = $derived(view ? segments(view.items).toReversed() : []);
 
 	let list = $state<HTMLElement>();
-	/** The target's text by `seq`; undefined while still searched for, null when not found. */
-	const place = $derived(target && view ? reportPlace(view, target) : undefined);
+	/** The target's text by `seq`; 'pending' for a question whose message is still to come;
+	 *  undefined while still searched for, null when not found. */
+	const found = $derived.by(() => {
+		if (!target || !view) return undefined;
+		return isQuestion(target) ? questionPlace(view, target, controller.lastReportAt) : reportPlace(view, target);
+	});
+	const targetId = $derived(target && (isQuestion(target) ? `${target.key}:r${target.question.revision}` : `${target.key}:${target.time}`));
+	/** What a question not found is judged for: its revision, and whether the turn that asked it
+	 *  has ended, as its message may reach the conversation a moment after the turn's report. */
+	const judgedId = $derived(
+		target && isQuestion(target) ? `${targetId}:${turnEnded(target, controller.lastReportAt)}` : targetId
+	);
+	/** The `judgedId` the pages read so far are for: a revised question's new asking message, or
+	 *  the message of a turn that just ended, may only be in the next page. */
+	let targetAtLastPage = $state<string | null>(null);
+	/** Until then, a question not found stays where its message will come. */
+	const place = $derived(found === null && target && isQuestion(target) && targetAtLastPage !== judgedId ? 'pending' : found);
+	// No next page may come when the message is missing: judged after a while without one.
+	$effect(() => {
+		if (found !== null || targetAtLastPage === judgedId) return;
+		const judged = judgedId;
+		const timer = setTimeout(() => (targetAtLastPage = judged ?? null), JUDGE_WITHOUT_PAGE_MS);
+		return () => clearTimeout(timer);
+	});
+	/** The segments as shown, newest first. The target's text, or the newest place for a question
+	 *  whose message is still to come, is one item, so its card stays put when the message comes. */
+	const shown = $derived.by((): (Segment | { kind: 'placed'; key: 'placed'; seq: number | null })[] => {
+		const rows = view ? segments(view.items).toReversed() : [];
+		if (!view || !(card || questionCards)) return rows;
+		if (place === 'pending') return [{ kind: 'placed', key: 'placed', seq: null }, ...rows];
+		return rows.map((row) => (row.kind === 'text' && row.item.seq === place ? { kind: 'placed', key: 'placed', seq: place } : row));
+	});
 	/** The texts the inbox's reports carry, by `seq`, framed as the reports they are. */
 	const reported = $derived.by(() => {
 		const found = new Map<number, InboxReport>();
@@ -84,22 +130,30 @@
 		}
 		return found;
 	});
+	/** The inbox questions a text asked, by `seq`, shown as their cards in its place; an opened
+	 *  question as it was opened. */
+	const asking = $derived.by(() => {
+		if (!view || !questionCards) return new Map<number, InboxQuestion[]>();
+		const opened = target && isQuestion(target) ? target : null;
+		const texts = view.items.filter((item): item is TranscriptText => item.kind === 'assistant');
+		return askingTexts(texts, opened ? [opened, ...questions.filter((question) => question.key !== opened.key)] : questions);
+	});
+	/** The cards at an opened question's place: every question its message asked, in its order. */
+	const placedQuestions = $derived(
+		target && isQuestion(target) ? ((typeof place === 'number' && asking.get(place)) || [target]) : []
+	);
 	/** Not found, or the record cannot be read: the target's card is shown above the conversation. */
 	const unplaced = $derived(!!target && (place === null || (place === undefined && !!(problem || earlierFailed))));
-	const targetId = $derived(target && `${target.key}:${target.time}`);
-	/** The `targetId` the pages read so far are for: a revised question's new asking message may
-	 *  only be in the next page. */
-	let targetAtLastPage = $state<string | null>(null);
 	/** The target's question or report, as last seen. */
 	let targetKey: string | undefined;
 	// Another question or report is judged on the pages already read.
 	$effect(() => {
 		const key = target?.key;
-		if (key !== targetKey) targetAtLastPage = untrack(() => targetId) ?? null;
+		if (key !== targetKey) targetAtLastPage = untrack(() => judgedId) ?? null;
 		targetKey = key;
 	});
 	$effect(() => {
-		if (unplaced && (problem || earlierFailed || targetAtLastPage === targetId)) untrack(() => onunplaced?.());
+		if (unplaced && (problem || earlierFailed || targetAtLastPage === judgedId)) untrack(() => onunplaced?.());
 	});
 	/** The target and opening last scrolled to, so it is scrolled to once per opening, and again
 	 *  when a revised question's asking message replaces the one before. */
@@ -107,9 +161,9 @@
 
 	$effect(() => {
 		const opening = targetId && `${targetId}:${opens}`;
-		// A question's card above the conversation is only for the moment until its text arrives, or
-		// it is lost: not scrolled to.
-		const due = typeof place === 'number' || (unplaced && !target?.exact);
+		// A question's card above the conversation is only for the moment until it is lost: not
+		// scrolled to.
+		const due = typeof place === 'number' || place === 'pending' || (unplaced && !isQuestion(target!));
 		if (!opening || !list || scrolledFor === opening || !due) return;
 		scrolledFor = opening;
 		align(list);
@@ -220,7 +274,7 @@
 			const update: TranscriptUpdate = JSON.parse((event as MessageEvent).data);
 			if (update.ok) {
 				view = withLatest(view, update.page);
-				targetAtLastPage = untrack(() => targetId) ?? null;
+				targetAtLastPage = untrack(() => judgedId) ?? null;
 				// The command line's label shows what the latest turn used.
 				switching.current[controllerId] = update.page.current ?? null;
 				usage = update.page.usage ?? null;
@@ -279,15 +333,19 @@
 		{#if shown.length}
 			<ol>
 				{#each shown as segment, index (segment.key)}
-					{#if segment.kind === 'text' && card && segment.item.seq === place}
+					{#if segment.kind === 'placed'}
 						<!-- The guides are items of their own, so the list's gap falls on both sides of them. -->
 						{#if index > 0}
 							<li class="guide"><ArrowUp size="1em" />較新的訊息</li>
 						{/if}
-						<li class="placed" data-seq={segment.item.seq}>{@render card()}</li>
+						<li class="placed" data-seq={segment.seq ?? undefined}>
+							{#if questionCards && placedQuestions.length}{@render questionCards(placedQuestions)}{:else}{@render card?.()}{/if}
+						</li>
 						{#if index < shown.length - 1 || view.before !== null}
 							<li class="guide"><ArrowDown size="1em" />較早的訊息</li>
 						{/if}
+					{:else if segment.kind === 'text' && questionCards && asking.has(segment.item.seq)}
+						<li class="asking" data-seq={segment.item.seq}>{@render questionCards(asking.get(segment.item.seq)!)}</li>
 					{:else if segment.kind === 'text'}
 						{@const marked = reported.get(segment.item.seq)}
 						<li class="said" class:reported={!!marked} data-kind={segment.item.kind}>
