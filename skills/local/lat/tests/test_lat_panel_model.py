@@ -1,6 +1,6 @@
-"""`board transcript` current settings and usage, and `board launch-args`: what the LAT board
-shows as a controller's model and effort, its context use, quota and prompt cache, and whether a
-Codex controller was started with a fixed model.
+"""`board transcript` current settings, usage and permission mode, and `board launch-args`: what
+the LAT board shows as a controller's model and effort, its context use, quota and prompt cache,
+its permission mode, and whether a Codex controller was started with a fixed model.
 
 Records keep the shapes of real Claude session and Codex rollout lines, cut down to the fields
 these commands read.
@@ -219,6 +219,29 @@ class CodexUsageTests(ModelTestCase):
         ])
         self.assertIsNotNone(page)
         self.assertIsNone(self.board("transcript", "--client", "claude", "--session-id", CLAUDE_SESSION)["usage"])
+
+
+class PermissionTests(ModelTestCase):
+    def test_a_claude_record_gives_the_last_prompt_s_mode(self):
+        first, second = claude_user("2026-10-14T09:00:00Z", "first"), claude_user("2026-10-14T09:01:00Z", "second")
+        first["permissionMode"], second["permissionMode"] = "bypassPermissions", "plan"
+        side = claude_user("2026-10-14T09:01:01Z", "sub-agent")
+        side.update(isSidechain=True, permissionMode="default")
+        self.claude([first, claude_reply("2026-10-14T09:00:01Z", "claude-opus-5-5"), second, side])
+        page = self.board("transcript", "--client", "claude", "--session-id", CLAUDE_SESSION)
+        self.assertEqual(page["permission"], {"mode": "plan"})
+
+    def test_a_claude_record_without_a_mode_has_none(self):
+        self.claude([claude_user("2026-10-14T09:00:00Z", "first")])
+        page = self.board("transcript", "--client", "claude", "--session-id", CLAUDE_SESSION)
+        self.assertIsNone(page["permission"])
+
+    def test_a_codex_record_gives_the_last_turn_s_approval_and_sandbox(self):
+        early, late = codex_turn("2026-10-14T09:00:01Z", "gpt-6-astra", "low"), codex_turn("2026-10-14T09:05:00Z", "gpt-6-astra", "low")
+        early["payload"].update(approval_policy="on-request", sandbox_policy={"type": "workspace-write"})
+        late["payload"].update(approval_policy="never", sandbox_policy={"type": "danger-full-access"})
+        self.assertEqual(self.codex([early, late], field="permission"), {"approval": "never", "sandbox": "danger-full-access"})
+        self.assertIsNone(self.codex([codex_turn("2026-10-14T09:00:01Z", "gpt-6-astra", "low")], field="permission"))
 
 
 class LaunchArgsTests(ModelTestCase):

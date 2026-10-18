@@ -1,15 +1,17 @@
-// A controller's context use, quota and prompt cache: the status line recorder, the file it keeps,
-// the line the information page makes of it, and the live feed that brings it there.
+// A controller's context use, quota, prompt cache and permission mode: the status line recorder,
+// the file it keeps, the line the information page makes of it, and the live feed that brings it there.
 import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { TranscriptUpdate } from '../src/lib/board/transcript.ts';
-import { usageFrom, usageParts, windowLabel, type Usage } from '../src/lib/board/usage.ts';
+import { usageDetails, usageFrom, usageParts, windowLabel, type Usage } from '../src/lib/board/usage.ts';
 import { loadConfig } from '../src/lib/server/config.ts';
+import type { Board } from '../src/lib/server/board.ts';
+import { followTranscript } from '../src/lib/server/transcript.ts';
 import { readClaudeUsage } from '../src/lib/server/usage.ts';
-import { startFixture, until, type Fixture } from './harness.ts';
+import { NODE, startFixture, until, type Fixture } from './harness.ts';
 
 const RECORDER = join(import.meta.dir, '../scripts/usage-recorder.sh');
 const NOW = Date.parse('2026-10-17T12:00:00Z');
@@ -30,7 +32,11 @@ function statusInput(overrides: Record<string, unknown> = {}) {
 	};
 }
 
-const texts = (usage: Usage, now = NOW) => usageParts(usage, now).map((part) => part.text).join(' · ');
+// The line as the page shows it: parts apart by a dot, a joined part after a space.
+const texts = (usage: Usage, now = NOW) =>
+	usageParts(usage, now)
+		.map((part, index) => (index === 0 ? '' : part.joined ? ' ' : ' • ') + part.text)
+		.join('');
 const levels = (usage: Usage, now = NOW) => Object.fromEntries(usageParts(usage, now).map((part) => [part.text, part.level]));
 const full: Usage = {
 	context: 42,
@@ -38,13 +44,59 @@ const full: Usage = {
 		{ minutes: 10080, used: 20 },
 		{ minutes: 300, used: 37 }
 	],
-	cache: { warm: true, hit: 0.97, expires: NOW + 38 * MINUTE + 30_000 }
+	cache: { warm: true, hit: 0.97, expires: NOW + 38 * MINUTE + 30_000 },
+	permission: null
+};
+
+// Nothing in a safe range.
+const tight: Usage = {
+	context: 62,
+	limits: [
+		{ minutes: 10080, used: 75 },
+		{ minutes: 300, used: 60 }
+	],
+	cache: { warm: true, hit: 0.7, expires: NOW + 20 * MINUTE + 30_000 },
+	permission: null
 };
 
 describe('the line', () => {
 	test('a Claude controller’s, in the status line’s order and words', () => {
-		expect(texts(full)).toBe('Ctx 42% used · 5h 剩 63% · 7d 剩 80% · 快取 命中 97% · 38 分後過期');
-		expect(Object.values(levels(full))).toEqual(['normal', 'normal', 'normal', 'normal', 'normal']);
+		expect(texts(tight)).toBe('Ctx 62% • 5h 40% • 7d 25% • Cache 70% ⏳ 20 min');
+		expect(Object.values(levels(tight))).toEqual(['normal', 'normal', 'normal', 'normal', 'normal']);
+	});
+
+	test('every part in its safe range is left off, and the line is then empty', () => {
+		expect(usageParts(full, NOW)).toEqual([]);
+	});
+
+	test('each part is left off past its boundary, and shown on it', () => {
+		const only = (usage: Partial<Usage>) => texts({ context: null, limits: [], cache: null, permission: null, ...usage });
+		// Context used: shown from 55%.
+		expect(only({ context: 54 })).toBe('');
+		expect(only({ context: 55 })).toBe('Ctx 55%');
+		// Quota left: the 5h window shown up to 45%, the 7d window up to 30%.
+		expect(only({ limits: [{ minutes: 300, used: 55 }] })).toBe('5h 45%');
+		expect(only({ limits: [{ minutes: 300, used: 54 }] })).toBe('');
+		expect(only({ limits: [{ minutes: 10080, used: 70 }] })).toBe('7d 30%');
+		expect(only({ limits: [{ minutes: 10080, used: 69 }] })).toBe('');
+		// Windows of any other length have no safe range.
+		expect(only({ limits: [{ minutes: 1440, used: 1 }, { minutes: 90, used: 1 }] })).toBe('90m 99% • 1d 99%');
+		// Cache hit: shown up to 80%.
+		const hit = (ratio: number) => only({ cache: { warm: true, hit: ratio, expires: null } });
+		expect(hit(0.8)).toBe('Cache 80%');
+		expect(hit(0.81)).toBe('');
+		// Countdown: shown up to 30 minutes.
+		const left = (ms: number, ratio = 0.97) => only({ cache: { warm: true, hit: ratio, expires: NOW + ms } });
+		expect(left(30 * MINUTE + 59_000)).toBe('Cache ⏳ 30 min');
+		expect(left(31 * MINUTE)).toBe('');
+		// A countdown without its hit keeps the label; with its hit, it follows it.
+		expect(left(20 * MINUTE)).toBe('Cache ⏳ 20 min');
+		expect(left(20 * MINUTE, 0.7)).toBe('Cache 70% ⏳ 20 min');
+		expect(left(31 * MINUTE, 0.7)).toBe('Cache 70%');
+		// Cold and expired are never safe.
+		expect(only({ cache: { warm: false, hit: 0.99, expires: NOW + 60 * MINUTE } })).toBe('Cache cold');
+		expect(only({ cache: { warm: true, hit: 0.99, expires: NOW - 1 } })).toBe('Cache ⏳ expired');
+		expect(only({ cache: { warm: true, hit: 0.7, expires: NOW - 1 } })).toBe('Cache 70% ⏳ expired');
 	});
 
 	test('yellow from 80% context, under 20% of a quota and 5 minutes of cache left', () => {
@@ -54,40 +106,78 @@ describe('the line', () => {
 				{ minutes: 300, used: 80.6 },
 				{ minutes: 10080, used: 80 }
 			],
-			cache: { warm: true, hit: 0.5, expires: NOW + 5 * MINUTE + 59_000 }
+			cache: { warm: true, hit: 0.5, expires: NOW + 5 * MINUTE + 59_000 },
+			permission: null
 		};
 		expect(levels(usage)).toEqual({
-			'Ctx 80% used': 'warn',
-			'5h 剩 19%': 'warn',
-			'7d 剩 20%': 'normal',
-			'快取 命中 50%': 'normal',
-			'5 分後過期': 'warn'
+			'Ctx 80%': 'warn',
+			'5h 19%': 'warn',
+			'7d 20%': 'normal',
+			'Cache 50%': 'normal',
+			'⏳ 5 min': 'warn'
 		});
 		expect(levels({ ...usage, context: 79.4, cache: { ...usage.cache!, expires: NOW + 6 * MINUTE } })).toMatchObject({
-			'Ctx 79% used': 'normal',
-			'6 分後過期': 'normal'
+			'Ctx 79%': 'normal',
+			'⏳ 6 min': 'normal'
 		});
 	});
 
 	test('an expired cache says so in the alarm colour, and the countdown follows the clock', () => {
-		expect(texts(full, full.cache!.expires! - 1)).toEndWith('0 分後過期');
-		expect(levels(full, full.cache!.expires!)['已過期']).toBe('danger');
-		expect(texts(full, NOW + 10 * MINUTE)).toEndWith('28 分後過期');
+		expect(texts(full, full.cache!.expires! - 1)).toEndWith('⏳ 0 min');
+		expect(levels(full, full.cache!.expires!)['⏳ expired']).toBe('danger');
+		expect(texts(full, NOW + 10 * MINUTE)).toEndWith('⏳ 28 min');
 	});
 
 	test('a cold cache shows as cold, without hit or countdown', () => {
-		expect(texts({ ...full, cache: { warm: false, hit: 0.97, expires: NOW + MINUTE } })).toBe('Ctx 42% used · 5h 剩 63% · 7d 剩 80% · 快取 冷');
+		expect(texts({ ...tight, cache: { warm: false, hit: 0.97, expires: NOW + MINUTE } })).toBe('Ctx 62% • 5h 40% • 7d 25% • Cache cold');
+	});
+
+	test('the info tip spells the line out, one part a line', () => {
+		expect(usageDetails(full, NOW)).toEqual(['Context 42% used', '5h 63%', '7d 80%', 'Cache hit 97%', 'expires in 38 min']);
+		expect(usageDetails(full, full.cache!.expires!).at(-1)).toBe('Cache expired');
+		expect(usageDetails({ ...full, cache: { warm: false, hit: 0.97, expires: NOW + MINUTE } }, NOW).at(-1)).toBe('Cache cold');
+		// A warm cache without a hit shows its expiry alone.
+		expect(usageDetails({ ...full, cache: { warm: true, hit: null, expires: NOW + 38 * MINUTE } }, NOW).slice(-1)).toEqual([
+			'expires in 38 min'
+		]);
+		// A Codex window of any other length, by its name.
+		const codex: Usage = { context: 60, limits: [{ minutes: 1440, used: 10 }], cache: null, permission: null };
+		expect(usageDetails(codex, NOW)).toEqual(['Context 60% used', '1d 90%']);
+	});
+
+	test('with nothing left off, every part shows, the permission mode too', () => {
+		const line = (usage: Usage) =>
+			usageParts(usage, NOW, true)
+				.map((part, index) => (index === 0 ? '' : part.joined ? ' ' : ' • ') + part.text)
+				.join('');
+		expect(line({ ...full, permission: { mode: 'bypassPermissions' } })).toBe(
+			'Ctx 42% • 5h 63% • 7d 80% • Cache 97% ⏳ 38 min • Bypass permissions'
+		);
+		expect(line({ ...full, cache: { warm: true, hit: null, expires: NOW + 50 * MINUTE }, permission: null })).toEndWith('• Cache ⏳ 50 min');
 	});
 
 	test('an exact half rounds to the even number, as the status line’s printf does', () => {
-		const usage: Usage = { context: 42.5, limits: [{ minutes: 300, used: 21.5 }, { minutes: 10080, used: 20.5 }], cache: null };
-		expect(texts(usage)).toBe('Ctx 42% used · 5h 剩 78% · 7d 剩 80%');
-		expect(texts({ ...usage, context: 43.5, limits: [] })).toBe('Ctx 44% used');
+		const usage: Usage = {
+			context: 56.5,
+			limits: [
+				{ minutes: 300, used: 56.5 },
+				{ minutes: 10080, used: 70.5 }
+			],
+			cache: null,
+			permission: null
+		};
+		expect(texts(usage)).toBe('Ctx 56% • 5h 44% • 7d 30%');
+		expect(texts({ ...usage, context: 57.5, limits: [] })).toBe('Ctx 58%');
 	});
 
 	test('a Codex controller’s: windows named by length, one only, and no countdown', () => {
-		const codex: Usage = { context: 9.68, limits: [{ minutes: 10080, used: 29 }], cache: { warm: true, hit: 0.9905, expires: null } };
-		expect(texts(codex)).toBe('Ctx 10% used · 7d 剩 71% · 快取 命中 99%');
+		const codex: Usage = {
+			context: 60.4,
+			limits: [{ minutes: 10080, used: 75 }],
+			cache: { warm: true, hit: 0.7, expires: null },
+			permission: null
+		};
+		expect(texts(codex)).toBe('Ctx 60% • 7d 25% • Cache 70%');
 		expect([300, 10080, 1440, 90].map(windowLabel)).toEqual(['5h', '7d', '1d', '90m']);
 	});
 
@@ -97,10 +187,44 @@ describe('the line', () => {
 		expect(usageFrom({ limits: 'x', cache: { warm: true, hit: 'x', expires: null } })).toEqual({
 			context: null,
 			limits: [],
-			cache: { warm: true, hit: null, expires: null }
+			cache: { warm: true, hit: null, expires: null },
+			permission: null
 		});
 		const quotaOnly = usageFrom({ context: null, limits: [{ minutes: 300, used: 120 }], cache: null })!;
-		expect(texts(quotaOnly)).toBe('5h 剩 0%');
+		expect(texts(quotaOnly)).toBe('5h 0%');
+		// A permission mode alone is a usage; one of the wrong type is none.
+		expect(usageFrom({ permission: { mode: 'plan' } })?.permission).toEqual({ mode: 'plan' });
+		expect(usageFrom({ permission: { approval: 'never', sandbox: 7 } })?.permission).toEqual({ approval: 'never', sandbox: null });
+		expect(usageFrom({ permission: { mode: 3 } })).toBeNull();
+	});
+});
+
+describe('the permission mode', () => {
+	const none: Usage = { context: null, limits: [], cache: null, permission: null };
+	const claude = (mode: string) => ({ ...none, permission: { mode } });
+
+	test('comes last on the line, each Claude mode by its name, an unknown one as it is', () => {
+		const names = ['auto', 'default', 'acceptEdits', 'plan', 'dontAsk', 'someNewMode'].map((mode) => texts(claude(mode)));
+		expect(names).toEqual(['Auto mode', 'Manual', 'Accept edits', 'Plan mode', "Don't ask", 'someNewMode']);
+		expect(texts({ ...tight, permission: { mode: 'auto' } })).toBe('Ctx 62% • 5h 40% • 7d 25% • Cache 70% ⏳ 20 min • Auto mode');
+		expect(usageParts(claude('plan'), NOW)).toEqual([{ text: 'Plan mode', level: 'normal' }]);
+	});
+
+	test('bypass is left off the line, and the tip always ends with the mode', () => {
+		expect(usageParts(claude('bypassPermissions'), NOW)).toEqual([]);
+		expect(usageDetails({ ...full, permission: { mode: 'bypassPermissions' } }, NOW).at(-1)).toBe('Permission: Bypass permissions');
+		expect(usageDetails(claude('acceptEdits'), NOW)).toEqual(['Permission: Accept edits']);
+		expect(usageDetails(claude('someNewMode'), NOW)).toEqual(['Permission: someNewMode']);
+	});
+
+	test('a Codex controller’s: never asking with full access is bypass, anything else its approval policy', () => {
+		const codex = (approval: string, sandbox: string | null) => ({ ...none, permission: { approval, sandbox } });
+		expect(texts(codex('never', 'danger-full-access'))).toBe('');
+		expect(usageDetails(codex('never', 'danger-full-access'), NOW)).toEqual(['Permission: Bypass permissions']);
+		expect(texts(codex('on-request', 'workspace-write'))).toBe('approval on-request');
+		expect(usageDetails(codex('on-request', 'workspace-write'), NOW)).toEqual(['Permission: approval on-request, sandbox workspace-write']);
+		expect(texts(codex('never', 'read-only'))).toBe('approval never');
+		expect(usageDetails(codex('untrusted', null), NOW)).toEqual(['Permission: approval untrusted']);
 	});
 });
 
@@ -164,7 +288,7 @@ describe('the recorder', () => {
 		record(JSON.stringify(statusInput()));
 		expect(readClaudeUsage(config, 'claude-session-1')).toEqual({ ...full, limits: [...full.limits].reverse() });
 		record(JSON.stringify(statusInput({ prompt_cache: { caching_observed: false }, rate_limits: undefined })));
-		expect(readClaudeUsage(config, 'claude-session-1')).toEqual({ context: 42, limits: [], cache: null });
+		expect(readClaudeUsage(config, 'claude-session-1')).toEqual({ context: 42, limits: [], cache: null, permission: null });
 		record(JSON.stringify(statusInput({ prompt_cache: { caching_observed: true, warm: false } })));
 		expect(readClaudeUsage(config, 'claude-session-1')?.cache).toEqual({ warm: false, hit: null, expires: null });
 		// Warm without a ratio: 0%, as the status line shows it.
@@ -248,11 +372,63 @@ describe('the live feed', () => {
 		const feeds = [follow(orin.session_id), follow(vela.session_id)];
 		try {
 			await until(() => usageOf(feeds[0].updates[0]), 5_000, 'the Codex page');
-			expect(usageOf(feeds[0].updates[0])).toEqual(codex);
+			expect(usageOf(feeds[0].updates[0])).toMatchObject(codex);
 			await until(() => feeds[1].updates[0], 5_000, 'the Claude page');
 			expect(usageOf(feeds[1].updates[0])).toBeNull();
 		} finally {
 			for (const feed of feeds) feed.close();
 		}
+	});
+});
+
+// Run from the source against the stand-in helper, as the fixture's server runs the last build.
+describe('the permission mode on the feed', () => {
+	let dir: string;
+	let board: Board;
+	beforeAll(() => {
+		dir = mkdtempSync(join(tmpdir(), 'lat-permission-'));
+		mkdirSync(join(dir, 'transcripts'));
+		writeFileSync(join(dir, 'helper.json'), '{}');
+		const config = loadConfig({
+			HOME: join(dir, 'home'),
+			LAT_USAGE_DIR: join(dir, 'usage'),
+			LAT_BOARD_HELPER_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-helper.mjs'), dir])
+		});
+		board = { config } as Board;
+	});
+	afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+	async function firstUsage(client: string, session: string) {
+		const updates: TranscriptUpdate[] = [];
+		const close = followTranscript(board, { client, sessionId: session }, (update) => updates.push(update));
+		try {
+			await until(() => updates.length > 0, 5_000, 'the first page');
+		} finally {
+			close();
+		}
+		return updates[0].ok ? updates[0].page.usage : undefined;
+	}
+	const write = (session: string, name: string, value: unknown) =>
+		writeFileSync(join(dir, 'transcripts', `${session}.${name}`), typeof value === 'string' ? value : JSON.stringify(value));
+
+	test('a Claude controller’s comes from its record, beside what the status line recorded', async () => {
+		write('claude-1', 'jsonl', '');
+		write('claude-1', 'permission.json', { mode: 'auto' });
+		spawnSync('bash', [RECORDER], {
+			input: JSON.stringify(statusInput({ session_id: 'claude-1' })),
+			env: { PATH: process.env.PATH ?? '', LAT_USAGE_DIR: join(dir, 'usage') }
+		});
+		expect(await firstUsage('claude', 'claude-1')).toEqual({ ...full, limits: [...full.limits].reverse(), permission: { mode: 'auto' } });
+		// Without a status line file, the mode alone.
+		write('claude-2', 'jsonl', '');
+		write('claude-2', 'permission.json', { mode: 'plan' });
+		expect(await firstUsage('claude', 'claude-2')).toEqual({ context: null, limits: [], cache: null, permission: { mode: 'plan' } });
+	});
+
+	test('a Codex controller’s comes with the helper’s usage', async () => {
+		write('codex-1', 'jsonl', '');
+		write('codex-1', 'usage.json', { context: 50, limits: [], cache: null });
+		write('codex-1', 'permission.json', { approval: 'on-request', sandbox: 'workspace-write' });
+		expect((await firstUsage('codex', 'codex-1'))?.permission).toEqual({ approval: 'on-request', sandbox: 'workspace-write' });
 	});
 });
