@@ -333,3 +333,68 @@ test.skipIf(!CHROME)('phone: the list comes back where it was scrolled after a r
 		await tab.until(`Math.abs(scrollY - ${scrolled}) <= 1`, `the list scrolled back to ${scrolled}`);
 	}
 }, 60_000);
+
+const TITLE = `document.querySelector('.topbar .whose')`;
+
+test.skipIf(!CHROME)('phone: the top-bar title opens the controller at its top from a question and from a report, and back returns', async () => {
+	await visit(390);
+	await tab.eval(click('.inbox', '題目 7'));
+	await shows(QUESTION(7), '題目 7');
+	await tab.eval(`${TITLE}.click()`);
+	await shows(CONTROLLER(), '@luna');
+	await tab.until(`scrollY === 0`, 'the controller at its top');
+	await tab.eval(ARROW);
+	await shows(QUESTION(7), '題目 7');
+	await tab.eval(`${TITLE}.click()`);
+	await shows(CONTROLLER(), '@luna');
+	await back();
+	await shows(QUESTION(7), '題目 7');
+	await back();
+	await showsList();
+
+	await tab.eval(click('.inbox', '交付第二張票'));
+	await tab.until(`location.search.startsWith('?item=') && !location.search.startsWith('?item=q')`, 'the report');
+	const report = await tab.eval<string>('location.search');
+	await tab.until(`document.querySelector('.placeholder') === null`, 'the report placed in its conversation');
+	await tab.eval(`${TITLE}.click()`);
+	await shows(CONTROLLER(), '@luna');
+	await tab.until(`scrollY === 0`, 'the controller at its top');
+	await tab.eval(ARROW);
+	await shows(report, '交付第二張票');
+	await tab.eval(`${TITLE}.click()`);
+	await shows(CONTROLLER(), '@luna');
+	await back();
+	await shows(report, '交付第二張票');
+}, 60_000);
+
+test.skipIf(!CHROME)('phone: the title on the controller page only scrolls to the top, adding no history entry', async () => {
+	await visit(390);
+	await tab.eval(click('.roster', '@luna'));
+	await shows(CONTROLLER(), '題目 3');
+	await tab.eval(`window.scrollTo(0, document.documentElement.scrollHeight)`);
+	await tab.until(`scrollY > 200`, 'the controller page scrolled down');
+	const length = await tab.eval<number>('history.length');
+	await tab.eval(`${TITLE}.click()`);
+	await tab.until(`scrollY === 0`, 'the page back at its top');
+	expect(await tab.eval('location.search')).toBe(CONTROLLER());
+	expect(await tab.eval('history.length')).toBe(length);
+	await back();
+	await showsList();
+}, 30_000);
+
+test.skipIf(!CHROME)('phone: an archived report of a controller off the roster has a title that is not a button', async () => {
+	const search = `?item=${encodeURIComponent(oldest.key)}`;
+	await visit(390, search);
+	await shows(search, oldest.title);
+	expect(await tab.eval(`${TITLE}.tagName`)).toBe('SPAN');
+	await tab.eval(`${TITLE}.click()`);
+	await sleep(200);
+	expect(await tab.eval('location.search')).toBe(search);
+}, 30_000);
+
+test.skipIf(!CHROME)('wide: the top bar stays hidden', async () => {
+	await visit(1400);
+	await tab.eval(click('.inbox', '題目 1'));
+	await shows(QUESTION(1), '題目 1');
+	expect(await tab.eval(`getComputedStyle(document.querySelector('.topbar')).display`)).toBe('none');
+}, 30_000);

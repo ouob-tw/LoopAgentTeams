@@ -245,6 +245,14 @@
 		}
 	}
 	const openController = (id: string) => go({ kind: 'controller', id });
+	/** The phone's top-bar title: from an item it opens the controller's page; on that page it only
+	 *  scrolls back to the top, so there is no new history entry. */
+	function tapTitle() {
+		if (!controller) return;
+		if (view?.kind !== 'controller') return openController(controller.id);
+		detail.scrollTop = 0;
+		window.scrollTo(0, 0);
+	}
 	const openLaunch = () => go({ kind: 'launch' });
 
 	const pending = $derived(inbox.filter((entry) => entry.kind === 'question' && entry.unsent).length);
@@ -370,10 +378,18 @@
 				<div class="topbar">
 					<button onclick={back} aria-label="返回">←</button>
 					{#if owner}
-						<span class="whose" title="{owner.project} @{owner.hcomName}">
-							<strong>{owner.project}</strong>
-							<span class="handle">@{owner.hcomName}</span>
-						</span>
+						<!-- Tappable while the controller is on the roster; an archived item of one that left is not. -->
+						{#if controller}
+							<button class="whose" title="{owner.project} @{owner.hcomName}" onclick={tapTitle}>
+								<strong>{owner.project}</strong>
+								<span class="handle">@{owner.hcomName}</span>
+							</button>
+						{:else}
+							<span class="whose" title="{owner.project} @{owner.hcomName}">
+								<strong>{owner.project}</strong>
+								<span class="handle">@{owner.hcomName}</span>
+							</span>
+						{/if}
 					{/if}
 					<span class="tools">
 						{@render refresh()}
@@ -694,6 +710,16 @@
 		flex-direction: column;
 		min-width: 0;
 		line-height: 1.25;
+	}
+	button.whose {
+		align-items: flex-start;
+		padding: 0;
+		border: 0;
+		background: none;
+		color: inherit;
+		font: inherit;
+		text-align: left;
+		cursor: pointer;
 	}
 	.topbar strong {
 		overflow: hidden;
