@@ -1477,13 +1477,15 @@ class Panel(App):
                 f"送出前題目已變更：{'、'.join(result['ids'])}。請重新檢查後再送出"
             )
             return
-        self.reload_disk()
         try:
+            # Records the submitted answers first, so the reload below shows them 已記錄.
             lat_panel.mark_submit_notification_pending(self.path, result)
         except (OSError, ValueError) as error:
+            self.reload_disk()
             self.unrecorded_notification = True
             self.notices["notify"] = notify_failure_line(f"無法記錄待送通知：{error}")
             return
+        self.reload_disk()
         self.unrecorded_notification = False
         # Close through the normal path: notify first, stay open if that fails.
         self.close_armed = False
@@ -1550,6 +1552,13 @@ class Panel(App):
         self.notices["submission"] = submission_error_text(text)
         self.render_status()
         if newly_submitted:
+            outcomes = lat_panel.record_submitted_answers(self.path, sorted(newly_submitted))
+            if any(item["recorded"] for item in outcomes):
+                # Recording rewrote the file; take it in now, or the next save would conflict.
+                try:
+                    self.load(self.path.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as error:
+                    self.set_notice("read", f"無法讀取問題檔：{error}")
             self.mark_pending()
         return True
 

@@ -600,6 +600,19 @@ class SessionTests(unittest.TestCase):
         questions.write_text('## Question\nLAT-A · r1 · 待答\n')
         self.assert_stop_block(self.stop_hook(), 'BROKEN.md', '讀不出狀態')
 
+    def test_stop_accepts_an_answer_recorded_at_submit(self):
+        self.write_legacy_record()
+        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
+        # As the panel's submit leaves an answered question: record answered, question 已記錄.
+        self.decisions.joinpath('LAT-B.md').write_text(
+            '- status: answered\n- advisor: needs-human\n\n## 答覆（r1，面板）\n\n- 答覆：A\n')
+        questions = self.bind_stop_panel()
+        questions.write_text(
+            '## Question\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n\n'
+            '## Done\nLAT-B · r1 · 已記錄 · 2026-10-19T00:00:00+00:00\n\n答覆：A\n\n- [x] 送出\n')
+        self.assert_silent(self.stop_hook())
+        self.assert_stop_block(self.stop_hook('Question\nDECIDE: LAT-B r1'), 'LAT-B', '不是 pending')
+
     def test_stop_reuses_reverse_panel_checks_for_both_clients(self):
         for client in ('codex', 'claude'):
             with self.subTest(client=client):

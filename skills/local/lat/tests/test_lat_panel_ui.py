@@ -107,6 +107,8 @@ class PanelTestCase(unittest.IsolatedAsyncioTestCase):
             "HERDR_PLUGIN_CONFIG_DIR": str(self.root / "plugin-config"),
             "HERDR_PLUGIN_STATE_DIR": str(self.root / "plugin-state"),
             "HERDR_CONFIG_PATH": str(self.config),
+            # A submit refreshes the bound pane's sidebar; outside Herdr it skips that.
+            "HERDR_WORKSPACE_ID": "",
         })
         environment.start()
         self.addCleanup(environment.stop)

@@ -26,7 +26,9 @@ Public API used by the Textual panel and LAT controller:
   (ordered label selections plus optional ``other``), ``other`` (the explicit
   choice on a single-select question), and ``text`` (an input-only question).
   Batch submit receives ``{question_id: (revision, section_sha256)}``; pass its
-  successful result to ``mark_submit_notification_pending``.
+  successful result to ``mark_submit_notification_pending``, which first runs
+  ``record_submitted_answers``: each answer that passes the provenance check is
+  appended to its decision record (status ``answered``) and marked recorded.
 * ``question_provenance`` checks one snapshot section against the latest panel
   journal entry that changed that question.
 * ``bind_controller``, ``unbind_controller``, and the binding lookup helpers
@@ -1013,42 +1015,201 @@ def set_question_status(
         raise ValueError("the controller may only set status to recorded")
     questions_path = Path(questions_path)
     with _path_lock(questions_path):
-        document = questions_path.read_text(encoding="utf-8")
-        existing = _question_section(document, question_id)
-        if existing["revision"] != revision:
+        _set_recorded_locked(
+            questions_path, question_id, revision, expected_section_sha256, now=now
+        )
+
+
+def _set_recorded_locked(
+    questions_path, question_id, revision, expected_section_sha256, *, now=None,
+    auto_recorded=False,
+):
+    document = questions_path.read_text(encoding="utf-8")
+    existing = _question_section(document, question_id)
+    if existing["revision"] != revision:
+        raise ValueError(
+            f"revision mismatch: expected r{revision}, found r{existing['revision']}"
+        )
+    actual_section_sha256 = _section_sha256(existing)
+    if actual_section_sha256 != expected_section_sha256:
+        raise ValueError(
+            f"section hash mismatch: expected {expected_section_sha256}, "
+            f"found {actual_section_sha256}"
+        )
+    recorded_at = _iso_time(now)
+    status_start = existing["start"] + existing["status_start"]
+    status_end = existing["start"] + existing["status_end"]
+    updated = (
+        document[:status_start]
+        + f"已記錄 · {recorded_at}"
+        + document[status_end:]
+    )
+    _replace_locked(questions_path, updated)
+    recorded_section = _question_section(updated, question_id)
+    details = {
+        "questions_path": _question_key(questions_path),
+        "recorded_question": question_id,
+        "recorded_revision": revision,
+        "recorded_at": recorded_at,
+        "recorded_section_sha256": _full_section_sha256(recorded_section),
+    }
+    if auto_recorded:
+        details["auto_recorded"] = True
+    _append_journal(
+        questions_path.parent / "panel-journal.jsonl",
+        document,
+        updated,
+        kind="set-status",
+        details=details,
+        now=now,
+    )
+
+
+ANSWERED_STATUS = "answered"
+
+
+def _indented(text):
+    """Continuation lines of a list item, so none of them reads as a record field."""
+    return re.sub(r"\n(?=[^\n])", "\n  ", text)
+
+
+def _write_decision_answer(decision_path, section, proof, answer, note, *, now=None):
+    """Append one panel answer to a pending decision record and mark it answered.
+
+    Returns the record's ``(previous, written)`` text, for ``_restore_decision``.
+    """
+    if not decision_path.parent.is_dir():
+        raise ValueError(f"decisions directory does not exist: {decision_path.parent}")
+    if not decision_path.exists():
+        raise ValueError(f"decision record not found: {decision_path}")
+    with _path_lock(decision_path):
+        text = _read_text_exact(decision_path)
+        status = read_decision_status(decision_path)
+        if status.error:
+            raise ValueError(f"decision record status unreadable: {status.error}")
+        if status.status != "pending":
+            raise ValueError(f"decision record is not pending (status: {status.status})")
+        version = re.search(r"^- version:\s*r([0-9]+)\b", text, re.MULTILINE | re.IGNORECASE)
+        if version and int(version.group(1)) != section["revision"]:
             raise ValueError(
-                f"revision mismatch: expected r{revision}, found r{existing['revision']}"
+                f"decision record is at r{version.group(1)}, question at r{section['revision']}"
             )
-        actual_section_sha256 = _section_sha256(existing)
-        if actual_section_sha256 != expected_section_sha256:
-            raise ValueError(
-                f"section hash mismatch: expected {expected_section_sha256}, "
-                f"found {actual_section_sha256}"
-            )
-        recorded_at = _iso_time(now)
-        status_start = existing["start"] + existing["status_start"]
-        status_end = existing["start"] + existing["status_end"]
+        status_line = re.search(r"^- status:.*$", text, re.MULTILINE | re.IGNORECASE)
+        lines = [
+            f"## 答覆（r{section['revision']}，面板，{_iso_time(now)}）",
+            "",
+            f"- 題目：{section['id']} r{section['revision']}",
+            f"- 答覆：{_indented(answer)}",
+        ]
+        if note:
+            lines.append(f"- 備註：{_indented(note)}")
+        lines += [
+            f"- 來源：面板，{proof['journal_path']} 第 {proof['journal_line']} 行，"
+            f"time {proof['time']}，section_sha256 {proof['section_sha256']}",
+            "- 記錄：送出時由 lat-panel 自動記錄；答覆的意思與核准範圍由主控判斷後補寫",
+        ]
         updated = (
-            document[:status_start]
-            + f"已記錄 · {recorded_at}"
-            + document[status_end:]
+            text[:status_line.start()] + f"- status: {ANSWERED_STATUS}" + text[status_line.end():]
+        ).rstrip("\n") + "\n\n" + "\n".join(lines) + "\n"
+        _replace_locked(decision_path, updated)
+        return text, updated
+
+
+def _restore_decision(decision_path, written, previous):
+    """Undo ``_write_decision_answer`` unless the record changed since."""
+    with _path_lock(decision_path):
+        if _read_text_exact(decision_path) != written:
+            return False
+        _replace_locked(decision_path, previous)
+        return True
+
+
+def record_submitted_answers(questions_path, question_ids, *, config_dir=None, now=None):
+    """Record each submitted answer in its decision record and mark the question recorded.
+
+    Each answer gets the same check as ``question_provenance``; its verbatim
+    answer, note and source are appended to the bound controller's
+    ``<decisions>/<ID>.md``, whose status becomes ``answered``. Returns one
+    outcome per ID with ``id``, ``revision``, ``answer``, ``note`` and
+    ``recorded``; an answer that is not recorded stays submitted and its
+    outcome has a ``reason``, also journaled for the notification. Never
+    raises: what the answer means is left to the controller.
+    """
+    questions_path = Path(questions_path)
+    journal_path = questions_path.parent / "panel-journal.jsonl"
+    try:
+        decisions_path, unknown = _bound_decisions_path(questions_path, config_dir), None
+    except (OSError, ValueError) as error:
+        decisions_path, unknown = None, str(error)
+    outcomes = []
+    try:
+        with _path_lock(questions_path):
+            for question_id in question_ids:
+                outcomes.append(_record_answer_locked(
+                    questions_path, journal_path, question_id, decisions_path, unknown, now
+                ))
+            failed = {
+                item["id"]: {"reason": item["reason"], "section_sha256": item["section_sha256"]}
+                for item in outcomes if not item["recorded"] and "section_sha256" in item
+            }
+            if failed:
+                document = _read_text_exact(questions_path)
+                _append_journal(
+                    journal_path, document, document, kind="auto-record",
+                    details={"questions_path": _question_key(questions_path),
+                             "not_recorded": failed},
+                    now=now, panel_write=False,
+                )
+    except (OSError, ValueError) as error:
+        done = {item["id"] for item in outcomes}
+        outcomes += [
+            {"id": question_id, "recorded": False, "reason": str(error)}
+            for question_id in question_ids if question_id not in done
+        ]
+    for item in outcomes:
+        item.pop("section_sha256", None)
+    if any(item["recorded"] for item in outcomes):
+        refresh_status_display(questions_path, config_dir=config_dir)
+    return outcomes
+
+
+def _record_answer_locked(questions_path, journal_path, question_id, decisions_path, unknown, now):
+    try:
+        section = _question_section(_read_text_exact(questions_path), question_id)
+    except (OSError, ValueError) as error:
+        return {"id": question_id, "recorded": False, "reason": str(error)}
+    answer, note = _answer_text_and_note(section["answer"] or "")
+    outcome = {
+        "id": question_id, "revision": section["revision"], "answer": answer, "note": note,
+        "recorded": False, "section_sha256": _section_sha256(section),
+    }
+    try:
+        if decisions_path is None:
+            raise ValueError(unknown)
+        proof = question_provenance(questions_path, journal_path, question_id)
+        decision_path = decisions_path / f"{question_id}.md"
+        previous, written = _write_decision_answer(decision_path, section, proof, answer, note, now=now)
+    except (OSError, ValueError, AttributeError, TypeError) as error:
+        # The last two: a journal line that is JSON but not an entry.
+        outcome["reason"] = str(error)
+        return outcome
+    try:
+        _set_recorded_locked(
+            questions_path, question_id, section["revision"], proof["section_sha256"],
+            now=now, auto_recorded=True,
         )
-        _replace_locked(questions_path, updated)
-        recorded_section = _question_section(updated, question_id)
-        _append_journal(
-            questions_path.parent / "panel-journal.jsonl",
-            document,
-            updated,
-            kind="set-status",
-            details={
-                "questions_path": _question_key(questions_path),
-                "recorded_question": question_id,
-                "recorded_revision": revision,
-                "recorded_at": recorded_at,
-                "recorded_section_sha256": _full_section_sha256(recorded_section),
-            },
-            now=now,
+    except (OSError, ValueError) as error:
+        # Put the record back to pending, so the manual steps can record this answer.
+        try:
+            restored = _restore_decision(decision_path, written, previous)
+        except OSError:
+            restored = False
+        outcome["reason"] = f"the question could not be marked recorded: {error}" + (
+            "" if restored else f"; {decision_path} already has the answer and status answered"
         )
+        return outcome
+    outcome["recorded"] = True
+    return outcome
 
 
 def _recorded_hashes(journal_path, questions_path):
@@ -1558,6 +1719,28 @@ def _show_notification(text, env=None):
         return "unknown"
 
 
+def _binding_decisions_path(binding):
+    """The decisions directory in the bound controller's session record."""
+    record_path = Path(binding["workspace"]) / ".lat/sessions" / f"{binding['session_id']}.json"
+    return Path(json.loads(record_path.read_text(encoding="utf-8"))["decisions_path"])
+
+
+def _bound_decisions_path(questions_path, config_dir=None):
+    key = _question_key(questions_path)
+    binding = next((
+        item for item in list_bindings(config_dir=config_dir)
+        if _question_key(item.get("questions_path", "")) == key
+    ), None)
+    if binding is None:
+        raise ValueError("no LAT controller is bound to this questions file")
+    try:
+        return _binding_decisions_path(binding)
+    except (KeyError, TypeError, ValueError) as error:
+        raise ValueError(f"controller session record has no decisions directory: {error}") from None
+    except OSError as error:
+        raise ValueError(f"controller session record cannot be read: {error}") from None
+
+
 def refresh_status_display(questions_path, *, notify=False, config_dir=None, env=None):
     """Show the bound controller's waiting counts on its Herdr sidebar row; never raise.
 
@@ -1577,9 +1760,7 @@ def refresh_status_display(questions_path, *, notify=False, config_dir=None, env
             return {"status": "unbound"}
         if not panel_enabled(env):
             return {"status": "disabled"}
-        record_path = (Path(binding["workspace"]) / ".lat/sessions"
-                       / f"{binding['session_id']}.json")
-        decisions_path = json.loads(record_path.read_text(encoding="utf-8"))["decisions_path"]
+        decisions_path = _binding_decisions_path(binding)
         # Count under the file lock; the sequence number lets Herdr drop an older count.
         with _path_lock(Path(questions_path)):
             decide, help_count = status_counts(questions_path, decisions_path)
@@ -1670,13 +1851,22 @@ def mark_notification_pending(questions_path, *, state_dir=None):
     return generation
 
 
-def mark_submit_notification_pending(questions_path, submit_result, *, state_dir=None):
-    """Mark notification state only for a successful, non-empty batch submit."""
+def mark_submit_notification_pending(
+    questions_path, submit_result, *, state_dir=None, config_dir=None
+):
+    """Record the answers of a successful, non-empty batch submit, then mark its notification.
+
+    Recording is ``record_submitted_answers``; an answer it cannot record stays
+    submitted and the notification says why.
+    """
     if (
         submit_result.get("status") != "submitted"
         or not submit_result.get("question_ids")
     ):
         return None
+    record_submitted_answers(
+        questions_path, submit_result["question_ids"], config_dir=config_dir
+    )
     return mark_notification_pending(questions_path, state_dir=state_dir)
 
 
@@ -1768,21 +1958,56 @@ def _submitted_after(submitted, since):
         return False
 
 
-def _submitted_answers(questions_path):
-    """Map the section hash of each panel-submitted, unrecorded answer to its journal time.
+def _owed_answers(questions_path):
+    """Return each answer a notification is owed for, whether or not one was ever stored.
 
-    These are the answers a notification is owed for, whether or not a pending
-    notification was ever stored. A submit the panel journal does not prove is
-    left out: the controller could not record it either.
+    These are panel-submitted answers still waiting to be recorded, with the
+    reason the submit did not record them, and answers the submit recorded
+    itself. Each has ``id``, ``revision``, ``answer``, ``note``, ``recorded``,
+    ``reason``, ``hash`` (the current-revision section hash) and ``time`` (when
+    it was journaled). A submit the panel journal does not prove is left out:
+    the controller could not record it either; so is an answer the controller
+    recorded by hand.
     """
     questions_path = Path(questions_path)
     journal_path = questions_path.parent / "panel-journal.jsonl"
     try:
         sections = _sections(questions_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {}
-    answers = {}
+        return []
+    auto_recorded = {}
+    not_recorded = {}
+    try:
+        lines = journal_path.read_text(encoding="utf-8").splitlines()
+    except (OSError, ValueError):
+        lines = []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:
+            continue
+        if not isinstance(entry, dict) or not _journal_entry_matches_questions(entry, questions_path):
+            continue
+        if entry.get("kind") == "set-status" and entry.get("recorded_question"):
+            auto_recorded[entry["recorded_question"]] = (
+                entry.get("recorded_section_sha256") if entry.get("auto_recorded") else None,
+                entry.get("time"),
+            )
+        elif entry.get("kind") == "auto-record" and isinstance(entry.get("not_recorded"), dict):
+            for question_id, failure in entry["not_recorded"].items():
+                if isinstance(failure, dict):
+                    not_recorded[question_id] = failure
+    answers = []
     for section in sections:
+        answer, note = _answer_text_and_note(section["answer"] or "")
+        item = {"id": section["id"], "revision": section["revision"], "answer": answer, "note": note}
+        if section["status"] == "recorded":
+            recorded_hash, recorded_time = auto_recorded.get(section["id"], (None, None))
+            if recorded_hash != _full_section_sha256(section):
+                continue
+            answers.append({**item, "recorded": True, "reason": None,
+                            "hash": _section_sha256(section), "time": recorded_time})
+            continue
         if section["status"] != "ready":
             continue
         try:
@@ -1790,8 +2015,20 @@ def _submitted_answers(questions_path):
         except (OSError, ValueError, AttributeError, TypeError):
             # The last two: a journal line that is JSON but not an entry.
             continue
-        answers[proof["section_sha256"]] = proof["time"]
+        failure = not_recorded.get(section["id"], {})
+        reason = (
+            failure.get("reason") if failure.get("section_sha256") == proof["section_sha256"]
+            else None
+        )
+        answers.append({**item, "recorded": False,
+                        "reason": reason or "not recorded when it was submitted",
+                        "hash": proof["section_sha256"], "time": proof["time"]})
     return answers
+
+
+def _submitted_answers(questions_path):
+    """Map the section hash of each answer a notification is owed for to its journal time."""
+    return {item["hash"]: item["time"] for item in _owed_answers(questions_path)}
 
 
 def _record_delivered(questions_path, answers, *, state_dir=None):
@@ -1863,6 +2100,49 @@ def send_pending_notification(questions_path, binding, *, state_dir=None, env=No
     return ok, reason
 
 
+def _delivered_hashes(questions_path, state_dir):
+    """Answer hashes the last delivery covered; none when the record cannot be read."""
+    path = _delivered_path(state_dir)
+    try:
+        with _path_lock(path):
+            delivered, _ = _read_delivered(path)
+    except OSError:
+        return set()
+    return set(delivered.get(_question_key(questions_path), []))
+
+
+def _notification_message(questions_key, owed, delivered):
+    """The controller's notice: each new answer, recorded or not, quoted as JSON strings."""
+    def quoted(item):
+        text = f"{item['id']} r{item['revision']}: answer {json.dumps(item['answer'], ensure_ascii=False)}"
+        if item["note"]:
+            text += f", note {json.dumps(item['note'], ensure_ascii=False)}"
+        return text
+
+    fresh = [item for item in owed if item["hash"] not in delivered]
+    recorded = [quoted(item) for item in fresh if item["recorded"]]
+    unrecorded = [
+        f"{quoted(item)}; not recorded: {item['reason']}"
+        for item in fresh if not item["recorded"]
+    ]
+    parts = [f"Questions file changed: {questions_key}."]
+    if recorded:
+        parts.append(
+            "Recorded at submit, decision record status answered: " + "; ".join(recorded)
+            + ". Read the answer in .lat/decisions/<ID>.md, judge what it means and write the "
+            "approved scope; re-ask with a new revision if it is unclear."
+        )
+    if unrecorded:
+        parts.append(
+            "Submitted but not recorded, still submitted: " + "; ".join(unrecorded)
+            + ". Check and record these by hand under the LAT question-processing contract."
+        )
+    if not recorded and not unrecorded:
+        parts.append("Re-read the file and apply the LAT question-processing contract.")
+    parts.append("This notification is not approval.")
+    return " ".join(parts)
+
+
 def _send_notification(questions_path, binding, *, state_dir=None, env=None, timeout=10):
     """Tell the bound controller to re-read its questions file; return ``(ok, reason)``.
 
@@ -1875,12 +2155,9 @@ def _send_notification(questions_path, binding, *, state_dir=None, env=None, tim
     if not target:
         return False, "binding has no HCOM name"
     # Read before sending: an answer submitted while the message is under way is not covered.
-    covered = _submitted_answers(questions_path)
-    message = (
-        f"Questions file changed: {questions_key}. Re-read the file and apply the LAT "
-        "question-processing contract. This notification is not approval. Only an "
-        "unambiguous checked submit answer for the matching question ID and revision may be recorded."
-    )
+    owed = _owed_answers(questions_path)
+    covered = {item["hash"]: item["time"] for item in owed}
+    message = _notification_message(questions_key, owed, _delivered_hashes(questions_path, state_dir))
     command = [
         "hcom", "send", f"@{target}", "--from", "lat-panel",
         "--intent", "inform", "--json", "--", message,
@@ -2175,11 +2452,12 @@ def answer_and_notify(
     questions_path, question_id, revision, expected_section_sha256,
     *, selections=(), text="", note="", config_dir=None, state_dir=None,
 ):
-    """Answer one question and notify its controller, as a panel submit does.
+    """Answer, record and notify one question, as a panel submit does.
 
-    A written answer stays submitted when the notification fails; the result
-    then has ``notified`` false with a ``reason`` and the notification stays
-    pending for ``notify_controller``.
+    ``recorded`` tells whether ``record_submitted_answers`` recorded the answer;
+    when it did not, the answer stays submitted and ``record_reason`` says why.
+    A notification that fails leaves ``notified`` false with a ``reason`` and
+    stays pending for ``notify_controller``.
     """
     result = answer_question(
         questions_path, question_id, revision, expected_section_sha256,
@@ -2187,6 +2465,10 @@ def answer_and_notify(
     )
     if result["status"] != "submitted":
         return result
+    [outcome] = record_submitted_answers(questions_path, [question_id], config_dir=config_dir)
+    result["recorded"] = outcome["recorded"]
+    if not outcome["recorded"]:
+        result["record_reason"] = outcome["reason"]
     try:
         mark_notification_pending(questions_path, state_dir=state_dir)
         notice = notify_controller(questions_path, config_dir=config_dir, state_dir=state_dir)

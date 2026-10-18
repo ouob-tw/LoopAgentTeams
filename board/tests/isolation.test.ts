@@ -27,7 +27,7 @@ test('a corrupt question file shows an error on its controller and leaves the ot
 });
 
 test('a report file with a cut-off line keeps its valid reports and flags only that controller', async () => {
-	const luna = fixture.bound('alpha', 'luna');
+	const luna = fixture.bound('alpha', 'luna', { questions: [question()] });
 	const nova = fixture.bound('beta', 'nova');
 	fixture.report(luna.session_id, { tag: 'NO REPLY', summary: '第一筆', hcom_name: 'luna', workspace: luna.workspace });
 	fixture.appendRaw(luna.session_id, '{"time": "2026-10-13T10:00:00Z", "session_id": "x", "hcom_na\n');

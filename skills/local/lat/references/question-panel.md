@@ -182,7 +182,17 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question resolve-
 
 ## 收到 `lat-panel` 通知
 
-通知表示問題檔有題目被勾選送出；通知本身不是核准證據，也不代表每一題都已作答。
+面板或看板送出答覆時，程式已對每一題做來源核對（與下方 `question provenance` 相同），通過的題目：答覆與備註原文、`<ID> r<版本>` 與來源（面板紀錄路徑、行號、`time`、`section_sha256`）已附在 `.lat/decisions/<ID>.md` 末尾的 `## 答覆（r<版本>，面板，…）`，狀態行改為 `- status: answered`，題目標為 `已記錄`。通知逐題列出題號、版本與答覆，分成已記錄與未記錄兩組；通知本身不是核准證據。
+
+1. **已記錄的題目**：只讀待決紀錄裡記下的答覆，判斷意思：
+   - 指向明確：在該答覆段落補一行 `- 核准：<依答覆核准的方案與範圍>`，狀態改為 `approved`（求助題改為 `resolved`）。
+   - 看不懂、含糊，或一段答覆含糊涵蓋多題：依「版本」改版重問，紀錄保留舊答覆、狀態改回 `pending`、版本行改為新版本，並在聊天說明原因。
+2. **未記錄的題目**（通知寫明原因，例如找不到待決紀錄、紀錄不是 `pending`、紀錄版本與題目不同、核對失敗）：題目維持已送出；依原因修正後，照下方「手動記錄」處理。
+3. **沒有列出答覆**：只更新理解，結束回合等待。
+
+### 手動記錄
+
+只用於自動記錄失敗的題目，以及「聊天答覆與更正」。
 
 1. 讀待決紀錄，再複製快照；題目與來源證據都只從快照讀取，處理完以 `shred -u "$snapshot"` 清除：
 
@@ -191,7 +201,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question resolve-
    cp "$questions" "$snapshot"
    ```
 
-2. 只看各題目前版本區段，`### 舊版` 以下不套用。對每個狀態為 `待答` 且已勾選送出的題目做來源核對，不自行解析區段或計算雜湊：
+2. 只看各題目前版本區段，`### 舊版` 以下不套用。對狀態為 `待答` 且已勾選送出的題目做來源核對，不自行解析區段或計算雜湊：
 
    ```bash
    uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenance \
@@ -201,7 +211,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question resolve-
 
    成功時輸出 `"status": "ok"`、面板紀錄路徑、行號、`time` 與 `section_sha256`，表示快照中這一題與面板最後一次寫入的內容相同。未勾選、沒有面板紀錄、舊紀錄缺少逐題雜湊，或該題之後又被修改時，指令失敗並說明原因。
 
-3. 依結果處理每一題：
+3. 依結果處理：
    - **通過核對、版本與決策紀錄相同、答覆指向明確**：寫入 `.lat/decisions/<ID>.md`——「答覆：」欄位原文（逐字，不摘要）、`<ID> r<版本>`、來源（面板，加上 `provenance` 輸出的紀錄路徑、行號、`time`、`section_sha256`）、依答覆核准的方案與範圍。寫入後才標為已記錄：
 
      ```bash
@@ -213,13 +223,12 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question resolve-
      指令因版本或區段雜湊不符而拒絕時，表示題目在快照後又變了：在剛寫入的決策紀錄項目註明「作廢：題目在記錄時被修改」，重新讀檔處理。
    - **未通過核對、版本不符、答覆有歧義，或一段答覆含糊涵蓋多題**：維持待決；在聊天說明不能採用的原因，依「草稿、送出與重答」請使用者釐清或重答。
    - **草稿**：依「草稿、送出與重答」處理，不記錄。
-   - **沒有已勾選送出的題目**：只更新理解，結束回合等待。
 
 面板紀錄是來源證據，不是防偽機制：能寫 `.lat/` 的 Agent 理論上能偽造答覆或紀錄。
 
 ## 聊天答覆與更正
 
-使用者在聊天回答 `<ID> r<版本>：…` 時，依「收到 `lat-panel` 通知」的步驟 1 建立快照，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄。標記前對同一份快照執行 `question section-hash --questions "$snapshot" --id "<ID>"`，把輸出的 `section_sha256` 傳給上述 `set-status`。
+使用者在聊天回答 `<ID> r<版本>：…` 時，依「手動記錄」的步驟 1 建立快照，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄。標記前對同一份快照執行 `question section-hash --questions "$snapshot" --id "<ID>"`，把輸出的 `section_sha256` 傳給上述 `set-status`。
 
 使用者在面板送出後又於聊天要求改答案時，舊紀錄保持原樣：新增一筆更正，保存聊天原文與來源，並把舊答案標為「已由更正項目取代」；更正只依聊天答覆的授權範圍生效。
 
@@ -326,11 +335,11 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board answer \
 - `--text` 在純文字題是答覆本身，在單選與複選題是「其他」的內容；只有空白視為沒有給。
 - 單選題給一個 `--select`，或只給 `--text`；複選題至少給一個 `--select` 或 `--text`；純文字題只給 `--text`。`--note` 可搭配任何答覆。
 
-效果與使用者在 Herdr 面板作答並送出相同：以「答覆格式」寫入答覆區並勾選送出、寫面板紀錄、送 `lat-panel` 通知；主控照「收到 `lat-panel` 通知」處理。原有的草稿會被這次的答覆取代。
+效果與使用者在 Herdr 面板作答並送出相同：以「答覆格式」寫入答覆區並勾選送出、寫面板紀錄、自動記錄到待決紀錄、送 `lat-panel` 通知；主控照「收到 `lat-panel` 通知」處理。原有的草稿會被這次的答覆取代。
 
 | `status` | 結束碼 | 意義 |
 | --- | --- | --- |
-| `submitted` | 0 | 已寫入並送出，另附 `id`、`revision`、新的 `section_sha256`。`notified` 為 `true` 表示通知已送達；為 `false` 表示已寫入但通知失敗，`reason` 是原因，答案保留為已送出，通常可用重送通知補送。 |
+| `submitted` | 0 | 已寫入並送出，另附 `id`、`revision`、送出時的 `section_sha256`。`recorded` 為 `true` 表示已自動記錄、題目已標為已記錄；為 `false` 時題目維持已送出，`record_reason` 是原因。`notified` 為 `true` 表示通知已送達；為 `false` 表示已寫入但通知失敗，`reason` 是原因，答案保留為已送出，通常可用重送通知補送。 |
 | `question_changed` | 1 | 題目不存在、版本不同，或區段雜湊不符；重新列出資料後再作答。 |
 | `not_pending` | 1 | 題目已送出或已記錄。 |
 | `invalid_answer` | 1 | 答覆不符合題型、序號超出範圍或重複，或文字含有會被讀成問題檔結構的行。 |
@@ -344,7 +353,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board answer \
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board notify --questions "$questions"
 ```
 
-只重送這份問題檔尚未送達的通知，不改寫答案與面板紀錄。Herdr 面板原有的重送照舊，同一則通知由任一邊送達後即清除。沒有待送通知時以問題檔為準：經面板或看板送出（面板紀錄可核對來源）、主控尚未記錄的答覆，若沒有送達紀錄就補送一次；已記錄或已升版的題目不會再送。送達紀錄存在狀態目錄的 `delivered-notifications.json`；這份紀錄在第一次需要時建立（`board list` 也會建立），建立時會記下待送通知檔最後變動的時間，在那之前送出的答覆只看待送通知，不依問題檔補送。
+只重送這份問題檔尚未送達的通知，不改寫答案與面板紀錄。Herdr 面板原有的重送照舊，同一則通知由任一邊送達後即清除。沒有待送通知時以問題檔為準：經面板或看板送出（面板紀錄可核對來源）而尚未記錄的答覆，以及送出時自動記錄的答覆，若沒有送達紀錄就補送一次；主控手動記錄、已歸檔或已升版的題目不會再送。送達紀錄存在狀態目錄的 `delivered-notifications.json`；這份紀錄在第一次需要時建立（`board list` 也會建立），建立時會記下待送通知檔最後變動的時間，在那之前送出的答覆只看待送通知，不依問題檔補送。
 
 | `status` | 結束碼 | 意義 |
 | --- | --- | --- |
