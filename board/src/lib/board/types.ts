@@ -56,6 +56,8 @@ export interface HelperQuestion {
 	title: string;
 	status: 'pending' | 'submitted' | 'recorded';
 	context: string;
+	/** The question's full explanation; absent from helpers that do not write it yet. */
+	details?: string | null;
 	kind: 'single' | 'multi' | 'text';
 	options: HelperOption[];
 	recommendation: string;
@@ -116,6 +118,9 @@ interface ItemOwner {
 	workspace: string;
 }
 
+/** The chat message that asked a question: its report's time and text. */
+export type AskingMessage = Pick<Report, 'time' | 'message'>;
+
 /** A question of an active controller that the controller has not recorded yet. */
 export interface InboxQuestion extends ItemOwner {
 	kind: 'question';
@@ -127,6 +132,8 @@ export interface InboxQuestion extends ItemOwner {
 	/** The answer is sent, but the notification to the controller has not been delivered. */
 	notifyFailed: boolean;
 	question: HelperQuestion;
+	/** The chat message (report) that asked this revision; null when none is found. */
+	askedIn: AskingMessage | null;
 }
 
 /** A DONE or HELP report. */

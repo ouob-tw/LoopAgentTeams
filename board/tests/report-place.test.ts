@@ -32,3 +32,11 @@ test('still unknown while earlier pages may hold an equal text; the near one onc
 	const reachesHour = [text(5, '2026-10-17T08:50:00Z', '更早'), ...pastNear];
 	expect(reportPlace(view(reachesHour, 4), report)).toBe(10);
 });
+
+test('a question\'s asking message takes only the text equal to it, never a near one', () => {
+	const asked = { ...report, exact: true };
+	const items = [text(1, '2026-10-17T09:58:00Z', '別的話')];
+	expect(reportPlace(view(items), asked)).toBeNull();
+	expect(reportPlace(view(items, 0), asked)).toBeUndefined();
+	expect(reportPlace(view([...items, text(2, '2026-10-17T09:59:00Z', 'DONE: 做完了')]), asked)).toBe(2);
+});

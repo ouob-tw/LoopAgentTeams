@@ -4,7 +4,8 @@
 	// permission mode in small print, a bar for each question waiting for an answer, then its
 	// conversation, its reports in the inbox and what was sent to it, one tab at a time. Its model
 	// and effort, and messages and wakes, go through the command line at the bottom of the screen.
-	// Opened for a report, the conversation shows that report where it is in the history.
+	// Opened for a report, the conversation shows that report where it is in the history; opened
+	// for a question, the question where the message that asked it is.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import Info from '@lucide/svelte/icons/info';
 	import { onMount, type Snippet } from 'svelte';
@@ -21,6 +22,7 @@
 		type InboxQuestion,
 		type InboxReport
 	} from '#lib/board/types.ts';
+	import type { PlacedMessage } from '#lib/board/transcript.ts';
 	import { usageDetails, usageParts, type Usage, type UsagePart } from '#lib/board/usage.ts';
 	import ItemRow from './ItemRow.svelte';
 	import SentLog from './SentLog.svelte';
@@ -32,9 +34,10 @@
 		tabMoves = 0,
 		items,
 		onopen,
-		report,
+		target,
 		opens = 0,
 		onplaced,
+		onunplaced,
 		card
 	}: {
 		controller: Controller;
@@ -43,12 +46,15 @@
 		/** This controller's inbox items. */
 		items: InboxItem[];
 		onopen: (item: InboxItem) => void;
-		/** The report this page was opened for, and how it is shown in the history. */
-		report?: InboxReport;
-		/** Changes with every opening of a report, the same one again too. */
+		/** The report, or a question's asking message, this page was opened at, and how it is
+		 *  shown in the history. */
+		target?: PlacedMessage;
+		/** Changes with every opening of the target, the same one again too. */
 		opens?: number;
-		/** Called once the report is scrolled to, or shown above the conversation instead. */
+		/** Called once the target is scrolled to, or shown above the conversation instead. */
 		onplaced?: () => void;
+		/** Called when the target's text is not found in the conversation, or it cannot be read. */
+		onunplaced?: () => void;
 		card?: Snippet;
 	} = $props();
 
@@ -157,10 +163,10 @@
 		reports: reports.length,
 		sent: messaging.sent[controller.id]?.length ?? null
 	});
-	// Opening a report, the same one again too, shows it in the conversation.
+	// Opening the target, the same one again too, shows it in the conversation.
 	$effect.pre(() => {
 		void opens;
-		if (report) tab = 'transcript';
+		if (target) tab = 'transcript';
 	});
 
 	function tabKeys(event: KeyboardEvent) {
@@ -320,7 +326,7 @@
 
 <!-- All three stay mounted, so the conversation keeps its place and its live feed. -->
 <div class="tabpanel" role="tabpanel" id="panel-transcript" aria-labelledby="tab-transcript" hidden={tab !== 'transcript'}>
-	<Transcript {controller} {reports} {report} {opens} {onplaced} {card} bind:usage />
+	<Transcript {controller} {reports} {target} {opens} {onplaced} {onunplaced} {card} bind:usage />
 </div>
 <div class="tabpanel" role="tabpanel" id="panel-reports" aria-labelledby="tab-reports" hidden={tab !== 'reports'}>
 	{#each reports as item (item.key)}

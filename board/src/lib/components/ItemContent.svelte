@@ -147,6 +147,9 @@
 		{#if question.context}
 			<div class="text md">{@html renderMarkdown(question.context)}</div>
 		{/if}
+		{#if question.details}
+			<div class="text md">{@html renderMarkdown(question.details)}</div>
+		{/if}
 		{#if question.options.length}
 			<ul class="options">
 				{#each question.options as option, index (index)}

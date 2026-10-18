@@ -1,0 +1,171 @@
+{
+	"about": "Which report (chat message) asked a panel question. A report matches when it belongs to the question's controller session, its tag is DECIDE or HELP, its last nonblank line starts with that tag ('DECIDE:' or 'HELP:') and holds the exact bounded '<ID> r<N>' after it, and it is not earlier than the question's asked_at (skipped when null). The latest match wins. 'expected' is the index into 'reports', or null for no match. Shared by the board and the Herdr side panel.",
+	"cases": [
+		{
+			"name": "the DECIDE message that asked it",
+			"session_id": "s1",
+			"question": { "id": "HOVE-143-SHORT-1", "revision": 1, "asked_at": "2026-10-18T06:20:00Z" },
+			"reports": [
+				{ "session_id": "s1", "tag": "DONE", "time": "2026-10-18T06:00:00Z", "message": "上一張票做完了。\n\nDONE: #142 已合進 dev" },
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:22:00Z", "message": "#143 的需求我看過了。\n\nDECIDE: HOVE-143-SHORT-1 r1 · 短流程 #143 · 回答面板上的題目" }
+			],
+			"expected": 1
+		},
+		{
+			"name": "a HELP message",
+			"session_id": "s1",
+			"question": { "id": "HOVE-HELP-7", "revision": 1, "asked_at": "2026-10-18T06:20:00Z" },
+			"reports": [
+				{ "session_id": "s1", "tag": "HELP", "time": "2026-10-18T06:22:00Z", "message": "7110 被佔用。\nHELP: HOVE-HELP-7 r1 · 7110 被佔用，可以結束預覽程序嗎 · 回答面板上的題目" }
+			],
+			"expected": 0
+		},
+		{
+			"name": "r1 does not match a message that only says r10",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": null },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:22:00Z", "message": "DECIDE: X-1 r10 · 標題" }
+			],
+			"expected": null
+		},
+		{
+			"name": "r10 does not match a message that only says r1",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 10, "asked_at": null },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:22:00Z", "message": "DECIDE: X-1 r1 · 標題" }
+			],
+			"expected": null
+		},
+		{
+			"name": "an ID is not matched by a longer ID it starts or ends",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": null },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:22:00Z", "message": "DECIDE: X-10 r1 · 標題" },
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:23:00Z", "message": "DECIDE: AX-1 r1 · 標題" },
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:24:00Z", "message": "DECIDE: X-1.2 r1 · 標題" }
+			],
+			"expected": null
+		},
+		{
+			"name": "a revised question matches the message of its revision, not the earlier one",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 2, "asked_at": "2026-10-18T07:00:00Z" },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:22:00Z", "message": "DECIDE: X-1 r1 · 舊版" },
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T07:01:00Z", "message": "DECIDE: X-1 r2 · 新版" }
+			],
+			"expected": 1
+		},
+		{
+			"name": "a revised question whose new message is missing is not matched by the earlier one",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 2, "asked_at": "2026-10-18T07:00:00Z" },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:22:00Z", "message": "DECIDE: X-1 r1 · 舊版" }
+			],
+			"expected": null
+		},
+		{
+			"name": "another controller's message",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": null },
+			"reports": [
+				{ "session_id": "s2", "tag": "DECIDE", "time": "2026-10-18T06:22:00Z", "message": "DECIDE: X-1 r1 · 標題" }
+			],
+			"expected": null
+		},
+		{
+			"name": "a message earlier than asked_at",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": "2026-10-18T07:00:00Z" },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:59:59Z", "message": "DECIDE: X-1 r1 · 標題" }
+			],
+			"expected": null
+		},
+		{
+			"name": "a message at asked_at itself",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": "2026-10-18T07:00:00Z" },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T07:00:00Z", "message": "DECIDE: X-1 r1 · 標題" }
+			],
+			"expected": 0
+		},
+		{
+			"name": "asked_at missing: the time is not checked",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": null },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2020-01-01T00:00:00Z", "message": "DECIDE: X-1 r1 · 標題" }
+			],
+			"expected": 0
+		},
+		{
+			"name": "several matches: the latest by time",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": null },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:30:00Z", "message": "第二次。\nDECIDE: X-1 r1 · 標題" },
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:20:00Z", "message": "第一次。\nDECIDE: X-1 r1 · 標題" }
+			],
+			"expected": 0
+		},
+		{
+			"name": "the ID only in the body, not on the last line",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": null },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:22:00Z", "message": "X-1 r1 還在等你。\nDECIDE: Y-2 r1 · 別題" }
+			],
+			"expected": null
+		},
+		{
+			"name": "the last line names the question but does not start with the tag",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": null },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:22:00Z", "message": "DECIDE: Y-2 r1 · 別題\n見 X-1 r1: 之前那題" }
+			],
+			"expected": null
+		},
+		{
+			"name": "DONE and NO REPLY messages never match",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": null },
+			"reports": [
+				{ "session_id": "s1", "tag": "NO REPLY", "time": "2026-10-18T06:22:00Z", "message": "NO REPLY: X-1 r1 仍待答" },
+				{ "session_id": "s1", "tag": "DONE", "time": "2026-10-18T06:23:00Z", "message": "DONE: X-1 r1 已記錄" }
+			],
+			"expected": null
+		},
+		{
+			"name": "one message asking two questions matches both",
+			"session_id": "s1",
+			"question": { "id": "Y-2", "revision": 3, "asked_at": null },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:22:00Z", "message": "兩件事。\nDECIDE: X-1 r1、Y-2 r3 · 兩題 · 回答面板上的題目" }
+			],
+			"expected": 0
+		},
+		{
+			"name": "blank lines after the tag line",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": null },
+			"reports": [
+				{ "session_id": "s1", "tag": "DECIDE", "time": "2026-10-18T06:22:00Z", "message": "說明。\nDECIDE: X-1 r1 · 標題\n\n  \n" }
+			],
+			"expected": 0
+		},
+		{
+			"name": "no reports at all",
+			"session_id": "s1",
+			"question": { "id": "X-1", "revision": 1, "asked_at": null },
+			"reports": [],
+			"expected": null
+		}
+	]
+}

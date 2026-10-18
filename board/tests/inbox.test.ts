@@ -71,6 +71,29 @@ test('a HELP turn end puts a help item in the inbox and the controller is 等你
 	});
 });
 
+test('a question carries the DECIDE message that asked its revision, and none when no message did', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	const askedAt = new Date(Date.now() - 60_000).toISOString();
+	const message = '先講我的理解。\n\nDECIDE: BOARD-7 r2 · 要不要走短流程 · 回答面板上的題目';
+	fixture.report(luna.session_id, { tag: 'DECIDE', summary: '舊版', message: 'DECIDE: BOARD-7 r1 · 舊版', hcom_name: 'luna', workspace: luna.workspace });
+	fixture.report(luna.session_id, { tag: 'DECIDE', summary: '要不要走短流程', message, hcom_name: 'luna', workspace: luna.workspace });
+	fixture.list([
+		{
+			...luna,
+			questions: [
+				question({ id: 'BOARD-7', revision: 2, title: '有原訊息的題目', asked_at: askedAt }),
+				question({ id: 'BOARD-8', revision: 1, title: '沒有原訊息的題目', asked_at: askedAt })
+			]
+		}
+	]);
+
+	const snapshot = await fixture.refresh(cookie);
+
+	const asked = titled(snapshot, '有原訊息的題目') as InboxQuestion;
+	expect(asked.askedIn).toEqual({ time: expect.any(String), message });
+	expect((titled(snapshot, '沒有原訊息的題目') as InboxQuestion).askedIn).toBeNull();
+});
+
 test('only DONE and HELP reports become inbox items', async () => {
 	const luna = fixture.bound('alpha', 'luna');
 	fixture.list([luna]);

@@ -17,6 +17,7 @@
 		toolsSummary,
 		withEarlier,
 		withLatest,
+		type PlacedMessage,
 		type TranscriptUpdate,
 		type TranscriptView
 	} from '#lib/board/transcript.ts';
@@ -28,21 +29,24 @@
 	let {
 		controller,
 		reports = [],
-		report,
+		target,
 		opens = 0,
 		onplaced,
+		onunplaced,
 		card,
 		usage = $bindable(null)
 	}: {
 		controller: Controller;
 		/** This controller's reports in the inbox: the texts they carry are marked as reports. */
 		reports?: InboxReport[];
-		/** The report this page was opened for, and how it is shown. */
-		report?: InboxReport;
-		/** Changes with every opening of a report, the same one again too. */
+		/** The report, or a question's asking message, this page was opened at, and how it is shown. */
+		target?: PlacedMessage;
+		/** Changes with every opening of the target, the same one again too. */
 		opens?: number;
-		/** Called once the report is scrolled to, or shown above the conversation instead. */
+		/** Called once the target is scrolled to, or shown above the conversation instead. */
 		onplaced?: () => void;
+		/** Called when the target's text is not found in the conversation, or it cannot be read. */
+		onunplaced?: () => void;
 		card?: Snippet;
 		/** Context use, quota and prompt cache, as the live feed last told; null when unknown. */
 		usage?: Usage | null;
@@ -62,8 +66,8 @@
 	const shown = $derived(view ? segments(view.items).toReversed() : []);
 
 	let list = $state<HTMLElement>();
-	/** The report's text by `seq`; undefined while still searched for, null when not found. */
-	const place = $derived(report && view ? reportPlace(view, report) : undefined);
+	/** The target's text by `seq`; undefined while still searched for, null when not found. */
+	const place = $derived(target && view ? reportPlace(view, target) : undefined);
 	/** The texts the inbox's reports carry, by `seq`, framed as the reports they are. */
 	const reported = $derived.by(() => {
 		const found = new Map<number, InboxReport>();
@@ -74,14 +78,25 @@
 		}
 		return found;
 	});
-	/** Not found, or the record cannot be read: the report is shown above the conversation. */
-	const unplaced = $derived(!!report && (place === null || (place === undefined && !!(problem || earlierFailed))));
-	/** The report and opening last scrolled to, so it is scrolled to once per opening. */
+	/** Not found, or the record cannot be read: the target's card is shown above the conversation. */
+	const unplaced = $derived(!!target && (place === null || (place === undefined && !!(problem || earlierFailed))));
+	const targetId = $derived(target && `${target.key}:${target.time}`);
+	/** The `targetId` when the latest page of the conversation arrived: a newer target, such as a
+	 *  revised question's new asking message, may only be in the next page. */
+	let targetAtLastPage = $state<string | null>(null);
+	$effect(() => {
+		if (unplaced && (problem || earlierFailed || targetAtLastPage === targetId)) untrack(() => onunplaced?.());
+	});
+	/** The target and opening last scrolled to, so it is scrolled to once per opening, and again
+	 *  when a revised question's asking message replaces the one before. */
 	let scrolledFor: string | null = null;
 
 	$effect(() => {
-		const opening = report && `${report.key}:${opens}`;
-		if (!opening || !list || scrolledFor === opening || (place === undefined && !unplaced)) return;
+		const opening = targetId && `${targetId}:${opens}`;
+		// A question's card above the conversation is only for the moment until its text arrives, or
+		// it is lost: not scrolled to.
+		const due = typeof place === 'number' || (unplaced && !target?.exact);
+		if (!opening || !list || scrolledFor === opening || !due) return;
 		scrolledFor = opening;
 		align(list, '.placed');
 	});
@@ -151,7 +166,7 @@
 	}
 	// Earlier parts until the report's text is found or the conversation starts.
 	$effect(() => {
-		if (report && view && place === undefined && !loadingEarlier && !earlierFailed) untrack(() => void loadEarlier());
+		if (target && view && place === undefined && !loadingEarlier && !earlierFailed) untrack(() => void loadEarlier());
 	});
 
 	$effect(() => {
@@ -170,6 +185,7 @@
 			const update: TranscriptUpdate = JSON.parse((event as MessageEvent).data);
 			if (update.ok) {
 				view = withLatest(view, update.page);
+				targetAtLastPage = untrack(() => targetId) ?? null;
 				// The command line's label shows what the latest turn used.
 				switching.current[controllerId] = update.page.current ?? null;
 				usage = update.page.usage ?? null;
@@ -282,7 +298,7 @@
 	{:else}
 		<p class="empty">讀取中…</p>
 	{/if}
-	{#if report}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
+	{#if target}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
 </section>
 
 <style>
