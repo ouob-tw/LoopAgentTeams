@@ -120,23 +120,29 @@
 		locate(false);
 	}
 	/** The controller of the lost question while it is open. */
-	const lostIn = $derived(lost && item?.key === lost ? item.controllerId : null);
+	const lostController = $derived(lost && item?.key === lost ? item.controllerId : null);
+	/** The lost question's conversation as read since it was lost. */
+	let lostSeen = $state.raw<TranscriptView | null>(null);
 	// Lost is not for good: a turn's text may reach the conversation a moment after its report,
 	// so its later pages are still watched, and the question is shown at its asking message once
 	// one has it.
 	$effect(() => {
-		const key = lost;
-		if (!key || !lostIn) return;
-		let seen: TranscriptView | null = null;
-		const source = new EventSource(`/api/transcript/events?controller=${encodeURIComponent(lostIn)}`);
+		if (!lostController) return;
+		const source = new EventSource(`/api/transcript/events?controller=${encodeURIComponent(lostController)}`);
 		source.addEventListener('transcript', (event) => {
 			const update: TranscriptUpdate = JSON.parse((event as MessageEvent).data);
-			if (!update.ok) return;
-			seen = withLatest(seen, update.page);
-			const target = item?.key === key ? placedAt(item) : null;
-			if (target && typeof reportPlace(seen, target) === 'number') lost = null;
+			if (update.ok) lostSeen = withLatest(lostSeen, update.page);
 		});
-		return () => source.close();
+		return () => {
+			source.close();
+			lostSeen = null;
+		};
+	});
+	// Checked again when the question changes too: a revised question is asked in a new message,
+	// which may have come before the revision did.
+	$effect(() => {
+		const target = lostController && item && placedAt(item);
+		if (target && lostSeen && typeof reportPlace(lostSeen, target) === 'number') lost = null;
 	});
 
 	/** Containers of the unfolded roster whose own surface, not a card or control, was clicked. */

@@ -569,6 +569,29 @@ for (const width of [390, 1400]) {
 	}, 30_000);
 }
 
+test.skipIf(!CHROME)('phone: a lost question is found at its revision\'s message that reached the conversation before the revision reached the page', async () => {
+	const id = 'RQ-1';
+	const asked = (revision: number) => question({ id, revision, title: '改版前就收到原訊息的題目', kind: 'single', options: OPTIONS, asked_at: minutesAgo(0.1) });
+	const r1 = `DECIDE: ${id} r1 · 第一版 · 回答面板上的題目`;
+	fixture.report(sol.session_id, { tag: 'DECIDE', summary: '第一版', message: r1, time: minutesAgo(0), hcom_name: 'sol', workspace: sol.workspace });
+	fixture.list([luna, { ...sol, questions: [...sol.questions, asked(1)] }]);
+	await fixture.refresh(cookie);
+	await visit(390);
+	await tab.eval(click('.inbox', '改版前就收到原訊息的題目'));
+	await tab.until(`document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')`, 'the not-found notice');
+	await tab.until(`document.querySelector('.placeholder') === null`, 'the placeholder gone');
+
+	// The r2 message reaches the conversation, and only then the board's data has r2.
+	const r2 = `第二版。\n\nDECIDE: ${id} r2 · 第二版 · 回答面板上的題目`;
+	appendFileSync(solTranscript(), JSON.stringify({ kind: 'assistant', time: minutesAgo(0), text: r2 }) + '\n');
+	await sleep(1000);
+	fixture.report(sol.session_id, { tag: 'DECIDE', summary: '第二版', message: r2, time: minutesAgo(0), hcom_name: 'sol', workspace: sol.workspace });
+	fixture.list([luna, { ...sol, questions: [...sol.questions, asked(2)] }]);
+	await fixture.refresh(cookie);
+	await placedAt(SOL_QUESTION(id), '改版前就收到原訊息的題目');
+	expect(await placedText()).toContain(`${id} r2`);
+}, 30_000);
+
 test.skipIf(!CHROME)('phone: back and reload find the question in its conversation again, like a report', async () => {
 	await visit(390);
 	await tab.eval(click('.inbox', '有原訊息的求助題'));
