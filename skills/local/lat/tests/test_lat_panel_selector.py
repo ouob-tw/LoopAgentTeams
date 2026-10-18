@@ -833,6 +833,12 @@ class SubmitTests(SelectorTestCase):
             app.editor.load_text(self.text().replace(
                 "答覆：\n\n- [ ] 送出", "答覆：A. 合併到 dev，不推送\n\n- [x] 送出", 1))
             app.save()
+            self.assertEqual(app.editor.text, self.text())
+            # Typing on right away saves without a conflict.
+            app.editor.move_cursor(app.editor.document.end)
+            await self.press(pilot, "z")
+            self.assertFalse(app.conflict)
+            self.assertTrue(self.text().endswith("z"))
             await self.settle(app, pilot)
         self.assertIn("Q1 · r1 · 已記錄 · ", section(self.text(), "Q1"))
         self.assertIn("- 答覆：A. 合併到 dev，不推送\n", (decisions / "Q1.md").read_text())

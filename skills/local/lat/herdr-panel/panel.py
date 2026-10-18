@@ -1552,7 +1552,13 @@ class Panel(App):
         self.notices["submission"] = submission_error_text(text)
         self.render_status()
         if newly_submitted:
-            lat_panel.record_submitted_answers(self.path, sorted(newly_submitted))
+            outcomes = lat_panel.record_submitted_answers(self.path, sorted(newly_submitted))
+            if any(item["recorded"] for item in outcomes):
+                # Recording rewrote the file; take it in now, or the next save would conflict.
+                try:
+                    self.load(self.path.read_text(encoding="utf-8"))
+                except (OSError, ValueError) as error:
+                    self.set_notice("read", f"無法讀取問題檔：{error}")
             self.mark_pending()
         return True
 
