@@ -592,6 +592,20 @@ test.skipIf(!CHROME)('phone: a lost question is found at its revision\'s message
 	expect(await placedText()).toContain(`${id} r2`);
 }, 30_000);
 
+for (const width of [390, 1400]) {
+	test.skipIf(!CHROME)(`${width}px: a question opened from another of the same controller, its asking message not in the conversation, says it is not found`, async () => {
+		await visit(width);
+		await tab.eval(click('.inbox', '有原訊息的求助題'));
+		await placedAt(SOL_QUESTION('HQ-1'), '有原訊息的求助題');
+		// From the controller's own list, so its conversation stays open as it is: judged on what
+		// has been read of it.
+		await tab.eval(click('.detail', '原訊息不在對話紀錄裡的題目'));
+		await tab.until(`document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')`, 'the not-found notice');
+		expect((await screen()).text).toContain('對話紀錄裡沒有原訊息');
+		expect(await tab.eval(`document.querySelector('.history')`)).toBeNull();
+	}, 30_000);
+}
+
 test.skipIf(!CHROME)('phone: back and reload find the question in its conversation again, like a report', async () => {
 	await visit(390);
 	await tab.eval(click('.inbox', '有原訊息的求助題'));
