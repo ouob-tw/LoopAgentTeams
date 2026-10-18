@@ -4,7 +4,7 @@
 import type { InboxItem } from './types.ts';
 
 export const DAY_MS = 24 * 60 * 60 * 1000;
-/** Processed items are listed only while issued, or asked, less than this long ago. */
+/** Processed items are listed only while issued, or asked, less than this long ago (`keptFrom`). */
 export const RETAIN_MS = 30 * DAY_MS;
 export const ARCHIVE_PAGE = 50;
 
@@ -14,9 +14,16 @@ export interface ArchivePage {
 	before: string | null;
 }
 
-/** Where a processed item stands: a report when it was issued, a question when it was asked, or
- *  recorded when that is not known. */
+/** When a processed item was handled, which places it: a report when it was read, or issued when
+ *  it was archived unread; a question when its answer was recorded. */
 export function processedTime(item: InboxItem): number {
+	if (item.kind === 'report') return Date.parse(item.readAt ?? item.time);
+	return Date.parse(item.question.recorded_at ?? item.time ?? '');
+}
+
+/** What the 30 days are kept from: when a report was issued, or a question asked (recorded when
+ *  that is not known). */
+export function keptFrom(item: InboxItem): number {
 	if (item.kind === 'report') return Date.parse(item.time);
 	return Date.parse(item.time ?? item.question.recorded_at ?? '');
 }
@@ -63,11 +70,15 @@ export function reaches(newest: ArchivePage, loaded: ArchivePage | null): boolea
 
 /** What the processed view shows after the newest pages were read again: those, then the earlier
  *  items already loaded below them that are still kept at `now`. When the new pages do not reach
- *  down to what was loaded, the earlier items are let go rather than leaving a gap. */
+ *  down to what was loaded, the earlier items are let go rather than leaving a gap. An item read
+ *  again since moved up into the new pages, and is not kept where it was. */
 export function withNewest(loaded: ArchivePage | null, newest: ArchivePage, now: number): ArchivePage {
 	const last = newest.items.at(-1);
 	if (!loaded || !last || newest.before === null || !reaches(newest, loaded)) return newest;
-	const earlier = loaded.items.filter((item) => compare(position(last), position(item)) < 0 && now - processedTime(item) < RETAIN_MS);
+	const keys = new Set(newest.items.map((item) => item.key));
+	const earlier = loaded.items.filter(
+		(item) => !keys.has(item.key) && compare(position(last), position(item)) < 0 && now - keptFrom(item) < RETAIN_MS
+	);
 	return earlier.length ? { items: [...newest.items, ...earlier], before: loaded.before } : newest;
 }
 

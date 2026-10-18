@@ -8,7 +8,7 @@ import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
 import { listControllers, pruneReports, readAnswered, readQuestions, type AnsweredFile } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
-import { answeredOf, answeredPaths, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources } from './model.ts';
+import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
@@ -173,7 +173,7 @@ function createBoard(): Board {
 		const [helper, reports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(config)]);
 		// Read after the list: the files are those of the controllers bound now, and of the sessions
 		// that reported.
-		const answered = await readAnswered(config, answeredPaths(helper.ok ? helper.controllers : lastActive, reports.files));
+		const answered = await readAnswered(config, answeredSources(helper.ok ? helper.controllers : lastActive, reports.files));
 		if (answered.ok) lastAnswered = answered.files;
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));

@@ -9,7 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { chosenIn } from '../src/lib/board/answers.ts';
-import { questionsPathOf } from '../src/lib/server/sources.ts';
+import { processedTime } from '../src/lib/board/archive.ts';
 import type { HelperController, HelperQuestion, InboxItem, InboxQuestion, InboxReport } from '../src/lib/board/types.ts';
 import { DAY, PORT_BASE, question, sleep, startFixture, titled, type Fixture, type HelperPlan } from './harness.ts';
 
@@ -45,6 +45,8 @@ const MULTI: HelperQuestion['options'] = ['甲', '乙', '丙'].map((label) => ({
 const processed = () => fixture.archive(cookie);
 const byKey = (items: InboxItem[], key: string) => items.find((item) => item.key === key);
 const questionKey = (session: string, id: string) => `q:${session}:${id}`;
+/** The question file the fake helper finds for an unbound controller. */
+const fileOf = (workspace: string, name: string) => join(workspace, '.lat', `questions-${name}.md`);
 
 test('an answer is read back as the options it names, its 其他 text, and parts that name none', () => {
 	const single = { kind: 'single' as const, options: SINGLE };
@@ -56,12 +58,6 @@ test('an answer is read back as the options it names, its 其他 text, and parts
 	expect(chosenIn(multi, '乙；其他：甲；乙')).toEqual({ select: [2], other: '甲；乙', unknown: [] });
 	expect(chosenIn(multi, '其他：只寫這個')).toEqual({ select: [], other: '只寫這個', unknown: [] });
 	expect(chosenIn({ kind: 'text', options: [] }, '想法；更多')).toEqual({ select: [], other: '想法；更多', unknown: [] });
-});
-
-test("an unbound controller's question file is named as the helper binds it", () => {
-	expect(questionsPathOf('/w/alpha', 'luna')).toBe('/w/alpha/.lat/questions-luna.md');
-	expect(questionsPathOf('/w/alpha', '_Vano.Processed buru-')).toBe('/w/alpha/.lat/questions-vano-processed-buru.md');
-	expect(questionsPathOf('/w/alpha', '—')).toBeNull();
 });
 
 test('a read report is processed until it is marked unread; an archived one stays processed for good', async () => {
@@ -108,7 +104,7 @@ test('answered questions of the question files and their archives are processed,
 		output: { controllers: [luna] },
 		archives: {
 			[luna.questions_path]: [answered({ id: 'Q-OLD', title: '封存的題目', answer: 'A. 第一個', options: SINGLE, asked_at: ago(DAY) })],
-			[questionsPathOf(beta, 'vega')!]: [
+			[fileOf(beta, 'vega')]: [
 				answered({ id: 'V-1', title: '舊 vega 的題目', answer: 'A. 第一個', options: SINGLE, asked_at: ago(3 * DAY + 1000) }),
 				answered({ id: 'V-2', title: '新 vega 的題目', answer: 'C. 第三個', options: SINGLE, asked_at: ago(DAY + 1000) }),
 				answered({ id: 'V-3', title: '沒有原訊息的題目', answer: 'C. 第三個', options: SINGLE, asked_at: ago(DAY / 2) })
@@ -119,8 +115,11 @@ test('answered questions of the question files and their archives are processed,
 	const snapshot = await fixture.refresh(cookie);
 	expect(snapshot.inbox.map((item) => item.key)).toContain(questionKey(luna.session_id, 'Q-WAIT'));
 	expect(snapshot.inbox.map((item) => item.key)).not.toContain(questionKey(luna.session_id, 'Q-REC'));
-	// The unbound sessions' file is found from their reports.
-	expect(fixture.helperArgs('answered').at(-1)).toContain(`--questions=${questionsPathOf(beta, 'vega')}`);
+	// The unbound sessions' file is found by the helper from the workspace and name they reported with, asked for once.
+	const args = fixture.helperArgs('answered').at(-1)!;
+	expect(args).toContain(`--questions=${luna.questions_path}`);
+	expect(args.filter((arg) => arg === `--workspace=${beta}`)).toHaveLength(1);
+	expect(args[args.indexOf(`--workspace=${beta}`) + 1]).toBe('--hcom-name=vega');
 
 	const items = await processed();
 	expect(byKey(items, questionKey(luna.session_id, 'Q-WAIT'))).toBeUndefined();
@@ -147,9 +146,16 @@ test('processed pages run newest first across reports and questions, none twice 
 		fixture.report('session-pago', { tag: 'DONE', summary: `舊交付 ${index}`, time: ago(8 * DAY + index * HOUR), hcom_name: 'pago', workspace: gamma });
 	}
 	const questions = Array.from({ length: 30 }, (_, index) =>
-		answered({ id: `P-${index}`, title: `舊題目 ${index}`, answer: 'A. 第一個', options: SINGLE, asked_at: ago(8 * DAY + index * HOUR + HOUR / 2) })
+		answered({
+			id: `P-${index}`,
+			title: `舊題目 ${index}`,
+			answer: 'A. 第一個',
+			options: SINGLE,
+			asked_at: ago(8 * DAY + index * HOUR + HOUR / 2 + 60_000),
+			recorded_at: ago(8 * DAY + index * HOUR + HOUR / 2)
+		})
 	);
-	fixture.setHelper({ output: { controllers: [] }, archives: { [questionsPathOf(gamma, 'pago')!]: questions } });
+	fixture.setHelper({ output: { controllers: [] }, archives: { [fileOf(gamma, 'pago')]: questions } });
 	const snapshot = await fixture.refresh(cookie);
 
 	const pages: InboxItem[][] = [];
@@ -163,18 +169,27 @@ test('processed pages run newest first across reports and questions, none twice 
 	expect(pages.slice(0, -1).every((page) => page.length === 50)).toBe(true);
 	expect(new Set(all.map((item) => item.key)).size).toBe(all.length);
 	expect(all.length).toBe(snapshot.processedCount);
-	const times = all.map((item) => Date.parse(item.kind === 'report' ? item.time : (item.time ?? item.question.recorded_at!)));
+	const times = all.map(processedTime);
 	expect(times).toEqual(times.toSorted((a, b) => b - a));
 	const mine = all.filter((item) => item.controllerId === 'session-pago').map((item) => item.title);
 	// Reports and questions take turns, an hour apart, the newest first.
 	expect(mine.slice(0, 4)).toEqual(['舊交付 0', '舊題目 0', '舊交付 1', '舊題目 1']);
 	expect(mine).toHaveLength(70);
+
+	// Read just now, a report issued 6 days ago is on top of the first page.
+	fixture.report('session-pago', { tag: 'DONE', summary: '六天前的交付', time: ago(6 * DAY), hcom_name: 'pago', workspace: gamma });
+	const late = titled(await fixture.refresh(cookie), '六天前的交付')!;
+	fixture.setClock(NOW + 60_000);
+	await fixture.markRead(cookie, late.key);
+	const [first]: InboxItem[] = (await (await fixture.archivePage(cookie)).json()).items;
+	fixture.setClock(NOW);
+	expect(first.key).toBe(late.key);
 });
 
 test('answered questions are kept 30 days from when they were asked, or recorded when that is not known', async () => {
 	const delta = join(fixture.dir, 'workspaces', 'delta');
 	fixture.report('session-reta', { tag: 'NO REPLY', summary: '', time: ago(DAY), hcom_name: 'reta', workspace: delta });
-	const path = questionsPathOf(delta, 'reta')!;
+	const path = fileOf(delta, 'reta');
 	fixture.setHelper({
 		output: { controllers: [] },
 		archives: {
@@ -188,7 +203,8 @@ test('answered questions are kept 30 days from when they were asked, or recorded
 	});
 	const snapshot = await fixture.refresh(cookie);
 	const titles = (await processed()).filter((item) => item.controllerId === 'session-reta').map((item) => item.title);
-	expect(titles).toEqual(['不知道何時問的', '差一分鐘滿 30 天']);
+	// By when they were recorded: an hour ago, then two days ago.
+	expect(titles).toEqual(['差一分鐘滿 30 天', '不知道何時問的']);
 	expect(snapshot.errors.join('\n')).toContain(`答過的題目讀不出來：${path}：問題檔讀不出來`);
 });
 

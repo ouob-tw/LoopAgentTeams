@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { processedTime } from '../src/lib/board/archive.ts';
 import type { BoardSnapshot, InboxReport } from '../src/lib/board/types.ts';
 import { DAY, named, startFixture, titled, type Fixture } from './harness.ts';
 
@@ -103,7 +104,9 @@ test('the archive lists newest first and is the same on another paired device', 
 	const mine = await fixture.archive(cookie);
 
 	expect(mine.length).toBeGreaterThanOrEqual(5);
-	expect(mine.map((report) => report.time)).toEqual(mine.map((report) => report.time).toSorted().toReversed());
+	// Newest first by when each was handled: read, or issued when archived unread.
+	const times = mine.map(processedTime);
+	expect(times).toEqual(times.toSorted((a, b) => b - a));
 	expect(await fixture.archive(other)).toEqual(mine);
 	const { generatedAt: _mine, ...here } = await fixture.board(cookie);
 	const { generatedAt: _theirs, ...there } = await fixture.board(other);

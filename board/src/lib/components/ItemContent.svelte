@@ -124,6 +124,12 @@
 	}
 </script>
 
+{#snippet check()}<span class="check" aria-label="你的答覆">✓</span>{/snippet}
+
+{#snippet pickedText(text: string)}
+	<li class="picked">{@render check()}<span class="option text">{text}</span></li>
+{/snippet}
+
 {#snippet optionBody(option: HelperOption)}
 	<span class="letter">{option.letter}</span>
 	<div>
@@ -175,16 +181,16 @@
 							</label>
 						</li>
 					{:else if chosen?.select.includes(position)}
-						<li class="picked"><span class="check" aria-label="你選的">✓</span>{@render optionBody(option)}</li>
+						<li class="picked">{@render check()}{@render optionBody(option)}</li>
 					{:else}
 						<li>{@render optionBody(option)}</li>
 					{/if}
 				{/each}
 				{#if chosen?.other}
-					<li class="picked"><span class="check" aria-label="你選的">✓</span><span class="option text">其他：{chosen.other}</span></li>
+					{@render pickedText(`其他：${chosen.other}`)}
 				{/if}
 				{#each chosen?.unknown ?? [] as part, index (index)}
-					<li class="picked"><span class="check" aria-label="你選的">✓</span><span class="option text">{part}</span></li>
+					{@render pickedText(part)}
 				{/each}
 				{#if answerable && choice}
 					<li class:chosen={draft.other}>
@@ -213,7 +219,7 @@
 		{/if}
 		{#if chosen && !choice}
 			<ul class="options">
-				<li class="picked"><span class="check" aria-label="你的答覆">✓</span><span class="option text">{chosen.other}</span></li>
+				{@render pickedText(chosen.other)}
 			</ul>
 		{/if}
 		{#if shownAnswer?.note}

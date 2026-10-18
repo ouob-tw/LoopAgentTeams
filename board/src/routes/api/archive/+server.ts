@@ -7,6 +7,6 @@ import type { RequestHandler } from './$types';
  *  newest first: the newest page, or with `before` the page after that cursor. */
 export const GET: RequestHandler = async ({ url }) => {
 	const before = url.searchParams.get('before');
-	if (before !== null && !isCursor(before)) error(400, '封存的游標格式不正確');
+	if (before !== null && !isCursor(before)) error(400, '已處理清單的游標格式不正確');
 	return json(await getBoard().archive(before));
 };

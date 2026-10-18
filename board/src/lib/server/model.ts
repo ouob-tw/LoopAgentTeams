@@ -16,10 +16,9 @@ import type {
 import { archivePage, DAY_MS, RETAIN_MS, sortArchive, type ArchivePage } from '../board/archive.ts';
 import { askingReport } from '../board/question-message.ts';
 import { reportedAt } from '../board/roster.ts';
-import type { AnsweredFile } from './helper.ts';
+import type { AnsweredFile, AnsweredSources } from './helper.ts';
 import type { InboxState } from './inbox-state.ts';
 import type { ReportFile } from './reports.ts';
-import { questionsPathOf } from './sources.ts';
 
 export interface Sources {
 	/** Controllers in the binding registry, with their questions. */
@@ -123,33 +122,43 @@ export function processedPage(sources: Sources, state: InboxState, now: number, 
 	return archivePage(sortArchive(processedItems(sources, state, now)), before);
 }
 
-/** The question files to read answered questions from: each bound controller's, and the one each
- *  session with a report file had while bound. */
-export function answeredPaths(active: HelperController[], files: ReportFile[]): string[] {
-	const paths = new Set(active.map((binding) => binding.questions_path));
+/** Where to read answered questions from: each bound controller's question file, and the file of
+ *  each other session with a report file, by the workspace and name it last reported with. */
+export function answeredSources(active: HelperController[], files: ReportFile[]): AnsweredSources {
+	const bound = new Set(active.map((binding) => binding.session_id));
+	const controllers = new Map<string, { workspace: string; hcomName: string }>();
 	for (const file of files) {
 		const latest = file.reports.at(-1);
-		const path = latest && questionsPathOf(latest.workspace, latest.hcom_name);
-		if (path) paths.add(path);
+		if (!latest || bound.has(file.sessionId)) continue;
+		controllers.set(`${latest.workspace}\n${latest.hcom_name}`, { workspace: latest.workspace, hcomName: latest.hcom_name });
 	}
-	return [...paths];
+	return { paths: active.map((binding) => binding.questions_path), controllers: [...controllers.values()] };
 }
 
 /**
- * Every answered question asked less than 30 days before `now` (recorded then, when when it was
+ * Every answered question asked less than 30 days before `now` (recorded then, when the time it was
  * asked is not known), as an item of the session that asked it: the one whose report asked it, else
  * the controller bound to its file, else the session that reported last of those using the file.
  */
 function answeredItems(sources: Sources, now: number): InboxQuestion[] {
+	/** The file of a session that is not bound is the one the helper found from its workspace and name. */
+	const pathOf = (file: ReportFile) => {
+		const binding = sources.active.find((candidate) => candidate.session_id === file.sessionId);
+		if (binding) return binding.questions_path;
+		const latest = file.reports.at(-1);
+		return sources.answered.find((entry) => latest && entry.workspace === latest.workspace && entry.hcom_name === latest.hcom_name)?.questions_path;
+	};
 	const byPath = new Map<string, ReportFile[]>();
 	for (const file of sources.reportFiles) {
-		const latest = file.reports.at(-1);
-		const binding = sources.active.find((candidate) => candidate.session_id === file.sessionId);
-		const path = binding?.questions_path ?? (latest && questionsPathOf(latest.workspace, latest.hcom_name));
+		const path = pathOf(file);
 		if (path) byPath.set(path, [...(byPath.get(path) ?? []), file]);
 	}
 	const items: InboxQuestion[] = [];
+	// A file asked for twice, by path and by a controller's name, is listed once.
+	const read = new Set<string>();
 	for (const { questions_path: path, questions } of sources.answered) {
+		if (path === null || read.has(path)) continue;
+		read.add(path);
 		const files = byPath.get(path) ?? [];
 		const binding = sources.active.find((candidate) => candidate.questions_path === path);
 		const lastReporting = files.toSorted((a, b) => reportedAtOf(b) - reportedAtOf(a))[0];

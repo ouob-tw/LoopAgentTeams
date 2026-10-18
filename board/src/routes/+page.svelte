@@ -318,6 +318,8 @@
 	}
 	function openItem(next: InboxItem) {
 		kept.set(next.key, next);
+		// Kept on the list from now: the read state may reach the page before the item is shown.
+		if (listedInbox.some((entry) => entry.key === next.key)) lingering = next.key;
 		go({ kind: 'item', key: next.key });
 		// Opening an inbox report reads it. Only opening does: a report marked unread stays unread
 		// while it is still open. An archived report keeps the read state it had.

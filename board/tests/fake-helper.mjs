@@ -120,16 +120,21 @@ function questions() {
 	return { output: { questions: listed(path)?.questions ?? plan.files?.[path] ?? [] } };
 }
 
-/** The answered questions of each question file and its archive. */
+/** The answered questions of each question file and its archive; a controller's file is
+ *  <workspace>/.lat/questions-<name>.md, the test names being file names already. */
 function answered() {
-	const files = (options().questions ?? []).map((path) => {
+	const given = options();
+	const controllers = (given.workspace ?? []).map((workspace, index) => ({ workspace, hcom_name: given['hcom-name']?.[index] ?? '' }));
+	const paths = [...(given.questions ?? []), ...controllers.map(({ workspace, hcom_name }) => join(workspace, '.lat', `questions-${hcom_name}.md`))];
+	const files = paths.map((path, index) => {
+		const controller = controllers[index - (given.questions ?? []).length];
 		/** @type {Map<string, any>} */
 		const latest = new Map();
 		for (const question of [...(plan.archives?.[path] ?? []), ...(listed(path)?.questions ?? plan.files?.[path] ?? [])]) {
 			latest.delete(question.id);
 			if (question.status === 'recorded' && question.answer) latest.set(question.id, question);
 		}
-		return { questions_path: path, questions: [...latest.values()], error: plan.answeredErrors?.[path] ?? null };
+		return { questions_path: path, ...controller, questions: [...latest.values()], error: plan.answeredErrors?.[path] ?? null };
 	});
 	return { output: { files } };
 }

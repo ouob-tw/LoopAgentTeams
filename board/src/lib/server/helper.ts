@@ -119,7 +119,11 @@ export async function readQuestions(config: BoardConfig, questionsPath: string):
 
 /** One question file's answered questions, as `board answered` prints them. */
 export interface AnsweredFile {
-	questions_path: string;
+	/** Null when the controller's name makes no file name. */
+	questions_path: string | null;
+	/** The controller the file was asked for by, when it was not asked for by path. */
+	workspace?: string;
+	hcom_name?: string;
 	questions: HelperQuestion[];
 	/** Why this file or its archive could not be read; null when they could. */
 	error: string | null;
@@ -132,17 +136,28 @@ const isAnsweredFile = (value: unknown): value is AnsweredFile => {
 	return (
 		typeof file === 'object' &&
 		file !== null &&
-		typeof file.questions_path === 'string' &&
+		(file.questions_path === null || typeof file.questions_path === 'string') &&
 		(file.error === null || typeof file.error === 'string') &&
 		Array.isArray(file.questions) &&
 		file.questions.every((question) => typeof question === 'object' && question !== null)
 	);
 };
 
+/** Question files to read answered questions from: by path, or by the workspace and name of a
+ *  controller that is no longer bound, whose file the helper names. */
+export interface AnsweredSources {
+	paths: string[];
+	controllers: { workspace: string; hcomName: string }[];
+}
+
 /** The answered questions each of these question files and its archive hold. */
-export async function readAnswered(config: BoardConfig, questionsPaths: string[]): Promise<HelperAnswered> {
-	if (!questionsPaths.length) return { ok: true, files: [] };
-	const { stdout, failure } = await run(config, ['answered', ...questionsPaths.map((path) => `--questions=${path}`)]);
+export async function readAnswered(config: BoardConfig, { paths, controllers }: AnsweredSources): Promise<HelperAnswered> {
+	if (!paths.length && !controllers.length) return { ok: true, files: [] };
+	const { stdout, failure } = await run(config, [
+		'answered',
+		...paths.map((path) => `--questions=${path}`),
+		...controllers.flatMap((controller) => [`--workspace=${controller.workspace}`, `--hcom-name=${controller.hcomName}`])
+	]);
 	let payload: { files?: unknown; reason?: unknown };
 	try {
 		payload = JSON.parse(stdout);
