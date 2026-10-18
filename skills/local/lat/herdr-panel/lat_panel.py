@@ -1074,7 +1074,10 @@ def _indented(text):
 
 
 def _write_decision_answer(decision_path, section, proof, answer, note, *, now=None):
-    """Append one panel answer to a pending decision record and mark it answered."""
+    """Append one panel answer to a pending decision record and mark it answered.
+
+    Returns the record's ``(previous, written)`` text, for ``_restore_decision``.
+    """
     if not decision_path.parent.is_dir():
         raise ValueError(f"decisions directory does not exist: {decision_path.parent}")
     if not decision_path.exists():
@@ -1109,6 +1112,16 @@ def _write_decision_answer(decision_path, section, proof, answer, note, *, now=N
             text[:status_line.start()] + f"- status: {ANSWERED_STATUS}" + text[status_line.end():]
         ).rstrip("\n") + "\n\n" + "\n".join(lines) + "\n"
         _replace_locked(decision_path, updated)
+        return text, updated
+
+
+def _restore_decision(decision_path, written, previous):
+    """Undo ``_write_decision_answer`` unless the record changed since."""
+    with _path_lock(decision_path):
+        if _read_text_exact(decision_path) != written:
+            return False
+        _replace_locked(decision_path, previous)
+        return True
 
 
 def record_submitted_answers(questions_path, question_ids, *, config_dir=None, now=None):
@@ -1155,6 +1168,8 @@ def record_submitted_answers(questions_path, question_ids, *, config_dir=None, n
         ]
     for item in outcomes:
         item.pop("section_sha256", None)
+    if any(item["recorded"] for item in outcomes):
+        refresh_status_display(questions_path, config_dir=config_dir)
     return outcomes
 
 
@@ -1173,8 +1188,8 @@ def _record_answer_locked(questions_path, journal_path, question_id, decisions_p
             raise ValueError(unknown)
         proof = question_provenance(questions_path, journal_path, question_id)
         decision_path = decisions_path / f"{question_id}.md"
-        _write_decision_answer(decision_path, section, proof, answer, note, now=now)
-    except (OSError, ValueError, UnicodeError, AttributeError, TypeError) as error:
+        previous, written = _write_decision_answer(decision_path, section, proof, answer, note, now=now)
+    except (OSError, ValueError, AttributeError, TypeError) as error:
         # The last two: a journal line that is JSON but not an entry.
         outcome["reason"] = str(error)
         return outcome
@@ -1184,8 +1199,13 @@ def _record_answer_locked(questions_path, journal_path, question_id, decisions_p
             now=now, auto_recorded=True,
         )
     except (OSError, ValueError) as error:
-        outcome["reason"] = (
-            f"answer written to {decision_path} but the question was not marked recorded: {error}"
+        # Put the record back to pending, so the manual steps can record this answer.
+        try:
+            restored = _restore_decision(decision_path, written, previous)
+        except OSError:
+            restored = False
+        outcome["reason"] = f"the question could not be marked recorded: {error}" + (
+            "" if restored else f"; {decision_path} already has the answer and status answered"
         )
         return outcome
     outcome["recorded"] = True

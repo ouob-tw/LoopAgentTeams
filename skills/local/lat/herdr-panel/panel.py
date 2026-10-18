@@ -1552,6 +1552,7 @@ class Panel(App):
         self.notices["submission"] = submission_error_text(text)
         self.render_status()
         if newly_submitted:
+            lat_panel.record_submitted_answers(self.path, sorted(newly_submitted))
             self.mark_pending()
         return True
 

@@ -816,13 +816,29 @@ class SubmitTests(SelectorTestCase):
         self.assertFalse(self.pending())
         self.assertIn("- [x] 送出", section(self.text(), "Q1"))
 
-    async def test_submit_records_the_answer_and_tells_the_controller(self):
+    def pending_decision(self):
         decisions = self.root / "decisions"
         decisions.mkdir()
         (decisions / "Q1.md").write_text("- status: pending\n- advisor: needs-human\n")
         (self.project / ".lat/sessions").mkdir()
         (self.project / ".lat/sessions/s-a.json").write_text(
             json.dumps({"decisions_path": str(decisions)}))
+        return decisions
+
+    async def test_raw_editor_submit_records_the_answer(self):
+        decisions = self.pending_decision()
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "ctrl+e")
+            app.editor.load_text(self.text().replace(
+                "答覆：\n\n- [ ] 送出", "答覆：A. 合併到 dev，不推送\n\n- [x] 送出", 1))
+            app.save()
+            await self.settle(app, pilot)
+        self.assertIn("Q1 · r1 · 已記錄 · ", section(self.text(), "Q1"))
+        self.assertIn("- 答覆：A. 合併到 dev，不推送\n", (decisions / "Q1.md").read_text())
+
+    async def test_submit_records_the_answer_and_tells_the_controller(self):
+        decisions = self.pending_decision()
         app = self.make_app()
         async with app.run_test() as pilot:
             await self.press(pilot, "1", "right", "right", "right", "enter")

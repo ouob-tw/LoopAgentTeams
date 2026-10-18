@@ -153,6 +153,29 @@ class NotRecordedTests(AutoRecordTestCase):
         self.assertFalse(outcome[0]["recorded"])
         self.assertIn("section hash mismatch", outcome[0]["reason"])
 
+    def test_record_put_back_when_the_question_cannot_be_marked_recorded(self):
+        before = self.decision("Q3").read_text()
+        original = self.core._set_recorded_locked
+
+        def refuse(*args, **kwargs):
+            raise OSError("disk full")
+
+        self.core._set_recorded_locked = refuse
+        self.addCleanup(setattr, self.core, "_set_recorded_locked", original)
+        question = next(item for item in self.core.parse_questions(self.questions.read_text())
+                        if item["id"] == "Q3")
+        saved = self.core.write_question_answer(
+            self.questions, "Q3", 1, self.core.question_section_sha256(question),
+            self.core.QuestionAnswer("text", (), "想法", ""))
+        self.core.submit_question_answers(self.questions, {"Q3": (1, saved["section_sha256"])})
+
+        [outcome] = self.core.record_submitted_answers(self.questions, ["Q3"], config_dir=self.config)
+
+        self.assertFalse(outcome["recorded"])
+        self.assertEqual(outcome["reason"], "the question could not be marked recorded: disk full")
+        self.assertEqual(self.decision("Q3").read_text(), before)
+        self.assertEqual(self.question("Q3")["status"], "submitted")
+
     def test_controller_without_a_session_record(self):
         (self.root / "project-a/.lat/sessions/s-a.json").unlink()
         self.assert_not_recorded("Q3", 1, "--text", "想法", reason="session record cannot be read")
