@@ -189,7 +189,8 @@ export async function tabToFront(config: BoardConfig, paneId: string): Promise<s
 
 /** One agent Herdr detects in a pane, with the names of its workspace and tab. */
 export interface HerdrAgent {
-	sessionId: string;
+	/** Null while Herdr does not know the client's session yet. */
+	sessionId: string | null;
 	client: string;
 	/** Herdr's own view of what it does: `idle`, `working`, `blocked`, `done` or `unknown`. */
 	status: string;
@@ -219,11 +220,8 @@ const isListedAgent = (value: unknown): value is ListedAgent =>
 		(field) => typeof (value as Record<string, unknown>)?.[field] === 'string'
 	);
 
-/**
- * Every agent `herdr agent list` reports, across all workspaces, with the labels of `workspace
- * list` and `tab list`; or why they cannot be told. One whose client session Herdr does not know
- * yet has no key on the board and is left out until it does.
- */
+/** Every agent `herdr agent list` reports, across all workspaces, with the labels of `workspace
+ *  list` and `tab list`; or why they cannot be told. */
 export async function listHerdrAgents(config: BoardConfig): Promise<{ ok: true; agents: HerdrAgent[] } | { ok: false; reason: string }> {
 	const [agents, workspaces, tabs] = await Promise.all([
 		herdr(config, ['agent', 'list']),
@@ -245,25 +243,22 @@ export async function listHerdrAgents(config: BoardConfig): Promise<{ ok: true; 
 	const tabLabel = new Map(tabList.map((tab) => [tab.tab_id as string, tab.label as string]));
 	return {
 		ok: true,
-		agents: agentList.flatMap((agent) => {
+		agents: agentList.map((agent) => {
 			const sessionId = agent.agent_session?.value;
-			if (typeof sessionId !== 'string' || !sessionId) return [];
 			const workspace = workspaceOf.get(agent.workspace_id);
 			const terminalTitle = typeof agent.terminal_title_stripped === 'string' ? agent.terminal_title_stripped : '';
-			return [
-				{
-					sessionId,
-					client: agent.agent,
-					status: agent.agent_status,
-					cwd: agent.cwd,
-					pane: agent.pane_id,
-					tab: agent.tab_id,
-					workspace: agent.workspace_id,
-					title: tabLabel.get(agent.tab_id) || terminalTitle || null,
-					workspaceLabel: workspace?.label ?? null,
-					workspaceNumber: workspace?.number ?? null
-				}
-			];
+			return {
+				sessionId: typeof sessionId === 'string' && sessionId ? sessionId : null,
+				client: agent.agent,
+				status: agent.agent_status,
+				cwd: agent.cwd,
+				pane: agent.pane_id,
+				tab: agent.tab_id,
+				workspace: agent.workspace_id,
+				title: tabLabel.get(agent.tab_id) || terminalTitle || null,
+				workspaceLabel: workspace?.label ?? null,
+				workspaceNumber: workspace?.number ?? null
+			};
 		})
 	};
 }

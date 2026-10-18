@@ -44,7 +44,7 @@ const WORKSPACES = [
 function setHerdr(agents: object[], extra: object = {}) {
 	const tabs = agents.map((agent) => {
 		const { tab_id, workspace_id, agent_session } = agent as { tab_id: string; workspace_id: string; agent_session: { value: string } | null };
-		return { tab_id, workspace_id, label: `tab-${agent_session?.value}`, number: 1, pane_count: 1 };
+		return { tab_id, workspace_id, label: `tab-${agent_session?.value ?? tab_id}`, number: 1, pane_count: 1 };
 	});
 	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ agents, workspaces: WORKSPACES, tabs, ...extra }));
 }
@@ -68,7 +68,7 @@ test('lists every Herdr agent across workspaces, named and stated by hcom when l
 		herdrAgent('s-pane', { status: 'idle', pane: 'wA:p9' }),
 		herdrAgent('s-plain', { status: 'blocked' }),
 		herdrAgent('s-done', { status: 'done' }),
-		// Herdr does not know its session yet: no key on the board.
+		// Herdr does not know its session yet: listed, without a key.
 		{ ...herdrAgent('s-none'), agent_session: null }
 	]);
 	fixture.setHcom({
@@ -90,8 +90,10 @@ test('lists every Herdr agent across workspaces, named and stated by hcom when l
 		['s-plain', 'tab-s-plain', 'none', 'blocked', 'herdr'],
 		['s-done', 'tab-s-done', 'none', 'done', 'herdr'],
 		['s-lead', 'lead', 'linked', 'working', 'hcom'],
+		[null, 'tab-wA:t-s-none', 'none', 'idle', 'herdr'],
 		['s-beta', 'tab-s-beta', 'none', 'working', 'herdr']
 	]);
+	expect(snapshot.agents.find((entry) => entry.id === null)).toMatchObject({ controller: false, herdr: { pane: 'wA:p-s-none' } });
 	expect(agent(snapshot, 's-lead')).toMatchObject({ controller: true, hcomName: 'lead', client: 'claude' });
 	expect(agent(snapshot, 's-plain')).toMatchObject({ controller: false, hcomName: null });
 	expect(agent(snapshot, 's-beta')).toEqual({
@@ -186,6 +188,23 @@ test('while hcom\'s list cannot be read the last pairing stands, and an agent th
 		['s-late', 'lato', 'linked', 'idle', 'hcom'],
 		['s-linked', 'linko', 'linked', 'idle', 'hcom'],
 		['s-plain', 'tab-s-plain', 'none', 'idle', 'herdr']
+	]);
+});
+
+test('an outage keeps each agent\'s own pairing: a new session in a linked pane is unknown, a linked one that moved stays linked', async () => {
+	setHerdr([herdrAgent('s-old', { pane: 'wA:p1' }), herdrAgent('s-moving', { pane: 'wA:p2' })]);
+	fixture.setHcom({ agents: [hcomAgent('olda', 's-old', { pane: 'wA:p1' }), hcomAgent('movo', null, { status: 'active', pane: 'wA:p2' })] });
+	expect(summary(await fixture.refresh(cookie))).toEqual([
+		['s-moving', 'movo', 'linked', 'working', 'hcom'],
+		['s-old', 'olda', 'linked', 'idle', 'hcom']
+	]);
+
+	fixture.setHcom({ listFail: { exit: 1, stderr: 'hcom broke' } });
+	// s-old's pane now runs a new session, and s-moving runs in another pane.
+	setHerdr([herdrAgent('s-new', { pane: 'wA:p1', status: 'working' }), herdrAgent('s-moving', { pane: 'wA:p7' })]);
+	expect(summary(await fixture.refresh(cookie))).toEqual([
+		['s-moving', 'movo', 'linked', 'working', 'hcom'],
+		['s-new', 'tab-s-new', 'unknown', 'working', 'herdr']
 	]);
 });
 

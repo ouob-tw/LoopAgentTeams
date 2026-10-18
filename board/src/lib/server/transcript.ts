@@ -20,7 +20,7 @@ export async function transcriptSource(board: Board, controllerId: string): Prom
 /** The client and session of an agent the 所有 Agent tab lists; null for any other session ID. */
 export async function agentTranscriptSource(board: Board, sessionId: string): Promise<{ client: string; sessionId: string } | null> {
 	const agent = (await board.current()).agents.find((candidate) => candidate.id === sessionId);
-	return agent ? { client: agent.client, sessionId: agent.id } : null;
+	return agent ? { client: agent.client, sessionId } : null;
 }
 
 /**

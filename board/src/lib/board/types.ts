@@ -200,8 +200,9 @@ export const AGENT_HCOM_LABEL: Record<AgentHcom, string> = {
 
 /** One agent Herdr lists, in any of its workspaces. */
 export interface Agent {
-	/** The client's session ID, as Herdr reports it: the agent's key everywhere on the board. */
-	id: string;
+	/** The client's session ID, as Herdr reports it: the agent's key everywhere on the board. Null
+	 *  while Herdr does not know it yet: such an agent is listed but cannot be opened. */
+	id: string | null;
 	/** Its HCOM name when linked, otherwise its Herdr tab's title. */
 	name: string;
 	/** The HCOM name, as last read; null unless linked. */
@@ -218,3 +219,6 @@ export interface Agent {
 	/** Bound as a LAT controller: its session ID is in the binding registry. */
 	controller: boolean;
 }
+
+/** An agent whose session Herdr knows: one that can be opened. */
+export type KnownAgent = Agent & { id: string };

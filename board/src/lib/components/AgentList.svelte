@@ -15,28 +15,41 @@
 
 {#each groups as group (group.workspace)}
 	<h3 data-workspace={group.workspace}>{group.label}</h3>
-	{#each group.agents as agent (agent.id)}
-		<button class="agent" class:current={agent.id === currentId} data-agent={agent.id} title={tooltip(agent)} onclick={() => onopen(agent.id)}>
-			<span class="who">
-				<StatusMark status={AGENT_MARK[agent.status]} decorative />
-				<strong class="name">{agent.name}</strong>
-				{#if agent.controller}
-					<span class="tag" title="LAT 主控">主控</span>
-				{/if}
-			</span>
-			<span class="facts">
-				<span class="status">{AGENT_STATUS_LABEL[agent.status]}</span>
-				<span>{agent.client}</span>
-				{#if agent.hcom !== 'linked'}
-					<span class:unknown={agent.hcom === 'unknown'}>{AGENT_HCOM_LABEL[agent.hcom]}</span>
-				{/if}
-			</span>
-			<span class="folder">{folderName(agent.folder)}</span>
-		</button>
+	{#each group.agents as agent (agent.id ?? agent.herdr.pane)}
+		{@const id = agent.id}
+		{#if id}
+			<button class="agent" class:current={id === currentId} data-agent={id} title={tooltip(agent)} onclick={() => onopen(id)}>
+				{@render row(agent)}
+			</button>
+		{:else}
+			<!-- Herdr does not know its session yet, and everything about an agent is keyed by it. -->
+			<div class="agent" data-pane={agent.herdr.pane} title={tooltip(agent)}>
+				{@render row(agent)}
+				<span class="pending">Herdr 還沒回報它的 session ID，暫時無法開啟</span>
+			</div>
+		{/if}
 	{/each}
 {:else}
 	<p class="none">Herdr 裡沒有 Agent。</p>
 {/each}
+
+{#snippet row(agent: Agent)}
+	<span class="who">
+		<StatusMark status={AGENT_MARK[agent.status]} decorative />
+		<strong class="name">{agent.name}</strong>
+		{#if agent.controller}
+			<span class="tag" title="LAT 主控">主控</span>
+		{/if}
+	</span>
+	<span class="facts">
+		<span class="status">{AGENT_STATUS_LABEL[agent.status]}</span>
+		<span>{agent.client}</span>
+		{#if agent.hcom !== 'linked'}
+			<span class:unknown={agent.hcom === 'unknown'}>{AGENT_HCOM_LABEL[agent.hcom]}</span>
+		{/if}
+	</span>
+	<span class="folder">{folderName(agent.folder)}</span>
+{/snippet}
 
 <style>
 	h3 {
@@ -98,6 +111,16 @@
 	}
 	.unknown {
 		color: var(--warn);
+	}
+	/* Not a button: framed like one, but nothing to press. */
+	div.agent {
+		border: 1px dashed var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+	}
+	.pending {
+		font-size: max(0.8rem, var(--min-font, 0px));
+		color: var(--muted);
 	}
 	.none {
 		margin: 0.5rem 0;

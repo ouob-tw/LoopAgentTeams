@@ -90,7 +90,10 @@ function herdrAgent(session: string, fields: { client?: string; status?: string;
 const AGENTS = [
 	herdrAgent('s-lead', { status: 'done', cwd: '/home/someone/projects/a-very-long-project-folder-name-that-must-not-push-the-page-sideways' }),
 	herdrAgent('s-plain', { status: 'blocked', client: 'codex' }),
-	herdrAgent('s-other', { status: 'working', workspace: 'wB' })
+	herdrAgent('s-other', { status: 'working', workspace: 'wB' }),
+	herdrAgent('s-long', { status: 'idle', workspace: 'wB' }),
+	// Herdr does not know its session yet.
+	{ ...herdrAgent('s-unknown', { status: 'idle', workspace: 'wB' }), agent_session: { kind: 'id', value: null } }
 ];
 function setHerdr(agents: object[]) {
 	writeFileSync(
@@ -102,8 +105,8 @@ function setHerdr(agents: object[]) {
 				{ workspace_id: 'wB', number: 2, label: 'Beta' }
 			],
 			tabs: agents.map((agent) => {
-				const { tab_id, workspace_id, agent_session } = agent as { tab_id: string; workspace_id: string; agent_session: { value: string } };
-				return { tab_id, workspace_id, label: `分頁-${agent_session.value}` };
+				const { tab_id, workspace_id, agent_session } = agent as { tab_id: string; workspace_id: string; agent_session: { value: string | null } };
+				return { tab_id, workspace_id, label: `分頁-${agent_session.value ?? tab_id}` };
 			})
 		})
 	);
@@ -122,6 +125,7 @@ beforeAll(async () => {
 	fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
 	setHerdr(AGENTS);
 	record('s-plain', ['幫我看一下測試', '測試都過了。']);
+	record('s-long', Array.from({ length: 60 }, (_, index) => `第 ${index} 段`));
 	await fixture.refresh(cookie);
 }, 30_000);
 afterEach(async () => {
@@ -166,6 +170,9 @@ for (const width of [1280, 390]) {
 		expect(list).toContain('主控');
 		expect(list).toContain('等待輸入');
 		expect(list).toContain('沒接 HCOM');
+		// Listed, but nothing to open without a session ID.
+		expect(await tab.eval(`document.querySelector('[data-pane="wB:p-s-unknown"]')?.tagName`)).toBe('DIV');
+		expect(list).toContain('Herdr 還沒回報它的 session ID，暫時無法開啟');
 		expect(await tab.eval(FITS)).toBe(true);
 
 		await openAgent('s-plain');
@@ -186,10 +193,34 @@ for (const width of [1280, 390]) {
 	}, 30_000);
 }
 
-test.skipIf(!CHROME)('a reload keeps the open agent and its tab; an agent Herdr no longer lists says so', async () => {
+test.skipIf(!CHROME)('the conversation shows the newest first and loads earlier parts at its end', async () => {
+	await visit(1280, '?agent=s-long');
+	const texts = `[...document.querySelectorAll('.detail .history li')].map((li) => li.innerText)`;
+	await tab.until(`${texts}.some((text) => text.includes('第 59 段'))`, 'the latest page');
+	let shown = await tab.eval<string[]>(texts);
+	expect(shown[0]).toContain('第 59 段');
+	expect(shown.some((text) => text.includes('第 9 段'))).toBe(false);
+	await tab.eval(`document.querySelector('.detail .earlier').scrollIntoView()`);
+	await tab.until(`${texts}.some((text) => text.includes('第 0 段'))`, 'the earlier part');
+	shown = await tab.eval<string[]>(texts);
+	expect(shown.at(-1)).toContain('第 0 段');
+}, 30_000);
+
+test.skipIf(!CHROME)('a reload keeps the tab the list was switched to', async () => {
+	await visit(1280);
+	await openTab();
+	await tab.until(`!!document.querySelector('.inbox [data-agent="s-plain"]')`, 'the agent list');
+	await tab.eval('window.beforeReload = true');
+	await tab.send('Page.reload');
+	await tab.until(`!window.beforeReload && JSON.stringify(history.state).includes('depth')`, 'the reloaded board');
+	await tab.until(`!!document.querySelector('.inbox [data-agent="s-plain"]')`, 'the agent list after the reload');
+	expect(await tab.eval(`document.querySelector('[data-middle="agents"]').getAttribute('aria-pressed')`)).toBe('true');
+}, 30_000);
+
+test.skipIf(!CHROME)('an address that opens an agent shows its tab; an agent Herdr no longer lists says so', async () => {
 	await visit(1280, '?agent=s-lead');
 	await tab.until(`!!document.querySelector('.detail [data-agent="s-lead"]')`, 'the agent page');
-	expect(await tab.eval(`document.querySelector('[data-middle="agents"]').getAttribute('aria-selected')`)).toBe('true');
+	expect(await tab.eval(`document.querySelector('[data-middle="agents"]').getAttribute('aria-pressed')`)).toBe('true');
 	// Its conversation cannot be read: the reason shows in a notice.
 	await tab.until(`document.querySelector('.dock')?.innerText.includes('對話紀錄讀不到')`, 'the notice');
 

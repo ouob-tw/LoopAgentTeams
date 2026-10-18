@@ -101,14 +101,14 @@
 
 ## 所有 Agent
 
-中間欄頂端的「信箱／所有 Agent」分頁切換兩份清單，選擇記在各自的裝置上。「所有 Agent」列出 Herdr 所有工作區裡的每一個 Agent，名冊、信箱與主控資訊頁不受影響。這張票只做檢視：清單與對話紀錄。
+中間欄頂端的「信箱／所有 Agent」分頁（對輔助技術是一組按下狀態的按鈕，與信箱的檢視切換相同）切換兩份清單，選擇記在各自的裝置上。「所有 Agent」列出 Herdr 所有工作區裡的每一個 Agent，名冊、信箱與主控資訊頁不受影響。目前只有檢視：清單與對話紀錄。
 
-- 名單：每次讀取資料（與輔助工具、hcom 清單同時）執行 `herdr agent list`，並用 `workspace list`、`tab list`（不帶 `--workspace`，一次列出所有分頁）取得工作區與分頁名稱。每個 Agent 以 Herdr 回報的 client session ID（`agent_session.value`）為鍵；Herdr 還不知道 session ID 的 Agent 沒有鍵，等它有了才列出。不在 Herdr 清單上的 Agent 不列，包括只在 hcom 清單上的（tmux 裡的、子 Agent）；從 Herdr 清單消失就從分頁消失。
-- 是否接 HCOM：`hcom list --json` 裡有同一個 session ID 的 Agent，沒有時看 `launch_context.pane_id` 是不是同一個窗格。配對到的顯示 HCOM 名稱與 HCOM 狀態（`active` 工作中、`listening` 閒置、`blocked` 等待輸入，其他是不明）；沒配對到的顯示 Herdr 分頁名稱（沒有時用終端機標題）與 Herdr 的 `agent_status`（`blocked` 等待輸入、`done` 已完成、`working` 工作中、`idle` 閒置，其他是不明），見 ADR 0003 第 2 點的補記。
+- 名單：每次讀取資料（與輔助工具、hcom 清單同時）執行 `herdr agent list`，並用 `workspace list`、`tab list`（不帶 `--workspace`，一次列出所有分頁）取得工作區與分頁名稱。每個 Agent 以 Herdr 回報的 client session ID（`agent_session.value`）為鍵；Herdr 還不知道 session ID 的 Agent 照樣列出，但沒有鍵，不能點開，清單上註明原因，等 Herdr 回報後才能開啟。不在 Herdr 清單上的 Agent 不列，包括只在 hcom 清單上的（tmux 裡的、子 Agent）；從 Herdr 清單消失就從分頁消失。
+- 是否接 HCOM：`hcom list --json` 裡有同一個 session ID 的 Agent，沒有時看 `launch_context.pane_id` 是不是同一個窗格（還沒有 session ID 的 Agent 只看窗格）。配對到的顯示 HCOM 名稱與 HCOM 狀態（`active` 工作中、`listening` 閒置、`blocked` 等待輸入，其他是不明）；沒配對到的顯示 Herdr 分頁名稱（沒有時用終端機標題）與 Herdr 的 `agent_status`（`blocked` 等待輸入、`done` 已完成、`working` 工作中、`idle` 閒置，其他是不明），見 ADR 0003 第 2 點的補記。
 - 面板綁定登記裡有它的 session ID 的標為 LAT 主控（綁定登記讀不到時沿用上次讀到的）。
 - 排序在伺服器（`src/lib/server/agents.ts`）：依 Herdr 工作區編號分組（不在工作區清單上的排最後），組內依等待輸入、已完成、工作中、閒置、不明，再依名稱。
 - Herdr 的三份清單任一讀不到（結束碼非 0、逾時、不是預期的 JSON 或格式）時，以讀取錯誤的浮動通知顯示原因，分頁沿用上次讀到的清單；看板啟動後還沒讀到過時清單是空的。
-- hcom 清單讀不到時沿用上次讀到的配對：當時配對到的照舊顯示 HCOM 名稱與當時的狀態，當時已確認沒接的照舊是沒接；看板啟動後還沒讀到過，或在讀不到期間才出現的 Agent，HCOM 連線標為「無法確認」，名稱與狀態暫用 Herdr 的。之後讀到清單就恢復。
+- hcom 清單讀不到時沿用上次讀到的配對：配對結果依 session ID 記住（沒有 session ID 的依窗格），當時配對到的照舊顯示 HCOM 名稱與當時的狀態，換了窗格也一樣；當時已確認沒接的照舊是沒接；同一個窗格換成新的 session 不會接手舊的配對，算是讀不到期間才出現的。看板啟動後還沒讀到過，或在讀不到期間才出現的 Agent，HCOM 連線標為「無法確認」，名稱與狀態暫用 Herdr 的。之後讀到清單就恢復。
 - 清單跟著看板的資料推送更新（`snapshot.agents`）：Agent 開啟、關閉或狀態改變不會動到看板監看的檔案，所以通常由保底重讀帶到畫面上，最慢同保底重讀的時限；其他來源的檔案變動、重新整理按鈕與載入頁面也會一起重讀。
 - 點進 Agent（網址 `?agent=<session ID>`）顯示它的工作位置與對話紀錄，對話紀錄與主控資訊頁共用同一套顯示、往下捲載入更早與自動接上新內容（見「對話紀錄」）；讀不到時以浮動通知顯示原因。Agent 從 Herdr 清單消失後，開著的頁面改說它已不在清單上。
 - 端點（都要登入，未登入回 401）：`GET /api/agents` 回傳目前的清單；`GET /api/agents/transcript?session=<ID>[&before=<游標>]` 與 `GET /api/agents/transcript/events?session=<ID>` 對應主控的 `/api/transcript` 與 `/api/transcript/events`，以 Agent 在 Herdr 回報的 client 呼叫輔助工具的 `board transcript`。不在清單上的 session ID 回 404，不呼叫輔助工具。

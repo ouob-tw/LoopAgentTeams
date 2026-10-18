@@ -18,7 +18,7 @@
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { askedTogether } from '#lib/board/question-message.ts';
 	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
-	import type { InboxItem, InboxQuestion } from '#lib/board/types.ts';
+	import type { InboxItem, InboxQuestion, KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
 	import AgentList from '#lib/components/AgentList.svelte';
 	import CommandLine from '#lib/components/CommandLine.svelte';
@@ -59,12 +59,6 @@
 	function setMiddle(next: (typeof MIDDLE_TABS)[number]) {
 		middle = next;
 		remember(MIDDLE_TAB_KEY, next);
-	}
-	function middleKeys(event: KeyboardEvent) {
-		if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
-		event.preventDefault();
-		setMiddle(middle === 'inbox' ? 'agents' : 'inbox');
-		(event.currentTarget as HTMLElement).querySelector<HTMLElement>(`[data-middle="${middle}"]`)?.focus();
 	}
 
 	onMount(() => appearance.restore());
@@ -131,7 +125,7 @@
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
 	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
 	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
-	const agent = $derived(agentId === null ? undefined : agents.find((candidate) => candidate.id === agentId));
+	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
 	// An agent opened by its address shows on the tab it belongs to.
 	$effect(() => {
 		if (view?.kind === 'agent') untrack(() => (middle = 'agents'));
@@ -464,23 +458,12 @@
 		{@render resize('roster')}
 
 		<section class="inbox">
-			<!-- svelte-ignore a11y_interactive_supports_focus -->
-			<div class="middle-tabs" role="tablist" aria-label="清單" onkeydown={middleKeys}>
-				<button
-					type="button"
-					role="tab"
-					data-middle="inbox"
-					aria-selected={middle === 'inbox'}
-					tabindex={middle === 'inbox' ? 0 : -1}
-					onclick={() => setMiddle('inbox')}>信箱</button
-				>
-				<button
-					type="button"
-					role="tab"
-					data-middle="agents"
-					aria-selected={middle === 'agents'}
-					tabindex={middle === 'agents' ? 0 : -1}
-					onclick={() => setMiddle('agents')}>所有 Agent<small>{agents.length}</small></button
+			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
+			     views, as the list they switch has no panel of its own around it. -->
+			<div class="middle-tabs" role="group" aria-label="清單">
+				<button type="button" data-middle="inbox" aria-pressed={middle === 'inbox'} onclick={() => setMiddle('inbox')}>信箱</button>
+				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => setMiddle('agents')}
+					>所有 Agent<small>{agents.length}</small></button
 				>
 			</div>
 			{#if middle === 'agents'}
@@ -730,12 +713,15 @@
 		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
-	.middle-tabs button[aria-selected='true'] {
+	/* An underline, not the filled look of other pressed buttons. */
+	.middle-tabs button[aria-pressed='true'] {
+		background: none;
+		border-color: transparent;
 		border-bottom-color: var(--accent);
 		color: var(--text);
 		font-weight: 600;
 	}
-	:global(:root[data-theme='light']) .middle-tabs button[aria-selected='true'] {
+	:global(:root[data-theme='light']) .middle-tabs button[aria-pressed='true'] {
 		border-bottom-color: var(--text);
 	}
 	.middle-tabs small {

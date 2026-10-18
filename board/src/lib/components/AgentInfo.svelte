@@ -3,11 +3,11 @@
 	// of who and where it stands, the details of where it runs, then its conversation. The status is
 	// hcom's when hcom reaches it and Herdr's otherwise (ADR 0003).
 	import { AGENT_MARK, folderName } from '#lib/board/agents.ts';
-	import { AGENT_HCOM_LABEL, AGENT_STATUS_LABEL, type Agent } from '#lib/board/types.ts';
+	import { AGENT_HCOM_LABEL, AGENT_STATUS_LABEL, type KnownAgent } from '#lib/board/types.ts';
 	import StatusMark from './StatusMark.svelte';
 	import Transcript from './Transcript.svelte';
 
-	let { agent }: { agent: Agent } = $props();
+	let { agent }: { agent: KnownAgent } = $props();
 
 	// Whose texts the conversation shows: by the name the tab lists it under.
 	const speaker = $derived({ id: agent.id, hcomName: agent.name, lastReportAt: null });
