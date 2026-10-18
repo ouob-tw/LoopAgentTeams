@@ -196,6 +196,15 @@ class LayoutTests(SelectorTestCase):
                     self.assertEqual(app.current.other, "abcD")
                     self.assertIn("詳細資訊要先離開輸入框", self.keys(app))
 
+    async def test_footer_warns_in_note_input_and_recovers_on_escape(self):
+        app = self.make_app()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await self.press(pilot, "@options", "tab")
+            self.assertIn("詳細資訊要先離開輸入框", self.keys(app))
+            await self.press(pilot, "escape")
+            self.assertNotIn("詳細資訊要先離開輸入框", self.keys(app))
+            self.assertIn("Ctrl+D 詳細資訊", self.keys(app))
+
     async def test_no_details_means_no_fold_line_and_ctrl_d_does_nothing(self):
         app = self.make_app()
         async with app.run_test(size=(80, 30)) as pilot:
