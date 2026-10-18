@@ -363,7 +363,8 @@ class QuestionOptions(NamedTuple):
     reason: str | None
 
 
-# A single-choice option is a list item "- A. label"; the older unlisted "A. label" still parses.
+# Options are list items: "- A. label" (single) or "- [ ] label" (multi); the older
+# unlisted "A. label" still parses.
 _SINGLE_OPTION = re.compile(r"^(?P<listed>- )?(?P<key>[A-Z])\.\s+(?P<label>\S.*)$")
 _MULTI_OPTION = re.compile(r"^(?P<listed>- )\[[ xX]\]\s+(?P<label>\S.*)$")
 _RECOMMENDATION = re.compile(r"(?:\A|\n[ \t]*\n)(?P<recommendation>➡\ufe0f?)")
