@@ -135,7 +135,7 @@ export function dropSessions(state: InboxState, sessionIds: string[]): boolean {
 	return changed;
 }
 
-const askedIn = (report: Report | null): AskingMessage | null => report && { time: report.time, message: report.message };
+const toAskingMessage = (report: Report | null): AskingMessage | null => report && { time: report.time, message: report.message };
 
 const questionKey = (binding: HelperController, question: HelperQuestion) => `q:${binding.session_id}:${question.id}`;
 
@@ -156,7 +156,7 @@ function questionItems(binding: HelperController, file: ReportFile | undefined):
 			// The pending notification belongs to the question file, so to every answer sent from it.
 			notifyFailed: question.status === 'submitted' && binding.notification_pending === true,
 			question,
-			askedIn: askedIn(askingReport(binding.session_id, question, file?.reports ?? []))
+			askedIn: toAskingMessage(askingReport(binding.session_id, question, file?.reports ?? []))
 		}));
 }
 

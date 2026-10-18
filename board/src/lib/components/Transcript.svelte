@@ -40,9 +40,9 @@
 		reports?: InboxReport[];
 		/** The report, or a question's asking message, this page was opened at, and how it is shown. */
 		target?: PlacedMessage;
-		/** Changes with every opening of a report, the same one again too. */
+		/** Changes with every opening of the target, the same one again too. */
 		opens?: number;
-		/** Called once the report is scrolled to, or shown above the conversation instead. */
+		/** Called once the target is scrolled to, or shown above the conversation instead. */
 		onplaced?: () => void;
 		card?: Snippet;
 		/** Context use, quota and prompt cache, as the live feed last told; null when unknown. */
@@ -63,7 +63,7 @@
 	const shown = $derived(view ? segments(view.items).toReversed() : []);
 
 	let list = $state<HTMLElement>();
-	/** The report's text by `seq`; undefined while still searched for, null when not found. */
+	/** The target's text by `seq`; undefined while still searched for, null when not found. */
 	const place = $derived(target && view ? reportPlace(view, target) : undefined);
 	/** The texts the inbox's reports carry, by `seq`, framed as the reports they are. */
 	const reported = $derived.by(() => {
@@ -75,7 +75,7 @@
 		}
 		return found;
 	});
-	/** Not found, or the record cannot be read: the report is shown above the conversation. */
+	/** Not found, or the record cannot be read: the target's card is shown above the conversation. */
 	const unplaced = $derived(!!target && (place === null || (place === undefined && !!(problem || earlierFailed))));
 	/** The report and opening last scrolled to, so it is scrolled to once per opening, and again
 	 *  when a revised question's asking message replaces the one before. */

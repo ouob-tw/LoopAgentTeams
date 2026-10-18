@@ -48,9 +48,9 @@
 		/** The report, or a question's asking message, this page was opened at, and how it is
 		 *  shown in the history. */
 		target?: PlacedMessage;
-		/** Changes with every opening of a report, the same one again too. */
+		/** Changes with every opening of the target, the same one again too. */
 		opens?: number;
-		/** Called once the report is scrolled to, or shown above the conversation instead. */
+		/** Called once the target is scrolled to, or shown above the conversation instead. */
 		onplaced?: () => void;
 		card?: Snippet;
 	} = $props();
@@ -160,7 +160,7 @@
 		reports: reports.length,
 		sent: messaging.sent[controller.id]?.length ?? null
 	});
-	// Opening a report, the same one again too, shows it in the conversation.
+	// Opening the target, the same one again too, shows it in the conversation.
 	$effect.pre(() => {
 		void opens;
 		if (target) tab = 'transcript';
