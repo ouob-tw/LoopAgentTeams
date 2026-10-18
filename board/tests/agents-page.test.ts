@@ -1,11 +1,11 @@
 // The 所有 Agent tab in a real browser: headless Chrome driven over its DevTools protocol, on the
 // built board with fake data, wide and at a phone's width. Skipped when the host has no Chrome.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
-import { PORT_BASE, sleep, startFixture, type Fixture } from './harness.ts';
+import { NODE, PORT_BASE, sleep, startFixture, type Fixture } from './harness.ts';
 
 const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
 	(path) => path && existsSync(path)
@@ -71,6 +71,7 @@ const FITS = `document.documentElement.scrollWidth <= window.innerWidth`;
 
 let fixture: Fixture;
 let cookie: string;
+const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-inject-'));
 let chrome: ChildProcess | undefined;
 let profile: string;
 let tab: Tab;
@@ -95,10 +96,11 @@ const AGENTS = [
 	// Herdr does not know its session yet.
 	{ ...herdrAgent('s-unknown', { status: 'idle', workspace: 'wB' }), agent_session: { kind: 'id', value: null } }
 ];
-function setHerdr(agents: object[]) {
+function setHerdr(agents: object[], extra: object = {}) {
 	writeFileSync(
 		join(fixture.dir, 'herdr.json'),
 		JSON.stringify({
+			...extra,
 			agents,
 			workspaces: [
 				{ workspace_id: 'wA', number: 1, label: 'Alpha' },
@@ -118,7 +120,8 @@ function record(session: string, texts: string[]) {
 }
 
 beforeAll(async () => {
-	fixture = await startFixture(32);
+	// The linked controller would be typed into through hcom's input command: a fake one.
+	fixture = await startFixture(32, { env: { LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-inject.mjs'), injectDir]) } });
 	cookie = await fixture.login();
 	const lead = fixture.bound('lat', 'lead', { session_id: 's-lead' });
 	fixture.list([lead]);
@@ -136,7 +139,10 @@ afterEach(async () => {
 	await exited;
 	rmSync(profile, { recursive: true, force: true });
 });
-afterAll(() => fixture?.cleanup());
+afterAll(async () => {
+	await fixture?.cleanup();
+	rmSync(injectDir, { recursive: true, force: true });
+});
 
 /** A new Chrome on the board at `search` in a window `width` wide. */
 async function visit(width: number, search = '') {
@@ -230,4 +236,96 @@ test.skipIf(!CHROME)('an address that opens an agent shows its tab; an agent Her
 	expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-lead"]')`)).toBe(false);
 	setHerdr(AGENTS);
 	await fixture.refresh(cookie);
+}, 30_000);
+
+/** The Herdr commands that act on an agent, not the lists every read makes. */
+function herdrCalls(): string[][] {
+	const file = join(fixture.dir, 'herdr-calls.jsonl');
+	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
+}
+/** Type into the agent page's box the way a person would, so the page's own binding sees it. */
+const type = (text: string) =>
+	tab.eval(`(() => {
+		const box = document.querySelector('.detail .compose textarea');
+		Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value').set.call(box, ${JSON.stringify(text)});
+		box.dispatchEvent(new Event('input', { bubbles: true }));
+	})()`);
+const boxText = () => tab.eval<string>(`document.querySelector('.detail .compose textarea').value`);
+const click = (selector: string) => tab.eval(`document.querySelector(${JSON.stringify(selector)}).click()`);
+
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`${width}px: text is sent to an agent and an interrupt asks first; both show in its record`, async () => {
+		rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+		await visit(width, '?agent=s-plain');
+		await tab.until(`!!document.querySelector('.detail .compose textarea')`, 'the agent page');
+		await type('請先停下來');
+		await click('.detail .compose button.primary');
+		await tab.until(`document.querySelector('.detail .compose textarea').value === ''`, 'the box emptied');
+		expect(herdrCalls()).toEqual([['agent', 'prompt', 'wA:p-s-plain', '請先停下來']]);
+
+		await click('.detail [data-action="interrupt"]');
+		await tab.until(`!!document.querySelector('.detail [data-action="confirm-interrupt"]')`, 'the confirmation');
+		expect(await tab.eval(`document.querySelector('.detail .confirm').innerText`)).toContain('Esc');
+		// Nothing is pressed before it is confirmed.
+		expect(herdrCalls()).toHaveLength(1);
+		expect(await tab.eval(FITS)).toBe(true);
+		await click('.detail [data-action="confirm-interrupt"]');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('已對')`, 'the interrupt notice');
+		expect(herdrCalls()).toEqual([
+			['agent', 'prompt', 'wA:p-s-plain', '請先停下來'],
+			['agent', 'send-keys', 'wA:p-s-plain', 'esc']
+		]);
+
+		await click('.detail [data-tab="log"]');
+		await tab.until(`document.querySelectorAll('.detail #agent-panel-log li').length >= 2`, 'the record');
+		const log = await tab.eval<string>(`document.querySelector('.detail #agent-panel-log').innerText`);
+		expect(log.indexOf('中斷')).toBeLessThan(log.indexOf('請先停下來'));
+		expect(log).toContain('已送出');
+		expect(await tab.eval(FITS)).toBe(true);
+	}, 30_000);
+}
+
+test.skipIf(!CHROME)('text Herdr refuses stays in the box with Herdr\'s reason, and is not sent again', async () => {
+	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+	const stderr = JSON.stringify({ error: { code: 'agent_blocked', message: 'agent is blocked' } });
+	setHerdr(AGENTS, { fail: { 'agent prompt': { exit: 1, stderr } } });
+	try {
+		await visit(1280, '?agent=s-plain');
+		await tab.until(`!!document.querySelector('.detail .compose textarea')`, 'the agent page');
+		await type('核准了嗎');
+		await click('.detail .compose button.primary');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('agent is blocked')`, 'the reason');
+		const notices = (await screen()).notices;
+		expect(notices).toContain('確認畫面');
+		expect(notices).toContain('文字還在輸入框裡');
+		expect(await boxText()).toBe('核准了嗎');
+		await sleep(500);
+		expect(herdrCalls()).toEqual([['agent', 'prompt', 'wA:p-s-plain', '核准了嗎']]);
+	} finally {
+		setHerdr(AGENTS);
+	}
+}, 30_000);
+
+test.skipIf(!CHROME)('while hcom cannot tell whether an agent is linked, its box is off but it can still be interrupted', async () => {
+	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+	fixture.setHcom({ listFail: { exit: 1, stderr: 'hcom down' } });
+	setHerdr([...AGENTS, herdrAgent('s-new', { status: 'working' })]);
+	try {
+		await fixture.refresh(cookie);
+		await visit(390, '?agent=s-new');
+		await tab.until(`!!document.querySelector('.detail .compose textarea')`, 'the agent page');
+		expect(await tab.eval(`document.querySelector('.detail .compose textarea').disabled`)).toBe(true);
+		expect((await screen()).detail).toContain('HCOM 連線無法確認');
+		expect(await tab.eval(`document.querySelector('.detail [data-action="interrupt"]').disabled`)).toBe(false);
+		await click('.detail [data-action="interrupt"]');
+		await tab.until(`!!document.querySelector('.detail [data-action="confirm-interrupt"]')`, 'the confirmation');
+		await click('.detail [data-action="confirm-interrupt"]');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('已對')`, 'the interrupt notice');
+		expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-new', 'esc']]);
+		expect(await tab.eval(FITS)).toBe(true);
+	} finally {
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+		setHerdr(AGENTS);
+		await fixture.refresh(cookie);
+	}
 }, 30_000);

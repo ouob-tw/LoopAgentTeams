@@ -33,7 +33,7 @@
 | `LAT_BOARD_HCOM_TIMEOUT_SECONDS` | hcom 啟動或接回指令多久沒結束就不再等（含 hcom 自己等 client 就緒的時間）；逾時算「仍在啟動」，不算失敗 | `60` |
 | `LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS` | `hcom list --json` 多久沒結束就當成讀不到（此時喚醒不送出，名冊沿用上次的清單）；`hcom kill` 也用這個時間，逾時算「停止結果不明」 | `15` |
 | `LAT_BOARD_MODEL_OPTIONS` | 表單提供的模型與思考強度（JSON），例如 `{"codex":{"models":["gpt-6.1-sol"]}}`；只取代有寫到的 client 與清單，其餘用內建清單 | 內建清單 |
-| `LAT_BOARD_HERDR_COMMAND` | Herdr 指令（JSON 字串陣列），看板會在後面加上 `pane list`、`workspace list`、`workspace create --cwd <專案> --label <名稱> --no-focus`，以及每次讀取資料時的 `agent list`、`workspace list`、`tab list`（「所有 Agent」分頁） | `["herdr"]` |
+| `LAT_BOARD_HERDR_COMMAND` | Herdr 指令（JSON 字串陣列），看板會在後面加上 `pane list`、`workspace list`、`workspace create --cwd <專案> --label <名稱> --no-focus`，以及每次讀取資料時的 `agent list`、`workspace list`、`tab list`，傳話與中斷時的 `agent prompt <窗格> <文字>`、`agent send-keys <窗格> esc`（「所有 Agent」分頁） | `["herdr"]` |
 | `LAT_BOARD_HERDR_TIMEOUT_SECONDS` | 每個 Herdr 指令多久沒結束就放棄 | `10` |
 | `LAT_BOARD_LAUNCH_WAIT_SECONDS` | 新建後多久還沒出現綁定，就在新建紀錄提示「已開分頁，但主控尚未啟用」；喚醒接回後多久還沒在 hcom 清單出現，就在送出紀錄提示「接回後仍未出現」 | `180` |
 
@@ -101,7 +101,7 @@
 
 ## 所有 Agent
 
-中間欄頂端的「信箱／所有 Agent」分頁（對輔助技術是一組按下狀態的按鈕，與信箱的檢視切換相同）切換兩份清單，選擇記在各自的裝置上。「所有 Agent」列出 Herdr 所有工作區裡的每一個 Agent，名冊、信箱與主控資訊頁不受影響。目前只有檢視：清單與對話紀錄。
+中間欄頂端的「信箱／所有 Agent」分頁（對輔助技術是一組按下狀態的按鈕，與信箱的檢視切換相同）切換兩份清單，選擇記在各自的裝置上。「所有 Agent」列出 Herdr 所有工作區裡的每一個 Agent，名冊、信箱與主控資訊頁不受影響。目前有清單、對話紀錄、傳話、中斷與操作紀錄；關閉與切換模型還沒有。
 
 - 名單：每次讀取資料（與輔助工具、hcom 清單同時）執行 `herdr agent list`，並用 `workspace list`、`tab list`（不帶 `--workspace`，一次列出所有分頁）取得工作區與分頁名稱。每個 Agent 以 Herdr 回報的 client session ID（`agent_session.value`）為鍵；Herdr 還不知道 session ID 的 Agent 照樣列出，但沒有鍵，不能點開，清單上註明原因，等 Herdr 回報後才能開啟。不在 Herdr 清單上的 Agent 不列，包括只在 hcom 清單上的（tmux 裡的、子 Agent）；從 Herdr 清單消失就從分頁消失。
 - 是否接 HCOM：`hcom list --json` 裡有同一個 session ID 的 Agent，沒有時看 `launch_context.pane_id` 是不是同一個窗格（還沒有 session ID 的 Agent 只看窗格）。配對到的顯示 HCOM 名稱與 HCOM 狀態（`active` 工作中、`listening` 閒置、`blocked` 等待輸入，其他是不明）；沒配對到的顯示 Herdr 分頁名稱（沒有時用終端機標題）與 Herdr 的 `agent_status`（`blocked` 等待輸入、`done` 已完成、`working` 工作中、`idle` 閒置，其他是不明），見 ADR 0003 第 2 點的補記。
@@ -111,8 +111,12 @@
 - hcom 清單讀不到時沿用上次讀到的配對：配對結果依 session ID 記住（沒有 session ID 的依窗格），當時配對到的照舊顯示 HCOM 名稱與當時的狀態，換了窗格也一樣；當時已確認沒接的照舊是沒接；同一個窗格換成新的 session 不會接手舊的配對，算是讀不到期間才出現的。看板啟動後還沒讀到過，或在讀不到期間才出現的 Agent，HCOM 連線標為「無法確認」，名稱與狀態暫用 Herdr 的。之後讀到清單就恢復。
 - 清單跟著看板的資料推送更新（`snapshot.agents`）：Agent 開啟、關閉或狀態改變不會動到看板監看的檔案，所以通常由保底重讀帶到畫面上，最慢同保底重讀的時限；其他來源的檔案變動、重新整理按鈕與載入頁面也會一起重讀。
 - 點進 Agent（網址 `?agent=<session ID>`）顯示它的工作位置與對話紀錄，對話紀錄與主控資訊頁共用同一套顯示、往下捲載入更早與自動接上新內容（見「對話紀錄」）；讀不到時以浮動通知顯示原因。Agent 從 Herdr 清單消失後，開著的頁面改說它已不在清單上。
-- 端點（都要登入，未登入回 401）：`GET /api/agents` 回傳目前的清單；`GET /api/agents/transcript?session=<ID>[&before=<游標>]` 與 `GET /api/agents/transcript/events?session=<ID>` 對應主控的 `/api/transcript` 與 `/api/transcript/events`，以 Agent 在 Herdr 回報的 client 呼叫輔助工具的 `board transcript`。不在清單上的 session ID 回 404，不呼叫輔助工具。
-- 測試以 `tests/fake-herdr.mjs`（`agent list`、`tab list`；每次讀取資料的清單呼叫另記在 `herdr-list-calls.jsonl`）與 `tests/fake-hcom.mjs` 代替真的指令；harness 預設就用假的 Herdr，所以測試不會讀到真的 Herdr。
+- 端點（都要登入，未登入回 401）：`GET /api/agents` 回傳目前的清單；`GET /api/agents/transcript?session=<ID>[&before=<游標>]` 與 `GET /api/agents/transcript/events?session=<ID>` 對應主控的 `/api/transcript` 與 `/api/transcript/events`，以 Agent 在 Herdr 回報的 client 呼叫輔助工具的 `board transcript`。不在清單上的 session ID 回 404，不呼叫輔助工具。下面的傳話、中斷與操作紀錄端點同樣要登入。
+- 傳話（`POST /api/agents/send`，`session`、`text`）：有接 HCOM 的用傳話給主控的輸入指令（`hcom term inject`，見「傳話給主控」，CR 一樣換成 LF）；沒接的用 `herdr agent prompt <窗格> <文字>`。Herdr 0.9.5 一律把窗格後面那個參數當成文字（`--wait`、`--help` 也一樣），所以文字原樣傳入，不需要分次。HCOM 連線無法確認時拒絕（409），頁面上的輸入框也停用。
+- 中斷（`POST /api/agents/interrupt`，`session`）：`herdr agent send-keys <窗格> esc`，有沒有接 HCOM、連線能不能確認都一樣。頁面先問一次才送出。
+- 兩者都只試一次、不重送，與傳話給主控、喚醒、切換模型排在同一個 session 的隊伍裡（`queued`），依序執行。每次請求先重讀一次資料（與重新整理按鈕相同），以這次讀到的 Herdr 清單與 hcom 配對決定窗格、HCOM 名稱與走哪條路，不看頁面送來的其他欄位：Agent 已不在 Herdr 清單上，或這次 Herdr 的清單讀不到（只有上次的清單可用），都拒絕（409）且不執行任何指令。Herdr 拒絕時（結束碼非 0，標準錯誤是 `{"error":{"code","message"}}`）以 `message` 為原因回 502；`agent_blocked`（停在確認畫面）另外說明。輸入指令或 Herdr 指令逾時算失敗，原因裡提醒文字可能已經送進去。
+- 操作紀錄：每次傳話與中斷（成功、失敗或拒絕）都寫一行 `sent-log.jsonl`（`kind: agent-action`；`action` 是 `send` 或 `interrupt`，另有 `agentId`（session ID）、當時的名稱與窗格、`route`（`hcom`、`herdr`，拒絕時 null）、文字、結果與原因）。`GET /api/agents/log?session=<ID>` 回傳這個 Agent 的紀錄（新的在前），不在目前清單上的回 404；頁面的「操作紀錄」分頁顯示它，每次資料推送時重讀。這些行不算進主控的送出紀錄。
+- 測試以 `tests/fake-herdr.mjs`（`agent list`、`tab list`、`agent prompt`、`agent send-keys`；每次讀取資料的清單呼叫另記在 `herdr-list-calls.jsonl`）與 `tests/fake-hcom.mjs` 代替真的指令；harness 預設就用假的 Herdr，所以測試不會讀到真的 Herdr。
 
 ## 用量與快取
 
@@ -254,7 +258,7 @@ bun run repro:hydration --serve none       # 只啟動已登入的假資料看�
 
 `tests/back-navigation.test.ts` 也用無頭 Chrome（同樣可用 `CHROME` 指定，使用起點加 29 與加 30）在真的瀏覽器裡走返回與重新整理；本機沒有 Chrome 時這些測試略過。
 
-`tests/agents-page.test.ts` 以同樣方式（使用起點加 32 與加 33）在電腦與手機寬度操作「所有 Agent」分頁，並檢查畫面不會左右捲動。
+`tests/agents-page.test.ts` 以同樣方式（使用起點加 32 與加 33）在電腦與手機寬度操作「所有 Agent」分頁（含傳話、中斷與操作紀錄），並檢查畫面不會左右捲動。傳話與中斷的伺服器端行為在 `tests/agent-control.test.ts`（起點加 34）。
 
 寬版底部指令列的版面規則：單行時目標標籤、輸入框文字與送出按鈕的垂直中心相差不超過 2px；輸入框隨多行內容長高時，標籤與按鈕都貼齊輸入框最下面一行，位置不跳動；送出按鈕在輸入框框線內的右側，輸入的文字不會跑到按鈕底下。量測（深色與淺色、整體大小 80／100／150 %）：
 

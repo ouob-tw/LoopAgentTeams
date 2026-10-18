@@ -262,3 +262,27 @@ export async function listHerdrAgents(config: BoardConfig): Promise<{ ok: true; 
 		})
 	};
 }
+
+/** How a Herdr command that acts on an agent ended: done, or why not in Herdr's words. */
+export type HerdrAct = { ok: true } | { ok: false; timedOut: boolean; code: string | null; reason: string };
+
+/**
+ * Runs `herdr agent <args>` against one agent. Herdr answers a request it refuses with JSON on
+ * standard error, `{"error":{"code","message"}}`; its message is the reason given.
+ */
+export async function agentCommand(config: BoardConfig, args: string[]): Promise<HerdrAct> {
+	const run = await runExternal(config.herdrCommand, ['agent', ...args], { timeoutMs: config.herdrTimeoutMs });
+	if (!run.failure) return { ok: true };
+	let error: { code?: unknown; message?: unknown } | undefined;
+	try {
+		error = JSON.parse(run.stderr.trim())?.error;
+	} catch {
+		// Not Herdr's own answer: the command's last line is the reason.
+	}
+	return {
+		ok: false,
+		timedOut: run.timedOut,
+		code: typeof error?.code === 'string' ? error.code : null,
+		reason: typeof error?.message === 'string' && error.message ? error.message : run.failure
+	};
+}

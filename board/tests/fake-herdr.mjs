@@ -3,8 +3,9 @@
 // `workspace list`, `tab list`), which go to <dir>/herdr-list-calls.jsonl. <dir>/herdr.json holds
 // the panes, workspaces, agents and tabs `pane list`, `workspace list`, `agent list` and `tab list`
 // print, the ID `workspace create` answers with (`created`; null leaves it out), and per command
-// ("pane list", "workspace list", "agent list", "tab list", "workspace create") a failure to act
-// out, `fail: { exit, stderr }`, or output to print instead, `raw: <text>`.
+// ("pane list", "workspace list", "agent list", "tab list", "workspace create", "agent prompt",
+// "agent send-keys") a failure to act out, `fail: { exit, stderr }`, or output to print instead,
+// `raw: <text>`. `agent prompt` and `agent send-keys` succeed otherwise, without checking the pane.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -35,6 +36,8 @@ if (plan.raw?.[command] !== undefined) {
 	const id = plan.created === undefined ? 'wNew' : plan.created;
 	const workspace = id === null ? {} : { workspace_id: id };
 	process.stdout.write(JSON.stringify({ id: 'cli:workspace:create', result: { workspace, tab: { tab_id: `${id}:t1` }, root_pane: { pane_id: `${id}:p1` } } }));
+} else if (command === 'agent prompt' || command === 'agent send-keys') {
+	process.stdout.write(JSON.stringify({ id: `cli:agent:${args[1]}`, result: { type: 'ok' } }));
 } else {
 	process.stderr.write(`unexpected herdr command: ${args.join(' ')}\n`);
 	process.exitCode = 2;

@@ -1,9 +1,10 @@
 // The board's sent log: one JSON line per attempt to send a message to a controller, per
-// answer the helper accepted, per attempt to start a new controller and per attempt to wake one,
-// kept in the board's state directory so every logged-in device sees the same history. Lines are only appended; what became
+// answer the helper accepted, per attempt to start a new controller, per attempt to wake one and
+// per action on an agent of the 所有 Agent tab, kept in the board's state directory so every logged-in device sees the same history. Lines are only appended; what became
 // of an answer, a launch or a resume is a later line of its own.
 import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
+import type { AgentAction } from '../board/agent-actions.ts';
 import type { AnswerState, SentAnswer, SentEntry } from '../board/answers.ts';
 import type { LaunchState, LaunchView, SentLaunch } from '../board/launch.ts';
 import type { SentMessage } from '../board/messages.ts';
@@ -92,7 +93,8 @@ type Line =
 	| ResumeResult
 	| ResumePane
 	| SentSwitch
-	| SwitchStep;
+	| SwitchStep
+	| AgentAction;
 
 /** Lines that only add to an entry of their own kind. */
 const FOLLOW_UP = new Set(['answer-state', 'launch-bound', 'resume-closed', 'resume-result', 'resume-pane', 'switch-step']);
@@ -234,6 +236,13 @@ export function readSent(stateDir: string, controllerId: string, now: number, wa
 		}
 	}
 	return entries.reverse();
+}
+
+/** What was done to one agent of the 所有 Agent tab, newest first. */
+export function readAgentActions(stateDir: string, agentId: string): AgentAction[] {
+	return readLines(stateDir)
+		.filter((line): line is AgentAction => line.kind === 'agent-action' && line.agentId === agentId)
+		.reverse();
 }
 
 /** Where the question's current version puts an answer; null when the question is not there. */
