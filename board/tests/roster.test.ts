@@ -44,17 +44,28 @@ test('status table: active with an unsent question is 等你, and the question i
 	expect(controller.pendingCount).toBe(2);
 });
 
-test.each(['HELP', 'DECIDE'] as const)('status table: active with latest report %s is 等你', async (tag) => {
-	const luna = fixture.bound('alpha', 'luna');
+test.each(['HELP', 'DECIDE'] as const)('status table: active with latest report %s and no unsent question is 進行中', async (tag) => {
+	const luna = fixture.bound('alpha', 'luna', { questions: [question({ id: 'Q-1', status: 'submitted' }), question({ id: 'Q-2', status: 'recorded' })] });
 	fixture.report(luna.session_id, { tag: 'DONE', summary: '先前交付', hcom_name: 'luna', workspace: luna.workspace });
 	fixture.report(luna.session_id, { tag, summary: '需要你看一下', hcom_name: 'luna', workspace: luna.workspace });
 	fixture.list([luna]);
 
 	const controller = named(await fixture.refresh(cookie), 'luna')!;
 
-	expect(controller.status).toBe('waiting');
+	expect(controller.status).toBe('working');
 	expect(controller.phase).toBe('需要你看一下');
 	expect(controller.pendingCount).toBe(0);
+});
+
+test('a controller turns 進行中 once the last unsent question after its DECIDE is answered', async () => {
+	const luna = fixture.bound('alpha', 'luna', { questions: [question({ id: 'Q-1' }), question({ id: 'Q-2', status: 'submitted' })] });
+	fixture.report(luna.session_id, { tag: 'DECIDE', summary: '等你決定', hcom_name: 'luna', workspace: luna.workspace });
+	fixture.list([luna]);
+	expect(named(await fixture.refresh(cookie), 'luna')!.status).toBe('waiting');
+
+	fixture.list([{ ...luna, questions: [question({ id: 'Q-1', status: 'recorded' }), question({ id: 'Q-2', status: 'submitted' })] }]);
+
+	expect(named(await fixture.refresh(cookie), 'luna')).toMatchObject({ status: 'working', phase: '等你決定', pendingCount: 0 });
 });
 
 test('status table: active with latest report DONE is 已交付', async () => {

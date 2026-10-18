@@ -172,8 +172,10 @@ function activeController(binding: HelperController, file: ReportFile | undefine
 	const latest = file?.reports.at(-1);
 	const pendingCount = binding.questions.filter((question) => question.status === 'pending').length;
 
+	// Only an unsent question waits on the user: a DECIDE or HELP whose questions are all answered
+	// leaves the controller working on them.
 	let status: ControllerStatus = 'working';
-	if (pendingCount > 0 || latest?.tag === 'HELP' || latest?.tag === 'DECIDE') status = 'waiting';
+	if (pendingCount > 0) status = 'waiting';
 	else if (latest?.tag === 'DONE') status = 'delivered';
 
 	return {

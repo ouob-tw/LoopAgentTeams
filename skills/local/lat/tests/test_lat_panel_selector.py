@@ -792,7 +792,10 @@ class SubmitTests(SelectorTestCase):
             [call] = self.calls()
             self.assertEqual(call[:2], ["send", "@ctl-a"])
             self.assertFalse(self.pending())
-            self.assertEqual(self.journal()[-1]["kind"], "batch-submit")
+            # No decision records here, so the submit could not record them and says why.
+            self.assertEqual(
+                [entry["kind"] for entry in self.journal()[-2:]], ["batch-submit", "auto-record"]
+            )
             for question_id in ("Q1", "Q2"):
                 proof = self.core.question_provenance(
                     self.questions, self.questions.parent / "panel-journal.jsonl", question_id,
@@ -812,6 +815,24 @@ class SubmitTests(SelectorTestCase):
         self.assertEqual(len(self.calls()), 1)
         self.assertFalse(self.pending())
         self.assertIn("- [x] 送出", section(self.text(), "Q1"))
+
+    async def test_submit_records_the_answer_and_tells_the_controller(self):
+        decisions = self.root / "decisions"
+        decisions.mkdir()
+        (decisions / "Q1.md").write_text("- status: pending\n- advisor: needs-human\n")
+        (self.project / ".lat/sessions").mkdir()
+        (self.project / ".lat/sessions/s-a.json").write_text(
+            json.dumps({"decisions_path": str(decisions)}))
+        app = self.make_app()
+        async with app.run_test() as pilot:
+            await self.press(pilot, "1", "right", "right", "right", "enter")
+            await self.settle(app, pilot)
+        self.assertIn("Q1 · r1 · 已記錄 · ", section(self.text(), "Q1"))
+        record = (decisions / "Q1.md").read_text()
+        self.assertTrue(record.startswith("- status: answered\n"))
+        self.assertIn("- 答覆：A. 合併到 dev，不推送\n", record)
+        [call] = self.calls()
+        self.assertIn('Q1 r1: answer "A. 合併到 dev，不推送"', call[-1])
 
     async def test_submit_stays_open_when_the_notification_fails(self):
         self.set_hcom("offline")

@@ -472,6 +472,10 @@ class AnswerTests(BoardTestCase):
                 "id": question_id,
                 "revision": revision,
                 "section_sha256": self.section_hash(self.questions, question_id),
+                # This controller has no session record, so the answer stays submitted.
+                "recorded": False,
+                "record_reason": "controller session record cannot be read: [Errno 2] "
+                f"No such file or directory: '{self.root / 'project-a/.lat/sessions/s-a.json'}'",
                 "notified": True,
             })
         self.assertEqual(self.questions.read_text(), FOUR_ANSWERED)

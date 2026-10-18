@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { FOLDED_KEY } from '../src/lib/board/prefs.ts';
-import { PORT_BASE, sleep, startFixture, type Fixture } from './harness.ts';
+import { PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
 
 const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
 	(path) => path && existsSync(path)
@@ -45,7 +45,7 @@ beforeAll(async () => {
 	fixture = await startFixture(15);
 	const cookie = await fixture.login('rail-cursor');
 	// One controller waiting for the user, then two at work: two runs, with a line between them.
-	const [luna, sol, vega] = ['luna', 'sol', 'vega'].map((name) => fixture.bound('alpha', name));
+	const [luna, sol, vega] = ['luna', 'sol', 'vega'].map((name) => fixture.bound('alpha', name, name === 'luna' ? { questions: [question()] } : {}));
 	fixture.report(luna.session_id, { tag: 'HELP', summary: '需要你看一下', hcom_name: 'luna', workspace: luna.workspace });
 	fixture.list([luna, sol, vega]);
 	await fixture.refresh(cookie);

@@ -25,6 +25,7 @@
 | `advising` | 諮詢中，尚未問過使用者。不是 `pending`：遺漏檢查不要求面板題目，`lat-watch wait --for <ID>` 也不接受。 | 尚無 |
 | `advisor-resolved` | 參謀定案或主控依參謀指示查證成功，已結案，主控照辦。 | `- advisor: resolved` 或 `- advisor: self-check` |
 | `pending` | 交給使用者，只有真人答覆能解除。 | `- advisor: needs-human`、`- advisor: exempt <類別>` 或 `- advisor: late <結論>` |
+| `answered` | 使用者已在面板或看板送出，程式已記下答覆原文與來源；主控判斷意思、寫核准範圍後改為 `approved`（求助題 `resolved`），見 [待答問題面板](question-panel.md#收到-lat-panel-通知)。不是 `pending`。 | 沿用 `pending` 時的參謀行 |
 
 - 參謀行讀法比照狀態行：取第一行以 `- advisor:` 開頭的行，鍵名與值都不分大小寫；第一個字決定結論，`exempt`、`late` 的第二個字決定類別或結論，其後可接註記。同家降級時在結論後加 `same-family-degraded`，例如 `- advisor: needs-human same-family-degraded`。
 - 結束回合的 DECIDE／HELP 檢查要求每個寫出的題號都有 `needs-human`、`exempt <spec-confirmation｜ticket-confirmation｜requirement-discussion｜account-quota>` 或 `late <needs-human｜resolved｜self-check>` 參謀行；缺少或寫錯就攔下，補做順序見 [主控恢復程序](recovery.md) 的「回合結束檢查」。

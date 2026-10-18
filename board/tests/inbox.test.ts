@@ -49,7 +49,7 @@ test('a single-choice question reaches the inbox within 5 seconds exactly as the
 	expect(sortByTime(page.latest()!.inbox)[0].title).toBe('回報要保留多久');
 });
 
-test('a HELP turn end puts a help item in the inbox and the controller is 等你', async () => {
+test('a HELP turn end puts a help item in the inbox; with no unsent question the controller is 進行中', async () => {
 	const luna = fixture.bound('alpha', 'luna');
 	fixture.list([luna]);
 	fixture.report(luna.session_id, {
@@ -62,7 +62,7 @@ test('a HELP turn end puts a help item in the inbox and the controller is 等你
 
 	const snapshot = await fixture.refresh(cookie);
 
-	expect(named(snapshot, 'luna')!.status).toBe('waiting');
+	expect(named(snapshot, 'luna')!.status).toBe('working');
 	expect(titled(snapshot, '測試環境連不上')).toMatchObject({
 		kind: 'report',
 		tag: 'HELP',

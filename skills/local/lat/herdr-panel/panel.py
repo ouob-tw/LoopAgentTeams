@@ -1477,13 +1477,15 @@ class Panel(App):
                 f"送出前題目已變更：{'、'.join(result['ids'])}。請重新檢查後再送出"
             )
             return
-        self.reload_disk()
         try:
+            # Records the submitted answers first, so the reload below shows them 已記錄.
             lat_panel.mark_submit_notification_pending(self.path, result)
         except (OSError, ValueError) as error:
+            self.reload_disk()
             self.unrecorded_notification = True
             self.notices["notify"] = notify_failure_line(f"無法記錄待送通知：{error}")
             return
+        self.reload_disk()
         self.unrecorded_notification = False
         # Close through the normal path: notify first, stay open if that fails.
         self.close_armed = False
