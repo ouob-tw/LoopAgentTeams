@@ -45,7 +45,7 @@ from textual.widgets import Static, TextArea
 cjk_wrap.install()
 
 PLUGIN_ID = "lat.panel"
-KEYS = "A–I／Enter 選擇 · ↑↓ 移動 · ←→ 換題 · V 詳細資訊 · Tab 備註 · Esc 關閉"
+KEYS = "A–I／Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Ctrl+D 詳細資訊 · Tab 備註 · Esc 關閉"
 RAW_KEYS = "Ctrl+E 選擇框  Ctrl+Q 關閉  Ctrl+Z 復原  Ctrl+Y 重做"
 INPUT_KEYS = "Enter 換行 · Esc 離開輸入框"
 PICKER_KEYS = "↑↓ 移動 · Enter 選定 · 1–9 直接選 · Esc 關閉"
@@ -54,8 +54,8 @@ PANE_MISSING = "視窗已不存在"
 NO_QUESTIONS = "目前沒有待答問題"
 OTHER_LABEL = "其他（自己輸入）"
 SUBMITTED = "已送出，等待記錄"
-DETAILS_FOLDED = "▸ 詳細資訊（按 V 展開）"
-DETAILS_OPEN = "▾ 詳細資訊（按 V 收合）"
+DETAILS_FOLDED = "▸ 詳細資訊（按 Ctrl+D 展開）"
+DETAILS_OPEN = "▾ 詳細資訊（按 Ctrl+D 收合）"
 RECORDED = "✔ 已記錄"
 LOCKED = "已送出或已記錄的題目不能修改；要改答案請在聊天告訴主控"
 FORGED = "答覆或備註不能有單獨一行寫成「- [x] 送出」、「答覆：」或題目標題；這次輸入沒有儲存"
@@ -511,7 +511,7 @@ class Panel(App):
         Binding("enter", "choose", priority=True, show=False),
         Binding("space", "toggle", priority=True, show=False),
         Binding("tab", "note", priority=True, show=False),
-        *(Binding(key, f"details('{key}')", priority=True, show=False) for key in "vV"),
+        Binding("ctrl+d", "details", priority=True, show=False),
         *(
             Binding(str(digit), f"digit({digit})", priority=True, show=False)
             for digit in range(1, 10)
@@ -1192,14 +1192,9 @@ class Panel(App):
         """Hidden alias kept from before letters: digit N picks row N."""
         self.pick_row(str(digit), lambda draft: digit - 1)
 
-    def action_details(self, key):
+    def action_details(self):
         """Fold or unfold the current question's details."""
-        if self.picker_active:
-            raise SkipAction()
         draft = self.selector_draft()
-        if self.typing_target(draft):
-            self.type_text(draft, key)
-            return
         if draft and draft.details is not None:
             draft.details_open = not draft.details_open
         self.refresh_view()
