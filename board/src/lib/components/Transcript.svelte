@@ -8,7 +8,7 @@
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import { EarlierReads } from '#lib/board/earlier.ts';
-	import { askingTexts } from '#lib/board/question-message.ts';
+	import { askedInMessage, askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { renderMarkdown } from '#lib/board/markdown.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -33,7 +33,7 @@
 		controller,
 		reports = [],
 		questions = [],
-		cards,
+		questionCards,
 		target,
 		opens = 0,
 		onplaced,
@@ -48,7 +48,7 @@
 		/** This controller's questions in the inbox: a message that asked some shows their cards. */
 		questions?: InboxQuestion[];
 		/** The cards of the questions one message asked, in its order. */
-		cards?: Snippet<[InboxQuestion[]]>;
+		questionCards?: Snippet<[InboxQuestion[]]>;
 		/** The report, or a question's asking message, this page was opened at, and how it is shown. */
 		target?: PlacedMessage;
 		/** Changes with every opening of the target, the same one again too. */
@@ -96,10 +96,8 @@
 	/** The inbox questions a text asked, by `seq`, shown as their cards in its place. Those the
 	 *  target's card shows, its own question and the others its message asked, are left to it. */
 	const asking = $derived.by(() => {
-		if (!view || !cards) return new Map<number, InboxQuestion[]>();
-		const atTarget = (question: InboxQuestion) =>
-			!!target &&
-			(question.key === target.key || (question.askedIn?.time === target.time && question.askedIn.message === target.message));
+		if (!view || !questionCards) return new Map<number, InboxQuestion[]>();
+		const atTarget = (question: InboxQuestion) => !!target && (question.key === target.key || askedInMessage(question, target));
 		const texts = view.items.filter((item): item is TranscriptText => item.kind === 'assistant');
 		return askingTexts(texts, questions.filter((question) => !atTarget(question)));
 	});
@@ -307,8 +305,8 @@
 						{#if index < shown.length - 1 || view.before !== null}
 							<li class="guide"><ArrowDown size="1em" />較早的訊息</li>
 						{/if}
-					{:else if segment.kind === 'text' && cards && asking.has(segment.item.seq)}
-						<li class="asking" data-seq={segment.item.seq}>{@render cards(asking.get(segment.item.seq)!)}</li>
+					{:else if segment.kind === 'text' && questionCards && asking.has(segment.item.seq)}
+						<li class="asking" data-seq={segment.item.seq}>{@render questionCards(asking.get(segment.item.seq)!)}</li>
 					{:else if segment.kind === 'text'}
 						{@const marked = reported.get(segment.item.seq)}
 						<li class="said" class:reported={!!marked} data-kind={segment.item.kind}>

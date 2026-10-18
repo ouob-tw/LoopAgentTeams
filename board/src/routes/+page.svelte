@@ -497,7 +497,7 @@
 							{controller}
 							items={inbox.filter((entry) => entry.controllerId === controller.id)}
 							onopen={openItem}
-							cards={askedCards}
+							questionCards={askedCards}
 						/>
 					{:else}
 						<p class="empty">這個主控已經不在名冊上：它已結束，回報也都封存了。</p>
@@ -515,7 +515,7 @@
 						{copy}
 						onplaced={() => locate(false)}
 						onunplaced={item.kind === 'question' ? () => lose(item.key) : undefined}
-						cards={askedCards}
+						questionCards={askedCards}
 					>
 						{#snippet card()}
 							<!-- The opened one is scrolled to; the others the same message asked are answerable too. -->
