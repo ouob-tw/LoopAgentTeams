@@ -47,7 +47,7 @@ cjk_wrap.install()
 PLUGIN_ID = "lat.panel"
 KEYS = "A–I／Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Ctrl+D 詳細資訊 · Tab 備註 · Esc 關閉"
 RAW_KEYS = "Ctrl+E 選擇框  Ctrl+Q 關閉  Ctrl+Z 復原  Ctrl+Y 重做"
-INPUT_KEYS = "Enter 換行 · Esc 離開輸入框"
+INPUT_KEYS = "Enter 換行 · Esc 離開輸入框 · 詳細資訊要先離開輸入框"
 PICKER_KEYS = "↑↓ 移動 · Enter 選定 · 1–9 直接選 · Esc 關閉"
 PICKER_TITLE = "選擇要回答哪個主控的問題"
 PANE_MISSING = "視窗已不存在"
