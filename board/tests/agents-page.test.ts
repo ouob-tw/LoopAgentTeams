@@ -257,7 +257,7 @@ const click = (selector: string) => tab.eval(`document.querySelector(${JSON.stri
 
 for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: text is sent to an agent and an interrupt asks first; both show in its record`, async () => {
-		rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+		for (const file of ['herdr-calls.jsonl', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
 		await visit(width, '?agent=s-plain');
 		await tab.until(`!!document.querySelector('.detail .compose textarea')`, 'the agent page');
 		await type('請先停下來');
@@ -279,7 +279,9 @@ for (const width of [1280, 390]) {
 		]);
 
 		await click('.detail [data-tab="log"]');
-		await tab.until(`document.querySelectorAll('.detail #agent-panel-log li').length >= 2`, 'the record');
+		// Read again after the interrupt: it is the newest entry.
+		await tab.until(`document.querySelector('.detail #agent-panel-log li')?.dataset.action === 'interrupt'`, 'the record');
+		expect(await tab.eval(`document.querySelectorAll('.detail #agent-panel-log li').length`)).toBe(2);
 		const log = await tab.eval<string>(`document.querySelector('.detail #agent-panel-log').innerText`);
 		expect(log.indexOf('中斷')).toBeLessThan(log.indexOf('請先停下來'));
 		expect(log).toContain('已送出');
@@ -338,7 +340,8 @@ test.skipIf(!CHROME)('an action from another device shows in an open record at o
 	await visit(1280, '?agent=s-plain');
 	await tab.until(`!!document.querySelector('.detail [data-tab="log"]')`, 'the agent page');
 	await click('.detail [data-tab="log"]');
-	await tab.until(`!!document.querySelector('.detail #agent-panel-log section')`, 'the record');
+	// Loaded: its section is there before the record is.
+	await tab.until(`!!document.querySelector('.detail #agent-panel-log ol, .detail #agent-panel-log .empty')`, 'the record');
 	const count = await tab.eval<number>(`document.querySelectorAll('.detail #agent-panel-log li').length`);
 	// Another device interrupts it; nothing in the list of agents changes.
 	const response = await fixture.fetch('/api/agents/interrupt', {
