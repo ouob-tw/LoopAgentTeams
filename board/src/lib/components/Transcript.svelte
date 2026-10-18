@@ -32,6 +32,7 @@
 		target,
 		opens = 0,
 		onplaced,
+		onunplaced,
 		card,
 		usage = $bindable(null)
 	}: {
@@ -44,6 +45,8 @@
 		opens?: number;
 		/** Called once the target is scrolled to, or shown above the conversation instead. */
 		onplaced?: () => void;
+		/** Called when the target's text is not found in the conversation, or it cannot be read. */
+		onunplaced?: () => void;
 		card?: Snippet;
 		/** Context use, quota and prompt cache, as the live feed last told; null when unknown. */
 		usage?: Usage | null;
@@ -77,6 +80,13 @@
 	});
 	/** Not found, or the record cannot be read: the target's card is shown above the conversation. */
 	const unplaced = $derived(!!target && (place === null || (place === undefined && !!(problem || earlierFailed))));
+	/** The target as the latest page of the conversation arrived: a newer target, such as a revised
+	 *  question's new asking message, may only be in the next page. */
+	let pagedFor = $state<string | null>(null);
+	const targetId = $derived(target && `${target.key}:${target.time}`);
+	$effect(() => {
+		if (unplaced && (problem || earlierFailed || pagedFor === targetId)) untrack(() => onunplaced?.());
+	});
 	/** The report and opening last scrolled to, so it is scrolled to once per opening, and again
 	 *  when a revised question's asking message replaces the one before. */
 	let scrolledFor: string | null = null;
@@ -172,6 +182,7 @@
 			const update: TranscriptUpdate = JSON.parse((event as MessageEvent).data);
 			if (update.ok) {
 				view = withLatest(view, update.page);
+				pagedFor = untrack(() => targetId) ?? null;
 				// The command line's label shows what the latest turn used.
 				switching.current[controllerId] = update.page.current ?? null;
 				usage = update.page.usage ?? null;

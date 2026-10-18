@@ -128,7 +128,11 @@ beforeAll(async () => {
 	if (!CHROME) return;
 	fixture = await startFixture(29);
 	cookie = await fixture.login('back-navigation');
-	luna = fixture.bound('alpha', 'luna', { questions });
+	// Its last question was asked in a message, but it has no conversation record to find it in.
+	luna = fixture.bound('alpha', 'luna', {
+		questions: [...questions, question({ id: 'TQ-1', title: '對話紀錄讀不到的題目', context: '紀錄讀不到時的說明', asked_at: minutesAgo(60) })]
+	});
+	fixture.report(luna.session_id, { tag: 'DECIDE', summary: '對話紀錄讀不到', message: 'DECIDE: TQ-1 r1 · 對話紀錄讀不到', time: minutesAgo(59), hcom_name: 'luna', workspace: luna.workspace });
 	fixture.report(luna.session_id, { tag: 'DONE', summary: '交付第二張票', hcom_name: 'luna', workspace: luna.workspace });
 	// More archived reports than the archive's first page holds, of a controller long gone: past
 	// the inbox's 7 days, inside the archive's 30.
@@ -152,7 +156,8 @@ beforeAll(async () => {
 				asked_at: minutesAgo(50)
 			}),
 			question({ id: 'HQ-1', revision: 1, title: '有原訊息的求助題', kind: 'single', options: OPTIONS, asked_at: minutesAgo(30) }),
-			question({ id: 'NQ-1', revision: 1, title: '沒有原訊息的題目', context: '只在面板上問', asked_at: minutesAgo(20) })
+			question({ id: 'NQ-1', revision: 1, title: '沒有原訊息的題目', context: '只在面板上問', asked_at: minutesAgo(20) }),
+			question({ id: 'MQ-1', revision: 1, title: '原訊息不在對話紀錄裡的題目', context: '對話紀錄裡沒有原訊息', asked_at: minutesAgo(12) })
 		]
 	});
 	const said = (kind: 'user' | 'assistant', minutes: number, text: string) => ({ kind, time: minutesAgo(minutes), text });
@@ -173,6 +178,8 @@ beforeAll(async () => {
 	asked('DECIDE', 70, ASKED.old);
 	asked('DECIDE', 49, ASKED.decide);
 	asked('HELP', 29, ASKED.help);
+	// Reported, but not in the conversation, nor any text in the few minutes before it.
+	asked('DECIDE', 10, 'DECIDE: MQ-1 r1 · 不在對話紀錄裡');
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
 	oldest = (await fixture.archive(cookie)).at(-1)!;
@@ -484,9 +491,10 @@ for (const width of [390, 1400]) {
 
 		// The conversation scrolls both ways around it.
 		const scroller = width < 761 ? 'document.scrollingElement' : `document.querySelector('.detail')`;
-		await tab.eval(`${scroller}.scrollBy(0, -400)`);
+		// Scrolled as a person does, which ends keeping the card in place.
+		await tab.eval(`window.dispatchEvent(new WheelEvent('wheel')); ${scroller}.scrollBy(0, -400)`);
 		await tab.until(`${PLACED}.getBoundingClientRect().top > 300`, 'scrolled up');
-		await tab.eval(`${scroller}.scrollBy(0, 800)`);
+		await tab.eval(`window.dispatchEvent(new WheelEvent('wheel')); ${scroller}.scrollBy(0, 800)`);
 		await tab.until(`${PLACED}.getBoundingClientRect().top < -100`, 'scrolled down');
 
 		await tab.eval(`${PLACED}.querySelector('input[type=radio]').click()`);
@@ -515,6 +523,22 @@ test.skipIf(!CHROME)('a question no message asked shows only its card, saying th
 	expect(text).toContain('只在面板上問');
 	expect(await tab.eval(`document.querySelector('.history')`)).toBeNull();
 }, 30_000);
+
+for (const [title, context] of [
+	['對話紀錄讀不到的題目', '紀錄讀不到時的說明'],
+	['原訊息不在對話紀錄裡的題目', '對話紀錄裡沒有原訊息']
+]) {
+	test.skipIf(!CHROME)(`${title}: its asking message is matched but not found in the conversation, so only its card shows, saying so`, async () => {
+		await visit(390);
+		await tab.eval(click('.inbox', title));
+		await tab.until(`document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')`, 'the not-found notice');
+		await tab.until(`document.querySelector('.placeholder') === null`, 'the placeholder gone');
+		expect((await screen()).text).toContain(context);
+		expect(await tab.eval(`document.querySelector('.history')`)).toBeNull();
+		await reload();
+		await tab.until(`document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')`, 'the not-found notice after a reload');
+	}, 30_000);
+}
 
 test.skipIf(!CHROME)('phone: back and reload find the question in its conversation again, like a report', async () => {
 	await visit(390);
