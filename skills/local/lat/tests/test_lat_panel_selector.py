@@ -173,6 +173,28 @@ class LayoutTests(SelectorTestCase):
             await pilot.press("ctrl+d")
             self.assertNotIn("來由。", self.view(app))
 
+    async def test_details_keep_blank_lines_verbatim(self):
+        body = "原文 [red]markup[/red]\n  縮排\n\n\n尾段"
+        details = f"【詳細資訊】\n{body}\n【詳細資訊結束】\n\n"
+        self.questions.write_text(SINGLE.replace("A. 合併到 dev，不推送\n", details + "A. 合併到 dev，不推送\n"))
+        app = self.make_app()
+        async with app.run_test(size=(80, 30)) as pilot:
+            await pilot.press("ctrl+d")
+            self.assertIn(body, self.view(app))
+
+    async def test_details_key_never_edits_the_open_answer_box(self):
+        details = "【詳細資訊】\n來由。\n【詳細資訊結束】\n\n"
+        free = TEXT.replace("請自由回答。", "請自由回答。\n\n" + details.strip())
+        choice = SINGLE.replace("A. 合併到 dev，不推送\n", details + "A. 合併到 dev，不推送\n")
+        for raw, moves in ((free, ()), (choice, ("@options", "down", "down", "down"))):
+            with self.subTest(moves=moves):
+                self.questions.write_text(raw)
+                app = self.make_app()
+                async with app.run_test(size=(80, 30)) as pilot:
+                    await self.press(pilot, *moves, "a", "b", "c", "D", "home", "ctrl+d", "ctrl+d")
+                    self.assertEqual(app.input.text, "abcD")
+                    self.assertEqual(app.current.other, "abcD")
+
     async def test_no_details_means_no_fold_line_and_ctrl_d_does_nothing(self):
         app = self.make_app()
         async with app.run_test(size=(80, 30)) as pilot:

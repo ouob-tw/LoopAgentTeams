@@ -918,7 +918,7 @@ class Panel(App):
             label_number = len(paragraphs) + 1
             paragraphs.append(DETAILS_OPEN if draft.details_open else DETAILS_FOLDED)
             if draft.details_open:
-                paragraphs += [text for text in re.split(r"\n(?:[ \t]*\n)+", draft.details) if text]
+                paragraphs.append(draft.details)  # one unit, so blank lines stay as written
         for number, paragraph in enumerate(paragraphs, 1):
             rows.extend((("", "", ""), ("", paragraph, "dim" if number == label_number else "")))
             keys.extend((None, ("text", number)))
@@ -1194,7 +1194,12 @@ class Panel(App):
 
     def action_details(self):
         """Fold or unfold the current question's details."""
-        draft = self.selector_draft()
+        try:
+            draft = self.selector_draft()
+        except SkipAction:
+            if self.focused is self.input:
+                return  # swallow the key so the answer box never deletes a character
+            raise
         if draft and draft.details is not None:
             draft.details_open = not draft.details_open
         self.refresh_view()
