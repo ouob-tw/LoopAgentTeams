@@ -1,6 +1,7 @@
 // A controller's conversation history: the shapes the panel helper's `board transcript` prints,
 // and the rules the page applies to them (joining pages, folding operations into one line).
 import type { CurrentSettings } from './models.ts';
+import type { AskingMessage } from './types.ts';
 import type { Usage } from './usage.ts';
 
 /** The person's message or the controller's text reply. */
@@ -101,11 +102,9 @@ export function toolLine(item: TranscriptTool): string {
 }
 
 /** The message a conversation is opened at: a report, or the message that asked a question. */
-export interface PlacedMessage {
+export interface PlacedMessage extends AskingMessage {
 	/** The inbox item it is opened for. */
 	key: string;
-	time: string;
-	message: string;
 }
 
 /** How long before a report its text may have been written, for a report whose text does not

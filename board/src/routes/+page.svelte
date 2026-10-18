@@ -293,7 +293,7 @@
 		{inInbox}
 		recorded={board.snapshot.recordedKeys.includes(item.key)}
 		handle={item.hcomName}
-		said={item.kind === 'question' ? item.askedIn : null}
+		askedIn={item.kind === 'question' ? item.askedIn : null}
 		onunread={copy ? async () => {} : (key) => board.mark(key, false)}
 	/>
 {/snippet}
@@ -465,7 +465,7 @@
 						{controller}
 						items={inbox.filter((entry) => entry.controllerId === controller.id)}
 						onopen={openItem}
-						report={placed}
+						target={placed}
 						{opens}
 						onplaced={() => locate(false)}
 					>
@@ -483,6 +483,7 @@
 						<ItemContent
 							{item}
 							{inInbox}
+							askedIn={item.kind === 'question' ? item.askedIn : null}
 							recorded={board.snapshot.recordedKeys.includes(item.key)}
 							onunread={(key) => board.mark(key, false)}
 						/>

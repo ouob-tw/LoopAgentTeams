@@ -3,6 +3,7 @@
 // agents only tells which bound controllers' clients are gone.
 import { basename } from 'node:path';
 import type {
+	AskingMessage,
 	BoardSnapshot,
 	Controller,
 	ControllerStatus,
@@ -134,7 +135,7 @@ export function dropSessions(state: InboxState, sessionIds: string[]): boolean {
 	return changed;
 }
 
-const pick = (report: Report | null) => report && { time: report.time, message: report.message };
+const askedIn = (report: Report | null): AskingMessage | null => report && { time: report.time, message: report.message };
 
 const questionKey = (binding: HelperController, question: HelperQuestion) => `q:${binding.session_id}:${question.id}`;
 
@@ -155,7 +156,7 @@ function questionItems(binding: HelperController, file: ReportFile | undefined):
 			// The pending notification belongs to the question file, so to every answer sent from it.
 			notifyFailed: question.status === 'submitted' && binding.notification_pending === true,
 			question,
-			askedIn: pick(askingReport(binding.session_id, question, file?.reports ?? []))
+			askedIn: askedIn(askingReport(binding.session_id, question, file?.reports ?? []))
 		}));
 }
 
@@ -277,7 +278,10 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		controllers,
 		// An ended or closed controller's questions cannot be answered any more, so only running
 		// bound ones are listed.
-		inbox: [...live.flatMap((binding) => questionItems(binding, sources.reportFiles.find((file) => file.sessionId === binding.session_id))), ...inboxReports],
+		inbox: [
+			...live.flatMap((binding) => questionItems(binding, sources.reportFiles.find((file) => file.sessionId === binding.session_id))),
+			...inboxReports
+		],
 		recordedKeys: live.flatMap((binding) =>
 			binding.questions.filter((question) => question.status === 'recorded').map((question) => questionKey(binding, question))
 		),

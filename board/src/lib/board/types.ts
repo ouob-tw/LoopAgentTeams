@@ -116,6 +116,9 @@ interface ItemOwner {
 	workspace: string;
 }
 
+/** The chat message that asked a question: its report's time and text. */
+export type AskingMessage = Pick<Report, 'time' | 'message'>;
+
 /** A question of an active controller that the controller has not recorded yet. */
 export interface InboxQuestion extends ItemOwner {
 	kind: 'question';
@@ -128,7 +131,7 @@ export interface InboxQuestion extends ItemOwner {
 	notifyFailed: boolean;
 	question: HelperQuestion;
 	/** The chat message (report) that asked this revision; null when none is found. */
-	askedIn: { time: string; message: string } | null;
+	askedIn: AskingMessage | null;
 }
 
 /** A DONE or HELP report. */

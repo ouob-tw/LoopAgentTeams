@@ -29,7 +29,7 @@
 	let {
 		controller,
 		reports = [],
-		report,
+		target,
 		opens = 0,
 		onplaced,
 		card,
@@ -38,8 +38,8 @@
 		controller: Controller;
 		/** This controller's reports in the inbox: the texts they carry are marked as reports. */
 		reports?: InboxReport[];
-		/** The report, or a question's asking message, this page was opened for, and how it is shown. */
-		report?: PlacedMessage;
+		/** The report, or a question's asking message, this page was opened at, and how it is shown. */
+		target?: PlacedMessage;
 		/** Changes with every opening of a report, the same one again too. */
 		opens?: number;
 		/** Called once the report is scrolled to, or shown above the conversation instead. */
@@ -64,7 +64,7 @@
 
 	let list = $state<HTMLElement>();
 	/** The report's text by `seq`; undefined while still searched for, null when not found. */
-	const place = $derived(report && view ? reportPlace(view, report) : undefined);
+	const place = $derived(target && view ? reportPlace(view, target) : undefined);
 	/** The texts the inbox's reports carry, by `seq`, framed as the reports they are. */
 	const reported = $derived.by(() => {
 		const found = new Map<number, InboxReport>();
@@ -76,12 +76,13 @@
 		return found;
 	});
 	/** Not found, or the record cannot be read: the report is shown above the conversation. */
-	const unplaced = $derived(!!report && (place === null || (place === undefined && !!(problem || earlierFailed))));
-	/** The report and opening last scrolled to, so it is scrolled to once per opening. */
+	const unplaced = $derived(!!target && (place === null || (place === undefined && !!(problem || earlierFailed))));
+	/** The report and opening last scrolled to, so it is scrolled to once per opening, and again
+	 *  when a revised question's asking message replaces the one before. */
 	let scrolledFor: string | null = null;
 
 	$effect(() => {
-		const opening = report && `${report.key}:${opens}`;
+		const opening = target && `${target.key}:${target.time}:${opens}`;
 		if (!opening || !list || scrolledFor === opening || (place === undefined && !unplaced)) return;
 		scrolledFor = opening;
 		align(list, '.placed');
@@ -152,7 +153,7 @@
 	}
 	// Earlier parts until the report's text is found or the conversation starts.
 	$effect(() => {
-		if (report && view && place === undefined && !loadingEarlier && !earlierFailed) untrack(() => void loadEarlier());
+		if (target && view && place === undefined && !loadingEarlier && !earlierFailed) untrack(() => void loadEarlier());
 	});
 
 	$effect(() => {
@@ -283,7 +284,7 @@
 	{:else}
 		<p class="empty">讀取中…</p>
 	{/if}
-	{#if report}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
+	{#if target}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
 </section>
 
 <style>

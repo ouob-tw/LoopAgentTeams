@@ -34,7 +34,7 @@
 		tabMoves = 0,
 		items,
 		onopen,
-		report,
+		target,
 		opens = 0,
 		onplaced,
 		card
@@ -45,9 +45,9 @@
 		/** This controller's inbox items. */
 		items: InboxItem[];
 		onopen: (item: InboxItem) => void;
-		/** The report, or a question's asking message, this page was opened for, and how it is
+		/** The report, or a question's asking message, this page was opened at, and how it is
 		 *  shown in the history. */
-		report?: PlacedMessage;
+		target?: PlacedMessage;
 		/** Changes with every opening of a report, the same one again too. */
 		opens?: number;
 		/** Called once the report is scrolled to, or shown above the conversation instead. */
@@ -163,7 +163,7 @@
 	// Opening a report, the same one again too, shows it in the conversation.
 	$effect.pre(() => {
 		void opens;
-		if (report) tab = 'transcript';
+		if (target) tab = 'transcript';
 	});
 
 	function tabKeys(event: KeyboardEvent) {
@@ -323,7 +323,7 @@
 
 <!-- All three stay mounted, so the conversation keeps its place and its live feed. -->
 <div class="tabpanel" role="tabpanel" id="panel-transcript" aria-labelledby="tab-transcript" hidden={tab !== 'transcript'}>
-	<Transcript {controller} {reports} {report} {opens} {onplaced} {card} bind:usage />
+	<Transcript {controller} {reports} {target} {opens} {onplaced} {card} bind:usage />
 </div>
 <div class="tabpanel" role="tabpanel" id="panel-reports" aria-labelledby="tab-reports" hidden={tab !== 'reports'}>
 	{#each reports as item (item.key)}
