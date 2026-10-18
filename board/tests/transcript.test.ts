@@ -237,6 +237,24 @@ test('a record that cannot be found shows why, appears once written, and leaves 
 	}
 });
 
+test('a line written while the first read is running reaches the page within seconds, not at the fallback re-read', async () => {
+	const nora = await bind('epsilon', 'nora');
+	record(nora.session_id, [said('user', '第一句')]);
+	// The helper reads the record, then takes a while to answer: the line below lands in between.
+	fixture.setHelper({ output: { controllers: fixture.listed() }, transcriptDelayMs: 1_500 } as never);
+	const feed = follow(nora.session_id);
+	try {
+		await sleep(500);
+		append(nora.session_id, [said('assistant', '讀取期間寫入')]);
+		const texts = (update: TranscriptUpdate | undefined) =>
+			update?.ok ? update.page.items.filter((item): item is TranscriptText => item.kind !== 'tool').map((item) => item.text) : [];
+		await until(() => texts(feed.updates.at(-1)).includes('讀取期間寫入'), 8_000, 'the line written during the first read');
+	} finally {
+		feed.close();
+		fixture.list(fixture.listed());
+	}
+}, 15_000);
+
 test('lines that cannot be read are counted for the page to mention', async () => {
 	const sora = await bind('epsilon', 'sora');
 	record(sora.session_id, [said('user', '一')]);
