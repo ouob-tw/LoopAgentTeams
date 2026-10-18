@@ -216,6 +216,20 @@
 	.entry.current {
 		border-color: var(--accent);
 	}
+	/* Reaches half the rail's gap (and the border) above and below, so neighbouring marks touch
+	   and the pointer never crosses the blank, and its expand cursor, between them. */
+	.entry {
+		position: relative;
+	}
+	.entry::after {
+		content: '';
+		position: absolute;
+		inset: calc(-0.225rem - 1px) 0;
+	}
+	/* Across the line between two runs, up to where the mark above reaches. */
+	.sep + .entry::after {
+		top: calc(-0.875rem - 2px);
+	}
 	.sep {
 		flex: none;
 		width: 1.4rem;
