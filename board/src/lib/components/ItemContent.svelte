@@ -12,6 +12,7 @@
 		inInbox,
 		recorded = false,
 		handle,
+		said = null,
 		onunread
 	}: {
 		item: InboxItem;
@@ -21,6 +22,8 @@
 		recorded?: boolean;
 		/** The controller's name, shown before the time where the item stands among its messages. */
 		handle?: string;
+		/** The chat message that asked the question, shown word for word in place of its context. */
+		said?: { time: string; message: string } | null;
 		onunread: (key: string) => Promise<void>;
 	} = $props();
 
@@ -144,7 +147,10 @@
 		{:else if !inInbox}
 			<p class="notice" role="status">這一題已經不在信箱：主控已結束，或題目已被移除。不能再作答。</p>
 		{/if}
-		{#if question.context}
+		{#if said}
+			<p class="source">說明取自 {formatTime(said.time)} 的聊天訊息</p>
+			<div class="text md">{@html renderMarkdown(said.message)}</div>
+		{:else if question.context}
 			<div class="text md">{@html renderMarkdown(question.context)}</div>
 		{/if}
 		{#if question.options.length}
@@ -445,6 +451,11 @@
 	.state {
 		margin: 0;
 		font-size: max(0.85rem, var(--min-font, 0px));
+		color: var(--muted);
+	}
+	.source {
+		margin: 0 0 0.3rem;
+		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
 	.notice {

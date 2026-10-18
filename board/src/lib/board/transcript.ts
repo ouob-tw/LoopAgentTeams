@@ -100,6 +100,14 @@ export function toolLine(item: TranscriptTool): string {
 	return `${item.error ? '✗ ' : ''}${ICONS[item.name] ?? '🔧'} ${text}`;
 }
 
+/** The message a conversation is opened at: a report, or the message that asked a question. */
+export interface PlacedMessage {
+	/** The inbox item it is opened for. */
+	key: string;
+	time: string;
+	message: string;
+}
+
 /** How long before a report its text may have been written, for a report whose text does not
  *  match any word for word. */
 const NEAR_MS = 5 * 60_000;

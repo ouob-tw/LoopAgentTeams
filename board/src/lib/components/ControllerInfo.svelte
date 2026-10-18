@@ -4,7 +4,8 @@
 	// permission mode in small print, a bar for each question waiting for an answer, then its
 	// conversation, its reports in the inbox and what was sent to it, one tab at a time. Its model
 	// and effort, and messages and wakes, go through the command line at the bottom of the screen.
-	// Opened for a report, the conversation shows that report where it is in the history.
+	// Opened for a report, the conversation shows that report where it is in the history; opened
+	// for a question, the question where the message that asked it is.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import Info from '@lucide/svelte/icons/info';
 	import { onMount, type Snippet } from 'svelte';
@@ -21,6 +22,7 @@
 		type InboxQuestion,
 		type InboxReport
 	} from '#lib/board/types.ts';
+	import type { PlacedMessage } from '#lib/board/transcript.ts';
 	import { usageDetails, usageParts, type Usage, type UsagePart } from '#lib/board/usage.ts';
 	import ItemRow from './ItemRow.svelte';
 	import SentLog from './SentLog.svelte';
@@ -43,8 +45,9 @@
 		/** This controller's inbox items. */
 		items: InboxItem[];
 		onopen: (item: InboxItem) => void;
-		/** The report this page was opened for, and how it is shown in the history. */
-		report?: InboxReport;
+		/** The report, or a question's asking message, this page was opened for, and how it is
+		 *  shown in the history. */
+		report?: PlacedMessage;
 		/** Changes with every opening of a report, the same one again too. */
 		opens?: number;
 		/** Called once the report is scrolled to, or shown above the conversation instead. */

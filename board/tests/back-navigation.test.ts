@@ -1,7 +1,7 @@
 // Going back through the board's screens in a real browser: headless Chrome driven over its
 // DevTools protocol, on the built board with fake data. Skipped when the host has no Chrome.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -110,6 +110,18 @@ let luna: ReturnType<Fixture['bound']>;
 let cookie: string;
 let oldest: InboxReport;
 const questions = Array.from({ length: 30 }, (_, index) => question({ id: `Q-${index + 1}`, title: `題目 ${index + 1}` }));
+let sol: ReturnType<Fixture['bound']>;
+const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+/** The messages that asked sol's questions, as its conversation and its reports both hold them. */
+const ASKED = {
+	old: '先問第一版。\n\nDECIDE: DQ-1 r1 · 第一版的說法 · 回答面板上的題目',
+	decide: '第二版的完整說明在這裡。\n\nDECIDE: DQ-1 r2 · 要不要走短流程 · 回答面板上的題目',
+	help: '測試機 7110 被舊的預覽程序佔用。\n\nHELP: HQ-1 r1 · 可以結束預覽程序嗎 · 回答面板上的題目'
+};
+const OPTIONS = [
+	{ letter: 'A', label: '照做', impact: '', recommended: true },
+	{ letter: 'B', label: '先不要', impact: '', recommended: false }
+];
 
 beforeAll(async () => {
 	if (!CHROME) return;
@@ -124,7 +136,34 @@ beforeAll(async () => {
 		const time = new Date(Date.now() - 8 * DAY - index * 60_000).toISOString();
 		fixture.report('session-gone', { tag: 'DONE', summary: `封存回報 ${index}`, time, hcom_name: 'vega', workspace: gone });
 	}
-	fixture.list([luna]);
+	// A controller whose questions were asked in its conversation, with enough of it on both sides
+	// of each asking message to scroll.
+	sol = fixture.bound('beta', 'sol', {
+		questions: [
+			question({ id: 'DQ-1', revision: 2, title: '有原訊息的待決題', kind: 'single', options: OPTIONS, context: '面板上的簡短說明', asked_at: minutesAgo(50) }),
+			question({ id: 'HQ-1', revision: 1, title: '有原訊息的求助題', kind: 'single', options: OPTIONS, asked_at: minutesAgo(30) }),
+			question({ id: 'NQ-1', revision: 1, title: '沒有原訊息的題目', context: '只在面板上問', asked_at: minutesAgo(20) })
+		]
+	});
+	const said = (kind: 'user' | 'assistant', minutes: number, text: string) => ({ kind, time: minutesAgo(minutes), text });
+	const filler = (from: number, count: number) =>
+		Array.from({ length: count }, (_, index) => said(index % 2 ? 'assistant' : 'user', from - index, `第 ${from - index} 分鐘前的訊息。\n\n${'很長的一段話。'.repeat(40)}`));
+	const conversation = [
+		...filler(100, 10),
+		said('assistant', 70, ASKED.old),
+		said('assistant', 49, ASKED.decide),
+		...filler(45, 6),
+		said('assistant', 29, ASKED.help),
+		...filler(25, 6)
+	];
+	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
+	writeFileSync(join(fixture.dir, 'transcripts', `${sol.session_id}.jsonl`), conversation.map((item) => JSON.stringify(item) + '\n').join(''));
+	const asked = (tag: 'DECIDE' | 'HELP', minutes: number, message: string) =>
+		fixture.report(sol.session_id, { tag, summary: message.split(' · ')[1], message, time: minutesAgo(minutes), hcom_name: 'sol', workspace: sol.workspace });
+	asked('DECIDE', 70, ASKED.old);
+	asked('DECIDE', 49, ASKED.decide);
+	asked('HELP', 29, ASKED.help);
+	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
 	oldest = (await fixture.archive(cookie)).at(-1)!;
 }, 30_000);
@@ -399,4 +438,84 @@ test.skipIf(!CHROME)('wide: the top bar stays hidden', async () => {
 	await tab.eval(click('.inbox', '題目 1'));
 	await shows(QUESTION(1), '題目 1');
 	expect(await tab.eval(`getComputedStyle(document.querySelector('.topbar')).display`)).toBe('none');
+}, 30_000);
+
+const SOL_QUESTION = (id: string) => `?item=${encodeURIComponent(`q:${sol.session_id}:${id}`)}`;
+/** The question's card in the conversation, once the placeholder over it is gone. */
+const PLACED = `document.querySelector('.history .placed')`;
+async function placedAt(search: string, title: string) {
+	await shows(search, title);
+	await tab.until(`document.querySelector('.placeholder') === null && ${PLACED}?.innerText.includes(${JSON.stringify(title)})`, `${title} placed in the conversation`);
+	// Scrolled to: its top near the top of the content, under the phone's bar.
+	await tab.until(`(() => { const top = ${PLACED}.getBoundingClientRect().top; return top >= 0 && top < 160; })()`, `${title} scrolled to`);
+}
+const placedText = () => tab.eval<string>(`${PLACED}.innerText`);
+
+for (const width of [390, 1400]) {
+	test.skipIf(!CHROME)(`${width}px: a question opens in its conversation at the message of its revision, merged with the answer card, and can be answered`, async () => {
+		// Unanswered again: the width before has answered it.
+		fixture.list([luna, sol]);
+		await fixture.refresh(cookie);
+		await visit(width);
+		await tab.eval(click('.inbox', '有原訊息的待決題'));
+		await placedAt(SOL_QUESTION('DQ-1'), '有原訊息的待決題');
+		const text = await placedText();
+		// One card: the chat message word for word, then what the panel question offers.
+		expect(text).toContain('說明取自');
+		expect(text).toContain('第二版的完整說明在這裡。');
+		expect(text).toContain('DECIDE: DQ-1 r2');
+		expect(text).toContain('DQ-1 r2');
+		expect(text).not.toContain('面板上的簡短說明');
+		expect(text).toContain('照做');
+		// The r1 message stays an ordinary message of the conversation.
+		expect(await tab.eval(`document.querySelectorAll('.history .placed').length`)).toBe(1);
+		expect(await tab.eval(`[...document.querySelectorAll('.history .said')].some((li) => li.innerText.includes('DQ-1 r1'))`)).toBe(true);
+		expect(await tab.eval(`[...document.querySelectorAll('.history .guide')].map((li) => li.innerText.trim())`)).toEqual(['較新的訊息', '較早的訊息']);
+
+		// The conversation scrolls both ways around it.
+		const scroller = width < 761 ? 'document.scrollingElement' : `document.querySelector('.detail')`;
+		await tab.eval(`${scroller}.scrollBy(0, -400)`);
+		await tab.until(`${PLACED}.getBoundingClientRect().top > 300`, 'scrolled up');
+		await tab.eval(`${scroller}.scrollBy(0, 800)`);
+		await tab.until(`${PLACED}.getBoundingClientRect().top < -100`, 'scrolled down');
+
+		await tab.eval(`${PLACED}.querySelector('input[type=radio]').click()`);
+		await tab.eval(click('.history .placed', '送出答覆'));
+		await tab.until(`${PLACED}.innerText.includes('已送出')`, 'the answer sent');
+		expect(fixture.listed().find((entry) => entry.session_id === sol.session_id)!.questions[0]).toMatchObject({ id: 'DQ-1', status: 'submitted' });
+	}, 30_000);
+}
+
+test.skipIf(!CHROME)('phone: a help question opens at its HELP message the same way', async () => {
+	await visit(390);
+	await tab.eval(click('.inbox', '有原訊息的求助題'));
+	await placedAt(SOL_QUESTION('HQ-1'), '有原訊息的求助題');
+	const text = await placedText();
+	expect(text).toContain('測試機 7110 被舊的預覽程序佔用。');
+	expect(text).toContain('送出答覆');
+}, 30_000);
+
+test.skipIf(!CHROME)('a question no message asked shows only its card, saying the message is not found', async () => {
+	await visit(390);
+	await tab.eval(click('.inbox', '沒有原訊息的題目'));
+	await shows(SOL_QUESTION('NQ-1'), '找不到提出這題的原訊息');
+	const text = (await screen()).text;
+	expect(text).toContain('只在面板上問');
+	expect(await tab.eval(`document.querySelector('.history')`)).toBeNull();
+}, 30_000);
+
+test.skipIf(!CHROME)('phone: back and reload find the question in its conversation again, like a report', async () => {
+	await visit(390);
+	await tab.eval(click('.inbox', '有原訊息的求助題'));
+	await placedAt(SOL_QUESTION('HQ-1'), '有原訊息的求助題');
+	await tab.eval(`${TITLE}.click()`);
+	await shows(`?controller=${sol.session_id}`, '@sol');
+	await back();
+	await placedAt(SOL_QUESTION('HQ-1'), '有原訊息的求助題');
+	await reload();
+	await placedAt(SOL_QUESTION('HQ-1'), '有原訊息的求助題');
+	await tab.eval(ARROW);
+	await showsList();
+	await back();
+	await tab.until(LEFT, 'leaving the board');
 }, 30_000);

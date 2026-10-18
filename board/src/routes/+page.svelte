@@ -15,6 +15,7 @@
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
+	import type { PlacedMessage } from '#lib/board/transcript.ts';
 	import type { InboxItem } from '#lib/board/types.ts';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
@@ -104,6 +105,12 @@
 	});
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
 
+	/** Where an opened item is shown in its controller's conversation: a report is its own message,
+	 *  a question is shown at the message that asked it. Null when there is no such message. */
+	const placedAt = (entry: InboxItem): PlacedMessage | null =>
+		entry.kind === 'report' ? entry : entry.askedIn && { key: entry.key, ...entry.askedIn };
+	const placed = $derived(item && placedAt(item));
+
 	/** Containers of the unfolded roster whose own surface, not a card or control, was clicked. */
 	const ROSTER_BLANK = '.roster, .unfolded, .summary, .counts, .people, .sep, .summary .tools';
 
@@ -144,8 +151,9 @@
 	/** Where the phone's list was scrolled to before a content screen replaced it. */
 	let listScroll = 0;
 
-	/** Set while an opened report is being found in its conversation: a copy of its card covers
-	 *  the content where the report will be, so the page never shows its top first. */
+	/** Set while an opened report, or a question's asking message, is being found in its
+	 *  conversation: a copy of its card covers the content where it will be, so the page never
+	 *  shows its top first. */
 	let locating = $state(false);
 	let locateTimer: ReturnType<typeof setTimeout> | undefined;
 	function locate(on: boolean) {
@@ -244,7 +252,7 @@
 	function present(next: View) {
 		if (next?.kind === 'item') {
 			opens++;
-			locate(next.item.kind === 'report' && controllers.some((candidate) => candidate.id === next.item.controllerId));
+			locate(!!placedAt(next.item) && controllers.some((candidate) => candidate.id === next.item.controllerId));
 		}
 		return show(next);
 	}
@@ -276,6 +284,18 @@
 {#snippet names(owner: { project: string; hcomName: string })}
 	<strong>{owner.project}</strong>
 	<span class="handle">@{owner.hcomName}</span>
+{/snippet}
+
+{#snippet placedCard(item: InboxItem, copy = false)}
+	<!-- A question's card shows the message that asked it in place of its context. -->
+	<ItemContent
+		{item}
+		{inInbox}
+		recorded={board.snapshot.recordedKeys.includes(item.key)}
+		handle={item.hcomName}
+		said={item.kind === 'question' ? item.askedIn : null}
+		onunread={copy ? async () => {} : (key) => board.mark(key, false)}
+	/>
 {/snippet}
 
 {#snippet refresh()}
@@ -437,24 +457,28 @@
 					{:else}
 						<p class="empty">這個主控已經不在名冊上：它已結束，回報也都封存了。</p>
 					{/if}
-				{:else if item?.kind === 'report' && controller}
-					<!-- A report is the controller's last text of its turn: shown in its conversation. -->
+				{:else if item && placed && controller}
+					<!-- A report is the controller's last text of its turn, and a question was asked in
+					     one: shown in its conversation. -->
 					<ControllerInfo
 						tabMoves={board.tabMoves}
 						{controller}
 						items={inbox.filter((entry) => entry.controllerId === controller.id)}
 						onopen={openItem}
-						report={item}
+						report={placed}
 						{opens}
 						onplaced={() => locate(false)}
 					>
 						{#snippet card()}
 							{#key item.key}
-								<ItemContent {item} {inInbox} handle={item.hcomName} onunread={(key) => board.mark(key, false)} />
+								{@render placedCard(item)}
 							{/key}
 						{/snippet}
 					</ControllerInfo>
 				{:else if item}
+					{#if item.kind === 'question' && !item.askedIn}
+						<p class="empty">找不到提出這題的原訊息。</p>
+					{/if}
 					{#key item.key}
 						<ItemContent
 							{item}
@@ -476,7 +500,7 @@
 		{#if locating && item}
 			<!-- Where the report's card will be once its conversation is scrolled to it. -->
 			<div class="placeholder" inert aria-hidden="true">
-				<div><ItemContent {item} {inInbox} handle={item.hcomName} onunread={async () => {}} /></div>
+				<div>{@render placedCard(item, true)}</div>
 			</div>
 		{/if}
 

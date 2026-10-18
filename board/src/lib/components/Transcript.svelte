@@ -17,6 +17,7 @@
 		toolsSummary,
 		withEarlier,
 		withLatest,
+		type PlacedMessage,
 		type TranscriptUpdate,
 		type TranscriptView
 	} from '#lib/board/transcript.ts';
@@ -37,8 +38,8 @@
 		controller: Controller;
 		/** This controller's reports in the inbox: the texts they carry are marked as reports. */
 		reports?: InboxReport[];
-		/** The report this page was opened for, and how it is shown. */
-		report?: InboxReport;
+		/** The report, or a question's asking message, this page was opened for, and how it is shown. */
+		report?: PlacedMessage;
 		/** Changes with every opening of a report, the same one again too. */
 		opens?: number;
 		/** Called once the report is scrolled to, or shown above the conversation instead. */
