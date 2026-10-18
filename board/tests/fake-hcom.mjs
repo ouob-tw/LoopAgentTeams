@@ -15,7 +15,8 @@
 // agent's shell reaches hcom.
 // `list --json` is logged to <dir>/hcom-list-calls.jsonl instead and prints `agents` plus those
 // resumes added; `listFail: { exit, stderr }` acts out a failure. `listSeries` gives the agents of
-// the next lists after it was written in turn, before `agents` takes over. Without either, <dir>/hcom-running.json is listed: the
+// the next lists after it was written in turn, before `agents` takes over; an entry
+// `{ fail: { exit, stderr } }` in it acts out a failure of that one list. Without either, <dir>/hcom-running.json is listed: the
 // test fixture keeps every controller it ever bound there, so none is closed unless a test says so.
 // `kill <name>` is logged to hcom-calls.jsonl like a launch and follows `kill`: `exit`, `stderr`,
 // `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
@@ -45,6 +46,10 @@ if (args[0] === 'list') {
 	// the plan was written count.
 	const listed = plan.listSeries?.length ? plan.listSeries.shift() : (plan.agents ?? defaultAgents());
 	if (plan.listSeries) writeFileSync(planFile, JSON.stringify(plan));
+	if (listed.fail) {
+		process.stderr.write(listed.fail.stderr ?? '');
+		process.exit(listed.fail.exit ?? 1);
+	}
 	process.stdout.write(JSON.stringify([...listed, ...added()]));
 	process.exit(0);
 }

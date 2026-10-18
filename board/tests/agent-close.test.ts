@@ -179,6 +179,46 @@ test('a close whose pane is still there, or whose command does not answer in tim
 	expect(slow.body.reason).toContain('結果不明');
 }, 15_000);
 
+test('a linked agent is not closed when hcom\'s list read again right before the kill cannot be read or no longer has it', async () => {
+	// The first list is the read every request makes; the second is the one the kill is checked on.
+	fixture.setHcom({ agents: [hcomAgent('lino', 's-linked')], listSeries: [[hcomAgent('lino', 's-linked')], { fail: { exit: 1, stderr: 'database locked' } }] });
+	const unread = await close('s-linked');
+	expect(unread.status).toBe(409);
+	expect(unread.body).toMatchObject({ ok: false, entry: { action: 'close', route: null, ok: false } });
+	expect(unread.body.reason).toContain('讀不到 hcom 的 Agent 清單');
+	expect(unread.body.reason).toContain('database locked');
+
+	fixture.setHcom({ agents: [hcomAgent('lino', 's-linked')], listSeries: [[hcomAgent('lino', 's-linked')], []] });
+	const gone = await close('s-linked');
+	expect(gone.status).toBe(409);
+	expect(gone.body.reason).toBe('hcom 的 Agent 清單裡已經沒有 @lino，沒有關閉。');
+
+	expect(hcomCalls()).toEqual([]);
+	expect(herdrCalls()).toEqual([]);
+	expect((await record('s-linked')).entries.map((entry) => [entry.action, entry.ok])).toEqual([
+		['close', false],
+		['close', false]
+	]);
+});
+
+test('a close whose pane cannot be looked for afterwards is reported as not known, and is not run again', async () => {
+	setHerdr(['s-linked', 's-plain', 's-board'], { fail: { 'pane list': { exit: 1, stderr: 'herdr socket gone' } } });
+	const plain = await close('s-plain');
+	expect(plain.status).toBe(502);
+	expect(plain.body.entry).toMatchObject({ route: 'herdr', ok: false });
+	expect(plain.body.reason).toContain('無法確認已關閉');
+	expect(plain.body.reason).toContain('讀不到 Herdr 的窗格清單');
+	expect(plain.body.reason).toContain('herdr socket gone');
+	expect(herdrCalls()).toEqual([['pane', 'close', 'wA:p-s-plain']]);
+
+	const linked = await close('s-linked');
+	expect(linked.status).toBe(502);
+	expect(linked.body.entry).toMatchObject({ route: 'hcom', ok: false });
+	expect(linked.body.reason).toContain('無法確認已關閉');
+	expect(hcomCalls()).toEqual([['kill', 'lino']]);
+	expect(herdrCalls()).toEqual([['pane', 'close', 'wA:p-s-plain']]);
+}, 15_000);
+
 test('requests that are not a close are refused, and closing needs a logged-in device', async () => {
 	expect((await close('')).status).toBe(400);
 	expect((await close(3)).status).toBe(400);
