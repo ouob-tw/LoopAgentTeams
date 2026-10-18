@@ -29,11 +29,14 @@ class Tab {
 	#waiting = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>();
 	/** The documents that have loaded, by the loader that loaded them. */
 	#loaded = new Set<string>();
+	/** The requests held by `Fetch.enable`, waiting for `Fetch.continueRequest`. */
+	paused: string[] = [];
 	constructor(socket: WebSocket) {
 		this.#socket = socket;
 		socket.addEventListener('message', (event) => {
 			const message = JSON.parse(String(event.data));
 			if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') this.#loaded.add(message.params.loaderId);
+			if (message.method === 'Fetch.requestPaused') this.paused.push(message.params.requestId);
 			this.#waiting.get(message.id)?.(message);
 			this.#waiting.delete(message.id);
 		});
@@ -118,6 +121,8 @@ const ASKED = {
 	decide: '第二版的完整說明在這裡。\n\nDECIDE: DQ-1 r2 · 要不要走短流程 · 回答面板上的題目',
 	help: '測試機 7110 被舊的預覽程序佔用。\n\nHELP: HQ-1 r1 · 可以結束預覽程序嗎 · 回答面板上的題目'
 };
+/** A report taller than the screen, its paragraphs numbered. */
+const LONG = Array.from({ length: 40 }, (_, index) => `第 ${index + 1} 段：${'回報的內容。'.repeat(12)}`).join('\n\n');
 const solTranscript = () => join(fixture.dir, 'transcripts', `${sol.session_id}.jsonl`);
 const OPTIONS = [
 	{ letter: 'A', label: '照做', impact: '', recommended: true },
@@ -167,7 +172,9 @@ beforeAll(async () => {
 		...filler(100, 10),
 		said('assistant', 70, ASKED.old),
 		said('assistant', 49, ASKED.decide),
-		...filler(45, 6),
+		...filler(45, 4),
+		said('assistant', 40, LONG),
+		...filler(39, 2),
 		said('assistant', 29, ASKED.help),
 		...filler(25, 6),
 		// A reply a minute before MQ-1's asking message, which is itself not in the conversation.
@@ -180,6 +187,7 @@ beforeAll(async () => {
 	asked('DECIDE', 70, ASKED.old);
 	asked('DECIDE', 49, ASKED.decide);
 	asked('HELP', 29, ASKED.help);
+	fixture.report(sol.session_id, { tag: 'DONE', summary: '很長的回報', message: LONG, time: minutesAgo(40), hcom_name: 'sol', workspace: sol.workspace });
 	// Reported, but not in the conversation; the reply just before it must not be taken instead.
 	asked('DECIDE', 10, 'DECIDE: MQ-1 r1 · 不在對話紀錄裡');
 	fixture.list([luna, sol]);
@@ -585,3 +593,43 @@ test.skipIf(!CHROME)('phone: a revision asked while the question is open moves i
 	// The r2 message is an ordinary message again.
 	expect(await tab.eval(`[...document.querySelectorAll('.history .said')].some((li) => li.innerText.includes('DQ-1 r2'))`)).toBe(true);
 }, 30_000);
+
+for (const width of [390, 1400]) {
+	test.skipIf(!CHROME)(`${width}px: the copy of a report scrolls while its conversation loads, and the report takes its place where it was read`, async () => {
+		await visit(width);
+		const scroller = width < 761 ? 'document.scrollingElement' : `document.querySelector('.detail')`;
+		// The conversation is held back until the copy has been read a while.
+		tab.paused = [];
+		await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/transcript/events*' }] });
+		await tab.eval(click('.inbox', '很長的回報'));
+		await tab.until(`document.querySelector('.placeholder')?.innerText.includes('第 40 段')`, 'the copy over the content');
+		const copy = `document.querySelector('.placeholder > div')`;
+		const start = await tab.eval<number>(`${copy}.getBoundingClientRect().top`);
+
+		// Scrolled as a person does, with the wheel over the copy.
+		const wheel = (deltaY: number) => tab.send('Input.dispatchMouseEvent', { type: 'mouseWheel', x: width - 100, y: 400, deltaX: 0, deltaY });
+		await wheel(600);
+		await tab.until(`${copy}.getBoundingClientRect().top < ${start - 300}`, 'the copy scrolled');
+		await sleep(300);
+		const read = await tab.eval<number>(`${copy}.getBoundingClientRect().top`);
+		// The page under it has not moved.
+		expect(await tab.eval(`${scroller}.scrollTop`)).toBe(0);
+
+		expect(tab.paused.length).toBeGreaterThan(0);
+		await tab.send('Fetch.disable');
+		for (const requestId of tab.paused) await tab.send('Fetch.continueRequest', { requestId }).catch(() => {});
+		await tab.until(`document.querySelector('.placeholder') === null && ${PLACED}?.innerText.includes('第 40 段')`, 'the report placed');
+		// Where the copy was read, from the moment it is gone, and still after it is kept there.
+		const placedTop = () => tab.eval<number>(`${PLACED}.getBoundingClientRect().top`);
+		expect(Math.abs((await placedTop()) - read)).toBeLessThanOrEqual(1);
+		await sleep(2800);
+		expect(Math.abs((await placedTop()) - read)).toBeLessThanOrEqual(1);
+
+		// The conversation scrolls on from there.
+		await wheel(300);
+		await tab.until(`${PLACED}.getBoundingClientRect().top < ${read - 200}`, 'the conversation scrolled on');
+		const moved = await placedTop();
+		await sleep(500);
+		expect(await placedTop()).toBe(moved);
+	}, 30_000);
+}

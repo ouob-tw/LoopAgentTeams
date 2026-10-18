@@ -164,6 +164,8 @@
 	 *  conversation: a copy of its card covers the content where it will be, so the page never
 	 *  shows its top first. */
 	let locating = $state(false);
+	/** The box showing that copy. */
+	let copy = $state<HTMLElement | null>(null);
 	let locateTimer: ReturnType<typeof setTimeout> | undefined;
 	function locate(on: boolean) {
 		clearTimeout(locateTimer);
@@ -475,6 +477,7 @@
 						onopen={openItem}
 						target={placed}
 						{opens}
+						{copy}
 						onplaced={() => locate(false)}
 						onunplaced={item.kind === 'question' ? () => lose(item.key) : undefined}
 					>
@@ -507,9 +510,10 @@
 			{/if}
 		</section>
 		{#if locating && item}
-			<!-- Where the report's card will be once its conversation is scrolled to it. -->
-			<div class="placeholder" inert aria-hidden="true">
-				<div>{@render placedCard(item, true)}</div>
+			<!-- Where the report's card will be once its conversation is scrolled to it. It scrolls
+			     to be read meanwhile, and the card is placed where it is read. -->
+			<div class="placeholder" aria-hidden="true" bind:this={copy}>
+				<div inert>{@render placedCard(item, true)}</div>
 			</div>
 		{/if}
 
@@ -702,12 +706,15 @@
 		z-index: 4;
 		min-width: 0;
 		overflow-y: scroll;
+		/* Scrolling it to its end does not scroll the page under it. */
+		overscroll-behavior: contain;
 		padding: 1rem 0.9rem;
 		background: var(--bg);
-		pointer-events: none;
 	}
+	/* Scrolled through, never clicked: the copy's buttons do nothing. */
 	.placeholder > div {
 		max-width: 46rem;
+		pointer-events: none;
 	}
 	.detail > :global(*) {
 		flex: none;
@@ -897,8 +904,9 @@
 		.placeholder {
 			position: fixed;
 			inset: 0;
-			overflow: hidden;
-			padding: 5rem 3px 0;
+			overflow-y: auto;
+			/* Its end clear of the command line, like the page's. */
+			padding: 5rem 3px var(--dock-h, 0px);
 		}
 		.topbar {
 			display: flex;
