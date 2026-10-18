@@ -119,7 +119,9 @@ const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).
 const ASKED = {
 	old: '先問第一版。\n\nDECIDE: DQ-1 r1 · 第一版的說法 · 回答面板上的題目',
 	decide: '第二版的完整說明在這裡。\n\nDECIDE: DQ-1 r2 · 要不要走短流程 · 回答面板上的題目',
-	help: '測試機 7110 被舊的預覽程序佔用。\n\nHELP: HQ-1 r1 · 可以結束預覽程序嗎 · 回答面板上的題目'
+	help: '測試機 7110 被舊的預覽程序佔用。\n\nHELP: HQ-1 r1 · 可以結束預覽程序嗎 · 回答面板上的題目',
+	// Two questions in one message, named in the opposite order of the question file.
+	group: '這兩題一起問。\n\nDECIDE: GQ-B r1, GQ-A r1 · 一起問的兩題 · 回答面板上的題目'
 };
 /** A report taller than the screen, its paragraphs numbered. */
 const LONG = Array.from({ length: 40 }, (_, index) => `第 ${index + 1} 段：${'回報的內容。'.repeat(12)}`).join('\n\n');
@@ -162,7 +164,9 @@ beforeAll(async () => {
 			}),
 			question({ id: 'HQ-1', revision: 1, title: '有原訊息的求助題', kind: 'single', options: OPTIONS, asked_at: minutesAgo(30) }),
 			question({ id: 'NQ-1', revision: 1, title: '沒有原訊息的題目', context: '只在面板上問', asked_at: minutesAgo(20) }),
-			question({ id: 'MQ-1', revision: 1, title: '原訊息不在對話紀錄裡的題目', context: '對話紀錄裡沒有原訊息', asked_at: minutesAgo(12) })
+			question({ id: 'MQ-1', revision: 1, title: '原訊息不在對話紀錄裡的題目', context: '對話紀錄裡沒有原訊息', asked_at: minutesAgo(12) }),
+			question({ id: 'GQ-A', revision: 1, title: '一起問的甲題', kind: 'single', options: OPTIONS, asked_at: minutesAgo(36) }),
+			question({ id: 'GQ-B', revision: 1, title: '一起問的乙題', kind: 'single', options: OPTIONS, asked_at: minutesAgo(36) })
 		]
 	});
 	const said = (kind: 'user' | 'assistant', minutes: number, text: string) => ({ kind, time: minutesAgo(minutes), text });
@@ -175,6 +179,8 @@ beforeAll(async () => {
 		...filler(45, 4),
 		said('assistant', 40, LONG),
 		...filler(39, 2),
+		said('assistant', 35, ASKED.group),
+		...filler(34, 2),
 		said('assistant', 29, ASKED.help),
 		...filler(25, 6),
 		// A reply a minute before MQ-1's asking message, which is itself not in the conversation.
@@ -187,6 +193,7 @@ beforeAll(async () => {
 	asked('DECIDE', 70, ASKED.old);
 	asked('DECIDE', 49, ASKED.decide);
 	asked('HELP', 29, ASKED.help);
+	asked('DECIDE', 35, ASKED.group);
 	fixture.report(sol.session_id, { tag: 'DONE', summary: '很長的回報', message: LONG, time: minutesAgo(40), hcom_name: 'sol', workspace: sol.workspace });
 	// Reported, but not in the conversation; the reply just before it must not be taken instead.
 	asked('DECIDE', 10, 'DECIDE: MQ-1 r1 · 不在對話紀錄裡');
@@ -526,6 +533,22 @@ test.skipIf(!CHROME)('phone: a help question opens at its HELP message the same 
 	expect(text).toContain('送出答覆');
 	expect(text).not.toContain('測試機 7110 被舊的預覽程序佔用。');
 }, 30_000);
+
+for (const [width, opened] of [[390, '一起問的甲題'], [1400, '一起問的乙題']] as const) {
+	test.skipIf(!CHROME)(`${width}px: the questions one message asked are its cards one after another, scrolled to the opened one`, async () => {
+		await visit(width);
+		await tab.eval(click('.inbox', opened));
+		const card = `document.querySelector('.history .placed [data-opened]')`;
+		await tab.until(`document.querySelector('.placeholder') === null && ${card}?.innerText.includes(${JSON.stringify(opened)})`, `${opened} placed in the conversation`);
+		await tab.until(`(() => { const top = ${card}.getBoundingClientRect().top; return top >= 0 && top < 160; })()`, `${opened} scrolled to`);
+		// In the message's order, at its one place, and each can be answered.
+		const cards = await tab.eval<string[]>(`[...document.querySelectorAll('.history .placed > .asked')].map((card) => card.innerText)`);
+		expect(cards.map((text) => text.match(/一起問的.題/)?.[0])).toEqual(['一起問的乙題', '一起問的甲題']);
+		for (const text of cards) expect(text).toContain('送出答覆');
+		expect(await tab.eval(`document.querySelectorAll('.history .placed').length`)).toBe(1);
+		expect(await tab.eval(`[...document.querySelectorAll('.history .said')].some((li) => li.innerText.includes('這兩題一起問。'))`)).toBe(false);
+	}, 30_000);
+}
 
 test.skipIf(!CHROME)('a question no message asked shows only its card, saying the message is not found', async () => {
 	await visit(390);

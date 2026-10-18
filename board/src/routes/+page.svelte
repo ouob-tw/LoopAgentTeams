@@ -15,6 +15,7 @@
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
+	import { askedTogether } from '#lib/board/question-message.ts';
 	import { reportPlace, withLatest, type PlacedMessage, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
 	import type { InboxItem } from '#lib/board/types.ts';
 	import CommandLine from '#lib/components/CommandLine.svelte';
@@ -115,6 +116,8 @@
 	 *  cannot be read, at this opening: it is shown as if no message had asked it. */
 	let lost = $state<string | null>(null);
 	const placed = $derived(item && item.key !== lost ? placedAt(item) : null);
+	/** The cards shown at the asking message: every question of the inbox it asked, in its order. */
+	const together = $derived(item?.kind === 'question' ? askedTogether(item, inbox) : item ? [item] : []);
 	function lose(key: string) {
 		lost = key;
 		locate(false);
@@ -326,7 +329,7 @@
 {#snippet placedCard(item: InboxItem, copy = false)}
 	<ItemContent
 		{item}
-		{inInbox}
+		inInbox={item.key === openKey ? inInbox : true}
 		recorded={board.snapshot.recordedKeys.includes(item.key)}
 		handle={item.hcomName}
 		onunread={copy ? async () => {} : (key) => board.mark(key, false)}
@@ -507,9 +510,10 @@
 						onunplaced={item.kind === 'question' ? () => lose(item.key) : undefined}
 					>
 						{#snippet card()}
-							{#key item.key}
-								{@render placedCard(item)}
-							{/key}
+							<!-- The opened one is scrolled to; the others the same message asked are answerable too. -->
+							{#each together as entry (entry.key)}
+								<div class="asked" data-opened={entry.key === item.key || undefined}>{@render placedCard(entry)}</div>
+							{/each}
 						{/snippet}
 					</ControllerInfo>
 				{:else if item}
@@ -759,6 +763,10 @@
 		.detail {
 			padding: 0.9rem;
 		}
+	}
+	/* One question card after another, as the message asked them. */
+	.asked + .asked {
+		margin-top: 0.5rem;
 	}
 	.context {
 		margin: 0;
