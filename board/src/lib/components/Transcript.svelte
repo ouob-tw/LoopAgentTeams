@@ -87,9 +87,17 @@
 	/** Not found, or the record cannot be read: the target's card is shown above the conversation. */
 	const unplaced = $derived(!!target && (place === null || (place === undefined && !!(problem || earlierFailed))));
 	const targetId = $derived(target && `${target.key}:${target.time}`);
-	/** The `targetId` when the latest page of the conversation arrived: a newer target, such as a
-	 *  revised question's new asking message, may only be in the next page. */
+	/** The `targetId` the pages read so far are for: a revised question's new asking message may
+	 *  only be in the next page. */
 	let targetAtLastPage = $state<string | null>(null);
+	/** The target's question or report, as last seen. */
+	let targetKey: string | undefined;
+	// Another question or report is judged on the pages already read.
+	$effect(() => {
+		const key = target?.key;
+		if (key !== targetKey) targetAtLastPage = untrack(() => targetId) ?? null;
+		targetKey = key;
+	});
 	$effect(() => {
 		if (unplaced && (problem || earlierFailed || targetAtLastPage === targetId)) untrack(() => onunplaced?.());
 	});
