@@ -202,12 +202,14 @@ afterAll(async () => {
 
 /** A new Chrome with nothing in it but the board's login, so nothing an earlier visit still had
  *  under way can reach into the next: with one Chrome for all of them, now and then every request
- *  of a new page was cancelled, in a new tab or in the same one. */
+ *  of a new page was cancelled, in a new tab or in the same one. Without extensions: Chrome starts
+ *  its own about two seconds after launch, and the requests a page sent at that moment were
+ *  cancelled before they left it. */
 async function startChrome() {
 	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
 	chrome = spawn(
 		CHROME!,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', `--user-data-dir=${profile}`, `--remote-debugging-port=${PORT_BASE + 30}`, 'about:blank'],
+		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, `--remote-debugging-port=${PORT_BASE + 30}`, 'about:blank'],
 		{ stdio: 'ignore' }
 	);
 	tab = await Tab.open(PORT_BASE + 30);
