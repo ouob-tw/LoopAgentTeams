@@ -16,7 +16,7 @@
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { askedTogether } from '#lib/board/question-message.ts';
-	import { questionPlace, turnEnded, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
+	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
 	import type { InboxItem, InboxQuestion } from '#lib/board/types.ts';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
@@ -111,34 +111,17 @@
 	/** The question whose asking message is not found in its conversation, or the conversation
 	 *  cannot be read, at this opening: it is shown as if no message had asked it. */
 	let lost = $state<string | null>(null);
-	/** Whether an opened item is shown in its controller's conversation: a report at its own
-	 *  message; a question at the message that asked it, or where that message will come while the
-	 *  turn that asked it goes on. Not a question whose turn ended without a report asking it,
-	 *  unless its conversation is found to have its message. */
-	const inConversation = (entry: InboxItem) =>
-		entry.kind === 'report' ||
-		!!entry.askedIn ||
-		!turnEnded(entry, controllers.find((candidate) => candidate.id === entry.controllerId)?.lastReportAt ?? null);
-	/** The question shown in its conversation at this opening: it stays there whatever its turn's
-	 *  report turns out to say, as its message may not have been the turn's last text. */
-	let shownIn = $state<string | null>(null);
-	const placed = $derived(item && item.key !== lost && (inConversation(item) || item.key === shownIn) ? item : null);
-	$effect(() => {
-		if (placed?.kind === 'question') shownIn = placed.key;
-	});
+	/** An opened item is shown in its controller's conversation: a report at its own message, a
+	 *  question at the message that asked it, or where that message will come. */
+	const placed = $derived(item && item.key !== lost ? item : null);
 	/** The cards shown at the asking message: every question of the inbox it asked, in its order. */
 	const together = $derived(item?.kind === 'question' ? askedTogether(item, inbox) : item ? [item] : []);
 	function lose(key: string) {
 		lost = key;
 		locate(false);
 	}
-	/** The controller of the lost question while it is open, or of a question not shown in its
-	 *  conversation. */
-	const lostController = $derived(
-		item?.kind === 'question' && (item.key === lost || !placed) && controllers.some((candidate) => candidate.id === item.controllerId)
-			? item.controllerId
-			: null
-	);
+	/** The controller of the lost question while it is open. */
+	const lostController = $derived(lost && item?.key === lost ? item.controllerId : null);
 	/** The lost question's conversation as read since it was lost. */
 	let lostSeen = $state.raw<TranscriptView | null>(null);
 	// Lost is not for good: a turn's text may reach the conversation a moment after its report,
@@ -161,9 +144,7 @@
 	$effect(() => {
 		if (!lostController || item?.kind !== 'question' || !lostSeen) return;
 		const place = questionPlace(lostSeen, item, controller?.lastReportAt ?? null);
-		if (typeof place !== 'number' && place !== 'pending') return;
-		lost = null;
-		shownIn = item.key;
+		if (typeof place === 'number' || place === 'pending') lost = null;
 	});
 
 	/** Containers of the unfolded roster whose own surface, not a card or control, was clicked. */
@@ -310,8 +291,7 @@
 		if (next?.kind === 'item') {
 			opens++;
 			lost = null;
-			shownIn = null;
-			locate(inConversation(next.item) && controllers.some((candidate) => candidate.id === next.item.controllerId));
+			locate(controllers.some((candidate) => candidate.id === next.item.controllerId));
 		}
 		return show(next);
 	}

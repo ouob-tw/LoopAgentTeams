@@ -268,6 +268,8 @@ async function showsList() {
 
 const QUESTION = (n: number) => `?item=${encodeURIComponent(`q:${luna.session_id}:Q-${n}`)}`;
 const CONTROLLER = () => `?controller=${luna.session_id}`;
+/** Luna has no conversation record: its question is shown alone, with the way to luna, once that is known. */
+const shownAlone = (n: number) => shows(QUESTION(n), '看主控資訊');
 
 test.skipIf(!CHROME)('phone: question, its controller, "←" back to the question, then the list where it was scrolled, then back leaves', async () => {
 	await visit(390);
@@ -276,7 +278,7 @@ test.skipIf(!CHROME)('phone: question, its controller, "←" back to the questio
 	expect(scrolled).toBeGreaterThan(500);
 
 	await tab.eval(click('.inbox', '題目 20'));
-	await shows(QUESTION(20), '題目 20');
+	await shownAlone(20);
 	await tab.eval(click('.detail', '看主控資訊'));
 	await shows(CONTROLLER(), '@luna');
 
@@ -321,7 +323,7 @@ test.skipIf(!CHROME)("phone: a controller's question goes back to the controller
 test.skipIf(!CHROME)('a reload keeps the open screen and the way back', async () => {
 	await visit(390);
 	await tab.eval(click('.inbox', '題目 5'));
-	await shows(QUESTION(5), '題目 5');
+	await shownAlone(5);
 	await tab.eval(click('.detail', '看主控資訊'));
 	await shows(CONTROLLER(), '@luna');
 
@@ -396,7 +398,7 @@ test.skipIf(!CHROME)('phone: the list comes back where it was scrolled after a r
 		const scrolled = await tab.eval<number>('Math.round(scrollY)');
 		expect(scrolled).toBeGreaterThan(500);
 		await tab.eval(click('.inbox', '題目 25'));
-		await shows(QUESTION(25), '題目 25');
+		await shownAlone(25);
 		await tab.eval(click('.detail', '看主控資訊'));
 		await shows(CONTROLLER(), '@luna');
 
@@ -938,6 +940,23 @@ test.skipIf(!CHROME)('phone: a question at its message stays there when its turn
 	await sleep(6000);
 	expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
 	expect(await tab.eval(`${PLACED}.innerText`)).toContain(title);
+	fixture.list([luna, sol]);
+	await fixture.refresh(cookie);
+}, 30_000);
+
+test.skipIf(!CHROME)('phone: a question opened after its turn ended, its message no report matches, is found at that message', async () => {
+	const id = 'MO-1';
+	const title = '回合結束後才打開的題目';
+	fixture.list([luna, { ...sol, questions: [...sol.questions, question({ id, revision: 1, title, kind: 'single', options: OPTIONS, asked_at: minutesAgo(0) })] }]);
+	say(`中途問、之後才打開。\n\nDECIDE: ${id} r1 · 之後才打開 · 回答面板上的題目`);
+	const last = 'NO REPLY: 繼續做別的';
+	say(last);
+	fixture.report(sol.session_id, { tag: 'NO REPLY', summary: '繼續做別的', message: last, time: minutesAgo(0), hcom_name: 'sol', workspace: sol.workspace });
+	await fixture.refresh(cookie);
+	await visit(390);
+	await tab.eval(click('.inbox', title));
+	await placedAt(SOL_QUESTION(id), title);
+	expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
 }, 30_000);
