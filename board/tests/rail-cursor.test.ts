@@ -111,6 +111,25 @@ const under = (selector: string, from = 0, to = 1) => `(() => {
 	return [...seen].sort();
 })()`;
 
+/** Which items `selector` matches the pointer is over at each point of the line through the middle
+ *  of every item, from the left edge of the roster to the right edge: the item itself, or, in
+ *  the last 5px, the handle that resizes the column and has a cursor of its own. */
+const across = (selector: string) => `(() => {
+	const column = document.querySelector('.roster').getBoundingClientRect();
+	const scrollbar = document.querySelector('.roster').offsetWidth - document.querySelector('.roster').clientWidth;
+	const left = column.left + 1;
+	const right = column.right - scrollbar - 5;
+	const blank = [];
+	document.querySelectorAll(${JSON.stringify(selector)}).forEach((item, index) => {
+		const box = item.getBoundingClientRect();
+		const y = (box.top + box.bottom) / 2;
+		for (let x = left; x <= right; x += 1) {
+			if (document.elementFromPoint(x, y)?.closest(${JSON.stringify(selector)}) !== item) blank.push(index + '@' + x);
+		}
+	});
+	return blank;
+})()`;
+
 test.skipIf(!CHROME)('moving between marks of the folded rail never crosses the blank, within a run or across the line between runs', async () => {
 	await visit(true);
 	await until(`document.querySelectorAll('.rail .entry').length >= 3 && document.querySelector('.rail .entry').getBoundingClientRect().width >= 30`);
@@ -118,6 +137,8 @@ test.skipIf(!CHROME)('moving between marks of the folded rail never crosses the 
 
 	expect(await evaluate(under('.rail .entry', 0, 1))).toEqual(['first', 'second']);
 	expect(await evaluate(under('.rail .entry', 1, 2))).toEqual(['first', 'second']);
+	// Beside a mark, out to both edges of the rail, is that mark too.
+	expect(await evaluate(across('.rail .entry'))).toEqual([]);
 });
 
 test.skipIf(!CHROME)('moving between cards of the unfolded roster never crosses the blank, within a run or across the line between runs', async () => {
@@ -127,4 +148,6 @@ test.skipIf(!CHROME)('moving between cards of the unfolded roster never crosses 
 
 	expect(await evaluate(under('.people .person', 0, 1))).toEqual(['first', 'second']);
 	expect(await evaluate(under('.people .person', 1, 2))).toEqual(['first', 'second']);
+	// Beside a card, out to both edges of the roster's column, is that card too.
+	expect(await evaluate(across('.people .person'))).toEqual([]);
 });
