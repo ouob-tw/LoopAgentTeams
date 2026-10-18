@@ -34,6 +34,7 @@
 		onplaced,
 		onunplaced,
 		card,
+		copy,
 		usage = $bindable(null)
 	}: {
 		controller: Controller;
@@ -43,11 +44,16 @@
 		target?: PlacedMessage;
 		/** Changes with every opening of the target, the same one again too. */
 		opens?: number;
-		/** Called once the target is scrolled to, or shown above the conversation instead. */
+		/** Called once the target is scrolled to, or shown above the conversation instead, or the
+		 *  user scrolled or clicked the page before it was. */
 		onplaced?: () => void;
 		/** Called when the target's text is not found in the conversation, or it cannot be read. */
 		onunplaced?: () => void;
 		card?: Snippet;
+		/** A box over the page until the target is placed, a copy of its card first in it, which
+		 *  the user may scroll meanwhile: the card is placed where its copy is on screen, and
+		 *  scrolling the box does not stop keeping it there. */
+		copy?: HTMLElement | null;
 		/** Context use, quota and prompt cache, as the live feed last told; null when unknown. */
 		usage?: Usage | null;
 	} = $props();
@@ -103,6 +109,8 @@
 
 	/** Stops keeping the report in place; set while it is kept. */
 	let stopAligning = () => {};
+	/** Where on screen the report's card was placed: where its copy was, if one was shown. */
+	let keptAt: number | undefined;
 	const USER_SCROLL = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
 
 	/** Scroll to the report and keep it there for a moment, as parts above it may still change
@@ -113,16 +121,22 @@
 		const until = performance.now() + 2500;
 		let frame = 0;
 		let last: number | undefined;
-		const stop = () => {
+		keptAt = undefined;
+		const stop = (event?: Event) => {
+			if (event?.target instanceof Node && copy?.contains(event.target)) return;
 			cancelAnimationFrame(frame);
 			for (const type of USER_SCROLL) removeEventListener(type, stop, true);
+			// The user took over before the card was placed: the copy must not stay over the page.
+			if (event && last === undefined) onplaced?.();
 		};
 		const step = () => {
 			const element = within.querySelector<HTMLElement>(selector);
 			const top = element?.getBoundingClientRect().top;
 			if (element && top !== last) {
-				makeRoom(element);
+				if (last === undefined) keptAt = copy?.firstElementChild?.getBoundingClientRect().top;
+				makeRoom(element, keptAt);
 				element.scrollIntoView({ block: 'start' });
+				if (keptAt !== undefined) (scrollerOf(element) ?? window).scrollBy(0, element.getBoundingClientRect().top - keptAt);
 				if (last === undefined) onplaced?.();
 				last = element.getBoundingClientRect().top;
 			}
@@ -142,15 +156,22 @@
 	$effect(() => {
 		void view;
 		const element = untrack(() => tail && list?.querySelector<HTMLElement>('.placed'));
-		if (element) makeRoom(element);
+		if (element) makeRoom(element, keptAt);
 	});
 
-	/** Let the report's card reach the top of the visible area however little follows it: the
-	 *  space after the conversation grows to what is missing (none when enough follows). */
-	function makeRoom(element: HTMLElement) {
-		if (!tail || !element.offsetParent) return;
+	/** The nearest box the element scrolls in; null when it scrolls with the page. */
+	function scrollerOf(element: HTMLElement): HTMLElement | null {
 		let scroller: HTMLElement | null = element.parentElement;
 		while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
+		return scroller;
+	}
+
+	/** Let the report's card reach the top of the visible area, or `at` on screen, however little
+	 *  follows it: the space after the conversation grows to what is missing (none when enough
+	 *  follows). */
+	function makeRoom(element: HTMLElement, at?: number) {
+		if (!tail || !element.offsetParent) return;
+		const scroller = scrollerOf(element);
 		const page = !scroller;
 		const port = page ? window.innerHeight : scroller!.clientHeight;
 		const portTop = page ? 0 : scroller!.getBoundingClientRect().top;
@@ -161,7 +182,7 @@
 		const height = page ? document.documentElement.scrollHeight : scroller!.scrollHeight;
 		// What follows the card's top, without the space.
 		const below = height - port - (scrolled + element.getBoundingClientRect().top - portTop);
-		const margin = parseFloat(getComputedStyle(element).scrollMarginTop) || 0;
+		const margin = at === undefined ? parseFloat(getComputedStyle(element).scrollMarginTop) || 0 : at - portTop;
 		tail.style.height = `${Math.max(0, Math.ceil(port - margin - below))}px`;
 	}
 	// Earlier parts until the report's text is found or the conversation starts.

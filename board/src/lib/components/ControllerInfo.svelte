@@ -38,7 +38,8 @@
 		opens = 0,
 		onplaced,
 		onunplaced,
-		card
+		card,
+		copy
 	}: {
 		controller: Controller;
 		/** Changes when the server announces a Herdr tab move. */
@@ -56,6 +57,8 @@
 		/** Called when the target's text is not found in the conversation, or it cannot be read. */
 		onunplaced?: () => void;
 		card?: Snippet;
+		/** A box over the page with a copy of the target's card until it is placed; see Transcript. */
+		copy?: HTMLElement | null;
 	} = $props();
 
 	const sorted = $derived(sortByTime(items));
@@ -332,7 +335,7 @@
 
 <!-- All three stay mounted, so the conversation keeps its place and its live feed. -->
 <div class="tabpanel" role="tabpanel" id="panel-transcript" aria-labelledby="tab-transcript" hidden={tab !== 'transcript'}>
-	<Transcript {controller} {reports} {target} {opens} {onplaced} {onunplaced} {card} bind:usage />
+	<Transcript {controller} {reports} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
 </div>
 <div class="tabpanel" role="tabpanel" id="panel-reports" aria-labelledby="tab-reports" hidden={tab !== 'reports'}>
 	{#each reports as item (item.key)}
