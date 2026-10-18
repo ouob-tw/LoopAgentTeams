@@ -112,7 +112,7 @@ test('Claude starts in a Git project root with /lat and the first message, in th
 	expect(body.entry).toMatchObject({ client: 'claude', folder: repo, scope: repo, hcomName: 'agent1', herdrWorkspace: 'wA', herdrWorkspaceLabel: 'alpha', workspaceCreated: false, outcome: 'started', state: 'starting' });
 	// The whole argument list: no model, effort or other client flag, and the text as one argument.
 	expect(hcomCalls()).toEqual([
-		{ args: ['claude', '--dir', repo, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 第一行\n第二行'], workspace: 'wA', tag: null }
+		{ args: ['claude', '--dir', repo, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 第一行\n第二行', '--dangerously-skip-permissions'], workspace: 'wA', tag: null }
 	]);
 	expect(herdrCalls().some((args) => args[0] === 'workspace' && args[1] === 'create')).toBe(false);
 });
@@ -136,7 +136,7 @@ test('a chosen model and effort go to Claude as --model and --effort after hcom\
 	expect(status).toBe(200);
 	expect(body.entry).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'xhigh' });
 	expect(hcomCalls().map((call) => call.args)).toEqual([
-		['claude', '--dir', repo, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 做一件事', '--model', 'claude-sonnet-5-5', '--effort', 'xhigh']
+		['claude', '--dir', repo, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 做一件事', '--dangerously-skip-permissions', '--model', 'claude-sonnet-5-5', '--effort', 'xhigh']
 	]);
 	expect((await launchOf(body.entry!.id))).toMatchObject({ model: 'claude-sonnet-5-5', effort: 'xhigh' });
 });
@@ -160,7 +160,7 @@ test('only what was chosen is passed: client default leaves the other one out', 
 
 	expect(hcomCalls().map((call) => call.args.slice(8))).toEqual([
 		['$lat 做一件事', '-c', 'model_reasoning_effort="high"'],
-		['/lat 做一件事', '--model', 'claude-haiku-5-5']
+		['/lat 做一件事', '--dangerously-skip-permissions', '--model', 'claude-haiku-5-5']
 	]);
 });
 
@@ -204,7 +204,7 @@ test('a Git subfolder opens in the workspace of a pane elsewhere in the same pro
 	const { body } = await launch({ folder: join(repo, 'a') });
 
 	expect(body.entry).toMatchObject({ folder: join(repo, 'a'), scope: repo, herdrWorkspace: 'wM' });
-	expect(hcomCalls()[0]).toMatchObject({ args: ['claude', '--dir', join(repo, 'a'), '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 做一件事'], workspace: 'wM' });
+	expect(hcomCalls()[0]).toMatchObject({ args: ['claude', '--dir', join(repo, 'a'), '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 做一件事', '--dangerously-skip-permissions'], workspace: 'wM' });
 });
 
 test('of several matching workspaces the one with the most panes in the project wins, then the lowest number', async () => {
