@@ -3,12 +3,15 @@
 	// column borders draggable. Narrow: the roster strip above the inbox, and one content screen
 	// at a time once something is opened.
 	import { onMount, tick, untrack } from 'svelte';
+	import { afterNavigate, goto } from '$app/navigation';
+	import { page } from '$app/state';
 	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
 	import Plus from '@lucide/svelte/icons/plus';
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import type { InboxSort } from '#lib/board/inbox.ts';
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
+	import { advance, arrive, listScrollIn, placeIn, samePlace, searchOf, viewOf, withListScroll, type Place, type Trail, type View } from '#lib/board/navigation.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -73,13 +76,18 @@
 		remember(SORT_KEY, next);
 	}
 
-	// The item is kept as it was when opened, so the content stays up after it leaves the inbox.
-	type View = { kind: 'item'; item: InboxItem } | { kind: 'controller'; id: string } | { kind: 'launch' } | null;
-	let view = $state<View>(null);
-
 	const controllers = $derived(board.snapshot.controllers);
 	const inbox = $derived(board.snapshot.inbox);
 	const archivedCount = $derived(board.snapshot.archivedCount);
+
+	/** Items as they were when opened on this page, so going back shows one that has left the inbox since. */
+	const kept = new Map<string, InboxItem>();
+	const archived = $derived(typeof board.archive === 'object' ? (board.archive?.reports ?? []) : []);
+	const viewAt = (place: Place) => viewOf(place, { kept, items: [...inbox, ...archived], controllers });
+	/** The screen the address names; a reload opens it again. */
+	const addressed = () => placeIn(new URLSearchParams(location.search));
+	// svelte-ignore state_referenced_locally
+	let view = $state<View>(viewAt(placeIn(page.url.searchParams)));
 
 	// The archive is fetched when its view is open, and again with every new snapshot: a report may
 	// have moved into it. A fetch that failed is retried only with its button.
@@ -92,8 +100,7 @@
 	const inInbox = $derived(inbox.some((item) => item.key === openKey));
 	const item = $derived.by(() => {
 		if (view?.kind !== 'item') return undefined;
-		const archive = typeof board.archive === 'object' ? (board.archive?.reports ?? []) : [];
-		return [...inbox, ...archive].find((candidate) => candidate.key === openKey) ?? view.item;
+		return [...inbox, ...archived].find((candidate) => candidate.key === openKey) ?? view.item;
 	});
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
 	// Undefined for an archived report whose controller has left the roster.
@@ -134,6 +141,79 @@
 		if (on) locateTimer = setTimeout(() => locate(false), 8_000);
 	}
 
+	/** History writes and the screens shown after them, one after another: each reads the entry the
+	 *  one before has left. One that fails does not stop the ones after it. */
+	let moving: Promise<unknown> = Promise.resolve();
+	function queue(step: () => unknown) {
+		moving = moving.then(step).catch((error) => console.error(error));
+	}
+	function move(step: (trail: Trail, depth: number | undefined) => void) {
+		queue(async () => {
+			const writes: (() => Promise<void>)[] = [];
+			const write = (replace: boolean) => (place: Place, depth: number) =>
+				void writes.push(() =>
+					goto(`${location.pathname}${searchOf(place)}`, { shallow: true, replace, state: { depth }, persistState: true })
+				);
+			step({ push: write(false), replace: write(true) }, page.state.depth);
+			for (const next of writes) await next();
+		});
+	}
+	afterNavigate(({ type }) => {
+		if (type !== 'enter') return;
+		move((trail, depth) => arrive(addressed(), depth, trail));
+		// After the first writes, which may put the list in front of the address for a moment.
+		if (view?.kind === 'missing') queue(() => void restore(addressed()));
+	});
+	/** Set while the archive is read for an item the address names, so it is not called missing
+	 *  before then; the first render is such a case too. */
+	// svelte-ignore state_referenced_locally
+	let seeking = $state(view?.kind === 'missing' && view.what === 'item');
+	/** The screen of an address arrived at by going back or forward, or by a reload. A report not in
+	 *  the inbox may be in the archive, which is read first, page after page until it is found or
+	 *  the archive ends. */
+	let restores = 0;
+	async function restore(place: Place) {
+		// Only the latest restore shows its screen, and ends the seeking.
+		const own = ++restores;
+		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && (board.archive === null || board.earlierFrom)) {
+			seeking = true;
+			if (board.archive === null) await board.loadArchive();
+			// Each round must get further back; one that fails or does not stops. A page the archive
+			// view is already reading counts as a round.
+			let from = board.earlierFrom;
+			while (own === restores && viewAt(place)?.kind === 'missing' && from) {
+				await board.loadEarlier();
+				if (board.archiveEarlier === 'failed' || board.earlierFrom === from) break;
+				from = board.earlierFrom;
+			}
+			if (own !== restores) return;
+			seeking = false;
+			if (!samePlace(place, addressed())) return;
+		}
+		seeking = false;
+		await present(viewAt(place));
+	}
+	onMount(() => {
+		const popped = (event: PopStateEvent) => {
+			listScroll = listScrollIn(event.state) ?? listScroll;
+			void restore(addressed());
+		};
+		addEventListener('popstate', popped);
+		return () => removeEventListener('popstate', popped);
+	});
+	/** Open a screen from the one shown, one history entry further. It is shown once the address
+	 *  names it, so a back pressed meanwhile can never leave the two apart. */
+	function go(next: Place) {
+		move((trail, depth) => {
+			const here = addressed();
+			if (here === null) history.replaceState(withListScroll(history.state, window.scrollY), '');
+			advance(next, { place: here, depth: depth ?? 0 }, trail);
+		});
+		queue(() => present(viewAt(next)));
+	}
+	/** The top bar's "←": every screen but the list has a board entry behind it. */
+	const back = () => queue(() => history.back());
+
 	async function show(next: View) {
 		if (next?.kind !== 'item') locate(false);
 		if (view === null) listScroll = window.scrollY;
@@ -145,12 +225,18 @@
 		if (next !== null) detail.focus({ preventScroll: true });
 		window.scrollTo(0, next === null ? listScroll : 0);
 	}
-	/** Counts openings, so opening the open report again scrolls back to it. */
+	/** Counts openings, so opening the open report again, or going back to it, scrolls back to it. */
 	let opens = $state(0);
+	function present(next: View) {
+		if (next?.kind === 'item') {
+			opens++;
+			locate(next.item.kind === 'report' && controllers.some((candidate) => candidate.id === next.item.controllerId));
+		}
+		return show(next);
+	}
 	function openItem(next: InboxItem) {
-		opens++;
-		locate(next.kind === 'report' && controllers.some((candidate) => candidate.id === next.controllerId));
-		void show({ kind: 'item', item: next });
+		kept.set(next.key, next);
+		go({ kind: 'item', key: next.key });
 		// Opening an inbox report reads it. Only opening does: a report marked unread stays unread
 		// while it is still open. An archived report keeps the read state it had.
 		const listed = inbox.find((entry) => entry.key === next.key);
@@ -158,8 +244,8 @@
 			board.mark(listed.key, true).catch(() => toasts.show('failed', '沒有標為已讀，請重新點開再試一次。'));
 		}
 	}
-	const openController = (id: string) => show({ kind: 'controller', id });
-	const openLaunch = () => show({ kind: 'launch' });
+	const openController = (id: string) => go({ kind: 'controller', id });
+	const openLaunch = () => go({ kind: 'launch' });
 
 	const pending = $derived(inbox.filter((entry) => entry.kind === 'question' && entry.unsent).length);
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
@@ -282,7 +368,7 @@
 				<p class="empty">從信箱選一則，或點主控名稱看它的資訊。</p>
 			{:else}
 				<div class="topbar">
-					<button onclick={() => show(null)} aria-label="返回">←</button>
+					<button onclick={back} aria-label="返回">←</button>
 					{#if owner}
 						<span class="whose" title="{owner.project} @{owner.hcomName}">
 							<strong>{owner.project}</strong>
@@ -295,7 +381,15 @@
 					</span>
 				</div>
 
-				{#if view.kind === 'launch'}
+				{#if view.kind === 'missing'}
+					{#if view.what === 'controller'}
+						<p class="empty">這個主控已不存在。</p>
+					{:else if board.archive === 'failed' || (board.archiveEarlier === 'failed' && board.earlierFrom)}
+						<p class="empty">信箱裡沒有這一則，封存也讀不出來；可以重新整理再試一次。</p>
+					{:else if !seeking}
+						<p class="empty">這一則已不存在。</p>
+					{/if}
+				{:else if view.kind === 'launch'}
 					<NewController {controllers} stamp={board.snapshot.generatedAt} onopen={openController} />
 				{:else if view.kind === 'controller'}
 					{#if controller}

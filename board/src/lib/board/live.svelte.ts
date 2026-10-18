@@ -15,6 +15,10 @@ export class LiveBoard {
 	archive = $state<ArchivePage | 'failed' | null>(null);
 	/** Loading the page after the loaded ones; after a failure only the button tries again. */
 	archiveEarlier = $state<'idle' | 'loading' | 'failed'>('idle');
+	/** Where the loaded archive stops while it goes on further back; null once it reaches the end. */
+	get earlierFrom(): string | null {
+		return typeof this.archive === 'object' ? (this.archive?.before ?? null) : null;
+	}
 	#connection: Connection | undefined;
 	#archiveLoads = 0;
 
@@ -60,10 +64,14 @@ export class LiveBoard {
 		this.archive = loaded === null || loaded === 'failed' ? loaded : withNewest(shown(), loaded, Date.parse(this.snapshot.generatedAt));
 	}
 
-	/** Add the page after the loaded ones. */
-	async loadEarlier(): Promise<void> {
-		const before = typeof this.archive === 'object' ? this.archive?.before : null;
-		if (!before || this.archiveEarlier === 'loading') return;
+	#earlierLoad: Promise<void> | undefined;
+	/** Add the page after the loaded ones. While one is being read, waits for that one. */
+	loadEarlier(): Promise<void> {
+		return (this.#earlierLoad ??= this.#readEarlier().finally(() => (this.#earlierLoad = undefined)));
+	}
+	async #readEarlier(): Promise<void> {
+		const before = this.earlierFrom;
+		if (!before) return;
 		this.archiveEarlier = 'loading';
 		let page: ArchivePage;
 		try {
