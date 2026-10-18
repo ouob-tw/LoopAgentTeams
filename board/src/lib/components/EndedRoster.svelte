@@ -160,6 +160,25 @@
 	.trigger.rail.current {
 		border-color: var(--accent);
 	}
+	/* Touches the mark or card above and reaches the column's sides, as those of the roster do,
+	   also across the line between runs. */
+	.trigger {
+		position: relative;
+	}
+	.trigger::after {
+		content: '';
+		position: absolute;
+		inset: calc(-0.2rem - 1px) calc(-0.6rem - 1px);
+	}
+	.trigger.rail::after {
+		inset: calc(-0.225rem - 1px) -1rem;
+	}
+	:global(.sep) + .trigger::after {
+		top: calc(-0.9rem - 2px);
+	}
+	:global(.sep) + .trigger.rail::after {
+		top: calc(-0.875rem - 2px);
+	}
 	.count {
 		padding: 0 0.35rem;
 		border-radius: var(--radius-pill);
@@ -213,6 +232,9 @@
 	@media (max-width: 760px) {
 		.trigger:not(.rail) {
 			flex: 0 0 auto;
+		}
+		.trigger:not(.rail)::after {
+			display: none;
 		}
 		.chevron {
 			display: none;

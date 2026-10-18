@@ -39,6 +39,23 @@
 		flex-direction: column;
 		gap: 0.4rem;
 	}
+	@media (min-width: 761px) {
+		/* Half the gap above and below, so neighbouring cards touch, and sideways to the edges of
+		   the column's padding, so the pointer never crosses the blank (and its collapse cursor)
+		   between or beside them. */
+		.people > :global(.person) {
+			position: relative;
+		}
+		.people > :global(.person)::after {
+			content: '';
+			position: absolute;
+			inset: calc(-0.2rem - 1px) calc(-0.6rem - 1px);
+		}
+		/* Across the line between two runs, up to where the card above reaches. */
+		.sep + :global(.person)::after {
+			top: calc(-0.9rem - 2px);
+		}
+	}
 	/* Between two runs of one status. */
 	.sep {
 		flex: none;

@@ -34,6 +34,8 @@ export function followTranscript(
 	let running = false;
 	let again = false;
 	let last = '';
+	/** The record file being watched; a file is read once more when first watched. */
+	let watched: string | null = null;
 	let debounce: ReturnType<typeof setTimeout> | undefined;
 	let timer: ReturnType<typeof setTimeout> | undefined;
 	/** The helper's last answer, and a Claude controller's usage, read apart from it. */
@@ -82,6 +84,10 @@ export function followTranscript(
 		const targets: WatchTargets = new Map();
 		if (result.ok) addFile(targets, result.path);
 		watcher.sync(targets);
+		// A line written while this read ran was missed, and no watch event covers it: read again.
+		const path = result.ok ? result.path : null;
+		if (path && path !== watched) again = true;
+		watched = path;
 		if (usageWatcher) {
 			// Read with every record read too, which also covers a missed watch event.
 			usage = readClaudeUsage(config, source.sessionId);
