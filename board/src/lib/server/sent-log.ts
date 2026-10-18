@@ -67,8 +67,8 @@ interface ResumePane {
 }
 
 /** A later step of a Codex model switch: where its stop got to, that it is over (`done`, when its
- *  session is found running again outside its own resume), or new settings the user chose when
- *  continuing it. */
+ *  session is found running again outside its own resume; `abandoned`, given up by the user), or
+ *  new settings the user chose when continuing it. */
 export interface SwitchStep {
 	kind: 'switch-step';
 	switchId: string;
@@ -175,6 +175,7 @@ function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
 		.map((logged) => {
 			const view: SwitchView = { ...logged, open: false, wakeId: null, appliedAt: logged.route === 'inject' ? logged.time : null };
 			for (const step of steps.get(logged.id) ?? []) {
+				if (step.state === 'abandoned') view.abandonedAt = step.time;
 				if (step.state) view.state = step.state;
 				if (step.error !== undefined) view.error = step.error;
 				if (step.to) view.to = step.to;
@@ -192,7 +193,7 @@ function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
 					view.error = wake.outcome === 'failed' ? wake.error : `接回沒有成功：${wake.closed ? RESUME_CLOSE_TEXT[wake.closed] : '結果不明'}`;
 				}
 			}
-			view.open = view.route === 'restart' && view.state !== 'done' && view.state !== 'refused';
+			view.open = view.route === 'restart' && view.state !== 'done' && view.state !== 'refused' && view.state !== 'abandoned';
 			return view;
 		});
 }
@@ -201,6 +202,20 @@ function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
 export function openSwitch(stateDir: string, controllerId: string, now: number, waitMs: number): SwitchView | null {
 	const lines = readLines(stateDir);
 	return switchesOf(lines, wakesOf(lines, now, waitMs)).findLast((view) => view.controllerId === controllerId && view.open) ?? null;
+}
+
+/** Every open model switch, one per session at most, oldest first. */
+export function openSwitches(stateDir: string, now: number, waitMs: number): SwitchView[] {
+	const lines = readLines(stateDir);
+	return switchesOf(lines, wakesOf(lines, now, waitMs)).filter((view) => view.open);
+}
+
+/** Every model switch of one session, newest first, wherever it was asked for. */
+export function readSwitches(stateDir: string, sessionId: string, now: number, waitMs: number): SwitchView[] {
+	const lines = readLines(stateDir);
+	return switchesOf(lines, wakesOf(lines, now, waitMs))
+		.filter((view) => view.controllerId === sessionId)
+		.reverse();
 }
 
 /** The switch with this ID as it stands now. */

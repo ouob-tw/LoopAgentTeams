@@ -432,3 +432,120 @@ test.skipIf(!CHROME)('a close Herdr refuses says why and leaves the agent on its
 		setHerdr(AGENTS);
 	}
 }, 30_000);
+
+/** A Claude linked to hcom and listening, with every agent's pane in Herdr, for a model switch. */
+const LINKED = herdrAgent('s-link', { status: 'idle' });
+function setLinked(hcom: object = {}) {
+	const agents = [...AGENTS, LINKED];
+	setHerdr(agents, { panes: agents.map((agent) => ({ pane_id: agent.pane_id, workspace_id: agent.workspace_id, cwd: agent.cwd })) });
+	fixture.setHcom({
+		agents: [
+			{ name: 'lead', session_id: 's-lead', status: 'active' },
+			{ name: 'lino', session_id: 's-link', status: 'listening', launch_context: { pane_id: LINKED.pane_id } }
+		],
+		...hcom
+	});
+}
+const hcomCalls = (): string[][] => {
+	const file = join(fixture.dir, 'hcom-calls.jsonl');
+	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line).args) : [];
+};
+const pickSetting = (kind: 'model' | 'effort', value: string) =>
+	tab.eval(`(() => { const select = document.querySelector('.detail [data-pick="${kind}"]'); select.value = ${JSON.stringify(value)}; select.dispatchEvent(new Event('change', { bubbles: true })); })()`);
+
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`${width}px: a switch asks first; one left unfinished stays listed, and giving it up asks first and runs nothing`, async () => {
+		for (const file of ['hcom-calls.jsonl', 'hcom-added.json', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
+		// The stop goes through; the resume fails.
+		setLinked({ exit: 1, stderr: 'resume refused' });
+		await fixture.refresh(cookie);
+		try {
+			await visit(width, '?agent=s-link');
+			await tab.until(`!!document.querySelector('.detail [data-pick="effort"] option[value="high"]')`, 'the switch form');
+			// Nothing picked: nothing to send.
+			expect(await tab.eval(`document.querySelector('.detail [data-action="switch"]').disabled`)).toBe(true);
+			await pickSetting('effort', 'high');
+			await click('.detail [data-action="switch"]');
+			await tab.until(`!!document.querySelector('.detail [data-action="confirm-switch"]')`, 'the confirmation');
+			expect(await tab.eval(`document.querySelector('.detail .model .confirm').innerText`)).toContain('思考強度 high');
+			expect(await tab.eval(FITS)).toBe(true);
+			expect(hcomCalls()).toEqual([]);
+			await click('.detail [data-action="confirm-switch"]');
+			await tab.until(`document.querySelector('.dock')?.innerText.includes('resume refused')`, 'the resume failure');
+			expect(hcomCalls().map((args) => args[0])).toEqual(['kill', 'r']);
+
+			// No longer in Herdr, still on its page and in the list, marked; only continue and give up.
+			await tab.until(`!!document.querySelector('.detail [data-action="abandon"]')`, 'the unfinished switch');
+			const detail = (await screen()).detail;
+			expect(detail).toContain('切換未完成');
+			expect(detail).toContain('已不在 Herdr 的清單上');
+			expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"], .detail [data-action="switch"], .detail .compose')`)).toBe(false);
+			await openTab();
+			await tab.until(`document.querySelector('.inbox [data-agent="s-link"]')?.innerText.includes('切換未完成')`, 'the marked row');
+			await openAgent('s-link');
+			await tab.until(`!!document.querySelector('.detail [data-action="abandon"]')`, 'its page again');
+			// Its record shows the switch.
+			await click('.detail [data-tab="log"]');
+			await tab.until(`document.querySelector('.detail [data-action="model-switch"][data-state="resume-failed"]')`, 'the switch in the record');
+
+			await click('.detail [data-action="abandon"]');
+			await tab.until(`!!document.querySelector('.detail [data-action="confirm-abandon"]')`, 'the give-up confirmation');
+			expect(await tab.eval(FITS)).toBe(true);
+			await click('.detail [data-action="confirm-abandon"]');
+			await tab.until(`document.querySelector('.dock')?.innerText.includes('已放棄 lino 的這次切換')`, 'the give-up notice');
+			expect(hcomCalls().map((args) => args[0])).toEqual(['kill', 'r']);
+			// Not in Herdr: gone from the list.
+			await tab.until(`document.querySelector('.detail')?.innerText.includes('已不在 Herdr 的清單上')`, 'the page saying it is gone');
+			await openTab();
+			await tab.until(`!!document.querySelector('.inbox [data-agent="s-other"]')`, 'the agent list');
+			expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-link"]')`)).toBe(false);
+		} finally {
+			setHerdr(AGENTS);
+			fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+			await fixture.refresh(cookie);
+		}
+	}, 30_000);
+}
+
+test.skipIf(!CHROME)('繼續切換 asks first and resumes an unfinished switch; a busy agent, or one not linked, says why it cannot switch', async () => {
+	for (const file of ['hcom-calls.jsonl', 'hcom-added.json', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
+	setLinked({ exit: 1, stderr: 'resume refused' });
+	await fixture.refresh(cookie);
+	try {
+		await visit(390, '?agent=s-link');
+		await tab.until(`!!document.querySelector('.detail [data-pick="model"] option[value="claude-sonnet-5-5"]')`, 'the switch form');
+		await pickSetting('model', 'claude-sonnet-5-5');
+		await click('.detail [data-action="switch"]');
+		await click('.detail [data-action="confirm-switch"]');
+		await tab.until(`!!document.querySelector('.detail [data-action="continue"]')`, 'the unfinished switch');
+
+		// The resume goes through this time and puts it back in Herdr.
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }], resumed: { name: 'lino', session_id: 's-link', status: 'listening' }, resumedHerdr: LINKED });
+		await click('.detail [data-action="continue"]');
+		await tab.until(`!!document.querySelector('.detail [data-action="confirm-continue"]')`, 'the continue confirmation');
+		expect(hcomCalls().map((args) => args[0])).toEqual(['kill', 'r']);
+		await click('.detail [data-action="confirm-continue"]');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('已繼續切換 lino')`, 'the continue notice');
+		expect(hcomCalls().map((args) => args[0])).toEqual(['kill', 'r', 'r']);
+		expect(hcomCalls()[2]).toContain('claude-sonnet-5-5');
+		await fixture.refresh(cookie);
+		await tab.until(`!!document.querySelector('.detail [data-action="switch"]') && !!document.querySelector('.detail .compose')`, 'the page as usual');
+
+		// At work: the form says to wait for the turn to end.
+		fixture.setHcom({ agents: [{ name: 'lino', session_id: 's-link', status: 'active', launch_context: { pane_id: LINKED.pane_id } }] });
+		await fixture.refresh(cookie);
+		await tab.until(`document.querySelector('.detail .model')?.innerText.includes('這一回合做完')`, 'the busy reason');
+		expect(await tab.eval(`document.querySelector('.detail [data-action="switch"]').disabled`)).toBe(true);
+
+		// Not linked to hcom: no form, only why.
+		await openTab();
+		await openAgent('s-plain');
+		await tab.until(`document.querySelector('.detail .model')?.innerText.includes('沒有接 HCOM')`, 'the not-linked reason');
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="switch"], .detail [data-pick]')`)).toBe(false);
+	} finally {
+		setHerdr(AGENTS);
+		rmSync(join(fixture.dir, 'hcom-added.json'), { force: true });
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+		await fixture.refresh(cookie);
+	}
+}, 30_000);

@@ -1,7 +1,8 @@
 <script lang="ts">
 	// The 所有 Agent tab: every agent Herdr lists, by workspace, who needs the user first. Each row
 	// shows its name, status, client, project folder and whether hcom reaches it; LAT controllers
-	// are marked.
+	// are marked, and so are agents with a model switch left unfinished, listed even when Herdr no
+	// longer lists them.
 	import { AGENT_MARK, agentGroups, folderName } from '#lib/board/agents.ts';
 	import { AGENT_HCOM_LABEL, AGENT_STATUS_LABEL, type Agent } from '#lib/board/types.ts';
 	import StatusMark from './StatusMark.svelte';
@@ -39,6 +40,9 @@
 		<strong class="name">{agent.name}</strong>
 		{#if agent.controller}
 			<span class="tag" title="LAT 主控">主控</span>
+		{/if}
+		{#if agent.switch}
+			<span class="tag unfinished" title={agent.inHerdr ? '模型切換未完成' : '模型切換未完成，已不在 Herdr 的清單上'}>切換未完成</span>
 		{/if}
 	</span>
 	<span class="facts">
@@ -96,6 +100,10 @@
 		border-radius: var(--radius-pill);
 		color: var(--accent);
 		font-size: max(0.7rem, var(--min-font, 0px));
+	}
+	.tag.unfinished {
+		border-color: var(--warn);
+		color: var(--warn);
 	}
 	.facts,
 	.folder {

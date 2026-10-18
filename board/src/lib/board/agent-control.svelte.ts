@@ -1,7 +1,9 @@
 // What the page keeps about actions on the 所有 Agent tab's agents: the operation record of the
-// agents it has opened, and one attempt at a time of sending text, interrupting or closing.
+// agents it has opened, what a model switch may offer them, and one attempt at a time of sending
+// text, interrupting, closing or switching.
 import type { AgentAction, AgentActionResponse } from './agent-actions.ts';
 import type { Outcome } from './messaging.svelte.ts';
+import type { AgentModelStatus, ModelChoice, SwitchResponse, SwitchView } from './models.ts';
 
 /** No answer came back, so the action may or may not have been done. */
 const UNKNOWN_OUTCOME = '沒有收到看板伺服器的回應，不確定有沒有執行；再試之前請先看操作紀錄。';
@@ -9,13 +11,18 @@ const UNKNOWN_OUTCOME = '沒有收到看板伺服器的回應，不確定有沒�
 class AgentControl {
 	/** Operation record by session ID, newest first; an agent is missing until its record is loaded. */
 	log = $state<Record<string, AgentAction[]>>({});
+	/** Its model switches, newest first, loaded with the record. */
+	switches = $state<Record<string, SwitchView[]>>({});
 	loadFailed = $state<Record<string, boolean>>({});
+	/** What a switch may offer, by session ID; missing until loaded. */
+	model = $state<Record<string, AgentModelStatus>>({});
 	/** The latest load started per agent; an older one that answers later is dropped. */
 	#loads: Record<string, number> = {};
 
 	async load(agentId: string): Promise<void> {
 		const load = (this.#loads[agentId] = (this.#loads[agentId] ?? 0) + 1);
 		let entries: AgentAction[] | undefined;
+		let switches: SwitchView[] = [];
 		let gone = false;
 		try {
 			const response = await fetch(`/api/agents/log?session=${encodeURIComponent(agentId)}`);
@@ -23,12 +30,15 @@ class AgentControl {
 			// Herdr no longer lists it: its page says so, and there is no record to show.
 			gone = response.status === 404;
 			if (!response.ok && !gone) throw new Error(`HTTP ${response.status}`);
-			if (!gone) entries = (await response.json()).entries;
+			if (!gone) ({ entries, switches = [] } = await response.json());
 		} catch {
 			// Reported below, unless a newer load has taken over.
 		}
 		if (load !== this.#loads[agentId]) return;
-		if (entries) this.log[agentId] = entries;
+		if (entries) {
+			this.log[agentId] = entries;
+			this.switches[agentId] = switches;
+		}
 		this.loadFailed[agentId] = !entries && !gone;
 	}
 
@@ -48,10 +58,10 @@ class AgentControl {
 			location.reload();
 			return { ok: false, reason: '這台裝置已不是登入狀態，沒有執行。' };
 		}
-		const answer: AgentActionResponse | null = await response.json().catch(() => null);
+		const answer: AgentActionResponse | SwitchResponse | null = await response.json().catch(() => null);
 		if (response.status === 400) return { ok: false, reason: '看板伺服器不接受這個請求，沒有執行。' };
 		void this.load(agentId);
-		if (!answer?.entry) return { ok: false, reason: UNKNOWN_OUTCOME };
+		if (typeof answer?.ok !== 'boolean') return { ok: false, reason: UNKNOWN_OUTCOME };
 		const logNote = answer.logError ? `（送出紀錄寫入失敗：${answer.logError}）` : '';
 		return { ok: answer.ok, reason: answer.ok ? logNote || null : answer.reason + logNote };
 	}
@@ -69,6 +79,28 @@ class AgentControl {
 	/** Close the agent and its Herdr pane, after the user confirmed it. */
 	close(agentId: string): Promise<Outcome> {
 		return this.#post('/api/agents/close', agentId, {});
+	}
+
+	/** Read what a switch may offer; a failed read leaves the form without options. */
+	async loadModel(agentId: string, signal?: AbortSignal): Promise<void> {
+		try {
+			const response = await fetch(`/api/agents/model?session=${encodeURIComponent(agentId)}`, { signal });
+			if (response.status === 401) return location.reload();
+			if (response.ok) this.model[agentId] = await response.json();
+		} catch {
+			// Shown as still loading.
+		}
+	}
+
+	/** Switch the model and effort, or with both null continue the open switch, after the user
+	 *  confirmed it. */
+	switchModel(agentId: string, choice: ModelChoice): Promise<Outcome> {
+		return this.#post('/api/agents/model', agentId, choice);
+	}
+
+	/** Give up the open switch as a whole, after the user confirmed it. */
+	abandonSwitch(agentId: string): Promise<Outcome> {
+		return this.#post('/api/agents/model/abandon', agentId, {});
 	}
 }
 

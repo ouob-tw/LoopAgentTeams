@@ -50,9 +50,9 @@ function inScope(cwd: string, scope: string): boolean {
  * The workspace for a project scope (a Git project root, or a folder that is not in one): the
  * workspace holding the most panes whose working folder is inside the scope, the lowest numbered
  * one on a tie. When no pane is inside it, a new workspace named after the scope folder is
- * created without taking the focus.
+ * created without taking the focus. A `prefer`red workspace that Herdr still lists comes first.
  */
-export async function chooseWorkspace(config: BoardConfig, scope: string): Promise<WorkspaceChoice> {
+export async function chooseWorkspace(config: BoardConfig, scope: string, prefer?: string): Promise<WorkspaceChoice> {
 	const [panes, workspaces] = await Promise.all([herdr(config, ['pane', 'list']), herdr(config, ['workspace', 'list'])]);
 	if ('reason' in panes) return { ok: false, reason: `讀不到 Herdr 的窗格清單：${panes.reason}` };
 	if ('reason' in workspaces) return { ok: false, reason: `讀不到 Herdr 的工作區清單：${workspaces.reason}` };
@@ -64,6 +64,9 @@ export async function chooseWorkspace(config: BoardConfig, scope: string): Promi
 	if (!Array.isArray(workspaceList) || !workspaceList.every(isWorkspace)) {
 		return { ok: false, reason: '讀不到 Herdr 的工作區清單：輸出不是預期的格式' };
 	}
+
+	const preferred = prefer === undefined ? undefined : workspaceList.find((workspace) => workspace.workspace_id === prefer);
+	if (preferred) return { ok: true, id: preferred.workspace_id, label: preferred.label, created: false };
 
 	const counts = new Map<string, number>();
 	for (const pane of paneList) {

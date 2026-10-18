@@ -11,7 +11,8 @@ import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.t
 import { archiveDue, archivedReports, buildSnapshot, dropSessions, expiredSessions, mark, type MarkResult, type Sources } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
-import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
+import { openResumes, openSwitches, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
+import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
 import { createAgentRoster } from './agents.ts';
 import { helperDirectories } from './sources.ts';
@@ -79,6 +80,8 @@ function createBoard(): Board {
 	let fallback: ReturnType<typeof setTimeout> | undefined;
 	let closed = false;
 	let sentLogError: string | null = null;
+	/** The open model switches as last read from the sent log. */
+	let lastSwitches: SwitchView[] = [];
 
 	const comparable = (value: BoardSnapshot) => JSON.stringify({ ...value, generatedAt: '' });
 
@@ -191,7 +194,12 @@ function createBoard(): Board {
 				sentLogError = (error as Error).message;
 			}
 		}
-		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)));
+		try {
+			lastSwitches = openSwitches(config.stateDir, config.now(), config.launchWaitMs);
+		} catch {
+			// The last ones read stand in; the sent log's own views say why it cannot be read.
+		}
+		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches);
 		sources = {
 			active: lastActive,
 			helperError: helper.ok ? null : helper.reason,

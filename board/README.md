@@ -29,7 +29,7 @@
 | `LAT_BOARD_CONFIG_DIR` | 看板的設定目錄，放使用者樣式檔 `user.css` | `$XDG_CONFIG_HOME/lat/board` |
 | `LAT_BOARD_INJECT_COMMAND` | 傳話用的輸入指令（JSON 字串陣列），看板會在後面加上 `<HCOM 名稱> <文字> --enter`；文字剛好是 `--help`、`-h`、`--name`、`--go`、`--enter` 這五個之一時，輸入指令會當成自己的選項，所以改分兩次呼叫（第一個字元，再接其餘字元與 `--enter`），輸入框收到的字元不變（這種訊息送出最多慢約 2 秒） | `["hcom","term","inject"]` |
 | `LAT_BOARD_INJECT_TIMEOUT_SECONDS` | 輸入指令多久沒結束就放棄 | `15` |
-| `LAT_BOARD_HCOM_COMMAND` | hcom 指令（JSON 字串陣列）。新建時看板在後面加上 `<client> --dir <資料夾> --terminal herdr --go --hcom-prompt <第一則訊息>`，喚醒接回時加上 `r <session ID> --terminal herdr --go --hcom-prompt <第一則訊息>`（切換 Codex 模型的接回沒有第一則訊息），兩者之後再接選定的模型與思考強度參數；判斷 client 是否還在（每次讀取資料與喚醒前）時加上 `list --json`，切換 Codex 模型與在「所有 Agent」分頁關閉有接 HCOM 的 Agent 時加上 `kill <HCOM 名稱>` | `["hcom"]` |
+| `LAT_BOARD_HCOM_COMMAND` | hcom 指令（JSON 字串陣列）。新建時看板在後面加上 `<client> --dir <資料夾> --terminal herdr --go --hcom-prompt <第一則訊息>`，喚醒接回時加上 `r <session ID> --terminal herdr --go --hcom-prompt <第一則訊息>`（切換 Codex 模型的接回沒有第一則訊息），兩者之後再接選定的模型與思考強度參數；判斷 client 是否還在（每次讀取資料與喚醒前）時加上 `list --json`，切換模型與在「所有 Agent」分頁關閉有接 HCOM 的 Agent 時加上 `kill <HCOM 名稱>` | `["hcom"]` |
 | `LAT_BOARD_HCOM_TIMEOUT_SECONDS` | hcom 啟動或接回指令多久沒結束就不再等（含 hcom 自己等 client 就緒的時間）；逾時算「仍在啟動」，不算失敗 | `60` |
 | `LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS` | `hcom list --json` 多久沒結束就當成讀不到（此時喚醒不送出，名冊沿用上次的清單）；`hcom kill` 也用這個時間，逾時算「停止結果不明」（關閉 Agent 時算結果不明） | `15` |
 | `LAT_BOARD_MODEL_OPTIONS` | 表單提供的模型與思考強度（JSON），例如 `{"codex":{"models":["gpt-6.1-sol"]}}`；只取代有寫到的 client 與清單，其餘用內建清單 | 內建清單 |
@@ -101,7 +101,7 @@
 
 ## 所有 Agent
 
-中間欄頂端的「信箱／所有 Agent」分頁（對輔助技術是一組按下狀態的按鈕，與信箱的檢視切換相同）切換兩份清單，選擇記在各自的裝置上。「所有 Agent」列出 Herdr 所有工作區裡的每一個 Agent，名冊、信箱與主控資訊頁不受影響。目前有清單、對話紀錄、傳話、中斷、關閉與操作紀錄；切換模型還沒有。
+中間欄頂端的「信箱／所有 Agent」分頁（對輔助技術是一組按下狀態的按鈕，與信箱的檢視切換相同）切換兩份清單，選擇記在各自的裝置上。「所有 Agent」列出 Herdr 所有工作區裡的每一個 Agent，名冊、信箱與主控資訊頁不受影響。有清單、對話紀錄、傳話、中斷、關閉、切換模型與操作紀錄。
 
 - 名單：每次讀取資料（與輔助工具、hcom 清單同時）執行 `herdr agent list`，並用 `workspace list`、`tab list`（不帶 `--workspace`，一次列出所有分頁）取得工作區與分頁名稱。每個 Agent 以 Herdr 回報的 client session ID（`agent_session.value`）為鍵；Herdr 還不知道 session ID 的 Agent 照樣列出，但沒有鍵，不能點開，清單上註明原因，等 Herdr 回報後才能開啟。不在 Herdr 清單上的 Agent 不列，包括只在 hcom 清單上的（tmux 裡的、子 Agent）；從 Herdr 清單消失就從分頁消失。
 - 是否接 HCOM：`hcom list --json` 裡有同一個 session ID 的 Agent，沒有時看 `launch_context.pane_id` 是不是同一個窗格（還沒有 session ID 的 Agent 只看窗格）。配對到的顯示 HCOM 名稱與 HCOM 狀態（`active` 工作中、`listening` 閒置、`blocked` 等待輸入，其他是不明）；沒配對到的顯示 Herdr 分頁名稱（沒有時用終端機標題）與 Herdr 的 `agent_status`（`blocked` 等待輸入、`done` 已完成、`working` 工作中、`idle` 閒置，其他是不明），見 ADR 0003 第 2 點的補記。
@@ -117,7 +117,11 @@
 - 關閉（`POST /api/agents/close`，`session`）：有接 HCOM 的用 `hcom kill <HCOM 名稱>`（hcom 會連它的窗格一起關掉；名稱是 `all` 或以 `tag:` 開頭時拒絕，因為 hcom 會當成多個 Agent），沒接的用 `herdr pane close <窗格>`。這次讀到的窗格就是看板自己所在的窗格（`HERDR_PANE_ID`）時拒絕（409）；有接 HCOM 的另在 kill 前重讀 `hcom list --json`，hcom 記的窗格（`launch_context.pane_id`，依 session 配對時可能與 Herdr 的不同）是看板自己的、清單讀不到或已沒有這個名稱時也拒絕；HCOM 連線無法確認時也拒絕（409），頁面上的關閉按鈕停用。指令成功後以 `herdr pane list` 核對窗格已經不在（最多 5 次、每次隔 0.4 秒），確認後才算關閉成功，並立刻重讀資料，Agent 從清單消失；指令失敗、逾時或核對不到都回 502，原因說明是失敗還是結果不明。頁面先問一次，確認畫面依 Agent 說明關閉後能不能接回：LAT 主控可以從主控資訊頁喚醒；有接 HCOM 的一般 Agent 看板不能接回，要在終端機用 `hcom r <名稱>`；沒接 HCOM 的看板沒辦法接回。
 - 三者都只試一次、不重送，與傳話給主控、喚醒、切換模型排在同一個 session 的隊伍裡（`queued`），依序執行。每次請求先重讀一次資料（與重新整理按鈕相同），以這次讀到的 Herdr 清單與 hcom 配對決定窗格、HCOM 名稱與走哪條路，不看頁面送來的其他欄位：Agent 已不在 Herdr 清單上，或這次 Herdr 的清單讀不到（只有上次的清單可用），都拒絕（409）且不執行任何指令。Herdr 拒絕時（結束碼非 0，標準錯誤是 `{"error":{"code","message"}}`）以 `message` 為原因回 502；`agent_blocked`（停在確認畫面）另外說明。輸入指令或 Herdr 指令逾時算失敗，原因裡提醒文字可能已經送進去。
 - 操作紀錄：每次傳話、中斷與關閉（成功、失敗或拒絕）都寫一行 `sent-log.jsonl`（`kind: agent-action`；`action` 是 `send`、`interrupt` 或 `close`，另有 `agentId`（session ID）、當時的名稱與窗格、`route`（`hcom`、`herdr`，拒絕時 null）、文字、結果與原因）。`GET /api/agents/log?session=<ID>` 回傳這個 Agent 的紀錄（新的在前），不在目前清單上的回 404，所以關閉成功後就不再提供；頁面的「操作紀錄」分頁顯示它。傳話與中斷不一定改變看板資料，所以每次寫入後伺服器另外推送 `agent-action` 事件（`{agentId}`），開著這個 Agent 紀錄的頁面（任何裝置）收到就重讀；資料推送時也會重讀。這些行不算進主控的送出紀錄。
-- 測試以 `tests/fake-herdr.mjs`（`agent list`、`tab list`、`agent prompt`、`agent send-keys`、`pane close`；每次讀取資料的清單呼叫另記在 `herdr-list-calls.jsonl`）與 `tests/fake-hcom.mjs`（含 `kill`）代替真的指令；harness 預設就用假的 Herdr，所以測試不會讀到真的 Herdr。
+- 切換模型（`POST /api/agents/model`，`session`、`model`、`effort`，null 表示保持目前；兩個都是 null 時繼續未結案的切換）：沿用主控的切換流程（`src/lib/server/switch.ts`，見「模型與思考強度」），由 `src/lib/server/agent-switch.ts` 以 session ID 為鍵呼叫，切換紀錄同樣是 `kind: switch`（`controllerId` 就是 session ID），另帶 `agent`（當時的名稱、資料夾、Herdr 工作區 ID、名稱與編號）。新的切換要這次讀到的 Herdr 清單上有它、有接 HCOM、窗格不是看板自己的、client 是 Claude 或 Codex、值在選項裡，才走主控的流程（hcom 清單上 `listening` 才停止、停止前再查一次、以參數接回同一段對話）；不符合時寫一筆 `refused` 並回 409，不執行任何指令。拒絕原因以 Agent 為主詞（例如工作中時說明要等它這一回合做完）。以 `--model`、`-m`、`--oss` 啟動的 Codex 拒絕換模型（`board launch-args` 判斷，同主控），思考強度照常；以 `-c model=…` 啟動的不受限。接回到切換紀錄記下的 Herdr 工作區，那個工作區已不在時才依它的資料夾選（`chooseWorkspace` 的 `prefer`）。`GET /api/agents/model?session=<ID>` 回傳選項與 Codex 的啟動參數判斷；不在清單上的回 404。
+- 切換未完成：每次讀取資料時從送出紀錄找出所有未結案的切換（`openSwitches`，沿用主控的判斷：停止中、停止失敗、停止結果不明、已停止待接回、接回中、接回失敗），在 Herdr 清單上的 Agent 帶上 `switch`；不在 Herdr 清單上、而切換帶有 `agent` 的，以切換紀錄的 session ID、client、HCOM 名稱與工作區列出（`inHerdr: false`，狀態取 hcom 清單上的，沒有時不明），所以看板重啟後仍在。這種 Agent 的傳話、中斷、關閉一律拒絕（409）；頁面只有「繼續切換」與「放棄切換」。繼續切換不要求它在 Herdr 清單上，沿用主控的再次查證，不會重複接回。從主控資訊頁開始、不帶 `agent` 的切換不會讓已不在 Herdr 的主控出現在這個分頁。
+- 放棄切換（`POST /api/agents/model/abandon`，`session`）：結束整筆切換，不只是目前這次接回。先把這筆切換未結案的接回寫成 `resume-closed`（`abandoned`），再追加 `switch-step`（`state: abandoned`），不執行任何 hcom 或 Herdr 指令；之後這筆切換算結案，Agent 回到一般規則（在 Herdr 清單上照常列出，不在就消失）。沒有未結案的切換回 409。與切換排在同一個 session 的隊伍裡，所以正在執行的停止或接回會先做完。切換與放棄後伺服器重讀資料並推送 `agent-action` 事件。主控資訊頁的切換與「放棄前一次接回」不變；主控的送出紀錄裡被放棄的切換顯示「已放棄這次切換」。
+- 操作紀錄的端點另外回傳 `switches`（這個 session 的所有切換，新的在前，含主控資訊頁開始的），頁面依時間與傳話、中斷、關閉排在一起。
+- 測試以 `tests/fake-herdr.mjs`（`agent list`、`tab list`、`agent prompt`、`agent send-keys`、`pane close`；每次讀取資料的清單呼叫另記在 `herdr-list-calls.jsonl`）與 `tests/fake-hcom.mjs`（含 `kill`，接回時可用 `resumedHerdr` 把 Agent 加回假的 Herdr）代替真的指令；harness 預設就用假的 Herdr，所以測試不會讀到真的 Herdr。
 
 ## 用量與快取
 
@@ -259,7 +263,7 @@ bun run repro:hydration --serve none       # 只啟動已登入的假資料看�
 
 `tests/back-navigation.test.ts` 也用無頭 Chrome（同樣可用 `CHROME` 指定，使用起點加 29 與加 30）在真的瀏覽器裡走返回與重新整理；本機沒有 Chrome 時這些測試略過。
 
-`tests/agents-page.test.ts` 以同樣方式（使用起點加 32 與加 33）在電腦與手機寬度操作「所有 Agent」分頁（含傳話、中斷、關閉與操作紀錄），並檢查畫面不會左右捲動。傳話與中斷的伺服器端行為在 `tests/agent-control.test.ts`（起點加 34），關閉在 `tests/agent-close.test.ts`（起點加 35）。
+`tests/agents-page.test.ts` 以同樣方式（使用起點加 32 與加 33）在電腦與手機寬度操作「所有 Agent」分頁（含傳話、中斷、關閉與操作紀錄），並檢查畫面不會左右捲動。傳話與中斷的伺服器端行為在 `tests/agent-control.test.ts`（起點加 34），關閉在 `tests/agent-close.test.ts`（起點加 35），切換模型、繼續切換與放棄切換在 `tests/agent-switch.test.ts`（起點加 37）。
 
 寬版底部指令列的版面規則：單行時目標標籤、輸入框文字與送出按鈕的垂直中心相差不超過 2px；輸入框隨多行內容長高時，標籤與按鈕都貼齊輸入框最下面一行，位置不跳動；送出按鈕在輸入框框線內的右側，輸入的文字不會跑到按鈕底下。量測（深色與淺色、整體大小 80／100／150 %）：
 

@@ -27,12 +27,13 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The agent as a read made now lists it, or why that cannot be relied on. A Herdr list that
  *  cannot be read now does not confirm that it is still there, whatever the last one said. */
-async function listedNow(board: Board, agentId: string): Promise<{ agent: Agent } | { agent?: Agent; reason: string }> {
+export async function listedNow(board: Board, agentId: string): Promise<{ agent: Agent } | { agent?: Agent; reason: string }> {
 	const snapshot = await board.refresh();
 	const { herdrError } = await board.sources();
 	const agent = snapshot.agents.find((candidate) => candidate.id === agentId);
 	if (herdrError) return { agent, reason: `無法確認這個 Agent 仍在 Herdr 的清單上，沒有執行：${herdrError}` };
-	return agent ? { agent } : { reason: AGENT_GONE_REASON };
+	// One listed only for its open model switch is not in Herdr: nothing else is done to it.
+	return agent?.inHerdr ? { agent } : { agent, reason: AGENT_GONE_REASON };
 }
 
 /** Why a Herdr command did not act, as the page shows it. */

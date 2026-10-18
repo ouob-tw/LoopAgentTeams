@@ -1,4 +1,5 @@
 // The board's data model, shared by the server and the UI.
+import type { SwitchView } from './models.ts';
 
 /** Checked top to bottom; the first row that holds wins. */
 export type ControllerStatus = 'ended' | 'closed' | 'waiting' | 'delivered' | 'working';
@@ -218,7 +219,15 @@ export interface Agent {
 	statusSource: 'hcom' | 'herdr';
 	/** Bound as a LAT controller: its session ID is in the binding registry. */
 	controller: boolean;
+	/** Whether Herdr's list has it. One it does not is listed only while a model switch of it is
+	 *  open, from what the switch kept; nothing but continuing or giving up that switch is done to it. */
+	inHerdr: boolean;
+	/** Its open model switch, to continue or give up; null when it has none. */
+	switch: AgentSwitch | null;
 }
+
+/** An agent's open model switch, as its list entry carries it. */
+export type AgentSwitch = Pick<SwitchView, 'id' | 'time' | 'state' | 'error' | 'from' | 'to' | 'carriedEffort'>;
 
 /** An agent whose session Herdr knows: one that can be opened. */
 export type KnownAgent = Agent & { id: string };

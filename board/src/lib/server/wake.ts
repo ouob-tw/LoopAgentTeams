@@ -205,16 +205,21 @@ export async function check(board: Board, controllerId: string): Promise<Plan> {
 }
 
 /**
- * Resume the conversation in the Herdr workspace of the controller's project. The attempt is in
+ * Resume the conversation in the Herdr workspace of the controller's project, or for an agent of
+ * the 所有 Agent tab in the one Herdr listed it in, while Herdr still has it. The attempt is in
  * the sent log, still open, before hcom runs, and hcom does not run unless it is: a board stopped
  * while hcom starts the client, or a result that cannot be written, leaves it open for the next
  * wake to check. Nothing else would stop that wake from resuming the conversation a second time.
  */
-export async function resume(board: Board, controller: Controller, entry: SentWake): Promise<Delivery> {
+export async function resume(
+	board: Board,
+	controller: Pick<Controller, 'workspace'> & { agent?: { workspace: string } },
+	entry: SentWake
+): Promise<Delivery> {
 	const { stateDir } = board.config;
 	entry.route = 'resume';
 	entry.outcome = 'failed';
-	const workspace = await chooseWorkspace(board.config, controller.workspace);
+	const workspace = await chooseWorkspace(board.config, controller.workspace, controller.agent?.workspace);
 	if (!workspace.ok) {
 		entry.error = workspace.reason;
 		return { abandon: null, logged: false, logError: null };

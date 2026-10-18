@@ -120,13 +120,23 @@ export interface ModelStatus {
 	lockReason: string | null;
 }
 
+/** What `GET /api/agents/model` answers for one agent of the 所有 Agent tab. */
+export interface AgentModelStatus {
+	/** What the form offers its client; null for a client the board cannot switch. */
+	options: ClientOptions | null;
+	/** Codex linked to hcom only: whether its launch arguments fix the model, or that they could not be read. */
+	lock: 'free' | 'fixed' | 'unknown' | null;
+	lockReason: string | null;
+}
+
 /**
  * Where a switch stands. The client is stopped and resumed with the new settings: `stopping` logged
  * before the stop ran; `stop-failed`
  * the stop command failed; `stop-unknown` it ran out of time or the client could not be seen to be
  * gone; `stopped` gone, not resumed yet; `resuming` resumed, its session not seen yet;
  * `resume-failed` the resume failed or was found over without the session showing up; `done` the
- * session showed up again. `refused` nothing was done. `sent` and `failed` are only on switches
+ * session showed up again; `abandoned` the user gave up the whole switch from the 所有 Agent tab,
+ * wherever it was. `refused` nothing was done. `sent` and `failed` are only on switches
  * logged before Claude was switched this way, when `/model` and `/effort` were typed in.
  */
 export type SwitchState =
@@ -139,7 +149,8 @@ export type SwitchState =
 	| 'stopped'
 	| 'resuming'
 	| 'resume-failed'
-	| 'done';
+	| 'done'
+	| 'abandoned';
 
 /** One switch in the board's sent log. Later lines move a Codex switch on; see `SwitchView`. */
 export interface SentSwitch {
@@ -162,6 +173,18 @@ export interface SentSwitch {
 	 *  the record when the settings were chosen or the client was last stopped; null when it could
 	 *  not be read. Missing when nothing is carried, and on switches logged before this was kept. */
 	carriedEffort?: string | null;
+	/** Set on a switch asked for on the 所有 Agent tab: where Herdr listed the agent then, so it is
+	 *  still listed, and resumed there, while its switch is open and Herdr no longer lists it. */
+	agent?: SwitchAgent;
+}
+
+/** An agent of the 所有 Agent tab as its switch keeps it. */
+export interface SwitchAgent {
+	name: string;
+	folder: string;
+	workspace: string;
+	workspaceLabel: string | null;
+	workspaceNumber: number | null;
 }
 
 export interface SwitchView extends SentSwitch {
@@ -172,6 +195,8 @@ export interface SwitchView extends SentSwitch {
 	appliedAt: string | null;
 	/** The resume that carries this switch's settings, the latest one. */
 	wakeId: string | null;
+	/** When the user gave the switch up; null unless `abandoned`. */
+	abandonedAt?: string | null;
 }
 
 /** What `POST /api/model` takes. Both null on a switch that is open continues it as it is. */
@@ -209,8 +234,35 @@ export const SWITCH_STATE_TEXT: Record<SwitchState, string> = {
 	stopped: '已停止，尚未接回',
 	resuming: '已停止並接回，等主控出現',
 	'resume-failed': '接回失敗，主控目前沒有在跑',
-	done: '已接回'
+	done: '已接回',
+	abandoned: '已放棄這次切換'
 };
+
+/** The same for an agent of the 所有 Agent tab. */
+export const AGENT_SWITCH_STATE_TEXT: Record<SwitchState, string> = {
+	...SWITCH_STATE_TEXT,
+	stopping: '正在停止 Agent，結果不明',
+	resuming: '已停止並接回，等 Agent 出現',
+	'resume-failed': '接回失敗，Agent 目前沒有在跑'
+};
+
+export const AGENT_BUSY_REASON = 'Agent 正在工作或狀態不明，要等它這一回合做完才能切換';
+export const AGENT_NOT_RUNNING_REASON = 'hcom 的 Agent 清單裡沒有這個 Agent，沒有切換';
+export const AGENT_FIXED_MODEL_REASON =
+	'這個 Codex Agent 啟動時指定了模型（--model、-m 或 --oss），接回後無法換模型，只能改思考強度';
+export const AGENT_NOT_LINKED_SWITCH_REASON = '這個 Agent 沒有接 HCOM，看板只能替有接 HCOM 的 Agent 切換模型與思考強度';
+export const AGENT_HCOM_UNKNOWN_SWITCH_REASON =
+	'HCOM 連線無法確認：hcom 的清單讀不到，不知道這個 Agent 有沒有接 HCOM，沒有切換；讀到清單後就能切換。';
+export const AGENT_SWITCH_OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，停止會連看板一起關掉，沒有切換。';
+export const AGENT_NO_OPEN_SWITCH_REASON = '這個 Agent 沒有未完成的切換，不用放棄。';
+
+/** What a switch from the 所有 Agent tab does, asked before it is sent. */
+export const agentSwitchConfirmText = (choice: ModelChoice) =>
+	`切換為${choiceText(choice)}？看板會停止這個 Agent，再以新設定在新分頁接回同一段對話，原分頁會關掉。`;
+
+export const AGENT_CONTINUE_CONFIRM_TEXT = '繼續這次切換？看板會先查證它停到哪裡，需要時再停止或接回這個 Agent。';
+export const AGENT_ABANDON_CONFIRM_TEXT =
+	'放棄這次切換？看板之後不會再停止或接回它，也不會執行任何指令；它若已不在 Herdr 的清單上，就會從清單消失。';
 
 export const settingsText = (settings: Partial<ModelChoice> | null | undefined) =>
 	`${settings?.model ?? '模型不明'}・${settings?.effort ?? '思考強度不明'}`;

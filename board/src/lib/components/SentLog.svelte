@@ -65,7 +65,7 @@
 							{#if entry.state === 'refused' || entry.state === 'failed'}
 								<span class="failed">✗ {entry.error}</span>
 							{:else}
-								<span class:failed={entry.open && entry.state !== 'resuming'}>{entry.open ? '' : '✓ '}{SWITCH_STATE_TEXT[entry.state]}</span>
+								<span class:failed={entry.open && entry.state !== 'resuming'}>{entry.open || entry.state === 'abandoned' ? '' : '✓ '}{SWITCH_STATE_TEXT[entry.state]}</span>
 							{/if}
 						</p>
 						<p class="text">改為 {choiceText(entry.to)}</p>

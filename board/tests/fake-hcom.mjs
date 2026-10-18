@@ -5,6 +5,8 @@
 //   - `stdout`, `stderr`, `exit`: replace the launch output, add an error, set the exit code.
 //   - `sleepMs`: wait this long after printing, before exiting.
 //   - `resumed`: an agent a resume adds to the agent list, as `list --json` prints one.
+//   - `resumedHerdr`: an agent a resume adds to the fake Herdr's <dir>/herdr.json, as `agent list`
+//     prints one, with its pane (in the agent's workspace and folder).
 //   - `readOnly`: a file a resume makes read-only while it runs, so the board cannot write it.
 // Each launch or resume also logs to <dir>/hcom-env.jsonl the names of the variables it got that
 // look like an agent's, hcom's or Herdr's own (HCOM_*, CLAUDE*, CODEX_*, HERDR_*, AI_AGENT), and
@@ -76,6 +78,14 @@ if (args[0] === 'kill') {
 } else {
 	const call = readFileSync(log, 'utf8').trim().split('\n').length;
 	if (args[0] === 'r' && plan.resumed) writeFileSync(addedFile, JSON.stringify([...added(), plan.resumed]));
+	if (args[0] === 'r' && plan.resumedHerdr) {
+		const herdrFile = join(dir, 'herdr.json');
+		const herdr = existsSync(herdrFile) ? JSON.parse(readFileSync(herdrFile, 'utf8')) : {};
+		const resumed = plan.resumedHerdr;
+		herdr.agents = [...(herdr.agents ?? []), resumed];
+		herdr.panes = [...(herdr.panes ?? []), { pane_id: resumed.pane_id, workspace_id: resumed.workspace_id, cwd: resumed.cwd }];
+		writeFileSync(herdrFile, JSON.stringify(herdr));
+	}
 	if (args[0] === 'r' && plan.readOnly) chmodSync(plan.readOnly, 0o444);
 
 	const name = plan.names === undefined ? `agent${call}` : plan.names[call - 1];

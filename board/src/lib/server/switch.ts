@@ -5,11 +5,15 @@
 // `/effort` would also save the choice as the user's default for new sessions. A switch is in the
 // sent log before the stop runs and stays open until the resumed session shows up in hcom's agent
 // list; 「繼續切換」 checks where an open one got to and goes on from there. Switches share the
-// per-controller queue of messages and wakes.
+// per-controller queue of messages and wakes. Agents of the 所有 Agent tab linked to hcom are
+// switched the same way, keyed by their session ID like a controller (`agent-switch.ts`).
 import { randomUUID } from 'node:crypto';
 import { isLaunchClient, type LaunchClient } from '../board/launch.ts';
 import { UNKNOWN_CONTROLLER_REASON } from '../board/messages.ts';
 import {
+	AGENT_BUSY_REASON,
+	AGENT_FIXED_MODEL_REASON,
+	AGENT_NOT_RUNNING_REASON,
 	BUSY_REASON,
 	chose,
 	FIXED_MODEL_REASON,
@@ -24,6 +28,7 @@ import {
 	type ModelChoice,
 	type ModelStatus,
 	type SentSwitch,
+	type SwitchAgent,
 	type SwitchRequest,
 	type SwitchResponse,
 	type SwitchState,
@@ -40,6 +45,17 @@ import { appendSent, openSwitch, switchView, type SwitchStep } from './sent-log.
 import { check, findController, resume } from './wake.ts';
 
 type Result<T> = { status: number; body: T };
+
+/** Whose model is switched: a controller, or an agent of the 所有 Agent tab, which carries where
+ *  Herdr listed it. Both are known by their session ID. `workspace` is the folder whose Herdr
+ *  workspace a resume goes to. */
+export type SwitchTarget = Pick<Controller, 'id' | 'hcomName' | 'client' | 'workspace'> & { agent?: SwitchAgent };
+
+/** How the refusals name the target. */
+const noun = (target: SwitchTarget) => (target.agent ? 'Agent' : '主控');
+const busyReason = (target: SwitchTarget) => (target.agent ? AGENT_BUSY_REASON : BUSY_REASON);
+const notRunningReason = (target: SwitchTarget) => (target.agent ? AGENT_NOT_RUNNING_REASON : NOT_RUNNING_REASON);
+const fixedModelReason = (target: SwitchTarget) => (target.agent ? AGENT_FIXED_MODEL_REASON : FIXED_MODEL_REASON);
 
 /** How many times, and how far apart, the board looks for a stopped client to be gone. */
 const STOP_CHECKS = 5;
@@ -109,7 +125,7 @@ async function attempt(board: Board, request: SwitchRequest): Promise<Result<Swi
 	return startSwitch(board, controller, entry);
 }
 
-function newEntry(board: Board, controllerId: string, controller: Controller | undefined, choice: ModelChoice): SentSwitch {
+export function newEntry(board: Board, controllerId: string, controller: SwitchTarget | undefined, choice: ModelChoice): SentSwitch {
 	return {
 		id: randomUUID(),
 		kind: 'switch',
@@ -122,7 +138,8 @@ function newEntry(board: Board, controllerId: string, controller: Controller | u
 		route: null,
 		state: 'refused',
 		error: null,
-		pane: null
+		pane: null,
+		...(controller?.agent && { agent: controller.agent })
 	};
 }
 
@@ -131,17 +148,17 @@ function newEntry(board: Board, controllerId: string, controller: Controller | u
  * stopped and resumed with the new settings. Nothing is ever typed into the conversation: Claude's
  * `/model` and `/effort` would also save the choice as the user's default for new sessions.
  */
-async function startSwitch(board: Board, controller: Controller, entry: SentSwitch): Promise<Result<SwitchResponse>> {
+export async function startSwitch(board: Board, controller: SwitchTarget, entry: SentSwitch): Promise<Result<SwitchResponse>> {
 	const refused = (reason: string) => finish(board, entry, { reason });
 	if (!chose(entry.to)) return refused('沒有選要改的模型或思考強度。');
 	const list = await listAgents(board.config);
 	if (!list.ok) return refused(`${WAKE_UNKNOWN_REASON}：${list.reason}`);
 	const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);
-	if (!agent) return refused(NOT_RUNNING_REASON);
-	if (agent.status !== 'listening') return refused(BUSY_REASON);
+	if (!agent) return refused(notRunningReason(controller));
+	if (agent.status !== 'listening') return refused(busyReason(controller));
 	// Only Codex repeats an explicit model on every resume over any later choice.
 	if (controller.client === 'codex' && entry.to.model !== null && (await modelLock(board.config, controller.id)).lock === 'fixed') {
-		return refused(FIXED_MODEL_REASON);
+		return refused(fixedModelReason(controller));
 	}
 	entry.from = await readCurrent(board.config, controller.client, controller.id);
 	if (carriesEffort(entry.to)) entry.carriedEffort = entry.from?.effort ?? null;
@@ -150,7 +167,7 @@ async function startSwitch(board: Board, controller: Controller, entry: SentSwit
 
 /** A first switch: check the client once more, log the switch, stop the client and, once it is
  *  seen to be gone, resume the conversation with the new settings. */
-async function restartSwitch(board: Board, controller: Controller, entry: SentSwitch, seen: HcomAgent): Promise<Result<SwitchResponse>> {
+async function restartSwitch(board: Board, controller: SwitchTarget, entry: SentSwitch, seen: HcomAgent): Promise<Result<SwitchResponse>> {
 	const ready = await recheck(board, controller, seen.name);
 	if ('refuse' in ready) return finish(board, entry, { reason: ready.refuse });
 	entry.route = 'restart';
@@ -169,21 +186,21 @@ async function restartSwitch(board: Board, controller: Controller, entry: SentSw
 
 /** The client again just before it is stopped: still this session under the name it had a moment
  *  ago, and still `listening`. */
-async function recheck(board: Board, controller: Controller, name: string): Promise<{ agent: HcomAgent } | { refuse: string }> {
+async function recheck(board: Board, controller: SwitchTarget, name: string): Promise<{ agent: HcomAgent } | { refuse: string }> {
 	const list = await listAgents(board.config);
 	if (!list.ok) return { refuse: `${WAKE_UNKNOWN_REASON}：${list.reason}` };
 	const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);
-	if (!agent) return { refuse: NOT_RUNNING_REASON };
-	if (agent.name !== name) return { refuse: `主控的 HCOM 名稱剛剛變了（@${name} → @${agent.name}），沒有切換，請再試一次` };
-	if (agent.status !== 'listening') return { refuse: BUSY_REASON };
+	if (!agent) return { refuse: notRunningReason(controller) };
+	if (agent.name !== name) return { refuse: `${noun(controller)}的 HCOM 名稱剛剛變了（@${name} → @${agent.name}），沒有切換，請再試一次` };
+	if (agent.status !== 'listening') return { refuse: busyReason(controller) };
 	// Stopping closes the pane hcom has for the client; never the one the board itself runs in.
 	if (agent.pane !== null && agent.pane === board.config.ownPane) return { refuse: OWN_PANE_REASON };
 	return { agent };
 }
 
 /** Stop the client, log how that went and resume once it is gone. The switch is already logged. */
-async function stopThenResume(board: Board, controller: Controller, switchId: string, agent: HcomAgent): Promise<Result<SwitchResponse>> {
-	const stopped = await stop(board, controller.id, agent);
+async function stopThenResume(board: Board, controller: SwitchTarget, switchId: string, agent: HcomAgent): Promise<Result<SwitchResponse>> {
+	const stopped = await stop(board, controller, agent);
 	const logError = step(board, switchId, { state: stopped.state, error: stopped.error });
 	if (stopped.state !== 'stopped') return respondLogged(board, switchId, { reason: stopped.error, status: 502 }, logError);
 	if (logError) return respondLogged(board, switchId, { reason: `寫不進送出紀錄，沒有接回：${logError}`, status: 500 }, logError);
@@ -191,25 +208,25 @@ async function stopThenResume(board: Board, controller: Controller, switchId: st
 }
 
 /** Run `hcom kill` and check the client is gone: no longer in hcom's list, and its pane closed. */
-async function stop(board: Board, sessionId: string, agent: HcomAgent): Promise<{ state: SwitchState; error: string | null }> {
+async function stop(board: Board, target: SwitchTarget, agent: HcomAgent): Promise<{ state: SwitchState; error: string | null }> {
 	const run = await killAgent(board.config, agent.name);
 	if (run.timedOut) return { state: 'stop-unknown', error: `停止指令${run.failure}，結果不明，沒有接回` };
 	if (run.failure) return { state: 'stop-failed', error: `停止失敗，沒有接回：${run.failure}` };
 	let why = '';
 	for (let attempt = 0; attempt < STOP_CHECKS; attempt++) {
 		if (attempt) await sleep(STOP_CHECK_MS);
-		const gone = await isGone(board, sessionId, agent.pane);
+		const gone = await isGone(board, target, agent.pane);
 		if (gone === true) return { state: 'stopped', error: null };
 		why = gone;
 	}
-	return { state: 'stop-unknown', error: `停止後無法確認主控已停止，沒有接回：${why}` };
+	return { state: 'stop-unknown', error: `停止後無法確認${noun(target)}已停止，沒有接回：${why}` };
 }
 
 /** True when the session is not in hcom's list and its pane is closed; otherwise why that is not known. */
-async function isGone(board: Board, sessionId: string, pane: string | null): Promise<true | string> {
+async function isGone(board: Board, target: SwitchTarget, pane: string | null): Promise<true | string> {
 	const list = await listAgents(board.config);
 	if (!list.ok) return list.reason;
-	if (list.agents.some((agent) => agent.sessionId === sessionId)) return 'hcom 的 Agent 清單裡還有這個主控';
+	if (list.agents.some((agent) => agent.sessionId === target.id)) return `hcom 的 Agent 清單裡還有這個${noun(target)}`;
 	if (!pane) return '沒有記到原本的 Herdr 窗格';
 	const exists = await paneExists(board.config, pane);
 	if ('reason' in exists) return exists.reason;
@@ -222,9 +239,9 @@ async function isGone(board: Board, sessionId: string, pane: string | null): Pro
  * running otherwise is refused; not known keeps it as it is. A stopped one is resumed after the
  * same checks as a second wake.
  */
-async function continueSwitch(board: Board, controller: Controller, open: SwitchView, choice: ModelChoice): Promise<Result<SwitchResponse>> {
+export async function continueSwitch(board: Board, controller: SwitchTarget, open: SwitchView, choice: ModelChoice): Promise<Result<SwitchResponse>> {
 	if (controller.client === 'codex' && choice.model !== null && (await modelLock(board.config, controller.id)).lock === 'fixed') {
-		return respondLogged(board, open.id, { reason: FIXED_MODEL_REASON, status: 409 }, null);
+		return respondLogged(board, open.id, { reason: fixedModelReason(controller), status: 409 }, null);
 	}
 	if (open.state !== 'stopping' && open.state !== 'stop-failed' && open.state !== 'stop-unknown') {
 		return resumeSwitch(board, controller, open.id, choice);
@@ -239,7 +256,7 @@ async function continueSwitch(board: Board, controller: Controller, open: Switch
 	const agent = list.agents.find((candidate) => candidate.sessionId === controller.id);
 	if (agent) {
 		if (agent.status !== 'listening') {
-			return respondLogged(board, open.id, { reason: `主控還在跑，而且不是等待狀態，沒有繼續切換。${BUSY_REASON}`, status: 409 }, null);
+			return respondLogged(board, open.id, { reason: `${noun(controller)}還在跑，而且不是等待狀態，沒有繼續切換。${busyReason(controller)}`, status: 409 }, null);
 		}
 		// Stopped again later than the settings were chosen: the effort to carry is the latest one.
 		// Read before the last check, so nothing is awaited between that check and the stop.
@@ -252,7 +269,7 @@ async function continueSwitch(board: Board, controller: Controller, open: Switch
 		if (logError) return respondLogged(board, open.id, { reason: `寫不進送出紀錄，沒有停止：${logError}`, status: 500 }, logError);
 		return stopThenResume(board, controller, open.id, ready.agent);
 	}
-	const gone = await isGone(board, controller.id, open.pane);
+	const gone = await isGone(board, controller, open.pane);
 	if (gone !== true) {
 		return respondLogged(board, open.id, { reason: `無法確認前一次停止已完成，請到 Herdr 查看：${gone}`, status: 409 }, null);
 	}
@@ -267,7 +284,7 @@ async function continueSwitch(board: Board, controller: Controller, open: Switch
  * page never takes settings that were not sent for ones that were. Otherwise new settings replace
  * the switch's own before the resume.
  */
-async function resumeSwitch(board: Board, controller: Controller, switchId: string, choice: ModelChoice): Promise<Result<SwitchResponse>> {
+async function resumeSwitch(board: Board, controller: SwitchTarget, switchId: string, choice: ModelChoice): Promise<Result<SwitchResponse>> {
 	const { stateDir, launchWaitMs } = board.config;
 	const plan = await check(board, controller.id).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有接回：${error.message}` }));
 	if ('refuse' in plan) {
@@ -323,7 +340,7 @@ async function resumeSwitch(board: Board, controller: Controller, switchId: stri
 }
 
 /** The effort to carry for these settings, read from the record now; nothing when they carry none. */
-async function carried(board: Board, controller: Controller, to: ModelChoice): Promise<{ carriedEffort?: string | null }> {
+async function carried(board: Board, controller: SwitchTarget, to: ModelChoice): Promise<{ carriedEffort?: string | null }> {
 	if (!carriesEffort(to)) return { carriedEffort: null };
 	return { carriedEffort: (await readCurrent(board.config, controller.client, controller.id))?.effort ?? null };
 }
@@ -351,7 +368,7 @@ function respondLogged(board: Board, switchId: string, outcome: Outcome, logErro
 }
 
 /** Log a switch that is over at once (Claude's, or one refused before anything ran) and answer. */
-function finish(board: Board, entry: SentSwitch, outcome: Outcome): Result<SwitchResponse> {
+export function finish(board: Board, entry: SentSwitch, outcome: Outcome): Result<SwitchResponse> {
 	if (outcome.reason !== null && entry.state === 'refused') entry.error = outcome.reason;
 	let logError: string | null = null;
 	try {

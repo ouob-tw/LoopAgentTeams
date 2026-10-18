@@ -106,7 +106,9 @@ test('lists every Herdr agent across workspaces, named and stated by hcom when l
 		herdr: { workspace: 'wB', workspaceLabel: 'Beta', workspaceNumber: 2, tab: 'wB:t-s-beta', pane: 'wB:p-s-beta' },
 		status: 'working',
 		statusSource: 'herdr',
-		controller: false
+		controller: false,
+		inHerdr: true,
+		switch: null
 	});
 	// The roster of controllers is untouched.
 	expect(snapshot.controllers.map((controller) => controller.hcomName)).toEqual(['lead']);

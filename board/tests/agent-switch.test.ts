@@ -1,0 +1,349 @@
+// Switching the model and effort of an agent on the 所有 Agent tab, continuing a switch left
+// unfinished and giving it up. Herdr, hcom and the helper are fakes: `hcom kill` takes the agent
+// and its pane out of the fake Herdr, `hcom r` can put them back; nothing real is stopped or resumed.
+import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
+import { existsSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+import type { AgentAction } from '../src/lib/board/agent-actions.ts';
+import {
+	AGENT_BUSY_REASON,
+	AGENT_FIXED_MODEL_REASON,
+	AGENT_HCOM_UNKNOWN_SWITCH_REASON,
+	AGENT_NO_OPEN_SWITCH_REASON,
+	AGENT_NOT_LINKED_SWITCH_REASON,
+	type AgentModelStatus,
+	type SwitchResponse,
+	type SwitchView
+} from '../src/lib/board/models.ts';
+import type { Agent } from '../src/lib/board/types.ts';
+import { checkRunHere, startFixture, type Fixture } from './harness.ts';
+
+let fixture: Fixture;
+let cookie: string;
+
+beforeAll(async () => {
+	fixture = await startFixture(37, {
+		// The board runs in this pane; the agent listed in it must never be stopped from the board.
+		env: {
+			HERDR_PANE_ID: 'wA:p-s-board',
+			LAT_BOARD_HERDR_TIMEOUT_SECONDS: '2',
+			LAT_BOARD_HCOM_TIMEOUT_SECONDS: '2',
+			LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS: '2'
+		}
+	});
+	cookie = await fixture.login();
+});
+afterAll(() => fixture.cleanup());
+beforeEach(async () => {
+	checkRunHere(fixture.dir);
+	for (const file of ['herdr-calls.jsonl', 'herdr.json', 'hcom.json', 'hcom-calls.jsonl', 'hcom-added.json', 'launch-args.json']) {
+		rmSync(join(fixture.dir, file), { force: true });
+	}
+	rmSync(join(fixture.dir, 'board-state', 'sent-log.jsonl'), { force: true });
+	fixture.list([]);
+	setHerdr(['s-claude', 's-codex', 's-plain', 's-board']);
+	fixture.setHcom({ agents: [hcomAgent('clio', 's-claude'), hcomAgent('coxa', 's-codex'), hcomAgent('boro', 's-board')] });
+	for (const session of ['s-claude', 's-codex']) lastTurn(session, session === 's-codex' ? 'gpt-6.1-sol' : 'claude-opus-5-5');
+	await fixture.refresh(cookie);
+});
+
+const pane = (session: string) => `wA:p-${session}`;
+function herdrAgent(session: string, paneId = pane(session)) {
+	return {
+		agent: session === 's-codex' ? 'codex' : 'claude',
+		agent_session: { kind: 'id', value: session },
+		agent_status: 'idle',
+		cwd: `/projects/${session}`,
+		pane_id: paneId,
+		tab_id: `wA:t-${session}`,
+		workspace_id: 'wA'
+	};
+}
+const hcomAgent = (name: string, session: string, status = 'listening', paneId = pane(session)) => ({
+	name,
+	session_id: session,
+	status,
+	launch_context: { pane_id: paneId }
+});
+function setHerdr(sessions: string[]) {
+	writeFileSync(
+		join(fixture.dir, 'herdr.json'),
+		JSON.stringify({
+			agents: sessions.map((session) => herdrAgent(session)),
+			panes: sessions.map((session) => ({ pane_id: pane(session), workspace_id: 'wA', cwd: `/projects/${session}` })),
+			workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }],
+			tabs: sessions.map((session) => ({ tab_id: `wA:t-${session}`, workspace_id: 'wA', label: `tab-${session}` }))
+		})
+	);
+}
+/** What the client's record says the latest turn used. */
+function lastTurn(session: string, model: string) {
+	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
+	writeFileSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), '');
+	writeFileSync(join(fixture.dir, 'transcripts', `${session}.current.json`), JSON.stringify({ model, effort: 'medium', time: '2026-10-19T09:00:00Z' }));
+}
+const launchArgs = (session: string, args: string[]) => {
+	const file = join(fixture.dir, 'launch-args.json');
+	const all = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
+	writeFileSync(file, JSON.stringify({ ...all, [session]: args }));
+};
+const hcomPlan = (plan: object) => fixture.setHcom({ agents: [hcomAgent('clio', 's-claude'), hcomAgent('coxa', 's-codex')], ...plan });
+
+const lines = (file: string): any[] => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []);
+/** Every hcom command that acts (`kill`, `r`), and every Herdr one that acts, not the lists. */
+const hcomCalls = (): string[][] => lines(join(fixture.dir, 'hcom-calls.jsonl')).map((call: { args: string[] }) => call.args);
+const herdrActs = (): string[][] =>
+	lines(join(fixture.dir, 'herdr-calls.jsonl')).filter((call: string[]) => !['pane list', 'workspace list'].includes(call.slice(0, 2).join(' ')));
+const resumeWorkspaces = () => lines(join(fixture.dir, 'hcom-calls.jsonl')).filter((call: { args: string[] }) => call.args[0] === 'r').map((call: { workspace: string }) => call.workspace);
+
+async function post(path: string, body: object, as = cookie): Promise<{ status: number; body: SwitchResponse }> {
+	const response = await fixture.fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body), cookie: as });
+	return { status: response.status, body: await response.json() };
+}
+const change = (session: string, model: string | null, effort: string | null) => post('/api/agents/model', { session, model, effort });
+const carryOn = (session: string) => change(session, null, null);
+const giveUp = (session: string) => post('/api/agents/model/abandon', { session });
+async function agents(): Promise<Agent[]> {
+	return (await (await fixture.fetch('/api/agents', { cookie })).json()).agents;
+}
+const find = async (session: string) => (await agents()).find((agent) => agent.id === session);
+async function record(session: string): Promise<{ status: number; entries: AgentAction[]; switches: SwitchView[] }> {
+	const response = await fixture.fetch(`/api/agents/log?session=${encodeURIComponent(session)}`, { cookie });
+	return response.ok ? { status: response.status, ...(await response.json()) } : { status: response.status, entries: [], switches: [] };
+}
+async function restart() {
+	await fixture.stop();
+	await fixture.start();
+	cookie = await fixture.login();
+	await fixture.refresh(cookie);
+}
+
+test('a listening agent linked to hcom is stopped and resumed in its own workspace with the new settings', async () => {
+	hcomPlan({ resumed: hcomAgent('clio', 's-claude', 'listening', 'wA:p-new'), resumedHerdr: herdrAgent('s-claude', 'wA:p-new') });
+	const switched = await change('s-claude', 'claude-sonnet-5-5', 'high');
+	expect(switched.status).toBe(200);
+	expect(switched.body.entry).toMatchObject({ route: 'restart', controllerId: 's-claude', to: { model: 'claude-sonnet-5-5', effort: 'high' }, from: { model: 'claude-opus-5-5', effort: 'medium' } });
+	const [kill, resume] = hcomCalls();
+	expect(kill).toEqual(['kill', 'clio']);
+	expect(resume.slice(0, 2)).toEqual(['r', 's-claude']);
+	expect(resume.slice(-4)).toEqual(['--model', 'claude-sonnet-5-5', '--effort', 'high']);
+	expect(resumeWorkspaces()).toEqual(['wA']);
+	// Nothing is typed into the conversation.
+	expect(herdrActs().filter((call) => call[0] === 'agent')).toEqual([]);
+
+	// Back in Herdr under its session; the switch is over once hcom lists it.
+	await fixture.refresh(cookie);
+	expect(await find('s-claude')).toMatchObject({ inHerdr: true, switch: null, herdr: { pane: 'wA:p-new' } });
+	const { switches } = await record('s-claude');
+	expect(switches.map((view) => view.state)).toEqual(['done']);
+});
+
+test('a Codex keeps the effort when only the model changes: -c overrides only, the latest effort carried', async () => {
+	hcomPlan({ resumed: hcomAgent('coxa', 's-codex'), resumedHerdr: herdrAgent('s-codex') });
+	const switched = await change('s-codex', 'gpt-6-astra', null);
+	expect(switched.status).toBe(200);
+	const resume = hcomCalls().find((args) => args[0] === 'r')!;
+	expect(resume.slice(-4)).toEqual(['-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="medium"']);
+	expect(resume).not.toContain('--model');
+});
+
+test('a Codex started with --model, -m or --oss cannot change its model, only its effort; one started with -c model= can', async () => {
+	for (const fixed of [['--model', 'gpt-6.1-sol'], ['-m', 'gpt-6.1-sol'], ['--oss']]) {
+		launchArgs('s-codex', fixed);
+		const status: AgentModelStatus = await (await fixture.fetch('/api/agents/model?session=s-codex', { cookie })).json();
+		expect(status).toMatchObject({ lock: 'fixed', options: { models: ['gpt-6.1-sol', 'gpt-6-astra'] } });
+		const refused = await change('s-codex', 'gpt-6-astra', null);
+		expect(refused.status).toBe(409);
+		expect(refused.body.reason).toBe(AGENT_FIXED_MODEL_REASON);
+	}
+	expect(hcomCalls()).toEqual([]);
+
+	hcomPlan({ resumed: hcomAgent('coxa', 's-codex'), resumedHerdr: herdrAgent('s-codex') });
+	const effort = await change('s-codex', null, 'high');
+	expect(effort.status).toBe(200);
+	expect(hcomCalls().find((args) => args[0] === 'r')!.slice(-2)).toEqual(['-c', 'model_reasoning_effort="high"']);
+
+	rmSync(join(fixture.dir, 'hcom-calls.jsonl'));
+	launchArgs('s-codex', ['-c', 'model="gpt-6.1-sol"']);
+	expect(await (await fixture.fetch('/api/agents/model?session=s-codex', { cookie })).json()).toMatchObject({ lock: 'free' });
+	setHerdr(['s-claude', 's-codex']);
+	hcomPlan({ resumed: hcomAgent('coxa', 's-codex'), resumedHerdr: herdrAgent('s-codex') });
+	await fixture.refresh(cookie);
+	const model = await change('s-codex', 'gpt-6-astra', 'low');
+	expect(model.status).toBe(200);
+	expect(hcomCalls().find((args) => args[0] === 'r')!.slice(-4)).toEqual(['-c', 'model="gpt-6-astra"', '-c', 'model_reasoning_effort="low"']);
+});
+
+test('an agent at work, one not linked to hcom, one hcom cannot tell about, and the board\'s own are not switched', async () => {
+	fixture.setHcom({ agents: [hcomAgent('clio', 's-claude', 'active'), hcomAgent('boro', 's-board')] });
+	await fixture.refresh(cookie);
+	expect(await find('s-claude')).toMatchObject({ status: 'working' });
+	const busy = await change('s-claude', null, 'high');
+	expect(busy.status).toBe(409);
+	expect(busy.body.reason).toBe(AGENT_BUSY_REASON);
+
+	const plain = await change('s-plain', null, 'high');
+	expect(plain.status).toBe(409);
+	expect(plain.body.reason).toBe(AGENT_NOT_LINKED_SWITCH_REASON);
+
+	const own = await change('s-board', null, 'high');
+	expect(own.status).toBe(409);
+	expect(own.body.reason).toContain('看板自己所在的窗格');
+
+	const offList = await change('s-gone', null, 'high');
+	expect(offList.status).toBe(409);
+	expect(offList.body.reason).toContain('已不在 Herdr 的清單上');
+
+	const notOffered = await change('s-claude', 'gpt-6-astra', null);
+	expect(notOffered.status).toBe(409);
+	expect(notOffered.body.reason).toContain('不在這個 client 的選項裡');
+	expect(hcomCalls()).toEqual([]);
+
+	// Every attempt is in the agent's record, refused.
+	expect((await record('s-claude')).switches.map((view) => [view.state, view.error])).toEqual([
+		['refused', notOffered.body.reason],
+		['refused', AGENT_BUSY_REASON]
+	]);
+	expect((await record('s-plain')).switches.map((view) => view.state)).toEqual(['refused']);
+});
+
+test('while hcom\'s list has never been read, no switch is made', async () => {
+	await fixture.stop();
+	fixture.setHcom({ listFail: { exit: 1, stderr: 'down' } });
+	await fixture.start();
+	cookie = await fixture.login();
+	await fixture.refresh(cookie);
+	expect(await find('s-claude')).toMatchObject({ hcom: 'unknown' });
+	const refused = await change('s-claude', null, 'high');
+	expect(refused.status).toBe(409);
+	expect(refused.body.reason).toBe(AGENT_HCOM_UNKNOWN_SWITCH_REASON);
+	expect(hcomCalls()).toEqual([]);
+});
+
+test('a resume that fails keeps the agent listed after a reread and a restart; 繼續切換 then resumes it', async () => {
+	hcomPlan({ exit: 1, stderr: 'resume refused' });
+	const failed = await change('s-claude', null, 'high');
+	expect(failed.status).toBe(502);
+	expect(hcomCalls().map((args) => args[0])).toEqual(['kill', 'r']);
+	// Stopped: no longer in Herdr, still listed from its switch.
+	const unfinished = { inHerdr: false, name: 'clio', hcomName: 'clio', client: 'claude', folder: '/projects/s-claude', switch: { state: 'resume-failed', to: { effort: 'high' } }, herdr: { workspace: 'wA', workspaceLabel: 'Alpha', workspaceNumber: 1 } };
+	expect(await find('s-claude')).toMatchObject(unfinished);
+	await fixture.refresh(cookie);
+	expect(await find('s-claude')).toMatchObject(unfinished);
+	await restart();
+	expect(await find('s-claude')).toMatchObject(unfinished);
+	// Its record is still offered.
+	expect((await record('s-claude')).switches[0]).toMatchObject({ state: 'resume-failed', open: true });
+
+	// Nothing but the switch is done to it while Herdr does not list it.
+	for (const path of ['/api/agents/send', '/api/agents/interrupt', '/api/agents/close']) {
+		const refused = await fixture.fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-claude', text: 'hi' }), cookie });
+		expect(refused.status).toBe(409);
+	}
+	expect(hcomCalls().map((args) => args[0])).toEqual(['kill', 'r']);
+
+	fixture.setHcom({ agents: [], resumed: hcomAgent('clio', 's-claude'), resumedHerdr: herdrAgent('s-claude') });
+	const resumed = await carryOn('s-claude');
+	expect(resumed.status).toBe(200);
+	const calls = hcomCalls();
+	expect(calls.map((args) => args[0])).toEqual(['kill', 'r', 'r']);
+	expect(calls[2].slice(-2)).toEqual(['--effort', 'high']);
+	await fixture.refresh(cookie);
+	expect(await find('s-claude')).toMatchObject({ inHerdr: true, switch: null });
+	expect((await record('s-claude')).switches[0]).toMatchObject({ state: 'done', open: false });
+});
+
+test('a resume sent whose agent has not shown up yet is still listed as unfinished after a restart', async () => {
+	// hcom answers, but the resumed agent is in neither list yet.
+	fixture.setHcom({ agents: [hcomAgent('clio', 's-claude')] });
+	const sent = await change('s-claude', 'claude-haiku-5-5', null);
+	expect(sent.status).toBe(200);
+	expect(sent.body.entry).toMatchObject({ state: 'resuming', open: true });
+	await restart();
+	expect(await find('s-claude')).toMatchObject({ inHerdr: false, switch: { state: 'resuming' } });
+});
+
+test('giving up a switch whose stop failed runs nothing and ends it; the agent, still in Herdr, is listed as usual', async () => {
+	hcomPlan({ kill: { exit: 1, stderr: 'no such agent' } });
+	const failed = await change('s-claude', null, 'high');
+	expect(failed.status).toBe(502);
+	expect(await find('s-claude')).toMatchObject({ inHerdr: true, switch: { state: 'stop-failed' } });
+	const before = { hcom: hcomCalls().length, herdr: herdrActs().length };
+
+	const given = await giveUp('s-claude');
+	expect(given.status).toBe(200);
+	expect(given.body.entry).toMatchObject({ state: 'abandoned', open: false });
+	expect({ hcom: hcomCalls().length, herdr: herdrActs().length }).toEqual(before);
+	expect(await find('s-claude')).toMatchObject({ inHerdr: true, switch: null });
+	expect((await record('s-claude')).switches[0]).toMatchObject({ state: 'abandoned', abandonedAt: expect.any(String) });
+
+	// Over: nothing to give up any more, and a new switch is a switch of its own.
+	expect((await giveUp('s-claude')).body.reason).toBe(AGENT_NO_OPEN_SWITCH_REASON);
+	hcomPlan({ resumed: hcomAgent('clio', 's-claude'), resumedHerdr: herdrAgent('s-claude') });
+	const again = await change('s-claude', null, 'low');
+	expect(again.status).toBe(200);
+	expect(again.body.entry!.id).not.toBe(given.body.entry!.id);
+});
+
+test('giving up a switch whose resume failed runs nothing; the agent, no longer in Herdr, leaves the list for good', async () => {
+	hcomPlan({ exit: 1, stderr: 'resume refused' });
+	await change('s-claude', null, 'high');
+	expect(await find('s-claude')).toMatchObject({ inHerdr: false });
+	const before = { hcom: hcomCalls().length, herdr: herdrActs().length };
+
+	const given = await giveUp('s-claude');
+	expect(given.status).toBe(200);
+	expect({ hcom: hcomCalls().length, herdr: herdrActs().length }).toEqual(before);
+	expect(await find('s-claude')).toBeUndefined();
+	await fixture.refresh(cookie);
+	expect(await find('s-claude')).toBeUndefined();
+	await restart();
+	expect(await find('s-claude')).toBeUndefined();
+	// The sent log keeps the switch as given up.
+	const logged = lines(join(fixture.dir, 'board-state', 'sent-log.jsonl'));
+	expect(logged.filter((line) => line.kind === 'switch-step').at(-1)).toMatchObject({ state: 'abandoned' });
+	// 繼續切換 has nothing to pick up, and a new switch needs it in Herdr.
+	const late = await carryOn('s-claude');
+	expect(late.status).toBe(409);
+	expect(hcomCalls().length).toBe(before.hcom);
+});
+
+test('giving up a switch while its resume is still on its way closes that resume too, without a command', async () => {
+	fixture.setHcom({ agents: [hcomAgent('clio', 's-claude')] });
+	await change('s-claude', null, 'high');
+	expect(await find('s-claude')).toMatchObject({ switch: { state: 'resuming' } });
+	const given = await giveUp('s-claude');
+	expect(given.status).toBe(200);
+	const logged = lines(join(fixture.dir, 'board-state', 'sent-log.jsonl'));
+	expect(logged.find((line) => line.kind === 'resume-closed')).toMatchObject({ result: 'abandoned' });
+	expect(await find('s-claude')).toBeUndefined();
+	expect(hcomCalls().map((args) => args[0])).toEqual(['kill', 'r']);
+});
+
+test('a give-up sent while the stop runs waits for it to end', async () => {
+	hcomPlan({ kill: { exit: 1, sleepMs: 600 } });
+	const order: string[] = [];
+	const switching = change('s-claude', null, 'high').then((result) => (order.push('switch'), result));
+	await Bun.sleep(150);
+	const giving = giveUp('s-claude').then((result) => (order.push('give up'), result));
+	const [switched, given] = await Promise.all([switching, giving]);
+	expect(order).toEqual(['switch', 'give up']);
+	expect(switched.body.entry).toMatchObject({ state: 'stop-failed' });
+	expect(given.status).toBe(200);
+	expect(given.body.entry).toMatchObject({ state: 'abandoned' });
+});
+
+test('the switch endpoints need a logged-in device and a well-formed request', async () => {
+	for (const [path, init] of [
+		['/api/agents/model?session=s-claude', {}],
+		['/api/agents/model', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-claude', model: null, effort: 'high' }) }],
+		['/api/agents/model/abandon', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-claude' }) }]
+	] as const) {
+		expect((await fixture.fetch(path, init)).status).toBe(401);
+	}
+	expect((await post('/api/agents/model', { session: 's-claude', model: 1, effort: null })).status).toBe(400);
+	expect((await post('/api/agents/model', { model: null, effort: 'high' })).status).toBe(400);
+	expect((await post('/api/agents/model/abandon', {})).status).toBe(400);
+	expect((await fixture.fetch('/api/agents/model?session=s-nobody', { cookie })).status).toBe(404);
+	expect(hcomCalls()).toEqual([]);
+});
