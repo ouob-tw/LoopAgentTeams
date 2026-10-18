@@ -112,7 +112,7 @@
 		const due = typeof place === 'number' || (unplaced && !target?.exact);
 		if (!opening || !list || scrolledFor === opening || !due) return;
 		scrolledFor = opening;
-		align(list, '.placed');
+		align(list);
 	});
 
 	/** Stops keeping the report in place; set while it is kept. */
@@ -121,10 +121,16 @@
 	let keptAt: number | undefined;
 	const USER_SCROLL = ['wheel', 'touchstart', 'keydown', 'pointerdown'] as const;
 
+	/** The target's card: of several the card shows, the one marked `data-opened`. */
+	function placedIn(within: HTMLElement): HTMLElement | null {
+		const placed = within.querySelector<HTMLElement>('.placed');
+		return placed?.querySelector<HTMLElement>('[data-opened]') ?? placed;
+	}
+
 	/** Scroll to the report and keep it there for a moment, as parts above it may still change
 	 *  height as they load, until the user scrolls or clicks. Starts on the next frame, after the
 	 *  page has put its new content at the top. */
-	function align(within: HTMLElement, selector: string) {
+	function align(within: HTMLElement) {
 		stopAligning();
 		const until = performance.now() + 2500;
 		let frame = 0;
@@ -138,7 +144,7 @@
 			if (event && last === undefined) onplaced?.();
 		};
 		const step = () => {
-			const element = within.querySelector<HTMLElement>(selector);
+			const element = placedIn(within);
 			const top = element?.getBoundingClientRect().top;
 			if (element && top !== last) {
 				if (last === undefined) keptAt = copy?.firstElementChild?.getBoundingClientRect().top;
@@ -163,7 +169,7 @@
 	// Earlier parts loaded under the placed card take the place of the room made for it.
 	$effect(() => {
 		void view;
-		const element = untrack(() => tail && list?.querySelector<HTMLElement>('.placed'));
+		const element = untrack(() => tail && list && placedIn(list));
 		if (element) makeRoom(element, keptAt);
 	});
 
@@ -379,11 +385,13 @@
 	}
 	/* Some room around it when scrolled to, below the phone's fixed bar too; what is above it
 	   stays just out of view. */
-	.placed {
+	.placed,
+	.placed :global([data-opened]) {
 		scroll-margin-block: 1rem;
 	}
 	@media (max-width: 760px) {
-		.placed {
+		.placed,
+		.placed :global([data-opened]) {
 			scroll-margin-top: 5rem;
 		}
 	}
