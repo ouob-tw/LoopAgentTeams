@@ -1,5 +1,5 @@
 // Watches the source files so a change triggers a re-read instead of polling the helper.
-import { statSync, watch, type FSWatcher } from 'node:fs';
+import { watch, type FSWatcher } from 'node:fs';
 import { basename, dirname } from 'node:path';
 
 /** Directory → file names that matter in it; null means every file. */
@@ -12,16 +12,8 @@ export function addFile(targets: WatchTargets, path: string): void {
 }
 
 export function createSourceWatcher(onChange: () => void) {
-	const watchers = new Map<string, { watcher: FSWatcher; inode: number }>();
+	const watchers = new Map<string, FSWatcher>();
 	let targets: WatchTargets = new Map();
-
-	function inode(directory: string): number | null {
-		try {
-			return statSync(directory).ino;
-		} catch {
-			return null;
-		}
-	}
 
 	function open(directory: string): void {
 		try {
@@ -32,9 +24,9 @@ export function createSourceWatcher(onChange: () => void) {
 			});
 			watcher.on('error', () => {
 				watcher.close();
-				watchers.delete(directory);
+				if (watchers.get(directory) === watcher) watchers.delete(directory);
 			});
-			watchers.set(directory, { watcher, inode: statSync(directory).ino });
+			watchers.set(directory, watcher);
 		} catch {
 			// Not there yet; the next sync tries again, and the fallback re-read covers the gap.
 		}
@@ -44,17 +36,15 @@ export function createSourceWatcher(onChange: () => void) {
 		/** Watch exactly these targets from now on. Called after every re-read. */
 		sync(next: WatchTargets): void {
 			targets = next;
-			for (const [directory, { watcher, inode: watched }] of watchers) {
-				// A directory deleted and created again keeps its path, but the old watch is dead.
-				if (!next.has(directory) || inode(directory) !== watched) {
-					watcher.close();
-					watchers.delete(directory);
-				}
-			}
-			for (const directory of next.keys()) if (!watchers.has(directory)) open(directory);
+			// Every directory is watched afresh: one deleted and created again keeps its path, and often
+			// its inode number too, but the old watch is dead and nothing reports it. The old watch is
+			// closed first: Bun hands a second watch of the same path the old, dead one.
+			for (const watcher of watchers.values()) watcher.close();
+			watchers.clear();
+			for (const directory of next.keys()) open(directory);
 		},
 		close(): void {
-			for (const { watcher } of watchers.values()) watcher.close();
+			for (const watcher of watchers.values()) watcher.close();
 			watchers.clear();
 		}
 	};
