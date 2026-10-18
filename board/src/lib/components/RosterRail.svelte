@@ -178,6 +178,8 @@
 		padding: 0.8rem 0 0;
 		background: var(--surface);
 		cursor: pointer;
+		/* Touch highlights the outermost pointer ancestor, which is the whole rail, not the pressed mark. */
+		-webkit-tap-highlight-color: transparent;
 	}
 	/* Framed and sized like the tools at the foot of the rail. */
 	.grip {
