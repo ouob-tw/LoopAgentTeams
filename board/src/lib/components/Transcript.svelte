@@ -87,13 +87,19 @@
 	/** Not found, or the record cannot be read: the target's card is shown above the conversation. */
 	const unplaced = $derived(!!target && (place === null || (place === undefined && !!(problem || earlierFailed))));
 	const targetId = $derived(target && `${target.key}:${target.time}`);
-	/** The target when the latest page of the conversation arrived. */
-	let targetAtLastPage = $state.raw<PlacedMessage | undefined>();
-	/** A revised question's new asking message may only be in the next page; another target is
-	 *  judged on what has been read. */
-	const awaitsPage = $derived(!!target && target.key === targetAtLastPage?.key && target.time !== targetAtLastPage.time);
+	/** The `targetId` the pages read so far are for: a revised question's new asking message may
+	 *  only be in the next page. */
+	let targetAtLastPage = $state<string | null>(null);
+	/** The target's question or report, as last seen. */
+	let targetKey: string | undefined;
+	// Another question or report is judged on the pages already read.
 	$effect(() => {
-		if (unplaced && (problem || earlierFailed || !awaitsPage)) untrack(() => onunplaced?.());
+		const key = target?.key;
+		if (key !== targetKey) targetAtLastPage = untrack(() => targetId) ?? null;
+		targetKey = key;
+	});
+	$effect(() => {
+		if (unplaced && (problem || earlierFailed || targetAtLastPage === targetId)) untrack(() => onunplaced?.());
 	});
 	/** The target and opening last scrolled to, so it is scrolled to once per opening, and again
 	 *  when a revised question's asking message replaces the one before. */
@@ -208,7 +214,7 @@
 			const update: TranscriptUpdate = JSON.parse((event as MessageEvent).data);
 			if (update.ok) {
 				view = withLatest(view, update.page);
-				targetAtLastPage = untrack(() => target);
+				targetAtLastPage = untrack(() => targetId) ?? null;
 				// The command line's label shows what the latest turn used.
 				switching.current[controllerId] = update.page.current ?? null;
 				usage = update.page.usage ?? null;

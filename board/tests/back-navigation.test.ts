@@ -606,6 +606,30 @@ for (const width of [390, 1400]) {
 	}, 30_000);
 }
 
+test.skipIf(!CHROME)('phone: a question opened from another of the same controller and revised there waits for its new asking message', async () => {
+	fixture.list([luna, sol]);
+	await fixture.refresh(cookie);
+	await visit(390);
+	await tab.eval(click('.inbox', '有原訊息的求助題'));
+	await placedAt(SOL_QUESTION('HQ-1'), '有原訊息的求助題');
+	await tab.eval(click('.detail', '有原訊息的待決題'));
+	await placedAt(SOL_QUESTION('DQ-1'), '有原訊息的待決題');
+
+	// Revised before the conversation has its new asking message.
+	const message = '切換後的第三版。\n\nDECIDE: DQ-1 r3 · 切換後的第三版 · 回答面板上的題目';
+	fixture.report(sol.session_id, { tag: 'DECIDE', summary: '切換後的第三版', message, time: minutesAgo(0), hcom_name: 'sol', workspace: sol.workspace });
+	const [first, ...rest] = sol.questions;
+	fixture.list([luna, { ...sol, questions: [{ ...first, revision: 3, asked_at: minutesAgo(0.1) }, ...rest] }]);
+	await fixture.refresh(cookie);
+	await tab.until(`document.querySelector('.detail').innerText.includes('DQ-1 r3')`, 'the r3 question on the page');
+	await sleep(500);
+	expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
+	appendFileSync(solTranscript(), JSON.stringify({ kind: 'assistant', time: minutesAgo(0), text: message }) + '\n');
+	await tab.until(`${PLACED}?.innerText.includes('DQ-1 r3')`, 'the card at the r3 message');
+	fixture.list([luna, sol]);
+	await fixture.refresh(cookie);
+}, 30_000);
+
 test.skipIf(!CHROME)('phone: back and reload find the question in its conversation again, like a report', async () => {
 	await visit(390);
 	await tab.eval(click('.inbox', '有原訊息的求助題'));
