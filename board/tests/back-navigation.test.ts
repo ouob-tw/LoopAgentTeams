@@ -340,6 +340,8 @@ test.skipIf(!CHROME)('phone: the top-bar title opens the controller at its top f
 	await visit(390);
 	await tab.eval(click('.inbox', '題目 7'));
 	await shows(QUESTION(7), '題目 7');
+	// Scrolled down on the item, the controller page still opens at its top.
+	await tab.eval(`window.scrollTo(0, 150)`);
 	await tab.eval(`${TITLE}.click()`);
 	await shows(CONTROLLER(), '@luna');
 	await tab.until(`scrollY === 0`, 'the controller at its top');

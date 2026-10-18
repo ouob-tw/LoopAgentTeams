@@ -259,9 +259,9 @@
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
 </script>
 
-{#snippet names(whose: { project: string; hcomName: string })}
-	<strong>{whose.project}</strong>
-	<span class="handle">@{whose.hcomName}</span>
+{#snippet names(owner: { project: string; hcomName: string })}
+	<strong>{owner.project}</strong>
+	<span class="handle">@{owner.hcomName}</span>
 {/snippet}
 
 {#snippet refresh()}
