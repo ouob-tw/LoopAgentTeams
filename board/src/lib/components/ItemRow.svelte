@@ -87,6 +87,9 @@
 	.row.current {
 		border-color: var(--accent);
 	}
+	.row:has(.main:focus-visible) {
+		border-color: var(--accent);
+	}
 	.main {
 		display: block;
 		width: 100%;
@@ -94,6 +97,11 @@
 		background: none;
 		border: 0;
 		text-align: left;
+	}
+	/* The keyboard position shows as the row's frame, the same as the open row, not as a ring
+	   around the button inside it: some browsers match :focus-visible after a mouse click too. */
+	.main:focus-visible {
+		outline: 2px solid transparent;
 	}
 	.clamp {
 		display: -webkit-box;
@@ -174,6 +182,11 @@
 		content: none;
 	}
 	:global(:root[data-theme='light']) .row.current {
+		border-color: var(--text);
+		outline: 2px solid var(--text);
+		outline-offset: -3px;
+	}
+	:global(:root[data-theme='light']) .row:has(.main:focus-visible) {
 		border-color: var(--text);
 		outline: 2px solid var(--text);
 		outline-offset: -3px;
