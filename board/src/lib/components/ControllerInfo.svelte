@@ -89,6 +89,11 @@
 		if (!usageButton) usagePinned = usageHover = false;
 	});
 	let usageTip = $state<{ left: number | null; right: number | null; top: number | null; bottom: number | null } | null>(null);
+	// The tip's own width, to keep it inside the window when its anchoring edge leaves too little room.
+	let usageTipWidth = $state(0);
+	const edgeGap = 8;
+	const keepInside = (edge: number | null) =>
+		edge === null ? null : Math.max(edgeGap, Math.min(edge, window.innerWidth - usageTipWidth - edgeGap));
 	$effect(() => {
 		if (!(usageHover || usagePinned) || !usageButton) {
 			usageTip = null;
@@ -245,8 +250,9 @@
 			id="usage-tip"
 			class="usage-tip"
 			role="tooltip"
-			style:left={usageTip.left === null ? null : `${usageTip.left}px`}
-			style:right={usageTip.right === null ? null : `${usageTip.right}px`}
+			bind:offsetWidth={usageTipWidth}
+			style:left={usageTip.left === null ? null : `${keepInside(usageTip.left)}px`}
+			style:right={usageTip.right === null ? null : `${keepInside(usageTip.right)}px`}
 			style:top={usageTip.top === null ? null : `${usageTip.top}px`}
 			style:bottom={usageTip.bottom === null ? null : `${usageTip.bottom}px`}
 		>

@@ -61,7 +61,7 @@ const tight: Usage = {
 
 describe('the line', () => {
 	test('a Claude controller’s, in the status line’s order and words', () => {
-		expect(texts(tight)).toBe('Ctx 62% • 5h 40% • 7d 25% • Cache 70% ⏳ 20 min');
+		expect(texts(tight)).toBe('上下文已用 62% • 5 小時額度剩 40% • 7 天額度剩 25% • 快取命中 70% 20 分鐘後失效');
 		expect(Object.values(levels(tight))).toEqual(['normal', 'normal', 'normal', 'normal', 'normal']);
 	});
 
@@ -73,30 +73,30 @@ describe('the line', () => {
 		const only = (usage: Partial<Usage>) => texts({ context: null, limits: [], cache: null, permission: null, ...usage });
 		// Context used: shown from 55%.
 		expect(only({ context: 54 })).toBe('');
-		expect(only({ context: 55 })).toBe('Ctx 55%');
+		expect(only({ context: 55 })).toBe('上下文已用 55%');
 		// Quota left: the 5h window shown up to 45%, the 7d window up to 30%.
-		expect(only({ limits: [{ minutes: 300, used: 55 }] })).toBe('5h 45%');
+		expect(only({ limits: [{ minutes: 300, used: 55 }] })).toBe('5 小時額度剩 45%');
 		expect(only({ limits: [{ minutes: 300, used: 54 }] })).toBe('');
-		expect(only({ limits: [{ minutes: 10080, used: 70 }] })).toBe('7d 30%');
+		expect(only({ limits: [{ minutes: 10080, used: 70 }] })).toBe('7 天額度剩 30%');
 		expect(only({ limits: [{ minutes: 10080, used: 69 }] })).toBe('');
 		// Windows of any other length have no safe range.
-		expect(only({ limits: [{ minutes: 1440, used: 1 }, { minutes: 90, used: 1 }] })).toBe('90m 99% • 1d 99%');
+		expect(only({ limits: [{ minutes: 1440, used: 1 }, { minutes: 90, used: 1 }] })).toBe('90 分鐘額度剩 99% • 1 天額度剩 99%');
 		// Cache hit: shown up to 80%.
 		const hit = (ratio: number) => only({ cache: { warm: true, hit: ratio, expires: null } });
-		expect(hit(0.8)).toBe('Cache 80%');
+		expect(hit(0.8)).toBe('快取命中 80%');
 		expect(hit(0.81)).toBe('');
 		// Countdown: shown up to 30 minutes.
 		const left = (ms: number, ratio = 0.97) => only({ cache: { warm: true, hit: ratio, expires: NOW + ms } });
-		expect(left(30 * MINUTE + 59_000)).toBe('Cache ⏳ 30 min');
+		expect(left(30 * MINUTE + 59_000)).toBe('快取 30 分鐘後失效');
 		expect(left(31 * MINUTE)).toBe('');
 		// A countdown without its hit keeps the label; with its hit, it follows it.
-		expect(left(20 * MINUTE)).toBe('Cache ⏳ 20 min');
-		expect(left(20 * MINUTE, 0.7)).toBe('Cache 70% ⏳ 20 min');
-		expect(left(31 * MINUTE, 0.7)).toBe('Cache 70%');
+		expect(left(20 * MINUTE)).toBe('快取 20 分鐘後失效');
+		expect(left(20 * MINUTE, 0.7)).toBe('快取命中 70% 20 分鐘後失效');
+		expect(left(31 * MINUTE, 0.7)).toBe('快取命中 70%');
 		// Cold and expired are never safe.
-		expect(only({ cache: { warm: false, hit: 0.99, expires: NOW + 60 * MINUTE } })).toBe('Cache cold');
-		expect(only({ cache: { warm: true, hit: 0.99, expires: NOW - 1 } })).toBe('Cache ⏳ expired');
-		expect(only({ cache: { warm: true, hit: 0.7, expires: NOW - 1 } })).toBe('Cache 70% ⏳ expired');
+		expect(only({ cache: { warm: false, hit: 0.99, expires: NOW + 60 * MINUTE } })).toBe('快取尚未建立');
+		expect(only({ cache: { warm: true, hit: 0.99, expires: NOW - 1 } })).toBe('快取已失效');
+		expect(only({ cache: { warm: true, hit: 0.7, expires: NOW - 1 } })).toBe('快取命中 70% 已失效');
 	});
 
 	test('yellow from 80% context, under 20% of a quota and 5 minutes of cache left', () => {
@@ -110,39 +110,39 @@ describe('the line', () => {
 			permission: null
 		};
 		expect(levels(usage)).toEqual({
-			'Ctx 80%': 'warn',
-			'5h 19%': 'warn',
-			'7d 20%': 'normal',
-			'Cache 50%': 'normal',
-			'⏳ 5 min': 'warn'
+			'上下文已用 80%': 'warn',
+			'5 小時額度剩 19%': 'warn',
+			'7 天額度剩 20%': 'normal',
+			'快取命中 50%': 'normal',
+			'5 分鐘後失效': 'warn'
 		});
 		expect(levels({ ...usage, context: 79.4, cache: { ...usage.cache!, expires: NOW + 6 * MINUTE } })).toMatchObject({
-			'Ctx 79%': 'normal',
-			'⏳ 6 min': 'normal'
+			'上下文已用 79%': 'normal',
+			'6 分鐘後失效': 'normal'
 		});
 	});
 
 	test('an expired cache says so in the alarm colour, and the countdown follows the clock', () => {
-		expect(texts(full, full.cache!.expires! - 1)).toEndWith('⏳ 0 min');
-		expect(levels(full, full.cache!.expires!)['⏳ expired']).toBe('danger');
-		expect(texts(full, NOW + 10 * MINUTE)).toEndWith('⏳ 28 min');
+		expect(texts(full, full.cache!.expires! - 1)).toEndWith('0 分鐘後失效');
+		expect(levels(full, full.cache!.expires!)['快取已失效']).toBe('danger');
+		expect(texts(full, NOW + 10 * MINUTE)).toEndWith('28 分鐘後失效');
 	});
 
 	test('a cold cache shows as cold, without hit or countdown', () => {
-		expect(texts({ ...tight, cache: { warm: false, hit: 0.97, expires: NOW + MINUTE } })).toBe('Ctx 62% • 5h 40% • 7d 25% • Cache cold');
+		expect(texts({ ...tight, cache: { warm: false, hit: 0.97, expires: NOW + MINUTE } })).toBe('上下文已用 62% • 5 小時額度剩 40% • 7 天額度剩 25% • 快取尚未建立');
 	});
 
 	test('the info tip spells the line out, one part a line', () => {
-		expect(usageDetails(full, NOW)).toEqual(['Context 42% used', '5h 63%', '7d 80%', 'Cache hit 97%', 'expires in 38 min']);
-		expect(usageDetails(full, full.cache!.expires!).at(-1)).toBe('Cache expired');
-		expect(usageDetails({ ...full, cache: { warm: false, hit: 0.97, expires: NOW + MINUTE } }, NOW).at(-1)).toBe('Cache cold');
+		expect(usageDetails(full, NOW)).toEqual(['上下文已用 42%', '5 小時額度剩 63%', '7 天額度剩 80%', '快取命中 97%', '快取 38 分鐘後失效']);
+		expect(usageDetails(full, full.cache!.expires!).at(-1)).toBe('快取已失效');
+		expect(usageDetails({ ...full, cache: { warm: false, hit: 0.97, expires: NOW + MINUTE } }, NOW).at(-1)).toBe('快取尚未建立');
 		// A warm cache without a hit shows its expiry alone.
 		expect(usageDetails({ ...full, cache: { warm: true, hit: null, expires: NOW + 38 * MINUTE } }, NOW).slice(-1)).toEqual([
-			'expires in 38 min'
+			'快取 38 分鐘後失效'
 		]);
 		// A Codex window of any other length, by its name.
 		const codex: Usage = { context: 60, limits: [{ minutes: 1440, used: 10 }], cache: null, permission: null };
-		expect(usageDetails(codex, NOW)).toEqual(['Context 60% used', '1d 90%']);
+		expect(usageDetails(codex, NOW)).toEqual(['上下文已用 60%', '1 天額度剩 90%']);
 	});
 
 	test('with nothing left off, every part shows, the permission mode too', () => {
@@ -151,9 +151,9 @@ describe('the line', () => {
 				.map((part, index) => (index === 0 ? '' : part.joined ? ' ' : ' • ') + part.text)
 				.join('');
 		expect(line({ ...full, permission: { mode: 'bypassPermissions' } })).toBe(
-			'Ctx 42% • 5h 63% • 7d 80% • Cache 97% ⏳ 38 min • Bypass permissions'
+			'上下文已用 42% • 5 小時額度剩 63% • 7 天額度剩 80% • 快取命中 97% 38 分鐘後失效 • 權限：免確認'
 		);
-		expect(line({ ...full, cache: { warm: true, hit: null, expires: NOW + 50 * MINUTE }, permission: null })).toEndWith('• Cache ⏳ 50 min');
+		expect(line({ ...full, cache: { warm: true, hit: null, expires: NOW + 50 * MINUTE }, permission: null })).toEndWith('• 快取 50 分鐘後失效');
 	});
 
 	test('an exact half rounds to the even number, as the status line’s printf does', () => {
@@ -166,8 +166,8 @@ describe('the line', () => {
 			cache: null,
 			permission: null
 		};
-		expect(texts(usage)).toBe('Ctx 56% • 5h 44% • 7d 30%');
-		expect(texts({ ...usage, context: 57.5, limits: [] })).toBe('Ctx 58%');
+		expect(texts(usage)).toBe('上下文已用 56% • 5 小時額度剩 44% • 7 天額度剩 30%');
+		expect(texts({ ...usage, context: 57.5, limits: [] })).toBe('上下文已用 58%');
 	});
 
 	test('a Codex controller’s: windows named by length, one only, and no countdown', () => {
@@ -177,8 +177,8 @@ describe('the line', () => {
 			cache: { warm: true, hit: 0.7, expires: null },
 			permission: null
 		};
-		expect(texts(codex)).toBe('Ctx 60% • 7d 25% • Cache 70%');
-		expect([300, 10080, 1440, 90].map(windowLabel)).toEqual(['5h', '7d', '1d', '90m']);
+		expect(texts(codex)).toBe('上下文已用 60% • 7 天額度剩 25% • 快取命中 70%');
+		expect([300, 10080, 1440, 90].map(windowLabel)).toEqual(['5 小時', '7 天', '1 天', '90 分鐘']);
 	});
 
 	test('what cannot be read is left out; nothing usable is no usage at all', () => {
@@ -191,7 +191,7 @@ describe('the line', () => {
 			permission: null
 		});
 		const quotaOnly = usageFrom({ context: null, limits: [{ minutes: 300, used: 120 }], cache: null })!;
-		expect(texts(quotaOnly)).toBe('5h 0%');
+		expect(texts(quotaOnly)).toBe('5 小時額度剩 0%');
 		// A permission mode alone is a usage; one of the wrong type is none.
 		expect(usageFrom({ permission: { mode: 'plan' } })?.permission).toEqual({ mode: 'plan' });
 		expect(usageFrom({ permission: { approval: 'never', sandbox: 7 } })?.permission).toEqual({ approval: 'never', sandbox: null });
@@ -205,26 +205,26 @@ describe('the permission mode', () => {
 
 	test('comes last on the line, each Claude mode by its name, an unknown one as it is', () => {
 		const names = ['auto', 'default', 'acceptEdits', 'plan', 'dontAsk', 'someNewMode'].map((mode) => texts(claude(mode)));
-		expect(names).toEqual(['Auto mode', 'Manual', 'Accept edits', 'Plan mode', "Don't ask", 'someNewMode']);
-		expect(texts({ ...tight, permission: { mode: 'auto' } })).toBe('Ctx 62% • 5h 40% • 7d 25% • Cache 70% ⏳ 20 min • Auto mode');
-		expect(usageParts(claude('plan'), NOW)).toEqual([{ text: 'Plan mode', level: 'normal' }]);
+		expect(names).toEqual(['權限：自動模式', '權限：手動確認', '權限：自動接受修改', '權限：規劃模式', '權限：不再詢問', '權限：someNewMode']);
+		expect(texts({ ...tight, permission: { mode: 'auto' } })).toBe('上下文已用 62% • 5 小時額度剩 40% • 7 天額度剩 25% • 快取命中 70% 20 分鐘後失效 • 權限：自動模式');
+		expect(usageParts(claude('plan'), NOW)).toEqual([{ text: '權限：規劃模式', level: 'normal' }]);
 	});
 
 	test('bypass is left off the line, and the tip always ends with the mode', () => {
 		expect(usageParts(claude('bypassPermissions'), NOW)).toEqual([]);
-		expect(usageDetails({ ...full, permission: { mode: 'bypassPermissions' } }, NOW).at(-1)).toBe('Permission: Bypass permissions');
-		expect(usageDetails(claude('acceptEdits'), NOW)).toEqual(['Permission: Accept edits']);
-		expect(usageDetails(claude('someNewMode'), NOW)).toEqual(['Permission: someNewMode']);
+		expect(usageDetails({ ...full, permission: { mode: 'bypassPermissions' } }, NOW).at(-1)).toBe('權限：免確認');
+		expect(usageDetails(claude('acceptEdits'), NOW)).toEqual(['權限：自動接受修改']);
+		expect(usageDetails(claude('someNewMode'), NOW)).toEqual(['權限：someNewMode']);
 	});
 
 	test('a Codex controller’s: never asking with full access is bypass, anything else its approval policy', () => {
 		const codex = (approval: string, sandbox: string | null) => ({ ...none, permission: { approval, sandbox } });
 		expect(texts(codex('never', 'danger-full-access'))).toBe('');
-		expect(usageDetails(codex('never', 'danger-full-access'), NOW)).toEqual(['Permission: Bypass permissions']);
-		expect(texts(codex('on-request', 'workspace-write'))).toBe('approval on-request');
-		expect(usageDetails(codex('on-request', 'workspace-write'), NOW)).toEqual(['Permission: approval on-request, sandbox workspace-write']);
-		expect(texts(codex('never', 'read-only'))).toBe('approval never');
-		expect(usageDetails(codex('untrusted', null), NOW)).toEqual(['Permission: approval untrusted']);
+		expect(usageDetails(codex('never', 'danger-full-access'), NOW)).toEqual(['權限：免確認']);
+		expect(texts(codex('on-request', 'workspace-write'))).toBe('權限：需要時才詢問');
+		expect(usageDetails(codex('on-request', 'workspace-write'), NOW)).toEqual(['權限：需要時才詢問，檔案權限：可寫入工作區']);
+		expect(texts(codex('never', 'read-only'))).toBe('權限：從不詢問');
+		expect(usageDetails(codex('untrusted', null), NOW)).toEqual(['權限：不信任的指令才詢問']);
 	});
 });
 

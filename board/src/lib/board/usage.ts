@@ -49,11 +49,11 @@ export function usageFrom(value: unknown): Usage | null {
 	return usage.context !== null || usage.limits.length || usage.cache || usage.permission ? usage : null;
 }
 
-/** A quota window's name by its length: 300 minutes is `5h`, 10080 is `7d`. */
+/** A quota window's length in words: 300 minutes is `5 小時`, 10080 is `7 天`. */
 export function windowLabel(minutes: number): string {
-	if (minutes % 1440 === 0) return `${minutes / 1440}d`;
-	if (minutes % 60 === 0) return `${minutes / 60}h`;
-	return `${minutes}m`;
+	if (minutes % 1440 === 0) return `${minutes / 1440} 天`;
+	if (minutes % 60 === 0) return `${minutes / 60} 小時`;
+	return `${minutes} 分鐘`;
 }
 
 /** Rounded as the status line's `printf '%.0f'` does: an exact half goes to the even number. */
@@ -63,18 +63,32 @@ function rounded(value: number): number {
 }
 
 const MODES: Record<string, string> = {
-	auto: 'Auto mode',
-	default: 'Manual',
-	acceptEdits: 'Accept edits',
-	plan: 'Plan mode',
-	dontAsk: "Don't ask",
-	bypassPermissions: 'Bypass permissions'
+	auto: '自動模式',
+	default: '手動確認',
+	acceptEdits: '自動接受修改',
+	plan: '規劃模式',
+	dontAsk: '不再詢問',
+	bypassPermissions: '免確認'
 };
+
+/** Codex's approval policies and sandboxes in words; one not listed is shown as it is. */
+const APPROVALS: Record<string, string> = {
+	untrusted: '不信任的指令才詢問',
+	'on-failure': '失敗時才詢問',
+	'on-request': '需要時才詢問',
+	never: '從不詢問'
+};
+const SANDBOXES: Record<string, string> = {
+	'read-only': '唯讀',
+	'workspace-write': '可寫入工作區',
+	'danger-full-access': '不受限'
+};
+const named = (names: Record<string, string>, key: string) => (Object.hasOwn(names, key) ? names[key] : key);
 
 /**
  * The permission in words, short for the line and long for the tip: a Claude mode by its name in
- * `MODES` (an unknown one as it is), a Codex one as `approval on-request` and
- * `approval on-request, sandbox workspace-write`. Bypass is Claude's `bypassPermissions` or Codex
+ * `MODES` (an unknown one as it is), a Codex one as `需要時才詢問` and
+ * `需要時才詢問，檔案權限：可寫入工作區`. Bypass is Claude's `bypassPermissions` or Codex
  * never asking with full access.
  */
 function permissionText(permission: NonNullable<Usage['permission']>): { short: string; long: string; bypass: boolean } {
@@ -85,36 +99,40 @@ function permissionText(permission: NonNullable<Usage['permission']>): { short: 
 	if (permission.approval === 'never' && permission.sandbox === 'danger-full-access') {
 		return { short: MODES.bypassPermissions, long: MODES.bypassPermissions, bypass: true };
 	}
-	const short = `approval ${permission.approval}`;
-	return { short, long: permission.sandbox === null ? short : `${short}, sandbox ${permission.sandbox}`, bypass: false };
+	const short = named(APPROVALS, permission.approval);
+	return {
+		short,
+		long: permission.sandbox === null ? short : `${short}，檔案權限：${named(SANDBOXES, permission.sandbox)}`,
+		bypass: false
+	};
 }
 
 /** The percent of a quota left above which a window of that length is left off the line. */
 const SAFE_LEFT: Record<number, number> = { 300: 45, 10080: 30 };
 
 /**
- * The line's parts at `now`, e.g. `Ctx 62%`, `5h 40%` (left), `Cache 70%`, `⏳ 20 min` (until it expires,
- * joined to the cache). Yellow from 80% context used, under 20% of a quota left and 5 minutes or less
- * of cache left; an expired cache in the alarm colour. A cold cache shows as `Cache cold`, without hit
- * or expiry. A part in its safe range is left off: context under 55% used, over 45% of the 5h or 30%
- * of the 7d quota left (other windows always show), a cache hit over 80%, over 30 minutes of cache
- * left, bypass permissions; a countdown shown without its hit keeps the `Cache` label. A cold or
- * expired cache always shows. The permission mode comes last, e.g. `Auto mode`. With `all`, nothing
- * is left off.
+ * The line's parts at `now`, e.g. `上下文已用 62%`, `5 小時額度剩 40%`, `快取命中 70%`, `20 分鐘後失效`
+ * (until it expires, joined to the cache). Yellow from 80% context used, under 20% of a quota left and
+ * 5 minutes or less of cache left; an expired cache in the alarm colour. A cold cache shows as
+ * `快取尚未建立`, without hit or expiry. A part in its safe range is left off: context under 55% used,
+ * over 45% of the 5-hour or 30% of the 7-day quota left (other windows always show), a cache hit over
+ * 80%, over 30 minutes of cache left, bypass permissions; a countdown shown without its hit carries
+ * the cache's name itself (`快取 20 分鐘後失效`, `快取已失效`). A cold or expired cache always shows. The
+ * permission comes last, e.g. `權限：自動模式`. With `all`, nothing is left off.
  */
 export function usageParts(usage: Usage, now: number, all = false): UsagePart[] {
 	const parts: UsagePart[] = [];
 	if (usage.context !== null) {
 		const used = rounded(usage.context);
-		if (all || used >= 55) parts.push({ text: `Ctx ${used}%`, level: used >= 80 ? 'warn' : 'normal' });
+		if (all || used >= 55) parts.push({ text: `上下文已用 ${used}%`, level: used >= 80 ? 'warn' : 'normal' });
 	}
 	for (const limit of usage.limits.toSorted((a, b) => a.minutes - b.minutes)) {
 		const left = rounded(Math.max(0, 100 - limit.used));
 		if (!all && left > (SAFE_LEFT[limit.minutes] ?? Infinity)) continue;
-		parts.push({ text: `${windowLabel(limit.minutes)} ${left}%`, level: left < 20 ? 'warn' : 'normal' });
+		parts.push({ text: `${windowLabel(limit.minutes)}額度剩 ${left}%`, level: left < 20 ? 'warn' : 'normal' });
 	}
 	const cache = usage.cache;
-	if (cache && !cache.warm) parts.push({ text: 'Cache cold', level: 'normal' });
+	if (cache && !cache.warm) parts.push({ text: '快取尚未建立', level: 'normal' });
 	else if (cache) {
 		const hit = cache.hit !== null ? Math.round(cache.hit * 100) : null;
 		const hitShown = hit !== null && (all || hit <= 80);
@@ -122,38 +140,39 @@ export function usageParts(usage: Usage, now: number, all = false): UsagePart[] 
 		const minutes = cache.expires !== null ? Math.floor((cache.expires - now) / 60_000) : null;
 		const expired = cache.expires !== null && cache.expires <= now;
 		const countdownShown = minutes !== null && (all || expired || minutes <= 30);
-		if (hitShown || countdownShown) parts.push({ text: hitShown ? `Cache ${hit}%` : 'Cache', level: 'normal' });
+		if (hitShown) parts.push({ text: `快取命中 ${hit}%`, level: 'normal' });
 		if (countdownShown) {
-			if (expired) parts.push({ text: '⏳ expired', level: 'danger', joined: true });
-			else parts.push({ text: `⏳ ${minutes} min`, level: minutes <= 5 ? 'warn' : 'normal', joined: true });
+			const level = expired ? 'danger' : minutes! <= 5 ? 'warn' : 'normal';
+			const text = expired ? '已失效' : `${minutes} 分鐘後失效`;
+			parts.push({ text: hitShown ? text : expired ? `快取${text}` : `快取 ${text}`, level, joined: hitShown });
 		}
 	}
 	if (usage.permission) {
 		const permission = permissionText(usage.permission);
-		if (all || !permission.bypass) parts.push({ text: permission.short, level: 'normal' });
+		if (all || !permission.bypass) parts.push({ text: `權限：${permission.short}`, level: 'normal' });
 	}
 	return parts;
 }
 
 /**
- * The same at `now` spelt out, one line each, for the line's info tip: `Context 42% used`, `5h 63%`,
- * `Cache hit 97%`, `expires in 38 min`, `Permission: Auto mode`; a cold cache as `Cache cold`, an
- * expired one as `Cache expired`.
+ * The same at `now` spelt out, one line each, for the line's info tip: `上下文已用 42%`,
+ * `5 小時額度剩 63%`, `快取命中 97%`, `快取 38 分鐘後失效`, `權限：自動模式`; a cold cache as
+ * `快取尚未建立`, an expired one as `快取已失效`.
  */
 export function usageDetails(usage: Usage, now: number): string[] {
 	const lines: string[] = [];
-	if (usage.context !== null) lines.push(`Context ${rounded(usage.context)}% used`);
+	if (usage.context !== null) lines.push(`上下文已用 ${rounded(usage.context)}%`);
 	for (const limit of usage.limits.toSorted((a, b) => a.minutes - b.minutes)) {
-		lines.push(`${windowLabel(limit.minutes)} ${rounded(Math.max(0, 100 - limit.used))}%`);
+		lines.push(`${windowLabel(limit.minutes)}額度剩 ${rounded(Math.max(0, 100 - limit.used))}%`);
 	}
 	const cache = usage.cache;
-	if (cache && !cache.warm) lines.push('Cache cold');
+	if (cache && !cache.warm) lines.push('快取尚未建立');
 	else if (cache) {
-		if (cache.hit !== null) lines.push(`Cache hit ${Math.round(cache.hit * 100)}%`);
+		if (cache.hit !== null) lines.push(`快取命中 ${Math.round(cache.hit * 100)}%`);
 		if (cache.expires !== null) {
-			lines.push(cache.expires <= now ? 'Cache expired' : `expires in ${Math.floor((cache.expires - now) / 60_000)} min`);
+			lines.push(cache.expires <= now ? '快取已失效' : `快取 ${Math.floor((cache.expires - now) / 60_000)} 分鐘後失效`);
 		}
 	}
-	if (usage.permission) lines.push(`Permission: ${permissionText(usage.permission).long}`);
+	if (usage.permission) lines.push(`權限：${permissionText(usage.permission).long}`);
 	return lines;
 }
