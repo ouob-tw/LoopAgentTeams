@@ -127,6 +127,8 @@ export interface InboxQuestion extends ItemOwner {
 	/** The answer is sent, but the notification to the controller has not been delivered. */
 	notifyFailed: boolean;
 	question: HelperQuestion;
+	/** The chat message (report) that asked this revision; null when none is found. */
+	askedIn: { time: string; message: string } | null;
 }
 
 /** A DONE or HELP report. */

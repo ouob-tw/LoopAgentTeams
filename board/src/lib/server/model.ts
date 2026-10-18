@@ -9,9 +9,11 @@ import type {
 	HelperController,
 	HelperQuestion,
 	InboxQuestion,
-	InboxReport
+	InboxReport,
+	Report
 } from '../board/types.ts';
 import { archivePage, DAY_MS, RETAIN_MS, sortArchive, type ArchivePage } from '../board/archive.ts';
+import { askingReport } from '../board/question-message.ts';
 import { reportedAt } from '../board/roster.ts';
 import type { InboxState } from './inbox-state.ts';
 import type { ReportFile } from './reports.ts';
@@ -132,9 +134,11 @@ export function dropSessions(state: InboxState, sessionIds: string[]): boolean {
 	return changed;
 }
 
+const pick = (report: Report | null) => report && { time: report.time, message: report.message };
+
 const questionKey = (binding: HelperController, question: HelperQuestion) => `q:${binding.session_id}:${question.id}`;
 
-function questionItems(binding: HelperController): InboxQuestion[] {
+function questionItems(binding: HelperController, file: ReportFile | undefined): InboxQuestion[] {
 	const workspace = binding.workspace;
 	return binding.questions
 		.filter((question) => question.status !== 'recorded')
@@ -150,7 +154,8 @@ function questionItems(binding: HelperController): InboxQuestion[] {
 			unsent: question.status === 'pending',
 			// The pending notification belongs to the question file, so to every answer sent from it.
 			notifyFailed: question.status === 'submitted' && binding.notification_pending === true,
-			question
+			question,
+			askedIn: pick(askingReport(binding.session_id, question, file?.reports ?? []))
 		}));
 }
 
@@ -272,7 +277,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		controllers,
 		// An ended or closed controller's questions cannot be answered any more, so only running
 		// bound ones are listed.
-		inbox: [...live.flatMap(questionItems), ...inboxReports],
+		inbox: [...live.flatMap((binding) => questionItems(binding, sources.reportFiles.find((file) => file.sessionId === binding.session_id))), ...inboxReports],
 		recordedKeys: live.flatMap((binding) =>
 			binding.questions.filter((question) => question.status === 'recorded').map((question) => questionKey(binding, question))
 		),
