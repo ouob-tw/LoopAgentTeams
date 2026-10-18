@@ -259,6 +259,11 @@
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
 </script>
 
+{#snippet names(whose: { project: string; hcomName: string })}
+	<strong>{whose.project}</strong>
+	<span class="handle">@{whose.hcomName}</span>
+{/snippet}
+
 {#snippet refresh()}
 	<button
 		class="tool icon"
@@ -381,13 +386,11 @@
 						<!-- Tappable while the controller is on the roster; an archived item of one that left is not. -->
 						{#if controller}
 							<button class="whose" title="{owner.project} @{owner.hcomName}" onclick={tapTitle}>
-								<strong>{owner.project}</strong>
-								<span class="handle">@{owner.hcomName}</span>
+								{@render names(owner)}
 							</button>
 						{:else}
 							<span class="whose" title="{owner.project} @{owner.hcomName}">
-								<strong>{owner.project}</strong>
-								<span class="handle">@{owner.hcomName}</span>
+								{@render names(owner)}
 							</span>
 						{/if}
 					{/if}
