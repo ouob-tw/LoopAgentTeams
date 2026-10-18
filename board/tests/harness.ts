@@ -4,6 +4,7 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import type { ArchivePage } from '../src/lib/board/archive.ts';
 import { connectBoard, type LinkState } from '../src/lib/board/client.ts';
 import type {
 	BoardSnapshot,
@@ -155,6 +156,12 @@ export interface HelperPlan extends FixedOutput {
 	questions?: FixedOutput;
 	/** What `board questions` prints for question files no listed controller has, by path. */
 	files?: Record<string, HelperQuestion[]>;
+	/** What each question file's archive holds, by the question file's path: `board answered`
+	 *  lists its answered questions before the file's own. */
+	archives?: Record<string, HelperQuestion[]>;
+	/** The error `board answered` gives a question file, by path. */
+	answeredErrors?: Record<string, string>;
+	answered?: FixedOutput;
 	/** Notifying the controller fails with this reason; the answer is still written. */
 	notifyFails?: string;
 	/** `board transcript` waits this long on a child process instead of reading, writing the
@@ -186,7 +193,7 @@ export interface Fixture {
 	listed(): HelperController[];
 	helperCalls(): number;
 	/** The argument list of every helper call so far that ran this `board` command. */
-	helperArgs(command: 'list' | 'questions' | 'answer' | 'notify' | 'transcript' | 'launch-args' | 'prune-reports'): string[][];
+	helperArgs(command: 'list' | 'questions' | 'answered' | 'answer' | 'notify' | 'transcript' | 'launch-args' | 'prune-reports'): string[][];
 	/** Rewrite the binding registry file, the way a controller binding or unbinding does. */
 	touchRegistry(): void;
 	report(sessionId: string, fields: Partial<Report> & { tag: Report['tag'] }): void;
@@ -209,8 +216,8 @@ export interface Fixture {
 	userStyle(css: string | null): void;
 	markRead(cookie: string, key: string): Promise<Response>;
 	markUnread(cookie: string, key: string): Promise<Response>;
-	/** Every archived report, newest first, read page by page. */
-	archive(cookie: string): Promise<InboxReport[]>;
+	/** Every processed item, newest first, read page by page. */
+	archive(cookie: string): Promise<InboxItem[]>;
 	/** One page of the archive as the server sends it: the newest, or the one after `before`. */
 	archivePage(cookie: string, before?: string | null): Promise<Response>;
 	watch(cookie: string): Watch;
@@ -391,16 +398,16 @@ export async function startFixture(
 		archivePage: (cookie, before = null) =>
 			fixture.fetch(before === null ? '/api/archive' : `/api/archive?before=${encodeURIComponent(before)}`, { cookie }),
 		async archive(cookie) {
-			const reports: InboxReport[] = [];
+			const items: InboxItem[] = [];
 			let before: string | null = null;
 			do {
 				const response = await fixture.archivePage(cookie, before);
 				if (!response.ok) throw new Error(`archive page: HTTP ${response.status}`);
-				const page: { reports: InboxReport[]; before: string | null } = await response.json();
-				reports.push(...page.reports);
+				const page: ArchivePage = await response.json();
+				items.push(...page.items);
 				before = page.before;
 			} while (before !== null);
-			return reports;
+			return items;
 		},
 		watch(cookie) {
 			const watch: Watch = {

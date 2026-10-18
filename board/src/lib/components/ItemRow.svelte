@@ -1,28 +1,28 @@
 <script lang="ts">
 	// One inbox item in a list: kind, title, owner label and time.
 	import { formatTime } from '#lib/board/format.ts';
-	import { itemLabel, type InboxItem } from '#lib/board/types.ts';
+	import { isAnswered, itemLabel, type InboxItem } from '#lib/board/types.ts';
 
 	let {
 		item,
 		current = false,
 		showOwner = true,
-		archived = false,
+		processed = false,
 		onopen,
 		onowner
 	}: {
 		item: InboxItem;
 		current?: boolean;
 		showOwner?: boolean;
-		/** Shown in the archive view: nothing there counts as unread. */
-		archived?: boolean;
+		/** Shown among the processed items: nothing there counts as unread. */
+		processed?: boolean;
 		onopen: (item: InboxItem) => void;
 		/** Opens the owner's information page; left out when the owner is no longer on the roster. */
 		onowner?: () => void;
 	} = $props();
 
 	// What still wants attention: an unsent question or an unread report.
-	const fresh = $derived(!archived && (item.kind === 'question' ? item.unsent : item.readAt === null));
+	const fresh = $derived(!processed && (item.kind === 'question' ? item.unsent : item.readAt === null));
 	const kind = $derived(item.kind === 'question' ? 'question' : item.tag === 'HELP' ? 'help' : 'report');
 </script>
 
@@ -44,10 +44,10 @@
 			{/if}
 		{/if}
 		<span class="meta">
-			{#if item.kind === 'question' && !item.unsent}
+			{#if item.kind === 'question' && !item.unsent && !isAnswered(item)}
 				<span>已送出</span>
 			{:else if item.kind === 'report'}
-				<span>{archived ? '已封存' : item.readAt === null ? '未讀' : '已讀'}</span>
+				<span>{item.archived ? '已封存' : item.readAt === null ? '未讀' : '已讀'}</span>
 			{/if}
 			<time datetime={item.time}>{formatTime(item.time)}</time>
 		</span>

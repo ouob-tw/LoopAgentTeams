@@ -2,6 +2,7 @@
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { processedTime } from '../src/lib/board/archive.ts';
 import type { BoardSnapshot, InboxReport } from '../src/lib/board/types.ts';
 import { DAY, named, startFixture, titled, type Fixture } from './harness.ts';
 
@@ -16,7 +17,8 @@ async function on(time: number): Promise<BoardSnapshot> {
 	fixture.setClock(time);
 	return fixture.refresh(cookie);
 }
-const archived = async (title: string, as = cookie) => (await fixture.archive(as)).find((report) => report.title === title);
+const archived = async (title: string, as = cookie) =>
+	(await fixture.archive(as)).find((item): item is InboxReport => item.kind === 'report' && item.title === title);
 const unread = (snapshot: BoardSnapshot) =>
 	snapshot.inbox.filter((item) => item.kind === 'report' && item.readAt === null).map((item) => item.title);
 
@@ -42,7 +44,7 @@ test('an unread report stays 7 days from when it was issued, then moves to the a
 	const day8 = await on(ISSUED + 8 * DAY);
 	expect(titled(day8, '一直沒讀')).toBeUndefined();
 	expect(unread(day8)).not.toContain('一直沒讀');
-	expect(day8.archivedCount).toBeGreaterThanOrEqual(1);
+	expect(day8.processedCount).toBeGreaterThanOrEqual(1);
 
 	// In the archive it still opens in full and says whose it is, though the controller is gone.
 	expect(named(day8, 'luna')).toBeUndefined();
@@ -102,7 +104,9 @@ test('the archive lists newest first and is the same on another paired device', 
 	const mine = await fixture.archive(cookie);
 
 	expect(mine.length).toBeGreaterThanOrEqual(5);
-	expect(mine.map((report) => report.time)).toEqual(mine.map((report) => report.time).toSorted().toReversed());
+	// Newest first by when each was handled: read, or issued when archived unread.
+	const times = mine.map(processedTime);
+	expect(times).toEqual(times.toSorted((a, b) => b - a));
 	expect(await fixture.archive(other)).toEqual(mine);
 	const { generatedAt: _mine, ...here } = await fixture.board(cookie);
 	const { generatedAt: _theirs, ...there } = await fixture.board(other);
@@ -185,7 +189,7 @@ test('an unusable state file is reported without making up which reports are rea
 	const cold = await fixture.board(cookie);
 	expect(cold.errors.join()).toContain('回報暫時不列出');
 	expect(cold.inbox.filter((item) => item.kind === 'report')).toEqual([]);
-	expect(cold.archivedCount).toBe(0);
+	expect(cold.processedCount).toBe(0);
 	expect(named(cold, 'steady')).toBeDefined();
 	expect(named(cold, 'early')).toBeUndefined();
 	expect(readFileSync(stateFile, 'utf8')).toBe('{ not json');

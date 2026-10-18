@@ -16,6 +16,7 @@ import type {
 import { archivePage, DAY_MS, RETAIN_MS, sortArchive, type ArchivePage } from '../board/archive.ts';
 import { askingReport } from '../board/question-message.ts';
 import { reportedAt } from '../board/roster.ts';
+import type { AnsweredFile, AnsweredSources } from './helper.ts';
 import type { InboxState } from './inbox-state.ts';
 import type { ReportFile } from './reports.ts';
 
@@ -32,6 +33,11 @@ export interface Sources {
 	hcomError: string | null;
 	/** Why the report files past retention could not be deleted at this read; null when they were. */
 	pruneError: string | null;
+	/** The answered questions of every question file of a bound controller or of a session with a
+	 *  report file. */
+	answered: AnsweredFile[];
+	/** Set when `answered` is the last one that could be read rather than a fresh one. */
+	answeredError: string | null;
 }
 
 /** Whether this controller was bound at the last read and its client is gone from hcom's list.
@@ -71,7 +77,8 @@ function reportItems(sources: Sources, state: InboxState, now: number): InboxRep
 				time: report.time,
 				title: report.summary,
 				message: report.message,
-				readAt: state.read[key] ?? null
+				readAt: state.read[key] ?? null,
+				archived: key in state.archived
 			});
 		});
 	}
@@ -103,11 +110,98 @@ export function mark(sources: Sources, state: InboxState, key: string, read: boo
 	return 'marked';
 }
 
-/** One page of the archive view: archived reports, newest first, starting just after the `before`
- *  cursor. Throws on a cursor that is not one. */
-export function archivedReports(sources: Sources, state: InboxState, now: number, before: string | null): ArchivePage {
-	const listed = reportItems(sources, state, now).filter((item) => item.key in state.archived);
-	return archivePage(sortArchive(listed), before);
+/** The read or archived reports and the answered questions, in no particular order. */
+function processedItems(sources: Sources, state: InboxState, now: number): (InboxReport | InboxQuestion)[] {
+	const reports = reportItems(sources, state, now).filter((item) => item.archived || item.readAt !== null);
+	return [...reports, ...answeredItems(sources, now)];
+}
+
+/** One page of the processed view (已處理), newest first, starting just after the `before` cursor.
+ *  Throws on a cursor that is not one. */
+export function processedPage(sources: Sources, state: InboxState, now: number, before: string | null): ArchivePage {
+	return archivePage(sortArchive(processedItems(sources, state, now)), before);
+}
+
+/** Where to read answered questions from: each bound controller's question file, and the file of
+ *  each other session with a report file, by the workspace and name it last reported with. */
+export function answeredSources(active: HelperController[], files: ReportFile[]): AnsweredSources {
+	const bound = new Set(active.map((binding) => binding.session_id));
+	const controllers = new Map<string, { workspace: string; hcomName: string }>();
+	for (const file of files) {
+		const latest = file.reports.at(-1);
+		if (!latest || bound.has(file.sessionId)) continue;
+		controllers.set(`${latest.workspace}\n${latest.hcom_name}`, { workspace: latest.workspace, hcomName: latest.hcom_name });
+	}
+	return { paths: active.map((binding) => binding.questions_path), controllers: [...controllers.values()] };
+}
+
+/**
+ * Every answered question asked less than 30 days before `now` (recorded then, when the time it was
+ * asked is not known), as an item of the session that asked it: the one whose report asked it, else
+ * the controller bound to its file, else the session that reported last of those using the file.
+ */
+function answeredItems(sources: Sources, now: number): InboxQuestion[] {
+	/** The file of a session that is not bound is the one the helper found from its workspace and name. */
+	const pathOf = (file: ReportFile) => {
+		const binding = sources.active.find((candidate) => candidate.session_id === file.sessionId);
+		if (binding) return binding.questions_path;
+		const latest = file.reports.at(-1);
+		return sources.answered.find((entry) => latest && entry.workspace === latest.workspace && entry.hcom_name === latest.hcom_name)?.questions_path;
+	};
+	const byPath = new Map<string, ReportFile[]>();
+	for (const file of sources.reportFiles) {
+		const path = pathOf(file);
+		if (path) byPath.set(path, [...(byPath.get(path) ?? []), file]);
+	}
+	const items: InboxQuestion[] = [];
+	// A file asked for twice, by path and by a controller's name, is listed once.
+	const read = new Set<string>();
+	for (const { questions_path: path, questions } of sources.answered) {
+		if (path === null || read.has(path)) continue;
+		read.add(path);
+		const files = byPath.get(path) ?? [];
+		const binding = sources.active.find((candidate) => candidate.questions_path === path);
+		const lastReporting = files.toSorted((a, b) => reportedAtOf(b) - reportedAtOf(a))[0];
+		for (const question of questions) {
+			const time = question.asked_at ?? question.recorded_at;
+			if (!time || !(now - Date.parse(time) < RETAIN_MS)) continue;
+			let asked: { file: ReportFile; report: Report } | null = null;
+			for (const file of files) {
+				const report = askingReport(file.sessionId, question, file.reports);
+				if (report && (!asked || Date.parse(report.time) > Date.parse(asked.report.time))) asked = { file, report };
+			}
+			const sessionId = asked?.file.sessionId ?? binding?.session_id ?? lastReporting?.sessionId;
+			if (!sessionId) continue;
+			const latest = files.find((file) => file.sessionId === sessionId)?.reports.at(-1);
+			const owner =
+				binding?.session_id === sessionId
+					? { hcomName: binding.hcom_name, workspace: binding.workspace }
+					: latest && { hcomName: latest.hcom_name, workspace: latest.workspace };
+			if (!owner) continue;
+			items.push({
+				kind: 'question',
+				key: questionKey({ session_id: sessionId }, question),
+				controllerId: sessionId,
+				hcomName: owner.hcomName,
+				project: basename(owner.workspace),
+				workspace: owner.workspace,
+				time: question.asked_at ?? null,
+				title: question.title,
+				unsent: false,
+				notifyFailed: false,
+				question,
+				askedIn: toAskingMessage(asked?.report ?? null)
+			});
+		}
+	}
+	return items;
+}
+
+const reportedAtOf = (file: ReportFile) => Math.max(...file.reports.map((report) => Date.parse(report.time)));
+
+/** The answered questions of one controller, as the processed view lists them. */
+export function answeredOf(sources: Sources, controllerId: string, now: number): InboxQuestion[] {
+	return answeredItems(sources, now).filter((item) => item.controllerId === controllerId);
 }
 
 /** The sessions whose report file is due for deletion at `now`: its newest report was issued
@@ -137,7 +231,7 @@ export function dropSessions(state: InboxState, sessionIds: string[]): boolean {
 
 const toAskingMessage = (report: Report | null): AskingMessage | null => report && { time: report.time, message: report.message };
 
-const questionKey = (binding: HelperController, question: HelperQuestion) => `q:${binding.session_id}:${question.id}`;
+const questionKey = (binding: Pick<HelperController, 'session_id'>, question: HelperQuestion) => `q:${binding.session_id}:${question.id}`;
 
 function questionItems(binding: HelperController, file: ReportFile | undefined): InboxQuestion[] {
 	const workspace = binding.workspace;
@@ -246,6 +340,14 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		errors.push(`${sources.hcomError}，${sources.running ? '已關閉的主控沿用上次讀到的清單判斷' : '主控暫時都顯示為啟用中'}`);
 	}
 	if (sources.pruneError) errors.push(`超過 30 天的回報紀錄沒有刪除，下次重讀再試：${sources.pruneError}`);
+	// A file asked for by path and by a controller's name says so once.
+	const unreadable = [
+		...new Set(
+			sources.answered.filter((file) => file.error).map((file) => `${file.questions_path ?? `${file.workspace} @${file.hcom_name}`}：${file.error}`)
+		)
+	];
+	if (sources.answeredError) unreadable.unshift(`輔助工具失敗：${sources.answeredError}，沿用上次讀到的`);
+	if (unreadable.length) errors.push(`答過的題目讀不出來：${unreadable.join('；')}`);
 
 	// Whatever is left belongs to controllers that are no longer bound: they have ended, and stay
 	// on the roster only while the inbox still holds one of their reports.
@@ -287,7 +389,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		recordedKeys: live.flatMap((binding) =>
 			binding.questions.filter((question) => question.status === 'recorded').map((question) => questionKey(binding, question))
 		),
-		archivedCount: reports.length - inboxReports.length,
+		processedCount: (state ? processedItems(sources, state, now) : answeredItems(sources, now)).length,
 		errors
 	};
 }
