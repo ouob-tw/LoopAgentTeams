@@ -34,8 +34,17 @@ export function createSourceWatcher(onChange: () => void) {
 	function openDirectory(directory: string): void {
 		// Directories are watched, not files: writers replace the files, which drops a file watch.
 		open(watchers, directory, (_event, name) => {
+			// Node names the directory itself when it goes, Bun names nothing (undefined, not null).
+			// Then this watch may be dead, and its parent's too when the parent went with it: both are
+			// opened again, and what is not there yet is opened at the next sync.
+			if (name == null || name === basename(directory)) {
+				forget(watchers, directory);
+				forget(parents, dirname(directory));
+				openMissing();
+				return onChange();
+			}
 			const names = targets.get(directory);
-			if (names === null || name === null || names?.has(name)) onChange();
+			if (names === null || names?.has(name)) onChange();
 		});
 	}
 
@@ -45,21 +54,27 @@ export function createSourceWatcher(onChange: () => void) {
 		open(parents, parent, (event, name) => {
 			if (event !== 'rename') return;
 			for (const directory of targets.keys()) {
-				if (dirname(directory) !== parent || (name !== null && name !== basename(directory))) continue;
-				watchers.get(directory)?.close();
-				watchers.delete(directory);
-				openDirectory(directory);
+				if (dirname(directory) !== parent || (name != null && name !== basename(directory))) continue;
+				forget(watchers, directory);
+				openMissing();
 				onChange();
 			}
 		});
 	}
 
+	function forget(from: Map<string, FSWatcher>, directory: string): void {
+		from.get(directory)?.close();
+		from.delete(directory);
+	}
+
+	function openMissing(): void {
+		// Parents first, so a directory created again while it is being opened is still seen.
+		for (const directory of targets.keys()) if (!parents.has(dirname(directory))) openParent(dirname(directory));
+		for (const directory of targets.keys()) if (!watchers.has(directory)) openDirectory(directory);
+	}
+
 	function closeAll(from: Map<string, FSWatcher>, keep: (directory: string) => boolean): void {
-		for (const [directory, watcher] of from) {
-			if (keep(directory)) continue;
-			watcher.close();
-			from.delete(directory);
-		}
+		for (const directory of from.keys()) if (!keep(directory)) forget(from, directory);
 	}
 
 	return {
@@ -69,9 +84,7 @@ export function createSourceWatcher(onChange: () => void) {
 			const needed = new Set([...next.keys()].map((directory) => dirname(directory)));
 			closeAll(watchers, (directory) => next.has(directory));
 			closeAll(parents, (parent) => needed.has(parent));
-			// Parents first, so a directory created again while it is being opened is still seen.
-			for (const parent of needed) if (!parents.has(parent)) openParent(parent);
-			for (const directory of next.keys()) if (!watchers.has(directory)) openDirectory(directory);
+			openMissing();
 		},
 		close(): void {
 			closeAll(watchers, () => false);

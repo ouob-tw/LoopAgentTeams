@@ -16,6 +16,7 @@ function watchedDirectory() {
 	const targets: WatchTargets = new Map([[watched, null]]);
 	sourceWatcher.sync(targets);
 	return {
+		dir,
 		watched,
 		sync: () => sourceWatcher.sync(targets),
 		changes: () => changes,
@@ -37,6 +38,26 @@ test('a directory deleted and created again is watched again without waiting for
 		setup.reset();
 		writeFileSync(join(setup.watched, 'session.jsonl'), '{}\n');
 		await until(() => setup.changes() > 0, 2_000, 'a change in the directory created again');
+	} finally {
+		setup.cleanup();
+	}
+});
+
+test('after its parent is deleted and created again, the directory is still watched through it', async () => {
+	const setup = watchedDirectory();
+	try {
+		rmSync(setup.dir, { recursive: true });
+		mkdirSync(setup.watched, { recursive: true });
+		await sleep(200);
+		// The board reads again after any change, and its sync opens what was not there yet.
+		setup.sync();
+		// Only a live watch of the new parent sees the directory go and come back once more.
+		rmSync(setup.watched, { recursive: true });
+		mkdirSync(setup.watched);
+		await sleep(200);
+		setup.reset();
+		writeFileSync(join(setup.watched, 'session.jsonl'), '{}\n');
+		await until(() => setup.changes() > 0, 2_000, 'a change in the directory created again under the new parent');
 	} finally {
 		setup.cleanup();
 	}
