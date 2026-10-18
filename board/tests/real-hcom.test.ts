@@ -8,7 +8,7 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PORT_BASE, startFixture, type Fixture } from './harness.ts';
+import { PORT_BASE, startFixture, until, type Fixture } from './harness.ts';
 
 const installed = Bun.which('hcom') !== null;
 const injectPort = PORT_BASE + 15;
@@ -77,6 +77,9 @@ for (const text of texts) {
 		});
 
 		expect(await response.json()).toMatchObject({ ok: true, reason: null });
+		// hcom sends the submit on a connection of its own just before it exits, so the board can
+		// answer before this process has read it; a late one would land in the next text's test.
+		await until(() => submitted.length > 0, 5_000, 'the submit');
 		expect(submitted).toEqual([text]);
 	}, 20_000);
 }
