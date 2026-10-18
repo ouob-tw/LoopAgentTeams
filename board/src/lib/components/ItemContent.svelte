@@ -1,22 +1,24 @@
 <script lang="ts">
-	// The full content of one inbox item. A question that is still waiting can be answered here.
-	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
+	// The full content of one inbox item. A question that is still waiting can be answered here; one
+	// that is answered is read-only, its choice marked among its options and the note under them.
+	import { ANSWER_STATE_TEXT, chosenIn } from '#lib/board/answers.ts';
 	import { answering, complete, outdated } from '#lib/board/answering.svelte.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { renderLinks, renderMarkdown } from '#lib/board/markdown.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
-	import { itemLabel, type HelperOption, type InboxItem } from '#lib/board/types.ts';
+	import { isAnswered, itemLabel, type HelperOption, type InboxItem } from '#lib/board/types.ts';
 
 	let {
 		item: current,
-		inInbox,
+		listed,
 		recorded = false,
 		handle,
 		onunread
 	}: {
 		item: InboxItem;
-		/** False once the item has left the inbox: an archived report, or a question that is gone. */
-		inInbox: boolean;
+		/** False once the page lists the item nowhere, in the inbox or among the processed items: a
+		 *  question that is gone. */
+		listed: boolean;
 		/** The question left the inbox because its controller recorded the answer. */
 		recorded?: boolean;
 		/** The controller's name, shown before the time where the item stands among its messages. */
@@ -26,14 +28,14 @@
 
 	const KIND_TEXT = { single: '單選', multi: '複選', text: '純文字' };
 
-	// Once an item has left the inbox the page only has it as it was when opened; what is shown is
-	// the last version that was in the inbox, so a sent answer stays on screen after it is recorded.
+	// Once an item is listed nowhere the page only has it as it was when opened; what is shown is
+	// the last version that was listed, so a sent answer stays on screen after it is recorded.
 	// svelte-ignore state_referenced_locally
 	let lastListed = $state.raw(current);
 	$effect.pre(() => {
-		if (inInbox) lastListed = current;
+		if (listed) lastListed = current;
 	});
-	const item = $derived(inInbox ? current : lastListed);
+	const item = $derived(listed ? current : lastListed);
 
 	let marking = $state(false);
 
@@ -53,6 +55,15 @@
 	const notice = $derived(answering.notifyResults[item.key]);
 	const sending = $derived(answering.sending[item.key] ?? false);
 	const notifying = $derived(answering.notifying[item.key] ?? false);
+	const answerable = $derived(item.kind === 'question' && listed && item.unsent);
+	/** The answer to show on a question that can no longer be answered: as its data has it, or as
+	 *  it was sent from this page when the data does not carry it yet. */
+	const shownAnswer = $derived.by(() => {
+		if (item.kind !== 'question') return null;
+		if (!item.unsent && item.question.answer) return { answer: item.question.answer, note: item.question.note };
+		return !answerable && submitted ? { answer: submitted.answer, note: submitted.note } : null;
+	});
+	const chosen = $derived(item.kind === 'question' && shownAnswer ? chosenIn(item.question, shownAnswer.answer) : null);
 
 	function choose(position: number, single: boolean) {
 		if (item.kind !== 'question') return;
@@ -71,7 +82,7 @@
 	// A floating notice while the draft is for an older version, so the form does not move.
 	$effect(() => {
 		const key = `outdated:${item.key}`;
-		const stale = item.kind === 'question' && inInbox && item.unsent && outdated(item.question, draft);
+		const stale = item.kind === 'question' && listed && item.unsent && outdated(item.question, draft);
 		toasts.stand(key, 'failed', stale ? '主控在你作答途中改了這一題，畫面上是目前的版本。你填的是舊版的答覆，送出會被拒絕；請對照後重新作答。' : null);
 		return () => toasts.stand(key, 'failed', null);
 	});
@@ -136,12 +147,11 @@
 
 	{#if item.kind === 'question'}
 		{@const question = item.question}
-		{@const answerable = inInbox && item.unsent}
 		{@const single = question.kind === 'single'}
 		{@const choice = question.kind !== 'text'}
-		{#if recorded}
+		{#if recorded && !isAnswered(item)}
 			<p class="notice recorded" role="status">✓ {ANSWER_STATE_TEXT.recorded}：主控已記錄這一題的答覆。</p>
-		{:else if !inInbox}
+		{:else if !listed}
 			<p class="notice" role="status">這一題已經不在信箱：主控已結束，或題目已被移除。不能再作答。</p>
 		{/if}
 		{#if question.context}
@@ -164,9 +174,17 @@
 								{@render optionBody(option)}
 							</label>
 						</li>
+					{:else if chosen?.select.includes(position)}
+						<li class="picked"><span class="check" aria-label="你選的">✓</span>{@render optionBody(option)}</li>
 					{:else}
 						<li>{@render optionBody(option)}</li>
 					{/if}
+				{/each}
+				{#if chosen?.other}
+					<li class="picked"><span class="check" aria-label="你選的">✓</span><span class="option text">其他：{chosen.other}</span></li>
+				{/if}
+				{#each chosen?.unknown ?? [] as part, index (index)}
+					<li class="picked"><span class="check" aria-label="你選的">✓</span><span class="option text">{part}</span></li>
 				{/each}
 				{#if answerable && choice}
 					<li class:chosen={draft.other}>
@@ -192,6 +210,14 @@
 					</li>
 				{/if}
 			</ul>
+		{/if}
+		{#if chosen && !choice}
+			<ul class="options">
+				<li class="picked"><span class="check" aria-label="你的答覆">✓</span><span class="option text">{chosen.other}</span></li>
+			</ul>
+		{/if}
+		{#if shownAnswer?.note}
+			<p class="your-note text">你的備註：{shownAnswer.note}</p>
 		{/if}
 		{#if question.recommendation}
 			<section class="recommendation">
@@ -233,7 +259,7 @@
 					<button class="primary" disabled={sending || !complete(question, draft)}>{sending ? '送出中…' : '送出答覆'}</button>
 				</div>
 			</form>
-		{:else if inInbox}
+		{:else if listed && !isAnswered(item)}
 			{#if item.notifyFailed || submitted?.notifyFailed}
 				<p class="state failed" role="alert">
 					已送出，但通知主控失敗{submitted?.notifyFailed && submitted.reason ? `：${submitted.reason}` : ''}。{item.notifyFailed
@@ -249,11 +275,6 @@
 				</div>
 			{/if}
 		{/if}
-		{#if !item.unsent && question.answer}
-			{@render answered(question.answer, question.note)}
-		{:else if !answerable && submitted}
-			{@render answered(submitted.answer, submitted.note)}
-		{/if}
 	{:else}
 		{#if item.message}
 			<div class="text message md">{@html renderMarkdown(item.message)}</div>
@@ -261,7 +282,7 @@
 			<p class="text message">（這筆回報沒有內容）</p>
 		{/if}
 		<footer>
-			{#if !inInbox}
+			{#if item.archived}
 				<span class="state">已封存{item.readAt ? `，${formatTime(item.readAt)} 標為已讀` : ''}</span>
 			{:else if item.readAt}
 				<span class="state">已讀（{formatTime(item.readAt)}）</span>
@@ -272,17 +293,6 @@
 		</footer>
 	{/if}
 </article>
-
-{#snippet answered(answer: string, note: string)}
-	<dl>
-		<dt>答覆</dt>
-		<dd class="text">{answer}</dd>
-		{#if note}
-			<dt>備註</dt>
-			<dd class="text">{note}</dd>
-		{/if}
-	</dl>
-{/snippet}
 
 <style>
 	.content {
@@ -463,17 +473,26 @@
 		border-color: var(--danger);
 		color: var(--danger);
 	}
-	dl {
-		display: grid;
-		grid-template-columns: auto 1fr;
-		gap: 0.2rem 1rem;
-		margin: 0.6rem 0 0;
+	/* The answer's choice: framed and marked in the accent colour, among the options. */
+	.options li.picked {
+		border: 2px solid var(--accent);
+		padding: calc(0.5rem - 1px) calc(0.7rem - 1px);
+		background: color-mix(in srgb, var(--accent) 10%, transparent);
 	}
-	dt {
-		color: var(--muted);
+	.check {
+		flex: none;
+		font-weight: 700;
+		color: var(--accent);
 	}
-	dd {
+	.options .option.text {
+		flex: 1;
+		min-width: 0;
 		margin: 0;
+	}
+	.your-note {
+		padding: 0.4rem 0.7rem;
+		border-radius: var(--radius);
+		background: color-mix(in srgb, var(--text) 6%, transparent);
 	}
 	footer {
 		display: flex;
@@ -497,5 +516,19 @@
 	}
 	:global(:root[data-theme='light']) .options li.chosen .option {
 		font-weight: 700;
+	}
+	:global(:root[data-theme='light']) .options li.picked {
+		border: 3px solid var(--text);
+		padding: calc(0.5rem - 2px) calc(0.7rem - 2px);
+		background: none;
+	}
+	:global(:root[data-theme='light']) .options li.picked .option,
+	:global(:root[data-theme='light']) .check {
+		font-weight: 700;
+		color: var(--text);
+	}
+	:global(:root[data-theme='light']) .your-note {
+		border: 1px solid var(--line);
+		background: none;
 	}
 </style>

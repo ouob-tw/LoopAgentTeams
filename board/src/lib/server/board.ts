@@ -3,12 +3,12 @@
 import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { ArchivePage } from '../board/archive.ts';
-import type { BoardSnapshot, HelperController } from '../board/types.ts';
+import type { BoardSnapshot, HelperController, InboxQuestion } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
-import { listControllers, pruneReports, readQuestions } from './helper.ts';
+import { listControllers, pruneReports, readAnswered, readQuestions, type AnsweredFile } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
-import { archiveDue, archivedReports, buildSnapshot, dropSessions, expiredSessions, mark, type MarkResult, type Sources } from './model.ts';
+import { answeredOf, answeredPaths, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
@@ -37,9 +37,11 @@ export interface Board {
 	sources(): Promise<Sources>;
 	/** Mark one inbox report read or unread for every logged-in device. */
 	mark(key: string, read: boolean): Promise<MarkResult>;
-	/** One page of the archive, newest first: the newest page, or the one after the `before`
-	 *  cursor. Throws on a cursor that is not one. */
+	/** One page of the processed items, newest first: the newest page, or the one after the
+	 *  `before` cursor. Throws on a cursor that is not one. */
 	archive(before: string | null): Promise<ArchivePage>;
+	/** One controller's answered questions, as the processed items have them. */
+	answered(controllerId: string): Promise<InboxQuestion[]>;
 	subscribe(stream: Stream): () => void;
 	/** Tell every open page that a Herdr tab moved: nothing in the snapshot shows tab order. */
 	tabMoved(): void;
@@ -62,6 +64,7 @@ function createBoard(): Board {
 	const streams = new Set<Stream>();
 	let snapshot: BoardSnapshot | null = null;
 	let lastActive: HelperController[] = [];
+	let lastAnswered: AnsweredFile[] = [];
 	/** Session IDs in hcom's last list that could be read; null until one could. */
 	let lastRunning: Set<string> | null = null;
 	/** What the last read found; read state changes rebuild the snapshot from it. */
@@ -168,6 +171,10 @@ function createBoard(): Board {
 
 	async function read(): Promise<BoardSnapshot> {
 		const [helper, reports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(config)]);
+		// Read after the list: the files are those of the controllers bound now, and of the sessions
+		// that reported.
+		const answered = await readAnswered(config, answeredPaths(helper.ok ? helper.controllers : lastActive, reports.files));
+		if (answered.ok) lastAnswered = answered.files;
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {
@@ -188,7 +195,9 @@ function createBoard(): Board {
 			reportsError: reports.error,
 			running: lastRunning,
 			hcomError: agents.ok ? null : agents.reason,
-			pruneError
+			pruneError,
+			answered: lastAnswered,
+			answeredError: answered.ok ? null : answered.reason
 		};
 
 		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
@@ -277,7 +286,7 @@ function createBoard(): Board {
 					controllers: [],
 					inbox: [],
 					recordedKeys: [],
-					archivedCount: 0,
+					processedCount: 0,
 					errors: [`讀取資料失敗：${error.message}`]
 				};
 				for (const stream of streams) stream.send('board', JSON.stringify(snapshot));
@@ -296,7 +305,8 @@ function createBoard(): Board {
 		sentLogError: () => sentLogError,
 		sources: readSources,
 		mark: async (key, read) => publish(await readSources(), { key, read })!,
-		archive: async (before) => archivedReports(await readSources(), loadInboxState(config.stateDir), config.now(), before),
+		archive: async (before) => processedPage(await readSources(), loadInboxState(config.stateDir), config.now(), before),
+		answered: async (controllerId) => answeredOf(await readSources(), controllerId, config.now()),
 		subscribe(stream) {
 			if (closed) stream.close();
 			else streams.add(stream);

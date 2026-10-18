@@ -25,3 +25,13 @@ export function helperDirectories(): { config: string; state: string } {
 		join(env.XDG_STATE_HOME || join(homedir(), '.local/state'), 'herdr/plugins/lat.panel');
 	return { config, state };
 }
+
+/** The question file the helper binds a controller with this name in this workspace to, as its
+ *  `bind_controller` names it; for a controller that is no longer bound. */
+export function questionsPathOf(workspace: string, hcomName: string): string | null {
+	const safe = hcomName
+		.replace(/[^A-Za-z0-9_-]+/g, '-')
+		.replace(/^[-_]+|[-_]+$/g, '')
+		.toLowerCase();
+	return safe ? join(workspace, '.lat', `questions-${safe}.md`) : null;
+}

@@ -2,7 +2,7 @@
 // reconnecting. Uses fetch rather than EventSource so a revoked device (401) can be told apart
 // from a server that is down.
 import type { ArchivePage } from './archive.ts';
-import type { BoardSnapshot } from './types.ts';
+import type { BoardSnapshot, InboxQuestion } from './types.ts';
 
 export type LinkState = 'connecting' | 'live' | 'offline';
 
@@ -25,8 +25,10 @@ export interface Connection {
 	refresh(): Promise<void>;
 	/** Mark an inbox report read or unread; every device gets the new state through the stream. */
 	mark(key: string, read: boolean): Promise<void>;
-	/** One page of the archived reports, newest first: the newest, or the one after `before`. */
+	/** One page of the processed items, newest first: the newest, or the one after `before`. */
 	archive(before?: string | null): Promise<ArchivePage>;
+	/** One controller's answered questions. */
+	answered(controllerId: string): Promise<InboxQuestion[]>;
 	close(): void;
 }
 
@@ -119,7 +121,16 @@ export function connectBoard(options: ConnectionOptions): Connection {
 			const response = await request(before === null ? '/api/archive' : `/api/archive?before=${encodeURIComponent(before)}`);
 			if (response.status === 401) {
 				unpaired();
-				return { reports: [], before: null };
+				return { items: [], before: null };
+			}
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			return await response.json();
+		},
+		async answered(controllerId) {
+			const response = await request(`/api/answered?controller=${encodeURIComponent(controllerId)}`);
+			if (response.status === 401) {
+				unpaired();
+				return [];
 			}
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
 			return await response.json();

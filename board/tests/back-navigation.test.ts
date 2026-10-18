@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { ARCHIVE_PAGE } from '../src/lib/board/archive.ts';
 import type { InboxReport } from '../src/lib/board/types.ts';
-import { DAY, PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
+import { DAY, PORT_BASE, question, sleep, startFixture, titled, type Fixture } from './harness.ts';
 
 const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
 	(path) => path && existsSync(path)
@@ -200,7 +200,7 @@ beforeAll(async () => {
 	asked('DECIDE', 10, 'DECIDE: MQ-1 r1 · 不在對話紀錄裡');
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
-	oldest = (await fixture.archive(cookie)).at(-1)!;
+	oldest = (await fixture.archive(cookie)).at(-1) as InboxReport;
 }, 30_000);
 
 afterAll(async () => {
@@ -242,6 +242,12 @@ const LEFT = `location.pathname === '/user.css'`;
  *  for the back, so a click, "←" and the browser's back all reach it. Nothing on the network. */
 const STARTED = `!window.beforeReload && window.popstateListeners >= 2`;
 /** A new Chrome: the start page, then the board at `search` in a window `width` wide. */
+/** Mark the report unread, so the inbox lists it again after an earlier test read it. */
+async function unread(title: string) {
+	const report = titled(await fixture.refresh(cookie), title)!;
+	if (report.kind === 'report' && report.readAt !== null) await fixture.markUnread(cookie, report.key);
+}
+
 async function visit(width: number, search = '') {
 	await stopChrome();
 	await startChrome();
@@ -432,6 +438,7 @@ test.skipIf(!CHROME)('phone: the top-bar title opens the controller at its top f
 	await back();
 	await showsList();
 
+	await unread('交付第二張票');
 	await tab.eval(click('.inbox', '交付第二張票'));
 	await tab.until(`location.search.startsWith('?item=') && !location.search.startsWith('?item=q')`, 'the report');
 	const report = await tab.eval<string>('location.search');
@@ -714,6 +721,7 @@ test.skipIf(!CHROME)('phone: a revision asked while the question is open moves i
 
 for (const width of [390, 1400]) {
 	test.skipIf(!CHROME)(`${width}px: the copy of a report scrolls while its conversation loads, and the report takes its place where it was read`, async () => {
+		await unread('很長的回報');
 		await visit(width);
 		const scroller = width < 761 ? 'document.scrollingElement' : `document.querySelector('.detail')`;
 		// The conversation is held back until the copy has been read a while.

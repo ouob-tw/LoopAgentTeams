@@ -94,3 +94,35 @@ export function answerText(question: Pick<HelperQuestion, 'kind' | 'options'>, s
 	if (other) chosen.push(`其他：${other}`);
 	return chosen.join('；');
 }
+
+/** What an answer chose, read back from the words `answerText` gives it, as the helper reads them:
+ *  the 1-based positions of the options it names, its 其他 text (all of a text question's answer),
+ *  and the parts that name no option, shown as they are written. */
+export function chosenIn(
+	question: Pick<HelperQuestion, 'kind' | 'options'>,
+	answer: string
+): { select: number[]; other: string; unknown: string[] } {
+	if (question.kind === 'text') return { select: [], other: answer, unknown: [] };
+	let named: string[];
+	let other = '';
+	if (answer.startsWith('其他：')) {
+		named = [];
+		other = answer.slice('其他：'.length);
+	} else if (question.kind === 'multi' && answer.includes('；其他：')) {
+		const at = answer.indexOf('；其他：');
+		named = answer.slice(0, at).split('；');
+		other = answer.slice(at + '；其他：'.length);
+	} else {
+		named = question.kind === 'multi' ? answer.split('；') : [answer];
+	}
+	const select: number[] = [];
+	const unknown: string[] = [];
+	for (const part of named.map((part) => part.trim()).filter(Boolean)) {
+		const index = question.options.findIndex(
+			(option, at) => !select.includes(at + 1) && (question.kind === 'single' ? `${option.letter}. ${option.label}` : option.label) === part
+		);
+		if (index < 0) unknown.push(part);
+		else select.push(index + 1);
+	}
+	return { select, other, unknown };
+}

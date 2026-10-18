@@ -2,7 +2,10 @@
 // `board list` prints whatever <dir>/helper.json tells it to. `board answer` and `board notify`
 // behave like the real commands against the controllers that file lists, and write the result back
 // into it; `board questions` prints a listed controller's questions, or the plan's `files` entry
-// for that path. A plan entry named after the command (`answer`, `notify`, `questions`) replaces
+// for that path; `board answered` prints, for each path, the answered questions of the plan's
+// `archives` entry for it followed by those `board questions` would print, the latest of an ID
+// winning as the real command does. A plan entry named after the command (`answer`, `notify`,
+// `questions`, `answered`) replaces
 // that with a fixed output. `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
 // item per line, the way the real command pages a client's record, with the latest turn's settings
 // from <dir>/transcripts/<session>.current.json, its usage from <session>.usage.json and its
@@ -117,6 +120,20 @@ function questions() {
 	return { output: { questions: listed(path)?.questions ?? plan.files?.[path] ?? [] } };
 }
 
+/** The answered questions of each question file and its archive. */
+function answered() {
+	const files = (options().questions ?? []).map((path) => {
+		/** @type {Map<string, any>} */
+		const latest = new Map();
+		for (const question of [...(plan.archives?.[path] ?? []), ...(listed(path)?.questions ?? plan.files?.[path] ?? [])]) {
+			latest.delete(question.id);
+			if (question.status === 'recorded' && question.answer) latest.set(question.id, question);
+		}
+		return { questions_path: path, questions: [...latest.values()], error: plan.answeredErrors?.[path] ?? null };
+	});
+	return { output: { files } };
+}
+
 /** One page of <dir>/transcripts/<session>.jsonl: the last 50 texts before the cursor and every
  *  operation after the first of them. A line that is not JSON is skipped and counted. */
 /** Like `uv run`, wait on a child that does the work; its PID, in <dir>/<name>-child.pid, tells
@@ -202,13 +219,15 @@ const act =
 		? answer
 		: command === 'questions'
 			? questions
-			: command === 'transcript'
-				? transcript
-				: command === 'launch-args'
-					? launchArgs
-					: command === 'prune-reports'
-						? prune
-						: notify;
+			: command === 'answered'
+				? answered
+				: command === 'transcript'
+					? transcript
+					: command === 'launch-args'
+						? launchArgs
+						: command === 'prune-reports'
+							? prune
+							: notify;
 const result = command === 'list' ? plan : (plan[command] ?? act());
 setTimeout(() => {
 	// `stderrBytes` and `padBytes` make the output too large: spaces before the real output.

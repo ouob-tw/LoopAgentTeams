@@ -1,5 +1,5 @@
 <script lang="ts">
-	// The inbox list: by time, by project, or the archive.
+	// The inbox list, by time or by project, or the processed items (已處理).
 	import { groupByProject, sortByTime, type InboxSort } from '#lib/board/inbox.ts';
 	import type { ArchivePage } from '#lib/board/archive.ts';
 	import type { Controller, InboxItem } from '#lib/board/types.ts';
@@ -13,7 +13,7 @@
 		showArchive,
 		archive,
 		earlier,
-		archivedCount,
+		processedCount,
 		currentKey,
 		onsort,
 		onarchive,
@@ -22,21 +22,22 @@
 		onopen,
 		oncontroller
 	}: {
+		/** What the inbox lists: questions and unread reports, and the report open since it was read. */
 		items: InboxItem[];
 		controllers: Controller[];
 		sort: InboxSort;
 		showArchive: boolean;
-		/** Archived reports loaded so far, newest first; null while loading, 'failed' when they could
+		/** Processed items loaded so far, newest first; null while loading, 'failed' when they could
 		 *  not be read. */
 		archive: ArchivePage | 'failed' | null;
 		/** Loading the page after the loaded ones. */
 		earlier: 'idle' | 'loading' | 'failed';
-		archivedCount: number;
+		processedCount: number;
 		currentKey: string | null;
 		onsort: (sort: InboxSort) => void;
 		onarchive: () => void;
 		onearlier: () => void;
-		/** Read the archive again after it could not be read. */
+		/** Read the processed items again after they could not be read. */
 		onretry: () => void;
 		onopen: (item: InboxItem) => void;
 		oncontroller: (id: string) => void;
@@ -64,7 +65,7 @@
 	<div class="toggle" role="group" aria-label="信箱檢視">
 		<button aria-pressed={!showArchive && sort === 'time'} onclick={() => onsort('time')}>依時間</button>
 		<button aria-pressed={!showArchive && sort === 'project'} onclick={() => onsort('project')}>依專案</button>
-		<button aria-pressed={showArchive} onclick={onarchive}>已封存{archivedCount ? ` ${archivedCount}` : ''}</button>
+		<button aria-pressed={showArchive} onclick={onarchive}>已處理{processedCount ? ` ${processedCount}` : ''}</button>
 	</div>
 </header>
 
@@ -72,13 +73,13 @@
 	{#if archive === null}
 		<p class="none" role="status">讀取中…</p>
 	{:else if archive === 'failed'}
-		<p class="none" role="alert">已封存的回報讀不出來。</p>
+		<p class="none" role="alert">已處理的項目讀不出來。</p>
 		<button class="earlier" onclick={onretry}>再試一次</button>
 	{:else}
-		{#each archive.reports as item (item.key)}
-			<ItemRow {item} archived current={item.key === currentKey} {onopen} onowner={owner(item)} />
+		{#each archive.items as item (item.key)}
+			<ItemRow {item} processed current={item.key === currentKey} {onopen} onowner={owner(item)} />
 		{:else}
-			<p class="none">沒有已封存的回報。</p>
+			<p class="none">沒有已處理的項目。</p>
 		{/each}
 		{#if archive.before !== null}
 			<button class="earlier" bind:this={end} onclick={onearlier} disabled={earlier === 'loading'}>

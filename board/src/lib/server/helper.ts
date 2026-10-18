@@ -117,6 +117,44 @@ export async function readQuestions(config: BoardConfig, questionsPath: string):
 	}
 }
 
+/** One question file's answered questions, as `board answered` prints them. */
+export interface AnsweredFile {
+	questions_path: string;
+	questions: HelperQuestion[];
+	/** Why this file or its archive could not be read; null when they could. */
+	error: string | null;
+}
+
+export type HelperAnswered = { ok: true; files: AnsweredFile[] } | { ok: false; reason: string };
+
+const isAnsweredFile = (value: unknown): value is AnsweredFile => {
+	const file = value as AnsweredFile;
+	return (
+		typeof file === 'object' &&
+		file !== null &&
+		typeof file.questions_path === 'string' &&
+		(file.error === null || typeof file.error === 'string') &&
+		Array.isArray(file.questions) &&
+		file.questions.every((question) => typeof question === 'object' && question !== null)
+	);
+};
+
+/** The answered questions each of these question files and its archive hold. */
+export async function readAnswered(config: BoardConfig, questionsPaths: string[]): Promise<HelperAnswered> {
+	if (!questionsPaths.length) return { ok: true, files: [] };
+	const { stdout, failure } = await run(config, ['answered', ...questionsPaths.map((path) => `--questions=${path}`)]);
+	let payload: { files?: unknown; reason?: unknown };
+	try {
+		payload = JSON.parse(stdout);
+	} catch {
+		return { ok: false, reason: failure ?? '輔助工具的輸出不是 JSON' };
+	}
+	if (failure || !Array.isArray(payload?.files) || !payload.files.every(isAnsweredFile)) {
+		return { ok: false, reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出缺少答過的題目' };
+	}
+	return { ok: true, files: payload.files };
+}
+
 /** What `board answer` and `board notify` print: one JSON object with a status. */
 export interface HelperResult {
 	status: string;
