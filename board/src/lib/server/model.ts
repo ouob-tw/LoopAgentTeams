@@ -340,7 +340,12 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		errors.push(`${sources.hcomError}，${sources.running ? '已關閉的主控沿用上次讀到的清單判斷' : '主控暫時都顯示為啟用中'}`);
 	}
 	if (sources.pruneError) errors.push(`超過 30 天的回報紀錄沒有刪除，下次重讀再試：${sources.pruneError}`);
-	const unreadable = sources.answered.filter((file) => file.error).map((file) => `${file.questions_path}：${file.error}`);
+	// A file asked for by path and by a controller's name says so once.
+	const unreadable = [
+		...new Set(
+			sources.answered.filter((file) => file.error).map((file) => `${file.questions_path ?? `${file.workspace} @${file.hcom_name}`}：${file.error}`)
+		)
+	];
 	if (sources.answeredError) unreadable.unshift(`輔助工具失敗：${sources.answeredError}，沿用上次讀到的`);
 	if (unreadable.length) errors.push(`答過的題目讀不出來：${unreadable.join('；')}`);
 
