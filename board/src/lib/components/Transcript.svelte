@@ -93,7 +93,10 @@
 
 	$effect(() => {
 		const opening = targetId && `${targetId}:${opens}`;
-		if (!opening || !list || scrolledFor === opening || (place === undefined && !unplaced)) return;
+		// A question's card above the conversation is only for the moment until its text arrives, or
+		// it is lost: not scrolled to.
+		const due = typeof place === 'number' || (unplaced && !target?.exact);
+		if (!opening || !list || scrolledFor === opening || !due) return;
 		scrolledFor = opening;
 		align(list, '.placed');
 	});

@@ -568,12 +568,17 @@ test.skipIf(!CHROME)('phone: a revision asked while the question is open moves i
 	await tab.eval(`window.dispatchEvent(new WheelEvent('wheel')); document.scrollingElement.scrollBy(0, -600)`);
 	await tab.until(`${PLACED}.getBoundingClientRect().top > 300`, 'scrolled away from the card');
 
+	// The board's data reaches the page before the conversation holds the new message.
 	const message = '第三版。\n\nDECIDE: DQ-1 r3 · 第三版 · 回答面板上的題目';
-	appendFileSync(solTranscript(), JSON.stringify({ kind: 'assistant', time: minutesAgo(0), text: message }) + '\n');
 	fixture.report(sol.session_id, { tag: 'DECIDE', summary: '第三版', message, time: minutesAgo(0), hcom_name: 'sol', workspace: sol.workspace });
 	const [first, ...rest] = sol.questions;
 	fixture.list([luna, { ...sol, questions: [{ ...first, revision: 3, asked_at: minutesAgo(0.1) }, ...rest] }]);
 	await fixture.refresh(cookie);
+	await tab.until(`document.querySelector('.detail').innerText.includes('DQ-1 r3')`, 'the r3 question on the page');
+	// Not called missing while the conversation has not had its next page.
+	await sleep(500);
+	expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
+	appendFileSync(solTranscript(), JSON.stringify({ kind: 'assistant', time: minutesAgo(0), text: message }) + '\n');
 
 	await tab.until(`${PLACED}?.innerText.includes('DQ-1 r3')`, 'the card at the r3 message');
 	await placedAt(SOL_QUESTION('DQ-1'), '有原訊息的待決題');
