@@ -136,7 +136,7 @@
 				if (last === undefined) keptAt = copy?.firstElementChild?.getBoundingClientRect().top;
 				makeRoom(element, keptAt);
 				element.scrollIntoView({ block: 'start' });
-				if (keptAt !== undefined) scrollerOf(element).scrollBy(0, element.getBoundingClientRect().top - keptAt);
+				if (keptAt !== undefined) (scrollerOf(element) ?? window).scrollBy(0, element.getBoundingClientRect().top - keptAt);
 				if (last === undefined) onplaced?.();
 				last = element.getBoundingClientRect().top;
 			}
@@ -159,11 +159,11 @@
 		if (element) makeRoom(element, keptAt);
 	});
 
-	/** The nearest box the element scrolls in; the page's own when there is none. */
-	function scrollerOf(element: HTMLElement): HTMLElement {
+	/** The nearest box the element scrolls in; null when it scrolls with the page. */
+	function scrollerOf(element: HTMLElement): HTMLElement | null {
 		let scroller: HTMLElement | null = element.parentElement;
 		while (scroller && !/(auto|scroll)/.test(getComputedStyle(scroller).overflowY)) scroller = scroller.parentElement;
-		return scroller ?? (document.scrollingElement as HTMLElement);
+		return scroller;
 	}
 
 	/** Let the report's card reach the top of the visible area, or `at` on screen, however little
@@ -171,9 +171,8 @@
 	 *  follows). */
 	function makeRoom(element: HTMLElement, at?: number) {
 		if (!tail || !element.offsetParent) return;
-		const found = scrollerOf(element);
-		const page = found === document.scrollingElement;
-		const scroller = page ? null : found;
+		const scroller = scrollerOf(element);
+		const page = !scroller;
 		const port = page ? window.innerHeight : scroller!.clientHeight;
 		const portTop = page ? 0 : scroller!.getBoundingClientRect().top;
 		const scrolled = page ? window.scrollY : scroller!.scrollTop;

@@ -612,16 +612,23 @@ for (const width of [390, 1400]) {
 		await tab.until(`${copy}.getBoundingClientRect().top < ${start - 300}`, 'the copy scrolled');
 		await sleep(300);
 		const read = await tab.eval<number>(`${copy}.getBoundingClientRect().top`);
+		// A paragraph being read in the middle of the screen, which must stay where it is too.
+		const paragraph = (scope: string) => `[...document.querySelectorAll(${JSON.stringify(`${scope} p`)})].find((p) => p.innerText.startsWith('第 12 段'))`;
+		const reading = await tab.eval<{ top: number; height: number }>(`(({ top, height }) => ({ top, height }))(${paragraph('.placeholder')}.getBoundingClientRect())`);
 		// The page under it has not moved.
 		expect(await tab.eval(`${scroller}.scrollTop`)).toBe(0);
 
 		expect(tab.paused.length).toBeGreaterThan(0);
 		await tab.send('Fetch.disable');
+		// Disabling may already have let a held request go on.
 		for (const requestId of tab.paused) await tab.send('Fetch.continueRequest', { requestId }).catch(() => {});
 		await tab.until(`document.querySelector('.placeholder') === null && ${PLACED}?.innerText.includes('第 40 段')`, 'the report placed');
 		// Where the copy was read, from the moment it is gone, and still after it is kept there.
 		const placedTop = () => tab.eval<number>(`${PLACED}.getBoundingClientRect().top`);
 		expect(Math.abs((await placedTop()) - read)).toBeLessThanOrEqual(1);
+		const real = await tab.eval<{ top: number; height: number }>(`(({ top, height }) => ({ top, height }))(${paragraph('.history .placed')}.getBoundingClientRect())`);
+		expect(Math.abs(real.top - reading.top)).toBeLessThanOrEqual(1);
+		expect(real.height).toBe(reading.height);
 		await sleep(2800);
 		expect(Math.abs((await placedTop()) - read)).toBeLessThanOrEqual(1);
 
