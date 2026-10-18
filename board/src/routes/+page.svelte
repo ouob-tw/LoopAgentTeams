@@ -108,11 +108,15 @@
 	/** Where an opened item is shown in its controller's conversation: a report is its own message,
 	 *  a question is shown at the message that asked it. Null when there is no such message. */
 	const placedAt = (entry: InboxItem): PlacedMessage | null =>
-		entry.kind === 'report' ? entry : entry.askedIn && { key: entry.key, ...entry.askedIn };
+		entry.kind === 'report' ? entry : entry.askedIn && { key: entry.key, ...entry.askedIn, exact: true };
 	/** The question whose asking message is not found in its conversation, or the conversation
 	 *  cannot be read, at this opening: it is shown as if no message had asked it. */
 	let lost = $state<string | null>(null);
 	const placed = $derived(item && item.key !== lost ? placedAt(item) : null);
+	function lose(key: string) {
+		lost = key;
+		locate(false);
+	}
 
 	/** Containers of the unfolded roster whose own surface, not a card or control, was clicked. */
 	const ROSTER_BLANK = '.roster, .unfolded, .summary, .counts, .people, .sep, .summary .tools';
@@ -470,12 +474,7 @@
 						target={placed}
 						{opens}
 						onplaced={() => locate(false)}
-						onunplaced={item.kind === 'question'
-							? () => {
-									lost = item.key;
-									locate(false);
-								}
-							: undefined}
+						onunplaced={item.kind === 'question' ? () => lose(item.key) : undefined}
 					>
 						{#snippet card()}
 							{#key item.key}

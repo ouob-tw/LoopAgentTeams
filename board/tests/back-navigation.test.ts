@@ -169,7 +169,9 @@ beforeAll(async () => {
 		said('assistant', 49, ASKED.decide),
 		...filler(45, 6),
 		said('assistant', 29, ASKED.help),
-		...filler(25, 6)
+		...filler(25, 6),
+		// A reply a minute before MQ-1's asking message, which is itself not in the conversation.
+		said('assistant', 11, '剛好在 MQ-1 之前的另一則回覆')
 	];
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
 	writeFileSync(solTranscript(), conversation.map((item) => JSON.stringify(item) + '\n').join(''));
@@ -178,7 +180,7 @@ beforeAll(async () => {
 	asked('DECIDE', 70, ASKED.old);
 	asked('DECIDE', 49, ASKED.decide);
 	asked('HELP', 29, ASKED.help);
-	// Reported, but not in the conversation, nor any text in the few minutes before it.
+	// Reported, but not in the conversation; the reply just before it must not be taken instead.
 	asked('DECIDE', 10, 'DECIDE: MQ-1 r1 · 不在對話紀錄裡');
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);

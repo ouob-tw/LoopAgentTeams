@@ -105,6 +105,8 @@ export function toolLine(item: TranscriptTool): string {
 export interface PlacedMessage extends AskingMessage {
 	/** The inbox item it is opened for. */
 	key: string;
+	/** Only the text equal to it counts: a question's asking message is never guessed. */
+	exact?: boolean;
 }
 
 /** How long before a report its text may have been written, for a report whose text does not
@@ -118,10 +120,14 @@ const SEARCH_MS = 60 * 60_000;
  * Where a report's text is in the conversation, as the text's `seq`. A report carries the
  * controller's last text of its turn, so the text that equals it is taken, the one nearest the
  * report's time when several do; failing that, once the pages loaded reach an hour before the
- * report (or the start), the controller's last text in the few minutes before it. Undefined while
- * they do not reach that far; null once they do and nothing fits.
+ * report (or the start), the controller's last text in the few minutes before it, unless only an
+ * `exact` match counts. Undefined while they do not reach that far; null once they do and nothing
+ * fits.
  */
-export function reportPlace(view: TranscriptView, report: { time: string; message: string }): number | null | undefined {
+export function reportPlace(
+	view: TranscriptView,
+	report: { time: string; message: string; exact?: boolean }
+): number | null | undefined {
 	const at = Date.parse(report.time);
 	const texts = view.items.filter((item): item is TranscriptText => item.kind === 'assistant');
 	const gap = (item: TranscriptText) => (item.time ? Math.abs(Date.parse(item.time) - at) : Infinity);
@@ -130,6 +136,7 @@ export function reportPlace(view: TranscriptView, report: { time: string; messag
 	if (same.length) return same.reduce((best, item) => (gap(item) < gap(best) ? item : best)).seq;
 	const first = view.items[0]?.time;
 	if (view.before !== null && !(first && Date.parse(first) < at - SEARCH_MS)) return undefined;
+	if (report.exact) return null;
 	const near = texts.findLast((item) => item.time && Date.parse(item.time) <= at && at - Date.parse(item.time) <= NEAR_MS);
 	return near?.seq ?? null;
 }
