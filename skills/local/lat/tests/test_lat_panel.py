@@ -241,6 +241,34 @@ class QuestionCliTests(unittest.TestCase):
         self.assertEqual((question["revision"], question["answer"]), (2, ""))
         self.assertIn("改過的來由。", question["details"])
 
+    def test_details_block_after_recommendation_parses_like_after_background(self):
+        block = "【詳細資訊】\n來由。\n\nA. 不是選項\n\n➡️ 不是推薦\n【詳細資訊結束】\n\n"
+        options = "- A. 甲（建議）\n  影響甲\n- B. 乙\n\n"
+        recommendation = "➡️ A：理由。\n"
+        sections = {
+            "OLD": f"## 題目？\n\n背景。\n\n{block}{options}{recommendation}",
+            "NEW": f"## 題目？\n\n背景。\n\n{options}{recommendation}\n{block}",
+        }
+        for question_id, text in sections.items():
+            section = self.root / f"{question_id}.md"
+            section.write_text(text)
+            self.assertEqual(self.cli("question", "upsert", "--id", question_id,
+                                      "--file", section).returncode, 0)
+        parsed = {}
+        for question_id in sections:
+            question = self.board_question(question_id)
+            parsed[question_id] = {key: question[key] for key in (
+                "title", "context", "details", "kind", "options", "recommendation")}
+        self.assertEqual(parsed["OLD"], parsed["NEW"])
+        self.assertEqual(parsed["NEW"]["details"], "來由。\n\nA. 不是選項\n\n➡️ 不是推薦")
+        self.assertEqual(parsed["NEW"]["recommendation"], "➡️ A：理由。")
+        panel = load_module()
+        questions = {item["id"]: item for item in panel.parse_questions(self.questions.read_text())}
+        self.assertEqual(panel.question_chat_parts(questions["OLD"]),
+                         panel.question_chat_parts(questions["NEW"]))
+        self.assertEqual([name for name, _ in panel.question_chat_parts(questions["NEW"])],
+                         ["標題", "背景", "選項 A", "選項 A 的內容", "選項 B", "推薦段落", "詳細資訊"])
+
     def test_question_without_details_has_null_details(self):
         section = self.root / "section.md"
         section.write_text("## 舊格式？\n\n背景。\n\nA. 甲\n")

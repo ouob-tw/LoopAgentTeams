@@ -512,9 +512,6 @@ def question_chat_parts(question):
     context = question_context(question)
     if context:
         parts.append(("背景", context))
-    details = question_details(question)
-    if details is not None:
-        parts.append(("詳細資訊", details))
     parsed = parse_question_options(question)
     for index, (letter, option) in enumerate(zip(_option_letters(parsed), parsed.options), 1):
         name = f"選項 {letter}" if letter else f"第 {index} 個選項"
@@ -527,6 +524,9 @@ def question_chat_parts(question):
     recommendation = question_recommendation(question)
     if recommendation:
         parts.append(("推薦段落", recommendation))
+    details = question_details(question)
+    if details is not None:
+        parts.append(("詳細資訊", details))
     return parts
 
 

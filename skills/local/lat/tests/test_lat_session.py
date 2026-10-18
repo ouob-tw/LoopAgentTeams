@@ -642,15 +642,13 @@ class SessionTests(unittest.TestCase):
         self.write_legacy_record()
         self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
         questions = self.bind_stop_panel()
+        details = '【詳細資訊】\n來由：上次漏寫。\n方法：照抄。\n【詳細資訊結束】\n\n'
+        options = 'A. 甲（建議）\n   影響甲\nB. 乙\n   影響乙\n\n'
         questions.write_text(
             '## 要怎麼做？\nLAT-A · r1 · 待答\n\n背景一句話。\n\n'
-            '【詳細資訊】\n來由：上次漏寫。\n方法：照抄。\n【詳細資訊結束】\n\n'
-            'A. 甲（建議）\n   影響甲\nB. 乙\n   影響乙\n\n'
-            '➡️ A：理由一。\n理由二。\n\n答覆：\n\n- [ ] 送出\n')
+            f'{options}➡️ A：理由一。\n理由二。\n\n{details}答覆：\n\n- [ ] 送出\n')
         full = ('❓ **LAT-A r1** - **要怎麼做？**\n\n背景一句話。\n\n'
-                '【詳細資訊】\n來由：上次漏寫。\n方法：照抄。\n【詳細資訊結束】\n\n'
-                'A. 甲（建議）\n   影響甲\nB. 乙\n   影響乙\n\n'
-                '➡️ A：理由一。\n理由二。\n\nDECIDE: LAT-A r1')
+                f'{options}➡️ A：理由一。\n理由二。\n\n{details}DECIDE: LAT-A r1')
         for part, name in (('方法：照抄。', '詳細資訊'), ('背景一句話。', '背景'),
                            ('   影響乙', '選項 B 的內容'), ('理由二。', '推薦段落'),
                            ('**要怎麼做？**', '標題'), ('B. 乙', '選項 B')):
@@ -663,6 +661,14 @@ class SessionTests(unittest.TestCase):
         # Only whitespace differs: the markers are optional, line breaks and indents are not compared.
         spaced = full.replace('   影響甲', '影響甲').replace('來由：上次漏寫。\n', '來由： 上次 漏寫。 ')
         self.assert_silent(self.stop_hook(spaced.replace('【詳細資訊】', '').replace('【詳細資訊結束】', '')))
+        # A question still written with its details after the background asks for the same order.
+        questions.write_text(
+            '## 要怎麼做？\nLAT-A · r1 · 待答\n\n背景一句話。\n\n'
+            f'{details}{options}➡️ A：理由一。\n理由二。\n\n答覆：\n\n- [ ] 送出\n')
+        self.assert_silent(self.stop_hook(full))
+        # The old chat order, details before the options, no longer passes.
+        old_order = full.replace(details, '').replace('背景一句話。\n\n', '背景一句話。\n\n' + details)
+        self.assert_stop_block(self.stop_hook(old_order), '缺少詳細資訊')
         # Unbound sessions have no question file to compare against.
         (self.root / 'plugin-config/bindings.json').write_text('{"version": 2, "bindings": {}}')
         self.assert_silent(self.stop_hook('DECIDE: LAT-A r2'))

@@ -147,9 +147,6 @@
 		{#if question.context}
 			<div class="text md">{@html renderMarkdown(question.context)}</div>
 		{/if}
-		{#if question.details}
-			<div class="text md">{@html renderMarkdown(question.details)}</div>
-		{/if}
 		{#if question.options.length}
 			<ul class="options">
 				{#each question.options as option, index (index)}
@@ -201,6 +198,9 @@
 				<h3>推薦</h3>
 				<div class="text md">{@html renderMarkdown(question.recommendation)}</div>
 			</section>
+		{/if}
+		{#if question.details}
+			<div class="text md">{@html renderMarkdown(question.details)}</div>
 		{/if}
 
 		{#if answerable}
