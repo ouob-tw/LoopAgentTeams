@@ -111,6 +111,7 @@ export interface PlacedMessage extends AskingMessage {
 /** What a conversation is opened at: a report, or a question, shown where its message asked it. */
 export type PlacedTarget = PlacedMessage | InboxQuestion;
 
+/** Whether the conversation is opened at a question rather than a report. */
 export const isQuestion = (target: PlacedTarget): target is InboxQuestion => 'kind' in target && target.kind === 'question';
 
 /** How long before a report its text may have been written, for a report whose text does not

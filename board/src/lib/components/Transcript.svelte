@@ -108,15 +108,15 @@
 	// No next page may come when the message is missing: judged after a while without one.
 	$effect(() => {
 		if (found !== null || targetAtLastPage === judgedId) return;
-		const id = judgedId;
-		const timer = setTimeout(() => (targetAtLastPage = id ?? null), JUDGE_WITHOUT_PAGE_MS);
+		const judged = judgedId;
+		const timer = setTimeout(() => (targetAtLastPage = judged ?? null), JUDGE_WITHOUT_PAGE_MS);
 		return () => clearTimeout(timer);
 	});
 	/** The segments as shown, newest first. The target's text, or the newest place for a question
 	 *  whose message is still to come, is one item, so its card stays put when the message comes. */
 	const shown = $derived.by((): (Segment | { kind: 'placed'; key: 'placed'; seq: number | null })[] => {
 		const rows = view ? segments(view.items).toReversed() : [];
-		if (!view || !card) return rows;
+		if (!view || !(card || questionCards)) return rows;
 		if (place === 'pending') return [{ kind: 'placed', key: 'placed', seq: null }, ...rows];
 		return rows.map((row) => (row.kind === 'text' && row.item.seq === place ? { kind: 'placed', key: 'placed', seq: place } : row));
 	});

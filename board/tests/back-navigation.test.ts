@@ -916,3 +916,28 @@ test.skipIf(!CHROME)('phone: a question opened before its message, whose turn th
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
 }, 30_000);
+
+test.skipIf(!CHROME)('phone: a question at its message stays there when its turn ends with another text, which no report of the question matches', async () => {
+	const id = 'MT-1';
+	const title = '回合中途問的題目';
+	fixture.list([luna, { ...sol, questions: [...sol.questions, question({ id, revision: 1, title, kind: 'single', options: OPTIONS, asked_at: minutesAgo(0) })] }]);
+	await fixture.refresh(cookie);
+	await visit(390);
+	await tab.eval(click('.inbox', title));
+	await placedAt(SOL_QUESTION(id), title);
+	await sleep(LOST_WATCH_READ);
+	say(`中途的提問。\n\nDECIDE: ${id} r1 · 中途 · 回答面板上的題目`);
+	await tab.until(`${PLACED}.dataset.seq !== undefined`, 'the card at the message');
+	// The turn goes on and ends with another text, which is its report.
+	const last = 'NO REPLY: 先做別的部分';
+	say(last);
+	fixture.report(sol.session_id, { tag: 'NO REPLY', summary: '先做別的部分', message: last, time: minutesAgo(0), hcom_name: 'sol', workspace: sol.workspace });
+	await fixture.refresh(cookie);
+	await tab.until(saidIncludes('先做別的部分'), 'the last text');
+	// Past the wait for a missing message: it is not missing.
+	await sleep(6000);
+	expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
+	expect(await tab.eval(`${PLACED}.innerText`)).toContain(title);
+	fixture.list([luna, sol]);
+	await fixture.refresh(cookie);
+}, 30_000);
