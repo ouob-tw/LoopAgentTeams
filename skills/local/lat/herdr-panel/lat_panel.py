@@ -9,7 +9,8 @@ Public API used by the Textual panel and LAT controller:
 * ``parse_questions``, ``upsert_question``, and ``set_question_status`` model
   and update natural-language question sections without touching other sections.
 * V2 selector UI flow: ``parse_question_options``, ``question_context``,
-  ``question_details``, ``question_recommendation``, and
+  ``question_details``, ``question_recommendation``, ``question_chat_parts``
+  (the text chat must repeat, checked at turn end), and
   ``parse_question_answer`` read one ``parse_questions`` result;
   ``question_section_sha256`` captures its guarded-write identity;
   ``write_question_answer`` saves (or, with ``None``, clears) a draft while
@@ -355,10 +356,10 @@ class QuestionOptions(NamedTuple):
 _SINGLE_OPTION = re.compile(r"^(?P<key>[A-Z])\.\s+(?P<label>\S.*)$")
 _MULTI_OPTION = re.compile(r"^- \[[ xX]\]\s+(?P<label>\S.*)$")
 _RECOMMENDATION = re.compile(r"(?:\A|\n[ \t]*\n)(?P<recommendation>➡\ufe0f?)")
-DETAILS_START = "【詳細資訊】"
-DETAILS_END = "【詳細資訊結束】"
+_DETAILS_START = "【詳細資訊】"
+_DETAILS_END = "【詳細資訊結束】"
 _DETAILS_MARKER = re.compile(
-    rf"^(?P<marker>{DETAILS_START}|{DETAILS_END})[ \t]*$", re.MULTILINE
+    rf"^(?P<marker>{_DETAILS_START}|{_DETAILS_END})[ \t]*$", re.MULTILINE
 )
 
 
@@ -371,8 +372,8 @@ def _split_details(body):
     markers = list(_DETAILS_MARKER.finditer(body))
     if (
         len(markers) != 2
-        or markers[0].group("marker") != DETAILS_START
-        or markers[1].group("marker") != DETAILS_END
+        or markers[0].group("marker") != _DETAILS_START
+        or markers[1].group("marker") != _DETAILS_END
     ):
         return body, None
     start, end = markers
@@ -384,12 +385,12 @@ def _split_details(body):
 
 def _check_details_markers(body):
     markers = [marker.group("marker") for marker in _DETAILS_MARKER.finditer(body)]
-    if markers and markers != [DETAILS_START, DETAILS_END]:
+    if markers and markers != [_DETAILS_START, _DETAILS_END]:
         raise ValueError(
-            f"details block needs one {DETAILS_START} line followed by one {DETAILS_END} line"
+            f"details block needs one {_DETAILS_START} line followed by one {_DETAILS_END} line"
         )
     if markers and not _split_details(body)[1].strip():
-        raise ValueError(f"details block between {DETAILS_START} and {DETAILS_END} is empty")
+        raise ValueError(f"details block between {_DETAILS_START} and {_DETAILS_END} is empty")
 
 
 def question_details(question):
@@ -483,15 +484,11 @@ def question_chat_parts(question):
     if details is not None:
         parts.append(("詳細資訊", details))
     parsed = parse_question_options(question)
-    letters = (
-        [option.key for option in parsed.options] if parsed.kind == "single"
-        else [chr(ord("A") + index) if index < 26 else str(index + 1)
-              for index in range(len(parsed.options))]
-    )
-    for letter, option in zip(letters, parsed.options):
-        parts.append((f"選項 {letter}", option.label))
+    for index, (letter, option) in enumerate(zip(_option_letters(parsed), parsed.options), 1):
+        name = f"選項 {letter}" if letter else f"第 {index} 個選項"
+        parts.append((name, f"{letter}. {option.label}" if letter else option.label))
         if option.impact:
-            parts.append((f"選項 {letter} 的影響", option.impact))
+            parts.append((f"{name} 的影響", option.impact))
     recommendation = question_recommendation(question)
     if recommendation:
         parts.append(("推薦段落", recommendation))
@@ -1908,15 +1905,19 @@ def _asked_times(questions_path):
     return times
 
 
+def _option_letters(parsed):
+    """Option letters per 題目格式: the file's keys, or A, B, … with none past Z."""
+    if parsed.kind == "single":
+        return [option.key for option in parsed.options]
+    return [
+        chr(ord("A") + index) if index < 26 else ""
+        for index in range(len(parsed.options))
+    ]
+
+
 def _board_question(section, asked_times):
     parsed = parse_question_options(section)
-    if parsed.kind == "single":
-        letters = [option.key for option in parsed.options]
-    else:
-        letters = [
-            chr(ord("A") + index) if index < 26 else ""
-            for index in range(len(parsed.options))
-        ]
+    letters = _option_letters(parsed)
     answer, note = _answer_text_and_note(section["answer"] or "")
     return {
         "id": section["id"],

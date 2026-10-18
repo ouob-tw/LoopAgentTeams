@@ -596,13 +596,15 @@ def missing_question_parts(panel, question, message):
     """Parts of the question's text absent from the message, compared without whitespace.
 
     Parts are searched in order from the question's `❓ **<ID> r<N>**` heading,
-    or from the start of the message without one.
+    or from the start of the message without one; the tag line is not searched.
     """
     def compact(text):
         return re.sub(r'\s+', '', text)
+    body = message.rstrip()
+    body = body[:body.rfind('\n') + 1]
     heading = re.search(
-        rf'^❓ \*\*{re.escape(question["id"])} r{question["revision"]}\*\*', message, re.MULTILINE)
-    text = compact(message[heading.start():] if heading else message)
+        rf'^❓ \*\*{re.escape(question["id"])} r{question["revision"]}\*\*', body, re.MULTILINE)
+    text = compact(body[heading.start():] if heading else body)
     cursor = 0
     missing = []
     for name, part in panel.question_chat_parts(question):

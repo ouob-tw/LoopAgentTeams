@@ -653,10 +653,13 @@ class SessionTests(unittest.TestCase):
                 '➡️ A：理由一。\n理由二。\n\nDECIDE: LAT-A r1')
         for part, name in (('方法：照抄。', '詳細資訊'), ('背景一句話。', '背景'),
                            ('   影響乙', '選項 B 的影響'), ('理由二。', '推薦段落'),
-                           ('**要怎麼做？**', '標題')):
+                           ('**要怎麼做？**', '標題'), ('B. 乙', '選項 B')):
             with self.subTest(name=name):
                 self.assert_stop_block(self.stop_hook(full.replace(part, '', 1)),
                                        'LAT-A r1：訊息沒有照抄題目原文，缺少' + name)
+        # The tag line does not count as a copy of the title.
+        self.assert_stop_block(self.stop_hook(full.replace('**要怎麼做？**', '', 1) + ' 要怎麼做？'),
+                               '缺少標題')
         # Only whitespace differs: the markers are optional, line breaks and indents are not compared.
         spaced = full.replace('   影響甲', '影響甲').replace('來由：上次漏寫。\n', '來由： 上次 漏寫。 ')
         self.assert_silent(self.stop_hook(spaced.replace('【詳細資訊】', '').replace('【詳細資訊結束】', '')))
@@ -2055,7 +2058,7 @@ class SessionTests(unittest.TestCase):
                     '❓ **LAT-B r1** 新題\nDECIDE: LAT-A r1', client).stdout)['reason'])
                 self.assert_silent(self.stop_hook('DECIDE: LAT-A r1, LAT-B r1', client))
                 self.assert_silent(self.stop_hook('DECIDE: LAT-A r2 改版', client))
-                self.assert_silent(self.stop_hook('HELP: LAT-H r1 請登入', client))
+                self.assert_silent(self.stop_hook('請登入\nHELP: LAT-H r1', client))
                 self.assertIn('已在先前訊息',
                               json.loads(self.stop_hook('HELP: LAT-H r1', client).stdout)['reason'])
                 # A blocked Stop is not reported, so it does not count as asked.
@@ -2081,13 +2084,13 @@ class SessionTests(unittest.TestCase):
                 path.write_text('- status: pending\n- kind: help\n')
                 self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '沒有參謀行')
                 path.write_text('- status: pending\n- advisor: needs-human\n- Kind: Help\n')
-                self.assert_silent(self.stop_hook('HELP: LAT-H r1 請登入', client))
+                self.assert_silent(self.stop_hook('請登入\nHELP: LAT-H r1', client))
                 self.assertIn('LAT HELP 檢查未通過',
                               json.loads(self.stop_hook('HELP: X r1', client).stdout)['reason'])
                 questions = self.bind_stop_panel(client)
                 self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '自己的面板')
                 questions.write_text('## 請登入\nLAT-H · r1 · 待答\n')
-                self.assert_silent(self.stop_hook('HELP: LAT-H r1 請登入', client))
+                self.assert_silent(self.stop_hook('請登入\nHELP: LAT-H r1', client))
                 (self.root / 'plugin-config/bindings.json').write_text(
                     '{"version": 2, "bindings": {}}')
                 path.write_bytes(b'\xff')

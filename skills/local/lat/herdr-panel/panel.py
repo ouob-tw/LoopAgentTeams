@@ -909,14 +909,14 @@ class Panel(App):
             rows.append(("", "題目格式錯誤：找不到答覆或送出標記。請按 Ctrl+E 修正", "bold"))
         keys += [("text", 0)] * (len(rows) - 1)
         paragraphs = [text for text in re.split(r"\n(?:[ \t]*\n)+", draft.context) if text]
-        label = None
+        label_number = None
         if draft.details is not None:
             # The details block follows the background under its own dim label.
-            label = len(paragraphs) + 1
+            label_number = len(paragraphs) + 1
             paragraphs.append(DETAILS_LABEL)
             paragraphs += [text for text in re.split(r"\n(?:[ \t]*\n)+", draft.details) if text]
         for number, paragraph in enumerate(paragraphs, 1):
-            rows.extend((("", "", ""), ("", paragraph, "dim" if number == label else "")))
+            rows.extend((("", "", ""), ("", paragraph, "dim" if number == label_number else "")))
             keys.extend((None, ("text", number)))
         rows.append(("", "", ""))
         keys.append(None)
