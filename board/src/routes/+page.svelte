@@ -15,7 +15,7 @@
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
-	import type { PlacedMessage } from '#lib/board/transcript.ts';
+	import { reportPlace, withLatest, type PlacedMessage, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
 	import type { InboxItem } from '#lib/board/types.ts';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
@@ -119,6 +119,25 @@
 		lost = key;
 		locate(false);
 	}
+	/** The controller of the lost question while it is open. */
+	const lostIn = $derived(lost && item?.key === lost ? item.controllerId : null);
+	// Lost is not for good: a turn's text may reach the conversation a moment after its report,
+	// so its later pages are still watched, and the question is shown at its asking message once
+	// one has it.
+	$effect(() => {
+		const key = lost;
+		if (!key || !lostIn) return;
+		let seen: TranscriptView | null = null;
+		const source = new EventSource(`/api/transcript/events?controller=${encodeURIComponent(lostIn)}`);
+		source.addEventListener('transcript', (event) => {
+			const update: TranscriptUpdate = JSON.parse((event as MessageEvent).data);
+			if (!update.ok) return;
+			seen = withLatest(seen, update.page);
+			const target = item?.key === key ? placedAt(item) : null;
+			if (target && typeof reportPlace(seen, target) === 'number') lost = null;
+		});
+		return () => source.close();
+	});
 
 	/** Containers of the unfolded roster whose own surface, not a card or control, was clicked. */
 	const ROSTER_BLANK = '.roster, .unfolded, .summary, .counts, .people, .sep, .summary .tools';

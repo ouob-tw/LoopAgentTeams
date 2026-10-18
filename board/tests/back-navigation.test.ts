@@ -550,6 +550,25 @@ for (const [title, context] of [
 	}, 30_000);
 }
 
+for (const width of [390, 1400]) {
+	test.skipIf(!CHROME)(`${width}px: a question whose asking message reaches the conversation after its report is found there without reopening it`, async () => {
+		// Reported at the end of a turn, a moment before the turn's text is in the conversation.
+		const id = `LQ-${width}`;
+		const message = `晚到的原訊息。\n\nDECIDE: ${id} r1 · 原訊息晚到 · 回答面板上的題目`;
+		fixture.report(sol.session_id, { tag: 'DECIDE', summary: '原訊息晚到', message, time: minutesAgo(0), hcom_name: 'sol', workspace: sol.workspace });
+		fixture.list([luna, { ...sol, questions: [...sol.questions, question({ id, revision: 1, title: `原訊息晚到的題目 ${width}`, kind: 'single', options: OPTIONS, asked_at: minutesAgo(0.1) })] }]);
+		await fixture.refresh(cookie);
+		await visit(width);
+		await tab.eval(click('.inbox', `原訊息晚到的題目 ${width}`));
+		await tab.until(`document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')`, 'the not-found notice');
+		await tab.until(`document.querySelector('.placeholder') === null`, 'the placeholder gone');
+		appendFileSync(solTranscript(), JSON.stringify({ kind: 'assistant', time: minutesAgo(0), text: message }) + '\n');
+		await placedAt(SOL_QUESTION(id), `原訊息晚到的題目 ${width}`);
+		expect(await placedText()).toContain(`${id} r1`);
+		expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
+	}, 30_000);
+}
+
 test.skipIf(!CHROME)('phone: back and reload find the question in its conversation again, like a report', async () => {
 	await visit(390);
 	await tab.eval(click('.inbox', '有原訊息的求助題'));
