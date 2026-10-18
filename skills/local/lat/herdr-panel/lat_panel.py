@@ -38,9 +38,9 @@ Public API used by the Textual panel and LAT controller:
   persisted notification lifecycle. ``send_pending_notification`` returns an
   ``(ok, reason)`` pair and clears state only after target delivery; it also
   notes which submitted answers that delivery covered.
-* ``board_controllers``, ``board_questions``, ``answer_and_notify``, and
-  ``notify_controller`` back the ``board`` commands: the LAT board reads and
-  answers question files only through them. ``answer_question`` is the write
+* ``board_controllers``, ``board_questions``, ``board_answered``,
+  ``answer_and_notify``, and ``notify_controller`` back the ``board`` commands:
+  the LAT board reads and answers question files only through them. ``answer_question`` is the write
   half of ``answer_and_notify``. ``board_transcript`` reads one page of a
   controller's conversation from the Claude or Codex session record that
   ``transcript_path`` finds, with the model and effort of the latest turn
@@ -69,6 +69,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   resolve (--session-id ID | [--herdr-workspace ID])
   board list
   board questions --questions PATH
+  board answered --questions PATH...
   board answer --questions PATH --id ID --revision N \
       --expected-section-sha256 HASH [--select N]... [--text TEXT] [--note TEXT]
   board notify --questions PATH
@@ -2284,6 +2285,44 @@ def board_questions(questions_path):
     ]
 
 
+def _answered_questions(questions_path):
+    questions_path = Path(questions_path)
+    latest = {}
+    # The archive holds older sections than the file; a later section of an ID replaces any
+    # earlier one, and one that is not an answered, recorded question leaves nothing for it.
+    for path in (_archive_path(questions_path), questions_path):
+        try:
+            document = path.read_text(encoding="utf-8")
+        except FileNotFoundError:
+            continue
+        for section in _sections(document):
+            latest.pop(section["id"], None)
+            answer, _ = _answer_text_and_note(section["answer"] or "")
+            if section["status"] == "recorded" and answer:
+                latest[section["id"]] = section
+    asked_times = _asked_times(questions_path)
+    return [_board_question(section, asked_times) for section in latest.values()]
+
+
+def board_answered(questions_paths):
+    """Return the answered questions each questions file and its archive hold.
+
+    Each file gets the latest section of every question ID in it or its
+    ``-archive`` file, when that section is recorded with an answer; the board
+    lists them as answered. A file that cannot be read sets only its own
+    ``error``; one that does not exist has none.
+    """
+    files = []
+    for path in questions_paths:
+        entry = {"questions_path": str(path), "questions": [], "error": None}
+        try:
+            entry["questions"] = _answered_questions(path)
+        except (OSError, ValueError) as error:
+            entry["error"] = str(error)
+        files.append(entry)
+    return files
+
+
 def _notification_owed(questions_path, state_dir):
     try:
         return bool(_undelivered_answers(questions_path, state_dir=state_dir))
@@ -3143,6 +3182,8 @@ def _run_board(args):
             result, code = {"controllers": board_controllers()}, 0
         elif args.board_command == "questions":
             result, code = {"questions": board_questions(args.questions)}, 0
+        elif args.board_command == "answered":
+            result, code = {"files": board_answered(args.questions)}, 0
         elif args.board_command == "answer":
             result = answer_and_notify(
                 args.questions, args.id, args.revision, args.expected_section_sha256,
@@ -3234,6 +3275,8 @@ def _build_parser():
     board_commands.add_parser("list")
     board_questions_parser = board_commands.add_parser("questions")
     board_questions_parser.add_argument("--questions", required=True, type=Path)
+    answered = board_commands.add_parser("answered")
+    answered.add_argument("--questions", required=True, type=Path, action="append")
     answer = board_commands.add_parser("answer")
     answer.add_argument("--questions", required=True, type=Path)
     answer.add_argument("--id", required=True)

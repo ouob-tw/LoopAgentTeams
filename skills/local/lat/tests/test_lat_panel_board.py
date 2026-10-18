@@ -882,6 +882,55 @@ class QuestionsTests(BoardTestCase):
         self.assertIn("duplicate question ID: Q3", result["reason"])
 
 
+class AnsweredTests(BoardTestCase):
+    def archive(self, questions=None):
+        questions = questions or self.questions
+        return questions.with_name(f"{questions.stem}-archive.md")
+
+    def test_answered_questions_come_from_the_file_and_its_archive(self):
+        self.questions.write_text("\n".join((RECORDED, SINGLE)))
+        older = RECORDED.replace("舊題目", "封存的題目").replace("Q0", "Q8")
+        self.archive().write_text(older)
+
+        [entry] = self.board("answered", "--questions", self.questions)["files"]
+
+        self.assertEqual(entry["questions_path"], str(self.questions))
+        self.assertIsNone(entry["error"])
+        self.assertEqual([item["id"] for item in entry["questions"]], ["Q8", "Q0"])
+        self.assertEqual(entry["questions"][1], self.board("list")["controllers"][0]["questions"][0])
+        self.assertEqual(entry["questions"][0]["answer"], "A. Done")
+        self.assertEqual(entry["questions"][0]["recorded_at"], "2026-10-02T09:00:00+00:00")
+
+    def test_latest_section_of_an_id_wins_and_only_an_answered_recorded_one_is_listed(self):
+        unanswered = "## 沒答就記錄\nQ7 · r1 · 已記錄 · 2026-10-02T09:00:00+00:00\n\n答覆：\n\n- [x] 送出\n"
+        again = RECORDED.replace("答覆：A. Done", "答覆：A. Done\n備註：第二次").replace("Q0 · r1", "Q0 · r2")
+        # Q0 was archived twice; Q1 was answered, archived, then asked again and waits.
+        self.archive().write_text("\n".join((RECORDED, again, RECORDED.replace("Q0", "Q1"), unanswered)))
+        self.questions.write_text(SINGLE)
+
+        [entry] = self.board("answered", "--questions", self.questions)["files"]
+
+        self.assertEqual([(item["id"], item["revision"], item["note"]) for item in entry["questions"]], [("Q0", 2, "第二次")])
+
+    def test_each_file_is_read_on_its_own(self):
+        other = self.bind("ctl-b", "s-b", "project-b")
+        other.write_text("\n".join((RECORDED, RECORDED)))
+        self.questions.write_text(RECORDED)
+        missing = self.root / "project-c/.lat/questions-gone.md"
+
+        files = self.board(
+            "answered", f"--questions={self.questions}", f"--questions={other}", f"--questions={missing}"
+        )["files"]
+
+        self.assertEqual([len(entry["questions"]) for entry in files], [1, 1, 0])
+        self.assertEqual([entry["error"] for entry in files], [None, None, None])
+        other.write_bytes(b"\xff")
+        broken = self.board("answered", f"--questions={self.questions}", f"--questions={other}")["files"]
+        self.assertEqual(len(broken[0]["questions"]), 1)
+        self.assertTrue(broken[1]["error"])
+        self.assertEqual(broken[1]["questions"], [])
+
+
 if HAS_TEXTUAL:
     from test_lat_panel_selector import SelectorTestCase
 
