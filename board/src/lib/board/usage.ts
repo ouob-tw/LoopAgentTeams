@@ -114,12 +114,11 @@ const SAFE_LEFT: Record<number, number> = { 300: 45, 10080: 30 };
  * The line's parts at `now`, e.g. `上下文已用 62%`, `5 小時額度剩 40%`, `快取命中 70%`, `20 分鐘後失效`
  * (until it expires, joined to the cache). Yellow from 80% context used, under 20% of a quota left and
  * 5 minutes or less of cache left; an expired cache in the alarm colour. A cold cache shows as
- * `快取尚未建立`, without hit or expiry. A part in its safe range is left off: context under 55% used, over 45% of the 5h or 30%
- * of the 7d quota left (other windows always show), a cache hit over 80%, over 30 minutes of cache
- * left, bypass permissions; a countdown shown without its hit carries the cache's name itself
- * (`快取 20 分鐘後失效`, `快取已失效`). A cold or expired cache always shows. The permission comes last,
- * e.g. `權限：自動模式`. With `all`, nothing
- * is left off.
+ * `快取尚未建立`, without hit or expiry. A part in its safe range is left off: context under 55% used,
+ * over 45% of the 5-hour or 30% of the 7-day quota left (other windows always show), a cache hit over
+ * 80%, over 30 minutes of cache left, bypass permissions; a countdown shown without its hit carries
+ * the cache's name itself (`快取 20 分鐘後失效`, `快取已失效`). A cold or expired cache always shows. The
+ * permission comes last, e.g. `權限：自動模式`. With `all`, nothing is left off.
  */
 export function usageParts(usage: Usage, now: number, all = false): UsagePart[] {
 	const parts: UsagePart[] = [];

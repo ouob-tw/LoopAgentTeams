@@ -102,7 +102,7 @@
 - 安全範圍的項目隱藏（`usageParts`）：上下文已用 < 55%、5 小時額度剩 > 45%、7 天額度剩 > 30%（其他期間一律顯示）、快取命中 > 80%、倒數 > 30 分鐘、權限為免確認；冷快取與已失效一定顯示。只剩倒數時整句帶快取名稱，例如 `快取 20 分鐘後失效`。全部隱藏或讀不到時整行與資訊圖示都不顯示。行尾資訊圖示（滑鼠停留或點一下）用 `usageDetails` 列出全部數值；「詳細資料」的「用量」列是 `usageParts(…, all)`，什麼都不隱藏。
 - 權限模式放最後：寫成 `權限：自動模式`、`手動確認`、`自動接受修改`、`規劃模式`、`免確認` 這類中文；Claude 取自對話紀錄最後一則使用者訊息的模式（Shift+Tab 切換後要等下一則訊息才反映），Codex 取自 rollout 的核准與沙箱設定（例如 `權限：需要時才詢問，檔案權限：可寫入工作區`）。
 - 變黃：上下文已用 ≥ 80%、任一額度剩不到 20%、快取剩 5 分鐘以內；已失效用紅色。淺色主題另加粗。
-- Codex 主控：輔助工具的 `board transcript` 從 rollout 最後的 `token_count` 事件算出 `usage`，是看板自己的算法，不一定等於 Codex 畫面上的「context left」：Ctx = 最後一次請求的 `input_tokens` ÷ `model_context_window`，快取命中 = `cached_input_tokens` ÷ `input_tokens`，額度取最後一筆方案額度（`limit_id` 為 `codex` 或沒有）的 `rate_limits` 的 `primary`／`secondary`（有幾個就顯示幾個，依 `window_minutes` 命名）；`premium` 這類其他額度的事件不算。
+- Codex 主控：輔助工具的 `board transcript` 從 rollout 最後的 `token_count` 事件算出 `usage`，是看板自己的算法，不一定等於 Codex 畫面上的「context left」：上下文已用 = 最後一次請求的 `input_tokens` ÷ `model_context_window`，快取命中 = `cached_input_tokens` ÷ `input_tokens`，額度取最後一筆方案額度（`limit_id` 為 `codex` 或沒有）的 `rate_limits` 的 `primary`／`secondary`（有幾個就顯示幾個，依 `window_minutes` 命名）；`premium` 這類其他額度的事件不算。
 - Claude 主控：這些數字只有狀態列指令拿得到，所以要在狀態列指令前面串上 `scripts/usage-recorder.sh`。它每次狀態列更新時讀標準輸入，把 `context_window.used_percentage`、`rate_limits` 的 `five_hour`／`seven_day`（`used_percentage`、`resets_at`）、`prompt_cache`（`caching_observed`、`warm`、`hit_ratio`、`expires_at`）與寫入時間存成 `$LAT_USAGE_DIR/<session ID>.json`（先寫暫存檔再改名），不存訊息、路徑或憑證；接著把同一份輸入原封不動交給後面的指令，印出它的輸出。記錄失敗（例如沒有 `jq`、目錄寫不進去、輸入不是 JSON）一律略過，不影響狀態列。需要 `bash` 與 `jq`。
 - 頁面開著時，用量跟著對話紀錄的推送（`/api/transcript/events` 的 `page.usage`）更新：Codex 隨紀錄檔變動；Claude 另外監看用量檔，只有它變了時只重讀這個檔、不重跑輔助工具。用量檔讀不出來時當成沒有，不影響其他區塊。
 
