@@ -73,7 +73,7 @@ export function createSourceWatcher(onChange: () => void) {
 		for (const directory of targets.keys()) if (!watchers.has(directory)) openDirectory(directory);
 	}
 
-	function closeAll(from: Map<string, FSWatcher>, keep: (directory: string) => boolean): void {
+	function closeExcept(from: Map<string, FSWatcher>, keep: (directory: string) => boolean): void {
 		for (const directory of from.keys()) if (!keep(directory)) forget(from, directory);
 	}
 
@@ -82,13 +82,13 @@ export function createSourceWatcher(onChange: () => void) {
 		sync(next: WatchTargets): void {
 			targets = next;
 			const needed = new Set([...next.keys()].map((directory) => dirname(directory)));
-			closeAll(watchers, (directory) => next.has(directory));
-			closeAll(parents, (parent) => needed.has(parent));
+			closeExcept(watchers, (directory) => next.has(directory));
+			closeExcept(parents, (parent) => needed.has(parent));
 			openMissing();
 		},
 		close(): void {
-			closeAll(watchers, () => false);
-			closeAll(parents, () => false);
+			closeExcept(watchers, () => false);
+			closeExcept(parents, () => false);
 		}
 	};
 }
