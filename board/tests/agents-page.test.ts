@@ -608,16 +608,28 @@ test.skipIf(!CHROME)('a Herdr list that cannot be read is reported while the las
 }, 30_000);
 
 test.skipIf(!CHROME)('a conversation that cannot be read says why, and shows once it can be', async () => {
+	const transcript = `document.querySelector('.detail #agent-panel-transcript')?.innerText ?? ''`;
 	try {
 		await visit(1280, '?agent=s-lead');
 		await tab.until(`!!document.querySelector('.detail [data-agent="s-lead"]')`, 'the agent page');
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('找不到 session s-lead 的對話紀錄檔')`, 'the reason');
 		expect((await screen()).notices).toContain('對話紀錄讀不到：找不到 session s-lead 的對話紀錄檔');
-		expect(await tab.eval(`document.querySelector('.detail #agent-panel-transcript').innerText`)).toContain('對話紀錄讀不到');
+		expect(await tab.eval(transcript)).toContain('對話紀錄讀不到');
 
 		record('s-lead', ['主控在嗎', '在。']);
-		await tab.until(`document.querySelector('.detail #agent-panel-transcript')?.innerText.includes('主控在嗎')`, 'the conversation');
-		expect(await tab.eval(`document.querySelector('.detail #agent-panel-transcript').innerText`)).not.toContain('對話紀錄讀不到');
+		await tab.until(`(${transcript}).includes('主控在嗎')`, 'the conversation');
+		expect(await tab.eval(transcript)).not.toContain('對話紀錄讀不到');
+		// Its notices dismissed, so a new one can be told apart.
+		await tab.eval(`document.querySelectorAll('.dock [aria-label="關閉"]').forEach((button) => button.click())`);
+		await tab.until(`!document.querySelector('.dock')?.innerText.includes('對話紀錄讀不到')`, 'the notice dismissed');
+
+		// Read once, then unreadable while open: why shows again, and it shows again once readable.
+		rmSync(join(fixture.dir, 'transcripts', 's-lead.jsonl'));
+		await fixture.refresh(cookie);
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('找不到 session s-lead 的對話紀錄檔')`, 'the reason again');
+		record('s-lead', ['主控在嗎', '在。', '又讀得到了嗎', '讀得到。']);
+		await tab.until(`(${transcript}).includes('又讀得到了嗎')`, 'the conversation again');
+		expect(await tab.eval(transcript)).not.toContain('對話紀錄讀不到');
 	} finally {
 		rmSync(join(fixture.dir, 'transcripts', 's-lead.jsonl'), { force: true });
 	}
