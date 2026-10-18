@@ -86,8 +86,10 @@
 	const viewAt = (place: Place) => viewOf(place, { kept, items: [...inbox, ...archived], controllers });
 	/** The screen the address names; a reload opens it again. */
 	const addressed = () => placeIn(new URLSearchParams(location.search));
+	/** The browser starts from the real address: under shallow routing page.url stays at the last full
+	 *  load, so a remount (HMR) would otherwise open a stale screen. The server has only page.url. */
 	// svelte-ignore state_referenced_locally
-	let view = $state<View>(viewAt(placeIn(page.url.searchParams)));
+	let view = $state<View>(viewAt(typeof location !== 'undefined' ? addressed() : placeIn(page.url.searchParams)));
 
 	// The archive is fetched when its view is open, and again with every new snapshot: a report may
 	// have moved into it. A fetch that failed is retried only with its button.
