@@ -23,7 +23,7 @@
 		type InboxQuestion,
 		type InboxReport
 	} from '#lib/board/types.ts';
-	import type { PlacedMessage } from '#lib/board/transcript.ts';
+	import type { PlacedTarget } from '#lib/board/transcript.ts';
 	import { usageDetails, usageParts, type Usage, type UsagePart } from '#lib/board/usage.ts';
 	import ItemRow from './ItemRow.svelte';
 	import SentLog from './SentLog.svelte';
@@ -49,9 +49,8 @@
 		/** This controller's inbox items. */
 		items: InboxItem[];
 		onopen: (item: InboxItem) => void;
-		/** The report, or a question's asking message, this page was opened at, and how it is
-		 *  shown in the history. */
-		target?: PlacedMessage;
+		/** The report or question this page was opened at, shown where it is in the history. */
+		target?: PlacedTarget;
 		/** Changes with every opening of the target, the same one again too. */
 		opens?: number;
 		/** Called once the target is scrolled to, or shown above the conversation instead. */

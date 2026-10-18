@@ -54,14 +54,11 @@ export function askedTogether(question: InboxQuestion, inbox: InboxItem[]): Inbo
 			entry.kind === 'question' &&
 			entry.key !== question.key &&
 			entry.controllerId === question.controllerId &&
-			askedInMessage(entry, message)
+			entry.askedIn?.time === message.time &&
+			entry.askedIn.message === message.message
 	);
 	return inNamedOrder(message.message, [question, ...others]);
 }
-
-/** Whether the question was asked in this message, as its report recorded it. */
-export const askedInMessage = (question: InboxQuestion, message: { time: string; message: string }) =>
-	question.askedIn?.time === message.time && question.askedIn.message === message.message;
 
 /** The questions in the order the message's tag line names them. */
 function inNamedOrder(message: string, questions: InboxQuestion[]): InboxQuestion[] {

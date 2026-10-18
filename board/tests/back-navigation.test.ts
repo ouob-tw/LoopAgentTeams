@@ -847,3 +847,72 @@ test.skipIf(!CHROME)('1400px: opened at a question, its conversation shows the o
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
 }, 30_000);
+
+for (const width of [390, 1400]) {
+	test.skipIf(!CHROME)(`${width}px: a question opened before its message is at the end of its conversation, and stays put when the message comes`, async () => {
+		const id = `EQ-${width}`;
+		const title = `先打開的題目 ${width}`;
+		const message = `先打開再到的提問 ${width}。\n\nDECIDE: ${id} r1 · 先打開 · 回答面板上的題目`;
+		// Asked after the controller's latest report: the turn asking it goes on.
+		fixture.list([luna, { ...sol, questions: [...sol.questions, question({ id, revision: 1, title, kind: 'single', options: OPTIONS, asked_at: minutesAgo(0) })] }]);
+		await fixture.refresh(cookie);
+		await visit(width);
+		await tab.eval(click('.inbox', title));
+		await placedAt(SOL_QUESTION(id), title);
+		// Its card where the message will come: the newest place, no guide above it.
+		expect(await tab.eval(`document.querySelector('.history ol').firstElementChild.classList.contains('placed')`)).toBe(true);
+		// From now on: whether the not-found notice shows, the card is replaced, or it moves.
+		await tab.eval(`(() => {
+			window.placedCard = ${PLACED};
+			window.placedTop = window.placedCard.getBoundingClientRect().top;
+			window.changes = [];
+			const seen = () => {
+				if (document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')) window.changes.push('not found');
+				const placed = ${PLACED};
+				if (placed !== window.placedCard) window.changes.push('replaced');
+				else if (Math.abs(placed.getBoundingClientRect().top - window.placedTop) > 1) window.changes.push('moved');
+			};
+			new MutationObserver(seen).observe(document.body, { subtree: true, childList: true, characterData: true, attributes: true });
+		})()`);
+		await sleep(LOST_WATCH_READ);
+		say(message);
+		await tab.until(`${PLACED}.dataset.seq !== undefined`, 'the card at the message');
+		expect(await tab.eval(saidIncludes(`先打開再到的提問 ${width}。`))).toBe(false);
+		// The turn's report, after the message: still nothing changes.
+		fixture.report(sol.session_id, { tag: 'DECIDE', summary: '先打開', message, time: minutesAgo(0), hcom_name: 'sol', workspace: sol.workspace });
+		await fixture.refresh(cookie);
+		await sleep(1000);
+		expect(await tab.eval('window.changes')).toEqual([]);
+		expect(await tab.eval(`${PLACED}.innerText`)).toContain(title);
+		fixture.list([luna, sol]);
+		await fixture.refresh(cookie);
+	}, 30_000);
+}
+
+test.skipIf(!CHROME)('phone: a question opened before its message, whose turn then ends without the message in the conversation, is not found after a while, and found once it comes', async () => {
+	const id = 'XQ-1';
+	const title = '回合結束仍沒有訊息的題目';
+	const message = `回報先到的提問。\n\nDECIDE: ${id} r1 · 回報先到 · 回答面板上的題目`;
+	const listed = { ...sol, questions: [...sol.questions, question({ id, revision: 1, title, kind: 'single', options: OPTIONS, asked_at: minutesAgo(0) })] };
+	fixture.list([luna, listed]);
+	await fixture.refresh(cookie);
+	await visit(390);
+	await tab.eval(click('.inbox', title));
+	await placedAt(SOL_QUESTION(id), title);
+	// The turn's report reaches the board, its text not the conversation.
+	await sleep(LOST_WATCH_READ);
+	fixture.report(sol.session_id, { tag: 'DECIDE', summary: '回報先到', message, time: minutesAgo(0), hcom_name: 'sol', workspace: sol.workspace });
+	await fixture.refresh(cookie);
+	// Kept where the message will come for a moment, as it may still reach the conversation.
+	await sleep(2000);
+	expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
+	expect(await tab.eval(`${PLACED}.innerText`)).toContain(title);
+	await tab.until(`document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')`, 'the not-found notice');
+	expect(await tab.eval(`document.querySelector('.history')`)).toBeNull();
+	await sleep(LOST_WATCH_READ);
+	say(message);
+	await placedAt(SOL_QUESTION(id), title);
+	expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
+	fixture.list([luna, sol]);
+	await fixture.refresh(cookie);
+}, 30_000);
