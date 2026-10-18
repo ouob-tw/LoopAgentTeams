@@ -16,7 +16,7 @@ import type {
 } from '../src/lib/board/types.ts';
 
 const ROOT = join(import.meta.dir, '..');
-// Each test file takes its own offsets from this base; the highest one in use is 30.
+// Each test file takes its own offsets from this base; the highest one in use is 36.
 export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
 
 /** What runs the server and the fake commands: Node when the host has it, otherwise the Bun that
@@ -266,6 +266,8 @@ export async function startFixture(
 		LAT_BOARD_HELPER_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-helper.mjs'), dir]),
 		// Every read asks hcom which clients still run; never the real one.
 		LAT_BOARD_HCOM_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-hcom.mjs'), dir]),
+		// Every read lists Herdr's agents too; never the real Herdr's.
+		LAT_BOARD_HERDR_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-herdr.mjs'), dir]),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,
 		HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state'),
 		...options.env

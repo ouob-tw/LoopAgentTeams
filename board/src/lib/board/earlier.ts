@@ -1,6 +1,15 @@
-// Reading an earlier page of a controller's conversation from the page, so that leaving the page
-// or opening another controller also ends the read on the server.
+// Reading an earlier page of a controller's or an agent's conversation from the page, so that
+// leaving the page or opening another one also ends the read on the server.
 import type { TranscriptUpdate } from './transcript.ts';
+
+/** Whose conversation: a controller's on its information page, or an agent's on the 所有 Agent tab. */
+export type TranscriptFeed = 'controller' | 'agent';
+
+/** Where a conversation's pages are read, or with `events` its live feed. */
+export function transcriptUrl(feed: TranscriptFeed, id: string, events = false): string {
+	const path = feed === 'agent' ? '/api/agents/transcript' : '/api/transcript';
+	return `${path}${events ? '/events' : ''}?${feed === 'agent' ? 'session' : 'controller'}=${encodeURIComponent(id)}`;
+}
 
 export type EarlierRead =
 	| { kind: 'page'; update: TranscriptUpdate }
@@ -22,11 +31,11 @@ export class EarlierReads {
 		this.#request = request;
 	}
 
-	async read(controllerId: string, before: number): Promise<EarlierRead> {
+	async read(controllerId: string, before: number, feed: TranscriptFeed = 'controller'): Promise<EarlierRead> {
 		this.cancel();
 		const abort = (this.#abort = new AbortController());
 		try {
-			const response = await this.#request(`/api/transcript?controller=${encodeURIComponent(controllerId)}&before=${before}`, {
+			const response = await this.#request(`${transcriptUrl(feed, controllerId)}&before=${before}`, {
 				signal: abort.signal
 			});
 			if (response.status === 401) return { kind: 'unpaired' };

@@ -12,7 +12,8 @@ import { archiveDue, archivedReports, buildSnapshot, dropSessions, expiredSessio
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
-import { tabToFront } from './herdr.ts';
+import { listHerdrAgents, tabToFront } from './herdr.ts';
+import { createAgentRoster } from './agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 
@@ -60,6 +61,7 @@ function createBoard(): Board {
 	const readReports = createReportReader(config.reportsDir);
 	const helperDirs = helperDirectories();
 	const streams = new Set<Stream>();
+	const agentRoster = createAgentRoster();
 	let snapshot: BoardSnapshot | null = null;
 	let lastActive: HelperController[] = [];
 	/** Session IDs in hcom's last list that could be read; null until one could. */
@@ -167,7 +169,12 @@ function createBoard(): Board {
 	}
 
 	async function read(): Promise<BoardSnapshot> {
-		const [helper, reports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(config)]);
+		const [helper, reports, agents, herdrAgents] = await Promise.all([
+			listControllers(config),
+			readReports(),
+			listAgents(config),
+			listHerdrAgents(config)
+		]);
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {
@@ -181,6 +188,7 @@ function createBoard(): Board {
 				sentLogError = (error as Error).message;
 			}
 		}
+		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)));
 		sources = {
 			active: lastActive,
 			helperError: helper.ok ? null : helper.reason,
@@ -188,6 +196,8 @@ function createBoard(): Board {
 			reportsError: reports.error,
 			running: lastRunning,
 			hcomError: agents.ok ? null : agents.reason,
+			agents: allAgents.agents,
+			herdrError: allAgents.herdrError,
 			pruneError
 		};
 
@@ -259,10 +269,10 @@ function createBoard(): Board {
 	}
 
 	// A change can land just after a read began and be missed by it, and the read that picks it up
-	// may take as long as the helper or hcom's list, read alongside it, is allowed to. Both fit inside
+	// may take as long as the helper, hcom's list or Herdr's, read alongside it, is allowed to. All fit inside
 	// the fallback deadline when reads start this far apart; a list timeout too long for the deadline
 	// still leaves a short gap rather than none.
-	const readMs = Math.max(config.helperTimeoutMs, config.hcomListTimeoutMs);
+	const readMs = Math.max(config.helperTimeoutMs, config.hcomListTimeoutMs, config.herdrTimeoutMs);
 	const fallbackGapMs = Math.max(config.fallbackMs - readMs - READ_SLACK_MS, READ_SLACK_MS);
 
 	function start(): Promise<BoardSnapshot> {
@@ -278,6 +288,7 @@ function createBoard(): Board {
 					inbox: [],
 					recordedKeys: [],
 					archivedCount: 0,
+					agents: [],
 					errors: [`讀取資料失敗：${error.message}`]
 				};
 				for (const stream of streams) stream.send('board', JSON.stringify(snapshot));

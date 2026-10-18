@@ -23,6 +23,9 @@ export const COMMAND_HIDDEN_KEY = 'lat-board-command-hidden';
 /** What is typed in the command line and not sent yet, so a reload keeps it. */
 export const COMMAND_DRAFT_KEY = 'lat-board-command-draft';
 
+/** Which list the middle column shows: the inbox, or the 所有 Agent tab. */
+export const MIDDLE_TAB_KEY = 'lat-board-middle-tab';
+
 /** '1' while an information page shows its details (path, Herdr place). */
 export const INFO_DETAILS_KEY = 'lat-board-info-details';
 

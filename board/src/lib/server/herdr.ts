@@ -1,5 +1,6 @@
 // Which Herdr workspace a controller's new tab opens in. Only where Herdr's panes are matters,
-// never the agent state Herdr shows for them.
+// never the agent state Herdr shows for them. The 所有 Agent tab is the exception: it lists every
+// agent Herdr detects, and shows Herdr's state for those hcom does not reach (ADR 0003).
 import { createConnection } from 'node:net';
 import { basename } from 'node:path';
 import type { BoardConfig } from './config.ts';
@@ -184,4 +185,85 @@ export async function tabToFront(config: BoardConfig, paneId: string): Promise<s
 	// The insert index counts the tab being moved too; 0 is always the front.
 	const moved = await socketRequest(config, 'tab.move', { tab_id: pane.tab_id, insert_index: 0 });
 	return 'reason' in moved ? `移動分頁失敗：${moved.reason}` : null;
+}
+
+/** One agent Herdr detects in a pane, with the names of its workspace and tab. */
+export interface HerdrAgent {
+	sessionId: string;
+	client: string;
+	/** Herdr's own view of what it does: `idle`, `working`, `blocked`, `done` or `unknown`. */
+	status: string;
+	cwd: string;
+	pane: string;
+	tab: string;
+	workspace: string;
+	/** The tab's label, else the terminal's title; null when Herdr gives neither. */
+	title: string | null;
+	workspaceLabel: string | null;
+	workspaceNumber: number | null;
+}
+
+interface ListedAgent {
+	agent: string;
+	agent_status: string;
+	cwd: string;
+	pane_id: string;
+	tab_id: string;
+	workspace_id: string;
+	agent_session?: { value?: unknown } | null;
+	terminal_title_stripped?: unknown;
+}
+
+const isListedAgent = (value: unknown): value is ListedAgent =>
+	['agent', 'agent_status', 'cwd', 'pane_id', 'tab_id', 'workspace_id'].every(
+		(field) => typeof (value as Record<string, unknown>)?.[field] === 'string'
+	);
+
+/**
+ * Every agent `herdr agent list` reports, across all workspaces, with the labels of `workspace
+ * list` and `tab list`; or why they cannot be told. One whose client session Herdr does not know
+ * yet has no key on the board and is left out until it does.
+ */
+export async function listHerdrAgents(config: BoardConfig): Promise<{ ok: true; agents: HerdrAgent[] } | { ok: false; reason: string }> {
+	const [agents, workspaces, tabs] = await Promise.all([
+		herdr(config, ['agent', 'list']),
+		herdr(config, ['workspace', 'list']),
+		herdr(config, ['tab', 'list'])
+	]);
+	if ('reason' in agents) return { ok: false, reason: `Herdr 的 Agent 清單讀不到：${agents.reason}` };
+	if ('reason' in workspaces) return { ok: false, reason: `Herdr 的工作區清單讀不到：${workspaces.reason}` };
+	if ('reason' in tabs) return { ok: false, reason: `Herdr 的分頁清單讀不到：${tabs.reason}` };
+	const agentList = agents.result.agents;
+	const workspaceList = workspaces.result.workspaces;
+	const tabList = tabs.result.tabs;
+	if (!Array.isArray(agentList) || !agentList.every(isListedAgent)) return { ok: false, reason: 'Herdr 的 Agent 清單不是預期的格式' };
+	if (!Array.isArray(workspaceList) || !workspaceList.every(isWorkspace)) return { ok: false, reason: 'Herdr 的工作區清單不是預期的格式' };
+	if (!Array.isArray(tabList) || !tabList.every((tab) => typeof tab?.tab_id === 'string' && typeof tab?.label === 'string')) {
+		return { ok: false, reason: 'Herdr 的分頁清單不是預期的格式' };
+	}
+	const workspaceOf = new Map(workspaceList.map((workspace) => [workspace.workspace_id, workspace]));
+	const tabLabel = new Map(tabList.map((tab) => [tab.tab_id as string, tab.label as string]));
+	return {
+		ok: true,
+		agents: agentList.flatMap((agent) => {
+			const sessionId = agent.agent_session?.value;
+			if (typeof sessionId !== 'string' || !sessionId) return [];
+			const workspace = workspaceOf.get(agent.workspace_id);
+			const terminalTitle = typeof agent.terminal_title_stripped === 'string' ? agent.terminal_title_stripped : '';
+			return [
+				{
+					sessionId,
+					client: agent.agent,
+					status: agent.agent_status,
+					cwd: agent.cwd,
+					pane: agent.pane_id,
+					tab: agent.tab_id,
+					workspace: agent.workspace_id,
+					title: tabLabel.get(agent.tab_id) || terminalTitle || null,
+					workspaceLabel: workspace?.label ?? null,
+					workspaceNumber: workspace?.number ?? null
+				}
+			];
+		})
+	};
 }

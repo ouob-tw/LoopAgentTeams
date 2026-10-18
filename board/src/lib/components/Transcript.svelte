@@ -8,7 +8,7 @@
 	// message that asked questions still in the inbox shows their cards in its place.
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
-	import { EarlierReads } from '#lib/board/earlier.ts';
+	import { EarlierReads, transcriptUrl, type TranscriptFeed } from '#lib/board/earlier.ts';
 	import { askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { renderMarkdown } from '#lib/board/markdown.ts';
@@ -39,6 +39,7 @@
 
 	let {
 		controller,
+		feed = 'controller',
 		reports = [],
 		questions = [],
 		questionCards,
@@ -50,7 +51,10 @@
 		copy,
 		usage = $bindable(null)
 	}: {
-		controller: Controller;
+		/** Whose conversation; an agent's is its session ID, its HCOM name or else its tab's title, and no report time. */
+		controller: Pick<Controller, 'id' | 'hcomName' | 'lastReportAt'>;
+		/** A controller's conversation, or an agent's on the 所有 Agent tab. */
+		feed?: TranscriptFeed;
 		/** This controller's reports in the inbox: the texts they carry are marked as reports. */
 		reports?: InboxReport[];
 		/** This controller's questions in the inbox: a message that asked some shows their cards. */
@@ -268,7 +272,7 @@
 		earlierFailed = null;
 		// Another controller's conversation: the room made for the last report goes.
 		if (untrack(() => tail)) tail!.style.height = '';
-		const source = new EventSource(`/api/transcript/events?controller=${encodeURIComponent(controllerId)}`);
+		const source = new EventSource(transcriptUrl(feed, controllerId, true));
 		untrack(() => (switching.watched[controllerId] = (switching.watched[controllerId] ?? 0) + 1));
 		source.addEventListener('transcript', (event) => {
 			const update: TranscriptUpdate = JSON.parse((event as MessageEvent).data);
@@ -298,7 +302,7 @@
 		const controllerId = id;
 		loadingEarlier = true;
 		earlierFailed = null;
-		const result = await earlier.read(controllerId, requested);
+		const result = await earlier.read(controllerId, requested, feed);
 		// Cancelled with its controller: what shows now belongs to another one.
 		if (result.kind === 'cancelled') return;
 		loadingEarlier = false;

@@ -13,11 +13,14 @@
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
 	import { advance, arrive, listScrollIn, placeIn, samePlace, searchOf, viewOf, withListScroll, type Place, type Trail, type View } from '#lib/board/navigation.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
-	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
+	import { folderName } from '#lib/board/agents.ts';
+	import { MIDDLE_TAB_KEY, remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { askedTogether } from '#lib/board/question-message.ts';
 	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
 	import type { InboxItem, InboxQuestion } from '#lib/board/types.ts';
+	import AgentInfo from '#lib/components/AgentInfo.svelte';
+	import AgentList from '#lib/components/AgentList.svelte';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
@@ -45,6 +48,24 @@
 		sort = remembered(SORT_KEY, ['time', 'project'], 'time');
 	});
 	let showArchive = $state(false);
+
+	/** The middle column's list: the inbox, or every agent Herdr lists. */
+	const MIDDLE_TABS = ['inbox', 'agents'] as const;
+	let middle = $state<(typeof MIDDLE_TABS)[number]>('inbox');
+	onMount(() => {
+		// An agent opened by its address shows on its own tab.
+		if (view?.kind !== 'agent') middle = remembered(MIDDLE_TAB_KEY, MIDDLE_TABS, 'inbox');
+	});
+	function setMiddle(next: (typeof MIDDLE_TABS)[number]) {
+		middle = next;
+		remember(MIDDLE_TAB_KEY, next);
+	}
+	function middleKeys(event: KeyboardEvent) {
+		if (event.key !== 'ArrowRight' && event.key !== 'ArrowLeft') return;
+		event.preventDefault();
+		setMiddle(middle === 'inbox' ? 'agents' : 'inbox');
+		(event.currentTarget as HTMLElement).querySelector<HTMLElement>(`[data-middle="${middle}"]`)?.focus();
+	}
 
 	onMount(() => appearance.restore());
 	let settings: Settings;
@@ -81,11 +102,12 @@
 	const controllers = $derived(board.snapshot.controllers);
 	const inbox = $derived(board.snapshot.inbox);
 	const archivedCount = $derived(board.snapshot.archivedCount);
+	const agents = $derived(board.snapshot.agents);
 
 	/** Items as they were when opened on this page, so going back shows one that has left the inbox since. */
 	const kept = new Map<string, InboxItem>();
 	const archived = $derived(typeof board.archive === 'object' ? (board.archive?.reports ?? []) : []);
-	const viewAt = (place: Place) => viewOf(place, { kept, items: [...inbox, ...archived], controllers });
+	const viewAt = (place: Place) => viewOf(place, { kept, items: [...inbox, ...archived], controllers, agents });
 	/** The screen the address names; a reload opens it again. */
 	const addressed = () => placeIn(new URLSearchParams(location.search));
 	/** The browser starts from the real address: under shallow routing page.url stays at the last full
@@ -107,6 +129,13 @@
 		return [...inbox, ...archived].find((candidate) => candidate.key === openKey) ?? view.item;
 	});
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
+	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
+	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
+	const agent = $derived(agentId === null ? undefined : agents.find((candidate) => candidate.id === agentId));
+	// An agent opened by its address shows on the tab it belongs to.
+	$effect(() => {
+		if (view?.kind === 'agent') untrack(() => (middle = 'agents'));
+	});
 
 	/** The question whose asking message is not found in its conversation, or the conversation
 	 *  cannot be read, at this opening: it is shown as if no message had asked it. */
@@ -315,6 +344,7 @@
 		window.scrollTo(0, 0);
 	}
 	const openLaunch = () => go({ kind: 'launch' });
+	const openAgent = (id: string) => go({ kind: 'agent', id });
 
 	const pending = $derived(inbox.filter((entry) => entry.kind === 'question' && entry.unsent).length);
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
@@ -434,35 +464,63 @@
 		{@render resize('roster')}
 
 		<section class="inbox">
-			<Inbox
-				items={inbox}
-				{controllers}
-				{sort}
-				{showArchive}
-				archive={board.archive}
-				earlier={board.archiveEarlier}
-				onearlier={() => void board.loadEarlier()}
-				onretry={() => void board.loadArchive()}
-				{archivedCount}
-				currentKey={openKey}
-				onsort={setSort}
-				onarchive={() => {
-					showArchive = true;
-					void board.loadArchive();
-				}}
-				onopen={openItem}
-				oncontroller={openController}
-			/>
+			<!-- svelte-ignore a11y_interactive_supports_focus -->
+			<div class="middle-tabs" role="tablist" aria-label="清單" onkeydown={middleKeys}>
+				<button
+					type="button"
+					role="tab"
+					data-middle="inbox"
+					aria-selected={middle === 'inbox'}
+					tabindex={middle === 'inbox' ? 0 : -1}
+					onclick={() => setMiddle('inbox')}>信箱</button
+				>
+				<button
+					type="button"
+					role="tab"
+					data-middle="agents"
+					aria-selected={middle === 'agents'}
+					tabindex={middle === 'agents' ? 0 : -1}
+					onclick={() => setMiddle('agents')}>所有 Agent<small>{agents.length}</small></button
+				>
+			</div>
+			{#if middle === 'agents'}
+				<AgentList {agents} currentId={agentId} onopen={openAgent} />
+			{:else}
+				<Inbox
+					items={inbox}
+					{controllers}
+					{sort}
+					{showArchive}
+					archive={board.archive}
+					earlier={board.archiveEarlier}
+					onearlier={() => void board.loadEarlier()}
+					onretry={() => void board.loadArchive()}
+					{archivedCount}
+					currentKey={openKey}
+					onsort={setSort}
+					onarchive={() => {
+						showArchive = true;
+						void board.loadArchive();
+					}}
+					onopen={openItem}
+					oncontroller={openController}
+				/>
+			{/if}
 		</section>
 		{@render resize('inbox')}
 
 		<section class="detail" bind:this={detail} tabindex="-1">
 			{#if view === null}
-				<p class="empty">從信箱選一則，或點主控名稱看它的資訊。</p>
+				<p class="empty">{middle === 'agents' ? '從所有 Agent 選一個，看它的對話紀錄。' : '從信箱選一則，或點主控名稱看它的資訊。'}</p>
 			{:else}
 				<div class="topbar">
 					<button onclick={back} aria-label="返回">←</button>
-					{#if owner}
+					{#if agent}
+						<span class="whose" title="{agent.folder} {agent.name}">
+							<strong>{folderName(agent.folder)}</strong>
+							<span class="handle">{agent.hcomName ? `@${agent.hcomName}` : agent.name}</span>
+						</span>
+					{:else if owner}
 						<!-- Tappable while the controller is on the roster; an archived item of one that left is not. -->
 						{#if controller}
 							<button class="whose" title="{owner.project} @{owner.hcomName}" onclick={tapTitle}>
@@ -483,10 +541,18 @@
 				{#if view.kind === 'missing'}
 					{#if view.what === 'controller'}
 						<p class="empty">這個主控已不存在。</p>
+					{:else if view.what === 'agent'}
+						<p class="empty">這個 Agent 已不在 Herdr 的清單上。</p>
 					{:else if board.archive === 'failed' || (board.archiveEarlier === 'failed' && board.earlierFrom)}
 						<p class="empty">信箱裡沒有這一則，封存也讀不出來；可以重新整理再試一次。</p>
 					{:else if !seeking}
 						<p class="empty">這一則已不存在。</p>
+					{/if}
+				{:else if view.kind === 'agent'}
+					{#if agent}
+						<AgentInfo {agent} />
+					{:else}
+						<p class="empty">這個 Agent 已不在 Herdr 的清單上：它已關閉。</p>
 					{/if}
 				{:else if view.kind === 'launch'}
 					<NewController {controllers} stamp={board.snapshot.generatedAt} onopen={openController} />
@@ -642,6 +708,42 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
+	}
+	/* The middle column's two lists, as tabs like those of an information page. */
+	.middle-tabs {
+		display: flex;
+		flex: none;
+		gap: 0.2rem;
+		margin-bottom: 0.4rem;
+		border-bottom: 1px solid var(--line);
+	}
+	.middle-tabs button {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		margin-bottom: -1px;
+		padding: 0.4rem 0.8rem;
+		border: 0;
+		border-bottom: 2px solid transparent;
+		border-radius: 0;
+		background: none;
+		font-size: max(0.85rem, var(--min-font, 0px));
+		color: var(--muted);
+	}
+	.middle-tabs button[aria-selected='true'] {
+		border-bottom-color: var(--accent);
+		color: var(--text);
+		font-weight: 600;
+	}
+	:global(:root[data-theme='light']) .middle-tabs button[aria-selected='true'] {
+		border-bottom-color: var(--text);
+	}
+	.middle-tabs small {
+		padding: 0 0.4rem;
+		border-radius: var(--radius-pill);
+		background: color-mix(in srgb, var(--text) 10%, var(--bg));
+		font-size: max(0.7rem, var(--min-font, 0px));
+		font-weight: 400;
 	}
 	.summary {
 		display: flex;
