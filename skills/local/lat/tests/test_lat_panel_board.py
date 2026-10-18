@@ -188,6 +188,7 @@ class ListTests(BoardTestCase):
                 "status": "pending",
                 "title": "正式版要怎麼併入？",
                 "context": "審查和驗收都通過了。",
+                "details": None,
                 "kind": "single",
                 "options": [
                     {
@@ -209,6 +210,7 @@ class ListTests(BoardTestCase):
                 "status": "pending",
                 "title": "要開哪些功能？",
                 "context": "選所有需要的。",
+                "details": None,
                 "kind": "multi",
                 "options": [
                     {"letter": "A", "label": "主控綁定", "impact": "綁定 tab。", "recommended": False},
@@ -228,6 +230,7 @@ class ListTests(BoardTestCase):
                 "status": "submitted",
                 "title": "還有什麼想法？",
                 "context": "請自由回答。",
+                "details": None,
                 "kind": "text",
                 "options": [],
                 "recommendation": "",
@@ -243,6 +246,7 @@ class ListTests(BoardTestCase):
                 "status": "recorded",
                 "title": "舊題目",
                 "context": "",
+                "details": None,
                 "kind": "single",
                 "options": [{"letter": "A", "label": "Done", "impact": "", "recommended": False}],
                 "recommendation": "",

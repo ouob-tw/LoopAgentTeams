@@ -204,6 +204,66 @@ class QuestionCliTests(unittest.TestCase):
         self.assertIn("答覆：\nChoose A\nUser note\n\n- [x] 送出", text)
         self.assertTrue(text.endswith(other))
 
+    def board_question(self, question_id):
+        result = self.cli("board", "questions", "--questions", self.questions)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        return next(item for item in json.loads(result.stdout)["questions"]
+                    if item["id"] == question_id)
+
+    def test_details_block_is_its_own_field_and_editing_it_bumps_the_revision(self):
+        section = self.root / "section.md"
+        details = (
+            "來由：上次漏寫說明。\n\n"
+            "A. 這行不是選項\n   也不是影響\n\n"
+            "➡️ 這段也不是推薦"
+        )
+        section.write_text(
+            "## 要怎麼做？\n\n背景一句話。\n\n"
+            f"【詳細資訊】\n{details}\n【詳細資訊結束】\n\n"
+            "A. 甲（建議）\n   影響甲\nB. 乙\n\n➡️ A：理由。\n"
+        )
+        self.assertEqual(self.cli("question", "upsert", "--id", "Q1", "--file", section).stdout,
+                         "Q1 r1\n")
+        question = self.board_question("Q1")
+        self.assertEqual(question["context"], "背景一句話。")
+        self.assertEqual(question["details"], details)
+        self.assertEqual([option["label"] for option in question["options"]], ["甲", "乙"])
+        self.assertEqual(question["recommendation"], "➡️ A：理由。")
+
+        self.questions.write_text(self.questions.read_text().replace(
+            "答覆：\n\n- [ ] 送出", "答覆：A. 甲\n\n- [x] 送出"))
+        section.write_text(section.read_text().replace("上次漏寫說明。", "改過的來由。"))
+        self.assertEqual(self.cli("question", "upsert", "--id", "Q1", "--file", section).stdout,
+                         "Q1 r2\n")
+        text = self.questions.read_text()
+        self.assertIn("### 舊版 r1（不套用至 r2）\n答覆：A. 甲\n\n- [x] 送出", text)
+        question = self.board_question("Q1")
+        self.assertEqual((question["revision"], question["answer"]), (2, ""))
+        self.assertIn("改過的來由。", question["details"])
+
+    def test_question_without_details_has_null_details(self):
+        section = self.root / "section.md"
+        section.write_text("## 舊格式？\n\n背景。\n\nA. 甲\n")
+        self.assertEqual(self.cli("question", "upsert", "--id", "Q1", "--file", section).returncode, 0)
+        question = self.board_question("Q1")
+        self.assertEqual((question["context"], question["details"]), ("背景。", None))
+
+    def test_upsert_refuses_unbalanced_or_empty_details_markers(self):
+        section = self.root / "section.md"
+        for body in (
+            "【詳細資訊】\n沒有結束\n",
+            "沒有開始\n【詳細資訊結束】\n",
+            "【詳細資訊結束】\n倒過來\n【詳細資訊】\n",
+            "【詳細資訊】\n一\n【詳細資訊結束】\n【詳細資訊】\n二\n【詳細資訊結束】\n",
+            "【詳細資訊】\n \n【詳細資訊結束】\n",
+        ):
+            with self.subTest(body=body):
+                section.write_text(f"## 題目？\n\n背景。\n\n{body}\nA. 甲\n")
+                result = self.cli("question", "upsert", "--id", "Q1", "--file", section)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("details block", result.stderr)
+                self.assertFalse(self.questions.exists())
+
     def test_parser_only_treats_heading_followed_by_status_as_a_section_boundary(self):
         document = (
             "## First?\nQ1 · r1 · 待答\n\nContext.\n\n答覆：\n"

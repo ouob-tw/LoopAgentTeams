@@ -592,6 +592,28 @@ def question_identifiers(message):
     ) | tag_line_identifiers(message)
 
 
+def missing_question_parts(panel, question, message):
+    """Parts of the question's text absent from the message, compared without whitespace.
+
+    Parts are searched in order from the question's `❓ **<ID> r<N>**` heading,
+    or from the start of the message without one.
+    """
+    def compact(text):
+        return re.sub(r'\s+', '', text)
+    heading = re.search(
+        rf'^❓ \*\*{re.escape(question["id"])} r{question["revision"]}\*\*', message, re.MULTILINE)
+    text = compact(message[heading.start():] if heading else message)
+    cursor = 0
+    missing = []
+    for name, part in panel.question_chat_parts(question):
+        found = text.find(compact(part), cursor)
+        if found < 0:
+            missing.append(name)
+        else:
+            cursor = found + len(compact(part))
+    return missing
+
+
 def announced_questions(record):
     """Question IDs and revisions this session already asked in a reported DECIDE/HELP.
 
@@ -663,10 +685,18 @@ def stop_check(record, payload):
             raise ValueError('面板綁定與主控紀錄不符')
         questions_path = Path(binding['questions_path'])
         questions = panel.parse_questions(questions_path.read_text(encoding='utf-8')) if questions_path.exists() else []
+        listed = tag_line_identifiers(message) or identifiers
         for identifier, revision in sorted(identifiers):
-            if not any(question['id'] == identifier and question['status_label'] == '待答'
-                       and question['revision'] == int(revision) for question in questions):
+            question = next((question for question in questions
+                             if question['id'] == identifier and question['status_label'] == '待答'
+                             and question['revision'] == int(revision)), None)
+            if question is None:
                 problems.append(f'{identifier} r{revision}：自己的面板缺少同版本待答題目')
+            elif (identifier, revision) in listed:
+                missing = missing_question_parts(panel, question, message)
+                if missing:
+                    problems.append(f'{identifier} r{revision}：訊息沒有照抄題目原文，缺少'
+                                    + '、'.join(missing))
         _, missing, inconsistent, unreadable, reverse = panel.pending_question_gaps(questions_path, decisions)
         problems.extend(f'{identifier}：遺漏檢查缺少面板題目' for identifier in missing)
         problems.extend(f'{identifier}：遺漏檢查不一致（{reason}）'

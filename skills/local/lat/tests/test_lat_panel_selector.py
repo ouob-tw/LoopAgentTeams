@@ -123,6 +123,18 @@ class LayoutTests(SelectorTestCase):
                     self.assertEqual(text.count("➡️ B："), 1)
                     self.assertEqual(app.current.selected, [])
 
+    async def test_details_show_after_the_background_under_their_label(self):
+        details = "【詳細資訊】\n來由：上次漏寫。\n\nA. 不是選項\n【詳細資訊結束】\n\n"
+        self.questions.write_text(SINGLE.replace("A. 合併到 dev，不推送\n", details + "A. 合併到 dev，不推送\n"))
+        app = self.make_app()
+        async with app.run_test(size=(80, 30)):
+            self.assertEqual(len(app.current.options), 3)
+            text = self.view(app)
+            self.assertNotIn("【詳細資訊", text)
+            self.assertLess(text.index("審查和驗收"), text.index("詳細資訊"))
+            self.assertLess(text.index("詳細資訊"), text.index("來由：上次漏寫。"))
+            self.assertLess(text.index("A. 不是選項"), text.index("合併到 dev，不推送"))
+
     async def test_recommendation_follows_all_options_without_selecting(self):
         footer = "➡️ B：Keep this original reason.\nMore advice."
         self.questions.write_text(SINGLE.replace("\n答覆：", f"\n{footer}\n\n答覆："))
