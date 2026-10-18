@@ -157,6 +157,13 @@ class OptionParsingTests(unittest.TestCase):
         self.assertEqual([option.impact for option in parsed.options], ["Body.", ""])
         self.assertEqual(panel.question_context(item), "Not part of A.")
 
+    def test_checklist_options_keep_paragraphs_under_them_like_list_items(self):
+        panel = load_module()
+        item = question("背景\n\n- [ ] x\n  p1\n\n  p2\n- [ ] y")
+        parsed = panel.parse_question_options(item)
+        self.assertEqual([option.impact for option in parsed.options], ["p1\n\np2", ""])
+        self.assertEqual(panel.question_context(item), "背景")
+
     def test_multi_options_accept_checked_definitions_and_ignore_submit_marker(self):
         panel = load_module()
 

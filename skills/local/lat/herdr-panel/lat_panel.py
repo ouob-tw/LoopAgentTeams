@@ -346,6 +346,15 @@ class QuestionOption(NamedTuple):
     impact: str
 
 
+class _OptionBlock(NamedTuple):
+    """One option line's match, its body, and the lines it spans."""
+
+    match: re.Match
+    body: str
+    first: int
+    end: int
+
+
 class QuestionOptions(NamedTuple):
     """Selector mode, parsed options, and a fallback reason when unavailable."""
 
@@ -356,7 +365,7 @@ class QuestionOptions(NamedTuple):
 
 # A single-choice option is a list item "- A. label"; the older unlisted "A. label" still parses.
 _SINGLE_OPTION = re.compile(r"^(?P<listed>- )?(?P<key>[A-Z])\.\s+(?P<label>\S.*)$")
-_MULTI_OPTION = re.compile(r"^(?P<listed>)- \[[ xX]\]\s+(?P<label>\S.*)$")
+_MULTI_OPTION = re.compile(r"^(?P<listed>- )\[[ xX]\]\s+(?P<label>\S.*)$")
 _RECOMMENDATION = re.compile(r"(?:\A|\n[ \t]*\n)(?P<recommendation>➡\ufe0f?)")
 _DETAILS_START = "【詳細資訊】"
 _DETAILS_END = "【詳細資訊結束】"
@@ -418,7 +427,7 @@ def question_recommendation(question):
 
 
 def _option_blocks(lines, pattern):
-    """Yield ``(match, body, first line, end line)`` for each option line.
+    """Yield an ``_OptionBlock`` for each option line.
 
     A list-item option owns every following blank or indented line up to the
     next unindented one, as Markdown nests them, dedented and without trailing
@@ -442,16 +451,18 @@ def _option_blocks(lines, pattern):
             textwrap.dedent("\n".join(owned)) if listed
             else "\n".join(line.strip() for line in owned)
         )
-        yield match, body, index, end
+        yield _OptionBlock(match, body, index, end)
         index = end
 
 
 def _option_items(lines, pattern, *, keyed):
     return tuple(
         QuestionOption(
-            match.group("key") if keyed else None, match.group("label").strip(), body
+            block.match.group("key") if keyed else None,
+            block.match.group("label").strip(),
+            block.body,
         )
-        for match, body, _, _ in _option_blocks(lines, pattern)
+        for block in _option_blocks(lines, pattern)
     )
 
 
@@ -483,8 +494,8 @@ def question_context(question):
         return "\n".join(lines).strip("\n")
     pattern = _SINGLE_OPTION if kind == "single" else _MULTI_OPTION
     owned = set()
-    for _, _, first, end in _option_blocks(lines, pattern):
-        owned.update(range(first, end))
+    for block in _option_blocks(lines, pattern):
+        owned.update(range(block.first, block.end))
     kept = []
     for number, line in enumerate(lines):
         if number in owned:
