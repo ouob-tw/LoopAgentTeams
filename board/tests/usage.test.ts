@@ -352,6 +352,8 @@ describe('the live feed', () => {
 		const feed = follow(luna.session_id);
 		try {
 			await until(() => usageOf(feed.updates.at(-1))?.context === 42, 5_000, 'the first usage');
+			// The first read is followed by one more when the record is first watched.
+			await until(() => fixture.helperArgs('transcript').length >= 2, 5_000, 'the read after the watch starts');
 			const reads = fixture.helperArgs('transcript').length;
 
 			spawnSync('bash', [RECORDER], { input: input(57), env: { PATH: process.env.PATH ?? '', LAT_USAGE_DIR: join(fixture.dir, 'usage') } });
