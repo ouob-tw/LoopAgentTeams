@@ -40,22 +40,27 @@ import type { Board } from './board.ts';
 import { modelLock, readCurrent } from './helper.ts';
 import { killAgent, listAgents, type HcomAgent } from './hcom.ts';
 import { paneExists } from './herdr.ts';
+import { switchPlace } from './agents.ts';
 import { queued } from './send.ts';
 import { appendSent, openSwitch, switchView, type SwitchStep } from './sent-log.ts';
 import { check, findController, resume } from './wake.ts';
 
 type Result<T> = { status: number; body: T };
 
-/** Whose model is switched: a controller, or an agent of the 所有 Agent tab, which carries where
- *  Herdr listed it. Both are known by their session ID. `workspace` is the folder whose Herdr
- *  workspace a resume goes to. */
-export type SwitchTarget = Pick<Controller, 'id' | 'hcomName' | 'client' | 'workspace'> & { agent?: SwitchAgent };
+/**
+ * Whose model is switched, by session ID: a controller from its information page, or an agent from
+ * the 所有 Agent tab (`onAgentTab`), which names it 「Agent」 and resumes it in the Herdr workspace
+ * kept for it. `workspace` is the folder whose Herdr workspace a resume goes to otherwise. `agent`
+ * is where Herdr listed it when the switch was asked for, kept with the switch so the 所有 Agent tab
+ * lists it while the switch is open, wherever it was asked for.
+ */
+export type SwitchTarget = Pick<Controller, 'id' | 'hcomName' | 'client' | 'workspace'> & { agent?: SwitchAgent; onAgentTab?: boolean };
 
 /** How the refusals name the target. */
-const noun = (target: SwitchTarget) => (target.agent ? 'Agent' : '主控');
-const busyReason = (target: SwitchTarget) => (target.agent ? AGENT_BUSY_REASON : BUSY_REASON);
-const notRunningReason = (target: SwitchTarget) => (target.agent ? AGENT_NOT_RUNNING_REASON : NOT_RUNNING_REASON);
-const fixedModelReason = (target: SwitchTarget) => (target.agent ? AGENT_FIXED_MODEL_REASON : FIXED_MODEL_REASON);
+const noun = (target: SwitchTarget) => (target.onAgentTab ? 'Agent' : '主控');
+const busyReason = (target: SwitchTarget) => (target.onAgentTab ? AGENT_BUSY_REASON : BUSY_REASON);
+const notRunningReason = (target: SwitchTarget) => (target.onAgentTab ? AGENT_NOT_RUNNING_REASON : NOT_RUNNING_REASON);
+const fixedModelReason = (target: SwitchTarget) => (target.onAgentTab ? AGENT_FIXED_MODEL_REASON : FIXED_MODEL_REASON);
 
 /** How many times, and how far apart, the board looks for a stopped client to be gone. */
 const STOP_CHECKS = 5;
@@ -105,7 +110,10 @@ interface Outcome {
 
 async function attempt(board: Board, request: SwitchRequest): Promise<Result<SwitchResponse>> {
 	const config = board.config;
-	const controller = await findController(board, request.controllerId);
+	const found = await findController(board, request.controllerId);
+	// Where Herdr lists it, kept with the switch for the 所有 Agent tab.
+	const row = found && (await board.current()).agents.find((agent) => agent.id === found.id && agent.inHerdr);
+	const controller: SwitchTarget | undefined = found && (row ? { ...found, agent: switchPlace(row) } : found);
 	const choice: ModelChoice = { model: request.model, effort: request.effort };
 	const entry = newEntry(board, request.controllerId, controller, choice);
 	const refused = (reason: string) => finish(board, entry, { reason });
@@ -325,7 +333,7 @@ async function resumeSwitch(board: Board, controller: SwitchTarget, switchId: st
 		outcome: 'refused',
 		error: null
 	};
-	const delivered = await resume(board, controller, wake);
+	const delivered = await resume(board, controller, wake, controller.onAgentTab ? controller.agent?.workspace : undefined);
 	let logError = delivered.logError;
 	if (!delivered.logged && !logError) {
 		// The resume did not get as far as hcom: kept in the log so the switch shows why.

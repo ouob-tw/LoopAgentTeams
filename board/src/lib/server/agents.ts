@@ -2,7 +2,7 @@
 // reached through hcom. Either list that cannot be read is stood in for by the last one that could.
 // An agent with an open model switch is listed too when Herdr does not list it, from what the
 // switch kept, until the switch is over or given up.
-import type { SwitchView } from '../board/models.ts';
+import type { SwitchAgent, SwitchView } from '../board/models.ts';
 import { AGENT_STATUSES, type Agent, type AgentStatus, type AgentSwitch } from '../board/types.ts';
 import type { AgentList, HcomAgent } from './hcom.ts';
 import type { HerdrAgent } from './herdr.ts';
@@ -22,6 +22,12 @@ function pair(agent: HerdrAgent, hcom: HcomAgent[]): HcomAgent | null {
 		hcom.find((candidate) => candidate.pane === agent.pane) ||
 		null
 	);
+}
+
+/** Where Herdr lists an agent, as a model switch keeps it. */
+export function switchPlace(agent: Agent): SwitchAgent {
+	const { workspace, workspaceLabel, workspaceNumber } = agent.herdr;
+	return { name: agent.name, folder: agent.folder, workspace, workspaceLabel, workspaceNumber };
 }
 
 function switchOf(view: SwitchView | undefined): AgentSwitch | null {

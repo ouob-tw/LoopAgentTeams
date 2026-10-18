@@ -549,3 +549,25 @@ test.skipIf(!CHROME)('繼續切換 asks first and resumes an unfinished switch; 
 		await fixture.refresh(cookie);
 	}
 }, 30_000);
+
+test.skipIf(!CHROME)('an agent still in Herdr whose switch did not stop it offers only continuing or giving up the switch', async () => {
+	for (const file of ['hcom-calls.jsonl', 'hcom-added.json', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
+	setLinked({ kill: { exit: 1, stderr: 'no such agent' } });
+	await fixture.refresh(cookie);
+	try {
+		await visit(390, '?agent=s-link');
+		await tab.until(`!!document.querySelector('.detail [data-pick="effort"] option[value="low"]')`, 'the switch form');
+		await pickSetting('effort', 'low');
+		await click('.detail [data-action="switch"]');
+		await click('.detail [data-action="confirm-switch"]');
+		await tab.until(`!!document.querySelector('.detail [data-action="abandon"]')`, 'the unfinished switch');
+		expect((await screen()).detail).toContain('停止失敗');
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"], .detail [data-action="interrupt"], .detail [data-action="switch"], .detail .compose')`)).toBe(false);
+		expect(await tab.eval(FITS)).toBe(true);
+	} finally {
+		setHerdr(AGENTS);
+		rmSync(join(fixture.dir, 'board-state/sent-log.jsonl'), { force: true });
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+		await fixture.refresh(cookie);
+	}
+}, 30_000);

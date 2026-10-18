@@ -2,6 +2,7 @@
 // turn and closing it. Each request reads Herdr's and hcom's lists again and acts on what they say now, never on
 // what the page sent. One attempt each, no retry, logged in the sent log either way.
 import { randomUUID } from 'node:crypto';
+import { AGENT_SWITCH_UNFINISHED_REASON } from '../board/models.ts';
 import {
 	AGENT_HCOM_UNKNOWN_CLOSE_REASON,
 	AGENT_HCOM_UNKNOWN_REASON,
@@ -60,6 +61,8 @@ async function attempt(
 	let route: AgentAction['route'] = null;
 	let reason: string | null;
 	if ('reason' in listed) reason = listed.reason;
+	// Its open model switch comes first: only continued or given up until it is over.
+	else if (listed.agent.switch) reason = AGENT_SWITCH_UNFINISHED_REASON;
 	else {
 		({ route, reason } = await act(listed.agent));
 		if (route) status = reason ? 502 : 200;

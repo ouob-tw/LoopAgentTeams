@@ -18,6 +18,7 @@ import {
 import type { Agent } from '../board/types.ts';
 import { AGENT_GONE_REASON, listedNow } from './agent-control.ts';
 import type { Board } from './board.ts';
+import { switchPlace } from './agents.ts';
 import { modelLock } from './helper.ts';
 import { queued } from './send.ts';
 import { appendSent, closeResume, openResume, openSwitch, switchView } from './sent-log.ts';
@@ -31,13 +32,8 @@ const targetOf = (agent: Agent & { id: string }): SwitchTarget => ({
 	hcomName: agent.hcomName ?? '',
 	client: agent.client,
 	workspace: agent.folder,
-	agent: {
-		name: agent.name,
-		folder: agent.folder,
-		workspace: agent.herdr.workspace,
-		workspaceLabel: agent.herdr.workspaceLabel,
-		workspaceNumber: agent.herdr.workspaceNumber
-	}
+	agent: switchPlace(agent),
+	onAgentTab: true
 });
 
 /** What the agent page offers for a switch: the lists, and for Codex whether its model can change.
@@ -78,7 +74,8 @@ async function announced<T>(board: Board, agentId: string, result: Promise<T>): 
 async function attempt(board: Board, agentId: string, choice: ModelChoice): Promise<Result<SwitchResponse>> {
 	const { config } = board;
 	const listed = await listedNow(board, agentId);
-	const agent = listed.agent?.inHerdr ? (listed.agent as Agent & { id: string }) : undefined;
+	// Herdr's list as read now has it; a row kept from an earlier list does not count.
+	const agent = 'reason' in listed ? undefined : (listed.agent as Agent & { id: string });
 	let open: SwitchView | null;
 	try {
 		open = openSwitch(config.stateDir, agentId, config.now(), config.launchWaitMs);
@@ -90,7 +87,7 @@ async function attempt(board: Board, agentId: string, choice: ModelChoice): Prom
 		const target: SwitchTarget | null = agent
 			? targetOf(agent)
 			: open.agent
-				? { id: agentId, hcomName: open.hcomName, client: open.client, workspace: open.agent.folder, agent: open.agent }
+				? { id: agentId, hcomName: open.hcomName, client: open.client, workspace: open.agent.folder, agent: open.agent, onAgentTab: true }
 				: null;
 		const refused = (reason: string) => ({ status: 409, body: { ok: false, reason, entry: open, abandon: null, logError: null } });
 		if (!target) return refused(AGENT_GONE_REASON);

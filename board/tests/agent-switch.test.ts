@@ -347,3 +347,53 @@ test('the switch endpoints need a logged-in device and a well-formed request', a
 	expect((await fixture.fetch('/api/agents/model?session=s-nobody', { cookie })).status).toBe(404);
 	expect(hcomCalls()).toEqual([]);
 });
+
+test('a new switch is refused while Herdr\'s list cannot be read now, though the last one listed the agent', async () => {
+	const file = join(fixture.dir, 'herdr.json');
+	writeFileSync(file, JSON.stringify({ ...JSON.parse(readFileSync(file, 'utf8')), fail: { 'agent list': { exit: 1, stderr: 'herdr down' } } }));
+	const refused = await change('s-claude', null, 'high');
+	expect(refused.status).toBe(409);
+	expect(refused.body.reason).toContain('無法確認這個 Agent 仍在 Herdr 的清單上');
+	expect(hcomCalls()).toEqual([]);
+});
+
+test('an agent still in Herdr with a switch left unfinished is not sent text, interrupted or closed', async () => {
+	hcomPlan({ kill: { exit: 1, stderr: 'no such agent' } });
+	await change('s-claude', null, 'high');
+	expect(await find('s-claude')).toMatchObject({ inHerdr: true, switch: { state: 'stop-failed' } });
+	const before = { hcom: hcomCalls().length, herdr: herdrActs().length };
+	for (const path of ['/api/agents/send', '/api/agents/interrupt', '/api/agents/close']) {
+		const response = await fixture.fetch(path, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-claude', text: 'hi' }), cookie });
+		expect(response.status).toBe(409);
+		expect((await response.json()).reason).toContain('模型切換未完成');
+	}
+	expect({ hcom: hcomCalls().length, herdr: herdrActs().length }).toEqual(before);
+});
+
+test('a controller switched from its information page whose resume fails is listed here too, and can be given up here', async () => {
+	const binding = fixture.bound('ctl', 'clio', { session_id: 's-claude' });
+	fixture.list([binding]);
+	hcomPlan({ exit: 1, stderr: 'resume refused' });
+	await fixture.refresh(cookie);
+	const response = await fixture.fetch('/api/model', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ controllerId: 's-claude', model: null, effort: 'high' }),
+		cookie
+	});
+	expect(response.status).toBe(502);
+	expect((await response.json()).entry).toMatchObject({ state: 'resume-failed', agent: { workspace: 'wA', folder: '/projects/s-claude' } });
+	// The tab shows it from the next read of the lists.
+	await fixture.refresh(cookie);
+	expect(await find('s-claude')).toMatchObject({ inHerdr: false, controller: true, switch: { state: 'resume-failed' }, herdr: { workspace: 'wA' } });
+	await restart();
+	expect(await find('s-claude')).toMatchObject({ inHerdr: false, switch: { state: 'resume-failed' } });
+
+	const before = hcomCalls().length;
+	expect((await giveUp('s-claude')).status).toBe(200);
+	expect(hcomCalls().length).toBe(before);
+	expect(await find('s-claude')).toBeUndefined();
+	// The controller's sent log shows it given up.
+	const sent = await (await fixture.fetch('/api/messages?controller=s-claude', { cookie })).json();
+	expect(sent.entries.find((entry: { kind: string }) => entry.kind === 'switch')).toMatchObject({ state: 'abandoned', open: false });
+});

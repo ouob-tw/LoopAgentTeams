@@ -22,6 +22,7 @@
 		AGENT_HCOM_UNKNOWN_SWITCH_REASON,
 		AGENT_NOT_LINKED_SWITCH_REASON,
 		AGENT_SWITCH_STATE_TEXT,
+		AGENT_SWITCH_UNFINISHED_REASON,
 		agentSwitchConfirmText,
 		carryNote,
 		choiceText,
@@ -182,6 +183,8 @@
 <section class="controls" aria-label="操作">
 	{#if !agent.inHerdr}
 		<p class="note">這個 Agent 已不在 Herdr 的清單上，因為模型切換未完成而保留在清單上；只能繼續切換或放棄切換。</p>
+	{:else if agent.switch}
+		<p class="note">{AGENT_SWITCH_UNFINISHED_REASON.replace(/，沒有執行。$/, '。')}</p>
 	{:else}
 		<form
 			class="compose"
