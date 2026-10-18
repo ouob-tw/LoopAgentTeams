@@ -160,6 +160,15 @@
 	.trigger.rail.current {
 		border-color: var(--accent);
 	}
+	/* Touches the mark above, as the rail's marks do. */
+	.trigger.rail {
+		position: relative;
+	}
+	.trigger.rail::after {
+		content: '';
+		position: absolute;
+		inset: calc(-0.225rem - 1px) 0;
+	}
 	.count {
 		padding: 0 0.35rem;
 		border-radius: var(--radius-pill);
