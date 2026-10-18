@@ -114,6 +114,49 @@ class OptionParsingTests(unittest.TestCase):
             ],
         )
 
+    def test_list_item_options_carry_their_whole_markdown_body(self):
+        panel = load_module()
+        item = question(
+            "Context.\n\n"
+            "- A. First（建議）\n"
+            "  Paragraph one.\n\n"
+            "  - sub one\n"
+            "    - nested\n"
+            "  - sub two\n\n"
+            "  ```\n  code\n  ```\n"
+            "- B. Second\n"
+            "  **Bold** body.\n"
+            "- C. Third\n\n"
+            "After."
+        )
+
+        parsed = panel.parse_question_options(item)
+
+        self.assertEqual(parsed.kind, "single")
+        self.assertEqual(
+            [(option.key, option.label, option.impact) for option in parsed.options],
+            [
+                ("A", "First（建議）",
+                 "Paragraph one.\n\n- sub one\n  - nested\n- sub two\n\n```\ncode\n```"),
+                ("B", "Second", "**Bold** body."),
+                ("C", "Third", ""),
+            ],
+        )
+        self.assertEqual(panel.question_context(item), "Context.\n\nAfter.")
+
+    def test_list_item_and_legacy_single_options_parse_alike(self):
+        panel = load_module()
+        legacy = panel.parse_question_options(question("A. 已完成\n   Done.\nB. Not yet"))
+        listed = panel.parse_question_options(question("- A. 已完成\n  Done.\n- B. Not yet"))
+        self.assertEqual(legacy, listed)
+
+    def test_list_item_option_body_ends_at_an_unindented_line(self):
+        panel = load_module()
+        item = question("- A. Alpha\n  Body.\n\nNot part of A.\n\n- B. Beta")
+        parsed = panel.parse_question_options(item)
+        self.assertEqual([option.impact for option in parsed.options], ["Body.", ""])
+        self.assertEqual(panel.question_context(item), "Not part of A.")
+
     def test_multi_options_accept_checked_definitions_and_ignore_submit_marker(self):
         panel = load_module()
 
@@ -131,7 +174,7 @@ class OptionParsingTests(unittest.TestCase):
     def test_mixed_or_missing_options_return_no_options_with_a_reason(self):
         panel = load_module()
 
-        mixed = panel.parse_question_options(question("A. Alpha\n- [ ] Beta"))
+        mixed = panel.parse_question_options(question("- A. Alpha\n- [ ] Beta"))
         missing = panel.parse_question_options(question("Free-form question."))
 
         self.assertIsNone(mixed.kind)

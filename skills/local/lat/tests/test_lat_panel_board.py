@@ -298,6 +298,22 @@ class ListTests(BoardTestCase):
         self.answer(self.questions, "Q5", 1, "--select", "27")
         self.assertIn("答覆：選項27\n\n- [x] 送出", self.questions.read_text())
 
+    def test_list_item_options_give_the_board_their_whole_markdown_body(self):
+        self.questions.write_text(
+            "## 要怎麼做？\nQ6 · r1 · 待答\n\n背景。\n\n"
+            "- A. 甲（建議）\n  第一段。\n\n  - 子項目\n    - 更深\n- B. 乙\n\n"
+            "答覆：\n\n- [ ] 送出\n"
+        )
+        [controller] = self.board("list")["controllers"]
+        [question] = controller["questions"]
+        self.assertEqual(question["context"], "背景。")
+        self.assertEqual(question["options"], [
+            {"letter": "A", "label": "甲", "impact": "第一段。\n\n- 子項目\n  - 更深", "recommended": True},
+            {"letter": "B", "label": "乙", "impact": "", "recommended": False},
+        ])
+        self.answer(self.questions, "Q6", 1, "--select", "2")
+        self.assertIn("答覆：B. 乙\n\n- [x] 送出", self.questions.read_text())
+
     def test_journal_line_that_is_not_an_entry_does_not_break_the_list(self):
         self.answer(self.questions, "Q3", 1, "--text", "想法")
         with (self.questions.parent / "panel-journal.jsonl").open("a") as journal:

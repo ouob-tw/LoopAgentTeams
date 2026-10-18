@@ -606,6 +606,29 @@ class LetterKeyTests(SelectorTestCase):
             await self.press(pilot, "j")
             self.assertIn("答覆：C. 先不合併\n", self.text())
 
+    async def test_list_item_options_show_their_bodies_and_letter_keys_select(self):
+        self.questions.write_text(
+            "## 正式版要怎麼併入？\nQ1 · r1 · 待答\n\n背景。\n\n"
+            "- A. 合併到 dev（建議）\n  第一段。\n\n  - 子項目一\n    - 更深一層\n"
+            "- B. 先不合併\n  **保留**分支。\n\n答覆：\n\n- [ ] 送出\n"
+        )
+        app = self.make_app()
+        async with app.run_test(size=(80, 30)) as pilot:
+            self.assertEqual(self.view(app).splitlines()[4:], [
+                "  A. 合併到 dev（建議）",
+                "     第一段。",
+                "     ",
+                "     - 子項目一",
+                "       - 更深一層",
+                "  B. 先不合併",
+                "     **保留**分支。",
+                "  C. 其他（自己輸入）",
+            ])
+            await self.press(pilot, "b")
+            self.assertIn("答覆：B. 先不合併\n\n- [ ] 送出", self.text())
+            await self.press(pilot, "a")
+            self.assertIn("答覆：A. 合併到 dev\n\n- [ ] 送出", self.text())
+
     async def test_other_row_and_its_input_keep_letters_as_text(self):
         app = self.make_app()
         async with app.run_test() as pilot:

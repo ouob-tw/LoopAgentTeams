@@ -209,6 +209,8 @@ class StatusDisplayTests(unittest.TestCase):
         self.assertFalse(self.questions.exists())
         self.assertEqual(self.upsert("H1", HELP_SECTION.replace("A. 已完成", "A. 已完成（建議）"))
                          .returncode, 0)
+        self.assertEqual(self.upsert("H1", "## 請登入\n\n說明。\n\n- A. 已完成\n  主控接著驗證。\n")
+                         .returncode, 0)
         # Decide records keep their free format.
         self.decision("D1")
         self.assertEqual(self.upsert("D1", "## 自由輸入\n\n說明。\n").returncode, 0)

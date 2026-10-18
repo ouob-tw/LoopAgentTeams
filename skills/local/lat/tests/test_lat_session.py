@@ -652,7 +652,7 @@ class SessionTests(unittest.TestCase):
                 'A. 甲（建議）\n   影響甲\nB. 乙\n   影響乙\n\n'
                 '➡️ A：理由一。\n理由二。\n\nDECIDE: LAT-A r1')
         for part, name in (('方法：照抄。', '詳細資訊'), ('背景一句話。', '背景'),
-                           ('   影響乙', '選項 B 的影響'), ('理由二。', '推薦段落'),
+                           ('   影響乙', '選項 B 的內容'), ('理由二。', '推薦段落'),
                            ('**要怎麼做？**', '標題'), ('B. 乙', '選項 B')):
             with self.subTest(name=name):
                 self.assert_stop_block(self.stop_hook(full.replace(part, '', 1)),
@@ -666,6 +666,22 @@ class SessionTests(unittest.TestCase):
         # Unbound sessions have no question file to compare against.
         (self.root / 'plugin-config/bindings.json').write_text('{"version": 2, "bindings": {}}')
         self.assert_silent(self.stop_hook('DECIDE: LAT-A r2'))
+
+    def test_stop_compares_each_list_item_option_body_paragraph_by_paragraph(self):
+        self.write_legacy_record()
+        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
+        options = ('- A. 甲（建議）\n  第一段說明。\n\n  - 子項目一\n  - 子項目二\n'
+                   '- B. 乙\n  **乙的說明**\n')
+        self.bind_stop_panel().write_text(
+            f'## 要怎麼做？\nLAT-A · r1 · 待答\n\n背景。\n\n{options}\n答覆：\n\n- [ ] 送出\n')
+        full = f'❓ **LAT-A r1** - **要怎麼做？**\n\n背景。\n\n{options}\nDECIDE: LAT-A r1'
+        self.assert_silent(self.stop_hook(full))
+        for part, name in (('第一段說明。', '選項 A 的內容第 1 段'),
+                           ('  - 子項目二\n', '選項 A 的內容第 2 段'),
+                           ('**乙的說明**', '選項 B 的內容'), ('- B. 乙', '選項 B')):
+            with self.subTest(name=name):
+                self.assert_stop_block(self.stop_hook(full.replace(part, '', 1)),
+                                       'LAT-A r1：訊息沒有照抄題目原文，缺少' + name)
 
     def test_stop_once_per_turn_warning_and_error_outputs_for_both_clients(self):
         for client in ('codex', 'claude'):
