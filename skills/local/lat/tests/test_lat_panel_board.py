@@ -930,6 +930,25 @@ class AnsweredTests(BoardTestCase):
         self.assertTrue(broken[1]["error"])
         self.assertEqual(broken[1]["questions"], [])
 
+    def test_an_unbound_controllers_file_is_found_from_its_workspace_and_name(self):
+        other = self.bind("Ctl.B", "s-b", "project-b")
+        self.archive(other).write_text(RECORDED)
+        self.core.unbind_controller("s-b", config_dir=self.config)
+        workspace = self.root / "project-b"
+
+        files = self.board(
+            "answered", f"--workspace={workspace}", "--hcom-name=Ctl.B",
+            f"--workspace={workspace}", "--hcom-name=--",
+        )["files"]
+
+        self.assertEqual(files[0]["questions_path"], str(other))
+        self.assertEqual((files[0]["workspace"], files[0]["hcom_name"]), (str(workspace), "Ctl.B"))
+        self.assertEqual([item["id"] for item in files[0]["questions"]], ["Q0"])
+        self.assertIsNone(files[1]["questions_path"])
+        self.assertTrue(files[1]["error"])
+        unpaired = self.board("answered", f"--workspace={workspace}", code=1)
+        self.assertEqual(unpaired["status"], "error")
+
 
 if HAS_TEXTUAL:
     from test_lat_panel_selector import SelectorTestCase
