@@ -45,17 +45,15 @@ from textual.widgets import Static, TextArea
 cjk_wrap.install()
 
 PLUGIN_ID = "lat.panel"
-KEYS = "A–I／Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Ctrl+D 詳細資訊 · Tab 備註 · Esc 關閉"
+KEYS = "A–I／Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Tab 備註 · Esc 關閉"
 RAW_KEYS = "Ctrl+E 選擇框  Ctrl+Q 關閉  Ctrl+Z 復原  Ctrl+Y 重做"
-INPUT_KEYS = "Enter 換行 · Esc 離開輸入框 · 詳細資訊要先離開輸入框"
+INPUT_KEYS = "Enter 換行 · Esc 離開輸入框"
 PICKER_KEYS = "↑↓ 移動 · Enter 選定 · 1–9 直接選 · Esc 關閉"
 PICKER_TITLE = "選擇要回答哪個主控的問題"
 PANE_MISSING = "視窗已不存在"
 NO_QUESTIONS = "目前沒有待答問題"
 OTHER_LABEL = "其他（自己輸入）"
 SUBMITTED = "已送出，等待記錄"
-DETAILS_FOLDED = "▸ 詳細資訊（按 Ctrl+D 展開）"
-DETAILS_OPEN = "▾ 詳細資訊（按 Ctrl+D 收合）"
 RECORDED = "✔ 已記錄"
 LOCKED = "已送出或已記錄的題目不能修改；要改答案請在聊天告訴主控"
 FORGED = "答覆或備註不能有單獨一行寫成「- [x] 送出」、「答覆：」或題目標題；這次輸入沒有儲存"
@@ -305,7 +303,6 @@ class Draft:
         self.note = ""
         self.unmatched = ""
         self.unsaved = False
-        self.details_open = False
         answer = lat_panel.parse_question_answer(section) if section["answer"] else None
         if answer is not None:
             self.restore(answer)
@@ -511,7 +508,6 @@ class Panel(App):
         Binding("enter", "choose", priority=True, show=False),
         Binding("space", "toggle", priority=True, show=False),
         Binding("tab", "note", priority=True, show=False),
-        Binding("ctrl+d", "details", priority=True, show=False),
         *(
             Binding(str(digit), f"digit({digit})", priority=True, show=False)
             for digit in range(1, 10)
@@ -912,15 +908,8 @@ class Panel(App):
             rows.append(("", "題目格式錯誤：找不到答覆或送出標記。請按 Ctrl+E 修正", "bold"))
         keys += [("text", 0)] * (len(rows) - 1)
         paragraphs = [text for text in re.split(r"\n(?:[ \t]*\n)+", draft.context) if text]
-        label_number = None
-        if draft.details is not None:
-            # The details block follows the background under its own dim fold line.
-            label_number = len(paragraphs) + 1
-            paragraphs.append(DETAILS_OPEN if draft.details_open else DETAILS_FOLDED)
-            if draft.details_open:
-                paragraphs.append(draft.details)  # one unit, so blank lines stay as written
         for number, paragraph in enumerate(paragraphs, 1):
-            rows.extend((("", "", ""), ("", paragraph, "dim" if number == label_number else "")))
+            rows.extend((("", "", ""), ("", paragraph, "")))
             keys.extend((None, ("text", number)))
         rows.append(("", "", ""))
         keys.append(None)
@@ -947,6 +936,10 @@ class Panel(App):
         if draft.recommendation:
             rows.extend((("", "", ""), ("", draft.recommendation, "")))
             keys.extend((None, ("post", "recommendation")))
+        if draft.details is not None:
+            # The details come last, shown in full as one unit so blank lines stay as written.
+            rows.extend((("", "", ""), ("", draft.details, "")))
+            keys.extend((None, ("post", "details")))
         if draft.kind is None and draft.editable:
             # The answer sits at the end of the text; Enter opens its input.
             focused = self.focus[:2] == ("post", "answer")
@@ -1191,18 +1184,6 @@ class Panel(App):
     def action_digit(self, digit):
         """Hidden alias kept from before letters: digit N picks row N."""
         self.pick_row(str(digit), lambda draft: digit - 1)
-
-    def action_details(self):
-        """Fold or unfold the current question's details."""
-        try:
-            draft = self.selector_draft()
-        except SkipAction:
-            if self.focused is self.input:
-                return  # swallow the key so the answer box never deletes a character
-            raise
-        if draft and draft.details is not None:
-            draft.details_open = not draft.details_open
-        self.refresh_view()
 
     def action_letter(self, key):
         self.pick_row(key, lambda draft: next(

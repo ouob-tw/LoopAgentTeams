@@ -160,6 +160,7 @@ beforeAll(async () => {
 				options: OPTIONS,
 				context: '面板上的簡短說明',
 				details: '題目的詳細資訊。\n\n第二段。',
+				recommendation: '➡️ A：這樣最快。',
 				asked_at: minutesAgo(50)
 			}),
 			question({ id: 'HQ-1', revision: 1, title: '有原訊息的求助題', kind: 'single', options: OPTIONS, asked_at: minutesAgo(30) }),
@@ -502,6 +503,9 @@ for (const width of [390, 1400]) {
 		expect(text).toContain('題目的詳細資訊。');
 		expect(text).toContain('第二段。');
 		expect(text).toContain('照做');
+		// Background, options, recommendation, then the details last.
+		const order = ['面板上的簡短說明', '照做', '➡️ A：這樣最快。', '題目的詳細資訊。', '第二段。'].map((part) => text.indexOf(part));
+		expect(order).toEqual([...order].sort((a, b) => a - b));
 		expect(text).not.toContain('第二版的完整說明在這裡。');
 		// The r1 message stays an ordinary message of the conversation.
 		expect(await tab.eval(`document.querySelectorAll('.history .placed').length`)).toBe(1);
