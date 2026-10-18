@@ -2563,6 +2563,36 @@ def _codex_usage(records):
     return usage if usage["context"] is not None or usage["limits"] or usage["cache"] else None
 
 
+def _claude_permission(records):
+    """The permission mode of the last prompt, which Claude writes on each one: a mode changed
+    since shows from the next prompt on."""
+    permission = None
+    for record in records:
+        if record.get("isSidechain") or record.get("type") != "user":
+            continue
+        mode = record.get("permissionMode")
+        if isinstance(mode, str) and mode:
+            permission = {"mode": mode}
+    return permission
+
+
+def _codex_permission(records):
+    """The last turn context's approval policy and sandbox type (None when it has none)."""
+    permission = None
+    for record in records:
+        payload = record.get("payload")
+        if record.get("type") != "turn_context" or not isinstance(payload, dict):
+            continue
+        approval, sandbox = payload.get("approval_policy"), payload.get("sandbox_policy")
+        if isinstance(sandbox, dict):
+            sandbox = sandbox.get("type")
+        if not isinstance(approval, str) or not approval:
+            continue
+        permission = {"approval": approval,
+                      "sandbox": sandbox if isinstance(sandbox, str) and sandbox else None}
+    return permission
+
+
 def current_settings(client, records):
     """The model and effort the latest turn ran with, and when that turn started; None when
     the record has no turn yet. A record with a field of the wrong type is passed over."""
@@ -2583,6 +2613,8 @@ def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_T
     ``current`` is ``current_settings`` of the whole record, whatever the page.
     ``usage`` is a Codex record's context use, quota and prompt cache
     (``_codex_usage``); None for Claude, whose record does not hold them.
+    ``permission`` is the latest turn's permission mode: ``{"mode"}`` for Claude,
+    ``{"approval", "sandbox"}`` for Codex; None when the record has none.
     """
     path = transcript_path(client, session_id, env=env)
     records, skipped = _read_records(path)
@@ -2601,6 +2633,7 @@ def board_transcript(client, session_id, *, before=None, limit=TRANSCRIPT_PAGE_T
         "skipped": skipped,
         "current": current_settings(client, records),
         "usage": _codex_usage(records) if client == "codex" else None,
+        "permission": _claude_permission(records) if client == "claude" else _codex_permission(records),
     }
 
 

@@ -100,7 +100,8 @@ async function attempt(board: Board, request: LaunchRequest): Promise<{ status: 
 			folder: prepared.startIn,
 			herdrWorkspace: entry.herdrWorkspace!,
 			prompt: latCommand(entry.client, entry.text),
-			extraArgs: modelArgs(entry.client, request)
+			// A new Claude starts in bypass-permissions mode. Not in modelArgs: resumes replay the original args.
+			extraArgs: [...(entry.client === 'claude' ? ['--dangerously-skip-permissions'] : []), ...modelArgs(entry.client, request)]
 		});
 		entry.outcome = launched.outcome;
 		entry.hcomName = launched.hcomName;

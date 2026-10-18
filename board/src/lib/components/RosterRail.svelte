@@ -1,6 +1,6 @@
 <script lang="ts">
 	// The folded roster of the wide layout: one status mark per controller. A mark opens its
-	// controller and leaves the roster folded; anywhere else on the rail unfolds it. Hovering a
+	// controller and leaves the roster folded; the blank of the rail unfolds it. Hovering a
 	// mark, or pressing and holding it on a touch screen, explains it.
 	import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
 	import type { Snippet } from 'svelte';
@@ -177,7 +177,7 @@
 		flex: 1;
 		padding: 0.8rem 0 0;
 		background: var(--surface);
-		cursor: pointer;
+		cursor: var(--cursor-expand);
 		/* Touch highlights the outermost pointer ancestor, which is the whole rail, not the pressed mark. */
 		-webkit-tap-highlight-color: transparent;
 	}

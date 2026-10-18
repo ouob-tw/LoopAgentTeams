@@ -2,7 +2,7 @@
 // a live feed that re-reads the client's record file whenever it changes, and a Claude
 // controller's usage file whenever the status line rewrites it.
 import type { TranscriptUpdate } from '../board/transcript.ts';
-import type { Usage } from '../board/usage.ts';
+import { usageFrom, type Usage } from '../board/usage.ts';
 import type { Board } from './board.ts';
 import { readTranscript } from './helper.ts';
 import { readClaudeUsage, usagePath } from './usage.ts';
@@ -21,7 +21,7 @@ export async function transcriptSource(board: Board, controllerId: string): Prom
  * Push the latest page now and again each time the record file changes, until closed. A record
  * that cannot be read is pushed as its reason and tried again shortly, so it shows up once it is
  * written. A Claude controller's page carries the usage its status line last recorded, read
- * again on its own when only that changes.
+ * again on its own when only that changes, with the permission mode from its record.
  */
 export function followTranscript(
 	board: Board,
@@ -60,7 +60,9 @@ export function followTranscript(
 
 	function send(): void {
 		if (!latest) return;
-		const update: TranscriptUpdate = latest.ok && claude ? { ok: true, page: { ...latest.page, usage } } : latest;
+		// The permission mode is the record's, read with the page.
+		const update: TranscriptUpdate =
+			latest.ok && claude ? { ok: true, page: { ...latest.page, usage: usageFrom({ ...usage, permission: latest.page.usage?.permission }) } } : latest;
 		const text = JSON.stringify(update);
 		if (text !== last) {
 			last = text;

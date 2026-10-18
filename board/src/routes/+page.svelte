@@ -103,6 +103,20 @@
 		return [...inbox, ...archived].find((candidate) => candidate.key === openKey) ?? view.item;
 	});
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
+
+	/** Containers of the unfolded roster whose own surface, not a card or control, was clicked. */
+	const ROSTER_BLANK = '.roster, .unfolded, .summary, .counts, .people, .sep, .summary .tools';
+
+	/** A click on the blank of the unfolded roster folds it; cards, controls and a click ending a text selection do not. */
+	function foldOnBlank(event: MouseEvent) {
+		if (!window.matchMedia('(min-width: 761px)').matches) return;
+		if (document.documentElement.dataset.roster === 'folded') return;
+		if ((event.target as Element).closest('.folded')) return;
+		if (!(event.target as Element).matches(ROSTER_BLANK)) return;
+		if (window.getSelection()?.toString()) return;
+		appearance.setFolded(true);
+	}
+
 	// Undefined for an archived report whose controller has left the roster.
 	const controller = $derived(controllers.find((candidate) => candidate.id === controllerId));
 	/** Whose content is open: shown in the fixed bar on a phone. */
@@ -311,7 +325,9 @@
 
 <div class="page" style:--dock-h="{dockHeight}px">
 	<div class="shell" class:viewing={view !== null}>
-		<nav class="roster">
+		<!-- Folding is for pointers: the fold control is the keyboard's way; a click on the blank of the roster does the same. -->
+		<!-- svelte-ignore a11y_click_events_have_key_events, a11y_no_noninteractive_element_interactions -->
+		<nav class="roster" onclick={foldOnBlank}>
 			<div class="folded">
 				<RosterRail
 					{controllers}
@@ -757,6 +773,15 @@
 		:global(:root[data-roster='folded']) .unfolded,
 		:global(:root[data-roster='folded']) .resize[data-column='roster'] {
 			display: none;
+		}
+		/* The blank of the unfolded roster folds it; what sits on it keeps its own cursor. */
+		:global(:root:not([data-roster='folded'])) .roster {
+			cursor: var(--cursor-collapse);
+		}
+		.stats,
+		.roster :global(.none),
+		.roster :global([role='dialog']) {
+			cursor: default;
 		}
 	}
 

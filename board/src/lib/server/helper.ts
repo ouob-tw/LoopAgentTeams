@@ -197,7 +197,7 @@ export async function readTranscript(
 	const args = ['transcript', `--client=${client}`, `--session-id=${sessionId}`];
 	if (before !== null) args.push(`--before=${before}`);
 	const { stdout, failure } = await run(config, args, signal);
-	let payload: Partial<TranscriptPage> & { status?: unknown; reason?: unknown; path?: unknown };
+	let payload: Partial<TranscriptPage> & { status?: unknown; reason?: unknown; path?: unknown; permission?: unknown };
 	try {
 		payload = JSON.parse(stdout);
 	} catch {
@@ -215,8 +215,8 @@ export async function readTranscript(
 			before: typeof payload.before === 'number' ? payload.before : null,
 			skipped: typeof payload.skipped === 'number' ? payload.skipped : 0,
 			current: currentFrom(payload.current),
-			// A Codex record's; an older helper prints none.
-			usage: usageFrom(payload.usage)
+			// A Codex record's, with the permission mode of either client's; an older helper prints none.
+			usage: usageFrom({ ...payload.usage, permission: payload.permission })
 		}
 	};
 }
