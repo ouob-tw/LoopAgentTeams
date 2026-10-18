@@ -123,94 +123,47 @@ class LayoutTests(SelectorTestCase):
                     self.assertEqual(text.count("➡️ B："), 1)
                     self.assertEqual(app.current.selected, [])
 
-    async def test_details_fold_by_default_and_toggle_with_ctrl_d(self):
+    async def test_details_show_in_full_after_the_recommendation(self):
         details = "【詳細資訊】\n來由：上次漏寫。\n\nA. 不是選項\n【詳細資訊結束】\n\n"
-        self.questions.write_text(SINGLE.replace("A. 合併到 dev，不推送\n", details + "A. 合併到 dev，不推送\n"))
-        app = self.make_app()
-        async with app.run_test(size=(80, 30)) as pilot:
-            self.assertEqual(len(app.current.options), 3)
-            text = self.view(app)
-            self.assertIn("▸ 詳細資訊（按 Ctrl+D 展開）", text)
-            self.assertNotIn("來由：上次漏寫。", text)
-            self.assertNotIn("【詳細資訊", text)
-            await pilot.press("ctrl+d")
-            text = self.view(app)
-            self.assertIn("▾ 詳細資訊（按 Ctrl+D 收合）", text)
-            self.assertLess(text.index("審查和驗收"), text.index("詳細資訊"))
-            self.assertLess(text.index("詳細資訊"), text.index("來由：上次漏寫。"))
-            self.assertLess(text.index("A. 不是選項"), text.index("合併到 dev，不推送"))
-            await pilot.press("ctrl+d")
-            text = self.view(app)
-            self.assertIn("▸ 詳細資訊（按 Ctrl+D 展開）", text)
-            self.assertNotIn("來由：上次漏寫。", text)
-            self.assertEqual(app.current.selected, [])
+        footer = "➡️ B：Original advice.\n\n"
+        old = SINGLE.replace("A. 合併到 dev，不推送\n", details + "A. 合併到 dev，不推送\n")
+        old = old.replace("\n答覆：", f"\n{footer}答覆：")
+        new = SINGLE.replace("\n答覆：", f"\n{footer}{details}答覆：")
+        views = []
+        for raw in (old, new):
+            self.questions.write_text(raw)
+            app = self.make_app()
+            async with app.run_test(size=(80, 40)) as pilot:
+                self.assertEqual(len(app.current.options), 3)
+                text = self.view(app)
+                self.assertNotIn("【詳細資訊", text)
+                self.assertNotIn("Ctrl+D", text + self.keys(app))
+                self.assertLess(text.index("審查和驗收"), text.index("合併到 dev，不推送"))
+                self.assertLess(text.index("其他（自己輸入）"), text.index("➡️ B："))
+                self.assertLess(text.index("➡️ B："), text.index("來由：上次漏寫。"))
+                self.assertLess(text.index("來由：上次漏寫。"), text.index("A. 不是選項"))
+                await pilot.press("ctrl+d")
+                self.assertEqual(self.view(app), text)
+                self.assertEqual(app.current.selected, [])
+                views.append(text)
+        self.assertEqual(views[0], views[1])
 
-    async def test_revised_details_show_folded_again(self):
-        old = "【詳細資訊】\n舊說明。\n【詳細資訊結束】\n\n"
-        self.questions.write_text(SINGLE.replace("A. 合併到 dev，不推送\n", old + "A. 合併到 dev，不推送\n"))
+    async def test_details_on_free_text_question_sit_before_the_answer(self):
+        details = "【詳細資訊】\n來由。\n【詳細資訊結束】"
+        self.questions.write_text(TEXT.replace("請自由回答。", "請自由回答。\n\n" + details))
         app = self.make_app()
-        async with app.run_test(size=(80, 30)) as pilot:
-            await pilot.press("ctrl+d")
-            self.assertIn("舊說明。", self.view(app))
-            revised = self.questions.read_text().replace("舊說明。", "新說明。").replace("r1", "r2")
-            self.questions.write_text(revised)
-            app.reload_disk()
-            await pilot.pause()
+        async with app.run_test(size=(80, 30)):
             text = self.view(app)
-            self.assertIn("▸ 詳細資訊（按 Ctrl+D 展開）", text)
-            self.assertNotIn("新說明。", text)
-            await pilot.press("ctrl+d")
-            self.assertIn("新說明。", self.view(app))
-
-    async def test_details_toggle_on_free_text_question_without_typing(self):
-        details = "【詳細資訊】\n來由。\n【詳細資訊結束】\n\n"
-        self.questions.write_text(TEXT.replace("請自由回答。", "請自由回答。\n\n" + details.strip()))
-        app = self.make_app()
-        async with app.run_test(size=(80, 30)) as pilot:
-            await pilot.press("ctrl+d")
-            self.assertIn("來由。", self.view(app))
-            self.assertEqual(app.current.other, "")
-            await pilot.press("ctrl+d")
-            self.assertNotIn("來由。", self.view(app))
+            self.assertLess(text.index("請自由回答。"), text.index("來由。"))
+            self.assertLess(text.index("來由。"), text.index("答覆："))
 
     async def test_details_keep_blank_lines_verbatim(self):
         body = "原文 [red]markup[/red]\n  縮排\n\n\n尾段"
         details = f"【詳細資訊】\n{body}\n【詳細資訊結束】\n\n"
         self.questions.write_text(SINGLE.replace("A. 合併到 dev，不推送\n", details + "A. 合併到 dev，不推送\n"))
         app = self.make_app()
-        async with app.run_test(size=(80, 30)) as pilot:
-            await pilot.press("ctrl+d")
+        async with app.run_test(size=(80, 30)):
             self.assertIn(body, self.view(app))
-
-    async def test_details_key_never_edits_the_open_answer_box(self):
-        details = "【詳細資訊】\n來由。\n【詳細資訊結束】\n\n"
-        free = TEXT.replace("請自由回答。", "請自由回答。\n\n" + details.strip())
-        choice = SINGLE.replace("A. 合併到 dev，不推送\n", details + "A. 合併到 dev，不推送\n")
-        for raw, moves in ((free, ()), (choice, ("@options", "down", "down", "down"))):
-            with self.subTest(moves=moves):
-                self.questions.write_text(raw)
-                app = self.make_app()
-                async with app.run_test(size=(80, 30)) as pilot:
-                    await self.press(pilot, *moves, "a", "b", "c", "D", "home", "ctrl+d", "ctrl+d")
-                    self.assertEqual(app.input.text, "abcD")
-                    self.assertEqual(app.current.other, "abcD")
-                    self.assertIn("詳細資訊要先離開輸入框", self.keys(app))
-
-    async def test_footer_warns_in_note_input_and_recovers_on_escape(self):
-        app = self.make_app()
-        async with app.run_test(size=(80, 30)) as pilot:
-            await self.press(pilot, "@options", "tab")
-            self.assertIn("詳細資訊要先離開輸入框", self.keys(app))
-            await self.press(pilot, "escape")
-            self.assertNotIn("詳細資訊要先離開輸入框", self.keys(app))
-            self.assertIn("Ctrl+D 詳細資訊", self.keys(app))
-
-    async def test_no_details_means_no_fold_line_and_ctrl_d_does_nothing(self):
-        app = self.make_app()
-        async with app.run_test(size=(80, 30)) as pilot:
-            await pilot.press("ctrl+d")
-            self.assertNotIn("詳細資訊", self.view(app))
-            self.assertEqual(app.current.selected, [])
 
     async def test_recommendation_follows_all_options_without_selecting(self):
         footer = "➡️ B：Keep this original reason.\nMore advice."
@@ -297,7 +250,7 @@ class LayoutTests(SelectorTestCase):
                 "     繼續保留在目前分支。",
                 "  D. 其他（自己輸入）",
             ])
-            self.assertEqual(self.keys(app), "A–I／Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Ctrl+D 詳細資訊 · Tab 備註 · Esc 關閉")
+            self.assertEqual(self.keys(app), "A–I／Enter 選擇 · ↑↓ 移動 · ←→ 換題 · Tab 備註 · Esc 關閉")
             self.assertEqual(self.status(app), "")
 
     async def test_view_wraps_mixed_cjk_text_between_characters(self):
@@ -374,7 +327,7 @@ class SingleSelectTests(SelectorTestCase):
         async with app.run_test() as pilot:
             await self.press(pilot, "4")
             self.assertIs(app.focused, app.input)
-            self.assertEqual(self.keys(app), "Enter 換行 · Esc 離開輸入框 · 詳細資訊要先離開輸入框")
+            self.assertEqual(self.keys(app), "Enter 換行 · Esc 離開輸入框")
             await self.press(pilot, *"ab", "enter", *"cd")
             self.assertIn("答覆：其他：ab\ncd\n\n- [ ] 送出", self.text())
             await self.press(pilot, "escape")
@@ -1614,7 +1567,7 @@ class ClickTests(SelectorTestCase):
         async with app.run_test(size=(80, 24)) as pilot:
             await self.click_row(app, pilot, "D. 其他（自己輸入）")
             self.assertIs(app.focused, app.input)
-            self.assertEqual(self.keys(app), "Enter 換行 · Esc 離開輸入框 · 詳細資訊要先離開輸入框")
+            self.assertEqual(self.keys(app), "Enter 換行 · Esc 離開輸入框")
             await self.press(pilot, "x")
             self.assertIn("答覆：其他：x\n", self.text())
 
