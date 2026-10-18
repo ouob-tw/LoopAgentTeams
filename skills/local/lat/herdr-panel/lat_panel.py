@@ -96,6 +96,7 @@ import stat
 import subprocess
 import sys
 import tempfile
+import textwrap
 import time
 from typing import NamedTuple
 import uuid
@@ -345,6 +346,15 @@ class QuestionOption(NamedTuple):
     impact: str
 
 
+class _OptionBlock(NamedTuple):
+    """One option line's match, its body, and the lines it spans."""
+
+    match: re.Match
+    body: str
+    first: int
+    end: int
+
+
 class QuestionOptions(NamedTuple):
     """Selector mode, parsed options, and a fallback reason when unavailable."""
 
@@ -353,8 +363,10 @@ class QuestionOptions(NamedTuple):
     reason: str | None
 
 
-_SINGLE_OPTION = re.compile(r"^(?P<key>[A-Z])\.\s+(?P<label>\S.*)$")
-_MULTI_OPTION = re.compile(r"^- \[[ xX]\]\s+(?P<label>\S.*)$")
+# Options are list items: "- A. label" (single) or "- [ ] label" (multi); the older
+# unlisted "A. label" still parses.
+_SINGLE_OPTION = re.compile(r"^(?P<listed>- )?(?P<key>[A-Z])\.\s+(?P<label>\S.*)$")
+_MULTI_OPTION = re.compile(r"^(?P<listed>- )\[[ xX]\]\s+(?P<label>\S.*)$")
 _RECOMMENDATION = re.compile(r"(?:\A|\n[ \t]*\n)(?P<recommendation>➡\ufe0f?)")
 _DETAILS_START = "【詳細資訊】"
 _DETAILS_END = "【詳細資訊結束】"
@@ -415,30 +427,52 @@ def question_recommendation(question):
     return _question_display_parts(question)[1]
 
 
-def _option_items(lines, pattern, *, keyed):
-    items = []
-    for index, line in enumerate(lines):
-        match = pattern.match(line)
+def _option_blocks(lines, pattern):
+    """Yield an ``_OptionBlock`` for each option line.
+
+    A list-item option owns every following blank or indented line up to the
+    next unindented one, as Markdown nests them, dedented and without trailing
+    blank lines. An unlisted ``A.`` option owns only the indented lines right
+    under it, each stripped.
+    """
+    index = 0
+    while index < len(lines):
+        match = pattern.match(lines[index])
         if match is None:
+            index += 1
             continue
-        impact = []
-        for following in lines[index + 1:]:
-            if not following or not following[:1].isspace():
-                break
-            impact.append(following.strip())
-        items.append(QuestionOption(
-            match.group("key") if keyed else None,
-            match.group("label").strip(),
-            "\n".join(impact),
-        ))
-    return tuple(items)
+        listed = bool(match.group("listed"))
+        end = index + 1
+        while end < len(lines) and (lines[end][:1].isspace() or (listed and not lines[end])):
+            end += 1
+        while end > index + 1 and not lines[end - 1].strip():
+            end -= 1
+        owned = lines[index + 1:end]
+        body = (
+            textwrap.dedent("\n".join(owned)) if listed
+            else "\n".join(line.strip() for line in owned)
+        )
+        yield _OptionBlock(match, body, index, end)
+        index = end
+
+
+def _option_items(lines, pattern, *, keyed):
+    return tuple(
+        QuestionOption(
+            block.match.group("key") if keyed else None,
+            block.match.group("label").strip(),
+            block.body,
+        )
+        for block in _option_blocks(lines, pattern)
+    )
 
 
 def parse_question_options(question):
     """Parse selector options from one ``parse_questions`` result.
 
-    ``A.`` lines produce single-select options and checklist lines produce
-    multi-select options. Mixed or absent styles deliberately fall back to
+    ``- A.`` (or older ``A.``) lines produce single-select options and
+    checklist lines produce multi-select options; each option's ``impact`` is
+    the Markdown under it. Mixed or absent styles deliberately fall back to
     free-form input and include a user-facing reason.
     """
     lines = _question_display_parts(question)[0].splitlines()
@@ -454,21 +488,19 @@ def parse_question_options(question):
 
 
 def question_context(question):
-    """Return the body without the option lines and impacts the selector lists."""
+    """Return the body without the option lines and bodies the selector lists."""
     lines = _question_display_parts(question)[0].splitlines()
     kind = parse_question_options(question).kind
     if kind is None:
         return "\n".join(lines).strip("\n")
     pattern = _SINGLE_OPTION if kind == "single" else _MULTI_OPTION
+    owned = set()
+    for block in _option_blocks(lines, pattern):
+        owned.update(range(block.first, block.end))
     kept = []
-    in_option = False
-    for line in lines:
-        if pattern.match(line):
-            in_option = True
+    for number, line in enumerate(lines):
+        if number in owned:
             continue
-        if in_option and line[:1].isspace():
-            continue
-        in_option = False
         if line or (kept and kept[-1]):
             kept.append(line)
     return "\n".join(kept).strip("\n")
@@ -487,8 +519,11 @@ def question_chat_parts(question):
     for index, (letter, option) in enumerate(zip(_option_letters(parsed), parsed.options), 1):
         name = f"選項 {letter}" if letter else f"第 {index} 個選項"
         parts.append((name, f"{letter}. {option.label}" if letter else option.label))
-        if option.impact:
-            parts.append((f"{name} 的影響", option.impact))
+        # Each paragraph is its own part, so a missing one is named on its own.
+        paragraphs = [text for text in re.split(r"\n(?:[ \t]*\n)+", option.impact) if text]
+        for number, paragraph in enumerate(paragraphs, 1):
+            suffix = f"第 {number} 段" if len(paragraphs) > 1 else ""
+            parts.append((f"{name} 的內容{suffix}", paragraph))
     recommendation = question_recommendation(question)
     if recommendation:
         parts.append(("推薦段落", recommendation))
@@ -879,7 +914,7 @@ def _check_help_question(decisions_path, question_id, incoming):
         _answer_label(option.label) == _DONE_OPTION for option in options.options
     ):
         raise ValueError(
-            f"help question {question_id} needs a single-choice option: <letter>. {_DONE_OPTION}"
+            f"help question {question_id} needs a single-choice option: - <letter>. {_DONE_OPTION}"
         )
 
 

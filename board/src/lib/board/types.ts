@@ -45,6 +45,7 @@ export interface Report {
 export interface HelperOption {
 	letter: string;
 	label: string;
+	/** The Markdown written under the option. */
 	impact: string;
 	recommended: boolean;
 }

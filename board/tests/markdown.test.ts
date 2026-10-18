@@ -21,3 +21,10 @@ test('a title gets links for its web addresses and nothing else', () => {
 	expect(renderLinks('<b>x</b> & [a](javascript:alert(1))')).toBe('&lt;b&gt;x&lt;/b&gt; &amp; [a](javascript:alert(1))');
 	expect(renderLinks('javascript:alert(1) file:///etc/passwd')).not.toContain('<a');
 });
+
+test('an option body as the helper gives it renders its paragraphs and nested lists', () => {
+	const html = renderMarkdown('第一段。\n\n- 子項目\n  - 更深\n\n```\ncode\n```');
+	expect(html).toBe(
+		'<p>第一段。</p>\n<ul>\n<li>子項目\n<ul>\n<li>更深</li>\n</ul>\n</li>\n</ul>\n<pre><code>code\n</code></pre>\n'
+	);
+});

@@ -118,7 +118,7 @@
 	<div>
 		<span class="option">{option.label}</span>
 		{#if option.recommended}<em>建議</em>{/if}
-		{#if option.impact}<p class="impact">{option.impact}</p>{/if}
+		{#if option.impact}<div class="impact md">{@html renderMarkdown(option.impact)}</div>{/if}
 	</div>
 {/snippet}
 
