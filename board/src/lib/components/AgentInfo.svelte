@@ -1,10 +1,14 @@
 <script lang="ts">
 	// An agent's page on the 所有 Agent tab, laid out like a controller's information page: one line
-	// of who and where it stands, the details of where it runs, a box to send it text and its
-	// interrupt, then its conversation and what was done to it, one tab at a time. The status is
+	// of who and where it stands, the details of where it runs, a box to send it text, its interrupt
+	// and close, then its conversation and what was done to it, one tab at a time. The status is
 	// hcom's when hcom reaches it and Herdr's otherwise (ADR 0003).
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
-	import { AGENT_HCOM_UNKNOWN_REASON, AGENT_INTERRUPT_CONFIRM_TEXT } from '#lib/board/agent-actions.ts';
+	import {
+		AGENT_HCOM_UNKNOWN_REASON,
+		AGENT_INTERRUPT_CONFIRM_TEXT,
+		agentCloseConfirmText
+	} from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { AGENT_MARK, folderName } from '#lib/board/agents.ts';
 	import { enterMakesNewline } from '#lib/board/messaging.svelte.ts';
@@ -22,11 +26,12 @@
 	let drafts = $state<Record<string, string>>({});
 	let sending = $state<Record<string, boolean>>({});
 	let sent = $state(0);
-	/** Agents whose interrupt confirmation is open. */
-	let confirming = $state<Record<string, boolean>>({});
+	/** Agents whose interrupt or close confirmation is open, and which one. */
+	let confirming = $state<Record<string, 'interrupt' | 'close'>>({});
 	let interrupting = $state<Record<string, boolean>>({});
-	// Whether hcom reaches it decides which command carries the text; until that is known nothing
-	// is sent (the server refuses it too). An interrupt goes through Herdr either way.
+	let closing = $state<Record<string, boolean>>({});
+	// Whether hcom reaches it decides which command carries the text or closes it; until that is
+	// known neither is done (the server refuses them too). An interrupt goes through Herdr either way.
 	const canSend = $derived(agent.hcom !== 'unknown');
 
 	async function submit() {
@@ -53,6 +58,16 @@
 		const result = await agentControl.interrupt(id);
 		interrupting[id] = false;
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已對 ${name} 送出 Esc。${result.reason ?? ''}` : (result.reason ?? '中斷失敗'));
+	}
+
+	async function close() {
+		// Once closed it leaves the list and this page with it; the notice is what shows the result.
+		const { id, name } = agent;
+		delete confirming[id];
+		closing[id] = true;
+		const result = await agentControl.close(id);
+		closing[id] = false;
+		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已關閉 ${name}。${result.reason ?? ''}` : (result.reason ?? '關閉失敗'));
 	}
 
 	const TABS = [
@@ -128,8 +143,8 @@
 	{#if !canSend}
 		<p class="note">{AGENT_HCOM_UNKNOWN_REASON}</p>
 	{/if}
-	<p class="hint">文字會打進它的輸入框並送出，它會當成是你本人說的話；對 LAT 派出的 Agent 傳話或中斷，主控不會知道。</p>
-	{#if confirming[agent.id]}
+	<p class="hint">文字會打進它的輸入框並送出，它會當成是你本人說的話；對 LAT 派出的 Agent 傳話、中斷或關閉，主控不會知道。</p>
+	{#if confirming[agent.id] === 'interrupt'}
 		<div class="confirm" role="group" aria-label="確認中斷">
 			<p class="warn">{AGENT_INTERRUPT_CONFIRM_TEXT}</p>
 			<div class="actions">
@@ -137,9 +152,18 @@
 				<button type="button" onclick={() => delete confirming[agent.id]}>取消</button>
 			</div>
 		</div>
+	{:else if confirming[agent.id] === 'close'}
+		<div class="confirm" role="group" aria-label="確認關閉">
+			<p class="warn">{agentCloseConfirmText(agent)}</p>
+			<div class="actions">
+				<button type="button" class="danger" data-action="confirm-close" onclick={close}>確認關閉</button>
+				<button type="button" onclick={() => delete confirming[agent.id]}>取消</button>
+			</div>
+		</div>
 	{:else}
 		<div class="actions">
-			<button type="button" data-action="interrupt" disabled={interrupting[agent.id]} onclick={() => (confirming[agent.id] = true)}>中斷這一回合</button>
+			<button type="button" data-action="interrupt" disabled={interrupting[agent.id]} onclick={() => (confirming[agent.id] = 'interrupt')}>中斷這一回合</button>
+			<button type="button" data-action="close" disabled={!canSend || closing[agent.id]} onclick={() => (confirming[agent.id] = 'close')}>關閉 Agent</button>
 		</div>
 	{/if}
 </section>

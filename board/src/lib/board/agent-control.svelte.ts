@@ -1,5 +1,5 @@
 // What the page keeps about actions on the 所有 Agent tab's agents: the operation record of the
-// agents it has opened, and one attempt at a time of sending text or interrupting.
+// agents it has opened, and one attempt at a time of sending text, interrupting or closing.
 import type { AgentAction, AgentActionResponse } from './agent-actions.ts';
 import type { Outcome } from './messaging.svelte.ts';
 
@@ -64,6 +64,11 @@ class AgentControl {
 	/** Press Esc in the agent's pane, after the user confirmed it. */
 	interrupt(agentId: string): Promise<Outcome> {
 		return this.#post('/api/agents/interrupt', agentId, {});
+	}
+
+	/** Close the agent and its Herdr pane, after the user confirmed it. */
+	close(agentId: string): Promise<Outcome> {
+		return this.#post('/api/agents/close', agentId, {});
 	}
 }
 

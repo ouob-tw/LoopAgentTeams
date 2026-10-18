@@ -4,10 +4,11 @@
 // the panes, workspaces, agents and tabs `pane list`, `workspace list`, `agent list` and `tab list`
 // print, the ID `workspace create` answers with (`created`; null leaves it out), and per command
 // ("pane list", "workspace list", "agent list", "tab list", "workspace create", "agent prompt",
-// "agent send-keys") a failure to act out, `fail: { exit, stderr }`, or output to print instead,
-// `raw: <text>`. `agent prompt` and `agent send-keys` succeed otherwise, without checking the pane.
+// "agent send-keys", "pane close") a failure to act out, `fail: { exit, stderr }`, or output to
+// print instead, `raw: <text>`. `agent prompt` and `agent send-keys` succeed otherwise, without
+// checking the pane; `pane close` takes the pane and its agent out of the panes and agents listed.
 // `slowMs: { <command>: ms }` makes a command wait that long before it answers.
-import { appendFileSync, existsSync, readFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [dir, ...args] = process.argv.slice(2);
@@ -38,6 +39,11 @@ if (plan.raw?.[command] !== undefined) {
 	const id = plan.created === undefined ? 'wNew' : plan.created;
 	const workspace = id === null ? {} : { workspace_id: id };
 	process.stdout.write(JSON.stringify({ id: 'cli:workspace:create', result: { workspace, tab: { tab_id: `${id}:t1` }, root_pane: { pane_id: `${id}:p1` } } }));
+} else if (command === 'pane close') {
+	plan.panes = (plan.panes ?? []).filter((/** @type {any} */ pane) => pane.pane_id !== args[2]);
+	plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.pane_id !== args[2]);
+	writeFileSync(planFile, JSON.stringify(plan));
+	process.stdout.write(JSON.stringify({ id: 'cli:pane:close', result: { type: 'ok' } }));
 } else if (command === 'agent prompt' || command === 'agent send-keys') {
 	process.stdout.write(JSON.stringify({ id: `cli:agent:${args[1]}`, result: { type: 'ok' } }));
 } else {

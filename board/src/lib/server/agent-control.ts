@@ -1,20 +1,29 @@
-// Acting on an agent of the 所有 Agent tab: typing text into its input box and interrupting its
-// turn. Each request reads Herdr's and hcom's lists again and acts on what they say now, never on
+// Acting on an agent of the 所有 Agent tab: typing text into its input box, interrupting its
+// turn and closing it. Each request reads Herdr's and hcom's lists again and acts on what they say now, never on
 // what the page sent. One attempt each, no retry, logged in the sent log either way.
 import { randomUUID } from 'node:crypto';
 import {
+	AGENT_HCOM_UNKNOWN_CLOSE_REASON,
 	AGENT_HCOM_UNKNOWN_REASON,
+	AGENT_OWN_PANE_REASON,
 	type AgentAction,
 	type AgentActionKind,
 	type AgentActionResponse
 } from '../board/agent-actions.ts';
 import type { Agent } from '../board/types.ts';
 import type { Board } from './board.ts';
-import { agentCommand, type HerdrAct } from './herdr.ts';
+import { killAgent } from './hcom.ts';
+import { agentCommand, closePane, paneExists, type HerdrAct } from './herdr.ts';
 import { inject, queued, typedText } from './send.ts';
 import { appendSent } from './sent-log.ts';
 
 export const AGENT_GONE_REASON = '這個 Agent 已不在 Herdr 的清單上，沒有執行。';
+
+/** How many times, and how far apart, the board looks for a closed agent's pane to be gone. */
+const CLOSE_CHECKS = 5;
+const CLOSE_CHECK_MS = 400;
+
+const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** The agent as a read made now lists it, or why that cannot be relied on. A Herdr list that
  *  cannot be read now does not confirm that it is still there, whatever the last one said. */
@@ -29,12 +38,13 @@ async function listedNow(board: Board, agentId: string): Promise<{ agent: Agent 
 /** Why a Herdr command did not act, as the page shows it. */
 function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: AgentActionKind): string {
 	if (act.timedOut) {
+		if (action === 'close') return `Herdr 的關閉指令${act.reason}，結果不明；請到 Herdr 查看。`;
 		return action === 'send'
 			? `Herdr 的傳話指令${act.reason}，文字可能已經送進去；重送前請先看對話紀錄。`
 			: `Herdr 的按鍵指令${act.reason}，不確定有沒有中斷。`;
 	}
 	if (act.code === 'agent_blocked') return `Herdr 拒收：這個 Agent 正停在需要核准的確認畫面（${act.reason}）。`;
-	return `Herdr ${action === 'send' ? '拒收' : '沒有送出 Esc'}：${act.reason}`;
+	return `Herdr ${{ send: '拒收', interrupt: '沒有送出 Esc', close: '沒有關閉' }[action]}：${act.reason}`;
 }
 
 async function attempt(
@@ -104,4 +114,51 @@ export function interruptAgent(board: Board, agentId: string) {
 			return { route: 'herdr', reason: act.ok ? null : herdrReason(act, 'interrupt') };
 		})
 	);
+}
+
+/**
+ * Close the agent and its Herdr pane: `hcom kill` when it is linked, `herdr pane close` when it is
+ * not. Refused for the pane the board itself runs in, and while hcom cannot tell which applies.
+ * Done only once its pane is gone; the list is read again then, so it leaves the tab at once.
+ * Queued like a send.
+ */
+export function closeAgent(board: Board, agentId: string) {
+	return queued(agentId, () =>
+		attempt(board, agentId, 'close', null, async (agent) => {
+			const pane = agent.herdr.pane;
+			if (pane === board.config.ownPane) return { route: null, reason: AGENT_OWN_PANE_REASON };
+			if (agent.hcom === 'unknown') return { route: null, reason: AGENT_HCOM_UNKNOWN_CLOSE_REASON };
+			let route: AgentAction['route'];
+			if (agent.hcom === 'linked') {
+				route = 'hcom';
+				// `hcom kill` reads `all` and `tag:…` as many agents, never one name.
+				const name = agent.hcomName!;
+				if (name === 'all' || name.startsWith('tag:')) return { route: null, reason: `HCOM 名稱 ${name} 會被 hcom kill 當成多個 Agent，沒有關閉。` };
+				const run = await killAgent(board.config, name);
+				if (run.timedOut) return { route, reason: `hcom kill ${run.failure}，結果不明；請到 Herdr 查看。` };
+				if (run.failure) return { route, reason: `hcom kill 失敗：${run.failure}` };
+			} else {
+				route = 'herdr';
+				const act = await closePane(board.config, pane);
+				if (!act.ok) return { route, reason: herdrReason(act, 'close') };
+			}
+			const closed = await paneGone(board, pane);
+			if (closed !== true) return { route, reason: `已送出關閉指令，但無法確認已關閉：${closed}；請到 Herdr 查看。` };
+			await board.refresh();
+			return { route, reason: null };
+		})
+	);
+}
+
+/** True once Herdr no longer has the pane; otherwise why that is not known. */
+async function paneGone(board: Board, pane: string): Promise<true | string> {
+	let why = '';
+	for (let check = 0; check < CLOSE_CHECKS; check++) {
+		if (check) await sleep(CLOSE_CHECK_MS);
+		const exists = await paneExists(board.config, pane);
+		if ('reason' in exists) why = exists.reason;
+		else if (!exists.exists) return true;
+		else why = '它的 Herdr 窗格還在';
+	}
+	return why;
 }

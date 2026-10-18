@@ -1,7 +1,7 @@
 <script lang="ts">
-	// What the user did to this agent from the board, on any logged-in device: text sent to it and
-	// interrupts, each made or refused.
-	import { AGENT_ACTION_LABEL } from '#lib/board/agent-actions.ts';
+	// What the user did to this agent from the board, on any logged-in device: text sent to it,
+	// interrupts and closes that did not close it, each made or refused.
+	import { AGENT_ACTION_LABEL, type AgentAction } from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -10,6 +10,11 @@
 	let { agent }: { agent: KnownAgent } = $props();
 
 	const entries = $derived(agentControl.log[agent.id]);
+	const DONE_LABEL = { send: '已送出', interrupt: '已送出 Esc', close: '已關閉' } as const;
+	function routeLabel(entry: AgentAction): string {
+		if (entry.route === 'hcom') return entry.action === 'close' ? '（hcom kill）' : '（HCOM 輸入框）';
+		return entry.route === 'herdr' ? '（Herdr）' : '';
+	}
 	// Each new board data hands this component a new `agent` object, so the record is read again
 	// then; an action from any device also has the server announce it (`agent-action`).
 	$effect(() => void agentControl.load(agent.id));
@@ -28,9 +33,9 @@
 				<li data-action={entry.action}>
 					<p class="meta">
 						<time datetime={entry.time}>{formatTime(entry.time)}</time>
-						<span>{AGENT_ACTION_LABEL[entry.action]}{entry.route === 'hcom' ? '（HCOM 輸入框）' : entry.route === 'herdr' ? '（Herdr）' : ''}</span>
+						<span>{AGENT_ACTION_LABEL[entry.action]}{routeLabel(entry)}</span>
 						{#if entry.ok}
-							<span>✓ {entry.action === 'send' ? '已送出' : '已送出 Esc'}</span>
+							<span>✓ {DONE_LABEL[entry.action]}</span>
 						{:else}
 							<span class="failed">✗ {entry.error}</span>
 						{/if}
@@ -40,7 +45,7 @@
 			{/each}
 		</ol>
 	{:else if entries}
-		<p class="empty">還沒有從看板傳話或中斷過。</p>
+		<p class="empty">還沒有從看板操作過這個 Agent。</p>
 	{/if}
 </section>
 

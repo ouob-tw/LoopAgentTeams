@@ -16,8 +16,8 @@
 // the next lists after it was written in turn, before `agents` takes over. Without either, <dir>/hcom-running.json is listed: the
 // test fixture keeps every controller it ever bound there, so none is closed unless a test says so.
 // `kill <name>` is logged to hcom-calls.jsonl like a launch and follows `kill`: `exit`, `stderr`,
-// `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane leaves the
-// fake Herdr's <dir>/herdr.json, the way hcom closes it.
+// `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
+// Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it.
 import { appendFileSync, chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -66,6 +66,7 @@ if (args[0] === 'kill') {
 			if (existsSync(herdrFile) && panes.length) {
 				const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
 				herdr.panes = (herdr.panes ?? []).filter((/** @type {any} */ pane) => !panes.includes(pane.pane_id));
+				herdr.agents = (herdr.agents ?? []).filter((/** @type {any} */ agent) => !panes.includes(agent.pane_id));
 				writeFileSync(herdrFile, JSON.stringify(herdr));
 			}
 		}

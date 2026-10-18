@@ -238,10 +238,12 @@ test.skipIf(!CHROME)('an address that opens an agent shows its tab; an agent Her
 	await fixture.refresh(cookie);
 }, 30_000);
 
-/** The Herdr commands that act on an agent, not the lists every read makes. */
+/** The Herdr commands that act on an agent, not the lists every read makes nor the pane list that
+ *  checks a close. */
 function herdrCalls(): string[][] {
 	const file = join(fixture.dir, 'herdr-calls.jsonl');
-	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
+	const calls: string[][] = existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
+	return calls.filter((call) => call.join(' ') !== 'pane list');
 }
 /** Type into the agent page's box the way a person would, so the page's own binding sees it. */
 const type = (text: string) =>
@@ -317,6 +319,8 @@ test.skipIf(!CHROME)('while hcom cannot tell whether an agent is linked, its box
 		expect(await tab.eval(`document.querySelector('.detail .compose textarea').disabled`)).toBe(true);
 		expect((await screen()).detail).toContain('HCOM 連線無法確認');
 		expect(await tab.eval(`document.querySelector('.detail [data-action="interrupt"]').disabled`)).toBe(false);
+		// Nor can it be closed: which of hcom and Herdr would close it is not known.
+		expect(await tab.eval(`document.querySelector('.detail [data-action="close"]').disabled`)).toBe(true);
 		await click('.detail [data-action="interrupt"]');
 		await tab.until(`!!document.querySelector('.detail [data-action="confirm-interrupt"]')`, 'the confirmation');
 		await click('.detail [data-action="confirm-interrupt"]');
@@ -362,6 +366,68 @@ test.skipIf(!CHROME)('an interrupt\'s notice names the agent interrupted, even w
 		const notices = (await screen()).notices;
 		expect(notices).toContain('已對 分頁-s-plain 送出 Esc');
 		expect(notices).not.toContain('分頁-s-other');
+	} finally {
+		setHerdr(AGENTS);
+	}
+}, 30_000);
+
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`${width}px: closing an agent asks first, shows the result and the agent is not listed after a reload`, async () => {
+		rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+		try {
+			await visit(width, '?agent=s-plain');
+			await tab.until(`!!document.querySelector('.detail [data-action="close"]')`, 'the agent page');
+			await click('.detail [data-action="close"]');
+			await tab.until(`!!document.querySelector('.detail [data-action="confirm-close"]')`, 'the confirmation');
+			// Not linked to hcom: the board cannot bring it back.
+			expect(await tab.eval(`document.querySelector('.detail .confirm').innerText`)).toContain('看板沒辦法把這段對話接回來');
+			expect(await tab.eval(FITS)).toBe(true);
+			expect(herdrCalls()).toEqual([]);
+			await click('.detail [data-action="confirm-close"]');
+			await tab.until(`document.querySelector('.dock')?.innerText.includes('已關閉 分頁-s-plain')`, 'the close notice');
+			expect(herdrCalls()).toEqual([['pane', 'close', 'wA:p-s-plain']]);
+			await tab.until(`document.querySelector('.detail')?.innerText.includes('已不在 Herdr 的清單上')`, 'the page saying it is gone');
+
+			// Away from its page and reloaded: not listed, and its address no longer opens it.
+			await openTab();
+			await tab.until(`!!document.querySelector('.inbox [data-agent="s-other"]')`, 'the agent list');
+			await tab.eval('window.beforeReload = true');
+			await tab.send('Page.reload');
+			await tab.until(`!window.beforeReload && !!document.querySelector('.inbox [data-agent="s-other"]')`, 'the reloaded list');
+			expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-plain"]')`)).toBe(false);
+		} finally {
+			setHerdr(AGENTS);
+			await fixture.refresh(cookie);
+		}
+	}, 30_000);
+}
+
+test.skipIf(!CHROME)('a close Herdr refuses says why and leaves the agent on its page; a controller\'s confirmation says it can be woken', async () => {
+	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+	const stderr = JSON.stringify({ error: { code: 'pane_not_found', message: 'pane went away' } });
+	setHerdr(AGENTS, { fail: { 'pane close': { exit: 1, stderr } } });
+	try {
+		await visit(390, '?agent=s-plain');
+		await tab.until(`!!document.querySelector('.detail [data-action="close"]')`, 'the agent page');
+		await click('.detail [data-action="close"]');
+		await tab.until(`!!document.querySelector('.detail [data-action="confirm-close"]')`, 'the confirmation');
+		await click('.detail [data-action="confirm-close"]');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('pane went away')`, 'the reason');
+		expect((await screen()).detail).toContain('分頁-s-plain');
+		expect(herdrCalls()).toEqual([['pane', 'close', 'wA:p-s-plain']]);
+
+		// The controller is linked to hcom, and its own page can wake it again; cancelling runs nothing.
+		await openTab();
+		await openAgent('s-lead');
+		await tab.until(`!!document.querySelector('.detail [data-agent="s-lead"]')`, 'the controller\'s agent page');
+		await click('.detail [data-action="close"]');
+		await tab.until(`!!document.querySelector('.detail [data-action="confirm-close"]')`, 'its confirmation');
+		const confirm = await tab.eval<string>(`document.querySelector('.detail .confirm').innerText`);
+		expect(confirm).toContain('hcom kill @lead');
+		expect(confirm).toContain('主控資訊頁喚醒接回');
+		await tab.eval(`[...document.querySelectorAll('.detail .confirm button')].find((button) => button.innerText === '取消').click()`);
+		await tab.until(`!!document.querySelector('.detail [data-action="close"]')`, 'the buttons again');
+		expect(herdrCalls()).toHaveLength(1);
 	} finally {
 		setHerdr(AGENTS);
 	}
