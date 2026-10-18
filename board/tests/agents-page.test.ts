@@ -329,3 +329,40 @@ test.skipIf(!CHROME)('while hcom cannot tell whether an agent is linked, its box
 		await fixture.refresh(cookie);
 	}
 }, 30_000);
+
+test.skipIf(!CHROME)('an action from another device shows in an open record at once', async () => {
+	await visit(1280, '?agent=s-plain');
+	await tab.until(`!!document.querySelector('.detail [data-tab="log"]')`, 'the agent page');
+	await click('.detail [data-tab="log"]');
+	await tab.until(`!!document.querySelector('.detail #agent-panel-log section')`, 'the record');
+	const count = await tab.eval<number>(`document.querySelectorAll('.detail #agent-panel-log li').length`);
+	// Another device interrupts it; nothing in the list of agents changes.
+	const response = await fixture.fetch('/api/agents/interrupt', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ session: 's-plain' }),
+		cookie
+	});
+	expect(response.status).toBe(200);
+	await tab.until(`document.querySelectorAll('.detail #agent-panel-log li').length === ${count + 1}`, 'the new entry');
+}, 30_000);
+
+test.skipIf(!CHROME)('an interrupt\'s notice names the agent interrupted, even when another one is open by then', async () => {
+	setHerdr(AGENTS, { slowMs: { 'agent send-keys': 1_500 } });
+	try {
+		await visit(1280, '?agent=s-plain');
+		await tab.until(`!!document.querySelector('.detail [data-action="interrupt"]')`, 'the agent page');
+		await click('.detail [data-action="interrupt"]');
+		await tab.until(`!!document.querySelector('.detail [data-action="confirm-interrupt"]')`, 'the confirmation');
+		await click('.detail [data-action="confirm-interrupt"]');
+		await openTab();
+		await openAgent('s-other');
+		await tab.until(`location.search === '?agent=s-other'`, 'the other agent');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('已對')`, 'the interrupt notice');
+		const notices = (await screen()).notices;
+		expect(notices).toContain('已對 分頁-s-plain 送出 Esc');
+		expect(notices).not.toContain('分頁-s-other');
+	} finally {
+		setHerdr(AGENTS);
+	}
+}, 30_000);

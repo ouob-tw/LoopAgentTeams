@@ -73,6 +73,7 @@ async function attempt(
 		// It was done or refused either way; that outcome is what the page must show.
 		logError = (error as Error).message;
 	}
+	board.agentActed(agentId);
 	return { status, body: { ok: entry.ok, reason, entry, logError } };
 }
 

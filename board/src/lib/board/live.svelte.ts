@@ -1,4 +1,5 @@
 // The board as the page sees it: the latest snapshot plus the state of the link to the server.
+import { agentControl } from './agent-control.svelte.ts';
 import { connectBoard, type Connection, type LinkState } from './client.ts';
 import { toasts } from './toasts.svelte.ts';
 import { reaches, withEarlier, withNewest, type ArchivePage } from './archive.ts';
@@ -32,6 +33,8 @@ export class LiveBoard {
 			onSnapshot: (snapshot) => (this.snapshot = snapshot),
 			onState: (state) => (this.link = state),
 			onTabMoved: () => this.tabMoves++,
+			// Only a record this page has loaded is shown anywhere; others load when opened.
+			onAgentAction: (agentId) => void (agentControl.log[agentId] && agentControl.load(agentId)),
 			// The server sends a browser that is not logged in to the login screen.
 			onUnpaired: () => location.reload()
 		});

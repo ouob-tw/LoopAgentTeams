@@ -44,6 +44,9 @@ export interface Board {
 	subscribe(stream: Stream): () => void;
 	/** Tell every open page that a Herdr tab moved: nothing in the snapshot shows tab order. */
 	tabMoved(): void;
+	/** Tell every open page that an agent's operation record grew: the snapshot does not hold it,
+	 *  and an action often changes nothing that it does. */
+	agentActed(agentId: string): void;
 	close(): void;
 }
 
@@ -314,6 +317,9 @@ function createBoard(): Board {
 			return () => streams.delete(stream);
 		},
 		tabMoved,
+		agentActed(agentId) {
+			for (const stream of streams) stream.send('agent-action', JSON.stringify({ agentId }));
+		},
 		close() {
 			closed = true;
 			clearTimeout(debounce);

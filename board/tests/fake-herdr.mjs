@@ -6,6 +6,7 @@
 // ("pane list", "workspace list", "agent list", "tab list", "workspace create", "agent prompt",
 // "agent send-keys") a failure to act out, `fail: { exit, stderr }`, or output to print instead,
 // `raw: <text>`. `agent prompt` and `agent send-keys` succeed otherwise, without checking the pane.
+// `slowMs: { <command>: ms }` makes a command wait that long before it answers.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -17,6 +18,7 @@ const planFile = join(dir, 'herdr.json');
 const plan = existsSync(planFile) ? JSON.parse(readFileSync(planFile, 'utf8')) : {};
 
 const failure = plan.fail?.[command];
+if (plan.slowMs?.[command]) await new Promise((resolve) => setTimeout(resolve, plan.slowMs[command]));
 if (plan.raw?.[command] !== undefined) {
 	process.stdout.write(plan.raw[command]);
 } else if (failure) {

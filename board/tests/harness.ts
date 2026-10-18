@@ -225,6 +225,8 @@ export interface Watch {
 	snapshots: BoardSnapshot[];
 	states: LinkState[];
 	unpaired: boolean;
+	/** The agents the server announced an action on, in order. */
+	agentActions: string[];
 	latest(): BoardSnapshot | undefined;
 	close(): void;
 }
@@ -409,6 +411,7 @@ export async function startFixture(
 				snapshots: [],
 				states: [],
 				unpaired: false,
+				agentActions: [],
 				latest: () => watch.snapshots.at(-1),
 				close: () => connection.close()
 			};
@@ -417,6 +420,7 @@ export async function startFixture(
 				onSnapshot: (snapshot) => watch.snapshots.push(snapshot),
 				onState: (state) => watch.states.push(state),
 				onUnpaired: () => (watch.unpaired = true),
+				onAgentAction: (agentId) => watch.agentActions.push(agentId),
 				retryMs: 200
 			});
 			watches.push(watch);

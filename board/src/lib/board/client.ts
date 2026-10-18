@@ -13,6 +13,8 @@ export interface ConnectionOptions {
 	onUnpaired(): void;
 	/** A Herdr tab moved; tab positions are not in the snapshot. */
 	onTabMoved?(): void;
+	/** Something was done to this agent; its operation record is not in the snapshot. */
+	onAgentAction?(agentId: string): void;
 	fetch?: typeof fetch;
 	retryMs?: number;
 }
@@ -54,6 +56,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		if (event === 'board') options.onSnapshot(JSON.parse(data));
 		else if (event === 'unpaired') unpaired();
 		else if (event === 'tab-moved') options.onTabMoved?.();
+		else if (event === 'agent-action') options.onAgentAction?.(JSON.parse(data).agentId);
 	}
 
 	async function listen(): Promise<void> {

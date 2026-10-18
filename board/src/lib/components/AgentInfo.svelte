@@ -46,12 +46,13 @@
 	}
 
 	async function interrupt() {
-		const id = agent.id;
+		// The notice names the agent interrupted, even if another one is open by the time it answers.
+		const { id, name } = agent;
 		delete confirming[id];
 		interrupting[id] = true;
 		const result = await agentControl.interrupt(id);
 		interrupting[id] = false;
-		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已對 ${agent.name} 送出 Esc。${result.reason ?? ''}` : (result.reason ?? '中斷失敗'));
+		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已對 ${name} 送出 Esc。${result.reason ?? ''}` : (result.reason ?? '中斷失敗'));
 	}
 
 	const TABS = [

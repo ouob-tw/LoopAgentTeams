@@ -115,7 +115,7 @@
 - 傳話（`POST /api/agents/send`，`session`、`text`）：有接 HCOM 的用傳話給主控的輸入指令（`hcom term inject`，見「傳話給主控」，CR 一樣換成 LF）；沒接的用 `herdr agent prompt <窗格> <文字>`。Herdr 0.9.5 一律把窗格後面那個參數當成文字（`--wait`、`--help` 也一樣），所以文字原樣傳入，不需要分次。HCOM 連線無法確認時拒絕（409），頁面上的輸入框也停用。
 - 中斷（`POST /api/agents/interrupt`，`session`）：`herdr agent send-keys <窗格> esc`，有沒有接 HCOM、連線能不能確認都一樣。頁面先問一次才送出。
 - 兩者都只試一次、不重送，與傳話給主控、喚醒、切換模型排在同一個 session 的隊伍裡（`queued`），依序執行。每次請求先重讀一次資料（與重新整理按鈕相同），以這次讀到的 Herdr 清單與 hcom 配對決定窗格、HCOM 名稱與走哪條路，不看頁面送來的其他欄位：Agent 已不在 Herdr 清單上，或這次 Herdr 的清單讀不到（只有上次的清單可用），都拒絕（409）且不執行任何指令。Herdr 拒絕時（結束碼非 0，標準錯誤是 `{"error":{"code","message"}}`）以 `message` 為原因回 502；`agent_blocked`（停在確認畫面）另外說明。輸入指令或 Herdr 指令逾時算失敗，原因裡提醒文字可能已經送進去。
-- 操作紀錄：每次傳話與中斷（成功、失敗或拒絕）都寫一行 `sent-log.jsonl`（`kind: agent-action`；`action` 是 `send` 或 `interrupt`，另有 `agentId`（session ID）、當時的名稱與窗格、`route`（`hcom`、`herdr`，拒絕時 null）、文字、結果與原因）。`GET /api/agents/log?session=<ID>` 回傳這個 Agent 的紀錄（新的在前），不在目前清單上的回 404；頁面的「操作紀錄」分頁顯示它，每次資料推送時重讀。這些行不算進主控的送出紀錄。
+- 操作紀錄：每次傳話與中斷（成功、失敗或拒絕）都寫一行 `sent-log.jsonl`（`kind: agent-action`；`action` 是 `send` 或 `interrupt`，另有 `agentId`（session ID）、當時的名稱與窗格、`route`（`hcom`、`herdr`，拒絕時 null）、文字、結果與原因）。`GET /api/agents/log?session=<ID>` 回傳這個 Agent 的紀錄（新的在前），不在目前清單上的回 404；頁面的「操作紀錄」分頁顯示它。傳話與中斷不一定改變看板資料，所以每次寫入後伺服器另外推送 `agent-action` 事件（`{agentId}`），開著這個 Agent 紀錄的頁面（任何裝置）收到就重讀；資料推送時也會重讀。這些行不算進主控的送出紀錄。
 - 測試以 `tests/fake-herdr.mjs`（`agent list`、`tab list`、`agent prompt`、`agent send-keys`；每次讀取資料的清單呼叫另記在 `herdr-list-calls.jsonl`）與 `tests/fake-hcom.mjs` 代替真的指令；harness 預設就用假的 Herdr，所以測試不會讀到真的 Herdr。
 
 ## 用量與快取

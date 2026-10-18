@@ -5,7 +5,7 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentAction, AgentActionResponse } from '../src/lib/board/agent-actions.ts';
-import { NODE, startFixture, type Fixture } from './harness.ts';
+import { NODE, startFixture, until, type Fixture } from './harness.ts';
 
 // The fake input command's plan and call log, known before the fixture makes its own directory.
 const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-inject-'));
@@ -219,4 +219,17 @@ test('sending, interrupting and the record need a logged-in device', async () =>
 	expect((await post('/api/agents/interrupt', { session: 's-plain' }, '')).status).toBe(401);
 	expect((await fixture.fetch('/api/agents/log?session=s-plain')).status).toBe(401);
 	expect(herdrCalls()).toEqual([]);
+});
+
+test('every action is announced to open pages, though the list of agents does not change', async () => {
+	const watch = fixture.watch(cookie);
+	await until(() => watch.snapshots.length > 0, 5_000, 'the first snapshot');
+	const before = watch.snapshots.length;
+	await interrupt('s-plain');
+	await send('s-new', 'gone');
+	await until(() => watch.agentActions.length >= 2, 5_000, 'the announcements');
+	expect(watch.agentActions).toEqual(['s-plain', 's-new']);
+	// Nothing the snapshot shows changed, so no new snapshot carried it.
+	expect(watch.snapshots.length).toBe(before);
+	watch.close();
 });

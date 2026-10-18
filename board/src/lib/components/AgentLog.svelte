@@ -11,7 +11,7 @@
 
 	const entries = $derived(agentControl.log[agent.id]);
 	// Each new board data hands this component a new `agent` object, so the record is read again
-	// then, as other devices add to it.
+	// then; an action from any device also has the server announce it (`agent-action`).
 	$effect(() => void agentControl.load(agent.id));
 
 	$effect(() => {
