@@ -287,13 +287,11 @@
 {/snippet}
 
 {#snippet placedCard(item: InboxItem, copy = false)}
-	<!-- A question's card shows the message that asked it in place of its context. -->
 	<ItemContent
 		{item}
 		{inInbox}
 		recorded={board.snapshot.recordedKeys.includes(item.key)}
 		handle={item.hcomName}
-		askedIn={item.kind === 'question' ? item.askedIn : null}
 		onunread={copy ? async () => {} : (key) => board.mark(key, false)}
 	/>
 {/snippet}
@@ -483,7 +481,6 @@
 						<ItemContent
 							{item}
 							{inInbox}
-							askedIn={item.kind === 'question' ? item.askedIn : null}
 							recorded={board.snapshot.recordedKeys.includes(item.key)}
 							onunread={(key) => board.mark(key, false)}
 						/>

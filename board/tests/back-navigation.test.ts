@@ -1,7 +1,7 @@
 // Going back through the board's screens in a real browser: headless Chrome driven over its
 // DevTools protocol, on the built board with fake data. Skipped when the host has no Chrome.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -118,6 +118,7 @@ const ASKED = {
 	decide: '第二版的完整說明在這裡。\n\nDECIDE: DQ-1 r2 · 要不要走短流程 · 回答面板上的題目',
 	help: '測試機 7110 被舊的預覽程序佔用。\n\nHELP: HQ-1 r1 · 可以結束預覽程序嗎 · 回答面板上的題目'
 };
+const solTranscript = () => join(fixture.dir, 'transcripts', `${sol.session_id}.jsonl`);
 const OPTIONS = [
 	{ letter: 'A', label: '照做', impact: '', recommended: true },
 	{ letter: 'B', label: '先不要', impact: '', recommended: false }
@@ -140,7 +141,16 @@ beforeAll(async () => {
 	// of each asking message to scroll.
 	sol = fixture.bound('beta', 'sol', {
 		questions: [
-			question({ id: 'DQ-1', revision: 2, title: '有原訊息的待決題', kind: 'single', options: OPTIONS, context: '面板上的簡短說明', asked_at: minutesAgo(50) }),
+			question({
+				id: 'DQ-1',
+				revision: 2,
+				title: '有原訊息的待決題',
+				kind: 'single',
+				options: OPTIONS,
+				context: '面板上的簡短說明',
+				details: '題目的詳細資訊。\n\n第二段。',
+				asked_at: minutesAgo(50)
+			}),
 			question({ id: 'HQ-1', revision: 1, title: '有原訊息的求助題', kind: 'single', options: OPTIONS, asked_at: minutesAgo(30) }),
 			question({ id: 'NQ-1', revision: 1, title: '沒有原訊息的題目', context: '只在面板上問', asked_at: minutesAgo(20) })
 		]
@@ -157,7 +167,7 @@ beforeAll(async () => {
 		...filler(25, 6)
 	];
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
-	writeFileSync(join(fixture.dir, 'transcripts', `${sol.session_id}.jsonl`), conversation.map((item) => JSON.stringify(item) + '\n').join(''));
+	writeFileSync(solTranscript(), conversation.map((item) => JSON.stringify(item) + '\n').join(''));
 	const asked = (tag: 'DECIDE' | 'HELP', minutes: number, message: string) =>
 		fixture.report(sol.session_id, { tag, summary: message.split(' · ')[1], message, time: minutesAgo(minutes), hcom_name: 'sol', workspace: sol.workspace });
 	asked('DECIDE', 70, ASKED.old);
@@ -452,7 +462,7 @@ async function placedAt(search: string, title: string) {
 const placedText = () => tab.eval<string>(`${PLACED}.innerText`);
 
 for (const width of [390, 1400]) {
-	test.skipIf(!CHROME)(`${width}px: a question opens in its conversation at the message of its revision, merged with the answer card, and can be answered`, async () => {
+	test.skipIf(!CHROME)(`${width}px: a question opens in its conversation at the message of its revision, its card in the message's place, and can be answered`, async () => {
 		// Unanswered again: the width before has answered it.
 		fixture.list([luna, sol]);
 		await fixture.refresh(cookie);
@@ -460,13 +470,13 @@ for (const width of [390, 1400]) {
 		await tab.eval(click('.inbox', '有原訊息的待決題'));
 		await placedAt(SOL_QUESTION('DQ-1'), '有原訊息的待決題');
 		const text = await placedText();
-		// One card: the chat message word for word, then what the panel question offers.
-		expect(text).toContain('說明取自');
-		expect(text).toContain('第二版的完整說明在這裡。');
-		expect(text).toContain('DECIDE: DQ-1 r2');
+		// The panel question itself, with its details, in place of the chat message.
 		expect(text).toContain('DQ-1 r2');
-		expect(text).not.toContain('面板上的簡短說明');
+		expect(text).toContain('面板上的簡短說明');
+		expect(text).toContain('題目的詳細資訊。');
+		expect(text).toContain('第二段。');
 		expect(text).toContain('照做');
+		expect(text).not.toContain('第二版的完整說明在這裡。');
 		// The r1 message stays an ordinary message of the conversation.
 		expect(await tab.eval(`document.querySelectorAll('.history .placed').length`)).toBe(1);
 		expect(await tab.eval(`[...document.querySelectorAll('.history .said')].some((li) => li.innerText.includes('DQ-1 r1'))`)).toBe(true);
@@ -491,8 +501,10 @@ test.skipIf(!CHROME)('phone: a help question opens at its HELP message the same 
 	await tab.eval(click('.inbox', '有原訊息的求助題'));
 	await placedAt(SOL_QUESTION('HQ-1'), '有原訊息的求助題');
 	const text = await placedText();
-	expect(text).toContain('測試機 7110 被舊的預覽程序佔用。');
+	// Without details the card is as it always was.
+	expect(text).toContain('HQ-1 r1');
 	expect(text).toContain('送出答覆');
+	expect(text).not.toContain('測試機 7110 被舊的預覽程序佔用。');
 }, 30_000);
 
 test.skipIf(!CHROME)('a question no message asked shows only its card, saying the message is not found', async () => {
@@ -518,4 +530,27 @@ test.skipIf(!CHROME)('phone: back and reload find the question in its conversati
 	await showsList();
 	await back();
 	await tab.until(LEFT, 'leaving the board');
+}, 30_000);
+
+test.skipIf(!CHROME)('phone: a revision asked while the question is open moves its card to the new message and scrolls to it', async () => {
+	fixture.list([luna, sol]);
+	await fixture.refresh(cookie);
+	await visit(390);
+	await tab.eval(click('.inbox', '有原訊息的待決題'));
+	await placedAt(SOL_QUESTION('DQ-1'), '有原訊息的待決題');
+	// Scrolled away as a person does, which ends keeping the card in place.
+	await tab.eval(`window.dispatchEvent(new WheelEvent('wheel')); document.scrollingElement.scrollBy(0, -600)`);
+	await tab.until(`${PLACED}.getBoundingClientRect().top > 300`, 'scrolled away from the card');
+
+	const message = '第三版。\n\nDECIDE: DQ-1 r3 · 第三版 · 回答面板上的題目';
+	appendFileSync(solTranscript(), JSON.stringify({ kind: 'assistant', time: minutesAgo(0), text: message }) + '\n');
+	fixture.report(sol.session_id, { tag: 'DECIDE', summary: '第三版', message, time: minutesAgo(0), hcom_name: 'sol', workspace: sol.workspace });
+	const [first, ...rest] = sol.questions;
+	fixture.list([luna, { ...sol, questions: [{ ...first, revision: 3, asked_at: minutesAgo(0.1) }, ...rest] }]);
+	await fixture.refresh(cookie);
+
+	await tab.until(`${PLACED}?.innerText.includes('DQ-1 r3')`, 'the card at the r3 message');
+	await placedAt(SOL_QUESTION('DQ-1'), '有原訊息的待決題');
+	// The r2 message is an ordinary message again.
+	expect(await tab.eval(`[...document.querySelectorAll('.history .said')].some((li) => li.innerText.includes('DQ-1 r2'))`)).toBe(true);
 }, 30_000);

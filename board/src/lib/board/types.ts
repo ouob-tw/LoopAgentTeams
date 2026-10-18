@@ -56,6 +56,8 @@ export interface HelperQuestion {
 	title: string;
 	status: 'pending' | 'submitted' | 'recorded';
 	context: string;
+	/** The question's full explanation; absent from helpers that do not write it yet. */
+	details?: string | null;
 	kind: 'single' | 'multi' | 'text';
 	options: HelperOption[];
 	recommendation: string;
