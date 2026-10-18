@@ -226,6 +226,10 @@
 		position: absolute;
 		inset: calc(-0.225rem - 1px) 0;
 	}
+	/* Across the line between two runs, up to where the mark above reaches. */
+	.sep + .entry::after {
+		top: calc(-0.875rem - 2px);
+	}
 	.sep {
 		flex: none;
 		width: 1.4rem;

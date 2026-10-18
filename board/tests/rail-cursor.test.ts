@@ -43,7 +43,10 @@ beforeAll(async () => {
 	if (!CHROME) return;
 	fixture = await startFixture(12);
 	const cookie = await fixture.login('rail-cursor');
-	fixture.list(['luna', 'sol', 'vega'].map((name) => fixture.bound('alpha', name)));
+	// One controller waiting for the user, then two at work: two runs, with a line between them.
+	const [luna, sol, vega] = ['luna', 'sol', 'vega'].map((name) => fixture.bound('alpha', name));
+	fixture.report(luna.session_id, { tag: 'HELP', summary: '需要你看一下', hcom_name: 'luna', workspace: luna.workspace });
+	fixture.list([luna, sol, vega]);
 	await fixture.refresh(cookie);
 	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
 	const port = PORT_BASE + 13;
@@ -92,31 +95,35 @@ async function visit(folded: boolean) {
 	await send('Page.navigate', { url: fixture.url });
 }
 
-/** What is under each point of the line between the centres of the first two `selector`s: the
- *  pointer going from one to the other must be over nothing but those two. */
-const under = (selector: string) => `(() => {
-	const [a, b] = [...document.querySelectorAll(${JSON.stringify(selector)})].slice(0, 2);
-	const [from, to] = [a, b].map((el) => el.getBoundingClientRect());
-	const x = (from.left + from.right) / 2;
+/** What is under each point of the line between the centres of the `from`th and `to`th
+ *  `selector`s: the pointer going from one to the other must be over nothing but those two. */
+const under = (selector: string, from = 0, to = 1) => `(() => {
+	const all = [...document.querySelectorAll(${JSON.stringify(selector)})];
+	const [a, b] = [all[${from}], all[${to}]];
+	const [top, bottom] = [a, b].map((el) => el.getBoundingClientRect());
+	const x = (top.left + top.right) / 2;
 	const seen = new Set();
-	for (let y = (from.top + from.bottom) / 2; y <= (to.top + to.bottom) / 2; y += 0.5) {
+	for (let y = (top.top + top.bottom) / 2; y <= (bottom.top + bottom.bottom) / 2; y += 0.5) {
 		const hit = document.elementFromPoint(x, y)?.closest(${JSON.stringify(selector)});
 		seen.add(hit === a ? 'first' : hit === b ? 'second' : 'blank');
 	}
 	return [...seen].sort();
 })()`;
 
-test.skipIf(!CHROME)('moving from one mark of the folded rail to the next never crosses the blank', async () => {
+test.skipIf(!CHROME)('moving between marks of the folded rail never crosses the blank, within a run or across the line between runs', async () => {
 	await visit(true);
-	// The style sheet has applied: the marks are stacked, not laid out inline.
-	await until(`document.querySelectorAll('.rail .entry').length >= 2 && document.querySelector('.rail .entry').getBoundingClientRect().width >= 30`);
+	await until(`document.querySelectorAll('.rail .entry').length >= 3 && document.querySelector('.rail .entry').getBoundingClientRect().width >= 30`);
+	expect(await evaluate(`document.querySelectorAll('.rail .sep').length`)).toBe(1);
 
-	expect(await evaluate(under('.rail .entry'))).toEqual(['first', 'second']);
+	expect(await evaluate(under('.rail .entry', 0, 1))).toEqual(['first', 'second']);
+	expect(await evaluate(under('.rail .entry', 1, 2))).toEqual(['first', 'second']);
 });
 
-test.skipIf(!CHROME)('moving from one card of the unfolded roster to the next never crosses the blank', async () => {
+test.skipIf(!CHROME)('moving between cards of the unfolded roster never crosses the blank, within a run or across the line between runs', async () => {
 	await visit(false);
-	await until(`document.querySelectorAll('.people .person').length >= 2 && document.querySelector('.people .person').getBoundingClientRect().width >= 100`);
+	await until(`document.querySelectorAll('.people .person').length >= 3 && document.querySelector('.people .person').getBoundingClientRect().width >= 100`);
+	expect(await evaluate(`document.querySelectorAll('.people .sep').length`)).toBe(1);
 
-	expect(await evaluate(under('.people .person'))).toEqual(['first', 'second']);
+	expect(await evaluate(under('.people .person', 0, 1))).toEqual(['first', 'second']);
+	expect(await evaluate(under('.people .person', 1, 2))).toEqual(['first', 'second']);
 });

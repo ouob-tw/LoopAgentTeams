@@ -50,6 +50,10 @@
 			position: absolute;
 			inset: calc(-0.2rem - 1px) 0;
 		}
+		/* Across the line between two runs, up to where the card above reaches. */
+		.sep + :global(.person)::after {
+			top: calc(-0.9rem - 2px);
+		}
 	}
 	/* Between two runs of one status. */
 	.sep {
