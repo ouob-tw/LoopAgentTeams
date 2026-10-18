@@ -1,10 +1,12 @@
 // The 所有 Agent tab in a real browser: headless Chrome driven over its DevTools protocol, on the
 // built board with fake data, wide and at a phone's width. Skipped when the host has no Chrome.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
+import { AGENT_HCOM_UNKNOWN_REASON } from '../src/lib/board/agent-actions.ts';
+import { AGENT_FIXED_MODEL_REASON, AGENT_HCOM_UNKNOWN_SWITCH_REASON, AGENT_NOT_LINKED_SWITCH_REASON, LOCK_UNKNOWN_TEXT } from '../src/lib/board/models.ts';
 import { NODE, PORT_BASE, sleep, startFixture, type Fixture } from './harness.ts';
 
 const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
@@ -574,3 +576,249 @@ test.skipIf(!CHROME)('an agent still in Herdr whose switch did not stop it offer
 		await fixture.refresh(cookie);
 	}
 }, 30_000);
+
+test.skipIf(!CHROME)('a Herdr list that cannot be read is reported while the last one stays listed, and the next one read replaces it', async () => {
+	await visit(1280);
+	await openTab();
+	await tab.until(`!!document.querySelector('.inbox [data-agent="s-plain"]')`, 'the agent list');
+	// Herdr would list a new agent now, but its list cannot be read.
+	setHerdr([...AGENTS, herdrAgent('s-fresh', {})], { fail: { 'agent list': { exit: 1, stderr: 'herdr server not running' } } });
+	try {
+		await fixture.refresh(cookie);
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('herdr server not running')`, 'the notice');
+		expect((await screen()).notices).toContain('Herdr 的 Agent 清單讀不到：herdr server not running，所有 Agent 分頁沿用上次讀到的清單');
+		const list = (await screen()).middle;
+		expect(list).toContain('分頁-s-plain');
+		expect(list).toContain('分頁-s-other');
+		expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-fresh"]')`)).toBe(false);
+		// An agent kept on the list still opens at its conversation.
+		await openAgent('s-plain');
+		await tab.until(`document.querySelector('.detail')?.innerText.includes('測試都過了。')`, 'the conversation');
+
+		setHerdr([...AGENTS, herdrAgent('s-fresh', {})]);
+		await fixture.refresh(cookie);
+		await tab.until(`!document.querySelector('.dock')?.innerText.includes('herdr server not running')`, 'the notice gone');
+		await openTab();
+		await tab.until(`!!document.querySelector('.inbox [data-agent="s-fresh"]')`, 'the list read again');
+		expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-plain"]')`)).toBe(true);
+	} finally {
+		setHerdr(AGENTS);
+		await fixture.refresh(cookie);
+	}
+}, 30_000);
+
+test.skipIf(!CHROME)('a conversation that cannot be read says why, and shows once it can be', async () => {
+	try {
+		await visit(1280, '?agent=s-lead');
+		await tab.until(`!!document.querySelector('.detail [data-agent="s-lead"]')`, 'the agent page');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('找不到 session s-lead 的對話紀錄檔')`, 'the reason');
+		expect((await screen()).notices).toContain('對話紀錄讀不到：找不到 session s-lead 的對話紀錄檔');
+		expect(await tab.eval(`document.querySelector('.detail #agent-panel-transcript').innerText`)).toContain('對話紀錄讀不到');
+
+		record('s-lead', ['主控在嗎', '在。']);
+		await tab.until(`document.querySelector('.detail #agent-panel-transcript')?.innerText.includes('主控在嗎')`, 'the conversation');
+		expect(await tab.eval(`document.querySelector('.detail #agent-panel-transcript').innerText`)).not.toContain('對話紀錄讀不到');
+	} finally {
+		rmSync(join(fixture.dir, 'transcripts', 's-lead.jsonl'), { force: true });
+	}
+}, 30_000);
+
+test.skipIf(!CHROME)('while hcom cannot tell whether an agent is linked its page says what is off and still shows its conversation; a list read again restores it', async () => {
+	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+	fixture.setHcom({ listFail: { exit: 1, stderr: 'hcom down' } });
+	setHerdr([...AGENTS, herdrAgent('s-new', { status: 'working' })]);
+	record('s-new', ['新的工作', '開始了。']);
+	try {
+		await fixture.refresh(cookie);
+		await visit(1280, '?agent=s-new');
+		await tab.until(`document.querySelector('.detail #agent-panel-transcript')?.innerText.includes('開始了。')`, 'the conversation');
+		const detail = (await screen()).detail;
+		expect(detail).toContain(AGENT_HCOM_UNKNOWN_REASON);
+		expect(detail).toContain(AGENT_HCOM_UNKNOWN_SWITCH_REASON);
+		expect(await tab.eval(`document.querySelector('.detail .compose textarea').disabled`)).toBe(true);
+		expect(await tab.eval(`document.querySelector('.detail [data-action="close"]').disabled`)).toBe(true);
+		expect(await tab.eval(`document.querySelector('.detail [data-action="interrupt"]').disabled`)).toBe(false);
+
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+		await fixture.refresh(cookie);
+		await tab.until(`document.querySelector('.detail .compose textarea')?.disabled === false`, 'the box on again');
+		expect(await tab.eval(`document.querySelector('.detail [data-action="close"]').disabled`)).toBe(false);
+		const after = (await screen()).detail;
+		expect(after).not.toContain('HCOM 連線無法確認');
+		// Now known not to be linked: the switch says that instead.
+		expect(after).toContain(AGENT_NOT_LINKED_SWITCH_REASON);
+		expect(herdrCalls()).toEqual([]);
+	} finally {
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+		setHerdr(AGENTS);
+		await fixture.refresh(cookie);
+	}
+}, 30_000);
+
+test.skipIf(!CHROME)('an interrupt Herdr does not carry out says why, is recorded as failed, and the page stays usable', async () => {
+	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+	const stderr = JSON.stringify({ error: { code: 'pane_not_found', message: 'pane went away' } });
+	setHerdr(AGENTS, { fail: { 'agent send-keys': { exit: 1, stderr } } });
+	try {
+		await visit(390, '?agent=s-plain');
+		await tab.until(`!!document.querySelector('.detail [data-action="interrupt"]')`, 'the agent page');
+		await click('.detail [data-action="interrupt"]');
+		await tab.until(`!!document.querySelector('.detail [data-action="confirm-interrupt"]')`, 'the confirmation');
+		await click('.detail [data-action="confirm-interrupt"]');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('pane went away')`, 'the reason');
+		const notices = (await screen()).notices;
+		expect(notices).toContain('Herdr 沒有送出 Esc：pane went away');
+		expect(notices).not.toContain('已對');
+
+		await click('.detail [data-tab="log"]');
+		await tab.until(`!!document.querySelector('.detail #agent-panel-log li[data-action="interrupt"]')`, 'the record');
+		const entry = await tab.eval<string>(`document.querySelector('.detail #agent-panel-log li[data-action="interrupt"]').innerText`);
+		expect(entry).toContain('✗ Herdr 沒有送出 Esc：pane went away');
+		expect(entry).not.toContain('已送出 Esc');
+
+		// Still on its page, and it can be interrupted again or sent text.
+		expect((await screen()).detail).toContain('分頁-s-plain');
+		expect(await tab.eval(`document.querySelector('.detail [data-action="interrupt"]').disabled`)).toBe(false);
+		await type('還在嗎');
+		await click('.detail .compose button.primary');
+		await tab.until(`document.querySelector('.detail .compose textarea').value === ''`, 'the box emptied');
+		expect(herdrCalls()).toEqual([
+			['agent', 'send-keys', 'wA:p-s-plain', 'esc'],
+			['agent', 'prompt', 'wA:p-s-plain', '還在嗎']
+		]);
+		expect(await tab.eval(FITS)).toBe(true);
+	} finally {
+		setHerdr(AGENTS);
+	}
+}, 30_000);
+
+test.skipIf(!CHROME)('text typed for one agent stays with it: another agent opened meanwhile neither shows nor gets it', async () => {
+	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+	const shown = (id: string) => `location.search === '?agent=${id}' && !!document.querySelector('.detail [data-agent="${id}"]') && !!document.querySelector('.detail .compose textarea')`;
+	setHerdr(AGENTS, { slowMs: { 'agent prompt': 1_500 } });
+	try {
+		await visit(1280, '?agent=s-plain');
+		await tab.until(shown('s-plain'), 'the agent page');
+		await type('只給 plain 的話');
+		await openTab();
+		await openAgent('s-other');
+		await tab.until(shown('s-other'), 'the other agent');
+		expect(await boxText()).toBe('');
+		expect(await tab.eval(`document.querySelector('.detail .compose button.primary').disabled`)).toBe(true);
+
+		// Sent to the other one, which is left before Herdr answers.
+		await type('給 other 的話');
+		await click('.detail .compose button.primary');
+		await openTab();
+		await openAgent('s-plain');
+		await tab.until(shown('s-plain'), 'the first agent again');
+		expect(await boxText()).toBe('只給 plain 的話');
+		// Herdr answers the send meanwhile.
+		await sleep(2_000);
+		expect(herdrCalls()).toEqual([['agent', 'prompt', 'wB:p-s-other', '給 other 的話']]);
+		expect(await boxText()).toBe('只給 plain 的話');
+
+		await openTab();
+		await openAgent('s-other');
+		await tab.until(shown('s-other'), 'the other agent again');
+		expect(await boxText()).toBe('');
+	} finally {
+		setHerdr(AGENTS);
+	}
+}, 30_000);
+
+test.skipIf(!CHROME)('a record that cannot be read, a request that gets no answer and a record that cannot be written are each said so', async () => {
+	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
+	const sentLog = join(fixture.dir, 'board-state', 'sent-log.jsonl');
+	try {
+		await visit(1280, '?agent=s-plain');
+		await tab.until(`!!document.querySelector('.detail .compose textarea')`, 'the agent page');
+		// The board server stops answering this page, as when the network drops.
+		await tab.eval(`(() => {
+			window.realFetch = window.fetch;
+			window.fetch = (input, init) => (String(input).includes('/api/agents/') ? Promise.reject(new TypeError('Failed to fetch')) : window.realFetch(input, init));
+		})()`);
+		// Its record is read again when it is opened again.
+		await openTab();
+		await openAgent('s-other');
+		await tab.until(`location.search === '?agent=s-other'`, 'the other agent');
+		await openAgent('s-plain');
+		await tab.until(`location.search === '?agent=s-plain' && !!document.querySelector('.detail .compose textarea')`, 'the agent page again');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('分頁-s-plain 的操作紀錄讀取失敗。')`, 'the record failure');
+
+		await type('有人在嗎');
+		await click('.detail .compose button.primary');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('沒有收到看板伺服器的回應')`, 'the unknown outcome');
+		expect((await screen()).notices).toContain('不確定有沒有執行；再試之前請先看操作紀錄。（文字還在輸入框裡）');
+		expect(await boxText()).toBe('有人在嗎');
+		expect(herdrCalls()).toEqual([]);
+
+		// Answering again, a send whose record cannot be written says so; its record reads again after.
+		await tab.eval(`window.fetch = window.realFetch`);
+		appendFileSync(sentLog, '');
+		chmodSync(sentLog, 0o400);
+		await click('.detail .compose button.primary');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('送出紀錄寫入失敗')`, 'the write failure');
+		expect(await boxText()).toBe('');
+		expect(herdrCalls()).toEqual([['agent', 'prompt', 'wA:p-s-plain', '有人在嗎']]);
+		await tab.until(`!document.querySelector('.dock')?.innerText.includes('操作紀錄讀取失敗')`, 'the record read again');
+	} finally {
+		chmodSync(sentLog, 0o600);
+	}
+}, 30_000);
+
+test.skipIf(!CHROME)('a Codex started with a fixed model offers only its effort and says why; one started with -c model= is not locked, and unread launch arguments say so', async () => {
+	const launches: Record<string, unknown> = {
+		's-fix': ['--model', 'gpt-6.1-sol'],
+		's-fixm': ['-m', 'gpt-6.1-sol'],
+		's-oss': ['--oss'],
+		's-cfg': ['-c', 'model="gpt-6.1-sol"'],
+		's-unk': { unknown: '讀不到 s-unk 的啟動參數' }
+	};
+	const sessions = Object.keys(launches);
+	rmSync(join(fixture.dir, 'hcom-calls.jsonl'), { force: true });
+	writeFileSync(join(fixture.dir, 'launch-args.json'), JSON.stringify(launches));
+	setHerdr([...AGENTS, ...sessions.map((session) => herdrAgent(session, { client: 'codex' }))]);
+	fixture.setHcom({
+		agents: [
+			{ name: 'lead', session_id: 's-lead', status: 'active' },
+			...sessions.map((session) => ({ name: `x${session}`, session_id: session, status: 'listening', launch_context: { pane_id: `wA:p-${session}` } }))
+		]
+	});
+	const formOf = (id: string) => `!!document.querySelector('.detail [data-agent="${id}"]') && !!document.querySelector('.detail [data-pick="effort"] option[value="high"]')`;
+	const disabled = (kind: 'model' | 'effort') => tab.eval<boolean>(`document.querySelector('.detail [data-pick="${kind}"]').disabled`);
+	const modelText = () => tab.eval<string>(`document.querySelector('.detail .model').innerText`);
+	try {
+		await fixture.refresh(cookie);
+		await visit(390, '?agent=s-fix');
+		for (const session of sessions) {
+			if (session !== 's-fix') {
+				await openTab();
+				await openAgent(session);
+			}
+			await tab.until(formOf(session), `${session}'s switch form`);
+			const fixed = ['s-fix', 's-fixm', 's-oss'].includes(session);
+			expect(await disabled('model')).toBe(fixed);
+			expect(await disabled('effort')).toBe(false);
+			expect((await modelText()).includes(AGENT_FIXED_MODEL_REASON)).toBe(fixed);
+			if (session === 's-unk') expect(await modelText()).toContain(`${LOCK_UNKNOWN_TEXT}：讀不到 s-unk 的啟動參數`);
+			else expect(await modelText()).not.toContain(LOCK_UNKNOWN_TEXT);
+			// The effort alone can still be picked and sent.
+			await pickSetting('effort', 'high');
+			expect(await tab.eval(`document.querySelector('.detail [data-action="switch"]').disabled`)).toBe(false);
+			expect(await tab.eval(FITS)).toBe(true);
+		}
+
+		// One not linked to hcom has no form, only why.
+		await openTab();
+		await openAgent('s-plain');
+		await tab.until(`document.querySelector('.detail [data-agent="s-plain"]') && document.querySelector('.detail .model')?.innerText.includes(${JSON.stringify(AGENT_NOT_LINKED_SWITCH_REASON)})`, 'the not-linked reason');
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="switch"], .detail [data-pick]')`)).toBe(false);
+		expect(hcomCalls()).toEqual([]);
+	} finally {
+		rmSync(join(fixture.dir, 'launch-args.json'), { force: true });
+		setHerdr(AGENTS);
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+		await fixture.refresh(cookie);
+	}
+}, 60_000);
