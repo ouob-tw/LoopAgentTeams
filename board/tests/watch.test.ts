@@ -1,30 +1,61 @@
 // The source watcher on its own, in this test's runtime (Bun); the board tests run it under Node.
-import { test } from 'bun:test';
+import { expect, test } from 'bun:test';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createSourceWatcher, type WatchTargets } from '../src/lib/server/watch.ts';
 import { sleep, until } from './harness.ts';
 
-test('a directory deleted and created again is watched again at the next sync, even under its old inode number', async () => {
+/** A temporary directory, watched as the board watches its reports directory. */
+function watchedDirectory() {
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-watch-'));
 	const watched = join(dir, 'reports');
 	mkdirSync(watched);
 	let changes = 0;
-	const watcher = createSourceWatcher(() => changes++);
+	const sourceWatcher = createSourceWatcher(() => changes++);
 	const targets: WatchTargets = new Map([[watched, null]]);
+	sourceWatcher.sync(targets);
+	return {
+		watched,
+		sync: () => sourceWatcher.sync(targets),
+		changes: () => changes,
+		reset: () => (changes = 0),
+		cleanup() {
+			sourceWatcher.close();
+			rmSync(dir, { recursive: true, force: true });
+		}
+	};
+}
+
+test('a directory deleted and created again is watched again without waiting for a re-read, even under its old inode number', async () => {
+	const setup = watchedDirectory();
 	try {
-		watcher.sync(targets);
-		rmSync(watched, { recursive: true });
-		mkdirSync(watched);
-		watcher.sync(targets);
+		rmSync(setup.watched, { recursive: true });
+		mkdirSync(setup.watched);
 		// Let the events of the deletion pass first, so only the new file can count.
 		await sleep(200);
-		changes = 0;
-		writeFileSync(join(watched, 'session.jsonl'), '{}\n');
-		await until(() => changes > 0, 2_000, 'a change in the directory created again');
+		setup.reset();
+		writeFileSync(join(setup.watched, 'session.jsonl'), '{}\n');
+		await until(() => setup.changes() > 0, 2_000, 'a change in the directory created again');
 	} finally {
-		watcher.close();
-		rmSync(dir, { recursive: true, force: true });
+		setup.cleanup();
+	}
+});
+
+test('a change written just before a sync is still reported', async () => {
+	const setup = watchedDirectory();
+	try {
+		// Bun drops what a closed watch had not delivered yet, so a sync must not reopen a live watch.
+		let missed = 0;
+		for (let i = 0; i < 50; i++) {
+			setup.reset();
+			writeFileSync(join(setup.watched, 'session.jsonl'), `${i}\n`);
+			setup.sync();
+			await sleep(20);
+			if (setup.changes() === 0) missed++;
+		}
+		expect(missed).toBe(0);
+	} finally {
+		setup.cleanup();
 	}
 });
