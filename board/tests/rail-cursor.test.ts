@@ -41,7 +41,7 @@ async function until(expression: string) {
 
 beforeAll(async () => {
 	if (!CHROME) return;
-	fixture = await startFixture(12);
+	fixture = await startFixture(31);
 	const cookie = await fixture.login('rail-cursor');
 	// One controller waiting for the user, then two at work: two runs, with a line between them.
 	const [luna, sol, vega] = ['luna', 'sol', 'vega'].map((name) => fixture.bound('alpha', name));
@@ -49,10 +49,10 @@ beforeAll(async () => {
 	fixture.list([luna, sol, vega]);
 	await fixture.refresh(cookie);
 	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const port = PORT_BASE + 13;
+	const port = PORT_BASE + 32;
 	chrome = spawn(
 		CHROME!,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, 'about:blank'],
+		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, 'about:blank'],
 		{ stdio: 'ignore' }
 	);
 	let target: { webSocketDebuggerUrl: string } | undefined;
