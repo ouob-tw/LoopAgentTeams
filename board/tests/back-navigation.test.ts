@@ -550,6 +550,11 @@ for (const [title, context] of [
 	}, 30_000);
 }
 
+/** Time for the conversation the page watches while a question is lost to have been read once: the
+ *  server watches the record only after its first read, so a line written during that read is
+ *  seen only at the fallback interval. */
+const LOST_WATCH_READ = 1000;
+
 for (const width of [390, 1400]) {
 	test.skipIf(!CHROME)(`${width}px: a question whose asking message reaches the conversation after its report is found there without reopening it`, async () => {
 		// Reported at the end of a turn, a moment before the turn's text is in the conversation.
@@ -562,6 +567,7 @@ for (const width of [390, 1400]) {
 		await tab.eval(click('.inbox', `原訊息晚到的題目 ${width}`));
 		await tab.until(`document.querySelector('.detail').innerText.includes('找不到提出這題的原訊息')`, 'the not-found notice');
 		await tab.until(`document.querySelector('.placeholder') === null`, 'the placeholder gone');
+		await sleep(LOST_WATCH_READ);
 		appendFileSync(solTranscript(), JSON.stringify({ kind: 'assistant', time: minutesAgo(0), text: message }) + '\n');
 		await placedAt(SOL_QUESTION(id), `原訊息晚到的題目 ${width}`);
 		expect(await placedText()).toContain(`${id} r1`);
@@ -583,6 +589,7 @@ test.skipIf(!CHROME)('phone: a lost question is found at its revision\'s message
 
 	// The r2 message reaches the conversation, and only then the board's data has r2.
 	const r2 = `第二版。\n\nDECIDE: ${id} r2 · 第二版 · 回答面板上的題目`;
+	await sleep(LOST_WATCH_READ);
 	appendFileSync(solTranscript(), JSON.stringify({ kind: 'assistant', time: minutesAgo(0), text: r2 }) + '\n');
 	await sleep(1000);
 	fixture.report(sol.session_id, { tag: 'DECIDE', summary: '第二版', message: r2, time: minutesAgo(0), hcom_name: 'sol', workspace: sol.workspace });
