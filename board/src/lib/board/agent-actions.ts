@@ -1,8 +1,9 @@
 // What the user does to an agent on the 所有 Agent tab: the shared shapes of its operation record.
 import type { Agent } from './types.ts';
 
-/** What was done: text typed into the agent's input box, its turn interrupted, or it closed. */
-export type AgentActionKind = 'send' | 'interrupt' | 'close';
+/** What was done: text typed into the agent's input box, its turn interrupted, it closed, or its
+ *  Herdr tab moved or renamed. */
+export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename';
 
 /** One line of the board's sent log: one attempt at an action on an agent, made or refused. */
 export interface AgentAction {
@@ -10,7 +11,7 @@ export interface AgentAction {
 	kind: 'agent-action';
 	action: AgentActionKind;
 	time: string;
-	/** The agent's session ID. */
+	/** The agent's session ID; empty for a tab moved or renamed from a card Herdr gave no session yet. */
 	agentId: string;
 	/** The name the tab listed it under then; empty when it was not listed. */
 	name: string;
@@ -18,7 +19,7 @@ export interface AgentAction {
 	route: 'hcom' | 'herdr' | null;
 	/** The Herdr pane it was in then; null when it was not listed. */
 	pane: string | null;
-	/** The text sent; null for an interrupt or a close. */
+	/** The text sent, or what a tab move or rename did; null for an interrupt or a close. */
 	text: string | null;
 	ok: boolean;
 	/** Why it was not done; null when it was. */
@@ -34,7 +35,13 @@ export interface AgentActionResponse {
 	logError: string | null;
 }
 
-export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = { send: '傳話', interrupt: '中斷', close: '關閉' };
+export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = {
+	send: '傳話',
+	interrupt: '中斷',
+	close: '關閉',
+	move: '調整分頁順序',
+	rename: '改分頁名稱'
+};
 
 export const AGENT_INTERRUPT_CONFIRM_TEXT = '中斷這個 Agent 目前這一回合（等同在它的終端機按 Esc）？';
 

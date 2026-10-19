@@ -146,6 +146,25 @@ export async function describePlace(
 	};
 }
 
+/** A workspace's tabs, all of them in the order Herdr shows them, plain terminal tabs included;
+ *  or why they cannot be told. */
+export async function workspaceTabs(
+	config: BoardConfig,
+	workspaceId: string
+): Promise<{ tabs: { id: string; label: string }[] } | { reason: string }> {
+	const tabs = await herdr(config, ['tab', 'list', '--workspace', workspaceId]);
+	if ('reason' in tabs) return { reason: `讀不到 Herdr 的分頁清單：${tabs.reason}` };
+	const tabList = tabs.result.tabs;
+	if (!Array.isArray(tabList) || !tabList.every((tab) => typeof tab?.tab_id === 'string' && typeof tab?.label === 'string')) {
+		return { reason: '讀不到 Herdr 的分頁清單：輸出不是預期的格式' };
+	}
+	return {
+		tabs: tabList
+			.filter((tab) => tab.workspace_id === undefined || tab.workspace_id === workspaceId)
+			.map((tab) => ({ id: tab.tab_id as string, label: tab.label as string }))
+	};
+}
+
 /** Sends one request over Herdr's socket and returns its `result`, or why there is none. */
 function socketRequest(config: BoardConfig, method: string, params: object): Promise<{ result: unknown } | { reason: string }> {
 	return new Promise((resolve) => {

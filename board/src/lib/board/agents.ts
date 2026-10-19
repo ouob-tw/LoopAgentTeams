@@ -69,3 +69,16 @@ export const AGENT_MARK: Record<AgentStatus, ControllerStatus> = {
 	idle: 'closed',
 	unknown: 'ended'
 };
+
+/** Where a card dragged onto another card of its workspace puts its Herdr tab: where the other
+ *  card's tab is, after that tab when dragged towards the end of the list and before it when
+ *  towards the front. `mark` is the card to show that place by: the tab's last card after it, its
+ *  first card before it, as a tab may have several. Null for a card of its own tab, where nothing
+ *  moves. Indexes are into the workspace's cards, which follow Herdr's tab order. */
+export function tabDrop(cards: readonly Agent[], dragged: number, over: number): { tab: string; after: boolean; mark: number } | null {
+	const tab = cards[over].herdr.tab;
+	if (tab === cards[dragged].herdr.tab) return null;
+	const after = over > dragged;
+	const mark = after ? cards.findLastIndex((card) => card.herdr.tab === tab) : cards.findIndex((card) => card.herdr.tab === tab);
+	return { tab, after, mark };
+}

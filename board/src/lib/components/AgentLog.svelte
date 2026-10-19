@@ -1,7 +1,7 @@
 <script lang="ts">
 	// What the user did to this agent from the board, on any logged-in device: text sent to it,
-	// interrupts and closes that did not close it, each made or refused, and its model switches as
-	// they stand now, given up ones included.
+	// interrupts and closes that did not close it, moves and renames of its Herdr tab, each made or
+	// refused, and its model switches as they stand now, given up ones included.
 	import { AGENT_ACTION_LABEL, type AgentAction } from '#lib/board/agent-actions.ts';
 	import { AGENT_SWITCH_STATE_TEXT, choiceText, settingsText, type SwitchView } from '#lib/board/models.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
@@ -22,7 +22,7 @@
 	);
 	/** A switch whose result is good or still on its way is not shown as a failure. */
 	const switchFailed = (entry: SwitchView) => entry.state !== 'done' && entry.state !== 'resuming' && entry.state !== 'abandoned';
-	const DONE_LABEL = { send: '已送出', interrupt: '已送出 Esc', close: '已關閉' } as const;
+	const DONE_LABEL = { send: '已送出', interrupt: '已送出 Esc', close: '已關閉', move: '已移動', rename: '已改名' } as const;
 	function routeLabel(entry: AgentAction): string {
 		if (entry.route === 'hcom') return entry.action === 'close' ? '（hcom kill）' : '（HCOM 輸入框）';
 		return entry.route === 'herdr' ? '（Herdr）' : '';

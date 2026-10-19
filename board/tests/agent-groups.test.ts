@@ -1,6 +1,6 @@
 // The 所有 Agent tab's grouping, as the page shows the server's list.
 import { expect, test } from 'bun:test';
-import { agentGroups, cardName, folderName, shortName, tabShown, workspaceFolders } from '../src/lib/board/agents.ts';
+import { agentGroups, cardName, folderName, shortName, tabDrop, tabShown, workspaceFolders } from '../src/lib/board/agents.ts';
 import type { Agent } from '../src/lib/board/types.ts';
 
 const agent = (id: string, workspace: string, workspaceLabel: string | null) =>
@@ -65,4 +65,17 @@ test('the page names the tab after the agent unless the tab already says its nam
 	expect(tabShown(named('lagu-composer-bure', 'lagu-composer-bure', 'bure'))).toBeNull();
 	expect(tabShown(named('study', null, 'study'))).toBeNull();
 	expect(tabShown(named('vema', 'vema', null))).toBeNull();
+});
+
+test('a card dropped on another card goes where that card’s tab is: after it when dragged down, before it when up; never onto its own tab', () => {
+	const card = (id: string, tab: string) => ({ id, herdr: { tab } }) as Agent;
+	// The second tab holds two agents, split by the user: the place is shown past both its cards.
+	const cards = [card('a', 't1'), card('b', 't2'), card('c', 't2'), card('d', 't3')];
+	expect(tabDrop(cards, 0, 3)).toEqual({ tab: 't3', after: true, mark: 3 });
+	expect(tabDrop(cards, 0, 1)).toEqual({ tab: 't2', after: true, mark: 2 });
+	expect(tabDrop(cards, 0, 2)).toEqual({ tab: 't2', after: true, mark: 2 });
+	expect(tabDrop(cards, 3, 2)).toEqual({ tab: 't2', after: false, mark: 1 });
+	expect(tabDrop(cards, 3, 0)).toEqual({ tab: 't1', after: false, mark: 0 });
+	expect(tabDrop(cards, 1, 2)).toBeNull();
+	expect(tabDrop(cards, 2, 1)).toBeNull();
 });
