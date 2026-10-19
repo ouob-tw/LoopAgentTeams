@@ -3,6 +3,7 @@
 // agent Herdr detects, and shows Herdr's state for those hcom does not reach (ADR 0003).
 import { createConnection } from 'node:net';
 import { basename } from 'node:path';
+import type { HerdrPlace } from '../board/format.ts';
 import type { BoardConfig } from './config.ts';
 import { runExternal } from './external.ts';
 
@@ -101,13 +102,6 @@ export async function paneExists(config: BoardConfig, paneId: string): Promise<{
 	return { exists: paneList.some((pane) => pane.pane_id === paneId) };
 }
 
-/** Where a pane's workspace and tab sit in Herdr, by name and by their place in its lists. */
-export interface HerdrPlace {
-	workspace: { label: string; number: number } | null;
-	/** `position` counts from 1 among the workspace's tabs. */
-	tab: { label: string; position: number } | null;
-}
-
 /** The names and places of a workspace and a tab, or why they cannot be told. One that is no
  *  longer in Herdr is null. */
 export async function describePlace(
@@ -203,6 +197,8 @@ export interface HerdrAgent {
 	workspace: string;
 	/** The tab's label, else the terminal's title; null when Herdr gives neither. */
 	title: string | null;
+	/** The tab's label and place among its workspace's tabs, counted from 1; null when the tab list does not have it. */
+	tabPlace: { label: string; position: number } | null;
 	workspaceLabel: string | null;
 	workspaceNumber: number | null;
 }
@@ -244,6 +240,12 @@ export async function listHerdrAgents(config: BoardConfig): Promise<{ ok: true; 
 	}
 	const workspaceOf = new Map(workspaceList.map((workspace) => [workspace.workspace_id, workspace]));
 	const tabLabel = new Map(tabList.map((tab) => [tab.tab_id as string, tab.label as string]));
+	// Herdr lists a workspace's tabs in the order it shows them.
+	const tabPlace = (tabId: string, workspaceId: string) => {
+		const ownTabs = tabList.filter((tab) => tab.workspace_id === undefined || tab.workspace_id === workspaceId);
+		const index = ownTabs.findIndex((tab) => tab.tab_id === tabId);
+		return index < 0 ? null : { label: ownTabs[index].label as string, position: index + 1 };
+	};
 	return {
 		ok: true,
 		agents: agentList.map((agent) => {
@@ -259,6 +261,7 @@ export async function listHerdrAgents(config: BoardConfig): Promise<{ ok: true; 
 				tab: agent.tab_id,
 				workspace: agent.workspace_id,
 				title: tabLabel.get(agent.tab_id) || terminalTitle || null,
+				tabPlace: tabPlace(agent.tab_id, agent.workspace_id),
 				workspaceLabel: workspace?.label ?? null,
 				workspaceNumber: workspace?.number ?? null
 			};

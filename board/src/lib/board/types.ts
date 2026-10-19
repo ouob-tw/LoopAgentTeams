@@ -180,8 +180,7 @@ export interface BoardSnapshot {
 	errors: string[];
 }
 
-/** What an agent on the 所有 Agent tab is doing, in the order the tab lists them within a Herdr
- *  workspace: who needs the user first. */
+/** What an agent on the Herdr tab is doing, from what needs the user most to least. */
 export const AGENT_STATUSES = ['blocked', 'done', 'working', 'idle', 'unknown'] as const;
 export type AgentStatus = (typeof AGENT_STATUSES)[number];
 
@@ -221,7 +220,16 @@ export interface Agent {
 	client: string;
 	/** The folder it works in. */
 	folder: string;
-	herdr: { workspace: string; workspaceLabel: string | null; workspaceNumber: number | null; tab: string; pane: string };
+	/** `tabPlace` is its tab's label and place among the workspace's tabs; null when Herdr's tab list
+	 *  does not have it or it is listed from its open switch. */
+	herdr: {
+		workspace: string;
+		workspaceLabel: string | null;
+		workspaceNumber: number | null;
+		tab: string;
+		tabPlace: { label: string; position: number } | null;
+		pane: string;
+	};
 	/** hcom's status when linked, Herdr's otherwise. */
 	status: AgentStatus;
 	statusSource: 'hcom' | 'herdr';

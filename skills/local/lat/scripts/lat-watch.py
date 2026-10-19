@@ -1502,7 +1502,10 @@ def popup_title(agent, orchestrator, label):
         client = info.get('tool') or ''
         _label, pane = herdr_label('pane', info['launch_context']['pane_id'])
         tab_label, tab = herdr_label('tab', pane['tab_id'])
-        place = [herdr_label('workspace', tab['workspace_id'])[0], tab_label]
+        place = [herdr_label('workspace', tab['workspace_id'])[0]]
+        # A tab already named after the agent would say its name twice.
+        if agent.lower() not in str(tab_label).lower():
+            place.append(tab_label)
     except (OSError, ValueError, KeyError, TypeError):
         pass
     return ' '.join([f'{client}{label}:', *map(str, place), agent])

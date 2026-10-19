@@ -1,0 +1,171 @@
+/* The model and effort picker beside the send button, shared by the controllers' and the agents'
+   pickers so both look the same. */
+/* One soft rounded tag holding both parts, shorter than the send button and centred beside it. */
+.picker {
+	position: relative;
+	display: inline-flex;
+	align-self: center;
+	align-items: center;
+	gap: 4px;
+	padding: 3px 4px;
+	border-radius: var(--radius-pill);
+	background: color-mix(in srgb, var(--text) 7%, var(--bg));
+	font-size: max(0.8rem, var(--min-font, 0px));
+}
+.picker .part {
+	max-width: 11rem;
+	padding: 2px 8px;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+	border: 0;
+	border-radius: var(--radius-pill);
+	background: none;
+	color: var(--text);
+	line-height: 1.4;
+}
+.picker .part:not([aria-disabled='true']):is(:hover, :focus-visible, [aria-expanded='true']) {
+	background: color-mix(in srgb, var(--text) 14%, var(--bg));
+}
+/* Apply and discard, round like the parts and as tall. */
+.picker .act {
+	display: inline-flex;
+	align-items: center;
+	padding: calc(2px + 0.2em) 0.35em;
+	border: 0;
+	border-radius: var(--radius-pill);
+	background: none;
+	color: var(--accent);
+	line-height: 1;
+}
+.picker .act.alert {
+	color: var(--danger);
+}
+.picker .act.discard {
+	color: var(--muted);
+}
+.picker .act:not([aria-disabled='true']):is(:hover, :focus-visible) {
+	background: color-mix(in srgb, var(--text) 14%, var(--bg));
+}
+.picker .act[aria-disabled='true'] {
+	opacity: var(--disabled-opacity);
+	cursor: default;
+}
+/* Switched, not confirmed by a turn yet. */
+.picker .part.waiting {
+	text-decoration: underline dotted;
+	text-underline-offset: 0.2em;
+}
+.picker .part.unknown {
+	color: var(--muted);
+}
+/* A wake option or a staged pick that differs from the current setting. */
+.picker .part.picked {
+	color: var(--accent);
+	font-weight: 600;
+}
+.picker .part[aria-disabled='true'] {
+	opacity: var(--disabled-opacity);
+	cursor: default;
+}
+/* Without translucency a part that cannot be picked is grey and struck through, like a
+   disabled button there. */
+:root[data-theme='light'] .picker .part[aria-disabled='true'] {
+	color: var(--muted);
+	text-decoration: line-through;
+}
+/* Floats above the parts, the line being at the bottom of the screen; opening it moves nothing. */
+.picker .menu {
+	position: absolute;
+	right: 0;
+	bottom: calc(100% + 0.4rem);
+	z-index: 40;
+	display: flex;
+	flex-direction: column;
+	min-width: 13rem;
+	max-width: min(22rem, calc(100vw - 2rem));
+	padding: 0.3rem;
+	background: var(--surface);
+	border: 2px solid var(--text);
+	border-radius: var(--radius);
+	box-shadow: 0 4px 16px rgb(0 0 0 / 0.35);
+}
+.picker .items {
+	display: flex;
+	flex-direction: column;
+}
+.picker .items:focus {
+	outline: none;
+}
+.picker .menu button {
+	display: flex;
+	gap: 0.6rem;
+	align-items: baseline;
+	padding: 0.35rem 0.6rem;
+	border: 0;
+	background: none;
+	font-size: max(0.85rem, var(--min-font, 0px));
+	text-align: left;
+	white-space: nowrap;
+}
+/* The full id or level, so two short names never leave a choice unclear. */
+.picker .menu small {
+	margin-left: auto;
+	font-family: var(--mono);
+	font-size: max(0.75rem, var(--min-font, 0px));
+	color: var(--muted);
+}
+.picker .menu button[aria-checked='true'] small {
+	color: inherit;
+}
+.picker .menu button:hover,
+.picker .menu button:focus-visible {
+	background: color-mix(in srgb, var(--text) 10%, var(--surface));
+	outline: none;
+}
+.picker .menu button[aria-checked='true'] {
+	background: var(--selected-bg);
+	color: var(--selected-text);
+	font-weight: 600;
+}
+.picker .menu button[aria-checked='true']::before {
+	content: '✓ ';
+}
+/* What needs the user about the last switch, with its buttons. */
+.picker .menu.status {
+	gap: 0.4rem;
+	padding: 0.6rem 0.7rem;
+	font-size: max(0.85rem, var(--min-font, 0px));
+}
+.picker .status p {
+	margin: 0;
+	overflow-wrap: anywhere;
+}
+.picker .status .note {
+	margin: 0;
+}
+.picker .failed {
+	color: var(--danger);
+}
+.picker .menu .wide {
+	justify-content: center;
+	border: 1px solid var(--line);
+	background: var(--surface);
+	font-family: inherit;
+}
+.picker .menu .wide.primary {
+	border-color: var(--accent);
+	background: var(--accent);
+	color: var(--bg);
+	font-weight: 600;
+}
+.picker .menu .wide.danger {
+	border-color: var(--danger);
+	color: var(--danger);
+}
+.picker .note {
+	margin: 0.3rem 0.6rem 0.2rem;
+	font-size: max(0.75rem, var(--min-font, 0px));
+	color: var(--muted);
+	overflow-wrap: anywhere;
+}

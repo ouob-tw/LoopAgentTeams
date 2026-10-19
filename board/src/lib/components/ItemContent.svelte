@@ -158,7 +158,7 @@
 		{#if recorded && !isAnswered(item)}
 			<p class="notice recorded" role="status">✓ {ANSWER_STATE_TEXT.recorded}：主控已記錄這一題的答覆。</p>
 		{:else if !listed}
-			<p class="notice" role="status">這一題已經不在信箱：主控已結束，或題目已被移除。不能再作答。</p>
+			<p class="notice" role="status">這一題已經不在待辦：主控已結束，或題目已被移除。不能再作答。</p>
 		{/if}
 		{#if question.context}
 			<div class="text md">{@html renderMarkdown(question.context)}</div>

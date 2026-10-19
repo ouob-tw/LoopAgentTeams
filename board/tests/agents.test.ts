@@ -84,12 +84,12 @@ test('lists every Herdr agent across workspaces, named and stated by hcom when l
 	const snapshot = await fixture.refresh(cookie);
 
 	expect(snapshot.errors).toEqual([]);
-	// Alpha (workspace 1) first; within it who needs the user first: blocked, done, working, idle.
+	// Alpha (workspace 1) first; within it in Herdr's own order of tabs, whatever their status.
 	expect(summary(snapshot)).toEqual([
+		['s-lead', 'lead', 'linked', 'working', 'hcom'],
 		['s-pane', 'pano', 'linked', 'blocked', 'hcom'],
 		['s-plain', 'tab-s-plain', 'none', 'blocked', 'herdr'],
 		['s-done', 'tab-s-done', 'none', 'done', 'herdr'],
-		['s-lead', 'lead', 'linked', 'working', 'hcom'],
 		[null, 'tab-wA:t-s-none', 'none', 'idle', 'herdr'],
 		['s-beta', 'tab-s-beta', 'none', 'working', 'herdr']
 	]);
@@ -103,7 +103,7 @@ test('lists every Herdr agent across workspaces, named and stated by hcom when l
 		hcom: 'none',
 		client: 'codex',
 		folder: '/projects/beta',
-		herdr: { workspace: 'wB', workspaceLabel: 'Beta', workspaceNumber: 2, tab: 'wB:t-s-beta', pane: 'wB:p-s-beta' },
+		herdr: { workspace: 'wB', workspaceLabel: 'Beta', workspaceNumber: 2, tab: 'wB:t-s-beta', tabPlace: { label: 'tab-s-beta', position: 1 }, pane: 'wB:p-s-beta' },
 		status: 'working',
 		statusSource: 'herdr',
 		controller: false,
@@ -122,7 +122,27 @@ test('an agent gone from Herdr\'s list leaves the tab; one that comes is added',
 	setHerdr([herdrAgent('s-one'), herdrAgent('s-two')]);
 	expect((await fixture.refresh(cookie)).agents.map((entry) => entry.id)).toEqual(['s-one', 's-two']);
 	setHerdr([herdrAgent('s-two'), herdrAgent('s-three')]);
-	expect((await fixture.refresh(cookie)).agents.map((entry) => entry.id)).toEqual(['s-three', 's-two']);
+	expect((await fixture.refresh(cookie)).agents.map((entry) => entry.id)).toEqual(['s-two', 's-three']);
+});
+
+test('rows keep Herdr\'s order of tabs and panes: a status change never moves one', async () => {
+	const tabs = [
+		{ tab_id: 'wA:t2', workspace_id: 'wA', label: 'second' },
+		{ tab_id: 'wA:t1', workspace_id: 'wA', label: 'first' }
+	];
+	const listed = (busy: string) => [
+		herdrAgent('s-a', { tab: 'wA:t1', pane: 'wA:p1', status: busy === 's-a' ? 'working' : 'idle' }),
+		herdrAgent('s-b', { tab: 'wA:t2', pane: 'wA:p2', status: busy === 's-b' ? 'blocked' : 'idle' }),
+		herdrAgent('s-c', { tab: 'wA:t1', pane: 'wA:p3', status: 'idle' })
+	];
+	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ agents: listed('s-a'), workspaces: WORKSPACES, tabs }));
+	let snapshot = await fixture.refresh(cookie);
+	// Tab `second` comes first in Herdr; within tab `first` the panes as Herdr lists them.
+	expect(snapshot.agents.map((entry) => entry.id)).toEqual(['s-b', 's-a', 's-c']);
+	expect(agent(snapshot, 's-a')?.herdr.tabPlace).toEqual({ label: 'first', position: 2 });
+	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ agents: listed('s-b'), workspaces: WORKSPACES, tabs }));
+	snapshot = await fixture.refresh(cookie);
+	expect(snapshot.agents.map((entry) => entry.id)).toEqual(['s-b', 's-a', 's-c']);
 });
 
 test('a Herdr list that cannot be read is reported and the last one stands in until one can', async () => {
@@ -132,15 +152,15 @@ test('a Herdr list that cannot be read is reported and the last one stands in un
 	setHerdr([herdrAgent('s-new')], { fail: { 'agent list': { exit: 1, stderr: 'herdr server not running' } } });
 	let snapshot = await fixture.refresh(cookie);
 	expect(snapshot.agents.map((entry) => entry.id)).toEqual(['s-kept']);
-	expect(snapshot.errors).toEqual(['Herdr 的 Agent 清單讀不到：herdr server not running，所有 Agent 分頁沿用上次讀到的清單']);
+	expect(snapshot.errors).toEqual(['Herdr 的 Agent 清單讀不到：herdr server not running，「Herdr」分頁沿用上次讀到的清單']);
 
 	setHerdr([herdrAgent('s-new')], { raw: { 'tab list': 'not json' } });
 	snapshot = await fixture.refresh(cookie);
 	expect(snapshot.agents.map((entry) => entry.id)).toEqual(['s-kept']);
-	expect(snapshot.errors).toEqual(['Herdr 的分頁清單讀不到：輸出不是預期的 JSON，所有 Agent 分頁沿用上次讀到的清單']);
+	expect(snapshot.errors).toEqual(['Herdr 的分頁清單讀不到：輸出不是預期的 JSON，「Herdr」分頁沿用上次讀到的清單']);
 
 	setHerdr([{ pane_id: 'wA:p1' }]);
-	expect((await fixture.refresh(cookie)).errors).toEqual(['Herdr 的 Agent 清單不是預期的格式，所有 Agent 分頁沿用上次讀到的清單']);
+	expect((await fixture.refresh(cookie)).errors).toEqual(['Herdr 的 Agent 清單不是預期的格式，「Herdr」分頁沿用上次讀到的清單']);
 
 	setHerdr([herdrAgent('s-new')]);
 	snapshot = await fixture.refresh(cookie);
@@ -180,16 +200,16 @@ test('while hcom\'s list cannot be read the last pairing stands, and an agent th
 	let snapshot = await fixture.refresh(cookie);
 	expect(summary(snapshot)).toEqual([
 		['s-linked', 'linko', 'linked', 'working', 'hcom'],
-		['s-late', 'tab-s-late', 'unknown', 'idle', 'herdr'],
-		['s-plain', 'tab-s-plain', 'none', 'idle', 'herdr']
+		['s-plain', 'tab-s-plain', 'none', 'idle', 'herdr'],
+		['s-late', 'tab-s-late', 'unknown', 'idle', 'herdr']
 	]);
 
 	fixture.setHcom({ agents: [hcomAgent('linko', 's-linked', { status: 'listening' }), hcomAgent('lato', 's-late')] });
 	snapshot = await fixture.refresh(cookie);
 	expect(summary(snapshot)).toEqual([
-		['s-late', 'lato', 'linked', 'idle', 'hcom'],
 		['s-linked', 'linko', 'linked', 'idle', 'hcom'],
-		['s-plain', 'tab-s-plain', 'none', 'idle', 'herdr']
+		['s-plain', 'tab-s-plain', 'none', 'idle', 'herdr'],
+		['s-late', 'lato', 'linked', 'idle', 'hcom']
 	]);
 });
 
@@ -197,16 +217,16 @@ test('an outage keeps each agent\'s own pairing: a new session in a linked pane 
 	setHerdr([herdrAgent('s-old', { pane: 'wA:p1' }), herdrAgent('s-moving', { pane: 'wA:p2' })]);
 	fixture.setHcom({ agents: [hcomAgent('olda', 's-old', { pane: 'wA:p1' }), hcomAgent('movo', null, { status: 'active', pane: 'wA:p2' })] });
 	expect(summary(await fixture.refresh(cookie))).toEqual([
-		['s-moving', 'movo', 'linked', 'working', 'hcom'],
-		['s-old', 'olda', 'linked', 'idle', 'hcom']
+		['s-old', 'olda', 'linked', 'idle', 'hcom'],
+		['s-moving', 'movo', 'linked', 'working', 'hcom']
 	]);
 
 	fixture.setHcom({ listFail: { exit: 1, stderr: 'hcom broke' } });
 	// s-old's pane now runs a new session, and s-moving runs in another pane.
 	setHerdr([herdrAgent('s-new', { pane: 'wA:p1', status: 'working' }), herdrAgent('s-moving', { pane: 'wA:p7' })]);
 	expect(summary(await fixture.refresh(cookie))).toEqual([
-		['s-moving', 'movo', 'linked', 'working', 'hcom'],
-		['s-new', 'tab-s-new', 'unknown', 'working', 'herdr']
+		['s-new', 'tab-s-new', 'unknown', 'working', 'herdr'],
+		['s-moving', 'movo', 'linked', 'working', 'hcom']
 	]);
 });
 

@@ -9,6 +9,7 @@ import {
 	placeIn,
 	samePlace,
 	searchOf,
+	tabIn,
 	viewOf,
 	withListScroll,
 	type Place,
@@ -75,6 +76,30 @@ test('every place survives the address, keys with any characters included', () =
 	expect(searchOf(null)).toBe('');
 	expect(samePlace(QUESTION, REPORT)).toBe(false);
 	expect(samePlace(CONTROLLER, null)).toBe(false);
+});
+
+test('the Herdr tab rides along in every address but an agent\'s, which names it already, and an agent\'s says the inbox', () => {
+	const places: Place[] = [null, { kind: 'launch' }, CONTROLLER, REPORT];
+	for (const place of places) {
+		const search = searchOf(place, 'agents');
+		const params = new URLSearchParams(search);
+		expect(tabIn(params)).toBe('agents');
+		expect(placeIn(params)).toEqual(place);
+		// The tab is no part of which screen it is.
+		expect(samePlace(placeIn(params), place)).toBe(true);
+	}
+	expect(searchOf(null, 'agents')).toBe('?tab=agents');
+	expect(searchOf({ kind: 'launch' }, 'agents')).toBe('?launch&tab=agents');
+	expect(searchOf({ kind: 'agent', id: 's-1' }, 'agents')).toBe('?agent=s-1');
+	expect(tabIn(new URLSearchParams('?agent=s-1'))).toBe('agents');
+	// An agent's page with the inbox beside it says so, or a reload would switch the list.
+	expect(searchOf({ kind: 'agent', id: 's-1' }, 'inbox')).toBe('?agent=s-1&tab=inbox');
+	expect(tabIn(new URLSearchParams('?agent=s-1&tab=inbox'))).toBe('inbox');
+	// The inbox is the default: not written, and an address without a tab names none.
+	expect(searchOf(CONTROLLER, 'inbox')).toBe(searchOf(CONTROLLER));
+	expect(tabIn(new URLSearchParams(searchOf(CONTROLLER)))).toBeNull();
+	expect(tabIn(new URLSearchParams('?tab=inbox'))).toBe('inbox');
+	expect(tabIn(new URLSearchParams('?tab=other'))).toBeNull();
 });
 
 test('question, its controller, back to the question, back to the list, then back leaves the board', () => {

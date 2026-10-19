@@ -80,6 +80,7 @@ export function createAgentRoster(): AgentRoster {
 						workspaceLabel: agent.workspaceLabel,
 						workspaceNumber: agent.workspaceNumber,
 						tab: agent.tab,
+						tabPlace: agent.tabPlace,
 						pane: agent.pane
 					},
 					status: linked ? (HCOM_STATUS[linked.status ?? ''] ?? 'unknown') : asStatus(agent.status),
@@ -106,6 +107,7 @@ export function createAgentRoster(): AgentRoster {
 						workspaceLabel: view.agent.workspaceLabel,
 						workspaceNumber: view.agent.workspaceNumber,
 						tab: '',
+						tabPlace: null,
 						pane: view.pane ?? ''
 					},
 					status: running ? (HCOM_STATUS[running.status ?? ''] ?? 'unknown') : 'unknown',
@@ -115,19 +117,22 @@ export function createAgentRoster(): AgentRoster {
 					switch: switchOf(view)
 				});
 			}
-			// By workspace, as Herdr numbers them, one it does not list last; within one, who needs the
-			// user first.
-			const place = (agent: Agent) => agent.herdr.workspaceNumber ?? Number.MAX_SAFE_INTEGER;
+			// In Herdr's own order, so a new status never moves a row: by workspace as Herdr numbers
+			// them, one it does not list last; within one by tab, then as Herdr lists the panes. One
+			// listed only from its open switch comes last in its workspace.
+			const last = Number.MAX_SAFE_INTEGER;
+			const place = (agent: Agent) => agent.herdr.workspaceNumber ?? last;
+			const order = new Map(agents.map((agent, index) => [agent, index]));
 			agents.sort(
 				(a, b) =>
 					place(a) - place(b) ||
 					a.herdr.workspace.localeCompare(b.herdr.workspace) ||
-					AGENT_STATUSES.indexOf(a.status) - AGENT_STATUSES.indexOf(b.status) ||
-					a.name.localeCompare(b.name) ||
-					(a.id ?? '').localeCompare(b.id ?? '') ||
-					a.herdr.pane.localeCompare(b.herdr.pane)
+					Number(!a.inHerdr) - Number(!b.inHerdr) ||
+					(a.herdr.tabPlace?.position ?? last) - (b.herdr.tabPlace?.position ?? last) ||
+					order.get(a)! - order.get(b)! ||
+					(a.id ?? '').localeCompare(b.id ?? '')
 			);
-			const herdrError = herdr.ok ? null : `${herdr.reason}，所有 Agent 分頁${lastHerdr ? '沿用上次讀到的清單' : '暫時沒有清單'}`;
+			const herdrError = herdr.ok ? null : `${herdr.reason}，「Herdr」分頁${lastHerdr ? '沿用上次讀到的清單' : '暫時沒有清單'}`;
 			return { agents, herdrError };
 		}
 	};
