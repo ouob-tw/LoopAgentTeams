@@ -61,8 +61,8 @@
 </script>
 
 <header>
-	<h2>信箱</h2>
-	<div class="toggle" role="group" aria-label="信箱檢視">
+	<h2>待辦</h2>
+	<div class="toggle" role="group" aria-label="待辦檢視">
 		<button aria-pressed={!showArchive && sort === 'time'} onclick={() => onsort('time')}>依時間</button>
 		<button aria-pressed={!showArchive && sort === 'project'} onclick={() => onsort('project')}>依專案</button>
 		<button aria-pressed={showArchive} onclick={onarchive}>已處理{processedCount ? ` ${processedCount}` : ''}</button>
@@ -91,7 +91,7 @@
 	{#each sortByTime(items) as item (item.key)}
 		<ItemRow {item} current={item.key === currentKey} {onopen} onowner={owner(item)} />
 	{:else}
-		<p class="none">信箱是空的。</p>
+		<p class="none">沒有待辦。</p>
 	{/each}
 {:else}
 	{#each groupByProject(items) as project (project.workspace)}
@@ -108,7 +108,7 @@
 			</div>
 		{/each}
 	{:else}
-		<p class="none">信箱是空的。</p>
+		<p class="none">沒有待辦。</p>
 	{/each}
 {/if}
 

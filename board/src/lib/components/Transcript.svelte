@@ -9,6 +9,7 @@
 	// place; a message whose questions the board has no data for stays text.
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
+	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import { EarlierReads, transcriptUrl, type TranscriptFeed } from '#lib/board/earlier.ts';
 	import { askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
@@ -388,14 +389,16 @@
 			<p class="empty">還沒有對話。</p>
 		{/if}
 		{#if view.before !== null}
-			<button class="earlier" bind:this={end} onclick={loadEarlier} disabled={loadingEarlier}>
-				{loadingEarlier ? '載入中…' : '載入更早'}
+			<!-- Scrolling it into view loads too; while a part is on its way it turns, so the end of the
+			     list does not look stuck. -->
+			<button class="earlier" bind:this={end} onclick={loadEarlier} disabled={loadingEarlier} aria-busy={loadingEarlier}>
+				{#if loadingEarlier}<span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>載入中…{:else}載入更早{/if}
 			</button>
 		{/if}
 	{:else if problem}
 		<p class="failed">對話紀錄讀不到。</p>
 	{:else}
-		<p class="empty">讀取中…</p>
+		<p class="empty loading" role="status" aria-busy="true"><span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>讀取中…</p>
 	{/if}
 	{#if target}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
 </section>
@@ -518,7 +521,32 @@
 		overflow-wrap: anywhere;
 	}
 	.earlier {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.4rem;
 		align-self: flex-start;
+	}
+	.loading {
+		display: flex;
+		align-items: center;
+		gap: 0.4rem;
+	}
+	.spinning {
+		display: inline-flex;
+		color: var(--muted);
+	}
+	.spinning :global(svg) {
+		animation: spin 1s linear infinite;
+	}
+	@keyframes spin {
+		to {
+			transform: rotate(360deg);
+		}
+	}
+	@media (prefers-reduced-motion: reduce) {
+		.spinning :global(svg) {
+			animation: none;
+		}
 	}
 	.failed {
 		color: var(--danger);

@@ -33,12 +33,28 @@ export function placeIn(search: Pick<URLSearchParams, 'get' | 'has'>): Place {
 	return null;
 }
 
-/** The query that names a place; empty for the list. */
-export function searchOf(place: Place): string {
-	if (place === null) return '';
-	if (place.kind === 'launch') return '?launch';
-	if (place.kind === 'agent') return `?${new URLSearchParams({ agent: place.id })}`;
-	return `?${new URLSearchParams(place.kind === 'item' ? { item: place.key } : { controller: place.id })}`;
+/** The middle column's list: the inbox, or every agent Herdr lists. */
+export type MiddleTab = 'inbox' | 'agents';
+
+/** The middle tab the address names; null when it names none. An agent is on the Herdr tab unless
+ *  the address says otherwise. */
+export function tabIn(search: Pick<URLSearchParams, 'get' | 'has'>): MiddleTab | null {
+	const tab = search.get('tab');
+	if (tab === 'agents' || tab === 'inbox') return tab;
+	return search.has('agent') ? 'agents' : null;
+}
+
+/** The query that names a place, with the Herdr tab when that one is shown (an agent's place
+ *  says it already, and so says the inbox when that one is), so a reload draws the right list at
+ *  once; empty for the list on the inbox. */
+export function searchOf(place: Place, tab?: MiddleTab): string {
+	const params = new URLSearchParams(
+		place === null || place.kind === 'launch' ? {} : place.kind === 'agent' ? { agent: place.id } : place.kind === 'item' ? { item: place.key } : { controller: place.id }
+	);
+	if (tab && (place?.kind === 'agent' ? tab === 'inbox' : tab === 'agents')) params.set('tab', tab);
+	const query = `${params}`;
+	if (place?.kind === 'launch') return query ? `?launch&${query}` : '?launch';
+	return query ? `?${query}` : '';
 }
 
 export function samePlace(a: Place, b: Place): boolean {

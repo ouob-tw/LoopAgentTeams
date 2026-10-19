@@ -1,17 +1,19 @@
 <script lang="ts">
-	// The 所有 Agent tab: every agent Herdr lists, by workspace, who needs the user first. Each row
-	// shows its name, status, client, project folder and whether hcom reaches it; LAT controllers
+	// The Herdr tab: every agent Herdr lists, by workspace, in Herdr's own order. Each row
+	// shows its Herdr tab and hcom name, status, client, project folder and whether hcom reaches it; LAT controllers
 	// are marked, and so are agents with a model switch left unfinished, listed even when Herdr no
 	// longer lists them.
 	import { AGENT_MARK, agentGroups, folderName } from '#lib/board/agents.ts';
 	import { AGENT_HCOM_LABEL, AGENT_STATUS_LABEL, type Agent } from '#lib/board/types.ts';
+	import AgentCardName from './AgentCardName.svelte';
+	import HcomBadge from './HcomBadge.svelte';
 	import StatusMark from './StatusMark.svelte';
 
 	let { agents, currentId, onopen }: { agents: Agent[]; currentId: string | null; onopen: (id: string) => void } = $props();
 
 	const groups = $derived(agentGroups(agents));
 	const tooltip = (agent: Agent) =>
-		`${agent.name}\n${AGENT_STATUS_LABEL[agent.status]}（${agent.statusSource === 'hcom' ? 'HCOM' : 'Herdr'}）・${agent.client}・${AGENT_HCOM_LABEL[agent.hcom]}\n${agent.folder}`;
+		`${agent.name}\n${AGENT_STATUS_LABEL[agent.status]}（${agent.statusSource === 'hcom' ? 'HCOM' : 'Herdr'}）・${agent.client}・${AGENT_HCOM_LABEL[agent.hcom]}\n${agent.herdr.tabPlace ? `分頁 ${agent.herdr.tabPlace.label}\n` : ''}${agent.folder}`;
 </script>
 
 {#each groups as group (group.workspace)}
@@ -37,7 +39,7 @@
 {#snippet row(agent: Agent)}
 	<span class="who">
 		<StatusMark status={AGENT_MARK[agent.status]} decorative />
-		<strong class="name">{agent.name}</strong>
+		<AgentCardName {agent} />
 		{#if agent.controller}
 			<span class="tag" title="LAT 主控">主控</span>
 		{/if}
@@ -48,9 +50,8 @@
 	<span class="facts">
 		<span class="status">{AGENT_STATUS_LABEL[agent.status]}</span>
 		<span>{agent.client}</span>
-		{#if agent.hcom !== 'linked'}
-			<span class:unknown={agent.hcom === 'unknown'}>{AGENT_HCOM_LABEL[agent.hcom]}</span>
-		{/if}
+		<!-- Not linked shows nothing, so the badge alone means linked; the tooltip still says it. -->
+		{#if agent.hcom !== 'none'}<HcomBadge hcom={agent.hcom} />{/if}
 	</span>
 	<span class="folder">{folderName(agent.folder)}</span>
 {/snippet}
@@ -84,14 +85,10 @@
 		gap: 0.4rem;
 		min-width: 0;
 	}
-	.name,
 	.folder {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
-	}
-	.name {
-		font-family: var(--mono);
 	}
 	.tag {
 		flex: none;
@@ -116,9 +113,6 @@
 	}
 	.status {
 		color: var(--text);
-	}
-	.unknown {
-		color: var(--warn);
 	}
 	/* Not a button: framed like one, but nothing to press. */
 	div.agent {

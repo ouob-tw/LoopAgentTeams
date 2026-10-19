@@ -383,7 +383,7 @@ test.skipIf(!CHROME)('wide: the browser back goes to the screen before', async (
 	await shows(QUESTION(1), '題目 1');
 	await back();
 	await tab.until(`location.search === ''`, 'the list');
-	expect((await screen()).text).toContain('從信箱選一則');
+	expect((await screen()).text).toContain('從待辦選一則');
 }, 30_000);
 
 test.skipIf(!CHROME)('a reload on an archived report past the first archive page opens it again', async () => {

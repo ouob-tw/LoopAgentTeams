@@ -3,27 +3,44 @@
 	// without a name to the controller that is open. The recipient's model and effort sit beside the
 	// send button. An ended or closed controller is woken instead; its other wake options sit in a
 	// pop-up behind a button that shows only then. A phone can put the line away behind a floating
-	// button, to read more of the page; what was typed stays, also across a reload.
+	// button, to read more of the page; what was typed stays, also across a reload. While an agent's
+	// page is open, a line without a name goes to that agent instead, from a draft of its own kept
+	// while the page is open; while
+	// it works and nothing is typed, the send button interrupts its turn instead.
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import MessageSquare from '@lucide/svelte/icons/message-square';
 	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
+	import Square from '@lucide/svelte/icons/square';
 	import { onMount, tick } from 'svelte';
+	import { AGENT_HCOM_UNKNOWN_REASON, AGENT_INTERRUPT_CONFIRM_TEXT } from '#lib/board/agent-actions.ts';
+	import { agentControl } from '#lib/board/agent-control.svelte.ts';
+	import { shortName } from '#lib/board/agents.ts';
 	import { COMMAND_DRAFT_KEY, COMMAND_HIDDEN_KEY, forget, remember, remembered, rememberedText } from '#lib/board/prefs.ts';
 	import { parseCommand } from '#lib/board/messages.ts';
 	import { enterMakesNewline, messaging } from '#lib/board/messaging.svelte.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
-	import { isInactive, type Controller } from '#lib/board/types.ts';
+	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
+	import { isInactive, type Controller, type KnownAgent } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
+	import AgentModelPicker from './AgentModelPicker.svelte';
 	import ModelPicker from './ModelPicker.svelte';
 	import SendButton from './SendButton.svelte';
 
-	let { controllers, target }: { controllers: Controller[]; target: Controller | undefined } = $props();
+	let {
+		controllers,
+		target,
+		agent
+	}: { controllers: Controller[]; target: Controller | undefined; agent?: KnownAgent } = $props();
 
+	/** The controllers' draft. */
 	let text = $state('');
+	// What was typed, by agent, so text meant for one is never sent to another opened meanwhile.
+	let agentDrafts = $state<Record<string, string>>({});
 	let sending = $state(false);
+	let agentSending = $state<Record<string, boolean>>({});
 	let sent = $state(0);
 	let optionsOpen = $state(false);
 	/** The send button's width, kept clear at the right of the box's text. */
@@ -53,8 +70,32 @@
 		await tick();
 		form.querySelector('textarea')?.focus();
 	}
-	const command = $derived(parseCommand(text, controllers, target, true));
-	const recipient = $derived(command.ok ? command.controller : text.trimStart().startsWith('@') ? undefined : target);
+	/** The draft of `owner`, whose box it is: an agent's ID, or null for the controllers'. */
+	const read = (owner: string | null) => (owner === null ? text : (agentDrafts[owner] ?? ''));
+	function write(owner: string | null, value: string) {
+		if (owner === null) text = value;
+		else agentDrafts[owner] = value;
+	}
+	const owner = $derived(agent?.id ?? null);
+	const draft = $derived(read(owner));
+	const named = $derived(draft.trimStart().startsWith('@'));
+	/** The open agent is the recipient: a line without a name while its page is open. */
+	const toAgent = $derived(agent !== undefined && !named);
+	/** How the line names the open agent: its short hcom name, like a controller's, or its tab's name without one. */
+	const agentName = $derived(agent ? (agent.hcomName ? `@${shortName(agent)}` : agent.name) : '');
+	// Why the open agent cannot be sent to; null when it can. Whether hcom reaches it decides which
+	// command carries the text, so until that is known nothing is sent (the server refuses it too).
+	const agentBlocked = $derived(
+		!agent ? null : !agent.inHerdr || agent.switch ? `${AGENT_SWITCH_UNFINISHED_TEXT}。` : agent.hcom === 'unknown' ? AGENT_HCOM_UNKNOWN_REASON : null
+	);
+	// An interrupt presses Esc in its pane through Herdr, whether hcom reaches it or not.
+	const stoppable = $derived(
+		toAgent && !!agent && agent.inHerdr && !agent.switch && agent.status !== 'idle' && agent.status !== 'done' && !draft.trim()
+	);
+	let interrupting = $state<Record<string, boolean>>({});
+	let confirmingStop = $state(false);
+	const command = $derived(parseCommand(draft, controllers, target, true));
+	const recipient = $derived(command.ok ? command.controller : named || toAgent ? undefined : target);
 	const waking = $derived(recipient !== undefined && isInactive(recipient.status));
 
 	// The wake's options, by controller ID. '' keeps the current model or effort.
@@ -75,17 +116,22 @@
 	// The pop-up belongs to one recipient: another one closes it.
 	$effect.pre(() => {
 		void id;
+		void owner;
 		optionsOpen = false;
+		confirmingStop = false;
 	});
 
 	async function submit() {
-		if (sending || !text.trim()) return;
+		const from = owner;
+		const sentText = draft;
+		if (!sentText.trim()) return;
+		if (toAgent && agent) return sendAgent(agent.id, sentText);
+		if (sending) return;
 		// Names are checked against the board's data at the moment of sending.
 		const parsed = command;
 		if (!parsed.ok) return toasts.show('failed', parsed.reason);
 		const to = parsed.controller;
 		const wake = isInactive(to.status);
-		const sentText = text;
 		sending = true;
 		const choice = wake && resumes
 			? { model: status?.lock === 'fixed' ? null : model[to.id] || null, effort: effort[to.id] || null }
@@ -94,7 +140,7 @@
 			? await messaging.wake(to.id, parsed.text, newRound[to.id] ?? false, choice)
 			: await messaging.send(to.id, parsed.text);
 		sending = false;
-		if (result.ok && text === sentText) text = '';
+		if (result.ok && read(from) === sentText) write(from, '');
 		if (result.ok) {
 			delete newRound[to.id];
 			delete model[to.id];
@@ -110,6 +156,31 @@
 			optionsOpen = true;
 		}
 		toasts.show('failed', `${result.reason}（文字還在輸入框裡）`);
+	}
+
+	async function sendAgent(id: string, sentText: string) {
+		if (agentSending[id] || agentBlocked) return;
+		agentSending[id] = true;
+		const result = await agentControl.send(id, sentText);
+		agentSending[id] = false;
+		if (result.ok && agentDrafts[id] === sentText) agentDrafts[id] = '';
+		if (result.ok) {
+			sent++;
+			if (result.reason) toasts.show('failed', result.reason);
+			return;
+		}
+		toasts.show('failed', `${result.reason}（文字還在輸入框裡）`);
+	}
+
+	async function interrupt() {
+		if (!agent) return;
+		// The notice names the agent interrupted, even if another one is open by the time it answers.
+		const { id, name } = agent;
+		confirmingStop = false;
+		interrupting[id] = true;
+		const result = await agentControl.interrupt(id);
+		interrupting[id] = false;
+		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已對 ${name} 送出 Esc。${result.reason ?? ''}` : (result.reason ?? '中斷失敗'));
 	}
 
 	async function abandon() {
@@ -136,43 +207,84 @@
 	<button type="button" class="hide" aria-label="收起輸入列" title="收起輸入列" onclick={() => setHidden(true)}>
 		<ChevronDown size="1.1em" />
 	</button>
-	<span class="to" class:other={recipient !== undefined && recipient.id !== target?.id}>→ {recipient ? `@${recipient.hcomName}` : '@名稱'}</span>
+	<span class="to" class:other={recipient !== undefined && recipient.id !== target?.id} title={toAgent && agent?.hcomName ? `@${agent.hcomName}` : undefined}>→ {toAgent && agent ? agentName : recipient ? `@${recipient.hcomName}` : '@名稱'}</span>
 	<!-- The send button sits inside the box at its right edge; the box keeps its text clear of it. -->
 	<div class="box" style:--send-w="{sendWidth}px">
 		<MessageBox
-			bind:value={() => text, (value) => (text = value)}
-			label={recipient ? `指令列：${waking ? '喚醒' : '傳話給'} @${recipient.hcomName}` : '指令列'}
-			placeholder="@名稱 指定主控・{enterMakesNewline.current ? 'Enter 換行・按鈕送出' : 'Enter 送出・Shift+Enter 換行'}"
+			bind:value={() => draft, (value) => write(owner, value)}
+			label={toAgent && agent ? `指令列：傳話給 ${agentName}` : recipient ? `指令列：${waking ? '喚醒' : '傳話給'} @${recipient.hcomName}` : '指令列'}
+			placeholder={toAgent && agentBlocked
+				? agentBlocked
+				: `${agent ? `傳話給 ${agentName}` : '@名稱 指定主控'}・${enterMakesNewline.current ? 'Enter 換行・按鈕送出' : 'Enter 送出・Shift+Enter 換行'}`}
+			disabled={toAgent && agentBlocked !== null}
 			onsend={submit}
 		/>
 		<!-- A wake keeps its word: it brings a controller back and spends quota. One button either
 		     way, so its check stays through the change. -->
 		<span class="send-slot" bind:clientWidth={sendWidth}>
-			<SendButton class="send" label={waking ? '喚醒' : '送出'} icon={waking ? undefined : sendIcon} {sending} {sent} disabled={!text.trim()} />
+			{#if stoppable && agent}
+				<button
+					type="button"
+					class="primary send square stop"
+					aria-label="中斷這一回合"
+					title="中斷這一回合（等同在它的終端機按 Esc）"
+					aria-expanded={confirmingStop}
+					data-action="interrupt"
+					disabled={interrupting[agent.id]}
+					onclick={() => (confirmingStop = !confirmingStop)}
+				>
+					<Square size="1em" fill="currentColor" />
+				</button>
+			{:else}
+				<SendButton
+					class="send"
+					label={waking ? '喚醒' : '送出'}
+					icon={waking ? undefined : sendIcon}
+					sending={toAgent && agent ? (agentSending[agent.id] ?? false) : sending}
+					{sent}
+					disabled={!draft.trim() || (toAgent && agentBlocked !== null)}
+				/>
+			{/if}
 		</span>
 	</div>
-	<div class="pill-slot">
-		<ModelPicker
-			controller={recipient}
-			chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }}
-			onchoose={(kind, value) => ((kind === 'model' ? model : effort)[id] = value)}
-		/>
-	</div>
-	<!-- Always there on a wide screen, so the box keeps its width whoever it is for; a phone shows
-	     it only for a wake. -->
-	<button
-		type="button"
-		class="options"
-		class:idle={!waking}
-		aria-label="喚醒選項"
-		title={waking ? '喚醒選項：開新一輪 LAT' : '只有已結束的主控有喚醒選項'}
-		aria-expanded={optionsOpen}
-		disabled={!waking}
-		onclick={() => (optionsOpen = !optionsOpen)}
-	>
-		<SlidersHorizontal size="1.1em" />
-	</button>
+	<!-- An agent has no wake. -->
+	{#if toAgent && agent}
+		<div class="pill-slot">
+			<AgentModelPicker {agent} />
+		</div>
+	{:else}
+		<div class="pill-slot">
+			<ModelPicker
+				controller={recipient}
+				chosen={{ model: model[id] ?? '', effort: effort[id] ?? '' }}
+				onchoose={(kind, value) => ((kind === 'model' ? model : effort)[id] = value)}
+			/>
+		</div>
+		<!-- Always there on a wide screen, so the box keeps its width whoever it is for; a phone shows
+		     it only for a wake. -->
+		<button
+			type="button"
+			class="options"
+			class:idle={!waking}
+			aria-label="喚醒選項"
+			title={waking ? '喚醒選項：開新一輪 LAT' : '只有已結束的主控有喚醒選項'}
+			aria-expanded={optionsOpen}
+			disabled={!waking}
+			onclick={() => (optionsOpen = !optionsOpen)}
+		>
+			<SlidersHorizontal size="1.1em" />
+		</button>
+	{/if}
 
+	{#if confirmingStop && stoppable}
+		<div class="popup" role="group" aria-label="確認中斷">
+			<p class="warn">{AGENT_INTERRUPT_CONFIRM_TEXT}</p>
+			<div class="actions">
+				<button type="button" class="danger" data-action="confirm-interrupt" onclick={interrupt}>確認中斷</button>
+				<button type="button" onclick={() => (confirmingStop = false)}>取消</button>
+			</div>
+		</div>
+	{/if}
 	{#if optionsOpen && waking && recipient}
 		<div class="popup" role="group" aria-label="喚醒選項">
 			<label class="round">
@@ -201,12 +313,12 @@
 	<button
 		type="button"
 		class="reopen"
-		aria-label={text.trim() ? '展開輸入列（有未送出的文字）' : '展開輸入列'}
+		aria-label={draft.trim() ? '展開輸入列（有未送出的文字）' : '展開輸入列'}
 		title="展開輸入列"
 		onclick={() => setHidden(false)}
 	>
 		<MessageSquare size="1.3em" />
-		{#if text.trim()}<span class="dot" aria-hidden="true"></span>{/if}
+		{#if draft.trim()}<span class="dot" aria-hidden="true"></span>{/if}
 	</button>
 {/if}
 
@@ -314,6 +426,12 @@
 		width: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px - 8px);
 		padding: 0;
 		border-radius: calc(var(--radius) - 2px);
+	}
+	/* The interrupt standing in for the send button: red, like the other stops. */
+	.box :global(.send.stop) {
+		border-color: var(--danger);
+		background: var(--danger);
+		color: var(--bg);
 	}
 	/* Only a phone puts the line away behind a floating button. */
 	.hide,

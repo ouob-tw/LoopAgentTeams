@@ -11,7 +11,21 @@
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import type { InboxSort } from '#lib/board/inbox.ts';
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
-	import { advance, arrive, listScrollIn, placeIn, samePlace, searchOf, viewOf, withListScroll, type Place, type Trail, type View } from '#lib/board/navigation.ts';
+	import {
+		advance,
+		arrive,
+		listScrollIn,
+		placeIn,
+		samePlace,
+		searchOf,
+		tabIn,
+		viewOf,
+		withListScroll,
+		type MiddleTab,
+		type Place,
+		type Trail,
+		type View
+	} from '#lib/board/navigation.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { folderName } from '#lib/board/agents.ts';
 	import { MIDDLE_TAB_KEY, remember, remembered, type Column } from '#lib/board/prefs.ts';
@@ -49,16 +63,20 @@
 	});
 	let showArchive = $state(false);
 
-	/** The middle column's list: the inbox, or every agent Herdr lists. */
+	/** The middle column's list. The address names it, so the server draws the right one at first;
+	 *  an address without one (typed, or from before) gets this device's last choice. */
 	const MIDDLE_TABS = ['inbox', 'agents'] as const;
-	let middle = $state<(typeof MIDDLE_TABS)[number]>('inbox');
+	let middle = $state<MiddleTab>(tabIn(page.url.searchParams) ?? 'inbox');
 	onMount(() => {
-		// An agent opened by its address shows on its own tab.
-		if (view?.kind !== 'agent') middle = remembered(MIDDLE_TAB_KEY, MIDDLE_TABS, 'inbox');
+		if (tabIn(new URLSearchParams(location.search))) return;
+		setMiddle(remembered(MIDDLE_TAB_KEY, MIDDLE_TABS, 'inbox'));
 	});
-	function setMiddle(next: (typeof MIDDLE_TABS)[number]) {
+	/** Show a list, and say it in this history entry's address; switching lists is no new screen. */
+	function setMiddle(next: MiddleTab) {
 		middle = next;
 		remember(MIDDLE_TAB_KEY, next);
+		const search = searchOf(addressed(), next);
+		if (search !== location.search) history.replaceState(history.state, '', `${location.pathname}${search}`);
 	}
 
 	onMount(() => appearance.restore());
@@ -138,10 +156,6 @@
 	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
 	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
 	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
-	// An agent opened by its address shows on the tab it belongs to.
-	$effect(() => {
-		if (view?.kind === 'agent') untrack(() => (middle = 'agents'));
-	});
 	// Read again with every new snapshot: a question of the inbox may have been answered and recorded.
 	$effect(() => {
 		void board.snapshot;
@@ -254,7 +268,7 @@
 			const writes: (() => Promise<void>)[] = [];
 			const write = (replace: boolean) => (place: Place, depth: number) =>
 				void writes.push(() =>
-					goto(`${location.pathname}${searchOf(place)}`, { shallow: true, replace, state: { depth }, persistState: true })
+					goto(`${location.pathname}${searchOf(place, middle)}`, { shallow: true, replace, state: { depth }, persistState: true })
 				);
 			step({ push: write(false), replace: write(true) }, page.state.depth);
 			for (const next of writes) await next();
@@ -298,6 +312,7 @@
 	onMount(() => {
 		const popped = (event: PopStateEvent) => {
 			listScroll = listScrollIn(event.state) ?? listScroll;
+			middle = tabIn(new URLSearchParams(location.search)) ?? 'inbox';
 			void restore(addressed());
 		};
 		addEventListener('popstate', popped);
@@ -484,9 +499,9 @@
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
 			     views, as the list they switch has no panel of its own around it. -->
 			<div class="middle-tabs" role="group" aria-label="清單">
-				<button type="button" data-middle="inbox" aria-pressed={middle === 'inbox'} onclick={() => setMiddle('inbox')}>信箱</button>
+				<button type="button" data-middle="inbox" aria-pressed={middle === 'inbox'} onclick={() => setMiddle('inbox')}>待辦</button>
 				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => setMiddle('agents')}
-					>所有 Agent<small>{agents.length}</small></button
+					>Herdr<small>{agents.length}</small></button
 				>
 			</div>
 			{#if middle === 'agents'}
@@ -517,7 +532,7 @@
 
 		<section class="detail" bind:this={detail} tabindex="-1">
 			{#if view === null}
-				<p class="empty">{middle === 'agents' ? '從所有 Agent 選一個，看它的對話紀錄。' : '從信箱選一則，或點主控名稱看它的資訊。'}</p>
+				<p class="empty">{middle === 'agents' ? '從 Herdr 清單選一個 Agent，看它的對話紀錄。' : '從待辦選一則，或點主控名稱看它的資訊。'}</p>
 			{:else}
 				<div class="topbar">
 					<button onclick={back} aria-label="返回">←</button>
@@ -550,7 +565,7 @@
 					{:else if view.what === 'agent'}
 						<p class="empty">這個 Agent 已不在 Herdr 的清單上。</p>
 					{:else if board.archive === 'failed' || (board.archiveEarlier === 'failed' && board.earlierFrom)}
-						<p class="empty">信箱裡沒有這一則，已處理的項目也讀不出來；可以重新整理再試一次。</p>
+						<p class="empty">待辦裡沒有這一則，已處理的項目也讀不出來；可以重新整理再試一次。</p>
 					{:else if !seeking}
 						<p class="empty">這一則已不存在。</p>
 					{/if}
@@ -638,7 +653,7 @@
 					...board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))
 				]}
 			/>
-			<CommandLine {controllers} target={controller} />
+			<CommandLine {controllers} target={controller} agent={view?.kind === 'agent' ? agent : undefined} />
 		</div>
 	</div>
 </div>
@@ -718,16 +733,21 @@
 		gap: 0.35rem;
 	}
 	/* The middle column's two lists, as tabs like those of an information page. */
+	/* One line however narrow the column: the tabs scroll sideways rather than wrap. */
 	.middle-tabs {
 		display: flex;
 		flex: none;
+		overflow-x: auto;
+		scrollbar-width: none;
 		gap: 0.2rem;
 		margin-bottom: 0.4rem;
 		border-bottom: 1px solid var(--line);
 	}
 	.middle-tabs button {
 		display: inline-flex;
+		flex: none;
 		align-items: center;
+		white-space: nowrap;
 		gap: 0.35rem;
 		margin-bottom: -1px;
 		padding: 0.4rem 0.8rem;

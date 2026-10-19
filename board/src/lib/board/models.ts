@@ -254,7 +254,9 @@ export const AGENT_NOT_LINKED_SWITCH_REASON = '這個 Agent 沒有接 HCOM，看
 export const AGENT_HCOM_UNKNOWN_SWITCH_REASON =
 	'HCOM 連線無法確認：hcom 的清單讀不到，不知道這個 Agent 有沒有接 HCOM，沒有切換；讀到清單後就能切換。';
 export const AGENT_SWITCH_OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，停止會連看板一起關掉，沒有切換。';
-export const AGENT_SWITCH_UNFINISHED_REASON = '這個 Agent 的模型切換未完成，處理完之前只能繼續切換或放棄切換，沒有執行。';
+/** Why an agent with a switch left unfinished takes nothing else; the reason a refusal gives adds that nothing ran. */
+export const AGENT_SWITCH_UNFINISHED_TEXT = '這個 Agent 的模型切換未完成，處理完之前只能繼續切換或放棄切換';
+export const AGENT_SWITCH_UNFINISHED_REASON = `${AGENT_SWITCH_UNFINISHED_TEXT}，沒有執行。`;
 export const AGENT_NO_OPEN_SWITCH_REASON = '這個 Agent 沒有未完成的切換，不用放棄。';
 
 /** What a switch from the 所有 Agent tab does, asked before it is sent. */
