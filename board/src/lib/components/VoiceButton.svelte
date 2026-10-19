@@ -1,15 +1,15 @@
 <script lang="ts">
 	// The mic beside a message box: one click records, the next stops and sends the recording to
 	// the board, which answers with the text to put in. Red while recording, a spinner while the
-	// recording is turned into text.
+	// recording is turned into text. While recording, the button counts down the time left.
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Mic from '@lucide/svelte/icons/mic';
-	import Square from '@lucide/svelte/icons/square';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { VoiceResult } from '#lib/board/voice.ts';
 
-	/** The speech recognition service takes recordings up to 3 minutes; one stops on its own before. */
-	const MAX_RECORDING_MS = 120_000;
+	/** The speech recognition service takes recordings up to 180 seconds; one stops on its own a
+	 *  second before, so the end of a full-length recording does not tip it over. */
+	const MAX_RECORDING_MS = 179_000;
 
 	type Phase = 'idle' | 'starting' | 'recording' | 'processing';
 	/** The button's name and tip in each phase. */
@@ -25,6 +25,9 @@
 	let phase = $state<Phase>('idle');
 	let recorder: MediaRecorder | null = null;
 	let limit: ReturnType<typeof setTimeout> | undefined;
+	let tick: ReturnType<typeof setInterval> | undefined;
+	/** Whole seconds left of the recording, shown on the button. */
+	let left = $state(0);
 	/** Set once the box has gone away; nothing may start recording after that. */
 	let gone = false;
 
@@ -53,6 +56,7 @@
 			current.ondataavailable = (event) => chunks.push(event.data);
 			current.onstop = () => {
 				clearTimeout(limit);
+				clearInterval(tick);
 				for (const track of tracks) track.stop();
 				if (recorder !== current) return;
 				recorder = null;
@@ -62,6 +66,9 @@
 			recorder = current;
 			phase = 'recording';
 			limit = setTimeout(stop, MAX_RECORDING_MS);
+			const startedAt = Date.now();
+			left = Math.ceil(MAX_RECORDING_MS / 1000);
+			tick = setInterval(() => (left = Math.max(0, Math.ceil((MAX_RECORDING_MS - (Date.now() - startedAt)) / 1000))), 250);
 		} catch (error) {
 			for (const track of stream?.getTracks() ?? []) track.stop();
 			phase = 'idle';
@@ -113,7 +120,7 @@
 	onclick={() => (phase === 'recording' ? stop() : void start())}
 >
 	{#if phase === 'recording'}
-		<Square size="0.9em" fill="currentColor" />
+		<span class="left">{Math.floor(left / 60)}:{String(left % 60).padStart(2, '0')}</span>
 	{:else if phase === 'processing'}
 		<LoaderCircle size="1.1em" class="spin" />
 	{:else}
@@ -138,6 +145,10 @@
 		background: var(--danger);
 		color: var(--bg);
 		animation: pulse 1.2s ease-in-out infinite;
+	}
+	.left {
+		font-size: 0.7em;
+		font-variant-numeric: tabular-nums;
 	}
 	.mic :global(.spin) {
 		animation: spin 0.9s linear infinite;
