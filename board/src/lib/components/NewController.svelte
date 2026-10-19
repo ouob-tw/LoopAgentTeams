@@ -79,11 +79,19 @@
 	]);
 	const chosenListed = $derived(choices.some((choice) => choice.path === form.folder));
 
-	// Another workspace's form starts over from its own folder; the same one keeps what was typed.
-	// Before the projects are read, a workspace without agents gets the most recent one once they are.
+	/** The folder used most recently: a controller's project or a plain agent's folder. */
+	const recentFolder = $derived.by(() => {
+		const project = projects.find((candidate) => candidate.exists);
+		const agent = launches.find((launch) => launch.role === 'agent' && launch.state !== 'failed');
+		if (!agent || (project && Date.parse(project.lastUsedAt) >= Date.parse(agent.time))) return project?.path ?? '';
+		return agent.folder;
+	});
+
+	// Another workspace's form starts over from its own folder and tab name; the message is kept.
+	// Before the lists are read, a workspace without agents gets the most recent folder once they are.
 	$effect(() => {
 		if (!target) return;
-		const fallback = target.folders[0] ?? projects.find((project) => project.exists)?.path ?? '';
+		const fallback = target.folders[0] ?? recentFolder;
 		untrack(() => {
 			if (agentLaunching.workspace !== target.workspace) {
 				agentLaunching.workspace = target.workspace;
@@ -113,6 +121,20 @@
 		if (browserOpen && !form.browse) void form.open();
 	}
 
+	// A plain agent's message and tab name stay until it appears in Herdr: a time-out keeps them to send again.
+	$effect(() => {
+		const pending = agentLaunching.sent;
+		const launch = pending && (agentLaunching.list?.launches ?? []).find((candidate) => candidate.id === pending.launchId);
+		if (!pending || !launch || launch.state === 'starting') return;
+		untrack(() => {
+			if (launch.state === 'appeared') {
+				if (agentLaunching.text === pending.text) agentLaunching.text = '';
+				if (agentLaunching.tabName === pending.tabName) agentLaunching.tabName = '';
+			}
+			agentLaunching.sent = null;
+		});
+	});
+
 	async function submit() {
 		if (!ready) return;
 		const sent = form;
@@ -121,12 +143,13 @@
 		sending = true;
 		const result = await sent.start();
 		sending = false;
-		// Only a launch that was made clears the message; anything typed meanwhile stays too.
-		if (result.ok && sent.text === sentText) {
+		if (target) {
+			if (result.ok && result.launchId) sent.sent = { launchId: result.launchId, text: sentText, tabName: sentTab };
+		} else if (result.ok && sent.text === sentText) {
+			// Only a launch that was made clears the message; anything typed meanwhile stays too.
 			sent.text = '';
 			sent.gitInit = false;
 		}
-		if (result.ok && sent.tabName === sentTab) sent.tabName = '';
 		const what = target ? '開新 Agent' : '新建';
 		toasts.show(
 			result.ok ? 'ok' : 'failed',

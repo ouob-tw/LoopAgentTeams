@@ -6,6 +6,8 @@ import type { BrowseResult, LaunchClient, LaunchList, LaunchResponse } from './l
 export interface StartResult {
 	ok: boolean;
 	reason: string | null;
+	/** The launch's ID in the sent log, when one was made. */
+	launchId?: string;
 }
 
 /** No answer came back, so a controller may or may not have been started. */
@@ -16,6 +18,9 @@ class Launching {
 	workspace = $state<string | null>(null);
 	/** The plain agent's tab name; '' keeps the default one. */
 	tabName = $state('');
+	/** A plain agent's launch whose message and tab name are cleared from the form only once it
+	 *  appears in Herdr, and only if they are still as sent; kept on a time-out. */
+	sent = $state<{ launchId: string; text: string; tabName: string } | null>(null);
 	client = $state<LaunchClient>('claude');
 	folder = $state('');
 	text = $state('');
@@ -101,7 +106,7 @@ class Launching {
 		void this.load();
 		if (!body) return { ok: false, reason: UNKNOWN_OUTCOME };
 		const logNote = body.logError ? `（送出紀錄寫入失敗：${body.logError}）` : '';
-		return { ok: body.ok, reason: body.ok ? logNote || null : body.reason + logNote };
+		return { ok: body.ok, reason: body.ok ? logNote || null : body.reason + logNote, launchId: body.entry?.id };
 	}
 }
 

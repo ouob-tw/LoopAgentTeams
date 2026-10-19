@@ -348,8 +348,8 @@ function launchState(launch: SentLaunch, controllerId: string | undefined, follo
 	return now - Date.parse(launch.time) >= waitMs ? 'overdue' : 'starting';
 }
 
-/** The most recent launches, newest first, each with where it stands at `now`. */
-export function readLaunches(stateDir: string, now: number, waitMs: number, limit: number): LaunchView[] {
+/** Every launch, newest first, each with where it stands at `now`. */
+export function readLaunches(stateDir: string, now: number, waitMs: number): LaunchView[] {
 	const lines = readLines(stateDir);
 	const bound = boundOf(lines);
 	const follows = new Map<string, LaunchFollow>();
@@ -371,7 +371,7 @@ export function readLaunches(stateDir: string, now: number, waitMs: number, limi
 			follow: follow ?? null
 		});
 	}
-	return launches.reverse().slice(0, limit);
+	return launches.reverse();
 }
 
 /**

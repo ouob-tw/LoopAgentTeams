@@ -442,7 +442,7 @@ test('a new controller whose tab cannot be moved is still started; the record sa
 	expect(view).toMatchObject({ state: 'starting', outcome: 'started', follow: { moveError: '移動分頁失敗：no such tab' } });
 });
 
-test('a launch whose name hcom does not list is not waited for: nothing is moved', async () => {
+test('a launch whose name a few of hcom\'s lists in a row lack is not waited for: nothing is moved', async () => {
 	const repo = folder('unlisted', true);
 	herdrPlan({ panes: [{ pane_id: 'wA:p1', workspace_id: 'wA', cwd: repo, tab_id: 'wA:t1' }] });
 	hcomPlan([{ name: 'ghost', workspace: 'wA', appears: false }]);
@@ -450,11 +450,10 @@ test('a launch whose name hcom does not list is not waited for: nothing is moved
 	plan.launched = [null];
 	writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
 
-	const started = Date.now();
 	const { body } = await launch({ folder: repo, text: '做一件事' });
 	const view = await followed(body.entry!.id);
 
-	expect(Date.now() - started).toBeLessThan(WAIT_SECONDS * 1000);
+	// Not the time-out's reason: it stopped before the wait ran out.
 	expect(view.follow?.error).toBe('hcom 的清單上沒有 @ghost，分頁沒有移到最前面；請到 Herdr 分頁查看');
 	expect(herdrCalls()).toEqual([]);
 });

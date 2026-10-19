@@ -56,7 +56,7 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 	}
 	try {
 		// Each form lists its own kind: as many plain agents as controllers.
-		const all = readLaunches(stateDir, board.config.now(), launchWaitMs, Infinity);
+		const all = readLaunches(stateDir, board.config.now(), launchWaitMs);
 		const launches = [...all.filter((launch) => launch.role !== 'agent').slice(0, LISTED_LAUNCHES), ...all.filter((launch) => launch.role === 'agent').slice(0, LISTED_LAUNCHES)];
 		return { projects, projectsError, launches, logError: null, modelOptions: board.config.modelOptions };
 	} catch (error) {
@@ -64,8 +64,10 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 	}
 }
 
-/** How often a plain agent's launch looks for it in Herdr's list. */
+/** How often a launch looks for its agent in Herdr's list. */
 const FOLLOW_POLL_MS = 1_000;
+/** How many lists of hcom in a row may lack the name before the agent counts as gone. */
+const GONE_AFTER = 3;
 
 // Launches run one after another, so two of them never both create a workspace for one project,
 // and two new tabs never race for the front: a launch is over only once it has been followed
@@ -156,52 +158,55 @@ async function attempt(
  * pane, and the Herdr agent with that session, or in that pane, is it. Then name its tab when a
  * name was asked for, and move the tab to the front of its workspace. Either step failing leaves
  * the agent started; the log says which one failed. Gives up once the launch wait has run out, or
- * at once when hcom's list, which has the agents still starting too, does not have the name.
+ * when a few of hcom's lists in a row, which have the agents still starting too, lack the name.
  */
 async function followAgent(board: Board, entry: SentLaunch, hcomName: string, tabName: string): Promise<void> {
 	const config = board.config;
 	const deadline = Date.parse(entry.time) + config.launchWaitMs;
 	let found: HerdrAgent | undefined;
-	let gone = false;
+	let missing = 0;
 	let unread: string | null = null;
-	for (;;) {
-		const [hcom, herdr] = await Promise.all([listAgents(config), listHerdrAgents(config)]);
-		unread = !hcom.ok ? hcom.reason : !herdr.ok ? herdr.reason : null;
-		if (hcom.ok && herdr.ok) {
-			const started = hcom.agents.find((candidate) => candidate.name === hcomName);
-			if (!started) {
-				gone = true;
-				break;
+	let renameError: string | null = null;
+	let moveError: string | null = null;
+	try {
+		for (;;) {
+			const [hcom, herdr] = await Promise.all([listAgents(config), listHerdrAgents(config)]);
+			unread = !hcom.ok ? hcom.reason : !herdr.ok ? herdr.reason : null;
+			if (hcom.ok && herdr.ok) {
+				const started = hcom.agents.find((candidate) => candidate.name === hcomName);
+				missing = started ? 0 : missing + 1;
+				found =
+					started &&
+					herdr.agents.find(
+						(candidate) => (started.sessionId !== null && candidate.sessionId === started.sessionId) || (started.pane !== null && candidate.pane === started.pane)
+					);
+				if (found || missing >= GONE_AFTER) break;
 			}
-			found =
-				started &&
-				herdr.agents.find(
-					(candidate) => (started.sessionId !== null && candidate.sessionId === started.sessionId) || (started.pane !== null && candidate.pane === started.pane)
-				);
-			if (found) break;
+			if (config.now() >= deadline) break;
+			await new Promise((resolve) => setTimeout(resolve, FOLLOW_POLL_MS));
 		}
-		if (config.now() >= deadline) break;
-		await new Promise((resolve) => setTimeout(resolve, FOLLOW_POLL_MS));
+		if (found) {
+			if (tabName) {
+				const renamed = await renameTab(config, found.tab, tabName);
+				if (!renamed.ok) renameError = `改分頁名稱失敗：${renamed.reason}`;
+			}
+			moveError = await moveTab(config, found.tab, 0);
+		}
+	} catch (error) {
+		// Never expected; the record still says the follow-through is over, and why.
+		unread = (error as Error).message;
+		if (found) moveError ??= `移動分頁失敗：${unread}`;
 	}
+	const notFound = missing >= GONE_AFTER ? `hcom 的清單上沒有 @${hcomName}` : `等了 ${Math.round(config.launchWaitMs / 1000)} 秒，Herdr 的清單上還沒有 @${hcomName}${unread ? `（${unread}）` : ''}`;
 	const line: LaunchFollowed = {
 		kind: 'launch-followed',
 		launchId: entry.id,
 		appearedAt: found ? new Date(config.now()).toISOString() : null,
-		error: found
-			? null
-			: `${gone ? `hcom 的清單上沒有 @${hcomName}` : `等了 ${Math.round(config.launchWaitMs / 1000)} 秒，Herdr 的清單上還沒有 @${hcomName}${unread ? `（${unread}）` : ''}`}，${tabName ? '沒有改分頁名稱，也' : '分頁'}沒有移到最前面；請到 Herdr 分頁查看`,
-		renameError: null,
-		moveError: null,
-		time: ''
+		error: found ? null : `${notFound}，${tabName ? '沒有改分頁名稱，也' : '分頁'}沒有移到最前面；請到 Herdr 分頁查看`,
+		renameError,
+		moveError,
+		time: new Date(config.now()).toISOString()
 	};
-	if (found) {
-		if (tabName) {
-			const renamed = await renameTab(config, found.tab, tabName);
-			if (!renamed.ok) line.renameError = `改分頁名稱失敗：${renamed.reason}`;
-		}
-		line.moveError = await moveTab(config, found.tab, 0);
-	}
-	line.time = new Date(config.now()).toISOString();
 	try {
 		appendSent(config.stateDir, line);
 	} catch (error) {
