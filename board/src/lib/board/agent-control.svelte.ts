@@ -42,7 +42,8 @@ class AgentControl {
 		this.loadFailed[agentId] = !entries && !gone;
 	}
 
-	async #post(path: string, agentId: string, body: object): Promise<Outcome> {
+	/** An agent Herdr has no session for yet (null) has no record to load. */
+	async #post(path: string, agentId: string | null, body: object): Promise<Outcome> {
 		let response: Response;
 		try {
 			response = await fetch(path, {
@@ -51,7 +52,7 @@ class AgentControl {
 				body: JSON.stringify({ session: agentId, ...body })
 			});
 		} catch {
-			void this.load(agentId);
+			if (agentId !== null) void this.load(agentId);
 			return { ok: false, reason: UNKNOWN_OUTCOME };
 		}
 		if (response.status === 401) {
@@ -60,7 +61,7 @@ class AgentControl {
 		}
 		const answer: AgentActionResponse | SwitchResponse | null = await response.json().catch(() => null);
 		if (response.status === 400) return { ok: false, reason: '看板伺服器不接受這個請求，沒有執行。' };
-		void this.load(agentId);
+		if (agentId !== null) void this.load(agentId);
 		if (typeof answer?.ok !== 'boolean') return { ok: false, reason: UNKNOWN_OUTCOME };
 		const logNote = answer.logError ? `（送出紀錄寫入失敗：${answer.logError}）` : '';
 		return { ok: answer.ok, reason: answer.ok ? logNote || null : answer.reason + logNote };
@@ -79,6 +80,16 @@ class AgentControl {
 	/** Close the agent and its Herdr pane, after the user confirmed it. */
 	close(agentId: string): Promise<Outcome> {
 		return this.#post('/api/agents/close', agentId, {});
+	}
+
+	/** Move the card's Herdr tab to where the tab `before` is in its workspace. */
+	moveTab(agentId: string | null, place: { workspace: string; tab: string }, before: string): Promise<Outcome> {
+		return this.#post('/api/agents/tab/move', agentId, { ...place, before });
+	}
+
+	/** Rename the card's Herdr tab; the label is already trimmed and not empty. */
+	renameTab(agentId: string | null, place: { workspace: string; tab: string }, label: string): Promise<Outcome> {
+		return this.#post('/api/agents/tab/rename', agentId, { ...place, label });
 	}
 
 	/** Read what a switch may offer; a failed read leaves the form without options. */

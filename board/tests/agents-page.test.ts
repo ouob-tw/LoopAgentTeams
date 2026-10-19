@@ -2,6 +2,7 @@
 // built board with fake data, wide and at a phone's width. Skipped when the host has no Chrome.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
@@ -74,6 +75,11 @@ const FITS = `document.documentElement.scrollWidth <= window.innerWidth`;
 let fixture: Fixture;
 let cookie: string;
 const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-inject-'));
+/** Herdr's socket, which moves a tab in the fake Herdr's tab list the way Herdr would, and logs
+ *  each request with the CLI's calls; `moveFails` is the error it answers with instead. */
+const socketPath = join(injectDir, 'herdr.sock');
+let socket: Server;
+let moveFails: string | null = null;
 let chrome: ChildProcess | undefined;
 let profile: string;
 let tab: Tab;
@@ -122,8 +128,29 @@ function record(session: string, texts: string[]) {
 }
 
 beforeAll(async () => {
+	socket = createServer((connection) => {
+		connection.on('data', (chunk) => {
+			const request = JSON.parse(chunk.toString().trim());
+			appendFileSync(join(fixture.dir, 'herdr-calls.jsonl'), JSON.stringify(['socket', request.method, request.params]) + '\n');
+			if (moveFails) return connection.write(JSON.stringify({ id: request.id, error: { message: moveFails } }) + '\n');
+			const planFile = join(fixture.dir, 'herdr.json');
+			const plan = JSON.parse(readFileSync(planFile, 'utf8'));
+			// As Herdr 0.9.5 does: before the tab at insert_index among the workspace's tabs as they are.
+			const moved = plan.tabs.find((candidate: { tab_id: string }) => candidate.tab_id === request.params.tab_id);
+			const before = plan.tabs.filter((candidate: { workspace_id: string }) => candidate.workspace_id === moved.workspace_id)[request.params.insert_index];
+			const others = plan.tabs.filter((candidate: object) => candidate !== moved);
+			const own = others.filter((candidate: { workspace_id: string }) => candidate.workspace_id === moved.workspace_id);
+			const at = before === moved ? plan.tabs.indexOf(moved) : before ? others.indexOf(before) : others.indexOf(own.at(-1)) + 1;
+			plan.tabs = [...others.slice(0, at), moved, ...others.slice(at)];
+			writeFileSync(planFile, JSON.stringify(plan));
+			connection.write(JSON.stringify({ id: request.id, result: { type: 'tab_moved' } }) + '\n');
+		});
+	});
+	await new Promise<void>((resolve) => socket.listen(socketPath, resolve));
 	// The linked controller would be typed into through hcom's input command: a fake one.
-	fixture = await startFixture(32, { env: { LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-inject.mjs'), injectDir]) } });
+	fixture = await startFixture(32, {
+		env: { LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-inject.mjs'), injectDir]), HERDR_SOCKET_PATH: socketPath }
+	});
 	cookie = await fixture.login();
 	const lead = fixture.bound('lat', 'lead', { session_id: 's-lead' });
 	fixture.list([lead]);
@@ -143,6 +170,7 @@ afterEach(async () => {
 });
 afterAll(async () => {
 	await fixture?.cleanup();
+	socket?.close();
 	rmSync(injectDir, { recursive: true, force: true });
 });
 
@@ -955,3 +983,159 @@ test.skipIf(!CHROME)('a Codex started with a fixed model offers only its effort 
 		await fixture.refresh(cookie);
 	}
 }, 60_000);
+
+/** A card in the list, and its drag handle. */
+const CARD = (id: string) => `.inbox [data-card="${id}"]`;
+const GRIP = (id: string) => `${CARD(id)} .grip`;
+const RENAME = '.inbox input.rename';
+/** The middle of an element on the screen, or this far from its left edge. */
+const point = (selector: string, fromLeft?: number) =>
+	tab.eval<{ x: number; y: number }>(
+		`(() => { const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: ${fromLeft === undefined ? 'box.left + box.width / 2' : `box.left + ${fromLeft}`}, y: box.top + box.height / 2 }; })()`
+	);
+/** The cards of a workspace, in the order the list shows them. */
+const cardsOf = (workspace: string) =>
+	tab.eval<string[]>(`[...document.querySelectorAll('.inbox [data-workspace="${workspace}"] [data-card]')].map((card) => card.dataset.card)`);
+const hasClass = (selector: string, name: string) => tab.eval<boolean>(`!!document.querySelector(${JSON.stringify(selector)})?.classList.contains('${name}')`);
+
+/** Press at `from`, move to `to` in steps, run `meanwhile` while still pressed, then let go: with
+ *  the mouse at a wide window, with a finger at a phone's width. */
+async function drag(touch: boolean, from: { x: number; y: number }, to: { x: number; y: number }, meanwhile: () => Promise<void> = async () => {}) {
+	const at = (step: number) => ({ x: from.x + ((to.x - from.x) * step) / 6, y: from.y + ((to.y - from.y) * step) / 6 });
+	if (touch) {
+		await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [from] });
+		for (let step = 1; step <= 6; step++) await tab.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [at(step)] });
+		await meanwhile();
+		await tab.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+	} else {
+		await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...from, button: 'left', buttons: 1, clickCount: 1 });
+		for (let step = 1; step <= 6; step++) await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at(step), button: 'left', buttons: 1 });
+		await meanwhile();
+		await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...to, button: 'left', buttons: 0, clickCount: 1 });
+	}
+}
+const key = async (name: 'Enter' | 'Escape') => {
+	const code = { Enter: 13, Escape: 27 }[name];
+	for (const type of ['keyDown', 'keyUp']) await tab.send('Input.dispatchKeyEvent', { type, key: name, code: name, windowsVirtualKeyCode: code });
+};
+/** Open a card's menu: a right click with the mouse, a long press with a finger. */
+async function openMenu(touch: boolean, id: string) {
+	const at = await point(CARD(id), 40);
+	if (touch) {
+		await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] });
+		await sleep(700);
+		await tab.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+	} else {
+		await tab.send('Input.dispatchMouseEvent', { type: 'mousePressed', ...at, button: 'right', buttons: 2, clickCount: 1 });
+		await tab.send('Input.dispatchMouseEvent', { type: 'mouseReleased', ...at, button: 'right', buttons: 0, clickCount: 1 });
+	}
+	await tab.until(`!!document.querySelector('.menu')`, 'the card menu');
+}
+async function freshTabs() {
+	for (const file of ['herdr-calls.jsonl', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
+	moveFails = null;
+	setHerdr(AGENTS);
+	await fixture.refresh(cookie);
+}
+
+for (const width of [1280, 390]) {
+	const touch = width < 761;
+	test.skipIf(!CHROME)(`${width}px: a card's handle drags its tab within its workspace, showing where it lands; outside it nothing moves`, async () => {
+		await freshTabs();
+		await visit(width);
+		if (touch) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+		await openTab();
+		await tab.until(`!!document.querySelector(${JSON.stringify(GRIP('s-plain'))})`, 'the handles');
+		expect(await cardsOf('wA')).toEqual(['s-lead', 's-plain']);
+		// The handle is the card's last thing on the right, and it lets touch drag instead of scroll.
+		expect(await tab.eval(`getComputedStyle(document.querySelector(${JSON.stringify(GRIP('s-plain'))})).touchAction`)).toBe('none');
+
+		await drag(touch, await point(GRIP('s-plain')), await point(CARD('s-lead')), async () => {
+			expect(await hasClass(CARD('s-plain'), 'dragging')).toBe(true);
+			expect(await hasClass(CARD('s-lead'), 'drop-before')).toBe(true);
+		});
+		await tab.until(`JSON.stringify([...document.querySelectorAll('.inbox [data-workspace="wA"] [data-card]')].map((card) => card.dataset.card)) === '["s-plain","s-lead"]'`, 'Herdr’s new order');
+		expect(herdrCalls()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-s-plain', insert_index: 0 }]]);
+		// Dragging by the handle does not open the agent.
+		expect((await screen()).search).not.toContain('agent=');
+
+		// Into another workspace: marked as no place to drop, and put back without asking Herdr.
+		await drag(touch, await point(GRIP('s-lead')), await point(CARD('s-other')), async () => {
+			expect(await hasClass(CARD('s-lead'), 'refused')).toBe(true);
+			expect(await tab.eval(`document.querySelector('.refuse-tip')?.innerText`)).toBe('不能拖到別的工作區');
+		});
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('不能拖到別的工作區')`, 'the notice');
+		expect(await tab.eval(`document.querySelector(${JSON.stringify(CARD('s-lead'))}).style.transform`)).toBe('');
+		expect(await tab.eval(`!!document.querySelector('.refuse-tip')`)).toBe(false);
+		expect(herdrCalls()).toHaveLength(1);
+
+		// Herdr refuses: its reason shows, and the list keeps Herdr's real order.
+		moveFails = 'tab is busy';
+		await drag(touch, await point(GRIP('s-lead')), await point(CARD('s-plain')));
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('排序失敗：移動分頁失敗：tab is busy')`, 'the failure');
+		expect(await cardsOf('wA')).toEqual(['s-plain', 's-lead']);
+		expect(herdrCalls()).toHaveLength(2);
+		expect(await tab.eval(FITS)).toBe(true);
+	}, 30_000);
+
+	test.skipIf(!CHROME)(`${width}px: ${touch ? 'a long press' : 'a right click'} opens the card's menu, and its one item renames the tab on the card`, async () => {
+		await freshTabs();
+		await visit(width);
+		if (touch) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+		await openTab();
+		await tab.until(`!!document.querySelector(${JSON.stringify(CARD('s-plain'))})`, 'the list');
+		await openMenu(touch, 's-plain');
+		expect(await tab.eval(`[...document.querySelectorAll('.menu button')].map((item) => item.innerText)`)).toEqual(['改分頁名稱']);
+		// The press that opened it does not open the agent.
+		expect((await screen()).search).not.toContain('agent=');
+		expect(await tab.eval(FITS)).toBe(true);
+
+		await click('.menu button');
+		await tab.until(`document.activeElement?.matches(${JSON.stringify(RENAME)})`, 'the name box');
+		expect(await tab.eval(`document.querySelector(${JSON.stringify(RENAME)}).value`)).toBe('分頁-s-plain');
+		expect(await tab.eval(`!!document.querySelector('.menu')`)).toBe(false);
+		// A blank name is not sent; Esc leaves the name as it was.
+		await tab.eval(`document.querySelector(${JSON.stringify(RENAME)}).value = '   '`);
+		await key('Enter');
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('分頁名稱不能空白')`, 'the blank notice');
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(RENAME)})`)).toBe(true);
+		await key('Escape');
+		await tab.until(`!document.querySelector(${JSON.stringify(RENAME)})`, 'the box gone');
+		expect(await tab.eval(`document.querySelector('${CARD('s-plain')} .card-name').innerText`)).toBe('分頁-s-plain');
+		// Leaving the box cancels too.
+		await openMenu(touch, 's-plain');
+		await click('.menu button');
+		await tab.until(`document.activeElement?.matches(${JSON.stringify(RENAME)})`, 'the name box again');
+		await tab.eval(`document.querySelector(${JSON.stringify(RENAME)}).blur()`);
+		await tab.until(`!document.querySelector(${JSON.stringify(RENAME)})`, 'the box gone after blur');
+		expect(herdrCalls()).toEqual([]);
+
+		await openMenu(touch, 's-plain');
+		await click('.menu button');
+		await tab.until(`document.activeElement?.matches(${JSON.stringify(RENAME)})`, 'the name box once more');
+		await tab.eval(`document.querySelector(${JSON.stringify(RENAME)}).value = ' 審查 '`);
+		await key('Enter');
+		await tab.until(`document.querySelector('${CARD('s-plain')} .card-name')?.innerText === '審查'`, 'the new name');
+		expect(herdrCalls()).toEqual([['tab', 'rename', 'wA:t-s-plain', '審查']]);
+
+		// Herdr refuses: its reason shows, and the name stays.
+		setHerdr(AGENTS, { fail: { 'tab rename': { exit: 1, stderr: JSON.stringify({ error: { code: 'x', message: 'label refused' } }) } } });
+		await fixture.refresh(cookie);
+		await tab.until(`document.querySelector('${CARD('s-plain')} .card-name')?.innerText === '分頁-s-plain'`, 'the name Herdr has');
+		await openMenu(touch, 's-plain');
+		await click('.menu button');
+		await tab.until(`document.activeElement?.matches(${JSON.stringify(RENAME)})`, 'the name box for the failure');
+		await tab.eval(`document.querySelector(${JSON.stringify(RENAME)}).value = '不行'`);
+		await key('Enter');
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('改名失敗：Herdr 沒有改名：label refused')`, 'the failure');
+		expect(await tab.eval(`document.querySelector('${CARD('s-plain')} .card-name').innerText`)).toBe('分頁-s-plain');
+
+		// Both are in the agent's record.
+		await openAgent('s-plain');
+		await click('.detail [data-tab="log"]');
+		await tab.until(`document.querySelectorAll('.detail #agent-panel-log li[data-action="rename"]').length === 2`, 'the record');
+		const log = await tab.eval<string>(`document.querySelector('.detail #agent-panel-log').innerText`);
+		expect(log).toContain('「分頁-s-plain」改為「審查」');
+		expect(log).toContain('label refused');
+	}, 30_000);
+}

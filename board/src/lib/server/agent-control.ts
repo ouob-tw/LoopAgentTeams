@@ -38,7 +38,7 @@ export async function listedNow(board: Board, agentId: string): Promise<{ agent:
 }
 
 /** Why a Herdr command did not act, as the page shows it. */
-function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: AgentActionKind): string {
+function herdrReason(act: Extract<HerdrAct, { ok: false }>, action: Exclude<AgentActionKind, 'move' | 'rename'>): string {
 	if (act.timedOut) {
 		if (action === 'close') return `Herdr 的關閉指令${act.reason}，結果不明；請到 Herdr 查看。`;
 		return action === 'send'
