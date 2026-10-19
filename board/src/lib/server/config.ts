@@ -43,6 +43,14 @@ export interface BoardConfig {
 	debounceMs: number;
 	/** How long a source address is refused after too many wrong passwords in a row. */
 	loginLockMs: number;
+	/** The speech recognition service voice input sends its recordings to; null turns voice input off. */
+	asrUrl: string | null;
+	/** The service's access token. It stays on the server: no response to a page carries it. */
+	asrToken: string | null;
+	asrTimeoutMs: number;
+	/** Command that runs a Codex app server over standard input and output, to tidy long speech. */
+	tidyCommand: string[];
+	tidyTimeoutMs: number;
 	/** The current time in milliseconds. Read state and archiving use this, never `Date.now()`. */
 	now(): number;
 }
@@ -130,6 +138,11 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		fallbackMs,
 		debounceMs: 200,
 		loginLockMs: seconds(env.LAT_BOARD_LOGIN_LOCK_SECONDS, 60_000),
+		asrUrl: env.LAT_BOARD_ASR_URL?.replace(/\/+$/, '') || null,
+		asrToken: env.LAT_BOARD_ASR_TOKEN || null,
+		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),
+		tidyCommand: commandFrom(env, 'LAT_BOARD_TIDY_COMMAND') ?? ['codex', 'app-server'],
+		tidyTimeoutMs: seconds(env.LAT_BOARD_TIDY_TIMEOUT_SECONDS, 30_000),
 		now: clock(env)
 	};
 }

@@ -37,6 +37,11 @@
 | `LAT_BOARD_HERDR_TIMEOUT_SECONDS` | 每個 Herdr 指令多久沒結束就放棄 | `10` |
 | `HERDR_SOCKET_PATH` | Herdr 的連線介面，用於 CLI 沒有的移動分頁（接回與開新後移到最前面、在「Herdr」分頁調整順序）；逾時同上一項 | `$XDG_CONFIG_HOME/herdr/herdr.sock` |
 | `LAT_BOARD_LAUNCH_WAIT_SECONDS` | 新建後多久還沒出現綁定，就在新建紀錄提示「已開分頁，但主控尚未啟用」；喚醒接回後多久還沒在 hcom 清單出現，就在送出紀錄提示「接回後仍未出現」 | `180` |
+| `LAT_BOARD_ASR_URL` | 語音輸入用的語音辨識服務（gohakka-infra）網址，例如 `http://localhost:8025`；看板呼叫它的 `/v1/asr/sync`（`whisper-large-v3-turbo`、`zh`）。沒設定或缺下一項時，按麥克風只會提示未設定 | 不設定 |
+| `LAT_BOARD_ASR_TOKEN` | 該服務的 JWT。只留在看板伺服器，不會出現在任何給瀏覽器的回應 | 不設定 |
+| `LAT_BOARD_ASR_TIMEOUT_SECONDS` | 語音辨識多久沒回應就放棄 | `60` |
+| `LAT_BOARD_TIDY_COMMAND` | 整理長語音用的 Codex app server 指令（JSON 字串陣列），每次整理啟動一個、以標準輸入輸出溝通，用完即結束 | `["codex","app-server"]` |
+| `LAT_BOARD_TIDY_TIMEOUT_SECONDS` | Codex 整理多久沒完成就改放原始辨識文字並提示 | `30` |
 
 `XDG_STATE_HOME` 未設定時是 `~/.local/state`，`XDG_CONFIG_HOME` 未設定時是 `~/.config`。
 
@@ -218,6 +223,16 @@
 - 測試以 `tests/fake-hcom.mjs`、`tests/fake-herdr.mjs` 代替真的 hcom 與 Herdr；不在 Git 專案裡的測試資料夾放在上層沒有 `.git` 的暫存目錄。
 - 開新 Agent（Herdr 分頁工作區標題的「＋」，網址 `?new-agent=<工作區 ID>`）共用 `NewController.svelte`（帶 `target`）與 `POST /api/launches`：請求多一個 `agent: { workspace, tabName }`。伺服器不送 LAT 啟動指令、不檢查 Git 也不 git init（`gitInit: true` 回 400），第一則訊息可以是空的（空的就不帶 `--hcom-prompt`），分頁名稱去頭尾空白後最多 60 字、不能換行；Claude 一樣帶 `--dangerously-skip-permissions`，模型與思考強度參數同新建主控。資料夾不存在、Herdr 清單上已沒有這個工作區都記為失敗；工作區不另外挑選或新建。紀錄是 `kind: launch` 加 `role: agent` 與 `tabName`，不會配對成主控（`settleLaunches` 跳過）。
 - 新建主控與開新 Agent 在 hcom 回報名稱後都會追蹤：伺服器每秒讀一次 `hcom list --json` 與 Herdr 的清單，hcom 清單上這個名稱的 session ID 或 `launch_context.pane_id`，對到 `herdr agent list` 的同一個 session 或窗格，就算出現在 Herdr。接著開新 Agent 有分頁名稱時 `herdr tab rename <分頁> <名稱>`，再以 socket 的 `tab.move`（`insert_index: 0`）移到最前面（主控只移動），追加一行 `launch-followed`（出現時間、沒出現的原因、改名與移動各自的失敗原因），然後重讀資料。連續三次讀得到的 hcom 清單都沒有這個名稱（它也列還在啟動的）就不再等；等到新建紀錄的等待時間（`LAT_BOARD_LAUNCH_WAIT_SECONDS`，預設 180 秒）還沒出現就記逾時，兩種都不改名也不移動。主控的狀態仍以綁定為準，追蹤結果只另外顯示移動失敗或沒出現的原因。新建與開新共用同一個隊伍：要等追蹤結束才換下一個，`POST` 則在 hcom 跑完就回應。`GET /api/launches` 的 `launches` 兩種各取最近 20 筆，各自的表單只列自己那種。
+
+## 語音輸入
+
+隱藏功能，畫面上沒有開關：連按「待辦」分頁 5 次（每兩下間隔 1.5 秒內）打開，記在這個瀏覽器（localStorage）；再連按 5 次關閉。打開後指令列與新建主控的第一句話旁會出現麥克風：按一下開始錄音、再按一下停止。
+
+- 錄音送到看板伺服器的 `/api/voice`，由伺服器帶著憑證轉給語音辨識服務（見「設定」的 `LAT_BOARD_ASR_*`）；結果用 opencc-js 轉成台灣正體（含用詞）。
+- 10 個字以內直接放到游標處；更長的先交給 Codex app server 修錯字、去掉口誤與贅字再放入。Codex 失敗、看不懂或逾時就放轉換後的原文，並以通知說明原因。
+- 放入時只取代選取的文字，其餘內容保留；錄音最長 2 分鐘，到時自動停止。
+- 麥克風只在 HTTPS 或 localhost 的網址可用；權限被拒時以通知說明。
+- 測試以 Bun 啟動的假語音辨識服務與 `tests/fake-codex.mjs`（假的 Codex app server）代替真的服務，不會呼叫外部服務。
 
 ## 版面與外觀
 

@@ -37,12 +37,18 @@ function agentIdentity(name: string): boolean {
 	return name === 'CLAUDECODE' || name === 'CLAUDE_PID' || name === 'CLAUDE_EFFORT' || name === 'AI_AGENT' || name.startsWith('CLAUDE_CODE_');
 }
 
+/** The board's own environment without the identity of an agent or pane it was started from. */
+export function ownEnv(): NodeJS.ProcessEnv {
+	const env: NodeJS.ProcessEnv = {};
+	for (const [name, value] of Object.entries(process.env)) if (!agentIdentity(name)) env[name] = value;
+	return env;
+}
+
 /** The environment hcom starts or resumes an agent in: the board's own, as the background service
  *  has it even when the board was started from inside an agent's shell or a Herdr pane, with
  *  Herdr's tab opening in this workspace. */
 export function hcomEnv(herdrWorkspace: string): NodeJS.ProcessEnv {
-	const env: NodeJS.ProcessEnv = {};
-	for (const [name, value] of Object.entries(process.env)) if (!agentIdentity(name)) env[name] = value;
+	const env = ownEnv();
 	env.HERDR_WORKSPACE_ID = herdrWorkspace;
 	return env;
 }

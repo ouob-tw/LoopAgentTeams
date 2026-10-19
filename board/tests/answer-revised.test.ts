@@ -44,10 +44,10 @@ async function until(expression: string) {
 
 beforeAll(async () => {
 	if (!CHROME) return;
-	fixture = await startFixture(38);
+	fixture = await startFixture(41);
 	cookie = await fixture.login('answer-revised');
 	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const port = PORT_BASE + 39;
+	const port = PORT_BASE + 42;
 	chrome = spawn(
 		CHROME!,
 		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, 'about:blank'],
