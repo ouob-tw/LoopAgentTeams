@@ -523,8 +523,8 @@ function runsNow(name: string) {
 const launches = () => hcomCalls().filter((args) => args[0] === 'claude' || args[0] === 'codex');
 const lastStep = (switchId: string) => sentLog().filter((line) => line.kind === 'switch-step' && line.switchId === switchId).at(-1);
 
-test('the old tab\'s own name is kept for the fresh client, even one with the old HCOM name in it; only the name hcom gave it is not', async () => {
-	for (const [label, kept] of [['clio QA', 'clio QA'], ['clio', null], ['CLIO', null]] as const) {
+test('the old tab\'s name is kept for the fresh client as it is, the old HCOM name too', async () => {
+	for (const [label, kept] of [['clio QA', 'clio QA'], ['clio', 'clio']] as const) {
 		rmSync(join(fixture.dir, 'board-state', 'sent-log.jsonl'), { force: true });
 		setHerdr(['s-claude', 's-codex']);
 		const herdr = JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8'));

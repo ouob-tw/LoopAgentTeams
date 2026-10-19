@@ -186,7 +186,7 @@ export interface SentSwitch {
 export interface SwitchRelaunch {
 	/** The client arguments hcom started it with. */
 	args: string[];
-	/** The old tab's label, to give the new tab; null when it only said the old HCOM name. */
+	/** The old tab's label, to give the new tab; null when Herdr's tab list did not have it. */
 	tabLabel: string | null;
 	/** The old tab's place among its workspace's tabs, counted from 0; null when not known. */
 	tabIndex: number | null;

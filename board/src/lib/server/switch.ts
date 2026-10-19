@@ -184,8 +184,7 @@ export async function startSwitch(board: Board, controller: SwitchTarget, entry:
 		const label = row?.herdr.tabPlace?.label ?? null;
 		entry.relaunch = {
 			args: launched.args,
-			// The label hcom gave it, its old name, would misname the new client; any other is kept.
-			tabLabel: label && !isDefaultLabel(label, controller.hcomName) ? label : null,
+			tabLabel: label,
 			tabIndex: row?.herdr.tabPlace ? row.herdr.tabPlace.position - 1 : null
 		};
 		return restartSwitch(board, controller, entry, agent);
@@ -193,13 +192,6 @@ export async function startSwitch(board: Board, controller: SwitchTarget, entry:
 	entry.from = record.ok ? (record.page.current ?? null) : null;
 	if (carriesEffort(entry.to)) entry.carriedEffort = entry.from?.effort ?? null;
 	return restartSwitch(board, controller, entry, agent);
-}
-
-/** Whether a tab's label is the one hcom gives a client: its HCOM name, whole or without the tags
- *  in front. */
-function isDefaultLabel(label: string, hcomName: string): boolean {
-	const name = label.trim().toLowerCase();
-	return name === hcomName.toLowerCase() || name === (hcomName.split('-').at(-1) ?? '').toLowerCase();
 }
 
 /** A first switch: check the client once more, log the switch, stop the client and, once it is
