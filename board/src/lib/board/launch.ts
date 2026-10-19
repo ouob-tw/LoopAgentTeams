@@ -1,7 +1,7 @@
 // Starting a new controller, or a plain agent in a chosen Herdr workspace, from the board: the
 // shapes shared by the server and the page, and the LAT start command a controller's first message
 // begins with.
-import type { ModelOptions } from './models.ts';
+import { DEFAULT_UNREADABLE_TEXT, type ModelChoice, type ModelOptions } from './models.ts';
 
 export const LAUNCH_CLIENTS = ['claude', 'codex'] as const;
 export type LaunchClient = (typeof LAUNCH_CLIENTS)[number];
@@ -57,6 +57,10 @@ export interface SentLaunch {
 	/** What the form chose; null for the client's own default. Missing on launches logged before. */
 	model?: string | null;
 	effort?: string | null;
+	/** What the client's settings gave, when the launch began, as its default model and as its
+	 *  default effort with the model it was started with; null where they gave none. Missing on
+	 *  launches logged before. */
+	defaults?: ModelChoice;
 	/** Whether the board ran `git init` in the folder for this launch. */
 	gitInit: boolean;
 	herdrWorkspace: string | null;
@@ -110,6 +114,17 @@ export const LAUNCH_STATE_TEXT: Record<LaunchState, string> = {
 	failed: '失敗',
 	appeared: '已出現在 Herdr'
 };
+
+/** The model and effort a launch started with, as its record shows them: a value left to the
+ *  client is the default its settings gave then. Null for a launch logged before the defaults
+ *  were kept that chose neither. */
+export function launchSettingsText(launch: Pick<SentLaunch, 'model' | 'effort' | 'defaults'>): string | null {
+	const { model = null, effort = null, defaults } = launch;
+	if (!defaults) return model || effort ? `模型 ${model ?? 'client 預設'}・思考強度 ${effort ?? 'client 預設'}` : null;
+	if (model === null && effort === null && defaults.model === null && defaults.effort === null) return `模型與思考強度：${DEFAULT_UNREADABLE_TEXT}`;
+	const part = (chosen: string | null, given: string | null) => chosen ?? (given === null ? DEFAULT_UNREADABLE_TEXT : `${given}（預設）`);
+	return `模型 ${part(model, defaults.model)}・思考強度 ${part(effort, defaults.effort)}`;
+}
 
 /** A plain agent's states where they read differently from a controller's. */
 export const AGENT_LAUNCH_STATE_TEXT: Partial<Record<LaunchState, string>> = {

@@ -4,7 +4,8 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:te
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
-import type { LaunchList, LaunchResponse, LaunchView } from '../src/lib/board/launch.ts';
+import { launchSettingsText, type LaunchList, type LaunchResponse, type LaunchView } from '../src/lib/board/launch.ts';
+import { DEFAULT_UNREADABLE_TEXT, type LaunchDefaults } from '../src/lib/board/models.ts';
 import { gitRoot } from '../src/lib/server/git.ts';
 import { AGENT_SHELL_ENV, checkRunHere, DAY, keptAgentShellEnv, NODE, startFixture, type Fixture } from './harness.ts';
 
@@ -162,6 +163,92 @@ test('only what was chosen is passed: client default leaves the other one out', 
 		['$lat 做一件事', '-c', 'model_reasoning_effort="high"'],
 		['/lat 做一件事', '--dangerously-skip-permissions', '--model', 'claude-haiku-5-5']
 	]);
+});
+
+/** Write the fixture home's client settings (null removes one); never the real home's. */
+function homeSettings(files: { claude?: object | string | null; codex?: string | null }) {
+	const home = join(fixture.dir, 'home');
+	for (const [path, content] of [['.claude/settings.json', files.claude], ['.codex/config.toml', files.codex]] as const) {
+		if (content === undefined) continue;
+		rmSync(join(home, path), { force: true });
+		if (content === null) continue;
+		mkdirSync(join(home, path, '..'), { recursive: true });
+		writeFileSync(join(home, path), typeof content === 'string' ? content : JSON.stringify(content));
+	}
+}
+
+async function defaultsFor(folder: string | null, as = cookie): Promise<LaunchDefaults> {
+	const query = folder === null ? '' : `?folder=${encodeURIComponent(folder)}`;
+	return (await fixture.fetch(`/api/launches/defaults${query}`, { cookie: as })).json();
+}
+
+test("the defaults are what the user's settings give, then the folder's, for each client", async () => {
+	homeSettings({
+		claude: { model: 'opus', effortLevel: 'medium', modelSettings: { 'claude-sonnet-5-5': { effortLevel: 'low' } } },
+		codex: 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "medium"\n'
+	});
+	try {
+		expect(await defaultsFor(null)).toEqual({
+			claude: { model: 'claude-opus-5-5', effort: 'medium', modelEfforts: { 'claude-sonnet-5-5': 'low' } },
+			codex: { model: 'gpt-6.1-sol', effort: 'medium', modelEfforts: {} }
+		});
+		const project = folder('own-settings', true);
+		mkdirSync(join(project, '.claude'));
+		writeFileSync(join(project, '.claude/settings.local.json'), JSON.stringify({ model: 'haiku', effortLevel: 'high' }));
+		expect((await defaultsFor(project)).claude).toMatchObject({ model: 'claude-haiku-5-5', effort: 'high' });
+		// Another folder is back to the user's.
+		expect((await defaultsFor(folder('plain-settings', true))).claude).toMatchObject({ model: 'claude-opus-5-5', effort: 'medium' });
+		expect((await fixture.fetch('/api/launches/defaults?folder=relative', { cookie })).status).toBe(400);
+		expect((await fixture.fetch('/api/launches/defaults')).status).toBe(401);
+	} finally {
+		homeSettings({ claude: null, codex: null });
+	}
+});
+
+test('a launch left to the defaults runs as before and logs the defaults its settings gave then', async () => {
+	const repo = folder('defaults-logged', true);
+	herdrPlan({ panes: [{ workspace_id: 'wD', cwd: repo }], workspaces: [['wD', 1, 'defaults-logged']] });
+	homeSettings({
+		claude: { model: 'opus', effortLevel: 'medium', modelSettings: { 'claude-sonnet-5-5': { effortLevel: 'low' } } },
+		codex: 'profile = "deep"\nmodel = "gpt-6.1-sol"\n[profiles.deep]\nmodel_reasoning_effort = "xhigh"\n'
+	});
+	try {
+		const claude = await launch({ client: 'claude', folder: repo, model: null, effort: null });
+		const sonnet = await launch({ client: 'claude', folder: repo, model: 'claude-sonnet-5-5', effort: null });
+		const codex = await launch({ client: 'codex', folder: repo, model: null, effort: null });
+		expect(hcomCalls().map((call) => call.args.slice(8))).toEqual([
+			['/lat 做一件事', '--dangerously-skip-permissions'],
+			['/lat 做一件事', '--dangerously-skip-permissions', '--model', 'claude-sonnet-5-5'],
+			['$lat 做一件事']
+		]);
+		expect(claude.body.entry).toMatchObject({ model: null, effort: null, defaults: { model: 'claude-opus-5-5', effort: 'medium' } });
+		// The effort left to the client is the one its settings give the model chosen.
+		expect(sonnet.body.entry).toMatchObject({ model: 'claude-sonnet-5-5', effort: null, defaults: { model: 'claude-opus-5-5', effort: 'low' } });
+		expect(codex.body.entry).toMatchObject({ defaults: { model: 'gpt-6.1-sol', effort: 'xhigh' } });
+		// What was read then stays, whatever the settings say later.
+		homeSettings({ claude: { model: 'haiku' } });
+		expect(await launchOf(claude.body.entry!.id)).toMatchObject({ defaults: { model: 'claude-opus-5-5', effort: 'medium' } });
+		expect(launchSettingsText(claude.body.entry!)).toBe('模型 claude-opus-5-5（預設）・思考強度 medium（預設）');
+		expect(launchSettingsText(sonnet.body.entry!)).toBe('模型 claude-sonnet-5-5・思考強度 low（預設）');
+
+		// Settings that cannot be read are not guessed at.
+		homeSettings({ claude: '{ broken', codex: null });
+		const unread = await launch({ client: 'claude', folder: repo, model: null, effort: null });
+		expect(unread.body.entry).toMatchObject({ defaults: { model: null, effort: null } });
+		expect(launchSettingsText(unread.body.entry!)).toBe(`模型與思考強度：${DEFAULT_UNREADABLE_TEXT}`);
+		const halfUnread = await launch({ client: 'codex', folder: repo, model: null, effort: 'low' });
+		expect(launchSettingsText(halfUnread.body.entry!)).toBe(`模型 ${DEFAULT_UNREADABLE_TEXT}・思考強度 low`);
+		expect(await defaultsFor(repo)).toEqual({ claude: { model: null, effort: null, modelEfforts: {} }, codex: { model: null, effort: null, modelEfforts: {} } });
+	} finally {
+		homeSettings({ claude: null, codex: null });
+	}
+	// Each launch waits for the one before to be followed through.
+}, 30_000);
+
+test('a launch logged before the defaults were kept reads as it did', () => {
+	expect(launchSettingsText({ model: null, effort: null })).toBeNull();
+	expect(launchSettingsText({})).toBeNull();
+	expect(launchSettingsText({ model: 'claude-opus-5-5', effort: null })).toBe('模型 claude-opus-5-5・思考強度 client 預設');
 });
 
 test('the lists are offered with the launches, and a value they do not offer is rejected without running anything', async () => {

@@ -21,6 +21,7 @@
 		LOCK_UNKNOWN_TEXT,
 		modelShort,
 		NOT_RUNNING_REASON,
+		readsCurrentAgain,
 		settingsText,
 		shownSettings,
 		SWITCH_MISSED_TEXT,
@@ -85,13 +86,14 @@
 	});
 	// With every new board data (each hands a new `controller` object), which is when a resume's
 	// result or the next turn comes in: the sent log while it is not read yet or a switch is still
-	// open or waiting, and the settings while a switch waits and no open conversation feeds them.
+	// open or waiting, and the settings while a switch waits or no turn was read yet (a new
+	// controller's first read comes before its first turn), when no open conversation feeds them.
 	$effect(() => {
 		if (!controller) return;
 		const target = controller.id;
 		untrack(() => {
 			if (messaging.sent[target] === undefined || unsettled || shownNow.waiting) void messaging.load(target);
-			if (shownNow.waiting && !switching.watched[target]) void switching.loadCurrent(target, true);
+			if (readsCurrentAgain(switching.current[target], shownNow.waiting) && !switching.watched[target]) void switching.loadCurrent(target, true);
 		});
 	});
 

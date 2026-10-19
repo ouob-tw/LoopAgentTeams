@@ -12,6 +12,7 @@
 		LAUNCH_CLIENTS,
 		LAUNCH_STATE_TEXT,
 		latCommand,
+		launchSettingsText,
 		TAB_NAME_MAX,
 		type LaunchClient,
 		type LaunchView,
@@ -19,6 +20,7 @@
 	} from '#lib/board/launch.ts';
 	import { agentLaunching, launching } from '#lib/board/launching.svelte.ts';
 	import { enterMakesNewline } from '#lib/board/messaging.svelte.ts';
+	import { DEFAULT_UNREADABLE_TEXT, defaultEffort, modelShort } from '#lib/board/models.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import MessageBox from './MessageBox.svelte';
@@ -47,14 +49,31 @@
 		void stamp;
 		void form.load();
 	});
+	// The defaults follow the folder, and settings edited meanwhile.
+	$effect(() => {
+		void stamp;
+		void form.loadDefaults(form.folder);
+	});
 	$effect(() => {
 		const shown = form;
-		const timer = setInterval(() => void shown.load(), POLL_MS);
+		const timer = setInterval(() => {
+			void shown.load();
+			void shown.loadDefaults(shown.folder);
+		}, POLL_MS);
 		return () => clearInterval(timer);
 	});
 
 	const projects = $derived(form.list?.projects ?? []);
 	const options = $derived(form.list?.modelOptions[form.client]);
+	/** What the client uses when a field is left to it, as its settings give it for this folder. */
+	const defaults = $derived(form.defaults?.folder === form.folder ? form.defaults.clients[form.client] : undefined);
+	/** The first option of a field: the value the client's settings give, said outright. */
+	function defaultOption(value: string | null | undefined): string {
+		if (!defaults) return form.defaultsFailed ? '預設：看板讀取 client 設定失敗' : '預設：讀取中…';
+		return `預設：${value ?? DEFAULT_UNREADABLE_TEXT}`;
+	}
+	/** A model by its short name, with the ID the other options use when that differs. */
+	const named = (model: string) => (modelShort(model) === model ? model : `${modelShort(model)}（${model}）`);
 
 	/** The lists differ per client, so a choice made for the other one is dropped. */
 	function chooseClient(client: LaunchClient) {
@@ -191,7 +210,7 @@
 			<label>
 				模型
 				<select bind:value={form.model}>
-					<option value="">client 預設</option>
+					<option value="">{defaultOption(defaults?.model && named(defaults.model))}</option>
 					{#each options?.models ?? [] as option (option)}
 						<option value={option}>{option}</option>
 					{/each}
@@ -200,7 +219,7 @@
 			<label>
 				思考強度
 				<select bind:value={form.effort}>
-					<option value="">client 預設</option>
+					<option value="">{defaultOption(defaults && defaultEffort(defaults, form.model || null))}</option>
 					{#each options?.efforts ?? [] as option (option)}
 						<option value={option}>{option}</option>
 					{/each}
@@ -331,8 +350,8 @@
 						{#if launch.tabName}<span>分頁名稱 {launch.tabName}</span>{/if}
 					</p>
 					<p class="title">{launch.folder}</p>
-					{#if launch.model || launch.effort}
-						<p class="title">模型 {launch.model ?? 'client 預設'}・思考強度 {launch.effort ?? 'client 預設'}</p>
+					{#if launchSettingsText(launch)}
+						<p class="title">{launchSettingsText(launch)}</p>
 					{/if}
 					<p class="state" class:failed={launch.state === 'failed'} class:warn={launch.state === 'overdue' || launch.state === 'uncertain'}>
 						{stateText(launch)}

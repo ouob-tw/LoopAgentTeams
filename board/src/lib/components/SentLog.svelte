@@ -4,7 +4,7 @@
 	// model switches.
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { formatTime } from '#lib/board/format.ts';
-	import { CLIENT_LABEL, LAUNCH_STATE_TEXT, latCommand } from '#lib/board/launch.ts';
+	import { CLIENT_LABEL, LAUNCH_STATE_TEXT, latCommand, launchSettingsText } from '#lib/board/launch.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { choiceText, settingsText, SWITCH_STATE_TEXT } from '#lib/board/models.ts';
@@ -54,8 +54,8 @@
 							<span>✓ {LAUNCH_STATE_TEXT.active}</span>
 						</p>
 						<p class="title">{entry.folder}</p>
-						{#if entry.model || entry.effort}
-							<p class="title">模型 {entry.model ?? 'client 預設'}・思考強度 {entry.effort ?? 'client 預設'}</p>
+						{#if launchSettingsText(entry)}
+							<p class="title">{launchSettingsText(entry)}</p>
 						{/if}
 						<p class="text">{latCommand(entry.client, entry.text)}</p>
 					{:else if entry.kind === 'switch'}

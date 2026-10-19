@@ -2,6 +2,7 @@
 // form as filled in (it survives a failed launch and leaving the page), the folders to choose from
 // and the recent launches.
 import type { BrowseResult, LaunchClient, LaunchList, LaunchResponse } from './launch.ts';
+import type { LaunchDefaults } from './models.ts';
 
 export interface StartResult {
 	ok: boolean;
@@ -39,6 +40,10 @@ class Launching {
 	browsing = $state(false);
 	browseFailed = $state(false);
 	#browses = 0;
+	/** What each client uses by default, read for this folder; null until read. */
+	defaults = $state<{ folder: string; clients: LaunchDefaults } | null>(null);
+	defaultsFailed = $state(false);
+	#defaultsReads = 0;
 
 	/** Read the folders under a path (the home folder when left out). A failed read keeps the level shown. */
 	async open(path?: string): Promise<void> {
@@ -58,6 +63,25 @@ class Launching {
 		this.browsing = false;
 		if (result) this.browse = result;
 		this.browseFailed = !result;
+	}
+
+	/** Read the clients' defaults for a folder ('' for the user's settings alone). A failed read
+	 *  keeps what was read for the same folder. */
+	async loadDefaults(folder: string): Promise<void> {
+		const read = ++this.#defaultsReads;
+		let clients: LaunchDefaults | undefined;
+		try {
+			const response = await fetch(`/api/launches/defaults?folder=${encodeURIComponent(folder)}`);
+			if (response.status === 401) return location.reload();
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			clients = await response.json();
+		} catch {
+			// Reported below, unless a newer read has taken over.
+		}
+		if (read !== this.#defaultsReads) return;
+		if (clients) this.defaults = { folder, clients };
+		else if (this.defaults?.folder !== folder) this.defaults = null;
+		this.defaultsFailed = !clients;
 	}
 
 	async load(): Promise<void> {

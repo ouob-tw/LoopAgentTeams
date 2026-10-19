@@ -389,3 +389,30 @@ export function effortShort(level: string): string {
 	const letter = level.charAt(0).toUpperCase();
 	return Object.values(EFFORT_SHORT).some((short) => short.startsWith(letter)) ? capital(level.slice(0, 2)) : letter;
 }
+
+/** What a client started without a model or effort argument uses, as its settings files give it;
+ *  null where they give none, or could not be read. */
+export interface ClientDefaults {
+	model: string | null;
+	effort: string | null;
+	/** Claude only: the effort `modelSettings` gives a model, by model ID; it beats `effort` for that model. */
+	modelEfforts: Record<string, string>;
+}
+
+/** What `GET /api/launches/defaults` answers for a folder. */
+export type LaunchDefaults = Record<LaunchClient, ClientDefaults>;
+
+export const DEFAULT_UNREADABLE_TEXT = '讀不到 client 設定，交給 client 內建預設';
+
+/** The effort a client uses by default with this model (its own default model when null). */
+export function defaultEffort(defaults: ClientDefaults, model: string | null): string | null {
+	const used = model ?? defaults.model;
+	return (used !== null && defaults.modelEfforts[used]) || defaults.effort;
+}
+
+/**
+ * Whether the command line reads the latest settings again with new board data, for a controller
+ * whose conversation is not open: while a switch waits for its next turn, and while no turn has
+ * been read yet, since a new controller is first read before its first turn starts.
+ */
+export const readsCurrentAgain = (current: CurrentSettings | null | undefined, waiting: boolean) => waiting || current === null;

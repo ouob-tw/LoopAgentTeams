@@ -9,7 +9,7 @@
 // moved to the front of its workspace.
 import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
-import { modelArgs } from '../board/models.ts';
+import { defaultEffort, modelArgs } from '../board/models.ts';
 import { latCommand, NOT_GIT_REASON, type LaunchList, type LaunchRequest, type LaunchResponse, type Project, type SentLaunch } from '../board/launch.ts';
 import type { HelperController } from '../board/types.ts';
 import type { Board } from './board.ts';
@@ -19,6 +19,7 @@ import { waitToAppear } from './appear.ts';
 import { launchAgent } from './hcom.ts';
 import { chooseWorkspace, moveTab, renameTab, workspaceLabel, type HerdrAgent } from './herdr.ts';
 import { typedText } from './send.ts';
+import { launchDefaults } from './client-settings.ts';
 import { appendSent, readLaunches, type LaunchFollowed } from './sent-log.ts';
 
 /** How many launches the new-controller page lists, and the new-agent form too. */
@@ -88,6 +89,8 @@ async function attempt(
 	const config = board.config;
 	const agent = request.agent ?? null;
 	const text = typedText(request.text);
+	// What the client's settings give for what the form left to them, as they are now.
+	const defaults = launchDefaults(request.folder)[request.client];
 	const entry: SentLaunch = {
 		id: randomUUID(),
 		kind: 'launch',
@@ -99,6 +102,7 @@ async function attempt(
 		text: agent && !text.trim() ? '' : text,
 		model: request.model,
 		effort: request.effort,
+		defaults: { model: defaults.model, effort: defaultEffort(defaults, request.model) },
 		gitInit: false,
 		herdrWorkspace: null,
 		herdrWorkspaceLabel: null,
