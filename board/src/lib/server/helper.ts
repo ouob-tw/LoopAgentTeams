@@ -228,7 +228,8 @@ export function notifyController(config: BoardConfig, questionsPath: string): Pr
 	return writeCommand(config, ['notify', `--questions=${questionsPath}`]);
 }
 
-export type HelperTranscript = { ok: true; page: TranscriptPage; path: string } | { ok: false; reason: string };
+/** `missing` when the client has written no record for the session yet, as with one just started. */
+export type HelperTranscript = { ok: true; page: TranscriptPage; path: string } | { ok: false; reason: string; missing?: boolean };
 
 const ITEM_KINDS = new Set(['user', 'assistant', 'tool']);
 const isItem = (value: unknown): value is TranscriptItem =>
@@ -258,7 +259,7 @@ export async function readTranscript(
 	}
 	if (failure || payload?.status !== 'ok' || !Array.isArray(payload.items) || !payload.items.every(isItem) || typeof payload.path !== 'string') {
 		const reason = typeof payload?.reason === 'string' ? payload.reason : failure;
-		return { ok: false, reason: reason ?? '輔助工具的輸出缺少對話紀錄' };
+		return { ok: false, reason: reason ?? '輔助工具的輸出缺少對話紀錄', ...(payload?.status === 'not_found' && { missing: true }) };
 	}
 	return {
 		ok: true,

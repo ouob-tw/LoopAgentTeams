@@ -9,7 +9,8 @@
 // that with a fixed output. `board transcript` pages through <dir>/transcripts/<session>.jsonl, one
 // item per line, the way the real command pages a client's record, with the latest turn's settings
 // from <dir>/transcripts/<session>.current.json, its usage from <session>.usage.json and its
-// permission mode from <session>.permission.json when there are; with `transcriptChildMs` in the plan it instead waits that long on a child process, writing
+// permission mode from <session>.permission.json when there are, and fails with the reason in
+// <session>.fail when there is one; with `transcriptChildMs` in the plan it instead waits that long on a child process, writing
 // the child's PID to transcript-child.pid (`launchArgsChildMs` does the same for `board launch-args`). `board launch-args` prints what <dir>/launch-args.json holds for the
 // session: a list of arguments, or `{ "unknown": reason }`. `board prune-reports` deletes nothing,
 // unless the plan sets `realPrune` to a Python interpreter: then that runs the real helper's command,
@@ -17,7 +18,7 @@
 // <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { appendFileSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
 const [dir, ...args] = process.argv.slice(2);
@@ -154,6 +155,9 @@ function transcript() {
 	const given = options();
 	const session = given['session-id']?.[0] ?? '';
 	const path = join(dir, 'transcripts', `${session}.jsonl`);
+	// A record that is there but cannot be read: the helper's error, with the reason in <session>.fail.
+	const fail = join(dir, 'transcripts', `${session}.fail`);
+	if (existsSync(fail)) return { output: { status: 'error', reason: readFileSync(fail, 'utf8') }, exit: 1 };
 	let lines;
 	try {
 		lines = readFileSync(path, 'utf8').split('\n').slice(0, -1);

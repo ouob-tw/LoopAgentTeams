@@ -86,7 +86,8 @@ export function followTranscript(
 		const result = await readTranscript(config, source.client, source.sessionId, null, abort.signal);
 		running = false;
 		if (closed) return;
-		latest = result.ok ? { ok: true, page: result.page } : result;
+		// A session just started has no record yet: an empty conversation, not a failure.
+		latest = result.ok ? { ok: true, page: result.page } : result.missing ? { ok: true, page: { items: [], before: null, skipped: 0 } } : { ok: false, reason: result.reason };
 		const targets: WatchTargets = new Map();
 		if (result.ok) addFile(targets, result.path);
 		watcher.sync(targets);
@@ -101,8 +102,8 @@ export function followTranscript(
 			addFile(usageTargets, usagePath(config, source.sessionId));
 			usageWatcher.sync(usageTargets);
 		}
-		// A missed watch event is caught by the board's own fallback interval; an unreadable record
-		// is retried sooner so it appears soon after the client writes it.
+		// A missed watch event is caught by the board's own fallback interval; a record not found or
+		// unreadable is retried sooner so it appears soon after the client writes it.
 		timer = setTimeout(() => void read(), result.ok ? config.fallbackMs : RETRY_MS);
 		send();
 		if (again) {

@@ -218,20 +218,21 @@ test('helper output past 64 MiB on either stream is refused, as before', async (
 	}
 }, 30_000);
 
-test('a record that cannot be found shows why, appears once written, and leaves the rest alone', async () => {
+test('a record not written yet is an empty conversation, not a failure; it appears once written, and the rest is left alone', async () => {
 	const mira = await bind('delta', 'mira');
 	rmSync(recordPath(mira.session_id), { force: true });
 	const feed = follow(mira.session_id);
 	try {
+		// A session just started has no record: nothing to say, nothing failed.
 		const missing = await until(() => feed.updates[0], 5_000, 'the first update');
-		expect(missing).toEqual({ ok: false, reason: `找不到 session ${mira.session_id} 的對話紀錄檔` });
+		expect(missing).toMatchObject({ ok: true, page: { items: [], before: null, skipped: 0 } });
 		// Every other block of the information page still has its data.
 		expect(named(await fixture.board(cookie), 'mira')).toBeDefined();
 		const sent = await fixture.fetch(`/api/messages?controller=${mira.session_id}`, { cookie });
 		expect(sent.status).toBe(200);
 
 		record(mira.session_id, [said('user', '現在有了')]);
-		await until(() => feed.updates.find((candidate) => candidate.ok), 6_000, 'the record once written');
+		await until(() => feed.updates.find((candidate) => candidate.ok && candidate.page.items.length), 6_000, 'the record once written');
 	} finally {
 		feed.close();
 	}
