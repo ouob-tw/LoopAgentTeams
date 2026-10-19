@@ -3,11 +3,11 @@
 // An agent with an open model switch is listed too when Herdr does not list it, from what the
 // switch kept, until the switch is over or given up.
 import type { SwitchAgent, SwitchView } from '../board/models.ts';
-import { AGENT_STATUSES, type Agent, type AgentStatus, type AgentSwitch } from '../board/types.ts';
+import { AGENT_STATUSES, type Agent, type AgentStatus, type AgentSwitch, type HerdrWorkspace } from '../board/types.ts';
 import type { AgentList, HcomAgent } from './hcom.ts';
 import type { HerdrAgent } from './herdr.ts';
 
-export type HerdrAgentList = { ok: true; agents: HerdrAgent[] } | { ok: false; reason: string };
+export type HerdrAgentList = { ok: true; agents: HerdrAgent[]; workspaces: HerdrWorkspace[] } | { ok: false; reason: string };
 
 /** hcom's own status words, as the tab's. */
 const HCOM_STATUS: Record<string, AgentStatus> = { active: 'working', listening: 'idle', blocked: 'blocked' };
@@ -40,26 +40,30 @@ function switchOf(view: SwitchView | undefined): AgentSwitch | null {
 const pairingKey = (agent: HerdrAgent) => agent.sessionId ?? `pane:${agent.pane}`;
 
 export interface AgentRoster {
-	/** Fold in this read's lists and the open model switches; returns the agents to show and, when
-	 *  Herdr's list is not this read's, why. */
+	/** Fold in this read's lists and the open model switches; returns the agents and Herdr's
+	 *  workspaces to show and, when Herdr's list is not this read's, why. */
 	update(
 		herdr: HerdrAgentList,
 		hcom: AgentList,
 		controllers: Set<string>,
 		switches: SwitchView[]
-	): { agents: Agent[]; herdrError: string | null };
+	): { agents: Agent[]; workspaces: HerdrWorkspace[]; herdrError: string | null };
 }
 
 export function createAgentRoster(): AgentRoster {
 	/** Herdr's last list that could be read; null until one could. */
 	let lastHerdr: HerdrAgent[] | null = null;
+	let lastWorkspaces: HerdrWorkspace[] = [];
 	/** What hcom's last list that could be read made of each Herdr agent then listed: the hcom
 	 *  agent it is, or null when it is not linked. One not in here has not been told since. */
 	let pairings = new Map<string, HcomAgent | null>();
 
 	return {
 		update(herdr, hcom, controllers, switches) {
-			if (herdr.ok) lastHerdr = herdr.agents;
+			if (herdr.ok) {
+				lastHerdr = herdr.agents;
+				lastWorkspaces = herdr.workspaces;
+			}
 			const listed = lastHerdr ?? [];
 			if (hcom.ok) pairings = new Map(listed.map((agent) => [pairingKey(agent), pair(agent, hcom.agents)]));
 			const agents = listed.map((agent): Agent => {
@@ -133,7 +137,7 @@ export function createAgentRoster(): AgentRoster {
 					(a.id ?? '').localeCompare(b.id ?? '')
 			);
 			const herdrError = herdr.ok ? null : `${herdr.reason}，「Herdr」分頁${lastHerdr ? '沿用上次讀到的清單' : '暫時沒有清單'}`;
-			return { agents, herdrError };
+			return { agents, workspaces: lastWorkspaces, herdrError };
 		}
 	};
 }

@@ -225,6 +225,7 @@ function createBoard(): Board {
 			hcomError: agents.ok ? null : agents.reason,
 			agents: allAgents.agents,
 			herdrError: allAgents.herdrError,
+			workspaces: allAgents.workspaces,
 			pruneError,
 			answered: lastAnswered,
 			answeredError: answered.ok ? null : answered.reason
@@ -319,6 +320,7 @@ function createBoard(): Board {
 					recordedKeys: [],
 					processedCount: 0,
 					agents: [],
+					workspaces: [],
 					errors: [`讀取資料失敗：${error.message}`]
 				};
 				for (const stream of streams) stream.send('board', JSON.stringify(snapshot));

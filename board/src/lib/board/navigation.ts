@@ -1,15 +1,16 @@
 // Which content screen is open, kept in the address and the browser's history: each opened screen
 // is one history entry, so the board's "←" and the phone's own back go to the screen before, and a
 // reload opens the same screen again.
-import type { Agent, Controller, InboxItem } from './types.ts';
+import type { Agent, Controller, HerdrWorkspace, InboxItem } from './types.ts';
 
 /** What the address names: an inbox item, a controller, the new-controller form, an agent of the
- *  所有 Agent tab by session ID, or the list. */
+ *  所有 Agent tab by session ID, the new-agent form of a Herdr workspace, or the list. */
 export type Place =
 	| { kind: 'item'; key: string }
 	| { kind: 'controller'; id: string }
 	| { kind: 'launch' }
 	| { kind: 'agent'; id: string }
+	| { kind: 'new-agent'; workspace: string }
 	| null;
 
 /** The screen shown for a place. An item is the copy it had when opened, so it stays up after it
@@ -19,7 +20,8 @@ export type View =
 	| { kind: 'controller'; id: string }
 	| { kind: 'launch' }
 	| { kind: 'agent'; id: string }
-	| { kind: 'missing'; what: 'item' | 'controller' | 'agent' }
+	| { kind: 'new-agent'; workspace: string }
+	| { kind: 'missing'; what: 'item' | 'controller' | 'agent' | 'workspace' }
 	| null;
 
 export function placeIn(search: Pick<URLSearchParams, 'get' | 'has'>): Place {
@@ -30,28 +32,41 @@ export function placeIn(search: Pick<URLSearchParams, 'get' | 'has'>): Place {
 	if (search.has('launch')) return { kind: 'launch' };
 	const agent = search.get('agent');
 	if (agent) return { kind: 'agent', id: agent };
+	const workspace = search.get('new-agent');
+	if (workspace) return { kind: 'new-agent', workspace };
 	return null;
 }
 
 /** The middle column's list: the inbox, or every agent Herdr lists. */
 export type MiddleTab = 'inbox' | 'agents';
 
-/** The middle tab the address names; null when it names none. An agent is on the Herdr tab unless
- *  the address says otherwise. */
+/** The middle tab the address names; null when it names none. An agent, or a workspace's
+ *  new-agent form, is on the Herdr tab unless the address says otherwise. */
 export function tabIn(search: Pick<URLSearchParams, 'get' | 'has'>): MiddleTab | null {
 	const tab = search.get('tab');
 	if (tab === 'agents' || tab === 'inbox') return tab;
-	return search.has('agent') ? 'agents' : null;
+	return search.has('agent') || search.has('new-agent') ? 'agents' : null;
 }
+
+/** Places that belong to the Herdr tab. */
+const onAgentsTab = (place: Place) => place?.kind === 'agent' || place?.kind === 'new-agent';
 
 /** The query that names a place, with the Herdr tab when that one is shown (an agent's place
  *  says it already, and so says the inbox when that one is), so a reload draws the right list at
  *  once; empty for the list on the inbox. */
 export function searchOf(place: Place, tab?: MiddleTab): string {
 	const params = new URLSearchParams(
-		place === null || place.kind === 'launch' ? {} : place.kind === 'agent' ? { agent: place.id } : place.kind === 'item' ? { item: place.key } : { controller: place.id }
+		place === null || place.kind === 'launch'
+			? {}
+			: place.kind === 'agent'
+				? { agent: place.id }
+				: place.kind === 'new-agent'
+					? { 'new-agent': place.workspace }
+					: place.kind === 'item'
+						? { item: place.key }
+						: { controller: place.id }
 	);
-	if (tab && (place?.kind === 'agent' ? tab === 'inbox' : tab === 'agents')) params.set('tab', tab);
+	if (tab && (onAgentsTab(place) ? tab === 'inbox' : tab === 'agents')) params.set('tab', tab);
 	const query = `${params}`;
 	if (place?.kind === 'launch') return query ? `?launch&${query}` : '?launch';
 	return query ? `?${query}` : '';
@@ -70,9 +85,13 @@ export function viewOf(
 		items: readonly InboxItem[];
 		controllers: readonly Controller[];
 		agents?: readonly Agent[];
+		workspaces?: readonly HerdrWorkspace[];
 	}
 ): View {
 	if (place === null || place.kind === 'launch') return place;
+	if (place.kind === 'new-agent') {
+		return from.workspaces?.some((workspace) => workspace.id === place.workspace) ? place : { kind: 'missing', what: 'workspace' };
+	}
 	if (place.kind === 'agent') return from.agents?.some((agent) => agent.id === place.id) ? place : { kind: 'missing', what: 'agent' };
 	if (place.kind === 'controller') {
 		return from.controllers.some((controller) => controller.id === place.id)

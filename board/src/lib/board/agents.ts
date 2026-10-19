@@ -1,5 +1,5 @@
 // The 所有 Agent tab's list as the page shows it: grouped by Herdr workspace, in the server's order.
-import type { Agent, AgentStatus, ControllerStatus } from './types.ts';
+import type { Agent, AgentStatus, ControllerStatus, HerdrWorkspace } from './types.ts';
 
 export interface AgentGroup {
 	workspace: string;
@@ -8,15 +8,24 @@ export interface AgentGroup {
 	agents: Agent[];
 }
 
-/** The agents by workspace, each group and each agent in the order the server sorted them. */
-export function agentGroups(agents: readonly Agent[]): AgentGroup[] {
-	const groups: AgentGroup[] = [];
+/** The agents by workspace: every workspace Herdr lists, in its order, with or without agents,
+ *  then those only an agent names; each agent in the order the server sorted them. */
+export function agentGroups(agents: readonly Agent[], workspaces: readonly HerdrWorkspace[] = []): AgentGroup[] {
+	const groups: AgentGroup[] = workspaces.map((workspace) => ({ workspace: workspace.id, label: workspace.label, agents: [] }));
 	for (const agent of agents) {
 		let group = groups.find((candidate) => candidate.workspace === agent.herdr.workspace);
 		if (!group) groups.push((group = { workspace: agent.herdr.workspace, label: agent.herdr.workspaceLabel ?? agent.herdr.workspace, agents: [] }));
 		group.agents.push(agent);
 	}
 	return groups;
+}
+
+/** The folders a workspace's agents work in, the most used first, ties in list order. */
+export function workspaceFolders(agents: readonly Agent[]): string[] {
+	const counts = new Map<string, number>();
+	for (const agent of agents) counts.set(agent.folder, (counts.get(agent.folder) ?? 0) + 1);
+	// A Map keeps the order of first appearance, and the sort is stable.
+	return [...counts].sort(([, a], [, b]) => b - a).map(([folder]) => folder);
 }
 
 /** Whether a tab's label already says a name, in any case. */

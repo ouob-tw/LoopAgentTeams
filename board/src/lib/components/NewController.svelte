@@ -1,9 +1,23 @@
 <script lang="ts">
 	// The new-controller page: pick the client, a folder controllers have run in and the first
-	// message, then follow the recent launches below until each controller is running.
+	// message, then follow the recent launches below until each controller is running. With a
+	// Herdr workspace as its target it is the Herdr tab's new-agent form instead: a plain agent in
+	// that workspace, with an optional tab name and first message, no LAT start command and no Git
+	// project needed, followed until Herdr lists it.
+	import { untrack } from 'svelte';
 	import { formatTime } from '#lib/board/format.ts';
-	import { CLIENT_LABEL, LAUNCH_CLIENTS, LAUNCH_STATE_TEXT, latCommand, type LaunchClient, type LaunchView } from '#lib/board/launch.ts';
-	import { launching } from '#lib/board/launching.svelte.ts';
+	import {
+		AGENT_LAUNCH_STATE_TEXT,
+		CLIENT_LABEL,
+		LAUNCH_CLIENTS,
+		LAUNCH_STATE_TEXT,
+		latCommand,
+		TAB_NAME_MAX,
+		type LaunchClient,
+		type LaunchView,
+		type Project
+	} from '#lib/board/launch.ts';
+	import { agentLaunching, launching } from '#lib/board/launching.svelte.ts';
 	import { enterMakesNewline } from '#lib/board/messaging.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
@@ -12,83 +26,119 @@
 	let {
 		controllers,
 		stamp,
-		onopen
+		onopen,
+		target = null
 	}: {
 		controllers: Controller[];
 		/** Changes with every new board data: a launch may have become a controller. */
 		stamp: string;
 		onopen: (controllerId: string) => void;
+		/** The Herdr workspace a plain agent is to open in, with the folders its agents work in, the
+		 *  most used first; null for a new controller. */
+		target?: { workspace: string; label: string; folders: string[] } | null;
 	} = $props();
+
+	const form = $derived(target ? agentLaunching : launching);
 
 	/** How often the list is read again while the page is open: a launch's wait runs out with no new data. */
 	const POLL_MS = 15_000;
 
 	$effect(() => {
 		void stamp;
-		void launching.load();
+		void form.load();
 	});
 	$effect(() => {
-		const timer = setInterval(() => void launching.load(), POLL_MS);
+		const shown = form;
+		const timer = setInterval(() => void shown.load(), POLL_MS);
 		return () => clearInterval(timer);
 	});
 
-	const projects = $derived(launching.list?.projects ?? []);
-	const options = $derived(launching.list?.modelOptions[launching.client]);
+	const projects = $derived(form.list?.projects ?? []);
+	const options = $derived(form.list?.modelOptions[form.client]);
 
 	/** The lists differ per client, so a choice made for the other one is dropped. */
 	function chooseClient(client: LaunchClient) {
-		if (client === launching.client) return;
-		launching.client = client;
-		launching.model = '';
-		launching.effort = '';
+		if (client === form.client) return;
+		form.client = client;
+		form.model = '';
+		form.effort = '';
 	}
-	const launches = $derived(launching.list?.launches ?? []);
-	const selected = $derived(projects.find((project) => project.path === launching.folder));
+	const launches = $derived((form.list?.launches ?? []).filter((launch) => (launch.role === 'agent') === (target !== null)));
+	const selected = $derived(projects.find((project) => project.path === form.folder));
 	// A folder chosen by browsing is judged by the browser's answer, which resolves links like a launch does.
+	// A plain agent needs no Git project.
 	const needsInit = $derived(
-		launching.browsedGit !== null
-			? launching.browsedGit === false
-			: selected !== undefined && selected.exists && !selected.git
+		target === null &&
+			(form.browsedGit !== null ? form.browsedGit === false : selected !== undefined && selected.exists && !selected.git)
 	);
 
+	/** The folders to pick from: for a plain agent those of the workspace's agents come first. */
+	const choices = $derived<{ path: string; inWorkspace: boolean; project: Project | undefined }[]>([
+		...(target?.folders ?? []).map((path) => ({ path, inWorkspace: true, project: projects.find((project) => project.path === path) })),
+		...projects.filter((project) => !target?.folders.includes(project.path)).map((project) => ({ path: project.path, inWorkspace: false, project }))
+	]);
+	const chosenListed = $derived(choices.some((choice) => choice.path === form.folder));
+
+	// Another workspace's form starts over from its own folder; the same one keeps what was typed.
+	// Before the projects are read, a workspace without agents gets the most recent one once they are.
+	$effect(() => {
+		if (!target) return;
+		const fallback = target.folders[0] ?? projects.find((project) => project.exists)?.path ?? '';
+		untrack(() => {
+			if (agentLaunching.workspace !== target.workspace) {
+				agentLaunching.workspace = target.workspace;
+				agentLaunching.tabName = '';
+				pick(fallback);
+			} else if (agentLaunching.folder === '' && fallback) pick(fallback);
+		});
+	});
+
 	let sending = $state(false);
-	const ready = $derived(!sending && launching.folder !== '' && launching.text.trim() !== '' && (!needsInit || launching.gitInit));
+	const ready = $derived(
+		!sending && form.folder !== '' && (target !== null || (form.text.trim() !== '' && (!needsInit || form.gitInit)))
+	);
 
 	const name = (path: string) => path.split('/').filter(Boolean).at(-1) ?? path;
 
 	function pick(path: string, browsedGit: boolean | null = null) {
-		launching.folder = path;
-		launching.browsedGit = browsedGit;
+		form.folder = path;
+		form.browsedGit = browsedGit;
 		// Consent to `git init` is for one folder only.
-		launching.gitInit = false;
+		form.gitInit = false;
 	}
 
 	let browserOpen = $state(false);
 	function toggleBrowser() {
 		browserOpen = !browserOpen;
-		if (browserOpen && !launching.browse) void launching.open();
+		if (browserOpen && !form.browse) void form.open();
 	}
 
 	async function submit() {
 		if (!ready) return;
-		const sentText = launching.text;
+		const sent = form;
+		const sentText = sent.text;
+		const sentTab = sent.tabName;
 		sending = true;
-		const result = await launching.start();
+		const result = await sent.start();
 		sending = false;
 		// Only a launch that was made clears the message; anything typed meanwhile stays too.
-		if (result.ok && launching.text === sentText) {
-			launching.text = '';
-			launching.gitInit = false;
+		if (result.ok && sent.text === sentText) {
+			sent.text = '';
+			sent.gitInit = false;
 		}
+		if (result.ok && sent.tabName === sentTab) sent.tabName = '';
+		const what = target ? '開新 Agent' : '新建';
 		toasts.show(
 			result.ok ? 'ok' : 'failed',
-			result.ok ? `已開始新建${result.reason ?? ''}，狀態見最近新建。` : `${result.reason}（表單內容保留著）`
+			result.ok ? `已開始${what}${result.reason ?? ''}，狀態見${target ? '最近開新' : '最近新建'}。` : `${result.reason}（表單內容保留著）`
 		);
 	}
 
 	function stateText(launch: LaunchView): string {
 		if (launch.state === 'failed') return `✗ 失敗：${launch.error ?? '原因不明'}`;
-		const text = LAUNCH_STATE_TEXT[launch.state];
+		const agent = launch.role === 'agent';
+		if (agent && launch.state === 'overdue' && launch.follow?.error) return `沒有等到它出現在 Herdr：${launch.follow.error}`;
+		const text = (agent && AGENT_LAUNCH_STATE_TEXT[launch.state]) || LAUNCH_STATE_TEXT[launch.state];
 		// Without a name nothing more can be said than to look in Herdr.
 		return launch.state === 'starting' && launch.error ? `${text}（${launch.error}）` : text;
 	}
@@ -96,7 +146,7 @@
 </script>
 
 <section class="new">
-	<h2>新建主控</h2>
+	<h2>{target ? `在 ${target.label} 開新 Agent` : '新建主控'}</h2>
 	<form
 		onsubmit={(event) => {
 			event.preventDefault();
@@ -107,7 +157,7 @@
 			<legend>Client</legend>
 			{#each LAUNCH_CLIENTS as client (client)}
 				<label>
-					<input type="radio" name="client" value={client} checked={launching.client === client} onchange={() => chooseClient(client)} />
+					<input type="radio" name="client" value={client} checked={form.client === client} onchange={() => chooseClient(client)} />
 					{CLIENT_LABEL[client]}
 				</label>
 			{/each}
@@ -117,7 +167,7 @@
 			<legend>模型與思考強度</legend>
 			<label>
 				模型
-				<select bind:value={launching.model}>
+				<select bind:value={form.model}>
 					<option value="">client 預設</option>
 					{#each options?.models ?? [] as option (option)}
 						<option value={option}>{option}</option>
@@ -126,7 +176,7 @@
 			</label>
 			<label>
 				思考強度
-				<select bind:value={launching.effort}>
+				<select bind:value={form.effort}>
 					<option value="">client 預設</option>
 					{#each options?.efforts ?? [] as option (option)}
 						<option value={option}>{option}</option>
@@ -136,58 +186,52 @@
 		</fieldset>
 
 		<fieldset class="folders">
-			<legend>資料夾（曾開過主控的專案，最近使用的在前）</legend>
-			{#if launching.loadFailed && !launching.list}
+			<legend>{target ? '資料夾（這個工作區的 Agent 在用的在前，再來是曾開過主控的專案）' : '資料夾（曾開過主控的專案，最近使用的在前）'}</legend>
+			{#if form.loadFailed && !form.list}
 				<p class="failed" role="alert">專案清單讀取失敗。</p>
-			{:else if launching.list?.projectsError}
-				<p class="failed" role="alert">專案清單讀取失敗：{launching.list.projectsError}</p>
+			{:else if form.list?.projectsError}
+				<p class="failed" role="alert">專案清單讀取失敗：{form.list.projectsError}</p>
 			{/if}
-			{#each projects as project (project.path)}
+			{#each choices as choice (choice.path)}
 				<label class="project">
-					<input
-						type="radio"
-						name="folder"
-						value={project.path}
-						checked={launching.folder === project.path}
-						onchange={() => pick(project.path)}
-					/>
+					<input type="radio" name="folder" value={choice.path} checked={form.folder === choice.path} onchange={() => pick(choice.path)} />
 					<span>
-						<strong>{name(project.path)}</strong>
-						<span class="path">{project.path}</span>
+						<strong>{name(choice.path)}</strong>
+						<span class="path">{choice.path}</span>
 						<span class="when">
-							最近 {formatTime(project.lastUsedAt)}{#if !project.exists}・資料夾已不存在{:else if !project.git}・不在 Git 專案裡{/if}
+							{#if choice.inWorkspace}這個工作區的 Agent 在用{#if choice.project}・{/if}{/if}{#if choice.project}最近 {formatTime(choice.project.lastUsedAt)}{#if !choice.project.exists}・資料夾已不存在{:else if !choice.project.git && !target}・不在 Git 專案裡{/if}{/if}
 						</span>
 					</span>
 				</label>
 			{:else}
-				{#if launching.list}<p class="none">還沒有主控回報過的專案。</p>{/if}
+				{#if form.list}<p class="none">還沒有主控回報過的專案。</p>{/if}
 			{/each}
 		</fieldset>
 
 		<fieldset class="browser">
 			<legend>其他資料夾</legend>
-			{#if launching.folder && !selected}
-				<p class="chosen">已選：<span class="path">{launching.folder}</span></p>
+			{#if form.folder && !chosenListed}
+				<p class="chosen">已選：<span class="path">{form.folder}</span></p>
 			{/if}
 			<button type="button" class="toggle" aria-expanded={browserOpen} onclick={toggleBrowser}>
 				{browserOpen ? '收起瀏覽' : '從家目錄逐層瀏覽…'}
 			</button>
 			{#if browserOpen}
-				{#if launching.browseFailed}
+				{#if form.browseFailed}
 					<p class="failed" role="alert">資料夾清單讀取失敗，請再試一次。</p>
 				{/if}
-				{#if launching.browse}
-					{@const level = launching.browse}
-					<div class="level" class:busy={launching.browsing}>
+				{#if form.browse}
+					{@const level = form.browse}
+					<div class="level" class:busy={form.browsing}>
 						<p class="path here">{level.path}{level.git ? '・在 Git 專案裡' : '・不在 Git 專案裡'}</p>
 						<div class="nav">
-							<button type="button" disabled={level.parent === null || launching.browsing} onclick={() => void launching.open(level.parent!)}>↑ 上一層</button>
-							<button type="button" disabled={level.path === level.home || launching.browsing} onclick={() => void launching.open()}>⌂ 家目錄</button>
-							<button type="button" class="use" disabled={launching.folder === level.path} onclick={() => {
+							<button type="button" disabled={level.parent === null || form.browsing} onclick={() => void form.open(level.parent!)}>↑ 上一層</button>
+							<button type="button" disabled={level.path === level.home || form.browsing} onclick={() => void form.open()}>⌂ 家目錄</button>
+							<button type="button" class="use" disabled={form.folder === level.path} onclick={() => {
 									pick(level.path, level.git);
 									browserOpen = false;
 								}}>
-								{launching.folder === level.path ? '已選這個資料夾' : '選這個資料夾'}
+								{form.folder === level.path ? '已選這個資料夾' : '選這個資料夾'}
 							</button>
 						</div>
 						{#if level.error}
@@ -196,7 +240,7 @@
 							<ul>
 								{#each level.entries as entry (entry.path)}
 									<li>
-										<button type="button" onclick={() => void launching.open(entry.path)}>
+										<button type="button" onclick={() => void form.open(entry.path)}>
 											<span>{entry.name}</span>{#if entry.git}<span class="tag">Git</span>{/if}
 										</button>
 									</li>
@@ -213,30 +257,41 @@
 		{#if needsInit}
 			<div class="init">
 				<p>這個資料夾不在 Git 專案裡，主控在這裡不能啟用。勾選後看板會先在這裡執行一次 <code>git init</code>，成功才開啟主控。</p>
-				<label><input type="checkbox" bind:checked={launching.gitInit} /> 先 git init 再開</label>
+				<label><input type="checkbox" bind:checked={form.gitInit} /> 先 git init 再開</label>
 			</div>
+		{/if}
+
+		{#if target}
+			<label class="tab-name">
+				分頁名稱（選填）
+				<input bind:value={form.tabName} maxlength={TAB_NAME_MAX} placeholder="留空就用 HCOM 與 Herdr 預設的名稱" />
+			</label>
 		{/if}
 
 		<div class="first">
 			<MessageBox
-				bind:value={launching.text}
-				label="第一句話"
-				placeholder={`第一句話（${enterMakesNewline.current ? 'Enter 換行，按鈕送出' : 'Enter 送出，Shift+Enter 換行'}）`}
+				bind:value={form.text}
+				label={target ? '第一則訊息（選填）' : '第一句話'}
+				placeholder={`${target ? '第一則訊息（選填）' : '第一句話'}（${enterMakesNewline.current ? 'Enter 換行，按鈕送出' : 'Enter 送出，Shift+Enter 換行'}）`}
 				onsend={submit}
 			/>
 			<p class="note">
-				送出的第一則訊息會是 <code>{latCommand(launching.client, '你的話')}</code>。看板會在該專案的 Herdr 工作區開一個新分頁，主控開始後就會用到額度；第一次在某個資料夾開 Claude 時，可能要先到 Herdr 分頁確認信任這個資料夾。
+				{#if target}
+					看板會經 HCOM 在 {target.label} 開一個新分頁，不送 LAT 啟動指令；出現在 Herdr 後{form.tabName.trim() ? '改成上面的分頁名稱，再' : ''}移到這個工作區最前面。Agent 開始後就會用到額度；第一次在某個資料夾開 Claude 時，可能要先到 Herdr 分頁確認信任這個資料夾。
+				{:else}
+					送出的第一則訊息會是 <code>{latCommand(form.client, '你的話')}</code>。看板會在該專案的 Herdr 工作區開一個新分頁，主控開始後就會用到額度；第一次在某個資料夾開 Claude 時，可能要先到 Herdr 分頁確認信任這個資料夾。
+				{/if}
 			</p>
 		</div>
 
-		<button class="primary" disabled={!ready}>{sending ? '新建中…' : '新建主控'}</button>
+		<button class="primary" disabled={!ready}>{target ? (sending ? '開新中…' : '開新 Agent') : sending ? '新建中…' : '新建主控'}</button>
 	</form>
 </section>
 
 <section class="launches">
-	<h3>最近新建</h3>
-	{#if launching.list?.logError}
-		<p class="failed" role="alert">新建紀錄讀取失敗：{launching.list.logError}</p>
+	<h3>{target ? '最近開新的 Agent' : '最近新建'}</h3>
+	{#if form.list?.logError}
+		<p class="failed" role="alert">{target ? '開新' : '新建'}紀錄讀取失敗：{form.list.logError}</p>
 	{/if}
 	{#if launches.length}
 		<ol>
@@ -250,6 +305,7 @@
 							<span>Herdr 工作區 {launch.herdrWorkspaceLabel || launch.herdrWorkspace}{launch.workspaceCreated ? '（新建）' : ''}</span>
 						{/if}
 						{#if launch.gitInit}<span>已 git init</span>{/if}
+						{#if launch.tabName}<span>分頁名稱 {launch.tabName}</span>{/if}
 					</p>
 					<p class="title">{launch.folder}</p>
 					{#if launch.model || launch.effort}
@@ -258,15 +314,27 @@
 					<p class="state" class:failed={launch.state === 'failed'} class:warn={launch.state === 'overdue' || launch.state === 'uncertain'}>
 						{stateText(launch)}
 					</p>
+					<!-- Neither step failing undoes the launch. A controller's state goes by its binding,
+					     so why its tab was not moved is said apart. -->
+					{#each [launch.follow?.renameError, launch.follow?.moveError] as stepError, index (index)}
+						{#if stepError}<p class="state warn">{stepError}（{launch.role === 'agent' ? 'Agent 仍算開成功' : '不影響主控啟動'}）</p>{/if}
+					{/each}
+					{#if launch.role !== 'agent' && launch.follow?.error && launch.state !== 'active'}
+						<p class="state warn">{launch.follow.error}</p>
+					{/if}
 					{#if launch.state === 'active' && onRoster(launch.controllerId)}
 						<button class="open" onclick={() => onopen(launch.controllerId!)}>看主控資訊 →</button>
 					{/if}
-					<p class="text">{latCommand(launch.client, launch.text)}</p>
+					{#if launch.role !== 'agent'}
+						<p class="text">{latCommand(launch.client, launch.text)}</p>
+					{:else if launch.text}
+						<p class="text">{launch.text}</p>
+					{/if}
 				</li>
 			{/each}
 		</ol>
-	{:else if launching.list}
-		<p class="none">還沒有從看板新建過主控。</p>
+	{:else if form.list}
+		<p class="none">{target ? '還沒有從看板開過新 Agent。' : '還沒有從看板新建過主控。'}</p>
 	{/if}
 </section>
 
@@ -421,6 +489,12 @@
 	}
 	form > .primary {
 		align-self: flex-start;
+	}
+	.tab-name {
+		display: flex;
+		flex-direction: column;
+		gap: 0.2rem;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	ol {
 		display: grid;

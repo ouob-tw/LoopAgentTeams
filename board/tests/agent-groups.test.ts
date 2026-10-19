@@ -1,6 +1,6 @@
 // The 所有 Agent tab's grouping, as the page shows the server's list.
 import { expect, test } from 'bun:test';
-import { agentGroups, cardName, folderName, shortName, tabShown } from '../src/lib/board/agents.ts';
+import { agentGroups, cardName, folderName, shortName, tabShown, workspaceFolders } from '../src/lib/board/agents.ts';
 import type { Agent } from '../src/lib/board/types.ts';
 
 const agent = (id: string, workspace: string, workspaceLabel: string | null) =>
@@ -13,6 +13,28 @@ test('groups by workspace in the order the server sorted them, a workspace Herdr
 		['Beta', ['c']],
 		['wZ', ['d']]
 	]);
+});
+
+test('every Herdr workspace is a group in Herdr\'s order, one without agents too; a workspace only an agent names comes last', () => {
+	const workspaces = [
+		{ id: 'wA', label: 'Alpha', number: 1 },
+		{ id: 'wE', label: 'Empty', number: 2 },
+		{ id: 'wB', label: 'Beta', number: 3 }
+	];
+	const groups = agentGroups([agent('a', 'wA', 'Alpha'), agent('c', 'wB', 'Beta'), agent('d', 'wZ', null)], workspaces);
+	expect(groups.map((group) => [group.workspace, group.label, group.agents.map((entry) => entry.id)])).toEqual([
+		['wA', 'Alpha', ['a']],
+		['wE', 'Empty', []],
+		['wB', 'Beta', ['c']],
+		['wZ', 'wZ', ['d']]
+	]);
+});
+
+test('a workspace\'s folders, the one most of its agents work in first, ties in list order', () => {
+	const at = (folder: string) => ({ folder }) as Agent;
+	expect(workspaceFolders([at('/b'), at('/a'), at('/a'), at('/c'), at('/b'), at('/a')])).toEqual(['/a', '/b', '/c']);
+	expect(workspaceFolders([at('/x'), at('/y')])).toEqual(['/x', '/y']);
+	expect(workspaceFolders([])).toEqual([]);
 });
 
 test('a folder is named by its last part', () => {

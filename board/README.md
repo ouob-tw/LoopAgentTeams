@@ -103,11 +103,12 @@
 
 ## Herdr 分頁
 
-中間欄頂端的「待辦／Herdr」分頁（對輔助技術是一組按下狀態的按鈕，與待辦的檢視切換相同）切換兩份清單，選擇記在各自的裝置上。「Herdr」分頁（舊稱「所有 Agent」）列出 Herdr 所有工作區裡的每一個 Agent，名冊、待辦與主控資訊頁不受影響。有清單、對話紀錄、傳話、中斷、關閉、切換模型與操作紀錄。
+中間欄頂端的「待辦／Herdr」分頁（對輔助技術是一組按下狀態的按鈕，與待辦的檢視切換相同）切換兩份清單，選擇記在各自的裝置上。「Herdr」分頁（舊稱「所有 Agent」）列出 Herdr 所有工作區裡的每一個 Agent，名冊、待辦與主控資訊頁不受影響。有清單、開新 Agent、對話紀錄、傳話、中斷、關閉、切換模型與操作紀錄。
 
 - 名單：每次讀取資料（與輔助工具、hcom 清單同時）執行 `herdr agent list`，並用 `workspace list`、`tab list`（不帶 `--workspace`，一次列出所有分頁）取得工作區與分頁名稱。每個 Agent 以 Herdr 回報的 client session ID（`agent_session.value`）為鍵；Herdr 還不知道 session ID 的 Agent 照樣列出，但沒有鍵，不能點開，清單上註明原因，等 Herdr 回報後才能開啟。不在 Herdr 清單上的 Agent 不列，包括只在 hcom 清單上的（tmux 裡的、子 Agent）；從 Herdr 清單消失就從分頁消失。
 - 是否接 HCOM：`hcom list --json` 裡有同一個 session ID 的 Agent，沒有時看 `launch_context.pane_id` 是不是同一個窗格（還沒有 session ID 的 Agent 只看窗格）。配對到的顯示 HCOM 名稱與 HCOM 狀態（`active` 工作中、`listening` 閒置、`blocked` 等待輸入，其他是不明）；沒配對到的顯示 Herdr 分頁名稱（沒有時用終端機標題）與 Herdr 的 `agent_status`（`blocked` 等待輸入、`done` 已完成、`working` 工作中、`idle` 閒置，其他是不明），見 ADR 0003 第 2 點的補記。
 - 面板綁定登記裡有它的 session ID 的標為 LAT 主控（綁定登記讀不到時沿用上次讀到的）。
+- 工作區：`workspace list` 的每個工作區依編號列出（`snapshot.workspaces`，讀不到時沿用上次的），沒有 Agent 的也列標題與「沒有 Agent」；只有 Agent 記著、清單上沒有的工作區排最後，沒有「＋」。
 - 排序在伺服器（`src/lib/server/agents.ts`）：照 Herdr 自己的順序，依 Herdr 工作區編號分組（不在工作區清單上的排最後），組內依分頁位置，同一分頁內依 `herdr agent list` 列出的窗格順序；只因模型切換未完成而列出、已不在 Herdr 的排在該組最後。狀態改變不會移動位置。
 - Herdr 的三份清單任一讀不到（結束碼非 0、逾時、不是預期的 JSON 或格式）時，以讀取錯誤的浮動通知顯示原因，分頁沿用上次讀到的清單；看板啟動後還沒讀到過時清單是空的。
 - hcom 清單讀不到時沿用上次讀到的配對：配對結果依 session ID 記住（沒有 session ID 的依窗格），當時配對到的照舊顯示 HCOM 名稱與當時的狀態，換了窗格也一樣；當時已確認沒接的照舊是沒接；同一個窗格換成新的 session 不會接手舊的配對，算是讀不到期間才出現的。看板啟動後還沒讀到過，或在讀不到期間才出現的 Agent，HCOM 連線標為「無法確認」，名稱與狀態暫用 Herdr 的。之後讀到清單就恢復。
@@ -123,7 +124,8 @@
 - 切換未完成：每次讀取資料時從送出紀錄找出所有未結案的切換（`openSwitches`，沿用主控的判斷：停止中、停止失敗、停止結果不明、已停止待接回、接回中、接回失敗），在 Herdr 清單上的 Agent 帶上 `switch`；不在 Herdr 清單上、而切換帶有 `agent` 的，以切換紀錄的 session ID、client、HCOM 名稱與工作區列出（`inHerdr: false`，狀態取 hcom 清單上的，沒有時不明），所以看板重啟後仍在。有未結案切換的 Agent（不論在不在 Herdr 清單上）的傳話、中斷、關閉一律拒絕（409）；頁面只說明切換未完成，「繼續切換」與「放棄切換」在指令列模型旁的 ⚠ 裡。繼續切換不要求它在 Herdr 清單上，沿用主控的再次查證，不會重複接回。從主控資訊頁開始的切換也帶 `agent`，所以同樣列出；只有切換當時主控不在 Herdr 清單上、沒記到 `agent` 的不列。主控資訊頁的文字與接回選工作區的方式不變，從這個分頁繼續或放棄時才以 Agent 為主詞、接回到記下的工作區。
 - 放棄切換（`POST /api/agents/model/abandon`，`session`）：結束整筆切換，不只是目前這次接回。先把這筆切換未結案的接回寫成 `resume-closed`（`abandoned`），再追加 `switch-step`（`state: abandoned`），不執行任何 hcom 或 Herdr 指令；之後這筆切換算結案，Agent 回到一般規則（在 Herdr 清單上照常列出，不在就消失）。沒有未結案的切換回 409。與切換排在同一個 session 的隊伍裡，所以正在執行的停止或接回會先做完。切換與放棄後伺服器重讀資料並推送 `agent-action` 事件。主控資訊頁的切換與「放棄前一次接回」不變；主控的送出紀錄裡被放棄的切換顯示「已放棄這次切換」。
 - 操作紀錄的端點另外回傳 `switches`（這個 session 的所有切換，新的在前，含主控資訊頁開始的），頁面依時間與傳話、中斷、關閉排在一起。
-- 測試以 `tests/fake-herdr.mjs`（`agent list`、`tab list`、`agent prompt`、`agent send-keys`、`pane close`；每次讀取資料的清單呼叫另記在 `herdr-list-calls.jsonl`）與 `tests/fake-hcom.mjs`（含 `kill`，接回時可用 `resumedHerdr` 把 Agent 加回假的 Herdr）代替真的指令；harness 預設就用假的 Herdr，所以測試不會讀到真的 Herdr。
+- 開新 Agent：見「新建主控」的實作說明最後一段。
+- 測試以 `tests/fake-herdr.mjs`（`agent list`、`tab list`、`agent prompt`、`agent send-keys`、`pane close`、`tab rename`；每次讀取資料的清單呼叫另記在 `herdr-list-calls.jsonl`）與 `tests/fake-hcom.mjs`（含 `kill`，接回時可用 `resumedHerdr` 把 Agent 加回假的 Herdr）代替真的指令；harness 預設就用假的 Herdr，所以測試不會讀到真的 Herdr。
 
 ## 用量與快取
 
@@ -208,6 +210,8 @@
 - 新建紀錄寫在 `sent-log.jsonl`（`kind: launch`），欄位有 client、所選資料夾、專案範圍、選定的模型與思考強度（null 是 client 預設）、HCOM 名稱、目標工作區、是否先 git init、結果與原因。`GET /api/launches` 另外回傳 `modelOptions`。之後每次讀取資料時，出現 HCOM 名稱相同的綁定，或該名稱在新建之後寫的回報紀錄，就追加一行 `launch-bound` 記下它成為哪個主控；不比對資料夾，所以同一資料夾連開兩次也各自對應。新建前就已經用這個名稱綁定的 session（前一個同名 Agent 留下的）不算；同一個名稱之後被 hcom 再用時，只算給最新那一筆。
 - 「尚未啟用」的等待時間用看板的時鐘計算（測試可用 `LAT_BOARD_CLOCK_FILE` 調整）；新建主控頁開著時每 15 秒重讀一次紀錄，所以時間到了不必重新整理。
 - 測試以 `tests/fake-hcom.mjs`、`tests/fake-herdr.mjs` 代替真的 hcom 與 Herdr；不在 Git 專案裡的測試資料夾放在上層沒有 `.git` 的暫存目錄。
+- 開新 Agent（Herdr 分頁工作區標題的「＋」，網址 `?new-agent=<工作區 ID>`）共用 `NewController.svelte`（帶 `target`）與 `POST /api/launches`：請求多一個 `agent: { workspace, tabName }`。伺服器不送 LAT 啟動指令、不檢查 Git 也不 git init（`gitInit: true` 回 400），第一則訊息可以是空的（空的就不帶 `--hcom-prompt`），分頁名稱去頭尾空白後最多 60 字、不能換行；Claude 一樣帶 `--dangerously-skip-permissions`，模型與思考強度參數同新建主控。資料夾不存在、Herdr 清單上已沒有這個工作區都記為失敗；工作區不另外挑選或新建。紀錄是 `kind: launch` 加 `role: agent` 與 `tabName`，不會配對成主控（`settleLaunches` 跳過）。
+- 新建主控與開新 Agent 在 hcom 回報名稱後都會追蹤：伺服器每秒讀一次 `hcom list --json` 與 Herdr 的清單，hcom 清單上這個名稱的 session ID 或 `launch_context.pane_id`，對到 `herdr agent list` 的同一個 session 或窗格，就算出現在 Herdr。接著開新 Agent 有分頁名稱時 `herdr tab rename <分頁> <名稱>`，再以 socket 的 `tab.move`（`insert_index: 0`）移到最前面（主控只移動），追加一行 `launch-followed`（出現時間、沒出現的原因、改名與移動各自的失敗原因），然後重讀資料。hcom 清單讀得到卻沒有這個名稱（它也列還在啟動的）就不再等；等到新建紀錄的等待時間（`LAT_BOARD_LAUNCH_WAIT_SECONDS`，預設 180 秒）還沒出現就記逾時，兩種都不改名也不移動。主控的狀態仍以綁定為準，追蹤結果只另外顯示移動失敗或沒出現的原因。新建與開新共用同一個隊伍：要等追蹤結束才換下一個，`POST` 則在 hcom 跑完就回應。`GET /api/launches` 的 `launches` 兩種各取最近 20 筆，各自的表單只列自己那種。
 
 ## 版面與外觀
 

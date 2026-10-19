@@ -27,7 +27,7 @@
 		type View
 	} from '#lib/board/navigation.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
-	import { folderName } from '#lib/board/agents.ts';
+	import { folderName, workspaceFolders } from '#lib/board/agents.ts';
 	import { MIDDLE_TAB_KEY, remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { askedTogether } from '#lib/board/question-message.ts';
@@ -115,6 +115,7 @@
 	const inbox = $derived(board.snapshot.inbox);
 	const processedCount = $derived(board.snapshot.processedCount);
 	const agents = $derived(board.snapshot.agents);
+	const workspaces = $derived(board.snapshot.workspaces);
 	/** The report opened from the inbox list: it stays there, read, until another screen is shown. */
 	let lingering = $state<string | null>(null);
 	/** What the inbox lists: the questions and the unread reports, and the report still open. */
@@ -131,7 +132,7 @@
 	/** The answered questions of the controller whose conversation is shown. */
 	const answered = $derived(board.answered.questions);
 	const known = $derived([...inbox, ...processed, ...answered]);
-	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers, agents });
+	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers, agents, workspaces });
 	/** The screen the address names; a reload opens it again. */
 	const addressed = () => placeIn(new URLSearchParams(location.search));
 	/** The browser starts from the real address: under shallow routing page.url stays at the last full
@@ -156,6 +157,15 @@
 	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
 	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
 	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
+	/** The workspace whose new-agent form is open; null when none is. */
+	const newIn = $derived(view?.kind === 'new-agent' ? view.workspace : null);
+	/** That form's workspace, with the folders its agents work in; undefined once Herdr no longer lists it. */
+	const newTarget = $derived.by(() => {
+		const workspace = workspaces.find((candidate) => candidate.id === newIn);
+		if (!workspace) return undefined;
+		const own = agents.filter((candidate) => candidate.inHerdr && candidate.herdr.workspace === workspace.id);
+		return { workspace: workspace.id, label: workspace.label, folders: workspaceFolders(own) };
+	});
 	// Read again with every new snapshot: a question of the inbox may have been answered and recorded.
 	$effect(() => {
 		void board.snapshot;
@@ -377,6 +387,7 @@
 	}
 	const openLaunch = () => go({ kind: 'launch' });
 	const openAgent = (id: string) => go({ kind: 'agent', id });
+	const openNewAgent = (workspace: string) => go({ kind: 'new-agent', workspace });
 
 	const pending = $derived(inbox.filter((entry) => entry.kind === 'question' && entry.unsent).length);
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
@@ -505,7 +516,7 @@
 				>
 			</div>
 			{#if middle === 'agents'}
-				<AgentList {agents} currentId={agentId} onopen={openAgent} />
+				<AgentList {agents} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
 			{:else}
 				<Inbox
 					items={listedInbox}
@@ -564,6 +575,8 @@
 						<p class="empty">這個主控已不存在。</p>
 					{:else if view.what === 'agent'}
 						<p class="empty">這個 Agent 已不在 Herdr 的清單上。</p>
+					{:else if view.what === 'workspace'}
+						<p class="empty">Herdr 裡已經沒有這個工作區。</p>
 					{:else if board.archive === 'failed' || (board.archiveEarlier === 'failed' && board.earlierFrom)}
 						<p class="empty">待辦裡沒有這一則，已處理的項目也讀不出來；可以重新整理再試一次。</p>
 					{:else if !seeking}
@@ -577,6 +590,12 @@
 					{/if}
 				{:else if view.kind === 'launch'}
 					<NewController {controllers} stamp={board.snapshot.generatedAt} onopen={openController} />
+				{:else if view.kind === 'new-agent'}
+					{#if newTarget}
+						<NewController {controllers} stamp={board.snapshot.generatedAt} onopen={openController} target={newTarget} />
+					{:else}
+						<p class="empty">Herdr 裡已經沒有這個工作區。</p>
+					{/if}
 				{:else if view.kind === 'controller'}
 					{#if controller}
 						<ControllerInfo
