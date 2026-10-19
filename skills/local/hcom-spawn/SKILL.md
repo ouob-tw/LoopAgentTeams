@@ -18,35 +18,13 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 | 前端，複雜以外 | `claude-sonnet-5-5` | `medium` | 換 `claude-opus-5-5` `medium` → `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
 | 前端，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
 | 後端實作，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
-| 後端實作，複雜以外 | 分配結果 `claude`：`claude-sonnet-5-5`<br>分配結果 `gpt`：`gpt-6.1-sol` | `medium` | Sonnet：同「前端，複雜以外」<br>GPT：`high` → 換 `gpt-6-astra` `medium` |
+| 後端實作，複雜以外 | `claude-sonnet-5-5` | `medium` | 同「前端，複雜以外」 |
 | 其他或混合 | 依任務內容選上面一列 | | |
 | 使用者或呼叫的技能指定的模型 | 照指定 | 照指定，沒說就 `medium` | 不換模型，沿 `low` → `medium` → `high` → `xhigh` 一次升一級 |
 
 **複雜任務**：跨檔案實作、除錯、設計、審查、需自行權衡方案。其餘都不算複雜。
 
-後端的審查與 QA 給 `gpt-6.1-sol` `medium`，升級照表中 GPT 那一段。
-
-**後端分配**：派「後端實作，複雜以外」的任務前，先跑小工具取得分配結果，不自己查兩家額度：
-
-```bash
-uv run --no-project python <skill_dir>/scripts/backend-route.py
-```
-
-`<skill_dir>` 是本技能安裝目錄的絕對路徑。輸出第一行是 `claude: <原因>` 或 `gpt: <原因>` 時照它分配；是 `auto: ...` 時由你依後面的用量表判斷。分配方式寫在 `~/.config/hcom-spawn/config.toml` 的 `backend`：
-
-| `backend` | 複雜以外的後端實作給誰 |
-| --- | --- |
-| `claude` | Claude |
-| `split` | GPT |
-| `auto`（檔案不存在時的預設） | 你依用量表判斷；任一查詢失敗給 Claude |
-
-用量表每個帳號一行，列出每個額度期間的長度、已用比例與離重置還有多久。判斷原則：
-
-- 選整體比較撐得到重置的那一家：看所有帳號，已用比例要對照離重置的時間。
-- 使用中帳號的短時間額度快滿，就避開那一家。
-- 兩家差不多時給 Claude。
-
-設定值無法辨識時小工具報錯並列出可用值，此時回報使用者修正，不自行猜測。
+後端的審查與 QA 給 `gpt-6.1-sol` `medium`，卡住時 `high` → 換 `gpt-6-astra` `medium`。
 
 `claude-fable-5-1` 只當升級終點，沒有任務預設用它。
 
@@ -54,7 +32,7 @@ uv run --no-project python <skill_dir>/scripts/backend-route.py
 
 使用者的指定優先於上表：
 
-- 只說「Codex」時用 `gpt-6.1-sol` `medium`；只說「Claude」時，複雜任務用 `claude-opus-5-5` `medium`，其餘用 `claude-sonnet-5-5` `medium`。不論任務是前端或後端，升級都照該模型在表中的那一列。
+- 只說「Codex」時用 `gpt-6.1-sol` `medium`；只說「Claude」時，複雜任務用 `claude-opus-5-5` `medium`，其餘用 `claude-sonnet-5-5` `medium`。不論任務是前端或後端，Claude 升級照該模型在表中的那一列，Codex 升級照上方後端審查與 QA 的那一句。
 - 指定了 effort 上限時，升級不超過它。
 - 指定表外模型時，先用工具查該 client 的可用模型，必要時查官方文件，確認正確 ID、可用性與支援的 effort。能唯一對應就用；有歧義或無法使用才詢問，不擅自換模型。不支援 `medium` 時用已查證的可用級別並說明。
 - Claude CLI 啟動時不驗證模型 ID，打錯的 ID 照樣啟動並顯示在畫面上，所以啟動成功不代表 ID 正確。
