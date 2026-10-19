@@ -213,6 +213,8 @@ export interface SwitchView extends SentSwitch {
 	abandonedAt?: string | null;
 	/** The HCOM name of the client a relaunch started; null until one did. */
 	relaunchedName?: string | null;
+	/** When the switch last went to `resuming`. */
+	resumingAt?: string | null;
 }
 
 /** What `POST /api/model` takes. Both null on a switch that is open continues it as it is. */

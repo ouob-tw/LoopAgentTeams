@@ -14,6 +14,7 @@ import { listAgents, type AgentList } from './hcom.ts';
 import { openResumes, openSwitches, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
 import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
+import { settleRelaunches } from './switch.ts';
 import { createAgentRoster, type HerdrAgentList } from './agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
@@ -212,6 +213,7 @@ function createBoard(): Board {
 		}
 		try {
 			lastSwitches = openSwitches(config.stateDir, config.now(), config.launchWaitMs);
+			settleRelaunches(board, lastSwitches);
 		} catch {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
 		}
@@ -332,7 +334,7 @@ function createBoard(): Board {
 		return running;
 	}
 
-	return {
+	const board: Board = {
 		config,
 		current: async () => snapshot ?? (await (running ?? refresh())),
 		refresh,
@@ -361,6 +363,7 @@ function createBoard(): Board {
 			streams.clear();
 		}
 	};
+	return board;
 }
 
 const KEY = Symbol.for('lat-board');

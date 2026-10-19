@@ -100,13 +100,8 @@ type HcomPlan = {
 	kill?: { exit?: number; stderr?: string; sleepMs?: number; stays?: boolean };
 };
 const hcomPlan = (plan: HcomPlan) => writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
-/** Herdr's panes; the agents earlier tests' resumes left running stay, so no resume of theirs is
- *  still being waited for (and reading the fake lists) while a later test runs. */
-function herdrPanes(panes: { workspace_id: string; cwd: string; pane_id: string }[]) {
-	const file = join(commandDir, 'herdr.json');
-	const agents = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')).agents ?? []) : [];
-	writeFileSync(file, JSON.stringify({ panes, agents, workspaces: [{ workspace_id: 'wP', number: 1, label: 'proj' }] }));
-}
+const herdrPanes = (panes: { workspace_id: string; cwd: string; pane_id: string }[]) =>
+	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify({ panes, workspaces: [{ workspace_id: 'wP', number: 1, label: 'proj' }] }));
 const launchArgs = (sessionId: string, stored: string[] | { unknown: string }) => {
 	const file = join(fixture.dir, 'launch-args.json');
 	const all = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};

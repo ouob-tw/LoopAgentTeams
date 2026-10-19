@@ -65,7 +65,6 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 	}
 }
 
-
 // Launches run one after another, so two of them never both create a workspace for one project,
 // and two new tabs never race for the front: a launch is over only once it has been followed
 // through. Its answer comes back before that, once hcom has run.

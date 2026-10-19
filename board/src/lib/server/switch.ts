@@ -43,10 +43,10 @@ import {
 import type { Controller } from '../board/types.ts';
 import { WAKE_UNKNOWN_REASON, type SentWake } from '../board/wake.ts';
 import type { Board } from './board.ts';
-import { waitToAppear } from './appear.ts';
+import { runningIn, waitToAppear } from './appear.ts';
 import { modelLock, readCurrent, readLaunchArgs, readTranscript } from './helper.ts';
 import { killAgent, launchAgent, listAgents, type HcomAgent } from './hcom.ts';
-import { chooseWorkspace, moveTab, paneExists, renameTab } from './herdr.ts';
+import { chooseWorkspace, listHerdrAgents, moveTab, paneExists, renameTab, type HerdrAgent } from './herdr.ts';
 import { switchPlace } from './agents.ts';
 import { queued } from './send.ts';
 import { appendSent, openSwitch, switchView, type SwitchStep } from './sent-log.ts';
@@ -182,11 +182,10 @@ export async function startSwitch(board: Board, controller: SwitchTarget, entry:
 		if (!launched.ok) return refused(`${noun(controller)}還沒有對話紀錄，要重新啟動才能換設定，但讀不到它的啟動參數，沒有切換：${launched.reason}`);
 		const row = (await board.current()).agents.find((candidate) => candidate.id === controller.id && candidate.inHerdr);
 		const label = row?.herdr.tabPlace?.label ?? null;
-		const short = controller.hcomName.split('-').at(-1) || controller.hcomName;
 		entry.relaunch = {
 			args: launched.args,
-			// A label that only says the old name would misname the new client.
-			tabLabel: label && !label.toLowerCase().includes(short.toLowerCase()) ? label : null,
+			// The label hcom gave it, its old name, would misname the new client; any other is kept.
+			tabLabel: label && !isDefaultLabel(label, controller.hcomName) ? label : null,
 			tabIndex: row?.herdr.tabPlace ? row.herdr.tabPlace.position - 1 : null
 		};
 		return restartSwitch(board, controller, entry, agent);
@@ -194,6 +193,13 @@ export async function startSwitch(board: Board, controller: SwitchTarget, entry:
 	entry.from = record.ok ? (record.page.current ?? null) : null;
 	if (carriesEffort(entry.to)) entry.carriedEffort = entry.from?.effort ?? null;
 	return restartSwitch(board, controller, entry, agent);
+}
+
+/** Whether a tab's label is the one hcom gives a client: its HCOM name, whole or without the tags
+ *  in front. */
+function isDefaultLabel(label: string, hcomName: string): boolean {
+	const name = label.trim().toLowerCase();
+	return name === hcomName.toLowerCase() || name === (hcomName.split('-').at(-1) ?? '').toLowerCase();
 }
 
 /** A first switch: check the client once more, log the switch, stop the client and, once it is
@@ -317,6 +323,9 @@ export async function continueSwitch(board: Board, controller: SwitchTarget, ope
  */
 async function resumeSwitch(board: Board, controller: SwitchTarget, switchId: string, choice: ModelChoice): Promise<Result<SwitchResponse>> {
 	const { stateDir, launchWaitMs } = board.config;
+	// A relaunch has nothing to resume, and its old session never comes back: none of a resume's checks apply.
+	const relaunched = switchView(stateDir, switchId, board.config.now(), launchWaitMs);
+	if (relaunched?.relaunch) return relaunchSwitch(board, controller, relaunched);
 	const plan = await check(board, controller.id, true).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有接回：${error.message}` }));
 	if ('refuse' in plan) {
 		const abandon = 'abandon' in plan ? (plan.abandon ?? null) : null;
@@ -333,7 +342,6 @@ async function resumeSwitch(board: Board, controller: SwitchTarget, switchId: st
 		if (logError) return respondLogged(board, switchId, { reason: `寫不進送出紀錄，沒有接回：${logError}`, status: 500 }, logError);
 	}
 	const view = switchView(stateDir, switchId, board.config.now(), launchWaitMs)!;
-	if (view.relaunch) return relaunchSwitch(board, controller, view);
 	// A retry that chose nothing new sends what was resolved before.
 	const sent = switchResumeChoice(view);
 	const wake: SentWake = {
@@ -371,23 +379,61 @@ async function resumeSwitch(board: Board, controller: SwitchTarget, switchId: st
 	return respondLogged(board, switchId, { reason: failed ? wake.error : null, status: failed ? 502 : 200 }, logError);
 }
 
+/** Relaunches whose client is being waited for by this board process. One the board does not
+ *  wait for (it restarted meanwhile) is settled by its reads (`settleRelaunches`). */
+const following = new Set<string>();
+
+/**
+ * Where a relaunch stands by hcom's and Herdr's lists now: its client runs; it may still come
+ * (`waiting`, within the launch wait); or it failed, and why. A switch given up or over is `over`.
+ */
+async function relaunchStanding(board: Board, view: SwitchView): Promise<{ runs: HerdrAgent } | 'waiting' | 'over' | { failed: string }> {
+	const { config } = board;
+	if (view.state !== 'resuming' && view.state !== 'resume-failed') return 'over';
+	const name = view.relaunchedName;
+	if (name) {
+		const [hcom, herdr] = await Promise.all([listAgents(config), listHerdrAgents(config)]);
+		const found = hcom.ok && herdr.ok ? runningIn({ name }, hcom.agents, herdr.agents).herdr : undefined;
+		if (found) return { runs: found };
+	}
+	if (view.state === 'resume-failed') return { failed: view.error ?? '重新啟動失敗' };
+	const since = Date.parse(view.appliedAt ?? view.resumingAt ?? view.time);
+	if (config.now() < since + config.launchWaitMs) return 'waiting';
+	return {
+		failed: name
+			? `重新啟動後等了 ${Math.round(config.launchWaitMs / 1000)} 秒，Herdr 的清單上還沒有 @${name}`
+			: '重新啟動的結果不明（看板在啟動途中停過），請到 Herdr 查看'
+	};
+}
+
 /**
  * Start afresh a stopped client that had no saved conversation (see the top of this file): one
  * hcom launch, then, in the background, wait for it to run in Herdr, name and place its tab like
- * the old one, and end the switch. A launch still on its way is not started a second time.
+ * the old one, and end the switch. One whose earlier launch still may come, or runs by now, is not
+ * launched again.
  */
 async function relaunchSwitch(board: Board, controller: SwitchTarget, view: SwitchView): Promise<Result<SwitchResponse>> {
 	const { config } = board;
 	const relaunch = view.relaunch!;
-	if (view.state === 'resuming' && view.relaunchedName) {
-		return respondLogged(board, view.id, { reason: `已經重新啟動為 @${view.relaunchedName}，正在等它出現，請稍後再看`, status: 409 }, null);
+	const standing = await relaunchStanding(board, view);
+	if (standing === 'waiting' || following.has(view.id)) {
+		const what = view.relaunchedName ? `已經重新啟動為 @${view.relaunchedName}` : '正在重新啟動';
+		return respondLogged(board, view.id, { reason: `${what}，正在等它出現，請稍後再看`, status: 409 }, null);
 	}
+	if (typeof standing === 'object' && 'runs' in standing) {
+		const logError = await finishRelaunch(board, view, standing.runs);
+		return respondLogged(board, view.id, { reason: logError && `寫不進送出紀錄：${logError}`, status: 500 }, logError);
+	}
+	if (view.state === 'resuming' && typeof standing === 'object') step(board, view.id, { state: 'resume-failed', error: standing.failed });
 	const fail = (error: string, status = 502) => respondLogged(board, view.id, { reason: error, status }, step(board, view.id, { state: 'resume-failed', error }));
 	if (!isLaunchClient(controller.client)) return fail(`看板不會重新啟動 ${controller.client || '這個 client'}。`, 409);
 	const workspace = await chooseWorkspace(config, controller.workspace, view.agent?.workspace);
 	if (!workspace.ok) return fail(`沒有重新啟動：${workspace.reason}`);
-	const logError = step(board, view.id, { state: 'resuming', error: null });
+	// In the log before hcom runs, with no name yet: a board stopped meanwhile waits out the launch
+	// wait before it launches again.
+	const logError = step(board, view.id, { state: 'resuming', error: null, relaunchedName: '' });
 	if (logError) return respondLogged(board, view.id, { reason: `寫不進送出紀錄，沒有重新啟動：${logError}`, status: 500 }, logError);
+	following.add(view.id);
 	const launched = await launchAgent(config, {
 		client: controller.client,
 		folder: controller.workspace,
@@ -396,38 +442,71 @@ async function relaunchSwitch(board: Board, controller: SwitchTarget, view: Swit
 		// Later arguments win over the ones hcom kept, the way a resume's do.
 		extraArgs: [...relaunch.args, ...modelArgs(controller.client, view.to)]
 	});
-	if (launched.outcome === 'failed') return fail(launched.reason ?? '重新啟動失敗');
-	if (!launched.hcomName) return fail('重新啟動後沒有拿到它的 HCOM 名稱，看板認不出是哪一個，請到 Herdr 查看');
+	if (launched.outcome === 'failed' || !launched.hcomName) {
+		following.delete(view.id);
+		return fail(launched.outcome === 'failed' ? (launched.reason ?? '重新啟動失敗') : '重新啟動後沒有拿到它的 HCOM 名稱，看板認不出是哪一個，請到 Herdr 查看');
+	}
 	const named = step(board, view.id, { relaunchedName: launched.hcomName });
-	void placeRelaunched(board, view, launched.hcomName);
+	void followRelaunch(board, view.id, view.controllerId, launched.hcomName);
 	return respondLogged(board, view.id, { reason: null }, named);
 }
 
-/** Wait for a relaunched client to run, give its tab the old label and place, and end the switch:
- *  done when it runs (a tab that could not be named or placed is noted), failed otherwise. */
-async function placeRelaunched(board: Board, view: SwitchView, name: string): Promise<void> {
+/** Wait for a relaunched client to run, then end the switch (`finishRelaunch`), or record why it
+ *  did not run. Only while the switch still waits for this client: a switch given up meanwhile
+ *  stays given up. */
+async function followRelaunch(board: Board, switchId: string, controllerId: string, name: string): Promise<void> {
+	const { config } = board;
+	let appeared: Awaited<ReturnType<typeof waitToAppear>>;
+	try {
+		appeared = await waitToAppear(config, { name }, config.now() + config.launchWaitMs, `@${name}`);
+	} catch (error) {
+		appeared = { found: null, reason: `確認不了它有沒有在執行：${(error as Error).message}` };
+	}
+	await queued(controllerId, async () => {
+		following.delete(switchId);
+		const view = switchView(config.stateDir, switchId, config.now(), config.launchWaitMs);
+		if (view?.state !== 'resuming' || view.relaunchedName !== name) return;
+		if (appeared.found) await finishRelaunch(board, view, appeared.found);
+		else step(board, switchId, { state: 'resume-failed', error: `重新啟動的 ${appeared.reason}` });
+	});
+	await board.refresh();
+	board.agentActed(controllerId);
+}
+
+/** End a relaunch whose client runs: give its tab the old label and place (a failure is noted)
+ *  and mark the switch done. Returns why the log could not be written, or null. */
+async function finishRelaunch(board: Board, view: SwitchView, found: HerdrAgent): Promise<string | null> {
 	const { config } = board;
 	const relaunch = view.relaunch!;
-	let fields: Omit<SwitchStep, 'kind' | 'switchId' | 'time'>;
-	try {
-		const appeared = await waitToAppear(config, { name }, config.now() + config.launchWaitMs, `@${name}`);
-		if (!appeared.found) fields = { state: 'resume-failed', error: `重新啟動的 ${appeared.reason}` };
-		else {
-			const problems: string[] = [];
-			if (relaunch.tabLabel) {
-				const renamed = await renameTab(config, appeared.found.tab, relaunch.tabLabel);
-				if (!renamed.ok) problems.push(`改分頁名稱失敗：${renamed.reason}`);
-			}
-			const moved = await moveTab(config, appeared.found.tab, relaunch.tabIndex ?? 0);
-			if (moved) problems.push(moved);
-			fields = { state: 'done', error: problems.length ? `已重新啟動為 @${name}，但${problems.join('；')}` : null };
-		}
-	} catch (error) {
-		fields = { state: 'resume-failed', error: `重新啟動後確認不了它有沒有在執行：${(error as Error).message}` };
+	const problems: string[] = [];
+	if (relaunch.tabLabel) {
+		const renamed = await renameTab(config, found.tab, relaunch.tabLabel);
+		if (!renamed.ok) problems.push(`改分頁名稱失敗：${renamed.reason}`);
 	}
-	step(board, view.id, fields);
-	await board.refresh();
-	board.agentActed(view.controllerId);
+	const moved = await moveTab(config, found.tab, relaunch.tabIndex ?? 0);
+	if (moved) problems.push(moved);
+	return step(board, view.id, {
+		state: 'done',
+		error: problems.length ? `已重新啟動為 @${view.relaunchedName}，但${problems.join('；')}` : null
+	});
+}
+
+/** Settle the relaunches this board process does not wait for (it restarted while one was on its
+ *  way): done once the client runs, failed once the launch wait is over. Queued per session like
+ *  every other step of a switch. */
+export function settleRelaunches(board: Board, switches: SwitchView[]): void {
+	for (const open of switches) {
+		if (!open.relaunch || open.state !== 'resuming' || following.has(open.id)) continue;
+		void queued(open.controllerId, async () => {
+			const view = switchView(board.config.stateDir, open.id, board.config.now(), board.config.launchWaitMs);
+			if (!view || view.state !== 'resuming' || following.has(view.id)) return;
+			const standing = await relaunchStanding(board, view);
+			if (typeof standing !== 'object') return;
+			if ('runs' in standing) await finishRelaunch(board, view, standing.runs);
+			else step(board, view.id, { state: 'resume-failed', error: standing.failed });
+			board.agentActed(view.controllerId);
+		});
+	}
 }
 
 /** The effort to carry for these settings, read from the record now; nothing when they carry none. */

@@ -510,3 +510,91 @@ test('a resume whose client exits at once is closed as failed, never as succeede
 	expect(sentLog().filter((line) => line.kind === 'resume-closed').map((line) => line.result)).toEqual(['failed', 'succeeded']);
 	expect((await find('s-claude'))?.switch).toBeNull();
 });
+
+/** Herdr now runs the fresh client hcom started under this name, in a new tab at the end. */
+function runsNow(name: string) {
+	const file = join(fixture.dir, 'herdr.json');
+	const herdr = JSON.parse(readFileSync(file, 'utf8'));
+	herdr.agents.push(herdrAgent(`s-${name}`, `wA:p-${name}`));
+	herdr.panes.push({ pane_id: `wA:p-${name}`, workspace_id: 'wA', cwd: '/projects/s-claude' });
+	herdr.tabs.push({ tab_id: `wA:t-s-${name}`, workspace_id: 'wA', label: name });
+	writeFileSync(file, JSON.stringify(herdr));
+}
+const launches = () => hcomCalls().filter((args) => args[0] === 'claude' || args[0] === 'codex');
+const lastStep = (switchId: string) => sentLog().filter((line) => line.kind === 'switch-step' && line.switchId === switchId).at(-1);
+
+test('the old tab\'s own name is kept for the fresh client, even one with the old HCOM name in it; only the name hcom gave it is not', async () => {
+	for (const [label, kept] of [['clio QA', 'clio QA'], ['clio', null], ['CLIO', null]] as const) {
+		rmSync(join(fixture.dir, 'board-state', 'sent-log.jsonl'), { force: true });
+		setHerdr(['s-claude', 's-codex']);
+		const herdr = JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8'));
+		herdr.tabs[0].label = label;
+		writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify(herdr));
+		noRecord('s-claude');
+		launchArgs('s-claude', ['--dangerously-skip-permissions']);
+		freshPlan('nova', 'claude', false);
+		await fixture.refresh(cookie);
+		const switched = await change('s-claude', null, 'medium');
+		expect(switched.body.entry?.relaunch?.tabLabel ?? null).toBe(kept);
+		expect((await giveUp('s-claude')).status).toBe(200);
+		rmSync(join(fixture.dir, 'hcom-calls.jsonl'), { force: true });
+	}
+});
+
+test('while a fresh client is awaited, 繼續切換 launches nothing more, and giving up stays given up', async () => {
+	noRecord('s-claude');
+	launchArgs('s-claude', ['--dangerously-skip-permissions']);
+	freshPlan('slow', 'claude', false);
+	const switched = await change('s-claude', null, 'medium');
+	const again = await carryOn('s-claude');
+	expect(again.status).toBe(409);
+	expect(again.body.reason).toContain('@slow');
+	expect(launches()).toHaveLength(1);
+
+	expect((await giveUp('s-claude')).status).toBe(200);
+	// The client never runs: what the wait finds later does not reopen the switch.
+	await new Promise((resolve) => setTimeout(resolve, 10_000));
+	expect(lastStep(switched.body.entry!.id)).toMatchObject({ state: 'abandoned' });
+}, 20_000);
+
+test('a board restarted while a fresh client is awaited settles it by its reads: failed once the wait is over, then done without a second launch once it runs', async () => {
+	noRecord('s-claude');
+	launchArgs('s-claude', ['--dangerously-skip-permissions']);
+	freshPlan('late', 'claude', false);
+	const switched = await change('s-claude', null, 'medium');
+	const id = switched.body.entry!.id;
+	await restart();
+	expect(lastStep(id)).toMatchObject({ relaunchedName: 'late' });
+
+	// Still within the wait: nothing settled, and nothing launched again.
+	expect((await carryOn('s-claude')).status).toBe(409);
+	// The wait is over: failed, with why, and still open to continue or give up.
+	fixture.setClock(Date.now() + 200_000);
+	await fixture.refresh(cookie);
+	await fixture.refresh(cookie);
+	expect(lastStep(id)).toMatchObject({ state: 'resume-failed' });
+	expect(lastStep(id).error).toContain('@late');
+	expect((await find('s-claude'))?.switch).toMatchObject({ state: 'resume-failed' });
+
+	// It came up after all: 繼續切換 ends the switch on it instead of launching another.
+	rmSync(join(fixture.dir, 'clock'), { force: true });
+	runsNow('late');
+	const done = await carryOn('s-claude');
+	expect(done.status).toBe(200);
+	expect(lastStep(id)).toMatchObject({ state: 'done' });
+	expect(launches()).toHaveLength(1);
+}, 30_000);
+
+test('a board restarted while a fresh client is awaited marks it done by its reads once Herdr runs it', async () => {
+	noRecord('s-claude');
+	launchArgs('s-claude', ['--dangerously-skip-permissions']);
+	freshPlan('back', 'claude', false);
+	const switched = await change('s-claude', null, 'medium');
+	await restart();
+	runsNow('back');
+	await fixture.refresh(cookie);
+	const deadline = Date.now() + 5_000;
+	while (lastStep(switched.body.entry!.id)?.state !== 'done' && Date.now() < deadline) await new Promise((resolve) => setTimeout(resolve, 100));
+	expect(lastStep(switched.body.entry!.id)).toMatchObject({ state: 'done' });
+	expect(launches()).toHaveLength(1);
+});

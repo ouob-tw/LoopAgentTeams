@@ -91,7 +91,7 @@ export interface SwitchStep {
 	pane?: string | null;
 	/** The effort carried, resolved again with new settings or a later stop. */
 	carriedEffort?: string | null;
-	/** The HCOM name of the client a relaunch started. */
+	/** The HCOM name of the client a relaunch started; empty when a relaunch's hcom run begins. */
 	relaunchedName?: string;
 	time: string;
 }
@@ -193,15 +193,15 @@ function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
 			const view: SwitchView = { ...logged, open: false, wakeId: null, appliedAt: logged.route === 'inject' ? logged.time : null };
 			for (const step of steps.get(logged.id) ?? []) {
 				if (step.state === 'abandoned') view.abandonedAt = step.time;
+				if (step.state === 'resuming') view.resumingAt = step.time;
 				if (step.state) view.state = step.state;
 				if (step.error !== undefined) view.error = step.error;
 				if (step.to) view.to = step.to;
 				if (step.pane !== undefined) view.pane = step.pane;
 				if (step.carriedEffort !== undefined) view.carriedEffort = step.carriedEffort;
-				if (step.relaunchedName) {
-					view.relaunchedName = step.relaunchedName;
-					view.appliedAt = step.time;
-				}
+				// Empty while a relaunch's hcom run is on its way.
+				if (step.relaunchedName !== undefined) view.relaunchedName = step.relaunchedName || null;
+				if (step.relaunchedName) view.appliedAt = step.time;
 			}
 			const wake = resumes.get(logged.id);
 			if (wake && wake.outcome !== 'failed' && wake.outcome !== 'refused') view.appliedAt = wake.time;
