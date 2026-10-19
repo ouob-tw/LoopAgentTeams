@@ -2181,5 +2181,143 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(len(self.sidebar_calls(log)), calls)
 
 
+    def prompt_hook(self, prompt='那題不用了，改做別的', client='codex', **overrides):
+        payload = dict(hook_event_name='UserPromptSubmit', cwd=str(self.work), session_id=SESSION,
+                       prompt=prompt)
+        payload.update(overrides)
+        return self.cli('hook', '--client', client, payload=payload, session=OTHER)
+
+    def ask(self, identifier, title, status='pending'):
+        """Write a decision record and ask its question in the controller's own questions file."""
+        self.decisions.joinpath(f'{identifier}.md').write_text(
+            f'- status: {status}\n- advisor: needs-human\n')
+        section = self.root / f'{identifier}.section.md'
+        section.write_text(f'## {title}\n\n背景。\n\nA. 好\n   影響。\n')
+        result = subprocess.run(
+            [sys.executable, str(PANEL), 'question', 'upsert',
+             '--questions', str(self.work / '.lat/questions-orch.md'),
+             '--decisions', str(self.decisions), '--id', identifier, '--file', str(section)],
+            text=True, capture_output=True, env=self.cli_environment(), cwd=self.work)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def prompt_context(self, result):
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        output = json.loads(result.stdout)
+        self.assertEqual(output['hookSpecificOutput']['hookEventName'], 'UserPromptSubmit')
+        return output['hookSpecificOutput']['additionalContext']
+
+    def test_prompt_reminder_lists_own_waiting_questions_for_both_clients(self):
+        self.ask('LAT-A', '要合併嗎？')
+        self.ask('LAT-B', '要關閉 Spec 嗎？')
+        self.ask('LAT-B', '要關閉 Spec 嗎？（改）')
+        self.ask('DONE', '已答的題', status='pending')
+        self.decisions.joinpath('DONE.md').write_text('- status: answered\n')
+        self.ask('SENT', '已送出未記錄的題')
+        questions = self.work / '.lat/questions-orch.md'
+        questions.write_text(questions.read_text().replace(
+            'SENT · r1 · 待答\n\n背景。\n\nA. 好\n   影響。\n\n答覆：\n\n- [ ] 送出',
+            'SENT · r1 · 待答\n\n背景。\n\nA. 好\n   影響。\n\n答覆：A\n\n- [x] 送出'))
+        self.assertIn('[x]', questions.read_text())
+        # A question another controller asked in the same workspace is not listed.
+        other = self.work / '.lat/questions-other.md'
+        other.write_text('## Theirs\nOTHER · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
+        self.decisions.joinpath('OTHER.md').write_text('- status: pending\n')
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                self.write_legacy_record(client=client, hcom_name='orch',
+                                         tasks_path=str(self.tasks))
+                text = self.prompt_context(self.prompt_hook(client=client))
+                lines = text.splitlines()
+                self.assertEqual(lines[0], 'LAT 待答提醒：你還有 2 題待答。')
+                self.assertRegex(lines[1], r'^- LAT-A r1「要合併嗎？」，提問時間 '
+                                           r'\d{4}-\d\d-\d\d \d\d:\d\d$')
+                self.assertRegex(lines[2], r'^- LAT-B r2「要關閉 Spec 嗎？（改）」，提問時間 \d{4}-')
+                self.assertIn('question withdraw', lines[3])
+                self.assertIn('改版', lines[3])
+                self.assertIn(str(SKILL / 'references/question-panel.md'), lines[3])
+                self.assertNotIn('DONE', text)
+                self.assertNotIn('SENT', text)
+                self.assertNotIn('OTHER', text)
+
+    def test_prompt_reminder_shows_unknown_time_without_an_upsert_entry(self):
+        self.write_legacy_record(hcom_name='orch', tasks_path=str(self.tasks))
+        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
+        (self.work / '.lat/questions-orch.md').write_text(
+            '## Q\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
+        self.assertIn('- LAT-A r1「Q」，提問時間 不明',
+                      self.prompt_context(self.prompt_hook()))
+
+    def test_prompt_reminder_silent_cases(self):
+        self.ask('LAT-A', '要合併嗎？')
+        record = self.write_legacy_record(hcom_name='orch', tasks_path=str(self.tasks))
+        # HCOM wakes agents with a prompt holding only its marker.
+        for prompt in ('<hcom>', ' <hcom>\n', '<hcom><hcom>'):
+            with self.subTest(prompt=prompt):
+                self.assert_silent(self.prompt_hook(prompt))
+        self.assertIn('LAT-A', self.prompt_hook('<hcom> 其實那題不用了').stdout)
+        for changes in ({'session_id': OTHER}, {'cwd': str(self.root)},
+                        {'prompt': None}, {'hook_event_name': 'UserPromptSubmitted'}):
+            with self.subTest(changes=changes):
+                self.assert_silent(self.prompt_hook(**changes))
+        self.assert_silent(self.prompt_hook(client='claude'))
+        for field, value in (('role', 'executor'), ('status', 'ended'),
+                             ('workspace', str(self.root)), ('client', 'claude')):
+            with self.subTest(field=field):
+                self.record.write_text(json.dumps(dict(record, **{field: value})))
+                self.assert_silent(self.prompt_hook())
+        # A legacy record has no HCOM name, so no questions file of its own.
+        self.write_legacy_record()
+        self.assert_silent(self.prompt_hook())
+        self.write_legacy_record(hcom_name='orch', tasks_path=str(self.tasks))
+        self.decisions.joinpath('LAT-A.md').write_text('- status: withdrawn\n')
+        self.assert_silent(self.prompt_hook())
+        self.record.unlink()
+        self.assert_silent(self.prompt_hook())
+
+    def test_prompt_reminder_errors_only_warn(self):
+        self.ask('LAT-A', '要合併嗎？')
+        self.write_legacy_record(hcom_name='orch', tasks_path=str(self.tasks))
+        questions = self.work / '.lat/questions-orch.md'
+        questions.write_text(questions.read_text() * 2)
+        for broken in (None, '{broken', '[]'):
+            with self.subTest(broken=broken):
+                if broken:
+                    self.record.write_text(broken)
+                result = self.prompt_hook()
+                self.assertEqual((result.returncode, result.stderr), (0, ''))
+                output = json.loads(result.stdout)
+                self.assertEqual(list(output), ['systemMessage'])
+                self.assertIn('LAT 待答提醒發生錯誤，未提醒', output['systemMessage'])
+
+    def test_install_adds_user_prompt_submit_without_matcher_for_both_clients(self):
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                path = self.root / client / ('hooks.json' if client == 'codex' else 'settings.json')
+                flags = (('--codex-home', path.parent) if client == 'codex' else
+                         ('--client', 'claude', '--claude-settings', path))
+                path.parent.mkdir()
+                other = {'hooks': [{'type': 'command', 'command': 'hcom hook prompt'}]}
+                original = {'hooks': {'UserPromptSubmit': [other]}}
+                path.write_text(json.dumps(original))
+                preview = self.cli('install', *flags, '--preview')
+                self.assertIn('UserPromptSubmit', preview.stdout)
+                self.assertEqual(json.loads(path.read_text()), original)
+                self.assertEqual(self.cli('install', *flags).returncode, 0)
+                groups = json.loads(path.read_text())['hooks']['UserPromptSubmit']
+                self.assertEqual(groups[0], other)
+                self.assertEqual(len(groups), 2)
+                self.assertNotIn('matcher', groups[1])
+                self.assertEqual(groups[1].get('name'),
+                                 'lat-codex-recovery' if client == 'codex' else None)
+                command = groups[1]['hooks'][0]['command']
+                self.assertTrue(command.endswith('hook --client claude' if client == 'claude'
+                                                 else 'lat-session.py hook'))
+                first = path.read_bytes()
+                self.assertEqual(self.cli('install', *flags).returncode, 0)
+                self.assertEqual(path.read_bytes(), first)
+                self.assertEqual(self.cli('uninstall', *flags).returncode, 0)
+                self.assertEqual(json.loads(path.read_text())['hooks']['UserPromptSubmit'], [other])
+
+
 if __name__ == '__main__':
     unittest.main()
