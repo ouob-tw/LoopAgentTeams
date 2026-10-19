@@ -82,9 +82,9 @@ class AgentControl {
 		return this.#post('/api/agents/close', agentId, {});
 	}
 
-	/** Move the card's Herdr tab to where the tab `before` is in its workspace. */
-	moveTab(agentId: string | null, place: { workspace: string; tab: string }, before: string): Promise<Outcome> {
-		return this.#post('/api/agents/tab/move', agentId, { ...place, before });
+	/** Move the card's Herdr tab next to the tab `onto`, the one it was dropped on, in its workspace. */
+	moveTab(agentId: string | null, place: { workspace: string; tab: string }, onto: string): Promise<Outcome> {
+		return this.#post('/api/agents/tab/move', agentId, { ...place, onto });
 	}
 
 	/** Rename the card's Herdr tab; the label is already trimmed and not empty. */

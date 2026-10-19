@@ -97,7 +97,7 @@
 			let at = bottoms.findIndex((bottom) => y < bottom);
 			if (at < 0) at = cards.length - 1;
 			const target = at === index ? null : tabDrop(cards, index, at);
-			over = target && { key: keyOf(cards[at]), ...target };
+			over = target && { key: keyOf(cards[target.mark]), tab: target.tab, after: target.after };
 		}
 		drag = { ...drag, x, y, over, refused };
 	}

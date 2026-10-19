@@ -9,8 +9,8 @@ import type { RequestHandler } from './$types';
 export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.json().catch(() => null);
 	const target = tabTarget(body);
-	const before = body?.before;
-	if (!target || typeof before !== 'string' || !before || before === target.tab) return json({ error: 'invalid_move' }, { status: 400 });
-	const result = await moveAgentTab(getBoard(), target, before);
+	const onto = body?.onto;
+	if (!target || typeof onto !== 'string' || !onto || onto === target.tab) return json({ error: 'invalid_move' }, { status: 400 });
+	const result = await moveAgentTab(getBoard(), target, onto);
 	return json(result.body, { status: result.status });
 };

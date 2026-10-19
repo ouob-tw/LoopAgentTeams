@@ -1,8 +1,8 @@
 // Moving and renaming a Herdr tab from an agent's card on the Herdr tab. Each request reads the
 // workspace's tab list again and acts only on a tab it still lists there, never on what the page
-// last saw. The board's own tab is no exception: neither closes nor moves the board away. One
-// attempt each, no retry, logged in the sent log either way; the list is read again afterwards
-// either way, so the page shows the order and names Herdr really has.
+// last saw. The board's own tab is treated like any other: moving or renaming it leaves the
+// board running. One attempt each, no retry, logged in the sent log either way; the list is read
+// again afterwards either way, so the page shows the order and names Herdr really has.
 import { randomUUID } from 'node:crypto';
 import type { AgentAction, AgentActionResponse } from '../board/agent-actions.ts';
 import type { Board } from './board.ts';
@@ -58,17 +58,17 @@ async function attempt(
 }
 
 /**
- * Move the tab next to the tab `before` in the workspace's full tab list, plain terminal tabs the
+ * Move the tab next to the tab `onto` (the one its card was dropped on) in the workspace's full tab list, plain terminal tabs the
  * board does not show included: dragged towards the front it lands before that tab, towards the
  * end after it. Herdr inserts before the tab at `insert_index` in the list as it is, the moved tab
  * still in it (Herdr 0.9.5, tried on a real workspace). Both must be tabs of the same workspace;
  * requests on one workspace's tabs are queued.
  */
-export function moveAgentTab(board: Board, target: TabTarget, before: string) {
+export function moveAgentTab(board: Board, target: TabTarget, onto: string) {
 	return queued(`tabs:${target.workspace}`, () =>
 		attempt(board, target, 'move', async (tabs) => {
 			const from = tabs.findIndex((tab) => tab.id === target.tab);
-			const to = tabs.findIndex((tab) => tab.id === before);
+			const to = tabs.findIndex((tab) => tab.id === onto);
 			if (to < 0) return { text: null, reason: '要放的位置不在同一個 Herdr 工作區裡，沒有移動。', acted: false };
 			const text = `「${tabs[from].label}」移到「${tabs[to].label}」${to < from ? '之前' : '之後'}（第 ${to + 1} 個分頁）`;
 			const reason = await moveTab(board.config, target.tab, to < from ? to : to + 1);

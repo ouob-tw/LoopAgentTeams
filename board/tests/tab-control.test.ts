@@ -127,8 +127,8 @@ async function post(path: string, body: object) {
 	});
 	return { status: response.status, body: (await response.json()) as AgentActionResponse };
 }
-const move = (session: string | null, tab: string, before: string, workspace = 'wA') =>
-	post('/api/agents/tab/move', { session, workspace, tab, before });
+const move = (session: string | null, tab: string, onto: string, workspace = 'wA') =>
+	post('/api/agents/tab/move', { session, workspace, tab, onto });
 const rename = (session: string | null, tab: string, label: string, workspace = 'wA') =>
 	post('/api/agents/tab/rename', { session, workspace, tab, label });
 
@@ -164,7 +164,7 @@ test('dragged towards the end, a tab lands after the target tab; a split tab mov
 test('a tab dropped on itself, as on another card of its own tab, is not a request: nothing is called or logged', async () => {
 	const result = await move('s-left', 'wA:t-pair', 'wA:t-pair');
 	expect(result.status).toBe(400);
-	for (const body of [{ workspace: 'wA', tab: 'wA:t-one' }, { session: 's-one', tab: 'wA:t-one', before: 'wA:t-last' }, { session: '', workspace: 'wA', tab: 'wA:t-one', before: 'wA:t-last' }]) {
+	for (const body of [{ workspace: 'wA', tab: 'wA:t-one' }, { session: 's-one', tab: 'wA:t-one', onto: 'wA:t-last' }, { session: '', workspace: 'wA', tab: 'wA:t-one', onto: 'wA:t-last' }]) {
 		expect((await post('/api/agents/tab/move', body)).status).toBe(400);
 	}
 	expect(herdrCalls()).toEqual([]);

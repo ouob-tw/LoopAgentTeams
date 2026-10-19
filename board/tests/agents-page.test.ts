@@ -1055,7 +1055,7 @@ for (const width of [1280, 390]) {
 			expect(await hasClass(CARD('s-lead'), 'drop-before')).toBe(true);
 		});
 		await tab.until(`JSON.stringify([...document.querySelectorAll('.inbox [data-workspace="wA"] [data-card]')].map((card) => card.dataset.card)) === '["s-plain","s-lead"]'`, 'Herdr’s new order');
-		expect(herdrCalls()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-s-plain', insert_index: 0 }]]);
+		expect(herdrCalls() as unknown[][]).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-s-plain', insert_index: 0 }]]);
 		// Dragging by the handle does not open the agent.
 		expect((await screen()).search).not.toContain('agent=');
 
