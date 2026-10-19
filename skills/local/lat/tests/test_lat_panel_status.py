@@ -261,6 +261,75 @@ class StatusDisplayTests(unittest.TestCase):
                 self.assertIn(reason, result.stderr)
                 self.assertEqual((self.decisions / f"{identifier}.md").read_text(), before)
 
+    def withdraw(self, identifier, *extra):
+        return self.cli("question", "withdraw", "--questions", self.questions,
+                        "--decisions", self.decisions, "--id", identifier, *extra)
+
+    def test_withdraw_records_reason_and_source_then_archives_the_question(self):
+        self.decision("D1")
+        self.decision("H1", kind="help")
+        self.upsert("D1", DECIDE_SECTION)
+        self.upsert("H1", HELP_SECTION)
+        self.assertEqual(self.displays()[-1], ["--display-agent", "zono ⚠待答1求助1"])
+        source = "使用者聊天原文：「合併那題不用了」\nsession cf5bf88b"
+        result = self.withdraw("D1", "--reason", " 需求改了，題目前提不成立 ", "--source", source)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = json.loads(result.stdout)
+        self.assertEqual((output["id"], output["status"]), ("D1", "withdrawn"))
+        self.assertEqual(output["cleanup"]["archived"],
+                         [{"id": "D1", "reason": "decision-not-pending"}])
+        record = (self.decisions / "D1.md").read_text()
+        self.assertIn("- status: withdrawn\n", record)
+        self.assertNotIn("pending", record)
+        self.assertRegex(record, r"\n\n## 撤回\n- 原因：需求改了，題目前提不成立\n"
+                                 r"- 依據：使用者聊天原文：「合併那題不用了」\n  session cf5bf88b\n"
+                                 r"- 時間：\d{4}-\d\d-\d\dT\d\d:\d\d:\d\d[+-]\d\d:\d\d\n$")
+        self.assertEqual([question["id"] for question in load_module().board_questions(
+            self.questions)], ["H1"])
+        self.assertIn("D1 · r1", self.questions.with_name(
+            f"{self.questions.stem}-archive.md").read_text())
+        self.assertEqual(self.displays()[-1], ["--display-agent", "zono ⚠求助1"])
+        # A help question is withdrawn the same way; nothing left clears the sidebar.
+        self.assertEqual(self.withdraw("H1", "--reason", "已不需要", "--source", "FURE-X r2")
+                         .returncode, 0)
+        self.assertEqual(self.displays()[-1], ["--clear-display-agent"])
+
+    def test_withdraw_refuses_blank_or_missing_fields_and_non_pending_records(self):
+        self.decision("D1")
+        self.decision("D2", status="answered")
+        self.decision("D3", status="withdrawn")
+        self.upsert("D1", DECIDE_SECTION)
+        questions = self.questions.read_text()
+        for identifier, extra, code, reason in (
+                ("D1", ("--reason", " \n", "--source", "chat"), 1, "must not be empty"),
+                ("D1", ("--reason", "old", "--source", "  "), 1, "must not be empty"),
+                ("D1", ("--source", "chat"), 2, "--reason"),
+                ("D1", ("--reason", "old"), 2, "--source"),
+                ("D2", ("--reason", "old", "--source", "chat"), 1, "not pending"),
+                ("D3", ("--reason", "old", "--source", "chat"), 1, "not pending")):
+            with self.subTest(identifier=identifier, extra=extra):
+                before = (self.decisions / f"{identifier}.md").read_text()
+                result = self.withdraw(identifier, *extra)
+                self.assertEqual(result.returncode, code)
+                self.assertIn(reason, result.stderr)
+                self.assertEqual((self.decisions / f"{identifier}.md").read_text(), before)
+                self.assertEqual(self.questions.read_text(), questions)
+        result = self.withdraw("NOPE", "--reason", "old", "--source", "chat")
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("decision record not found", result.stderr)
+        self.assertFalse(any(self.decisions.glob("*NOPE*")))
+
+    def test_withdraw_cleanup_failure_keeps_record_withdrawn_and_says_to_rerun(self):
+        self.decision("D1")
+        self.upsert("D1", DECIDE_SECTION)
+        (self.questions.parent / "panel-journal.jsonl").write_text("{broken\n")
+        result = self.withdraw("D1", "--reason", "old", "--source", "chat")
+        self.assertEqual((result.returncode, result.stdout), (1, ""))
+        self.assertIn("withdrawn but cleanup failed", result.stderr)
+        self.assertIn("rerun question cleanup", result.stderr)
+        self.assertIn("- status: withdrawn", (self.decisions / "D1.md").read_text())
+        self.assertEqual(self.displays()[-1], ["--clear-display-agent"])
+
     def test_unbound_file_and_missing_herdr_skip_the_display_quietly(self):
         self.decision("D1")
         loose = self.root / "loose/questions-loose.md"

@@ -17,7 +17,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install \
 
 檢查 preview 只有 LAT group，再執行安裝。helper 會備份原本的 `hooks.json`，保留其他 hooks；重跑不會重複新增。
 
-重新啟動 Codex，輸入 `/hooks`，進入 `SessionStart`，選中 command 結尾為 `lat-session.py hook`、matcher 為 `^(compact|resume)$` 的項目，按 `t` 信任。只核准這一項；確認它顯示 `[x]`。不要使用略過信任檢查的啟動參數。
+重新啟動 Codex，輸入 `/hooks`，進入 `SessionStart`，選中 command 結尾為 `lat-session.py hook`、matcher 為 `^(compact|resume)$` 的項目，按 `t` 信任；`Stop` 與 `UserPromptSubmit` 中同一 command 的項目也照樣信任。只核准 LAT 的項目；確認它們顯示 `[x]`。不要使用略過信任檢查的啟動參數。
 
 Codex 更新或重設 hooks 後，再以 `/hooks` 確認 LAT 已啟用且受信任；升級舊版 LAT hook 後，也要重跑 install 並重新信任。
 
@@ -32,13 +32,15 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client cl
 uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client claude
 ```
 
-重新啟動 Claude Code，在 `/hooks` 的 `SessionStart` 確認有 command 結尾為 `hook --client claude`、matcher 為 `^(compact|resume)$` 的項目。下方停用與移除指令在 Claude 一律加上 `--client claude`。
+重新啟動 Claude Code，在 `/hooks` 的 `SessionStart` 確認有 command 結尾為 `hook --client claude`、matcher 為 `^(compact|resume)$` 的項目，`Stop` 與 `UserPromptSubmit` 也有同一 command。下方停用與移除指令在 Claude 一律加上 `--client claude`。
 
 ## 平常怎麼用
 
 LAT 主控讀完專案設定後，先登記對話，再建立進度清單。可請主控提供 `.lat/sessions/<session-id>.json` 路徑，確認 `status` 是 `active`，且 `skill_dir` 指向已安裝 LAT。只閱讀技能或擔任執行 Agent 不會啟用。
 
 手動 `/compact`、自動壓縮或接回同一對話時，hook 會提示主控先完整重讀 LAT 規則、進度與待決紀錄，再核對 tracker 與既有授權，接著繼續原任務。沒有真人答覆的決策仍然等待，缺少獨立審查的工作不能宣告完成。可做一次 `/compact` 後說「繼續」，查看工具紀錄是否先重讀上述檔案。
+
+使用者每次傳新訊息給主控時，hook 會列出主控仍待答的題目，提醒它判斷是否撤回過時的題目或改版（見[撤回過時題目](../skills/local/lat/references/question-panel.md#撤回過時題目)）。這個提醒是後來新增的事件，已安裝過的人要重跑上面的 install，Codex 再到 `/hooks` 信任新項目，主控重開後生效。
 
 啟用前發生的壓縮不受保護。`/clear`、fork 與新對話不繼承主控標記；`/clear` 不會停用舊紀錄，日後接回舊對話仍可恢復。正常交付／取消會停用該筆紀錄。
 

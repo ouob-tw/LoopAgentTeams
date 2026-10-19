@@ -90,6 +90,6 @@ deactivate 保留本輪最後回報的資格，停用後第一次 Stop 仍追加
 - v1 僅支援 Git 工作區。activate 要求正規化後的 worktree 根目錄；子目錄 cwd 可恢復，但 hook 只查最近 `.git` 邊界的工作區，另一 worktree／巢狀 repo 不繼承。非 Git 的 activate 報錯，hook 靜默。
 - hook 使用 payload `session_id`（hook process 沒有主控的 session 環境變數），只匹配自己的紀錄。client 與 hook 的 `--client` 相同、role=orchestrator、workspace、session_id、active 全部相符才提示。這是流程提醒，不是防惡意 Agent 的安全門禁。
 - 沒有該 ID 的紀錄或已知條件不符：exit 0、零輸出。精確 ID 的紀錄損壞，或匹配後所需檔案缺失：輸出短恢復錯誤，不推定授權。
-- `/clear` 與 fork／新 session 不繼承標記。`/clear` 不改舊紀錄；日後 resume 舊對話仍可恢復，直到明確停用。沒有 clear handler；SessionEnd 也不刪紀錄。SubagentStart／SubagentStop 不掛此 hook（其 payload ID 是父 session）；主控 Stop 使用上述回合結束檢查。
+- `/clear` 與 fork／新 session 不繼承標記。`/clear` 不改舊紀錄；日後 resume 舊對話仍可恢復，直到明確停用。沒有 clear handler；SessionEnd 也不刪紀錄。SubagentStart／SubagentStop 不掛此 hook（其 payload ID 是父 session）；主控 Stop 使用上述回合結束檢查；UserPromptSubmit 以相同身分比對列出待答題目，見 [撤回過時題目](question-panel.md#撤回過時題目)。
 - 每次 compact／resume 都重新匹配，不設永久「已提示」旗標；恢復提示不累積全文、不呼叫模型、不掃 transcript、不連網、不觸發 compact。
 - 啟用前發生的壓縮無法恢復；遺漏停用可能留下 active。移動工作區、session 移交與 plugin 包裝不在 v1。

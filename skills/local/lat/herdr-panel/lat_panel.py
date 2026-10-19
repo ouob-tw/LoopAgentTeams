@@ -63,6 +63,8 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   question check-pending --questions PATH --decisions DIR
   question resolve-help --questions PATH --decisions DIR --id ID \
       --evidence TEXT --location TEXT
+  question withdraw --questions PATH --decisions DIR --id ID \
+      --reason TEXT --source TEXT
   bind --hcom-name NAME --client CLIENT --session-id ID --workspace ROOT \
        [--herdr-workspace ID] [--herdr-tab ID] [--herdr-pane ID]
   unbind --session-id ID
@@ -1812,6 +1814,31 @@ def resolve_help(decisions_path, question_id, evidence, location, *, now=None):
         _replace_locked(path, updated)
 
 
+def withdraw_question(decisions_path, question_id, reason, source, *, now=None):
+    """Withdraw a pending record whose question no longer applies, keeping why and on what."""
+    path = Path(decisions_path) / f"{question_id}.md"
+    if not reason.strip() or not source.strip():
+        raise ValueError("--reason and --source must not be empty")
+    if not path.is_file():
+        raise ValueError(f"decision record not found: {path}")
+    with _path_lock(path):
+        status = read_decision_status(path)
+        if status.error or status.status != "pending":
+            raise ValueError(
+                f"{question_id} is not pending (status: {status.status or status.error}); "
+                "only a pending record can be withdrawn"
+            )
+        text = _read_text_exact(path)
+        status_line = re.search(r"^- status:.*$", text, re.MULTILINE | re.IGNORECASE)
+        updated = (
+            text[:status_line.start()] + "- status: withdrawn" + text[status_line.end():]
+        ).rstrip("\n") + (
+            f"\n\n## 撤回\n- 原因：{_indented(reason.strip())}\n"
+            f"- 依據：{_indented(source.strip())}\n- 時間：{_iso_time(now)}\n"
+        )
+        _replace_locked(path, updated)
+
+
 def _notification_path(state_dir=None):
     directory = Path(state_dir) if state_dir else plugin_directory("state")
     return directory / "pending-notifications.json"
@@ -3278,6 +3305,12 @@ def _build_parser():
     resolve_help_parser.add_argument("--id", required=True)
     resolve_help_parser.add_argument("--evidence", required=True)
     resolve_help_parser.add_argument("--location", required=True)
+    withdraw = question_commands.add_parser("withdraw")
+    withdraw.add_argument("--questions", required=True, type=Path)
+    withdraw.add_argument("--decisions", required=True, type=Path)
+    withdraw.add_argument("--id", required=True)
+    withdraw.add_argument("--reason", required=True)
+    withdraw.add_argument("--source", required=True)
     check_pending = question_commands.add_parser("check-pending")
     check_pending.add_argument("--questions", required=True, type=Path)
     check_pending.add_argument("--decisions", required=True, type=Path)
@@ -3396,6 +3429,21 @@ def main(argv=None):
                       "rerun question cleanup", file=sys.stderr)
                 return 1
             print(json.dumps({"id": args.id, "status": "self-verified", "cleanup": cleanup},
+                             ensure_ascii=False))
+            _warn_display(refresh_status_display(args.questions))
+            return 0
+        if args.command == "question" and args.question_command == "withdraw":
+            withdraw_question(args.decisions, args.id, args.reason, args.source)
+            try:
+                cleanup = (cleanup_questions(args.questions, args.decisions)
+                           if args.questions.exists() else None)
+            except (OSError, ValueError) as error:
+                # The record is already withdrawn; a rerun of withdraw would refuse it.
+                _warn_display(refresh_status_display(args.questions))
+                print(f"lat-panel: {args.id} is withdrawn but cleanup failed: {error}; "
+                      "rerun question cleanup", file=sys.stderr)
+                return 1
+            print(json.dumps({"id": args.id, "status": "withdrawn", "cleanup": cleanup},
                              ensure_ascii=False))
             _warn_display(refresh_status_display(args.questions))
             return 0

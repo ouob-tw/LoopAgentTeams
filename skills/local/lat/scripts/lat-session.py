@@ -34,6 +34,9 @@ HCOM_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
 ENDED = ('ended', 'completed', 'cancelled')
 # A last line with one of these tags asks the user a recorded question.
 QUESTION_TAGS = ('DECIDE:', 'HELP:')
+HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit')
+# HCOM wakes an agent with a prompt holding only this marker; the message itself arrives in hook context.
+HCOM_PROMPT = re.compile(r'(?:\s*<hcom>)+\s*')
 
 
 def panel_module():
@@ -458,8 +461,8 @@ def deactivate(args):
     print(json.dumps({'removed': removed}))
 
 
-def context(text):
-    print(json.dumps({'hookSpecificOutput': {'hookEventName': 'SessionStart',
+def context(text, event='SessionStart'):
+    print(json.dumps({'hookSpecificOutput': {'hookEventName': event,
                                             'additionalContext': text}}))
 
 
@@ -477,7 +480,7 @@ def configure(args):
         return
     updated = copy.deepcopy(config)
     events = updated.setdefault('hooks', {})
-    for event in ('SessionStart', 'Stop'):
+    for event in HOOK_EVENTS:
         if args.action == 'uninstall' and event not in events:
             continue
         groups = events.setdefault(event, [])
@@ -535,6 +538,9 @@ def configure(args):
                 group['hooks'] = [h for h in handlers if not is_lat_command(h)]
                 if not group['hooks'] and set(group) <= {'name', 'matcher', 'hooks'}:
                     groups.remove(group)
+            # Install may have added the event; leave no empty list behind for it.
+            if owned and not groups:
+                del events[event]
     if updated == config:
         print('No changes')
         return
@@ -886,6 +892,54 @@ def activation_check(client, payload, sid):
         ensure_ascii=False))
 
 
+def waiting_questions(record):
+    """`(ID, revision, title, asked at)` of this controller's waiting questions with a pending record."""
+    panel = panel_module()
+    path = panel.controller_questions_path(record['workspace'], record['hcom_name'])
+    decisions = Path(record['decisions_path'])
+    waiting = []
+    for question in panel.board_questions(path):
+        if question['status'] == 'recorded':
+            continue
+        decision = decisions / f'{question["id"]}.md'
+        if not decision.is_file():
+            continue
+        status = read_decision_status(decision)
+        if status.error is None and status.status == 'pending':
+            waiting.append((question['id'], question['revision'], question['title'],
+                            question['asked_at']))
+    return waiting
+
+
+def local_time(value):
+    try:
+        return datetime.fromisoformat(value).astimezone().strftime('%Y-%m-%d %H:%M')
+    except (TypeError, ValueError):
+        return '不明'
+
+
+def prompt_reminder(record, payload):
+    """List the controller's waiting questions when the user sends a new message."""
+    prompt = payload.get('prompt')
+    if not isinstance(prompt, str) or HCOM_PROMPT.fullmatch(prompt) or legacy_record(record):
+        return
+    waiting = waiting_questions(record)
+    if not waiting:
+        return
+    lines = [f'LAT 待答提醒：你還有 {len(waiting)} 題待答。']
+    lines += [f'- {identifier} r{revision}「{title}」，提問時間 {local_time(asked)}'
+              for identifier, revision, title, asked in waiting]
+    lines.append('對照使用者這則訊息，判斷各題是否已過時而要撤回（question withdraw），'
+                 '或前提改變而要改版；仍適用就繼續等答覆。撤回用法見 '
+                 f'{Path(record["skill_dir"]) / "references/question-panel.md"}「撤回過時題目」。')
+    context('\n'.join(lines), 'UserPromptSubmit')
+
+
+def warn_reminder(exc):
+    print(json.dumps({'systemMessage': f'LAT 待答提醒發生錯誤，未提醒：{exc}'},
+                     ensure_ascii=False))
+
+
 def hook(client):
     # Hook payload IDs are authoritative: the hook process has no client session env.
     try:
@@ -897,6 +951,8 @@ def hook(client):
             message = payload.get('last_assistant_message')
             if not isinstance(message, str):
                 return
+        elif event == 'UserPromptSubmit':
+            pass
         elif event != 'SessionStart' or payload.get('source') not in ('compact', 'resume'):
             return
         sid = session_id(payload.get('session_id'))
@@ -917,6 +973,13 @@ def hook(client):
                         workspace=str(root))
         if event != 'Stop':
             expected['status'] = 'active'
+        if event == 'UserPromptSubmit':
+            if all(record.get(key) == value for key, value in expected.items()):
+                try:
+                    prompt_reminder(record, payload)
+                except Exception as exc:  # noqa: BLE001 - never block the user's message
+                    warn_reminder(exc)
+            return
         # Reject known mismatches before checking broken dependencies.
         if any(key in record and record[key] != value for key, value in expected.items()):
             return
@@ -937,6 +1000,9 @@ def hook(client):
             return
         context(pointer(path))
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
+        if event == 'UserPromptSubmit':
+            warn_reminder(exc)
+            return
         if event == 'Stop':
             tag = question_tag(message)
             if tag:
@@ -964,7 +1030,7 @@ def main():
     # Accepted for older callers; every deactivation ends as 'ended'.
     stop.add_argument('--status', choices=('completed', 'cancelled'), help=argparse.SUPPRESS)
     stop.add_argument('--session-id', help='Explicit ID for manual stale-record deactivation')
-    sub.add_parser('hook', help='Read SessionStart or Stop payload on stdin')
+    sub.add_parser('hook', help='Read SessionStart, Stop or UserPromptSubmit payload on stdin')
     for action in ('install', 'uninstall'):
         config = sub.add_parser(action, help=f'{action.title()} the independent LAT hook group')
         config.add_argument('--codex-home', type=Path,

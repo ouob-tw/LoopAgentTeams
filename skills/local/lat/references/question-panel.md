@@ -146,7 +146,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
 
 ## 側欄與通知
 
-`question upsert`、`set-status`、`cleanup`、`resolve-help`，以及 activate、恢復時重綁與 deactivate，都會自動更新綁定窗格在 Herdr 側欄的名稱，主控不需另外執行：
+`question upsert`、`set-status`、`cleanup`、`resolve-help`、`withdraw`，以及 activate、恢復時重綁與 deactivate，都會自動更新綁定窗格在 Herdr 側欄的名稱，主控不需另外執行：
 
 - 有待答時顯示 `<短名> ⚠待答{n}求助{n}`，短名是 HCOM 名稱最後一個連字號後的部分（與分頁名稱 `lat-<短名>` 相同，沒有連字號時用全名）；數字是自己問題檔中狀態為「待答」、決策紀錄仍未結案的題目，依 `- kind: help` 分成求助與其他，數字為 0 的那一項不顯示（例：`tene ⚠待答1`、`tene ⚠求助2`）；兩者都是 0 或 deactivate 後恢復原名。
 - `question upsert` 寫入新題或升版時，另發一則同樣文字的 Herdr 內建通知；Herdr 因發太快或忙碌沒顯示時不重試。
@@ -163,6 +163,22 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question resolve-
 ```
 
 只接受仍為 `pending` 的 `- kind: help` 紀錄：狀態改為 `self-verified`，在紀錄末尾加 `## 主控查證`（查證、位置、時間），再清理問題檔並更新側欄。清理失敗時紀錄已結案、指令以非零結束，依錯誤重跑 `question cleanup`。查不到時不執行，題目維持待答，等使用者在面板選「已完成」或在聊天說明，再依「收到 `lat-panel` 通知」或「聊天答覆與更正」記錄。
+
+## 撤回過時題目
+
+使用者表示某題不用答了，或需求改變使題目前提不成立時，執行：
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question withdraw \
+  --questions "$questions" --decisions "$decisions" --id "<ID>" \
+  --reason "<為何不再需要>" --source "<可查證的依據>"
+```
+
+`--source` 寫可查證的出處，例如使用者聊天原文與 session ID，或取代它的決策紀錄 ID 與版本；執行時間由工具另記，不能當成依據。`--reason`、`--source` 去除空白後不可為空，否則拒絕且不改任何檔案。DECIDE 與 HELP 題都適用。
+
+只接受仍為 `pending` 的紀錄：狀態改為 `withdrawn`，在紀錄末尾加 `## 撤回`（原因、依據、時間），再清理問題檔（題目歸檔）並更新側欄；看板待辦因題目離開問題檔而消失。非 pending 時拒絕並說明目前狀態。清理失敗時紀錄已撤回、指令以非零結束，依錯誤重跑 `question cleanup`。題目只是前提改變、仍要問時改版重問，不要撤回。
+
+**待答提醒**：安裝 LAT hook 後，主控每次收到使用者的新訊息，UserPromptSubmit hook 會在附加內容列出自己問題檔中仍待答（決策紀錄 pending）的每題 `<ID> r<版本>`、標題與提問時間，提示判斷是否撤回或改版。只對 active 且身分相符的主控紀錄作用；沒有待答題、執行 Agent、沒有 LAT 紀錄，或 HCOM 投遞訊息造成的回合（提示內容只有 `<hcom>` 標記）都不輸出。提問時間取自 `panel-journal.jsonl` 的寫題紀錄，找不到時顯示「不明」。hook 出錯只以 `systemMessage` 留警告，不擋使用者訊息。安裝見 [Hook 設定程序](hook-setup.md)。
 
 ## 答覆格式
 
