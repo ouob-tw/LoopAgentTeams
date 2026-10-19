@@ -6,7 +6,7 @@
 	// and effort, and messages and wakes, go through the command line at the bottom of the screen.
 	// Opened for a report, the conversation shows that report where it is in the history; opened
 	// for a question, the question where the message that asked it is. Any message that asked
-	// questions still in the inbox shows their cards in its place.
+	// questions still in the inbox, or answered ones, shows their cards in its place.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import Info from '@lucide/svelte/icons/info';
 	import { onMount, type Snippet } from 'svelte';
@@ -34,6 +34,7 @@
 		controller,
 		tabMoves = 0,
 		items,
+		answered = [],
 		onopen,
 		target,
 		opens = 0,
@@ -48,6 +49,8 @@
 		tabMoves?: number;
 		/** This controller's inbox items. */
 		items: InboxItem[];
+		/** This controller's answered questions: their cards are shown in the conversation only. */
+		answered?: InboxQuestion[];
 		onopen: (item: InboxItem) => void;
 		/** The report or question this page was opened at, shown where it is in the history. */
 		target?: PlacedTarget;
@@ -338,7 +341,7 @@
 
 <!-- All three stay mounted, so the conversation keeps its place and its live feed. -->
 <div class="tabpanel" role="tabpanel" id="panel-transcript" aria-labelledby="tab-transcript" hidden={tab !== 'transcript'}>
-	<Transcript {controller} {reports} {questions} {questionCards} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
+	<Transcript {controller} {reports} questions={[...questions, ...answered]} {questionCards} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
 </div>
 <div class="tabpanel" role="tabpanel" id="panel-reports" aria-labelledby="tab-reports" hidden={tab !== 'reports'}>
 	{#each reports as item (item.key)}

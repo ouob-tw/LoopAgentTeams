@@ -5,7 +5,8 @@
 	// scrolls into view, or with the button. Opened for a report, it shows the report in place of
 	// the text it carries and scrolls to it, loading earlier parts until it is found; opened for a
 	// question, its card where the message that asked it is, or where that message will come. A
-	// message that asked questions still in the inbox shows their cards in its place.
+	// message that asked questions still in the inbox, or answered ones, shows their cards in its
+	// place; a message whose questions the board has no data for stays text.
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import { EarlierReads, transcriptUrl, type TranscriptFeed } from '#lib/board/earlier.ts';
@@ -57,7 +58,8 @@
 		feed?: TranscriptFeed;
 		/** This controller's reports in the inbox: the texts they carry are marked as reports. */
 		reports?: InboxReport[];
-		/** This controller's questions in the inbox: a message that asked some shows their cards. */
+		/** This controller's questions in the inbox and its answered ones: a message that asked some
+		 *  shows their cards. */
 		questions?: InboxQuestion[];
 		/** The cards of the questions one message asked, in its order. */
 		questionCards?: Snippet<[InboxQuestion[]]>;

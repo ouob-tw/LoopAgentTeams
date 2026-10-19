@@ -87,7 +87,9 @@ test('groups by status, newest report first within a group, no report last, then
 		hcomError: null,
 		agents: [],
 		herdrError: null,
-		pruneError: null
+		pruneError: null,
+		answered: [],
+		answeredError: null
 	};
 	const { controllers } = buildSnapshot(sources, { read: {}, archived: {} }, NOW);
 	expect(controllers.map((controller) => [controller.hcomName, controller.status])).toEqual([

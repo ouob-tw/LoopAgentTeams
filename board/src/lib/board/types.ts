@@ -123,7 +123,8 @@ interface ItemOwner {
 /** The chat message that asked a question: its report's time and text. */
 export type AskingMessage = Pick<Report, 'time' | 'message'>;
 
-/** A question of an active controller that the controller has not recorded yet. */
+/** A question of an active controller that the controller has not recorded yet, or one answered
+ *  and recorded (`question.status` is `recorded`), which the inbox no longer lists. */
 export interface InboxQuestion extends ItemOwner {
 	kind: 'question';
 	/** When it was asked; null for a question written before the helper recorded that. */
@@ -148,24 +149,31 @@ export interface InboxReport extends ItemOwner {
 	message: string;
 	/** When it was marked read on any device; null while unread. */
 	readAt: string | null;
+	/** Archived 7 days after it was issued: it can no longer be marked read or unread. */
+	archived: boolean;
 }
 
 export type InboxItem = InboxQuestion | InboxReport;
 
+/** Whether the question was answered and its controller recorded the answer. */
+export const isAnswered = (item: InboxItem): boolean => item.kind === 'question' && item.question.status === 'recorded';
+
 export function itemLabel(item: InboxItem): string {
-	if (item.kind === 'question') return '待決';
+	if (item.kind === 'question') return isAnswered(item) ? '已回答' : '待決';
 	return item.tag === 'HELP' ? '求助' : '完成';
 }
 
 export interface BoardSnapshot {
 	generatedAt: string;
 	controllers: Controller[];
-	/** Questions and unarchived reports, in source order; the page sorts them. */
+	/** Questions and unarchived reports, in source order; the page sorts them. The inbox lists the
+	 *  questions and the unread reports; the read ones are among the processed items too. */
 	inbox: InboxItem[];
 	/** Keys of the active controllers' questions that are recorded, and so no longer in the inbox. */
 	recordedKeys: string[];
-	/** How many reports are in the archive; they are fetched separately. */
-	archivedCount: number;
+	/** How many items are processed: read or archived reports and answered questions. They are
+	 *  fetched separately. */
+	processedCount: number;
 	/** Every agent Herdr lists, by workspace number and status; see `Agent`. */
 	agents: Agent[];
 	/** Source failures that cannot be attributed to one controller. */

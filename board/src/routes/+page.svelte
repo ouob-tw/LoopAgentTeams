@@ -95,13 +95,25 @@
 
 	const controllers = $derived(board.snapshot.controllers);
 	const inbox = $derived(board.snapshot.inbox);
-	const archivedCount = $derived(board.snapshot.archivedCount);
+	const processedCount = $derived(board.snapshot.processedCount);
 	const agents = $derived(board.snapshot.agents);
+	/** The report opened from the inbox list: it stays there, read, until another screen is shown. */
+	let lingering = $state<string | null>(null);
+	/** What the inbox lists: the questions and the unread reports, and the report still open. */
+	const listedInbox = $derived(inbox.filter((entry) => entry.kind === 'question' || entry.readAt === null || entry.key === lingering));
 
 	/** Items as they were when opened on this page, so going back shows one that has left the inbox since. */
 	const kept = new Map<string, InboxItem>();
-	const archived = $derived(typeof board.archive === 'object' ? (board.archive?.reports ?? []) : []);
-	const viewAt = (place: Place) => viewOf(place, { kept, items: [...inbox, ...archived], controllers, agents });
+	/** The processed items loaded, without a report marked unread since: it is back in the inbox. */
+	const processed = $derived(
+		typeof board.archive === 'object'
+			? (board.archive?.items ?? []).filter((entry) => !inbox.some((listed) => listed.key === entry.key && listed.kind === 'report' && listed.readAt === null))
+			: []
+	);
+	/** The answered questions of the controller whose conversation is shown. */
+	const answered = $derived(board.answered.questions);
+	const known = $derived([...inbox, ...processed, ...answered]);
+	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers, agents });
 	/** The screen the address names; a reload opens it again. */
 	const addressed = () => placeIn(new URLSearchParams(location.search));
 	/** The browser starts from the real address: under shallow routing page.url stays at the last full
@@ -117,10 +129,10 @@
 	});
 
 	const openKey = $derived(view?.kind === 'item' ? view.item.key : null);
-	const inInbox = $derived(inbox.some((item) => item.key === openKey));
+	const listed = $derived(known.some((item) => item.key === openKey));
 	const item = $derived.by(() => {
 		if (view?.kind !== 'item') return undefined;
-		return [...inbox, ...archived].find((candidate) => candidate.key === openKey) ?? view.item;
+		return known.find((candidate) => candidate.key === openKey) ?? view.item;
 	});
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
 	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
@@ -130,6 +142,13 @@
 	$effect(() => {
 		if (view?.kind === 'agent') untrack(() => (middle = 'agents'));
 	});
+	// Read again with every new snapshot: a question of the inbox may have been answered and recorded.
+	$effect(() => {
+		void board.snapshot;
+		const id = controllerId;
+		// Untracked: the read sets what it reads, which must not start it again.
+		if (id) untrack(() => void board.loadAnswered(id));
+	});
 
 	/** The question whose asking message is not found in its conversation, or the conversation
 	 *  cannot be read, at this opening: it is shown as if no message had asked it. */
@@ -138,7 +157,7 @@
 	 *  question at the message that asked it, or where that message will come. */
 	const placed = $derived(item && item.key !== lost ? item : null);
 	/** The cards shown at the asking message: every question of the inbox it asked, in its order. */
-	const together = $derived(item?.kind === 'question' ? askedTogether(item, inbox) : item ? [item] : []);
+	const together = $derived(item?.kind === 'question' ? askedTogether(item, [...inbox, ...answered]) : item ? [item] : []);
 	function lose(key: string) {
 		lost = key;
 		locate(false);
@@ -299,6 +318,8 @@
 
 	async function show(next: View) {
 		if (next?.kind !== 'item') locate(false);
+		// A read report leaves the inbox list once another screen replaces it, not while it is open.
+		lingering = next?.kind === 'item' && listedInbox.some((entry) => entry.key === next.item.key) ? next.item.key : null;
 		if (view === null) listScroll = window.scrollY;
 		view = next;
 		await tick();
@@ -320,6 +341,8 @@
 	}
 	function openItem(next: InboxItem) {
 		kept.set(next.key, next);
+		// Kept on the list from now: the read state may reach the page before the item is shown.
+		if (listedInbox.some((entry) => entry.key === next.key)) lingering = next.key;
 		go({ kind: 'item', key: next.key });
 		// Opening an inbox report reads it. Only opening does: a report marked unread stays unread
 		// while it is still open. An archived report keeps the read state it had.
@@ -352,7 +375,7 @@
 {#snippet placedCard(item: InboxItem, copy = false)}
 	<ItemContent
 		{item}
-		inInbox={item.key === openKey ? inInbox : true}
+		listed={item.key === openKey ? listed : true}
 		recorded={board.snapshot.recordedKeys.includes(item.key)}
 		handle={item.hcomName}
 		onunread={copy ? async () => {} : (key) => board.mark(key, false)}
@@ -470,7 +493,7 @@
 				<AgentList {agents} currentId={agentId} onopen={openAgent} />
 			{:else}
 				<Inbox
-					items={inbox}
+					items={listedInbox}
 					{controllers}
 					{sort}
 					{showArchive}
@@ -478,7 +501,7 @@
 					earlier={board.archiveEarlier}
 					onearlier={() => void board.loadEarlier()}
 					onretry={() => void board.loadArchive()}
-					{archivedCount}
+					{processedCount}
 					currentKey={openKey}
 					onsort={setSort}
 					onarchive={() => {
@@ -527,7 +550,7 @@
 					{:else if view.what === 'agent'}
 						<p class="empty">這個 Agent 已不在 Herdr 的清單上。</p>
 					{:else if board.archive === 'failed' || (board.archiveEarlier === 'failed' && board.earlierFrom)}
-						<p class="empty">信箱裡沒有這一則，封存也讀不出來；可以重新整理再試一次。</p>
+						<p class="empty">信箱裡沒有這一則，已處理的項目也讀不出來；可以重新整理再試一次。</p>
 					{:else if !seeking}
 						<p class="empty">這一則已不存在。</p>
 					{/if}
@@ -545,6 +568,7 @@
 							tabMoves={board.tabMoves}
 							{controller}
 							items={inbox.filter((entry) => entry.controllerId === controller.id)}
+							answered={answered.filter((entry) => entry.controllerId === controller.id)}
 							onopen={openItem}
 							questionCards={askedCards}
 						/>
@@ -558,6 +582,7 @@
 						tabMoves={board.tabMoves}
 						{controller}
 						items={inbox.filter((entry) => entry.controllerId === controller.id)}
+						answered={answered.filter((entry) => entry.controllerId === controller.id)}
 						onopen={openItem}
 						target={placed}
 						{opens}
@@ -580,7 +605,7 @@
 					{#key item.key}
 						<ItemContent
 							{item}
-							{inInbox}
+							{listed}
 							recorded={board.snapshot.recordedKeys.includes(item.key)}
 							onunread={(key) => board.mark(key, false)}
 						/>

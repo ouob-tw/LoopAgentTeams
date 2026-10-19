@@ -61,7 +61,7 @@ test('the archive comes 50 at a time, newest first, each page after the last one
 		expected.push(`回報 ${index}`);
 	}
 	const snapshot = await on(T0 + 10 * DAY);
-	expect(snapshot.archivedCount).toBe(120);
+	expect(snapshot.processedCount).toBe(120);
 
 	const sizes: number[] = [];
 	const seen: InboxReport[] = [];
@@ -69,9 +69,9 @@ test('the archive comes 50 at a time, newest first, each page after the last one
 	do {
 		const response = await fixture.archivePage(cookie, before);
 		expect(response.status).toBe(200);
-		const page: { reports: InboxReport[]; before: string | null } = await response.json();
-		sizes.push(page.reports.length);
-		seen.push(...page.reports);
+		const page: { items: InboxReport[]; before: string | null } = await response.json();
+		sizes.push(page.items.length);
+		seen.push(...page.items);
 		before = page.before;
 	} while (before !== null);
 
@@ -86,10 +86,10 @@ test('the archive comes 50 at a time, newest first, each page after the last one
 	const first: { before: string } = await (await fixture.archivePage(cookie)).json();
 	fixture.report('session-new', { tag: 'DONE', summary: '新封存', time: iso(T0 + 2 * DAY), hcom_name: 'luna', workspace });
 	await on(T0 + 10 * DAY);
-	const newest: { reports: InboxReport[] } = await (await fixture.archivePage(cookie)).json();
-	expect(newest.reports[0].title).toBe('新封存');
-	const second: { reports: InboxReport[] } = await (await fixture.archivePage(cookie, first.before)).json();
-	expect(second.reports.map((report) => report.key)).toEqual(seen.slice(50, 100).map((report) => report.key));
+	const newest: { items: InboxReport[] } = await (await fixture.archivePage(cookie)).json();
+	expect(newest.items[0].title).toBe('新封存');
+	const second: { items: InboxReport[] } = await (await fixture.archivePage(cookie, first.before)).json();
+	expect(second.items.map((report) => report.key)).toEqual(seen.slice(50, 100).map((report) => report.key));
 });
 
 test('the archive lists reports for 30 days; a file is deleted when its newest report is 30 days old', async () => {
@@ -99,19 +99,19 @@ test('the archive lists reports for 30 days; a file is deleted when its newest r
 	fixture.report('session-ended', { tag: 'HELP', summary: '較晚的', time: iso(T0 + 2 * DAY), hcom_name: 'vega', workspace });
 	const titles = async () => (await fixture.archive(cookie)).map((report) => report.title);
 
-	expect((await on(T0 + 30 * DAY - 1)).archivedCount).toBe(2);
+	expect((await on(T0 + 30 * DAY - 1)).processedCount).toBe(2);
 	expect(await titles()).toEqual(['較晚的', '較早的']);
 
-	expect((await on(T0 + 30 * DAY)).archivedCount).toBe(1);
+	expect((await on(T0 + 30 * DAY)).processedCount).toBe(1);
 	expect(await titles()).toEqual(['較晚的']);
 	expect(has('session-ended')).toBe(true);
 
-	expect((await on(T0 + 32 * DAY - 1)).archivedCount).toBe(1);
+	expect((await on(T0 + 32 * DAY - 1)).processedCount).toBe(1);
 	expect(has('session-ended')).toBe(true);
 	const keys = Object.keys(inboxState().archived);
 	expect(keys.filter((key) => key.startsWith('session-ended#'))).toHaveLength(2);
 
-	expect((await on(T0 + 32 * DAY)).archivedCount).toBe(0);
+	expect((await on(T0 + 32 * DAY)).processedCount).toBe(0);
 	expect(await titles()).toEqual([]);
 	await eventually(() => !has('session-ended'), 'the file to be deleted');
 	// The lock file stays: a hook waiting on it and one arriving later must share the one lock.
@@ -149,7 +149,7 @@ test('a file whose lock is held is left until a later read', async () => {
 		expect(held.errors).toEqual([]);
 		expect(has('session-busy')).toBe(true);
 		// Left for later, but past retention: listed nowhere, its state already cleared.
-		expect(held.archivedCount).toBe(0);
+		expect(held.processedCount).toBe(0);
 		expect(titled(held, '鎖住了')).toBeUndefined();
 		expect(Object.keys(inboxState().archived).filter((key) => key.startsWith('session-busy#'))).toEqual([]);
 
@@ -173,7 +173,7 @@ test('after pruning, a bound running controller shows as usual and a closed one 
 	const before = await on(T0 + 29 * DAY);
 	expect(named(before, 'luna')).toMatchObject({ status: 'delivered', phase: 'luna 的舊交付' });
 	expect(named(before, 'orin')).toBeUndefined();
-	expect(before.archivedCount).toBe(2);
+	expect(before.processedCount).toBe(2);
 
 	await on(T0 + 30 * DAY);
 	// Read after both files are gone.
@@ -184,7 +184,7 @@ test('after pruning, a bound running controller shows as usual and a closed one 
 	expect(after.errors).toEqual([]);
 	expect(named(after, 'luna')).toMatchObject({ status: 'working', phase: null, lastReportAt: null, error: null, pendingCount: 0 });
 	expect(named(after, 'orin')).toBeUndefined();
-	expect(after.archivedCount).toBe(0);
+	expect(after.processedCount).toBe(0);
 	fixture.setHcom({});
 });
 
@@ -205,7 +205,7 @@ test('when the read and archive state cannot be saved first, nothing is deleted'
 		expect(fixture.helperArgs('prune-reports')).toHaveLength(asked);
 		expect(has('session-unsaved')).toBe(true);
 		// Past retention it is listed nowhere in the meantime.
-		expect(snapshot.archivedCount).toBe(0);
+		expect(snapshot.processedCount).toBe(0);
 		expect(titled(snapshot, '存不了')).toBeUndefined();
 	} finally {
 		chmodSync(stateDir(), 0o700);

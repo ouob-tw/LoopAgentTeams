@@ -3,7 +3,7 @@ import { agentControl } from './agent-control.svelte.ts';
 import { connectBoard, type Connection, type LinkState } from './client.ts';
 import { toasts } from './toasts.svelte.ts';
 import { reaches, withEarlier, withNewest, type ArchivePage } from './archive.ts';
-import type { BoardSnapshot } from './types.ts';
+import type { BoardSnapshot, InboxQuestion } from './types.ts';
 
 export class LiveBoard {
 	snapshot: BoardSnapshot;
@@ -11,8 +11,8 @@ export class LiveBoard {
 	refreshing = $state(false);
 	/** Counts the Herdr tab moves the server announced, so pages showing a position read it again. */
 	tabMoves = $state(0);
-	/** The archived reports loaded so far, newest first; null until loaded, 'failed' when the newest
-	 *  page could not be read: then only the retry button, or opening the archive again, reads it. */
+	/** The processed items loaded so far, newest first; null until loaded, 'failed' when the newest
+	 *  page could not be read: then only the retry button, or opening the view again, reads it. */
 	archive = $state<ArchivePage | 'failed' | null>(null);
 	/** Loading the page after the loaded ones; after a failure only the button tries again. */
 	archiveEarlier = $state<'idle' | 'loading' | 'failed'>('idle');
@@ -20,8 +20,13 @@ export class LiveBoard {
 	get earlierFrom(): string | null {
 		return typeof this.archive === 'object' ? (this.archive?.before ?? null) : null;
 	}
+	/** The answered questions of the controller whose conversation is shown, as last read; empty
+	 *  for another controller until they are read. */
+	answered = $state.raw<{ controllerId: string; questions: InboxQuestion[] }>({ controllerId: '', questions: [] });
 	#connection: Connection | undefined;
 	#archiveLoads = 0;
+	#answeredLoads = 0;
+	#answeredShown = 0;
 
 	constructor(initial: BoardSnapshot) {
 		this.snapshot = $state(initial);
@@ -67,6 +72,23 @@ export class LiveBoard {
 		this.archive = loaded === null || loaded === 'failed' ? loaded : withNewest(shown(), loaded, Date.parse(this.snapshot.generatedAt));
 	}
 
+	/** Read this controller's answered questions again; a read that fails leaves what was shown.
+	 *  Reads can overlap: an answer is shown unless a later read's was already, so one that is
+	 *  slow to come back does not keep the earlier ones from showing. */
+	async loadAnswered(controllerId: string): Promise<void> {
+		const load = ++this.#answeredLoads;
+		if (this.answered.controllerId !== controllerId) this.answered = { controllerId, questions: [] };
+		let questions: InboxQuestion[];
+		try {
+			questions = (await this.#connection?.answered(controllerId)) ?? [];
+		} catch {
+			return;
+		}
+		if (load < this.#answeredShown || this.answered.controllerId !== controllerId) return;
+		this.#answeredShown = load;
+		this.answered = { controllerId, questions };
+	}
+
 	#earlierLoad: Promise<void> | undefined;
 	/** Add the page after the loaded ones. While one is being read, waits for that one. */
 	loadEarlier(): Promise<void> {
@@ -78,10 +100,10 @@ export class LiveBoard {
 		this.archiveEarlier = 'loading';
 		let page: ArchivePage;
 		try {
-			page = (await this.#connection?.archive(before)) ?? { reports: [], before };
+			page = (await this.#connection?.archive(before)) ?? { items: [], before };
 		} catch {
 			this.archiveEarlier = 'failed';
-			toasts.show('failed', '更早的封存回報載入失敗，請按「載入更早」再試一次。');
+			toasts.show('failed', '更早的已處理項目載入失敗，請按「載入更早」再試一次。');
 			return;
 		}
 		this.archiveEarlier = 'idle';

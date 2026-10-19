@@ -322,6 +322,15 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board questions -
 
 輸出 `{"questions": [...]}`，每一題的欄位與 `board list` 相同，結束碼 0；不需要有綁定的主控，看板用它讀已結束主控留下的問題檔。檔案不存在時 `questions` 為空陣列；讀不出來或題號重複時輸出 `{"status": "error", "reason": "…"}`，結束碼 1。不寫入任何檔案。
 
+### 讀取答過的題目
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board answered \
+  [--questions "$questions"]... [--workspace "<工作區>" --hcom-name "<名稱>"]...
+```
+
+`--workspace` 與 `--hcom-name` 成對給，表示已不在綁定裡的主控，由輔助工具依綁定時的規則找出它的問題檔；看板不自己拼檔名。輸出 `{"files": [{"questions_path": "…", "questions": [...], "error": null}, ...]}`，先依序列出 `--questions`，再依序列出每一對，每個一筆，成對給的那幾筆另帶 `workspace` 與 `hcom_name`；名稱拼不出檔名時那一筆的 `questions_path` 為 null、`error` 說明原因。`--workspace` 與 `--hcom-name` 個數不同時輸出 `{"status": "error", …}`，結束碼 1；其餘結束碼 0。`questions` 是這份問題檔與它的封存檔（`<問題檔名>-archive.md`）裡已記錄且有答覆的題目，欄位與 `board list` 相同；同一題號取最新的一段（封存檔在前、問題檔在後），最新一段不是已記錄的答覆時那題不列。檔案不存在時為空陣列；讀不出來時只有那一筆的 `error` 說明原因。看板用它列「已處理」的答過題目。不寫入任何檔案。
+
 ### 寫入並送出答案
 
 ```bash
