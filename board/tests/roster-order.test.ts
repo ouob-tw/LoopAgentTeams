@@ -87,6 +87,7 @@ test('groups by status, newest report first within a group, no report last, then
 		hcomError: null,
 		agents: [],
 		herdrError: null,
+		workspaces: [],
 		pruneError: null,
 		answered: [],
 		answeredError: null

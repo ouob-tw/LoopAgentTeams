@@ -4,6 +4,7 @@
 import { createConnection } from 'node:net';
 import { basename } from 'node:path';
 import type { HerdrPlace } from '../board/format.ts';
+import type { HerdrWorkspace } from '../board/types.ts';
 import type { BoardConfig } from './config.ts';
 import { runExternal } from './external.ts';
 
@@ -88,6 +89,16 @@ export async function chooseWorkspace(config: BoardConfig, scope: string, prefer
 	const id = (created.result.workspace as Partial<Workspace> | undefined)?.workspace_id;
 	if (typeof id !== 'string') return { ok: false, reason: '建立 Herdr 工作區失敗：輸出缺少工作區編號' };
 	return { ok: true, id, label, created: true };
+}
+
+/** The label of the workspace with this ID, null when Herdr no longer lists it; or why that
+ *  cannot be told. */
+export async function workspaceLabel(config: BoardConfig, workspaceId: string): Promise<{ label: string | null } | { reason: string }> {
+	const workspaces = await herdr(config, ['workspace', 'list']);
+	if ('reason' in workspaces) return { reason: `讀不到 Herdr 的工作區清單：${workspaces.reason}` };
+	const workspaceList = workspaces.result.workspaces;
+	if (!Array.isArray(workspaceList) || !workspaceList.every(isWorkspace)) return { reason: '讀不到 Herdr 的工作區清單：輸出不是預期的格式' };
+	return { label: workspaceList.find((workspace) => workspace.workspace_id === workspaceId)?.label ?? null };
 }
 
 /** Whether a pane with this ID is open in Herdr, or why that cannot be told. Only that it exists
@@ -179,9 +190,19 @@ export async function tabToFront(config: BoardConfig, paneId: string): Promise<s
 	const paneList = panes.result.panes;
 	const pane = Array.isArray(paneList) ? paneList.find((candidate) => candidate?.pane_id === paneId) : undefined;
 	if (typeof pane?.tab_id !== 'string') return '找不到窗格所在的分頁';
-	// The insert index counts the tab being moved too; 0 is always the front.
-	const moved = await socketRequest(config, 'tab.move', { tab_id: pane.tab_id, insert_index: 0 });
+	return moveTab(config, pane.tab_id, 0);
+}
+
+/** Move a tab to this place among its workspace's tabs, counted from 0; the index counts the tab
+ *  being moved too, so 0 is always the front. Returns why it did not move, or null. */
+export async function moveTab(config: BoardConfig, tabId: string, index: number): Promise<string | null> {
+	const moved = await socketRequest(config, 'tab.move', { tab_id: tabId, insert_index: index });
 	return 'reason' in moved ? `移動分頁失敗：${moved.reason}` : null;
+}
+
+/** Give a tab this label: `herdr tab rename <tab> <label>`. */
+export function renameTab(config: BoardConfig, tabId: string, label: string): Promise<HerdrAct> {
+	return herdrAct(config, ['tab', 'rename', tabId, label]);
 }
 
 /** One agent Herdr detects in a pane, with the names of its workspace and tab. */
@@ -220,8 +241,10 @@ const isListedAgent = (value: unknown): value is ListedAgent =>
 	);
 
 /** Every agent `herdr agent list` reports, across all workspaces, with the labels of `workspace
- *  list` and `tab list`; or why they cannot be told. */
-export async function listHerdrAgents(config: BoardConfig): Promise<{ ok: true; agents: HerdrAgent[] } | { ok: false; reason: string }> {
+ *  list` and `tab list`, and every workspace in Herdr's order; or why they cannot be told. */
+export async function listHerdrAgents(
+	config: BoardConfig
+): Promise<{ ok: true; agents: HerdrAgent[]; workspaces: HerdrWorkspace[] } | { ok: false; reason: string }> {
 	const [agents, workspaces, tabs] = await Promise.all([
 		herdr(config, ['agent', 'list']),
 		herdr(config, ['workspace', 'list']),
@@ -248,6 +271,9 @@ export async function listHerdrAgents(config: BoardConfig): Promise<{ ok: true; 
 	};
 	return {
 		ok: true,
+		workspaces: workspaceList
+			.map((workspace) => ({ id: workspace.workspace_id, label: workspace.label, number: workspace.number }))
+			.sort((a, b) => a.number - b.number),
 		agents: agentList.map((agent) => {
 			const sessionId = agent.agent_session?.value;
 			const workspace = workspaceOf.get(agent.workspace_id);

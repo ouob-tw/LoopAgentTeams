@@ -176,8 +176,17 @@ export interface BoardSnapshot {
 	processedCount: number;
 	/** Every agent Herdr lists, by workspace number and status; see `Agent`. */
 	agents: Agent[];
+	/** Every Herdr workspace, as Herdr numbers them: the Herdr tab shows one without agents too. */
+	workspaces: HerdrWorkspace[];
 	/** Source failures that cannot be attributed to one controller. */
 	errors: string[];
+}
+
+/** One Herdr workspace, as `herdr workspace list` gives it. */
+export interface HerdrWorkspace {
+	id: string;
+	label: string;
+	number: number;
 }
 
 /** What an agent on the Herdr tab is doing, from what needs the user most to least. */

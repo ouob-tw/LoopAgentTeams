@@ -4,9 +4,10 @@
 // the panes, workspaces, agents and tabs `pane list`, `workspace list`, `agent list` and `tab list`
 // print, the ID `workspace create` answers with (`created`; null leaves it out), and per command
 // ("pane list", "workspace list", "agent list", "tab list", "workspace create", "agent prompt",
-// "agent send-keys", "pane close") a failure to act out, `fail: { exit, stderr }`, or output to
+// "agent send-keys", "pane close", "tab rename") a failure to act out, `fail: { exit, stderr }`, or output to
 // print instead, `raw: <text>`. `agent prompt` and `agent send-keys` succeed otherwise, without
-// checking the pane; `pane close` takes the pane and its agent out of the panes and agents listed.
+// checking the pane; `pane close` takes the pane and its agent out of the panes and agents listed;
+// `tab rename <tab> <label>` gives the listed tab that label.
 // `slowMs: { <command>: ms }` makes a command wait that long before it answers.
 import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -44,6 +45,10 @@ if (plan.raw?.[command] !== undefined) {
 	plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.pane_id !== args[2]);
 	writeFileSync(planFile, JSON.stringify(plan));
 	process.stdout.write(JSON.stringify({ id: 'cli:pane:close', result: { type: 'ok' } }));
+} else if (command === 'tab rename') {
+	plan.tabs = (plan.tabs ?? []).map((/** @type {any} */ tab) => (tab.tab_id === args[2] ? { ...tab, label: args.slice(3).join(' ') } : tab));
+	writeFileSync(planFile, JSON.stringify(plan));
+	process.stdout.write(JSON.stringify({ id: 'cli:tab:rename', result: { type: 'ok' } }));
 } else if (command === 'agent prompt' || command === 'agent send-keys') {
 	process.stdout.write(JSON.stringify({ id: `cli:agent:${args[1]}`, result: { type: 'ok' } }));
 } else {

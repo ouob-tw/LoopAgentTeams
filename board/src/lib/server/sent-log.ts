@@ -6,7 +6,7 @@ import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentAction } from '../board/agent-actions.ts';
 import type { AnswerState, SentAnswer, SentEntry } from '../board/answers.ts';
-import type { LaunchState, LaunchView, SentLaunch } from '../board/launch.ts';
+import type { LaunchFollow, LaunchState, LaunchView, SentLaunch } from '../board/launch.ts';
 import type { SentMessage } from '../board/messages.ts';
 import type { ModelChoice, SentSwitch, SwitchState, SwitchView } from '../board/models.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
@@ -35,6 +35,14 @@ interface LaunchMark {
 	kind: 'launch-bound';
 	launchId: string;
 	controllerId: string;
+	time: string;
+}
+
+/** How a plain agent's launch was followed through: written once, when it appeared in Herdr and
+ *  its tab was renamed and moved, or when the wait ran out. */
+export interface LaunchFollowed extends LaunchFollow {
+	kind: 'launch-followed';
+	launchId: string;
 	time: string;
 }
 
@@ -88,6 +96,7 @@ type Line =
 	| AnswerMark
 	| SentLaunch
 	| LaunchMark
+	| LaunchFollowed
 	| SentWake
 	| ResumeMark
 	| ResumeResult
@@ -97,7 +106,7 @@ type Line =
 	| AgentAction;
 
 /** Lines that only add to an entry of their own kind. */
-const FOLLOW_UP = new Set(['answer-state', 'launch-bound', 'resume-closed', 'resume-result', 'resume-pane', 'switch-step']);
+const FOLLOW_UP = new Set(['answer-state', 'launch-bound', 'launch-followed', 'resume-closed', 'resume-result', 'resume-pane', 'switch-step']);
 
 export function appendSent(stateDir: string, entry: Line): void {
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
@@ -328,24 +337,41 @@ export async function settleAnswers(
 	return null;
 }
 
-function launchState(launch: SentLaunch, controllerId: string | undefined, now: number, waitMs: number): LaunchState {
+/** A controller stands by its binding; a plain agent, which never binds, by its follow-through. */
+function launchState(launch: SentLaunch, controllerId: string | undefined, follow: LaunchFollow | undefined, now: number, waitMs: number): LaunchState {
 	if (launch.outcome === 'failed') return 'failed';
 	if (controllerId) return 'active';
+	const agent = launch.role === 'agent';
+	if (agent && follow?.appearedAt) return 'appeared';
 	if (!launch.hcomName) return 'uncertain';
+	if (agent && follow) return 'overdue';
 	return now - Date.parse(launch.time) >= waitMs ? 'overdue' : 'starting';
 }
 
-/** The most recent launches, newest first, each with where it stands at `now`. */
-export function readLaunches(stateDir: string, now: number, waitMs: number, limit: number): LaunchView[] {
+/** Every launch, newest first, each with where it stands at `now`. */
+export function readLaunches(stateDir: string, now: number, waitMs: number): LaunchView[] {
 	const lines = readLines(stateDir);
 	const bound = boundOf(lines);
+	const follows = new Map<string, LaunchFollow>();
+	for (const line of lines) {
+		if (line.kind === 'launch-followed' && !follows.has(line.launchId)) {
+			const { appearedAt, error, renameError, moveError } = line;
+			follows.set(line.launchId, { appearedAt, error, renameError, moveError });
+		}
+	}
 	const launches: LaunchView[] = [];
 	for (const line of lines) {
 		if (line.kind !== 'launch') continue;
 		const controllerId = bound.get(line.id);
-		launches.push({ ...line, state: launchState(line, controllerId, now, waitMs), controllerId: controllerId ?? null });
+		const follow = follows.get(line.id);
+		launches.push({
+			...line,
+			state: launchState(line, controllerId, follow, now, waitMs),
+			controllerId: controllerId ?? null,
+			follow: follow ?? null
+		});
 	}
-	return launches.reverse().slice(0, limit);
+	return launches.reverse();
 }
 
 /**
@@ -362,7 +388,8 @@ export function settleLaunches(stateDir: string, controllers: HelperController[]
 	const bound = boundOf(lines);
 	const seen = new Set<string>();
 	for (const line of lines.toReversed()) {
-		if (line.kind !== 'launch' || !line.hcomName || line.outcome === 'failed' || seen.has(line.hcomName)) continue;
+		// A plain agent never becomes a controller; its name is not looked for in the bindings.
+		if (line.kind !== 'launch' || line.role === 'agent' || !line.hcomName || line.outcome === 'failed' || seen.has(line.hcomName)) continue;
 		seen.add(line.hcomName);
 		if (bound.has(line.id)) continue;
 		const since = Date.parse(line.time);

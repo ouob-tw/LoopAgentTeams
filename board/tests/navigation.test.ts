@@ -215,6 +215,19 @@ test('an agent of the 所有 Agent tab is named by its session ID, and missing o
 	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents: [] })).toEqual({ kind: 'missing', what: 'agent' });
 });
 
+test('a workspace\'s new-agent form is named by the workspace, on the Herdr tab, and missing once Herdr no longer lists it', () => {
+	const place = placeIn(new URLSearchParams('?new-agent=wA%3A1'));
+	expect(place).toEqual({ kind: 'new-agent', workspace: 'wA:1' });
+	expect(searchOf(place)).toBe('?new-agent=wA%3A1');
+	expect(searchOf(place, 'agents')).toBe('?new-agent=wA%3A1');
+	expect(tabIn(new URLSearchParams(searchOf(place)))).toBe('agents');
+	expect(searchOf(place, 'inbox')).toBe('?new-agent=wA%3A1&tab=inbox');
+	expect(samePlace(place, { kind: 'new-agent', workspace: 'wB' })).toBe(false);
+	const workspaces = [{ id: 'wA:1', label: 'Alpha', number: 1 }];
+	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], workspaces })).toEqual({ kind: 'new-agent', workspace: 'wA:1' });
+	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], workspaces: [] })).toEqual({ kind: 'missing', what: 'workspace' });
+});
+
 test("the list's scroll goes into its history entry beside the fields already there", () => {
 	const kit = { 'sveltekit:history': { historyIndex: 3 } };
 	const state = withListScroll(kit, 1427.6);

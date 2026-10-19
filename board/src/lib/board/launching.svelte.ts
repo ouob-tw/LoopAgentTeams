@@ -1,16 +1,26 @@
-// What the page keeps about starting new controllers: the form as filled in (it survives a failed
-// launch and leaving the page), the folders to choose from and the recent launches.
+// What the page keeps about starting new controllers, and plain agents from the Herdr tab: each
+// form as filled in (it survives a failed launch and leaving the page), the folders to choose from
+// and the recent launches.
 import type { BrowseResult, LaunchClient, LaunchList, LaunchResponse } from './launch.ts';
 
 export interface StartResult {
 	ok: boolean;
 	reason: string | null;
+	/** The launch's ID in the sent log, when one was made. */
+	launchId?: string;
 }
 
 /** No answer came back, so a controller may or may not have been started. */
 const UNKNOWN_OUTCOME = '沒有收到看板伺服器的回應，不確定有沒有開始新建；重送前請先看下方的新建紀錄。';
 
 class Launching {
+	/** The plain-agent form's Herdr workspace; null for the new-controller form. */
+	workspace = $state<string | null>(null);
+	/** The plain agent's tab name; '' keeps the default one. */
+	tabName = $state('');
+	/** A plain agent's launch whose message and tab name are cleared from the form only once it
+	 *  appears in Herdr, and only if they are still as sent; kept on a time-out. */
+	sent = $state<{ launchId: string; text: string; tabName: string } | null>(null);
 	client = $state<LaunchClient>('claude');
 	folder = $state('');
 	text = $state('');
@@ -77,9 +87,10 @@ class Launching {
 					client: this.client,
 					folder: this.folder,
 					text: this.text,
-					gitInit: this.gitInit,
+					gitInit: this.workspace === null && this.gitInit,
 					model: this.model || null,
-					effort: this.effort || null
+					effort: this.effort || null,
+					agent: this.workspace === null ? null : { workspace: this.workspace, tabName: this.tabName.trim() }
 				})
 			});
 		} catch {
@@ -95,8 +106,10 @@ class Launching {
 		void this.load();
 		if (!body) return { ok: false, reason: UNKNOWN_OUTCOME };
 		const logNote = body.logError ? `（送出紀錄寫入失敗：${body.logError}）` : '';
-		return { ok: body.ok, reason: body.ok ? logNote || null : body.reason + logNote };
+		return { ok: body.ok, reason: body.ok ? logNote || null : body.reason + logNote, launchId: body.entry?.id };
 	}
 }
 
 export const launching = new Launching();
+/** The new-agent form of the Herdr tab, kept apart from the new controller's. */
+export const agentLaunching = new Launching();

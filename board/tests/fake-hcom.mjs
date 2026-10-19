@@ -8,6 +8,9 @@
 //   - `resumedHerdr`: an agent a resume adds to the fake Herdr's <dir>/herdr.json, as `agent list`
 //     prints one, with its pane (in the agent's workspace and folder).
 //   - `readOnly`: a file a resume makes read-only while it runs, so the board cannot write it.
+//   - `launched`, `launchedHerdr`: per launch in turn (not a resume), the agent it adds to the
+//     agent list like `resumed`, and the Herdr agent (or a list of them) it adds to the fake
+//     Herdr's <dir>/herdr.json with its pane and, from `tab_label`, its tab at the end; null adds none.
 // Each launch or resume also logs to <dir>/hcom-env.jsonl the names of the variables it got that
 // look like an agent's, hcom's or Herdr's own (HCOM_*, CLAUDE*, CODEX_*, HERDR_*, AI_AGENT), and
 // the values of those it must still get (HCOM_DIR, CODEX_HOME, HERDR_SOCKET_PATH, HOME, PATH), with
@@ -92,6 +95,19 @@ if (args[0] === 'kill') {
 		writeFileSync(herdrFile, JSON.stringify(herdr));
 	}
 	if (args[0] === 'r' && plan.readOnly) chmodSync(plan.readOnly, 0o444);
+	const listedLaunch = args[0] === 'r' ? null : plan.launched?.[call - 1];
+	if (listedLaunch) writeFileSync(addedFile, JSON.stringify([...added(), listedLaunch]));
+	const launchedHerdr = args[0] === 'r' ? null : plan.launchedHerdr?.[call - 1];
+	if (launchedHerdr) {
+		const herdrFile = join(dir, 'herdr.json');
+		const herdr = existsSync(herdrFile) ? JSON.parse(readFileSync(herdrFile, 'utf8')) : {};
+		for (const { tab_label, ...agent } of [launchedHerdr].flat()) {
+			herdr.agents = [...(herdr.agents ?? []), agent];
+			herdr.panes = [...(herdr.panes ?? []), { pane_id: agent.pane_id, workspace_id: agent.workspace_id, cwd: agent.cwd, tab_id: agent.tab_id }];
+			herdr.tabs = [...(herdr.tabs ?? []), { tab_id: agent.tab_id, label: tab_label, workspace_id: agent.workspace_id }];
+		}
+		writeFileSync(herdrFile, JSON.stringify(herdr));
+	}
 
 	const name = plan.names === undefined ? `agent${call}` : plan.names[call - 1];
 	const client = args[0] === 'codex' ? 'Codex' : 'Claude';

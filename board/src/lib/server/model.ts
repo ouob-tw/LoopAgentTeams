@@ -11,6 +11,7 @@ import type {
 	ControllerStatus,
 	HelperController,
 	HelperQuestion,
+	HerdrWorkspace,
 	InboxQuestion,
 	InboxReport,
 	Report
@@ -37,6 +38,8 @@ export interface Sources {
 	agents: Agent[];
 	/** Set when `agents` is not from this read: why Herdr's list could not be read, and what shows instead. */
 	herdrError: string | null;
+	/** Every Herdr workspace in the last list that could be read. */
+	workspaces: HerdrWorkspace[];
 	/** Why the report files past retention could not be deleted at this read; null when they were. */
 	pruneError: string | null;
 	/** The answered questions of every question file of a bound controller or of a session with a
@@ -398,6 +401,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		),
 		processedCount: (state ? processedItems(sources, state, now) : answeredItems(sources, now)).length,
 		agents: sources.agents,
+		workspaces: sources.workspaces,
 		errors
 	};
 }

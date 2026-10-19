@@ -66,13 +66,14 @@ export function launchResult(run: ExternalResult, action = '啟動'): LaunchResu
  */
 const IN_A_HERDR_TAB = ['--terminal', 'herdr', '--no-run-here'];
 
-/** Start one agent of this client in the folder, with this first message, in a new Herdr tab of
- *  the workspace. `extraArgs` go to the client, after hcom's own flags. */
+/** Start one agent of this client in the folder, with this first message (none when it is
+ *  empty), in a new Herdr tab of the workspace. `extraArgs` go to the client, after hcom's own flags. */
 export async function launchAgent(
 	config: BoardConfig,
 	launch: { client: LaunchClient; folder: string; herdrWorkspace: string; prompt: string; extraArgs: string[] }
 ): Promise<LaunchResult> {
-	const args = [launch.client, '--dir', launch.folder, ...IN_A_HERDR_TAB, '--go', '--hcom-prompt', launch.prompt, ...launch.extraArgs];
+	const prompt = launch.prompt ? ['--hcom-prompt', launch.prompt] : [];
+	const args = [launch.client, '--dir', launch.folder, ...IN_A_HERDR_TAB, '--go', ...prompt, ...launch.extraArgs];
 	const run = await runExternal(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
 		env: hcomEnv(launch.herdrWorkspace)
