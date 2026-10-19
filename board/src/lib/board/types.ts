@@ -14,7 +14,7 @@ export const STATUS_LABEL: Record<ControllerStatus, string> = {
 /**
  * Whether the controller is no longer running: 已結束 (no longer bound) or 已關閉 (still bound, but
  * its client is gone from hcom's list). Both are handled alike: woken instead of typed into, their
- * questions not listed, on the roster only while the inbox holds one of their reports.
+ * questions not listed, on the roster only while one of their reports is not yet archived.
  */
 export function isInactive(status: ControllerStatus): boolean {
 	return status === 'ended' || status === 'closed';

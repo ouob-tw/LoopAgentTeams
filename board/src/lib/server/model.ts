@@ -325,8 +325,8 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 	for (const binding of sources.active) {
 		const file = files.get(binding.session_id);
 		files.delete(binding.session_id);
-		// A closed controller stays on the roster only while the inbox holds one of its reports,
-		// like an ended one.
+		// A closed controller stays on the roster only while one of its reports is not yet archived
+		// (read ones count), like an ended one.
 		const closed = isClosed(sources, binding.session_id);
 		if (closed && !withInboxReport.has(binding.session_id)) continue;
 		const controller = closed ? closedController(binding, file) : activeController(binding, file);
@@ -350,7 +350,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 	if (unreadable.length) errors.push(`答過的題目讀不出來：${unreadable.join('；')}`);
 
 	// Whatever is left belongs to controllers that are no longer bound: they have ended, and stay
-	// on the roster only while the inbox still holds one of their reports.
+	// on the roster only while one of their reports is not yet archived (read ones count).
 	for (const file of files.values()) {
 		if (withInboxReport.has(file.sessionId)) {
 			const controller = endedController(file, sources.running?.has(file.sessionId) ?? false);

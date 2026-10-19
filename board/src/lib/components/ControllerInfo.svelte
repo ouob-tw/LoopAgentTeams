@@ -347,7 +347,7 @@
 	{#each reports as item (item.key)}
 		<ItemRow {item} showOwner={false} {onopen} />
 	{:else}
-		<p class="none">信箱裡沒有它的回報。</p>
+		<p class="none">沒有發出未滿 7 天的回報。</p>
 	{/each}
 </div>
 <div class="tabpanel" role="tabpanel" id="panel-sent" aria-labelledby="tab-sent" hidden={tab !== 'sent'}>

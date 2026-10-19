@@ -111,8 +111,9 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		userStylePath: join(env.LAT_BOARD_CONFIG_DIR || join(configHome(env), 'lat/board'), 'user.css'),
 		helperCommand: helperCommand(env),
 		// A missed change may wait out one read and then need a second one; both must fit in the
-		// fallback deadline, so the helper never gets more than half of it.
-		helperTimeoutMs: Math.min(seconds(env.LAT_BOARD_HELPER_TIMEOUT_SECONDS, 15_000), (fallbackMs - READ_SLACK_MS) / 2),
+		// fallback deadline, and each runs the helper twice in a row (the list, then the answered
+		// questions), so the helper never gets more than a quarter of it.
+		helperTimeoutMs: Math.min(seconds(env.LAT_BOARD_HELPER_TIMEOUT_SECONDS, 15_000), (fallbackMs - READ_SLACK_MS) / 4),
 		injectCommand: commandFrom(env, 'LAT_BOARD_INJECT_COMMAND') ?? ['hcom', 'term', 'inject'],
 		// The command itself waits up to 2 seconds for the client to show the text before submitting.
 		injectTimeoutMs: seconds(env.LAT_BOARD_INJECT_TIMEOUT_SECONDS, 15_000),

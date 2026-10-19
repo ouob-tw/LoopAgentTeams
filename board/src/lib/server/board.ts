@@ -268,10 +268,10 @@ function createBoard(): Board {
 	}
 
 	// A change can land just after a read began and be missed by it, and the read that picks it up
-	// may take as long as the helper or hcom's list, read alongside it, is allowed to. Both fit inside
-	// the fallback deadline when reads start this far apart; a list timeout too long for the deadline
-	// still leaves a short gap rather than none.
-	const readMs = Math.max(config.helperTimeoutMs, config.hcomListTimeoutMs);
+	// may take as long as the helper or hcom's list, read alongside it, is allowed to, and then the
+	// helper again for the answered questions. Both fit inside the fallback deadline when reads start
+	// this far apart; a list timeout too long for the deadline still leaves a short gap rather than none.
+	const readMs = Math.max(config.helperTimeoutMs, config.hcomListTimeoutMs) + config.helperTimeoutMs;
 	const fallbackGapMs = Math.max(config.fallbackMs - readMs - READ_SLACK_MS, READ_SLACK_MS);
 
 	function start(): Promise<BoardSnapshot> {
