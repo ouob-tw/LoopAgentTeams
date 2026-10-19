@@ -4,9 +4,8 @@
 	// send button. An ended or closed controller is woken instead; its other wake options sit in a
 	// pop-up behind a button that shows only then. A phone can put the line away behind a floating
 	// button, to read more of the page; what was typed stays, also across a reload. While an agent's
-	// page is open, a line without a name goes to that agent instead, from a draft of its own kept
-	// while the page is open; while
-	// it works and nothing is typed, the send button interrupts its turn instead.
+	// page is open, a line without a name goes to that agent instead, from a draft of its own, also
+	// kept across a reload; while it works and nothing is typed, the send button interrupts its turn instead.
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import MessageSquare from '@lucide/svelte/icons/message-square';
@@ -16,7 +15,7 @@
 	import { AGENT_HCOM_UNKNOWN_REASON, AGENT_INTERRUPT_CONFIRM_TEXT } from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { shortName } from '#lib/board/agents.ts';
-	import { COMMAND_DRAFT_KEY, COMMAND_HIDDEN_KEY, forget, remember, remembered, rememberedText } from '#lib/board/prefs.ts';
+	import { AGENT_DRAFTS_KEY, COMMAND_DRAFT_KEY, COMMAND_HIDDEN_KEY, forget, remember, remembered, rememberedText } from '#lib/board/prefs.ts';
 	import { parseCommand } from '#lib/board/messages.ts';
 	import { enterMakesNewline, messaging } from '#lib/board/messaging.svelte.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
@@ -53,6 +52,7 @@
 	onMount(() => {
 		hidden = remembered(COMMAND_HIDDEN_KEY, ['1', '0'], '0') === '1';
 		text = rememberedText(COMMAND_DRAFT_KEY);
+		agentDrafts = savedAgentDrafts();
 		restored = true;
 	});
 	$effect(() => {
@@ -61,6 +61,24 @@
 		if (draft) remember(COMMAND_DRAFT_KEY, draft);
 		else forget(COMMAND_DRAFT_KEY);
 	});
+	$effect(() => {
+		// Only agents with something typed are kept, so the saved drafts do not grow with every agent opened.
+		const kept = Object.entries(agentDrafts).filter(([, draft]) => draft);
+		if (!restored) return;
+		if (kept.length) remember(AGENT_DRAFTS_KEY, JSON.stringify(Object.fromEntries(kept)));
+		else forget(AGENT_DRAFTS_KEY);
+	});
+
+	/** The agents' saved drafts; whatever is not a map of text is dropped. */
+	function savedAgentDrafts(): Record<string, string> {
+		try {
+			const saved: unknown = JSON.parse(rememberedText(AGENT_DRAFTS_KEY) || '{}');
+			if (!saved || typeof saved !== 'object' || Array.isArray(saved)) return {};
+			return Object.fromEntries(Object.entries(saved).filter(([, draft]) => typeof draft === 'string'));
+		} catch {
+			return {};
+		}
+	}
 
 	async function setHidden(next: boolean) {
 		hidden = next;

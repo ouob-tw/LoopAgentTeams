@@ -23,6 +23,9 @@ export const COMMAND_HIDDEN_KEY = 'lat-board-command-hidden';
 /** What is typed in the command line and not sent yet, so a reload keeps it. */
 export const COMMAND_DRAFT_KEY = 'lat-board-command-draft';
 
+/** The same for each agent's own draft, as JSON from agent ID to text. */
+export const AGENT_DRAFTS_KEY = 'lat-board-agent-drafts';
+
 /** Which list the middle column shows: the inbox, or the 所有 Agent tab. */
 export const MIDDLE_TAB_KEY = 'lat-board-middle-tab';
 
