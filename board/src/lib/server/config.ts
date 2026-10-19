@@ -112,7 +112,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		helperCommand: helperCommand(env),
 		// A missed change may wait out one read and then need a second one; both must fit in the
 		// fallback deadline, and each runs the helper twice in a row (the list, then the answered
-		// questions), so the helper never gets more than a quarter of it.
+		// questions and sent answers), so the helper never gets more than a quarter of it.
 		helperTimeoutMs: Math.min(seconds(env.LAT_BOARD_HELPER_TIMEOUT_SECONDS, 15_000), (fallbackMs - READ_SLACK_MS) / 4),
 		injectCommand: commandFrom(env, 'LAT_BOARD_INJECT_COMMAND') ?? ['hcom', 'term', 'inject'],
 		// The command itself waits up to 2 seconds for the client to show the text before submitting.

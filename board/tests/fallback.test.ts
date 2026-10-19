@@ -5,11 +5,11 @@ import { named, sleep, startFixture, until, type Fixture } from './harness.ts';
 let fixture: Fixture;
 let cookie: string;
 // A short deadline keeps the test quick; the product default and ceiling are checked below.
-const DEADLINE_MS = 10_000;
+const DEADLINE_MS = 12_000;
 
 beforeAll(async () => {
 	fixture = await startFixture(3, {
-		env: { LAT_BOARD_FALLBACK_SECONDS: '10', LAT_BOARD_HELPER_TIMEOUT_SECONDS: '2.25', LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS: '1' }
+		env: { LAT_BOARD_FALLBACK_SECONDS: '12', LAT_BOARD_HELPER_TIMEOUT_SECONDS: '2.75', LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS: '1' }
 	});
 	cookie = await fixture.login();
 });
@@ -22,15 +22,15 @@ test('a change the file watch missed is on the page within the fallback deadline
 	await until(() => named(page.latest(), 'luna'), 5_000, 'the first snapshot');
 
 	// The worst case: the change lands just after a read began, so that read misses it, and the
-	// helper takes a while to answer, both for the list and then for the answered questions. No
-	// watched file changes, so no watch event fires.
-	const answered = { output: { status: 'ok', files: [] }, sleepMs: 1_800 };
-	fixture.setHelper({ output: { controllers: [fixture.bound('alpha', 'luna')] }, sleepMs: 1_800, answered });
+	// helper takes a while to answer, both for the list and then for the answered questions and
+	// sent answers. No watched file changes, so no watch event fires.
+	const answered = { output: { status: 'ok', files: [] }, sleepMs: 2_250 };
+	fixture.setHelper({ output: { controllers: [fixture.bound('alpha', 'luna')] }, sleepMs: 2_250, answered });
 	const reading = fixture.refresh(cookie);
 	await sleep(300);
 	fixture.setHelper({
 		output: { controllers: [fixture.bound('alpha', 'luna'), fixture.bound('beta', 'missed')] },
-		sleepMs: 1_800,
+		sleepMs: 2_250,
 		answered
 	});
 	const changedAt = Date.now();

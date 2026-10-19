@@ -2,7 +2,7 @@
 	// A controller's information page: one line of who and where it stands with its latest phase
 	// (the details behind a disclosure) and, while it runs, its context use, quota, prompt cache and
 	// permission mode in small print, a bar for each question waiting for an answer, then its
-	// conversation, its reports in the inbox and what was sent to it, one tab at a time. Its model
+	// conversation, its reports not yet archived and what was sent to it, one tab at a time. Its model
 	// and effort, and messages and wakes, go through the command line at the bottom of the screen.
 	// Opened for a report, the conversation shows that report where it is in the history; opened
 	// for a question, the question where the message that asked it is. Any message that asked
@@ -47,7 +47,7 @@
 		controller: Controller;
 		/** Changes when the server announces a Herdr tab move. */
 		tabMoves?: number;
-		/** This controller's inbox items. */
+		/** This controller's inbox items, with its read reports not yet archived. */
 		items: InboxItem[];
 		/** This controller's answered questions: their cards are shown in the conversation only. */
 		answered?: InboxQuestion[];
@@ -347,7 +347,7 @@
 	{#each reports as item (item.key)}
 		<ItemRow {item} showOwner={false} {onopen} />
 	{:else}
-		<p class="none">沒有發出未滿 7 天的回報。</p>
+		<p class="none">近 7 天沒有回報。</p>
 	{/each}
 </div>
 <div class="tabpanel" role="tabpanel" id="panel-sent" aria-labelledby="tab-sent" hidden={tab !== 'sent'}>

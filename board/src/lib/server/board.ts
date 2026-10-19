@@ -172,15 +172,22 @@ function createBoard(): Board {
 	async function read(): Promise<BoardSnapshot> {
 		const [helper, reports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(config)]);
 		// Read after the list: the files are those of the controllers bound now, and of the sessions
-		// that reported.
-		const answered = await readAnswered(config, answeredSources(helper.ok ? helper.controllers : lastActive, reports.files));
+		// that reported. The sent answers settle against the same list alongside, so a read runs the
+		// helper at most twice in a row.
+		const [answered, settled] = await Promise.all([
+			readAnswered(config, answeredSources(helper.ok ? helper.controllers : lastActive, reports.files)),
+			helper.ok
+				? settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path)).catch((error: Error) => error)
+				: null
+		]);
 		if (answered.ok) lastAnswered = answered.files;
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {
 			lastActive = helper.controllers;
 			try {
-				const answersError = await settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path));
+				if (settled instanceof Error) throw settled;
+				const answersError = settled;
 				const launchesError = settleLaunches(config.stateDir, helper.controllers, reports.files, config.now());
 				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, agents, tabMoved));
 			} catch (error) {
@@ -269,8 +276,9 @@ function createBoard(): Board {
 
 	// A change can land just after a read began and be missed by it, and the read that picks it up
 	// may take as long as the helper or hcom's list, read alongside it, is allowed to, and then the
-	// helper again for the answered questions. Both fit inside the fallback deadline when reads start
-	// this far apart; a list timeout too long for the deadline still leaves a short gap rather than none.
+	// helper again for the answered questions and the sent answers. Both fit inside the fallback
+	// deadline when reads start this far apart; a list timeout too long for the deadline still leaves
+	// a short gap rather than none.
 	const readMs = Math.max(config.helperTimeoutMs, config.hcomListTimeoutMs) + config.helperTimeoutMs;
 	const fallbackGapMs = Math.max(config.fallbackMs - readMs - READ_SLACK_MS, READ_SLACK_MS);
 
