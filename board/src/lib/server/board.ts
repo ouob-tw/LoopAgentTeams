@@ -178,15 +178,16 @@ function createBoard(): Board {
 	}
 
 	async function read(): Promise<BoardSnapshot> {
-		const [helper, reports, agents, herdrAgents] = await Promise.all([
-			listControllers(config),
-			readReports(),
+		const [[helper, reports, answered], agents, herdrAgents] = await Promise.all([
+			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
+				// Read after the list: the files are those of the controllers bound now, and of the
+				// sessions that reported. hcom's and Herdr's lists are not waited for.
+				const answered = await readAnswered(config, answeredSources(helper.ok ? helper.controllers : lastActive, reports.files));
+				return [helper, reports, answered] as const;
+			}),
 			listAgents(config),
 			listHerdrAgents(config)
 		]);
-		// Read after the list: the files are those of the controllers bound now, and of the sessions
-		// that reported.
-		const answered = await readAnswered(config, answeredSources(helper.ok ? helper.controllers : lastActive, reports.files));
 		if (answered.ok) lastAnswered = answered.files;
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
