@@ -1,17 +1,21 @@
 // Voice input through the board server: a stand-in speech recognition service and a fake Codex
 // app server. The token goes to the service and never comes back to the page.
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NODE, startFixture, type Fixture } from './harness.ts';
 
 const TOKEN = 'secret-asr-token-should-stay-on-server';
 const ROOT = join(import.meta.dir, '..');
+/** What the built board serves to browsers as files. */
+const CLIENT = join(ROOT, 'build/client');
 /** Where the fake Codex app server reads its plan and logs its turns. */
 const codexDir = mkdtempSync(join(tmpdir(), 'lat-board-codex-'));
 
 interface Heard {
+	method: string;
+	path: string;
 	authorization: string | null;
 	modelId: unknown;
 	dialectId: unknown;
@@ -27,6 +31,8 @@ const asr = Bun.serve({
 		const form = await request.formData();
 		const audio = form.get('audio') as File;
 		heard.push({
+			method: request.method,
+			path: new URL(request.url).pathname,
 			authorization: request.headers.get('authorization'),
 			modelId: form.get('model_id'),
 			dialectId: form.get('dialect_id'),
@@ -83,9 +89,41 @@ test('short speech goes straight back in Traditional Chinese, without Codex', as
 	answer = transcript('打开设置页面');
 	expect(await speak()).toEqual({ status: 200, body: { text: '開啟設定頁面', notice: null } });
 	expect(heard).toEqual([
-		{ authorization: `Bearer ${TOKEN}`, modelId: 'whisper-large-v3-turbo', dialectId: 'zh', fileName: 'speech.webm', bytes: 400 }
+		{ method: 'POST', path: '/v1/asr/sync', authorization: `Bearer ${TOKEN}`, modelId: 'whisper-large-v3-turbo', dialectId: 'zh', fileName: 'speech.webm', bytes: 400 }
 	]);
 	expect(codexCalls()).toEqual([]);
+});
+
+test('the ten-character limit is counted after the conversion', async () => {
+	// Nine characters heard, ten once 内存 becomes 記憶體: still short.
+	answer = transcript('电脑内存不够用了吧');
+	expect(await speak()).toEqual({ status: 200, body: { text: '電腦記憶體不夠用了吧', notice: null } });
+	expect(codexCalls()).toEqual([]);
+	// Ten characters heard, eleven once converted: tidied.
+	answer = transcript('我的电脑内存不够用了');
+	codexPlan({ reply: '我的電腦記憶體不夠用了。' });
+	expect(await speak()).toEqual({ status: 200, body: { text: '我的電腦記憶體不夠用了。', notice: null } });
+	expect(codexCalls().map((call) => call.text)).toEqual(['<transcript>\n我的電腦記憶體不夠用了\n</transcript>']);
+});
+
+test('the page and every file the browser loads leave the token out', async () => {
+	const html = await (await fixture.fetch('/', { cookie })).text();
+	expect(html).not.toContain(TOKEN);
+	const files: string[] = [];
+	const walk = (dir: string) => {
+		for (const entry of readdirSync(dir, { withFileTypes: true })) {
+			if (entry.isDirectory()) walk(join(dir, entry.name));
+			// Compressed copies of the files checked here, served in their place.
+			else if (!/\.(br|gz)$/.test(entry.name)) files.push(join(dir, entry.name).slice(CLIENT.length));
+		}
+	};
+	walk(CLIENT);
+	expect(files.some((file) => file.endsWith('.js'))).toBe(true);
+	for (const file of files) {
+		const response = await fixture.fetch(file, { cookie });
+		expect(response.status).toBe(200);
+		expect(await response.text()).not.toContain(TOKEN);
+	}
 });
 
 test('long speech is tidied by Codex and comes back in Traditional Chinese', async () => {
