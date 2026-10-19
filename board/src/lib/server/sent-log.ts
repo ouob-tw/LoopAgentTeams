@@ -11,7 +11,9 @@ import type { SentMessage } from '../board/messages.ts';
 import type { ModelChoice, SentSwitch, SwitchState, SwitchView } from '../board/models.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import { RESUME_CLOSE_TEXT, type ResumeClose, type SentWake, type WakeView } from '../board/wake.ts';
+import { runningIn } from './appear.ts';
 import { findAgent, type HcomAgent } from './hcom.ts';
+import type { HerdrAgent } from './herdr.ts';
 import type { ReportFile } from './reports.ts';
 
 const SENT_LOG_FILE = 'sent-log.jsonl';
@@ -51,6 +53,8 @@ export interface ResumeMark {
 	kind: 'resume-closed';
 	wakeId: string;
 	result: ResumeClose;
+	/** Why it `failed`. */
+	reason?: string;
 	time: string;
 }
 
@@ -87,6 +91,8 @@ export interface SwitchStep {
 	pane?: string | null;
 	/** The effort carried, resolved again with new settings or a later stop. */
 	carriedEffort?: string | null;
+	/** The HCOM name of the client a relaunch started. */
+	relaunchedName?: string;
 	time: string;
 }
 
@@ -164,6 +170,8 @@ function wakesOf(lines: Line[], now: number, waitMs: number): WakeView[] {
 				open,
 				closed: close?.result ?? null,
 				closedAt: close?.time ?? null,
+				closedReason: close?.reason ?? null,
+				resultAt: result?.time ?? null,
 				overdue: open && now - Date.parse(wake.time) >= waitMs
 			};
 		});
@@ -190,6 +198,10 @@ function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
 				if (step.to) view.to = step.to;
 				if (step.pane !== undefined) view.pane = step.pane;
 				if (step.carriedEffort !== undefined) view.carriedEffort = step.carriedEffort;
+				if (step.relaunchedName) {
+					view.relaunchedName = step.relaunchedName;
+					view.appliedAt = step.time;
+				}
 			}
 			const wake = resumes.get(logged.id);
 			if (wake && wake.outcome !== 'failed' && wake.outcome !== 'refused') view.appliedAt = wake.time;
@@ -199,7 +211,10 @@ function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
 				else if (wake.closed === 'succeeded') view.state = 'done';
 				else {
 					view.state = 'resume-failed';
-					view.error = wake.outcome === 'failed' ? wake.error : `接回沒有成功：${wake.closed ? RESUME_CLOSE_TEXT[wake.closed] : '結果不明'}`;
+					view.error =
+						wake.outcome === 'failed'
+							? wake.error
+							: `接回沒有成功：${wake.closed ? RESUME_CLOSE_TEXT[wake.closed] : '結果不明'}${wake.closedReason ? `（${wake.closedReason}）` : ''}`;
 				}
 			}
 			view.open = view.route === 'restart' && view.state !== 'done' && view.state !== 'refused' && view.state !== 'abandoned';
@@ -421,8 +436,40 @@ export function openResume(stateDir: string, controllerId: string, now: number, 
 	return openResumes(stateDir, now, waitMs).findLast((wake) => wake.controllerId === controllerId) ?? null;
 }
 
-export function closeResume(stateDir: string, wakeId: string, result: ResumeClose, now: number): void {
-	appendSent(stateDir, { kind: 'resume-closed', wakeId, result, time: new Date(now).toISOString() });
+/** How long after hcom's run a model switch's resumed client may take to run in Herdr. Herdr
+ *  spots a client within a second of its start; one not running by then has exited. */
+export const RESUME_RUN_GRACE_MS = 15_000;
+
+/**
+ * Where an open resume of a model switch stands: `succeeded` once hcom lists its session and Herdr
+ * runs it (`runningIn`; hcom alone lists for a while a client that has already exited, as one
+ * resumed with no saved conversation does); failed, with why, once it has not run that long after
+ * hcom's run, or by the end of the wait; `wait` otherwise, and while Herdr's list (`herdr`, null)
+ * was not read.
+ */
+export function switchResumeVerdict(
+	wake: WakeView,
+	agents: HcomAgent[],
+	herdr: HerdrAgent[] | null,
+	now: number,
+	waitMs: number
+): 'succeeded' | 'wait' | { failed: string } {
+	if (!herdr) return 'wait';
+	const running = runningIn({ sessionId: wake.controllerId }, agents, herdr);
+	if (running.herdr) return 'succeeded';
+	if (wake.overdue) return { failed: `接回後等了 ${Math.round(waitMs / 1000)} 秒，Herdr 一直沒有執行它` };
+	if (wake.resultAt && now - Date.parse(wake.resultAt) >= RESUME_RUN_GRACE_MS) {
+		return {
+			failed: running.hcom
+				? `hcom 回報已接回，但 ${RESUME_RUN_GRACE_MS / 1000} 秒後 Herdr 仍沒有在執行它，client 可能一啟動就結束了`
+				: `接回後 ${RESUME_RUN_GRACE_MS / 1000} 秒，hcom 與 Herdr 的清單上都沒有它`
+		};
+	}
+	return 'wait';
+}
+
+export function closeResume(stateDir: string, wakeId: string, result: ResumeClose, now: number, reason?: string): void {
+	appendSent(stateDir, { kind: 'resume-closed', wakeId, result, ...(reason && { reason }), time: new Date(now).toISOString() });
 }
 
 /**
@@ -430,17 +477,23 @@ export function closeResume(stateDir: string, wakeId: string, result: ResumeClos
  * those hcom shows under their session or HCOM name. Called with every fresh read while any
  * resume is open, so a wake shows as succeeded without the user waking it again.
  *
+ * A model switch's resume needs Herdr to run the client too (`herdr`, null when Herdr's list was
+ * not read): hcom lists a resumed client for a while that has already exited. One that has not
+ * run by the end of the wait failed; the switch is then open to continue or give up.
+ *
  * Returns why the log could not be brought up to date, or null.
  */
 export function settleResumes(
 	stateDir: string,
 	agents: HcomAgent[],
+	herdr: HerdrAgent[] | null,
 	now: number,
 	waitMs: number,
 	onPane: (pane: string) => void = () => {}
 ): string | null {
 	for (const wake of openResumes(stateDir, now, waitMs)) {
-		const running = agents.find((agent) => agent.sessionId === wake.controllerId);
+		const verdict = wake.switchId ? switchResumeVerdict(wake, agents, herdr, now, waitMs) : null;
+		const running = verdict ? verdict === 'succeeded' : agents.find((agent) => agent.sessionId === wake.controllerId);
 		const seen = findAgent(agents, wake.controllerId, [wake.hcomName, wake.resumedName]);
 		try {
 			if (!wake.pane && seen?.pane) {
@@ -448,6 +501,7 @@ export function settleResumes(
 				onPane(seen.pane);
 			}
 			if (running) closeResume(stateDir, wake.id, 'succeeded', now);
+			else if (verdict && typeof verdict === 'object') closeResume(stateDir, wake.id, 'failed', now, verdict.failed);
 		} catch (error) {
 			return (error as Error).message;
 		}

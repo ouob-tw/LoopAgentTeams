@@ -4,9 +4,15 @@
 // `--effort`, Codex `-c` overrides). Nothing is typed into the conversation: Claude's `/model` and
 // `/effort` would also save the choice as the user's default for new sessions. A switch is in the
 // sent log before the stop runs and stays open until the resumed session shows up in hcom's agent
-// list; 「繼續切換」 checks where an open one got to and goes on from there. Switches share the
-// per-controller queue of messages and wakes. Agents of the 所有 Agent tab linked to hcom are
-// switched the same way, keyed by their session ID like a controller (`agent-switch.ts`).
+// list and Herdr runs it; 「繼續切換」 checks where an open one got to and goes on from there.
+// Switches share the per-controller queue of messages and wakes. Agents of the 所有 Agent tab
+// linked to hcom are switched the same way, keyed by their session ID like a controller
+// (`agent-switch.ts`).
+//
+// A client that has had no turn yet has no saved conversation, and resuming it would only exit.
+// It is started afresh instead (`relaunch`): with the arguments hcom started it with and the new
+// settings, in its folder and workspace, its new tab named and placed like the old one. It comes
+// back under a new HCOM name and session ID; nothing was in the old conversation to lose.
 import { randomUUID } from 'node:crypto';
 import { isLaunchClient, type LaunchClient } from '../board/launch.ts';
 import { UNKNOWN_CONTROLLER_REASON } from '../board/messages.ts';
@@ -37,9 +43,10 @@ import {
 import type { Controller } from '../board/types.ts';
 import { WAKE_UNKNOWN_REASON, type SentWake } from '../board/wake.ts';
 import type { Board } from './board.ts';
-import { modelLock, readCurrent } from './helper.ts';
-import { killAgent, listAgents, type HcomAgent } from './hcom.ts';
-import { paneExists } from './herdr.ts';
+import { waitToAppear } from './appear.ts';
+import { modelLock, readCurrent, readLaunchArgs, readTranscript } from './helper.ts';
+import { killAgent, launchAgent, listAgents, type HcomAgent } from './hcom.ts';
+import { chooseWorkspace, moveTab, paneExists, renameTab } from './herdr.ts';
 import { switchPlace } from './agents.ts';
 import { queued } from './send.ts';
 import { appendSent, openSwitch, switchView, type SwitchStep } from './sent-log.ts';
@@ -168,7 +175,23 @@ export async function startSwitch(board: Board, controller: SwitchTarget, entry:
 	if (controller.client === 'codex' && entry.to.model !== null && (await modelLock(board.config, controller.id)).lock === 'fixed') {
 		return refused(fixedModelReason(controller));
 	}
-	entry.from = await readCurrent(board.config, controller.client, controller.id);
+	const record = await readTranscript(board.config, controller.client, controller.id);
+	if (!record.ok && record.missing) {
+		// Read now: hcom forgets the arguments once the client is stopped.
+		const launched = await readLaunchArgs(board.config, controller.id);
+		if (!launched.ok) return refused(`${noun(controller)}還沒有對話紀錄，要重新啟動才能換設定，但讀不到它的啟動參數，沒有切換：${launched.reason}`);
+		const row = (await board.current()).agents.find((candidate) => candidate.id === controller.id && candidate.inHerdr);
+		const label = row?.herdr.tabPlace?.label ?? null;
+		const short = controller.hcomName.split('-').at(-1) || controller.hcomName;
+		entry.relaunch = {
+			args: launched.args,
+			// A label that only says the old name would misname the new client.
+			tabLabel: label && !label.toLowerCase().includes(short.toLowerCase()) ? label : null,
+			tabIndex: row?.herdr.tabPlace ? row.herdr.tabPlace.position - 1 : null
+		};
+		return restartSwitch(board, controller, entry, agent);
+	}
+	entry.from = record.ok ? (record.page.current ?? null) : null;
 	if (carriesEffort(entry.to)) entry.carriedEffort = entry.from?.effort ?? null;
 	return restartSwitch(board, controller, entry, agent);
 }
@@ -294,7 +317,7 @@ export async function continueSwitch(board: Board, controller: SwitchTarget, ope
  */
 async function resumeSwitch(board: Board, controller: SwitchTarget, switchId: string, choice: ModelChoice): Promise<Result<SwitchResponse>> {
 	const { stateDir, launchWaitMs } = board.config;
-	const plan = await check(board, controller.id).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有接回：${error.message}` }));
+	const plan = await check(board, controller.id, true).catch((error: Error) => ({ refuse: `寫不進送出紀錄，沒有接回：${error.message}` }));
 	if ('refuse' in plan) {
 		const abandon = 'abandon' in plan ? (plan.abandon ?? null) : null;
 		return respondLogged(board, switchId, { reason: plan.refuse, abandon, status: 409 }, null);
@@ -310,6 +333,7 @@ async function resumeSwitch(board: Board, controller: SwitchTarget, switchId: st
 		if (logError) return respondLogged(board, switchId, { reason: `寫不進送出紀錄，沒有接回：${logError}`, status: 500 }, logError);
 	}
 	const view = switchView(stateDir, switchId, board.config.now(), launchWaitMs)!;
+	if (view.relaunch) return relaunchSwitch(board, controller, view);
 	// A retry that chose nothing new sends what was resolved before.
 	const sent = switchResumeChoice(view);
 	const wake: SentWake = {
@@ -345,6 +369,65 @@ async function resumeSwitch(board: Board, controller: SwitchTarget, switchId: st
 	}
 	const failed = wake.outcome === 'failed' || wake.outcome === 'refused';
 	return respondLogged(board, switchId, { reason: failed ? wake.error : null, status: failed ? 502 : 200 }, logError);
+}
+
+/**
+ * Start afresh a stopped client that had no saved conversation (see the top of this file): one
+ * hcom launch, then, in the background, wait for it to run in Herdr, name and place its tab like
+ * the old one, and end the switch. A launch still on its way is not started a second time.
+ */
+async function relaunchSwitch(board: Board, controller: SwitchTarget, view: SwitchView): Promise<Result<SwitchResponse>> {
+	const { config } = board;
+	const relaunch = view.relaunch!;
+	if (view.state === 'resuming' && view.relaunchedName) {
+		return respondLogged(board, view.id, { reason: `已經重新啟動為 @${view.relaunchedName}，正在等它出現，請稍後再看`, status: 409 }, null);
+	}
+	const fail = (error: string, status = 502) => respondLogged(board, view.id, { reason: error, status }, step(board, view.id, { state: 'resume-failed', error }));
+	if (!isLaunchClient(controller.client)) return fail(`看板不會重新啟動 ${controller.client || '這個 client'}。`, 409);
+	const workspace = await chooseWorkspace(config, controller.workspace, view.agent?.workspace);
+	if (!workspace.ok) return fail(`沒有重新啟動：${workspace.reason}`);
+	const logError = step(board, view.id, { state: 'resuming', error: null });
+	if (logError) return respondLogged(board, view.id, { reason: `寫不進送出紀錄，沒有重新啟動：${logError}`, status: 500 }, logError);
+	const launched = await launchAgent(config, {
+		client: controller.client,
+		folder: controller.workspace,
+		herdrWorkspace: workspace.id,
+		prompt: '',
+		// Later arguments win over the ones hcom kept, the way a resume's do.
+		extraArgs: [...relaunch.args, ...modelArgs(controller.client, view.to)]
+	});
+	if (launched.outcome === 'failed') return fail(launched.reason ?? '重新啟動失敗');
+	if (!launched.hcomName) return fail('重新啟動後沒有拿到它的 HCOM 名稱，看板認不出是哪一個，請到 Herdr 查看');
+	const named = step(board, view.id, { relaunchedName: launched.hcomName });
+	void placeRelaunched(board, view, launched.hcomName);
+	return respondLogged(board, view.id, { reason: null }, named);
+}
+
+/** Wait for a relaunched client to run, give its tab the old label and place, and end the switch:
+ *  done when it runs (a tab that could not be named or placed is noted), failed otherwise. */
+async function placeRelaunched(board: Board, view: SwitchView, name: string): Promise<void> {
+	const { config } = board;
+	const relaunch = view.relaunch!;
+	let fields: Omit<SwitchStep, 'kind' | 'switchId' | 'time'>;
+	try {
+		const appeared = await waitToAppear(config, { name }, config.now() + config.launchWaitMs, `@${name}`);
+		if (!appeared.found) fields = { state: 'resume-failed', error: `重新啟動的 ${appeared.reason}` };
+		else {
+			const problems: string[] = [];
+			if (relaunch.tabLabel) {
+				const renamed = await renameTab(config, appeared.found.tab, relaunch.tabLabel);
+				if (!renamed.ok) problems.push(`改分頁名稱失敗：${renamed.reason}`);
+			}
+			const moved = await moveTab(config, appeared.found.tab, relaunch.tabIndex ?? 0);
+			if (moved) problems.push(moved);
+			fields = { state: 'done', error: problems.length ? `已重新啟動為 @${name}，但${problems.join('；')}` : null };
+		}
+	} catch (error) {
+		fields = { state: 'resume-failed', error: `重新啟動後確認不了它有沒有在執行：${(error as Error).message}` };
+	}
+	step(board, view.id, fields);
+	await board.refresh();
+	board.agentActed(view.controllerId);
 }
 
 /** The effort to carry for these settings, read from the record now; nothing when they carry none. */

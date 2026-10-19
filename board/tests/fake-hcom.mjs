@@ -6,7 +6,9 @@
 //   - `sleepMs`: wait this long after printing, before exiting.
 //   - `resumed`: an agent a resume adds to the agent list, as `list --json` prints one.
 //   - `resumedHerdr`: an agent a resume adds to the fake Herdr's <dir>/herdr.json, as `agent list`
-//     prints one, with its pane (in the agent's workspace and folder).
+//     prints one, with its pane (in the agent's workspace and folder). Without it, a `resumed`
+//     agent with a session is added in its pane (or a new one) of the workspace hcom was given,
+//     unless `resumedExits` is set: then hcom lists it, but nothing runs in Herdr.
 //   - `readOnly`: a file a resume makes read-only while it runs, so the board cannot write it.
 //   - `launched`, `launchedHerdr`: per launch in turn (not a resume), the agent it adds to the
 //     agent list like `resumed`, and the Herdr agent (or a list of them) it adds to the fake
@@ -24,8 +26,15 @@
 // `kill <name>` is logged to hcom-calls.jsonl like a launch and follows `kill`: `exit`, `stderr`,
 // `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
 // Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it.
-import { appendFileSync, chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+
+/** Write a file whole, so a fake run alongside (the board reads the lists while a switch is
+ *  followed) never reads it half written. */
+function write(/** @type {string} */ file, /** @type {string} */ text) {
+	writeFileSync(`${file}.${process.pid}`, text);
+	renameSync(`${file}.${process.pid}`, file);
+}
 
 const [dir, ...args] = process.argv.slice(2);
 const planFile = join(dir, 'hcom.json');
@@ -48,7 +57,7 @@ if (args[0] === 'list') {
 	// Taken from the plan as they are used: the board lists on every read too, so only lists after
 	// the plan was written count.
 	const listed = plan.listSeries?.length ? plan.listSeries.shift() : (plan.agents ?? defaultAgents());
-	if (plan.listSeries) writeFileSync(planFile, JSON.stringify(plan));
+	if (plan.listSeries) write(planFile, JSON.stringify(plan));
 	if (listed.fail) {
 		process.stderr.write(listed.fail.stderr ?? '');
 		process.exit(listed.fail.exit ?? 1);
@@ -69,15 +78,15 @@ if (args[0] === 'kill') {
 		if (!kill.exit && !kill.stays) {
 			const gone = [...(plan.agents ?? []), ...added()].filter((/** @type {any} */ agent) => agent.name === args[1]);
 			plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.name !== args[1]);
-			writeFileSync(planFile, JSON.stringify(plan));
-			writeFileSync(addedFile, JSON.stringify(added().filter((/** @type {any} */ agent) => agent.name !== args[1])));
+			write(planFile, JSON.stringify(plan));
+			write(addedFile, JSON.stringify(added().filter((/** @type {any} */ agent) => agent.name !== args[1])));
 			const herdrFile = join(dir, 'herdr.json');
 			const panes = gone.map((/** @type {any} */ agent) => agent.launch_context?.pane_id).filter(Boolean);
 			if (existsSync(herdrFile) && panes.length) {
 				const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
 				herdr.panes = (herdr.panes ?? []).filter((/** @type {any} */ pane) => !panes.includes(pane.pane_id));
 				herdr.agents = (herdr.agents ?? []).filter((/** @type {any} */ agent) => !panes.includes(agent.pane_id));
-				writeFileSync(herdrFile, JSON.stringify(herdr));
+				write(herdrFile, JSON.stringify(herdr));
 			}
 		}
 		process.stderr.write(kill.stderr ?? '');
@@ -85,18 +94,32 @@ if (args[0] === 'kill') {
 	}, kill.sleepMs ?? 0);
 } else {
 	const call = readFileSync(log, 'utf8').trim().split('\n').length;
-	if (args[0] === 'r' && plan.resumed) writeFileSync(addedFile, JSON.stringify([...added(), plan.resumed]));
-	if (args[0] === 'r' && plan.resumedHerdr) {
+	if (args[0] === 'r' && plan.resumed) write(addedFile, JSON.stringify([...added(), plan.resumed]));
+	// A resumed client runs in Herdr like a real one, unless the plan says it exited at once.
+	const resumedHerdr =
+		plan.resumedHerdr ??
+		(plan.resumed?.session_id && !plan.resumedExits
+			? {
+					agent: 'claude',
+					agent_status: 'idle',
+					cwd: '/',
+					pane_id: plan.resumed.launch_context?.pane_id ?? `${process.env.HERDR_WORKSPACE_ID}:p-${plan.resumed.session_id}`,
+					tab_id: `${process.env.HERDR_WORKSPACE_ID}:t-${plan.resumed.session_id}`,
+					workspace_id: process.env.HERDR_WORKSPACE_ID,
+					agent_session: { value: plan.resumed.session_id }
+				}
+			: null);
+	if (args[0] === 'r' && resumedHerdr) {
 		const herdrFile = join(dir, 'herdr.json');
 		const herdr = existsSync(herdrFile) ? JSON.parse(readFileSync(herdrFile, 'utf8')) : {};
-		const resumed = plan.resumedHerdr;
+		const resumed = resumedHerdr;
 		herdr.agents = [...(herdr.agents ?? []), resumed];
 		herdr.panes = [...(herdr.panes ?? []), { pane_id: resumed.pane_id, workspace_id: resumed.workspace_id, cwd: resumed.cwd }];
-		writeFileSync(herdrFile, JSON.stringify(herdr));
+		write(herdrFile, JSON.stringify(herdr));
 	}
 	if (args[0] === 'r' && plan.readOnly) chmodSync(plan.readOnly, 0o444);
 	const listedLaunch = args[0] === 'r' ? null : plan.launched?.[call - 1];
-	if (listedLaunch) writeFileSync(addedFile, JSON.stringify([...added(), listedLaunch]));
+	if (listedLaunch) write(addedFile, JSON.stringify([...added(), listedLaunch]));
 	const launchedHerdr = args[0] === 'r' ? null : plan.launchedHerdr?.[call - 1];
 	if (launchedHerdr) {
 		const herdrFile = join(dir, 'herdr.json');
@@ -106,7 +129,7 @@ if (args[0] === 'kill') {
 			herdr.panes = [...(herdr.panes ?? []), { pane_id: agent.pane_id, workspace_id: agent.workspace_id, cwd: agent.cwd, tab_id: agent.tab_id }];
 			herdr.tabs = [...(herdr.tabs ?? []), { tab_id: agent.tab_id, label: tab_label, workspace_id: agent.workspace_id }];
 		}
-		writeFileSync(herdrFile, JSON.stringify(herdr));
+		write(herdrFile, JSON.stringify(herdr));
 	}
 
 	const name = plan.names === undefined ? `agent${call}` : plan.names[call - 1];

@@ -15,8 +15,9 @@ import type { HelperController } from '../board/types.ts';
 import type { Board } from './board.ts';
 import { gitInit, gitRoot } from './git.ts';
 import { listControllers } from './helper.ts';
-import { launchAgent, listAgents } from './hcom.ts';
-import { chooseWorkspace, listHerdrAgents, moveTab, renameTab, workspaceLabel, type HerdrAgent } from './herdr.ts';
+import { waitToAppear } from './appear.ts';
+import { launchAgent } from './hcom.ts';
+import { chooseWorkspace, moveTab, renameTab, workspaceLabel, type HerdrAgent } from './herdr.ts';
 import { typedText } from './send.ts';
 import { appendSent, readLaunches, type LaunchFollowed } from './sent-log.ts';
 
@@ -64,10 +65,6 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 	}
 }
 
-/** How often a launch looks for its agent in Herdr's list. */
-const FOLLOW_POLL_MS = 1_000;
-/** How many lists of hcom in a row may lack the name before the agent counts as gone. */
-const GONE_AFTER = 3;
 
 // Launches run one after another, so two of them never both create a workspace for one project,
 // and two new tabs never race for the front: a launch is over only once it has been followed
@@ -154,50 +151,32 @@ async function attempt(
 }
 
 /**
- * Wait until Herdr lists the agent hcom started under this name: hcom's list gives its session and
- * pane, and the Herdr agent with that session, or in that pane, is it. Then name its tab when a
- * name was asked for, and move the tab to the front of its workspace. Either step failing leaves
- * the agent started; the log says which one failed. Gives up once the launch wait has run out, or
- * when a few of hcom's lists in a row, which have the agents still starting too, lack the name.
+ * Wait until Herdr runs the agent hcom started under this name (`waitToAppear`). Then name its tab
+ * when a name was asked for, and move the tab to the front of its workspace. Either step failing
+ * leaves the agent started; the log says which one failed.
  */
 async function followAgent(board: Board, entry: SentLaunch, hcomName: string, tabName: string): Promise<void> {
 	const config = board.config;
-	const deadline = Date.parse(entry.time) + config.launchWaitMs;
-	let found: HerdrAgent | undefined;
-	let missing = 0;
-	let unread: string | null = null;
+	let found: HerdrAgent | null = null;
+	let notFound = '';
 	let renameError: string | null = null;
 	let moveError: string | null = null;
 	try {
-		for (;;) {
-			const [hcom, herdr] = await Promise.all([listAgents(config), listHerdrAgents(config)]);
-			unread = !hcom.ok ? hcom.reason : !herdr.ok ? herdr.reason : null;
-			if (hcom.ok && herdr.ok) {
-				const started = hcom.agents.find((candidate) => candidate.name === hcomName);
-				missing = started ? 0 : missing + 1;
-				found =
-					started &&
-					herdr.agents.find(
-						(candidate) => (started.sessionId !== null && candidate.sessionId === started.sessionId) || (started.pane !== null && candidate.pane === started.pane)
-					);
-				if (found || missing >= GONE_AFTER) break;
-			}
-			if (config.now() >= deadline) break;
-			await new Promise((resolve) => setTimeout(resolve, FOLLOW_POLL_MS));
-		}
-		if (found) {
+		const appeared = await waitToAppear(config, { name: hcomName }, Date.parse(entry.time) + config.launchWaitMs, `@${hcomName}`);
+		found = appeared.found;
+		if (!appeared.found) notFound = appeared.reason;
+		else {
 			if (tabName) {
-				const renamed = await renameTab(config, found.tab, tabName);
+				const renamed = await renameTab(config, appeared.found.tab, tabName);
 				if (!renamed.ok) renameError = `改分頁名稱失敗：${renamed.reason}`;
 			}
-			moveError = await moveTab(config, found.tab, 0);
+			moveError = await moveTab(config, appeared.found.tab, 0);
 		}
 	} catch (error) {
 		// Never expected; the record still says the follow-through is over, and why.
-		unread = (error as Error).message;
-		if (found) moveError ??= `移動分頁失敗：${unread}`;
+		notFound = (error as Error).message;
+		if (found) moveError ??= `移動分頁失敗：${notFound}`;
 	}
-	const notFound = missing >= GONE_AFTER ? `hcom 的清單上沒有 @${hcomName}` : `等了 ${Math.round(config.launchWaitMs / 1000)} 秒，Herdr 的清單上還沒有 @${hcomName}${unread ? `（${unread}）` : ''}`;
 	const line: LaunchFollowed = {
 		kind: 'launch-followed',
 		launchId: entry.id,

@@ -32,10 +32,11 @@ import {
 } from '../board/wake.ts';
 import type { Board } from './board.ts';
 import { findAgent, listAgents, resumeAgent, type HcomAgent } from './hcom.ts';
-import { chooseWorkspace, paneExists, tabToFront } from './herdr.ts';
+import { runningIn } from './appear.ts';
+import { chooseWorkspace, listHerdrAgents, paneExists, tabToFront } from './herdr.ts';
 import { inject, queued, typedText } from './send.ts';
 import { modelLock, readCurrent } from './helper.ts';
-import { appendSent, closeResume, openResume, openSwitch, type ResumeResult } from './sent-log.ts';
+import { appendSent, closeResume, openResume, openSwitch, switchResumeVerdict, type ResumeResult } from './sent-log.ts';
 
 /** Where a model switch has stopped its client without seeing it gone. */
 const UNSETTLED_STOP = new Set<SwitchState>(['stopping', 'stop-failed', 'stop-unknown']);
@@ -182,16 +183,28 @@ async function attempt(board: Board, request: WakeRequest): Promise<Result<WakeR
  * session in hcom's list settles it as succeeded; its name or session there, or its recorded pane
  * still in Herdr, means it is not over; its recorded pane gone settles it as ended; with no pane
  * recorded nothing can be told, and only the user can give it up.
+ *
+ * For a model switch (`confirm`, or an open resume that carries one) running also needs Herdr to
+ * run the client (`runningIn`): hcom lists a resumed client for a while that has already exited.
+ * Such a resume is closed as failed once `switchResumeVerdict` says so.
  */
-export async function check(board: Board, controllerId: string): Promise<Plan> {
+export async function check(board: Board, controllerId: string, confirm = false): Promise<Plan> {
 	const { stateDir, launchWaitMs } = board.config;
 	const now = board.config.now();
 	const list = await listAgents(board.config);
 	if (!list.ok) return { refuse: `${WAKE_UNKNOWN_REASON}：${list.reason}` };
-	const running = list.agents.find((agent) => agent.sessionId === controllerId) ?? null;
 	const open = openResume(stateDir, controllerId, now, launchWaitMs);
+	let running = list.agents.find((agent) => agent.sessionId === controllerId) ?? null;
+	let verdict: ReturnType<typeof switchResumeVerdict> | null = null;
+	if (running ? confirm || open?.switchId : open?.switchId) {
+		const herdr = await listHerdrAgents(board.config);
+		if (!herdr.ok) return { refuse: `無法確認它有沒有在 Herdr 執行，沒有送出：${herdr.reason}` };
+		if (!runningIn({ sessionId: controllerId }, list.agents, herdr.agents).herdr) running = null;
+		if (open?.switchId) verdict = switchResumeVerdict(open, list.agents, herdr.agents, now, launchWaitMs);
+	}
 	if (open) {
 		if (running) closeResume(stateDir, open.id, 'succeeded', now);
+		else if (verdict && typeof verdict === 'object') closeResume(stateDir, open.id, 'failed', now, verdict.failed);
 		else if (findAgent(list.agents, open.controllerId, [open.hcomName, open.resumedName])) return { refuse: RESUME_BUSY_REASON };
 		else if (!open.pane) return { refuse: RESUME_UNCONFIRMED_REASON, abandon: open.id };
 		else {

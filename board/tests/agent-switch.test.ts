@@ -397,3 +397,116 @@ test('a controller switched from its information page whose resume fails is list
 	const sent = await (await fixture.fetch('/api/messages?controller=s-claude', { cookie })).json();
 	expect(sent.entries.find((entry: { kind: string }) => entry.kind === 'switch')).toMatchObject({ state: 'abandoned', open: false });
 });
+
+// --- A client with no saved conversation, and a resume that does not run ------------------------------
+
+const sentLog = (): any[] => lines(join(fixture.dir, 'board-state', 'sent-log.jsonl'));
+/** The switch once a step put it in one of these states. */
+async function switchReaches(switchId: string, states: string[], timeoutMs = 14_000): Promise<any[]> {
+	const deadline = Date.now() + timeoutMs;
+	for (;;) {
+		const steps = sentLog().filter((line) => line.switchId === switchId && line.kind === 'switch-step');
+		if (steps.some((line) => states.includes(line.state))) return steps;
+		if (Date.now() > deadline) throw new Error(`switch never reached ${states.join('/')}`);
+		await new Promise((resolve) => setTimeout(resolve, 100));
+	}
+}
+/** No saved conversation: the client has had no turn yet. */
+const noRecord = (session: string) => rmSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), { force: true });
+/** After the stop (hcom's first call), hcom starts a fresh client under this name, which Herdr runs
+ *  in a new tab at the end unless `runs` is false. */
+function freshPlan(name: string, client: 'claude' | 'codex', runs = true) {
+	hcomPlan({
+		names: [null, name],
+		launched: [null, hcomAgent(name, `s-${name}`, 'listening', `wA:p-${name}`)],
+		launchedHerdr: [
+			null,
+			runs ? { ...herdrAgent(`s-${name}`, `wA:p-${name}`), agent: client, tab_id: `wA:t-${name}`, tab_label: name } : null
+		]
+	});
+}
+
+test('an agent with no saved conversation is started afresh with its launch arguments and the new settings, its tab named like the old one', async () => {
+	setHerdr(['s-codex', 's-claude', 's-plain', 's-board']);
+	noRecord('s-claude');
+	launchArgs('s-claude', ['--dangerously-skip-permissions', '--effort', 'low']);
+	freshPlan('nova', 'claude');
+	await fixture.refresh(cookie);
+
+	const switched = await change('s-claude', null, 'medium');
+	expect(switched.status).toBe(200);
+	expect(switched.body.entry).toMatchObject({ state: 'resuming', open: true, relaunch: { tabLabel: 'tab-s-claude', tabIndex: 1 }, relaunchedName: 'nova' });
+	// Stopped, then a fresh launch in its folder and workspace: never a resume of a conversation that is not there.
+	expect(hcomCalls()).toEqual([
+		['kill', 'clio'],
+		['claude', '--dir', '/projects/s-claude', '--terminal', 'herdr', '--no-run-here', '--go', '--dangerously-skip-permissions', '--effort', 'low', '--effort', 'medium']
+	]);
+	expect(lines(join(fixture.dir, 'hcom-calls.jsonl')).at(-1).workspace).toBe('wA');
+
+	await switchReaches(switched.body.entry!.id, ['done']);
+	expect(herdrActs()).toContainEqual(['tab', 'rename', 'wA:t-nova', 'tab-s-claude']);
+	await fixture.refresh(cookie);
+	expect(await find('s-claude')).toBeUndefined();
+	expect(await find('s-nova')).toMatchObject({ hcomName: 'nova', inHerdr: true, herdr: { tabPlace: { label: 'tab-s-claude' } } });
+});
+
+test('a Codex with no saved conversation is started afresh too, with -c overrides after its own arguments', async () => {
+	noRecord('s-codex');
+	launchArgs('s-codex', ['--yolo']);
+	freshPlan('kiro', 'codex');
+
+	const switched = await change('s-codex', null, 'high');
+	expect(switched.status).toBe(200);
+	expect(hcomCalls().at(-1)).toEqual(['codex', '--dir', '/projects/s-codex', '--terminal', 'herdr', '--no-run-here', '--go', '--yolo', '-c', 'model_reasoning_effort="high"']);
+	await switchReaches(switched.body.entry!.id, ['done']);
+});
+
+test('without its launch arguments an agent with no saved conversation is not stopped', async () => {
+	noRecord('s-claude');
+	const refused = await change('s-claude', null, 'medium');
+	expect(refused.status).toBe(409);
+	expect(refused.body.reason).toContain('還沒有對話紀錄');
+	expect(hcomCalls()).toEqual([]);
+});
+
+test('a fresh start that never runs in Herdr fails with the reason; the switch stays unfinished', async () => {
+	noRecord('s-claude');
+	launchArgs('s-claude', ['--dangerously-skip-permissions']);
+	freshPlan('lost', 'claude', false);
+
+	const switched = await change('s-claude', null, 'medium');
+	expect(switched.status).toBe(200);
+	const steps = await switchReaches(switched.body.entry!.id, ['resume-failed', 'done']);
+	expect(steps.at(-1)).toMatchObject({ state: 'resume-failed' });
+	expect(steps.at(-1).error).toContain('@lost');
+	await fixture.refresh(cookie);
+	expect(await find('s-claude')).toMatchObject({ inHerdr: false, switch: { state: 'resume-failed' } });
+}, 20_000);
+
+test('a resume whose client exits at once is closed as failed, never as succeeded; the switch stays unfinished and can be continued', async () => {
+	// hcom reports the resume ready and lists the session, but nothing runs in its new tab.
+	hcomPlan({ resumed: hcomAgent('clio', 's-claude', 'listening', 'wA:p-new'), resumedExits: true });
+	const switched = await change('s-claude', null, 'high');
+	expect(switched.status).toBe(200);
+
+	// Still waiting for it to run: not settled either way.
+	await fixture.refresh(cookie);
+	expect(sentLog().some((line) => line.kind === 'resume-closed')).toBe(false);
+	// Its time to run is over (the board's clock), and Herdr still runs nothing in its tab.
+	fixture.setClock(Date.now() + 20_000);
+	await fixture.refresh(cookie);
+	const closed = sentLog().find((line) => line.kind === 'resume-closed');
+	expect(closed).toMatchObject({ result: 'failed' });
+	expect(closed.reason).toContain('Herdr 仍沒有在執行它');
+	const listed = await find('s-claude');
+	expect(listed?.switch).toMatchObject({ state: 'resume-failed' });
+	expect(listed?.switch?.error).toContain('Herdr 仍沒有在執行它');
+	rmSync(join(fixture.dir, 'clock'), { force: true });
+
+	// 繼續切換 resumes again; this time the client runs, and the switch is done.
+	hcomPlan({ agents: [hcomAgent('coxa', 's-codex')], resumed: hcomAgent('clio', 's-claude', 'listening', 'wA:p-again') });
+	expect((await carryOn('s-claude')).status).toBe(200);
+	await fixture.refresh(cookie);
+	expect(sentLog().filter((line) => line.kind === 'resume-closed').map((line) => line.result)).toEqual(['failed', 'succeeded']);
+	expect((await find('s-claude'))?.switch).toBeNull();
+});

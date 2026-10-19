@@ -14,7 +14,7 @@ import { listAgents, type AgentList } from './hcom.ts';
 import { openResumes, openSwitches, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
 import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
-import { createAgentRoster } from './agents.ts';
+import { createAgentRoster, type HerdrAgentList } from './agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 
@@ -55,11 +55,11 @@ export interface Board {
 
 /** Close the resumes whose session hcom's list of this read holds; a list that could not be read
  *  leaves them open until a later read. */
-async function settleWakes(config: BoardConfig, list: AgentList, moved: () => void): Promise<string | null> {
+async function settleWakes(config: BoardConfig, list: AgentList, herdr: HerdrAgentList, moved: () => void): Promise<string | null> {
 	if (!openResumes(config.stateDir, config.now(), config.launchWaitMs).length) return null;
 	// A resume's pane found only now: its new tab is moved to the front like one found at once.
 	const onPane = (pane: string) => void tabToFront(config, pane).then((reason) => reason === null && moved());
-	return list.ok ? settleResumes(config.stateDir, list.agents, config.now(), config.launchWaitMs, onPane) : null;
+	return list.ok ? settleResumes(config.stateDir, list.agents, herdr.ok ? herdr.agents : null, config.now(), config.launchWaitMs, onPane) : null;
 }
 
 function createBoard(): Board {
@@ -204,7 +204,7 @@ function createBoard(): Board {
 				if (settled instanceof Error) throw settled;
 				const answersError = settled;
 				const launchesError = settleLaunches(config.stateDir, helper.controllers, reports.files, config.now());
-				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, agents, tabMoved));
+				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, agents, herdrAgents, tabMoved));
 			} catch (error) {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
 				sentLogError = (error as Error).message;

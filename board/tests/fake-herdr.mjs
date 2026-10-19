@@ -9,8 +9,15 @@
 // checking the pane; `pane close` takes the pane and its agent out of the panes and agents listed;
 // `tab rename <tab> <label>` gives the listed tab that label.
 // `slowMs: { <command>: ms }` makes a command wait that long before it answers.
-import { appendFileSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+
+/** Write a file whole, so a fake run alongside (the board reads the lists while a switch is
+ *  followed) never reads it half written. */
+function write(/** @type {string} */ file, /** @type {string} */ text) {
+	writeFileSync(`${file}.${process.pid}`, text);
+	renameSync(`${file}.${process.pid}`, file);
+}
 
 const [dir, ...args] = process.argv.slice(2);
 const command = args.slice(0, 2).join(' ');
@@ -43,11 +50,11 @@ if (plan.raw?.[command] !== undefined) {
 } else if (command === 'pane close') {
 	plan.panes = (plan.panes ?? []).filter((/** @type {any} */ pane) => pane.pane_id !== args[2]);
 	plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.pane_id !== args[2]);
-	writeFileSync(planFile, JSON.stringify(plan));
+	write(planFile, JSON.stringify(plan));
 	process.stdout.write(JSON.stringify({ id: 'cli:pane:close', result: { type: 'ok' } }));
 } else if (command === 'tab rename') {
 	plan.tabs = (plan.tabs ?? []).map((/** @type {any} */ tab) => (tab.tab_id === args[2] ? { ...tab, label: args.slice(3).join(' ') } : tab));
-	writeFileSync(planFile, JSON.stringify(plan));
+	write(planFile, JSON.stringify(plan));
 	process.stdout.write(JSON.stringify({ id: 'cli:tab:rename', result: { type: 'ok' } }));
 } else if (command === 'agent prompt' || command === 'agent send-keys') {
 	process.stdout.write(JSON.stringify({ id: `cli:agent:${args[1]}`, result: { type: 'ok' } }));

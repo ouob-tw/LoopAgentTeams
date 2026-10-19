@@ -100,8 +100,13 @@ type HcomPlan = {
 	kill?: { exit?: number; stderr?: string; sleepMs?: number; stays?: boolean };
 };
 const hcomPlan = (plan: HcomPlan) => writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
-const herdrPanes = (panes: { workspace_id: string; cwd: string; pane_id: string }[]) =>
-	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify({ panes, workspaces: [{ workspace_id: 'wP', number: 1, label: 'proj' }] }));
+/** Herdr's panes; the agents earlier tests' resumes left running stay, so no resume of theirs is
+ *  still being waited for (and reading the fake lists) while a later test runs. */
+function herdrPanes(panes: { workspace_id: string; cwd: string; pane_id: string }[]) {
+	const file = join(commandDir, 'herdr.json');
+	const agents = existsSync(file) ? (JSON.parse(readFileSync(file, 'utf8')).agents ?? []) : [];
+	writeFileSync(file, JSON.stringify({ panes, agents, workspaces: [{ workspace_id: 'wP', number: 1, label: 'proj' }] }));
+}
 const launchArgs = (sessionId: string, stored: string[] | { unknown: string }) => {
 	const file = join(fixture.dir, 'launch-args.json');
 	const all = existsSync(file) ? JSON.parse(readFileSync(file, 'utf8')) : {};
@@ -624,14 +629,19 @@ test('a switch whose session is running again however it got there is over, and 
 	const failed = await change(target.id, 'gpt-6-astra', null);
 	expect(failed.body.entry).toMatchObject({ state: 'resume-failed', open: true });
 
-	// The client came back anyway, e.g. hcom started it after all.
+	// The client came back anyway, e.g. hcom started it after all, and Herdr runs it.
 	hcomPlan({ agents: [target.self] });
+	const herdr = JSON.parse(readFileSync(join(commandDir, 'herdr.json'), 'utf8'));
+	herdr.agents = [{ agent: 'codex', agent_status: 'idle', cwd: target.workspace, pane_id: target.self.launch_context.pane_id, tab_id: 'wP:t', workspace_id: 'wP', agent_session: { value: target.id } }];
+	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify(herdr));
 	const over = await resumeSwitch(target.id);
 	expect(over.body.ok).toBe(true);
 	expect(over.body.entry).toMatchObject({ id: failed.body.entry!.id, state: 'done', open: false });
 
 	hcomPlan({ agents: [target.self], exit: 1 });
 	const broken = await change(target.id, 'gpt-6-astra', null);
+	// Back again in hcom's list and in Herdr.
+	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify(herdr));
 	hcomPlan({ agents: [target.self], resumed: agent(target.name, target.id) });
 	const fresh = await change(target.id, null, 'low');
 	expect(fresh.body.ok).toBe(true);
