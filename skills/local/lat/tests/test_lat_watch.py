@@ -3455,7 +3455,7 @@ esac
             'notification show 停住: worker-open --sound request',
         ])
 
-    def test_user_popup_is_one_line_with_client_workspace_tab_and_agent(self):
+    def popup_with_tab(self, tab_label):
         watch = load_watch()
         self.install_hcom(
             '#!/bin/sh\n'
@@ -3468,7 +3468,7 @@ esac
             'printf "%s\\n" "$*" >> "$FAKE_HERDR_LOG"\n'
             'case "$1" in\n'
             '  pane) printf \'%s\\n\' \'{"result":{"pane":{"label":"p","tab_id":"w1:t1"}}}\';;\n'
-            '  tab) printf \'%s\\n\' \'{"result":{"tab":{"label":"STUDY",'
+            f'  tab) printf \'%s\\n\' \'{{"result":{{"tab":{{"label":"{tab_label}",'
             '"workspace_id":"w1"}}}\';;\n'
             '  workspace) printf \'%s\\n\' \'{"result":{"workspace":{"label":"LAT"}}}\';;\n'
             'esac\n'
@@ -3478,9 +3478,15 @@ esac
         with patch.dict(os.environ, self.env):
             watch.perform(watch.Action('notify-user', 'orch', 'long detail',
                                        category='quota', label='額度不足'), 'orch')
+        return self.herdr_log.read_text().splitlines()[-1]
 
-        self.assertEqual(self.herdr_log.read_text().splitlines()[-1],
+    def test_user_popup_is_one_line_with_client_workspace_tab_and_agent(self):
+        self.assertEqual(self.popup_with_tab('STUDY'),
                          'notification show claude額度不足: LAT STUDY orch --sound request')
+
+    def test_user_popup_leaves_out_a_tab_named_after_the_agent(self):
+        self.assertEqual(self.popup_with_tab('lat-ORCH'),
+                         'notification show claude額度不足: LAT orch --sound request')
 
     def test_user_notification_degrades_to_hcom_and_reports_herdr_failure(self):
         herdr = Path(self.env['PATH'].split(':', 1)[0]) / 'herdr'
