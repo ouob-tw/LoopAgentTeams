@@ -129,13 +129,13 @@
 </button>
 
 <style>
-	/* Square, as tall as a one-line box. */
+	/* Square, as tall as a one-line box; it widens only if the countdown would not fit. */
 	.mic {
 		flex: none;
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
+		min-width: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
 		height: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
 		padding: 0;
 		line-height: 1;
@@ -147,7 +147,11 @@
 		animation: pulse 1.2s ease-in-out infinite;
 	}
 	.left {
-		font-size: 0.7em;
+		/* As large as "m:ss" fits across the square, nearly edge to edge. */
+		font-size: 1.4em;
+		font-weight: 600;
+		letter-spacing: -0.04em;
+		white-space: nowrap;
 		font-variant-numeric: tabular-nums;
 	}
 	.mic :global(.spin) {

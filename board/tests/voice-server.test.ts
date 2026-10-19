@@ -71,7 +71,7 @@ beforeEach(() => {
 });
 
 const codexPlan = (plan: object) => writeFileSync(join(codexDir, 'codex.json'), JSON.stringify(plan));
-const codexCalls = (): { text: string; effort: string }[] => {
+const codexCalls = (): { text: string; model: string; effort: string }[] => {
 	const file = join(codexDir, 'codex-calls.jsonl');
 	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
 };
@@ -132,8 +132,9 @@ test('long speech is tidied by Codex and comes back in Traditional Chinese', asy
 	expect(await speak()).toEqual({ status: 200, body: { text: '我想請你幫我看一下這個登入頁面的問題。', notice: null } });
 	const calls = codexCalls();
 	expect(calls).toHaveLength(1);
-	// Codex gets the converted transcript, marked off as text to tidy, at low effort.
+	// Codex gets the converted transcript, marked off as text to tidy, on the fixed model at low effort.
 	expect(calls[0].text).toBe('<transcript>\n嗯,那個,我想要請你幫我看一下,這個這個登入頁面的問題\n</transcript>');
+	expect(calls[0].model).toBe('gpt-6-luna');
 	expect(calls[0].effort).toBe('low');
 });
 

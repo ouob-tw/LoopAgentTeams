@@ -50,6 +50,9 @@ async function recognize(config: BoardConfig, audio: Blob): Promise<Outcome<stri
 	return { ok: false, reason: `語音辨識失敗（${response.status}）${message}` };
 }
 
+/** The model that tidies long speech, fixed so a change to Codex's own default does not change it. */
+const TIDY_MODEL = 'gpt-6-luna';
+
 const TIDY_INSTRUCTIONS = [
 	'You tidy up text produced by speech recognition. The user message holds the transcript inside <transcript> tags.',
 	'Fix recognition errors such as wrong homophones and typos, remove filler words, stutters, repeated words and slips of the tongue (keep only the corrected version when the speaker corrects themselves), and fix punctuation.',
@@ -161,13 +164,14 @@ export function tidy(config: BoardConfig, text: string): Promise<Outcome<string>
 			write({ method: 'initialized' });
 			const started = await request('thread/start', {
 				ephemeral: true,
+				model: TIDY_MODEL,
 				cwd: tmpdir(),
 				sandbox: 'read-only',
 				approvalPolicy: 'never',
 				developerInstructions: TIDY_INSTRUCTIONS
 			});
 			const threadId = (started.thread as { id: string }).id;
-			await request('turn/start', { threadId, effort: 'low', input: [{ type: 'text', text: `<transcript>\n${text}\n</transcript>`, text_elements: [] }] });
+			await request('turn/start', { threadId, model: TIDY_MODEL, effort: 'low', input: [{ type: 'text', text: `<transcript>\n${text}\n</transcript>`, text_elements: [] }] });
 		})().catch((error: Error) => finish({ ok: false, reason: `Codex 回應看不懂：${error.message}` }, 'Codex 回應看不懂'));
 	});
 }

@@ -22,7 +22,7 @@ createInterface({ input: process.stdin }).on('line', (line) => {
 	else if (message.method === 'thread/start') write({ id: message.id, result: { thread: { id: 'thread-1' }, params: message.params } });
 	else if (message.method === 'turn/start') {
 		const text = message.params.input[0].text;
-		appendFileSync(join(dir, 'codex-calls.jsonl'), JSON.stringify({ text, effort: message.params.effort }) + '\n');
+		appendFileSync(join(dir, 'codex-calls.jsonl'), JSON.stringify({ text, model: message.params.model, effort: message.params.effort }) + '\n');
 		write({ id: message.id, result: { turn: { id: 'turn-1', status: 'inProgress', items: [] } } });
 		if (plan.junk) return process.stdout.write(plan.junk + '\n');
 		if (plan.exit) process.exit(1);
