@@ -60,6 +60,14 @@ test('a failed turn, a timeout and a garbled reply each log one line', async () 
 	expect(onlyLine()).toContain('Codex 逾時（1 秒）');
 });
 
+test('a reply that is not JSON logs a fixed phrase, not the parser\'s quote of it', async () => {
+	plan({ junk: `${SPEECH.slice(0, 6)} is not json` });
+	const result = await tidy(config(fakeCodex), SPEECH);
+	expect(result.ok).toBe(false);
+	expect(onlyLine()).toBe('[voice] Codex tidy failed: Codex 回應看不懂');
+	expect(lines[0]).not.toContain(SPEECH.slice(0, 6));
+});
+
 test('a Codex that cannot be started logs the reason', async () => {
 	await tidy(config(['/nonexistent/codex-for-test']), SPEECH);
 	expect(onlyLine()).toStartWith('[voice] Codex tidy failed: ');

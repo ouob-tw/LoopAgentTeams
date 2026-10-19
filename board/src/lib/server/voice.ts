@@ -68,6 +68,8 @@ function end(child: ChildProcess): void {
 
 /** How much of the end of Codex's own error output goes into the journal. */
 const STDERR_TAIL = 300;
+/** What is kept while reading, so a secret is whole when it is taken out, before the tail is cut. */
+const STDERR_KEPT = 16_384;
 
 /** One journal line for a failed tidy: why, how the child ended, and the tail of what it wrote to stderr. */
 function logFailure(config: BoardConfig, text: string, reason: string, ended: string | null, stderr: string): void {
@@ -94,12 +96,13 @@ export function tidy(config: BoardConfig, text: string): Promise<Outcome<string>
 		let settled = false;
 		let ended: string | null = null;
 		let stderr = '';
-		const finish = (outcome: Outcome<string>) => {
+		/** `logged` stands in for the reason in the journal when the reason quotes what Codex sent. */
+		const finish = (outcome: Outcome<string>, logged?: string) => {
 			if (settled) return;
 			settled = true;
-			if (!outcome.ok) logFailure(config, text, outcome.reason, ended, stderr);
 			clearTimeout(timer);
 			end(child);
+			if (!outcome.ok) logFailure(config, text, logged ?? outcome.reason, ended, stderr);
 			resolve(outcome);
 		};
 		const timer = setTimeout(() => finish({ ok: false, reason: `Codex 逾時（${config.tidyTimeoutMs / 1000} 秒）` }), config.tidyTimeoutMs);
@@ -110,7 +113,7 @@ export function tidy(config: BoardConfig, text: string): Promise<Outcome<string>
 			finish({ ok: false, reason: 'Codex 提前結束' });
 		});
 		child.stderr!.on('data', (chunk: Buffer) => {
-			stderr = (stderr + chunk.toString()).slice(-STDERR_TAIL * 4);
+			stderr = (stderr + chunk.toString()).slice(-STDERR_KEPT);
 		});
 		child.stderr!.on('error', () => {
 			// The exit says why.
@@ -149,7 +152,7 @@ export function tidy(config: BoardConfig, text: string): Promise<Outcome<string>
 			try {
 				read(line);
 			} catch (error) {
-				finish({ ok: false, reason: `Codex 回應看不懂：${(error as Error).message}` });
+				finish({ ok: false, reason: `Codex 回應看不懂：${(error as Error).message}` }, 'Codex 回應看不懂');
 			}
 		});
 
@@ -165,7 +168,7 @@ export function tidy(config: BoardConfig, text: string): Promise<Outcome<string>
 			});
 			const threadId = (started.thread as { id: string }).id;
 			await request('turn/start', { threadId, effort: 'low', input: [{ type: 'text', text: `<transcript>\n${text}\n</transcript>`, text_elements: [] }] });
-		})().catch((error: Error) => finish({ ok: false, reason: `Codex 回應看不懂：${error.message}` }));
+		})().catch((error: Error) => finish({ ok: false, reason: `Codex 回應看不懂：${error.message}` }, 'Codex 回應看不懂'));
 	});
 }
 
