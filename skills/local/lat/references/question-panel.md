@@ -176,7 +176,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question withdraw
 
 `--source` 寫可查證的出處，例如使用者聊天原文與 session ID，或取代它的決策紀錄 ID 與版本；執行時間由工具另記，不能當成依據。`--reason`、`--source` 去除空白後不可為空，否則拒絕且不改任何檔案。DECIDE 與 HELP 題都適用。
 
-只接受仍為 `pending` 的紀錄：狀態改為 `withdrawn`，在紀錄末尾加 `## 撤回`（原因、依據、時間），再清理問題檔（題目歸檔）並更新側欄；看板待辦因題目離開問題檔而消失。非 pending 時拒絕並說明目前狀態；使用者已在面板或看板送出答覆、但還沒記錄的題目也拒絕，改依「收到 `lat-panel` 通知」記錄答覆。清理失敗時紀錄已撤回、指令以非零結束，依錯誤重跑 `question cleanup`。題目只是前提改變、仍要問時改版重問，不要撤回。
+只接受仍為 `pending` 的紀錄：狀態改為 `withdrawn`，在紀錄末尾加 `## 撤回`（原因、依據、時間），再清理問題檔（題目歸檔）並更新側欄；看板待辦因題目離開問題檔而消失。非 pending 時拒絕並說明目前狀態。使用者已送出答覆、還沒記錄的題目也照樣撤回並歸檔，答覆隨題目原文留在歸檔檔；撤回前先確認那份答覆確實不再需要。清理失敗時紀錄已撤回、指令以非零結束，依錯誤重跑 `question cleanup`。題目只是前提改變、仍要問時改版重問，不要撤回。
 
 **待答提醒**：安裝 LAT hook 後，主控每次收到使用者的新訊息，UserPromptSubmit hook 會在附加內容列出自己問題檔中仍待答（決策紀錄 pending）的每題 `<ID> r<版本>`、標題與提問時間，提示判斷是否撤回或改版；使用者已送出答覆、等主控記錄的題目不列。只對 active 且身分相符的主控紀錄作用；沒有待答題、執行 Agent、沒有 LAT 紀錄，或 HCOM 投遞訊息造成的回合（提示內容只有 `<hcom>` 標記）都不輸出。提問時間取自 `panel-journal.jsonl` 的寫題紀錄，找不到時顯示「不明」。hook 出錯只以 `systemMessage` 留警告，不擋使用者訊息。安裝見 [Hook 設定程序](hook-setup.md)。
 
@@ -250,7 +250,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question withdraw
 
 ## 清理題目
 
-`question upsert` 每次寫題前只清理 `--questions` 指定的檔案：已記錄且有時間與相符 `set-status` 雜湊的題目立即歸檔；待答題則只在同名決策紀錄可讀且狀態不是 `pending` 時歸檔。歸檔保留題目原文，不以時間讓未答題過期。每次清理都在 `panel-journal.jsonl` 寫一筆 `cleanup`，記錄搬走的題號與原因。
+`question upsert` 每次寫題前只清理 `--questions` 指定的檔案：已記錄且有時間與相符 `set-status` 雜湊的題目立即歸檔；待答題則只在同名決策紀錄可讀且狀態不是 `pending` 時歸檔，但已送出答覆、還沒記錄的題目保留；決策狀態為 `withdrawn` 的題目例外，即使已送出答覆也歸檔。歸檔保留題目原文，不以時間讓未答題過期。每次清理都在 `panel-journal.jsonl` 寫一筆 `cleanup`，記錄搬走的題號與原因。
 
 不寫新題時可單獨清理：
 

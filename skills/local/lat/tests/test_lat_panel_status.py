@@ -277,7 +277,7 @@ class StatusDisplayTests(unittest.TestCase):
         output = json.loads(result.stdout)
         self.assertEqual((output["id"], output["status"]), ("D1", "withdrawn"))
         self.assertEqual(output["cleanup"]["archived"],
-                         [{"id": "D1", "reason": "decision-not-pending"}])
+                         [{"id": "D1", "reason": "withdrawn"}])
         record = (self.decisions / "D1.md").read_text()
         self.assertIn("- status: withdrawn\n", record)
         self.assertNotIn("pending", record)
@@ -314,24 +314,24 @@ class StatusDisplayTests(unittest.TestCase):
                 self.assertIn(reason, result.stderr)
                 self.assertEqual((self.decisions / f"{identifier}.md").read_text(), before)
                 self.assertEqual(self.questions.read_text(), questions)
-        # The user already submitted an answer: record it rather than withdraw.
-        self.decision("D4")
-        self.upsert("D4", DECIDE_SECTION.replace("要合併嗎？", "已送出？"))
-        self.questions.write_text(self.questions.read_text().replace(
-            "D4 · r1 · 待答\n\n背景。\n\nA. 合併（建議）\n   影響。\nB. 不合併\n   影響。\n\n答覆：\n\n- [ ] 送出",
-            "D4 · r1 · 待答\n\n背景。\n\nA. 合併（建議）\n   影響。\nB. 不合併\n   影響。\n\n答覆：A\n\n- [x] 送出"))
-        questions = self.questions.read_text()
-        self.assertIn("答覆：A", questions)
-        before = (self.decisions / "D4.md").read_text()
-        result = self.withdraw("D4", "--reason", "old", "--source", "chat")
-        self.assertEqual(result.returncode, 1)
-        self.assertIn("already has a submitted answer", result.stderr)
-        self.assertEqual((self.decisions / "D4.md").read_text(), before)
-        self.assertEqual(self.questions.read_text(), questions)
         result = self.withdraw("NOPE", "--reason", "old", "--source", "chat")
         self.assertEqual(result.returncode, 1)
         self.assertIn("decision record not found", result.stderr)
         self.assertFalse(any(self.decisions.glob("*NOPE*")))
+
+    def test_withdraw_archives_a_question_with_a_submitted_answer_and_keeps_the_answer(self):
+        self.decision("D1")
+        self.upsert("D1", DECIDE_SECTION)
+        self.questions.write_text(self.questions.read_text().replace(
+            "答覆：\n\n- [ ] 送出", "答覆：A\n\n- [x] 送出"))
+        self.assertIn("- [x] 送出", self.questions.read_text())
+        result = self.withdraw("D1", "--reason", "old", "--source", "chat")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(json.loads(result.stdout)["cleanup"]["archived"],
+                         [{"id": "D1", "reason": "withdrawn"}])
+        self.assertEqual(load_module().board_questions(self.questions), [])
+        archive = self.questions.with_name(f"{self.questions.stem}-archive.md").read_text()
+        self.assertIn("答覆：A\n\n- [x] 送出", archive)
 
     def test_withdraw_cleanup_failure_keeps_record_withdrawn_and_says_to_rerun(self):
         self.decision("D1")
