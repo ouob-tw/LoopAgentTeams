@@ -147,6 +147,17 @@ test.skipIf(!CHROME)("the new-controller form names each client's defaults, the 
 	write(join(home(), '.codex/config.toml'), 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "medium"\n');
 	await choose(plain);
 	await shows('GPT-6.1 Sol（gpt-6.1-sol）', 'medium');
+
+	// A read again for the same folder that fails does not keep showing what may be out of date.
+	await evaluate(`(() => {
+		const fetch = window.fetch;
+		window.fetch = (input, init) => (String(input).includes('/api/launches/defaults') ? Promise.reject(new TypeError('offline')) : fetch(input, init));
+		window.restoreFetch = () => (window.fetch = fetch);
+	})()`);
+	fixture.report(luna.session_id, { tag: 'DONE', summary: '又好了', hcom_name: 'luna', workspace: own });
+	await fixture.refresh(cookie);
+	await shows('看板讀取 client 設定失敗', '看板讀取 client 設定失敗');
+	await evaluate('window.restoreFetch()');
 	await choose('claude');
 }, 30_000);
 

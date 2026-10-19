@@ -66,7 +66,7 @@ class Launching {
 	}
 
 	/** Read the clients' defaults for a folder ('' for the user's settings alone). A failed read
-	 *  keeps what was read for the same folder. */
+	 *  drops what was read before: the settings may have changed since. */
 	async loadDefaults(folder: string): Promise<void> {
 		const read = ++this.#defaultsReads;
 		let clients: LaunchDefaults | undefined;
@@ -79,8 +79,7 @@ class Launching {
 			// Reported below, unless a newer read has taken over.
 		}
 		if (read !== this.#defaultsReads) return;
-		if (clients) this.defaults = { folder, clients };
-		else if (this.defaults?.folder !== folder) this.defaults = null;
+		this.defaults = clients ? { folder, clients } : null;
 		this.defaultsFailed = !clients;
 	}
 
