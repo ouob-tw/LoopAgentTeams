@@ -45,15 +45,21 @@
 	});
 
 	function keydown(event: KeyboardEvent) {
+		quiet = false;
 		if (!sendsOnEnter(event, enterMakesNewline.current)) return;
 		event.preventDefault();
 		onsend();
 	}
 
+	/** Set after spoken text goes in: the cursor shows without bringing up a phone's on-screen
+	 *  keyboard, until the box is tapped, typed in or left. */
+	let quiet = $state(false);
+
 	/** Put spoken text where the cursor is, over a selection like typing would be, keeping the rest. */
 	async function insert(text: string) {
 		const placed = insertAt(value, box.selectionStart, box.selectionEnd, text);
 		value = placed.value;
+		quiet = true;
 		await tick();
 		box.focus();
 		box.setSelectionRange(placed.caret, placed.caret);
@@ -64,7 +70,18 @@
 	{#if voice.unlocked}
 		<VoiceButton {disabled} oninsert={insert} />
 	{/if}
-	<textarea bind:this={box} bind:value rows="1" aria-label={label} {placeholder} {disabled} onkeydown={keydown}></textarea>
+	<textarea
+		bind:this={box}
+		bind:value
+		rows="1"
+		aria-label={label}
+		{placeholder}
+		{disabled}
+		inputmode={quiet ? 'none' : undefined}
+		onkeydown={keydown}
+		onpointerdown={() => (quiet = false)}
+		onblur={() => (quiet = false)}
+	></textarea>
 </div>
 
 <style>
