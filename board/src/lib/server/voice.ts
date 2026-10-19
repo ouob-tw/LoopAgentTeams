@@ -66,28 +66,58 @@ function end(child: ChildProcess): void {
 	}
 }
 
+/** How much of the end of Codex's own error output goes into the journal. */
+const STDERR_TAIL = 300;
+/** What is kept while reading, so a secret is whole when it is taken out, before the tail is cut. */
+const STDERR_KEPT = 16_384;
+
+/** One journal line for a failed tidy: why, how the child ended, and the tail of what it wrote to stderr. */
+function logFailure(config: BoardConfig, text: string, reason: string, ended: string | null, stderr: string): void {
+	// Neither the speech nor the service's token goes in, should the child or an error message repeat them.
+	const clean = (value: string) => {
+		for (const secret of [text, config.asrToken]) if (secret) value = value.replaceAll(secret, '…');
+		return value.replace(/\s+/g, ' ').trim();
+	};
+	const tail = clean(stderr).slice(-STDERR_TAIL);
+	console.error(`[voice] Codex tidy failed: ${clean(reason)}${ended ? ` (${ended})` : ''}${tail ? ` stderr: ${tail}` : ''}`);
+}
+
 /** The transcript tidied by a Codex app server: one ephemeral thread, read-only, never asking for approval. */
 export function tidy(config: BoardConfig, text: string): Promise<Outcome<string>> {
 	const [command, ...args] = config.tidyCommand;
 	return new Promise((resolve) => {
 		let child: ChildProcess;
 		try {
-			child = spawn(command, args, { cwd: tmpdir(), env: ownEnv(), detached: true, stdio: ['pipe', 'pipe', 'ignore'] });
+			child = spawn(command, args, { cwd: tmpdir(), env: ownEnv(), detached: true, stdio: ['pipe', 'pipe', 'pipe'] });
 		} catch (error) {
+			logFailure(config, text, (error as Error).message, null, '');
 			return resolve({ ok: false, reason: (error as Error).message });
 		}
 		let settled = false;
-		const finish = (outcome: Outcome<string>) => {
+		let ended: string | null = null;
+		let stderr = '';
+		/** `logged` stands in for the reason in the journal when the reason quotes what Codex sent. */
+		const finish = (outcome: Outcome<string>, logged?: string) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
 			end(child);
+			if (!outcome.ok) logFailure(config, text, logged ?? outcome.reason, ended, stderr);
 			resolve(outcome);
 		};
 		const timer = setTimeout(() => finish({ ok: false, reason: `Codex 逾時（${config.tidyTimeoutMs / 1000} 秒）` }), config.tidyTimeoutMs);
 		child.on('error', (error) => finish({ ok: false, reason: error.message }));
 		// Not 'exit': that can come before its last lines are read.
-		child.on('close', () => finish({ ok: false, reason: 'Codex 提前結束' }));
+		child.on('close', (code, signal) => {
+			ended = code !== null ? `exit ${code}` : `signal ${signal}`;
+			finish({ ok: false, reason: 'Codex 提前結束' });
+		});
+		child.stderr!.on('data', (chunk: Buffer) => {
+			stderr = (stderr + chunk.toString()).slice(-STDERR_KEPT);
+		});
+		child.stderr!.on('error', () => {
+			// The exit says why.
+		});
 		child.stdin!.on('error', () => {
 			// The exit says why.
 		});
@@ -122,7 +152,7 @@ export function tidy(config: BoardConfig, text: string): Promise<Outcome<string>
 			try {
 				read(line);
 			} catch (error) {
-				finish({ ok: false, reason: `Codex 回應看不懂：${(error as Error).message}` });
+				finish({ ok: false, reason: `Codex 回應看不懂：${(error as Error).message}` }, 'Codex 回應看不懂');
 			}
 		});
 
@@ -138,7 +168,7 @@ export function tidy(config: BoardConfig, text: string): Promise<Outcome<string>
 			});
 			const threadId = (started.thread as { id: string }).id;
 			await request('turn/start', { threadId, effort: 'low', input: [{ type: 'text', text: `<transcript>\n${text}\n</transcript>`, text_elements: [] }] });
-		})().catch((error: Error) => finish({ ok: false, reason: `Codex 回應看不懂：${error.message}` }));
+		})().catch((error: Error) => finish({ ok: false, reason: `Codex 回應看不懂：${error.message}` }, 'Codex 回應看不懂'));
 	});
 }
 
