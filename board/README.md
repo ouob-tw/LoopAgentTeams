@@ -36,6 +36,11 @@
 | `LAT_BOARD_HERDR_COMMAND` | Herdr 指令（JSON 字串陣列），看板會在後面加上 `pane list`、`workspace list`、`workspace create --cwd <專案> --label <名稱> --no-focus`，以及每次讀取資料時的 `agent list`、`workspace list`、`tab list`，傳話與中斷時的 `agent prompt <窗格> <文字>`、`agent send-keys <窗格> esc`，關閉沒接 HCOM 的 Agent 時的 `pane close <窗格>`（「Herdr」分頁） | `["herdr"]` |
 | `LAT_BOARD_HERDR_TIMEOUT_SECONDS` | 每個 Herdr 指令多久沒結束就放棄 | `10` |
 | `LAT_BOARD_LAUNCH_WAIT_SECONDS` | 新建後多久還沒出現綁定，就在新建紀錄提示「已開分頁，但主控尚未啟用」；喚醒接回後多久還沒在 hcom 清單出現，就在送出紀錄提示「接回後仍未出現」 | `180` |
+| `LAT_BOARD_ASR_URL` | 語音輸入用的語音辨識服務（gohakka-infra）網址，例如 `http://localhost:8025`；看板呼叫它的 `/v1/asr/sync`（`whisper-large-v3-turbo`、`zh`）。沒設定或缺下一項時，按麥克風只會提示未設定 | 不設定 |
+| `LAT_BOARD_ASR_TOKEN` | 該服務的 JWT。只留在看板伺服器，不會出現在任何給瀏覽器的回應 | 不設定 |
+| `LAT_BOARD_ASR_TIMEOUT_SECONDS` | 語音辨識多久沒回應就放棄 | `60` |
+| `LAT_BOARD_TIDY_COMMAND` | 整理長語音用的 Codex app server 指令（JSON 字串陣列），每次整理啟動一個、以標準輸入輸出溝通，用完即結束 | `["codex","app-server"]` |
+| `LAT_BOARD_TIDY_TIMEOUT_SECONDS` | Codex 整理多久沒完成就改放原始辨識文字並提示 | `30` |
 
 `XDG_STATE_HOME` 未設定時是 `~/.local/state`，`XDG_CONFIG_HOME` 未設定時是 `~/.config`。
 
@@ -208,6 +213,12 @@
 - 新建紀錄寫在 `sent-log.jsonl`（`kind: launch`），欄位有 client、所選資料夾、專案範圍、選定的模型與思考強度（null 是 client 預設）、HCOM 名稱、目標工作區、是否先 git init、結果與原因。`GET /api/launches` 另外回傳 `modelOptions`。之後每次讀取資料時，出現 HCOM 名稱相同的綁定，或該名稱在新建之後寫的回報紀錄，就追加一行 `launch-bound` 記下它成為哪個主控；不比對資料夾，所以同一資料夾連開兩次也各自對應。新建前就已經用這個名稱綁定的 session（前一個同名 Agent 留下的）不算；同一個名稱之後被 hcom 再用時，只算給最新那一筆。
 - 「尚未啟用」的等待時間用看板的時鐘計算（測試可用 `LAT_BOARD_CLOCK_FILE` 調整）；新建主控頁開著時每 15 秒重讀一次紀錄，所以時間到了不必重新整理。
 - 測試以 `tests/fake-hcom.mjs`、`tests/fake-herdr.mjs` 代替真的 hcom 與 Herdr；不在 Git 專案裡的測試資料夾放在上層沒有 `.git` 的暫存目錄。
+
+## 語音輸入
+
+隱藏功能，畫面上沒有開關：連按「待辦」分頁 5 次（每兩下間隔 1.5 秒內）打開，記在這個瀏覽器（localStorage）；再連按 5 次關閉。打開後指令列與新建主控的第一句話旁會出現麥克風：按一下開始錄音、再按一下停止（最長 2 分鐘自動停止）。
+
+錄音送到看板伺服器的 `/api/voice`，由伺服器帶著憑證轉給語音辨識服務（見「設定」的 `LAT_BOARD_ASR_*`），結果用 opencc-js 轉成台灣正體（含用詞）。10 個字以內直接放到游標處；更長的先交給 Codex app server 修錯字、去掉口誤與贅字再放入，Codex 失敗或逾時就放轉換後的原文並提示。放入時只取代選取的文字，其餘內容保留。麥克風只在 HTTPS 或 localhost 的網址可用。
 
 ## 版面與外觀
 

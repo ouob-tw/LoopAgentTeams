@@ -1,8 +1,13 @@
 <script lang="ts">
 	// A multi-line message box that grows with its text up to a limit. Whether Enter sends or
 	// makes a new line depends on the device; Enter during input-method composition never sends.
+	// Where voice input is unlocked, a mic before the box puts what was said at the cursor.
+	import { tick } from 'svelte';
 	import { sendsOnEnter } from '#lib/board/messages.ts';
 	import { enterMakesNewline } from '#lib/board/messaging.svelte.ts';
+	import { voice } from '#lib/board/voice.svelte.ts';
+	import { insertAt } from '#lib/board/voice.ts';
+	import VoiceButton from './VoiceButton.svelte';
 
 	let {
 		value = $bindable(),
@@ -44,13 +49,34 @@
 		event.preventDefault();
 		onsend();
 	}
+
+	/** Put spoken text where the cursor is, over a selection like typing would be, keeping the rest. */
+	async function insert(text: string) {
+		const placed = insertAt(value, box.selectionStart, box.selectionEnd, text);
+		value = placed.value;
+		await tick();
+		box.focus();
+		box.setSelectionRange(placed.caret, placed.caret);
+	}
 </script>
 
-<textarea bind:this={box} bind:value rows="1" aria-label={label} {placeholder} {disabled} onkeydown={keydown}></textarea>
+<div class="message-box">
+	{#if voice.unlocked}
+		<VoiceButton {disabled} oninsert={insert} />
+	{/if}
+	<textarea bind:this={box} bind:value rows="1" aria-label={label} {placeholder} {disabled} onkeydown={keydown}></textarea>
+</div>
 
 <style>
+	.message-box {
+		display: flex;
+		align-items: flex-end;
+		gap: 0.4rem;
+	}
 	textarea {
 		display: block;
+		flex: 1;
+		min-width: 0;
 		width: 100%;
 		max-height: 12rem;
 		resize: none;

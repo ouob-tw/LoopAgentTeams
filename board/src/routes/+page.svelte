@@ -27,6 +27,7 @@
 		type View
 	} from '#lib/board/navigation.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
+	import { voice } from '#lib/board/voice.svelte.ts';
 	import { folderName } from '#lib/board/agents.ts';
 	import { MIDDLE_TAB_KEY, remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -80,6 +81,7 @@
 	}
 
 	onMount(() => appearance.restore());
+	onMount(() => voice.restore());
 	let settings: Settings;
 
 	/** Drag a column's right border. Only a real move changes the width, so a double click is free to reset it. */
@@ -499,7 +501,7 @@
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
 			     views, as the list they switch has no panel of its own around it. -->
 			<div class="middle-tabs" role="group" aria-label="清單">
-				<button type="button" data-middle="inbox" aria-pressed={middle === 'inbox'} onclick={() => setMiddle('inbox')}>待辦</button>
+				<button type="button" data-middle="inbox" aria-pressed={middle === 'inbox'} onclick={() => (setMiddle('inbox'), voice.tap())}>待辦</button>
 				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => setMiddle('agents')}
 					>Herdr<small>{agents.length}</small></button
 				>
