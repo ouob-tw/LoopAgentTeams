@@ -51,17 +51,22 @@ export interface SentWake {
 }
 
 /**
- * How an open resume attempt was closed: `succeeded` its session showed up in hcom's agent list;
- * `ended` the pane it was recorded in is gone and hcom has no trace of it; `abandoned` the user
- * chose to give it up.
+ * How an open resume attempt was closed: `succeeded` its session showed up in hcom's agent list
+ * (a model switch's only once Herdr also runs it); `ended` the pane it was recorded in is gone and
+ * hcom has no trace of it; `failed` a model switch's resumed client never ran in Herdr; `abandoned`
+ * the user chose to give it up.
  */
-export type ResumeClose = 'succeeded' | 'ended' | 'abandoned';
+export type ResumeClose = 'succeeded' | 'ended' | 'failed' | 'abandoned';
 
 export interface WakeView extends SentWake {
 	/** A resume whose result is not settled yet: another resume is checked against it first. */
 	open: boolean;
 	closed: ResumeClose | null;
 	closedAt: string | null;
+	/** Why it was closed as `failed`; null otherwise. */
+	closedReason?: string | null;
+	/** When hcom's run for it ended; null while it has not. */
+	resultAt?: string | null;
 	/** Open longer than the wait without its session showing up. */
 	overdue: boolean;
 }
@@ -105,6 +110,7 @@ export const RESUME_OVERDUE_TEXT = '接回後仍未出現，請到 Herdr 分頁�
 export const RESUME_CLOSE_TEXT: Record<ResumeClose, string> = {
 	succeeded: '接回成功',
 	ended: '前一次接回已結束',
+	failed: '接回後沒有在 Herdr 執行',
 	abandoned: '使用者放棄'
 };
 

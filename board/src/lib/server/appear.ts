@@ -1,0 +1,54 @@
+// Whether a client hcom started (or resumed) really runs: hcom's list has it, and Herdr lists an
+// agent with its session, or in the pane hcom has for it. hcom's own answer is not enough: it can
+// report a client ready, and list it for a while, that has already exited in its tab (a resume of
+// a session with no saved conversation does).
+import type { BoardConfig } from './config.ts';
+import { listAgents, type HcomAgent } from './hcom.ts';
+import { listHerdrAgents, type HerdrAgent } from './herdr.ts';
+
+/** How often the lists are read while waiting. */
+const POLL_MS = 1_000;
+/** How many of hcom's lists in a row may lack the client before it counts as gone. */
+const GONE_AFTER = 3;
+/** How many reads in a row Herdr may show no agent in the pane hcom has for the client before it
+ *  counts as exited: Herdr spots a client within a second of its start. */
+const EXITED_AFTER = 8;
+
+/** Which client: the one hcom lists under this name, or with this session ID. */
+export type Wanted = { name: string } | { sessionId: string };
+
+/** The Herdr agent that is this client, when both lists are read and agree. */
+export function runningIn(wanted: Wanted, hcom: HcomAgent[], herdr: HerdrAgent[]): { hcom: HcomAgent | undefined; herdr: HerdrAgent | undefined } {
+	const listed = hcom.find((agent) => ('name' in wanted ? agent.name === wanted.name : agent.sessionId === wanted.sessionId));
+	const seen =
+		listed &&
+		herdr.find((agent) => (listed.sessionId !== null && agent.sessionId === listed.sessionId) || (listed.pane !== null && agent.pane === listed.pane));
+	return { hcom: listed, herdr: seen };
+}
+
+export type Appearance = { found: HerdrAgent } | { found: null; reason: string };
+
+/** Wait until the client runs in Herdr, or until `deadline` (board clock); gives up early when
+ *  hcom stops listing it, or when it is listed but nothing runs in its pane for a while. `who`
+ *  names it in the reasons. */
+export async function waitToAppear(config: BoardConfig, wanted: Wanted, deadline: number, who: string): Promise<Appearance> {
+	let missing = 0;
+	let idle = 0;
+	let unread: string | null = null;
+	for (;;) {
+		const [hcom, herdr] = await Promise.all([listAgents(config), listHerdrAgents(config)]);
+		unread = !hcom.ok ? hcom.reason : !herdr.ok ? herdr.reason : null;
+		if (hcom.ok && herdr.ok) {
+			const running = runningIn(wanted, hcom.agents, herdr.agents);
+			if (running.herdr) return { found: running.herdr };
+			missing = running.hcom ? 0 : missing + 1;
+			idle = running.hcom?.pane ? idle + 1 : 0;
+			if (missing >= GONE_AFTER) return { found: null, reason: `hcom 的清單上沒有 ${who}` };
+			if (idle >= EXITED_AFTER) return { found: null, reason: `${who} 沒有在它的 Herdr 分頁裡執行，可能一啟動就結束了` };
+		}
+		if (config.now() >= deadline) {
+			return { found: null, reason: `等了 ${Math.round(config.launchWaitMs / 1000)} 秒，Herdr 的清單上還沒有 ${who}${unread ? `（${unread}）` : ''}` };
+		}
+		await new Promise((resolve) => setTimeout(resolve, POLL_MS));
+	}
+}

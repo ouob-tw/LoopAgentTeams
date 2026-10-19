@@ -460,6 +460,8 @@ test.skipIf(!CHROME)('a close Herdr refuses says why and leaves the agent on its
 /** A Claude linked to hcom and listening, with every agent's pane in Herdr, for a model switch. */
 const LINKED = herdrAgent('s-link', { status: 'idle' });
 function setLinked(hcom: object = {}) {
+	// It has had a turn, so a switch resumes its conversation.
+	record('s-link', ['你好', '好的']);
 	const agents = [...AGENTS, LINKED];
 	setHerdr(agents, { panes: agents.map((agent) => ({ pane_id: agent.pane_id, workspace_id: agent.workspace_id, cwd: agent.cwd })) });
 	fixture.setHcom({

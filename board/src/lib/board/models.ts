@@ -176,6 +176,20 @@ export interface SentSwitch {
 	/** Set on a switch asked for on the 所有 Agent tab: where Herdr listed the agent then, so it is
 	 *  still listed, and resumed there, while its switch is open and Herdr no longer lists it. */
 	agent?: SwitchAgent;
+	/** Set when the client had no saved conversation yet, so there is nothing to resume: it is
+	 *  started afresh instead, with the arguments hcom kept for it (read before the stop, which
+	 *  makes hcom forget them) and the new settings after them, in a tab named and placed like
+	 *  its old one. */
+	relaunch?: SwitchRelaunch;
+}
+
+export interface SwitchRelaunch {
+	/** The client arguments hcom started it with. */
+	args: string[];
+	/** The old tab's label, to give the new tab; null when Herdr's tab list did not have it. */
+	tabLabel: string | null;
+	/** The old tab's place among its workspace's tabs, counted from 0; null when not known. */
+	tabIndex: number | null;
 }
 
 /** An agent of the 所有 Agent tab as its switch keeps it. */
@@ -197,6 +211,10 @@ export interface SwitchView extends SentSwitch {
 	wakeId: string | null;
 	/** When the user gave the switch up; null unless `abandoned`. */
 	abandonedAt?: string | null;
+	/** The HCOM name of the client a relaunch started; null until one did. */
+	relaunchedName?: string | null;
+	/** When the switch last went to `resuming`. */
+	resumingAt?: string | null;
 }
 
 /** What `POST /api/model` takes. Both null on a switch that is open continues it as it is. */
@@ -261,7 +279,7 @@ export const AGENT_NO_OPEN_SWITCH_REASON = '這個 Agent 沒有未完成的切�
 
 /** What a switch from the 所有 Agent tab does, asked before it is sent. */
 export const agentSwitchConfirmText = (choice: ModelChoice) =>
-	`切換為${choiceText(choice)}？看板會停止這個 Agent，再以新設定在新分頁接回同一段對話，原分頁會關掉。`;
+	`切換為${choiceText(choice)}？看板會停止這個 Agent，再以新設定在新分頁接回同一段對話，原分頁會關掉。還沒有對話的 Agent 沒有可接回的內容，會改用新設定重新啟動（HCOM 名稱會換新）。`;
 
 export const AGENT_CONTINUE_CONFIRM_TEXT = '繼續這次切換？看板會先查證它停到哪裡，需要時再停止或接回這個 Agent。';
 export const AGENT_ABANDON_CONFIRM_TEXT =
