@@ -18,8 +18,8 @@ export interface Draft {
 	other: boolean;
 	text: string;
 	note: string;
-	/** The version of the question the user was looking at when they started answering; the
-	 *  answer is sent for that version, so one filled in for an older version is refused. */
+	/** The version of the question the draft was filled in for, which the answer is sent for. A
+	 *  question that changes under the draft moves it to the new version (`rebase`). */
 	base: { revision: number; sectionSha256: string } | null;
 }
 
@@ -55,6 +55,8 @@ const answerTextOf = (question: HelperQuestion, draft: Draft) => (question.kind 
 export function outdated(question: HelperQuestion, draft: Draft): boolean {
 	return draft.base !== null && (draft.base.revision !== question.revision || draft.base.sectionSha256 !== question.section_sha256);
 }
+
+const versionOf = (question: HelperQuestion) => ({ revision: question.revision, sectionSha256: question.section_sha256 });
 
 /** Whether the draft is an answer the question's kind allows; the helper has the last word. */
 export function complete(question: HelperQuestion, draft: Draft): boolean {
@@ -95,9 +97,20 @@ class Answering {
 		return this.drafts[key] ?? EMPTY;
 	}
 
-	edit(item: InboxQuestion, change: Partial<Omit<Draft, 'base'>>): void {
+	/** The question on screen is no longer the version the draft was filled in for: move the draft
+	 *  to the version on screen. Positions may mean other options now, so the choice is dropped;
+	 *  what was typed is still the user's. Returns whether the draft was moved. */
+	rebase(item: InboxQuestion): boolean {
 		const draft = this.draft(item.key);
-		const base = draft.base ?? { revision: item.question.revision, sectionSha256: item.question.section_sha256 };
+		if (!outdated(item.question, draft)) return false;
+		this.drafts[item.key] = { ...draft, select: [], other: false, base: versionOf(item.question) };
+		return true;
+	}
+
+	edit(item: InboxQuestion, change: Partial<Omit<Draft, 'base'>>): void {
+		this.rebase(item);
+		const draft = this.draft(item.key);
+		const base = draft.base ?? versionOf(item.question);
 		this.drafts[item.key] = { ...draft, ...change, base };
 		delete this.outcomes[item.key];
 		// A question that can be edited again is a new version; what was sent before is history.

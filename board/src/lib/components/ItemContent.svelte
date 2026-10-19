@@ -2,7 +2,7 @@
 	// The full content of one inbox item. A question that is still waiting can be answered here; one
 	// that is answered is read-only, its choice marked among its options and the note under them.
 	import { ANSWER_STATE_TEXT, chosenIn } from '#lib/board/answers.ts';
-	import { answering, complete, outdated } from '#lib/board/answering.svelte.ts';
+	import { answering, complete } from '#lib/board/answering.svelte.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { renderLinks, renderMarkdown } from '#lib/board/markdown.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
@@ -79,12 +79,12 @@
 		answering.edit(item, single ? { select: [], other: true } : { other: !draft.other });
 	}
 
-	// A floating notice while the draft is for an older version, so the form does not move.
+	// The question changed under the draft: it moves to the version on screen at once, so the next
+	// choice and send are for that version and do not have to be refused first.
 	$effect(() => {
-		const key = `outdated:${item.key}`;
-		const stale = item.kind === 'question' && listed && item.unsent && outdated(item.question, draft);
-		toasts.stand(key, 'failed', stale ? '主控在你作答途中改了這一題，畫面上是目前的版本。你填的是舊版的答覆，送出會被拒絕；請對照後重新作答。' : null);
-		return () => toasts.stand(key, 'failed', null);
+		if (item.kind === 'question' && listed && item.unsent && answering.rebase(item)) {
+			toasts.show('failed', '主控改了這一題，畫面上是新版本；已清掉你選的選項，請重新選擇（你打的文字和備註還在）。');
+		}
 	});
 
 	async function submit() {
