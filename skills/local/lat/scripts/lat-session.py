@@ -899,7 +899,8 @@ def waiting_questions(record):
     decisions = Path(record['decisions_path'])
     waiting = []
     for question in panel.board_questions(path):
-        if question['status'] == 'recorded':
+        # A submitted answer waits for the controller to record it, not for the user.
+        if question['status'] != 'pending':
             continue
         decision = decisions / f'{question["id"]}.md'
         if not decision.is_file():
@@ -951,9 +952,10 @@ def hook(client):
             message = payload.get('last_assistant_message')
             if not isinstance(message, str):
                 return
-        elif event == 'UserPromptSubmit':
-            pass
-        elif event != 'SessionStart' or payload.get('source') not in ('compact', 'resume'):
+        elif event == 'SessionStart':
+            if payload.get('source') not in ('compact', 'resume'):
+                return
+        elif event != 'UserPromptSubmit':
             return
         sid = session_id(payload.get('session_id'))
         cwd = Path(payload['cwd'])

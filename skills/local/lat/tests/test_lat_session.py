@@ -2212,6 +2212,12 @@ class SessionTests(unittest.TestCase):
         self.ask('LAT-B', '要關閉 Spec 嗎？（改）')
         self.ask('DONE', '已答的題', status='pending')
         self.decisions.joinpath('DONE.md').write_text('- status: answered\n')
+        self.ask('SENT', '已送出未記錄的題')
+        questions = self.work / '.lat/questions-orch.md'
+        questions.write_text(questions.read_text().replace(
+            'SENT · r1 · 待答\n\n背景。\n\nA. 好\n   影響。\n\n答覆：\n\n- [ ] 送出',
+            'SENT · r1 · 待答\n\n背景。\n\nA. 好\n   影響。\n\n答覆：A\n\n- [x] 送出'))
+        self.assertIn('[x]', questions.read_text())
         # A question another controller asked in the same workspace is not listed.
         other = self.work / '.lat/questions-other.md'
         other.write_text('## Theirs\nOTHER · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
@@ -2230,6 +2236,7 @@ class SessionTests(unittest.TestCase):
                 self.assertIn('改版', lines[3])
                 self.assertIn(str(SKILL / 'references/question-panel.md'), lines[3])
                 self.assertNotIn('DONE', text)
+                self.assertNotIn('SENT', text)
                 self.assertNotIn('OTHER', text)
 
     def test_prompt_reminder_shows_unknown_time_without_an_upsert_entry(self):

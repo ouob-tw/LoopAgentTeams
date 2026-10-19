@@ -1814,14 +1814,27 @@ def resolve_help(decisions_path, question_id, evidence, location, *, now=None):
         _replace_locked(path, updated)
 
 
-def withdraw_question(decisions_path, question_id, reason, source, *, now=None):
-    """Withdraw a pending record whose question no longer applies, keeping why and on what."""
+def withdraw_question(questions_path, decisions_path, question_id, reason, source, *, now=None):
+    """Withdraw a pending record whose question no longer applies, keeping why and on what.
+
+    A question the user already submitted an answer to is refused: that answer
+    is recorded instead, and cleanup would keep the question anyway.
+    """
+    questions_path = Path(questions_path)
     path = Path(decisions_path) / f"{question_id}.md"
     if not reason.strip() or not source.strip():
         raise ValueError("--reason and --source must not be empty")
     if not path.is_file():
         raise ValueError(f"decision record not found: {path}")
-    with _path_lock(path):
+    # Same order as a panel submit: the questions file lock, then the record's.
+    with _path_lock(questions_path), _path_lock(path):
+        document = _read_text_exact(questions_path) if questions_path.exists() else ""
+        if any(question["id"] == question_id
+               and (question["checked"] or question["malformed_submission"])
+               for question in parse_questions(document)):
+            raise ValueError(
+                f"{question_id} already has a submitted answer; record it instead of withdrawing"
+            )
         status = read_decision_status(path)
         if status.error or status.status != "pending":
             raise ValueError(
@@ -3433,7 +3446,7 @@ def main(argv=None):
             _warn_display(refresh_status_display(args.questions))
             return 0
         if args.command == "question" and args.question_command == "withdraw":
-            withdraw_question(args.decisions, args.id, args.reason, args.source)
+            withdraw_question(args.questions, args.decisions, args.id, args.reason, args.source)
             try:
                 cleanup = (cleanup_questions(args.questions, args.decisions)
                            if args.questions.exists() else None)
