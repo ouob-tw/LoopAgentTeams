@@ -19,12 +19,11 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 | 前端，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
 | 後端實作，複雜 | `claude-opus-5-5` | `medium` | `high` → `xhigh` → 換 `claude-fable-5-1` `medium` |
 | 後端實作，複雜以外 | `claude-sonnet-5-5` | `medium` | 同「前端，複雜以外」 |
+| 後端審查與 QA | `gpt-6.1-sol` | `medium` | `high` → 換 `gpt-6-astra` `medium` |
 | 其他或混合 | 依任務內容選上面一列 | | |
 | 使用者或呼叫的技能指定的模型 | 照指定 | 照指定，沒說就 `medium` | 不換模型，沿 `low` → `medium` → `high` → `xhigh` 一次升一級 |
 
 **複雜任務**：跨檔案實作、除錯、設計、審查、需自行權衡方案。其餘都不算複雜。
-
-後端的審查與 QA 給 `gpt-6.1-sol` `medium`，卡住時 `high` → 換 `gpt-6-astra` `medium`。
 
 `claude-fable-5-1` 只當升級終點，沒有任務預設用它。
 
@@ -32,7 +31,7 @@ description: "召喚其他 client 的 Agent 透過 HCOM 協作時使用：叫一
 
 使用者的指定優先於上表：
 
-- 只說「Codex」時用 `gpt-6.1-sol` `medium`；只說「Claude」時，複雜任務用 `claude-opus-5-5` `medium`，其餘用 `claude-sonnet-5-5` `medium`。不論任務是前端或後端，Claude 升級照該模型在表中的那一列，Codex 升級照上方後端審查與 QA 的那一句。
+- 只說「Codex」時用 `gpt-6.1-sol` `medium`；只說「Claude」時，複雜任務用 `claude-opus-5-5` `medium`，其餘用 `claude-sonnet-5-5` `medium`。不論任務是前端或後端，升級都照該模型在表中的那一列。
 - 指定了 effort 上限時，升級不超過它。
 - 指定表外模型時，先用工具查該 client 的可用模型，必要時查官方文件，確認正確 ID、可用性與支援的 effort。能唯一對應就用；有歧義或無法使用才詢問，不擅自換模型。不支援 `medium` 時用已查證的可用級別並說明。
 - Claude CLI 啟動時不驗證模型 ID，打錯的 ID 照樣啟動並顯示在畫面上，所以啟動成功不代表 ID 正確。
