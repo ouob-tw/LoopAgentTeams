@@ -5,6 +5,8 @@
 //   - `stdout`, `stderr`, `exit`: replace the launch output, add an error, set the exit code.
 //   - `sleepMs`: wait this long after printing, before exiting.
 //   - `resumed`: an agent a resume adds to the agent list, as `list --json` prints one.
+//   - `resumedHerdr`: an agent a resume adds to the fake Herdr's <dir>/herdr.json, as `agent list`
+//     prints one, with its pane (in the agent's workspace and folder).
 //   - `readOnly`: a file a resume makes read-only while it runs, so the board cannot write it.
 // Each launch or resume also logs to <dir>/hcom-env.jsonl the names of the variables it got that
 // look like an agent's, hcom's or Herdr's own (HCOM_*, CLAUDE*, CODEX_*, HERDR_*, AI_AGENT), and
@@ -13,11 +15,12 @@
 // agent's shell reaches hcom.
 // `list --json` is logged to <dir>/hcom-list-calls.jsonl instead and prints `agents` plus those
 // resumes added; `listFail: { exit, stderr }` acts out a failure. `listSeries` gives the agents of
-// the next lists after it was written in turn, before `agents` takes over. Without either, <dir>/hcom-running.json is listed: the
+// the next lists after it was written in turn, before `agents` takes over; an entry
+// `{ fail: { exit, stderr } }` in it acts out a failure of that one list. Without either, <dir>/hcom-running.json is listed: the
 // test fixture keeps every controller it ever bound there, so none is closed unless a test says so.
 // `kill <name>` is logged to hcom-calls.jsonl like a launch and follows `kill`: `exit`, `stderr`,
-// `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane leaves the
-// fake Herdr's <dir>/herdr.json, the way hcom closes it.
+// `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
+// Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it.
 import { appendFileSync, chmodSync, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -43,6 +46,10 @@ if (args[0] === 'list') {
 	// the plan was written count.
 	const listed = plan.listSeries?.length ? plan.listSeries.shift() : (plan.agents ?? defaultAgents());
 	if (plan.listSeries) writeFileSync(planFile, JSON.stringify(plan));
+	if (listed.fail) {
+		process.stderr.write(listed.fail.stderr ?? '');
+		process.exit(listed.fail.exit ?? 1);
+	}
 	process.stdout.write(JSON.stringify([...listed, ...added()]));
 	process.exit(0);
 }
@@ -66,6 +73,7 @@ if (args[0] === 'kill') {
 			if (existsSync(herdrFile) && panes.length) {
 				const herdr = JSON.parse(readFileSync(herdrFile, 'utf8'));
 				herdr.panes = (herdr.panes ?? []).filter((/** @type {any} */ pane) => !panes.includes(pane.pane_id));
+				herdr.agents = (herdr.agents ?? []).filter((/** @type {any} */ agent) => !panes.includes(agent.pane_id));
 				writeFileSync(herdrFile, JSON.stringify(herdr));
 			}
 		}
@@ -75,6 +83,14 @@ if (args[0] === 'kill') {
 } else {
 	const call = readFileSync(log, 'utf8').trim().split('\n').length;
 	if (args[0] === 'r' && plan.resumed) writeFileSync(addedFile, JSON.stringify([...added(), plan.resumed]));
+	if (args[0] === 'r' && plan.resumedHerdr) {
+		const herdrFile = join(dir, 'herdr.json');
+		const herdr = existsSync(herdrFile) ? JSON.parse(readFileSync(herdrFile, 'utf8')) : {};
+		const resumed = plan.resumedHerdr;
+		herdr.agents = [...(herdr.agents ?? []), resumed];
+		herdr.panes = [...(herdr.panes ?? []), { pane_id: resumed.pane_id, workspace_id: resumed.workspace_id, cwd: resumed.cwd }];
+		writeFileSync(herdrFile, JSON.stringify(herdr));
+	}
 	if (args[0] === 'r' && plan.readOnly) chmodSync(plan.readOnly, 0o444);
 
 	const name = plan.names === undefined ? `agent${call}` : plan.names[call - 1];

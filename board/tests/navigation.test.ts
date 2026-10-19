@@ -14,7 +14,7 @@ import {
 	type Place,
 	type Trail
 } from '../src/lib/board/navigation.ts';
-import type { Controller, InboxItem } from '../src/lib/board/types.ts';
+import type { Agent, Controller, InboxItem } from '../src/lib/board/types.ts';
 
 class BrowserHistory implements Trail {
 	entries: { search: string; depth?: number }[];
@@ -177,6 +177,17 @@ test('a screen comes back from the copy opened on this page, then the inbox, els
 	});
 	expect(viewOf({ kind: 'launch' }, { kept: new Map(), items: [], controllers: [] })).toEqual({ kind: 'launch' });
 	expect(viewOf(null, { kept: new Map(), items: [], controllers: [] })).toBeNull();
+});
+
+test('an agent of the 所有 Agent tab is named by its session ID, and missing once Herdr no longer lists it', () => {
+	const place = placeIn(new URLSearchParams('?agent=s%2F1'));
+	expect(place).toEqual({ kind: 'agent', id: 's/1' });
+	expect(searchOf(place)).toBe('?agent=s%2F1');
+	expect(samePlace(place, { kind: 'agent', id: 's/1' })).toBe(true);
+	expect(samePlace(place, { kind: 'controller', id: 's/1' })).toBe(false);
+	const agents = [{ id: 's/1' } as Agent];
+	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents })).toEqual({ kind: 'agent', id: 's/1' });
+	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents: [] })).toEqual({ kind: 'missing', what: 'agent' });
 });
 
 test("the list's scroll goes into its history entry beside the fields already there", () => {

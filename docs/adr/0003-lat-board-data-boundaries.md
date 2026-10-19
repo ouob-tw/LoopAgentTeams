@@ -17,6 +17,7 @@ status: accepted
    - 為什麼：被 HCOM 包住的 client，Herdr 回報的狀態會與實際不符（見 `docs/herdr-hcom-status-research.md`）。依賴它，看板的狀態就不可信。
    - 代價：看板分不出「正在執行指令」與「停在等待」這種更細的狀態；停住監控的通知這一版也不顯示。
    - 2026-10-16 補記（ouob-tw/LoopAgentTeams-work#130）：client 是否還在，改看 hcom 的 Agent 清單（`hcom list --json`）。有面板綁定、但 session ID 不在清單上的主控顯示為「已關閉」，處理方式與已結束相同；面板綁定照舊不動。hcom 清單不是 Herdr 的 Agent 狀態，喚醒本來就用它判斷。清單讀不到時沿用上次讀到的清單；看板啟動後還沒讀到過時，所有綁定照舊顯示為啟用中。
+   - 2026-10-19 補記（ouob-tw/LoopAgentTeams-work#162）：本決定只管主控名冊。看板新增的「所有 Agent」分頁以 Herdr 的 Agent 清單（`herdr agent list`）為名單來源；有接 HCOM 的 Agent 仍顯示 HCOM 的狀態，沒接 HCOM 的才顯示 Herdr 回報的狀態，因為它們沒有別的狀態來源，而 Herdr 狀態不準的問題只出現在被 HCOM 包住的 client。代價是同一分頁混用兩種狀態來源；HCOM 清單讀不到時，無法確認是否接 HCOM 的 Agent 不提供需要 HCOM 的控制。
 
 3. **從看板傳話，是把文字輸入到主控 client 的輸入框並送出，不用 HCOM 訊息。**
    - 為什麼：LAT 的授權規則只認使用者在對話裡說的話，HCOM 訊息不算真人核准。走輸入框，主控把它當成使用者的聊天訊息，現有規則不必修改。

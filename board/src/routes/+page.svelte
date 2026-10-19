@@ -13,11 +13,14 @@
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
 	import { advance, arrive, listScrollIn, placeIn, samePlace, searchOf, viewOf, withListScroll, type Place, type Trail, type View } from '#lib/board/navigation.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
-	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
+	import { folderName } from '#lib/board/agents.ts';
+	import { MIDDLE_TAB_KEY, remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { askedTogether } from '#lib/board/question-message.ts';
 	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
-	import type { InboxItem, InboxQuestion } from '#lib/board/types.ts';
+	import type { InboxItem, InboxQuestion, KnownAgent } from '#lib/board/types.ts';
+	import AgentInfo from '#lib/components/AgentInfo.svelte';
+	import AgentList from '#lib/components/AgentList.svelte';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
@@ -45,6 +48,18 @@
 		sort = remembered(SORT_KEY, ['time', 'project'], 'time');
 	});
 	let showArchive = $state(false);
+
+	/** The middle column's list: the inbox, or every agent Herdr lists. */
+	const MIDDLE_TABS = ['inbox', 'agents'] as const;
+	let middle = $state<(typeof MIDDLE_TABS)[number]>('inbox');
+	onMount(() => {
+		// An agent opened by its address shows on its own tab.
+		if (view?.kind !== 'agent') middle = remembered(MIDDLE_TAB_KEY, MIDDLE_TABS, 'inbox');
+	});
+	function setMiddle(next: (typeof MIDDLE_TABS)[number]) {
+		middle = next;
+		remember(MIDDLE_TAB_KEY, next);
+	}
 
 	onMount(() => appearance.restore());
 	let settings: Settings;
@@ -81,6 +96,7 @@
 	const controllers = $derived(board.snapshot.controllers);
 	const inbox = $derived(board.snapshot.inbox);
 	const processedCount = $derived(board.snapshot.processedCount);
+	const agents = $derived(board.snapshot.agents);
 	/** The report opened from the inbox list: it stays there, read, until another screen is shown. */
 	let lingering = $state<string | null>(null);
 	/** What the inbox lists: the questions and the unread reports, and the report still open. */
@@ -97,7 +113,7 @@
 	/** The answered questions of the controller whose conversation is shown. */
 	const answered = $derived(board.answered.questions);
 	const known = $derived([...inbox, ...processed, ...answered]);
-	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers });
+	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers, agents });
 	/** The screen the address names; a reload opens it again. */
 	const addressed = () => placeIn(new URLSearchParams(location.search));
 	/** The browser starts from the real address: under shallow routing page.url stays at the last full
@@ -119,6 +135,13 @@
 		return known.find((candidate) => candidate.key === openKey) ?? view.item;
 	});
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
+	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
+	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
+	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
+	// An agent opened by its address shows on the tab it belongs to.
+	$effect(() => {
+		if (view?.kind === 'agent') untrack(() => (middle = 'agents'));
+	});
 	// Read again with every new snapshot: a question of the inbox may have been answered and recorded.
 	$effect(() => {
 		void board.snapshot;
@@ -338,6 +361,7 @@
 		window.scrollTo(0, 0);
 	}
 	const openLaunch = () => go({ kind: 'launch' });
+	const openAgent = (id: string) => go({ kind: 'agent', id });
 
 	const pending = $derived(inbox.filter((entry) => entry.kind === 'question' && entry.unsent).length);
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
@@ -457,35 +481,52 @@
 		{@render resize('roster')}
 
 		<section class="inbox">
-			<Inbox
-				items={listedInbox}
-				{controllers}
-				{sort}
-				{showArchive}
-				archive={board.archive}
-				earlier={board.archiveEarlier}
-				onearlier={() => void board.loadEarlier()}
-				onretry={() => void board.loadArchive()}
-				{processedCount}
-				currentKey={openKey}
-				onsort={setSort}
-				onarchive={() => {
-					showArchive = true;
-					void board.loadArchive();
-				}}
-				onopen={openItem}
-				oncontroller={openController}
-			/>
+			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
+			     views, as the list they switch has no panel of its own around it. -->
+			<div class="middle-tabs" role="group" aria-label="清單">
+				<button type="button" data-middle="inbox" aria-pressed={middle === 'inbox'} onclick={() => setMiddle('inbox')}>信箱</button>
+				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => setMiddle('agents')}
+					>所有 Agent<small>{agents.length}</small></button
+				>
+			</div>
+			{#if middle === 'agents'}
+				<AgentList {agents} currentId={agentId} onopen={openAgent} />
+			{:else}
+				<Inbox
+					items={listedInbox}
+					{controllers}
+					{sort}
+					{showArchive}
+					archive={board.archive}
+					earlier={board.archiveEarlier}
+					onearlier={() => void board.loadEarlier()}
+					onretry={() => void board.loadArchive()}
+					{processedCount}
+					currentKey={openKey}
+					onsort={setSort}
+					onarchive={() => {
+						showArchive = true;
+						void board.loadArchive();
+					}}
+					onopen={openItem}
+					oncontroller={openController}
+				/>
+			{/if}
 		</section>
 		{@render resize('inbox')}
 
 		<section class="detail" bind:this={detail} tabindex="-1">
 			{#if view === null}
-				<p class="empty">從信箱選一則，或點主控名稱看它的資訊。</p>
+				<p class="empty">{middle === 'agents' ? '從所有 Agent 選一個，看它的對話紀錄。' : '從信箱選一則，或點主控名稱看它的資訊。'}</p>
 			{:else}
 				<div class="topbar">
 					<button onclick={back} aria-label="返回">←</button>
-					{#if owner}
+					{#if agent}
+						<span class="whose" title="{agent.folder} {agent.name}">
+							<strong>{folderName(agent.folder)}</strong>
+							<span class="handle">{agent.hcomName ? `@${agent.hcomName}` : agent.name}</span>
+						</span>
+					{:else if owner}
 						<!-- Tappable while the controller is on the roster; an archived item of one that left is not. -->
 						{#if controller}
 							<button class="whose" title="{owner.project} @{owner.hcomName}" onclick={tapTitle}>
@@ -506,10 +547,18 @@
 				{#if view.kind === 'missing'}
 					{#if view.what === 'controller'}
 						<p class="empty">這個主控已不存在。</p>
+					{:else if view.what === 'agent'}
+						<p class="empty">這個 Agent 已不在 Herdr 的清單上。</p>
 					{:else if board.archive === 'failed' || (board.archiveEarlier === 'failed' && board.earlierFrom)}
 						<p class="empty">信箱裡沒有這一則，已處理的項目也讀不出來；可以重新整理再試一次。</p>
 					{:else if !seeking}
 						<p class="empty">這一則已不存在。</p>
+					{/if}
+				{:else if view.kind === 'agent'}
+					{#if agent}
+						<AgentInfo {agent} />
+					{:else}
+						<p class="empty">這個 Agent 已不在 Herdr 的清單上：它已關閉。</p>
 					{/if}
 				{:else if view.kind === 'launch'}
 					<NewController {controllers} stamp={board.snapshot.generatedAt} onopen={openController} />
@@ -667,6 +716,45 @@
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
+	}
+	/* The middle column's two lists, as tabs like those of an information page. */
+	.middle-tabs {
+		display: flex;
+		flex: none;
+		gap: 0.2rem;
+		margin-bottom: 0.4rem;
+		border-bottom: 1px solid var(--line);
+	}
+	.middle-tabs button {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.35rem;
+		margin-bottom: -1px;
+		padding: 0.4rem 0.8rem;
+		border: 0;
+		border-bottom: 2px solid transparent;
+		border-radius: 0;
+		background: none;
+		font-size: max(0.85rem, var(--min-font, 0px));
+		color: var(--muted);
+	}
+	/* An underline, not the filled look of other pressed buttons. */
+	.middle-tabs button[aria-pressed='true'] {
+		background: none;
+		border-color: transparent;
+		border-bottom-color: var(--accent);
+		color: var(--text);
+		font-weight: 600;
+	}
+	:global(:root[data-theme='light']) .middle-tabs button[aria-pressed='true'] {
+		border-bottom-color: var(--text);
+	}
+	.middle-tabs small {
+		padding: 0 0.4rem;
+		border-radius: var(--radius-pill);
+		background: color-mix(in srgb, var(--text) 10%, var(--bg));
+		font-size: max(0.7rem, var(--min-font, 0px));
+		font-weight: 400;
 	}
 	.summary {
 		display: flex;

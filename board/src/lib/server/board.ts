@@ -11,8 +11,10 @@ import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.t
 import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
-import { openResumes, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
-import { tabToFront } from './herdr.ts';
+import { openResumes, openSwitches, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
+import type { SwitchView } from '../board/models.ts';
+import { listHerdrAgents, tabToFront } from './herdr.ts';
+import { createAgentRoster } from './agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 
@@ -45,6 +47,9 @@ export interface Board {
 	subscribe(stream: Stream): () => void;
 	/** Tell every open page that a Herdr tab moved: nothing in the snapshot shows tab order. */
 	tabMoved(): void;
+	/** Tell every open page that an agent's operation record grew: the snapshot does not hold it,
+	 *  and an action often changes nothing that it does. */
+	agentActed(agentId: string): void;
 	close(): void;
 }
 
@@ -62,6 +67,7 @@ function createBoard(): Board {
 	const readReports = createReportReader(config.reportsDir);
 	const helperDirs = helperDirectories();
 	const streams = new Set<Stream>();
+	const agentRoster = createAgentRoster();
 	let snapshot: BoardSnapshot | null = null;
 	let lastActive: HelperController[] = [];
 	let lastAnswered: AnsweredFile[] = [];
@@ -77,6 +83,8 @@ function createBoard(): Board {
 	let fallback: ReturnType<typeof setTimeout> | undefined;
 	let closed = false;
 	let sentLogError: string | null = null;
+	/** The open model switches as last read from the sent log. */
+	let lastSwitches: SwitchView[] = [];
 
 	const comparable = (value: BoardSnapshot) => JSON.stringify({ ...value, generatedAt: '' });
 
@@ -170,15 +178,22 @@ function createBoard(): Board {
 	}
 
 	async function read(): Promise<BoardSnapshot> {
-		const [helper, reports, agents] = await Promise.all([listControllers(config), readReports(), listAgents(config)]);
-		// Read after the list: the files are those of the controllers bound now, and of the sessions
-		// that reported. The sent answers settle against the same list alongside, so a read runs the
-		// helper at most twice in a row.
-		const [answered, settled] = await Promise.all([
-			readAnswered(config, answeredSources(helper.ok ? helper.controllers : lastActive, reports.files)),
-			helper.ok
-				? settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path)).catch((error: Error) => error)
-				: null
+		const [[helper, reports, answered, settled], agents, herdrAgents] = await Promise.all([
+			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
+				// Read after the list: the files are those of the controllers bound now, and of the
+				// sessions that reported. The sent answers settle against the same list alongside, so
+				// a read runs the helper at most twice in a row. hcom's and Herdr's lists are not
+				// waited for.
+				const [answered, settled] = await Promise.all([
+					readAnswered(config, answeredSources(helper.ok ? helper.controllers : lastActive, reports.files)),
+					helper.ok
+						? settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path)).catch((error: Error) => error)
+						: null
+				]);
+				return [helper, reports, answered, settled] as const;
+			}),
+			listAgents(config),
+			listHerdrAgents(config)
 		]);
 		if (answered.ok) lastAnswered = answered.files;
 		// A list that cannot be read must not close every controller: the last one read stands in.
@@ -195,6 +210,12 @@ function createBoard(): Board {
 				sentLogError = (error as Error).message;
 			}
 		}
+		try {
+			lastSwitches = openSwitches(config.stateDir, config.now(), config.launchWaitMs);
+		} catch {
+			// The last ones read stand in; the sent log's own views say why it cannot be read.
+		}
+		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches);
 		sources = {
 			active: lastActive,
 			helperError: helper.ok ? null : helper.reason,
@@ -202,6 +223,8 @@ function createBoard(): Board {
 			reportsError: reports.error,
 			running: lastRunning,
 			hcomError: agents.ok ? null : agents.reason,
+			agents: allAgents.agents,
+			herdrError: allAgents.herdrError,
 			pruneError,
 			answered: lastAnswered,
 			answeredError: answered.ok ? null : answered.reason
@@ -275,11 +298,11 @@ function createBoard(): Board {
 	}
 
 	// A change can land just after a read began and be missed by it, and the read that picks it up
-	// may take as long as the helper or hcom's list, read alongside it, is allowed to, and then the
-	// helper again for the answered questions and the sent answers. Both fit inside the fallback
-	// deadline when reads start this far apart; a list timeout too long for the deadline still leaves
-	// a short gap rather than none.
-	const readMs = Math.max(config.helperTimeoutMs, config.hcomListTimeoutMs) + config.helperTimeoutMs;
+	// may take as long as the helper twice in a row (the list, then the answered questions and the
+	// sent answers), or hcom's or Herdr's list read alongside, is allowed to. All fit inside the
+	// fallback deadline when reads start this far apart; a list timeout too long for the deadline
+	// still leaves a short gap rather than none.
+	const readMs = Math.max(2 * config.helperTimeoutMs, config.hcomListTimeoutMs, config.herdrTimeoutMs);
 	const fallbackGapMs = Math.max(config.fallbackMs - readMs - READ_SLACK_MS, READ_SLACK_MS);
 
 	function start(): Promise<BoardSnapshot> {
@@ -295,6 +318,7 @@ function createBoard(): Board {
 					inbox: [],
 					recordedKeys: [],
 					processedCount: 0,
+					agents: [],
 					errors: [`讀取資料失敗：${error.message}`]
 				};
 				for (const stream of streams) stream.send('board', JSON.stringify(snapshot));
@@ -321,6 +345,9 @@ function createBoard(): Board {
 			return () => streams.delete(stream);
 		},
 		tabMoved,
+		agentActed(agentId) {
+			for (const stream of streams) stream.send('agent-action', JSON.stringify({ agentId }));
+		},
 		close() {
 			closed = true;
 			clearTimeout(debounce);

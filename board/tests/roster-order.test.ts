@@ -85,6 +85,8 @@ test('groups by status, newest report first within a group, no report last, then
 		reportsError: null,
 		running: new Set(['w', 'k-new', 'k-old', 'k-none', 'd-b', 'd-a2', 'd-a1']),
 		hcomError: null,
+		agents: [],
+		herdrError: null,
 		pruneError: null,
 		answered: [],
 		answeredError: null

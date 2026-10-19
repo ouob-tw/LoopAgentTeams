@@ -1,5 +1,6 @@
 // Which Herdr workspace a controller's new tab opens in. Only where Herdr's panes are matters,
-// never the agent state Herdr shows for them.
+// never the agent state Herdr shows for them. The 所有 Agent tab is the exception: it lists every
+// agent Herdr detects, and shows Herdr's state for those hcom does not reach (ADR 0003).
 import { createConnection } from 'node:net';
 import { basename } from 'node:path';
 import type { BoardConfig } from './config.ts';
@@ -49,9 +50,9 @@ function inScope(cwd: string, scope: string): boolean {
  * The workspace for a project scope (a Git project root, or a folder that is not in one): the
  * workspace holding the most panes whose working folder is inside the scope, the lowest numbered
  * one on a tie. When no pane is inside it, a new workspace named after the scope folder is
- * created without taking the focus.
+ * created without taking the focus. A `prefer`red workspace that Herdr still lists comes first.
  */
-export async function chooseWorkspace(config: BoardConfig, scope: string): Promise<WorkspaceChoice> {
+export async function chooseWorkspace(config: BoardConfig, scope: string, prefer?: string): Promise<WorkspaceChoice> {
 	const [panes, workspaces] = await Promise.all([herdr(config, ['pane', 'list']), herdr(config, ['workspace', 'list'])]);
 	if ('reason' in panes) return { ok: false, reason: `讀不到 Herdr 的窗格清單：${panes.reason}` };
 	if ('reason' in workspaces) return { ok: false, reason: `讀不到 Herdr 的工作區清單：${workspaces.reason}` };
@@ -63,6 +64,9 @@ export async function chooseWorkspace(config: BoardConfig, scope: string): Promi
 	if (!Array.isArray(workspaceList) || !workspaceList.every(isWorkspace)) {
 		return { ok: false, reason: '讀不到 Herdr 的工作區清單：輸出不是預期的格式' };
 	}
+
+	const preferred = prefer === undefined ? undefined : workspaceList.find((workspace) => workspace.workspace_id === prefer);
+	if (preferred) return { ok: true, id: preferred.workspace_id, label: preferred.label, created: false };
 
 	const counts = new Map<string, number>();
 	for (const pane of paneList) {
@@ -184,4 +188,114 @@ export async function tabToFront(config: BoardConfig, paneId: string): Promise<s
 	// The insert index counts the tab being moved too; 0 is always the front.
 	const moved = await socketRequest(config, 'tab.move', { tab_id: pane.tab_id, insert_index: 0 });
 	return 'reason' in moved ? `移動分頁失敗：${moved.reason}` : null;
+}
+
+/** One agent Herdr detects in a pane, with the names of its workspace and tab. */
+export interface HerdrAgent {
+	/** Null while Herdr does not know the client's session yet. */
+	sessionId: string | null;
+	client: string;
+	/** Herdr's own view of what it does: `idle`, `working`, `blocked`, `done` or `unknown`. */
+	status: string;
+	cwd: string;
+	pane: string;
+	tab: string;
+	workspace: string;
+	/** The tab's label, else the terminal's title; null when Herdr gives neither. */
+	title: string | null;
+	workspaceLabel: string | null;
+	workspaceNumber: number | null;
+}
+
+interface ListedAgent {
+	agent: string;
+	agent_status: string;
+	cwd: string;
+	pane_id: string;
+	tab_id: string;
+	workspace_id: string;
+	agent_session?: { value?: unknown } | null;
+	terminal_title_stripped?: unknown;
+}
+
+const isListedAgent = (value: unknown): value is ListedAgent =>
+	['agent', 'agent_status', 'cwd', 'pane_id', 'tab_id', 'workspace_id'].every(
+		(field) => typeof (value as Record<string, unknown>)?.[field] === 'string'
+	);
+
+/** Every agent `herdr agent list` reports, across all workspaces, with the labels of `workspace
+ *  list` and `tab list`; or why they cannot be told. */
+export async function listHerdrAgents(config: BoardConfig): Promise<{ ok: true; agents: HerdrAgent[] } | { ok: false; reason: string }> {
+	const [agents, workspaces, tabs] = await Promise.all([
+		herdr(config, ['agent', 'list']),
+		herdr(config, ['workspace', 'list']),
+		herdr(config, ['tab', 'list'])
+	]);
+	if ('reason' in agents) return { ok: false, reason: `Herdr 的 Agent 清單讀不到：${agents.reason}` };
+	if ('reason' in workspaces) return { ok: false, reason: `Herdr 的工作區清單讀不到：${workspaces.reason}` };
+	if ('reason' in tabs) return { ok: false, reason: `Herdr 的分頁清單讀不到：${tabs.reason}` };
+	const agentList = agents.result.agents;
+	const workspaceList = workspaces.result.workspaces;
+	const tabList = tabs.result.tabs;
+	if (!Array.isArray(agentList) || !agentList.every(isListedAgent)) return { ok: false, reason: 'Herdr 的 Agent 清單不是預期的格式' };
+	if (!Array.isArray(workspaceList) || !workspaceList.every(isWorkspace)) return { ok: false, reason: 'Herdr 的工作區清單不是預期的格式' };
+	if (!Array.isArray(tabList) || !tabList.every((tab) => typeof tab?.tab_id === 'string' && typeof tab?.label === 'string')) {
+		return { ok: false, reason: 'Herdr 的分頁清單不是預期的格式' };
+	}
+	const workspaceOf = new Map(workspaceList.map((workspace) => [workspace.workspace_id, workspace]));
+	const tabLabel = new Map(tabList.map((tab) => [tab.tab_id as string, tab.label as string]));
+	return {
+		ok: true,
+		agents: agentList.map((agent) => {
+			const sessionId = agent.agent_session?.value;
+			const workspace = workspaceOf.get(agent.workspace_id);
+			const terminalTitle = typeof agent.terminal_title_stripped === 'string' ? agent.terminal_title_stripped : '';
+			return {
+				sessionId: typeof sessionId === 'string' && sessionId ? sessionId : null,
+				client: agent.agent,
+				status: agent.agent_status,
+				cwd: agent.cwd,
+				pane: agent.pane_id,
+				tab: agent.tab_id,
+				workspace: agent.workspace_id,
+				title: tabLabel.get(agent.tab_id) || terminalTitle || null,
+				workspaceLabel: workspace?.label ?? null,
+				workspaceNumber: workspace?.number ?? null
+			};
+		})
+	};
+}
+
+/** How a Herdr command that acts on an agent ended: done, or why not in Herdr's words. */
+export type HerdrAct = { ok: true } | { ok: false; timedOut: boolean; code: string | null; reason: string };
+
+/** Runs `herdr agent <args>` against one agent. */
+export function agentCommand(config: BoardConfig, args: string[]): Promise<HerdrAct> {
+	return herdrAct(config, ['agent', ...args]);
+}
+
+/** Closes a pane and what runs in it: `herdr pane close <pane>`. */
+export function closePane(config: BoardConfig, pane: string): Promise<HerdrAct> {
+	return herdrAct(config, ['pane', 'close', pane]);
+}
+
+/**
+ * Runs a Herdr command that acts on something. Herdr answers a request it refuses with JSON on
+ * standard error, `{"error":{"code","message"}}`; its message is the reason given.
+ */
+async function herdrAct(config: BoardConfig, args: string[]): Promise<HerdrAct> {
+	const run = await runExternal(config.herdrCommand, args, { timeoutMs: config.herdrTimeoutMs });
+	if (!run.failure) return { ok: true };
+	let error: { code?: unknown; message?: unknown } | undefined;
+	try {
+		error = JSON.parse(run.stderr.trim())?.error;
+	} catch {
+		// Not Herdr's own answer: the command's last line is the reason.
+	}
+	return {
+		ok: false,
+		timedOut: run.timedOut,
+		code: typeof error?.code === 'string' ? error.code : null,
+		reason: typeof error?.message === 'string' && error.message ? error.message : run.failure
+	};
 }

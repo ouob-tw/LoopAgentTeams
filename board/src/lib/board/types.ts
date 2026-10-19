@@ -1,4 +1,5 @@
 // The board's data model, shared by the server and the UI.
+import type { SwitchView } from './models.ts';
 
 /** Checked top to bottom; the first row that holds wins. */
 export type ControllerStatus = 'ended' | 'closed' | 'waiting' | 'delivered' | 'working';
@@ -173,6 +174,68 @@ export interface BoardSnapshot {
 	/** How many items are processed: read or archived reports and answered questions. They are
 	 *  fetched separately. */
 	processedCount: number;
+	/** Every agent Herdr lists, by workspace number and status; see `Agent`. */
+	agents: Agent[];
 	/** Source failures that cannot be attributed to one controller. */
 	errors: string[];
 }
+
+/** What an agent on the 所有 Agent tab is doing, in the order the tab lists them within a Herdr
+ *  workspace: who needs the user first. */
+export const AGENT_STATUSES = ['blocked', 'done', 'working', 'idle', 'unknown'] as const;
+export type AgentStatus = (typeof AGENT_STATUSES)[number];
+
+export const AGENT_STATUS_LABEL: Record<AgentStatus, string> = {
+	blocked: '等待輸入',
+	done: '已完成',
+	working: '工作中',
+	idle: '閒置',
+	unknown: '不明'
+};
+
+/**
+ * Whether an agent is reached through hcom: `linked` when hcom's list has its session ID or its
+ * Herdr pane, `none` when a list that could be read has neither, `unknown` when no list read since
+ * the agent appeared tells (none read since the board started, or it appeared while the list could
+ * not be read).
+ */
+export type AgentHcom = 'linked' | 'none' | 'unknown';
+
+export const AGENT_HCOM_LABEL: Record<AgentHcom, string> = {
+	linked: '有接 HCOM',
+	none: '沒接 HCOM',
+	unknown: 'HCOM 連線無法確認'
+};
+
+/** One agent Herdr lists, in any of its workspaces. */
+export interface Agent {
+	/** The client's session ID, as Herdr reports it: the agent's key everywhere on the board. Null
+	 *  while Herdr does not know it yet: such an agent is listed but cannot be opened. */
+	id: string | null;
+	/** Its HCOM name when linked, otherwise its Herdr tab's title. */
+	name: string;
+	/** The HCOM name, as last read; null unless linked. */
+	hcomName: string | null;
+	hcom: AgentHcom;
+	/** The client, as Herdr names it: `claude`, `codex` and the like. */
+	client: string;
+	/** The folder it works in. */
+	folder: string;
+	herdr: { workspace: string; workspaceLabel: string | null; workspaceNumber: number | null; tab: string; pane: string };
+	/** hcom's status when linked, Herdr's otherwise. */
+	status: AgentStatus;
+	statusSource: 'hcom' | 'herdr';
+	/** Bound as a LAT controller: its session ID is in the binding registry. */
+	controller: boolean;
+	/** Whether Herdr's list has it. One it does not is listed only while a model switch of it is
+	 *  open, from what the switch kept; nothing but continuing or giving up that switch is done to it. */
+	inHerdr: boolean;
+	/** Its open model switch, to continue or give up; null when it has none. */
+	switch: AgentSwitch | null;
+}
+
+/** An agent's open model switch, as its list entry carries it. */
+export type AgentSwitch = Pick<SwitchView, 'id' | 'time' | 'state' | 'error' | 'from' | 'to' | 'carriedEffort'>;
+
+/** An agent whose session Herdr knows: one that can be opened. */
+export type KnownAgent = Agent & { id: string };

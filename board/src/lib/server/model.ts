@@ -1,8 +1,10 @@
 // Turns the three LAT sources (binding registry and question files through the helper, report
-// records) into the board's data model. Herdr's agent status is never consulted; hcom's list of
-// agents only tells which bound controllers' clients are gone.
+// records) into the board's data model. Herdr's agent status is never consulted for controllers;
+// hcom's list of agents only tells which bound controllers' clients are gone. The 所有 Agent tab's
+// list is made apart (`agents.ts`) and only passed through.
 import { basename } from 'node:path';
 import type {
+	Agent,
 	AskingMessage,
 	BoardSnapshot,
 	Controller,
@@ -31,6 +33,10 @@ export interface Sources {
 	running: Set<string> | null;
 	/** Set when `running` is not from this read: why hcom's list could not be read. */
 	hcomError: string | null;
+	/** Every agent Herdr lists, for the 所有 Agent tab: the last list that could be read. */
+	agents: Agent[];
+	/** Set when `agents` is not from this read: why Herdr's list could not be read, and what shows instead. */
+	herdrError: string | null;
 	/** Why the report files past retention could not be deleted at this read; null when they were. */
 	pruneError: string | null;
 	/** The answered questions of every question file of a bound controller or of a session with a
@@ -339,6 +345,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 	if (sources.hcomError) {
 		errors.push(`${sources.hcomError}，${sources.running ? '已關閉的主控沿用上次讀到的清單判斷' : '主控暫時都顯示為啟用中'}`);
 	}
+	if (sources.herdrError) errors.push(sources.herdrError);
 	if (sources.pruneError) errors.push(`超過 30 天的回報紀錄沒有刪除，下次重讀再試：${sources.pruneError}`);
 	// A file asked for by path and by a controller's name says so once.
 	const unreadable = [
@@ -390,6 +397,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 			binding.questions.filter((question) => question.status === 'recorded').map((question) => questionKey(binding, question))
 		),
 		processedCount: (state ? processedItems(sources, state, now) : answeredItems(sources, now)).length,
+		agents: sources.agents,
 		errors
 	};
 }

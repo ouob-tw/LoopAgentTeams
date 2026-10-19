@@ -1,4 +1,4 @@
-// A controller's conversation history: which client and session a controller ID stands for, and
+// A controller's or another agent's conversation history: which client and session an ID stands for, and
 // a live feed that re-reads the client's record file whenever it changes, and a Claude
 // controller's usage file whenever the status line rewrites it.
 import type { TranscriptUpdate } from '../board/transcript.ts';
@@ -15,6 +15,12 @@ const RETRY_MS = 4_000;
 export async function transcriptSource(board: Board, controllerId: string): Promise<{ client: string; sessionId: string } | null> {
 	const controller = (await board.current()).controllers.find((candidate) => candidate.id === controllerId);
 	return controller ? { client: controller.client, sessionId: controller.id } : null;
+}
+
+/** The client and session of an agent the 所有 Agent tab lists; null for any other session ID. */
+export async function agentTranscriptSource(board: Board, sessionId: string): Promise<{ client: string; sessionId: string } | null> {
+	const agent = (await board.current()).agents.find((candidate) => candidate.id === sessionId);
+	return agent ? { client: agent.client, sessionId } : null;
 }
 
 /**
