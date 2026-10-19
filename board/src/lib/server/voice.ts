@@ -18,7 +18,8 @@ export const toTraditional = OpenCC.Converter({ from: 'cn', to: 'twp' });
 
 type Outcome<T> = { ok: true; value: T } | { ok: false; reason: string };
 
-const EXTENSIONS: Record<string, string> = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a', 'audio/mpeg': 'mp3', 'audio/wav': 'wav' };
+/** What browsers record in: Chrome and Firefox WebM or Ogg, Safari MP4. */
+const EXTENSIONS: Record<string, string> = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a' };
 
 /** What the service heard, as it wrote it. */
 async function recognize(config: BoardConfig, audio: Blob): Promise<Outcome<string>> {
@@ -44,7 +45,8 @@ async function recognize(config: BoardConfig, audio: Blob): Promise<Outcome<stri
 	if (response.status === 401) return { ok: false, reason: '語音辨識服務不接受看板的憑證' };
 	if (response.status === 413) return { ok: false, reason: '錄音太長，語音辨識服務不收' };
 	if (response.status === 422) return { ok: false, reason: '語音辨識服務無法處理這段錄音' };
-	const message = typeof body?.message === 'string' ? `：${body.message}` : '';
+	// The service's own words, with the token taken out should it ever repeat it.
+	const message = typeof body?.message === 'string' ? `：${body.message.replaceAll(config.asrToken!, '…')}` : '';
 	return { ok: false, reason: `語音辨識失敗（${response.status}）${message}` };
 }
 
@@ -84,7 +86,8 @@ export function tidy(config: BoardConfig, text: string): Promise<Outcome<string>
 		};
 		const timer = setTimeout(() => finish({ ok: false, reason: `Codex 逾時（${config.tidyTimeoutMs / 1000} 秒）` }), config.tidyTimeoutMs);
 		child.on('error', (error) => finish({ ok: false, reason: error.message }));
-		child.on('exit', () => finish({ ok: false, reason: 'Codex 提前結束' }));
+		// Not 'exit': that can come before its last lines are read.
+		child.on('close', () => finish({ ok: false, reason: 'Codex 提前結束' }));
 		child.stdin!.on('error', () => {
 			// The exit says why.
 		});
@@ -101,21 +104,26 @@ export function tidy(config: BoardConfig, text: string): Promise<Outcome<string>
 				write({ id, method, params });
 			});
 
-		createInterface({ input: child.stdout! }).on('line', (line) => {
-			let message: { id?: number; method?: string; params?: Record<string, any>; result?: Record<string, unknown>; error?: { message?: string } };
-			try {
-				message = JSON.parse(line);
-			} catch {
-				return;
-			}
+		/** The last agent message so far; a finished turn may also list it. */
+		let reply: string | undefined;
+		const read = (line: string) => {
+			const message: { id?: number; method?: string; params?: Record<string, any>; result?: Record<string, unknown>; error?: { message?: string } } = JSON.parse(line);
 			if (message.method === undefined && message.id !== undefined) return waiting.get(message.id)?.(message);
 			// A request of its own, such as an approval; nothing here can answer one.
 			if (message.id !== undefined) return void write({ id: message.id, error: { code: -32601, message: 'not supported' } });
+			if (message.method === 'item/completed' && message.params?.item?.type === 'agentMessage') reply = message.params.item.text;
 			if (message.method !== 'turn/completed') return;
-			const turn = message.params?.turn as { status: string; error: { message?: string } | null; items: { type: string; text?: string }[] };
-			const reply = turn.items.findLast((item) => item.type === 'agentMessage')?.text?.trim();
-			if (turn.status === 'completed' && reply) finish({ ok: true, value: toTraditional(reply) });
+			const turn = message.params?.turn as { status: string; error: { message?: string } | null; items?: { type: string; text?: string }[] };
+			const text = (turn.items?.findLast((item) => item.type === 'agentMessage')?.text ?? reply)?.trim();
+			if (turn.status === 'completed' && text) finish({ ok: true, value: toTraditional(text) });
 			else finish({ ok: false, reason: `Codex 沒有完成：${turn.error?.message ?? turn.status}` });
+		};
+		createInterface({ input: child.stdout! }).on('line', (line) => {
+			try {
+				read(line);
+			} catch (error) {
+				finish({ ok: false, reason: `Codex 回應看不懂：${(error as Error).message}` });
+			}
 		});
 
 		void (async () => {
@@ -130,7 +138,7 @@ export function tidy(config: BoardConfig, text: string): Promise<Outcome<string>
 			});
 			const threadId = (started.thread as { id: string }).id;
 			await request('turn/start', { threadId, effort: 'low', input: [{ type: 'text', text: `<transcript>\n${text}\n</transcript>`, text_elements: [] }] });
-		})();
+		})().catch((error: Error) => finish({ ok: false, reason: `Codex 回應看不懂：${error.message}` }));
 	});
 }
 

@@ -8,14 +8,25 @@
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { VoiceResult } from '#lib/board/voice.ts';
 
-	/** The speech recognition service takes up to 3 minutes; a recording stops on its own before. */
+	/** The speech recognition service takes recordings up to 3 minutes; one stops on its own before. */
 	const MAX_RECORDING_MS = 120_000;
+
+	type Phase = 'idle' | 'starting' | 'recording' | 'processing';
+	/** The button's name and tip in each phase. */
+	const LABELS: Record<Phase, { label: string; title: string }> = {
+		idle: { label: '語音輸入', title: '語音輸入' },
+		starting: { label: '開啟麥克風中', title: '開啟麥克風中…' },
+		recording: { label: '停止錄音', title: '停止錄音並轉成文字' },
+		processing: { label: '辨識中', title: '辨識中…' }
+	};
 
 	let { disabled = false, oninsert }: { disabled?: boolean; oninsert: (text: string) => void } = $props();
 
-	let phase = $state<'idle' | 'recording' | 'processing'>('idle');
+	let phase = $state<Phase>('idle');
 	let recorder: MediaRecorder | null = null;
 	let limit: ReturnType<typeof setTimeout> | undefined;
+	/** Set once the box has gone away; nothing may start recording after that. */
+	let gone = false;
 
 	function micFailure(error: unknown): string {
 		const name = (error as Error).name;
@@ -29,27 +40,33 @@
 			toasts.show('failed', '這個瀏覽器不能錄音；麥克風只在 HTTPS 或 localhost 的網址可用。');
 			return;
 		}
-		let stream: MediaStream;
+		// The button stays disabled while the browser asks for the mic, so a second click cannot
+		// open a second one.
+		phase = 'starting';
+		let stream: MediaStream | null = null;
 		try {
 			stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+			if (gone) throw null;
+			const current = new MediaRecorder(stream, { audioBitsPerSecond: 24_000 });
+			const chunks: Blob[] = [];
+			const tracks = stream.getTracks();
+			current.ondataavailable = (event) => chunks.push(event.data);
+			current.onstop = () => {
+				clearTimeout(limit);
+				for (const track of tracks) track.stop();
+				if (recorder !== current) return;
+				recorder = null;
+				void send(new Blob(chunks, { type: current.mimeType }));
+			};
+			current.start();
+			recorder = current;
+			phase = 'recording';
+			limit = setTimeout(stop, MAX_RECORDING_MS);
 		} catch (error) {
-			toasts.show('failed', micFailure(error));
-			return;
+			for (const track of stream?.getTracks() ?? []) track.stop();
+			phase = 'idle';
+			if (!gone) toasts.show('failed', micFailure(error));
 		}
-		const chunks: Blob[] = [];
-		const current = new MediaRecorder(stream, { audioBitsPerSecond: 24_000 });
-		current.ondataavailable = (event) => chunks.push(event.data);
-		current.onstop = () => {
-			clearTimeout(limit);
-			for (const track of stream.getTracks()) track.stop();
-			if (recorder !== current) return;
-			recorder = null;
-			void send(new Blob(chunks, { type: current.mimeType }));
-		};
-		recorder = current;
-		current.start();
-		phase = 'recording';
-		limit = setTimeout(stop, MAX_RECORDING_MS);
 	}
 
 	function stop() {
@@ -58,21 +75,27 @@
 	}
 
 	async function send(audio: Blob) {
+		let body: (VoiceResult & { error?: string }) | null;
+		let status: number;
 		try {
 			const response = await fetch('/api/voice', { method: 'POST', headers: { 'content-type': audio.type }, body: audio });
-			const body = (await response.json().catch(() => null)) as (VoiceResult & { error?: string }) | null;
-			if (!response.ok || !body?.text) return toasts.show('failed', body?.error ?? `語音輸入失敗（${response.status}）`);
-			oninsert(body.text);
-			if (body.notice) toasts.show('info', body.notice);
+			status = response.ok ? 200 : response.status;
+			body = await response.json().catch(() => null);
 		} catch {
 			toasts.show('failed', '語音輸入失敗：連不到看板');
+			return;
 		} finally {
 			phase = 'idle';
 		}
+		if (status !== 200 || !body?.text) return toasts.show('failed', body?.error ?? `語音輸入失敗（${status}）`);
+		if (gone) return;
+		oninsert(body.text);
+		if (body.notice) toasts.show('info', body.notice);
 	}
 
 	// A box that goes away mid-recording lets go of the mic and drops the recording.
 	$effect(() => () => {
+		gone = true;
 		const current = recorder;
 		recorder = null;
 		current?.stop();
@@ -83,10 +106,10 @@
 	type="button"
 	class="mic"
 	data-voice={phase}
-	aria-label={phase === 'recording' ? '停止錄音' : phase === 'processing' ? '辨識中' : '語音輸入'}
-	title={phase === 'recording' ? '停止錄音並轉成文字' : phase === 'processing' ? '辨識中…' : '語音輸入'}
+	aria-label={LABELS[phase].label}
+	title={LABELS[phase].title}
 	aria-pressed={phase === 'recording'}
-	disabled={(disabled && phase === 'idle') || phase === 'processing'}
+	disabled={(disabled && phase === 'idle') || phase === 'starting' || phase === 'processing'}
 	onclick={() => (phase === 'recording' ? stop() : void start())}
 >
 	{#if phase === 'recording'}

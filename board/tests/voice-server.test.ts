@@ -99,20 +99,30 @@ test('long speech is tidied by Codex and comes back in Traditional Chinese', asy
 	expect(calls[0].effort).toBe('low');
 });
 
+test('a reply sent only as a completed item is read too', async () => {
+	answer = transcript('这是一段超过十个字的语音辨识结果');
+	codexPlan({ reply: '这是语音辨识结果。', itemOnly: true });
+	expect(await speak()).toEqual({ status: 200, body: { text: '這是語音辨識結果。', notice: null } });
+});
+
 test('when Codex fails, quits or runs out of time, the converted text comes back with a notice', async () => {
 	answer = transcript('这是一段超过十个字的语音辨识结果');
 	const raw = '這是一段超過十個字的語音辨識結果';
 	for (const [plan, reason] of [
 		[{ fail: true }, 'usage limit reached'],
 		[{ exit: true }, 'Codex 提前結束'],
-		[{ hang: true }, 'Codex 逾時（2 秒）']
+		[{ hang: true }, 'Codex 逾時（2 秒）'],
+		[{ garbled: true }, 'Codex 回應看不懂']
 	] as const) {
 		codexPlan(plan);
+		const started = Date.now();
 		const { status, body } = await speak();
 		expect(status).toBe(200);
 		expect(body.text).toBe(raw);
 		expect(body.notice).toContain('Codex 整理失敗');
 		expect(body.notice).toContain(reason);
+		// Only a hang waits out the time limit.
+		if (!('hang' in plan)) expect(Date.now() - started).toBeLessThan(1_500);
 	}
 });
 
@@ -121,6 +131,9 @@ test('a service that refuses or fails is reported without the token', async () =
 	expect(await speak()).toEqual({ status: 502, body: { error: '語音辨識服務不接受看板的憑證' } });
 	answer = () => Response.json({ error: 'local_unavailable', message: '本地主機暫時不可用' }, { status: 503 });
 	expect(await speak()).toEqual({ status: 502, body: { error: '語音辨識失敗（503）：本地主機暫時不可用' } });
+	// Should the service ever repeat the token, it is taken out.
+	answer = () => Response.json({ error: 'worker_error', message: `bad header Bearer ${TOKEN}` }, { status: 503 });
+	expect(await speak()).toEqual({ status: 502, body: { error: '語音辨識失敗（503）：bad header Bearer …' } });
 	answer = transcript('   ');
 	expect(await speak()).toEqual({ status: 422, body: { error: '沒有聽出任何字' } });
 	expect((await speak(new Blob([], { type: 'audio/webm' }))).status).toBe(400);
