@@ -68,8 +68,8 @@
 		<span class="status"><StatusMark status={AGENT_MARK[agent.status]} decorative />{AGENT_STATUS_LABEL[agent.status]}</span>
 		<h2 title={agent.name}>{shortName(agent)}</h2>
 		{#if tabShown(agent)}<span class="handle"><span class="dot" aria-hidden="true">·</span>{tabShown(agent)}</span>{/if}
-		<!-- Not linked shows no badge, as on the list; the details say it. -->
-		<span class="chip">{folderName(agent.folder)}・{agent.client}{#if agent.hcom !== 'none'}・<HcomBadge hcom={agent.hcom} />{/if}</span>
+		<!-- Not linked shows no badge, as on the list. -->
+		<span class="chip">{folderName(agent.folder)}{#if agent.hcom !== 'none'}・<HcomBadge hcom={agent.hcom} />{/if}</span>
 		{#if agent.controller}
 			<span class="tag">LAT 主控</span>
 		{/if}
@@ -84,8 +84,6 @@
 			<dd>{agent.folder}</dd>
 			<dt>Herdr 位置</dt>
 			<dd>{where}</dd>
-			<dt>HCOM</dt>
-			<dd>{{ linked: '有接', none: '沒接', unknown: '無法確認' }[agent.hcom]}</dd>
 			<dt>狀態來源</dt>
 			<dd>{agent.statusSource === 'hcom' ? 'HCOM' : 'Herdr'}</dd>
 			<dt>Session ID</dt>

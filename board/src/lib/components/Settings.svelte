@@ -1,5 +1,5 @@
 <script lang="ts">
-	// The settings of this device: theme, overall size and smallest text size.
+	// The settings of this device: theme, overall size, smallest text size and how the usage line reads.
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { MIN_FONT, SCALE } from '#lib/board/prefs.ts';
 
@@ -70,6 +70,15 @@
 				<button disabled={appearance.minFont === null} onclick={() => appearance.resetMinFont()}>不限</button>
 			</div>
 			<p class="note">比這個小的字一律放大到這個大小，範圍 {MIN_FONT.min}px 到 {MIN_FONT.max}px。</p>
+		</section>
+
+		<section>
+			<h3>用量列</h3>
+			<div class="choices" role="group" aria-label="用量列">
+				<button aria-pressed={appearance.usageStyle === 'detailed'} onclick={() => appearance.setUsageStyle('detailed')}>詳細</button>
+				<button aria-pressed={appearance.usageStyle === 'compact'} onclick={() => appearance.setUsageStyle('compact')}>精簡</button>
+			</div>
+			<p class="note">資訊頁的用量小字；精簡用英文縮寫，例如 Ctx 62% • 5h 40%。</p>
 		</section>
 	</div>
 </dialog>
