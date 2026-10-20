@@ -3,6 +3,7 @@ import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -121,6 +122,7 @@ class SpawnWatchTests(unittest.TestCase):
         self.addCleanup(patcher.stop)
         self.watch = load()
         self.watch.herdr = FakeHerdr()
+        self.watch.LABEL_WAIT, self.watch.LABEL_POLL = 0.3, 0.01
 
     def run_watch(self, fake, tool='claude', model='claude-sonnet-5-5', effort='low', tag=None,
                   launched=None):
@@ -446,16 +448,20 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertIn('no herdr pane in hcom list for kilo', log.getvalue())
         self.assertEqual(fake.sent, [])
 
-    def test_pane_recorded_after_the_first_poll_still_gets_its_tab_renamed(self):
-        fake = FakeHcom(screens=[['❯'], CLAUDE_START], stop_after=50)
+    def test_pane_recorded_after_the_check_still_gets_its_tab_renamed(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
         fake.agents = [agent_row('kilo')]
         real = fake.__call__
+        lookups = []
 
         def call(*args, timeout=30):
-            if args[0] == 'term':  # the pane shows up once the agent's screen does
-                fake.agents = [agent_row('kilo', 'w1:p1')]
+            if args == ('list', '--json'):
+                lookups.append(args)
+                if len(lookups) == 3:  # hcom records the pane a little later
+                    fake.agents = [agent_row('kilo', 'w1:p1')]
             return real(*args, timeout=timeout)
         self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1'})
+        self.watch.LABEL_WAIT = 5
         self.watch.process_ids = lambda: {'kilo': 'kilo'}
         self.watch.launched_with = lambda tool, process_id: ('claude-sonnet-5-5', 'low')
         self.watch.hcom, self.watch.clock, self.watch.sleep = call, fake.clock, fake.sleep
@@ -463,6 +469,31 @@ class SpawnWatchTests(unittest.TestCase):
                          '--effort', 'low', '--after-id', '99'])
         self.assertIn(('tab', 'rename', 'w1:t1', 'vare-kilo'), self.watch.herdr.calls)
         self.assertEqual(fake.sent, [])
+
+    def test_slow_herdr_does_not_hold_up_the_check(self):
+        fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
+        fake.agents = [agent_row('kilo', 'w1:p1')]
+        real = fake.__call__
+        reported, herdr_saw_report = threading.Event(), []
+
+        def call(*args, timeout=30):
+            if args[0] == 'send':
+                reported.set()
+            return real(*args, timeout=timeout)
+
+        def herdr(*args):  # hangs until the check has reported, or gives up after 5s
+            herdr_saw_report.append(reported.wait(5))
+            return 1, 'timed out'
+        self.watch.herdr = herdr
+        self.watch.process_ids = lambda: {'kilo': 'kilo'}
+        self.watch.launched_with = lambda tool, process_id: ('claude-sonnet-5-5', 'low')
+        self.watch.hcom, self.watch.clock, self.watch.sleep = call, fake.clock, fake.sleep
+        with mock.patch('sys.stderr', new=io.StringIO()):
+            self.watch.main(['--spawner', 'vare', '--tool', 'claude',
+                             '--model', 'claude-sonnet-5-5', '--effort', 'low',
+                             '--after-id', '99'])
+        self.assertEqual(herdr_saw_report, [True])
+        self.assertIn('permission: expected bypass permissions on', fake.sent[0][-1])
 
     def test_agent_launched_in_another_terminal_is_skipped(self):
         fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)

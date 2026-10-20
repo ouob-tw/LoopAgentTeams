@@ -14,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -30,6 +31,8 @@ SCREEN_WINDOW = 20     # seconds of screen reading after the agent is ready
 DEADLINE = 180         # seconds after the launch to give up on confirming
 POLL = 0.3
 STOP_POLL = 5
+LABEL_WAIT = 180       # seconds to keep looking up new agents' panes for tab labels
+LABEL_POLL = 1
 ITEMS = ('model', 'effort', 'permission')
 EXPECTED_PERMISSION = {'claude': 'bypass permissions on', 'codex': 'YOLO'}
 EFFORTS = 'none|minimal|low|medium|high|xhigh|max'
@@ -177,6 +180,22 @@ def label_tabs(spawner, names):
         if code:
             log(f'tab {label} not set: herdr tab rename {tab}: {out.strip()[:200]}')
     return waiting
+
+
+def start_labels(spawner, names):
+    """Retry label_tabs on its own thread until every pane is known or LABEL_WAIT
+    seconds pass, so slow herdr calls never hold up the launch check."""
+    def run():
+        pending, end = names, time.monotonic() + LABEL_WAIT
+        while pending := label_tabs(spawner, pending):
+            if time.monotonic() >= end:
+                log(f"tabs not set: no herdr pane in hcom list for {', '.join(pending)}")
+                return
+            time.sleep(LABEL_POLL)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
 
 
 def watch_blocked(event, watched):
@@ -396,23 +415,18 @@ def release_stopped(watched):
             del watched[name]
 
 
-def check(tool, agents, expected, watched, launch_id, start, spawner, unattributed=None):
+def check(tool, agents, expected, watched, launch_id, start, unattributed=None):
     """Read screens (then session logs) until every item is known or time runs out.
 
-    Each poll also labels the tabs of agents whose pane has appeared in `hcom list`
-    since (label_tabs). Agents that stop meanwhile get no report.
+    Agents that stop meanwhile get no report.
     """
     seen = {name: {} for name in agents}
     reasons = {name: 'agent did not become ready' for name in agents}
     ready_at, logs, pending, stopped = {}, {}, set(agents), set()
-    unlabeled = list(agents)
     while pending and clock() - start < DEADLINE:
         release_stopped(watched)
         stopped |= {name for name in pending if stopped_since(name, launch_id)}
         pending -= stopped
-        unlabeled = [name for name in unlabeled if name not in stopped]
-        if unlabeled:
-            unlabeled = label_tabs(spawner, unlabeled)
         for name in sorted(pending):
             full = agents[name]
             code, out = hcom('term', full, '--json', timeout=10)
@@ -440,11 +454,6 @@ def check(tool, agents, expected, watched, launch_id, start, spawner, unattribut
                 pending.discard(name)
         sleep(POLL)
     stopped |= {name for name in agents if stopped_since(name, launch_id)}
-    unlabeled = [name for name in unlabeled if name not in stopped]
-    if unlabeled:
-        unlabeled = label_tabs(spawner, unlabeled)
-    if unlabeled:
-        log(f"tabs not set: no herdr pane in hcom list for {', '.join(unlabeled)}")
     return {name: report(tool, agents[name], expected, seen[name],
                          f'{reasons[name]} within {DEADLINE}s', unattributed)
             for name in agents if name not in stopped}
@@ -474,16 +483,19 @@ def main(argv=None):
         data, launch_id = batch['data'], batch['id']
         spawner = data.get('by') or args.spawner
         agents = {name: full_name(data, name) for name in data['instances'] if NAME.match(name)}
+        labels = start_labels(spawner, list(agents))
         expected = {'model': None if unattributed else args.model,
                     'effort': None if unattributed else args.effort,
                     'permission': EXPECTED_PERMISSION[args.tool]}
         for text in check(args.tool, agents, expected, watched, launch_id, start,
-                          spawner, unattributed).values():
+                          unattributed).values():
             if text:
                 notify(spawner, text)
     while watched:
         sleep(STOP_POLL)
         release_stopped(watched)
+    if batch:
+        labels.join()
     return 0
 
 if __name__ == '__main__':
