@@ -162,7 +162,7 @@ export function createClientErrorLimit(now: () => number = Date.now): ClientErro
 }
 
 /** Log one report from a page on `host` as the server checked it; the user agent comes from the
- *  request's own header, cut to its limit. Every field is redacted as well (see redact.ts). */
+ *  request's own header, redacted and cut to its limit. Every field is redacted as well (see redact.ts). */
 export async function logClientError(
 	deviceId: string,
 	report: Record<string, unknown>,
@@ -170,13 +170,15 @@ export async function logClientError(
 	userAgent: string | null,
 	redact: (text: string) => Promise<string>
 ): Promise<void> {
+	// Redacted before it is cut: a token cut in half would no longer be recognised.
+	const agent = userAgent && (await redact(userAgent));
 	const fields: Record<string, string | null> = {
 		kind: listed(report.kind, KINDS),
 		exc_type: listed(report.type, TYPES),
 		exc_message: knownMessage(report.message),
 		traceback: stackFrames(report.stack, host),
 		url: pagePath(report.url, host),
-		user_agent: userAgent && userAgent.length > MAX_USER_AGENT ? userAgent.slice(0, MAX_USER_AGENT) + TRUNCATED : userAgent
+		user_agent: agent && agent.length > MAX_USER_AGENT ? agent.slice(0, MAX_USER_AGENT) + TRUNCATED : agent
 	};
 	for (const [key, value] of Object.entries(fields)) if (value) fields[key] = await redact(value);
 	log('ERROR', 'board.client', 'client_error', { device_id: deviceId, ...fields });
