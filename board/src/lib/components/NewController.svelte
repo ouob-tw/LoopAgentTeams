@@ -1,12 +1,13 @@
 <script lang="ts">
-	// The new-controller page: pick the client, a folder controllers have run in and the first
-	// message, then follow the recent launches below until each controller is running: a launch's
-	// row leads to its agent's page once Herdr runs it, and to the controller's information page
-	// once it is active. With a
-	// Herdr workspace as its target it is the Herdr tab's new-agent form instead: a plain agent in
-	// that workspace, with an optional tab name and first message, no LAT start command and no Git
-	// project needed, followed until Herdr lists it.
+	// The new-controller page: the folder controllers have run in, typed with suggestions as it is,
+	// then the first message and the client's settings in one row, then follow the recent launches
+	// below until each controller is running: a launch's row leads to its agent's page once Herdr
+	// runs it, and to the controller's information page once it is active. With a Herdr workspace
+	// as its target it is the Herdr tab's new-agent form instead: a plain agent in that workspace,
+	// with an optional tab name and first message, no LAT start command and no Git project needed,
+	// followed until Herdr lists it. A folder that is not there yet is created when the form is sent.
 	import { untrack } from 'svelte';
+	import { folderName, pathMatches, suggestedFolders } from '#lib/board/folder-search.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import {
 		AGENT_LAUNCH_STATE_TEXT,
@@ -53,6 +54,8 @@
 
 	/** How often the list is read again while the page is open: a launch's wait runs out with no new data. */
 	const POLL_MS = 15_000;
+	/** How long typing pauses before the folder box is searched. */
+	const SEARCH_DELAY_MS = 120;
 
 	$effect(() => {
 		void stamp;
@@ -61,13 +64,13 @@
 	// The defaults follow the folder, and settings edited meanwhile.
 	$effect(() => {
 		void stamp;
-		void form.loadDefaults(form.folder);
+		void form.loadDefaults(form.folderPath ?? '');
 	});
 	$effect(() => {
 		const shown = form;
 		const timer = setInterval(() => {
 			void shown.load();
-			void shown.loadDefaults(shown.folder);
+			void shown.loadDefaults(shown.folderPath ?? '');
 		}, POLL_MS);
 		return () => clearInterval(timer);
 	});
@@ -75,7 +78,7 @@
 	const projects = $derived(form.list?.projects ?? []);
 	const options = $derived(form.list?.modelOptions[form.client]);
 	/** What the client uses when a field is left to it, as its settings give it for this folder. */
-	const defaults = $derived(form.defaults?.folder === form.folder ? form.defaults.clients[form.client] : undefined);
+	const defaults = $derived(form.defaults?.folder === (form.folderPath ?? '') ? form.defaults.clients[form.client] : undefined);
 	/** The first option of a field: the value the client's settings give, said outright. */
 	function defaultOption(value: string | null | undefined): string {
 		if (!defaults) return form.defaultsFailed ? '預設：看板讀取 client 設定失敗' : '預設：讀取中…';
@@ -92,20 +95,60 @@
 		form.effort = '';
 	}
 	const launches = $derived((form.list?.launches ?? []).filter((launch) => (launch.role === 'agent') === (target !== null)));
-	const selected = $derived(projects.find((project) => project.path === form.folder));
-	// A folder chosen by browsing is judged by the browser's answer, which resolves links like a launch does.
-	// A plain agent needs no Git project.
-	const needsInit = $derived(
-		target === null &&
-			(form.browsedGit !== null ? form.browsedGit === false : selected !== undefined && selected.exists && !selected.git)
-	);
 
-	/** The folders to pick from: for a plain agent those of the workspace's agents come first. */
-	const choices = $derived<{ path: string; inWorkspace: boolean; project: Project | undefined }[]>([
-		...(target?.folders ?? []).map((path) => ({ path, inWorkspace: true, project: projects.find((project) => project.path === path) })),
-		...projects.filter((project) => !target?.folders.includes(project.path)).map((project) => ({ path: project.path, inWorkspace: false, project }))
-	]);
-	const chosenListed = $derived(choices.some((choice) => choice.path === form.folder));
+	// --- The folder box ------------------------------------------------------------------------
+
+	// Search the folder as typed once typing pauses; only the answer for the text now in the box counts.
+	$effect(() => {
+		const shown = form;
+		const input = shown.folder;
+		if (shown.folderPath === null) return;
+		const timer = setTimeout(() => void shown.find(input), SEARCH_DELAY_MS);
+		return () => clearTimeout(timer);
+	});
+	const found = $derived(form.search?.input === form.folder ? form.search : null);
+	const typed = $derived(found?.target ?? null);
+	const searchFailed = $derived(form.searchFailed === form.folder);
+
+	/** One row of the folder list: a known folder, or one under the typed level. */
+	interface Row {
+		path: string;
+		/** In a Git project; null when not known. */
+		git: boolean | null;
+		inWorkspace: boolean;
+		project: Project | undefined;
+	}
+	const known = (path: string): Row => {
+		const project = projects.find((candidate) => candidate.path === path);
+		return { path, git: project?.exists ? project.git : null, inWorkspace: target?.folders.includes(path) ?? false, project };
+	};
+	/** Before anything is typed, the most recent folders; then the known folders matching what is
+	 *  typed, and the folders under the typed level, each once. */
+	const rows = $derived.by<Row[]>(() => {
+		const all = [...(target?.folders ?? []), ...projects.map((project) => project.path)];
+		if (!form.folderEdited || form.folder.trim() === '') return suggestedFolders(target?.folders ?? [], projects.map((project) => project.path)).map(known);
+		const home = form.list?.home ?? '';
+		const matched = [...new Set(all)].filter((path) => pathMatches(path, form.folder, home)).map(known);
+		const listed = (found?.entries ?? [])
+			.filter((entry) => !matched.some((row) => row.path === entry.path))
+			.map((entry) => ({ ...known(entry.path), git: entry.git }));
+		return [...matched, ...listed];
+	});
+
+	/** What a row says about its folder: whether the workspace uses it, when it was last used or
+	 *  that it is gone, and whether it is in a Git project. */
+	function rowFacts(row: Row): string {
+		const facts: string[] = [];
+		if (row.inWorkspace) facts.push('這個工作區的 Agent 在用');
+		if (row.project) facts.push(row.project.exists ? `最近 ${formatTime(row.project.lastUsedAt)}` : '資料夾已不存在');
+		if (row.git !== null) facts.push(row.git ? '在 Git 專案裡' : '不在 Git 專案裡');
+		return facts.join('・');
+	}
+
+	let listOpen = $state(false);
+	/** The row the arrow keys are on; -1 for none. */
+	let active = $state(-1);
+	const shownRows = $derived(listOpen ? rows : []);
 
 	/** The folder used most recently: a controller's project or a plain agent's folder. */
 	const recentFolder = $derived.by(() => {
@@ -125,29 +168,86 @@
 				agentLaunching.workspace = target.workspace;
 				agentLaunching.tabName = '';
 				pick(fallback);
-			} else if (agentLaunching.folder === '' && fallback) pick(fallback);
+			} else if (agentLaunching.folder === '' && !agentLaunching.folderEdited && fallback) pick(fallback);
+		});
+	});
+	// A new controller starts from the most recent folder, unless the box was typed in.
+	$effect(() => {
+		if (target) return;
+		const fallback = recentFolder;
+		untrack(() => {
+			if (launching.folder === '' && !launching.folderEdited && fallback) pick(fallback);
 		});
 	});
 
-	let sending = $state(false);
-	const ready = $derived(
-		!sending && form.folder !== '' && (target !== null || (form.text.trim() !== '' && (!needsInit || form.gitInit)))
-	);
-
-	const name = (path: string) => path.split('/').filter(Boolean).at(-1) ?? path;
-
-	function pick(path: string, browsedGit: boolean | null = null) {
+	function pick(path: string) {
 		form.folder = path;
-		form.browsedGit = browsedGit;
+		form.folderEdited = false;
 		// Consent to `git init` is for one folder only.
 		form.gitInit = false;
 	}
 
-	let browserOpen = $state(false);
-	function toggleBrowser() {
-		browserOpen = !browserOpen;
-		if (browserOpen && !form.browse) void form.open();
+	function typing() {
+		form.folderEdited = true;
+		form.gitInit = false;
+		listOpen = true;
+		active = -1;
 	}
+
+	function choose(row: Row) {
+		pick(row.path);
+		listOpen = false;
+		active = -1;
+	}
+
+	/** Arrows move along the list, Tab takes the folder and goes on into it, Enter takes it, Esc
+	 *  closes the list. Enter never sends the form from here. */
+	function keydown(event: KeyboardEvent) {
+		const count = shownRows.length;
+		if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
+			event.preventDefault();
+			if (!listOpen) {
+				listOpen = true;
+				return;
+			}
+			if (count) active = event.key === 'ArrowDown' ? (active + 1) % count : active <= 0 ? count - 1 : active - 1;
+		} else if (event.key === 'Tab' && !event.shiftKey && count) {
+			event.preventDefault();
+			form.folder = `${shownRows[Math.max(active, 0)]!.path.replace(/\/$/, '')}/`;
+			typing();
+		} else if (event.key === 'Enter') {
+			event.preventDefault();
+			if (active >= 0 && active < count) choose(shownRows[active]!);
+			else listOpen = false;
+		} else if (event.key === 'Escape' && listOpen) {
+			event.preventDefault();
+			listOpen = false;
+			active = -1;
+		}
+	}
+
+	// A plain agent needs no Git project; a folder still to be created is made one with the controller.
+	const needsInit = $derived(target === null && typed?.state === 'folder' && !typed.git);
+	const willCreate = $derived(typed?.state === 'missing' && typed.cannotCreate === null);
+	/** Why the folder cannot be sent as it is typed; null when it can. */
+	const folderProblem = $derived.by(() => {
+		if (form.folder.trim() === '') return '請輸入資料夾。';
+		if (form.folderPath === null) return form.list ? '請輸入完整路徑（以 / 或 ~ 開頭）。' : null;
+		if (typed?.state === 'not-folder') return '這不是資料夾。';
+		if (typed?.state === 'missing' && typed.cannotCreate) return `這個資料夾不存在，也不能建立：${typed.cannotCreate}。`;
+		return null;
+	});
+	// Until the search says how the folder stands it cannot be sent, unless the search failed:
+	// then the server judges it.
+	const folderKnown = $derived(typed !== null || searchFailed);
+
+	let sending = $state(false);
+	const ready = $derived(
+		!sending &&
+			folderProblem === null &&
+			folderKnown &&
+			(target !== null || (form.text.trim() !== '' && (!needsInit || form.gitInit)))
+	);
 
 	// A plain agent's message and tab name stay until it appears in Herdr: a time-out keeps them to send again.
 	$effect(() => {
@@ -168,9 +268,12 @@
 		const sent = form;
 		const sentText = sent.text;
 		const sentTab = sent.tabName;
+		const sentFolder = sent.folder;
 		sending = true;
 		const result = await sent.start();
 		sending = false;
+		// The folder may have been created: what the box says about it is read again.
+		if (sent.folder === sentFolder && sent.folderPath !== null) void sent.find(sentFolder);
 		if (target) {
 			if (result.ok && result.launchId) sent.sent = { launchId: result.launchId, text: sentText, tabName: sentTab };
 		} else if (result.ok && sent.text === sentText) {
@@ -203,18 +306,76 @@
 			void submit();
 		}}
 	>
-		<fieldset class="clients">
-			<legend>Client</legend>
-			{#each LAUNCH_CLIENTS as client (client)}
-				<label>
-					<input type="radio" name="client" value={client} checked={form.client === client} onchange={() => chooseClient(client)} />
-					{CLIENT_LABEL[client]}
-				</label>
-			{/each}
-		</fieldset>
+		<div class="folder">
+			<label for="folder-box">資料夾</label>
+			<div class="combo">
+				<input
+					id="folder-box"
+					role="combobox"
+					autocomplete="off"
+					spellcheck="false"
+					aria-autocomplete="list"
+					aria-expanded={shownRows.length > 0}
+					aria-controls="folder-list"
+					aria-activedescendant={active >= 0 && active < shownRows.length ? `folder-row-${active}` : undefined}
+					placeholder="~/專案資料夾"
+					bind:value={form.folder}
+					oninput={typing}
+					onfocus={() => (listOpen = true)}
+					onblur={() => {
+						listOpen = false;
+						active = -1;
+					}}
+					onkeydown={keydown}
+				/>
+				{#if shownRows.length}
+					<!-- Pressing a row keeps the focus in the box, so the list is not closed before the click. -->
+					<ul id="folder-list" role="listbox" aria-label="符合的資料夾" onmousedown={(event) => event.preventDefault()}>
+						{#each shownRows as row, index (row.path)}
+							<li id={`folder-row-${index}`} role="option" aria-selected={index === active} class:active={index === active}>
+								<button type="button" tabindex="-1" onclick={() => choose(row)}>
+									<strong>{folderName(row.path)}</strong>
+									<span class="path">{row.path}</span>
+									<span class="when">{rowFacts(row)}</span>
+								</button>
+							</li>
+						{/each}
+					</ul>
+				{/if}
+			</div>
+			{#if form.loadFailed && !form.list}
+				<p class="failed" role="alert">專案清單讀取失敗。</p>
+			{:else if form.list?.projectsError}
+				<p class="failed" role="alert">專案清單讀取失敗：{form.list.projectsError}</p>
+			{/if}
+			{#if folderProblem && form.folderEdited}
+				<p class="failed">{folderProblem}</p>
+			{:else if willCreate}
+				<p class="note">這個資料夾還不存在，送出時會建立{target === null && !typed?.git ? '並 git init' : ''}。</p>
+			{:else if searchFailed}
+				<p class="note">讀不到這個資料夾的狀態，送出時由看板確認。</p>
+			{/if}
+			{#if needsInit}
+				<label class="init"><input type="checkbox" bind:checked={form.gitInit} /> 不在 Git 專案裡：先 git init 再開</label>
+			{/if}
+		</div>
 
-		<fieldset class="settings">
-			<legend>模型與思考強度</legend>
+		<MessageBox
+			bind:value={form.text}
+			label={target ? '第一則訊息（選填）' : '第一句話'}
+			placeholder={`${target ? '第一則訊息（選填）' : '第一句話'}（${enterMakesNewline.current ? 'Enter 換行，按鈕送出' : 'Enter 送出，Shift+Enter 換行'}）`}
+			onsend={submit}
+		/>
+
+		<div class="settings">
+			<div class="clients" role="radiogroup" aria-label="Client">
+				{#each LAUNCH_CLIENTS as client (client)}
+					<label>
+						<input type="radio" name="client" value={client} checked={form.client === client} onchange={() => chooseClient(client)} />
+						{CLIENT_LABEL[client]}
+					</label>
+				{/each}
+			</div>
 			<label>
 				模型
 				<select bind:value={form.model}>
@@ -233,108 +394,22 @@
 					{/each}
 				</select>
 			</label>
-		</fieldset>
-
-		<fieldset class="folders">
-			<legend>{target ? '資料夾（這個工作區的 Agent 在用的在前，再來是曾開過主控的專案）' : '資料夾（曾開過主控的專案，最近使用的在前）'}</legend>
-			{#if form.loadFailed && !form.list}
-				<p class="failed" role="alert">專案清單讀取失敗。</p>
-			{:else if form.list?.projectsError}
-				<p class="failed" role="alert">專案清單讀取失敗：{form.list.projectsError}</p>
-			{/if}
-			{#each choices as choice (choice.path)}
-				<label class="project">
-					<input type="radio" name="folder" value={choice.path} checked={form.folder === choice.path} onchange={() => pick(choice.path)} />
-					<span>
-						<strong>{name(choice.path)}</strong>
-						<span class="path">{choice.path}</span>
-						<span class="when">
-							{#if choice.inWorkspace}這個工作區的 Agent 在用{#if choice.project}・{/if}{/if}{#if choice.project}最近 {formatTime(choice.project.lastUsedAt)}{#if !choice.project.exists}・資料夾已不存在{:else if !choice.project.git && !target}・不在 Git 專案裡{/if}{/if}
-						</span>
-					</span>
+			{#if target}
+				<label class="tab-name">
+					分頁名稱（選填）
+					<input bind:value={form.tabName} maxlength={TAB_NAME_MAX} placeholder="留空用預設名稱" />
 				</label>
-			{:else}
-				{#if form.list}<p class="none">還沒有主控回報過的專案。</p>{/if}
-			{/each}
-		</fieldset>
-
-		<fieldset class="browser">
-			<legend>其他資料夾</legend>
-			{#if form.folder && !chosenListed}
-				<p class="chosen">已選：<span class="path">{form.folder}</span></p>
 			{/if}
-			<button type="button" class="toggle" aria-expanded={browserOpen} onclick={toggleBrowser}>
-				{browserOpen ? '收起瀏覽' : '從家目錄逐層瀏覽…'}
-			</button>
-			{#if browserOpen}
-				{#if form.browseFailed}
-					<p class="failed" role="alert">資料夾清單讀取失敗，請再試一次。</p>
-				{/if}
-				{#if form.browse}
-					{@const level = form.browse}
-					<div class="level" class:busy={form.browsing}>
-						<p class="path here">{level.path}{level.git ? '・在 Git 專案裡' : '・不在 Git 專案裡'}</p>
-						<div class="nav">
-							<button type="button" disabled={level.parent === null || form.browsing} onclick={() => void form.open(level.parent!)}>↑ 上一層</button>
-							<button type="button" disabled={level.path === level.home || form.browsing} onclick={() => void form.open()}>⌂ 家目錄</button>
-							<button type="button" class="use" disabled={form.folder === level.path} onclick={() => {
-									pick(level.path, level.git);
-									browserOpen = false;
-								}}>
-								{form.folder === level.path ? '已選這個資料夾' : '選這個資料夾'}
-							</button>
-						</div>
-						{#if level.error}
-							<p class="failed" role="alert">讀不到這個資料夾：{level.error}</p>
-						{:else}
-							<ul>
-								{#each level.entries as entry (entry.path)}
-									<li>
-										<button type="button" onclick={() => void form.open(entry.path)}>
-											<span>{entry.name}</span>{#if entry.git}<span class="tag">Git</span>{/if}
-										</button>
-									</li>
-								{:else}
-									<li class="none">這裡沒有可見的資料夾。</li>
-								{/each}
-							</ul>
-						{/if}
-					</div>
-				{/if}
-			{/if}
-		</fieldset>
-
-		{#if needsInit}
-			<div class="init">
-				<p>這個資料夾不在 Git 專案裡，主控在這裡不能啟用。勾選後看板會先在這裡執行一次 <code>git init</code>，成功才開啟主控。</p>
-				<label><input type="checkbox" bind:checked={form.gitInit} /> 先 git init 再開</label>
-			</div>
-		{/if}
-
-		{#if target}
-			<label class="tab-name">
-				分頁名稱（選填）
-				<input bind:value={form.tabName} maxlength={TAB_NAME_MAX} placeholder="留空就用 HCOM 與 Herdr 預設的名稱" />
-			</label>
-		{/if}
-
-		<div class="first">
-			<MessageBox
-				bind:value={form.text}
-				label={target ? '第一則訊息（選填）' : '第一句話'}
-				placeholder={`${target ? '第一則訊息（選填）' : '第一句話'}（${enterMakesNewline.current ? 'Enter 換行，按鈕送出' : 'Enter 送出，Shift+Enter 換行'}）`}
-				onsend={submit}
-			/>
-			<p class="note">
-				{#if target}
-					看板會經 HCOM 在 {target.label} 開一個新分頁，不送 LAT 啟動指令；出現在 Herdr 後{form.tabName.trim() ? '改成上面的分頁名稱，再' : ''}移到這個工作區最前面。Agent 開始後就會用到額度；第一次在某個資料夾開 Claude 時，可能要先到 Herdr 分頁確認信任這個資料夾。
-				{:else}
-					送出的第一則訊息會是 <code>{latCommand(form.client, '你的話')}</code>。看板會在該專案的 Herdr 工作區開一個新分頁，主控開始後就會用到額度；第一次在某個資料夾開 Claude 時，可能要先到 Herdr 分頁確認信任這個資料夾。
-				{/if}
-			</p>
 		</div>
 
 		<button class="primary" disabled={!ready}>{target ? (sending ? '開新中…' : '開新 Agent') : sending ? '新建中…' : '新建主控'}</button>
+		<p class="note">
+			{#if target}
+				不送 LAT 啟動指令，Agent 開始後就會用到額度；第一次在某個資料夾開 Claude 時，可能要先到 Herdr 分頁確認信任這個資料夾。
+			{:else}
+				第一則訊息會是 <code>{latCommand(form.client, '你的話')}</code>，主控開始後就會用到額度；第一次在某個資料夾開 Claude 時，可能要先到 Herdr 分頁確認信任這個資料夾。
+			{/if}
+		</p>
 	</form>
 </section>
 
@@ -354,6 +429,7 @@
 						{#if launch.herdrWorkspace}
 							<span>Herdr 工作區 {launch.herdrWorkspaceLabel || launch.herdrWorkspace}{launch.workspaceCreated ? '（新建）' : ''}</span>
 						{/if}
+						{#if launch.folderCreated}<span>已新建資料夾</span>{/if}
 						{#if launch.gitInit}<span>已 git init</span>{/if}
 						{#if launch.tabName}<span>分頁名稱 {launch.tabName}</span>{/if}
 					</p>
@@ -406,52 +482,62 @@
 		font-size: max(1.1rem, var(--min-font, 0px));
 	}
 	h3,
-	legend {
+	.folder > label {
 		margin: 0;
 		padding: 0;
 		font-size: max(0.8rem, var(--min-font, 0px));
 		font-weight: 600;
 		color: var(--muted);
 	}
-	fieldset {
+	.folder {
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
-		margin: 0;
-		padding: 0;
-		border: 0;
 		min-width: 0;
 	}
-	.clients,
-	.settings {
-		flex-direction: row;
-		flex-wrap: wrap;
-		gap: 0.35rem 1.2rem;
+	.combo {
+		position: relative;
 	}
-	.clients legend,
-	.settings legend {
+	.combo input {
 		width: 100%;
-		margin-bottom: 0.35rem;
+		box-sizing: border-box;
+		font-family: var(--mono);
 	}
-	.settings label {
+	.combo ul {
+		position: absolute;
+		z-index: 5;
+		top: calc(100% + 2px);
+		left: 0;
+		right: 0;
 		display: flex;
 		flex-direction: column;
-		gap: 0.2rem;
-		font-size: max(0.85rem, var(--min-font, 0px));
-	}
-	.project {
-		display: flex;
-		gap: 0.6rem;
-		align-items: flex-start;
-		padding: 0.5rem 0.7rem;
+		margin: 0;
+		padding: 0.2rem;
+		list-style: none;
+		max-height: 50vh;
+		overflow-y: auto;
+		background: var(--surface);
 		border: 1px solid var(--line);
 		border-radius: var(--radius);
-		cursor: pointer;
 	}
-	.project > span {
+	.combo li button {
 		display: flex;
 		flex-direction: column;
-		min-width: 0;
+		align-items: flex-start;
+		gap: 0.1rem;
+		width: 100%;
+		min-height: 2.5rem;
+		padding: 0.4rem 0.6rem;
+		border: 0;
+		background: none;
+		color: inherit;
+		text-align: left;
+		overflow-wrap: anywhere;
+	}
+	.combo li.active button,
+	.combo li button:hover {
+		background: var(--bg);
+		outline: 1px solid var(--accent);
 	}
 	.path,
 	.when {
@@ -462,71 +548,39 @@
 	.path {
 		font-family: var(--mono);
 	}
-	.chosen {
+	.init {
+		align-self: flex-start;
+		padding: 0.4rem 0.6rem;
+		border: 1px solid var(--warn);
+		border-radius: var(--radius);
 		font-size: max(0.85rem, var(--min-font, 0px));
 	}
-	.toggle,
-	.nav button,
-	.level li button {
-		padding: 0.5rem 0.7rem;
-		min-height: 2.5rem;
-		border: 1px solid var(--line);
-		border-radius: var(--radius);
-		background: none;
-		color: inherit;
-		text-align: left;
-	}
-	.toggle {
-		align-self: flex-start;
-	}
-	.level {
-		display: flex;
-		flex-direction: column;
-		gap: 0.5rem;
-	}
-	.level.busy {
-		opacity: 0.6;
-	}
-	.here {
-		overflow-wrap: anywhere;
-	}
-	.nav {
+	.settings {
 		display: flex;
 		flex-wrap: wrap;
-		gap: 0.4rem;
+		align-items: flex-end;
+		gap: 0.5rem 1rem;
 	}
-	.level ul {
+	.settings > label {
 		display: flex;
 		flex-direction: column;
-		gap: 0.3rem;
-		margin: 0;
-		padding: 0;
-		list-style: none;
-		max-height: 50vh;
-		overflow-y: auto;
+		gap: 0.2rem;
+		min-width: 0;
+		font-size: max(0.85rem, var(--min-font, 0px));
 	}
-	.level li button {
+	.settings select {
+		max-width: 100%;
+	}
+	.clients {
 		display: flex;
-		justify-content: space-between;
-		gap: 0.6rem;
-		width: 100%;
-		overflow-wrap: anywhere;
+		gap: 0.8rem;
+		padding-bottom: 0.4rem;
 	}
-	.tag {
-		font-size: max(0.75rem, var(--min-font, 0px));
-		color: var(--muted);
+	.tab-name {
+		flex: 1 1 12rem;
 	}
 	button:disabled {
 		opacity: 0.5;
-	}
-	.init {
-		padding: 0.5rem 0.7rem;
-		border: 1px solid var(--warn);
-		border-radius: var(--radius);
-	}
-	.init p {
-		margin: 0 0 0.35rem;
-		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	p {
 		margin: 0;
@@ -537,19 +591,8 @@
 		color: var(--muted);
 		overflow-wrap: anywhere;
 	}
-	.first {
-		display: flex;
-		flex-direction: column;
-		gap: 0.35rem;
-	}
 	form > .primary {
 		align-self: flex-start;
-	}
-	.tab-name {
-		display: flex;
-		flex-direction: column;
-		gap: 0.2rem;
-		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 	ol {
 		display: grid;
@@ -558,7 +601,7 @@
 		padding: 0;
 		list-style: none;
 	}
-	li {
+	ol > li {
 		display: flex;
 		flex-direction: column;
 		gap: 0.2rem;

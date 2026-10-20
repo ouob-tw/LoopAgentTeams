@@ -1,5 +1,6 @@
-// Starting a new controller from the board: check the folder (running `git init` only when the
-// user asked for it), pick the Herdr workspace of its project, and have hcom open the client there
+// Starting a new controller from the board: check the folder (creating it under the home folder
+// when it is not there yet, and running `git init` when the user asked for it or the folder is
+// new), pick the Herdr workspace of its project, and have hcom open the client there
 // with the LAT start command and the user's first message. Every attempt that got past the form's
 // own rules is logged, and followed until a binding with its HCOM name appears.
 //
@@ -9,10 +10,13 @@
 // moved to the front of its workspace.
 import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { defaultEffort, modelArgs } from '../board/models.ts';
+import { normalizePath } from '../board/folder-search.ts';
 import { latCommand, NOT_GIT_REASON, type LaunchList, type LaunchRequest, type LaunchResponse, type Project, type SentLaunch } from '../board/launch.ts';
 import type { HelperController } from '../board/types.ts';
 import type { Board } from './board.ts';
+import { cannotCreate, createFolder } from './browse.ts';
 import { gitInit, gitRoot } from './git.ts';
 import { listControllers } from './helper.ts';
 import { waitToAppear } from './appear.ts';
@@ -60,9 +64,9 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 		// Each form lists its own kind: as many plain agents as controllers.
 		const all = readLaunches(stateDir, board.config.now(), launchWaitMs);
 		const launches = [...all.filter((launch) => launch.role !== 'agent').slice(0, LISTED_LAUNCHES), ...all.filter((launch) => launch.role === 'agent').slice(0, LISTED_LAUNCHES)];
-		return { projects, projectsError, launches, logError: null, modelOptions: board.config.modelOptions };
+		return { projects, projectsError, launches, logError: null, modelOptions: board.config.modelOptions, home: homedir() };
 	} catch (error) {
-		return { projects, projectsError, launches: [], logError: (error as Error).message, modelOptions: board.config.modelOptions };
+		return { projects, projectsError, launches: [], logError: (error as Error).message, modelOptions: board.config.modelOptions, home: homedir() };
 	}
 }
 
@@ -113,6 +117,7 @@ async function attempt(
 		effort: request.effort,
 		defaults: { model: defaults.model, effort: defaultEffort(defaults, request.model) },
 		gitInit: false,
+		folderCreated: false,
 		herdrWorkspace: null,
 		herdrWorkspaceLabel: null,
 		workspaceCreated: false,
@@ -122,7 +127,14 @@ async function attempt(
 		error: null
 	};
 
-	const prepared = agent ? await prepareAgent(board, request.folder, agent.workspace, entry) : await prepare(board, request, entry);
+	// A folder that is not there is created only once the launch is about to go ahead.
+	const create = !isFolderThere(request.folder);
+	const refused = create ? cannotCreate(normalizePath(request.folder)) : null;
+	const prepared: Stop | Prepared = refused
+		? { reason: `資料夾不存在，${refused}；沒有建立資料夾，也沒有${agent ? '開新 Agent' : '啟動主控'}。`, refused: true }
+		: agent
+			? await prepareAgent(board, request.folder, agent.workspace, entry, create)
+			: await prepare(board, request, entry, create);
 	if ('refused' in prepared) {
 		// The form does not allow this; nothing was started or changed, so nothing is logged.
 		return { status: 409, body: { ok: false, reason: prepared.reason, entry: null, logError: null } };
@@ -208,6 +220,24 @@ async function followAgent(board: Board, entry: SentLaunch, hcomName: string, ta
 	void board.refresh();
 }
 
+/** Whether anything is at this path, following links; a dangling link is not. */
+function isFolderThere(path: string): boolean {
+	try {
+		statSync(path);
+		return true;
+	} catch {
+		return false;
+	}
+}
+
+/** Create the missing folder for a launch, recording that it did; resolves with why it could not. */
+function create(asked: string, entry: SentLaunch, what: string): Stop | null {
+	const failure = createFolder(normalizePath(asked));
+	if (failure) return { reason: `${failure}，沒有${what}` };
+	entry.folderCreated = true;
+	return null;
+}
+
 /** The folder with its symbolic links resolved, or why there is none to start in. */
 function resolveFolder(asked: string): { folder: string } | Stop {
 	try {
@@ -221,13 +251,15 @@ function resolveFolder(asked: string): { folder: string } | Stop {
 
 /** Everything before hcom runs for a plain agent: the folder must exist, in a Git project or not,
  *  and Herdr must still list the workspace. */
-async function prepareAgent(board: Board, asked: string, workspace: string, entry: SentLaunch): Promise<Stop | { startIn: string; bound: HelperController[] }> {
-	const resolved = resolveFolder(asked);
-	if ('reason' in resolved) return resolved;
-	entry.scope = gitRoot(resolved.folder) ?? resolved.folder;
+async function prepareAgent(board: Board, asked: string, workspace: string, entry: SentLaunch, missing: boolean): Promise<Stop | Prepared> {
 	const place = await workspaceLabel(board.config, workspace);
 	if ('reason' in place) return { reason: `${place.reason}，沒有開新 Agent` };
 	if (place.label === null) return { reason: 'Herdr 裡已經沒有這個工作區，沒有開新 Agent' };
+	const failed = missing ? create(asked, entry, '開新 Agent') : null;
+	if (failed) return failed;
+	const resolved = resolveFolder(asked);
+	if ('reason' in resolved) return resolved;
+	entry.scope = gitRoot(resolved.folder) ?? resolved.folder;
 	entry.herdrWorkspace = workspace;
 	entry.herdrWorkspaceLabel = place.label;
 	return { startIn: resolved.folder, bound: [] };
@@ -236,26 +268,29 @@ async function prepareAgent(board: Board, asked: string, workspace: string, entr
 /** Why a launch cannot go on: `refused` when the request breaks the form's own rules, so nothing
  *  was tried; otherwise it is a failure to log. */
 type Stop = { reason: string; refused?: true };
+/** The folder to start in, its symbolic links resolved, and the bindings before the launch. */
+type Prepared = { startIn: string; bound: HelperController[] };
 
 /** Everything before hcom runs. Fills in the entry as it goes; resolves with why it cannot go on,
- *  or the folder to start in with its symbolic links resolved and the bindings before the launch. */
-async function prepare(
-	board: Board,
-	request: LaunchRequest,
-	entry: SentLaunch
-): Promise<Stop | { startIn: string; bound: HelperController[] }> {
-	const resolved = resolveFolder(request.folder);
-	if ('reason' in resolved) return resolved;
-	const folder = resolved.folder;
+ *  or the folder to start in. A `missing` folder is created first, and is a project of its own
+ *  with `git init` when it is not in one. */
+async function prepare(board: Board, request: LaunchRequest, entry: SentLaunch, missing: boolean): Promise<Stop | Prepared> {
 	// The bindings as they are before anything runs: one already under the name hcom will print is
 	// not the new controller. Without them a launch could not be told from an earlier agent's.
 	const before = await listControllers(board.config);
-	if (!before.ok) return { reason: `讀不到面板綁定登記，沒有啟動主控：${before.reason}` };
+	if (!before.ok) return { reason: `讀不到面板綁定登記，沒有${missing ? '建立資料夾，也沒有' : ''}啟動主控：${before.reason}` };
+	const failed = missing ? create(request.folder, entry, '啟動主控') : null;
+	if (failed) return failed;
+	const resolved = resolveFolder(request.folder);
+	if ('reason' in resolved) return resolved;
+	const folder = resolved.folder;
 	let scope = gitRoot(folder);
 	if (!scope) {
-		if (!request.gitInit) return { reason: NOT_GIT_REASON, refused: true };
+		if (!request.gitInit && !entry.folderCreated) return { reason: NOT_GIT_REASON, refused: true };
 		const initFailure = await gitInit(folder);
-		if (initFailure) return { reason: `git init 失敗，沒有啟動主控：${initFailure}` };
+		if (initFailure) {
+			return { reason: entry.folderCreated ? `資料夾已建立，但 git init 失敗：${initFailure}` : `git init 失敗，沒有啟動主控：${initFailure}` };
+		}
 		entry.gitInit = true;
 		scope = folder;
 	}

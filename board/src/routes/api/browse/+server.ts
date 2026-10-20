@@ -1,11 +1,12 @@
-import { isAbsolute, resolve } from 'node:path';
 import { json } from '@sveltejs/kit';
-import { browse } from '#lib/server/browse.ts';
+import { searchFolders } from '#lib/server/browse.ts';
 import type { RequestHandler } from './$types';
 
-/** The folders under `?path=` (an absolute path; the home folder when left out). */
+/** The folders matching what is typed in the folder box (`?q=`, a full path; `~` is the home
+ *  folder), and how the typed folder stands. */
 export const GET: RequestHandler = ({ url }) => {
-	const path = url.searchParams.get('path');
-	if (path !== null && (!isAbsolute(path) || path.includes('\0'))) return json({ error: 'invalid_path' }, { status: 400 });
-	return json(browse(path === null ? undefined : resolve(path)));
+	const input = url.searchParams.get('q') ?? '';
+	const result = input.includes('\0') ? null : searchFolders(input);
+	if (result === null) return json({ error: 'invalid_path' }, { status: 400 });
+	return json(result);
 };

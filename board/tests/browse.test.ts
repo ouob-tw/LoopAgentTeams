@@ -1,10 +1,11 @@
-// Browsing folders for the new-controller picker, in folders under the fixture's temporary
-// directory (its HOME is `<dir>/home`).
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+// Searching folders as they are typed in the new-controller and new-agent forms, in folders under
+// the fixture's temporary directory (its HOME is `<dir>/home`), and the rules the page shares.
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { dirname, join } from 'node:path';
-import type { BrowseResult } from '../src/lib/board/launch.ts';
+import { join } from 'node:path';
+import { expandHome, nameMatches, pathMatches, suggestedFolders, typedFolder, typedLevel } from '../src/lib/board/folder-search.ts';
+import type { FolderSearch } from '../src/lib/board/launch.ts';
 import { gitRoot } from '../src/lib/server/git.ts';
 import { startFixture, type Fixture } from './harness.ts';
 
@@ -12,6 +13,46 @@ import { startFixture, type Fixture } from './harness.ts';
 const plainBase = [tmpdir(), '/var/tmp', '/dev/shm'].find((base) => existsSync(base) && gitRoot(base) === null);
 const plainDir = plainBase ? mkdtempSync(join(plainBase, 'lat-board-browse-')) : null;
 const needsPlain = test.skipIf(plainDir === null);
+
+describe('the shared rules', () => {
+	const home = '/home/u';
+	test('`~` is the home folder, only at the start', () => {
+		expect(expandHome('~', home)).toBe(home);
+		expect(expandHome('~/a', home)).toBe('/home/u/a');
+		expect(expandHome('/x/~/a', home)).toBe('/x/~/a');
+		expect(expandHome('~other', home)).toBe('~other');
+	});
+	test('a typed path is normalized; text that is not a full path names no folder', () => {
+		expect(typedFolder('~/a/../b//c/', home)).toBe('/home/u/b/c');
+		expect(typedFolder('/', home)).toBe('/');
+		expect(typedFolder('proj', home)).toBeNull();
+		expect(typedFolder('', home)).toBeNull();
+	});
+	test('the level is what comes before the last slash, the part what comes after', () => {
+		expect(typedLevel('~/pro', home)).toEqual({ dir: home, part: 'pro' });
+		expect(typedLevel('~/projects/', home)).toEqual({ dir: '/home/u/projects', part: '' });
+		expect(typedLevel('~', home)).toEqual({ dir: '/home', part: 'u' });
+		expect(typedLevel('/', home)).toEqual({ dir: '/', part: '' });
+		expect(typedLevel('pro', home)).toBeNull();
+	});
+	test('names match ignoring case; hidden ones only when the part starts with a dot', () => {
+		expect(nameMatches('MyProject', 'proj')).toBe(true);
+		expect(nameMatches('MyProject', '')).toBe(true);
+		expect(nameMatches('other', 'proj')).toBe(false);
+		expect(nameMatches('.config', '')).toBe(false);
+		expect(nameMatches('.config', 'con')).toBe(false);
+		expect(nameMatches('.config', '.CON')).toBe(true);
+	});
+	test('a known folder matches by name or path, ignoring case, with `~` expanded', () => {
+		expect(pathMatches('/home/u/work/LoopAgent', 'loop', home)).toBe(true);
+		expect(pathMatches('/home/u/work/LoopAgent', '~/WORK', home)).toBe(true);
+		expect(pathMatches('/home/u/work/LoopAgent', '/srv', home)).toBe(false);
+	});
+	test('before typing: the workspace folders first, then recent projects, five at most and each once', () => {
+		expect(suggestedFolders(['/w1', '/p2'], ['/p1', '/p2', '/p3', '/p4', '/p5'])).toEqual(['/w1', '/p2', '/p1', '/p3', '/p4']);
+		expect(suggestedFolders([], ['/p1', '/p2'])).toEqual(['/p1', '/p2']);
+	});
+});
 
 let fixture: Fixture;
 let cookie: string;
@@ -27,37 +68,68 @@ afterAll(async () => {
 	if (plainDir) rmSync(plainDir, { recursive: true, force: true });
 });
 
-async function browse(path?: string, as = cookie): Promise<BrowseResult> {
-	const query = path === undefined ? '' : `?path=${encodeURIComponent(path)}`;
-	const response = await fixture.fetch(`/api/browse${query}`, { cookie: as });
+async function search(q: string, as = cookie): Promise<FolderSearch> {
+	const response = await fixture.fetch(`/api/browse?q=${encodeURIComponent(q)}`, { cookie: as });
 	expect(response.status).toBe(200);
 	return response.json();
 }
+const names = (result: FolderSearch) => result.entries.map((entry) => entry.name);
 
-test('starts at the home folder and lists only visible folders, by name', async () => {
+test('`~/` lists the visible folders of the home folder, by name', async () => {
 	mkdirSync(join(home, 'beta'));
-	mkdirSync(join(home, 'alpha'));
+	mkdirSync(join(home, 'Alpha'));
 	mkdirSync(join(home, '.hidden'));
 	writeFileSync(join(home, 'file.txt'), '');
-	const result = await browse();
-	expect(result.path).toBe(home);
+	const result = await search('~/');
 	expect(result.home).toBe(home);
+	expect(result.path).toBe(home);
+	expect(result.target).toMatchObject({ state: 'folder', cannotCreate: null });
 	expect(result.error).toBeNull();
-	expect(result.entries.map((entry) => entry.name)).toEqual(['alpha', 'beta']);
-	expect(result.entries[0]!.path).toBe(join(home, 'alpha'));
+	expect(names(result)).toEqual(['Alpha', 'beta']);
+	expect(result.entries[0]!.path).toBe(join(home, 'Alpha'));
 });
 
-test('goes up one level at a time to the root, which has no parent', async () => {
-	let result = await browse(home);
-	const seen = [result.path];
-	while (result.parent) {
-		expect(result.parent).toBe(dirname(result.path));
-		result = await browse(result.parent);
-		seen.push(result.path);
-	}
-	expect(result.path).toBe('/');
-	expect(result.parent).toBeNull();
-	expect(seen.length).toBeGreaterThan(2);
+test('the last part matches names ignoring case, those starting with it first; a dot shows hidden ones', async () => {
+	mkdirSync(join(home, 'case', 'Notes'), { recursive: true });
+	mkdirSync(join(home, 'case', 'my-notes'));
+	mkdirSync(join(home, 'case', '.notes'));
+	mkdirSync(join(home, 'case', 'other'));
+	expect(names(await search('~/case/NOTE'))).toEqual(['Notes', 'my-notes']);
+	expect(names(await search(`${home}/case/.n`))).toEqual(['.notes']);
+	expect(names(await search('~/case/zzz'))).toEqual([]);
+});
+
+test('a level that is not there lists nothing and says so; its folder is one to create', async () => {
+	const result = await search('~/nowhere/deeper/x');
+	expect(result.error).toBe('ENOENT');
+	expect(result.entries).toEqual([]);
+	expect(result.path).toBe(join(home, 'nowhere/deeper/x'));
+	expect(result.target).toMatchObject({ state: 'missing', cannotCreate: null });
+});
+
+test('a folder that is not there outside the home folder will not be created', async () => {
+	const result = await search(join(fixture.dir, 'outside', 'new'));
+	expect(result.target.state).toBe('missing');
+	expect(result.target.cannotCreate).toContain('只會在家目錄');
+	expect((await search('~/../escape')).target.cannotCreate).toContain('只會在家目錄');
+});
+
+test('a link out of the home folder is judged by where it leads; a link into it is fine', async () => {
+	const outside = join(fixture.dir, 'outside-real');
+	mkdirSync(outside, { recursive: true });
+	symlinkSync(outside, join(home, 'out-link'));
+	expect((await search('~/out-link/new')).target.cannotCreate).toContain('只會在家目錄');
+	mkdirSync(join(home, 'inner'));
+	symlinkSync(join(home, 'inner'), join(outside, 'in-link'));
+	expect((await search(join(outside, 'in-link', 'new'))).target.cannotCreate).toBeNull();
+	symlinkSync(join(home, 'gone'), join(home, 'dangling'));
+	expect((await search('~/dangling/new')).target.cannotCreate).toContain('連結');
+});
+
+test('a file is not a folder, and nothing is created under one', async () => {
+	writeFileSync(join(home, 'a-file'), '');
+	expect((await search('~/a-file')).target.state).toBe('not-folder');
+	expect((await search('~/a-file/sub')).target.cannotCreate).toContain('不是資料夾');
 });
 
 test('a symbolic link to a folder is listed under its own path; links to files and to nowhere are not', async () => {
@@ -67,12 +139,12 @@ test('a symbolic link to a folder is listed under its own path; links to files a
 	symlinkSync(join(base, 'real'), join(base, 'to-folder'));
 	symlinkSync(join(base, 'plain.txt'), join(base, 'to-file'));
 	symlinkSync(join(base, 'gone'), join(base, 'dangling'));
-	const result = await browse(base);
+	const result = await search('~/links/');
 	expect(result.entries.map((entry) => entry.path)).toEqual([join(base, 'real'), join(base, 'to-folder')]);
-	expect((await browse(join(base, 'to-folder'))).error).toBeNull();
+	expect((await search('~/links/to-folder')).target.state).toBe('folder');
 });
 
-needsPlain('marks each level and folder as in a Git project or not', async () => {
+needsPlain('marks each folder as in a Git project or not, links by where they lead; a missing one by the folder above it', async () => {
 	const repo = join(home, 'repo');
 	mkdirSync(join(repo, '.git'), { recursive: true });
 	mkdirSync(join(repo, 'src'));
@@ -82,61 +154,28 @@ needsPlain('marks each level and folder as in a Git project or not', async () =>
 	mkdirSync(join(plain, 'sub'), { recursive: true });
 	symlinkSync(repo, join(plain, 'repo'));
 	symlinkSync(join(home, 'worktree'), join(plain, 'worktree'));
-	const parent = await browse(plain);
-	expect(parent.git).toBe(false);
+	const parent = await search(`${plain}/`);
+	expect(parent.target.git).toBe(false);
 	expect(parent.entries.map((entry) => [entry.name, entry.git])).toEqual([['repo', true], ['sub', false], ['worktree', true]]);
-	const inside = await browse(repo);
-	expect(inside.git).toBe(true);
-	expect(inside.entries.map((entry) => [entry.name, entry.git])).toEqual([['src', true]]);
+	expect((await search('~/repo/')).entries.map((entry) => [entry.name, entry.git])).toEqual([['src', true]]);
+	expect((await search('~/repo/src')).target.git).toBe(true);
+	expect((await search('~/repo/new/deep')).target).toEqual({ state: 'missing', git: true, cannotCreate: null });
 });
 
-needsPlain('Git status follows where a link leads, not the link path', async () => {
-	const repo = join(home, 'crossrepo');
-	mkdirSync(join(repo, '.git'), { recursive: true });
-	mkdirSync(join(repo, 'src'));
-	const plain = join(plainDir!, 'cross');
-	mkdirSync(plain, { recursive: true });
-	symlinkSync(plain, join(repo, 'to-plain'));
-	symlinkSync(join(repo, 'src'), join(plain, 'to-src'));
-	// A link inside a Git project that leads out of it: a launch there needs git init.
-	const inside = await browse(repo);
-	expect(inside.entries.find((entry) => entry.name === 'to-plain')!.git).toBe(false);
-	expect((await browse(join(repo, 'to-plain'))).git).toBe(false);
-	// A link outside any Git project that leads into one: a launch there is fine.
-	const outside = await browse(plain);
-	expect(outside.entries.map((entry) => [entry.name, entry.git])).toEqual([['to-src', true]]);
-	expect((await browse(join(plain, 'to-src'))).git).toBe(true);
-});
-
-test('a folder that cannot be read answers with the reason, and so does one that is not there', async () => {
+test('a level that cannot be read answers with the reason', async () => {
 	const locked = join(home, 'locked');
 	mkdirSync(locked);
 	chmodSync(locked, 0o000);
 	try {
-		const result = await browse(locked);
 		// Running as root can read it anyway.
-		if (process.getuid?.() !== 0) {
-			expect(result.error).toBe('EACCES');
-			expect(result.entries).toEqual([]);
-			expect(result.parent).toBe(home);
-		}
+		if (process.getuid?.() !== 0) expect((await search('~/locked/')).error).toBe('EACCES');
 	} finally {
 		chmodSync(locked, 0o755);
 	}
-	const missing = await browse(join(home, 'nope'));
-	expect(missing.error).toBe('ENOENT');
-	expect(missing.parent).toBe(home);
-	writeFileSync(join(home, 'afile'), '');
-	expect((await browse(join(home, 'afile'))).error).toBe('ENOTDIR');
 });
 
-test('paths are normalized, and a relative path is refused', async () => {
-	expect((await browse(`${home}/alpha/../beta/`)).path).toBe(join(home, 'beta'));
-	const response = await fixture.fetch('/api/browse?path=relative/dir', { cookie });
-	expect(response.status).toBe(400);
-});
-
-test('a device that is not logged in gets 401', async () => {
-	expect((await fixture.fetch('/api/browse')).status).toBe(401);
-	expect((await fixture.fetch(`/api/browse?path=${encodeURIComponent(home)}`)).status).toBe(401);
+test('text that is not a full path is refused, and a device that is not logged in gets 401', async () => {
+	expect((await fixture.fetch('/api/browse?q=relative/dir', { cookie })).status).toBe(400);
+	expect((await fixture.fetch('/api/browse', { cookie })).status).toBe(400);
+	expect((await fixture.fetch(`/api/browse?q=${encodeURIComponent('~/')}`)).status).toBe(401);
 });
