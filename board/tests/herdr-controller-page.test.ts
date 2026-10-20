@@ -431,18 +431,27 @@ for (const width of [1280, 390]) {
 		}
 	}, 60_000);
 
-	test.skipIf(!CHROME)(`${width}px: a DONE report opened from the report list is shown in the conversation and can be marked read there`, async () => {
+	test.skipIf(!CHROME)(`${width}px: a DONE report opened from the report list is shown in the conversation and read by opening it, as in the inbox`, async () => {
 		await visit(width, '?agent=s-lead');
 		await tab.until(`${leadPage} && ${CARDS_IN}`, 'the cards');
+		expect(await tab.eval<string>(`${historyCard('report', SAID.done2)}.innerText`)).toContain('標為已讀');
 		await tab.eval(click('.detail [role="tablist"]', '回報'));
 		await tab.until(`!!document.querySelector('#panel-reports:not([hidden]) .row')`, 'the report list');
 		await tab.eval(click('#panel-reports', SAID.done2));
 		await tab.until(`!document.querySelector('#panel-transcript').hidden && ${OPENED}?.innerText.includes(${JSON.stringify(SAID.done2)})`, 'the report in the conversation');
-		expect(await tab.eval<string>(`${OPENED}.innerText`)).toContain('未讀');
-		await tab.eval(`[...${OPENED}.querySelectorAll('button')].find((b) => b.innerText === '標為已讀').click()`);
-		await tab.until(`${OPENED}.innerText.includes('已讀（')`, 'read there');
+		// Opening it read it.
+		await tab.until(`${OPENED}.innerText.includes('已讀（')`, 'read by opening it');
+		const key = (await fixture.board(cookie)).inbox.find((item) => item.kind === 'report' && item.message === SAID.done2)!.key;
+		expect((await fixture.board(cookie)).inbox.find((item) => item.key === key)).toMatchObject({ readAt: expect.any(String) });
 		expect(new URLSearchParams(await tab.eval<string>('location.search')).get('agent')).toBe('s-lead');
 		expect(await tab.eval(FITS)).toBe(true);
+		// Marked unread while open, it stays unread; its own button reads it again.
+		await tab.eval(`[...${OPENED}.querySelectorAll('button')].find((b) => b.innerText === '標為未讀').click()`);
+		await tab.until(`${OPENED}.innerText.includes('標為已讀')`, 'unread');
+		await sleep(1_000);
+		expect((await fixture.board(cookie)).inbox.find((item) => item.key === key)).toMatchObject({ readAt: null });
+		await tab.eval(`[...${OPENED}.querySelectorAll('button')].find((b) => b.innerText === '標為已讀').click()`);
+		await tab.until(`${OPENED}.innerText.includes('已讀（')`, 'read with its button');
 		// Unread again, for the next width.
 		await tab.eval(`[...${OPENED}.querySelectorAll('button')].find((b) => b.innerText === '標為未讀').click()`);
 		await tab.until(`${OPENED}.innerText.includes('標為已讀')`, 'unread again');

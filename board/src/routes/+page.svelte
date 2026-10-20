@@ -175,6 +175,11 @@
 	function openInAgent(next: InboxItem) {
 		agentOpened = next;
 		agentOpens++;
+		// Opening reads an inbox report here too, as `openItem` does.
+		const listed = inbox.find((entry) => entry.key === next.key);
+		if (listed?.kind === 'report' && listed.readAt === null) {
+			board.mark(listed.key, true).catch(() => toasts.show('failed', '沒有標為已讀，請重新點開再試一次。'));
+		}
 	}
 	/** The workspace whose new-agent form is open; null when none is. */
 	const newIn = $derived(view?.kind === 'new-agent' ? view.workspace : null);
