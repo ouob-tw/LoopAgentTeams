@@ -19,9 +19,11 @@ export async function transcriptSource(board: Board, controllerId: string): Prom
 	return controller ? { client: controller.client, sessionId: controller.id } : null;
 }
 
-/** The client and session of an agent the 所有 Agent tab lists; null for any other session ID. */
+/** The client and session of an agent the 所有 Agent tab lists, or its 已關閉 section, by the
+ *  client it was closed with; null for any other session ID. */
 export async function agentTranscriptSource(board: Board, sessionId: string): Promise<{ client: string; sessionId: string } | null> {
-	const agent = (await board.current()).agents.find((candidate) => candidate.id === sessionId);
+	const { agents, closed } = await board.current();
+	const agent = agents.find((candidate) => candidate.id === sessionId) ?? closed.agents.find((candidate) => candidate.id === sessionId);
 	return agent ? { client: agent.client, sessionId } : null;
 }
 
