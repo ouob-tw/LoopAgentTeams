@@ -2,7 +2,7 @@
 // protocol, on the built board with fake data, wide and at a phone's width. Its header and details,
 // the bars of its questions, and its tabs. Skipped when the host has no Chrome.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -230,4 +230,50 @@ test.skipIf(!CHROME)("at a phone's width the tabs share the width and nothing sc
 	await tab.eval(`${tabButton('回報')}.click()`);
 	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-reports"]'`, 'the reports panel');
 	expect(await tab.eval(FITS)).toBe(true);
+}, 60_000);
+
+test.skipIf(!CHROME)('a controller without a report shows no latest report; the usage line reads in the style the settings pick', async () => {
+	const orin = fixture.bound('beta', 'orin', { client: 'codex' });
+	fixture.list([luna, orin]);
+	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
+	writeFileSync(join(fixture.dir, 'transcripts', `${orin.session_id}.jsonl`), JSON.stringify({ kind: 'user', time: null, text: '開始' }) + '\n');
+	writeFileSync(
+		join(fixture.dir, 'transcripts', `${orin.session_id}.usage.json`),
+		JSON.stringify({ context: 62, limits: [{ minutes: 10080, used: 75 }], cache: { warm: true, hit: 0.7, expires: null } })
+	);
+	await fixture.refresh(cookie);
+	await visit(1280);
+	const header = `document.querySelector('.detail .profile header').innerText`;
+	// Neither header names the client; one with a report says when.
+	expect(await tab.eval<string>(header)).toContain('最後回報');
+	expect(await tab.eval<string>(header)).not.toContain('claude');
+
+	// As it reads on screen: the dots between the groups are drawn by the styles.
+	const line = `[...document.querySelectorAll('.detail .profile .usage .group')].map((group) => [...group.children].map((part) => part.textContent).join(' ')).join(' • ')`;
+	const visitOrin = async () => {
+		await tab.navigate(`${fixture.url}/?controller=${orin.session_id}`);
+		await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'beta'`, "the report-less controller's page");
+		await tab.until(`(${line}).includes('62%')`, 'its usage line');
+	};
+	await visitOrin();
+	expect(await tab.eval<string>(header)).not.toContain('最後回報');
+	expect(await tab.eval<string>(header)).not.toContain('codex');
+	// Detailed by default.
+	expect(await tab.eval<string>(line)).toBe('上下文已用 62% • 7 天額度剩 25% • 快取命中 70%');
+
+	const choice = (label: string) => `[...document.querySelectorAll('dialog [aria-label="用量列"] button')].find((b) => b.innerText === ${JSON.stringify(label)})`;
+	await tab.eval(`[...document.querySelectorAll('[aria-label="設定"]')].find((b) => b.offsetParent !== null).click()`);
+	expect(await tab.eval(`${choice('詳細')}.getAttribute('aria-pressed')`)).toBe('true');
+	await tab.eval(`${choice('精簡')}.click()`);
+	await tab.until(`(${line}) === 'Ctx 62% • 7d 25% • Cache 70%'`, 'the compact line, at once');
+
+	// Kept across a reload; the details' entry stays spelt out.
+	await visitOrin();
+	expect(await tab.eval<string>(line)).toBe('Ctx 62% • 7d 25% • Cache 70%');
+	await tab.eval(`document.querySelector('.detail .more').click()`);
+	await tab.until(`document.querySelector('.detail .profile dl')?.innerText.includes('上下文已用 62%')`, 'the details, spelt out');
+
+	await tab.eval(`[...document.querySelectorAll('[aria-label="設定"]')].find((b) => b.offsetParent !== null).click()`);
+	await tab.eval(`${choice('詳細')}.click()`);
+	await tab.until(`(${line}).startsWith('上下文已用 62%')`, 'the detailed line again');
 }, 60_000);

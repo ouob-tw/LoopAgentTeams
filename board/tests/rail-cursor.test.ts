@@ -139,6 +139,10 @@ test.skipIf(!CHROME)('moving between marks of the folded rail never crosses the 
 	expect(await evaluate(under('.rail .entry', 1, 2))).toEqual(['first', 'second']);
 	// Beside a mark, out to both edges of the rail, is that mark too.
 	expect(await evaluate(across('.rail .entry'))).toEqual([]);
+	// The column behind the rail's scrollbar and below its first screen has the rail's colour, not the page's.
+	expect(await evaluate(`getComputedStyle(document.querySelector('.roster')).backgroundColor`)).toBe(
+		await evaluate(`getComputedStyle(document.querySelector('.rail')).backgroundColor`)
+	);
 });
 
 test.skipIf(!CHROME)('moving between cards of the unfolded roster never crosses the blank, within a run or across the line between runs', async () => {

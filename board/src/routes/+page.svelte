@@ -483,7 +483,7 @@
 {/snippet}
 
 {#snippet openSettings()}
-	<button class="tool icon" onclick={() => settings.open()} aria-label="設定" title="設定：主題、整體大小與最小字體">
+	<button class="tool icon" onclick={() => settings.open()} aria-label="設定" title="設定：主題、整體大小、最小字體與用量列">
 		<SettingsIcon size="1.1em" />
 	</button>
 {/snippet}
@@ -1063,11 +1063,14 @@
 		:global(:root[data-roster='folded']) .shell {
 			--col-roster: 2.75rem;
 		}
-		/* A vertical scrollbar narrows the rail; it never scrolls sideways. */
+		/* A vertical scrollbar narrows the rail; it never scrolls sideways. The column has the
+		   rail's colour, so the scrollbar's transparent track and the marks scrolled past the
+		   first screen show it rather than the page's darker one. */
 		:global(:root[data-roster='folded']) .roster {
 			overflow-x: hidden;
 			display: flex;
 			padding: 0;
+			background: var(--surface);
 		}
 		/* The rail fills the column, so a click anywhere below the marks still unfolds. */
 		:global(:root[data-roster='folded']) .folded {

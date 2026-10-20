@@ -67,7 +67,7 @@
 		<span class="status"><StatusMark status={controller.status} />{STATUS_LABEL[controller.status]}</span>
 		<h2>{controller.project}</h2>
 		<span class="handle">@{controller.hcomName}</span>
-		<span class="chip">{controller.client}・最後回報 {controller.lastReportAt ? formatTime(controller.lastReportAt) : '尚無'}</span>
+		{#if controller.lastReportAt}<span class="chip">最後回報 {formatTime(controller.lastReportAt)}</span>{/if}
 		<button type="button" class="more" aria-expanded={details} onclick={toggleDetails}>
 			詳細資料<span class="chevron" class:open={details}><ChevronDown size="1em" /></span>
 		</button>
@@ -109,7 +109,7 @@
 		border-radius: var(--radius);
 		padding: 0.7rem 0.9rem;
 	}
-	/* One line while it fits: status, project, name, client and latest report, details at the end. */
+	/* One line while it fits: status, project, name and latest report, details at the end. */
 	header {
 		display: flex;
 		flex-wrap: wrap;

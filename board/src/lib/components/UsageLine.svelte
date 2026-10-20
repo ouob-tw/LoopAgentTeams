@@ -2,8 +2,10 @@
 	// A client's context use, quota, prompt cache and permission mode in small print, as its live
 	// conversation feed last told: on its own line with an icon that spells it out, or (`full`) as
 	// a 執行狀況 entry of an information page's details, with nothing left off. Shared by the
-	// controllers' and the agents' information pages, so both read the same.
+	// controllers' and the agents' information pages, so both read the same. The line reads in the
+	// style chosen in the settings; the tip and the details are always spelt out.
 	import Info from '@lucide/svelte/icons/info';
+	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { usageDetails, usageParts, type Usage, type UsagePart } from '#lib/board/usage.ts';
 
 	let { usage, full = false }: { usage: Usage | null; full?: boolean } = $props();
@@ -16,10 +18,10 @@
 			else groups.push([part]);
 			return groups;
 		}, []);
-	const usageGroups = $derived(usage ? grouped(usageParts(usage, now)) : []);
+	const usageGroups = $derived(usage ? grouped(usageParts(usage, now, { style: appearance.usageStyle })) : []);
 	const usageLines = $derived(usage ? usageDetails(usage, now) : []);
 	// The details show the line with nothing left off.
-	const usageFull = $derived(usage ? grouped(usageParts(usage, now, true)) : []);
+	const usageFull = $derived(usage ? grouped(usageParts(usage, now, { all: true })) : []);
 	// The line spelt out shows while a mouse is over the icon, and after a tap until a tap elsewhere.
 	// Fixed to the screen beside the icon, towards the roomier side, so no panel edge cuts it off.
 	let usageHover = $state(false);
