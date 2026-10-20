@@ -1,9 +1,9 @@
 // What the user does to an agent on the 所有 Agent tab: the shared shapes of its operation record.
 import type { Agent } from './types.ts';
 
-/** What was done: text typed into the agent's input box, its turn interrupted, it closed, or its
- *  Herdr tab moved or renamed. */
-export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename';
+/** What was done: text typed into the agent's input box, its turn interrupted, it closed, its
+ *  Herdr tab moved or renamed, or it brought back from the 已關閉 section. */
+export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename' | 'resume';
 
 /** One line of the board's sent log: one attempt at an action on an agent, made or refused. */
 export interface AgentAction {
@@ -19,7 +19,7 @@ export interface AgentAction {
 	route: 'hcom' | 'herdr' | null;
 	/** The Herdr pane it was in then; null when it was not listed. */
 	pane: string | null;
-	/** The text sent, or what a tab move or rename did; null for an interrupt or a close. */
+	/** The text sent, or what a tab move, a rename or a resume did; null for an interrupt or a close. */
 	text: string | null;
 	ok: boolean;
 	/** Why it was not done; null when it was. */
@@ -40,7 +40,8 @@ export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = {
 	interrupt: '中斷',
 	close: '關閉',
 	move: '調整分頁順序',
-	rename: '改分頁名稱'
+	rename: '改分頁名稱',
+	resume: '接回'
 };
 
 export const AGENT_INTERRUPT_CONFIRM_TEXT = '中斷這個 Agent 目前這一回合（等同在它的終端機按 Esc）？';
@@ -57,6 +58,6 @@ export const AGENT_OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是�
 export function agentCloseConfirmText(agent: Pick<Agent, 'hcom' | 'hcomName' | 'controller'>): string {
 	const what = agent.hcom === 'linked' ? `關閉這個 Agent（hcom kill @${agent.hcomName}，連同它的 Herdr 分頁）？` : '關閉這個 Agent 和它的 Herdr 分頁？';
 	if (agent.controller) return `${what}它是 LAT 主控，關閉後可以從主控資訊頁喚醒接回。`;
-	if (agent.hcom === 'linked') return `${what}看板沒有接回一般 Agent 的功能，關閉後要接回請在終端機執行 hcom r ${agent.hcomName}。`;
+	if (agent.hcom === 'linked') return `${what}有對話紀錄的話，關閉後 7 天內可以從清單底部的「已關閉」接回。`;
 	return `${what}它沒有接 HCOM，關閉後看板沒辦法把這段對話接回來，要接回只能你自己在終端機操作。`;
 }

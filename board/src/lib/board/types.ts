@@ -1,5 +1,6 @@
 // The board's data model, shared by the server and the UI.
 import type { SwitchView } from './models.ts';
+import type { ClosedList } from './closed-agents.ts';
 
 /** Checked top to bottom; the first row that holds wins. */
 export type ControllerStatus = 'ended' | 'closed' | 'waiting' | 'delivered' | 'working';
@@ -178,6 +179,8 @@ export interface BoardSnapshot {
 	agents: Agent[];
 	/** Every Herdr workspace, as Herdr numbers them: the Herdr tab shows one without agents too. */
 	workspaces: HerdrWorkspace[];
+	/** The agents of the Herdr tab's 已關閉 section. */
+	closed: ClosedList;
 	/** Source failures that cannot be attributed to one controller. */
 	errors: string[];
 }

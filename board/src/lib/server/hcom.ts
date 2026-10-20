@@ -154,3 +154,61 @@ export async function listAgents(config: BoardConfig): Promise<AgentList> {
 export function killAgent(config: BoardConfig, name: string): Promise<ExternalResult> {
 	return runExternal(config.hcomCommand, ['kill', name], { timeoutMs: config.hcomListTimeoutMs });
 }
+
+/** One `stopped` life event of hcom: who stopped which session, and when. */
+export interface HcomStop {
+	/** hcom's event ID: a later stop has a higher one. */
+	id: number;
+	/** The HCOM name it ran under. */
+	name: string;
+	/** Who stopped it: `cli`, `pty`, `session`, `system`, `subagent`, or another agent's name. */
+	by: string;
+	reason: string;
+	/** Board clock milliseconds. */
+	time: number;
+	/** From the event's snapshot of the agent; null when it has none. */
+	sessionId: string | null;
+	client: string | null;
+	folder: string | null;
+}
+
+export type StopList = { ok: true; stops: HcomStop[] } | { ok: false; reason: string };
+
+const textOf = (value: unknown) => (typeof value === 'string' && value ? value : null);
+
+/** hcom's `stopped` events since this time (board clock milliseconds), oldest first. Only the full
+ *  form of an event carries the agent's session; its time without a zone is UTC. */
+export async function listStops(config: BoardConfig, since: number): Promise<StopList> {
+	const args = ['events', '--type', 'life', '--action', 'stopped', '--full', '--after', new Date(since).toISOString(), '--last', '100000'];
+	const run = await runExternal(config.hcomCommand, args, { timeoutMs: config.hcomListTimeoutMs });
+	if (run.failure) return { ok: false, reason: `hcom 的停止紀錄讀不到：${run.failure}` };
+	const stops: HcomStop[] = [];
+	for (const line of run.stdout.split('\n')) {
+		if (!line.trim()) continue;
+		let event: { id?: unknown; instance?: unknown; ts?: unknown; data?: Record<string, unknown> };
+		try {
+			event = JSON.parse(line);
+		} catch {
+			return { ok: false, reason: 'hcom 的停止紀錄不是預期的 JSON' };
+		}
+		const data = event?.data;
+		const ts = textOf(event?.ts);
+		if (typeof event?.id !== 'number' || typeof event.instance !== 'string' || !ts || data?.action !== 'stopped' || typeof data.by !== 'string') {
+			return { ok: false, reason: 'hcom 的停止紀錄不是預期的格式' };
+		}
+		const time = Date.parse(/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : `${ts}Z`);
+		if (Number.isNaN(time)) return { ok: false, reason: 'hcom 的停止紀錄時間不是預期的格式' };
+		const snapshot = (typeof data.snapshot === 'object' && data.snapshot !== null ? data.snapshot : {}) as Record<string, unknown>;
+		stops.push({
+			id: event.id,
+			name: event.instance,
+			by: data.by,
+			reason: typeof data.reason === 'string' ? data.reason : '',
+			time,
+			sessionId: textOf(snapshot.session_id),
+			client: textOf(snapshot.tool),
+			folder: textOf(snapshot.directory)
+		});
+	}
+	return { ok: true, stops };
+}

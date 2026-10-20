@@ -122,6 +122,8 @@ async function deliver(board: Board, controller: Controller | undefined, request
 	}
 	// A running client keeps its settings: the information page's 修改 changes them.
 	if (chose(choice)) return refuse(WAKE_RUNNING_CHOICE_REASON);
+	// Only a resume from the 已關閉 section goes without a message; there is nothing to type in.
+	if (!typedText(request.text).trim()) return refuse('主控已經在執行，沒有接回。');
 	entry.route = 'inject';
 	entry.error = await inject(board.config, plan.agent.name, entry.text);
 	entry.outcome = entry.error ? 'failed' : 'sent';

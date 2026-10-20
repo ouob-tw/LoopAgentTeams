@@ -2,6 +2,7 @@
 // agents it has opened, what a model switch may offer them, and one attempt at a time of sending
 // text, interrupting, closing or switching.
 import type { AgentAction, AgentActionResponse } from './agent-actions.ts';
+import type { ClosedResumeResponse } from './closed-agents.ts';
 import type { Outcome } from './messaging.svelte.ts';
 import type { AgentModelStatus, ModelChoice, SwitchResponse, SwitchView } from './models.ts';
 
@@ -65,12 +66,13 @@ class AgentControl {
 			location.reload();
 			return { ok: false, reason: '這台裝置已不是登入狀態，沒有執行。' };
 		}
-		const answer: AgentActionResponse | SwitchResponse | null = await response.json().catch(() => null);
+		const answer: AgentActionResponse | SwitchResponse | ClosedResumeResponse | null = await response.json().catch(() => null);
 		if (response.status === 400) return { ok: false, reason: '看板伺服器不接受這個請求，沒有執行。' };
 		if (agentId !== null) void this.load(agentId);
 		if (typeof answer?.ok !== 'boolean') return { ok: false, reason: UNKNOWN_OUTCOME };
 		const logNote = answer.logError ? `（送出紀錄寫入失敗：${answer.logError}）` : '';
-		return { ok: answer.ok, reason: answer.ok ? logNote || null : answer.reason + logNote };
+		const abandon = answer && 'abandon' in answer ? answer.abandon : null;
+		return { ok: answer.ok, reason: answer.ok ? logNote || null : answer.reason + logNote, abandon };
 	}
 
 	/** One attempt; the caller keeps the text when it fails. */
@@ -113,6 +115,12 @@ class AgentControl {
 	 *  confirmed it. */
 	switchModel(agentId: string, choice: ModelChoice): Promise<Outcome> {
 		return this.#post('/api/agents/model', agentId, choice);
+	}
+
+	/** Bring back a closed agent of the 已關閉 section, a controller with its wake's options; its
+	 *  row shows how it goes on. */
+	resumeClosed(agentId: string, wake: object): Promise<Outcome> {
+		return this.#post('/api/agents/closed/resume', agentId, wake);
 	}
 
 	/** Give up the open switch as a whole, after the user confirmed it. */

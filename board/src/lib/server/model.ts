@@ -19,6 +19,7 @@ import type {
 import { archivePage, DAY_MS, RETAIN_MS, sortArchive, type ArchivePage } from '../board/archive.ts';
 import { askingReport } from '../board/question-message.ts';
 import { reportedAt } from '../board/roster.ts';
+import type { ClosedAgent, ClosedList } from '../board/closed-agents.ts';
 import type { AnsweredFile, AnsweredSources } from './helper.ts';
 import type { InboxState } from './inbox-state.ts';
 import type { ReportFile } from './reports.ts';
@@ -40,6 +41,8 @@ export interface Sources {
 	herdrError: string | null;
 	/** Every Herdr workspace in the last list that could be read. */
 	workspaces: HerdrWorkspace[];
+	/** The Herdr tab's 已關閉 section, all but which of them are controllers. */
+	closed: Omit<ClosedList, 'agents'> & { agents: Omit<ClosedAgent, 'controller'>[] };
 	/** Why the report files past retention could not be deleted at this read; null when they were. */
 	pruneError: string | null;
 	/** The answered questions of every question file of a bound controller or of a session with a
@@ -406,6 +409,8 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 			agent.controller || !agent.id || !controllers.some((controller) => controller.id === agent.id) ? agent : { ...agent, controller: true }
 		),
 		workspaces: sources.workspaces,
+		// On the roster: woken like a controller.
+		closed: { ...sources.closed, agents: sources.closed.agents.map((agent) => ({ ...agent, controller: controllers.some((controller) => controller.id === agent.id) })) },
 		errors
 	};
 }
