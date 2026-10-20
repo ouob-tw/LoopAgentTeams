@@ -62,12 +62,12 @@ export function folderName(path: string): string {
 
 /** The roster's shape for an agent's status, so both lists read alike: ▲ needs the user, ■ done,
  *  ● working, ○ idle, □ unknown. */
-export const AGENT_MARK: Record<AgentStatus, ControllerStatus> = {
+export const AGENT_MARK: Record<AgentStatus, ControllerStatus | 'unknown'> = {
 	blocked: 'waiting',
 	done: 'delivered',
 	working: 'working',
-	idle: 'closed',
-	unknown: 'ended'
+	idle: 'idle',
+	unknown: 'unknown'
 };
 
 /** Where a card dragged onto another card of its workspace puts its Herdr tab: where the other

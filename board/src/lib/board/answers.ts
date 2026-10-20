@@ -28,8 +28,8 @@ export const ANSWER_STATE_TEXT: Record<AnswerState, string> = {
 	waiting: '已送出，等主控記錄',
 	recorded: '已記錄',
 	superseded: '題目已改版，這份答覆沒有被記錄',
-	ended: '主控已結束，沒有記錄這份答覆',
-	unknown: '主控已結束，無法確認這份答覆有沒有被記錄'
+	ended: '主控已停用 LAT，沒有記錄這份答覆',
+	unknown: '主控已停用 LAT，無法確認這份答覆有沒有被記錄'
 };
 
 /** One answer in the board's sent log. Only answers the helper accepted are logged. */
@@ -79,7 +79,7 @@ export interface NotifyResponse {
 	reason: string | null;
 }
 
-export const ENDED_ANSWER_REASON = '這個主控已結束，它的待決題不能再作答。';
+export const ENDED_ANSWER_REASON = '這個主控已停用 LAT，它的待決題不能再作答。';
 export const CLOSED_ANSWER_REASON = '這個主控已關閉，它的待決題不能再作答。';
 
 /** The answer as the question file's answer format words it, for the sent log. */

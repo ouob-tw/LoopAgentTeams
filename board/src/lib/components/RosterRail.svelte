@@ -32,7 +32,7 @@
 	 *  from the nearer edge of the window. Fixed coordinates, so the rail's scrolling does not clip it. */
 	let tip = $state<{ id: string; left: number; top: number | null; bottom: number | null } | null>(null);
 	const explained = $derived(controllers.find((controller) => controller.id === tip?.id));
-	/** Runs of one status with a short line between them; ended ones older than a day are one mark
+	/** Runs of one status with a short line between them; idle and closed ones older than a day are one mark
 	 *  that opens their list. */
 	const parts = $derived(splitRoster(controllers, Date.now()));
 

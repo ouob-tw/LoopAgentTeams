@@ -84,7 +84,7 @@ test('groups by status, newest report first within a group, no report last, then
 			file('e-old', 'ended-old', 'e', [['2026-10-16T07:00:00Z', 'DONE']])
 		],
 		reportsError: null,
-		running: new Set(['w', 'k-new', 'k-old', 'k-none', 'd-b', 'd-a2', 'd-a1']),
+		running: new Set(['w', 'k-new', 'k-old', 'k-none', 'd-b', 'd-a2', 'd-a1', 'e-new']),
 		hcomError: null,
 		agents: [],
 		herdrError: null,
@@ -103,8 +103,8 @@ test('groups by status, newest report first within a group, no report last, then
 		['del-a1', 'delivered'],
 		['del-a2', 'delivered'],
 		['del-b', 'delivered'],
+		['ended-new', 'idle'],
 		['closer', 'closed'],
-		['ended-new', 'ended'],
-		['ended-old', 'ended']
+		['ended-old', 'closed']
 	]);
 });

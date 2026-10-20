@@ -135,7 +135,7 @@ test('an ended controller is refused without running the input command', async (
 	const { status, body } = await send('session-ended', '再改一下');
 
 	expect(status).toBe(409);
-	expect(body).toMatchObject({ ok: false, reason: '這個主控已結束，無法傳話。' });
+	expect(body).toMatchObject({ ok: false, reason: '這個主控已停用 LAT，無法傳話。' });
 	expect(calls()).toEqual([]);
 	expect(await sentTo('session-ended')).toMatchObject([{ hcomName: 'orin', text: '再改一下', ok: false }]);
 });
@@ -151,7 +151,7 @@ test('a controller that was unbound after the page last heard of it is refused',
 	const { status, body } = await send(luna.session_id, '你好');
 
 	expect(status).toBe(409);
-	expect(body.reason).toBe('這個主控已結束，無法傳話。');
+	expect(body.reason).toBe('這個主控已停用 LAT，無法傳話。');
 	expect(calls()).toEqual([]);
 });
 

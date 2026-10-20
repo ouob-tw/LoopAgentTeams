@@ -3,14 +3,16 @@
 	// menu of the choices. For a running controller picks are staged and sent as one switch with the
 	// apply button, so changing both restarts it once; for an ended or closed one they only set what
 	// the wake will use. A ⚠ beside them opens what needs the user about the last switch: one left
-	// unfinished to continue, a resume to give up, or a switch the next turn did not take.
+	// unfinished to continue or give up, a resume to give up, or a switch the next turn did not take.
 	import Check from '@lucide/svelte/icons/check';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import X from '@lucide/svelte/icons/x';
 	import { untrack } from 'svelte';
+	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import {
+		AGENT_ABANDON_CONFIRM_TEXT,
 		BUSY_REASON,
 		carryNote,
 		choiceText,
@@ -68,6 +70,10 @@
 	/** Something about the last switch the user has to see. */
 	const alerting = $derived(!!controller && (unsettled || !!abandon || check === 'missed'));
 	let confirming = $state(false);
+	/** The confirmation of giving up the unfinished switch itself is open. */
+	let confirmingSwitch = $state(false);
+	/** A give-up on its way, by controller ID: it and a continue wait for its answer. */
+	const givingUp = $state<Record<string, boolean>>({});
 	/** The latest turn's settings, or what a switch sent while its next turn is still to come. */
 	const shownNow = $derived(controller ? shownSettings(lastApplied(entries), switching.current[id]) : { settings: undefined, waiting: false });
 	const current = $derived(shownNow.settings);
@@ -134,6 +140,7 @@
 	$effect.pre(() => {
 		void id;
 		menu = null;
+		confirmingSwitch = false;
 	});
 
 	/** Opening a menu reads whether the controller can switch now: the status kept for the label
@@ -153,6 +160,7 @@
 		const kind = menu;
 		menu = null;
 		confirming = false;
+		confirmingSwitch = false;
 		if (focus && kind) (kind === 'status' ? alertButton : triggers[kind])?.focus();
 	}
 
@@ -168,6 +176,17 @@
 		const result = await messaging.abandon(target, wakeId);
 		if (result.ok) delete switching.outcomes[target];
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? '已放棄前一次接回，可以再按「繼續切換」。' : (result.reason ?? '放棄失敗'));
+	}
+
+	/** Give up the unfinished switch as a whole, as the 所有 Agent tab does: nothing is run. */
+	async function giveUpSwitch() {
+		const { id: target, hcomName } = controller!;
+		close(true);
+		givingUp[target] = true;
+		const result = await agentControl.abandonSwitch(target);
+		await messaging.load(target);
+		givingUp[target] = false;
+		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已放棄 ${hcomName} 的這次切換。${result.reason ?? ''}` : (result.reason ?? '放棄失敗'));
 	}
 
 	/** Opens with its first button in focus. */
@@ -269,7 +288,7 @@
 			title={unsettled ? '切換尚未完成' : abandon ? '可以放棄前一次接回' : SWITCH_MISSED_TEXT}
 			aria-haspopup="dialog"
 			aria-expanded={menu === 'status'}
-			onclick={() => (menu = menu === 'status' ? null : 'status')}
+			onclick={() => ((confirmingSwitch = false), (menu = menu === 'status' ? null : 'status'))}
 		>
 			<TriangleAlert size="1em" />
 		</button>
@@ -306,9 +325,17 @@
 				<p class="note">舊設定：{unfinished.from ? settingsText(unfinished.from) : '不明'}</p>
 				<p class="note">新設定：{choiceText(unfinished.to)}</p>
 				{#if carryNote(unfinished)}<p class="note">{carryNote(unfinished)}</p>{/if}
-				<button type="button" class="wide primary" disabled={switching.sending[id]} onclick={resume}>
+				<button type="button" class="wide primary" disabled={switching.sending[id] || givingUp[id]} onclick={resume}>
 					{switching.sending[id] ? '處理中…' : '繼續切換'}
 				</button>
+				{#if confirmingSwitch}
+					<p class="failed">{AGENT_ABANDON_CONFIRM_TEXT}</p>
+					<button type="button" class="wide danger" onclick={giveUpSwitch}>確認放棄</button>
+					<button type="button" class="wide" onclick={() => (confirmingSwitch = false)}>取消</button>
+				{:else}
+					<!-- While this page's stop or resume of it runs, it is given up only after (the server queues it too). -->
+					<button type="button" class="wide" disabled={switching.sending[id] || givingUp[id]} onclick={() => (confirmingSwitch = true)}>放棄切換</button>
+				{/if}
 			{/if}
 			{#if abandon}
 				{#if confirming}

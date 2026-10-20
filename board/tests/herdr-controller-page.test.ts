@@ -286,10 +286,11 @@ for (const width of [1280, 390]) {
 		await tab.until(`!!document.querySelector('#panel-log:not([hidden]) ol, #panel-log:not([hidden]) .empty')`, 'the operation record');
 		expect(await tab.eval(FITS)).toBe(true);
 
-		// Ended in LAT with a report not yet archived: still the controller's page.
+		// LAT deactivated, its conversation still in hcom's list and a report not yet archived: 閒置,
+		// still the controller's page.
 		await openAgent('s-luna');
-		await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'moon'`, "the ended controller's header");
-		expect(await tab.eval<string>(`document.querySelector('.detail .profile').innerText`)).toContain('已結束');
+		await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'moon'`, "the idle controller's header");
+		expect(await tab.eval<string>(`document.querySelector('.detail .profile').innerText`)).toContain('閒置');
 		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '回報', '送出紀錄', '操作紀錄']);
 		await tab.until(`document.querySelectorAll('.history li.report article').length === 1`, 'its report card');
 
@@ -469,7 +470,7 @@ test.skipIf(!CHROME)("the controller's information page is as it was: no close, 
 
 test.skipIf(!CHROME)('a controller is closed as an agent is: asked, confirmed, then closed', async () => {
 	await visit(390, '?agent=s-luna');
-	await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'moon'`, "the ended controller's page");
+	await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'moon'`, "the idle controller's page");
 	await tab.eval(`document.querySelector('.detail [data-action="close"]').click()`);
 	await tab.until(`!!document.querySelector('.detail [data-action="confirm-close"]')`, 'the confirmation');
 	await tab.eval(click('.detail .confirm', '取消'));
@@ -514,3 +515,81 @@ test.skipIf(!CHROME)('a controller whose model switch is unfinished stays in the
 	expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"], .detail .questions')`)).toBe(false);
 	await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick]')`, "the agent's model picker with its continue and give up");
 }, 60_000);
+
+/** A real press on the first button in `scope` whose text includes `text`: moved to its middle and
+ *  clicked there, after checking that the button is what a pointer there reaches. */
+async function press(scope: string, text: string) {
+	const at = await tab.eval<{ x: number; y: number; hit: boolean }>(`(() => {
+		const button = [...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.innerText.includes(${JSON.stringify(text)}) || b.getAttribute('aria-label')?.includes(${JSON.stringify(text)}));
+		const box = button.getBoundingClientRect();
+		const x = box.left + box.width / 2, y = box.top + box.height / 2;
+		return { x, y, hit: button.contains(document.elementFromPoint(x, y)) };
+	})()`);
+	expect(at.hit).toBe(true);
+	for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+		await tab.send('Input.dispatchMouseEvent', { type, x: at.x, y: at.y, button: 'left', buttons: type === 'mousePressed' ? 1 : 0, clickCount: 1 });
+	}
+}
+
+for (const [width, name] of [[1280, 'vera'], [390, 'wren']] as const) {
+	test.skipIf(!CHROME)(`${width}px: an in-Herdr controller whose stop failed offers to continue the switch or give it up`, async () => {
+		const session = `s-${name}`;
+		const bound = fixture.bound('ctl', name, { session_id: session });
+		fixture.list([lead, sol, bound]);
+		setHerdr([...LISTED, session]);
+		writeFileSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), '');
+		writeFileSync(join(fixture.dir, 'transcripts', `${session}.current.json`), JSON.stringify({ model: 'claude-opus-5-5', effort: 'medium', time: minutesAgo(1) }));
+		fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent(name, session)], kill: { exit: 1, stderr: 'no such agent' } });
+		try {
+			await fixture.refresh(cookie);
+			const response = await fixture.fetch('/api/model', {
+				method: 'POST',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ controllerId: session, model: null, effort: 'high' }),
+				cookie
+			});
+			expect((await response.json()).entry).toMatchObject({ state: 'stop-failed', open: true });
+			await fixture.refresh(cookie);
+			expect((await fixture.board(cookie)).agents.find((agent) => agent.id === session)).toMatchObject({ inHerdr: true, controller: true, switch: { state: 'stop-failed' } });
+			const before = hcomCalls().length;
+
+			await visit(width, `?agent=${session}`);
+			await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'ctl' && !!document.querySelector('.dock .pill-slot .alert')`, 'the controller page with its ⚠');
+			await press('.dock .pill-slot', '模型切換需要處理');
+			const dialog = `.dock .pill-slot [role="dialog"][aria-label="模型切換"]`;
+			await tab.until(`!!document.querySelector(${JSON.stringify(dialog)})`, 'the status dialog');
+			const buttons = await tab.eval<string[]>(`[...document.querySelectorAll(${JSON.stringify(`${dialog} button`)})].map((b) => b.innerText)`);
+			expect(buttons).toEqual(['繼續切換', '放棄切換']);
+			expect(await tab.eval(`(() => { const box = document.querySelector(${JSON.stringify(dialog)}).getBoundingClientRect(); return box.left >= 0 && box.right <= window.innerWidth && box.top >= 0; })()`)).toBe(true);
+
+			// Asked first, and cancelling gives nothing up.
+			await press(dialog, '放棄切換');
+			await tab.until(`document.querySelector(${JSON.stringify(dialog)}).innerText.includes('放棄這次切換？')`, 'the confirmation');
+			await press(dialog, '取消');
+			await tab.until(`[...document.querySelectorAll(${JSON.stringify(`${dialog} button`)})].some((b) => b.innerText === '放棄切換')`, 'back to the options');
+			expect((await fixture.board(cookie)).agents.find((agent) => agent.id === session)).toMatchObject({ switch: { state: 'stop-failed' } });
+
+			// A confirmation left open is not there when the ⚠ opens the dialog again.
+			await press(dialog, '放棄切換');
+			await press('.dock .pill-slot', '模型切換需要處理');
+			await tab.until(`!document.querySelector(${JSON.stringify(dialog)})`, 'the dialog closed by the ⚠');
+			await press('.dock .pill-slot', '模型切換需要處理');
+			await tab.until(`document.querySelector(${JSON.stringify(dialog)})?.innerText.includes('放棄切換') && !document.querySelector(${JSON.stringify(dialog)}).innerText.includes('放棄這次切換？')`, 'the options, not the confirmation');
+
+			await press(dialog, '放棄切換');
+			await tab.until(`document.querySelector(${JSON.stringify(dialog)}).innerText.includes('放棄這次切換？')`, 'the confirmation again');
+			await press(dialog, '確認放棄');
+			await tab.until(`document.querySelector('.toasts')?.innerText.includes('已放棄 ${name} 的這次切換')`, 'the result');
+			await tab.until(`!document.querySelector('.dock .pill-slot .alert')`, 'the ⚠ gone');
+			// Ended with no command.
+			expect(hcomCalls().length).toBe(before);
+			expect((await fixture.board(cookie)).agents.find((agent) => agent.id === session)).toMatchObject({ inHerdr: true, switch: null });
+			expect(await tab.eval(FITS)).toBe(true);
+		} finally {
+			fixture.setHcom({ agents: HCOM_AGENTS });
+			fixture.list([lead, sol]);
+			setHerdr(LISTED);
+			await fixture.refresh(cookie);
+		}
+	}, 60_000);
+}

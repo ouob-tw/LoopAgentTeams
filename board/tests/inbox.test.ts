@@ -107,7 +107,7 @@ test('only DONE and HELP reports become inbox items', async () => {
 	expect(titles(snapshot.inbox.filter((item) => item.controllerId === luna.session_id))).toEqual(['這筆才進信箱']);
 });
 
-test('the DONE message of a controller deactivated as completed is in the inbox in full, and it is 已結束', async () => {
+test('the DONE message of a controller deactivated as completed is in the inbox in full, and it is 閒置', async () => {
 	const luna = fixture.bound('alpha', 'luna');
 	fixture.list([luna]);
 	expect(named(await fixture.refresh(cookie), 'luna')!.status).toBe('working');
@@ -124,7 +124,7 @@ test('the DONE message of a controller deactivated as completed is in the inbox 
 	});
 	const snapshot = await fixture.refresh(cookie);
 
-	expect(named(snapshot, 'luna')).toMatchObject({ status: 'ended', herdr: null });
+	expect(named(snapshot, 'luna')).toMatchObject({ status: 'idle', herdr: null });
 	expect(titled(snapshot, '第一版已交付')).toMatchObject({
 		tag: 'DONE',
 		message: '改了三個檔案。\n測試全數通過。\n\nDONE: 第一版已交付',
@@ -142,11 +142,11 @@ test('a controller that started, delivered and ended while the board was stopped
 
 	const snapshot = await fixture.board(cookie);
 
-	expect(named(snapshot, 'ghost')).toMatchObject({ status: 'ended', project: 'while-stopped' });
+	expect(named(snapshot, 'ghost')).toMatchObject({ status: 'closed', project: 'while-stopped' });
 	expect(titled(snapshot, '看板沒開時交付')).toMatchObject({ kind: 'report', tag: 'DONE', project: 'while-stopped', hcomName: 'ghost' });
 });
 
-test('a cancelled controller with an unsent question and a last HELP is 已結束; only its report stays in the inbox', async () => {
+test('a cancelled controller with an unsent question and a last HELP is 閒置; only its report stays in the inbox', async () => {
 	const orin = fixture.bound('alpha', 'orin', { questions: [question({ id: 'Q-9', title: '沒人回答的題' })] });
 	fixture.report(orin.session_id, { tag: 'HELP', summary: '取消前的求助', message: '全文\n\nHELP: 取消前的求助', hcom_name: 'orin', workspace: orin.workspace, final: true });
 	fixture.list([orin]);
@@ -158,7 +158,7 @@ test('a cancelled controller with an unsent question and a last HELP is 已結�
 	fixture.list([]);
 	const after = await fixture.refresh(cookie);
 
-	expect(named(after, 'orin')).toMatchObject({ status: 'ended', pendingCount: 0 });
+	expect(named(after, 'orin')).toMatchObject({ status: 'idle', pendingCount: 0 });
 	expect(titled(after, '沒人回答的題')).toBeUndefined();
 	expect(titled(after, '取消前的求助')).toMatchObject({ tag: 'HELP', message: '全文\n\nHELP: 取消前的求助' });
 });
