@@ -33,6 +33,7 @@ TAIL_LINES = 20
 TAIL_BYTES = 8192
 KILL_GRACE_SECONDS = 5.0
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+LAUNCHER = 'read -r go <&3 || exit 125; exec 3<&-; exec "$@"'
 
 
 # ---------------------------------------------------------------- locations and config
@@ -364,12 +365,10 @@ def content_tree(root, include=()):
 
 
 def normalize_command(argv):
-    """One spelling for `-- pytest -q` and `-- 'pytest -q'` (the latter runs via sh -c)."""
+    """The command as run: a shell string keeps its own text, since quoting and expansion
+    change what runs; split arguments are quoted back into one string."""
     if len(argv) == 1:
-        try:
-            return shlex.join(shlex.split(argv[0]))
-        except ValueError:
-            return ' '.join(argv[0].split())
+        return argv[0].strip()
     return shlex.join(argv)
 
 
@@ -444,6 +443,14 @@ class Interrupted(Exception):
     def __init__(self, signum):
         super().__init__(signum)
         self.signum = signum
+
+
+def _child_setup(go_read):
+    """In the forked child: put the go pipe on fd 3 and reopen the signals the gate blocks."""
+    def setup():
+        os.dup2(go_read, 3)
+        signal.pthread_sigmask(signal.SIG_UNBLOCK, SIGNALS)
+    return setup
 
 
 def _raise_interrupted(signum, _frame):
@@ -600,18 +607,19 @@ class Gate:
         with_state(change)
 
     def release(self):
-        """Drop this gate's entries; a slot whose test session still runs stays counted."""
+        """Drop this gate's entries; a lock or slot whose test session still runs stays held."""
+        def still_held(holder):
+            if holder['id'] != self.me['id']:
+                return True
+            if holder.get('sid') and session_pids(holder['sid']):
+                holder['gate_done'] = True
+                return True
+            return False
+
         def change(state):
             state['waiters'] = [w for w in state['waiters'] if w['id'] != self.me['id']]
-            state['locks'] = {k: v for k, v in state['locks'].items() if v['id'] != self.me['id']}
-            kept = []
-            for holder in state['slots']:
-                if holder['id'] != self.me['id']:
-                    kept.append(holder)
-                elif holder.get('sid') and session_pids(holder['sid']):
-                    holder['gate_done'] = True
-                    kept.append(holder)
-            state['slots'] = kept
+            state['locks'] = {k: v for k, v in state['locks'].items() if still_held(v)}
+            state['slots'] = [h for h in state['slots'] if still_held(h)]
         with_state(change)
 
     def run(self):
@@ -646,17 +654,25 @@ class Gate:
     def execute(self, info):
         argv = ['/bin/sh', '-c', self.argv[0]] if len(self.argv) == 1 else self.argv
         started, start_iso = time.monotonic(), now_iso()
+        # The suite waits for a byte on fd 3 until its session is recorded; if the gate is
+        # killed before that, the pipe closes and the suite never runs uncounted.
+        go_read, go_write = os.pipe()
         # An interrupt must not land between starting the session and recording it.
         old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
         try:
-            child = subprocess.Popen(argv, cwd=self.cwd, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, start_new_session=True)
+            child = subprocess.Popen(['/bin/sh', '-c', LAUNCHER, 'suite-gate', *argv],
+                                     cwd=self.cwd, stdout=subprocess.PIPE,
+                                     stderr=subprocess.PIPE, start_new_session=True,
+                                     pass_fds=(3,), preexec_fn=_child_setup(go_read))
             self.child = child
             self.set_session(child.pid)
+            os.write(go_write, b'go\n')
         except OSError as exc:
-            warn(f'could not start {argv[0]}: {exc}')
+            warn(f'could not start /bin/sh: {exc}')
             return 127
         finally:
+            os.close(go_read)
+            os.close(go_write)
             signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
         tail = Tail()
         pumps = [threading.Thread(target=pump, args=(stream, out, tail), daemon=True)

@@ -159,10 +159,11 @@ class RunAndReuseTests(GateCase):
         self.assertEqual(self.runs(), 2)
         self.assertEqual(self.records()[-1]['rerun_reason'], 'db schema changed')
 
-    def test_split_and_single_string_commands_share_a_fingerprint(self):
-        self.assertEqual(self.gate('run', '--', 'sh', '-c', self.suite()).returncode, 0)
-        self.assertEqual(self.gate('run', '--', f"sh -c '{self.suite()}'").returncode, 0)
-        self.assertEqual(self.runs(), 1)
+    def test_shell_quoting_is_part_of_the_command(self):
+        (self.repo / 'a.txt').write_text('')
+        self.assertEqual(self.gate('run', '--', f'echo run >> {self.counter}; ls *.txt').returncode, 0)
+        self.assertEqual(self.gate('run', '--', f"echo run >> {self.counter}; ls '*.txt'").returncode, 2)
+        self.assertEqual(self.runs(), 2)
 
     def test_changed_content_untracked_file_and_failure_run_again(self):
         self.gate('run', '--', self.suite())
@@ -251,7 +252,7 @@ class RunAndReuseTests(GateCase):
         root = gate.fingerprint(self.repo, ['pytest'])
         self.assertNotEqual(root['fingerprint'], gate.fingerprint(self.repo / 'sub', ['pytest'])['fingerprint'])
         self.assertNotEqual(root['fingerprint'], gate.fingerprint(self.repo, ['pytest', '-x'])['fingerprint'])
-        self.assertEqual(root['fingerprint'], gate.fingerprint(self.repo, ['pytest   '])['fingerprint'])
+        self.assertEqual(root['fingerprint'], gate.fingerprint(self.repo, [' pytest '])['fingerprint'])
         git(self.repo, 'add', '-A')
         (self.repo / 'app.py').write_text('x = 5\n')  # same-size edit
         self.assertNotEqual(root['fingerprint'], gate.fingerprint(self.repo, ['pytest'])['fingerprint'])
@@ -384,6 +385,40 @@ class SessionTests(GateCase):
                         or gate.proc_stat(grandchild)[0] == 'Z', message='grandchild ended')
         self.assertEqual(self.records(), [])
         self.assertEqual(self.status()['running'], [])
+
+    def test_lock_and_slot_stay_held_while_a_finished_suite_leaves_processes(self):
+        pidfile = self.tmp / 'left.pid'
+        self.kill_session_later(pidfile)
+        command = f'sleep 60 <&- >&- 2>&- & echo $! > {pidfile}; exit 1'
+        self.assertEqual(self.gate('run', '--', command).returncode, 1)
+        status = self.status()
+        self.assertEqual((len(status['running']), len(status['locks'])), (1, 1))
+        os.killpg(int(status['running'][0]['sid']), signal.SIGKILL)
+        self.wait_until(lambda: not self.status()['locks'], message='lock freed')
+
+    def test_a_gate_killed_before_recording_the_session_never_starts_the_suite(self):
+        snippet = (
+            'import importlib.util, os, signal, sys\n'
+            f'spec = importlib.util.spec_from_file_location("g", {str(SCRIPT)!r})\n'
+            'g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)\n'
+            'g.Gate.set_session = lambda self, sid: os.kill(os.getpid(), signal.SIGKILL)\n'
+            'g.main(sys.argv[1:])\n')
+        result = subprocess.run([sys.executable, '-c', snippet, 'run', '--', self.suite()],
+                                cwd=self.repo, env=self.env, capture_output=True, timeout=60)
+        self.assertEqual(result.returncode, -signal.SIGKILL)
+        time.sleep(0.3)
+        self.assertEqual(self.runs(), 0)
+        self.assertEqual(self.status()['running'], [])
+
+    def test_interrupt_sends_the_suite_a_term_it_can_handle(self):
+        ready, cleaned = self.tmp / 'ready', self.tmp / 'cleaned'
+        command = (f"trap 'touch {cleaned}; exit 1' TERM; touch {ready}; "
+                   f"while true; do sleep 0.05; done")
+        proc = self.start('run', '--', command)
+        self.wait_until(ready.exists, message='suite started')
+        proc.send_signal(signal.SIGTERM)
+        self.assertEqual(self.finish(proc)[0], 128 + signal.SIGTERM)
+        self.assertTrue(cleaned.exists(), 'the suite never saw SIGTERM')
 
     def test_killed_gate_keeps_the_slot_while_the_test_session_lives(self):
         self.set_config(max_slots=1)
