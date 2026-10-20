@@ -1,7 +1,8 @@
 <script lang="ts">
 	// What the user sent to this controller from the board, on any logged-in device: messages typed
-	// into its client, answers to its questions, the launch that started it, its wakes and its
-	// model switches.
+	// into its client, answers to its questions, the launch that started it, its wakes, its
+	// model switches and the interrupts of its turn.
+	import { AGENT_ACTION_LABEL } from '#lib/board/agent-actions.ts';
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { CLIENT_LABEL, LAUNCH_STATE_TEXT, latCommand, launchSettingsText } from '#lib/board/launch.ts';
@@ -92,6 +93,16 @@
 						{#if entry.choice && (entry.choice.model || entry.choice.effort)}
 							<p class="title">{choiceText(entry.choice)}{entry.carriedEffort ? `（思考強度沿用 ${entry.carriedEffort}）` : ''}</p>
 						{/if}
+					{:else if entry.kind === 'agent-action'}
+						<p class="meta">
+							<time datetime={entry.time}>{formatTime(entry.time)}</time>
+							<span>{AGENT_ACTION_LABEL[entry.action]}{entry.route === 'herdr' ? '（Herdr）' : ''}</span>
+							{#if entry.ok}
+								<span>✓ 已送出 Esc</span>
+							{:else}
+								<span class="failed">✗ {entry.error}</span>
+							{/if}
+						</p>
 					{:else}
 						<p class="meta">
 							<time datetime={entry.time}>{formatTime(entry.time)}</time>

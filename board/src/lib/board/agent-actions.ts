@@ -1,5 +1,5 @@
 // What the user does to an agent on the 所有 Agent tab: the shared shapes of its operation record.
-import type { Agent } from './types.ts';
+import type { Agent, Controller } from './types.ts';
 
 /** What was done: text typed into the agent's input box, its turn interrupted, it closed, its
  *  Herdr tab moved or renamed, or it brought back from the 已關閉 section. */
@@ -45,6 +45,14 @@ export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = {
 };
 
 export const AGENT_INTERRUPT_CONFIRM_TEXT = '中斷這個 Agent 目前這一回合（等同在它的終端機按 Esc）？';
+
+export const CONTROLLER_INTERRUPT_CONFIRM_TEXT = '中斷這個主控目前這一回合（等同在它的終端機按 Esc）？';
+
+/** Whether the controller's turn can be interrupted from its page: it is at work and runs in a
+ *  Herdr pane, where Esc is pressed as for an agent. */
+export function controllerInterruptible(controller: Pick<Controller, 'status' | 'herdr'>): boolean {
+	return controller.status === 'working' && controller.herdr !== null;
+}
 
 export const AGENT_HCOM_UNKNOWN_REASON =
 	'HCOM 連線無法確認：hcom 的清單讀不到，不知道這個 Agent 有沒有接 HCOM，沒有送出；讀到清單後就能傳話與關閉，中斷不受影響。';

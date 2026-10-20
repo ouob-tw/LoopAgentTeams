@@ -1,5 +1,6 @@
 // Answering a controller's question from the board: the shapes shared by the server and the page,
 // and the text an answer is shown as. The answer itself is written by the panel helper.
+import type { AgentAction } from './agent-actions.ts';
 import type { LaunchView } from './launch.ts';
 import type { SentMessage } from './messages.ts';
 import type { SwitchView } from './models.ts';
@@ -50,8 +51,9 @@ export interface SentAnswer {
 	settledAt: string | null;
 }
 
-/** A launch is listed under the controller it became, so it is always `active` there. */
-export type SentEntry = SentMessage | SentAnswer | LaunchView | WakeView | SwitchView;
+/** A launch is listed under the controller it became, so it is always `active` there. An agent
+ *  action is an interrupt of its turn. */
+export type SentEntry = SentMessage | SentAnswer | LaunchView | WakeView | SwitchView | AgentAction;
 
 /** The helper's own statuses, plus `ended` when the controller is no longer bound. */
 export type AnswerStatus = 'submitted' | 'question_changed' | 'not_pending' | 'invalid_answer' | 'error' | 'ended';

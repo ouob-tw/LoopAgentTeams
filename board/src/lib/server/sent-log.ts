@@ -248,7 +248,8 @@ export function switchView(stateDir: string, switchId: string, now: number, wait
 	return switchesOf(lines, wakesOf(lines, now, waitMs)).find((view) => view.id === switchId) ?? null;
 }
 
-/** What was sent to one controller, newest first: a launch counts once it became this controller. */
+/** What was sent to one controller, newest first: a launch counts once it became this controller;
+ *  of what was done to its session as an agent, only interrupts. */
 export function readSent(stateDir: string, controllerId: string, now: number, waitMs: number): SentEntry[] {
 	const lines = readLines(stateDir);
 	const marks = marksOf(lines);
@@ -260,6 +261,10 @@ export function readSent(stateDir: string, controllerId: string, now: number, wa
 	for (const line of lines) {
 		if (line.kind === 'launch') {
 			if (bound.get(line.id) === controllerId) entries.push({ ...line, state: 'active', controllerId });
+			continue;
+		}
+		if (line.kind === 'agent-action') {
+			if (line.action === 'interrupt' && line.agentId === controllerId) entries.push(line);
 			continue;
 		}
 		if (FOLLOW_UP.has(line.kind) || !('controllerId' in line)) continue;
