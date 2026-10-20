@@ -192,16 +192,16 @@ for (const width of [1280, 360]) {
 		const rows = await tab.eval<{ text: string; cls: string | null }[]>(windows);
 		expect(rows.length).toBe(3);
 		expect(await tab.eval(`document.querySelectorAll('.quota .bar, .quota .fill').length`)).toBe(0);
-		expect(rows[0].text).toMatch(/^5 小時 剩 60% \d\d:\d\d 重置$/);
-		expect(rows[1].text).toMatch(/^7 天 剩 15% \d+\/\d+ \d\d:\d\d 重置$/);
-		expect(rows[2].text).toMatch(/^Fable 剩 4% \d+\/\d+ \d\d:\d\d 重置$/);
+		expect(rows[0].text).toMatch(/^5 小時 60% \d\d:\d\d 重置$/);
+		expect(rows[1].text).toMatch(/^7 天 15% \d+\/\d+ \d\d:\d\d 重置$/);
+		expect(rows[2].text).toMatch(/^Fable 4% \d+\/\d+ \d\d:\d\d 重置$/);
 		expect(rows.map((row) => row.cls)).toEqual(['percent', 'percent warn', 'percent danger']);
 
 		// The other account: its own age, stale; a reset gone by waits for new data; its plan only recorded.
 		expect(claude[1].text).toContain('spare@example.com');
 		expect(claude[1].text).toContain('20 分鐘前更新');
 		expect(claude[1].text).not.toContain('資料可能過舊');
-		expect(claude[1].text).toContain('剩 30%');
+		expect(claude[1].text).toContain('30%');
 		expect(claude[1].text).toContain('等待新資料');
 		expect(
 			await tab.eval(`(() => { const plan = document.querySelectorAll('.quota [data-client="claude"] .card')[1].querySelector('.plan'); return [plan.innerText, plan.classList.contains('recorded'), plan.title]; })()`)
