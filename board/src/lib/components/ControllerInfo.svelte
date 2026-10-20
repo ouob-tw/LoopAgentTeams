@@ -100,8 +100,7 @@
 <!-- Opened from the Herdr tab, the agent's own close below stands for this one. -->
 {#if controller.status === 'idle' && !agent}
 	{#if idleAgent}
-		<!-- Unbound, so the agent list does not call it a controller; it still is one to wake. -->
-		<AgentClose agent={idleAgent} label="關閉" controller />
+		<AgentClose agent={idleAgent} label="關閉" />
 	{:else}
 		<p class="note">Herdr 的清單上找不到它的分頁，無法從這裡關閉。</p>
 	{/if}

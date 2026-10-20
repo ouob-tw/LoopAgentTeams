@@ -8,17 +8,7 @@
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { KnownAgent } from '#lib/board/types.ts';
 
-	let {
-		agent,
-		label = '關閉 Agent',
-		controller
-	}: {
-		agent: KnownAgent;
-		label?: string;
-		/** Whether the confirmation says it is a LAT controller that can be woken again; by default
-		 *  whether it is bound as one. */
-		controller?: boolean;
-	} = $props();
+	let { agent, label = '關閉 Agent' }: { agent: KnownAgent; label?: string } = $props();
 
 	/** Agents whose confirmation of an action is open, and which one: one at a time per agent. */
 	let confirming = $state<Record<string, 'close'>>({});
@@ -49,7 +39,7 @@
 		{/if}
 		{#if confirming[agent.id] === 'close'}
 			<div class="confirm" role="group" aria-label="確認關閉">
-				<p class="warn">{agentCloseConfirmText({ ...agent, controller: controller ?? agent.controller })}</p>
+				<p class="warn">{agentCloseConfirmText(agent)}</p>
 				<div class="actions">
 					<button type="button" class="danger" data-action="confirm-close" onclick={close}>確認關閉</button>
 					<button type="button" onclick={() => delete confirming[agent.id]}>取消</button>
