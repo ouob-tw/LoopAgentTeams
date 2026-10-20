@@ -65,7 +65,7 @@ def pytest_collection_modifyitems(items):
 
 ## 執行指令
 
-前後端分離時，後端指令請先 `cd <backend>` 再執行（`pyproject.toml` 在 `<backend>/`）：
+前後端分離時，後端指令請先 `cd <backend>` 再執行（`pyproject.toml` 在 `<backend>/`）。Agent 跑整套測試時，把下列不指定檔案的指令包進閘門：`suite-gate.py run -- <指令>`，見 SKILL.md「測試可信度」；指定檔案或目錄的測試直接跑。
 
 ```bash
 # 只跑單元測試（預設）

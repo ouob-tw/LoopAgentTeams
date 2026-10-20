@@ -2,6 +2,8 @@
 
 供維護者驗證恢復機制；主控執行 LAT 時不需載入。先將 `lat_dir` 設為待測 LAT 技能目錄的絕對路徑；hook 安裝步驟見 [Hook 設定程序](../references/hook-setup.md)。
 
+Agent 執行下列整套測試時包進 three-tier-testing 閘門：`suite-gate.py run -- <指令>`。
+
 單元／CLI 合約測試（僅暫存檔，沒有模型或真實 Codex）：
 
 ```bash
