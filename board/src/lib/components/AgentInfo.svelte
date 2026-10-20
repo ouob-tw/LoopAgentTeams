@@ -21,7 +21,15 @@
 	import UsageLine from './UsageLine.svelte';
 	import type { Usage } from '#lib/board/usage.ts';
 
-	let { agent }: { agent: KnownAgent } = $props();
+	let {
+		agent,
+		idleController = false
+	}: {
+		agent: KnownAgent;
+		/** Its session is an idle controller on the roster: no longer bound, but closed the way its
+		 *  controller page closes it, as one that can be woken again. */
+		idleController?: boolean;
+	} = $props();
 
 	/** As the conversation's live feed last told; shown only while Herdr lists it. */
 	let usage = $state<Usage | null>(null);
@@ -106,7 +114,7 @@
 	{:else if agent.switch}
 		<p class="note">{AGENT_SWITCH_UNFINISHED_TEXT}：按下方輸入列模型旁的 ⚠ 處理。</p>
 	{:else}
-		<AgentClose {agent} label="關閉 Agent" />
+		<AgentClose {agent} label="關閉 Agent" controller={agent.controller || idleController} />
 	{/if}
 </section>
 

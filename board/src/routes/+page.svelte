@@ -230,6 +230,10 @@
 
 	// Undefined for an archived report whose controller has left the roster.
 	const controller = $derived(controllers.find((candidate) => candidate.id === controllerId));
+	/** The agent Herdr runs the open controller's session in, for every page that shows the controller. */
+	const controllerAgent = $derived(
+		controllerId === undefined ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.inHerdr && candidate.id === controllerId)
+	);
 	/** Whose content is open: shown in the fixed bar on a phone. */
 	const owner = $derived(
 		view?.kind === 'item' ? item : controller && { project: controller.project, hcomName: controller.hcomName }
@@ -586,7 +590,7 @@
 					{/if}
 				{:else if view.kind === 'agent'}
 					{#if agent}
-						<AgentInfo {agent} />
+						<AgentInfo {agent} idleController={controllers.some((candidate) => candidate.id === agent.id && candidate.status === 'idle')} />
 					{:else}
 						<p class="empty">這個 Agent 已不在 Herdr 的清單上：它已關閉。</p>
 					{/if}
@@ -603,7 +607,7 @@
 						<ControllerInfo
 							tabMoves={board.tabMoves}
 							{controller}
-							agent={agents.find((candidate): candidate is KnownAgent => candidate.inHerdr && candidate.id === controller.id)}
+							agent={controllerAgent}
 							items={inbox.filter((entry) => entry.controllerId === controller.id)}
 							answered={answered.filter((entry) => entry.controllerId === controller.id)}
 							onopen={openItem}
@@ -618,6 +622,7 @@
 					<ControllerInfo
 						tabMoves={board.tabMoves}
 						{controller}
+						agent={controllerAgent}
 						items={inbox.filter((entry) => entry.controllerId === controller.id)}
 						answered={answered.filter((entry) => entry.controllerId === controller.id)}
 						onopen={openItem}

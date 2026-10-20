@@ -120,6 +120,22 @@ test('an agent whose hcom pane is the board\'s own is not closed, though Herdr l
 	expect(herdrCalls()).toEqual([]);
 });
 
+test('an agent whose hcom name hcom kill reads as many agents, `all` or `tag:…`, is not closed', async () => {
+	for (const name of ['all', 'tag:vonu']) {
+		fixture.setHcom({ agents: [hcomAgent(name, 's-linked')] });
+		const refused = await close('s-linked');
+		expect(refused.status).toBe(409);
+		expect(refused.body).toMatchObject({
+			ok: false,
+			reason: `HCOM 名稱 ${name} 會被 hcom kill 當成多個 Agent，沒有關閉。`,
+			entry: { action: 'close', route: null, ok: false }
+		});
+	}
+	expect(hcomCalls()).toEqual([]);
+	expect(herdrCalls()).toEqual([]);
+	expect(await listed()).toContain('s-linked');
+});
+
 test('an agent Herdr no longer lists, or a Herdr list that cannot be read, is not closed', async () => {
 	setHerdr(['s-linked', 's-board']);
 	const gone = await close('s-plain');
