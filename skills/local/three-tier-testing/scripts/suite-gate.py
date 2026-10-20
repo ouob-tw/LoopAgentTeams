@@ -94,7 +94,9 @@ def now_iso():
 
 # ---------------------------------------------------------------- full-suite detection
 
-PUNCTUATION = set(';&|()<>\n')
+OPERATORS = ('<<<', '&&', '||', ';;', '|&', '>>', '<<', '&>', '>&', '<&', '>|',
+             ';', '&', '|', '(', ')', '<', '>', '\n')
+REDIRECTS = {'<<<', '>>', '<<', '&>', '>&', '<&', '>|', '<', '>'}
 SHELLS = {'sh', 'bash', 'zsh', 'dash'}
 
 # Per runner: options that take a separate value, and options that narrow the run.
@@ -143,55 +145,113 @@ WRAP_VALUE = {'timeout': {'-s', '--signal', '-k', '--kill-after'}, 'nice': {'-n'
               'env': {'-u', '--unset', '-C', '--chdir'}}
 
 
+def _operator_at(text, i):
+    return next((op for op in OPERATORS if text.startswith(op, i)), None)
+
+
+def _tokens(text):
+    """(value, is_operator, start, end) for each word and operator of shell text.
+
+    Quotes and backslashes are removed from word values; `#` at the start of a word
+    begins a comment up to the end of the line. ValueError on an unclosed quote.
+    """
+    tokens, i, n = [], 0, len(text)
+    while i < n:
+        if text[i] in ' \t\r':
+            i += 1
+        elif text.startswith('\\\n', i):
+            i += 2
+        elif text[i] == '#':
+            end = text.find('\n', i)
+            i = n if end < 0 else end
+        elif _operator_at(text, i):
+            op = _operator_at(text, i)
+            tokens.append((op, True, i, i + len(op)))
+            i += len(op)
+        else:
+            start, value = i, []
+            while i < n and text[i] not in ' \t\r' and not _operator_at(text, i):
+                c = text[i]
+                if c == '\\':
+                    if text[i + 1:i + 2] != '\n':
+                        value.append(text[i + 1:i + 2])
+                    i += 2
+                elif c == "'":
+                    end = text.find("'", i + 1)
+                    if end < 0:
+                        raise ValueError('unclosed quote')
+                    value.append(text[i + 1:end])
+                    i = end + 1
+                elif c == '"':
+                    i += 1
+                    while i < n and text[i] != '"':
+                        if text[i] == '\\' and text[i + 1:i + 2] in ('"', '\\', '$', '`'):
+                            i += 1
+                        value.append(text[i])
+                        i += 1
+                    if i >= n:
+                        raise ValueError('unclosed quote')
+                    i += 1
+                else:
+                    value.append(c)
+                    i += 1
+            tokens.append((''.join(value), False, start, i))
+    return tokens
+
+
+def _simple_commands(text):
+    """(words, start, end) for each simple command, without opening `sh -c`.
+
+    Redirections (`2>&1`, `> out`) are dropped with their target; start and end span
+    the command's words in text. ValueError on an unclosed quote.
+    """
+    commands, words, spans = [], [], []
+    drop_next = False
+    for value, is_operator, start, end in _tokens(text) + [('\n', True, len(text), len(text))]:
+        if is_operator and value in REDIRECTS:
+            if words and words[-1].isdigit() and spans[-1][1] == start:
+                words.pop()  # the file descriptor of `2>`
+                spans.pop()
+            drop_next = True
+        elif is_operator:
+            if words:
+                commands.append((words, spans[0][0], spans[-1][1]))
+            words, spans, drop_next = [], [], False
+        elif drop_next:
+            drop_next = False
+        else:
+            words.append(value)
+            spans.append((start, end))
+    return commands
+
+
 def split_commands(command):
     """Simple commands of a shell string, as word lists; `sh -c '...'` is opened up.
 
     Newlines separate commands, redirections (`2>&1`, `> out`) are dropped with their
-    target, and `#` starts a comment up to the end of the line.
+    target, and `#` at the start of a word starts a comment up to the end of the line.
     """
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|()<>\n')
-    lexer.whitespace = ' \t\r'
-    lexer.whitespace_split = True
-    lexer.commenters = ''
     try:
-        tokens = list(lexer)
+        found = [words for words, _, _ in _simple_commands(command)]
     except ValueError:
-        tokens = command.split()
-    commands, words = [], []
-    comment = drop_next = False
-    for token in tokens + [';']:
-        is_operator = token and set(token) <= PUNCTUATION
-        if comment:
-            comment = '\n' not in token or not is_operator
-            if comment:
-                continue
-        if is_operator and set(token) & {'<', '>'}:
-            if words and words[-1].isdigit():
-                words.pop()  # the file descriptor of `2>`
-            drop_next = True
-        elif is_operator:
-            if words:
-                commands.extend(_open_shell(words))
-            words, drop_next = [], False
-        elif drop_next:
-            drop_next = False
-        elif token.startswith('#'):
-            comment = True
-        else:
-            words.append(token)
-    return commands
+        found = [command.split()]
+    return [inner for words in found for inner in _open_shell(words)]
 
 
-def _open_shell(words):
+def _shell_body(words):
+    """The `-c` text when words run a shell such as `bash -lc '<text>'`, else None."""
     rest = _strip_assignments(words)
     if rest and os.path.basename(rest[0]) in SHELLS:
         for i, word in enumerate(rest[1:], 1):
             if word == '-c' or (word.startswith('-') and not word.startswith('--')
                                 and 'c' in word[1:]):
-                if i + 1 < len(rest):
-                    return split_commands(rest[i + 1])
-                break
-    return [words]
+                return rest[i + 1] if i + 1 < len(rest) else None
+    return None
+
+
+def _open_shell(words):
+    body = _shell_body(words)
+    return [words] if body is None else split_commands(body)
 
 
 def _strip_assignments(words):
@@ -777,9 +837,10 @@ def print_reuse(record, command):
         for line in record['output_tail'].splitlines():
             print(f'    {line}')
     print('This is the result for the current content: report it. Being asked to run the '
-          'suite again is not a reason to rerun; rerun only when something outside the '
-          'tracked files changed (database, external service, ignored config):')
-    print(f'  suite-gate.py run --rerun "<what changed>" -- {command}')
+          'suite again is not by itself a reason to rerun. With a concrete reason (for '
+          'example a database, service or ignored config changed, or a flaky test is being '
+          'investigated), rerun with:')
+    print(f'  suite-gate.py run --rerun "<reason>" -- {command}')
 
 
 def cmd_run(rerun, argv):
@@ -882,13 +943,34 @@ def shell_text(command):
     return command if isinstance(command, str) else ''
 
 
+def _wrap_suites(text, cwd, registry):
+    """text with each full-suite simple command replaced in place by its gate command.
+
+    The rest of the text (cd, export, pipes, a later echo) stays as written, so the gate
+    records the suite's own exit code. A suite inside `bash -c '...'` replaces that
+    whole shell command with the rewritten body.
+    """
+    parts, last = [], 0
+    for words, start, end in _simple_commands(text):
+        if _is_gate_run(words):
+            continue
+        body = _shell_body(words)
+        if body is not None:
+            replacement = _wrap_suites(body, cwd, registry)
+            replacement = None if replacement == body else replacement
+        elif is_full_suite(shlex.join(words), cwd, registry):
+            replacement = gate_command(text[start:end])
+        else:
+            replacement = None
+        if replacement is not None:
+            parts += [text[last:start], replacement]
+            last = end
+    return ''.join(parts) + text[last:]
+
+
 def gate_rewrite(text, cwd):
     """The command to run instead of text, or None when text runs no full suite outside
-    `suite-gate.py run`.
-
-    Only the suite commands go through the gate, after any `cd` before them, so the
-    recorded exit code is the suite's own and not that of a pipe or a later `echo`.
-    """
+    `suite-gate.py run`."""
     try:
         commands = [words for words in split_commands(text) if not _is_gate_run(words)]
         if not commands:
@@ -897,14 +979,9 @@ def gate_rewrite(text, cwd):
         if not is_full_suite(' ; '.join(shlex.join(words) for words in commands), cwd,
                              registry):
             return None
-        suites = [words for words in commands
-                  if is_full_suite(shlex.join(words), cwd, registry)]
-        if not suites:  # only the commands together match a registry pattern
-            return gate_command(text)
-        before = commands[:next(i for i, words in enumerate(commands) if words is suites[0])]
-        moves = [shlex.join(words) for words in before if _strip_assignments(words)[:1]
-                 in (['cd'], ['pushd'])]
-        return ' && '.join(moves + [gate_command(shlex.join(words)) for words in suites])
+        rewritten = _wrap_suites(text, cwd, registry)
+        # Only the commands together match a registry pattern: send all of them.
+        return rewritten if rewritten != text else gate_command(text)
     except Exception:  # unreadable text or a hook bug: block what looks like a runner
         if SCRIPT.name not in text and LOOKS_LIKE_TESTS.search(text):
             return gate_command(text)
@@ -926,8 +1003,9 @@ def cmd_hook():
           'the gate reuses a passing result for the same content and queues when the host '
           'is busy:\n'
           f'  {rewrite}\n'
-          'Only the suite goes through the gate (under /bin/sh), so its own exit code is '
-          'recorded; add pipes such as `| tail -30` after the gate command if needed. '
+          'Only the suite command itself is wrapped, so the gate records its own exit code; '
+          'the rest of your command is unchanged. The wrapped part runs under /bin/sh and '
+          'sees only exported variables. '
           'Add --rerun "<reason>" after `run` only when the gate reports an earlier pass and '
           'you have a concrete reason to run again. To run only some tests, name the files '
           'or a filter.',

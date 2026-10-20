@@ -488,6 +488,8 @@ class DetectionTests(unittest.TestCase):
             'FOO=1 timeout 600 pytest', "bash -lc 'pytest -q'", 'echo hi; pytest',
             'cd board\nbun test', 'pytest -q 2>&1 | tail -20', 'pytest > out.txt',
             'pytest &>/dev/null', 'cd x # go to x\npytest', 'echo "a\nb"; pytest',
+            'pytest # comment', 'echo "# note"; pytest', 'echo a#b; pytest',
+            "echo 'it''s'; pytest", 'pytest \\\n  -q',
         ]
         targeted = [
             'pytest tests/test_a.py', 'pytest -k login', 'pytest -kfoo', 'pytest tests/a.py::t',
@@ -498,6 +500,7 @@ class DetectionTests(unittest.TestCase):
             'cargo test parse', 'cargo test -p core', 'echo pytest', 'git status',
             'bun run build', 'uv run python script.py', 'pytest tests/a.py 2>&1 | tail',
             'echo "# note"\ngit status', 'pytest tests/a.py # full run later',
+            'pytest \\\n  tests/a.py', 'pytest "tests/a b.py"',
         ]
         for command in full:
             self.assertTrue(gate.is_full_suite(command, registry={}), command)
@@ -542,17 +545,28 @@ class HookTests(GateCase):
         return {'claude': text, 'codex-list': ['bash', '-lc', text]}
 
     def test_unwrapped_full_suites_are_blocked_with_a_ready_to_run_rewrite(self):
-        """Only the suite goes through the gate, after the `cd`s before it."""
+        """Only the suite command is replaced; everything around it stays as written."""
         g = gate.gate_command
         cases = {
             'pytest': g('pytest'),
             'FOO=1 timeout 600 uv run pytest -q': g('FOO=1 timeout 600 uv run pytest -q'),
             'cd sub && uv run pytest -q': 'cd sub && ' + g('uv run pytest -q'),
-            'npm test 2>&1 | tail -5': g('npm test'),
-            'echo start\ncd a; cd b\npytest; echo "exit=${PIPESTATUS[0]}"':
-                'cd a && cd b && ' + g('pytest'),
+            'npm test 2>&1 | tail -5': g('npm test') + ' 2>&1 | tail -5',
+            'set -o pipefail\npytest 2>&1 | tail -20':
+                'set -o pipefail\n' + g('pytest') + ' 2>&1 | tail -20',
+            'pytest | tail -30; echo "exit=${PIPESTATUS[0]}"':
+                g('pytest') + ' | tail -30; echo "exit=${PIPESTATUS[0]}"',
             "bash -lc 'go test ./...'": g('go test ./...'),
+            "bash -lc 'cd a && pytest' | tail": 'cd a && ' + g('pytest') + ' | tail',
             'pytest && cargo test': g('pytest') + ' && ' + g('cargo test'),
+            'cd a && pytest && cd ../b && bun test':
+                'cd a && ' + g('pytest') + ' && cd ../b && ' + g('bun test'),
+            'export APP_ENV=test; pytest': 'export APP_ENV=test; ' + g('pytest'),
+            'cd "$ROOT" && pytest --junitxml="$OUT/r.xml"':
+                'cd "$ROOT" && ' + g('pytest --junitxml="$OUT/r.xml"'),
+            'pytest # comment': g('pytest') + ' # comment',
+            'echo "# note"; pytest': 'echo "# note"; ' + g('pytest'),
+            'pytest "#"; pytest': 'pytest "#"; ' + g('pytest'),
         }
         for text, expected in cases.items():
             for client, command in self.formats(text).items():
@@ -603,6 +617,7 @@ class HookTests(GateCase):
             self.assertEqual(result.returncode, 0, result.stderr)
             self.assertEqual(self.runs(), expected_runs)
         self.assertIn('already passed', result.stdout)
+        self.assertIn('not by itself a reason', result.stdout)
 
     def test_unreadable_input_never_blocks_and_unreadable_commands_block_only_runners(self):
         for payload in ('not json', '[]', '{"tool_input": "x"}'):
