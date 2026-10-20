@@ -7,13 +7,19 @@
 	// page is open, a line without a name goes to that agent instead, from a draft of its own, also
 	// kept across a reload; while it works and nothing is typed, the send button interrupts its turn instead.
 	// A controller's page on the Herdr tab is written to as the controller it is, from the controllers' draft.
+	// A controller at work in a Herdr pane is interrupted the same way, while nothing is typed.
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import MessageSquare from '@lucide/svelte/icons/message-square';
 	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
 	import Square from '@lucide/svelte/icons/square';
 	import { onMount, tick, untrack } from 'svelte';
-	import { AGENT_HCOM_UNKNOWN_REASON, AGENT_INTERRUPT_CONFIRM_TEXT } from '#lib/board/agent-actions.ts';
+	import {
+		AGENT_HCOM_UNKNOWN_REASON,
+		AGENT_INTERRUPT_CONFIRM_TEXT,
+		CONTROLLER_INTERRUPT_CONFIRM_TEXT,
+		controllerInterruptible
+	} from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { shortName } from '#lib/board/agents.ts';
 	import { AGENT_DRAFTS_KEY, COMMAND_DRAFT_KEY, COMMAND_HIDDEN_KEY, forget, remember, remembered, rememberedText } from '#lib/board/prefs.ts';
@@ -138,6 +144,14 @@
 	let confirmingStop = $state(false);
 	const command = $derived(parseCommand(draft, controllers, target, true));
 	const recipient = $derived(command.ok ? command.controller : named || toAgent ? undefined : target);
+	/** Whose turn the send button interrupts instead, as the notice names it; null when it sends. */
+	const stopping = $derived(
+		stoppable && agent
+			? { id: agent.id, name: agent.name, confirm: AGENT_INTERRUPT_CONFIRM_TEXT }
+			: !toAgent && !draft.trim() && recipient && controllerInterruptible(recipient)
+				? { id: recipient.id, name: `@${recipient.hcomName}`, confirm: CONTROLLER_INTERRUPT_CONFIRM_TEXT }
+				: null
+	);
 	const waking = $derived(recipient !== undefined && isInactive(recipient.status));
 
 	// The wake's options, by controller ID. '' keeps the current model or effort.
@@ -161,6 +175,10 @@
 		void owner;
 		optionsOpen = false;
 		confirmingStop = false;
+	});
+	// Nothing to interrupt any more closes it, so it does not come back by itself when there is again.
+	$effect.pre(() => {
+		if (!stopping) confirmingStop = false;
 	});
 
 	async function submit() {
@@ -215,9 +233,9 @@
 	}
 
 	async function interrupt() {
-		if (!agent) return;
-		// The notice names the agent interrupted, even if another one is open by the time it answers.
-		const { id, name } = agent;
+		if (!stopping) return;
+		// The notice names the one interrupted, even if another one is open by the time it answers.
+		const { id, name } = stopping;
 		confirmingStop = false;
 		interrupting[id] = true;
 		const result = await agentControl.interrupt(id);
@@ -264,7 +282,7 @@
 		<!-- A wake keeps its word: it brings a controller back and spends quota. One button either
 		     way, so its check stays through the change. -->
 		<span class="send-slot" bind:clientWidth={sendWidth}>
-			{#if stoppable && agent}
+			{#if stopping}
 				<button
 					type="button"
 					class="primary send square stop"
@@ -272,7 +290,7 @@
 					title="中斷這一回合（等同在它的終端機按 Esc）"
 					aria-expanded={confirmingStop}
 					data-action="interrupt"
-					disabled={interrupting[agent.id]}
+					disabled={interrupting[stopping.id]}
 					onclick={() => (confirmingStop = !confirmingStop)}
 				>
 					<Square size="1em" fill="currentColor" />
@@ -318,9 +336,9 @@
 		</button>
 	{/if}
 
-	{#if confirmingStop && stoppable}
+	{#if confirmingStop && stopping}
 		<div class="popup" role="group" aria-label="確認中斷">
-			<p class="warn">{AGENT_INTERRUPT_CONFIRM_TEXT}</p>
+			<p class="warn">{stopping.confirm}</p>
 			<div class="actions">
 				<button type="button" class="danger" data-action="confirm-interrupt" onclick={interrupt}>確認中斷</button>
 				<button type="button" onclick={() => (confirmingStop = false)}>取消</button>

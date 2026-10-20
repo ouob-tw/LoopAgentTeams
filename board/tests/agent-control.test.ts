@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import type { AgentAction, AgentActionResponse } from '../src/lib/board/agent-actions.ts';
+import { controllerInterruptible, type AgentAction, type AgentActionResponse } from '../src/lib/board/agent-actions.ts';
 import { NODE, startFixture, until, type Fixture } from './harness.ts';
 
 // The fake input command's plan and call log, known before the fixture makes its own directory.
@@ -201,9 +201,36 @@ test('every send and interrupt is in the agent\'s record, newest first, on every
 		['send', '第一則', true]
 	]);
 	expect(entries[0]).toMatchObject({ kind: 'agent-action', agentId: 's-plain', route: 'herdr' });
-	// A controller's sent log is not mixed with it.
+	// A controller's sent log has its interrupts, not what else was done to it as an agent.
 	const controllerLog = await fixture.fetch('/api/messages?controller=s-plain', { cookie });
-	expect((await controllerLog.json()).entries).toEqual([]);
+	expect((await controllerLog.json()).entries).toEqual([entries[0]]);
+});
+
+test("a controller's interrupts, done or not, are in its sent log with the reason, newest first", async () => {
+	await interrupt('s-plain');
+	setHerdr([herdrAgent('s-plain')], { fail: { 'agent send-keys': { exit: 1, stderr: JSON.stringify({ error: { code: 'x', message: 'pane went away' } }) } } });
+	await interrupt('s-plain');
+	// Gone from Herdr's list: refused before anything is pressed.
+	setHerdr([]);
+	await interrupt('s-plain');
+	const response = await fixture.fetch('/api/messages?controller=s-plain', { cookie });
+	const entries: AgentAction[] = (await response.json()).entries;
+	expect(entries.map((entry) => [entry.kind, entry.action, entry.ok, entry.error])).toEqual([
+		['agent-action', 'interrupt', false, '這個 Agent 已不在 Herdr 的清單上，沒有執行。'],
+		['agent-action', 'interrupt', false, 'Herdr 沒有送出 Esc：pane went away'],
+		['agent-action', 'interrupt', true, null]
+	]);
+	expect(herdrCalls()).toEqual([
+		['agent', 'send-keys', 'wA:p-s-plain', 'esc'],
+		['agent', 'send-keys', 'wA:p-s-plain', 'esc']
+	]);
+});
+
+test('only a controller at work with a Herdr pane offers the interrupt', () => {
+	const herdr = { workspace: 'wA', tab: 'wA:t', pane: 'wA:p' };
+	expect(controllerInterruptible({ status: 'working', herdr })).toBe(true);
+	for (const status of ['idle', 'closed', 'waiting', 'delivered'] as const) expect(controllerInterruptible({ status, herdr })).toBe(false);
+	expect(controllerInterruptible({ status: 'working', herdr: null })).toBe(false);
 });
 
 test('requests that are not a send or an interrupt are refused before anything runs', async () => {

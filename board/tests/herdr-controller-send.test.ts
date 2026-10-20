@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import type { SentEntry } from '../src/lib/board/answers.ts';
 import { AGENT_DRAFTS_KEY, COMMAND_DRAFT_KEY } from '../src/lib/board/prefs.ts';
-import { NODE, PORT_BASE, sleep, startFixture, type Fixture } from './harness.ts';
+import { NODE, PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
 
 const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
 	(path) => path && existsSync(path)
@@ -103,6 +103,8 @@ const BOX = '.dock .cmd textarea';
 const SEND = '.dock .cmd .send-slot button';
 const OPTIONS = '.dock .cmd button.options';
 const POPUP = '.dock .popup[aria-label="喚醒選項"]';
+const STOP = '.dock [data-action="interrupt"]';
+const CONFIRM_STOP = '.dock [data-action="confirm-interrupt"]';
 /** Click the first button in `scope` whose text includes `text`. */
 const click = (scope: string, text: string) =>
 	`[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.innerText.includes(${JSON.stringify(text)})).click()`;
@@ -130,7 +132,7 @@ function herdrAgent(session: string, cwd = `/home/someone/projects/${session}`) 
 		workspace_id: 'wA'
 	};
 }
-function setHerdr() {
+function setHerdr(extra: object = {}) {
 	const agents = [herdrAgent('s-lead'), herdrAgent('s-gone', gone.workspace), herdrAgent('s-luna'), herdrAgent('s-plain')];
 	writeFileSync(
 		join(fixture.dir, 'herdr.json'),
@@ -138,7 +140,8 @@ function setHerdr() {
 			agents,
 			panes: agents.map((agent) => ({ pane_id: agent.pane_id, workspace_id: agent.workspace_id, cwd: agent.cwd })),
 			workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }],
-			tabs: agents.map((agent) => ({ tab_id: agent.tab_id, workspace_id: agent.workspace_id, label: `分頁-${agent.agent_session.value}` }))
+			tabs: agents.map((agent) => ({ tab_id: agent.tab_id, workspace_id: agent.workspace_id, label: `分頁-${agent.agent_session.value}` })),
+			...extra
 		})
 	);
 }
@@ -151,6 +154,8 @@ function record(session: string, said: { kind: 'user' | 'assistant'; minutes: nu
 }
 const lines = (file: string): any[] => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []);
 const injects = (): string[][] => lines(join(injectDir, 'inject-calls.jsonl'));
+/** The Herdr commands that act on an agent, not the lists every read makes. */
+const herdrCalls = (): string[][] => lines(join(fixture.dir, 'herdr-calls.jsonl'));
 const resumes = (): string[][] => lines(join(fixture.dir, 'hcom-calls.jsonl')).map((call: { args: string[] }) => call.args).filter((args) => args[0] === 'r');
 async function sentLog(controllerId: string): Promise<SentEntry[]> {
 	return (await (await fixture.fetch(`/api/messages?controller=${encodeURIComponent(controllerId)}`, { cookie })).json()).entries;
@@ -166,7 +171,8 @@ beforeAll(async () => {
 	fixture = await startFixture(50, {
 		env: {
 			LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-inject.mjs'), injectDir]),
-			LAT_BOARD_HCOM_TIMEOUT_SECONDS: '1'
+			LAT_BOARD_HCOM_TIMEOUT_SECONDS: '1',
+			LAT_BOARD_HERDR_TIMEOUT_SECONDS: '2'
 		}
 	});
 	cookie = await fixture.login('herdr-controller-send');
@@ -192,7 +198,7 @@ beforeAll(async () => {
 beforeEach(() => {
 	if (!CHROME) return;
 	for (const file of ['inject-calls.jsonl', 'inject-typed.jsonl']) rmSync(join(injectDir, file), { force: true });
-	rmSync(join(fixture.dir, 'hcom-calls.jsonl'), { force: true });
+	for (const file of ['hcom-calls.jsonl', 'herdr-calls.jsonl']) rmSync(join(fixture.dir, file), { force: true });
 });
 afterEach(async () => {
 	if (!chrome || chrome.exitCode !== null || chrome.signalCode !== null) return;
@@ -267,6 +273,161 @@ for (const width of [1280, 390]) {
 	}, 60_000);
 
 }
+
+// Wide on its information page, a phone on the Herdr tab.
+for (const [width, search] of [
+	[1280, '?controller=s-lead'],
+	[390, '?agent=s-lead']
+] as const) {
+	test.skipIf(!CHROME)(`${width}px: a controller at work is interrupted after a confirmation, named in the notice and in its sent log`, async () => {
+		await visit(width, search);
+		// Nothing typed: the send button is a stop.
+		await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
+		await type('先別停');
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(false);
+		expect(await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).getAttribute('aria-label')`)).toBe('送出');
+		await type('');
+		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
+		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
+		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
+		const popup = await tab.eval<string>(`document.querySelector('.dock .popup').innerText`);
+		expect(popup).toContain('主控');
+		expect(popup).toContain('Esc');
+		// Nothing is pressed before it is confirmed.
+		expect(herdrCalls()).toEqual([]);
+		expect(await tab.eval(FITS)).toBe(true);
+		await tab.eval(`document.querySelector(${JSON.stringify(CONFIRM_STOP)}).click()`);
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('已對 @lead 送出 Esc')`, 'the interrupt notice');
+		expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);
+		expect(injects()).toEqual([]);
+		await tab.eval(click('.detail [role="tablist"]', '送出紀錄'));
+		await tab.until(`document.querySelector('#panel-sent:not([hidden]) li[data-kind="agent-action"]')?.innerText.includes('已送出 Esc')`, 'the sent log');
+		expect(await tab.eval(FITS)).toBe(true);
+	}, 60_000);
+}
+
+test.skipIf(!CHROME)('a controller not at work keeps its wake button, with no interrupt', async () => {
+	for (const [search, header] of [
+		['?controller=s-luna', 'moon'],
+		['?controller=s-gone', 'dusk']
+	]) {
+		await visit(1280, search);
+		await tab.until(`${pageOf(header)} && document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, `${header}'s page`);
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(false);
+		tab.close();
+		const exited = new Promise((resolve) => chrome!.once('exit', resolve));
+		chrome!.kill('SIGKILL');
+		await exited;
+		rmSync(profile, { recursive: true, force: true });
+	}
+}, 60_000);
+
+test.skipIf(!CHROME)('an interrupt Herdr does not carry out says why, is not tried again, and is in the sent log as failed', async () => {
+	const stderr = JSON.stringify({ error: { code: 'pane_not_found', message: 'pane went away' } });
+	setHerdr({ fail: { 'agent send-keys': { exit: 1, stderr } } });
+	try {
+		await visit(1280, '?controller=s-lead');
+		await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
+		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
+		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
+		await tab.eval(`document.querySelector(${JSON.stringify(CONFIRM_STOP)}).click()`);
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('Herdr 沒有送出 Esc：pane went away')`, 'the reason');
+		expect(await tab.eval<string>(`document.querySelector('.dock').innerText`)).not.toContain('已對');
+		await sleep(500);
+		expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);
+		await tab.eval(click('.detail [role="tablist"]', '送出紀錄'));
+		await tab.until(`document.querySelector('#panel-sent:not([hidden]) li[data-kind="agent-action"]')?.innerText.includes('✗ Herdr 沒有送出 Esc：pane went away')`, 'the failed row');
+		// The stop is there to press again.
+		expect(await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).disabled`)).toBe(false);
+	} finally {
+		setHerdr();
+		await fixture.refresh(cookie);
+	}
+}, 60_000);
+
+test.skipIf(!CHROME)('an interrupt whose Herdr command times out says so, is tried once, and is in the sent log as failed', async () => {
+	setHerdr({ slowMs: { 'agent send-keys': 4_000 } });
+	try {
+		await visit(1280, '?controller=s-lead');
+		await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
+		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
+		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
+		await tab.eval(`document.querySelector(${JSON.stringify(CONFIRM_STOP)}).click()`);
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('Herdr 的按鍵指令逾時（2 秒），不確定有沒有中斷。')`, 'the reason');
+		expect(await tab.eval<string>(`document.querySelector('.dock').innerText`)).not.toContain('已對');
+		// Past the slow command's own end: still the one attempt.
+		await sleep(3_000);
+		expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);
+		await tab.eval(click('.detail [role="tablist"]', '送出紀錄'));
+		await tab.until(
+			`document.querySelector('#panel-sent:not([hidden]) li[data-kind="agent-action"]')?.innerText.includes('✗ Herdr 的按鍵指令逾時（2 秒）')`,
+			'the failed row'
+		);
+	} finally {
+		setHerdr();
+		await fixture.refresh(cookie);
+	}
+}, 60_000);
+
+test.skipIf(!CHROME)('only blank space typed keeps the stop; a line naming a controller is sent or wakes instead', async () => {
+	await visit(1280, '?controller=s-lead');
+	await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
+	await type('  \n ');
+	await sleep(200);
+	expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
+	for (const [line, label] of [
+		['@lead 先別停', ''],
+		['@luna 醒醒', '喚醒']
+	]) {
+		await type(line);
+		await tab.until(`document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === ${JSON.stringify(label)}`, `the ${label} button`);
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(false);
+	}
+	expect(herdrCalls()).toEqual([]);
+}, 60_000);
+
+test.skipIf(!CHROME)('the confirmation is cancelled without a key pressed, and closes when the controller changes or stops working', async () => {
+	const sun = fixture.bound('sun', 'sun', { session_id: 's-sun' });
+	fixture.list([lead, gone, sun]);
+	fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun')] });
+	await fixture.refresh(cookie);
+	const open = async () => {
+		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
+		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
+		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
+	};
+	const confirmShown = () => tab.eval<boolean>(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`);
+	try {
+		await visit(1280, '?controller=s-lead');
+		await tab.until(pageOf('lat'), "lead's page");
+		await open();
+		await tab.eval(click('.dock .popup', '取消'));
+		await tab.until(`!document.querySelector('.dock .popup')`, 'the confirmation closed');
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
+
+		// Another controller opened: closed, and not shown for it.
+		await open();
+		await tab.eval(`document.querySelector('.unfolded button.person[data-controller="sun"]').click()`);
+		await tab.until(`${pageOf('sun')} && !!document.querySelector(${JSON.stringify(STOP)})`, "sun's page");
+		expect(await confirmShown()).toBe(false);
+
+		// It stops working, a question waiting on the user, and works again: closed, and not back.
+		await open();
+		fixture.list([lead, gone, { ...sun, questions: [question()] }]);
+		await fixture.refresh(cookie);
+		await tab.until(`!document.querySelector(${JSON.stringify(STOP)})`, 'no stop while it waits');
+		expect(await confirmShown()).toBe(false);
+		fixture.list([lead, gone, sun]);
+		await fixture.refresh(cookie);
+		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
+		expect(await confirmShown()).toBe(false);
+		expect(herdrCalls()).toEqual([]);
+	} finally {
+		fixture.list([lead, gone]);
+		fixture.setHcom({ agents: HCOM_AGENTS });
+		await fixture.refresh(cookie);
+	}
+}, 60_000);
 
 // Wide: a new LAT round and an effort; a phone: the same conversation with another model.
 for (const { width, newRound, kind, value, flags } of [
