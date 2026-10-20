@@ -1,6 +1,7 @@
 // Which agents of the Herdr tab are controllers: those whose session is on the controller roster,
 // bound or ended with a report not yet archived. Matched by session ID, never by name.
 import { expect, test } from 'bun:test';
+import { EMPTY_CLOSED, type ClosedAgent } from '../src/lib/board/closed-agents.ts';
 import type { Agent, HelperController, Report } from '../src/lib/board/types.ts';
 import { buildSnapshot, type Sources } from '../src/lib/server/model.ts';
 import type { ReportFile } from '../src/lib/server/reports.ts';
@@ -57,7 +58,7 @@ const agent = (id: string | null, name: string, isBound = false): Agent => ({
 	switch: null
 });
 
-function controllersOf(agents: Agent[], archived: string[] = []) {
+function snapshotOf(agents: Agent[], archived: string[] = [], closed: Omit<ClosedAgent, 'controller'>[] = []) {
 	const sources: Sources = {
 		active: [bound('s-bound', 'lead')],
 		helperError: null,
@@ -74,13 +75,17 @@ function controllersOf(agents: Agent[], archived: string[] = []) {
 		agents,
 		herdrError: null,
 		workspaces: [],
+		closed: { ...EMPTY_CLOSED, agents: closed },
 		pruneError: null,
 		answered: [],
 		answeredError: null
 	};
 	const state = { read: {}, archived: Object.fromEntries(archived.map((key) => [key, '2026-10-20T11:00:00Z'])) };
-	const snapshot = buildSnapshot(sources, state, NOW);
-	return Object.fromEntries(snapshot.agents.map((entry) => [entry.id ?? entry.name, entry.controller]));
+	return buildSnapshot(sources, state, NOW);
+}
+
+function controllersOf(agents: Agent[], archived: string[] = []) {
+	return Object.fromEntries(snapshotOf(agents, archived).agents.map((entry) => [entry.id ?? entry.name, entry.controller]));
 }
 
 test('bound, or ended with a report not yet archived, is a controller; neither is not', () => {
@@ -101,4 +106,25 @@ test('an ended controller whose reports are all archived is no longer one', () =
 
 test('the same name in another session is not the controller', () => {
 	expect(controllersOf([agent('s-twin', 'luna'), agent('s-twin-2', 'lead')])).toEqual({ 's-twin': false, 's-twin-2': false });
+});
+
+test('a closed row of the 已關閉 section is a controller by the same roster as the Herdr tab', () => {
+	const closedRow = (id: string): Omit<ClosedAgent, 'controller'> => ({
+		id,
+		hcomName: id,
+		tab: null,
+		client: 'claude',
+		folder: '/',
+		workspace: 'w',
+		workspaceLabel: null,
+		stoppedAt: '2026-10-20T11:00:00.000Z',
+		resume: null
+	});
+	const ids = ['s-bound', 's-ended', 's-quiet', 's-plain'];
+	const listed = snapshotOf(ids.map((id) => agent(id, id)));
+	const closed = snapshotOf([], [], ids.map(closedRow));
+	const fromList = Object.fromEntries(listed.agents.map((entry) => [entry.id, entry.controller]));
+	const fromClosed = Object.fromEntries(closed.closed.agents.map((entry) => [entry.id, entry.controller]));
+	expect(fromClosed).toEqual({ 's-bound': true, 's-ended': true, 's-quiet': false, 's-plain': false });
+	expect(fromClosed).toEqual(fromList);
 });
