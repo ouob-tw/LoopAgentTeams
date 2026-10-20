@@ -177,6 +177,7 @@ test.skipIf(!CHROME)("the new-controller form names each client's defaults, the 
 test.skipIf(!CHROME)("the new-agent form names the defaults the same way", async () => {
 	await send('Page.navigate', { url: `${fixture.url}/?new-agent=wA` });
 	await until(`document.querySelector('h2')?.textContent.includes('Alpha')`);
+	await filledIn();
 	await pickFolder(own);
 	await shows('Haiku 5.5（claude-haiku-5-5）', 'high');
 	await choose('codex');
