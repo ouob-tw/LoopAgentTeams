@@ -37,6 +37,11 @@ function redactorFor(event: RequestEvent): (text: string) => Promise<string> {
 	return async (text) => redact(text, await (secrets ??= (copy ? copy.text().catch(() => null) : Promise.resolve(null)).then((body) => secretsOf(body, token))));
 }
 
+function requestIdOf(event: RequestEvent): string {
+	const given = event.request.headers.get('x-request-id');
+	return given && REQUEST_ID.test(given) ? given : randomUUID();
+}
+
 const where = (event: RequestEvent) => ({ method: event.request.method, path: event.url.pathname });
 
 async function reason(event: RequestEvent, value: unknown): Promise<string | undefined> {
@@ -62,8 +67,7 @@ async function logFailure(event: RequestEvent, response: Response) {
 }
 
 export const handle: Handle = ({ event, resolve }) => {
-	const given = event.request.headers.get('x-request-id');
-	event.locals.requestId = given && REQUEST_ID.test(given) ? given : randomUUID();
+	event.locals.requestId = requestIdOf(event);
 	event.locals.redact = redactorFor(event);
 	return withRequestId(event.locals.requestId, async () => {
 		let response: Response;
@@ -99,6 +103,9 @@ export const handle: Handle = ({ event, resolve }) => {
  *  has returned, so the request id comes from the request itself. */
 export const handleError: HandleServerError = async ({ kind, error, event }) => {
 	if (kind !== 'unknown') return;
+	// SvelteKit can fail before `handle` runs, such as loading a route's module.
+	event.locals.requestId ??= requestIdOf(event);
+	event.locals.redact ??= redactorFor(event);
 	const { exc_type, exc_message, traceback } = exceptionFields(error);
 	const fields = {
 		...where(event),

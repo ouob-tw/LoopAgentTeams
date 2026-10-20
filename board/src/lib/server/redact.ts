@@ -35,8 +35,13 @@ export function secretsOf(body: string | null, token: string | undefined): strin
 
 export function redact(text: string, secrets: string[]): string {
 	// Node quotes an argument it cannot pass to a command after "Received", and JSON.parse quotes
-	// the text it could not read: both may be the user's text or a state file's content.
-	let result = text.replace(/(\. Received ).*$/gm, `$1${OMITTED}`).replace(/"[^\n]*" is not valid JSON/g, `"${OMITTED}" is not valid JSON`);
+	// the text it could not read, cut short with "..." when long: both may be the user's text or a
+	// state file's content. A web address keeps no query or fragment, which may hold anything; a
+	// stack frame's line and column stay.
+	let result = text
+		.replace(/(\. Received ).*$/gm, `$1${OMITTED}`)
+		.replace(/"[^\n]*"(?:\.\.\.)? is not valid JSON/g, `"${OMITTED}" is not valid JSON`)
+		.replace(/(\bhttps?:\/\/[^\s?#()'"]+)[?#][^\s()'"]*?((?::\d+){1,2})?(?=[)\s'"]|$)/gm, '$1$2');
 	for (const secret of secrets) result = result.split(secret).join(OMITTED);
 	return result;
 }

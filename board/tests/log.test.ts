@@ -39,6 +39,10 @@ test('the user text of a request and its token are taken out, as are texts Node 
 	expect(redact(`c-1: 答案\n第二行內容 / 第二行內容 / 備註 / ${PASSWORD} / tok-9`, secrets)).toBe('c-1:[omitted]/ [omitted] / [omitted] / [omitted] / [omitted]');
 	expect(redact("must be a string without null bytes. Received 'a\\x00b'\n    at x", [])).toBe('must be a string without null bytes. Received [omitted]\n    at x');
 	expect(redact('Unexpected token \'o\', "not "json"" is not valid JSON', [])).toBe('Unexpected token \'o\', "[omitted]" is not valid JSON');
+	expect(redact('Unexpected token \'S\', "SECRET123!SECRET1"... is not valid JSON', [])).toBe('Unexpected token \'S\', "[omitted]" is not valid JSON');
+	expect(redact('Error: x\n    at render (http://board/app.js?password=abc:1:2)\n    at http://board/b.js#frag', [])).toBe(
+		'Error: x\n    at render (http://board/app.js:1:2)\n    at http://board/b.js'
+	);
 	expect(secretsOf('not json', undefined)).toEqual([]);
 });
 
@@ -59,4 +63,21 @@ test('each device gets a fixed number of reports per window, counted afresh in t
 	expect(admitted('a', 1)).toBe(0);
 	time += 1;
 	expect(admitted('a', CLIENT_ERRORS_PER_WINDOW + 1)).toBe(CLIENT_ERRORS_PER_WINDOW);
+});
+
+test('an exception SvelteKit reports before the request hook ran is still logged, redacted, with a request id', async () => {
+	const { handleError } = await import('../src/hooks.server.ts');
+	const written: string[] = [];
+	const write = process.stderr.write;
+	process.stderr.write = ((chunk: string) => (written.push(chunk), true)) as typeof process.stderr.write;
+	try {
+		const request = new Request('http://board/agents', { headers: { 'x-request-id': 'req-early' } });
+		const event = { request, url: new URL(request.url), cookies: { get: () => 'tok-early' }, locals: {} };
+		await handleError({ kind: 'unknown', error: new Error('module failed for tok-early'), event } as never);
+	} finally {
+		process.stderr.write = write;
+	}
+	const [line] = written.map((chunk) => JSON.parse(chunk));
+	expect(line).toMatchObject({ message: 'unhandled_error', request_id: 'req-early', path: '/agents', exc_message: 'module failed for [omitted]' });
+	expect(written.join('')).not.toContain('tok-early');
 });

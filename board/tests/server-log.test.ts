@@ -144,7 +144,8 @@ test('an exception nothing caught leaves its path and whole stack, with the same
 test('a failure in the hook itself before the page is rendered still logs its 500 and stack under the request id', async () => {
 	const devices = join(fixture.dir, 'board-state/devices.json');
 	const saved = readFileSync(devices, 'utf8');
-	writeFileSync(devices, 'PRIVATE-STATE-CONTENT{');
+	// Long enough that JSON.parse quotes only its start, cut short.
+	writeFileSync(devices, 'PRIVATE-STATE!'.repeat(10));
 	try {
 		const page = await fixture.fetch('/', { cookie, headers: { 'x-request-id': 'req-hook' } });
 		expect(page.status).toBe(500);
@@ -155,7 +156,7 @@ test('a failure in the hook itself before the page is rendered still logs its 50
 	const [crash] = lines('unhandled_error');
 	expect(crash).toMatchObject({ request_id: 'req-hook', path: '/', exc_type: 'SyntaxError' });
 	expect(String(crash.traceback)).toContain('findDevice');
-	expect(output()).not.toContain('PRIVATE-STATE-CONTENT');
+	expect(output()).not.toContain('PRIVATE-STATE');
 });
 
 test('ordinary refusals and successes write nothing', async () => {
@@ -195,7 +196,7 @@ test('a browser report is logged without the device token or the page query, and
 		kind: 'error',
 		type: 'SyntaxError',
 		message: `Unexpected token 'P', "PRIVATE-ANSWER" is not valid JSON; cookie ${token}`,
-		stack: `SyntaxError: ${token}\n    at render (app.js:1:2)`,
+		stack: `SyntaxError: ${token}\n    at render (http://board/app.js?password=${PASSWORD}:1:2)`,
 		url: `http://board/agents?password=${PASSWORD}&token=${token}#${token}`
 	});
 
@@ -203,7 +204,7 @@ test('a browser report is logged without the device token or the page query, and
 	const [line] = lines('client_error');
 	expect(line).toMatchObject({
 		exc_message: `Unexpected token 'P', "[omitted]" is not valid JSON; cookie [omitted]`,
-		traceback: 'SyntaxError: [omitted]\n    at render (app.js:1:2)',
+		traceback: 'SyntaxError: [omitted]\n    at render (http://board/app.js:1:2)',
 		url: 'http://board/agents'
 	});
 	for (const secret of [token, PASSWORD, 'PRIVATE-ANSWER']) expect(output()).not.toContain(secret);
