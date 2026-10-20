@@ -230,7 +230,10 @@ export function createClosedRoster(config: BoardConfig): ClosedRoster {
 				if (last.get(id)?.id !== Number(stopId)) saved.delete(key);
 			}
 
-			const candidates = closedCandidates([...seen.values()], lastStopList, present, now);
+			// One being brought back stays on its row, with how it goes, until Herdr runs it: hcom
+			// lists a resumed client before then, also one that never comes up.
+			const held: Present = { ...present, running: new Set([...running].filter((id) => !resumes.has(id))) };
+			const candidates = closedCandidates([...seen.values()], lastStopList, held, now);
 			const told = await Promise.all(candidates.map(({ agent, stop }) => savedFor(agent, stop, now)));
 			const rows = candidates
 				.filter((_, index) => told[index])
@@ -280,6 +283,7 @@ function logResume(
 
 export const CLOSED_GONE_REASON = '它已不在「已關閉」清單上（可能已經接回，或不再符合條件），沒有接回。';
 export const CLOSED_BUSY_REASON = '它正在接回，請稍候。';
+export const CLOSED_LISTED_REASON = 'hcom 的清單上還有它（可能仍在啟動，或卡住了），請到 Herdr 分頁查看，沒有再接回。';
 
 /** What a controller's 接回 is woken with, as its wake options give it: a first message (may be
  *  empty), a new LAT round, a model and effort (null keeps the current one). */
@@ -309,6 +313,8 @@ async function attempt(board: Board, sessionId: string, wake: ClosedWake): Promi
 	const last = lastStops(stops.ok ? stops.stops : []).get(sessionId);
 	if (`${last && new Date(last.time).toISOString()}` !== row.stoppedAt || !LISTED_BY.has(last!.by)) return refuse(CLOSED_GONE_REASON);
 	if (row.resume?.state === 'resuming') return refuse(CLOSED_BUSY_REASON);
+	// Kept on its row after a 接回 that hcom still lists: running, or stuck starting.
+	if ((await board.sources()).running?.has(sessionId)) return refuse(CLOSED_LISTED_REASON);
 
 	const started = config.now();
 	resumes.set(sessionId, { state: 'resuming', time: new Date(started).toISOString() });

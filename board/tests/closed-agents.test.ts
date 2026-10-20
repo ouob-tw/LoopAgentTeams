@@ -7,7 +7,7 @@ import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CLOSED_KEEP_MS, type ClosedAgent } from '../src/lib/board/closed-agents.ts';
-import { CLOSED_GONE_REASON } from '../src/lib/server/closed-agents.ts';
+import { CLOSED_GONE_REASON, CLOSED_LISTED_REASON } from '../src/lib/server/closed-agents.ts';
 import { DAY, startFixture, until, type Fixture } from './harness.ts';
 
 let fixture: Fixture;
@@ -304,11 +304,18 @@ test("a closed controller's 接回 takes the model and effort chosen, and the ro
 	expect(hcomCalls().filter((call) => call.args[0] === 'r').at(-1)?.args).toEqual([
 		'r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go', '--model', 'claude-sonnet-5-5', '--effort', 'high'
 	]);
-	// Not logged as back before Herdr runs it.
+	// Not logged as back before Herdr runs it, and its row says it is on the way although hcom
+	// lists it already.
 	expect(sentLog().filter((line) => line.action === 'resume')).toEqual([]);
+	expect(await closedOf()).toMatchObject([{ id: 's-lead', resume: { state: 'resuming' } }]);
 	const failed = await until(() => sentLog().find((line) => line.action === 'resume'), 15_000, 'the outcome logged');
 	expect(failed).toMatchObject({ agentId: 's-lead', ok: false, route: 'hcom' });
 	expect(failed.error).toContain('接回後');
+	// The row keeps why; another 接回 is refused while hcom still lists it.
+	expect(await closedOf()).toMatchObject([{ id: 's-lead', resume: { state: 'failed', reason: failed.error } }]);
+	const again = await resume('s-lead', { text: '', newRound: false, model: null, effort: null });
+	expect(again.status).toBe(409);
+	expect((await again.json()).reason).toBe(CLOSED_LISTED_REASON);
 }, 30_000);
 
 test("a closed controller's 接回 stopped by an earlier resume offers to give that one up", async () => {
@@ -392,6 +399,7 @@ test('接回 that cannot pick a workspace, or whose agent never shows up in Herd
 	const failed = await until(() => sentLog().filter((line) => line.action === 'resume')[1], 15_000, 'the failure logged');
 	expect(failed).toMatchObject({ ok: false, route: 'hcom' });
 	expect(failed.error).toContain('接回後');
+	expect(await closedOf()).toMatchObject([{ id: 's-a', resume: { state: 'failed', reason: failed.error } }]);
 }, 30_000);
 
 test('接回 resumes the same conversation in a new tab of its old workspace, moved to the front; it leaves the section', async () => {
