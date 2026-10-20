@@ -239,7 +239,7 @@ test.skipIf(!CHROME)('a controller without a report shows no latest report; the 
 	writeFileSync(join(fixture.dir, 'transcripts', `${orin.session_id}.jsonl`), JSON.stringify({ kind: 'user', time: null, text: '開始' }) + '\n');
 	writeFileSync(
 		join(fixture.dir, 'transcripts', `${orin.session_id}.usage.json`),
-		JSON.stringify({ context: 62, limits: [{ minutes: 10080, used: 75 }], cache: { warm: true, hit: 0.7, expires: null } })
+		JSON.stringify({ context: 62, limits: [{ minutes: 300, used: 20 }, { minutes: 10080, used: 75 }], cache: { warm: true, hit: 0.7, expires: null } })
 	);
 	await fixture.refresh(cookie);
 	await visit(1280);
@@ -277,15 +277,17 @@ test.skipIf(!CHROME)('a controller without a report shows no latest report; the 
 		await tab.eval(`document.querySelector('.detail .profile .usage-info').click()`);
 		return lines;
 	};
-	expect(await tip()).toBe('Ctx 62% | 7d 25% | Cache 70%');
+	// The 5-hour quota (80% left) is in its safe range: off the line, but in the tip and the details.
+	expect(await tip()).toBe('Ctx 62% | 5h 80% | 7d 25% | Cache 70%');
 	await tab.eval(`document.querySelector('.detail .more').click()`);
 	await tab.until(`document.querySelector('.detail .profile dl')?.innerText.includes('Ctx 62%')`, 'the details, short');
+	expect(await tab.eval<string>(`document.querySelector('.detail .profile dl').innerText`)).toContain('5h 80%');
 	expect(await tab.eval<string>(`document.querySelector('.detail .profile dl').innerText`)).not.toContain('上下文已用');
 
 	await tab.eval(`[...document.querySelectorAll('[aria-label="設定"]')].find((b) => b.offsetParent !== null).click()`);
 	await tab.eval(`${choice('詳細')}.click()`);
 	await tab.until(`(${line}).startsWith('上下文已用 62%')`, 'the detailed line again');
 	// Detailed again: the tip and the details are spelt out in Chinese.
-	expect(await tip()).toBe('上下文已用 62% | 7 天額度剩 25% | 快取命中 70%');
+	expect(await tip()).toBe('上下文已用 62% | 5 小時額度剩 80% | 7 天額度剩 25% | 快取命中 70%');
 	expect(await tab.eval<string>(`document.querySelector('.detail .profile dl').innerText`)).toContain('上下文已用 62%');
 }, 60_000);
