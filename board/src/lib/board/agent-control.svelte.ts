@@ -19,6 +19,12 @@ class AgentControl {
 	/** The latest load started per agent; an older one that answers later is dropped. */
 	#loads: Record<string, number> = {};
 
+	/** How many entries the agent's operation record shows; null until it is loaded. */
+	logCount(agentId: string): number | null {
+		const log = this.log[agentId];
+		return log ? log.length + (this.switches[agentId]?.length ?? 0) : null;
+	}
+
 	async load(agentId: string): Promise<void> {
 		const load = (this.#loads[agentId] = (this.#loads[agentId] ?? 0) + 1);
 		let entries: AgentAction[] | undefined;

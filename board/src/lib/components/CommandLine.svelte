@@ -95,6 +95,8 @@
 		else agentDrafts[owner] = value;
 	}
 	const owner = $derived(agent?.id ?? null);
+	/** The open agent as the controller it is, while Herdr lists it: its model is switched as a controller's. */
+	const agentController = $derived(agent?.controller && agent.inHerdr ? controllers.find((candidate) => candidate.id === agent.id) : undefined);
 	const draft = $derived(read(owner));
 	const named = $derived(draft.trimStart().startsWith('@'));
 	/** The open agent is the recipient: a line without a name while its page is open. */
@@ -268,7 +270,16 @@
 	<!-- An agent has no wake. -->
 	{#if toAgent && agent}
 		<div class="pill-slot">
-			<AgentModelPicker {agent} />
+			{#if agentController}
+				{@const own = agentController.id}
+				<ModelPicker
+					controller={agentController}
+					chosen={{ model: model[own] ?? '', effort: effort[own] ?? '' }}
+					onchoose={(kind, value) => ((kind === 'model' ? model : effort)[own] = value)}
+				/>
+			{:else}
+				<AgentModelPicker {agent} />
+			{/if}
 		</div>
 	{:else}
 		<div class="pill-slot">
