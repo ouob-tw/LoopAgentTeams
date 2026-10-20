@@ -96,7 +96,7 @@ test('the quotas reach the page over the event stream, with no secret, from read
 		{
 			email: 'codex@example.com',
 			current: true,
-			plan: { label: 'Pro', source: 'live', observedAt: now },
+			plan: { label: 'Pro', source: 'recorded', observedAt: now },
 			windows: [{ label: '5 小時', used: 85, resetsAt: now + 1000 }],
 			observedAt: now
 		}
@@ -125,7 +125,7 @@ test('failing, missing and mismatched sources say why in the tab and leave the b
 		10_000,
 		'both groups failing'
 	);
-	expect(missing.claude).toEqual({ ok: false, reason: 'claude-swap 讀取失敗（ConfigError）' });
+	expect(missing.claude).toEqual({ ok: false, reason: 'claude-swap 讀取失敗：它的檔案讀不出來或格式不對' });
 	expect(missing.codex).toEqual({ ok: false, reason: '找不到 Codex 帳號檔' });
 
 	writeCodex(board, { version: 4, accounts: [] });

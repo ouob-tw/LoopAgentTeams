@@ -233,9 +233,10 @@ test.skipIf(!CHROME)('an old reading turns its group header yellow; no Codex usa
 	const codex = await cards('codex');
 	expect(codex[0].current).toBe(true);
 	expect(codex[0].text).toContain('two@example.com');
-	// Codex's plan comes with the usage beside it: shown plainly.
-	expect(codex[0].text).toContain('Plus');
-	expect(await tab.eval(`document.querySelector('.quota [data-client="codex"] .card .plan').classList.contains('recorded')`)).toBe(false);
+	// Recorded with the usage reading: faded, with when.
+	expect(
+		await tab.eval(`(() => { const plan = document.querySelector('.quota [data-client="codex"] .card .plan'); return [plan.innerText, plan.classList.contains('recorded'), plan.title]; })()`)
+	).toEqual(['Plus', true, '上次使用時記錄（今天）']);
 	expect(codex[1].text).toContain('one@example.com');
 	expect(codex[1].text).toContain('沒有紀錄');
 	expect(codex[1].text).toContain('方案未知');

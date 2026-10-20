@@ -144,8 +144,8 @@ export async function readCodexQuota(dir: string): Promise<QuotaGroup> {
 			return {
 				email: text(account.email) ?? '（沒有 email）',
 				current: index === active,
-				// Read with the usage shown beside it.
-				plan: planType ? { label: capitalized(planType), source: 'live', observedAt } : null,
+				// As recorded with that usage: the board reads no plan live.
+				plan: planType ? { label: capitalized(planType), source: 'recorded', observedAt } : null,
 				windows,
 				observedAt
 			};
@@ -154,8 +154,8 @@ export async function readCodexQuota(dir: string): Promise<QuotaGroup> {
 }
 
 /** What `cswap list --json --cached-only` printed, for the tab; see claude-swap's schema version 1.
- *  A reason never repeats the command's own words, which reach every page: only its exit, and the
- *  name of an error it reports. */
+ *  A reason never repeats the command's own words, which reach every page: only its exit, and what
+ *  an error type it is known to report means. */
 export function parseClaudeList(stdout: string, code: number | null, timedOut: boolean): QuotaGroup {
 	const ended = timedOut ? '逾時' : code === null ? '沒有正常結束' : `結束碼 ${code}`;
 	let parsed: unknown;
@@ -166,10 +166,7 @@ export function parseClaudeList(stdout: string, code: number | null, timedOut: b
 	}
 	if (!isRecord(parsed)) return { ok: false, reason: 'claude-swap 的回答看不懂' };
 	if (parsed.schemaVersion !== 1) return { ok: false, reason: `claude-swap 的資料版本不符（是 ${versionText(parsed.schemaVersion)}，看板認得 1）` };
-	if (isRecord(parsed.error)) {
-		const type = typeof parsed.error.type === 'string' && /^\w{1,40}$/.test(parsed.error.type) ? `（${parsed.error.type}）` : '';
-		return { ok: false, reason: `claude-swap 讀取失敗${type}` };
-	}
+	if (isRecord(parsed.error)) return { ok: false, reason: `claude-swap 讀取失敗${parsed.error.type === 'ConfigError' ? '：它的檔案讀不出來或格式不對' : ''}` };
 	if (code !== 0 || !Array.isArray(parsed.accounts)) return { ok: false, reason: `claude-swap 沒有回答（${ended}）` };
 	return {
 		ok: true,

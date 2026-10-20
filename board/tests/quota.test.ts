@@ -116,7 +116,7 @@ test('codex accounts come from the account file, joined with the quota cache, th
 	expect(a).toEqual({
 		email: 'a@example.com',
 		current: false,
-		plan: { label: 'Plus', source: 'live', observedAt: NOW - 5 * MIN },
+		plan: { label: 'Plus', source: 'recorded', observedAt: NOW - 5 * MIN },
 		windows: [
 			{ label: '5 小時', used: 45, resetsAt: NOW + 60 * MIN },
 			{ label: '7 天', used: 82, resetsAt: null }
@@ -126,8 +126,8 @@ test('codex accounts come from the account file, joined with the quota cache, th
 	expect(b.observedAt).toBe(NOW - 20 * MIN);
 	expect(b.plan?.label).toBe('Team');
 	expect(b.windows.map((window) => window.used)).toEqual([50, 60]);
-	// Codex's plan comes with the usage it is shown beside, however old that is.
-	expect(c.plan).toEqual({ label: 'Pro', source: 'live', observedAt: NOW - 2 * DAY });
+	// Recorded with its usage reading, and shown with that reading's age.
+	expect(c.plan).toEqual({ label: 'Pro', source: 'recorded', observedAt: NOW - 2 * DAY });
 	expect(d).toEqual({ email: 'd@example.com', current: false, plan: null, windows: [], observedAt: null });
 	const sent = JSON.stringify(group);
 	for (const secret of SECRETS) expect(sent).not.toContain(secret);
@@ -242,9 +242,9 @@ test('claude-swap rows: fresh, last good and no usage, with their plans', () => 
 test('claude-swap failures say why, in the board\'s own words only', () => {
 	expect(parseClaudeList(JSON.stringify({ schemaVersion: 1, error: { type: 'ConfigError', message: 'token=refresh-token-SECRET-1' } }), 1, false)).toEqual({
 		ok: false,
-		reason: 'claude-swap 讀取失敗（ConfigError）'
+		reason: 'claude-swap 讀取失敗：它的檔案讀不出來或格式不對'
 	});
-	expect(parseClaudeList(JSON.stringify({ schemaVersion: 1, error: { type: 'refresh-token SECRET 1' } }), 1, false)).toEqual({
+	expect(parseClaudeList(JSON.stringify({ schemaVersion: 1, error: { type: 'refresh_token_SECRET_1' } }), 1, false)).toEqual({
 		ok: false,
 		reason: 'claude-swap 讀取失敗'
 	});
