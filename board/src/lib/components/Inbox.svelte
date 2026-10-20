@@ -61,7 +61,7 @@
 </script>
 
 <header>
-	<h2>待辦</h2>
+	<h2 class="visually-hidden">待辦</h2>
 	<div class="toggle" role="group" aria-label="待辦檢視">
 		<button aria-pressed={!showArchive && sort === 'time'} onclick={() => onsort('time')}>依時間</button>
 		<button aria-pressed={!showArchive && sort === 'project'} onclick={() => onsort('project')}>依專案</button>
@@ -116,14 +116,21 @@
 	header {
 		display: flex;
 		flex-wrap: wrap;
-		justify-content: space-between;
+		justify-content: flex-start;
 		align-items: center;
 		gap: 0.4rem;
 		margin-bottom: 0.4rem;
 	}
-	h2 {
-		margin: 0;
-		font-size: max(1rem, var(--min-font, 0px));
+	/* Named for assistive technology only: the 待辦 tab above already says it. */
+	.visually-hidden {
+		position: absolute;
+		width: 1px;
+		height: 1px;
+		margin: -1px;
+		padding: 0;
+		overflow: hidden;
+		clip-path: inset(50%);
+		white-space: nowrap;
 	}
 	.toggle {
 		display: flex;
