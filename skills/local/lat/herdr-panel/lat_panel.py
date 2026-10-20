@@ -558,14 +558,14 @@ def plain_markdown(text):
         if opening:
             fence = opening.group("fence")
             continue
-        line = _HEADING_MARK.sub(r"\1", line)
-        pieces = []
-        last = 0
-        for code in _INLINE_CODE.finditer(line):
-            pieces += [_plain_inline(line[last:code.start()]), _code_span(code.group(2))]
-            last = code.end()
-        pieces.append(_plain_inline(line[last:]))
-        kept.append("".join(pieces))
+        # Code spans become placeholders, so emphasis around them is still found
+        # and their own text is put back untouched.
+        codes = []
+        def hold(code):
+            codes.append(_code_span(code.group(2)))
+            return f"\ue000{len(codes) - 1}\ue001"
+        line = _plain_inline(_INLINE_CODE.sub(hold, _HEADING_MARK.sub(r"\1", line)))
+        kept.append(re.sub("\ue000([0-9]+)\ue001", lambda held: codes[int(held.group(1))], line))
     return "\n".join(kept)
 
 

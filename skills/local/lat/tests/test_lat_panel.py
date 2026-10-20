@@ -1332,6 +1332,8 @@ class QuestionPlainTextTests(unittest.TestCase):
             "* 清單項目\n- 另一項": "* 清單項目\n- 另一項",
             "```保留這段文字```": "保留這段文字",
             "``` `x` ```": "`x`",
+            "*請執行 `make test` 再合併*": "請執行 make test 再合併",
+            "__請確認 `dev`__ 與 **`a**b`**": "請確認 dev 與 a**b",
         }
         for text, plain in cases.items():
             with self.subTest(text=text):
