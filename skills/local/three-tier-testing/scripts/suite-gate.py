@@ -5,16 +5,20 @@
 only one of several identical requests run, and caps how many full suites run on the host
 at once. `status` lists running and queued suites and recent records. `is_full_suite()`
 decides whether a shell command is a full suite run (project registry first, then the
-default runner rules) and is meant to be reused by a pre-tool hook.
+default runner rules). `hook` is the PreToolUse hook that blocks full suites run outside
+the gate, and `install` / `uninstall --client claude|codex` add or remove it.
 
 Linux only: slot and lock holders stay counted while their test session has live processes.
 """
 import argparse
+import copy
+import difflib
 import fcntl
 import fnmatch
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -90,7 +94,9 @@ def now_iso():
 
 # ---------------------------------------------------------------- full-suite detection
 
-SEPARATORS = {';', '&&', '||', '|', '&', '(', ')', '|&', ';;'}
+OPERATORS = ('<<<', '&&', '||', ';;', '|&', '>>', '<<', '&>', '>&', '<&', '>|',
+             ';', '&', '|', '(', ')', '<', '>', '\n')
+REDIRECTS = {'<<<', '>>', '<<', '&>', '>&', '<&', '>|', '<', '>'}
 SHELLS = {'sh', 'bash', 'zsh', 'dash'}
 
 # Per runner: options that take a separate value, and options that narrow the run.
@@ -139,36 +145,114 @@ WRAP_VALUE = {'timeout': {'-s', '--signal', '-k', '--kill-after'}, 'nice': {'-n'
               'env': {'-u', '--unset', '-C', '--chdir'}}
 
 
-def split_commands(command):
-    """Simple commands of a shell string, as word lists; `sh -c '...'` is opened up."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|()')
-    lexer.whitespace_split = True
-    lexer.commenters = '#'
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        tokens = command.split()
-    commands, words = [], []
-    for token in tokens + [';']:
-        if token in SEPARATORS or token == '\n':
-            if words:
-                commands.extend(_open_shell(words))
-            words = []
+def _operator_at(text, i):
+    return next((op for op in OPERATORS if text.startswith(op, i)), None)
+
+
+def _tokens(text):
+    """(value, is_operator, start, end) for each word and operator of shell text.
+
+    Quotes and backslashes are removed from word values; `#` at the start of a word
+    begins a comment up to the end of the line. ValueError on an unclosed quote.
+    """
+    tokens, i, n = [], 0, len(text)
+    while i < n:
+        if text[i] in ' \t\r':
+            i += 1
+        elif text.startswith('\\\n', i):
+            i += 2
+        elif text[i] == '#':
+            end = text.find('\n', i)
+            i = n if end < 0 else end
+        elif _operator_at(text, i):
+            op = _operator_at(text, i)
+            tokens.append((op, True, i, i + len(op)))
+            i += len(op)
         else:
-            words.append(token)
+            start, value = i, []
+            while i < n and text[i] not in ' \t\r' and not _operator_at(text, i):
+                c = text[i]
+                if c == '\\':
+                    if text[i + 1:i + 2] != '\n':
+                        value.append(text[i + 1:i + 2])
+                    i += 2
+                elif c == "'":
+                    end = text.find("'", i + 1)
+                    if end < 0:
+                        raise ValueError('unclosed quote')
+                    value.append(text[i + 1:end])
+                    i = end + 1
+                elif c == '"':
+                    i += 1
+                    while i < n and text[i] != '"':
+                        if text[i] == '\\' and text[i + 1:i + 2] in ('"', '\\', '$', '`'):
+                            i += 1
+                        value.append(text[i])
+                        i += 1
+                    if i >= n:
+                        raise ValueError('unclosed quote')
+                    i += 1
+                else:
+                    value.append(c)
+                    i += 1
+            tokens.append((''.join(value), False, start, i))
+    return tokens
+
+
+def _simple_commands(text):
+    """(words, spans) for each simple command, without opening `sh -c`.
+
+    Redirections (`2>&1`, `> out`) are dropped with their target; spans are each word's
+    (start, end) in text. ValueError on an unclosed quote.
+    """
+    commands, words, spans = [], [], []
+    drop_next = False
+    for value, is_operator, start, end in _tokens(text) + [('\n', True, len(text), len(text))]:
+        if is_operator and value in REDIRECTS:
+            if words and words[-1].isdigit() and spans[-1][1] == start:
+                words.pop()  # the file descriptor of `2>`
+                spans.pop()
+            drop_next = True
+        elif is_operator:
+            if words:
+                commands.append((words, spans))
+            words, spans, drop_next = [], [], False
+        elif drop_next:
+            drop_next = False
+        else:
+            words.append(value)
+            spans.append((start, end))
     return commands
 
 
-def _open_shell(words):
-    rest = _strip_assignments(words)
+def split_commands(command):
+    """Simple commands of a shell string, as word lists; `sh -c '...'` is opened up.
+
+    Newlines separate commands, redirections (`2>&1`, `> out`) are dropped with their
+    target, and `#` at the start of a word starts a comment up to the end of the line.
+    """
+    try:
+        found = [words for words, _ in _simple_commands(command)]
+    except ValueError:
+        found = [command.split()]
+    return [inner for words in found for inner in _open_shell(words)]
+
+
+def _shell_body_index(words):
+    """Index of the `-c` text when words run a shell such as `bash -lc '<text>'`, else None."""
+    skip = len(words) - len(_strip_assignments(words))
+    rest = words[skip:]
     if rest and os.path.basename(rest[0]) in SHELLS:
         for i, word in enumerate(rest[1:], 1):
             if word == '-c' or (word.startswith('-') and not word.startswith('--')
                                 and 'c' in word[1:]):
-                if i + 1 < len(rest):
-                    return split_commands(rest[i + 1])
-                break
-    return [words]
+                return skip + i + 1 if i + 1 < len(rest) else None
+    return None
+
+
+def _open_shell(words):
+    index = _shell_body_index(words)
+    return [words] if index is None else split_commands(words[index])
 
 
 def _strip_assignments(words):
@@ -320,10 +404,8 @@ def is_full_suite(command, cwd='.', registry=None):
 
 
 def _normalize_pattern(pattern):
-    try:
-        return ' '.join(shlex.split(pattern))
-    except ValueError:
-        return ' '.join(pattern.split())
+    """A registry pattern read the same way as the command it is matched against."""
+    return _normalize_words([w for c in split_commands(pattern) for w in c])
 
 
 # ---------------------------------------------------------------- content fingerprint
@@ -700,7 +782,9 @@ class Gate:
         append_record(record)
         if changed:
             warn('content changed during the run: this result is recorded but will not be '
-                 'reused; do not edit files while the suite runs')
+                 'reused; do not edit files while the suite runs, and git-ignore files the '
+                 'tests generate (e.g. __pycache__/, .pytest_cache/, build output). '
+                 'Run `git status --porcelain` to see what changed')
         warn(f"recorded exit {code} in {duration}s"
              + (f" for fingerprint {info['fingerprint'][:12]}" if info else ''))
         return code
@@ -755,7 +839,11 @@ def print_reuse(record, command):
         print('  output tail:')
         for line in record['output_tail'].splitlines():
             print(f'    {line}')
-    print(f'To run it anyway: suite-gate.py run --rerun "<reason>" -- {command}')
+    print('This is the result for the current content: report it. Being asked to run the '
+          'suite again is not by itself a reason to rerun. With a concrete reason (for '
+          'example a database, service or ignored config changed, or a flaky test is being '
+          'investigated), rerun with:')
+    print(f'  suite-gate.py run --rerun "<reason>" -- {command}')
 
 
 def cmd_run(rerun, argv):
@@ -828,11 +916,225 @@ def cmd_status(as_json, fp_prefix, limit):
     return 0
 
 
+# ---------------------------------------------------------------- hook
+
+SCRIPT = Path(__file__).resolve()
+# Seen when the command text could not be read: block anything that looks like a runner.
+LOOKS_LIKE_TESTS = re.compile(
+    r'\b(pytest|py\.test|unittest|jest|vitest|playwright\s+test|go\s+test|cargo\s+test'
+    r'|bun\s+test|(npm|pnpm|yarn|bun)\s+(run\s+)?(test|t))\b')
+
+
+def gate_command(text):
+    """The ready-to-run command that sends text through the gate."""
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'run', '--', text])
+
+
+def _is_gate_run(words):
+    return any(os.path.basename(word) == SCRIPT.name and words[i + 1:i + 2] == ['run']
+               for i, word in enumerate(words))
+
+
+def shell_text(command):
+    """The shell text of a hook's command: Codex may send `["bash", "-lc", "<text>"]`."""
+    if isinstance(command, list):
+        words = [str(word) for word in command]
+        if len(words) == 3 and os.path.basename(words[0]) in SHELLS \
+                and words[1].startswith('-') and 'c' in words[1]:
+            return words[2]
+        return shlex.join(words)
+    return command if isinstance(command, str) else ''
+
+
+def _wrap_suites(text, cwd, registry):
+    """text with each full-suite simple command replaced in place by its gate command.
+
+    The rest of the text (cd, export, pipes, a later echo) stays as written, so the gate
+    records the suite's own exit code. In `bash -c '<body>'` only the body argument is
+    rewritten, so the shell's assignments, options and isolation stay.
+    """
+    parts, last = [], 0
+    for words, spans in _simple_commands(text):
+        if _is_gate_run(words):
+            continue
+        index = _shell_body_index(words)
+        if index is not None:
+            body = _wrap_suites(words[index], cwd, registry)
+            start, end = spans[index]
+            replacement = None if body == words[index] else shlex.quote(body)
+        elif is_full_suite(shlex.join(words), cwd, registry):
+            start, end = spans[0][0], spans[-1][1]
+            replacement = gate_command(text[start:end])
+        else:
+            replacement = None
+        if replacement is not None:
+            parts += [text[last:start], replacement]
+            last = end
+    return ''.join(parts) + text[last:]
+
+
+def gate_rewrite(text, cwd):
+    """The command to run instead of text, or None when text runs no full suite outside
+    `suite-gate.py run`."""
+    try:
+        commands = [words for words in split_commands(text) if not _is_gate_run(words)]
+        if not commands:
+            return None
+        registry = load_registry(cwd) or {}
+        if not is_full_suite(' ; '.join(shlex.join(words) for words in commands), cwd,
+                             registry):
+            return None
+        rewritten = _wrap_suites(text, cwd, registry)
+        # Only the commands together match a registry pattern: send all of them.
+        return rewritten if rewritten != text else gate_command(text)
+    except Exception:  # unreadable text or a hook bug: block what looks like a runner
+        if SCRIPT.name not in text and LOOKS_LIKE_TESTS.search(text):
+            return gate_command(text)
+        return None
+
+
+def cmd_hook():
+    """PreToolUse (matcher Bash) for Claude and Codex: exit 2 with the rewrite on stderr."""
+    try:
+        payload = json.load(sys.stdin)
+        text = shell_text(payload.get('tool_input', {}).get('command', ''))
+        cwd = payload.get('cwd') or os.getcwd()
+    except (ValueError, AttributeError):
+        return 0  # nothing to read; never leave the agent stuck
+    rewrite = text.strip() and gate_rewrite(text, cwd if os.path.isdir(cwd) else os.getcwd())
+    if not rewrite:
+        return 0
+    print('Blocked: this runs a full test suite outside the suite gate. Run this instead; '
+          'the gate reuses a passing result for the same content and queues when the host '
+          'is busy:\n'
+          f'  {rewrite}\n'
+          'Only the suite command itself is wrapped, so the gate records its own exit code; '
+          'the rest of your command is unchanged. The wrapped part runs under /bin/sh and '
+          'sees only exported variables. '
+          'Add --rerun "<reason>" after `run` only when the gate reports an earlier pass and '
+          'you have a concrete reason to run again. To run only some tests, name the files '
+          'or a filter.',
+          file=sys.stderr)
+    return 2
+
+
+# ---------------------------------------------------------------- install
+
+HOOK_COMMAND = shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'hook'])
+GROUP_NAME = 'suite-gate'
+BACKUP_PREFIX = '.suite-gate-backup-'
+
+
+def is_hook_handler(handler):
+    """A handler running some copy of this script's hook, wherever it is installed."""
+    if not isinstance(handler, dict) or not isinstance(handler.get('command'), str):
+        return False
+    try:
+        words = shlex.split(handler['command'])
+    except ValueError:
+        return False
+    return any(os.path.basename(word) == SCRIPT.name for word in words) \
+        and words[-1:] == ['hook']
+
+
+def settings_path(client, claude_settings, codex_home):
+    if client == 'codex':
+        home = codex_home or os.environ.get('CODEX_HOME') or '~/.codex'
+        return Path(home).expanduser().resolve() / 'hooks.json'
+    if claude_settings:
+        return Path(claude_settings).expanduser().resolve()
+    home = os.environ.get('CLAUDE_CONFIG_DIR') or '~/.claude'
+    return Path(home).expanduser().resolve() / 'settings.json'
+
+
+def updated_config(config, client, action):
+    """A copy of config with this hook installed or removed under PreToolUse."""
+    if not isinstance(config, dict) or not isinstance(config.get('hooks', {}), dict):
+        raise ValueError('expected a JSON object whose "hooks" is an object')
+    updated = copy.deepcopy(config)
+    if action == 'uninstall' and 'PreToolUse' not in updated.get('hooks', {}):
+        return updated
+    events = updated.setdefault('hooks', {})
+    groups = events.setdefault('PreToolUse', [])
+    if not isinstance(groups, list) or any(not isinstance(g, dict) for g in groups):
+        raise ValueError('expected PreToolUse to be a list of matcher groups')
+    for group in groups:
+        if 'hooks' in group and not isinstance(group['hooks'], list):
+            raise ValueError('expected every PreToolUse group to hold a "hooks" list')
+    mine = [(group, handler) for group in groups for handler in group.get('hooks', [])
+            if is_hook_handler(handler)]
+    if action == 'install':
+        handler = {'type': 'command', 'command': HOOK_COMMAND}
+        if len(mine) > 1:
+            raise ValueError('the suite-gate hook is listed more than once; inspect the file')
+        if mine:
+            group, existing = mine[0]
+            existing.update(handler)  # a moved skill gets the new path; other fields stay
+            if all(is_hook_handler(h) for h in group['hooks']):
+                group['matcher'] = 'Bash'
+        else:
+            group = {'matcher': 'Bash', 'hooks': [handler]}
+            if client == 'codex':
+                group = {'name': GROUP_NAME, **group}
+            groups.append(group)
+        return updated
+    for group, handler in mine:
+        group['hooks'].remove(handler)
+    emptied = [group for group, _ in mine
+               if not group['hooks'] and set(group) <= {'name', 'matcher', 'hooks'}]
+    groups[:] = [g for g in groups if not any(g is e for e in emptied)]
+    if not groups:
+        del events['PreToolUse']
+    return updated
+
+
+def cmd_configure(action, client, claude_settings, codex_home, preview):
+    path = settings_path(client, claude_settings, codex_home)
+    try:
+        original = path.read_bytes()
+    except FileNotFoundError:
+        original = None
+    config = json.loads(original) if original is not None else {}
+    updated = updated_config(config, client, action)
+    if updated == config:
+        print(f'No changes: {path}')
+        return 0
+    before = original.decode() if original is not None else ''
+    after = json.dumps(updated, indent=2, ensure_ascii=False) + '\n'
+    diff = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                                        fromfile=str(path), tofile=str(path)))
+    if preview:
+        print(diff, end='')
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current = path.read_bytes() if path.exists() else None
+    if current != original:
+        raise ValueError(f'{path} changed while it was being read; retry')
+    if original is not None:
+        with tempfile.NamedTemporaryFile(prefix=path.name + BACKUP_PREFIX, dir=path.parent,
+                                         delete=False) as backup:
+            backup.write(original)
+        print(f'Backup: {backup.name}')
+    with tempfile.NamedTemporaryFile('w', prefix=path.name + '.', dir=path.parent,
+                                     delete=False) as tmp:
+        tmp.write(after)
+    if original is not None:
+        shutil.copymode(path, tmp.name)
+    os.replace(tmp.name, path)
+    print(diff, end='')
+    if client == 'codex':
+        print(f'Updated {path}; restart Codex and trust the hook in /hooks')
+    else:
+        print(f'Updated {path}; restart Claude Code and confirm the hook in /hooks')
+    return 0
+
+
 # ---------------------------------------------------------------- entry
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not sys.platform.startswith('linux'):
+    # A hook that exits 2 would block every command, so only run and status check this.
+    if not sys.platform.startswith('linux') and argv[:1] in (['run'], ['status']):
         warn('only Linux is supported')
         return 2
     command = []
@@ -847,13 +1149,32 @@ def main(argv=None):
     status.add_argument('--json', action='store_true')
     status.add_argument('--fingerprint', metavar='PREFIX', help='only records for this fingerprint')
     status.add_argument('--limit', type=int, default=10)
+    sub.add_parser('hook', help='PreToolUse hook (matcher Bash) for Claude and Codex; '
+                                'reads the payload on stdin')
+    for action in ('install', 'uninstall'):
+        config = sub.add_parser(action, help=f'{action} the hook in a client\'s settings')
+        config.add_argument('--client', choices=('claude', 'codex'), required=True)
+        config.add_argument('--claude-settings', metavar='PATH',
+                            help='default: $CLAUDE_CONFIG_DIR/settings.json or '
+                                 '~/.claude/settings.json')
+        config.add_argument('--codex-home', metavar='DIR', help='default: $CODEX_HOME or ~/.codex')
+        config.add_argument('--preview', action='store_true', help='show the diff, write nothing')
     args = parser.parse_args(argv)
     if args.action == 'run':
         if not command:
             parser.error('run needs the suite command after --')
         return cmd_run(args.rerun, command)
     if command:
-        parser.error('status takes no command')
+        parser.error(f'{args.action} takes no command')
+    if args.action == 'hook':
+        return cmd_hook()
+    if args.action in ('install', 'uninstall'):
+        try:
+            return cmd_configure(args.action, args.client, args.claude_settings,
+                                 args.codex_home, args.preview)
+        except (OSError, ValueError) as exc:
+            warn(str(exc))
+            return 1
     return cmd_status(args.json, args.fingerprint, args.limit)
 
 
