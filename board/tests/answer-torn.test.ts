@@ -9,6 +9,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import type { HelperController, HelperQuestion, InboxQuestion } from '../src/lib/board/types.ts';
+import { withRecorded } from '../src/lib/server/model.ts';
 import { PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
 
 const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
@@ -79,6 +80,7 @@ beforeAll(async () => {
 		waiting.delete(message.id);
 	});
 	await send('Runtime.enable');
+	await send('Page.enable');
 	const [name, value] = cookie.split('=');
 	await send('Network.setCookie', { name, value, url: fixture.url });
 }, 30_000);
@@ -101,15 +103,16 @@ const first = (overrides: Partial<HelperQuestion> = {}) =>
 const second = () => question({ id: 'Q-2', title: '第二題', kind: 'single', options: options(['丙', '丁']), asked_at: ASKED_AT, section_sha256: 'b'.repeat(64) });
 const MESSAGE = '請決定。\n\nDECIDE: Q-1 r1 · 第一題；Q-2 r1 · 第二題';
 
-/** A bound controller that asked Q-1 and Q-2 in one DECIDE message, in its report and conversation. */
-function asking(project: string, name: string): HelperController {
+/** A bound controller that asked Q-1 and Q-2 in one DECIDE message, in its report and, unless
+ *  `inConversation` is false, in its conversation too. */
+function asking(project: string, name: string, inConversation = true): HelperController {
 	const controller = fixture.bound(project, name, { questions: [first(), second()] });
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
 	writeFileSync(
 		join(fixture.dir, 'transcripts', `${controller.session_id}.jsonl`),
 		[
 			{ kind: 'user', time: '2026-10-20T00:59:00.000Z', text: '開始' },
-			{ kind: 'assistant', time: '2026-10-20T01:00:30.000Z', text: MESSAGE }
+			{ kind: 'assistant', time: '2026-10-20T01:00:30.000Z', text: inConversation ? MESSAGE : '先看一下。' }
 		]
 			.map((line) => JSON.stringify(line) + '\n')
 			.join('')
@@ -136,6 +139,18 @@ function torn(controller: HelperController, listed: HelperQuestion, others: Help
 			}
 		}
 	});
+}
+
+/** After a torn read, a read whose `board answered` fails: the list still has Q-1 submitted, and the
+ *  answered list read before stands in. */
+async function answeredFails(controller: HelperController) {
+	torn(controller, first({ status: 'submitted', answer: 'A. 甲' }));
+	await fixture.refresh(cookie);
+	fixture.setHelper({
+		output: { controllers: [{ ...controller, questions: [first({ status: 'submitted', answer: 'A. 甲' }), second()] }] },
+		answered: { output: { status: 'error', reason: '問題檔封存讀不出來' }, exit: 1 }
+	});
+	return fixture.refresh(cookie);
 }
 
 const key = (controller: HelperController, id: string) => `q:${controller.session_id}:${id}`;
@@ -209,4 +224,88 @@ for (const width of [1280, 390]) {
 			}
 		}, 30_000);
 	}
+}
+
+test('a recorded copy in the answered list of another question file leaves the question as listed', () => {
+	const luna = { ...asking('delta', 'luna'), questions: [first({ status: 'submitted', answer: 'A. 甲' })] };
+	const other = { questions_path: '/elsewhere/.lat/questions-nova.md', error: null, questions: [first({ status: 'recorded', answer: 'A. 甲' })] };
+	expect(withRecorded([luna], [other])[0]!.questions[0]!.status).toBe('submitted');
+	// The same copy in the controller's own file is taken as recorded.
+	expect(withRecorded([luna], [{ ...other, questions_path: luna.questions_path }])[0]!.questions[0]!.status).toBe('recorded');
+});
+
+test('when `board answered` fails, the list stands as read and the answered list read before is kept', async () => {
+	const vega = asking('epsilon', 'vega');
+	const snapshot = await answeredFails(vega);
+	expect(questionKeys(snapshot.inbox)).toEqual([key(vega, 'Q-1'), key(vega, 'Q-2')]);
+	expect((await answered(vega)).map((item) => [item.key, item.question.status])).toEqual([[key(vega, 'Q-1'), 'recorded']]);
+});
+
+/** The ids of the cards each time the opened question's cards were shown above the conversation,
+ *  as its asking message was not found; recorded from before the page's first script. They are
+ *  shown only until the question is judged lost, often within the same update, so they are read
+ *  from the nodes added rather than from the page. */
+const FALLBACK_LOG = `window.__fallback = [];
+new MutationObserver((records) => {
+	for (const node of records.flatMap((record) => [...record.addedNodes])) {
+		if (!(node instanceof HTMLElement)) continue;
+		for (const shown of [node, ...node.querySelectorAll('div.placed')].filter((element) => element.matches('div.placed'))) {
+			window.__fallback.push([...shown.querySelectorAll('.asked header .id')].map((id) => id.textContent.trim()));
+		}
+	}
+}).observe(document, { subtree: true, childList: true });`;
+
+/** Open Q-2, whose asking message is not in the conversation: its cards and Q-1's are shown above
+ *  the conversation until the message is judged missing, then the question alone. */
+async function openUnplaced(controller: HelperController) {
+	const { identifier } = await send('Page.addScriptToEvaluateOnNewDocument', { source: FALLBACK_LOG });
+	try {
+		errors = [];
+		await send('Page.navigate', { url: fixture.url + `/?item=${encodeURIComponent(key(controller, 'Q-2'))}` });
+		await until(`/Internal Error/.test(document.body.innerText) || document.body.innerText.includes('找不到提出這題的原訊息')`);
+		await sleep(500);
+	} finally {
+		await send('Page.removeScriptToEvaluateOnNewDocument', { identifier });
+	}
+}
+
+async function expectShownOnce(cards: string) {
+	expect(await evaluate<string>(`document.body.innerText`)).not.toContain('Internal Error');
+	expect(errors.filter((error) => error.includes('each_key_duplicate'))).toEqual([]);
+	const ids = await evaluate<string[]>(cards);
+	expect(ids.filter((id) => id.startsWith('Q-1'))).toHaveLength(1);
+	expect(ids.filter((id) => id.startsWith('Q-2'))).toHaveLength(1);
+}
+const FALLBACK_SEEN = `window.__fallback.findLast((ids) => ids.length > 1) ?? []`;
+const ASKED_IDS = `[...document.querySelectorAll('.asked header .id')].map((id) => id.textContent.trim())`;
+
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`at ${width} px, the cards shown above the conversation show a question recorded during a read once`, async () => {
+		const controller = asking(`unplaced-${width}`, 'rana', false);
+		torn(controller, first({ status: 'submitted', answer: 'A. 甲' }));
+		await fixture.refresh(cookie);
+		await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 600 });
+		await openUnplaced(controller);
+		await expectShownOnce(FALLBACK_SEEN);
+		expect(await evaluate<string>(`document.body.innerText`)).toContain('找不到提出這題的原訊息');
+	}, 30_000);
+
+	test.skipIf(!CHROME)(`at ${width} px, a read whose answered list fails leaves the controller page showing each question once`, async () => {
+		const controller = asking(`failed-${width}`, 'rana');
+		await answeredFails(controller);
+		await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 600 });
+		errors = [];
+		await send('Page.navigate', { url: fixture.url + `/?controller=${encodeURIComponent(controller.session_id)}` });
+		await until(`/Internal Error/.test(document.body.innerText) || document.querySelectorAll('.asked').length >= 2`);
+		await sleep(1000);
+		await expectShownOnce(ASKED_IDS);
+	}, 30_000);
+
+	test.skipIf(!CHROME)(`at ${width} px, a read whose answered list fails leaves the cards above the conversation showing each question once`, async () => {
+		const controller = asking(`failed-unplaced-${width}`, 'rana', false);
+		await answeredFails(controller);
+		await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 600 });
+		await openUnplaced(controller);
+		await expectShownOnce(FALLBACK_SEEN);
+	}, 30_000);
 }
