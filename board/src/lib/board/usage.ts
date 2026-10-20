@@ -200,11 +200,20 @@ export function usageParts(
 }
 
 /**
- * The same at `now` spelt out, one line each, for the line's info tip: `上下文已用 42%`,
- * `5 小時額度剩 63%`, `快取命中 97%`, `快取 38 分鐘後失效`, `權限：自動模式`; a cold cache as
- * `快取尚未建立`, an expired one as `快取已失效`.
+ * The same at `now`, one line each, for the line's info tip: spelt out in the detailed style
+ * (`上下文已用 42%`, `5 小時額度剩 63%`, `快取命中 97%`, `快取 38 分鐘後失效`, `權限：自動模式`; a cold cache as
+ * `快取尚未建立`, an expired one as `快取已失效`), short in the compact style, the line's own wording with
+ * nothing left off (`Ctx 42%`, `5h 63%`, `Cache 97% ⏳ 38 min`, `Cache cold`, `Auto mode`).
  */
-export function usageDetails(usage: Usage, now: number): string[] {
+export function usageDetails(usage: Usage, now: number, style: UsageStyle = 'detailed'): string[] {
+	if (style === 'compact') {
+		const lines: string[] = [];
+		for (const part of usageParts(usage, now, { all: true, style })) {
+			if (part.joined && lines.length) lines[lines.length - 1] += ` ${part.text}`;
+			else lines.push(part.text);
+		}
+		return lines;
+	}
 	const lines: string[] = [];
 	if (usage.context !== null) lines.push(`上下文已用 ${rounded(usage.context)}%`);
 	for (const limit of usage.limits.toSorted((a, b) => a.minutes - b.minutes)) {

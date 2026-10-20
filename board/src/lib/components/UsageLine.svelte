@@ -3,7 +3,8 @@
 	// conversation feed last told: on its own line with an icon that spells it out, or (`full`) as
 	// a 執行狀況 entry of an information page's details, with nothing left off. Shared by the
 	// controllers' and the agents' information pages, so both read the same. The line reads in the
-	// style chosen in the settings; the tip and the details are always spelt out.
+	// style chosen in the settings, and so do the tip and the details: spelt out in Chinese in the
+	// detailed style, short as the line has it in the compact one. The details keep every item.
 	import Info from '@lucide/svelte/icons/info';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { usageDetails, usageParts, type Usage, type UsagePart } from '#lib/board/usage.ts';
@@ -19,9 +20,9 @@
 			return groups;
 		}, []);
 	const usageGroups = $derived(usage ? grouped(usageParts(usage, now, { style: appearance.usageStyle })) : []);
-	const usageLines = $derived(usage ? usageDetails(usage, now) : []);
+	const usageLines = $derived(usage ? usageDetails(usage, now, appearance.usageStyle) : []);
 	// The details show the line with nothing left off.
-	const usageFull = $derived(usage ? grouped(usageParts(usage, now, { all: true })) : []);
+	const usageFull = $derived(usage ? grouped(usageParts(usage, now, { all: true, style: appearance.usageStyle })) : []);
 	// The line spelt out shows while a mouse is over the icon, and after a tap until a tap elsewhere.
 	// Fixed to the screen beside the icon, towards the roomier side, so no panel edge cuts it off.
 	let usageHover = $state(false);

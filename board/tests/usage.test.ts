@@ -288,13 +288,21 @@ describe('the compact line', () => {
 		expect(codex('never', 'danger-full-access')).toBe('');
 	});
 
-	test('with nothing left off, it still reads short; the tip stays spelt out', () => {
+	test('with nothing left off, it still reads short; the tip reads in the style too', () => {
 		expect(
 			usageParts({ ...full, permission: { mode: 'bypassPermissions' } }, NOW, { all: true, style: 'compact' })
 				.map((part, index) => (index === 0 ? '' : part.joined ? ' ' : ' • ') + part.text)
 				.join('')
 		).toBe('Ctx 42% • 5h 63% • 7d 80% • Cache 97% ⏳ 38 min • Bypass permissions');
+		// Detailed: spelt out. Compact: the line's wording, every item, a countdown on its cache's line.
 		expect(usageDetails(full, NOW)[0]).toBe('上下文已用 42%');
+		expect(usageDetails(full, NOW, 'detailed')).toEqual(usageDetails(full, NOW));
+		expect(usageDetails(full, NOW, 'compact')).toEqual(['Ctx 42%', '5h 63%', '7d 80%', 'Cache 97% ⏳ 38 min']);
+		expect(usageDetails({ ...full, cache: { warm: true, hit: null, expires: NOW + 38 * MINUTE } }, NOW, 'compact').slice(-1)).toEqual(['Cache ⏳ 38 min']);
+		expect(usageDetails(full, full.cache!.expires!, 'compact').at(-1)).toBe('Cache 97% ⏳ expired');
+		expect(usageDetails({ ...full, cache: { warm: false, hit: null, expires: null } }, NOW, 'compact').at(-1)).toBe('Cache cold');
+		expect(usageDetails({ ...full, permission: { mode: 'bypassPermissions' } }, NOW, 'compact').at(-1)).toBe('Bypass permissions');
+		expect(usageDetails({ ...full, permission: { approval: 'on-request', sandbox: 'workspace-write' } }, NOW, 'compact').at(-1)).toBe('approval on-request');
 	});
 });
 

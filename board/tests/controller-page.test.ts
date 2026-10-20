@@ -267,13 +267,25 @@ test.skipIf(!CHROME)('a controller without a report shows no latest report; the 
 	await tab.eval(`${choice('精簡')}.click()`);
 	await tab.until(`(${line}) === 'Ctx 62% • 7d 25% • Cache 70%'`, 'the compact line, at once');
 
-	// Kept across a reload; the details' entry stays spelt out.
+	// Kept across a reload; the tip and the details' entry read short too, with every item.
 	await visitOrin();
 	expect(await tab.eval<string>(line)).toBe('Ctx 62% • 7d 25% • Cache 70%');
+	const tip = async () => {
+		await tab.eval(`document.querySelector('.detail .profile .usage-info').click()`);
+		await tab.until(`!!document.querySelector('.usage-tip')`, 'the tip');
+		const lines = await tab.eval<string>(`[...document.querySelectorAll('.usage-tip span')].map((span) => span.textContent).join(' | ')`);
+		await tab.eval(`document.querySelector('.detail .profile .usage-info').click()`);
+		return lines;
+	};
+	expect(await tip()).toBe('Ctx 62% | 7d 25% | Cache 70%');
 	await tab.eval(`document.querySelector('.detail .more').click()`);
-	await tab.until(`document.querySelector('.detail .profile dl')?.innerText.includes('上下文已用 62%')`, 'the details, spelt out');
+	await tab.until(`document.querySelector('.detail .profile dl')?.innerText.includes('Ctx 62%')`, 'the details, short');
+	expect(await tab.eval<string>(`document.querySelector('.detail .profile dl').innerText`)).not.toContain('上下文已用');
 
 	await tab.eval(`[...document.querySelectorAll('[aria-label="設定"]')].find((b) => b.offsetParent !== null).click()`);
 	await tab.eval(`${choice('詳細')}.click()`);
 	await tab.until(`(${line}).startsWith('上下文已用 62%')`, 'the detailed line again');
+	// Detailed again: the tip and the details are spelt out in Chinese.
+	expect(await tip()).toBe('上下文已用 62% | 7 天額度剩 25% | 快取命中 70%');
+	expect(await tab.eval<string>(`document.querySelector('.detail .profile dl').innerText`)).toContain('上下文已用 62%');
 }, 60_000);
