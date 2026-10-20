@@ -400,7 +400,7 @@ test('a text the helper cannot be given at all is a failure, not a server error'
 	expect(listedQuestion(luna, 'T-1')).toEqual(asked);
 });
 
-test('a question of an ended controller cannot be answered, and its notification cannot be resent', async () => {
+test('a question of a deactivated controller cannot be answered, and its notification cannot be resent', async () => {
 	const asked = text({ title: '已結束主控的題' });
 	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
 	fixture.report(luna.session_id, { tag: 'HELP', summary: '卡住了', hcom_name: 'luna', workspace: luna.workspace });
@@ -413,14 +413,14 @@ test('a question of an ended controller cannot be answered, and its notification
 	const resend = await notify(luna);
 
 	expect(status).toBe(409);
-	expect(body).toMatchObject({ status: 'ended', reason: '這個主控已結束，它的待決題不能再作答。', entry: null });
+	expect(body).toMatchObject({ status: 'ended', reason: '這個主控已停用 LAT，它的待決題不能再作答。', entry: null });
 	expect(resend).toMatchObject({ status: 409, body: { status: 'ended' } });
 	expect(fixture.helperArgs('answer')).toEqual([]);
 	expect(fixture.helperArgs('notify')).toEqual([]);
-	// The refusal re-read the sources: the question is out of the inbox, the controller is 已結束.
+	// The refusal re-read the sources: the question is out of the inbox, the controller is 閒置.
 	const after = await fixture.board(cookie);
 	expect(titled(after, '已結束主控的題')).toBeUndefined();
-	expect(named(after, 'luna')).toMatchObject({ status: 'ended' });
+	expect(named(after, 'luna')).toMatchObject({ status: 'idle' });
 	expect(await sentAnswers(luna.session_id)).toEqual([]);
 });
 
@@ -474,7 +474,7 @@ test('an answer the controller records and then ends before the board reads agai
 	end(luna, [{ ...listedQuestion(luna, 'T-1'), status: 'recorded', recorded_at: '2026-03-02T10:00:00.000Z' }]);
 	const snapshot = await fixture.refresh(cookie);
 
-	expect(named(snapshot, 'luna')).toMatchObject({ status: 'ended' });
+	expect(named(snapshot, 'luna')).toMatchObject({ status: 'idle' });
 	const [entry] = await sentAnswers(luna.session_id);
 	expect(entry).toMatchObject({ answer: '好', state: 'recorded', settledAt: '2026-03-02T10:00:00.000Z' });
 	// The file's path is the server's business.
@@ -496,7 +496,7 @@ test('an answer whose controller ends without recording it is logged as not reco
 
 	const [entry] = await sentAnswers(luna.session_id);
 	expect(entry.state).toBe('ended');
-	expect(ANSWER_STATE_TEXT[entry.state]).toContain('主控已結束');
+	expect(ANSWER_STATE_TEXT[entry.state]).toContain('主控已停用 LAT');
 	expect(ANSWER_STATE_TEXT[entry.state]).not.toContain('已記錄');
 	expect(entry.settledAt).not.toBeNull();
 });

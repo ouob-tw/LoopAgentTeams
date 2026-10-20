@@ -1,5 +1,6 @@
 <script lang="ts">
-	// A controller's information page, made of blocks: its header, a bar for each question waiting
+	// A controller's information page, made of blocks: its header, a close for an idle one (its
+	// conversation still open in Herdr, as on the 所有 Agent tab), a bar for each question waiting
 	// for an answer, then its conversation, its reports not yet archived and what was sent to it, one
 	// tab at a time. Its model and effort, and messages and wakes, go through the command line at the
 	// bottom of the screen.
@@ -9,9 +10,10 @@
 	import type { Snippet } from 'svelte';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
-	import type { Controller, InboxItem, InboxQuestion, InboxReport } from '#lib/board/types.ts';
+	import type { Controller, InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
 	import type { PlacedTarget } from '#lib/board/transcript.ts';
 	import type { Usage } from '#lib/board/usage.ts';
+	import AgentClose from './AgentClose.svelte';
 	import ControllerHeader from './ControllerHeader.svelte';
 	import PendingQuestions from './PendingQuestions.svelte';
 	import RecordTabs from './RecordTabs.svelte';
@@ -21,6 +23,7 @@
 
 	let {
 		controller,
+		agent,
 		tabMoves = 0,
 		items,
 		answered = [],
@@ -34,6 +37,8 @@
 		questionCards
 	}: {
 		controller: Controller;
+		/** The agent Herdr runs this controller's session in; undefined when it lists none. */
+		agent?: KnownAgent;
 		/** Changes when the server announces a Herdr tab move. */
 		tabMoves?: number;
 		/** This controller's inbox items, with its read reports not yet archived. */
@@ -80,6 +85,17 @@
 
 <ControllerHeader {controller} {tabMoves} usage={shown} />
 
+{#if controller.status === 'idle'}
+	<section class="controls" aria-label="操作">
+		{#if agent}
+			<!-- Unbound, so the agent list does not call it a controller; it still is one to wake. -->
+			<AgentClose {agent} label="關閉" controller />
+		{:else}
+			<p class="note">Herdr 的清單上找不到它的分頁，無法從這裡關閉。</p>
+		{/if}
+	</section>
+{/if}
+
 <PendingQuestions status={controller.status} {questions} {onopen} />
 
 <RecordTabs {tabs} bind:tab ariaLabel="主控的紀錄">
@@ -93,3 +109,16 @@
 		{/if}
 	{/snippet}
 </RecordTabs>
+
+<style>
+	.controls {
+		display: flex;
+		flex-direction: column;
+		gap: 0.4rem;
+	}
+	.note {
+		margin: 0;
+		font-size: max(0.85rem, var(--min-font, 0px));
+		color: var(--muted);
+	}
+</style>

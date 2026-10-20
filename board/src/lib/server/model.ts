@@ -56,7 +56,7 @@ export function isClosed(sources: Sources, sessionId: string): boolean {
 }
 
 /** The roster's order of status groups. */
-const STATUS_ORDER: ControllerStatus[] = ['waiting', 'working', 'delivered', 'closed', 'ended'];
+const STATUS_ORDER: ControllerStatus[] = ['waiting', 'working', 'delivered', 'idle', 'closed'];
 
 /** A report is archived this long after it was issued, read or not. */
 const ARCHIVE_MS = 7 * DAY_MS;
@@ -297,12 +297,14 @@ function activeController(binding: HelperController, file: ReportFile | undefine
 	};
 }
 
-/** A bound controller whose client is gone: shown like an ended one, from its binding. */
+/** A bound controller whose client is gone: shown like an unbound one, from its binding. */
 function closedController(binding: HelperController, file: ReportFile | undefined): Controller {
 	return { ...activeController(binding, file), status: 'closed', running: false, pendingCount: 0, herdr: null, error: reportError(file) };
 }
 
-function endedController(file: ReportFile, running: boolean): Controller {
+/** A controller whose LAT round is no longer bound: 閒置 while its conversation is in hcom's list,
+ *  or before any list was read; 已關閉 once it is gone from it. */
+function endedController(file: ReportFile, running: Set<string> | null): Controller {
 	const latest = file.reports.at(-1)!;
 	return {
 		id: file.sessionId,
@@ -310,8 +312,8 @@ function endedController(file: ReportFile, running: boolean): Controller {
 		project: basename(latest.workspace),
 		workspace: latest.workspace,
 		client: latest.client,
-		status: 'ended',
-		running,
+		status: running === null || running.has(file.sessionId) ? 'idle' : 'closed',
+		running: running?.has(file.sessionId) ?? false,
 		phase: latest.summary,
 		pendingCount: 0,
 		herdr: null,
@@ -335,7 +337,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		const file = files.get(binding.session_id);
 		files.delete(binding.session_id);
 		// A closed controller stays on the roster only while one of its reports is not yet archived
-		// (read ones count), like an ended one.
+		// (read ones count), like an unbound one.
 		const closed = isClosed(sources, binding.session_id);
 		if (closed && !withInboxReport.has(binding.session_id)) continue;
 		const controller = closed ? closedController(binding, file) : activeController(binding, file);
@@ -346,7 +348,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 	}
 	if (sources.helperError) errors.push(`輔助工具失敗：${sources.helperError}`);
 	if (sources.hcomError) {
-		errors.push(`${sources.hcomError}，${sources.running ? '已關閉的主控沿用上次讀到的清單判斷' : '主控暫時都顯示為啟用中'}`);
+		errors.push(`${sources.hcomError}，${sources.running ? '閒置與已關閉的主控沿用上次讀到的清單判斷' : '主控暫時都顯示為啟用中'}`);
 	}
 	if (sources.herdrError) errors.push(sources.herdrError);
 	if (sources.pruneError) errors.push(`超過 30 天的回報紀錄沒有刪除，下次重讀再試：${sources.pruneError}`);
@@ -359,11 +361,11 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 	if (sources.answeredError) unreadable.unshift(`輔助工具失敗：${sources.answeredError}，沿用上次讀到的`);
 	if (unreadable.length) errors.push(`答過的題目讀不出來：${unreadable.join('；')}`);
 
-	// Whatever is left belongs to controllers that are no longer bound: they have ended, and stay
+	// Whatever is left belongs to controllers that are no longer bound: they are idle or closed, and stay
 	// on the roster only while one of their reports is not yet archived (read ones count).
 	for (const file of files.values()) {
 		if (withInboxReport.has(file.sessionId)) {
-			const controller = endedController(file, sources.running?.has(file.sessionId) ?? false);
+			const controller = endedController(file, sources.running);
 			if (sources.helperError) {
 				// Without the registry there is no telling whether it has really ended.
 				controller.error = joinErrors(
@@ -390,7 +392,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 	return {
 		generatedAt: new Date(now).toISOString(),
 		controllers,
-		// An ended or closed controller's questions cannot be answered any more, so only running
+		// An idle or closed controller's questions cannot be answered any more, so only running
 		// bound ones are listed.
 		inbox: [
 			...live.flatMap((binding) => questionItems(binding, sources.reportFiles.find((file) => file.sessionId === binding.session_id))),

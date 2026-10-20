@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The command line at the bottom of the screen: `@name message` goes to that controller, a line
 	// without a name to the controller that is open. The recipient's model and effort sit beside the
-	// send button. An ended or closed controller is woken instead; its other wake options sit in a
+	// send button. An idle or closed controller is woken instead; its other wake options sit in a
 	// pop-up behind a button that shows only then. A phone can put the line away behind a floating
 	// button, to read more of the page; what was typed stays, also across a reload. While an agent's
 	// page is open, a line without a name goes to that agent instead, from a draft of its own, also
@@ -285,7 +285,7 @@
 			class="options"
 			class:idle={!waking}
 			aria-label="喚醒選項"
-			title={waking ? '喚醒選項：開新一輪 LAT' : '只有已結束的主控有喚醒選項'}
+			title={waking ? '喚醒選項：開新一輪 LAT' : '只有閒置或已關閉的主控有喚醒選項'}
 			aria-expanded={optionsOpen}
 			disabled={!waking}
 			onclick={() => (optionsOpen = !optionsOpen)}
@@ -310,7 +310,7 @@
 				開新一輪 LAT
 			</label>
 			<p class="note">
-				@{recipient.hcomName} 已結束。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪
+				@{recipient.hcomName} {recipient.status === 'idle' ? '閒置中' : '已關閉'}。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪
 				LAT」會在前面加上 LAT 啟動指令。
 			</p>
 			{#if abandonable[id]}

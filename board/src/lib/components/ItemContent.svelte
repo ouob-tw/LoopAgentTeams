@@ -105,7 +105,7 @@
 		} else if (result?.status === 'unknown') {
 			toasts.show('failed', '沒有收到看板伺服器的回應，不確定有沒有送出；請按「重新整理」確認這一題的狀態（你填的內容還在）。');
 		} else if (result?.status === 'ended') {
-			toasts.show('failed', result.reason ?? '主控已結束，沒有送出。');
+			toasts.show('failed', result.reason ?? '主控已停用 LAT 或已關閉，沒有送出。');
 		}
 	}
 
@@ -158,7 +158,7 @@
 		{#if recorded && !isAnswered(item)}
 			<p class="notice recorded" role="status">✓ {ANSWER_STATE_TEXT.recorded}：主控已記錄這一題的答覆。</p>
 		{:else if !listed}
-			<p class="notice" role="status">這一題已經不在待辦：主控已結束，或題目已被移除。不能再作答。</p>
+			<p class="notice" role="status">這一題已經不在待辦：主控已停用 LAT 或已關閉，或題目已被移除。不能再作答。</p>
 		{/if}
 		{#if question.context}
 			<div class="text md">{@html renderMarkdown(question.context)}</div>

@@ -5,6 +5,7 @@ import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SentEntry } from '../src/lib/board/answers.ts';
+import { isInactive } from '../src/lib/board/types.ts';
 import {
 	ABANDON_CONFIRM_TEXT,
 	RESUME_BUSY_REASON,
@@ -96,7 +97,7 @@ async function ended(client = 'claude'): Promise<{ id: string; name: string; wor
 	fixture.report(id, { tag: 'DONE', hcom_name: name, client, workspace, summary: '交付' });
 	herdrPlan({ panes: [{ workspace_id: 'wP', cwd: workspace, pane_id: 'wP:p1' }], workspaces: [['wP', 1, `p${n}`]] });
 	const snapshot = await fixture.refresh(cookie);
-	expect(named(snapshot, name)?.status).toBe('ended');
+	expect(isInactive(named(snapshot, name)!.status)).toBe(true);
 	return { id, name, workspace };
 }
 
@@ -216,23 +217,25 @@ test('the sent log says 已喚醒, or 已喚醒，等主控啟用 for a new roun
 	const plain = await ended();
 	await wake(plain.id, '問一下');
 	const round = await ended();
+	hcomPlan({ resumed: agent(round.name, round.id) });
 	await wake(round.id, '做下一輪', true);
 
 	expect(wakeText((await wakes(plain.id))[0])).toBe('已喚醒');
 	expect(wakeText((await wakes(round.id))[0])).toBe('已喚醒，等主控啟用');
 });
 
-test('without the box ticked the controller stays ended; with it, it is active again once it binds', async () => {
+test('without the box ticked the controller stays 閒置; with it, it is active again once it binds', async () => {
 	const plain = await ended();
 	hcomPlan({ resumed: agent(plain.name, plain.id) });
 	await wake(plain.id, '問一下');
-	expect(named(await fixture.refresh(cookie), plain.name)?.status).toBe('ended');
+	expect(named(await fixture.refresh(cookie), plain.name)?.status).toBe('idle');
 
 	const round = await ended();
+	hcomPlan({ resumed: agent(round.name, round.id) });
 	await wake(round.id, '做下一輪', true);
 	fixture.list([fixture.bound('x', round.name, { session_id: round.id, workspace: round.workspace })]);
 	const controller = (await fixture.refresh(cookie)).controllers.find((candidate) => candidate.id === round.id);
-	expect(controller?.status).not.toBe('ended');
+	expect(isInactive(controller!.status)).toBe(false);
 });
 
 test('a Herdr workspace that cannot be chosen fails the wake, logged, and resumes nothing', async () => {

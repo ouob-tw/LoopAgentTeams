@@ -591,10 +591,10 @@
 						<p class="empty">這個 Agent 已不在 Herdr 的清單上：它已關閉。</p>
 					{/if}
 				{:else if view.kind === 'launch'}
-					<NewController {controllers} stamp={board.snapshot.generatedAt} onopen={openController} />
+					<NewController {controllers} {agents} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} />
 				{:else if view.kind === 'new-agent'}
 					{#if newTarget}
-						<NewController {controllers} stamp={board.snapshot.generatedAt} onopen={openController} target={newTarget} />
+						<NewController {controllers} {agents} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} target={newTarget} />
 					{:else}
 						<p class="empty">Herdr 裡已經沒有這個工作區。</p>
 					{/if}
@@ -603,13 +603,14 @@
 						<ControllerInfo
 							tabMoves={board.tabMoves}
 							{controller}
+							agent={agents.find((candidate): candidate is KnownAgent => candidate.inHerdr && candidate.id === controller.id)}
 							items={inbox.filter((entry) => entry.controllerId === controller.id)}
 							answered={answered.filter((entry) => entry.controllerId === controller.id)}
 							onopen={openItem}
 							questionCards={askedCards}
 						/>
 					{:else}
-						<p class="empty">這個主控已經不在名冊上：它已結束，回報也都封存了。</p>
+						<p class="empty">這個主控已經不在名冊上：它已停用 LAT 或已關閉，回報也都封存了。</p>
 					{/if}
 				{:else if item && placed && controller}
 					<!-- A report is the controller's last text of its turn, and a question was asked in

@@ -1,6 +1,6 @@
 <script lang="ts">
 	// One shape per status, in both themes, so the five can be told apart without colour:
-	// ▲ 等你, ● 進行中, ■ 已交付, □ 已結束, ○ 已關閉. `--mark-size` sets the size.
+	// ▲ 等你, ● 進行中, ■ 已交付, ○ 閒置, □ 已關閉. `--mark-size` sets the size.
 	import { STATUS_LABEL, type ControllerStatus } from '#lib/board/types.ts';
 
 	let {
@@ -37,13 +37,13 @@
 		background: var(--status-delivered);
 		border-radius: 0;
 	}
-	.mark[data-status='ended'] {
+	.mark[data-status='idle'] {
 		background: transparent;
 		border: 2px solid var(--status-ended);
-		border-radius: 0;
 	}
 	.mark[data-status='closed'] {
 		background: transparent;
 		border: 2px solid var(--status-ended);
+		border-radius: 0;
 	}
 </style>

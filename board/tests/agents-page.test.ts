@@ -504,6 +504,49 @@ const hcomCalls = (): string[][] => {
 	const file = join(fixture.dir, 'hcom-calls.jsonl');
 	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line).args) : [];
 };
+test.skipIf(!CHROME)("an idle controller's information page closes it as the 所有 Agent tab does, then it is 已關閉; a running one has no 關閉", async () => {
+	// idol deactivated LAT: unbound, with a report kept, its conversation still in hcom's list and in Herdr.
+	const idle = herdrAgent('s-idle', { status: 'idle' });
+	const agents = [...AGENTS, idle];
+	setHerdr(agents, { panes: agents.map((agent) => ({ pane_id: agent.pane_id, workspace_id: agent.workspace_id, cwd: agent.cwd })) });
+	fixture.setHcom({
+		agents: [
+			{ name: 'lead', session_id: 's-lead', status: 'active' },
+			{ name: 'idol', session_id: 's-idle', status: 'listening', launch_context: { pane_id: idle.pane_id } }
+		]
+	});
+	fixture.report('s-idle', { tag: 'DONE', summary: '交付完成', hcom_name: 'idol', workspace: idle.cwd });
+	rmSync(join(fixture.dir, 'hcom-calls.jsonl'), { force: true });
+	const header = `document.querySelector('.detail .profile header')?.innerText ?? ''`;
+	try {
+		await fixture.refresh(cookie);
+		await visit(1280, '?controller=s-lead');
+		await tab.until(`(${header}).includes('@lead')`, "the running controller's page");
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"]')`)).toBe(false);
+
+		await tab.send('Page.navigate', { url: `${fixture.url}/?controller=s-idle` });
+		await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.until(`(${header}).includes('@idol') && !!document.querySelector('.detail [data-action="close"]')`, "the idle controller's page");
+		expect(await tab.eval<string>(header)).toContain('閒置');
+		expect(await tab.eval<string>(`document.querySelector('.detail [data-action="close"]').innerText`)).toBe('關閉');
+
+		await click('.detail [data-action="close"]');
+		await tab.until(`!!document.querySelector('.detail [data-action="confirm-close"]')`, 'the confirmation');
+		const confirm = await tab.eval<string>(`document.querySelector('.detail .confirm').innerText`);
+		expect(confirm).toContain('hcom kill @idol');
+		expect(confirm).toContain('主控資訊頁喚醒接回');
+		await click('.detail [data-action="confirm-close"]');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('已關閉 idol')`, 'the result');
+		expect(hcomCalls()).toEqual([['kill', 'idol']]);
+		await tab.until(`(${header}).includes('已關閉') && !document.querySelector('.detail [data-action="close"]')`, 'the controller, now 已關閉');
+	} finally {
+		rmSync(join(fixture.reportsDir, 's-idle.jsonl'), { force: true });
+		setHerdr(AGENTS);
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+		await fixture.refresh(cookie);
+	}
+}, 30_000);
+
 /** The open agent's model and effort beside the send button, the button that applies what was
  *  picked, and the ⚠ of a switch left unfinished. */
 const part = (kind: 'model' | 'effort') => `.dock [data-pick="${kind}"]`;

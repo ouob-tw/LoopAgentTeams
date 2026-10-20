@@ -66,8 +66,8 @@ export const AGENT_MARK: Record<AgentStatus, ControllerStatus> = {
 	blocked: 'waiting',
 	done: 'delivered',
 	working: 'working',
-	idle: 'closed',
-	unknown: 'ended'
+	idle: 'idle',
+	unknown: 'closed'
 };
 
 /** Where a card dragged onto another card of its workspace puts its Herdr tab: where the other

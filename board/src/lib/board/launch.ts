@@ -2,6 +2,7 @@
 // shapes shared by the server and the page, and the LAT start command a controller's first message
 // begins with.
 import { DEFAULT_UNREADABLE_TEXT, type ModelChoice, type ModelOptions } from './models.ts';
+import type { Agent, Controller } from './types.ts';
 
 export const LAUNCH_CLIENTS = ['claude', 'codex'] as const;
 export type LaunchClient = (typeof LAUNCH_CLIENTS)[number];
@@ -124,6 +125,23 @@ export function launchSettingsText(launch: Pick<SentLaunch, 'model' | 'effort' |
 	if (model === null && effort === null && defaults.model === null && defaults.effort === null) return `模型與思考強度：${DEFAULT_UNREADABLE_TEXT}`;
 	const part = (chosen: string | null, given: string | null) => chosen ?? (given === null ? DEFAULT_UNREADABLE_TEXT : `${given}（預設）`);
 	return `模型 ${part(model, defaults.model)}・思考強度 ${part(effort, defaults.effort)}`;
+}
+
+/** Where a controller's launch row leads: its information page once it is active and on the
+ *  roster, before that the page of the agent Herdr runs under its HCOM name; null while neither is
+ *  there or the launch failed. Nothing is opened for the user: the row only shows the way. */
+export function launchLink(
+	launch: Pick<LaunchView, 'state' | 'controllerId' | 'hcomName'>,
+	controllers: readonly Pick<Controller, 'id'>[],
+	agents: readonly Pick<Agent, 'id' | 'hcomName' | 'inHerdr'>[]
+): { kind: 'controller' | 'agent'; id: string } | null {
+	if (launch.state === 'failed') return null;
+	const { controllerId } = launch;
+	if (launch.state === 'active' && controllerId !== null && controllers.some((controller) => controller.id === controllerId)) {
+		return { kind: 'controller', id: controllerId };
+	}
+	const agent = launch.hcomName && agents.find((candidate) => candidate.inHerdr && candidate.id !== null && candidate.hcomName === launch.hcomName);
+	return agent ? { kind: 'agent', id: agent.id! } : null;
 }
 
 /** A plain agent's states where they read differently from a controller's. */
