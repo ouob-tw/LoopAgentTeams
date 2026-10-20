@@ -102,6 +102,17 @@ test('the Herdr tab rides along in every address but an agent\'s, which names it
 	expect(tabIn(new URLSearchParams('?tab=other'))).toBeNull();
 });
 
+test('the 額度 tab rides along in every address, an agent\'s too', () => {
+	const places: Place[] = [null, { kind: 'launch' }, CONTROLLER, REPORT, { kind: 'agent', id: 's-1' }, { kind: 'new-agent', workspace: 'wA' }];
+	for (const place of places) {
+		const params = new URLSearchParams(searchOf(place, 'quota'));
+		expect(tabIn(params)).toBe('quota');
+		expect(samePlace(placeIn(params), place)).toBe(true);
+	}
+	expect(searchOf(null, 'quota')).toBe('?tab=quota');
+	expect(searchOf({ kind: 'agent', id: 's-1' }, 'quota')).toBe('?agent=s-1&tab=quota');
+});
+
 test('question, its controller, back to the question, back to the list, then back leaves the board', () => {
 	const history = new BrowserHistory();
 	const screen = boardOn(history);
@@ -213,6 +224,13 @@ test('an agent of the 所有 Agent tab is named by its session ID, and missing o
 	const agents = [{ id: 's/1' } as Agent];
 	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents })).toEqual({ kind: 'agent', id: 's/1' });
 	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents: [] })).toEqual({ kind: 'missing', what: 'agent' });
+});
+
+test('a closed agent of the 已關閉 section has the same place, until it is listed nowhere', () => {
+	const place = placeIn(new URLSearchParams('?agent=s-closed'));
+	expect(tabIn(new URLSearchParams(searchOf(place)))).toBe('agents');
+	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents: [], closed: [{ id: 's-closed' }] })).toEqual({ kind: 'agent', id: 's-closed' });
+	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents: [], closed: [{ id: 's-other' }] })).toEqual({ kind: 'missing', what: 'agent' });
 });
 
 test('a workspace\'s new-agent form is named by the workspace, on the Herdr tab, and missing once Herdr no longer lists it', () => {

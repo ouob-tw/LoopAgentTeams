@@ -134,8 +134,8 @@ function herdrAgent(session: string, cwd = `/home/someone/projects/${session}`) 
 		workspace_id: 'wA'
 	};
 }
-function setHerdr(extra: object = {}) {
-	const agents = [herdrAgent('s-lead'), herdrAgent('s-sun'), herdrAgent('s-gone', gone.workspace), herdrAgent('s-luna'), herdrAgent('s-plain')];
+function setHerdr(extra: object = {}, more: string[] = []) {
+	const agents = [herdrAgent('s-lead'), herdrAgent('s-gone', gone.workspace), herdrAgent('s-luna'), herdrAgent('s-plain'), ...more.map((session) => herdrAgent(session))];
 	writeFileSync(
 		join(fixture.dir, 'herdr.json'),
 		JSON.stringify({
@@ -148,8 +148,7 @@ function setHerdr(extra: object = {}) {
 	);
 }
 const hcomAgent = (name: string, session: string, status = 'listening') => ({ name, session_id: session, status, launch_context: { pane_id: `wA:p-${session}` } });
-// `gone` is bound but hcom no longer lists it: closed, its pane still in Herdr.
-// `lead` is really at work: only hcom's live status, not its LAT report, decides the stop.
+// `gone` is bound but hcom no longer lists it: closed, its pane still in Herdr. `lead` is in a turn.
 const HCOM_AGENTS = [hcomAgent('lead', 's-lead', 'active'), hcomAgent('luna', 's-luna'), hcomAgent('plain', 's-plain')];
 function record(session: string, said: { kind: 'user' | 'assistant'; minutes: number; text: string }[]) {
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
@@ -389,11 +388,15 @@ test.skipIf(!CHROME)('only blank space typed keeps the stop; a line naming a con
 	expect(herdrCalls()).toEqual([]);
 }, 60_000);
 
-test.skipIf(!CHROME)('the confirmation is cancelled without a key pressed, and closes when the controller changes or stops working', async () => {
+test.skipIf(!CHROME)('the confirmation is cancelled without a key pressed, and closes when the controller changes or its turn ends', async () => {
 	const sun = fixture.bound('sun', 'sun', { session_id: 's-sun' });
+	const sunTurn = async (status: string) => {
+		fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun', status)] });
+		await fixture.refresh(cookie);
+	};
 	fixture.list([lead, gone, sun]);
-	fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun', 'active')] });
-	await fixture.refresh(cookie);
+	setHerdr({}, ['s-sun']);
+	await sunTurn('active');
 	const open = async () => {
 		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
 		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
@@ -414,20 +417,27 @@ test.skipIf(!CHROME)('the confirmation is cancelled without a key pressed, and c
 		await tab.until(`${pageOf('sun')} && !!document.querySelector(${JSON.stringify(STOP)})`, "sun's page");
 		expect(await confirmShown()).toBe(false);
 
-		// It stops working, as hcom sees it, and works again: closed, and not back.
+		// A question waiting on the user does not end its turn: the stop and the confirmation stay.
 		await open();
-		fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun', 'listening')] });
+		fixture.list([lead, gone, { ...sun, questions: [question()] }]);
 		await fixture.refresh(cookie);
-		await tab.until(`!document.querySelector(${JSON.stringify(STOP)})`, 'no stop while it is idle');
+		await tab.until(`document.querySelector('.detail .status')?.innerText.includes('等你')`, 'sun waiting on the user');
+		expect(await confirmShown()).toBe(true);
+		// Its turn ends (hcom lists it listening): no stop, closed, the LAT status as it was; then a new
+		// turn: the stop is back, the confirmation is not.
+		await sunTurn('listening');
+		await tab.until(`!document.querySelector(${JSON.stringify(STOP)})`, 'no stop once its turn ended');
 		expect(await confirmShown()).toBe(false);
-		fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun', 'active')] });
-		await fixture.refresh(cookie);
+		expect(await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).getAttribute('aria-label')`)).toBe('送出');
+		expect(await tab.eval<string>(`document.querySelector('.detail .status').innerText`)).toContain('等你');
+		await sunTurn('blocked');
 		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
 		expect(await confirmShown()).toBe(false);
 		expect(herdrCalls()).toEqual([]);
 	} finally {
 		fixture.list([lead, gone]);
 		fixture.setHcom({ agents: HCOM_AGENTS });
+		setHerdr();
 		await fixture.refresh(cookie);
 	}
 }, 60_000);

@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { controllerInterruptible, type AgentAction, type AgentActionResponse } from '../src/lib/board/agent-actions.ts';
+import type { AgentAction, AgentActionResponse } from '../src/lib/board/agent-actions.ts';
 import { NODE, startFixture, until, type Fixture } from './harness.ts';
 
 // The fake input command's plan and call log, known before the fixture makes its own directory.
@@ -224,21 +224,6 @@ test("a controller's interrupts, done or not, are in its sent log with the reaso
 		['agent', 'send-keys', 'wA:p-s-plain', 'esc'],
 		['agent', 'send-keys', 'wA:p-s-plain', 'esc']
 	]);
-});
-
-test('a controller is interrupted by its live agent entry, whatever the LAT reports make of it', () => {
-	const live = { id: 's-c', inHerdr: true, switch: null, status: 'working' } as const;
-	// Working agent: LAT-disabled, delivered or waiting controllers alike (their status is not read).
-	expect(controllerInterruptible([live], 's-c')).toBe(true);
-	for (const status of ['working', 'blocked', 'unknown'] as const) expect(controllerInterruptible([{ ...live, status }], 's-c')).toBe(true);
-	// Actually idle or done.
-	for (const status of ['idle', 'done'] as const) expect(controllerInterruptible([{ ...live, status }], 's-c')).toBe(false);
-	// Not in Herdr, switch open, not listed, listed under another session.
-	expect(controllerInterruptible([{ ...live, inHerdr: false }], 's-c')).toBe(false);
-	expect(controllerInterruptible([{ ...live, switch: { id: 'sw' } as never }], 's-c')).toBe(false);
-	expect(controllerInterruptible([], 's-c')).toBe(false);
-	expect(controllerInterruptible([{ ...live, id: 's-other' }], 's-c')).toBe(false);
-	expect(controllerInterruptible([{ ...live, id: null }], 's-c')).toBe(false);
 });
 
 test('requests that are not a send or an interrupt are refused before anything runs', async () => {

@@ -8,6 +8,9 @@ export const THEMES = ['dark', 'light'] as const;
 export type Theme = (typeof THEMES)[number];
 export const THEME_KEY = 'lat-board-theme';
 
+/** How the usage line reads, by `USAGE_STYLES`; 'detailed' when nothing is saved. */
+export const USAGE_STYLE_KEY = 'lat-board-usage-style';
+
 /** Overall size, in percent of the browser's own text size. */
 export const SCALE = { key: 'lat-board-scale', min: 80, max: 150, step: 10, base: 100 } as const;
 

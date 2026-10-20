@@ -4,7 +4,8 @@
 import type { Agent, Controller, HerdrWorkspace, InboxItem } from './types.ts';
 
 /** What the address names: an inbox item, a controller, the new-controller form, an agent of the
- *  所有 Agent tab by session ID, the new-agent form of a Herdr workspace, or the list. */
+ *  所有 Agent tab or its 已關閉 section by session ID, the new-agent form of a Herdr workspace, or
+ *  the list. */
 export type Place =
 	| { kind: 'item'; key: string }
 	| { kind: 'controller'; id: string }
@@ -37,23 +38,23 @@ export function placeIn(search: Pick<URLSearchParams, 'get' | 'has'>): Place {
 	return null;
 }
 
-/** The middle column's list: the inbox, or every agent Herdr lists. */
-export type MiddleTab = 'inbox' | 'agents';
+/** The middle column's list: the inbox, every agent Herdr lists, or the accounts' quotas. */
+export type MiddleTab = 'inbox' | 'agents' | 'quota';
 
 /** The middle tab the address names; null when it names none. An agent, or a workspace's
  *  new-agent form, is on the Herdr tab unless the address says otherwise. */
 export function tabIn(search: Pick<URLSearchParams, 'get' | 'has'>): MiddleTab | null {
 	const tab = search.get('tab');
-	if (tab === 'agents' || tab === 'inbox') return tab;
+	if (tab === 'agents' || tab === 'inbox' || tab === 'quota') return tab;
 	return search.has('agent') || search.has('new-agent') ? 'agents' : null;
 }
 
 /** Places that belong to the Herdr tab. */
 const onAgentsTab = (place: Place) => place?.kind === 'agent' || place?.kind === 'new-agent';
 
-/** The query that names a place, with the Herdr tab when that one is shown (an agent's place
- *  says it already, and so says the inbox when that one is), so a reload draws the right list at
- *  once; empty for the list on the inbox. */
+/** The query that names a place, with the Herdr or 額度 tab when that one is shown (an agent's
+ *  place says the Herdr tab already, and so says the inbox when that one is), so a reload draws the
+ *  right list at once; empty for the list on the inbox. */
 export function searchOf(place: Place, tab?: MiddleTab): string {
 	const params = new URLSearchParams(
 		place === null || place.kind === 'launch'
@@ -66,7 +67,7 @@ export function searchOf(place: Place, tab?: MiddleTab): string {
 						? { item: place.key }
 						: { controller: place.id }
 	);
-	if (tab && (onAgentsTab(place) ? tab === 'inbox' : tab === 'agents')) params.set('tab', tab);
+	if (tab && (onAgentsTab(place) ? tab !== 'agents' : tab !== 'inbox')) params.set('tab', tab);
 	const query = `${params}`;
 	if (place?.kind === 'launch') return query ? `?launch&${query}` : '?launch';
 	return query ? `?${query}` : '';
@@ -85,6 +86,8 @@ export function viewOf(
 		items: readonly InboxItem[];
 		controllers: readonly Controller[];
 		agents?: readonly Agent[];
+		/** The 已關閉 section's agents: their pages are the agent's too. */
+		closed?: readonly Pick<Agent, 'id'>[];
 		workspaces?: readonly HerdrWorkspace[];
 	}
 ): View {
@@ -92,7 +95,10 @@ export function viewOf(
 	if (place.kind === 'new-agent') {
 		return from.workspaces?.some((workspace) => workspace.id === place.workspace) ? place : { kind: 'missing', what: 'workspace' };
 	}
-	if (place.kind === 'agent') return from.agents?.some((agent) => agent.id === place.id) ? place : { kind: 'missing', what: 'agent' };
+	if (place.kind === 'agent') {
+		const listed = (agents?: readonly Pick<Agent, 'id'>[]) => agents?.some((agent) => agent.id === place.id);
+		return listed(from.agents) || listed(from.closed) ? place : { kind: 'missing', what: 'agent' };
+	}
 	if (place.kind === 'controller') {
 		return from.controllers.some((controller) => controller.id === place.id)
 			? place

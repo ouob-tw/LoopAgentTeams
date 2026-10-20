@@ -37,12 +37,14 @@
 	import { everyController, type InboxItem, type InboxQuestion, type InboxReport, type KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
 	import AgentList from '#lib/components/AgentList.svelte';
+	import ClosedAgentInfo from '#lib/components/ClosedAgentInfo.svelte';
 	import ClosedAgents from '#lib/components/ClosedAgents.svelte';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import NewController from '#lib/components/NewController.svelte';
+	import QuotaList from '#lib/components/QuotaList.svelte';
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
 	import Settings from '#lib/components/Settings.svelte';
@@ -73,7 +75,7 @@
 
 	/** The middle column's list. The address names it, so the server draws the right one at first;
 	 *  an address without one (typed, or from before) gets this device's last choice. */
-	const MIDDLE_TABS = ['inbox', 'agents'] as const;
+	const MIDDLE_TABS = ['inbox', 'agents', 'quota'] as const;
 	let middle = $state<MiddleTab>(tabIn(page.url.searchParams) ?? 'inbox');
 	onMount(() => {
 		if (tabIn(new URLSearchParams(location.search))) return;
@@ -125,6 +127,7 @@
 	const processedCount = $derived(board.snapshot.processedCount);
 	const agents = $derived(board.snapshot.agents);
 	const workspaces = $derived(board.snapshot.workspaces);
+	const closed = $derived(board.snapshot.closed);
 	/** The report opened from the inbox list: it stays there, read, until another screen is shown. */
 	let lingering = $state<string | null>(null);
 	/** What the inbox lists: the questions and the unread reports, and the report still open. */
@@ -141,7 +144,7 @@
 	/** The answered questions of the controller whose conversation is shown. */
 	const answered = $derived(board.answered.questions);
 	const known = $derived([...inbox, ...processed, ...answered]);
-	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers, agents, workspaces });
+	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers, agents, closed: closed.agents, workspaces });
 	/** The screen the address names; a reload opens it again. */
 	const addressed = () => placeIn(new URLSearchParams(location.search));
 	/** The browser starts from the real address: under shallow routing page.url stays at the last full
@@ -166,6 +169,9 @@
 	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
 	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
 	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
+	/** The open agent while the 已關閉 section lists it instead: once 接回 brings it back to Herdr,
+	 *  its page is the agent's again. */
+	const closedAgent = $derived(agentId === null || agent ? undefined : closed.agents.find((candidate) => candidate.id === agentId));
 	/** The controllers of the Herdr tab and the command line: the roster's, and the bound ones off it. */
 	const herdrControllers = $derived(everyController(board.snapshot));
 	/** The open agent as the controller it is, while Herdr lists it: its page is the controller's. */
@@ -489,7 +495,7 @@
 {/snippet}
 
 {#snippet openSettings()}
-	<button class="tool icon" onclick={() => settings.open()} aria-label="設定" title="設定：主題、整體大小與最小字體">
+	<button class="tool icon" onclick={() => settings.open()} aria-label="設定" title="設定：主題、整體大小、最小字體與用量列">
 		<SettingsIcon size="1.1em" />
 	</button>
 {/snippet}
@@ -561,10 +567,13 @@
 				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => setMiddle('agents')}
 					>Herdr<small>{agents.length}</small></button
 				>
+				<button type="button" data-middle="quota" aria-pressed={middle === 'quota'} onclick={() => setMiddle('quota')}>額度</button>
 			</div>
-			{#if middle === 'agents'}
+			{#if middle === 'quota'}
+				<QuotaList quota={board.quota} />
+			{:else if middle === 'agents'}
 				<AgentList {agents} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
-				<ClosedAgents closed={board.snapshot.closed} controllers={herdrControllers} />
+				<ClosedAgents {closed} currentId={agentId} onopen={openAgent} />
 			{:else}
 				<Inbox
 					items={listedInbox}
@@ -599,6 +608,11 @@
 						<span class="whose" title="{agent.folder} {agent.name}">
 							<strong>{folderName(agent.folder)}</strong>
 							<span class="handle">{agent.hcomName ? `@${agent.hcomName}` : agent.name}</span>
+						</span>
+					{:else if closedAgent}
+						<span class="whose" title="{closedAgent.folder} @{closedAgent.hcomName}">
+							<strong>{folderName(closedAgent.folder)}</strong>
+							<span class="handle">@{closedAgent.hcomName}</span>
 						</span>
 					{:else if owner}
 						<!-- Tappable while the controller is on the roster; an archived item of one that left is not. -->
@@ -654,6 +668,8 @@
 						</ControllerInfo>
 					{:else if agent}
 						<AgentInfo {agent} />
+					{:else if closedAgent}
+						<ClosedAgentInfo agent={closedAgent} timeZone={closed.timeZone} controllers={herdrControllers} />
 					{:else}
 						<p class="empty">這個 Agent 已不在 Herdr 的清單上：它已關閉。</p>
 					{/if}
@@ -748,7 +764,8 @@
 				controllers={herdrControllers}
 				target={controller ?? agentController}
 				agent={view?.kind === 'agent' && !agentController ? agent : undefined}
-				{agents}
+				closed={view?.kind === 'agent' ? closedAgent : undefined}
+				agents={board.snapshot.agents}
 				adopt={agentController?.id}
 			/>
 		</div>
@@ -1070,11 +1087,14 @@
 		:global(:root[data-roster='folded']) .shell {
 			--col-roster: 2.75rem;
 		}
-		/* A vertical scrollbar narrows the rail; it never scrolls sideways. */
+		/* A vertical scrollbar narrows the rail; it never scrolls sideways. The column has the
+		   rail's colour, so the scrollbar's transparent track and the marks scrolled past the
+		   first screen show it rather than the page's darker one. */
 		:global(:root[data-roster='folded']) .roster {
 			overflow-x: hidden;
 			display: flex;
 			padding: 0;
+			background: var(--surface);
 		}
 		/* The rail fills the column, so a click anywhere below the marks still unfolds. */
 		:global(:root[data-roster='folded']) .folded {

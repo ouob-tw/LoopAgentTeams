@@ -230,10 +230,13 @@ for (const width of [1280, 390]) {
 		expect((await screen()).detail).not.toContain('/home/someone/projects/s-plain');
 		await click('.detail .more');
 		const detail = (await screen()).detail;
-		expect(detail).toContain('codex');
+		// The client is left to the command line's model; the status source says where the status comes from.
+		expect(await tab.eval<string>(`document.querySelector('.detail .profile header').innerText`)).not.toContain('codex');
 		expect(detail).toContain('/home/someone/projects/s-plain');
 		expect(detail).toContain('Alpha（工作區#1）・分頁-s-plain（分頁#2）');
-		expect(detail).toContain('沒接');
+		const terms = await tab.eval<string[]>(`[...document.querySelectorAll('.detail .profile dt')].map((term) => term.innerText)`);
+		expect(terms).toContain('狀態來源');
+		expect(terms).not.toContain('HCOM');
 		expect(detail).toContain('幫我看一下測試');
 		// The command line is its box now.
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(BOX)}).placeholder`)).toContain('傳話給 分頁-s-plain');
@@ -636,8 +639,8 @@ for (const width of [1280, 390]) {
 			await click('.dock [data-action="confirm-abandon"]');
 			await tab.until(`document.querySelector('.dock')?.innerText.includes('已放棄 lino 的這次切換')`, 'the give-up notice');
 			expect(hcomCalls().map((args) => args[0])).toEqual(['kill', 'r']);
-			// Not in Herdr: gone from the list.
-			await tab.until(`document.querySelector('.detail')?.innerText.includes('已不在 Herdr 的清單上')`, 'the page saying it is gone');
+			// Not in Herdr: gone from the list, its page now the closed agent's of the 已關閉 section.
+			await tab.until(`!!document.querySelector('.detail [data-closed-agent="s-link"]')`, 'the page of it closed');
 			await openTab();
 			await tab.until(`!!document.querySelector('.inbox [data-agent="s-other"]')`, 'the agent list');
 			expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-link"]')`)).toBe(false);

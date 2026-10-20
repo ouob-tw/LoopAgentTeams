@@ -7,6 +7,7 @@ import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CLOSED_KEEP_MS, type ClosedAgent } from '../src/lib/board/closed-agents.ts';
+import type { TranscriptUpdate } from '../src/lib/board/transcript.ts';
 import { CLOSED_GONE_REASON, CLOSED_LISTED_REASON } from '../src/lib/server/closed-agents.ts';
 import { DAY, startFixture, until, type Fixture } from './harness.ts';
 
@@ -22,9 +23,9 @@ const WORKSPACES = [
 	{ workspace_id: 'wB', number: 2, label: 'Beta' }
 ];
 
-function herdrAgent(session: string, workspace = 'wA') {
+function herdrAgent(session: string, workspace = 'wA', client = 'claude') {
 	return {
-		agent: 'claude',
+		agent: client,
 		agent_session: { kind: 'id', value: session },
 		agent_status: 'idle',
 		cwd: `/projects/${session}`,
@@ -68,7 +69,7 @@ const closedOf = async (): Promise<ClosedAgent[]> => (await fixture.refresh(cook
 const ids = async () => (await closedOf()).map((agent) => agent.id);
 /** The board sees these agents in Herdr, then Herdr no longer lists them. */
 async function seeThenGone(...sessions: string[]) {
-	setHerdr(sessions.map((session) => herdrAgent(session)));
+	setHerdr(sessions.map((session) => herdrAgent(session, 'wA', session.endsWith('-codex') ? 'codex' : 'claude')));
 	await fixture.refresh(cookie);
 	setHerdr([]);
 }
@@ -478,6 +479,51 @@ test("the board's own 關閉 makes the fake hcom record a stop by cli, and the a
 	const closed = await fixture.fetch('/api/agents/close', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session: 's-a' }), cookie });
 	expect(closed.status).toBe(200);
 	expect(await closedOf()).toMatchObject([{ id: 's-a', hcomName: 'aaaa' }]);
+});
+
+test("a listed one's conversation is read, a page at a time and live, by the client it was closed with", async () => {
+	record('s-old-codex', Array.from({ length: 60 }, (_, index) => (index ? 'assistant' : 'user')));
+	await seeThenGone('s-old-codex');
+	stopEvent('s-old-codex', 'pty');
+	expect(await closedOf()).toMatchObject([{ id: 's-old-codex', client: 'codex' }]);
+
+	const latest = await fixture.fetch('/api/agents/transcript?session=s-old-codex', { cookie });
+	expect(latest.status).toBe(200);
+	const update: TranscriptUpdate = await latest.json();
+	if (!update.ok) throw new Error(update.reason);
+	expect(update.page.items.length).toBe(50);
+	expect(fixture.helperArgs('transcript').at(-1)).toEqual(['board', 'transcript', '--client=codex', '--session-id=s-old-codex']);
+	const earlier = await fixture.fetch(`/api/agents/transcript?session=s-old-codex&before=${update.page.before}`, { cookie });
+	expect(earlier.status).toBe(200);
+	const page: TranscriptUpdate = await earlier.json();
+	if (!page.ok) throw new Error(page.reason);
+	expect(page.page.items.length).toBe(10);
+
+	const abort = new AbortController();
+	const events = await fixture.fetch('/api/agents/transcript/events?session=s-old-codex', { cookie, signal: abort.signal });
+	expect(events.status).toBe(200);
+	expect(events.headers.get('content-type')).toBe('text/event-stream');
+	abort.abort();
+});
+
+test('a session neither Herdr nor the 已關閉 section lists has no conversation to read', async () => {
+	// Seen and stopped, but by another agent, and one stopped 7×24 hours ago: never listed.
+	record('s-by-agent');
+	record('s-too-old');
+	await seeThenGone('s-by-agent', 's-too-old');
+	stopEvent('s-by-agent', 'lelu');
+	const stoppedAt = Date.now() - 60_000;
+	stopEvent('s-too-old', 'cli', { ts: new Date(stoppedAt).toISOString() });
+	expect(await ids()).toEqual(['s-too-old']);
+	fixture.setClock(stoppedAt + CLOSED_KEEP_MS);
+	expect(await ids()).toEqual([]);
+
+	const calls = fixture.helperArgs('transcript').length;
+	for (const session of ['s-by-agent', 's-too-old', 's-nobody']) {
+		expect((await fixture.fetch(`/api/agents/transcript?session=${session}`, { cookie })).status).toBe(404);
+		expect((await fixture.fetch(`/api/agents/transcript/events?session=${session}`, { cookie })).status).toBe(404);
+	}
+	expect(fixture.helperArgs('transcript').length).toBe(calls);
 });
 
 test('seven days back is asked of hcom by the board clock', async () => {

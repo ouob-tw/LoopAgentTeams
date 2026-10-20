@@ -55,6 +55,16 @@ async function choose(value: string) {
 	await until(`!!${radio}`);
 	await evaluate(`${radio}.click()`);
 }
+/** Wait until the page has hydrated: the form has filled in the most recent folder. */
+const filledIn = () => until(`!!document.querySelector('#folder-box')?.value`);
+/** Type a folder into the form's folder box. */
+async function pickFolder(path: string) {
+	await evaluate(`(() => {
+		const box = document.querySelector('#folder-box');
+		box.value = ${JSON.stringify(path)};
+		box.dispatchEvent(new Event('input', { bubbles: true }));
+	})()`);
+}
 /** Pick an option of the model field. */
 const pickModel = (value: string) =>
 	evaluate(`(() => {
@@ -127,10 +137,13 @@ afterAll(async () => {
 
 test.skipIf(!CHROME)("the new-controller form names each client's defaults, the folder's own, and the effort for a chosen model", async () => {
 	await send('Page.navigate', { url: `${fixture.url}/?launch` });
+	await filledIn();
+	// No folder: the user's settings alone.
+	await pickFolder('');
 	await shows('Opus 5.5（claude-opus-5-5）', 'medium');
-	await choose(own);
+	await pickFolder(own);
 	await shows('Haiku 5.5（claude-haiku-5-5）', 'high');
-	await choose(plain);
+	await pickFolder(plain);
 	await shows('Opus 5.5（claude-opus-5-5）', 'medium');
 	// Only the model chosen: the effort it gets is what modelSettings gives that model.
 	await pickModel('claude-sonnet-5-5');
@@ -142,10 +155,10 @@ test.skipIf(!CHROME)("the new-controller form names each client's defaults, the 
 
 	// Settings that cannot be read say the client's own default is used.
 	write(join(home(), '.codex/config.toml'), 'model = "gpt-6.1-sol\n');
-	await choose(own);
+	await pickFolder(own);
 	await shows(DEFAULT_UNREADABLE_TEXT, DEFAULT_UNREADABLE_TEXT);
 	write(join(home(), '.codex/config.toml'), 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "medium"\n');
-	await choose(plain);
+	await pickFolder(plain);
 	await shows('GPT-6.1 Sol（gpt-6.1-sol）', 'medium');
 
 	// A read again for the same folder that fails does not keep showing what may be out of date.
@@ -164,7 +177,8 @@ test.skipIf(!CHROME)("the new-controller form names each client's defaults, the 
 test.skipIf(!CHROME)("the new-agent form names the defaults the same way", async () => {
 	await send('Page.navigate', { url: `${fixture.url}/?new-agent=wA` });
 	await until(`document.querySelector('h2')?.textContent.includes('Alpha')`);
-	await choose(own);
+	await filledIn();
+	await pickFolder(own);
 	await shows('Haiku 5.5（claude-haiku-5-5）', 'high');
 	await choose('codex');
 	await shows('GPT-6.1 Sol（gpt-6.1-sol）', 'medium');
@@ -177,6 +191,8 @@ test.skipIf(!CHROME)("the command line's label shows a new controller's settings
 	await send('Page.navigate', { url: `${fixture.url}/?launch` });
 	// Addressed from the command line: its conversation is not open, so nothing feeds the label.
 	// Hydrated: the form has read the defaults.
+	await filledIn();
+	await pickFolder(plain);
 	await shows('Opus 5.5（claude-opus-5-5）', 'medium');
 	await evaluate(`document.querySelector('textarea[aria-label^="指令列"]').focus()`);
 	await send('Input.insertText', { text: '@luna 你好' });

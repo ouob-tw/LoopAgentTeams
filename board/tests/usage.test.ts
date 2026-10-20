@@ -147,7 +147,7 @@ describe('the line', () => {
 
 	test('with nothing left off, every part shows, the permission mode too', () => {
 		const line = (usage: Usage) =>
-			usageParts(usage, NOW, true)
+			usageParts(usage, NOW, { all: true })
 				.map((part, index) => (index === 0 ? '' : part.joined ? ' ' : ' • ') + part.text)
 				.join('');
 		expect(line({ ...full, permission: { mode: 'bypassPermissions' } })).toBe(
@@ -225,6 +225,76 @@ describe('the permission mode', () => {
 		expect(usageDetails(codex('on-request', 'workspace-write'), NOW)).toEqual(['權限：需要時才詢問，檔案權限：可寫入工作區']);
 		expect(texts(codex('never', 'read-only'))).toBe('權限：從不詢問');
 		expect(usageDetails(codex('untrusted', null), NOW)).toEqual(['權限：不信任的指令才詢問']);
+	});
+});
+
+describe('the compact line', () => {
+	// The line in the compact style, as it read before the parts were spelt out in full.
+	const compact = (usage: Usage, now = NOW) =>
+		usageParts(usage, now, { style: 'compact' })
+			.map((part, index) => (index === 0 ? '' : part.joined ? ' ' : ' • ') + part.text)
+			.join('');
+	const only = (usage: Partial<Usage>) => compact({ context: null, limits: [], cache: null, permission: null, ...usage });
+	const none: Usage = { context: null, limits: [], cache: null, permission: null };
+
+	test('short names in the status line’s order, the permission mode last', () => {
+		expect(compact({ ...tight, permission: { mode: 'auto' } })).toBe('Ctx 62% • 5h 40% • 7d 25% • Cache 70% ⏳ 20 min • Auto mode');
+		expect(only({ limits: [{ minutes: 1440, used: 1 }, { minutes: 90, used: 1 }] })).toBe('90m 99% • 1d 99%');
+	});
+
+	test('the same parts are left off as in the detailed line, with the same colours', () => {
+		expect(usageParts(full, NOW, { style: 'compact' })).toEqual([]);
+		expect(only({ context: 54 })).toBe('');
+		expect(only({ context: 55 })).toBe('Ctx 55%');
+		expect(only({ limits: [{ minutes: 300, used: 54 }] })).toBe('');
+		expect(only({ limits: [{ minutes: 10080, used: 70 }] })).toBe('7d 30%');
+		const usage: Usage = {
+			context: 80,
+			limits: [{ minutes: 300, used: 81 }],
+			cache: { warm: true, hit: 0.5, expires: NOW + 5 * MINUTE },
+			permission: null
+		};
+		expect(usageParts(usage, NOW, { style: 'compact' }).map((part) => part.level)).toEqual(['warn', 'warn', 'normal', 'warn']);
+	});
+
+	test('a cold cache, an expired one and a countdown without its hit', () => {
+		expect(only({ cache: { warm: false, hit: 0.99, expires: NOW + 60 * MINUTE } })).toBe('Cache cold');
+		expect(only({ cache: { warm: true, hit: 0.99, expires: NOW - 1 } })).toBe('Cache ⏳ expired');
+		expect(only({ cache: { warm: true, hit: 0.7, expires: NOW - 1 } })).toBe('Cache 70% ⏳ expired');
+		expect(usageParts({ ...none, cache: { warm: true, hit: 0.7, expires: NOW - 1 } }, NOW, { style: 'compact' }).at(-1)).toEqual({
+			text: '⏳ expired',
+			level: 'danger',
+			joined: true
+		});
+		// A countdown alone keeps the `Cache` label, the countdown joined to it.
+		expect(only({ cache: { warm: true, hit: 0.97, expires: NOW + 20 * MINUTE } })).toBe('Cache ⏳ 20 min');
+		expect(only({ cache: { warm: true, hit: null, expires: NOW + 30 * MINUTE + 59_000 } })).toBe('Cache ⏳ 30 min');
+	});
+
+	test('each Claude mode by its English name, a Codex one by its approval policy, bypass left off', () => {
+		const claude = (mode: string) => only({ permission: { mode } });
+		expect(['auto', 'default', 'acceptEdits', 'plan', 'dontAsk', 'someNewMode'].map(claude)).toEqual([
+			'Auto mode',
+			'Manual',
+			'Accept edits',
+			'Plan mode',
+			"Don't ask",
+			'someNewMode'
+		]);
+		const codex = (approval: string, sandbox: string | null) => only({ permission: { approval, sandbox } });
+		expect(codex('on-request', 'workspace-write')).toBe('approval on-request');
+		expect(codex('never', 'read-only')).toBe('approval never');
+		expect(claude('bypassPermissions')).toBe('');
+		expect(codex('never', 'danger-full-access')).toBe('');
+	});
+
+	test('with nothing left off, it still reads short; the tip stays spelt out', () => {
+		expect(
+			usageParts({ ...full, permission: { mode: 'bypassPermissions' } }, NOW, { all: true, style: 'compact' })
+				.map((part, index) => (index === 0 ? '' : part.joined ? ' ' : ' • ') + part.text)
+				.join('')
+		).toBe('Ctx 42% • 5h 63% • 7d 80% • Cache 97% ⏳ 38 min • Bypass permissions');
+		expect(usageDetails(full, NOW)[0]).toBe('上下文已用 42%');
 	});
 });
 

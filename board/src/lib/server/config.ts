@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { parseModelOptions, type ModelOptions } from '../board/models.ts';
+import { codexMultiAuthDir } from './quota.ts';
 
 type Env = Record<string, string | undefined>;
 
@@ -51,6 +52,13 @@ export interface BoardConfig {
 	/** Command that runs a Codex app server over standard input and output, to tidy long speech. */
 	tidyCommand: string[];
 	tidyTimeoutMs: number;
+	/** Command that runs claude-swap; the board appends `list --json --cached-only`, which reads its files only. */
+	cswapCommand: string[];
+	cswapTimeoutMs: number;
+	/** codex-multi-auth's folder, whose account file and quota cache the board reads. */
+	codexMultiAuthDir: string;
+	/** How often the 額度 tab's sources are read. */
+	quotaIntervalMs: number;
 	/** The current time in milliseconds. Read state and archiving use this, never `Date.now()`. */
 	now(): number;
 }
@@ -143,6 +151,10 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),
 		tidyCommand: commandFrom(env, 'LAT_BOARD_TIDY_COMMAND') ?? ['codex', 'app-server'],
 		tidyTimeoutMs: seconds(env.LAT_BOARD_TIDY_TIMEOUT_SECONDS, 30_000),
+		cswapCommand: commandFrom(env, 'LAT_BOARD_CSWAP_COMMAND') ?? ['cswap'],
+		cswapTimeoutMs: seconds(env.LAT_BOARD_CSWAP_TIMEOUT_SECONDS, 10_000),
+		codexMultiAuthDir: codexMultiAuthDir(env),
+		quotaIntervalMs: seconds(env.LAT_BOARD_QUOTA_SECONDS, 30_000),
 		now: clock(env)
 	};
 }
