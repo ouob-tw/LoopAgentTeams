@@ -17,7 +17,7 @@ import { NODE, PORT_BASE, sleep, startFixture, type Fixture } from './harness.ts
 const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
 	(path) => path && existsSync(path)
 );
-const DEBUG_PORT = PORT_BASE + 51;
+const DEBUG_PORT = PORT_BASE + 70;
 
 /** One Chrome tab, spoken to over the DevTools protocol. */
 class Tab {
@@ -64,6 +64,16 @@ class Tab {
 		const { result, exceptionDetails } = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
 		if (exceptionDetails) throw new Error(`${expression}: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
 		return result.value;
+	}
+	/** A click with the pointer at the centre of the first element matching `selector`: it lands on
+	 *  whatever is on top there, which an element's own click() does not. */
+	async pointerClick(selector: string) {
+		const { x, y } = await this.eval<{ x: number; y: number }>(
+			`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`
+		);
+		for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
+			await this.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+		}
 	}
 	/** Load a new document and wait until it has loaded. */
 	async navigate(url: string) {
@@ -302,6 +312,34 @@ for (const { width, newRound, kind, value, flags } of [
 			cookie
 		});
 	}, 60_000);
+}
+
+// With the wake's options open the model and effort menus are on top of them, so a real click on a
+// choice reaches the choice (an element's own click() would not show it).
+for (const width of [1280, 390]) {
+	for (const [page, search] of [['Herdr tab', '?agent=s-gone'], ['information page', '?controller=s-gone']]) {
+		test.skipIf(!CHROME)(`${width}px: the ${page}'s effort menu is clickable over the open wake options`, async () => {
+			await visit(width, search);
+			await tab.until(`${pageOf('dusk')} && document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, "the closed controller's page");
+			await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
+			await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
+			const menu = `.dock [role="menu"][aria-label="思考強度"]`;
+			await tab.until(
+				`(() => { const part = document.querySelector('.dock .pill-slot .part[aria-label^="思考強度："]'); if (part.getAttribute('aria-expanded') !== 'true') part.click(); return !!document.querySelector('${menu}'); })()`,
+				'the effort menu'
+			);
+			const item = `[...document.querySelectorAll('${menu} button')].find((b) => b.querySelector('small')?.innerText === 'high')`;
+			await tab.eval(`${item}.setAttribute('data-test-high', '')`);
+			const hit = `!!(() => { const r = document.querySelector('[data-test-high]').getBoundingClientRect(); return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest('[data-test-high]'); })()`;
+			expect(await tab.eval(hit)).toBe(true);
+			await tab.pointerClick('[data-test-high]');
+			await tab.until(`document.querySelector('.dock .pill-slot .part[aria-label^="思考強度："]').getAttribute('aria-label').includes('high')`, 'the effort chosen');
+			// The wake options stay usable.
+			await tab.pointerClick(`${POPUP} input[type=checkbox]`);
+			expect(await tab.eval(`document.querySelector('${POPUP} input[type=checkbox]').checked`)).toBe(true);
+			expect(await tab.eval(FITS)).toBe(true);
+		}, 60_000);
+	}
 }
 
 test.skipIf(!CHROME)('an ended controller still running in its pane is woken by typing into it', async () => {
