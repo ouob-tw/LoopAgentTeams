@@ -639,8 +639,8 @@ for (const width of [1280, 390]) {
 			await click('.dock [data-action="confirm-abandon"]');
 			await tab.until(`document.querySelector('.dock')?.innerText.includes('已放棄 lino 的這次切換')`, 'the give-up notice');
 			expect(hcomCalls().map((args) => args[0])).toEqual(['kill', 'r']);
-			// Not in Herdr: gone from the list.
-			await tab.until(`document.querySelector('.detail')?.innerText.includes('已不在 Herdr 的清單上')`, 'the page saying it is gone');
+			// Not in Herdr: gone from the list, its page now the closed agent's of the 已關閉 section.
+			await tab.until(`!!document.querySelector('.detail [data-closed-agent="s-link"]')`, 'the page of it closed');
 			await openTab();
 			await tab.until(`!!document.querySelector('.inbox [data-agent="s-other"]')`, 'the agent list');
 			expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-link"]')`)).toBe(false);

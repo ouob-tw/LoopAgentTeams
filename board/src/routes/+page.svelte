@@ -36,6 +36,7 @@
 	import { everyController, type InboxItem, type InboxQuestion, type InboxReport, type KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
 	import AgentList from '#lib/components/AgentList.svelte';
+	import ClosedAgentInfo from '#lib/components/ClosedAgentInfo.svelte';
 	import ClosedAgents from '#lib/components/ClosedAgents.svelte';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
@@ -120,6 +121,7 @@
 	const processedCount = $derived(board.snapshot.processedCount);
 	const agents = $derived(board.snapshot.agents);
 	const workspaces = $derived(board.snapshot.workspaces);
+	const closed = $derived(board.snapshot.closed);
 	/** The report opened from the inbox list: it stays there, read, until another screen is shown. */
 	let lingering = $state<string | null>(null);
 	/** What the inbox lists: the questions and the unread reports, and the report still open. */
@@ -136,7 +138,7 @@
 	/** The answered questions of the controller whose conversation is shown. */
 	const answered = $derived(board.answered.questions);
 	const known = $derived([...inbox, ...processed, ...answered]);
-	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers, agents, workspaces });
+	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers, agents, closed: closed.agents, workspaces });
 	/** The screen the address names; a reload opens it again. */
 	const addressed = () => placeIn(new URLSearchParams(location.search));
 	/** The browser starts from the real address: under shallow routing page.url stays at the last full
@@ -161,6 +163,9 @@
 	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
 	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
 	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
+	/** The open agent while the 已關閉 section lists it instead: once 接回 brings it back to Herdr,
+	 *  its page is the agent's again. */
+	const closedAgent = $derived(agentId === null || agent ? undefined : closed.agents.find((candidate) => candidate.id === agentId));
 	/** The controllers of the Herdr tab and the command line: the roster's, and the bound ones off it. */
 	const herdrControllers = $derived(everyController(board.snapshot));
 	/** The open agent as the controller it is, while Herdr lists it: its page is the controller's. */
@@ -562,7 +567,7 @@
 				<QuotaList quota={board.quota} />
 			{:else if middle === 'agents'}
 				<AgentList {agents} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
-				<ClosedAgents closed={board.snapshot.closed} controllers={herdrControllers} />
+				<ClosedAgents {closed} currentId={agentId} onopen={openAgent} />
 			{:else}
 				<Inbox
 					items={listedInbox}
@@ -597,6 +602,11 @@
 						<span class="whose" title="{agent.folder} {agent.name}">
 							<strong>{folderName(agent.folder)}</strong>
 							<span class="handle">{agent.hcomName ? `@${agent.hcomName}` : agent.name}</span>
+						</span>
+					{:else if closedAgent}
+						<span class="whose" title="{closedAgent.folder} @{closedAgent.hcomName}">
+							<strong>{folderName(closedAgent.folder)}</strong>
+							<span class="handle">@{closedAgent.hcomName}</span>
 						</span>
 					{:else if owner}
 						<!-- Tappable while the controller is on the roster; an archived item of one that left is not. -->
@@ -652,6 +662,8 @@
 						</ControllerInfo>
 					{:else if agent}
 						<AgentInfo {agent} />
+					{:else if closedAgent}
+						<ClosedAgentInfo agent={closedAgent} timeZone={closed.timeZone} controllers={herdrControllers} />
 					{:else}
 						<p class="empty">這個 Agent 已不在 Herdr 的清單上：它已關閉。</p>
 					{/if}
@@ -746,6 +758,8 @@
 				controllers={herdrControllers}
 				target={controller ?? agentController}
 				agent={view?.kind === 'agent' && !agentController ? agent : undefined}
+				closed={view?.kind === 'agent' ? closedAgent : undefined}
+				agents={board.snapshot.agents}
 				adopt={agentController?.id}
 			/>
 		</div>
