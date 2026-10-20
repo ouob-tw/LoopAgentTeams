@@ -54,7 +54,39 @@ repo 根目錄放 `.suite-gate.json`（進版控）：
 - `suites`：整套測試指令的樣式，可用 `*`、`?` 萬用字元；比對時空白會先整理成一格。有登記時只以登記為準，不再用預設判斷。
 - `fingerprint_include`：額外納入指紋的被忽略檔案（glob，相對 repo 根），例如測試用的環境變數檔。
 
-沒有登記檔時用預設判斷：pytest、`python -m unittest`、bun test、vitest、jest、npm／pnpm／yarn test、playwright test、go test、cargo test 等，沒有指定檔案、路徑或篩選參數（如 `-k`、`-t`、`-g`、`-run`）就算整套。寧可多算，被誤判時加原因重跑即可。這個判斷是 `is_full_suite()`，供執行前的 hook 共用。
+沒有登記檔時用預設判斷：pytest、`python -m unittest`、bun test、vitest、jest、npm／pnpm／yarn test、playwright test、go test、cargo test 等，沒有指定檔案、路徑或篩選參數（如 `-k`、`-t`、`-g`、`-run`）就算整套。寧可多算，被誤判時加原因重跑即可。這個判斷是 `is_full_suite()`，執行前的 hook 也用它。
+
+判斷時換行與 `;`、`&&`、`|` 一樣當作分隔，轉向（`2>&1`、`> out.txt`）連同目標一起略過，`#` 之後到行尾當作註解；登記的樣式也照同樣方式整理後再比對。
+
+## 執行前的 hook
+
+`suite-gate.py hook` 是 Claude 與 Codex 的 PreToolUse hook（matcher `Bash`），讓 Agent 不經閘門就跑整套測試時被擋下：
+
+- 指令裡有整套測試（照上面的判斷，以 hook 輸入的 `cwd` 找專案登記檔）且不是透過 `suite-gate.py run` 執行時擋下（結束碼 2），在 stderr 回覆可直接執行的改寫指令：`uv run --no-project python <skill>/scripts/suite-gate.py run -- '<原指令>'`。整串指令（含 `cd`、管線）原樣包進去。
+- 放行：透過 `suite-gate.py run` 的指令（含 `--rerun`）、指定檔案或篩選範圍的測試、非測試指令。同一串指令裡另有沒包裝的整套測試時仍擋下。
+- Claude 送字串；Codex 送字串或 `["bash", "-lc", "<指令>"]`，兩種都讀。回覆方式兩邊相同。
+- 讀不懂時比照派工把關與廣播攔截寧可多擋，但不讓 Agent 卡死：hook 輸入不是可讀的 JSON 就放行（無從判斷）；指令讀到一半出錯時，只要像測試執行器（pytest、jest、`npm test` 等）且不含 `suite-gate.py` 就擋下。被擋下時照回覆的改寫指令執行一定會放行；被誤擋時同樣改用閘門，或改成指定檔案的寫法。
+- 使用者在終端機自己打的指令不經 hook。
+
+## 安裝與移除 hook
+
+技能檔案安裝不會註冊 hook。比照 LAT hook-setup 與派工把關：先預覽、備份、保留其他 entries，重跑不重複。
+
+```bash
+uv run --no-project python <skill>/scripts/suite-gate.py install --client claude --preview
+uv run --no-project python <skill>/scripts/suite-gate.py install --client claude
+uv run --no-project python <skill>/scripts/suite-gate.py install --client codex --preview
+uv run --no-project python <skill>/scripts/suite-gate.py install --client codex
+```
+
+- 寫入位置：Claude 預設 `$CLAUDE_CONFIG_DIR/settings.json`（沒設時 `~/.claude/settings.json`），可用 `--claude-settings <檔案>` 指定；Codex 預設 `$CODEX_HOME/hooks.json`（沒設時 `~/.codex/hooks.json`），可用 `--codex-home <目錄>` 指定。
+- 在 `PreToolUse` 新增 matcher `Bash` 的獨立 group，command 為 `uv run --no-project python <skill>/scripts/suite-gate.py hook`；Codex 的 group 另帶 `"name": "suite-gate"`。派工把關、廣播攔截等其他 entries 與未知欄位保留。
+- 已裝過時不重複；技能搬了位置，重跑 `install` 會就地更新同一筆的路徑。同一檔案裡出現兩筆以上就停下，請手動檢查。
+- `--preview` 只印差異、不寫入。寫入前備份為同目錄的 `<檔名>.suite-gate-backup-*`，寫入前確認檔案沒被同時改動，再原子替換。
+- `uninstall --client claude|codex`（同樣可加 `--preview` 與路徑參數）只移除這筆 hook，清空後的 group 與 `PreToolUse` 一併移除；與其他 handler 共用的 group 保留其他 handler。
+- Claude Code 重啟後在 `/hooks` 確認；Codex 重啟後須在 `/hooks` 檢查並信任這個 command，搬動技能或更新 command 後要重新信任。已在執行的 Agent 重啟後才生效。
+
+驗證：在 Agent 內執行一個整套測試指令（例如 `pytest`），應被擋下並收到改寫指令；照改寫指令執行會跑測試，第二次同內容會直接拿到上次結果。
 
 ## 紀錄與設定位置
 

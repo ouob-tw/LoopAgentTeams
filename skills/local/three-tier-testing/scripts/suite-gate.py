@@ -5,16 +5,20 @@
 only one of several identical requests run, and caps how many full suites run on the host
 at once. `status` lists running and queued suites and recent records. `is_full_suite()`
 decides whether a shell command is a full suite run (project registry first, then the
-default runner rules) and is meant to be reused by a pre-tool hook.
+default runner rules). `hook` is the PreToolUse hook that blocks full suites run outside
+the gate, and `install` / `uninstall --client claude|codex` add or remove it.
 
 Linux only: slot and lock holders stay counted while their test session has live processes.
 """
 import argparse
+import copy
+import difflib
 import fcntl
 import fnmatch
 import hashlib
 import json
 import os
+import re
 import shlex
 import shutil
 import signal
@@ -90,7 +94,7 @@ def now_iso():
 
 # ---------------------------------------------------------------- full-suite detection
 
-SEPARATORS = {';', '&&', '||', '|', '&', '(', ')', '|&', ';;'}
+PUNCTUATION = set(';&|()<>\n')
 SHELLS = {'sh', 'bash', 'zsh', 'dash'}
 
 # Per runner: options that take a separate value, and options that narrow the run.
@@ -140,20 +144,39 @@ WRAP_VALUE = {'timeout': {'-s', '--signal', '-k', '--kill-after'}, 'nice': {'-n'
 
 
 def split_commands(command):
-    """Simple commands of a shell string, as word lists; `sh -c '...'` is opened up."""
-    lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|()')
+    """Simple commands of a shell string, as word lists; `sh -c '...'` is opened up.
+
+    Newlines separate commands, redirections (`2>&1`, `> out`) are dropped with their
+    target, and `#` starts a comment up to the end of the line.
+    """
+    lexer = shlex.shlex(command, posix=True, punctuation_chars=';&|()<>\n')
+    lexer.whitespace = ' \t\r'
     lexer.whitespace_split = True
-    lexer.commenters = '#'
+    lexer.commenters = ''
     try:
         tokens = list(lexer)
     except ValueError:
         tokens = command.split()
     commands, words = [], []
+    comment = drop_next = False
     for token in tokens + [';']:
-        if token in SEPARATORS or token == '\n':
+        is_operator = token and set(token) <= PUNCTUATION
+        if comment:
+            comment = '\n' not in token or not is_operator
+            if comment:
+                continue
+        if is_operator and set(token) & {'<', '>'}:
+            if words and words[-1].isdigit():
+                words.pop()  # the file descriptor of `2>`
+            drop_next = True
+        elif is_operator:
             if words:
                 commands.extend(_open_shell(words))
-            words = []
+            words, drop_next = [], False
+        elif drop_next:
+            drop_next = False
+        elif token.startswith('#'):
+            comment = True
         else:
             words.append(token)
     return commands
@@ -320,10 +343,8 @@ def is_full_suite(command, cwd='.', registry=None):
 
 
 def _normalize_pattern(pattern):
-    try:
-        return ' '.join(shlex.split(pattern))
-    except ValueError:
-        return ' '.join(pattern.split())
+    """A registry pattern read the same way as the command it is matched against."""
+    return _normalize_words([w for c in split_commands(pattern) for w in c])
 
 
 # ---------------------------------------------------------------- content fingerprint
@@ -828,11 +849,183 @@ def cmd_status(as_json, fp_prefix, limit):
     return 0
 
 
+# ---------------------------------------------------------------- hook
+
+SCRIPT = Path(__file__).resolve()
+# Seen when the command text could not be read: block anything that looks like a runner.
+LOOKS_LIKE_TESTS = re.compile(
+    r'\b(pytest|py\.test|unittest|jest|vitest|playwright\s+test|go\s+test|cargo\s+test'
+    r'|bun\s+test|(npm|pnpm|yarn|bun)\s+(run\s+)?(test|t))\b')
+
+
+def gate_command(text):
+    """The ready-to-run command that sends text through the gate."""
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'run', '--', text])
+
+
+def _is_gate_run(words):
+    return any(os.path.basename(word) == SCRIPT.name and words[i + 1:i + 2] == ['run']
+               for i, word in enumerate(words))
+
+
+def shell_text(command):
+    """The shell text of a hook's command: Codex may send `["bash", "-lc", "<text>"]`."""
+    if isinstance(command, list):
+        words = [str(word) for word in command]
+        if len(words) == 3 and os.path.basename(words[0]) in SHELLS \
+                and words[1].startswith('-') and 'c' in words[1]:
+            return words[2]
+        return shlex.join(words)
+    return command if isinstance(command, str) else ''
+
+
+def needs_gate(text, cwd):
+    """True when text runs a full suite outside `suite-gate.py run`."""
+    try:
+        commands = [words for words in split_commands(text) if not _is_gate_run(words)]
+        return bool(commands) and is_full_suite(
+            ' ; '.join(shlex.join(words) for words in commands), cwd)
+    except Exception:  # unreadable text or a hook bug: block what looks like a runner
+        return SCRIPT.name not in text and bool(LOOKS_LIKE_TESTS.search(text))
+
+
+def cmd_hook():
+    """PreToolUse (matcher Bash) for Claude and Codex: exit 2 with the rewrite on stderr."""
+    try:
+        payload = json.load(sys.stdin)
+        text = shell_text(payload.get('tool_input', {}).get('command', ''))
+        cwd = payload.get('cwd') or os.getcwd()
+    except (ValueError, AttributeError):
+        return 0  # nothing to read; never leave the agent stuck
+    if not text.strip() or not needs_gate(text, cwd if os.path.isdir(cwd) else os.getcwd()):
+        return 0
+    print('Blocked: this runs a full test suite outside the suite gate. Run it through the '
+          'gate instead (it reuses a passing result for the same content and queues when '
+          'the host is busy):\n'
+          f'  {gate_command(text)}\n'
+          'If the gate reports an earlier pass but you need a fresh run, add '
+          '--rerun "<reason>" after `run`. To run only some tests, name the files or a filter.',
+          file=sys.stderr)
+    return 2
+
+
+# ---------------------------------------------------------------- install
+
+HOOK_COMMAND = shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'hook'])
+GROUP_NAME = 'suite-gate'
+BACKUP_PREFIX = '.suite-gate-backup-'
+
+
+def is_hook_handler(handler):
+    """A handler running some copy of this script's hook, wherever it is installed."""
+    if not isinstance(handler, dict) or not isinstance(handler.get('command'), str):
+        return False
+    try:
+        words = shlex.split(handler['command'])
+    except ValueError:
+        return False
+    return any(os.path.basename(word) == SCRIPT.name for word in words) \
+        and words[-1:] == ['hook']
+
+
+def settings_path(client, claude_settings, codex_home):
+    if client == 'codex':
+        home = codex_home or os.environ.get('CODEX_HOME') or '~/.codex'
+        return Path(home).expanduser().resolve() / 'hooks.json'
+    if claude_settings:
+        return Path(claude_settings).expanduser().resolve()
+    home = os.environ.get('CLAUDE_CONFIG_DIR') or '~/.claude'
+    return Path(home).expanduser().resolve() / 'settings.json'
+
+
+def updated_config(config, client, action):
+    """A copy of config with this hook installed or removed under PreToolUse."""
+    if not isinstance(config, dict) or not isinstance(config.get('hooks', {}), dict):
+        raise ValueError('expected a JSON object whose "hooks" is an object')
+    updated = copy.deepcopy(config)
+    if action == 'uninstall' and 'PreToolUse' not in updated.get('hooks', {}):
+        return updated
+    events = updated.setdefault('hooks', {})
+    groups = events.setdefault('PreToolUse', [])
+    if not isinstance(groups, list) or any(not isinstance(g, dict) for g in groups):
+        raise ValueError('expected PreToolUse to be a list of matcher groups')
+    for group in groups:
+        if 'hooks' in group and not isinstance(group['hooks'], list):
+            raise ValueError('expected every PreToolUse group to hold a "hooks" list')
+    mine = [(group, handler) for group in groups for handler in group.get('hooks', [])
+            if is_hook_handler(handler)]
+    if action == 'install':
+        handler = {'type': 'command', 'command': HOOK_COMMAND}
+        if len(mine) > 1:
+            raise ValueError('the suite-gate hook is listed more than once; inspect the file')
+        if mine:
+            group, existing = mine[0]
+            existing.update(handler)  # a moved skill gets the new path; other fields stay
+            if all(is_hook_handler(h) for h in group['hooks']):
+                group['matcher'] = 'Bash'
+        else:
+            group = {'matcher': 'Bash', 'hooks': [handler]}
+            if client == 'codex':
+                group = {'name': GROUP_NAME, **group}
+            groups.append(group)
+        return updated
+    for group, handler in mine:
+        group['hooks'].remove(handler)
+    emptied = [group for group, _ in mine
+               if not group['hooks'] and set(group) <= {'name', 'matcher', 'hooks'}]
+    groups[:] = [g for g in groups if not any(g is e for e in emptied)]
+    if not groups:
+        del events['PreToolUse']
+    return updated
+
+
+def cmd_configure(action, client, claude_settings, codex_home, preview):
+    path = settings_path(client, claude_settings, codex_home)
+    try:
+        original = path.read_bytes()
+    except FileNotFoundError:
+        original = None
+    config = json.loads(original) if original is not None else {}
+    updated = updated_config(config, client, action)
+    if updated == config:
+        print(f'No changes: {path}')
+        return 0
+    before = original.decode() if original is not None else ''
+    after = json.dumps(updated, indent=2, ensure_ascii=False) + '\n'
+    diff = ''.join(difflib.unified_diff(before.splitlines(True), after.splitlines(True),
+                                        fromfile=str(path), tofile=str(path)))
+    if preview:
+        print(diff, end='')
+        return 0
+    path.parent.mkdir(parents=True, exist_ok=True)
+    current = path.read_bytes() if path.exists() else None
+    if current != original:
+        raise ValueError(f'{path} changed while it was being read; retry')
+    if original is not None:
+        with tempfile.NamedTemporaryFile(prefix=path.name + BACKUP_PREFIX, dir=path.parent,
+                                         delete=False) as backup:
+            backup.write(original)
+        print(f'Backup: {backup.name}')
+    with tempfile.NamedTemporaryFile('w', prefix=path.name + '.', dir=path.parent,
+                                     delete=False) as tmp:
+        tmp.write(after)
+    if original is not None:
+        shutil.copymode(path, tmp.name)
+    os.replace(tmp.name, path)
+    print(diff, end='')
+    if client == 'codex':
+        print(f'Updated {path}; restart Codex and trust the hook in /hooks')
+    else:
+        print(f'Updated {path}; restart Claude Code and confirm the hook in /hooks')
+    return 0
+
+
 # ---------------------------------------------------------------- entry
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
-    if not sys.platform.startswith('linux'):
+    # A hook that exits 2 would block every command, so only run and status check this.
+    if not sys.platform.startswith('linux') and argv[:1] in (['run'], ['status']):
         warn('only Linux is supported')
         return 2
     command = []
@@ -847,13 +1040,32 @@ def main(argv=None):
     status.add_argument('--json', action='store_true')
     status.add_argument('--fingerprint', metavar='PREFIX', help='only records for this fingerprint')
     status.add_argument('--limit', type=int, default=10)
+    sub.add_parser('hook', help='PreToolUse hook (matcher Bash) for Claude and Codex; '
+                                'reads the payload on stdin')
+    for action in ('install', 'uninstall'):
+        config = sub.add_parser(action, help=f'{action} the hook in a client\'s settings')
+        config.add_argument('--client', choices=('claude', 'codex'), required=True)
+        config.add_argument('--claude-settings', metavar='PATH',
+                            help='default: $CLAUDE_CONFIG_DIR/settings.json or '
+                                 '~/.claude/settings.json')
+        config.add_argument('--codex-home', metavar='DIR', help='default: $CODEX_HOME or ~/.codex')
+        config.add_argument('--preview', action='store_true', help='show the diff, write nothing')
     args = parser.parse_args(argv)
     if args.action == 'run':
         if not command:
             parser.error('run needs the suite command after --')
         return cmd_run(args.rerun, command)
     if command:
-        parser.error('status takes no command')
+        parser.error(f'{args.action} takes no command')
+    if args.action == 'hook':
+        return cmd_hook()
+    if args.action in ('install', 'uninstall'):
+        try:
+            return cmd_configure(args.action, args.client, args.claude_settings,
+                                 args.codex_home, args.preview)
+        except (OSError, ValueError) as exc:
+            warn(str(exc))
+            return 1
     return cmd_status(args.json, args.fingerprint, args.limit)
 
 

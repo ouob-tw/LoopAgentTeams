@@ -486,6 +486,8 @@ class DetectionTests(unittest.TestCase):
             'npm run test -- --coverage', 'pnpm test', 'yarn test', 'npx vitest run', 'jest',
             'npx playwright test --project chromium', 'go test ./...', 'cargo test',
             'FOO=1 timeout 600 pytest', "bash -lc 'pytest -q'", 'echo hi; pytest',
+            'cd board\nbun test', 'pytest -q 2>&1 | tail -20', 'pytest > out.txt',
+            'pytest &>/dev/null', 'cd x # go to x\npytest', 'echo "a\nb"; pytest',
         ]
         targeted = [
             'pytest tests/test_a.py', 'pytest -k login', 'pytest -kfoo', 'pytest tests/a.py::t',
@@ -494,7 +496,8 @@ class DetectionTests(unittest.TestCase):
             'npx vitest run src/a', 'jest -t name', 'npx playwright test -g login',
             'playwright test e2e/a.spec.ts', 'go test ./pkg', 'go test -run TestX ./...',
             'cargo test parse', 'cargo test -p core', 'echo pytest', 'git status',
-            'bun run build', 'uv run python script.py',
+            'bun run build', 'uv run python script.py', 'pytest tests/a.py 2>&1 | tail',
+            'echo "# note"\ngit status', 'pytest tests/a.py # full run later',
         ]
         for command in full:
             self.assertTrue(gate.is_full_suite(command, registry={}), command)
@@ -517,6 +520,229 @@ class DetectionTests(unittest.TestCase):
             (repo / '.suite-gate.json').write_text(json.dumps({'suites': ['make  check']}))
             self.assertFalse(gate.is_full_suite('pytest', repo / 'sub'))
             self.assertTrue(gate.is_full_suite('make check', repo / 'sub'))
+
+
+
+def run_hook(command, cwd, env=None):
+    payload = json.dumps({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash',
+                          'tool_input': {'command': command}, 'cwd': str(cwd)})
+    return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=payload, text=True,
+                          capture_output=True, env=env, timeout=60)
+
+
+def rewrite_of(stderr):
+    """The ready-to-run command from a block message (it may span lines)."""
+    return stderr.split('\n  ', 1)[1].split('\nIf the gate', 1)[0]
+
+
+class HookTests(GateCase):
+    """Claude sends the command as a string; Codex as a string or ["bash", "-lc", text]."""
+
+    def formats(self, text):
+        return {'claude': text, 'codex-list': ['bash', '-lc', text]}
+
+    def test_unwrapped_full_suites_are_blocked_with_a_ready_to_run_rewrite(self):
+        for text in ('pytest', 'cd sub && uv run pytest -q', 'npm test 2>&1 | tail -5',
+                     'echo start\npytest'):
+            for client, command in self.formats(text).items():
+                with self.subTest(client=client, text=text):
+                    result = run_hook(command, self.repo, self.env)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertEqual(rewrite_of(result.stderr), gate.gate_command(text))
+
+    def test_wrapped_targeted_and_other_commands_pass(self):
+        wrapped = gate.gate_command('pytest')
+        for text in (wrapped, wrapped.replace(' run -- ', ' run --rerun "db reset" -- '),
+                     f'cd sub && {wrapped} 2>&1 | tail -3', 'pytest tests/test_a.py',
+                     'pytest -k login', 'go test ./pkg', 'git status', 'ls -la',
+                     f'{gate.shlex.quote(str(SCRIPT))} status', ''):
+            for client, command in self.formats(text).items():
+                with self.subTest(client=client, text=text):
+                    result = run_hook(command, self.repo, self.env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stderr, '')
+
+    def test_a_wrapped_suite_does_not_cover_another_unwrapped_one(self):
+        result = run_hook(f"{gate.gate_command('pytest')} && pytest", self.repo, self.env)
+        self.assertEqual(result.returncode, 2)
+
+    def test_the_registry_in_the_payload_cwd_decides(self):
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'suites': ['make check']}))
+        (self.repo / 'sub').mkdir()
+        self.assertEqual(run_hook('make check', self.repo / 'sub', self.env).returncode, 2)
+        self.assertEqual(run_hook('pytest', self.repo / 'sub', self.env).returncode, 0)
+        self.assertEqual(run_hook('make check', self.tmp, self.env).returncode, 0)
+
+    def test_the_rewrite_runs_passes_the_hook_and_is_reused_next_time(self):
+        suite = self.suite()
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'suites': [suite]}))
+        blocked = run_hook(suite, self.repo, self.env)
+        self.assertEqual(blocked.returncode, 2, blocked.stderr)
+        rewrite = rewrite_of(blocked.stderr)
+        self.assertEqual(run_hook(rewrite, self.repo, self.env).returncode, 0)
+        for expected_runs in (1, 1):
+            result = subprocess.run(rewrite, shell=True, cwd=self.repo, env=self.env,
+                                    capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertEqual(self.runs(), expected_runs)
+        self.assertIn('already passed', result.stdout)
+
+    def test_unreadable_input_never_blocks_and_unreadable_commands_block_only_runners(self):
+        for payload in ('not json', '[]', '{"tool_input": "x"}'):
+            with self.subTest(payload=payload):
+                result = subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=payload,
+                                        text=True, capture_output=True, env=self.env)
+                self.assertEqual(result.returncode, 0, result.stderr)
+        original = gate.split_commands
+        gate.split_commands = lambda text: 1 / 0  # a hook bug on any text
+        try:
+            self.assertTrue(gate.needs_gate('pytest -q', self.repo))
+            self.assertTrue(gate.needs_gate('bun run test', self.repo))
+            self.assertFalse(gate.needs_gate('git status', self.repo))
+            self.assertFalse(gate.needs_gate(gate.gate_command('pytest'), self.repo))
+        finally:
+            gate.split_commands = original
+        # A payload cwd that does not exist falls back to the hook's own directory.
+        self.assertEqual(run_hook('pytest', self.tmp / 'gone', self.env).returncode, 2)
+
+
+OTHER_GROUPS = [
+    {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command':
+        'uv run --no-project python /skills/hcom-spawn/scripts/block-broadcast.py'}]},
+    {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command':
+        'uv run --no-project python /skills/hcom-spawn/scripts/spawn-guard.py'}]},
+]
+
+
+class InstallTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = Path(tempfile.mkdtemp(prefix='suite-gate-install-'))
+        self.addCleanup(subprocess.run, ['rm', '-rf', str(self.tmp)])
+        # Point every default at the temp dir, so a test can never touch real settings.
+        self.env = dict(os.environ, HOME=str(self.tmp / 'home'),
+                        CLAUDE_CONFIG_DIR=str(self.tmp / 'claude'),
+                        CODEX_HOME=str(self.tmp / 'codex'))
+        self.files = {'claude': self.tmp / 'claude/settings.json',
+                      'codex': self.tmp / 'codex/hooks.json'}
+
+    def configure(self, action, client, *extra):
+        return subprocess.run([sys.executable, str(SCRIPT), action, '--client', client, *extra],
+                              env=self.env, capture_output=True, text=True, timeout=60)
+
+    def seed(self, client):
+        path = self.files[client]
+        path.parent.mkdir(parents=True)
+        config = {'model': 'x', 'hooks': {'PreToolUse': gate.copy.deepcopy(OTHER_GROUPS),
+                                          'Stop': [{'hooks': [{'type': 'command',
+                                                               'command': 'stop.sh'}]}]}}
+        path.write_text(json.dumps(config, indent=2) + '\n')
+        return config
+
+    def ours(self, config):
+        return [h for g in config['hooks'].get('PreToolUse', []) for h in g['hooks']
+                if gate.is_hook_handler(h)]
+
+    def backups(self, client):
+        path = self.files[client]
+        return sorted(path.parent.glob(path.name + gate.BACKUP_PREFIX + '*'))
+
+    def test_preview_shows_the_diff_and_writes_nothing(self):
+        for client in ('claude', 'codex'):
+            with self.subTest(client=client):
+                self.seed(client)
+                original = self.files[client].read_text()
+                result = self.configure('install', client, '--preview')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn(f'+            "command": "{gate.HOOK_COMMAND}"', result.stdout)
+                self.assertEqual(self.files[client].read_text(), original)
+                self.assertEqual(self.backups(client), [])
+
+    def test_install_backs_up_keeps_other_entries_and_is_idempotent(self):
+        for client in ('claude', 'codex'):
+            with self.subTest(client=client):
+                seeded = self.seed(client)
+                original = self.files[client].read_text()
+                result = self.configure('install', client)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                config = json.loads(self.files[client].read_text())
+                self.assertEqual(config['model'], 'x')
+                self.assertEqual(config['hooks']['Stop'], seeded['hooks']['Stop'])
+                self.assertEqual(config['hooks']['PreToolUse'][:2], OTHER_GROUPS)
+                group = config['hooks']['PreToolUse'][2]
+                self.assertEqual(group['matcher'], 'Bash')
+                self.assertEqual(group['hooks'], [{'type': 'command',
+                                                   'command': gate.HOOK_COMMAND}])
+                self.assertEqual(group.get('name'), 'suite-gate' if client == 'codex' else None)
+                [backup] = self.backups(client)
+                self.assertEqual(backup.read_text(), original)
+                again = self.configure('install', client)
+                self.assertEqual(again.returncode, 0, again.stderr)
+                self.assertIn('No changes', again.stdout)
+                self.assertEqual(json.loads(self.files[client].read_text()), config)
+                self.assertEqual(len(self.backups(client)), 1)
+
+    def test_install_creates_a_missing_file_and_updates_a_moved_skill_in_place(self):
+        result = self.configure('install', 'codex')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        config = json.loads(self.files['codex'].read_text())
+        self.assertEqual(len(self.ours(config)), 1)
+        self.assertEqual(self.backups('codex'), [])
+        group = config['hooks']['PreToolUse'][0]
+        group['hooks'][0]['command'] = 'uv run --no-project python /old/suite-gate.py hook'
+        group['hooks'][0]['timeout'] = 30
+        self.files['codex'].write_text(json.dumps(config))
+        self.assertEqual(self.configure('install', 'codex').returncode, 0)
+        config = json.loads(self.files['codex'].read_text())
+        self.assertEqual(self.ours(config), [{'type': 'command', 'command': gate.HOOK_COMMAND,
+                                              'timeout': 30}])
+
+    def test_uninstall_removes_only_the_hook(self):
+        for client in ('claude', 'codex'):
+            with self.subTest(client=client):
+                seeded = self.seed(client)
+                self.assertEqual(self.configure('install', client).returncode, 0)
+                result = self.configure('uninstall', client)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(self.files[client].read_text()), seeded)
+                self.assertEqual(len(self.backups(client)), 2)
+                self.assertIn('No changes', self.configure('uninstall', client).stdout)
+
+    def test_uninstall_keeps_a_shared_group_and_drops_an_emptied_event(self):
+        path = self.files['claude']
+        path.parent.mkdir(parents=True)
+        shared = {'matcher': 'Bash', 'hooks': [OTHER_GROUPS[0]['hooks'][0],
+                                               {'type': 'command', 'command': gate.HOOK_COMMAND}]}
+        path.write_text(json.dumps({'hooks': {'PreToolUse': [shared]}}))
+        self.assertEqual(self.configure('uninstall', 'claude').returncode, 0)
+        self.assertEqual(json.loads(path.read_text()),
+                         {'hooks': {'PreToolUse': [OTHER_GROUPS[0]]}})
+        self.assertEqual(self.configure('install', 'claude').returncode, 0)
+        self.assertEqual(self.configure('uninstall', 'claude').returncode, 0)
+        self.assertEqual(json.loads(path.read_text()), {'hooks': {'PreToolUse': [OTHER_GROUPS[0]]}})
+        path.write_text(json.dumps({'hooks': {}}))
+        self.assertEqual(self.configure('install', 'claude').returncode, 0)
+        self.assertEqual(self.configure('uninstall', 'claude').returncode, 0)
+        self.assertEqual(json.loads(path.read_text()), {'hooks': {}})
+
+    def test_explicit_paths_and_bad_files(self):
+        other = self.tmp / 'elsewhere/settings.json'
+        result = self.configure('install', 'claude', '--claude-settings', str(other))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.ours(json.loads(other.read_text()))), 1)
+        self.assertFalse(self.files['claude'].exists())
+        result = self.configure('install', 'codex', '--codex-home', str(self.tmp / 'c2'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.tmp / 'c2/hooks.json').exists())
+        for bad in ('[]', '{"hooks": []}', '{"hooks": {"PreToolUse": {}}}', 'nope'):
+            with self.subTest(bad=bad):
+                other.write_text(bad)
+                result = self.configure('install', 'claude', '--claude-settings', str(other))
+                self.assertEqual(result.returncode, 1)
+                self.assertEqual(other.read_text(), bad)
+        twice = {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command': gate.HOOK_COMMAND}]}
+        other.write_text(json.dumps({'hooks': {'PreToolUse': [twice, twice]}}))
+        self.assertEqual(self.configure('install', 'claude', '--claude-settings',
+                                        str(other)).returncode, 1)
 
 
 if __name__ == '__main__':
