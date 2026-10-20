@@ -275,7 +275,7 @@ for (const width of [1280, 390]) {
 }
 
 for (const width of [1280, 390]) {
-	test.skipIf(!CHROME)(`${width}px: gone from Herdr, its row of the 已關閉 section is a controller's, woken with the wake's options`, async () => {
+	test.skipIf(!CHROME)(`${width}px: gone from Herdr, its row of the 已關閉 section opens a controller's page, woken with the wake's options`, async () => {
 		const session = `s-gone-${width}`;
 		const ROW = `[data-closed="${session}"]`;
 		const WAKE = `[data-wake="${session}"]`;
@@ -286,7 +286,10 @@ for (const width of [1280, 390]) {
 		await tab.eval(`document.querySelector('.inbox .closed .trigger').click()`);
 		await tab.until(`!!document.querySelector('${ROW}')`, 'its row');
 		expect(await tab.eval(`document.querySelector('${ROW} .tag')?.innerText`)).toBe('主控');
-		await tab.eval(`document.querySelector('${ROW} [data-action="resume"]').click()`);
+		// Its 接回 is on its page, opened from the row.
+		await tab.eval(`document.querySelector('${ROW}').click()`);
+		await tab.until(`!!document.querySelector('.detail [data-closed-agent="${session}"]')`, 'its page');
+		await tab.eval(`document.querySelector('.detail [data-action="resume"]').click()`);
 		await tab.until(`(document.querySelector('${WAKE}')?.innerText ?? '').includes('開新一輪 LAT')`, "the wake's options");
 		expect(await tab.eval(`document.querySelectorAll('${WAKE} .pills button').length`)).toBeGreaterThan(0);
 		expect(await tab.eval(FITS)).toBe(true);

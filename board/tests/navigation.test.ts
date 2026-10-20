@@ -215,6 +215,13 @@ test('an agent of the 所有 Agent tab is named by its session ID, and missing o
 	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents: [] })).toEqual({ kind: 'missing', what: 'agent' });
 });
 
+test('a closed agent of the 已關閉 section has the same place, until it is listed nowhere', () => {
+	const place = placeIn(new URLSearchParams('?agent=s-closed'));
+	expect(tabIn(new URLSearchParams(searchOf(place)))).toBe('agents');
+	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents: [], closed: [{ id: 's-closed' }] })).toEqual({ kind: 'agent', id: 's-closed' });
+	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents: [], closed: [{ id: 's-other' }] })).toEqual({ kind: 'missing', what: 'agent' });
+});
+
 test('a workspace\'s new-agent form is named by the workspace, on the Herdr tab, and missing once Herdr no longer lists it', () => {
 	const place = placeIn(new URLSearchParams('?new-agent=wA%3A1'));
 	expect(place).toEqual({ kind: 'new-agent', workspace: 'wA:1' });

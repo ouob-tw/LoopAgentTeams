@@ -35,6 +35,9 @@ export interface ClosedList {
 	timeZone: string;
 }
 
+/** Why nothing is sent to a closed agent from the command line while its page is open. */
+export const CLOSED_SEND_TEXT = '已關閉，先接回才能傳訊息。';
+
 export const EMPTY_CLOSED: ClosedList = { agents: [], error: null, timeZone: 'UTC' };
 
 export const CLOSED_GROUPS = ['今天', '昨天', '近 7 天'] as const;

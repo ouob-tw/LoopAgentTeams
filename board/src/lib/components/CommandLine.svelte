@@ -6,6 +6,7 @@
 	// button, to read more of the page; what was typed stays, also across a reload. While an agent's
 	// page is open, a line without a name goes to that agent instead, from a draft of its own, also
 	// kept across a reload; while it works and nothing is typed, the send button interrupts its turn instead.
+	// A closed agent's page, from the 已關閉 section, says it must be brought back first.
 	// A controller's page on the Herdr tab is written to as the controller it is, from the controllers' draft.
 	// A controller at work in a Herdr pane is interrupted the same way, while nothing is typed.
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
@@ -22,6 +23,7 @@
 	} from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { shortName } from '#lib/board/agents.ts';
+	import { CLOSED_SEND_TEXT, type ClosedAgent } from '#lib/board/closed-agents.ts';
 	import { AGENT_DRAFTS_KEY, COMMAND_DRAFT_KEY, COMMAND_HIDDEN_KEY, forget, remember, remembered, rememberedText } from '#lib/board/prefs.ts';
 	import { parseCommand } from '#lib/board/messages.ts';
 	import { enterMakesNewline, messaging } from '#lib/board/messaging.svelte.ts';
@@ -39,11 +41,14 @@
 		controllers,
 		target,
 		agent,
+		closed,
 		adopt
 	}: {
 		controllers: Controller[];
 		target: Controller | undefined;
 		agent?: KnownAgent;
+		/** The closed agent whose page is open: a line without a name would go to it, so none is sent. */
+		closed?: Pick<ClosedAgent, 'id' | 'hcomName'>;
 		/** The controller whose page is open on the Herdr tab: what was typed to it as an agent, before
 		 *  the board wrote to it as a controller, is moved into the controllers' draft, once. */
 		adopt?: string;
@@ -124,11 +129,13 @@
 		if (owner === null) text = value;
 		else agentDrafts[owner] = value;
 	}
-	const owner = $derived(agent?.id ?? null);
+	const owner = $derived(agent?.id ?? closed?.id ?? null);
 	const draft = $derived(read(owner));
 	const named = $derived(draft.trimStart().startsWith('@'));
 	/** The open agent is the recipient: a line without a name while its page is open. */
 	const toAgent = $derived(agent !== undefined && !named);
+	/** A line without a name while a closed agent's page is open: not sent. */
+	const toClosed = $derived(closed !== undefined && !named);
 	/** How the line names the open agent: its short hcom name, like a controller's, or its tab's name without one. */
 	const agentName = $derived(agent ? (agent.hcomName ? `@${shortName(agent)}` : agent.name) : '');
 	// Why the open agent cannot be sent to; null when it can. Whether hcom reaches it decides which
@@ -143,7 +150,7 @@
 	let interrupting = $state<Record<string, boolean>>({});
 	let confirmingStop = $state(false);
 	const command = $derived(parseCommand(draft, controllers, target, true));
-	const recipient = $derived(command.ok ? command.controller : named || toAgent ? undefined : target);
+	const recipient = $derived(command.ok ? command.controller : named || toAgent || toClosed ? undefined : target);
 	/** Whose turn the send button interrupts instead, as the notice names it; null when it sends. */
 	const stopping = $derived(
 		stoppable && agent
@@ -184,7 +191,7 @@
 	async function submit() {
 		const from = owner;
 		const sentText = draft;
-		if (!sentText.trim()) return;
+		if (!sentText.trim() || toClosed) return;
 		if (toAgent && agent) return sendAgent(agent.id, sentText);
 		if (sending) return;
 		// Names are checked against the board's data at the moment of sending.
@@ -267,16 +274,18 @@
 	<button type="button" class="hide" aria-label="收起輸入列" title="收起輸入列" onclick={() => setHidden(true)}>
 		<ChevronDown size="1.1em" />
 	</button>
-	<span class="to" class:other={recipient !== undefined && recipient.id !== target?.id} title={toAgent && agent?.hcomName ? `@${agent.hcomName}` : undefined}>→ {toAgent && agent ? agentName : recipient ? `@${recipient.hcomName}` : '@名稱'}</span>
+	<span class="to" class:other={recipient !== undefined && recipient.id !== target?.id} title={toAgent && agent?.hcomName ? `@${agent.hcomName}` : undefined}>→ {toAgent && agent ? agentName : toClosed && closed ? `@${closed.hcomName}` : recipient ? `@${recipient.hcomName}` : '@名稱'}</span>
 	<!-- The send button sits inside the box at its right edge; the box keeps its text clear of it. -->
 	<div class="box" style:--send-w="{sendWidth}px">
 		<MessageBox
 			bind:value={() => draft, (value) => write(owner, value)}
-			label={toAgent && agent ? `指令列：傳話給 ${agentName}` : recipient ? `指令列：${waking ? '喚醒' : '傳話給'} @${recipient.hcomName}` : '指令列'}
+			label={toAgent && agent ? `指令列：傳話給 ${agentName}` : toClosed && closed ? `指令列：@${closed.hcomName} 已關閉` : recipient ? `指令列：${waking ? '喚醒' : '傳話給'} @${recipient.hcomName}` : '指令列'}
 			placeholder={toAgent && agentBlocked
 				? agentBlocked
-				: `${agent ? `傳話給 ${agentName}` : '@名稱 指定主控'}・${enterMakesNewline.current ? 'Enter 換行・按鈕送出' : 'Enter 送出・Shift+Enter 換行'}`}
-			disabled={toAgent && agentBlocked !== null}
+				: toClosed
+					? CLOSED_SEND_TEXT
+					: `${agent ? `傳話給 ${agentName}` : '@名稱 指定主控'}・${enterMakesNewline.current ? 'Enter 換行・按鈕送出' : 'Enter 送出・Shift+Enter 換行'}`}
+			disabled={(toAgent && agentBlocked !== null) || toClosed}
 			onsend={submit}
 		/>
 		<!-- A wake keeps its word: it brings a controller back and spends quota. One button either
@@ -302,17 +311,17 @@
 					icon={waking ? undefined : sendIcon}
 					sending={toAgent && agent ? (agentSending[agent.id] ?? false) : sending}
 					{sent}
-					disabled={!draft.trim() || (toAgent && agentBlocked !== null)}
+					disabled={!draft.trim() || (toAgent && agentBlocked !== null) || toClosed}
 				/>
 			{/if}
 		</span>
 	</div>
-	<!-- An agent has no wake. -->
+	<!-- An agent has no wake; a closed one is brought back from its page. -->
 	{#if toAgent && agent}
 		<div class="pill-slot">
 			<AgentModelPicker {agent} />
 		</div>
-	{:else}
+	{:else if !toClosed}
 		<div class="pill-slot">
 			<ModelPicker
 				controller={recipient}

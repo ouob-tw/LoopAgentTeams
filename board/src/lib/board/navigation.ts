@@ -4,7 +4,8 @@
 import type { Agent, Controller, HerdrWorkspace, InboxItem } from './types.ts';
 
 /** What the address names: an inbox item, a controller, the new-controller form, an agent of the
- *  所有 Agent tab by session ID, the new-agent form of a Herdr workspace, or the list. */
+ *  所有 Agent tab or its 已關閉 section by session ID, the new-agent form of a Herdr workspace, or
+ *  the list. */
 export type Place =
 	| { kind: 'item'; key: string }
 	| { kind: 'controller'; id: string }
@@ -85,6 +86,8 @@ export function viewOf(
 		items: readonly InboxItem[];
 		controllers: readonly Controller[];
 		agents?: readonly Agent[];
+		/** The 已關閉 section's agents: their pages are the agent's too. */
+		closed?: readonly Pick<Agent, 'id'>[];
 		workspaces?: readonly HerdrWorkspace[];
 	}
 ): View {
@@ -92,7 +95,10 @@ export function viewOf(
 	if (place.kind === 'new-agent') {
 		return from.workspaces?.some((workspace) => workspace.id === place.workspace) ? place : { kind: 'missing', what: 'workspace' };
 	}
-	if (place.kind === 'agent') return from.agents?.some((agent) => agent.id === place.id) ? place : { kind: 'missing', what: 'agent' };
+	if (place.kind === 'agent') {
+		const listed = (agents?: readonly Pick<Agent, 'id'>[]) => agents?.some((agent) => agent.id === place.id);
+		return listed(from.agents) || listed(from.closed) ? place : { kind: 'missing', what: 'agent' };
+	}
 	if (place.kind === 'controller') {
 		return from.controllers.some((controller) => controller.id === place.id)
 			? place
