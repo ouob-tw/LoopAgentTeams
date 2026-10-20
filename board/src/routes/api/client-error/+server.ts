@@ -16,7 +16,7 @@ export const POST: RequestHandler = async ({ request, locals, url }) => {
 	} catch {
 		// Answered below.
 	}
-	if (!report || typeof report !== 'object') return json({ error: 'invalid_client_error' }, { status: 400 });
+	if (!report || typeof report !== 'object' || Array.isArray(report)) return json({ error: 'invalid_client_error' }, { status: 400 });
 	if (!limit.admit(device.id)) return json({ error: 'rate_limited' }, { status: 429 });
 	await logClientError(device.id, report as Record<string, unknown>, url.host, request.headers.get('user-agent'), locals.redact);
 	return new Response(null, { status: 204 });
