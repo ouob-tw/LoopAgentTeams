@@ -10,14 +10,14 @@ import type { ReportFile } from '../src/lib/server/reports.ts';
 
 const NOW = Date.parse('2026-10-20T12:00:00Z');
 
-function file(id: string, tag: Report['tag']): ReportFile {
+function file(id: string, tag: Report['tag'], time = '2026-10-20T11:00:00Z'): ReportFile {
 	return {
 		sessionId: id,
 		invalidLines: 0,
 		error: null,
 		reports: [
 			{
-				time: '2026-10-20T11:00:00Z',
+				time,
 				session_id: id,
 				hcom_name: id,
 				client: 'claude',
@@ -160,9 +160,16 @@ test('a controller is woken, not typed into, when its LAT round is over or its c
 	for (const status of ['working', 'delivered', 'waiting', 'idle', 'closed'] as const) expect(needsWake({ status, herdr: null })).toBe(true);
 });
 
-test('delivered works, stops, in the roster order: working before delivered, then back', () => {
-	const order = (agents: Agent[]) =>
-		buildSnapshot(sources(RUNNING_ALL, agents, [asking]), { read: {}, archived: {} }, NOW).controllers.map((controller) => [controller.id, controller.status]);
-	expect(order([live('bound-on', 'working')])).toEqual([['asking', 'waiting'], ['bound-on', 'working'], ['done-on', 'idle'], ['bound-off', 'closed'], ['done-off', 'closed']]);
-	expect(order([live('bound-on', 'idle')])).toEqual([['asking', 'waiting'], ['bound-on', 'delivered'], ['done-on', 'idle'], ['bound-off', 'closed'], ['done-off', 'closed']]);
+test('a delivered controller sorts among the delivered ones, then ahead of them while it works, and back after', () => {
+	// `newer` is delivered too, with a later report: ahead of `bound-on` unless that one works.
+	const newer = bound('newer');
+	const order = (agents: Agent[]) => {
+		const from = sources(new Set([...RUNNING_ALL, 'newer']), agents, [asking, newer]);
+		from.reportFiles.push(file('newer', 'DONE', '2026-10-20T11:30:00Z'));
+		return buildSnapshot(from, { read: {}, archived: {} }, NOW).controllers.map((controller) => [controller.id, controller.status]);
+	};
+	const rest = [['done-on', 'idle'], ['bound-off', 'closed'], ['done-off', 'closed']];
+	expect(order([])).toEqual([['asking', 'waiting'], ['newer', 'delivered'], ['bound-on', 'delivered'], ...rest]);
+	expect(order([live('bound-on', 'working')])).toEqual([['asking', 'waiting'], ['bound-on', 'working'], ['newer', 'delivered'], ...rest]);
+	expect(order([live('bound-on', 'idle')])).toEqual([['asking', 'waiting'], ['newer', 'delivered'], ['bound-on', 'delivered'], ...rest]);
 });
