@@ -206,6 +206,7 @@ class RunAndReuseTests(GateCase):
         result = self.gate('run', '--', command)
         self.assertEqual(result.returncode, 0)
         self.assertIn('content changed during the run', result.stderr)
+        self.assertIn('git status --porcelain', result.stderr)
         record = self.records()[-1]
         self.assertTrue(record['content_changed'])
         self.assertFalse(record['reusable'])

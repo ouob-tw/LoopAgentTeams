@@ -109,5 +109,6 @@ uv run --no-project python <skill>/scripts/suite-gate.py install --client codex
 
 - 只認程式檔內容；資料庫、外部服務、容器狀態與被忽略的設定檔（除非列入 `fingerprint_include`）不在指紋內，需要時用 `--rerun` 寫原因。
 - 測試期間改檔又改回原樣偵測不到。
+- 測試自己產生的檔案（例如 `__pycache__/`、`.pytest_cache/`、建置輸出）要列進 `.gitignore`，否則每次都會被當成「執行中內容改變」而無法沿用；被標成這樣時，用 `git status --porcelain` 查是哪些檔案變了。
 - 測試自己另開新工作階段的背景程式不算名額。
 - 預設判斷只看指令文字，可能誤判；專案登記可讓判斷準確。

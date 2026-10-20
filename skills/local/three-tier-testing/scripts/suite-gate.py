@@ -782,7 +782,9 @@ class Gate:
         append_record(record)
         if changed:
             warn('content changed during the run: this result is recorded but will not be '
-                 'reused; do not edit files while the suite runs')
+                 'reused; do not edit files while the suite runs, and git-ignore files the '
+                 'tests generate (e.g. __pycache__/, .pytest_cache/, build output). '
+                 'Run `git status --porcelain` to see what changed')
         warn(f"recorded exit {code} in {duration}s"
              + (f" for fingerprint {info['fingerprint'][:12]}" if info else ''))
         return code
