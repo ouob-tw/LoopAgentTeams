@@ -145,28 +145,29 @@ def tab_label(spawner, name):
     return f"{spawner.rsplit('-', 1)[-1]}-{name}"
 
 
-def label_tabs(spawner, names):
-    """Rename each agent's Herdr tab to tab_label; return the names whose pane is not
-    known yet. Failures only go to watch.log.
+def label_tabs(spawner, agents):
+    """Rename each agent's Herdr tab to tab_label; return the agents (base name -> full
+    name) whose pane is not known yet. Failures only go to watch.log.
 
-    The pane is the agent's launch_context.pane_id in `hcom list`; agents launched in
-    another terminal (terminal_preset_effective other than herdr) are skipped.
+    The pane is the agent's launch_context.pane_id in `hcom list`, found by full name since
+    base names can repeat under other tags; agents launched in another terminal
+    (terminal_preset_effective other than herdr) are skipped.
     """
     _, listing = hcom('list', '--json')
     try:
-        contexts = {agent['base_name']: agent.get('launch_context') or {}
+        contexts = {agent['name']: agent.get('launch_context') or {}
                     for agent in json.loads(listing)}
     except (ValueError, KeyError, TypeError, AttributeError):
         contexts = {}
-    waiting = []
-    for name in names:
-        context, label = contexts.get(name, {}), tab_label(spawner, name)
+    waiting = {}
+    for name, full in agents.items():
+        context, label = contexts.get(full, {}), tab_label(spawner, name)
         preset, pane = context.get('terminal_preset_effective'), context.get('pane_id')
         if preset and preset != 'herdr':
             log(f'tab {label} not set: launched in {preset}, not herdr')
             continue
         if not pane:
-            waiting.append(name)
+            waiting[name] = full
             continue
         code, out = herdr('pane', 'get', pane)
         try:
@@ -182,14 +183,14 @@ def label_tabs(spawner, names):
     return waiting
 
 
-def start_labels(spawner, names):
+def start_labels(spawner, agents):
     """Retry label_tabs on its own thread until every pane is known or LABEL_WAIT
     seconds pass, so slow herdr calls never hold up the launch check."""
     def run():
-        pending, end = names, time.monotonic() + LABEL_WAIT
+        pending, end = agents, time.monotonic() + LABEL_WAIT
         while pending := label_tabs(spawner, pending):
             if time.monotonic() >= end:
-                log(f"tabs not set: no herdr pane in hcom list for {', '.join(pending)}")
+                log(f"tabs not set: no herdr pane in hcom list for {', '.join(pending.values())}")
                 return
             time.sleep(LABEL_POLL)
 
@@ -483,7 +484,7 @@ def main(argv=None):
         data, launch_id = batch['data'], batch['id']
         spawner = data.get('by') or args.spawner
         agents = {name: full_name(data, name) for name in data['instances'] if NAME.match(name)}
-        labels = start_labels(spawner, list(agents))
+        labels = start_labels(spawner, agents)
         expected = {'model': None if unattributed else args.model,
                     'effort': None if unattributed else args.effort,
                     'permission': EXPECTED_PERMISSION[args.tool]}

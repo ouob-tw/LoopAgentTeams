@@ -106,11 +106,11 @@ class FakeHerdr:
         raise AssertionError(f'unexpected herdr call {args}')
 
 
-def agent_row(name, pane=None, preset='herdr'):
+def agent_row(name, pane=None, preset='herdr', tag='vare-review'):
     context = {'process_id': name, 'terminal_preset_effective': preset}
     if pane:
         context['pane_id'] = pane
-    return {'base_name': name, 'name': f'vare-review-{name}', 'launch_context': context}
+    return {'base_name': name, 'name': f'{tag}-{name}', 'launch_context': context}
 
 
 class SpawnWatchTests(unittest.TestCase):
@@ -429,13 +429,21 @@ class SpawnWatchTests(unittest.TestCase):
         self.run_watch(fake)
         self.assertIn(('tab', 'rename', 'w1:t1', 'guzu-kilo'), self.watch.herdr.calls)
 
+    def test_agent_with_the_same_base_name_under_another_tag_keeps_its_tab(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.agents = [agent_row('kilo', 'w1:p1'), agent_row('kilo', 'w1:p9', tag='mefa-docs')]
+        self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1', 'w1:p9': 'w1:t9'})
+        self.run_watch(fake)
+        self.assertEqual(self.watch.herdr.calls, [('pane', 'get', 'w1:p1'),
+                                                  ('tab', 'rename', 'w1:t1', 'vare-kilo')])
+
     def test_agent_without_a_pane_is_skipped_and_still_checked(self):
         fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
         fake.agents = [agent_row('kilo')]
         with mock.patch('sys.stderr', new=io.StringIO()) as log:
             self.assertEqual(self.run_watch(fake), 0)
         self.assertEqual(self.watch.herdr.calls, [])
-        self.assertIn('no herdr pane in hcom list for kilo', log.getvalue())
+        self.assertIn('no herdr pane in hcom list for vare-review-kilo', log.getvalue())
         self.assertEqual(len(fake.sent), 1)
         self.assertIn('permission: expected bypass permissions on', fake.sent[0][-1])
 
@@ -445,7 +453,7 @@ class SpawnWatchTests(unittest.TestCase):
         with mock.patch('sys.stderr', new=io.StringIO()) as log:
             self.assertEqual(self.run_watch(fake), 0)
         self.assertEqual(self.watch.herdr.calls, [])
-        self.assertIn('no herdr pane in hcom list for kilo', log.getvalue())
+        self.assertIn('no herdr pane in hcom list for vare-review-kilo', log.getvalue())
         self.assertEqual(fake.sent, [])
 
     def test_pane_recorded_after_the_check_still_gets_its_tab_renamed(self):
