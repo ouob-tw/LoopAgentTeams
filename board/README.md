@@ -277,6 +277,25 @@
 
 只想改其中一個主題時，用 `:root[data-theme='light']` 或 `:root[data-theme='dark']`。內建淺色主題的顏色在白底上的對比都不低於 7:1；自己覆蓋的顏色不會被檢查。
 
+## 錯誤紀錄
+
+看板出錯時寫一行 JSON 到標準錯誤，背景常駐時由 systemd 收進 journal：
+
+```bash
+journalctl --user -u lat-board -o cat | grep '"layer":"lat-board"'
+journalctl --user -u lat-board -o cat | grep '"message":"client_error"' | jq .
+```
+
+每行都有 `ts`（UTC）、`level`、`logger`、`layer`（固定 `lat-board`）、`message`（事件名），請求中寫的行另有同一請求共用的 `request_id`（沿用請求的 `x-request-id`，沒有就自產）。只記三種事件，不記一般請求，也不記 4xx 的拒絕（密碼錯誤、題目已改版等）：
+
+| `message` | 何時寫 | 其他欄位 |
+| --- | --- | --- |
+| `http_error` | 任何 API 或頁面回應狀態 ≥ 500（例如輔助工具失敗的 502、寫不進送出紀錄的 500） | `method`、`path`、`status`，以及回應裡的 `reason`、`error`、`logError`、`detail`（SvelteKit 錯誤頁的訊息） |
+| `unhandled_error` | 伺服器端沒被處理的例外（之後同一請求還有一行 500 的 `http_error`） | `method`、`path`、`exc_type`、`exc_message`、`traceback` |
+| `client_error` | 瀏覽器端的錯誤：頁面變成 Internal Error、或沒被處理的 `error`／`unhandledrejection`，由頁面送到 `POST /api/client-error` | `kind`、`exc_message`、`traceback`、`url`、`user_agent`、`device_id` |
+
+不寫密碼、裝置 token、答覆與訊息內文：原因裡若出現請求中的 `text`、`note`、`password` 原文，或 Node 引述無法傳給指令的參數（`Received …`），改成 `[omitted]`；原因最多 2000 字。`/api/client-error` 只收已登入裝置（未登入回 401、不寫）；各欄位超過上限（`kind` 40、`exc_message` 1000、`traceback` 8000、`url` 2000、`user_agent` 500 字）截斷並加上 `…[truncated]`，整個請求超過 64K 字回 413；同一裝置每分鐘最多記 10 筆，其餘回 429 不寫。只寫標準錯誤，不另存日誌檔。
+
 ## 開發與測試
 
 ```bash
@@ -308,5 +327,7 @@ bun run repro:hydration --serve none       # 只啟動已登入的假資料看�
 bun run build && bun run measure:commandline   # 無頭 Chrome；違反規則就以 1 結束；使用測試連接埠起點加 16 與加 17
 bun scripts/measure-commandline.ts --serve     # 啟動已登入的假資料看板，再用 scripts/measure-commandline.py 以 WebKit 量同樣的案例
 ```
+
+錯誤紀錄的伺服器端在 `tests/server-log.test.ts`（起點加 63），格式與限頻本身在 `tests/log.test.ts`；`tests/client-error-page.test.ts` 用無頭 Chrome（起點加 64 與加 65）讓頁面變成 Internal Error，檢查 journal 那一行。
 
 封存與 30 天保留的期限都用看板的時鐘計算。測試以 `LAT_BOARD_CLOCK_FILE` 指定一個檔案，內容是一個 ISO 時間，看板就把它當成現在；沒有設定或檔案讀不出時間時用系統時間。

@@ -468,3 +468,12 @@ export async function startFixture(
 	await fixture.start();
 	return fixture;
 }
+
+/** The board's log lines (see src/lib/server/log.ts) in this output, with this event name. */
+export function logged(output: string, message: string): Record<string, unknown>[] {
+	return output
+		.split('\n')
+		.filter((line) => line.startsWith('{'))
+		.map((line) => JSON.parse(line))
+		.filter((line) => line.message === message);
+}
