@@ -309,6 +309,63 @@ for (const width of [1280, 390]) {
 	}, 30_000);
 }
 
+test.skipIf(!CHROME)("390px: a closed agent's address opens its page, with the list behind it", async () => {
+	await visit(390, '?agent=s-week');
+	await tab.until(`(document.querySelector('.detail .history')?.innerText ?? '').includes('回覆 1')`, 'its conversation');
+	expect(await tab.eval(`document.querySelector('.detail [data-closed-agent]').innerText`)).toContain('分頁-s-week');
+	expect(fixture.helperArgs('transcript').at(-1)).toEqual(['board', 'transcript', '--client=codex', '--session-id=s-week']);
+	await tab.eval(`document.querySelector('.detail .topbar button[aria-label="返回"]').click()`);
+	await tab.until(`location.search === '?tab=agents' || location.search === ''`, 'the list');
+	expect(await tab.eval(`getComputedStyle(document.querySelector('.detail')).display`)).toBe('none');
+}, 30_000);
+
+test.skipIf(!CHROME)("a draft kept from before is not sent to the closed agent, named or not, and the reason still shows", async () => {
+	await visit(1280);
+	await tab.eval(`localStorage.setItem('lat-board-agent-drafts', JSON.stringify({ 's-lead': '@lead 繼續', 's-yesterday': '還沒送出' }))`);
+	await tab.send('Page.reload');
+	await tab.until(`JSON.stringify(history.state).includes('depth') && !!document.querySelector('.inbox [data-agent="s-live"]')`, 'the board again');
+	// Unfolded once the reloaded page answers clicks.
+	await tab.until(
+		`(() => { const trigger = document.querySelector(${JSON.stringify(TRIGGER)}); if (trigger?.getAttribute('aria-expanded') === 'false') trigger.click(); return !!document.querySelector('[data-closed]'); })()`,
+		'the rows'
+	);
+	const wakes = () => sentLog().filter((line) => line.kind === 'wake').length;
+	const before = wakes();
+	for (const [session, draft, to] of [['s-yesterday', '還沒送出', '@n-s-yesterday'], ['s-lead', '@lead 繼續', '@lead']]) {
+		await openClosed(session);
+		await tab.until(`document.querySelector('.dock textarea').value === ${JSON.stringify(draft)}`, 'the kept draft');
+		expect(await tab.eval(`document.querySelector('.dock textarea').disabled`)).toBe(true);
+		expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe(`→ ${to}`);
+		expect(await tab.eval(`document.querySelector('.dock .closed-note')?.innerText`)).toBe('已關閉，先接回才能傳訊息。');
+		expect(await tab.eval(`document.querySelector('.dock button[type="submit"], .dock .send')?.disabled`)).toBe(true);
+		await tab.eval(`document.querySelector('.dock form').requestSubmit()`);
+		await sleep(300);
+		expect(wakes()).toBe(before);
+		expect(await tab.eval(`document.querySelector('.dock textarea').value`)).toBe(draft);
+	}
+}, 30_000);
+
+test.skipIf(!CHROME)("a closed controller's 接回 stopped by an earlier resume offers to give that one up on its page", async () => {
+	const earlier = {
+		id: 'wake-earlier', kind: 'wake', time: new Date().toISOString(), controllerId: 's-lead', hcomName: 'lead', text: '早先', newRound: false,
+		route: 'resume', herdrWorkspace: null, herdrWorkspaceLabel: null, workspaceCreated: false, resumedName: null, pane: null, extraArgs: [],
+		outcome: 'pending', error: null
+	};
+	appendFileSync(join(fixture.dir, 'board-state', 'sent-log.jsonl'), JSON.stringify(earlier) + '\n');
+	await visit(1280);
+	await unfold();
+	await openClosed('s-lead');
+	await tab.eval(`document.querySelector(${JSON.stringify(RESUME)}).click()`);
+	const WAKE = '.detail [data-wake="s-lead"]';
+	await tab.until(`!!document.querySelector('${WAKE} [data-action="wake"]')`, "the wake's options");
+	await tab.eval(`document.querySelector('${WAKE} [data-action="wake"]').click()`);
+	await tab.until(`!!document.querySelector('${WAKE} [data-action="abandon"]')`, 'the offer to give the earlier one up');
+	await tab.until(`document.querySelector('.detail .controls').innerText.includes('接回失敗')`, 'the failure on the page');
+	await tab.eval(`document.querySelector('${WAKE} [data-action="abandon"]').click()`);
+	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已放棄前一次接回')`, 'the notice');
+	await tab.until(`!document.querySelector('${WAKE} [data-action="abandon"]')`, 'the offer to go');
+}, 30_000);
+
 test.skipIf(!CHROME)('a 接回 that fails stays on the page and the row with why, logged', async () => {
 	fixture.setHcom({ agents: [], exit: 1, stderr: 'no such session' });
 	await visit(1280);
@@ -319,7 +376,7 @@ test.skipIf(!CHROME)('a 接回 that fails stays on the page and the row with why
 	expect(await tab.eval(`document.querySelector('.detail .controls').innerText`)).toContain('hcom 接回失敗');
 	expect(await rowText('s-fail')).toContain('hcom 接回失敗');
 	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('沒有接回 @n-s-fail')`, 'the failure notice');
-	expect(sentLog().filter((line) => line.action === 'resume')).toMatchObject([{ agentId: 's-fail', ok: false }]);
+	expect(sentLog().filter((line) => line.action === 'resume' && line.agentId === 's-fail')).toMatchObject([{ agentId: 's-fail', ok: false }]);
 	expect(await tab.eval(`document.querySelector(${JSON.stringify(RESUME)}).disabled`)).toBe(false);
 }, 30_000);
 
@@ -368,7 +425,7 @@ test.skipIf(!CHROME)("390px: a closed controller's page shows its conversation, 
 	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已開始接回 @lead')`, 'the notice');
 	const resumed = readFileSync(join(fixture.dir, 'hcom-calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.args[0] === 'r');
 	expect(resumed.at(-1).args).toEqual(['r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 繼續']);
-	expect(sentLog().find((line) => line.kind === 'wake')).toMatchObject({ controllerId: 's-lead', newRound: true, route: 'resume' });
+	expect(sentLog().find((line) => line.kind === 'wake' && line.newRound)).toMatchObject({ controllerId: 's-lead', newRound: true, route: 'resume' });
 }, 30_000);
 
 test.skipIf(!CHROME)('once its model switch is given up, the agent moves to the section', async () => {

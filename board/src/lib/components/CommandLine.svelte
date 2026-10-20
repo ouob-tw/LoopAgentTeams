@@ -134,8 +134,6 @@
 	const named = $derived(draft.trimStart().startsWith('@'));
 	/** The open agent is the recipient: a line without a name while its page is open. */
 	const toAgent = $derived(agent !== undefined && !named);
-	/** A line without a name while a closed agent's page is open: not sent. */
-	const toClosed = $derived(closed !== undefined && !named);
 	/** How the line names the open agent: its short hcom name, like a controller's, or its tab's name without one. */
 	const agentName = $derived(agent ? (agent.hcomName ? `@${shortName(agent)}` : agent.name) : '');
 	// Why the open agent cannot be sent to; null when it can. Whether hcom reaches it decides which
@@ -150,7 +148,10 @@
 	let interrupting = $state<Record<string, boolean>>({});
 	let confirmingStop = $state(false);
 	const command = $derived(parseCommand(draft, controllers, target, true));
-	const recipient = $derived(command.ok ? command.controller : named || toAgent || toClosed ? undefined : target);
+	/** A line for the closed agent whose page is open, without a name or naming it (a closed
+	 *  controller): not sent; it is brought back from its page. */
+	const toClosed = $derived(closed !== undefined && (!named || (command.ok && command.controller.id === closed.id)));
+	const recipient = $derived(toClosed ? undefined : command.ok ? command.controller : named || toAgent ? undefined : target);
 	/** Whose turn the send button interrupts instead, as the notice names it; null when it sends. */
 	const stopping = $derived(
 		stoppable && agent
@@ -345,6 +346,10 @@
 		</button>
 	{/if}
 
+	<!-- Said here too, as a draft kept from before hides the placeholder. -->
+	{#if toClosed && draft.trim()}
+		<p class="closed-note" role="status">{CLOSED_SEND_TEXT}</p>
+	{/if}
 	{#if confirmingStop && stopping}
 		<div class="popup" role="group" aria-label="確認中斷">
 			<p class="warn">{stopping.confirm}</p>
@@ -428,6 +433,18 @@
 		padding: 0 0.6rem;
 	}
 	/* Floats above the line; opening it moves nothing. */
+	.closed-note {
+		position: absolute;
+		left: 1rem;
+		bottom: calc(100% + 0.4rem);
+		margin: 0;
+		padding: 0.3rem 0.6rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		background: var(--surface);
+		font-size: max(0.85rem, var(--min-font, 0px));
+		color: var(--muted);
+	}
 	.popup {
 		position: absolute;
 		right: 1rem;
