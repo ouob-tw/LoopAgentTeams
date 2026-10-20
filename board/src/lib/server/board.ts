@@ -333,6 +333,7 @@ function createBoard(): Board {
 				snapshot = {
 					generatedAt: new Date().toISOString(),
 					controllers: [],
+					offRoster: [],
 					inbox: [],
 					recordedKeys: [],
 					processedCount: 0,

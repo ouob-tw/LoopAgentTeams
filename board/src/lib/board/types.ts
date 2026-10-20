@@ -168,6 +168,9 @@ export function itemLabel(item: InboxItem): string {
 export interface BoardSnapshot {
 	generatedAt: string;
 	controllers: Controller[];
+	/** Bound controllers whose client is closed and whose reports are all archived: off the roster,
+	 *  but controllers on the Herdr tab, opened and woken as one. */
+	offRoster: Controller[];
 	/** Questions and unarchived reports, in source order; the page sorts them. The inbox lists the
 	 *  questions and the unread reports; the read ones are among the processed items too. */
 	inbox: InboxItem[];
@@ -185,6 +188,9 @@ export interface BoardSnapshot {
 	/** Source failures that cannot be attributed to one controller. */
 	errors: string[];
 }
+
+/** The controllers of the roster, then those off it. */
+export const everyController = (snapshot: BoardSnapshot): Controller[] => [...snapshot.controllers, ...snapshot.offRoster];
 
 /** One Herdr workspace, as `herdr workspace list` gives it. */
 export interface HerdrWorkspace {

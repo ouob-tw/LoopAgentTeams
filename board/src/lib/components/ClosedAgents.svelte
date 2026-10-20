@@ -23,7 +23,7 @@
 		controllers
 	}: {
 		closed: ClosedList;
-		/** The roster, for a closed controller's wake options. */
+		/** The controllers on and off the roster, for a closed controller's wake options. */
 		controllers: Controller[];
 	} = $props();
 
