@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LaunchList, LaunchResponse } from '../src/lib/board/launch.ts';
 import { gitRoot } from '../src/lib/server/git.ts';
+import { spawnSync } from 'node:child_process';
 import { checkRunHere, NODE, startFixture, type Fixture } from './harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-new-folder-'));
@@ -161,6 +162,21 @@ needsPlain('failing part way removes the levels the launch made, and keeps those
 	expect(existsSync(join(home, 'before'))).toBe(true);
 	expect(existsSync(join(home, 'before', 'made'))).toBe(false);
 	expect(hcomCalls()).toEqual([]);
+});
+
+test('rolling back keeps a level this attempt made when something was put into it meanwhile', () => {
+	const own = join(commandDir, 'interrupted-home');
+	mkdirSync(own);
+	const kept = join(own, 'made', 'kept');
+	const result = spawnSync(process.execPath, [join(import.meta.dir, 'interrupted-create.ts'), join(kept, 'deeper'), join(kept, 'deeper')], {
+		env: { ...process.env, HOME: own },
+		encoding: 'utf8'
+	});
+	expect(result.status).toBe(0);
+	expect(JSON.parse(result.stdout)).toBe('建立資料夾失敗：EIO');
+	// `kept` holds the file, so it and the level above it stay; nothing below it was made.
+	expect(existsSync(join(kept, 'written-meanwhile'))).toBe(true);
+	expect(existsSync(join(kept, 'deeper'))).toBe(false);
 });
 
 needsPlain('a new folder whose git init fails is kept, and the controller is not started', async () => {
