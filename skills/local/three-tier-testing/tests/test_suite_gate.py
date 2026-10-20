@@ -165,6 +165,13 @@ class RunAndReuseTests(GateCase):
         self.assertEqual(self.gate('run', '--', f"echo run >> {self.counter}; ls '*.txt'").returncode, 2)
         self.assertEqual(self.runs(), 2)
 
+    def test_shell_string_and_split_arguments_are_different_commands(self):
+        split = ['echo', '-e', 'a\\nb']
+        shell = gate.normalize_command(split)
+        self.assertEqual(gate.normalize_command([shell]), shell)
+        self.assertNotEqual(gate.fingerprint(self.repo, split)['fingerprint'],
+                            gate.fingerprint(self.repo, [shell])['fingerprint'])
+
     def test_changed_content_untracked_file_and_failure_run_again(self):
         self.gate('run', '--', self.suite())
         (self.repo / 'app.py').write_text('x = 2\n')

@@ -365,8 +365,9 @@ def content_tree(root, include=()):
 
 
 def normalize_command(argv):
-    """The command as run: a shell string keeps its own text, since quoting and expansion
-    change what runs; split arguments are quoted back into one string."""
+    """The command text: a shell string keeps its own text, since quoting and expansion
+    change what runs; split arguments are quoted back into one string. The fingerprint
+    also keeps the mode, because sh and a direct exec can run the same text differently."""
     if len(argv) == 1:
         return argv[0].strip()
     return shlex.join(argv)
@@ -382,8 +383,9 @@ def fingerprint(cwd, argv):
     include = [p for p in include if isinstance(p, str)]
     tree = content_tree(root, include)
     rel = os.path.relpath(Path(cwd).resolve(), root.resolve())
+    mode = 'shell' if len(argv) == 1 else 'exec'
     command = normalize_command(argv)
-    digest = hashlib.sha256(f'{tree}\0{command}\0{rel}'.encode()).hexdigest()
+    digest = hashlib.sha256(f'{tree}\0{mode}\0{command}\0{rel}'.encode()).hexdigest()
     return {'fingerprint': digest, 'tree': tree, 'repo': str(root), 'rel_cwd': rel}
 
 
