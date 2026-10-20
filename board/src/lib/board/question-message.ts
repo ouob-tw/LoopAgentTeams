@@ -42,6 +42,13 @@ export function askingReport<R extends { session_id: string; tag: string; time: 
 	return found;
 }
 
+/** The inbox's items and then the answered questions it does not hold: a read made while an answer
+ *  was recorded can hold a question in both, and one key must be shown once. The inbox copy wins. */
+export function withAnswered<T extends InboxItem>(inbox: T[], answered: InboxQuestion[]): (T | InboxQuestion)[] {
+	const keys = new Set(inbox.map((item) => item.key));
+	return [...inbox, ...answered.filter((item) => !keys.has(item.key))];
+}
+
 /**
  * The question and the others of the inbox its asking message asked too, in the order the message
  * names them; only the question itself when it was asked alone, or in no message found.

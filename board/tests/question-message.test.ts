@@ -1,7 +1,7 @@
 // Which chat message asked a panel question, from the cases shared with the Herdr side panel.
 import { expect, test } from 'bun:test';
 import fixture from './fixtures/question-message-match.json';
-import { askedTogether, askingReport, askingTexts } from '../src/lib/board/question-message.ts';
+import { askedTogether, askingReport, askingTexts, withAnswered } from '../src/lib/board/question-message.ts';
 import type { InboxItem, InboxQuestion } from '../src/lib/board/types.ts';
 
 for (const entry of fixture.cases) {
@@ -60,4 +60,12 @@ test("a conversation's texts each show the inbox questions they asked, in the or
 	]);
 	// Not in the inbox: the text asked nothing that is shown.
 	expect(askingTexts(texts, []).size).toBe(0);
+});
+
+test('a question both in the inbox and answered is listed once, as the inbox has it', () => {
+	const inbox = asked('A-1', 1);
+	const recorded = { ...asked('A-1', 1), unsent: false } as InboxQuestion;
+	const other = asked('B-1', 2);
+	expect(withAnswered([inbox], [recorded, other])).toEqual([inbox, other]);
+	expect(askedTogether(inbox, withAnswered([inbox], [recorded, other])).map((entry) => entry.key)).toEqual(['q:s1:B-1', 'q:s1:A-1']);
 });
