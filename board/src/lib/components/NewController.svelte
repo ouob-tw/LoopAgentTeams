@@ -1,6 +1,8 @@
 <script lang="ts">
 	// The new-controller page: pick the client, a folder controllers have run in and the first
-	// message, then follow the recent launches below until each controller is running. With a
+	// message, then follow the recent launches below until each controller is running: a launch's
+	// row leads to its agent's page once Herdr runs it, and to the controller's information page
+	// once it is active. With a
 	// Herdr workspace as its target it is the Herdr tab's new-agent form instead: a plain agent in
 	// that workspace, with an optional tab name and first message, no LAT start command and no Git
 	// project needed, followed until Herdr lists it.
@@ -12,6 +14,7 @@
 		LAUNCH_CLIENTS,
 		LAUNCH_STATE_TEXT,
 		latCommand,
+		launchLink,
 		launchSettingsText,
 		TAB_NAME_MAX,
 		type LaunchClient,
@@ -22,19 +25,25 @@
 	import { enterMakesNewline } from '#lib/board/messaging.svelte.ts';
 	import { DEFAULT_UNREADABLE_TEXT, defaultEffort, modelShort } from '#lib/board/models.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
-	import type { Controller } from '#lib/board/types.ts';
+	import type { Agent, Controller } from '#lib/board/types.ts';
 	import MessageBox from './MessageBox.svelte';
 
 	let {
 		controllers,
+		agents,
 		stamp,
 		onopen,
+		onagent,
 		target = null
 	}: {
 		controllers: Controller[];
+		/** Herdr's agents, as the board data lists them: a launch's tab may have appeared. */
+		agents: Agent[];
 		/** Changes with every new board data: a launch may have become a controller. */
 		stamp: string;
 		onopen: (controllerId: string) => void;
+		/** Opens an agent's page on the board. */
+		onagent: (agentId: string) => void;
 		/** The Herdr workspace a plain agent is to open in, with the folders its agents work in, the
 		 *  most used first; null for a new controller. */
 		target?: { workspace: string; label: string; folders: string[] } | null;
@@ -184,7 +193,6 @@
 		// Without a name nothing more can be said than to look in Herdr.
 		return launch.state === 'starting' && launch.error ? `${text}（${launch.error}）` : text;
 	}
-	const onRoster = (id: string | null) => id !== null && controllers.some((controller) => controller.id === id);
 </script>
 
 <section class="new">
@@ -364,8 +372,13 @@
 					{#if launch.role !== 'agent' && launch.follow?.error && launch.state !== 'active'}
 						<p class="state warn">{launch.follow.error}</p>
 					{/if}
-					{#if launch.state === 'active' && onRoster(launch.controllerId)}
-						<button class="open" onclick={() => onopen(launch.controllerId!)}>看主控資訊 →</button>
+					{#if launch.role !== 'agent'}
+						{@const link = launchLink(launch, form.list?.launches ?? [], controllers, agents)}
+						{#if link?.kind === 'controller'}
+							<button class="open" onclick={() => onopen(link.id)}>看主控資訊 →</button>
+						{:else if link}
+							<button class="open" onclick={() => onagent(link.id)}>看這個 Agent →</button>
+						{/if}
 					{/if}
 					{#if launch.role !== 'agent'}
 						<p class="text">{latCommand(launch.client, launch.text)}</p>

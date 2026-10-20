@@ -3,7 +3,7 @@ import { parseCommand, sendsOnEnter } from '../src/lib/board/messages.ts';
 
 const luna = { id: 's-1', hcomName: 'luna', status: 'working' as const };
 const nova = { id: 's-2', hcomName: 'nova-b1', status: 'waiting' as const };
-const gone = { id: 's-3', hcomName: 'orin', status: 'ended' as const };
+const gone = { id: 's-3', hcomName: 'orin', status: 'idle' as const };
 const all = [luna, nova, gone];
 
 const key = (overrides: Partial<Parameters<typeof sendsOnEnter>[0]> = {}) => ({
@@ -47,8 +47,8 @@ test('without @name and with nothing open, the line is not sent', () => {
 	expect(parseCommand('繼續', all, undefined).ok).toBe(false);
 });
 
-test('an ended controller is refused, by name or when it is the open one', () => {
-	expect(parseCommand('@orin 還在嗎', all, luna)).toEqual({ ok: false, reason: '@orin 已結束，無法傳話。' });
+test('an idle controller is refused, by name or when it is the open one', () => {
+	expect(parseCommand('@orin 還在嗎', all, luna)).toEqual({ ok: false, reason: '@orin 閒置，無法傳話。' });
 	expect(parseCommand('還在嗎', all, gone).ok).toBe(false);
 });
 

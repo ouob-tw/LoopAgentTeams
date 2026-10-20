@@ -51,7 +51,7 @@ test('a cut-off line does not hide an ended controller', async () => {
 
 	const controller = named(await fixture.refresh(cookie), 'vega')!;
 
-	expect(controller).toMatchObject({ status: 'ended', phase: '交付後檔案受損' });
+	expect(controller).toMatchObject({ status: 'closed', phase: '交付後檔案受損' });
 	expect(controller.error).toContain('1 行');
 });
 
@@ -68,7 +68,7 @@ test('when the helper fails, the last known controllers stay and every controlle
 	expect(named(failed, 'luna')).toMatchObject({ status: 'working', phase: '實作中' });
 	expect(named(failed, 'luna')!.error).toContain('invalid bindings file');
 	// Whether an unbound controller has really ended cannot be told without the registry.
-	expect(named(failed, 'orin')!.status).toBe('ended');
+	expect(named(failed, 'orin')!.status).toBe('closed');
 	expect(named(failed, 'orin')!.error).toContain('invalid bindings file');
 	expect(failed.errors.join()).toContain('invalid bindings file');
 

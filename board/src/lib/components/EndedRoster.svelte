@@ -1,5 +1,5 @@
 <script lang="ts">
-	// The ended controllers that last reported over a day ago, kept out of the roster: one row at its
+	// The idle and closed controllers that last reported over a day ago, kept out of the roster: one row at its
 	// end (a mark with a count on the folded rail, a tag on a phone) that opens a panel of their
 	// cards, newest report first, under how long ago that was. Beside the roster on a wide screen, from the bottom on a phone.
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
@@ -78,8 +78,8 @@
 		class:current
 		aria-haspopup="dialog"
 		aria-expanded={open}
-		aria-label="已結束的主控 {ended.length} 個"
-		title="已結束的主控"
+		aria-label="超過 1 天的閒置與已關閉主控 {ended.length} 個"
+		title="超過 1 天的閒置與已關閉主控"
 		onclick={(event) => {
 			// Its own control: a click on it is not one on the rail around it, which would unfold.
 			event.stopPropagation();
@@ -87,11 +87,11 @@
 			else void show();
 		}}
 	>
-		<StatusMark status="ended" decorative />
+		<StatusMark status="closed" decorative />
 		{#if rail}
 			<span class="count">{ended.length}</span>
 		{:else}
-			<span class="label">已結束 {ended.length}</span>
+			<span class="label">閒置／已關閉 {ended.length}</span>
 			<span class="chevron" class:open><ChevronRight size="1em" /></span>
 		{/if}
 	</button>
@@ -104,7 +104,7 @@
 		onclick={(event) => event.stopPropagation()}
 		class="panel"
 		role="dialog"
-		aria-label="已結束的主控"
+		aria-label="超過 1 天的閒置與已關閉主控"
 		tabindex="-1"
 		style:left="{place.left}px"
 		style:top={place.top === null ? null : `${place.top}px`}

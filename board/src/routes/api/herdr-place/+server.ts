@@ -11,7 +11,7 @@ export const GET: RequestHandler = async ({ url }) => {
 	const board = getBoard();
 	const controller = await findController(board, controllerId);
 	if (!controller) return json({ error: 'unknown_controller' }, { status: 404 });
-	if (!controller.herdr) return json({ ok: false, reason: '主控已結束' });
+	if (!controller.herdr) return json({ ok: false, reason: '主控已停用 LAT 或已關閉' });
 	const result = await describePlace(board.config, controller.herdr.workspace, controller.herdr.tab);
 	return json('reason' in result ? { ok: false, reason: result.reason } : { ok: true, place: result.place });
 };

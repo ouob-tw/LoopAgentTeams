@@ -92,9 +92,9 @@
 						{placeText(place)}
 					{/if}
 				{:else if controller.status === 'closed'}
-					client 已不在 hcom 清單上，位置不明
+					對話已不在 hcom 清單上，位置不明
 				{:else}
-					已不在面板綁定登記中，位置不明
+					已停用 LAT，不在面板綁定登記中，位置不明
 				{/if}
 			</dd>
 			<UsageLine {usage} full />

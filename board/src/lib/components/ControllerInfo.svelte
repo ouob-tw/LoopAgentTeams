@@ -1,5 +1,6 @@
 <script lang="ts">
-	// A controller's information page, made of blocks: its header, a bar for each question waiting
+	// A controller's information page, made of blocks: its header, a close for an idle one (its
+	// conversation still open in Herdr, as on the 所有 Agent tab), a bar for each question waiting
 	// for an answer, then its conversation, its reports not yet archived and what was sent to it, one
 	// tab at a time. Its model and effort, and messages and wakes, go through the command line at the
 	// bottom of the screen.
@@ -27,6 +28,7 @@
 	let {
 		controller,
 		agent,
+		idleAgent,
 		tabMoves = 0,
 		items,
 		answered = [],
@@ -43,6 +45,9 @@
 		controller: Controller;
 		/** The controller as the Herdr tab lists it, when opened from there. */
 		agent?: KnownAgent;
+		/** The agent Herdr runs an idle controller's session in, on every page that shows it;
+		 *  undefined when it lists none. */
+		idleAgent?: KnownAgent;
 		/** Changes when the server announces a Herdr tab move. */
 		tabMoves?: number;
 		/** This controller's inbox items, with its read reports not yet archived. */
@@ -92,6 +97,15 @@
 
 <ControllerHeader {controller} {tabMoves} usage={shown} />
 
+<!-- Opened from the Herdr tab, the agent's own close below stands for this one. -->
+{#if controller.status === 'idle' && !agent}
+	{#if idleAgent}
+		<AgentClose agent={idleAgent} label="關閉" />
+	{:else}
+		<p class="note">Herdr 的清單上找不到它的分頁，無法從這裡關閉。</p>
+	{/if}
+{/if}
+
 <PendingQuestions status={controller.status} {questions} {onopen} />
 
 {#if agent}
@@ -111,3 +125,11 @@
 		{/if}
 	{/snippet}
 </RecordTabs>
+
+<style>
+	.note {
+		margin: 0;
+		font-size: max(0.85rem, var(--min-font, 0px));
+		color: var(--muted);
+	}
+</style>

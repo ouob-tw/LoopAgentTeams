@@ -101,7 +101,7 @@ test('status table: active without any report is 進行中 with no phase yet', a
 	expect(controller).toMatchObject({ status: 'working', phase: null, lastReportAt: null });
 });
 
-test('status table: an unbound controller with an unarchived report is 已結束', async () => {
+test('status table: an unbound controller with an unarchived report, gone from hcom\'s list, is 已關閉', async () => {
 	const workspace = `${fixture.dir}/workspaces/gamma`;
 	fixture.report('session-ended-done', { tag: 'DONE', summary: '交付完成', hcom_name: 'vega', workspace, final: true });
 	fixture.list([]);
@@ -110,7 +110,7 @@ test('status table: an unbound controller with an unarchived report is 已結束
 
 	expect(controller).toMatchObject({
 		id: 'session-ended-done',
-		status: 'ended',
+		status: 'closed',
 		project: 'gamma',
 		phase: '交付完成',
 		herdr: null,
@@ -118,7 +118,7 @@ test('status table: an unbound controller with an unarchived report is 已結束
 	});
 });
 
-test('已結束 wins over 等你: an unbound controller whose last report is HELP or DECIDE is 已結束', async () => {
+test('已關閉 wins over 等你: an unbound controller whose last report is HELP or DECIDE is 已關閉', async () => {
 	const workspace = `${fixture.dir}/workspaces/gamma`;
 	fixture.report('session-ended-help', { tag: 'HELP', summary: '求助後被取消', hcom_name: 'orin', workspace, final: true });
 	fixture.report('session-ended-decide', { tag: 'HELP', summary: '先求助', hcom_name: 'pavo', workspace });
@@ -127,8 +127,8 @@ test('已結束 wins over 等你: an unbound controller whose last report is HEL
 
 	const snapshot = await fixture.refresh(cookie);
 
-	expect(named(snapshot, 'orin')).toMatchObject({ status: 'ended', pendingCount: 0 });
-	expect(named(snapshot, 'pavo')).toMatchObject({ status: 'ended', phase: '等你決定', pendingCount: 0 });
+	expect(named(snapshot, 'orin')).toMatchObject({ status: 'closed', pendingCount: 0 });
+	expect(named(snapshot, 'pavo')).toMatchObject({ status: 'closed', phase: '等你決定', pendingCount: 0 });
 });
 
 test('an unbound controller leaves the roster once no report of it is left in the inbox', async () => {
@@ -142,7 +142,7 @@ test('an unbound controller leaves the roster once no report of it is left in th
 
 	expect(named(snapshot, 'oldie')).toBeUndefined();
 	expect(named(snapshot, 'quiet')).toBeUndefined();
-	expect(named(snapshot, 'recent')).toMatchObject({ status: 'ended' });
+	expect(named(snapshot, 'recent')).toMatchObject({ status: 'closed' });
 });
 
 test('a controller bound again after its final report keeps that report as its latest until a new one', async () => {

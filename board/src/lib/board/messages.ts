@@ -25,7 +25,7 @@ export interface SendResponse {
 	logError: string | null;
 }
 
-export const ENDED_REASON = '這個主控已結束，無法傳話。';
+export const ENDED_REASON = '這個主控已停用 LAT，無法傳話。';
 export const CLOSED_REASON = '這個主控已關閉，無法傳話。';
 export const UNKNOWN_CONTROLLER_REASON = '看板目前的資料裡沒有這個主控，沒有送出。';
 
@@ -52,7 +52,7 @@ export type Command<T extends Target> = { ok: true; controller: T; text: string 
 
 /**
  * Who a command line is for: a leading `@name` picks that controller, otherwise the one that is
- * open. Never falls back to another controller. An ended or closed controller is refused unless
+ * open. Never falls back to another controller. An idle or closed controller is refused unless
  * the caller `wakes` it instead of sending.
  */
 export function parseCommand<T extends Target>(input: string, controllers: T[], open: T | undefined, wakes = false): Command<T> {
@@ -62,7 +62,7 @@ export function parseCommand<T extends Target>(input: string, controllers: T[], 
 	if (addressed) {
 		const name = addressed[1];
 		const matches = controllers.filter((candidate) => candidate.hcomName === name);
-		// A name can be reused after a controller ended; the one still running is the one meant.
+		// A name can be reused after a controller stopped; the one still running is the one meant.
 		controller = matches.find((candidate) => !isInactive(candidate.status)) ?? matches[0];
 		if (!controller) return { ok: false, reason: `找不到主控 @${name}，沒有送出。` };
 		text = addressed[2];

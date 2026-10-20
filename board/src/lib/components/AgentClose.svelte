@@ -1,14 +1,14 @@
 <script lang="ts">
 	// An agent's close, asked for and then confirmed. An agent with a switch left unfinished is
 	// pointed to the command line to continue or give it up instead; one Herdr no longer lists is
-	// shown only for that.
+	// shown only for that. An idle controller's information page closes its agent this way too.
 	import { AGENT_HCOM_UNKNOWN_REASON, agentCloseConfirmText } from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { KnownAgent } from '#lib/board/types.ts';
 
-	let { agent }: { agent: KnownAgent } = $props();
+	let { agent, label = '關閉 Agent' }: { agent: KnownAgent; label?: string } = $props();
 
 	/** Agents whose confirmation of an action is open, and which one: one at a time per agent. */
 	let confirming = $state<Record<string, 'close'>>({});
@@ -47,7 +47,7 @@
 			</div>
 		{:else}
 			<div class="actions">
-				<button type="button" data-action="close" disabled={!closable || closing[agent.id]} onclick={() => (confirming[agent.id] = 'close')}>關閉 Agent</button>
+				<button type="button" data-action="close" disabled={!closable || closing[agent.id]} onclick={() => (confirming[agent.id] = 'close')}>{label}</button>
 			</div>
 		{/if}
 	{/if}

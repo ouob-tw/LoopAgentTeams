@@ -2,6 +2,7 @@
 // shapes shared by the server and the page, and the LAT start command a controller's first message
 // begins with.
 import { DEFAULT_UNREADABLE_TEXT, type ModelChoice, type ModelOptions } from './models.ts';
+import type { Agent, Controller } from './types.ts';
 
 export const LAUNCH_CLIENTS = ['claude', 'codex'] as const;
 export type LaunchClient = (typeof LAUNCH_CLIENTS)[number];
@@ -124,6 +125,32 @@ export function launchSettingsText(launch: Pick<SentLaunch, 'model' | 'effort' |
 	if (model === null && effort === null && defaults.model === null && defaults.effort === null) return `模型與思考強度：${DEFAULT_UNREADABLE_TEXT}`;
 	const part = (chosen: string | null, given: string | null) => chosen ?? (given === null ? DEFAULT_UNREADABLE_TEXT : `${given}（預設）`);
 	return `模型 ${part(model, defaults.model)}・思考強度 ${part(effort, defaults.effort)}`;
+}
+
+/** Where a controller's launch row leads: its information page once it is active and on the
+ *  roster, before that the page of the agent Herdr runs as its session, or under its HCOM name
+ *  while the session is not known; null while neither is there or the launch failed. A name hcom
+ *  hands out again belongs to the newest of all `launches` that has it, a plain agent's too, and
+ *  a session already under it when the launch began is not the launch's. Nothing is opened for
+ *  the user: the row only shows the way. */
+export function launchLink(
+	launch: Pick<LaunchView, 'time' | 'state' | 'controllerId' | 'hcomName' | 'earlierSessions'>,
+	launches: readonly Pick<LaunchView, 'time' | 'hcomName'>[],
+	controllers: readonly Pick<Controller, 'id'>[],
+	agents: readonly Pick<Agent, 'id' | 'hcomName' | 'inHerdr'>[]
+): { kind: 'controller' | 'agent'; id: string } | null {
+	if (launch.state === 'failed') return null;
+	const { controllerId, hcomName } = launch;
+	if (launch.state === 'active' && controllerId !== null && controllers.some((controller) => controller.id === controllerId)) {
+		return { kind: 'controller', id: controllerId };
+	}
+	const running = agents.filter((candidate) => candidate.inHerdr && candidate.id !== null);
+	let agent;
+	if (controllerId !== null) agent = running.find((candidate) => candidate.id === controllerId);
+	else if (hcomName && !launches.some((other) => other.hcomName === hcomName && Date.parse(other.time) > Date.parse(launch.time))) {
+		agent = running.find((candidate) => candidate.hcomName === hcomName && !launch.earlierSessions.includes(candidate.id!));
+	}
+	return agent ? { kind: 'agent', id: agent.id! } : null;
 }
 
 /** A plain agent's states where they read differently from a controller's. */

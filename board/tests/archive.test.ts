@@ -89,7 +89,7 @@ test('an ended controller stays on the roster until its last report is archived;
 	const day8 = await on(ISSUED + 8 * DAY);
 	expect(titled(day8, '較早的求助')).toBeUndefined();
 	expect(titled(day8, '較晚的交付')).toBeDefined();
-	expect(named(day8, 'vega')).toMatchObject({ status: 'ended' });
+	expect(named(day8, 'vega')).toMatchObject({ status: 'closed' });
 
 	const day10 = await on(ISSUED + 10 * DAY);
 	expect(titled(day10, '較晚的交付')).toBeUndefined();
