@@ -480,9 +480,16 @@ for (const { name, report, ended, lat, hcom, herdr, stop } of LEAD_CASES) {
 				await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
 			}
 			if (stop) {
+				// With the wake options open, the stop closes them: one pop-up at a time, never overlapping.
+				if (ended) {
+					await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
+					await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
+				}
 				await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
 				await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
-				await tab.eval(`document.querySelector(${JSON.stringify(CONFIRM_STOP)}).click()`);
+				expect(await tab.eval(`document.querySelectorAll('.dock .popup').length`)).toBe(1);
+				expect(await tab.eval(`!!document.querySelector(${JSON.stringify(POPUP)})`)).toBe(false);
+				await tab.pointerClick(CONFIRM_STOP);
 				await tab.until(`document.querySelector('.dock')?.innerText.includes('已對 @lead 送出 Esc')`, 'the interrupt notice');
 				// The Esc went to the pane of the session that was open, nobody else's.
 				expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);

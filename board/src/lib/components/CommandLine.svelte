@@ -305,7 +305,7 @@
 					aria-expanded={confirmingStop}
 					data-action="interrupt"
 					disabled={interrupting[stopping.id]}
-					onclick={() => (confirmingStop = !confirmingStop)}
+					onclick={() => ((confirmingStop = !confirmingStop), (optionsOpen = false))}
 				>
 					<Square size="1em" fill="currentColor" />
 				</button>
@@ -344,7 +344,7 @@
 			title={waking ? '喚醒選項：開新一輪 LAT' : '只有閒置或已關閉的主控有喚醒選項'}
 			aria-expanded={optionsOpen}
 			disabled={!waking}
-			onclick={() => (optionsOpen = !optionsOpen)}
+			onclick={() => ((optionsOpen = !optionsOpen), (confirmingStop = false))}
 		>
 			<SlidersHorizontal size="1.1em" />
 		</button>
