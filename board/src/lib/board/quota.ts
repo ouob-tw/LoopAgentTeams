@@ -25,7 +25,7 @@ export interface QuotaPlan {
 export interface QuotaAccount {
 	email: string;
 	current: boolean;
-	/** null when no plan was ever recorded: 方案未知. */
+	/** null when no plan was ever recorded: none is shown. */
 	plan: QuotaPlan | null;
 	/** Empty when no usage was ever recorded: 沒有紀錄. */
 	windows: QuotaWindow[];
@@ -75,14 +75,13 @@ export function agoText(at: number, now: number): string {
 
 export const updatedText = (at: number | null, now: number) => (at === null ? '沒有紀錄' : `${agoText(at, now)}更新`);
 
-/** What is left of a window, 0–100: 100 − used. */
-export const remaining = (used: number) => Math.min(100, Math.max(0, 100 - used));
+/** What is left of a window as shown, 0–100: 100 − the used percent rounded (81.5 used leaves 18). */
+export const remaining = (used: number) => 100 - Math.round(Math.min(100, Math.max(0, used)));
 
-/** 20% left and under is a warning, 5% left and under the danger color. */
+/** 20% left and under is a warning, 5% left and under the danger color; judged on the number shown. */
 export const level = (left: number) => (left <= 5 ? 'danger' : left <= 20 ? 'warn' : null);
 
-/** 剩 N%; N rounds the used percent as before, so 81.5 used reads 剩 18%, not 剩 19%. */
-export const percentText = (used: number) => `剩 ${100 - Math.round(Math.min(100, Math.max(0, used)))}%`;
+export const percentText = (used: number) => `剩 ${remaining(used)}%`;
 
 /** A window whose reset has passed: its number is the last window's, not this one's. */
 export const waiting = (window: QuotaWindow, now: number) => window.resetsAt !== null && window.resetsAt <= now;

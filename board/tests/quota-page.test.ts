@@ -167,7 +167,7 @@ const cards = (client: string) =>
 	);
 const windows = `[...document.querySelectorAll('.quota [data-client="claude"] .card.current .window')].map((row) => ({
 	text: row.innerText.replace(/\\s+/g, ' '),
-	fill: row.querySelector('.percent')?.className.replace(/svelte-\\S+/g, '').trim() ?? null
+	cls: row.querySelector('.percent')?.className.replace(/svelte-\\S+/g, '').trim() ?? null
 }))`;
 
 for (const width of [1280, 360]) {
@@ -189,13 +189,13 @@ for (const width of [1280, 360]) {
 		).toEqual(['Max 5x', false, '']);
 		// The group header: the account in use's reading, fresh.
 		expect(await header('claude')).toBe('Claude 1 分鐘前更新');
-		const rows = await tab.eval<{ text: string; fill: string | null }[]>(windows);
+		const rows = await tab.eval<{ text: string; cls: string | null }[]>(windows);
 		expect(rows.length).toBe(3);
 		expect(await tab.eval(`document.querySelectorAll('.quota .bar, .quota .fill').length`)).toBe(0);
 		expect(rows[0].text).toMatch(/^5 小時 剩 60% \d\d:\d\d 重置$/);
 		expect(rows[1].text).toMatch(/^7 天 剩 15% \d+\/\d+ \d\d:\d\d 重置$/);
 		expect(rows[2].text).toMatch(/^Fable 剩 4% \d+\/\d+ \d\d:\d\d 重置$/);
-		expect(rows.map((row) => row.fill)).toEqual(['percent', 'percent warn', 'percent danger']);
+		expect(rows.map((row) => row.cls)).toEqual(['percent', 'percent warn', 'percent danger']);
 
 		// The other account: its own age, stale; a reset gone by waits for new data; its plan only recorded.
 		expect(claude[1].text).toContain('spare@example.com');
