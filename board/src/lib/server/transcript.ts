@@ -2,6 +2,7 @@
 // a live feed that re-reads the client's record file whenever it changes, and a Claude
 // controller's usage file whenever the status line rewrites it.
 import type { TranscriptUpdate } from '../board/transcript.ts';
+import { everyController } from '../board/types.ts';
 import { usageFrom, type Usage } from '../board/usage.ts';
 import type { Board } from './board.ts';
 import { readTranscript } from './helper.ts';
@@ -11,9 +12,10 @@ import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 /** How soon a record that could not be found or read is tried again. */
 const RETRY_MS = 4_000;
 
-/** The client and session of a controller the roster lists, active or ended; null for any other ID. */
+/** The client and session of a controller the roster lists, active or ended, or a bound one off it;
+ *  null for any other ID. */
 export async function transcriptSource(board: Board, controllerId: string): Promise<{ client: string; sessionId: string } | null> {
-	const controller = (await board.current()).controllers.find((candidate) => candidate.id === controllerId);
+	const controller = everyController(await board.current()).find((candidate) => candidate.id === controllerId);
 	return controller ? { client: controller.client, sessionId: controller.id } : null;
 }
 

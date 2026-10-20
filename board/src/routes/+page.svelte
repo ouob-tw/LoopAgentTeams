@@ -33,7 +33,7 @@
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { askedTogether } from '#lib/board/question-message.ts';
 	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
-	import type { InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
+	import { everyController, type InboxItem, type InboxQuestion, type InboxReport, type KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
 	import AgentList from '#lib/components/AgentList.svelte';
 	import ClosedAgents from '#lib/components/ClosedAgents.svelte';
@@ -160,8 +160,10 @@
 	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
 	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
 	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
+	/** The controllers of the Herdr tab and the command line: the roster's, and the bound ones off it. */
+	const herdrControllers = $derived(everyController(board.snapshot));
 	/** The open agent as the controller it is, while Herdr lists it: its page is the controller's. */
-	const agentController = $derived(agent?.controller && agent.inHerdr ? controllers.find((candidate) => candidate.id === agent.id) : undefined);
+	const agentController = $derived(agent?.controller && agent.inHerdr ? herdrControllers.find((candidate) => candidate.id === agent.id) : undefined);
 	/** The question or report of that page last opened from its own bars and report list: shown where
 	 *  it is in the conversation, without leaving the Herdr tab. */
 	let agentOpened = $state.raw<InboxItem | null>(null);
@@ -556,7 +558,7 @@
 			</div>
 			{#if middle === 'agents'}
 				<AgentList {agents} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
-				<ClosedAgents closed={board.snapshot.closed} {controllers} />
+				<ClosedAgents closed={board.snapshot.closed} controllers={herdrControllers} />
 			{:else}
 				<Inbox
 					items={listedInbox}
@@ -737,7 +739,7 @@
 			/>
 			<!-- A controller's page on the Herdr tab is written to as on its information page. -->
 			<CommandLine
-				{controllers}
+				controllers={herdrControllers}
 				target={controller ?? agentController}
 				agent={view?.kind === 'agent' && !agentController ? agent : undefined}
 				adopt={agentController?.id}

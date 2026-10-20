@@ -1,5 +1,5 @@
-// Which agents of the Herdr tab are controllers: those whose session is on the controller roster,
-// bound or ended with a report not yet archived. Matched by session ID, never by name.
+// Which agents of the Herdr tab are controllers: those whose session is bound, or on the
+// controller roster ended with a report not yet archived. Matched by session ID, never by name.
 import { expect, test } from 'bun:test';
 import { EMPTY_CLOSED, type ClosedAgent } from '../src/lib/board/closed-agents.ts';
 import type { Agent, HelperController, Report } from '../src/lib/board/types.ts';
@@ -58,7 +58,9 @@ const agent = (id: string | null, name: string, isBound = false): Agent => ({
 	switch: null
 });
 
-function snapshotOf(agents: Agent[], archived: string[] = [], closed: Omit<ClosedAgent, 'controller'>[] = []) {
+const RUNNING = ['s-bound', 's-ended', 's-quiet', 's-plain', 's-twin'];
+
+function snapshotOf(agents: Agent[], archived: string[] = [], closed: Omit<ClosedAgent, 'controller'>[] = [], running = RUNNING) {
 	const sources: Sources = {
 		active: [bound('s-bound', 'lead')],
 		helperError: null,
@@ -70,7 +72,7 @@ function snapshotOf(agents: Agent[], archived: string[] = [], closed: Omit<Close
 			file('s-quiet', 'vega', ['NO REPLY'])
 		],
 		reportsError: null,
-		running: new Set(['s-bound', 's-ended', 's-quiet', 's-plain', 's-twin']),
+		running: new Set(running),
 		hcomError: null,
 		agents,
 		herdrError: null,
@@ -127,4 +129,31 @@ test('a closed row of the 已關閉 section is a controller by the same roster a
 	const fromClosed = Object.fromEntries(closed.closed.agents.map((entry) => [entry.id, entry.controller]));
 	expect(fromClosed).toEqual({ 's-bound': true, 's-ended': true, 's-quiet': false, 's-plain': false });
 	expect(fromClosed).toEqual(fromList);
+});
+
+test('a bound controller whose client is closed and whose reports are all archived is one on the Herdr tab, off the roster', () => {
+	const closedRow: Omit<ClosedAgent, 'controller'> = {
+		id: 's-bound',
+		hcomName: 'lead',
+		tab: null,
+		client: 'claude',
+		folder: '/w/p',
+		workspace: 'w',
+		workspaceLabel: null,
+		stoppedAt: '2026-10-20T11:00:00.000Z',
+		resume: null
+	};
+	const notRunning = RUNNING.filter((id) => id !== 's-bound');
+	const snapshot = snapshotOf([agent('s-bound', 'lead', true)], ['s-bound#0'], [closedRow], notRunning);
+	expect(snapshot.agents.map((entry) => entry.controller)).toEqual([true]);
+	expect(snapshot.closed.agents.map((entry) => entry.controller)).toEqual([true]);
+	// The roster, and so the To-do tab, keeps it out, as before.
+	expect(snapshot.controllers.map((controller) => controller.id)).toEqual(['s-ended']);
+	expect(snapshot.offRoster.map((controller) => [controller.id, controller.status, controller.hcomName])).toEqual([['s-bound', 'closed', 'lead']]);
+	expect(snapshot.inbox.filter((item) => item.controllerId === 's-bound')).toEqual([]);
+
+	// With a report not yet archived it is on the roster, and not off it too.
+	const reported = snapshotOf([agent('s-bound', 'lead', true)], [], [], notRunning);
+	expect(reported.controllers.map((controller) => controller.id)).toContain('s-bound');
+	expect(reported.offRoster).toEqual([]);
 });

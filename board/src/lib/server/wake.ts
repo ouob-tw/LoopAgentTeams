@@ -19,7 +19,7 @@ import {
 	type SwitchState
 } from '../board/models.ts';
 import { UNKNOWN_CONTROLLER_REASON } from '../board/messages.ts';
-import type { Controller } from '../board/types.ts';
+import { everyController, type Controller } from '../board/types.ts';
 import {
 	RESUME_BUSY_REASON,
 	RESUME_UNCONFIRMED_REASON,
@@ -67,8 +67,8 @@ export function abandonResume(board: Board, controllerId: string, wakeId: string
 }
 
 export async function findController(board: Board, controllerId: string): Promise<Controller | undefined> {
-	const known = (await board.current()).controllers.find((controller) => controller.id === controllerId);
-	return known ?? (await board.refresh()).controllers.find((controller) => controller.id === controllerId);
+	const known = everyController(await board.current()).find((controller) => controller.id === controllerId);
+	return known ?? everyController(await board.refresh()).find((controller) => controller.id === controllerId);
 }
 
 /** What stops this wake, or the running client to type into (null: resume). */

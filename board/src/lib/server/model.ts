@@ -336,18 +336,18 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 
 	const live = sources.active.filter((binding) => !isClosed(sources, binding.session_id));
 	const controllers: Controller[] = [];
+	const offRoster: Controller[] = [];
 	for (const binding of sources.active) {
 		const file = files.get(binding.session_id);
 		files.delete(binding.session_id);
 		// A closed controller stays on the roster only while one of its reports is not yet archived
-		// (read ones count), like an unbound one.
+		// (read ones count), like an unbound one; still bound, it is a controller on the Herdr tab.
 		const closed = isClosed(sources, binding.session_id);
-		if (closed && !withInboxReport.has(binding.session_id)) continue;
 		const controller = closed ? closedController(binding, file) : activeController(binding, file);
 		if (sources.helperError) {
 			controller.error = joinErrors(`資料可能過期，輔助工具失敗：${sources.helperError}`, controller.error);
 		}
-		controllers.push(controller);
+		(closed && !withInboxReport.has(binding.session_id) ? offRoster : controllers).push(controller);
 	}
 	if (sources.helperError) errors.push(`輔助工具失敗：${sources.helperError}`);
 	if (sources.hcomError) {
@@ -392,9 +392,11 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 			a.hcomName.localeCompare(b.hcomName) ||
 			a.id.localeCompare(b.id)
 	);
+	const isController = (id: string) => [...controllers, ...offRoster].some((controller) => controller.id === id);
 	return {
 		generatedAt: new Date(now).toISOString(),
 		controllers,
+		offRoster,
 		// An idle or closed controller's questions cannot be answered any more, so only running
 		// bound ones are listed.
 		inbox: [
@@ -405,14 +407,14 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 			binding.questions.filter((question) => question.status === 'recorded').map((question) => questionKey(binding, question))
 		),
 		processedCount: (state ? processedItems(sources, state, now) : answeredItems(sources, now)).length,
-		// A controller on the roster is one on the Herdr tab too: bound, as the agent list already
-		// tells, or ended with a report not yet archived.
+		// A controller on the roster or off it is one on the Herdr tab too: bound, as the agent list
+		// already tells, or ended with a report not yet archived.
 		agents: sources.agents.map((agent) =>
-			agent.controller || !agent.id || !controllers.some((controller) => controller.id === agent.id) ? agent : { ...agent, controller: true }
+			agent.controller || !agent.id || !isController(agent.id) ? agent : { ...agent, controller: true }
 		),
 		workspaces: sources.workspaces,
-		// On the roster: woken like a controller.
-		closed: { ...sources.closed, agents: sources.closed.agents.map((agent) => ({ ...agent, controller: controllers.some((controller) => controller.id === agent.id) })) },
+		// On the roster or off it: woken like a controller.
+		closed: { ...sources.closed, agents: sources.closed.agents.map((agent) => ({ ...agent, controller: isController(agent.id) })) },
 		errors
 	};
 }
