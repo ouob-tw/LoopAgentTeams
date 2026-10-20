@@ -7,7 +7,7 @@
 	// with an optional tab name and first message, no LAT start command and no Git project needed,
 	// followed until Herdr lists it. A folder that is not there yet is created when the form is sent.
 	import { untrack } from 'svelte';
-	import { folderName, pathMatches, suggestedFolders } from '#lib/board/folder-search.ts';
+	import { folderName, listKey, pathMatches, suggestedFolders } from '#lib/board/folder-search.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import {
 		AGENT_LAUNCH_STATE_TEXT,
@@ -120,7 +120,8 @@
 	}
 	const known = (path: string): Row => {
 		const project = projects.find((candidate) => candidate.path === path);
-		return { path, git: project?.exists ? project.git : null, inWorkspace: target?.folders.includes(path) ?? false, project };
+		const git = project ? (project.exists ? project.git : null) : (form.gitOf[path] ?? null);
+		return { path, git, inWorkspace: target?.folders.includes(path) ?? false, project };
 	};
 	/** Before anything is typed, the most recent folders; then the known folders matching what is
 	 *  typed, and the folders under the typed level, each once. */
@@ -128,10 +129,14 @@
 		const all = [...(target?.folders ?? []), ...projects.map((project) => project.path)];
 		if (!form.folderEdited || form.folder.trim() === '') return suggestedFolders(target?.folders ?? [], projects.map((project) => project.path)).map(known);
 		const home = form.list?.home ?? '';
-		const matched = [...new Set(all)].filter((path) => pathMatches(path, form.folder, home)).map(known);
-		const listed = (found?.entries ?? [])
-			.filter((entry) => !matched.some((row) => row.path === entry.path))
-			.map((entry) => ({ ...known(entry.path), git: entry.git }));
+		const entries = found?.entries ?? [];
+		// A folder found under the typed level says whether it is in Git, a known one included.
+		const withGit = (row: Row): Row => {
+			const entry = entries.find((candidate) => candidate.path === row.path);
+			return entry ? { ...row, git: entry.git } : row;
+		};
+		const matched = [...new Set(all)].filter((path) => pathMatches(path, form.folder, home)).map((path) => withGit(known(path)));
+		const listed = entries.filter((entry) => !matched.some((row) => row.path === entry.path)).map((entry) => withGit(known(entry.path)));
 		return [...matched, ...listed];
 	});
 
@@ -149,6 +154,15 @@
 	/** The row the arrow keys are on; -1 for none. */
 	let active = $state(-1);
 	const shownRows = $derived(listOpen ? rows : []);
+	// A folder the projects do not know, such as one a workspace's agent works in, is asked about.
+	$effect(() => {
+		for (const row of shownRows) if (row.git === null && !row.project && !(row.path in form.gitOf)) void form.checkGit(row.path);
+	});
+	// The row the arrows are on stays in sight, and is dropped when the list no longer has it.
+	$effect(() => {
+		if (active >= shownRows.length) active = -1;
+		else if (active >= 0) document.getElementById(`folder-row-${active}`)?.scrollIntoView({ block: 'nearest' });
+	});
 
 	/** The folder used most recently: a controller's project or a plain agent's folder. */
 	const recentFolder = $derived.by(() => {
@@ -201,28 +215,18 @@
 	}
 
 	/** Arrows move along the list, Tab takes the folder and goes on into it, Enter takes it, Esc
-	 *  closes the list. Enter never sends the form from here. */
+	 *  closes the list (`listKey`). Enter never sends the form from here. */
 	function keydown(event: KeyboardEvent) {
-		const count = shownRows.length;
-		if (event.key === 'ArrowDown' || event.key === 'ArrowUp') {
-			event.preventDefault();
-			if (!listOpen) {
-				listOpen = true;
-				return;
-			}
-			if (count) active = event.key === 'ArrowDown' ? (active + 1) % count : active <= 0 ? count - 1 : active - 1;
-		} else if (event.key === 'Tab' && !event.shiftKey && count) {
-			event.preventDefault();
-			form.folder = `${shownRows[Math.max(active, 0)]!.path.replace(/\/$/, '')}/`;
+		const done = listKey(event.key, event.shiftKey, { open: listOpen, active, count: shownRows.length });
+		if (!done.handled) return;
+		event.preventDefault();
+		const rowsNow = shownRows;
+		listOpen = done.open;
+		active = done.active;
+		if (done.choose !== null) choose(rowsNow[done.choose]!);
+		if (done.complete !== null) {
+			form.folder = `${rowsNow[done.complete]!.path.replace(/\/$/, '')}/`;
 			typing();
-		} else if (event.key === 'Enter') {
-			event.preventDefault();
-			if (active >= 0 && active < count) choose(shownRows[active]!);
-			else listOpen = false;
-		} else if (event.key === 'Escape' && listOpen) {
-			event.preventDefault();
-			listOpen = false;
-			active = -1;
 		}
 	}
 
@@ -351,7 +355,7 @@
 			{#if folderProblem && form.folderEdited}
 				<p class="failed">{folderProblem}</p>
 			{:else if willCreate}
-				<p class="note">這個資料夾還不存在，送出時會建立{target === null && !typed?.git ? '並 git init' : ''}。</p>
+				<p class="note">這個資料夾還不存在，送出時會建立{target === null ? '並 git init' : ''}。</p>
 			{:else if searchFailed}
 				<p class="note">讀不到這個資料夾的狀態，送出時由看板確認。</p>
 			{/if}

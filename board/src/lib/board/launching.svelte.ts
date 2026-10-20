@@ -42,6 +42,8 @@ class Launching {
 	/** The text whose search failed; null when the latest one did not. */
 	searchFailed = $state<string | null>(null);
 	#searches = 0;
+	/** Whether folders the projects do not know are in a Git project, as asked; null when it could not be told. */
+	gitOf = $state<Record<string, boolean | null>>({});
 	/** What each client uses by default, read for this folder; null until read. */
 	defaults = $state<{ folder: string; clients: LaunchDefaults } | null>(null);
 	defaultsFailed = $state(false);
@@ -70,6 +72,19 @@ class Launching {
 		if (search !== this.#searches) return;
 		if (result) this.search = result;
 		this.searchFailed = result ? null : input;
+	}
+
+	/** Ask whether a folder is in a Git project, once. */
+	async checkGit(path: string): Promise<void> {
+		this.gitOf[path] = null;
+		try {
+			const response = await fetch(`/api/browse?q=${encodeURIComponent(path)}`);
+			if (!response.ok) return;
+			const result: FolderSearch = await response.json();
+			if (result.target.state === 'folder') this.gitOf[path] = result.target.git;
+		} catch {
+			// Left unknown: the row just does not say.
+		}
 	}
 
 	/** Read the clients' defaults for a folder ('' for the user's settings alone). A failed read

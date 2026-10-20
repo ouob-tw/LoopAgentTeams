@@ -61,3 +61,28 @@ export function pathMatches(path: string, input: string, home: string): boolean 
 export function suggestedFolders(workspaceFolders: readonly string[], projects: readonly string[]): string[] {
 	return [...new Set([...workspaceFolders, ...projects])].slice(0, SUGGESTED);
 }
+
+/** What a key pressed in the folder box does to its list of `count` rows: the list open or
+ *  closed, the row the arrows are on (-1 for none), the row taken as the folder (`choose`), or
+ *  the row whose path goes into the box to look one level down (`complete`); `handled` keeps the
+ *  key from doing anything else, such as sending the form. A row the list no longer has counts as
+ *  none. */
+export function listKey(
+	key: string,
+	shift: boolean,
+	list: { open: boolean; active: number; count: number }
+): { open: boolean; active: number; choose: number | null; complete: number | null; handled: boolean } {
+	const { open, count } = list;
+	const active = list.active < count ? list.active : -1;
+	const none = { open, active, choose: null, complete: null, handled: false };
+	if (key === 'ArrowDown' || key === 'ArrowUp') {
+		if (!open) return { ...none, open: true, handled: true };
+		if (!count) return { ...none, handled: true };
+		const next = key === 'ArrowDown' ? (active + 1) % count : active <= 0 ? count - 1 : active - 1;
+		return { ...none, active: next, handled: true };
+	}
+	if (key === 'Tab' && !shift && open && count) return { ...none, active: -1, complete: Math.max(active, 0), handled: true };
+	if (key === 'Enter') return { ...none, open: false, active: -1, choose: open && active >= 0 ? active : null, handled: true };
+	if (key === 'Escape' && open) return { ...none, open: false, active: -1, handled: true };
+	return none;
+}

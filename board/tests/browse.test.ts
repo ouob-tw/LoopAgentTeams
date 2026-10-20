@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expandHome, nameMatches, pathMatches, suggestedFolders, typedFolder, typedLevel } from '../src/lib/board/folder-search.ts';
+import { expandHome, listKey, nameMatches, pathMatches, suggestedFolders, typedFolder, typedLevel } from '../src/lib/board/folder-search.ts';
 import type { FolderSearch } from '../src/lib/board/launch.ts';
 import { gitRoot } from '../src/lib/server/git.ts';
 import { startFixture, type Fixture } from './harness.ts';
@@ -51,6 +51,31 @@ describe('the shared rules', () => {
 	test('before typing: the workspace folders first, then recent projects, five at most and each once', () => {
 		expect(suggestedFolders(['/w1', '/p2'], ['/p1', '/p2', '/p3', '/p4', '/p5'])).toEqual(['/w1', '/p2', '/p1', '/p3', '/p4']);
 		expect(suggestedFolders([], ['/p1', '/p2'])).toEqual(['/p1', '/p2']);
+	});
+	test('keys: arrows open the list and go round it, Tab completes, Enter takes a row without sending, Esc closes', () => {
+		const at = (active: number, open = true, count = 3) => ({ open, active, count });
+		expect(listKey('ArrowDown', false, at(-1, false))).toMatchObject({ open: true, active: -1, handled: true });
+		expect(listKey('ArrowDown', false, at(-1))).toMatchObject({ active: 0 });
+		expect(listKey('ArrowDown', false, at(2))).toMatchObject({ active: 0 });
+		expect(listKey('ArrowUp', false, at(-1))).toMatchObject({ active: 2 });
+		expect(listKey('ArrowUp', false, at(1))).toMatchObject({ active: 0 });
+		// Tab takes the row the arrows are on, or the first; with no rows it moves on as usual.
+		expect(listKey('Tab', false, at(1))).toMatchObject({ complete: 1, open: true, handled: true });
+		expect(listKey('Tab', false, at(-1))).toMatchObject({ complete: 0 });
+		expect(listKey('Tab', false, at(-1, true, 0))).toMatchObject({ handled: false });
+		expect(listKey('Tab', true, at(1))).toMatchObject({ handled: false });
+		// Enter is always kept from sending the form.
+		expect(listKey('Enter', false, at(2))).toEqual({ open: false, active: -1, choose: 2, complete: null, handled: true });
+		expect(listKey('Enter', false, at(-1))).toMatchObject({ choose: null, open: false, handled: true });
+		expect(listKey('Enter', false, at(-1, false, 0))).toMatchObject({ choose: null, handled: true });
+		expect(listKey('Escape', false, at(1))).toMatchObject({ open: false, active: -1, handled: true });
+		expect(listKey('Escape', false, at(-1, false, 0))).toMatchObject({ handled: false });
+		expect(listKey('a', false, at(1))).toMatchObject({ handled: false });
+	});
+	test('a row the list no longer has counts as none: Tab and Enter never take a missing one', () => {
+		expect(listKey('Tab', false, { open: true, active: 4, count: 2 })).toMatchObject({ complete: 0 });
+		expect(listKey('Enter', false, { open: true, active: 4, count: 2 })).toMatchObject({ choose: null });
+		expect(listKey('ArrowDown', false, { open: true, active: 4, count: 2 })).toMatchObject({ active: 0 });
 	});
 });
 

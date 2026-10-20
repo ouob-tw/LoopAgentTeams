@@ -272,8 +272,8 @@ type Stop = { reason: string; refused?: true };
 type Prepared = { startIn: string; bound: HelperController[] };
 
 /** Everything before hcom runs. Fills in the entry as it goes; resolves with why it cannot go on,
- *  or the folder to start in. A `missing` folder is created first, and is a project of its own
- *  with `git init` when it is not in one. */
+ *  or the folder to start in. A `missing` folder is created first, and made a project of its own
+ *  with `git init`. */
 async function prepare(board: Board, request: LaunchRequest, entry: SentLaunch, missing: boolean): Promise<Stop | Prepared> {
 	// The bindings as they are before anything runs: one already under the name hcom will print is
 	// not the new controller. Without them a launch could not be told from an earlier agent's.
@@ -284,7 +284,8 @@ async function prepare(board: Board, request: LaunchRequest, entry: SentLaunch, 
 	const resolved = resolveFolder(request.folder);
 	if ('reason' in resolved) return resolved;
 	const folder = resolved.folder;
-	let scope = gitRoot(folder);
+	// A folder the board just created is a project of its own, even inside another one.
+	let scope = entry.folderCreated ? null : gitRoot(folder);
 	if (!scope) {
 		if (!request.gitInit && !entry.folderCreated) return { reason: NOT_GIT_REASON, refused: true };
 		const initFailure = await gitInit(folder);

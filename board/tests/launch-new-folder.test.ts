@@ -83,7 +83,7 @@ needsPlain('a new controller in a folder not there yet creates it with the level
 	expect((await launches()).find((entry) => entry.id === body.entry!.id)).toMatchObject({ folderCreated: true, gitInit: true });
 });
 
-needsPlain('a new folder inside a Git project starts in that project, with no git init of its own', async () => {
+needsPlain('a new folder inside a Git project is still made a project of its own', async () => {
 	const repo = join(home, 'repo');
 	mkdirSync(join(repo, '.git'), { recursive: true });
 	const folder = join(repo, 'sub', 'new');
@@ -91,9 +91,8 @@ needsPlain('a new folder inside a Git project starts in that project, with no gi
 	const { status, body } = await launch({ folder });
 
 	expect(status).toBe(200);
-	expect(existsSync(folder)).toBe(true);
-	expect(existsSync(join(folder, '.git'))).toBe(false);
-	expect(body.entry).toMatchObject({ folderCreated: true, gitInit: false, scope: repo });
+	expect(existsSync(join(folder, '.git/HEAD'))).toBe(true);
+	expect(body.entry).toMatchObject({ folderCreated: true, gitInit: true, scope: folder });
 });
 
 needsPlain('a plain agent gets the folder created, and nothing else: no git init', async () => {
