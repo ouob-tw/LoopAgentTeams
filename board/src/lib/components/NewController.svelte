@@ -373,7 +373,7 @@
 						<p class="state warn">{launch.follow.error}</p>
 					{/if}
 					{#if launch.role !== 'agent'}
-						{@const link = launchLink(launch, controllers, agents)}
+						{@const link = launchLink(launch, launches, controllers, agents)}
 						{#if link?.kind === 'controller'}
 							<button class="open" onclick={() => onopen(link.id)}>看主控資訊 →</button>
 						{:else if link}

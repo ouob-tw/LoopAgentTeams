@@ -10,6 +10,7 @@
 	import type { Snippet } from 'svelte';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
+	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
 	import type { Controller, InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
 	import type { PlacedTarget } from '#lib/board/transcript.ts';
 	import type { Usage } from '#lib/board/usage.ts';
@@ -87,7 +88,10 @@
 
 {#if controller.status === 'idle'}
 	<section class="controls" aria-label="操作">
-		{#if agent}
+		{#if agent?.switch}
+			<!-- As on its agent page: nothing but continuing or giving up the switch until it is over. -->
+			<p class="note">{AGENT_SWITCH_UNFINISHED_TEXT}，處理完才能關閉。</p>
+		{:else if agent}
 			<!-- Unbound, so the agent list does not call it a controller; it still is one to wake. -->
 			<AgentClose {agent} label="關閉" controller />
 		{:else}
