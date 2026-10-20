@@ -2,9 +2,10 @@
 // browser: headless Chrome driven over its DevTools protocol, on the built board with fake hcom,
 // Herdr, helper and input command, wide and at a phone's width. It is off the roster, so the To-do
 // tab does not list it, but on the Herdr tab its card opens the controller's page and the command
-// line wakes it, resuming its conversation. Skipped when the host has no Chrome.
+// line wakes it, resuming its conversation; gone from Herdr, its row of the 已關閉 section is a
+// controller's, woken with the wake's options. Skipped when the host has no Chrome.
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
@@ -96,6 +97,8 @@ let chrome: ChildProcess | undefined;
 let profile: string;
 let tab: Tab;
 let old: ReturnType<Fixture['bound']>;
+/** Like `old`, but Herdr no longer lists them: in the 已關閉 section, one for each width. */
+const GONE = ['s-gone-1280', 's-gone-390'];
 
 function herdrAgent(session: string, cwd: string) {
 	return {
@@ -128,23 +131,43 @@ beforeAll(async () => {
 	});
 	cookie = await fixture.login('herdr-off-roster');
 	old = fixture.bound('qa', 'old', { session_id: 's-old' });
-	// Its only report is over 7 days old, so archived.
-	fixture.report('s-old', { tag: 'DONE', summary: '早就收工', message: '早就收工了。', time: new Date(Date.now() - 8 * DAY_MS).toISOString(), hcom_name: 'old', workspace: old.workspace });
+	const gone = GONE.map((session) => fixture.bound(session, session.replace('s-', ''), { session_id: session }));
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
-	writeFileSync(join(fixture.dir, 'transcripts', 's-old.jsonl'), JSON.stringify({ kind: 'assistant', time: new Date(Date.now() - 8 * DAY_MS).toISOString(), text: '早就收工了。' }) + '\n');
-	fixture.list([old]);
-	// Bound, but hcom no longer lists it: closed, its pane still in Herdr.
+	for (const controller of [old, ...gone]) {
+		const session = controller.session_id;
+		// Its only report is over 7 days old, so archived.
+		const time = new Date(Date.now() - 8 * DAY_MS).toISOString();
+		fixture.report(session, { tag: 'DONE', summary: '早就收工', message: '早就收工了。', time, hcom_name: controller.hcom_name, workspace: controller.workspace });
+		const said = [{ kind: 'user', text: '請開始。' }, { kind: 'assistant', text: '早就收工了。' }];
+		writeFileSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), said.map((line) => JSON.stringify({ ...line, time }) + '\n').join(''));
+	}
+	fixture.list([old, ...gone]);
+	// Bound, but hcom no longer lists them: closed. `old` keeps its pane in Herdr; the others are
+	// seen there once, then their panes close.
 	fixture.setHcom({ agents: [] });
-	const agent = herdrAgent('s-old', old.workspace);
-	writeFileSync(
-		join(fixture.dir, 'herdr.json'),
-		JSON.stringify({
-			agents: [agent],
-			panes: [{ pane_id: agent.pane_id, workspace_id: agent.workspace_id, cwd: agent.cwd }],
-			workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }],
-			tabs: [{ tab_id: agent.tab_id, workspace_id: agent.workspace_id, label: '分頁-s-old' }]
-		})
-	);
+	const setHerdr = (agents: ReturnType<typeof herdrAgent>[]) =>
+		writeFileSync(
+			join(fixture.dir, 'herdr.json'),
+			JSON.stringify({
+				agents,
+				panes: agents.map((agent) => ({ pane_id: agent.pane_id, workspace_id: agent.workspace_id, cwd: agent.cwd })),
+				workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }],
+				tabs: agents.map((agent) => ({ tab_id: agent.tab_id, workspace_id: agent.workspace_id, label: `分頁-${agent.agent_session.value}` }))
+			})
+		);
+	setHerdr([old, ...gone].map((controller) => herdrAgent(controller.session_id, controller.workspace)));
+	await fixture.refresh(cookie);
+	setHerdr([herdrAgent('s-old', old.workspace)]);
+	for (const [index, controller] of gone.entries()) {
+		const event = {
+			data: { action: 'stopped', by: 'pty', reason: 'killed', snapshot: { name: controller.hcom_name, session_id: controller.session_id, tool: 'claude', directory: controller.workspace } },
+			id: index + 1,
+			instance: controller.hcom_name,
+			ts: new Date(Date.now() - 60_000).toISOString(),
+			type: 'life'
+		};
+		appendFileSync(join(fixture.dir, 'hcom-events.jsonl'), JSON.stringify(event) + '\n');
+	}
 	await fixture.refresh(cookie);
 }, 30_000);
 
@@ -191,9 +214,10 @@ const type = (text: string) =>
 test.skipIf(!CHROME)('it is off the roster and its report stays archived, but a controller on the Herdr tab', async () => {
 	const snapshot: BoardSnapshot = await fixture.board(cookie);
 	expect(snapshot.controllers).toEqual([]);
-	expect(snapshot.offRoster.map((controller) => [controller.id, controller.status])).toEqual([['s-old', 'closed']]);
+	expect(snapshot.offRoster.map((controller) => [controller.id, controller.status]).sort()).toEqual([['s-gone-1280', 'closed'], ['s-gone-390', 'closed'], ['s-old', 'closed']]);
 	expect(snapshot.inbox).toEqual([]);
 	expect(snapshot.agents.map((agent) => [agent.id, agent.controller])).toEqual([['s-old', true]]);
+	expect(snapshot.closed.agents.map((agent) => [agent.id, agent.controller]).sort()).toEqual([['s-gone-1280', true], ['s-gone-390', true]]);
 });
 
 for (const width of [1280, 390]) {
@@ -247,5 +271,32 @@ for (const width of [1280, 390]) {
 			body: JSON.stringify({ controllerId: 's-old', wakeId: wake!.id }),
 			cookie
 		});
+	}, 60_000);
+}
+
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`${width}px: gone from Herdr, its row of the 已關閉 section is a controller's, woken with the wake's options`, async () => {
+		const session = `s-gone-${width}`;
+		const ROW = `[data-closed="${session}"]`;
+		const WAKE = `[data-wake="${session}"]`;
+		const text = `接回 ${width}`;
+		await visit(width);
+		await tab.eval(`document.querySelector('[data-middle="agents"]').click()`);
+		await tab.until(`!!document.querySelector('.inbox .closed .trigger')`, 'the 已關閉 section');
+		await tab.eval(`document.querySelector('.inbox .closed .trigger').click()`);
+		await tab.until(`!!document.querySelector('${ROW}')`, 'its row');
+		expect(await tab.eval(`document.querySelector('${ROW} .tag')?.innerText`)).toBe('主控');
+		await tab.eval(`document.querySelector('${ROW} [data-action="resume"]').click()`);
+		await tab.until(`(document.querySelector('${WAKE}')?.innerText ?? '').includes('開新一輪 LAT')`, "the wake's options");
+		expect(await tab.eval(`document.querySelectorAll('${WAKE} .pills button').length`)).toBeGreaterThan(0);
+		expect(await tab.eval(FITS)).toBe(true);
+		await tab.eval(`(() => { const box = document.querySelector('${WAKE} textarea'); box.value = ${JSON.stringify(text)}; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+		await tab.eval(`document.querySelector('${WAKE} [data-action="wake"]').click()`);
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已開始接回 @gone-${width}')`, 'the notice');
+		// A controller wake: resumed with its text, in its sent log, not as an agent.
+		expect(resumes()).toEqual([['r', session, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', text]]);
+		const wake = (await sentLog(session)).find((entry) => 'text' in entry && entry.text === text);
+		expect(wake).toMatchObject({ kind: 'wake', route: 'resume' });
+		expect((await fixture.board(cookie)).controllers).toEqual([]);
 	}, 60_000);
 }
