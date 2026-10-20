@@ -256,8 +256,16 @@ for (const width of [1280, 390]) {
 		expect(await tab.eval(FITS)).toBe(true);
 	}, 60_000);
 
+}
+
+// Wide: a new LAT round and an effort; a phone: the same conversation with another model.
+for (const { width, newRound, kind, value, flags } of [
+	{ width: 1280, newRound: true, kind: '思考強度', value: 'high', flags: ['--effort', 'high'] },
+	{ width: 390, newRound: false, kind: '模型', value: 'claude-sonnet-5-5', flags: ['--model', 'claude-sonnet-5-5'] }
+]) {
 	test.skipIf(!CHROME)(`${width}px: a closed controller is woken with the wake's options, resuming its conversation, and the wake is in its sent log`, async () => {
 		const text = `醒來 ${width}`;
+		const prompt = newRound ? `/lat ${text}` : text;
 		await visit(width, '?agent=s-gone');
 		await tab.until(`${pageOf('dusk')} && document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, "the closed controller's page");
 		if (width > 760) expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @gone');
@@ -266,23 +274,24 @@ for (const width of [1280, 390]) {
 		await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
 		await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
 		expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(POPUP)}).innerText`)).toContain('開新一輪 LAT');
-		await tab.eval(`document.querySelector('${POPUP} input[type=checkbox]').click()`);
+		if (newRound) await tab.eval(`document.querySelector('${POPUP} input[type=checkbox]').click()`);
 		expect(await tab.eval(FITS)).toBe(true);
-		// Its effort for this wake, from the controller's model picker beside the button.
-		// Opened once the board has read what it may be woken with.
+		// Its model or effort for this wake, from the controller's model picker beside the button,
+		// opened once the board has read what it may be woken with.
+		const menu = `.dock [role="menu"][aria-label="${kind}"]`;
 		await tab.until(
-			`(() => { const part = document.querySelector('.dock .pill-slot .part[aria-label^="思考強度"]'); if (part.getAttribute('aria-expanded') !== 'true') part.click(); return !!document.querySelector('.dock [role="menu"][aria-label="思考強度"]'); })()`,
-			'the effort menu'
+			`(() => { const part = document.querySelector('.dock .pill-slot .part[aria-label^="${kind}："]'); if (part.getAttribute('aria-expanded') !== 'true') part.click(); return !!document.querySelector('${menu}'); })()`,
+			`the ${kind} menu`
 		);
-		await tab.eval(`[...document.querySelectorAll('.dock [role="menu"][aria-label="思考強度"] button')].find((b) => b.querySelector('small')?.innerText === 'high').click()`);
+		await tab.eval(`[...document.querySelectorAll('${menu} button')].find((b) => b.querySelector('small')?.innerText === ${JSON.stringify(value)}).click()`);
 		await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).click()`);
 		await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');
-		// Resumed by its session ID, the LAT start command in front; nothing typed, nothing sent as an agent.
-		expect(resumes()).toEqual([['r', 's-gone', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', `/lat ${text}`, '--effort', 'high']]);
+		// Resumed by its session ID with what was chosen; nothing typed, nothing sent as an agent.
+		expect(resumes()).toEqual([['r', 's-gone', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', prompt, ...flags]]);
 		expect(injects()).toEqual([]);
 		expect(await agentLog('s-gone')).toEqual([]);
-		const wake = (await sentLog('s-gone')).find((entry) => said(entry, `/lat ${text}`));
-		expect(wake).toMatchObject({ kind: 'wake', route: 'resume', newRound: true });
+		const wake = (await sentLog('s-gone')).find((entry) => said(entry, prompt));
+		expect(wake).toMatchObject({ kind: 'wake', route: 'resume', newRound });
 		await tab.eval(click('.detail [role="tablist"]', '送出紀錄'));
 		await tab.until(`document.querySelector('#panel-sent:not([hidden])')?.innerText.includes(${JSON.stringify(text)})`, 'the wake in the sent log');
 		// The attempt stays open until the resumed client shows; given up for the next test.
@@ -411,4 +420,29 @@ test.skipIf(!CHROME)("with text in both, the old draft goes after the controller
 	await sleep(300);
 	expect(await boxText()).toBe('共用的話\n\n升級前的話');
 	expect(injects()).toEqual([]);
+}, 60_000);
+
+test.skipIf(!CHROME)("opened from the list, each controller's old draft is taken in once, after what the controllers' draft has", async () => {
+	await visit(1280, '?agent=s-plain', { [AGENT_DRAFTS_KEY]: JSON.stringify({ 's-lead': '給 lead 的舊話', 's-gone': '給 gone 的舊話', 's-plain': '別人的話' }) });
+	await tab.until(`!!document.querySelector('.detail [data-agent="s-plain"]') && document.querySelector(${JSON.stringify(BOX)})?.value === '別人的話'`, "the agent's own draft");
+	const openFromList = async (session: string) => {
+		await tab.eval(`document.querySelector('[data-middle="agents"]').click()`);
+		await tab.until(`!!document.querySelector('.inbox button.agent[data-agent="${session}"]')`, `the card of ${session}`);
+		await tab.eval(`document.querySelector('.inbox button.agent[data-agent="${session}"]').click()`);
+	};
+	await openFromList('s-lead');
+	await tab.until(`${pageOf('lat')} && document.querySelector(${JSON.stringify(BOX)})?.value === '給 lead 的舊話'`, "lead's old draft taken in");
+	await openFromList('s-gone');
+	await tab.until(`${pageOf('dusk')} && document.querySelector(${JSON.stringify(BOX)})?.value === '給 lead 的舊話\\n\\n給 gone 的舊話'`, "gone's old draft after it");
+	await until(async () => JSON.stringify(JSON.parse((await stored(AGENT_DRAFTS_KEY)) ?? '{}')) === JSON.stringify({ 's-plain': '別人的話' }), 'only the agent draft left');
+	// Back and forth: nothing taken in again, and the agent keeps its own.
+	await openFromList('s-lead');
+	await tab.until(pageOf('lat'), "lead's page again");
+	await sleep(300);
+	expect(await boxText()).toBe('給 lead 的舊話\n\n給 gone 的舊話');
+	await openFromList('s-plain');
+	await tab.until(`!!document.querySelector('.detail [data-agent="s-plain"]')`, 'the agent page again');
+	expect(await boxText()).toBe('別人的話');
+	expect(injects()).toEqual([]);
+	expect(resumes()).toEqual([]);
 }, 60_000);
