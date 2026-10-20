@@ -35,6 +35,9 @@ ENDED = ('ended', 'completed', 'cancelled')
 # A last line with one of these tags asks the user a recorded question.
 QUESTION_TAGS = ('DECIDE:', 'HELP:')
 HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit')
+QUESTION_HEADING = re.compile(r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', re.MULTILINE)
+# Between questions the Stop hook shows; Claude Code drops blank lines, so a visible line.
+QUESTION_SEPARATOR = '\n\n' + '─' * 20 + '\n\n'
 # HCOM wakes an agent with a prompt holding only this marker; the message itself arrives in hook context.
 HCOM_PROMPT = re.compile(r'(?:\s*<hcom>)+\s*')
 
@@ -583,43 +586,74 @@ def question_tag(message):
     return next((tag[:-1] for tag in QUESTION_TAGS if lines and lines[-1].startswith(tag)), None)
 
 
+def tag_line_questions(message):
+    """`(ID, N)` for each `<ID> r<N>` after the last line's DECIDE/HELP tag, in order, once each."""
+    last = [line for line in message.splitlines() if line.strip()][-1]
+    return list(dict.fromkeys(re.findall(
+        r'(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)[ \t]+r([0-9]+)(?![A-Za-z0-9_])',
+        last.split(':', 1)[1])))
+
+
 def tag_line_identifiers(message):
     """`<ID> r<N>` written after the last line's DECIDE/HELP tag."""
-    last = [line for line in message.splitlines() if line.strip()][-1]
-    return set(re.findall(
-        r'(?<![A-Za-z0-9_.-])([A-Za-z0-9_.-]+)[ \t]+r([0-9]+)(?![A-Za-z0-9_])',
-        last.split(':', 1)[1]))
+    return set(tag_line_questions(message))
 
 
 def question_identifiers(message):
     """`❓ **<ID> r<N>**` headings plus `<ID> r<N>` on the last line's tag."""
-    return set(re.findall(
-        r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', message, re.MULTILINE)
-    ) | tag_line_identifiers(message)
+    return set(QUESTION_HEADING.findall(message)) | tag_line_identifiers(message)
 
 
-def missing_question_parts(panel, question, message):
-    """Parts of the question's text absent from the message, compared without whitespace.
+def listed_questions(message):
+    """The questions a DECIDE/HELP asks, in order: the tag line's, else the `❓` headings'."""
+    return tag_line_questions(message) or list(dict.fromkeys(QUESTION_HEADING.findall(message)))
 
-    Parts are searched in order from the question's `❓ **<ID> r<N>**` heading,
-    or from the start of the message without one; the tag line is not searched.
+
+def own_questions_path(panel, record):
+    """This controller's bound question file, or None when its session has no panel binding."""
+    binding = next((item for item in panel.list_bindings()
+                    if item.get('session_id') == record['session_id']), None)
+    if binding is None:
+        return None
+    if binding.get('client') != record['client'] or binding.get('workspace') != record['workspace']:
+        raise ValueError('面板綁定與主控紀錄不符')
+    return Path(binding['questions_path'])
+
+
+def read_questions(panel, path):
+    return panel.parse_questions(path.read_text(encoding='utf-8')) if path.exists() else []
+
+
+def waiting_question(questions, identifier, revision):
+    return next((question for question in questions
+                 if question['id'] == identifier and question['status_label'] == '待答'
+                 and question['revision'] == int(revision)), None)
+
+
+def question_delivery(record, message):
+    """`(text, warning)`: the listed questions as plain text from the bound question file.
+
+    Unbound sessions get nothing. Delivery never changes the check result, so any
+    failure only becomes a one-line warning.
     """
-    def compact(text):
-        return re.sub(r'\s+', '', text)
-    body = message.rstrip()
-    body = body[:body.rfind('\n') + 1]
-    heading = re.search(
-        rf'^❓ \*\*{re.escape(question["id"])} r{question["revision"]}\*\*', body, re.MULTILINE)
-    text = compact(body[heading.start():] if heading else body)
-    cursor = 0
-    missing = []
-    for name, part in panel.question_chat_parts(question):
-        found = text.find(compact(part), cursor)
-        if found < 0:
-            missing.append(name)
-        else:
-            cursor = found + len(compact(part))
-    return missing
+    try:
+        panel = panel_module()
+        path = own_questions_path(panel, record)
+        if path is None:
+            return '', ''
+        questions = read_questions(panel, path)
+        shown, missing = [], []
+        for identifier, revision in listed_questions(message):
+            question = waiting_question(questions, identifier, revision)
+            if question is None:
+                missing.append(f'{identifier} r{revision}')
+            else:
+                shown.append(panel.question_plain_text(question))
+    except Exception as exc:  # noqa: BLE001 - never let delivery break the Stop hook
+        return '', f'LAT 題目代送失敗，請到面板查看題目：{exc}'
+    warning = ('LAT 題目代送失敗：自己的問題檔沒有 ' + '、'.join(missing)
+               + ' 的待答題目，請到面板查看。') if missing else ''
+    return QUESTION_SEPARATOR.join(shown), warning
 
 
 def announced_questions(record):
@@ -643,16 +677,8 @@ def announced_questions(record):
     return announced
 
 
-def hold_once(payload, reason):
-    """Block the first Stop of a turn; later ones only leave a visible warning."""
-    if payload.get('stop_hook_active'):
-        print(json.dumps({'systemMessage': reason + ' 本回合已繼續過，不再攔下。'}, ensure_ascii=False))
-        return False
-    print(json.dumps({'decision': 'block', 'reason': reason}, ensure_ascii=False))
-    return True
-
-
 def stop_check(record, payload):
+    """Why this DECIDE/HELP Stop should be held, or None when it passes."""
     message = payload['last_assistant_message']
     tag = question_tag(message)
     identifiers = question_identifiers(message)
@@ -686,25 +712,12 @@ def stop_check(record, payload):
                 if consensus_error:
                     problems.append(f'{identifier} r{revision}：{consensus_error}')
     panel = panel_module()
-    binding = next((item for item in panel.list_bindings()
-                    if item.get('session_id') == record['session_id']), None)
-    if binding is not None:
-        if binding.get('client') != record['client'] or binding.get('workspace') != record['workspace']:
-            raise ValueError('面板綁定與主控紀錄不符')
-        questions_path = Path(binding['questions_path'])
-        questions = panel.parse_questions(questions_path.read_text(encoding='utf-8')) if questions_path.exists() else []
-        listed = tag_line_identifiers(message) or identifiers
+    questions_path = own_questions_path(panel, record)
+    if questions_path is not None:
+        questions = read_questions(panel, questions_path)
         for identifier, revision in sorted(identifiers):
-            question = next((question for question in questions
-                             if question['id'] == identifier and question['status_label'] == '待答'
-                             and question['revision'] == int(revision)), None)
-            if question is None:
+            if waiting_question(questions, identifier, revision) is None:
                 problems.append(f'{identifier} r{revision}：自己的面板缺少同版本待答題目')
-            elif (identifier, revision) in listed:
-                missing = missing_question_parts(panel, question, message)
-                if missing:
-                    problems.append(f'{identifier} r{revision}：訊息沒有照抄題目原文，缺少'
-                                    + '、'.join(missing))
         _, missing, inconsistent, unreadable, reverse = panel.pending_question_gaps(questions_path, decisions)
         problems.extend(f'{identifier}：遺漏檢查缺少面板題目' for identifier in missing)
         problems.extend(f'{identifier}：遺漏檢查不一致（{reason}）'
@@ -715,17 +728,17 @@ def stop_check(record, payload):
                         if path.stem not in statuses or not statuses[path.stem].error)
     if not problems:
         # The tag line decides; headings count only when the tag line names no question.
-        listed = tag_line_identifiers(message) or identifiers
+        listed = set(listed_questions(message))
         if listed <= announced_questions(record):
             names = '、'.join(f'{identifier} r{revision}'
                               for identifier, revision in sorted(listed))
-            return hold_once(payload, (
+            return (
                 f'LAT {tag} 檢查未通過：最後一行只列出 {names}，已在先前訊息以 DECIDE／HELP 問過，版本沒變。'
                 '這則有新題或改版時，把它的題號寫進最後一行；沒有時改以 `NO REPLY: ` 開頭，'
-                '題目仍待答，側欄會持續顯示。'))
-        return
-    return hold_once(payload, f'LAT {tag} 檢查未通過：' + '；'.join(problems) + (
-        '。Spec 確認題先更新 Spec 共識 → 跑檢查工具 → 確認題寫明共識版本。補做順序：寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重列題目。'))
+                '題目仍待答，側欄會持續顯示。')
+        return None
+    return f'LAT {tag} 檢查未通過：' + '；'.join(problems) + (
+        '。Spec 確認題先更新 Spec 共識 → 跑檢查工具 → 確認題寫明共識版本。補做順序：寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重新提問。')
 
 
 def reports_path(record):
@@ -782,17 +795,29 @@ def append_report(record, message):
 
 
 def report_stop(record, payload):
+    message = payload['last_assistant_message']
     if record['status'] == 'active':
-        tag = question_tag(payload['last_assistant_message'])
+        tag = question_tag(message)
         if tag:
+            notes = []
             try:
-                if stop_check(record, payload):
-                    return
+                reason = stop_check(record, payload)
             except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
-                print(json.dumps({'systemMessage': f'LAT {tag} 檢查發生錯誤，未攔下：{exc}'},
-                                 ensure_ascii=False))
+                notes.append(f'LAT {tag} 檢查發生錯誤，未攔下：{exc}')
+            else:
+                # Hold only the first Stop of a turn; later ones pass with a visible warning.
+                if reason and not payload.get('stop_hook_active'):
+                    print(json.dumps({'decision': 'block', 'reason': reason}, ensure_ascii=False))
+                    return
+                if reason:
+                    notes.append(reason + ' 本回合已繼續過，不再攔下。')
+            # A passing or released DECIDE/HELP shows its questions after the message.
+            shown, warning = question_delivery(record, message)
+            text = '\n\n'.join(part for part in (shown, warning, *notes) if part)
+            if text:
+                print(json.dumps({'systemMessage': text}, ensure_ascii=False))
     try:
-        append_report(record, payload['last_assistant_message'])
+        append_report(record, message)
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         print(f'LAT report warning: {exc}', file=sys.stderr)
 

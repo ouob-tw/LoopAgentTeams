@@ -264,10 +264,8 @@ class QuestionCliTests(unittest.TestCase):
         self.assertEqual(parsed["NEW"]["recommendation"], "➡️ A：理由。")
         panel = load_module()
         questions = {item["id"]: item for item in panel.parse_questions(self.questions.read_text())}
-        self.assertEqual(panel.question_chat_parts(questions["OLD"]),
-                         panel.question_chat_parts(questions["NEW"]))
-        self.assertEqual([name for name, _ in panel.question_chat_parts(questions["NEW"])],
-                         ["標題", "背景", "選項 A", "選項 A 的內容", "選項 B", "推薦段落", "詳細資訊"])
+        self.assertEqual(panel.question_plain_text(questions["OLD"]).replace("OLD", "NEW", 1),
+                         panel.question_plain_text(questions["NEW"]))
 
     def test_question_without_details_has_null_details(self):
         section = self.root / "section.md"
@@ -1255,6 +1253,103 @@ class NotificationTests(unittest.TestCase):
             self.assertEqual(result, (True, "delivered"))
             self.assertTrue(panel.notification_is_pending(questions, state_dir=state_dir))
 
+
+
+class QuestionPlainTextTests(unittest.TestCase):
+    """The turn-end hook shows ``question_plain_text`` after the controller's message."""
+
+    def render(self, section):
+        panel = load_module()
+        text = f"## {section}\n\n答覆：\n\n- [ ] 送出\n"
+        header, body = text.split("\n", 1)
+        question = panel.parse_questions(f"{header}\nQ1 · r3 · 待答\n{body}")[0]
+        return panel.question_plain_text(question)
+
+    def test_single_select_with_details_multi_paragraph_options_and_emoji(self):
+        section = (
+            "**要不要** 合併 `dev`？\n\n"
+            "審查已通過 ✅，只差 **合併**；見 [說明](https://example.com/a)。\n\n"
+            "- A. 合併到 `dev`（建議）\n"
+            "  本機會與 **dev** 一致。\n\n"
+            "  - 推送前跑 `make test`\n"
+            "  - 不改遠端\n"
+            "- B. 先不合併\n"
+            "  ```bash\n"
+            "  echo **kept**\n"
+            "  ```\n\n"
+            "➡️ A：先讓 **本機** 一致 🚀。\n"
+            "第二行理由。\n\n"
+            "【詳細資訊】\n"
+            "### 來由\n"
+            "`dev` 是安裝來源。\n\n"
+            "第二段。\n"
+            "【詳細資訊結束】\n"
+        )
+        self.assertEqual(self.render(section), (
+            "❓ Q1 r3 - 要不要 合併 dev？\n\n"
+            "審查已通過 ✅，只差 合併；見 說明 (https://example.com/a)。\n\n"
+            "A. 合併到 dev（建議）\n"
+            "  本機會與 dev 一致。\n\n"
+            "  - 推送前跑 make test\n"
+            "  - 不改遠端\n"
+            "B. 先不合併\n"
+            "  echo **kept**\n\n"
+            "➡️ A：先讓 本機 一致 🚀。\n"
+            "第二行理由。\n\n"
+            "【詳細資訊】\n"
+            "來由\n"
+            "dev 是安裝來源。\n\n"
+            "第二段。\n"
+            "【詳細資訊結束】"
+        ))
+
+    def test_multi_select_options_get_letters_and_a_hint(self):
+        section = (
+            "要裝哪些？\n\n背景。\n\n"
+            "- [ ] Claude\n  主控用。\n"
+            "- [ ] **Codex**\n"
+        )
+        self.assertEqual(self.render(section), (
+            "❓ Q1 r3 - 要裝哪些？\n\n背景。\n\n"
+            "（複選題，可選多項）\n"
+            "A. Claude\n  主控用。\n"
+            "B. Codex"
+        ))
+
+    def test_question_without_options_or_body_keeps_what_it_has(self):
+        self.assertEqual(self.render("自由回答？\n\n寫下 `路徑`。\n"),
+                         "❓ Q1 r3 - 自由回答？\n\n寫下 路徑。")
+        panel = load_module()
+        question = panel.parse_questions("## 只有標題\nQ2 · r1 · 待答\n")[0]
+        self.assertEqual(panel.question_plain_text(question), "❓ Q2 r1 - 只有標題")
+
+    def test_plain_markdown_drops_emphasis_but_keeps_code_and_ordinary_symbols(self):
+        panel = load_module()
+        cases = {
+            "__重要__、*斜體*、~~舊方案~~、這是*強調*的": "重要、斜體、舊方案、這是強調的",
+            "_底線_ 與 **粗體**": "底線 與 粗體",
+            "`a*b*c` 與 `__init__`、snake_case_name、2*3*4": "a*b*c 與 __init__、snake_case_name、2*3*4",
+            "* 清單項目\n- 另一項": "* 清單項目\n- 另一項",
+            "```保留這段文字```": "保留這段文字",
+            "``` `x` ```": "`x`",
+            "*請執行 `make test` 再合併*": "請執行 make test 再合併",
+            "__請確認 `dev`__ 與 **`a**b`**": "請確認 dev 與 a**b",
+        }
+        for text, plain in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(panel.plain_markdown(text), plain)
+
+    def test_plain_markdown_fences_need_a_matching_closing_line(self):
+        panel = load_module()
+        self.assertEqual(
+            panel.plain_markdown("````md\n```\n**內容**\n````\n**之後**"),
+            "```\n**內容**\n之後")
+        self.assertEqual(panel.plain_markdown("~~~\n`code`\n~~~\n`after`"), "`code`\nafter")
+
+    def test_legacy_unlisted_options_render_like_listed_ones(self):
+        self.assertEqual(
+            self.render("舊格式？\n\n背景。\n\nA. 甲（建議）\n   影響甲\nB. 乙\n"),
+            "❓ Q1 r3 - 舊格式？\n\n背景。\n\nA. 甲（建議）\n  影響甲\nB. 乙")
 
 if __name__ == "__main__":
     unittest.main()
