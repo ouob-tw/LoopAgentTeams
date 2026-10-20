@@ -2,7 +2,7 @@
 // exceptions nothing caught, and errors pages report from the browser. Never the user's password,
 // device token, answers or messages.
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
-import { readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { CLIENT_ERRORS_PER_WINDOW, MAX_FRAMES, MAX_USER_AGENT } from '../src/lib/server/client-errors.ts';
 import { logged, PASSWORD, question, startFixture, type Fixture } from './harness.ts';
@@ -167,13 +167,18 @@ test('ordinary refusals and successes write nothing', async () => {
 	expect(output().split('\n').filter((line) => line.startsWith('{'))).toEqual([]);
 });
 
-/** A report as a page of this board sends it; `at` is a location in one of its scripts. */
+/** A report as a page of this board sends it; `at` is an address on this board. */
 const at = (path: string) => `${fixture.url}${path}`;
+// Two script files this build really has.
+const [CHUNK, ENTRY] = ['chunks', 'entry'].map((dir) => {
+	const file = readdirSync(join(import.meta.dir, '../build/client/_app/immutable', dir)).find((name) => name.endsWith('.js'));
+	return `/_app/immutable/${dir}/${file}`;
+});
 const report = () => ({
 	kind: 'handleError',
 	type: 'Error',
 	message: 'https://svelte.dev/e/each_key_duplicate',
-	stack: `Error: https://svelte.dev/e/each_key_duplicate\n    at Pe (${at('/_app/immutable/chunks/a1.js')}:1:200)\n    at ${at('/_app/immutable/entry/app.js')}:3:40`,
+	stack: `Error: https://svelte.dev/e/each_key_duplicate\n    at Pe (${at(CHUNK!)}:1:200)\n    at ${at(ENTRY!)}:3:40`,
 	url: at('/')
 });
 
@@ -190,7 +195,7 @@ test('a browser error from a logged-in device is one line of what the server che
 		kind: 'handleError',
 		exc_type: 'Error',
 		exc_message: 'svelte:each_key_duplicate',
-		traceback: 'at /_app/immutable/chunks/a1.js:1:200\nat /_app/immutable/entry/app.js:3:40',
+		traceback: `at ${CHUNK}:1:200\nat ${ENTRY}:3:40`,
 		url: '/',
 		user_agent: 'TestBrowser/1.0'
 	});
@@ -221,13 +226,16 @@ test('anything a report says that the server does not recognise reaches the log 
 		message: `答覆是：${answer}`,
 		stack: [
 			`Error: ${answer}`,
-			`    at ${answer} (${at('/_app/a.js')}?q=${answer}:1:2)`,
+			`    at ${answer} (${at(CHUNK!)}?q=${answer}:1:2)`,
 			`    at render (https://elsewhere.example/${encodeURIComponent(answer)}.js:3:4)`,
 			`    at ${at('/_app/' + encodeURIComponent(answer) + '.js')}:5:6`,
-			`    at ${at('/_app/b.js')}#${token}:7:8`,
+			// Plain characters a path may hold, but no file this build has.
+			`    at ${at(`/_app/immutable/chunks/${token}.js`)}:9:9`,
+			`    at ${at('/_app/PRIVATE-MESSAGE.js')}:9:9`,
+			`    at ${at(ENTRY!)}#${token}:7:8`,
 			`    ${answer}`
 		].join('\n'),
-		url: `${at('/agents')}?password=${PASSWORD}#${token}`
+		url: `${at('/login')}?password=${PASSWORD}#${token}`
 	});
 
 	expect(response.status).toBe(204);
@@ -236,15 +244,19 @@ test('anything a report says that the server does not recognise reaches the log 
 		kind: '[omitted]',
 		exc_type: '[omitted]',
 		exc_message: '[omitted]',
-		traceback: 'at /_app/a.js:1:2\nat /_app/b.js:7:8',
-		url: '/agents'
+		traceback: `at ${CHUNK}:1:2\nat ${ENTRY}:7:8`,
+		url: '/login'
 	});
-	for (const secret of [answer, encodeURIComponent(answer), token, PASSWORD]) expect(output()).not.toContain(secret);
+	for (const secret of [answer, encodeURIComponent(answer), token, PASSWORD, 'PRIVATE-MESSAGE']) expect(output()).not.toContain(secret);
 
 	mark = fixture.serverOutput().length;
 	await post('/api/client-error', { ...report(), message: `https://svelte.dev/e/${'not_a_code'}`, url: `http://elsewhere.example/${answer}` });
-	expect(lines('client_error')).toMatchObject([{ exc_message: 'svelte:unknown', url: '[omitted]' }]);
-	expect(output()).not.toContain(answer);
+	await post('/api/client-error', { ...report(), url: at(`/${token}/PRIVATE-ANSWER`) });
+	expect(lines('client_error')).toMatchObject([
+		{ exc_message: 'svelte:unknown', url: '[omitted]' },
+		{ url: '[omitted]' }
+	]);
+	for (const secret of [answer, token, 'PRIVATE-ANSWER']) expect(output()).not.toContain(secret);
 });
 
 test('a device that is not logged in is refused and nothing is logged', async () => {
@@ -258,7 +270,7 @@ test('a device that is not logged in is refused and nothing is logged', async ()
 });
 
 test('long content is cut: frames past the limit and a long user agent; a huge body is refused', async () => {
-	const frames = Array.from({ length: MAX_FRAMES + 5 }, (_, i) => `    at ${at('/_app/a.js')}:${i + 1}:1`).join('\n');
+	const frames = Array.from({ length: MAX_FRAMES + 5 }, (_, i) => `    at ${at(CHUNK!)}:${i + 1}:1`).join('\n');
 	expect((await post('/api/client-error', { ...report(), stack: frames }, { cookie, headers: { 'user-agent': 'a'.repeat(2_000) } })).status).toBe(204);
 	const [line] = lines('client_error');
 	expect(String(line.traceback).split('\n')).toHaveLength(MAX_FRAMES + 1);

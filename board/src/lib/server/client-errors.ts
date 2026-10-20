@@ -2,9 +2,12 @@
 // logged as it was sent: an error's message is any text the page's code put there, perhaps an
 // answer or a message, which the server cannot tell apart. So a line holds only what the server
 // itself writes after checking the report: a canonical message for a known kind of error (anything
-// else is [omitted]), an error type from a fixed list, the board's own script locations from the
-// stack, and the page's path. One device gets only so many lines a minute, so a page that keeps
+// else is [omitted]), an error type from a fixed list, locations in the script files this build
+// really has, and which of the board's pages it was. One device gets only so many lines a minute, so a page that keeps
 // failing cannot flood the journal.
+import { readdirSync } from 'node:fs';
+import { dirname, join, relative } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { log } from './log.ts';
 import { OMITTED } from './redact.ts';
 
@@ -81,13 +84,34 @@ export function knownMessage(value: unknown): string | null {
 	return OMITTED;
 }
 
-const SAFE_PATH = /^\/[\w\-./]*$/;
+/** The board's pages (src/routes); any other path is not logged. */
+const PAGES = new Set(['/', '/login']);
 
-/** The board's own script locations in a stack, one `at <path>:<line>:<column>` per frame. A frame
- *  of another host, a path with anything but plain characters, and every function name and
- *  message line are left out. `host` is the board's as the request named it: the server cannot
- *  tell http from https without an ORIGIN setting, so only host and port are compared. */
-export function stackFrames(value: unknown, host: string): string | null {
+let scripts: Set<string> | undefined;
+/** The script files this build serves under /_app/immutable, found next to the server's own
+ *  modules (build/client beside build/server). None without a build, as in development. */
+function builtScripts(): Set<string> {
+	if (scripts) return scripts;
+	scripts = new Set();
+	for (let dir = dirname(fileURLToPath(import.meta.url)), up = 0; up < 8; dir = dirname(dir), up++) {
+		const root = join(dir, 'client');
+		let files: string[];
+		try {
+			files = readdirSync(join(root, '_app/immutable'), { recursive: true, encoding: 'utf8' });
+		} catch {
+			continue;
+		}
+		for (const file of files) if (file.endsWith('.js')) scripts.add('/' + relative(root, join(root, '_app/immutable', file)));
+		break;
+	}
+	return scripts;
+}
+
+/** Locations in this build's own scripts, one `at <path>:<line>:<column>` per frame. A frame of
+ *  another host or of a file the build does not have, and every function name and message line,
+ *  are left out. `host` is the board's as the request named it: the server cannot tell http from
+ *  https without an ORIGIN setting, so only host and port are compared. */
+export function stackFrames(value: unknown, host: string, known = builtScripts()): string | null {
 	if (typeof value !== 'string') return null;
 	const frames: string[] = [];
 	for (const line of value.split('\n')) {
@@ -99,19 +123,19 @@ export function stackFrames(value: unknown, host: string): string | null {
 		} catch {
 			continue;
 		}
-		if (url.host !== host || !SAFE_PATH.test(url.pathname)) continue;
+		if (url.host !== host || !known.has(url.pathname)) continue;
 		frames.push(`at ${url.pathname}:${location[2]}:${location[3]}`);
 	}
 	if (!frames.length) return null;
 	return frames.length > MAX_FRAMES ? [...frames.slice(0, MAX_FRAMES), TRUNCATED].join('\n') : frames.join('\n');
 }
 
-/** The page's path on this board, without its query and fragment. */
+/** Which of the board's pages it was, without its query and fragment. */
 export function pagePath(value: unknown, host: string): string | null {
 	if (typeof value !== 'string') return null;
 	try {
 		const url = new URL(value);
-		return url.host === host && SAFE_PATH.test(url.pathname) ? url.pathname : OMITTED;
+		return url.host === host && PAGES.has(url.pathname) ? url.pathname : OMITTED;
 	} catch {
 		return OMITTED;
 	}
@@ -138,7 +162,7 @@ export function createClientErrorLimit(now: () => number = Date.now): ClientErro
 }
 
 /** Log one report from a page on `host` as the server checked it; the user agent comes from the
- *  request's own header, redacted (see redact.ts) and cut to its limit. */
+ *  request's own header, cut to its limit. Every field is redacted as well (see redact.ts). */
 export async function logClientError(
 	deviceId: string,
 	report: Record<string, unknown>,
@@ -146,14 +170,14 @@ export async function logClientError(
 	userAgent: string | null,
 	redact: (text: string) => Promise<string>
 ): Promise<void> {
-	const agent = userAgent && (await redact(userAgent));
-	log('ERROR', 'board.client', 'client_error', {
-		device_id: deviceId,
+	const fields: Record<string, string | null> = {
 		kind: listed(report.kind, KINDS),
 		exc_type: listed(report.type, TYPES),
 		exc_message: knownMessage(report.message),
 		traceback: stackFrames(report.stack, host),
 		url: pagePath(report.url, host),
-		user_agent: agent && agent.length > MAX_USER_AGENT ? agent.slice(0, MAX_USER_AGENT) + TRUNCATED : agent
-	});
+		user_agent: userAgent && userAgent.length > MAX_USER_AGENT ? userAgent.slice(0, MAX_USER_AGENT) + TRUNCATED : userAgent
+	};
+	for (const [key, value] of Object.entries(fields)) if (value) fields[key] = await redact(value);
+	log('ERROR', 'board.client', 'client_error', { device_id: deviceId, ...fields });
 }

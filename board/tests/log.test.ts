@@ -65,7 +65,7 @@ test('each device gets a fixed number of reports per window, counted afresh in t
 	expect(admitted('a', CLIENT_ERRORS_PER_WINDOW + 1)).toBe(CLIENT_ERRORS_PER_WINDOW);
 });
 
-test('an exception SvelteKit reports before the request hook ran is still logged, redacted, with a request id', async () => {
+test('an exception SvelteKit reports before the request hook ran is still logged, redacted, with a request id and its 500', async () => {
 	const { handleError } = await import('../src/hooks.server.ts');
 	const written: string[] = [];
 	const write = process.stderr.write;
@@ -77,7 +77,10 @@ test('an exception SvelteKit reports before the request hook ran is still logged
 	} finally {
 		process.stderr.write = write;
 	}
-	const [line] = written.map((chunk) => JSON.parse(chunk));
-	expect(line).toMatchObject({ message: 'unhandled_error', request_id: 'req-early', path: '/agents', exc_message: 'module failed for [omitted]' });
+	// Nothing else saw this request, so its 500 is logged here too.
+	expect(written.map((chunk) => JSON.parse(chunk))).toMatchObject([
+		{ message: 'unhandled_error', request_id: 'req-early', path: '/agents', exc_message: 'module failed for [omitted]' },
+		{ message: 'http_error', request_id: 'req-early', path: '/agents', status: 500 }
+	]);
 	expect(written.join('')).not.toContain('tok-early');
 });

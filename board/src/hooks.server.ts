@@ -103,7 +103,9 @@ export const handle: Handle = ({ event, resolve }) => {
  *  has returned, so the request id comes from the request itself. */
 export const handleError: HandleServerError = async ({ kind, error, event }) => {
 	if (kind !== 'unknown') return;
-	// SvelteKit can fail before `handle` runs, such as loading a route's module.
+	// SvelteKit can fail before `handle` runs, such as loading a route's module: then nothing else
+	// logs the 500 it answers with.
+	const early = event.locals.requestId === undefined;
 	event.locals.requestId ??= requestIdOf(event);
 	event.locals.redact ??= redactorFor(event);
 	const { exc_type, exc_message, traceback } = exceptionFields(error);
@@ -113,5 +115,8 @@ export const handleError: HandleServerError = async ({ kind, error, event }) => 
 		exc_message: await event.locals.redact(exc_message),
 		traceback: traceback && (await event.locals.redact(traceback))
 	};
-	withRequestId(event.locals.requestId, () => log('ERROR', 'board.http', 'unhandled_error', fields));
+	withRequestId(event.locals.requestId, () => {
+		log('ERROR', 'board.http', 'unhandled_error', fields);
+		if (early) log('ERROR', 'board.http', 'http_error', { ...where(event), status: 500 });
+	});
 };
