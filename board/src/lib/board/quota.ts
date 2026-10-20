@@ -81,7 +81,7 @@ export const remaining = (used: number) => 100 - Math.round(Math.min(100, Math.m
 /** 20% left and under is a warning, 5% left and under the danger color; judged on the number shown. */
 export const level = (left: number) => (left <= 5 ? 'danger' : left <= 20 ? 'warn' : null);
 
-export const percentText = (used: number) => `剩 ${remaining(used)}%`;
+export const percentText = (used: number) => `${remaining(used)}%`;
 
 /** A window whose reset has passed: its number is the last window's, not this one's. */
 export const waiting = (window: QuotaWindow, now: number) => window.resetsAt !== null && window.resetsAt <= now;

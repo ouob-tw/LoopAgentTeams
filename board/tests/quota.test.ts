@@ -286,7 +286,7 @@ test('the tab: the account in use first, its reading the group\'s, the threshold
 	expect([100, 20.1, 20, 5.1, 5, 0].map(level)).toEqual([null, null, 'warn', 'warn', 'danger', 'danger']);
 	expect([0, 20, 79.6, 94.6, 95, 100].map(remaining)).toEqual([100, 80, 20, 5, 5, 0]);
 	expect([79.6, 94.6].map((used) => level(remaining(used)))).toEqual(['warn', 'danger']);
-	expect([0, 11, 81.4, 81.5, 100].map(percentText)).toEqual(['剩 100%', '剩 89%', '剩 19%', '剩 18%', '剩 0%']);
+	expect([0, 11, 81.4, 81.5, 100].map(percentText)).toEqual(['100%', '89%', '19%', '18%', '0%']);
 	expect(waiting({ label: '', used: 50, resetsAt: NOW }, NOW)).toBe(true);
 	expect(waiting({ label: '', used: 50, resetsAt: NOW + 1 }, NOW)).toBe(false);
 	expect(waiting({ label: '', used: 50, resetsAt: null }, NOW)).toBe(false);
