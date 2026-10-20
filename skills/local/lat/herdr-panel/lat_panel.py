@@ -9,8 +9,8 @@ Public API used by the Textual panel and LAT controller:
 * ``parse_questions``, ``upsert_question``, and ``set_question_status`` model
   and update natural-language question sections without touching other sections.
 * V2 selector UI flow: ``parse_question_options``, ``question_context``,
-  ``question_details``, ``question_recommendation``, ``question_chat_parts``
-  (the text chat must repeat, checked at turn end), and
+  ``question_details``, ``question_recommendation``, ``question_plain_text``
+  (what the turn-end hook shows after a DECIDE/HELP), and
   ``parse_question_answer`` read one ``parse_questions`` result;
   ``question_section_sha256`` captures its guarded-write identity;
   ``write_question_answer`` saves (or, with ``None``, clears) a draft while
@@ -511,28 +511,66 @@ def question_context(question):
     return "\n".join(kept).strip("\n")
 
 
-def question_chat_parts(question):
-    """The question text that chat must repeat, as ordered ``(part name, text)`` pairs."""
-    parts = [("標題", question["title"])]
+_FENCE_LINE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})")
+_HEADING_MARK = re.compile(r"^([ \t]*)#{1,6}[ \t]+")
+_INLINE_CODE = re.compile(r"(`+)(.+?)\1")
+_LINK = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
+
+
+def _plain_inline(text):
+    return _LINK.sub(r"\1 (\2)", text).replace("**", "")
+
+
+def plain_markdown(text):
+    """Drop Markdown marks: ``**``, backticks, code fence lines, heading marks, link syntax.
+
+    Code keeps its text as written; list markers, indentation and emoji stay.
+    """
+    kept = []
+    fenced = False
+    for line in text.splitlines():
+        if _FENCE_LINE.match(line):
+            fenced = not fenced
+            continue
+        if fenced:
+            kept.append(line)
+            continue
+        line = _HEADING_MARK.sub(r"\1", line)
+        pieces = []
+        last = 0
+        for code in _INLINE_CODE.finditer(line):
+            pieces += [_plain_inline(line[last:code.start()]), code.group(2)]
+            last = code.end()
+        pieces.append(_plain_inline(line[last:]))
+        kept.append("".join(pieces))
+    return "\n".join(kept)
+
+
+def question_plain_text(question):
+    """The question as plain text in 聊天提問格式 order, for the turn-end hook to show.
+
+    Title line, background, options with their letters and indented content,
+    the ``➡️`` paragraph, then the details block, separated by blank lines.
+    """
+    blocks = [f"❓ {question['id']} r{question['revision']} - {plain_markdown(question['title'])}"]
     context = question_context(question)
     if context:
-        parts.append(("背景", context))
+        blocks.append(plain_markdown(context))
     parsed = parse_question_options(question)
-    for index, (letter, option) in enumerate(zip(_option_letters(parsed), parsed.options), 1):
-        name = f"選項 {letter}" if letter else f"第 {index} 個選項"
-        parts.append((name, f"{letter}. {option.label}" if letter else option.label))
-        # Each paragraph is its own part, so a missing one is named on its own.
-        paragraphs = [text for text in re.split(r"\n(?:[ \t]*\n)+", option.impact) if text]
-        for number, paragraph in enumerate(paragraphs, 1):
-            suffix = f"第 {number} 段" if len(paragraphs) > 1 else ""
-            parts.append((f"{name} 的內容{suffix}", paragraph))
+    if parsed.options:
+        lines = ["（複選題，可選多項）"] if parsed.kind == "multi" else []
+        for letter, option in zip(_option_letters(parsed), parsed.options):
+            lines.append(f"{letter}. {option.label}" if letter else option.label)
+            lines += [f"  {line}" if line.strip() else ""
+                      for line in option.impact.splitlines()]
+        blocks.append(plain_markdown("\n".join(lines)))
     recommendation = question_recommendation(question)
     if recommendation:
-        parts.append(("推薦段落", recommendation))
+        blocks.append(plain_markdown(recommendation))
     details = question_details(question)
     if details is not None:
-        parts.append(("詳細資訊", details))
-    return parts
+        blocks.append(f"{_DETAILS_START}\n{plain_markdown(details)}\n{_DETAILS_END}")
+    return "\n\n".join(blocks)
 
 
 class QuestionAnswer(NamedTuple):

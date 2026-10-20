@@ -20,6 +20,7 @@ SKILL = SCRIPT.parent.parent
 PANEL = SKILL / 'herdr-panel/lat_panel.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
 OTHER = '22222222-2222-4222-8222-222222222222'
+SEPARATOR = '\n\n' + '─' * 20 + '\n\n'
 
 
 class SessionTests(unittest.TestCase):
@@ -436,14 +437,16 @@ class SessionTests(unittest.TestCase):
                         self.assertEqual(set(warning), {'systemMessage'})
                         self.assertIn(reason, warning['systemMessage'])
                         path.write_text(prefix + receipt)
-                        self.assert_silent(self.stop_hook(message, client, stop_hook_active=True))
+                        self.assert_stop_pass(self.stop_hook(message, client, stop_hook_active=True),
+                                              *['LAT-A r1 - 確認 Spec'][:bound])
                 path.write_bytes(b'\xff')
                 warning = json.loads(self.stop_hook(message, client).stdout)
                 self.assertEqual(set(warning), {'systemMessage'})
                 self.assertIn('檢查發生錯誤，未攔下', warning['systemMessage'])
                 for advisor in ('exempt requirement-discussion', 'needs-human', 'late needs-human'):
                     path.write_text(f'- status: pending\n- advisor: {advisor}\n')
-                    self.assert_silent(self.stop_hook(message.replace('共識 v3', '共識'), client))
+                    self.assert_stop_pass(self.stop_hook(message.replace('共識 v3', '共識'), client),
+                                          *['LAT-A r1 - 確認 Spec'][:bound])
             binding_path.write_text(original)
 
     def test_stop_missing_advisor_blocks_then_consulted_reask_passes(self):
@@ -486,7 +489,8 @@ class SessionTests(unittest.TestCase):
                 for value in valid:
                     with self.subTest(client=client, bound=bound, advisor=value):
                         path.write_text(f'- status: pending\n- AdViSoR:{value}\n- advisor: invalid\n')
-                        self.assert_silent(self.stop_hook(client=client))
+                        self.assert_stop_pass(self.stop_hook(client=client),
+                                              *['LAT-A r1 - Question'][:bound])
                 for line, reason in invalid:
                     with self.subTest(client=client, bound=bound, advisor=line):
                         path.write_text(f'- status: pending\n{line}\n')
@@ -510,7 +514,7 @@ class SessionTests(unittest.TestCase):
             self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
             for status in ('advising', 'advisor-resolved'):
                 self.decisions.joinpath('LAT-B.md').write_text(f'- status: {status}\n')
-                self.assert_silent(self.stop_hook(client=client))
+                self.assert_stop_pass(self.stop_hook(client=client), 'LAT-A r1 - Question')
                 self.assert_stop_block(self.stop_hook('DECIDE: LAT-A r1, LAT-B r1', client),
                                        'LAT-B r1：紀錄不是 pending', 'LAT-B r1：沒有參謀行')
             self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
@@ -537,6 +541,17 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         return Path(json.loads(result.stdout)['binding']['questions_path'])
 
+    def assert_stop_pass(self, result, *headings):
+        """A passing DECIDE/HELP Stop: silent when unbound, else only the shown question headings."""
+        if not headings:
+            self.assert_silent(result)
+            return
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        output = json.loads(result.stdout)
+        self.assertEqual(set(output), {'systemMessage'})
+        self.assertEqual(output['systemMessage'],
+                         SEPARATOR.join(f'❓ {heading}' for heading in headings))
+
     def assert_stop_block(self, result, *details):
         self.assertEqual(result.returncode, 0, result.stderr)
         output = json.loads(result.stdout)
@@ -544,7 +559,7 @@ class SessionTests(unittest.TestCase):
         for detail in details:
             self.assertIn(detail, output['reason'])
         self.assertIn('寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板', output['reason'])
-        self.assertIn('遺漏檢查 → 依聊天提問格式重列題目', output['reason'])
+        self.assertIn('遺漏檢查 → 依聊天提問格式重新提問', output['reason'])
         self.assertNotIn('systemMessage', output)
 
     def test_stop_message_extraction_and_last_nonempty_line(self):
@@ -610,7 +625,7 @@ class SessionTests(unittest.TestCase):
         questions.write_text(
             '## Question\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n\n'
             '## Done\nLAT-B · r1 · 已記錄 · 2026-10-19T00:00:00+00:00\n\n答覆：A\n\n- [x] 送出\n')
-        self.assert_silent(self.stop_hook())
+        self.assert_stop_pass(self.stop_hook(), 'LAT-A r1 - Question')
         self.assert_stop_block(self.stop_hook('Question\nDECIDE: LAT-B r1'), 'LAT-B', '不是 pending')
 
     def test_stop_reuses_reverse_panel_checks_for_both_clients(self):
@@ -629,7 +644,7 @@ class SessionTests(unittest.TestCase):
                     'OLD', '決策已非 pending', 'question cleanup',
                     'MISSING', '找不到決策紀錄', '處理使用者已送出的答覆')
                 questions.write_text(current)
-                self.assert_silent(self.stop_hook(client=client))
+                self.assert_stop_pass(self.stop_hook(client=client), 'LAT-A r1 - Question')
 
     def test_stop_panel_own_question_revision_and_omission_check(self):
         self.write_legacy_record()
@@ -643,64 +658,152 @@ class SessionTests(unittest.TestCase):
             questions.write_text(text)
             self.assert_stop_block(self.stop_hook(), '自己的面板')
         questions.write_text('## Question\nLAT-A · r1 · 待答\n')
-        self.assert_silent(self.stop_hook())
+        self.assert_stop_pass(self.stop_hook(), 'LAT-A r1 - Question')
         self.decisions.joinpath('LAT-B.md').write_text('- status: pending\n- advisor: needs-human\n')
         self.assert_stop_block(self.stop_hook(), 'LAT-B', '遺漏檢查')
         self.assert_stop_block(self.stop_hook('❓ **LAT-A r2** Question\nDECIDE: LAT-A r1'),
                                'LAT-A r2')
         questions.write_text(questions.read_text() + '\n## Next\nLAT-B · r1 · 待答\n')
-        self.assert_silent(self.stop_hook(stop_hook_active=True))
+        self.assert_stop_pass(self.stop_hook(stop_hook_active=True), 'LAT-A r1 - Question')
 
-    def test_stop_requires_each_tag_line_question_copied_in_full(self):
+    QUESTION_A = (
+        '## **要不要**合併？\nLAT-A · r1 · 待答\n\n審查通過 ✅，見 `dev`。\n\n'
+        '- A. 合併（建議）\n  第一段 **重點**。\n\n  - 子項目\n- B. 先不合併\n\n'
+        '➡️ A：理由一 🚀。\n理由二。\n\n'
+        '【詳細資訊】\n來由。\n\n第二段。\n【詳細資訊結束】\n\n答覆：\n\n- [ ] 送出\n')
+    SHOWN_A = (
+        '❓ LAT-A r1 - 要不要合併？\n\n審查通過 ✅，見 dev。\n\n'
+        'A. 合併（建議）\n  第一段 重點。\n\n  - 子項目\nB. 先不合併\n\n'
+        '➡️ A：理由一 🚀。\n理由二。\n\n'
+        '【詳細資訊】\n來由。\n\n第二段。\n【詳細資訊結束】')
+    QUESTION_B = ('## 要裝哪些？\nLAT-B · r2 · 待答\n\n背景。\n\n- [ ] Claude\n- [ ] Codex\n\n'
+                  '答覆：\n\n- [ ] 送出\n')
+    SHOWN_B = '❓ LAT-B r2 - 要裝哪些？\n\n背景。\n\n（複選題，可選多項）\nA. Claude\nB. Codex'
+
+    def shown(self, result):
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        output = json.loads(result.stdout)
+        self.assertEqual(set(output), {'systemMessage'})
+        return output['systemMessage']
+
+    def test_stop_shows_listed_questions_as_plain_text_without_a_chat_copy(self):
+        reports = self.root / 'reports' / f'{SESSION}.jsonl'
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                def ask(message):
+                    # Each ask starts with no reports, so a repeat is not held as already asked.
+                    reports.unlink(missing_ok=True)
+                    return self.stop_hook(message, client)
+                self.activate_as(client)
+                for name in ('LAT-A', 'LAT-B'):
+                    self.decisions.joinpath(f'{name}.md').write_text(
+                        '- status: pending\n- advisor: needs-human\n')
+                questions = self.bind_stop_panel(client)
+                questions.write_text(self.QUESTION_A + '\n' + self.QUESTION_B)
+                # Background and the tag line are enough; the hook shows the full question.
+                self.assertEqual(self.shown(ask('背景說明。\nDECIDE: LAT-A r1')), self.SHOWN_A)
+                # The report keeps only the model's message.
+                self.assertEqual([report['message'] for report in self.reports()],
+                                 ['背景說明。\nDECIDE: LAT-A r1'])
+                self.assertEqual(self.shown(ask('DECIDE: LAT-A r1')), self.SHOWN_A)
+                # Several questions come in tag-line order, each once, with a separator line.
+                self.assertEqual(self.shown(ask('DECIDE: LAT-B r2、LAT-A r1、LAT-B r2')),
+                                 self.SHOWN_B + SEPARATOR + self.SHOWN_A)
+                # Without IDs on the tag line, the `❓` headings name them in their order.
+                self.assertEqual(self.shown(ask(
+                    '❓ **LAT-B r2** 題\n❓ **LAT-A r1** 題\nDECIDE: 請選')),
+                    self.SHOWN_B + SEPARATOR + self.SHOWN_A)
+                # HELP is shown the same way.
+                self.decisions.joinpath('LAT-A.md').write_text(
+                    '- status: pending\n- advisor: needs-human\n- kind: help\n')
+                self.assertEqual(self.shown(ask('HELP: LAT-A r1')), self.SHOWN_A)
+                # Unbound: nothing shown and no chat copy compared, as before.
+                (self.root / 'plugin-config/bindings.json').write_text(
+                    '{"version": 2, "bindings": {}}')
+                self.assert_silent(ask('HELP: LAT-A r1'))
+                self.record.unlink()
+                reports.unlink()
+
+    def test_stop_held_question_is_not_shown_and_a_released_one_is(self):
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                self.activate_as(client)
+                path = self.decisions / 'LAT-A.md'
+                path.write_text('- status: pending\n')
+                self.bind_stop_panel(client).write_text(self.QUESTION_A)
+                for message in ('DECIDE: LAT-A r1', 'DECIDE: LAT-A r1、LAT-B r2'):
+                    # assert_stop_block also checks no systemMessage rides along with the hold.
+                    self.assert_stop_block(self.stop_hook(message, client), '沒有參謀行')
+                released = self.shown(self.stop_hook('DECIDE: LAT-A r1', client,
+                                                     stop_hook_active=True))
+                self.assertTrue(released.startswith(self.SHOWN_A + '\n\nLAT DECIDE 檢查未通過：'))
+                self.assertIn('沒有參謀行', released)
+                self.assertTrue(released.endswith('本回合已繼續過，不再攔下。'))
+                # A released question missing from the file is named in a warning, not shown.
+                released = self.shown(self.stop_hook('DECIDE: LAT-A r1、LAT-B r2', client,
+                                                     stop_hook_active=True))
+                self.assertTrue(released.startswith(
+                    self.SHOWN_A + '\n\nLAT 題目代送失敗：自己的問題檔沒有 LAT-B r2 的待答題目，'
+                    '請到面板查看。\n\nLAT DECIDE 檢查未通過：'))
+                # A repeated tag line is held without delivery, then shown when released.
+                path.write_text('- status: pending\n- advisor: needs-human\n')
+                (self.root / 'reports' / f'{SESSION}.jsonl').unlink()
+                self.assertEqual(self.shown(self.stop_hook('DECIDE: LAT-A r1', client)),
+                                 self.SHOWN_A)
+                self.assertEqual(set(json.loads(self.stop_hook('DECIDE: LAT-A r1', client).stdout)),
+                                 {'decision', 'reason'})
+                released = self.shown(self.stop_hook('DECIDE: LAT-A r1', client,
+                                                     stop_hook_active=True))
+                self.assertTrue(released.startswith(self.SHOWN_A + '\n\nLAT DECIDE 檢查未通過：'))
+                self.assertIn('已在先前訊息', released)
+                self.record.unlink()
+                (self.root / 'reports' / f'{SESSION}.jsonl').unlink()
+
+    def test_stop_delivery_failures_only_add_a_warning(self):
         self.write_legacy_record()
-        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
+        path = self.decisions / 'LAT-A.md'
+        path.write_text('- status: pending\n- advisor: needs-human\n')
         questions = self.bind_stop_panel()
-        details = '【詳細資訊】\n來由：上次漏寫。\n方法：照抄。\n【詳細資訊結束】\n\n'
-        options = 'A. 甲（建議）\n   影響甲\nB. 乙\n   影響乙\n\n'
-        questions.write_text(
-            '## 要怎麼做？\nLAT-A · r1 · 待答\n\n背景一句話。\n\n'
-            f'{options}➡️ A：理由一。\n理由二。\n\n{details}答覆：\n\n- [ ] 送出\n')
-        full = ('❓ **LAT-A r1** - **要怎麼做？**\n\n背景一句話。\n\n'
-                f'{options}➡️ A：理由一。\n理由二。\n\n{details}DECIDE: LAT-A r1')
-        for part, name in (('方法：照抄。', '詳細資訊'), ('背景一句話。', '背景'),
-                           ('   影響乙', '選項 B 的內容'), ('理由二。', '推薦段落'),
-                           ('**要怎麼做？**', '標題'), ('B. 乙', '選項 B')):
-            with self.subTest(name=name):
-                self.assert_stop_block(self.stop_hook(full.replace(part, '', 1)),
-                                       'LAT-A r1：訊息沒有照抄題目原文，缺少' + name)
-        # The tag line does not count as a copy of the title.
-        self.assert_stop_block(self.stop_hook(full.replace('**要怎麼做？**', '', 1) + ' 要怎麼做？'),
-                               '缺少標題')
-        # Only whitespace differs: the markers are optional, line breaks and indents are not compared.
-        spaced = full.replace('   影響甲', '影響甲').replace('來由：上次漏寫。\n', '來由： 上次 漏寫。 ')
-        self.assert_silent(self.stop_hook(spaced.replace('【詳細資訊】', '').replace('【詳細資訊結束】', '')))
-        # A question still written with its details after the background asks for the same order.
-        questions.write_text(
-            '## 要怎麼做？\nLAT-A · r1 · 待答\n\n背景一句話。\n\n'
-            f'{details}{options}➡️ A：理由一。\n理由二。\n\n答覆：\n\n- [ ] 送出\n')
-        self.assert_silent(self.stop_hook(full))
-        # The old chat order, details before the options, no longer passes.
-        old_order = full.replace(details, '').replace('背景一句話。\n\n', '背景一句話。\n\n' + details)
-        self.assert_stop_block(self.stop_hook(old_order), '缺少詳細資訊')
-        # Unbound sessions have no question file to compare against.
-        (self.root / 'plugin-config/bindings.json').write_text('{"version": 2, "bindings": {}}')
-        self.assert_silent(self.stop_hook('DECIDE: LAT-A r2'))
-
-    def test_stop_compares_each_list_item_option_body_paragraph_by_paragraph(self):
-        self.write_legacy_record()
-        self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
-        options = ('- A. 甲（建議）\n  第一段說明。\n\n  - 子項目一\n  - 子項目二\n'
-                   '- B. 乙\n  **乙的說明**\n')
-        self.bind_stop_panel().write_text(
-            f'## 要怎麼做？\nLAT-A · r1 · 待答\n\n背景。\n\n{options}\n答覆：\n\n- [ ] 送出\n')
-        full = f'❓ **LAT-A r1** - **要怎麼做？**\n\n背景。\n\n{options}\nDECIDE: LAT-A r1'
-        self.assert_silent(self.stop_hook(full))
-        for part, name in (('第一段說明。', '選項 A 的內容第 1 段'),
-                           ('  - 子項目二\n', '選項 A 的內容第 2 段'),
-                           ('**乙的說明**', '選項 B 的內容'), ('- B. 乙', '選項 B')):
-            with self.subTest(name=name):
-                self.assert_stop_block(self.stop_hook(full.replace(part, '', 1)),
-                                       'LAT-A r1：訊息沒有照抄題目原文，缺少' + name)
+        questions.write_text(self.QUESTION_A)
+        # A check error still releases and shows the question with the error note.
+        path.write_bytes(b'\xff')
+        shown = self.shown(self.stop_hook())
+        self.assertTrue(shown.startswith(self.SHOWN_A + '\n\nLAT DECIDE 檢查發生錯誤，未攔下：'))
+        # An unreadable question file fails both the check and the delivery: warnings only.
+        path.write_text('- status: pending\n- advisor: needs-human\n')
+        questions.write_bytes(b'\xff')
+        shown = self.shown(self.stop_hook())
+        self.assertTrue(shown.startswith('LAT 題目代送失敗，請到面板查看題目：'))
+        self.assertIn('LAT DECIDE 檢查發生錯誤，未攔下', shown)
+        # A binding that no longer matches the record is not used for delivery.
+        questions.write_text(self.QUESTION_A)
+        bindings = self.root / 'plugin-config/bindings.json'
+        original = bindings.read_text()
+        bindings.write_text(original.replace(str(self.work), str(self.root)))
+        shown = self.shown(self.stop_hook())
+        self.assertIn('LAT 題目代送失敗，請到面板查看題目：面板綁定與主控紀錄不符', shown)
+        self.assertNotIn('❓', shown)
+        bindings.write_text(original)
+        # A renderer that throws after a passing check: the check result stays a pass.
+        shim = self.root / 'render-fault.py'
+        shim.write_text(
+            'import importlib.util\n'
+            f'spec = importlib.util.spec_from_file_location("lat_session", {str(SCRIPT)!r})\n'
+            'helper = importlib.util.module_from_spec(spec)\n'
+            'spec.loader.exec_module(helper)\n'
+            'load = helper.panel_module\n'
+            'def panel_module():\n'
+            '    panel = load()\n'
+            '    def fail(question): raise RuntimeError("simulated render failure")\n'
+            '    panel.question_plain_text = fail\n'
+            '    return panel\n'
+            'helper.panel_module = panel_module\n'
+            'raise SystemExit(helper.main())\n')
+        result = self.cli('hook', script=shim, session=OTHER, payload=dict(
+            hook_event_name='Stop', cwd=str(self.work), session_id=SESSION,
+            stop_hook_active=False, last_assistant_message='DECIDE: LAT-A r1'))
+        self.assertEqual(self.shown(result),
+                         'LAT 題目代送失敗，請到面板查看題目：simulated render failure')
 
     def test_stop_once_per_turn_warning_and_error_outputs_for_both_clients(self):
         for client in ('codex', 'claude'):
@@ -2056,11 +2159,13 @@ class SessionTests(unittest.TestCase):
                     binding_path.write_text(original if bound else '{"version": 2, "bindings": {}}')
                     path = self.decisions / 'LAT-A.md'
                     path.write_text('- status: pending\n- advisor: exempt ticket-confirmation\n')
-                    self.assert_silent(self.stop_hook(client=client))
+                    self.assert_stop_pass(self.stop_hook(client=client),
+                                          *['LAT-A r1 - Question'][:bound])
                     path.write_text('- status: pending\n- advisor: exempt ticket-confirmatio\n')
                     self.assert_stop_block(self.stop_hook(client=client), '不在清單內')
                     path.write_text('- status: pending\n- advisor: exempt ticket-confirmation\n')
-                    self.assert_silent(self.stop_hook(client=client, stop_hook_active=True))
+                    self.assert_stop_pass(self.stop_hook(client=client, stop_hook_active=True),
+                                          *['LAT-A r1 - Question'][:bound])
             binding_path.write_text(original)
 
     def activate_as(self, client):
@@ -2125,7 +2230,8 @@ class SessionTests(unittest.TestCase):
                 questions = self.bind_stop_panel(client)
                 self.assert_stop_block(self.stop_hook('HELP: LAT-H r1', client), '自己的面板')
                 questions.write_text('## 請登入\nLAT-H · r1 · 待答\n')
-                self.assert_silent(self.stop_hook('請登入\nHELP: LAT-H r1', client))
+                self.assert_stop_pass(self.stop_hook('請登入\nHELP: LAT-H r1', client),
+                                      'LAT-H r1 - 請登入')
                 (self.root / 'plugin-config/bindings.json').write_text(
                     '{"version": 2, "bindings": {}}')
                 path.write_bytes(b'\xff')
