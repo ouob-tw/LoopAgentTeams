@@ -133,7 +133,7 @@ function herdrAgent(session: string, cwd = `/home/someone/projects/${session}`) 
 	};
 }
 function setHerdr(extra: object = {}) {
-	const agents = [herdrAgent('s-lead'), herdrAgent('s-gone', gone.workspace), herdrAgent('s-luna'), herdrAgent('s-plain')];
+	const agents = [herdrAgent('s-lead'), herdrAgent('s-sun'), herdrAgent('s-gone', gone.workspace), herdrAgent('s-luna'), herdrAgent('s-plain')];
 	writeFileSync(
 		join(fixture.dir, 'herdr.json'),
 		JSON.stringify({
@@ -145,9 +145,10 @@ function setHerdr(extra: object = {}) {
 		})
 	);
 }
-const hcomAgent = (name: string, session: string) => ({ name, session_id: session, status: 'listening', launch_context: { pane_id: `wA:p-${session}` } });
+const hcomAgent = (name: string, session: string, status = 'listening') => ({ name, session_id: session, status, launch_context: { pane_id: `wA:p-${session}` } });
 // `gone` is bound but hcom no longer lists it: closed, its pane still in Herdr.
-const HCOM_AGENTS = [hcomAgent('lead', 's-lead'), hcomAgent('luna', 's-luna'), hcomAgent('plain', 's-plain')];
+// `lead` is really at work: only hcom's live status, not its LAT report, decides the stop.
+const HCOM_AGENTS = [hcomAgent('lead', 's-lead', 'active'), hcomAgent('luna', 's-luna'), hcomAgent('plain', 's-plain')];
 function record(session: string, said: { kind: 'user' | 'assistant'; minutes: number; text: string }[]) {
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
 	writeFileSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), said.map(({ kind, minutes, text }) => JSON.stringify({ kind, time: minutesAgo(minutes), text }) + '\n').join(''));
@@ -389,7 +390,7 @@ test.skipIf(!CHROME)('only blank space typed keeps the stop; a line naming a con
 test.skipIf(!CHROME)('the confirmation is cancelled without a key pressed, and closes when the controller changes or stops working', async () => {
 	const sun = fixture.bound('sun', 'sun', { session_id: 's-sun' });
 	fixture.list([lead, gone, sun]);
-	fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun')] });
+	fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun', 'active')] });
 	await fixture.refresh(cookie);
 	const open = async () => {
 		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
@@ -411,13 +412,13 @@ test.skipIf(!CHROME)('the confirmation is cancelled without a key pressed, and c
 		await tab.until(`${pageOf('sun')} && !!document.querySelector(${JSON.stringify(STOP)})`, "sun's page");
 		expect(await confirmShown()).toBe(false);
 
-		// It stops working, a question waiting on the user, and works again: closed, and not back.
+		// It stops working, as hcom sees it, and works again: closed, and not back.
 		await open();
-		fixture.list([lead, gone, { ...sun, questions: [question()] }]);
+		fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun', 'listening')] });
 		await fixture.refresh(cookie);
-		await tab.until(`!document.querySelector(${JSON.stringify(STOP)})`, 'no stop while it waits');
+		await tab.until(`!document.querySelector(${JSON.stringify(STOP)})`, 'no stop while it is idle');
 		expect(await confirmShown()).toBe(false);
-		fixture.list([lead, gone, sun]);
+		fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun', 'active')] });
 		await fixture.refresh(cookie);
 		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
 		expect(await confirmShown()).toBe(false);
@@ -428,6 +429,49 @@ test.skipIf(!CHROME)('the confirmation is cancelled without a key pressed, and c
 		await fixture.refresh(cookie);
 	}
 }, 60_000);
+
+// The stop follows the live agent with the controller's session, not the LAT reports. Each case
+// changes only what LAT or the live agent says of `lead` and puts it back.
+const LEAD_CASES: { name: string; report?: boolean; lat: () => object; hcom?: string; herdr?: () => object; stop: boolean }[] = [
+	{ name: 'LAT-disabled (idle) but really at work', report: true, lat: () => [gone], stop: true },
+	{ name: 'delivered (DONE report) but really at work', report: true, lat: () => [lead, gone], stop: true },
+	{ name: 'waiting on a question but really at work', lat: () => [{ ...lead, questions: [question()] }, gone], stop: true },
+	{ name: 'LAT-disabled but really idle', report: true, lat: () => [gone], hcom: 'listening', stop: false },
+	{ name: 'LAT says working but really idle (hcom listening)', lat: () => [lead, gone], hcom: 'listening', stop: false },
+	{ name: 'LAT says working but not in Herdr', lat: () => [lead, gone], herdr: () => ({ agents: [], panes: [] }), stop: false }
+];
+for (const { name, report, lat, hcom, herdr, stop } of LEAD_CASES) {
+	test.skipIf(!CHROME)(`the stop on a controller's page: ${name} -> ${stop ? 'stop' : 'no stop'}`, async () => {
+		if (report) fixture.report('s-lead', { tag: 'DONE', summary: '交付', message: '交付了。', time: minutesAgo(3), hcom_name: 'lead', workspace: lead.workspace });
+		fixture.list(lat() as never);
+		fixture.setHcom({ agents: [hcomAgent('lead', 's-lead', hcom ?? 'active'), ...HCOM_AGENTS.slice(1)] });
+		if (herdr) setHerdr(herdr());
+		await fixture.refresh(cookie);
+		try {
+			await visit(1280, '?controller=s-lead');
+			await tab.until(`${pageOf('lat')}`, "lead's page");
+			await sleep(300);
+			expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(stop);
+			if (stop) {
+				await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
+				await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
+				await tab.eval(`document.querySelector(${JSON.stringify(CONFIRM_STOP)}).click()`);
+				await tab.until(`document.querySelector('.dock')?.innerText.includes('已對 @lead 送出 Esc')`, 'the interrupt notice');
+				// The Esc went to the pane of the session that was open, nobody else's.
+				expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);
+				expect((await agentLog('s-lead')).map((entry: any) => [entry.action, entry.ok])).toContainEqual(['interrupt', true]);
+			} else {
+				expect(await tab.eval(`!!document.querySelector(${JSON.stringify(SEND)})`)).toBe(true);
+			}
+		} finally {
+			rmSync(join(fixture.reportsDir, 's-lead.jsonl'), { force: true });
+			fixture.list([lead, gone]);
+			fixture.setHcom({ agents: HCOM_AGENTS });
+			setHerdr();
+			await fixture.refresh(cookie);
+		}
+	}, 60_000);
+}
 
 // Wide: a new LAT round and an effort; a phone: the same conversation with another model.
 for (const { width, newRound, kind, value, flags } of [

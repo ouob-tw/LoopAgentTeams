@@ -1,5 +1,5 @@
 // What the user does to an agent on the 所有 Agent tab: the shared shapes of its operation record.
-import type { Agent, Controller } from './types.ts';
+import type { Agent } from './types.ts';
 
 /** What was done: text typed into the agent's input box, its turn interrupted, it closed, its
  *  Herdr tab moved or renamed, or it brought back from the 已關閉 section. */
@@ -48,10 +48,17 @@ export const AGENT_INTERRUPT_CONFIRM_TEXT = '中斷這個 Agent 目前這一回�
 
 export const CONTROLLER_INTERRUPT_CONFIRM_TEXT = '中斷這個主控目前這一回合（等同在它的終端機按 Esc）？';
 
-/** Whether the controller's turn can be interrupted from its page: it is at work and runs in a
- *  Herdr pane, where Esc is pressed as for an agent. */
-export function controllerInterruptible(controller: Pick<Controller, 'status' | 'herdr'>): boolean {
-	return controller.status === 'working' && controller.herdr !== null;
+/** Whether the agent's turn can be interrupted: it is in a Herdr pane, no model switch is open and
+ *  it is not idle or done. Nothing typed in its box is checked by the caller. */
+export function agentInterruptible(agent: Pick<Agent, 'inHerdr' | 'switch' | 'status'>): boolean {
+	return agent.inHerdr && !agent.switch && agent.status !== 'idle' && agent.status !== 'done';
+}
+
+/** Whether the controller's turn can be interrupted from its page: the live agent with its session
+ *  ID is interruptible as on the agent's page, whatever the LAT reports make of the controller. */
+export function controllerInterruptible(agents: Pick<Agent, 'id' | 'inHerdr' | 'switch' | 'status'>[], controllerId: string): boolean {
+	const agent = agents.find((candidate) => candidate.id === controllerId);
+	return agent !== undefined && agentInterruptible(agent);
 }
 
 export const AGENT_HCOM_UNKNOWN_REASON =

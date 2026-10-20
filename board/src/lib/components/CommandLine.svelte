@@ -7,7 +7,7 @@
 	// page is open, a line without a name goes to that agent instead, from a draft of its own, also
 	// kept across a reload; while it works and nothing is typed, the send button interrupts its turn instead.
 	// A controller's page on the Herdr tab is written to as the controller it is, from the controllers' draft.
-	// A controller at work in a Herdr pane is interrupted the same way, while nothing is typed.
+	// A controller whose live agent is at work in a Herdr pane is interrupted the same way, while nothing is typed.
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import MessageSquare from '@lucide/svelte/icons/message-square';
@@ -18,6 +18,7 @@
 		AGENT_HCOM_UNKNOWN_REASON,
 		AGENT_INTERRUPT_CONFIRM_TEXT,
 		CONTROLLER_INTERRUPT_CONFIRM_TEXT,
+		agentInterruptible,
 		controllerInterruptible
 	} from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
@@ -28,7 +29,7 @@
 	import { switching } from '#lib/board/switching.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
-	import { isInactive, type Controller, type KnownAgent } from '#lib/board/types.ts';
+	import { isInactive, type Agent, type Controller, type KnownAgent } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
 	import AgentModelPicker from './AgentModelPicker.svelte';
@@ -39,11 +40,14 @@
 		controllers,
 		target,
 		agent,
+		agents = [],
 		adopt
 	}: {
 		controllers: Controller[];
 		target: Controller | undefined;
 		agent?: KnownAgent;
+		/** The live agent list: a controller is interrupted by its entry here, not by its LAT status. */
+		agents?: Agent[];
 		/** The controller whose page is open on the Herdr tab: what was typed to it as an agent, before
 		 *  the board wrote to it as a controller, is moved into the controllers' draft, once. */
 		adopt?: string;
@@ -138,7 +142,7 @@
 	);
 	// An interrupt presses Esc in its pane through Herdr, whether hcom reaches it or not.
 	const stoppable = $derived(
-		toAgent && !!agent && agent.inHerdr && !agent.switch && agent.status !== 'idle' && agent.status !== 'done' && !draft.trim()
+		toAgent && !!agent && agentInterruptible(agent) && !draft.trim()
 	);
 	let interrupting = $state<Record<string, boolean>>({});
 	let confirmingStop = $state(false);
@@ -148,7 +152,7 @@
 	const stopping = $derived(
 		stoppable && agent
 			? { id: agent.id, name: agent.name, confirm: AGENT_INTERRUPT_CONFIRM_TEXT }
-			: !toAgent && !draft.trim() && recipient && controllerInterruptible(recipient)
+			: !toAgent && !draft.trim() && recipient && controllerInterruptible(agents, recipient.id)
 				? { id: recipient.id, name: `@${recipient.hcomName}`, confirm: CONTROLLER_INTERRUPT_CONFIRM_TEXT }
 				: null
 	);
