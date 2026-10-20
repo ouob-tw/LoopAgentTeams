@@ -10,7 +10,9 @@ import {
 	isStale,
 	level,
 	ordered,
+	percentText,
 	planView,
+	remaining,
 	resetText,
 	updatedText,
 	waiting,
@@ -281,7 +283,9 @@ test('the tab: the account in use first, its reading the group\'s, the threshold
 	expect(updatedText(NOW - 10, NOW)).toBe('剛剛更新');
 	expect(updatedText(null, NOW)).toBe('沒有紀錄');
 
-	expect([79.9, 80, 94.9, 95, 100].map(level)).toEqual([null, 'warn', 'warn', 'danger', 'danger']);
+	expect([100, 20.1, 20, 5.1, 5, 0].map(level)).toEqual([null, null, 'warn', 'warn', 'danger', 'danger']);
+	expect([0, 20, 95, 100].map(remaining)).toEqual([100, 80, 5, 0]);
+	expect([0, 11, 81.4, 81.5, 100].map(percentText)).toEqual(['剩 100%', '剩 89%', '剩 19%', '剩 18%', '剩 0%']);
 	expect(waiting({ label: '', used: 50, resetsAt: NOW }, NOW)).toBe(true);
 	expect(waiting({ label: '', used: 50, resetsAt: NOW + 1 }, NOW)).toBe(false);
 	expect(waiting({ label: '', used: 50, resetsAt: null }, NOW)).toBe(false);
@@ -290,7 +294,7 @@ test('the tab: the account in use first, its reading the group\'s, the threshold
 
 	expect(planView({ label: 'Max 5x', source: 'live', observedAt: NOW }, NOW)).toEqual({ text: 'Max 5x', recorded: false });
 	expect(planView({ label: 'Pro', source: 'recorded', observedAt: NOW - 3 * DAY - 1 }, NOW)).toEqual({ text: 'Pro', recorded: true, title: '上次使用時記錄（3 天前）' });
-	expect(planView(null, NOW)).toEqual({ text: '方案未知', recorded: false });
+	expect(planView(null, NOW)).toBeNull();
 });
 
 test('the poller reads both sources, keeps one failing from the other, and tells only of changes', async () => {

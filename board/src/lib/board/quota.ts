@@ -44,7 +44,7 @@ export interface QuotaSnapshot {
 	codex: QuotaGroup;
 }
 
-/** Past this age a reading is marked 資料可能過舊. */
+/** Past this age a reading's time turns yellow. */
 export const STALE_MS: Record<QuotaClient, number> = { claude: 3 * 60_000, codex: 15 * 60_000 };
 
 export const MINUTE = 60_000;
@@ -75,10 +75,14 @@ export function agoText(at: number, now: number): string {
 
 export const updatedText = (at: number | null, now: number) => (at === null ? '沒有紀錄' : `${agoText(at, now)}更新`);
 
-/** 80% and up is a warning, 95% and up the danger color. */
-export const level = (used: number) => (used >= 95 ? 'danger' : used >= 80 ? 'warn' : null);
+/** What is left of a window, 0–100: 100 − used. */
+export const remaining = (used: number) => Math.min(100, Math.max(0, 100 - used));
 
-export const percentText = (used: number) => `${Math.round(used)}%`;
+/** 20% left and under is a warning, 5% left and under the danger color. */
+export const level = (left: number) => (left <= 5 ? 'danger' : left <= 20 ? 'warn' : null);
+
+/** 剩 N%; N rounds the used percent as before, so 81.5 used reads 剩 18%, not 剩 19%. */
+export const percentText = (used: number) => `剩 ${100 - Math.round(Math.min(100, Math.max(0, used)))}%`;
 
 /** A window whose reset has passed: its number is the last window's, not this one's. */
 export const waiting = (window: QuotaWindow, now: number) => window.resetsAt !== null && window.resetsAt <= now;
@@ -91,9 +95,9 @@ export function resetText(resetsAt: number, now: number): string {
 	return `${sameDay ? time : `${at.getMonth() + 1}/${at.getDate()} ${time}`} 重置`;
 }
 
-/** The plan as the card shows it: faded with its age when only recorded. */
-export function planView(plan: QuotaPlan | null, now: number): { text: string; recorded: boolean; title?: string } {
-	if (!plan) return { text: '方案未知', recorded: false };
+/** The plan as the card shows it: faded with its age when only recorded; null (nothing shown) when unknown. */
+export function planView(plan: QuotaPlan | null, now: number): { text: string; recorded: boolean; title?: string } | null {
+	if (!plan) return null;
 	if (plan.source === 'live') return { text: plan.label, recorded: false };
 	const days = plan.observedAt === null ? null : Math.floor(Math.max(0, now - plan.observedAt) / DAY);
 	return {

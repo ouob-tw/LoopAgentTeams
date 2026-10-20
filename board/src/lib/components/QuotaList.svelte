@@ -1,8 +1,8 @@
 <script lang="ts">
 	// The 額度 tab: the Claude and the Codex accounts one above the other, each group with when its
-	// account in use was read and a warning once that is too old. One card per account, the one in
-	// use first and framed: its email and plan, then a line per quota window with a thin bar, the
-	// percent used and when it resets. Read-only: nothing here switches an account or asks for new
+	// account in use was read, in yellow once that is too old. One card per account, the one in
+	// use first and framed: its email and plan, then a line per quota window with the
+	// percent left and when it resets. Read-only: nothing here switches an account or asks for new
 	// data; the server reads the sources by itself.
 	import {
 		agoText,
@@ -12,6 +12,7 @@
 		ordered,
 		percentText,
 		planView,
+		remaining,
 		resetText,
 		updatedText,
 		waiting,
@@ -41,11 +42,11 @@
 		<p class="who">
 			{#if account.current}<span class="badge">使用中</span>{/if}
 			<span class="email">{account.email}</span>
-			<span class="plan" class:recorded={plan.recorded} title={plan.title}>{plan.text}</span>
+			{#if plan}<span class="plan" class:recorded={plan.recorded} title={plan.title}>{plan.text}</span>{/if}
 		</p>
 		{#if !account.current && account.observedAt !== null}
 			<p class="age" class:stale={isStale(account.observedAt, now, client)}>
-				{agoText(account.observedAt, now)}更新{#if isStale(account.observedAt, now, client)}・資料可能過舊{/if}
+				{agoText(account.observedAt, now)}更新
 			</p>
 		{/if}
 		{#if account.windows.length}
@@ -57,8 +58,7 @@
 						{#if window.used === null}
 							<span class="none">沒有紀錄</span>
 						{:else}
-							<span class="bar"><span class={['fill', !old && level(window.used)]} style:width="{Math.min(100, Math.max(0, window.used))}%"></span></span>
-							<span class={['percent', !old && level(window.used)]}>{percentText(window.used)}</span>
+							<span class={['percent', !old && level(remaining(window.used))]}>{percentText(window.used)}</span>
 							<span class="reset">{old ? '等待新資料' : window.resetsAt === null ? '' : resetText(window.resetsAt, now)}</span>
 						{/if}
 					</li>
@@ -79,7 +79,7 @@
 				{#if group?.ok}
 					{@const at = groupObservedAt(group.accounts)}
 					<span class="updated" class:stale={isStale(at, now, client)}>
-						{updatedText(at, now)}{#if isStale(at, now, client)}・資料可能過舊{/if}
+						{updatedText(at, now)}
 					</span>
 				{/if}
 			</header>
@@ -143,10 +143,10 @@
 	.cards {
 		gap: 0.45rem;
 	}
-	/* The cards' window lines share their columns, so the bars line up whatever the reset reads. */
+	/* The cards' window lines share their columns, so the percents line up whatever the reset reads. */
 	.windows {
 		display: grid;
-		grid-template-columns: minmax(3.5em, auto) minmax(2.5rem, 1fr) 2.8em auto;
+		grid-template-columns: minmax(3.5em, auto) auto 1fr;
 		gap: 0.3rem 0.5rem;
 	}
 	.card {
@@ -204,7 +204,7 @@
 		color: var(--danger);
 		overflow-wrap: anywhere;
 	}
-	/* Label, bar, percent and reset on one line. */
+	/* Label, percent and reset on one line. */
 	.window {
 		display: grid;
 		grid-column: 1 / -1;
@@ -217,25 +217,8 @@
 		overflow-wrap: anywhere;
 		color: var(--muted);
 	}
-	.bar {
-		height: 0.35rem;
-		border-radius: var(--radius-pill);
-		background: color-mix(in srgb, var(--text) 12%, var(--bg));
-		overflow: hidden;
-	}
-	.fill {
-		display: block;
-		height: 100%;
-		background: var(--accent);
-	}
-	.fill.warn {
-		background: var(--warn);
-	}
-	.fill.danger {
-		background: var(--danger);
-	}
 	.percent {
-		text-align: right;
+		white-space: nowrap;
 		font-variant-numeric: tabular-nums;
 	}
 	.percent.warn {
@@ -245,14 +228,13 @@
 		color: var(--danger);
 	}
 	.window .none {
-		grid-column: 2 / 5;
+		grid-column: 2 / 4;
 	}
 	.reset {
 		color: var(--muted);
 		font-size: max(0.75rem, var(--min-font, 0px));
 		white-space: nowrap;
 	}
-	.window.old .fill,
 	.window.old .percent {
 		opacity: 0.5;
 	}

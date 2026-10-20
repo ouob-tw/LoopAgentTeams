@@ -167,11 +167,11 @@ const cards = (client: string) =>
 	);
 const windows = `[...document.querySelectorAll('.quota [data-client="claude"] .card.current .window')].map((row) => ({
 	text: row.innerText.replace(/\\s+/g, ' '),
-	fill: row.querySelector('.fill')?.className.replace(/svelte-\\S+/g, '').trim() ?? null
+	fill: row.querySelector('.percent')?.className.replace(/svelte-\\S+/g, '').trim() ?? null
 }))`;
 
 for (const width of [1280, 360]) {
-	test.skipIf(!CHROME)(`${width}px: the accounts in use first and framed, every window with its bar, percent and reset, plans three ways`, async () => {
+	test.skipIf(!CHROME)(`${width}px: the accounts in use first and framed, every window with its percent left and reset, no bar, plans three ways`, async () => {
 		setClaude(Date.now());
 		setCodex({ version: 4, accounts: [] });
 		await visit(width);
@@ -191,20 +191,23 @@ for (const width of [1280, 360]) {
 		expect(await header('claude')).toBe('Claude 1 分鐘前更新');
 		const rows = await tab.eval<{ text: string; fill: string | null }[]>(windows);
 		expect(rows.length).toBe(3);
-		expect(rows[0].text).toMatch(/^5 小時 40% \d\d:\d\d 重置$/);
-		expect(rows[1].text).toMatch(/^7 天 85% \d+\/\d+ \d\d:\d\d 重置$/);
-		expect(rows[2].text).toMatch(/^Fable 96% \d+\/\d+ \d\d:\d\d 重置$/);
-		expect(rows.map((row) => row.fill)).toEqual(['fill', 'fill warn', 'fill danger']);
+		expect(await tab.eval(`document.querySelectorAll('.quota .bar, .quota .fill').length`)).toBe(0);
+		expect(rows[0].text).toMatch(/^5 小時 剩 60% \d\d:\d\d 重置$/);
+		expect(rows[1].text).toMatch(/^7 天 剩 15% \d+\/\d+ \d\d:\d\d 重置$/);
+		expect(rows[2].text).toMatch(/^Fable 剩 4% \d+\/\d+ \d\d:\d\d 重置$/);
+		expect(rows.map((row) => row.fill)).toEqual(['percent', 'percent warn', 'percent danger']);
 
 		// The other account: its own age, stale; a reset gone by waits for new data; its plan only recorded.
 		expect(claude[1].text).toContain('spare@example.com');
-		expect(claude[1].text).toContain('20 分鐘前更新・資料可能過舊');
-		expect(claude[1].text).toContain('70%');
+		expect(claude[1].text).toContain('20 分鐘前更新');
+		expect(claude[1].text).not.toContain('資料可能過舊');
+		expect(claude[1].text).toContain('剩 30%');
 		expect(claude[1].text).toContain('等待新資料');
 		expect(
 			await tab.eval(`(() => { const plan = document.querySelectorAll('.quota [data-client="claude"] .card')[1].querySelector('.plan'); return [plan.innerText, plan.classList.contains('recorded'), plan.title]; })()`)
 		).toEqual(['Pro', true, '上次使用時記錄（3 天前）']);
-		expect(claude[2].text).toContain('方案未知');
+		expect(claude[2].text).not.toContain('方案未知');
+		expect(await tab.eval(`document.querySelectorAll('.quota [data-client="claude"] .card')[2].querySelector('.plan')`)).toBeNull();
 		expect(claude[2].text).toContain('沒有紀錄');
 		expect(claude[2].text).not.toContain('0%');
 
@@ -225,11 +228,11 @@ test.skipIf(!CHROME)('an old reading turns its group header yellow; no Codex usa
 	);
 	await visit(1280);
 	await tab.until(`document.querySelectorAll('.quota [data-client="codex"] .card').length === 2`, 'the Codex cards');
-	expect(await header('claude')).toBe('Claude 4 分鐘前更新・資料可能過舊');
+	expect(await header('claude')).toBe('Claude 4 分鐘前更新');
 	expect(await tab.eval(`getComputedStyle(document.querySelector('.quota [data-client="claude"] .updated')).color`)).toBe(
 		await tab.eval(`getComputedStyle(document.documentElement).getPropertyValue('--warn').trim() && (() => { const probe = document.createElement('span'); probe.style.color = 'var(--warn)'; document.body.append(probe); const color = getComputedStyle(probe).color; probe.remove(); return color; })()`)
 	);
-	expect(await header('codex')).toBe('Codex 16 分鐘前更新・資料可能過舊');
+	expect(await header('codex')).toBe('Codex 16 分鐘前更新');
 	const codex = await cards('codex');
 	expect(codex[0].current).toBe(true);
 	expect(codex[0].text).toContain('two@example.com');
@@ -239,5 +242,5 @@ test.skipIf(!CHROME)('an old reading turns its group header yellow; no Codex usa
 	).toEqual(['Plus', false, '']);
 	expect(codex[1].text).toContain('one@example.com');
 	expect(codex[1].text).toContain('沒有紀錄');
-	expect(codex[1].text).toContain('方案未知');
+	expect(codex[1].text).not.toContain('方案未知');
 }, 30_000);
