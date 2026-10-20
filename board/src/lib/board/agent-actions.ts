@@ -48,10 +48,14 @@ export const AGENT_INTERRUPT_CONFIRM_TEXT = '中斷這個 Agent 目前這一回�
 
 export const CONTROLLER_INTERRUPT_CONFIRM_TEXT = '中斷這個主控目前這一回合（等同在它的終端機按 Esc）？';
 
-/** Whether the controller's turn can be interrupted from its page: it is at work and runs in a
- *  Herdr pane, where Esc is pressed as for an agent. */
-export function controllerInterruptible(controller: Pick<Controller, 'status' | 'herdr'>): boolean {
-	return controller.status === 'working' && controller.herdr !== null;
+/** Whether the controller's turn can be interrupted from its page: it runs in a Herdr pane, where
+ *  Esc is pressed as for an agent, and its client is in a turn, whatever its LAT status. hcom tells
+ *  the turn (active or blocked); for one hcom does not list, Herdr does, as for any agent. */
+export function controllerInterruptible(controller: Pick<Controller, 'id' | 'herdr'>, agents: Agent[]): boolean {
+	const agent = agents.find((candidate) => candidate.id === controller.id);
+	if (controller.herdr === null || !agent?.inHerdr || agent.switch) return false;
+	if (agent.statusSource === 'hcom') return agent.status === 'working' || agent.status === 'blocked';
+	return agent.status !== 'idle' && agent.status !== 'done';
 }
 
 export const AGENT_HCOM_UNKNOWN_REASON =
