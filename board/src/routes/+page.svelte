@@ -742,6 +742,7 @@
 				controllers={herdrControllers}
 				target={controller ?? agentController}
 				agent={view?.kind === 'agent' && !agentController ? agent : undefined}
+				agents={board.snapshot.agents}
 				adopt={agentController?.id}
 			/>
 		</div>

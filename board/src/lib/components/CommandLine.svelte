@@ -7,7 +7,8 @@
 	// page is open, a line without a name goes to that agent instead, from a draft of its own, also
 	// kept across a reload; while it works and nothing is typed, the send button interrupts its turn instead.
 	// A controller's page on the Herdr tab is written to as the controller it is, from the controllers' draft.
-	// A controller at work in a Herdr pane is interrupted the same way, while nothing is typed.
+	// A controller in a turn in a Herdr pane is interrupted the same way, while nothing is typed; its
+	// turn is read from the Herdr tab's list of agents, not from its LAT status.
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import MessageSquare from '@lucide/svelte/icons/message-square';
@@ -28,7 +29,7 @@
 	import { switching } from '#lib/board/switching.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
-	import { isInactive, type Controller, type KnownAgent } from '#lib/board/types.ts';
+	import { isInactive, type Agent, type Controller, type KnownAgent } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
 	import AgentModelPicker from './AgentModelPicker.svelte';
@@ -39,11 +40,14 @@
 		controllers,
 		target,
 		agent,
+		agents,
 		adopt
 	}: {
 		controllers: Controller[];
 		target: Controller | undefined;
 		agent?: KnownAgent;
+		/** Every agent Herdr lists: whether a controller is in a turn is read from its own. */
+		agents: Agent[];
 		/** The controller whose page is open on the Herdr tab: what was typed to it as an agent, before
 		 *  the board wrote to it as a controller, is moved into the controllers' draft, once. */
 		adopt?: string;
@@ -148,7 +152,7 @@
 	const stopping = $derived(
 		stoppable && agent
 			? { id: agent.id, name: agent.name, confirm: AGENT_INTERRUPT_CONFIRM_TEXT }
-			: !toAgent && !draft.trim() && recipient && controllerInterruptible(recipient)
+			: !toAgent && !draft.trim() && recipient && controllerInterruptible(recipient, agents)
 				? { id: recipient.id, name: `@${recipient.hcomName}`, confirm: CONTROLLER_INTERRUPT_CONFIRM_TEXT }
 				: null
 	);

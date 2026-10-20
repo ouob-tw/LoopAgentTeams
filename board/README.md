@@ -182,7 +182,7 @@
 - 每次傳話不論成敗都記在狀態目錄的 `sent-log.jsonl`，在該主控的資訊頁可以看到，所有已登入裝置看到的相同。
 - 多行文字以一則訊息送出：行與行之間送的是換行字元（LF），最後才送出 Enter（CR）。文字裡的 CR 會先換成 LF，否則會提早送出。
 - 畫面寬度 760px 以下，或只有觸控、沒有滑鼠或觸控板的裝置：Enter 換行，按按鈕送出。其他情況 Enter 送出、Shift+Enter 換行。輸入法選字時的 Enter 不會送出。
-- 中斷主控這一回合：對象是進行中（`working`）、`herdr` 不為空的主控（`controllerInterruptible`），指令列又沒有打字時，送出鈕換成 Agent 頁面那顆紅色停止鈕，按下先問一次（`CONTROLLER_INTERRUPT_CONFIRM_TEXT`），確認後呼叫與 Agent 相同的 `POST /api/agents/interrupt`（`session` 是主控的 session ID）。伺服器照 Agent 的規則重讀清單，以 Herdr 這次列出的窗格送 `herdr agent send-keys <窗格> esc`，不在 Herdr 清單上或有未完成的模型切換就拒絕，只試一次；結果照樣寫一行 `agent-action`（`interrupt`）。通知寫「已對 @名稱 送出 Esc。」或失敗原因。主控資訊頁與 Herdr 分頁的主控頁都一樣。
+- 中斷主控這一回合：對象是 `herdr` 不為空、而且 client 這一回合正在跑的主控（`controllerInterruptible`），回合狀態取自資料裡同一個 session 的 Agent（`agents`），不看主控的 LAT 狀態：狀態來自 hcom 時要是 `working`（hcom `active`）或 `blocked`，來自 Herdr 時（hcom 沒有它）照一般 Agent 的規則，不是閒置或已完成；不在 Herdr 清單上或有未完成的模型切換就沒有停止鈕。指令列又沒有打字時，送出鈕換成 Agent 頁面那顆紅色停止鈕，按下先問一次（`CONTROLLER_INTERRUPT_CONFIRM_TEXT`），確認後呼叫與 Agent 相同的 `POST /api/agents/interrupt`（`session` 是主控的 session ID）。伺服器照 Agent 的規則重讀清單，以 Herdr 這次列出的窗格送 `herdr agent send-keys <窗格> esc`，不在 Herdr 清單上或有未完成的模型切換就拒絕，只試一次；結果照樣寫一行 `agent-action`（`interrupt`）。通知寫「已對 @名稱 送出 Esc。」或失敗原因。主控資訊頁與 Herdr 分頁的主控頁都一樣。
 
 ## 喚醒閒置或已關閉的主控
 
