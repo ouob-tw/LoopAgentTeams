@@ -10,12 +10,14 @@ import { listControllers, pruneReports, readAnswered, readQuestions, type Answer
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
-import { listAgents, type AgentList } from './hcom.ts';
+import { listAgents, listStops, type AgentList } from './hcom.ts';
 import { openResumes, openSwitches, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
 import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
 import { settleRelaunches } from './switch.ts';
 import { createAgentRoster, type HerdrAgentList } from './agents.ts';
+import { createClosedRoster } from './closed-agents.ts';
+import { CLOSED_KEEP_MS, EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 
@@ -69,6 +71,9 @@ function createBoard(): Board {
 	const helperDirs = helperDirectories();
 	const streams = new Set<Stream>();
 	const agentRoster = createAgentRoster();
+	const closedRoster = createClosedRoster(config);
+	/** Whether a Herdr list has been read yet: until then no agent is known to be closed. */
+	let herdrRead = false;
 	let snapshot: BoardSnapshot | null = null;
 	let lastActive: HelperController[] = [];
 	let lastAnswered: AnsweredFile[] = [];
@@ -179,7 +184,7 @@ function createBoard(): Board {
 	}
 
 	async function read(): Promise<BoardSnapshot> {
-		const [[helper, reports, answered, settled], agents, herdrAgents] = await Promise.all([
+		const [[helper, reports, answered, settled], agents, herdrAgents, stops] = await Promise.all([
 			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
 				// Read after the list: the files are those of the controllers bound now, and of the
 				// sessions that reported. The sent answers settle against the same list alongside, so
@@ -194,7 +199,8 @@ function createBoard(): Board {
 				return [helper, reports, answered, settled] as const;
 			}),
 			listAgents(config),
-			listHerdrAgents(config)
+			listHerdrAgents(config),
+			listStops(config, config.now() - CLOSED_KEEP_MS)
 		]);
 		if (answered.ok) lastAnswered = answered.files;
 		// A list that cannot be read must not close every controller: the last one read stands in.
@@ -218,6 +224,14 @@ function createBoard(): Board {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
 		}
 		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches);
+		herdrRead ||= herdrAgents.ok;
+		const closedAgents = await closedRoster.update({
+			agents: herdrRead ? allAgents.agents : null,
+			running: lastRunning,
+			stops,
+			switching: new Set(lastSwitches.map((view) => view.controllerId)),
+			now: config.now()
+		});
 		sources = {
 			active: lastActive,
 			helperError: helper.ok ? null : helper.reason,
@@ -228,6 +242,7 @@ function createBoard(): Board {
 			agents: allAgents.agents,
 			herdrError: allAgents.herdrError,
 			workspaces: allAgents.workspaces,
+			closed: closedAgents,
 			pruneError,
 			answered: lastAnswered,
 			answeredError: answered.ok ? null : answered.reason
@@ -323,6 +338,7 @@ function createBoard(): Board {
 					processedCount: 0,
 					agents: [],
 					workspaces: [],
+					closed: EMPTY_CLOSED,
 					errors: [`讀取資料失敗：${error.message}`]
 				};
 				for (const stream of streams) stream.send('board', JSON.stringify(snapshot));

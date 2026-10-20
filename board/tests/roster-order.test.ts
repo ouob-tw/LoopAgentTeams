@@ -1,6 +1,7 @@
 // The order the server lists controllers in: by status group, then the latest report first (none
 // last), then project, name and ID.
 import { expect, test } from 'bun:test';
+import { EMPTY_CLOSED } from '../src/lib/board/closed-agents.ts';
 import type { HelperController, HelperQuestion, Report } from '../src/lib/board/types.ts';
 import { buildSnapshot, type Sources } from '../src/lib/server/model.ts';
 import type { ReportFile } from '../src/lib/server/reports.ts';
@@ -88,6 +89,7 @@ test('groups by status, newest report first within a group, no report last, then
 		agents: [],
 		herdrError: null,
 		workspaces: [],
+		closed: EMPTY_CLOSED,
 		pruneError: null,
 		answered: [],
 		answeredError: null

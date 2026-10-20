@@ -36,6 +36,7 @@
 	import type { InboxItem, InboxQuestion, KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
 	import AgentList from '#lib/components/AgentList.svelte';
+	import ClosedAgents from '#lib/components/ClosedAgents.svelte';
 	import CommandLine from '#lib/components/CommandLine.svelte';
 	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
@@ -390,6 +391,11 @@
 	const openLaunch = () => go({ kind: 'launch' });
 	const openAgent = (id: string) => go({ kind: 'agent', id });
 	const openNewAgent = (workspace: string) => go({ kind: 'new-agent', workspace });
+	/** A closed controller's 接回: its page, with the command line ready to wake it. */
+	function wakeClosed(id: string) {
+		openController(id);
+		queue(() => document.querySelector<HTMLTextAreaElement>('form.cmd textarea')?.focus());
+	}
 
 	const pending = $derived(inbox.filter((entry) => entry.kind === 'question' && entry.unsent).length);
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
@@ -519,6 +525,7 @@
 			</div>
 			{#if middle === 'agents'}
 				<AgentList {agents} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
+				<ClosedAgents closed={board.snapshot.closed} onwake={wakeClosed} />
 			{:else}
 				<Inbox
 					items={listedInbox}
