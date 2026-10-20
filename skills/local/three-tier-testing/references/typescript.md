@@ -13,6 +13,8 @@
 
 ## 裸跑原則
 
+Agent 跑整套測試（如不指定檔案的 `npx vitest run`）時包進閘門：`suite-gate.py run -- <指令>`，見 SKILL.md「測試可信度」；指定檔案或目錄的測試直接跑。
+
 Vitest 預設只收集 `src/**/*.test.ts`（由 vitest config 的 `include` 控制）。Playwright 需明確指定目錄：
 
 ```bash
