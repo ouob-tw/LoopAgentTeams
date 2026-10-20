@@ -47,6 +47,8 @@ async function until(expression: string) {
 
 beforeAll(async () => {
 	fixture = await startFixture(90);
+	// The questions were asked at a fixed time: answered ones are listed for 30 days after.
+	fixture.setClock(Date.parse('2026-10-20T02:00:00.000Z'));
 	cookie = await fixture.login('answer-torn');
 	if (!CHROME) return;
 	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
