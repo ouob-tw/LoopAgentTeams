@@ -111,6 +111,8 @@ const click = (scope: string, text: string) =>
 const pageOf = (header: string) => `document.querySelector('.detail .profile h2')?.innerText === ${JSON.stringify(header)}`;
 
 const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+/** When luna's report was issued, fixed once for the setup and the assertions on it. */
+const LUNA_REPORTED_AT = minutesAgo(15);
 
 const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-inject-'));
 let fixture: Fixture;
@@ -187,7 +189,7 @@ beforeAll(async () => {
 		{ kind: 'assistant', minutes: 25, text: '先收工。' }
 	]);
 	// Ended in LAT, its client still running in its pane.
-	fixture.report('s-luna', { tag: 'DONE', summary: '交付', message: '月亮的交付。', time: minutesAgo(15), hcom_name: 'luna', workspace: join(fixture.dir, 'workspaces', 'moon') });
+	fixture.report('s-luna', { tag: 'DONE', summary: '交付', message: '月亮的交付。', time: LUNA_REPORTED_AT, hcom_name: 'luna', workspace: join(fixture.dir, 'workspaces', 'moon') });
 	record('s-luna', [{ kind: 'assistant', minutes: 15, text: '月亮的交付。' }]);
 	record('s-plain', [{ kind: 'user', minutes: 5, text: '幫我看一下測試' }]);
 	fixture.list([lead, gone]);
@@ -458,7 +460,13 @@ for (const { name, report, ended, lat, hcom, herdr, stop } of LEAD_CASES) {
 			if (ended && stop) {
 				await type('在嗎');
 				await tab.until(`document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, 'the wake button');
-				await type('');
+				await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
+				await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
+				expect(await tab.eval(`document.querySelector(${JSON.stringify(POPUP)}).innerText`)).toContain('已停用 LAT（正在工作）');
+				await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).click()`);
+				await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');
+				expect(injects()).toEqual([['lead', '在嗎', '--enter']]);
+				expect((await sentLog('s-lead')).find((entry) => said(entry, '在嗎'))).toMatchObject({ kind: 'wake', outcome: 'sent' });
 				await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
 			}
 			if (stop) {
@@ -482,12 +490,12 @@ for (const { name, report, ended, lat, hcom, herdr, stop } of LEAD_CASES) {
 	}, 60_000);
 }
 
-test.skipIf(!CHROME)("a controller's last report shows the time only when it is today, the date too before", async () => {
+test.skipIf(!CHROME)("a controller's last report of today shows the time only (the date from yesterday on is in notice-time.test.ts)", async () => {
 	await visit(1280, '?controller=s-luna');
 	await tab.until(pageOf('moon'), "luna's page");
 	const shown = await tab.eval<string>(`[...document.querySelectorAll('.detail .chip')].map((chip) => chip.innerText).find((text) => text.includes('最後回報'))`);
 	// Her report is 15 minutes old: today unless midnight just passed.
-	const reportedOn = new Date(Date.now() - 15 * 60_000).toDateString();
+	const reportedOn = new Date(LUNA_REPORTED_AT).toDateString();
 	expect(shown).toMatch(reportedOn === new Date().toDateString() ? /最後回報 \d{2}:\d{2}:\d{2}$/ : /最後回報 \d+\/\d+ \d{2}:\d{2}:\d{2}$/);
 }, 60_000);
 

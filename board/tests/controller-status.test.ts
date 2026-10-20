@@ -156,6 +156,13 @@ test('a controller is woken, not typed into, when its LAT round is over or its c
 	expect(needsWake({ status: 'working', herdr })).toBe(false);
 	for (const status of ['delivered', 'waiting'] as const) expect(needsWake({ status, herdr })).toBe(false);
 	for (const status of ['idle', 'closed'] as const) expect(needsWake({ status, herdr })).toBe(true);
-	// Ended in LAT but at work: no pane of LAT's own.
-	expect(needsWake({ status: 'working', herdr: null })).toBe(true);
+	// Without a pane of LAT's own (ended, or closed), whatever the status shows.
+	for (const status of ['working', 'delivered', 'waiting', 'idle', 'closed'] as const) expect(needsWake({ status, herdr: null })).toBe(true);
+});
+
+test('delivered works, stops, in the roster order: working before delivered, then back', () => {
+	const order = (agents: Agent[]) =>
+		buildSnapshot(sources(RUNNING_ALL, agents, [asking]), { read: {}, archived: {} }, NOW).controllers.map((controller) => [controller.id, controller.status]);
+	expect(order([live('bound-on', 'working')])).toEqual([['asking', 'waiting'], ['bound-on', 'working'], ['done-on', 'idle'], ['bound-off', 'closed'], ['done-off', 'closed']]);
+	expect(order([live('bound-on', 'idle')])).toEqual([['asking', 'waiting'], ['bound-on', 'delivered'], ['done-on', 'idle'], ['bound-off', 'closed'], ['done-off', 'closed']]);
 });
