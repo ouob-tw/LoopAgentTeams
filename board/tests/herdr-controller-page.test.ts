@@ -8,6 +8,7 @@ import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
+import type { HelperQuestion } from '../src/lib/board/types.ts';
 import { PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
 
 const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
@@ -394,31 +395,40 @@ for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: a question opened from its bar is the one of its message scrolled to, and follows the board's data`, async () => {
 		await visit(width, '?agent=s-sol');
 		await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'sun' && document.querySelectorAll('.history li.asking article').length === 2`, 'both cards of the message');
-		await tab.eval(click('.detail .questions', '一起問的乙題'));
-		await tab.until(`${OPENED}?.innerText.includes('一起問的乙題')`, 'the second question opened');
+		// The message names GQ-B first: GQ-A is the second card.
+		await tab.eval(click('.detail .questions', '一起問的甲題'));
+		await tab.until(`${OPENED}?.innerText.includes('一起問的甲題')`, 'the second question opened');
 		await tab.until(
 			`(() => { const box = ${OPENED}.getBoundingClientRect(); return box.top >= 0 && box.top < window.innerHeight; })()`,
 			'the second question scrolled to'
 		);
-		expect(await tab.eval(`[...${OPENED}.querySelectorAll('button')].some((b) => b.innerText.includes('送出答覆'))`)).toBe(true);
+		const answerable = `[...${OPENED}.querySelectorAll('button')].some((b) => b.innerText.includes('送出答覆'))`;
+		expect(await tab.eval(answerable)).toBe(true);
 
-		// Answered from another device: the opened card shows it, and offers no answer any more.
-		const answer = (status: 'pending' | 'submitted') =>
+		const original = fixture.listed();
+		const change = (edit: (entry: HelperQuestion) => HelperQuestion | null) =>
 			fixture.list(
-				fixture.listed().map((entry) =>
-					entry.session_id !== 's-sol'
-						? entry
-						: { ...entry, questions: entry.questions.map((each) => (each.id === 'GQ-B' ? { ...each, status, answer: status === 'pending' ? '' : 'A. 照做', section_sha256: status.padEnd(64, 'x') } : each)) }
+				original.map((entry) =>
+					entry.session_id !== 's-sol' ? entry : { ...entry, questions: entry.questions.flatMap((each) => (each.id === 'GQ-A' ? (edit(each) ?? []) : [each])) }
 				)
 			);
-		answer('submitted');
-		await fixture.refresh(cookie);
-		await tab.until(`![...${OPENED}.querySelectorAll('button')].some((b) => b.innerText.includes('送出答覆'))`, 'the opened card answered');
-		expect(new URLSearchParams(await tab.eval<string>('location.search')).get('agent')).toBe('s-sol');
-		expect(await tab.eval(FITS)).toBe(true);
-		// As it was, for the next width.
-		answer('pending');
-		await fixture.refresh(cookie);
+		try {
+			// Answered from another device: the opened card shows it, and offers no answer any more.
+			change((entry) => ({ ...entry, status: 'submitted', answer: 'A. 照做', section_sha256: 'b'.repeat(64) }));
+			await fixture.refresh(cookie);
+			await tab.until(`!(${answerable}) && ${OPENED}.innerText.includes('照做')`, 'the opened card answered');
+			// Gone from the question file: still shown, never answerable.
+			change(() => null);
+			await fixture.refresh(cookie);
+			await sleep(500);
+			expect(await tab.eval(answerable)).toBe(false);
+			expect(new URLSearchParams(await tab.eval<string>('location.search')).get('agent')).toBe('s-sol');
+			expect(await tab.eval(FITS)).toBe(true);
+		} finally {
+			// As it was, for the next width.
+			fixture.list(original);
+			await fixture.refresh(cookie);
+		}
 	}, 60_000);
 
 	test.skipIf(!CHROME)(`${width}px: a DONE report opened from the report list is shown in the conversation and can be marked read there`, async () => {

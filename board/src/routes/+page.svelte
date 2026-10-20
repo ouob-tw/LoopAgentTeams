@@ -420,7 +420,7 @@
 {#snippet placedCard(item: InboxItem, copy = false)}
 	<ItemContent
 		{item}
-		listed={item.key === openKey ? listed : true}
+		listed={item.key === openKey ? listed : known.some((entry) => entry.key === item.key)}
 		recorded={board.snapshot.recordedKeys.includes(item.key)}
 		handle={item.hcomName}
 		onunread={copy ? async () => {} : (key) => board.mark(key, false)}
