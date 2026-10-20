@@ -532,7 +532,7 @@ def run_hook(command, cwd, env=None):
 
 def rewrite_of(stderr):
     """The ready-to-run command from a block message (it may span lines)."""
-    return stderr.split('\n  ', 1)[1].split('\nIf the gate', 1)[0]
+    return stderr.split('\n  ', 1)[1].split('\nOnly the suite', 1)[0]
 
 
 class HookTests(GateCase):
@@ -542,13 +542,30 @@ class HookTests(GateCase):
         return {'claude': text, 'codex-list': ['bash', '-lc', text]}
 
     def test_unwrapped_full_suites_are_blocked_with_a_ready_to_run_rewrite(self):
-        for text in ('pytest', 'cd sub && uv run pytest -q', 'npm test 2>&1 | tail -5',
-                     'echo start\npytest'):
+        """Only the suite goes through the gate, after the `cd`s before it."""
+        g = gate.gate_command
+        cases = {
+            'pytest': g('pytest'),
+            'FOO=1 timeout 600 uv run pytest -q': g('FOO=1 timeout 600 uv run pytest -q'),
+            'cd sub && uv run pytest -q': 'cd sub && ' + g('uv run pytest -q'),
+            'npm test 2>&1 | tail -5': g('npm test'),
+            'echo start\ncd a; cd b\npytest; echo "exit=${PIPESTATUS[0]}"':
+                'cd a && cd b && ' + g('pytest'),
+            "bash -lc 'go test ./...'": g('go test ./...'),
+            'pytest && cargo test': g('pytest') + ' && ' + g('cargo test'),
+        }
+        for text, expected in cases.items():
             for client, command in self.formats(text).items():
                 with self.subTest(client=client, text=text):
                     result = run_hook(command, self.repo, self.env)
                     self.assertEqual(result.returncode, 2, result.stderr)
-                    self.assertEqual(rewrite_of(result.stderr), gate.gate_command(text))
+                    self.assertEqual(rewrite_of(result.stderr), expected)
+
+    def test_a_registry_pattern_over_several_commands_wraps_the_whole_text(self):
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'suites': ['make deps; make check']}))
+        result = run_hook('make deps; make check', self.repo, self.env)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(rewrite_of(result.stderr), gate.gate_command('make deps; make check'))
 
     def test_wrapped_targeted_and_other_commands_pass(self):
         wrapped = gate.gate_command('pytest')
@@ -596,10 +613,11 @@ class HookTests(GateCase):
         original = gate.split_commands
         gate.split_commands = lambda text: 1 / 0  # a hook bug on any text
         try:
-            self.assertTrue(gate.needs_gate('pytest -q', self.repo))
-            self.assertTrue(gate.needs_gate('bun run test', self.repo))
-            self.assertFalse(gate.needs_gate('git status', self.repo))
-            self.assertFalse(gate.needs_gate(gate.gate_command('pytest'), self.repo))
+            self.assertEqual(gate.gate_rewrite('pytest -q | tail', self.repo),
+                             gate.gate_command('pytest -q | tail'))
+            self.assertTrue(gate.gate_rewrite('bun run test', self.repo))
+            self.assertIsNone(gate.gate_rewrite('git status', self.repo))
+            self.assertIsNone(gate.gate_rewrite(gate.gate_command('pytest'), self.repo))
         finally:
             gate.split_commands = original
         # A payload cwd that does not exist falls back to the hook's own directory.

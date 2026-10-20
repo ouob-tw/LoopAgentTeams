@@ -776,7 +776,10 @@ def print_reuse(record, command):
         print('  output tail:')
         for line in record['output_tail'].splitlines():
             print(f'    {line}')
-    print(f'To run it anyway: suite-gate.py run --rerun "<reason>" -- {command}')
+    print('This is the result for the current content: report it. Being asked to run the '
+          'suite again is not a reason to rerun; rerun only when something outside the '
+          'tracked files changed (database, external service, ignored config):')
+    print(f'  suite-gate.py run --rerun "<what changed>" -- {command}')
 
 
 def cmd_run(rerun, argv):
@@ -879,14 +882,33 @@ def shell_text(command):
     return command if isinstance(command, str) else ''
 
 
-def needs_gate(text, cwd):
-    """True when text runs a full suite outside `suite-gate.py run`."""
+def gate_rewrite(text, cwd):
+    """The command to run instead of text, or None when text runs no full suite outside
+    `suite-gate.py run`.
+
+    Only the suite commands go through the gate, after any `cd` before them, so the
+    recorded exit code is the suite's own and not that of a pipe or a later `echo`.
+    """
     try:
         commands = [words for words in split_commands(text) if not _is_gate_run(words)]
-        return bool(commands) and is_full_suite(
-            ' ; '.join(shlex.join(words) for words in commands), cwd)
+        if not commands:
+            return None
+        registry = load_registry(cwd) or {}
+        if not is_full_suite(' ; '.join(shlex.join(words) for words in commands), cwd,
+                             registry):
+            return None
+        suites = [words for words in commands
+                  if is_full_suite(shlex.join(words), cwd, registry)]
+        if not suites:  # only the commands together match a registry pattern
+            return gate_command(text)
+        before = commands[:next(i for i, words in enumerate(commands) if words is suites[0])]
+        moves = [shlex.join(words) for words in before if _strip_assignments(words)[:1]
+                 in (['cd'], ['pushd'])]
+        return ' && '.join(moves + [gate_command(shlex.join(words)) for words in suites])
     except Exception:  # unreadable text or a hook bug: block what looks like a runner
-        return SCRIPT.name not in text and bool(LOOKS_LIKE_TESTS.search(text))
+        if SCRIPT.name not in text and LOOKS_LIKE_TESTS.search(text):
+            return gate_command(text)
+        return None
 
 
 def cmd_hook():
@@ -897,14 +919,18 @@ def cmd_hook():
         cwd = payload.get('cwd') or os.getcwd()
     except (ValueError, AttributeError):
         return 0  # nothing to read; never leave the agent stuck
-    if not text.strip() or not needs_gate(text, cwd if os.path.isdir(cwd) else os.getcwd()):
+    rewrite = text.strip() and gate_rewrite(text, cwd if os.path.isdir(cwd) else os.getcwd())
+    if not rewrite:
         return 0
-    print('Blocked: this runs a full test suite outside the suite gate. Run it through the '
-          'gate instead (it reuses a passing result for the same content and queues when '
-          'the host is busy):\n'
-          f'  {gate_command(text)}\n'
-          'If the gate reports an earlier pass but you need a fresh run, add '
-          '--rerun "<reason>" after `run`. To run only some tests, name the files or a filter.',
+    print('Blocked: this runs a full test suite outside the suite gate. Run this instead; '
+          'the gate reuses a passing result for the same content and queues when the host '
+          'is busy:\n'
+          f'  {rewrite}\n'
+          'Only the suite goes through the gate (under /bin/sh), so its own exit code is '
+          'recorded; add pipes such as `| tail -30` after the gate command if needed. '
+          'Add --rerun "<reason>" after `run` only when the gate reports an earlier pass and '
+          'you have a concrete reason to run again. To run only some tests, name the files '
+          'or a filter.',
           file=sys.stderr)
     return 2
 

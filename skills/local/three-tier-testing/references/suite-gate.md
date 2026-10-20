@@ -13,7 +13,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
 
 - `--` 之後可以是一整串 shell 指令（一個引號包住的字串，以 `sh -c` 執行），也可以是拆開的參數。指令文字會原樣算進指紋，引號或寫法不同就算不同指令；同一個整套測試請固定用同一種寫法。
 - 測試的輸出與結束碼原樣轉出。閘門自己的訊息印在 stderr，開頭是 `suite-gate:`。
-- 已通過時不執行，印出上次的執行者、時間、耗時、指令與輸出結尾，以 0 結束。
+- 已通過時不執行，印出上次的執行者、時間、耗時、指令與輸出結尾，以 0 結束，並提醒把這筆當作結果回報：別人要求「再跑一次」本身不是重跑的理由。
 - 資料庫、外部服務或沒進版控的設定改了、需要重跑時，用 `--rerun` 寫原因；原因會記進紀錄。`--rerun` 同樣要排隊。
 
 ### 怎樣算「同一份內容」
@@ -62,7 +62,7 @@ repo 根目錄放 `.suite-gate.json`（進版控）：
 
 `suite-gate.py hook` 是 Claude 與 Codex 的 PreToolUse hook（matcher `Bash`），讓 Agent 不經閘門就跑整套測試時被擋下：
 
-- 指令裡有整套測試（照上面的判斷，以 hook 輸入的 `cwd` 找專案登記檔）且不是透過 `suite-gate.py run` 執行時擋下（結束碼 2），在 stderr 回覆可直接執行的改寫指令：`uv run --no-project python <skill>/scripts/suite-gate.py run -- '<原指令>'`。整串指令（含 `cd`、管線）原樣包進去。
+- 指令裡有整套測試（照上面的判斷，以 hook 輸入的 `cwd` 找專案登記檔）且不是透過 `suite-gate.py run` 執行時擋下（結束碼 2），在 stderr 回覆可直接執行的改寫指令，例如 `cd board && bun test 2>&1 | tail -30` 改寫為 `cd board && uv run --no-project python <skill>/scripts/suite-gate.py run -- 'bun test'`。只把整套測試那一段包進閘門，前面的 `cd` 保留，管線、轉向與其他指令拿掉，讓紀錄的結束碼是測試自己的（例如 `| tail` 或之後的 `echo` 會讓結束碼變成 0）；需要時 Agent 自己在閘門指令後面加管線。包進去的測試以 `/bin/sh` 執行。只有登記檔的樣式要整串指令才對得上時，整串包進去。
 - 放行：透過 `suite-gate.py run` 的指令（含 `--rerun`）、指定檔案或篩選範圍的測試、非測試指令。同一串指令裡另有沒包裝的整套測試時仍擋下。
 - Claude 送字串；Codex 送字串或 `["bash", "-lc", "<指令>"]`，兩種都讀。回覆方式兩邊相同。
 - 讀不懂時比照派工把關與廣播攔截寧可多擋，但不讓 Agent 卡死：hook 輸入不是可讀的 JSON 就放行（無從判斷）；指令讀到一半出錯時，只要像測試執行器（pytest、jest、`npm test` 等）且不含 `suite-gate.py` 就擋下。被擋下時照回覆的改寫指令執行一定會放行；被誤擋時同樣改用閘門，或改成指定檔案的寫法。
