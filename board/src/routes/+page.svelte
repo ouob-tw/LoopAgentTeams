@@ -1063,11 +1063,14 @@
 		:global(:root[data-roster='folded']) .shell {
 			--col-roster: 2.75rem;
 		}
-		/* A vertical scrollbar narrows the rail; it never scrolls sideways. */
+		/* A vertical scrollbar narrows the rail; it never scrolls sideways. The column has the
+		   rail's colour, so the scrollbar's transparent track and the marks scrolled past the
+		   first screen show it rather than the page's darker one. */
 		:global(:root[data-roster='folded']) .roster {
 			overflow-x: hidden;
 			display: flex;
 			padding: 0;
+			background: var(--surface);
 		}
 		/* The rail fills the column, so a click anywhere below the marks still unfolds. */
 		:global(:root[data-roster='folded']) .folded {
