@@ -435,14 +435,17 @@ test.skipIf(plainDir === null || process.getuid?.() === 0)('a failed git init is
 	}
 });
 
-test('a folder that does not exist is reported and logged, and nothing runs', async () => {
+test('a folder that does not exist outside the home folder is refused: nothing is created, runs or is logged', async () => {
 	const missing = join(fixture.dir, 'projects', 'nowhere');
+	const before = (await list()).launches.length;
 
 	const { status, body } = await launch({ folder: missing });
 
-	expect(status).toBe(502);
-	expect(body.reason).toBe(`資料夾不存在：${missing}`);
-	expect(await launchOf(body.entry!.id)).toMatchObject({ state: 'failed', folder: missing });
+	expect(status).toBe(409);
+	expect(body).toMatchObject({ ok: false, entry: null });
+	expect(body.reason).toContain('只會在家目錄');
+	expect(existsSync(missing)).toBe(false);
+	expect((await list()).launches).toHaveLength(before);
 	expect(hcomCalls()).toEqual([]);
 	expect(herdrCalls()).toEqual([]);
 });
