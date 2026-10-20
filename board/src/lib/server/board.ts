@@ -129,8 +129,8 @@ function createBoard(): Board {
 	// Read on its own timer, not with the board's sources: a slow or failing read leaves the rest alone.
 	const quotaPoller = createQuotaPoller(
 		{
-			claude: () => readClaudeQuota(config.cswapCommand, config.cswapTimeoutMs, config.now()),
-			codex: () => readCodexQuota(config.codexMultiAuthDir, config.now())
+			claude: () => readClaudeQuota(config.cswapCommand, config.cswapTimeoutMs),
+			codex: () => readCodexQuota(config.codexMultiAuthDir)
 		},
 		{
 			intervalMs: config.quotaIntervalMs,

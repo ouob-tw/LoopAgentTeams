@@ -100,7 +100,7 @@ test('codex accounts come from the account file, joined with the quota cache, th
 			byWorkspace: { [workspaceKey('record:b', 'ws-b2')]: entry(NOW - 20 * MIN, 50, 60, 'team') }
 		}
 	);
-	const group = await readCodexQuota(dir, NOW);
+	const group = await readCodexQuota(dir);
 	expect(group.ok).toBe(true);
 	if (!group.ok) return;
 	expect(group.accounts.map((row) => [row.email, row.current])).toEqual([
@@ -126,8 +126,8 @@ test('codex accounts come from the account file, joined with the quota cache, th
 	expect(b.observedAt).toBe(NOW - 20 * MIN);
 	expect(b.plan?.label).toBe('Team');
 	expect(b.windows.map((window) => window.used)).toEqual([50, 60]);
-	// A plan seen days ago is only recorded.
-	expect(c.plan).toEqual({ label: 'Pro', source: 'recorded', observedAt: NOW - 2 * DAY });
+	// Codex's plan comes with the usage it is shown beside, however old that is.
+	expect(c.plan).toEqual({ label: 'Pro', source: 'live', observedAt: NOW - 2 * DAY });
 	expect(d).toEqual({ email: 'd@example.com', current: false, plan: null, windows: [], observedAt: null });
 	const sent = JSON.stringify(group);
 	for (const secret of SECRETS) expect(sent).not.toContain(secret);
@@ -144,26 +144,29 @@ test('a codex account ID shared by two accounts falls back to neither', async ()
 		},
 		{ version: 1, byAccountId: { same: entry(NOW, 10, 10) }, byEmail: {} }
 	);
-	const group = await readCodexQuota(dir, NOW);
+	const group = await readCodexQuota(dir);
 	expect(group.ok && group.accounts.map((row) => row.windows.length)).toEqual([0, 0]);
 });
 
 test('codex files that are missing, unreadable or of another version say why', async () => {
-	expect(await readCodexQuota(codexDir(undefined), NOW)).toEqual({ ok: false, reason: '找不到 Codex 帳號檔' });
-	expect(await readCodexQuota(codexDir('{not json'), NOW)).toEqual({ ok: false, reason: 'Codex 帳號檔 不是有效的 JSON' });
-	expect(await readCodexQuota(codexDir({ version: 2, accounts: [] }), NOW)).toEqual({
+	expect(await readCodexQuota(codexDir(undefined))).toEqual({ ok: false, reason: '找不到 Codex 帳號檔' });
+	expect(await readCodexQuota(codexDir('{not json'))).toEqual({ ok: false, reason: 'Codex 帳號檔 不是有效的 JSON' });
+	expect(await readCodexQuota(codexDir({ version: 2, accounts: [] }))).toEqual({
 		ok: false,
 		reason: 'Codex 帳號檔版本不符（是 2，看板認得 3）'
 	});
 	const accounts = { version: 3, activeIndex: 0, accounts: [account({ accountId: 'a', email: 'a@example.com' })] };
-	expect(await readCodexQuota(codexDir(accounts, { version: 2 }), NOW)).toEqual({
+	expect(await readCodexQuota(codexDir(accounts, { version: 2 }))).toEqual({
 		ok: false,
 		reason: 'Codex 額度快取版本不符（是 2，看板認得 1）'
 	});
-	expect(await readCodexQuota(codexDir(accounts, '{'), NOW)).toEqual({ ok: false, reason: 'Codex 額度快取 不是有效的 JSON' });
-	// No cache yet: the accounts with nothing recorded.
-	const bare = await readCodexQuota(codexDir(accounts), NOW);
-	expect(bare.ok && bare.accounts).toEqual([{ email: 'a@example.com', current: true, plan: null, windows: [], observedAt: null }]);
+	// A version is shown only as a number, never as the file's text.
+	expect(await readCodexQuota(codexDir(accounts, { version: 'refresh-token-SECRET-1' }))).toEqual({
+		ok: false,
+		reason: 'Codex 額度快取版本不符（是 不明，看板認得 1）'
+	});
+	expect(await readCodexQuota(codexDir(accounts, '{'))).toEqual({ ok: false, reason: 'Codex 額度快取 不是有效的 JSON' });
+	expect(await readCodexQuota(codexDir(accounts))).toEqual({ ok: false, reason: '找不到 Codex 額度快取' });
 });
 
 test('the codex folder follows CODEX_MULTI_AUTH_DIR, then CODEX_HOME', () => {
@@ -205,8 +208,7 @@ test('claude-swap rows: fresh, last good and no usage, with their plans', () => 
 			{ number: 4, email: 'key@example.com', active: false, usageStatus: 'api_key', usage: null, plan: plan('max_20x', 'Max 20x', null) }
 		]),
 		0,
-		null,
-		NOW
+		false
 	);
 	expect(group).toEqual({
 		ok: true,
@@ -214,7 +216,8 @@ test('claude-swap rows: fresh, last good and no usage, with their plans', () => 
 			{
 				email: 'one@example.com',
 				current: true,
-				plan: { label: 'Max 5x', source: 'live', observedAt: NOW - 10 * MIN },
+				// claude-swap only ever records a plan, the one in use's too.
+				plan: { label: 'Max 5x', source: 'recorded', observedAt: NOW - 10 * MIN },
 				windows: [
 					{ label: '5 小時', used: 12, resetsAt: NOW + 60 * MIN },
 					{ label: '7 天', used: 81.4, resetsAt: NOW + 3 * DAY },
@@ -236,19 +239,25 @@ test('claude-swap rows: fresh, last good and no usage, with their plans', () => 
 	});
 });
 
-test('claude-swap failures say why', () => {
-	expect(parseClaudeList(JSON.stringify({ schemaVersion: 1, error: { type: 'ConfigError', message: 'roster is malformed' } }), 1, 'x', NOW)).toEqual({
+test('claude-swap failures say why, in the board\'s own words only', () => {
+	expect(parseClaudeList(JSON.stringify({ schemaVersion: 1, error: { type: 'ConfigError', message: 'token=refresh-token-SECRET-1' } }), 1, false)).toEqual({
 		ok: false,
-		reason: 'claude-swap 讀取失敗：roster is malformed'
+		reason: 'claude-swap 讀取失敗（ConfigError）'
 	});
-	expect(parseClaudeList(JSON.stringify({ schemaVersion: 2, accounts: [] }), 0, null, NOW)).toEqual({
+	expect(parseClaudeList(JSON.stringify({ schemaVersion: 1, error: { type: 'refresh-token SECRET 1' } }), 1, false)).toEqual({
+		ok: false,
+		reason: 'claude-swap 讀取失敗'
+	});
+	expect(parseClaudeList(JSON.stringify({ schemaVersion: 2, accounts: [] }), 0, false)).toEqual({
 		ok: false,
 		reason: 'claude-swap 的資料版本不符（是 2，看板認得 1）'
 	});
-	expect(parseClaudeList('', 2, 'unrecognized arguments: --cached-only', NOW)).toEqual({
+	expect(parseClaudeList(JSON.stringify({ schemaVersion: 'refresh-token-SECRET-1' }), 0, false)).toEqual({
 		ok: false,
-		reason: 'claude-swap 沒有回答：unrecognized arguments: --cached-only'
+		reason: 'claude-swap 的資料版本不符（是 不明，看板認得 1）'
 	});
+	expect(parseClaudeList('refresh-token-SECRET-1', 2, false)).toEqual({ ok: false, reason: 'claude-swap 沒有回答（結束碼 2）' });
+	expect(parseClaudeList('', null, true)).toEqual({ ok: false, reason: 'claude-swap 沒有回答（逾時）' });
 });
 
 const row = (fields: Partial<QuotaAccount>): QuotaAccount => ({ email: 'x', current: false, plan: null, windows: [], observedAt: null, ...fields });
@@ -296,7 +305,7 @@ test('the poller reads both sources, keeps one failing from the other, and tells
 	);
 	await Bun.sleep(70);
 	expect(seen.length).toBe(1);
-	expect(seen[0]).toEqual({ readAt: NOW, claude: { ok: false, reason: '讀取失敗：boom' }, codex: { ok: true, accounts: [] } });
+	expect(seen[0]).toEqual({ readAt: NOW, claude: { ok: false, reason: '讀取失敗（看板內部錯誤）' }, codex: { ok: true, accounts: [] } });
 	codex = { ok: false, reason: '找不到 Codex 帳號檔' };
 	await Bun.sleep(50);
 	poller.close();

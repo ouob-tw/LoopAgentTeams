@@ -15,7 +15,8 @@ export interface QuotaWindow {
 
 export interface QuotaPlan {
 	label: string;
-	/** `live`: seen within the hour; `recorded`: only as last seen in use, longer ago. */
+	/** `live`: read along with the usage shown (Codex); `recorded`: only as last seen in use (Claude:
+	 *  claude-swap records it when it switches to, adds or confirms an account). */
 	source: 'live' | 'recorded';
 	observedAt: number | null;
 }

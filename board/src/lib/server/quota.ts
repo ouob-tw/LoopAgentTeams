@@ -7,7 +7,7 @@ import { readFile } from 'node:fs/promises';
 import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
-import type { QuotaAccount, QuotaGroup, QuotaPlan, QuotaSnapshot, QuotaWindow } from '../board/quota.ts';
+import type { QuotaAccount, QuotaGroup, QuotaSnapshot, QuotaWindow } from '../board/quota.ts';
 import { runExternal } from './external.ts';
 
 type Env = Record<string, string | undefined>;
@@ -41,30 +41,25 @@ function windowLabel(minutes: number | null, fallback: string): string {
 	return `${minutes} 分鐘`;
 }
 
-/** A plan seen within the hour is shown as current; an older one as recorded, with its age. */
-const PLAN_LIVE_MS = 60 * 60_000;
-const planOf = (label: string, observedAt: number, now: number): QuotaPlan => ({
-	label,
-	source: now - observedAt <= PLAN_LIVE_MS ? 'live' : 'recorded',
-	observedAt
-});
+/** A version as a reason may show it: a number, nothing taken from a file's text. */
+const versionText = (value: unknown) => (typeof value === 'number' && Number.isFinite(value) ? String(value) : '不明');
 
 const PLAN_LABELS: Record<string, string> = { prolite: 'Pro Lite' };
 const capitalized = (value: string) => PLAN_LABELS[value] ?? value.charAt(0).toUpperCase() + value.slice(1);
 
 /** Read a JSON file; a reason when it is missing or not JSON. */
-async function readJson(path: string, name: string): Promise<{ ok: true; value: unknown } | { ok: false; reason: string; missing: boolean }> {
+async function readJson(path: string, name: string): Promise<{ ok: true; value: unknown } | { ok: false; reason: string }> {
 	let content: string;
 	try {
 		content = await readFile(path, 'utf8');
 	} catch (error) {
-		const missing = (error as NodeJS.ErrnoException).code === 'ENOENT';
-		return { ok: false, missing, reason: missing ? `找不到 ${name}` : `${name} 讀不出來（${(error as NodeJS.ErrnoException).code ?? 'error'}）` };
+		const code = (error as NodeJS.ErrnoException).code;
+		return { ok: false, reason: code === 'ENOENT' ? `找不到 ${name}` : `${name} 讀不出來（${code ?? 'error'}）` };
 	}
 	try {
 		return { ok: true, value: JSON.parse(content) };
 	} catch {
-		return { ok: false, missing: false, reason: `${name} 不是有效的 JSON` };
+		return { ok: false, reason: `${name} 不是有效的 JSON` };
 	}
 }
 
@@ -122,24 +117,18 @@ function codexWindow(value: unknown, fallback: string): QuotaWindow | null {
 }
 
 /** Every account the account file lists, with what the quota cache has for it. */
-export async function readCodexQuota(dir: string, now: number): Promise<QuotaGroup> {
+export async function readCodexQuota(dir: string): Promise<QuotaGroup> {
 	const accountsFile = await readJson(join(dir, CODEX_ACCOUNTS_FILE), 'Codex 帳號檔');
 	if (!accountsFile.ok) return { ok: false, reason: accountsFile.reason };
 	const storage = accountsFile.value;
 	if (!isRecord(storage) || storage.version !== 3 || !Array.isArray(storage.accounts)) {
-		const version = isRecord(storage) ? JSON.stringify(storage.version ?? null) : '不明';
-		return { ok: false, reason: `Codex 帳號檔版本不符（是 ${version}，看板認得 3）` };
+		return { ok: false, reason: `Codex 帳號檔版本不符（是 ${versionText(isRecord(storage) ? storage.version : null)}，看板認得 3）` };
 	}
 	const quotaFile = await readJson(join(dir, CODEX_QUOTA_FILE), 'Codex 額度快取');
-	let cache: Json = {};
-	if (quotaFile.ok) {
-		if (!isRecord(quotaFile.value) || quotaFile.value.version !== 1) {
-			const version = isRecord(quotaFile.value) ? JSON.stringify(quotaFile.value.version ?? null) : '不明';
-			return { ok: false, reason: `Codex 額度快取版本不符（是 ${version}，看板認得 1）` };
-		}
-		cache = quotaFile.value;
-	} else if (!quotaFile.missing) {
-		return { ok: false, reason: quotaFile.reason };
+	if (!quotaFile.ok) return { ok: false, reason: quotaFile.reason };
+	const cache = quotaFile.value;
+	if (!isRecord(cache) || cache.version !== 1) {
+		return { ok: false, reason: `Codex 額度快取版本不符（是 ${versionText(isRecord(cache) ? cache.version : null)}，看板認得 1）` };
 	}
 	const rows = storage.accounts.filter(isRecord);
 	const active = number(storage.activeIndex);
@@ -153,9 +142,10 @@ export async function readCodexQuota(dir: string, now: number): Promise<QuotaGro
 				? [codexWindow(entry.primary, '主要時段'), codexWindow(entry.secondary, '次要時段')].filter((window) => window !== null)
 				: [];
 			return {
-				email: text(account.email) ?? text(account.accountLabel) ?? '（沒有 email）',
+				email: text(account.email) ?? '（沒有 email）',
 				current: index === active,
-				plan: planType && observedAt !== null ? planOf(capitalized(planType), observedAt, now) : null,
+				// Read with the usage shown beside it.
+				plan: planType ? { label: capitalized(planType), source: 'live', observedAt } : null,
 				windows,
 				observedAt
 			};
@@ -163,18 +153,24 @@ export async function readCodexQuota(dir: string, now: number): Promise<QuotaGro
 	};
 }
 
-/** What `cswap list --json --cached-only` printed, for the tab; see claude-swap's schema version 1. */
-export function parseClaudeList(stdout: string, code: number | null, failure: string | null, now: number): QuotaGroup {
+/** What `cswap list --json --cached-only` printed, for the tab; see claude-swap's schema version 1.
+ *  A reason never repeats the command's own words, which reach every page: only its exit, and the
+ *  name of an error it reports. */
+export function parseClaudeList(stdout: string, code: number | null, timedOut: boolean): QuotaGroup {
+	const ended = timedOut ? '逾時' : code === null ? '沒有正常結束' : `結束碼 ${code}`;
 	let parsed: unknown;
 	try {
 		parsed = JSON.parse(stdout);
 	} catch {
-		return { ok: false, reason: `claude-swap 沒有回答${failure ? `：${failure}` : ''}` };
+		return { ok: false, reason: `claude-swap 沒有回答（${ended}）` };
 	}
 	if (!isRecord(parsed)) return { ok: false, reason: 'claude-swap 的回答看不懂' };
-	if (parsed.schemaVersion !== 1) return { ok: false, reason: `claude-swap 的資料版本不符（是 ${JSON.stringify(parsed.schemaVersion ?? null)}，看板認得 1）` };
-	if (isRecord(parsed.error)) return { ok: false, reason: `claude-swap 讀取失敗：${text(parsed.error.message) ?? text(parsed.error.type) ?? '原因不明'}` };
-	if (code !== 0 || !Array.isArray(parsed.accounts)) return { ok: false, reason: `claude-swap 沒有回答${failure ? `：${failure}` : ''}` };
+	if (parsed.schemaVersion !== 1) return { ok: false, reason: `claude-swap 的資料版本不符（是 ${versionText(parsed.schemaVersion)}，看板認得 1）` };
+	if (isRecord(parsed.error)) {
+		const type = typeof parsed.error.type === 'string' && /^\w{1,40}$/.test(parsed.error.type) ? `（${parsed.error.type}）` : '';
+		return { ok: false, reason: `claude-swap 讀取失敗${type}` };
+	}
+	if (code !== 0 || !Array.isArray(parsed.accounts)) return { ok: false, reason: `claude-swap 沒有回答（${ended}）` };
 	return {
 		ok: true,
 		accounts: parsed.accounts.filter(isRecord).map((row): QuotaAccount => {
@@ -200,7 +196,7 @@ export function parseClaudeList(stdout: string, code: number | null, failure: st
 			return {
 				email: text(row.email) ?? '（沒有 email）',
 				current: row.active === true,
-				plan: label && planAt !== null ? planOf(label, planAt, now) : null,
+				plan: label && planAt !== null ? { label, source: 'recorded', observedAt: planAt } : null,
 				windows,
 				observedAt,
 				...(row.usageStatus === 'api_key' ? { note: 'API 金鑰帳號，沒有額度時段' } : {})
@@ -211,10 +207,10 @@ export function parseClaudeList(stdout: string, code: number | null, failure: st
 
 export const CLAUDE_LIST_ARGS = ['list', '--json', '--cached-only'];
 
-export async function readClaudeQuota(command: string[], timeoutMs: number, now: number): Promise<QuotaGroup> {
+export async function readClaudeQuota(command: string[], timeoutMs: number): Promise<QuotaGroup> {
 	const result = await runExternal(command, CLAUDE_LIST_ARGS, { timeoutMs });
-	if (result.code === null && !result.timedOut && !result.stdout) return { ok: false, reason: `claude-swap 無法執行：${result.failure}` };
-	return parseClaudeList(result.stdout, result.code, result.failure, now);
+	if (result.code === null && !result.timedOut && !result.stdout) return { ok: false, reason: '找不到或無法啟動 cswap 指令' };
+	return parseClaudeList(result.stdout, result.code, result.timedOut);
 }
 
 export interface QuotaSources {
@@ -234,8 +230,8 @@ export function createQuotaPoller(sources: QuotaSources, options: { intervalMs: 
 	let latest: QuotaSnapshot | null = null;
 	let reading = false;
 	let closed = false;
-	const settle = (read: () => Promise<QuotaGroup>) =>
-		read().catch((error: Error): QuotaGroup => ({ ok: false, reason: `讀取失敗：${error.message}` }));
+	// The error's own words stay on the server, as a reason's do.
+	const settle = (read: () => Promise<QuotaGroup>) => read().catch((): QuotaGroup => ({ ok: false, reason: '讀取失敗（看板內部錯誤）' }));
 	async function poll() {
 		if (reading || closed) return;
 		reading = true;

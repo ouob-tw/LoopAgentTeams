@@ -91,7 +91,7 @@ test('the quotas reach the page over the event stream, with no secret, from read
 		10_000,
 		'both groups read'
 	);
-	expect(quota.claude.ok && quota.claude.accounts[0]).toMatchObject({ email: 'claude@example.com', current: true, plan: { label: 'Max 5x', source: 'live' } });
+	expect(quota.claude.ok && quota.claude.accounts[0]).toMatchObject({ email: 'claude@example.com', current: true, plan: { label: 'Max 5x', source: 'recorded' } });
 	expect(quota.codex.ok && quota.codex.accounts).toEqual([
 		{
 			email: 'codex@example.com',
@@ -125,7 +125,7 @@ test('failing, missing and mismatched sources say why in the tab and leave the b
 		10_000,
 		'both groups failing'
 	);
-	expect(missing.claude).toEqual({ ok: false, reason: 'claude-swap 讀取失敗：usage cache is malformed' });
+	expect(missing.claude).toEqual({ ok: false, reason: 'claude-swap 讀取失敗（ConfigError）' });
 	expect(missing.codex).toEqual({ ok: false, reason: '找不到 Codex 帳號檔' });
 
 	writeCodex(board, { version: 4, accounts: [] });

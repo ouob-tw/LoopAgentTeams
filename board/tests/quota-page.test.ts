@@ -183,7 +183,10 @@ for (const width of [1280, 360]) {
 		expect(claude.map((card) => card.current)).toEqual([true, false, false]);
 		expect(claude[0].text).toContain('使用中');
 		expect(claude[0].text).toContain('a-very-long-address-for-the-account-in-use@example-company.com');
-		expect(claude[0].text).toContain('Max 5x');
+		// claude-swap only records plans, the one in use's too: faded, with when.
+		expect(
+			await tab.eval(`(() => { const plan = document.querySelector('.quota [data-client="claude"] .card .plan'); return [plan.innerText, plan.classList.contains('recorded'), plan.title]; })()`)
+		).toEqual(['Max 5x', true, '上次使用時記錄（今天）']);
 		// The group header: the account in use's reading, fresh.
 		expect(await header('claude')).toBe('Claude 1 分鐘前更新');
 		const rows = await tab.eval<{ text: string; fill: string | null }[]>(windows);
@@ -230,8 +233,9 @@ test.skipIf(!CHROME)('an old reading turns its group header yellow; no Codex usa
 	const codex = await cards('codex');
 	expect(codex[0].current).toBe(true);
 	expect(codex[0].text).toContain('two@example.com');
-	// A plan from a reading over an hour old would be faded; this one is fresh enough to show plainly.
+	// Codex's plan comes with the usage beside it: shown plainly.
 	expect(codex[0].text).toContain('Plus');
+	expect(await tab.eval(`document.querySelector('.quota [data-client="codex"] .card .plan').classList.contains('recorded')`)).toBe(false);
 	expect(codex[1].text).toContain('one@example.com');
 	expect(codex[1].text).toContain('沒有紀錄');
 	expect(codex[1].text).toContain('方案未知');
