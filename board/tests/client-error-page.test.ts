@@ -85,7 +85,7 @@ afterAll(async () => {
 
 const reports = (from: number) => logged(fixture.serverOutput().slice(from), 'client_error');
 
-test.skipIf(!CHROME)('a page that renders into Internal Error logs the error, its stack and the page address without its query', async () => {
+test.skipIf(!CHROME)('a page that renders into Internal Error logs the error code, its script locations and the page path', async () => {
 	// Two questions with one id: the rail's keyed list cannot hold both.
 	const luna = fixture.bound('alpha', 'luna', { questions: [question({ id: 'D-1', title: '重複一' }), question({ id: 'D-1', title: '重複二' })] });
 	fixture.list([luna]);
@@ -96,13 +96,12 @@ test.skipIf(!CHROME)('a page that renders into Internal Error logs the error, it
 	const [line] = await waitFor(() => reports(from).length > 0 && reports(from), 10_000, 'the browser error in the log');
 
 	expect(await evaluate<string>('document.body.innerText')).toContain('Internal Error');
-	expect(line).toMatchObject({ level: 'ERROR', logger: 'board.client', kind: 'handleError', exc_type: 'Error', url: `${fixture.url}/` });
-	expect(String(line.exc_message)).toContain('each_key_duplicate');
-	expect(String(line.traceback)).toContain('at ');
+	expect(line).toMatchObject({ level: 'ERROR', logger: 'board.client', kind: 'handleError', exc_type: 'Error', exc_message: 'svelte:each_key_duplicate', url: '/' });
+	expect(String(line.traceback)).toMatch(/^at \/_app\/immutable\/\S+\.js:\d+:\d+(\nat \/_app\/immutable\/\S+\.js:\d+:\d+)*$/);
 	expect(String(line.user_agent)).toContain('Chrome');
 }, 30_000);
 
-test.skipIf(!CHROME)('an error or a rejection nothing handles is logged too', async () => {
+test.skipIf(!CHROME)('an error or a rejection nothing handles is logged too, its free-text message as [omitted]', async () => {
 	fixture.list([]);
 	await fixture.refresh(cookie);
 	await send('Page.navigate', { url: fixture.url });
@@ -117,8 +116,8 @@ test.skipIf(!CHROME)('an error or a rejection nothing handles is logged too', as
 
 	expect(lines).toEqual(
 		expect.arrayContaining([
-			expect.objectContaining({ kind: 'error', exc_type: 'Error', exc_message: 'thrown later' }),
-			expect.objectContaining({ kind: 'unhandledrejection', exc_type: 'Error', exc_message: 'rejected later' })
+			expect.objectContaining({ kind: 'error', exc_type: 'Error', exc_message: '[omitted]' }),
+			expect.objectContaining({ kind: 'unhandledrejection', exc_type: 'Error', exc_message: '[omitted]' })
 		])
 	);
 }, 30_000);

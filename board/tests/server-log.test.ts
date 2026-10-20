@@ -4,7 +4,7 @@
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { CLIENT_ERROR_LIMITS, CLIENT_ERRORS_PER_WINDOW } from '../src/lib/server/client-errors.ts';
+import { CLIENT_ERRORS_PER_WINDOW, MAX_FRAMES, MAX_USER_AGENT } from '../src/lib/server/client-errors.ts';
 import { logged, PASSWORD, question, startFixture, type Fixture } from './harness.ts';
 
 // Offset 63 is used by no other file.
@@ -167,10 +167,18 @@ test('ordinary refusals and successes write nothing', async () => {
 	expect(output().split('\n').filter((line) => line.startsWith('{'))).toEqual([]);
 });
 
-const report = { kind: 'error', type: 'TypeError', message: 'x is undefined', stack: 'TypeError: x is undefined\n    at render (app.js:1:2)', url: 'http://board/agents' };
+/** A report as a page of this board sends it; `at` is a location in one of its scripts. */
+const at = (path: string) => `${fixture.url}${path}`;
+const report = () => ({
+	kind: 'handleError',
+	type: 'Error',
+	message: 'https://svelte.dev/e/each_key_duplicate',
+	stack: `Error: https://svelte.dev/e/each_key_duplicate\n    at Pe (${at('/_app/immutable/chunks/a1.js')}:1:200)\n    at ${at('/_app/immutable/entry/app.js')}:3:40`,
+	url: at('/')
+});
 
-test('a browser error from a logged-in device is one line with its message, stack, page and browser, and no token', async () => {
-	const response = await post('/api/client-error', report, { cookie, headers: { 'user-agent': 'TestBrowser/1.0' } });
+test('a browser error from a logged-in device is one line of what the server checked: message code, type, script locations, page path', async () => {
+	const response = await post('/api/client-error', report(), { cookie, headers: { 'user-agent': 'TestBrowser/1.0' } });
 
 	expect(response.status).toBe(204);
 	const [line, ...rest] = lines('client_error');
@@ -179,40 +187,69 @@ test('a browser error from a logged-in device is one line with its message, stac
 		level: 'ERROR',
 		logger: 'board.client',
 		layer: 'lat-board',
-		kind: 'error',
-		exc_type: 'TypeError',
-		exc_message: report.message,
-		traceback: report.stack,
-		url: report.url,
+		kind: 'handleError',
+		exc_type: 'Error',
+		exc_message: 'svelte:each_key_duplicate',
+		traceback: 'at /_app/immutable/chunks/a1.js:1:200\nat /_app/immutable/entry/app.js:3:40',
+		url: '/',
 		user_agent: 'TestBrowser/1.0'
 	});
 	expect(line.device_id).toBeString();
 	expect(output()).not.toContain(cookie.split('=')[1]);
 });
 
-test('a browser report is logged without the device token or the page query, and without JSON text it quotes', async () => {
+test('known engine messages are logged by their canonical text, never with what they name', async () => {
+	const messages = {
+		"Cannot read properties of undefined (reading 'secret-answer-1')": 'cannot read a property of undefined',
+		'secretAnswer2 is not a function': 'not a function',
+		'secretAnswer3 is not defined': 'not defined',
+		"Unexpected token 's', \"secret-answer-4\" is not valid JSON": 'invalid JSON',
+		'Failed to fetch': 'network request failed'
+	};
+	for (const message of Object.keys(messages)) expect((await post('/api/client-error', { ...report(), type: 'TypeError', message })).status).toBe(204);
+
+	expect(lines('client_error').map((line) => line.exc_message)).toEqual(Object.values(messages));
+	expect(output()).not.toMatch(/secret-?answer/i);
+});
+
+test('anything a report says that the server does not recognise reaches the log only as [omitted] or not at all', async () => {
 	const token = cookie.split('=')[1];
+	const answer = '這是答覆內容';
 	const response = await post('/api/client-error', {
-		kind: 'error',
-		type: 'SyntaxError',
-		message: `Unexpected token 'P', "PRIVATE-ANSWER" is not valid JSON; cookie ${token}`,
-		stack: `SyntaxError: ${token}\n    at render (http://board/app.js?password=${PASSWORD}:1:2)`,
-		url: `http://board/agents?password=${PASSWORD}&token=${token}#${token}`
+		kind: `error ${answer}`,
+		type: `Error ${answer}`,
+		message: `答覆是：${answer}`,
+		stack: [
+			`Error: ${answer}`,
+			`    at ${answer} (${at('/_app/a.js')}?q=${answer}:1:2)`,
+			`    at render (https://elsewhere.example/${encodeURIComponent(answer)}.js:3:4)`,
+			`    at ${at('/_app/' + encodeURIComponent(answer) + '.js')}:5:6`,
+			`    at ${at('/_app/b.js')}#${token}:7:8`,
+			`    ${answer}`
+		].join('\n'),
+		url: `${at('/agents')}?password=${PASSWORD}#${token}`
 	});
 
 	expect(response.status).toBe(204);
 	const [line] = lines('client_error');
 	expect(line).toMatchObject({
-		exc_message: `Unexpected token 'P', "[omitted]" is not valid JSON; cookie [omitted]`,
-		traceback: 'SyntaxError: [omitted]\n    at render (http://board/app.js:1:2)',
-		url: 'http://board/agents'
+		kind: '[omitted]',
+		exc_type: '[omitted]',
+		exc_message: '[omitted]',
+		traceback: 'at /_app/a.js:1:2\nat /_app/b.js:7:8',
+		url: '/agents'
 	});
-	for (const secret of [token, PASSWORD, 'PRIVATE-ANSWER']) expect(output()).not.toContain(secret);
+	for (const secret of [answer, encodeURIComponent(answer), token, PASSWORD]) expect(output()).not.toContain(secret);
+
+	mark = fixture.serverOutput().length;
+	await post('/api/client-error', { ...report(), message: `https://svelte.dev/e/${'not_a_code'}`, url: `http://elsewhere.example/${answer}` });
+	expect(lines('client_error')).toMatchObject([{ exc_message: 'svelte:unknown', url: '[omitted]' }]);
+	expect(output()).not.toContain(answer);
 });
 
 test('a device that is not logged in is refused and nothing is logged', async () => {
-	const anonymous = await post('/api/client-error', report, {});
-	const revoked = await post('/api/client-error', report, { cookie: 'lat_board_device=not-a-token' });
+	const anonymous = await post('/api/client-error', report(), {});
+	const revoked = await post('/api/client-error', report(), { cookie: 'lat_board_device=not-a-token' });
 
 	expect(anonymous.status).toBe(401);
 	expect(revoked.status).toBe(401);
@@ -220,16 +257,13 @@ test('a device that is not logged in is refused and nothing is logged', async ()
 	expect(output()).not.toContain('not-a-token');
 });
 
-test('long fields are cut to their limits, and a huge body is refused', async () => {
-	const long = { kind: 'k'.repeat(100), type: 't'.repeat(500), message: 'm'.repeat(5_000), stack: 's'.repeat(20_000), url: 'http://board/' + 'u'.repeat(5_000) };
-	expect((await post('/api/client-error', long, { cookie, headers: { 'user-agent': 'a'.repeat(2_000) } })).status).toBe(204);
+test('long content is cut: frames past the limit and a long user agent; a huge body is refused', async () => {
+	const frames = Array.from({ length: MAX_FRAMES + 5 }, (_, i) => `    at ${at('/_app/a.js')}:${i + 1}:1`).join('\n');
+	expect((await post('/api/client-error', { ...report(), stack: frames }, { cookie, headers: { 'user-agent': 'a'.repeat(2_000) } })).status).toBe(204);
 	const [line] = lines('client_error');
-	expect(line.kind).toBe('k'.repeat(CLIENT_ERROR_LIMITS.kind) + '…[truncated]');
-	expect(line.exc_type).toBe('t'.repeat(CLIENT_ERROR_LIMITS.type) + '…[truncated]');
-	expect(line.exc_message).toBe('m'.repeat(CLIENT_ERROR_LIMITS.message) + '…[truncated]');
-	expect(line.traceback).toBe('s'.repeat(CLIENT_ERROR_LIMITS.stack) + '…[truncated]');
-	expect(line.url).toBe('http://board/' + 'u'.repeat(CLIENT_ERROR_LIMITS.url - 13) + '…[truncated]');
-	expect(line.user_agent).toBe('a'.repeat(CLIENT_ERROR_LIMITS.userAgent) + '…[truncated]');
+	expect(String(line.traceback).split('\n')).toHaveLength(MAX_FRAMES + 1);
+	expect(String(line.traceback).split('\n').at(-1)).toBe('…[truncated]');
+	expect(line.user_agent).toBe('a'.repeat(MAX_USER_AGENT) + '…[truncated]');
 
 	mark = fixture.serverOutput().length;
 	expect((await post('/api/client-error', { message: 'x'.repeat(100_000) })).status).toBe(413);
@@ -239,13 +273,13 @@ test('long fields are cut to their limits, and a huge body is refused', async ()
 test('many reports in a short time from one device log only a few; another device still gets its own', async () => {
 	const flood = await fixture.login('flood');
 	const statuses = [];
-	for (let i = 0; i < CLIENT_ERRORS_PER_WINDOW + 15; i++) statuses.push((await post('/api/client-error', { ...report, message: `flood ${i}` }, { cookie: flood })).status);
+	for (let i = 0; i < CLIENT_ERRORS_PER_WINDOW + 15; i++) statuses.push((await post('/api/client-error', { ...report(), message: `flood ${i}` }, { cookie: flood })).status);
 
 	expect(statuses.filter((status) => status === 204)).toHaveLength(CLIENT_ERRORS_PER_WINDOW);
 	expect(statuses.filter((status) => status === 429)).toHaveLength(15);
 	expect(lines('client_error')).toHaveLength(CLIENT_ERRORS_PER_WINDOW);
 
 	const other = await fixture.login('other');
-	expect((await post('/api/client-error', report, { cookie: other })).status).toBe(204);
+	expect((await post('/api/client-error', report(), { cookie: other })).status).toBe(204);
 	expect(lines('client_error')).toHaveLength(CLIENT_ERRORS_PER_WINDOW + 1);
 });

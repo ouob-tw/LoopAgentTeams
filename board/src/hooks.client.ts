@@ -1,8 +1,8 @@
 import type { HandleClientError } from '@sveltejs/kit/hooks';
 
 // Errors in the browser never reach the server by themselves: the page shows "Internal Error" and
-// the journal says nothing. Each one is sent to the board's log; the server limits how many it keeps.
-// A report that cannot be sent is dropped.
+// the journal says nothing. Each one is sent to the board's log; the server decides what of it is
+// safe to keep (see client-errors.ts) and how many. A report that cannot be sent is dropped.
 const MAX_STACK = 8_000;
 
 function report(kind: string, error: unknown) {

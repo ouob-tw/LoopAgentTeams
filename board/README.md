@@ -292,11 +292,14 @@ journalctl --user -u lat-board -o cat | grep '"message":"client_error"' | jq .
 | --- | --- | --- |
 | `http_error` | 任何 API 或頁面回應狀態 ≥ 500（例如輔助工具失敗的 502、寫不進送出紀錄的 500），也包括看板自己在處理請求前就出錯的 500 | `method`、`path`、`status`，以及回應裡的 `reason`、`error`、`logError`、`detail`（SvelteKit 錯誤頁的訊息），各最多 2000 字 |
 | `unhandled_error` | 伺服器端沒被處理的例外（同一請求另有一行 500 的 `http_error`） | `method`、`path`、`exc_type`、`exc_message`、`traceback` |
-| `client_error` | 瀏覽器端的錯誤：頁面變成 Internal Error、或沒被處理的 `error`／`unhandledrejection`，由頁面送到 `POST /api/client-error` | `kind`、`exc_type`、`exc_message`、`traceback`、`url`（不含查詢字串與 `#` 之後）、`user_agent`、`device_id` |
+| `client_error` | 瀏覽器端的錯誤：頁面變成 Internal Error、或沒被處理的 `error`／`unhandledrejection`，由頁面送到 `POST /api/client-error` | `kind`、`exc_type`、`exc_message`、`traceback`、`url`、`user_agent`、`device_id`；內容見下 |
 
-不寫密碼、裝置 token、答覆與訊息內文：每一行從回應、例外或瀏覽器回報取來的文字，都先把該請求內容裡的 `text`、`note`、`password`（不論請求宣稱的內容類型；含去頭尾空白、換行統一、JSON 跳脫後的樣子與其中每一行）和該請求 cookie 的裝置 token 換成 `[omitted]`，Node 引述無法傳給指令的參數（`Received …`）與 `JSON.parse` 引述讀不懂的內容（`"…" is not valid JSON`）也一樣。只引用答覆其中幾個字的原因認不出來。
+不寫密碼、裝置 token、答覆與訊息內文：
 
-`/api/client-error` 只收已登入裝置（未登入回 401、不寫）；各欄位超過上限（`kind` 40、`exc_type` 100、`exc_message` 1000、`traceback` 8000、`url` 2000、`user_agent` 500 字）截斷並加上 `…[truncated]`，整個請求超過 64K 字回 413；同一裝置每分鐘最多記 10 筆，其餘回 429 不寫。只寫標準錯誤，不另存日誌檔。
+- 伺服器端的 `http_error` 與 `unhandled_error`：每一行從回應或例外取來的文字，都先把該請求內容裡的 `text`、`note`、`password`（不論請求宣稱的內容類型；含去頭尾空白、換行統一、JSON 跳脫後的樣子與其中每一行）和該請求 cookie 的裝置 token 換成 `[omitted]`；Node 引述無法傳給指令的參數（`Received …`）、`JSON.parse` 引述讀不懂的內容（`"…" is not valid JSON`，含截短的）也一樣，網址去掉查詢字串與 `#` 之後。只引用答覆其中幾個字的原因認不出來。
+- 瀏覽器的 `client_error`：頁面送來的錯誤訊息是任意文字，伺服器分辨不出其中有沒有答覆，所以一律不照原樣記，只記伺服器自己檢查後寫的內容。`exc_message` 只有認得整句的已知錯誤才記一個固定說法（Svelte 錯誤碼如 `svelte:each_key_duplicate`，常見的引擎訊息如 `cannot read a property of undefined`、`not a function`、`invalid JSON`、`network request failed`，其中提到的名稱不記），其餘記 `[omitted]`；`exc_type` 只收內建的錯誤類型（`Error`、`TypeError` 等），`kind` 只收三種來源，不符合的記 `[omitted]`；`traceback` 只留看板自己腳本的位置（`at /_app/...js:行:欄`，最多 30 個，多的以 `…[truncated]` 標示），函式名稱、訊息行與其他網站的位置都不記；`url` 只記頁面路徑。`user_agent` 取自請求標頭，最多 500 字。
+
+`/api/client-error` 只收已登入裝置（未登入回 401、不寫）；整個請求超過 64K 字回 413；同一裝置每分鐘最多記 10 筆，其餘回 429 不寫。只寫標準錯誤，不另存日誌檔。
 
 ## 開發與測試
 

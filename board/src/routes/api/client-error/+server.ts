@@ -5,7 +5,7 @@ import type { RequestHandler } from './$types';
 const limit = createClientErrorLimit();
 
 /** An error a page hit in the browser. Only a logged-in device gets here (see hooks.server.ts). */
-export const POST: RequestHandler = async ({ request, locals }) => {
+export const POST: RequestHandler = async ({ request, locals, url }) => {
 	const device = locals.device!;
 	if (Number(request.headers.get('content-length')) > MAX_CLIENT_ERROR_CHARS) return json({ error: 'too_large' }, { status: 413 });
 	const text = await request.text();
@@ -18,6 +18,6 @@ export const POST: RequestHandler = async ({ request, locals }) => {
 	}
 	if (!report || typeof report !== 'object') return json({ error: 'invalid_client_error' }, { status: 400 });
 	if (!limit.admit(device.id)) return json({ error: 'rate_limited' }, { status: 429 });
-	await logClientError(device.id, report as Record<string, unknown>, request.headers.get('user-agent'), locals.redact);
+	await logClientError(device.id, report as Record<string, unknown>, url.host, request.headers.get('user-agent'), locals.redact);
 	return new Response(null, { status: 204 });
 };
