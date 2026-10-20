@@ -245,7 +245,8 @@ export interface Agent {
 	/** hcom's status when linked, Herdr's otherwise. */
 	status: AgentStatus;
 	statusSource: 'hcom' | 'herdr';
-	/** Bound as a LAT controller: its session ID is in the binding registry. */
+	/** A LAT controller: its session ID is in the binding registry, or on the controller roster as
+	 *  an ended one with a report not yet archived. */
 	controller: boolean;
 	/** Whether Herdr's list has it. One it does not is listed only while a model switch of it is
 	 *  open, from what the switch kept; nothing but continuing or giving up that switch is done to it. */

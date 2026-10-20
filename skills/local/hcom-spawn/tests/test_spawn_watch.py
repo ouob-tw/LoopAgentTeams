@@ -1,7 +1,9 @@
 import importlib.util
+import io
 import json
 import os
 import tempfile
+import threading
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -37,6 +39,7 @@ class FakeHcom:
         self.batches = [self.batch]
         self.blocked_early = False
         self.unsub_fails = False
+        self.agents = None  # `hcom list --json` rows; None answers like `hcom list <name>`
 
     def clock(self):
         return self.now
@@ -72,12 +75,42 @@ class FakeHcom:
                 return 1, "Error: 'kilo' has no terminal registered yet\n"
             lines = self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
             return 0, json.dumps({'lines': lines, 'ready': True})
+        if args == ('list', '--json') and self.agents is not None:
+            return 0, json.dumps(self.agents)
         if args[0] == 'list':
             return 0, json.dumps({'transcript_path': self.log or ''})
         if args[0] == 'send':
             self.sent.append(args)
             return 0, ''
         raise AssertionError(f'unexpected hcom call {args}')
+
+
+class FakeHerdr:
+    """Answers `herdr pane get` and `herdr tab rename`; panes maps pane id -> tab id."""
+
+    def __init__(self, panes=None, get_fails=False, rename_fails=False, missing=False):
+        self.panes, self.calls = panes or {}, []
+        self.get_fails, self.rename_fails, self.missing = get_fails, rename_fails, missing
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        if self.missing:
+            return 1, "[Errno 2] No such file or directory: 'herdr'"
+        if args[:2] == ('pane', 'get'):
+            if self.get_fails or args[2] not in self.panes:
+                return 1, json.dumps({'error': {'code': 'pane_not_found'}})
+            return 0, json.dumps({'result': {'pane': {'pane_id': args[2],
+                                                      'tab_id': self.panes[args[2]]}}})
+        if args[:2] == ('tab', 'rename'):
+            return (1, 'rename failed') if self.rename_fails else (0, '{}')
+        raise AssertionError(f'unexpected herdr call {args}')
+
+
+def agent_row(name, pane=None, preset='herdr', tag='vare-review'):
+    context = {'process_id': name, 'terminal_preset_effective': preset}
+    if pane:
+        context['pane_id'] = pane
+    return {'base_name': name, 'name': f'{tag}-{name}', 'launch_context': context}
 
 
 class SpawnWatchTests(unittest.TestCase):
@@ -88,6 +121,8 @@ class SpawnWatchTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.watch = load()
+        self.watch.herdr = FakeHerdr()
+        self.watch.LABEL_WAIT, self.watch.LABEL_POLL = 0.3, 0.01
 
     def run_watch(self, fake, tool='claude', model='claude-sonnet-5-5', effort='low', tag=None,
                   launched=None):
@@ -370,6 +405,141 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertFalse(matches('claude', 'model', 'claude-opus-5-5', 'Sonnet 5.5'))
         self.assertFalse(matches('codex', 'model', 'gpt-6.1-sol', 'gpt-6-astra'))
         self.assertFalse(matches('codex', 'model', 'gpt-6.1-sol', 'gpt-6.1-sol-mini'))
+
+    def test_label_is_last_segment_of_spawner_and_agent_base_name(self):
+        self.assertEqual(self.watch.tab_label('bivu-i182-guzu', 'fizo'), 'guzu-fizo')
+        self.assertEqual(self.watch.tab_label('bivu', 'feho'), 'bivu-feho')
+
+    def test_each_agent_of_the_batch_gets_its_tab_renamed(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.batch['data']['instances'] = ['kilo', 'mona']
+        fake.agents = [agent_row('kilo', 'w1:p1'), agent_row('mona', 'w1:p2')]
+        self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1', 'w1:p2': 'w1:t2'})
+        self.assertEqual(self.run_watch(fake), 0)
+        renames = [call for call in self.watch.herdr.calls if call[0] == 'tab']
+        self.assertEqual(renames, [('tab', 'rename', 'w1:t1', 'vare-kilo'),
+                                   ('tab', 'rename', 'w1:t2', 'vare-mona')])
+        self.assertEqual(fake.sent, [])
+
+    def test_spawner_with_a_tag_uses_only_its_last_segment(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.batch['data']['by'] = 'bivu-i182-guzu'
+        fake.agents = [agent_row('kilo', 'w1:p1')]
+        self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1'})
+        self.run_watch(fake)
+        self.assertIn(('tab', 'rename', 'w1:t1', 'guzu-kilo'), self.watch.herdr.calls)
+
+    def test_agent_with_the_same_base_name_under_another_tag_keeps_its_tab(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.agents = [agent_row('kilo', 'w1:p1'), agent_row('kilo', 'w1:p9', tag='mefa-docs')]
+        self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1', 'w1:p9': 'w1:t9'})
+        self.run_watch(fake)
+        self.assertEqual(self.watch.herdr.calls, [('pane', 'get', 'w1:p1'),
+                                                  ('tab', 'rename', 'w1:t1', 'vare-kilo')])
+
+    def test_agent_without_a_pane_is_skipped_and_still_checked(self):
+        fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
+        fake.agents = [agent_row('kilo')]
+        with mock.patch('sys.stderr', new=io.StringIO()) as log:
+            self.assertEqual(self.run_watch(fake), 0)
+        self.assertEqual(self.watch.herdr.calls, [])
+        self.assertIn('no herdr pane in hcom list for vare-review-kilo', log.getvalue())
+        self.assertEqual(len(fake.sent), 1)
+        self.assertIn('permission: expected bypass permissions on', fake.sent[0][-1])
+
+    def test_agent_missing_from_hcom_list_is_skipped_at_the_end_of_the_check(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=500)
+        fake.agents = []
+        with mock.patch('sys.stderr', new=io.StringIO()) as log:
+            self.assertEqual(self.run_watch(fake), 0)
+        self.assertEqual(self.watch.herdr.calls, [])
+        self.assertIn('no herdr pane in hcom list for vare-review-kilo', log.getvalue())
+        self.assertEqual(fake.sent, [])
+
+    def test_pane_recorded_after_the_check_still_gets_its_tab_renamed(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.agents = [agent_row('kilo')]
+        real = fake.__call__
+        lookups = []
+
+        def call(*args, timeout=30):
+            if args == ('list', '--json'):
+                lookups.append(args)
+                if len(lookups) == 3:  # hcom records the pane a little later
+                    fake.agents = [agent_row('kilo', 'w1:p1')]
+            return real(*args, timeout=timeout)
+        self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1'})
+        self.watch.LABEL_WAIT = 5
+        self.watch.process_ids = lambda: {'kilo': 'kilo'}
+        self.watch.launched_with = lambda tool, process_id: ('claude-sonnet-5-5', 'low')
+        self.watch.hcom, self.watch.clock, self.watch.sleep = call, fake.clock, fake.sleep
+        self.watch.main(['--spawner', 'vare', '--tool', 'claude', '--model', 'claude-sonnet-5-5',
+                         '--effort', 'low', '--after-id', '99'])
+        self.assertIn(('tab', 'rename', 'w1:t1', 'vare-kilo'), self.watch.herdr.calls)
+        self.assertEqual(fake.sent, [])
+
+    def test_slow_herdr_does_not_hold_up_the_check(self):
+        fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
+        fake.agents = [agent_row('kilo', 'w1:p1')]
+        real = fake.__call__
+        reported, herdr_saw_report = threading.Event(), []
+
+        def call(*args, timeout=30):
+            if args[0] == 'send':
+                reported.set()
+            return real(*args, timeout=timeout)
+
+        def herdr(*args):  # hangs until the check has reported, or gives up after 5s
+            herdr_saw_report.append(reported.wait(5))
+            return 1, 'timed out'
+        self.watch.herdr = herdr
+        self.watch.process_ids = lambda: {'kilo': 'kilo'}
+        self.watch.launched_with = lambda tool, process_id: ('claude-sonnet-5-5', 'low')
+        self.watch.hcom, self.watch.clock, self.watch.sleep = call, fake.clock, fake.sleep
+        with mock.patch('sys.stderr', new=io.StringIO()):
+            self.watch.main(['--spawner', 'vare', '--tool', 'claude',
+                             '--model', 'claude-sonnet-5-5', '--effort', 'low',
+                             '--after-id', '99'])
+        self.assertEqual(herdr_saw_report, [True])
+        self.assertIn('permission: expected bypass permissions on', fake.sent[0][-1])
+
+    def test_agent_launched_in_another_terminal_is_skipped(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.agents = [agent_row('kilo', '%14', preset='tmux')]
+        with mock.patch('sys.stderr', new=io.StringIO()) as log:
+            self.assertEqual(self.run_watch(fake), 0)
+        self.assertEqual(self.watch.herdr.calls, [])
+        self.assertIn('launched in tmux, not herdr', log.getvalue())
+        self.assertEqual(fake.sent, [])
+
+    def assert_herdr_failure_only_logged(self, herdr):
+        fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
+        fake.agents = [agent_row('kilo', 'w1:p1')]
+        self.watch.herdr = herdr
+        with mock.patch('sys.stderr', new=io.StringIO()) as log:
+            self.assertEqual(self.run_watch(fake), 0)
+        self.assertIn('tab vare-kilo not set', log.getvalue())
+        self.assertEqual(len(fake.sent), 1)
+        self.assertIn('permission: expected bypass permissions on', fake.sent[0][-1])
+
+    def test_failed_pane_lookup_is_logged_and_does_not_affect_the_check(self):
+        self.assert_herdr_failure_only_logged(FakeHerdr(get_fails=True))
+
+    def test_failed_tab_rename_is_logged_and_does_not_affect_the_check(self):
+        self.assert_herdr_failure_only_logged(FakeHerdr(panes={'w1:p1': 'w1:t1'},
+                                                        rename_fails=True))
+
+    def test_missing_herdr_command_is_logged_and_does_not_affect_the_check(self):
+        self.assert_herdr_failure_only_logged(FakeHerdr(missing=True))
+
+    def test_unparsable_pane_info_is_a_failure(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.agents = [agent_row('kilo', 'w1:p1')]
+        self.watch.herdr = lambda *args: (0, 'not json')
+        with mock.patch('sys.stderr', new=io.StringIO()) as log:
+            self.assertEqual(self.run_watch(fake), 0)
+        self.assertIn('vare-kilo', log.getvalue())
+        self.assertEqual(fake.sent, [])
 
 
 if __name__ == '__main__':

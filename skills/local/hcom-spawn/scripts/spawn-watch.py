@@ -2,9 +2,10 @@
 """Background check started by spawn-guard.py for one `hcom N claude|codex` launch.
 
 Finds the launch batch, subscribes the spawner to each new agent's approval-blocked status,
-compares model, effort and permission on the agent's screen with the launch command, tells
-the spawner about any mismatch or anything it could not confirm, and removes the
-subscriptions once the agents stop.
+renames each new agent's Herdr tab to <spawner>-<agent>, compares model, effort and
+permission on the agent's screen with the launch command, tells the spawner about any
+mismatch or anything it could not confirm, and removes the subscriptions once the agents
+stop.
 """
 import argparse
 import importlib.util
@@ -13,6 +14,7 @@ import os
 import re
 import subprocess
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -29,6 +31,8 @@ SCREEN_WINDOW = 20     # seconds of screen reading after the agent is ready
 DEADLINE = 180         # seconds after the launch to give up on confirming
 POLL = 0.3
 STOP_POLL = 5
+LABEL_WAIT = 180       # seconds to keep looking up new agents' panes for tab labels
+LABEL_POLL = 1
 ITEMS = ('model', 'effort', 'permission')
 EXPECTED_PERMISSION = {'claude': 'bypass permissions on', 'codex': 'YOLO'}
 EFFORTS = 'none|minimal|low|medium|high|xhigh|max'
@@ -53,6 +57,20 @@ def hcom(*args, timeout=30):
     except (OSError, subprocess.SubprocessError) as error:
         return 1, str(error)
     return done.returncode, done.stdout
+
+
+def herdr(*args):
+    """Run herdr; return (exit code, output)."""
+    try:
+        done = subprocess.run(['herdr', *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        return 1, str(error)
+    return done.returncode, done.stdout if done.returncode == 0 else done.stdout + done.stderr
+
+
+def log(text):
+    """Write to watch.log (spawn-guard points this process's stderr there)."""
+    print(f'hcom-spawn watch: {text}', file=sys.stderr, flush=True)
 
 
 def events(*filters):
@@ -120,6 +138,65 @@ def launched_with(tool, process_id):
 
 def full_name(data, name):
     return f"{data['tag']}-{name}" if data.get('tag') else name
+
+
+def tab_label(spawner, name):
+    """Herdr tab label for an agent: last segment of its spawner's name, then its own."""
+    return f"{spawner.rsplit('-', 1)[-1]}-{name}"
+
+
+def label_tabs(spawner, agents):
+    """Rename each agent's Herdr tab to tab_label; return the agents (base name -> full
+    name) whose pane is not known yet. Failures only go to watch.log.
+
+    The pane is the agent's launch_context.pane_id in `hcom list`, found by full name since
+    base names can repeat under other tags; agents launched in another terminal
+    (terminal_preset_effective other than herdr) are skipped.
+    """
+    _, listing = hcom('list', '--json')
+    try:
+        contexts = {agent['name']: agent.get('launch_context') or {}
+                    for agent in json.loads(listing)}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        contexts = {}
+    waiting = {}
+    for name, full in agents.items():
+        context, label = contexts.get(full, {}), tab_label(spawner, name)
+        preset, pane = context.get('terminal_preset_effective'), context.get('pane_id')
+        if preset and preset != 'herdr':
+            log(f'tab {label} not set: launched in {preset}, not herdr')
+            continue
+        if not pane:
+            waiting[name] = full
+            continue
+        code, out = herdr('pane', 'get', pane)
+        try:
+            tab = json.loads(out)['result']['pane']['tab_id'] if code == 0 else None
+        except (ValueError, KeyError, TypeError):
+            tab = None
+        if not tab:
+            log(f'tab {label} not set: herdr pane get {pane}: {out.strip()[:200]}')
+            continue
+        code, out = herdr('tab', 'rename', tab, label)
+        if code:
+            log(f'tab {label} not set: herdr tab rename {tab}: {out.strip()[:200]}')
+    return waiting
+
+
+def start_labels(spawner, agents):
+    """Retry label_tabs on its own thread until every pane is known or LABEL_WAIT
+    seconds pass, so slow herdr calls never hold up the launch check."""
+    def run():
+        pending, end = agents, time.monotonic() + LABEL_WAIT
+        while pending := label_tabs(spawner, pending):
+            if time.monotonic() >= end:
+                log(f"tabs not set: no herdr pane in hcom list for {', '.join(pending.values())}")
+                return
+            time.sleep(LABEL_POLL)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
 
 
 def watch_blocked(event, watched):
@@ -405,17 +482,21 @@ def main(argv=None):
     if batch:
         start = clock()
         data, launch_id = batch['data'], batch['id']
+        spawner = data.get('by') or args.spawner
         agents = {name: full_name(data, name) for name in data['instances'] if NAME.match(name)}
+        labels = start_labels(spawner, agents)
         expected = {'model': None if unattributed else args.model,
                     'effort': None if unattributed else args.effort,
                     'permission': EXPECTED_PERMISSION[args.tool]}
         for text in check(args.tool, agents, expected, watched, launch_id, start,
                           unattributed).values():
             if text:
-                notify(data.get('by') or args.spawner, text)
+                notify(spawner, text)
     while watched:
         sleep(STOP_POLL)
         release_stopped(watched)
+    if batch:
+        labels.join()
     return 0
 
 if __name__ == '__main__':
