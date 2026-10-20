@@ -10,21 +10,24 @@
 //
 // 接回 of a plain agent resumes the same conversation with `hcom r` in a new tab of its old Herdr
 // workspace, or of the one its folder picks when that is gone, and moves the tab to the front once
-// Herdr runs it. One at a time, in the queue of new agents. A controller is woken from its page.
+// Herdr runs it. One at a time, in the queue of new agents. A controller's is a controller wake,
+// with the wake's options and an optional first message.
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentAction } from '../board/agent-actions.ts';
 import { CLOSED_KEEP_MS, type ClosedAgent, type ClosedList, type ClosedResume, type ClosedResumeResponse } from '../board/closed-agents.ts';
 import type { Agent } from '../board/types.ts';
+import type { WakeRequest } from '../board/wake.ts';
 import { waitToAppear } from './appear.ts';
 import type { Board } from './board.ts';
 import type { BoardConfig } from './config.ts';
-import { resumeAgent, type HcomStop, type StopList } from './hcom.ts';
+import { listStops, resumeAgent, type HcomStop, type StopList } from './hcom.ts';
 import { readTranscript } from './helper.ts';
 import { chooseWorkspace, moveTab } from './herdr.ts';
 import { inLaunchQueue } from './launch.ts';
 import { appendSent } from './sent-log.ts';
+import { wakeController } from './wake.ts';
 
 /** Who may have stopped an agent for it to be listed. */
 export const LISTED_BY = new Set(['cli', 'pty', 'session', 'system']);
@@ -144,6 +147,8 @@ export function createClosedRoster(config: BoardConfig): ClosedRoster {
 		fileError = `看板記下的 Agent 讀不出來：${(error as Error).message}`;
 	}
 	let lastStopList: HcomStop[] | null = null;
+	/** Whether `seen` holds changes not written yet: kept until a write goes through. */
+	let unsaved = false;
 	/** Whether a session has a saved conversation, by session and stop; `untold` until a time. */
 	const saved = new Map<string, boolean | { untold: number }>();
 	const timeZone = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -154,6 +159,7 @@ export function createClosedRoster(config: BoardConfig): ClosedRoster {
 			writeFileSync(temporary, JSON.stringify({ agents: [...seen.values()] }) + '\n', { mode: 0o600 });
 			renameSync(temporary, file);
 			fileError = null;
+			unsaved = false;
 		} catch (error) {
 			fileError = `看板記下的 Agent 寫不進去：${(error as Error).message}`;
 		}
@@ -182,6 +188,13 @@ export function createClosedRoster(config: BoardConfig): ClosedRoster {
 		return changed;
 	}
 
+	/** Why the list may be out of date or short, after this read's stop list. */
+	function errorText(stops: StopList): string | null {
+		const errors = [fileError];
+		if (!stops.ok) errors.push(`${stops.reason}，「已關閉」${lastStopList ? '沿用上次讀到的紀錄' : '暫時不列'}`);
+		return errors.filter(Boolean).join('；') || null;
+	}
+
 	async function savedFor(agent: SeenAgent, stop: HcomStop, now: number): Promise<boolean> {
 		const key = `${agent.sessionId}:${stop.id}`;
 		const known = saved.get(key);
@@ -194,22 +207,28 @@ export function createClosedRoster(config: BoardConfig): ClosedRoster {
 
 	return {
 		async update({ agents, running, stops, switching, now }) {
-			let changed = agents ? remember(agents, now) : false;
+			if (agents && remember(agents, now)) unsaved = true;
 			if (stops.ok) lastStopList = stops.stops;
-			const errors = [fileError];
-			if (!stops.ok) errors.push(`${stops.reason}，「已關閉」${lastStopList ? '沿用上次讀到的紀錄' : '暫時不列'}`);
-			if (!agents || !running || !lastStopList) return { agents: [], error: errors.filter(Boolean).join('；') || null, timeZone };
+			if (!agents || !running || !lastStopList) {
+				if (unsaved) save();
+				return { agents: [], error: errorText(stops), timeZone };
+			}
 
 			const present: Present = { inHerdr: new Set(agents.flatMap((agent) => (agent.inHerdr && agent.id ? [agent.id] : []))), running, switching };
 			const last = lastStops(lastStopList);
 			for (const agent of [...seen.values()]) {
 				if (!kept(agent, last.get(agent.sessionId), present, stops.ok, now)) {
 					seen.delete(agent.sessionId);
-					changed = true;
+					unsaved = true;
 				}
 			}
-			if (changed) save();
-			for (const id of present.inHerdr) resumes.delete(id);
+			if (unsaved) save();
+			// Only what a kept record may still need is remembered.
+			for (const id of resumes.keys()) if (present.inHerdr.has(id) || !seen.has(id)) resumes.delete(id);
+			for (const key of saved.keys()) {
+				const [id, stopId] = key.split(':');
+				if (last.get(id)?.id !== Number(stopId)) saved.delete(key);
+			}
 
 			const candidates = closedCandidates([...seen.values()], lastStopList, present, now);
 			const told = await Promise.all(candidates.map(({ agent, stop }) => savedFor(agent, stop, now)));
@@ -220,7 +239,7 @@ export function createClosedRoster(config: BoardConfig): ClosedRoster {
 					return row;
 				})
 				.sort((a, b) => Date.parse(b.stoppedAt) - Date.parse(a.stoppedAt));
-			return { agents: rows, error: errors.filter(Boolean).join('；') || null, timeZone };
+			return { agents: rows, error: errorText(stops), timeZone };
 		}
 	};
 }
@@ -260,35 +279,56 @@ function logResume(
 }
 
 export const CLOSED_GONE_REASON = '它已不在「已關閉」清單上（可能已經接回，或不再符合條件），沒有接回。';
-export const CLOSED_CONTROLLER_REASON = '它是 LAT 主控，請在主控頁傳訊息喚醒，沒有接回。';
 export const CLOSED_BUSY_REASON = '它正在接回，請稍候。';
 
-/** Bring a closed plain agent back (see the top of this file). Answers once hcom has run; the rest
- *  is followed in the background, its outcome on the row and in the agent's operation record. */
-export function resumeClosed(board: Board, sessionId: string): Promise<Result> {
-	return inLaunchQueue(() => attempt(board, sessionId));
+/** What a controller's 接回 is woken with, as its wake options give it: a first message (may be
+ *  empty), a new LAT round, a model and effort (null keeps the current one). */
+export type ClosedWake = Pick<WakeRequest, 'text' | 'newRound' | 'model' | 'effort'>;
+
+/** Bring a closed agent back (see the top of this file). A plain agent's answers once hcom has run;
+ *  the rest is followed in the background. A controller is woken (`wakeController`). Either's
+ *  outcome is on the row and in the agent's operation record. */
+export function resumeClosed(board: Board, sessionId: string, wake: ClosedWake): Promise<Result> {
+	return inLaunchQueue(() => attempt(board, sessionId, wake));
 }
 
-async function attempt(board: Board, sessionId: string): Promise<{ value: Result; follow?: Promise<unknown> }> {
+async function attempt(board: Board, sessionId: string, wake: ClosedWake): Promise<{ value: Result; follow?: Promise<unknown> }> {
 	const { config } = board;
 	const row = (await board.refresh()).closed.agents.find((agent) => agent.id === sessionId);
 	const refuse = (reason: string) => {
 		const { logError } = logResume(board, { id: sessionId, hcomName: row?.hcomName ?? '' }, null, null, reason);
-		return { value: { status: 409, body: { ok: false, reason, logError } } };
+		return { value: { status: 409, body: { ok: false, reason, logError, abandon: null } } };
 	};
 	if (!row) return refuse(CLOSED_GONE_REASON);
-	if (row.controller) return refuse(CLOSED_CONTROLLER_REASON);
+	// A row kept from earlier lists does not show it is not running again, or was not stopped
+	// since by someone else.
+	const { hcomError, herdrError } = await board.sources();
+	const stops = await listStops(config, config.now() - CLOSED_KEEP_MS);
+	const unread = hcomError ?? herdrError ?? (stops.ok ? null : stops.reason);
+	if (unread) return refuse(`無法確認它仍可接回，沒有接回：${unread}`);
+	const last = lastStops(stops.ok ? stops.stops : []).get(sessionId);
+	if (`${last && new Date(last.time).toISOString()}` !== row.stoppedAt || !LISTED_BY.has(last!.by)) return refuse(CLOSED_GONE_REASON);
 	if (row.resume?.state === 'resuming') return refuse(CLOSED_BUSY_REASON);
 
 	const started = config.now();
 	resumes.set(sessionId, { state: 'resuming', time: new Date(started).toISOString() });
 	void board.refresh();
-	const fail = (reason: string, route: AgentAction['route'] = null) => {
+	const fail = (reason: string, route: AgentAction['route'] = null, abandon: string | null = null) => {
 		resumes.set(sessionId, { state: 'failed', reason, time: new Date(config.now()).toISOString() });
 		void board.refresh();
 		const { logError } = logResume(board, row, route, null, reason);
-		return { status: 502, body: { ok: false, reason, logError } };
+		return { status: 502, body: { ok: false, reason, logError, abandon } };
 	};
+
+	if (row.controller) {
+		const woken = await wakeController(board, { controllerId: sessionId, ...wake });
+		const { entry } = woken.body;
+		if (!woken.body.ok) return { value: fail(woken.body.reason ?? '喚醒失敗', entry?.route === 'resume' ? 'hcom' : null, woken.body.abandon) };
+		resumes.delete(sessionId);
+		const { logError } = logResume(board, row, 'hcom', `以主控喚醒接回${entry?.herdrWorkspaceLabel ? `，開在工作區「${entry.herdrWorkspaceLabel}」` : ''}`, null);
+		await board.refresh();
+		return { value: { status: 200, body: { ok: true, reason: entry?.outcome === 'pending' ? entry.error : null, logError: woken.body.logError ?? logError, abandon: null } } };
+	}
 
 	const workspace = await chooseWorkspace(config, row.folder, row.workspace);
 	if (!workspace.ok) return { value: fail(`沒有接回：${workspace.reason}`) };
@@ -309,5 +349,5 @@ async function attempt(board: Board, sessionId: string): Promise<{ value: Result
 		await board.refresh();
 		board.tabMoved();
 	})();
-	return { value: { status: 200, body: { ok: true, reason: resumed.outcome === 'pending' ? resumed.reason : null, logError: null } }, follow };
+	return { value: { status: 200, body: { ok: true, reason: resumed.outcome === 'pending' ? resumed.reason : null, logError: null, abandon: null } }, follow };
 }

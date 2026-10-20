@@ -76,4 +76,6 @@ export interface ClosedResumeResponse {
 	reason: string | null;
 	/** Set when the attempt could not be written to the sent log. */
 	logError: string | null;
+	/** A controller's open resume attempt the user may give up, when it is what stopped this one. */
+	abandon: string | null;
 }

@@ -65,7 +65,8 @@ class AgentControl {
 		if (agentId !== null) void this.load(agentId);
 		if (typeof answer?.ok !== 'boolean') return { ok: false, reason: UNKNOWN_OUTCOME };
 		const logNote = answer.logError ? `（送出紀錄寫入失敗：${answer.logError}）` : '';
-		return { ok: answer.ok, reason: answer.ok ? logNote || null : answer.reason + logNote };
+		const abandon = answer && 'abandon' in answer ? answer.abandon : null;
+		return { ok: answer.ok, reason: answer.ok ? logNote || null : answer.reason + logNote, abandon };
 	}
 
 	/** One attempt; the caller keeps the text when it fails. */
@@ -110,9 +111,10 @@ class AgentControl {
 		return this.#post('/api/agents/model', agentId, choice);
 	}
 
-	/** Bring back a closed agent of the 已關閉 section; its row shows how it goes on. */
-	resumeClosed(agentId: string): Promise<Outcome> {
-		return this.#post('/api/agents/closed/resume', agentId, {});
+	/** Bring back a closed agent of the 已關閉 section, a controller with its wake's options; its
+	 *  row shows how it goes on. */
+	resumeClosed(agentId: string, wake: object): Promise<Outcome> {
+		return this.#post('/api/agents/closed/resume', agentId, wake);
 	}
 
 	/** Give up the open switch as a whole, after the user confirmed it. */

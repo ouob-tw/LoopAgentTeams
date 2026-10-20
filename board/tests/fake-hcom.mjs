@@ -30,7 +30,7 @@
 // `events` (the board asks for `stopped` life events in full form, `--after` a time) prints the
 // events of <dir>/hcom-events.jsonl, one JSON object per line as `hcom events --full` does, those
 // at or after `--after` alone; it is logged to <dir>/hcom-events-calls.jsonl. `eventsFail:
-// { exit, stderr }` acts out a failure.
+// { exit, stderr }` acts out a failure; `eventsRaw` is printed instead of the events.
 import { appendFileSync, chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -76,6 +76,10 @@ if (args[0] === 'events') {
 	if (plan.eventsFail) {
 		process.stderr.write(plan.eventsFail.stderr ?? '');
 		process.exit(plan.eventsFail.exit ?? 1);
+	}
+	if (plan.eventsRaw !== undefined) {
+		process.stdout.write(plan.eventsRaw);
+		process.exit(0);
 	}
 	const after = args.indexOf('--after') >= 0 ? Date.parse(args[args.indexOf('--after') + 1]) : -Infinity;
 	const eventsFile = join(dir, 'hcom-events.jsonl');

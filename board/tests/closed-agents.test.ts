@@ -7,7 +7,7 @@ import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { CLOSED_KEEP_MS, type ClosedAgent } from '../src/lib/board/closed-agents.ts';
-import { CLOSED_CONTROLLER_REASON, CLOSED_GONE_REASON } from '../src/lib/server/closed-agents.ts';
+import { CLOSED_GONE_REASON } from '../src/lib/server/closed-agents.ts';
 import { DAY, startFixture, until, type Fixture } from './harness.ts';
 
 let fixture: Fixture;
@@ -80,8 +80,8 @@ const hcomCalls = (): { args: string[]; workspace: string | null; tag: string | 
 	const file = join(fixture.dir, 'hcom-calls.jsonl');
 	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
 };
-const resume = (session: string) =>
-	fixture.fetch('/api/agents/closed/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session }), cookie });
+const resume = (session: string, wake: object = {}) =>
+	fixture.fetch('/api/agents/closed/resume', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ session, ...wake }), cookie });
 
 beforeAll(async () => {
 	socket = createServer((connection) =>
@@ -249,7 +249,8 @@ test('an agent with an open model switch is not listed, until the switch is give
 	expect(await ids()).toEqual(['s-switch']);
 });
 
-test('a closed controller is marked, and its 接回 is a wake from its page', async () => {
+/** A bound controller with a report, seen in Herdr, then closed by the board. */
+async function closedController() {
 	const lead = fixture.bound('lat', 'lead', { session_id: 's-lead' });
 	fixture.list([lead]);
 	fixture.report('s-lead', { tag: 'DONE', hcom_name: 'lead', summary: '完成' });
@@ -258,13 +259,103 @@ test('a closed controller is marked, and its 接回 is a wake from its page', as
 	await seeThenGone('s-lead');
 	fixture.setHcom({ agents: [] });
 	stopEvent('s-lead', 'cli', { name: 'lead' });
-	expect(await closedOf()).toMatchObject([{ id: 's-lead', controller: true }]);
+	return lead;
+}
 
-	const answer = await resume('s-lead');
-	expect(answer.status).toBe(409);
-	expect(await answer.json()).toEqual({ ok: false, reason: CLOSED_CONTROLLER_REASON, logError: null });
+test("a closed controller is marked, and its 接回 is the controller's wake with its options", async () => {
+	await closedController();
+	expect(await closedOf()).toMatchObject([{ id: 's-lead', controller: true }]);
+	fixture.setHcom({ agents: [], resumed: { name: 'lead', session_id: 's-lead', status: 'listening', launch_context: { pane_id: 'ws-lat:p-back' } } });
+
+	const answer = await resume('s-lead', { text: '繼續', newRound: true, model: null, effort: null });
+	expect(answer.status).toBe(200);
+	expect(await answer.json()).toMatchObject({ ok: true, abandon: null });
+	// Woken like a controller: the LAT start command and the message as its first message, in its
+	// project's workspace.
+	const resumed = hcomCalls().filter((call) => call.args[0] === 'r');
+	expect(resumed).toEqual([{ args: ['r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 繼續'], workspace: expect.any(String), tag: null }]);
+	expect(sentLog().find((line) => line.kind === 'wake')).toMatchObject({ controllerId: 's-lead', route: 'resume', newRound: true });
+	expect(sentLog().find((line) => line.action === 'resume')).toMatchObject({ agentId: 's-lead', ok: true, route: 'hcom' });
+	expect(await ids()).toEqual([]);
+});
+
+test("a closed controller's 接回 may go without a message, and a failed one stays on the row", async () => {
+	await closedController();
+	fixture.setHcom({ agents: [], exit: 1, stderr: 'resume failed' });
+	const failed = await resume('s-lead');
+	expect(failed.status).toBe(502);
+	const body = await failed.json();
+	expect(body.reason).toContain('hcom 接回失敗');
+	expect(await closedOf()).toMatchObject([{ id: 's-lead', resume: { state: 'failed', reason: body.reason } }]);
+	expect(sentLog().filter((line) => line.action === 'resume')).toMatchObject([{ agentId: 's-lead', ok: false, error: body.reason }]);
+	// No first message: hcom gets none.
+	expect(hcomCalls().filter((call) => call.args[0] === 'r').at(-1)?.args).toEqual(['r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go']);
+});
+
+test('接回 is refused while hcom, Herdr or the stop list cannot be read now, whatever the last ones said', async () => {
+	record('s-a');
+	await seeThenGone('s-a');
+	stopEvent('s-a', 'cli');
+	expect(await ids()).toEqual(['s-a']);
+	for (const plan of [{ listFail: { exit: 1, stderr: 'hcom down' } }, { eventsFail: { exit: 1, stderr: 'events down' } }]) {
+		fixture.setHcom({ agents: [], ...plan });
+		const answer = await resume('s-a');
+		expect(answer.status).toBe(409);
+		expect((await answer.json()).reason).toContain('無法確認它仍可接回');
+	}
+	fixture.setHcom({ agents: [] });
+	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ fail: { 'agent list': { exit: 1, stderr: 'herdr down' } } }));
+	expect((await resume('s-a')).status).toBe(409);
 	expect(hcomCalls().filter((call) => call.args[0] === 'r')).toEqual([]);
 });
+
+test('an agent seen while the stop list cannot be read is still recorded, and listed after a restart', async () => {
+	await fixture.stop();
+	await fixture.start();
+	fixture.setHcom({ agents: [], eventsFail: { exit: 1, stderr: 'events down' } });
+	record('s-early');
+	setHerdr([herdrAgent('s-early')]);
+	const first = (await fixture.refresh(cookie)).closed;
+	expect(first.error).toContain('hcom 的停止紀錄讀不到：events down');
+	setHerdr([]);
+	fixture.setHcom({ agents: [] });
+	stopEvent('s-early', 'pty', { reason: 'closed' });
+	await fixture.stop();
+	await fixture.start();
+	expect(await ids()).toEqual(['s-early']);
+});
+
+test('a stop list hcom prints in a form the board does not know is not used', async () => {
+	record('s-a');
+	await seeThenGone('s-a');
+	stopEvent('s-a', 'cli');
+	for (const raw of ['not json\n', JSON.stringify({ id: 1, instance: 'x', ts: '2026-10-20T00:00:00', data: { action: 'stopped' } }) + '\n', JSON.stringify({ id: 1, instance: 'x', ts: 'yesterday', data: { action: 'stopped', by: 'cli' } }) + '\n']) {
+		fixture.setHcom({ agents: [], eventsRaw: raw });
+		const closed = (await fixture.refresh(cookie)).closed;
+		expect(closed.error).toContain('hcom 的停止紀錄');
+	}
+});
+
+test('接回 that cannot pick a workspace, or whose agent never shows up in Herdr, fails on the row and in the record', async () => {
+	record('s-a');
+	await seeThenGone('s-a');
+	stopEvent('s-a', 'cli');
+	// Herdr's pane list is not what the board expects: no workspace can be picked.
+	const plan = JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8'));
+	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ ...plan, workspaces: [WORKSPACES[1]], raw: { 'pane list': 'not json' } }));
+	const unpicked = await resume('s-a');
+	expect(unpicked.status).toBe(502);
+	expect((await unpicked.json()).reason).toContain('沒有接回：讀不到 Herdr 的窗格清單');
+	expect(hcomCalls().filter((call) => call.args[0] === 'r')).toEqual([]);
+
+	// hcom resumes it and lists it, but nothing runs in Herdr: it fails once the wait is out.
+	setHerdr([]);
+	fixture.setHcom({ agents: [], resumedExits: true, resumed: { name: 'n-s-a', session_id: 's-a', status: 'listening', launch_context: { pane_id: 'wA:p-gone' } } });
+	expect((await resume('s-a')).status).toBe(200);
+	const failed = await until(() => sentLog().filter((line) => line.action === 'resume')[1], 15_000, 'the failure logged');
+	expect(failed).toMatchObject({ ok: false, route: 'hcom' });
+	expect(failed.error).toContain('接回後');
+}, 30_000);
 
 test('接回 resumes the same conversation in a new tab of its old workspace, moved to the front; it leaves the section', async () => {
 	record('s-a');
@@ -275,7 +366,7 @@ test('接回 resumes the same conversation in a new tab of its old workspace, mo
 
 	const answer = await resume('s-a');
 	expect(answer.status).toBe(200);
-	expect(await answer.json()).toEqual({ ok: true, reason: null, logError: null });
+	expect(await answer.json()).toEqual({ ok: true, reason: null, logError: null, abandon: null });
 	const resumed = hcomCalls().filter((call) => call.args[0] === 'r');
 	expect(resumed).toEqual([{ args: ['r', 's-a', '--terminal', 'herdr', '--no-run-here', '--go'], workspace: 'wA', tag: null }]);
 

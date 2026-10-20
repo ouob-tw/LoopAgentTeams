@@ -294,19 +294,26 @@ test.skipIf(!CHROME)('390px: 接回 brings the agent back to its workspace at th
 	expect(await tab.eval(`document.querySelector(${JSON.stringify(TRIGGER)}).innerText`)).toBe('已關閉 4');
 }, 30_000);
 
-test.skipIf(!CHROME)("a controller's 接回 opens its page, its command line ready to wake it with the wake's options", async () => {
-	await visit(1280);
+test.skipIf(!CHROME)("390px: a controller's 接回 opens the wake's options and wakes it with them", async () => {
+	fixture.setHcom({ agents: [], resumed: { name: 'lead', session_id: 's-lead', status: 'listening', launch_context: { pane_id: 'ws-lat:p-back' } } });
+	await visit(390);
 	await unfold();
 	await tab.until(`!!document.querySelector(${JSON.stringify(resumeButton('s-lead'))})`, 'the row');
 	await tab.eval(`document.querySelector(${JSON.stringify(resumeButton('s-lead'))}).click()`);
-	await tab.until(`location.search.includes('controller=s-lead')`, 'the controller page');
-	await tab.until(`document.activeElement === document.querySelector('.dock .cmd textarea')`, 'the command line to take the focus');
-	expect(await tab.eval(`document.querySelector('.dock .cmd textarea').getAttribute('aria-label')`)).toBe('指令列：喚醒 @lead');
-	expect(await tab.eval(`document.querySelector('.dock .cmd [aria-label="喚醒選項"]').disabled`)).toBe(false);
-	await tab.eval(`document.querySelector('.dock .cmd [aria-label="喚醒選項"]').click()`);
-	await tab.until(`(document.querySelector('.dock')?.innerText ?? '').includes('開新一輪 LAT')`, "the wake's options");
-	// Nothing was resumed by hcom for it: the wake does that once a message is sent.
-	expect(readFileSync(join(fixture.dir, 'hcom-calls.jsonl'), 'utf8')).not.toContain('"s-lead"');
+	const WAKE = '[data-wake="s-lead"]';
+	await tab.until(`!!document.querySelector('${WAKE}')`, "the wake's options");
+	// The controller's model and effort parts, a new round, and a first message that may stay empty.
+	await tab.until(`(document.querySelector('${WAKE}')?.innerText ?? '').includes('開新一輪 LAT')`, 'the new-round box');
+	expect(await tab.eval(`document.querySelectorAll('${WAKE} .pills button').length`)).toBeGreaterThan(0);
+	expect(await tab.eval(FITS)).toBe(true);
+	await tab.eval(`document.querySelector('${WAKE} input[type="checkbox"]').click()`);
+	await tab.eval(`(() => { const box = document.querySelector('${WAKE} textarea'); box.value = '繼續'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
+	await tab.eval(`document.querySelector('${WAKE} [data-action="wake"]').click()`);
+	await tab.until(`!document.querySelector('[data-closed="s-lead"]')`, 'the row to leave');
+	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已開始接回 @lead')`, 'the notice');
+	const resumed = readFileSync(join(fixture.dir, 'hcom-calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.args[0] === 'r');
+	expect(resumed.at(-1).args).toEqual(['r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 繼續']);
+	expect(sentLog().find((line) => line.kind === 'wake')).toMatchObject({ controllerId: 's-lead', newRound: true, route: 'resume' });
 }, 30_000);
 
 test.skipIf(!CHROME)('once its model switch is given up, the agent moves to the section', async () => {
