@@ -163,14 +163,17 @@
 	const agentController = $derived(agent?.controller && agent.inHerdr ? controllers.find((candidate) => candidate.id === agent.id) : undefined);
 	/** The question or report of that page last opened from its own bars and report list: shown where
 	 *  it is in the conversation, without leaving the Herdr tab. */
-	let agentTarget = $state<InboxItem | null>(null);
+	let agentOpened = $state.raw<InboxItem | null>(null);
+	/** That item as the board's data has it now, so an answer or a read shows on it too; as it was
+	 *  opened once the data no longer has it. */
+	const agentTarget = $derived(agentOpened && (known.find((candidate) => candidate.key === agentOpened!.key) ?? agentOpened));
 	let agentOpens = $state(0);
 	$effect.pre(() => {
 		void agentId;
-		agentTarget = null;
+		agentOpened = null;
 	});
 	function openInAgent(next: InboxItem) {
-		agentTarget = next;
+		agentOpened = next;
 		agentOpens++;
 	}
 	/** The workspace whose new-agent form is open; null when none is. */
@@ -435,9 +438,9 @@
 {/snippet}
 
 {#snippet askedCards(entries: InboxQuestion[])}
-	<!-- An opened one among them is the one scrolled to. -->
+	<!-- An opened one among them is the one scrolled to, from the inbox or the Herdr tab. -->
 	{#each entries as entry (entry.key)}
-		<div class="asked" data-opened={entry.key === openKey || undefined}>{@render placedCard(entry)}</div>
+		<div class="asked" data-opened={entry.key === (openKey ?? agentTarget?.key) || undefined}>{@render placedCard(entry)}</div>
 	{/each}
 {/snippet}
 
@@ -623,7 +626,11 @@
 							reportCard={doneCard}
 						>
 							{#snippet card()}
-								{#if agentTarget}{@render placedCard(agentTarget)}{/if}
+								{#if agentTarget?.kind === 'report' && agentTarget.tag === 'DONE'}
+									{@render doneCard(agentTarget)}
+								{:else if agentTarget}
+									{@render placedCard(agentTarget)}
+								{/if}
 							{/snippet}
 						</ControllerInfo>
 					{:else if agent}

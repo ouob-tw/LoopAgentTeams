@@ -105,7 +105,9 @@ const SAID = {
 	ask2: '還有一題。\n\nDECIDE: DQ-2 r1 · 要不要合併 · 回答面板上的題目',
 	done1: '第一張票交付了。',
 	done2: '第二張票交付了。',
-	noReply: '只是說一聲，不用回。'
+	noReply: '只是說一聲，不用回。',
+	// Two questions in one message, named in the opposite order of the question file.
+	group: '這兩題一起問。\n\nDECIDE: GQ-B r1, GQ-A r1 · 一起問的兩題 · 回答面板上的題目'
 };
 
 let fixture: Fixture;
@@ -114,6 +116,7 @@ let chrome: ChildProcess | undefined;
 let profile: string;
 let tab: Tab;
 let lead: ReturnType<Fixture['bound']>;
+let sol: ReturnType<Fixture['bound']>;
 
 function herdrAgent(session: string, workspace = 'wA') {
 	return {
@@ -139,7 +142,8 @@ function setHerdr(sessions: string[]) {
 	);
 }
 const hcomAgent = (name: string, session: string) => ({ name, session_id: session, status: 'listening', launch_context: { pane_id: `wA:p-${session}` } });
-const HCOM_AGENTS = [hcomAgent('lead', 's-lead'), hcomAgent('luna', 's-luna'), hcomAgent('plain', 's-plain'), hcomAgent('clio', 's-clio')];
+const HCOM_AGENTS = [hcomAgent('lead', 's-lead'), hcomAgent('luna', 's-luna'), hcomAgent('plain', 's-plain'), hcomAgent('sol', 's-sol'), hcomAgent('clio', 's-clio')];
+const LISTED = ['s-lead', 's-luna', 's-plain', 's-sol'];
 function record(session: string, said: { kind: 'user' | 'assistant'; minutes: number; text: string }[]) {
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
 	writeFileSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), said.map(({ kind, minutes, text }) => JSON.stringify({ kind, time: minutesAgo(minutes), text }) + '\n').join(''));
@@ -185,9 +189,22 @@ beforeAll(async () => {
 		{ kind: 'user', minutes: 5, text: '幫我看一下測試' },
 		{ kind: 'assistant', minutes: 4, text: '測試都過了。' }
 	]);
-	fixture.list([lead]);
+	// A bound controller that asked two questions in one message.
+	sol = fixture.bound('sun', 'sol', {
+		session_id: 's-sol',
+		questions: [
+			question({ id: 'GQ-A', title: '一起問的甲題', kind: 'single', options: OPTIONS, asked_at: minutesAgo(30) }),
+			question({ id: 'GQ-B', title: '一起問的乙題', kind: 'single', options: OPTIONS, asked_at: minutesAgo(30) })
+		]
+	});
+	report('s-sol', 'sol', 'DECIDE', 30, SAID.group, sol.workspace);
+	record('s-sol', [
+		{ kind: 'user', minutes: 40, text: '開始吧。' },
+		{ kind: 'assistant', minutes: 30, text: SAID.group }
+	]);
+	fixture.list([lead, sol]);
 	fixture.setHcom({ agents: HCOM_AGENTS });
-	setHerdr(['s-lead', 's-luna', 's-plain']);
+	setHerdr(LISTED);
 	await fixture.refresh(cookie);
 }, 30_000);
 
@@ -370,6 +387,58 @@ test.skipIf(!CHROME)('a report marked read on either page is read on the other',
 	expect((await fixture.board(cookie)).inbox.find((item) => item.key === keyOf(SAID.done2))).toMatchObject({ readAt: null });
 }, 60_000);
 
+/** The card of the question or report opened from a bar or the report list, in the conversation. */
+const OPENED = `(document.querySelector('.history .placed [data-opened] article') ?? document.querySelector('.history .placed article'))`;
+
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`${width}px: a question opened from its bar is the one of its message scrolled to, and follows the board's data`, async () => {
+		await visit(width, '?agent=s-sol');
+		await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'sun' && document.querySelectorAll('.history li.asking article').length === 2`, 'both cards of the message');
+		await tab.eval(click('.detail .questions', '一起問的乙題'));
+		await tab.until(`${OPENED}?.innerText.includes('一起問的乙題')`, 'the second question opened');
+		await tab.until(
+			`(() => { const box = ${OPENED}.getBoundingClientRect(); return box.top >= 0 && box.top < window.innerHeight; })()`,
+			'the second question scrolled to'
+		);
+		expect(await tab.eval(`[...${OPENED}.querySelectorAll('button')].some((b) => b.innerText.includes('送出答覆'))`)).toBe(true);
+
+		// Answered from another device: the opened card shows it, and offers no answer any more.
+		const answer = (status: 'pending' | 'submitted') =>
+			fixture.list(
+				fixture.listed().map((entry) =>
+					entry.session_id !== 's-sol'
+						? entry
+						: { ...entry, questions: entry.questions.map((each) => (each.id === 'GQ-B' ? { ...each, status, answer: status === 'pending' ? '' : 'A. 照做', section_sha256: status.padEnd(64, 'x') } : each)) }
+				)
+			);
+		answer('submitted');
+		await fixture.refresh(cookie);
+		await tab.until(`![...${OPENED}.querySelectorAll('button')].some((b) => b.innerText.includes('送出答覆'))`, 'the opened card answered');
+		expect(new URLSearchParams(await tab.eval<string>('location.search')).get('agent')).toBe('s-sol');
+		expect(await tab.eval(FITS)).toBe(true);
+		// As it was, for the next width.
+		answer('pending');
+		await fixture.refresh(cookie);
+	}, 60_000);
+
+	test.skipIf(!CHROME)(`${width}px: a DONE report opened from the report list is shown in the conversation and can be marked read there`, async () => {
+		await visit(width, '?agent=s-lead');
+		await tab.until(`${leadPage} && ${CARDS_IN}`, 'the cards');
+		await tab.eval(click('.detail [role="tablist"]', '回報'));
+		await tab.until(`!!document.querySelector('#panel-reports:not([hidden]) .row')`, 'the report list');
+		await tab.eval(click('#panel-reports', SAID.done2));
+		await tab.until(`!document.querySelector('#panel-transcript').hidden && ${OPENED}?.innerText.includes(${JSON.stringify(SAID.done2)})`, 'the report in the conversation');
+		expect(await tab.eval<string>(`${OPENED}.innerText`)).toContain('未讀');
+		await tab.eval(`[...${OPENED}.querySelectorAll('button')].find((b) => b.innerText === '標為已讀').click()`);
+		await tab.until(`${OPENED}.innerText.includes('已讀（')`, 'read there');
+		expect(new URLSearchParams(await tab.eval<string>('location.search')).get('agent')).toBe('s-lead');
+		expect(await tab.eval(FITS)).toBe(true);
+		// Unread again, for the next width.
+		await tab.eval(`[...${OPENED}.querySelectorAll('button')].find((b) => b.innerText === '標為未讀').click()`);
+		await tab.until(`${OPENED}.innerText.includes('標為已讀')`, 'unread again');
+	}, 60_000);
+}
+
 test.skipIf(!CHROME)("the controller's information page is as it was: no close, no operation record, reports as marked text", async () => {
 	await visit(1280, '?controller=s-lead');
 	await tab.until(`${leadPage} && document.querySelectorAll('.history li.asking article').length === 2`, 'the information page');
@@ -395,14 +464,14 @@ test.skipIf(!CHROME)('a controller is closed as an agent is: asked, confirmed, t
 	expect(hcomCalls().filter((args) => args[0] === 'kill')).toEqual([['kill', 'luna']]);
 	await tab.until(`document.querySelector('.detail').innerText.includes('已不在 Herdr 的清單上')`, 'the page gone with it');
 	// Restored for the tests after this one.
-	setHerdr(['s-lead', 's-luna', 's-plain']);
+	setHerdr(LISTED);
 	await fixture.refresh(cookie);
 }, 60_000);
 
 test.skipIf(!CHROME)('a controller whose model switch is unfinished stays in the list, offering only to continue or give it up', async () => {
 	const clio = fixture.bound('ctl', 'clio', { session_id: 's-clio' });
 	fixture.list([lead, clio]);
-	setHerdr(['s-lead', 's-luna', 's-plain', 's-clio']);
+	setHerdr([...LISTED, 's-clio']);
 	writeFileSync(join(fixture.dir, 'transcripts', 's-clio.jsonl'), '');
 	writeFileSync(join(fixture.dir, 'transcripts', 's-clio.current.json'), JSON.stringify({ model: 'claude-opus-5-5', effort: 'medium', time: minutesAgo(1) }));
 	fixture.setHcom({ agents: HCOM_AGENTS, exit: 1, stderr: 'resume refused' });
