@@ -599,6 +599,19 @@ class HookTests(GateCase):
                     self.assertEqual(result.returncode, 0, result.stderr)
                     self.assertEqual(result.stderr, '')
 
+    def test_messages_that_mention_a_suite_pass(self):
+        for text in (
+            "hcom send @meka --name ripu --intent inform -- 'Suite PASSES. Direct "
+            "`python3 -m unittest discover -s tests | tail -20` was blocked; ran pytest via the gate.'",
+            'echo "next: pytest && npm test"',
+            "git commit -m 'test: run pytest -q in CI'",
+            "printf '%s\\n' 'go test ./...' | tee notes.txt",
+        ):
+            for client, command in self.formats(text).items():
+                with self.subTest(client=client, text=text):
+                    result = run_hook(command, self.repo, self.env)
+                    self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_a_wrapped_suite_does_not_cover_another_unwrapped_one(self):
         result = run_hook(f"{gate.gate_command('pytest')} && pytest", self.repo, self.env)
         self.assertEqual(result.returncode, 2)
