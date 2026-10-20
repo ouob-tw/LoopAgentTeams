@@ -242,16 +242,17 @@ needsPlain('a folder outside any Git project opens as it is: no git init, nothin
 	await followed(body.entry!.id);
 });
 
-test('a folder that does not exist is refused with the reason, logged, and nothing is started', async () => {
+test('a folder that does not exist outside the home folder is refused with the reason: nothing is created or started', async () => {
 	herdrPlan();
 	const missing = join(fixture.dir, 'nowhere');
 
 	const { status, body } = await launch({ folder: missing, agent: { workspace: 'wA', tabName: '' } });
 
-	expect(status).toBe(502);
-	expect(body).toMatchObject({ ok: false, reason: `資料夾不存在：${missing}` });
+	expect(status).toBe(409);
+	expect(body).toMatchObject({ ok: false, entry: null });
+	expect(body.reason).toContain('只會在家目錄');
+	expect(existsSync(missing)).toBe(false);
 	expect(hcomCalls()).toEqual([]);
-	expect((await launchOf(body.entry!.id))?.state).toBe('failed');
 });
 
 test('a workspace Herdr no longer lists is a failure, and nothing is started', async () => {

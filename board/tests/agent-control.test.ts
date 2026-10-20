@@ -4,7 +4,7 @@ import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { controllerInterruptible, type AgentAction, type AgentActionResponse } from '../src/lib/board/agent-actions.ts';
+import type { AgentAction, AgentActionResponse } from '../src/lib/board/agent-actions.ts';
 import { NODE, startFixture, until, type Fixture } from './harness.ts';
 
 // The fake input command's plan and call log, known before the fixture makes its own directory.
@@ -224,13 +224,6 @@ test("a controller's interrupts, done or not, are in its sent log with the reaso
 		['agent', 'send-keys', 'wA:p-s-plain', 'esc'],
 		['agent', 'send-keys', 'wA:p-s-plain', 'esc']
 	]);
-});
-
-test('only a controller at work with a Herdr pane offers the interrupt', () => {
-	const herdr = { workspace: 'wA', tab: 'wA:t', pane: 'wA:p' };
-	expect(controllerInterruptible({ status: 'working', herdr })).toBe(true);
-	for (const status of ['idle', 'closed', 'waiting', 'delivered'] as const) expect(controllerInterruptible({ status, herdr })).toBe(false);
-	expect(controllerInterruptible({ status: 'working', herdr: null })).toBe(false);
 });
 
 test('requests that are not a send or an interrupt are refused before anything runs', async () => {

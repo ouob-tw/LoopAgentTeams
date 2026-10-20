@@ -755,6 +755,7 @@
 				target={controller ?? agentController}
 				agent={view?.kind === 'agent' && !agentController ? agent : undefined}
 				closed={view?.kind === 'agent' ? closedAgent : undefined}
+				agents={board.snapshot.agents}
 				adopt={agentController?.id}
 			/>
 		</div>

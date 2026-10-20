@@ -64,6 +64,8 @@ export interface SentLaunch {
 	defaults?: ModelChoice;
 	/** Whether the board ran `git init` in the folder for this launch. */
 	gitInit: boolean;
+	/** The board created the folder for this launch. Missing on launches logged before. */
+	folderCreated?: boolean;
 	herdrWorkspace: string | null;
 	herdrWorkspaceLabel: string | null;
 	/** The board created the Herdr workspace for this launch. */
@@ -179,6 +181,8 @@ export interface LaunchList {
 	logError: string | null;
 	/** What the model and effort fields offer each client. */
 	modelOptions: ModelOptions;
+	/** The home folder of the user running the board: `~` in the folder box. */
+	home: string;
 }
 
 /** What `POST /api/launches` answers. A refusal starts nothing and logs nothing: `entry` is null. */
@@ -192,8 +196,8 @@ export interface LaunchResponse {
 
 export const NOT_GIT_REASON = '這個資料夾不在 Git 專案裡，主控在這裡不能啟用；勾選「先 git init 再開」才能送出。';
 
-/** One folder in a browse listing. */
-export interface BrowseEntry {
+/** One folder a search lists under the typed level. */
+export interface FolderEntry {
 	name: string;
 	/** The folder's path as listed, a symbolic link's own path included. */
 	path: string;
@@ -201,16 +205,26 @@ export interface BrowseEntry {
 	git: boolean;
 }
 
-/** What `GET /api/browse` answers: the folders directly under `path`. */
-export interface BrowseResult {
-	path: string;
-	/** The folder one level up; null at the root. */
-	parent: string | null;
-	/** Where browsing starts: the home folder of the user running the board. */
-	home: string;
-	/** Whether `path` is in a Git project. */
+/** How the typed folder stands now: `missing` when nothing is there. */
+export interface FolderTarget {
+	state: 'folder' | 'missing' | 'not-folder';
+	/** Whether it is in a Git project; for a missing folder, whether the nearest folder above it is. */
 	git: boolean;
-	entries: BrowseEntry[];
-	/** Why the folder could not be read; the listing is then empty. */
+	/** For a missing folder, why the board will not create it; null when it will. */
+	cannotCreate: string | null;
+}
+
+/** What `GET /api/browse?q=` answers for a typed full path. */
+export interface FolderSearch {
+	/** The text as typed. */
+	input: string;
+	/** The home folder `~` stands for. */
+	home: string;
+	/** The typed folder, normalized. */
+	path: string;
+	target: FolderTarget;
+	/** The folders under the typed level whose name matches its last part, by name. */
+	entries: FolderEntry[];
+	/** Why the level could not be read (`ENOENT` when it is not there); the listing is then empty. */
 	error: string | null;
 }
