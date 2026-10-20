@@ -130,12 +130,12 @@ export function launchSettingsText(launch: Pick<SentLaunch, 'model' | 'effort' |
 /** Where a controller's launch row leads: its information page once it is active and on the
  *  roster, before that the page of the agent Herdr runs as its session, or under its HCOM name
  *  while the session is not known; null while neither is there or the launch failed. A name hcom
- *  hands out again belongs to the newest of `launches` (newest first) that has it, and a session
- *  already under it when the launch began is not the launch's. Nothing is opened for the user: the
- *  row only shows the way. */
+ *  hands out again belongs to the newest of all `launches` that has it, a plain agent's too, and
+ *  a session already under it when the launch began is not the launch's. Nothing is opened for
+ *  the user: the row only shows the way. */
 export function launchLink(
-	launch: Pick<LaunchView, 'id' | 'state' | 'controllerId' | 'hcomName' | 'earlierSessions'>,
-	launches: readonly Pick<LaunchView, 'id' | 'hcomName'>[],
+	launch: Pick<LaunchView, 'time' | 'state' | 'controllerId' | 'hcomName' | 'earlierSessions'>,
+	launches: readonly Pick<LaunchView, 'time' | 'hcomName'>[],
 	controllers: readonly Pick<Controller, 'id'>[],
 	agents: readonly Pick<Agent, 'id' | 'hcomName' | 'inHerdr'>[]
 ): { kind: 'controller' | 'agent'; id: string } | null {
@@ -147,7 +147,7 @@ export function launchLink(
 	const running = agents.filter((candidate) => candidate.inHerdr && candidate.id !== null);
 	let agent;
 	if (controllerId !== null) agent = running.find((candidate) => candidate.id === controllerId);
-	else if (hcomName && launches.find((other) => other.hcomName === hcomName)?.id === launch.id) {
+	else if (hcomName && !launches.some((other) => other.hcomName === hcomName && Date.parse(other.time) > Date.parse(launch.time))) {
 		agent = running.find((candidate) => candidate.hcomName === hcomName && !launch.earlierSessions.includes(candidate.id!));
 	}
 	return agent ? { kind: 'agent', id: agent.id! } : null;

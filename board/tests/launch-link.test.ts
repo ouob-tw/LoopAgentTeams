@@ -5,7 +5,7 @@ import { launchLink, type LaunchView } from '../src/lib/board/launch.ts';
 
 type Row = Parameters<typeof launchLink>[0];
 const launch = (state: LaunchView['state'], controllerId: string | null = null, fields: Partial<Row> = {}): Row => ({
-	id: 'launch-1',
+	time: '2026-10-20T10:00:00Z',
 	state,
 	controllerId,
 	hcomName: 'bure',
@@ -47,8 +47,11 @@ test('a name hcom hands out again leads only from the launch it belongs to', () 
 	// A session already under the name when the launch began is not this launch's.
 	expect(link(launch('starting', null, { earlierSessions: ['session-1'] }), [], [agent])).toBeNull();
 	// A newer launch got the name: the older one, never bound, borrows nothing.
-	const older = launch('overdue', null, { id: 'launch-old' });
-	const newer = launch('starting', null, { id: 'launch-new' });
+	const older = launch('overdue', null, { time: '2026-10-20T09:00:00Z' });
+	const newer = launch('starting');
 	expect(launchLink(older, [newer, older], [], [agent])).toBeNull();
 	expect(launchLink(newer, [newer, older], [], [agent])).toEqual({ kind: 'agent', id: 'session-1' });
+	// So does a newer plain agent, listed after the controllers' launches.
+	const plain = { time: '2026-10-20T11:00:00Z', hcomName: 'bure' };
+	expect(launchLink(newer, [newer, plain], [], [agent])).toBeNull();
 });
