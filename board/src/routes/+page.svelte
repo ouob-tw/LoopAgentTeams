@@ -160,7 +160,7 @@
 	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
 	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
 	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
-	/** The controllers of the Herdr tab: the roster's, and the bound ones off it. */
+	/** The controllers of the Herdr tab and the command line: the roster's, and the bound ones off it. */
 	const herdrControllers = $derived(everyController(board.snapshot));
 	/** The open agent as the controller it is, while Herdr lists it: its page is the controller's. */
 	const agentController = $derived(agent?.controller && agent.inHerdr ? herdrControllers.find((candidate) => candidate.id === agent.id) : undefined);
@@ -739,7 +739,7 @@
 			/>
 			<!-- A controller's page on the Herdr tab is written to as on its information page. -->
 			<CommandLine
-				{controllers}
+				controllers={herdrControllers}
 				target={controller ?? agentController}
 				agent={view?.kind === 'agent' && !agentController ? agent : undefined}
 				adopt={agentController?.id}

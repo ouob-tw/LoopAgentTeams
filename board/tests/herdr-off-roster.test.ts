@@ -236,8 +236,8 @@ for (const width of [1280, 390]) {
 		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '回報', '送出紀錄', '操作紀錄']);
 		expect(await tab.eval<string>(`document.querySelector('.detail .profile').innerText`)).toContain('已關閉');
 		if (width > 760) expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @old');
-		// The wake's options, as on any closed controller's page.
-		await type(text);
+		// The wake's options, as on any closed controller's page; addressed by its name too.
+		await type(`@old ${text}`);
 		await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
 		await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
 		expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(POPUP)}).innerText`)).toContain('開新一輪 LAT');
