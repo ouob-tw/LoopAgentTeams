@@ -275,7 +275,10 @@ test("a closed controller is marked, and its 接回 is the controller's wake wit
 	const resumed = hcomCalls().filter((call) => call.args[0] === 'r');
 	expect(resumed).toEqual([{ args: ['r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', '/lat 繼續'], workspace: expect.any(String), tag: null }]);
 	expect(sentLog().find((line) => line.kind === 'wake')).toMatchObject({ controllerId: 's-lead', route: 'resume', newRound: true });
-	expect(sentLog().find((line) => line.action === 'resume')).toMatchObject({ agentId: 's-lead', ok: true, route: 'hcom' });
+	// Logged as back once Herdr runs it.
+	const back = await until(() => sentLog().find((line) => line.action === 'resume'), 10_000, 'the resume logged');
+	expect(back).toMatchObject({ agentId: 's-lead', ok: true, route: 'hcom' });
+	expect(back.text).toContain('以主控喚醒接回');
 	expect(await ids()).toEqual([]);
 });
 
@@ -290,6 +293,40 @@ test("a closed controller's 接回 may go without a message, and a failed one st
 	expect(sentLog().filter((line) => line.action === 'resume')).toMatchObject([{ agentId: 's-lead', ok: false, error: body.reason }]);
 	// No first message: hcom gets none.
 	expect(hcomCalls().filter((call) => call.args[0] === 'r').at(-1)?.args).toEqual(['r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go']);
+});
+
+test("a closed controller's 接回 takes the model and effort chosen, and the row says so until it shows up in Herdr", async () => {
+	await closedController();
+	// hcom lists it once resumed, but nothing runs in Herdr: the outcome comes once the wait is out.
+	fixture.setHcom({ agents: [], resumedExits: true, resumed: { name: 'lead', session_id: 's-lead', status: 'listening', launch_context: { pane_id: 'ws-lat:p-gone' } } });
+	const answer = await resume('s-lead', { text: '', newRound: false, model: 'claude-sonnet-5-5', effort: 'high' });
+	expect(answer.status).toBe(200);
+	expect(hcomCalls().filter((call) => call.args[0] === 'r').at(-1)?.args).toEqual([
+		'r', 's-lead', '--terminal', 'herdr', '--no-run-here', '--go', '--model', 'claude-sonnet-5-5', '--effort', 'high'
+	]);
+	// Not logged as back before Herdr runs it.
+	expect(sentLog().filter((line) => line.action === 'resume')).toEqual([]);
+	const failed = await until(() => sentLog().find((line) => line.action === 'resume'), 15_000, 'the outcome logged');
+	expect(failed).toMatchObject({ agentId: 's-lead', ok: false, route: 'hcom' });
+	expect(failed.error).toContain('接回後');
+}, 30_000);
+
+test("a closed controller's 接回 stopped by an earlier resume offers to give that one up", async () => {
+	await closedController();
+	// An earlier resume with no pane recorded: whether it ended cannot be told.
+	mkdirSync(join(fixture.dir, 'board-state'), { recursive: true });
+	const earlier = {
+		id: 'wake-earlier', kind: 'wake', time: new Date().toISOString(), controllerId: 's-lead', hcomName: 'lead', text: '早先', newRound: false,
+		route: 'resume', herdrWorkspace: null, herdrWorkspaceLabel: null, workspaceCreated: false, resumedName: null, pane: null, extraArgs: [],
+		outcome: 'pending', error: null
+	};
+	appendFileSync(join(fixture.dir, 'board-state', 'sent-log.jsonl'), JSON.stringify(earlier) + '\n');
+	const answer = await resume('s-lead', { text: '', newRound: false, model: null, effort: null });
+	expect(answer.status).toBe(502);
+	const body = await answer.json();
+	expect(body).toMatchObject({ ok: false, abandon: 'wake-earlier' });
+	expect(await closedOf()).toMatchObject([{ id: 's-lead', resume: { state: 'failed', reason: body.reason } }]);
+	expect(hcomCalls().filter((call) => call.args[0] === 'r')).toEqual([]);
 });
 
 test('接回 is refused while hcom, Herdr or the stop list cannot be read now, whatever the last ones said', async () => {

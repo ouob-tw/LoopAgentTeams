@@ -320,22 +320,8 @@ async function attempt(board: Board, sessionId: string, wake: ClosedWake): Promi
 		return { status: 502, body: { ok: false, reason, logError, abandon } };
 	};
 
-	if (row.controller) {
-		const woken = await wakeController(board, { controllerId: sessionId, ...wake });
-		const { entry } = woken.body;
-		if (!woken.body.ok) return { value: fail(woken.body.reason ?? '喚醒失敗', entry?.route === 'resume' ? 'hcom' : null, woken.body.abandon) };
-		resumes.delete(sessionId);
-		const { logError } = logResume(board, row, 'hcom', `以主控喚醒接回${entry?.herdrWorkspaceLabel ? `，開在工作區「${entry.herdrWorkspaceLabel}」` : ''}`, null);
-		await board.refresh();
-		return { value: { status: 200, body: { ok: true, reason: entry?.outcome === 'pending' ? entry.error : null, logError: woken.body.logError ?? logError, abandon: null } } };
-	}
-
-	const workspace = await chooseWorkspace(config, row.folder, row.workspace);
-	if (!workspace.ok) return { value: fail(`沒有接回：${workspace.reason}`) };
-	const resumed = await resumeAgent(config, { sessionId, herdrWorkspace: workspace.id, prompt: '', extraArgs: [] });
-	if (resumed.outcome === 'failed') return { value: fail(resumed.reason ?? '接回失敗', 'hcom') };
-	const where = `開在工作區「${workspace.label}」`;
-	const follow = (async () => {
+	/** Wait until Herdr runs it, then log it back, its tab first when `toFront`; or log why not. */
+	const followBack = async (where: string, toFront: boolean) => {
 		let appeared: Awaited<ReturnType<typeof waitToAppear>>;
 		try {
 			appeared = await waitToAppear(config, { sessionId }, started + config.launchWaitMs, `@${row.hcomName}`);
@@ -343,11 +329,27 @@ async function attempt(board: Board, sessionId: string, wake: ClosedWake): Promi
 			appeared = { found: null, reason: `確認不了它有沒有在執行：${(error as Error).message}` };
 		}
 		if (!appeared.found) return void fail(`接回後${appeared.reason}`, 'hcom');
-		const moveError = await moveTab(config, appeared.found.tab, 0);
+		const moveError = toFront ? await moveTab(config, appeared.found.tab, 0) : null;
 		resumes.delete(sessionId);
 		logResume(board, row, 'hcom', moveError ? `${where}；${moveError}` : where, null);
 		await board.refresh();
-		board.tabMoved();
-	})();
-	return { value: { status: 200, body: { ok: true, reason: resumed.outcome === 'pending' ? resumed.reason : null, logError: null, abandon: null } }, follow };
+		if (toFront) board.tabMoved();
+	};
+
+	if (row.controller) {
+		const woken = await wakeController(board, { controllerId: sessionId, ...wake });
+		const { entry } = woken.body;
+		if (!woken.body.ok) return { value: fail(woken.body.reason ?? '喚醒失敗', entry?.route === 'resume' ? 'hcom' : null, woken.body.abandon) };
+		const body = { ok: true, reason: entry?.outcome === 'pending' ? entry.error : null, logError: woken.body.logError, abandon: null };
+		// The wake's resume moves its tab to the front itself.
+		const where = `以主控喚醒接回${entry?.herdrWorkspaceLabel ? `，開在工作區「${entry.herdrWorkspaceLabel}」` : ''}`;
+		return { value: { status: 200, body }, follow: followBack(where, false) };
+	}
+
+	const workspace = await chooseWorkspace(config, row.folder, row.workspace);
+	if (!workspace.ok) return { value: fail(`沒有接回：${workspace.reason}`) };
+	const resumed = await resumeAgent(config, { sessionId, herdrWorkspace: workspace.id, prompt: '', extraArgs: [] });
+	if (resumed.outcome === 'failed') return { value: fail(resumed.reason ?? '接回失敗', 'hcom') };
+	const body = { ok: true, reason: resumed.outcome === 'pending' ? resumed.reason : null, logError: null, abandon: null };
+	return { value: { status: 200, body }, follow: followBack(`開在工作區「${workspace.label}」`, true) };
 }
