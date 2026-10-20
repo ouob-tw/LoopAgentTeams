@@ -1,28 +1,26 @@
-// How the roster lays out the controllers it is given: the ones still on the board in runs of one
-// status each, in the server's order, then the ended ones that reported within a day, newest
-// first; the other ended ones are kept apart, by how long ago they last reported.
+// How the roster lays out the controllers it is given: in runs of one status each, in the server's
+// order; the idle and closed ones that last reported over a day ago are kept apart, by how long ago
+// that was.
 import { DAY_MS } from './archive.ts';
-import type { Controller } from './types.ts';
+import { isInactive, type Controller } from './types.ts';
 
 /** When a controller last reported, earliest of all when it never has. */
 export const reportedAt = (controller: Controller) => (controller.lastReportAt ? Date.parse(controller.lastReportAt) : -Infinity);
 
-/** Runs of one status in the order given, the ended ones that reported within a day last and
- *  newest first; and the older ended ones, which the roster keeps out of its list. */
+/** Runs of one status in the order given, the idle and closed ones only when they reported within
+ *  a day; and the older idle and closed ones, which the roster keeps out of its list. */
 export function splitRoster(controllers: readonly Controller[], now: number): { groups: Controller[][]; older: Controller[] } {
 	const groups: Controller[][] = [];
-	const recent: Controller[] = [];
 	const older: Controller[] = [];
 	for (const controller of controllers) {
-		if (controller.status === 'ended') {
-			(now - reportedAt(controller) <= DAY_MS ? recent : older).push(controller);
+		if (isInactive(controller.status) && now - reportedAt(controller) > DAY_MS) {
+			older.push(controller);
 			continue;
 		}
 		const last = groups.at(-1);
 		if (last?.[0].status === controller.status) last.push(controller);
 		else groups.push([controller]);
 	}
-	if (recent.length) groups.push(recent.sort((a, b) => reportedAt(b) - reportedAt(a)));
 	return { groups, older };
 }
 
@@ -32,8 +30,8 @@ const AGES = [
 ] as const;
 const OLDEST = '更早';
 
-/** Ended controllers older than a day by the age of their latest report, newest first: within
- *  three days, a week, or earlier, where one without a report goes. Empty ranges are left out. */
+/** Idle and closed controllers older than a day by the age of their latest report, newest first:
+ *  within three days, a week, or earlier, where one without a report goes. Empty ranges are left out. */
 export function endedByAge(ended: readonly Controller[], now: number): { label: string; controllers: Controller[] }[] {
 	const buckets = [...AGES.map(({ label }) => ({ label, controllers: [] as Controller[] })), { label: OLDEST, controllers: [] as Controller[] }];
 	for (const controller of [...ended].sort((a, b) => reportedAt(b) - reportedAt(a))) {

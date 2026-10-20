@@ -98,7 +98,7 @@
 		<h3 title={project.workspace}>{project.project}</h3>
 		{#each project.controllers as group (group.controllerId)}
 			<button class="owner" onclick={() => oncontroller(group.controllerId)}>
-				<StatusMark status={byId.get(group.controllerId)?.status ?? 'ended'} />
+				<StatusMark status={byId.get(group.controllerId)?.status ?? 'closed'} />
 				{project.project} · @{group.hcomName}
 			</button>
 			<div class="nest">

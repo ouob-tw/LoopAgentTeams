@@ -1,7 +1,7 @@
 <script lang="ts">
 	// The controller roster: three-line cards on a wide screen, a strip of two-line tags on a phone,
-	// a faint line between the runs of one status. Ended controllers that reported within a day are
-	// the last run; the older ones are one row at the end that opens their list.
+	// a faint line between the runs of one status. Idle and closed controllers that last reported
+	// over a day ago are one row at the end that opens their list.
 	import { splitRoster } from '#lib/board/roster.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import EndedRoster from './EndedRoster.svelte';

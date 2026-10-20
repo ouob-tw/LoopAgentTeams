@@ -129,7 +129,7 @@ test('the archive lists reports for 30 days; a file is deleted when its newest r
 	fixture.report('session-ended', { tag: 'DONE', summary: '回來了', time: iso(T0 + 32 * DAY), hcom_name: 'vega', workspace });
 	const back = await on(T0 + 32 * DAY);
 	expect(titled(back, '回來了')).toMatchObject({ key: 'session-ended#0', readAt: null });
-	expect(named(back, 'vega')).toMatchObject({ status: 'ended' });
+	expect(named(back, 'vega')).toMatchObject({ status: 'closed' });
 });
 
 test('a file whose lock is held is left until a later read', async () => {

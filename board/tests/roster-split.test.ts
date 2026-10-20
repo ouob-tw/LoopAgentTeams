@@ -1,5 +1,5 @@
-// How the roster splits what the server lists: runs of one status, ended controllers that reported
-// within a day as the last run, and the older ended ones by age for their pop-up.
+// How the roster splits what the server lists: runs of one status, the idle and closed controllers
+// that reported within a day among them, and the older idle and closed ones by age for their pop-up.
 import { expect, test } from 'bun:test';
 import { DAY_MS } from '../src/lib/board/archive.ts';
 import { endedByAge, splitRoster } from '../src/lib/board/roster.ts';
@@ -16,7 +16,7 @@ function controller(hcomName: string, status: ControllerStatus, lastReportAt: st
 		workspace: '/w/p',
 		client: 'claude',
 		status,
-		running: status !== 'ended' && status !== 'closed',
+		running: status !== 'idle' && status !== 'closed',
 		phase: null,
 		pendingCount: 0,
 		herdr: null,
@@ -27,40 +27,41 @@ function controller(hcomName: string, status: ControllerStatus, lastReportAt: st
 
 const names = (list: Controller[]) => list.map((entry) => entry.hcomName);
 
-test('runs of one status keep the given order; recent ended ones are the last run, newest first', () => {
+test('runs of one status keep the given order; idle and closed ones older than a day are kept apart', () => {
 	const { groups, older } = splitRoster(
 		[
 			controller('w1', 'waiting', ago(2)),
 			controller('k1', 'working', ago(1)),
 			controller('k2', 'working', null),
 			controller('d1', 'delivered', ago(0.1)),
+			controller('i-hour', 'idle', ago(0.05)),
+			controller('i-day', 'idle', ago(0.9)),
+			controller('i-old', 'idle', ago(2)),
 			controller('c1', 'closed', ago(0.2)),
-			controller('e-old', 'ended', ago(2)),
-			controller('e-day', 'ended', ago(0.9)),
-			controller('e-hour', 'ended', ago(0.05)),
-			controller('e-none', 'ended', null)
+			controller('c-old', 'closed', ago(3)),
+			controller('c-none', 'closed', null)
 		],
 		NOW
 	);
-	expect(groups.map(names)).toEqual([['w1'], ['k1', 'k2'], ['d1'], ['c1'], ['e-hour', 'e-day']]);
-	expect(names(older)).toEqual(['e-old', 'e-none']);
+	expect(groups.map(names)).toEqual([['w1'], ['k1', 'k2'], ['d1'], ['i-hour', 'i-day'], ['c1']]);
+	expect(names(older)).toEqual(['i-old', 'c-old', 'c-none']);
 });
 
-test('no ended controller within a day leaves no ended run', () => {
-	const { groups, older } = splitRoster([controller('k1', 'working', ago(1)), controller('e1', 'ended', ago(5))], NOW);
+test('no idle controller within a day leaves no idle run', () => {
+	const { groups, older } = splitRoster([controller('k1', 'working', ago(1)), controller('e1', 'idle', ago(5))], NOW);
 	expect(groups.map(names)).toEqual([['k1']]);
 	expect(names(older)).toEqual(['e1']);
 });
 
-test('older ended controllers fall into 3 天內, 1 週內 and 更早, newest first, empty ranges left out', () => {
+test('older idle and closed controllers fall into 3 天內, 1 週內 and 更早, newest first, empty ranges left out', () => {
 	const buckets = endedByAge(
 		[
-			controller('a', 'ended', ago(2)),
-			controller('b', 'ended', ago(3)),
-			controller('c', 'ended', ago(6)),
-			controller('d', 'ended', ago(8)),
-			controller('none', 'ended', null),
-			controller('e', 'ended', ago(1.5))
+			controller('a', 'idle', ago(2)),
+			controller('b', 'idle', ago(3)),
+			controller('c', 'idle', ago(6)),
+			controller('d', 'idle', ago(8)),
+			controller('none', 'closed', null),
+			controller('e', 'idle', ago(1.5))
 		],
 		NOW
 	);
@@ -69,5 +70,5 @@ test('older ended controllers fall into 3 天內, 1 週內 and 更早, newest fi
 		['1 週內', ['c']],
 		['更早', ['d', 'none']]
 	]);
-	expect(endedByAge([controller('x', 'ended', ago(10))], NOW).map((bucket) => bucket.label)).toEqual(['更早']);
+	expect(endedByAge([controller('x', 'idle', ago(10))], NOW).map((bucket) => bucket.label)).toEqual(['更早']);
 });

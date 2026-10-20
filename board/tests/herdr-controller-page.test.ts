@@ -286,10 +286,11 @@ for (const width of [1280, 390]) {
 		await tab.until(`!!document.querySelector('#panel-log:not([hidden]) ol, #panel-log:not([hidden]) .empty')`, 'the operation record');
 		expect(await tab.eval(FITS)).toBe(true);
 
-		// Ended in LAT with a report not yet archived: still the controller's page.
+		// LAT deactivated, its conversation still in hcom's list and a report not yet archived: 閒置,
+		// still the controller's page.
 		await openAgent('s-luna');
-		await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'moon'`, "the ended controller's header");
-		expect(await tab.eval<string>(`document.querySelector('.detail .profile').innerText`)).toContain('已結束');
+		await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'moon'`, "the idle controller's header");
+		expect(await tab.eval<string>(`document.querySelector('.detail .profile').innerText`)).toContain('閒置');
 		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '回報', '送出紀錄', '操作紀錄']);
 		await tab.until(`document.querySelectorAll('.history li.report article').length === 1`, 'its report card');
 
@@ -469,7 +470,7 @@ test.skipIf(!CHROME)("the controller's information page is as it was: no close, 
 
 test.skipIf(!CHROME)('a controller is closed as an agent is: asked, confirmed, then closed', async () => {
 	await visit(390, '?agent=s-luna');
-	await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'moon'`, "the ended controller's page");
+	await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'moon'`, "the idle controller's page");
 	await tab.eval(`document.querySelector('.detail [data-action="close"]').click()`);
 	await tab.until(`!!document.querySelector('.detail [data-action="confirm-close"]')`, 'the confirmation');
 	await tab.eval(click('.detail .confirm', '取消'));

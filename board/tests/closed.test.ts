@@ -80,7 +80,7 @@ test('a bound controller missing from hcom\'s list is 已關閉: last on the ros
 	expect(titled(snapshot, '交付後關掉了')).toMatchObject({ kind: 'report', controllerId: orin.session_id });
 });
 
-test('an ended controller hcom lists again, as after a wake outside LAT, stays 已結束 but runs', async () => {
+test('a deactivated controller still in hcom\'s list is 閒置 and runs; one gone from it is 已關閉', async () => {
 	const { luna } = scene();
 	const woken = { session_id: 'woken-session', hcom_name: 'nova' } as HelperController;
 	const gone = { session_id: 'gone-session', hcom_name: 'vela' } as HelperController;
@@ -93,8 +93,8 @@ test('an ended controller hcom lists again, as after a wake outside LAT, stays �
 
 	expect(named(snapshot, 'luna')).toMatchObject({ status: 'working', running: true });
 	expect(named(snapshot, 'orin')).toMatchObject({ status: 'closed', running: false });
-	expect(named(snapshot, 'nova')).toMatchObject({ status: 'ended', running: true });
-	expect(named(snapshot, 'vela')).toMatchObject({ status: 'ended', running: false });
+	expect(named(snapshot, 'nova')).toMatchObject({ status: 'idle', running: true });
+	expect(named(snapshot, 'vela')).toMatchObject({ status: 'closed', running: false });
 });
 
 test('a closed controller\'s question cannot be answered and a message is refused; a wake resumes it', async () => {
