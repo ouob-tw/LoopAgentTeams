@@ -511,35 +511,58 @@ def question_context(question):
     return "\n".join(kept).strip("\n")
 
 
-_FENCE_LINE = re.compile(r"^[ \t]*(?:`{3,}|~{3,})")
+# A fence opens with three or more ` or ~ (a ` fence's info string has no `) and closes
+# on a line of the same character, at least as long, with nothing after it.
+_FENCE_OPEN = re.compile(r"^[ \t]*(?P<fence>`{3,}(?=[^`]*$)|~{3,})")
 _HEADING_MARK = re.compile(r"^([ \t]*)#{1,6}[ \t]+")
-_INLINE_CODE = re.compile(r"(`+)(.+?)\1")
+_INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
 _LINK = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
+# Emphasis marks around text; `*` may sit inside CJK words but not between ASCII letters or digits,
+# `_` only outside words, so 2*3*4 and snake_case stay as written.
+_EMPHASIS = (
+    re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*"),
+    re.compile(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)"),
+    re.compile(r"~~(?=\S)(.+?)(?<=\S)~~"),
+    re.compile(r"(?<![0-9A-Za-z*])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![0-9A-Za-z*])"),
+    re.compile(r"(?<!\w)_(?=[^\s_])(.+?)(?<=[^\s_])_(?!\w)"),
+)
 
 
 def _plain_inline(text):
-    return _LINK.sub(r"\1 (\2)", text).replace("**", "")
+    text = _LINK.sub(r"\1 (\2)", text)
+    for pattern in _EMPHASIS:
+        text = pattern.sub(r"\1", text)
+    return text.replace("**", "")
+
+
+def _code_span(text):
+    """A code span's text: one space is trimmed from each end when both ends have one."""
+    return text[1:-1] if len(text) > 2 and text[0] == text[-1] == " " and text.strip() else text
 
 
 def plain_markdown(text):
-    """Drop Markdown marks: ``**``, backticks, code fence lines, heading marks, link syntax.
+    """Drop Markdown marks: emphasis, backticks, code fence lines, heading marks, link syntax.
 
     Code keeps its text as written; list markers, indentation and emoji stay.
     """
     kept = []
-    fenced = False
+    fence = None
     for line in text.splitlines():
-        if _FENCE_LINE.match(line):
-            fenced = not fenced
+        if fence:
+            if re.fullmatch(rf"[ \t]*{re.escape(fence[0])}{{{len(fence)},}}[ \t]*", line):
+                fence = None
+            else:
+                kept.append(line)
             continue
-        if fenced:
-            kept.append(line)
+        opening = _FENCE_OPEN.match(line)
+        if opening:
+            fence = opening.group("fence")
             continue
         line = _HEADING_MARK.sub(r"\1", line)
         pieces = []
         last = 0
         for code in _INLINE_CODE.finditer(line):
-            pieces += [_plain_inline(line[last:code.start()]), code.group(2)]
+            pieces += [_plain_inline(line[last:code.start()]), _code_span(code.group(2))]
             last = code.end()
         pieces.append(_plain_inline(line[last:]))
         kept.append("".join(pieces))

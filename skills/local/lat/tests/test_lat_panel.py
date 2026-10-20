@@ -1323,6 +1323,27 @@ class QuestionPlainTextTests(unittest.TestCase):
         question = panel.parse_questions("## 只有標題\nQ2 · r1 · 待答\n")[0]
         self.assertEqual(panel.question_plain_text(question), "❓ Q2 r1 - 只有標題")
 
+    def test_plain_markdown_drops_emphasis_but_keeps_code_and_ordinary_symbols(self):
+        panel = load_module()
+        cases = {
+            "__重要__、*斜體*、~~舊方案~~、這是*強調*的": "重要、斜體、舊方案、這是強調的",
+            "_底線_ 與 **粗體**": "底線 與 粗體",
+            "`a*b*c` 與 `__init__`、snake_case_name、2*3*4": "a*b*c 與 __init__、snake_case_name、2*3*4",
+            "* 清單項目\n- 另一項": "* 清單項目\n- 另一項",
+            "```保留這段文字```": "保留這段文字",
+            "``` `x` ```": "`x`",
+        }
+        for text, plain in cases.items():
+            with self.subTest(text=text):
+                self.assertEqual(panel.plain_markdown(text), plain)
+
+    def test_plain_markdown_fences_need_a_matching_closing_line(self):
+        panel = load_module()
+        self.assertEqual(
+            panel.plain_markdown("````md\n```\n**內容**\n````\n**之後**"),
+            "```\n**內容**\n之後")
+        self.assertEqual(panel.plain_markdown("~~~\n`code`\n~~~\n`after`"), "`code`\nafter")
+
     def test_legacy_unlisted_options_render_like_listed_ones(self):
         self.assertEqual(
             self.render("舊格式？\n\n背景。\n\nA. 甲（建議）\n   影響甲\nB. 乙\n"),
