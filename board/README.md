@@ -278,6 +278,30 @@
 
 只想改其中一個主題時，用 `:root[data-theme='light']` 或 `:root[data-theme='dark']`。內建淺色主題的顏色在白底上的對比都不低於 7:1；自己覆蓋的顏色不會被檢查。
 
+## 錯誤紀錄
+
+看板出錯時寫一行 JSON 到標準錯誤，背景常駐時由 systemd 收進 journal：
+
+```bash
+journalctl --user -u lat-board -o cat | grep '"layer":"lat-board"'
+journalctl --user -u lat-board -o cat | grep '"message":"client_error"' | jq .
+```
+
+每行都有 `ts`（UTC）、`level`、`logger`、`layer`（固定 `lat-board`）、`message`（事件名），請求中寫的行另有同一請求共用的 `request_id`（沿用請求的 `x-request-id`，沒有就自產）。只記三種事件，不記一般請求，也不記 4xx 的拒絕（密碼錯誤、題目已改版等）：
+
+| `message` | 何時寫 | 其他欄位 |
+| --- | --- | --- |
+| `http_error` | 任何 API 或頁面回應狀態 ≥ 500（例如輔助工具失敗的 502、寫不進送出紀錄的 500），也包括看板自己在處理請求前就出錯的 500 | `method`、`path`、`status`，以及回應裡的 `reason`、`error`、`logError`、`detail`（SvelteKit 錯誤頁的訊息），各最多 2000 字 |
+| `unhandled_error` | 伺服器端沒被處理的例外（同一請求另有一行 500 的 `http_error`，連 SvelteKit 在請求處理前就失敗也是） | `method`、`path`、`exc_type`、`exc_message`、`traceback` |
+| `client_error` | 瀏覽器端的錯誤：頁面變成 Internal Error、或沒被處理的 `error`／`unhandledrejection`，由頁面送到 `POST /api/client-error` | `kind`、`exc_type`、`exc_message`、`traceback`、`url`、`user_agent`、`device_id`；內容見下 |
+
+不寫密碼、裝置 token、答覆與訊息內文：
+
+- 伺服器端的 `http_error` 與 `unhandled_error`：每一行從回應或例外取來的文字，都先把該請求內容裡的 `text`、`note`、`password`（不論請求宣稱的內容類型；含去頭尾空白、換行統一、JSON 跳脫後的樣子與其中每一行）和該請求 cookie 的裝置 token 換成 `[omitted]`；Node 引述無法傳給指令的參數（`Received …`）、`JSON.parse` 引述讀不懂的內容（`"…" is not valid JSON`，含截短的）也一樣，網址去掉查詢字串與 `#` 之後。只引用答覆其中幾個字的原因認不出來。
+- 瀏覽器的 `client_error`：頁面送來的錯誤訊息是任意文字，伺服器分辨不出其中有沒有答覆，所以一律不照原樣記，只記伺服器自己檢查後寫的內容。`exc_message` 只有認得整句的已知錯誤才記一個固定說法（Svelte 錯誤碼如 `svelte:each_key_duplicate`，常見的引擎訊息如 `cannot read a property of undefined`、`not a function`、`invalid JSON`、`network request failed`，其中提到的名稱不記），其餘記 `[omitted]`；`exc_type` 只收內建的錯誤類型（`Error`、`TypeError` 等），`kind` 只收三種來源，不符合的記 `[omitted]`；`traceback` 只留這次建置真有的腳本檔（伺服器列出 `build/client/_app/immutable` 下的檔案）裡的位置（`at /_app/...js:行:欄`，最多 30 個，多的以 `…[truncated]` 標示），函式名稱、訊息行、其他網站與不存在的檔案都不記，開發模式沒有建置所以不記位置；`url` 只記看板的頁面（`/`、`/login`），其他路徑記 `[omitted]`。`user_agent` 取自請求標頭，最多 500 字。以上每個欄位也再濾一次該請求的裝置 token。
+
+`/api/client-error` 只收已登入裝置（未登入回 401、不寫）；整個請求超過 64K 字回 413；同一裝置每分鐘最多記 10 筆，其餘回 429 不寫。只寫標準錯誤，不另存日誌檔。
+
 ## 開發與測試
 
 ```bash
@@ -309,5 +333,7 @@ bun run repro:hydration --serve none       # 只啟動已登入的假資料看�
 bun run build && bun run measure:commandline   # 無頭 Chrome；違反規則就以 1 結束；使用測試連接埠起點加 16 與加 17
 bun scripts/measure-commandline.ts --serve     # 啟動已登入的假資料看板，再用 scripts/measure-commandline.py 以 WebKit 量同樣的案例
 ```
+
+錯誤紀錄的伺服器端在 `tests/server-log.test.ts`（起點加 63），格式與限頻本身在 `tests/log.test.ts`；`tests/client-error-page.test.ts` 用無頭 Chrome（起點加 64 與加 65）讓頁面變成 Internal Error，檢查 journal 那一行。
 
 封存與 30 天保留的期限都用看板的時鐘計算。測試以 `LAT_BOARD_CLOCK_FILE` 指定一個檔案，內容是一個 ISO 時間，看板就把它當成現在；沒有設定或檔案讀不出時間時用系統時間。

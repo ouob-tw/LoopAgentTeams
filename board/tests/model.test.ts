@@ -23,7 +23,7 @@ import {
 } from '../src/lib/board/models.ts';
 import type { TranscriptUpdate } from '../src/lib/board/transcript.ts';
 import type { WakeResponse, WakeView } from '../src/lib/board/wake.ts';
-import { AGENT_SHELL_ENV, checkRunHere, keptAgentShellEnv, NODE, startFixture, until, type Fixture } from './harness.ts';
+import { AGENT_SHELL_ENV, checkRunHere, keptAgentShellEnv, logged, NODE, startFixture, until, type Fixture } from './harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-model-'));
 const commandEnv = {
@@ -798,9 +798,14 @@ test('a switch that cannot be written to the sent log first stops nothing', asyn
 	writeFileSync(log, existsSync(log) ? readFileSync(log) : '', { flag: 'a' });
 	chmodSync(log, 0o444);
 	try {
+		const before = fixture.serverOutput().length;
 		const { status, body } = await change(target.id, null, 'low');
 		expect(status).toBe(500);
 		expect(body.reason).toContain('寫不進送出紀錄');
+		// The journal says the same.
+		const [line] = logged(fixture.serverOutput().slice(before), 'http_error');
+		expect(line).toMatchObject({ path: '/api/model', status: 500, reason: body.reason });
+		expect(line.logError).toBeString();
 		expect(kills()).toEqual([]);
 	} finally {
 		chmodSync(log, 0o644);
