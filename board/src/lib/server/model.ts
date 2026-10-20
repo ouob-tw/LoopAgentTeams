@@ -1,7 +1,7 @@
 // Turns the three LAT sources (binding registry and question files through the helper, report
 // records) into the board's data model. Herdr's agent status is never consulted for controllers;
 // hcom's list of agents only tells which bound controllers' clients are gone. The 所有 Agent tab's
-// list is made apart (`agents.ts`) and only passed through.
+// list is made apart (`agents.ts`) and passed through, its agents on the controller roster marked so.
 import { basename } from 'node:path';
 import type {
 	Agent,
@@ -400,7 +400,11 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 			binding.questions.filter((question) => question.status === 'recorded').map((question) => questionKey(binding, question))
 		),
 		processedCount: (state ? processedItems(sources, state, now) : answeredItems(sources, now)).length,
-		agents: sources.agents,
+		// A controller on the roster is one on the Herdr tab too: bound, as the agent list already
+		// tells, or ended with a report not yet archived.
+		agents: sources.agents.map((agent) =>
+			agent.controller || !agent.id || !controllers.some((controller) => controller.id === agent.id) ? agent : { ...agent, controller: true }
+		),
 		workspaces: sources.workspaces,
 		errors
 	};

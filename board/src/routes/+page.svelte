@@ -33,7 +33,7 @@
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { askedTogether } from '#lib/board/question-message.ts';
 	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
-	import type { InboxItem, InboxQuestion, KnownAgent } from '#lib/board/types.ts';
+	import type { InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
 	import AgentList from '#lib/components/AgentList.svelte';
 	import CommandLine from '#lib/components/CommandLine.svelte';
@@ -159,6 +159,20 @@
 	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
 	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
 	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
+	/** The open agent as the controller it is, while Herdr lists it: its page is the controller's. */
+	const agentController = $derived(agent?.controller && agent.inHerdr ? controllers.find((candidate) => candidate.id === agent.id) : undefined);
+	/** The question or report of that page last opened from its own bars and report list: shown where
+	 *  it is in the conversation, without leaving the Herdr tab. */
+	let agentTarget = $state<InboxItem | null>(null);
+	let agentOpens = $state(0);
+	$effect.pre(() => {
+		void agentId;
+		agentTarget = null;
+	});
+	function openInAgent(next: InboxItem) {
+		agentTarget = next;
+		agentOpens++;
+	}
 	/** The workspace whose new-agent form is open; null when none is. */
 	const newIn = $derived(view?.kind === 'new-agent' ? view.workspace : null);
 	/** That form's workspace, with the folders its agents work in; undefined once Herdr no longer lists it. */
@@ -171,7 +185,7 @@
 	// Read again with every new snapshot: a question of the inbox may have been answered and recorded.
 	$effect(() => {
 		void board.snapshot;
-		const id = controllerId;
+		const id = controllerId ?? agentController?.id;
 		// Untracked: the read sets what it reads, which must not start it again.
 		if (id) untrack(() => void board.loadAnswered(id));
 	});
@@ -410,6 +424,16 @@
 	/>
 {/snippet}
 
+{#snippet doneCard(report: InboxReport)}
+	<ItemContent
+		item={report}
+		listed
+		handle={report.hcomName}
+		onunread={(key) => board.mark(key, false)}
+		onread={(key) => board.mark(key, true)}
+	/>
+{/snippet}
+
 {#snippet askedCards(entries: InboxQuestion[])}
 	<!-- An opened one among them is the one scrolled to. -->
 	{#each entries as entry (entry.key)}
@@ -585,7 +609,24 @@
 						<p class="empty">這一則已不存在。</p>
 					{/if}
 				{:else if view.kind === 'agent'}
-					{#if agent}
+					{#if agent && agentController}
+						<ControllerInfo
+							tabMoves={board.tabMoves}
+							controller={agentController}
+							{agent}
+							items={inbox.filter((entry) => entry.controllerId === agentController.id)}
+							answered={answered.filter((entry) => entry.controllerId === agentController.id)}
+							onopen={openInAgent}
+							target={agentTarget ?? undefined}
+							opens={agentOpens}
+							questionCards={askedCards}
+							reportCard={doneCard}
+						>
+							{#snippet card()}
+								{#if agentTarget}{@render placedCard(agentTarget)}{/if}
+							{/snippet}
+						</ControllerInfo>
+					{:else if agent}
 						<AgentInfo {agent} />
 					{:else}
 						<p class="empty">這個 Agent 已不在 Herdr 的清單上：它已關閉。</p>
