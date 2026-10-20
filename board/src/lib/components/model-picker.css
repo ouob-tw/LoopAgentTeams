@@ -74,12 +74,13 @@
 	color: var(--muted);
 	text-decoration: line-through;
 }
-/* Floats above the parts, the line being at the bottom of the screen; opening it moves nothing. */
+/* Floats above the parts, the line being at the bottom of the screen; opening it moves nothing. One
+   above the line's own popups (40), which come later in the page and would cover it. */
 .picker .menu {
 	position: absolute;
 	right: 0;
 	bottom: calc(100% + 0.4rem);
-	z-index: 40;
+	z-index: 41;
 	display: flex;
 	flex-direction: column;
 	min-width: 13rem;
