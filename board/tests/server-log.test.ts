@@ -277,10 +277,14 @@ test('long content is cut: frames past the limit and a long user agent; a huge b
 	expect(String(line.traceback).split('\n').at(-1)).toBe('…[truncated]');
 	expect(line.user_agent).toBe('a'.repeat(MAX_USER_AGENT) + '…[truncated]');
 
-	// A token the cut would split is taken out before cutting.
-	const token = cookie.split('=')[1]!;
+	// A token the cut would split is taken out before cutting. A device of its own: this file's
+	// main device has used up its reports for the minute by now.
+	const fresh = await fixture.login('user-agent-cut');
+	const token = fresh.split('=')[1]!;
 	mark = fixture.serverOutput().length;
-	await post('/api/client-error', report(), { cookie, headers: { 'user-agent': 'a'.repeat(MAX_USER_AGENT - 10) + token } });
+	const cut = await post('/api/client-error', report(), { cookie: fresh, headers: { 'user-agent': 'a'.repeat(MAX_USER_AGENT - 10) + token } });
+	expect(cut.status).toBe(204);
+	expect(lines('client_error')).toMatchObject([{ user_agent: 'a'.repeat(MAX_USER_AGENT - 10) + '[omitted]' }]);
 	expect(output()).not.toContain(token.slice(0, 8));
 
 	mark = fixture.serverOutput().length;
