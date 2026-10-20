@@ -91,12 +91,12 @@ test('the quotas reach the page over the event stream, with no secret, from read
 		10_000,
 		'both groups read'
 	);
-	expect(quota.claude.ok && quota.claude.accounts[0]).toMatchObject({ email: 'claude@example.com', current: true, plan: { label: 'Max 5x', source: 'recorded' } });
+	expect(quota.claude.ok && quota.claude.accounts[0]).toMatchObject({ email: 'claude@example.com', current: true, plan: { label: 'Max 5x', source: 'live' } });
 	expect(quota.codex.ok && quota.codex.accounts).toEqual([
 		{
 			email: 'codex@example.com',
 			current: true,
-			plan: { label: 'Pro', source: 'recorded', observedAt: now },
+			plan: { label: 'Pro', source: 'live', observedAt: now },
 			windows: [{ label: '5 小時', used: 85, resetsAt: now + 1000 }],
 			observedAt: now
 		}

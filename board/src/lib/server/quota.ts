@@ -144,8 +144,8 @@ export async function readCodexQuota(dir: string): Promise<QuotaGroup> {
 			return {
 				email: text(account.email) ?? '（沒有 email）',
 				current: index === active,
-				// As recorded with that usage: the board reads no plan live.
-				plan: planType ? { label: capitalized(planType), source: 'recorded', observedAt } : null,
+				// Recorded with each usage reading: as current as the usage, whose age the card shows.
+				plan: planType ? { label: capitalized(planType), source: 'live', observedAt } : null,
 				windows,
 				observedAt
 			};
@@ -162,6 +162,8 @@ export function parseClaudeList(stdout: string, code: number | null, timedOut: b
 	try {
 		parsed = JSON.parse(stdout);
 	} catch {
+		// argparse's exit for an argument it does not know: a claude-swap from before the cached list.
+		if (code === 2) return { ok: false, reason: 'claude-swap 尚未提供唯讀額度指令（需更新 claude-swap）' };
 		return { ok: false, reason: `claude-swap 沒有回答（${ended}）` };
 	}
 	if (!isRecord(parsed)) return { ok: false, reason: 'claude-swap 的回答看不懂' };
@@ -175,7 +177,8 @@ export function parseClaudeList(stdout: string, code: number | null, timedOut: b
 			const usage = fresh ? (row.usage as Json) : isRecord(row.lastGoodUsage) ? row.lastGoodUsage : null;
 			const observedAt = fresh ? time(row.usageFetchedAt) : usage ? time(row.lastGoodFetchedAt) : null;
 			const plan = isRecord(row.plan) ? row.plan : {};
-			// claude-swap records a plan when it switches to, adds or confirms an account; it never reads one live.
+			// claude-swap records a plan when it switches to, adds or confirms an account: the one in use's
+			// is its current plan, another's as last seen in use.
 			const label = text(plan.id) && plan.id !== 'unknown' ? text(plan.label) : null;
 			const planAt = time(plan.observedAt);
 			const windows: QuotaWindow[] = [];
@@ -193,7 +196,7 @@ export function parseClaudeList(stdout: string, code: number | null, timedOut: b
 			return {
 				email: text(row.email) ?? '（沒有 email）',
 				current: row.active === true,
-				plan: label && planAt !== null ? { label, source: 'recorded', observedAt: planAt } : null,
+				plan: label && planAt !== null ? { label, source: row.active === true ? 'live' : 'recorded', observedAt: planAt } : null,
 				windows,
 				observedAt,
 				...(row.usageStatus === 'api_key' ? { note: 'API 金鑰帳號，沒有額度時段' } : {})

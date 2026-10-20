@@ -116,7 +116,7 @@ test('codex accounts come from the account file, joined with the quota cache, th
 	expect(a).toEqual({
 		email: 'a@example.com',
 		current: false,
-		plan: { label: 'Plus', source: 'recorded', observedAt: NOW - 5 * MIN },
+		plan: { label: 'Plus', source: 'live', observedAt: NOW - 5 * MIN },
 		windows: [
 			{ label: '5 小時', used: 45, resetsAt: NOW + 60 * MIN },
 			{ label: '7 天', used: 82, resetsAt: null }
@@ -126,8 +126,8 @@ test('codex accounts come from the account file, joined with the quota cache, th
 	expect(b.observedAt).toBe(NOW - 20 * MIN);
 	expect(b.plan?.label).toBe('Team');
 	expect(b.windows.map((window) => window.used)).toEqual([50, 60]);
-	// Recorded with its usage reading, and shown with that reading's age.
-	expect(c.plan).toEqual({ label: 'Pro', source: 'recorded', observedAt: NOW - 2 * DAY });
+	// Recorded with its usage reading: as current as that, however old.
+	expect(c.plan).toEqual({ label: 'Pro', source: 'live', observedAt: NOW - 2 * DAY });
 	expect(d).toEqual({ email: 'd@example.com', current: false, plan: null, windows: [], observedAt: null });
 	const sent = JSON.stringify(group);
 	for (const secret of SECRETS) expect(sent).not.toContain(secret);
@@ -216,8 +216,8 @@ test('claude-swap rows: fresh, last good and no usage, with their plans', () => 
 			{
 				email: 'one@example.com',
 				current: true,
-				// claude-swap only ever records a plan, the one in use's too.
-				plan: { label: 'Max 5x', source: 'recorded', observedAt: NOW - 10 * MIN },
+				// Recorded when claude-swap switched to it: the account in use's plan is the current one.
+				plan: { label: 'Max 5x', source: 'live', observedAt: NOW - 10 * MIN },
 				windows: [
 					{ label: '5 小時', used: 12, resetsAt: NOW + 60 * MIN },
 					{ label: '7 天', used: 81.4, resetsAt: NOW + 3 * DAY },
@@ -256,7 +256,9 @@ test('claude-swap failures say why, in the board\'s own words only', () => {
 		ok: false,
 		reason: 'claude-swap 的資料版本不符（是 不明，看板認得 1）'
 	});
-	expect(parseClaudeList('refresh-token-SECRET-1', 2, false)).toEqual({ ok: false, reason: 'claude-swap 沒有回答（結束碼 2）' });
+	// A claude-swap from before the cached list rejects the argument.
+	expect(parseClaudeList('', 2, false)).toEqual({ ok: false, reason: 'claude-swap 尚未提供唯讀額度指令（需更新 claude-swap）' });
+	expect(parseClaudeList('refresh-token-SECRET-1', 1, false)).toEqual({ ok: false, reason: 'claude-swap 沒有回答（結束碼 1）' });
 	expect(parseClaudeList('', null, true)).toEqual({ ok: false, reason: 'claude-swap 沒有回答（逾時）' });
 });
 

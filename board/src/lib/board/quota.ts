@@ -15,9 +15,9 @@ export interface QuotaWindow {
 
 export interface QuotaPlan {
 	label: string;
-	/** `live`: read just now; `recorded`: only as last seen in use. Neither source reads a plan live
-	 *  (claude-swap records it when it switches to, adds or confirms an account; codex-multi-auth with
-	 *  each usage reading), so every plan they give is recorded. */
+	/** `live`: current (Claude's account in use, whose plan claude-swap recorded when switching to it;
+	 *  Codex's, recorded with each usage reading); `recorded`: only as last seen in use (Claude's
+	 *  other accounts). */
 	source: 'live' | 'recorded';
 	observedAt: number | null;
 }
