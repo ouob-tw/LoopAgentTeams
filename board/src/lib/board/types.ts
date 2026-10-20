@@ -1,5 +1,6 @@
 // The board's data model, shared by the server and the UI.
 import type { SwitchView } from './models.ts';
+import type { ClosedList } from './closed-agents.ts';
 
 /** Checked top to bottom; the first row that holds wins. */
 export type ControllerStatus = 'idle' | 'closed' | 'waiting' | 'delivered' | 'working';
@@ -179,6 +180,8 @@ export interface BoardSnapshot {
 	agents: Agent[];
 	/** Every Herdr workspace, as Herdr numbers them: the Herdr tab shows one without agents too. */
 	workspaces: HerdrWorkspace[];
+	/** The agents of the Herdr tab's 已關閉 section. */
+	closed: ClosedList;
 	/** Source failures that cannot be attributed to one controller. */
 	errors: string[];
 }
@@ -243,7 +246,8 @@ export interface Agent {
 	/** hcom's status when linked, Herdr's otherwise. */
 	status: AgentStatus;
 	statusSource: 'hcom' | 'herdr';
-	/** Bound as a LAT controller: its session ID is in the binding registry. */
+	/** A LAT controller: its session ID is in the binding registry, or on the controller roster as
+	 *  an ended one with a report not yet archived. */
 	controller: boolean;
 	/** Whether Herdr's list has it. One it does not is listed only while a model switch of it is
 	 *  open, from what the switch kept; nothing but continuing or giving up that switch is done to it. */

@@ -6,7 +6,8 @@
 	// the text it carries and scrolls to it, loading earlier parts until it is found; opened for a
 	// question, its card where the message that asked it is, or where that message will come. A
 	// message that asked questions still in the inbox, or answered ones, shows their cards in its
-	// place; a message whose questions the board has no data for stays text.
+	// place; a message whose questions the board has no data for stays text. Given a report card, a
+	// DONE report of the inbox shows its card in place of its text.
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
@@ -45,6 +46,7 @@
 		reports = [],
 		questions = [],
 		questionCards,
+		reportCard,
 		target,
 		opens = 0,
 		onplaced,
@@ -64,6 +66,8 @@
 		questions?: InboxQuestion[];
 		/** The cards of the questions one message asked, in its order. */
 		questionCards?: Snippet<[InboxQuestion[]]>;
+		/** A DONE report's card, shown in place of the text it carries. */
+		reportCard?: Snippet<[InboxReport]>;
 		/** The report or question this page was opened at. */
 		target?: PlacedTarget;
 		/** Changes with every opening of the target, the same one again too. */
@@ -353,6 +357,8 @@
 						{/if}
 					{:else if segment.kind === 'text' && questionCards && asking.has(segment.item.seq)}
 						<li class="asking" data-seq={segment.item.seq}>{@render questionCards(asking.get(segment.item.seq)!)}</li>
+					{:else if segment.kind === 'text' && reportCard && reported.get(segment.item.seq)?.tag === 'DONE'}
+						<li class="report" data-seq={segment.item.seq}>{@render reportCard(reported.get(segment.item.seq)!)}</li>
 					{:else if segment.kind === 'text'}
 						{@const marked = reported.get(segment.item.seq)}
 						<li class="said" class:reported={!!marked} data-kind={segment.item.kind}>

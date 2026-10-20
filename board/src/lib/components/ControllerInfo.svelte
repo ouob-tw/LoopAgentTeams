@@ -7,14 +7,17 @@
 	// Opened for a report, the conversation shows that report where it is in the history; opened
 	// for a question, the question where the message that asked it is. Any message that asked
 	// questions still in the inbox, or answered ones, shows their cards in its place.
+	// Opened from the Herdr tab, the page is also the agent's: its close, and what was done to it
+	// as a last tab.
 	import type { Snippet } from 'svelte';
+	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
-	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
 	import type { Controller, InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
 	import type { PlacedTarget } from '#lib/board/transcript.ts';
 	import type { Usage } from '#lib/board/usage.ts';
 	import AgentClose from './AgentClose.svelte';
+	import AgentLog from './AgentLog.svelte';
 	import ControllerHeader from './ControllerHeader.svelte';
 	import PendingQuestions from './PendingQuestions.svelte';
 	import RecordTabs from './RecordTabs.svelte';
@@ -25,6 +28,7 @@
 	let {
 		controller,
 		agent,
+		idleAgent,
 		tabMoves = 0,
 		items,
 		answered = [],
@@ -35,11 +39,15 @@
 		onunplaced,
 		card,
 		copy,
-		questionCards
+		questionCards,
+		reportCard
 	}: {
 		controller: Controller;
-		/** The agent Herdr runs this controller's session in; undefined when it lists none. */
+		/** The controller as the Herdr tab lists it, when opened from there. */
 		agent?: KnownAgent;
+		/** The agent Herdr runs an idle controller's session in, on every page that shows it;
+		 *  undefined when it lists none. */
+		idleAgent?: KnownAgent;
 		/** Changes when the server announces a Herdr tab move. */
 		tabMoves?: number;
 		/** This controller's inbox items, with its read reports not yet archived. */
@@ -60,6 +68,8 @@
 		copy?: HTMLElement | null;
 		/** The cards of the questions one message asked, in its order; see Transcript. */
 		questionCards?: Snippet<[InboxQuestion[]]>;
+		/** A DONE report's card, in place of its text; see Transcript. */
+		reportCard?: Snippet<[InboxReport]>;
 	} = $props();
 
 	const sorted = $derived(sortByTime(items));
@@ -70,12 +80,13 @@
 	let usage = $state<Usage | null>(null);
 	const shown = $derived(usage && controller.running ? usage : null);
 
-	type Tab = 'transcript' | 'reports' | 'sent';
+	type Tab = 'transcript' | 'reports' | 'sent' | 'log';
 	let tab = $state<Tab>('transcript');
 	const tabs = $derived([
 		{ id: 'transcript', label: '對話紀錄', count: null },
 		{ id: 'reports', label: '回報', count: reports.length },
-		{ id: 'sent', label: '送出紀錄', count: messaging.sent[controller.id]?.length ?? null }
+		{ id: 'sent', label: '送出紀錄', count: messaging.sent[controller.id]?.length ?? null },
+		...(agent ? [{ id: 'log', label: '操作紀錄', count: agentControl.logCount(agent.id) } as const] : [])
 	] as const satisfies readonly { id: Tab; label: string; count: number | null }[]);
 	// Opening the target, the same one again too, shows it in the conversation.
 	$effect.pre(() => {
@@ -86,40 +97,37 @@
 
 <ControllerHeader {controller} {tabMoves} usage={shown} />
 
-{#if controller.status === 'idle'}
-	<section class="controls" aria-label="操作">
-		{#if agent?.switch}
-			<!-- As on its agent page: nothing but continuing or giving up the switch until it is over. -->
-			<p class="note">{AGENT_SWITCH_UNFINISHED_TEXT}，處理完才能關閉。</p>
-		{:else if agent}
-			<!-- Unbound, so the agent list does not call it a controller; it still is one to wake. -->
-			<AgentClose {agent} label="關閉" controller />
-		{:else}
-			<p class="note">Herdr 的清單上找不到它的分頁，無法從這裡關閉。</p>
-		{/if}
-	</section>
+<!-- Opened from the Herdr tab, the agent's own close below stands for this one. -->
+{#if controller.status === 'idle' && !agent}
+	{#if idleAgent}
+		<!-- Unbound, so the agent list does not call it a controller; it still is one to wake. -->
+		<AgentClose agent={idleAgent} label="關閉" controller />
+	{:else}
+		<p class="note">Herdr 的清單上找不到它的分頁，無法從這裡關閉。</p>
+	{/if}
 {/if}
 
 <PendingQuestions status={controller.status} {questions} {onopen} />
 
+{#if agent}
+	<AgentClose {agent} />
+{/if}
+
 <RecordTabs {tabs} bind:tab ariaLabel="主控的紀錄">
 	{#snippet panel(id)}
 		{#if id === 'transcript'}
-			<Transcript {controller} {reports} questions={[...questions, ...answered]} {questionCards} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
+			<Transcript {controller} {reports} questions={[...questions, ...answered]} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
 		{:else if id === 'reports'}
 			<ReportList {reports} {onopen} />
-		{:else}
+		{:else if id === 'sent'}
 			<SentLog {controller} />
+		{:else if agent}
+			<AgentLog {agent} />
 		{/if}
 	{/snippet}
 </RecordTabs>
 
 <style>
-	.controls {
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-	}
 	.note {
 		margin: 0;
 		font-size: max(0.85rem, var(--min-font, 0px));

@@ -3,15 +3,13 @@
 	// of who and where it stands, the details of where it runs, its close, then its conversation and
 	// what was done to it, one tab at a time. Text, an interrupt and a model switch are sent to it
 	// from the command line. The status is hcom's when hcom reaches it and Herdr's otherwise (ADR
-	// 0003). An agent with a switch left unfinished is pointed to the command line to continue or
-	// give it up; one Herdr no longer lists is shown only for that.
+	// 0003).
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { onMount } from 'svelte';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { AGENT_MARK, folderName, shortName, tabShown } from '#lib/board/agents.ts';
 	import { placeText } from '#lib/board/format.ts';
 	import { INFO_DETAILS_KEY, remember, remembered } from '#lib/board/prefs.ts';
-	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
 	import { AGENT_STATUS_LABEL, type KnownAgent } from '#lib/board/types.ts';
 	import AgentClose from './AgentClose.svelte';
 	import AgentLog from './AgentLog.svelte';
@@ -21,15 +19,7 @@
 	import UsageLine from './UsageLine.svelte';
 	import type { Usage } from '#lib/board/usage.ts';
 
-	let {
-		agent,
-		idleController = false
-	}: {
-		agent: KnownAgent;
-		/** Its session is an idle controller on the roster: no longer bound, but closed the way its
-		 *  controller page closes it, as one that can be woken again. */
-		idleController?: boolean;
-	} = $props();
+	let { agent }: { agent: KnownAgent } = $props();
 
 	/** As the conversation's live feed last told; shown only while Herdr lists it. */
 	let usage = $state<Usage | null>(null);
@@ -51,7 +41,7 @@
 	] as const;
 	type Tab = (typeof TABS)[number]['id'];
 	let tab = $state<Tab>('transcript');
-	const logCount = $derived(agentControl.log[agent.id] ? agentControl.log[agent.id].length + (agentControl.switches[agent.id]?.length ?? 0) : null);
+	const logCount = $derived(agentControl.logCount(agent.id));
 
 	function tabKeys(event: KeyboardEvent) {
 		const step = { ArrowRight: 1, ArrowLeft: -1 }[event.key];
@@ -108,15 +98,7 @@
 	{/if}
 </article>
 
-<section class="controls" aria-label="操作">
-	{#if !agent.inHerdr}
-		<p class="note">這個 Agent 已不在 Herdr 的清單上，因為模型切換未完成而保留在清單上；只能按下方輸入列模型旁的 ⚠ 繼續切換或放棄切換。</p>
-	{:else if agent.switch}
-		<p class="note">{AGENT_SWITCH_UNFINISHED_TEXT}：按下方輸入列模型旁的 ⚠ 處理。</p>
-	{:else}
-		<AgentClose {agent} label="關閉 Agent" controller={agent.controller || idleController} />
-	{/if}
-</section>
+<AgentClose {agent} />
 
 <!-- svelte-ignore a11y_interactive_supports_focus -->
 <div class="tabs" role="tablist" aria-label="Agent 的紀錄" onkeydown={tabKeys}>
@@ -275,14 +257,6 @@
 	}
 	.tabpanel[hidden] {
 		display: none;
-	}
-	.controls {
-		display: flex;
-		flex-direction: column;
-		gap: 0.4rem;
-	}
-	.controls .note {
-		margin: 0;
 	}
 
 	:global(:root[data-theme='light']) .tabs button[aria-selected='true'] {

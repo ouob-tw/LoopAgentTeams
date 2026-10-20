@@ -6,12 +6,13 @@
 	// button, to read more of the page; what was typed stays, also across a reload. While an agent's
 	// page is open, a line without a name goes to that agent instead, from a draft of its own, also
 	// kept across a reload; while it works and nothing is typed, the send button interrupts its turn instead.
+	// A controller's page on the Herdr tab is written to as the controller it is, from the controllers' draft.
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import MessageSquare from '@lucide/svelte/icons/message-square';
 	import SlidersHorizontal from '@lucide/svelte/icons/sliders-horizontal';
 	import Square from '@lucide/svelte/icons/square';
-	import { onMount, tick } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { AGENT_HCOM_UNKNOWN_REASON, AGENT_INTERRUPT_CONFIRM_TEXT } from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { shortName } from '#lib/board/agents.ts';
@@ -31,8 +32,16 @@
 	let {
 		controllers,
 		target,
-		agent
-	}: { controllers: Controller[]; target: Controller | undefined; agent?: KnownAgent } = $props();
+		agent,
+		adopt
+	}: {
+		controllers: Controller[];
+		target: Controller | undefined;
+		agent?: KnownAgent;
+		/** The controller whose page is open on the Herdr tab: what was typed to it as an agent, before
+		 *  the board wrote to it as a controller, is moved into the controllers' draft, once. */
+		adopt?: string;
+	} = $props();
 
 	/** The controllers' draft. */
 	let text = $state('');
@@ -54,6 +63,11 @@
 		text = rememberedText(COMMAND_DRAFT_KEY);
 		agentDrafts = savedAgentDrafts();
 		restored = true;
+		if (adopt) adoptDraft(adopt);
+	});
+	$effect(() => {
+		const id = adopt;
+		if (id) untrack(() => adoptDraft(id));
 	});
 	$effect(() => {
 		const draft = text;
@@ -78,6 +92,16 @@
 		} catch {
 			return {};
 		}
+	}
+
+	/** Move the agent draft of controller `id` to the end of the controllers' draft, a blank line
+	 *  between when both have text; it is then gone, so it is never moved twice. Nothing is sent. */
+	function adoptDraft(id: string) {
+		if (!restored) return;
+		const old = agentDrafts[id];
+		if (old === undefined) return;
+		if (old) text = text ? `${text}\n\n${old}` : old;
+		delete agentDrafts[id];
 	}
 
 	async function setHidden(next: boolean) {

@@ -13,7 +13,8 @@
 		listed,
 		recorded = false,
 		handle,
-		onunread
+		onunread,
+		onread
 	}: {
 		item: InboxItem;
 		/** False once the page lists the item nowhere, in the inbox or among the processed items: a
@@ -24,6 +25,8 @@
 		/** The controller's name, shown before the time where the item stands among its messages. */
 		handle?: string;
 		onunread: (key: string) => Promise<void>;
+		/** Given where opening the report does not read it: an unread report offers to be marked read. */
+		onread?: (key: string) => Promise<void>;
 	} = $props();
 
 	const KIND_TEXT = { single: '單選', multi: '複選', text: '純文字' };
@@ -39,10 +42,10 @@
 
 	let marking = $state(false);
 
-	async function unread() {
+	async function mark(change: (key: string) => Promise<void>) {
 		marking = true;
 		try {
-			await onunread(item.key);
+			await change(item.key);
 		} catch {
 			toasts.show('failed', '沒有標記成功，請再試一次。');
 		} finally {
@@ -292,9 +295,10 @@
 				<span class="state">已封存{item.readAt ? `，${formatTime(item.readAt)} 標為已讀` : ''}</span>
 			{:else if item.readAt}
 				<span class="state">已讀（{formatTime(item.readAt)}）</span>
-				<button onclick={unread} disabled={marking}>標為未讀</button>
+				<button onclick={() => mark(onunread)} disabled={marking}>標為未讀</button>
 			{:else}
 				<span class="state">未讀</span>
+				{#if onread}<button onclick={() => mark(onread)} disabled={marking}>標為已讀</button>{/if}
 			{/if}
 		</footer>
 	{/if}

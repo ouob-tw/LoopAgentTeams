@@ -2,6 +2,7 @@
 // conversation is still in hcom's list: 閒置 when only the round is over, 已關閉 whenever the
 // conversation is gone.
 import { expect, test } from 'bun:test';
+import { EMPTY_CLOSED } from '../src/lib/board/closed-agents.ts';
 import type { HelperController, Report } from '../src/lib/board/types.ts';
 import { buildSnapshot, type Sources } from '../src/lib/server/model.ts';
 import type { ReportFile } from '../src/lib/server/reports.ts';
@@ -58,7 +59,8 @@ function sources(running: Set<string> | null): Sources {
 		workspaces: [],
 		pruneError: null,
 		answered: [],
-		answeredError: null
+		answeredError: null,
+		closed: EMPTY_CLOSED
 	};
 }
 

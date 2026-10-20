@@ -272,17 +272,17 @@ test.skipIf(!CHROME)('a reload keeps the tab the list was switched to', async ()
 }, 30_000);
 
 test.skipIf(!CHROME)('an address that opens an agent shows its tab; an agent Herdr no longer lists says so', async () => {
-	await visit(1280, '?agent=s-lead');
-	await tab.until(`!!document.querySelector('.detail [data-agent="s-lead"]')`, 'the agent page');
+	await visit(1280, '?agent=s-other');
+	await tab.until(`!!document.querySelector('.detail [data-agent="s-other"]')`, 'the agent page');
 	expect(await tab.eval(`document.querySelector('[data-middle="agents"]').getAttribute('aria-pressed')`)).toBe('true');
 	// It has written no record yet: an empty conversation, and no notice about it.
 	await tab.until(`document.querySelector('.detail #agent-panel-transcript')?.innerText.includes('還沒有對話')`, 'the empty conversation');
 	expect((await screen()).notices).not.toContain('對話紀錄讀不到');
 
-	setHerdr(AGENTS.filter((agent) => agent.agent_session.value !== 's-lead'));
+	setHerdr(AGENTS.filter((agent) => agent.agent_session.value !== 's-other'));
 	await fixture.refresh(cookie);
 	await tab.until(`document.querySelector('.detail')?.innerText.includes('這個 Agent 已不在 Herdr 的清單上')`, 'the agent gone');
-	expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-lead"]')`)).toBe(false);
+	expect(await tab.eval(`!!document.querySelector('.inbox [data-agent="s-other"]')`)).toBe(false);
 	setHerdr(AGENTS);
 	await fixture.refresh(cookie);
 }, 30_000);
@@ -471,7 +471,7 @@ test.skipIf(!CHROME)('a close Herdr refuses says why and leaves the agent on its
 		// The controller is linked to hcom, and its own page can wake it again; cancelling runs nothing.
 		await openTab();
 		await openAgent('s-lead');
-		await tab.until(`!!document.querySelector('.detail [data-agent="s-lead"]')`, 'the controller\'s agent page');
+		await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'lat' && !!document.querySelector('.detail [data-action="close"]')`, 'the controller\'s page');
 		await click('.detail [data-action="close"]');
 		await tab.until(`!!document.querySelector('.detail [data-action="confirm-close"]')`, 'its confirmation');
 		const confirm = await tab.eval<string>(`document.querySelector('.detail .confirm').innerText`);
@@ -524,11 +524,11 @@ test.skipIf(!CHROME)("an idle controller's information page closes it as the 所
 		await tab.until(`(${header}).includes('@lead')`, "the running controller's page");
 		expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"]')`)).toBe(false);
 
-		// Its agent page asks what its controller page asks, although the binding no longer calls it a controller.
+		// Opened from the Herdr tab it asks what its controller page asks.
 		await tab.eval('window.beforeNavigate = true');
 		await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-idle` });
 		await tab.until(`!window.beforeNavigate && JSON.stringify(history.state).includes('depth')`, 'the board to start on the agent page');
-		await tab.until(`!!document.querySelector('.detail [data-agent="s-idle"] ~ .controls [data-action="close"]')`, 'its agent page');
+		await tab.until(`(${header}).includes('@idol') && !!document.querySelector('.detail [data-action="close"]')`, 'its page on the Herdr tab');
 		await click('.detail [data-action="close"]');
 		await tab.until(`!!document.querySelector('.detail [data-action="confirm-close"]')`, 'its agent page confirmation');
 		const asked = await tab.eval<string>(`document.querySelector('.detail .confirm .warn').innerText`);
@@ -748,10 +748,10 @@ test.skipIf(!CHROME)('a Herdr list that cannot be read is reported while the las
 
 test.skipIf(!CHROME)('a conversation not written yet is empty without a notice; one that cannot be read says why, and shows once it can be', async () => {
 	const transcript = `document.querySelector('.detail #agent-panel-transcript')?.innerText ?? ''`;
-	const fail = join(fixture.dir, 'transcripts', 's-lead.fail');
+	const fail = join(fixture.dir, 'transcripts', 's-other.fail');
 	try {
-		await visit(1280, '?agent=s-lead');
-		await tab.until(`!!document.querySelector('.detail [data-agent="s-lead"]')`, 'the agent page');
+		await visit(1280, '?agent=s-other');
+		await tab.until(`!!document.querySelector('.detail [data-agent="s-other"]')`, 'the agent page');
 		await tab.until(`(${transcript}).includes('還沒有對話')`, 'the empty conversation');
 		expect((await screen()).notices).not.toContain('對話紀錄讀不到');
 
@@ -759,12 +759,12 @@ test.skipIf(!CHROME)('a conversation not written yet is empty without a notice; 
 		writeFileSync(fail, '紀錄檔讀不出來');
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('對話紀錄讀不到：紀錄檔讀不出來')`, 'the reason');
 		rmSync(fail);
-		record('s-lead', ['主控在嗎', '在。']);
-		await tab.until(`(${transcript}).includes('主控在嗎')`, 'the conversation');
+		record('s-other', ['你在嗎', '在。']);
+		await tab.until(`(${transcript}).includes('你在嗎')`, 'the conversation');
 		expect(await tab.eval(transcript)).not.toContain('對話紀錄讀不到');
 	} finally {
 		rmSync(fail, { force: true });
-		rmSync(join(fixture.dir, 'transcripts', 's-lead.jsonl'), { force: true });
+		rmSync(join(fixture.dir, 'transcripts', 's-other.jsonl'), { force: true });
 	}
 }, 30_000);
 

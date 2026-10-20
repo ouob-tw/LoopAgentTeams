@@ -25,7 +25,12 @@
 // test fixture keeps every controller it ever bound there, so none is closed unless a test says so.
 // `kill <name>` is logged to hcom-calls.jsonl like a launch and follows `kill`: `exit`, `stderr`,
 // `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
-// Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it.
+// Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it, and a
+// `stopped` event by `cli` is added for it.
+// `events` (the board asks for `stopped` life events in full form, `--after` a time) prints the
+// events of <dir>/hcom-events.jsonl, one JSON object per line as `hcom events --full` does, those
+// at or after `--after` alone; it is logged to <dir>/hcom-events-calls.jsonl. `eventsFail:
+// { exit, stderr }` acts out a failure; `eventsRaw` is printed instead of the events.
 import { appendFileSync, chmodSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -66,6 +71,24 @@ if (args[0] === 'list') {
 	process.exit(0);
 }
 
+if (args[0] === 'events') {
+	appendFileSync(join(dir, 'hcom-events-calls.jsonl'), JSON.stringify(args) + '\n');
+	if (plan.eventsFail) {
+		process.stderr.write(plan.eventsFail.stderr ?? '');
+		process.exit(plan.eventsFail.exit ?? 1);
+	}
+	if (plan.eventsRaw !== undefined) {
+		process.stdout.write(plan.eventsRaw);
+		process.exit(0);
+	}
+	const after = args.indexOf('--after') >= 0 ? Date.parse(args[args.indexOf('--after') + 1]) : -Infinity;
+	const eventsFile = join(dir, 'hcom-events.jsonl');
+	const lines = existsSync(eventsFile) ? readFileSync(eventsFile, 'utf8').split('\n').filter(Boolean) : [];
+	const zoned = (/** @type {string} */ ts) => (/[zZ]|[+-]\d\d:?\d\d$/.test(ts) ? ts : `${ts}Z`);
+	for (const line of lines) if (Date.parse(zoned(JSON.parse(line).ts)) >= after) process.stdout.write(line + '\n');
+	process.exit(0);
+}
+
 const log = join(dir, 'hcom-calls.jsonl');
 appendFileSync(log, JSON.stringify({ args, workspace: process.env.HERDR_WORKSPACE_ID ?? null, tag: process.env.HCOM_TAG ?? null }) + '\n');
 const agentLike = Object.keys(process.env).filter((name) => /^(HCOM_|CLAUDE|CODEX_|HERDR_|AI_AGENT$)/.test(name)).sort();
@@ -77,6 +100,13 @@ if (args[0] === 'kill') {
 	setTimeout(() => {
 		if (!kill.exit && !kill.stays) {
 			const gone = [...(plan.agents ?? []), ...added()].filter((/** @type {any} */ agent) => agent.name === args[1]);
+			const eventsFile = join(dir, 'hcom-events.jsonl');
+			for (const agent of gone) {
+				const id = existsSync(eventsFile) ? readFileSync(eventsFile, 'utf8').split('\n').filter(Boolean).length + 1 : 1;
+				const snapshot = { name: agent.name, session_id: agent.session_id ?? null, tool: agent.tool ?? 'claude', directory: agent.directory ?? '/' };
+				const event = { data: { action: 'stopped', by: 'cli', reason: 'killed', snapshot }, id, instance: agent.name, ts: new Date().toISOString(), type: 'life' };
+				appendFileSync(eventsFile, JSON.stringify(event) + '\n');
+			}
 			plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.name !== args[1]);
 			write(planFile, JSON.stringify(plan));
 			write(addedFile, JSON.stringify(added().filter((/** @type {any} */ agent) => agent.name !== args[1])));

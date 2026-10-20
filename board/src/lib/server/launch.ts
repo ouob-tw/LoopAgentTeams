@@ -66,20 +66,29 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 	}
 }
 
-// Launches run one after another, so two of them never both create a workspace for one project,
-// and two new tabs never race for the front: a launch is over only once it has been followed
-// through. Its answer comes back before that, once hcom has run.
+// Launches, and resumes of closed agents (`closed.ts`), run one after another, so two of them never
+// both create a workspace for one project, and two new tabs never race for the front: one is over
+// only once it has been followed through. Its answer comes back before that, once hcom has run.
 let lastLaunch: Promise<unknown> = Promise.resolve();
 
-export function startLaunch(board: Board, request: LaunchRequest): Promise<{ status: number; body: LaunchResponse }> {
+/** Run `run` once those before it are over; answers with its value, and holds the queue until its
+ *  `follow` is over too. */
+export function inLaunchQueue<T>(run: () => Promise<{ value: T; follow?: Promise<unknown> }>): Promise<T> {
 	let followed: Promise<unknown> = Promise.resolve();
 	const result = lastLaunch.then(async () => {
-		const made = await attempt(board, request);
+		const made = await run();
 		if (made.follow) followed = made.follow;
-		return { status: made.status, body: made.body };
+		return made.value;
 	});
 	lastLaunch = result.then(() => followed).catch(() => undefined);
 	return result;
+}
+
+export function startLaunch(board: Board, request: LaunchRequest): Promise<{ status: number; body: LaunchResponse }> {
+	return inLaunchQueue(async () => {
+		const made = await attempt(board, request);
+		return { value: { status: made.status, body: made.body }, follow: made.follow };
+	});
 }
 
 async function attempt(
