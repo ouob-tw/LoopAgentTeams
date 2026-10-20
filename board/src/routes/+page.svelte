@@ -729,7 +729,13 @@
 					...board.snapshot.errors.map((error) => ({ kind: 'failed' as const, text: `⚠ ${error}` }))
 				]}
 			/>
-			<CommandLine {controllers} target={controller} agent={view?.kind === 'agent' ? agent : undefined} />
+			<!-- A controller's page on the Herdr tab is written to as on its information page. -->
+			<CommandLine
+				{controllers}
+				target={controller ?? agentController}
+				agent={view?.kind === 'agent' && !agentController ? agent : undefined}
+				adopt={agentController?.id}
+			/>
 		</div>
 	</div>
 </div>
