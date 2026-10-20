@@ -482,7 +482,8 @@ test.skipIf(!CHROME)('a controller is closed as an agent is: asked, confirmed, t
 	await tab.eval(`document.querySelector('.detail [data-action="confirm-close"]').click()`);
 	await tab.until(`document.querySelector('.dock').innerText.includes('已關閉')`, 'the closing notice');
 	expect(hcomCalls().filter((args) => args[0] === 'kill')).toEqual([['kill', 'luna']]);
-	await tab.until(`document.querySelector('.detail').innerText.includes('已不在 Herdr 的清單上')`, 'the page gone with it');
+	// Closed by hcom kill: its page is the closed controller's of the 已關閉 section now.
+	await tab.until(`!!document.querySelector('.detail [data-closed-agent="s-luna"]')`, 'the page of it closed');
 	// Restored for the tests after this one.
 	setHerdr(LISTED);
 	await fixture.refresh(cookie);
