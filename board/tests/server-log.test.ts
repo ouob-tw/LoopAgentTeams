@@ -3,8 +3,9 @@
 // device token, answers or messages.
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { connect } from 'node:net';
 import { join } from 'node:path';
-import { CLIENT_ERRORS_PER_WINDOW, MAX_FRAMES, MAX_USER_AGENT } from '../src/lib/server/client-errors.ts';
+import { CLIENT_ERRORS_PER_WINDOW, MAX_CLIENT_ERROR_CHARS, MAX_FRAMES, MAX_USER_AGENT } from '../src/lib/server/client-errors.ts';
 import { logged, PASSWORD, question, startFixture, type Fixture } from './harness.ts';
 
 // Offset 63 is used by no other file.
@@ -304,4 +305,54 @@ test('many reports in a short time from one device log only a few; another devic
 	const other = await fixture.login('other');
 	expect((await post('/api/client-error', report(), { cookie: other })).status).toBe(204);
 	expect(lines('client_error')).toHaveLength(CLIENT_ERRORS_PER_WINDOW + 1);
+});
+
+test('a report that is not one JSON object is refused with 400 and nothing is logged', async () => {
+	const device = await fixture.login('malformed');
+	for (const body of ['{ not json', '', 'null', '"text"', '42', 'true', '[]', '[{"message":"x"}]']) {
+		const response = await post('/api/client-error', body, { cookie: device });
+		expect({ body, status: response.status }).toEqual({ body, status: 400 });
+	}
+	expect(lines('client_error')).toEqual([]);
+});
+
+/** Send a request byte for byte, so its Content-Length can say what the body is not. */
+function rawPost(path: string, headers: Record<string, string>, body: string): Promise<number> {
+	const { hostname, port } = new URL(fixture.url);
+	return new Promise((resolve, reject) => {
+		const socket = connect(Number(port), hostname, () => {
+			const head = Object.entries({ host: `${hostname}:${port}`, connection: 'close', ...headers }).map(([name, value]) => `${name}: ${value}`);
+			socket.write(`POST ${path} HTTP/1.1\r\n${head.join('\r\n')}\r\n\r\n${body}`);
+		});
+		let reply = '';
+		socket.on('data', (chunk) => {
+			reply += chunk;
+			const status = /^HTTP\/1\.1 (\d{3})/.exec(reply);
+			if (status) resolve(Number(status[1])), socket.destroy();
+		});
+		socket.on('error', reject);
+	});
+}
+
+test('a body over the limit is refused with 413 whether its Content-Length says so or it comes without one', async () => {
+	const device = await fixture.login('oversize');
+	const small = JSON.stringify(report());
+
+	// Declared too long: refused before the body is read, whatever it really holds.
+	expect(await rawPost('/api/client-error', { cookie: device, 'content-type': 'application/json', 'content-length': String(MAX_CLIENT_ERROR_CHARS + 1) }, small)).toBe(413);
+
+	// No length given (chunked): refused once read.
+	const huge = JSON.stringify({ ...report(), message: 'x'.repeat(MAX_CLIENT_ERROR_CHARS) });
+	const streamed = await fixture.fetch('/api/client-error', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: new ReadableStream({ start: (controller) => (controller.enqueue(new TextEncoder().encode(huge)), controller.close()) }),
+		cookie: device
+	});
+	expect(streamed.status).toBe(413);
+
+	// Just within the limit is taken.
+	const within = JSON.stringify({ ...report(), message: 'x'.repeat(MAX_CLIENT_ERROR_CHARS - small.length - 100) });
+	expect((await post('/api/client-error', within, { cookie: device })).status).toBe(204);
+	expect(lines('client_error')).toHaveLength(1);
 });

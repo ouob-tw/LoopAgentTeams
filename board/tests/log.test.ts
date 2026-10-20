@@ -84,3 +84,56 @@ test('an exception SvelteKit reports before the request hook ran is still logged
 	]);
 	expect(written.join('')).not.toContain('tok-early');
 });
+
+/** What the request hook logs for a response the route gave; /api/login needs no device. */
+async function loggedFor(response: Response): Promise<Record<string, unknown>[]> {
+	const { handle } = await import('../src/hooks.server.ts');
+	const written: string[] = [];
+	const write = process.stderr.write;
+	process.stderr.write = ((chunk: string) => (written.push(chunk), true)) as typeof process.stderr.write;
+	try {
+		const request = new Request('http://board/api/login', { method: 'POST' });
+		const event = { request, url: new URL(request.url), cookies: { get: () => undefined }, locals: {} };
+		expect(await handle({ event, resolve: async () => response } as never)).toBe(response);
+	} finally {
+		process.stderr.write = write;
+	}
+	return written.map((chunk) => JSON.parse(chunk));
+}
+
+test('a failed response logs exactly its reason, error, logError and message (as detail), only when they are text', async () => {
+	const body = { reason: '原因', error: 'helper_failed', logError: '寫不進', message: 'Internal Error', entry: { text: '不記' }, status: 'error' };
+	expect(await loggedFor(Response.json(body, { status: 502 }))).toEqual([
+		expect.objectContaining({ message: 'http_error', path: '/api/login', status: 502, reason: '原因', error: 'helper_failed', logError: '寫不進', detail: 'Internal Error' })
+	]);
+	const [line] = await loggedFor(Response.json(body, { status: 502 }));
+	expect(Object.keys(line!)).not.toContain('entry');
+
+	const [partial] = await loggedFor(Response.json({ reason: '', error: 42, logError: null, message: ['x'] }, { status: 500 }));
+	expect(partial).not.toHaveProperty('reason');
+	expect(partial).not.toHaveProperty('error');
+	expect(partial).not.toHaveProperty('logError');
+	expect(partial).not.toHaveProperty('detail');
+});
+
+test('a reason longer than 2000 characters is cut with a mark', async () => {
+	const [line] = await loggedFor(Response.json({ reason: '長'.repeat(2_500) }, { status: 500 }));
+	expect(line!.reason).toBe('長'.repeat(2_000) + '…');
+});
+
+test('a failed response whose body is not JSON, or not readable as JSON, logs only where and what status', async () => {
+	for (const response of [
+		new Response('<h1>500 Internal Error</h1>', { status: 500, headers: { 'content-type': 'text/html' } }),
+		new Response('{ not json', { status: 503, headers: { 'content-type': 'application/json' } })
+	]) {
+		const [line, ...rest] = await loggedFor(response);
+		expect(rest).toEqual([]);
+		expect(line).toMatchObject({ message: 'http_error', method: 'POST', path: '/api/login', status: response.status });
+		for (const field of ['reason', 'error', 'logError', 'detail']) expect(line).not.toHaveProperty(field);
+	}
+});
+
+test('a response below 500 logs nothing', async () => {
+	expect(await loggedFor(Response.json({ reason: '密碼錯誤' }, { status: 401 }))).toEqual([]);
+	expect(await loggedFor(Response.json({ reason: '已改版' }, { status: 409 }))).toEqual([]);
+});
