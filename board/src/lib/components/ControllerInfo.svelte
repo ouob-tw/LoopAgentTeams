@@ -13,6 +13,7 @@
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
+	import { withAnswered } from '#lib/board/question-message.ts';
 	import type { Controller, InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
 	import type { PlacedTarget } from '#lib/board/transcript.ts';
 	import type { Usage } from '#lib/board/usage.ts';
@@ -115,7 +116,7 @@
 <RecordTabs {tabs} bind:tab ariaLabel="主控的紀錄">
 	{#snippet panel(id)}
 		{#if id === 'transcript'}
-			<Transcript {controller} {reports} questions={[...questions, ...answered]} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
+			<Transcript {controller} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
 		{:else if id === 'reports'}
 			<ReportList {reports} {onopen} />
 		{:else if id === 'sent'}

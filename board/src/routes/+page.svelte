@@ -31,7 +31,7 @@
 	import { folderName, workspaceFolders } from '#lib/board/agents.ts';
 	import { MIDDLE_TAB_KEY, remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
-	import { askedTogether } from '#lib/board/question-message.ts';
+	import { askedTogether, withAnswered } from '#lib/board/question-message.ts';
 	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
 	import { everyController, type InboxItem, type InboxQuestion, type InboxReport, type KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
@@ -208,7 +208,7 @@
 	 *  question at the message that asked it, or where that message will come. */
 	const placed = $derived(item && item.key !== lost ? item : null);
 	/** The cards shown at the asking message: every question of the inbox it asked, in its order. */
-	const together = $derived(item?.kind === 'question' ? askedTogether(item, [...inbox, ...answered]) : item ? [item] : []);
+	const together = $derived(item?.kind === 'question' ? askedTogether(item, withAnswered(inbox, answered)) : item ? [item] : []);
 	function lose(key: string) {
 		lost = key;
 		locate(false);

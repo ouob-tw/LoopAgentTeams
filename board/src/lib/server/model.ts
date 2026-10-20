@@ -52,6 +52,20 @@ export interface Sources {
 	answeredError: string | null;
 }
 
+/** The controllers with every question that the answered list of the same read already has
+ *  recorded taken as recorded: `board answered` runs after `board list`, so an answer recorded in
+ *  between is still pending or submitted in the list. Recorded is final, so the answered copy wins. */
+export function withRecorded(controllers: HelperController[], answered: AnsweredFile[]): HelperController[] {
+	return controllers.map((binding) => {
+		const recorded = answered
+			.filter((file) => file.questions_path === binding.questions_path)
+			.flatMap((file) => file.questions.filter((question) => question.status === 'recorded'));
+		const final = (question: HelperQuestion) =>
+			(question.status !== 'recorded' && recorded.find((entry) => entry.id === question.id && entry.revision === question.revision)) || question;
+		return recorded.length ? { ...binding, questions: binding.questions.map(final) } : binding;
+	});
+}
+
 /** Whether this controller was bound at the last read and its client is gone from hcom's list.
  *  Without any list read yet nothing is closed, nor is a controller bound since the last read. */
 export function isClosed(sources: Sources, sessionId: string): boolean {

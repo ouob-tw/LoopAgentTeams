@@ -8,7 +8,7 @@ import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
 import { listControllers, pruneReports, readAnswered, readQuestions, type AnsweredFile } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
-import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources } from './model.ts';
+import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources, withRecorded } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, listStops, type AgentList } from './hcom.ts';
 import { openResumes, openSwitches, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
@@ -206,7 +206,7 @@ function createBoard(): Board {
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {
-			lastActive = helper.controllers;
+			lastActive = answered.ok ? withRecorded(helper.controllers, answered.files) : helper.controllers;
 			try {
 				if (settled instanceof Error) throw settled;
 				const answersError = settled;
