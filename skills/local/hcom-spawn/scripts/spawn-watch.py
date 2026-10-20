@@ -143,23 +143,27 @@ def tab_label(spawner, name):
 
 
 def label_tabs(spawner, names):
-    """Rename each listed agent's Herdr tab to tab_label; return the names `hcom list`
-    does not show yet. Failures only go to watch.log.
+    """Rename each agent's Herdr tab to tab_label; return the names whose pane is not
+    known yet. Failures only go to watch.log.
 
-    The pane is the agent's launch_context.pane_id in `hcom list`.
+    The pane is the agent's launch_context.pane_id in `hcom list`; agents launched in
+    another terminal (terminal_preset_effective other than herdr) are skipped.
     """
-    _, out = hcom('list', '--json')
+    _, listing = hcom('list', '--json')
     try:
         contexts = {agent['base_name']: agent.get('launch_context') or {}
-                    for agent in json.loads(out)}
+                    for agent in json.loads(listing)}
     except (ValueError, KeyError, TypeError, AttributeError):
         contexts = {}
+    waiting = []
     for name in names:
-        if name not in contexts:
+        context, label = contexts.get(name, {}), tab_label(spawner, name)
+        preset, pane = context.get('terminal_preset_effective'), context.get('pane_id')
+        if preset and preset != 'herdr':
+            log(f'tab {label} not set: launched in {preset}, not herdr')
             continue
-        label, pane = tab_label(spawner, name), contexts[name].get('pane_id')
         if not pane:
-            log(f'tab {label} not set: no herdr pane')
+            waiting.append(name)
             continue
         code, out = herdr('pane', 'get', pane)
         try:
@@ -172,7 +176,7 @@ def label_tabs(spawner, names):
         code, out = herdr('tab', 'rename', tab, label)
         if code:
             log(f'tab {label} not set: herdr tab rename {tab}: {out.strip()[:200]}')
-    return [name for name in names if name not in contexts]
+    return waiting
 
 
 def watch_blocked(event, watched):
@@ -395,8 +399,8 @@ def release_stopped(watched):
 def check(tool, agents, expected, watched, launch_id, start, spawner, unattributed=None):
     """Read screens (then session logs) until every item is known or time runs out.
 
-    Each poll also labels the tabs of agents that have appeared in `hcom list` since
-    (label_tabs). Agents that stop meanwhile get no report.
+    Each poll also labels the tabs of agents whose pane has appeared in `hcom list`
+    since (label_tabs). Agents that stop meanwhile get no report.
     """
     seen = {name: {} for name in agents}
     reasons = {name: 'agent did not become ready' for name in agents}
@@ -437,8 +441,10 @@ def check(tool, agents, expected, watched, launch_id, start, spawner, unattribut
         sleep(POLL)
     stopped |= {name for name in agents if stopped_since(name, launch_id)}
     unlabeled = [name for name in unlabeled if name not in stopped]
-    if unlabeled and (unlabeled := label_tabs(spawner, unlabeled)):
-        log(f"tabs not set: {', '.join(unlabeled)} never appeared in hcom list")
+    if unlabeled:
+        unlabeled = label_tabs(spawner, unlabeled)
+    if unlabeled:
+        log(f"tabs not set: no herdr pane in hcom list for {', '.join(unlabeled)}")
     return {name: report(tool, agents[name], expected, seen[name],
                          f'{reasons[name]} within {DEADLINE}s', unattributed)
             for name in agents if name not in stopped}
@@ -466,14 +472,15 @@ def main(argv=None):
     if batch:
         start = clock()
         data, launch_id = batch['data'], batch['id']
+        spawner = data.get('by') or args.spawner
         agents = {name: full_name(data, name) for name in data['instances'] if NAME.match(name)}
         expected = {'model': None if unattributed else args.model,
                     'effort': None if unattributed else args.effort,
                     'permission': EXPECTED_PERMISSION[args.tool]}
         for text in check(args.tool, agents, expected, watched, launch_id, start,
-                          data.get('by') or args.spawner, unattributed).values():
+                          spawner, unattributed).values():
             if text:
-                notify(data.get('by') or args.spawner, text)
+                notify(spawner, text)
     while watched:
         sleep(STOP_POLL)
         release_stopped(watched)

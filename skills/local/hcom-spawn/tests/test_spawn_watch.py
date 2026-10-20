@@ -105,8 +105,8 @@ class FakeHerdr:
         raise AssertionError(f'unexpected herdr call {args}')
 
 
-def agent_row(name, pane=None):
-    context = {'process_id': name}
+def agent_row(name, pane=None, preset='herdr'):
+    context = {'process_id': name, 'terminal_preset_effective': preset}
     if pane:
         context['pane_id'] = pane
     return {'base_name': name, 'name': f'vare-review-{name}', 'launch_context': context}
@@ -404,7 +404,6 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertFalse(matches('codex', 'model', 'gpt-6.1-sol', 'gpt-6-astra'))
         self.assertFalse(matches('codex', 'model', 'gpt-6.1-sol', 'gpt-6.1-sol-mini'))
 
-
     def test_label_is_last_segment_of_spawner_and_agent_base_name(self):
         self.assertEqual(self.watch.tab_label('bivu-i182-guzu', 'fizo'), 'guzu-fizo')
         self.assertEqual(self.watch.tab_label('bivu', 'feho'), 'bivu-feho')
@@ -434,7 +433,7 @@ class SpawnWatchTests(unittest.TestCase):
         with mock.patch('sys.stderr', new=io.StringIO()) as log:
             self.assertEqual(self.run_watch(fake), 0)
         self.assertEqual(self.watch.herdr.calls, [])
-        self.assertIn('no herdr pane', log.getvalue())
+        self.assertIn('no herdr pane in hcom list for kilo', log.getvalue())
         self.assertEqual(len(fake.sent), 1)
         self.assertIn('permission: expected bypass permissions on', fake.sent[0][-1])
 
@@ -444,23 +443,55 @@ class SpawnWatchTests(unittest.TestCase):
         with mock.patch('sys.stderr', new=io.StringIO()) as log:
             self.assertEqual(self.run_watch(fake), 0)
         self.assertEqual(self.watch.herdr.calls, [])
-        self.assertIn('kilo never appeared in hcom list', log.getvalue())
+        self.assertIn('no herdr pane in hcom list for kilo', log.getvalue())
         self.assertEqual(fake.sent, [])
 
-    def test_herdr_failures_are_logged_and_do_not_affect_the_check(self):
-        for herdr in (FakeHerdr(get_fails=True), FakeHerdr(panes={'w1:p1': 'w1:t1'},
-                                                           rename_fails=True),
-                      FakeHerdr(missing=True)):
-            with self.subTest(herdr=vars(herdr)):
-                self.setUp()
-                fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
+    def test_pane_recorded_after_the_first_poll_still_gets_its_tab_renamed(self):
+        fake = FakeHcom(screens=[['❯'], CLAUDE_START], stop_after=50)
+        fake.agents = [agent_row('kilo')]
+        real = fake.__call__
+
+        def call(*args, timeout=30):
+            if args[0] == 'term':  # the pane shows up once the agent's screen does
                 fake.agents = [agent_row('kilo', 'w1:p1')]
-                self.watch.herdr = herdr
-                with mock.patch('sys.stderr', new=io.StringIO()) as log:
-                    self.assertEqual(self.run_watch(fake), 0)
-                self.assertIn('vare-kilo', log.getvalue())
-                self.assertEqual(len(fake.sent), 1)
-                self.assertIn('permission: expected bypass permissions on', fake.sent[0][-1])
+            return real(*args, timeout=timeout)
+        self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1'})
+        self.watch.process_ids = lambda: {'kilo': 'kilo'}
+        self.watch.launched_with = lambda tool, process_id: ('claude-sonnet-5-5', 'low')
+        self.watch.hcom, self.watch.clock, self.watch.sleep = call, fake.clock, fake.sleep
+        self.watch.main(['--spawner', 'vare', '--tool', 'claude', '--model', 'claude-sonnet-5-5',
+                         '--effort', 'low', '--after-id', '99'])
+        self.assertIn(('tab', 'rename', 'w1:t1', 'vare-kilo'), self.watch.herdr.calls)
+        self.assertEqual(fake.sent, [])
+
+    def test_agent_launched_in_another_terminal_is_skipped(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.agents = [agent_row('kilo', '%14', preset='tmux')]
+        with mock.patch('sys.stderr', new=io.StringIO()) as log:
+            self.assertEqual(self.run_watch(fake), 0)
+        self.assertEqual(self.watch.herdr.calls, [])
+        self.assertIn('launched in tmux, not herdr', log.getvalue())
+        self.assertEqual(fake.sent, [])
+
+    def assert_herdr_failure_only_logged(self, herdr):
+        fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
+        fake.agents = [agent_row('kilo', 'w1:p1')]
+        self.watch.herdr = herdr
+        with mock.patch('sys.stderr', new=io.StringIO()) as log:
+            self.assertEqual(self.run_watch(fake), 0)
+        self.assertIn('tab vare-kilo not set', log.getvalue())
+        self.assertEqual(len(fake.sent), 1)
+        self.assertIn('permission: expected bypass permissions on', fake.sent[0][-1])
+
+    def test_failed_pane_lookup_is_logged_and_does_not_affect_the_check(self):
+        self.assert_herdr_failure_only_logged(FakeHerdr(get_fails=True))
+
+    def test_failed_tab_rename_is_logged_and_does_not_affect_the_check(self):
+        self.assert_herdr_failure_only_logged(FakeHerdr(panes={'w1:p1': 'w1:t1'},
+                                                        rename_fails=True))
+
+    def test_missing_herdr_command_is_logged_and_does_not_affect_the_check(self):
+        self.assert_herdr_failure_only_logged(FakeHerdr(missing=True))
 
     def test_unparsable_pane_info_is_a_failure(self):
         fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
