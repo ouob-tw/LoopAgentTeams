@@ -1,13 +1,14 @@
 <script lang="ts">
 	// One shape per status, in both themes, so the five can be told apart without colour:
-	// ▲ 等你, ● 進行中, ■ 已交付, ○ 閒置, □ 已關閉. `--mark-size` sets the size.
+	// ▲ 等你, ● 進行中, ■ 已交付, ○ 閒置, ◇ 已關閉; and □ for a Herdr agent whose status is not
+	// known. `--mark-size` sets the size.
 	import { STATUS_LABEL, type ControllerStatus } from '#lib/board/types.ts';
 
 	let {
 		status,
 		decorative = false
 	}: {
-		status: ControllerStatus;
+		status: ControllerStatus | 'unknown';
 		/** The surrounding control already says the status: no label and no tooltip of its own. */
 		decorative?: boolean;
 	} = $props();
@@ -16,7 +17,8 @@
 {#if decorative}
 	<i class="mark" data-status={status} aria-hidden="true"></i>
 {:else}
-	<i class="mark" data-status={status} role="img" aria-label={STATUS_LABEL[status]} title={STATUS_LABEL[status]}></i>
+	{@const label = status === 'unknown' ? '不明' : STATUS_LABEL[status]}
+	<i class="mark" data-status={status} role="img" aria-label={label} title={label}></i>
 {/if}
 
 <style>
@@ -41,7 +43,14 @@
 		background: transparent;
 		border: 2px solid var(--status-ended);
 	}
+	/* A square on its corner, shrunk to take no more room than the others. */
 	.mark[data-status='closed'] {
+		background: transparent;
+		border: 2px solid var(--status-ended);
+		border-radius: 0;
+		transform: rotate(45deg) scale(0.75);
+	}
+	.mark[data-status='unknown'] {
 		background: transparent;
 		border: 2px solid var(--status-ended);
 		border-radius: 0;

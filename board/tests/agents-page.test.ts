@@ -560,6 +560,10 @@ test.skipIf(!CHROME)("an idle controller's information page closes it as the 所
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('已關閉 idol')`, 'the result', 30_000);
 		expect(hcomCalls()).toEqual([['kill', 'idol']]);
 		await tab.until(`(${header}).includes('已關閉') && !document.querySelector('.detail [data-action="close"]')`, 'the controller, now 已關閉');
+		// 已關閉 is the square on its corner, no other mark's shape; 閒置 was the circle.
+		const mark = `document.querySelector('.detail .profile .mark')`;
+		expect(await tab.eval(`${mark}.dataset.status`)).toBe('closed');
+		expect(await tab.eval(`getComputedStyle(${mark}).transform`)).not.toBe('none');
 	} finally {
 		rmSync(join(fixture.reportsDir, 's-idle.jsonl'), { force: true });
 		setHerdr(AGENTS);
