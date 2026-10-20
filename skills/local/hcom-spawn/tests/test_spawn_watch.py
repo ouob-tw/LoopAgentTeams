@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 import os
 import tempfile
@@ -37,6 +38,7 @@ class FakeHcom:
         self.batches = [self.batch]
         self.blocked_early = False
         self.unsub_fails = False
+        self.agents = None  # `hcom list --json` rows; None answers like `hcom list <name>`
 
     def clock(self):
         return self.now
@@ -72,12 +74,42 @@ class FakeHcom:
                 return 1, "Error: 'kilo' has no terminal registered yet\n"
             lines = self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
             return 0, json.dumps({'lines': lines, 'ready': True})
+        if args == ('list', '--json') and self.agents is not None:
+            return 0, json.dumps(self.agents)
         if args[0] == 'list':
             return 0, json.dumps({'transcript_path': self.log or ''})
         if args[0] == 'send':
             self.sent.append(args)
             return 0, ''
         raise AssertionError(f'unexpected hcom call {args}')
+
+
+class FakeHerdr:
+    """Answers `herdr pane get` and `herdr tab rename`; panes maps pane id -> tab id."""
+
+    def __init__(self, panes=None, get_fails=False, rename_fails=False, missing=False):
+        self.panes, self.calls = panes or {}, []
+        self.get_fails, self.rename_fails, self.missing = get_fails, rename_fails, missing
+
+    def __call__(self, *args):
+        self.calls.append(args)
+        if self.missing:
+            return 1, "[Errno 2] No such file or directory: 'herdr'"
+        if args[:2] == ('pane', 'get'):
+            if self.get_fails or args[2] not in self.panes:
+                return 1, json.dumps({'error': {'code': 'pane_not_found'}})
+            return 0, json.dumps({'result': {'pane': {'pane_id': args[2],
+                                                      'tab_id': self.panes[args[2]]}}})
+        if args[:2] == ('tab', 'rename'):
+            return (1, 'rename failed') if self.rename_fails else (0, '{}')
+        raise AssertionError(f'unexpected herdr call {args}')
+
+
+def agent_row(name, pane=None):
+    context = {'process_id': name}
+    if pane:
+        context['pane_id'] = pane
+    return {'base_name': name, 'name': f'vare-review-{name}', 'launch_context': context}
 
 
 class SpawnWatchTests(unittest.TestCase):
@@ -88,6 +120,7 @@ class SpawnWatchTests(unittest.TestCase):
         patcher.start()
         self.addCleanup(patcher.stop)
         self.watch = load()
+        self.watch.herdr = FakeHerdr()
 
     def run_watch(self, fake, tool='claude', model='claude-sonnet-5-5', effort='low', tag=None,
                   launched=None):
@@ -370,6 +403,73 @@ class SpawnWatchTests(unittest.TestCase):
         self.assertFalse(matches('claude', 'model', 'claude-opus-5-5', 'Sonnet 5.5'))
         self.assertFalse(matches('codex', 'model', 'gpt-6.1-sol', 'gpt-6-astra'))
         self.assertFalse(matches('codex', 'model', 'gpt-6.1-sol', 'gpt-6.1-sol-mini'))
+
+
+    def test_label_is_last_segment_of_spawner_and_agent_base_name(self):
+        self.assertEqual(self.watch.tab_label('bivu-i182-guzu', 'fizo'), 'guzu-fizo')
+        self.assertEqual(self.watch.tab_label('bivu', 'feho'), 'bivu-feho')
+
+    def test_each_agent_of_the_batch_gets_its_tab_renamed(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.batch['data']['instances'] = ['kilo', 'mona']
+        fake.agents = [agent_row('kilo', 'w1:p1'), agent_row('mona', 'w1:p2')]
+        self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1', 'w1:p2': 'w1:t2'})
+        self.assertEqual(self.run_watch(fake), 0)
+        renames = [call for call in self.watch.herdr.calls if call[0] == 'tab']
+        self.assertEqual(renames, [('tab', 'rename', 'w1:t1', 'vare-kilo'),
+                                   ('tab', 'rename', 'w1:t2', 'vare-mona')])
+        self.assertEqual(fake.sent, [])
+
+    def test_spawner_with_a_tag_uses_only_its_last_segment(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.batch['data']['by'] = 'bivu-i182-guzu'
+        fake.agents = [agent_row('kilo', 'w1:p1')]
+        self.watch.herdr = FakeHerdr(panes={'w1:p1': 'w1:t1'})
+        self.run_watch(fake)
+        self.assertIn(('tab', 'rename', 'w1:t1', 'guzu-kilo'), self.watch.herdr.calls)
+
+    def test_agent_without_a_pane_is_skipped_and_still_checked(self):
+        fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
+        fake.agents = [agent_row('kilo')]
+        with mock.patch('sys.stderr', new=io.StringIO()) as log:
+            self.assertEqual(self.run_watch(fake), 0)
+        self.assertEqual(self.watch.herdr.calls, [])
+        self.assertIn('no herdr pane', log.getvalue())
+        self.assertEqual(len(fake.sent), 1)
+        self.assertIn('permission: expected bypass permissions on', fake.sent[0][-1])
+
+    def test_agent_missing_from_hcom_list_is_skipped_at_the_end_of_the_check(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=500)
+        fake.agents = []
+        with mock.patch('sys.stderr', new=io.StringIO()) as log:
+            self.assertEqual(self.run_watch(fake), 0)
+        self.assertEqual(self.watch.herdr.calls, [])
+        self.assertIn('kilo never appeared in hcom list', log.getvalue())
+        self.assertEqual(fake.sent, [])
+
+    def test_herdr_failures_are_logged_and_do_not_affect_the_check(self):
+        for herdr in (FakeHerdr(get_fails=True), FakeHerdr(panes={'w1:p1': 'w1:t1'},
+                                                           rename_fails=True),
+                      FakeHerdr(missing=True)):
+            with self.subTest(herdr=vars(herdr)):
+                self.setUp()
+                fake = FakeHcom(screens=[CLAUDE_AUTO], stop_after=50)
+                fake.agents = [agent_row('kilo', 'w1:p1')]
+                self.watch.herdr = herdr
+                with mock.patch('sys.stderr', new=io.StringIO()) as log:
+                    self.assertEqual(self.run_watch(fake), 0)
+                self.assertIn('vare-kilo', log.getvalue())
+                self.assertEqual(len(fake.sent), 1)
+                self.assertIn('permission: expected bypass permissions on', fake.sent[0][-1])
+
+    def test_unparsable_pane_info_is_a_failure(self):
+        fake = FakeHcom(screens=[CLAUDE_START], stop_after=50)
+        fake.agents = [agent_row('kilo', 'w1:p1')]
+        self.watch.herdr = lambda *args: (0, 'not json')
+        with mock.patch('sys.stderr', new=io.StringIO()) as log:
+            self.assertEqual(self.run_watch(fake), 0)
+        self.assertIn('vare-kilo', log.getvalue())
+        self.assertEqual(fake.sent, [])
 
 
 if __name__ == '__main__':

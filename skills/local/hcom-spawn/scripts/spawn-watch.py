@@ -2,9 +2,10 @@
 """Background check started by spawn-guard.py for one `hcom N claude|codex` launch.
 
 Finds the launch batch, subscribes the spawner to each new agent's approval-blocked status,
-compares model, effort and permission on the agent's screen with the launch command, tells
-the spawner about any mismatch or anything it could not confirm, and removes the
-subscriptions once the agents stop.
+renames each new agent's Herdr tab to <spawner>-<agent>, compares model, effort and
+permission on the agent's screen with the launch command, tells the spawner about any
+mismatch or anything it could not confirm, and removes the subscriptions once the agents
+stop.
 """
 import argparse
 import importlib.util
@@ -53,6 +54,20 @@ def hcom(*args, timeout=30):
     except (OSError, subprocess.SubprocessError) as error:
         return 1, str(error)
     return done.returncode, done.stdout
+
+
+def herdr(*args):
+    """Run herdr; return (exit code, output)."""
+    try:
+        done = subprocess.run(['herdr', *args], capture_output=True, text=True, timeout=10)
+    except (OSError, subprocess.SubprocessError) as error:
+        return 1, str(error)
+    return done.returncode, done.stdout if done.returncode == 0 else done.stdout + done.stderr
+
+
+def log(text):
+    """Write to watch.log (spawn-guard points this process's stderr there)."""
+    print(f'hcom-spawn watch: {text}', file=sys.stderr, flush=True)
 
 
 def events(*filters):
@@ -120,6 +135,44 @@ def launched_with(tool, process_id):
 
 def full_name(data, name):
     return f"{data['tag']}-{name}" if data.get('tag') else name
+
+
+def tab_label(spawner, name):
+    """Herdr tab label for an agent: last segment of its spawner's name, then its own."""
+    return f"{spawner.rsplit('-', 1)[-1]}-{name}"
+
+
+def label_tabs(spawner, names):
+    """Rename each listed agent's Herdr tab to tab_label; return the names `hcom list`
+    does not show yet. Failures only go to watch.log.
+
+    The pane is the agent's launch_context.pane_id in `hcom list`.
+    """
+    _, out = hcom('list', '--json')
+    try:
+        contexts = {agent['base_name']: agent.get('launch_context') or {}
+                    for agent in json.loads(out)}
+    except (ValueError, KeyError, TypeError, AttributeError):
+        contexts = {}
+    for name in names:
+        if name not in contexts:
+            continue
+        label, pane = tab_label(spawner, name), contexts[name].get('pane_id')
+        if not pane:
+            log(f'tab {label} not set: no herdr pane')
+            continue
+        code, out = herdr('pane', 'get', pane)
+        try:
+            tab = json.loads(out)['result']['pane']['tab_id'] if code == 0 else None
+        except (ValueError, KeyError, TypeError):
+            tab = None
+        if not tab:
+            log(f'tab {label} not set: herdr pane get {pane}: {out.strip()[:200]}')
+            continue
+        code, out = herdr('tab', 'rename', tab, label)
+        if code:
+            log(f'tab {label} not set: herdr tab rename {tab}: {out.strip()[:200]}')
+    return [name for name in names if name not in contexts]
 
 
 def watch_blocked(event, watched):
@@ -339,18 +392,23 @@ def release_stopped(watched):
             del watched[name]
 
 
-def check(tool, agents, expected, watched, launch_id, start, unattributed=None):
+def check(tool, agents, expected, watched, launch_id, start, spawner, unattributed=None):
     """Read screens (then session logs) until every item is known or time runs out.
 
-    Agents that stop meanwhile get no report.
+    Each poll also labels the tabs of agents that have appeared in `hcom list` since
+    (label_tabs). Agents that stop meanwhile get no report.
     """
     seen = {name: {} for name in agents}
     reasons = {name: 'agent did not become ready' for name in agents}
     ready_at, logs, pending, stopped = {}, {}, set(agents), set()
+    unlabeled = list(agents)
     while pending and clock() - start < DEADLINE:
         release_stopped(watched)
         stopped |= {name for name in pending if stopped_since(name, launch_id)}
         pending -= stopped
+        unlabeled = [name for name in unlabeled if name not in stopped]
+        if unlabeled:
+            unlabeled = label_tabs(spawner, unlabeled)
         for name in sorted(pending):
             full = agents[name]
             code, out = hcom('term', full, '--json', timeout=10)
@@ -378,6 +436,9 @@ def check(tool, agents, expected, watched, launch_id, start, unattributed=None):
                 pending.discard(name)
         sleep(POLL)
     stopped |= {name for name in agents if stopped_since(name, launch_id)}
+    unlabeled = [name for name in unlabeled if name not in stopped]
+    if unlabeled and (unlabeled := label_tabs(spawner, unlabeled)):
+        log(f"tabs not set: {', '.join(unlabeled)} never appeared in hcom list")
     return {name: report(tool, agents[name], expected, seen[name],
                          f'{reasons[name]} within {DEADLINE}s', unattributed)
             for name in agents if name not in stopped}
@@ -410,7 +471,7 @@ def main(argv=None):
                     'effort': None if unattributed else args.effort,
                     'permission': EXPECTED_PERMISSION[args.tool]}
         for text in check(args.tool, agents, expected, watched, launch_id, start,
-                          unattributed).values():
+                          data.get('by') or args.spawner, unattributed).values():
             if text:
                 notify(data.get('by') or args.spawner, text)
     while watched:
