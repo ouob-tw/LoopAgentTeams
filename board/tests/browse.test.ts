@@ -4,7 +4,7 @@ import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expandHome, listKey, nameMatches, pathMatches, suggestedFolders, typedFolder, typedLevel } from '../src/lib/board/folder-search.ts';
+import { expandHome, latestOnly, listKey, nameMatches, pathMatches, shownSearch, suggestedFolders, typedFolder, typedLevel } from '../src/lib/board/folder-search.ts';
 import type { FolderSearch } from '../src/lib/board/launch.ts';
 import { gitRoot } from '../src/lib/server/git.ts';
 import { startFixture, type Fixture } from './harness.ts';
@@ -71,6 +71,20 @@ describe('the shared rules', () => {
 		expect(listKey('Escape', false, at(1))).toMatchObject({ open: false, active: -1, handled: true });
 		expect(listKey('Escape', false, at(-1, false, 0))).toMatchObject({ handled: false });
 		expect(listKey('a', false, at(1))).toMatchObject({ handled: false });
+	});
+	test('an earlier search that answers after a later one does not count, nor an answer for other text', async () => {
+		const pending = new Map<string, (value: string) => void>();
+		const search = latestOnly((input: string) => new Promise<string>((resolve) => pending.set(input, resolve)));
+		const older = search('~/pr');
+		const newer = search('~/proj');
+		pending.get('~/proj')!(`answer for ~/proj`);
+		pending.get('~/pr')!(`answer for ~/pr`);
+		expect(await newer).toEqual({ current: true, value: 'answer for ~/proj' });
+		expect(await older).toEqual({ current: false, value: 'answer for ~/pr' });
+		const answer = { input: '~/proj' };
+		expect(shownSearch(answer, '~/proj')).toBe(answer);
+		expect(shownSearch(answer, '~/proje')).toBeNull();
+		expect(shownSearch(null, '~/proj')).toBeNull();
 	});
 	test('a row the list no longer has counts as none: Tab and Enter never take a missing one', () => {
 		expect(listKey('Tab', false, { open: true, active: 4, count: 2 })).toMatchObject({ complete: 0 });

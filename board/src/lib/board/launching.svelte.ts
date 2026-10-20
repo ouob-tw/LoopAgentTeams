@@ -1,7 +1,7 @@
 // What the page keeps about starting new controllers, and plain agents from the Herdr tab: each
 // form as filled in (it survives a failed launch and leaving the page), the folders to choose from
 // and the recent launches.
-import { typedFolder } from './folder-search.ts';
+import { latestOnly, typedFolder } from './folder-search.ts';
 import type { FolderSearch, LaunchClient, LaunchList, LaunchResponse } from './launch.ts';
 import type { LaunchDefaults } from './models.ts';
 
@@ -41,7 +41,6 @@ class Launching {
 	search = $state<FolderSearch | null>(null);
 	/** The text whose search failed; null when the latest one did not. */
 	searchFailed = $state<string | null>(null);
-	#searches = 0;
 	/** Whether folders the projects do not know are in a Git project, as asked; null when it could not be told. */
 	gitOf = $state<Record<string, boolean | null>>({});
 	/** What each client uses by default, read for this folder; null until read. */
@@ -59,20 +58,22 @@ class Launching {
 	/** Search for what is typed in the folder box (a full path). Only the latest search counts: an
 	 *  answer to an earlier one that comes back later is dropped. */
 	async find(input: string): Promise<void> {
-		const search = ++this.#searches;
-		let result: FolderSearch | undefined;
+		const { current, value } = await this.#search(input);
+		if (!current) return;
+		if (value) this.search = value;
+		this.searchFailed = value ? null : input;
+	}
+	#search = latestOnly(async (input: string): Promise<FolderSearch | undefined> => {
 		try {
 			const response = await fetch(`/api/browse?q=${encodeURIComponent(input)}`);
-			if (response.status === 401) return location.reload();
+			if (response.status === 401) location.reload();
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			result = await response.json();
+			return await response.json();
 		} catch {
-			// Reported below, unless a newer search has taken over.
+			// Reported by `find`, unless a newer search has taken over.
+			return undefined;
 		}
-		if (search !== this.#searches) return;
-		if (result) this.search = result;
-		this.searchFailed = result ? null : input;
-	}
+	});
 
 	/** Ask whether a folder is in a Git project, once. */
 	async checkGit(path: string): Promise<void> {

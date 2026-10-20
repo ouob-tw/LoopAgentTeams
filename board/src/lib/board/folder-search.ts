@@ -86,3 +86,17 @@ export function listKey(
 	if (key === 'Escape' && open) return { ...none, open: false, active: -1, handled: true };
 	return none;
 }
+
+/** Run a search each time the box changes, where an answer counts only when no later search has
+ *  begun meanwhile: an earlier one that comes back last is not `current`. */
+export function latestOnly<T, R>(run: (input: T) => Promise<R>): (input: T) => Promise<{ current: boolean; value: R }> {
+	let begun = 0;
+	return async (input) => {
+		const mine = ++begun;
+		const value = await run(input);
+		return { current: mine === begun, value };
+	};
+}
+
+/** The search answer the box shows: only the one for the text now in it. */
+export const shownSearch = <S extends { input: string }>(search: S | null, input: string): S | null => (search?.input === input ? search : null);

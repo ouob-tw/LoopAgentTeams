@@ -7,7 +7,7 @@
 	// with an optional tab name and first message, no LAT start command and no Git project needed,
 	// followed until Herdr lists it. A folder that is not there yet is created when the form is sent.
 	import { untrack } from 'svelte';
-	import { folderName, listKey, pathMatches, suggestedFolders } from '#lib/board/folder-search.ts';
+	import { folderName, listKey, pathMatches, shownSearch, suggestedFolders } from '#lib/board/folder-search.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import {
 		AGENT_LAUNCH_STATE_TEXT,
@@ -106,7 +106,7 @@
 		const timer = setTimeout(() => void shown.find(input), SEARCH_DELAY_MS);
 		return () => clearTimeout(timer);
 	});
-	const found = $derived(form.search?.input === form.folder ? form.search : null);
+	const found = $derived(shownSearch(form.search, form.folder));
 	const typed = $derived(found?.target ?? null);
 	const searchFailed = $derived(form.searchFailed === form.folder);
 
