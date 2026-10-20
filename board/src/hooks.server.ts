@@ -1,10 +1,12 @@
-import { json, redirect } from '@sveltejs/kit';
+import { isHttpError, isRedirect, json, redirect } from '@sveltejs/kit';
+import type { RequestEvent } from '@sveltejs/kit';
 import type { Handle, HandleServerError, ServerInit } from '@sveltejs/kit/hooks';
 import { randomUUID } from 'node:crypto';
 import { DEVICE_COOKIE } from '#lib/server/auth.ts';
 import { getBoard } from '#lib/server/board.ts';
 import { findDevice } from '#lib/server/devices.ts';
 import { exceptionFields, log, withRequestId } from '#lib/server/log.ts';
+import { redact, secretsOf } from '#lib/server/redact.ts';
 
 export const init: ServerInit = () => {
 	const board = getBoard();
@@ -24,67 +26,85 @@ const USER_STYLE = '<link rel="stylesheet" href="/user.css" />';
 
 // A caller's own request id is kept when it looks like one.
 const REQUEST_ID = /^[\w.:-]{1,128}$/;
-
-// What a failed response's reason may not repeat: the user's text in the request (answers,
-// messages, the password). Node's errors about an argument that cannot be passed to a command
-// quote that argument after "Received", possibly cut short, so that part is dropped as a whole.
-const CONTENT_FIELDS = ['text', 'note', 'password'] as const;
-const OMITTED = '[omitted]';
 const MAX_REASON = 2000;
 
-async function contentOf(request: Request | null): Promise<string[]> {
-	const body: Record<string, unknown> | null = request ? await request.json().catch(() => null) : null;
-	if (!body || typeof body !== 'object') return [];
-	return CONTENT_FIELDS.map((field) => body[field]).filter((value): value is string => typeof value === 'string' && !!value.trim());
+/** Take the user's text and token out of what a log line repeats; see redact.ts. The request body
+ *  is read only when a line needs it, from a copy, whatever its content type. */
+function redactorFor(event: RequestEvent): (text: string) => Promise<string> {
+	const token = event.cookies.get(DEVICE_COOKIE);
+	const copy = event.request.body ? event.request.clone() : null;
+	let secrets: Promise<string[]> | undefined;
+	return async (text) => redact(text, await (secrets ??= (copy ? copy.text().catch(() => null) : Promise.resolve(null)).then((body) => secretsOf(body, token))));
 }
 
-function scrubbed(reason: unknown, content: string[]): string | undefined {
-	if (typeof reason !== 'string' || !reason) return undefined;
-	let text = reason.replace(/(\. Received ).*$/s, `$1${OMITTED}`);
-	for (const value of content) text = text.split(value).join(OMITTED);
+const where = (event: RequestEvent) => ({ method: event.request.method, path: event.url.pathname });
+
+async function reason(event: RequestEvent, value: unknown): Promise<string | undefined> {
+	if (typeof value !== 'string' || !value) return undefined;
+	const text = await event.locals.redact(value);
 	return text.length > MAX_REASON ? `${text.slice(0, MAX_REASON)}…` : text;
 }
 
 /** One line for a response with a server-side status: its reasons as the page was told them. */
-async function logFailure(event: Parameters<Handle>[0]['event'], response: Response, request: Request | null) {
-	const reasons: Record<string, string | undefined> = {};
-	if (response.headers.get('content-type')?.includes('application/json')) {
-		const body: Record<string, unknown> | null = await response.clone().json().catch(() => null);
-		const content = await contentOf(request);
-		for (const field of ['reason', 'error', 'logError'] as const) reasons[field] = scrubbed(body?.[field], content);
+async function logFailure(event: RequestEvent, response: Response) {
+	const body: Record<string, unknown> | null = response.headers.get('content-type')?.includes('application/json')
+		? await response.clone().json().catch(() => null)
+		: null;
+	log('ERROR', 'board.http', 'http_error', {
+		...where(event),
+		status: response.status,
+		reason: await reason(event, body?.reason),
+		error: await reason(event, body?.error),
+		logError: await reason(event, body?.logError),
 		// SvelteKit's own error body; `message` is the log line's event name.
-		reasons.detail = scrubbed(body?.message, content);
-	}
-	log('ERROR', 'board.http', 'http_error', { method: event.request.method, path: event.url.pathname, status: response.status, ...reasons });
+		detail: await reason(event, body?.message)
+	});
 }
 
 export const handle: Handle = ({ event, resolve }) => {
 	const given = event.request.headers.get('x-request-id');
-	return withRequestId(given && REQUEST_ID.test(given) ? given : randomUUID(), async () => {
-		const token = event.cookies.get(DEVICE_COOKIE);
-		const device = token ? findDevice(getBoard().config.stateDir, token) : null;
-		event.locals.device = device;
+	event.locals.requestId = given && REQUEST_ID.test(given) ? given : randomUUID();
+	event.locals.redact = redactorFor(event);
+	return withRequestId(event.locals.requestId, async () => {
+		let response: Response;
+		try {
+			const token = event.cookies.get(DEVICE_COOKIE);
+			const device = token ? findDevice(getBoard().config.stateDir, token) : null;
+			event.locals.device = device;
 
-		const path = event.url.pathname;
-		if (!device && !OPEN_PATHS.has(path)) {
-			if (path.startsWith('/api/')) return json({ error: 'unpaired' }, { status: 401 });
-			redirect(303, '/login');
+			const path = event.url.pathname;
+			if (!device && !OPEN_PATHS.has(path)) {
+				if (path.startsWith('/api/')) return json({ error: 'unpaired' }, { status: 401 });
+				redirect(303, '/login');
+			}
+			if (device && path === '/login') redirect(303, '/');
+			// Only a logged-in device can fetch the stylesheet, so only its pages refer to it.
+			response = await resolve(event, {
+				transformPageChunk: ({ html }) => html.replace('%lat.user-style%', device ? USER_STYLE : '')
+			});
+		} catch (error) {
+			// Thrown here, before or around resolving: SvelteKit answers with a 500 (or the error's own
+			// status) after this, where nothing else sees it.
+			const status = isRedirect(error) ? 0 : isHttpError(error) ? error.status : 500;
+			if (status >= 500) log('ERROR', 'board.http', 'http_error', { ...where(event), status });
+			throw error;
 		}
-		if (device && path === '/login') redirect(303, '/');
-		// Read only when the response fails, to keep the user's text out of its reason.
-		const request = event.request.headers.get('content-type')?.includes('application/json') ? event.request.clone() : null;
-		// Only a logged-in device can fetch the stylesheet, so only its pages refer to it.
-		const response = await resolve(event, {
-			transformPageChunk: ({ html }) => html.replace('%lat.user-style%', device ? USER_STYLE : '')
-		});
-		if (response.status >= 500) await logFailure(event, response, request);
+		if (response.status >= 500) await logFailure(event, response);
 		return response;
 	});
 };
 
 /** An exception nothing caught: where it happened and its whole stack. Errors the board or
- *  SvelteKit raise on purpose, such as not-found, are not logged here. */
-export const handleError: HandleServerError = ({ kind, error, event }) => {
+ *  SvelteKit raise on purpose, such as not-found, are not logged here. It may run after `handle`
+ *  has returned, so the request id comes from the request itself. */
+export const handleError: HandleServerError = async ({ kind, error, event }) => {
 	if (kind !== 'unknown') return;
-	log('ERROR', 'board.http', 'unhandled_error', { method: event.request.method, path: event.url.pathname, ...exceptionFields(error) });
+	const { exc_type, exc_message, traceback } = exceptionFields(error);
+	const fields = {
+		...where(event),
+		exc_type,
+		exc_message: await event.locals.redact(exc_message),
+		traceback: traceback && (await event.locals.redact(traceback))
+	};
+	withRequestId(event.locals.requestId, () => log('ERROR', 'board.http', 'unhandled_error', fields));
 };

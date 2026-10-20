@@ -13,7 +13,7 @@ const context = new AsyncLocalStorage<{ requestId: string }>();
 /** Run `action` with this request id on every line it logs, however deep the call. */
 export const withRequestId = <T>(requestId: string, action: () => T): T => context.run({ requestId }, action);
 
-export const currentRequestId = (): string | undefined => context.getStore()?.requestId;
+const currentRequestId = (): string | undefined => context.getStore()?.requestId;
 
 /** The log line for one event, without the line break. */
 export function logLine(level: LogLevel, logger: string, message: string, extra: Record<string, unknown> = {}, now = new Date()): string {

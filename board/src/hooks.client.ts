@@ -9,9 +9,11 @@ function report(kind: string, error: unknown) {
 	const failure = error instanceof Error ? error : null;
 	const body = JSON.stringify({
 		kind,
-		message: failure ? `${failure.name}: ${failure.message}` : String(error),
+		type: failure?.name ?? typeof error,
+		message: failure ? failure.message : String(error),
 		stack: failure?.stack?.slice(0, MAX_STACK) ?? null,
-		url: location.href
+		// Without the query and fragment, which may hold anything.
+		url: location.origin + location.pathname
 	});
 	fetch('/api/client-error', { method: 'POST', headers: { 'content-type': 'application/json' }, body, keepalive: true }).catch(() => {});
 }

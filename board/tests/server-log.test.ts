@@ -75,6 +75,38 @@ test('a message that cannot be passed to the input command is logged without its
 	expect(output()).not.toContain('絕不記錄');
 });
 
+test('the answer is taken out however the reason repeats it, whatever the request says its body is', async () => {
+	const asked = question({ id: 'T-1', kind: 'text' });
+	const luna = fixture.bound('alpha', 'luna', { questions: [asked] });
+	const token = cookie.split('=')[1];
+	const answer = (text: string, contentType: string) =>
+		post(
+			'/api/answers',
+			{ controllerId: luna.session_id, questionId: 'T-1', revision: 1, sectionSha256: asked.section_sha256, select: [], text, note: '' },
+			{ cookie, headers: { 'content-type': contentType } }
+		);
+	const cases = [
+		{ text: '  前後有空白的答案  ', reason: 'failed: 前後有空白的答案', contentType: 'application/json' },
+		{ text: '另一種內容類型的答案', reason: 'failed: 另一種內容類型的答案', contentType: 'application/octet-stream' },
+		{ text: '第一行沒事\r\n第二行是秘密內容', reason: 'failed at line 2: 第二行是秘密內容', contentType: 'application/json' },
+		{ text: '有"引號"與\\的答案', reason: 'failed: "有\\"引號\\"與\\\\的答案"', contentType: 'application/json' },
+		{ text: '好', reason: `token ${token} leaked`, contentType: 'application/json' }
+	];
+	for (const { text, reason, contentType } of cases) {
+		fixture.setHelper({ output: { controllers: [luna] }, answer: { output: { status: 'error', reason }, exit: 1 } });
+		expect((await answer(text, contentType)).status).toBe(502);
+	}
+	const reasons = lines('http_error').map((line) => line.reason);
+	expect(reasons).toEqual([
+		'failed: [omitted]',
+		'failed: [omitted]',
+		'failed at line 2: [omitted]',
+		'failed: "[omitted]"',
+		'token [omitted] leaked'
+	]);
+	for (const secret of ['前後有空白的答案', '另一種內容類型的答案', '第二行是秘密內容', '引號', token]) expect(output()).not.toContain(secret);
+});
+
 test('a 500 is logged with its error and without the password, and a request id is made up when none is given', async () => {
 	const path = join(fixture.dir, 'board-state/password.json');
 	const saved = readFileSync(path, 'utf8');
@@ -109,6 +141,23 @@ test('an exception nothing caught leaves its path and whole stack, with the same
 	expect(lines('http_error')).toMatchObject([{ request_id: 'req-crash', path: '/api/archive', status: 500 }]);
 });
 
+test('a failure in the hook itself before the page is rendered still logs its 500 and stack under the request id', async () => {
+	const devices = join(fixture.dir, 'board-state/devices.json');
+	const saved = readFileSync(devices, 'utf8');
+	writeFileSync(devices, 'PRIVATE-STATE-CONTENT{');
+	try {
+		const page = await fixture.fetch('/', { cookie, headers: { 'x-request-id': 'req-hook' } });
+		expect(page.status).toBe(500);
+	} finally {
+		writeFileSync(devices, saved);
+	}
+	expect(lines('http_error')).toMatchObject([{ request_id: 'req-hook', method: 'GET', path: '/', status: 500 }]);
+	const [crash] = lines('unhandled_error');
+	expect(crash).toMatchObject({ request_id: 'req-hook', path: '/', exc_type: 'SyntaxError' });
+	expect(String(crash.traceback)).toContain('findDevice');
+	expect(output()).not.toContain('PRIVATE-STATE-CONTENT');
+});
+
 test('ordinary refusals and successes write nothing', async () => {
 	expect((await fixture.tryLogin('wrong')).status).toBe(401);
 	expect((await post('/api/answers', {})).status).toBe(400);
@@ -117,7 +166,7 @@ test('ordinary refusals and successes write nothing', async () => {
 	expect(output().split('\n').filter((line) => line.startsWith('{'))).toEqual([]);
 });
 
-const report = { kind: 'error', message: 'TypeError: x is undefined', stack: 'TypeError: x is undefined\n    at render (app.js:1:2)', url: 'http://board/?item=1' };
+const report = { kind: 'error', type: 'TypeError', message: 'x is undefined', stack: 'TypeError: x is undefined\n    at render (app.js:1:2)', url: 'http://board/agents' };
 
 test('a browser error from a logged-in device is one line with its message, stack, page and browser, and no token', async () => {
 	const response = await post('/api/client-error', report, { cookie, headers: { 'user-agent': 'TestBrowser/1.0' } });
@@ -130,6 +179,7 @@ test('a browser error from a logged-in device is one line with its message, stac
 		logger: 'board.client',
 		layer: 'lat-board',
 		kind: 'error',
+		exc_type: 'TypeError',
 		exc_message: report.message,
 		traceback: report.stack,
 		url: report.url,
@@ -137,6 +187,26 @@ test('a browser error from a logged-in device is one line with its message, stac
 	});
 	expect(line.device_id).toBeString();
 	expect(output()).not.toContain(cookie.split('=')[1]);
+});
+
+test('a browser report is logged without the device token or the page query, and without JSON text it quotes', async () => {
+	const token = cookie.split('=')[1];
+	const response = await post('/api/client-error', {
+		kind: 'error',
+		type: 'SyntaxError',
+		message: `Unexpected token 'P', "PRIVATE-ANSWER" is not valid JSON; cookie ${token}`,
+		stack: `SyntaxError: ${token}\n    at render (app.js:1:2)`,
+		url: `http://board/agents?password=${PASSWORD}&token=${token}#${token}`
+	});
+
+	expect(response.status).toBe(204);
+	const [line] = lines('client_error');
+	expect(line).toMatchObject({
+		exc_message: `Unexpected token 'P', "[omitted]" is not valid JSON; cookie [omitted]`,
+		traceback: 'SyntaxError: [omitted]\n    at render (app.js:1:2)',
+		url: 'http://board/agents'
+	});
+	for (const secret of [token, PASSWORD, 'PRIVATE-ANSWER']) expect(output()).not.toContain(secret);
 });
 
 test('a device that is not logged in is refused and nothing is logged', async () => {
@@ -149,14 +219,15 @@ test('a device that is not logged in is refused and nothing is logged', async ()
 	expect(output()).not.toContain('not-a-token');
 });
 
-test('long fields are cut to their limits, and a huge body is refused unread', async () => {
-	const long = { kind: 'k'.repeat(100), message: 'm'.repeat(5_000), stack: 's'.repeat(20_000), url: 'u'.repeat(5_000) };
+test('long fields are cut to their limits, and a huge body is refused', async () => {
+	const long = { kind: 'k'.repeat(100), type: 't'.repeat(500), message: 'm'.repeat(5_000), stack: 's'.repeat(20_000), url: 'http://board/' + 'u'.repeat(5_000) };
 	expect((await post('/api/client-error', long, { cookie, headers: { 'user-agent': 'a'.repeat(2_000) } })).status).toBe(204);
 	const [line] = lines('client_error');
 	expect(line.kind).toBe('k'.repeat(CLIENT_ERROR_LIMITS.kind) + '…[truncated]');
+	expect(line.exc_type).toBe('t'.repeat(CLIENT_ERROR_LIMITS.type) + '…[truncated]');
 	expect(line.exc_message).toBe('m'.repeat(CLIENT_ERROR_LIMITS.message) + '…[truncated]');
 	expect(line.traceback).toBe('s'.repeat(CLIENT_ERROR_LIMITS.stack) + '…[truncated]');
-	expect(line.url).toBe('u'.repeat(CLIENT_ERROR_LIMITS.url) + '…[truncated]');
+	expect(line.url).toBe('http://board/' + 'u'.repeat(CLIENT_ERROR_LIMITS.url - 13) + '…[truncated]');
 	expect(line.user_agent).toBe('a'.repeat(CLIENT_ERROR_LIMITS.userAgent) + '…[truncated]');
 
 	mark = fixture.serverOutput().length;
