@@ -29,7 +29,7 @@
 	import { switching } from '#lib/board/switching.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
-	import { isInactive, type Agent, type Controller, type KnownAgent } from '#lib/board/types.ts';
+	import { needsWake, type Agent, type Controller, type KnownAgent } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import MessageBox from './MessageBox.svelte';
 	import AgentModelPicker from './AgentModelPicker.svelte';
@@ -156,7 +156,7 @@
 				? { id: recipient.id, name: `@${recipient.hcomName}`, confirm: CONTROLLER_INTERRUPT_CONFIRM_TEXT }
 				: null
 	);
-	const waking = $derived(recipient !== undefined && isInactive(recipient.status));
+	const waking = $derived(recipient !== undefined && needsWake(recipient));
 
 	// The wake's options, by controller ID. '' keeps the current model or effort.
 	let newRound = $state<Record<string, boolean>>({});
@@ -195,7 +195,7 @@
 		const parsed = command;
 		if (!parsed.ok) return toasts.show('failed', parsed.reason);
 		const to = parsed.controller;
-		const wake = isInactive(to.status);
+		const wake = needsWake(to);
 		sending = true;
 		const choice = wake && resumes
 			? { model: status?.lock === 'fixed' ? null : model[to.id] || null, effort: effort[to.id] || null }
@@ -356,7 +356,7 @@
 				開新一輪 LAT
 			</label>
 			<p class="note">
-				@{recipient.hcomName} {recipient.status === 'idle' ? '閒置中' : '已關閉'}。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪
+				@{recipient.hcomName} {recipient.status === 'closed' ? '已關閉' : recipient.status === 'working' ? '已停用 LAT（正在工作）' : '閒置中'}。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪
 				LAT」會在前面加上 LAT 啟動指令。
 			</p>
 			{#if abandonable[id]}

@@ -10,6 +10,7 @@
 	import RefreshCw from '@lucide/svelte/icons/refresh-cw';
 	import SettingsIcon from '@lucide/svelte/icons/settings';
 	import type { InboxSort } from '#lib/board/inbox.ts';
+	import { clock } from '#lib/board/clock.svelte.ts';
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
 	import {
 		advance,
@@ -51,6 +52,11 @@
 
 	// svelte-ignore state_referenced_locally
 	const board = new LiveBoard(data.snapshot);
+	// The notice times read the board's calendar day.
+	$effect.pre(() => {
+		clock.timeZone = board.snapshot.closed.timeZone;
+	});
+	onMount(() => clock.run());
 	onMount(() => {
 		const close = board.connect();
 		// A reload of the page also re-reads every source, like the refresh button.

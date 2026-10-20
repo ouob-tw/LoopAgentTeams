@@ -4,7 +4,8 @@
 	// quota, prompt cache and permission mode in small print.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { onMount } from 'svelte';
-	import { formatTime, placeText, type HerdrPlace } from '#lib/board/format.ts';
+	import { clock } from '#lib/board/clock.svelte.ts';
+	import { noticeTime, placeText, type HerdrPlace } from '#lib/board/format.ts';
 	import { INFO_DETAILS_KEY, remember, remembered } from '#lib/board/prefs.ts';
 	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
@@ -67,7 +68,7 @@
 		<span class="status"><StatusMark status={controller.status} />{STATUS_LABEL[controller.status]}</span>
 		<h2>{controller.project}</h2>
 		<span class="handle">@{controller.hcomName}</span>
-		<span class="chip">{controller.client}・最後回報 {controller.lastReportAt ? formatTime(controller.lastReportAt) : '尚無'}</span>
+		<span class="chip">{controller.client}・最後回報 {controller.lastReportAt ? noticeTime(controller.lastReportAt, clock.now, clock.timeZone) : '尚無'}</span>
 		<button type="button" class="more" aria-expanded={details} onclick={toggleDetails}>
 			詳細資料<span class="chevron" class:open={details}><ChevronDown size="1em" /></span>
 		</button>

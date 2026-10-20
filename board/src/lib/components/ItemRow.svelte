@@ -1,6 +1,7 @@
 <script lang="ts">
 	// One inbox item in a list: kind, title, owner label and time.
-	import { formatTime } from '#lib/board/format.ts';
+	import { clock } from '#lib/board/clock.svelte.ts';
+	import { noticeTime } from '#lib/board/format.ts';
 	import { isAnswered, itemLabel, type InboxItem } from '#lib/board/types.ts';
 
 	let {
@@ -49,7 +50,7 @@
 			{:else if item.kind === 'report'}
 				<span>{item.archived ? '已封存' : item.readAt === null ? '未讀' : '已讀'}</span>
 			{/if}
-			<time datetime={item.time}>{formatTime(item.time)}</time>
+			<time datetime={item.time}>{noticeTime(item.time, clock.now, clock.timeZone)}</time>
 		</span>
 	</div>
 </div>

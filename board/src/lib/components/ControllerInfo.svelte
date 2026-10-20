@@ -98,8 +98,9 @@
 
 <ControllerHeader {controller} {tabMoves} usage={shown} />
 
-<!-- Opened from the Herdr tab, the agent's own close below stands for this one. -->
-{#if controller.status === 'idle' && !agent}
+<!-- An ended controller (idle, or at work again with LAT off): no pane of LAT's own. Opened from the
+     Herdr tab, the agent's own close below stands for this one. -->
+{#if !controller.herdr && controller.status !== 'closed' && !agent}
 	{#if idleAgent}
 		<AgentClose agent={idleAgent} label="關閉" />
 	{:else}

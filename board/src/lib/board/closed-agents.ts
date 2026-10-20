@@ -41,7 +41,7 @@ export const CLOSED_GROUPS = ['今天', '昨天', '近 7 天'] as const;
 export type ClosedGroup = (typeof CLOSED_GROUPS)[number];
 
 /** The calendar day of a moment in a time zone, as a count of days. */
-function dayNumber(time: number, timeZone: string): number {
+export function dayNumber(time: number, timeZone: string): number {
 	const parts = new Intl.DateTimeFormat('en-US', { timeZone, year: 'numeric', month: 'numeric', day: 'numeric' }).formatToParts(time);
 	const part = (type: string) => Number(parts.find((candidate) => candidate.type === type)!.value);
 	return Date.UTC(part('year'), part('month') - 1, part('day')) / 86_400_000;

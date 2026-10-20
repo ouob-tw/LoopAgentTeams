@@ -432,15 +432,15 @@ test.skipIf(!CHROME)('the confirmation is cancelled without a key pressed, and c
 
 // The stop follows the live agent with the controller's session, not the LAT reports. Each case
 // changes only what LAT or the live agent says of `lead` and puts it back.
-const LEAD_CASES: { name: string; report?: boolean; lat: () => object; hcom?: string; herdr?: () => object; stop: boolean }[] = [
-	{ name: 'LAT-disabled (idle) but really at work', report: true, lat: () => [gone], stop: true },
+const LEAD_CASES: { name: string; report?: boolean; ended?: boolean; lat: () => object; hcom?: string; herdr?: () => object; stop: boolean }[] = [
+	{ name: 'LAT-disabled (idle) but really at work', report: true, ended: true, lat: () => [gone], stop: true },
 	{ name: 'delivered (DONE report) but really at work', report: true, lat: () => [lead, gone], stop: true },
 	{ name: 'waiting on a question but really at work', lat: () => [{ ...lead, questions: [question()] }, gone], stop: true },
-	{ name: 'LAT-disabled but really idle', report: true, lat: () => [gone], hcom: 'listening', stop: false },
+	{ name: 'LAT-disabled but really idle', report: true, ended: true, lat: () => [gone], hcom: 'listening', stop: false },
 	{ name: 'LAT says working but really idle (hcom listening)', lat: () => [lead, gone], hcom: 'listening', stop: false },
 	{ name: 'LAT says working but not in Herdr', lat: () => [lead, gone], herdr: () => ({ agents: [], panes: [] }), stop: false }
 ];
-for (const { name, report, lat, hcom, herdr, stop } of LEAD_CASES) {
+for (const { name, report, ended, lat, hcom, herdr, stop } of LEAD_CASES) {
 	test.skipIf(!CHROME)(`the stop on a controller's page: ${name} -> ${stop ? 'stop' : 'no stop'}`, async () => {
 		if (report) fixture.report('s-lead', { tag: 'DONE', summary: '交付', message: '交付了。', time: minutesAgo(3), hcom_name: 'lead', workspace: lead.workspace });
 		fixture.list(lat() as never);
@@ -452,6 +452,15 @@ for (const { name, report, lat, hcom, herdr, stop } of LEAD_CASES) {
 			await tab.until(`${pageOf('lat')}`, "lead's page");
 			await sleep(300);
 			expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(stop);
+			// Ended in LAT, working or not: its page still offers the close.
+			if (ended) expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"]')`)).toBe(true);
+			// An ended one that works is shown 工作中 but still woken, not sent to (LAT would refuse a send).
+			if (ended && stop) {
+				await type('在嗎');
+				await tab.until(`document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, 'the wake button');
+				await type('');
+				await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
+			}
 			if (stop) {
 				await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
 				await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
@@ -472,6 +481,15 @@ for (const { name, report, lat, hcom, herdr, stop } of LEAD_CASES) {
 		}
 	}, 60_000);
 }
+
+test.skipIf(!CHROME)("a controller's last report shows the time only when it is today, the date too before", async () => {
+	await visit(1280, '?controller=s-luna');
+	await tab.until(pageOf('moon'), "luna's page");
+	const shown = await tab.eval<string>(`[...document.querySelectorAll('.detail .chip')].map((chip) => chip.innerText).find((text) => text.includes('最後回報'))`);
+	// Her report is 15 minutes old: today unless midnight just passed.
+	const reportedOn = new Date(Date.now() - 15 * 60_000).toDateString();
+	expect(shown).toMatch(reportedOn === new Date().toDateString() ? /最後回報 \d{2}:\d{2}:\d{2}$/ : /最後回報 \d+\/\d+ \d{2}:\d{2}:\d{2}$/);
+}, 60_000);
 
 // Wide: a new LAT round and an effort; a phone: the same conversation with another model.
 for (const { width, newRound, kind, value, flags } of [

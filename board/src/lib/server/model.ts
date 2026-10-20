@@ -1,6 +1,6 @@
 // Turns the three LAT sources (binding registry and question files through the helper, report
-// records) into the board's data model. Herdr's agent status is never consulted for controllers;
-// hcom's list of agents only tells which bound controllers' clients are gone. The 所有 Agent tab's
+// records) into the board's data model. A controller's status comes from LAT; the agent list only
+// tells that an idle or delivered one is really at work, and which bound controllers' clients are gone. The 所有 Agent tab's
 // list is made apart (`agents.ts`) and passed through, its agents on the controller roster marked so.
 import { basename } from 'node:path';
 import type {
@@ -394,6 +394,13 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		} else if (!file.reports.length && (file.error || file.invalidLines)) {
 			errors.push(`回報紀錄 ${file.sessionId} 讀不出任何一筆回報`);
 		}
+	}
+
+	// An idle or delivered controller whose live agent (same session ID) is at work is working, until
+	// it stops. Waiting stays waiting: its questions still wait on the user.
+	const atWork = new Set(sources.agents.filter((agent) => agent.inHerdr && agent.status === 'working' && agent.id).map((agent) => agent.id));
+	for (const controller of controllers) {
+		if ((controller.status === 'idle' || controller.status === 'delivered') && atWork.has(controller.id)) controller.status = 'working';
 	}
 
 	// Who needs the user first, then by latest report, newest first; no report goes last.

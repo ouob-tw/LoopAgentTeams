@@ -3,7 +3,8 @@
 	// that is answered is read-only, its choice marked among its options and the note under them.
 	import { ANSWER_STATE_TEXT, chosenIn } from '#lib/board/answers.ts';
 	import { answering, complete } from '#lib/board/answering.svelte.ts';
-	import { formatTime } from '#lib/board/format.ts';
+	import { clock } from '#lib/board/clock.svelte.ts';
+	import { noticeTime } from '#lib/board/format.ts';
 	import { renderLinks, renderMarkdown } from '#lib/board/markdown.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { isAnswered, itemLabel, type HelperOption, type InboxItem } from '#lib/board/types.ts';
@@ -150,7 +151,7 @@
 			<span>{KIND_TEXT[item.question.kind] ?? item.question.kind}</span>
 		{/if}
 		{#if handle}<span class="handle">@{handle}</span>{/if}
-		<time datetime={item.time}>{formatTime(item.time)}</time>
+		<time datetime={item.time}>{noticeTime(item.time, clock.now, clock.timeZone)}</time>
 	</header>
 	<h2>{@html item.title ? renderLinks(item.title) : '（沒有標題）'}</h2>
 
@@ -292,9 +293,9 @@
 		{/if}
 		<footer>
 			{#if item.archived}
-				<span class="state">已封存{item.readAt ? `，${formatTime(item.readAt)} 標為已讀` : ''}</span>
+				<span class="state">已封存{item.readAt ? `，${noticeTime(item.readAt, clock.now, clock.timeZone)} 標為已讀` : ''}</span>
 			{:else if item.readAt}
-				<span class="state">已讀（{formatTime(item.readAt)}）</span>
+				<span class="state">已讀（{noticeTime(item.readAt, clock.now, clock.timeZone)}）</span>
 				<button onclick={() => mark(onunread)} disabled={marking}>標為未讀</button>
 			{:else}
 				<span class="state">未讀</span>

@@ -23,6 +23,13 @@ export function isInactive(status: ControllerStatus): boolean {
 	return status === 'idle' || status === 'closed';
 }
 
+/** Whether the board wakes the controller instead of typing into it: its LAT round is over (no
+ *  pane of LAT's own) or its client is gone. An ended one whose agent is at work shows 工作中, and
+ *  is still woken. */
+export function needsWake(controller: Pick<Controller, 'status' | 'herdr'>): boolean {
+	return isInactive(controller.status) || controller.herdr === null;
+}
+
 /** What the roster shows as a controller's current phase. */
 export function phaseText(controller: Pick<Controller, 'phase'>): string {
 	if (controller.phase === null) return '尚無回報';
