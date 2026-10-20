@@ -200,10 +200,10 @@ def _tokens(text):
 
 
 def _simple_commands(text):
-    """(words, start, end) for each simple command, without opening `sh -c`.
+    """(words, spans) for each simple command, without opening `sh -c`.
 
-    Redirections (`2>&1`, `> out`) are dropped with their target; start and end span
-    the command's words in text. ValueError on an unclosed quote.
+    Redirections (`2>&1`, `> out`) are dropped with their target; spans are each word's
+    (start, end) in text. ValueError on an unclosed quote.
     """
     commands, words, spans = [], [], []
     drop_next = False
@@ -215,7 +215,7 @@ def _simple_commands(text):
             drop_next = True
         elif is_operator:
             if words:
-                commands.append((words, spans[0][0], spans[-1][1]))
+                commands.append((words, spans))
             words, spans, drop_next = [], [], False
         elif drop_next:
             drop_next = False
@@ -232,26 +232,27 @@ def split_commands(command):
     target, and `#` at the start of a word starts a comment up to the end of the line.
     """
     try:
-        found = [words for words, _, _ in _simple_commands(command)]
+        found = [words for words, _ in _simple_commands(command)]
     except ValueError:
         found = [command.split()]
     return [inner for words in found for inner in _open_shell(words)]
 
 
-def _shell_body(words):
-    """The `-c` text when words run a shell such as `bash -lc '<text>'`, else None."""
-    rest = _strip_assignments(words)
+def _shell_body_index(words):
+    """Index of the `-c` text when words run a shell such as `bash -lc '<text>'`, else None."""
+    skip = len(words) - len(_strip_assignments(words))
+    rest = words[skip:]
     if rest and os.path.basename(rest[0]) in SHELLS:
         for i, word in enumerate(rest[1:], 1):
             if word == '-c' or (word.startswith('-') and not word.startswith('--')
                                 and 'c' in word[1:]):
-                return rest[i + 1] if i + 1 < len(rest) else None
+                return skip + i + 1 if i + 1 < len(rest) else None
     return None
 
 
 def _open_shell(words):
-    body = _shell_body(words)
-    return [words] if body is None else split_commands(body)
+    index = _shell_body_index(words)
+    return [words] if index is None else split_commands(words[index])
 
 
 def _strip_assignments(words):
@@ -947,18 +948,20 @@ def _wrap_suites(text, cwd, registry):
     """text with each full-suite simple command replaced in place by its gate command.
 
     The rest of the text (cd, export, pipes, a later echo) stays as written, so the gate
-    records the suite's own exit code. A suite inside `bash -c '...'` replaces that
-    whole shell command with the rewritten body.
+    records the suite's own exit code. In `bash -c '<body>'` only the body argument is
+    rewritten, so the shell's assignments, options and isolation stay.
     """
     parts, last = [], 0
-    for words, start, end in _simple_commands(text):
+    for words, spans in _simple_commands(text):
         if _is_gate_run(words):
             continue
-        body = _shell_body(words)
-        if body is not None:
-            replacement = _wrap_suites(body, cwd, registry)
-            replacement = None if replacement == body else replacement
+        index = _shell_body_index(words)
+        if index is not None:
+            body = _wrap_suites(words[index], cwd, registry)
+            start, end = spans[index]
+            replacement = None if body == words[index] else shlex.quote(body)
         elif is_full_suite(shlex.join(words), cwd, registry):
+            start, end = spans[0][0], spans[-1][1]
             replacement = gate_command(text[start:end])
         else:
             replacement = None

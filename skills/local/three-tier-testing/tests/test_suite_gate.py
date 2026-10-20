@@ -546,7 +546,7 @@ class HookTests(GateCase):
 
     def test_unwrapped_full_suites_are_blocked_with_a_ready_to_run_rewrite(self):
         """Only the suite command is replaced; everything around it stays as written."""
-        g = gate.gate_command
+        g, q = gate.gate_command, gate.shlex.quote
         cases = {
             'pytest': g('pytest'),
             'FOO=1 timeout 600 uv run pytest -q': g('FOO=1 timeout 600 uv run pytest -q'),
@@ -556,8 +556,13 @@ class HookTests(GateCase):
                 'set -o pipefail\n' + g('pytest') + ' 2>&1 | tail -20',
             'pytest | tail -30; echo "exit=${PIPESTATUS[0]}"':
                 g('pytest') + ' | tail -30; echo "exit=${PIPESTATUS[0]}"',
-            "bash -lc 'go test ./...'": g('go test ./...'),
-            "bash -lc 'cd a && pytest' | tail": 'cd a && ' + g('pytest') + ' | tail',
+            "bash -lc 'go test ./...'": 'bash -lc ' + q(g('go test ./...')),
+            "bash -lc 'cd a && pytest' | tail": 'bash -lc ' + q('cd a && ' + g('pytest')) + ' | tail',
+            "APP_ENV=test bash -c 'pytest'": 'APP_ENV=test bash -c ' + q(g('pytest')),
+            "false && bash -c 'echo prep; pytest'":
+                'false && bash -c ' + q('echo prep; ' + g('pytest')),
+            "bash -c 'cd backend && pytest'; bun test":
+                'bash -c ' + q('cd backend && ' + g('pytest')) + '; ' + g('bun test'),
             'pytest && cargo test': g('pytest') + ' && ' + g('cargo test'),
             'cd a && pytest && cd ../b && bun test':
                 'cd a && ' + g('pytest') + ' && cd ../b && ' + g('bun test'),
