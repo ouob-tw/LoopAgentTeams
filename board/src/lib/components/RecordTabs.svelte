@@ -1,12 +1,13 @@
 <script lang="ts" generics="T extends string">
 	// A page's records, one tab at a time: the tab strip, then a panel for each tab. All panels stay
-	// mounted, so a conversation keeps its place and its live feed.
+	// mounted, so a conversation keeps its place and its live feed. Tabs and panels are identified by
+	// their IDs alone, as one strip is on the screen at a time.
 	import type { Snippet } from 'svelte';
 
 	let {
 		tabs,
 		tab = $bindable(),
-		label,
+		ariaLabel,
 		panel
 	}: {
 		/** In order; a count is shown after the label unless it is null. */
@@ -14,7 +15,7 @@
 		/** The tab shown. */
 		tab: T;
 		/** What the strip lists, for screen readers. */
-		label: string;
+		ariaLabel: string;
 		/** A tab's panel content. */
 		panel: Snippet<[T]>;
 	} = $props();
@@ -30,7 +31,7 @@
 </script>
 
 <!-- svelte-ignore a11y_interactive_supports_focus -->
-<div class="tabs" role="tablist" aria-label={label} onkeydown={tabKeys}>
+<div class="tabs" role="tablist" aria-label={ariaLabel} onkeydown={tabKeys}>
 	{#each tabs as entry (entry.id)}
 		<button
 			type="button"

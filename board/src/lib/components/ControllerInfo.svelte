@@ -1,8 +1,8 @@
 <script lang="ts">
-	// A controller's information page, made of the blocks shared with other controller pages: its
-	// header, a bar for each question waiting for an answer, then its conversation, its reports not
-	// yet archived and what was sent to it, one tab at a time. Its model and effort, and messages and
-	// wakes, go through the command line at the bottom of the screen.
+	// A controller's information page, made of blocks: its header, a bar for each question waiting
+	// for an answer, then its conversation, its reports not yet archived and what was sent to it, one
+	// tab at a time. Its model and effort, and messages and wakes, go through the command line at the
+	// bottom of the screen.
 	// Opened for a report, the conversation shows that report where it is in the history; opened
 	// for a question, the question where the message that asked it is. Any message that asked
 	// questions still in the inbox, or answered ones, shows their cards in its place.
@@ -82,7 +82,7 @@
 
 <PendingQuestions status={controller.status} {questions} {onopen} />
 
-<RecordTabs {tabs} bind:tab label="主控的紀錄">
+<RecordTabs {tabs} bind:tab ariaLabel="主控的紀錄">
 	{#snippet panel(id)}
 		{#if id === 'transcript'}
 			<Transcript {controller} {reports} questions={[...questions, ...answered]} {questionCards} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />

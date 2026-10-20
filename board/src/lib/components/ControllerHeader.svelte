@@ -1,5 +1,5 @@
 <script lang="ts">
-	// A controller's header, shared by the pages that show one: one line of who and where it stands
+	// A controller's header: one line of who and where it stands
 	// with its latest phase (the details behind a disclosure) and, while it runs, its context use,
 	// quota, prompt cache and permission mode in small print.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
