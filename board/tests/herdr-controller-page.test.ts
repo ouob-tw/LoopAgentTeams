@@ -569,6 +569,13 @@ for (const [width, name] of [[1280, 'vera'], [390, 'wren']] as const) {
 			await tab.until(`[...document.querySelectorAll(${JSON.stringify(`${dialog} button`)})].some((b) => b.innerText === '放棄切換')`, 'back to the options');
 			expect((await fixture.board(cookie)).agents.find((agent) => agent.id === session)).toMatchObject({ switch: { state: 'stop-failed' } });
 
+			// A confirmation left open is not there when the ⚠ opens the dialog again.
+			await press(dialog, '放棄切換');
+			await press('.dock .pill-slot', '模型切換需要處理');
+			await tab.until(`!document.querySelector(${JSON.stringify(dialog)})`, 'the dialog closed by the ⚠');
+			await press('.dock .pill-slot', '模型切換需要處理');
+			await tab.until(`document.querySelector(${JSON.stringify(dialog)})?.innerText.includes('放棄切換') && !document.querySelector(${JSON.stringify(dialog)}).innerText.includes('放棄這次切換？')`, 'the options, not the confirmation');
+
 			await press(dialog, '放棄切換');
 			await tab.until(`document.querySelector(${JSON.stringify(dialog)}).innerText.includes('放棄這次切換？')`, 'the confirmation again');
 			await press(dialog, '確認放棄');
