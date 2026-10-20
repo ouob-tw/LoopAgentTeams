@@ -1,7 +1,7 @@
-// This device's appearance: theme, overall size, smallest text size, whether the roster is folded and the two column
-// widths. Each is a variable or attribute on the root element, which the styles read, and is
-// remembered in the browser; the startup script in `src/app.html` puts it back before first paint.
-// Only what the settings dialog shows is also kept as state here. The usage line's style is state
+// This device's appearance: theme, overall size, smallest text size, whether the roster is folded, the two column
+// widths and how the usage line reads. Each but the last is a variable or attribute on the root element, which
+// the styles read, and is remembered in the browser; the startup script in `src/app.html` puts it back before
+// first paint. Only what the settings dialog shows is also kept as state here. The usage line's style is state
 // only: the line is not drawn before the page takes over, so it needs nothing before first paint.
 import {
 	FOLDED_KEY,

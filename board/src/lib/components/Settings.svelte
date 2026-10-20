@@ -75,8 +75,12 @@
 		<section>
 			<h3>用量列</h3>
 			<div class="choices" role="group" aria-label="用量列">
-				<button aria-pressed={appearance.usageStyle === 'detailed'} onclick={() => appearance.setUsageStyle('detailed')}>詳細</button>
-				<button aria-pressed={appearance.usageStyle === 'compact'} onclick={() => appearance.setUsageStyle('compact')}>精簡</button>
+				<button aria-pressed={appearance.usageStyle === 'detailed'} onclick={() => appearance.setUsageStyle('detailed')}>
+					詳細
+				</button>
+				<button aria-pressed={appearance.usageStyle === 'compact'} onclick={() => appearance.setUsageStyle('compact')}>
+					精簡
+				</button>
 			</div>
 			<p class="note">資訊頁的用量小字；精簡用英文縮寫，例如 Ctx 62% • 5h 40%。</p>
 		</section>
