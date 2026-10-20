@@ -113,6 +113,36 @@ class TabToFrontTests(unittest.TestCase):
         self.assertEqual(done.returncode, 2)
         self.assertNotIn('Traceback', done.stderr)
 
+    def test_non_object_line_is_skipped_and_error_without_message_falls_back(self):
+        herdr = self.fake([[1, 2], {'id': 'lat-handover', 'error': 'boom'}])
+        done = run_tool(herdr.path, 'wV:tRT')
+        self.assertEqual(done.returncode, 1)
+        self.assertIn('回應裡沒有結果', done.stdout)
+
+    def test_answer_split_across_reads_is_assembled(self):
+        line = (json.dumps({'id': 'lat-handover', 'result': {}}) + '\n').encode()
+        herdr = self.fake([line[:10], line[10:]])
+        self.assertEqual(run_tool(herdr.path, 'wV:tRT').returncode, 0)
+
+    def test_silent_server_times_out(self):
+        module = load()
+        module.TIMEOUT_SECONDS = 0.3
+        # A listening socket that never accepts or answers.
+        silent = os.path.join(self.tmp.name, 'silent.sock')
+        server = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+        server.bind(silent)
+        server.listen(1)
+        self.addCleanup(server.close)
+        self.assertIn('逾時', module.move_to_front('wV:tRT', silent))
+
+    def test_empty_tab_id_is_a_usage_error(self):
+        self.assertEqual(run_tool(os.path.join(self.tmp.name, 'x.sock'), '').returncode, 2)
+
+    def test_relative_xdg_config_home_is_ignored(self):
+        module = load()
+        with mock.patch.dict(os.environ, {'XDG_CONFIG_HOME': 'rel', 'HERDR_SOCKET_PATH': ''}):
+            self.assertEqual(module.socket_path(), str(Path.home() / '.config/herdr/herdr.sock'))
+
     def test_socket_path_precedence(self):
         module = load()
         with mock.patch.dict(os.environ, {'HERDR_SOCKET_PATH': '/a.sock', 'XDG_CONFIG_HOME': '/xdg'}):

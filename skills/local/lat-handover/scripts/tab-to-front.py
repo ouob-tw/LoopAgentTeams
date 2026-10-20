@@ -10,6 +10,7 @@ import json
 import os
 import socket
 import sys
+import time
 from pathlib import Path
 
 REQUEST_ID = 'lat-handover'
@@ -19,7 +20,9 @@ TIMEOUT_SECONDS = 5
 def socket_path():
     if os.environ.get('HERDR_SOCKET_PATH'):
         return os.environ['HERDR_SOCKET_PATH']
-    config = os.environ.get('XDG_CONFIG_HOME') or str(Path.home() / '.config')
+    config = os.environ.get('XDG_CONFIG_HOME', '')
+    if not os.path.isabs(config):  # a relative value is ignored, as the board does
+        config = str(Path.home() / '.config')
     return str(Path(config) / 'herdr' / 'herdr.sock')
 
 
@@ -29,6 +32,7 @@ def move_to_front(tab_id, path):
                           'params': {'tab_id': tab_id, 'insert_index': 0}}) + '\n'
     try:
         with socket.socket(socket.AF_UNIX, socket.SOCK_STREAM) as client:
+            deadline = time.monotonic() + TIMEOUT_SECONDS
             client.settimeout(TIMEOUT_SECONDS)
             client.connect(path)
             client.sendall(request.encode())
@@ -48,6 +52,7 @@ def move_to_front(tab_id, path):
                     error = body.get('error')
                     message = error.get('message') if isinstance(error, dict) else None
                     return message or '回應裡沒有結果'
+                client.settimeout(max(deadline - time.monotonic(), 0.001))
                 chunk = client.recv(4096)
                 if not chunk:
                     return '連線在回應前就關閉了'
