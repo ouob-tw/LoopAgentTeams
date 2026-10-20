@@ -12,7 +12,7 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import type { SentEntry } from '../src/lib/board/answers.ts';
 import { AGENT_DRAFTS_KEY, COMMAND_DRAFT_KEY } from '../src/lib/board/prefs.ts';
-import { NODE, PORT_BASE, sleep, startFixture, type Fixture } from './harness.ts';
+import { NODE, PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
 
 const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
 	(path) => path && existsSync(path)
@@ -171,7 +171,8 @@ beforeAll(async () => {
 	fixture = await startFixture(50, {
 		env: {
 			LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-inject.mjs'), injectDir]),
-			LAT_BOARD_HCOM_TIMEOUT_SECONDS: '1'
+			LAT_BOARD_HCOM_TIMEOUT_SECONDS: '1',
+			LAT_BOARD_HERDR_TIMEOUT_SECONDS: '2'
 		}
 	});
 	cookie = await fixture.login('herdr-controller-send');
@@ -340,6 +341,90 @@ test.skipIf(!CHROME)('an interrupt Herdr does not carry out says why, is not tri
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).disabled`)).toBe(false);
 	} finally {
 		setHerdr();
+		await fixture.refresh(cookie);
+	}
+}, 60_000);
+
+test.skipIf(!CHROME)('an interrupt whose Herdr command times out says so, is tried once, and is in the sent log as failed', async () => {
+	setHerdr({ slowMs: { 'agent send-keys': 4_000 } });
+	try {
+		await visit(1280, '?controller=s-lead');
+		await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
+		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
+		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
+		await tab.eval(`document.querySelector(${JSON.stringify(CONFIRM_STOP)}).click()`);
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('Herdr 的按鍵指令逾時（2 秒），不確定有沒有中斷。')`, 'the reason');
+		expect(await tab.eval<string>(`document.querySelector('.dock').innerText`)).not.toContain('已對');
+		// Past the slow command's own end: still the one attempt.
+		await sleep(3_000);
+		expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);
+		await tab.eval(click('.detail [role="tablist"]', '送出紀錄'));
+		await tab.until(
+			`document.querySelector('#panel-sent:not([hidden]) li[data-kind="agent-action"]')?.innerText.includes('✗ Herdr 的按鍵指令逾時（2 秒）')`,
+			'the failed row'
+		);
+	} finally {
+		setHerdr();
+		await fixture.refresh(cookie);
+	}
+}, 60_000);
+
+test.skipIf(!CHROME)('only blank space typed keeps the stop; a line naming a controller is sent or wakes instead', async () => {
+	await visit(1280, '?controller=s-lead');
+	await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
+	await type('  \n ');
+	await sleep(200);
+	expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
+	for (const [line, label] of [
+		['@lead 先別停', ''],
+		['@luna 醒醒', '喚醒']
+	]) {
+		await type(line);
+		await tab.until(`document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === ${JSON.stringify(label)}`, `the ${label} button`);
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(false);
+	}
+	expect(herdrCalls()).toEqual([]);
+}, 60_000);
+
+test.skipIf(!CHROME)('the confirmation is cancelled without a key pressed, and closes when the controller changes or stops working', async () => {
+	const sun = fixture.bound('sun', 'sun', { session_id: 's-sun' });
+	fixture.list([lead, gone, sun]);
+	fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun')] });
+	await fixture.refresh(cookie);
+	const open = async () => {
+		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
+		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
+		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
+	};
+	const confirmShown = () => tab.eval<boolean>(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`);
+	try {
+		await visit(1280, '?controller=s-lead');
+		await tab.until(pageOf('lat'), "lead's page");
+		await open();
+		await tab.eval(click('.dock .popup', '取消'));
+		await tab.until(`!document.querySelector('.dock .popup')`, 'the confirmation closed');
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
+
+		// Another controller opened: closed, and not shown for it.
+		await open();
+		await tab.eval(`document.querySelector('.unfolded button.person[data-controller="sun"]').click()`);
+		await tab.until(`${pageOf('sun')} && !!document.querySelector(${JSON.stringify(STOP)})`, "sun's page");
+		expect(await confirmShown()).toBe(false);
+
+		// It stops working, a question waiting on the user, and works again: closed, and not back.
+		await open();
+		fixture.list([lead, gone, { ...sun, questions: [question()] }]);
+		await fixture.refresh(cookie);
+		await tab.until(`!document.querySelector(${JSON.stringify(STOP)})`, 'no stop while it waits');
+		expect(await confirmShown()).toBe(false);
+		fixture.list([lead, gone, sun]);
+		await fixture.refresh(cookie);
+		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
+		expect(await confirmShown()).toBe(false);
+		expect(herdrCalls()).toEqual([]);
+	} finally {
+		fixture.list([lead, gone]);
+		fixture.setHcom({ agents: HCOM_AGENTS });
 		await fixture.refresh(cookie);
 	}
 }, 60_000);

@@ -176,6 +176,10 @@
 		optionsOpen = false;
 		confirmingStop = false;
 	});
+	// Nothing to interrupt any more closes it, so it does not come back by itself when there is again.
+	$effect.pre(() => {
+		if (!stopping) confirmingStop = false;
+	});
 
 	async function submit() {
 		const from = owner;
