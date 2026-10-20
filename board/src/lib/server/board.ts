@@ -20,6 +20,8 @@ import { createClosedRoster } from './closed-agents.ts';
 import { CLOSED_KEEP_MS, EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
+import type { QuotaSnapshot } from '../board/quota.ts';
+import { createQuotaPoller, readClaudeQuota, readCodexQuota } from './quota.ts';
 
 const HEARTBEAT_MS = 15_000;
 
@@ -53,6 +55,8 @@ export interface Board {
 	/** Tell every open page that an agent's operation record grew: the snapshot does not hold it,
 	 *  and an action often changes nothing that it does. */
 	agentActed(agentId: string): void;
+	/** The 額度 tab's last reading; null until the first one is done. */
+	quota(): QuotaSnapshot | null;
 	close(): void;
 }
 
@@ -121,6 +125,21 @@ function createBoard(): Board {
 	const deviceWatcher = createSourceWatcher(dropRevoked);
 	const deviceTargets: WatchTargets = new Map([[config.stateDir, new Set([DEVICES_FILE])]]);
 	deviceWatcher.sync(deviceTargets);
+
+	// Read on its own timer, not with the board's sources: a slow or failing read leaves the rest alone.
+	const quotaPoller = createQuotaPoller(
+		{
+			claude: () => readClaudeQuota(config.cswapCommand, config.cswapTimeoutMs, config.now()),
+			codex: () => readCodexQuota(config.codexMultiAuthDir, config.now())
+		},
+		{
+			intervalMs: config.quotaIntervalMs,
+			now: config.now,
+			onChange: (quota) => {
+				for (const stream of streams) stream.send('quota', JSON.stringify(quota));
+			}
+		}
+	);
 
 	const heartbeat = setInterval(() => {
 		dropRevoked();
@@ -369,8 +388,10 @@ function createBoard(): Board {
 		agentActed(agentId) {
 			for (const stream of streams) stream.send('agent-action', JSON.stringify({ agentId }));
 		},
+		quota: () => quotaPoller.current(),
 		close() {
 			closed = true;
+			quotaPoller.close();
 			clearTimeout(debounce);
 			clearTimeout(fallback);
 			clearInterval(heartbeat);

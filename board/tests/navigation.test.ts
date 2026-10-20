@@ -102,6 +102,17 @@ test('the Herdr tab rides along in every address but an agent\'s, which names it
 	expect(tabIn(new URLSearchParams('?tab=other'))).toBeNull();
 });
 
+test('the 額度 tab rides along in every address, an agent\'s too', () => {
+	const places: Place[] = [null, { kind: 'launch' }, CONTROLLER, REPORT, { kind: 'agent', id: 's-1' }, { kind: 'new-agent', workspace: 'wA' }];
+	for (const place of places) {
+		const params = new URLSearchParams(searchOf(place, 'quota'));
+		expect(tabIn(params)).toBe('quota');
+		expect(samePlace(placeIn(params), place)).toBe(true);
+	}
+	expect(searchOf(null, 'quota')).toBe('?tab=quota');
+	expect(searchOf({ kind: 'agent', id: 's-1' }, 'quota')).toBe('?agent=s-1&tab=quota');
+});
+
 test('question, its controller, back to the question, back to the list, then back leaves the board', () => {
 	const history = new BrowserHistory();
 	const screen = boardOn(history);

@@ -2,6 +2,7 @@
 // reconnecting. Uses fetch rather than EventSource so a revoked device (401) can be told apart
 // from a server that is down.
 import type { ArchivePage } from './archive.ts';
+import type { QuotaSnapshot } from './quota.ts';
 import type { BoardSnapshot, InboxQuestion } from './types.ts';
 
 export type LinkState = 'connecting' | 'live' | 'offline';
@@ -15,6 +16,8 @@ export interface ConnectionOptions {
 	onTabMoved?(): void;
 	/** Something was done to this agent; its operation record is not in the snapshot. */
 	onAgentAction?(agentId: string): void;
+	/** The accounts' quotas as the server last read them; not part of the snapshot. */
+	onQuota?(quota: QuotaSnapshot): void;
 	fetch?: typeof fetch;
 	retryMs?: number;
 }
@@ -59,6 +62,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		else if (event === 'unpaired') unpaired();
 		else if (event === 'tab-moved') options.onTabMoved?.();
 		else if (event === 'agent-action') options.onAgentAction?.(JSON.parse(data).agentId);
+		else if (event === 'quota') options.onQuota?.(JSON.parse(data));
 	}
 
 	async function listen(): Promise<void> {

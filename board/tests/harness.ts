@@ -6,6 +6,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ArchivePage } from '../src/lib/board/archive.ts';
 import { connectBoard, type LinkState } from '../src/lib/board/client.ts';
+import type { QuotaSnapshot } from '../src/lib/board/quota.ts';
 import type {
 	BoardSnapshot,
 	Controller,
@@ -234,6 +235,8 @@ export interface Watch {
 	unpaired: boolean;
 	/** The agents the server announced an action on, in order. */
 	agentActions: string[];
+	/** The 額度 readings the server sent, in order. */
+	quotas: QuotaSnapshot[];
 	latest(): BoardSnapshot | undefined;
 	close(): void;
 }
@@ -277,6 +280,9 @@ export async function startFixture(
 		LAT_BOARD_HCOM_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-hcom.mjs'), dir]),
 		// Every read lists Herdr's agents too; never the real Herdr's.
 		LAT_BOARD_HERDR_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-herdr.mjs'), dir]),
+		// The 額度 tab reads claude-swap's list and codex-multi-auth's files; never the real ones.
+		LAT_BOARD_CSWAP_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-cswap.mjs'), dir]),
+		CODEX_MULTI_AUTH_DIR: join(dir, 'codex-multi-auth'),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,
 		HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state'),
 		...options.env
@@ -419,6 +425,7 @@ export async function startFixture(
 				states: [],
 				unpaired: false,
 				agentActions: [],
+				quotas: [],
 				latest: () => watch.snapshots.at(-1),
 				close: () => connection.close()
 			};
@@ -428,6 +435,7 @@ export async function startFixture(
 				onState: (state) => watch.states.push(state),
 				onUnpaired: () => (watch.unpaired = true),
 				onAgentAction: (agentId) => watch.agentActions.push(agentId),
+				onQuota: (quota) => watch.quotas.push(quota),
 				retryMs: 200
 			});
 			watches.push(watch);

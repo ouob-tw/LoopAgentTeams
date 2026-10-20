@@ -42,6 +42,7 @@
 	import Inbox from '#lib/components/Inbox.svelte';
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import NewController from '#lib/components/NewController.svelte';
+	import QuotaList from '#lib/components/QuotaList.svelte';
 	import Roster from '#lib/components/Roster.svelte';
 	import RosterRail from '#lib/components/RosterRail.svelte';
 	import Settings from '#lib/components/Settings.svelte';
@@ -67,7 +68,7 @@
 
 	/** The middle column's list. The address names it, so the server draws the right one at first;
 	 *  an address without one (typed, or from before) gets this device's last choice. */
-	const MIDDLE_TABS = ['inbox', 'agents'] as const;
+	const MIDDLE_TABS = ['inbox', 'agents', 'quota'] as const;
 	let middle = $state<MiddleTab>(tabIn(page.url.searchParams) ?? 'inbox');
 	onMount(() => {
 		if (tabIn(new URLSearchParams(location.search))) return;
@@ -555,8 +556,11 @@
 				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => setMiddle('agents')}
 					>Herdr<small>{agents.length}</small></button
 				>
+				<button type="button" data-middle="quota" aria-pressed={middle === 'quota'} onclick={() => setMiddle('quota')}>額度</button>
 			</div>
-			{#if middle === 'agents'}
+			{#if middle === 'quota'}
+				<QuotaList quota={board.quota} />
+			{:else if middle === 'agents'}
 				<AgentList {agents} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
 				<ClosedAgents closed={board.snapshot.closed} controllers={herdrControllers} />
 			{:else}

@@ -37,23 +37,23 @@ export function placeIn(search: Pick<URLSearchParams, 'get' | 'has'>): Place {
 	return null;
 }
 
-/** The middle column's list: the inbox, or every agent Herdr lists. */
-export type MiddleTab = 'inbox' | 'agents';
+/** The middle column's list: the inbox, every agent Herdr lists, or the accounts' quotas. */
+export type MiddleTab = 'inbox' | 'agents' | 'quota';
 
 /** The middle tab the address names; null when it names none. An agent, or a workspace's
  *  new-agent form, is on the Herdr tab unless the address says otherwise. */
 export function tabIn(search: Pick<URLSearchParams, 'get' | 'has'>): MiddleTab | null {
 	const tab = search.get('tab');
-	if (tab === 'agents' || tab === 'inbox') return tab;
+	if (tab === 'agents' || tab === 'inbox' || tab === 'quota') return tab;
 	return search.has('agent') || search.has('new-agent') ? 'agents' : null;
 }
 
 /** Places that belong to the Herdr tab. */
 const onAgentsTab = (place: Place) => place?.kind === 'agent' || place?.kind === 'new-agent';
 
-/** The query that names a place, with the Herdr tab when that one is shown (an agent's place
- *  says it already, and so says the inbox when that one is), so a reload draws the right list at
- *  once; empty for the list on the inbox. */
+/** The query that names a place, with the Herdr or 額度 tab when that one is shown (an agent's
+ *  place says the Herdr tab already, and so says the inbox when that one is), so a reload draws the
+ *  right list at once; empty for the list on the inbox. */
 export function searchOf(place: Place, tab?: MiddleTab): string {
 	const params = new URLSearchParams(
 		place === null || place.kind === 'launch'
@@ -66,7 +66,7 @@ export function searchOf(place: Place, tab?: MiddleTab): string {
 						? { item: place.key }
 						: { controller: place.id }
 	);
-	if (tab && (onAgentsTab(place) ? tab === 'inbox' : tab === 'agents')) params.set('tab', tab);
+	if (tab && (onAgentsTab(place) ? tab !== 'agents' : tab !== 'inbox')) params.set('tab', tab);
 	const query = `${params}`;
 	if (place?.kind === 'launch') return query ? `?launch&${query}` : '?launch';
 	return query ? `?${query}` : '';

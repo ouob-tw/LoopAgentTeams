@@ -4,6 +4,7 @@ import { connectBoard, type Connection, type LinkState } from './client.ts';
 import { messaging } from './messaging.svelte.ts';
 import { toasts } from './toasts.svelte.ts';
 import { reaches, withEarlier, withNewest, type ArchivePage } from './archive.ts';
+import type { QuotaSnapshot } from './quota.ts';
 import type { BoardSnapshot, InboxQuestion } from './types.ts';
 
 export class LiveBoard {
@@ -12,6 +13,8 @@ export class LiveBoard {
 	refreshing = $state(false);
 	/** Counts the Herdr tab moves the server announced, so pages showing a position read it again. */
 	tabMoves = $state(0);
+	/** The 額度 tab's accounts as the server last read them; null until it sends them. */
+	quota = $state.raw<QuotaSnapshot | null>(null);
 	/** The processed items loaded so far, newest first; null until loaded, 'failed' when the newest
 	 *  page could not be read: then only the retry button, or opening the view again, reads it. */
 	archive = $state<ArchivePage | 'failed' | null>(null);
@@ -39,6 +42,7 @@ export class LiveBoard {
 			onSnapshot: (snapshot) => (this.snapshot = snapshot),
 			onState: (state) => (this.link = state),
 			onTabMoved: () => this.tabMoves++,
+			onQuota: (quota) => (this.quota = quota),
 			// Only a record this page has loaded is shown anywhere; others load when opened. A
 			// controller's sent log has the interrupts of its turn.
 			onAgentAction: (agentId) => {
