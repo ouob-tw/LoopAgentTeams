@@ -839,7 +839,7 @@ class NotificationTests(PanelTestCase):
         app = self.make_app(NOTIFY_DELAY=30)
         async with app.run_test() as pilot:
             with patch.object(
-                self.core, "mark_notification_pending", side_effect=OSError("disk full"),
+                self.core.bindings, "mark_notification_pending", side_effect=OSError("disk full"),
             ):
                 await self.submit_first_option(app, pilot)
             self.assertIn("- [x] 送出", self.questions.read_text())
@@ -857,7 +857,7 @@ class NotificationTests(PanelTestCase):
         app = self.make_app(NOTIFY_DELAY=30)
         async with app.run_test() as pilot:
             with patch.object(
-                self.core, "mark_notification_pending", side_effect=OSError("disk full"),
+                self.core.bindings, "mark_notification_pending", side_effect=OSError("disk full"),
             ):
                 await self.submit_first_option(app, pilot)
                 for _ in range(2):
