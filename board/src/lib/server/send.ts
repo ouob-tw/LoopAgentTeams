@@ -1,11 +1,11 @@
 // Sending a message to a controller: the text is typed into the controller's client input and
 // submitted, the way the stall watcher nudges an agent. Never an HCOM message, so the controller
 // treats it as the user typing in that tab. One attempt, no retry, no other channel.
-import { execFile } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { CLOSED_REASON, ENDED_REASON, UNKNOWN_CONTROLLER_REASON, type SendResponse, type SentMessage } from '../board/messages.ts';
 import type { Board } from './board.ts';
 import type { BoardConfig } from './config.ts';
+import { runCommand } from './external.ts';
 import { listControllers } from './helper.ts';
 import { isClosed } from './model.ts';
 import { appendSent } from './sent-log.ts';
@@ -38,26 +38,13 @@ export function injectCalls(text: string): string[][] {
 }
 
 /** Runs one call of the input command; resolves with why it failed, or null when it succeeded. */
-function runInject(config: BoardConfig, hcomName: string, args: string[]): Promise<string | null> {
-	const [command, ...prefix] = config.injectCommand;
+async function runInject(config: BoardConfig, hcomName: string, args: string[]): Promise<string | null> {
 	const timeout = config.injectTimeoutMs;
-	const failed = (detail: string) => `輸入到 @${hcomName} 的分頁失敗：${detail}`;
-	return new Promise((resolve) => {
-		const done = (error: (Error & { killed?: boolean }) | null, stdout: string, stderr: string) => {
-			if (!error) return resolve(null);
-			if (error.killed) {
-				return resolve(`輸入指令逾時（${timeout / 1000} 秒），文字可能已經打進輸入框但沒有送出。`);
-			}
-			// The command prints its reason on standard output; standard error may only hold notices.
-			resolve(failed(stdout.trim().split('\n')[0] || stderr.trim().split('\n').at(-1) || error.message));
-		};
-		try {
-			execFile(command, [...prefix, hcomName, ...args], { timeout }, done);
-		} catch (error) {
-			// Text that cannot be a command argument at all, such as one holding a NUL character.
-			resolve(failed((error as Error).message));
-		}
-	});
+	// The command prints its reason on standard output; standard error may only hold notices.
+	const run = await runCommand(config.injectCommand, [hcomName, ...args], { timeoutMs: timeout, failureFrom: 'stdout-first' });
+	if (run.failure === null) return null;
+	if (run.timedOut) return `輸入指令逾時（${timeout / 1000} 秒），文字可能已經打進輸入框但沒有送出。`;
+	return `輸入到 @${hcomName} 的分頁失敗：${run.failure}`;
 }
 
 /** Types the text into the controller's input box and submits it. One attempt per call, and no
