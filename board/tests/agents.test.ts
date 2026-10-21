@@ -157,7 +157,7 @@ test('a Herdr list that cannot be read is reported and the last one stands in un
 	setHerdr([herdrAgent('s-new')], { raw: { 'tab list': 'not json' } });
 	snapshot = await fixture.refresh(cookie);
 	expect(snapshot.agents.map((entry) => entry.id)).toEqual(['s-kept']);
-	expect(snapshot.errors).toEqual(['Herdr 的分頁清單讀不到：輸出不是預期的 JSON，「Herdr」分頁沿用上次讀到的清單']);
+	expect(snapshot.errors).toEqual(['Herdr 的分頁清單讀不到：回應不是預期的 JSON，「Herdr」分頁沿用上次讀到的清單']);
 
 	setHerdr([{ pane_id: 'wA:p1' }]);
 	expect((await fixture.refresh(cookie)).errors).toEqual(['Herdr 的 Agent 清單不是預期的格式，「Herdr」分頁沿用上次讀到的清單']);

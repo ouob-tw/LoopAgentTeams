@@ -1,4 +1,5 @@
 // The board's data model, shared by the server and the UI.
+import type { HerdrPlace } from './format.ts';
 import type { SwitchView } from './models.ts';
 import type { ClosedList } from './closed-agents.ts';
 
@@ -112,6 +113,8 @@ export interface Controller {
 	running: boolean;
 	/** Where the controller runs in Herdr; null once it is idle or closed. */
 	herdr: { workspace: string; tab: string; pane: string } | null;
+	/** Herdr location from the same roster read; a string explains a failed read. */
+	herdrPlace?: HerdrPlace | string | null;
 	lastReportAt: string | null;
 	/** Why some of this controller's sources could not be read; null when all were. */
 	error: string | null;

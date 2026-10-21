@@ -2,28 +2,36 @@
 // against the fake hcom and Herdr commands. Nothing here starts an agent or touches a real Herdr.
 import { afterAll, beforeEach, expect, test } from 'bun:test';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { waitToAppear } from '../src/lib/server/appear.ts';
 import { loadConfig } from '../src/lib/server/config.ts';
-import { NODE } from './harness.ts';
+import { answerHerdrList, NODE } from './harness.ts';
 
 const dir = mkdtempSync(join(tmpdir(), 'lat-board-appear-'));
+const socketPath = join(dir, 'herdr.sock');
+const server = createServer((connection) => connection.on('data', async (chunk) => {
+	const answer = await answerHerdrList(dir, JSON.parse(chunk.toString().trim()));
+	if (!connection.destroyed) connection.end(answer ?? '');
+}));
+await new Promise<void>((resolve) => server.listen(socketPath, resolve));
 const config = loadConfig({
+	HERDR_SOCKET_PATH: socketPath,
 	LAT_BOARD_HCOM_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-hcom.mjs'), dir]),
 	LAT_BOARD_HERDR_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-herdr.mjs'), dir])
 });
-afterAll(() => rmSync(dir, { recursive: true, force: true }));
+afterAll(() => { server.close(); rmSync(dir, { recursive: true, force: true }); });
 
 const broken = { exit: 1, stderr: 'herdr socket gone' };
 /** How many times Herdr's agent list was asked for. */
 const agentLists = () => {
-	const file = join(dir, 'herdr-list-calls.jsonl');
+	const file = join(dir, 'herdr-socket-calls.jsonl');
 	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter((line) => line === '["agent","list"]').length : 0;
 };
 
 beforeEach(() => {
-	rmSync(join(dir, 'herdr-list-calls.jsonl'), { force: true });
+	rmSync(join(dir, 'herdr-socket-calls.jsonl'), { force: true });
 	// hcom lists the client, without a pane: only Herdr's lists can end the wait early.
 	writeFileSync(join(dir, 'hcom.json'), JSON.stringify({ agents: [{ name: 'tavi', session_id: 's-tavi' }] }));
 });

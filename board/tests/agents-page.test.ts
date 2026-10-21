@@ -1,3 +1,4 @@
+import { answerHerdrList } from './harness.ts';
 // The 所有 Agent tab in a real browser: headless Chrome driven over its DevTools protocol, on the
 // built board with fake data, wide and at a phone's width. Skipped when the host has no Chrome.
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -129,8 +130,11 @@ function record(session: string, texts: string[]) {
 
 beforeAll(async () => {
 	socket = createServer((connection) => {
-		connection.on('data', (chunk) => {
+		connection.on('data', async (chunk) => {
 			const request = JSON.parse(chunk.toString().trim());
+			if (!fixture) return connection.write(JSON.stringify({ id: request.id, result: { agents: [], workspaces: [], tabs: [] } }) + '\n');
+			const listing = await answerHerdrList(fixture.dir, request);
+			if (listing !== null) return connection.write(listing);
 			appendFileSync(join(fixture.dir, 'herdr-calls.jsonl'), JSON.stringify(['socket', request.method, request.params]) + '\n');
 			if (moveFails) return connection.write(JSON.stringify({ id: request.id, error: { message: moveFails } }) + '\n');
 			const planFile = join(fixture.dir, 'herdr.json');

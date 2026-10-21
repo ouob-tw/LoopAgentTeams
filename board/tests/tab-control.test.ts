@@ -7,7 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { AgentAction, AgentActionResponse } from '../src/lib/board/agent-actions.ts';
 import { loadConfig } from '../src/lib/server/config.ts';
-import { startFixture, type Fixture } from './harness.ts';
+import { answerHerdrList, startFixture, type Fixture } from './harness.ts';
 
 const socketDir = mkdtempSync(join(tmpdir(), 'lat-board-tab-control-'));
 const socketPath = join(socketDir, 'herdr.sock');
@@ -22,8 +22,11 @@ const readJson = (file: string) => JSON.parse(readFileSync(file, 'utf8'));
 
 beforeAll(async () => {
 	socket = createServer((connection) => {
-		connection.on('data', (chunk) => {
+		connection.on('data', async (chunk) => {
 			const request = JSON.parse(chunk.toString().trim());
+			if (!fixture) return connection.write(JSON.stringify({ id: request.id, result: { agents: [], workspaces: [], tabs: [] } }) + '\n');
+			const listing = await answerHerdrList(fixture.dir, request);
+			if (listing !== null) return connection.write(listing);
 			appendFileSync(join(fixture.dir, 'herdr-calls.jsonl'), JSON.stringify(['socket', request.method, request.params]) + '\n');
 			if (moveFails) return connection.write(JSON.stringify({ id: request.id, error: { message: moveFails } }) + '\n');
 			// As Herdr 0.9.5 does: the tab goes before the one at insert_index among the workspace's
