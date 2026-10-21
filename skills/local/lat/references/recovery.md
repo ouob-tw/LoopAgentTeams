@@ -22,9 +22,9 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" activate --client "
   --tasks "$tasks" --hcom-name "$hcom_name"
 ```
 
-activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；Claude：`CLAUDE_CODE_SESSION_ID`），不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。`--workspace` 須是 Git worktree 根目錄。`--hcom-name` 一律必填，只接受明確值，不讀 `HCOM_INSTANCE_NAME`；缺少時不建立 session 紀錄，照錯誤中的完整指令補上名稱重跑。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑與「已開始第 N 輪」（沒有歷史的紀錄視為第 1 輪），紀錄 client、session、主控角色、工作區、active 狀態、HCOM 名稱與恢復路徑（含任務卡目錄），並在背景啟動停住監控 `lat-watch.py run`（pid 在 `.lat/watch/<session-id>.pid`，輸出在同名 `.log`）。active 紀錄內容不同時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
+activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；Claude：`CLAUDE_CODE_SESSION_ID`），不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。`--workspace` 須是 Git worktree 根目錄。`--hcom-name` 一律必填，只接受明確值，不讀 `HCOM_INSTANCE_NAME`；缺少時不建立 session 紀錄，照錯誤中的完整指令補上名稱重跑。session 紀錄、監控 pid／log 與主控自己的等待聲明一律放在主工作區共用的 `.lat`；在 linked worktree 內 activate 也一樣，不在 worktree 內建 `.lat`（更新前已留在 worktree `.lat` 的紀錄照原位置讀取與停用，不搬移）。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑與「已開始第 N 輪」（沒有歷史的紀錄視為第 1 輪），紀錄 client、session、主控角色、工作區、active 狀態、HCOM 名稱與恢復路徑（含任務卡目錄），並在背景啟動停住監控 `lat-watch.py run`（pid 在 `.lat/watch/<session-id>.pid`，輸出在同名 `.log`）。active 紀錄內容不同時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
 
-   同一對話在上一輪停用後，可在同一工作區用上方 activate 指令與本輪的路徑、HCOM 名稱開始新一輪。上一輪的狀態、技能目錄、恢復路徑、HCOM 名稱與技能文字指紋依序保存在紀錄的 `history` 清單；目前欄位換成本輪內容，重新計算指紋，照常綁定面板、啟動監控與設定分頁名稱。deactivate、恢復 hook 與回合結束檢查只讀目前欄位；不清除或搬移共用的待決紀錄、任務卡、監控狀態與等待聲明。其他狀態或無法辨識的紀錄仍拒絕；不要刪除或手動重建 session 紀錄。
+   同一對話在上一輪停用後，可在同一工作區用上方 activate 指令與本輪的路徑、HCOM 名稱開始新一輪。上一輪的狀態、結束時間、技能目錄、恢復路徑、HCOM 名稱與技能文字指紋依序保存在紀錄的 `history` 清單；目前欄位換成本輪內容（不帶結束時間），重新計算指紋，照常綁定面板、啟動監控與設定分頁名稱。deactivate、恢復 hook 與回合結束檢查只讀目前欄位；不清除或搬移共用的待決紀錄、任務卡、監控狀態與等待聲明。其他狀態或無法辨識的紀錄仍拒絕；不要刪除或手動重建 session 紀錄。
 
    舊版 activate 建立的 active 紀錄沒有 `tasks_path` 與 `hcom_name`。恢復 hook 會照常提示讀取紀錄，但不會啟動停住監控；請將上方同一條 activate 指令的 `--tasks "$tasks" --hcom-name "$hcom_name"` 換成真實值後重跑。指令會在原紀錄補上這兩個欄位，保留其餘內容，然後啟動監控；不要刪除或重建 session 紀錄。舊紀錄在升級前維持原有待決檢查，不寫主控回報；升級後才開始記錄，不推測 HCOM 名稱。
 
@@ -34,8 +34,8 @@ activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；C
 
    安裝或更新技能後，從不同技能目錄執行 hook／deactivate 仍會辨認並沿用本輪既有的監控；需要重啟時，使用紀錄的 `skill_dir/scripts/lat-watch.py`，與本輪的技能文字更新基準一致。
 
-3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`（Claude 的提示已附這兩份全文，不必另讀），以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的 `.lat/questions-<hcom-name>.md`（尚未寫題時不存在，不算缺檔）。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。hook 發現紀錄仍 active 但停住監控沒在執行時，會在提示前自動重新啟動它。面板啟用且 hook 取得 Herdr workspace／tab／pane 編號時，也會把自己的面板綁定更新為目前位置；取不到就保持原綁定。
-4. 交付、取消或換班時停用，紀錄狀態一律改為 `ended`（舊紀錄的 `completed`／`cancelled` 視同 `ended`）。換班時加 `--successor <新主控 HCOM 名稱>` 記下接手者。deactivate 會停止自己的停住監控並解除自己的綁定，沒有綁定也不報錯；成功後紀錄保留，後續 compact／resume 不再提示。
+3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`（Claude 的提示已附這兩份全文，不必另讀），以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的 `.lat/questions-<hcom-name>.md`（尚未寫題時不存在，不算缺檔）。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。hook 發現紀錄仍 active 但停住監控沒在執行時（包括主控掉線 60 分鐘後監控自停、紀錄留有 `watcher_stopped` 的情況，見 [停住監控](stall-watch.md#主控掉線時自停)），會在提示前自動重新啟動它。面板啟用且 hook 取得 Herdr workspace／tab／pane 編號時，也會把自己的面板綁定更新為目前位置；取不到就保持原綁定。
+4. 交付、取消或換班時停用，紀錄狀態一律改為 `ended`（舊紀錄的 `completed`／`cancelled` 視同 `ended`）。換班時加 `--successor <新主控 HCOM 名稱>` 記下接手者。deactivate 會停止自己的停住監控並解除自己的綁定，沒有綁定也不報錯，並在紀錄寫入結束時間 `ended_at_utc`（已結束的紀錄再停用不改寫；沒有結束時間的舊紀錄不補）；成功後紀錄保留，後續 compact／resume 不再提示。
 
 ```bash
 uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client "$client" \
