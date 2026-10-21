@@ -22,5 +22,14 @@ for (const instance of [md, links]) {
 
 export const renderMarkdown = (text: string) => md.render(text);
 
+/** The lines of each code block as it would be shown, fenced or indented, inside lists and quotes
+ *  too: `[first, end)`, counted from 0, in order. */
+export function codeBlockLines(text: string): [number, number][] {
+	return md
+		.parse(text, {})
+		.filter((token) => (token.type === 'fence' || token.type === 'code_block') && token.map)
+		.map((token) => token.map as [number, number]);
+}
+
 /** One line of plain text as HTML, its web addresses as links. */
 export const renderLinks = (text: string) => links.renderInline(text);

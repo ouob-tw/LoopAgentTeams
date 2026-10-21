@@ -1,5 +1,6 @@
 // Translating a conversation's English replies into Chinese: which texts count as English, and
 // what the page and the board server send each other for it.
+import { codeBlockLines } from './markdown.ts';
 
 /** Most texts one request may ask for, and the longest one. */
 export const MAX_TEXTS = 50;
@@ -8,8 +9,18 @@ export const MAX_LENGTH = 20_000;
 /** One line of the answer, sent as soon as that text is ready: by its place in the request. */
 export type TranslatedLine = { index: number; text: string } | { index: number; error: string };
 
-/** What says nothing about the language: code, links and paths. */
-const NOT_PROSE = [/^(```|~~~)[^\n]*\n[\s\S]*?^\1[^\n]*$/gm, /`[^`\n]+`/g, /\bhttps?:\/\/\S+/g, /\S*\/\S*/g];
+/** Inline code, links and anything with a slash, such as a path. */
+const NOT_PROSE = [/``[^\n]+?``|`[^`\n]+`/g, /\bhttps?:\/\/\S+/g, /\S*\/\S*/g];
+
+/** The text with each code block (its whole lines, as the board's Markdown sees them), each
+ *  inline code, link and path put through `swap`, in that order. */
+export function swapCode(text: string, swap: (found: string) => string): string {
+	const lines = text.split('\n');
+	for (const [first, end] of codeBlockLines(text).toReversed()) lines.splice(first, end - first, swap(lines.slice(first, end).join('\n')));
+	let rest = lines.join('\n');
+	for (const pattern of NOT_PROSE) rest = rest.replace(pattern, swap);
+	return rest;
+}
 const WORD = /[A-Za-z]{2,}/g;
 /** Han, kana and the Chinese punctuation. */
 const CJK = /[　-〿぀-ヿ㐀-鿿豈-﫿＀-￯]/g;
@@ -22,8 +33,7 @@ const MAX_CJK_PER_WORD = 0.5;
 /** Whether a text is mostly English and worth translating: a Chinese text that names a few
  *  English terms is not. */
 export function isEnglish(text: string): boolean {
-	let prose = text;
-	for (const pattern of NOT_PROSE) prose = prose.replace(pattern, ' ');
+	const prose = swapCode(text, () => ' ');
 	const words = prose.match(WORD)?.length ?? 0;
 	const cjk = prose.match(CJK)?.length ?? 0;
 	return words >= MIN_WORDS && cjk <= words * MAX_CJK_PER_WORD;

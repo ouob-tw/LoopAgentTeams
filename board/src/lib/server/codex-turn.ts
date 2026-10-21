@@ -34,15 +34,18 @@ function end(child: ChildProcess): void {
 
 /** How much of the end of Codex's own error output goes into the journal. */
 const STDERR_TAIL = 300;
-/** What is kept while reading, so a secret is whole when it is taken out, before the tail is cut. */
+/** The least kept of stderr while reading. */
 const STDERR_KEPT = 16_384;
+
+/** The value with every secret taken out. */
+function hide(turn: CodexTurn, value: string): string {
+	for (const secret of turn.secrets) if (secret) value = value.replaceAll(secret, '…');
+	return value;
+}
 
 /** One journal line for a failed turn: why, how the child ended, and the tail of what it wrote to stderr. */
 function logFailure(turn: CodexTurn, reason: string, ended: string | null, stderr: string): void {
-	const clean = (value: string) => {
-		for (const secret of turn.secrets) if (secret) value = value.replaceAll(secret, '…');
-		return value.replace(/\s+/g, ' ').trim();
-	};
+	const clean = (value: string) => hide(turn, value).replace(/\s+/g, ' ').trim();
 	const tail = clean(stderr).slice(-STDERR_TAIL);
 	console.error(`${turn.journal} failed: ${clean(reason)}${ended ? ` (${ended})` : ''}${tail ? ` stderr: ${tail}` : ''}`);
 }
@@ -77,8 +80,13 @@ export function codexTurn(turn: CodexTurn): Promise<Outcome<string>> {
 			ended = code !== null ? `exit ${code}` : `signal ${signal}`;
 			finish({ ok: false, reason: 'Codex 提前結束' });
 		});
-		child.stderr!.on('data', (chunk: Buffer) => {
-			stderr = (stderr + chunk.toString()).slice(-STDERR_KEPT);
+		// Secrets are taken out as it comes, before it is cut: twice the longest is kept, so one is
+		// whole once its end has come, however long.
+		const kept = Math.max(STDERR_KEPT, 2 * Math.max(0, ...turn.secrets.map((secret) => secret?.length ?? 0)));
+		// Decoded as it comes, so a character split between two chunks does not break a secret.
+		child.stderr!.setEncoding('utf8');
+		child.stderr!.on('data', (chunk: string) => {
+			stderr = hide(turn, stderr + chunk).slice(-kept);
 		});
 		child.stderr!.on('error', () => {
 			// The exit says why.

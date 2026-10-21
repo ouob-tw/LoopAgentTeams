@@ -1,13 +1,14 @@
 // Translating a conversation's English replies: which texts count as English, code and links kept
 // as written, translations saved and expired, and the page's requests. No server and no Codex.
-import { afterEach, expect, test } from 'bun:test';
-import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { afterEach, expect, spyOn, test } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { isEnglish, Translations, type Translation } from '../src/lib/board/translate.ts';
-import type { CodexTurn, Outcome } from '../src/lib/server/codex-turn.ts';
+import { codexTurn, type CodexTurn, type Outcome } from '../src/lib/server/codex-turn.ts';
 import { loadConfig } from '../src/lib/server/config.ts';
 import { createTranslator, protect, restore } from '../src/lib/server/translate.ts';
+import { NODE } from './harness.ts';
 
 const DAY = 24 * 60 * 60_000;
 const dirs: string[] = [];
@@ -40,6 +41,20 @@ test('code, links and paths go to Codex as markers and come back as written', ()
 	expect(back).toContain('https://example.com/x.');
 	expect(back).toContain('```sh\necho "keep me"\n```');
 	expect(back).toContain('- 完成');
+});
+
+test('code blocks indented in a list or by four spaces count as code: not English, and kept as written', () => {
+	const listed = '已完成。\n\n- 步驟：\n\n  ```sh\n  echo this whole line is plain English words for the shell here\n  ```\n';
+	const indented = '已完成。\n\n    run every one of these English words through the command line now\n';
+	expect(isEnglish(listed)).toBe(false);
+	expect(isEnglish(indented)).toBe(false);
+
+	const reply = 'Steps:\n\n    indented code stays\n\n- Build it:\n\n  ```sh\n  bun run build\n  ```\n\n- Then check.\n';
+	const { text, kept } = protect(reply);
+	expect(text).not.toContain('bun run build');
+	expect(text).not.toContain('indented code stays');
+	expect(text).toContain('- Then check.');
+	expect(restore(text, kept)).toBe(reply);
 });
 
 test('a translation that dropped or repeated a marker is refused', () => {
@@ -152,6 +167,34 @@ test('a failed translation is not saved, so the next request tries again; one th
 	answer = { ok: true, value: '請現在執行 ⟦0⟧。' };
 	expect(await ask(made, ['Please run `make` now.'])).toEqual([{ ok: true, value: '請現在執行 `make`。' }]);
 	expect(calls).toHaveLength(3);
+});
+
+test("a long reply Codex repeats on stderr before failing stays out of the journal, whole or in part", async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'lat-board-codex-'));
+	dirs.push(dir);
+	const reply = Array.from({ length: 2000 }, (_, index) => `segment-${index}`).join(' ');
+	expect(reply.length).toBeGreaterThan(20_000);
+	writeFileSync(join(dir, 'codex.json'), JSON.stringify({ stderr: `echo: ${reply}\nfatal: quit`, exit: true }));
+	const lines: string[] = [];
+	const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => void lines.push(args.join(' ')));
+	try {
+		const done = await codexTurn({
+			command: [NODE, join(import.meta.dir, 'fake-codex.mjs'), dir],
+			timeoutMs: 5000,
+			model: 'gpt-6-luna',
+			effort: 'low',
+			instructions: '',
+			input: reply,
+			secrets: [reply],
+			journal: '[translate] Codex translation'
+		});
+		expect(done.ok).toBe(false);
+	} finally {
+		spy.mockRestore();
+	}
+	expect(lines).toHaveLength(1);
+	expect(lines[0]).toContain('fatal: quit');
+	expect(lines[0]).not.toContain('segment-');
 });
 
 /** The page's side, with the server's answer as `lines` written in `chunks` pieces. */

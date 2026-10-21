@@ -62,8 +62,18 @@ test('a device that is not logged in cannot translate', async () => {
 });
 
 test('a request that is not a list of texts is refused', async () => {
-	for (const texts of [[], 'text', [1], [''], Array(51).fill('x'), ['x'.repeat(20_001)]]) expect((await ask(texts)).status).toBe(400);
+	for (const texts of [[], 'text', [1], [''], Array(51).fill('x')]) expect((await ask(texts)).status).toBe(400);
 	expect(codexCalls()).toEqual([]);
+});
+
+test('a reply too long to translate fails alone; the others in its request are translated', async () => {
+	const long = 'word '.repeat(4001);
+	expect(await lines(['First short reply.', long, 'Last short reply.'])).toEqual({
+		0: { text: '譯：First short reply.' },
+		1: { error: '太長，不翻譯（超過 20000 字）' },
+		2: { text: '譯：Last short reply.' }
+	});
+	expect(codexCalls()).toHaveLength(2);
 });
 
 test('each text is translated by gpt-6-luna at low effort, its code, links, paths and Markdown kept', async () => {
