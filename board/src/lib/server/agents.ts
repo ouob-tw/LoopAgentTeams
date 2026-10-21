@@ -39,7 +39,7 @@ function switchOf(view: SwitchView | undefined): AgentSwitch | null {
 /** Which agent a pairing belongs to: its session, or its pane while Herdr knows no session. */
 const pairingKey = (agent: HerdrAgent) => agent.sessionId ?? `pane:${agent.pane}`;
 
-export interface AgentRoster {
+interface AgentRoster {
 	/** Fold in this read's lists and the open model switches; returns the agents and Herdr's
 	 *  workspaces to show and, when Herdr's list is not this read's, why. */
 	update(

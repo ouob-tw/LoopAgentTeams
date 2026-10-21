@@ -8,7 +8,7 @@ import type { HerdrWorkspace } from '../board/types.ts';
 import type { BoardConfig } from './config.ts';
 import { parseJsonOutput, runCommand } from './external.ts';
 
-export type WorkspaceChoice =
+type WorkspaceChoice =
 	| { ok: true; id: string; label: string; created: boolean }
 	| { ok: false; reason: string };
 

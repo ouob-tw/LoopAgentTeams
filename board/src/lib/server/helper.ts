@@ -7,7 +7,7 @@ import { usageFrom } from '../board/usage.ts';
 import type { BoardConfig } from './config.ts';
 import { parseJsonOutput, runCommand } from './external.ts';
 
-export type HelperList =
+type HelperList =
 	| { ok: true; controllers: HelperController[] }
 	| { ok: false; reason: string };
 
@@ -82,7 +82,7 @@ export interface AnsweredFile {
 	error: string | null;
 }
 
-export type HelperAnswered = { ok: true; files: AnsweredFile[] } | { ok: false; reason: string };
+type HelperAnswered = { ok: true; files: AnsweredFile[] } | { ok: false; reason: string };
 
 const isAnsweredFile = (value: unknown): value is AnsweredFile => {
 	const file = value as AnsweredFile;
@@ -122,7 +122,7 @@ export async function readAnswered(config: BoardConfig, { paths, controllers }: 
 }
 
 /** What `board answer` and `board notify` print: one JSON object with a status. */
-export interface HelperResult {
+interface HelperResult {
 	status: string;
 	reason: string | null;
 	/** Only on a submitted answer: whether the controller was notified. */
@@ -144,7 +144,7 @@ async function writeCommand(config: BoardConfig, args: string[]): Promise<Helper
 	};
 }
 
-export interface HelperAnswer {
+interface HelperAnswer {
 	questionsPath: string;
 	id: string;
 	revision: number;
@@ -176,7 +176,7 @@ export function notifyController(config: BoardConfig, questionsPath: string): Pr
 }
 
 /** `missing` when the client has written no record for the session yet, as with one just started. */
-export type HelperTranscript = { ok: true; page: TranscriptPage; path: string } | { ok: false; reason: string; missing?: boolean };
+type HelperTranscript = { ok: true; page: TranscriptPage; path: string } | { ok: false; reason: string; missing?: boolean };
 
 const ITEM_KINDS = new Set(['user', 'assistant', 'tool']);
 const isItem = (value: unknown): value is TranscriptItem =>
@@ -233,7 +233,7 @@ function currentFrom(value: unknown): CurrentSettings | null {
 	return current.model || current.effort ? current : null;
 }
 
-export type LaunchArgs = { ok: true; args: string[] } | { ok: false; reason: string };
+type LaunchArgs = { ok: true; args: string[] } | { ok: false; reason: string };
 
 /** The arguments hcom stored for the launch of the agent with this session ID, read by the helper
  *  from hcom's own data; hcom repeats them on every resume. */
@@ -267,7 +267,7 @@ export async function readCurrent(config: BoardConfig, client: string, sessionId
 
 /** Why some report file due could not be deleted; null when every one was, or was left for a busy
  *  lock. */
-export type PruneResult = { reason: string | null };
+type PruneResult = { reason: string | null };
 
 const isFailure = (value: unknown): value is { session_id: string; reason: string } =>
 	typeof (value as { session_id?: unknown })?.session_id === 'string' && typeof (value as { reason?: unknown }).reason === 'string';

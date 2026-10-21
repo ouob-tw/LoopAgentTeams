@@ -6,7 +6,7 @@ import { USAGE_STYLES, type UsageStyle } from '../board/usage.ts';
 
 const FILE = 'usage-style.json';
 
-export const DEFAULT_USAGE_STYLE: UsageStyle = 'detailed';
+const DEFAULT_USAGE_STYLE: UsageStyle = 'detailed';
 
 export const isUsageStyle = (value: unknown): value is UsageStyle => USAGE_STYLES.some((style) => style === value);
 

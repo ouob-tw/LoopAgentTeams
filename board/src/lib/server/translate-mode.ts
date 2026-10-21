@@ -6,7 +6,7 @@ import { TRANSLATE_MODES, type TranslateMode } from '../board/translate-mode.ts'
 
 const FILE = 'translate-mode.json';
 
-export const DEFAULT_TRANSLATE_MODE: TranslateMode = 'manual';
+const DEFAULT_TRANSLATE_MODE: TranslateMode = 'manual';
 
 export const isTranslateMode = (value: unknown): value is TranslateMode => TRANSLATE_MODES.some((mode) => mode === value);
 
