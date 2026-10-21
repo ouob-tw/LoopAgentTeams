@@ -9,7 +9,7 @@ uv run --no-project python "$lat_dir/scripts/lat-clean.py" list --workspace "$wo
   --repo <tracker repo，OWNER/NAME> --output "$workspace/.lat/runs/misc-<YYYY-MM-DD>-cleanup/list.json"
 ```
 
-只讀，不改任何檔案。掃描主工作區共用的 `.lat`，以及各 worktree（含 `.worktrees/*`）內多出的 `.lat`；符號連結的 `.lat` 或 worktree 資料夾略過。每項列出編號、類別、路徑、大小、最後修改時間、刪除方式（trash／shred 與原因）、連到的票與說明；最後印出清單檔路徑與清單雜湊。
+只讀，不改任何檔案。掃描主工作區共用的 `.lat`，以及各 worktree（含 `.worktrees/*`）內多出的 `.lat`；經由符號連結才到得了的 `.lat` 略過。每項列出編號、類別、路徑、大小、最後修改時間、刪除方式（trash／shred 與原因）、連到的票與說明；最後印出清單檔路徑與清單雜湊。
 
 | 類別 | 範圍 |
 |---|---|

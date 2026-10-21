@@ -377,6 +377,52 @@ class RulesTests(unittest.TestCase):
         self.assertTrue((home / 'auth.json').exists())
 
 
+class RootsTests(unittest.TestCase):
+    """Which .lat folders count, with `git worktree list` answered by a stub."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(os.path.realpath(self.temp.name))
+        self.main = self.root / 'main'
+        (self.main / '.lat/sessions').mkdir(parents=True)
+        self.worktrees = []
+        original = _lat_cleanup.run_cli
+        _lat_cleanup.run_cli = lambda command, **_: ''.join(
+            f'worktree {path}\n' for path in [self.main, *self.worktrees])
+        self.addCleanup(setattr, _lat_cleanup, 'run_cli', original)
+
+    def outside(self, name):
+        (self.root / name / '.lat').mkdir(parents=True)
+        (self.root / name / '.lat/keep.md').write_text('not ours\n')
+        return self.root / name
+
+    def test_links_never_make_a_cleanup_root(self):
+        (self.main / '.worktrees').symlink_to(self.outside('elsewhere'))
+        alias = self.root / 'alias'
+        alias.symlink_to(self.outside('registered'))
+        self.worktrees = [alias]
+
+        self.assertEqual(_lat_cleanup.lat_directories(self.main / '.lat'), [self.main / '.lat'])
+        protection = _lat_cleanup.Protection(self.main / '.lat', issues=[])
+        for path in (self.root / 'elsewhere/.lat', self.root / 'registered/.lat/keep.md'):
+            self.assertEqual(protection.reason(path), '不在 .lat 內')
+
+    def test_open_ticket_absolute_link_protects_an_external_worktree(self):
+        external = self.outside('external')
+        (external / '.lat/evidence/qa').mkdir(parents=True)
+        (external / '.lat/evidence/qa/shot.png').write_text('x')
+        self.worktrees = [external]
+        issues = [(7, 'OPEN', f'see {external}/.lat/evidence/qa/shot.png')]
+
+        protection = _lat_cleanup.Protection(self.main / '.lat', issues=issues, need_tracker=True)
+
+        self.assertEqual(protection.lat_dirs, [self.main / '.lat', external / '.lat'])
+        for path in (external / '.lat', external / '.lat/evidence/qa'):
+            self.assertEqual(protection.reason(path), '開啟中的票連到此路徑 #7')
+        self.assertIsNone(protection.reason(external / '.lat/keep.md'))
+
+
 @unittest.skipUnless(shutil.which('trash-put') and shutil.which('shred'), 'needs trash-cli and shred')
 class RealToolsTests(unittest.TestCase):
     """Runs the real trash-put and shred inside a temporary directory and trash."""

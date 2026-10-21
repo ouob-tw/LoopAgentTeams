@@ -93,21 +93,23 @@ def lock_targets(path):
 def lat_directories(lat):
     """The shared .lat, then the .lat of every linked worktree and `.worktrees/*` folder.
 
-    A symbolically linked `.lat` or worktree folder is skipped, so a link never turns its
-    target into something cleanup may delete.
+    A `.lat` reached through a symbolic link is skipped, so a link never turns its target
+    into something cleanup may delete: no link from the repository down to a `.worktrees`
+    one, and none at all in a path Git lists.
     """
     lat = Path(lat)
     others = [other for other in sorted(lat.parent.glob('.worktrees/*/.lat'))
-              if not other.parent.is_symlink()]
+              if not any(path.is_symlink() for path in (other, other.parent, other.parent.parent))]
     try:
         output = run_cli(['git', '-C', str(lat.parent), 'worktree', 'list', '--porcelain'],
                          timeout=10)
     except ValueError:
         output = ''
-    others += [Path(line.removeprefix('worktree ')) / '.lat' for line in output.splitlines()
-               if line.startswith('worktree ')]
-    return [lat, *dict.fromkeys(other for other in others
-                                if other != lat and other.is_dir() and not other.is_symlink())]
+    for line in output.splitlines():
+        other = Path(line.removeprefix('worktree ')) / '.lat'
+        if line.startswith('worktree ') and os.path.realpath(other) == os.path.abspath(other):
+            others.append(other)
+    return [lat, *dict.fromkeys(other for other in others if other != lat and other.is_dir())]
 
 
 def _load(name, filename):
@@ -289,12 +291,15 @@ class Protection:
 
 
 def linked_tickets(path, repo_root, issues):
-    """Tickets whose body or comments name `path` (relative to the repository) or below it."""
-    needle = os.path.relpath(path, repo_root)
-    pattern = re.compile(r'(?<![A-Za-z0-9_-])' + re.escape(needle)
-                         + r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9])')
+    """Tickets whose body or comments name `path` or below it, by its absolute path or, inside
+    the repository, its path relative to it."""
+    relative = os.path.relpath(path, repo_root)
+    needles = [str(path)] + ([] if relative.startswith('..') else [relative])
+    patterns = [re.compile(r'(?<![A-Za-z0-9_-])' + re.escape(needle)
+                           + r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9])') for needle in needles]
     return [dict(number=number, state=state) for number, state, text in issues
-            if needle in text and pattern.search(text)]
+            if any(needle in text and pattern.search(text)
+                   for needle, pattern in zip(needles, patterns))]
 
 
 def tracker_texts(repo):
