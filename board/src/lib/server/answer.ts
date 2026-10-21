@@ -8,16 +8,18 @@ import {
 	ENDED_ANSWER_REASON,
 	type AnswerRequest,
 	type AnswerResponse,
+	type AnswerState,
 	type AnswerStatus,
 	type NotifyResponse,
 	type NotifyStatus,
 	type SentAnswer
 } from '../board/answers.ts';
-import type { HelperController } from '../board/types.ts';
+import type { HelperController, HelperQuestion } from '../board/types.ts';
 import type { Board } from './board.ts';
 import { answerQuestion, listControllers, notifyController } from './helper.ts';
 import { isClosed } from './model.ts';
-import { appendSent } from './sent-log.ts';
+import { appendSent, type AnswerMark, type SentLog, type StoredAnswer } from './sent-log.ts';
+import { marksOf } from './sent-views.ts';
 
 const ANSWER_HTTP: Record<string, number> = {
 	submitted: 200,
@@ -121,4 +123,72 @@ export async function resendNotification(board: Board, controllerId: string): Pr
 	const reason = known || result.status === 'error' ? result.reason : `輔助工具回報 ${result.status}`;
 	await board.refresh();
 	return { status: NOTIFY_HTTP[status] ?? 502, body: { status, reason } };
+}
+
+/** Where the question's current version puts an answer; null when the question is not there. */
+function stateIn(questions: HelperQuestion[] | null | undefined, answer: StoredAnswer): { state: AnswerState; question: HelperQuestion } | null {
+	const question = questions?.find((candidate) => candidate.id === answer.questionId);
+	if (!question) return null;
+	if (question.revision > answer.revision) return { state: 'superseded', question };
+	if (question.revision === answer.revision && question.status === 'recorded') return { state: 'recorded', question };
+	return { state: 'waiting', question };
+}
+
+/**
+ * Note what the controllers have done with the answers since: recorded them, or asked the question
+ * again as a newer version. Called with every fresh list, so an answer recorded between two reads
+ * is caught by the next one.
+ *
+ * A controller that is no longer bound may have recorded an answer just before it ended, so the
+ * question file it left behind is read once, through `readEnded`, for each answer still waiting:
+ * the answer ends up recorded, superseded, `ended` (the file shows it was not recorded) or
+ * `unknown` (the file, or the question in it, cannot be read). Those last two are looked at again
+ * only if the controller is bound again.
+ *
+ * Returns why the log could not be brought up to date, or null: an answer then keeps showing the
+ * state of its last line until a later call can write the new one.
+ */
+export async function settleAnswers(
+	log: SentLog,
+	controllers: HelperController[],
+	now: number,
+	readEnded: (questionsPath: string) => Promise<HelperQuestion[] | null>
+): Promise<string | null> {
+	const lines = log.lines;
+	const marks = marksOf(lines);
+	const bound = new Map(controllers.map((controller) => [controller.session_id, controller]));
+	const stateOf = (answer: StoredAnswer) => marks.get(answer.id)?.state ?? 'waiting';
+	// Every file is asked for at once, so a read of the sources waits for one helper call, not many.
+	const endedPaths = new Set<string>();
+	for (const line of lines) {
+		if (line.kind === 'answer' && line.questionsPath && stateOf(line) === 'waiting' && !bound.has(line.controllerId)) {
+			endedPaths.add(line.questionsPath);
+		}
+	}
+	const left = new Map(await Promise.all([...endedPaths].map(async (path) => [path, await readEnded(path)] as const)));
+	for (const line of lines) {
+		if (line.kind !== 'answer') continue;
+		const current = stateOf(line);
+		if (current === 'recorded' || current === 'superseded') continue;
+		const controller = bound.get(line.controllerId);
+		let found: ReturnType<typeof stateIn>;
+		let state: AnswerState;
+		if (controller) {
+			found = stateIn(controller.questions, line);
+			state = found?.state ?? current;
+		} else if (current === 'waiting') {
+			found = stateIn(line.questionsPath ? left.get(line.questionsPath) : null, line);
+			state = !found ? 'unknown' : found.state === 'waiting' ? 'ended' : found.state;
+		} else continue;
+		if (state === current) continue;
+		const time = (state === 'recorded' && found?.question.recorded_at) || new Date(now).toISOString();
+		const mark: AnswerMark = { kind: 'answer-state', answerId: line.id, state, time };
+		try {
+			log.append(mark);
+		} catch (error) {
+			return (error as Error).message;
+		}
+		marks.set(line.id, mark);
+	}
+	return null;
 }

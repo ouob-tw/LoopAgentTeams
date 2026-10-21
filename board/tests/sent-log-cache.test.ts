@@ -5,7 +5,8 @@ import { appendFileSync, chmodSync, mkdtempSync, readFileSync, rmSync, utimesSyn
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SentMessage } from '../src/lib/board/messages.ts';
-import { appendSent, openSwitches, readAgentActions, readSent, sentLogReads } from '../src/lib/server/sent-log.ts';
+import { appendSent, readLines, sentLogReads } from '../src/lib/server/sent-log.ts';
+import { openSwitches, readAgentActions, readSent } from '../src/lib/server/sent-views.ts';
 
 const NOW = Date.parse('2026-10-21T08:00:00.000Z');
 let stateDir: string;
@@ -20,7 +21,7 @@ const message = (id: string, text: string): SentMessage => ({
 	ok: true,
 	error: null
 });
-const texts = () => readSent(stateDir, 'session-a', NOW, 60_000).map((entry) => (entry as SentMessage).text);
+const texts = () => readSent(readLines(stateDir, NOW), 'session-a', NOW, 60_000).map((entry) => (entry as SentMessage).text);
 
 beforeEach(() => {
 	stateDir = mkdtempSync(join(tmpdir(), 'lat-sent-log-'));
@@ -32,9 +33,9 @@ afterEach(() => rmSync(stateDir, { recursive: true, force: true }));
 test('reads of an unchanged file parse it once', () => {
 	const before = sentLogReads.count;
 	for (let round = 0; round < 5; round++) {
-		expect(openSwitches(stateDir, NOW, 60_000)).toEqual([]);
+		expect(openSwitches(readLines(stateDir, NOW), NOW, 60_000)).toEqual([]);
 		expect(texts()).toEqual(['second', 'first']);
-		readAgentActions(stateDir, 'session-a', NOW);
+		readAgentActions(readLines(stateDir, NOW), 'session-a');
 	}
 	expect(sentLogReads.count - before).toBe(1);
 });
@@ -95,7 +96,7 @@ test('a line the board appends after a line cut short reads as the file has it',
 });
 
 test('what a read returns cannot change what the next read sees', () => {
-	const [entry] = readSent(stateDir, 'session-a', NOW, 60_000) as SentMessage[];
+	const [entry] = readSent(readLines(stateDir, NOW), 'session-a', NOW, 60_000) as SentMessage[];
 	expect(() => {
 		entry.text = 'changed';
 	}).toThrow();

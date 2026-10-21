@@ -11,10 +11,14 @@ import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.t
 import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources, withRecorded } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
-import { openResumes, openSwitches, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
+import { appendSent, readLines, type Line, type SentLog } from './sent-log.ts';
+import { openResumes, openSwitches } from './sent-views.ts';
 import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
-import { settleRelaunches } from './switch.ts';
+import { settleAnswers } from './answer.ts';
+import { settleLaunches } from './launch.ts';
+import { settleRelaunches } from './relaunch.ts';
+import { settleResumes } from './wake.ts';
 import { createAgentRoster, type HerdrAgentList } from './agents.ts';
 import { createClosedRoster } from './closed-agents.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
@@ -86,11 +90,28 @@ export interface Board {
 
 /** Close the resumes whose session hcom's list of this read holds; a list that could not be read
  *  leaves them open until a later read. */
-async function settleWakes(config: BoardConfig, list: AgentList, herdr: HerdrAgentList, moved: () => void): Promise<string | null> {
-	if (!openResumes(config.stateDir, config.now(), config.launchWaitMs).length) return null;
+async function settleWakes(config: BoardConfig, log: SentLog, list: AgentList, herdr: HerdrAgentList, moved: () => void): Promise<string | null> {
+	if (!openResumes(log.lines, config.now(), config.launchWaitMs).length) return null;
 	// A resume's pane found only now: its new tab is moved to the front like one found at once.
 	const onPane = (pane: string) => void tabToFront(config, pane).then((reason) => reason === null && moved());
-	return list.ok ? settleResumes(config.stateDir, list.agents, herdr.ok ? herdr.agents : null, config.now(), config.launchWaitMs, onPane) : null;
+	return list.ok ? settleResumes(log, list.agents, herdr.ok ? herdr.agents : null, config.now(), config.launchWaitMs, onPane) : null;
+}
+
+/** Read the sent log once for one read of the sources: everything that read settles, and the views
+ *  it shows, work from these lines and the ones it appends. The error when it cannot be read. */
+function openLog(config: BoardConfig): SentLog | Error {
+	try {
+		const lines: Line[] = [...readLines(config.stateDir, config.now())];
+		return {
+			lines,
+			append(line) {
+				appendSent(config.stateDir, line);
+				lines.push(line);
+			}
+		};
+	} catch (error) {
+		return error as Error;
+	}
 }
 
 function createBoard(): Board {
@@ -234,19 +255,20 @@ function createBoard(): Board {
 	}
 
 	async function read(): Promise<BoardSnapshot> {
-		const [[helper, reports, answered, settled], agents, herdrAgents, stops] = await Promise.all([
+		const [[helper, reports, answered, settled, log], agents, herdrAgents, stops] = await Promise.all([
 			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
 				// Read after the list: the files are those of the controllers bound now, and of the
 				// sessions that reported. The sent answers settle against the same list alongside, so
 				// a read runs the helper at most twice in a row. hcom's and Herdr's lists are not
 				// waited for.
+				const log = openLog(config);
 				const [answered, settled] = await Promise.all([
 					readAnswered(config, answeredSources(helper.ok ? helper.controllers : lastActive, reports.files)),
-					helper.ok
-						? settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path)).catch((error: Error) => error)
+					helper.ok && !(log instanceof Error)
+						? settleAnswers(log, helper.controllers, config.now(), (path) => readQuestions(config, path)).catch((error: Error) => error)
 						: null
 				]);
-				return [helper, reports, answered, settled] as const;
+				return [helper, reports, answered, settled, log] as const;
 			}),
 			listAgents(config),
 			listHerdrAgents(config),
@@ -260,17 +282,19 @@ function createBoard(): Board {
 		if (helper.ok) {
 			lastActive = answered.ok ? withRecorded(helper.controllers, answered.files) : helper.controllers;
 			try {
+				if (log instanceof Error) throw log;
 				if (settled instanceof Error) throw settled;
 				const answersError = settled;
-				const launchesError = settleLaunches(config.stateDir, helper.controllers, reports.files, config.now());
-				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, agents, herdrAgents, tabMoved));
+				const launchesError = settleLaunches(log, helper.controllers, reports.files, config.now());
+				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, log, agents, herdrAgents, tabMoved));
 			} catch (error) {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
 				sentLogError = (error as Error).message;
 			}
 		}
 		try {
-			lastSwitches = openSwitches(config.stateDir, config.now(), config.launchWaitMs);
+			if (log instanceof Error) throw log;
+			lastSwitches = openSwitches(log.lines, config.now(), config.launchWaitMs);
 			settleRelaunches(board, lastSwitches);
 		} catch {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
