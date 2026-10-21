@@ -71,6 +71,7 @@ function snapshotOf(agents: Agent[], archived: string[] = [], closed: Omit<Close
 			// Ended, with nothing the inbox keeps: not on the roster.
 			file('s-quiet', 'vega', ['NO REPLY'])
 		],
+		duties: new Map(),
 		reportsError: null,
 		running: new Set(running),
 		hcomError: null,

@@ -343,6 +343,7 @@ function createBoard(): Board {
 			active: lastActive,
 			helperError: helper.ok ? null : helper.reason,
 			reportFiles: reports.files,
+			duties: reports.duties,
 			reportsError: reports.error,
 			running: lastRunning,
 			hcomError: agents.ok ? null : agents.reason,

@@ -426,7 +426,7 @@ class OpenActionTests(PanelTestCase):
             {"pane_id": "pane-b", "tab_id": "new-tab", "workspace_id": "ws-a"},
         ])
         self.assertEqual(opened["LAT_PANEL_SESSION_ID"], "s-b")
-        self.assertEqual(opened["LAT_PANEL_FILE"], str(other / ".lat/questions-ctl-b.md"))
+        self.assertEqual(opened["LAT_PANEL_FILE"], str(other / ".lat/questions/ctl-b.md"))
 
     def test_snapshot_failure_falls_back_to_recorded_tab(self):
         opened = self.open("ws-a", "tab-a", snapshot_error="unavailable")

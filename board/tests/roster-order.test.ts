@@ -83,6 +83,7 @@ test('groups by status, newest report first within a group, no report last, then
 			file('e-new', 'ended-new', 'e', [['2026-10-17T07:00:00Z', 'DONE']]),
 			file('e-old', 'ended-old', 'e', [['2026-10-16T07:00:00Z', 'DONE']])
 		],
+		duties: new Map(),
 		reportsError: null,
 		running: new Set(['w', 'k-new', 'k-old', 'k-none', 'd-b', 'd-a2', 'd-a1', 'e-new']),
 		hcomError: null,

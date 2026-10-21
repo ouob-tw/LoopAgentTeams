@@ -112,6 +112,15 @@ class RetentionTests(PruneTestCase):
         for session in ("s-young", "s-newer-first", "s-only-broken", "s-bad-time", "s-bad-tag"):
             self.assertTrue(self.exists(session), session)
 
+    def test_the_duty_file_goes_with_its_report_file(self):
+        self.write("s-old", record(NOW - RETENTION))
+        self.write("s-young", record(NOW - timedelta(days=1)))
+        for session in ("s-old", "s-young"):
+            (self.reports / f"{session}.duty.json").write_text("{}")
+        self.assertEqual(self.prune()[0], ["s-old"])
+        self.assertFalse(self.exists("s-old", ".duty.json"))
+        self.assertTrue(self.exists("s-young", ".duty.json"))
+
     def test_only_the_named_sessions_are_looked_at(self):
         self.write("s-named", record(NOW - RETENTION))
         self.write("s-other", record(NOW - RETENTION))

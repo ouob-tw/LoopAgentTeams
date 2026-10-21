@@ -34,8 +34,8 @@ activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；C
 
    安裝或更新技能後，從不同技能目錄執行 hook／deactivate 仍會辨認並沿用本輪既有的監控；需要重啟時，使用紀錄的 `skill_dir/scripts/lat-watch.py`，與本輪的技能文字更新基準一致。
 
-3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`（Claude 的提示已附這兩份全文，不必另讀），以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的 `.lat/questions-<hcom-name>.md`（尚未寫題時不存在，不算缺檔）。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。hook 發現紀錄仍 active 但停住監控沒在執行時（包括主控掉線 60 分鐘後監控自停、紀錄留有 `watcher_stopped` 的情況，見 [停住監控](stall-watch.md#主控掉線時自停)），會在提示前自動重新啟動它。面板啟用且 hook 取得 Herdr workspace／tab／pane 編號時，也會把自己的面板綁定更新為目前位置；取不到就保持原綁定。
-4. 交付、取消或換班時停用，紀錄狀態一律改為 `ended`（舊紀錄的 `completed`／`cancelled` 視同 `ended`）。換班時加 `--successor <新主控 HCOM 名稱>` 記下接手者。deactivate 會停止自己的停住監控並解除自己的綁定，沒有綁定也不報錯，並在紀錄寫入結束時間 `ended_at_utc`（已結束的紀錄再停用不改寫；沒有結束時間的舊紀錄不補）；成功後紀錄保留，後續 compact／resume 不再提示。
+3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`（Claude 的提示已附這兩份全文，不必另讀），以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的問題檔（綁定的 `questions_path`；新綁定在 `.lat/questions/`，見 [待答問題面板](question-panel.md#變數)；尚未寫題時不存在，不算缺檔）。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。hook 發現紀錄仍 active 但停住監控沒在執行時（包括主控掉線 60 分鐘後監控自停、紀錄留有 `watcher_stopped` 的情況，見 [停住監控](stall-watch.md#主控掉線時自停)），會在提示前自動重新啟動它。面板啟用且 hook 取得 Herdr workspace／tab／pane 編號時，也會把自己的面板綁定更新為目前位置；取不到就保持原綁定。
+4. 交付、取消或換班時停用，紀錄狀態一律改為 `ended`（舊紀錄的 `completed`／`cancelled` 視同 `ended`）。換班時加 `--successor <新主控 HCOM 名稱>` 記下接手者。deactivate 會停止自己的停住監控並解除自己的綁定，沒有綁定也不報錯；自己在 `.lat/questions/` 的問題檔清理後沒有題目時刪除（歸檔檔與鎖檔保留，根目錄舊問題檔不動，見 [解除綁定](question-panel.md#解除綁定)），並在紀錄寫入結束時間 `ended_at_utc`（已結束的紀錄再停用不改寫；沒有結束時間的舊紀錄不補）；成功後紀錄保留，後續 compact／resume 不再提示。
 
 ```bash
 uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client "$client" \
@@ -43,7 +43,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client
 # 換班時加上 --successor <新主控 HCOM 名稱>。
 ```
 
-手動停用遺留的 active 紀錄：確認指定對話已結束／取消，再加 `--session-id <record-session-id>`，只改該筆紀錄。沒有列舉／自動清理功能。
+手動停用遺留的 active 紀錄：確認指定對話已結束／取消，再加 `--session-id <record-session-id>`，只改該筆紀錄。session 紀錄永不清理；已結束 session 留下的監控檔，結束滿 40 天後由 [自動清理](cleanup.md#自動清理) 處理（開啟後；activate／deactivate 會在背景觸發），沒有結束時間的由 [清理指令](cleanup.md) 列給使用者確認。
 
 ## 技能文字更新
 

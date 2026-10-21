@@ -116,8 +116,20 @@ export interface Controller {
 	/** Herdr location from the same roster read; a string explains a failed read. */
 	herdrPlace?: HerdrPlace | string | null;
 	lastReportAt: string | null;
+	/** What the controller recorded it is responsible for; null until it recorded it. */
+	duty: Duty | null;
 	/** Why some of this controller's sources could not be read; null when all were. */
 	error: string | null;
+}
+
+/** A controller's duty, as it recorded it with `lat-session.py duty`. */
+export interface Duty {
+	/** One line: what the controller is responsible for. */
+	text: string;
+	/** What the user will see once it is done, as the controller expects. */
+	expected: string;
+	/** The summary of its latest DONE report since it recorded the duty; null before there is one. */
+	delivered: string | null;
 }
 
 /** Where an inbox item comes from. The owner is carried by the item itself, so an archived

@@ -4,19 +4,24 @@
 	// shows its Herdr tab and hcom name, status, client, project folder and whether hcom reaches it; LAT controllers
 	// are marked, and so are agents with a model switch left unfinished, listed even when Herdr no
 	// longer lists them. A card's handle drags its Herdr tab to another place in the same workspace;
-	// its context menu (a long press on a touch screen) renames the tab on the card itself.
+	// its context menu (a long press on a touch screen) renames the tab on the card itself. Hovering
+	// a card explains it, a controller's with the duty it recorded; its menu shows the duty too.
 	import GripVertical from '@lucide/svelte/icons/grip-vertical';
 	import Plus from '@lucide/svelte/icons/plus';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { AGENT_MARK, agentGroups, folderName, tabDrop } from '#lib/board/agents.ts';
+	import { Explainer } from '#lib/board/explain.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
-	import { AGENT_HCOM_LABEL, AGENT_STATUS_LABEL, type Agent, type HerdrWorkspace } from '#lib/board/types.ts';
+	import { AGENT_HCOM_LABEL, AGENT_STATUS_LABEL, type Agent, type Controller, type HerdrWorkspace } from '#lib/board/types.ts';
 	import AgentCardName from './AgentCardName.svelte';
+	import DutyText from './DutyText.svelte';
+	import ExplainTip from './ExplainTip.svelte';
 	import HcomBadge from './HcomBadge.svelte';
 	import StatusMark from './StatusMark.svelte';
 
 	let {
 		agents,
+		controllers,
 		workspaces,
 		currentId,
 		newIn,
@@ -24,6 +29,8 @@
 		onnew
 	}: {
 		agents: Agent[];
+		/** The roster's controllers, for the duty of a card that is one. */
+		controllers: Controller[];
 		workspaces: HerdrWorkspace[];
 		currentId: string | null;
 		/** The workspace whose new-agent form is open; null when none is. */
@@ -33,10 +40,21 @@
 	} = $props();
 
 	const groups = $derived(agentGroups(agents, workspaces));
-	const tooltip = (agent: Agent) =>
-		`${agent.name}\n${AGENT_STATUS_LABEL[agent.status]}（${agent.statusSource === 'hcom' ? 'HCOM' : 'Herdr'}）・${agent.client}・${AGENT_HCOM_LABEL[agent.hcom]}\n${agent.herdr.tabPlace ? `分頁 ${agent.herdr.tabPlace.label}\n` : ''}${agent.folder}`;
 	/** A card's key: its session, or its pane while Herdr has no session for it. */
 	const keyOf = (agent: Agent) => agent.id ?? agent.herdr.pane;
+	const dutyOf = (agent: Agent) => (agent.controller ? (controllers.find((controller) => controller.id === agent.id)?.duty ?? null) : null);
+
+	/** A touch's long press opens the card's menu instead, so only hovering and focus explain a card. */
+	const explainer = new Explainer<string>(() => {});
+	const explained = $derived(agents.find((agent) => keyOf(agent) === explainer.tip?.key));
+	/** What makes a card explain itself, in place of the browser's own tooltip. */
+	const explaining = (agent: Agent) => ({
+		'aria-describedby': explainer.tip?.key === keyOf(agent) ? 'agent-tip' : undefined,
+		onpointerenter: (event: PointerEvent & { currentTarget: HTMLElement }) => explainer.hover(event, keyOf(agent)),
+		onpointerleave: explainer.leave,
+		onfocus: (event: FocusEvent & { currentTarget: HTMLElement }) => explainer.focus(event, keyOf(agent)),
+		onblur: explainer.dismiss
+	});
 
 	/** How long a touch is held before the card's menu opens, and how far it may wander meanwhile. */
 	const LONG_PRESS_MS = 450;
@@ -82,6 +100,7 @@
 			box: group.getBoundingClientRect()
 		};
 		menu = null;
+		explainer.dismiss();
 		drag = { key: keyOf(agent), startY: event.clientY, x: event.clientX, y: event.clientY, over: null, refused: false };
 	}
 
@@ -126,6 +145,7 @@
 
 	function openMenu(agent: Agent, x: number, y: number) {
 		renaming = null;
+		explainer.dismiss();
 		menu = { agent, x, y };
 	}
 
@@ -258,12 +278,13 @@
 						{@render row(agent, true)}
 					</div>
 				{:else if id}
-					<button class="agent" class:current={id === currentId} data-agent={id} title={tooltip(agent)} onclick={() => open(id)}>
+					<button class="agent" class:current={id === currentId} data-agent={id} {...explaining(agent)} onclick={() => open(id)}>
 						{@render row(agent, false)}
 					</button>
 				{:else}
 					<!-- Herdr does not know its session yet, and everything about an agent is keyed by it. -->
-					<div class="agent" data-pane={agent.herdr.pane} title={tooltip(agent)}>
+					<!-- svelte-ignore a11y_no_static_element_interactions -->
+					<div class="agent" data-pane={agent.herdr.pane} {...explaining(agent)}>
 						{@render row(agent, false)}
 						<span class="pending">Herdr 還沒回報它的 session ID，暫時無法開啟</span>
 					</div>
@@ -297,9 +318,29 @@
 
 {#if menu}
 	{@const target = menu.agent}
-	<div class="menu" role="menu" aria-label="分頁" bind:this={menuBox}>
-		<button type="button" role="menuitem" onclick={() => startRename(target)}>改分頁名稱</button>
+	{@const duty = dutyOf(target)}
+	<div class="menu" bind:this={menuBox}>
+		{#if duty}
+			<div class="duty"><DutyText {duty} /></div>
+		{/if}
+		<div role="menu" aria-label="分頁">
+			<button type="button" role="menuitem" onclick={() => startRename(target)}>改分頁名稱</button>
+		</div>
 	</div>
+{/if}
+
+{#if explainer.tip && explained}
+	{@const duty = dutyOf(explained)}
+	<ExplainTip id="agent-tip" place={explainer.tip}>
+		<strong>{explained.name}</strong>
+		<span>{AGENT_STATUS_LABEL[explained.status]}（{explained.statusSource === 'hcom' ? 'HCOM' : 'Herdr'}）・{explained.client}・{AGENT_HCOM_LABEL[explained.hcom]}</span>
+		{#if explained.herdr.tabPlace}<span>分頁 {explained.herdr.tabPlace.label}</span>{/if}
+		<span class="tip-folder">{explained.folder}</span>
+		{#if duty}
+			<hr class="rule" />
+			<DutyText {duty} />
+		{/if}
+	</ExplainTip>
 {/if}
 
 {#snippet row(agent: Agent, edit: boolean)}
@@ -493,6 +534,28 @@
 		left: 0;
 		top: 0;
 		padding: 0.25rem;
+	}
+	/* Above the menu's items: what the controller is responsible for. */
+	.menu .duty {
+		display: flex;
+		flex-direction: column;
+		max-width: min(18rem, 70vw);
+		padding: 0.3rem 0.5rem 0.45rem;
+		margin-bottom: 0.25rem;
+		border-bottom: 1px solid var(--line);
+		font-size: max(0.8rem, var(--min-font, 0px));
+		overflow-wrap: anywhere;
+	}
+	.tip-folder {
+		font-family: var(--mono);
+		color: var(--muted);
+	}
+	/* Between where the agent is and its duty. */
+	.rule {
+		width: 100%;
+		margin: 0.3rem 0;
+		border: 0;
+		border-top: 1px solid var(--line);
 	}
 	.menu button {
 		display: block;
