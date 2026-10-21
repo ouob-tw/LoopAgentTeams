@@ -4,9 +4,13 @@ import { remember, remembered, TRANSLATE_KEY } from './prefs.ts';
 
 class TranslatePref {
 	on = $state(false);
+	#loaded = false;
 
-	/** Reads the saved choice; the browser only, so called once a page is mounted. */
+	/** Reads the saved choice once per page; the browser only, so called once a page is mounted. Mounting
+	 * again (a tab switch) keeps the choice made since, saved or not. */
 	load() {
+		if (this.#loaded) return;
+		this.#loaded = true;
 		this.on = remembered(TRANSLATE_KEY, ['1', '0'], '0') === '1';
 	}
 
