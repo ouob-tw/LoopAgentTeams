@@ -21,6 +21,7 @@ function controller(hcomName: string, status: ControllerStatus, lastReportAt: st
 		pendingCount: 0,
 		herdr: null,
 		lastReportAt,
+		duty: null,
 		error: null
 	};
 }

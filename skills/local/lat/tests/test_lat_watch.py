@@ -3347,6 +3347,25 @@ esac
         watch.append_log(log, {'new': 'third'})
         self.assertEqual(len(log.read_text().splitlines()), 2)
 
+    def test_watch_log_rotation_threshold_is_exactly_one_mebibyte(self):
+        watch = load_watch()
+        one_mib = 1024 * 1024
+        log = watch.state_path(self.work, 'orch').with_name('watch.jsonl')
+        old = log.with_name('watch.jsonl.1')
+        log.parent.mkdir(parents=True)
+        for size in (one_mib - 1, one_mib):
+            log.write_text('x' * size)
+            watch.append_log(log, {'new': size})
+            self.assertFalse(old.exists(), size)
+            self.assertEqual(log.stat().st_size, size + len('{"new":%d}\n' % size))
+            log.unlink()
+        log.write_text('x' * (one_mib + 1))
+        watch.append_log(log, {'new': 'over'})
+        self.assertEqual(log.read_text(), '{"new":"over"}\n')
+        self.assertEqual(old.stat().st_size, one_mib + 1)
+        self.assertEqual(sorted(path.name for path in log.parent.iterdir()),
+                         ['watch.jsonl', 'watch.jsonl.1'])
+
     def test_orchestrator_gone_sixty_minutes_stops_but_a_short_absence_does_not(self):
         watch = load_watch()
         self.listing_hcom(worker_open='active')

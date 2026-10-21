@@ -138,7 +138,9 @@ class BoardTestCase(BoardCli, unittest.TestCase):
             name, "claude", session, workspace, "ws-1", f"tab-{session}", f"pane-{session}",
             config_dir=self.config,
         )
-        return Path(binding["questions_path"])
+        questions = Path(binding["questions_path"])
+        questions.parent.mkdir(exist_ok=True)
+        return questions
 
     def set_hcom(self, mode):
         (self.hcom_dir / "mode").write_text(mode)
@@ -148,7 +150,7 @@ class BoardTestCase(BoardCli, unittest.TestCase):
         return [json.loads(line) for line in log.read_text().splitlines()] if log.exists() else []
 
     def journal(self):
-        path = self.questions.parent / "panel-journal.jsonl"
+        path = self.questions.parents[1] / "panel-journal.jsonl"
         return path.read_text() if path.exists() else ""
 
     def pending(self, questions=None):
@@ -174,7 +176,7 @@ class ListTests(BoardTestCase):
             "client": "claude",
             "session_id": "s-a",
             "workspace": str(self.root / "project-a"),
-            "questions_path": str(self.root / "project-a/.lat/questions-ctl-a.md"),
+            "questions_path": str(self.root / "project-a/.lat/questions/ctl-a.md"),
             "herdr_workspace": "ws-1",
             "herdr_tab": "tab-s-a",
             "herdr_pane": "pane-s-a",
@@ -316,7 +318,7 @@ class ListTests(BoardTestCase):
 
     def test_journal_line_that_is_not_an_entry_does_not_break_the_list(self):
         self.answer(self.questions, "Q3", 1, "--text", "想法")
-        with (self.questions.parent / "panel-journal.jsonl").open("a") as journal:
+        with (self.questions.parents[1] / "panel-journal.jsonl").open("a") as journal:
             journal.write("[]\n")
         [controller] = self.board("list")["controllers"]
         self.assertIsNone(controller["error"])
@@ -336,7 +338,7 @@ class AskedAtTests(BoardTestCase):
         self.decisions = self.root / "decisions"
         self.decisions.mkdir()
         (self.decisions / "Q1.md").write_text("- status: pending\n")
-        self.journal_path = self.questions.parent / "panel-journal.jsonl"
+        self.journal_path = self.questions.parents[1] / "panel-journal.jsonl"
 
     def upsert(self, body):
         """Ask Q1 with the controller's command; return when it ran as (before, after)."""
@@ -494,7 +496,7 @@ class AnswerTests(BoardTestCase):
             proof = self.run_cli(
                 "question", "provenance", "--questions", snapshot,
                 "--source-questions", self.questions,
-                "--journal", self.questions.parent / "panel-journal.jsonl", "--id", question_id,
+                "--journal", self.questions.parents[1] / "panel-journal.jsonl", "--id", question_id,
             )
             self.assertEqual(proof.returncode, 0, proof.stderr)
             proof = json.loads(proof.stdout)
@@ -618,7 +620,7 @@ class NotificationTests(BoardTestCase):
         self.assertEqual(self.journal(), journal)
         proof = self.run_cli(
             "question", "provenance", "--questions", self.questions,
-            "--journal", self.questions.parent / "panel-journal.jsonl", "--id", "Q3",
+            "--journal", self.questions.parents[1] / "panel-journal.jsonl", "--id", "Q3",
         )
         self.assertEqual(proof.returncode, 0, proof.stderr)
 

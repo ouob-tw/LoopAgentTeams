@@ -32,7 +32,7 @@ LOAD = re.compile(r'while\s+(?::|true)\s*;\s*do\s*:?\s*;?\s*done'
                   r'|(?:^|[\s;&|(`\'"])(?:stress-ng|stress)\s[^;&|\n]*?'
                   r'(?:--cpu\b|-c\s|--matrix\b|--all\b|--sequential\b)'
                   r'|\bsysbench\b[^;&|\n]*\bcpu\b'
-                  r'|\byes\b[^;&|\n]*>\s*/dev/null')
+                  r'|(?:^|[\s;&|(`\'"])yes(?:\s[^;&|\n]*)?>\s*/dev/null')
 LIMIT = re.compile(r'\btaskset\b|\bcpulimit\b|\bsystemd-run\b[^\n]*(?:AllowedCPUs|CPUQuota)=')
 TASKSET_LIST = re.compile(r'\btaskset\s+(?:-\S*c\S*\s+|--cpu-list\s+)(?P<list>[\d,\-]+)')
 # Heredoc bodies and quoted text are data (messages, prompts), except a script after `-c`.

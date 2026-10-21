@@ -1,15 +1,34 @@
 <script lang="ts">
-	// One controller as the roster shows it: project, status and name, and its current phase, each
-	// cut to one line with an ellipsis; the tooltip has all of it.
-	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
+	// One controller as the roster shows it: project, status and name, its current phase, and the
+	// duty it recorded, each cut to one line with an ellipsis. Hovering the card, or pressing and
+	// holding it on a touch screen, explains it with all of them.
+	import { Explainer } from '#lib/board/explain.svelte.ts';
+	import { phaseText, type Controller } from '#lib/board/types.ts';
+	import ControllerExplain from './ControllerExplain.svelte';
+	import ExplainTip from './ExplainTip.svelte';
 	import StatusMark from './StatusMark.svelte';
 
 	let { controller, current, onopen }: { controller: Controller; current: boolean; onopen: (id: string) => void } = $props();
 
-	const tooltip = $derived(`${controller.project} @${controller.hcomName}\n${STATUS_LABEL[controller.status]}：${phaseText(controller)}`);
+	const explainer = new Explainer<string>((id) => onopen(id));
+	const tipId = $derived(`roster-tip-${controller.id}`);
 </script>
 
-<button class="person" class:current data-controller={controller.hcomName} title={tooltip} onclick={() => onopen(controller.id)}>
+<button
+	class="person"
+	class:current
+	data-controller={controller.hcomName}
+	aria-describedby={explainer.tip ? tipId : undefined}
+	onclick={(event) => explainer.click(event, controller.id)}
+	onpointerenter={(event) => explainer.hover(event, controller.id)}
+	onpointerleave={explainer.leave}
+	onpointerdown={(event) => explainer.down(event, controller.id)}
+	onpointerup={explainer.release}
+	onpointercancel={explainer.release}
+	onfocus={(event) => explainer.focus(event, controller.id)}
+	onblur={explainer.dismiss}
+	oncontextmenu={(event) => event.preventDefault()}
+>
 	<strong class="project">{controller.project}</strong>
 	<span class="who">
 		<StatusMark status={controller.status} />
@@ -22,7 +41,16 @@
 		{/if}
 	</span>
 	<span class="phase">{phaseText(controller)}</span>
+	{#if controller.duty}
+		<span class="duty">{controller.duty.text}</span>
+	{/if}
 </button>
+
+{#if explainer.tip}
+	<ExplainTip id={tipId} place={explainer.tip}>
+		<ControllerExplain {controller} />
+	</ExplainTip>
+{/if}
 
 <style>
 	.person {
@@ -32,12 +60,18 @@
 		min-width: 0;
 		text-align: left;
 		padding: 0.55rem 0.6rem;
+		/* A long press explains the card; it must not select text or open the browser's own menu. */
+		user-select: none;
+		-webkit-user-select: none;
+		-webkit-touch-callout: none;
+		touch-action: manipulation;
 	}
 	.person.current {
 		border-color: var(--accent);
 	}
 	.project,
-	.phase {
+	.phase,
+	.duty {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
@@ -73,6 +107,9 @@
 	.phase {
 		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
+	}
+	.duty {
+		font-size: max(0.8rem, var(--min-font, 0px));
 	}
 
 	:global(:root[data-theme='light']) .person.current {

@@ -4,7 +4,7 @@
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { question, startFixture, type Fixture } from '../harness.ts';
+import { question, sleep, startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
 
 /** Runs first in every document: counts the listeners for the browser's back. */
@@ -206,4 +206,77 @@ test.skipIf(!CHROME)('a controller without a report shows no latest report; the 
 	// Detailed again: the tip and the details are spelt out in Chinese.
 	expect(await tip()).toBe('上下文已用 62% | 5 小時額度剩 80% | 7 天額度剩 25% | 快取命中 70%');
 	expect(await tab.eval<string>(`document.querySelector('.detail .profile dl').innerText`)).toContain('上下文已用 62%');
+}, 60_000);
+
+/** The middle of what `selector` picks, in the window's coordinates. */
+const middle = (selector: string) =>
+	tab.eval<{ x: number; y: number }>(`(() => { const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; })()`);
+const CARD = `.people > .person[data-controller="luna"]`;
+const ROSTER_TIP = () => `#roster-tip-${luna.session_id}`;
+
+async function recordDuty() {
+	// Recorded before both reports, so the latest of them is what it delivered.
+	const time = new Date(Date.now() - 3_600_000).toISOString();
+	writeFileSync(join(fixture.reportsDir, `${luna.session_id}.duty.json`), JSON.stringify({ text: '整理看板名冊', expected: '名冊顯示職責', time }));
+	await fixture.refresh(cookie);
+}
+
+test.skipIf(!CHROME)('the roster card shows the duty under the phase; hovering it explains the card, its status above its duty', async () => {
+	await recordDuty();
+	await visit(1280);
+	await tab.until(`document.querySelector(${JSON.stringify(CARD)})?.innerText.includes('整理看板名冊')`, 'the duty on the card');
+	const lines = (await tab.eval<string>(`document.querySelector(${JSON.stringify(CARD)}).innerText`)).split('\n').filter(Boolean);
+	expect(lines.indexOf('交付第二張票')).toBeLessThan(lines.indexOf('整理看板名冊'));
+	// The explanation stands in for the browser's own tooltip.
+	expect(await tab.eval(`document.querySelector(${JSON.stringify(CARD)}).hasAttribute('title')`)).toBe(false);
+
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...(await middle(CARD)) });
+	await tab.until(`!!document.querySelector(${JSON.stringify(ROSTER_TIP())})`, 'the explanation');
+	const tip = await tab.eval<string>(`document.querySelector(${JSON.stringify(ROSTER_TIP())}).innerText`);
+	expect(tip).toContain('@luna');
+	expect(tip.indexOf('等你：交付第二張票')).toBeGreaterThan(-1);
+	expect(tip.indexOf('等你：交付第二張票')).toBeLessThan(tip.indexOf('整理看板名冊'));
+	expect(tip).toContain('已交付結果');
+	expect(tip).not.toContain('預期結果');
+	expect(await tab.eval(`document.querySelector(${JSON.stringify(CARD)}).getAttribute('aria-describedby')`)).toBe(ROSTER_TIP().slice(1));
+
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 700 });
+	await tab.until(`!document.querySelector(${JSON.stringify(ROSTER_TIP())})`, 'the explanation gone');
+}, 60_000);
+
+test.skipIf(!CHROME)('the details start with the duty and what it delivered', async () => {
+	await recordDuty();
+	await visit(1280);
+	await tab.eval(`document.querySelector('.detail .more').click()`);
+	await tab.until(`!!document.querySelector('.detail .profile dl')`, 'the details');
+	const details = await tab.eval<string>(`document.querySelector('.detail .profile dl').innerText`);
+	expect(details.startsWith('職責')).toBe(true);
+	expect(details.indexOf('整理看板名冊')).toBeLessThan(details.indexOf('專案路徑'));
+	expect(details).toContain('已交付結果');
+	await tab.eval(`document.querySelector('.detail .more').click()`);
+}, 60_000);
+
+test.skipIf(!CHROME)("at a phone's width the tag shows the duty; a long press explains it without opening it, a tap opens it", async () => {
+	await recordDuty();
+	await visit(390);
+	await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+	await tab.navigate(`${fixture.url}/`);
+	await tab.until(STARTED, 'the board to start');
+	await tab.until(`document.querySelector(${JSON.stringify(CARD)})?.innerText.includes('整理看板名冊')`, 'the duty on the tag');
+
+	const at = await middle(CARD);
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] });
+	await sleep(700);
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+	await tab.until(`!!document.querySelector(${JSON.stringify(ROSTER_TIP())})`, 'the explanation');
+	expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(ROSTER_TIP())}).innerText`)).toContain('已交付結果');
+	// Inside the window, however near its edge the tag is.
+	expect(await tab.eval(`document.querySelector(${JSON.stringify(ROSTER_TIP())}).getBoundingClientRect().right <= window.innerWidth`)).toBe(true);
+	expect(await tab.eval(FITS)).toBe(true);
+	expect((await tab.eval<{ search: string }>(SCREEN)).search).not.toContain('controller=');
+
+	await sleep(2_000);
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] });
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+	await tab.until(`location.search.includes('controller=')`, 'the controller opened by a tap');
 }, 60_000);
