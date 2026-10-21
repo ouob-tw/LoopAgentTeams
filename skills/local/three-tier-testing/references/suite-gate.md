@@ -224,7 +224,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py cleanup-done
 cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cleanup-done --command '<整套指令>' --baseline <秒數>
 ```
 
-- 在專案內執行（任一工作區皆可）。不帶參數時，這個專案的每個單位都以今天為上次整理日、開始新視窗，基準留給新視窗的第一筆可沿用通過。
+- 在專案內執行（任一工作區皆可）。不帶參數時，這個專案的每個單位都以今天為上次整理日、開始新視窗，基準留給新視窗的第一筆實際執行的可沿用通過（沿用上次結果不算）。當天已開票或留言的單位，重設後當天仍不再動作。
 - `--command` 只重設在目前目錄執行的那一套（指令文字要和經閘門跑的一樣）；還沒見過時直接建立。`--baseline` 直接指定新基準（秒），須搭配 `--command`。
 - 整理票關閉時執行；整理票的收尾步驟見 [cleanup.md](cleanup.md)。
 

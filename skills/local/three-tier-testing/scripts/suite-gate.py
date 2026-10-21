@@ -1199,20 +1199,24 @@ def unit_key(project, rel, command):
 
 
 def new_window(unit, baseline=None):
-    """Start a cleanup window today: the baseline is given or the next pass."""
+    """Start a cleanup window today: the baseline is given or the next pass. The day of
+    the last tracker action stays, so a reset never allows a second action that day."""
     unit.update(last_cleanup=today().isoformat(), window_start=now_iso(), baseline=baseline,
-                baseline_source='given' if baseline else None, samples=[], sample_count=0,
-                acted=None)
+                baseline_source='given' if baseline else None, samples=[], sample_count=0)
     return unit
 
 
 def new_unit(project, rel, command, baseline=None):
-    return new_window({'project': str(project), 'rel_cwd': rel, 'command': command}, baseline)
+    return new_window({'project': str(project), 'rel_cwd': rel, 'command': command,
+                       'acted': None}, baseline)
+
+
+def secs(value):
+    return f'{round(value, 2)}s'
 
 
 def add_sample(unit, seconds):
     """A reusable pass: the window's first one is the baseline, later ones are samples."""
-    seconds = round(seconds, 2)
     if unit['baseline'] is None:
         unit['baseline'], unit['baseline_source'] = seconds, 'first pass'
     else:
@@ -1222,7 +1226,7 @@ def add_sample(unit, seconds):
 
 def cleanup_median(unit):
     """Median of the latest later passes, or None until enough of them exist."""
-    if unit['baseline'] is None or unit['sample_count'] < CLEANUP_MIN_SAMPLES:
+    if not unit['baseline'] or unit['sample_count'] < CLEANUP_MIN_SAMPLES:
         return None
     return statistics.median(unit['samples'])
 
@@ -1236,8 +1240,9 @@ def cleanup_due(unit):
                        f'more than {CLEANUP_DAYS}')
     median = cleanup_median(unit)
     if median is not None and median >= unit['baseline'] * CLEANUP_GROWTH:
-        reasons.append(f"median {median}s of the latest {len(unit['samples'])} passes is "
-                       f"{median / unit['baseline']:.0%} of the baseline {unit['baseline']}s, "
+        reasons.append(f"median {secs(median)} of the latest {len(unit['samples'])} passes "
+                       f"is {median / unit['baseline']:.0%} of the baseline "
+                       f"{secs(unit['baseline'])}, "
                        f'at least {CLEANUP_GROWTH:.0%}')
     return reasons
 
@@ -1251,12 +1256,12 @@ def cleanup_numbers(unit):
         speed = (f"{unit['sample_count']} pass(es) after the baseline; "
                  f'{CLEANUP_MIN_SAMPLES} needed before the speed is judged')
     else:
-        speed = (f"{median}s, median of the latest {len(unit['samples'])} passes "
+        speed = (f"{secs(median)}, median of the latest {len(unit['samples'])} passes "
                  f"({median / unit['baseline']:.0%} of the baseline)")
     return [f"- Project: {unit['project']}",
             f"- Suite: `{unit['command']}` in `{unit['rel_cwd']}`",
             f"- Last cleanup: {unit['last_cleanup']} (window since {unit['window_start']})",
-            "- Baseline: " + (f"{unit['baseline']}s ({unit['baseline_source']})"
+            "- Baseline: " + (f"{secs(unit['baseline'])} ({unit['baseline_source']})"
                                if unit['baseline'] is not None else 'none yet'),
             f'- Current: {speed}']
 
@@ -1399,7 +1404,7 @@ def cmd_cleanup_done(command, baseline):
     for unit in done:
         print(f"New cleanup window for `{unit['command']}` in {unit['project']}/"
               f"{unit['rel_cwd']}: last cleanup {unit['last_cleanup']}, baseline "
-              + (f"{unit['baseline']}s" if unit['baseline'] else 'the next passing run'))
+              + (secs(unit['baseline']) if unit['baseline'] else 'the next passing run'))
     return 0
 
 

@@ -30,8 +30,11 @@ def replace(path, text):
     os.replace(tmp, path)
 
 
-# The host's global and system Git config (e.g. a shared core.hooksPath) stay out of tests.
-GIT_ENV = dict(os.environ, GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
+# The host's global, system and environment Git config (e.g. a shared core.hooksPath) stay
+# out of tests.
+GIT_ENV = dict({k: v for k, v in os.environ.items()
+                if not k.startswith(('GIT_CONFIG', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX'))},
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
                GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
                GIT_COMMITTER_EMAIL='t@t')
 
@@ -995,6 +998,29 @@ class CleanupTests(CleanupCase):
         self.assertIn('DUE: `' + self.command, text)
         self.assertIn('Baseline: 0.1s (given)', text)
         self.assertIn('of the baseline 0.1s, at least 130%', text)
+
+    def test_cleanup_done_does_not_allow_a_second_action_the_same_day(self):
+        for delay in (0.2, 0.4, 0.4, 0.4):
+            self.run_suite('2026-01-02', delay=delay)
+        self.assertEqual(len(self.actions()), 1)
+        self.env['SUITE_GATE_TEST_TODAY'] = '2026-01-02'
+        self.gate('cleanup-done', '--command', self.command, '--baseline', '0.1')
+        for _ in range(3):
+            result = self.run_suite('2026-01-02', delay=0.3)
+        self.assertTrue(self.unit()['due'])
+        self.assertIn('already updated today', result.stderr)
+        self.assertEqual(len(self.actions()), 1)
+
+    def test_a_very_short_suite_keeps_a_positive_baseline(self):
+        for _ in range(4):
+            result = self.run_suite('2026-01-01')
+            self.assertNotIn('check skipped', result.stderr)
+        unit = self.unit()
+        self.assertGreater(unit['baseline'], 0)
+        self.assertIsNotNone(unit['median'])
+        result = self.run_suite('2026-03-01')
+        self.assertNotIn('check skipped', result.stderr)
+        self.assertIn('59 days since the last cleanup', self.gh_calls()[-1][-3])
 
     def test_an_open_cleanup_ticket_gets_a_comment_once_per_day(self):
         (self.gh_dir / 'open.json').write_text(
