@@ -6,6 +6,7 @@ import { everyController } from '../board/types.ts';
 import { usageFrom, type Usage } from '../board/usage.ts';
 import type { Board } from './board.ts';
 import { readTranscript } from './helper.ts';
+import { exceptionFields, log } from './log.ts';
 import { readClaudeUsage, usagePath } from './usage.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 
@@ -27,13 +28,69 @@ export async function agentTranscriptSource(board: Board, sessionId: string): Pr
 	return agent ? { client: agent.client, sessionId } : null;
 }
 
+/** One follower per conversation, shared by every page open on it, per board. */
+interface Follower {
+	subscribers: Set<(update: TranscriptUpdate) => void>;
+	/** The update last sent, for a page that opens later. */
+	sent: TranscriptUpdate | null;
+	close: () => void;
+}
+const followers = new WeakMap<Board, Map<string, Follower>>();
+
 /**
  * Push the latest page now and again each time the record file changes, until closed. A record
  * that cannot be read is pushed as its reason and tried again shortly, so it shows up once it is
  * written. A Claude controller's page carries the usage its status line last recorded, read
  * again on its own when only that changes, with the permission mode from its record.
+ * Every page open on one conversation shares one follower: a page that joins gets the update
+ * last sent at once, and the last page to close stops it.
  */
 export function followTranscript(
+	board: Board,
+	source: { client: string; sessionId: string },
+	push: (update: TranscriptUpdate) => void
+): () => void {
+	let shared = followers.get(board);
+	if (!shared) followers.set(board, (shared = new Map()));
+	const key = `${source.client}\0${source.sessionId}`;
+	let follower = shared.get(key);
+	if (follower) {
+		const joined = follower;
+		// After the caller has its close function in hand, as with a first page.
+		queueMicrotask(() => {
+			if (joined.sent && joined.subscribers.has(push)) deliver(push, joined.sent);
+		});
+	} else {
+		const created: Follower = {
+			subscribers: new Set(),
+			sent: null,
+			close: startFollower(board, source, (update) => {
+				created.sent = update;
+				for (const subscriber of [...created.subscribers]) deliver(subscriber, update);
+			})
+		};
+		shared.set(key, (follower = created));
+	}
+	follower.subscribers.add(push);
+	const own = follower;
+	return () => {
+		if (!own.subscribers.delete(push) || own.subscribers.size > 0) return;
+		own.close();
+		if (shared.get(key) === own) shared.delete(key);
+	};
+}
+
+/** One page's push; a page that throws must not keep the update from the others. */
+function deliver(push: (update: TranscriptUpdate) => void, update: TranscriptUpdate): void {
+	try {
+		push(update);
+	} catch (error) {
+		log('WARNING', 'board.transcript', 'transcript_push_failed', exceptionFields(error));
+	}
+}
+
+/** The one follower behind every page open on a conversation; see `followTranscript`. */
+function startFollower(
 	board: Board,
 	source: { client: string; sessionId: string },
 	push: (update: TranscriptUpdate) => void
