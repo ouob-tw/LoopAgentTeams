@@ -103,7 +103,8 @@ class LoadTests(HookCase):
                         'taskset -c 0,1 stress-ng --cpu 2',
                         'systemd-run --user --scope -p AllowedCPUs=0-3 stress-ng --cpu 4',
                         'cpulimit -l 200 -- stress --cpu 2', 'stress-ng --help | head',
-                        'echo done', "echo 'never run while :; do :; done unpinned'"]:
+                        'echo done', "echo 'never run while :; do :; done unpinned'",
+                        'bunx skills add ~/repo --skill lat --global --yes > /dev/null 2>&1']:
             with self.subTest(command):
                 self.assert_allowed(self.bash(command))
 

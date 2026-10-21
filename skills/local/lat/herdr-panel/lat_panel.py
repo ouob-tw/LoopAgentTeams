@@ -5,7 +5,7 @@ Public API used by the Textual panel and LAT controller:
 
 * ``locked_replace`` performs a conditional atomic UTF-8 replacement. Pass a
   journal path for a panel save, or call ``save_panel_edit`` to use
-  ``<questions parent>/panel-journal.jsonl``.
+  the ``panel-journal.jsonl`` at the ``.lat`` root (``panel_journal_path``).
 * ``parse_questions``, ``upsert_question``, and ``set_question_status`` model
   and update natural-language question sections without touching other sections.
 * V2 selector UI flow: ``parse_question_options``, ``question_context``,
@@ -178,6 +178,7 @@ from questions import (
     malformed_submission_ids,
     parse_question_answer,
     parse_question_options,
+    panel_journal_path,
     parse_questions,
     pending_question_gaps,
     plain_markdown,
@@ -188,6 +189,7 @@ from questions import (
     question_provenance,
     question_recommendation,
     question_section_sha256,
+    remove_empty_questions,
     render_answer_area,
     resolve_help,
     save_panel_edit,
@@ -232,9 +234,11 @@ from bindings import (
     clear_pending_notification,
     clear_status_display,
     controller_questions_path,
+    legacy_questions_path,
     list_bindings,
     mark_notification_pending,
     mark_submit_notification_pending,
+    new_questions_path,
     notification_is_pending,
     panel_enabled,
     record_submitted_answers,
@@ -360,7 +364,7 @@ def _build_parser():
     question = commands.add_parser("question")
     question_commands = question.add_subparsers(dest="question_command", required=True)
     upsert = question_commands.add_parser("upsert")
-    upsert.add_argument("--questions", type=Path, default=Path(".lat/questions.md"))
+    upsert.add_argument("--questions", required=True, type=Path)
     upsert.add_argument("--decisions", required=True, type=Path)
     upsert.add_argument("--id", required=True)
     upsert.add_argument("--file", required=True, type=Path)
@@ -373,7 +377,7 @@ def _build_parser():
     section_hash.add_argument("--questions", required=True, type=Path)
     section_hash.add_argument("--id", required=True)
     set_status = question_commands.add_parser("set-status")
-    set_status.add_argument("--questions", type=Path, default=Path(".lat/questions.md"))
+    set_status.add_argument("--questions", required=True, type=Path)
     set_status.add_argument("--id", required=True)
     set_status.add_argument("--revision", required=True, type=int)
     set_status.add_argument(
@@ -382,7 +386,7 @@ def _build_parser():
     set_status.add_argument("--expected-section-sha256", required=True)
     archive_recorded = question_commands.add_parser("archive-recorded")
     archive_recorded.add_argument(
-        "--questions", type=Path, default=Path(".lat/questions.md")
+        "--questions", required=True, type=Path
     )
     archive_recorded.add_argument("--older-than", type=float, default=300)
     cleanup = question_commands.add_parser("cleanup")

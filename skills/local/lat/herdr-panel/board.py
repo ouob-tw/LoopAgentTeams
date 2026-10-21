@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from questions import (
+    QUESTIONS_DIR,
     QuestionAnswer,
     _RECOMMENDED,
     _answer_label,
@@ -19,6 +20,7 @@ from questions import (
     _sections,
     _submit_question_answers_locked,
     _write_question_answer_locked,
+    panel_journal_path,
     parse_question_answer,
     parse_question_options,
     question_context,
@@ -33,6 +35,7 @@ from bindings import (
     _submitted_answers,
     _undelivered_answers,
     controller_questions_path,
+    legacy_questions_path,
     list_bindings,
     mark_notification_pending,
     notification_is_pending,
@@ -45,9 +48,7 @@ def _asked_times(questions_path):
     """Map ``(question ID, revision)`` to the time its upsert was journaled."""
     times = {}
     try:
-        lines = (
-            Path(questions_path).parent / "panel-journal.jsonl"
-        ).read_text(encoding="utf-8").splitlines()
+        lines = panel_journal_path(questions_path).read_text(encoding="utf-8").splitlines()
     except (OSError, ValueError):
         return times
     for line in lines:
@@ -123,22 +124,35 @@ def board_questions(questions_path):
     ]
 
 
-def _answered_questions(questions_path):
-    questions_path = Path(questions_path)
+def _name_files(questions_path):
+    """The root file and the ``questions/`` file of one name in one ``.lat``, older first."""
+    path = Path(questions_path)
+    if path.parent.name == QUESTIONS_DIR:
+        return [path.parent.parent / f"questions-{path.stem}.md", path]
+    if path.name.startswith("questions-"):
+        return [path, path.parent / QUESTIONS_DIR / path.name.removeprefix("questions-")]
+    return [path]
+
+
+def _answered_questions(questions_path, older=()):
+    """The answered questions of this file, of the other location's file of its name and of
+    ``older`` files: a controller's earlier rounds may have used another one."""
     latest = {}
+    asked_times = {}
     # The archive holds older sections than the file; a later section of an ID replaces any
     # earlier one, and one that is not an answered, recorded question leaves nothing for it.
-    for path in (_archive_path(questions_path), questions_path):
-        try:
-            document = path.read_text(encoding="utf-8")
-        except FileNotFoundError:
-            continue
-        for section in _sections(document):
-            latest.pop(section["id"], None)
-            answer, _ = _answer_text_and_note(section["answer"] or "")
-            if section["status"] == "recorded" and answer:
-                latest[section["id"]] = section
-    asked_times = _asked_times(questions_path)
+    for questions in dict.fromkeys([*map(Path, older), *_name_files(questions_path)]):
+        for path in (_archive_path(questions), questions):
+            try:
+                document = path.read_text(encoding="utf-8")
+            except FileNotFoundError:
+                continue
+            for section in _sections(document):
+                latest.pop(section["id"], None)
+                answer, _ = _answer_text_and_note(section["answer"] or "")
+                if section["status"] == "recorded" and answer:
+                    latest[section["id"]] = section
+        asked_times.update(_asked_times(questions))
     return [_board_question(section, asked_times) for section in latest.values()]
 
 
@@ -149,8 +163,10 @@ def board_answered(questions_paths, controllers=()):
     hcom_name)`` in ``controllers`` as ``controller_questions_path`` names it;
     those entries also carry their ``workspace`` and ``hcom_name``, so the board
     finds an unbound controller's file without naming it itself. Each file gets
-    the latest section of every question ID in it or its ``-archive`` file, when
-    that section is recorded with an answer. A file that cannot be read, or a
+    the latest section of every question ID in it or its ``-archive`` file, or in
+    the other location's file of the same name (root ``.lat`` or
+    ``.lat/questions/``) and its archive, when that section is recorded with an
+    answer. A file that cannot be read, or a
     name that makes no file name, sets only its own ``error``; a file that does
     not exist has no questions.
     """
@@ -161,16 +177,17 @@ def board_answered(questions_paths, controllers=()):
         entry = {"questions_path": None, "workspace": workspace, "hcom_name": hcom_name}
         try:
             path = controller_questions_path(workspace, hcom_name)
-        except ValueError as error:
+            older = [legacy_questions_path(workspace, hcom_name)]
+        except (OSError, ValueError) as error:
             files.append({**entry, "questions": [], "error": str(error)})
             continue
-        files.append(_answered_entry(path, {**entry, "questions_path": str(path)}))
+        files.append(_answered_entry(path, {**entry, "questions_path": str(path)}, older))
     return files
 
 
-def _answered_entry(path, entry):
+def _answered_entry(path, entry, older=()):
     try:
-        return {**entry, "questions": _answered_questions(path), "error": None}
+        return {**entry, "questions": _answered_questions(path, older), "error": None}
     except (OSError, ValueError) as error:
         return {**entry, "questions": [], "error": str(error)}
 
