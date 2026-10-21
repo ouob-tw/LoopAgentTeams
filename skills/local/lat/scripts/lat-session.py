@@ -398,6 +398,31 @@ def pointer(path, record):
     return text
 
 
+def release_own_wait(workspace, name):
+    """End the controller's own wait so a later activation does not report it as expired."""
+    path = workspace / '.lat/watch/waits' / f'{name}.json'
+    if not path.parent.is_dir():
+        return
+    # Same lock file lat-watch uses for this declaration.
+    with (path.parent / f'.{path.stem}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        original = current_bytes(path)
+        if original is None:
+            return
+        declaration = json.loads(original)
+        if not isinstance(declaration, dict) or not (
+                declaration.get('active', True) or declaration.get('expiry_nudge_pending')
+                or declaration.get('expiry_notice')):
+            return
+        # Also drop an expiry nudge or notice still queued for delivery, as a normal release does.
+        declaration.pop('expiry_notice', None)
+        declaration.update(active=False, released_reason='deactivated',
+                           released_at_utc=datetime.now(timezone.utc).isoformat(),
+                           expiry_count=0, expiry_declared_at=[], expiry_notified=False,
+                           expiry_nudge_pending=False)
+        write_json_atomic(path, declaration, expected=original)
+
+
 def deactivate(args):
     if args.successor and not HCOM_NAME.fullmatch(args.successor):
         raise ValueError('Invalid successor HCOM name; record unchanged')
@@ -416,6 +441,8 @@ def deactivate(args):
         if any(record.get(key) != value for key, value in expected.items()):
             raise ValueError('Controller identity does not match; record unchanged')
         _stop_watcher_locked(record)
+        if record.get('hcom_name'):
+            release_own_wait(workspace, record['hcom_name'])
         panel = panel_module()
         try:
             panel.clear_status_display(panel.resolve_session_binding(sid))
