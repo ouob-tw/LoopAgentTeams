@@ -48,6 +48,8 @@ export function connectBoard(options: ConnectionOptions): Connection {
 	let closed = false;
 	let attempt: AbortController | undefined;
 	let retry: ReturnType<typeof setTimeout> | undefined;
+	/** How many styles the stream has announced; an answer older than the latest of them is stale. */
+	let styleEvents = 0;
 
 	function unpaired(): void {
 		closed = true;
@@ -68,7 +70,10 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		else if (event === 'tab-moved') options.onTabMoved?.();
 		else if (event === 'agent-action') options.onAgentAction?.(JSON.parse(data).agentId);
 		else if (event === 'quota') options.onQuota?.(JSON.parse(data));
-		else if (event === 'usage-style') options.onUsageStyle?.(JSON.parse(data).style);
+		else if (event === 'usage-style') {
+			styleEvents++;
+			options.onUsageStyle?.(JSON.parse(data).style);
+		}
 	}
 
 	async function listen(): Promise<void> {
@@ -131,6 +136,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 			if (!response.ok && response.status !== 409) throw new Error(`HTTP ${response.status}`);
 		},
 		async setUsageStyle(style) {
+			const heard = styleEvents;
 			const response = await request('/api/usage-style', {
 				method: 'PUT',
 				headers: { 'content-type': 'application/json' },
@@ -138,8 +144,9 @@ export function connectBoard(options: ConnectionOptions): Connection {
 			});
 			if (response.status === 401) return unpaired();
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			// Not left to the push alone: that waits on the stream, which may be down.
-			options.onUsageStyle?.(style);
+			// Not left to the push alone: the stream may be down. But a style announced meanwhile
+			// is newer than this answer, which would put the page back.
+			if (styleEvents === heard) options.onUsageStyle?.(style);
 		},
 		async archive(before = null) {
 			const response = await request(before === null ? '/api/archive' : `/api/archive?before=${encodeURIComponent(before)}`);
