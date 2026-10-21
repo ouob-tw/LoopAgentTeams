@@ -291,10 +291,9 @@ class Protection:
 
 
 def linked_tickets(path, repo_root, issues):
-    """Tickets whose body or comments name `path` or below it, by its absolute path or, inside
-    the repository, its path relative to it."""
-    relative = os.path.relpath(path, repo_root)
-    needles = [str(path)] + ([] if relative.startswith('..') else [relative])
+    """Tickets whose body or comments name `path` or below it, by its absolute path or its
+    path relative to the repository."""
+    needles = [str(path), os.path.relpath(path, repo_root)]
     patterns = [re.compile(r'(?<![A-Za-z0-9_-])' + re.escape(needle)
                            + r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9])') for needle in needles]
     return [dict(number=number, state=state) for number, state, text in issues

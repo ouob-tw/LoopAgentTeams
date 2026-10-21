@@ -398,14 +398,14 @@ class RootsTests(unittest.TestCase):
         return self.root / name
 
     def test_links_never_make_a_cleanup_root(self):
-        (self.main / '.worktrees').symlink_to(self.outside('elsewhere'))
+        (self.main / '.worktrees').symlink_to(self.outside('elsewhere/wt').parent)
         alias = self.root / 'alias'
         alias.symlink_to(self.outside('registered'))
         self.worktrees = [alias]
 
         self.assertEqual(_lat_cleanup.lat_directories(self.main / '.lat'), [self.main / '.lat'])
         protection = _lat_cleanup.Protection(self.main / '.lat', issues=[])
-        for path in (self.root / 'elsewhere/.lat', self.root / 'registered/.lat/keep.md'):
+        for path in (self.root / 'elsewhere/wt/.lat', self.root / 'registered/.lat/keep.md'):
             self.assertEqual(protection.reason(path), '不在 .lat 內')
 
     def test_open_ticket_absolute_link_protects_an_external_worktree(self):
@@ -413,14 +413,15 @@ class RootsTests(unittest.TestCase):
         (external / '.lat/evidence/qa').mkdir(parents=True)
         (external / '.lat/evidence/qa/shot.png').write_text('x')
         self.worktrees = [external]
-        issues = [(7, 'OPEN', f'see {external}/.lat/evidence/qa/shot.png')]
+        for link in (f'{external}/.lat/evidence/qa/shot.png', '../external/.lat/evidence/qa/shot.png'):
+            issues = [(7, 'OPEN', f'see {link}')]
 
-        protection = _lat_cleanup.Protection(self.main / '.lat', issues=issues, need_tracker=True)
+            protection = _lat_cleanup.Protection(self.main / '.lat', issues=issues, need_tracker=True)
 
-        self.assertEqual(protection.lat_dirs, [self.main / '.lat', external / '.lat'])
-        for path in (external / '.lat', external / '.lat/evidence/qa'):
-            self.assertEqual(protection.reason(path), '開啟中的票連到此路徑 #7')
-        self.assertIsNone(protection.reason(external / '.lat/keep.md'))
+            self.assertEqual(protection.lat_dirs, [self.main / '.lat', external / '.lat'])
+            for path in (external / '.lat', external / '.lat/evidence/qa'):
+                self.assertEqual(protection.reason(path), '開啟中的票連到此路徑 #7', link)
+            self.assertIsNone(protection.reason(external / '.lat/keep.md'))
 
 
 @unittest.skipUnless(shutil.which('trash-put') and shutil.which('shred'), 'needs trash-cli and shred')
