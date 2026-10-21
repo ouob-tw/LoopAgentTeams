@@ -154,7 +154,9 @@ export async function settleAnswers(
 	now: number,
 	readEnded: (questionsPath: string) => Promise<HelperQuestion[] | null>
 ): Promise<string | null> {
-	const lines = log.lines;
+	// The answers as read now: one appended while the files below are read had its file left out, and
+	// is settled by the next read.
+	const lines = [...log.lines];
 	const marks = marksOf(lines);
 	const bound = new Map(controllers.map((controller) => [controller.session_id, controller]));
 	const stateOf = (answer: StoredAnswer) => marks.get(answer.id)?.state ?? 'waiting';

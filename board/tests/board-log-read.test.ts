@@ -3,7 +3,7 @@
 // with every line appended in this process meanwhile. The board runs in this process against fake
 // commands and a temporary state directory; nothing real is read.
 import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test';
-import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SentLaunch } from '../src/lib/board/launch.ts';
@@ -11,6 +11,7 @@ import type { SentSwitch } from '../src/lib/board/models.ts';
 import type { HelperController } from '../src/lib/board/types.ts';
 import type { SentWake } from '../src/lib/board/wake.ts';
 import type { Board } from '../src/lib/server/board.ts';
+import { settleAnswers } from '../src/lib/server/answer.ts';
 import * as sentLog from '../src/lib/server/sent-log.ts';
 
 const ROOT = join(import.meta.dir, '..');
@@ -218,4 +219,64 @@ test('a log stops taking appended lines once closed', () => {
 	log.close();
 	sentLog.appendSent(stateDir, wake('w4'));
 	expect(log.lines).toHaveLength(count + 1);
+});
+
+test('an answer appended while the answers settle waits for the next read', async () => {
+	const own = mkdtempSync(join(tmpdir(), 'lat-board-log-answers-'));
+	const answer = (id: string, controllerId: string): sentLog.StoredAnswer => ({
+		id,
+		kind: 'answer',
+		time,
+		controllerId,
+		hcomName: controllerId,
+		questionId: 'Q1',
+		revision: 1,
+		title: 'Which one?',
+		answer: 'A',
+		note: '',
+		questionsPath: join(own, `questions-${controllerId}.md`)
+	});
+	try {
+		sentLog.appendSent(own, answer('a-old', 'session-x'));
+		const log = sentLog.openLog(own, Date.now());
+		const asked: string[] = [];
+		// Neither controller is bound: each answer's question file is read, and this one cannot be.
+		const error = await settleAnswers(log, [], Date.now(), async (path) => {
+			asked.push(path);
+			// A submission that was already under way lands meanwhile, its controller since unbound.
+			sentLog.appendSent(own, answer('a-new', 'session-y'));
+			return null;
+		});
+		log.close();
+		expect(error).toBeNull();
+		expect(asked).toEqual([join(own, 'questions-session-x.md')]);
+		const marks = sentLog.readLines(own, Date.now()).filter((line) => line.kind === 'answer-state');
+		expect(marks.map((mark) => [mark.answerId, mark.state])).toEqual([['a-old', 'unknown']]);
+	} finally {
+		rmSync(own, { recursive: true, force: true });
+	}
+});
+
+test('a line appended onto one cut short is no more in a log kept up with than in the file', () => {
+	const own = mkdtempSync(join(tmpdir(), 'lat-board-log-torn-'));
+	const file = join(own, 'sent-log.jsonl');
+	const ids = (lines: readonly sentLog.Line[]) => lines.map((line) => ('id' in line ? line.id : null));
+	try {
+		// Cut short before the log was read.
+		writeFileSync(file, JSON.stringify(wake('t1')) + '\n{"kind":"wa');
+		const log = sentLog.openLog(own, Date.now());
+		sentLog.appendSent(own, wake('t2'));
+		sentLog.appendSent(own, wake('t3'));
+		expect(ids(log.lines)).toEqual(['t1', 't3']);
+		expect(ids(log.lines)).toEqual(ids(sentLog.readLines(own, Date.now())));
+		// Cut short by someone else after it was read.
+		appendFileSync(file, '{"kind":"wa');
+		sentLog.appendSent(own, wake('t4'));
+		sentLog.appendSent(own, wake('t5'));
+		expect(ids(log.lines)).toEqual(['t1', 't3', 't5']);
+		expect(ids(log.lines)).toEqual(ids(sentLog.readLines(own, Date.now())));
+		log.close();
+	} finally {
+		rmSync(own, { recursive: true, force: true });
+	}
 });

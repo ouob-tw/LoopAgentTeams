@@ -9,7 +9,7 @@
 //
 // What the lines come to is worked out in `sent-views.ts`; how each feature settles its own
 // entries against the clients running now is in that feature's module.
-import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentAction } from '../board/agent-actions.ts';
 import type { AnswerState, SentAnswer } from '../board/answers.ts';
@@ -181,22 +181,40 @@ function cacheRows(stateDir: string, rows: Row[], size: number, mtimeMs: number,
 	return cached;
 }
 
+/** Whether the file's text ends with a whole line, so one appended stands on its own. */
+function endsWhole(path: string, info: { size: number } | null): boolean {
+	if (!info?.size) return true;
+	const last = Buffer.alloc(1);
+	const fd = openSync(path, 'r');
+	try {
+		readSync(fd, last, 0, 1, info.size - 1);
+	} finally {
+		closeSync(fd);
+	}
+	return last[0] === 0x0a;
+}
+
 export function appendSent(stateDir: string, entry: Line): void {
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const path = join(stateDir, SENT_LOG_FILE);
 	const raw = JSON.stringify(entry);
 	const cached = cache.get(stateDir);
+	const info = stamp(path);
+	const known = unchanged(cached, info);
 	// Kept only while the file is as the board left it: someone else's write is read whole next time.
-	const keep = unchanged(cached, stamp(path)) && cached!.whole;
+	const keep = known && cached!.whole;
+	// Asked only while a read of the board keeps up with the log.
+	const whole = live.has(stateDir) && (known ? cached!.whole : endsWhole(path, info));
 	cache.delete(stateDir);
 	// The text may hold internal addresses and paths, like the reports do.
 	appendFileSync(path, raw + '\n', { mode: 0o600 });
 	const line = parse(raw)!;
-	for (const add of live.get(stateDir) ?? []) add(line);
+	// Joined onto a line cut short, it is no line of its own: a read of the file leaves it out too.
+	if (whole) for (const add of live.get(stateDir) ?? []) add(line);
 	if (!keep) return;
 	const size = cached!.size + Buffer.byteLength(raw + '\n');
-	const info = stamp(path);
-	if (info?.size === size) cacheRows(stateDir, [...cached!.rows, { raw, line }], size, info.mtimeMs, true);
+	const after = stamp(path);
+	if (after?.size === size) cacheRows(stateDir, [...cached!.rows, { raw, line }], size, after.mtimeMs, true);
 }
 
 /** The IDs a line belongs with: its own entry's, and a switch's for the wake that resumes it. */
