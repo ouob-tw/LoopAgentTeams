@@ -1,11 +1,12 @@
-// This device's appearance: theme, overall size, smallest text size, whether the roster is folded, the two column
-// widths and how the usage line reads. Each but the last is a variable or attribute on the root element, which
-// the styles read, and is remembered in the browser; the startup script in `src/app.html` puts it back before
-// first paint. Only what the settings dialog shows is also kept as state here. The usage line's style is state
-// only: the line is not drawn before the page takes over, so it needs nothing before first paint.
+// This device's appearance: theme, overall size, smallest text size, whether the roster is folded and the two
+// column widths. Each is a variable or attribute on the root element, which the styles read, and is remembered
+// in the browser; the startup script in `src/app.html` puts it back before first paint. Only what the settings
+// dialog shows is also kept as state here. How the usage line reads is not this device's: the board keeps it for
+// every device and tells the page, which only holds the latest here.
 import {
 	FOLDED_KEY,
 	forget,
+	LEGACY_USAGE_STYLE_KEY,
 	MIN_FONT,
 	remember,
 	remembered,
@@ -13,12 +14,11 @@ import {
 	SCALE,
 	THEME_KEY,
 	THEMES,
-	USAGE_STYLE_KEY,
 	WIDTHS,
 	type Column,
 	type Theme
 } from './prefs.ts';
-import { USAGE_STYLES, type UsageStyle } from './usage.ts';
+import type { UsageStyle } from './usage.ts';
 
 const WIDTH_VARIABLE = { roster: '--roster-w', inbox: '--inbox-w' } as const;
 const clamp = (value: number, min: number, max: number) => Math.min(max, Math.max(min, value));
@@ -29,6 +29,7 @@ class Appearance {
 	scale = $state<number>(SCALE.base);
 	/** Smallest text size in px; null when there is no floor. */
 	minFont = $state<number | null>(null);
+	/** As the board last said; 詳細 until it does. */
 	usageStyle = $state<UsageStyle>('detailed');
 
 	/** Take over what the startup script applied. */
@@ -36,12 +37,7 @@ class Appearance {
 		this.theme = remembered(THEME_KEY, THEMES, 'dark');
 		this.scale = rememberedNumber(SCALE.key, SCALE.min, SCALE.max) ?? SCALE.base;
 		this.minFont = rememberedNumber(MIN_FONT.key, MIN_FONT.min, MIN_FONT.max);
-		this.usageStyle = remembered(USAGE_STYLE_KEY, USAGE_STYLES, 'detailed');
-	}
-
-	setUsageStyle(style: UsageStyle): void {
-		this.usageStyle = style;
-		remember(USAGE_STYLE_KEY, style);
+		forget(LEGACY_USAGE_STYLE_KEY);
 	}
 
 	setTheme(theme: Theme): void {

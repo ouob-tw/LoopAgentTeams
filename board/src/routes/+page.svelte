@@ -772,7 +772,7 @@
 	</div>
 </div>
 
-<Settings bind:this={settings} />
+<Settings bind:this={settings} onusagestyle={(style) => void board.setUsageStyle(style)} />
 
 <style>
 	.dock {
