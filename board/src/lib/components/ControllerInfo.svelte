@@ -1,6 +1,6 @@
 <script lang="ts">
 	// A controller's information page, made of blocks: its header, a close for an idle one (its
-	// conversation still open in Herdr, as on the 所有 Agent tab), a bar for each question waiting
+	// conversation still open in Herdr, as on the Herdr 分頁), a bar for each question waiting
 	// for an answer, then its conversation, its reports not yet archived and what was sent to it, one
 	// tab at a time. Its model and effort, and messages and wakes, go through the command line at the
 	// bottom of the screen.

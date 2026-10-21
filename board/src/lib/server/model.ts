@@ -1,6 +1,6 @@
 // Turns the three LAT sources (binding registry and question files through the helper, report
 // records) into the board's data model. A controller's status comes from LAT; the agent list only
-// tells that an idle or delivered one is really at work, and which bound controllers' clients are gone. The 所有 Agent tab's
+// tells that an idle or delivered one is really at work, and which bound controllers' clients are gone. The Herdr 分頁's
 // list is made apart (`agents.ts`) and passed through, its agents on the controller roster marked so.
 import { basename } from 'node:path';
 import type {
@@ -38,7 +38,7 @@ export interface Sources {
 	running: Set<string> | null;
 	/** Set when `running` is not from this read: why hcom's list could not be read. */
 	hcomError: string | null;
-	/** Every agent Herdr lists, for the 所有 Agent tab: the last list that could be read. */
+	/** Every agent Herdr lists, for the Herdr 分頁: the last list that could be read. */
 	agents: Agent[];
 	/** Set when `agents` is not from this read: why Herdr's list could not be read, and what shows instead. */
 	herdrError: string | null;

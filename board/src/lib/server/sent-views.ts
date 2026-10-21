@@ -149,7 +149,7 @@ export function readSent(lines: readonly Line[], controllerId: string, now: numb
 	return entries.reverse();
 }
 
-/** What was done to one agent of the 所有 Agent tab, newest first. */
+/** What was done to one agent of the Herdr 分頁, newest first. */
 export function readAgentActions(lines: readonly Line[], agentId: string): AgentAction[] {
 	return lines.filter((line): line is AgentAction => line.kind === 'agent-action' && line.agentId === agentId).reverse();
 }

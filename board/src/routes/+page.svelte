@@ -180,7 +180,7 @@
 		return known.find((candidate) => candidate.key === openKey) ?? view.item;
 	});
 	const controllerId = $derived(view?.kind === 'controller' ? view.id : item?.controllerId);
-	/** The open agent of the 所有 Agent tab; undefined once Herdr no longer lists it. */
+	/** The open agent of the Herdr 分頁; undefined once Herdr no longer lists it. */
 	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
 	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
 	/** The open agent while the 已關閉 section lists it instead: once 接回 brings it back to Herdr,

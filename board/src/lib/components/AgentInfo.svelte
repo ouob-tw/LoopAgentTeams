@@ -1,5 +1,5 @@
 <script lang="ts">
-	// An agent's page on the 所有 Agent tab, laid out like a controller's information page: one line
+	// An agent's page on the Herdr 分頁, laid out like a controller's information page: one line
 	// of who and where it stands, the details of where it runs, its close, then its conversation and
 	// what was done to it, one tab at a time. Text, an interrupt and a model switch are sent to it
 	// from the command line. The status is hcom's when hcom reaches it and Herdr's otherwise (ADR

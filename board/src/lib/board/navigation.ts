@@ -4,7 +4,7 @@
 import type { Agent, Controller, HerdrWorkspace, InboxItem } from './types.ts';
 
 /** What the address names: an inbox item, a controller, the new-controller form, an agent of the
- *  所有 Agent tab or its 已關閉 section by session ID, the new-agent form of a Herdr workspace, or
+ *  Herdr 分頁 or its 已關閉 section by session ID, the new-agent form of a Herdr workspace, or
  *  the list. */
 export type Place =
 	| { kind: 'item'; key: string }

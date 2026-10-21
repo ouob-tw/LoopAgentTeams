@@ -5,7 +5,7 @@
 // `/effort` would also save the choice as the user's default for new sessions. A switch is in the
 // sent log before the stop runs and stays open until the resumed session shows up in hcom's agent
 // list and Herdr runs it; 「繼續切換」 checks where an open one got to and goes on from there.
-// Switches share the per-controller queue of messages and wakes. Agents of the 所有 Agent tab
+// Switches share the per-controller queue of messages and wakes. Agents of the Herdr 分頁
 // linked to hcom are switched the same way, keyed by their session ID like a controller
 // (`agent-switch.ts`).
 //
@@ -58,9 +58,9 @@ export type Result<T> = { status: number; body: T };
 
 /**
  * Whose model is switched, by session ID: a controller from its information page, or an agent from
- * the 所有 Agent tab (`onAgentTab`), which names it 「Agent」 and resumes it in the Herdr workspace
+ * the Herdr 分頁 (`onAgentTab`), which names it 「Agent」 and resumes it in the Herdr workspace
  * kept for it. `workspace` is the folder whose Herdr workspace a resume goes to otherwise. `agent`
- * is where Herdr listed it when the switch was asked for, kept with the switch so the 所有 Agent tab
+ * is where Herdr listed it when the switch was asked for, kept with the switch so the Herdr 分頁
  * lists it while the switch is open, wherever it was asked for.
  */
 export type SwitchTarget = Pick<Controller, 'id' | 'hcomName' | 'client' | 'workspace'> & { agent?: SwitchAgent; onAgentTab?: boolean };
@@ -120,7 +120,7 @@ interface Outcome {
 async function attempt(board: Board, request: SwitchRequest): Promise<Result<SwitchResponse>> {
 	const config = board.config;
 	const found = await findController(board, request.controllerId);
-	// Where Herdr lists it, kept with the switch for the 所有 Agent tab.
+	// Where Herdr lists it, kept with the switch for the Herdr 分頁.
 	const row = found && (await board.current()).agents.find((agent) => agent.id === found.id && agent.inHerdr);
 	const controller: SwitchTarget | undefined = found && (row ? { ...found, agent: switchPlace(row) } : found);
 	const choice: ModelChoice = { model: request.model, effort: request.effort };
