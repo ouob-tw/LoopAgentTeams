@@ -2,7 +2,7 @@
 // target label, the box's text and the send button's text sit, for both themes and the three
 // overall sizes, with one line and with several. Starts the built board on fake data.
 //
-//   bun run build && bun run measure:commandline
+//   bun run build:test && bun run measure:commandline
 //
 // Rules checked (exit 1 when broken):
 //   one line     the three centres are within 2px of each other;
@@ -17,7 +17,6 @@
 // --shots <dir> saves a screenshot of every case there.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { launchChrome } from '../tests/browser.ts';
 import { startFixture } from '../tests/harness.ts';
 
 const TOLERANCE = 2;
@@ -37,6 +36,8 @@ if (process.argv.includes('--serve')) {
 	await new Promise(() => {});
 }
 
+// Loaded only here: finding no Chrome fails the import, and --serve needs none.
+const { launchChrome } = await import('../tests/browser.ts');
 const browser = await launchChrome();
 const debugPort = browser.debugPort;
 

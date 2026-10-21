@@ -347,7 +347,7 @@ bun run test:all       # 先建置到 build-test/，再跑以上三層
 瀏覽器擴充功能（例如 Dark Reader）會在頁面啟動前，在樣式表旁邊插入或搬動節點；樣式表放在頁面元件的範本裡就會讓首頁變成錯誤頁，所以一律放在 `<head>`。
 
 ```bash
-bun run build && bun run repro:hydration   # 無頭 Chrome 模擬這些改動；有一種讓看板壞掉就以 1 結束
+bun run build:test && bun run repro:hydration   # 無頭 Chrome 模擬這些改動；有一種讓看板壞掉就以 1 結束
 bun run repro:hydration --serve none       # 只啟動已登入的假資料看板，給裝了真實擴充功能的瀏覽器開
 ```
 
@@ -364,7 +364,7 @@ bun run repro:hydration --serve none       # 只啟動已登入的假資料看�
 寬版底部指令列的版面規則：單行時目標標籤、輸入框文字與送出按鈕的垂直中心相差不超過 2px；輸入框隨多行內容長高時，標籤與按鈕都貼齊輸入框最下面一行，位置不跳動；送出按鈕在輸入框框線內的右側，輸入的文字不會跑到按鈕底下。量測（深色與淺色、整體大小 80／100／150 %）：
 
 ```bash
-bun run build && bun run measure:commandline   # 無頭 Chrome；違反規則就以 1 結束；使用測試連接埠起點加 16 與加 17
+bun run build:test && bun run measure:commandline   # 無頭 Chrome；違反規則就以 1 結束；使用測試連接埠起點加 16 與加 17
 bun scripts/measure-commandline.ts --serve     # 啟動已登入的假資料看板，再用 scripts/measure-commandline.py 以 WebKit 量同樣的案例
 ```
 
