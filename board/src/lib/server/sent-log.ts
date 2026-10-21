@@ -9,7 +9,7 @@
 //
 // What the lines come to is worked out in `sent-views.ts`; how each feature settles its own
 // entries against the clients running now is in that feature's module.
-import { appendFileSync, closeSync, mkdirSync, openSync, readFileSync, readSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentAction } from '../board/agent-actions.ts';
 import type { AnswerState, SentAnswer } from '../board/answers.ts';
@@ -137,9 +137,13 @@ const cache = new Map<string, Cached>();
 /** When each state directory's log was last cleaned, by the board's clock. */
 const prunedAt = new Map<string, number>();
 
-/** The reads of the board under way, by state directory: each is handed every line appended in
- *  this process while it lasts (`openLog`), or null for one joined onto a line cut short. */
+/** The reads of the board under way, by state directory (`openLog`): each is handed every line
+ *  the board appends while it lasts, or null when the file may now hold anything else. */
 const live = new Map<string, Set<(line: Line | null) => void>>();
+
+const tell = (stateDir: string, line: Line | null) => {
+	for (const add of live.get(stateDir) ?? []) add(line);
+};
 
 /** How many times the whole file was read and parsed; tests count the reads with it. */
 export const sentLogReads = { count: 0 };
@@ -181,40 +185,29 @@ function cacheRows(stateDir: string, rows: Row[], size: number, mtimeMs: number,
 	return cached;
 }
 
-/** Whether the file's text ends with a whole line, so one appended stands on its own. */
-function endsWhole(path: string, info: { size: number } | null): boolean {
-	if (!info?.size) return true;
-	const last = Buffer.alloc(1);
-	const fd = openSync(path, 'r');
-	try {
-		readSync(fd, last, 0, 1, info.size - 1);
-	} finally {
-		closeSync(fd);
-	}
-	return last[0] === 0x0a;
-}
-
 export function appendSent(stateDir: string, entry: Line): void {
 	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
 	const path = join(stateDir, SENT_LOG_FILE);
 	const raw = JSON.stringify(entry);
 	const cached = cache.get(stateDir);
-	const info = stamp(path);
-	const known = unchanged(cached, info);
 	// Kept only while the file is as the board left it: someone else's write is read whole next time.
-	const keep = known && cached!.whole;
-	// Asked only while a read of the board keeps up with the log.
-	const whole = live.has(stateDir) && (known ? cached!.whole : endsWhole(path, info));
+	const keep = unchanged(cached, stamp(path)) && cached!.whole;
 	cache.delete(stateDir);
-	// The text may hold internal addresses and paths, like the reports do.
-	appendFileSync(path, raw + '\n', { mode: 0o600 });
-	const line = parse(raw)!;
-	// Joined onto a line cut short, it is no line of its own: a read of the file leaves it out too.
-	for (const add of live.get(stateDir) ?? []) add(whole ? line : null);
-	if (!keep) return;
-	const size = cached!.size + Buffer.byteLength(raw + '\n');
-	const after = stamp(path);
-	if (after?.size === size) cacheRows(stateDir, [...cached!.rows, { raw, line }], size, after.mtimeMs, true);
+	/** The line as the cache now has it; null when the cache could not keep up, the write failed, or
+	 *  the file ended with a line cut short that it joined: a read of the file tells then. */
+	let line: Line | null = null;
+	try {
+		// The text may hold internal addresses and paths, like the reports do.
+		appendFileSync(path, raw + '\n', { mode: 0o600 });
+		if (!keep) return;
+		const size = cached!.size + Buffer.byteLength(raw + '\n');
+		const info = stamp(path);
+		if (info?.size !== size) return;
+		line = parse(raw);
+		cacheRows(stateDir, [...cached!.rows, { raw, line }], size, info.mtimeMs, true);
+	} finally {
+		tell(stateDir, line);
+	}
 }
 
 /** The IDs a line belongs with: its own entry's, and a switch's for the wake that resumes it. */
@@ -272,6 +265,7 @@ function prune(stateDir: string, cached: Cached, now: number): Cached {
 		rmSync(temporary, { force: true });
 		writeFileSync(temporary, text, { mode: 0o600 });
 		renameSync(temporary, path);
+		tell(stateDir, null);
 	} catch {
 		// The log stays whole until the next cleaning; reading it is not held up by this.
 		rmSync(temporary, { force: true });
@@ -302,6 +296,8 @@ function readCached(stateDir: string): Cached | null {
 		throw error;
 	}
 	sentLogReads.count += 1;
+	// Read again because it changed: a log kept up with may miss what changed it.
+	tell(stateDir, null);
 	const rows = text
 		.split('\n')
 		.filter((raw) => raw.trim())
@@ -335,6 +331,7 @@ function readRows(stateDir: string, now: number): Cached | null {
 /** The lines one read of the board works from (`openLog`), and how it adds one; `append` throws
  *  as `appendSent` does. */
 export interface SentLog {
+	/** Throws, once the file has to be read again, when it cannot be. */
 	readonly lines: readonly Line[];
 	append(line: Line): void;
 	/** Stop adding the lines appended from now on. */
@@ -342,27 +339,31 @@ export interface SentLog {
 }
 
 /**
- * The log read once, for one read of the board: its lines now, and, until `close`, every line
- * appended in this process meanwhile, by the read itself or by a request alongside it. The board
- * is the only writer, so what is worked out from `lines` later in the read is what a read of the
- * file then would give.
+ * The log read once, for one read of the board: its lines now, and, until `close`, every line the
+ * board appends meanwhile, by the read itself or by a request alongside it. When the board cannot
+ * tell what the file holds after a change (a write failed, joined a line cut short or found the
+ * file changed by someone else; a cleaning rewrote it; any read found it changed), `lines` reads
+ * the file again next, as every step of a read used to. Otherwise `lines` is what a read of the
+ * file would give: the board is the only writer, and a change by anyone else is seen once the
+ * board next writes or reads the file.
  */
 export function openLog(stateDir: string, now: number): SentLog {
-	const read = readRows(stateDir, now);
-	const lines = [...(read?.lines ?? [])];
-	// A last line with no newline after it: the next line appended joins it, and a read of the file
-	// then leaves out both.
-	let tail = read && !read.whole ? (read.rows.at(-1)?.line ?? null) : null;
+	let lines = [...(readRows(stateDir, now)?.lines ?? [])];
+	let stale = false;
 	const add = (line: Line | null) => {
-		if (line) lines.push(line);
-		else if (tail) lines.splice(lines.lastIndexOf(tail), 1);
-		// The file ends with a newline now, or with what someone else wrote.
-		tail = null;
+		if (line && !stale) lines.push(line);
+		else stale = true;
 	};
 	const reads = live.get(stateDir) ?? new Set();
 	live.set(stateDir, reads.add(add));
 	return {
-		lines,
+		get lines() {
+			if (stale) {
+				lines = [...(readCached(stateDir)?.lines ?? [])];
+				stale = false;
+			}
+			return lines;
+		},
 		append: (line) => appendSent(stateDir, line),
 		close() {
 			reads.delete(add);

@@ -2,8 +2,8 @@
 // open switches it shows and the relaunches it settles later all work from those lines, kept up
 // with every line appended in this process meanwhile. The board runs in this process against fake
 // commands and a temporary state directory; nothing real is read.
-import { afterAll, beforeAll, expect, spyOn, test } from 'bun:test';
-import { appendFileSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SentLaunch } from '../src/lib/board/launch.ts';
@@ -257,35 +257,113 @@ test('an answer appended while the answers settle waits for the next read', asyn
 	}
 });
 
-test('a line appended onto one cut short is no more in a log kept up with than in the file', () => {
-	const own = mkdtempSync(join(tmpdir(), 'lat-board-log-torn-'));
-	const file = join(own, 'sent-log.jsonl');
+describe('a log kept up with gives what a read of the file would', () => {
+	let own: string;
+	const file = () => join(own, 'sent-log.jsonl');
+	const DAY = 24 * 60 * 60 * 1000;
 	const ids = (lines: readonly sentLog.Line[]) => lines.map((line) => ('id' in line ? line.id : null));
-	try {
-		// Cut short before the log was read.
-		writeFileSync(file, JSON.stringify(wake('t1')) + '\n{"kind":"wa');
-		const log = sentLog.openLog(own, Date.now());
-		sentLog.appendSent(own, wake('t2'));
-		sentLog.appendSent(own, wake('t3'));
-		expect(ids(log.lines)).toEqual(['t1', 't3']);
-		expect(ids(log.lines)).toEqual(ids(sentLog.readLines(own, Date.now())));
-		// Cut short by someone else after it was read.
-		appendFileSync(file, '{"kind":"wa');
-		sentLog.appendSent(own, wake('t4'));
-		sentLog.appendSent(own, wake('t5'));
-		expect(ids(log.lines)).toEqual(['t1', 't3', 't5']);
-		expect(ids(log.lines)).toEqual(ids(sentLog.readLines(own, Date.now())));
-		log.close();
-		// A whole line, but its newline never written: the next line joins it, and both are lost.
-		writeFileSync(file, JSON.stringify(wake('u1')) + '\n' + JSON.stringify(wake('u2')));
-		const cut = sentLog.openLog(own, Date.now());
-		expect(ids(cut.lines)).toEqual(['u1', 'u2']);
-		sentLog.appendSent(own, wake('u3'));
-		sentLog.appendSent(own, wake('u4'));
-		expect(ids(cut.lines)).toEqual(['u1', 'u4']);
-		expect(ids(cut.lines)).toEqual(ids(sentLog.readLines(own, Date.now())));
-		cut.close();
-	} finally {
+	const same = (log: sentLog.SentLog, now = Date.now()) => expect(ids(log.lines)).toEqual(ids(sentLog.readLines(own, now)));
+	beforeEach(() => {
+		own = mkdtempSync(join(tmpdir(), 'lat-board-log-live-'));
+	});
+	afterEach(() => {
+		chmodSync(own, 0o700);
 		rmSync(own, { recursive: true, force: true });
+	});
+
+	const tails: [string, string][] = [
+		['a whole last line', '\n'],
+		['spaces after the last line', '\n  '],
+		['a carriage return after the last line', '\n\r'],
+		['a line cut short', '\n{"kind":"wa'],
+		['a whole line with no newline', ''],
+		['nothing else', 'EMPTY'],
+		['only spaces', 'BLANK']
+	];
+	for (const [name, tail] of tails) {
+		test(`with ${name} at the end of the file`, () => {
+			writeFileSync(file(), tail === 'EMPTY' ? '' : tail === 'BLANK' ? '   ' : JSON.stringify(wake('t1')) + tail);
+			const log = sentLog.openLog(own, Date.now());
+			same(log);
+			sentLog.appendSent(own, wake('t2'));
+			same(log);
+			sentLog.appendSent(own, wake('t3'));
+			same(log);
+			expect(ids(log.lines)).toContain('t3');
+			log.close();
+		});
 	}
+
+	test('after an append that failed', () => {
+		sentLog.appendSent(own, wake('f1'));
+		const log = sentLog.openLog(own, Date.now());
+		chmodSync(file(), 0o400);
+		try {
+			expect(() => sentLog.appendSent(own, wake('f2'))).toThrow();
+		} finally {
+			chmodSync(file(), 0o600);
+		}
+		// Whatever a failed write left: here, the line after all.
+		appendFileSync(file(), JSON.stringify(wake('f2')) + '\n');
+		same(log);
+		sentLog.appendSent(own, wake('f3'));
+		same(log);
+		log.close();
+	});
+
+	test('after someone else wrote to the file, once the board appends', () => {
+		sentLog.appendSent(own, wake('o1'));
+		const log = sentLog.openLog(own, Date.now());
+		appendFileSync(file(), JSON.stringify(wake('o2')) + '\n');
+		sentLog.appendSent(own, wake('o3'));
+		expect(ids(log.lines)).toEqual(['o1', 'o2', 'o3']);
+		same(log);
+		log.close();
+	});
+
+	test('after someone else wrote to the file, once a read finds it changed', () => {
+		sentLog.appendSent(own, wake('r1'));
+		const log = sentLog.openLog(own, Date.now());
+		// Replaced, at another size: one of the same size and time is not seen by anyone (the cache's own limit).
+		writeFileSync(file(), JSON.stringify(wake('r2')) + '\n' + JSON.stringify(wake('r3')) + '\n');
+		expect(ids(sentLog.readLines(own, Date.now()))).toEqual(['r2', 'r3']);
+		expect(ids(log.lines)).toEqual(['r2', 'r3']);
+		log.close();
+	});
+
+	test('after a cleaning under way dropped what is past retention', () => {
+		const start = Date.now() - 60 * DAY;
+		sentLog.appendSent(own, { ...wake('p1'), time: new Date(start).toISOString() });
+		sentLog.appendSent(own, { ...wake('p2'), time: new Date(start + 20 * DAY).toISOString() });
+		const log = sentLog.openLog(own, start + 21 * DAY);
+		expect(ids(log.lines)).toEqual(['p1', 'p2']);
+		// A later read, a day on, cleans the file while this log is open.
+		const later = start + 31 * DAY;
+		expect(ids(sentLog.readLines(own, later))).toEqual(['p2']);
+		same(log, later);
+		log.close();
+	});
+
+	test('with two open, each takes the lines appended, and one closed stops', () => {
+		sentLog.appendSent(own, wake('m1'));
+		const first = sentLog.openLog(own, Date.now());
+		const second = sentLog.openLog(own, Date.now());
+		sentLog.appendSent(own, wake('m2'));
+		first.close();
+		sentLog.appendSent(own, wake('m3'));
+		expect(ids(first.lines)).toEqual(['m1', 'm2']);
+		expect(ids(second.lines)).toEqual(['m1', 'm2', 'm3']);
+		same(second);
+		second.close();
+	});
+
+	test('the lines the board appends to a whole file are taken without reading it again', () => {
+		sentLog.appendSent(own, wake('n1'));
+		const log = sentLog.openLog(own, Date.now());
+		const before = sentLog.sentLogReads.count;
+		for (const id of ['n2', 'n3', 'n4']) sentLog.appendSent(own, wake(id));
+		expect(ids(log.lines)).toEqual(['n1', 'n2', 'n3', 'n4']);
+		expect(sentLog.sentLogReads.count).toBe(before);
+		log.close();
+	});
 });

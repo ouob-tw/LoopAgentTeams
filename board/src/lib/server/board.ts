@@ -101,12 +101,16 @@ async function settleWakes(config: BoardConfig, log: SentLog, list: AgentList, h
 interface Reading {
 	log: SentLog | Error | null;
 	settled: Promise<unknown>;
+	/** The read is over: it failed before the log was opened, say. A log opened now is closed at once. */
+	over: boolean;
 }
 
-/** Read the sent log for one read of the sources; the error when it cannot be read. */
+/** Read the sent log for one read of the sources; the error when it cannot be read. A log that
+ *  cannot be read stays the error for the whole read; the next read tries again. */
 function readLog(config: BoardConfig, reading: Reading): SentLog | Error {
 	try {
 		reading.log = openLog(config.stateDir, config.now());
+		if (reading.over) reading.log.close();
 	} catch (error) {
 		reading.log = error as Error;
 	}
@@ -254,10 +258,11 @@ function createBoard(): Board {
 	}
 
 	async function read(): Promise<BoardSnapshot> {
-		const reading: Reading = { log: null, settled: Promise.resolve() };
+		const reading: Reading = { log: null, settled: Promise.resolve(), over: false };
 		try {
 			return await readWith(reading);
 		} finally {
+			reading.over = true;
 			const { log } = reading;
 			if (log && !(log instanceof Error)) void reading.settled.finally(() => log.close());
 		}
