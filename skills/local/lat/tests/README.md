@@ -4,6 +4,8 @@
 
 Agent 執行下列整套測試時包進 three-tier-testing 閘門：`suite-gate.py run -- <指令>`。
 
+LoopAgentTeams 的登記檔（repo 根的 `.suite-gate.json`）有受影響測試對照表：每張票改跑 `suite-gate.py affected`；跑整套時要標用途（`run --purpose post-merge`、`--purpose release` 或 `--reason "<原因>"`）。
+
 單元／CLI 合約測試（僅暫存檔，沒有模型或真實 Codex）：
 
 ```bash
