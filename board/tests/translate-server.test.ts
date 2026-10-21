@@ -136,7 +136,8 @@ test('a page that leaves drops what it alone wanted and Codex has not started; w
 	await left;
 	expect(Object.values(await busy).every((line) => line.text?.startsWith('譯：'))).toBe(true);
 	await Bun.sleep(1500);
-	expect(codexCalls().map((call) => call.text)).toEqual(['Busy one is running.', 'Busy two is running.', 'Busy three is running.'].map((text) => `<reply>\n${text}\n</reply>`));
+	// The three run side by side, in any order.
+	expect(codexCalls().map((call) => call.text).sort()).toEqual(['Busy one is running.', 'Busy three is running.', 'Busy two is running.'].map((text) => `<reply>\n${text}\n</reply>`));
 });
 
 test('Codex failing or timing out gives a reason for that text, and nothing is saved for it; the failure is answered as it was for 5 minutes', async () => {
