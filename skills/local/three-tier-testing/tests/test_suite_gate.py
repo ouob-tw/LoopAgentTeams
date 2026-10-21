@@ -155,6 +155,18 @@ class GateCase(unittest.TestCase):
         empty.mkdir()
         self.env['SUITE_GATE_CGROUP_ROOT'] = str(empty)
 
+    def scopes_that_fall_back(self):
+        """Make the gate see cgroup v2 and systemd-run, but have every scope fail to start, so
+        a queued suite expects a scope and the started suite falls back to a session."""
+        root, fake_bin = self.tmp / 'cgroup', self.tmp / 'scope-bin'
+        root.mkdir()
+        (root / 'cgroup.controllers').write_text('cpu memory pids\n')
+        fake_bin.mkdir()
+        (fake_bin / 'systemd-run').write_text('#!/bin/sh\necho no user bus >&2\nexit 1\n')
+        (fake_bin / 'systemd-run').chmod(0o755)
+        self.env['SUITE_GATE_CGROUP_ROOT'] = str(root)
+        self.env['PATH'] = f'{fake_bin}:{os.environ["PATH"]}'
+
     def alive(self, pid):
         stat = gate.proc_stat(pid)
         return stat is not None and stat[0] != 'Z'
@@ -911,6 +923,52 @@ class AdmissionRuleTests(unittest.TestCase):
         self.assertEqual(gate.unused_reservation(old, config), (4.0, 4 * GIB))
 
 
+class HostViewTests(unittest.TestCase):
+    """host_view() on fake /proc files whose CPU counters move."""
+
+    def setUp(self):
+        self.root = Path(tempfile.mkdtemp(prefix='suite-gate-proc-'))
+        self.addCleanup(subprocess.run, ['rm', '-rf', str(self.root)])
+        (self.root / 'pressure').mkdir()
+        for name in ('io', 'cpu'):
+            (self.root / 'pressure' / name).write_text('some avg10=0.00 avg60=0.00 total=0\n')
+        (self.root / 'meminfo').write_text(f'MemAvailable: {8 * 2**20} kB\n')
+        patcher = mock.patch.dict(os.environ, SUITE_GATE_PROC_ROOT=str(self.root))
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def stat(self, busy, idle, iowait=0):
+        (self.root / 'stat').write_text(f'cpu  {busy} 0 0 {idle} {iowait} 0 0 0 0 0\n'
+                                        'cpu0 0\ncpu1 0\ncpu2 0\ncpu3 0\n')
+
+    def test_idle_cpu_is_measured_since_the_base_reading_and_a_stale_base_is_dropped(self):
+        config, state = dict(gate.DEFAULTS), {}
+        self.stat(busy=1000, idle=3000)  # since boot: 3/4 idle
+        host = gate.host_view(state, config)
+        self.assertEqual((host['cores'], host['cpu_idle'], host['cpu_free_cores']), (4, 0.75, 3.0))
+        self.assertEqual(len(state['host_cpu']), 1)
+        self.stat(busy=1300, idle=3050, iowait=50)  # 300 busy, 100 idle (iowait counts) since
+        host = gate.host_view(state, config)
+        self.assertEqual((host['cpu_idle'], host['cpu_free_cores']), (0.25, 1.0))
+        self.assertEqual(host['mem_available_bytes'], 8 * GIB)
+        state['host_cpu'][0][0] -= 3 * gate.CPU_WINDOW_SECONDS  # the base is too old now
+        self.stat(busy=2000, idle=2900, iowait=100)
+        host = gate.host_view(state, config)
+        self.assertEqual(host['cpu_idle'], 0.6, 'counters since boot, the base was dropped')
+
+    def test_a_reading_older_than_the_window_becomes_the_next_base(self):
+        config, state = dict(gate.DEFAULTS), {}
+        self.stat(busy=1000, idle=3000)
+        gate.host_view(state, config)
+        state['host_cpu'][0][0] -= gate.CPU_WINDOW_SECONDS
+        self.stat(busy=1100, idle=3100)
+        gate.host_view(state, config)
+        self.assertEqual([w[1:] for w in state['host_cpu']], [[4000, 3000], [4200, 3100]])
+        self.stat(busy=1100, idle=3400)
+        host = gate.host_view(state, config)
+        self.assertEqual(host['cpu_idle'], 0.8, '100 busy, 400 idle since the base of 4000')
+
+
 class AdmissionTests(GateCase):
     """Who starts and why the rest wait, on fake host readings. Suites run in plain sessions,
     so their current use is unknown and each running suite holds all of its reservation."""
@@ -1040,6 +1098,11 @@ class BrakeTests(GateCase):
 
 
 class ConfigTests(GateCase):
+    def setUp(self):
+        super().setUp()
+        self.without_scopes()
+        self.fake_host()
+
     def status_of(self):
         result = self.gate('status', '--json')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -1088,6 +1151,10 @@ class ConfigTests(GateCase):
 
 
 class ReservationTests(GateCase):
+    def setUp(self):
+        super().setUp()
+        self.fake_host()
+
     def test_worktrees_of_a_repo_share_a_profile_key_and_other_repos_do_not(self):
         (self.repo / 'sub').mkdir()
         (self.repo / 'sub/a.py').write_text('')
@@ -1110,41 +1177,78 @@ class ReservationTests(GateCase):
         self.assertEqual(same_text[0], same_text[1])
         self.assertNotEqual(same_text[0], same_text[2])
 
-    def test_the_reservation_is_the_highest_of_the_latest_measured_runs(self):
-        command = self.suite()
-        key = gate.fingerprint(self.repo, [command])['profile_key']
-
+    def measured_history(self, key):
+        """Ledger lines for key, oldest first; the latest five measured runs peak at 5.5 cores
+        and 3 GiB."""
         def run(cpu, mem, key=key, **extra):
             return {'profile_key': key, 'profile': dict(
                 {'cpu_peak_cores': cpu, 'mem_peak_bytes': mem, 'fallback': False}, **extra)}
-        history = [run(20, 20 * GIB),  # sixth newest measured run: outside profile_history
-                   run(3, GIB), run(5.5, 2 * GIB),
-                   run(30, 30 * GIB, fallback=True), run(None, 9 * GIB),  # not measured
-                   run(25, 25 * GIB, key=dict(key, repo='/elsewhere/.git')),  # another repo
-                   run(2, 3 * GIB), run(1, int(1.5 * GIB)), run(2.5, GIB)]
-        self.state.mkdir()
-        (self.state / 'ledger.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in history))
+        return [run(20, 20 * GIB),  # sixth newest measured run: outside profile_history
+                run(3, GIB), run(5.5, 2 * GIB),
+                run(30, 30 * GIB, fallback=True), run(None, 9 * GIB),  # not measured
+                run(25, 25 * GIB, key=dict(key, repo='/elsewhere/.git')),  # another repo
+                run(2, 3 * GIB), run(1, int(1.5 * GIB)), run(2.5, GIB)]
+
+    def write_ledger(self, records, mode='w'):
+        self.state.mkdir(exist_ok=True)
+        with open(self.state / 'ledger.jsonl', mode) as ledger:
+            ledger.write(''.join(json.dumps(r) + '\n' for r in records))
+
+    def reservations(self):
+        status = self.status()
+        return ([h['reservation'] for h in status['running']],
+                [w['reservation'] for w in status['waiting'] if w.get('kind') == 'slot'])
+
+    def test_the_reservation_is_the_highest_of_the_latest_measured_runs_and_follows_the_ledger(self):
+        self.scopes_that_fall_back()
+        release_queued = self.tmp / 'release-queued'
+        command = f'while [ ! -f {release_queued} ]; do sleep 0.05; done'
+        key = gate.fingerprint(self.repo, [command])['profile_key']
+        self.write_ledger(self.measured_history(key))
         self.set_config(min_slots=1, max_slots=1)
         hold, release = self.blocker('hold')
         self.wait_until(lambda: len(self.status()['running']) == 1, message='blocker running')
         queued = self.start('run', '--', command)
-
-        def reservations():
-            status = self.status()
-            return ([h['reservation'] for h in status['running']],
-                    [w['reservation'] for w in status['waiting'] if w.get('kind') == 'slot'])
         default = {'cpu_cores': 4.0, 'mem_bytes': 4 * GIB, 'source': 'default'}
-        self.wait_until(lambda: reservations() == (
+        self.wait_until(lambda: self.reservations() == (
             [default], [{'cpu_cores': 5.5, 'mem_bytes': 3 * GIB, 'source': 'measured'}]),
             message='measured reservation')
         self.set_config(min_slots=1, max_slots=1, profile_history=1)
-        self.wait_until(lambda: reservations()[1] == [
+        self.wait_until(lambda: self.reservations()[1] == [
             {'cpu_cores': 2.5, 'mem_bytes': GIB, 'source': 'measured'}],
             message='profile_history reread')
+        self.set_config(min_slots=1, max_slots=1)
+        # Another run of the same command finishes while this one waits; no config change.
+        self.write_ledger([{'profile_key': key, 'profile': {
+            'cpu_peak_cores': 12.0, 'mem_peak_bytes': 6 * GIB, 'fallback': False}}], mode='a')
+        self.wait_until(lambda: self.reservations()[1] == [
+            {'cpu_cores': 12.0, 'mem_bytes': 6 * GIB, 'source': 'measured'}],
+            message='the new record counted')
+        release.touch()
+        self.finish(hold)
+        # Its scope fails to start, so the running suite falls back and reserves the default.
+        self.wait_until(lambda: self.reservations() == ([default], []), message='fell back')
+        release_queued.touch()
+        code, _, err = self.finish(queued)
+        self.assertEqual(code, 0, err)
+        self.assertIn('could not start a systemd user scope', err)
+        self.assertEqual(self.records()[-1]['profile_key'], key)
+
+    def test_without_scopes_a_queued_suite_reserves_the_default_despite_measured_runs(self):
+        self.without_scopes()
+        command = self.suite()
+        key = gate.fingerprint(self.repo, [command])['profile_key']
+        self.write_ledger(self.measured_history(key))
+        self.set_config(min_slots=1, max_slots=1)
+        hold, release = self.blocker('hold')
+        self.wait_until(lambda: len(self.status()['running']) == 1, message='blocker running')
+        queued = self.start('run', '--', command)
+        default = {'cpu_cores': 4.0, 'mem_bytes': 4 * GIB, 'source': 'default'}
+        self.wait_until(lambda: self.reservations() == ([default], [default]),
+                        message='default reservation while queued')
         release.touch()
         self.assertEqual(self.finish(queued)[0], 0)
         self.finish(hold)
-        self.assertEqual(self.records()[-1]['profile_key'], key)
 
 
 class CutoverTests(GateCase):

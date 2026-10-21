@@ -1046,7 +1046,7 @@ class Gate:
         self.keeper = self.keeper_pid = None  # holds the group open until it is measured
         self.finished = False  # the suite exited by itself
         self.key = None  # what its measured usage is filed under
-        self.measured = None  # (profile_history, measured reservation) read for self.key
+        self.measured = None  # ((profile_history, ledger version), reservation) for self.key
         self.me = {'id': uuid.uuid4().hex, 'pid': os.getpid(),
                    'start': proc_stat(os.getpid())[2], 'sid': None, 'cgroup': None,
                    'agent': agent_name(), 'command': self.command, 'cwd': str(cwd),
@@ -1087,11 +1087,19 @@ class Gate:
         self._wait(attempt, describe)
 
     def reservation(self):
-        """The measured reservation for this suite's command, read again when
-        profile_history changes; None means the configured default."""
-        history = self.config['profile_history']
-        if self.measured is None or self.measured[0] != history:
-            self.measured = (history, measured_reservation(self.key, history))
+        """The measured reservation for this suite's command, read again when the ledger or
+        profile_history changes; None means the configured default, which is also what a
+        suite that will run without a scope (fallback) reserves."""
+        if not (cgroup_v2() and shutil.which('systemd-run')):
+            return None
+        try:
+            stat = (state_dir() / 'ledger.jsonl').stat()
+            version = (stat.st_size, stat.st_mtime_ns)
+        except OSError:
+            version = None
+        seen = (self.config['profile_history'], version)
+        if self.measured is None or self.measured[0] != seen:
+            self.measured = (seen, measured_reservation(self.key, seen[0]))
         return self.measured[1]
 
     def acquire_slot(self):
@@ -1132,12 +1140,17 @@ class Gate:
         self._wait(attempt, describe)
 
     def set_session(self, sid, group=None):
-        """Record the suite's session and group on this gate's lock and slot."""
+        """Record the suite's session and group on this gate's lock and slot. Without a
+        group (fallback) the suite reserves the default."""
         def change(state):
             for holder in [*state['locks'].values(), *state['slots']]:
                 if holder['id'] == self.me['id']:
                     holder['sid'], holder['cgroup'] = sid, group
+                    if group is None:
+                        holder['reservation'] = None
         self.me['sid'], self.me['cgroup'] = sid, group
+        if group is None:
+            self.me['reservation'] = None
         with_state(change)
 
     def store_sample(self, cores, mem):
@@ -1484,7 +1497,8 @@ def cmd_status(as_json, fp_prefix, limit):
     if as_json:
         shown = [{k: v for k, v in h.items() if k != 'unused'} for h in running]
         print(json.dumps({'min_slots': floor, 'max_slots': cap, 'config': config,
-                          'host': host, 'running': shown, 'waiting': waiting, 'locks': state['locks'], 'records': records},
+                          'host': host, 'running': shown, 'waiting': waiting,
+                          'locks': state['locks'], 'records': records},
                          ensure_ascii=False, indent=1))
         return 0
     now = time.time()

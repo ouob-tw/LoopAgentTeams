@@ -34,11 +34,11 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
    - 閘門被強制殺掉而測試還在跑：名額與指紋鎖繼續被佔用，直到群組內的程序全部結束。
    - 測試正常結束後群組內仍有程序：印出警告列出這些程序（PID 與指令），紀錄的 `profile.leftover_processes` 記下數量；閘門不殺它們，名額與鎖照常釋放。
    - 群組在閘門讀完最終用量前不會被回收（閘門在群組內留一個等待程序，讀完才讓它結束）。
-4. 主機沒有 cgroup v2 或 systemd 使用者服務（例如沒有 `XDG_RUNTIME_DIR`、連不上使用者 bus）時，印出警告並退回舊做法：測試在新工作階段中執行，名額以這個工作階段是否還有程序判斷，另開新工作階段的程序不計入，也不量用量（`profile.fallback` 為 `true`），預約量照下面的規則計算。
+4. 主機沒有 cgroup v2 或 systemd 使用者服務（例如沒有 `XDG_RUNTIME_DIR`、連不上使用者 bus）時，印出警告並退回舊做法：測試在新工作階段中執行，名額以這個工作階段是否還有程序判斷，另開新工作階段的程序不計入，也不量用量（`profile.fallback` 為 `true`），預約量一律用預設值（排隊時就看不到 cgroup v2 或 `systemd-run` 的，排隊時也用預設值；排隊時看得到、開跑時才退回的，開跑後改回預設值）。
 
 ### 放行計算
 
-**預約量**：每套測試以「同一指令」最近 `profile_history` 筆有效用量紀錄中最高的 CPU 核數（`profile.cpu_peak_cores`）與最高的記憶體（`profile.mem_peak_bytes`）為預約量。「同一指令」的鍵是：repository（同一 repo 各 worktree 共用的 Git 共同目錄）、執行目錄相對於 worktree 根的路徑、指令文字；指令文字中出現的 worktree 根絕對路徑先換成 `<worktree>`，所以不同 worktree 對到同一鍵，不同專案不共用。退回模式或缺值的紀錄不算有效。沒有有效紀錄（第一次跑、不在 Git 工作區）時用 `default_cores` 核與 `default_mem_gb` GB。
+**預約量**：每套測試以「同一指令」最近 `profile_history` 筆有效用量紀錄中最高的 CPU 核數（`profile.cpu_peak_cores`）與最高的記憶體（`profile.mem_peak_bytes`）為預約量。「同一指令」的鍵是：repository（同一 repo 各 worktree 共用的 Git 共同目錄）、執行目錄相對於 worktree 根的路徑、指令文字；指令文字中出現的 worktree 根絕對路徑先換成 `<worktree>`，所以不同 worktree 對到同一鍵，不同專案不共用。退回模式或缺值的紀錄不算有效。沒有有效紀錄（第一次跑、不在 Git 工作區）或以退回模式執行時用 `default_cores` 核與 `default_mem_gb` GB。排隊中每次檢查若紀錄檔有變（例如同一指令的另一次執行剛結束），就重新計算預約量。
 
 **每次檢查**（在共用狀態的鎖內，只有排第一的等待者）依序：
 
