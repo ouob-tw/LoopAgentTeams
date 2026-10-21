@@ -29,7 +29,12 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
 
 1. 同一指紋有人正在跑時先等它（每隔一段時間印出對方名稱與已等時間）。它通過就沿用，失敗才自己跑。
 2. 再排主機名額，等待時印出正在跑的是誰、前面還有幾個。順序固定是先指紋、後名額。
-3. 名額以「這次測試的工作階段（session）是否還有程序活著」判斷。Ctrl-C 或終止訊號會先結束整個測試工作階段再退出，不寫紀錄；閘門被強制殺掉而測試還在跑時，名額繼續被佔用到測試結束。測試自己另開新工作階段的背景程式不計入。
+3. 每套測試在自己的資源群組（systemd 使用者 scope，cgroup v2，名稱 `suite-gate-<編號>.scope`）中執行，測試另開新工作階段的背景程式也在群組裡。名額以「閘門還在，或群組內還有程序」判斷：
+   - Ctrl-C 或終止訊號：先對群組內所有程序送 SIGTERM，5 秒內沒結束就以群組的 kill 結束全部，再退出，不寫紀錄。
+   - 閘門被強制殺掉而測試還在跑：名額與指紋鎖繼續被佔用，直到群組內的程序全部結束。
+   - 測試正常結束後群組內仍有程序：印出警告列出這些程序（PID 與指令），紀錄的 `profile.leftover_processes` 記下數量；閘門不殺它們，名額與鎖照常釋放。
+   - 群組在閘門讀完最終用量前不會被回收（閘門在群組內留一個等待程序，讀完才讓它結束）。
+4. 主機沒有 cgroup v2 或 systemd 使用者服務（例如沒有 `XDG_RUNTIME_DIR`、連不上使用者 bus）時，印出警告並退回舊做法：測試在新工作階段中執行，名額以這個工作階段是否還有程序判斷，另開新工作階段的程序不計入，也不量用量（`profile.fallback` 為 `true`）。
 
 ## 查狀態與紀錄
 
@@ -95,20 +100,36 @@ uv run --no-project python <skill>/scripts/suite-gate.py install --client codex
 | 紀錄、名額與鎖 | `$XDG_STATE_HOME/suite-gate/`（預設 `~/.local/state/suite-gate/`） | 環境變數 `SUITE_GATE_STATE_DIR` |
 | 設定 | `$XDG_CONFIG_HOME/suite-gate/config.json`（預設 `~/.config/suite-gate/config.json`） | 環境變數 `SUITE_GATE_CONFIG` |
 
-整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用。
+整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用，以及這次的用量 `profile`：
+
+| 欄位 | 意思 |
+| ---- | ---- |
+| `cpu_peak_cores` | 每個取樣間隔的 CPU 使用核數中最高的一次（含結束前最後一段） |
+| `cpu_avg_cores` | 整段執行的平均核數（CPU 總秒數除以耗時） |
+| `cpu_seconds` | 群組的 CPU 總秒數 |
+| `mem_peak_bytes` | 群組的記憶體高峰（`memory.peak`） |
+| `sample_seconds` | 這次的取樣間隔 |
+| `fallback` | 是否為退回模式（沒有資源群組，用量都不量） |
+| `leftover_processes` | 正常結束後群組內遺留的程序數 |
+
+讀不到的值記為 `null`，不記 0。
+
+執行中的測試，`status` 顯示目前的 CPU 核數與記憶體，`status --json` 在 `running` 每一筆的 `usage`（`cpu_cores`、`mem_bytes`）。CPU 核數取自閘門最近一次取樣，閘門不在時為空；記憶體讀群組當下的值。名額持有者紀錄有資源群組路徑 `cgroup` 與測試主工作階段 `sid`。
 
 設定檔欄位（都可省略）：
 
 ```json
-{"max_slots": 2, "poll_seconds": 1, "report_seconds": 30}
+{"max_slots": 2, "poll_seconds": 1, "report_seconds": 30, "sample_seconds": 2}
 ```
 
-`max_slots` 是主機同時可跑的整套測試數；`poll_seconds` 是排隊時多久檢查一次；`report_seconds` 是多久印一次等待狀況。
+`max_slots` 是主機同時可跑的整套測試數；`poll_seconds` 是排隊時多久檢查一次；`report_seconds` 是多久印一次等待狀況；`sample_seconds` 是執行中多久讀一次群組的 CPU 與記憶體。
+
+測試用的環境變數：`SUITE_GATE_CGROUP_ROOT` 改指 cgroup 檔案的根目錄（預設 `/sys/fs/cgroup`），`SUITE_GATE_UNIT_PREFIX` 改資源群組名稱的開頭（預設 `suite-gate`）。
 
 ## 限制
 
 - 只認程式檔內容；資料庫、外部服務、容器狀態與被忽略的設定檔（除非列入 `fingerprint_include`）不在指紋內，需要時用 `--rerun` 寫原因。
 - 測試期間改檔又改回原樣偵測不到。
 - 測試自己產生的檔案（例如 `__pycache__/`、`.pytest_cache/`、建置輸出）要列進 `.gitignore`，否則每次都會被當成「執行中內容改變」而無法沿用；被標成這樣時，用 `git status --porcelain` 查是哪些檔案變了。
-- 測試自己另開新工作階段的背景程式不算名額。
+- 測試執行期間另開新工作階段的背景程式算在名額與用量內；測試正常結束後還留著的，閘門只警告、不殺，也不再佔名額，但它們仍吃主機資源。退回模式下這類程式不算名額。
 - 預設判斷只看指令文字，可能誤判；專案登記可讓判斷準確。

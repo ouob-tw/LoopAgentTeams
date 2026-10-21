@@ -8,7 +8,9 @@ decides whether a shell command is a full suite run (project registry first, the
 default runner rules). `hook` is the PreToolUse hook that blocks full suites run outside
 the gate, and `install` / `uninstall --client claude|codex` add or remove it.
 
-Linux only: slot and lock holders stay counted while their test session has live processes.
+Linux only: each suite runs in its own systemd user scope (cgroup v2), and slot and lock
+holders stay counted while that group has processes. Without a user scope the suite runs
+in a new session instead, which is then what counts.
 """
 import argparse
 import copy
@@ -32,12 +34,24 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REGISTRY_NAME = '.suite-gate.json'
-DEFAULTS = {'max_slots': 2, 'poll_seconds': 1.0, 'report_seconds': 30.0}
+DEFAULTS = {'max_slots': 2, 'poll_seconds': 1.0, 'report_seconds': 30.0, 'sample_seconds': 2.0}
 TAIL_LINES = 20
 TAIL_BYTES = 8192
 KILL_GRACE_SECONDS = 5.0
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
+FALLBACK_NOTE = ('running the suite in a new session instead; its usage is not measured and '
+                 'processes it starts in another session are not counted')
+PROFILE_UNMEASURED = {'cpu_peak_cores': None, 'cpu_avg_cores': None, 'cpu_seconds': None,
+                      'mem_peak_bytes': None, 'sample_seconds': None, 'fallback': True,
+                      'leftover_processes': None}
 LAUNCHER = 'read -r go <&3 || exit 125; exec 3<&-; exec "$@"'
+# In a scope: report readiness on fd 5, wait for go on fd 3, then leave a keeper reading fd 4
+# in the group (its pid goes to fd 5), so the group outlives the suite until the gate has
+# read the final counters and closes fd 4. `exec` drops the keeper's copies of the output
+# pipes for good (a redirected builtin would keep saved copies open).
+SCOPE_LAUNCHER = ('echo ready >&5; read -r go <&3 || exit 125; exec 3<&-; '
+                  '(exec </dev/null >/dev/null 2>&1 5>&-; read -r _ <&4) & echo $! >&5; '
+                  'exec 4<&- 5>&-; exec "$@"')
 
 
 # ---------------------------------------------------------------- locations and config
@@ -498,10 +512,28 @@ def session_pids(sid):
     return pids
 
 
+def gate_alive(holder):
+    return not holder.get('gate_done') and pid_alive(holder['pid'], holder['start'])
+
+
 def holder_alive(holder):
-    if not holder.get('gate_done') and pid_alive(holder['pid'], holder['start']):
+    """The gate runs, or the suite's group (its session, for a holder without one) has
+    processes."""
+    if gate_alive(holder):
         return True
+    if holder.get('cgroup'):
+        return bool(cgroup_pids(holder['cgroup']))
     return bool(holder.get('sid')) and bool(session_pids(holder['sid']))
+
+
+def _wait_until(done, child):
+    deadline = time.monotonic() + KILL_GRACE_SECONDS
+    while time.monotonic() < deadline:
+        child.poll()
+        if done():
+            return True
+        time.sleep(0.05)
+    return False
 
 
 def end_session(sid, child):
@@ -512,13 +544,130 @@ def end_session(sid, child):
                 os.kill(pid, sig)
             except ProcessLookupError:
                 pass
-        deadline = time.monotonic() + KILL_GRACE_SECONDS
-        while time.monotonic() < deadline:
-            child.poll()
-            if not session_pids(sid):
-                return
-            time.sleep(0.05)
+        if _wait_until(lambda: not session_pids(sid), child):
+            return
     child.poll()
+
+
+def end_group(group, child):
+    """SIGTERM every process of the group, then kill what is left of it, sessions included."""
+    for pid in cgroup_pids(group):
+        try:
+            os.kill(pid, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+    if _wait_until(lambda: not cgroup_pids(group), child):
+        return
+    try:
+        (cgroup_dir(group) / 'cgroup.kill').write_text('1')
+    except OSError:
+        pass
+    _wait_until(lambda: not cgroup_pids(group), child)
+    child.poll()
+
+
+# ---------------------------------------------------------------- host readings
+
+def cgroup_root():
+    return Path(os.environ.get('SUITE_GATE_CGROUP_ROOT') or '/sys/fs/cgroup')
+
+
+def cgroup_dir(group):
+    return cgroup_root() / group.lstrip('/')
+
+
+def cgroup_v2():
+    return (cgroup_root() / 'cgroup.controllers').is_file()
+
+
+def process_cgroup(pid):
+    """The cgroup v2 path of a process (`/user.slice/...`), or None."""
+    try:
+        lines = Path(f'/proc/{pid}/cgroup').read_text().splitlines()
+    except OSError:
+        return None
+    return next((line[3:] for line in lines if line.startswith('0::')), None)
+
+
+def cgroup_pids(group):
+    """Processes in the group; none once the group is gone."""
+    try:
+        return [int(pid) for pid in (cgroup_dir(group) / 'cgroup.procs').read_text().split()]
+    except (OSError, ValueError):
+        return []
+
+
+def cgroup_value(group, name, key=None):
+    """An integer from a group file (from its `key value` line when key is given), or
+    None when it cannot be read."""
+    try:
+        text = (cgroup_dir(group) / name).read_text()
+    except OSError:
+        return None
+    try:
+        if key is None:
+            return int(text.split()[0])
+        return next((int(value) for name_, value in (line.split() for line in text.splitlines())
+                     if name_ == key), None)
+    except (ValueError, IndexError):
+        return None
+
+
+def command_line(pid):
+    try:
+        raw = Path(f'/proc/{pid}/cmdline').read_bytes()
+    except OSError:
+        return '?'
+    return raw.rstrip(b'\0').replace(b'\0', b' ').decode(errors='replace') or '?'
+
+
+def holder_usage(holder):
+    """Current CPU cores and memory bytes of a running suite (None when unknown).
+
+    Cores come from the gate's latest sample, so they are unknown once the gate is gone;
+    memory is read from the group now.
+    """
+    if not holder.get('cgroup'):
+        return {'cpu_cores': None, 'mem_bytes': None}
+    sample = holder.get('sample') or {}
+    return {'cpu_cores': sample.get('cpu_cores') if gate_alive(holder) else None,
+            'mem_bytes': cgroup_value(holder['cgroup'], 'memory.current')}
+
+
+class Sampler:
+    """Reads the group's CPU time and memory every interval while the suite runs."""
+
+    def __init__(self, group, interval, report):
+        self.group, self.interval, self.report = group, interval, report
+        self.last = (time.monotonic(), self.cpu_usec())
+        self.peak_cores = None
+        self.done = threading.Event()
+        self.thread = threading.Thread(target=self._loop, daemon=True)
+        self.thread.start()
+
+    def cpu_usec(self):
+        return cgroup_value(self.group, 'cpu.stat', 'usage_usec')
+
+    def _sample(self):
+        now, usage = time.monotonic(), self.cpu_usec()
+        (then, before), self.last = self.last, (now, usage)
+        if usage is None or before is None or now <= then:
+            return None
+        cores = (usage - before) / 1e6 / (now - then)
+        self.peak_cores = max(cores, self.peak_cores or 0.0)
+        return cores
+
+    def _loop(self):
+        while not self.done.wait(self.interval):
+            cores = self._sample()
+            self.report(cores, cgroup_value(self.group, 'memory.current'))
+
+    def finish(self):
+        """Stop sampling and take the last, partial interval; the peak cores."""
+        self.done.set()
+        self.thread.join()
+        self._sample()
+        return self.peak_cores
 
 
 # ---------------------------------------------------------------- shared state
@@ -529,10 +678,14 @@ class Interrupted(Exception):
         self.signum = signum
 
 
-def _child_setup(go_read):
-    """In the forked child: put the go pipe on fd 3 and reopen the signals the gate blocks."""
+def _child_setup(fds):
+    """In the forked child: put each pipe on its fd ({target: source}) and reopen the
+    signals the gate blocks."""
     def setup():
-        os.dup2(go_read, 3)
+        # Move the sources above the targets first, so no dup2 overwrites a later source.
+        high = {target: fcntl.fcntl(source, fcntl.F_DUPFD, 10) for target, source in fds.items()}
+        for target, source in high.items():
+            os.dup2(source, target)
         signal.pthread_sigmask(signal.SIG_UNBLOCK, SIGNALS)
     return setup
 
@@ -618,9 +771,14 @@ class Gate:
         self.config = config
         self.command = normalize_command(argv)
         self.child = None
+        self.group = None  # the suite's cgroup, None in a plain session
+        self.sampler = None
+        self.keeper = self.keeper_pid = None  # holds the group open until it is measured
+        self.finished = False  # the suite exited by itself
         self.me = {'id': uuid.uuid4().hex, 'pid': os.getpid(),
-                   'start': proc_stat(os.getpid())[2], 'sid': None, 'agent': agent_name(),
-                   'command': self.command, 'cwd': str(cwd), 'fingerprint': None}
+                   'start': proc_stat(os.getpid())[2], 'sid': None, 'cgroup': None,
+                   'agent': agent_name(), 'command': self.command, 'cwd': str(cwd),
+                   'fingerprint': None}
 
     def _holder(self, **extra):
         return dict(self.me, since=time.time(), **extra)
@@ -682,20 +840,36 @@ class Gate:
 
         self._wait(attempt, describe)
 
-    def set_session(self, sid):
+    def set_session(self, sid, group=None):
+        """Record the suite's session and group on this gate's lock and slot."""
         def change(state):
             for holder in [*state['locks'].values(), *state['slots']]:
                 if holder['id'] == self.me['id']:
-                    holder['sid'] = sid
-        self.me['sid'] = sid
+                    holder['sid'], holder['cgroup'] = sid, group
+        self.me['sid'], self.me['cgroup'] = sid, group
+        with_state(change)
+
+    def store_sample(self, cores, mem):
+        def change(state):
+            for holder in state['slots']:
+                if holder['id'] == self.me['id']:
+                    holder['sample'] = {
+                        'cpu_cores': None if cores is None else round(cores, 2),
+                        'mem_bytes': mem, 'time': time.time()}
         with_state(change)
 
     def release(self):
-        """Drop this gate's entries; a lock or slot whose test session still runs stays held."""
+        """Drop this gate's entries. A lock or slot whose suite was cut short stays held while
+        its group (or session) has processes; processes a finished suite left in its group do
+        not hold it."""
         def still_held(holder):
             if holder['id'] != self.me['id']:
                 return True
-            if holder.get('sid') and session_pids(holder['sid']):
+            if holder.get('cgroup'):
+                alive = not self.finished and cgroup_pids(holder['cgroup'])
+            else:
+                alive = holder.get('sid') and session_pids(holder['sid'])
+            if alive:
                 holder['gate_done'] = True
                 return True
             return False
@@ -735,29 +909,127 @@ class Gate:
                     continue
             return self.execute(info)
 
-    def execute(self, info):
-        argv = ['/bin/sh', '-c', self.argv[0]] if len(self.argv) == 1 else self.argv
-        started, start_iso = time.monotonic(), now_iso()
+    def _scope_ready(self):
+        """True when the suite can run in a systemd user scope; warns why not otherwise."""
+        if not cgroup_v2():
+            warn(f'cgroup v2 is not mounted at {cgroup_root()}: {FALLBACK_NOTE}')
+        elif not shutil.which('systemd-run'):
+            warn(f'systemd-run is not installed: {FALLBACK_NOTE}')
+        else:
+            return True
+        return False
+
+    def _start(self, argv, scoped):
+        """Start the suite held on fd 3 until its session (and group) is recorded.
+
+        In a scope, also sets self.group, self.keeper and self.keeper_pid. Returns the
+        child, or None when the scope could not be set up; the suite has not run then.
+        """
         # The suite waits for a byte on fd 3 until its session is recorded; if the gate is
         # killed before that, the pipe closes and the suite never runs uncounted.
         go_read, go_write = os.pipe()
+        fds, launch = {3: go_read}, ['/bin/sh', '-c', LAUNCHER, 'suite-gate', *argv]
+        if scoped:
+            keep_read, keep_write = os.pipe()
+            report_read, report_write = os.pipe()
+            fds.update({4: keep_read, 5: report_write})
+            prefix = os.environ.get('SUITE_GATE_UNIT_PREFIX') or 'suite-gate'
+            unit = f"{prefix}-{self.me['id'][:12]}"
+            launch = ['systemd-run', '--user', '--scope', '--quiet', '--collect',
+                      f'--unit={unit}', '--', '/bin/sh', '-c', SCOPE_LAUNCHER, 'suite-gate',
+                      *argv]
         # An interrupt must not land between starting the session and recording it.
         old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
         try:
-            child = subprocess.Popen(['/bin/sh', '-c', LAUNCHER, 'suite-gate', *argv],
-                                     cwd=self.cwd, stdout=subprocess.PIPE,
-                                     stderr=subprocess.PIPE, start_new_session=True,
-                                     pass_fds=(3,), preexec_fn=_child_setup(go_read))
+            try:
+                child = subprocess.Popen(launch, cwd=self.cwd, stdout=subprocess.PIPE,
+                                         stderr=subprocess.PIPE, start_new_session=True,
+                                         pass_fds=tuple(fds), preexec_fn=_child_setup(fds))
+            except OSError as exc:
+                if not scoped:
+                    raise
+                warn(f'could not start a systemd user scope ({exc}): {FALLBACK_NOTE}')
+                os.close(keep_write)
+                os.close(report_read)
+                return None
+            finally:
+                for fd in fds.values():
+                    os.close(fd)
+            if scoped:
+                report = os.fdopen(report_read)
+                group = process_cgroup(child.pid) if report.readline() == 'ready\n' else None
+                if group is None or not group.endswith(f'/{unit}.scope') \
+                        or not (cgroup_dir(group) / 'cgroup.procs').is_file():
+                    os.close(go_write)  # the held launcher exits without running the suite
+                    go_write = None
+                    os.close(keep_write)
+                    report.close()
+                    child.wait()
+                    child.stdout.close()
+                    why = child.stderr.read().decode(errors='replace').strip()
+                    child.stderr.close()
+                    warn(f"could not start a systemd user scope ({why or 'no group for it'}): "
+                         f'{FALLBACK_NOTE}')
+                    return None
+                self.group, self.keeper = group, keep_write
             self.child = child
-            self.set_session(child.pid)
+            self.set_session(child.pid, self.group)
             os.write(go_write, b'go\n')
+            if scoped:
+                with report:
+                    line = report.readline().strip()
+                self.keeper_pid = int(line) if line.isdigit() else None
+            return child
+        finally:
+            if go_write is not None:
+                os.close(go_write)
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+
+    def measure(self, duration):
+        """The record's profile: the group's final counters, read before the keeper lets the
+        group go. Values that cannot be read are None."""
+        if not self.group:
+            return dict(PROFILE_UNMEASURED)
+        peak = self.sampler.finish()
+        usec = cgroup_value(self.group, 'cpu.stat', 'usage_usec')
+        mem_peak = cgroup_value(self.group, 'memory.peak')
+        left = [pid for pid in cgroup_pids(self.group) if pid != self.keeper_pid]
+        os.close(self.keeper)
+        self.keeper = None
+        if left:
+            warn(f'the suite left {len(left)} process(es) running in its group; they are not '
+                 'stopped and no longer hold the slot:\n'
+                 + '\n'.join(f'  {pid} {command_line(pid)}' for pid in left))
+        seconds = None if usec is None else usec / 1e6
+        return {
+            'cpu_peak_cores': None if peak is None else round(peak, 2),
+            'cpu_avg_cores': None if seconds is None or duration <= 0
+            else round(seconds / duration, 2),
+            'cpu_seconds': None if seconds is None else round(seconds, 2),
+            'mem_peak_bytes': mem_peak, 'sample_seconds': self.config['sample_seconds'],
+            'fallback': False, 'leftover_processes': len(left),
+        }
+
+    def end_suite(self):
+        """End an interrupted suite: its whole group, or its session without one."""
+        if self.sampler:
+            self.sampler.done.set()
+        if self.group:
+            end_group(self.group, self.child)
+        else:
+            end_session(self.child.pid, self.child)
+
+    def execute(self, info):
+        argv = ['/bin/sh', '-c', self.argv[0]] if len(self.argv) == 1 else self.argv
+        started, start_iso = time.monotonic(), now_iso()
+        try:
+            child = self._start(argv, True) if self._scope_ready() else None
+            child = child or self._start(argv, False)
         except OSError as exc:
             warn(f'could not start /bin/sh: {exc}')
             return 127
-        finally:
-            os.close(go_read)
-            os.close(go_write)
-            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        if self.group:
+            self.sampler = Sampler(self.group, self.config['sample_seconds'], self.store_sample)
         tail = Tail()
         pumps = [threading.Thread(target=pump, args=(stream, out, tail), daemon=True)
                  for stream, out in ((child.stdout, sys.stdout.buffer),
@@ -765,8 +1037,10 @@ class Gate:
         for thread in pumps:
             thread.start()
         code = child.wait()
+        self.finished = True
         for thread in pumps:
             thread.join(timeout=2)
+        profile = self.measure(time.monotonic() - started)
         code = 128 - code if code < 0 else code
         duration = round(time.monotonic() - started, 1)
         after = fingerprint(self.cwd, self.argv) if info else None
@@ -777,7 +1051,7 @@ class Gate:
             'rel_cwd': info and info['rel_cwd'], 'exit_code': code, 'duration_s': duration,
             'output_tail': tail.text(), 'agent': self.me['agent'], 'time': start_iso,
             'finished': now_iso(), 'rerun_reason': self.rerun, 'content_changed': changed,
-            'reusable': info is not None and code == 0 and not changed,
+            'reusable': info is not None and code == 0 and not changed, 'profile': profile,
         }
         append_record(record)
         if changed:
@@ -826,6 +1100,14 @@ def fmt_seconds(seconds):
     return f'{seconds // 3600}h{seconds % 3600 // 60:02d}m'
 
 
+def fmt_bytes(count):
+    for unit in ('B', 'KiB', 'MiB'):
+        if count < 1024:
+            return f'{count:.0f} {unit}' if unit == 'B' else f'{count:.1f} {unit}'
+        count /= 1024
+    return f'{count:.1f} GiB'
+
+
 def print_reuse(record, command):
     print('suite-gate: this content already passed with the same command; not running it again.')
     print(f"  fingerprint: {record['fingerprint']}")
@@ -856,12 +1138,13 @@ def cmd_run(rerun, argv):
     try:
         return gate.run()
     except Interrupted as exc:
-        child = gate.child
-        if child is not None:
+        if gate.child is not None and not gate.finished:
             for sig in SIGNALS:
                 signal.signal(sig, signal.SIG_IGN)
-            warn('interrupted: ending the test session; no record written')
-            end_session(child.pid, child)
+            warn('interrupted: ending the suite and everything it started; no record written')
+            gate.end_suite()
+        elif gate.child is not None:
+            warn('interrupted: no record written')
         return 128 + exc.signum
     except RuntimeError as exc:
         warn(str(exc))
@@ -879,17 +1162,22 @@ def cmd_status(as_json, fp_prefix, limit):
         records = [r for r in records if (r.get('fingerprint') or '').startswith(fp_prefix)]
     records = records[-limit:]
     max_slots = load_config()['max_slots']
+    running = [dict(h, usage=holder_usage(h)) for h in state['slots']]
     if as_json:
-        print(json.dumps({'max_slots': max_slots, 'running': state['slots'],
+        print(json.dumps({'max_slots': max_slots, 'running': running,
                           'waiting': state['waiters'], 'locks': state['locks'],
                           'records': records}, ensure_ascii=False, indent=1))
         return 0
     now = time.time()
     print(f"Running ({len(state['slots'])}/{max_slots} host slots):")
-    for h in state['slots'] or []:
-        note = ' (gate gone, test session still alive)' if h.get('gate_done') or not \
-            pid_alive(h['pid'], h['start']) else ''
-        print(f"  {h['agent']}  {fmt_seconds(now - h['since'])}  "
+    for h in running:
+        note = '' if gate_alive(h) else (' (gate gone, its group still has processes)'
+                                         if h.get('cgroup') else
+                                         ' (gate gone, test session still alive)')
+        cores, mem = h['usage']['cpu_cores'], h['usage']['mem_bytes']
+        usage = (f"cpu {'-' if cores is None else f'{cores:.1f} cores'}, "
+                 f"mem {'-' if mem is None else fmt_bytes(mem)}")
+        print(f"  {h['agent']}  {fmt_seconds(now - h['since'])}  {usage}  "
               f"fp {(h.get('fingerprint') or '-')[:12]}  {h['cwd']}  {h['command']}{note}")
     if not state['slots']:
         print('  none')
