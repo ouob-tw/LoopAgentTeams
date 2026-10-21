@@ -21,8 +21,10 @@ import type { Board } from './board.ts';
 import { switchPlace } from './agents.ts';
 import { modelLock } from './helper.ts';
 import { queued } from './send.ts';
-import { appendSent, closeResume, openResume, openSwitch, switchView } from './sent-log.ts';
+import { appendSent, readLines } from './sent-log.ts';
+import { openResume, openSwitch, switchView } from './sent-views.ts';
 import { continueSwitch, finish, newEntry, startSwitch, type SwitchTarget } from './switch.ts';
+import { closeResume } from './wake.ts';
 
 type Result<T> = { status: number; body: T };
 
@@ -78,7 +80,8 @@ async function attempt(board: Board, agentId: string, choice: ModelChoice): Prom
 	const agent = 'reason' in listed ? undefined : (listed.agent as Agent & { id: string });
 	let open: SwitchView | null;
 	try {
-		open = openSwitch(config.stateDir, agentId, config.now(), config.launchWaitMs);
+		const now = config.now();
+		open = openSwitch(readLines(config.stateDir, now), agentId, now, config.launchWaitMs);
 	} catch (error) {
 		return finish(board, newEntry(board, agentId, agent && targetOf(agent), choice), { reason: `讀不到送出紀錄，沒有切換：${(error as Error).message}` });
 	}
@@ -117,7 +120,7 @@ async function abandon(board: Board, agentId: string): Promise<Result<SwitchResp
 	});
 	let open: SwitchView | null;
 	try {
-		open = openSwitch(stateDir, agentId, now, launchWaitMs);
+		open = openSwitch(readLines(stateDir, now), agentId, now, launchWaitMs);
 	} catch (error) {
 		return fail(500, '讀不到送出紀錄，沒有放棄。', (error as Error).message);
 	}
@@ -125,11 +128,11 @@ async function abandon(board: Board, agentId: string): Promise<Result<SwitchResp
 	try {
 		// Its resume first: one left open would hold up the next wake or switch of the session. A
 		// failure after it leaves the switch open as `resume-failed`, to give up again.
-		const resume = openResume(stateDir, agentId, now, launchWaitMs);
+		const resume = openResume(readLines(stateDir, now), agentId, now, launchWaitMs);
 		if (resume?.switchId === open.id) closeResume(stateDir, resume.id, 'abandoned', now);
 		appendSent(stateDir, { kind: 'switch-step', switchId: open.id, state: 'abandoned', time: new Date(now).toISOString() });
 	} catch (error) {
 		return fail(500, '寫不進送出紀錄，沒有放棄。', (error as Error).message, open);
 	}
-	return { status: 200, body: { ok: true, reason: null, entry: switchView(stateDir, open.id, now, launchWaitMs), abandon: null, logError: null } };
+	return { status: 200, body: { ok: true, reason: null, entry: switchView(readLines(stateDir, now), open.id, now, launchWaitMs), abandon: null, logError: null } };
 }

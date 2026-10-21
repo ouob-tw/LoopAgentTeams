@@ -38,6 +38,15 @@ description: Use when setting up test infrastructure, adding tests, reorganizing
 - 執行者先保存測試結果與必要 logs，再清理已無後續用途的任務專用 container、network、測試 volume 與 image；後續仍需使用的資源交接給接手者。
 - 保留共用 image、共用資料與 build cache，不執行全域 prune。Build cache 的容量與期限由主機 GC 政策管理。
 
+## 測試資源清理：隔離 client 家目錄
+
+測試以隔離的 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 等啟動 Agent 時：
+
+- 家目錄放在專案的證據／狀態資料夾以外的暫存位置，例如 `$XDG_RUNTIME_DIR` 或系統暫存區下以任務 tag 命名的資料夾，並登記在任務紀錄的暫存路徑，標明含機密。
+- 複製 auth 時權限設 0600，不輸出內容。
+- 收尾時以 `shred -u` 逐檔銷毀家目錄內的檔案（含對話紀錄、資料庫與登入資料），再移除空目錄；確認證據資料夾內沒有家目錄副本，暫存位置已不存在。
+- 證據只保存結論、指令輸出、必要截圖與必要的單一檔案節錄，不保存整個家目錄。
+
 ## Compose 與 .env 檔案
 
 只允許下列檔名，需要時才建立。不建立其他 `compose.*.yml` 或 `.env.*`（如 `.env.test`、`.env.integration`、`docker-compose.test.yml`、`compose.qa.yml`）。
