@@ -280,6 +280,8 @@ test.skipIf(!CHROME)("the button is at the right end of the tab row on the 對�
 		await tab.until(`!!${said('譯：I fixed')}.querySelector('.original')`, 'the original');
 		expect(await tab.eval(FITS)).toBe(true);
 		// Another tab has no button; back on 對話紀錄 it is there, still pressed.
+		// What was chosen stays chosen on coming back even if the browser kept nothing.
+		await tab.eval(`localStorage.clear()`);
 		await tab.eval(`document.querySelector('#tab-sent').click()`);
 		await tab.until(`document.querySelector('.detail button.translate') === null`, 'the button gone on another tab');
 		await tab.eval(`document.querySelector('#tab-transcript').click()`);
