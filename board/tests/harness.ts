@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import type { ArchivePage } from '../src/lib/board/archive.ts';
 import { connectBoard, type LinkState } from '../src/lib/board/client.ts';
 import type { QuotaSnapshot } from '../src/lib/board/quota.ts';
+import type { TranslateMode } from '../src/lib/board/translate-mode.ts';
 import type { UsageStyle } from '../src/lib/board/usage.ts';
 import type {
 	BoardSnapshot,
@@ -240,6 +241,8 @@ export interface Watch {
 	quotas: QuotaSnapshot[];
 	/** The usage line styles the server sent, in order. */
 	usageStyles: UsageStyle[];
+	/** The translation modes the server sent, in order. */
+	translateModes: TranslateMode[];
 	latest(): BoardSnapshot | undefined;
 	close(): void;
 }
@@ -430,6 +433,7 @@ export async function startFixture(
 				agentActions: [],
 				quotas: [],
 				usageStyles: [],
+				translateModes: [],
 				latest: () => watch.snapshots.at(-1),
 				close: () => connection.close()
 			};
@@ -441,6 +445,7 @@ export async function startFixture(
 				onAgentAction: (agentId) => watch.agentActions.push(agentId),
 				onQuota: (quota) => watch.quotas.push(quota),
 				onUsageStyle: (style) => watch.usageStyles.push(style),
+				onTranslateMode: (mode) => watch.translateModes.push(mode),
 				retryMs: 200
 			});
 			watches.push(watch);

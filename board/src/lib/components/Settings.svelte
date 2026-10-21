@@ -1,11 +1,13 @@
 <script lang="ts">
-	// The settings of this device: theme, overall size and smallest text size; and how the usage line reads,
-	// which is the board's for every device.
+	// The settings of this device: theme, overall size and smallest text size; and the board's, which every
+	// device shares: how the usage line reads and whether conversations open translated.
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { MIN_FONT, SCALE } from '#lib/board/prefs.ts';
+	import { translatePref } from '#lib/board/translate-pref.svelte.ts';
+	import type { TranslateMode } from '#lib/board/translate-mode.ts';
 	import type { UsageStyle } from '#lib/board/usage.ts';
 
-	let { onusagestyle }: { onusagestyle: (style: UsageStyle) => void } = $props();
+	let { onusagestyle, ontranslatemode }: { onusagestyle: (style: UsageStyle) => void; ontranslatemode: (mode: TranslateMode) => void } = $props();
 
 	let dialog: HTMLDialogElement;
 
@@ -25,7 +27,7 @@
 			<h2 id="settings-title">設定</h2>
 			<button onclick={() => dialog.close()}>關閉</button>
 		</header>
-		<p class="note">主題、整體大小與最小字體只記在這台裝置的瀏覽器裡；用量列所有已登入的裝置共用。</p>
+		<p class="note">主題、整體大小與最小字體只記在這台裝置的瀏覽器裡；用量列與對話翻譯所有已登入的裝置共用。</p>
 
 		<section>
 			<h3>主題</h3>
@@ -87,6 +89,15 @@
 				</button>
 			</div>
 			<p class="note">所有裝置共用。資訊頁的用量小字；精簡用英文縮寫，例如 Ctx 62% • 5h 40%。</p>
+		</section>
+
+		<section>
+			<h3>對話翻譯</h3>
+			<div class="choices" role="group" aria-label="對話翻譯">
+				<button aria-pressed={translatePref.mode === 'auto'} onclick={() => ontranslatemode('auto')}>自動翻譯</button>
+				<button aria-pressed={translatePref.mode === 'manual'} onclick={() => ontranslatemode('manual')}>手動切換</button>
+			</div>
+			<p class="note">所有裝置共用。自動翻譯：打開對話紀錄就顯示中文；手動切換：顯示原文，按分頁列的翻譯圖示才翻。圖示只切換目前這個對話。</p>
 		</section>
 	</div>
 </dialog>

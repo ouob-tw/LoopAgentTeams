@@ -6,6 +6,8 @@ import { messaging } from './messaging.svelte.ts';
 import { toasts } from './toasts.svelte.ts';
 import { reaches, withEarlier, withNewest, type ArchivePage } from './archive.ts';
 import type { QuotaSnapshot } from './quota.ts';
+import { translatePref } from './translate-pref.svelte.ts';
+import type { TranslateMode } from './translate-mode.ts';
 import type { UsageStyle } from './usage.ts';
 import type { BoardSnapshot, InboxQuestion } from './types.ts';
 
@@ -46,6 +48,7 @@ export class LiveBoard {
 			onTabMoved: () => this.tabMoves++,
 			onQuota: (quota) => (this.quota = quota),
 			onUsageStyle: (style) => (appearance.usageStyle = style),
+			onTranslateMode: (mode) => (translatePref.mode = mode),
 			// Only a record this page has loaded is shown anywhere; others load when opened. A
 			// controller's sent log has the interrupts of its turn.
 			onAgentAction: (agentId) => {
@@ -71,6 +74,17 @@ export class LiveBoard {
 			await this.#connection.setUsageStyle(style);
 		} catch {
 			toasts.show('failed', '用量列樣式沒有存成功，請稍後再試。');
+		}
+	}
+
+	/** Change whether conversations open translated on every device. As with the usage style, the page
+	 *  follows only once the board has saved it; a failure is a toast. */
+	async setTranslateMode(mode: TranslateMode): Promise<void> {
+		try {
+			if (!this.#connection) throw new Error('not connected');
+			await this.#connection.setTranslateMode(mode);
+		} catch {
+			toasts.show('failed', '對話翻譯偏好沒有存成功，請稍後再試。');
 		}
 	}
 

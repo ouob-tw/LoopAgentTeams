@@ -1,8 +1,8 @@
 // Loading the board's pages as new documents in one tab, the way the address bar or a link from
-// elsewhere does. The translation button across the three pages that show a conversation: a controller's
+// elsewhere does. The 自動翻譯 setting across the three pages that show a conversation: a controller's
 // information page, a Herdr agent's page and a closed agent's page, each loaded in turn, at a
 // desktop's and a phone's width; the same English reply is on all three, and once translated it
-// shows translated on each. The pages left behind are kept for the back button, so this also
+// shows translated on each without the button being used. The pages left behind are kept for the back button, so this also
 // shows that they do not hold the board's connections (six over HTTP/1.1) and starve the page in
 // view. And going back to the board from another page loads it again, its feeds live and its
 // command-line draft still there. Skipped when the host has no Chrome.
@@ -150,6 +150,8 @@ beforeAll(async () => {
 	};
 	appendFileSync(join(fixture.dir, 'hcom-events.jsonl'), JSON.stringify(event) + '\n');
 	await fixture.refresh(cookie);
+	const auto = await fixture.fetch('/api/translate-mode', { method: 'PUT', cookie, headers: { 'content-type': 'application/json' }, body: JSON.stringify({ mode: 'auto' }) });
+	expect(auto.status).toBe(200);
 }, 30_000);
 
 afterAll(async () => {
@@ -182,20 +184,17 @@ async function visit(width: number) {
 }
 
 for (const width of [1440, 412]) {
-	test.skipIf(!CHROME)(`switched on at a controller's page, the agent and closed agent pages loaded next show the reply translated (${width}px)`, async () => {
+	test.skipIf(!CHROME)(`with 自動翻譯 set, the controller, agent and closed agent pages each show the reply translated when loaded (${width}px)`, async () => {
 		await visit(width);
 		await tab.navigate(`${fixture.url}/?controller=${lead.session_id}`);
-		// The switch is drawn by the server first: clicked again until the page, once started, takes it.
-		await tab.until(
-			`(() => { if (!document.querySelector('.detail button.translate')) return false; if (!(${PRESSED})) document.querySelector('.detail button.translate').click(); return ${PRESSED}; })()`,
-			"the controller's conversation switched to 中文"
-		);
+		// The board's setting reaches the page once it has started.
+		await tab.until(PRESSED, "中文 on the controller's page");
 		await tab.until(DONE, 'the translation on the controller page');
 		for (let round = 0; round < 3; round++) {
 			for (const session of ['s-live', 's-gone']) {
 				await tab.navigate(`${fixture.url}/?agent=${session}&tab=agents`);
 				await tab.until(`!!document.querySelector('.detail button.translate')`, `${session}'s page`);
-				// The saved choice is put back once the page has started.
+				// The board's setting reaches the page once it has started.
 				await tab.until(PRESSED, `中文 on ${session}'s page`);
 				const deadline = Date.now() + 10_000;
 				while (!(await tab.eval(DONE))) {

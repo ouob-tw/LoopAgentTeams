@@ -6,6 +6,7 @@
 import {
 	FOLDED_KEY,
 	forget,
+	LEGACY_TRANSLATE_KEY,
 	LEGACY_USAGE_STYLE_KEY,
 	MIN_FONT,
 	remember,
@@ -38,6 +39,7 @@ class Appearance {
 		this.scale = rememberedNumber(SCALE.key, SCALE.min, SCALE.max) ?? SCALE.base;
 		this.minFont = rememberedNumber(MIN_FONT.key, MIN_FONT.min, MIN_FONT.max);
 		forget(LEGACY_USAGE_STYLE_KEY);
+		forget(LEGACY_TRANSLATE_KEY);
 	}
 
 	setTheme(theme: Theme): void {
