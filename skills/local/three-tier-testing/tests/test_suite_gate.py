@@ -1,6 +1,7 @@
 import importlib.util
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -970,6 +971,16 @@ class HookTests(GateCase):
         self.assertEqual(run_hook('pytest', self.tmp / 'gone', self.env).returncode, 2)
 
 
+def cli(*args):
+    """A gate command line as the gate prints it, built here rather than by the gate."""
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), *args])
+
+
+AFFECTED = cli('affected')
+WHY = ('--reason', '<why the full suite is needed>')
+BEGIN, END = '# >>> suite-gate pre-push >>>\n', '# <<< suite-gate pre-push <<<\n'
+
+
 def mapped_reply(stderr):
     """(affected command, full suite with a purpose) from a mapped project's block message."""
     affected = stderr.split('Run this instead:\n  ', 1)[1].split('\nIt runs the tests', 1)[0]
@@ -984,14 +995,15 @@ class MappedHookTests(AffectedCase):
         return {'claude': text, 'codex-list': ['bash', '-lc', text]}
 
     def test_an_unwrapped_full_suite_gets_the_affected_command_and_the_purpose_syntax(self):
-        a, g, q, why = (gate.affected_command(), gate.gate_command, gate.shlex.quote,
-                        gate.REASON_FLAGS)
+        a, q = AFFECTED, shlex.quote
         cases = {
-            'pytest': (a, g('pytest', why)),
+            'pytest': (a, cli('run', *WHY, '--', 'pytest')),
             'cd web && bun test 2>&1 | tail -30':
-                (f'cd web && {a} 2>&1 | tail -30', f"cd web && {g('bun test', why)} 2>&1 | tail -30"),
+                (f'cd web && {a} 2>&1 | tail -30',
+                 f"cd web && {cli('run', *WHY, '--', 'bun test')} 2>&1 | tail -30"),
             "bash -lc 'pytest -q' | tail":
-                (f'bash -lc {q(a)} | tail', f"bash -lc {q(g('pytest -q', why))} | tail"),
+                (f'bash -lc {q(a)} | tail',
+                 f"bash -lc {q(cli('run', *WHY, '--', 'pytest -q'))} | tail"),
         }
         for text, expected in cases.items():
             for client, command in self.formats(text).items():
@@ -1019,7 +1031,7 @@ class MappedHookTests(AffectedCase):
         for flags in (('--purpose', 'post-merge'), ('--purpose', 'release'),
                       ('--reason', 'flaky test')):
             with self.subTest(flags=flags):
-                result = run_hook(gate.gate_command(self.full('root'), flags), self.repo,
+                result = run_hook(cli('run', *flags, '--', self.full('root')), self.repo,
                                   self.env)
                 self.assertEqual((result.returncode, result.stderr), (0, ''))
         blocked = run_hook(self.full('root'), self.repo, self.env)
@@ -1038,8 +1050,8 @@ class MappedHookTests(AffectedCase):
         result = run_hook('cd web && bun test 2>&1 | tail -30', self.repo, self.env)
         self.assertEqual(result.returncode, 2)
         self.assertEqual(rewrite_of(result.stderr),
-                         f"cd web && {gate.gate_command('bun test')} 2>&1 | tail -30")
-        self.assertNotIn(gate.affected_command(), result.stderr)
+                         f"cd web && {cli('run', '--', 'bun test')} 2>&1 | tail -30")
+        self.assertNotIn(AFFECTED, result.stderr)
 
 
 def head(cwd, rev='HEAD'):
@@ -1131,6 +1143,15 @@ class PrePushTests(PrePushCase):
         self.fill(refused)
         self.assertEqual(self.push('HEAD:refs/tags/t2').returncode, 0)
 
+    def test_a_symlinked_suite_directory_matches_the_gate(self):
+        (self.repo / 'web-alias').symlink_to('web')
+        self.registry['full_suites'] = [{'command': self.full('web'), 'cwd': 'web-alias'}]
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        git(self.repo, 'commit', '-qm', 'alias')
+        self.fill(self.push('HEAD:refs/tags/a1'))
+        self.assertEqual(self.push('HEAD:refs/tags/a1').returncode, 0)
+
     def test_the_stdin_protocol(self):
         sha, zero = head(self.repo), '0' * 40
         cases = {
@@ -1162,16 +1183,20 @@ class PrePushInstallTests(PrePushCase):
     OLD = '#!/bin/sh\necho "$@" > {out}.args\ncat > {out}\nexit 0\n'
 
     def backups(self):
-        return sorted(self.hook.parent.glob('pre-push' + gate.BACKUP_PREFIX + '*'))
+        return sorted(self.hook.parent.glob('pre-push.suite-gate-backup-*'))
 
     def test_preview_install_and_uninstall_of_a_new_hook(self):
         preview = self.install('--preview')
         self.assertEqual(preview.returncode, 0, preview.stderr)
-        self.assertIn('+' + gate.PRE_PUSH_BEGIN, preview.stdout)
+        self.assertIn('+' + BEGIN, preview.stdout)
         self.assertFalse(self.hook.exists())
         self.assertEqual(self.install().returncode, 0)
-        self.assertEqual(self.hook.read_text(), '#!/bin/sh\n' + gate.pre_push_block())
+        text = self.hook.read_text()
+        self.assertTrue(text.startswith('#!/bin/sh\n' + BEGIN) and text.endswith(END), text)
+        self.assertIn(cli('pre-push'), text)
         self.assertTrue(os.access(self.hook, os.X_OK))
+        self.assertEqual(self.push('feature').returncode, 0)
+        self.assertIn('push refused', self.push('main').stderr)
         self.assertIn('No changes', self.install().stdout)
         self.assertEqual(self.backups(), [])
         self.assertEqual(self.gate('uninstall-pre-push', '--repo', str(self.repo),
@@ -1188,7 +1213,7 @@ class PrePushInstallTests(PrePushCase):
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
         text = self.hook.read_text()
-        self.assertTrue(text.startswith('#!/bin/sh\n' + gate.PRE_PUSH_BEGIN), text)
+        self.assertTrue(text.startswith('#!/bin/sh\n' + BEGIN), text)
         self.assertTrue(text.endswith(original.split('\n', 1)[1]))
         [backup] = self.backups()
         self.assertEqual(backup.read_text(), original)
@@ -1210,8 +1235,9 @@ class PrePushInstallTests(PrePushCase):
         git(self.repo, 'config', 'core.hooksPath', str(shared))
         result = self.install()
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertIn(f'core.hooksPath is {shared}', result.stdout)
-        self.assertIn('exec "$local_hook" "$@"', result.stdout)
+        for out in (result.stdout, self.install('--preview').stdout, self.install().stdout):
+            self.assertIn(f'Installed but NOT active: core.hooksPath={shared}', out)
+            self.assertIn('exec "$local_hook" "$@"', out)
         self.assertTrue(self.hook.exists())
         self.assertEqual(list(shared.iterdir()), [])
 
@@ -1230,6 +1256,21 @@ class PrePushInstallTests(PrePushCase):
                 self.hook.chmod(mode)
                 self.assertEqual(self.install().returncode, 1)
                 self.assertEqual(self.hook.read_text(), text)
+        for marks in ((BEGIN, BEGIN, END), (BEGIN, END, END), (END, BEGIN), (BEGIN,)):
+            broken = '#!/bin/sh\n' + 'echo keep\n'.join(marks) + 'exit 0\n'
+            self.hook.write_text(broken)
+            self.hook.chmod(0o755)
+            for action in ('install-pre-push', 'uninstall-pre-push'):
+                with self.subTest(marks=marks, action=action):
+                    self.assertEqual(self.gate(action, '--repo', str(self.repo)).returncode, 1)
+                    self.assertEqual(self.hook.read_text(), broken)
+
+    def test_an_existing_shebang_only_hook_survives_uninstall(self):
+        self.hook.write_text('#!/bin/sh\n')
+        self.hook.chmod(0o755)
+        self.assertEqual(self.install().returncode, 0)
+        self.assertEqual(self.gate('uninstall-pre-push', '--repo', str(self.repo)).returncode, 0)
+        self.assertEqual(self.hook.read_text(), '#!/bin/sh\n')
 
 
 OTHER_GROUPS = [

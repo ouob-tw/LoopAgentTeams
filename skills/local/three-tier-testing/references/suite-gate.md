@@ -187,9 +187,9 @@ uv run --no-project python <skill>/scripts/suite-gate.py uninstall-pre-push --re
 
 - 只裝在命令列指定的 repo，而且 repo 根要有登記檔、`full_suites` 正確，否則拒絕。
 - 寫進該 repo 自己的 `<git-common-dir>/hooks/pre-push`（同一 repo 的所有工作區共用）。`--preview` 只印差異。
-- 已有 pre-push 時保留原內容：在第一行（須是 sh、bash 等 shell 的 `#!`）之後插入一段有標記的區塊，原 hook 照樣收到推送的參照；寫入前備份為同目錄的 `pre-push.suite-gate-backup-*`。原 hook 不是 shell 腳本或沒有執行權限時拒絕，請先手動處理。
-- 重跑不重複；技能搬了位置，重跑會就地更新區塊中的路徑。`uninstall-pre-push` 只移除這段區塊；剩下只有 `#!` 一行時刪掉整個檔案。
-- 設了 `core.hooksPath`（例如全主機共用的 hooks 目錄）時，Git 只跑那個目錄裡的 hook。安裝仍只寫 repo 自己的 hooks 目錄、絕不改共用目錄，並提醒：共用目錄的 `pre-push` 要轉交給 repo 自己的 hook，檢查才會執行，例如：
+- 已有 pre-push 時保留原內容：在第一行（須是 sh、bash 等 shell 的 `#!`）之後插入一段有標記的區塊，原 hook 照樣收到推送的參照；寫入前備份為同目錄的 `pre-push.suite-gate-backup-*`。原 hook 不是 shell 腳本或沒有執行權限時拒絕（結束碼 1，檔案一個位元組都不動）：自動串接任意程式或啟用原本被 Git 忽略的 hook 都會改變既有行為。要串接時，手動把原 hook 改名，讓 `pre-push` 成為以 `"$@"` 呼叫它（並傳下 stdin）的 shell 腳本，再重新安裝。標記區塊不完整（缺開頭或結尾、重複或順序顛倒）時，安裝與移除都拒絕、不改檔案。
+- 重跑不重複；技能搬了位置，重跑會就地更新區塊中的路徑。`uninstall-pre-push` 只移除這段區塊；檔案原本就是安裝時新建的（區塊內有記號）才整個刪掉，原本就存在的 hook 一律保留其餘內容。
+- 設了 `core.hooksPath`（例如全主機共用的 hooks 目錄）時，Git 只跑那個目錄裡的 hook。安裝仍只寫 repo 自己的 hooks 目錄、絕不改共用目錄，照常以 0 結束，但安裝、預覽與重跑時都會明白印出 `Installed but NOT active: core.hooksPath=<目錄> ...`：共用目錄的 `pre-push` 要轉交給 repo 自己的 hook，檢查才會執行，例如：
 
   ```sh
   local_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"

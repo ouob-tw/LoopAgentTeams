@@ -475,13 +475,17 @@ def digest(tree, argv, rel):
     return hashlib.sha256(f'{tree}\0{mode}\0{command}\0{rel}'.encode()).hexdigest()
 
 
+def rel_cwd(root, cwd):
+    return os.path.relpath(Path(cwd).resolve(), root.resolve())
+
+
 def fingerprint(cwd, argv):
     """Dict with fingerprint, tree, repo and relative cwd; None outside a Git work tree."""
     root = repo_root(cwd)
     if root is None:
         return None
     tree = content_tree(root, include_patterns(load_registry(cwd) or {}))
-    rel = os.path.relpath(Path(cwd).resolve(), root.resolve())
+    rel = rel_cwd(root, cwd)
     return {'fingerprint': digest(tree, argv, rel), 'tree': tree, 'repo': str(root),
             'rel_cwd': rel}
 
@@ -1509,8 +1513,8 @@ def cmd_pre_push():
         missing, differs = {}, []
         for commit, refs in commits.items():
             tree = content_tree(root, include, commit)
-            lacking = [s for s in suites
-                       if not reusable_record(digest(tree, [s['command']], s['cwd']))]
+            lacking = [s for s in suites if not reusable_record(
+                digest(tree, [s['command']], rel_cwd(root, root / s['cwd'])))]
             if lacking:
                 missing[commit] = (refs, lacking)
                 if content_tree(root, include) != tree:
@@ -1540,16 +1544,22 @@ def cmd_pre_push():
     return 1
 
 
-def pre_push_block():
+PRE_PUSH_CREATED = '# suite-gate created this file; uninstall removes it.\n'
+
+
+def pre_push_block(created=False):
     run = shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'pre-push'])
     return (f'{PRE_PUSH_BEGIN}\n'
+            + (PRE_PUSH_CREATED if created else '') +
             '# Added by suite-gate.py install-pre-push; remove with uninstall-pre-push.\n'
             '# The pushed refs are kept for the rest of this hook on stdin.\n'
             'suite_gate_refs=$(mktemp) || exit 1\n'
-            'cat > "$suite_gate_refs"\n'
+            'trap \'rm -f "$suite_gate_refs"; exit 1\' HUP INT TERM\n'
+            'cat > "$suite_gate_refs" || { rm -f "$suite_gate_refs"; exit 1; }\n'
             f'{run} "$@" < "$suite_gate_refs" || {{ rm -f "$suite_gate_refs"; exit 1; }}\n'
             'exec < "$suite_gate_refs"\n'
             'rm -f "$suite_gate_refs"\n'
+            'trap - HUP INT TERM\n'
             f'{PRE_PUSH_END}\n')
 
 
@@ -1558,21 +1568,25 @@ def updated_hook(text, action):
     lines = (text or '').splitlines(True)
     marks = [i for i, line in enumerate(lines) if line.rstrip('\n') in (PRE_PUSH_BEGIN,
                                                                           PRE_PUSH_END)]
-    if marks and (len(marks) != 2 or lines[marks[0]].rstrip('\n') != PRE_PUSH_BEGIN):
+    if marks and [lines[i].rstrip('\n') for i in marks] != [PRE_PUSH_BEGIN, PRE_PUSH_END]:
         raise ValueError('the suite-gate block is broken; inspect the hook')
+    # Only a file this installer created is removed; any other keeps all its own lines.
+    created = bool(marks) and PRE_PUSH_CREATED in lines[marks[0]:marks[1]]
     if action == 'uninstall':
         if not marks:
             return text
         rest = lines[:marks[0]] + lines[marks[1] + 1:]
-        return None if not ''.join(rest[1:]).strip() else ''.join(rest)
-    block = pre_push_block()
+        return None if created and ''.join(rest) == '#!/bin/sh\n' else ''.join(rest)
+    block = pre_push_block(created)
     if marks:
         return ''.join(lines[:marks[0]]) + block + ''.join(lines[marks[1] + 1:])
     if text is None:
-        return '#!/bin/sh\n' + block
+        return '#!/bin/sh\n' + pre_push_block(created=True)
     if not lines or not SH_SHEBANG.fullmatch(lines[0].strip()):
-        raise ValueError('the existing pre-push hook is not a sh or bash script; '
-                         'add the check by hand or move that hook first')
+        raise ValueError('the existing pre-push hook is not a sh or bash script, so it was '
+                         'left unchanged. To chain it, move it to another name, make '
+                         'pre-push a sh script that runs it with "$@" (passing stdin on), '
+                         'then install again')
     head = lines[0] if lines[0].endswith('\n') else lines[0] + '\n'
     return head + block + ''.join(lines[1:])
 
@@ -1591,34 +1605,36 @@ def cmd_pre_push_configure(action, repo, preview):
     common = git(['rev-parse', '--git-common-dir'], root).stdout.strip()
     path = (root / common).resolve() / 'hooks/pre-push'
     active = (root / git(['rev-parse', '--git-path', 'hooks'], root).stdout.strip()).resolve()
+    inactive = None
     if action == 'install' and active != path.parent:
-        print(f'Note: core.hooksPath is {active}, so Git runs hooks from there, not from '
-              f'{path.parent}. This check runs only if {active}/pre-push hands over to the '
-              'repo\'s own hook, for example with these lines:\n'
-              '  local_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"\n'
-              '  [ -x "$local_hook" ] && exec "$local_hook" "$@"\n'
-              '  exit 0')
+        inactive = (f'Installed but NOT active: core.hooksPath={active} runs hooks from '
+                    f'there, not from {path.parent}. Add a hand-over to {active}/pre-push, '
+                    'for example:\n'
+                    '  local_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"\n'
+                    '  [ -x "$local_hook" ] && exec "$local_hook" "$@"\n'
+                    '  exit 0')
     try:
         original = path.read_bytes()
     except FileNotFoundError:
         original = None
     before = original.decode() if original is not None else None
     if action == 'install' and original is not None and not os.access(path, os.X_OK):
-        raise ValueError(f'{path} exists but is not executable, so Git ignores it; '
-                         'make it executable or remove it first')
+        raise ValueError(f'{path} exists but is not executable, so Git ignores it; it was '
+                         'left unchanged. Make it executable (it will then run on every push) '
+                         'or remove it, then install again')
     after = updated_hook(before, action)
     if after == before:
         print(f'No changes: {path}')
-        return 0
-    diff = ''.join(difflib.unified_diff((before or '').splitlines(True),
-                                        (after or '').splitlines(True),
-                                        fromfile=str(path), tofile=str(path)))
-    if preview:
+    else:
+        diff = ''.join(difflib.unified_diff((before or '').splitlines(True),
+                                            (after or '').splitlines(True),
+                                            fromfile=str(path), tofile=str(path)))
         print(diff, end='')
-        return 0
-    write_file(path, original, after, mode=0o755)
-    print(diff, end='')
-    print(f'Removed {path}' if after is None else f'Updated {path}')
+        if not preview:
+            write_file(path, original, after, mode=0o755)
+            print(f'Removed {path}' if after is None else f'Updated {path}')
+    if inactive:
+        print(inactive)
     return 0
 
 
