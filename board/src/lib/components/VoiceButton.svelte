@@ -4,6 +4,7 @@
 	// recording is turned into text. While recording, the button counts down the time left.
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import Mic from '@lucide/svelte/icons/mic';
+	import { request } from '#lib/board/api.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { VoiceResult } from '#lib/board/voice.ts';
 
@@ -82,18 +83,16 @@
 	}
 
 	async function send(audio: Blob) {
-		let body: (VoiceResult & { error?: string }) | null;
-		let status: number;
-		try {
-			const response = await fetch('/api/voice', { method: 'POST', headers: { 'content-type': audio.type }, body: audio });
-			status = response.ok ? 200 : response.status;
-			body = await response.json().catch(() => null);
-		} catch {
-			toasts.show('failed', '語音輸入失敗：連不到看板');
-			return;
-		} finally {
-			phase = 'idle';
-		}
+		const result = await request<VoiceResult & { error?: string }>('/api/voice', {
+			method: 'POST',
+			headers: { 'content-type': audio.type },
+			body: audio
+		});
+		phase = 'idle';
+		if (!result.ok && result.kind === 'network') return toasts.show('failed', '語音輸入失敗：連不到看板');
+		if (!result.ok && result.unpaired) return;
+		const status = result.ok || result.kind === 'json' ? 200 : result.status;
+		const body = (result.ok ? result.value : result.body) as (VoiceResult & { error?: string }) | null | undefined;
 		if (status !== 200 || !body?.text) return toasts.show('failed', body?.error ?? `語音輸入失敗（${status}）`);
 		if (gone) return;
 		oninsert(body.text);

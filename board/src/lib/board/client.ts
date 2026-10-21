@@ -1,6 +1,7 @@
 // The page's live link to the server: reads the event stream, reports when it drops and keeps
 // reconnecting. Uses fetch rather than EventSource so a revoked device (401) can be told apart
 // from a server that is down.
+import { createRequest, type ApiResult } from './api.ts';
 import type { ArchivePage } from './archive.ts';
 import type { QuotaSnapshot } from './quota.ts';
 import type { TranslateMode } from './translate-mode.ts';
@@ -48,7 +49,7 @@ export interface Connection {
 }
 
 export function connectBoard(options: ConnectionOptions): Connection {
-	const request = options.fetch ?? fetch;
+	const request = createRequest({ fetch: options.fetch, unpaired });
 	const retryMs = options.retryMs ?? 2_000;
 	let closed = false;
 	let attempt: AbortController | undefined;
@@ -73,6 +74,12 @@ export function connectBoard(options: ConnectionOptions): Connection {
 	function unpaired(): void {
 		closed = true;
 		options.onUnpaired();
+	}
+	/** The value of an answer; a device no longer logged in has been told already, and gets `none`. */
+	function valueOf<T>(result: ApiResult<T>, none: T): T {
+		if (result.ok) return result.value;
+		if (result.unpaired) return none;
+		throw new Error(result.message);
 	}
 
 	function receive(block: string): void {
@@ -103,9 +110,10 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		};
 		try {
 			heard();
-			const response = await request('/api/events', { signal });
-			if (response.status === 401) return unpaired();
-			if (!response.ok || !response.body) throw new Error(`HTTP ${response.status}`);
+			const result = await request('/api/events', { signal }, async (response) => response);
+			if (!result.ok && result.unpaired) return;
+			const response = valueOf(result, null);
+			if (!response?.body) throw new Error('no event stream');
 			const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
 			let buffer = '';
 			while (!closed) {
@@ -134,62 +142,49 @@ export function connectBoard(options: ConnectionOptions): Connection {
 
 	return {
 		async refresh() {
-			const response = await request('/api/refresh', {
+			const result = await request<BoardSnapshot>('/api/refresh', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' }
 			});
-			if (response.status === 401) return unpaired();
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			options.onSnapshot(await response.json());
+			const snapshot = valueOf(result, null);
+			if (snapshot) options.onSnapshot(snapshot);
 		},
 		async mark(key, read) {
-			const response = await request(read ? '/api/inbox/read' : '/api/inbox/unread', {
+			// The answer's body is not used.
+			const result = await request(read ? '/api/inbox/read' : '/api/inbox/unread', {
 				method: 'POST',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ key })
-			});
-			if (response.status === 401) return unpaired();
+			}, async () => null);
 			// 409: it was archived in the meantime, which the next snapshot shows.
-			if (!response.ok && response.status !== 409) throw new Error(`HTTP ${response.status}`);
+			if (!result.ok && result.status !== 409) valueOf(result, null);
 		},
 		async setUsageStyle(style) {
-			const response = await request('/api/usage-style', {
+			const result = await request<{ style: UsageStyle; revision: number }>('/api/usage-style', {
 				method: 'PUT',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ style })
 			});
-			if (response.status === 401) return unpaired();
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			const saved = valueOf(result, null);
 			// Not left to the push alone: the stream may be down.
-			hearStyle(await response.json());
+			if (saved) hearStyle(saved);
 		},
 		async setTranslateMode(mode) {
-			const response = await request('/api/translate-mode', {
+			const result = await request<{ mode: TranslateMode; revision: number }>('/api/translate-mode', {
 				method: 'PUT',
 				headers: { 'content-type': 'application/json' },
 				body: JSON.stringify({ mode })
 			});
-			if (response.status === 401) return unpaired();
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			hearMode(await response.json());
+			const saved = valueOf(result, null);
+			if (saved) hearMode(saved);
 		},
 		async archive(before = null) {
-			const response = await request(before === null ? '/api/archive' : `/api/archive?before=${encodeURIComponent(before)}`);
-			if (response.status === 401) {
-				unpaired();
-				return { items: [], before: null };
-			}
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			return await response.json();
+			const result = await request<ArchivePage>(before === null ? '/api/archive' : `/api/archive?before=${encodeURIComponent(before)}`);
+			return valueOf(result, { items: [], before: null });
 		},
 		async answered(controllerId) {
-			const response = await request(`/api/answered?controller=${encodeURIComponent(controllerId)}`);
-			if (response.status === 401) {
-				unpaired();
-				return [];
-			}
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			return await response.json();
+			const result = await request<InboxQuestion[]>(`/api/answered?controller=${encodeURIComponent(controllerId)}`);
+			return valueOf(result, []);
 		},
 		close() {
 			closed = true;

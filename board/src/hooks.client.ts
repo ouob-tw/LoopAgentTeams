@@ -15,6 +15,7 @@ function report(kind: string, error: unknown) {
 		// Without the query and fragment, which may hold anything.
 		url: location.origin + location.pathname
 	});
+	// Not through api.ts: a report must never reload the page, not even for a device logged out.
 	fetch('/api/client-error', { method: 'POST', headers: { 'content-type': 'application/json' }, body, keepalive: true }).catch(() => {});
 }
 
