@@ -352,7 +352,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		// Cancelled with its controller: what shows now belongs to another one.
 		if (result.kind === 'cancelled') return;
 		loadingEarlier = false;
-		if (result.kind === 'unpaired') return location.reload();
+		// The page is reloading already.
+		if (result.kind === 'unpaired') return;
 		if (controllerId !== id || !view) return;
 		if (result.kind === 'failed') earlierFailed = '沒有收到看板伺服器的回應。';
 		else if (result.update.ok) view = withEarlier(view, result.update.page, requested);

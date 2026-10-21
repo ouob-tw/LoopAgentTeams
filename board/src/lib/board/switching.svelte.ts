@@ -1,5 +1,6 @@
 // What the page keeps about switching controllers' model and effort: what each controller's switch
 // may offer right now, and the latest settings read from its conversation record.
+import { request } from './api.ts';
 import { messaging, type Outcome } from './messaging.svelte.ts';
 import type { CurrentSettings, ModelChoice, ModelStatus, SwitchResponse } from './models.ts';
 import { toasts } from './toasts.svelte.ts';
@@ -33,15 +34,11 @@ class Switching {
 	 * for its next turn). A failed read keeps what is shown.
 	 */
 	async loadCurrent(controllerId: string, again = false, signal?: AbortSignal): Promise<void> {
-		try {
-			const response = await fetch(`/api/transcript?controller=${encodeURIComponent(controllerId)}`, { signal });
-			if (response.status === 401) return location.reload();
-			if (!response.ok) return;
-			const update: TranscriptUpdate = await response.json();
-			if (update.ok && (again || this.current[controllerId] === undefined)) this.current[controllerId] = update.page.current ?? null;
-		} catch {
-			// What is shown stays.
-		}
+		// A failed read keeps what is shown.
+		const result = await request<TranscriptUpdate>(`/api/transcript?controller=${encodeURIComponent(controllerId)}`, { signal });
+		if (!result.ok) return;
+		const update = result.value;
+		if (update.ok && (again || this.current[controllerId] === undefined)) this.current[controllerId] = update.page.current ?? null;
 	}
 
 	/** `load`, unless the status was read for the same state of the controller in the last 30 s:
@@ -70,15 +67,10 @@ class Switching {
 	 *  too, and leaves everything as it was. */
 	async load(controllerId: string, signal?: AbortSignal): Promise<void> {
 		const load = (this.#loads[controllerId] = (this.#loads[controllerId] ?? 0) + 1);
-		let status: ModelStatus | undefined;
-		try {
-			const response = await fetch(`/api/model?controller=${encodeURIComponent(controllerId)}`, { signal });
-			if (response.status === 401) return location.reload();
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			status = await response.json();
-		} catch {
-			// Reported below, unless a newer load has taken over.
-		}
+		const result = await request<ModelStatus>(`/api/model?controller=${encodeURIComponent(controllerId)}`, { signal });
+		if (!result.ok && result.unpaired) return;
+		// Reported below, unless a newer load has taken over.
+		const status = result.ok ? result.value : undefined;
 		if (signal?.aborted || load !== this.#loads[controllerId]) return;
 		if (status) this.status[controllerId] = status;
 		this.loadFailed[controllerId] = !status;
@@ -86,23 +78,18 @@ class Switching {
 
 	/** Switch, or continue the open switch (with both left null to keep its settings). */
 	async switch(controllerId: string, choice: ModelChoice): Promise<Outcome> {
-		let response: Response;
-		try {
-			response = await fetch('/api/model', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ controllerId, ...choice })
-			});
-		} catch {
+		const result = await request<SwitchResponse>('/api/model', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ controllerId, ...choice })
+		});
+		if (!result.ok && result.kind === 'network') {
 			void messaging.load(controllerId);
 			return { ok: false, reason: UNKNOWN_OUTCOME };
 		}
-		if (response.status === 401) {
-			location.reload();
-			return { ok: false, reason: '這台裝置已不是登入狀態，沒有送出。' };
-		}
-		if (response.status === 400) return { ok: false, reason: '看板伺服器不接受這次切換，沒有送出。' };
-		const body: SwitchResponse | null = await response.json().catch(() => null);
+		if (!result.ok && result.unpaired) return { ok: false, reason: '這台裝置已不是登入狀態，沒有送出。' };
+		if (!result.ok && result.status === 400) return { ok: false, reason: '看板伺服器不接受這次切換，沒有送出。' };
+		const body = (result.ok ? result.value : result.body) as SwitchResponse | null | undefined;
 		void messaging.load(controllerId);
 		void this.load(controllerId);
 		if (!body) return { ok: false, reason: UNKNOWN_OUTCOME };

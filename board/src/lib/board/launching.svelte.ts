@@ -1,6 +1,7 @@
 // What the page keeps about starting new controllers, and plain agents from the Herdr tab: each
 // form as filled in (it survives a failed launch and leaving the page), the folders to choose from
 // and the recent launches.
+import { request } from './api.ts';
 import { latestOnly, typedFolder } from './folder-search.ts';
 import type { FolderSearch, LaunchClient, LaunchList, LaunchResponse } from './launch.ts';
 import type { LaunchDefaults } from './models.ts';
@@ -64,43 +65,27 @@ class Launching {
 		this.searchFailed = value ? null : input;
 	}
 	#search = latestOnly(async (input: string): Promise<FolderSearch | undefined> => {
-		try {
-			const response = await fetch(`/api/browse?q=${encodeURIComponent(input)}`);
-			if (response.status === 401) location.reload();
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			return await response.json();
-		} catch {
-			// Reported by `find`, unless a newer search has taken over.
-			return undefined;
-		}
+		const result = await request<FolderSearch>(`/api/browse?q=${encodeURIComponent(input)}`);
+		// A failure is reported by `find`, unless a newer search has taken over.
+		return result.ok ? result.value : undefined;
 	});
 
 	/** Ask whether a folder is in a Git project, once. */
 	async checkGit(path: string): Promise<void> {
 		this.gitOf[path] = null;
-		try {
-			const response = await fetch(`/api/browse?q=${encodeURIComponent(path)}`);
-			if (!response.ok) return;
-			const result: FolderSearch = await response.json();
-			if (result.target.state === 'folder') this.gitOf[path] = result.target.git;
-		} catch {
-			// Left unknown: the row just does not say.
-		}
+		const result = await request<FolderSearch>(`/api/browse?q=${encodeURIComponent(path)}`);
+		// A failure leaves it unknown: the row just does not say.
+		if (result.ok && result.value.target.state === 'folder') this.gitOf[path] = result.value.target.git;
 	}
 
 	/** Read the clients' defaults for a folder ('' for the user's settings alone). A failed read
 	 *  drops what was read before: the settings may have changed since. */
 	async loadDefaults(folder: string): Promise<void> {
 		const read = ++this.#defaultsReads;
-		let clients: LaunchDefaults | undefined;
-		try {
-			const response = await fetch(`/api/launches/defaults?folder=${encodeURIComponent(folder)}`);
-			if (response.status === 401) return location.reload();
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			clients = await response.json();
-		} catch {
-			// Reported below, unless a newer read has taken over.
-		}
+		const result = await request<LaunchDefaults>(`/api/launches/defaults?folder=${encodeURIComponent(folder)}`);
+		if (!result.ok && result.unpaired) return;
+		// A failure is reported below, unless a newer read has taken over.
+		const clients = result.ok ? result.value : undefined;
 		if (read !== this.#defaultsReads) return;
 		this.defaults = clients ? { folder, clients } : null;
 		this.defaultsFailed = !clients;
@@ -108,15 +93,10 @@ class Launching {
 
 	async load(): Promise<void> {
 		const load = ++this.#loads;
-		let list: LaunchList | undefined;
-		try {
-			const response = await fetch('/api/launches');
-			if (response.status === 401) return location.reload();
-			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			list = await response.json();
-		} catch {
-			// Reported below, unless a newer load has taken over.
-		}
+		const result = await request<LaunchList>('/api/launches');
+		if (!result.ok && result.unpaired) return;
+		// A failure is reported below, unless a newer load has taken over.
+		const list = result.ok ? result.value : undefined;
 		if (load !== this.#loads) return;
 		if (list) this.list = list;
 		this.loadFailed = !list;
@@ -124,31 +104,26 @@ class Launching {
 
 	/** One attempt with the form as it is; the form is kept when it fails. */
 	async start(): Promise<StartResult> {
-		let response: Response;
-		try {
-			response = await fetch('/api/launches', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({
-					client: this.client,
-					folder: this.folderPath ?? this.folder,
-					text: this.text,
-					gitInit: this.workspace === null && this.gitInit,
-					model: this.model || null,
-					effort: this.effort || null,
-					agent: this.workspace === null ? null : { workspace: this.workspace, tabName: this.tabName.trim() }
-				})
-			});
-		} catch {
+		const result = await request<LaunchResponse>('/api/launches', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({
+				client: this.client,
+				folder: this.folderPath ?? this.folder,
+				text: this.text,
+				gitInit: this.workspace === null && this.gitInit,
+				model: this.model || null,
+				effort: this.effort || null,
+				agent: this.workspace === null ? null : { workspace: this.workspace, tabName: this.tabName.trim() }
+			})
+		});
+		if (!result.ok && result.kind === 'network') {
 			void this.load();
 			return { ok: false, reason: UNKNOWN_OUTCOME };
 		}
-		if (response.status === 401) {
-			location.reload();
-			return { ok: false, reason: '這台裝置已不是登入狀態，沒有送出。' };
-		}
-		if (response.status === 400) return { ok: false, reason: '看板伺服器不接受這份表單，沒有送出。' };
-		const body: LaunchResponse | null = await response.json().catch(() => null);
+		if (!result.ok && result.unpaired) return { ok: false, reason: '這台裝置已不是登入狀態，沒有送出。' };
+		if (!result.ok && result.status === 400) return { ok: false, reason: '看板伺服器不接受這份表單，沒有送出。' };
+		const body = (result.ok ? result.value : result.body) as LaunchResponse | null | undefined;
 		void this.load();
 		if (!body) return { ok: false, reason: UNKNOWN_OUTCOME };
 		const logNote = body.logError ? `（送出紀錄寫入失敗：${body.logError}）` : '';
