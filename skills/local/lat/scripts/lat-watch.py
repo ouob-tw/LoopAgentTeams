@@ -19,6 +19,7 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import DecisionStatus, read_decision_status
+from _lat_common import process_starttime, run_cli, watcher_process_matches, write_json_atomic
 
 
 IDLE_SECONDS = 10 * 60
@@ -786,23 +787,7 @@ def rule_fingerprint(skill_dir):
             for path in sorted(files) if path.is_file()}
 
 
-def write_object(path, value, *, expected=_UNSET):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    original = (path.read_bytes() if path.exists() else None) if expected is _UNSET else expected
-    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
-        temp = Path(stream.name)
-        try:
-            json.dump(value, stream, indent=2, ensure_ascii=False)
-            stream.write('\n')
-            stream.flush()
-            os.fsync(stream.fileno())
-            current = path.read_bytes() if path.exists() else None
-            if current != original:
-                raise ValueError(f'Concurrent change detected: {path}')
-            temp.replace(path)
-            return (json.dumps(value, indent=2, ensure_ascii=False) + '\n').encode()
-        finally:
-            temp.unlink(missing_ok=True)
+write_object = write_json_atomic
 
 
 def write_wait(path, value, *, expected):
@@ -812,17 +797,7 @@ def write_wait(path, value, *, expected):
 
 
 def run_command(command, failure=None):
-    try:
-        result = subprocess.run(command, text=True, capture_output=True,
-                                timeout=COMMAND_TIMEOUT_SECONDS)
-    except subprocess.TimeoutExpired as error:
-        raise ValueError(f'{" ".join(command[:2])} timed out after '
-                         f'{COMMAND_TIMEOUT_SECONDS} seconds') from error
-    if result.returncode:
-        detail = result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
-        message = failure or f'{command[0]} failed'
-        raise ValueError(f'{message}: {detail}')
-    return result.stdout
+    return run_cli(command, timeout=COMMAND_TIMEOUT_SECONDS, failure=failure)
 
 
 def run_json(command):
@@ -2197,29 +2172,15 @@ def alarm_condition_met(declaration):
     return False
 
 
-def process_starttime(pid):
-    try:
-        fields = Path(f'/proc/{pid}/stat').read_text().rpartition(') ')[2].split()
-        return None if fields[0] == 'Z' else int(fields[19])
-    except (FileNotFoundError, ProcessLookupError):
-        return None
-
-
 def alarm_watcher_running(workspace, record):
     """Verify the PID belongs to this session's watcher, not a reused PID."""
     try:
         pid = int((watch_dir(workspace) / f"{record['session_id']}.pid").read_text())
-        if process_starttime(pid) is None:
-            return False
-        command = tuple(part.decode() for part in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
-                        if part)
     except (OSError, ValueError, KeyError, IndexError):
         return False
     expected = ('run', '--workspace', str(workspace), '--orchestrator', record['hcom_name'],
                 '--tasks', record['tasks_path'], '--decisions', record['decisions_path'])
-    return any(Path(command[i]).name == 'lat-watch.py'
-               and command[i + 1:i + 1 + len(expected)] == expected
-               for i in range(len(command)))
+    return watcher_process_matches(pid, expected)
 
 
 def declare_alarm(args):
