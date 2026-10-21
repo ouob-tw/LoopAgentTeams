@@ -79,11 +79,24 @@ class SessionTests(unittest.TestCase):
         env.update(extra_env or {})
         return env
 
-    def activate(self, session=SESSION):
+    def activate(self, session=SESSION, duty=True):
         result = self.cli('activate', '--workspace', self.work,
                           '--progress', self.progress, '--decisions', self.decisions,
                           session=session)
         self.assertEqual(result.returncode, 0, result.stderr)
+        if duty:
+            self.record_duty(session=session)
+
+    def record_duty(self, text='整理看板名冊', expected='名冊顯示職責', session=SESSION,
+                    client='codex', extra_env=None):
+        extra = dict(extra_env or {})
+        if client == 'claude':
+            extra['CLAUDE_CODE_SESSION_ID'] = session
+        return self.cli('duty', '--client', client, '--workspace', self.work, '--text', text,
+                        '--expected', expected, session=session, extra_env=extra)
+
+    def duty_file(self, session=SESSION):
+        return self.root / 'reports' / f'{session}.duty.json'
 
     def test_hook_and_deactivate_keep_ownership_after_helper_directory_changes(self):
         installed = self.root / 'installed-lat'
@@ -258,6 +271,73 @@ class SessionTests(unittest.TestCase):
             self.assertFalse(self.reports()[-1]['final'])
             self.assertEqual(self.reports()[-1]['round'], round_number + 1)
 
+    def test_duty_is_written_replaced_and_refused_when_invalid(self):
+        self.activate(duty=False)
+        result = self.record_duty('  整理看板名冊  ', '名冊顯示職責')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        duty = json.loads(self.duty_file().read_text())
+        self.assertEqual((duty['text'], duty['expected']), ('整理看板名冊', '名冊顯示職責'))
+        self.assertTrue(duty['time'].endswith('Z'))
+        self.assertEqual(self.duty_file().stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.record_duty('改做交付', '已推送').returncode, 0)
+        self.assertEqual(json.loads(self.duty_file().read_text())['text'], '改做交付')
+        before = self.duty_file().read_bytes()
+        for text, expected, detail in (('職' * 41, '結果', 'at most 40'), ('兩行\n職責', '結果', 'one line'),
+                                       ('   ', '結果', 'must not be empty'),
+                                       ('職責', '', 'must not be empty')):
+            with self.subTest(text=text, expected=expected):
+                result = self.record_duty(text, expected)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(detail, result.stderr)
+                self.assertEqual(self.duty_file().read_bytes(), before)
+        self.assertEqual(self.record_duty('職' * 40, '結果').returncode, 0)
+
+    def test_activate_prints_the_duty_command(self):
+        result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                          '--decisions', self.decisions)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'lat-session.py duty --client codex --workspace {self.work} --text',
+                      result.stdout)
+
+    def test_duty_needs_this_sessions_active_controller(self):
+        self.activate(duty=False)
+        other = self.record_duty(session=OTHER)
+        self.assertEqual(other.returncode, 1)
+        self.assertIn('No active controller', other.stderr)
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        ended = self.record_duty()
+        self.assertEqual(ended.returncode, 1)
+        self.assertIn('No active controller', ended.stderr)
+        self.assertFalse(self.duty_file().exists())
+
+    def test_tagged_stop_without_duty_is_held_once_with_the_command(self):
+        self.activate(duty=False)
+        held = self.stop_hook('Work done\nDONE: delivered')
+        output = json.loads(held.stdout)
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('LAT 職責檢查未通過', output['reason'])
+        self.assertIn(f'lat-session.py duty --client codex --workspace {self.work}', output['reason'])
+        self.assertEqual(self.reports(), [])
+        released = self.stop_hook('Work done\nDONE: delivered', stop_hook_active=True)
+        self.assertIn('本回合已繼續過，不再攔下', json.loads(released.stdout)['systemMessage'])
+        self.assertEqual(self.reports()[-1]['tag'], 'DONE')
+        for message in ('NO REPLY: waiting', 'Plain message'):
+            with self.subTest(message=message):
+                self.assert_silent(self.stop_hook(message))
+        self.assertEqual(self.record_duty().returncode, 0)
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+
+    def test_question_stop_without_duty_lists_both_checks(self):
+        self.activate(duty=False)
+        held = json.loads(self.stop_hook('Question\nDECIDE: LAT-A r1').stdout)
+        self.assertIn('LAT 職責檢查未通過', held['reason'])
+        self.assertIn('LAT-A r1：沒有待決紀錄', held['reason'])
+        self.decisions.joinpath('LAT-A.md').write_text(
+            '- status: pending\n- advisor: exempt requirement-discussion\n')
+        held = json.loads(self.stop_hook('Question\nDECIDE: LAT-A r1').stdout)
+        self.assertTrue(held['reason'].startswith('LAT 職責檢查未通過'))
+        self.assertNotIn('DECIDE 檢查未通過', held['reason'])
+
     def test_report_write_failure_does_not_change_stop_results(self):
         self.activate()
         destination = self.root / 'not-a-directory'
@@ -291,16 +371,17 @@ class SessionTests(unittest.TestCase):
         for state, directory in ((str(self.root / 'state'), self.root / 'state/lat/reports'),
                                  ('', self.root / '.local/state/lat/reports'),
                                  ('relative', self.root / '.local/state/lat/reports')):
+            env = {'LAT_REPORTS_DIR': '', 'XDG_STATE_HOME': state, 'HOME': str(self.root)}
+            self.assertEqual(self.record_duty(extra_env=env).returncode, 0)
             result = self.cli('hook', payload=dict(
                 hook_event_name='Stop', session_id=SESSION, cwd=str(self.work),
-                last_assistant_message='DONE: result'), extra_env={
-                    'LAT_REPORTS_DIR': '', 'XDG_STATE_HOME': state, 'HOME': str(self.root)})
+                last_assistant_message='DONE: result'), extra_env=env)
             self.assert_silent(result)
             self.assertTrue((directory / f'{SESSION}.jsonl').is_file())
         self.assertFalse((self.work / '.lat/reports').exists())
 
     def test_final_report_failure_can_retry_and_concurrent_hooks_write_once(self):
-        self.activate()
+        self.activate(duty=False)
         self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
         destination = self.root / 'reports'
         destination.write_text('blocked')
@@ -356,7 +437,6 @@ class SessionTests(unittest.TestCase):
     def test_partial_report_tail_and_non_objects_do_not_block_later_rounds(self):
         self.activate()
         directory = self.root / 'reports'
-        directory.mkdir()
         path = directory / f'{SESSION}.jsonl'
         original = b'[]\nnull\n{"time":"partial'
         path.write_bytes(original)

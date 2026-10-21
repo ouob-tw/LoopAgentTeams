@@ -1547,7 +1547,8 @@ def _report_expired(path, now):
 
 
 def prune_reports(directory, now, sessions):
-    """Delete the ``<session-id>.jsonl`` report file in ``directory`` of each of
+    """Delete the ``<session-id>.jsonl`` report file in ``directory``, and the
+    ``<session-id>.duty.json`` duty file beside it, of each of
     ``sessions`` whose newest complete record was issued ``REPORT_RETENTION`` or
     more before ``now``. Only the sessions the caller names are looked at: the
     board clears their read and archive state before it asks.
@@ -1577,6 +1578,7 @@ def prune_reports(directory, now, sessions):
                     continue
                 if _report_expired(path, now):
                     path.unlink()
+                    directory.joinpath(f"{session_id}.duty.json").unlink(missing_ok=True)
                     deleted.append(session_id)
         except OSError as error:
             failed.append({"session_id": session_id, "reason": str(error)})
