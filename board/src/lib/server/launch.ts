@@ -16,13 +16,14 @@ import { normalizePath } from '../board/folder-search.ts';
 import { latCommand, NOT_GIT_REASON, type LaunchList, type LaunchRequest, type LaunchResponse, type Project, type SentLaunch } from '../board/launch.ts';
 import type { HelperController } from '../board/types.ts';
 import type { Board } from './board.ts';
+import type { BoardConfig } from './config.ts';
 import { cannotCreate, createFolder } from './browse.ts';
 import { gitInit, gitRoot } from './git.ts';
 import { listControllers } from './helper.ts';
 import { waitToAppear } from './appear.ts';
 import { launchAgent } from './hcom.ts';
 import { chooseWorkspace, moveTab, renameTab, workspaceLabel, type HerdrAgent } from './herdr.ts';
-import { typedText } from './send.ts';
+import { queued, typedText } from './send.ts';
 import { launchDefaults } from './client-settings.ts';
 import { appendSent, readLaunches, type LaunchFollowed } from './sent-log.ts';
 
@@ -70,22 +71,26 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 	}
 }
 
-// Launches, and resumes of closed agents (`closed.ts`), run one after another, so two of them never
-// both create a workspace for one project, and two new tabs never race for the front: one is over
-// only once it has been followed through. Its answer comes back before that, once hcom has run.
+// Launches, and resumes of closed agents (`closed.ts`), run one after another until hcom has run,
+// so two of them never both create a workspace for one project. Each answers then, and is followed
+// through in the background: the next one does not wait for that.
 let lastLaunch: Promise<unknown> = Promise.resolve();
 
-/** Run `run` once those before it are over; answers with its value, and holds the queue until its
- *  `follow` is over too. */
+/** Run `run` once those before it have run; answers with its value, and leaves its `follow` to go on. */
 export function inLaunchQueue<T>(run: () => Promise<{ value: T; follow?: Promise<unknown> }>): Promise<T> {
-	let followed: Promise<unknown> = Promise.resolve();
 	const result = lastLaunch.then(async () => {
 		const made = await run();
-		if (made.follow) followed = made.follow;
+		void made.follow?.catch(() => undefined);
 		return made.value;
 	});
-	lastLaunch = result.then(() => followed).catch(() => undefined);
+	lastLaunch = result.catch(() => undefined);
 	return result;
+}
+
+/** Move this tab to the front of its workspace (`moveTab`) once the moves to the front before it
+ *  are over: the tabs launches and resumes bring there never race for it. */
+export function moveToFront(config: BoardConfig, tabId: string): Promise<string | null> {
+	return queued('launch:front', () => moveTab(config, tabId, 0));
 }
 
 export function startLaunch(board: Board, request: LaunchRequest): Promise<{ status: number; body: LaunchResponse }> {
@@ -194,7 +199,7 @@ async function followAgent(board: Board, entry: SentLaunch, hcomName: string, ta
 				const renamed = await renameTab(config, appeared.found.tab, tabName);
 				if (!renamed.ok) renameError = `改分頁名稱失敗：${renamed.reason}`;
 			}
-			moveError = await moveTab(config, appeared.found.tab, 0);
+			moveError = await moveToFront(config, appeared.found.tab);
 		}
 	} catch (error) {
 		// Never expected; the record still says the follow-through is over, and why.

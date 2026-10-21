@@ -10,7 +10,7 @@
 //
 // 接回 of a plain agent resumes the same conversation with `hcom r` in a new tab of its old Herdr
 // workspace, or of the one its folder picks when that is gone, and moves the tab to the front once
-// Herdr runs it. One at a time, in the queue of new agents. A controller's is a controller wake,
+// Herdr runs it. Its hcom run waits its turn in the queue of new agents. A controller's is a controller wake,
 // with the wake's options and an optional first message.
 import { randomUUID } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
@@ -24,8 +24,8 @@ import type { Board } from './board.ts';
 import type { BoardConfig } from './config.ts';
 import { listStops, resumeAgent, type HcomStop, type StopList } from './hcom.ts';
 import { readTranscript } from './helper.ts';
-import { chooseWorkspace, moveTab } from './herdr.ts';
-import { inLaunchQueue } from './launch.ts';
+import { chooseWorkspace } from './herdr.ts';
+import { inLaunchQueue, moveToFront } from './launch.ts';
 import { appendSent } from './sent-log.ts';
 import { wakeController } from './wake.ts';
 
@@ -335,7 +335,7 @@ async function attempt(board: Board, sessionId: string, wake: ClosedWake): Promi
 			appeared = { found: null, reason: `確認不了它有沒有在執行：${(error as Error).message}` };
 		}
 		if (!appeared.found) return void fail(`接回後${appeared.reason}`, 'hcom');
-		const moveError = toFront ? await moveTab(config, appeared.found.tab, 0) : null;
+		const moveError = toFront ? await moveToFront(config, appeared.found.tab) : null;
 		resumes.delete(sessionId);
 		logResume(board, row, 'hcom', moveError ? `${where}；${moveError}` : where, null);
 		await board.refresh();
