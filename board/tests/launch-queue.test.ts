@@ -1,3 +1,4 @@
+import { answerHerdrList } from './harness.ts';
 // The queue new controllers, plain agents and resumes go through: one waits for the one before it
 // only until hcom has run, not until the agent shows in Herdr; moving their tabs to the front still
 // goes one at a time. Against fake hcom and Herdr commands and a fake Herdr socket; nothing here
@@ -34,6 +35,8 @@ beforeAll(async () => {
 	socket = createServer((connection) => {
 		connection.on('data', async (chunk) => {
 			const request = JSON.parse(chunk.toString().trim());
+			const listing = await answerHerdrList(commandDir, request);
+			if (listing !== null) return connection.write(listing);
 			appendFileSync(join(commandDir, 'moves.jsonl'), JSON.stringify({ tab: request.params.tab_id, at: Date.now(), edge: 'start' }) + '\n');
 			const launched = readJson('hcom.json').launchedHerdr.filter(Boolean).length;
 			await until(() => readJson('herdr.json').agents.length >= launched, 10_000, 'every launched agent in Herdr');

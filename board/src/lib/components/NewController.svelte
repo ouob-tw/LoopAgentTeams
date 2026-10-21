@@ -52,8 +52,6 @@
 
 	const form = $derived(target ? agentLaunching : launching);
 
-	/** How often the list is read again while the page is open: a launch's wait runs out with no new data. */
-	const POLL_MS = 15_000;
 	/** How long typing pauses before the folder box is searched. */
 	const SEARCH_DELAY_MS = 120;
 
@@ -66,13 +64,13 @@
 		void stamp;
 		void form.loadDefaults(form.folderPath ?? '');
 	});
+	// A pending launch can expire without another snapshot; otherwise no timer is needed.
 	$effect(() => {
 		const shown = form;
-		const timer = setInterval(() => {
-			void shown.load();
-			void shown.loadDefaults(shown.folderPath ?? '');
-		}, POLL_MS);
-		return () => clearInterval(timer);
+		const delay = shown.list?.refreshAfterMs;
+		if (delay === null || delay === undefined) return;
+		const timer = setTimeout(() => void shown.load(), delay);
+		return () => clearTimeout(timer);
 	});
 
 	const projects = $derived(form.list?.projects ?? []);

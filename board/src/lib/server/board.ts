@@ -10,14 +10,14 @@ import { listControllers, pruneReports, readAnswered, readQuestions, type Answer
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources, withRecorded } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
-import { listAgents, listStops, type AgentList } from './hcom.ts';
+import { listAgents, type AgentList } from './hcom.ts';
 import { openResumes, openSwitches, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
 import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
 import { settleRelaunches } from './switch.ts';
 import { createAgentRoster, type HerdrAgentList } from './agents.ts';
 import { createClosedRoster } from './closed-agents.ts';
-import { CLOSED_KEEP_MS, EMPTY_CLOSED } from '../board/closed-agents.ts';
+import { EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 import type { QuotaSnapshot } from '../board/quota.ts';
@@ -117,6 +117,8 @@ function createBoard(): Board {
 	let fallback: ReturnType<typeof setTimeout> | undefined;
 	let closed = false;
 	let sentLogError: string | null = null;
+	let herdrPlaces: Extract<Awaited<ReturnType<typeof listHerdrAgents>>, { ok: true }> | null = null;
+	let herdrPlaceError: string | null = null;
 	/** The usage line's style; read from its file the first time it is asked for. The revision
 	 *  starts at the time, so one after a restart is newer than any before it. */
 	let usageStyle: UsageStyleState | null = null;
@@ -248,8 +250,10 @@ function createBoard(): Board {
 			}),
 			listAgents(config),
 			listHerdrAgents(config),
-			listStops(config, config.now() - CLOSED_KEEP_MS)
+			closedRoster.readStops()
 		]);
+		if (herdrAgents.ok) herdrPlaces = herdrAgents;
+		herdrPlaceError = herdrAgents.ok ? null : herdrAgents.reason;
 		if (answered.ok) lastAnswered = answered.files;
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
@@ -339,6 +343,17 @@ function createBoard(): Board {
 		if (!problem) lastState = state;
 
 		const next = buildSnapshot(from, state, now);
+		for (const controller of [...next.controllers, ...next.offRoster]) {
+			const target = controller.herdr;
+			if (!target) {
+				controller.herdrPlace = null;
+				continue;
+			}
+			const workspace = herdrPlaces?.workspaces.find((entry) => entry.id === target.workspace);
+			controller.herdrPlace = herdrPlaceError ?? herdrPlaces?.places[target.tab] ?? {
+				workspace: workspace ? { label: workspace.label, number: workspace.number } : null, tab: null
+			};
+		}
 		if (problem) next.errors.push(problem);
 		const changed = !snapshot || comparable(snapshot) !== comparable(next);
 		snapshot = next;
@@ -355,6 +370,7 @@ function createBoard(): Board {
 
 	function tabMoved(): void {
 		for (const stream of streams) stream.send('tab-moved', '{}');
+		if (!closed) void refresh();
 	}
 
 	function refresh(): Promise<BoardSnapshot> {

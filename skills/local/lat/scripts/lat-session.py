@@ -5,6 +5,7 @@ import copy
 import difflib
 from datetime import datetime, timezone
 import fcntl
+import importlib
 import importlib.util
 import json
 import os
@@ -20,6 +21,8 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import (read_advisor_error, read_decision_kind, read_decision_status,
                                  read_spec_consensus_error)
+from _lat_common import (reports_directory, run_cli, watcher_process_matches,
+                         write_json_atomic)
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 GROUP_NAME = 'lat-codex-recovery'
@@ -42,14 +45,12 @@ QUESTION_SEPARATOR = '\n\n' + '─' * 20 + '\n\n'
 HCOM_PROMPT = re.compile(r'(?:\s*<hcom>)+\s*')
 
 
-def panel_module():
-    path = SKILL_DIR / 'herdr-panel/lat_panel.py'
-    spec = importlib.util.spec_from_file_location('lat_panel', path)
-    if spec is None or spec.loader is None:
-        raise ValueError(f'Cannot load LAT panel helper: {path}')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def panel_module(name='bindings'):
+    """Load only the panel capability needed by this hook path."""
+    directory = SKILL_DIR / 'herdr-panel'
+    if str(directory) not in sys.path:
+        sys.path.insert(0, str(directory))
+    return importlib.import_module(name)
 
 
 def activate_command(client, workspace, progress, decisions, tasks, hcom_name):
@@ -99,24 +100,6 @@ def current_bytes(path):
         return path.read_bytes()
     except FileNotFoundError:
         return None
-
-
-def write_json(path, value, expected):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
-        temp = Path(stream.name)
-        try:
-            json.dump(value, stream, indent=2, ensure_ascii=False)
-            stream.write('\n')
-            stream.flush()
-            os.fsync(stream.fileno())
-            if current_bytes(path) != expected:
-                raise ValueError(f'Concurrent change detected: {path}; retry after inspection')
-            if path.exists():
-                os.chmod(temp, path.stat().st_mode & 0o777)
-            temp.replace(path)
-        finally:
-            temp.unlink(missing_ok=True)
 
 
 def legacy_record(record):
@@ -176,40 +159,10 @@ def read_pid(path):
     return value if value > 1 else None
 
 
-def process_command(pid):
-    try:
-        stat = Path(f'/proc/{pid}/stat').read_text()
-        if stat[stat.rfind(')') + 2:].split(maxsplit=1)[0] == 'Z':
-            return None
-        return tuple(part.decode() for part in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
-                     if part)
-    except (FileNotFoundError, PermissionError, UnicodeDecodeError):
-        return None
-
-
 def watcher_running(record, pid=None):
     pid_path, _, _ = watcher_paths(record)
     pid = pid or read_pid(pid_path)
-    command = process_command(pid) if pid is not None else None
-    if command is None:
-        return False
-    expected = tuple(watcher_command(record)[5:])
-    return any(Path(command[index]).name == 'lat-watch.py'
-               and command[index + 1:index + 1 + len(expected)] == expected
-               for index in range(len(command) - len(expected)))
-
-
-def write_pid(path, pid):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
-        temp = Path(stream.name)
-        try:
-            stream.write(f'{pid}\n')
-            stream.flush()
-            os.fsync(stream.fileno())
-            temp.replace(path)
-        finally:
-            temp.unlink(missing_ok=True)
+    return watcher_process_matches(pid, watcher_command(record)[5:])
 
 
 def _ensure_watcher_locked(record):
@@ -222,7 +175,7 @@ def _ensure_watcher_locked(record):
             watcher_command(record), cwd=record['workspace'], stdin=subprocess.DEVNULL,
             stdout=output, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
         )
-    write_pid(pid_path, process.pid)
+    write_json_atomic(pid_path, process.pid)
     return process.pid
 
 
@@ -260,12 +213,10 @@ def ensure_tab_label(hcom_name):
         return
     label = f'lat-{hcom_name.rsplit("-", 1)[-1]}'
     try:
-        result = subprocess.run(['herdr', 'tab', 'get', tab], capture_output=True, text=True,
-                                timeout=5, check=True)
-        if json.loads(result.stdout)['result']['tab']['label'] == label:
+        output = run_cli(['herdr', 'tab', 'get', tab], timeout=5)
+        if json.loads(output)['result']['tab']['label'] == label:
             return
-        subprocess.run(['herdr', 'tab', 'rename', tab, label], capture_output=True,
-                       timeout=5, check=True)
+        run_cli(['herdr', 'tab', 'rename', tab, label], timeout=5)
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
         pass
 
@@ -388,7 +339,7 @@ def activate(args):
         raise ValueError(
             f'{error}；請修復 Herdr 後重新執行：{command}'
         ) from error
-    write_json(path, record, original)
+    write_json_atomic(path, record, expected=original)
     print(path)
     print(f'已開始第 {len(record.get("history", [])) + 1} 輪')
     if enabled:
@@ -459,7 +410,7 @@ def deactivate(args):
         record['status'] = 'ended'
         if args.successor:
             record['successor'] = args.successor
-        write_json(path, record, original)
+        write_json_atomic(path, record, expected=original)
     print(path)
     print(json.dumps({'removed': removed}))
 
@@ -561,7 +512,7 @@ def configure(args):
                                          delete=False) as backup:
             backup.write(original)
             print(f'Backup: {backup.name}')
-    write_json(path, updated, original)
+    write_json_atomic(path, updated, expected=original)
     if args.client == 'codex':
         print(f'Updated {path}; review changed hooks through Codex /hooks before use')
     else:
@@ -620,8 +571,9 @@ def own_questions_path(panel, record):
     return Path(binding['questions_path'])
 
 
-def read_questions(panel, path):
-    return panel.parse_questions(path.read_text(encoding='utf-8')) if path.exists() else []
+def read_questions(path):
+    return panel_module('questions').parse_questions(
+        path.read_text(encoding='utf-8')) if path.exists() else []
 
 
 def waiting_question(questions, identifier, revision):
@@ -641,14 +593,14 @@ def question_delivery(record, message):
         path = own_questions_path(panel, record)
         if path is None:
             return '', ''
-        questions = read_questions(panel, path)
+        questions = read_questions(path)
         shown, missing = [], []
         for identifier, revision in listed_questions(message):
             question = waiting_question(questions, identifier, revision)
             if question is None:
                 missing.append(f'{identifier} r{revision}')
             else:
-                shown.append(panel.question_plain_text(question))
+                shown.append(panel_module('questions').question_plain_text(question))
     except Exception as exc:  # noqa: BLE001 - never let delivery break the Stop hook
         return '', f'LAT 題目代送失敗，請到面板查看題目：{exc}'
     warning = ('LAT 題目代送失敗：自己的問題檔沒有 ' + '、'.join(missing)
@@ -714,11 +666,11 @@ def stop_check(record, payload):
     panel = panel_module()
     questions_path = own_questions_path(panel, record)
     if questions_path is not None:
-        questions = read_questions(panel, questions_path)
+        questions = read_questions(questions_path)
         for identifier, revision in sorted(identifiers):
             if waiting_question(questions, identifier, revision) is None:
                 problems.append(f'{identifier} r{revision}：自己的面板缺少同版本待答題目')
-        _, missing, inconsistent, unreadable, reverse = panel.pending_question_gaps(questions_path, decisions)
+        _, missing, inconsistent, unreadable, reverse = panel_module('questions').pending_question_gaps(questions_path, decisions)
         problems.extend(f'{identifier}：遺漏檢查缺少面板題目' for identifier in missing)
         problems.extend(f'{identifier}：遺漏檢查不一致（{reason}）'
                         for identifier, reason, _ in inconsistent)
@@ -742,14 +694,7 @@ def stop_check(record, payload):
 
 
 def reports_path(record):
-    override = os.environ.get('LAT_REPORTS_DIR')
-    state = os.environ.get('XDG_STATE_HOME')
-    directory = (Path(override) if override else
-                 (Path(state) if state and Path(state).is_absolute() else
-                  Path.home() / '.local/state') / 'lat/reports')
-    if not directory.is_absolute():
-        raise ValueError('LAT_REPORTS_DIR must be absolute')
-    return directory / f'{record["session_id"]}.jsonl'
+    return reports_directory() / f'{record["session_id"]}.jsonl'
 
 
 def append_report(record, message):
@@ -876,7 +821,7 @@ def lat_transcript(client, payload, sid):
     """Read the conversation's transcript; True when it shows the LAT skill was called up."""
     path = payload.get('transcript_path')
     if path is None:
-        path = panel_module().transcript_path(client, sid)
+        path = panel_module('transcript').transcript_path(client, sid)
     elif not isinstance(path, str) or not Path(path).is_absolute():
         raise ValueError(f'transcript_path is not an absolute path: {path!r}')
     # Transcripts can be large: parse lines until one confirms the format, then only marker lines.
@@ -923,7 +868,7 @@ def waiting_questions(record):
     path = panel.controller_questions_path(record['workspace'], record['hcom_name'])
     decisions = Path(record['decisions_path'])
     waiting = []
-    for question in panel.board_questions(path):
+    for question in panel_module('board').board_questions(path):
         # A submitted answer waits for the controller to record it, not for the user.
         if question['status'] != 'pending':
             continue

@@ -205,11 +205,14 @@
 		const own = agents.filter((candidate) => candidate.inHerdr && candidate.herdr.workspace === workspace.id);
 		return { workspace: workspace.id, label: workspace.label, folders: workspaceFolders(own) };
 	});
-	// Read again with every new snapshot: a question of the inbox may have been answered and recorded.
-	$effect(() => {
-		void board.snapshot;
+	// A new object or unrelated activity must not reload the answered history.
+	const answeredKey = $derived.by(() => {
 		const id = controllerId ?? agentController?.id;
-		// Untracked: the read sets what it reads, which must not start it again.
+		return JSON.stringify([id, board.snapshot.inbox.filter((item) => item.kind === 'question' && item.controllerId === id)
+			.map((item) => item.kind === 'question' ? [item.question.id, item.question.revision, item.question.status] : [])]);
+	});
+	$effect(() => {
+		const [id] = JSON.parse(answeredKey);
 		if (id) untrack(() => void board.loadAnswered(id));
 	});
 

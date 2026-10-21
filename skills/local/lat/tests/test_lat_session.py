@@ -791,13 +791,9 @@ class SessionTests(unittest.TestCase):
             f'spec = importlib.util.spec_from_file_location("lat_session", {str(SCRIPT)!r})\n'
             'helper = importlib.util.module_from_spec(spec)\n'
             'spec.loader.exec_module(helper)\n'
-            'load = helper.panel_module\n'
-            'def panel_module():\n'
-            '    panel = load()\n'
-            '    def fail(question): raise RuntimeError("simulated render failure")\n'
-            '    panel.question_plain_text = fail\n'
-            '    return panel\n'
-            'helper.panel_module = panel_module\n'
+            'questions = helper.panel_module("questions")\n'
+            'def fail(question): raise RuntimeError("simulated render failure")\n'
+            'questions.question_plain_text = fail\n'
             'raise SystemExit(helper.main())\n')
         result = self.cli('hook', script=shim, session=OTHER, payload=dict(
             hook_event_name='Stop', cwd=str(self.work), session_id=SESSION,
@@ -1401,7 +1397,7 @@ class SessionTests(unittest.TestCase):
         helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(helper)
 
-        self.assertIsNone(helper.process_command(zombie.pid))
+        self.assertFalse(helper.watcher_process_matches(zombie.pid, ('run',)))
 
     def test_hook_restarts_a_dead_active_watcher_without_extra_output(self):
         self.activate()
