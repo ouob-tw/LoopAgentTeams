@@ -1534,7 +1534,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(json.loads(record_path.read_text())['status'], 'ended')
         self.assertFalse((worktree / '.lat').exists())
 
-    def test_older_record_in_a_worktree_lat_is_still_recovered_and_deactivated_in_place(self):
+    def test_older_record_in_a_worktree_lat_recovers_self_stops_and_ends_in_place(self):
         main, worktree = self.linked_worktree()
         legacy = worktree / '.lat/sessions' / f'{SESSION}.json'
         legacy.parent.mkdir(parents=True)
@@ -1546,8 +1546,26 @@ class SessionTests(unittest.TestCase):
         resumed = self.hook(source='resume', cwd=str(worktree))
         self.assertEqual(resumed.returncode, 0, resumed.stderr)
         self.assertIn(f'LAT recovery record: {legacy}', resumed.stdout)
-        pid = int((worktree / '.lat/watch' / f'{SESSION}.pid').read_text())
+        pid_path = worktree / '.lat/watch' / f'{SESSION}.pid'
+        old_pid = int(pid_path.read_text())
+        self.kill_group_later(old_pid)
+        spec = importlib.util.spec_from_file_location('lat_watch', SKILL / 'scripts/lat-watch.py')
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+
+        reason = 'orchestrator orch missing from HCOM for 60 minutes'
+        self.assertEqual(watch.stop_self(worktree, 'orch', reason, 3600, pgid=old_pid), SESSION)
+        os.killpg(old_pid, 15)
+        self.wait_for(lambda: not self.process_exists(old_pid))
+        self.assertFalse(pid_path.exists())
+        self.assertEqual(json.loads(legacy.read_text())['watcher_stopped']['reason'], reason)
+        self.assertIn(f'LAT watch stopped: {reason}',
+                      (worktree / '.lat/watch' / f'{SESSION}.log').read_text())
+        resumed = self.hook(source='resume', cwd=str(worktree))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        pid = int(pid_path.read_text())
         self.kill_group_later(pid)
+        self.assertTrue(self.process_exists(pid))
         result = self.cli('deactivate', '--workspace', worktree)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.wait_for(lambda: not self.process_exists(pid))

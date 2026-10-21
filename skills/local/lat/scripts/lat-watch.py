@@ -2196,8 +2196,10 @@ def stop_self(workspace, orchestrator, reason, now, pgid=None):
     append_log(state_path(workspace, orchestrator).with_name('watch.jsonl'),
                {'at': now, 'agent': orchestrator, 'decision': 'watcher-stopped',
                 'reason': reason, 'actions': []})
-    # The session launcher records the process group leader (uv) as the watcher pid.
-    for pid_path in sorted(watch_dir(workspace).glob('*.pid')):
+    # The session launcher records the process group leader (uv) as the watcher pid, next to
+    # its session record: the shared .lat, or an older record's own worktree .lat.
+    roots = dict.fromkeys([watch_dir(workspace), Path(workspace) / '.lat/watch'])
+    for pid_path in sorted(path for root in roots for path in root.glob('*.pid')):
         with contextlib.suppress(OSError, ValueError):
             if int(pid_path.read_text()) == pgid:
                 break
@@ -2212,7 +2214,7 @@ def stop_self(workspace, orchestrator, reason, now, pgid=None):
         pid_path.unlink(missing_ok=True)
         with pid_path.with_suffix('.log').open('a') as stream:
             stream.write(f'{stopped_at} LAT watch stopped: {reason}\n')
-        record_path = lat_dir(workspace) / 'sessions' / f'{sid}.json'
+        record_path = pid_path.parent.parent / 'sessions' / f'{sid}.json'
         original = record_path.read_bytes()
         record = json.loads(original)
         if (isinstance(record, dict) and record.get('status') == 'active'
