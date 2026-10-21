@@ -20,7 +20,7 @@ function stateFiles(dir: string): string {
 }
 
 beforeAll(async () => {
-	fixture = await startFixture(2, { env: { LAT_BOARD_LOGIN_LOCK_SECONDS: String(LOCK_SECONDS) } });
+	fixture = await startFixture({ env: { LAT_BOARD_LOGIN_LOCK_SECONDS: String(LOCK_SECONDS) } });
 	fixture.list([fixture.bound('alpha', 'luna')]);
 	await fixture.refresh(await fixture.login());
 });
@@ -244,7 +244,7 @@ test('an unreadable password file is reported on the login screen and logs nothi
 describe('before a password is set', () => {
 	let fresh: Fixture;
 	beforeAll(async () => {
-		fresh = await startFixture(18, { password: null });
+		fresh = await startFixture({ password: null });
 	});
 	afterAll(() => fresh.cleanup());
 

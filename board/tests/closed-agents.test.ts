@@ -96,7 +96,7 @@ beforeAll(async () => {
 		})
 	);
 	await new Promise<void>((resolve) => socket.listen(socketPath, resolve));
-	fixture = await startFixture(60, { env: { HERDR_SOCKET_PATH: socketPath, LAT_BOARD_LAUNCH_WAIT_SECONDS: '5' } });
+	fixture = await startFixture({ env: { HERDR_SOCKET_PATH: socketPath, LAT_BOARD_LAUNCH_WAIT_SECONDS: '5' } });
 	cookie = await fixture.login();
 }, 30_000);
 afterAll(async () => {

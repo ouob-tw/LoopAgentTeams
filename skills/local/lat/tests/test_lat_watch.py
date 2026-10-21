@@ -927,7 +927,7 @@ class WaitDeadlineDecisionTests(unittest.TestCase):
         self.assertEqual(actions, [])
         self.assertEqual(events, ['wait-extended'])
         saved, actions, events = watch.decide_wait(
-            saved, waiter, target._replace(command_running=True),
+            saved, waiter, target._replace(command_running=True, terminal_ready=False),
             {'last_progress_at': 0}, 4800)
         self.assertTrue(saved['active'])
         self.assertEqual(events, [])
@@ -936,6 +936,34 @@ class WaitDeadlineDecisionTests(unittest.TestCase):
             {'last_progress_at': 4800}, 4860)
         self.assertFalse(saved['active'])
         self.assertEqual(events, ['wait-expired'])
+
+    def test_background_process_alone_does_not_extend(self):
+        watch = load_watch()
+        waiter = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        target = waiter._replace(agent='reviewer', command_running=True, terminal_ready=True)
+        declaration = dict(agent='worker', target='reviewer', declared_at=0, active=True,
+                           declared_at_utc='1970-01-01T00:00:00+00:00')
+        saved, _, events = watch.decide_wait(
+            declaration, waiter, target, {'last_progress_at': 0}, 3600)
+        self.assertFalse(saved['active'])
+        self.assertEqual(events, ['wait-expired'])
+
+    def test_extension_stops_at_cap_while_target_stays_busy(self):
+        watch = load_watch()
+        waiter = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        target = waiter._replace(agent='reviewer', command_running=True, terminal_ready=False)
+        declaration = dict(agent='worker', target='reviewer', declared_at=0, active=True,
+                           declared_at_utc='1970-01-01T00:00:00+00:00', deadline_at=3000)
+        cap = 3000 + 30 * 60
+        saved, _, events = watch.decide_wait(
+            declaration, waiter, target, {'last_progress_at': cap - 60}, cap - 60)
+        self.assertTrue(saved['active'])
+        self.assertEqual(events, ['wait-extended'])
+        saved, actions, events = watch.decide_wait(
+            saved, waiter, target, {'last_progress_at': cap}, cap)
+        self.assertFalse(saved['active'])
+        self.assertEqual(events, ['wait-expired'])
+        self.assertEqual([action.category for action in actions], ['wait-expiry'])
 
     def test_extension_does_not_delay_a_previous_pending_notice(self):
         watch = load_watch()
@@ -2184,7 +2212,7 @@ esac
         self.assertEqual(result.returncode, 0, result.stderr)
         saved = json.loads(result.stdout)
         self.assertEqual(saved['kind'], 'agent')
-        self.assertEqual(saved['deadline_at'] - saved['declared_at'], 3600)
+        self.assertEqual(saved['deadline_at'] - saved['declared_at'], 3000)
         path = self.work / '.lat/watch/waits/worker-open.json'
         before = path.read_bytes()
         for target in ('worker-open', 'open'):

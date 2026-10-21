@@ -28,7 +28,7 @@ let cookie: string;
 
 beforeAll(async () => {
 	// Started as from inside an agent's shell, the way QA starts a test board.
-	fixture = await startFixture(20, { env: { ...AGENT_SHELL_ENV, ...commandEnv, LAT_BOARD_HCOM_TIMEOUT_SECONDS: '2' } });
+	fixture = await startFixture({ env: { ...AGENT_SHELL_ENV, ...commandEnv, LAT_BOARD_HCOM_TIMEOUT_SECONDS: '2' } });
 	cookie = await fixture.login();
 });
 afterAll(async () => {
@@ -717,7 +717,7 @@ test('a browser that is not logged in can neither launch nor see the folders and
 
 test('LAT_BOARD_MODEL_OPTIONS replaces the lists it names and keeps the others', async () => {
 	const options = { codex: { models: ['gpt-test-1'] } };
-	const other = await startFixture(23, { env: { ...commandEnv, LAT_BOARD_MODEL_OPTIONS: JSON.stringify(options) } });
+	const other = await startFixture({ env: { ...commandEnv, LAT_BOARD_MODEL_OPTIONS: JSON.stringify(options) } });
 	try {
 		const otherCookie = await other.login();
 		const listed: LaunchList = await (await other.fetch('/api/launches', { cookie: otherCookie })).json();
@@ -729,7 +729,7 @@ test('LAT_BOARD_MODEL_OPTIONS replaces the lists it names and keeps the others',
 });
 
 test('the wait can be changed with LAT_BOARD_LAUNCH_WAIT_SECONDS', async () => {
-	const other = await startFixture(21, { env: { ...commandEnv, LAT_BOARD_LAUNCH_WAIT_SECONDS: '60' } });
+	const other = await startFixture({ env: { ...commandEnv, LAT_BOARD_LAUNCH_WAIT_SECONDS: '60' } });
 	try {
 		const otherCookie = await other.login();
 		const repo = join(other.dir, 'repo');

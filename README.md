@@ -134,7 +134,7 @@ LAT 看板是跑在主機上的網頁服務，電腦與手機用同一個網址�
 
 ```bash
 bunx skills add ouob-tw/LoopAgentTeams \
-  --skill lat hcom-spawn three-tier-testing to-spec to-tickets implement grill-with-docs wayfinder handoff \
+  --skill lat hcom-spawn three-tier-testing host-guard to-spec to-tickets implement grill-with-docs wayfinder handoff \
   --skill setup-matt-pocock-skills triage to-questionnaire \
   --global --agent claude-code codex
 ```
@@ -175,6 +175,16 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client cl
 uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client claude
 ```
 
+**4. 共用主機保護 hook**（多個 Agent 共用一台主機時建議安裝）：擋下從根目錄搜尋整個磁碟的指令，以及沒有限制 CPU 核心的壓力測試。需要 `uv`。
+
+```bash
+guard="$HOME/.agents/skills/host-guard/scripts/host-guard.py"
+uv run --no-project python "$guard" install --client claude
+uv run --no-project python "$guard" install --client codex
+```
+
+Codex 重啟後在 `/hooks` 信任 command 結尾為 `host-guard.py hook` 的項目。保護的路徑與核心上限見 [host-guard](skills/local/host-guard/SKILL.md)。
+
 ### 專案初始化
 
 在目標專案中執行一次 `/setup-matt-pocock-skills`，設定 issue tracker（例如 GitHub Issues）、triage 標籤與領域文件位置；LAT 依此讀寫 Spec 與 Tickets。每個專案僅需初始化一次。
@@ -206,12 +216,13 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client cl
 - [LAT 的派工與收尾規則](skills/local/lat/references/agents.md)
 - [hcom-spawn：召喚 Agent 協作](skills/local/hcom-spawn/SKILL.md)
 - [三層測試](skills/local/three-tier-testing/SKILL.md)
+- [共用主機保護](skills/local/host-guard/SKILL.md)
 - [HCOM／HERDR workspace 設定](docs/hcom-herdr-setup.md)
 - [LAT 壓縮後恢復：安裝與使用](docs/lat-recovery.md)
 
 ## 本地開發
 
-技能原始檔依來源分成 `skills/local/`（LAT、hcom-spawn、three-tier-testing）與 `skills/matt/`（Matt skills 副本）。
+技能原始檔依來源分成 `skills/local/`（LAT、hcom-spawn、three-tier-testing、host-guard）與 `skills/matt/`（Matt skills 副本）。
 
 本 repo 收錄的九個 Matt skills 副本，移除了 `disable-model-invocation` 並啟用 Codex 的 `allow_implicit_invocation`，讓 LAT 能自動呼叫各階段技能，因此不能直接換成上游原版。副本來源為上游 main `d81f3a1`（內容等同待發布的 v1.3.0）；更新時優先採用正式發布版，正式版落後時採用已準備發布的版本並記錄 commit。
 
@@ -225,7 +236,7 @@ git clone https://github.com/ouob-tw/LoopAgentTeams.git ~/LoopAgentTeams
 
 ```bash
 bunx skills add ~/LoopAgentTeams \
-  --skill lat hcom-spawn three-tier-testing to-spec to-tickets implement grill-with-docs wayfinder handoff \
+  --skill lat hcom-spawn three-tier-testing host-guard to-spec to-tickets implement grill-with-docs wayfinder handoff \
   --skill setup-matt-pocock-skills triage to-questionnaire --global \
   --agent claude-code codex --yes
 ```

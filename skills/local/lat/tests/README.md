@@ -16,7 +16,7 @@ uv run --no-project python -m unittest discover -s "$lat_dir/tests"
 uv run --no-project --with textual==8.2.8 python -m unittest discover -s tests
 ```
 
-實機測試使用專用 Git 工作區、隔離 `CODEX_HOME`、技能副本與假進度／待決檔，保留原始 transcript 與 hook 設定。若複製 auth，限制權限為 0600，禁止輸出內容；測試完成以 `shred -u` 清除。測試程序結束後清理自己的非機密暫存資源。
+實機測試使用專用 Git 工作區、隔離 `CODEX_HOME`、技能副本與假進度／待決檔，保留原始 transcript 與 hook 設定。隔離家目錄放 `.lat` 以外的暫存位置（見 [任務卡](../references/task-cards.md#隔離-client-家目錄)），證據只留結論、指令輸出與必要節錄。若複製 auth，限制權限為 0600，禁止輸出內容；測試完成以 `shred -u` 逐檔銷毀家目錄內的檔案，再移除空目錄。測試程序結束後清理自己的非機密暫存資源。
 
 1. install preview → install → 正常 `/hooks` 信任；核對其他 command 保留。啟動 Codex 主控載入 `$lat`，讀設定後 activate，完整讀 references 與假進度。
 2. `/compact` 後要求繼續。從工具紀錄核對：首個相依動作之前完整重讀紀錄、SKILL、兩份 references、進度與待決紀錄，並核對 tracker；截斷讀取與模型自稱記得均不算通過。

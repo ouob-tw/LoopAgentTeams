@@ -23,7 +23,7 @@ const unread = (snapshot: BoardSnapshot) =>
 	snapshot.inbox.filter((item) => item.kind === 'report' && item.readAt === null).map((item) => item.title);
 
 beforeAll(async () => {
-	fixture = await startFixture(8);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 	other = await fixture.login('second-device');
 	fixture.setClock(ISSUED);

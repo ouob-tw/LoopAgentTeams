@@ -46,7 +46,7 @@ beforeAll(async () => {
 		});
 	});
 	await new Promise<void>((resolve) => socket.listen(socketPath, resolve));
-	fixture = await startFixture(54, {
+	fixture = await startFixture({
 		env: {
 			LAT_BOARD_HCOM_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-hcom.mjs'), commandDir]),
 			LAT_BOARD_HERDR_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-herdr.mjs'), commandDir]),

@@ -15,7 +15,7 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(67, {
+	fixture = await startFixture({
 		env: {
 			LAT_BOARD_TRANSLATE_TIMEOUT_SECONDS: '2',
 			LAT_BOARD_TRANSLATE_CONCURRENCY: '1',

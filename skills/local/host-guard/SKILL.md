@@ -1,0 +1,57 @@
+---
+name: host-guard
+description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench) or searching for files across the whole filesystem on a host shared with other agents. Covers how to pin load to a few cores, how to search narrowly, and how to install the hook.
+---
+
+# 共用主機保護（host-guard）
+
+多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下兩類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
+
+## 從根目錄搜尋整個磁碟
+
+`find`、`bfs`、`fd`、`du`、`rg`、`tree`、`grep -r`、`ls -R` 以 `/`、`/mnt`、`/media` 或設定的其他路徑為起點時擋下；Claude 的 Grep／Glob 工具指定這些路徑也擋。包在 `sudo`、`timeout`、`bash -c "…"`、`$(…)` 裡同樣會擋。
+
+改用較小的範圍：專案資料夾、`$HOME` 底下的資料夾、`/etc`、`/usr`、`/opt`。找 PATH 上的程式用 `command -v NAME`。`find / -maxdepth 3` 以內放行。
+
+## 吃滿 CPU 的壓力測試
+
+`while :; do :; done`、`while true; do :; done`、`stress`／`stress-ng --cpu`、`sysbench cpu`、`yes > /dev/null` 沒有限制核心時擋下。指令執行的 `.sh` 腳本（`bash x.sh`、`./x.sh`）也會讀內容檢查。
+
+限制在少數核心（預設上限為主機核心數的 1/4）：
+
+```bash
+taskset -c 0-3 bash loadcmp.sh          # 子程序繼承限制，包住啟動腳本即可
+systemd-run --user --scope -p AllowedCPUs=0-3 stress-ng --cpu 4 -t 60
+```
+
+`taskset -c` 指定的核心數超過上限也會擋。要模擬「主機很忙」，在限制的核心上製造負載，並把被測程式放在同一組核心上跑。
+
+## 設定
+
+`$XDG_CONFIG_HOME/host-guard/config.json`（預設 `~/.config/host-guard/config.json`，環境變數 `HOST_GUARD_CONFIG` 可改位置）：
+
+```json
+{"extra_scan_roots": ["/mnt/raid"], "max_load_cores": 4}
+```
+
+- `extra_scan_roots`：再加上要保護的路徑，例如大型或慢速磁碟的掛載點。
+- `max_load_cores`：壓力測試最多可用的核心數。
+
+檔案不存在或讀不懂時用預設值。
+
+## 安裝與移除 hook
+
+技能檔案安裝不會註冊 hook。比照 suite-gate：先預覽、備份、保留其他 entries，重跑不重複。
+
+```bash
+uv run --no-project python <skill>/scripts/host-guard.py install --client claude --preview
+uv run --no-project python <skill>/scripts/host-guard.py install --client claude
+uv run --no-project python <skill>/scripts/host-guard.py install --client codex --preview
+uv run --no-project python <skill>/scripts/host-guard.py install --client codex
+```
+
+- 寫入位置：Claude 預設 `$CLAUDE_CONFIG_DIR/settings.json`（沒設時 `~/.claude/settings.json`），可用 `--claude-settings <檔案>` 指定；Codex 預設 `$CODEX_HOME/hooks.json`（沒設時 `~/.codex/hooks.json`），可用 `--codex-home <目錄>` 指定。
+- 在 `PreToolUse` 新增獨立 group：Claude 的 matcher 是 `Bash|Grep|Glob`，Codex 是 `Bash` 並帶 `"name": "host-guard"`。寫入前備份為同目錄的 `<檔名>.host-guard-backup-*`。
+- `uninstall --client claude|codex` 只移除這筆 hook。
+- Claude Code 重啟後在 `/hooks` 確認；Codex 重啟後須在 `/hooks` 信任這個 command。已在執行的 Agent 重啟後才生效。
+- 使用者在終端機自己打的指令不經 hook。

@@ -43,7 +43,7 @@ beforeAll(async () => {
 		});
 	});
 	await new Promise<void>((resolve) => socket.listen(socketPath, resolve));
-	fixture = await startFixture(43, {
+	fixture = await startFixture({
 		// The board runs in the pane of agent s-board: its own tab is moved and renamed like any other.
 		env: { HERDR_SOCKET_PATH: socketPath, HERDR_PANE_ID: 'wA:p-board', LAT_BOARD_HERDR_TIMEOUT_SECONDS: '2' }
 	});
