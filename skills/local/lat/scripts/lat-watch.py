@@ -24,6 +24,8 @@ from _lat_common import process_starttime, run_cli, watcher_process_matches, wri
 
 IDLE_SECONDS = 10 * 60
 ACTIVE_SECONDS = 20 * 60
+WAIT_DEFAULT_MINUTES = 50
+WAIT_EXTENSION_SECONDS = 30 * 60
 PROMPT_SECONDS = 5 * 60
 PROMPT_SETTLE_SECONDS = 1
 PROMPT_POLL_SECONDS = 0.05
@@ -1150,8 +1152,10 @@ def decide_wait(declaration, observation, target_observation, target_state, now)
     actions, events = [], []
     deadline = saved.setdefault('deadline_at', saved['declared_at'] + 60 * 60)
     if saved.get('active', True) and now >= deadline:
-        extending = (target_observation is not None and not target_observation.wait_active
-                     and (target_observation.command_running
+        # Background processes alone do not count, and the extension is capped.
+        extending = (now < deadline + WAIT_EXTENSION_SECONDS
+                     and target_observation is not None and not target_observation.wait_active
+                     and (target_observation.terminal_ready is False
                           or (target_state is not None
                               and now - target_state['last_progress_at'] < ACTIVE_SECONDS)))
         if extending:
@@ -2302,7 +2306,7 @@ def declare_wait(args):
         declaration['target'] = resolve_agent_name(agents, declaration['target'], required=False)
         if declaration['target'] == agent:
             raise ValueError('Cannot wait on yourself; use lat-watch alarm instead')
-        declaration['deadline_at'] = declaration['declared_at'] + (args.minutes or 60) * 60
+        declaration['deadline_at'] = declaration['declared_at'] + (args.minutes or WAIT_DEFAULT_MINUTES) * 60
     path = wait_path(workspace, agent)
     previous, wait_original = read_wait(path)
     if previous and previous.get('expiry_count', 0):
@@ -2354,7 +2358,7 @@ def main():
     waiting.add_argument('--for', dest='target', required=True)
     waiting.add_argument('--reason', required=True)
     waiting.add_argument('--minutes', type=int, choices=range(1, 721),
-                         metavar='1..720', help='Agent wait deadline (default: 60 minutes)')
+                         metavar='1..720', help=f'Agent wait deadline (default: {WAIT_DEFAULT_MINUTES} minutes)')
     alarm = commands.add_parser('alarm', help='Register a watcher-owned wake-up alarm')
     alarm.add_argument('--workspace', type=Path, required=True)
     alarm.add_argument('--agent', required=True)
