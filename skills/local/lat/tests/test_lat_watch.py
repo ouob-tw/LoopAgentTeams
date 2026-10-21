@@ -954,7 +954,7 @@ class WaitDeadlineDecisionTests(unittest.TestCase):
         target = waiter._replace(agent='reviewer', command_running=True, terminal_ready=False)
         declaration = dict(agent='worker', target='reviewer', declared_at=0, active=True,
                            declared_at_utc='1970-01-01T00:00:00+00:00', deadline_at=3000)
-        cap = 3000 + watch.WAIT_EXTENSION_SECONDS
+        cap = 3000 + 30 * 60
         saved, _, events = watch.decide_wait(
             declaration, waiter, target, {'last_progress_at': cap - 60}, cap - 60)
         self.assertTrue(saved['active'])
