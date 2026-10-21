@@ -64,18 +64,6 @@ class NewLocationTests(QuestionDirTestCase):
         self.assertEqual(self.core.archive_recorded_questions(self.new, 0, now=LATER), ["Q3"])
         self.assertIn("Q3 · r1 · 已記錄", (self.lat / "questions/ctl-archive.md").read_text())
 
-    def test_worktree_controller_file_is_in_the_main_checkouts_lat(self):
-        main = self.root / "main"
-        main.mkdir()
-        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "core.hooksPath=/dev/null"]
-        subprocess.run([*git, "init", "-q", main], check=True)
-        subprocess.run([*git, "-C", main, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
-        worktree = self.root / "wt"
-        subprocess.run([*git, "-C", main, "worktree", "add", "-q", worktree], check=True)
-
-        self.assertEqual(self.core.controller_questions_path(worktree, "ctl"),
-                         main.resolve() / ".lat/questions/ctl.md")
-
     def test_no_command_defaults_to_the_old_questions_md(self):
         for command in ("upsert", "set-status", "archive-recorded"):
             with self.subTest(command=command):
@@ -135,6 +123,44 @@ class LegacyLocationTests(QuestionDirTestCase):
         self.assertEqual(present, [("Q1", self.legacy), ("Q3", self.new)])
         self.assertEqual(missing, ["Q9"])
         self.assertEqual(inconsistent, [("Q8", "問題已歸檔", self.lat / "questions/other-archive.md")])
+
+
+class WorktreeTests(QuestionDirTestCase):
+    def setUp(self):
+        super().setUp()
+        self.main = self.root / "main"
+        self.main.mkdir()
+        git = ["git", "-c", "user.name=t", "-c", "user.email=t@example.com", "-c", "core.hooksPath=/dev/null"]
+        subprocess.run([*git, "init", "-q", self.main], check=True)
+        subprocess.run([*git, "-C", self.main, "commit", "-q", "--allow-empty", "-m", "init"], check=True)
+        self.workspace = self.root / "wt"
+        subprocess.run([*git, "-C", self.main, "worktree", "add", "-q", self.workspace], check=True)
+        self.lat = self.main.resolve() / ".lat"
+        self.new = self.lat / "questions/ctl.md"
+
+    def test_worktree_controller_files_and_records_are_in_the_main_checkouts_lat(self):
+        self.assertEqual(self.bind_ctl("s-1"), str(self.new))
+        self.decide("Q3")
+        self.new.parent.mkdir(parents=True)
+        self.new.write_text(TEXT)
+
+        self.assertTrue(self.answer(self.new, "Q3", 1, "--text", "想法")["recorded"])
+        self.assertIn(f"來源：面板，{self.lat / 'panel-journal.jsonl'}", (self.decisions / "Q3.md").read_text())
+
+    def test_omission_check_sees_a_worktrees_own_root_files_and_the_shared_ones(self):
+        legacy = self.workspace / ".lat/questions-old.md"
+        legacy.parent.mkdir()
+        legacy.write_text(SINGLE)
+        self.new.parent.mkdir(parents=True)
+        self.new.write_text(TEXT)
+        for question_id in ("Q1", "Q3"):
+            self.decide(question_id)
+
+        for questions in (legacy, self.new):
+            with self.subTest(questions=questions):
+                present, missing, _, _, _ = self.core.pending_question_gaps(questions, self.decisions)
+                self.assertEqual(sorted(present), [("Q1", legacy.resolve()), ("Q3", self.new)])
+                self.assertEqual(missing, [])
 
 
 class MixedBoardTests(QuestionDirTestCase):

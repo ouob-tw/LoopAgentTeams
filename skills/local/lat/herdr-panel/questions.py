@@ -15,7 +15,7 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from lat_decision_status import read_decision_kind, read_decision_status
-from _lat_common import write_text_atomic as _replace_locked
+from _lat_common import run_cli, write_text_atomic as _replace_locked
 
 
 QUESTIONS_DIR = "questions"
@@ -1318,6 +1318,25 @@ def _cleanup_locked(questions_path, decisions_path, document, *, exclude_id=None
     return updated, result
 
 
+def _lat_directories(questions_path):
+    """The ``.lat`` of this file and, in a Git repository, of every checkout of it.
+
+    New files are in the main checkout's shared ``.lat``; older bindings of a linked
+    worktree kept their root files in that worktree's own ``.lat``.
+    """
+    lat = panel_journal_path(questions_path).parent
+    directories = [lat.resolve()]
+    try:
+        output = run_cli(["git", "-C", str(lat.parent), "worktree", "list", "--porcelain"],
+                         timeout=10)
+    except ValueError:
+        return directories
+    for line in output.splitlines():
+        if line.startswith("worktree "):
+            directories.append((Path(line.removeprefix("worktree ")) / ".lat").resolve())
+    return list(dict.fromkeys(directories))
+
+
 def pending_question_gaps(questions_path, decisions_path):
     """Check pending decisions across controllers and stale questions in this file."""
     questions_path = Path(questions_path)
@@ -1338,9 +1357,10 @@ def pending_question_gaps(questions_path, decisions_path):
             pending_ids.append(decision.stem)
 
     # Root files are the older place, ``questions/`` the current one; both are read.
-    lat_directory = panel_journal_path(questions_path).parent
     files = sorted(
-        [*lat_directory.glob("questions-*.md"), *lat_directory.glob(f"{QUESTIONS_DIR}/*.md")]
+        path for directory in _lat_directories(questions_path)
+        for pattern in ("questions-*.md", f"{QUESTIONS_DIR}/*.md")
+        for path in directory.glob(pattern)
     )
     current = {}
     for path in files:

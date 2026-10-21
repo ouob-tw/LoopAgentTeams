@@ -314,8 +314,15 @@ def _show_notification(text, env=None):
 
 
 def _binding_decisions_path(binding):
-    """The decisions directory in the bound controller's session record."""
-    record_path = Path(binding["workspace"]) / ".lat/sessions" / f"{binding['session_id']}.json"
+    """The decisions directory in the bound controller's session record.
+
+    Records live in the shared .lat; an older one in a worktree's own .lat is still read there.
+    """
+    workspace = Path(binding["workspace"])
+    name = f"{binding['session_id']}.json"
+    record_path = shared_lat_dir(workspace) / "sessions" / name
+    if not record_path.exists():
+        record_path = workspace / ".lat/sessions" / name
     return Path(json.loads(record_path.read_text(encoding="utf-8"))["decisions_path"])
 
 
