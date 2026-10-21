@@ -2,8 +2,9 @@
 // open switches it shows and the relaunches it settles later all work from those lines, kept up
 // with every line appended in this process meanwhile. The board runs in this process against fake
 // commands and a temporary state directory; nothing real is read.
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, spyOn, test } from 'bun:test';
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, mock, spyOn, test } from 'bun:test';
 import { appendFileSync, chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SentLaunch } from '../src/lib/board/launch.ts';
@@ -19,6 +20,15 @@ const NODE = Bun.which('node') ?? process.execPath;
 const dir = mkdtempSync(join(tmpdir(), 'lat-board-log-read-'));
 const stateDir = join(dir, 'board-state');
 const time = new Date(Date.now() - 5_000).toISOString();
+const env = { ...process.env };
+// Herdr is out of reach: its socket answers every request with an error.
+const herdr = createServer((connection) =>
+	connection.on('data', (chunk) => {
+		for (const line of chunk.toString().split('\n').filter(Boolean)) {
+			connection.write(JSON.stringify({ id: JSON.parse(line).id, error: { message: 'no herdr here' } }) + '\n');
+		}
+	})
+);
 let board: Board;
 
 const binding: HelperController = {
@@ -109,6 +119,7 @@ const relaunch: SentSwitch = {
 };
 
 beforeAll(async () => {
+	await new Promise<void>((resolve) => herdr.listen(join(dir, 'herdr.sock'), resolve));
 	for (const name of ['reports', 'home', 'herdr-config', 'herdr-state']) mkdirSync(join(dir, name));
 	mkdirSync(join(binding.workspace, '.lat'), { recursive: true });
 	writeFileSync(join(dir, 'helper.json'), JSON.stringify({ output: { controllers: [binding] } }));
@@ -126,7 +137,7 @@ beforeAll(async () => {
 		CODEX_MULTI_AUTH_DIR: join(dir, 'codex-multi-auth'),
 		HERDR_PLUGIN_CONFIG_DIR: join(dir, 'herdr-config'),
 		HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state'),
-		HERDR_SOCKET_PATH: join(dir, 'no-herdr.sock')
+		HERDR_SOCKET_PATH: join(dir, 'herdr.sock')
 	});
 	sentLog.appendSent(stateDir, launch);
 	sentLog.appendSent(stateDir, {
@@ -151,8 +162,14 @@ beforeAll(async () => {
 
 afterAll(() => {
 	board?.close();
+	herdr.close();
+	for (const name of Object.keys(process.env)) if (!(name in env)) delete process.env[name];
+	Object.assign(process.env, env);
 	rmSync(dir, { recursive: true, force: true });
 });
+
+// A test that fails midway leaves no spy behind for the next.
+afterEach(() => mock.restore());
 
 const logged = () =>
 	readFileSync(join(stateDir, 'sent-log.jsonl'), 'utf8')
