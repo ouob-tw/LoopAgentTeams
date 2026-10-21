@@ -36,8 +36,9 @@ export const MIDDLE_TAB_KEY = 'lat-board-middle-tab';
 /** '1' while an information page shows its details (path, Herdr place). */
 export const INFO_DETAILS_KEY = 'lat-board-info-details';
 
-/** '1' while conversations show English replies translated into Chinese; off when nothing is saved. */
-export const TRANSLATE_KEY = 'lat-board-translate';
+/** Where the translation switch used to be kept. Whether conversations open translated is the
+ *  board's setting for every device now; the old value is only cleared. */
+export const LEGACY_TRANSLATE_KEY = 'lat-board-translate';
 
 /** Column widths of the wide layout in px. The defaults live in the page's styles. */
 export const WIDTHS = {

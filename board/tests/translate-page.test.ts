@@ -2,7 +2,7 @@
 // its DevTools protocol, on the built board with a fake Codex. The 中文／原文 switch starts at 原文
 // and sends nothing; switched on, English replies show 翻譯中 and then the translation, each with
 // its original a click away, while the user's messages and Chinese replies stay as they are. The
-// choice is kept across a reload, a failure is a quiet note tried again once the board's hold on
+// button's choice is not kept: a reload is 原文 again. A failure is a quiet note tried again once the board's hold on
 // it is over, and the phone's width fits. Skipped
 // when the host has no Chrome.
 import { spawn, type ChildProcess } from 'node:child_process';
@@ -178,7 +178,7 @@ async function open() {
 	await tab.until(`!!(${said('All green')})`, "the controller's conversation");
 }
 
-test.skipIf(!CHROME)('off on a new device and sends nothing; on, English replies turn from 翻譯中 to Chinese, the rest untouched; remembered after a reload', async () => {
+test.skipIf(!CHROME)('off on a new device and sends nothing; on, English replies turn from 翻譯中 to Chinese, the rest untouched; the choice is not kept over a reload', async () => {
 	await visit(1280);
 	expect(await tab.eval(`${SWITCH}.getAttribute('aria-pressed')`)).toBe('false');
 	expect(await tab.eval(`${SWITCH}.getAttribute('aria-label')`)).toBe('翻譯成中文');
@@ -214,9 +214,14 @@ test.skipIf(!CHROME)('off on a new device and sends nothing; on, English replies
 	await tab.eval(`[...${reply}.querySelectorAll('button')].find((b) => b.innerText === '收起原文').click()`);
 	await tab.until(`!${reply}.querySelector('.original')`, 'the original closed');
 
-	// Remembered across a reload; the saved translation shows without asking Codex again.
+	// Not kept over a reload: back to 原文 with nothing asked. Switched on again, the saved translation
+	// shows without asking Codex again.
 	await open();
-	expect(await tab.eval(`${SWITCH}.getAttribute('aria-pressed')`)).toBe('true');
+	expect(await tab.eval(`${SWITCH}.getAttribute('aria-pressed')`)).toBe('false');
+	expect(await tab.eval(`localStorage.getItem('lat-board-translate')`)).toBeNull();
+	await sleep(500);
+	expect(await tab.eval('window.translateRequests')).toBe(0);
+	await tab.eval(`${SWITCH}.click()`);
 	await tab.until(`${said('譯：')}?.dataset.translation === 'done'`, 'the saved translation');
 	expect(codexCalls()).toHaveLength(1);
 
@@ -251,9 +256,11 @@ test.skipIf(!CHROME)('a reply pushed while on is translated; a failure leaves th
 	// Reopened soon, it is the same failure; once the board's hold on it is over, it is tried again.
 	codexPlan({ prefix: '譯：' });
 	await open();
+	await tab.eval(`${SWITCH}.click()`);
 	await tab.until(`${said('fail to translate')}?.dataset.translation === 'failed'`, 'the failure, held');
 	fixture.setClock(Date.now() + 6 * 60_000);
 	await open();
+	await tab.eval(`${SWITCH}.click()`);
 	await tab.until(`${said('譯：This reply will fail')}?.dataset.translation === 'done'`, 'the failed one translated on reopening');
 }, 60_000);
 
@@ -280,8 +287,7 @@ test.skipIf(!CHROME)("the button is at the right end of the tab row on the 對�
 		await tab.until(`!!${said('譯：I fixed')}.querySelector('.original')`, 'the original');
 		expect(await tab.eval(FITS)).toBe(true);
 		// Another tab has no button; back on 對話紀錄 it is there, still pressed.
-		// What was chosen stays chosen on coming back even if the browser kept nothing.
-		await tab.eval(`localStorage.clear()`);
+		// What was chosen stays chosen on coming back to the tab.
 		await tab.eval(`document.querySelector('#tab-sent').click()`);
 		await tab.until(`document.querySelector('.detail button.translate') === null`, 'the button gone on another tab');
 		await tab.eval(`document.querySelector('#tab-transcript').click()`);

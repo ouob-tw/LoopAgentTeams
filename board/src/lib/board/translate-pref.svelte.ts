@@ -1,22 +1,28 @@
-// Whether conversations show English replies translated: this device's choice, shared by every
-// conversation and by the button that flips it.
-import { remember, remembered, TRANSLATE_KEY } from './prefs.ts';
+// Whether conversations show English replies translated. The board's setting, shared by every device,
+// says how a conversation opens; the button in the tab row then flips only the conversation open now.
+import type { TranslateMode } from './translate-mode.ts';
 
 class TranslatePref {
-	on = $state(false);
-	#loaded = false;
+	/** As the board last said; 手動切換 until it does. */
+	mode = $state<TranslateMode>('manual');
+	/** The conversation the button was last used for or left alone in, and the choice made there. */
+	#scope = '';
+	#choice = $state<boolean | null>(null);
 
-	/** Reads the saved choice once per page; the browser only, so called once a page is mounted. Mounting
-	 * again (a tab switch) keeps the choice made since, saved or not. */
-	load() {
-		if (this.#loaded) return;
-		this.#loaded = true;
-		this.on = remembered(TRANSLATE_KEY, ['1', '0'], '0') === '1';
+	get on(): boolean {
+		return this.#choice ?? this.mode === 'auto';
 	}
 
-	set(on: boolean) {
-		this.on = on;
-		remember(TRANSLATE_KEY, on ? '1' : '0');
+	/** A conversation is shown: a different one than the last starts from the board's setting again. */
+	enter(conversation: string): void {
+		if (conversation === this.#scope) return;
+		this.#scope = conversation;
+		this.#choice = null;
+	}
+
+	/** Flip the conversation shown now. */
+	set(on: boolean): void {
+		this.#choice = on;
 	}
 }
 

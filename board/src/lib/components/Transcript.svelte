@@ -126,9 +126,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		const timer = setTimeout(() => (targetAtLastPage = judged ?? null), JUDGE_WITHOUT_PAGE_MS);
 		return () => clearTimeout(timer);
 	});
-	/** Whether English replies show translated; this device's choice, for every conversation. */
+	/** Whether English replies show translated: the board's setting, unless the button was used on this conversation. */
 	const translating = $derived(translatePref.on);
-	onMount(() => translatePref.load());
+	$effect.pre(() => translatePref.enter(id));
 	// Turned off: nothing more is asked. Turned on again: what failed is asked for again.
 	$effect(() => {
 		if (!translating) untrack(() => translations.stop());
