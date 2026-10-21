@@ -390,7 +390,8 @@ def pointer(path, record):
                  'references/task-cards.md follows; it counts as re-reading them.')
         for name in INLINE_REFERENCES:
             reference = Path(record['skill_dir']) / name
-            text += f'\n\n===== {reference} =====\n{reference.read_text(encoding="utf-8")}'
+            body = reference.read_text(encoding='utf-8')
+            text += f'\n\n===== {reference} =====\n{body}'
     return text
 
 

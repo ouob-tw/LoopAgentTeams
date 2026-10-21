@@ -2000,8 +2000,9 @@ class SessionTests(unittest.TestCase):
         context = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
         for reference in references:
             self.assertIn(f'===== {reference} =====\n{reference.read_text()}', context)
-        # Claude Code moves longer context to a file and shows only a 2,000-character preview.
-        self.assertLess(len(context), 10_000)
+        # Claude Code moves context over 10,000 characters to a file and shows a 2,000-character
+        # preview; keep room for longer workspace paths and the legacy-upgrade suffix.
+        self.assertLess(len(context), 9_000)
         self.cli('deactivate', '--client', 'claude', '--workspace', self.work,
                  '--session-id', SESSION, session=OTHER)
         self.record.unlink()
