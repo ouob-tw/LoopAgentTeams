@@ -19,7 +19,7 @@
 | `HOST`、`PORT` | 監聽位址與連接埠（也可用 `start` 的 `--host`、`--port`） | `0.0.0.0`、`7100` |
 | `LAT_BOARD_LAT_DIR` | LAT 技能目錄 | `~/.agents/skills/lat` |
 | `LAT_BOARD_HELPER_COMMAND` | 直接指定輔助工具指令（JSON 字串陣列），看板會在後面加上 `board list` 等參數 | 由技能目錄組出 |
-| `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已登入裝置、密碼雜湊、回報的已讀與封存、送出紀錄） | `$XDG_STATE_HOME/lat/board` |
+| `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已登入裝置、密碼雜湊、回報的已讀與封存、用量列樣式 `usage-style.json`、送出紀錄） | `$XDG_STATE_HOME/lat/board` |
 | `LAT_REPORTS_DIR` | 主控回報紀錄目錄，須與 LAT hook 寫入的位置相同 | `$XDG_STATE_HOME/lat/reports` |
 | `LAT_USAGE_DIR` | Claude 主控用量檔的目錄，須與狀態列記錄程式寫入的位置相同（見「用量與快取」） | `$XDG_STATE_HOME/lat/usage` |
 | `LAT_BOARD_FALLBACK_SECONDS` | 漏掉檔案變動時，最慢幾秒內補上（從變動到畫面更新）；5 到 60 | `60` |
@@ -173,7 +173,7 @@
 - 安全範圍的項目隱藏（`usageParts`）：上下文已用 < 55%、5 小時額度剩 > 45%、7 天額度剩 > 30%（其他期間一律顯示）、快取命中 > 80%、倒數 > 30 分鐘、權限為免確認；冷快取與已失效一定顯示。只剩倒數時整句帶快取名稱，例如 `快取 20 分鐘後失效`。全部隱藏或讀不到時整行與資訊圖示都不顯示。行尾資訊圖示（滑鼠停留或點一下）用 `usageDetails` 列出全部數值；「詳細資料」的「執行狀況」列是 `usageParts(…, all)`，什麼都不隱藏。
 - 權限模式放最後：寫成 `權限：自動模式`、`手動確認`、`自動接受修改`、`規劃模式`、`免確認` 這類中文；Claude 取自對話紀錄最後一則使用者訊息的模式（Shift+Tab 切換後要等下一則訊息才反映），Codex 取自 rollout 的核准與沙箱設定（例如 `權限：需要時才詢問，檔案權限：可寫入工作區`）。
 - 變黃：上下文已用 ≥ 80%、任一額度剩不到 20%、快取剩 5 分鐘以內；已失效用紅色。淺色主題另加粗。
-- 精簡樣式（設定的「用量列」，`appearance.usageStyle`，存在 `lat-board-usage-style`，預設 `detailed`）：`usageParts(…, { style: 'compact' })` 隱藏與變色同上，文字用狀態列的縮寫：`Ctx 62%`、`5h 40%`、`Cache 70%`、`⏳ 20 min`（一定接在 `Cache` 後面，只剩倒數時是 `Cache ⏳ 20 min`）、`⏳ expired`、`Cache cold`，權限不加前綴，Claude 用英文名稱（`Auto mode`、`Bypass permissions` 等），Codex 寫 `approval on-request`。只影響行內小字；資訊圖示（`usageDetails`）與「執行狀況」列一律是中文全稱。
+- 精簡樣式（設定的「用量列」，`appearance.usageStyle`）：這是所有已登入裝置共用的設定，存在看板狀態目錄的 `usage-style.json`（`{"style":"detailed"|"compact"}`，權限 600，原子寫入），還沒存過、檔案壞掉或內容不是這兩個值時是 `detailed`（下次存檔會蓋掉壞檔）。`GET /api/usage-style` 讀、`PUT /api/usage-style`（本文 `{"style":…}`）寫，都要登入，回應與事件都是 `{style, revision}`，`revision` 每次存檔遞增（從啟動時間起算，重啟後仍比之前大），頁面只採用比已套用的更新的 revision，所以事件與存檔回應不論誰先到都不會把畫面退回舊值；別的值回 400，存檔失敗回 500 且維持原值、不推送。存檔後看板在事件串流推 `usage-style` 事件，所有開著的頁面立刻套用，新連上的頁面一連上也會收到目前的值，所以其他裝置不必重新整理。頁面只在看板回報存好了才換樣式；存檔失敗時顯示「用量列樣式沒有存成功」浮動通知，按鈕與畫面維持原樣。瀏覽器不再讀寫舊的 `lat-board-usage-style`，頁面載入時會把它清掉。樣式內容：`usageParts(…, { style: 'compact' })` 隱藏與變色同上，文字用狀態列的縮寫：`Ctx 62%`、`5h 40%`、`Cache 70%`、`⏳ 20 min`（一定接在 `Cache` 後面，只剩倒數時是 `Cache ⏳ 20 min`）、`⏳ expired`、`Cache cold`，權限不加前綴，Claude 用英文名稱（`Auto mode`、`Bypass permissions` 等），Codex 寫 `approval on-request`。只影響行內小字；資訊圖示（`usageDetails`）與「執行狀況」列一律是中文全稱。
 - Codex 主控：輔助工具的 `board transcript` 從 rollout 最後的 `token_count` 事件算出 `usage`，是看板自己的算法，不一定等於 Codex 畫面上的「context left」：上下文已用 = 最後一次請求的 `input_tokens` ÷ `model_context_window`，快取命中 = `cached_input_tokens` ÷ `input_tokens`，額度取最後一筆方案額度（`limit_id` 為 `codex` 或沒有）的 `rate_limits` 的 `primary`／`secondary`（有幾個就顯示幾個，依 `window_minutes` 命名）；`premium` 這類其他額度的事件不算。
 - Claude 主控：這些數字只有狀態列指令拿得到，所以要在狀態列指令前面串上 `scripts/usage-recorder.sh`。它每次狀態列更新時讀標準輸入，把 `context_window.used_percentage`、`rate_limits` 的 `five_hour`／`seven_day`（`used_percentage`、`resets_at`）、`prompt_cache`（`caching_observed`、`warm`、`hit_ratio`、`expires_at`）與寫入時間存成 `$LAT_USAGE_DIR/<session ID>.json`（先寫暫存檔再改名），不存訊息、路徑或憑證；接著把同一份輸入原封不動交給後面的指令，印出它的輸出。記錄失敗（例如沒有 `jq`、目錄寫不進去、輸入不是 JSON）一律略過，不影響狀態列。需要 `bash` 與 `jq`。
 - 頁面開著時，用量跟著對話紀錄的推送（`/api/transcript/events` 的 `page.usage`）更新：Codex 隨紀錄檔變動；Claude 另外監看用量檔，只有它變了時只重讀這個檔、不重跑輔助工具。用量檔讀不出來時當成沒有，不影響其他區塊。
@@ -274,7 +274,7 @@
 - 主控資訊頁的 Herdr 位置（在「詳細資料」裡）以工作區與分頁的名稱和第幾個顯示，由 `GET /api/herdr-place?controller=<ID>`（要登入）讀 `herdr workspace list` 與 `herdr tab list`；分頁的第幾個依清單順序計算，每次看板資料更新時重讀；看板移動接回分頁不會改變看板資料，所以移動成功後另外推送 `tab-moved` 事件，開著的頁面收到就重讀。
 - 開著的畫面寫在網址裡（`?item=<key>`、`?controller=<ID>`、`?launch`、`?agent=<session ID>`），每開一個畫面記一筆瀏覽器歷史紀錄（`src/lib/board/navigation.ts`）：手機頂端列的「←」與系統返回（電腦是瀏覽器的上一頁）都回到上一個畫面，退到待辦列表時回到離開前的捲動位置，再按一次才離開看板。重新整理後開回同一個畫面，返回路徑照舊；找不到那一則或那個主控時顯示「已不存在」（待辦沒有、已處理也讀不出來時改為提示重新整理再試），不在待辦的項目會在「已處理」往前讀更早的頁找到為止；退回列表時的捲動位置記在列表那一筆歷史紀錄裡，重新整理後也找得回來。從別處直接開帶畫面的網址時，看板在它前面補一筆待辦列表。只為重新整理與返回使用，不保證網址拿到其他裝置的行為。
 - 從別的網頁（網址列、外部連結）以整頁載入來到看板，再按瀏覽器的「上一頁」回到看板時，頁面會重新載入，不再瞬間還原：捲動位置與展開狀態會重設，即時更新照常，指令列草稿仍在。原因是瀏覽器暫存的離開頁面會一直占著即時連線，純 HTTP/1.1 下同一主機最多 6 條，幾頁暫存頁就會讓目前這頁的請求（翻譯、傳話、載入更早）一直卡住；所以離開時暫存頁面就結束連線（`src/hooks.client.ts`）。看板內點擊切換不受影響。
-- 排序方式、中間欄的分頁（待辦或 Herdr）、名冊收合、兩欄寬度、主題、整體大小、最小字體、用量列樣式、資訊頁「詳細資料」的開合、手機指令列的收起與指令列裡還沒送出的文字（重新整理後保留，送出成功後清掉）記在各自裝置的瀏覽器裡；瀏覽器不允許儲存時一切照常運作，只是不記憶。
+- 排序方式、中間欄的分頁（待辦或 Herdr）、名冊收合、兩欄寬度、主題、整體大小、最小字體、資訊頁「詳細資料」的開合、手機指令列的收起與指令列裡還沒送出的文字（重新整理後保留，送出成功後清掉）記在各自裝置的瀏覽器裡；瀏覽器不允許儲存時一切照常運作，只是不記憶。用量列樣式不在其中：它由看板統一保存、所有裝置共用。
 
 ### 自訂樣式
 
