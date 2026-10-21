@@ -18,7 +18,7 @@ export interface ExternalResult {
 	signal: NodeJS.Signals | null;
 }
 
-export interface RunOptions {
+interface RunOptions {
 	timeoutMs: number;
 	/** Bytes each of standard output and error may hold; 16 MB unless given. */
 	maxBuffer?: number;

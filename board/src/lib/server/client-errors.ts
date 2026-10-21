@@ -76,7 +76,7 @@ const TEMPLATES: [RegExp, string][] = [
 ];
 
 /** The canonical message for a known kind of error; [omitted] for any other text. */
-export function knownMessage(value: unknown): string | null {
+function knownMessage(value: unknown): string | null {
 	if (typeof value !== 'string' || !value) return null;
 	const svelte = SVELTE_PRODUCTION.exec(value) ?? SVELTE_DEVELOPMENT.exec(value);
 	if (svelte) return SVELTE_CODES.has(svelte[1]!) ? `svelte:${svelte[1]}` : 'svelte:unknown';
@@ -111,7 +111,7 @@ function builtScripts(): Set<string> {
  *  another host or of a file the build does not have, and every function name and message line,
  *  are left out. `host` is the board's as the request named it: the server cannot tell http from
  *  https without an ORIGIN setting, so only host and port are compared. */
-export function stackFrames(value: unknown, host: string, known = builtScripts()): string | null {
+function stackFrames(value: unknown, host: string, known = builtScripts()): string | null {
 	if (typeof value !== 'string') return null;
 	const frames: string[] = [];
 	for (const line of value.split('\n')) {
@@ -131,7 +131,7 @@ export function stackFrames(value: unknown, host: string, known = builtScripts()
 }
 
 /** Which of the board's pages it was, without its query and fragment. */
-export function pagePath(value: unknown, host: string): string | null {
+function pagePath(value: unknown, host: string): string | null {
 	if (typeof value !== 'string') return null;
 	try {
 		const url = new URL(value);
@@ -143,7 +143,7 @@ export function pagePath(value: unknown, host: string): string | null {
 
 const listed = (value: unknown, known: Set<string>) => (typeof value === 'string' && known.has(value) ? value : value == null ? null : OMITTED);
 
-export interface ClientErrorLimit {
+interface ClientErrorLimit {
 	/** May this device log one more line now? */
 	admit(deviceId: string): boolean;
 }

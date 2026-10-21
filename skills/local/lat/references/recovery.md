@@ -43,7 +43,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client
 # 換班時加上 --successor <新主控 HCOM 名稱>。
 ```
 
-手動停用遺留的 active 紀錄：確認指定對話已結束／取消，再加 `--session-id <record-session-id>`，只改該筆紀錄。session 紀錄永不清理；已結束 session 留下的監控檔由 [清理指令](cleanup.md) 列給使用者確認。
+手動停用遺留的 active 紀錄：確認指定對話已結束／取消，再加 `--session-id <record-session-id>`，只改該筆紀錄。session 紀錄永不清理；已結束 session 留下的監控檔，結束滿 40 天後由 [自動清理](cleanup.md#自動清理) 處理（開啟後；activate／deactivate 會在背景觸發），沒有結束時間的由 [清理指令](cleanup.md) 列給使用者確認。
 
 ## 技能文字更新
 

@@ -30,7 +30,7 @@ import { appendSent } from './sent-log.ts';
 import { wakeController } from './wake.ts';
 
 /** Who may have stopped an agent for it to be listed. */
-export const LISTED_BY = new Set(['cli', 'pty', 'session', 'system']);
+const LISTED_BY = new Set(['cli', 'pty', 'session', 'system']);
 
 const SEEN_FILE = 'seen-agents.json';
 /** How stale the time an agent was last seen may get before the record is written again. */
@@ -125,7 +125,7 @@ async function hasConversation(config: BoardConfig, client: string, sessionId: s
 /** 接回 under way or failed, by session ID. */
 const resumes = new Map<string, ClosedResume>();
 
-export interface ClosedRoster {
+interface ClosedRoster {
 	readStops(): Promise<StopList>;
 	/** Record the agents Herdr lists now and work out the closed ones. `agents` is null while no
 	 *  Herdr list has been read, `running` while no hcom list has: then none is listed. */
@@ -289,12 +289,12 @@ function logResume(
 }
 
 export const CLOSED_GONE_REASON = '它已不在「已關閉」清單上（可能已經接回，或不再符合條件），沒有接回。';
-export const CLOSED_BUSY_REASON = '它正在接回，請稍候。';
+const CLOSED_BUSY_REASON = '它正在接回，請稍候。';
 export const CLOSED_LISTED_REASON = 'hcom 的清單上還有它（可能仍在啟動，或卡住了），請到 Herdr 分頁查看，沒有再接回。';
 
 /** What a controller's 接回 is woken with, as its wake options give it: a first message (may be
  *  empty), a new LAT round, a model and effort (null keeps the current one). */
-export type ClosedWake = Pick<WakeRequest, 'text' | 'newRound' | 'model' | 'effort'>;
+type ClosedWake = Pick<WakeRequest, 'text' | 'newRound' | 'model' | 'effort'>;
 
 /** Bring a closed agent back (see the top of this file). A plain agent's answers once hcom has run;
  *  the rest is followed in the background. A controller is woken (`wakeController`). Either's

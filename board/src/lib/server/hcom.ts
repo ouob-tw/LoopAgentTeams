@@ -3,7 +3,7 @@ import type { LaunchClient, LaunchOutcome } from '../board/launch.ts';
 import type { BoardConfig } from './config.ts';
 import { parseJsonOutput, runCommand, type ExternalResult } from './external.ts';
 
-export interface LaunchResult {
+interface LaunchResult {
 	outcome: LaunchOutcome;
 	hcomName: string | null;
 	/** Why it failed, or what is not known about a launch that did not report ready. */
@@ -11,7 +11,7 @@ export interface LaunchResult {
 }
 
 /** The one agent name the launch output's `Names:` line gives, or null. */
-export function launchedName(stdout: string): string | null {
+function launchedName(stdout: string): string | null {
 	const names = /^Names:[ \t]*(.*)$/m.exec(stdout)?.[1].split(/[\s,]+/).filter(Boolean) ?? [];
 	return names.length === 1 ? names[0] : null;
 }
@@ -47,7 +47,7 @@ export function ownEnv(): NodeJS.ProcessEnv {
 /** The environment hcom starts or resumes an agent in: the board's own, as the background service
  *  has it even when the board was started from inside an agent's shell or a Herdr pane, with
  *  Herdr's tab opening in this workspace. */
-export function hcomEnv(herdrWorkspace: string): NodeJS.ProcessEnv {
+function hcomEnv(herdrWorkspace: string): NodeJS.ProcessEnv {
 	const env = ownEnv();
 	env.HERDR_WORKSPACE_ID = herdrWorkspace;
 	return env;
@@ -55,7 +55,7 @@ export function hcomEnv(herdrWorkspace: string): NodeJS.ProcessEnv {
 
 /** What one hcom run that opens a client ended as: ready, still starting (exit 2 or out of time) or
  *  failed. `action` names the run in the reasons: 啟動 or 接回. */
-export function launchResult(run: ExternalResult, action = '啟動'): LaunchResult {
+function launchResult(run: ExternalResult, action = '啟動'): LaunchResult {
 	const hcomName = launchedName(run.stdout);
 	if (run.code === 0) return { outcome: 'started', hcomName, reason: null };
 	if (run.code === 2) return { outcome: 'pending', hcomName, reason: 'hcom 回報主控仍在啟動，或在等你到 Herdr 分頁處理' };
