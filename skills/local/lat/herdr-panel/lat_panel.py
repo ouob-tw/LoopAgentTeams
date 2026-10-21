@@ -97,10 +97,8 @@ import os
 from pathlib import Path
 import re
 import sqlite3
-import stat
 import subprocess
 import sys
-import tempfile
 import textwrap
 import time
 from typing import NamedTuple
@@ -108,6 +106,7 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from lat_decision_status import read_decision_kind, read_decision_status
+from _lat_common import plugin_directory, run_cli, write_text_atomic as _replace_locked
 
 
 @contextmanager
@@ -120,29 +119,6 @@ def _path_lock(path):
             yield
         finally:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
-
-
-def _replace_locked(path, text):
-    mode = stat.S_IMODE(path.stat().st_mode) if path.exists() else 0o600
-    temporary = None
-    try:
-        with tempfile.NamedTemporaryFile(
-            mode="w", encoding="utf-8", dir=path.parent, delete=False
-        ) as output:
-            temporary = Path(output.name)
-            os.fchmod(output.fileno(), mode)
-            output.write(text)
-            output.flush()
-            os.fsync(output.fileno())
-        os.replace(temporary, path)
-        directory_fd = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory_fd)
-        finally:
-            os.close(directory_fd)
-    finally:
-        if temporary is not None and temporary.exists():
-            temporary.unlink()
 
 
 def _question_changes(before, after):
@@ -1531,50 +1507,23 @@ def archive_recorded_questions(
         return archived_ids
 
 
-def plugin_directory(kind, env=None):
-    """Resolve the plugin config or state directory without contacting Herdr's server."""
-    env = os.environ if env is None else env
-    variable = f"HERDR_PLUGIN_{kind.upper()}_DIR"
-    if env.get(variable):
-        return Path(env[variable]).expanduser()
-    if kind == "config":
-        try:
-            result = subprocess.run(
-                ["herdr", "plugin", "config-dir", "lat.panel"],
-                text=True, capture_output=True, timeout=10, check=True, env=env,
-            )
-            if result.stdout.strip():
-                return Path(result.stdout.strip()).expanduser()
-        except (FileNotFoundError, subprocess.SubprocessError):
-            pass
-        base = Path(env.get("XDG_CONFIG_HOME", Path.home() / ".config"))
-        return base / "herdr/plugins/config/lat.panel"
-    base = Path(env.get("XDG_STATE_HOME", Path.home() / ".local/state"))
-    return base / "herdr/plugins/lat.panel"
-
-
 def panel_enabled(env=None):
     """Return whether this shell is in Herdr with the LAT panel enabled."""
     env = os.environ if env is None else env
     if not env.get("HERDR_WORKSPACE_ID"):
         return False
     try:
-        result = subprocess.run(
+        output = run_cli(
             ["herdr", "plugin", "list", "--plugin", "lat.panel", "--json"],
-            text=True, capture_output=True, timeout=10, check=True, env=env,
+            timeout=10, failure="cannot check lat.panel", env=env,
         )
-        payload = json.loads(result.stdout)
-    except FileNotFoundError:
-        return False
-    except OSError as error:
-        raise ValueError(f"cannot check lat.panel: {error}") from error
-    except subprocess.CalledProcessError as error:
-        reason = error.stderr.strip() or f"herdr plugin list exited {error.returncode}"
-        raise ValueError(f"cannot check lat.panel: {reason}") from error
-    except subprocess.TimeoutExpired as error:
-        raise ValueError("cannot check lat.panel: herdr plugin list timed out") from error
-    except json.JSONDecodeError as error:
-        raise ValueError("cannot check lat.panel: invalid JSON from herdr plugin list") from error
+        payload = json.loads(output)
+    except ValueError as error:
+        if isinstance(error.__cause__, FileNotFoundError):
+            return False
+        if isinstance(error, json.JSONDecodeError):
+            raise ValueError("cannot check lat.panel: invalid JSON from herdr plugin list") from error
+        raise
     if isinstance(payload, dict) and isinstance(payload.get("result"), dict):
         payload = payload["result"]
     if isinstance(payload, dict):
@@ -1766,17 +1715,10 @@ def status_text(hcom_name, decide, help_count):
 def _run_herdr(arguments, env=None, timeout=5):
     """Run one herdr CLI call; return ``(ok, stdout or failure reason)``."""
     try:
-        result = subprocess.run(
-            ["herdr", *arguments], text=True, capture_output=True, timeout=timeout,
-            env=os.environ if env is None else env,
-        )
-    except subprocess.TimeoutExpired:
-        return False, f"herdr {arguments[0]} timed out"
-    except OSError as error:
+        return True, run_cli(["herdr", *arguments], timeout=timeout,
+                             env=os.environ if env is None else env)
+    except ValueError as error:
         return False, str(error)
-    if result.returncode != 0:
-        return False, result.stderr.strip() or f"herdr exited {result.returncode}"
-    return True, result.stdout
 
 
 def _report_display(pane, text, seq, env=None):

@@ -2,7 +2,11 @@
 // answer the helper accepted, per attempt to start a new controller, per attempt to wake one and
 // per action on an agent of the 所有 Agent tab, kept in the board's state directory so every logged-in device sees the same history. Lines are only appended; what became
 // of an answer, a launch or a resume is a later line of its own.
-import { appendFileSync, mkdirSync, readFileSync } from 'node:fs';
+//
+// The board is the only writer, so the parsed lines are kept per state directory and read again only
+// when the file's size or time is not what the board left it at. Lines older than 30 days are
+// dropped by the group they belong to, like the reports.
+import { appendFileSync, mkdirSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentAction } from '../board/agent-actions.ts';
 import type { AnswerState, SentAnswer, SentEntry } from '../board/answers.ts';
@@ -114,39 +118,205 @@ type Line =
 /** Lines that only add to an entry of their own kind. */
 const FOLLOW_UP = new Set(['answer-state', 'launch-bound', 'launch-followed', 'resume-closed', 'resume-result', 'resume-pane', 'switch-step']);
 
-export function appendSent(stateDir: string, entry: Line): void {
-	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-	// The text may hold internal addresses and paths, like the reports do.
-	appendFileSync(join(stateDir, SENT_LOG_FILE), JSON.stringify(entry) + '\n', { mode: 0o600 });
+/** How long a group of lines is kept after its latest line, as the reports are. */
+const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
+/** How long after a cleaning the next read cleans again. */
+const PRUNE_EVERY_MS = 24 * 60 * 60 * 1000;
+
+interface Row {
+	raw: string;
+	/** Null for a line that cannot be read: kept in the file, left out of what is read. */
+	line: Line | null;
 }
 
-function readLines(stateDir: string): Line[] {
-	let text: string;
+interface Cached {
+	rows: Row[];
+	lines: readonly Line[];
+	size: number;
+	mtimeMs: number;
+	/** The text ends with a whole line, so a line appended stands on its own. */
+	whole: boolean;
+}
+
+const cache = new Map<string, Cached>();
+/** When each state directory's log was last cleaned, by the board's clock. */
+const prunedAt = new Map<string, number>();
+
+/** How many times the whole file was read and parsed; tests count the reads with it. */
+export const sentLogReads = { count: 0 };
+
+function deepFreeze<T>(value: T): T {
+	if (value && typeof value === 'object') {
+		for (const inner of Object.values(value)) deepFreeze(inner);
+		Object.freeze(value);
+	}
+	return value;
+}
+
+function parse(raw: string): Line | null {
 	try {
-		text = readFileSync(join(stateDir, SENT_LOG_FILE), 'utf8');
+		const line = JSON.parse(raw);
+		return line && typeof line === 'object' ? deepFreeze(line) : null;
+	} catch {
+		// One cut short by a failed write.
+		return null;
+	}
+}
+
+/** Stat the file; null when there is none yet. */
+function stamp(path: string) {
+	try {
+		return statSync(path);
 	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return [];
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
 		throw error;
 	}
-	const lines: Line[] = [];
-	for (const line of text.split('\n')) {
-		try {
-			lines.push(JSON.parse(line));
-		} catch {
-			// An empty line, or one cut short by a failed write.
-		}
-	}
-	return lines;
 }
 
-const marksOf = (lines: Line[]) =>
+const unchanged = (cached: Cached | undefined, info: { size: number; mtimeMs: number } | null): cached is Cached =>
+	!!cached && !!info && cached.size === info.size && cached.mtimeMs === info.mtimeMs;
+
+function cacheRows(stateDir: string, rows: Row[], size: number, mtimeMs: number, whole: boolean): Cached {
+	const cached: Cached = { rows, lines: Object.freeze(rows.flatMap((row) => (row.line ? [row.line] : []))), size, mtimeMs, whole };
+	cache.set(stateDir, cached);
+	return cached;
+}
+
+export function appendSent(stateDir: string, entry: Line): void {
+	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+	const path = join(stateDir, SENT_LOG_FILE);
+	const raw = JSON.stringify(entry);
+	const cached = cache.get(stateDir);
+	// Kept only while the file is as the board left it: someone else's write is read whole next time.
+	const keep = unchanged(cached, stamp(path)) && cached!.whole;
+	cache.delete(stateDir);
+	// The text may hold internal addresses and paths, like the reports do.
+	appendFileSync(path, raw + '\n', { mode: 0o600 });
+	if (!keep) return;
+	const size = cached!.size + Buffer.byteLength(raw + '\n');
+	const info = stamp(path);
+	if (info?.size === size) cacheRows(stateDir, [...cached!.rows, { raw, line: parse(raw) }], size, info.mtimeMs, true);
+}
+
+/** The IDs a line belongs with: its own entry's, and a switch's for the wake that resumes it. */
+function keysOf(line: Line): string[] {
+	switch (line.kind) {
+		case 'answer-state':
+			return [line.answerId];
+		case 'launch-bound':
+		case 'launch-followed':
+			return [line.launchId];
+		case 'resume-closed':
+		case 'resume-result':
+		case 'resume-pane':
+			return [line.wakeId];
+		case 'switch-step':
+			return [line.switchId];
+		case 'wake':
+			return line.switchId ? [line.id, line.switchId] : [line.id];
+		default:
+			return [line.id];
+	}
+}
+
+/**
+ * Drop every group whose latest line is more than 30 days before `now`: an entry with the lines
+ * that add to it, and a switch with the wakes that resume it. The file is replaced whole, and only
+ * when something is dropped. Lines that cannot be read, or have no time, are kept.
+ */
+function prune(stateDir: string, cached: Cached, now: number): Cached {
+	// Union of IDs into groups, each with its latest time.
+	const parent = new Map<string, string>();
+	const root = (key: string): string => {
+		let top = key;
+		while (parent.has(top) && parent.get(top) !== top) top = parent.get(top)!;
+		parent.set(key, top);
+		return top;
+	};
+	for (const line of cached.lines) {
+		const [first, ...rest] = keysOf(line).map(root);
+		for (const other of rest) if (other !== first) parent.set(other, first);
+	}
+	const latest = new Map<string, number>();
+	for (const line of cached.lines) {
+		const group = root(keysOf(line)[0]);
+		const time = Date.parse(line.time);
+		latest.set(group, Math.max(latest.get(group) ?? -Infinity, Number.isNaN(time) ? Infinity : time));
+	}
+	const kept = cached.rows.filter(({ line }) => !line || !(now - latest.get(root(keysOf(line)[0]))! > RETENTION_MS));
+	if (kept.length === cached.rows.length) return cached;
+	const path = join(stateDir, SENT_LOG_FILE);
+	const temporary = `${path}.${process.pid}.tmp`;
+	const text = kept.map(({ raw }) => raw + '\n').join('');
+	try {
+		// One left by a board stopped midway would keep its own mode.
+		rmSync(temporary, { force: true });
+		writeFileSync(temporary, text, { mode: 0o600 });
+		renameSync(temporary, path);
+	} catch {
+		// The log stays whole until the next cleaning; reading it is not held up by this.
+		rmSync(temporary, { force: true });
+		return cached;
+	}
+	const info = stamp(path);
+	const size = Buffer.byteLength(text);
+	if (info?.size !== size) {
+		cache.delete(stateDir);
+		return readCached(stateDir) ?? cached;
+	}
+	return cacheRows(stateDir, kept, size, info.mtimeMs, true);
+}
+
+/** The log as it is in the file, from the cache while the file is as the board left it. */
+function readCached(stateDir: string): Cached | null {
+	const path = join(stateDir, SENT_LOG_FILE);
+	const info = stamp(path);
+	const cached = cache.get(stateDir);
+	if (unchanged(cached, info)) return cached;
+	cache.delete(stateDir);
+	if (!info) return null;
+	let text: string;
+	try {
+		text = readFileSync(path, 'utf8');
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+		throw error;
+	}
+	sentLogReads.count += 1;
+	const rows = text
+		.split('\n')
+		.filter((raw) => raw.trim())
+		.map((raw) => ({ raw, line: parse(raw) }));
+	const size = Buffer.byteLength(text);
+	const whole = text === '' || text.endsWith('\n');
+	// A line appended between the stat and the read: what was read is used once, and read again next time.
+	if (size !== info.size) return { rows, lines: Object.freeze(rows.flatMap((row) => (row.line ? [row.line] : []))), size, mtimeMs: info.mtimeMs, whole };
+	return cacheRows(stateDir, rows, size, info.mtimeMs, whole);
+}
+
+/**
+ * Every line of the log. Called with the board's clock, the first read of a state directory, and
+ * the first one a day after, drop what is past retention too. The lines are frozen: they are the
+ * cache's own.
+ */
+function readLines(stateDir: string, now: number): readonly Line[] {
+	let cached = readCached(stateDir);
+	const last = prunedAt.get(stateDir);
+	if (last === undefined || now - last >= PRUNE_EVERY_MS) {
+		prunedAt.set(stateDir, now);
+		if (cached) cached = prune(stateDir, cached, now);
+	}
+	return cached?.lines ?? [];
+}
+
+const marksOf = (lines: readonly Line[]) =>
 	new Map(lines.filter((line) => line.kind === 'answer-state').map((mark) => [mark.answerId, mark]));
 
-const boundOf = (lines: Line[]) =>
+const boundOf = (lines: readonly Line[]) =>
 	new Map(lines.filter((line) => line.kind === 'launch-bound').map((mark) => [mark.launchId, mark.controllerId]));
 
 /** Every wake as it stands at `now`, in log order. A resume stays open until a line closes it. */
-function wakesOf(lines: Line[], now: number, waitMs: number): WakeView[] {
+function wakesOf(lines: readonly Line[], now: number, waitMs: number): WakeView[] {
 	const closes = new Map<string, ResumeMark>();
 	const panes = new Map<string, string>();
 	const results = new Map<string, ResumeResult>();
@@ -182,7 +352,7 @@ function wakesOf(lines: Line[], now: number, waitMs: number): WakeView[] {
  * is stopped, its latest resume tells the rest: open is `resuming`, its session seen is `done`,
  * anything else is `resume-failed`.
  */
-function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
+function switchesOf(lines: readonly Line[], wakes: WakeView[]): SwitchView[] {
 	const steps = new Map<string, SwitchStep[]>();
 	for (const line of lines) if (line.kind === 'switch-step') steps.set(line.switchId, [...(steps.get(line.switchId) ?? []), line]);
 	const resumes = new Map<string, WakeView>();
@@ -224,19 +394,19 @@ function switchesOf(lines: Line[], wakes: WakeView[]): SwitchView[] {
 
 /** The controller's open model switch, or null. There is at most one: a switch continues it first. */
 export function openSwitch(stateDir: string, controllerId: string, now: number, waitMs: number): SwitchView | null {
-	const lines = readLines(stateDir);
+	const lines = readLines(stateDir, now);
 	return switchesOf(lines, wakesOf(lines, now, waitMs)).findLast((view) => view.controllerId === controllerId && view.open) ?? null;
 }
 
 /** Every open model switch, one per session at most, oldest first. */
 export function openSwitches(stateDir: string, now: number, waitMs: number): SwitchView[] {
-	const lines = readLines(stateDir);
+	const lines = readLines(stateDir, now);
 	return switchesOf(lines, wakesOf(lines, now, waitMs)).filter((view) => view.open);
 }
 
 /** Every model switch of one session, newest first, wherever it was asked for. */
 export function readSwitches(stateDir: string, sessionId: string, now: number, waitMs: number): SwitchView[] {
-	const lines = readLines(stateDir);
+	const lines = readLines(stateDir, now);
 	return switchesOf(lines, wakesOf(lines, now, waitMs))
 		.filter((view) => view.controllerId === sessionId)
 		.reverse();
@@ -244,14 +414,14 @@ export function readSwitches(stateDir: string, sessionId: string, now: number, w
 
 /** The switch with this ID as it stands now. */
 export function switchView(stateDir: string, switchId: string, now: number, waitMs: number): SwitchView | null {
-	const lines = readLines(stateDir);
+	const lines = readLines(stateDir, now);
 	return switchesOf(lines, wakesOf(lines, now, waitMs)).find((view) => view.id === switchId) ?? null;
 }
 
 /** What was sent to one controller, newest first: a launch counts once it became this controller;
  *  of what was done to its session as an agent, only interrupts. */
 export function readSent(stateDir: string, controllerId: string, now: number, waitMs: number): SentEntry[] {
-	const lines = readLines(stateDir);
+	const lines = readLines(stateDir, now);
 	const marks = marksOf(lines);
 	const bound = boundOf(lines);
 	const wakeViews = wakesOf(lines, now, waitMs);
@@ -283,8 +453,8 @@ export function readSent(stateDir: string, controllerId: string, now: number, wa
 }
 
 /** What was done to one agent of the 所有 Agent tab, newest first. */
-export function readAgentActions(stateDir: string, agentId: string): AgentAction[] {
-	return readLines(stateDir)
+export function readAgentActions(stateDir: string, agentId: string, now: number): AgentAction[] {
+	return readLines(stateDir, now)
 		.filter((line): line is AgentAction => line.kind === 'agent-action' && line.agentId === agentId)
 		.reverse();
 }
@@ -318,7 +488,7 @@ export async function settleAnswers(
 	now: number,
 	readEnded: (questionsPath: string) => Promise<HelperQuestion[] | null>
 ): Promise<string | null> {
-	const lines = readLines(stateDir);
+	const lines = readLines(stateDir, now);
 	const marks = marksOf(lines);
 	const bound = new Map(controllers.map((controller) => [controller.session_id, controller]));
 	const stateOf = (answer: StoredAnswer) => marks.get(answer.id)?.state ?? 'waiting';
@@ -370,7 +540,7 @@ function launchState(launch: SentLaunch, controllerId: string | undefined, follo
 
 /** Every launch, newest first, each with where it stands at `now`. */
 export function readLaunches(stateDir: string, now: number, waitMs: number): LaunchView[] {
-	const lines = readLines(stateDir);
+	const lines = readLines(stateDir, now);
 	const bound = boundOf(lines);
 	const follows = new Map<string, LaunchFollow>();
 	for (const line of lines) {
@@ -404,7 +574,7 @@ export function readLaunches(stateDir: string, now: number, waitMs: number): Lau
  * Returns why the log could not be brought up to date, or null.
  */
 export function settleLaunches(stateDir: string, controllers: HelperController[], reportFiles: ReportFile[], now: number): string | null {
-	const lines = readLines(stateDir);
+	const lines = readLines(stateDir, now);
 	const bound = boundOf(lines);
 	const seen = new Set<string>();
 	for (const line of lines.toReversed()) {
@@ -433,7 +603,7 @@ export function settleLaunches(stateDir: string, controllers: HelperController[]
 
 /** The open resume attempts, oldest first. */
 export function openResumes(stateDir: string, now: number, waitMs: number): WakeView[] {
-	return wakesOf(readLines(stateDir), now, waitMs).filter((wake) => wake.open);
+	return wakesOf(readLines(stateDir, now), now, waitMs).filter((wake) => wake.open);
 }
 
 /** The controller's open resume attempt, or null. There is at most one: a wake checks it first. */
