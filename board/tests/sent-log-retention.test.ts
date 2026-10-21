@@ -4,7 +4,8 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readAgentActions, readSent } from '../src/lib/server/sent-log.ts';
+import { readLines } from '../src/lib/server/sent-log.ts';
+import { readAgentActions, readSent } from '../src/lib/server/sent-views.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-21T08:00:00.000Z');
@@ -73,7 +74,7 @@ const left = () =>
 			const line = JSON.parse(raw);
 			return `${line.kind}:${line.id ?? line.answerId ?? line.wakeId}`;
 		});
-const read = (now = NOW) => readSent(stateDir, 'session-a', now, 60_000);
+const read = (now = NOW) => readSent(readLines(stateDir, now), 'session-a', now, 60_000);
 
 beforeEach(() => {
 	stateDir = mkdtempSync(join(tmpdir(), 'lat-sent-retention-'));
@@ -141,6 +142,6 @@ test('a first read of the agent actions cleans the log too', () => {
 		error: null
 	});
 	write([action('old', 31), action('new', 1)]);
-	expect(readAgentActions(stateDir, 'session-a', NOW).map((entry) => entry.id)).toEqual(['new']);
+	expect(readAgentActions(readLines(stateDir, NOW), 'session-a').map((entry) => entry.id)).toEqual(['new']);
 	expect(left()).toEqual(['agent-action:new']);
 });
