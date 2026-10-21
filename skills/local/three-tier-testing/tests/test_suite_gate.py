@@ -105,8 +105,8 @@ class GateCase(unittest.TestCase):
     def install_fake_gh(self):
         """A `gh` first on PATH that logs its arguments; the real one is never reached.
 
-        `issue list` prints gh/open.json (default `[]`); with gh/fail present every call
-        fails."""
+        `issue list` prints gh/open.json (default `[]`), `issue view` gh/view.json (default
+        an open issue); with gh/fail present every call fails."""
         self.gh_dir = self.tmp / 'gh'
         self.gh_dir.mkdir()
         fake = self.tmp / 'bin/gh'
@@ -121,6 +121,10 @@ if (d / 'fail').exists():
     sys.exit('gh: HTTP 502')
 if sys.argv[1:3] == ['issue', 'list']:
     print((d / 'open.json').read_text() if (d / 'open.json').exists() else '[]')
+elif sys.argv[1:3] == ['issue', 'view']:
+    view = d / 'view.json'
+    print(view.read_text() if view.exists() else json.dumps(
+        {{'state': 'OPEN', 'url': 'https://github.com/o/r/issues/' + sys.argv[3]}}))
 elif sys.argv[1:3] == ['issue', 'create']:
     print('https://github.com/o/r/issues/7')
 """)
@@ -1254,7 +1258,17 @@ class CleanupCase(GateCase):
 
     def actions(self):
         """The gh calls other than looking up the open issue."""
-        return [call[:3] for call in self.gh_calls() if call[:2] != ['issue', 'list']]
+        return [call[:3] for call in self.gh_calls()
+                if call[:2] not in (['issue', 'list'], ['issue', 'view'])]
+
+    def set_speed(self, baseline, samples):
+        """Replace the unit's baseline and later passes with exact numbers of seconds."""
+        path = self.state / 'state.json'
+        state = json.loads(path.read_text())
+        [unit] = state['cleanup'].values()
+        unit.update(baseline=baseline, baseline_source='given', samples=samples,
+                    sample_count=len(samples))
+        path.write_text(json.dumps(state))
 
 
 class CleanupTests(CleanupCase):
@@ -1325,6 +1339,18 @@ class CleanupTests(CleanupCase):
         self.assertGreaterEqual(unit['median'], unit['baseline'] * 1.3)
         [reason] = unit['due']
         self.assertIn('of the latest 3 passes', reason)
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+
+    def test_a_median_of_exactly_130_percent_triggers_and_just_below_does_not(self):
+        self.run_suite('2026-01-01')
+        self.set_speed(100, [129, 129, 129])
+        self.run_suite('2026-01-02', code=1)  # a failed run is checked but adds no sample
+        self.assertEqual((self.unit()['median'], self.unit()['due']), (129, []))
+        self.assertEqual(self.gh_calls(), [])
+        self.set_speed(100, [130, 130, 130])
+        self.run_suite('2026-01-02', code=1)
+        [reason] = self.unit()['due']
+        self.assertIn('median 130s of the latest 3 passes is 130% of the baseline 100s', reason)
         self.assertEqual(self.actions(), [['issue', 'create', '--title']])
 
     def test_a_single_slow_run_does_not_trigger(self):
@@ -1416,6 +1442,31 @@ class CleanupTests(CleanupCase):
         self.assertEqual(len(self.actions()), 1)
         self.run_suite('2026-02-16')
         self.assertEqual(len(self.actions()), 2)
+
+    def test_the_opened_issue_gets_the_next_comment_even_before_the_label_list_shows_it(self):
+        self.run_suite('2026-01-01')
+        self.run_suite('2026-02-01')
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+        result = self.run_suite('2026-02-02')  # the label list still returns []
+        self.assertIn('commented on https://github.com/o/r/issues/7', result.stderr)
+        self.assertEqual(self.gh_calls()[-2][:5], ['issue', 'view', '7', '--json', 'state,url'])
+        self.assertEqual(self.actions(), [['issue', 'create', '--title'],
+                                          ['issue', 'comment', '7']])
+
+    def test_after_our_issue_is_closed_the_label_list_decides_again(self):
+        self.run_suite('2026-01-01')
+        self.run_suite('2026-02-01')
+        (self.gh_dir / 'view.json').write_text(
+            json.dumps({'state': 'CLOSED', 'url': 'https://github.com/o/r/issues/7'}))
+        (self.gh_dir / 'open.json').write_text(
+            json.dumps([{'number': 5, 'url': 'https://github.com/o/r/issues/5'}]))
+        result = self.run_suite('2026-02-02')
+        self.assertIn('commented on https://github.com/o/r/issues/5', result.stderr)
+        (self.gh_dir / 'open.json').unlink()
+        self.run_suite('2026-02-03')
+        self.assertEqual(self.actions(), [['issue', 'create', '--title'],
+                                          ['issue', 'comment', '5'],
+                                          ['issue', 'create', '--title']])
 
     def test_a_failing_tracker_only_prints_the_ticket_and_is_retried(self):
         (self.gh_dir / 'fail').touch()

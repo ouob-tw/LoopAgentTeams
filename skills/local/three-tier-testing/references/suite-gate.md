@@ -255,7 +255,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py uninstall-pre-push --re
   {"cleanup": {"github_repo": "<owner>/<repo>", "label": "test-cleanup"}}
   ```
 
-  觸發時用 `gh issue list --state open --label <標籤>` 找開著的整理票：有就 `gh issue comment` 更新數字，沒有就 `gh issue create`（標題 `Test cleanup: <專案目錄名>`，內文列出觸發原因、上次整理日、基準、目前中位數，並指向本技能的 `references/cleanup.md` 與 `cleanup-done`）。每個單位每天最多一次開票或留言，同一天再觸發只印一行提醒。
+  觸發時先查閘門上次開的整理票（`gh issue view <編號>`，剛開的票可能還沒出現在標籤清單），還開著就留言；否則用 `gh issue list --state open --label <標籤>` 找開著的整理票：有就 `gh issue comment` 更新數字，沒有就 `gh issue create`（標題 `Test cleanup: <專案目錄名>`，內文列出觸發原因、上次整理日、基準、目前中位數，並指向本技能的 `references/cleanup.md` 與 `cleanup-done`）。每個單位每天最多一次開票或留言，同一天再觸發只印一行提醒。
 - **不影響測試結果**：檢查在測試結束、紀錄寫入、名額釋放之後才做，每次 `gh` 呼叫最多等 10 秒。沒設 tracker、`gh` 失敗或逾時，只在 stderr 印出提醒與應開票的標題和內文，測試輸出與結束碼不變；失敗不算當天已處理，下次執行會再試。
 - 只支援 GitHub；其他 tracker 不設 `cleanup`，照 stderr 的內容手動開票。
 

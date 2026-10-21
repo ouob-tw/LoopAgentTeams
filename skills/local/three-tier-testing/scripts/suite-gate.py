@@ -1913,16 +1913,28 @@ def gh(args, tracker):
     return result.stdout
 
 
-def post_cleanup(tracker, title, body, comment):
-    """Comment on the open cleanup issue, or open one; returns what was done."""
+def tracker_key(tracker):
+    return json.dumps([tracker['repo'], tracker['label']])
+
+
+def post_cleanup(tracker, title, body, comment, opened):
+    """Comment on the open cleanup issue, or open one; returns (what was done, the number of
+    an issue opened now or None). opened is the issue this gate opened last: it is asked
+    first, since a new issue can be missing from the label list for a while."""
+    if opened is not None:
+        issue = json.loads(gh(['issue', 'view', str(opened), '--json', 'state,url'], tracker))
+        if issue['state'] == 'OPEN':
+            gh(['issue', 'comment', str(opened), '--body', comment], tracker)
+            return f"commented on {issue['url']}", None
     found = json.loads(gh(['issue', 'list', '--state', 'open', '--label', tracker['label'],
                            '--json', 'number,url', '--limit', '1'], tracker))
     if found:
         gh(['issue', 'comment', str(found[0]['number']), '--body', comment], tracker)
-        return f"commented on {found[0]['url']}"
+        return f"commented on {found[0]['url']}", None
     url = gh(['issue', 'create', '--title', title, '--label', tracker['label'],
               '--body', body], tracker).strip()
-    return f'opened {url}'
+    number = re.search(r'/issues/(\d+)$', url)
+    return f'opened {url}', int(number.group(1)) if number else None
 
 
 def check_cleanup(finished, command, cwd):
@@ -1953,9 +1965,10 @@ def _check_cleanup(finished, command, cwd):
         claimed = bool(reasons) and tracker is not None and previous != day
         if claimed:
             unit['acted'] = day  # at most one tracker action per unit per day
-        return dict(unit), reasons, claimed, previous
+        opened = state.get('cleanup_issues', {}).get(tracker_key(tracker)) if claimed else None
+        return dict(unit), reasons, claimed, previous, opened
 
-    unit, reasons, claimed, previous = with_state(update)
+    unit, reasons, claimed, previous, opened = with_state(update)
     if not reasons:
         return
     title, body, comment = cleanup_ticket(unit, reasons)
@@ -1969,7 +1982,7 @@ def _check_cleanup(finished, command, cwd):
              'updated today')
         return
     try:
-        done = post_cleanup(tracker, title, body, comment)
+        done, number = post_cleanup(tracker, title, body, comment, opened)
     except Interrupted:
         raise
     except Exception as exc:
@@ -1982,6 +1995,10 @@ def _check_cleanup(finished, command, cwd):
              f"({exc}). Open or update the open `{tracker['label']}` issue by hand:\n"
              f'Title: {title}\n{body}')
         return
+    if number is not None:
+        def remember(state):
+            state.setdefault('cleanup_issues', {})[tracker_key(tracker)] = number
+        with_state(remember)
     warn(f'test cleanup is due: {done}')
 
 
