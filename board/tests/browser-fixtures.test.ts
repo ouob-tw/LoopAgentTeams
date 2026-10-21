@@ -5,9 +5,9 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { expect, test } from 'bun:test';
+import { afterEach, expect, test } from 'bun:test';
 import { CHROME, launchChrome } from './browser.ts';
-import { sleep, startFixture } from './harness.ts';
+import { sleep, startFixture, type Fixture } from './harness.ts';
 
 const alive = (pid: number) => {
 	try {
@@ -18,18 +18,28 @@ const alive = (pid: number) => {
 	}
 };
 
+/** What a test acquired, released in the reverse order whatever happens after. */
+const cleanups: (() => Promise<unknown>)[] = [];
+afterEach(async () => {
+	while (cleanups.length) await cleanups.pop()!().catch(() => {});
+});
+async function fixtureOf(): Promise<Fixture> {
+	const fixture = await startFixture();
+	cleanups.push(() => fixture.cleanup());
+	return fixture;
+}
+
 test('two fixtures started together get different ports and both answer', async () => {
-	const [a, b] = await Promise.all([startFixture(), startFixture()]);
-	try {
-		expect(new URL(a.url).port).not.toBe(new URL(b.url).port);
-		for (const fixture of [a, b]) expect((await fetch(`${fixture.url}/login`)).status).toBe(200);
-	} finally {
-		await Promise.all([a.cleanup(), b.cleanup()]);
-	}
+	const results = await Promise.allSettled([fixtureOf(), fixtureOf()]);
+	const [a, b] = results.map((result) => (result.status === 'fulfilled' ? result.value : Promise.reject(result.reason)));
+	const [first, second] = await Promise.all([a, b]);
+	expect(new URL(first.url).port).not.toBe(new URL(second.url).port);
+	for (const fixture of [first, second]) expect((await fetch(`${fixture.url}/login`)).status).toBe(200);
 }, 60_000);
 
 test('a fixture and a Chrome start while ports 7110–7201 are taken', async () => {
 	const held: Server[] = [];
+	cleanups.push(() => closeAll(held));
 	for (let port = 7110; port <= 7201; port++) {
 		const server = createServer();
 		// A port somebody else already holds stays theirs.
@@ -39,17 +49,14 @@ test('a fixture and a Chrome start while ports 7110–7201 are taken', async () 
 		});
 		if (bound) held.push(server);
 	}
-	const fixture = await startFixture().catch(async (error) => (await closeAll(held), Promise.reject(error)));
-	const browser = CHROME ? await launchChrome() : undefined;
-	try {
-		expect(held.length).toBeGreaterThan(0);
-		expect(Number(new URL(fixture.url).port)).toBeGreaterThan(0);
-		expect((await fetch(`${fixture.url}/login`)).status).toBe(200);
-		if (browser) expect(await browser.tab.eval('1 + 1')).toBe(2);
-	} finally {
-		await browser?.close();
-		await fixture.cleanup();
-		await closeAll(held);
+	const fixture = await fixtureOf();
+	expect(held.length).toBeGreaterThan(0);
+	expect(Number(new URL(fixture.url).port)).toBeGreaterThan(0);
+	expect((await fetch(`${fixture.url}/login`)).status).toBe(200);
+	if (CHROME) {
+		const browser = await launchChrome();
+		cleanups.push(() => browser.close());
+		expect(await browser.tab.eval('1 + 1')).toBe(2);
 	}
 }, 60_000);
 

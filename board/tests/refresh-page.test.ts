@@ -1,6 +1,5 @@
 // Refresh acceptance in a real browser with fake hcom/Herdr/helper services only.
-import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { question, sleep, startFixture, type Fixture } from './harness.ts';

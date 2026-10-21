@@ -3,8 +3,7 @@
 // open in the other without a reload, the settings' buttons and the line always agree, a style
 // that cannot be saved shows a notice and leaves the page as it was, and the theme stays each
 // browser's own. Headless Chrome over its DevTools protocol; skipped when the host has no Chrome.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { sleep, startFixture, type Fixture } from './harness.ts';

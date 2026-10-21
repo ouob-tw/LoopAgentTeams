@@ -1,9 +1,6 @@
 // Clicking an inbox row with the mouse must light up only the row's own frame: the inner
 // button never shows the keyboard focus ring, in any frame. In a real browser: headless Chrome driven
 // over its DevTools protocol, on the built board with fake data. Skipped when the host has no Chrome.
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { sleep, startFixture, type Fixture } from './harness.ts';
 import { CHROME, launchChrome, type Browser } from './browser.ts';

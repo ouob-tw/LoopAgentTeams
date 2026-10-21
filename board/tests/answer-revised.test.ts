@@ -2,9 +2,6 @@
 // screen at once, so answering again as the notice says goes through the first time. In a real
 // browser: headless Chrome driven over its DevTools protocol, on the built board with fake data.
 // Skipped when the host has no Chrome.
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import type { HelperController, HelperQuestion } from '../src/lib/board/types.ts';
 import { question, sleep, startFixture, type Fixture } from './harness.ts';

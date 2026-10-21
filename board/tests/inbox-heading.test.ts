@@ -1,10 +1,7 @@
 // The 待辦 tab's top row in a real browser: headless Chrome driven over its DevTools protocol, on
 // the built board, at a desktop and a phone width. Skipped when the host has no Chrome.
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
-import { sleep, startFixture, type Fixture } from './harness.ts';
+import { startFixture, type Fixture } from './harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from './browser.ts';
 
 

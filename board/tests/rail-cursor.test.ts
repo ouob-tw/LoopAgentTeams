@@ -1,12 +1,9 @@
 // The blank of the roster shows the expand or collapse cursor, so the pointer must never cross it
 // between two neighbouring marks or cards. In a real browser: headless Chrome driven over its
 // DevTools protocol, on the built board with fake data. Skipped when the host has no Chrome.
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { FOLDED_KEY } from '../src/lib/board/prefs.ts';
-import { question, sleep, startFixture, type Fixture } from './harness.ts';
+import { question, startFixture, type Fixture } from './harness.ts';
 import { CHROME, launchChrome, type Browser } from './browser.ts';
 
 let fixture: Fixture;

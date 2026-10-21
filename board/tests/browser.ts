@@ -17,10 +17,13 @@ export class Tab {
 	#socket: WebSocket;
 	#next = 0;
 	#waiting = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>();
+	#failures = new Set<(error: Error) => void>();
 	/** The documents that have loaded, by the loader that loaded them. */
 	#loaded = new Set<string>();
 	/** The requests held by `Fetch.enable`, waiting for `Fetch.continueRequest`. */
 	paused: string[] = [];
+	/** The page's uncaught exceptions and console errors; empty it (`errors.length = 0`) to start over. */
+	errors: string[] = [];
 	/** An expression in the page whose value a timed out wait reports, to show what the page was doing. */
 	screen: string | undefined;
 	constructor(socket: WebSocket) {
@@ -29,9 +32,21 @@ export class Tab {
 			const message = JSON.parse(String(event.data));
 			if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') this.#loaded.add(message.params.loaderId);
 			if (message.method === 'Fetch.requestPaused') this.paused.push(message.params.requestId);
+			if (message.method === 'Runtime.exceptionThrown') this.errors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
+			if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') {
+				this.errors.push(message.params.args.map((arg: { value?: string; description?: string }) => arg.value ?? arg.description).join(' '));
+			}
 			this.#waiting.get(message.id)?.(message);
 			this.#waiting.delete(message.id);
 		});
+		// A tab that is gone answers nothing: every request still waiting fails instead of hanging.
+		socket.addEventListener('close', () => this.#fail(new Error('the Chrome tab closed')));
+		socket.addEventListener('error', () => this.#fail(new Error('the Chrome tab failed')));
+	}
+	#fail(error: Error) {
+		for (const fail of this.#failures) fail(error);
+		this.#failures.clear();
+		this.#waiting.clear();
 	}
 	/** A new tab of the Chrome listening on `debugPort`. `scripts` run first in every document. */
 	static async open(debugPort: number, scripts: string[] = []): Promise<Tab> {
@@ -46,9 +61,13 @@ export class Tab {
 			if (!target) await sleep(100);
 		}
 		const socket = new WebSocket(target.webSocketDebuggerUrl);
-		await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
+		await new Promise((resolve, reject) => {
+			socket.addEventListener('open', resolve, { once: true });
+			socket.addEventListener('error', () => reject(new Error('the Chrome tab did not open')), { once: true });
+		});
 		const tab = new Tab(socket);
 		await tab.send('Page.enable');
+		await tab.send('Runtime.enable');
 		await tab.send('Page.setLifecycleEventsEnabled', { enabled: true });
 		for (const source of scripts) await tab.send('Page.addScriptToEvaluateOnNewDocument', { source });
 		return tab;
@@ -56,9 +75,13 @@ export class Tab {
 	send(method: string, params: object = {}): Promise<any> {
 		const id = ++this.#next;
 		this.#socket.send(JSON.stringify({ id, method, params }));
-		return new Promise((resolve, reject) =>
-			this.#waiting.set(id, (message) => (message.error ? reject(new Error(message.error.message)) : resolve(message.result)))
-		);
+		return new Promise((resolve, reject) => {
+			this.#failures.add(reject);
+			this.#waiting.set(id, (message) => {
+				this.#failures.delete(reject);
+				message.error ? reject(new Error(message.error.message)) : resolve(message.result);
+			});
+		});
 	}
 	async eval<T = unknown>(expression: string): Promise<T> {
 		const { result, exceptionDetails } = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
@@ -146,7 +169,10 @@ export async function launchChrome(options: { scripts?: string[]; screen?: strin
 	};
 	try {
 		const debugPort = await debuggingPort(profile, chrome);
-		tab = await Tab.open(debugPort, options.scripts);
+		// Chrome that stops answering after it said its port must not hang the setup past its own cleanup.
+		let giveUp: ReturnType<typeof setTimeout>;
+		const timeout = new Promise<never>((_, reject) => (giveUp = setTimeout(() => reject(new Error('timed out opening a Chrome tab')), 20_000)));
+		tab = await Promise.race([Tab.open(debugPort, options.scripts), timeout]).finally(() => clearTimeout(giveUp));
 		tab.screen = options.screen;
 		return { tab, debugPort, pid: chrome.pid!, close };
 	} catch (error) {

@@ -1,11 +1,8 @@
 // Errors in the browser reach the board's log: a page that renders into "Internal Error" and an
 // error or rejection nothing handled. In a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with fake data. Skipped when the host has no Chrome.
-import { existsSync, mkdtempSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { logged, question, sleep, startFixture, until as waitFor, type Fixture } from './harness.ts';
+import { logged, question, startFixture, until as waitFor, type Fixture } from './harness.ts';
 import { CHROME, launchChrome, type Browser } from './browser.ts';
 
 let fixture: Fixture;

@@ -1,7 +1,6 @@
 // Going back through the board's screens in a real browser: headless Chrome driven over its
 // DevTools protocol, on the built board with fake data. Skipped when the host has no Chrome.
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { ARCHIVE_PAGE } from '../src/lib/board/archive.ts';

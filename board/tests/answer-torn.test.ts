@@ -3,8 +3,7 @@
 // the pages that show the inbox's questions with the answered ones show it once instead of failing
 // on a duplicate key. The pages in a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with fake data. Skipped when the host has no Chrome.
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import type { HelperController, HelperQuestion, InboxQuestion } from '../src/lib/board/types.ts';
@@ -16,7 +15,7 @@ let fixture: Fixture;
 let cookie: string;
 let browser: Browser | undefined;
 /** The page's errors and exceptions since the last navigation. */
-let errors: string[] = [];
+const errors = () => browser!.tab.errors;
 
 const send = (method: string, params: object = {}) => browser!.tab.send(method, params);
 const evaluate = <T>(expression: string) => browser!.tab.eval<T>(expression);
@@ -147,7 +146,7 @@ for (const width of [1280, 390]) {
 			await send('Page.navigate', { url: fixture.url + view.path(controller) });
 			const row = (id: string) => `!!document.querySelector('.row[data-item="${key(controller, id)}"]')`;
 			await until(view.cards ? `document.querySelectorAll('form.answer').length === 2` : row('Q-1'));
-			errors = [];
+			errors().length = 0;
 
 			torn(controller, first({ status: 'submitted', answer: 'A. 甲' }));
 			await fixture.refresh(cookie);
@@ -158,7 +157,7 @@ for (const width of [1280, 390]) {
 			);
 			await sleep(1000);
 			expect(await evaluate<string>(`document.body.innerText`)).not.toContain('Internal Error');
-			expect(errors.filter((error) => error.includes('each_key_duplicate'))).toEqual([]);
+			expect(errors().filter((error) => error.includes('each_key_duplicate'))).toEqual([]);
 			if (view.cards) {
 				const ids = await evaluate<string[]>(`[...document.querySelectorAll('.asked header .id')].map((id) => id.textContent.trim())`);
 				expect(ids.filter((id) => id.startsWith('Q-1'))).toHaveLength(1);
@@ -204,7 +203,7 @@ new MutationObserver((records) => {
 async function openUnplaced(controller: HelperController) {
 	const { identifier } = await send('Page.addScriptToEvaluateOnNewDocument', { source: FALLBACK_LOG });
 	try {
-		errors = [];
+		errors().length = 0;
 		await send('Page.navigate', { url: fixture.url + `/?item=${encodeURIComponent(key(controller, 'Q-2'))}` });
 		await until(`/Internal Error/.test(document.body.innerText) || document.body.innerText.includes('找不到提出這題的原訊息')`);
 		await sleep(500);
@@ -215,7 +214,7 @@ async function openUnplaced(controller: HelperController) {
 
 async function expectShownOnce(cards: string) {
 	expect(await evaluate<string>(`document.body.innerText`)).not.toContain('Internal Error');
-	expect(errors.filter((error) => error.includes('each_key_duplicate'))).toEqual([]);
+	expect(errors().filter((error) => error.includes('each_key_duplicate'))).toEqual([]);
 	const ids = await evaluate<string[]>(cards);
 	expect(ids.filter((id) => id.startsWith('Q-1'))).toHaveLength(1);
 	expect(ids.filter((id) => id.startsWith('Q-2'))).toHaveLength(1);
@@ -238,7 +237,7 @@ for (const width of [1280, 390]) {
 		const controller = asking(`failed-${width}`, 'rana');
 		await answeredFails(controller);
 		await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 600 });
-		errors = [];
+		errors().length = 0;
 		await send('Page.navigate', { url: fixture.url + `/?controller=${encodeURIComponent(controller.session_id)}` });
 		await until(`/Internal Error/.test(document.body.innerText) || document.querySelectorAll('.asked').length >= 2`);
 		await sleep(1000);

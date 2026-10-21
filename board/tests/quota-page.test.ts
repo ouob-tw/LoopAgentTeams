@@ -1,11 +1,10 @@
 // The 額度 tab in a real browser: headless Chrome driven over its DevTools protocol, on the built
 // board with a fake claude-swap and codex-multi-auth files in a temporary folder, with the middle
 // column 360px wide and at a phone's width. Skipped when the host has no Chrome.
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
-import { DAY, sleep, startFixture, type Fixture } from './harness.ts';
+import { DAY, startFixture, type Fixture } from './harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from './browser.ts';
 
 const MIN = 60_000;

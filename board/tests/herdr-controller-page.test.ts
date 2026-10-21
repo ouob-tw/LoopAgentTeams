@@ -3,8 +3,7 @@
 // width. The page is the controller's information page plus the agent's close and operation
 // record: its question and report cards answer and read as the inbox does. An ordinary agent's page
 // and the information page stay as they were. Skipped when the host has no Chrome.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import type { HelperQuestion } from '../src/lib/board/types.ts';

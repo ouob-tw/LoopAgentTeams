@@ -3,8 +3,7 @@
 // Answered questions come from the question files and their archives, and show as read-only cards
 // there and in the conversation. Server checks always run; the page is checked in headless Chrome,
 // driven over its DevTools protocol, when the host has one.
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { chosenIn } from '../src/lib/board/answers.ts';

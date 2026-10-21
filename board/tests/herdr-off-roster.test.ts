@@ -4,13 +4,13 @@
 // tab does not list it, but on the Herdr tab its card opens the controller's page and the command
 // line wakes it, resuming its conversation; gone from Herdr, its row of the 已關閉 section is a
 // controller's, woken with the wake's options. Skipped when the host has no Chrome.
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import type { SentEntry } from '../src/lib/board/answers.ts';
 import type { BoardSnapshot } from '../src/lib/board/types.ts';
-import { jsonLines, NODE, sleep, startFixture, type Fixture } from './harness.ts';
+import { jsonLines, NODE, startFixture, type Fixture } from './harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from './browser.ts';
 
 

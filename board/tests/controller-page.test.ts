@@ -1,11 +1,10 @@
 // A controller's information page in a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with fake data, wide and at a phone's width. Its header and details,
 // the bars of its questions, and its tabs. Skipped when the host has no Chrome.
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { question, sleep, startFixture, type Fixture } from './harness.ts';
+import { question, startFixture, type Fixture } from './harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from './browser.ts';
 
 /** Runs first in every document: counts the listeners for the browser's back. */

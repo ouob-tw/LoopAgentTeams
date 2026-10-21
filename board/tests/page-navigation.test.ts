@@ -6,7 +6,7 @@
 // shows that they do not hold the board's connections (six over HTTP/1.1) and starve the page in
 // view. And going back to the board from another page loads it again, its feeds live and its
 // command-line draft still there. Skipped when the host has no Chrome.
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';

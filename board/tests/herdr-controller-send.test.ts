@@ -5,7 +5,7 @@
 // in its sent log. An ordinary agent is still written to as an agent. The controllers share one
 // draft; what was typed to a controller as an agent before is moved into it once. Skipped when the
 // host has no Chrome.
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';

@@ -5,7 +5,7 @@
 // again; a change in the settings dialog reaches an open page and survives a reload; a setting that
 // cannot be saved shows a notice and leaves things as they were; the old per-device switch is
 // cleared and not read. Skipped when the host has no Chrome.
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';

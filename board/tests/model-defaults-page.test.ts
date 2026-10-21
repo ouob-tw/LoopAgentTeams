@@ -2,8 +2,7 @@
 // label shows a new controller's model once its first turn starts, without a reload. In a real
 // browser: headless Chrome driven over its DevTools protocol, on the built board with fake data and
 // client settings in the fixture's temporary home. Skipped when the host has no Chrome.
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { DEFAULT_UNREADABLE_TEXT } from '../src/lib/board/models.ts';
