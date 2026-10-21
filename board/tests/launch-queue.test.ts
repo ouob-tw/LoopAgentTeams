@@ -8,34 +8,38 @@ import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { LaunchList, LaunchResponse, LaunchView } from '../src/lib/board/launch.ts';
-import { NODE, sleep, startFixture, type Fixture } from './harness.ts';
+import { NODE, sleep, startFixture, until, type Fixture } from './harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-launch-queue-'));
 const socketPath = join(commandDir, 'herdr.sock');
 /** How long a launch waits for its agent to appear in Herdr in these tests. */
 const WAIT_SECONDS = 10;
-/** How long the fake socket takes to move a tab. */
-const MOVE_MS = 800;
+/** How long the fake socket holds a move once Herdr runs every agent the test launched: longer
+ *  than a wait's poll, so any other follow-through has reached its own move by then. */
+const HOLD_MS = 1_500;
 
 let fixture: Fixture;
 let cookie: string;
 let socket: Server;
 
+const readJson = (name: string) => JSON.parse(readFileSync(join(commandDir, name), 'utf8'));
 const readLog = <T>(name: string): T[] => {
 	const file = join(commandDir, name);
 	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
 };
 
 beforeAll(async () => {
-	// Herdr's socket: each `tab.move` is logged when it comes in and when it is answered.
+	// Herdr's socket: each `tab.move` is logged when it comes in and when it is answered, which is
+	// only once Herdr runs every agent hcom was told to start, and HOLD_MS after that.
 	socket = createServer((connection) => {
-		connection.on('data', (chunk) => {
+		connection.on('data', async (chunk) => {
 			const request = JSON.parse(chunk.toString().trim());
 			appendFileSync(join(commandDir, 'moves.jsonl'), JSON.stringify({ tab: request.params.tab_id, at: Date.now(), edge: 'start' }) + '\n');
-			setTimeout(() => {
-				appendFileSync(join(commandDir, 'moves.jsonl'), JSON.stringify({ tab: request.params.tab_id, at: Date.now(), edge: 'end' }) + '\n');
-				connection.write(JSON.stringify({ id: request.id, result: { type: 'tab_moved' } }) + '\n');
-			}, MOVE_MS);
+			const launched = readJson('hcom.json').launchedHerdr.filter(Boolean).length;
+			await until(() => readJson('herdr.json').agents.length >= launched, 10_000, 'every launched agent in Herdr');
+			await sleep(HOLD_MS);
+			appendFileSync(join(commandDir, 'moves.jsonl'), JSON.stringify({ tab: request.params.tab_id, at: Date.now(), edge: 'end' }) + '\n');
+			connection.write(JSON.stringify({ id: request.id, result: { type: 'tab_moved' } }) + '\n');
 		});
 	});
 	await new Promise<void>((resolve) => socket.listen(socketPath, resolve));
@@ -145,10 +149,13 @@ test('a launch whose agent never shows in Herdr does not hold up the next one pa
 		{ name: 'zelo', workspace: 'wA', folder }
 	]);
 
-	const [first, second] = await Promise.all([launch(folder, true), launch(folder, true)]);
+	// The second asks once the first has taken the queue, so the first is the one that never shows.
+	const starting = launch(folder, true);
+	await until(() => readLog('hcom-calls.jsonl').length === 1, 10_000, 'the first hcom run');
+	const [first, second] = await Promise.all([starting, launch(folder, true)]);
 
 	expect([first.status, second.status]).toEqual([200, 200]);
-	expect(readLog<{ args: string[] }>('hcom-calls.jsonl')).toHaveLength(2);
+	expect([first.body.entry?.hcomName, second.body.entry?.hcomName]).toEqual(['tavi', 'zelo']);
 	// Answered once its own hcom has run, not once the first one's wait of WAIT_SECONDS is over.
 	expect(second.at - first.at).toBeLessThan(3_000);
 	expect((await followed(second.body.entry!.id)).follow).toMatchObject({ appearedAt: expect.any(String) });
@@ -169,7 +176,8 @@ test('two new controllers for one project at once still make one workspace', asy
 	const creates = readLog<string[]>('herdr-calls.jsonl').filter((call) => call.slice(0, 2).join(' ') === 'workspace create');
 	expect(creates).toHaveLength(1);
 	expect([first.body.entry?.herdrWorkspace, second.body.entry?.herdrWorkspace]).toEqual(['wNew', 'wNew']);
-	expect([first.body.entry?.workspaceCreated, second.body.entry?.workspaceCreated]).toEqual([true, false]);
+	// Whichever the queue took first created it.
+	expect([first.body.entry?.workspaceCreated, second.body.entry?.workspaceCreated].sort()).toEqual([false, true]);
 	await followed(first.body.entry!.id);
 	await followed(second.body.entry!.id);
 }, 30_000);
