@@ -20,7 +20,8 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import DecisionStatus, read_decision_status
-from _lat_common import process_starttime, run_cli, watcher_process_matches, write_json_atomic
+from _lat_common import (process_starttime, run_cli, shared_lat_dir, watcher_process_matches,
+                         write_json_atomic)
 
 
 IDLE_SECONDS = 10 * 60
@@ -724,16 +725,8 @@ def valid_name(value):
 
 @functools.lru_cache(maxsize=None)
 def lat_dir(workspace):
-    """All worktrees share the main checkout's .lat; never create one in a linked worktree.
-
-    A worktree whose .lat already exists (a controller activated there) keeps using it.
-    """
-    workspace = Path(workspace)
-    if (workspace / '.git').is_file() and not (workspace / '.lat').is_dir():
-        common = run_command(['git', '-C', str(workspace), 'rev-parse',
-                              '--path-format=absolute', '--git-common-dir']).strip()
-        return Path(common).parent / '.lat'
-    return workspace / '.lat'
+    """All worktrees share the main checkout's .lat; never create one in a linked worktree."""
+    return shared_lat_dir(workspace)
 
 
 def watch_dir(workspace):

@@ -3423,33 +3423,6 @@ esac
         self.assertTrue((main / '.lat/watch/orch/watch.jsonl').is_file())
         self.assertEqual(watch.wait_path(worktree, 'orch'), main / '.lat/watch/waits/orch.json')
 
-    def test_watcher_of_a_controller_activated_in_a_worktree_keeps_its_lat(self):
-        main = self.root / 'main'
-        main.mkdir()
-        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid']
-        subprocess.run([*git, 'init', '-q', str(main)], check=True)
-        subprocess.run([*git, '-C', str(main), 'commit', '-q', '--allow-empty', '-m', 'init'],
-                       check=True)
-        worktree = self.root / 'wt'
-        subprocess.run([*git, '-C', str(main), 'worktree', 'add', '-q', str(worktree)],
-                       check=True)
-        # What activate leaves in a worktree before it launches the watcher.
-        sessions = worktree / '.lat/sessions'
-        sessions.mkdir(parents=True)
-        (sessions / 'sid.json').write_text(json.dumps(dict(
-            session_id='sid', role='orchestrator', status='active',
-            workspace=str(worktree), hcom_name='orch')))
-        (worktree / '.lat/watch').mkdir()
-        (worktree / '.lat/watch/sid.pid').write_text('1234567')
-        watch = load_watch()
-        reason = 'orchestrator orch missing from HCOM for 60 minutes'
-        self.assertEqual(watch.stop_self(worktree, 'orch', reason, 0, pgid=1234567), 'sid')
-        self.assertFalse((worktree / '.lat/watch/sid.pid').exists())
-        self.assertEqual(json.loads((sessions / 'sid.json').read_text())['watcher_stopped']['reason'],
-                         reason)
-        self.assertTrue((worktree / '.lat/watch/orch/watch.jsonl').is_file())
-        self.assertFalse((main / '.lat').exists())
-
     def test_log_append_and_rotation_wait_for_another_writer(self):
         watch = load_watch()
         log = watch.state_path(self.work, 'orch').with_name('watch.jsonl')

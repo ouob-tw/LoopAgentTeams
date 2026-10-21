@@ -64,6 +64,16 @@ def run_cli(command, *, timeout, failure=None, env=None):
     return result.stdout
 
 
+def shared_lat_dir(workspace):
+    """One .lat per repository, in the main checkout; linked worktrees share it."""
+    workspace = Path(workspace)
+    if (workspace / '.git').is_file():
+        common = run_cli(['git', '-C', str(workspace), 'rev-parse', '--path-format=absolute',
+                          '--git-common-dir'], timeout=10).strip()
+        return Path(common).parent / '.lat'
+    return workspace / '.lat'
+
+
 def process_starttime(pid):
     try:
         fields = Path(f'/proc/{pid}/stat').read_text().rpartition(') ')[2].split()

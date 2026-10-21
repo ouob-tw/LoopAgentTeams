@@ -1483,6 +1483,77 @@ class SessionTests(unittest.TestCase):
         self.assertNotEqual(new_pid, old_pid)
         self.assertTrue(self.process_exists(new_pid))
 
+    def linked_worktree(self):
+        main, worktree = self.root / 'repo', self.root / 'wt'
+        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid']
+        subprocess.run([*git, 'init', '-q', str(main)], check=True)
+        subprocess.run([*git, '-C', str(main), 'commit', '-q', '--allow-empty', '-m', 'init'],
+                       check=True)
+        subprocess.run([*git, '-C', str(main), 'worktree', 'add', '-q', str(worktree)], check=True)
+        return main, worktree
+
+    def kill_group_later(self, pid):
+        def kill():
+            try:
+                os.killpg(pid, 15)
+            except ProcessLookupError:
+                pass
+        self.addCleanup(kill)
+
+    def test_worktree_controller_lives_in_main_lat_through_stop_resume_and_deactivate(self):
+        main, worktree = self.linked_worktree()
+        result = self.cli('activate', '--workspace', worktree, '--progress', self.progress,
+                          '--decisions', self.decisions)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record_path = main / '.lat/sessions' / f'{SESSION}.json'
+        self.assertEqual(json.loads(record_path.read_text())['workspace'], str(worktree))
+        pid_path = main / '.lat/watch' / f'{SESSION}.pid'
+        old_pid = int(pid_path.read_text())
+        self.kill_group_later(old_pid)
+        spec = importlib.util.spec_from_file_location('lat_watch', SKILL / 'scripts/lat-watch.py')
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+
+        reason = 'orchestrator orch missing from HCOM for 60 minutes'
+        self.assertEqual(watch.stop_self(worktree, 'orch', reason, 3600, pgid=old_pid), SESSION)
+        os.killpg(old_pid, 15)
+        self.wait_for(lambda: not self.process_exists(old_pid))
+        self.assertFalse(pid_path.exists())
+        self.assertEqual(json.loads(record_path.read_text())['watcher_stopped']['reason'], reason)
+
+        resumed = self.hook(source='resume', cwd=str(worktree))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertIn(f'LAT recovery record: {record_path}', resumed.stdout)
+        new_pid = int(pid_path.read_text())
+        self.kill_group_later(new_pid)
+        self.assertTrue(self.process_exists(new_pid))
+
+        result = self.cli('deactivate', '--workspace', worktree)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_for(lambda: not self.process_exists(new_pid))
+        self.assertEqual(json.loads(record_path.read_text())['status'], 'ended')
+        self.assertFalse((worktree / '.lat').exists())
+
+    def test_older_record_in_a_worktree_lat_is_still_recovered_and_deactivated_in_place(self):
+        main, worktree = self.linked_worktree()
+        legacy = worktree / '.lat/sessions' / f'{SESSION}.json'
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps(dict(
+            client='codex', session_id=SESSION, role='orchestrator', workspace=str(worktree),
+            status='active', skill_dir=str(SKILL), progress_path=str(self.progress),
+            decisions_path=str(self.decisions), tasks_path=str(self.tasks), hcom_name='orch')))
+
+        resumed = self.hook(source='resume', cwd=str(worktree))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertIn(f'LAT recovery record: {legacy}', resumed.stdout)
+        pid = int((worktree / '.lat/watch' / f'{SESSION}.pid').read_text())
+        self.kill_group_later(pid)
+        result = self.cli('deactivate', '--workspace', worktree)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_for(lambda: not self.process_exists(pid))
+        self.assertEqual(json.loads(legacy.read_text())['status'], 'ended')
+        self.assertFalse((main / '.lat/sessions').exists())
+
     def test_deactivate_records_end_time_and_a_new_round_starts_without_one(self):
         self.activate()
         self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)

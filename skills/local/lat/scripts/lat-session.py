@@ -21,7 +21,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import (read_advisor_error, read_decision_kind, read_decision_status,
                                  read_spec_consensus_error)
-from _lat_common import (reports_directory, run_cli, watcher_process_matches,
+from _lat_common import (reports_directory, run_cli, shared_lat_dir, watcher_process_matches,
                          write_json_atomic)
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
@@ -137,8 +137,16 @@ def legacy_upgrade_command(record):
     )
 
 
+def session_path(workspace, sid):
+    """Records live in the main checkout's shared .lat; an older one in a worktree's own .lat
+    is still found there, never moved."""
+    path = shared_lat_dir(workspace) / 'sessions' / f'{sid}.json'
+    legacy = Path(workspace) / '.lat/sessions' / f'{sid}.json'
+    return legacy if not path.exists() and legacy.exists() else path
+
+
 def watcher_paths(record):
-    root = Path(record['workspace']) / '.lat/watch'
+    root = session_path(record['workspace'], record['session_id']).parent.parent / 'watch'
     sid = record['session_id']
     return root / f'{sid}.pid', root / f'{sid}.lock', root / f'{sid}.log'
 
@@ -298,7 +306,7 @@ def activate(args):
     watcher = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(watcher)
     fingerprint = watcher.rule_fingerprint(SKILL_DIR)
-    path = workspace / '.lat/sessions' / f'{sid}.json'
+    path = session_path(workspace, sid)
     original = current_bytes(path)
     if path.exists():
         existing = read_json(path)
@@ -396,7 +404,7 @@ def pointer(path, record):
 
 def release_own_wait(workspace, name):
     """End the controller's own wait so a later activation does not report it as expired."""
-    path = workspace / '.lat/watch/waits' / f'{name}.json'
+    path = shared_lat_dir(workspace) / 'watch/waits' / f'{name}.json'
     if not path.parent.is_dir():
         return
     # Same lock file lat-watch uses for this declaration.
@@ -424,7 +432,7 @@ def deactivate(args):
         raise ValueError('Invalid successor HCOM name; record unchanged')
     workspace = args.workspace.resolve(strict=True)
     sid = session_id(args.session_id or os.environ.get(SESSION_ENV[args.client]))
-    path = workspace / '.lat/sessions' / f'{sid}.json'
+    path = session_path(workspace, sid)
     lock_record = dict(workspace=str(workspace), session_id=sid)
     _, lock_path, _ = watcher_paths(lock_record)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1027,7 +1035,7 @@ def hook(client):
         if not cwd.is_absolute():
             return
         root = workspace_root(cwd.resolve(strict=True))
-        path = root / '.lat/sessions' / f'{sid}.json'
+        path = session_path(root, sid)
         if not path.exists():
             if event == 'Stop':
                 activation_check(client, payload, sid)

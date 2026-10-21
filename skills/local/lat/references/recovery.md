@@ -22,7 +22,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" activate --client "
   --tasks "$tasks" --hcom-name "$hcom_name"
 ```
 
-activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；Claude：`CLAUDE_CODE_SESSION_ID`），不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。`--workspace` 須是 Git worktree 根目錄。`--hcom-name` 一律必填，只接受明確值，不讀 `HCOM_INSTANCE_NAME`；缺少時不建立 session 紀錄，照錯誤中的完整指令補上名稱重跑。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑與「已開始第 N 輪」（沒有歷史的紀錄視為第 1 輪），紀錄 client、session、主控角色、工作區、active 狀態、HCOM 名稱與恢復路徑（含任務卡目錄），並在背景啟動停住監控 `lat-watch.py run`（pid 在 `.lat/watch/<session-id>.pid`，輸出在同名 `.log`）。active 紀錄內容不同時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
+activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；Claude：`CLAUDE_CODE_SESSION_ID`），不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。`--workspace` 須是 Git worktree 根目錄。`--hcom-name` 一律必填，只接受明確值，不讀 `HCOM_INSTANCE_NAME`；缺少時不建立 session 紀錄，照錯誤中的完整指令補上名稱重跑。session 紀錄、監控 pid／log 與主控自己的等待聲明一律放在主工作區共用的 `.lat`；在 linked worktree 內 activate 也一樣，不在 worktree 內建 `.lat`（更新前已留在 worktree `.lat` 的紀錄照原位置讀取與停用，不搬移）。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑與「已開始第 N 輪」（沒有歷史的紀錄視為第 1 輪），紀錄 client、session、主控角色、工作區、active 狀態、HCOM 名稱與恢復路徑（含任務卡目錄），並在背景啟動停住監控 `lat-watch.py run`（pid 在 `.lat/watch/<session-id>.pid`，輸出在同名 `.log`）。active 紀錄內容不同時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
 
    同一對話在上一輪停用後，可在同一工作區用上方 activate 指令與本輪的路徑、HCOM 名稱開始新一輪。上一輪的狀態、結束時間、技能目錄、恢復路徑、HCOM 名稱與技能文字指紋依序保存在紀錄的 `history` 清單；目前欄位換成本輪內容（不帶結束時間），重新計算指紋，照常綁定面板、啟動監控與設定分頁名稱。deactivate、恢復 hook 與回合結束檢查只讀目前欄位；不清除或搬移共用的待決紀錄、任務卡、監控狀態與等待聲明。其他狀態或無法辨識的紀錄仍拒絕；不要刪除或手動重建 session 紀錄。
 
