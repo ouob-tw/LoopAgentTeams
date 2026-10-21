@@ -4,75 +4,16 @@
 // tab does not list it, but on the Herdr tab its card opens the controller's page and the command
 // line wakes it, resuming its conversation; gone from Herdr, its row of the 已關閉 section is a
 // controller's, woken with the wake's options. Skipped when the host has no Chrome.
-import { spawn, type ChildProcess } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import type { SentEntry } from '../src/lib/board/answers.ts';
 import type { BoardSnapshot } from '../src/lib/board/types.ts';
-import { NODE, PORT_BASE, sleep, startFixture, type Fixture } from './harness.ts';
+import { jsonLines, NODE, sleep, startFixture, type Fixture } from './harness.ts';
+import { CHROME, launchChrome, type Browser, type Tab } from './browser.ts';
 
-const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
-	(path) => path && existsSync(path)
-);
-const DEBUG_PORT = PORT_BASE + 80;
 
-/** One Chrome tab, spoken to over the DevTools protocol. */
-class Tab {
-	#socket: WebSocket;
-	#next = 0;
-	#waiting = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>();
-	constructor(socket: WebSocket) {
-		this.#socket = socket;
-		socket.addEventListener('message', (event) => {
-			const message = JSON.parse(String(event.data));
-			this.#waiting.get(message.id)?.(message);
-			this.#waiting.delete(message.id);
-		});
-	}
-	static async open(): Promise<Tab> {
-		const deadline = Date.now() + 10_000;
-		let target: { webSocketDebuggerUrl: string } | undefined;
-		while (!target) {
-			if (Date.now() > deadline) throw new Error('timed out waiting for Chrome to listen');
-			target = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/new?about:blank`, { method: 'PUT' }).then(
-				(response) => response.json(),
-				() => undefined
-			);
-			if (!target) await sleep(100);
-		}
-		const socket = new WebSocket(target.webSocketDebuggerUrl);
-		await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-		const tab = new Tab(socket);
-		await tab.send('Page.enable');
-		return tab;
-	}
-	send(method: string, params: object = {}): Promise<any> {
-		const id = ++this.#next;
-		this.#socket.send(JSON.stringify({ id, method, params }));
-		return new Promise((resolve, reject) =>
-			this.#waiting.set(id, (message) => (message.error ? reject(new Error(message.error.message)) : resolve(message.result)))
-		);
-	}
-	async eval<T = unknown>(expression: string): Promise<T> {
-		const { result, exceptionDetails } = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-		if (exceptionDetails) throw new Error(`${expression}: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
-		return result.value;
-	}
-	/** A click with the pointer at the centre of the first element matching `selector`: it lands on
-	 *  whatever is on top there, which an element's own click() does not. */
-	async until(expression: string, what = expression) {
-		const deadline = Date.now() + 10_000;
-		while (!(await this.eval(expression).catch(() => false))) {
-			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}; the page shows ${JSON.stringify(await this.eval(SCREEN))}`);
-			await sleep(50);
-		}
-	}
-	close() {
-		this.#socket.close();
-	}
-}
 
 const SCREEN = `({ search: location.search, detail: document.querySelector('.detail')?.innerText ?? '', notices: document.querySelector('.dock')?.innerText ?? '' })`;
 /** The tab strip's labels, without their counts. */
@@ -93,8 +34,7 @@ const DAY_MS = 24 * 60 * 60_000;
 const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-inject-'));
 let fixture: Fixture;
 let cookie: string;
-let chrome: ChildProcess | undefined;
-let profile: string;
+let browser: Browser | undefined;
 let tab: Tab;
 let old: ReturnType<Fixture['bound']>;
 /** Like `old`, but Herdr no longer lists them: in the 已關閉 section, one for each width. */
@@ -111,7 +51,7 @@ function herdrAgent(session: string, cwd: string) {
 		workspace_id: 'wA'
 	};
 }
-const lines = (file: string): any[] => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []);
+const lines = jsonLines;
 const injects = (): string[][] => lines(join(injectDir, 'inject-calls.jsonl'));
 const resumes = (): string[][] => lines(join(fixture.dir, 'hcom-calls.jsonl')).map((call: { args: string[] }) => call.args).filter((args) => args[0] === 'r');
 async function sentLog(controllerId: string): Promise<SentEntry[]> {
@@ -123,7 +63,7 @@ async function agentLog(agentId: string): Promise<unknown[]> {
 
 beforeAll(async () => {
 	if (!CHROME) return;
-	fixture = await startFixture(81, {
+	fixture = await startFixture({
 		env: {
 			LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-inject.mjs'), injectDir]),
 			LAT_BOARD_HCOM_TIMEOUT_SECONDS: '1'
@@ -177,12 +117,7 @@ beforeEach(() => {
 	rmSync(join(fixture.dir, 'hcom-calls.jsonl'), { force: true });
 });
 afterEach(async () => {
-	if (!chrome || chrome.exitCode !== null || chrome.signalCode !== null) return;
-	tab?.close();
-	const exited = new Promise((resolve) => chrome!.once('exit', resolve));
-	chrome.kill('SIGKILL');
-	await exited;
-	rmSync(profile, { recursive: true, force: true });
+	await browser?.close();
 });
 afterAll(async () => {
 	await fixture?.cleanup();
@@ -191,13 +126,8 @@ afterAll(async () => {
 
 /** A new Chrome, logged in, on the board in a window `width` wide. */
 async function visit(width: number) {
-	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	chrome = spawn(
-		CHROME!,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, `--remote-debugging-port=${DEBUG_PORT}`, 'about:blank'],
-		{ stdio: 'ignore' }
-	);
-	tab = await Tab.open();
+	browser = await launchChrome({ screen: SCREEN });
+	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });

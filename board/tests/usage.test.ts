@@ -382,7 +382,7 @@ describe('the live feed', () => {
 	let fixture: Fixture;
 	let cookie: string;
 	beforeAll(async () => {
-		fixture = await startFixture(28);
+		fixture = await startFixture();
 		cookie = await fixture.login();
 	});
 	afterAll(() => fixture.cleanup());

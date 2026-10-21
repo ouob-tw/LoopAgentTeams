@@ -14,7 +14,7 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(34, {
+	fixture = await startFixture({
 		env: {
 			LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-inject.mjs'), injectDir]),
 			LAT_BOARD_INJECT_TIMEOUT_SECONDS: '2',

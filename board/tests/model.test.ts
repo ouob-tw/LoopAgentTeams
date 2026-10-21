@@ -40,7 +40,7 @@ let cookie: string;
 
 beforeAll(async () => {
 	// Started as from inside an agent's shell in a Herdr pane, the way QA starts a test board.
-	fixture = await startFixture(24, { env: { ...AGENT_SHELL_ENV, ...commandEnv } });
+	fixture = await startFixture({ env: { ...AGENT_SHELL_ENV, ...commandEnv } });
 	cookie = await fixture.login();
 });
 afterAll(async () => {

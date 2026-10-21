@@ -9,15 +9,15 @@ import { join } from 'node:path';
 import { NODE, startFixture, until, type Fixture } from './harness.ts';
 
 const runtimes = [
-	{ name: 'Node', runtime: NODE, offset: 25 },
-	{ name: 'Bun', runtime: process.execPath, offset: 26 }
+	{ name: 'Node', runtime: NODE },
+	{ name: 'Bun', runtime: process.execPath }
 ];
 const fixtures: Record<string, { fixture: Fixture; cookie: string; sessionId: string }> = {};
 
 beforeAll(async () => {
-	for (const { name, runtime, offset } of runtimes) {
+	for (const { name, runtime } of runtimes) {
 		// hcom is never run for real: a command that answers nothing stands in for it.
-		const fixture = await startFixture(offset, { runtime, env: { LAT_BOARD_HCOM_COMMAND: JSON.stringify(['true']) } });
+		const fixture = await startFixture({ runtime, env: { LAT_BOARD_HCOM_COMMAND: JSON.stringify(['true']) } });
 		const cookie = await fixture.login();
 		const controller = fixture.bound('alpha', 'luna', { client: 'codex' });
 		fixture.setHelper({ output: { controllers: [controller] }, transcriptChildMs: 20_000, launchArgsChildMs: 20_000 });

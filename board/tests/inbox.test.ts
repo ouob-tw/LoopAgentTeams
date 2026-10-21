@@ -9,7 +9,7 @@ const at = (clock: string) => `2026-03-02T${clock}:00.000Z`;
 const titles = (items: { title: string }[]) => items.map((item) => item.title);
 
 beforeAll(async () => {
-	fixture = await startFixture(7);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());

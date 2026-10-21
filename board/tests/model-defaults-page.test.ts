@@ -2,49 +2,25 @@
 // label shows a new controller's model once its first turn starts, without a reload. In a real
 // browser: headless Chrome driven over its DevTools protocol, on the built board with fake data and
 // client settings in the fixture's temporary home. Skipped when the host has no Chrome.
-import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { DEFAULT_UNREADABLE_TEXT } from '../src/lib/board/models.ts';
 import type { HelperController } from '../src/lib/board/types.ts';
-import { PORT_BASE, sleep, startFixture, type Fixture } from './harness.ts';
+import { sleep, startFixture, type Fixture } from './harness.ts';
+import { CHROME, launchChrome, type Browser } from './browser.ts';
 
-const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
-	(path) => path && existsSync(path)
-);
-
-// Offsets 44 and 45 are used by no other file: this board's port and its Chrome's.
 let fixture: Fixture;
 let cookie: string;
-let chrome: ChildProcess;
-let profile: string;
-let socket: WebSocket;
-let next = 0;
-const waiting = new Map<number, (message: { result?: any; error?: { message: string } }) => void>();
+let browser: Browser | undefined;
 let luna: HelperController;
 let own: string;
 let plain: string;
 
-const send = (method: string, params: object = {}) =>
-	new Promise<any>((resolve, reject) => {
-		const id = ++next;
-		waiting.set(id, (message) => (message.error ? reject(new Error(message.error.message)) : resolve(message.result)));
-		socket.send(JSON.stringify({ id, method, params }));
-	});
-async function evaluate<T>(expression: string): Promise<T> {
-	const { result, exceptionDetails } = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-	if (exceptionDetails) throw new Error(`${expression}: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
-	return result.value;
-}
-async function until(expression: string, timeoutMs = 10_000) {
-	const deadline = Date.now() + timeoutMs;
-	while (!(await evaluate(expression).catch(() => false))) {
-		if (Date.now() > deadline) throw new Error(`timed out waiting for ${expression}: ${await evaluate(SHOWN).catch(() => '')}`);
-		await sleep(50);
-	}
-}
+const send = (method: string, params: object = {}) => browser!.tab.send(method, params);
+const evaluate = <T>(expression: string) => browser!.tab.eval<T>(expression);
+const until = (expression: string, timeoutMs?: number) => browser!.tab.until(expression, expression, timeoutMs);
 
 /** The first option of the form's model and effort fields, as the page shows them. */
 const SHOWN = `JSON.stringify([...document.querySelectorAll('.settings select')].map((select) => select.options[0].text))`;
@@ -81,7 +57,7 @@ const home = () => join(fixture.dir, 'home');
 
 beforeAll(async () => {
 	if (!CHROME) return;
-	fixture = await startFixture(44);
+	fixture = await startFixture();
 	cookie = await fixture.login('model-defaults');
 	write(join(home(), '.claude/settings.json'), { model: 'opus', effortLevel: 'medium', modelSettings: { 'claude-sonnet-5-5': { effortLevel: 'low' } } });
 	write(join(home(), '.codex/config.toml'), 'model = "gpt-6.1-sol"\nmodel_reasoning_effort = "medium"\n');
@@ -96,42 +72,14 @@ beforeAll(async () => {
 	fixture.list([luna, sol]);
 	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha' }] }));
 	await fixture.refresh(cookie);
-	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const port = PORT_BASE + 45;
-	chrome = spawn(
-		CHROME!,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, 'about:blank'],
-		{ stdio: 'ignore' }
-	);
-	let target: { webSocketDebuggerUrl: string } | undefined;
-	for (let tries = 0; !target; tries++) {
-		if (tries > 100) throw new Error('timed out waiting for Chrome to listen');
-		target = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' }).then(
-			(response) => response.json(),
-			() => undefined
-		);
-		if (!target) await sleep(100);
-	}
-	socket = new WebSocket(target.webSocketDebuggerUrl);
-	await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-	socket.addEventListener('message', (event) => {
-		const message = JSON.parse(String(event.data));
-		waiting.get(message.id)?.(message);
-		waiting.delete(message.id);
-	});
+	browser = await launchChrome({ screen: SHOWN });
 	const [name, value] = cookie.split('=');
 	await send('Network.setCookie', { name, value, url: fixture.url });
 	await send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
 }, 30_000);
 
 afterAll(async () => {
-	if (chrome) {
-		socket.close();
-		const exited = new Promise((resolve) => chrome.once('exit', resolve));
-		chrome.kill('SIGKILL');
-		await exited;
-		rmSync(profile, { recursive: true, force: true });
-	}
+	await browser?.close();
 	await fixture?.cleanup();
 });
 

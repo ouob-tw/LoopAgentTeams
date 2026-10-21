@@ -1,119 +1,32 @@
 // Refresh acceptance in a real browser with fake hcom/Herdr/helper services only.
-import { spawn, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
-const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium'].find(path => path && existsSync(path));
-const DEBUG_PORT = PORT_BASE + 89;
+import { question, sleep, startFixture, type Fixture } from './harness.ts';
+import { CHROME, launchChrome, type Browser, type Tab } from './browser.ts';
 const COUNT_POPSTATE = `(() => { const add = window.addEventListener; window.popstateListeners = 0; window.addEventListener = function(type, ...rest) { if (type === 'popstate') window.popstateListeners++; return add.call(this, type, ...rest); }; })()`;
 const STARTED = `window.popstateListeners >= 2`;
 const SCREEN = `document.body.innerText`;
-/** One Chrome tab, spoken to over the DevTools protocol. */
-class Tab {
-	#socket: WebSocket;
-	#next = 0;
-	#waiting = new Map<number, (message: {
-		result?: unknown;
-		error?: {
-			message: string;
-		};
-	}) => void>();
-	/** The documents that have loaded, by the loader that loaded them. */
-	#loaded = new Set<string>();
-	constructor(socket: WebSocket) {
-		this.#socket = socket;
-		socket.addEventListener('message', (event) => {
-			const message = JSON.parse(String(event.data));
-			if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load')
-				this.#loaded.add(message.params.loaderId);
-			this.#waiting.get(message.id)?.(message);
-			this.#waiting.delete(message.id);
-		});
-	}
-	static async open(): Promise<Tab> {
-		const deadline = Date.now() + 10000;
-		let target: {
-			webSocketDebuggerUrl: string;
-		} | undefined;
-		while (!target) {
-			if (Date.now() > deadline)
-				throw new Error('timed out waiting for Chrome to listen');
-			target = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/new?about:blank`, { method: 'PUT' }).then((response) => response.json(), () => undefined);
-			if (!target)
-				await sleep(100);
-		}
-		const socket = new WebSocket(target.webSocketDebuggerUrl);
-		await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-		const tab = new Tab(socket);
-		await tab.send('Page.enable');
-		await tab.send('Page.setLifecycleEventsEnabled', { enabled: true });
-		await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: COUNT_POPSTATE });
-		return tab;
-	}
-	send(method: string, params: object = {}): Promise<any> {
-		const id = ++this.#next;
-		this.#socket.send(JSON.stringify({ id, method, params }));
-		return new Promise((resolve, reject) => this.#waiting.set(id, (message) => (message.error ? reject(new Error(message.error.message)) : resolve(message.result))));
-	}
-	async eval<T = unknown>(expression: string): Promise<T> {
-		const { result, exceptionDetails } = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-		if (exceptionDetails)
-			throw new Error(`${expression}: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
-		return result.value;
-	}
-	/** Load a new document and wait until it has loaded. */
-	async navigate(url: string) {
-		const { loaderId, errorText } = await this.send('Page.navigate', { url });
-		if (errorText)
-			throw new Error(`${url}: ${errorText}`);
-		const deadline = Date.now() + 10000;
-		while (!this.#loaded.has(loaderId)) {
-			if (Date.now() > deadline)
-				throw new Error(`timed out loading ${url}`);
-			await sleep(20);
-		}
-	}
-	async until(expression: string, what = expression) {
-		const deadline = Date.now() + 10000;
-		while (!(await this.eval(expression).catch(() => false))) {
-			if (Date.now() > deadline)
-				throw new Error(`timed out waiting for ${what}; the page shows ${JSON.stringify(await this.eval(SCREEN))}`);
-			await sleep(50);
-		}
-	}
-	close() {
-		this.#socket.close();
-	}
-}
-let fixture: Fixture, cookie: string, chrome: ChildProcess, profile: string, tab: Tab;
+let fixture: Fixture, cookie: string, browser: Browser, tab: Tab;
 let controller: ReturnType<Fixture['bound']>;
 beforeAll(async () => {
 	if (!CHROME)
 		return;
-	fixture = await startFixture(88, { env: { LAT_BOARD_LAUNCH_WAIT_SECONDS: '2' } });
+	fixture = await startFixture({ env: { LAT_BOARD_LAUNCH_WAIT_SECONDS: '2' } });
 	cookie = await fixture.login();
 	controller = fixture.bound('alpha', 'tavi', { herdr_workspace: 'wA', herdr_tab: 'wA:t2', questions: [question({ id: 'Q-214' })] });
 	fixture.list([controller]);
 	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ workspaces: [{ workspace_id: 'wA', number: 3, label: 'Alpha' }], tabs: [{ tab_id: 'wA:t1', workspace_id: 'wA', label: 'shell' }, { tab_id: 'wA:t2', workspace_id: 'wA', label: 'controller' }], agents: [] }));
 	await fixture.refresh(cookie);
-	profile = mkdtempSync(join(tmpdir(), 'lat-214-chrome-'));
-	chrome = spawn(CHROME!, ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', `--user-data-dir=${profile}`, `--remote-debugging-port=${DEBUG_PORT}`, 'about:blank'], { stdio: 'ignore' });
-	tab = await Tab.open();
+	browser = await launchChrome({ scripts: [COUNT_POPSTATE], screen: SCREEN });
+	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: `(() => { const fetch = window.fetch; window.requests214 = []; window.fetch = (...args) => { window.requests214.push(String(args[0])); return fetch(...args); }; })()` });
 }, 30000);
 afterAll(async () => {
-	if (chrome && chrome.exitCode === null && chrome.signalCode === null) {
-		tab.close();
-		const exited = new Promise(resolve => chrome.once('exit', resolve));
-		chrome.kill('SIGKILL');
-		await exited;
-	}
-	if (profile)
-		rmSync(profile, { recursive: true, force: true });
+	await browser?.close();
 	await fixture?.cleanup();
 });
 const count = (path: string) => tab.eval<number>(`window.requests214.filter(url => url.split('?')[0] === ${JSON.stringify(path)}).length`);

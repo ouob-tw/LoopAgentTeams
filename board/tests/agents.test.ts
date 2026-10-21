@@ -11,7 +11,7 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(31);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());
@@ -318,7 +318,7 @@ test('every agent endpoint needs a logged-in device', async () => {
 });
 
 test('with no file change at all, the fallback read brings a status change to open pages', async () => {
-	const quiet = await startFixture(36, {
+	const quiet = await startFixture({
 		env: { LAT_BOARD_FALLBACK_SECONDS: '6', LAT_BOARD_HELPER_TIMEOUT_SECONDS: '2', LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS: '2', LAT_BOARD_HERDR_TIMEOUT_SECONDS: '2' }
 	});
 	try {

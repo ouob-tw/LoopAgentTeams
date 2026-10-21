@@ -22,7 +22,7 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(12, { env: commandEnv });
+	fixture = await startFixture({ env: commandEnv });
 	cookie = await fixture.login();
 });
 afterAll(async () => {
@@ -170,7 +170,7 @@ test('a closed controller that reappears in the list is active again, typed into
 test('a list that cannot be read since startup shows every bound controller as active, with an error', async () => {
 	const hcomDir = mkdtempSync(join(tmpdir(), 'lat-board-closed-start-'));
 	writeFileSync(join(hcomDir, 'hcom.json'), JSON.stringify({ listFail: { exit: 3, stderr: 'not ready' } }));
-	const cold = await startFixture(13, {
+	const cold = await startFixture({
 		env: { ...commandEnv, LAT_BOARD_HCOM_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-hcom.mjs'), hcomDir]) }
 	});
 	try {

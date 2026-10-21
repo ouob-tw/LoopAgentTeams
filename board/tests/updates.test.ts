@@ -6,7 +6,7 @@ let cookie: string;
 
 beforeAll(async () => {
 	// The default fallback of 60 seconds stays: anything faster below is the file watch at work.
-	fixture = await startFixture(1);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());

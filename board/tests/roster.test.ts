@@ -7,7 +7,7 @@ let cookie: string;
 const ago = (ms: number) => new Date(Date.now() - ms).toISOString();
 
 beforeAll(async () => {
-	fixture = await startFixture(0);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());
