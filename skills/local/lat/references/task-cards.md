@@ -21,7 +21,7 @@
 - preflight：無（有現場動作時寫動手前的核對事項）
 - 預計檢查數：無（派 QA 時寫預計的檢查數量級，如約 10 項）
 - 整套測試：無（派實作與 QA 時必填：由誰、在什麼時點經閘門跑一次，如「實作者在該票審查都通過後的最終版本」「不跑，查實作者的閘門紀錄」）
-- runs：主工作區 `.lat/runs/` 下該票資料夾的絕對路徑（見「票資料位置」）
+- runs：主工作區 `.lat/runs/` 下該票資料夾的絕對路徑（見「票資料位置」）；沒有自己票號的卡（Spec 審查、參謀）寫上層票的資料夾，都沒有就寫「無」
 - temp paths：逐項列路徑；含機密者標記 `secret → shred -u`，不記錄機密內容；隔離 client 家目錄必列（見「隔離 client 家目錄」）
 - done so far：
 - next step：
@@ -38,7 +38,7 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 
 ## 隔離 client 家目錄
 
-測試或 QA 以隔離的 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 等啟動 Agent 時，家目錄放在 `.lat` 以外的暫存位置，例如 `$XDG_RUNTIME_DIR/<任務 tag>/` 或系統暫存區下以任務 tag 命名的資料夾；不放進 `runs/`、`evidence/` 或任何 `.lat` 路徑。建立時立刻把路徑寫進任務卡 `temp paths` 並標 `secret → shred -u`（家目錄內有登入資料、對話紀錄與資料庫）。複製 auth 時權限設 0600，不輸出內容。任務收尾時以 `shred -u` 逐檔銷毀家目錄內的檔案，再移除空目錄，並確認 `.lat` 內沒有家目錄副本。需要留存的內容只留結論、指令輸出、必要截圖與必要的單一檔案節錄（不含登入資料），放進 `runs/`。
+測試或 QA 以隔離的 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 等啟動 Agent 時，家目錄放在 `.lat` 以外的暫存位置，以任務 tag 命名，不放進 `runs/` 或任何 `.lat` 路徑。建立時立刻把路徑寫進 `temp paths` 並標 `secret → shred -u`。建立、權限、銷毀與證據保存的做法見 three-tier-testing 的「測試資源清理：隔離 client 家目錄」；任務收尾時依下方規則核對。
 
 ## 現場動作額度
 
@@ -94,7 +94,7 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 
 - 清理任務卡列明且屬於本任務的資源；普通暫存檔用 trash-cli，含機密者（含隔離 client 家目錄）先用 `shred -u`，再移除所在 worktree。核對 `temp paths` 列出的位置都已不存在、`.lat` 內沒有家目錄副本。
 - 以 `git worktree remove` 移除該任務的獨立 worktree，以 `git branch -d` 刪除任務分支；`-D` 僅限使用者明確確認放棄該分支。
-- **先**將任務卡移至 `.lat/tasks/done/`（卡片維持移到 `done/`，不在原處保留），**再**關閉 Agent；移走後停住監控不再盯該 Agent。卡片仍在而 Agent 消失會被視為意外消失並通知主控。
+- **先**將任務卡移至 `.lat/tasks/done/`，**再**關閉 Agent；移走後停住監控不再盯該 Agent。卡片仍在而 Agent 消失會被視為意外消失並通知主控。
 
 只有任務卡明列待完成後續工作時可暫留，例如 QA 保留 worktree 供複驗；後續工作完成後立即收尾。
 

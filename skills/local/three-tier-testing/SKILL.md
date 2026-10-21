@@ -42,7 +42,7 @@ description: Use when setting up test infrastructure, adding tests, reorganizing
 
 測試以隔離的 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 等啟動 Agent 時：
 
-- 家目錄放在專案的證據／狀態資料夾（如 LAT 的 `.lat`）以外的暫存位置，例如 `$XDG_RUNTIME_DIR` 或系統暫存區下以任務 tag 命名的資料夾，並登記在任務紀錄的暫存路徑，標明含機密。
+- 家目錄放在專案的證據／狀態資料夾以外的暫存位置，例如 `$XDG_RUNTIME_DIR` 或系統暫存區下以任務 tag 命名的資料夾，並登記在任務紀錄的暫存路徑，標明含機密。
 - 複製 auth 時權限設 0600，不輸出內容。
 - 收尾時以 `shred -u` 逐檔銷毀家目錄內的檔案（含對話紀錄、資料庫與登入資料），再移除空目錄；確認證據資料夾內沒有家目錄副本，暫存位置已不存在。
 - 證據只保存結論、指令輸出、必要截圖與必要的單一檔案節錄，不保存整個家目錄。
