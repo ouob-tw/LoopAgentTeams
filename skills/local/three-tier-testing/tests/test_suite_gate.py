@@ -53,8 +53,14 @@ class GateCase(unittest.TestCase):
         self.env = dict(GIT_ENV, SUITE_GATE_STATE_DIR=str(self.state),
                         SUITE_GATE_CONFIG=str(self.config), HCOM_INSTANCE_NAME='tester',
                         HCOM_TAG='t', HOME=str(self.tmp / 'home'),
-                        XDG_CONFIG_HOME=str(self.tmp / 'xdg-config'))
+                        XDG_CONFIG_HOME=str(self.tmp / 'xdg-config'),
+                        XDG_STATE_HOME=str(self.tmp / 'xdg-state'),
+                        XDG_DATA_HOME=str(self.tmp / 'xdg-data'),
+                        XDG_CACHE_HOME=str(self.tmp / 'xdg-cache'),
+                        GH_CONFIG_DIR=str(self.tmp / 'gh-config'))
         self.env.pop('CLAUDE_CODE_SESSION_ID', None)
+        self.env.pop('SUITE_GATE_TEST_TODAY', None)
+        self.install_fake_gh()
         self.repo = self.tmp / 'repo'
         self.repo.mkdir()
         git(self.repo, 'init', '-q', '-b', 'main')
@@ -65,6 +71,35 @@ class GateCase(unittest.TestCase):
         self.counter = self.tmp / 'count'
         self.procs = []
         self.addCleanup(self.stop_procs)
+
+    def install_fake_gh(self):
+        """A `gh` first on PATH that logs its arguments; the real one is never reached.
+
+        `issue list` prints gh/open.json (default `[]`); with gh/fail present every call
+        fails."""
+        self.gh_dir = self.tmp / 'gh'
+        self.gh_dir.mkdir()
+        fake = self.tmp / 'bin/gh'
+        fake.parent.mkdir()
+        fake.write_text(f"""#!{sys.executable}
+import json, sys
+from pathlib import Path
+d = Path({str(self.gh_dir)!r})
+with open(d / 'calls.jsonl', 'a') as log:
+    log.write(json.dumps(sys.argv[1:]) + '\\n')
+if (d / 'fail').exists():
+    sys.exit('gh: HTTP 502')
+if sys.argv[1:3] == ['issue', 'list']:
+    print((d / 'open.json').read_text() if (d / 'open.json').exists() else '[]')
+elif sys.argv[1:3] == ['issue', 'create']:
+    print('https://github.com/o/r/issues/7')
+""")
+        fake.chmod(0o755)
+        self.env['PATH'] = f"{fake.parent}{os.pathsep}{self.env['PATH']}"
+
+    def gh_calls(self):
+        path = self.gh_dir / 'calls.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def set_config(self, **values):
         self.config.write_text(json.dumps(
@@ -735,6 +770,15 @@ class MapFallbackTests(AffectedCase):
         self.assertIn('no affected.commands directory holds this test', result.stderr)
         self.assertEqual(self.full_runs(), ['root', 'web'])
 
+    def test_affected_tests_are_no_cleanup_unit_but_fallback_suites_are(self):
+        self.touch('src/app.py')
+        self.assertEqual(self.gate('affected').returncode, 0)
+        self.assertEqual(self.status()['cleanup'], [])
+        self.touch('README.md')
+        self.assertEqual(self.gate('affected').returncode, 0)
+        self.assertEqual(sorted((u['rel_cwd'], u['command']) for u in self.status()['cleanup']),
+                         [('.', self.full('root')), ('web', self.full('web'))])
+
     def test_a_failing_full_suite_fails_the_fallback(self):
         self.registry['full_suites'][1]['command'] = 'exit 3'
         self.write_registry()
@@ -789,6 +833,219 @@ class PurposeTests(AffectedCase):
         self.assertIsNone(self.records()[-1]['purpose'])
         self.assertIn('already passed', self.gate('run', '--', self.full('root')).stdout)
         self.assertEqual(len(self.records()), 1, 'a reuse without a purpose writes nothing')
+
+
+class CleanupCase(GateCase):
+    """One full suite whose delay and exit code come from files outside the repo, in a
+    project whose registry names a GitHub tracker (the fake `gh`)."""
+
+    def setUp(self):
+        super().setUp()
+        self.registry = {'cleanup': {'github_repo': 'o/r', 'label': 'test-cleanup'}}
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'registry')
+        self.delay_file, self.code_file = self.tmp / 'delay', self.tmp / 'code'
+        self.before = self.tmp / 'before.sh'  # runs first; may change the repo mid-run
+        self.before.write_text('')
+        self.command = (f'sh {self.before}; echo run >> {self.counter}; '
+                        f'sleep $(cat {self.delay_file}); '
+                        f'echo suite-out; exit $(cat {self.code_file})')
+
+    def write_registry(self):
+        (self.repo / '.suite-gate.json').write_text(json.dumps(self.registry))
+
+    def run_suite(self, day, delay=0, code=0, rerun=True):
+        """Run the suite on day (YYYY-MM-DD); rerun makes it run even for passed content."""
+        self.delay_file.write_text(str(delay))
+        self.code_file.write_text(str(code))
+        self.env['SUITE_GATE_TEST_TODAY'] = day
+        flags = ['--rerun', 'speed sample'] if rerun else []
+        result = self.gate('run', *flags, '--', self.command)
+        self.assertEqual(result.returncode, code, result.stderr)
+        if 'already passed' not in result.stdout:
+            self.assertEqual(result.stdout, 'suite-out\n', 'the check never touches stdout')
+        return result
+
+    def unit(self):
+        [unit] = self.status()['cleanup']
+        return unit
+
+    def actions(self):
+        """The gh calls other than looking up the open issue."""
+        return [call[:3] for call in self.gh_calls() if call[:2] != ['issue', 'list']]
+
+
+class CleanupTests(CleanupCase):
+    def test_the_first_run_starts_a_window_today_with_its_time_as_the_baseline(self):
+        self.run_suite('2026-01-01', delay=0.1)
+        unit = self.unit()
+        self.assertEqual((unit['last_cleanup'], unit['rel_cwd'], unit['command']),
+                         ('2026-01-01', '.', self.command))
+        self.assertEqual(unit['project'], str(self.repo))
+        self.assertEqual(unit['baseline_source'], 'first pass')
+        self.assertGreaterEqual(unit['baseline'], 0.1)
+        self.assertEqual((unit['sample_count'], unit['median'], unit['due']), (0, None, []))
+        self.assertEqual(self.gh_calls(), [])
+        text = self.gate('status').stdout
+        self.assertIn('Test cleanup (1 suites):', text)
+        self.assertIn('not due: `' + self.command, text)
+        self.assertIn('Last cleanup: 2026-01-01', text)
+
+    def test_more_than_30_days_triggers_on_any_run_even_a_failed_one(self):
+        self.run_suite('2026-01-01')
+        self.run_suite('2026-01-31', code=1)
+        self.assertEqual(self.gh_calls(), [], 'exactly 30 days is not due')
+        result = self.run_suite('2026-02-01', code=1)
+        list_call, create = self.gh_calls()
+        self.assertEqual(list_call, ['issue', 'list', '--state', 'open', '--label',
+                                     'test-cleanup', '--json', 'number,url', '--limit', '1',
+                                     '--repo', 'o/r'])
+        self.assertEqual(create[:4], ['issue', 'create', '--title', f'Test cleanup: {self.repo.name}'])
+        self.assertEqual(create[4:6], ['--label', 'test-cleanup'])
+        self.assertEqual(create[-2:], ['--repo', 'o/r'])
+        body = create[create.index('--body') + 1]
+        self.assertIn('31 days since the last cleanup (2026-01-01)', body)
+        self.assertIn('references/cleanup.md', body)
+        self.assertIn('cleanup-done', body)
+        self.assertIn('opened https://github.com/o/r/issues/7', result.stderr)
+        self.assertTrue(self.unit()['due'])
+
+    def test_a_run_whose_content_changed_is_checked_but_is_no_sample(self):
+        self.before.write_text(f'echo x >> {self.repo}/app.py\n')
+        self.run_suite('2026-01-01')
+        self.assertTrue(self.records()[-1]['content_changed'])
+        self.assertIsNone(self.unit()['baseline'], 'a run that is not reusable is no sample')
+        self.run_suite('2026-03-01')
+        self.assertTrue(self.records()[-1]['content_changed'])
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+
+    def test_a_reused_result_is_not_checked(self):
+        self.run_suite('2026-01-01', rerun=False)
+        result = self.run_suite('2026-03-01', rerun=False)
+        self.assertEqual(self.runs(), 1)
+        self.assertNotIn('cleanup', result.stderr)
+        self.assertEqual(self.gh_calls(), [])
+        self.run_suite('2026-03-01')
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+
+    def test_30_percent_slower_triggers_once_three_later_passes_exist(self):
+        self.run_suite('2026-01-01', delay=0.2)
+        self.run_suite('2026-01-02', code=1, delay=0.6)
+        self.run_suite('2026-01-02', delay=0.4)
+        self.run_suite('2026-01-02', delay=0.4)
+        unit = self.unit()
+        self.assertEqual((unit['sample_count'], unit['median'], unit['due']), (2, None, []),
+                         'a failed run is no sample, and two samples are not judged')
+        self.assertEqual(self.gh_calls(), [])
+        self.run_suite('2026-01-02', delay=0.4)
+        unit = self.unit()
+        self.assertEqual(unit['sample_count'], 3)
+        self.assertGreaterEqual(unit['median'], unit['baseline'] * 1.3)
+        [reason] = unit['due']
+        self.assertIn('of the latest 3 passes', reason)
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+
+    def test_a_single_slow_run_does_not_trigger(self):
+        for delay in (0.2, 0.2, 0.8, 0.2, 0.2):
+            self.run_suite('2026-01-02', delay=delay)
+        unit = self.unit()
+        self.assertEqual(unit['sample_count'], 4)
+        self.assertLess(unit['median'], unit['baseline'] * 1.3)
+        self.assertEqual(unit['due'], [])
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_the_median_uses_only_the_latest_five_later_passes(self):
+        for delay in (0.2, 0.6, 0.6, 0.6, 0.2, 0.2, 0.2):
+            self.run_suite('2026-01-02', delay=delay)
+        unit = self.unit()
+        self.assertEqual((unit['sample_count'], len(unit['samples'])), (6, 5))
+        self.assertEqual(unit['due'], [], 'latest five: 0.6 0.6 0.2 0.2 0.2')
+
+    def test_cleanup_done_starts_a_new_window_without_the_old_samples(self):
+        for delay in (0.2, 0.4, 0.4, 0.4):
+            self.run_suite('2026-01-02', delay=delay)
+        self.assertTrue(self.unit()['due'])
+        self.env['SUITE_GATE_TEST_TODAY'] = '2026-01-05'
+        done = self.gate('cleanup-done')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn('last cleanup 2026-01-05, baseline the next passing run', done.stdout)
+        unit = self.unit()
+        self.assertEqual((unit['last_cleanup'], unit['baseline'], unit['samples'],
+                          unit['sample_count'], unit['due']), ('2026-01-05', None, [], 0, []))
+        calls = len(self.gh_calls())
+        for delay in (0.4, 0.4, 0.4, 0.4):
+            self.run_suite('2026-01-05', delay=delay)
+        unit = self.unit()
+        self.assertEqual((unit['baseline_source'], unit['sample_count'], unit['due']),
+                         ('first pass', 3, []))
+        self.assertEqual(len(self.gh_calls()), calls)
+
+    def test_cleanup_done_can_set_the_baseline_and_status_shows_due(self):
+        self.assertEqual(self.gate('cleanup-done', '--baseline', '0.1').returncode, 2)
+        self.env['SUITE_GATE_TEST_TODAY'] = '2026-01-02'
+        done = self.gate('cleanup-done', '--command', self.command, '--baseline', '0.1')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual((self.unit()['baseline'], self.unit()['baseline_source']), (0.1, 'given'))
+        for _ in range(3):
+            self.run_suite('2026-01-02', delay=0.3)
+        self.assertEqual(self.unit()['sample_count'], 3)
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+        text = self.gate('status').stdout
+        self.assertIn('DUE: `' + self.command, text)
+        self.assertIn('Baseline: 0.1s (given)', text)
+        self.assertIn('of the baseline 0.1s, at least 130%', text)
+
+    def test_an_open_cleanup_ticket_gets_a_comment_once_per_day(self):
+        (self.gh_dir / 'open.json').write_text(
+            json.dumps([{'number': 5, 'url': 'https://github.com/o/r/issues/5'}]))
+        self.run_suite('2026-01-01')
+        result = self.run_suite('2026-02-15')
+        self.assertIn('commented on https://github.com/o/r/issues/5', result.stderr)
+        [comment] = self.actions()
+        self.assertEqual(comment, ['issue', 'comment', '5'])
+        body = self.gh_calls()[-1][4]
+        self.assertTrue(body.startswith('Updated numbers'), body)
+        self.assertIn('45 days since the last cleanup', body)
+        again = self.run_suite('2026-02-15')
+        self.assertIn('already updated today', again.stderr)
+        self.assertEqual(len(self.actions()), 1)
+        self.run_suite('2026-02-16')
+        self.assertEqual(len(self.actions()), 2)
+
+    def test_a_failing_tracker_only_prints_the_ticket_and_is_retried(self):
+        (self.gh_dir / 'fail').touch()
+        self.run_suite('2026-01-01')
+        result = self.run_suite('2026-03-01', code=3)
+        self.assertIn('could not be updated (gh issue list failed: gh: HTTP 502)', result.stderr)
+        self.assertIn(f'Title: Test cleanup: {self.repo.name}', result.stderr)
+        self.assertIn('59 days since the last cleanup', result.stderr)
+        self.assertEqual(self.records()[-1]['exit_code'], 3)
+        (self.gh_dir / 'fail').unlink()
+        self.run_suite('2026-03-01')
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']],
+                         'a failed attempt does not use up the day')
+
+    def test_without_a_tracker_the_ticket_is_printed(self):
+        del self.registry['cleanup']
+        self.write_registry()
+        self.run_suite('2026-01-01')
+        result = self.run_suite('2026-03-01')
+        self.assertIn('registry names no tracker', result.stderr)
+        self.assertIn('59 days since the last cleanup', result.stderr)
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_worktrees_of_one_project_share_a_unit(self):
+        self.run_suite('2026-01-01')
+        other = self.tmp / 'wt'
+        git(self.repo, 'worktree', 'add', '-q', '--detach', str(other))
+        self.env['SUITE_GATE_TEST_TODAY'] = '2026-01-02'
+        self.code_file.write_text('0')
+        self.delay_file.write_text('0')
+        result = self.gate('run', '--rerun', 'other tree', '--', self.command, cwd=other)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        unit = self.unit()
+        self.assertEqual((unit['project'], unit['sample_count']), (str(self.repo), 1))
 
 
 class DetectionTests(unittest.TestCase):

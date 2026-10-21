@@ -6,6 +6,8 @@
 
 推送到 main 或推送標籤前，可以用 Git pre-push 檢查確認這份內容已有每一套整套的通過紀錄（見[推送前把關](#推送前把關pre-push)）。
 
+整套跑完後，距上次整理太久或整套明顯變慢時，閘門會開整理票或提醒（見[定期整理觸發](#定期整理觸發)）。
+
 以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫，只支援 Linux。
 
 ## 跑整套測試
@@ -66,6 +68,7 @@ repo 根目錄放 `.suite-gate.json`（進版控）：
 
 - `suites`：整套測試指令的樣式，可用 `*`、`?` 萬用字元；比對時空白會先整理成一格。有登記時只以登記為準，不再用預設判斷。
 - `fingerprint_include`：額外納入指紋的被忽略檔案（glob，相對 repo 根），例如測試用的環境變數檔。
+- `cleanup`：整理票開在哪個 GitHub repo、用哪個標籤，見[定期整理觸發](#定期整理觸發)。
 
 沒有登記檔時用預設判斷：pytest、`python -m unittest`、bun test、vitest、jest、npm／pnpm／yarn test、playwright test、go test、cargo test 等，沒有指定檔案、路徑或篩選參數（如 `-k`、`-t`、`-g`、`-run`）就算整套。寧可多算，被誤判時加原因重跑即可。這個判斷是 `is_full_suite()`，執行前的 hook 也用它。
 
@@ -197,11 +200,43 @@ uv run --no-project python <skill>/scripts/suite-gate.py uninstall-pre-push --re
   exit 0
   ```
 
+## 定期整理觸發
+
+每次整套實際跑完（經 `run` 或對照表退回整套），閘門檢查這個專案是否該整理測試；達門檻時在專案 tracker 開整理票，或在已開著的整理票留言更新數字。整理的做法見 [cleanup.md](cleanup.md)。受影響測試（`kind: "affected"`）與沿用上次結果的執行都不檢查。
+
+- **單位**：專案（主 repo 根；同一 repo 的各工作區算同一個）＋整套指令文字＋執行目錄（相對 repo 根）。狀態存在閘門狀態目錄的 `state.json`（`cleanup` 欄位）：上次整理日、統計視窗起點、基準、視窗內最近的耗時樣本與累計數、當天是否已處理。第一次看到某個單位時，當天記為上次整理日並開始新視窗。
+- **日期檢查**：每次實際執行完成都檢查，不論通過、失敗或執行中內容改變。距上次整理日**超過** 30 天即觸發（剛好 30 天不觸發）。
+- **速度檢查**：樣本只取視窗內「可沿用的通過」（結束碼 0、執行中內容沒變、不是受影響測試）的耗時。視窗內第一筆是基準；之後再累積至少 3 筆才判斷，取最新至多 5 筆的中位數，**大於或等於**基準 × 1.3 即觸發。因為至少取 3 筆的中位數，單次變慢不會觸發；整理完成後舊樣本全部捨棄。基準還沒有時只做日期檢查。
+- **tracker**：登記檔的 `cleanup` 欄位指定 GitHub repo 與整理票標籤（標籤預設 `test-cleanup`，須先在該 repo 建好）：
+
+  ```json
+  {"cleanup": {"github_repo": "<owner>/<repo>", "label": "test-cleanup"}}
+  ```
+
+  觸發時用 `gh issue list --state open --label <標籤>` 找開著的整理票：有就 `gh issue comment` 更新數字，沒有就 `gh issue create`（標題 `Test cleanup: <專案目錄名>`，內文列出觸發原因、上次整理日、基準、目前中位數，並指向本技能的 `references/cleanup.md` 與 `cleanup-done`）。每個單位每天最多一次開票或留言，同一天再觸發只印一行提醒。
+- **不影響測試結果**：檢查在測試結束、紀錄寫入、名額釋放之後才做，每次 `gh` 呼叫最多等 10 秒。沒設 tracker、`gh` 失敗或逾時，只在 stderr 印出提醒與應開票的標題和內文，測試輸出與結束碼不變；失敗不算當天已處理，下次執行會再試。
+- 只支援 GitHub；其他 tracker 不設 `cleanup`，照 stderr 的內容手動開票。
+
+### 整理完成
+
+```bash
+uv run --no-project python <skill>/scripts/suite-gate.py cleanup-done
+cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cleanup-done --command '<整套指令>' --baseline <秒數>
+```
+
+- 在專案內執行（任一工作區皆可）。不帶參數時，這個專案的每個單位都以今天為上次整理日、開始新視窗，基準留給新視窗的第一筆可沿用通過。
+- `--command` 只重設在目前目錄執行的那一套（指令文字要和經閘門跑的一樣）；還沒見過時直接建立。`--baseline` 直接指定新基準（秒），須搭配 `--command`。
+- 整理票關閉時執行；整理票的收尾步驟見 [cleanup.md](cleanup.md)。
+
+`status` 列出每個單位的整理狀態（上次整理日、視窗起點、基準、目前中位數、是否已達門檻與原因）；`status --json` 在 `cleanup` 欄位列出同樣內容（`median`、`due`）。
+
+`SUITE_GATE_TEST_TODAY=YYYY-MM-DD` 會取代「今天」，只供測試使用。
+
 ## 紀錄與設定位置
 
 | 項目 | 預設位置 | 改用其他位置 |
 | ---- | -------- | ------------ |
-| 紀錄、名額與鎖 | `$XDG_STATE_HOME/suite-gate/`（預設 `~/.local/state/suite-gate/`） | 環境變數 `SUITE_GATE_STATE_DIR` |
+| 紀錄、名額、鎖與整理狀態 | `$XDG_STATE_HOME/suite-gate/`（預設 `~/.local/state/suite-gate/`） | 環境變數 `SUITE_GATE_STATE_DIR` |
 | 設定 | `$XDG_CONFIG_HOME/suite-gate/config.json`（預設 `~/.config/suite-gate/config.json`） | 環境變數 `SUITE_GATE_CONFIG` |
 
 整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用，以及用途（`purpose`：`post-merge`、`release`、`map-fallback`、`reason` 或 `null`）與自填原因（`purpose_reason`）；對照表退回整套另有 `trigger_files`。受影響測試的紀錄標 `kind: "affected"`，另有 `base`、`changed_files`、`selected_tests` 與 `why`（每個測試被選的原因），一律不可沿用。帶用途的執行沿用上次結果時的沿用紀錄標 `kind: "reuse"`，另有 `reused_time`、`reused_agent`。

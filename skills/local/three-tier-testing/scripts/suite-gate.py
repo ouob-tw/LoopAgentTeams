@@ -3,7 +3,10 @@
 
 `run [--rerun "<reason>"] -- <cmd>` reuses a passing result for identical content, lets
 only one of several identical requests run, and caps how many full suites run on the host
-at once; in a project with an affected-test map it needs a purpose. `affected [--base
+at once; in a project with an affected-test map it needs a purpose. After each full suite
+that ran it checks whether the project is due for a test cleanup and opens or updates a
+cleanup ticket; `cleanup-done [--command <cmd> [--baseline <s>]]` starts a new cleanup
+window. `affected [--base
 <rev>]` runs only the tests the map selects for this change, or the registered full suites
 through the gate when the change leaves the map. `status` lists running and queued suites
 and recent records. `is_full_suite()`
@@ -28,13 +31,14 @@ import re
 import shlex
 import shutil
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 REGISTRY_NAME = '.suite-gate.json'
@@ -641,6 +645,7 @@ class Gate:
         self.extra = extra or {}  # written into the record over the defaults
         self.command = normalize_command(argv)
         self.child = None
+        self.finished = None  # a full suite that ran, for the cleanup check
         self.me = {'id': uuid.uuid4().hex, 'pid': os.getpid(),
                    'start': proc_stat(os.getpid())[2], 'sid': None, 'agent': agent_name(),
                    'command': self.command, 'cwd': str(cwd), 'fingerprint': None}
@@ -802,7 +807,8 @@ class Gate:
         for thread in pumps:
             thread.join(timeout=2)
         code = 128 - code if code < 0 else code
-        duration = round(time.monotonic() - started, 1)
+        seconds = time.monotonic() - started
+        duration = round(seconds, 1)
         after = fingerprint(self.cwd, self.argv) if info else None
         changed = info is not None and after['fingerprint'] != info['fingerprint']
         record = {
@@ -816,6 +822,8 @@ class Gate:
         }
         record.update(self.extra)
         append_record(record)
+        if info is not None and not record.get('kind'):
+            self.finished = {'info': info, 'seconds': seconds, 'sample': record['reusable']}
         if changed:
             warn('content changed during the run: this result is recorded but will not be '
                  'reused; do not edit files while the suite runs, and git-ignore files the '
@@ -894,10 +902,10 @@ def describe_purpose(record):
 
 
 def _drive(gate, action):
-    """action() with the gate's entries released after; an interrupt ends the test
-    session and is raised again."""
+    """action() with the gate's entries released after, then the cleanup check of a full
+    suite that ran; an interrupt ends the test session and is raised again."""
     try:
-        return action()
+        result = action()
     except Interrupted:
         child = gate.child
         if child is not None:
@@ -908,6 +916,9 @@ def _drive(gate, action):
         raise
     finally:
         gate.release()
+    if gate.finished:
+        check_cleanup(gate.finished, gate.command, gate.cwd)
+    return result
 
 
 def _guarded(body):
@@ -1161,6 +1172,237 @@ def run_fallback(root, amap, fallback):
     return code
 
 
+# ---------------------------------------------------------------- test cleanup
+
+CLEANUP_DAYS = 30        # due when the last cleanup is more than this many days ago
+CLEANUP_GROWTH = 1.3     # due when the median of later passes reaches baseline x this
+CLEANUP_MIN_SAMPLES = 3  # later passes needed before the speed is judged
+CLEANUP_LATEST = 5       # the median is taken over at most this many latest passes
+CLEANUP_LABEL = 'test-cleanup'
+TRACKER_TIMEOUT = 10
+
+
+def today():
+    """Today's date. SUITE_GATE_TEST_TODAY (YYYY-MM-DD) replaces it; for tests only."""
+    fake = os.environ.get('SUITE_GATE_TEST_TODAY')
+    return date.fromisoformat(fake) if fake else date.today()
+
+
+def project_root(root):
+    """The main work tree of root's repository, shared by all of its worktrees."""
+    common = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], root).stdout.strip()
+    return Path(common).parent if common and Path(common).name == '.git' else root
+
+
+def unit_key(project, rel, command):
+    return json.dumps([str(project), rel, command])
+
+
+def new_window(unit, baseline=None):
+    """Start a cleanup window today: the baseline is given or the next pass."""
+    unit.update(last_cleanup=today().isoformat(), window_start=now_iso(), baseline=baseline,
+                baseline_source='given' if baseline else None, samples=[], sample_count=0,
+                acted=None)
+    return unit
+
+
+def new_unit(project, rel, command, baseline=None):
+    return new_window({'project': str(project), 'rel_cwd': rel, 'command': command}, baseline)
+
+
+def add_sample(unit, seconds):
+    """A reusable pass: the window's first one is the baseline, later ones are samples."""
+    seconds = round(seconds, 2)
+    if unit['baseline'] is None:
+        unit['baseline'], unit['baseline_source'] = seconds, 'first pass'
+    else:
+        unit['samples'] = (unit['samples'] + [seconds])[-CLEANUP_LATEST:]
+        unit['sample_count'] += 1
+
+
+def cleanup_median(unit):
+    """Median of the latest later passes, or None until enough of them exist."""
+    if unit['baseline'] is None or unit['sample_count'] < CLEANUP_MIN_SAMPLES:
+        return None
+    return statistics.median(unit['samples'])
+
+
+def cleanup_due(unit):
+    """The reasons this unit is due for a cleanup; empty when it is not."""
+    reasons = []
+    days = (today() - date.fromisoformat(unit['last_cleanup'])).days
+    if days > CLEANUP_DAYS:
+        reasons.append(f"{days} days since the last cleanup ({unit['last_cleanup']}), "
+                       f'more than {CLEANUP_DAYS}')
+    median = cleanup_median(unit)
+    if median is not None and median >= unit['baseline'] * CLEANUP_GROWTH:
+        reasons.append(f"median {median}s of the latest {len(unit['samples'])} passes is "
+                       f"{median / unit['baseline']:.0%} of the baseline {unit['baseline']}s, "
+                       f'at least {CLEANUP_GROWTH:.0%}')
+    return reasons
+
+
+def cleanup_numbers(unit):
+    """The unit's cleanup state as Markdown list lines."""
+    median = cleanup_median(unit)
+    if unit['baseline'] is None:
+        speed = 'no baseline yet (set by the next passing run)'
+    elif median is None:
+        speed = (f"{unit['sample_count']} pass(es) after the baseline; "
+                 f'{CLEANUP_MIN_SAMPLES} needed before the speed is judged')
+    else:
+        speed = (f"{median}s, median of the latest {len(unit['samples'])} passes "
+                 f"({median / unit['baseline']:.0%} of the baseline)")
+    return [f"- Project: {unit['project']}",
+            f"- Suite: `{unit['command']}` in `{unit['rel_cwd']}`",
+            f"- Last cleanup: {unit['last_cleanup']} (window since {unit['window_start']})",
+            "- Baseline: " + (f"{unit['baseline']}s ({unit['baseline_source']})"
+                               if unit['baseline'] is not None else 'none yet'),
+            f'- Current: {speed}']
+
+
+def cleanup_ticket(unit, reasons):
+    """(title, body, comment) for a cleanup ticket of this unit's project."""
+    numbers = [f'- Due ({today().isoformat()}): ' + '; '.join(reasons), *cleanup_numbers(unit)]
+    title = f"Test cleanup: {Path(unit['project']).name}"
+    body = '\n'.join([
+        'The suite gate found this project due for a test cleanup.', '', *numbers, '',
+        'Follow the cleanup procedure in the three-tier-testing skill '
+        '(`references/cleanup.md`). When closing this ticket, run '
+        '`suite-gate.py cleanup-done` in the project to start a new window.'])
+    comment = '\n'.join(['Updated numbers from the suite gate:', '', *numbers])
+    return title, body, comment
+
+
+def read_tracker(registry):
+    """{'repo', 'label'} from the registry's `cleanup`, or None without a GitHub repo."""
+    cleanup = registry.get('cleanup')
+    if not isinstance(cleanup, dict):
+        return None
+    repo, label = cleanup.get('github_repo'), cleanup.get('label', CLEANUP_LABEL)
+    if not isinstance(repo, str) or not repo.strip() or not isinstance(label, str) \
+            or not label.strip():
+        return None
+    return {'repo': repo.strip(), 'label': label.strip()}
+
+
+def gh(args, tracker):
+    result = subprocess.run(['gh', *args, '--repo', tracker['repo']], capture_output=True,
+                            text=True, stdin=subprocess.DEVNULL, timeout=TRACKER_TIMEOUT)
+    if result.returncode != 0:
+        detail = (result.stderr.strip().splitlines() or [f'exit {result.returncode}'])[-1]
+        raise RuntimeError(f'gh {args[0]} {args[1]} failed: {detail}')
+    return result.stdout
+
+
+def post_cleanup(tracker, title, body, comment):
+    """Comment on the open cleanup issue, or open one; returns what was done."""
+    found = json.loads(gh(['issue', 'list', '--state', 'open', '--label', tracker['label'],
+                           '--json', 'number,url', '--limit', '1'], tracker))
+    if found:
+        gh(['issue', 'comment', str(found[0]['number']), '--body', comment], tracker)
+        return f"commented on {found[0]['url']}"
+    url = gh(['issue', 'create', '--title', title, '--label', tracker['label'],
+              '--body', body], tracker).strip()
+    return f'opened {url}'
+
+
+def check_cleanup(finished, command, cwd):
+    """After a full suite ran: count a reusable pass as a speed sample, then open or update
+    the cleanup ticket when the unit is due. Never changes the suite's output or exit."""
+    try:
+        _check_cleanup(finished, command, cwd)
+    except Interrupted:
+        raise
+    except Exception as exc:  # the cleanup check must never fail the suite
+        warn(f'test cleanup check skipped: {exc}')
+
+
+def _check_cleanup(finished, command, cwd):
+    info = finished['info']
+    project = project_root(Path(info['repo']))
+    key = unit_key(project, info['rel_cwd'], command)
+    tracker = read_tracker(load_registry(cwd) or {})
+    day = today().isoformat()
+
+    def update(state):
+        unit = state.setdefault('cleanup', {}).setdefault(
+            key, new_unit(project, info['rel_cwd'], command))
+        if finished['sample']:
+            add_sample(unit, finished['seconds'])
+        reasons = cleanup_due(unit)
+        previous = unit['acted']
+        claimed = bool(reasons) and tracker is not None and previous != day
+        if claimed:
+            unit['acted'] = day  # at most one tracker action per unit per day
+        return dict(unit), reasons, claimed, previous
+
+    unit, reasons, claimed, previous = with_state(update)
+    if not reasons:
+        return
+    title, body, comment = cleanup_ticket(unit, reasons)
+    if tracker is None:
+        warn('test cleanup is due, and the registry names no tracker (`cleanup.github_repo` '
+             f'in {REGISTRY_NAME}). Open a cleanup ticket in this project\'s tracker:\n'
+             f'Title: {title}\n{body}')
+        return
+    if not claimed:
+        warn(f"test cleanup is due; the cleanup ticket in {tracker['repo']} was already "
+             'updated today')
+        return
+    try:
+        done = post_cleanup(tracker, title, body, comment)
+    except Interrupted:
+        raise
+    except Exception as exc:
+        def unclaim(state):
+            stored = state.get('cleanup', {}).get(key)
+            if stored and stored['acted'] == day:
+                stored['acted'] = previous
+        with_state(unclaim)
+        warn(f"test cleanup is due, but the tracker {tracker['repo']} could not be updated "
+             f"({exc}). Open or update the open `{tracker['label']}` issue by hand:\n"
+             f'Title: {title}\n{body}')
+        return
+    warn(f'test cleanup is due: {done}')
+
+
+def cmd_cleanup_done(command, baseline):
+    if baseline is not None and (command is None or baseline <= 0):
+        warn('--baseline needs --command and a number of seconds above 0')
+        return 2
+    root = repo_root(Path.cwd())
+    if root is None:
+        warn('not in a Git work tree')
+        return 2
+    project = project_root(root)
+    rel = rel_cwd(root, Path.cwd())
+
+    def change(state):
+        units = state.setdefault('cleanup', {})
+        if command is not None:
+            text = normalize_command([command])
+            key = unit_key(project, rel, text)
+            if key not in units:
+                units[key] = new_unit(project, rel, text, baseline)
+                return [dict(units[key])]
+            keys = [key]
+        else:
+            keys = [k for k, u in units.items() if u['project'] == str(project)]
+        return [dict(new_window(units[k], baseline)) for k in keys]
+
+    done = with_state(change)
+    if not done:
+        print(f'No full suite of {project} has run through the gate yet; the first one '
+              'starts its cleanup window today.')
+        return 0
+    for unit in done:
+        print(f"New cleanup window for `{unit['command']}` in {unit['project']}/"
+              f"{unit['rel_cwd']}: last cleanup {unit['last_cleanup']}, baseline "
+              + (f"{unit['baseline']}s" if unit['baseline'] else 'the next passing run'))
+    return 0
+
+
 # ---------------------------------------------------------------- status
 
 def cmd_status(as_json, fp_prefix, limit):
@@ -1170,10 +1412,13 @@ def cmd_status(as_json, fp_prefix, limit):
         records = [r for r in records if (r.get('fingerprint') or '').startswith(fp_prefix)]
     records = records[-limit:]
     max_slots = load_config()['max_slots']
+    cleanup = [dict(unit, median=cleanup_median(unit), due=cleanup_due(unit))
+               for unit in state.get('cleanup', {}).values()]
     if as_json:
         print(json.dumps({'max_slots': max_slots, 'running': state['slots'],
                           'waiting': state['waiters'], 'locks': state['locks'],
-                          'records': records}, ensure_ascii=False, indent=1))
+                          'records': records, 'cleanup': cleanup},
+                         ensure_ascii=False, indent=1))
         return 0
     now = time.time()
     print(f"Running ({len(state['slots'])}/{max_slots} host slots):")
@@ -1210,6 +1455,13 @@ def cmd_status(as_json, fp_prefix, limit):
         print(f"  {r.get('time')}  {result}  fp {(r.get('fingerprint') or '-')[:12]}  "
               f"{r.get('agent')}  {r.get('duration_s')}s  {r.get('cwd')}  "
               f"{r.get('command')}{rerun}{purpose}")
+    print(f'Test cleanup ({len(cleanup)} suites):')
+    for unit in cleanup:
+        print(f"  {'DUE' if unit['due'] else 'not due'}: `{unit['command']}` in "
+              f"{unit['project']}/{unit['rel_cwd']}")
+        # The first two lines name the project and suite, already on the heading line.
+        for line in cleanup_numbers(unit)[2:] + [f'- Due: {why}' for why in unit['due']]:
+            print(f'    {line[2:]}')
     return 0
 
 
@@ -1643,7 +1895,8 @@ def cmd_pre_push_configure(action, repo, preview):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     # A hook that exits 2 would block every command, so only run and status check this.
-    if not sys.platform.startswith('linux') and argv[:1] in (['run'], ['status'], ['affected']):
+    if not sys.platform.startswith('linux') and argv[:1] in (['run'], ['status'], ['affected'],
+                                                             ['cleanup-done']):
         warn('only Linux is supported')
         return 2
     command = []
@@ -1666,6 +1919,12 @@ def main(argv=None):
     status.add_argument('--json', action='store_true')
     status.add_argument('--fingerprint', metavar='PREFIX', help='only records for this fingerprint')
     status.add_argument('--limit', type=int, default=10)
+    done = sub.add_parser('cleanup-done', help='a test cleanup of this project is finished: '
+                          'start a new cleanup window for its full suites')
+    done.add_argument('--command', metavar='TEXT', help='only this full-suite command, as '
+                      'run through the gate from the current directory')
+    done.add_argument('--baseline', type=float, metavar='SECONDS', help='the new baseline '
+                      '(needs --command); default: the next passing run')
     sub.add_parser('hook', help='PreToolUse hook (matcher Bash) for Claude and Codex; '
                                 'reads the payload on stdin')
     pre_push = sub.add_parser('pre-push', help='Git pre-push hook: refuse pushing main or a '
@@ -1695,6 +1954,8 @@ def main(argv=None):
         return cmd_hook()
     if args.action == 'affected':
         return cmd_affected(args.base)
+    if args.action == 'cleanup-done':
+        return cmd_cleanup_done(args.command, args.baseline)
     if args.action == 'pre-push':
         return cmd_pre_push()
     if args.action in ('install-pre-push', 'uninstall-pre-push'):
