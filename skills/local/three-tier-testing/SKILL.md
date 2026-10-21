@@ -121,7 +121,21 @@ docker compose -f compose.e2e.yml -p <project>_e2e_review --env-file .env.e2e --
 - 修正產品程式缺陷時，回歸測試須在修復前版本因目標缺陷失敗，並在修復後通過；由實作者做一次，QA 與主控不重做；新功能與只改測試的修正不適用。保留版本、指令與結果。Import、fixture 或環境錯誤不算重現。無法取得基準或重現時，將「測試能攔下原缺陷」標為 `UNPROVEN` 並記原因，修復後結果另列，不抹除其他有效證據。
 - 偶發失敗的測試先查出原因，修好後對該測試檔做一次重複跑；不以連跑多次整套作為證明。
 - 結果區分 `PASS`、`FAIL`、`UNPROVEN`（證據不足）與 `NOT_EXECUTED`（未執行），記錄原因；未測與無法證明不能彙總成通過。
-- 整套測試經閘門執行，同內容已通過就沿用上次結果；專案登記檔有對照表時，每張票改跑 `suite-gate.py affected`，整套須標明用途。用法見 [references/suite-gate.md](references/suite-gate.md)。
+- 整套測試經閘門執行，同內容已通過就沿用上次結果；用法見 [references/suite-gate.md](references/suite-gate.md)。
+
+## 受影響測試與整套測試的時點
+
+專案登記檔（`.suite-gate.json`）有受影響測試對照表時：
+
+- **每張票**：只跑 `suite-gate.py affected` 選出的受影響測試，不在票內跑整套。改到對照表沒列的檔案或標為共用的路徑時，指令會自動改跑整套（用途 `map-fallback`）。
+- **對照表維護**：新增程式檔或測試檔時，實作者順手補進對照表；審查者核對對照表的變更是否涵蓋新增的檔案。
+- **整批合併後**：全部票合併後，由主控指定一人以 `run --purpose post-merge` 跑一次整套；內容相同時閘門沿用，視同完成。
+- **發布前**：推送 main 或版本標籤前，每一套登記的整套測試須有通過紀錄（`--purpose release`，或沿用合併後的紀錄）；推送前檢查的做法見 [references/suite-gate.md](references/suite-gate.md)。
+- **票內確有必要跑整套**（環境改變、查偶發失敗等）：用 `run --reason "<原因>"` 放行，原因會記進紀錄。
+
+沒有對照表的專案維持舊規則：每張票在該票審查都通過後的最終版本，經閘門跑一次整套。
+
+測試越積越多、整套越跑越慢時，依 [references/cleanup.md](references/cleanup.md) 定期整理。
 
 ## 測試歸屬判斷
 
