@@ -540,7 +540,9 @@ class SessionTests(unittest.TestCase):
             text=True, capture_output=True,
             env=self.cli_environment(extra_env=self.panel_env()), cwd=self.work)
         self.assertEqual(result.returncode, 0, result.stderr)
-        return Path(json.loads(result.stdout)['binding']['questions_path'])
+        questions = Path(json.loads(result.stdout)['binding']['questions_path'])
+        questions.parent.mkdir(parents=True, exist_ok=True)
+        return questions
 
     def assert_stop_pass(self, result, *headings):
         """A passing DECIDE/HELP Stop: silent when unbound, else only the shown question headings."""
@@ -1142,7 +1144,7 @@ class SessionTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        questions = self.work / '.lat/questions-nifo-bind-lezo.md'
+        questions = self.work / '.lat/questions/nifo-bind-lezo.md'
         self.assertIn(str(questions), result.stdout)
         bindings = json.loads(
             (self.root / 'plugin-config/bindings.json').read_text()
@@ -1302,6 +1304,33 @@ class SessionTests(unittest.TestCase):
             (self.root / 'plugin-config/bindings.json').read_text()
         )['bindings']
         self.assertEqual(bindings, {})
+
+    def test_deactivate_deletes_only_its_own_empty_new_location_question_file(self):
+        env = self.panel_env()
+        legacy = self.work / '.lat/questions-orch.md'
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text('## Old\nOLD · r1 · 已記錄 · 2026-10-01T00:00:00+00:00\n\n答覆：A\n\n- [x] 送出\n')
+        original = legacy.read_bytes()
+        questions = self.work / '.lat/questions/orch.md'
+        for text, kept in (('# 問題\n', False),
+                           ('## Q\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n', True),
+                           ('## Q\nLAT-A · r1 · 待答\n\n答覆：A\n\n- [x] 送出\n', True)):
+            with self.subTest(text=text):
+                activated = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                                     '--decisions', self.decisions, '--hcom-name', 'orch',
+                                     extra_env=env)
+                self.assertEqual(activated.returncode, 0, activated.stderr)
+                self.assertIn(f'問題檔：{questions}', activated.stdout)
+                questions.write_text(text)
+                self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
+
+                result = self.cli('deactivate', '--workspace', self.work, extra_env=env)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(questions.exists(), kept)
+                self.assertEqual('已刪除空問題檔' in result.stdout, not kept)
+                self.assertTrue((questions.parent / '.orch.md.lock').exists())
+                self.assertEqual(legacy.read_bytes(), original)
 
     def test_activate_starts_one_watcher_and_deactivate_stops_it(self):
         self.activate()
@@ -1849,6 +1878,8 @@ class SessionTests(unittest.TestCase):
                     unbind_controller=lambda session_id: 0,
                     resolve_session_binding=lambda session_id: {'herdr_pane': 'pane'},
                     clear_status_display=lambda binding: (True, ''),
+                    new_questions_path=lambda workspace, name: self.work / f'.lat/questions/{name}.md',
+                    remove_empty_questions=lambda path, decisions: False,
                 )):
             deactivate_thread = threading.Thread(target=deactivate)
             deactivate_thread.start()
@@ -2456,7 +2487,7 @@ class SessionTests(unittest.TestCase):
     def test_activate_resume_and_deactivate_keep_the_sidebar_in_step(self):
         env, log = self.sidebar_env()
         self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
-        questions = self.work / '.lat/questions-orch.md'
+        questions = self.work / '.lat/questions/orch.md'
         questions.parent.mkdir(parents=True, exist_ok=True)
         questions.write_text('## Q\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
         self.assertEqual(self.cli('activate', '--workspace', self.work, '--progress', self.progress,
@@ -2496,7 +2527,7 @@ class SessionTests(unittest.TestCase):
         section.write_text(f'## {title}\n\n背景。\n\nA. 好\n   影響。\n')
         result = subprocess.run(
             [sys.executable, str(PANEL), 'question', 'upsert',
-             '--questions', str(self.work / '.lat/questions-orch.md'),
+             '--questions', str(self.work / '.lat/questions/orch.md'),
              '--decisions', str(self.decisions), '--id', identifier, '--file', str(section)],
             text=True, capture_output=True, env=self.cli_environment(), cwd=self.work)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -2514,13 +2545,13 @@ class SessionTests(unittest.TestCase):
         self.ask('DONE', '已答的題', status='pending')
         self.decisions.joinpath('DONE.md').write_text('- status: answered\n')
         self.ask('SENT', '已送出未記錄的題')
-        questions = self.work / '.lat/questions-orch.md'
+        questions = self.work / '.lat/questions/orch.md'
         questions.write_text(questions.read_text().replace(
             'SENT · r1 · 待答\n\n背景。\n\nA. 好\n   影響。\n\n答覆：\n\n- [ ] 送出',
             'SENT · r1 · 待答\n\n背景。\n\nA. 好\n   影響。\n\n答覆：A\n\n- [x] 送出'))
         self.assertIn('[x]', questions.read_text())
         # A question another controller asked in the same workspace is not listed.
-        other = self.work / '.lat/questions-other.md'
+        other = self.work / '.lat/questions/other.md'
         other.write_text('## Theirs\nOTHER · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
         self.decisions.joinpath('OTHER.md').write_text('- status: pending\n')
         for client in ('codex', 'claude'):
@@ -2543,8 +2574,9 @@ class SessionTests(unittest.TestCase):
     def test_prompt_reminder_shows_unknown_time_without_an_upsert_entry(self):
         self.write_legacy_record(hcom_name='orch', tasks_path=str(self.tasks))
         self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
-        (self.work / '.lat/questions-orch.md').write_text(
-            '## Q\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
+        questions = self.work / '.lat/questions/orch.md'
+        questions.parent.mkdir(parents=True)
+        questions.write_text('## Q\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
         self.assertIn('- LAT-A r1「Q」，提問時間 不明',
                       self.prompt_context(self.prompt_hook()))
 
@@ -2578,7 +2610,7 @@ class SessionTests(unittest.TestCase):
     def test_prompt_reminder_errors_only_warn(self):
         self.ask('LAT-A', '要合併嗎？')
         self.write_legacy_record(hcom_name='orch', tasks_path=str(self.tasks))
-        questions = self.work / '.lat/questions-orch.md'
+        questions = self.work / '.lat/questions/orch.md'
         questions.write_text(questions.read_text() * 2)
         for broken in (None, '{broken', '[]'):
             with self.subTest(broken=broken):

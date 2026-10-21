@@ -15,7 +15,18 @@ from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from lat_decision_status import read_decision_kind, read_decision_status
-from _lat_common import write_text_atomic as _replace_locked
+from _lat_common import run_cli, write_text_atomic as _replace_locked
+
+
+QUESTIONS_DIR = "questions"
+
+
+def panel_journal_path(questions_path):
+    """The one panel journal at the ``.lat`` root, for a root or ``questions/`` file alike."""
+    directory = Path(questions_path).parent
+    if directory.name == QUESTIONS_DIR:
+        directory = directory.parent
+    return directory / "panel-journal.jsonl"
 
 
 @contextmanager
@@ -108,7 +119,7 @@ def save_panel_edit(questions_path, expected_text, new_text):
         questions_path,
         expected_text,
         new_text,
-        journal_path=questions_path.parent / "panel-journal.jsonl",
+        journal_path=panel_journal_path(questions_path),
         journal_details={"questions_path": _question_key(questions_path)},
     )
 
@@ -699,7 +710,7 @@ def _write_question_answer_locked(
     if changed:
         _replace_locked(questions_path, updated)
         _append_journal(
-            questions_path.parent / "panel-journal.jsonl",
+            panel_journal_path(questions_path),
             document,
             updated,
             kind="answer-write",
@@ -773,7 +784,7 @@ def _submit_question_answers_locked(questions_path, expected_questions):
     if submitted_ids:
         _replace_locked(questions_path, updated)
         _append_journal(
-            questions_path.parent / "panel-journal.jsonl",
+            panel_journal_path(questions_path),
             document,
             updated,
             kind="batch-submit",
@@ -963,7 +974,7 @@ def upsert_question_written(questions_path, question_id, section_text, *, decisi
         _replace_locked(questions_path, updated)
         try:
             _append_journal(
-                questions_path.parent / "panel-journal.jsonl",
+                panel_journal_path(questions_path),
                 document,
                 updated,
                 kind="upsert",
@@ -1029,7 +1040,7 @@ def _set_recorded_locked(
     if auto_recorded:
         details["auto_recorded"] = True
     _append_journal(
-        questions_path.parent / "panel-journal.jsonl",
+        panel_journal_path(questions_path),
         document,
         updated,
         kind="set-status",
@@ -1109,7 +1120,7 @@ def _record_submitted_answers(questions_path, question_ids, decisions_path, unkn
     raises: what the answer means is left to the controller.
     """
     questions_path = Path(questions_path)
-    journal_path = questions_path.parent / "panel-journal.jsonl"
+    journal_path = panel_journal_path(questions_path)
     outcomes = []
     try:
         with _path_lock(questions_path):
@@ -1219,6 +1230,26 @@ def cleanup_questions(questions_path, decisions_path, *, expected_text=None):
         return result
 
 
+def remove_empty_questions(questions_path, decisions_path):
+    """Clean one file, then delete it when no question section is left in it.
+
+    Returns whether it was deleted; its archive and lock files stay.
+    """
+    questions_path = Path(questions_path)
+    if not Path(decisions_path).is_dir():
+        raise ValueError(f"decisions directory does not exist: {decisions_path}")
+    with _path_lock(questions_path):
+        try:
+            document = _read_text_exact(questions_path)
+        except FileNotFoundError:
+            return False
+        updated, _ = _cleanup_locked(questions_path, decisions_path, document)
+        if parse_questions(updated):
+            return False
+        questions_path.unlink()
+        return True
+
+
 def _decision_state(decision_path):
     try:
         status = read_decision_status(decision_path)
@@ -1241,7 +1272,7 @@ def _decision_withdrawn(decision_path):
 
 def _cleanup_locked(questions_path, decisions_path, document, *, exclude_id=None):
     """Clean a snapshot while the caller holds the questions-file lock."""
-    journal_path = questions_path.parent / "panel-journal.jsonl"
+    journal_path = panel_journal_path(questions_path)
     recorded_hashes = _recorded_hashes(journal_path, questions_path)
     eligible = []
     result = {"archived": [], "kept": []}
@@ -1287,6 +1318,25 @@ def _cleanup_locked(questions_path, decisions_path, document, *, exclude_id=None
     return updated, result
 
 
+def _lat_directories(questions_path):
+    """The ``.lat`` of this file and, in a Git repository, of every checkout of it.
+
+    New files are in the main checkout's shared ``.lat``; older bindings of a linked
+    worktree kept their root files in that worktree's own ``.lat``.
+    """
+    lat = panel_journal_path(questions_path).parent
+    directories = [lat.resolve()]
+    try:
+        output = run_cli(["git", "-C", str(lat.parent), "worktree", "list", "--porcelain"],
+                         timeout=10)
+    except ValueError:
+        return directories
+    for line in output.splitlines():
+        if line.startswith("worktree "):
+            directories.append((Path(line.removeprefix("worktree ")) / ".lat").resolve())
+    return list(dict.fromkeys(directories))
+
+
 def pending_question_gaps(questions_path, decisions_path):
     """Check pending decisions across controllers and stale questions in this file."""
     questions_path = Path(questions_path)
@@ -1306,16 +1356,20 @@ def pending_question_gaps(questions_path, decisions_path):
         elif status.status == "pending":
             pending_ids.append(decision.stem)
 
-    question_files = sorted(
-        path for path in questions_path.parent.glob("questions-*.md")
-        if not path.stem.endswith("-archive")
+    # Root files are the older place, ``questions/`` the current one; both are read.
+    files = sorted(
+        path for directory in _lat_directories(questions_path)
+        for pattern in ("questions-*.md", f"{QUESTIONS_DIR}/*.md")
+        for path in directory.glob(pattern)
     )
     current = {}
-    for path in question_files:
+    for path in files:
+        if path.stem.endswith("-archive"):
+            continue
         for question in parse_questions(path.read_text(encoding="utf-8")):
             current.setdefault(question["id"], []).append((path, question))
     archived = {}
-    for path in sorted(questions_path.parent.glob("questions-*-archive.md")):
+    for path in (path for path in files if path.stem.endswith("-archive")):
         for question in parse_questions(path.read_text(encoding="utf-8")):
             archived.setdefault(question["id"], []).append((path, question))
     present = []
@@ -1389,7 +1443,7 @@ def archive_recorded_questions(
     current_time = datetime.now().astimezone() if now is None else now
     if current_time.tzinfo is None or current_time.utcoffset() is None:
         raise ValueError("time must include a UTC offset")
-    journal_path = questions_path.parent / "panel-journal.jsonl"
+    journal_path = panel_journal_path(questions_path)
     archive_path = _archive_path(questions_path)
     with _path_lock(questions_path):
         document = questions_path.read_text(encoding="utf-8")

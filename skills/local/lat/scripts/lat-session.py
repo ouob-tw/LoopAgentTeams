@@ -427,6 +427,20 @@ def release_own_wait(workspace, name):
         write_json_atomic(path, declaration, expected=original)
 
 
+def remove_empty_questions(panel, workspace, record):
+    """Delete this controller's `.lat/questions/` file once cleanup leaves no question in it.
+
+    The root `.lat` file of older bindings is never touched. Never raises: ending the round
+    matters more than tidying the file.
+    """
+    try:
+        path = panel.new_questions_path(workspace, record['hcom_name'])
+        if panel_module('questions').remove_empty_questions(path, record['decisions_path']):
+            print(f'已刪除空問題檔：{path}')
+    except (OSError, ValueError, KeyError) as error:
+        print(f'問題檔未收尾：{error}')
+
+
 def deactivate(args):
     if args.successor and not HCOM_NAME.fullmatch(args.successor):
         raise ValueError('Invalid successor HCOM name; record unchanged')
@@ -453,6 +467,8 @@ def deactivate(args):
         except (OSError, ValueError, KeyError):
             pass
         removed = panel.unbind_controller(sid)
+        if record.get('hcom_name'):
+            remove_empty_questions(panel, workspace, record)
         if record['status'] == 'active' and not legacy_record(record):
             record['final_report_pending'] = True
         if record['status'] not in ENDED:
