@@ -219,6 +219,45 @@ test('a failed fake Codex batch echoing each original and masked reply keeps the
 	for (const privatePart of ['Private', 'secret-one', 'secret-two', '⟦0⟧']) expect(lines[0]).not.toContain(privatePart);
 });
 
+test('overlapping batched replies stay private in either order and across stderr chunks', async () => {
+	const prefix = 'Shared ordinary prefix.';
+	const longer = `${prefix} PRIVATE_CONTINUATION_223`;
+	for (const texts of [[prefix, longer], [longer, prefix]]) {
+		for (const split of [false, true]) {
+			const { config } = setUp();
+			config.translateCommand = [NODE, '--eval', split
+				? `process.stderr.write(${JSON.stringify(prefix)}); setTimeout(() => { process.stderr.write(${JSON.stringify(longer.slice(prefix.length) + '\n' + prefix)}); process.exit(1); }, 50);`
+				: `process.stderr.write(${JSON.stringify(longer + '\n' + prefix)}); process.exit(1);`];
+			const lines: string[] = [];
+			const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => void lines.push(args.join(' ')));
+			try {
+				await createTranslator(config).translate(texts, () => {});
+			} finally {
+				spy.mockRestore();
+			}
+			expect(lines).toHaveLength(1);
+			expect(lines[0]).not.toContain('Shared');
+			expect(lines[0]).not.toContain('PRIVATE_CONTINUATION_223');
+		}
+	}
+});
+
+test('stderr redaction preserves overlapping secret ranges across window boundaries and retains the diagnostic tail', async () => {
+	const { config } = setUp();
+	const texts = ['ABCDE_PRIVATE', 'PRIVATE_FGHIJ'];
+	config.translateCommand = [NODE, '--eval', `process.stderr.write('x'.repeat(40000) + 'ABCDE_PRIVATE'); setTimeout(() => { process.stderr.write('_FGHIJ\\nfatal overlap quit'); process.exit(1); }, 50);`];
+	const lines: string[] = [];
+	const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => void lines.push(args.join(' ')));
+	try {
+		await createTranslator(config).translate(texts, () => {});
+	} finally {
+		spy.mockRestore();
+	}
+	expect(lines).toHaveLength(1);
+	for (const part of ['ABCDE', 'PRIVATE', 'FGHIJ']) expect(lines[0]).not.toContain(part);
+	expect(lines[0]).toContain('fatal overlap quit');
+});
+
 test('Codex is asked with gpt-6-luna at low effort, and the reply comes back in Traditional Chinese', async () => {
 	const { calls, translator, ask } = setUp(async () => ({ ok: true, value: '<reply id="1">软件已经更新</reply>' }));
 	expect(await ask(translator(), ['The software was updated.'])).toEqual([{ ok: true, value: '軟體已經更新' }]);
