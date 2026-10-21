@@ -52,6 +52,13 @@ export interface BoardConfig {
 	/** Command that runs a Codex app server over standard input and output, to tidy long speech. */
 	tidyCommand: string[];
 	tidyTimeoutMs: number;
+	/** The same for translating English replies of a conversation into Chinese. */
+	translateCommand: string[];
+	translateTimeoutMs: number;
+	/** How many Codex app servers translate at once; more requests wait their turn. */
+	translateConcurrency: number;
+	/** How long a saved translation is kept after it was last used. */
+	translateKeepMs: number;
 	/** Command that runs claude-swap; the board appends `list --json --cached-only`, which reads its files only. */
 	cswapCommand: string[];
 	cswapTimeoutMs: number;
@@ -64,6 +71,7 @@ export interface BoardConfig {
 }
 
 const MAX_FALLBACK_MS = 60_000;
+const DAY_SECONDS = 24 * 60 * 60;
 /** Below this there is no room left for the helper to run twice. */
 const MIN_FALLBACK_MS = 5_000;
 /** Allowed for reading the report files and pushing the snapshot once the helper has answered. */
@@ -151,6 +159,11 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),
 		tidyCommand: commandFrom(env, 'LAT_BOARD_TIDY_COMMAND') ?? ['codex', 'app-server'],
 		tidyTimeoutMs: seconds(env.LAT_BOARD_TIDY_TIMEOUT_SECONDS, 30_000),
+		translateCommand: commandFrom(env, 'LAT_BOARD_TRANSLATE_COMMAND') ?? ['codex', 'app-server'],
+		translateTimeoutMs: seconds(env.LAT_BOARD_TRANSLATE_TIMEOUT_SECONDS, 60_000),
+		translateConcurrency: Math.max(1, Math.floor(Number(env.LAT_BOARD_TRANSLATE_CONCURRENCY)) || 3),
+		// Days: read as seconds, then a second becomes a day.
+		translateKeepMs: seconds(env.LAT_BOARD_TRANSLATE_KEEP_DAYS, 30_000) * DAY_SECONDS,
 		cswapCommand: commandFrom(env, 'LAT_BOARD_CSWAP_COMMAND') ?? ['cswap'],
 		cswapTimeoutMs: seconds(env.LAT_BOARD_CSWAP_TIMEOUT_SECONDS, 10_000),
 		codexMultiAuthDir: codexMultiAuthDir(env),

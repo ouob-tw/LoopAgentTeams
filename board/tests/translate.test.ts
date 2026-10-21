@@ -1,0 +1,250 @@
+// Translating a conversation's English replies: which texts count as English, code and links kept
+// as written, translations saved and expired, and the page's requests. No server and no Codex.
+import { afterEach, expect, test } from 'bun:test';
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { isEnglish, Translations, type Translation } from '../src/lib/board/translate.ts';
+import type { CodexTurn, Outcome } from '../src/lib/server/codex-turn.ts';
+import { loadConfig } from '../src/lib/server/config.ts';
+import { createTranslator, protect, restore } from '../src/lib/server/translate.ts';
+
+const DAY = 24 * 60 * 60_000;
+const dirs: string[] = [];
+afterEach(() => {
+	for (const dir of dirs.splice(0)) rmSync(dir, { recursive: true, force: true });
+});
+
+test('a mostly English reply is English; Chinese, Chinese naming English terms, and too little text are not', () => {
+	expect(isEnglish('I fixed the failing test and pushed the branch.')).toBe(true);
+	expect(isEnglish('Done — see `src/lib/a.ts` for the change. 好')).toBe(true);
+	expect(isEnglish('我已經修好了測試，分支也推上去了。')).toBe(false);
+	expect(isEnglish('這次 commit 修了 board 的 transcript stream bug')).toBe(false);
+	expect(isEnglish('OK')).toBe(false);
+	// Code, links and paths say nothing about the language.
+	expect(isEnglish('改好了：\n```ts\nconst answer = await fetch(url).then((response) => response.json());\n```')).toBe(false);
+	expect(isEnglish('看 https://example.com/some/long/english/path 與 /home/user/project/src/file.ts')).toBe(false);
+});
+
+test('code, links and paths go to Codex as markers and come back as written', () => {
+	const text = 'Run `bun test` in board/, see https://example.com/x.\n\n```sh\necho "keep me"\n```\n\n- Done';
+	const { text: masked, kept } = protect(text);
+	expect(masked).not.toContain('bun test');
+	expect(masked).not.toContain('example.com');
+	expect(masked).not.toContain('keep me');
+	expect(masked).not.toContain('board/');
+	expect(masked).toContain('- Done');
+	const translated = masked.replace('Run', '執行').replace('in', '於').replace('Done', '完成');
+	const back = restore(translated, kept)!;
+	expect(back).toContain('`bun test`');
+	expect(back).toContain('https://example.com/x.');
+	expect(back).toContain('```sh\necho "keep me"\n```');
+	expect(back).toContain('- 完成');
+});
+
+test('a translation that dropped or repeated a marker is refused', () => {
+	const { text, kept } = protect('Use `a` and `b` here.');
+	expect(restore(text.replace('⟦1⟧', ''), kept)).toBeNull();
+	expect(restore(text.replace('⟦0⟧', '⟦0⟧⟦0⟧'), kept)).toBeNull();
+	expect(restore(`${text} ⟦7⟧`, kept)).toBeNull();
+});
+
+/** A translator on a fresh state directory and a clock the test moves; Codex answers as `answer` says. */
+function setUp(answer: (turn: CodexTurn) => Promise<Outcome<string>> = async (turn) => ({ ok: true, value: `譯：${turn.input.replace(/<\/?reply>\n?/g, '').trim()}` }), env: Record<string, string> = {}) {
+	const dir = mkdtempSync(join(tmpdir(), 'lat-board-translate-'));
+	dirs.push(dir);
+	let now = Date.parse('2026-10-21T00:00:00Z');
+	const config = { ...loadConfig({ LAT_BOARD_STATE_DIR: dir, ...env }), now: () => now };
+	const calls: CodexTurn[] = [];
+	const turn = (given: CodexTurn) => {
+		calls.push(given);
+		return answer(given);
+	};
+	const translator = () => createTranslator(config, turn);
+	const ask = async (made: ReturnType<typeof translator>, texts: string[]) => {
+		const got: Outcome<string>[] = [];
+		await made.translate(texts, (index, outcome) => (got[index] = outcome));
+		return got;
+	};
+	return { dir, config, calls, translator, ask, advance: (ms: number) => (now += ms) };
+}
+
+test('Codex is asked with gpt-6-luna at low effort, and the reply comes back in Traditional Chinese', async () => {
+	const { calls, translator, ask } = setUp(async () => ({ ok: true, value: '软件已经更新' }));
+	expect(await ask(translator(), ['The software was updated.'])).toEqual([{ ok: true, value: '軟體已經更新' }]);
+	expect(calls[0].model).toBe('gpt-6-luna');
+	expect(calls[0].effort).toBe('low');
+	expect(calls[0].input).toBe('<reply>\nThe software was updated.\n</reply>');
+});
+
+test('a translated text is saved: asked again, or by another board start on the same directory, Codex is not called', async () => {
+	const { dir, calls, translator, ask } = setUp();
+	const first = translator();
+	expect(await ask(first, ['Hello there friend.'])).toEqual([{ ok: true, value: '譯：Hello there friend.' }]);
+	expect(await ask(first, ['Hello there friend.'])).toEqual([{ ok: true, value: '譯：Hello there friend.' }]);
+	expect(await ask(translator(), ['Hello there friend.'])).toEqual([{ ok: true, value: '譯：Hello there friend.' }]);
+	expect(calls).toHaveLength(1);
+	// Saved by a hash of the original: the conversation itself is not in the file.
+	const file = readFileSync(join(dir, 'translations.json'), 'utf8');
+	expect(file).toContain('譯：Hello');
+	expect(file).not.toContain('"Hello there friend."');
+});
+
+test('a translation unused for the kept time is dropped; one used meanwhile stays', async () => {
+	const { dir, calls, translator, ask, advance } = setUp(undefined, { LAT_BOARD_TRANSLATE_KEEP_DAYS: '30' });
+	const made = translator();
+	await ask(made, ['Old unused reply here.', 'Reply used every week.']);
+	for (let week = 0; week < 4; week++) {
+		advance(7 * DAY);
+		await ask(made, ['Reply used every week.']);
+	}
+	advance(3 * DAY);
+	// 31 days since the first was last used, 3 since the second.
+	await ask(made, ['Something new to translate.']);
+	const saved = readFileSync(join(dir, 'translations.json'), 'utf8');
+	expect(saved).not.toContain('Old unused');
+	expect(saved).toContain('Reply used every week');
+	calls.length = 0;
+	await ask(translator(), ['Old unused reply here.', 'Reply used every week.']);
+	expect(calls.map((call) => call.input)).toEqual(['<reply>\nOld unused reply here.\n</reply>']);
+});
+
+test('the same text asked for by two pages at once is translated once', async () => {
+	let release = () => {};
+	const { calls, translator, ask } = setUp(
+		(turn) => new Promise((resolve) => (release = () => resolve({ ok: true, value: `譯：${turn.input}` })))
+	);
+	const made = translator();
+	const one = ask(made, ['Shared reply text here.']);
+	const two = ask(made, ['Shared reply text here.']);
+	await Bun.sleep(10);
+	release();
+	expect((await one)[0].ok).toBe(true);
+	expect(await two).toEqual(await one);
+	expect(calls).toHaveLength(1);
+});
+
+test('no more Codex translations run at once than the limit; the rest wait their turn', async () => {
+	let running = 0;
+	let most = 0;
+	const { translator, ask } = setUp(
+		async (turn) => {
+			most = Math.max(most, ++running);
+			await Bun.sleep(20);
+			running--;
+			return { ok: true, value: turn.input };
+		},
+		{ LAT_BOARD_TRANSLATE_CONCURRENCY: '2' }
+	);
+	const got = await ask(translator(), ['One two three.', 'Four five six.', 'Seven eight nine.', 'Ten eleven twelve.', 'More words here.']);
+	expect(got.every((outcome) => outcome.ok)).toBe(true);
+	expect(most).toBe(2);
+});
+
+test('a failed translation is not saved, so the next request tries again; one that lost its code is a failure', async () => {
+	let answer: Outcome<string> = { ok: false, reason: 'Codex 逾時（60 秒）' };
+	const { dir, calls, translator, ask } = setUp(async () => answer);
+	const made = translator();
+	expect(await ask(made, ['Please run `make` now.'])).toEqual([{ ok: false, reason: 'Codex 逾時（60 秒）' }]);
+	expect(existsSync(join(dir, 'translations.json'))).toBe(false);
+	answer = { ok: true, value: '請現在執行。' };
+	expect(await ask(made, ['Please run `make` now.'])).toEqual([{ ok: false, reason: '譯文少了原文的程式碼、網址或路徑' }]);
+	answer = { ok: true, value: '請現在執行 ⟦0⟧。' };
+	expect(await ask(made, ['Please run `make` now.'])).toEqual([{ ok: true, value: '請現在執行 `make`。' }]);
+	expect(calls).toHaveLength(3);
+});
+
+/** The page's side, with the server's answer as `lines` written in `chunks` pieces. */
+function pageSide(respond: (texts: string[]) => Response | Promise<Response>) {
+	const states = new Map<string, Translation | undefined>();
+	const sent: string[][] = [];
+	let unpaired = 0;
+	const translations = new Translations((text, translation) => states.set(text, translation), {
+		request: async (_url, init) => {
+			const texts = JSON.parse(String(init.body)).texts as string[];
+			sent.push(texts);
+			return respond(texts);
+		},
+		unpaired: () => unpaired++
+	});
+	return { states, sent, translations, unpaired: () => unpaired };
+}
+const ndjson = (lines: object[], split = 7) => {
+	const body = lines.map((line) => JSON.stringify(line) + '\n').join('');
+	const bytes = new TextEncoder().encode(body);
+	return new Response(
+		new ReadableStream({
+			start(controller) {
+				// Cut anywhere, inside characters too.
+				for (let start = 0; start < bytes.length; start += split) controller.enqueue(bytes.slice(start, start + split));
+				controller.close();
+			}
+		})
+	);
+};
+const settle = () => Bun.sleep(5);
+
+test('the page sends what it wants together, once, and each text turns from pending to its translation', async () => {
+	const { states, sent, translations } = pageSide((texts) => ndjson([{ index: 1, text: '第二段譯文' }, { index: 0, text: '第一段譯文' }]));
+	translations.want(['First reply.', 'Second reply.']);
+	translations.want(['First reply.', 'Second reply.']);
+	expect(states.get('First reply.')).toEqual({ status: 'pending' });
+	await settle();
+	expect(sent).toEqual([['First reply.', 'Second reply.']]);
+	expect(states.get('First reply.')).toEqual({ status: 'done', text: '第一段譯文' });
+	expect(states.get('Second reply.')).toEqual({ status: 'done', text: '第二段譯文' });
+	// Asked for again, as a later page or a pushed reply would: nothing new goes out.
+	translations.want(['Second reply.', 'Third reply.']);
+	await settle();
+	expect(sent).toEqual([['First reply.', 'Second reply.'], ['Third reply.']]);
+});
+
+test("a text the server failed, one it never answered and a request that broke are failed; retry asks for them again", async () => {
+	let respond = (_texts: string[]): Response => ndjson([{ index: 0, error: 'Codex 逾時（60 秒）' }]);
+	const { states, sent, translations } = pageSide((texts) => respond(texts));
+	translations.want(['A reply.', 'B reply.']);
+	await settle();
+	expect(states.get('A reply.')).toEqual({ status: 'failed', reason: 'Codex 逾時（60 秒）' });
+	expect(states.get('B reply.')).toEqual({ status: 'failed', reason: '看板伺服器沒有回完' });
+
+	respond = () => Response.json({ error: 'texts 要是…' }, { status: 400 });
+	translations.want(['C reply.']);
+	await settle();
+	expect(states.get('C reply.')).toEqual({ status: 'failed', reason: 'texts 要是…' });
+
+	// Failed ones are not asked for again until retried.
+	translations.want(['A reply.']);
+	await settle();
+	expect(sent).toHaveLength(2);
+	respond = (texts) => ndjson(texts.map((_, index) => ({ index, text: `譯${index}` })));
+	translations.retry();
+	expect(states.get('A reply.')).toBeUndefined();
+	translations.want(['A reply.', 'B reply.', 'C reply.']);
+	await settle();
+	expect(states.get('C reply.')).toEqual({ status: 'done', text: '譯2' });
+});
+
+test('stopping ends the requests on their way and forgets them; translations already in stay', async () => {
+	let finish = () => {};
+	const { states, translations } = pageSide(
+		(texts) => (texts[0] === 'Done one.' ? ndjson([{ index: 0, text: '好了' }]) : new Promise<Response>((resolve) => (finish = () => resolve(ndjson([{ index: 0, text: '太晚' }])))))
+	);
+	translations.want(['Done one.']);
+	await settle();
+	translations.want(['Slow one.']);
+	await settle();
+	translations.stop();
+	expect(states.get('Slow one.')).toBeUndefined();
+	expect(states.get('Done one.')).toEqual({ status: 'done', text: '好了' });
+	finish();
+	await settle();
+	expect(states.get('Slow one.')).toBeUndefined();
+});
+
+test('more texts than one request holds go in several; a logged-out device reloads', async () => {
+	const { sent, translations, unpaired } = pageSide(() => new Response(null, { status: 401 }));
+	translations.want(Array.from({ length: 120 }, (_, index) => `Reply number ${index}.`));
+	await settle();
+	expect(sent.map((texts) => texts.length)).toEqual([50, 50, 20]);
+	expect(unpaired()).toBe(3);
+});

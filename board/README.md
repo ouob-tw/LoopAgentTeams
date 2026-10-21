@@ -43,6 +43,10 @@
 | `BODY_SIZE_LIMIT` | 伺服器收的請求大小上限（adapter-node 的設定）。約 3 分鐘的錄音會超過預設的 512K，用語音輸入時設成 `2M` | `512K` |
 | `LAT_BOARD_TIDY_COMMAND` | 整理長語音用的 Codex app server 指令（JSON 字串陣列），每次整理啟動一個、以標準輸入輸出溝通，用完即結束；模型固定為 `gpt-6-luna`、思考強度 `low` | `["codex","app-server"]` |
 | `LAT_BOARD_TIDY_TIMEOUT_SECONDS` | Codex 整理多久沒完成就改放原始辨識文字並提示 | `30` |
+| `LAT_BOARD_TRANSLATE_COMMAND` | 翻譯對話紀錄英文回覆用的 Codex app server 指令（JSON 字串陣列），每段翻譯啟動一個、用完即結束；模型固定為 `gpt-6-luna`、思考強度 `low`（見「對話翻譯」） | `["codex","app-server"]` |
+| `LAT_BOARD_TRANSLATE_TIMEOUT_SECONDS` | 一段翻譯多久沒完成就算失敗，該段留著原文並小字註明 | `60` |
+| `LAT_BOARD_TRANSLATE_CONCURRENCY` | 同時最多幾個 Codex 在翻譯，其餘排隊；所有頁面共用 | `3` |
+| `LAT_BOARD_TRANSLATE_KEEP_DAYS` | 存下的譯文多久沒用到就清掉 | `30` |
 | `LAT_BOARD_CSWAP_COMMAND` | claude-swap 指令（JSON 字串陣列），「額度」分頁讀 Claude 帳號時在後面加上 `list --json --cached-only`（只讀 claude-swap 自己的檔案，不連網、不刷新登入）；看板不會執行其他 cswap 指令 | `["cswap"]` |
 | `LAT_BOARD_CSWAP_TIMEOUT_SECONDS` | 上一項多久沒結束就放棄 | `10` |
 | `CODEX_MULTI_AUTH_DIR` | codex-multi-auth 的資料夾，「額度」分頁直接讀其中的 `openai-codex-accounts.json` 與 `quota-cache.json`，只取 email、使用中、方案、用量、重置時間與更新時間，不執行 codex-multi-auth；沒設定時用 `$CODEX_HOME/multi-auth` | `~/.codex/multi-auth` |
@@ -113,6 +117,19 @@
 - 一頁是最後 50 段文字（你的訊息加主控文字）和其間的操作；捲到清單底部時自動取再早的 50 段，底部的「載入更早」按鈕也可以手動載入，載入失敗後只能用按鈕重試。每個項目帶著它在整段對話裡的位置（`seq`），頁與頁之間不重複也不漏。
 - 頁面開著時，伺服器監看那個紀錄檔，有變動 5 秒內推送最新一頁（`/api/transcript/events`）；一次多出超過 50 段時只留新的一頁，更早的可再載入。紀錄檔還不存在時（輔助工具回 `not_found`，例如剛開的 session）推送空的對話、不跳通知；讀不出來時以浮動通知顯示原因，資訊頁其他區塊不受影響。兩者之後都每幾秒再試。關掉頁面時，還在讀的輔助工具連同它開的 Python 一起結束。
 - 讀不出來的行會略過，這一區上方註明「有 N 行紀錄讀不出來，已略過」：不是 JSON 物件的行，以及欄位型別不對的紀錄（只略過那一筆，前後照常）；client 還在寫的最後一行不算。
+
+## 對話翻譯
+
+對話紀錄上方的「中文／原文」切換：選「中文」時，畫面上的英文回覆顯示成繁體中文。主控資訊頁、Herdr 分頁的 Agent 頁與已關閉 Agent 頁都用同一個對話紀錄元件（`Transcript.svelte`），所以三處都有。
+
+- **開關**：預設「原文」。選擇記在這個瀏覽器（localStorage 的 `lat-board-translate`，`1` 是中文），所有對話共用。選「原文」時頁面不送任何翻譯請求，還在路上的請求也一併中止。
+- **翻哪些**：只翻主控或 Agent 的文字回覆，而且要判斷為英文：拿掉程式碼框、行內程式碼、網址與含 `/` 的字（路徑等）之後，至少有 3 個英文單字（兩個字母以上），而且中日文字數不超過英文單字數的一半（`src/lib/board/translate.ts` 的 `isEnglish`）。你的訊息、操作行、以回報或題目卡顯示的訊息，以及帶回報標籤的文字都不翻。只翻已載入到畫面上的段落：最新一頁、往下捲載入的更早頁、即時推送的新回覆，不預先翻整段歷史。
+- **請求**：頁面把還沒問過的英文段落（新的在前）一起送到 `POST /api/translate`（`{ "texts": [...] }`，一次最多 50 段、每段最多 20000 字，超過就分成幾個請求）。伺服器以 NDJSON 回答，每段好了就送一行 `{"index":0,"text":"…"}` 或失敗的 `{"index":0,"error":"原因"}`，已存的譯文立刻送出，不用等其他段。端點跟其他 API 一樣要登入。
+- **伺服器翻譯**：每段開一個 Codex app server（`LAT_BOARD_TRANSLATE_COMMAND`）跑一個回合，同時最多 `LAT_BOARD_TRANSLATE_CONCURRENCY` 個，其餘排隊；呼叫與逾時做法和語音整理相同（`src/lib/server/codex-turn.ts`）。送出前把程式碼框、行內程式碼、網址與含 `/` 的字換成 `⟦0⟧` 這類記號，Codex 只翻其餘文字並保留 Markdown 結構，回來後用 opencc-js 轉成台灣正體、再把記號換回原文，所以這些內容與原文完全相同；記號少了或重複就算失敗。指令、檔名等沒加反引號的技術詞由提示要求維持原樣。
+- **存放**：譯文以原文的 SHA-256 為鍵存在狀態目錄的 `translations.json`（權限 600，不存原文），所有裝置共用，重開頁面或換裝置直接用、不再呼叫 Codex。同一段文字正在翻時又被要求，等同一次翻譯。每段記最後使用時間（最多一小時更新一次），每次請求與每次存檔時清掉超過 `LAT_BOARD_TRANSLATE_KEEP_DAYS` 天沒用到的。失敗不存，下次要求會再翻。
+- **顯示**：還沒翻好的段落顯示原文並在標頭標「翻譯中」，翻好原地換成中文，下方「看原文」可展開／收起該段英文原文。失敗時留著原文，下方小字「翻譯失敗，顯示原文（原因）」，不跳浮動通知；換到別的對話再回來、重新整理，或切回「原文」再切「中文」時會重試。
+- **紀錄**：失敗寫一行 `[translate] Codex translation failed: …` 到錯誤紀錄，內容不含對話文字。
+- 測試以 `tests/fake-codex.mjs` 代替 Codex：`tests/translate.test.ts`（英文判斷、記號、快取命中與過期、同時數、失敗、頁面請求）、`tests/translate-server.test.ts`（登入、串流、重啟後沿用、30 天過期、失敗與逾時）、`tests/translate-page.test.ts`（真瀏覽器：預設關閉不送請求、翻譯中與替換、看原文、重新整理記得、失敗小字、手機寬度）。
 
 ## Herdr 分頁
 

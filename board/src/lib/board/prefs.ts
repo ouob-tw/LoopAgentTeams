@@ -35,6 +35,9 @@ export const MIDDLE_TAB_KEY = 'lat-board-middle-tab';
 /** '1' while an information page shows its details (path, Herdr place). */
 export const INFO_DETAILS_KEY = 'lat-board-info-details';
 
+/** '1' while conversations show English replies translated into Chinese; off when nothing is saved. */
+export const TRANSLATE_KEY = 'lat-board-translate';
+
 /** Column widths of the wide layout in px. The defaults live in the page's styles. */
 export const WIDTHS = {
 	roster: { key: 'lat-board-roster-width', min: 170, max: 440 },

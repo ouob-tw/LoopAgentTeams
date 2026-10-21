@@ -3,7 +3,9 @@
 // <dir>/codex.json says: `reply` is the agent message it answers with; `fail` ends the turn as
 // failed, `hang` never ends it, `exit` quits as soon as the turn starts, `itemOnly` sends the reply
 // only as a completed item (the finished turn lists none) and `garbled` ends the turn with no turn,
-// `junk` answers with that text on a line of its own, which is not JSON.
+// `junk` answers with that text on a line of its own, which is not JSON; `prefix` answers with it
+// followed by what the input holds inside its tags, as a translation that keeps every marker would;
+// `delayMs` waits that long before ending the turn.
 // `stderr` is written to standard error first, as Codex does with its own complaints.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -16,7 +18,7 @@ const plan = existsSync(planFile) ? JSON.parse(readFileSync(planFile, 'utf8')) :
 const write = (message) => process.stdout.write(JSON.stringify(message) + '\n');
 if (plan.stderr) process.stderr.write(plan.stderr + '\n');
 
-createInterface({ input: process.stdin }).on('line', (line) => {
+createInterface({ input: process.stdin }).on('line', async (line) => {
 	const message = JSON.parse(line);
 	if (message.method === 'initialize') write({ id: message.id, result: { userAgent: 'fake' } });
 	else if (message.method === 'thread/start') write({ id: message.id, result: { thread: { id: 'thread-1' }, params: message.params } });
@@ -28,7 +30,9 @@ createInterface({ input: process.stdin }).on('line', (line) => {
 		if (plan.exit) process.exit(1);
 		if (plan.hang) return;
 		if (plan.garbled) return write({ method: 'turn/completed', params: { threadId: 'thread-1' } });
-		const item = { type: 'agentMessage', id: 'm1', text: plan.reply ?? '' };
+		if (plan.delayMs) await new Promise((resolve) => setTimeout(resolve, plan.delayMs));
+		const inner = text.replace(/^<[^>]+>\n?|\n?<\/[^>]+>$/g, '');
+		const item = { type: 'agentMessage', id: 'm1', text: plan.prefix !== undefined ? plan.prefix + inner : (plan.reply ?? '') };
 		if (plan.itemOnly) {
 			write({ method: 'item/completed', params: { threadId: 'thread-1', turnId: 'turn-1', item } });
 			return write({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [], error: null } } });
