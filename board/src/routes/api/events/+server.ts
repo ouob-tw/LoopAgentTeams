@@ -32,7 +32,7 @@ export const GET: RequestHandler = async ({ cookies }) => {
 			send('board', JSON.stringify(await board.current()));
 			const quota = board.quota();
 			if (quota) send('quota', JSON.stringify(quota));
-			send('usage-style', JSON.stringify({ style: board.usageStyle() }));
+			send('usage-style', JSON.stringify(board.usageStyle()));
 		},
 		cancel: () => unsubscribe()
 	});

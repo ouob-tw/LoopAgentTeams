@@ -48,8 +48,14 @@ export function connectBoard(options: ConnectionOptions): Connection {
 	let closed = false;
 	let attempt: AbortController | undefined;
 	let retry: ReturnType<typeof setTimeout> | undefined;
-	/** How many styles the stream has announced; an answer older than the latest of them is stale. */
-	let styleEvents = 0;
+	/** The newest usage style shown, by the server's revision of it: the stream and the answers to
+	 *  saves arrive in any order, and only a newer revision replaces what is shown. */
+	let styleRevision = 0;
+	function hearStyle({ style, revision }: { style: UsageStyle; revision: number }): void {
+		if (revision <= styleRevision) return;
+		styleRevision = revision;
+		options.onUsageStyle?.(style);
+	}
 
 	function unpaired(): void {
 		closed = true;
@@ -70,10 +76,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		else if (event === 'tab-moved') options.onTabMoved?.();
 		else if (event === 'agent-action') options.onAgentAction?.(JSON.parse(data).agentId);
 		else if (event === 'quota') options.onQuota?.(JSON.parse(data));
-		else if (event === 'usage-style') {
-			styleEvents++;
-			options.onUsageStyle?.(JSON.parse(data).style);
-		}
+		else if (event === 'usage-style') hearStyle(JSON.parse(data));
 	}
 
 	async function listen(): Promise<void> {
@@ -136,7 +139,6 @@ export function connectBoard(options: ConnectionOptions): Connection {
 			if (!response.ok && response.status !== 409) throw new Error(`HTTP ${response.status}`);
 		},
 		async setUsageStyle(style) {
-			const heard = styleEvents;
 			const response = await request('/api/usage-style', {
 				method: 'PUT',
 				headers: { 'content-type': 'application/json' },
@@ -144,9 +146,8 @@ export function connectBoard(options: ConnectionOptions): Connection {
 			});
 			if (response.status === 401) return unpaired();
 			if (!response.ok) throw new Error(`HTTP ${response.status}`);
-			// Not left to the push alone: the stream may be down. But a style announced meanwhile
-			// is newer than this answer, which would put the page back.
-			if (styleEvents === heard) options.onUsageStyle?.(style);
+			// Not left to the push alone: the stream may be down.
+			hearStyle(await response.json());
 		},
 		async archive(before = null) {
 			const response = await request(before === null ? '/api/archive' : `/api/archive?before=${encodeURIComponent(before)}`);

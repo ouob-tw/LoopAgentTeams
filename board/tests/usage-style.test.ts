@@ -57,7 +57,10 @@ test('a change on one device reaches every open page and every device that asks 
 	const theirs = fixture.watch(other);
 	await until(() => mine.usageStyles.length && theirs.usageStyles.length, 5_000, 'both pages to connect');
 
-	expect((await put('compact')).status).toBe(200);
+	const saved = await put('compact');
+	expect(saved.status).toBe(200);
+	const { style, revision } = await saved.json();
+	expect(style).toBe('compact');
 	await until(() => theirs.usageStyles.at(-1) === 'compact', 5_000, 'the other device to hear of 精簡');
 	await until(() => mine.usageStyles.at(-1) === 'compact', 5_000, 'this device to hear of 精簡');
 	expect(await get(other)).toBe('compact');
@@ -72,7 +75,10 @@ test('a change on one device reaches every open page and every device that asks 
 	await until(() => later.usageStyles.at(0), 10_000, 'a page opened after the restart');
 	expect(later.usageStyles).toEqual(['compact']);
 
-	expect((await put('detailed', other)).status).toBe(200);
+	// Every save is a newer revision, restarts included, for pages to tell the newer report apart.
+	expect((await fixture.fetch('/api/usage-style', { cookie: other }).then((response) => response.json())).revision).toBeGreaterThan(revision);
+	const changed = await put('detailed', other);
+	expect((await changed.json()).revision).toBeGreaterThan(revision);
 	await until(() => later.usageStyles.at(-1) === 'detailed', 5_000, 'back to 詳細 on the page');
 	expect(await get()).toBe('detailed');
 	for (const watch of [mine, theirs, later]) watch.close();
