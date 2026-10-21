@@ -298,6 +298,12 @@ for (const width of [1280, 390]) {
 		await openAgent('s-plain');
 		await tab.until(`document.querySelector('#agent-panel-transcript')?.innerText.includes('測試都過了。')`, "the agent's conversation");
 		expect(await tab.eval(TABS)).toEqual(['對話紀錄', '操作紀錄']);
+		// The translation button ends the tab row on 對話紀錄 only.
+		expect(await tab.eval(`document.querySelector('.detail .tabbar > button.translate')?.getAttribute('aria-pressed')`)).toBe('false');
+		await tab.eval(`document.querySelector('#agent-tab-log').click()`);
+		await tab.until(`!document.querySelector('.detail button.translate')`, 'no translation button on the log tab');
+		await tab.eval(`document.querySelector('#agent-tab-transcript').click()`);
+		expect(await tab.eval(`!!document.querySelector('.detail .tabbar > button.translate')`)).toBe(true);
 		expect(await tab.eval(`!!document.querySelector('.detail .questions, .history li.report, #panel-reports')`)).toBe(false);
 		await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick]')`, "the agent's model picker");
 		expect(await tab.eval(FITS)).toBe(true);

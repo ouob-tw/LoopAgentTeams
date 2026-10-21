@@ -13,6 +13,8 @@ const GONE_AFTER = 3;
 /** How many reads in a row Herdr may show no agent in the pane hcom has for the client before it
  *  counts as exited: Herdr spots a client within a second of its start. */
 const EXITED_AFTER = 8;
+/** How many reads in a row Herdr's lists may fail before the wait gives up on them. */
+const UNREAD_AFTER = 5;
 
 /** Which client: the one hcom lists under this name, or with this session ID. */
 export type Wanted = { name: string } | { sessionId: string };
@@ -29,15 +31,20 @@ export function runningIn(wanted: Wanted, hcom: HcomAgent[], herdr: HerdrAgent[]
 export type Appearance = { found: HerdrAgent } | { found: null; reason: string };
 
 /** Wait until the client runs in Herdr, or until `deadline` (board clock); gives up early when
- *  hcom stops listing it, or when it is listed but nothing runs in its pane for a while. `who`
- *  names it in the reasons. */
+ *  hcom stops listing it, when it is listed but nothing runs in its pane for a while, or when
+ *  Herdr's lists cannot be read for a while. `who` names it in the reasons. */
 export async function waitToAppear(config: BoardConfig, wanted: Wanted, deadline: number, who: string): Promise<Appearance> {
 	let missing = 0;
 	let idle = 0;
+	let herdrUnread = 0;
 	let unread: string | null = null;
 	for (;;) {
 		const [hcom, herdr] = await Promise.all([listAgents(config), listHerdrAgents(config)]);
 		unread = !hcom.ok ? hcom.reason : !herdr.ok ? herdr.reason : null;
+		herdrUnread = herdr.ok ? 0 : herdrUnread + 1;
+		if (!herdr.ok && herdrUnread >= UNREAD_AFTER) {
+			return { found: null, reason: `連續 ${UNREAD_AFTER} 次讀不到 Herdr 的清單，不再等 ${who}（${herdr.reason}）` };
+		}
 		if (hcom.ok && herdr.ok) {
 			const running = runningIn(wanted, hcom.agents, herdr.agents);
 			if (running.herdr) return { found: running.herdr };

@@ -3,12 +3,14 @@
 	// mounted, so a conversation keeps its place and its live feed. Tabs and panels are identified by
 	// their IDs alone, as one strip is on the screen at a time.
 	import type { Snippet } from 'svelte';
+	import TranslateToggle from './TranslateToggle.svelte';
 
 	let {
 		tabs,
 		tab = $bindable(),
 		ariaLabel,
-		panel
+		panel,
+		translateTab
 	}: {
 		/** In order; a count is shown after the label unless it is null. */
 		tabs: readonly { id: T; label: string; count: number | null }[];
@@ -18,6 +20,8 @@
 		ariaLabel: string;
 		/** A tab's panel content. */
 		panel: Snippet<[T]>;
+		/** The tab that holds a conversation: the translation button sits at the strip's end while it is shown. */
+		translateTab: T;
 	} = $props();
 
 	function tabKeys(event: KeyboardEvent) {
@@ -31,21 +35,24 @@
 </script>
 
 <!-- svelte-ignore a11y_interactive_supports_focus -->
-<div class="tabs" role="tablist" aria-label={ariaLabel} onkeydown={tabKeys}>
-	{#each tabs as entry (entry.id)}
-		<button
-			type="button"
-			role="tab"
-			id="tab-{entry.id}"
-			data-tab={entry.id}
-			aria-selected={tab === entry.id}
-			aria-controls="panel-{entry.id}"
-			tabindex={tab === entry.id ? 0 : -1}
-			onclick={() => (tab = entry.id)}
-		>
-			{entry.label}{#if entry.count !== null}<small>{entry.count}</small>{/if}
-		</button>
-	{/each}
+<div class="tabbar">
+	<div class="tabs" role="tablist" aria-label={ariaLabel} onkeydown={tabKeys}>
+		{#each tabs as entry (entry.id)}
+			<button
+				type="button"
+				role="tab"
+				id="tab-{entry.id}"
+				data-tab={entry.id}
+				aria-selected={tab === entry.id}
+				aria-controls="panel-{entry.id}"
+				tabindex={tab === entry.id ? 0 : -1}
+				onclick={() => (tab = entry.id)}
+			>
+				{entry.label}{#if entry.count !== null}<small>{entry.count}</small>{/if}
+			</button>
+		{/each}
+	</div>
+	{#if tab === translateTab}<TranslateToggle />{/if}
 </div>
 
 {#each tabs as entry (entry.id)}
@@ -55,10 +62,15 @@
 {/each}
 
 <style>
+	.tabbar {
+		display: flex;
+		border-bottom: 1px solid var(--line);
+	}
 	.tabs {
 		display: flex;
+		flex: 1;
+		min-width: 0;
 		gap: 0.2rem;
-		border-bottom: 1px solid var(--line);
 	}
 	.tabs button {
 		display: inline-flex;

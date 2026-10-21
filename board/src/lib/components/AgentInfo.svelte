@@ -15,6 +15,7 @@
 	import AgentLog from './AgentLog.svelte';
 	import HcomBadge from './HcomBadge.svelte';
 	import StatusMark from './StatusMark.svelte';
+	import TranslateToggle from './TranslateToggle.svelte';
 	import Transcript from './Transcript.svelte';
 	import UsageLine from './UsageLine.svelte';
 	import type { Usage } from '#lib/board/usage.ts';
@@ -99,6 +100,7 @@
 <AgentClose {agent} />
 
 <!-- svelte-ignore a11y_interactive_supports_focus -->
+<div class="tabbar">
 <div class="tabs" role="tablist" aria-label="Agent 的紀錄" onkeydown={tabKeys}>
 	{#each TABS as entry (entry.id)}
 		<button
@@ -114,6 +116,8 @@
 			{entry.label}{#if entry.id === 'log' && logCount !== null}<small>{logCount}</small>{/if}
 		</button>
 	{/each}
+</div>
+{#if tab === 'transcript'}<TranslateToggle />{/if}
 </div>
 
 <!-- Both stay mounted, so the conversation keeps its place and its live feed. -->
@@ -218,10 +222,15 @@
 		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--warn);
 	}
+	.tabbar {
+		display: flex;
+		border-bottom: 1px solid var(--line);
+	}
 	.tabs {
 		display: flex;
+		flex: 1;
+		min-width: 0;
 		gap: 0.2rem;
-		border-bottom: 1px solid var(--line);
 	}
 	.tabs button {
 		display: inline-flex;

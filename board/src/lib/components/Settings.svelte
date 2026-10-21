@@ -1,7 +1,13 @@
 <script lang="ts">
-	// The settings of this device: theme, overall size, smallest text size and how the usage line reads.
+	// The settings of this device: theme, overall size and smallest text size; and the board's, which every
+	// device shares: how the usage line reads and whether conversations open translated.
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { MIN_FONT, SCALE } from '#lib/board/prefs.ts';
+	import { translatePref } from '#lib/board/translate-pref.svelte.ts';
+	import type { TranslateMode } from '#lib/board/translate-mode.ts';
+	import type { UsageStyle } from '#lib/board/usage.ts';
+
+	let { onusagestyle, ontranslatemode }: { onusagestyle: (style: UsageStyle) => void; ontranslatemode: (mode: TranslateMode) => void } = $props();
 
 	let dialog: HTMLDialogElement;
 
@@ -21,7 +27,7 @@
 			<h2 id="settings-title">設定</h2>
 			<button onclick={() => dialog.close()}>關閉</button>
 		</header>
-		<p class="note">這些設定只記在這台裝置的瀏覽器裡。</p>
+		<p class="note">主題、整體大小與最小字體只記在這台裝置的瀏覽器裡；用量列與對話翻譯所有已登入的裝置共用。</p>
 
 		<section>
 			<h3>主題</h3>
@@ -75,14 +81,23 @@
 		<section>
 			<h3>用量列</h3>
 			<div class="choices" role="group" aria-label="用量列">
-				<button aria-pressed={appearance.usageStyle === 'detailed'} onclick={() => appearance.setUsageStyle('detailed')}>
+				<button aria-pressed={appearance.usageStyle === 'detailed'} onclick={() => onusagestyle('detailed')}>
 					詳細
 				</button>
-				<button aria-pressed={appearance.usageStyle === 'compact'} onclick={() => appearance.setUsageStyle('compact')}>
+				<button aria-pressed={appearance.usageStyle === 'compact'} onclick={() => onusagestyle('compact')}>
 					精簡
 				</button>
 			</div>
-			<p class="note">資訊頁的用量小字；精簡用英文縮寫，例如 Ctx 62% • 5h 40%。</p>
+			<p class="note">所有裝置共用。資訊頁的用量小字；精簡用英文縮寫，例如 Ctx 62% • 5h 40%。</p>
+		</section>
+
+		<section>
+			<h3>對話翻譯</h3>
+			<div class="choices" role="group" aria-label="對話翻譯">
+				<button aria-pressed={translatePref.mode === 'auto'} onclick={() => ontranslatemode('auto')}>自動翻譯</button>
+				<button aria-pressed={translatePref.mode === 'manual'} onclick={() => ontranslatemode('manual')}>手動切換</button>
+			</div>
+			<p class="note">所有裝置共用。自動翻譯：打開對話紀錄就顯示中文；手動切換：顯示原文，按分頁列的翻譯圖示才翻。圖示只切換目前這個對話。</p>
 		</section>
 	</div>
 </dialog>

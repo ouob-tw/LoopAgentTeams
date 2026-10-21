@@ -114,7 +114,7 @@
 	<AgentClose {agent} />
 {/if}
 
-<RecordTabs {tabs} bind:tab ariaLabel="主控的紀錄">
+<RecordTabs {tabs} bind:tab ariaLabel="主控的紀錄" translateTab="transcript">
 	{#snippet panel(id)}
 		{#if id === 'transcript'}
 			<Transcript {controller} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />

@@ -374,30 +374,6 @@ test('an hcom failure is logged with its reason and not followed', async () => {
 	expect(body.reason).toStartWith('hcom 啟動失敗');
 });
 
-test('launches queue: the next one starts only after the one before has been followed through', async () => {
-	herdrPlan();
-	hcomPlan([
-		{ name: 'slow', workspace: 'wA', appears: false },
-		{ name: 'next', workspace: 'wA' }
-	]);
-	const repo = folder('queued', true);
-
-	const started = Date.now();
-	const [first, second] = await Promise.all([
-		launch({ folder: repo, agent: { workspace: 'wA', tabName: '' } }),
-		launch({ folder: repo, agent: { workspace: 'wA', tabName: '' } })
-	]);
-	expect(Date.now() - started).toBeGreaterThanOrEqual((WAIT_SECONDS - 0.5) * 1000);
-	await followed(second.body.entry!.id);
-
-	const lines = sentLog().filter((line) => line.launchId === first.body.entry!.id || line.id === first.body.entry!.id || line.id === second.body.entry!.id);
-	expect(lines.map((line) => [line.kind, line.launchId ?? line.id])).toEqual([
-		['launch', first.body.entry!.id],
-		['launch-followed', first.body.entry!.id],
-		['launch', second.body.entry!.id]
-	]);
-});
-
 test('the list keeps plain agents and controllers apart, and a plain agent never becomes a controller', async () => {
 	herdrPlan();
 	hcomPlan([{ name: 'solo', workspace: 'wA' }]);

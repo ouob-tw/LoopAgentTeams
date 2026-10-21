@@ -1,5 +1,6 @@
 """Behavior and CLI contract tests for the LAT stall watcher."""
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
@@ -7,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -3422,9 +3424,11 @@ esac
         with patch.object(watch, 'run_json', return_value=terminal), \
                 patch.object(watch, 'session_events', return_value=[]), \
                 patch.object(watch, 'release_wait_if_needed', return_value=None), \
-                patch.object(watch, 'read_processes', return_value=[]):
+                patch.object(watch, 'read_processes') as read_processes:
             observation = watch.observe(
-                self.work, self.work / '.lat/decisions', 'orch', 'worker-open', info)
+                self.work, self.work / '.lat/decisions', 'orch', 'worker-open', info,
+                processes=[])
+        read_processes.assert_not_called()
 
         self.assertEqual(observation.input_text, '')
         self.assertFalse(observation.prompt_empty)
@@ -4161,7 +4165,7 @@ esac
         })
         (watch_dir / 'state.json').write_text(original)
 
-        def observe(workspace, decisions, orchestrator, agent, info, card=None):
+        def observe(workspace, decisions, orchestrator, agent, info, card=None, *, processes):
             return observation._replace(agent=agent)
 
         with patch.object(watch, 'observe', side_effect=observe):
@@ -4198,6 +4202,225 @@ esac
                           record.get('decision') == 'observation-failed'],
                          [(0, 'orch'), (60, 'orch'), (120, 'orch'), (120, 'worker-open'),
                           (180, 'orch')])
+
+    def test_command_timeout_names_the_command(self):
+        watch = load_watch()
+        timeout = subprocess.TimeoutExpired(['hcom', 'term'], watch.COMMAND_TIMEOUT_SECONDS)
+        with patch.object(watch.subprocess, 'run', side_effect=timeout) as run:
+            with self.assertRaisesRegex(ValueError, r'hcom term .*timed out after 30 seconds'):
+                watch.run_command(['hcom', 'term', 'worker-open', '--json'])
+        self.assertEqual(run.call_args.kwargs['timeout'], 30)
+
+    def test_cycle_logs_observation_timeout_and_keeps_observing_others(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        real_run = subprocess.run
+        commands = []
+
+        def run(command, **kwargs):
+            commands.append((command, kwargs))
+            if command[:3] == ['hcom', 'term', 'orch']:
+                raise subprocess.TimeoutExpired(command, kwargs['timeout'])
+            return real_run(command, **kwargs)
+
+        with patch.object(watch.subprocess, 'run', side_effect=run):
+            self.run_cycles(watch, 0)
+
+        self.assertTrue(commands)
+        for command, kwargs in commands:
+            self.assertEqual(kwargs.get('timeout'), watch.COMMAND_TIMEOUT_SECONDS, command)
+        records = self.watch_records()
+        failed = [record for record in records if record.get('decision') == 'observation-failed']
+        self.assertEqual([record['agent'] for record in failed], ['orch'])
+        self.assertIn('hcom term timed out after 30 seconds', failed[0]['error'])
+        self.assertEqual([record['agent'] for record in records if 'observation' in record],
+                         ['worker-open'])
+
+    def test_cycle_reads_processes_once_for_all_agents(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        with patch.object(watch, 'read_processes', return_value=[]) as read_processes:
+            self.run_cycles(watch, 0)
+        self.assertEqual(read_processes.call_count, 1)
+        self.assertEqual([record['agent'] for record in self.watch_records()
+                          if 'observation' in record], ['orch', 'worker-open'])
+
+    def test_wait_holds_lock_from_read_to_write(self):
+        self.wait_session()
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        real_write = watch.write_object
+        paused, resume = threading.Event(), threading.Event()
+        order, errors = [], []
+
+        def write(target, value, **kwargs):
+            if threading.current_thread() is declaring and target == path:
+                paused.set()
+                resume.wait(10)
+                order.append('wait-written')
+            return real_write(target, value, **kwargs)
+
+        def declare():
+            try:
+                with patch.dict(os.environ, self.env):
+                    watch.declare_wait(argparse.Namespace(
+                        workspace=self.work, agent='worker-open', target='reviewer',
+                        reason='review', minutes=None))
+            except Exception as error:  # surfaced through the assertion below
+                errors.append(error)
+
+        def monitor():
+            with watch.wait_lock(path):
+                order.append('monitor-locked')
+                real_write(path, {'agent': 'worker-open', 'monitor': True})
+
+        declaring = threading.Thread(target=declare)
+        competing = threading.Thread(target=monitor)
+        with patch.object(watch, 'write_object', side_effect=write):
+            declaring.start()
+            self.assertTrue(paused.wait(10))
+            competing.start()
+            competing.join(0.3)
+            self.assertTrue(competing.is_alive())
+            resume.set()
+            declaring.join(10)
+            competing.join(10)
+
+        self.assertEqual(errors, [])
+        self.assertEqual(order, ['wait-written', 'monitor-locked'])
+        self.assertEqual(json.loads(path.read_text()), {'agent': 'worker-open', 'monitor': True})
+
+    def assert_wait_lock_available_during_command(self, path, command):
+        # A fresh descriptor in another thread bypasses wait_lock's reentrancy.
+        results = []
+
+        def probe():
+            try:
+                with path.with_name(f'.{path.stem}.lock').open('a') as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                results.append('acquired')
+            except OSError as error:
+                results.append(error)
+
+        competing = threading.Thread(target=probe)
+        competing.start()
+        competing.join(10)
+        self.assertFalse(competing.is_alive(), command)
+        self.assertEqual(results, ['acquired'], command)
+
+    def test_expired_wait_unlocks_before_observing_target_command(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'orch')
+        watch.write_object(path, dict(
+            agent='orch', kind='agent', target='worker-open', active=True,
+            declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00', deadline_at=60))
+        real_run = watch.run_command
+        intercepted = []
+
+        def run(command, **kwargs):
+            if command[:3] == ['hcom', 'term', 'worker-open']:
+                intercepted.append(command[:3])
+                self.assert_wait_lock_available_during_command(path, command)
+            return real_run(command, **kwargs)
+
+        with patch.object(watch, 'run_command', side_effect=run):
+            self.run_cycles(watch, 60)
+
+        self.assertEqual(intercepted, [['hcom', 'term', 'worker-open']])
+        self.assertTrue(json.loads(path.read_text())['deadline_extended'])
+
+    def test_wait_release_unlocks_before_reading_hcom_events(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(
+            agent='worker-open', kind='agent', target='absent', active=True,
+            declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00', deadline_at=3600))
+        real_run = watch.run_command
+        intercepted = []
+
+        def run(command, **kwargs):
+            if command[:2] == ['hcom', 'events'] and '--after' in command:
+                intercepted.append(command[:2])
+                self.assert_wait_lock_available_during_command(path, command)
+            return real_run(command, **kwargs)
+
+        with patch.object(watch, 'run_command', side_effect=run):
+            self.run_cycles(watch, 0)
+
+        self.assertEqual(intercepted, [['hcom', 'events']])
+        self.assertEqual(json.loads(path.read_text())['released_reason'], 'message-delivered')
+
+    def test_alarm_delivery_unlocks_before_hcom_and_herdr_commands(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch, agent='orch')
+        # A busy prompt makes the normal deadline path notify the user.
+        Path(str(self.hcom_log) + '.busy').touch()
+        real_run = watch.run_command
+        intercepted = []
+
+        def run(command, **kwargs):
+            if (command[:2] == ['hcom', 'send']
+                    or command[:3] == ['herdr', 'notification', 'show']):
+                intercepted.append(command[:2])
+                self.assert_wait_lock_available_during_command(path, command)
+            return real_run(command, **kwargs)
+
+        with patch.object(watch, 'run_command', side_effect=run):
+            self.run_cycles(watch, 660)
+
+        self.assertEqual(intercepted, [['hcom', 'send'], ['herdr', 'notification']])
+        self.assertTrue(json.loads(path.read_text())['alarm_notified'])
+
+    def test_alarm_write_back_after_external_command_detects_change(self):
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, {'agent': 'worker-open', 'kind': 'alarm', 'active': True})
+        declaration, original = watch.read_wait(path)
+
+        def perform(action, orchestrator, workspace):
+            # The agent replaces its declaration while the notice command runs.
+            with watch.wait_lock(path):
+                watch.write_object(path, {'agent': 'worker-open', 'kind': 'alarm', 'new': True})
+            return {}
+
+        action = watch.Action('notify-orchestrator', 'worker-open', 'alarm', category='alarm-notice')
+        with patch.object(watch, 'perform', side_effect=perform):
+            with self.assertRaisesRegex(ValueError, 'Concurrent change detected'):
+                watch.deliver_alarm_notice(action, declaration, path, original, 'orch', self.work)
+        self.assertEqual(json.loads(path.read_text())['new'], True)
+
+    def test_cycle_holds_wait_lock_from_read_to_write(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        real_decide = watch.decide_alarm
+        real_write = watch.write_object
+        blocked = []
+
+        def replace():
+            with watch.wait_lock(path):
+                real_write(path, {'agent': 'worker-open', 'kind': 'alarm', 'replaced': True})
+
+        competing = threading.Thread(target=replace)
+
+        def decide_alarm(*args):
+            competing.start()
+            competing.join(0.3)
+            blocked.append(competing.is_alive())
+            return real_decide(*args)
+
+        with patch.object(watch, 'decide_alarm', side_effect=decide_alarm):
+            self.run_cycles(watch, 0)
+        competing.join(10)
+
+        self.assertEqual(blocked, [True])
+        self.assertFalse([record for record in self.watch_records()
+                          if record.get('decision') == 'observation-failed'])
+        self.assertTrue(json.loads(path.read_text())['replaced'])
 
 
 if __name__ == '__main__':
