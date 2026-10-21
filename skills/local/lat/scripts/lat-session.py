@@ -447,6 +447,8 @@ def deactivate(args):
         removed = panel.unbind_controller(sid)
         if record['status'] == 'active' and not legacy_record(record):
             record['final_report_pending'] = True
+        if record['status'] not in ENDED:
+            record['ended_at_utc'] = datetime.now(timezone.utc).isoformat()
         record['status'] = 'ended'
         if args.successor:
             record['successor'] = args.successor

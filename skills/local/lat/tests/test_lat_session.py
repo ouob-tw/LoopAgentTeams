@@ -1,6 +1,7 @@
 """CLI contract tests; only disposable local files, no Codex/model calls."""
 import json
 import argparse
+from datetime import datetime, timezone
 import importlib.util
 from unittest.mock import patch
 import os
@@ -1458,6 +1459,45 @@ class SessionTests(unittest.TestCase):
         self.assertNotEqual(new_pid, old_pid)
         self.wait_for(lambda: len(self.fake_uv_log.read_text().splitlines()) == 2)
 
+    def test_hook_restarts_a_watcher_that_stopped_itself_after_its_orchestrator_left(self):
+        self.activate()
+        old_pid = self.watcher_pid()
+        spec = importlib.util.spec_from_file_location('lat_watch', SKILL / 'scripts/lat-watch.py')
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+        reason = 'orchestrator orch missing from HCOM for 60 minutes'
+
+        self.assertEqual(watch.stop_self(self.work, 'orch', reason, 3600, pgid=old_pid), SESSION)
+        os.killpg(old_pid, 15)
+        self.wait_for(lambda: not self.process_exists(old_pid))
+
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+        record = json.loads(self.record.read_text())
+        self.assertEqual(record['status'], 'active')
+        self.assertEqual(record['watcher_stopped']['reason'], reason)
+        self.assertIn(f'LAT watch stopped: {reason}',
+                      (self.work / '.lat/watch' / f'{SESSION}.log').read_text())
+        result = self.hook(source='resume')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        new_pid = self.watcher_pid()
+        self.assertNotEqual(new_pid, old_pid)
+        self.assertTrue(self.process_exists(new_pid))
+
+    def test_deactivate_records_end_time_and_a_new_round_starts_without_one(self):
+        self.activate()
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        ended = json.loads(self.record.read_text())
+        self.assertEqual(datetime.fromisoformat(ended['ended_at_utc']).tzinfo, timezone.utc)
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        self.assertEqual(json.loads(self.record.read_text())['ended_at_utc'],
+                         ended['ended_at_utc'])
+
+        self.activate()
+        current = json.loads(self.record.read_text())
+        self.assertEqual(current['status'], 'active')
+        self.assertNotIn('ended_at_utc', current)
+        self.assertEqual(current['history'][0]['ended_at_utc'], ended['ended_at_utc'])
+
     def test_hook_recovers_legacy_record_without_starting_watcher(self):
         self.write_legacy_record()
         expected_command = (
@@ -1514,7 +1554,8 @@ class SessionTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(self.record.read_text()), dict(legacy, status='ended'))
+        ended = json.loads(self.record.read_text())
+        self.assertEqual(ended, dict(legacy, status='ended', ended_at_utc=ended['ended_at_utc']))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
 
     def activate_bound(self):

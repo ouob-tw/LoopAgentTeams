@@ -4,6 +4,7 @@ import argparse
 import contextlib
 from datetime import datetime, timezone
 import fcntl
+import functools
 import hashlib
 import json
 import os
@@ -32,6 +33,8 @@ PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
 QUOTA_CLEAR_ROUNDS = 2
 FAILURE_REPEAT_SECONDS = 60 * 60
+ORCHESTRATOR_GONE_SECONDS = 60 * 60
+LOG_ROTATE_BYTES = 1024 * 1024
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
 # Successful deliveries awaiting a session-record save; retained across retry cycles.
 RULE_DELIVERIES = {}
@@ -719,8 +722,19 @@ def valid_name(value):
     return value
 
 
+@functools.lru_cache(maxsize=None)
+def lat_dir(workspace):
+    """All worktrees share the main checkout's .lat; never create one in a linked worktree."""
+    workspace = Path(workspace)
+    if (workspace / '.git').is_file():
+        common = run_command(['git', '-C', str(workspace), 'rev-parse',
+                              '--path-format=absolute', '--git-common-dir']).strip()
+        return Path(common).parent / '.lat'
+    return workspace / '.lat'
+
+
 def watch_dir(workspace):
-    return workspace / '.lat/watch'
+    return lat_dir(workspace) / 'watch'
 
 
 def wait_path(workspace, agent):
@@ -1469,6 +1483,10 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
 
 def append_log(path, record):
     path.parent.mkdir(parents=True, exist_ok=True)
+    with contextlib.suppress(FileNotFoundError):
+        if path.stat().st_size > LOG_ROTATE_BYTES:
+            # Keep only the current file and one older one.
+            os.replace(path, path.with_name(f'{path.name}.1'))
     with path.open('a') as stream:
         stream.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
         stream.flush()
@@ -1743,7 +1761,7 @@ def roll_back(action, state):
 
 def check_rule_changes(workspace, orchestrator, log, now):
     """Advance each owning session's rule baseline only after delivery succeeds."""
-    for path in sorted((workspace / '.lat/sessions').glob('*.json')):
+    for path in sorted((lat_dir(workspace) / 'sessions').glob('*.json')):
         try:
             lock_path = watch_dir(workspace) / f'{path.stem}.lock'
             lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -1864,8 +1882,17 @@ def unavailable_alarm(workspace, orchestrator, agent, state, now, log):
         append_log(log, {'at': now, 'agent': agent, 'decision': 'alarm-check-failed', 'error': str(error)})
 
 
+def log_signature(observation, state):
+    """What counts as a status change for the log; progress alone is not one."""
+    return [observation.status, observation.wait_active, observation.command_running,
+            observation.prompt_empty, state['quota_active'], state['nudged']]
+
+
 def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
-    """Observe every owned agent once, execute actions, and persist state/logs."""
+    """Observe every owned agent once, execute actions, and persist state/logs.
+
+    Returns a stop reason once the orchestrator has been gone from HCOM long enough.
+    """
     now = time.time() if now is None else now
     orchestrator = valid_name(orchestrator)
     path = state_path(workspace, orchestrator)
@@ -1903,6 +1930,10 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
         except (TypeError, ValueError, OverflowError, OSError) as error:
             reset_agent_state(path, log, now, agent, f'{type(error).__name__}: {error}')
             states.pop(agent)
+    missing_since = states.get(orchestrator, {}).get('missing_since')
+    if type(missing_since) not in (int, float):
+        missing_since = None
+    orchestrator_gone = False
     for agent in set(states) - set(agents):
         append_log(log, {
             'at': now, 'agent': agent,
@@ -1936,6 +1967,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
         if disappeared:
             unavailable_alarm(workspace, orchestrator, agent, previous, now, log)
             states[agent] = previous
+            orchestrator_gone = orchestrator_gone or agent == orchestrator
         if agent != orchestrator and disappeared:
             state = dict(previous)
             state['missing_cycles'] = state.get('missing_cycles', 0) + 1
@@ -1963,18 +1995,20 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                     results.append({'kind': action.kind, 'status': 'failed',
                                     'error': str(error)})
             states[agent] = state
-            append_log(log, {
-                'at': now, 'agent': agent, 'decision': 'agent-disappeared',
-                'state': state, 'actions': actions, 'action_results': results,
-            })
+            if state['missing_cycles'] == 1 or actions:
+                append_log(log, {
+                    'at': now, 'agent': agent, 'decision': 'agent-disappeared',
+                    'state': state, 'actions': actions, 'action_results': results,
+                })
             continue
         previous.pop('missing_cycles', None)
         previous.pop('disappearance_notified', None)
         if info is None:
-            append_log(log, {
-                'at': now, 'agent': agent, 'decision': 'not-observable',
-                'actions': [], 'error': 'agent missing from hcom list',
-            })
+            if missing_since is None:
+                append_log(log, {
+                    'at': now, 'agent': agent, 'decision': 'not-observable',
+                    'actions': [], 'error': 'agent missing from hcom list',
+                })
             continue
         try:
             try:
@@ -1983,6 +2017,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 unavailable_alarm(workspace, orchestrator, agent, previous, now, log)
                 raise
             previous = states.get(agent)
+            logged = previous.get('log_signature') if previous else None
             wait_file = wait_path(workspace, agent)
             with contextlib.ExitStack() as wait_held:
                 wait_held.enter_context(wait_lock(wait_file))
@@ -2103,19 +2138,33 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 state['wait'] = saved_wait
             state['last_seen_status'] = info.get('status', 'unknown')
             state['last_seen_at'] = now
+            state['log_signature'] = log_signature(observation, state)
             states[agent] = state
-            append_log(log, {
-                'at': now, 'agent': agent, 'observation': observation_record(observation),
-                'state': state, 'actions': [action_record(action) for action in actions],
-                'action_results': results,
-            })
+            if (actions or state['log_signature'] != logged
+                    or any(result['status'] == 'failed' for result in results)):
+                append_log(log, {
+                    'at': now, 'agent': agent, 'observation': observation_record(observation),
+                    'state': state, 'actions': [action_record(action) for action in actions],
+                    'action_results': results,
+                })
         except (OSError, ValueError, TypeError, KeyError) as error:
             append_log(log, {
                 'at': now, 'agent': agent, 'decision': 'observation-failed',
                 'actions': [], 'error': str(error),
             })
-    states.setdefault(orchestrator, {})['feature_versions'] = {'wait_deadline': 1, 'alarm': 1}
+    own = states.setdefault(orchestrator, {})
+    own['feature_versions'] = {'wait_deadline': 1, 'alarm': 1}
+    own.pop('missing_since', None)
+    stop_reason = None
+    if orchestrator_gone:
+        since = now if missing_since is None else missing_since
+        if now - since >= ORCHESTRATOR_GONE_SECONDS:
+            stop_reason = (f'orchestrator {orchestrator} missing from HCOM for '
+                           f'{int((now - since) // 60)} minutes')
+        else:
+            own['missing_since'] = since
     write_object(path, states)
+    return stop_reason
 
 
 def log_cycle_failure(log, previous, error, now):
@@ -2135,6 +2184,42 @@ def log_cycle_failure(log, previous, error, now):
     return {'error': message, 'logged_at': now, 'repeats': repeats}
 
 
+def stop_self(workspace, orchestrator, reason, now, pgid=None):
+    """Remove this watcher's pid file and note why in its active session record and log.
+
+    The session stays active, so the recovery hook starts a new watcher on resume.
+    """
+    pgid = os.getpgrp() if pgid is None else pgid
+    stopped_at = datetime.fromtimestamp(now, timezone.utc).isoformat()
+    append_log(state_path(workspace, orchestrator).with_name('watch.jsonl'),
+               {'at': now, 'agent': orchestrator, 'decision': 'watcher-stopped',
+                'reason': reason, 'actions': []})
+    # The session launcher records the process group leader (uv) as the watcher pid.
+    for pid_path in sorted(watch_dir(workspace).glob('*.pid')):
+        with contextlib.suppress(OSError, ValueError):
+            if int(pid_path.read_text()) == pgid:
+                break
+    else:
+        return None
+    sid = pid_path.stem
+    with (pid_path.with_suffix('.lock')).open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        with contextlib.suppress(OSError, ValueError):
+            if int(pid_path.read_text()) != pgid:
+                return None
+        pid_path.unlink(missing_ok=True)
+        with pid_path.with_suffix('.log').open('a') as stream:
+            stream.write(f'{stopped_at} LAT watch stopped: {reason}\n')
+        record_path = lat_dir(workspace) / 'sessions' / f'{sid}.json'
+        original = record_path.read_bytes()
+        record = json.loads(original)
+        if (isinstance(record, dict) and record.get('status') == 'active'
+                and record.get('hcom_name') == orchestrator):
+            record['watcher_stopped'] = {'at_utc': stopped_at, 'reason': reason}
+            write_object(record_path, record, expected=original)
+    return sid
+
+
 def run_forever(args):
     workspace = args.workspace.resolve(strict=True)
     tasks = args.tasks.resolve()
@@ -2144,10 +2229,14 @@ def run_forever(args):
     while True:
         now = time.time()
         try:
-            run_cycle(workspace, tasks, decisions, args.orchestrator, now)
+            reason = run_cycle(workspace, tasks, decisions, args.orchestrator, now)
             failure = None
         except Exception as error:
+            reason = None
             failure = log_cycle_failure(log, failure, error, now)
+        if reason:
+            stop_self(workspace, args.orchestrator, reason, now)
+            return
         time.sleep(CHECK_SECONDS)
 
 
@@ -2194,7 +2283,7 @@ def declare_alarm(args):
     if not reason:
         raise ValueError('--reason must not be empty')
     owners = []
-    for path in sorted((workspace / '.lat/sessions').glob('*.json')):
+    for path in sorted((lat_dir(workspace) / 'sessions').glob('*.json')):
         try:
             record = read_object(path, {})
             if (record.get('role') != 'orchestrator' or record.get('status') != 'active'
@@ -2266,7 +2355,7 @@ def declare_wait(args):
         raise ValueError('--reason must not be empty')
     decision_target = False
     owners = []
-    for path in sorted((workspace / '.lat/sessions').glob('*.json')):
+    for path in sorted((lat_dir(workspace) / 'sessions').glob('*.json')):
         try:
             record = read_object(path, {})
         except (OSError, ValueError):
@@ -2311,7 +2400,7 @@ def declare_wait(args):
     previous, wait_original = read_wait(path)
     if previous and previous.get('expiry_count', 0):
         # Releasing runs hcom, so it stays outside the lock and keeps its own compare-and-replace.
-        for owner, decisions in owners or [(agent, workspace / '.lat/decisions')]:
+        for owner, decisions in owners or [(agent, lat_dir(workspace) / 'decisions')]:
             if release_wait_if_needed(workspace, decisions, owner, previous, agents,
                                       expected=wait_original):
                 break
