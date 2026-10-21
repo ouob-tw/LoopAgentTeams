@@ -632,10 +632,7 @@ test.skipIf(!CHROME)("the agent's model picker is worked by keys, and a click el
 		expect(await tab.eval(`document.activeElement === document.querySelector(${JSON.stringify(part('effort'))})`)).toBe(true);
 		await click(part('effort'));
 		await tab.until(`!!document.querySelector('${menu}')`, 'the menu again');
-		const { x, y } = await tab.eval<{ x: number; y: number }>(
-			`(() => { const r = document.querySelector('.detail .topbar .whose').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`
-		);
-		for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await tab.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+		await tab.pointerClick('.detail .topbar .whose');
 		await tab.until(`!document.querySelector('${menu}')`, 'the menu closed by a click elsewhere');
 		await click('.dock .picker .discard');
 	} finally {
