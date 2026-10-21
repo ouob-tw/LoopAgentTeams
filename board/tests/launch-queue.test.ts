@@ -15,7 +15,7 @@ const socketPath = join(commandDir, 'herdr.sock');
 /** How long a launch waits for its agent to appear in Herdr in these tests. */
 const WAIT_SECONDS = 10;
 /** How long the fake socket holds a move once Herdr runs every agent the test launched: longer
- *  than a wait's poll, so any other follow-through has reached its own move by then. */
+ *  than a wait's poll, an allowance for any other follow-through to reach its own move. */
 const HOLD_MS = 1_500;
 
 let fixture: Fixture;
