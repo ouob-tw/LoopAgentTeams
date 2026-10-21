@@ -21,13 +21,24 @@
 - preflight：無（有現場動作時寫動手前的核對事項）
 - 預計檢查數：無（派 QA 時寫預計的檢查數量級，如約 10 項）
 - 整套測試：無（派實作與 QA 時必填：由誰、在什麼時點經閘門跑一次，如「實作者在該票審查都通過後的最終版本」「不跑，查實作者的閘門紀錄」）
-- temp paths：逐項列路徑；含機密者標記 `secret → shred -u`，不記錄機密內容
+- runs：主工作區 `.lat/runs/` 下該票資料夾的絕對路徑（見「票資料位置」）
+- temp paths：逐項列路徑；含機密者標記 `secret → shred -u`，不記錄機密內容；隔離 client 家目錄必列（見「隔離 client 家目錄」）
 - done so far：
 - next step：
 - deliverable commit：待 Orchestrator 從 Git 查證後填入
 ```
 
 agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括號（如 `<名稱> (HCOM tag ...)`、`<名稱>（QA）`）；orchestrator 填派工主控的 HCOM 名稱。[停住監控](stall-watch.md) 靠這兩欄找出每位主控要盯的 Agent；缺少 agent、orchestrator、status 任一欄，或 agent 欄留空、名稱後接其他符號的卡片無法辨識，監控會跳過並記錄，該 Agent 因此不受監控。不適用的欄位填「無」，不可省略資源歸屬或虛構 commit。status 使用 `dispatched / in progress / committed / merged`，沒有 commit 的 Spec 文件審查與參謀以 `completed` 結束；受阻原因及恢復條件寫在 next step。
+
+## 票資料位置
+
+每張票的 QA 情境草稿、實作路徑清單、測試清單、證據、截圖與重測結果，放在主工作區的 `.lat/runs/issue-<N>/`，N 是 tracker 的票號；子資料夾名稱自由。沒有票號的工作（研究、原型）放 `.lat/runs/misc-<YYYY-MM-DD>-<tag>/`。主控進度索引維持單一檔案 `.lat/progress/<hcom-name>.md`，不在 `progress/` 下建子資料夾或票的筆記。不再新建 `.lat/evidence/`、`.lat/prototypes/`、`.lat/handoffs/`；原型放 `runs/`，交接寫 tracker。
+
+任務卡的 `runs` 欄寫該票資料夾的絕對路徑，派工訊息也帶同一個路徑。一個 `.lat` 由所有 worktree 共用，路徑一律指向主工作區的 `.lat`，不要在 worktree 內另建 `.lat`。證據只存結論、指令輸出、必要截圖與必要的單一檔案節錄；通過的項目不存 Playwright trace，只存截圖或輸出（失敗項目才留 trace，設定見 three-tier-testing 的 TypeScript 設定）。
+
+## 隔離 client 家目錄
+
+測試或 QA 以隔離的 `CODEX_HOME`、`CLAUDE_CONFIG_DIR` 等啟動 Agent 時，家目錄放在 `.lat` 以外的暫存位置，例如 `$XDG_RUNTIME_DIR/<任務 tag>/` 或系統暫存區下以任務 tag 命名的資料夾；不放進 `runs/`、`evidence/` 或任何 `.lat` 路徑。建立時立刻把路徑寫進任務卡 `temp paths` 並標 `secret → shred -u`（家目錄內有登入資料、對話紀錄與資料庫）。複製 auth 時權限設 0600，不輸出內容。任務收尾時以 `shred -u` 逐檔銷毀家目錄內的檔案，再移除空目錄，並確認 `.lat` 內沒有家目錄副本。需要留存的內容只留結論、指令輸出、必要截圖與必要的單一檔案節錄（不含登入資料），放進 `runs/`。
 
 ## 現場動作額度
 
@@ -81,9 +92,9 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 
 每項任務合併至整合分支且整合後驗證通過後，由 Orchestrator 在關閉 Agent 的同一步驟完成以下清理，不等整批結束：
 
-- 清理任務卡列明且屬於本任務的資源；普通暫存檔用 trash-cli，含機密者先用 `shred -u`，再移除所在 worktree。
+- 清理任務卡列明且屬於本任務的資源；普通暫存檔用 trash-cli，含機密者（含隔離 client 家目錄）先用 `shred -u`，再移除所在 worktree。核對 `temp paths` 列出的位置都已不存在、`.lat` 內沒有家目錄副本。
 - 以 `git worktree remove` 移除該任務的獨立 worktree，以 `git branch -d` 刪除任務分支；`-D` 僅限使用者明確確認放棄該分支。
-- **先**將任務卡移至 `.lat/tasks/done/`，**再**關閉 Agent；移走後停住監控不再盯該 Agent。卡片仍在而 Agent 消失會被視為意外消失並通知主控。
+- **先**將任務卡移至 `.lat/tasks/done/`（卡片維持移到 `done/`，不在原處保留），**再**關閉 Agent；移走後停住監控不再盯該 Agent。卡片仍在而 Agent 消失會被視為意外消失並通知主控。
 
 只有任務卡明列待完成後續工作時可暫留，例如 QA 保留 worktree 供複驗；後續工作完成後立即收尾。
 

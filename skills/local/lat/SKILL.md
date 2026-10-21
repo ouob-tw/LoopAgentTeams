@@ -22,7 +22,7 @@ LAT 管理角色、階段轉換與交接；各階段的做法交給對應 Matt s
 - **壓縮或接回先恢復**：收到恢復提示或發現規則不完整時，先依「主控恢復」完整重讀規則、進度與待決紀錄，再做任何相依動作。
 - **使用者訊息加標籤**：對使用者的每則訊息最後一行以 `DECIDE: `、`HELP: `、`DONE: ` 或 `NO REPLY: ` 開頭，用法見「使用者訊息格式」。
 
-啟動時讀取專案 `AGENTS.md`／`CLAUDE.md` 與 `docs/agents/issue-tracker.md`（由 /setup-matt-pocock-skills 設定），依配置的 issue tracker 讀寫 Spec 與 Tickets。尚未設定時，若專案 repo 是公開的，建議另建私人 `<repo>-work` repo 存放 issues，避免交接與證據中的內網位址、本機路徑或帳號資訊公開。證據、交接／未解事項及學習說明分開保存，具體位置依專案設定；交接與未解事項建立 tracker issues，決策依下方「交接」規則保存。
+啟動時讀取專案 `AGENTS.md`／`CLAUDE.md` 與 `docs/agents/issue-tracker.md`（由 /setup-matt-pocock-skills 設定），依配置的 issue tracker 讀寫 Spec 與 Tickets。尚未設定時，若專案 repo 是公開的，建議另建私人 `<repo>-work` repo 存放 issues，避免交接與證據中的內網位址、本機路徑或帳號資訊公開。證據、交接／未解事項及學習說明分開保存，具體位置依專案設定；票的證據與草稿放 `.lat/runs/issue-<N>/`（見 [任務卡](references/task-cards.md#票資料位置)）；交接與未解事項建立 tracker issues，決策依下方「交接」規則保存。
 
 ## 主控恢復
 
@@ -53,7 +53,7 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
 - [ ] QA 情境草稿：兩種流程都在派發前同步派 QA，依下方「測試清單」從需求獨立列出情境；短流程以該 issue 的驗收條件為需求來源，之後派發、實作（含 /code-review）、整合、驗收與交付照常。
 - [ ] 派發：Orchestrator 核對規劃與分工。
   - [ ] 若本票只完成已確認需求的一部分，其餘必要工作須同時建立 tracker Ticket，列明驗收條件與依賴，不只寫「之後補做」。超出已確認需求的功能，不自行加票。
-  - [ ] 依 [任務卡](references/task-cards.md) 建立每張派工卡，配置各 Agent 的獨立 sandbox／container prefix 與 port range，登記資源歸屬，並填好必填的 `live actions` 與 `preflight`；派實作與 QA 時另填 `整套測試`。
+  - [ ] 依 [任務卡](references/task-cards.md) 建立每張派工卡，配置各 Agent 的獨立 sandbox／container prefix 與 port range，登記資源歸屬，並填好必填的 `live actions`、`preflight` 與 `runs`；派實作與 QA 時另填 `整套測試`。
   - [ ] 平行派發前，列出各 Ticket 預計修改的檔案與整合後必須成立的限制，先協調解決衝突。
   - [ ] 共用檔案依序修改，指定目前負責的 Ticket；接手前由 Orchestrator 更新分工與依賴，下一張 Ticket 從已整合版本接續。
   - [ ] 將可開始的 Tickets 交給 Implementer，每張實作任務使用新 context。
@@ -90,7 +90,7 @@ Orchestrator 處理重複、缺口與衝突；補足既有需求可直接推進�
 
 QA 逐項記錄 `PASS`（證據支持）、`FAIL`（結果不符）、`UNPROVEN`（證據不足）或 `NOT_EXECUTED`（未執行），附證據或原因。改動範圍外的 `UNPROVEN` 只列入回報，不擋交付；範圍內的照舊處理。
 
-以獨立的 Claude 設定目錄（`CLAUDE_CONFIG_DIR`）啟動測試用 Agent 前，須在該目錄的 `settings.json` 設定 `"promptSuggestionEnabled": false`；否則建議提示的灰字會被當成輸入框有字，停住監控不會催促它。
+隔離的 client 家目錄（`CODEX_HOME`、`CLAUDE_CONFIG_DIR` 等）放 `.lat` 以外的暫存位置，收尾時銷毀，規則見 [任務卡](references/task-cards.md#隔離-client-家目錄)。以獨立的 Claude 設定目錄（`CLAUDE_CONFIG_DIR`）啟動測試用 Agent 前，須在該目錄的 `settings.json` 設定 `"promptSuggestionEnabled": false`；否則建議提示的灰字會被當成輸入框有字，停住監控不會催促它。
 
 ## 按需委派
 
