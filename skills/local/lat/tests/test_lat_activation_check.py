@@ -308,6 +308,19 @@ class ActivationCheckTests(unittest.TestCase):
         self.append(transcript, line[30:] + '\n')
         self.assert_blocked(self.run_hook('claude', payload))
 
+    def test_corrupt_position_file_is_ignored_and_overwritten(self):
+        transcript = self.write_transcript([self.user_line('hello')])
+        payload = self.payload('claude', transcript)
+        self.assert_released(self.run_hook('claude', payload))
+        saved = json.loads(self.state_file().read_text())
+        for offset in (1.5, True, '3', -1, None):
+            with self.subTest(offset=offset):
+                self.state_file().write_text(json.dumps(dict(saved, offset=offset)))
+                self.append(transcript, self.user_line('more') + '\n')
+                self.assert_released(self.run_hook('claude', payload))
+                self.assertEqual(json.loads(self.state_file().read_text())['offset'],
+                                 transcript.stat().st_size)
+
     def test_codex_position_is_kept_per_client_and_session(self):
         transcript = self.write_transcript([codex_message('user', 'hi')])
         self.assert_released(self.run_hook('codex', self.payload('codex', transcript)))

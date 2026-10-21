@@ -825,14 +825,15 @@ def activation_directory():
     return base / 'lat/activation'
 
 
-def load_scan(path, transcript):
-    """Where the last Stop stopped reading this transcript: `(offset, format confirmed)`."""
+def load_scan(path, transcript, status):
+    """Where the last Stop stopped reading this transcript (`status`: its open file): `(offset, format confirmed)`."""
     try:
         saved = json.loads(path.read_text(encoding='utf-8'))
-        status = Path(transcript).stat()
+        offset = saved['offset']
         if (saved['path'] == str(transcript) and saved['inode'] == status.st_ino
-                and 0 <= saved['offset'] <= status.st_size and isinstance(saved['records'], bool)):
-            return saved['offset'], saved['records']
+                and type(offset) is int and 0 <= offset <= status.st_size
+                and isinstance(saved['records'], bool)):
+            return offset, saved['records']
     except (OSError, ValueError, TypeError, KeyError):
         pass
     return 0, False
@@ -866,11 +867,12 @@ def lat_transcript(client, payload, sid):
     elif not isinstance(path, str) or not Path(path).is_absolute():
         raise ValueError(f'transcript_path is not an absolute path: {path!r}')
     scan = activation_directory() / f'{client}-{sid}.json'
-    offset, records = load_scan(scan, path)
     # Transcripts can be large: parse lines until one confirms the format, then only marker lines.
     markers = LAT_MARKERS[client]
     with open(path, 'rb') as stream:
-        inode = os.fstat(stream.fileno()).st_ino
+        status = os.fstat(stream.fileno())
+        inode = status.st_ino
+        offset, records = load_scan(scan, path, status)
         stream.seek(offset)
         for raw in stream:
             line = raw.decode('utf-8')
