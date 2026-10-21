@@ -8,15 +8,14 @@ import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PORT_BASE, startFixture, until, type Fixture } from './harness.ts';
+import { startFixture, until, type Fixture } from './harness.ts';
 
 const installed = Bun.which('hcom') !== null;
-const injectPort = PORT_BASE + 15;
 
 /** What the stand-in terminal received: the text in its input box at each submit. */
 const submitted: string[] = [];
 let inputBox = '';
-let terminal: { stop(closeActive?: boolean): void } | undefined;
+let terminal: { port: number; stop(closeActive?: boolean): void } | undefined;
 let hcomDir = '';
 let fixture: Fixture;
 let cookie: string;
@@ -27,14 +26,9 @@ beforeAll(async () => {
 	mkdirSync(join(hcomDir, 'home'));
 	// Any command makes hcom create its database; then register the one agent and its input port.
 	spawnSync('hcom', ['list'], { env: { ...process.env, HCOM_DIR: hcomDir }, encoding: 'utf8' });
-	const db = new Database(join(hcomDir, 'hcom.db'));
-	db.run("INSERT INTO instances (name, created_at, status) VALUES ('luna', ?, 'active')", [Date.now() / 1000]);
-	db.run("INSERT INTO notify_endpoints (instance, kind, port, updated_at) VALUES ('luna', 'inject', ?, ?)", [injectPort, Date.now() / 1000]);
-	db.close();
-
 	terminal = Bun.listen({
 		hostname: '127.0.0.1',
-		port: injectPort,
+		port: 0,
 		socket: {
 			data(socket, data) {
 				const received = Buffer.from(data).toString('utf8');
@@ -50,7 +44,11 @@ beforeAll(async () => {
 			}
 		}
 	});
-	fixture = await startFixture(14, {
+	const db = new Database(join(hcomDir, 'hcom.db'));
+	db.run("INSERT INTO instances (name, created_at, status) VALUES ('luna', ?, 'active')", [Date.now() / 1000]);
+	db.run("INSERT INTO notify_endpoints (instance, kind, port, updated_at) VALUES ('luna', 'inject', ?, ?)", [terminal.port, Date.now() / 1000]);
+	db.close();
+	fixture = await startFixture({
 		env: { HCOM_DIR: hcomDir, LAT_BOARD_INJECT_COMMAND: JSON.stringify(['hcom', 'term', 'inject']), LAT_BOARD_INJECT_TIMEOUT_SECONDS: '10' }
 	});
 	cookie = await fixture.login();

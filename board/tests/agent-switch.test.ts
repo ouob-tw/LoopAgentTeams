@@ -22,7 +22,7 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(37, {
+	fixture = await startFixture({
 		// The board runs in this pane; the agent listed in it must never be stopped from the board.
 		env: {
 			HERDR_PANE_ID: 'wA:p-s-board',

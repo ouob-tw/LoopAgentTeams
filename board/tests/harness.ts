@@ -35,8 +35,8 @@ export async function answerHerdrList(dir: string, request: { id: string; method
 }
 
 const ROOT = join(import.meta.dir, '..');
-// Each test file takes its own offsets from this base; refresh acceptance uses offsets 88–90.
-export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
+// Test servers and Chrome bind port 0, so the system picks a free port; the server says which one
+// on its standard output (`Listening on http://host:port`), Chrome in its profile's DevToolsActivePort.
 
 /** What runs the server and the fake commands: Node when the host has it, otherwise the Bun that
  *  runs the tests, so the same tests pass on a host that has only Bun. */
@@ -124,6 +124,13 @@ export function uvPython(): string {
 
 /** The board password every fixture sets unless told not to. A test value, not a real password. */
 export const PASSWORD = 'test-password-一二三';
+/** The JSON lines of a file a fake command appends to while the test reads it: nothing for a file
+ *  that is missing or created but not yet written, and not the line still being written. */
+export function jsonLines(file: string): any[] {
+	if (!existsSync(file)) return [];
+	const text = readFileSync(file, 'utf8');
+	return text.slice(0, text.lastIndexOf('\n') + 1).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function until<T>(read: () => T | undefined | false | null, timeoutMs: number, what: string): Promise<T> {
@@ -270,7 +277,6 @@ export const titled = (snapshot: BoardSnapshot | undefined, title: string): Inbo
 	snapshot?.inbox.find((item) => item.title === title);
 
 export async function startFixture(
-	portOffset: number,
 	options: {
 		env?: Record<string, string>;
 		password?: string | null;
@@ -280,8 +286,9 @@ export async function startFixture(
 ): Promise<Fixture> {
 	if (!existsSync(join(ROOT, 'build/index.js'))) throw new Error('build/ is missing: run `bun run build` first');
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-test-'));
-	const port = PORT_BASE + portOffset;
-	const url = `http://127.0.0.1:${port}`;
+	// Known once the server has said where it listens; a restart asks for the same port again.
+	let port = 0;
+	let url = '';
 	const reportsDir = join(dir, 'reports');
 	const configDir = join(dir, 'herdr-config');
 	for (const name of ['reports', 'herdr-config', 'herdr-state', 'home']) mkdirSync(join(dir, name));
@@ -307,7 +314,7 @@ export async function startFixture(
 		PATH: process.env.PATH ?? '',
 		HOME: join(dir, 'home'),
 		HOST: '127.0.0.1',
-		PORT: String(port),
+		PORT: '0',
 		LAT_BOARD_STATE_DIR: join(dir, 'board-state'),
 		LAT_REPORTS_DIR: reportsDir,
 		LAT_USAGE_DIR: join(dir, 'usage'),
@@ -485,9 +492,23 @@ export async function startFixture(
 			return watch;
 		},
 		async start() {
-			server = spawn(options.runtime ?? NODE, [join(ROOT, 'build/index.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-			server.stdout!.on('data', (chunk) => ((output += chunk), process.stdout.write(chunk)));
-			server.stderr!.on('data', (chunk) => ((output += chunk), process.stderr.write(chunk)));
+			server = spawn(options.runtime ?? NODE, [join(ROOT, 'build/index.js')], { env: { ...env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+			const child = server;
+			let heard = '';
+			child.stderr!.on('data', (chunk) => ((output += chunk), process.stderr.write(chunk)));
+			port = await new Promise<number>((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error('board server did not say where it listens')), 10_000);
+				child.once('exit', (code) => (clearTimeout(timer), reject(new Error(`board server exited with ${code}`))));
+				child.stdout!.on('data', (chunk) => {
+					output += chunk;
+					process.stdout.write(chunk);
+					heard += chunk;
+					const match = /Listening on http:\/\/[^\s:]+:(\d+)/.exec(heard);
+					if (match) (clearTimeout(timer), resolve(Number(match[1])));
+				});
+			});
+			url = `http://127.0.0.1:${port}`;
+			fixture.url = url;
 			const deadline = Date.now() + 10_000;
 			for (;;) {
 				try {
@@ -517,7 +538,12 @@ export async function startFixture(
 
 	fixture.list([]);
 	if (options.password !== null) fixture.setPassword(options.password ?? PASSWORD);
-	await fixture.start();
+	try {
+		await fixture.start();
+	} catch (error) {
+		await fixture.cleanup();
+		throw error;
+	}
 	return fixture;
 }
 

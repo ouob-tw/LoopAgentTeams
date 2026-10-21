@@ -1,6 +1,7 @@
 """CLI contract tests; only disposable local files, no Codex/model calls."""
 import json
 import argparse
+from datetime import datetime, timezone
 import importlib.util
 from unittest.mock import patch
 import os
@@ -1538,6 +1539,134 @@ class SessionTests(unittest.TestCase):
         self.assertNotEqual(new_pid, old_pid)
         self.wait_for(lambda: len(self.fake_uv_log.read_text().splitlines()) == 2)
 
+    def test_hook_restarts_a_watcher_that_stopped_itself_after_its_orchestrator_left(self):
+        self.activate()
+        old_pid = self.watcher_pid()
+        spec = importlib.util.spec_from_file_location('lat_watch', SKILL / 'scripts/lat-watch.py')
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+        reason = 'orchestrator orch missing from HCOM for 60 minutes'
+
+        self.assertEqual(watch.stop_self(self.work, 'orch', reason, 3600, pgid=old_pid), SESSION)
+        os.killpg(old_pid, 15)
+        self.wait_for(lambda: not self.process_exists(old_pid))
+
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+        record = json.loads(self.record.read_text())
+        self.assertEqual(record['status'], 'active')
+        self.assertEqual(record['watcher_stopped']['reason'], reason)
+        self.assertIn(f'LAT watch stopped: {reason}',
+                      (self.work / '.lat/watch' / f'{SESSION}.log').read_text())
+        result = self.hook(source='resume')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        new_pid = self.watcher_pid()
+        self.assertNotEqual(new_pid, old_pid)
+        self.assertTrue(self.process_exists(new_pid))
+
+    def linked_worktree(self):
+        main, worktree = self.root / 'repo', self.root / 'wt'
+        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid']
+        subprocess.run([*git, 'init', '-q', str(main)], check=True)
+        subprocess.run([*git, '-C', str(main), 'commit', '-q', '--allow-empty', '-m', 'init'],
+                       check=True)
+        subprocess.run([*git, '-C', str(main), 'worktree', 'add', '-q', str(worktree)], check=True)
+        return main, worktree
+
+    def kill_group_later(self, pid):
+        def kill():
+            try:
+                os.killpg(pid, 15)
+            except ProcessLookupError:
+                pass
+        self.addCleanup(kill)
+
+    def test_worktree_controller_lives_in_main_lat_through_stop_resume_and_deactivate(self):
+        main, worktree = self.linked_worktree()
+        result = self.cli('activate', '--workspace', worktree, '--progress', self.progress,
+                          '--decisions', self.decisions)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record_path = main / '.lat/sessions' / f'{SESSION}.json'
+        self.assertEqual(json.loads(record_path.read_text())['workspace'], str(worktree))
+        pid_path = main / '.lat/watch' / f'{SESSION}.pid'
+        old_pid = int(pid_path.read_text())
+        self.kill_group_later(old_pid)
+        spec = importlib.util.spec_from_file_location('lat_watch', SKILL / 'scripts/lat-watch.py')
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+
+        reason = 'orchestrator orch missing from HCOM for 60 minutes'
+        self.assertEqual(watch.stop_self(worktree, 'orch', reason, 3600, pgid=old_pid), SESSION)
+        os.killpg(old_pid, 15)
+        self.wait_for(lambda: not self.process_exists(old_pid))
+        self.assertFalse(pid_path.exists())
+        self.assertEqual(json.loads(record_path.read_text())['watcher_stopped']['reason'], reason)
+
+        resumed = self.hook(source='resume', cwd=str(worktree))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertIn(f'LAT recovery record: {record_path}', resumed.stdout)
+        new_pid = int(pid_path.read_text())
+        self.kill_group_later(new_pid)
+        self.assertTrue(self.process_exists(new_pid))
+
+        result = self.cli('deactivate', '--workspace', worktree)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_for(lambda: not self.process_exists(new_pid))
+        self.assertEqual(json.loads(record_path.read_text())['status'], 'ended')
+        self.assertFalse((worktree / '.lat').exists())
+
+    def test_older_record_in_a_worktree_lat_recovers_self_stops_and_ends_in_place(self):
+        main, worktree = self.linked_worktree()
+        legacy = worktree / '.lat/sessions' / f'{SESSION}.json'
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps(dict(
+            client='codex', session_id=SESSION, role='orchestrator', workspace=str(worktree),
+            status='active', skill_dir=str(SKILL), progress_path=str(self.progress),
+            decisions_path=str(self.decisions), tasks_path=str(self.tasks), hcom_name='orch')))
+
+        resumed = self.hook(source='resume', cwd=str(worktree))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertIn(f'LAT recovery record: {legacy}', resumed.stdout)
+        pid_path = worktree / '.lat/watch' / f'{SESSION}.pid'
+        old_pid = int(pid_path.read_text())
+        self.kill_group_later(old_pid)
+        spec = importlib.util.spec_from_file_location('lat_watch', SKILL / 'scripts/lat-watch.py')
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+
+        reason = 'orchestrator orch missing from HCOM for 60 minutes'
+        self.assertEqual(watch.stop_self(worktree, 'orch', reason, 3600, pgid=old_pid), SESSION)
+        os.killpg(old_pid, 15)
+        self.wait_for(lambda: not self.process_exists(old_pid))
+        self.assertFalse(pid_path.exists())
+        self.assertEqual(json.loads(legacy.read_text())['watcher_stopped']['reason'], reason)
+        self.assertIn(f'LAT watch stopped: {reason}',
+                      (worktree / '.lat/watch' / f'{SESSION}.log').read_text())
+        resumed = self.hook(source='resume', cwd=str(worktree))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        pid = int(pid_path.read_text())
+        self.kill_group_later(pid)
+        self.assertTrue(self.process_exists(pid))
+        result = self.cli('deactivate', '--workspace', worktree)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_for(lambda: not self.process_exists(pid))
+        self.assertEqual(json.loads(legacy.read_text())['status'], 'ended')
+        self.assertFalse((main / '.lat/sessions').exists())
+
+    def test_deactivate_records_end_time_and_a_new_round_starts_without_one(self):
+        self.activate()
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        ended = json.loads(self.record.read_text())
+        self.assertEqual(datetime.fromisoformat(ended['ended_at_utc']).tzinfo, timezone.utc)
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        self.assertEqual(json.loads(self.record.read_text())['ended_at_utc'],
+                         ended['ended_at_utc'])
+
+        self.activate()
+        current = json.loads(self.record.read_text())
+        self.assertEqual(current['status'], 'active')
+        self.assertNotIn('ended_at_utc', current)
+        self.assertEqual(current['history'][0]['ended_at_utc'], ended['ended_at_utc'])
+
     def test_hook_recovers_legacy_record_without_starting_watcher(self):
         self.write_legacy_record()
         expected_command = (
@@ -1594,7 +1723,8 @@ class SessionTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(self.record.read_text()), dict(legacy, status='ended'))
+        ended = json.loads(self.record.read_text())
+        self.assertEqual(ended, dict(legacy, status='ended', ended_at_utc=ended['ended_at_utc']))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
 
     def activate_bound(self):

@@ -3,82 +3,31 @@
 // the pages that show the inbox's questions with the answered ones show it once instead of failing
 // on a duplicate key. The pages in a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with fake data. Skipped when the host has no Chrome.
-import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import type { HelperController, HelperQuestion, InboxQuestion } from '../src/lib/board/types.ts';
 import { withRecorded } from '../src/lib/server/model.ts';
-import { PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
+import { question, sleep, startFixture, type Fixture } from './harness.ts';
+import { CHROME, launchChrome, type Browser } from './browser.ts';
 
-const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
-	(path) => path && existsSync(path)
-);
-
-// Offsets 90 and 91 are used by no other file: this board's port and its Chrome's.
 let fixture: Fixture;
 let cookie: string;
-let chrome: ChildProcess | undefined;
-let profile: string;
-let socket: WebSocket;
-let next = 0;
-const waiting = new Map<number, (message: { result?: any; error?: { message: string } }) => void>();
+let browser: Browser | undefined;
 /** The page's errors and exceptions since the last navigation. */
-let errors: string[] = [];
+const errors = () => browser!.tab.errors;
 
-const send = (method: string, params: object = {}) =>
-	new Promise<any>((resolve, reject) => {
-		const id = ++next;
-		waiting.set(id, (message) => (message.error ? reject(new Error(message.error.message)) : resolve(message.result)));
-		socket.send(JSON.stringify({ id, method, params }));
-	});
-async function evaluate<T>(expression: string): Promise<T> {
-	const { result, exceptionDetails } = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-	if (exceptionDetails) throw new Error(`${expression}: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
-	return result.value;
-}
-async function until(expression: string) {
-	const deadline = Date.now() + 10_000;
-	while (!(await evaluate(expression).catch(() => false))) {
-		if (Date.now() > deadline) throw new Error(`timed out waiting for ${expression}`);
-		await sleep(50);
-	}
-}
+const send = (method: string, params: object = {}) => browser!.tab.send(method, params);
+const evaluate = <T>(expression: string) => browser!.tab.eval<T>(expression);
+const until = (expression: string) => browser!.tab.until(expression);
 
 beforeAll(async () => {
-	fixture = await startFixture(90);
+	fixture = await startFixture();
 	// The questions were asked at a fixed time: answered ones are listed for 30 days after.
 	fixture.setClock(Date.parse('2026-10-20T02:00:00.000Z'));
 	cookie = await fixture.login('answer-torn');
 	if (!CHROME) return;
-	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const port = PORT_BASE + 91;
-	chrome = spawn(
-		CHROME,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, 'about:blank'],
-		{ stdio: 'ignore' }
-	);
-	let target: { webSocketDebuggerUrl: string } | undefined;
-	for (let tries = 0; !target; tries++) {
-		if (tries > 100) throw new Error('timed out waiting for Chrome to listen');
-		target = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' }).then(
-			(response) => response.json(),
-			() => undefined
-		);
-		if (!target) await sleep(100);
-	}
-	socket = new WebSocket(target.webSocketDebuggerUrl);
-	await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-	socket.addEventListener('message', (event) => {
-		const message = JSON.parse(String(event.data));
-		if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.exception?.description ?? message.params.exceptionDetails.text);
-		if (message.method === 'Runtime.consoleAPICalled' && message.params.type === 'error') {
-			errors.push(message.params.args.map((arg: { value?: string; description?: string }) => arg.value ?? arg.description).join(' '));
-		}
-		waiting.get(message.id)?.(message);
-		waiting.delete(message.id);
-	});
+	browser = await launchChrome();
 	await send('Runtime.enable');
 	await send('Page.enable');
 	const [name, value] = cookie.split('=');
@@ -86,13 +35,7 @@ beforeAll(async () => {
 }, 30_000);
 
 afterAll(async () => {
-	if (chrome) {
-		socket.close();
-		const exited = new Promise((resolve) => chrome!.once('exit', resolve));
-		chrome.kill('SIGKILL');
-		await exited;
-		rmSync(profile, { recursive: true, force: true });
-	}
+	await browser?.close();
 	await fixture?.cleanup();
 });
 
@@ -203,7 +146,7 @@ for (const width of [1280, 390]) {
 			await send('Page.navigate', { url: fixture.url + view.path(controller) });
 			const row = (id: string) => `!!document.querySelector('.row[data-item="${key(controller, id)}"]')`;
 			await until(view.cards ? `document.querySelectorAll('form.answer').length === 2` : row('Q-1'));
-			errors = [];
+			errors().length = 0;
 
 			torn(controller, first({ status: 'submitted', answer: 'A. 甲' }));
 			await fixture.refresh(cookie);
@@ -214,7 +157,7 @@ for (const width of [1280, 390]) {
 			);
 			await sleep(1000);
 			expect(await evaluate<string>(`document.body.innerText`)).not.toContain('Internal Error');
-			expect(errors.filter((error) => error.includes('each_key_duplicate'))).toEqual([]);
+			expect(errors().filter((error) => error.includes('each_key_duplicate'))).toEqual([]);
 			if (view.cards) {
 				const ids = await evaluate<string[]>(`[...document.querySelectorAll('.asked header .id')].map((id) => id.textContent.trim())`);
 				expect(ids.filter((id) => id.startsWith('Q-1'))).toHaveLength(1);
@@ -260,7 +203,7 @@ new MutationObserver((records) => {
 async function openUnplaced(controller: HelperController) {
 	const { identifier } = await send('Page.addScriptToEvaluateOnNewDocument', { source: FALLBACK_LOG });
 	try {
-		errors = [];
+		errors().length = 0;
 		await send('Page.navigate', { url: fixture.url + `/?item=${encodeURIComponent(key(controller, 'Q-2'))}` });
 		await until(`/Internal Error/.test(document.body.innerText) || document.body.innerText.includes('找不到提出這題的原訊息')`);
 		await sleep(500);
@@ -271,7 +214,7 @@ async function openUnplaced(controller: HelperController) {
 
 async function expectShownOnce(cards: string) {
 	expect(await evaluate<string>(`document.body.innerText`)).not.toContain('Internal Error');
-	expect(errors.filter((error) => error.includes('each_key_duplicate'))).toEqual([]);
+	expect(errors().filter((error) => error.includes('each_key_duplicate'))).toEqual([]);
 	const ids = await evaluate<string[]>(cards);
 	expect(ids.filter((id) => id.startsWith('Q-1'))).toHaveLength(1);
 	expect(ids.filter((id) => id.startsWith('Q-2'))).toHaveLength(1);
@@ -294,7 +237,7 @@ for (const width of [1280, 390]) {
 		const controller = asking(`failed-${width}`, 'rana');
 		await answeredFails(controller);
 		await send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 600 });
-		errors = [];
+		errors().length = 0;
 		await send('Page.navigate', { url: fixture.url + `/?controller=${encodeURIComponent(controller.session_id)}` });
 		await until(`/Internal Error/.test(document.body.innerText) || document.querySelectorAll('.asked').length >= 2`);
 		await sleep(1000);

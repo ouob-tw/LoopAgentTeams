@@ -5,7 +5,7 @@ let fixture: Fixture;
 afterAll(() => fixture?.cleanup());
 
 test('when the registry has never been readable, a report owner is not presented as surely ended', async () => {
-	fixture = await startFixture(6);
+	fixture = await startFixture();
 	const cookie = await fixture.login();
 	fixture.report('session-maybe-bound', {
 		tag: 'DONE',

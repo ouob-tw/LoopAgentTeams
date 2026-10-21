@@ -14,7 +14,7 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(84);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());

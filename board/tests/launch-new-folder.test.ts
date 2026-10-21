@@ -30,7 +30,7 @@ let cookie: string;
 beforeAll(async () => {
 	if (!plainDir) return;
 	mkdirSync(home);
-	fixture = await startFixture(66, {
+	fixture = await startFixture({
 		env: {
 			HOME: home,
 			PATH: `${binDir}:${process.env.PATH ?? ''}`,

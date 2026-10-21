@@ -10,13 +10,13 @@
 //
 // Exits 1 when a change breaks the board. `--serve none` is for a browser with a real extension.
 //
-// CHROME names the browser to run; LAT_BOARD_TEST_PORT_BASE moves the two ports (base + 12, 13);
+// CHROME names the browser to run; the board and the proxy take ports the system picks (the proxy's is printed);
 // LAT_BOARD_REPRO_HOST is the address the proxy listens on (127.0.0.1).
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PORT_BASE, question, startFixture } from '../tests/harness.ts';
+import { question, startFixture } from '../tests/harness.ts';
 
 /** What the stand-in extension does, to every stylesheet <link> as it is parsed unless it says otherwise. */
 const CHANGES = {
@@ -200,7 +200,7 @@ if (unknown.length || (serve && chosen.length !== 1)) {
 }
 const changes = (chosen.length ? chosen : Object.keys(CHANGES).filter((name) => name !== 'replace')) as Change[];
 
-const fixture = await startFixture(12);
+const fixture = await startFixture();
 const cookie = await fixture.login('hydration-repro');
 const bound = fixture.bound(PROJECT, NAME, { questions: [question({ id: 'Q-1', title: TITLE })] });
 fixture.report(bound.session_id, { tag: 'NO REPLY', summary: '實作第二張票', hcom_name: NAME, workspace: bound.workspace });
@@ -212,7 +212,7 @@ let change: Change = changes[0];
 let received: (report: Report) => void = () => {};
 const proxy = Bun.serve({
 	hostname: process.env.LAT_BOARD_REPRO_HOST ?? '127.0.0.1',
-	port: PORT_BASE + 13,
+	port: 0,
 	idleTimeout: 0,
 	async fetch(request) {
 		const url = new URL(request.url);
