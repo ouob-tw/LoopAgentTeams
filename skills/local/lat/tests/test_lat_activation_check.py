@@ -9,6 +9,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-session.py'
@@ -49,6 +50,7 @@ class ActivationCheckTests(unittest.TestCase):
         self.claude_home = self.root / 'claude-home'
         self.codex_home = self.root / 'codex-home'
         self.reports = self.root / 'reports'
+        self.state = self.root / 'state'
 
     def write_transcript(self, records, name='transcript.jsonl'):
         path = self.root / name
@@ -73,7 +75,8 @@ class ActivationCheckTests(unittest.TestCase):
 
     def run_hook(self, client, payload, launched_by=None):
         env = dict(os.environ, CLAUDE_CONFIG_DIR=str(self.claude_home),
-                   CODEX_HOME=str(self.codex_home), LAT_REPORTS_DIR=str(self.reports))
+                   CODEX_HOME=str(self.codex_home), LAT_REPORTS_DIR=str(self.reports),
+                   XDG_STATE_HOME=str(self.state))
         env.pop('HCOM_LAUNCHED_BY', None)
         if launched_by is not None:
             env['HCOM_LAUNCHED_BY'] = launched_by
@@ -235,6 +238,109 @@ class ActivationCheckTests(unittest.TestCase):
         records = self.fixture_records('codex-lat-skill.jsonl')
         transcript = self.write_transcript(['{"type": "resp', *records, '{"partial'])
         self.assert_blocked(self.run_hook('codex', self.payload('codex', transcript)))
+
+    # The scan position is remembered per session, so each Stop reads only new bytes.
+    def user_line(self, text):
+        return json.dumps(dict(type='user', sessionId=SESSION,
+                               message=dict(role='user', content=text)))
+
+    def lat_line(self, length):
+        """A /lat command line and a plain line of exactly the same byte length."""
+        command = '<command-name>/lat</command-name>'
+        return (self.user_line(command + 'a' * (length - len(command))),
+                self.user_line('a' * length))
+
+    def state_file(self, client='claude'):
+        return self.state / f'lat/activation/{client}-{SESSION}.json'
+
+    def append(self, path, text):
+        with path.open('a') as stream:
+            stream.write(text)
+
+    def test_second_stop_reads_only_new_bytes(self):
+        lat, plain = self.lat_line(60)
+        transcript = self.write_transcript([plain, self.user_line('hi')])
+        payload = self.payload('claude', transcript)
+        self.assert_released(self.run_hook('claude', payload))
+        self.assertEqual(json.loads(self.state_file().read_text())['offset'],
+                         transcript.stat().st_size)
+        # Swap the scanned first line for a /lat one without changing size or inode.
+        with transcript.open('r+b') as stream:
+            stream.write(lat.encode())
+        self.assert_released(self.run_hook('claude', payload))
+        self.assert_blocked(self.run_hook('claude', self.payload(
+            'claude', self.claude_command_transcript())))
+
+    def test_lat_invoked_after_first_stop_blocks_next_stop(self):
+        transcript = self.write_transcript([self.user_line('hello')])
+        payload = self.payload('claude', transcript)
+        self.assert_released(self.run_hook('claude', payload))
+        self.append(transcript, self.user_line('<command-name>/lat</command-name>') + '\n')
+        self.assert_blocked(self.run_hook('claude', payload))
+        # A block records no position, so the hook keeps blocking until activated.
+        self.assert_blocked(self.run_hook('claude', payload))
+
+    def test_replaced_or_shortened_transcript_is_rescanned(self):
+        lat, plain = self.lat_line(60)
+        transcript = self.write_transcript([plain, self.user_line('x' * 200)])
+        payload = self.payload('claude', transcript)
+        self.assert_released(self.run_hook('claude', payload))
+        # Shorter file whose first line invokes LAT.
+        transcript.write_text(lat + '\n')
+        self.assert_blocked(self.run_hook('claude', payload))
+        # A different file at the same path (new inode) of larger size.
+        self.assert_released(self.run_hook('claude', self.payload(
+            'claude', self.write_transcript([plain], 'other.jsonl'))))
+        replacement = self.root / 'replacement.jsonl'
+        replacement.write_text(plain + '\n' + lat + '\n' + 'z' * 500 + '\n')
+        os.replace(replacement, self.root / 'other.jsonl')
+        self.assert_blocked(self.run_hook('claude', self.payload(
+            'claude', self.root / 'other.jsonl')))
+
+    def test_half_written_last_line_is_read_once_completed(self):
+        line = self.user_line('<command-name>/lat</command-name>')
+        transcript = self.write_transcript([self.user_line('hello')])
+        self.append(transcript, line[:30])
+        payload = self.payload('claude', transcript)
+        self.assert_released(self.run_hook('claude', payload))
+        recorded = json.loads(self.state_file().read_text())['offset']
+        self.assertEqual(recorded, len(self.user_line('hello')) + 1)
+        self.append(transcript, line[30:] + '\n')
+        self.assert_blocked(self.run_hook('claude', payload))
+
+    def test_codex_position_is_kept_per_client_and_session(self):
+        transcript = self.write_transcript([codex_message('user', 'hi')])
+        self.assert_released(self.run_hook('codex', self.payload('codex', transcript)))
+        self.assertTrue(self.state_file('codex').is_file())
+        self.assertFalse(self.state_file('claude').exists())
+
+    def test_unwritable_state_dir_gives_same_result_with_one_warning(self):
+        self.state.write_text('a file, not a directory')
+        transcript = self.write_transcript([self.user_line('hello')])
+        result = self.run_hook('claude', self.payload('claude', transcript))
+        self.assertEqual((result.returncode, result.stdout), (0, ''))
+        self.assertEqual(len(result.stderr.strip().splitlines()), 1)
+        self.assertIn('LAT activation check warning:', result.stderr)
+        self.assert_blocked(self.run_hook('claude', self.payload(
+            'claude', self.claude_command_transcript())))
+
+    def test_stale_position_files_are_removed_at_most_daily(self):
+        directory = self.state / 'lat/activation'
+        directory.mkdir(parents=True)
+        old, recent = directory / 'claude-old.json', directory / 'claude-recent.json'
+        old.write_text('{}')
+        recent.write_text('{}')
+        long_ago = time.time() - 31 * 86400
+        os.utime(old, (long_ago, long_ago))
+        transcript = self.write_transcript([self.user_line('hello')])
+        payload = self.payload('claude', transcript)
+        self.assert_released(self.run_hook('claude', payload))
+        self.assertFalse(old.exists())
+        self.assertTrue(recent.exists())
+        old.write_text('{}')
+        os.utime(old, (long_ago, long_ago))
+        self.assert_released(self.run_hook('claude', payload))
+        self.assertTrue(old.exists())
 
 
 if __name__ == '__main__':
