@@ -1,5 +1,5 @@
 <script lang="ts" module>
-	type Kind = 'model' | 'effort';
+	import type { Kind } from './PickerMenu.svelte';
 	// Kept apart from the picker, which goes whenever the line is for someone else (an `@name`
 	// line, a controller's page) and comes back with the agent.
 	/** Picks not sent yet, by agent; kept when another agent is open, dropped once sent or discarded. */
@@ -29,21 +29,16 @@
 		agentSwitchConfirmText,
 		carryNote,
 		choiceText,
-		effortShort,
 		LOCK_UNKNOWN_TEXT,
-		modelShort,
 		settingsText,
 		type ModelChoice
 	} from '#lib/board/models.ts';
 	import { switching as feeds } from '#lib/board/switching.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { KnownAgent } from '#lib/board/types.ts';
-	import './model-picker.css';
+	import PickerMenu, { focusFirst, NAME, PLACEHOLDER, short, type Part } from './PickerMenu.svelte';
 
 	let { agent }: { agent: KnownAgent } = $props();
-
-	const PLACEHOLDER: Record<Kind, string> = { model: '模型', effort: '強度' };
-	const NAME: Record<Kind, string> = { model: '模型', effort: '思考強度' };
 
 	const id = $derived(agent.id);
 	const modelStatus = $derived(agentControl.model[id]);
@@ -74,15 +69,24 @@
 	const choice = $derived<ModelChoice>({ model: staged[id]?.model ?? null, effort: staged[id]?.effort ?? null });
 	const current = $derived(feeds.current[id] ?? null);
 	const shown = (kind: Kind) => pending(kind) || current?.[kind] || PLACEHOLDER[kind];
-	const short = (kind: Kind, value: string) => (kind === 'model' ? modelShort(value) : effortShort(value));
+	function part(kind: Kind): Part {
+		const unknown = shown(kind) === PLACEHOLDER[kind];
+		return {
+			text: unknown ? PLACEHOLDER[kind] : short(kind, shown(kind)),
+			label: `${NAME[kind]}：${unknown ? '不明' : shown(kind)}`,
+			title: reason(kind) ?? `${NAME[kind]}：${unknown ? '還不知道（它還沒做完一回合）' : shown(kind)}（選好後按 ✓ 套用）`,
+			picked: !!pending(kind),
+			unknown,
+			disabled: !!reason(kind)
+		};
+	}
 
 	/** The open menu, or the confirmation of a switch, a continue or a give-up. */
 	let menu = $state<Kind | 'status' | 'switch' | null>(null);
 	let confirming = $state<'continue' | 'abandon' | null>(null);
 	let alertButton = $state<HTMLButtonElement>();
 	let applyButton = $state<HTMLButtonElement>();
-	let root = $state<HTMLElement>();
-	const triggers = $state<Partial<Record<Kind, HTMLButtonElement>>>({});
+	let picker = $state<PickerMenu>();
 
 	// The menus belong to one agent: another one closes them.
 	$effect.pre(() => {
@@ -102,7 +106,9 @@
 		menu = null;
 		confirming = null;
 		if (!focus || !open) return;
-		(open === 'status' ? alertButton : open === 'switch' ? applyButton : triggers[open])?.focus();
+		if (open === 'status') alertButton?.focus();
+		else if (open === 'switch') applyButton?.focus();
+		else picker?.focusPart(open);
 	}
 
 	function pick(kind: Kind, value: string) {
@@ -128,162 +134,114 @@
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `${done}${result.reason ?? ''}` : (result.reason ?? '切換失敗'));
 	}
 
-	/** Opens with its first button in focus. */
-	function focusFirst(element: HTMLElement) {
-		element.querySelector<HTMLElement>('button')?.focus();
-	}
-
-	/** Opens with the chosen item in focus, so the arrow keys start from it. */
-	function focusChosen(element: HTMLElement) {
-		const items = [...element.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
-		(items.find((item) => item.getAttribute('aria-checked') === 'true') ?? items[0])?.focus();
-	}
-
-	function keys(event: KeyboardEvent) {
-		const items = [...(event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
-		const at = items.indexOf(document.activeElement as HTMLElement);
-		const move = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[event.key];
-		if (move !== undefined) {
-			event.preventDefault();
-			items[(move + items.length) % items.length]?.focus();
-		} else if (event.key === 'Escape') {
-			event.preventDefault();
-			close(true);
-		} else if (event.key === 'Tab') close();
-	}
-
-	// A click anywhere else closes the open menu.
-	$effect(() => {
-		if (!menu) return;
-		const outside = (event: PointerEvent) => {
-			if (!root?.contains(event.target as Node)) close();
-		};
-		addEventListener('pointerdown', outside, true);
-		return () => removeEventListener('pointerdown', outside, true);
-	});
-
 	const applyText = $derived(`切換為 ${choiceText(choice)}，會重開 Agent 一次`);
 </script>
 
-<span class="picker" bind:this={root}>
-	{#each ['model', 'effort'] as const as kind (kind)}
-		<button
-			type="button"
-			class="part"
-			data-pick={kind}
-			class:picked={!!pending(kind)}
-			class:unknown={shown(kind) === PLACEHOLDER[kind]}
-			bind:this={triggers[kind]}
-			aria-label="{NAME[kind]}：{shown(kind) === PLACEHOLDER[kind] ? '不明' : shown(kind)}"
-			aria-haspopup="menu"
-			aria-expanded={menu === kind}
-			aria-disabled={!!reason(kind)}
-			title={reason(kind) ?? `${NAME[kind]}：${shown(kind) === PLACEHOLDER[kind] ? '還不知道（它還沒做完一回合）' : shown(kind)}（選好後按 ✓ 套用）`}
-			onclick={() => toggle(kind)}
-		>
-			{shown(kind) === PLACEHOLDER[kind] ? PLACEHOLDER[kind] : short(kind, shown(kind))}
-		</button>
-	{/each}
-	{#if agent.switch}
-		<button
-			bind:this={alertButton}
-			type="button"
-			class="act alert"
-			data-action="switch-status"
-			aria-label="模型切換需要處理"
-			title="切換尚未完成"
-			aria-haspopup="dialog"
-			aria-expanded={menu === 'status'}
-			onclick={() => (menu === 'status' ? close() : ((confirming = null), (menu = 'status')))}
-		>
-			<TriangleAlert size="1em" />
-		</button>
-	{/if}
-	{#if anyStaged}
-		<button
-			bind:this={applyButton}
-			type="button"
-			class="act"
-			data-action="apply"
-			aria-label="套用：{applyText}"
-			title={blocked ?? applyText}
-			aria-disabled={!!blocked}
-			aria-haspopup="dialog"
-			aria-expanded={menu === 'switch'}
-			onclick={() => (menu === 'switch' ? close() : !blocked && (menu = 'switch'))}
-		>
-			<Check size="1em" />
-		</button>
-		<button type="button" class="act discard" aria-label="放棄選好的模型與思考強度" title="放棄選好的值" onclick={() => delete staged[id]}>
-			<X size="1em" />
-		</button>
-	{/if}
+<PickerMenu
+	bind:this={picker}
+	{menu}
+	{part}
+	tagged
+	ontoggle={toggle}
+	values={(kind) => (kind === 'model' ? modelStatus?.options?.models : modelStatus?.options?.efforts)}
+	checked={(kind) => pending(kind) || current?.[kind]}
+	onpick={pick}
+	onclose={close}
+>
+	{#snippet actions()}
+		{#if agent.switch}
+			<button
+				bind:this={alertButton}
+				type="button"
+				class="act alert"
+				data-action="switch-status"
+				aria-label="模型切換需要處理"
+				title="切換尚未完成"
+				aria-haspopup="dialog"
+				aria-expanded={menu === 'status'}
+				onclick={() => (menu === 'status' ? close() : ((confirming = null), (menu = 'status')))}
+			>
+				<TriangleAlert size="1em" />
+			</button>
+		{/if}
+		{#if anyStaged}
+			<button
+				bind:this={applyButton}
+				type="button"
+				class="act"
+				data-action="apply"
+				aria-label="套用：{applyText}"
+				title={blocked ?? applyText}
+				aria-disabled={!!blocked}
+				aria-haspopup="dialog"
+				aria-expanded={menu === 'switch'}
+				onclick={() => (menu === 'switch' ? close() : !blocked && (menu = 'switch'))}
+			>
+				<Check size="1em" />
+			</button>
+			<button type="button" class="act discard" aria-label="放棄選好的模型與思考強度" title="放棄選好的值" onclick={() => delete staged[id]}>
+				<X size="1em" />
+			</button>
+		{/if}
+	{/snippet}
 
-	{#if menu === 'switch'}
-		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-		<div
-			class="menu status"
-			role="dialog"
-			aria-label="確認切換"
-			tabindex="-1"
-			onkeydown={(event) => event.key === 'Escape' && (event.preventDefault(), close(true))}
-			{@attach focusFirst}
-		>
-			<p>{agentSwitchConfirmText(choice)}</p>
-			<button type="button" class="wide primary" data-action="confirm-switch" onclick={() => run('switch')}>確認切換</button>
-			<button type="button" class="wide" onclick={() => close(true)}>取消</button>
-		</div>
-	{:else if menu === 'status' && agent.switch}
-		{@const open = agent.switch}
-		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-		<div
-			class="menu status"
-			role="dialog"
-			aria-label="模型切換"
-			tabindex="-1"
-			onkeydown={(event) => event.key === 'Escape' && (event.preventDefault(), close(true))}
-			{@attach focusFirst}
-		>
-			<p><strong>切換未完成：{AGENT_SWITCH_STATE_TEXT[open.state]}</strong></p>
-			{#if open.error}<p class="failed">{open.error}</p>{/if}
-			<p class="note">舊設定：{open.from ? settingsText(open.from) : '不明'}</p>
-			<p class="note">新設定：{choiceText(open.to)}</p>
-			{#if carryNote(open)}<p class="note">{carryNote(open)}</p>{/if}
-			{#if confirming}
-				<p class={confirming === 'abandon' ? 'failed' : ''}>{confirming === 'continue' ? AGENT_CONTINUE_CONFIRM_TEXT : AGENT_ABANDON_CONFIRM_TEXT}</p>
-				<button
-					type="button"
-					class="wide {confirming === 'continue' ? 'primary' : 'danger'}"
-					data-action="confirm-{confirming}"
-					onclick={() => run(confirming as 'continue' | 'abandon')}
-				>
-					{confirming === 'continue' ? '確認繼續' : '確認放棄'}
-				</button>
-				<button type="button" class="wide" onclick={() => (confirming = null)}>取消</button>
-			{:else}
-				<button type="button" class="wide primary" data-action="continue" disabled={switching[id]} onclick={() => (confirming = 'continue')}>
-					{switching[id] ? '處理中…' : '繼續切換'}
-				</button>
-				<!-- While this page's stop or resume of it runs, it is given up only after (the server queues it too). -->
-				<button type="button" class="wide" data-action="abandon" disabled={switching[id]} onclick={() => (confirming = 'abandon')}>放棄切換</button>
-			{/if}
-		</div>
-	{:else if (menu === 'model' || menu === 'effort') && modelStatus?.options}
-		{@const kind = menu}
-		{@const values = kind === 'model' ? modelStatus.options.models : modelStatus.options.efforts}
-		<!-- The choices are the menu; the notes under it are read as text. -->
-		<div class="menu">
-			<div class="items" role="menu" aria-label={NAME[kind]} tabindex="-1" onkeydown={keys} {@attach focusChosen}>
-				{#each values as value (value)}
-					<button type="button" role="menuitemradio" aria-checked={(pending(kind) || current?.[kind]) === value} onclick={() => pick(kind, value)}>
-						{short(kind, value)}<small>{value}</small>
-					</button>
-				{/each}
+	{#snippet dialog()}
+		{#if menu === 'switch'}
+			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+			<div
+				class="menu status"
+				role="dialog"
+				aria-label="確認切換"
+				tabindex="-1"
+				onkeydown={(event) => event.key === 'Escape' && (event.preventDefault(), close(true))}
+				{@attach focusFirst}
+			>
+				<p>{agentSwitchConfirmText(choice)}</p>
+				<button type="button" class="wide primary" data-action="confirm-switch" onclick={() => run('switch')}>確認切換</button>
+				<button type="button" class="wide" onclick={() => close(true)}>取消</button>
 			</div>
-			<p class="note">選好模型與思考強度後按 ✓ 一次套用。要等它這一回合做完才能切換；切換時原分頁會關掉，在新分頁以新設定接回同一段對話。</p>
-			{#if kind === 'model' && modelStatus.lock === 'unknown'}
-				<p class="note">{LOCK_UNKNOWN_TEXT}：{modelStatus.lockReason}</p>
-			{/if}
-		</div>
-	{/if}
-</span>
+		{:else if menu === 'status' && agent.switch}
+			{@const open = agent.switch}
+			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+			<div
+				class="menu status"
+				role="dialog"
+				aria-label="模型切換"
+				tabindex="-1"
+				onkeydown={(event) => event.key === 'Escape' && (event.preventDefault(), close(true))}
+				{@attach focusFirst}
+			>
+				<p><strong>切換未完成：{AGENT_SWITCH_STATE_TEXT[open.state]}</strong></p>
+				{#if open.error}<p class="failed">{open.error}</p>{/if}
+				<p class="note">舊設定：{open.from ? settingsText(open.from) : '不明'}</p>
+				<p class="note">新設定：{choiceText(open.to)}</p>
+				{#if carryNote(open)}<p class="note">{carryNote(open)}</p>{/if}
+				{#if confirming}
+					<p class={confirming === 'abandon' ? 'failed' : ''}>{confirming === 'continue' ? AGENT_CONTINUE_CONFIRM_TEXT : AGENT_ABANDON_CONFIRM_TEXT}</p>
+					<button
+						type="button"
+						class="wide {confirming === 'continue' ? 'primary' : 'danger'}"
+						data-action="confirm-{confirming}"
+						onclick={() => run(confirming as 'continue' | 'abandon')}
+					>
+						{confirming === 'continue' ? '確認繼續' : '確認放棄'}
+					</button>
+					<button type="button" class="wide" onclick={() => (confirming = null)}>取消</button>
+				{:else}
+					<button type="button" class="wide primary" data-action="continue" disabled={switching[id]} onclick={() => (confirming = 'continue')}>
+						{switching[id] ? '處理中…' : '繼續切換'}
+					</button>
+					<!-- While this page's stop or resume of it runs, it is given up only after (the server queues it too). -->
+					<button type="button" class="wide" data-action="abandon" disabled={switching[id]} onclick={() => (confirming = 'abandon')}>放棄切換</button>
+				{/if}
+			</div>
+		{/if}
+	{/snippet}
+
+	{#snippet notes(kind: Kind)}
+		<p class="note">選好模型與思考強度後按 ✓ 一次套用。要等它這一回合做完才能切換；切換時原分頁會關掉，在新分頁以新設定接回同一段對話。</p>
+		{#if kind === 'model' && modelStatus?.lock === 'unknown'}
+			<p class="note">{LOCK_UNKNOWN_TEXT}：{modelStatus.lockReason}</p>
+		{/if}
+	{/snippet}
+</PickerMenu>

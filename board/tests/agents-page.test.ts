@@ -656,6 +656,61 @@ for (const width of [1280, 390]) {
 	}, 30_000);
 }
 
+// The agent's menus by keys: it opens with the chosen item in focus; the arrows, Home and End
+// move round the list; Escape closes it and gives the focus back to its part; a click anywhere
+// else closes it too.
+const KEY_CODES = { ArrowDown: 40, ArrowUp: 38, Home: 36, End: 35, Escape: 27 } as const;
+async function press(name: keyof typeof KEY_CODES) {
+	for (const type of ['keyDown', 'keyUp']) await tab.send('Input.dispatchKeyEvent', { type, key: name, code: name, windowsVirtualKeyCode: KEY_CODES[name] });
+}
+test.skipIf(!CHROME)("the agent's model picker is worked by keys, and a click elsewhere closes its menu", async () => {
+	setLinked();
+	await fixture.refresh(cookie);
+	try {
+		await visit(1280, '?agent=s-link');
+		await tab.until(pickable('effort'), 'the switch parts');
+		const menu = `.dock .picker [role="menu"][aria-label="思考強度"]`;
+		const items = `[...document.querySelectorAll('${menu} [role="menuitemradio"]')]`;
+		const at = () => tab.eval<number>(`${items}.indexOf(document.activeElement)`);
+		await pickSetting('effort', 'high');
+		await tab.until(`!document.querySelector('${menu}')`, 'the menu closed by the pick');
+		await click(part('effort'));
+		await tab.until(`!!document.querySelector('${menu}')`, 'the menu again');
+		const count = await tab.eval<number>(`${items}.length`);
+		const chosen = await tab.eval<number>(`${items}.findIndex((b) => b.querySelector('small')?.innerText === 'high')`);
+		expect(count).toBeGreaterThan(2);
+		expect(await tab.eval(`${items}[${chosen}].getAttribute('aria-checked')`)).toBe('true');
+		expect(await at()).toBe(chosen);
+		await press('ArrowDown');
+		expect(await at()).toBe((chosen + 1) % count);
+		await press('ArrowUp');
+		expect(await at()).toBe(chosen);
+		await press('End');
+		expect(await at()).toBe(count - 1);
+		await press('ArrowDown');
+		expect(await at()).toBe(0);
+		await press('ArrowUp');
+		expect(await at()).toBe(count - 1);
+		await press('Home');
+		expect(await at()).toBe(0);
+		await press('Escape');
+		await tab.until(`!document.querySelector('${menu}')`, 'the menu closed by Escape');
+		expect(await tab.eval(`document.activeElement === document.querySelector(${JSON.stringify(part('effort'))})`)).toBe(true);
+		await click(part('effort'));
+		await tab.until(`!!document.querySelector('${menu}')`, 'the menu again');
+		const { x, y } = await tab.eval<{ x: number; y: number }>(
+			`(() => { const r = document.querySelector('.detail .topbar .whose').getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`
+		);
+		for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) await tab.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
+		await tab.until(`!document.querySelector('${menu}')`, 'the menu closed by a click elsewhere');
+		await click('.dock .picker .discard');
+	} finally {
+		setHerdr(AGENTS);
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+		await fixture.refresh(cookie);
+	}
+}, 30_000);
+
 test.skipIf(!CHROME)('繼續切換 asks first and resumes an unfinished switch; a busy agent, or one not linked, says why it cannot switch', async () => {
 	for (const file of ['hcom-calls.jsonl', 'hcom-added.json', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
 	setLinked({ exit: 1, stderr: 'resume refused' });
