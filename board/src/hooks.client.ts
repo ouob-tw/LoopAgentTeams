@@ -25,3 +25,13 @@ window.addEventListener('unhandledrejection', (event) => report('unhandledreject
 export const handleError: HandleClientError = ({ kind, error }) => {
 	if (kind === 'unknown') report('handleError', error);
 };
+
+// A page the browser keeps for its back button keeps its live feeds open, and over HTTP/1.1 a
+// browser opens at most six connections to the board: two or three such pages leave none for the
+// page in view. Kept pages stop loading; one brought back is loaded again, its feeds with it.
+window.addEventListener('pagehide', (event) => {
+	if (event.persisted) window.stop();
+});
+window.addEventListener('pageshow', (event) => {
+	if (event.persisted) location.reload();
+});
