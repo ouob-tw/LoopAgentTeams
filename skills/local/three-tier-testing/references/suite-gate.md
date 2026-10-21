@@ -154,22 +154,22 @@ LoopAgentTeams 風格的例子：
 
 ```json
 {
-  "suites": ["bun run test", "uv run --no-project python -m unittest discover -s skills/local/*/tests"],
+  "suites": ["*bun run test:all", "*bun run test:server", "*bun run test:browser", "*python -m unittest discover -s *tests"],
   "integration_branch": "dev",
   "full_suites": [
-    {"cwd": "board", "command": "bun run test"},
+    {"cwd": "board", "command": "bun run test:all"},
     {"cwd": ".", "command": "uv run --no-project python -m unittest discover -s skills/local/lat/tests"},
     {"cwd": ".", "command": "uv run --no-project python -m unittest discover -s skills/local/three-tier-testing/tests"}
   ],
   "affected": {
     "commands": {
-      "board": "bun test {tests}",
+      "board": "if printf '%s\\n' {tests} | grep -qv '^tests/unit/'; then bun run build:test || exit; fi; bun test {tests}",
       "skills/local/lat": "uv run --no-project python -m unittest {tests}",
       "skills/local/three-tier-testing": "uv run --no-project python -m unittest {tests}"
     },
     "map": [
       {"paths": ["board/src/lib/server/**"], "tests": ["board/tests/server/**/*.test.ts"]},
-      {"paths": ["board/src/routes/**"], "tests": ["board/tests/*-page.test.ts"]},
+      {"paths": ["board/src/routes/**"], "tests": ["board/tests/browser/*-page.test.ts"]},
       {"paths": ["skills/local/lat/scripts/lat-watch.py"], "tests": ["skills/local/lat/tests/test_lat_watch.py"]},
       {"paths": ["skills/local/lat/scripts/_lat_common.py"], "tests": ["skills/local/lat/tests/test_*.py"]},
       {"paths": ["skills/local/three-tier-testing/scripts/**"], "tests": ["skills/local/three-tier-testing/tests/test_*.py"]},
@@ -179,6 +179,8 @@ LoopAgentTeams 風格的例子：
   }
 }
 ```
+
+這裡的 board 只有 `tests/unit/` 不需要建置；`suites` 只列跑伺服器或瀏覽器測試的整套指令，單跑 `bun test`（只有單元測試）不算整套。樣板因此只在選到 `tests/unit/` 以外的測試時先建置，建置失敗就停下並回傳它的結束碼。
 
 改到 `skills/local/lat/scripts/lat-watch.py` 時，在 `skills/local/lat` 執行 `uv run --no-project python -m unittest tests/test_lat_watch.py`；改到 `board/bun.lock` 或沒列在表上的檔案時，經閘門跑（或沿用）三套整套。
 

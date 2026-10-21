@@ -1,2 +1,4 @@
 [test]
 timeout = 30000
+# A bare `bun test` runs only the unit tests; `bun run test:server`, `test:browser` and `test:all` run the rest.
+root = "tests/unit"

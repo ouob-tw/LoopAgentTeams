@@ -169,7 +169,7 @@ docker compose -f compose.e2e.yml -p <project>_e2e_review --env-file .env.e2e --
 
 ## 驗收測試（`tests/qa_e2e/`，選用）
 
-三層之外的獨立目錄，存放對應規格驗收清單（QA）的測試。LoopAgentTeams 的 QA 依規格逐條撰寫於此。
+三層之外的獨立目錄，存放對應規格驗收清單（QA）的測試。
 
 - 技術規則同 E2E：無 mock、驅動真實應用
 - 與 `tests/e2e/` 分開的原因：每條測試對應規格的一條驗收項，由驗收方撰寫；修正實作的一方（如 Implementer）只能執行、不得修改
