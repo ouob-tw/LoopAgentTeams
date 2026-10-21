@@ -28,9 +28,16 @@ export async function agentTranscriptSource(board: Board, sessionId: string): Pr
 	return agent ? { client: agent.client, sessionId } : null;
 }
 
+/** One page following a conversation; its own object, so the same callback can follow twice. */
+interface Subscriber {
+	push: (update: TranscriptUpdate) => void;
+	/** Whether it got any update yet, so the one for a page that joins is not sent twice. */
+	served: boolean;
+}
+
 /** One follower per conversation, shared by every page open on it, per board. */
 interface Follower {
-	subscribers: Set<(update: TranscriptUpdate) => void>;
+	subscribers: Set<Subscriber>;
 	/** The update last sent, for a page that opens later. */
 	sent: TranscriptUpdate | null;
 	close: () => void;
@@ -53,12 +60,13 @@ export function followTranscript(
 	let shared = followers.get(board);
 	if (!shared) followers.set(board, (shared = new Map()));
 	const key = `${source.client}\0${source.sessionId}`;
+	const subscriber: Subscriber = { push, served: false };
 	let follower = shared.get(key);
 	if (follower) {
 		const joined = follower;
 		// After the caller has its close function in hand, as with a first page.
 		queueMicrotask(() => {
-			if (joined.sent && joined.subscribers.has(push)) deliver(push, joined.sent);
+			if (joined.sent && joined.subscribers.has(subscriber) && !subscriber.served) deliver(subscriber, joined.sent, source);
 		});
 	} else {
 		const created: Follower = {
@@ -66,26 +74,28 @@ export function followTranscript(
 			sent: null,
 			close: startFollower(board, source, (update) => {
 				created.sent = update;
-				for (const subscriber of [...created.subscribers]) deliver(subscriber, update);
+				// A page closed by another one's push during this round gets nothing more.
+				for (const each of [...created.subscribers]) if (created.subscribers.has(each)) deliver(each, update, source);
 			})
 		};
 		shared.set(key, (follower = created));
 	}
-	follower.subscribers.add(push);
+	follower.subscribers.add(subscriber);
 	const own = follower;
 	return () => {
-		if (!own.subscribers.delete(push) || own.subscribers.size > 0) return;
+		if (!own.subscribers.delete(subscriber) || own.subscribers.size > 0) return;
 		own.close();
 		if (shared.get(key) === own) shared.delete(key);
 	};
 }
 
 /** One page's push; a page that throws must not keep the update from the others. */
-function deliver(push: (update: TranscriptUpdate) => void, update: TranscriptUpdate): void {
+function deliver(subscriber: Subscriber, update: TranscriptUpdate, source: { client: string; sessionId: string }): void {
+	subscriber.served = true;
 	try {
-		push(update);
+		subscriber.push(update);
 	} catch (error) {
-		log('WARNING', 'board.transcript', 'transcript_push_failed', exceptionFields(error));
+		log('ERROR', 'board.transcript', 'transcript_push_failed', { client: source.client, session_id: source.sessionId, ...exceptionFields(error) });
 	}
 }
 

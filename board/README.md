@@ -311,13 +311,14 @@ journalctl --user -u lat-board -o cat | grep '"layer":"lat-board"'
 journalctl --user -u lat-board -o cat | grep '"message":"client_error"' | jq .
 ```
 
-每行都有 `ts`（UTC）、`level`、`logger`、`layer`（固定 `lat-board`）、`message`（事件名），請求中寫的行另有同一請求共用的 `request_id`（沿用請求的 `x-request-id`，沒有就自產）。只記三種事件，不記一般請求，也不記 4xx 的拒絕（密碼錯誤、題目已改版等）：
+每行都有 `ts`（UTC）、`level`、`logger`、`layer`（固定 `lat-board`）、`message`（事件名），請求中寫的行另有同一請求共用的 `request_id`（沿用請求的 `x-request-id`，沒有就自產）。只記四種事件，不記一般請求，也不記 4xx 的拒絕（密碼錯誤、題目已改版等）：
 
 | `message` | 何時寫 | 其他欄位 |
 | --- | --- | --- |
 | `http_error` | 任何 API 或頁面回應狀態 ≥ 500（例如輔助工具失敗的 502、寫不進送出紀錄的 500），也包括看板自己在處理請求前就出錯的 500 | `method`、`path`、`status`，以及回應裡的 `reason`、`error`、`logError`、`detail`（SvelteKit 錯誤頁的訊息），各最多 2000 字 |
 | `unhandled_error` | 伺服器端沒被處理的例外（同一請求另有一行 500 的 `http_error`，連 SvelteKit 在請求處理前就失敗也是） | `method`、`path`、`exc_type`、`exc_message`、`traceback` |
 | `client_error` | 瀏覽器端的錯誤：頁面變成 Internal Error、或沒被處理的 `error`／`unhandledrejection`，由頁面送到 `POST /api/client-error` | `kind`、`exc_type`、`exc_message`、`traceback`、`url`、`user_agent`、`device_id`；內容見下 |
+| `transcript_push_failed` | 對話紀錄有更新時，送給某個開著的頁面出錯（同一段對話的其他頁面照常收到） | `client`、`session_id`、`exc_type`、`exc_message`、`traceback` |
 
 不寫密碼、裝置 token、答覆與訊息內文：
 

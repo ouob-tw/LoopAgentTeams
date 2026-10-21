@@ -1,6 +1,6 @@
 // Pages open on the same conversation share one follower: one watch, one helper read per change,
 // each read sent to every open page. Different conversations are followed apart.
-import { afterAll, beforeAll, expect, test } from 'bun:test';
+import { afterAll, beforeAll, describe, expect, test } from 'bun:test';
 import { appendFileSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -168,17 +168,26 @@ test('different conversations are followed apart', async () => {
 });
 
 // Run from the source against the stand-in helper, as the fixture's server runs the last build.
-test('a page whose push throws does not keep the update from the others', async () => {
-	const dir = mkdtempSync(join(tmpdir(), 'lat-follow-shared-'));
-	try {
+describe('pages sharing a follower, from the source', () => {
+	let dir: string;
+	let board: Board;
+	beforeAll(() => {
+		dir = mkdtempSync(join(tmpdir(), 'lat-follow-shared-'));
 		mkdirSync(join(dir, 'transcripts'));
 		writeFileSync(join(dir, 'helper.json'), '{}');
-		writeFileSync(join(dir, 'transcripts', 'codex-1.jsonl'), JSON.stringify(said('一')) + '\n');
 		const config = loadConfig({
 			HOME: join(dir, 'home'),
 			LAT_BOARD_HELPER_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-helper.mjs'), dir])
 		});
-		const board = { config } as Board;
+		board = { config } as Board;
+	});
+	afterAll(() => rmSync(dir, { recursive: true, force: true }));
+
+	const write = (session: string, texts: string[]) =>
+		writeFileSync(join(dir, 'transcripts', `${session}.jsonl`), texts.map((text) => JSON.stringify(said(text)) + '\n').join(''));
+
+	test('a page whose push throws does not keep the update from the others', async () => {
+		write('codex-1', ['一']);
 		const source = { client: 'codex', sessionId: 'codex-1' };
 		let thrown = 0;
 		const updates: TranscriptUpdate[] = [];
@@ -195,7 +204,59 @@ test('a page whose push throws does not keep the update from the others', async 
 			closeFirst();
 			closeSecond();
 		}
-	} finally {
-		rmSync(dir, { recursive: true, force: true });
-	}
+	});
+
+	test('a page closed by another page’s push gets nothing more', async () => {
+		write('codex-2', ['一']);
+		const source = { client: 'codex', sessionId: 'codex-2' };
+		const first: TranscriptUpdate[] = [];
+		const second: TranscriptUpdate[] = [];
+		const closeFirst = followTranscript(board, source, (update) => {
+			first.push(update);
+			closeSecond();
+		});
+		const closeSecond = followTranscript(board, source, (update) => second.push(update));
+		try {
+			await until(() => first[0], 5_000, 'the first page');
+			await sleep(100);
+			expect(second).toEqual([]);
+		} finally {
+			closeFirst();
+		}
+	});
+
+	test('one callback following twice keeps following until both are closed', async () => {
+		write('codex-3', ['一']);
+		const source = { client: 'codex', sessionId: 'codex-3' };
+		const updates: TranscriptUpdate[] = [];
+		const push = (update: TranscriptUpdate) => updates.push(update);
+		const closeFirst = followTranscript(board, source, push);
+		const closeSecond = followTranscript(board, source, push);
+		try {
+			await until(() => updates[0], 5_000, 'the first page');
+			closeFirst();
+			write('codex-3', ['一', '二']);
+			await until(() => updates.find((update) => count(update) === 2), 5_000, 'the new line after one close');
+		} finally {
+			closeFirst();
+			closeSecond();
+		}
+	});
+
+	test('a page that joins before the first read gets each update once', async () => {
+		write('codex-4', ['一']);
+		const source = { client: 'codex', sessionId: 'codex-4' };
+		const first: TranscriptUpdate[] = [];
+		const second: TranscriptUpdate[] = [];
+		const closeFirst = followTranscript(board, source, (update) => first.push(update));
+		const closeSecond = followTranscript(board, source, (update) => second.push(update));
+		try {
+			await until(() => first[0] && second[0], 5_000, 'both pages');
+			await sleep(100);
+			expect(second).toHaveLength(1);
+		} finally {
+			closeFirst();
+			closeSecond();
+		}
+	});
 });
