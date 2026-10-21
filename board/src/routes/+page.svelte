@@ -406,7 +406,7 @@
 			{#if middle === 'quota'}
 				<QuotaList quota={board.quota} />
 			{:else if middle === 'agents'}
-				<AgentList {agents} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
+				<AgentList {agents} {controllers} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
 				<ClosedAgents {closed} currentId={agentId} onopen={openAgent} />
 			{:else}
 				<Inbox

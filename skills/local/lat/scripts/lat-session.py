@@ -37,6 +37,9 @@ HCOM_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
 ENDED = ('ended', 'completed', 'cancelled')
 # A last line with one of these tags asks the user a recorded question.
 QUESTION_TAGS = ('DECIDE:', 'HELP:')
+# A last line with one of these tags needs the controller's duty on record first.
+DUTY_TAGS = QUESTION_TAGS + ('DONE:',)
+DUTY_LIMIT = 40
 HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit')
 INLINE_REFERENCES = ('references/agents.md', 'references/task-cards.md')
 QUESTION_HEADING = re.compile(r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', re.MULTILINE)
@@ -351,6 +354,7 @@ def activate(args):
     write_json_atomic(path, record, expected=original)
     print(path)
     print(f'已開始第 {len(record.get("history", [])) + 1} 輪')
+    print(f'看板職責：任務明確後執行（任務改變時再執行一次）：{duty_command(record)}')
     if enabled:
         try:
             binding, replaced, legacy_ignored = panel.bind_controller(
@@ -479,6 +483,61 @@ def deactivate(args):
         write_json_atomic(path, record, expected=original)
     print(path)
     print(json.dumps({'removed': removed}))
+
+
+def duty_path(sid):
+    return reports_directory() / f'{sid}.duty.json'
+
+
+def duty_command(record):
+    return shlex.join([
+        'uv', 'run', '--no-project', 'python', str(Path(__file__).resolve()), 'duty',
+        '--client', record['client'], '--workspace', record['workspace'],
+        '--text', f'<{DUTY_LIMIT} 字以內：這個主控負責做什麼>',
+        '--expected', '<做完後使用者會看到什麼>',
+    ])
+
+
+def record_duty(args):
+    """Write or replace this controller's duty, which the board shows on its card."""
+    text, expected = args.text.strip(), args.expected.strip()
+    if not text or not expected:
+        raise ValueError('--text and --expected must not be empty; duty unchanged')
+    if '\n' in text or len(text) > DUTY_LIMIT:
+        raise ValueError(f'--text must be one line of at most {DUTY_LIMIT} characters '
+                         f'(got {len(text)}); duty unchanged')
+    workspace = args.workspace.resolve(strict=True)
+    sid = session_id(os.environ.get(SESSION_ENV[args.client]))
+    try:
+        record = read_json(workspace / '.lat/sessions' / f'{sid}.json')
+    except FileNotFoundError:
+        record = {}
+    expected_identity = dict(client=args.client, session_id=sid, role='orchestrator',
+                             workspace=str(workspace), status='active')
+    if any(record.get(key) != value for key, value in expected_identity.items()):
+        raise ValueError('No active controller record for this session; duty unchanged')
+    path = duty_path(sid)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The report lock: the board's pruning deletes this file with the report file under it.
+    with (path.parent / f'{sid}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        write_json_atomic(path, dict(
+            text=text, expected=expected,
+            time=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')))
+    print(path)
+
+
+def missing_duty(record, message):
+    """Why this DECIDE/HELP/DONE Stop should be held for a duty not on record, or None."""
+    lines = [line for line in message.splitlines() if line.strip()]
+    if legacy_record(record) or not lines or not lines[-1].startswith(DUTY_TAGS):
+        return None
+    path = duty_path(record['session_id'])
+    # A reports location that is not a directory cannot hold a duty either; the report write warns.
+    if path.is_file() or (path.parent.exists() and not path.parent.is_dir()):
+        return None
+    return ('LAT 職責檢查未通過：看板上還沒有這個主控的職責。先執行 '
+            f'`{duty_command(record)}`，再照原樣結束回合。任務改變時用同一指令覆蓋。')
 
 
 def context(text, event='SessionStart'):
@@ -809,24 +868,33 @@ def report_stop(record, payload):
     message = payload['last_assistant_message']
     if record['status'] == 'active':
         tag = question_tag(message)
+        reasons, notes = [], []
+        try:
+            duty = missing_duty(record, message)
+        except (OSError, ValueError) as exc:
+            notes.append(f'LAT 職責檢查發生錯誤，未攔下：{exc}')
+        else:
+            if duty:
+                reasons.append(duty)
         if tag:
-            notes = []
             try:
                 reason = stop_check(record, payload)
             except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
                 notes.append(f'LAT {tag} 檢查發生錯誤，未攔下：{exc}')
             else:
-                # Hold only the first Stop of a turn; later ones pass with a visible warning.
-                if reason and not payload.get('stop_hook_active'):
-                    print(json.dumps({'decision': 'block', 'reason': reason}, ensure_ascii=False))
-                    return
                 if reason:
-                    notes.append(reason + ' 本回合已繼續過，不再攔下。')
-            # A passing or released DECIDE/HELP shows its questions after the message.
-            shown, warning = question_delivery(record, message)
-            text = '\n\n'.join(part for part in (shown, warning, *notes) if part)
-            if text:
-                print(json.dumps({'systemMessage': text}, ensure_ascii=False))
+                    reasons.append(reason)
+        # Hold only the first Stop of a turn; later ones pass with a visible warning.
+        if reasons and not payload.get('stop_hook_active'):
+            print(json.dumps({'decision': 'block', 'reason': '\n\n'.join(reasons)},
+                             ensure_ascii=False))
+            return
+        notes += [reason + ' 本回合已繼續過，不再攔下。' for reason in reasons]
+        # A passing or released DECIDE/HELP shows its questions after the message.
+        shown, warning = question_delivery(record, message) if tag else ('', '')
+        text = '\n\n'.join(part for part in (shown, warning, *notes) if part)
+        if text:
+            print(json.dumps({'systemMessage': text}, ensure_ascii=False))
     try:
         append_report(record, message)
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
@@ -1122,6 +1190,10 @@ def main():
     # Accepted for older callers; every deactivation ends as 'ended'.
     stop.add_argument('--status', choices=('completed', 'cancelled'), help=argparse.SUPPRESS)
     stop.add_argument('--session-id', help='Explicit ID for manual stale-record deactivation')
+    duty = sub.add_parser('duty', help="Record this controller's duty for the board")
+    duty.add_argument('--workspace', type=Path, required=True)
+    duty.add_argument('--text', required=True, help=f'What it is responsible for, <= {DUTY_LIMIT} chars')
+    duty.add_argument('--expected', required=True, help='What the user will see when it is done')
     sub.add_parser('hook', help='Read SessionStart, Stop or UserPromptSubmit payload on stdin')
     for action in ('install', 'uninstall'):
         config = sub.add_parser(action, help=f'{action.title()} the independent LAT hook group')
@@ -1138,6 +1210,8 @@ def main():
             activate(args)
         elif args.action == 'deactivate':
             deactivate(args)
+        elif args.action == 'duty':
+            record_duty(args)
         elif args.action == 'hook':
             hook(args.client)
         else:
