@@ -1320,6 +1320,25 @@ class SessionTests(unittest.TestCase):
         self.wait_for(lambda: not self.process_exists(pid))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
 
+    def test_deactivate_releases_only_the_controllers_own_wait(self):
+        self.activate()
+        waits = self.work / '.lat/watch/waits'
+        waits.mkdir(parents=True, exist_ok=True)
+        declaration = dict(agent='orch', kind='agent', target='worker', active=True,
+                           declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
+                           deadline_at=3000)
+        (waits / 'orch.json').write_text(json.dumps(declaration))
+        (waits / 'worker.json').write_text(json.dumps(dict(declaration, agent='worker',
+                                                           target='orch')))
+
+        result = self.cli('deactivate', '--workspace', self.work)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        own = json.loads((waits / 'orch.json').read_text())
+        self.assertFalse(own['active'])
+        self.assertEqual(own['released_reason'], 'deactivated')
+        self.assertTrue(json.loads((waits / 'worker.json').read_text())['active'])
+
     def test_stale_pid_for_unrelated_process_is_replaced_without_signalling_it(self):
         unrelated = subprocess.Popen(['sleep', '30'], start_new_session=True)
         self.addCleanup(self.terminate_process, unrelated)
