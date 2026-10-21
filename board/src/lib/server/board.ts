@@ -22,6 +22,14 @@ import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 import type { QuotaSnapshot } from '../board/quota.ts';
 import { createQuotaPoller, readClaudeQuota, readCodexQuota } from './quota.ts';
+import { loadUsageStyle, saveUsageStyle } from './usage-style.ts';
+import type { UsageStyle } from '../board/usage.ts';
+
+/** The style with its revision: it grows with every save, so a page can tell which of two reports of the style is newer. */
+export interface UsageStyleState {
+	style: UsageStyle;
+	revision: number;
+}
 
 const HEARTBEAT_MS = 15_000;
 
@@ -57,6 +65,10 @@ export interface Board {
 	agentActed(agentId: string): void;
 	/** The 額度 tab's last reading; null until the first one is done. */
 	quota(): QuotaSnapshot | null;
+	/** How the usage line reads on every device. */
+	usageStyle(): UsageStyleState;
+	/** Save the style and tell every open page. Throws, leaving the style as it was, when it cannot be saved. */
+	setUsageStyle(style: UsageStyle): UsageStyleState;
 	close(): void;
 }
 
@@ -93,6 +105,9 @@ function createBoard(): Board {
 	let fallback: ReturnType<typeof setTimeout> | undefined;
 	let closed = false;
 	let sentLogError: string | null = null;
+	/** The usage line's style; read from its file the first time it is asked for. The revision
+	 *  starts at the time, so one after a restart is newer than any before it. */
+	let usageStyle: UsageStyleState | null = null;
 	/** The open model switches as last read from the sent log. */
 	let lastSwitches: SwitchView[] = [];
 
@@ -389,6 +404,14 @@ function createBoard(): Board {
 			for (const stream of streams) stream.send('agent-action', JSON.stringify({ agentId }));
 		},
 		quota: () => quotaPoller.current(),
+		usageStyle: () => (usageStyle ??= { style: loadUsageStyle(config.stateDir), revision: Date.now() }),
+		setUsageStyle(style) {
+			const revision = board.usageStyle().revision + 1;
+			saveUsageStyle(config.stateDir, style);
+			usageStyle = { style, revision };
+			for (const stream of streams) stream.send('usage-style', JSON.stringify(usageStyle));
+			return usageStyle;
+		},
 		close() {
 			closed = true;
 			quotaPoller.close();
