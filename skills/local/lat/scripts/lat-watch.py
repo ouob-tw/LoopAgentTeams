@@ -724,9 +724,12 @@ def valid_name(value):
 
 @functools.lru_cache(maxsize=None)
 def lat_dir(workspace):
-    """All worktrees share the main checkout's .lat; never create one in a linked worktree."""
+    """All worktrees share the main checkout's .lat; never create one in a linked worktree.
+
+    A worktree whose .lat already exists (a controller activated there) keeps using it.
+    """
     workspace = Path(workspace)
-    if (workspace / '.git').is_file():
+    if (workspace / '.git').is_file() and not (workspace / '.lat').is_dir():
         common = run_command(['git', '-C', str(workspace), 'rev-parse',
                               '--path-format=absolute', '--git-common-dir']).strip()
         return Path(common).parent / '.lat'
@@ -1483,14 +1486,20 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
 
 def append_log(path, record):
     path.parent.mkdir(parents=True, exist_ok=True)
-    with contextlib.suppress(FileNotFoundError):
-        if path.stat().st_size > LOG_ROTATE_BYTES:
-            # Keep only the current file and one older one.
-            os.replace(path, path.with_name(f'{path.name}.1'))
-    with path.open('a') as stream:
-        stream.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
-        stream.flush()
-        os.fsync(stream.fileno())
+    # Other processes (alarm registration) append too; the directory lock keeps rotation atomic.
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        with contextlib.suppress(FileNotFoundError):
+            if path.stat().st_size > LOG_ROTATE_BYTES:
+                # Keep only the current file and one older one.
+                os.replace(path, path.with_name(f'{path.name}.1'))
+        with path.open('a') as stream:
+            stream.write(json.dumps(record, ensure_ascii=False, separators=(',', ':')) + '\n')
+            stream.flush()
+            os.fsync(stream.fileno())
+    finally:
+        os.close(directory)
 
 
 def action_record(action):
@@ -1967,7 +1976,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
         if disappeared:
             unavailable_alarm(workspace, orchestrator, agent, previous, now, log)
             states[agent] = previous
-            orchestrator_gone = orchestrator_gone or agent == orchestrator
+        orchestrator_gone = orchestrator_gone or (agent == orchestrator and info is None)
         if agent != orchestrator and disappeared:
             state = dict(previous)
             state['missing_cycles'] = state.get('missing_cycles', 0) + 1

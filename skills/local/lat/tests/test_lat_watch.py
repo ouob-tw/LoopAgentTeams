@@ -3358,15 +3358,20 @@ esac
             self.listing_hcom(orch='listening', worker_open='active')
             results.append(watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=1860))
             self.assertNotIn('missing_since', self.watch_state()['orch'])
+            # A listed inactive identity is still found, so it never counts as gone.
             self.listing_hcom(orch='inactive', worker_open='active')
             results += [watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
-                        for now in range(1920, 1920 + 3600, 60)]
+                        for now in range(1920, 1920 + 3601, 60)]
+            self.assertNotIn('missing_since', self.watch_state()['orch'])
+            self.listing_hcom(worker_open='active')
+            results += [watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+                        for now in range(5580, 5580 + 3600, 60)]
             self.assertEqual(set(results), {None})
-            reason = watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=5520)
+            reason = watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=9180)
         self.assertEqual(reason, 'orchestrator orch missing from HCOM for 60 minutes')
         self.assertNotIn('missing_since', self.watch_state()['orch'])
         self.assertEqual(len([record for record in self.watch_records()
-                              if record.get('decision') == 'not-observable']), 1)
+                              if record.get('decision') == 'not-observable']), 2)
 
     def test_watcher_stops_itself_removing_pid_and_noting_reason_in_active_session(self):
         watch = load_watch()
@@ -3417,6 +3422,51 @@ esac
         self.assertFalse((worktree / '.lat').exists())
         self.assertTrue((main / '.lat/watch/orch/watch.jsonl').is_file())
         self.assertEqual(watch.wait_path(worktree, 'orch'), main / '.lat/watch/waits/orch.json')
+
+    def test_watcher_of_a_controller_activated_in_a_worktree_keeps_its_lat(self):
+        main = self.root / 'main'
+        main.mkdir()
+        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid']
+        subprocess.run([*git, 'init', '-q', str(main)], check=True)
+        subprocess.run([*git, '-C', str(main), 'commit', '-q', '--allow-empty', '-m', 'init'],
+                       check=True)
+        worktree = self.root / 'wt'
+        subprocess.run([*git, '-C', str(main), 'worktree', 'add', '-q', str(worktree)],
+                       check=True)
+        # What activate leaves in a worktree before it launches the watcher.
+        sessions = worktree / '.lat/sessions'
+        sessions.mkdir(parents=True)
+        (sessions / 'sid.json').write_text(json.dumps(dict(
+            session_id='sid', role='orchestrator', status='active',
+            workspace=str(worktree), hcom_name='orch')))
+        (worktree / '.lat/watch').mkdir()
+        (worktree / '.lat/watch/sid.pid').write_text('1234567')
+        watch = load_watch()
+        reason = 'orchestrator orch missing from HCOM for 60 minutes'
+        self.assertEqual(watch.stop_self(worktree, 'orch', reason, 0, pgid=1234567), 'sid')
+        self.assertFalse((worktree / '.lat/watch/sid.pid').exists())
+        self.assertEqual(json.loads((sessions / 'sid.json').read_text())['watcher_stopped']['reason'],
+                         reason)
+        self.assertTrue((worktree / '.lat/watch/orch/watch.jsonl').is_file())
+        self.assertFalse((main / '.lat').exists())
+
+    def test_log_append_and_rotation_wait_for_another_writer(self):
+        watch = load_watch()
+        log = watch.state_path(self.work, 'orch').with_name('watch.jsonl')
+        log.parent.mkdir(parents=True)
+        log.write_text('x' * (watch.LOG_ROTATE_BYTES + 1))
+        directory = os.open(log.parent, os.O_RDONLY)
+        self.addCleanup(os.close, directory)
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        writer = threading.Thread(target=watch.append_log, args=(log, {'new': 1}))
+        writer.start()
+        writer.join(0.3)
+        self.assertTrue(writer.is_alive())
+        self.assertFalse(log.with_name('watch.jsonl.1').exists())
+        fcntl.flock(directory, fcntl.LOCK_UN)
+        writer.join(5)
+        self.assertEqual(log.read_text(), '{"new":1}\n')
+        self.assertTrue(log.with_name('watch.jsonl.1').exists())
 
     def test_notification_releases_orchestrator_wait_via_message_delivery(self):
         watch = load_watch()

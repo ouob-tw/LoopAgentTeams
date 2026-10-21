@@ -1,6 +1,6 @@
 # 停住監控
 
-主控 activate 時，`lat-session.py` 自動在背景啟動 `scripts/lat-watch.py run`；deactivate 停止它，並解除主控自己的等待聲明（記為 `deactivated`），連同已到期但還沒送出的催促與通知一起清掉，之後重新 activate 不會再收到舊等待的到期催促；compact／resume 發現它不在時重新啟動（見 [主控恢復程序](recovery.md)）。每個主控一支，每分鐘檢查一次。所有 worktree 共用主工作區的 `.lat`：以 worktree 路徑當 `--workspace` 啟動的監控，狀態與紀錄也寫到主工作區的 `.lat`，不在 worktree 內另建。以下 `$lat_dir`、`$workspace`、`$tasks` 是主控 activate 時用的 LAT 技能目錄、工作區根目錄與任務卡目錄絕對路徑。
+主控 activate 時，`lat-session.py` 自動在背景啟動 `scripts/lat-watch.py run`；deactivate 停止它，並解除主控自己的等待聲明（記為 `deactivated`），連同已到期但還沒送出的催促與通知一起清掉，之後重新 activate 不會再收到舊等待的到期催促；compact／resume 發現它不在時重新啟動（見 [主控恢復程序](recovery.md)）。每個主控一支，每分鐘檢查一次。所有 worktree 共用主工作區的 `.lat`：以 worktree 路徑當 `--workspace` 啟動的監控，狀態與紀錄也寫到主工作區的 `.lat`，不在 worktree 內另建；只有該 worktree 已有自己的 `.lat`（主控在 worktree 內 activate）時沿用它。以下 `$lat_dir`、`$workspace`、`$tasks` 是主控 activate 時用的 LAT 技能目錄、工作區根目錄與任務卡目錄絕對路徑。
 
 ## 技能文字更新通知
 
@@ -48,7 +48,7 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 
 ## 主控掉線時自停
 
-主控連續 60 分鐘不在 HCOM 清單、或為非額度原因的 `inactive` 時，監控自行停止：移除自己的 `.lat/watch/<session-id>.pid`，在 session 紀錄寫入 `watcher_stopped`（停止時間 `at_utc` 與原因 `reason`），在 `.lat/watch/<session-id>.log` 寫一行 `LAT watch stopped: <原因>`，`watch.jsonl` 記 `watcher-stopped`。session 維持 active；之後 compact／resume 時恢復 hook 照常重新啟動監控（見 [主控恢復程序](recovery.md)）。期間主控只要重新出現一次就重新計時，短暫消失不會停止；HCOM 清單讀取失敗算檢查出錯，不算消失。
+主控連續 60 分鐘不在 HCOM 清單時，監控自行停止（清單中仍列為 `inactive` 不算查不到）：移除自己的 `.lat/watch/<session-id>.pid`，在 session 紀錄寫入 `watcher_stopped`（停止時間 `at_utc` 與原因 `reason`），在 `.lat/watch/<session-id>.log` 寫一行 `LAT watch stopped: <原因>`，`watch.jsonl` 記 `watcher-stopped`。session 維持 active；之後 compact／resume 時恢復 hook 照常重新啟動監控（見 [主控恢復程序](recovery.md)）。期間主控只要重新出現一次就重新計時，短暫消失不會停止；HCOM 清單讀取失敗算檢查出錯，不算消失。
 
 ## 結束回合前
 
