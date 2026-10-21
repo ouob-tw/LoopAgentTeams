@@ -15,7 +15,7 @@
 	import { EarlierReads, transcriptUrl, type TranscriptFeed } from '#lib/board/earlier.ts';
 	import { askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
-	import { renderMarkdown } from '#lib/board/markdown.ts';
+	import { RenderedMarkdown } from '#lib/board/markdown.ts';
 		import { toasts } from '#lib/board/toasts.svelte.ts';
 	import {
 		isQuestion,
@@ -142,6 +142,28 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	/** Replies whose original the user opened under the translation, by key. */
 	let originals = $state<Record<string, boolean>>({});
 
+	/** The texts' HTML and their translations', by `seq`: a push renders only what is new. */
+	const markdown = new RenderedMarkdown();
+	const translatedMarkdown = new RenderedMarkdown();
+
+	/** The same list as last time while its entries are the same: every board push hands the page
+	 *  new copies of them, and what is worked out from them is worked out again only when they change. */
+	function steady<T>(): (next: T) => T {
+		let last: T;
+		let lastJson: string | undefined;
+		return (next) => {
+			const json = JSON.stringify(next);
+			if (json !== lastJson) [last, lastJson] = [next, json];
+			return last;
+		};
+	}
+	const steadyReports = steady<InboxReport[]>();
+	const steadyQuestions = steady<InboxQuestion[]>();
+	const steadyOpened = steady<InboxQuestion | null>();
+	const reportList = $derived(steadyReports(reports));
+	const questionList = $derived(steadyQuestions(questions));
+	const openedQuestion = $derived(steadyOpened(target && isQuestion(target) ? target : null));
+
 	/** The segments as shown, newest first. The target's text, or the newest place for a question
 	 *  whose message is still to come, is one item, so its card stays put when the message comes. */
 	const shown = $derived.by((): (Segment | { kind: 'placed'; key: 'placed'; seq: number | null })[] => {
@@ -154,7 +176,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	const reported = $derived.by(() => {
 		const found = new Map<number, InboxReport>();
 		if (!view) return found;
-		for (const entry of reports) {
+		for (const entry of reportList) {
 			const seq = reportPlace(view, entry);
 			if (typeof seq === 'number' && !found.has(seq)) found.set(seq, entry);
 		}
@@ -164,9 +186,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	 *  question as it was opened. */
 	const asking = $derived.by(() => {
 		if (!view || !questionCards) return new Map<number, InboxQuestion[]>();
-		const opened = target && isQuestion(target) ? target : null;
+		const opened = openedQuestion;
 		const texts = view.items.filter((item): item is TranscriptText => item.kind === 'assistant');
-		return askingTexts(texts, opened ? [opened, ...questions.filter((question) => question.key !== opened.key)] : questions);
+		return askingTexts(texts, opened ? [opened, ...questionList.filter((question) => question.key !== opened.key)] : questionList);
 	});
 	/** The `seq` of each reply shown as text that is mostly English: only these are translated,
 	 *  never the user's messages, reports or questions. */
@@ -312,6 +334,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		problem = null;
 		opened = {};
 		originals = {};
+		markdown.clear();
+		translatedMarkdown.clear();
 		// Another conversation, or this one opened again: what failed may be tried again.
 		untrack(() => translations.retry());
 		loadingEarlier = false;
@@ -414,15 +438,15 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 								{/if}
 							</p>
 							{#if translation?.status === 'done'}
-								<div class="text md" lang="zh-Hant-TW">{@html renderMarkdown(translation.text)}</div>
+								<div class="text md" lang="zh-Hant-TW">{@html translatedMarkdown.html(segment.item.seq, translation.text)}</div>
 								<button class="fold original-toggle" aria-expanded={!!originals[segment.key]} onclick={() => (originals[segment.key] = !originals[segment.key])}>
 									{originals[segment.key] ? '收起原文' : '看原文'}
 								</button>
 								{#if originals[segment.key]}
-									<div class="text md original" lang="en">{@html renderMarkdown(segment.item.text)}</div>
+									<div class="text md original" lang="en">{@html markdown.html(segment.item.seq, segment.item.text)}</div>
 								{/if}
 							{:else}
-								<div class="text md">{@html renderMarkdown(segment.item.text)}</div>
+								<div class="text md">{@html markdown.html(segment.item.seq, segment.item.text)}</div>
 								{#if translation?.status === 'failed'}
 									<p class="untranslated">翻譯失敗，顯示原文（{translation.reason}）</p>
 								{/if}
