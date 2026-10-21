@@ -1,5 +1,5 @@
 // Loading the board's pages as new documents in one tab, the way the address bar or a link from
-// elsewhere does. The 中文 switch across the three pages that show a conversation: a controller's
+// elsewhere does. The translation button across the three pages that show a conversation: a controller's
 // information page, a Herdr agent's page and a closed agent's page, each loaded in turn, at a
 // desktop's and a phone's width; the same English reply is on all three, and once translated it
 // shows translated on each. The pages left behind are kept for the back button, so this also
@@ -91,7 +91,7 @@ const SCREEN = `document.querySelector('.detail')?.innerText ?? ''`;
 const ENGLISH = 'The server now saves each completed translation and reuses it on another device.';
 const DONE = `!!document.querySelector('.detail [data-translation="done"]')`;
 const STATE = `[...document.querySelectorAll('.detail [data-translation]')].map((li) => li.dataset.translation).join(',')`;
-const PRESSED = `[...document.querySelectorAll('.detail .language button')].find((b) => b.innerText === '中文')?.getAttribute('aria-pressed') === 'true'`;
+const PRESSED = `document.querySelector('.detail button.translate')?.getAttribute('aria-pressed') === 'true'`;
 const line = (kind: string, text: string) => JSON.stringify({ kind, time: '2026-10-21T01:00:00Z', text }) + '\n';
 
 let fixture: Fixture;
@@ -187,14 +187,14 @@ for (const width of [1440, 412]) {
 		await tab.navigate(`${fixture.url}/?controller=${lead.session_id}`);
 		// The switch is drawn by the server first: clicked again until the page, once started, takes it.
 		await tab.until(
-			`(() => { if (!document.querySelector('.detail .language')) return false; if (!(${PRESSED})) [...document.querySelectorAll('.detail .language button')].find((b) => b.innerText === '中文').click(); return ${PRESSED}; })()`,
+			`(() => { if (!document.querySelector('.detail button.translate')) return false; if (!(${PRESSED})) document.querySelector('.detail button.translate').click(); return ${PRESSED}; })()`,
 			"the controller's conversation switched to 中文"
 		);
 		await tab.until(DONE, 'the translation on the controller page');
 		for (let round = 0; round < 3; round++) {
 			for (const session of ['s-live', 's-gone']) {
 				await tab.navigate(`${fixture.url}/?agent=${session}&tab=agents`);
-				await tab.until(`!!document.querySelector('.detail .language')`, `${session}'s page`);
+				await tab.until(`!!document.querySelector('.detail button.translate')`, `${session}'s page`);
 				// The saved choice is put back once the page has started.
 				await tab.until(PRESSED, `中文 on ${session}'s page`);
 				const deadline = Date.now() + 10_000;
@@ -210,7 +210,7 @@ for (const width of [1440, 412]) {
 test.skipIf(!CHROME)("going back to the board from another page loads it again, with live updates and the command-line draft", async () => {
 	await visit(1440);
 	await tab.navigate(`${fixture.url}/?controller=${lead.session_id}`);
-	await tab.until(`!!document.querySelector('.detail .language') && !!document.querySelector('.dock textarea')`, "the controller's conversation and command line");
+	await tab.until(`!!document.querySelector('.detail button.translate') && !!document.querySelector('.dock textarea')`, "the controller's conversation and command line");
 	// Typed again until the page, once started, has saved it: the server draws the box first.
 	await tab.until(
 		`(() => {
@@ -228,7 +228,7 @@ test.skipIf(!CHROME)("going back to the board from another page loads it again, 
 	// Loaded again, not brought back as it was left: no mark of the old document, and the
 	// browser says it was a reload.
 	await tab.until(
-		`location.pathname === '/' && window.leftBehind === undefined && performance.getEntriesByType('navigation')[0]?.type === 'reload' && !!document.querySelector('.detail .language')`,
+		`location.pathname === '/' && window.leftBehind === undefined && performance.getEntriesByType('navigation')[0]?.type === 'reload' && !!document.querySelector('.detail button.translate')`,
 		'the board to load again'
 	);
 	await tab.until(`document.querySelector('.dock textarea')?.value === 'a draft to keep'`, 'the draft');
