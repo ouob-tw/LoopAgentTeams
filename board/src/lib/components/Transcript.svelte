@@ -7,7 +7,8 @@
 	// question, its card where the message that asked it is, or where that message will come. A
 	// message that asked questions still in the inbox, or answered ones, shows their cards in its
 	// place; a message whose questions the board has no data for stays text. Given a report card, a
-	// DONE report of the inbox shows its card in place of its text.
+	// DONE report of the inbox shows its card in place of its text. With 中文 picked above it, the
+	// English replies shown are translated, each with its original a click away.
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
@@ -15,6 +16,7 @@
 	import { askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { renderMarkdown } from '#lib/board/markdown.ts';
+	import { remember, remembered, TRANSLATE_KEY } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import {
 		isQuestion,
@@ -33,9 +35,10 @@
 		type TranscriptView
 	} from '#lib/board/transcript.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
+	import { isEnglish, Translations, type Translation } from '#lib/board/translate.ts';
 	import { itemLabel, type Controller, type InboxQuestion, type InboxReport } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
-	import { untrack, type Snippet } from 'svelte';
+	import { onMount, untrack, type Snippet } from 'svelte';
 
 	/** How long a question not found waits for the next page before it is judged without one. */
 	const JUDGE_WITHOUT_PAGE_MS = 5_000;
@@ -123,6 +126,26 @@
 		const timer = setTimeout(() => (targetAtLastPage = judged ?? null), JUDGE_WITHOUT_PAGE_MS);
 		return () => clearTimeout(timer);
 	});
+	/** Whether English replies show translated; this device's choice, for every conversation. */
+	let translating = $state(false);
+	onMount(() => {
+		translating = remembered(TRANSLATE_KEY, ['1', '0'], '0') === '1';
+	});
+	function translate(on: boolean) {
+		translating = on;
+		remember(TRANSLATE_KEY, on ? '1' : '0');
+		// Turned on again: what failed is asked for again; turned off: nothing more is asked.
+		if (!on) translations.stop();
+	}
+	/** Translations by original text, as they come in. */
+	let translated = $state<Record<string, Translation>>({});
+	const translations = new Translations((text, translation) => {
+		if (translation) translated[text] = translation;
+		else delete translated[text];
+	});
+	/** Replies whose original the user opened under the translation, by key. */
+	let originals = $state<Record<string, boolean>>({});
+
 	/** The segments as shown, newest first. The target's text, or the newest place for a question
 	 *  whose message is still to come, is one item, so its card stays put when the message comes. */
 	const shown = $derived.by((): (Segment | { kind: 'placed'; key: 'placed'; seq: number | null })[] => {
@@ -149,6 +172,23 @@
 		const texts = view.items.filter((item): item is TranscriptText => item.kind === 'assistant');
 		return askingTexts(texts, opened ? [opened, ...questions.filter((question) => question.key !== opened.key)] : questions);
 	});
+	/** The `seq` of each reply shown as text that is mostly English: only these are translated,
+	 *  never the user's messages, reports or questions. */
+	const english = $derived.by(() => {
+		const seqs = new Set<number>();
+		if (!translating) return seqs;
+		for (const row of shown) {
+			if (row.kind === 'text' && row.item.kind === 'assistant' && !reported.has(row.item.seq) && !asking.has(row.item.seq) && isEnglish(row.item.text)) seqs.add(row.item.seq);
+		}
+		return seqs;
+	});
+	// Newest first, what is loaded and not asked for yet; pushed and earlier parts as they come.
+	$effect(() => {
+		const texts = shown.flatMap((row) => (row.kind === 'text' && english.has(row.item.seq) ? [row.item.text] : []));
+		untrack(() => translations.want(texts));
+	});
+	$effect(() => () => translations.stop());
+
 	/** The cards at an opened question's place: every question its message asked, in its order. */
 	const placedQuestions = $derived(
 		target && isQuestion(target) ? ((typeof place === 'number' && asking.get(place)) || [target]) : []
@@ -275,6 +315,9 @@
 		usage = null;
 		problem = null;
 		opened = {};
+		originals = {};
+		// Another conversation, or this one opened again: what failed may be tried again.
+		untrack(() => translations.retry());
 		loadingEarlier = false;
 		earlierFailed = null;
 		// Another controller's conversation: the room made for the last report goes.
@@ -334,6 +377,10 @@
 </script>
 
 <section class="history" data-block="transcript" bind:this={list}>
+	<div class="language" role="group" aria-label="對話紀錄的語言">
+		<button aria-pressed={translating} onclick={() => translate(true)}>中文</button>
+		<button aria-pressed={!translating} onclick={() => translate(false)}>原文</button>
+	</div>
 	{#if unplaced && card}
 		<div class="placed">{@render card()}</div>
 	{/if}
@@ -361,15 +408,32 @@
 						<li class="report" data-seq={segment.item.seq}>{@render reportCard(reported.get(segment.item.seq)!)}</li>
 					{:else if segment.kind === 'text'}
 						{@const marked = reported.get(segment.item.seq)}
-						<li class="said" class:reported={!!marked} data-kind={segment.item.kind}>
+						{@const translation = english.has(segment.item.seq) ? (translated[segment.item.text] ?? { status: 'pending' }) : null}
+						<li class="said" class:reported={!!marked} data-kind={segment.item.kind} data-translation={translation?.status}>
 							<p class="meta">
 								{#if marked}<span class="label">{itemLabel(marked)}</span>{/if}
 								<span>{segment.item.kind === 'user' ? '你' : `@${controller.hcomName}`}</span>
 								{#if segment.item.time}
 									<time datetime={segment.item.time}>{formatTime(segment.item.time)}</time>
 								{/if}
+								{#if translation?.status === 'pending'}
+									<span class="translating" role="status"><span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>翻譯中</span>
+								{/if}
 							</p>
-							<div class="text md">{@html renderMarkdown(segment.item.text)}</div>
+							{#if translation?.status === 'done'}
+								<div class="text md" lang="zh-Hant-TW">{@html renderMarkdown(translation.text)}</div>
+								<button class="fold original-toggle" aria-expanded={!!originals[segment.key]} onclick={() => (originals[segment.key] = !originals[segment.key])}>
+									{originals[segment.key] ? '收起原文' : '看原文'}
+								</button>
+								{#if originals[segment.key]}
+									<div class="text md original" lang="en">{@html renderMarkdown(segment.item.text)}</div>
+								{/if}
+							{:else}
+								<div class="text md">{@html renderMarkdown(segment.item.text)}</div>
+								{#if translation?.status === 'failed'}
+									<p class="untranslated">翻譯失敗，顯示原文（{translation.reason}）</p>
+								{/if}
+							{/if}
 						</li>
 					{:else}
 						<li class="tools">
@@ -505,6 +569,45 @@
 	}
 	.text {
 		overflow-wrap: anywhere;
+	}
+	/* Two halves of one small switch, at the right above the conversation. */
+	.language {
+		display: inline-flex;
+		align-self: flex-end;
+		border: 1px solid var(--line);
+		border-radius: var(--radius-pill);
+		overflow: hidden;
+	}
+	.language button {
+		padding: 0.1rem 0.7rem;
+		border: 0;
+		border-radius: 0;
+		background: none;
+		color: var(--muted);
+		font: inherit;
+		font-size: max(0.8rem, var(--min-font, 0px));
+		cursor: pointer;
+	}
+	.language button[aria-pressed='true'] {
+		background: var(--surface);
+		color: var(--text);
+		font-weight: 600;
+	}
+	.translating {
+		display: inline-flex;
+		align-items: center;
+		gap: 0.25rem;
+	}
+	.original {
+		margin-top: 0.3rem;
+		padding-left: 0.6rem;
+		border-left: 2px solid var(--line);
+		color: var(--muted);
+	}
+	.untranslated {
+		margin-top: 0.2rem;
+		font-size: max(0.75rem, var(--min-font, 0px));
+		color: var(--muted);
 	}
 	.fold {
 		padding: 0.1rem 0;
