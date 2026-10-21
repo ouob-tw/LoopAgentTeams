@@ -75,7 +75,7 @@ test('a translation that dropped or repeated a marker is refused', () => {
 });
 
 /** A translator on a fresh state directory and a clock the test moves; Codex answers as `answer` says. */
-function setUp(answer: (turn: CodexTurn) => Promise<Outcome<string>> = async (turn) => ({ ok: true, value: `譯：${turn.input.replace(/<\/?reply>\n?/g, '').trim()}` }), env: Record<string, string> = {}) {
+function setUp(answer: (turn: CodexTurn) => Promise<Outcome<string>> = async (turn) => ({ ok: true, value: turn.input.replace(/(<reply id="\d+">)\n?/g, '$1譯：').replace(/\n<\/reply>/g, '</reply>') }), env: Record<string, string> = {}) {
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-translate-'));
 	dirs.push(dir);
 	let now = Date.parse('2026-10-21T00:00:00Z');
@@ -94,12 +94,137 @@ function setUp(answer: (turn: CodexTurn) => Promise<Outcome<string>> = async (tu
 	return { dir, config, calls, translator, ask, advance: (ms: number) => (now += ms) };
 }
 
+test('ten short replies at concurrency one use at most two fake Codex turns, with each translation matched', async () => {
+	const { dir, config } = setUp(undefined, { LAT_BOARD_TRANSLATE_CONCURRENCY: '1' });
+	writeFileSync(join(dir, 'codex.json'), JSON.stringify({ prefix: '譯：' }));
+	config.translateCommand = [NODE, join(import.meta.dir, 'fake-codex.mjs'), dir];
+	const texts = Array.from({ length: 10 }, (_, index) => `Reply number ${index} with \`code-${index}\`.`);
+	const got: Outcome<string>[] = [];
+	await createTranslator(config).translate(texts, (index, outcome) => (got[index] = outcome));
+	expect(got).toEqual(texts.map((text) => ({ ok: true, value: `譯：${text}` })));
+	const calls = readFileSync(join(dir, 'codex-calls.jsonl'), 'utf8').trim().split('\n');
+	expect(calls.length).toBeLessThanOrEqual(2);
+});
+
+test('batches keep at most eight replies and 4000 masked characters, including exactly 1000 per short reply', async () => {
+	const { calls, translator, ask } = setUp(undefined, { LAT_BOARD_TRANSLATE_CONCURRENCY: '1' });
+	const texts = ['a', 'b', 'c', 'd', 'e'].map((letter) => letter.repeat(1000));
+	expect((await ask(translator(), texts)).every((outcome) => outcome.ok)).toBe(true);
+	expect(calls).toHaveLength(2);
+	expect([...calls[0].input.matchAll(/<reply id=/g)]).toHaveLength(4);
+	expect([...calls[1].input.matchAll(/<reply id=/g)]).toHaveLength(1);
+	calls.length = 0;
+	await ask(translator(), Array.from({ length: 9 }, (_, index) => `Small reply ${index}.`));
+	expect(calls).toHaveLength(2);
+	expect([...calls[0].input.matchAll(/<reply id=/g)]).toHaveLength(8);
+});
+
+test('1001 masked characters run alone, while long protected code still joins short replies', async () => {
+	const { calls, translator, ask } = setUp(undefined, { LAT_BOARD_TRANSLATE_CONCURRENCY: '1' });
+	const texts = ['Before.', 'x'.repeat(1001), 'After.', `Run \`${'code'.repeat(500)}\` now.`];
+	const got = await ask(translator(), texts);
+	expect(got).toEqual(texts.map((text) => ({ ok: true, value: `譯：${text}` })));
+	expect(calls).toHaveLength(2);
+	expect(calls[0].input).toContain('Before.');
+	expect(calls[0].input).toContain('After.');
+	expect(calls[0].input).toContain('Run ⟦0⟧ now.');
+	expect(calls[1].input).toBe(`<reply id="1">\n${'x'.repeat(1001)}\n</reply>`);
+});
+
+test('missing, duplicate and broken-marker replies fail only their own job, even with replies returned out of order', async () => {
+	for (const broken of ['', '<reply id="2">Second.</reply><reply id="2">Duplicate.</reply>', '<reply id="2">Missing code.</reply>']) {
+		const { calls, translator, ask, advance } = setUp(async () => ({ ok: true, value: `<reply id="3">第三 软件</reply>${broken}<reply id="1">第一 ⟦0⟧</reply>` }));
+		const made = translator();
+		const texts = ['First \`one\`.', 'Second \`two\`.', 'Third.'];
+		const got = await ask(made, texts);
+		expect(got).toEqual([{ ok: true, value: '第一 \`one\`' }, { ok: false, reason: '譯文少了原文的程式碼、網址或路徑' }, { ok: true, value: '第三 軟體' }]);
+		expect(await ask(made, texts)).toEqual(got);
+		expect(calls).toHaveLength(1);
+		// Successes survive a restart; only the failed reply needs a new turn.
+		await ask(translator(), [texts[0], texts[2]]);
+		expect(calls).toHaveLength(1);
+		advance(FAILURE_HOLD_MS);
+		await ask(made, [texts[1]]);
+		expect(calls).toHaveLength(2);
+	}
+});
+
+test('a whole batch failure or exception fails and holds every job with the same reason', async () => {
+	for (const throws of [false, true]) {
+		const { calls, translator, ask } = setUp(async () => {
+			if (throws) throw new Error('private content');
+			return { ok: false, reason: 'Codex 逾時（60 秒）' };
+		});
+		const made = translator();
+		const texts = ['Whole batch first.', 'Whole batch second.', 'Whole batch third.'];
+		const got = await ask(made, texts);
+		expect(got).toEqual(texts.map(() => ({ ok: false, reason: throws ? '翻譯時出錯' : 'Codex 逾時（60 秒）' })));
+		expect(await ask(made, texts)).toEqual(got);
+		expect(calls).toHaveLength(1);
+	}
+});
+
+test('a cancelled queued member is absent from the next batch and a shared member still translates once', async () => {
+	let release = () => {};
+	const { calls, translator, ask } = setUp((turn) => new Promise((resolve) => (release = () => resolve({ ok: true, value: turn.input }))), { LAT_BOARD_TRANSLATE_CONCURRENCY: '1' });
+	const made = translator();
+	const first = ask(made, ['Holds the batch place.']);
+	await Bun.sleep(5);
+	const gone = new AbortController();
+	const abandoned = made.translate(['Abandoned batch member.'], () => { throw new Error('aborted callback'); }, gone.signal);
+	const shared = new AbortController();
+	const left = made.translate(['Shared batch member.'], () => { throw new Error('aborted callback'); }, shared.signal);
+	const next = ask(made, ['Shared batch member.', 'Other batch member.']);
+	gone.abort();
+	shared.abort();
+	await abandoned;
+	release();
+	await first;
+	await Bun.sleep(5);
+	expect(calls).toHaveLength(2);
+	expect(calls[1].input).toBe('<reply id="1">\nShared batch member.\n</reply>\n<reply id="2">\nOther batch member.\n</reply>');
+	release();
+	expect((await next).every((outcome) => outcome.ok)).toBe(true);
+	await left;
+});
+
+test('every request abandoning a job before batching starts sends no turn and leaves no failure hold', async () => {
+	const { calls, translator, ask } = setUp();
+	const made = translator();
+	const gone = new AbortController();
+	const left = made.translate(['Gone before batch starts.'], () => { throw new Error('aborted callback'); }, gone.signal);
+	gone.abort();
+	await left;
+	expect(calls).toHaveLength(0);
+	expect(await ask(made, ['Gone before batch starts.'])).toEqual([{ ok: true, value: '譯：Gone before batch starts.' }]);
+	expect(calls).toHaveLength(1);
+});
+
+test('a failed fake Codex batch echoing each original and masked reply keeps them out of the journal', async () => {
+	const { dir, config } = setUp();
+	const texts = ['Private first reply with \`secret-one\`.', 'Private second reply with \`secret-two\`.'];
+	writeFileSync(join(dir, 'codex.json'), JSON.stringify({ stderr: texts.flatMap((text) => [text, protect(text).text]).join('\n') + '\nfatal batch quit', exit: true }));
+	config.translateCommand = [NODE, join(import.meta.dir, 'fake-codex.mjs'), dir];
+	const lines: string[] = [];
+	const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => void lines.push(args.join(' ')));
+	try {
+		const got: Outcome<string>[] = [];
+		await createTranslator(config).translate(texts, (index, outcome) => (got[index] = outcome));
+		expect(got.every((outcome) => !outcome.ok)).toBe(true);
+	} finally {
+		spy.mockRestore();
+	}
+	expect(lines).toHaveLength(1);
+	expect(lines[0]).toContain('fatal batch quit');
+	for (const privatePart of ['Private', 'secret-one', 'secret-two', '⟦0⟧']) expect(lines[0]).not.toContain(privatePart);
+});
+
 test('Codex is asked with gpt-6-luna at low effort, and the reply comes back in Traditional Chinese', async () => {
-	const { calls, translator, ask } = setUp(async () => ({ ok: true, value: '软件已经更新' }));
+	const { calls, translator, ask } = setUp(async () => ({ ok: true, value: '<reply id="1">软件已经更新</reply>' }));
 	expect(await ask(translator(), ['The software was updated.'])).toEqual([{ ok: true, value: '軟體已經更新' }]);
 	expect(calls[0].model).toBe('gpt-6-luna');
 	expect(calls[0].effort).toBe('low');
-	expect(calls[0].input).toBe('<reply>\nThe software was updated.\n</reply>');
+	expect(calls[0].input).toBe('<reply id="1">\nThe software was updated.\n</reply>');
 });
 
 test('a translated text is saved: asked again, or by another board start on the same directory, Codex is not called', async () => {
@@ -131,7 +256,7 @@ test('a translation unused for the kept time is dropped; one used meanwhile stay
 	expect(saved).toContain('Reply used every week');
 	calls.length = 0;
 	await ask(translator(), ['Old unused reply here.', 'Reply used every week.']);
-	expect(calls.map((call) => call.input)).toEqual(['<reply>\nOld unused reply here.\n</reply>']);
+	expect(calls.map((call) => call.input)).toEqual(['<reply id="1">\nOld unused reply here.\n</reply>']);
 });
 
 test('a translation unused for exactly the kept time stays; a moment more and it is dropped', async () => {
@@ -149,7 +274,7 @@ test('a translation unused for exactly the kept time stays; a moment more and it
 test('the same text asked for by two pages at once is translated once', async () => {
 	let release = () => {};
 	const { calls, translator, ask } = setUp(
-		(turn) => new Promise((resolve) => (release = () => resolve({ ok: true, value: `譯：${turn.input}` })))
+		(turn) => new Promise((resolve) => (release = () => resolve({ ok: true, value: turn.input })))
 	);
 	const made = translator();
 	const one = ask(made, ['Shared reply text here.']);
@@ -173,7 +298,7 @@ test('no more Codex translations run at once than the limit; the rest wait their
 		},
 		{ LAT_BOARD_TRANSLATE_CONCURRENCY: '2' }
 	);
-	const got = await ask(translator(), ['One two three.', 'Four five six.', 'Seven eight nine.', 'Ten eleven twelve.', 'More words here.']);
+	const got = await ask(translator(), Array.from({ length: 17 }, (_, index) => `Reply ${index} here.`));
 	expect(got.every((outcome) => outcome.ok)).toBe(true);
 	expect(most).toBe(2);
 });
@@ -190,11 +315,11 @@ test('a failed translation is not saved; it is answered as it was for a while, t
 	expect(calls).toHaveLength(1);
 
 	advance(2000);
-	answer = { ok: true, value: '請現在執行。' };
+	answer = { ok: true, value: '<reply id="1">請現在執行。</reply>' };
 	expect(await ask(made, ['Please run `make` now.'])).toEqual([{ ok: false, reason: '譯文少了原文的程式碼、網址或路徑' }]);
 	expect(calls).toHaveLength(2);
 	advance(FAILURE_HOLD_MS);
-	answer = { ok: true, value: '請現在執行 ⟦0⟧。' };
+	answer = { ok: true, value: '<reply id="1">請現在執行 ⟦0⟧。</reply>' };
 	expect(await ask(made, ['Please run `make` now.'])).toEqual([{ ok: true, value: '請現在執行 `make`。' }]);
 	expect(calls).toHaveLength(3);
 });
@@ -219,13 +344,14 @@ test('a translation that throws is a failure for every request that wanted it, n
 test('a text still waiting for a Codex place is dropped once every request that wanted it is aborted', async () => {
 	const releases: (() => void)[] = [];
 	const { calls, translator } = setUp(
-		(turn) => new Promise((resolve) => releases.push(() => resolve({ ok: true, value: `譯：${turn.input}` }))),
+		(turn) => new Promise((resolve) => releases.push(() => resolve({ ok: true, value: turn.input }))),
 		{ LAT_BOARD_TRANSLATE_CONCURRENCY: '1' }
 	);
 	const made = translator();
 	const told: string[] = [];
 	const asking = (texts: string[], signal?: AbortSignal) => made.translate(texts, (index, outcome) => told.push(`${texts[index]}=${outcome.ok}`), signal);
 	const first = asking(['Holds the only place.']);
+	await Bun.sleep(5);
 	const gone = new AbortController();
 	const left = asking(['Only the gone page wants this.'], gone.signal);
 	const oneOfTwo = new AbortController();
@@ -239,7 +365,7 @@ test('a text still waiting for a Codex place is dropped once every request that 
 	await Bun.sleep(5);
 	releases.shift()!();
 	await Promise.all(shared);
-	expect(calls.map((call) => call.input)).toEqual(['<reply>\nHolds the only place.\n</reply>', '<reply>\nTwo pages want this one.\n</reply>']);
+	expect(calls.map((call) => call.input)).toEqual(['<reply id="1">\nHolds the only place.\n</reply>', '<reply id="1">\nTwo pages want this one.\n</reply>']);
 	// The aborted requests are told nothing; the one still there gets its translation.
 	expect(told).toEqual(['Holds the only place.=true', 'Two pages want this one.=true']);
 	// Dropped is not a failure: asked again, it is translated.
@@ -258,7 +384,7 @@ async function streamed(stream: ReadableStream<Uint8Array>): Promise<object[]> {
 test('a request gone before the translator runs, or already gone when it comes, starts no Codex', async () => {
 	const releases: (() => void)[] = [];
 	const { calls, translator } = setUp(
-		(turn) => new Promise((resolve) => releases.push(() => resolve({ ok: true, value: `譯：${turn.input}` }))),
+		(turn) => new Promise((resolve) => releases.push(() => resolve({ ok: true, value: turn.input }))),
 		{ LAT_BOARD_TRANSLATE_CONCURRENCY: '1' }
 	);
 	const made = translator();
@@ -275,7 +401,7 @@ test('a request gone before the translator runs, or already gone when it comes, 
 	await first;
 	await new Response(late).text();
 	await Bun.sleep(5);
-	expect(calls.map((call) => call.input)).toEqual(['<reply>\nHolds the only place.\n</reply>']);
+	expect(calls.map((call) => call.input)).toEqual(['<reply id="1">\nHolds the only place.\n</reply>']);
 });
 
 test('the answer fails every text the translator did not answer when it breaks, then ends', async () => {
