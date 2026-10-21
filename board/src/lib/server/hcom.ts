@@ -1,7 +1,7 @@
 // Starting agents through hcom, in a Herdr tab of a workspace the board picks.
 import type { LaunchClient, LaunchOutcome } from '../board/launch.ts';
 import type { BoardConfig } from './config.ts';
-import { runExternal, type ExternalResult } from './external.ts';
+import { parseJsonOutput, runCommand, type ExternalResult } from './external.ts';
 
 export interface LaunchResult {
 	outcome: LaunchOutcome;
@@ -80,7 +80,7 @@ export async function launchAgent(
 ): Promise<LaunchResult> {
 	const prompt = launch.prompt ? ['--hcom-prompt', launch.prompt] : [];
 	const args = [launch.client, '--dir', launch.folder, ...IN_A_HERDR_TAB, '--go', ...prompt, ...launch.extraArgs];
-	const run = await runExternal(config.hcomCommand, args, {
+	const run = await runCommand(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
 		env: hcomEnv(launch.herdrWorkspace)
 	});
@@ -95,7 +95,7 @@ export async function resumeAgent(
 ): Promise<LaunchResult> {
 	const prompt = resume.prompt ? ['--hcom-prompt', resume.prompt] : [];
 	const args = ['r', resume.sessionId, ...IN_A_HERDR_TAB, '--go', ...prompt, ...resume.extraArgs];
-	const run = await runExternal(config.hcomCommand, args, {
+	const run = await runCommand(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
 		env: hcomEnv(resume.herdrWorkspace)
 	});
@@ -122,14 +122,11 @@ export type AgentList = { ok: true; agents: HcomAgent[] } | { ok: false; reason:
 
 /** hcom's list of agents. Whether a client is still running is told by its session ID in it. */
 export async function listAgents(config: BoardConfig): Promise<AgentList> {
-	const run = await runExternal(config.hcomCommand, ['list', '--json'], { timeoutMs: config.hcomListTimeoutMs });
+	const run = await runCommand(config.hcomCommand, ['list', '--json'], { timeoutMs: config.hcomListTimeoutMs });
 	if (run.failure) return { ok: false, reason: `hcom 的 Agent 清單讀不到：${run.failure}` };
-	let parsed: unknown;
-	try {
-		parsed = JSON.parse(run.stdout);
-	} catch {
-		return { ok: false, reason: 'hcom 的 Agent 清單不是預期的 JSON' };
-	}
+	const read = parseJsonOutput<unknown>(run, 'hcom 的 Agent 清單不是預期的 JSON');
+	if (!read.ok) return read;
+	const parsed = read.value;
 	const valid =
 		Array.isArray(parsed) &&
 		parsed.every(
@@ -152,7 +149,7 @@ export async function listAgents(config: BoardConfig): Promise<AgentList> {
 /** Stop one agent's process; hcom closes its terminal pane too. Whether it is gone is for the
  *  caller to check: the command's own answer does not say. */
 export function killAgent(config: BoardConfig, name: string): Promise<ExternalResult> {
-	return runExternal(config.hcomCommand, ['kill', name], { timeoutMs: config.hcomListTimeoutMs });
+	return runCommand(config.hcomCommand, ['kill', name], { timeoutMs: config.hcomListTimeoutMs });
 }
 
 /** One `stopped` life event of hcom: who stopped which session, and when. */
@@ -180,7 +177,7 @@ const textOf = (value: unknown) => (typeof value === 'string' && value ? value :
  *  form of an event carries the agent's session; its time without a zone is UTC. */
 export async function listStops(config: BoardConfig, since: number): Promise<StopList> {
 	const args = ['events', '--type', 'life', '--action', 'stopped', '--full', '--after', new Date(since).toISOString(), '--last', '100000'];
-	const run = await runExternal(config.hcomCommand, args, { timeoutMs: config.hcomListTimeoutMs });
+	const run = await runCommand(config.hcomCommand, args, { timeoutMs: config.hcomListTimeoutMs });
 	if (run.failure) return { ok: false, reason: `hcom 的停止紀錄讀不到：${run.failure}` };
 	const stops: HcomStop[] = [];
 	for (const line of run.stdout.split('\n')) {
