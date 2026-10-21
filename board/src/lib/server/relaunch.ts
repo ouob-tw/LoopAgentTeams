@@ -10,6 +10,8 @@ import { runningIn, waitToAppear } from './appear.ts';
 import { launchAgent, listAgents } from './hcom.ts';
 import { chooseWorkspace, listHerdrAgents, moveTab, renameTab, type HerdrAgent } from './herdr.ts';
 import { queued } from './send.ts';
+import type { SentLog } from './sent-log.ts';
+import { switchView } from './sent-views.ts';
 import { currentSwitch, respondLogged, step, type Result, type SwitchTarget } from './switch.ts';
 
 /** Relaunches whose client is being waited for by this board process. One the board does not
@@ -126,18 +128,24 @@ async function finishRelaunch(board: Board, view: SwitchView, found: HerdrAgent)
 
 /** Settle the relaunches this board process does not wait for (it restarted while one was on its
  *  way): done once the client runs, failed once the launch wait is over. Queued per session like
- *  every other step of a switch. */
-export function settleRelaunches(board: Board, switches: SwitchView[]): void {
+ *  every other step of a switch, against the lines of the read that found them (`log`, still kept
+ *  up with). Resolves once each has been looked at. */
+export function settleRelaunches(board: Board, log: SentLog, switches: SwitchView[]): Promise<unknown> {
+	const settling: Promise<unknown>[] = [];
 	for (const open of switches) {
 		if (!open.relaunch || open.state !== 'resuming' || following.has(open.id)) continue;
-		void queued(open.controllerId, async () => {
-			const view = currentSwitch(board, open.id);
-			if (!view || view.state !== 'resuming' || following.has(view.id)) return;
-			const standing = await relaunchStanding(board, view);
-			if (typeof standing !== 'object') return;
-			if ('runs' in standing) await finishRelaunch(board, view, standing.runs);
-			else step(board, view.id, { state: 'resume-failed', error: standing.failed });
-			board.agentActed(view.controllerId);
-		});
+		settling.push(
+			queued(open.controllerId, async () => {
+				// The read's lines, kept up with: what was done to the switch while it waited its turn is in them.
+				const view = switchView(log.lines, open.id, board.config.now(), board.config.launchWaitMs);
+				if (!view || view.state !== 'resuming' || following.has(view.id)) return;
+				const standing = await relaunchStanding(board, view);
+				if (typeof standing !== 'object') return;
+				if ('runs' in standing) await finishRelaunch(board, view, standing.runs);
+				else step(board, view.id, { state: 'resume-failed', error: standing.failed });
+				board.agentActed(view.controllerId);
+			})
+		);
 	}
+	return Promise.allSettled(settling);
 }

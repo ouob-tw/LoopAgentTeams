@@ -137,6 +137,10 @@ const cache = new Map<string, Cached>();
 /** When each state directory's log was last cleaned, by the board's clock. */
 const prunedAt = new Map<string, number>();
 
+/** The reads of the board under way, by state directory: each is handed every line appended in
+ *  this process while it lasts (`openLog`). */
+const live = new Map<string, Set<(line: Line) => void>>();
+
 /** How many times the whole file was read and parsed; tests count the reads with it. */
 export const sentLogReads = { count: 0 };
 
@@ -187,10 +191,12 @@ export function appendSent(stateDir: string, entry: Line): void {
 	cache.delete(stateDir);
 	// The text may hold internal addresses and paths, like the reports do.
 	appendFileSync(path, raw + '\n', { mode: 0o600 });
+	const line = parse(raw)!;
+	for (const add of live.get(stateDir) ?? []) add(line);
 	if (!keep) return;
 	const size = cached!.size + Buffer.byteLength(raw + '\n');
 	const info = stamp(path);
-	if (info?.size === size) cacheRows(stateDir, [...cached!.rows, { raw, line: parse(raw) }], size, info.mtimeMs, true);
+	if (info?.size === size) cacheRows(stateDir, [...cached!.rows, { raw, line }], size, info.mtimeMs, true);
 }
 
 /** The IDs a line belongs with: its own entry's, and a switch's for the wake that resumes it. */
@@ -304,9 +310,32 @@ export function readLines(stateDir: string, now: number): readonly Line[] {
 	return cached?.lines ?? [];
 }
 
-/** The lines one read of the board works from, and how it adds one: to the file, then to `lines`,
- *  so what is worked out from them afterwards sees it. `append` throws as `appendSent` does. */
+/** The lines one read of the board works from (`openLog`), and how it adds one; `append` throws
+ *  as `appendSent` does. */
 export interface SentLog {
 	readonly lines: readonly Line[];
 	append(line: Line): void;
+	/** Stop adding the lines appended from now on. */
+	close(): void;
+}
+
+/**
+ * The log read once, for one read of the board: its lines now, and, until `close`, every line
+ * appended in this process meanwhile, by the read itself or by a request alongside it. The board
+ * is the only writer, so what is worked out from `lines` later in the read is what a read of the
+ * file then would give.
+ */
+export function openLog(stateDir: string, now: number): SentLog {
+	const lines = [...readLines(stateDir, now)];
+	const add = (line: Line) => void lines.push(line);
+	const reads = live.get(stateDir) ?? new Set();
+	live.set(stateDir, reads.add(add));
+	return {
+		lines,
+		append: (line) => appendSent(stateDir, line),
+		close() {
+			reads.delete(add);
+			if (!reads.size && live.get(stateDir) === reads) live.delete(stateDir);
+		}
+	};
 }

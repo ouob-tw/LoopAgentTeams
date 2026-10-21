@@ -225,17 +225,16 @@ test("a controller's sent entries: its own messages, answers, wakes and switches
 
 test('the views module, and everything it imports, runs no program', () => {
 	const forbidden = ['hcom.ts', 'appear.ts', 'helper.ts', 'herdr.ts', 'node:child_process', 'child_process', 'bun'];
+	// Bun's own scan: every import, export from and literal dynamic import that runs; type-only ones are left out.
+	const transpiler = new Bun.Transpiler({ loader: 'ts' });
 	const seen = new Set<string>();
 	const walk = (file: string) => {
 		if (seen.has(file)) return;
 		seen.add(file);
-		const text = readFileSync(file, 'utf8');
-		// Type-only imports are erased; nothing of theirs runs.
-		for (const [, specifier] of text.matchAll(/^import\s+(?!type\s)[^;]*?from\s+'([^']+)'/gms)) {
+		for (const { path: specifier } of transpiler.scanImports(readFileSync(file, 'utf8'))) {
 			expect(forbidden.some((name) => specifier === name || specifier.endsWith(`/${name}`))).toBe(false);
 			if (specifier.startsWith('.') || specifier.startsWith('#lib/')) {
-				const target = specifier.startsWith('#lib/') ? join(import.meta.dir, '../src/lib', specifier.slice(5)) : resolve(dirname(file), specifier);
-				walk(target);
+				walk(specifier.startsWith('#lib/') ? join(import.meta.dir, '../src/lib', specifier.slice(5)) : resolve(dirname(file), specifier));
 			} else expect(specifier.startsWith('node:')).toBe(false);
 		}
 	};

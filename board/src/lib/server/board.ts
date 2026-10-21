@@ -11,8 +11,8 @@ import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.t
 import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources, withRecorded } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
-import { appendSent, readLines, type Line, type SentLog } from './sent-log.ts';
-import { openResumes, openSwitches } from './sent-views.ts';
+import { openLog, type SentLog } from './sent-log.ts';
+import { openSwitches } from './sent-views.ts';
 import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
 import { settleAnswers } from './answer.ts';
@@ -91,27 +91,26 @@ export interface Board {
 /** Close the resumes whose session hcom's list of this read holds; a list that could not be read
  *  leaves them open until a later read. */
 async function settleWakes(config: BoardConfig, log: SentLog, list: AgentList, herdr: HerdrAgentList, moved: () => void): Promise<string | null> {
-	if (!openResumes(log.lines, config.now(), config.launchWaitMs).length) return null;
 	// A resume's pane found only now: its new tab is moved to the front like one found at once.
 	const onPane = (pane: string) => void tabToFront(config, pane).then((reason) => reason === null && moved());
 	return list.ok ? settleResumes(log, list.agents, herdr.ok ? herdr.agents : null, config.now(), config.launchWaitMs, onPane) : null;
 }
 
-/** Read the sent log once for one read of the sources: everything that read settles, and the views
- *  it shows, work from these lines and the ones it appends. The error when it cannot be read. */
-function openLog(config: BoardConfig): SentLog | Error {
+/** The sent log as one read of the sources works from: read once, and kept up with until the read
+ *  and the relaunches it settles are over (`settled`). */
+interface Reading {
+	log: SentLog | Error | null;
+	settled: Promise<unknown>;
+}
+
+/** Read the sent log for one read of the sources; the error when it cannot be read. */
+function readLog(config: BoardConfig, reading: Reading): SentLog | Error {
 	try {
-		const lines: Line[] = [...readLines(config.stateDir, config.now())];
-		return {
-			lines,
-			append(line) {
-				appendSent(config.stateDir, line);
-				lines.push(line);
-			}
-		};
+		reading.log = openLog(config.stateDir, config.now());
 	} catch (error) {
-		return error as Error;
+		reading.log = error as Error;
 	}
+	return reading.log;
 }
 
 function createBoard(): Board {
@@ -255,13 +254,23 @@ function createBoard(): Board {
 	}
 
 	async function read(): Promise<BoardSnapshot> {
+		const reading: Reading = { log: null, settled: Promise.resolve() };
+		try {
+			return await readWith(reading);
+		} finally {
+			const { log } = reading;
+			if (log && !(log instanceof Error)) void reading.settled.finally(() => log.close());
+		}
+	}
+
+	async function readWith(reading: Reading): Promise<BoardSnapshot> {
 		const [[helper, reports, answered, settled, log], agents, herdrAgents, stops] = await Promise.all([
 			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
 				// Read after the list: the files are those of the controllers bound now, and of the
 				// sessions that reported. The sent answers settle against the same list alongside, so
 				// a read runs the helper at most twice in a row. hcom's and Herdr's lists are not
 				// waited for.
-				const log = openLog(config);
+				const log = readLog(config, reading);
 				const [answered, settled] = await Promise.all([
 					readAnswered(config, answeredSources(helper.ok ? helper.controllers : lastActive, reports.files)),
 					helper.ok && !(log instanceof Error)
@@ -295,7 +304,7 @@ function createBoard(): Board {
 		try {
 			if (log instanceof Error) throw log;
 			lastSwitches = openSwitches(log.lines, config.now(), config.launchWaitMs);
-			settleRelaunches(board, lastSwitches);
+			reading.settled = settleRelaunches(board, log, lastSwitches);
 		} catch {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
 		}
