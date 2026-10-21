@@ -263,3 +263,29 @@ test.skipIf(!CHROME)("at a phone's width the switch shows above the conversation
 	await tab.until(`!!${said('譯：I fixed')}.querySelector('.original')`, 'the original');
 	expect(await tab.eval(FITS)).toBe(true);
 }, 60_000);
+
+test.skipIf(!CHROME)('loading an earlier part translates only the replies it brought', async () => {
+	codexPlan({ prefix: '譯：' });
+	const orin = fixture.bound('beta', 'orin');
+	fixture.list([luna, orin]);
+	// 60 English replies: the first page holds the last 50, the earlier part the first 10.
+	writeFileSync(
+		join(fixture.dir, 'transcripts', `${orin.session_id}.jsonl`),
+		Array.from({ length: 60 }, (_, index) => line('assistant', `Long history reply number ${index} for paging.`)).join('')
+	);
+	await fixture.refresh(cookie);
+	await visit(1280);
+	await tab.navigate(`${fixture.url}/?controller=${orin.session_id}`);
+	await tab.until(`!!(${said('reply number 59 ')})`, "orin's conversation");
+	const before = codexCalls().length;
+	await tab.eval(`${switchButton('中文')}.click()`);
+	await tab.until(`!!${said('譯：Long history reply number 10 ')} && !!${said('譯：Long history reply number 59 ')}`, 'the first page translated');
+	const firstPage = codexCalls().slice(before);
+	expect(firstPage).toHaveLength(50);
+	expect(firstPage.some((text) => text.includes('number 9 '))).toBe(false);
+
+	await tab.eval(`document.querySelector('.detail button.earlier').scrollIntoView()`);
+	await tab.until(`!!${said('譯：Long history reply number 0 ')}`, 'the earlier part translated');
+	const earlier = codexCalls().slice(before + 50);
+	expect(earlier.map((text) => Number(/number (\d+)/.exec(text)![1])).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+}, 60_000);
