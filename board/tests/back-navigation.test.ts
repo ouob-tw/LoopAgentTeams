@@ -1,17 +1,13 @@
 // Going back through the board's screens in a real browser: headless Chrome driven over its
 // DevTools protocol, on the built board with fake data. Skipped when the host has no Chrome.
-import { spawn, type ChildProcess } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { appendFileSync, mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { ARCHIVE_PAGE } from '../src/lib/board/archive.ts';
 import type { InboxReport } from '../src/lib/board/types.ts';
-import { DAY, PORT_BASE, question, sleep, startFixture, titled, type Fixture } from './harness.ts';
+import { DAY, question, sleep, startFixture, titled, type Fixture } from './harness.ts';
+import { CHROME, launchChrome, type Browser, type Tab } from './browser.ts';
 
-const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
-	(path) => path && existsSync(path)
-);
 
 /** Runs first in every document: counts the listeners for the browser's back. */
 const COUNT_POPSTATE = `(() => {
@@ -22,80 +18,6 @@ const COUNT_POPSTATE = `(() => {
 		return add.call(this, type, ...rest);
 	};
 })()`;
-/** One Chrome tab, spoken to over the DevTools protocol. */
-class Tab {
-	#socket: WebSocket;
-	#next = 0;
-	#waiting = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>();
-	/** The documents that have loaded, by the loader that loaded them. */
-	#loaded = new Set<string>();
-	/** The requests held by `Fetch.enable`, waiting for `Fetch.continueRequest`. */
-	paused: string[] = [];
-	constructor(socket: WebSocket) {
-		this.#socket = socket;
-		socket.addEventListener('message', (event) => {
-			const message = JSON.parse(String(event.data));
-			if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') this.#loaded.add(message.params.loaderId);
-			if (message.method === 'Fetch.requestPaused') this.paused.push(message.params.requestId);
-			this.#waiting.get(message.id)?.(message);
-			this.#waiting.delete(message.id);
-		});
-	}
-	/** A new tab of the Chrome listening on `debugPort`. */
-	static async open(debugPort: number): Promise<Tab> {
-		const deadline = Date.now() + 10_000;
-		let target: { webSocketDebuggerUrl: string } | undefined;
-		while (!target) {
-			if (Date.now() > deadline) throw new Error('timed out waiting for Chrome to listen');
-			target = await fetch(`http://127.0.0.1:${debugPort}/json/new?about:blank`, { method: 'PUT' }).then(
-				(response) => response.json(),
-				() => undefined
-			);
-			if (!target) await sleep(100);
-		}
-		const socket = new WebSocket(target.webSocketDebuggerUrl);
-		await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-		const tab = new Tab(socket);
-		await tab.send('Page.enable');
-		await tab.send('Page.setLifecycleEventsEnabled', { enabled: true });
-		await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: COUNT_POPSTATE });
-		return tab;
-	}
-	send(method: string, params: object = {}): Promise<any> {
-		const id = ++this.#next;
-		this.#socket.send(JSON.stringify({ id, method, params }));
-		return new Promise((resolve, reject) =>
-			this.#waiting.set(id, (message) => (message.error ? reject(new Error(message.error.message)) : resolve(message.result)))
-		);
-	}
-	async eval<T = unknown>(expression: string): Promise<T> {
-		const { result, exceptionDetails } = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-		if (exceptionDetails) throw new Error(`${expression}: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
-		return result.value;
-	}
-	/** Load a new document and wait until it has loaded. */
-	async navigate(url: string) {
-		// The load of this navigation's own document: the tab's first, empty one also fires a load.
-		const { loaderId, errorText } = await this.send('Page.navigate', { url });
-		if (errorText) throw new Error(`${url}: ${errorText}`);
-		const deadline = Date.now() + 10_000;
-		while (!this.#loaded.has(loaderId)) {
-			if (Date.now() > deadline) throw new Error(`timed out loading ${url}`);
-			await sleep(20);
-		}
-	}
-	/** Wait for an expression in the page to be true. */
-	async until(expression: string, what = expression) {
-		const deadline = Date.now() + 10_000;
-		while (!(await this.eval(expression).catch(() => false))) {
-			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}; the page shows ${JSON.stringify(await this.eval(SCREEN))}`);
-			await sleep(50);
-		}
-	}
-	close() {
-		this.#socket.close();
-	}
-}
 
 /** What the page shows: the address's query and the content column's text, plus, for a wait that
  *  times out, how many listeners for the back are in and the notices above the command line. */
@@ -106,8 +28,7 @@ const click = (scope: string, text: string) =>
 const ARROW = `document.querySelector('.topbar button').click()`;
 
 let fixture: Fixture;
-let chrome: ChildProcess;
-let profile: string;
+let browser: Browser | undefined;
 let tab: Tab;
 let luna: ReturnType<Fixture['bound']>;
 let cookie: string;
@@ -133,7 +54,7 @@ const OPTIONS = [
 
 beforeAll(async () => {
 	if (!CHROME) return;
-	fixture = await startFixture(29);
+	fixture = await startFixture();
 	cookie = await fixture.login('back-navigation');
 	// Its last question was asked in a message, but it has no conversation record to find it in.
 	luna = fixture.bound('alpha', 'luna', {
@@ -214,23 +135,13 @@ afterAll(async () => {
  *  its own about two seconds after launch, and the requests a page sent at that moment were
  *  cancelled before they left it. */
 async function startChrome() {
-	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	chrome = spawn(
-		CHROME!,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, `--remote-debugging-port=${PORT_BASE + 30}`, 'about:blank'],
-		{ stdio: 'ignore' }
-	);
-	tab = await Tab.open(PORT_BASE + 30);
+	browser = await launchChrome({ scripts: [COUNT_POPSTATE], screen: SCREEN });
+	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 }
 async function stopChrome() {
-	if (!chrome || chrome.exitCode !== null || chrome.signalCode !== null) return;
-	tab.close();
-	const exited = new Promise((resolve) => chrome.once('exit', resolve));
-	chrome.kill('SIGKILL');
-	await exited;
-	rmSync(profile, { recursive: true, force: true });
+	await browser?.close();
 }
 
 /** The page before the board in every visit; going back to it is leaving the board. A page of the
@@ -967,4 +878,29 @@ test.skipIf(!CHROME)('phone: a question opened after its turn ended, its message
 	expect((await screen()).text).not.toContain('找不到提出這題的原訊息');
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
+}, 30_000);
+
+// A push bringing one text renders that text's Markdown alone, not every text shown before it:
+// counted with the browser's own call counts, as markdown-it's `render` keeps its name in the build.
+test.skipIf(!CHROME)("a conversation's push of one new text renders only that text's Markdown", async () => {
+	await visit(1400, `?controller=${sol.session_id}`);
+	await tab.until(`document.querySelectorAll('.history li.said').length > 2`, 'the conversation');
+	const shown = await tab.eval<number>(`document.querySelectorAll('.history li.said').length`);
+	await tab.send('Profiler.enable');
+	await tab.send('Profiler.startPreciseCoverage', { callCount: true, detailed: false });
+	try {
+		// Taking the counts sets them back to zero.
+		await tab.send('Profiler.takePreciseCoverage');
+		say('只多一則的推送 **粗體**');
+		await tab.until(`document.querySelector('.history')?.innerText.includes('只多一則的推送')`, 'the new text');
+		await sleep(500);
+		const { result } = await tab.send('Profiler.takePreciseCoverage');
+		const calls = (name: string) =>
+			Math.max(0, ...result.flatMap((script: any) => script.functions.filter((fn: any) => fn.functionName === name).map((fn: any) => fn.ranges[0].count)));
+		// Every text shown asked for its HTML; only the new one was rendered.
+		expect(calls('html')).toBeGreaterThan(shown);
+		expect(calls('render')).toBe(1);
+	} finally {
+		await tab.send('Profiler.stopPreciseCoverage');
+	}
 }, 30_000);

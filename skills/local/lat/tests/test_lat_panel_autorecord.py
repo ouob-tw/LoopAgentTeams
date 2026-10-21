@@ -66,7 +66,7 @@ class RecordedTests(AutoRecordTestCase):
         section_sha256 = next(change["section_sha256"] for change in submit["changed_questions"]
                               if change["id"] == "Q4")
         self.assertIn(
-            f"- 來源：面板，{self.questions.parent / 'panel-journal.jsonl'} "
+            f"- 來源：面板，{self.questions.parents[1] / 'panel-journal.jsonl'} "
             f"第 {self.journal_line('batch-submit')} 行，time {submit['time']}，"
             f"section_sha256 {section_sha256}\n", record)
 
@@ -155,13 +155,13 @@ class NotRecordedTests(AutoRecordTestCase):
 
     def test_record_put_back_when_the_question_cannot_be_marked_recorded(self):
         before = self.decision("Q3").read_text()
-        original = self.core._set_recorded_locked
+        original = self.core.questions._set_recorded_locked
 
         def refuse(*args, **kwargs):
             raise OSError("disk full")
 
-        self.core._set_recorded_locked = refuse
-        self.addCleanup(setattr, self.core, "_set_recorded_locked", original)
+        self.core.questions._set_recorded_locked = refuse
+        self.addCleanup(setattr, self.core.questions, "_set_recorded_locked", original)
         question = next(item for item in self.core.parse_questions(self.questions.read_text())
                         if item["id"] == "Q3")
         saved = self.core.write_question_answer(

@@ -1,3 +1,4 @@
+import { answerHerdrList } from './harness.ts';
 // Opening a plain agent from the Herdr tab, against fake hcom and Herdr commands, a fake Herdr
 // socket and folders in temporary directories. Nothing here starts an agent or touches a real Herdr.
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
@@ -32,8 +33,10 @@ beforeAll(async () => {
 	// Herdr's socket: each `tab.move` is logged with the CLI's calls, so their order can be told,
 	// and moves the tab in the fake Herdr's tab list the way Herdr would.
 	socket = createServer((connection) => {
-		connection.on('data', (chunk) => {
+		connection.on('data', async (chunk) => {
 			const request = JSON.parse(chunk.toString().trim());
+			const listing = await answerHerdrList(commandDir, request);
+			if (listing !== null) return connection.write(listing);
 			appendFileSync(join(commandDir, 'herdr-calls.jsonl'), JSON.stringify(['socket', request.method, request.params]) + '\n');
 			if (moveFails) return connection.write(JSON.stringify({ id: request.id, error: { message: moveFails } }) + '\n');
 			const plan = readJson(herdrFile);
@@ -48,7 +51,7 @@ beforeAll(async () => {
 		});
 	});
 	await new Promise<void>((resolve) => socket.listen(socketPath, resolve));
-	fixture = await startFixture(40, {
+	fixture = await startFixture({
 		env: {
 			LAT_BOARD_HCOM_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-hcom.mjs'), commandDir]),
 			LAT_BOARD_HERDR_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-herdr.mjs'), commandDir]),

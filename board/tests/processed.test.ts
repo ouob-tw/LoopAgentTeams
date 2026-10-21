@@ -3,31 +3,25 @@
 // Answered questions come from the question files and their archives, and show as read-only cards
 // there and in the conversation. Server checks always run; the page is checked in headless Chrome,
 // driven over its DevTools protocol, when the host has one.
-import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { chosenIn } from '../src/lib/board/answers.ts';
 import { processedTime } from '../src/lib/board/archive.ts';
 import type { HelperController, HelperQuestion, InboxItem, InboxQuestion, InboxReport } from '../src/lib/board/types.ts';
-import { DAY, PORT_BASE, question, sleep, startFixture, titled, type Fixture, type HelperPlan } from './harness.ts';
-
-const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
-	(path) => path && existsSync(path)
-);
+import { DAY, question, sleep, startFixture, titled, type Fixture, type HelperPlan } from './harness.ts';
+import { CHROME, launchChrome, type Browser } from './browser.ts';
 
 const NOW = Date.parse('2026-06-10T08:00:00.000Z');
 const HOUR = 60 * 60 * 1000;
 const iso = (time: number) => new Date(time).toISOString();
 const ago = (ms: number) => iso(NOW - ms);
 
-// Offset 16 is this file's board; Chrome takes offset 30, as the other files that start one do.
 let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(16);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 	fixture.setClock(NOW);
 });
@@ -210,31 +204,12 @@ test('answered questions are kept 30 days from when they were asked, or recorded
 
 // ——— The page, in headless Chrome ———
 
-let chrome: ChildProcess | undefined;
-let profile: string;
-let socket: WebSocket;
-let next = 0;
-const waiting = new Map<number, (message: { result?: any; error?: { message: string } }) => void>();
+let browser: Browser | undefined;
 let mira: HelperController;
 
-const send = (method: string, params: object = {}) =>
-	new Promise<any>((resolve, reject) => {
-		const id = ++next;
-		waiting.set(id, (message) => (message.error ? reject(new Error(message.error.message)) : resolve(message.result)));
-		socket.send(JSON.stringify({ id, method, params }));
-	});
-async function evaluate<T>(expression: string): Promise<T> {
-	const { result, exceptionDetails } = await send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-	if (exceptionDetails) throw new Error(`${expression}: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
-	return result.value;
-}
-async function until(expression: string, what = expression) {
-	const deadline = Date.now() + 10_000;
-	while (!(await evaluate(expression).catch(() => false))) {
-		if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
-		await sleep(50);
-	}
-}
+const send = (method: string, params: object = {}) => browser!.tab.send(method, params);
+const evaluate = <T>(expression: string) => browser!.tab.eval<T>(expression);
+const until = (expression: string, what?: string) => browser!.tab.until(expression, what);
 /** The first button in `scope` whose text includes `text`. */
 const button = (scope: string, text: string) =>
 	`[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.innerText.includes(${JSON.stringify(text)}))`;
@@ -300,41 +275,14 @@ beforeAll(async () => {
 /** A new Chrome for every visit, as the other files that start one do: the streams a page left
  *  open can hold the browser's connections to the board, and the next page waits on them. */
 async function startChrome() {
-	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const port = PORT_BASE + 30;
-	chrome = spawn(
-		CHROME!,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, `--remote-debugging-port=${port}`, 'about:blank'],
-		{ stdio: 'ignore' }
-	);
-	let target: { webSocketDebuggerUrl: string } | undefined;
-	for (let tries = 0; !target; tries++) {
-		if (tries > 100) throw new Error('timed out waiting for Chrome to listen');
-		target = await fetch(`http://127.0.0.1:${port}/json/new?about:blank`, { method: 'PUT' }).then(
-			(response) => response.json(),
-			() => undefined
-		);
-		if (!target) await sleep(100);
-	}
-	socket = new WebSocket(target.webSocketDebuggerUrl);
-	await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-	socket.addEventListener('message', (event) => {
-		const message = JSON.parse(String(event.data));
-		waiting.get(message.id)?.(message);
-		waiting.delete(message.id);
-	});
+	browser = await launchChrome();
 	const [name, value] = cookie.split('=');
 	await send('Network.setCookie', { name, value, url: fixture.url });
 }
 
 async function stopChrome() {
-	if (!chrome) return;
-	socket.close();
-	const exited = new Promise((resolve) => chrome!.once('exit', resolve));
-	chrome.kill('SIGKILL');
-	await exited;
-	chrome = undefined;
-	rmSync(profile, { recursive: true, force: true });
+	await browser?.close();
+	browser = undefined;
 }
 
 afterAll(stopChrome);

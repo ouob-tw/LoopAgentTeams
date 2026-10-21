@@ -32,10 +32,10 @@ function trapCommands(dir: string): string {
 	return bin;
 }
 
-async function start(offset: number): Promise<Fixture> {
+async function start(): Promise<Fixture> {
 	trapDir = mkdtempSync(join(tmpdir(), 'lat-board-quota-trap-'));
 	const bin = trapCommands(trapDir);
-	fixture = await startFixture(offset, { env: { LAT_BOARD_QUOTA_SECONDS: '1', PATH: `${bin}:${process.env.PATH ?? ''}` } });
+	fixture = await startFixture({ env: { LAT_BOARD_QUOTA_SECONDS: '1', PATH: `${bin}:${process.env.PATH ?? ''}` } });
 	return fixture;
 }
 
@@ -47,7 +47,7 @@ function writeCodex(fixture: Fixture, accounts: unknown, cache?: unknown) {
 }
 
 test('the quotas reach the page over the event stream, with no secret, from read-only sources only', async () => {
-	const board = await start(56);
+	const board = await start();
 	const now = Date.now();
 	writeFileSync(
 		join(board.dir, 'cswap.json'),
@@ -116,7 +116,7 @@ test('the quotas reach the page over the event stream, with no secret, from read
 });
 
 test('failing, missing and mismatched sources say why in the tab and leave the board alone', async () => {
-	const board = await start(57);
+	const board = await start();
 	writeFileSync(join(board.dir, 'cswap.json'), JSON.stringify({ output: { schemaVersion: 1, error: { type: 'ConfigError', message: 'usage cache is malformed' } }, exit: 1 }));
 	const cookie = await board.login();
 	const watch = board.watch(cookie);

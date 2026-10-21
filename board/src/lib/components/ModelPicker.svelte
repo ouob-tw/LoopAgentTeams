@@ -17,11 +17,9 @@
 		carryNote,
 		choiceText,
 		EFFORT_UNKNOWN_TEXT,
-		effortShort,
 		FIXED_MODEL_REASON,
 		lastApplied,
 		LOCK_UNKNOWN_TEXT,
-		modelShort,
 		NOT_RUNNING_REASON,
 		readsCurrentAgain,
 		settingsText,
@@ -36,9 +34,7 @@
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
 	import type { Controller } from '#lib/board/types.ts';
-	import './model-picker.css';
-
-	type Kind = 'model' | 'effort';
+	import PickerMenu, { focusFirst, NAME, PLACEHOLDER, short, type Kind, type Part } from './PickerMenu.svelte';
 
 	let {
 		controller,
@@ -51,10 +47,8 @@
 		onchoose?: (kind: Kind, value: string) => void;
 	} = $props();
 
-	const PLACEHOLDER: Record<Kind, string> = { model: '模型', effort: '強度' };
 	/** What the server's refusal asks for, said before it has to refuse. */
 	const UNSETTLED_TEXT = SWITCH_UNSETTLED_REASON.replace(/，沒有送出$/, '');
-	const NAME: Record<Kind, string> = { model: '模型', effort: '思考強度' };
 
 	const id = $derived(controller?.id ?? '');
 	// An ended controller woken outside LAT runs again, and is switched like a running one.
@@ -128,13 +122,24 @@
 	const pending = (kind: Kind) => (waking ? chosen[kind] : (staged[id]?.[kind] ?? ''));
 	const anyStaged = $derived(!waking && !!(staged[id]?.model || staged[id]?.effort));
 	const shown = (kind: Kind) => pending(kind) || current?.[kind] || PLACEHOLDER[kind];
-	/** As Claude Code's status line writes it, e.g. `Opus 5.5` and `H`. */
-	const short = (kind: Kind, value: string) => (kind === 'model' ? modelShort(value) : effortShort(value));
+	function part(kind: Kind): Part {
+		const unknown = shown(kind) === PLACEHOLDER[kind];
+		return {
+			text: unknown ? PLACEHOLDER[kind] : short(kind, shown(kind)),
+			label: `${NAME[kind]}：${shown(kind)}`,
+			title:
+				reason(kind) ??
+				`${NAME[kind]}：${shown(kind)}${shownNow.waiting && !pending(kind) ? `（${SWITCH_WAITING_TEXT}）` : ''}（${waking ? '喚醒時套用' : '選好後按 ✓ 套用'}）`,
+			picked: !!pending(kind),
+			unknown,
+			waiting: shownNow.waiting && !pending(kind) && !unknown,
+			disabled: !!reason(kind)
+		};
+	}
 
 	let menu = $state<Kind | 'status' | null>(null);
 	let alertButton = $state<HTMLButtonElement>();
-	let root = $state<HTMLElement>();
-	const triggers = $state<Partial<Record<Kind, HTMLButtonElement>>>({});
+	let picker = $state<PickerMenu>();
 
 	// The menus belong to one recipient: another one closes them.
 	$effect.pre(() => {
@@ -161,7 +166,9 @@
 		menu = null;
 		confirming = false;
 		confirmingSwitch = false;
-		if (focus && kind) (kind === 'status' ? alertButton : triggers[kind])?.focus();
+		if (!focus || !kind) return;
+		if (kind === 'status') alertButton?.focus();
+		else picker?.focusPart(kind);
 	}
 
 	/** Continue the unfinished switch with the settings it had. */
@@ -187,11 +194,6 @@
 		await messaging.load(target);
 		givingUp[target] = false;
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已放棄 ${hcomName} 的這次切換。${result.reason ?? ''}` : (result.reason ?? '放棄失敗'));
-	}
-
-	/** Opens with its first button in focus. */
-	function focusFirst(element: HTMLElement) {
-		element.querySelector<HTMLElement>('button')?.focus();
 	}
 
 	function pick(kind: Kind, value: string) {
@@ -228,166 +230,119 @@
 			applying = false;
 		}
 	}
-
-	/** Opens with the chosen item in focus, so the arrow keys start from it. */
-	function focusChosen(element: HTMLElement) {
-		const items = [...element.querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
-		(items.find((item) => item.getAttribute('aria-checked') === 'true') ?? items[0])?.focus();
-	}
-
-	function keys(event: KeyboardEvent) {
-		const items = [...(event.currentTarget as HTMLElement).querySelectorAll<HTMLElement>('[role="menuitemradio"]')];
-		const at = items.indexOf(document.activeElement as HTMLElement);
-		const move = { ArrowDown: at + 1, ArrowUp: at - 1, Home: 0, End: items.length - 1 }[event.key];
-		if (move !== undefined) {
-			event.preventDefault();
-			items[(move + items.length) % items.length]?.focus();
-		} else if (event.key === 'Escape') {
-			event.preventDefault();
-			close(true);
-		} else if (event.key === 'Tab') close();
-	}
-
-	// A click anywhere else closes the open menu.
-	$effect(() => {
-		if (!menu) return;
-		const outside = (event: PointerEvent) => {
-			if (!root?.contains(event.target as Node)) close();
-		};
-		addEventListener('pointerdown', outside, true);
-		return () => removeEventListener('pointerdown', outside, true);
-	});
 </script>
 
-<span class="picker" bind:this={root}>
-	{#each ['model', 'effort'] as const as kind (kind)}
-		<button
-			type="button"
-			class="part"
-			class:picked={!!pending(kind)}
-			class:unknown={shown(kind) === PLACEHOLDER[kind]}
-			class:waiting={shownNow.waiting && !pending(kind) && shown(kind) !== PLACEHOLDER[kind]}
-			bind:this={triggers[kind]}
-			aria-label="{NAME[kind]}：{shown(kind)}"
-			aria-haspopup="menu"
-			aria-expanded={menu === kind}
-			aria-disabled={!!reason(kind)}
-			title={reason(kind) ??
-				`${NAME[kind]}：${shown(kind)}${shownNow.waiting && !pending(kind) ? `（${SWITCH_WAITING_TEXT}）` : ''}（${waking ? '喚醒時套用' : '選好後按 ✓ 套用'}）`}
-			onclick={() => toggle(kind)}
-		>
-			{shown(kind) === PLACEHOLDER[kind] ? PLACEHOLDER[kind] : short(kind, shown(kind))}
-		</button>
-	{/each}
-	{#if alerting}
-		<button
-			bind:this={alertButton}
-			type="button"
-			class="act alert"
-			aria-label="模型切換需要處理"
-			title={unsettled ? '切換尚未完成' : abandon ? '可以放棄前一次接回' : SWITCH_MISSED_TEXT}
-			aria-haspopup="dialog"
-			aria-expanded={menu === 'status'}
-			onclick={() => ((confirmingSwitch = false), (menu = menu === 'status' ? null : 'status'))}
-		>
-			<TriangleAlert size="1em" />
-		</button>
-	{/if}
-	{#if anyStaged}
-		<button
-			type="button"
-			class="act"
-			aria-label="套用：{applyText}"
-			title={blocked ?? applyText}
-			aria-disabled={!!blocked}
-			onclick={apply}
-		>
-			<Check size="1em" />
-		</button>
-		<button type="button" class="act discard" aria-label="放棄選好的模型與思考強度" title="放棄選好的值" onclick={() => delete staged[id]}>
-			<X size="1em" />
-		</button>
-	{/if}
+<PickerMenu
+	bind:this={picker}
+	{menu}
+	{part}
+	ontoggle={toggle}
+	values={(kind) => (kind === 'model' ? status?.options?.models : status?.options?.efforts)}
+	checked={(kind) => pending(kind) || current?.[kind]}
+	onpick={pick}
+	onclose={close}
+>
+	{#snippet actions()}
+		{#if alerting}
+			<button
+				bind:this={alertButton}
+				type="button"
+				class="act alert"
+				aria-label="模型切換需要處理"
+				title={unsettled ? '切換尚未完成' : abandon ? '可以放棄前一次接回' : SWITCH_MISSED_TEXT}
+				aria-haspopup="dialog"
+				aria-expanded={menu === 'status'}
+				onclick={() => ((confirmingSwitch = false), (menu = menu === 'status' ? null : 'status'))}
+			>
+				<TriangleAlert size="1em" />
+			</button>
+		{/if}
+		{#if anyStaged}
+			<button
+				type="button"
+				class="act"
+				aria-label="套用：{applyText}"
+				title={blocked ?? applyText}
+				aria-disabled={!!blocked}
+				onclick={apply}
+			>
+				<Check size="1em" />
+			</button>
+			<button type="button" class="act discard" aria-label="放棄選好的模型與思考強度" title="放棄選好的值" onclick={() => delete staged[id]}>
+				<X size="1em" />
+			</button>
+		{/if}
+	{/snippet}
 
-	{#if menu === 'status'}
-		<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
-		<div
-			class="menu status"
-			role="dialog"
-			aria-label="模型切換"
-			tabindex="-1"
-			onkeydown={(event) => event.key === 'Escape' && (event.preventDefault(), close(true))}
-			{@attach focusFirst}
-		>
-			{#if unfinished}
-				<p><strong>切換尚未完成：{SWITCH_STATE_TEXT[unfinished.state]}</strong></p>
-				{#if unfinished.error}<p class="failed">{unfinished.error}</p>{/if}
-				<p class="note">舊設定：{unfinished.from ? settingsText(unfinished.from) : '不明'}</p>
-				<p class="note">新設定：{choiceText(unfinished.to)}</p>
-				{#if carryNote(unfinished)}<p class="note">{carryNote(unfinished)}</p>{/if}
-				<button type="button" class="wide primary" disabled={switching.sending[id] || givingUp[id]} onclick={resume}>
-					{switching.sending[id] ? '處理中…' : '繼續切換'}
-				</button>
-				{#if confirmingSwitch}
-					<p class="failed">{AGENT_ABANDON_CONFIRM_TEXT}</p>
-					<button type="button" class="wide danger" onclick={giveUpSwitch}>確認放棄</button>
-					<button type="button" class="wide" onclick={() => (confirmingSwitch = false)}>取消</button>
-				{:else}
-					<!-- While this page's stop or resume of it runs, it is given up only after (the server queues it too). -->
-					<button type="button" class="wide" disabled={switching.sending[id] || givingUp[id]} onclick={() => (confirmingSwitch = true)}>放棄切換</button>
-				{/if}
-			{/if}
-			{#if abandon}
-				{#if confirming}
-					<p class="failed">{ABANDON_CONFIRM_TEXT}</p>
-					<button type="button" class="wide danger" onclick={() => giveUp(abandon)}>確認放棄</button>
-					<button type="button" class="wide" onclick={() => (confirming = false)}>取消</button>
-				{:else}
-					<button type="button" class="wide" onclick={() => (confirming = true)}>放棄前一次接回</button>
-				{/if}
-			{/if}
-			{#if check === 'missed' && !unfinished}
-				<p class="failed">
-					{SWITCH_MISSED_TEXT}：下一回合實際是 {settingsText(switching.current[id])}{controller?.client === 'codex'
-						? '（常見原因：當初啟動時指定了 --model）'
-						: ''}
-				</p>
-			{/if}
-		</div>
-	{:else if menu && status?.options}
-		{@const kind = menu}
-		{@const values = kind === 'model' ? status.options.models : status.options.efforts}
-		<!-- The choices are the menu; the notes under it are read as text. -->
-		<div class="menu">
-			<div class="items" role="menu" aria-label={NAME[kind]} tabindex="-1" onkeydown={keys} {@attach focusChosen}>
-				{#if waking}
-					<button type="button" role="menuitemradio" aria-checked={!chosen[kind]} onclick={() => pick(kind, '')}>
-						保持目前
-						{#if current?.[kind]}<small title={current[kind]}>{short(kind, current[kind])}</small>{/if}
+	{#snippet dialog()}
+		{#if menu === 'status'}
+			<!-- svelte-ignore a11y_no_noninteractive_element_interactions -->
+			<div
+				class="menu status"
+				role="dialog"
+				aria-label="模型切換"
+				tabindex="-1"
+				onkeydown={(event) => event.key === 'Escape' && (event.preventDefault(), close(true))}
+				{@attach focusFirst}
+			>
+				{#if unfinished}
+					<p><strong>切換尚未完成：{SWITCH_STATE_TEXT[unfinished.state]}</strong></p>
+					{#if unfinished.error}<p class="failed">{unfinished.error}</p>{/if}
+					<p class="note">舊設定：{unfinished.from ? settingsText(unfinished.from) : '不明'}</p>
+					<p class="note">新設定：{choiceText(unfinished.to)}</p>
+					{#if carryNote(unfinished)}<p class="note">{carryNote(unfinished)}</p>{/if}
+					<button type="button" class="wide primary" disabled={switching.sending[id] || givingUp[id]} onclick={resume}>
+						{switching.sending[id] ? '處理中…' : '繼續切換'}
 					</button>
+					{#if confirmingSwitch}
+						<p class="failed">{AGENT_ABANDON_CONFIRM_TEXT}</p>
+						<button type="button" class="wide danger" onclick={giveUpSwitch}>確認放棄</button>
+						<button type="button" class="wide" onclick={() => (confirmingSwitch = false)}>取消</button>
+					{:else}
+						<!-- While this page's stop or resume of it runs, it is given up only after (the server queues it too). -->
+						<button type="button" class="wide" disabled={switching.sending[id] || givingUp[id]} onclick={() => (confirmingSwitch = true)}>放棄切換</button>
+					{/if}
 				{/if}
-				{#each values as value (value)}
-					<button
-						type="button"
-						role="menuitemradio"
-						aria-checked={(pending(kind) || current?.[kind]) === value}
-						onclick={() => pick(kind, value)}
-					>
-						{short(kind, value)}<small>{value}</small>
-					</button>
-				{/each}
+				{#if abandon}
+					{#if confirming}
+						<p class="failed">{ABANDON_CONFIRM_TEXT}</p>
+						<button type="button" class="wide danger" onclick={() => giveUp(abandon)}>確認放棄</button>
+						<button type="button" class="wide" onclick={() => (confirming = false)}>取消</button>
+					{:else}
+						<button type="button" class="wide" onclick={() => (confirming = true)}>放棄前一次接回</button>
+					{/if}
+				{/if}
+				{#if check === 'missed' && !unfinished}
+					<p class="failed">
+						{SWITCH_MISSED_TEXT}：下一回合實際是 {settingsText(switching.current[id])}{controller?.client === 'codex'
+							? '（常見原因：當初啟動時指定了 --model）'
+							: ''}
+					</p>
+				{/if}
 			</div>
-			<p class="note">
-				{waking
-					? '只用在這次喚醒，送出時才套用。'
-					: '選好模型與思考強度後按 ✓ 一次套用：看板會關掉原本的分頁，用新設定在新分頁接回同一段對話。'}
-			</p>
-			{#if kind === 'model' && !(waking ? chosen.effort : null) && !current?.effort}
-				<p class="note">{EFFORT_UNKNOWN_TEXT}。</p>
-			{/if}
-			{#if kind === 'model' && status.lock === 'unknown'}
-				<p class="note">{LOCK_UNKNOWN_TEXT}（{status.lockReason}），之後以下一回合核對結果。</p>
-			{/if}
-		</div>
-	{/if}
-</span>
+		{/if}
+	{/snippet}
+
+	{#snippet lead(kind: Kind)}
+		{#if waking}
+			<button type="button" role="menuitemradio" aria-checked={!chosen[kind]} onclick={() => pick(kind, '')}>
+				保持目前
+				{#if current?.[kind]}<small title={current[kind]}>{short(kind, current[kind])}</small>{/if}
+			</button>
+		{/if}
+	{/snippet}
+
+	{#snippet notes(kind: Kind)}
+		<p class="note">
+			{waking
+				? '只用在這次喚醒，送出時才套用。'
+				: '選好模型與思考強度後按 ✓ 一次套用：看板會關掉原本的分頁，用新設定在新分頁接回同一段對話。'}
+		</p>
+		{#if kind === 'model' && !(waking ? chosen.effort : null) && !current?.effort}
+			<p class="note">{EFFORT_UNKNOWN_TEXT}。</p>
+		{/if}
+		{#if kind === 'model' && status?.lock === 'unknown'}
+			<p class="note">{LOCK_UNKNOWN_TEXT}（{status.lockReason}），之後以下一回合核對結果。</p>
+		{/if}
+	{/snippet}
+</PickerMenu>

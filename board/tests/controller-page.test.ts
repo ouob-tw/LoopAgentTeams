@@ -1,17 +1,12 @@
 // A controller's information page in a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with fake data, wide and at a phone's width. Its header and details,
 // the bars of its questions, and its tabs. Skipped when the host has no Chrome.
-import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
-import { PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
+import { question, sleep, startFixture, type Fixture } from './harness.ts';
+import { CHROME, launchChrome, type Browser, type Tab } from './browser.ts';
 
-const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
-	(path) => path && existsSync(path)
-);
-const DEBUG_PORT = PORT_BASE + 47;
 /** Runs first in every document: counts the listeners for the browser's back. */
 const COUNT_POPSTATE = `(() => {
 	const add = window.addEventListener;
@@ -25,74 +20,6 @@ const COUNT_POPSTATE = `(() => {
  *  for the back, so clicks reach it. */
 const STARTED = `window.popstateListeners >= 2`;
 
-/** One Chrome tab, spoken to over the DevTools protocol. */
-class Tab {
-	#socket: WebSocket;
-	#next = 0;
-	#waiting = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>();
-	/** The documents that have loaded, by the loader that loaded them. */
-	#loaded = new Set<string>();
-	constructor(socket: WebSocket) {
-		this.#socket = socket;
-		socket.addEventListener('message', (event) => {
-			const message = JSON.parse(String(event.data));
-			if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') this.#loaded.add(message.params.loaderId);
-			this.#waiting.get(message.id)?.(message);
-			this.#waiting.delete(message.id);
-		});
-	}
-	static async open(): Promise<Tab> {
-		const deadline = Date.now() + 10_000;
-		let target: { webSocketDebuggerUrl: string } | undefined;
-		while (!target) {
-			if (Date.now() > deadline) throw new Error('timed out waiting for Chrome to listen');
-			target = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/new?about:blank`, { method: 'PUT' }).then(
-				(response) => response.json(),
-				() => undefined
-			);
-			if (!target) await sleep(100);
-		}
-		const socket = new WebSocket(target.webSocketDebuggerUrl);
-		await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-		const tab = new Tab(socket);
-		await tab.send('Page.enable');
-		await tab.send('Page.setLifecycleEventsEnabled', { enabled: true });
-		await tab.send('Page.addScriptToEvaluateOnNewDocument', { source: COUNT_POPSTATE });
-		return tab;
-	}
-	send(method: string, params: object = {}): Promise<any> {
-		const id = ++this.#next;
-		this.#socket.send(JSON.stringify({ id, method, params }));
-		return new Promise((resolve, reject) =>
-			this.#waiting.set(id, (message) => (message.error ? reject(new Error(message.error.message)) : resolve(message.result)))
-		);
-	}
-	async eval<T = unknown>(expression: string): Promise<T> {
-		const { result, exceptionDetails } = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-		if (exceptionDetails) throw new Error(`${expression}: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
-		return result.value;
-	}
-	/** Load a new document and wait until it has loaded. */
-	async navigate(url: string) {
-		const { loaderId, errorText } = await this.send('Page.navigate', { url });
-		if (errorText) throw new Error(`${url}: ${errorText}`);
-		const deadline = Date.now() + 10_000;
-		while (!this.#loaded.has(loaderId)) {
-			if (Date.now() > deadline) throw new Error(`timed out loading ${url}`);
-			await sleep(20);
-		}
-	}
-	async until(expression: string, what = expression) {
-		const deadline = Date.now() + 10_000;
-		while (!(await this.eval(expression).catch(() => false))) {
-			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}; the page shows ${JSON.stringify(await this.eval(SCREEN))}`);
-			await sleep(50);
-		}
-	}
-	close() {
-		this.#socket.close();
-	}
-}
 
 const SCREEN = `({ search: location.search, detail: document.querySelector('.detail')?.innerText ?? '' })`;
 /** The tab strip as shown: each tab's text, whether it is the open one, and which one has focus. */
@@ -104,14 +31,13 @@ const FITS = `document.documentElement.scrollWidth <= window.innerWidth`;
 
 let fixture: Fixture;
 let cookie: string;
-let chrome: ChildProcess;
-let profile: string;
+let browser: Browser | undefined;
 let tab: Tab;
 let luna: ReturnType<Fixture['bound']>;
 
 beforeAll(async () => {
 	if (!CHROME) return;
-	fixture = await startFixture(46);
+	fixture = await startFixture();
 	cookie = await fixture.login('controller-page');
 	luna = fixture.bound('alpha', 'luna', {
 		questions: [question({ id: 'Q-1', title: '要不要先合併', kind: 'single', options: [{ letter: 'A', label: '合併', impact: '', recommended: true }] })]
@@ -128,24 +54,14 @@ afterAll(async () => {
 });
 
 async function stopChrome() {
-	if (!chrome || chrome.exitCode !== null || chrome.signalCode !== null) return;
-	tab.close();
-	const exited = new Promise((resolve) => chrome.once('exit', resolve));
-	chrome.kill('SIGKILL');
-	await exited;
-	rmSync(profile, { recursive: true, force: true });
+	await browser?.close();
 }
 
 /** A new Chrome, logged in, on the controller's information page in a window `width` wide. */
 async function visit(width: number) {
 	await stopChrome();
-	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	chrome = spawn(
-		CHROME!,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, `--remote-debugging-port=${DEBUG_PORT}`, 'about:blank'],
-		{ stdio: 'ignore' }
-	);
-	tab = await Tab.open();
+	browser = await launchChrome({ scripts: [COUNT_POPSTATE], screen: SCREEN });
+	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
@@ -290,4 +206,77 @@ test.skipIf(!CHROME)('a controller without a report shows no latest report; the 
 	// Detailed again: the tip and the details are spelt out in Chinese.
 	expect(await tip()).toBe('上下文已用 62% | 5 小時額度剩 80% | 7 天額度剩 25% | 快取命中 70%');
 	expect(await tab.eval<string>(`document.querySelector('.detail .profile dl').innerText`)).toContain('上下文已用 62%');
+}, 60_000);
+
+/** The middle of what `selector` picks, in the window's coordinates. */
+const middle = (selector: string) =>
+	tab.eval<{ x: number; y: number }>(`(() => { const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: box.left + box.width / 2, y: box.top + box.height / 2 }; })()`);
+const CARD = `.people > .person[data-controller="luna"]`;
+const ROSTER_TIP = () => `#roster-tip-${luna.session_id}`;
+
+async function recordDuty() {
+	// Recorded before both reports, so the latest of them is what it delivered.
+	const time = new Date(Date.now() - 3_600_000).toISOString();
+	writeFileSync(join(fixture.reportsDir, `${luna.session_id}.duty.json`), JSON.stringify({ text: '整理看板名冊', expected: '名冊顯示職責', time }));
+	await fixture.refresh(cookie);
+}
+
+test.skipIf(!CHROME)('the roster card shows the duty under the phase; hovering it explains the card, its status above its duty', async () => {
+	await recordDuty();
+	await visit(1280);
+	await tab.until(`document.querySelector(${JSON.stringify(CARD)})?.innerText.includes('整理看板名冊')`, 'the duty on the card');
+	const lines = (await tab.eval<string>(`document.querySelector(${JSON.stringify(CARD)}).innerText`)).split('\n').filter(Boolean);
+	expect(lines.indexOf('交付第二張票')).toBeLessThan(lines.indexOf('整理看板名冊'));
+	// The explanation stands in for the browser's own tooltip.
+	expect(await tab.eval(`document.querySelector(${JSON.stringify(CARD)}).hasAttribute('title')`)).toBe(false);
+
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...(await middle(CARD)) });
+	await tab.until(`!!document.querySelector(${JSON.stringify(ROSTER_TIP())})`, 'the explanation');
+	const tip = await tab.eval<string>(`document.querySelector(${JSON.stringify(ROSTER_TIP())}).innerText`);
+	expect(tip).toContain('@luna');
+	expect(tip.indexOf('等你：交付第二張票')).toBeGreaterThan(-1);
+	expect(tip.indexOf('等你：交付第二張票')).toBeLessThan(tip.indexOf('整理看板名冊'));
+	expect(tip).toContain('已交付結果');
+	expect(tip).not.toContain('預期結果');
+	expect(await tab.eval(`document.querySelector(${JSON.stringify(CARD)}).getAttribute('aria-describedby')`)).toBe(ROSTER_TIP().slice(1));
+
+	await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 900, y: 700 });
+	await tab.until(`!document.querySelector(${JSON.stringify(ROSTER_TIP())})`, 'the explanation gone');
+}, 60_000);
+
+test.skipIf(!CHROME)('the details start with the duty and what it delivered', async () => {
+	await recordDuty();
+	await visit(1280);
+	await tab.eval(`document.querySelector('.detail .more').click()`);
+	await tab.until(`!!document.querySelector('.detail .profile dl')`, 'the details');
+	const details = await tab.eval<string>(`document.querySelector('.detail .profile dl').innerText`);
+	expect(details.startsWith('職責')).toBe(true);
+	expect(details.indexOf('整理看板名冊')).toBeLessThan(details.indexOf('專案路徑'));
+	expect(details).toContain('已交付結果');
+	await tab.eval(`document.querySelector('.detail .more').click()`);
+}, 60_000);
+
+test.skipIf(!CHROME)("at a phone's width the tag shows the duty; a long press explains it without opening it, a tap opens it", async () => {
+	await recordDuty();
+	await visit(390);
+	await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+	await tab.navigate(`${fixture.url}/`);
+	await tab.until(STARTED, 'the board to start');
+	await tab.until(`document.querySelector(${JSON.stringify(CARD)})?.innerText.includes('整理看板名冊')`, 'the duty on the tag');
+
+	const at = await middle(CARD);
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] });
+	await sleep(700);
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+	await tab.until(`!!document.querySelector(${JSON.stringify(ROSTER_TIP())})`, 'the explanation');
+	expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(ROSTER_TIP())}).innerText`)).toContain('已交付結果');
+	// Inside the window, however near its edge the tag is.
+	expect(await tab.eval(`document.querySelector(${JSON.stringify(ROSTER_TIP())}).getBoundingClientRect().right <= window.innerWidth`)).toBe(true);
+	expect(await tab.eval(FITS)).toBe(true);
+	expect((await tab.eval<{ search: string }>(SCREEN)).search).not.toContain('controller=');
+
+	await sleep(2_000);
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchStart', touchPoints: [at] });
+	await tab.send('Input.dispatchTouchEvent', { type: 'touchEnd', touchPoints: [] });
+	await tab.until(`location.search.includes('controller=')`, 'the controller opened by a tap');
 }, 60_000);

@@ -1,6 +1,6 @@
 # 停住監控
 
-主控 activate 時，`lat-session.py` 自動在背景啟動 `scripts/lat-watch.py run`；deactivate 停止它，compact／resume 發現它不在時重新啟動（見 [主控恢復程序](recovery.md)）。每個主控一支，每分鐘檢查一次。以下 `$lat_dir`、`$workspace`、`$tasks` 是主控 activate 時用的 LAT 技能目錄、工作區根目錄與任務卡目錄絕對路徑。
+主控 activate 時，`lat-session.py` 自動在背景啟動 `scripts/lat-watch.py run`；deactivate 停止它，並解除主控自己的等待聲明（記為 `deactivated`），連同已到期但還沒送出的催促與通知一起清掉，之後重新 activate 不會再收到舊等待的到期催促；compact／resume 發現它不在時重新啟動（見 [主控恢復程序](recovery.md)）。每個主控一支，每分鐘檢查一次。所有 worktree 共用主工作區的 `.lat`：以 worktree 路徑當 `--workspace` 啟動的監控，狀態與紀錄也寫到主工作區的 `.lat`，不在 worktree 內另建。以下 `$lat_dir`、`$workspace`、`$tasks` 是主控 activate 時用的 LAT 技能目錄、工作區根目錄與任務卡目錄絕對路徑。
 
 ## 技能文字更新通知
 
@@ -45,6 +45,10 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 - 監控只檢查欄位有沒有填，不解析額度內容，不計算已用額度，也不判斷 `live actions` 是否該填「無」。
 
 主控收到後依 [任務卡](task-cards.md#現場動作額度) 補上兩欄，並把補上的內容傳給該執行 Agent。
+
+## 主控掉線時自停
+
+主控連續 60 分鐘不在 HCOM 清單時，監控自行停止（清單中仍列為 `inactive` 不算查不到）：移除自己的 `.lat/watch/<session-id>.pid`，在 session 紀錄寫入 `watcher_stopped`（停止時間 `at_utc` 與原因 `reason`），在 `.lat/watch/<session-id>.log` 寫一行 `LAT watch stopped: <原因>`，`watch.jsonl` 記 `watcher-stopped`。session 維持 active；之後 compact／resume 時恢復 hook 照常重新啟動監控（見 [主控恢復程序](recovery.md)）。期間主控只要重新出現一次就重新計時，短暫消失不會停止；HCOM 清單讀取失敗算檢查出錯，不算消失。
 
 ## 結束回合前
 
@@ -92,9 +96,9 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 
 ## 等待期限與連續到期
 
-等待 Agent 預設 60 分鐘，可在 `wait` 加上 `--minutes 1..720` 指定分鐘數。決策等待沒有期限，指定 `--minutes` 會被拒絕。`--for` 的 Agent 名稱依清單解析成完整名稱；解析後是自己時拒絕，保留原聲明，提示改用 `alarm`。
+等待 Agent 預設 50 分鐘，短於 Claude 一小時的提示快取，多數情況醒來時快取還在；下方的延長（最多到 80 分鐘）或等待者自己忙碌而晚送催促時，仍可能超過一小時；可在 `wait` 加上 `--minutes 1..720` 指定分鐘數。決策等待沒有期限，指定 `--minutes` 會被拒絕。`--for` 的 Agent 名稱依清單解析成完整名稱；解析後是自己時拒絕，保留原聲明，提示改用 `alarm`。
 
-期限到時，被等的 Agent 必須同屬這支監控的對象，而且最近 20 分鐘有進展或畫面仍在執行指令，才延長到下一輪判斷；它自己處於有效等待不算有進展。每筆聲明只記錄第一次延長。否則聲明立刻失效，原因為 `expired`，監控在等待者視窗輸入 `[lat-watch] ` 催促，寫明對象、已等多久，請它查看對方狀態後繼續工作或重新聲明。與鬧鐘共用「回合已結束、視窗就緒且輸入框為空」的判斷；視窗忙碌或輸入框有字時下一輪再試，回合結束後殘留的背景程序不阻擋催促。送達後回到原有停住處理。
+期限到時，被等的 Agent 必須同屬這支監控的對象，而且最近 20 分鐘有進展或前景仍在執行指令，才延長到下一輪判斷；只有背景程序在跑、或它自己處於有效等待，都不算有進展。延長最多到原期限後 30 分鐘，之後不論對方狀態都到期。每筆聲明只記錄第一次延長。否則聲明立刻失效，原因為 `expired`，監控在等待者視窗輸入 `[lat-watch] ` 催促，寫明對象、已等多久，請它查看對方狀態後繼續工作或重新聲明。與鬧鐘共用「回合已結束、視窗就緒且輸入框為空」的判斷；視窗忙碌或輸入框有字時下一輪再試，回合結束後殘留的背景程序不阻擋催促。送達後回到原有停住處理。
 
 同一對象連續第二次到期，另通知上一層一次，附等待者、對象與兩筆聲明時間：執行 Agent 通知主控，主控則通知使用者並在主控對話留說明。第三次以後只催促等待者，直到原有條件正常解除等待或下一筆換對象，計數才歸零。通知失敗下一輪重試，成功後不重送。有 Herdr 但彈出通知暫時失敗時，保留已送達的對話說明，只重試彈出通知；沒有 Herdr 時沿用只留對話說明的方式。
 
@@ -135,7 +139,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" status --workspace "$
 
 Codex 的觀察紀錄以 `codex_turn_finished` 表示回合已結束（`true`）、未結束（`false`）或未知（`null`）；因回合已結束但狀態仍 `active` 而催促時，停住原因為 `Codex turn finished but status active`。
 
-等待生命週期也記錄 `wait-expired`、`wait-extended`（每筆第一次）、`wait-expiry-notified`（成功後）。每次判斷與動作記在 `$workspace/.lat/watch/<主控 HCOM 名稱>/watch.jsonl`，無法辨識而跳過的任務卡也記在這裡（`task-card-skipped`，卡片持續無法辨識期間同一內容只記一次；修好或移走後重新計算）。某一輪檢查出錯時記 `cycle-failed`（錯誤類型與訊息，同一錯誤連續發生時每小時最多記一次），下一分鐘照常再查；狀態檔損壞時改名為 `<原檔名>.corrupt-<時間>` 留存，記 `state-file-reset` 後從頭計時；只有個別 Agent 的狀態損壞時，複製一份同名留存檔，記 `agent-state-reset`，只讓該 Agent 從頭計時；任務卡目錄不存在時只盯主控，記一次 `task-directory-missing`。監控程式本身的錯誤輸出在 `$workspace/.lat/watch/<session-id>.log`。查誤報或漏報時讀這兩份的最後幾行。
+等待生命週期也記錄 `wait-expired`、`wait-extended`（每筆第一次）、`wait-expiry-notified`（成功後）。觀察紀錄記在主工作區的 `.lat/watch/<主控 HCOM 名稱>/watch.jsonl`，只在 Agent 狀態改變（HCOM 狀態、有效等待、執行中指令、輸入框是否為空、額度狀況、是否已催促）、發出催促或通知、或出錯時寫一筆；只有進展、狀態不變時不寫。Agent 消失只在第一輪與發出通知時記 `agent-disappeared`，主控不在清單只在開始時記一次 `not-observable`。檔案超過 1 MB 時改名為 `watch.jsonl.1`（取代上一份），只保留目前檔與一份舊檔。無法辨識而跳過的任務卡也記在這裡（`task-card-skipped`，卡片持續無法辨識期間同一內容只記一次；修好或移走後重新計算）。某一輪檢查出錯時記 `cycle-failed`（錯誤類型與訊息，同一錯誤連續發生時每小時最多記一次），下一分鐘照常再查；狀態檔損壞時改名為 `<原檔名>.corrupt-<時間>` 留存，記 `state-file-reset` 後從頭計時；只有個別 Agent 的狀態損壞時，複製一份同名留存檔，記 `agent-state-reset`，只讓該 Agent 從頭計時；任務卡目錄不存在時只盯主控，記一次 `task-directory-missing`。監控程式本身的錯誤輸出在 `$workspace/.lat/watch/<session-id>.log`。查誤報或漏報時讀這兩份的最後幾行。
 
 ## 通知使用者的情況
 

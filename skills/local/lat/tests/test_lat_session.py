@@ -1,6 +1,7 @@
 """CLI contract tests; only disposable local files, no Codex/model calls."""
 import json
 import argparse
+from datetime import datetime, timezone
 import importlib.util
 from unittest.mock import patch
 import os
@@ -79,11 +80,24 @@ class SessionTests(unittest.TestCase):
         env.update(extra_env or {})
         return env
 
-    def activate(self, session=SESSION):
+    def activate(self, session=SESSION, duty=True):
         result = self.cli('activate', '--workspace', self.work,
                           '--progress', self.progress, '--decisions', self.decisions,
                           session=session)
         self.assertEqual(result.returncode, 0, result.stderr)
+        if duty:
+            self.record_duty(session=session)
+
+    def record_duty(self, text='整理看板名冊', expected='名冊顯示職責', session=SESSION,
+                    client='codex', extra_env=None):
+        extra = dict(extra_env or {})
+        if client == 'claude':
+            extra['CLAUDE_CODE_SESSION_ID'] = session
+        return self.cli('duty', '--client', client, '--workspace', self.work, '--text', text,
+                        '--expected', expected, session=session, extra_env=extra)
+
+    def duty_file(self, session=SESSION):
+        return self.root / 'reports' / f'{session}.duty.json'
 
     def test_hook_and_deactivate_keep_ownership_after_helper_directory_changes(self):
         installed = self.root / 'installed-lat'
@@ -258,6 +272,73 @@ class SessionTests(unittest.TestCase):
             self.assertFalse(self.reports()[-1]['final'])
             self.assertEqual(self.reports()[-1]['round'], round_number + 1)
 
+    def test_duty_is_written_replaced_and_refused_when_invalid(self):
+        self.activate(duty=False)
+        result = self.record_duty('  整理看板名冊  ', '名冊顯示職責')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        duty = json.loads(self.duty_file().read_text())
+        self.assertEqual((duty['text'], duty['expected']), ('整理看板名冊', '名冊顯示職責'))
+        self.assertTrue(duty['time'].endswith('Z'))
+        self.assertEqual(self.duty_file().stat().st_mode & 0o777, 0o600)
+        self.assertEqual(self.record_duty('改做交付', '已推送').returncode, 0)
+        self.assertEqual(json.loads(self.duty_file().read_text())['text'], '改做交付')
+        before = self.duty_file().read_bytes()
+        for text, expected, detail in (('職' * 41, '結果', 'at most 40'), ('兩行\n職責', '結果', 'one line'),
+                                       ('   ', '結果', 'must not be empty'),
+                                       ('職責', '', 'must not be empty')):
+            with self.subTest(text=text, expected=expected):
+                result = self.record_duty(text, expected)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(detail, result.stderr)
+                self.assertEqual(self.duty_file().read_bytes(), before)
+        self.assertEqual(self.record_duty('職' * 40, '結果').returncode, 0)
+
+    def test_activate_prints_the_duty_command(self):
+        result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                          '--decisions', self.decisions)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'lat-session.py duty --client codex --workspace {self.work} --text',
+                      result.stdout)
+
+    def test_duty_needs_this_sessions_active_controller(self):
+        self.activate(duty=False)
+        other = self.record_duty(session=OTHER)
+        self.assertEqual(other.returncode, 1)
+        self.assertIn('No active controller', other.stderr)
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        ended = self.record_duty()
+        self.assertEqual(ended.returncode, 1)
+        self.assertIn('No active controller', ended.stderr)
+        self.assertFalse(self.duty_file().exists())
+
+    def test_tagged_stop_without_duty_is_held_once_with_the_command(self):
+        self.activate(duty=False)
+        held = self.stop_hook('Work done\nDONE: delivered')
+        output = json.loads(held.stdout)
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('LAT 職責檢查未通過', output['reason'])
+        self.assertIn(f'lat-session.py duty --client codex --workspace {self.work}', output['reason'])
+        self.assertEqual(self.reports(), [])
+        released = self.stop_hook('Work done\nDONE: delivered', stop_hook_active=True)
+        self.assertIn('本回合已繼續過，不再攔下', json.loads(released.stdout)['systemMessage'])
+        self.assertEqual(self.reports()[-1]['tag'], 'DONE')
+        for message in ('NO REPLY: waiting', 'Plain message'):
+            with self.subTest(message=message):
+                self.assert_silent(self.stop_hook(message))
+        self.assertEqual(self.record_duty().returncode, 0)
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+
+    def test_question_stop_without_duty_lists_both_checks(self):
+        self.activate(duty=False)
+        held = json.loads(self.stop_hook('Question\nDECIDE: LAT-A r1').stdout)
+        self.assertIn('LAT 職責檢查未通過', held['reason'])
+        self.assertIn('LAT-A r1：沒有待決紀錄', held['reason'])
+        self.decisions.joinpath('LAT-A.md').write_text(
+            '- status: pending\n- advisor: exempt requirement-discussion\n')
+        held = json.loads(self.stop_hook('Question\nDECIDE: LAT-A r1').stdout)
+        self.assertTrue(held['reason'].startswith('LAT 職責檢查未通過'))
+        self.assertNotIn('DECIDE 檢查未通過', held['reason'])
+
     def test_report_write_failure_does_not_change_stop_results(self):
         self.activate()
         destination = self.root / 'not-a-directory'
@@ -291,16 +372,17 @@ class SessionTests(unittest.TestCase):
         for state, directory in ((str(self.root / 'state'), self.root / 'state/lat/reports'),
                                  ('', self.root / '.local/state/lat/reports'),
                                  ('relative', self.root / '.local/state/lat/reports')):
+            env = {'LAT_REPORTS_DIR': '', 'XDG_STATE_HOME': state, 'HOME': str(self.root)}
+            self.assertEqual(self.record_duty(extra_env=env).returncode, 0)
             result = self.cli('hook', payload=dict(
                 hook_event_name='Stop', session_id=SESSION, cwd=str(self.work),
-                last_assistant_message='DONE: result'), extra_env={
-                    'LAT_REPORTS_DIR': '', 'XDG_STATE_HOME': state, 'HOME': str(self.root)})
+                last_assistant_message='DONE: result'), extra_env=env)
             self.assert_silent(result)
             self.assertTrue((directory / f'{SESSION}.jsonl').is_file())
         self.assertFalse((self.work / '.lat/reports').exists())
 
     def test_final_report_failure_can_retry_and_concurrent_hooks_write_once(self):
-        self.activate()
+        self.activate(duty=False)
         self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
         destination = self.root / 'reports'
         destination.write_text('blocked')
@@ -356,7 +438,6 @@ class SessionTests(unittest.TestCase):
     def test_partial_report_tail_and_non_objects_do_not_block_later_rounds(self):
         self.activate()
         directory = self.root / 'reports'
-        directory.mkdir()
         path = directory / f'{SESSION}.jsonl'
         original = b'[]\nnull\n{"time":"partial'
         path.write_bytes(original)
@@ -539,7 +620,9 @@ class SessionTests(unittest.TestCase):
             text=True, capture_output=True,
             env=self.cli_environment(extra_env=self.panel_env()), cwd=self.work)
         self.assertEqual(result.returncode, 0, result.stderr)
-        return Path(json.loads(result.stdout)['binding']['questions_path'])
+        questions = Path(json.loads(result.stdout)['binding']['questions_path'])
+        questions.parent.mkdir(parents=True, exist_ok=True)
+        return questions
 
     def assert_stop_pass(self, result, *headings):
         """A passing DECIDE/HELP Stop: silent when unbound, else only the shown question headings."""
@@ -791,13 +874,9 @@ class SessionTests(unittest.TestCase):
             f'spec = importlib.util.spec_from_file_location("lat_session", {str(SCRIPT)!r})\n'
             'helper = importlib.util.module_from_spec(spec)\n'
             'spec.loader.exec_module(helper)\n'
-            'load = helper.panel_module\n'
-            'def panel_module():\n'
-            '    panel = load()\n'
-            '    def fail(question): raise RuntimeError("simulated render failure")\n'
-            '    panel.question_plain_text = fail\n'
-            '    return panel\n'
-            'helper.panel_module = panel_module\n'
+            'questions = helper.panel_module("questions")\n'
+            'def fail(question): raise RuntimeError("simulated render failure")\n'
+            'questions.question_plain_text = fail\n'
             'raise SystemExit(helper.main())\n')
         result = self.cli('hook', script=shim, session=OTHER, payload=dict(
             hook_event_name='Stop', cwd=str(self.work), session_id=SESSION,
@@ -1145,7 +1224,7 @@ class SessionTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        questions = self.work / '.lat/questions-nifo-bind-lezo.md'
+        questions = self.work / '.lat/questions/nifo-bind-lezo.md'
         self.assertIn(str(questions), result.stdout)
         bindings = json.loads(
             (self.root / 'plugin-config/bindings.json').read_text()
@@ -1306,6 +1385,33 @@ class SessionTests(unittest.TestCase):
         )['bindings']
         self.assertEqual(bindings, {})
 
+    def test_deactivate_deletes_only_its_own_empty_new_location_question_file(self):
+        env = self.panel_env()
+        legacy = self.work / '.lat/questions-orch.md'
+        legacy.parent.mkdir(parents=True, exist_ok=True)
+        legacy.write_text('## Old\nOLD · r1 · 已記錄 · 2026-10-01T00:00:00+00:00\n\n答覆：A\n\n- [x] 送出\n')
+        original = legacy.read_bytes()
+        questions = self.work / '.lat/questions/orch.md'
+        for text, kept in (('# 問題\n', False),
+                           ('## Q\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n', True),
+                           ('## Q\nLAT-A · r1 · 待答\n\n答覆：A\n\n- [x] 送出\n', True)):
+            with self.subTest(text=text):
+                activated = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                                     '--decisions', self.decisions, '--hcom-name', 'orch',
+                                     extra_env=env)
+                self.assertEqual(activated.returncode, 0, activated.stderr)
+                self.assertIn(f'問題檔：{questions}', activated.stdout)
+                questions.write_text(text)
+                self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
+
+                result = self.cli('deactivate', '--workspace', self.work, extra_env=env)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(questions.exists(), kept)
+                self.assertEqual('已刪除空問題檔' in result.stdout, not kept)
+                self.assertTrue((questions.parent / '.orch.md.lock').exists())
+                self.assertEqual(legacy.read_bytes(), original)
+
     def test_activate_starts_one_watcher_and_deactivate_stops_it(self):
         self.activate()
         pid = self.watcher_pid()
@@ -1323,6 +1429,50 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.wait_for(lambda: not self.process_exists(pid))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+
+    def test_deactivate_releases_only_the_controllers_own_wait(self):
+        self.activate()
+        waits = self.work / '.lat/watch/waits'
+        waits.mkdir(parents=True, exist_ok=True)
+        declaration = dict(agent='orch', kind='agent', target='worker', active=True,
+                           declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
+                           deadline_at=3000)
+        (waits / 'orch.json').write_text(json.dumps(declaration))
+        (waits / 'worker.json').write_text(json.dumps(dict(declaration, agent='worker',
+                                                           target='orch')))
+
+        result = self.cli('deactivate', '--workspace', self.work)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        own = json.loads((waits / 'orch.json').read_text())
+        self.assertFalse(own['active'])
+        self.assertEqual(own['released_reason'], 'deactivated')
+        self.assertTrue(json.loads((waits / 'worker.json').read_text())['active'])
+
+    def test_deactivate_drops_an_expiry_nudge_still_waiting_for_delivery(self):
+        self.activate()
+        waits = self.work / '.lat/watch/waits'
+        waits.mkdir(parents=True, exist_ok=True)
+        expired = dict(agent='orch', kind='agent', target='worker', active=False,
+                       declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
+                       deadline_at=3000, released_reason='expired', expiry_nudge_pending=True,
+                       expiry_count=2, expiry_declared_at=['a', 'b'],
+                       expiry_notice=dict(target='worker', declared_at=['a', 'b'],
+                                          conversation_delivered=False, delivered=False))
+        (waits / 'orch.json').write_text(json.dumps(expired))
+
+        result = self.cli('deactivate', '--workspace', self.work)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = json.loads((waits / 'orch.json').read_text())
+        self.assertEqual(saved['released_reason'], 'deactivated')
+        spec = importlib.util.spec_from_file_location('lat_watch', SCRIPT.with_name('lat-watch.py'))
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+        ready = watch.Observation('orch', 'listening', True, False, 10, 10, 1,
+                                  is_orchestrator=True)
+        _, actions, events = watch.decide_wait(saved, ready, None, None, 4000)
+        self.assertEqual((actions, events), ([], []))
 
     def test_stale_pid_for_unrelated_process_is_replaced_without_signalling_it(self):
         unrelated = subprocess.Popen(['sleep', '30'], start_new_session=True)
@@ -1418,6 +1568,134 @@ class SessionTests(unittest.TestCase):
         self.assertNotEqual(new_pid, old_pid)
         self.wait_for(lambda: len(self.fake_uv_log.read_text().splitlines()) == 2)
 
+    def test_hook_restarts_a_watcher_that_stopped_itself_after_its_orchestrator_left(self):
+        self.activate()
+        old_pid = self.watcher_pid()
+        spec = importlib.util.spec_from_file_location('lat_watch', SKILL / 'scripts/lat-watch.py')
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+        reason = 'orchestrator orch missing from HCOM for 60 minutes'
+
+        self.assertEqual(watch.stop_self(self.work, 'orch', reason, 3600, pgid=old_pid), SESSION)
+        os.killpg(old_pid, 15)
+        self.wait_for(lambda: not self.process_exists(old_pid))
+
+        self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+        record = json.loads(self.record.read_text())
+        self.assertEqual(record['status'], 'active')
+        self.assertEqual(record['watcher_stopped']['reason'], reason)
+        self.assertIn(f'LAT watch stopped: {reason}',
+                      (self.work / '.lat/watch' / f'{SESSION}.log').read_text())
+        result = self.hook(source='resume')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        new_pid = self.watcher_pid()
+        self.assertNotEqual(new_pid, old_pid)
+        self.assertTrue(self.process_exists(new_pid))
+
+    def linked_worktree(self):
+        main, worktree = self.root / 'repo', self.root / 'wt'
+        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid']
+        subprocess.run([*git, 'init', '-q', str(main)], check=True)
+        subprocess.run([*git, '-C', str(main), 'commit', '-q', '--allow-empty', '-m', 'init'],
+                       check=True)
+        subprocess.run([*git, '-C', str(main), 'worktree', 'add', '-q', str(worktree)], check=True)
+        return main, worktree
+
+    def kill_group_later(self, pid):
+        def kill():
+            try:
+                os.killpg(pid, 15)
+            except ProcessLookupError:
+                pass
+        self.addCleanup(kill)
+
+    def test_worktree_controller_lives_in_main_lat_through_stop_resume_and_deactivate(self):
+        main, worktree = self.linked_worktree()
+        result = self.cli('activate', '--workspace', worktree, '--progress', self.progress,
+                          '--decisions', self.decisions)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        record_path = main / '.lat/sessions' / f'{SESSION}.json'
+        self.assertEqual(json.loads(record_path.read_text())['workspace'], str(worktree))
+        pid_path = main / '.lat/watch' / f'{SESSION}.pid'
+        old_pid = int(pid_path.read_text())
+        self.kill_group_later(old_pid)
+        spec = importlib.util.spec_from_file_location('lat_watch', SKILL / 'scripts/lat-watch.py')
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+
+        reason = 'orchestrator orch missing from HCOM for 60 minutes'
+        self.assertEqual(watch.stop_self(worktree, 'orch', reason, 3600, pgid=old_pid), SESSION)
+        os.killpg(old_pid, 15)
+        self.wait_for(lambda: not self.process_exists(old_pid))
+        self.assertFalse(pid_path.exists())
+        self.assertEqual(json.loads(record_path.read_text())['watcher_stopped']['reason'], reason)
+
+        resumed = self.hook(source='resume', cwd=str(worktree))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertIn(f'LAT recovery record: {record_path}', resumed.stdout)
+        new_pid = int(pid_path.read_text())
+        self.kill_group_later(new_pid)
+        self.assertTrue(self.process_exists(new_pid))
+
+        result = self.cli('deactivate', '--workspace', worktree)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_for(lambda: not self.process_exists(new_pid))
+        self.assertEqual(json.loads(record_path.read_text())['status'], 'ended')
+        self.assertFalse((worktree / '.lat').exists())
+
+    def test_older_record_in_a_worktree_lat_recovers_self_stops_and_ends_in_place(self):
+        main, worktree = self.linked_worktree()
+        legacy = worktree / '.lat/sessions' / f'{SESSION}.json'
+        legacy.parent.mkdir(parents=True)
+        legacy.write_text(json.dumps(dict(
+            client='codex', session_id=SESSION, role='orchestrator', workspace=str(worktree),
+            status='active', skill_dir=str(SKILL), progress_path=str(self.progress),
+            decisions_path=str(self.decisions), tasks_path=str(self.tasks), hcom_name='orch')))
+
+        resumed = self.hook(source='resume', cwd=str(worktree))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        self.assertIn(f'LAT recovery record: {legacy}', resumed.stdout)
+        pid_path = worktree / '.lat/watch' / f'{SESSION}.pid'
+        old_pid = int(pid_path.read_text())
+        self.kill_group_later(old_pid)
+        spec = importlib.util.spec_from_file_location('lat_watch', SKILL / 'scripts/lat-watch.py')
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+
+        reason = 'orchestrator orch missing from HCOM for 60 minutes'
+        self.assertEqual(watch.stop_self(worktree, 'orch', reason, 3600, pgid=old_pid), SESSION)
+        os.killpg(old_pid, 15)
+        self.wait_for(lambda: not self.process_exists(old_pid))
+        self.assertFalse(pid_path.exists())
+        self.assertEqual(json.loads(legacy.read_text())['watcher_stopped']['reason'], reason)
+        self.assertIn(f'LAT watch stopped: {reason}',
+                      (worktree / '.lat/watch' / f'{SESSION}.log').read_text())
+        resumed = self.hook(source='resume', cwd=str(worktree))
+        self.assertEqual(resumed.returncode, 0, resumed.stderr)
+        pid = int(pid_path.read_text())
+        self.kill_group_later(pid)
+        self.assertTrue(self.process_exists(pid))
+        result = self.cli('deactivate', '--workspace', worktree)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.wait_for(lambda: not self.process_exists(pid))
+        self.assertEqual(json.loads(legacy.read_text())['status'], 'ended')
+        self.assertFalse((main / '.lat/sessions').exists())
+
+    def test_deactivate_records_end_time_and_a_new_round_starts_without_one(self):
+        self.activate()
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        ended = json.loads(self.record.read_text())
+        self.assertEqual(datetime.fromisoformat(ended['ended_at_utc']).tzinfo, timezone.utc)
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        self.assertEqual(json.loads(self.record.read_text())['ended_at_utc'],
+                         ended['ended_at_utc'])
+
+        self.activate()
+        current = json.loads(self.record.read_text())
+        self.assertEqual(current['status'], 'active')
+        self.assertNotIn('ended_at_utc', current)
+        self.assertEqual(current['history'][0]['ended_at_utc'], ended['ended_at_utc'])
+
     def test_hook_recovers_legacy_record_without_starting_watcher(self):
         self.write_legacy_record()
         expected_command = (
@@ -1474,7 +1752,8 @@ class SessionTests(unittest.TestCase):
         )
 
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(json.loads(self.record.read_text()), dict(legacy, status='ended'))
+        ended = json.loads(self.record.read_text())
+        self.assertEqual(ended, dict(legacy, status='ended', ended_at_utc=ended['ended_at_utc']))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
 
     def activate_bound(self):
@@ -1679,6 +1958,8 @@ class SessionTests(unittest.TestCase):
                     unbind_controller=lambda session_id: 0,
                     resolve_session_binding=lambda session_id: {'herdr_pane': 'pane'},
                     clear_status_display=lambda binding: (True, ''),
+                    new_questions_path=lambda workspace, name: self.work / f'.lat/questions/{name}.md',
+                    remove_empty_questions=lambda path, decisions: False,
                 )):
             deactivate_thread = threading.Thread(target=deactivate)
             deactivate_thread.start()
@@ -1986,6 +2267,31 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_silent(self.cli('hook', '--client', 'claude', payload=payload))
 
+    def test_recovery_inlines_dispatch_references_for_claude_only(self):
+        references = [SKILL / 'references/agents.md', SKILL / 'references/task-cards.md']
+        result = self.cli(
+            'activate', '--client', 'claude', '--workspace', self.work,
+            '--progress', self.progress, '--decisions', self.decisions,
+            session='', claude_session=SESSION,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.cli('hook', '--client', 'claude', payload=dict(
+            hook_event_name='SessionStart', source='compact', cwd=str(self.work),
+            session_id=SESSION))
+        context = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
+        for reference in references:
+            self.assertIn(f'===== {reference} =====\n{reference.read_text()}', context)
+        # Claude Code moves context over 10,000 characters to a file and shows a 2,000-character
+        # preview; keep room for longer workspace paths and the legacy-upgrade suffix.
+        self.assertLess(len(context), 9_000)
+        self.cli('deactivate', '--client', 'claude', '--workspace', self.work,
+                 '--session-id', SESSION, session=OTHER)
+        self.record.unlink()
+        self.activate()
+        context = json.loads(self.hook().stdout)['hookSpecificOutput']['additionalContext']
+        self.assertIn('skill_dir/references/agents.md', context)
+        self.assertNotIn('=====', context)
+
     def test_claude_activation_requires_claude_session_id(self):
         result = self.cli('activate', '--client', 'claude', '--workspace', self.work,
                           '--progress', self.progress, '--decisions', self.decisions)
@@ -2261,7 +2567,7 @@ class SessionTests(unittest.TestCase):
     def test_activate_resume_and_deactivate_keep_the_sidebar_in_step(self):
         env, log = self.sidebar_env()
         self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n- advisor: needs-human\n')
-        questions = self.work / '.lat/questions-orch.md'
+        questions = self.work / '.lat/questions/orch.md'
         questions.parent.mkdir(parents=True, exist_ok=True)
         questions.write_text('## Q\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
         self.assertEqual(self.cli('activate', '--workspace', self.work, '--progress', self.progress,
@@ -2301,7 +2607,7 @@ class SessionTests(unittest.TestCase):
         section.write_text(f'## {title}\n\n背景。\n\nA. 好\n   影響。\n')
         result = subprocess.run(
             [sys.executable, str(PANEL), 'question', 'upsert',
-             '--questions', str(self.work / '.lat/questions-orch.md'),
+             '--questions', str(self.work / '.lat/questions/orch.md'),
              '--decisions', str(self.decisions), '--id', identifier, '--file', str(section)],
             text=True, capture_output=True, env=self.cli_environment(), cwd=self.work)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -2319,13 +2625,13 @@ class SessionTests(unittest.TestCase):
         self.ask('DONE', '已答的題', status='pending')
         self.decisions.joinpath('DONE.md').write_text('- status: answered\n')
         self.ask('SENT', '已送出未記錄的題')
-        questions = self.work / '.lat/questions-orch.md'
+        questions = self.work / '.lat/questions/orch.md'
         questions.write_text(questions.read_text().replace(
             'SENT · r1 · 待答\n\n背景。\n\nA. 好\n   影響。\n\n答覆：\n\n- [ ] 送出',
             'SENT · r1 · 待答\n\n背景。\n\nA. 好\n   影響。\n\n答覆：A\n\n- [x] 送出'))
         self.assertIn('[x]', questions.read_text())
         # A question another controller asked in the same workspace is not listed.
-        other = self.work / '.lat/questions-other.md'
+        other = self.work / '.lat/questions/other.md'
         other.write_text('## Theirs\nOTHER · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
         self.decisions.joinpath('OTHER.md').write_text('- status: pending\n')
         for client in ('codex', 'claude'):
@@ -2348,8 +2654,9 @@ class SessionTests(unittest.TestCase):
     def test_prompt_reminder_shows_unknown_time_without_an_upsert_entry(self):
         self.write_legacy_record(hcom_name='orch', tasks_path=str(self.tasks))
         self.decisions.joinpath('LAT-A.md').write_text('- status: pending\n')
-        (self.work / '.lat/questions-orch.md').write_text(
-            '## Q\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
+        questions = self.work / '.lat/questions/orch.md'
+        questions.parent.mkdir(parents=True)
+        questions.write_text('## Q\nLAT-A · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n')
         self.assertIn('- LAT-A r1「Q」，提問時間 不明',
                       self.prompt_context(self.prompt_hook()))
 
@@ -2383,7 +2690,7 @@ class SessionTests(unittest.TestCase):
     def test_prompt_reminder_errors_only_warn(self):
         self.ask('LAT-A', '要合併嗎？')
         self.write_legacy_record(hcom_name='orch', tasks_path=str(self.tasks))
-        questions = self.work / '.lat/questions-orch.md'
+        questions = self.work / '.lat/questions/orch.md'
         questions.write_text(questions.read_text() * 2)
         for broken in (None, '{broken', '[]'):
             with self.subTest(broken=broken):

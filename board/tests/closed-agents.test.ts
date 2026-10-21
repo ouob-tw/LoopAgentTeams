@@ -9,7 +9,7 @@ import { join } from 'node:path';
 import { CLOSED_KEEP_MS, type ClosedAgent } from '../src/lib/board/closed-agents.ts';
 import type { TranscriptUpdate } from '../src/lib/board/transcript.ts';
 import { CLOSED_GONE_REASON, CLOSED_LISTED_REASON } from '../src/lib/server/closed-agents.ts';
-import { DAY, startFixture, until, type Fixture } from './harness.ts';
+import { answerHerdrList, DAY, startFixture, until, type Fixture } from './harness.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -86,14 +86,17 @@ const resume = (session: string, wake: object = {}) =>
 
 beforeAll(async () => {
 	socket = createServer((connection) =>
-		connection.on('data', (chunk) => {
+		connection.on('data', async (chunk) => {
 			const request = JSON.parse(chunk.toString().trim());
+			if (!fixture) return connection.write(JSON.stringify({ id: request.id, result: { agents: [], workspaces: [], tabs: [] } }) + '\n');
+			const listing = await answerHerdrList(fixture.dir, request);
+			if (listing !== null) return connection.write(listing);
 			appendFileSync(join(fixture.dir, 'herdr-calls.jsonl'), JSON.stringify(['socket', request.method, request.params]) + '\n');
 			connection.write(JSON.stringify({ id: request.id, result: { type: 'tab_moved' } }) + '\n');
 		})
 	);
 	await new Promise<void>((resolve) => socket.listen(socketPath, resolve));
-	fixture = await startFixture(60, { env: { HERDR_SOCKET_PATH: socketPath, LAT_BOARD_LAUNCH_WAIT_SECONDS: '5' } });
+	fixture = await startFixture({ env: { HERDR_SOCKET_PATH: socketPath, LAT_BOARD_LAUNCH_WAIT_SECONDS: '5' } });
 	cookie = await fixture.login();
 }, 30_000);
 afterAll(async () => {
@@ -101,7 +104,8 @@ afterAll(async () => {
 	socket?.close();
 	rmSync(socketDir, { recursive: true, force: true });
 });
-beforeEach(() => {
+beforeEach(async () => {
+	await fixture.stop();
 	for (const name of ['hcom.json', 'herdr.json', 'hcom-added.json', 'hcom-events.jsonl', 'hcom-calls.jsonl', 'herdr-calls.jsonl', 'transcripts']) {
 		rmSync(join(fixture.dir, name), { recursive: true, force: true });
 	}
@@ -110,6 +114,7 @@ beforeEach(() => {
 	rmSync(join(fixture.dir, 'clock'), { force: true });
 	fixture.list([]);
 	fixture.setHcom({ agents: [] });
+	await fixture.start();
 });
 
 test('one closed in its Herdr pane is listed with what the board saw of it and its stop', async () => {
@@ -533,4 +538,24 @@ test('seven days back is asked of hcom by the board clock', async () => {
 	const last = calls.at(-1);
 	expect(last.slice(0, 6)).toEqual(['events', '--type', 'life', '--action', 'stopped', '--full']);
 	expect(last[last.indexOf('--after') + 1]).toBe(new Date(Date.parse('2026-10-20T00:00:00Z') - 7 * DAY).toISOString());
+});
+
+
+test('overlapping stop events stay unique, merge with new stops and expire at CLOSED_KEEP_MS', async () => {
+	const now = Date.parse('2026-10-21T12:00:00Z');
+	fixture.setClock(now);
+	record('s-overlap'); record('s-next');
+	await seeThenGone('s-overlap', 's-next');
+	stopEvent('s-overlap', 'pty', { ts: new Date(now - 1000).toISOString() });
+	expect(await ids()).toEqual(['s-overlap']);
+	expect(await ids()).toEqual(['s-overlap']);
+	stopEvent('s-next', 'pty', { ts: new Date(now).toISOString() });
+	expect((await ids()).sort()).toEqual(['s-next', 's-overlap']);
+	fixture.setHcom({ eventsFail: { exit: 1, stderr: 'offline' } });
+	expect((await ids()).sort()).toEqual(['s-next', 's-overlap']);
+	fixture.setClock(now + CLOSED_KEEP_MS - 1000);
+	expect(await ids()).toEqual(['s-next']);
+	fixture.setHcom({});
+	fixture.setClock(now + CLOSED_KEEP_MS);
+	expect(await ids()).toEqual([]);
 });

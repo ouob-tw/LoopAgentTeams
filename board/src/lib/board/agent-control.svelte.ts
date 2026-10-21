@@ -2,6 +2,7 @@
 // agents it has opened, what a model switch may offer them, and one attempt at a time of sending
 // text, interrupting, closing or switching.
 import type { AgentAction, AgentActionResponse } from './agent-actions.ts';
+import { request } from './api.ts';
 import type { ClosedResumeResponse } from './closed-agents.ts';
 import type { Outcome } from './messaging.svelte.ts';
 import type { AgentModelStatus, ModelChoice, SwitchResponse, SwitchView } from './models.ts';
@@ -30,17 +31,12 @@ class AgentControl {
 		const load = (this.#loads[agentId] = (this.#loads[agentId] ?? 0) + 1);
 		let entries: AgentAction[] | undefined;
 		let switches: SwitchView[] = [];
-		let gone = false;
-		try {
-			const response = await fetch(`/api/agents/log?session=${encodeURIComponent(agentId)}`);
-			if (response.status === 401) return location.reload();
-			// Herdr no longer lists it: its page says so, and there is no record to show.
-			gone = response.status === 404;
-			if (!response.ok && !gone) throw new Error(`HTTP ${response.status}`);
-			if (!gone) ({ entries, switches = [] } = await response.json());
-		} catch {
-			// Reported below, unless a newer load has taken over.
-		}
+		const result = await request<{ entries: AgentAction[]; switches?: SwitchView[] }>(`/api/agents/log?session=${encodeURIComponent(agentId)}`);
+		if (!result.ok && result.unpaired) return;
+		// Herdr no longer lists it: its page says so, and there is no record to show.
+		const gone = !result.ok && result.status === 404;
+		// Otherwise a failure is reported below, unless a newer load has taken over.
+		if (result.ok) ({ entries, switches = [] } = result.value);
 		if (load !== this.#loads[agentId]) return;
 		if (entries) {
 			this.log[agentId] = entries;
@@ -51,23 +47,18 @@ class AgentControl {
 
 	/** An agent Herdr has no session for yet (null) has no record to load. */
 	async #post(path: string, agentId: string | null, body: object): Promise<Outcome> {
-		let response: Response;
-		try {
-			response = await fetch(path, {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ session: agentId, ...body })
-			});
-		} catch {
+		const result = await request<AgentActionResponse | SwitchResponse | ClosedResumeResponse>(path, {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ session: agentId, ...body })
+		});
+		if (!result.ok && result.kind === 'network') {
 			if (agentId !== null) void this.load(agentId);
 			return { ok: false, reason: UNKNOWN_OUTCOME };
 		}
-		if (response.status === 401) {
-			location.reload();
-			return { ok: false, reason: '這台裝置已不是登入狀態，沒有執行。' };
-		}
-		const answer: AgentActionResponse | SwitchResponse | ClosedResumeResponse | null = await response.json().catch(() => null);
-		if (response.status === 400) return { ok: false, reason: '看板伺服器不接受這個請求，沒有執行。' };
+		if (!result.ok && result.unpaired) return { ok: false, reason: '這台裝置已不是登入狀態，沒有執行。' };
+		const answer = (result.ok ? result.value : result.body) as AgentActionResponse | SwitchResponse | ClosedResumeResponse | null | undefined;
+		if (!result.ok && result.status === 400) return { ok: false, reason: '看板伺服器不接受這個請求，沒有執行。' };
 		if (agentId !== null) void this.load(agentId);
 		if (typeof answer?.ok !== 'boolean') return { ok: false, reason: UNKNOWN_OUTCOME };
 		const logNote = answer.logError ? `（送出紀錄寫入失敗：${answer.logError}）` : '';
@@ -102,13 +93,9 @@ class AgentControl {
 
 	/** Read what a switch may offer; a failed read leaves the form without options. */
 	async loadModel(agentId: string, signal?: AbortSignal): Promise<void> {
-		try {
-			const response = await fetch(`/api/agents/model?session=${encodeURIComponent(agentId)}`, { signal });
-			if (response.status === 401) return location.reload();
-			if (response.ok) this.model[agentId] = await response.json();
-		} catch {
-			// Shown as still loading.
-		}
+		const result = await request<AgentModelStatus>(`/api/agents/model?session=${encodeURIComponent(agentId)}`, { signal });
+		// A failure is shown as still loading.
+		if (result.ok) this.model[agentId] = result.value;
 	}
 
 	/** Switch the model and effort, or with both null continue the open switch, after the user

@@ -68,6 +68,7 @@ class StatusDisplayTests(unittest.TestCase):
         )
         self.assertEqual(bound.returncode, 0, bound.stderr)
         self.questions = Path(json.loads(bound.stdout)["binding"]["questions_path"])
+        self.questions.parent.mkdir(parents=True)
 
     def cli(self, *args, **env):
         return subprocess.run(
@@ -191,7 +192,7 @@ class StatusDisplayTests(unittest.TestCase):
             "## d\nGONE · r1 · 已記錄 · 2026-10-16T00:00:00+00:00\n\n答覆：A\n\n- [x] 送出\n\n"
             "## e\nNOREC · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n"
         )
-        other = self.questions.with_name("questions-other.md")
+        other = self.questions.with_name("other.md")
         other.write_text("## x\nD9 · r1 · 待答\n\n答覆：\n\n- [ ] 送出\n")
         self.decision("D9")
         self.assertEqual(panel.status_counts(self.questions, self.decisions), (2, 1))
@@ -235,7 +236,7 @@ class StatusDisplayTests(unittest.TestCase):
     def test_resolve_help_cleanup_failure_keeps_record_closed_and_says_to_rerun(self):
         self.decision("H1", kind="help")
         self.upsert("H1", HELP_SECTION)
-        (self.questions.parent / "panel-journal.jsonl").write_text("{broken\n")
+        (self.questions.parents[1] / "panel-journal.jsonl").write_text("{broken\n")
         result = self.cli("question", "resolve-help", "--questions", self.questions,
                           "--decisions", self.decisions, "--id", "H1",
                           "--evidence", "ok", "--location", "here")
@@ -336,7 +337,7 @@ class StatusDisplayTests(unittest.TestCase):
     def test_withdraw_cleanup_failure_keeps_record_withdrawn_and_says_to_rerun(self):
         self.decision("D1")
         self.upsert("D1", DECIDE_SECTION)
-        (self.questions.parent / "panel-journal.jsonl").write_text("{broken\n")
+        (self.questions.parents[1] / "panel-journal.jsonl").write_text("{broken\n")
         result = self.withdraw("D1", "--reason", "old", "--source", "chat")
         self.assertEqual((result.returncode, result.stdout), (1, ""))
         self.assertIn("withdrawn but cleanup failed", result.stderr)

@@ -38,7 +38,7 @@ test('a read that finishes gives the page, a logged-out device or a missing answ
 	expect(await ok.read('s 1', 50)).toEqual({ kind: 'page', update: page as never });
 	expect(urls).toEqual(['/api/transcript?controller=s%201&before=50']);
 
-	expect(await new EarlierReads(() => answer(401, {})).read('s-1', 50)).toEqual({ kind: 'unpaired' });
+	expect(await new EarlierReads(() => answer(401, {}), () => {}).read('s-1', 50)).toEqual({ kind: 'unpaired' });
 	expect(await new EarlierReads(() => Promise.reject(new TypeError('network'))).read('s-1', 50)).toEqual({ kind: 'failed' });
 });
 

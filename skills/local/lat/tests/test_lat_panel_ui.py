@@ -426,7 +426,7 @@ class OpenActionTests(PanelTestCase):
             {"pane_id": "pane-b", "tab_id": "new-tab", "workspace_id": "ws-a"},
         ])
         self.assertEqual(opened["LAT_PANEL_SESSION_ID"], "s-b")
-        self.assertEqual(opened["LAT_PANEL_FILE"], str(other / ".lat/questions-ctl-b.md"))
+        self.assertEqual(opened["LAT_PANEL_FILE"], str(other / ".lat/questions/ctl-b.md"))
 
     def test_snapshot_failure_falls_back_to_recorded_tab(self):
         opened = self.open("ws-a", "tab-a", snapshot_error="unavailable")
@@ -839,7 +839,7 @@ class NotificationTests(PanelTestCase):
         app = self.make_app(NOTIFY_DELAY=30)
         async with app.run_test() as pilot:
             with patch.object(
-                self.core, "mark_notification_pending", side_effect=OSError("disk full"),
+                self.core.bindings, "mark_notification_pending", side_effect=OSError("disk full"),
             ):
                 await self.submit_first_option(app, pilot)
             self.assertIn("- [x] 送出", self.questions.read_text())
@@ -857,7 +857,7 @@ class NotificationTests(PanelTestCase):
         app = self.make_app(NOTIFY_DELAY=30)
         async with app.run_test() as pilot:
             with patch.object(
-                self.core, "mark_notification_pending", side_effect=OSError("disk full"),
+                self.core.bindings, "mark_notification_pending", side_effect=OSError("disk full"),
             ):
                 await self.submit_first_option(app, pilot)
                 for _ in range(2):

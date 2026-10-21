@@ -164,6 +164,9 @@ class QuestionCliTests(unittest.TestCase):
     def cli(self, *args):
         if args[:2] == ("question", "upsert"):
             args = (*args, "--decisions", self.questions.parent)
+        # No command has a default questions file.
+        if args[0] == "question" and "--questions" not in args:
+            args = (*args, "--questions", self.questions)
         return subprocess.run(
             [sys.executable, str(MODULE), *map(str, args)],
             text=True,
@@ -786,7 +789,7 @@ class BindingCliTests(unittest.TestCase):
         self.assertEqual(json.loads(exact.stdout)["hcom_name"], "alpha")
         self.assertEqual(
             json.loads(first.stdout)["binding"]["questions_path"],
-            str(self.first / ".lat/questions-alpha.md"),
+            str(self.first / ".lat/questions/alpha.md"),
         )
         ambiguous = self.cli("resolve", "--herdr-workspace", "herdr-1")
         self.assertNotEqual(ambiguous.returncode, 0)
@@ -803,7 +806,7 @@ class BindingCliTests(unittest.TestCase):
         self.assertEqual(payload["replaced"]["hcom_name"], "alpha")
         self.assertEqual(
             payload["binding"]["questions_path"],
-            str(self.second / ".lat/questions-gamma.md"),
+            str(self.second / ".lat/questions/gamma.md"),
         )
         self.assertEqual(payload["binding"]["herdr_tab"], "tab-3")
         self.assertEqual(payload["binding"]["herdr_pane"], "pane-3")
@@ -849,7 +852,7 @@ class BindingCliTests(unittest.TestCase):
         self.assertEqual(binding["hcom_name"], "Alpha / Team")
         self.assertEqual(
             binding["questions_path"],
-            str(self.first / ".lat/questions-alpha-team.md"),
+            str(self.first / ".lat/questions/alpha-team.md"),
         )
 
 
@@ -1165,7 +1168,7 @@ class NotificationTests(unittest.TestCase):
                         "hcom_name": target,
                         "questions_path": str(questions),
                     }
-                    with patch.object(panel.subprocess, "run", return_value=receipt):
+                    with patch.object(panel.bindings.subprocess, "run", return_value=receipt):
                         ok, _reason = panel.send_pending_notification(
                             questions, binding, state_dir=state_dir,
                         )
@@ -1245,7 +1248,7 @@ class NotificationTests(unittest.TestCase):
                     command, 0, json.dumps({"delivered_to": ["alpha"]}), ""
                 )
 
-            with patch.object(panel.subprocess, "run", side_effect=deliver_after_new_change):
+            with patch.object(panel.bindings.subprocess, "run", side_effect=deliver_after_new_change):
                 result = panel.send_pending_notification(
                     questions, binding, state_dir=state_dir,
                 )

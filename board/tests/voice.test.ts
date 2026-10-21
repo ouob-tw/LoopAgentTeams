@@ -11,15 +11,16 @@ test('Simplified Chinese becomes Taiwan Traditional, words included; Traditional
 	expect(toTraditional('ok, 好的')).toBe('ok, 好的');
 });
 
-test('up to ten characters is short, counted after trimming and by character, not byte', () => {
-	expect(SHORT_LIMIT).toBe(10);
+test('up to twenty characters is short, counted after trimming and by character, not byte', () => {
+	const twenty = '一二三四五六七八九十一二三四五六七八九十';
+	expect(SHORT_LIMIT).toBe(20);
 	expect(isShort('開啟設定頁面')).toBe(true);
-	expect(isShort('一二三四五六七八九十')).toBe(true);
-	expect(isShort('  一二三四五六七八九十\n')).toBe(true);
-	expect(isShort('一二三四五六七八九十一')).toBe(false);
+	expect(isShort(twenty)).toBe(true);
+	expect(isShort(`  ${twenty}\n`)).toBe(true);
+	expect(isShort(`${twenty}一`)).toBe(false);
 	// Characters outside the basic plane are one character each.
-	expect(isShort('𠀋'.repeat(10))).toBe(true);
-	expect(isShort('𠀋'.repeat(11))).toBe(false);
+	expect(isShort('𠀋'.repeat(20))).toBe(true);
+	expect(isShort('𠀋'.repeat(21))).toBe(false);
 });
 
 test('text goes in at the cursor and keeps what is around it; the caret lands after it', () => {

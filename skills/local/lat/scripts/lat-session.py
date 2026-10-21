@@ -5,6 +5,7 @@ import copy
 import difflib
 from datetime import datetime, timezone
 import fcntl
+import importlib
 import importlib.util
 import json
 import os
@@ -20,7 +21,7 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import (read_advisor_error, read_decision_kind, read_decision_status,
                                  read_spec_consensus_error)
-from _lat_common import (reports_directory, run_cli, watcher_process_matches,
+from _lat_common import (reports_directory, run_cli, shared_lat_dir, watcher_process_matches,
                          write_json_atomic)
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
@@ -36,7 +37,11 @@ HCOM_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
 ENDED = ('ended', 'completed', 'cancelled')
 # A last line with one of these tags asks the user a recorded question.
 QUESTION_TAGS = ('DECIDE:', 'HELP:')
+# A last line with one of these tags needs the controller's duty on record first.
+DUTY_TAGS = QUESTION_TAGS + ('DONE:',)
+DUTY_LIMIT = 40
 HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit')
+INLINE_REFERENCES = ('references/agents.md', 'references/task-cards.md')
 QUESTION_HEADING = re.compile(r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', re.MULTILINE)
 # Between questions the Stop hook shows; Claude Code drops blank lines, so a visible line.
 QUESTION_SEPARATOR = '\n\n' + '─' * 20 + '\n\n'
@@ -44,14 +49,12 @@ QUESTION_SEPARATOR = '\n\n' + '─' * 20 + '\n\n'
 HCOM_PROMPT = re.compile(r'(?:\s*<hcom>)+\s*')
 
 
-def panel_module():
-    path = SKILL_DIR / 'herdr-panel/lat_panel.py'
-    spec = importlib.util.spec_from_file_location('lat_panel', path)
-    if spec is None or spec.loader is None:
-        raise ValueError(f'Cannot load LAT panel helper: {path}')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def panel_module(name='bindings'):
+    """Load only the panel capability needed by this hook path."""
+    directory = SKILL_DIR / 'herdr-panel'
+    if str(directory) not in sys.path:
+        sys.path.insert(0, str(directory))
+    return importlib.import_module(name)
 
 
 def activate_command(client, workspace, progress, decisions, tasks, hcom_name):
@@ -137,8 +140,16 @@ def legacy_upgrade_command(record):
     )
 
 
+def session_path(workspace, sid):
+    """Records live in the main checkout's shared .lat; an older one in a worktree's own .lat
+    is still found there, never moved."""
+    path = shared_lat_dir(workspace) / 'sessions' / f'{sid}.json'
+    legacy = Path(workspace) / '.lat/sessions' / f'{sid}.json'
+    return legacy if not path.exists() and legacy.exists() else path
+
+
 def watcher_paths(record):
-    root = Path(record['workspace']) / '.lat/watch'
+    root = session_path(record['workspace'], record['session_id']).parent.parent / 'watch'
     sid = record['session_id']
     return root / f'{sid}.pid', root / f'{sid}.lock', root / f'{sid}.log'
 
@@ -298,7 +309,7 @@ def activate(args):
     watcher = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(watcher)
     fingerprint = watcher.rule_fingerprint(SKILL_DIR)
-    path = workspace / '.lat/sessions' / f'{sid}.json'
+    path = session_path(workspace, sid)
     original = current_bytes(path)
     if path.exists():
         existing = read_json(path)
@@ -343,6 +354,7 @@ def activate(args):
     write_json_atomic(path, record, expected=original)
     print(path)
     print(f'已開始第 {len(record.get("history", [])) + 1} 輪')
+    print(f'看板職責：任務明確後執行（任務改變時再執行一次）：{duty_command(record)}')
     if enabled:
         try:
             binding, replaced, legacy_ignored = panel.bind_controller(
@@ -371,15 +383,66 @@ def activate(args):
         raise ValueError('Session was deactivated while starting its watcher')
 
 
-def pointer(path):
-    return (f'LAT recovery record: {path}\n'
+def pointer(path, record):
+    # Claude compaction drops references; inline the two that dispatch and closing rely on.
+    # Codex caps hook context near 2,500 tokens, so it keeps re-reading them itself.
+    inline = record['client'] == 'claude'
+    refs = ('skill_dir/references/agents.md, skill_dir/references/task-cards.md, '
+            if not inline else '')
+    text = (f'LAT recovery record: {path}\n'
             'Before any dependent action, read this record, then fully re-read '
-            'skill_dir/SKILL.md, skill_dir/references/agents.md, '
-            'skill_dir/references/task-cards.md, progress_path, and all decision records '
+            f'skill_dir/SKILL.md, {refs}progress_path, and all decision records '
             'in decisions_path. Resolve these paths from the record. Reconcile the progress '
             'index with the tracker; preserve the existing checklist. Verify prior human '
             'authorization and pending decisions before continuing. Missing or corrupt data: '
             'stop dependent work and report; never infer authorization or reset progress.')
+    if inline:
+        text += ('\nThe full current text of references/agents.md and '
+                 'references/task-cards.md follows; it counts as re-reading them.')
+        for name in INLINE_REFERENCES:
+            reference = Path(record['skill_dir']) / name
+            body = reference.read_text(encoding='utf-8')
+            text += f'\n\n===== {reference} =====\n{body}'
+    return text
+
+
+def release_own_wait(workspace, name):
+    """End the controller's own wait so a later activation does not report it as expired."""
+    path = shared_lat_dir(workspace) / 'watch/waits' / f'{name}.json'
+    if not path.parent.is_dir():
+        return
+    # Same lock file lat-watch uses for this declaration.
+    with (path.parent / f'.{path.stem}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        original = current_bytes(path)
+        if original is None:
+            return
+        declaration = json.loads(original)
+        if not isinstance(declaration, dict) or not (
+                declaration.get('active', True) or declaration.get('expiry_nudge_pending')
+                or declaration.get('expiry_notice')):
+            return
+        # Also drop an expiry nudge or notice still queued for delivery, as a normal release does.
+        declaration.pop('expiry_notice', None)
+        declaration.update(active=False, released_reason='deactivated',
+                           released_at_utc=datetime.now(timezone.utc).isoformat(),
+                           expiry_count=0, expiry_declared_at=[], expiry_notified=False,
+                           expiry_nudge_pending=False)
+        write_json_atomic(path, declaration, expected=original)
+
+
+def remove_empty_questions(panel, workspace, record):
+    """Delete this controller's `.lat/questions/` file once cleanup leaves no question in it.
+
+    The root `.lat` file of older bindings is never touched. Never raises: ending the round
+    matters more than tidying the file.
+    """
+    try:
+        path = panel.new_questions_path(workspace, record['hcom_name'])
+        if panel_module('questions').remove_empty_questions(path, record['decisions_path']):
+            print(f'已刪除空問題檔：{path}')
+    except (OSError, ValueError, KeyError) as error:
+        print(f'問題檔未收尾：{error}')
 
 
 def deactivate(args):
@@ -387,7 +450,7 @@ def deactivate(args):
         raise ValueError('Invalid successor HCOM name; record unchanged')
     workspace = args.workspace.resolve(strict=True)
     sid = session_id(args.session_id or os.environ.get(SESSION_ENV[args.client]))
-    path = workspace / '.lat/sessions' / f'{sid}.json'
+    path = session_path(workspace, sid)
     lock_record = dict(workspace=str(workspace), session_id=sid)
     _, lock_path, _ = watcher_paths(lock_record)
     lock_path.parent.mkdir(parents=True, exist_ok=True)
@@ -400,20 +463,81 @@ def deactivate(args):
         if any(record.get(key) != value for key, value in expected.items()):
             raise ValueError('Controller identity does not match; record unchanged')
         _stop_watcher_locked(record)
+        if record.get('hcom_name'):
+            release_own_wait(workspace, record['hcom_name'])
         panel = panel_module()
         try:
             panel.clear_status_display(panel.resolve_session_binding(sid))
         except (OSError, ValueError, KeyError):
             pass
         removed = panel.unbind_controller(sid)
+        if record.get('hcom_name'):
+            remove_empty_questions(panel, workspace, record)
         if record['status'] == 'active' and not legacy_record(record):
             record['final_report_pending'] = True
+        if record['status'] not in ENDED:
+            record['ended_at_utc'] = datetime.now(timezone.utc).isoformat()
         record['status'] = 'ended'
         if args.successor:
             record['successor'] = args.successor
         write_json_atomic(path, record, expected=original)
     print(path)
     print(json.dumps({'removed': removed}))
+
+
+def duty_path(sid):
+    return reports_directory() / f'{sid}.duty.json'
+
+
+def duty_command(record):
+    return shlex.join([
+        'uv', 'run', '--no-project', 'python', str(Path(__file__).resolve()), 'duty',
+        '--client', record['client'], '--workspace', record['workspace'],
+        '--text', f'<{DUTY_LIMIT} 字以內：這個主控負責做什麼>',
+        '--expected', '<做完後使用者會看到什麼>',
+    ])
+
+
+def record_duty(args):
+    """Write or replace this controller's duty, which the board shows on its card."""
+    text, expected = args.text.strip(), args.expected.strip()
+    if not text or not expected:
+        raise ValueError('--text and --expected must not be empty; duty unchanged')
+    if '\n' in text or len(text) > DUTY_LIMIT:
+        raise ValueError(f'--text must be one line of at most {DUTY_LIMIT} characters '
+                         f'(got {len(text)}); duty unchanged')
+    workspace = args.workspace.resolve(strict=True)
+    sid = session_id(os.environ.get(SESSION_ENV[args.client]))
+    try:
+        record = read_json(workspace / '.lat/sessions' / f'{sid}.json')
+    except FileNotFoundError:
+        record = {}
+    expected_identity = dict(client=args.client, session_id=sid, role='orchestrator',
+                             workspace=str(workspace), status='active')
+    if any(record.get(key) != value for key, value in expected_identity.items()):
+        raise ValueError('No active controller record for this session; duty unchanged')
+    path = duty_path(sid)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The report lock: the board's pruning deletes this file with the report file under it.
+    with (path.parent / f'{sid}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        write_json_atomic(path, dict(
+            text=text, expected=expected,
+            time=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')))
+    print(path)
+
+
+def missing_duty(record, message):
+    """Why this DECIDE/HELP/DONE Stop should be held for a duty not on record, or None."""
+    lines = [line for line in message.splitlines() if line.strip()]
+    if legacy_record(record) or not lines or not lines[-1].startswith(DUTY_TAGS):
+        return None
+    path = duty_path(record['session_id'])
+    # A reports location that is not a directory cannot hold a duty either; the report write warns.
+    if path.is_file() or (path.parent.exists() and not path.parent.is_dir()):
+        return None
+    return ('LAT 職責檢查未通過：看板上還沒有這個主控的職責。先執行 '
+            f'`{duty_command(record)}`，再照原樣結束回合。任務改變時用同一指令覆蓋。')
 
 
 def context(text, event='SessionStart'):
@@ -572,8 +696,9 @@ def own_questions_path(panel, record):
     return Path(binding['questions_path'])
 
 
-def read_questions(panel, path):
-    return panel.parse_questions(path.read_text(encoding='utf-8')) if path.exists() else []
+def read_questions(path):
+    return panel_module('questions').parse_questions(
+        path.read_text(encoding='utf-8')) if path.exists() else []
 
 
 def waiting_question(questions, identifier, revision):
@@ -593,14 +718,14 @@ def question_delivery(record, message):
         path = own_questions_path(panel, record)
         if path is None:
             return '', ''
-        questions = read_questions(panel, path)
+        questions = read_questions(path)
         shown, missing = [], []
         for identifier, revision in listed_questions(message):
             question = waiting_question(questions, identifier, revision)
             if question is None:
                 missing.append(f'{identifier} r{revision}')
             else:
-                shown.append(panel.question_plain_text(question))
+                shown.append(panel_module('questions').question_plain_text(question))
     except Exception as exc:  # noqa: BLE001 - never let delivery break the Stop hook
         return '', f'LAT 題目代送失敗，請到面板查看題目：{exc}'
     warning = ('LAT 題目代送失敗：自己的問題檔沒有 ' + '、'.join(missing)
@@ -666,11 +791,11 @@ def stop_check(record, payload):
     panel = panel_module()
     questions_path = own_questions_path(panel, record)
     if questions_path is not None:
-        questions = read_questions(panel, questions_path)
+        questions = read_questions(questions_path)
         for identifier, revision in sorted(identifiers):
             if waiting_question(questions, identifier, revision) is None:
                 problems.append(f'{identifier} r{revision}：自己的面板缺少同版本待答題目')
-        _, missing, inconsistent, unreadable, reverse = panel.pending_question_gaps(questions_path, decisions)
+        _, missing, inconsistent, unreadable, reverse = panel_module('questions').pending_question_gaps(questions_path, decisions)
         problems.extend(f'{identifier}：遺漏檢查缺少面板題目' for identifier in missing)
         problems.extend(f'{identifier}：遺漏檢查不一致（{reason}）'
                         for identifier, reason, _ in inconsistent)
@@ -743,24 +868,33 @@ def report_stop(record, payload):
     message = payload['last_assistant_message']
     if record['status'] == 'active':
         tag = question_tag(message)
+        reasons, notes = [], []
+        try:
+            duty = missing_duty(record, message)
+        except (OSError, ValueError) as exc:
+            notes.append(f'LAT 職責檢查發生錯誤，未攔下：{exc}')
+        else:
+            if duty:
+                reasons.append(duty)
         if tag:
-            notes = []
             try:
                 reason = stop_check(record, payload)
             except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
                 notes.append(f'LAT {tag} 檢查發生錯誤，未攔下：{exc}')
             else:
-                # Hold only the first Stop of a turn; later ones pass with a visible warning.
-                if reason and not payload.get('stop_hook_active'):
-                    print(json.dumps({'decision': 'block', 'reason': reason}, ensure_ascii=False))
-                    return
                 if reason:
-                    notes.append(reason + ' 本回合已繼續過，不再攔下。')
-            # A passing or released DECIDE/HELP shows its questions after the message.
-            shown, warning = question_delivery(record, message)
-            text = '\n\n'.join(part for part in (shown, warning, *notes) if part)
-            if text:
-                print(json.dumps({'systemMessage': text}, ensure_ascii=False))
+                    reasons.append(reason)
+        # Hold only the first Stop of a turn; later ones pass with a visible warning.
+        if reasons and not payload.get('stop_hook_active'):
+            print(json.dumps({'decision': 'block', 'reason': '\n\n'.join(reasons)},
+                             ensure_ascii=False))
+            return
+        notes += [reason + ' 本回合已繼續過，不再攔下。' for reason in reasons]
+        # A passing or released DECIDE/HELP shows its questions after the message.
+        shown, warning = question_delivery(record, message) if tag else ('', '')
+        text = '\n\n'.join(part for part in (shown, warning, *notes) if part)
+        if text:
+            print(json.dumps({'systemMessage': text}, ensure_ascii=False))
     try:
         append_report(record, message)
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
@@ -771,6 +905,8 @@ CLAUDE_LAT_COMMAND = '<command-name>/lat</command-name>'
 CODEX_LAT_NAME = '<name>lat</name>'
 CODEX_LAT_SKILL = re.compile(r'\s*<skill>\s*' + re.escape(CODEX_LAT_NAME))
 # Raw-line prefilter: every line invoked_lat can accept contains one of these.
+SCAN_RETENTION = 30 * 86400
+SCAN_CLEANUP_INTERVAL = 86400
 LAT_MARKERS = dict(claude=(CLAUDE_LAT_COMMAND, '"Skill"'), codex=(CODEX_LAT_NAME,))
 
 
@@ -817,18 +953,65 @@ def invoked_lat(client, record):
                for block in payload['content'])
 
 
+def activation_directory():
+    state = os.environ.get('XDG_STATE_HOME')
+    base = Path(state) if state and Path(state).is_absolute() else Path.home() / '.local/state'
+    return base / 'lat/activation'
+
+
+def load_scan(path, transcript, status):
+    """Where the last Stop stopped reading this transcript (`status`: its open file): `(offset, format confirmed)`."""
+    try:
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        offset = saved['offset']
+        if (saved['path'] == str(transcript) and saved['inode'] == status.st_ino
+                and type(offset) is int and 0 <= offset <= status.st_size
+                and isinstance(saved['records'], bool)):
+            return offset, saved['records']
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return 0, False
+
+
+def save_scan(path, transcript, inode, offset, records):
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # At most once a day, drop positions of sessions that went quiet (the report retention).
+    marker = directory / '.cleanup'
+    now = time.time()
+    if not marker.exists() or now - marker.stat().st_mtime >= SCAN_CLEANUP_INTERVAL:
+        for stale in directory.glob('*.json'):
+            if now - stale.stat().st_mtime >= SCAN_RETENTION:
+                stale.unlink(missing_ok=True)
+        marker.touch()
+        os.utime(marker, (now, now))
+    write_json_atomic(path, dict(path=str(transcript), inode=inode, offset=offset,
+                                 records=records), mode=0o600)
+
+
 def lat_transcript(client, payload, sid):
-    """Read the conversation's transcript; True when it shows the LAT skill was called up."""
+    """Read the conversation's transcript; True when it shows the LAT skill was called up.
+
+    Reads resume where the previous Stop for this session stopped, unless the file was
+    replaced or shortened; a half-written last line is read again once it is complete.
+    """
     path = payload.get('transcript_path')
     if path is None:
-        path = panel_module().transcript_path(client, sid)
+        path = panel_module('transcript').transcript_path(client, sid)
     elif not isinstance(path, str) or not Path(path).is_absolute():
         raise ValueError(f'transcript_path is not an absolute path: {path!r}')
+    scan = activation_directory() / f'{client}-{sid}.json'
     # Transcripts can be large: parse lines until one confirms the format, then only marker lines.
     markers = LAT_MARKERS[client]
-    records = False
-    with open(path, encoding='utf-8') as stream:
-        for line in stream:
+    with open(path, 'rb') as stream:
+        status = os.fstat(stream.fileno())
+        inode = status.st_ino
+        offset, records = load_scan(scan, path, status)
+        stream.seek(offset)
+        for raw in stream:
+            line = raw.decode('utf-8')
+            if raw.endswith(b'\n'):
+                offset += len(raw)
             if records and not any(marker in line for marker in markers):
                 continue
             try:
@@ -841,6 +1024,10 @@ def lat_transcript(client, payload, sid):
                     return True
     if not records:
         raise ValueError(f'no transcript records in {path}')
+    try:
+        save_scan(scan, path, inode, offset, records)
+    except (OSError, ValueError) as exc:
+        print(f'LAT activation check warning: {exc}', file=sys.stderr)
     return False
 
 
@@ -868,7 +1055,7 @@ def waiting_questions(record):
     path = panel.controller_questions_path(record['workspace'], record['hcom_name'])
     decisions = Path(record['decisions_path'])
     waiting = []
-    for question in panel.board_questions(path):
+    for question in panel_module('board').board_questions(path):
         # A submitted answer waits for the controller to record it, not for the user.
         if question['status'] != 'pending':
             continue
@@ -932,7 +1119,7 @@ def hook(client):
         if not cwd.is_absolute():
             return
         root = workspace_root(cwd.resolve(strict=True))
-        path = root / '.lat/sessions' / f'{sid}.json'
+        path = session_path(root, sid)
         if not path.exists():
             if event == 'Stop':
                 activation_check(client, payload, sid)
@@ -965,12 +1152,13 @@ def hook(client):
             return
         if legacy_record(record):
             dependencies(record, require_watcher=False)
-            context(f'{pointer(path)}\nLegacy session upgrade: {legacy_upgrade_command(record)}')
+            context(f'{pointer(path, record)}\n'
+                    f'Legacy session upgrade: {legacy_upgrade_command(record)}')
             return
         dependencies(record)
         if ensure_watcher(record, path, rebind=True) is None:
             return
-        context(pointer(path))
+        context(pointer(path, record))
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         if event == 'UserPromptSubmit':
             warn_reminder(exc)
@@ -1002,6 +1190,10 @@ def main():
     # Accepted for older callers; every deactivation ends as 'ended'.
     stop.add_argument('--status', choices=('completed', 'cancelled'), help=argparse.SUPPRESS)
     stop.add_argument('--session-id', help='Explicit ID for manual stale-record deactivation')
+    duty = sub.add_parser('duty', help="Record this controller's duty for the board")
+    duty.add_argument('--workspace', type=Path, required=True)
+    duty.add_argument('--text', required=True, help=f'What it is responsible for, <= {DUTY_LIMIT} chars')
+    duty.add_argument('--expected', required=True, help='What the user will see when it is done')
     sub.add_parser('hook', help='Read SessionStart, Stop or UserPromptSubmit payload on stdin')
     for action in ('install', 'uninstall'):
         config = sub.add_parser(action, help=f'{action.title()} the independent LAT hook group')
@@ -1018,6 +1210,8 @@ def main():
             activate(args)
         elif args.action == 'deactivate':
             deactivate(args)
+        elif args.action == 'duty':
+            record_duty(args)
         elif args.action == 'hook':
             hook(args.client)
         else:

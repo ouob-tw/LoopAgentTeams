@@ -4,7 +4,7 @@ import { named, startFixture, until, type Fixture } from './harness.ts';
 let fixture: Fixture;
 
 beforeAll(async () => {
-	fixture = await startFixture(5);
+	fixture = await startFixture();
 });
 afterAll(() => fixture.cleanup());
 

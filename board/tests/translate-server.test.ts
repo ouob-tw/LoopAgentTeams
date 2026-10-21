@@ -15,9 +15,10 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(67, {
+	fixture = await startFixture({
 		env: {
 			LAT_BOARD_TRANSLATE_TIMEOUT_SECONDS: '2',
+			LAT_BOARD_TRANSLATE_CONCURRENCY: '1',
 			LAT_BOARD_TRANSLATE_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-codex.mjs'), codexDir])
 		}
 	});
@@ -73,7 +74,7 @@ test('a reply too long to translate fails alone; the others in its request are t
 		1: { error: '太長，不翻譯（超過 20000 字）' },
 		2: { text: '譯：Last short reply.' }
 	});
-	expect(codexCalls()).toHaveLength(2);
+	expect(codexCalls()).toHaveLength(1);
 });
 
 test('each text is translated by gpt-6-luna at low effort, its code, links, paths and Markdown kept', async () => {
@@ -82,12 +83,47 @@ test('each text is translated by gpt-6-luna at low effort, its code, links, path
 	expect(got[0].text).toBe(`譯：${reply}`);
 	expect(got[1].text).toBe('譯：A second plain reply.');
 	const calls = codexCalls();
-	expect(calls).toHaveLength(2);
+	expect(calls).toHaveLength(1);
 	expect(calls.every((call) => call.model === 'gpt-6-luna' && call.effort === 'low')).toBe(true);
 	// Codex saw the code, the link and the path as markers only.
 	const seen = calls.find((call) => call.text.includes('Summary'))!.text;
 	for (const kept of ['bun test', 'example.com', '/home/u/board', 'git status']) expect(seen).not.toContain(kept);
 	expect(seen).toContain('## Summary');
+});
+
+test('ten short texts use two or fewer turns and each numbered translation reaches its own line', async () => {
+	const texts = Array.from({ length: 10 }, (_, index) => `Batch acceptance reply ${index}.`);
+	const got = await lines(texts);
+	texts.forEach((text, index) => expect(got[index]).toEqual({ text: `譯：${text}` }));
+	expect(codexCalls().length).toBeLessThanOrEqual(2);
+});
+
+test('a reply above 1000 masked characters has its own turn', async () => {
+	const long = 'Long reply text. '.repeat(70);
+	const got = await lines(['Short before long.', long, 'Short after long.']);
+	expect(got).toEqual({ 0: { text: '譯：Short before long.' }, 1: { text: `譯：${long}`.trimEnd() }, 2: { text: '譯：Short after long.' } });
+	const calls = codexCalls();
+	expect(calls).toHaveLength(2);
+	const alone = calls.find((call) => call.text.includes('Long reply text.'))!.text;
+	expect(alone).not.toContain('Short');
+});
+
+test('a missing second reply fails alone and is held while the other replies are saved', async () => {
+	codexPlan({ prefix: '譯：', omitReply: 2 });
+	const texts = ['Missing batch first.', 'Missing batch second.', 'Missing batch third.'];
+	const got = await lines(texts);
+	expect(got).toEqual({
+		0: { text: '譯：Missing batch first.' },
+		1: { error: '譯文少了原文的程式碼、網址或路徑' },
+		2: { text: '譯：Missing batch third.' }
+	});
+	codexPlan({ prefix: '譯：' });
+	expect(await lines(texts)).toEqual(got);
+	expect(codexCalls()).toHaveLength(1);
+	const saved = readFileSync(join(fixture.dir, 'board-state', 'translations.json'), 'utf8');
+	expect(saved).toContain('譯：Missing batch first.');
+	expect(saved).toContain('譯：Missing batch third.');
+	expect(saved).not.toContain('Missing batch second.');
 });
 
 test('a saved translation comes at once, before one still being translated, and survives a restart without calling Codex', async () => {
@@ -124,7 +160,7 @@ test('a translation unused for 30 days is dropped and translated again when aske
 
 test('a page that leaves drops what it alone wanted and Codex has not started; what is running finishes', async () => {
 	codexPlan({ prefix: '譯：', delayMs: 1200 });
-	// The three Codex places are taken by these.
+	// The one Codex place is taken by this batch.
 	const busy = lines(['Busy one is running.', 'Busy two is running.', 'Busy three is running.']);
 	await Bun.sleep(300);
 	const leaving = new AbortController();
@@ -136,8 +172,7 @@ test('a page that leaves drops what it alone wanted and Codex has not started; w
 	await left;
 	expect(Object.values(await busy).every((line) => line.text?.startsWith('譯：'))).toBe(true);
 	await Bun.sleep(1500);
-	// The three run side by side, in any order.
-	expect(codexCalls().map((call) => call.text).sort()).toEqual(['Busy one is running.', 'Busy three is running.', 'Busy two is running.'].map((text) => `<reply>\n${text}\n</reply>`));
+	expect(codexCalls().map((call) => call.text)).toEqual([['Busy one is running.', 'Busy two is running.', 'Busy three is running.'].map((text, index) => `<reply id="${index + 1}">\n${text}\n</reply>`).join('\n')]);
 });
 
 test('Codex failing or timing out gives a reason for that text, and nothing is saved for it; the failure is answered as it was for 5 minutes', async () => {

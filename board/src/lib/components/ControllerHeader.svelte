@@ -1,14 +1,15 @@
 <script lang="ts">
 	// A controller's header: one line of who and where it stands
-	// with its latest phase (the details behind a disclosure) and, while it runs, its context use,
+	// with its latest phase (the details behind a disclosure, its duty first) and, while it runs, its context use,
 	// quota, prompt cache and permission mode in small print.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { onMount } from 'svelte';
 	import { clock } from '#lib/board/clock.svelte.ts';
-	import { noticeTime, placeText, type HerdrPlace } from '#lib/board/format.ts';
+	import { noticeTime, placeText } from '#lib/board/format.ts';
 	import { INFO_DETAILS_KEY, remember, remembered } from '#lib/board/prefs.ts';
 	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
+	import DutyText from './DutyText.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import UsageLine from './UsageLine.svelte';
 
@@ -33,34 +34,7 @@
 		remember(INFO_DETAILS_KEY, details ? '1' : '0');
 	}
 
-	/** The Herdr names and places, by controller ID; a string says why they are unknown. */
-	let places = $state<Record<string, HerdrPlace | string>>({});
-	const place = $derived(places[controller.id]);
-
-	// Read again with every new board data (each hands this page a new `controller` object), as
-	// tabs may have moved since, and whenever the server announces a tab move, which changes no
-	// board data: the board moves a resumed controller's tab to the front.
-	$effect(() => {
-		const id = controller.id;
-		void tabMoves;
-		if (!controller.herdr) return;
-		const abort = new AbortController();
-		read(id, abort.signal);
-		return () => abort.abort();
-	});
-
-	function read(id: string, signal: AbortSignal) {
-		fetch(`/api/herdr-place?controller=${encodeURIComponent(id)}`, { signal })
-			.then((response) => {
-				// The server sends a browser that is not logged in to the login screen.
-				if (response.status === 401) location.reload();
-				return response.json();
-			})
-			.then((body) => (places[id] = body.ok ? body.place : (body.reason ?? '讀不到位置')))
-			.catch(() => {
-				if (!signal.aborted) places[id] = '沒有收到看板伺服器的回應';
-			});
-	}
+	const place = $derived(controller.herdrPlace ?? undefined);
 </script>
 
 <article class="profile">
@@ -80,6 +54,10 @@
 	{/if}
 	{#if details}
 		<dl>
+			{#if controller.duty}
+				<dt>職責</dt>
+				<dd class="duty"><DutyText duty={controller.duty} /></dd>
+			{/if}
 			<dt>專案路徑</dt>
 			<dd>{controller.workspace}</dd>
 			<dt>Herdr 位置</dt>
@@ -184,5 +162,11 @@
 	dd {
 		margin: 0;
 		overflow-wrap: anywhere;
+	}
+	/* The duty, the result under it. */
+	.duty {
+		display: flex;
+		flex-direction: column;
+		gap: 0.1rem;
 	}
 </style>

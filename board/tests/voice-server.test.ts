@@ -48,7 +48,7 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(38, {
+	fixture = await startFixture({
 		env: {
 			LAT_BOARD_ASR_URL: `http://127.0.0.1:${asr.port}/`,
 			LAT_BOARD_ASR_TOKEN: TOKEN,
@@ -94,16 +94,16 @@ test('short speech goes straight back in Traditional Chinese, without Codex', as
 	expect(codexCalls()).toEqual([]);
 });
 
-test('the ten-character limit is counted after the conversion', async () => {
-	// Nine characters heard, ten once 内存 becomes 記憶體: still short.
-	answer = transcript('电脑内存不够用了吧');
-	expect(await speak()).toEqual({ status: 200, body: { text: '電腦記憶體不夠用了吧', notice: null } });
+test('the twenty-character limit is counted after the conversion', async () => {
+	// Nineteen characters heard, twenty once 内存 becomes 記憶體: still short.
+	answer = transcript('一二三四五六七八九十电脑内存不够用了吧');
+	expect(await speak()).toEqual({ status: 200, body: { text: '一二三四五六七八九十電腦記憶體不夠用了吧', notice: null } });
 	expect(codexCalls()).toEqual([]);
-	// Ten characters heard, eleven once converted: tidied.
-	answer = transcript('我的电脑内存不够用了');
-	codexPlan({ reply: '我的電腦記憶體不夠用了。' });
-	expect(await speak()).toEqual({ status: 200, body: { text: '我的電腦記憶體不夠用了。', notice: null } });
-	expect(codexCalls().map((call) => call.text)).toEqual(['<transcript>\n我的電腦記憶體不夠用了\n</transcript>']);
+	// Twenty heard, twenty-one once converted: tidied.
+	answer = transcript('一二三四五六七八九十我的电脑内存不够用了');
+	codexPlan({ reply: '一二三四五六七八九十我的電腦記憶體不夠用了。' });
+	expect(await speak()).toEqual({ status: 200, body: { text: '一二三四五六七八九十我的電腦記憶體不夠用了。', notice: null } });
+	expect(codexCalls().map((call) => call.text)).toEqual(['<transcript>\n一二三四五六七八九十我的電腦記憶體不夠用了\n</transcript>']);
 });
 
 test('the page and every file the browser loads leave the token out', async () => {
@@ -139,14 +139,14 @@ test('long speech is tidied by Codex and comes back in Traditional Chinese', asy
 });
 
 test('a reply sent only as a completed item is read too', async () => {
-	answer = transcript('这是一段超过十个字的语音辨识结果');
+	answer = transcript('这是一段超过二十个字的语音辨识结果,请交给大模型整理一下');
 	codexPlan({ reply: '这是语音辨识结果。', itemOnly: true });
 	expect(await speak()).toEqual({ status: 200, body: { text: '這是語音辨識結果。', notice: null } });
 });
 
 test('when Codex fails, quits or runs out of time, the converted text comes back with a notice', async () => {
-	answer = transcript('这是一段超过十个字的语音辨识结果');
-	const raw = '這是一段超過十個字的語音辨識結果';
+	answer = transcript('这是一段超过二十个字的语音辨识结果,请交给大模型整理一下');
+	const raw = '這是一段超過二十個字的語音辨識結果,請交給大模型整理一下';
 	for (const [plan, reason] of [
 		[{ fail: true }, 'usage limit reached'],
 		[{ exit: true }, 'Codex 提前結束'],
@@ -185,7 +185,7 @@ test('a device that is not logged in gets nothing from it', async () => {
 });
 
 test('without a configured service, voice input says so', async () => {
-	const bare = await startFixture(39);
+	const bare = await startFixture();
 	try {
 		const login = await bare.login();
 		const response = await bare.fetch('/api/voice', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: new Blob([new Uint8Array(10)]), cookie: login });

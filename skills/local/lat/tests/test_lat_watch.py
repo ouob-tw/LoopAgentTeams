@@ -927,7 +927,7 @@ class WaitDeadlineDecisionTests(unittest.TestCase):
         self.assertEqual(actions, [])
         self.assertEqual(events, ['wait-extended'])
         saved, actions, events = watch.decide_wait(
-            saved, waiter, target._replace(command_running=True),
+            saved, waiter, target._replace(command_running=True, terminal_ready=False),
             {'last_progress_at': 0}, 4800)
         self.assertTrue(saved['active'])
         self.assertEqual(events, [])
@@ -936,6 +936,34 @@ class WaitDeadlineDecisionTests(unittest.TestCase):
             {'last_progress_at': 4800}, 4860)
         self.assertFalse(saved['active'])
         self.assertEqual(events, ['wait-expired'])
+
+    def test_background_process_alone_does_not_extend(self):
+        watch = load_watch()
+        waiter = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        target = waiter._replace(agent='reviewer', command_running=True, terminal_ready=True)
+        declaration = dict(agent='worker', target='reviewer', declared_at=0, active=True,
+                           declared_at_utc='1970-01-01T00:00:00+00:00')
+        saved, _, events = watch.decide_wait(
+            declaration, waiter, target, {'last_progress_at': 0}, 3600)
+        self.assertFalse(saved['active'])
+        self.assertEqual(events, ['wait-expired'])
+
+    def test_extension_stops_at_cap_while_target_stays_busy(self):
+        watch = load_watch()
+        waiter = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        target = waiter._replace(agent='reviewer', command_running=True, terminal_ready=False)
+        declaration = dict(agent='worker', target='reviewer', declared_at=0, active=True,
+                           declared_at_utc='1970-01-01T00:00:00+00:00', deadline_at=3000)
+        cap = 3000 + 30 * 60
+        saved, _, events = watch.decide_wait(
+            declaration, waiter, target, {'last_progress_at': cap - 60}, cap - 60)
+        self.assertTrue(saved['active'])
+        self.assertEqual(events, ['wait-extended'])
+        saved, actions, events = watch.decide_wait(
+            saved, waiter, target, {'last_progress_at': cap}, cap)
+        self.assertFalse(saved['active'])
+        self.assertEqual(events, ['wait-expired'])
+        self.assertEqual([action.category for action in actions], ['wait-expiry'])
 
     def test_extension_does_not_delay_a_previous_pending_notice(self):
         watch = load_watch()
@@ -2184,7 +2212,7 @@ esac
         self.assertEqual(result.returncode, 0, result.stderr)
         saved = json.loads(result.stdout)
         self.assertEqual(saved['kind'], 'agent')
-        self.assertEqual(saved['deadline_at'] - saved['declared_at'], 3600)
+        self.assertEqual(saved['deadline_at'] - saved['declared_at'], 3000)
         path = self.work / '.lat/watch/waits/worker-open.json'
         before = path.read_bytes()
         for target in ('worker-open', 'open'):
@@ -2666,7 +2694,7 @@ esac
                 self.assertTrue(all(state['last_progress_at'] == 0
                                     for state in self.watch_state().values()))
                 self.run_cycles(watch, 1_800)
-                notices = [(row['agent'], action['kind']) for row in self.watch_records()[-2:]
+                notices = [(row['agent'], action['kind']) for row in self.watch_records()
                            if row.get('at') == 1_800 for action in row.get('actions', [])]
                 self.assertEqual(notices, [('orch', 'notify-user'),
                                           ('worker-open', 'notify-orchestrator')])
@@ -2674,11 +2702,12 @@ esac
                 self.run_cycles(watch, 2_400, 2_401, 3_000)
                 self.assertEqual(len(self.injections()), nudge_count)
                 later = [(row['agent'], action['kind'])
-                         for row in self.watch_records()[-6:]
+                         for row in self.watch_records() if row.get('at', 0) >= 2_400
                          for action in row.get('actions', [])]
                 self.assertEqual(later, [('worker-open', 'notify-user')])
-                # Start the next client with a fresh persisted episode.
+                # Start the next client with a fresh persisted episode and log.
                 (self.work / '.lat/watch/orch/state.json').unlink()
+                (self.work / '.lat/watch/orch/watch.jsonl').unlink()
 
     def test_nudge_lifecycle_events_do_not_hide_incoming_messages_or_outgoing_work(self):
         transcript = self.finished_codex_fixture('claude')
@@ -3274,6 +3303,163 @@ esac
         self.assertEqual(self.disappearance_notices(), [])
         self.assertNotIn('worker-open', self.watch_state())
 
+    def listing_hcom(self, **statuses):
+        listing = self.root / 'agents.json'
+        listing.write_text(json.dumps([{'name': name.replace('_', '-'), 'status': status}
+                                       for name, status in statuses.items()]))
+        self.install_hcom(
+            '#!/bin/sh\n'
+            'printf "%s\\n" "$*" >> "$FAKE_HCOM_LOG"\n'
+            f'if [ "$1" = list ]; then cat "{listing}"\n'
+            'elif [ "$1" = term ]; then\n'
+            '  printf \'%s\\n\' \'{"ready":true,"prompt_empty":true}\'\n'
+            'fi\n'
+        )
+
+    def test_unchanged_status_writes_nothing_for_ten_minutes_and_a_change_writes_one(self):
+        self.listing_hcom(orch='active', worker_open='active')
+        watch = load_watch()
+        self.run_cycles(watch, 0)
+        first = self.watch_records()
+        self.assertEqual([record['agent'] for record in first], ['orch', 'worker-open'])
+        self.run_cycles(watch, *range(60, 601, 60))
+        self.assertEqual(self.watch_records(), first)
+        self.listing_hcom(orch='active', worker_open='blocked')
+        self.run_cycles(watch, 660)
+        added = self.watch_records()[len(first):]
+        self.assertEqual([(record['agent'], record['observation']['status'])
+                          for record in added], [('worker-open', 'blocked')])
+        self.run_cycles(watch, 720)
+        self.assertEqual(len(self.watch_records()), len(first) + 1)
+
+    def test_watch_log_over_one_megabyte_rotates_keeping_one_old_file(self):
+        watch = load_watch()
+        log = watch.state_path(self.work, 'orch').with_name('watch.jsonl')
+        log.parent.mkdir(parents=True)
+        for marker in ('first', 'second'):
+            log.write_text(json.dumps({'old': marker}) + '\n' + 'x' * watch.LOG_ROTATE_BYTES)
+            watch.append_log(log, {'new': marker})
+            self.assertEqual(log.read_text().splitlines(), [json.dumps({'new': marker},
+                                                                       separators=(',', ':'))])
+            self.assertIn(marker, log.with_name('watch.jsonl.1').read_text().splitlines()[0])
+        self.assertEqual(sorted(path.name for path in log.parent.iterdir()),
+                         ['watch.jsonl', 'watch.jsonl.1'])
+        watch.append_log(log, {'new': 'third'})
+        self.assertEqual(len(log.read_text().splitlines()), 2)
+
+    def test_watch_log_rotation_threshold_is_exactly_one_mebibyte(self):
+        watch = load_watch()
+        one_mib = 1024 * 1024
+        log = watch.state_path(self.work, 'orch').with_name('watch.jsonl')
+        old = log.with_name('watch.jsonl.1')
+        log.parent.mkdir(parents=True)
+        for size in (one_mib - 1, one_mib):
+            log.write_text('x' * size)
+            watch.append_log(log, {'new': size})
+            self.assertFalse(old.exists(), size)
+            self.assertEqual(log.stat().st_size, size + len('{"new":%d}\n' % size))
+            log.unlink()
+        log.write_text('x' * (one_mib + 1))
+        watch.append_log(log, {'new': 'over'})
+        self.assertEqual(log.read_text(), '{"new":"over"}\n')
+        self.assertEqual(old.stat().st_size, one_mib + 1)
+        self.assertEqual(sorted(path.name for path in log.parent.iterdir()),
+                         ['watch.jsonl', 'watch.jsonl.1'])
+
+    def test_orchestrator_gone_sixty_minutes_stops_but_a_short_absence_does_not(self):
+        watch = load_watch()
+        self.listing_hcom(worker_open='active')
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        with patch.dict(os.environ, self.env):
+            results = [watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+                       for now in range(0, 1801, 60)]
+            self.listing_hcom(orch='listening', worker_open='active')
+            results.append(watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=1860))
+            self.assertNotIn('missing_since', self.watch_state()['orch'])
+            # A listed inactive identity is still found, so it never counts as gone.
+            self.listing_hcom(orch='inactive', worker_open='active')
+            results += [watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+                        for now in range(1920, 1920 + 3601, 60)]
+            self.assertNotIn('missing_since', self.watch_state()['orch'])
+            self.listing_hcom(worker_open='active')
+            results += [watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=now)
+                        for now in range(5580, 5580 + 3600, 60)]
+            self.assertEqual(set(results), {None})
+            reason = watch.run_cycle(self.work, self.tasks, decisions, 'orch', now=9180)
+        self.assertEqual(reason, 'orchestrator orch missing from HCOM for 60 minutes')
+        self.assertNotIn('missing_since', self.watch_state()['orch'])
+        self.assertEqual(len([record for record in self.watch_records()
+                              if record.get('decision') == 'not-observable']), 2)
+
+    def test_watcher_stops_itself_removing_pid_and_noting_reason_in_active_session(self):
+        watch = load_watch()
+        self.listing_hcom(worker_open='active')
+        sessions = self.work / '.lat/sessions'
+        sessions.mkdir(parents=True)
+        record = dict(session_id='sid', role='orchestrator', status='active',
+                      workspace=str(self.work), hcom_name='orch')
+        (sessions / 'sid.json').write_text(json.dumps(record))
+        root = self.work / '.lat/watch'
+        root.mkdir()
+        (root / 'sid.pid').write_text(str(os.getpgrp()))
+        (root / 'other.pid').write_text('999999')
+        self.run_cycles(watch, *range(0, 3541, 60))
+        args = argparse.Namespace(workspace=self.work, tasks=self.tasks,
+                                  decisions=self.work / '.lat/decisions', orchestrator='orch')
+        with patch.dict(os.environ, self.env), patch.object(watch.time, 'time', return_value=3600), \
+                patch.object(watch.time, 'sleep', side_effect=AssertionError('kept running')):
+            self.assertIsNone(watch.run_forever(args))
+        self.assertFalse((root / 'sid.pid').exists())
+        self.assertTrue((root / 'other.pid').exists())
+        saved = json.loads((sessions / 'sid.json').read_text())
+        self.assertEqual(saved['status'], 'active')
+        self.assertEqual(saved['watcher_stopped']['reason'],
+                         'orchestrator orch missing from HCOM for 60 minutes')
+        self.assertEqual(saved['watcher_stopped']['at_utc'], '1970-01-01T01:00:00+00:00')
+        self.assertEqual((root / 'sid.log').read_text(),
+                         '1970-01-01T01:00:00+00:00 LAT watch stopped: '
+                         'orchestrator orch missing from HCOM for 60 minutes\n')
+        self.assertEqual(self.watch_records()[-1]['decision'], 'watcher-stopped')
+
+    def test_watcher_started_in_a_linked_worktree_uses_the_main_checkout_lat(self):
+        main = self.root / 'main'
+        main.mkdir()
+        git = ['git', '-c', 'user.name=t', '-c', 'user.email=t@example.invalid']
+        subprocess.run([*git, 'init', '-q', str(main)], check=True)
+        subprocess.run([*git, '-C', str(main), 'commit', '-q', '--allow-empty', '-m', 'init'],
+                       check=True)
+        worktree = self.root / 'wt'
+        subprocess.run([*git, '-C', str(main), 'worktree', 'add', '-q', str(worktree)],
+                       check=True)
+        self.listing_hcom(orch='active')
+        decisions = main / '.lat/decisions'
+        decisions.mkdir(parents=True)
+        watch = load_watch()
+        with patch.dict(os.environ, self.env):
+            watch.run_cycle(worktree, main / '.lat/tasks', decisions, 'orch', now=0)
+        self.assertFalse((worktree / '.lat').exists())
+        self.assertTrue((main / '.lat/watch/orch/watch.jsonl').is_file())
+        self.assertEqual(watch.wait_path(worktree, 'orch'), main / '.lat/watch/waits/orch.json')
+
+    def test_log_append_and_rotation_wait_for_another_writer(self):
+        watch = load_watch()
+        log = watch.state_path(self.work, 'orch').with_name('watch.jsonl')
+        log.parent.mkdir(parents=True)
+        log.write_text('x' * (watch.LOG_ROTATE_BYTES + 1))
+        directory = os.open(log.parent, os.O_RDONLY)
+        self.addCleanup(os.close, directory)
+        fcntl.flock(directory, fcntl.LOCK_EX)
+        writer = threading.Thread(target=watch.append_log, args=(log, {'new': 1}))
+        writer.start()
+        writer.join(0.3)
+        self.assertTrue(writer.is_alive())
+        self.assertFalse(log.with_name('watch.jsonl.1').exists())
+        fcntl.flock(directory, fcntl.LOCK_UN)
+        writer.join(5)
+        self.assertEqual(log.read_text(), '{"new":1}\n')
+        self.assertTrue(log.with_name('watch.jsonl.1').exists())
+
     def test_notification_releases_orchestrator_wait_via_message_delivery(self):
         watch = load_watch()
         declaration = {
@@ -3759,8 +3945,8 @@ esac
         watch = load_watch()
         self.run_cycles(watch, 0, 600, 1_200)
 
-        records = self.watch_records()
-        result = records[-2]['action_results'][0]
+        result, = [record['action_results'][0] for record in self.watch_records()
+                   if record['at'] == 1_200 and record.get('action_results')]
         self.assertEqual(result['kind'], 'notify-user')
         self.assertEqual(result['delivery'], 'hcom-only')
         self.assertIn('no display', result['herdr_error'])
@@ -3995,8 +4181,9 @@ esac
 
         records = [json.loads(line) for line in
                    (self.work / '.lat/watch/orch/watch.jsonl').read_text().splitlines()]
+        # First missing cycle and the notice; the cycle in between writes nothing.
         self.assertEqual(len([record for record in records
-                              if record.get('decision') == 'agent-disappeared']), 3)
+                              if record.get('decision') == 'agent-disappeared']), 2)
         self.assertEqual(len([record for record in records
                               if record.get('decision') == 'observation-failed']), 3)
         failures = [result for record in records for result in record.get('action_results', [])
@@ -4042,7 +4229,7 @@ esac
                                   decisions=decisions, orchestrator='orch')
         stop = RuntimeError('stop test loop')
 
-        with patch.object(watch, 'run_cycle') as cycle, \
+        with patch.object(watch, 'run_cycle', return_value=None) as cycle, \
                 patch.object(watch.time, 'sleep', side_effect=[None, stop]) as sleeper:
             with self.assertRaisesRegex(RuntimeError, 'stop test loop'):
                 watch.run_forever(args)

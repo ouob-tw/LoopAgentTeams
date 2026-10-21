@@ -40,7 +40,7 @@ const has = (session: string, suffix = '.jsonl') => existsSync(join(fixture.repo
 
 beforeAll(async () => {
 	python = uvPython();
-	fixture = await startFixture(27);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());

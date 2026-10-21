@@ -112,6 +112,15 @@ class RetentionTests(PruneTestCase):
         for session in ("s-young", "s-newer-first", "s-only-broken", "s-bad-time", "s-bad-tag"):
             self.assertTrue(self.exists(session), session)
 
+    def test_the_duty_file_goes_with_its_report_file(self):
+        self.write("s-old", record(NOW - RETENTION))
+        self.write("s-young", record(NOW - timedelta(days=1)))
+        for session in ("s-old", "s-young"):
+            (self.reports / f"{session}.duty.json").write_text("{}")
+        self.assertEqual(self.prune()[0], ["s-old"])
+        self.assertFalse(self.exists("s-old", ".duty.json"))
+        self.assertTrue(self.exists("s-young", ".duty.json"))
+
     def test_only_the_named_sessions_are_looked_at(self):
         self.write("s-named", record(NOW - RETENTION))
         self.write("s-other", record(NOW - RETENTION))
@@ -165,7 +174,7 @@ class RetentionTests(PruneTestCase):
                     stream.write(record(NOW) + "\n")
             return expired
 
-        with mock.patch.object(self.core, "_report_expired", checked):
+        with mock.patch.object(self.core.questions, "_report_expired", checked):
             self.assertEqual(self.prune()[0], [])
         self.assertEqual(calls, [True, False])
         self.assertEqual(len((self.reports / "s-old.jsonl").read_text().splitlines()), 2)
@@ -206,7 +215,7 @@ class RetentionTests(PruneTestCase):
                 self.assertNotIn("first in-lock", logged())
             return real(path, now)
 
-        with mock.patch.object(self.core, "_report_expired", checked):
+        with mock.patch.object(self.core.questions, "_report_expired", checked):
             self.assertEqual(self.prune()[0], ["s-old"])
 
         # The first hook gets the lock once the old file is gone, and writes a new one.

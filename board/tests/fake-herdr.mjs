@@ -13,6 +13,7 @@
 // acts out a failure, null answers as usual; once the series is used up, `fail` applies again.
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { pathToFileURL } from 'node:url';
 
 /** Write a file whole, so a fake run alongside (the board reads the lists while a switch is
  *  followed) never reads it half written. */
@@ -21,48 +22,70 @@ function write(/** @type {string} */ file, /** @type {string} */ text) {
 	renameSync(`${file}.${process.pid}`, file);
 }
 
-const [dir, ...args] = process.argv.slice(2);
-const command = args.slice(0, 2).join(' ');
-const listing = ['agent list', 'workspace list', 'tab list'].includes(command);
-appendFileSync(join(dir, listing ? 'herdr-list-calls.jsonl' : 'herdr-calls.jsonl'), JSON.stringify(args) + '\n');
-const planFile = join(dir, 'herdr.json');
-const plan = existsSync(planFile) ? JSON.parse(readFileSync(planFile, 'utf8')) : {};
+export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} */ args, transport = 'cli') {
+	let stdout = '', stderr = '', code = 0;
+	const command = args.slice(0, 2).join(' ');
+	const listing = ['agent list', 'workspace list', 'tab list'].includes(command);
+	appendFileSync(join(dir, transport === 'socket' ? 'herdr-socket-calls.jsonl' : listing ? 'herdr-list-calls.jsonl' : 'herdr-calls.jsonl'), JSON.stringify(args) + '\n');
+	const planFile = join(dir, 'herdr.json');
+	const plan = existsSync(planFile) ? JSON.parse(readFileSync(planFile, 'utf8')) : {};
 
-const series = plan.failSeries?.[command];
-const failure = series?.length ? series.shift() : plan.fail?.[command];
-if (series) write(planFile, JSON.stringify(plan));
-if (plan.slowMs?.[command]) await new Promise((resolve) => setTimeout(resolve, plan.slowMs[command]));
-if (plan.raw?.[command] !== undefined) {
-	process.stdout.write(plan.raw[command]);
-} else if (failure) {
-	process.stderr.write(failure.stderr ?? '');
-	process.exitCode = failure.exit ?? 1;
-} else if (command === 'pane list') {
-	process.stdout.write(JSON.stringify({ id: 'cli:pane:list', result: { panes: plan.panes ?? [] } }));
-} else if (command === 'workspace list') {
-	process.stdout.write(JSON.stringify({ id: 'cli:workspace:list', result: { type: 'workspace_list', workspaces: plan.workspaces ?? [] } }));
-} else if (command === 'agent list') {
-	process.stdout.write(JSON.stringify({ id: 'cli:agent:list', result: { agents: plan.agents ?? [] } }));
-} else if (command === 'tab list') {
-	const workspace = args[2] === '--workspace' ? args[3] : null;
-	const tabs = (plan.tabs ?? []).filter((/** @type {any} */ tab) => workspace === null || tab.workspace_id === workspace);
-	process.stdout.write(JSON.stringify({ id: 'cli:tab:list', result: { tabs } }));
-} else if (command === 'workspace create') {
-	const id = plan.created === undefined ? 'wNew' : plan.created;
-	const workspace = id === null ? {} : { workspace_id: id };
-	process.stdout.write(JSON.stringify({ id: 'cli:workspace:create', result: { workspace, tab: { tab_id: `${id}:t1` }, root_pane: { pane_id: `${id}:p1` } } }));
-} else if (command === 'pane close') {
-	plan.panes = (plan.panes ?? []).filter((/** @type {any} */ pane) => pane.pane_id !== args[2]);
-	plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.pane_id !== args[2]);
-	write(planFile, JSON.stringify(plan));
-	process.stdout.write(JSON.stringify({ id: 'cli:pane:close', result: { type: 'ok' } }));
-} else if (command === 'tab rename') {
-	plan.tabs = (plan.tabs ?? []).map((/** @type {any} */ tab) => (tab.tab_id === args[2] ? { ...tab, label: args.slice(3).join(' ') } : tab));
-	write(planFile, JSON.stringify(plan));
-	process.stdout.write(JSON.stringify({ id: 'cli:tab:rename', result: { type: 'ok' } }));
-} else if (command === 'agent prompt' || command === 'agent send-keys') {
-	process.stdout.write(JSON.stringify({ id: `cli:agent:${args[1]}`, result: { type: 'ok' } }));
-} else {
-	process.stderr.write(`unexpected herdr command: ${args.join(' ')}\n`);
-	process.exitCode = 2;
+	const series = plan.failSeries?.[command];
+	const failure = series?.length ? series.shift() : plan.fail?.[command];
+	if (series) write(planFile, JSON.stringify(plan));
+	if (plan.slowMs?.[command]) await new Promise((resolve) => setTimeout(resolve, plan.slowMs[command]));
+	if (plan.raw?.[command] !== undefined) {
+		stdout += plan.raw[command];
+	} else if (failure) {
+		stderr += failure.stderr ?? '';
+		code = failure.exit ?? 1;
+	} else if (command === 'pane list') {
+		stdout += JSON.stringify({ id: 'cli:pane:list', result: { panes: plan.panes ?? [] } });
+	} else if (command === 'workspace list') {
+		stdout += JSON.stringify({ id: 'cli:workspace:list', result: { type: 'workspace_list', workspaces: plan.workspaces ?? [] } });
+	} else if (command === 'agent list') {
+		stdout += JSON.stringify({ id: 'cli:agent:list', result: { agents: plan.agents ?? [] } });
+	} else if (command === 'tab list') {
+		const workspace = args[2] === '--workspace' ? args[3] : null;
+		const tabs = (plan.tabs ?? []).filter((/** @type {any} */ tab) => workspace === null || tab.workspace_id === workspace);
+		stdout += JSON.stringify({ id: 'cli:tab:list', result: { tabs } });
+	} else if (command === 'workspace create') {
+		const id = plan.created === undefined ? 'wNew' : plan.created;
+		const workspace = id === null ? {} : { workspace_id: id };
+		stdout += JSON.stringify({ id: 'cli:workspace:create', result: { workspace, tab: { tab_id: `${id}:t1` }, root_pane: { pane_id: `${id}:p1` } } });
+	} else if (command === 'pane close') {
+		plan.panes = (plan.panes ?? []).filter((/** @type {any} */ pane) => pane.pane_id !== args[2]);
+		plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.pane_id !== args[2]);
+		write(planFile, JSON.stringify(plan));
+		stdout += JSON.stringify({ id: 'cli:pane:close', result: { type: 'ok' } });
+	} else if (command === 'tab move') {
+		const tab = (plan.tabs ?? []).find((/** @type {any} */ candidate) => candidate.tab_id === args[2]);
+		if (tab) {
+			const own = plan.tabs.filter((/** @type {any} */ candidate) => candidate.workspace_id === tab.workspace_id);
+			const before = own[Number(args[3])];
+			const others = plan.tabs.filter((/** @type {any} */ candidate) => candidate !== tab);
+			const at = before === tab ? plan.tabs.indexOf(tab) : before ? others.indexOf(before) : others.length;
+			plan.tabs = [...others.slice(0, at), tab, ...others.slice(at)];
+			write(planFile, JSON.stringify(plan));
+		}
+		stdout += JSON.stringify({ result: { type: 'tab_moved' } });
+	} else if (command === 'tab rename') {
+		plan.tabs = (plan.tabs ?? []).map((/** @type {any} */ tab) => (tab.tab_id === args[2] ? { ...tab, label: args.slice(3).join(' ') } : tab));
+		write(planFile, JSON.stringify(plan));
+		stdout += JSON.stringify({ id: 'cli:tab:rename', result: { type: 'ok' } });
+	} else if (command === 'agent prompt' || command === 'agent send-keys') {
+		stdout += JSON.stringify({ id: `cli:agent:${args[1]}`, result: { type: 'ok' } });
+	} else {
+		stderr += `unexpected herdr command: ${args.join(' ')}\n`;
+		code = 2;
+	}
+
+	return { stdout, stderr, code };
+}
+if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) {
+	const [dir, ...args] = process.argv.slice(2);
+	const result = await runHerdr(dir, args);
+	process.stdout.write(result.stdout);
+	process.stderr.write(result.stderr);
+	process.exitCode = result.code;
 }

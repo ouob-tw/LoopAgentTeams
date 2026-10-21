@@ -8,7 +8,7 @@ let cookie: string;
 const DEADLINE_MS = 12_000;
 
 beforeAll(async () => {
-	fixture = await startFixture(3, {
+	fixture = await startFixture({
 		env: { LAT_BOARD_FALLBACK_SECONDS: '12', LAT_BOARD_HELPER_TIMEOUT_SECONDS: '2.75', LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS: '1', LAT_BOARD_HERDR_TIMEOUT_SECONDS: '1' }
 	});
 	cookie = await fixture.login();

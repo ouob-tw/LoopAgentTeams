@@ -1,7 +1,8 @@
 import { json } from '@sveltejs/kit';
 import { getBoard } from '#lib/server/board.ts';
 import { sendMessage, typedText } from '#lib/server/send.ts';
-import { readSent } from '#lib/server/sent-log.ts';
+import { readLines } from '#lib/server/sent-log.ts';
+import { readSent } from '#lib/server/sent-views.ts';
 import type { RequestHandler } from './$types';
 
 /** Type a message into a controller's client. Every attempt answers with its sent-log entry. */
@@ -20,5 +21,6 @@ export const GET: RequestHandler = ({ url }) => {
 	const controllerId = url.searchParams.get('controller');
 	if (!controllerId) return json({ error: 'missing_controller' }, { status: 400 });
 	const board = getBoard();
-	return json({ entries: readSent(board.config.stateDir, controllerId, board.config.now(), board.config.launchWaitMs), logError: board.sentLogError() });
+	const now = board.config.now();
+	return json({ entries: readSent(readLines(board.config.stateDir, now), controllerId, now, board.config.launchWaitMs), logError: board.sentLogError() });
 };

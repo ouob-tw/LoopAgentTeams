@@ -5,7 +5,7 @@
 // only as a completed item (the finished turn lists none) and `garbled` ends the turn with no turn,
 // `junk` answers with that text on a line of its own, which is not JSON; `prefix` answers with it
 // followed by what the input holds inside its tags, as a translation that keeps every marker would;
-// `delayMs` waits that long before ending the turn.
+// `omitReply` drops that numbered translation; `delayMs` waits that long before ending the turn.
 // `stderr` is written to standard error first, as Codex does with its own complaints.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
@@ -32,7 +32,12 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
 		if (plan.garbled) return write({ method: 'turn/completed', params: { threadId: 'thread-1' } });
 		if (plan.delayMs) await new Promise((resolve) => setTimeout(resolve, plan.delayMs));
 		const inner = text.replace(/^<[^>]+>\n?|\n?<\/[^>]+>$/g, '');
-		const item = { type: 'agentMessage', id: 'm1', text: plan.prefix !== undefined ? plan.prefix + inner : (plan.reply ?? '') };
+		const translated = text.includes('<reply id="')
+			? [...text.matchAll(/<reply id="(\d+)">\n?([\s\S]*?)\n?<\/reply>/g)]
+				.filter((match) => match[1] !== String(plan.omitReply))
+				.map((match) => `<reply id="${match[1]}">${plan.prefix}${match[2]}</reply>`).join('\n')
+			: plan.prefix + inner;
+		const item = { type: 'agentMessage', id: 'm1', text: plan.prefix !== undefined ? translated : (plan.reply ?? '') };
 		if (plan.itemOnly) {
 			write({ method: 'item/completed', params: { threadId: 'thread-1', turnId: 'turn-1', item } });
 			return write({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [], error: null } } });

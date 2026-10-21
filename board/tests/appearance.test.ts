@@ -11,7 +11,7 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(10);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());
@@ -184,7 +184,7 @@ test.each(['blocked', 'throwing'] as const)('with browser storage %s the startup
 
 const LONG_NAME = 'luna-lat-handoff-nova-next-miro-fix42-vega';
 
-test('a long controller name is whole in the tooltips and the rail explanation', async () => {
+test('a long controller name is whole on the card and in the rail explanation', async () => {
 	const long = fixture.bound('alpha', LONG_NAME, { questions: [question({ id: 'Q-1' }), question({ id: 'Q-2' })] });
 	fixture.report(long.session_id, { tag: 'NO REPLY', summary: '實作第二張票', hcom_name: LONG_NAME, workspace: long.workspace });
 	fixture.list([long]);
@@ -192,8 +192,9 @@ test('a long controller name is whole in the tooltips and the rail explanation',
 
 	const html = await page();
 
-	// The roster card and phone tag: project and full name, then status and phase.
-	expect(html).toMatch(new RegExp(`<button[^>]*class="person[^>]*title="alpha @${LONG_NAME}\\s+等你：實作第二張票"`));
+	// The roster card and phone tag: project and full name, then the phase; hovering or a long
+	// press explains it whole, as the folded rail's mark is explained.
+	expect(html).toMatch(new RegExp(`<button[^>]*class="person[^>]*>[^]*?alpha[^]*?@${LONG_NAME}[^]*?實作第二張票`));
 	// The folded rail's mark says whose it is, its status and how many questions wait.
 	expect(html).toMatch(new RegExp(`<button[^>]*class="entry[^>]*aria-label="alpha @${LONG_NAME}：等你，待決 2 題"`));
 });

@@ -1,6 +1,7 @@
+import { answerHerdrList } from './harness.ts';
+import { CHROME, launchChrome, type Browser, type Tab } from './browser.ts';
 // The 所有 Agent tab in a real browser: headless Chrome driven over its DevTools protocol, on the
 // built board with fake data, wide and at a phone's width. Skipped when the host has no Chrome.
-import { spawn, type ChildProcess } from 'node:child_process';
 import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -8,64 +9,9 @@ import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { AGENT_HCOM_UNKNOWN_REASON } from '../src/lib/board/agent-actions.ts';
 import { AGENT_FIXED_MODEL_REASON, AGENT_HCOM_UNKNOWN_SWITCH_REASON, AGENT_NOT_LINKED_SWITCH_REASON, LOCK_UNKNOWN_TEXT } from '../src/lib/board/models.ts';
-import { NODE, PORT_BASE, sleep, startFixture, type Fixture } from './harness.ts';
+import { NODE, sleep, startFixture, type Fixture } from './harness.ts';
 
-const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
-	(path) => path && existsSync(path)
-);
-const DEBUG_PORT = PORT_BASE + 33;
 
-/** One Chrome tab, spoken to over the DevTools protocol. */
-class Tab {
-	#socket: WebSocket;
-	#next = 0;
-	#waiting = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>();
-	constructor(socket: WebSocket) {
-		this.#socket = socket;
-		socket.addEventListener('message', (event) => {
-			const message = JSON.parse(String(event.data));
-			this.#waiting.get(message.id)?.(message);
-			this.#waiting.delete(message.id);
-		});
-	}
-	static async open(): Promise<Tab> {
-		const deadline = Date.now() + 10_000;
-		let target: { webSocketDebuggerUrl: string } | undefined;
-		while (!target) {
-			if (Date.now() > deadline) throw new Error('timed out waiting for Chrome to listen');
-			target = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/new?about:blank`, { method: 'PUT' }).then(
-				(response) => response.json(),
-				() => undefined
-			);
-			if (!target) await sleep(100);
-		}
-		const socket = new WebSocket(target.webSocketDebuggerUrl);
-		await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-		return new Tab(socket);
-	}
-	send(method: string, params: object = {}): Promise<any> {
-		const id = ++this.#next;
-		this.#socket.send(JSON.stringify({ id, method, params }));
-		return new Promise((resolve, reject) =>
-			this.#waiting.set(id, (message) => (message.error ? reject(new Error(message.error.message)) : resolve(message.result)))
-		);
-	}
-	async eval<T = unknown>(expression: string): Promise<T> {
-		const { result, exceptionDetails } = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-		if (exceptionDetails) throw new Error(`${expression}: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
-		return result.value;
-	}
-	async until(expression: string, what = expression, ms = 10_000) {
-		const deadline = Date.now() + ms;
-		while (!(await this.eval(expression).catch(() => false))) {
-			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}; the page shows ${JSON.stringify(await this.eval(SCREEN))}`);
-			await sleep(50);
-		}
-	}
-	close() {
-		this.#socket.close();
-	}
-}
 
 const SCREEN = `({ search: location.search, middle: document.querySelector('.inbox')?.innerText ?? '', detail: document.querySelector('.detail')?.innerText ?? '', notices: document.querySelector('.dock .toasts')?.innerText ?? '' })`;
 const screen = () => tab.eval<{ search: string; middle: string; detail: string; notices: string }>(SCREEN);
@@ -80,8 +26,7 @@ const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-inject-'));
 const socketPath = join(injectDir, 'herdr.sock');
 let socket: Server;
 let moveFails: string | null = null;
-let chrome: ChildProcess | undefined;
-let profile: string;
+let browser: Browser | undefined;
 let tab: Tab;
 
 function herdrAgent(session: string, fields: { client?: string; status?: string; workspace?: string; cwd?: string }) {
@@ -129,8 +74,11 @@ function record(session: string, texts: string[]) {
 
 beforeAll(async () => {
 	socket = createServer((connection) => {
-		connection.on('data', (chunk) => {
+		connection.on('data', async (chunk) => {
 			const request = JSON.parse(chunk.toString().trim());
+			if (!fixture) return connection.write(JSON.stringify({ id: request.id, result: { agents: [], workspaces: [], tabs: [] } }) + '\n');
+			const listing = await answerHerdrList(fixture.dir, request);
+			if (listing !== null) return connection.write(listing);
 			appendFileSync(join(fixture.dir, 'herdr-calls.jsonl'), JSON.stringify(['socket', request.method, request.params]) + '\n');
 			if (moveFails) return connection.write(JSON.stringify({ id: request.id, error: { message: moveFails } }) + '\n');
 			const planFile = join(fixture.dir, 'herdr.json');
@@ -148,7 +96,7 @@ beforeAll(async () => {
 	});
 	await new Promise<void>((resolve) => socket.listen(socketPath, resolve));
 	// The linked controller would be typed into through hcom's input command: a fake one.
-	fixture = await startFixture(32, {
+	fixture = await startFixture({
 		env: { LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-inject.mjs'), injectDir]), HERDR_SOCKET_PATH: socketPath }
 	});
 	cookie = await fixture.login();
@@ -161,12 +109,7 @@ beforeAll(async () => {
 	await fixture.refresh(cookie);
 }, 30_000);
 afterEach(async () => {
-	if (!chrome || chrome.exitCode !== null) return;
-	tab.close();
-	const exited = new Promise((resolve) => chrome!.once('exit', resolve));
-	chrome.kill('SIGKILL');
-	await exited;
-	rmSync(profile, { recursive: true, force: true });
+	await browser?.close();
 });
 afterAll(async () => {
 	await fixture?.cleanup();
@@ -176,13 +119,8 @@ afterAll(async () => {
 
 /** A new Chrome on the board at `search` in a window `width` wide. */
 async function visit(width: number, search = '') {
-	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	chrome = spawn(
-		CHROME!,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', `--user-data-dir=${profile}`, `--remote-debugging-port=${DEBUG_PORT}`, 'about:blank'],
-		{ stdio: 'ignore' }
-	);
-	tab = await Tab.open();
+	browser = await launchChrome({ screen: SCREEN });
+	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
@@ -651,6 +589,58 @@ for (const width of [1280, 390]) {
 		}
 	}, 30_000);
 }
+
+// The agent's menus by keys: it opens with the chosen item in focus; the arrows, Home and End
+// move round the list; Escape closes it and gives the focus back to its part; a click anywhere
+// else closes it too.
+const KEY_CODES = { ArrowDown: 40, ArrowUp: 38, Home: 36, End: 35, Escape: 27 } as const;
+async function press(name: keyof typeof KEY_CODES) {
+	for (const type of ['keyDown', 'keyUp']) await tab.send('Input.dispatchKeyEvent', { type, key: name, code: name, windowsVirtualKeyCode: KEY_CODES[name] });
+}
+test.skipIf(!CHROME)("the agent's model picker is worked by keys, and a click elsewhere closes its menu", async () => {
+	setLinked();
+	await fixture.refresh(cookie);
+	try {
+		await visit(1280, '?agent=s-link');
+		await tab.until(pickable('effort'), 'the switch parts');
+		const menu = `.dock .picker [role="menu"][aria-label="思考強度"]`;
+		const items = `[...document.querySelectorAll('${menu} [role="menuitemradio"]')]`;
+		const at = () => tab.eval<number>(`${items}.indexOf(document.activeElement)`);
+		await pickSetting('effort', 'high');
+		await tab.until(`!document.querySelector('${menu}')`, 'the menu closed by the pick');
+		await click(part('effort'));
+		await tab.until(`!!document.querySelector('${menu}')`, 'the menu again');
+		const count = await tab.eval<number>(`${items}.length`);
+		const chosen = await tab.eval<number>(`${items}.findIndex((b) => b.querySelector('small')?.innerText === 'high')`);
+		expect(count).toBeGreaterThan(2);
+		expect(await tab.eval(`${items}[${chosen}].getAttribute('aria-checked')`)).toBe('true');
+		expect(await at()).toBe(chosen);
+		await press('ArrowDown');
+		expect(await at()).toBe((chosen + 1) % count);
+		await press('ArrowUp');
+		expect(await at()).toBe(chosen);
+		await press('End');
+		expect(await at()).toBe(count - 1);
+		await press('ArrowDown');
+		expect(await at()).toBe(0);
+		await press('ArrowUp');
+		expect(await at()).toBe(count - 1);
+		await press('Home');
+		expect(await at()).toBe(0);
+		await press('Escape');
+		await tab.until(`!document.querySelector('${menu}')`, 'the menu closed by Escape');
+		expect(await tab.eval(`document.activeElement === document.querySelector(${JSON.stringify(part('effort'))})`)).toBe(true);
+		await click(part('effort'));
+		await tab.until(`!!document.querySelector('${menu}')`, 'the menu again');
+		await tab.pointerClick('.detail .topbar .whose');
+		await tab.until(`!document.querySelector('${menu}')`, 'the menu closed by a click elsewhere');
+		await click('.dock .picker .discard');
+	} finally {
+		setHerdr(AGENTS);
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+		await fixture.refresh(cookie);
+	}
+}, 30_000);
 
 test.skipIf(!CHROME)('繼續切換 asks first and resumes an unfinished switch; a busy agent, or one not linked, says why it cannot switch', async () => {
 	for (const file of ['hcom-calls.jsonl', 'hcom-added.json', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
@@ -1210,5 +1200,44 @@ for (const width of [1280, 390]) {
 		const log = await tab.eval<string>(`document.querySelector('.detail #agent-panel-log').innerText`);
 		expect(log).toContain('「分頁-s-plain」改為「審查」');
 		expect(log).toContain('label refused');
+	}, 30_000);
+}
+
+for (const width of [1280, 390]) {
+	const touch = width < 761;
+	test.skipIf(!CHROME)(`${width}px: a controller's card adds its duty to ${touch ? 'its long-press menu' : 'its hover explanation and menu'}; the card itself does not show it`, async () => {
+		const duty = join(fixture.reportsDir, 's-lead.duty.json');
+		writeFileSync(duty, JSON.stringify({ text: '整理看板名冊', expected: '名冊顯示職責', time: new Date().toISOString() }));
+		try {
+			await freshTabs();
+			await visit(width);
+			if (touch) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+			await openTab();
+			await tab.until(`!!document.querySelector(${JSON.stringify(CARD('s-lead'))})`, 'the list');
+			expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(CARD('s-lead'))}).innerText`)).not.toContain('整理看板名冊');
+			expect(await tab.eval(`document.querySelector('[data-agent="s-lead"]').hasAttribute('title')`)).toBe(false);
+
+			if (!touch) {
+				await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...(await point(CARD('s-lead'), 40)) });
+				await tab.until(`document.querySelector('#agent-tip')?.innerText.includes('整理看板名冊')`, "the controller's explanation");
+				const tip = await tab.eval<string>(`document.querySelector('#agent-tip').innerText`);
+				// Where it is first, then its duty and the result it expects.
+				expect(tip.indexOf('分頁 分頁-s-lead')).toBeGreaterThan(-1);
+				expect(tip.indexOf('分頁 分頁-s-lead')).toBeLessThan(tip.indexOf('整理看板名冊'));
+				expect(tip).toContain('預期結果');
+				// An agent that is no controller is explained without a duty.
+				await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...(await point(CARD('s-plain'), 40)) });
+				await tab.until(`document.querySelector('#agent-tip')?.innerText.includes('分頁-s-plain')`, "the other agent's explanation");
+				expect(await tab.eval<string>(`document.querySelector('#agent-tip').innerText`)).not.toContain('預期結果');
+			}
+
+			await openMenu(touch, 's-lead');
+			expect(await tab.eval<string>(`document.querySelector('.menu').innerText`)).toMatch(/^整理看板名冊\s+預期結果\s*名冊顯示職責/);
+			expect(await tab.eval(`[...document.querySelectorAll('.menu button')].map((item) => item.innerText)`)).toEqual(['改分頁名稱']);
+			expect(await tab.eval(`!!document.querySelector('#agent-tip')`)).toBe(false);
+			expect(await tab.eval(FITS)).toBe(true);
+		} finally {
+			rmSync(duty, { force: true });
+		}
 	}, 30_000);
 }

@@ -2,7 +2,7 @@
 	// Wide: roster, inbox and content side by side, the roster foldable into a rail and both
 	// column borders draggable. Narrow: the roster strip above the inbox, and one content screen
 	// at a time once something is opened.
-	import { onMount, tick, untrack } from 'svelte';
+	import { onMount, untrack } from 'svelte';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
@@ -12,35 +12,20 @@
 	import type { InboxSort } from '#lib/board/inbox.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { LiveBoard } from '#lib/board/live.svelte.ts';
-	import {
-		advance,
-		arrive,
-		listScrollIn,
-		placeIn,
-		samePlace,
-		searchOf,
-		tabIn,
-		viewOf,
-		withListScroll,
-		type MiddleTab,
-		type Place,
-		type Trail,
-		type View
-	} from '#lib/board/navigation.ts';
+	import { placeIn, tabIn, viewOf, type Place } from '#lib/board/navigation.ts';
+	import { Navigation } from '#lib/board/navigation.svelte.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { voice } from '#lib/board/voice.svelte.ts';
 	import { folderName, workspaceFolders } from '#lib/board/agents.ts';
-	import { MIDDLE_TAB_KEY, remember, remembered, type Column } from '#lib/board/prefs.ts';
+	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
-	import { askedTogether, withAnswered } from '#lib/board/question-message.ts';
-	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
-	import { everyController, type InboxItem, type InboxQuestion, type InboxReport, type KnownAgent } from '#lib/board/types.ts';
+	import { everyController, type InboxItem, type KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
 	import AgentList from '#lib/components/AgentList.svelte';
 	import ClosedAgentInfo from '#lib/components/ClosedAgentInfo.svelte';
 	import ClosedAgents from '#lib/components/ClosedAgents.svelte';
 	import CommandLine from '#lib/components/CommandLine.svelte';
-	import ControllerInfo from '#lib/components/ControllerInfo.svelte';
+	import ControllerPage from '#lib/components/ControllerPage.svelte';
 	import Inbox from '#lib/components/Inbox.svelte';
 	import ItemContent from '#lib/components/ItemContent.svelte';
 	import NewController from '#lib/components/NewController.svelte';
@@ -72,22 +57,6 @@
 		sort = remembered(SORT_KEY, ['time', 'project'], 'time');
 	});
 	let showArchive = $state(false);
-
-	/** The middle column's list. The address names it, so the server draws the right one at first;
-	 *  an address without one (typed, or from before) gets this device's last choice. */
-	const MIDDLE_TABS = ['inbox', 'agents', 'quota'] as const;
-	let middle = $state<MiddleTab>(tabIn(page.url.searchParams) ?? 'inbox');
-	onMount(() => {
-		if (tabIn(new URLSearchParams(location.search))) return;
-		setMiddle(remembered(MIDDLE_TAB_KEY, MIDDLE_TABS, 'inbox'));
-	});
-	/** Show a list, and say it in this history entry's address; switching lists is no new screen. */
-	function setMiddle(next: MiddleTab) {
-		middle = next;
-		remember(MIDDLE_TAB_KEY, next);
-		const search = searchOf(addressed(), next);
-		if (search !== location.search) history.replaceState(history.state, '', `${location.pathname}${search}`);
-	}
 
 	onMount(() => appearance.restore());
 	onMount(() => voice.restore());
@@ -145,12 +114,57 @@
 	const answered = $derived(board.answered.questions);
 	const known = $derived([...inbox, ...processed, ...answered]);
 	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers, agents, closed: closed.agents, workspaces });
-	/** The screen the address names; a reload opens it again. */
-	const addressed = () => placeIn(new URLSearchParams(location.search));
-	/** The browser starts from the real address: under shallow routing page.url stays at the last full
-	 *  load, so a remount (HMR) would otherwise open a stale screen. The server has only page.url. */
-	// svelte-ignore state_referenced_locally
-	let view = $state<View>(viewAt(typeof location !== 'undefined' ? addressed() : placeIn(page.url.searchParams)));
+
+	let detail: HTMLElement;
+	/** The screen shown and the browser's history. The middle column's list is in the address too,
+	 *  so the server draws the right one at first. The browser starts from the real address: under
+	 *  shallow routing page.url stays at the last full load, so a remount (HMR) would otherwise
+	 *  open a stale screen. The server has only page.url. */
+	const navigation = new Navigation(
+		{
+			browser: {
+				search: () => location.search,
+				pathname: () => location.pathname,
+				state: () => history.state,
+				depth: () => page.state.depth,
+				replaceState: (state, url) => history.replaceState(state, '', url),
+				back: () => history.back(),
+				write: (url, replace, depth) => goto(url, { shallow: true, replace, state: { depth }, persistState: true }),
+				scrollY: () => window.scrollY
+			},
+			viewAt,
+			archive: board,
+			showing(next) {
+				if (next?.kind === 'item') {
+					lost = null;
+					locate(controllers.some((candidate) => candidate.id === next.item.controllerId));
+				} else locate(false);
+				// A read report leaves the inbox list once another screen replaces it, not while it is open.
+				lingering = next?.kind === 'item' && listedInbox.some((entry) => entry.key === next.item.key) ? next.item.key : null;
+			},
+			shown(next, scrollY) {
+				detail.scrollTop = 0;
+				// On a phone the button that was just pressed is hidden now; keep the keyboard on screen.
+				if (next !== null) detail.focus({ preventScroll: true });
+				window.scrollTo(0, scrollY);
+			}
+		},
+		{
+			view: viewAt(typeof location !== 'undefined' ? placeIn(new URLSearchParams(location.search)) : placeIn(page.url.searchParams)),
+			middle: tabIn(page.url.searchParams) ?? 'inbox'
+		}
+	);
+	onMount(() => navigation.restoreMiddle());
+	afterNavigate(({ type }) => {
+		if (type === 'enter') navigation.enter();
+	});
+	onMount(() => {
+		const popped = (event: PopStateEvent) => navigation.popped(event.state);
+		addEventListener('popstate', popped);
+		return () => removeEventListener('popstate', popped);
+	});
+	const view = $derived(navigation.view);
+	const middle = $derived(navigation.middle);
 
 	// The archive is fetched when its view is open, and again with every new snapshot: a report may
 	// have moved into it. A fetch that failed is retried only with its button.
@@ -176,26 +190,6 @@
 	const herdrControllers = $derived(everyController(board.snapshot));
 	/** The open agent as the controller it is, while Herdr lists it: its page is the controller's. */
 	const agentController = $derived(agent?.controller && agent.inHerdr ? herdrControllers.find((candidate) => candidate.id === agent.id) : undefined);
-	/** The question or report of that page last opened from its own bars and report list: shown where
-	 *  it is in the conversation, without leaving the Herdr tab. */
-	let agentOpened = $state.raw<InboxItem | null>(null);
-	/** That item as the board's data has it now, so an answer or a read shows on it too; as it was
-	 *  opened once the data no longer has it. */
-	const agentTarget = $derived(agentOpened && (known.find((candidate) => candidate.key === agentOpened!.key) ?? agentOpened));
-	let agentOpens = $state(0);
-	$effect.pre(() => {
-		void agentId;
-		agentOpened = null;
-	});
-	function openInAgent(next: InboxItem) {
-		agentOpened = next;
-		agentOpens++;
-		// Opening reads an inbox report here too, as `openItem` does.
-		const listed = inbox.find((entry) => entry.key === next.key);
-		if (listed?.kind === 'report' && listed.readAt === null) {
-			board.mark(listed.key, true).catch(() => toasts.show('failed', '沒有標為已讀，請重新點開再試一次。'));
-		}
-	}
 	/** The workspace whose new-agent form is open; null when none is. */
 	const newIn = $derived(view?.kind === 'new-agent' ? view.workspace : null);
 	/** That form's workspace, with the folders its agents work in; undefined once Herdr no longer lists it. */
@@ -205,52 +199,20 @@
 		const own = agents.filter((candidate) => candidate.inHerdr && candidate.herdr.workspace === workspace.id);
 		return { workspace: workspace.id, label: workspace.label, folders: workspaceFolders(own) };
 	});
-	// Read again with every new snapshot: a question of the inbox may have been answered and recorded.
-	$effect(() => {
-		void board.snapshot;
+	// A new object or unrelated activity must not reload the answered history.
+	const answeredKey = $derived.by(() => {
 		const id = controllerId ?? agentController?.id;
-		// Untracked: the read sets what it reads, which must not start it again.
+		return JSON.stringify([id, board.snapshot.inbox.filter((item) => item.kind === 'question' && item.controllerId === id)
+			.map((item) => item.kind === 'question' ? [item.question.id, item.question.revision, item.question.status] : [])]);
+	});
+	$effect(() => {
+		const [id] = JSON.parse(answeredKey);
 		if (id) untrack(() => void board.loadAnswered(id));
 	});
 
 	/** The question whose asking message is not found in its conversation, or the conversation
 	 *  cannot be read, at this opening: it is shown as if no message had asked it. */
 	let lost = $state<string | null>(null);
-	/** An opened item is shown in its controller's conversation: a report at its own message, a
-	 *  question at the message that asked it, or where that message will come. */
-	const placed = $derived(item && item.key !== lost ? item : null);
-	/** The cards shown at the asking message: every question of the inbox it asked, in its order. */
-	const together = $derived(item?.kind === 'question' ? askedTogether(item, withAnswered(inbox, answered)) : item ? [item] : []);
-	function lose(key: string) {
-		lost = key;
-		locate(false);
-	}
-	/** The controller of the lost question while it is open. */
-	const lostController = $derived(lost && item?.key === lost ? item.controllerId : null);
-	/** The lost question's conversation as read since it was lost. */
-	let lostSeen = $state.raw<TranscriptView | null>(null);
-	// Lost is not for good: a turn's text may reach the conversation a moment after its report,
-	// so its later pages are still watched, and the question is shown at its asking message once
-	// one has it.
-	$effect(() => {
-		if (!lostController) return;
-		const source = new EventSource(`/api/transcript/events?controller=${encodeURIComponent(lostController)}`);
-		source.addEventListener('transcript', (event) => {
-			const update: TranscriptUpdate = JSON.parse((event as MessageEvent).data);
-			if (update.ok) lostSeen = withLatest(lostSeen, update.page);
-		});
-		return () => {
-			source.close();
-			lostSeen = null;
-		};
-	});
-	// Checked again when the question changes too: a revised question is asked in a new message,
-	// which may have come before the revision did.
-	$effect(() => {
-		if (!lostController || item?.kind !== 'question' || !lostSeen) return;
-		const place = questionPlace(lostSeen, item, controller?.lastReportAt ?? null);
-		if (typeof place === 'number' || place === 'pending') lost = null;
-	});
 
 	/** Containers of the unfolded roster whose own surface, not a card or control, was clicked. */
 	const ROSTER_BLANK = '.roster, .unfolded, .summary, .counts, .people, .sep, .summary .tools';
@@ -276,7 +238,6 @@
 		view?.kind === 'item' ? item : controller && { project: controller.project, hcomName: controller.hcomName }
 	);
 
-	let detail: HTMLElement;
 	/** The command line's height, kept clear at the end of a phone's page. */
 	let dockHeight = $state(0);
 	/** How far the on-screen keyboard reaches over the page; the phone's command line sits above it. */
@@ -293,9 +254,6 @@
 			viewport.removeEventListener('scroll', place);
 		};
 	});
-	/** Where the phone's list was scrolled to before a content screen replaced it. */
-	let listScroll = 0;
-
 	/** Set while an opened report, or a question's asking message, is being found in its
 	 *  conversation: a copy of its card covers the content where it will be, so the page never
 	 *  shows its top first. */
@@ -310,108 +268,11 @@
 		if (on) locateTimer = setTimeout(() => locate(false), 8_000);
 	}
 
-	/** History writes and the screens shown after them, one after another: each reads the entry the
-	 *  one before has left. One that fails does not stop the ones after it. */
-	let moving: Promise<unknown> = Promise.resolve();
-	function queue(step: () => unknown) {
-		moving = moving.then(step).catch((error) => console.error(error));
-	}
-	function move(step: (trail: Trail, depth: number | undefined) => void) {
-		queue(async () => {
-			const writes: (() => Promise<void>)[] = [];
-			const write = (replace: boolean) => (place: Place, depth: number) =>
-				void writes.push(() =>
-					goto(`${location.pathname}${searchOf(place, middle)}`, { shallow: true, replace, state: { depth }, persistState: true })
-				);
-			step({ push: write(false), replace: write(true) }, page.state.depth);
-			for (const next of writes) await next();
-		});
-	}
-	afterNavigate(({ type }) => {
-		if (type !== 'enter') return;
-		move((trail, depth) => arrive(addressed(), depth, trail));
-		// After the first writes, which may put the list in front of the address for a moment.
-		if (view?.kind === 'missing') queue(() => void restore(addressed()));
-	});
-	/** Set while the archive is read for an item the address names, so it is not called missing
-	 *  before then; the first render is such a case too. */
-	// svelte-ignore state_referenced_locally
-	let seeking = $state(view?.kind === 'missing' && view.what === 'item');
-	/** The screen of an address arrived at by going back or forward, or by a reload. A report not in
-	 *  the inbox may be in the archive, which is read first, page after page until it is found or
-	 *  the archive ends. */
-	let restores = 0;
-	async function restore(place: Place) {
-		// Only the latest restore shows its screen, and ends the seeking.
-		const own = ++restores;
-		if (viewAt(place)?.kind === 'missing' && place?.kind === 'item' && (board.archive === null || board.earlierFrom)) {
-			seeking = true;
-			if (board.archive === null) await board.loadArchive();
-			// Each round must get further back; one that fails or does not stops. A page the archive
-			// view is already reading counts as a round.
-			let from = board.earlierFrom;
-			while (own === restores && viewAt(place)?.kind === 'missing' && from) {
-				await board.loadEarlier();
-				if (board.archiveEarlier === 'failed' || board.earlierFrom === from) break;
-				from = board.earlierFrom;
-			}
-			if (own !== restores) return;
-			seeking = false;
-			if (!samePlace(place, addressed())) return;
-		}
-		seeking = false;
-		await present(viewAt(place));
-	}
-	onMount(() => {
-		const popped = (event: PopStateEvent) => {
-			listScroll = listScrollIn(event.state) ?? listScroll;
-			middle = tabIn(new URLSearchParams(location.search)) ?? 'inbox';
-			void restore(addressed());
-		};
-		addEventListener('popstate', popped);
-		return () => removeEventListener('popstate', popped);
-	});
-	/** Open a screen from the one shown, one history entry further. It is shown once the address
-	 *  names it, so a back pressed meanwhile can never leave the two apart. */
-	function go(next: Place) {
-		move((trail, depth) => {
-			const here = addressed();
-			if (here === null) history.replaceState(withListScroll(history.state, window.scrollY), '');
-			advance(next, { place: here, depth: depth ?? 0 }, trail);
-		});
-		queue(() => present(viewAt(next)));
-	}
-	/** The top bar's "←": every screen but the list has a board entry behind it. */
-	const back = () => queue(() => history.back());
-
-	async function show(next: View) {
-		if (next?.kind !== 'item') locate(false);
-		// A read report leaves the inbox list once another screen replaces it, not while it is open.
-		lingering = next?.kind === 'item' && listedInbox.some((entry) => entry.key === next.item.key) ? next.item.key : null;
-		if (view === null) listScroll = window.scrollY;
-		view = next;
-		await tick();
-		// New content starts at its top; going back returns to the same place in the list.
-		detail.scrollTop = 0;
-		// On a phone the button that was just pressed is hidden now; keep the keyboard on screen.
-		if (next !== null) detail.focus({ preventScroll: true });
-		window.scrollTo(0, next === null ? listScroll : 0);
-	}
-	/** Counts openings, so opening the open report again, or going back to it, scrolls back to it. */
-	let opens = $state(0);
-	function present(next: View) {
-		if (next?.kind === 'item') {
-			opens++;
-			lost = null;
-			locate(controllers.some((candidate) => candidate.id === next.item.controllerId));
-		}
-		return show(next);
-	}
 	function openItem(next: InboxItem) {
 		kept.set(next.key, next);
 		// Kept on the list from now: the read state may reach the page before the item is shown.
 		if (listedInbox.some((entry) => entry.key === next.key)) lingering = next.key;
-		go({ kind: 'item', key: next.key });
+		navigation.go({ kind: 'item', key: next.key });
 		// Opening an inbox report reads it. Only opening does: a report marked unread stays unread
 		// while it is still open. An archived report keeps the read state it had.
 		const listed = inbox.find((entry) => entry.key === next.key);
@@ -419,7 +280,7 @@
 			board.mark(listed.key, true).catch(() => toasts.show('failed', '沒有標為已讀，請重新點開再試一次。'));
 		}
 	}
-	const openController = (id: string) => go({ kind: 'controller', id });
+	const openController = (id: string) => navigation.go({ kind: 'controller', id });
 	/** The phone's top-bar title: from an item it opens the controller's page; on that page it only
 	 *  scrolls back to the top, so there is no new history entry. */
 	function tapTitle() {
@@ -428,9 +289,9 @@
 		detail.scrollTop = 0;
 		window.scrollTo(0, 0);
 	}
-	const openLaunch = () => go({ kind: 'launch' });
-	const openAgent = (id: string) => go({ kind: 'agent', id });
-	const openNewAgent = (workspace: string) => go({ kind: 'new-agent', workspace });
+	const openLaunch = () => navigation.go({ kind: 'launch' });
+	const openAgent = (id: string) => navigation.go({ kind: 'agent', id });
+	const openNewAgent = (workspace: string) => navigation.go({ kind: 'new-agent', workspace });
 
 	const pending = $derived(inbox.filter((entry) => entry.kind === 'question' && entry.unsent).length);
 	const unread = $derived(inbox.filter((entry) => entry.kind === 'report' && entry.readAt === null).length);
@@ -439,33 +300,6 @@
 {#snippet names(owner: { project: string; hcomName: string })}
 	<strong>{owner.project}</strong>
 	<span class="handle">@{owner.hcomName}</span>
-{/snippet}
-
-{#snippet placedCard(item: InboxItem, copy = false)}
-	<ItemContent
-		{item}
-		listed={item.key === openKey ? listed : known.some((entry) => entry.key === item.key)}
-		recorded={board.snapshot.recordedKeys.includes(item.key)}
-		handle={item.hcomName}
-		onunread={copy ? async () => {} : (key) => board.mark(key, false)}
-	/>
-{/snippet}
-
-{#snippet doneCard(report: InboxReport)}
-	<ItemContent
-		item={report}
-		listed
-		handle={report.hcomName}
-		onunread={(key) => board.mark(key, false)}
-		onread={(key) => board.mark(key, true)}
-	/>
-{/snippet}
-
-{#snippet askedCards(entries: InboxQuestion[])}
-	<!-- An opened one among them is the one scrolled to, from the inbox or the Herdr tab. -->
-	{#each entries as entry (entry.key)}
-		<div class="asked" data-opened={entry.key === (openKey ?? agentTarget?.key) || undefined}>{@render placedCard(entry)}</div>
-	{/each}
 {/snippet}
 
 {#snippet refresh()}
@@ -563,16 +397,16 @@
 			<!-- Drawn as tabs; a pair of pressed buttons to assistive technology, like the inbox's own
 			     views, as the list they switch has no panel of its own around it. -->
 			<div class="middle-tabs" role="group" aria-label="清單">
-				<button type="button" data-middle="inbox" aria-pressed={middle === 'inbox'} onclick={() => (setMiddle('inbox'), voice.tap())}>待辦</button>
-				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => setMiddle('agents')}
+				<button type="button" data-middle="inbox" aria-pressed={middle === 'inbox'} onclick={() => (navigation.setMiddle('inbox'), voice.tap())}>待辦</button>
+				<button type="button" data-middle="agents" aria-pressed={middle === 'agents'} onclick={() => navigation.setMiddle('agents')}
 					>Herdr<small>{agents.length}</small></button
 				>
-				<button type="button" data-middle="quota" aria-pressed={middle === 'quota'} onclick={() => setMiddle('quota')}>額度</button>
+				<button type="button" data-middle="quota" aria-pressed={middle === 'quota'} onclick={() => navigation.setMiddle('quota')}>額度</button>
 			</div>
 			{#if middle === 'quota'}
 				<QuotaList quota={board.quota} />
 			{:else if middle === 'agents'}
-				<AgentList {agents} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
+				<AgentList {agents} {controllers} {workspaces} currentId={agentId} {newIn} onopen={openAgent} onnew={openNewAgent} />
 				<ClosedAgents {closed} currentId={agentId} onopen={openAgent} />
 			{:else}
 				<Inbox
@@ -603,7 +437,7 @@
 				<p class="empty">{middle === 'agents' ? '從 Herdr 清單選一個 Agent，看它的對話紀錄。' : '從待辦選一則，或點主控名稱看它的資訊。'}</p>
 			{:else}
 				<div class="topbar">
-					<button onclick={back} aria-label="返回">←</button>
+					<button onclick={() => navigation.back()} aria-label="返回">←</button>
 					{#if agent}
 						<span class="whose" title="{agent.folder} {agent.name}">
 							<strong>{folderName(agent.folder)}</strong>
@@ -641,31 +475,12 @@
 						<p class="empty">Herdr 裡已經沒有這個工作區。</p>
 					{:else if board.archive === 'failed' || (board.archiveEarlier === 'failed' && board.earlierFrom)}
 						<p class="empty">待辦裡沒有這一則，已處理的項目也讀不出來；可以重新整理再試一次。</p>
-					{:else if !seeking}
+					{:else if !navigation.seeking}
 						<p class="empty">這一則已不存在。</p>
 					{/if}
 				{:else if view.kind === 'agent'}
 					{#if agent && agentController}
-						<ControllerInfo
-							tabMoves={board.tabMoves}
-							controller={agentController}
-							{agent}
-							items={inbox.filter((entry) => entry.controllerId === agentController.id)}
-							answered={answered.filter((entry) => entry.controllerId === agentController.id)}
-							onopen={openInAgent}
-							target={agentTarget ?? undefined}
-							opens={agentOpens}
-							questionCards={askedCards}
-							reportCard={doneCard}
-						>
-							{#snippet card()}
-								{#if agentTarget?.kind === 'report' && agentTarget.tag === 'DONE'}
-									{@render doneCard(agentTarget)}
-								{:else if agentTarget}
-									{@render placedCard(agentTarget)}
-								{/if}
-							{/snippet}
-						</ControllerInfo>
+						<ControllerPage {board} controller={agentController} {agent} {known} {openKey} {listed} onopen={openItem} oncontroller={openController} />
 					{:else if agent}
 						<AgentInfo {agent} />
 					{:else if closedAgent}
@@ -683,43 +498,28 @@
 					{/if}
 				{:else if view.kind === 'controller'}
 					{#if controller}
-						<ControllerInfo
-							tabMoves={board.tabMoves}
-							{controller}
-							idleAgent={controllerAgent}
-							items={inbox.filter((entry) => entry.controllerId === controller.id)}
-							answered={answered.filter((entry) => entry.controllerId === controller.id)}
-							onopen={openItem}
-							questionCards={askedCards}
-						/>
+						<ControllerPage {board} {controller} idleAgent={controllerAgent} {known} {openKey} {listed} onopen={openItem} oncontroller={openController} />
 					{:else}
 						<p class="empty">這個主控已經不在名冊上：它已停用 LAT 或已關閉，回報也都封存了。</p>
 					{/if}
-				{:else if item && placed && controller}
-					<!-- A report is the controller's last text of its turn, and a question was asked in
-					     one: shown in its conversation. -->
-					<ControllerInfo
-						tabMoves={board.tabMoves}
+				{:else if item && controller}
+					<ControllerPage
+						{board}
 						{controller}
 						idleAgent={controllerAgent}
-						items={inbox.filter((entry) => entry.controllerId === controller.id)}
-						answered={answered.filter((entry) => entry.controllerId === controller.id)}
+						{known}
+						{openKey}
+						{listed}
 						onopen={openItem}
-						target={placed}
-						{opens}
+						oncontroller={openController}
+						{item}
+						opens={navigation.opens}
 						{copy}
 						onplaced={() => locate(false)}
-						onunplaced={item.kind === 'question' ? () => lose(item.key) : undefined}
-						questionCards={askedCards}
-					>
-						{#snippet card()}
-							<!-- The opened one is scrolled to; the others the same message asked are answerable too. -->
-							{#each together as entry (entry.key)}
-								<div class="asked" data-opened={entry.key === item.key || undefined}>{@render placedCard(entry)}</div>
-							{/each}
-						{/snippet}
-					</ControllerInfo>
+						bind:lost
+					/>
 				{:else if item}
+					<!-- An archived item of a controller that has left the roster. -->
 					{#if item.kind === 'question' && (!item.askedIn || item.key === lost)}
 						<p class="empty">找不到提出這題的原訊息。</p>
 					{/if}
@@ -731,13 +531,7 @@
 							onunread={(key) => board.mark(key, false)}
 						/>
 					{/key}
-					{#if controller}
-						<button class="context" onclick={() => openController(controller.id)}>
-							{item.project} · @{item.hcomName}　看主控資訊 →
-						</button>
-					{:else}
-						<p class="context">{item.project} · @{item.hcomName}（已不在名冊上）</p>
-					{/if}
+					<p class="context">{item.project} · @{item.hcomName}（已不在名冊上）</p>
 				{/if}
 			{/if}
 		</section>
@@ -745,7 +539,9 @@
 			<!-- Where the report's card will be once its conversation is scrolled to it. It scrolls
 			     to be read meanwhile, and the card is placed where it is read. -->
 			<div class="placeholder" aria-hidden="true" bind:this={copy}>
-				<div inert>{@render placedCard(item, true)}</div>
+				<div inert>
+					<ItemContent {item} {listed} recorded={board.snapshot.recordedKeys.includes(item.key)} handle={item.hcomName} onunread={async () => {}} />
+				</div>
 			</div>
 		{/if}
 
@@ -1019,25 +815,11 @@
 			padding: 0.9rem;
 		}
 	}
-	/* One question card after another, as the message asked them. */
-	.asked + .asked {
-		margin-top: 0.5rem;
-	}
 	.context {
 		margin: 0;
-		padding: 0;
-		background: none;
-		border: 0;
 		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
-		text-align: left;
 		overflow-wrap: anywhere;
-	}
-	button.context {
-		color: var(--accent);
-	}
-	button.context:hover {
-		text-decoration: underline;
 	}
 	.topbar {
 		display: none;

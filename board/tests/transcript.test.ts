@@ -10,7 +10,7 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(22);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());
@@ -193,23 +193,23 @@ test('closing the page ends the helper and the process it was waiting on', async
 	}
 });
 
-test('helper output past 64 MiB on either stream is refused, as before', async () => {
+test('helper output past 64 MiB on either stream is refused as too large', async () => {
 	const rona = await bind('iota', 'rona');
 	const plan = JSON.parse(readFileSync(join(fixture.dir, 'helper.json'), 'utf8'));
 	const valid = { status: 'ok', path: '/x.jsonl', items: [], before: null, skipped: 0 };
 	const over = 65 * 1024 * 1024;
 	try {
 		fixture.setHelper({ ...plan, transcript: { output: valid, padBytes: over } });
-		expect(await page(rona.session_id)).toEqual({ ok: false, reason: 'stdout maxBuffer length exceeded' });
+		expect(await page(rona.session_id)).toEqual({ ok: false, reason: '輸出過大（stdout 超過 64 MB）' });
 
 		fixture.setHelper({ ...plan, transcript: { output: valid, stderrBytes: over } });
-		expect(await page(rona.session_id)).toEqual({ ok: false, reason: 'stderr maxBuffer length exceeded' });
+		expect(await page(rona.session_id)).toEqual({ ok: false, reason: '輸出過大（stderr 超過 64 MB）' });
 
 		// The same through the live feed, whose helper leads its own process group.
 		const feed = follow(rona.session_id);
 		try {
 			const update = await until(() => feed.updates[0], 10_000, 'the first update');
-			expect(update).toEqual({ ok: false, reason: 'stderr maxBuffer length exceeded' });
+			expect(update).toEqual({ ok: false, reason: '輸出過大（stderr 超過 64 MB）' });
 		} finally {
 			feed.close();
 		}

@@ -37,10 +37,24 @@ const STDERR_TAIL = 300;
 /** The least kept of stderr while reading. */
 const STDERR_KEPT = 16_384;
 
+/** Mark original character ranges before replacing anything, so overlaps cannot hide a match. */
+function markSecrets(value: string, secrets: CodexTurn['secrets'], hidden: boolean[]): void {
+	for (const secret of secrets) {
+		if (!secret) continue;
+		for (let at = value.indexOf(secret); at >= 0; at = value.indexOf(secret, at + 1)) hidden.fill(true, at, at + secret.length);
+	}
+}
+
 /** The value with every secret taken out. */
 function hide(turn: CodexTurn, value: string): string {
-	for (const secret of turn.secrets) if (secret) value = value.replaceAll(secret, '…');
-	return value;
+	const hidden = Array<boolean>(value.length).fill(false);
+	markSecrets(value, turn.secrets, hidden);
+	let clean = '';
+	for (let at = 0; at < value.length; at++) {
+		if (!hidden[at]) clean += value[at];
+		else if (at === 0 || !hidden[at - 1]) clean += '…';
+	}
+	return clean;
 }
 
 /** One journal line for a failed turn: why, how the child ended, and the tail of what it wrote to stderr. */
@@ -64,13 +78,35 @@ export function codexTurn(turn: CodexTurn): Promise<Outcome<string>> {
 		let settled = false;
 		let ended: string | null = null;
 		let stderr = '';
+		let pendingStderr = '';
+		let hidden: boolean[] = [];
+		let lastHidden = false;
+		const secrets = turn.secrets.filter((secret): secret is string => !!secret).sort((a, b) => b.length - a.length);
+		const longest = secrets[0]?.length ?? 0;
+		/** Keep the final longest-secret window raw, so future chunks can complete overlapping
+		 *  secrets. Marked characters stay marked even after their matching prefix was emitted. */
+		const flushStderr = (final: boolean) => {
+			markSecrets(pendingStderr, secrets, hidden);
+			const count = final ? pendingStderr.length : Math.max(0, pendingStderr.length - longest);
+			for (let at = 0; at < count; at++) {
+				if (!hidden[at]) stderr += pendingStderr[at];
+				else if (!lastHidden) stderr += '…';
+				lastHidden = hidden[at];
+			}
+			stderr = stderr.slice(-STDERR_KEPT);
+			pendingStderr = pendingStderr.slice(count);
+			hidden = hidden.slice(count);
+		};
 		/** `logged` stands in for the reason in the journal when the reason quotes what Codex sent. */
 		const finish = (outcome: Outcome<string>, logged?: string) => {
 			if (settled) return;
 			settled = true;
 			clearTimeout(timer);
 			end(child);
-			if (!outcome.ok) logFailure(turn, logged ?? outcome.reason, ended, stderr);
+			if (!outcome.ok) {
+				flushStderr(true);
+				logFailure(turn, logged ?? outcome.reason, ended, stderr);
+			}
 			resolve(outcome);
 		};
 		const timer = setTimeout(() => finish({ ok: false, reason: `Codex 逾時（${turn.timeoutMs / 1000} 秒）` }), turn.timeoutMs);
@@ -80,13 +116,12 @@ export function codexTurn(turn: CodexTurn): Promise<Outcome<string>> {
 			ended = code !== null ? `exit ${code}` : `signal ${signal}`;
 			finish({ ok: false, reason: 'Codex 提前結束' });
 		});
-		// Secrets are taken out as it comes, before it is cut: twice the longest is kept, so one is
-		// whole once its end has come, however long.
-		const kept = Math.max(STDERR_KEPT, 2 * Math.max(0, ...turn.secrets.map((secret) => secret?.length ?? 0)));
-		// Decoded as it comes, so a character split between two chunks does not break a secret.
+		// Decode as it comes, so a character split between chunks does not break a secret.
 		child.stderr!.setEncoding('utf8');
 		child.stderr!.on('data', (chunk: string) => {
-			stderr = hide(turn, stderr + chunk).slice(-kept);
+			pendingStderr += chunk;
+			hidden = hidden.concat(Array<boolean>(chunk.length).fill(false));
+			flushStderr(false);
 		});
 		child.stderr!.on('error', () => {
 			// The exit says why.

@@ -25,7 +25,9 @@ import { launchAgent } from './hcom.ts';
 import { chooseWorkspace, moveTab, renameTab, workspaceLabel, type HerdrAgent } from './herdr.ts';
 import { queued, typedText } from './send.ts';
 import { launchDefaults } from './client-settings.ts';
-import { appendSent, readLaunches, type LaunchFollowed } from './sent-log.ts';
+import type { ReportFile } from './reports.ts';
+import { appendSent, readLines, type LaunchFollowed, type SentLog } from './sent-log.ts';
+import { boundOf, readLaunches } from './sent-views.ts';
 
 /** How many launches the new-controller page lists, and the new-agent form too. */
 const LISTED_LAUNCHES = 20;
@@ -63,11 +65,14 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 	}
 	try {
 		// Each form lists its own kind: as many plain agents as controllers.
-		const all = readLaunches(stateDir, board.config.now(), launchWaitMs);
+		const now = board.config.now();
+		const all = readLaunches(readLines(stateDir, now), now, launchWaitMs);
 		const launches = [...all.filter((launch) => launch.role !== 'agent').slice(0, LISTED_LAUNCHES), ...all.filter((launch) => launch.role === 'agent').slice(0, LISTED_LAUNCHES)];
-		return { projects, projectsError, launches, logError: null, modelOptions: board.config.modelOptions, home: homedir() };
+		const deadlines = launches.filter((launch) => launch.state === 'starting').map((launch) => Date.parse(launch.time) + launchWaitMs);
+		const refreshAfterMs = deadlines.length ? Math.max(0, Math.min(...deadlines) - board.config.now()) : null;
+		return { refreshAfterMs, projects, projectsError, launches, logError: null, modelOptions: board.config.modelOptions, home: homedir() };
 	} catch (error) {
-		return { projects, projectsError, launches: [], logError: (error as Error).message, modelOptions: board.config.modelOptions, home: homedir() };
+		return { refreshAfterMs: null, projects, projectsError, launches: [], logError: (error as Error).message, modelOptions: board.config.modelOptions, home: homedir() };
 	}
 }
 
@@ -307,4 +312,41 @@ async function prepare(board: Board, request: LaunchRequest, entry: SentLaunch, 
 	entry.herdrWorkspaceLabel = workspace.label;
 	entry.workspaceCreated = workspace.created;
 	return { startIn: folder, bound: before.controllers };
+}
+
+/**
+ * Note which launches have become a controller: a binding with the launch's HCOM name, or a
+ * report record with that name written since the launch (the controller may have bound and ended
+ * between two reads). The folder is never compared, so two launches in one folder each find their
+ * own. A session already bound under the name when the launch began is not it. A name hcom hands
+ * out again later belongs to the newest launch that has it.
+ *
+ * Returns why the log could not be brought up to date, or null.
+ */
+export function settleLaunches(log: SentLog, controllers: HelperController[], reportFiles: ReportFile[], now: number): string | null {
+	const lines = log.lines;
+	const bound = boundOf(lines);
+	const seen = new Set<string>();
+	for (const line of lines.toReversed()) {
+		// A plain agent never becomes a controller; its name is not looked for in the bindings.
+		if (line.kind !== 'launch' || line.role === 'agent' || !line.hcomName || line.outcome === 'failed' || seen.has(line.hcomName)) continue;
+		seen.add(line.hcomName);
+		if (bound.has(line.id)) continue;
+		const since = Date.parse(line.time);
+		const earlier = new Set(line.earlierSessions);
+		const controllerId =
+			controllers.find((controller) => controller.hcom_name === line.hcomName && !earlier.has(controller.session_id))?.session_id ??
+			reportFiles.find(
+				(file) =>
+					!earlier.has(file.sessionId) &&
+					file.reports.some((report) => report.hcom_name === line.hcomName && Date.parse(report.time) >= since)
+			)?.sessionId;
+		if (!controllerId) continue;
+		try {
+			log.append({ kind: 'launch-bound', launchId: line.id, controllerId, time: new Date(now).toISOString() });
+		} catch (error) {
+			return (error as Error).message;
+		}
+	}
+	return null;
 }

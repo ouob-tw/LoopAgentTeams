@@ -10,14 +10,18 @@ import { listControllers, pruneReports, readAnswered, readQuestions, type Answer
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
 import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources, withRecorded } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
-import { listAgents, listStops, type AgentList } from './hcom.ts';
-import { openResumes, openSwitches, settleAnswers, settleLaunches, settleResumes } from './sent-log.ts';
+import { listAgents, type AgentList } from './hcom.ts';
+import { openLog, type SentLog } from './sent-log.ts';
+import { openSwitches } from './sent-views.ts';
 import type { SwitchView } from '../board/models.ts';
 import { listHerdrAgents, tabToFront } from './herdr.ts';
-import { settleRelaunches } from './switch.ts';
+import { settleAnswers } from './answer.ts';
+import { settleLaunches } from './launch.ts';
+import { settleRelaunches } from './relaunch.ts';
+import { settleResumes } from './wake.ts';
 import { createAgentRoster, type HerdrAgentList } from './agents.ts';
 import { createClosedRoster } from './closed-agents.ts';
-import { CLOSED_KEEP_MS, EMPTY_CLOSED } from '../board/closed-agents.ts';
+import { EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
 import type { QuotaSnapshot } from '../board/quota.ts';
@@ -86,17 +90,39 @@ export interface Board {
 
 /** Close the resumes whose session hcom's list of this read holds; a list that could not be read
  *  leaves them open until a later read. */
-async function settleWakes(config: BoardConfig, list: AgentList, herdr: HerdrAgentList, moved: () => void): Promise<string | null> {
-	if (!openResumes(config.stateDir, config.now(), config.launchWaitMs).length) return null;
+async function settleWakes(config: BoardConfig, log: SentLog, list: AgentList, herdr: HerdrAgentList, moved: () => void): Promise<string | null> {
 	// A resume's pane found only now: its new tab is moved to the front like one found at once.
 	const onPane = (pane: string) => void tabToFront(config, pane).then((reason) => reason === null && moved());
-	return list.ok ? settleResumes(config.stateDir, list.agents, herdr.ok ? herdr.agents : null, config.now(), config.launchWaitMs, onPane) : null;
+	return list.ok ? settleResumes(log, list.agents, herdr.ok ? herdr.agents : null, config.now(), config.launchWaitMs, onPane) : null;
+}
+
+/** The sent log as one read of the sources works from: read once, and kept up with until the read
+ *  and the relaunches it settles are over (`settled`). */
+interface Reading {
+	log: SentLog | Error | null;
+	settled: Promise<unknown>;
+	/** The read is over: it failed before the log was opened, say. A log opened now is closed at once. */
+	over: boolean;
+}
+
+/** Read the sent log for one read of the sources; the error when it cannot be read. A log that
+ *  cannot be read stays the error for the whole read; the next read tries again. */
+function readLog(config: BoardConfig, reading: Reading): SentLog | Error {
+	try {
+		reading.log = openLog(config.stateDir, config.now());
+		if (reading.over) reading.log.close();
+	} catch (error) {
+		reading.log = error as Error;
+	}
+	return reading.log;
 }
 
 function createBoard(): Board {
 	const config = loadConfig();
 	const readReports = createReportReader(config.reportsDir);
-	const helperDirs = helperDirectories();
+	/** The helper's registry and notification directories; null until Herdr has said where they are,
+	 *  which the board does not wait for: they are only watched, never read. */
+	let helperDirs: { config: string; state: string } | null = null;
 	const streams = new Set<Stream>();
 	const agentRoster = createAgentRoster();
 	const closedRoster = createClosedRoster(config);
@@ -117,6 +143,8 @@ function createBoard(): Board {
 	let fallback: ReturnType<typeof setTimeout> | undefined;
 	let closed = false;
 	let sentLogError: string | null = null;
+	let herdrPlaces: Extract<Awaited<ReturnType<typeof listHerdrAgents>>, { ok: true }> | null = null;
+	let herdrPlaceError: string | null = null;
 	/** The usage line's style; read from its file the first time it is asked for. The revision
 	 *  starts at the time, so one after a restart is newer than any before it. */
 	let usageStyle: UsageStyleState | null = null;
@@ -148,6 +176,21 @@ function createBoard(): Board {
 			debounce = undefined;
 			void refresh();
 		}, config.debounceMs);
+	});
+	/** What the last read says to watch: the reports, the helper's files once their directories
+	 *  are known, and each active controller's question file. */
+	function watchTargets(): WatchTargets {
+		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
+		if (helperDirs) {
+			addFile(targets, join(helperDirs.config, 'bindings.json'));
+			addFile(targets, join(helperDirs.state, 'pending-notifications.json'));
+		}
+		for (const controller of lastActive) addFile(targets, controller.questions_path);
+		return targets;
+	}
+	void helperDirectories(config).then((dirs) => {
+		helperDirs = dirs;
+		if (!closed) sourceWatcher.sync(watchTargets());
 	});
 	// Created up front so the device list can be watched before the first device logs in.
 	mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
@@ -232,42 +275,58 @@ function createBoard(): Board {
 	}
 
 	async function read(): Promise<BoardSnapshot> {
-		const [[helper, reports, answered, settled], agents, herdrAgents, stops] = await Promise.all([
+		const reading: Reading = { log: null, settled: Promise.resolve(), over: false };
+		try {
+			return await readWith(reading);
+		} finally {
+			reading.over = true;
+			const { log } = reading;
+			if (log && !(log instanceof Error)) void reading.settled.finally(() => log.close());
+		}
+	}
+
+	async function readWith(reading: Reading): Promise<BoardSnapshot> {
+		const [[helper, reports, answered, settled, log], agents, herdrAgents, stops] = await Promise.all([
 			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
 				// Read after the list: the files are those of the controllers bound now, and of the
 				// sessions that reported. The sent answers settle against the same list alongside, so
 				// a read runs the helper at most twice in a row. hcom's and Herdr's lists are not
 				// waited for.
+				const log = readLog(config, reading);
 				const [answered, settled] = await Promise.all([
 					readAnswered(config, answeredSources(helper.ok ? helper.controllers : lastActive, reports.files)),
-					helper.ok
-						? settleAnswers(config.stateDir, helper.controllers, config.now(), (path) => readQuestions(config, path)).catch((error: Error) => error)
+					helper.ok && !(log instanceof Error)
+						? settleAnswers(log, helper.controllers, config.now(), (path) => readQuestions(config, path)).catch((error: Error) => error)
 						: null
 				]);
-				return [helper, reports, answered, settled] as const;
+				return [helper, reports, answered, settled, log] as const;
 			}),
 			listAgents(config),
 			listHerdrAgents(config),
-			listStops(config, config.now() - CLOSED_KEEP_MS)
+			closedRoster.readStops()
 		]);
+		if (herdrAgents.ok) herdrPlaces = herdrAgents;
+		herdrPlaceError = herdrAgents.ok ? null : herdrAgents.reason;
 		if (answered.ok) lastAnswered = answered.files;
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {
 			lastActive = answered.ok ? withRecorded(helper.controllers, answered.files) : helper.controllers;
 			try {
+				if (log instanceof Error) throw log;
 				if (settled instanceof Error) throw settled;
 				const answersError = settled;
-				const launchesError = settleLaunches(config.stateDir, helper.controllers, reports.files, config.now());
-				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, agents, herdrAgents, tabMoved));
+				const launchesError = settleLaunches(log, helper.controllers, reports.files, config.now());
+				sentLogError = answersError ?? launchesError ?? (await settleWakes(config, log, agents, herdrAgents, tabMoved));
 			} catch (error) {
 				// A sent log that cannot be read or written must not stop the board; its own view says so.
 				sentLogError = (error as Error).message;
 			}
 		}
 		try {
-			lastSwitches = openSwitches(config.stateDir, config.now(), config.launchWaitMs);
-			settleRelaunches(board, lastSwitches);
+			if (log instanceof Error) throw log;
+			lastSwitches = openSwitches(log.lines, config.now(), config.launchWaitMs);
+			reading.settled = settleRelaunches(board, log, lastSwitches);
 		} catch {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
 		}
@@ -284,6 +343,7 @@ function createBoard(): Board {
 			active: lastActive,
 			helperError: helper.ok ? null : helper.reason,
 			reportFiles: reports.files,
+			duties: reports.duties,
 			reportsError: reports.error,
 			running: lastRunning,
 			hcomError: agents.ok ? null : agents.reason,
@@ -296,11 +356,7 @@ function createBoard(): Board {
 			answeredError: answered.ok ? null : answered.reason
 		};
 
-		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
-		addFile(targets, join(helperDirs.config, 'bindings.json'));
-		addFile(targets, join(helperDirs.state, 'pending-notifications.json'));
-		for (const controller of lastActive) addFile(targets, controller.questions_path);
-		if (!closed) sourceWatcher.sync(targets);
+		if (!closed) sourceWatcher.sync(watchTargets());
 
 		publish(sources);
 		pruneAfter(reports.files);
@@ -339,6 +395,17 @@ function createBoard(): Board {
 		if (!problem) lastState = state;
 
 		const next = buildSnapshot(from, state, now);
+		for (const controller of [...next.controllers, ...next.offRoster]) {
+			const target = controller.herdr;
+			if (!target) {
+				controller.herdrPlace = null;
+				continue;
+			}
+			const workspace = herdrPlaces?.workspaces.find((entry) => entry.id === target.workspace);
+			controller.herdrPlace = herdrPlaceError ?? herdrPlaces?.places[target.tab] ?? {
+				workspace: workspace ? { label: workspace.label, number: workspace.number } : null, tab: null
+			};
+		}
 		if (problem) next.errors.push(problem);
 		const changed = !snapshot || comparable(snapshot) !== comparable(next);
 		snapshot = next;
@@ -355,6 +422,7 @@ function createBoard(): Board {
 
 	function tabMoved(): void {
 		for (const stream of streams) stream.send('tab-moved', '{}');
+		if (!closed) void refresh();
 	}
 
 	function refresh(): Promise<BoardSnapshot> {

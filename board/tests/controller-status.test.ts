@@ -52,6 +52,7 @@ function sources(running: Set<string> | null, agents: Agent[] = [], extraBound: 
 		active: [bound('bound-on'), bound('bound-off'), ...extraBound],
 		helperError: null,
 		reportFiles: ['bound-on', 'bound-off', 'done-on', 'done-off', ...extraBound.map((binding) => binding.session_id)].map((id) => file(id, 'DONE')),
+		duties: new Map(),
 		reportsError: null,
 		running,
 		hcomError: null,

@@ -126,6 +126,7 @@ async function hasConversation(config: BoardConfig, client: string, sessionId: s
 const resumes = new Map<string, ClosedResume>();
 
 export interface ClosedRoster {
+	readStops(): Promise<StopList>;
 	/** Record the agents Herdr lists now and work out the closed ones. `agents` is null while no
 	 *  Herdr list has been read, `running` while no hcom list has: then none is listed. */
 	update(input: {
@@ -147,6 +148,7 @@ export function createClosedRoster(config: BoardConfig): ClosedRoster {
 		fileError = `看板記下的 Agent 讀不出來：${(error as Error).message}`;
 	}
 	let lastStopList: HcomStop[] | null = null;
+	let latestStopTime: number | null = null;
 	/** Whether `seen` holds changes not written yet: kept until a write goes through. */
 	let unsaved = false;
 	/** Whether a session has a saved conversation, by session and stop; `untold` until a time. */
@@ -206,9 +208,13 @@ export function createClosedRoster(config: BoardConfig): ClosedRoster {
 	}
 
 	return {
+		readStops: () => listStops(config, latestStopTime === null ? config.now() - CLOSED_KEEP_MS : latestStopTime - 1000),
 		async update({ agents, running, stops, switching, now }) {
 			if (agents && remember(agents, now)) unsaved = true;
-			if (stops.ok) lastStopList = stops.stops;
+			if (stops.ok) {
+				for (const stop of stops.stops) latestStopTime = Math.max(latestStopTime ?? stop.time, stop.time);
+				lastStopList = [...new Map([...(lastStopList ?? []), ...stops.stops].map((stop) => [stop.id, stop])).values()];
+			}
 			if (!agents || !running || !lastStopList) {
 				if (unsaved) save();
 				return { agents: [], error: errorText(stops), timeZone };
@@ -216,6 +222,7 @@ export function createClosedRoster(config: BoardConfig): ClosedRoster {
 
 			const present: Present = { inHerdr: new Set(agents.flatMap((agent) => (agent.inHerdr && agent.id ? [agent.id] : []))), running, switching };
 			const last = lastStops(lastStopList);
+			lastStopList = lastStopList.filter((stop) => now - stop.time < CLOSED_KEEP_MS);
 			for (const agent of [...seen.values()]) {
 				if (!kept(agent, last.get(agent.sessionId), present, stops.ok, now)) {
 					seen.delete(agent.sessionId);

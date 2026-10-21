@@ -6,7 +6,7 @@ import { basename } from 'node:path';
 import type { HerdrPlace } from '../board/format.ts';
 import type { HerdrWorkspace } from '../board/types.ts';
 import type { BoardConfig } from './config.ts';
-import { runExternal } from './external.ts';
+import { parseJsonOutput, runCommand } from './external.ts';
 
 export type WorkspaceChoice =
 	| { ok: true; id: string; label: string; created: boolean }
@@ -25,14 +25,11 @@ interface Workspace {
 
 /** Runs one Herdr command and returns its `result`, or why there is none. */
 async function herdr(config: BoardConfig, args: string[]): Promise<{ result: Record<string, unknown> } | { reason: string }> {
-	const run = await runExternal(config.herdrCommand, args, { timeoutMs: config.herdrTimeoutMs });
+	const run = await runCommand(config.herdrCommand, args, { timeoutMs: config.herdrTimeoutMs });
 	if (run.failure) return { reason: run.failure };
-	try {
-		const result = JSON.parse(run.stdout)?.result;
-		if (typeof result === 'object' && result !== null) return { result };
-	} catch {
-		// Reported below.
-	}
+	const parsed = parseJsonOutput<{ result?: unknown } | null>(run, '輸出不是預期的 JSON');
+	const result = parsed.ok ? parsed.value?.result : null;
+	if (typeof result === 'object' && result !== null) return { result: result as Record<string, unknown> };
 	return { reason: '輸出不是預期的 JSON' };
 }
 
@@ -111,39 +108,6 @@ export async function paneExists(config: BoardConfig, paneId: string): Promise<{
 		return { reason: '讀不到 Herdr 的窗格清單：輸出不是預期的格式' };
 	}
 	return { exists: paneList.some((pane) => pane.pane_id === paneId) };
-}
-
-/** The names and places of a workspace and a tab, or why they cannot be told. One that is no
- *  longer in Herdr is null. */
-export async function describePlace(
-	config: BoardConfig,
-	workspaceId: string,
-	tabId: string
-): Promise<{ place: HerdrPlace } | { reason: string }> {
-	const [workspaces, tabs] = await Promise.all([
-		herdr(config, ['workspace', 'list']),
-		herdr(config, ['tab', 'list', '--workspace', workspaceId])
-	]);
-	if ('reason' in workspaces) return { reason: `讀不到 Herdr 的工作區清單：${workspaces.reason}` };
-	if ('reason' in tabs) return { reason: `讀不到 Herdr 的分頁清單：${tabs.reason}` };
-	const workspaceList = workspaces.result.workspaces;
-	const tabList = tabs.result.tabs;
-	if (!Array.isArray(workspaceList) || !workspaceList.every(isWorkspace)) {
-		return { reason: '讀不到 Herdr 的工作區清單：輸出不是預期的格式' };
-	}
-	if (!Array.isArray(tabList) || !tabList.every((tab) => typeof tab?.tab_id === 'string' && typeof tab?.label === 'string')) {
-		return { reason: '讀不到 Herdr 的分頁清單：輸出不是預期的格式' };
-	}
-	const workspace = workspaceList.find((candidate) => candidate.workspace_id === workspaceId);
-	// Herdr lists a workspace's tabs in the order it shows them.
-	const ownTabs = tabList.filter((tab) => tab.workspace_id === undefined || tab.workspace_id === workspaceId);
-	const index = ownTabs.findIndex((tab) => tab.tab_id === tabId);
-	return {
-		place: {
-			workspace: workspace ? { label: workspace.label, number: workspace.number } : null,
-			tab: index < 0 ? null : { label: ownTabs[index].label, position: index + 1 }
-		}
-	};
 }
 
 /** A workspace's tabs, all of them in the order Herdr shows them, plain terminal tabs included;
@@ -263,18 +227,18 @@ const isListedAgent = (value: unknown): value is ListedAgent =>
  *  list` and `tab list`, and every workspace in Herdr's order; or why they cannot be told. */
 export async function listHerdrAgents(
 	config: BoardConfig
-): Promise<{ ok: true; agents: HerdrAgent[]; workspaces: HerdrWorkspace[] } | { ok: false; reason: string }> {
+): Promise<{ ok: true; agents: HerdrAgent[]; workspaces: HerdrWorkspace[]; places: Record<string, HerdrPlace> } | { ok: false; reason: string }> {
 	const [agents, workspaces, tabs] = await Promise.all([
-		herdr(config, ['agent', 'list']),
-		herdr(config, ['workspace', 'list']),
-		herdr(config, ['tab', 'list'])
+		socketRequest(config, 'agent.list', {}),
+		socketRequest(config, 'workspace.list', {}),
+		socketRequest(config, 'tab.list', {})
 	]);
 	if ('reason' in agents) return { ok: false, reason: `Herdr 的 Agent 清單讀不到：${agents.reason}` };
 	if ('reason' in workspaces) return { ok: false, reason: `Herdr 的工作區清單讀不到：${workspaces.reason}` };
 	if ('reason' in tabs) return { ok: false, reason: `Herdr 的分頁清單讀不到：${tabs.reason}` };
-	const agentList = agents.result.agents;
-	const workspaceList = workspaces.result.workspaces;
-	const tabList = tabs.result.tabs;
+	const agentList = (agents.result as Record<string, unknown> | null)?.agents;
+	const workspaceList = (workspaces.result as Record<string, unknown> | null)?.workspaces;
+	const tabList = (tabs.result as Record<string, unknown> | null)?.tabs;
 	if (!Array.isArray(agentList) || !agentList.every(isListedAgent)) return { ok: false, reason: 'Herdr 的 Agent 清單不是預期的格式' };
 	if (!Array.isArray(workspaceList) || !workspaceList.every(isWorkspace)) return { ok: false, reason: 'Herdr 的工作區清單不是預期的格式' };
 	if (!Array.isArray(tabList) || !tabList.every((tab) => typeof tab?.tab_id === 'string' && typeof tab?.label === 'string')) {
@@ -290,6 +254,10 @@ export async function listHerdrAgents(
 	};
 	return {
 		ok: true,
+		places: Object.fromEntries(tabList.map((tab) => {
+			const workspace = workspaceOf.get(tab.workspace_id);
+			return [tab.tab_id, { workspace: workspace ? { label: workspace.label, number: workspace.number } : null, tab: tabPlace(tab.tab_id, tab.workspace_id) }];
+		})),
 		workspaces: workspaceList
 			.map((workspace) => ({ id: workspace.workspace_id, label: workspace.label, number: workspace.number }))
 			.sort((a, b) => a.number - b.number),
@@ -332,7 +300,7 @@ export function closePane(config: BoardConfig, pane: string): Promise<HerdrAct> 
  * standard error, `{"error":{"code","message"}}`; its message is the reason given.
  */
 async function herdrAct(config: BoardConfig, args: string[]): Promise<HerdrAct> {
-	const run = await runExternal(config.herdrCommand, args, { timeoutMs: config.herdrTimeoutMs });
+	const run = await runCommand(config.herdrCommand, args, { timeoutMs: config.herdrTimeoutMs });
 	if (!run.failure) return { ok: true };
 	let error: { code?: unknown; message?: unknown } | undefined;
 	try {

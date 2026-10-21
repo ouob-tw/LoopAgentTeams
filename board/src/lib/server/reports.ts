@@ -1,5 +1,5 @@
 // Controller report records: one append-only JSONL file per controller session, written by the
-// turn-end hook. The board only reads them.
+// turn-end hook, and beside it the duty the controller recorded. The board only reads them.
 import { readdir, readFile, stat } from 'node:fs/promises';
 import { join } from 'node:path';
 import type { Report } from '../board/types.ts';
@@ -39,6 +39,32 @@ function parseReport(line: string): Report | null {
 	return complete ? value : null;
 }
 
+/** A controller's `<session-id>.duty.json`, as `lat-session.py duty` writes it. */
+export interface RecordedDuty {
+	text: string;
+	expected: string;
+	time: string;
+}
+
+const DUTY_SUFFIX = '.duty.json';
+
+function parseDuty(text: string): RecordedDuty | null {
+	let value: RecordedDuty;
+	try {
+		value = JSON.parse(text);
+	} catch {
+		return null;
+	}
+	const complete =
+		typeof value === 'object' &&
+		value !== null &&
+		typeof value.text === 'string' &&
+		typeof value.expected === 'string' &&
+		typeof value.time === 'string' &&
+		!Number.isNaN(Date.parse(value.time));
+	return complete ? { text: value.text, expected: value.expected, time: value.time } : null;
+}
+
 interface Cached {
 	stamp: string;
 	file: ReportFile;
@@ -47,8 +73,10 @@ interface Cached {
 /** Reads every report file in a directory, re-parsing only the files that changed. */
 export function createReportReader(directory: string) {
 	const cache = new Map<string, Cached>();
+	const dutyCache = new Map<string, { stamp: string; duty: RecordedDuty | null }>();
 
-	async function readOne(name: string): Promise<ReportFile> {
+	/** Null for a file deleted since the directory was listed, as the board's pruning does. */
+	async function readOne(name: string): Promise<ReportFile | null> {
 		const sessionId = name.slice(0, -'.jsonl'.length);
 		const path = join(directory, name);
 		try {
@@ -67,20 +95,47 @@ export function createReportReader(directory: string) {
 			return file;
 		} catch (error) {
 			cache.delete(name);
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
 			return { sessionId, reports: [], invalidLines: 0, error: (error as Error).message };
 		}
 	}
 
-	return async function readReports(): Promise<{ files: ReportFile[]; error: string | null }> {
-		let names: string[];
+	/** A duty file that cannot be read, or is not a duty, counts as no duty. */
+	async function readDuty(name: string): Promise<RecordedDuty | null> {
+		const path = join(directory, name);
 		try {
-			names = (await readdir(directory)).filter((name) => name.endsWith('.jsonl')).sort();
+			const info = await stat(path);
+			const stamp = `${info.mtimeMs}:${info.size}`;
+			const cached = dutyCache.get(name);
+			if (cached?.stamp === stamp) return cached.duty;
+			const duty = parseDuty(await readFile(path, 'utf8'));
+			dutyCache.set(name, { stamp, duty });
+			return duty;
+		} catch {
+			dutyCache.delete(name);
+			return null;
+		}
+	}
+
+	return async function readReports(): Promise<{ files: ReportFile[]; duties: Map<string, RecordedDuty>; error: string | null }> {
+		let all: string[];
+		try {
+			all = (await readdir(directory)).sort();
 		} catch (error) {
 			// No controller has finished a turn yet.
-			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { files: [], error: null };
-			return { files: [], error: `回報紀錄目錄讀不出來：${(error as Error).message}` };
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return { files: [], duties: new Map(), error: null };
+			return { files: [], duties: new Map(), error: `回報紀錄目錄讀不出來：${(error as Error).message}` };
 		}
+		const names = all.filter((name) => name.endsWith('.jsonl'));
+		const dutyNames = all.filter((name) => name.endsWith(DUTY_SUFFIX));
 		for (const name of cache.keys()) if (!names.includes(name)) cache.delete(name);
-		return { files: await Promise.all(names.map(readOne)), error: null };
+		for (const name of dutyCache.keys()) if (!dutyNames.includes(name)) dutyCache.delete(name);
+		const [files, duties] = await Promise.all([Promise.all(names.map(readOne)), Promise.all(dutyNames.map(readDuty))]);
+		const bySession = new Map<string, RecordedDuty>();
+		dutyNames.forEach((name, index) => {
+			const duty = duties[index];
+			if (duty) bySession.set(name.slice(0, -DUTY_SUFFIX.length), duty);
+		});
+		return { files: files.filter((file) => file !== null), duties: bySession, error: null };
 	};
 }

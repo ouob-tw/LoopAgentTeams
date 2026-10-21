@@ -2,6 +2,8 @@
 // directories and a fake helper command. Nothing here reads or writes real LAT data.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { runHerdr } from './fake-herdr.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ArchivePage } from '../src/lib/board/archive.ts';
@@ -19,9 +21,22 @@ import type {
 	Report
 } from '../src/lib/board/types.ts';
 
+/** Answer list requests from the exact same plan and failure controls as the fake CLI. */
+export async function answerHerdrList(dir: string, request: { id: string; method: string; params?: { tab_id?: string; insert_index?: number } }, moves = false): Promise<string | null> {
+	if (!(moves ? ['agent.list', 'workspace.list', 'tab.list', 'tab.move'] : ['agent.list', 'workspace.list', 'tab.list']).includes(request.method)) return null;
+	const args = request.method === 'tab.move' ? ['tab', 'move', request.params?.tab_id ?? '', String(request.params?.insert_index ?? 0)] : request.method.split('.');
+	const run = await runHerdr(dir, args, 'socket');
+	if (run.code) return JSON.stringify({ id: request.id, error: { message: run.stderr } }) + '\n';
+	try {
+		return JSON.stringify({ ...JSON.parse(run.stdout), id: request.id }) + '\n';
+	} catch {
+		return run.stdout + '\n';
+	}
+}
+
 const ROOT = join(import.meta.dir, '..');
-// Each test file takes its own offsets from this base; the highest one in use is 62 (46 and 47 are left to another branch).
-export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
+// Test servers and Chrome bind port 0, so the system picks a free port; the server says which one
+// on its standard output (`Listening on http://host:port`), Chrome in its profile's DevToolsActivePort.
 
 /** What runs the server and the fake commands: Node when the host has it, otherwise the Bun that
  *  runs the tests, so the same tests pass on a host that has only Bun. */
@@ -70,7 +85,7 @@ export function keptAgentShellEnv(fixture: Fixture, command: string) {
 		kept: {
 			HCOM_DIR: AGENT_SHELL_ENV.HCOM_DIR,
 			CODEX_HOME: AGENT_SHELL_ENV.CODEX_HOME,
-			HERDR_SOCKET_PATH: AGENT_SHELL_ENV.HERDR_SOCKET_PATH,
+			HERDR_SOCKET_PATH: join(fixture.dir, 'herdr.sock'),
 			HOME: join(fixture.dir, 'home'),
 			PATH: process.env.PATH ?? ''
 		}
@@ -109,6 +124,13 @@ export function uvPython(): string {
 
 /** The board password every fixture sets unless told not to. A test value, not a real password. */
 export const PASSWORD = 'test-password-一二三';
+/** The JSON lines of a file a fake command appends to while the test reads it: nothing for a file
+ *  that is missing or created but not yet written, and not the line still being written. */
+export function jsonLines(file: string): any[] {
+	if (!existsSync(file)) return [];
+	const text = readFileSync(file, 'utf8');
+	return text.slice(0, text.lastIndexOf('\n') + 1).split('\n').filter(Boolean).map((line) => JSON.parse(line));
+}
 export const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
 export async function until<T>(read: () => T | undefined | false | null, timeoutMs: number, what: string): Promise<T> {
@@ -255,7 +277,6 @@ export const titled = (snapshot: BoardSnapshot | undefined, title: string): Inbo
 	snapshot?.inbox.find((item) => item.title === title);
 
 export async function startFixture(
-	portOffset: number,
 	options: {
 		env?: Record<string, string>;
 		password?: string | null;
@@ -265,17 +286,35 @@ export async function startFixture(
 ): Promise<Fixture> {
 	if (!existsSync(join(ROOT, 'build/index.js'))) throw new Error('build/ is missing: run `bun run build` first');
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-test-'));
-	const port = PORT_BASE + portOffset;
-	const url = `http://127.0.0.1:${port}`;
+	// Known once the server has said where it listens; a restart asks for the same port again.
+	let port = 0;
+	let url = '';
 	const reportsDir = join(dir, 'reports');
 	const configDir = join(dir, 'herdr-config');
 	for (const name of ['reports', 'herdr-config', 'herdr-state', 'home']) mkdirSync(join(dir, name));
 
+	const socketPath = join(dir, 'herdr.sock');
+	const herdrCommand = options.env?.LAT_BOARD_HERDR_COMMAND;
+	const herdrDir = herdrCommand ? JSON.parse(herdrCommand).at(-1) as string : dir;
+	const herdrSocket = createServer((connection) => {
+		let buffer = '';
+		connection.on('data', (chunk) => {
+			buffer += chunk.toString();
+			let end: number;
+			while ((end = buffer.indexOf('\n')) >= 0) {
+				const request = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
+				void answerHerdrList(herdrDir, request, true).then((answer) => {
+					if (!connection.destroyed) connection.end(answer ?? JSON.stringify({ id: request.id, result: { type: 'tab_moved' } }) + '\n');
+				});
+			}
+		});
+	});
+	await new Promise<void>((resolve) => herdrSocket.listen(socketPath, resolve));
 	const env: Record<string, string> = {
 		PATH: process.env.PATH ?? '',
 		HOME: join(dir, 'home'),
 		HOST: '127.0.0.1',
-		PORT: String(port),
+		PORT: '0',
 		LAT_BOARD_STATE_DIR: join(dir, 'board-state'),
 		LAT_REPORTS_DIR: reportsDir,
 		LAT_USAGE_DIR: join(dir, 'usage'),
@@ -291,7 +330,8 @@ export async function startFixture(
 		CODEX_MULTI_AUTH_DIR: join(dir, 'codex-multi-auth'),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,
 		HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state'),
-		...options.env
+		...options.env,
+		HERDR_SOCKET_PATH: options.env?.HERDR_SOCKET_PATH && options.env.HERDR_SOCKET_PATH !== AGENT_SHELL_ENV.HERDR_SOCKET_PATH ? options.env.HERDR_SOCKET_PATH : socketPath
 	};
 	let server: ChildProcess | undefined;
 	let output = '';
@@ -452,9 +492,23 @@ export async function startFixture(
 			return watch;
 		},
 		async start() {
-			server = spawn(options.runtime ?? NODE, [join(ROOT, 'build/index.js')], { env, stdio: ['ignore', 'pipe', 'pipe'] });
-			server.stdout!.on('data', (chunk) => ((output += chunk), process.stdout.write(chunk)));
-			server.stderr!.on('data', (chunk) => ((output += chunk), process.stderr.write(chunk)));
+			server = spawn(options.runtime ?? NODE, [join(ROOT, 'build/index.js')], { env: { ...env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+			const child = server;
+			let heard = '';
+			child.stderr!.on('data', (chunk) => ((output += chunk), process.stderr.write(chunk)));
+			port = await new Promise<number>((resolve, reject) => {
+				const timer = setTimeout(() => reject(new Error('board server did not say where it listens')), 10_000);
+				child.once('exit', (code) => (clearTimeout(timer), reject(new Error(`board server exited with ${code}`))));
+				child.stdout!.on('data', (chunk) => {
+					output += chunk;
+					process.stdout.write(chunk);
+					heard += chunk;
+					const match = /Listening on http:\/\/[^\s:]+:(\d+)/.exec(heard);
+					if (match) (clearTimeout(timer), resolve(Number(match[1])));
+				});
+			});
+			url = `http://127.0.0.1:${port}`;
+			fixture.url = url;
 			const deadline = Date.now() + 10_000;
 			for (;;) {
 				try {
@@ -477,13 +531,19 @@ export async function startFixture(
 		async cleanup() {
 			for (const watch of watches) watch.close();
 			await fixture.stop();
+			herdrSocket.close();
 			rmSync(dir, { recursive: true, force: true });
 		}
 	};
 
 	fixture.list([]);
 	if (options.password !== null) fixture.setPassword(options.password ?? PASSWORD);
-	await fixture.start();
+	try {
+		await fixture.start();
+	} catch (error) {
+		await fixture.cleanup();
+		throw error;
+	}
 	return fixture;
 }
 

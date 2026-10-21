@@ -26,19 +26,29 @@
 	let now = $state(0);
 	let trigger = $state<HTMLButtonElement>();
 	let panel = $state<HTMLElement>();
-	/** Where the panel goes beside the row: from its top, or from its bottom in the lower half. */
-	let place = $state<{ left: number; top: number | null; bottom: number | null }>({ left: 0, top: 0, bottom: null });
+	/** Where the panel goes beside the row: its left edge and its top. */
+	let place = $state({ left: 0, top: 0 });
 
 	const current = $derived(ended.some((controller) => controller.id === currentId));
 	const buckets = $derived(open ? endedByAge(ended, now) : []);
 
+	/** Lines the panel up with the row (its top in the upper half of the screen, its bottom in the lower half),
+	 *  then keeps all of it inside the screen, 1rem from the top and the bottom. It has to be rendered to be measured. */
+	function position() {
+		if (!trigger || !panel) return;
+		const box = trigger.getBoundingClientRect();
+		const margin = parseFloat(getComputedStyle(document.documentElement).fontSize);
+		const height = panel.offsetHeight;
+		const wanted = box.top < window.innerHeight / 2 ? box.top : box.bottom - height;
+		const top = Math.max(margin, Math.min(wanted, window.innerHeight - margin - height));
+		place = { left: box.right + 8, top };
+	}
+
 	async function show() {
 		now = Date.now();
-		const box = trigger!.getBoundingClientRect();
-		const upper = box.top < window.innerHeight / 2;
-		place = { left: box.right + 8, top: upper ? box.top : null, bottom: upper ? null : window.innerHeight - box.bottom };
 		open = true;
 		await tick();
+		position();
 		panel?.querySelector<HTMLElement>('.person')?.focus();
 	}
 
@@ -57,6 +67,13 @@
 		event.preventDefault();
 		close(true);
 	}
+
+	// A resized window puts the open panel where the same rules would.
+	$effect(() => {
+		if (!open) return;
+		addEventListener('resize', position);
+		return () => removeEventListener('resize', position);
+	});
 
 	// A click anywhere else closes it.
 	$effect(() => {
@@ -107,8 +124,7 @@
 		aria-label="超過 1 天的閒置與已關閉主控"
 		tabindex="-1"
 		style:left="{place.left}px"
-		style:top={place.top === null ? null : `${place.top}px`}
-		style:bottom={place.bottom === null ? null : `${place.bottom}px`}
+		style:top="{place.top}px"
 		onkeydown={keys}
 	>
 		{#each buckets as bucket (bucket.label)}
