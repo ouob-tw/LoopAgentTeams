@@ -9,7 +9,10 @@ through the gate when the change leaves the map. `status` lists running and queu
 and recent records. `is_full_suite()`
 decides whether a shell command is a full suite run (project registry first, then the
 default runner rules). `hook` is the PreToolUse hook that blocks full suites run outside
-the gate, and `install` / `uninstall --client claude|codex` add or remove it.
+the gate (with an affected-test map it points at `affected` instead), and `install` /
+`uninstall --client claude|codex` add or remove it. `pre-push` is the Git pre-push check
+that refuses pushing main or a tag without a passing record of every registered full
+suite; `install-pre-push` / `uninstall-pre-push --repo <dir>` add or remove it.
 
 Linux only: slot and lock holders stay counted while their test session has live processes.
 """
@@ -424,17 +427,21 @@ def repo_root(cwd):
     return Path(result.stdout.strip())
 
 
-def content_tree(root, include=()):
-    """Tree hash of tracked plus unignored new files (and `include` paths), via a
-    throwaway index so the real one is untouched."""
+def content_tree(root, include=(), commit=None):
+    """Tree hash of tracked plus unignored new files (or of commit's tree when given), plus
+    the `include` paths from the work tree, via a throwaway index so the real one is
+    untouched."""
     with tempfile.TemporaryDirectory(prefix='suite-gate-') as tmp:
         index = Path(tmp) / 'index'
-        real = git(['rev-parse', '--git-path', 'index'], root).stdout.strip()
-        if real and (root / real).is_file():
-            # copy2 keeps the index mtime, which Git needs to re-check racily clean entries
-            shutil.copy2(root / real, index)
         env = dict(os.environ, GIT_INDEX_FILE=str(index))
-        steps = [['add', '-A', '--', '.']]
+        if commit:
+            steps = [['read-tree', commit]]
+        else:
+            real = git(['rev-parse', '--git-path', 'index'], root).stdout.strip()
+            if real and (root / real).is_file():
+                # copy2 keeps the index mtime, which Git needs to re-check racily clean entries
+                shutil.copy2(root / real, index)
+            steps = [['add', '-A', '--', '.']]
         extra = sorted({str(p.relative_to(root)) for pattern in include
                         for p in root.glob(pattern) if p.is_file()})
         if extra:
@@ -458,20 +465,29 @@ def normalize_command(argv):
     return shlex.join(argv)
 
 
+def include_patterns(registry):
+    return [p for p in registry.get('fingerprint_include') or [] if isinstance(p, str)]
+
+
+def digest(tree, argv, rel):
+    mode = 'shell' if len(argv) == 1 else 'exec'
+    command = normalize_command(argv)
+    return hashlib.sha256(f'{tree}\0{mode}\0{command}\0{rel}'.encode()).hexdigest()
+
+
+def rel_cwd(root, cwd):
+    return os.path.relpath(Path(cwd).resolve(), root.resolve())
+
+
 def fingerprint(cwd, argv):
     """Dict with fingerprint, tree, repo and relative cwd; None outside a Git work tree."""
     root = repo_root(cwd)
     if root is None:
         return None
-    registry = load_registry(cwd) or {}
-    include = registry.get('fingerprint_include') or []
-    include = [p for p in include if isinstance(p, str)]
-    tree = content_tree(root, include)
-    rel = os.path.relpath(Path(cwd).resolve(), root.resolve())
-    mode = 'shell' if len(argv) == 1 else 'exec'
-    command = normalize_command(argv)
-    digest = hashlib.sha256(f'{tree}\0{mode}\0{command}\0{rel}'.encode()).hexdigest()
-    return {'fingerprint': digest, 'tree': tree, 'repo': str(root), 'rel_cwd': rel}
+    tree = content_tree(root, include_patterns(load_registry(cwd) or {}))
+    rel = rel_cwd(root, cwd)
+    return {'fingerprint': digest(tree, argv, rel), 'tree': tree, 'repo': str(root),
+            'rel_cwd': rel}
 
 
 # ---------------------------------------------------------------- process liveness
@@ -973,18 +989,23 @@ def read_map(registry):
         _strings(rule.get('paths'), f'affected.map[{i}].paths', allow_empty=False)
         _strings(rule.get('tests'), f'affected.map[{i}].tests')
     shared = _strings(affected.get('shared', []), 'affected.shared')
+    suites = read_full_suites(registry)
+    branch = registry.get('integration_branch')
+    if branch is not None and (not isinstance(branch, str) or not branch):
+        raise ValueError('integration_branch must be a branch name')
+    return {'commands': {_dir_key(k): v for k, v in commands.items()}, 'rules': rules,
+            'shared': shared, 'branch': branch, 'suites': suites}
+
+
+def read_full_suites(registry):
+    """The registry's full suites as [{command, cwd}]. ValueError when missing or bad."""
     suites = registry.get('full_suites')
     if not isinstance(suites, list) or not suites or not all(
             isinstance(s, dict) and isinstance(s.get('command'), str) and s['command'].strip()
             and isinstance(s.get('cwd', '.'), str) for s in suites):
         raise ValueError('full_suites must list {"command": "...", "cwd": "<dir>"} entries')
-    branch = registry.get('integration_branch')
-    if branch is not None and (not isinstance(branch, str) or not branch):
-        raise ValueError('integration_branch must be a branch name')
-    return {'commands': {_dir_key(k): v for k, v in commands.items()}, 'rules': rules,
-            'shared': shared, 'branch': branch,
-            'suites': [{'command': s['command'].strip(), 'cwd': _dir_key(s.get('cwd', '.'))}
-                       for s in suites]}
+    return [{'command': s['command'].strip(), 'cwd': _dir_key(s.get('cwd', '.'))}
+            for s in suites]
 
 
 def glob_match(path, pattern):
@@ -1201,9 +1222,13 @@ LOOKS_LIKE_TESTS = re.compile(
     r'|bun\s+test|(npm|pnpm|yarn|bun)\s+(run\s+)?(test|t))\b')
 
 
-def gate_command(text):
+REASON_FLAGS = ('--reason', '<why the full suite is needed>')
+
+
+def gate_command(text, flags=()):
     """The ready-to-run command that sends text through the gate."""
-    return shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'run', '--', text])
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'run', *flags,
+                       '--', text])
 
 
 def _is_gate_run(words):
@@ -1222,8 +1247,8 @@ def shell_text(command):
     return command if isinstance(command, str) else ''
 
 
-def _wrap_suites(text, cwd, registry):
-    """text with each full-suite simple command replaced in place by its gate command.
+def _wrap_suites(text, cwd, registry, wrap):
+    """text with each full-suite simple command replaced in place by wrap(command text).
 
     The rest of the text (cd, export, pipes, a later echo) stays as written, so the gate
     records the suite's own exit code. In `bash -c '<body>'` only the body argument is
@@ -1235,12 +1260,12 @@ def _wrap_suites(text, cwd, registry):
             continue
         index = _shell_body_index(words)
         if index is not None:
-            body = _wrap_suites(words[index], cwd, registry)
+            body = _wrap_suites(words[index], cwd, registry, wrap)
             start, end = spans[index]
             replacement = None if body == words[index] else shlex.quote(body)
         elif is_full_suite(shlex.join(words), cwd, registry):
             start, end = spans[0][0], spans[-1][1]
-            replacement = gate_command(text[start:end])
+            replacement = wrap(text[start:end])
         else:
             replacement = None
         if replacement is not None:
@@ -1249,9 +1274,9 @@ def _wrap_suites(text, cwd, registry):
     return ''.join(parts) + text[last:]
 
 
-def gate_rewrite(text, cwd):
+def gate_rewrite(text, cwd, wrap=gate_command):
     """The command to run instead of text, or None when text runs no full suite outside
-    `suite-gate.py run`."""
+    `suite-gate.py run`. wrap turns a suite's text into what replaces it."""
     try:
         commands = [words for words in split_commands(text) if not _is_gate_run(words)]
         if not commands:
@@ -1260,26 +1285,44 @@ def gate_rewrite(text, cwd):
         if not is_full_suite(' ; '.join(shlex.join(words) for words in commands), cwd,
                              registry):
             return None
-        rewritten = _wrap_suites(text, cwd, registry)
+        rewritten = _wrap_suites(text, cwd, registry, wrap)
         # Only the commands together match a registry pattern: send all of them.
-        return rewritten if rewritten != text else gate_command(text)
+        return rewritten if rewritten != text else wrap(text)
     except Exception:  # unreadable text or a hook bug: block what looks like a runner
         if SCRIPT.name not in text and LOOKS_LIKE_TESTS.search(text):
-            return gate_command(text)
+            return wrap(text)
         return None
 
 
 def cmd_hook():
-    """PreToolUse (matcher Bash) for Claude and Codex: exit 2 with the rewrite on stderr."""
+    """PreToolUse (matcher Bash) for Claude and Codex: exit 2 with the rewrite on stderr.
+
+    In a project with an affected-test map the rewrite runs the affected tests instead,
+    and the reply shows how to run a full suite with a purpose."""
     try:
         payload = json.load(sys.stdin)
         text = shell_text(payload.get('tool_input', {}).get('command', ''))
         cwd = payload.get('cwd') or os.getcwd()
     except (ValueError, AttributeError):
         return 0  # nothing to read; never leave the agent stuck
-    rewrite = text.strip() and gate_rewrite(text, cwd if os.path.isdir(cwd) else os.getcwd())
+    cwd = cwd if os.path.isdir(cwd) else os.getcwd()
+    rewrite = text.strip() and gate_rewrite(text, cwd)
     if not rewrite:
         return 0
+    if is_mapped(load_registry(cwd) or {}):
+        affected = gate_rewrite(text, cwd, lambda _suite: affected_command())
+        full = gate_rewrite(text, cwd, lambda suite: gate_command(suite, REASON_FLAGS))
+        print('Blocked: this project has an affected-test map, so a ticket runs only the '
+              'tests its change affects, not the full suite. Run this instead:\n'
+              f'  {affected}\n'
+              'It runs the tests the map selects for the changed files, or the registered '
+              'full suites through the gate when a change is not covered by the map.\n'
+              'When a full suite is really needed, run it through the gate with a purpose:\n'
+              f'  {full}\n'
+              'Replace --reason \'<...>\' with --purpose post-merge after a batch is merged, '
+              'or --purpose release before a release. The purpose is recorded with the result.',
+              file=sys.stderr)
+        return 2
     print('Blocked: this runs a full test suite outside the suite gate. Run this instead; '
           'the gate reuses a passing result for the same content and queues when the host '
           'is busy:\n'
@@ -1382,6 +1425,18 @@ def cmd_configure(action, client, claude_settings, codex_home, preview):
     if preview:
         print(diff, end='')
         return 0
+    write_file(path, original, after)
+    print(diff, end='')
+    if client == 'codex':
+        print(f'Updated {path}; restart Codex and trust the hook in /hooks')
+    else:
+        print(f'Updated {path}; restart Claude Code and confirm the hook in /hooks')
+    return 0
+
+
+def write_file(path, original, after, mode=0o644):
+    """Replace path with after (None removes it) after backing up original; refuses when
+    path changed since original was read. A new file gets mode, an old one keeps its own."""
     path.parent.mkdir(parents=True, exist_ok=True)
     current = path.read_bytes() if path.exists() else None
     if current != original:
@@ -1391,17 +1446,195 @@ def cmd_configure(action, client, claude_settings, codex_home, preview):
                                          delete=False) as backup:
             backup.write(original)
         print(f'Backup: {backup.name}')
+    if after is None:
+        path.unlink()
+        return
     with tempfile.NamedTemporaryFile('w', prefix=path.name + '.', dir=path.parent,
                                      delete=False) as tmp:
         tmp.write(after)
     if original is not None:
         shutil.copymode(path, tmp.name)
-    os.replace(tmp.name, path)
-    print(diff, end='')
-    if client == 'codex':
-        print(f'Updated {path}; restart Codex and trust the hook in /hooks')
     else:
-        print(f'Updated {path}; restart Claude Code and confirm the hook in /hooks')
+        os.chmod(tmp.name, mode)
+    os.replace(tmp.name, path)
+
+
+# ---------------------------------------------------------------- pre-push
+
+PRE_PUSH_BEGIN = '# >>> suite-gate pre-push >>>'
+PRE_PUSH_END = '# <<< suite-gate pre-push <<<'
+SH_SHEBANG = re.compile(r'#!\s*(?:\S*/)?(?:env\s+)?(?:\S*/)?(?:sh|bash|dash|zsh)(?:\s.*)?')
+
+
+def is_release_ref(ref):
+    return ref == 'refs/heads/main' or ref.startswith('refs/tags/')
+
+
+def pushed_commits(root, lines):
+    """{commit: [remote refs]} for pre-push stdin lines that push main or a tag; other
+    branches and deletions are not checked."""
+    found = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        _local_ref, local_oid, remote_ref, _remote_oid = parts
+        if not local_oid.strip('0') or not is_release_ref(remote_ref):
+            continue
+        result = git(['rev-parse', '--verify', '--quiet', local_oid + '^{commit}'], root)
+        if result.returncode != 0:
+            raise RuntimeError(f'{remote_ref}: {local_oid} is not a commit')
+        found.setdefault(result.stdout.strip(), []).append(remote_ref)
+    return found
+
+
+def release_command(root, suite):
+    cwd = root if suite['cwd'] == '.' else root / suite['cwd']
+    run = gate_command(suite['command'], ('--purpose', 'release'))
+    return f'cd {shlex.quote(str(cwd))} && {run}'
+
+
+def cmd_pre_push():
+    """Git pre-push: refuse pushing main or a tag unless every registered full suite has a
+    reusable pass for the pushed commit (its tree plus `fingerprint_include` files from the
+    work tree, the command and its directory: the fingerprint the gate would compute)."""
+    root = repo_root(Path.cwd())
+    lines = sys.stdin.read().splitlines()
+    if root is None:
+        warn('pre-push: not in a Git work tree; nothing checked')
+        return 0
+    try:
+        commits = pushed_commits(root, lines)
+        if not commits:
+            return 0
+        registry = load_registry(root) or {}
+        suites = read_full_suites(registry)
+        include = include_patterns(registry)
+        missing, differs = {}, []
+        for commit, refs in commits.items():
+            tree = content_tree(root, include, commit)
+            lacking = [s for s in suites if not reusable_record(
+                digest(tree, [s['command']], rel_cwd(root, root / s['cwd'])))]
+            if lacking:
+                missing[commit] = (refs, lacking)
+                if content_tree(root, include) != tree:
+                    differs.append(commit)
+    except (RuntimeError, ValueError) as exc:
+        warn(f'push refused: {exc}. `git push --no-verify` skips this check.')
+        return 1
+    if not missing:
+        warn('pre-push: every registered full suite passed for the pushed content')
+        return 0
+    warn('push refused: no passing full-suite record for the pushed content:')
+    commands = []
+    for commit, (refs, lacking) in missing.items():
+        warn(f"  {', '.join(refs)} at {commit[:12]}:")
+        for suite in lacking:
+            warn(f"    {suite['cwd']}: {suite['command']}")
+            if release_command(root, suite) not in commands:
+                commands.append(release_command(root, suite))
+    warn('Run each missing suite through the gate on that content (purpose release), then '
+         'push again:')
+    for command in commands:
+        warn(f'  {command}')
+    for commit in differs:
+        warn(f'The work tree differs from {commit[:12]}; run the commands in a clean checkout '
+             f'of it (for example `git switch --detach {commit[:12]}`).')
+    warn('`git push --no-verify` skips this check.')
+    return 1
+
+
+PRE_PUSH_CREATED = '# suite-gate created this file; uninstall removes it.\n'
+
+
+def pre_push_block(created=False):
+    run = shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'pre-push'])
+    return (f'{PRE_PUSH_BEGIN}\n'
+            + (PRE_PUSH_CREATED if created else '') +
+            '# Added by suite-gate.py install-pre-push; remove with uninstall-pre-push.\n'
+            '# The pushed refs are kept for the rest of this hook on stdin.\n'
+            'suite_gate_refs=$(mktemp) || exit 1\n'
+            'trap \'rm -f "$suite_gate_refs"; exit 1\' HUP INT TERM\n'
+            'cat > "$suite_gate_refs" || { rm -f "$suite_gate_refs"; exit 1; }\n'
+            f'{run} "$@" < "$suite_gate_refs" || {{ rm -f "$suite_gate_refs"; exit 1; }}\n'
+            'exec < "$suite_gate_refs"\n'
+            'rm -f "$suite_gate_refs"\n'
+            'trap - HUP INT TERM\n'
+            f'{PRE_PUSH_END}\n')
+
+
+def updated_hook(text, action):
+    """The pre-push hook text with this check installed or removed; None removes the file."""
+    lines = (text or '').splitlines(True)
+    marks = [i for i, line in enumerate(lines) if line.rstrip('\n') in (PRE_PUSH_BEGIN,
+                                                                          PRE_PUSH_END)]
+    if marks and [lines[i].rstrip('\n') for i in marks] != [PRE_PUSH_BEGIN, PRE_PUSH_END]:
+        raise ValueError('the suite-gate block is broken; inspect the hook')
+    # Only a file this installer created is removed; any other keeps all its own lines.
+    created = bool(marks) and PRE_PUSH_CREATED in lines[marks[0]:marks[1]]
+    if action == 'uninstall':
+        if not marks:
+            return text
+        rest = lines[:marks[0]] + lines[marks[1] + 1:]
+        return None if created and ''.join(rest) == '#!/bin/sh\n' else ''.join(rest)
+    block = pre_push_block(created)
+    if marks:
+        return ''.join(lines[:marks[0]]) + block + ''.join(lines[marks[1] + 1:])
+    if text is None:
+        return '#!/bin/sh\n' + pre_push_block(created=True)
+    if not lines or not SH_SHEBANG.fullmatch(lines[0].strip()):
+        raise ValueError('the existing pre-push hook is not a sh or bash script, so it was '
+                         'left unchanged. To chain it, move it to another name, make '
+                         'pre-push a sh script that runs it with "$@" (passing stdin on), '
+                         'then install again')
+    head = lines[0] if lines[0].endswith('\n') else lines[0] + '\n'
+    return head + block + ''.join(lines[1:])
+
+
+def cmd_pre_push_configure(action, repo, preview):
+    root = repo_root(Path(repo))
+    if root is None:
+        raise ValueError(f'{repo} is not a Git work tree')
+    if action == 'install':
+        registry = load_registry(root)
+        if registry is None:
+            raise ValueError(f'no {REGISTRY_NAME} at {root}: the pre-push check is only for '
+                             'repos with a registry')
+        read_full_suites(registry)
+    # Always the repo's own hooks dir: a core.hooksPath may be shared by every repo.
+    common = git(['rev-parse', '--git-common-dir'], root).stdout.strip()
+    path = (root / common).resolve() / 'hooks/pre-push'
+    active = (root / git(['rev-parse', '--git-path', 'hooks'], root).stdout.strip()).resolve()
+    inactive = None
+    if action == 'install' and active != path.parent:
+        inactive = (f'Installed but NOT active: core.hooksPath={active} runs hooks from '
+                    f'there, not from {path.parent}. Add a hand-over to {active}/pre-push, '
+                    'for example:\n'
+                    '  local_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"\n'
+                    '  [ -x "$local_hook" ] && exec "$local_hook" "$@"\n'
+                    '  exit 0')
+    try:
+        original = path.read_bytes()
+    except FileNotFoundError:
+        original = None
+    before = original.decode() if original is not None else None
+    if action == 'install' and original is not None and not os.access(path, os.X_OK):
+        raise ValueError(f'{path} exists but is not executable, so Git ignores it; it was '
+                         'left unchanged. Make it executable (it will then run on every push) '
+                         'or remove it, then install again')
+    after = updated_hook(before, action)
+    if after == before:
+        print(f'No changes: {path}')
+    else:
+        diff = ''.join(difflib.unified_diff((before or '').splitlines(True),
+                                            (after or '').splitlines(True),
+                                            fromfile=str(path), tofile=str(path)))
+        print(diff, end='')
+        if not preview:
+            write_file(path, original, after, mode=0o755)
+            print(f'Removed {path}' if after is None else f'Updated {path}')
+    if inactive:
+        print(inactive)
     return 0
 
 
@@ -1435,6 +1668,14 @@ def main(argv=None):
     status.add_argument('--limit', type=int, default=10)
     sub.add_parser('hook', help='PreToolUse hook (matcher Bash) for Claude and Codex; '
                                 'reads the payload on stdin')
+    pre_push = sub.add_parser('pre-push', help='Git pre-push hook: refuse pushing main or a '
+                              'tag without a passing record of every registered full suite')
+    pre_push.add_argument('remote', nargs='*', help='remote name and URL, as Git passes them')
+    for action in ('install-pre-push', 'uninstall-pre-push'):
+        config = sub.add_parser(action, help=f'{action.split("-")[0]} the pre-push check in '
+                                'a repo with a registry')
+        config.add_argument('--repo', required=True, help='the repo (work tree) to change')
+        config.add_argument('--preview', action='store_true', help='show the diff, write nothing')
     for action in ('install', 'uninstall'):
         config = sub.add_parser(action, help=f'{action} the hook in a client\'s settings')
         config.add_argument('--client', choices=('claude', 'codex'), required=True)
@@ -1454,6 +1695,14 @@ def main(argv=None):
         return cmd_hook()
     if args.action == 'affected':
         return cmd_affected(args.base)
+    if args.action == 'pre-push':
+        return cmd_pre_push()
+    if args.action in ('install-pre-push', 'uninstall-pre-push'):
+        try:
+            return cmd_pre_push_configure(args.action.split('-')[0], args.repo, args.preview)
+        except (OSError, ValueError) as exc:
+            warn(str(exc))
+            return 1
     if args.action in ('install', 'uninstall'):
         try:
             return cmd_configure(args.action, args.client, args.claude_settings,
