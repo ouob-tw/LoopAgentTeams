@@ -123,11 +123,19 @@ const RETENTION_MS = 30 * 24 * 60 * 60 * 1000;
 /** How long after a cleaning the next read cleans again. */
 const PRUNE_EVERY_MS = 24 * 60 * 60 * 1000;
 
+interface Row {
+	raw: string;
+	/** Null for a line that cannot be read: kept in the file, left out of what is read. */
+	line: Line | null;
+}
+
 interface Cached {
+	rows: Row[];
 	lines: readonly Line[];
 	size: number;
-	/** Null after the board appended a line: its new time is learned on the next read. */
-	mtimeMs: number | null;
+	mtimeMs: number;
+	/** The text ends with a whole line, so a line appended stands on its own. */
+	whole: boolean;
 }
 
 const cache = new Map<string, Cached>();
@@ -137,19 +145,6 @@ const prunedAt = new Map<string, number>();
 /** How many times the whole file was read and parsed; tests count the reads with it. */
 export const sentLogReads = { count: 0 };
 
-export function appendSent(stateDir: string, entry: Line): void {
-	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-	const text = JSON.stringify(entry) + '\n';
-	// The text may hold internal addresses and paths, like the reports do.
-	appendFileSync(join(stateDir, SENT_LOG_FILE), text, { mode: 0o600 });
-	const cached = cache.get(stateDir);
-	if (cached) {
-		// A size that does not match on the next read means someone else wrote too: it is read whole then.
-		const line = JSON.parse(text) as Line;
-		cache.set(stateDir, { lines: Object.freeze([...cached.lines, deepFreeze(line)]), size: cached.size + Buffer.byteLength(text), mtimeMs: null });
-	}
-}
-
 function deepFreeze<T>(value: T): T {
 	if (value && typeof value === 'object') {
 		for (const inner of Object.values(value)) deepFreeze(inner);
@@ -158,23 +153,49 @@ function deepFreeze<T>(value: T): T {
 	return value;
 }
 
-/** The file's text, or null when there is none yet. */
-function readText(path: string): string | null {
+function parse(raw: string): Line | null {
 	try {
-		return readFileSync(path, 'utf8');
+		const line = JSON.parse(raw);
+		return line && typeof line === 'object' ? deepFreeze(line) : null;
+	} catch {
+		// One cut short by a failed write.
+		return null;
+	}
+}
+
+/** Stat the file; null when there is none yet. */
+function stamp(path: string) {
+	try {
+		return statSync(path);
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
 		throw error;
 	}
 }
 
-function parse(text: string): Line | null {
-	try {
-		return JSON.parse(text);
-	} catch {
-		// An empty line, or one cut short by a failed write.
-		return null;
-	}
+const unchanged = (cached: Cached | undefined, info: { size: number; mtimeMs: number } | null): cached is Cached =>
+	!!cached && !!info && cached.size === info.size && cached.mtimeMs === info.mtimeMs;
+
+function cacheRows(stateDir: string, rows: Row[], size: number, mtimeMs: number, whole: boolean): Cached {
+	const cached: Cached = { rows, lines: Object.freeze(rows.flatMap((row) => (row.line ? [row.line] : []))), size, mtimeMs, whole };
+	cache.set(stateDir, cached);
+	return cached;
+}
+
+export function appendSent(stateDir: string, entry: Line): void {
+	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+	const path = join(stateDir, SENT_LOG_FILE);
+	const raw = JSON.stringify(entry);
+	const cached = cache.get(stateDir);
+	// Kept only while the file is as the board left it: someone else's write is read whole next time.
+	const keep = unchanged(cached, stamp(path)) && cached!.whole;
+	cache.delete(stateDir);
+	// The text may hold internal addresses and paths, like the reports do.
+	appendFileSync(path, raw + '\n', { mode: 0o600 });
+	if (!keep) return;
+	const size = cached!.size + Buffer.byteLength(raw + '\n');
+	const info = stamp(path);
+	if (info?.size === size) cacheRows(stateDir, [...cached!.rows, { raw, line: parse(raw) }], size, info.mtimeMs, true);
 }
 
 /** The IDs a line belongs with: its own entry's, and a switch's for the wake that resumes it. */
@@ -203,11 +224,7 @@ function keysOf(line: Line): string[] {
  * that add to it, and a switch with the wakes that resume it. The file is replaced whole, and only
  * when something is dropped. Lines that cannot be read, or have no time, are kept.
  */
-function prune(stateDir: string, now: number): void {
-	const path = join(stateDir, SENT_LOG_FILE);
-	const text = readText(path);
-	if (text === null) return;
-	const rows = text.split('\n').filter((raw) => raw.trim()).map((raw) => ({ raw, line: parse(raw) }));
+function prune(stateDir: string, cached: Cached, now: number): Cached {
 	// Union of IDs into groups, each with its latest time.
 	const parent = new Map<string, string>();
 	const root = (key: string): string => {
@@ -216,76 +233,80 @@ function prune(stateDir: string, now: number): void {
 		parent.set(key, top);
 		return top;
 	};
-	for (const { line } of rows) {
-		if (!line) continue;
+	for (const line of cached.lines) {
 		const [first, ...rest] = keysOf(line).map(root);
 		for (const other of rest) if (other !== first) parent.set(other, first);
 	}
 	const latest = new Map<string, number>();
-	for (const { line } of rows) {
-		if (!line) continue;
+	for (const line of cached.lines) {
 		const group = root(keysOf(line)[0]);
 		const time = Date.parse(line.time);
 		latest.set(group, Math.max(latest.get(group) ?? -Infinity, Number.isNaN(time) ? Infinity : time));
 	}
-	const kept = rows.filter(({ line }) => !line || !(now - latest.get(root(keysOf(line)[0]))! > RETENTION_MS));
-	if (kept.length === rows.length) return;
+	const kept = cached.rows.filter(({ line }) => !line || !(now - latest.get(root(keysOf(line)[0]))! > RETENTION_MS));
+	if (kept.length === cached.rows.length) return cached;
+	const path = join(stateDir, SENT_LOG_FILE);
 	const temporary = `${path}.${process.pid}.tmp`;
+	const text = kept.map(({ raw }) => raw + '\n').join('');
 	try {
 		// One left by a board stopped midway would keep its own mode.
 		rmSync(temporary, { force: true });
-		writeFileSync(temporary, kept.map(({ raw }) => raw + '\n').join(''), { mode: 0o600 });
+		writeFileSync(temporary, text, { mode: 0o600 });
 		renameSync(temporary, path);
 	} catch {
 		// The log stays whole until the next cleaning; reading it is not held up by this.
 		rmSync(temporary, { force: true });
-		return;
+		return cached;
 	}
+	const info = stamp(path);
+	const size = Buffer.byteLength(text);
+	if (info?.size !== size) {
+		cache.delete(stateDir);
+		return readCached(stateDir) ?? cached;
+	}
+	return cacheRows(stateDir, kept, size, info.mtimeMs, true);
+}
+
+/** The log as it is in the file, from the cache while the file is as the board left it. */
+function readCached(stateDir: string): Cached | null {
+	const path = join(stateDir, SENT_LOG_FILE);
+	const info = stamp(path);
+	const cached = cache.get(stateDir);
+	if (unchanged(cached, info)) return cached;
 	cache.delete(stateDir);
+	if (!info) return null;
+	let text: string;
+	try {
+		text = readFileSync(path, 'utf8');
+	} catch (error) {
+		if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
+		throw error;
+	}
+	sentLogReads.count += 1;
+	const rows = text
+		.split('\n')
+		.filter((raw) => raw.trim())
+		.map((raw) => ({ raw, line: parse(raw) }));
+	const size = Buffer.byteLength(text);
+	const whole = text === '' || text.endsWith('\n');
+	// A line appended between the stat and the read: what was read is used once, and read again next time.
+	if (size !== info.size) return { rows, lines: Object.freeze(rows.flatMap((row) => (row.line ? [row.line] : []))), size, mtimeMs: info.mtimeMs, whole };
+	return cacheRows(stateDir, rows, size, info.mtimeMs, whole);
 }
 
 /**
- * Every line of the log, from the cache while the file is as the board left it. Called with the
- * board's clock, the first read of a state directory, and the first one a day after, drop what is
- * past retention first. The lines are frozen: they are the cache's own.
+ * Every line of the log. Called with the board's clock, the first read of a state directory, and
+ * the first one a day after, drop what is past retention too. The lines are frozen: they are the
+ * cache's own.
  */
-function readLines(stateDir: string, now?: number): readonly Line[] {
-	if (now !== undefined) {
-		const last = prunedAt.get(stateDir);
-		if (last === undefined || now - last >= PRUNE_EVERY_MS) {
-			prunedAt.set(stateDir, now);
-			prune(stateDir, now);
-		}
+function readLines(stateDir: string, now: number): readonly Line[] {
+	let cached = readCached(stateDir);
+	const last = prunedAt.get(stateDir);
+	if (last === undefined || now - last >= PRUNE_EVERY_MS) {
+		prunedAt.set(stateDir, now);
+		if (cached) cached = prune(stateDir, cached, now);
 	}
-	const path = join(stateDir, SENT_LOG_FILE);
-	let info;
-	try {
-		info = statSync(path);
-	} catch (error) {
-		if ((error as NodeJS.ErrnoException).code !== 'ENOENT') throw error;
-		cache.delete(stateDir);
-		return [];
-	}
-	const cached = cache.get(stateDir);
-	if (cached && cached.size === info.size && (cached.mtimeMs === null || cached.mtimeMs === info.mtimeMs)) {
-		if (cached.mtimeMs === null) cached.mtimeMs = info.mtimeMs;
-		return cached.lines;
-	}
-	const text = readText(path);
-	if (text === null) {
-		cache.delete(stateDir);
-		return [];
-	}
-	sentLogReads.count += 1;
-	const lines: Line[] = [];
-	for (const raw of text.split('\n')) {
-		const line = parse(raw);
-		if (line) lines.push(deepFreeze(line));
-	}
-	const frozen = Object.freeze(lines);
-	// The size read is the text's own, so a line appended between the stat and the read is not lost.
-	cache.set(stateDir, { lines: frozen, size: Buffer.byteLength(text), mtimeMs: Buffer.byteLength(text) === info.size ? info.mtimeMs : null });
-	return frozen;
+	return cached?.lines ?? [];
 }
 
 const marksOf = (lines: readonly Line[]) =>
@@ -432,8 +453,8 @@ export function readSent(stateDir: string, controllerId: string, now: number, wa
 }
 
 /** What was done to one agent of the 所有 Agent tab, newest first. */
-export function readAgentActions(stateDir: string, agentId: string): AgentAction[] {
-	return readLines(stateDir)
+export function readAgentActions(stateDir: string, agentId: string, now: number): AgentAction[] {
+	return readLines(stateDir, now)
 		.filter((line): line is AgentAction => line.kind === 'agent-action' && line.agentId === agentId)
 		.reverse();
 }

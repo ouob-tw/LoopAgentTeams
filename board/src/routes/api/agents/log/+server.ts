@@ -11,5 +11,6 @@ export const GET: RequestHandler = async ({ url }) => {
 	const board = getBoard();
 	if (!(await board.current()).agents.some((agent) => agent.id === sessionId)) return json({ error: 'unknown_agent' }, { status: 404 });
 	const { stateDir, launchWaitMs } = board.config;
-	return json({ entries: readAgentActions(stateDir, sessionId), switches: readSwitches(stateDir, sessionId, board.config.now(), launchWaitMs) });
+	const now = board.config.now();
+	return json({ entries: readAgentActions(stateDir, sessionId, now), switches: readSwitches(stateDir, sessionId, now, launchWaitMs) });
 };

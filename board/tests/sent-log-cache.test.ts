@@ -1,7 +1,7 @@
 // The sent log is parsed once while the file stays as the board left it; a line the board appends
 // is seen at once without a whole read, and one written by anyone else on the next read.
-import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { appendFileSync, chmodSync, mkdtempSync, rmSync } from 'node:fs';
+import { afterEach, beforeEach, expect, spyOn, test } from 'bun:test';
+import { appendFileSync, chmodSync, mkdtempSync, readFileSync, rmSync, utimesSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SentMessage } from '../src/lib/board/messages.ts';
@@ -34,9 +34,19 @@ test('reads of an unchanged file parse it once', () => {
 	for (let round = 0; round < 5; round++) {
 		expect(openSwitches(stateDir, NOW, 60_000)).toEqual([]);
 		expect(texts()).toEqual(['second', 'first']);
-		readAgentActions(stateDir, 'session-a');
+		readAgentActions(stateDir, 'session-a', NOW);
 	}
 	expect(sentLogReads.count - before).toBe(1);
+});
+
+test('the first read, which also cleans the log, parses each line once', () => {
+	const parse = spyOn(JSON, 'parse');
+	try {
+		for (let round = 0; round < 5; round++) expect(texts()).toEqual(['second', 'first']);
+		expect(parse).toHaveBeenCalledTimes(2);
+	} finally {
+		parse.mockRestore();
+	}
 });
 
 test('a line the board appends is read at once, without reading the file again', () => {
@@ -55,6 +65,33 @@ test('a line appended to the file by someone else shows on the next read', () =>
 	// And after the board appends on top of it, both are there.
 	appendSent(stateDir, message('m4', 'fourth'));
 	expect(texts()).toEqual(['fourth', 'from elsewhere', 'second', 'first']);
+});
+
+test('a line appended by someone else, then one by the board, are both read', () => {
+	expect(texts()).toEqual(['second', 'first']);
+	appendFileSync(join(stateDir, 'sent-log.jsonl'), JSON.stringify(message('m3', 'from elsewhere')) + '\n');
+	appendSent(stateDir, message('m4', 'fourth'));
+	expect(texts()).toEqual(['fourth', 'from elsewhere', 'second', 'first']);
+});
+
+test('a rewrite of the same size by someone else, then a line by the board, are both read', () => {
+	expect(texts()).toEqual(['second', 'first']);
+	const file = join(stateDir, 'sent-log.jsonl');
+	const before = readFileSync(file, 'utf8');
+	writeFileSync(file, before.replace('"first"', '"FIRST"'));
+	// A different time, as a later write has.
+	utimesSync(file, new Date(), new Date(Date.now() + 5_000));
+	appendSent(stateDir, message('m3', 'third'));
+	expect(texts()).toEqual(['third', 'second', 'FIRST']);
+});
+
+test('a line the board appends after a line cut short reads as the file has it', () => {
+	const file = join(stateDir, 'sent-log.jsonl');
+	appendFileSync(file, '{"id":"torn","kind":"mess');
+	expect(texts()).toEqual(['second', 'first']);
+	appendSent(stateDir, message('m3', 'third'));
+	// On disk the new line joined the cut one: neither can be read.
+	expect(texts()).toEqual(['second', 'first']);
 });
 
 test('what a read returns cannot change what the next read sees', () => {

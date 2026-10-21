@@ -4,7 +4,7 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { mkdtempSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { readSent } from '../src/lib/server/sent-log.ts';
+import { readAgentActions, readSent } from '../src/lib/server/sent-log.ts';
 
 const DAY = 24 * 60 * 60 * 1000;
 const NOW = Date.parse('2026-10-21T08:00:00.000Z');
@@ -124,4 +124,23 @@ test('the log is cleaned again a day after the last time, not before', () => {
 	expect(left()).toEqual(['message:a', 'message:b']);
 	read(NOW + DAY);
 	expect(left()).toEqual(['message:b']);
+});
+
+test('a first read of the agent actions cleans the log too', () => {
+	const action = (id: string, days: number) => ({
+		id,
+		kind: 'agent-action',
+		action: 'interrupt',
+		time: ago(days),
+		agentId: 'session-a',
+		name: 'luna',
+		route: 'hcom',
+		pane: null,
+		text: null,
+		ok: true,
+		error: null
+	});
+	write([action('old', 31), action('new', 1)]);
+	expect(readAgentActions(stateDir, 'session-a', NOW).map((entry) => entry.id)).toEqual(['new']);
+	expect(left()).toEqual(['agent-action:new']);
 });
