@@ -173,6 +173,14 @@ async function until(check: () => Promise<boolean>, what: string) {
 		await sleep(50);
 	}
 }
+/** Open the menu of a model picker's part once the picker has read what may be picked. Each click
+ *  starts a newer read that the older ones give way to, so clicking on every poll would never let a
+ *  read slower than the poll (a busy host) land. */
+async function openMenu(part: string, menu: string, what: string) {
+	await tab.until(`document.querySelector('${part}')?.getAttribute('aria-disabled') === 'false'`, `${what}'s part to be read`);
+	await tab.eval(`document.querySelector('${part}').click()`);
+	await tab.until(`!!document.querySelector('${menu}')`, what);
+}
 
 for (const width of [1280, 390]) {
 	test.skipIf(!CHROME)(`${width}px: a running controller gets the text typed into its input box, in its sent log, not as an agent`, async () => {
@@ -454,10 +462,7 @@ for (const { width, newRound, kind, value, flags } of [
 		// Its model or effort for this wake, from the controller's model picker beside the button,
 		// opened once the board has read what it may be woken with.
 		const menu = `.dock [role="menu"][aria-label="${kind}"]`;
-		await tab.until(
-			`(() => { const part = document.querySelector('.dock .pill-slot .part[aria-label^="${kind}："]'); if (part.getAttribute('aria-expanded') !== 'true') part.click(); return !!document.querySelector('${menu}'); })()`,
-			`the ${kind} menu`
-		);
+		await openMenu(`.dock .pill-slot .part[aria-label^="${kind}："]`, menu, `the ${kind} menu`);
 		await tab.eval(`[...document.querySelectorAll('${menu} button')].find((b) => b.querySelector('small')?.innerText === ${JSON.stringify(value)}).click()`);
 		await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).click()`);
 		await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');
@@ -489,10 +494,7 @@ for (const width of [1280, 390]) {
 			await tab.eval(`document.querySelector(${JSON.stringify(OPTIONS)}).click()`);
 			await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
 			const menu = `.dock [role="menu"][aria-label="思考強度"]`;
-			await tab.until(
-				`(() => { const part = document.querySelector('.dock .pill-slot .part[aria-label^="思考強度："]'); if (part.getAttribute('aria-expanded') !== 'true') part.click(); return !!document.querySelector('${menu}'); })()`,
-				'the effort menu'
-			);
+			await openMenu('.dock .pill-slot .part[aria-label^="思考強度："]', menu, 'the effort menu');
 			const item = `[...document.querySelectorAll('${menu} button')].find((b) => b.querySelector('small')?.innerText === 'high')`;
 			await tab.eval(`${item}.setAttribute('data-test-high', '')`);
 			const hit = `!!(() => { const r = document.querySelector('[data-test-high]').getBoundingClientRect(); return document.elementFromPoint(r.x + r.width / 2, r.y + r.height / 2)?.closest('[data-test-high]'); })()`;
@@ -565,11 +567,7 @@ async function press(name: keyof typeof KEY_CODES) {
 async function menuKeys(part: string, menu: string, value: string, outside: string) {
 	const items = `[...document.querySelectorAll('${menu} [role="menuitemradio"]')]`;
 	const at = () => tab.eval<number>(`${items}.indexOf(document.activeElement)`);
-	const open = () =>
-		tab.until(
-			`(() => { const part = document.querySelector('${part}'); if (part.getAttribute('aria-expanded') !== 'true') part.click(); return !!document.querySelector('${menu}'); })()`,
-			'the menu'
-		);
+	const open = () => openMenu(part, menu, 'the menu');
 	await open();
 	await tab.eval(`${items}.find((b) => b.querySelector('small')?.innerText === ${JSON.stringify(value)}).click()`);
 	await tab.until(`!document.querySelector('${menu}')`, 'the menu closed by the pick');
