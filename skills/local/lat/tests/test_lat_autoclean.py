@@ -32,7 +32,34 @@ def age(path, days):
     os.utime(path, (moment, moment))
 
 
-class AutocleanTestCase(CleanTestCase):
+class RunnerTestCase(CleanTestCase):
+    def autoclean(self, *args):
+        return subprocess.run(['uv', 'run', '--no-project', 'python', str(SCRIPT), *map(str, args)],
+                              text=True, capture_output=True, env=self.env, timeout=120)
+
+    def enable(self):
+        result = self.autoclean('enable', '--workspace', self.work, '--repo', REPO)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def run_once(self):
+        result = self.autoclean('run', '--workspace', self.work)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result
+
+    def log_lines(self):
+        path = self.lat / 'cleanup.log'
+        return [line.split('\t') for line in path.read_text().splitlines()] if path.exists() else []
+
+    def outcome(self, relative):
+        """The logged outcome of `relative`, or None when it was not logged."""
+        found = [line[4] for line in self.log_lines() if line[2] == relative]
+        return found[-1] if found else None
+
+    def exists(self, relative):
+        return (self.lat / relative).exists()
+
+
+class AutocleanTestCase(RunnerTestCase):
     def setUp(self):
         super().setUp()
         self.session(ACTIVE, 'live', 'active')
@@ -78,31 +105,6 @@ class AutocleanTestCase(CleanTestCase):
             self.lat / 'panel-journal.jsonl', self.lat / f'watch/{ACTIVE}.log',
             self.lat / 'watch/live/watch.jsonl', self.lat / 'tasks/live-card.md',
             self.lat / 'watch/waits/live.json', self.lat / 'watch/waits/helper.json')}
-
-    def autoclean(self, *args):
-        return subprocess.run(['uv', 'run', '--no-project', 'python', str(SCRIPT), *map(str, args)],
-                              text=True, capture_output=True, env=self.env, timeout=120)
-
-    def enable(self):
-        result = self.autoclean('enable', '--workspace', self.work, '--repo', REPO)
-        self.assertEqual(result.returncode, 0, result.stderr)
-
-    def run_once(self):
-        result = self.autoclean('run', '--workspace', self.work)
-        self.assertEqual(result.returncode, 0, result.stderr)
-        return result
-
-    def log_lines(self):
-        path = self.lat / 'cleanup.log'
-        return [line.split('\t') for line in path.read_text().splitlines()] if path.exists() else []
-
-    def outcome(self, relative):
-        """The logged outcome of `relative`, or None when it was not logged."""
-        found = [line[4] for line in self.log_lines() if line[2] == relative]
-        return found[-1] if found else None
-
-    def exists(self, relative):
-        return (self.lat / relative).exists()
 
     def assert_untouched(self):
         for path, content in self.untouchable.items():
@@ -292,6 +294,72 @@ class EnabledTests(AutocleanTestCase):
             module.trigger(self.work)
         self.assertEqual(output.getvalue().count('自動清理未啟動'), 2)
 
+
+class BoundaryTests(RunnerTestCase):
+    """The 40 days and 24 hours are pinned here as literals, apart from the script's constants.
+
+    The pass runs in this process on a frozen clock, so "exactly" is exact and one second
+    either side lands on the other side of the rule.
+    """
+    CLOCK = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc)
+    SECOND = timedelta(seconds=1)
+
+    def setUp(self):
+        super().setUp()
+        self.enable()
+        exact = self.CLOCK - timedelta(days=40)
+        self.when = dict(under=exact + self.SECOND, exact=exact, over=exact - self.SECOND)
+        self.sids = {label: f'{number}' * 8 + '-0000-4000-8000-000000000000'
+                     for number, label in enumerate(self.when, 1)}
+        issues = []
+        for number, (label, moment) in enumerate(self.when.items(), 1):
+            self.write(f'runs/issue-{number}/notes.md', 'evidence\n')
+            issues.append(dict(number=number, state='CLOSED', closedAt=moment.isoformat(),
+                               body='', comments=[]))
+            sid = self.sids[label]
+            self.session(sid, label, 'ended', ended_at_utc=moment.isoformat())
+            self.write(f'watch/{sid}.log', 'log\n')
+            self.write(f'watch/{label}/watch.jsonl', '{}\n')
+            seconds = int(moment.timestamp()) * 10**9
+            for relative in (f'tasks/done/{label}.md', f'watch/waits/{label}.json',
+                             f'watch/waits/.{label}-orphan.lock'):
+                os.utime(self.write(relative, 'x'), ns=(seconds, seconds))
+        self.set_issues(issues)
+
+    def run_frozen(self):
+        module = load()
+        clock = self.CLOCK
+
+        class Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock if tz else clock.replace(tzinfo=None)
+
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(module, 'datetime', Frozen):
+            module.run(Path(os.path.realpath(self.lat)))
+
+    def test_each_category_cleans_from_exactly_40_days(self):
+        self.run_frozen()
+        for number, label in enumerate(self.when, 1):
+            paths = (f'runs/issue-{number}', f'watch/{self.sids[label]}.log', f'watch/{label}',
+                     f'tasks/done/{label}.md', f'watch/waits/{label}.json',
+                     f'watch/waits/.{label}-orphan.lock')
+            for path in paths:
+                self.assertEqual(self.exists(path), label == 'under', path)
+                self.assertEqual(self.outcome(path).startswith('跳過'), label == 'under', path)
+
+    def test_a_second_pass_waits_exactly_24_hours(self):
+        stamp = self.lat / 'cleanup.last-run'
+        day = timedelta(hours=24)
+        for delta, runs in ((day - self.SECOND, False), (day, True), (day + self.SECOND, True)):
+            with self.subTest(delta=delta):
+                stamp.write_text((self.CLOCK - delta).isoformat() + '\n')
+                before = len(self.log_lines())
+                self.run_frozen()
+                started = [line[4] for line in self.log_lines()[before:]]
+                self.assertEqual('開始' in started, runs, started)
+                self.assertEqual(any('24 小時內已執行' in item for item in started), not runs)
 
 def load():
     spec = importlib.util.spec_from_file_location('lat_autoclean_under_test', SCRIPT)
