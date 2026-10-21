@@ -185,9 +185,11 @@ for (const width of [1440, 412]) {
 	test.skipIf(!CHROME)(`switched on at a controller's page, the agent and closed agent pages loaded next show the reply translated (${width}px)`, async () => {
 		await visit(width);
 		await tab.navigate(`${fixture.url}/?controller=${lead.session_id}`);
-		// The switch is drawn by the server first: clicked once the page has started.
-		await tab.until(`!!document.querySelector('.detail .language') && performance.now() > 1500`, "the controller's conversation");
-		await tab.eval(`[...document.querySelectorAll('.detail .language button')].find((b) => b.innerText === '中文').click()`);
+		// The switch is drawn by the server first: clicked again until the page, once started, takes it.
+		await tab.until(
+			`(() => { if (!document.querySelector('.detail .language')) return false; if (!(${PRESSED})) [...document.querySelectorAll('.detail .language button')].find((b) => b.innerText === '中文').click(); return ${PRESSED}; })()`,
+			"the controller's conversation switched to 中文"
+		);
 		await tab.until(DONE, 'the translation on the controller page');
 		for (let round = 0; round < 3; round++) {
 			for (const session of ['s-live', 's-gone']) {
@@ -208,15 +210,19 @@ for (const width of [1440, 412]) {
 test.skipIf(!CHROME)("going back to the board from another page loads it again, with live updates and the command-line draft", async () => {
 	await visit(1440);
 	await tab.navigate(`${fixture.url}/?controller=${lead.session_id}`);
-	await tab.until(`!!document.querySelector('.detail .language') && !!document.querySelector('.dock textarea') && performance.now() > 1500`, "the controller's conversation and command line");
-	await tab.eval(`(() => {
-		window.leftBehind = true;
-		const box = document.querySelector('.dock textarea');
-		box.value = 'a draft to keep';
-		box.dispatchEvent(new Event('input', { bubbles: true }));
-	})()`);
-	// The page saves the draft once it has started: leave only once it has.
-	await tab.until(`localStorage.getItem('lat-board-command-draft') === 'a draft to keep'`, 'the draft to be saved');
+	await tab.until(`!!document.querySelector('.detail .language') && !!document.querySelector('.dock textarea')`, "the controller's conversation and command line");
+	// Typed again until the page, once started, has saved it: the server draws the box first.
+	await tab.until(
+		`(() => {
+			window.leftBehind = true;
+			if (localStorage.getItem('lat-board-command-draft') === 'a draft to keep') return true;
+			const box = document.querySelector('.dock textarea');
+			box.value = 'a draft to keep';
+			box.dispatchEvent(new Event('input', { bubbles: true }));
+			return false;
+		})()`,
+		'the draft to be saved'
+	);
 	await tab.navigate('about:blank');
 	await tab.eval('history.back()');
 	// Loaded again, not brought back as it was left: no mark of the old document, and the
