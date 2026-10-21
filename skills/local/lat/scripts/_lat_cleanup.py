@@ -47,12 +47,12 @@ def entries(path):
                 yield Path(root) / name
 
 
-def sensitive_reason(path, lat):
+def sensitive_reason(path):
     """Why `path` (a file or a whole directory) must be shredded, or None for trash."""
-    watch = Path(lat) / 'watch'
     for entry in entries(path):
         name = entry.name
-        if entry.parent == watch and fnmatch.fnmatch(name, 'prompt-*.txt'):
+        if (entry.parent.name == 'watch' and entry.parent.parent.name == '.lat'
+                and fnmatch.fnmatch(name, 'prompt-*.txt')):
             return f'輸入備份 {name}'
         if any(fnmatch.fnmatch(name, pattern) for pattern in SENSITIVE_NAMES):
             return f'敏感檔 {entry}'
@@ -63,8 +63,8 @@ def sensitive_reason(path, lat):
     return None
 
 
-def deletion_method(path, lat):
-    return 'shred' if sensitive_reason(path, lat) else 'trash'
+def deletion_method(path):
+    return 'shred' if sensitive_reason(path) else 'trash'
 
 
 def ticket_numbers(path, lat):
@@ -91,9 +91,14 @@ def lock_targets(path):
 
 
 def lat_directories(lat):
-    """The shared .lat, then the .lat of every linked worktree and `.worktrees/*` folder."""
+    """The shared .lat, then the .lat of every linked worktree and `.worktrees/*` folder.
+
+    A symbolically linked `.lat` or worktree folder is skipped, so a link never turns its
+    target into something cleanup may delete.
+    """
     lat = Path(lat)
-    others = sorted(lat.parent.glob('.worktrees/*/.lat'))
+    others = [other for other in sorted(lat.parent.glob('.worktrees/*/.lat'))
+              if not other.parent.is_symlink()]
     try:
         output = run_cli(['git', '-C', str(lat.parent), 'worktree', 'list', '--porcelain'],
                          timeout=10)
@@ -101,7 +106,8 @@ def lat_directories(lat):
         output = ''
     others += [Path(line.removeprefix('worktree ')) / '.lat' for line in output.splitlines()
                if line.startswith('worktree ')]
-    return [lat, *dict.fromkeys(other for other in others if other != lat and other.is_dir())]
+    return [lat, *dict.fromkeys(other for other in others
+                                if other != lat and other.is_dir() and not other.is_symlink())]
 
 
 def _load(name, filename):
@@ -151,17 +157,26 @@ def _monitored_agents(record, watcher):
 
 
 def active_dependencies(lat, lat_dirs):
-    """Paths an active controller still needs: recovery files, its questions, its watch files."""
+    """(paths, directories, errors) an active controller still needs.
+
+    Each of `paths` is kept with everything below it: recovery files, questions, watch
+    files. Each of `directories` (the task-card directory) only has to keep existing; its
+    top-level cards are in `paths`, `done/` is not.
+    """
     records, errors = session_records(lat_dirs)
     active = [(path, record) for path, record in records if record.get('status') not in ENDED]
-    paths = set()
+    paths, directories = set(), set()
     agents = set()
     watcher = _load('lat_watch_rules', SCRIPTS / 'lat-watch.py') if active else None
     bindings = _panel_bindings() if active else None
     for record_path, record in active:
-        for key in ('progress_path', 'decisions_path', 'tasks_path'):
+        for key in ('progress_path', 'decisions_path'):
             if record.get(key):
                 paths.add(Path(record[key]))
+        if record.get('tasks_path'):
+            tasks = Path(record['tasks_path'])
+            directories.add(tasks)
+            paths.update(tasks.glob('*.md'))
         record_lat = record_path.parent.parent
         sid = record.get('session_id') or record_path.stem
         paths.update(record_lat / 'watch' / f'{sid}{suffix}' for suffix in ('.pid', '.lock', '.log'))
@@ -177,7 +192,8 @@ def active_dependencies(lat, lat_dirs):
         for directory in lat_dirs:
             waits = Path(directory) / 'watch/waits'
             paths.update((waits / f'{agent}.json', waits / f'.{agent}.lock'))
-    return {Path(os.path.realpath(path)) for path in paths}, errors
+    return ({Path(os.path.realpath(path)) for path in paths},
+            {Path(os.path.realpath(path)) for path in directories}, errors)
 
 
 def _questions_paths(bindings, record, lat):
@@ -193,15 +209,34 @@ def _questions_paths(bindings, record, lat):
 
 
 class Protection:
-    """Answers whether a path is inside a hard limit, from one fresh read of sessions."""
+    """Answers whether a path is inside a hard limit, from one fresh read of sessions.
 
-    def __init__(self, lat, *, ticket_states=None, ticket_error=None):
+    `issues` is the tracker as (number, state, body and comments) tuples, or None when it
+    could not be read. With `need_tracker`, an unread tracker refuses every path, since an
+    open ticket might link it; otherwise only paths named after a ticket are refused.
+    """
+
+    def __init__(self, lat, *, issues=None, tracker_error=None, need_tracker=False):
         self.lat = Path(os.path.realpath(lat))
         self.lat_dirs = [Path(os.path.realpath(path)) for path in lat_directories(self.lat)]
         self.never = [directory / name for directory in self.lat_dirs for name in NEVER]
-        self.active, self.session_errors = active_dependencies(self.lat, self.lat_dirs)
-        self.ticket_states = ticket_states
-        self.ticket_error = ticket_error
+        self.active, self.kept, self.session_errors = active_dependencies(self.lat, self.lat_dirs)
+        self.issues = issues
+        self.ticket_states = None if issues is None else {
+            number: state for number, state, _ in issues}
+        self.tracker_error = tracker_error
+        self.need_tracker = need_tracker
+
+    def _ticket_items(self, real):
+        """Ticket-data items (`<.lat>/<runs|progress|...>/<name>`) that hold or are in `real`."""
+        for root in self.lat_dirs:
+            for top in TICKET_DATA:
+                folder = root / top
+                if real != folder and _inside(real, folder):
+                    yield folder / real.relative_to(folder).parts[0], root
+                elif _inside(folder, real) and folder.is_dir() and not folder.is_symlink():
+                    for child in folder.iterdir():
+                        yield child, root
 
     def reason(self, path, *, going=frozenset()):
         """Why `path` must never be deleted, or None.
@@ -227,23 +262,50 @@ class Protection:
             if _inside(real, dependency) or (_inside(dependency, real)
                                              and os.path.lexists(dependency)):
                 return f'active session 仍需要 {dependency}'
+        for directory in self.kept:
+            if _inside(directory, real) and os.path.lexists(directory):
+                return f'active session 仍需要 {directory}'
         for entry in entries(real):
             if any(target.exists() and not _inside(target, real) and target not in going
                    for target in lock_targets(entry)):
                 return f'現存檔案的鎖 {entry.name}'
-        numbers = ticket_numbers(real, self.lat)
+        if self.issues is None and self.need_tracker:
+            return f'票狀態無法確認：{self.tracker_error or "未查詢"}'
+        items = list(self._ticket_items(real))
+        numbers = sorted({number for item, root in items for number in ticket_numbers(item, root)})
         if numbers and self.ticket_states is None:
-            return f'票狀態無法確認：{self.ticket_error or "未查詢"}'
-        open_tickets = [number for number in numbers
-                        if (self.ticket_states or {}).get(number) == 'OPEN']
+            return f'票狀態無法確認：{self.tracker_error or "未查詢"}'
+        open_tickets = [number for number in numbers if self.ticket_states.get(number) == 'OPEN']
         if open_tickets:
             return '開啟中的票 ' + '、'.join(f'#{number}' for number in open_tickets)
+        # A link to the item, to something in it, or to the ticket folder holding it.
+        named = {real, *(item for item, _ in items if _inside(real, item))}
+        linked = sorted({ticket['number'] for named_path in named
+                         for ticket in linked_tickets(named_path, self.lat.parent, self.issues or [])
+                         if ticket['state'] == 'OPEN'})
+        if linked:
+            return '開啟中的票連到此路徑 ' + '、'.join(f'#{number}' for number in linked)
         return None
 
 
-def ticket_states(repo):
-    """{number: 'OPEN' | 'CLOSED'} for every ticket; raises ValueError when gh fails."""
-    return {issue['number']: issue['state'] for issue in tracker_issues(repo, ('number', 'state'))}
+def linked_tickets(path, repo_root, issues):
+    """Tickets whose body or comments name `path` (relative to the repository) or below it."""
+    needle = os.path.relpath(path, repo_root)
+    pattern = re.compile(r'(?<![A-Za-z0-9_-])' + re.escape(needle)
+                         + r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9])')
+    return [dict(number=number, state=state) for number, state, text in issues
+            if needle in text and pattern.search(text)]
+
+
+def tracker_texts(repo):
+    """Every ticket as (number, state, body and comments); raises ValueError when gh fails."""
+    try:
+        return [(issue['number'], issue['state'],
+                 '\n'.join([issue.get('body') or '',
+                            *((comment.get('body') or '') for comment in issue.get('comments') or [])]))
+                for issue in tracker_issues(repo, ('number', 'state', 'body', 'comments'))]
+    except (KeyError, TypeError, AttributeError) as error:
+        raise ValueError(f'gh issue list returned unexpected data: {error!r}') from error
 
 
 def tracker_issues(repo, fields):
@@ -281,11 +343,11 @@ def usage(path):
     return size, latest
 
 
-def delete(path, method, lat):
+def delete(path, method):
     """Remove one item with trash-put; for 'shred', `shred -u` its regular files first.
 
-    A file with other hard links is not shredded (that would destroy the other copy);
-    when such a file is itself sensitive the item is refused before anything changes.
+    A shred item holding a file with other hard links is refused before anything changes:
+    shredding would destroy the other copy, and trashing it would keep the content.
     """
     path = Path(path)
     if method not in ('trash', 'shred'):
@@ -297,9 +359,7 @@ def delete(path, method, lat):
             if not stat.S_ISREG(info.st_mode):
                 continue
             if info.st_nlink > 1:
-                if sensitive_reason(entry, lat):
-                    raise ValueError(f'sensitive file has other hard links: {entry}')
-                continue
+                raise ValueError(f'file has other hard links, not shredded: {entry}')
             files.append(str(entry))
         for start in range(0, len(files), _SHRED_BATCH):
             run_cli(['shred', '-u', '--', *files[start:start + _SHRED_BATCH]], timeout=600)

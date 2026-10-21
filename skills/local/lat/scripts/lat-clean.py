@@ -10,9 +10,9 @@ import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_cleanup import (ENDED, TICKET_DATA, Protection, delete, fingerprint, lock_targets,
-                          sensitive_reason, session_records, ticket_numbers, ticket_states,
-                          tracker_issues, usage, watcher_alive)
+from _lat_cleanup import (ENDED, TICKET_DATA, Protection, delete, fingerprint, linked_tickets,
+                          lock_targets, sensitive_reason, session_records, ticket_numbers,
+                          tracker_texts, usage, watcher_alive)
 from _lat_common import shared_lat_dir, write_text_atomic
 
 LIST_VERSION = 1
@@ -29,6 +29,7 @@ CATEGORIES = {
     'watch-leftover': '監控殘留',
     'stale-wait': '等待紀錄',
     'prompt-backup': '輸入備份',
+    'done-task-card': '已完成任務卡',
 }
 LEGACY_FILES = ('questions.md', 'demo-questions.md')
 SESSION_FILE = re.compile(r'(?P<sid>[A-Za-z0-9_-]{1,128})\.(?:log|lock|pid)')
@@ -133,6 +134,8 @@ def scan(protection):
             add(path, 'watch-leftover', note)
     for path in sorted((watch / 'waits').glob('*.json')):
         add(path, 'stale-wait', f'Agent {path.stem}')
+    for path in sorted((lat / 'tasks/done').glob('*.md')):
+        add(path, 'done-task-card')
 
     listed = {path for path, _, _ in found}
     locks = [*lat.glob('.*.lock'), *(lat / 'questions').glob('.*.lock'),
@@ -166,37 +169,25 @@ def candidates(protection):
     return included, excluded
 
 
-def _linked(path, repo_root, issues):
-    needle = os.path.relpath(path, repo_root)
-    pattern = re.compile(r'(?<![A-Za-z0-9_-])' + re.escape(needle)
-                         + r'(?![A-Za-z0-9_-]|\.[A-Za-z0-9])')
-    return [dict(number=number, state=state) for number, state, text in issues
-            if needle in text and pattern.search(text)]
-
-
 def list_command(args):
     lat = _real(shared_lat_dir(args.workspace.resolve(strict=True)))
     try:
-        issues = [(issue['number'], issue['state'],
-                   '\n'.join([issue.get('body') or '',
-                              *((comment.get('body') or '') for comment in issue.get('comments') or [])]))
-                  for issue in tracker_issues(args.repo, ('number', 'state', 'body', 'comments'))]
-        states, error = {number: state for number, state, _ in issues}, None
-    except (ValueError, KeyError, TypeError, AttributeError) as failure:
-        issues, states, error = None, None, str(failure)
-    protection = Protection(lat, ticket_states=states, ticket_error=error)
+        issues, error = tracker_texts(args.repo), None
+    except ValueError as failure:
+        issues, error = None, str(failure)
+    protection = Protection(lat, issues=issues, tracker_error=error)
     included, excluded = candidates(protection)
     items = []
     for index, (path, category, note) in enumerate(included, 1):
         size, modified = usage(path)
-        reason = sensitive_reason(path, lat)
+        reason = sensitive_reason(path)
         items.append(dict(
             id=index, category=category, path=str(path), note=note, size=size,
             modified_utc=datetime.fromtimestamp(modified, timezone.utc).isoformat(timespec='seconds'),
             method='shred' if reason else 'trash', sensitive=reason,
             tickets=ticket_numbers(path, lat),
             linked=(dict(error=error) if issues is None
-                    else dict(found=_linked(path, lat.parent, issues))),
+                    else dict(found=linked_tickets(path, lat.parent, issues))),
             fingerprint=fingerprint(path),
         ))
     document = dict(version=LIST_VERSION, repo=args.repo, lat=str(lat),
@@ -269,16 +260,16 @@ def execute_command(args):
         raise ValueError(f'清單不是這個工作區（{lat}）的清理清單，拒絕執行')
     items = _selection(args.only, document['items'])
     try:
-        states, error = ticket_states(document['repo']), None
+        issues, error = tracker_texts(document['repo']), None
     except ValueError as failure:
-        states, error = None, str(failure)
+        issues, error = None, str(failure)
     results = {}
     for locks in (False, True):
-        protection = Protection(lat, ticket_states=states, ticket_error=error)
+        protection = Protection(lat, issues=issues, tracker_error=error, need_tracker=True)
         current = {str(path): category for path, category, _ in scan(protection)}
         for item in items:
             if _is_lock(item['path']) == locks:
-                results[item['id']] = _execute_item(item, protection, current, lat)
+                results[item['id']] = _execute_item(item, protection, current)
     failed = 0
     print('| # | 路徑 | 結果 |')
     print('|---|---|---|')
@@ -291,7 +282,7 @@ def execute_command(args):
     return 1 if failed else 0
 
 
-def _execute_item(item, protection, current, lat):
+def _execute_item(item, protection, current):
     path = Path(item['path'])
     reason = protection.reason(path)
     if reason:
@@ -302,9 +293,9 @@ def _execute_item(item, protection, current, lat):
         return '跳過：列出後已被改動'
     if current.get(str(_real(path))) != item['category']:
         return '跳過：已不符合清單條件'
-    method = 'shred' if item['method'] == 'shred' or sensitive_reason(path, lat) else 'trash'
+    method = 'shred' if item['method'] == 'shred' or sensitive_reason(path) else 'trash'
     try:
-        delete(path, method, lat)
+        delete(path, method)
     except (OSError, ValueError) as error:
         return f'失敗：{error}'
     return '已用 shred 銷毀' if method == 'shred' else '已用 trash 移到垃圾桶'

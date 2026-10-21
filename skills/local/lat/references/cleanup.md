@@ -9,7 +9,7 @@ uv run --no-project python "$lat_dir/scripts/lat-clean.py" list --workspace "$wo
   --repo <tracker repo，OWNER/NAME> --output "$workspace/.lat/runs/misc-<YYYY-MM-DD>-cleanup/list.json"
 ```
 
-只讀，不改任何檔案。掃描主工作區共用的 `.lat`，以及各 worktree（含 `.worktrees/*`）內多出的 `.lat`。每項列出編號、類別、路徑、大小、最後修改時間、刪除方式（trash／shred 與原因）、連到的票與說明；最後印出清單檔路徑與清單雜湊。
+只讀，不改任何檔案。掃描主工作區共用的 `.lat`，以及各 worktree（含 `.worktrees/*`）內多出的 `.lat`；符號連結的 `.lat` 或 worktree 資料夾略過。每項列出編號、類別、路徑、大小、最後修改時間、刪除方式（trash／shred 與原因）、連到的票與說明；最後印出清單檔路徑與清單雜湊。
 
 | 類別 | 範圍 |
 |---|---|
@@ -24,10 +24,11 @@ uv run --no-project python "$lat_dir/scripts/lat-clean.py" list --workspace "$wo
 | 監控殘留 | 非 active session 的 `watch/<session-id>.log`／`.lock`／`.pid`（監控程序仍在時不列 pid），沒有 active session 的 `watch/<名稱>/`；說明欄寫結束時間或「無結束時間」 |
 | 等待紀錄 | `watch/waits/<Agent>.json` |
 | 輸入備份 | `watch/prompt-*.txt` |
+| 已完成任務卡 | `tasks/done/*.md` |
 
 - **連到的票**：以 `gh issue list` 讀 tracker 所有票的內文與留言，找出提到 `.lat/<路徑>` 的票並標開啟／關閉；查不到寫「未查到」。查詢失敗時每項寫「查詢失敗：原因」，清單照常產生。
 - **票號**：取名稱中的 `issue-N` 與兩位數以上的數字；日期與 commit 雜湊不算，tracker 沒有的號碼不算。
-- **不列入**：硬限制、仍有待答題的問題檔，以及 tracker 查詢失敗時名稱帶票號的項目（票狀態無法確認）。未列入的項目與原因寫在清單檔的 `excluded`。
+- **不列入**：硬限制（含開啟中的票連到的路徑）、仍有待答題的問題檔，以及 tracker 查詢失敗時名稱帶票號的項目（票狀態無法確認）。未列入的項目與原因寫在清單檔的 `excluded`。
 
 ## 交給使用者
 
@@ -42,13 +43,13 @@ uv run --no-project python "$lat_dir/scripts/lat-clean.py" execute --workspace "
 
 - 只接受「列出」產生、雜湊相符、屬於同一工作區的清單檔；不符時整份拒絕，什麼都不刪。
 - `--only` 填使用者同意的編號；使用者同意整份清單時才省略。
-- 逐項重新核對，不符的跳過並在結果表寫原因：硬限制、active session 仍需要、開啟中的票（重新查 tracker；查詢失敗時名稱帶票號的項目跳過）、已不存在、列出後被改動（項目內任一檔案的增刪、大小或修改時間不同）、已不符合清單類別。鎖檔最後處理，目標檔仍在時跳過。
-- 敏感項目先以 `shred -u` 逐檔銷毀，剩下的空目錄再用 `trash-put`；其他項目用 `trash-put`。有其他硬連結的檔案不 shred（會毀掉另一份）；這種檔案本身是敏感檔時，該項失敗、不動任何檔案。
+- 逐項重新核對，不符的跳過並在結果表寫原因：硬限制、active session 仍需要、開啟中的票（重新讀 tracker；讀不到時整份清單都跳過）、已不存在、列出後被改動（項目內任一檔案的增刪、大小或修改時間不同）、已不符合清單類別。鎖檔最後處理，目標檔仍在時跳過。
+- 敏感項目先以 `shred -u` 逐檔銷毀，剩下的空目錄再用 `trash-put`；其他項目用 `trash-put`。敏感項目內有任何檔案另有硬連結時（shred 會毀掉另一份，丟垃圾桶又留下內容），該項失敗、不動任何檔案。
 - 印出每項結果與統計；有失敗時以非零結束。把結果回報使用者。
 
 ## 敏感判定
 
-項目內任一處符合即整項 shred：`password.json`、`auth.json`、`*.sqlite*`、`.credentials*`、`.lat/watch/prompt-*.txt`，以及隔離 client 家目錄（資料夾內有 `auth.json`、`.credentials.json` 或 `sessions/`）。
+項目內任一處符合即整項 shred：`password.json`、`auth.json`、`*.sqlite*`、`.credentials*`、任何 `.lat` 的 `watch/prompt-*.txt`，以及隔離 client 家目錄（資料夾內有 `auth.json`、`.credentials.json` 或 `sessions/`）。
 
 ## 硬限制
 
@@ -56,6 +57,6 @@ uv run --no-project python "$lat_dir/scripts/lat-clean.py" execute --workspace "
 
 - 共用 `.lat` 與任何 worktree `.lat` 的 `decisions/`、`sessions/`、`panel-journal.jsonl`，以及包含它們的資料夾。
 - 目標檔仍存在的 `.lock`。
-- active session 依賴的檔案：進度檔、待決目錄、任務卡目錄、該主控的問題檔與歸檔檔及其鎖、`watch/<session-id>.*`、`watch/<名稱>/`，以及該主控與其頂層任務卡 Agent 的等待紀錄。
-- 名稱帶有開啟中票號的票資料。
+- active session 依賴的檔案：進度檔、待決目錄、任務卡目錄與其頂層任務卡（`done/` 不在內）、該主控的問題檔與歸檔檔及其鎖、`watch/<session-id>.*`、`watch/<名稱>/`，以及該主控與其頂層任務卡 Agent 的等待紀錄。
+- 開啟中票的資料：任何 `.lat` 的 `runs/`、`progress/`、`evidence/`、`prototypes/`、`handoffs/` 中名稱帶該票號的項目，以及含有這類項目的資料夾；開啟中的票內文或留言提到的路徑、其中的檔案與所在的票資料夾。
 - 有任何 session 紀錄讀不出來時，整次不刪。

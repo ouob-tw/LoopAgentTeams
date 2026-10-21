@@ -132,11 +132,21 @@ class Fixture(CleanTestCase):
         self.write('watch/waits/old-agent.json', '{}')
         self.write('watch/waits/.old-agent.lock')
         self.write('watch/waits/live.json', '{}')
-        (self.work / '.worktrees/wt/.lat/watch/x').mkdir(parents=True)
+        self.write('evidence/linked-notes/a.png', 'linked from an open ticket')
+        self.write('tasks/done/old-card.md', 'done\n')
+        self.write('tasks/live-card.md', '- agent：helper\n- orchestrator：live\n- status：dispatched\n')
+        (self.work / '.worktrees/wt/.lat/watch').mkdir(parents=True)
+        (self.work / '.worktrees/wt/.lat/watch/prompt-user-1.txt').write_text('typed\n')
+        (self.work / '.worktrees/wt2/.lat/runs/issue-7').mkdir(parents=True)
+        (self.work / '.worktrees/wt2/.lat/runs/issue-7/n.md').write_text('open ticket\n')
+        (self.root / 'outside/.lat').mkdir(parents=True)
+        (self.root / 'outside/.lat/keep.md').write_text('not ours\n')
+        (self.work / '.worktrees/alias').symlink_to(self.root / 'outside')
         self.set_issues([
-            dict(number=5, state='CLOSED', body='see .lat/evidence/issue-5-qa/shot.png', comments=[]),
-            dict(number=7, state='OPEN', body='', comments=[
+            dict(number=5, state='CLOSED', body='see .lat/evidence/issue-5-qa/shot.png', comments=[
                 dict(body='notes in /abs/.lat/progress/gone.md.')]),
+            dict(number=7, state='OPEN', body='', comments=[
+                dict(body='screens: /abs/.lat/evidence/linked-notes/a.png')]),
         ])
 
 
@@ -151,7 +161,7 @@ class ListTests(Fixture):
         self.assertEqual(items['evidence/issue-5-qa']['linked'],
                          {'found': [{'number': 5, 'state': 'CLOSED'}]})
         self.assertEqual(items['progress/gone.md']['category'], 'controller-progress')
-        self.assertEqual(items['progress/gone.md']['linked'], {'found': [{'number': 7, 'state': 'OPEN'}]})
+        self.assertEqual(items['progress/gone.md']['linked'], {'found': [{'number': 5, 'state': 'CLOSED'}]})
         self.assertEqual(items['evidence/notes']['linked'], {'found': []})
         self.assertEqual(items['evidence/notes']['category'], 'no-ticket')
         self.assertEqual(items['runs/misc-2026-10-01-proto']['category'], 'misc-run')
@@ -164,11 +174,14 @@ class ListTests(Fixture):
             '.questions-old.md.lock': 'orphan-lock', '.questions-gone.md.lock': 'orphan-lock',
             f'watch/{ENDED_SID}.log': 'watch-leftover', 'watch/gone': 'watch-leftover',
             'watch/waits/old-agent.json': 'stale-wait', 'watch/waits/.old-agent.lock': 'orphan-lock',
-            'watch/prompt-gone-abc.txt': 'prompt-backup',
+            'watch/prompt-gone-abc.txt': 'prompt-backup', 'tasks/done/old-card.md': 'done-task-card',
         }
         self.assertEqual({key: items[key]['category'] for key in expected}, expected)
-        worktree = [item for item in document['items'] if '.worktrees' in item['path']]
-        self.assertEqual([item['category'] for item in worktree], ['worktree-lat'])
+        worktree = {os.path.relpath(item['path'], self.work): item for item in document['items']
+                    if '.worktrees' in item['path']}
+        self.assertEqual(list(worktree), ['.worktrees/wt/.lat'])
+        self.assertEqual(worktree['.worktrees/wt/.lat']['method'], 'shred')
+        self.assertFalse(any('outside' in item['path'] for item in document['items']))
         for item in document['items']:
             self.assertTrue(item['modified_utc'] and item['fingerprint'])
         self.assertIn('| # | 類別 | 路徑 | 大小 | 最後修改 | 刪除方式 | 連到的票 | 說明 |', result.stdout)
@@ -185,11 +198,14 @@ class ListTests(Fixture):
         for relative in ('decisions', 'decisions/D-1.md', 'sessions', 'panel-journal.jsonl',
                          'progress/live.md', 'questions-live.md', f'watch/{ACTIVE}.log', 'watch/live',
                          'watch/waits/live.json', 'evidence/issue-7-qa', 'runs/issue-7',
-                         'questions-open.md'):
+                         'questions-open.md', 'evidence/linked-notes', 'tasks/live-card.md',
+                         'tasks'):
             self.assertNotIn(relative, listed)
         reasons = {os.path.relpath(item['path'], self.lat): item['reason']
                    for item in document['excluded']}
         self.assertEqual(reasons['evidence/issue-7-qa'], '開啟中的票 #7')
+        self.assertEqual(reasons['evidence/linked-notes'], '開啟中的票連到此路徑 #7')
+        self.assertEqual(reasons['../.worktrees/wt2/.lat/runs'], '開啟中的票 #7')
         self.assertTrue(reasons['progress/live.md'].startswith('active session 仍需要'))
 
     def test_tracker_failure_is_marked_and_does_not_stop_the_list(self):
@@ -296,16 +312,17 @@ class ExecuteTests(Fixture):
         self.assertTrue((self.lat / '.questions-gone.md.lock').exists())
         self.assertEqual(self.removal_calls(), [])
 
-    def test_ticket_state_failure_skips_numbered_items_only(self):
+    def test_tracker_failure_at_execute_skips_everything(self):
         _, _, items = self.list_items()
         self.env['FAKE_GH_FAIL'] = 'offline'
         wanted = f'{items["evidence/issue-5-qa"]["id"]},{items["evidence/notes"]["id"]}'
 
         result = self.execute('--only', wanted)
 
-        self.assertIn('跳過：票狀態無法確認', result.stdout)
+        self.assertEqual(result.stdout.count('跳過：票狀態無法確認'), 2)
         self.assertTrue((self.lat / 'evidence/issue-5-qa').exists())
-        self.assertFalse((self.lat / 'evidence/notes').exists())
+        self.assertTrue((self.lat / 'evidence/notes').exists())
+        self.assertEqual(self.removal_calls(), [])
 
 
 class RulesTests(unittest.TestCase):
@@ -317,6 +334,7 @@ class RulesTests(unittest.TestCase):
 
     def test_sensitive_rule(self):
         cases = {
+            'x/.lat/watch/prompt-y-2.txt': True,
             'a/password.json': True, 'a/auth.json': True, 'a/logs.sqlite-wal': True,
             'a/.credentials.json': True, 'watch/prompt-x-1.txt': True, 'b/claude/sessions/x.jsonl': True,
             'c/notes.md': False, 'c/prompt-x.txt': False,
@@ -327,7 +345,7 @@ class RulesTests(unittest.TestCase):
             path.write_text('x')
             top = self.lat / relative.split('/')[0]
             item = path if relative.startswith('watch/') else top
-            self.assertEqual(bool(_lat_cleanup.sensitive_reason(item, self.lat)), sensitive, relative)
+            self.assertEqual(bool(_lat_cleanup.sensitive_reason(item)), sensitive, relative)
 
     def test_ticket_numbers_skip_dates_and_commit_hashes(self):
         cases = {
@@ -338,17 +356,24 @@ class RulesTests(unittest.TestCase):
         for relative, numbers in cases.items():
             self.assertEqual(_lat_cleanup.ticket_numbers(self.lat / relative, self.lat), numbers, relative)
 
-    def test_shred_refuses_a_sensitive_file_with_other_hard_links(self):
+    def test_shred_refuses_an_item_with_hard_linked_files(self):
         home = self.lat / 'home'
-        home.mkdir()
+        (home / 'sessions').mkdir(parents=True)
         (home / 'auth.json').write_text('secret')
-        outside = Path(self.temp.name) / 'kept.json'
-        os.link(home / 'auth.json', outside)
+        (home / 'sessions/chat.jsonl').write_text('conversation')
+        outside = Path(self.temp.name) / 'kept.jsonl'
+        os.link(home / 'sessions/chat.jsonl', outside)
+        calls = []
+        original = _lat_cleanup.run_cli
+        _lat_cleanup.run_cli = lambda command, **_: calls.append(command)
+        try:
+            with self.assertRaisesRegex(ValueError, 'other hard links'):
+                _lat_cleanup.delete(home, 'shred')
+        finally:
+            _lat_cleanup.run_cli = original
 
-        with self.assertRaisesRegex(ValueError, 'other hard links'):
-            _lat_cleanup.delete(home, 'shred', self.lat)
-
-        self.assertEqual(outside.read_text(), 'secret')
+        self.assertEqual(calls, [])
+        self.assertEqual(outside.read_text(), 'conversation')
         self.assertTrue((home / 'auth.json').exists())
 
 
@@ -370,8 +395,8 @@ class RealToolsTests(unittest.TestCase):
             saved = os.environ.copy()
             os.environ.update(env)
             try:
-                _lat_cleanup.delete(plain, 'trash', lat)
-                _lat_cleanup.delete(secret, 'shred', lat)
+                _lat_cleanup.delete(plain, 'trash')
+                _lat_cleanup.delete(secret, 'shred')
             finally:
                 os.environ.clear()
                 os.environ.update(saved)
