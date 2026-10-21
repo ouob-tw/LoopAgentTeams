@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Watch explicitly registered LAT work for stalled agents (stdlib only)."""
 import argparse
+import contextlib
 from datetime import datetime, timezone
 import fcntl
 import hashlib
@@ -12,6 +13,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from typing import NamedTuple
 
@@ -704,6 +706,10 @@ def decide(previous, observation, now):
     return state, actions
 
 
+COMMAND_TIMEOUT_SECONDS = 30
+_WAIT_LOCKS = threading.local()
+
+
 def valid_name(value):
     if not isinstance(value, str) or not NAME.fullmatch(value):
         raise ValueError(f'Invalid HCOM name: {value!r}')
@@ -732,10 +738,32 @@ def read_object(path, default=None):
     return value
 
 
+@contextlib.contextmanager
+def wait_lock(path):
+    """Hold one agent's wait-file lock; reentrant within a thread. Never hold it across hcom/herdr."""
+    held = _WAIT_LOCKS.__dict__.setdefault('paths', set())
+    if path in held:
+        yield
+        return
+    lock_path = path.with_name(f'.{path.stem}.lock')
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        held.add(path)
+        try:
+            yield
+        finally:
+            held.discard(path)
+            fcntl.flock(lock, fcntl.LOCK_UN)
+
+
 def read_wait(path):
     """Read a declaration and its comparison bytes from the same revision."""
+    if not path.parent.is_dir():
+        return None, None
     try:
-        original = path.read_bytes()
+        with wait_lock(path):
+            original = path.read_bytes()
     except FileNotFoundError:
         return None, None
     declaration = json.loads(original)
@@ -777,8 +805,19 @@ def write_object(path, value, *, expected=_UNSET):
             temp.unlink(missing_ok=True)
 
 
+def write_wait(path, value, *, expected):
+    """Compare and replace a wait file under its lock."""
+    with wait_lock(path):
+        return write_object(path, value, expected=expected)
+
+
 def run_command(command, failure=None):
-    result = subprocess.run(command, text=True, capture_output=True)
+    try:
+        result = subprocess.run(command, text=True, capture_output=True,
+                                timeout=COMMAND_TIMEOUT_SECONDS)
+    except subprocess.TimeoutExpired as error:
+        raise ValueError(f'{" ".join(command[:2])} timed out after '
+                         f'{COMMAND_TIMEOUT_SECONDS} seconds') from error
     if result.returncode:
         detail = result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
         message = failure or f'{command[0]} failed'
@@ -1358,11 +1397,11 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
             updated.pop('expiry_notice', None)
         elif updated.get('expiry_notice'):
             updated['expiry_notice'] = {**updated['expiry_notice'], 'episode_reset': True}
-        write_object(wait_path(workspace, agent), updated, expected=expected)
+        write_wait(wait_path(workspace, agent), updated, expected=expected)
     return reason
 
 
-def observe(workspace, decisions, orchestrator, agent, info, card=None):
+def observe(workspace, decisions, orchestrator, agent, info, card=None, *, processes):
     status_issue = hcom_quota_issue(info)
     try:
         terminal = run_json(['hcom', 'term', agent, '--json', '--name', orchestrator])
@@ -1419,7 +1458,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None):
             if isinstance(declared_at, (int, float)):
                 orchestrator_wait_started_at = declared_at
     ready = terminal.get('ready') is True
-    background_running = background_process_running(agent, info, read_processes())
+    background_running = background_process_running(agent, info, processes)
     return Observation(
         agent=agent,
         status=info.get('status', 'missing'),
@@ -1807,7 +1846,7 @@ def read_alarm_wait(path):
 def save_alarm_delivery(path, declaration, original):
     """Keep a successful input/notice across recoverable persistence failures."""
     ALARM_DELIVERIES[str(path)] = (original, dict(declaration))
-    saved = write_object(path, declaration, expected=original)
+    saved = write_wait(path, declaration, expected=original)
     ALARM_DELIVERIES.pop(str(path), None)
     return saved
 
@@ -1824,15 +1863,16 @@ def unavailable_alarm(workspace, orchestrator, agent, state, now, log):
     """Keep the fixed deadline even when HCOM cannot observe the window."""
     path = wait_path(workspace, agent)
     try:
-        declaration, original = read_alarm_wait(path)
-        if not declaration or declaration.get('kind') != 'alarm':
-            return
-        observation = Observation(agent, 'unavailable', False, False, 0, 0, 0,
-                                  is_orchestrator=agent == orchestrator, terminal_ready=False)
-        met = (alarm_condition_met(declaration) if declaration.get('active', True)
-               and declaration.get('due_at') is None else False)
-        saved, actions, events = decide_alarm(declaration, observation, met, now)
-        original = write_object(path, saved, expected=original)
+        with wait_lock(path):
+            declaration, original = read_alarm_wait(path)
+            if not declaration or declaration.get('kind') != 'alarm':
+                return
+            observation = Observation(agent, 'unavailable', False, False, 0, 0, 0,
+                                      is_orchestrator=agent == orchestrator, terminal_ready=False)
+            met = (alarm_condition_met(declaration) if declaration.get('active', True)
+                   and declaration.get('due_at') is None else False)
+            saved, actions, events = decide_alarm(declaration, observation, met, now)
+            original = write_object(path, saved, expected=original)
         ALARM_DELIVERIES.pop(str(path), None)
         state['wait'] = saved
         for event in events:
@@ -1870,6 +1910,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     notify_incomplete_cards(path.with_name('incomplete-cards.json'), log, incomplete,
                             orchestrator, workspace, now)
     hcom = list_hcom(orchestrator)
+    processes = read_processes()
     states = read_watch_file(path, log, now)
     for agent, state in list(states.items()):
         try:
@@ -1898,7 +1939,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             restored = restore_alarm_nudge(states.get(agent), declaration)
             if restored is not None:
                 states[agent] = restored
-            observed = observe(workspace, decisions, orchestrator, agent, hcom[agent], cards.get(agent))
+            observed = observe(workspace, decisions, orchestrator, agent, hcom[agent], cards.get(agent),
+                               processes=processes)
             observations[agent] = nudge_only_observation(
                 states.get(agent), observed, hcom[agent], orchestrator)
         return observations[agent]
@@ -1962,38 +2004,46 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 unavailable_alarm(workspace, orchestrator, agent, previous, now, log)
                 raise
             previous = states.get(agent)
-            declaration, wait_original = read_alarm_wait(wait_path(workspace, agent))
-            if declaration and 'kind' not in declaration:
-                declaration['kind'] = ('decision' if pending_decision(decisions, declaration['target'])
-                                       is not None else 'agent')
-            target_observation, target_state = None, None
-            if (declaration and declaration.get('kind') == 'agent'
-                    and declaration.get('active', True)
-                    and now >= declaration.get('deadline_at', declaration['declared_at'] + 3600)):
-                target = declaration['target']
-                target_info = agent_info(hcom, target)
-                if target_info:
-                    target = target_info['name']
-                if target in agents and target in hcom and hcom[target].get('status') != 'inactive':
-                    try:
-                        target_observation = current_observation(target)
-                        target_state, _ = decide(states.get(target), target_observation, now)
-                    except (OSError, ValueError, TypeError, KeyError):
-                        target_observation, target_state = None, None
-            if declaration and declaration.get('kind') == 'alarm':
-                met = (alarm_condition_met(declaration) if declaration.get('active', True)
-                       and declaration.get('due_at') is None else False)
-                saved_wait, wait_actions, wait_events = decide_alarm(declaration, observation, met, now)
-            else:
-                saved_wait, wait_actions, wait_events = decide_wait(
-                    declaration, observation, target_observation, target_state, now)
-            if saved_wait is not None:
-                observation = observation._replace(
-                    wait_active=saved_wait.get('active', True),
-                    wait_released=observation.wait_released or 'wait-expired' in wait_events)
-                wait_original = write_object(wait_path(workspace, agent), saved_wait,
-                                             expected=wait_original)
-                ALARM_DELIVERIES.pop(str(wait_path(workspace, agent)), None)
+            wait_file = wait_path(workspace, agent)
+            with contextlib.ExitStack() as wait_held:
+                wait_held.enter_context(wait_lock(wait_file))
+                declaration, wait_original = read_alarm_wait(wait_file)
+                if declaration and 'kind' not in declaration:
+                    declaration['kind'] = ('decision' if pending_decision(
+                        decisions, declaration['target']) is not None else 'agent')
+                target_observation, target_state = None, None
+                if (declaration and declaration.get('kind') == 'agent'
+                        and declaration.get('active', True)
+                        and now >= declaration.get('deadline_at', declaration['declared_at'] + 3600)):
+                    target = declaration['target']
+                    target_info = agent_info(hcom, target)
+                    if target_info:
+                        target = target_info['name']
+                    if target in agents and target in hcom and hcom[target].get('status') != 'inactive':
+                        # Observing the target runs hcom, so release the lock and compare on return.
+                        wait_held.close()
+                        try:
+                            target_observation = current_observation(target)
+                            target_state, _ = decide(states.get(target), target_observation, now)
+                        except (OSError, ValueError, TypeError, KeyError):
+                            target_observation, target_state = None, None
+                        wait_held.enter_context(wait_lock(wait_file))
+                        if read_wait(wait_file)[1] != wait_original:
+                            raise ValueError(f'Concurrent change detected: {wait_file}')
+                if declaration and declaration.get('kind') == 'alarm':
+                    met = (alarm_condition_met(declaration) if declaration.get('active', True)
+                           and declaration.get('due_at') is None else False)
+                    saved_wait, wait_actions, wait_events = decide_alarm(
+                        declaration, observation, met, now)
+                else:
+                    saved_wait, wait_actions, wait_events = decide_wait(
+                        declaration, observation, target_observation, target_state, now)
+                if saved_wait is not None:
+                    observation = observation._replace(
+                        wait_active=saved_wait.get('active', True),
+                        wait_released=observation.wait_released or 'wait-expired' in wait_events)
+                    wait_original = write_object(wait_file, saved_wait, expected=wait_original)
+                    ALARM_DELIVERIES.pop(str(wait_file), None)
             for event in wait_events:
                 append_log(log, {'at': now, 'agent': agent, 'decision': event,
                                  'wait': saved_wait})
@@ -2018,7 +2068,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                         except (OSError, ValueError):
                             if now >= saved_wait['due_at'] + IDLE_SECONDS:
                                 expire_alarm(saved_wait, now, 'input failed')
-                                wait_original = write_object(wait_path(workspace, agent), saved_wait,
+                                wait_original = write_wait(wait_path(workspace, agent), saved_wait,
                                                              expected=wait_original)
                                 append_log(log, {'at': now, 'agent': agent,
                                                  'decision': 'alarm-undelivered', 'wait': saved_wait})
@@ -2060,7 +2110,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                                 append_log(log, {'at': now, 'agent': agent,
                                                  'decision': 'wait-expiry-notified',
                                                  'target': notice['target']})
-                        wait_original = write_object(wait_path(workspace, agent), saved_wait,
+                        wait_original = write_wait(wait_path(workspace, agent), saved_wait,
                                                      expected=wait_original)
                     if action.kind == 'recover-prompt':
                         apply_prompt_recovery_result(state, delivery, now)
@@ -2220,8 +2270,9 @@ def declare_alarm(args):
                                         starttime=process_starttime(args.pid))
     if args.after is None:
         declaration['timeout_at'] = now + (args.timeout or 60) * 60
-    _, original = read_wait(wait_path(workspace, agent))
-    write_object(wait_path(workspace, agent), declaration, expected=original)
+    with wait_lock(wait_path(workspace, agent)):
+        _, original = read_wait(wait_path(workspace, agent))
+        write_object(wait_path(workspace, agent), declaration, expected=original)
     append_log(state_path(workspace, record['hcom_name']).with_name('watch.jsonl'),
                {'at': now, 'agent': agent, 'decision': 'alarm-registered', 'wait': declaration})
     print(json.dumps(declaration, ensure_ascii=False))
@@ -2291,23 +2342,27 @@ def declare_wait(args):
         if declaration['target'] == agent:
             raise ValueError('Cannot wait on yourself; use lat-watch alarm instead')
         declaration['deadline_at'] = declaration['declared_at'] + (args.minutes or 60) * 60
-    previous, wait_original = read_wait(wait_path(workspace, agent))
+    path = wait_path(workspace, agent)
+    previous, wait_original = read_wait(path)
     if previous and previous.get('expiry_count', 0):
+        # Releasing runs hcom, so it stays outside the lock and keeps its own compare-and-replace.
         for owner, decisions in owners or [(agent, workspace / '.lat/decisions')]:
             if release_wait_if_needed(workspace, decisions, owner, previous, agents,
                                       expected=wait_original):
-                previous, wait_original = read_wait(wait_path(workspace, agent))
                 break
-    previous = previous or {}
-    same_target = previous.get('target') == declaration['target']
-    declaration['expiry_count'] = previous.get('expiry_count', 0) if same_target else 0
-    if same_target and declaration['expiry_count']:
-        for key in ('expiry_declared_at', 'expiry_notified', 'expiry_notice'):
-            if key in previous:
-                declaration[key] = previous[key]
-    elif same_target and previous.get('expiry_notice') and not previous['expiry_notice']['delivered']:
-        declaration['expiry_notice'] = previous['expiry_notice']
-    write_object(wait_path(workspace, agent), declaration, expected=wait_original)
+    with wait_lock(path):
+        previous, wait_original = read_wait(path)
+        previous = previous or {}
+        same_target = previous.get('target') == declaration['target']
+        declaration['expiry_count'] = previous.get('expiry_count', 0) if same_target else 0
+        if same_target and declaration['expiry_count']:
+            for key in ('expiry_declared_at', 'expiry_notified', 'expiry_notice'):
+                if key in previous:
+                    declaration[key] = previous[key]
+        elif (same_target and previous.get('expiry_notice')
+              and not previous['expiry_notice']['delivered']):
+            declaration['expiry_notice'] = previous['expiry_notice']
+        write_object(path, declaration, expected=wait_original)
     print(json.dumps(declaration, ensure_ascii=False))
 
 
