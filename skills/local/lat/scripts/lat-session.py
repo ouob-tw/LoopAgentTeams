@@ -38,6 +38,7 @@ ENDED = ('ended', 'completed', 'cancelled')
 # A last line with one of these tags asks the user a recorded question.
 QUESTION_TAGS = ('DECIDE:', 'HELP:')
 HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit')
+INLINE_REFERENCES = ('references/agents.md', 'references/task-cards.md')
 QUESTION_HEADING = re.compile(r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', re.MULTILINE)
 # Between questions the Stop hook shows; Claude Code drops blank lines, so a visible line.
 QUESTION_SEPARATOR = '\n\n' + '─' * 20 + '\n\n'
@@ -370,15 +371,27 @@ def activate(args):
         raise ValueError('Session was deactivated while starting its watcher')
 
 
-def pointer(path):
-    return (f'LAT recovery record: {path}\n'
+def pointer(path, record):
+    # Claude compaction drops references; inline the two that dispatch and closing rely on.
+    # Codex caps hook context near 2,500 tokens, so it keeps re-reading them itself.
+    inline = record['client'] == 'claude'
+    refs = ('skill_dir/references/agents.md, skill_dir/references/task-cards.md, '
+            if not inline else '')
+    text = (f'LAT recovery record: {path}\n'
             'Before any dependent action, read this record, then fully re-read '
-            'skill_dir/SKILL.md, skill_dir/references/agents.md, '
-            'skill_dir/references/task-cards.md, progress_path, and all decision records '
+            f'skill_dir/SKILL.md, {refs}progress_path, and all decision records '
             'in decisions_path. Resolve these paths from the record. Reconcile the progress '
             'index with the tracker; preserve the existing checklist. Verify prior human '
             'authorization and pending decisions before continuing. Missing or corrupt data: '
             'stop dependent work and report; never infer authorization or reset progress.')
+    if inline:
+        text += ('\nThe full current text of references/agents.md and '
+                 'references/task-cards.md follows; it counts as re-reading them.')
+        for name in INLINE_REFERENCES:
+            reference = Path(record['skill_dir']) / name
+            body = reference.read_text(encoding='utf-8')
+            text += f'\n\n===== {reference} =====\n{body}'
+    return text
 
 
 def deactivate(args):
@@ -965,12 +978,13 @@ def hook(client):
             return
         if legacy_record(record):
             dependencies(record, require_watcher=False)
-            context(f'{pointer(path)}\nLegacy session upgrade: {legacy_upgrade_command(record)}')
+            context(f'{pointer(path, record)}\n'
+                    f'Legacy session upgrade: {legacy_upgrade_command(record)}')
             return
         dependencies(record)
         if ensure_watcher(record, path, rebind=True) is None:
             return
-        context(pointer(path))
+        context(pointer(path, record))
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         if event == 'UserPromptSubmit':
             warn_reminder(exc)

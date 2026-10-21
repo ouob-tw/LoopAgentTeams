@@ -1982,6 +1982,31 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_silent(self.cli('hook', '--client', 'claude', payload=payload))
 
+    def test_recovery_inlines_dispatch_references_for_claude_only(self):
+        references = [SKILL / 'references/agents.md', SKILL / 'references/task-cards.md']
+        result = self.cli(
+            'activate', '--client', 'claude', '--workspace', self.work,
+            '--progress', self.progress, '--decisions', self.decisions,
+            session='', claude_session=SESSION,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.cli('hook', '--client', 'claude', payload=dict(
+            hook_event_name='SessionStart', source='compact', cwd=str(self.work),
+            session_id=SESSION))
+        context = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
+        for reference in references:
+            self.assertIn(f'===== {reference} =====\n{reference.read_text()}', context)
+        # Claude Code moves context over 10,000 characters to a file and shows a 2,000-character
+        # preview; keep room for longer workspace paths and the legacy-upgrade suffix.
+        self.assertLess(len(context), 9_000)
+        self.cli('deactivate', '--client', 'claude', '--workspace', self.work,
+                 '--session-id', SESSION, session=OTHER)
+        self.record.unlink()
+        self.activate()
+        context = json.loads(self.hook().stdout)['hookSpecificOutput']['additionalContext']
+        self.assertIn('skill_dir/references/agents.md', context)
+        self.assertNotIn('=====', context)
+
     def test_claude_activation_requires_claude_session_id(self):
         result = self.cli('activate', '--client', 'claude', '--workspace', self.work,
                           '--progress', self.progress, '--decisions', self.decisions)
