@@ -143,7 +143,7 @@ async function openAt(y: number) {
 	})()`);
 }
 
-const POSITIONS = { top: 20, middle: 420, bottom: 720 };
+const POSITIONS = { top: 20, upper: 350, middle: 420, bottom: 720 };
 
 for (const [count, label] of [[2, 'few'], [30, 'many']] as const) {
 	for (const [where, y] of Object.entries(POSITIONS)) {
@@ -156,12 +156,14 @@ for (const [count, label] of [[2, 'few'], [30, 'many']] as const) {
 			if (count === 2) {
 				// Short: no scrolling, and lined up with the row's top (upper half) or its bottom (lower half).
 				expect(m.scrolls).toBe(false);
-				if (where === 'top') expect(Math.abs(m.panel.top - m.row.top)).toBeLessThan(1);
+				if (where === 'top' || where === 'upper') expect(Math.abs(m.panel.top - m.row.top)).toBeLessThan(1);
 				if (where === 'middle' || where === 'bottom') expect(Math.abs(m.panel.bottom - m.row.bottom)).toBeLessThan(1);
 			} else {
-				// Taller than the screen allows: it fills the range and scrolls to its last card.
+				// Taller than the screen allows: it is capped to the smaller of 36rem and the range, scrolls, and reaches its last card.
 				expect(m.scrolls).toBe(true);
 				expect(m.last).toBe(true);
+				// Aligned with an upper-half row it would run past the bottom margin: pushed up to it.
+				if (where === 'upper') expect(Math.abs(m.inner - m.margin - m.panel.bottom)).toBeLessThan(1);
 			}
 		});
 	}
