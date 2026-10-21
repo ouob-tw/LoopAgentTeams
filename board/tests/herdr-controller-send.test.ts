@@ -5,13 +5,14 @@
 // in its sent log. An ordinary agent is still written to as an agent. The controllers share one
 // draft; what was typed to a controller as an agent before is moved into it once. Skipped when the
 // host has no Chrome.
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import type { SentEntry } from '../src/lib/board/answers.ts';
 import { AGENT_DRAFTS_KEY, COMMAND_DRAFT_KEY } from '../src/lib/board/prefs.ts';
-import { jsonLines, NODE, question, sleep, startFixture, type Fixture } from './harness.ts';
+import { DAY, jsonLines, NODE, question, sleep, startFixture, type Fixture } from './harness.ts';
 import { CHROME, launchChrome, type Browser, type Tab } from './browser.ts';
 
 
@@ -29,7 +30,19 @@ const click = (scope: string, text: string) =>
 	`[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.innerText.includes(${JSON.stringify(text)})).click()`;
 const pageOf = (header: string) => `document.querySelector('.detail .profile h2')?.innerText === ${JSON.stringify(header)}`;
 
-const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+/** The host's offset from UTC: `bun test` runs with TZ=UTC, while the board and Chrome use the host's zone. */
+const HOST_OFFSET_MS = (() => {
+	const zone = spawnSync('date', ['+%z'], { encoding: 'utf8', env: { PATH: process.env.PATH } }).stdout.trim();
+	return (zone[0] === '-' ? -1 : 1) * (Number(zone.slice(1, 3)) * 60 + Number(zone.slice(3, 5))) * 60_000;
+})();
+/** The host's calendar day of a time. */
+const hostDay = (time: number) => Math.floor((time + HOST_OFFSET_MS) / DAY);
+/** Minutes before now, shrunk in the first half hour of the host's day so that none of the fixtures'
+ *  times (the longest is 30 minutes) falls on yesterday, which the board shows with a date. */
+const minutesAgo = (minutes: number) => {
+	const room = Math.max(0, Date.now() - (hostDay(Date.now()) * DAY - HOST_OFFSET_MS) - 60_000);
+	return new Date(Date.now() - Math.min(minutes * 60_000, (room * minutes) / 31)).toISOString();
+};
 /** When luna's report was issued, fixed once for the setup and the assertions on it. */
 const LUNA_REPORTED_AT = minutesAgo(15);
 
@@ -416,8 +429,8 @@ test.skipIf(!CHROME)("a controller's last report of today shows the time only (t
 	await tab.until(pageOf('moon'), "luna's page");
 	const shown = await tab.eval<string>(`[...document.querySelectorAll('.detail .chip')].map((chip) => chip.innerText).find((text) => text.includes('最後回報'))`);
 	// Her report is 15 minutes old: today unless midnight just passed.
-	const reportedOn = new Date(LUNA_REPORTED_AT).toDateString();
-	expect(shown).toMatch(reportedOn === new Date().toDateString() ? /最後回報 \d{2}:\d{2}:\d{2}$/ : /最後回報 \d+\/\d+ \d{2}:\d{2}:\d{2}$/);
+	const reportedToday = hostDay(Date.parse(LUNA_REPORTED_AT)) === hostDay(Date.now());
+	expect(shown).toMatch(reportedToday ? /最後回報 \d{2}:\d{2}:\d{2}$/ : /最後回報 \d+\/\d+ \d{2}:\d{2}:\d{2}$/);
 }, 60_000);
 
 // Wide: a new LAT round and an effort; a phone: the same conversation with another model.
