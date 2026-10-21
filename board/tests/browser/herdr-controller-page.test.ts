@@ -356,6 +356,9 @@ for (const width of [1280, 390]) {
 	}, 60_000);
 
 	test.skipIf(!CHROME)(`${width}px: a DONE report opened from the report list is shown in the conversation and read by opening it, as in the inbox`, async () => {
+		// Each width starts with the report unread, whatever an earlier width or test left behind.
+		const key = (await fixture.board(cookie)).inbox.find((item) => item.kind === 'report' && item.message === SAID.done2)!.key;
+		expect((await fixture.markUnread(cookie, key)).ok).toBe(true);
 		await visit(width, '?agent=s-lead');
 		await tab.until(`${leadPage} && ${CARDS_IN}`, 'the cards');
 		expect(await tab.eval<string>(`${historyCard('report', SAID.done2)}.innerText`)).toContain('標為已讀');
@@ -365,7 +368,6 @@ for (const width of [1280, 390]) {
 		await tab.until(`!document.querySelector('#panel-transcript').hidden && ${OPENED}?.innerText.includes(${JSON.stringify(SAID.done2)})`, 'the report in the conversation');
 		// Opening it read it.
 		await tab.until(`${OPENED}.innerText.includes('已讀（')`, 'read by opening it');
-		const key = (await fixture.board(cookie)).inbox.find((item) => item.kind === 'report' && item.message === SAID.done2)!.key;
 		expect((await fixture.board(cookie)).inbox.find((item) => item.key === key)).toMatchObject({ readAt: expect.any(String) });
 		expect(new URLSearchParams(await tab.eval<string>('location.search')).get('agent')).toBe('s-lead');
 		expect(await tab.eval(FITS)).toBe(true);
