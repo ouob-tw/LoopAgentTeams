@@ -331,6 +331,61 @@ describe('a log kept up with gives what a read of the file would', () => {
 		log.close();
 	});
 
+	test('after someone else deleted the file, once a read finds it gone', () => {
+		sentLog.appendSent(own, wake('d1'));
+		const log = sentLog.openLog(own, Date.now());
+		rmSync(file());
+		expect(sentLog.readLines(own, Date.now())).toEqual([]);
+		expect(log.lines).toEqual([]);
+		log.close();
+	});
+
+	test('after a read found the file changed but could not read it', () => {
+		sentLog.appendSent(own, wake('e1'));
+		const log = sentLog.openLog(own, Date.now());
+		appendFileSync(file(), JSON.stringify(wake('e2')) + '\n');
+		chmodSync(file(), 0o000);
+		try {
+			expect(() => sentLog.readLines(own, Date.now())).toThrow();
+			expect(() => log.lines).toThrow();
+		} finally {
+			chmodSync(file(), 0o600);
+		}
+		same(log);
+		expect(ids(log.lines)).toEqual(['e1', 'e2']);
+		log.close();
+	});
+
+	test('after a read could not even look at the file', () => {
+		sentLog.appendSent(own, wake('h1'));
+		const log = sentLog.openLog(own, Date.now());
+		chmodSync(own, 0o000);
+		try {
+			expect(() => sentLog.readLines(own, Date.now())).toThrow();
+			expect(() => log.lines).toThrow();
+		} finally {
+			chmodSync(own, 0o700);
+		}
+		same(log);
+		log.close();
+	});
+
+	test('after an append that failed before it wrote', () => {
+		sentLog.appendSent(own, wake('g1'));
+		const log = sentLog.openLog(own, Date.now());
+		appendFileSync(file(), JSON.stringify(wake('g2')) + '\n');
+		// The state directory cannot be looked into, so even the first check of the file fails.
+		chmodSync(own, 0o000);
+		try {
+			expect(() => sentLog.appendSent(own, wake('g3'))).toThrow();
+		} finally {
+			chmodSync(own, 0o700);
+		}
+		same(log);
+		expect(ids(log.lines)).toEqual(['g1', 'g2']);
+		log.close();
+	});
+
 	test('after a cleaning under way dropped what is past retention', () => {
 		const start = Date.now() - 60 * DAY;
 		sentLog.appendSent(own, { ...wake('p1'), time: new Date(start).toISOString() });

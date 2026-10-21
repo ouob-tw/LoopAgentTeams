@@ -186,17 +186,17 @@ function cacheRows(stateDir: string, rows: Row[], size: number, mtimeMs: number,
 }
 
 export function appendSent(stateDir: string, entry: Line): void {
-	mkdirSync(stateDir, { recursive: true, mode: 0o700 });
-	const path = join(stateDir, SENT_LOG_FILE);
-	const raw = JSON.stringify(entry);
-	const cached = cache.get(stateDir);
-	// Kept only while the file is as the board left it: someone else's write is read whole next time.
-	const keep = unchanged(cached, stamp(path)) && cached!.whole;
-	cache.delete(stateDir);
 	/** The line as the cache now has it; null when the cache could not keep up, the write failed, or
 	 *  the file ended with a line cut short that it joined: a read of the file tells then. */
 	let line: Line | null = null;
 	try {
+		mkdirSync(stateDir, { recursive: true, mode: 0o700 });
+		const path = join(stateDir, SENT_LOG_FILE);
+		const raw = JSON.stringify(entry);
+		const cached = cache.get(stateDir);
+		// Kept only while the file is as the board left it: someone else's write is read whole next time.
+		const keep = unchanged(cached, stamp(path)) && cached!.whole;
+		cache.delete(stateDir);
 		// The text may hold internal addresses and paths, like the reports do.
 		appendFileSync(path, raw + '\n', { mode: 0o600 });
 		if (!keep) return;
@@ -283,10 +283,18 @@ function prune(stateDir: string, cached: Cached, now: number): Cached {
 /** The log as it is in the file, from the cache while the file is as the board left it. */
 function readCached(stateDir: string): Cached | null {
 	const path = join(stateDir, SENT_LOG_FILE);
-	const info = stamp(path);
+	let info: ReturnType<typeof stamp>;
+	try {
+		info = stamp(path);
+	} catch (error) {
+		tell(stateDir, null);
+		throw error;
+	}
 	const cached = cache.get(stateDir);
 	if (unchanged(cached, info)) return cached;
 	cache.delete(stateDir);
+	// Changed, gone or not readable now: a log kept up with may miss what changed it.
+	tell(stateDir, null);
 	if (!info) return null;
 	let text: string;
 	try {
@@ -296,8 +304,6 @@ function readCached(stateDir: string): Cached | null {
 		throw error;
 	}
 	sentLogReads.count += 1;
-	// Read again because it changed: a log kept up with may miss what changed it.
-	tell(stateDir, null);
 	const rows = text
 		.split('\n')
 		.filter((raw) => raw.trim())
