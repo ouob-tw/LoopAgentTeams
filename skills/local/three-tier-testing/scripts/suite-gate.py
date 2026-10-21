@@ -603,10 +603,11 @@ def read_records():
 def reusable_record(fp):
     """The latest record for this content when it passed; None when it failed or is absent.
 
-    Records whose content changed mid-run describe no single content and are skipped.
+    Records whose content changed mid-run describe no single content and are skipped, as
+    are affected-test runs and reuse notes (records with a `kind`).
     """
     for record in reversed(read_records()):
-        if record.get('kind') == 'affected':
+        if record.get('kind'):
             continue
         if record.get('fingerprint') == fp and not record.get('content_changed'):
             return record if record.get('reusable') else None
@@ -722,16 +723,14 @@ class Gate:
             elif not self.rerun:
                 record = reusable_record(fp)
                 if record:
-                    print_reuse(record, self.command)
-                    return 0
+                    return self.reuse(record, info)
             if fp:
                 self.acquire_lock(fp)
                 if not self.rerun:
                     record = reusable_record(fp)
                     if record:
                         self.release()
-                        print_reuse(record, self.command)
-                        return 0
+                        return self.reuse(record, info)
             self.acquire_slot()
             if info is not None:
                 again = fingerprint(self.cwd, self.argv)
@@ -740,6 +739,19 @@ class Gate:
                     self.release()
                     continue
             return self.execute(info)
+
+    def reuse(self, record, info):
+        """Report the earlier pass; a run with a purpose also notes the reuse in the ledger."""
+        print_reuse(record, self.command)
+        if self.extra.get('purpose'):
+            append_record({
+                'kind': 'reuse', 'fingerprint': info['fingerprint'], 'tree': info['tree'],
+                'repo': info['repo'], 'command': self.command, 'cwd': str(self.cwd),
+                'rel_cwd': info['rel_cwd'], 'exit_code': 0, 'agent': self.me['agent'],
+                'time': now_iso(), 'reusable': False, 'reused_time': record.get('time'),
+                'reused_agent': record.get('agent'), 'purpose': None, 'purpose_reason': None,
+                **self.extra})
+        return 0
 
     def execute(self, info):
         argv = ['/bin/sh', '-c', self.argv[0]] if len(self.argv) == 1 else self.argv
@@ -1167,7 +1179,9 @@ def cmd_status(as_json, fp_prefix, limit):
                 'content changed' if r.get('content_changed') else 'not in Git') + ')'
         else:
             result = f"FAIL exit {r.get('exit_code')}"
-        if r.get('kind') == 'affected':
+        if r.get('kind') == 'reuse':
+            result = f"REUSED pass of {r.get('reused_time')}"
+        elif r.get('kind') == 'affected':
             result = ('PASS' if r.get('exit_code') == 0 else f"FAIL exit {r.get('exit_code')}") \
                 + ' (affected tests)'
         rerun = f"  rerun: {r['rerun_reason']}" if r.get('rerun_reason') else ''

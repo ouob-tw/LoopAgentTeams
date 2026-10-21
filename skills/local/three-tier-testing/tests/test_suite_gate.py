@@ -674,6 +674,26 @@ class MapFallbackTests(AffectedCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(again.stdout.count('already passed'), 2)
         self.assertEqual(self.full_runs(), ['root', 'web'])
+        notes = self.records()[2:]
+        self.assertEqual([(n['kind'], n['purpose'], n['trigger_files'], n['fingerprint'])
+                          for n in notes],
+                         [('reuse', 'map-fallback', ['README.md'], r['fingerprint'])
+                          for r in (root, web)])
+        self.assertIn('REUSED pass of', self.gate('status').stdout)
+        self.gate('affected')
+        self.assertEqual(self.full_runs(), ['root', 'web'], 'reuse notes never block reuse')
+
+    def test_a_fallback_reusing_a_post_merge_pass_records_the_fallback(self):
+        self.touch('README.md')
+        for suite in self.registry['full_suites']:
+            cwd = self.repo / suite['cwd']
+            result = self.gate('run', '--purpose', 'post-merge', '--', suite['command'], cwd=cwd)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.gate('affected').returncode, 0)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+        notes = self.records()[2:]
+        self.assertEqual([(n['kind'], n['purpose'], n['trigger_files'], n['reused_agent'])
+                          for n in notes], [('reuse', 'map-fallback', ['README.md'], 't-tester')] * 2)
 
     def test_a_shared_path_falls_back_and_waits_for_a_host_slot(self):
         self.set_config(max_slots=1)
@@ -735,6 +755,8 @@ class PurposeTests(AffectedCase):
         self.assertIn('already passed', release.stdout)
         self.assertIn('purpose:     post-merge', release.stdout)
         self.assertEqual(self.full_runs(), ['root'])
+        note = self.records()[-1]
+        self.assertEqual((note['kind'], note['purpose']), ('reuse', 'release'))
         self.touch('src/app.py')
         reason = self.gate('run', '--reason', 'investigating a flaky test', '--',
                            self.full('root'))
@@ -757,6 +779,8 @@ class PurposeTests(AffectedCase):
         result = self.gate('run', '--', self.full('root'))
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIsNone(self.records()[-1]['purpose'])
+        self.assertIn('already passed', self.gate('run', '--', self.full('root')).stdout)
+        self.assertEqual(len(self.records()), 1, 'a reuse without a purpose writes nothing')
 
 
 class DetectionTests(unittest.TestCase):

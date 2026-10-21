@@ -25,7 +25,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
   uv run --no-project python <skill>/scripts/suite-gate.py run --reason "<為什麼需要整套>" -- '<整套測試指令>'
   ```
 
-  用途與原因寫進紀錄，不進指紋：整批合併後的通過紀錄，發布前可以直接沿用。`--rerun` 只管「要不要沿用」，不能代替用途。沒有對照表的專案不需要用途，可以照舊帶。
+  用途與原因寫進紀錄，不進指紋：整批合併後的通過紀錄，發布前可以直接沿用。帶用途的執行沿用了上次結果時，另寫一筆沿用紀錄（`kind: "reuse"`，含用途、被沿用那筆的時間與執行者），本身不能再被沿用。`--rerun` 只管「要不要沿用」，不能代替用途。沒有對照表的專案不需要用途，可以照舊帶。
 
 ### 怎樣算「同一份內容」
 
@@ -87,7 +87,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
 - 選出的測試依所在目錄分組（取 `affected.commands` 中最長的符合目錄），把相對該目錄的路徑代入 `{tests}`，在該目錄以 `/bin/sh` 執行。沒有目錄涵蓋的測試，改跑整套。
 - 輸出（stderr）列出基準點、改動檔、選出的測試與原因、每組執行的指令；測試輸出與結束碼原樣轉出，多組時回傳第一個非 0 的結束碼。
 - 受影響測試不佔整套名額、不排隊、不沿用；每組寫一筆紀錄（`kind: "affected"`），含基準 commit、改動檔、該組選出的測試與原因。沒有選出任何測試時不執行、不寫紀錄。
-- **改跑整套**（對照表退回整套）：列出觸發的檔案與原因，再對 `full_suites` 的每一套照 `run` 的規則經閘門執行——同樣排隊、佔名額、同內容沿用。紀錄的用途是 `map-fallback`，並記下觸發的檔案（`trigger_files`）。被觸發時把缺的檔案補進對照表；審查者核對對照表的變更。
+- **改跑整套**（對照表退回整套）：列出觸發的檔案與原因，再對 `full_suites` 的每一套照 `run` 的規則經閘門執行——同樣排隊、佔名額、同內容沿用。紀錄的用途是 `map-fallback`，並記下觸發的檔案（`trigger_files`）；沿用上次結果時寫在沿用紀錄裡。被觸發時把缺的檔案補進對照表；審查者核對對照表的變更。
 
 ### 對照表欄位
 
@@ -172,7 +172,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py install --client codex
 | 紀錄、名額與鎖 | `$XDG_STATE_HOME/suite-gate/`（預設 `~/.local/state/suite-gate/`） | 環境變數 `SUITE_GATE_STATE_DIR` |
 | 設定 | `$XDG_CONFIG_HOME/suite-gate/config.json`（預設 `~/.config/suite-gate/config.json`） | 環境變數 `SUITE_GATE_CONFIG` |
 
-整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用，以及用途（`purpose`：`post-merge`、`release`、`map-fallback`、`reason` 或 `null`）與自填原因（`purpose_reason`）；對照表退回整套另有 `trigger_files`。受影響測試的紀錄標 `kind: "affected"`，另有 `base`、`changed_files`、`selected_tests` 與 `why`（每個測試被選的原因），一律不可沿用。
+整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用，以及用途（`purpose`：`post-merge`、`release`、`map-fallback`、`reason` 或 `null`）與自填原因（`purpose_reason`）；對照表退回整套另有 `trigger_files`。受影響測試的紀錄標 `kind: "affected"`，另有 `base`、`changed_files`、`selected_tests` 與 `why`（每個測試被選的原因），一律不可沿用。帶用途的執行沿用上次結果時的沿用紀錄標 `kind: "reuse"`，另有 `reused_time`、`reused_agent`。
 
 設定檔欄位（都可省略）：
 
