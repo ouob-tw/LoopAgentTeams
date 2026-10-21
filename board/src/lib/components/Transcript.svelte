@@ -16,8 +16,7 @@
 	import { askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { renderMarkdown } from '#lib/board/markdown.ts';
-	import { remember, remembered, TRANSLATE_KEY } from '#lib/board/prefs.ts';
-	import { toasts } from '#lib/board/toasts.svelte.ts';
+		import { toasts } from '#lib/board/toasts.svelte.ts';
 	import {
 		isQuestion,
 		questionPlace,
@@ -35,6 +34,7 @@
 		type TranscriptView
 	} from '#lib/board/transcript.ts';
 	import { switching } from '#lib/board/switching.svelte.ts';
+import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	import { isEnglish, Translations, type Translation } from '#lib/board/translate.ts';
 	import { itemLabel, type Controller, type InboxQuestion, type InboxReport } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
@@ -127,16 +127,12 @@
 		return () => clearTimeout(timer);
 	});
 	/** Whether English replies show translated; this device's choice, for every conversation. */
-	let translating = $state(false);
-	onMount(() => {
-		translating = remembered(TRANSLATE_KEY, ['1', '0'], '0') === '1';
+	const translating = $derived(translatePref.on);
+	onMount(() => translatePref.load());
+	// Turned off: nothing more is asked. Turned on again: what failed is asked for again.
+	$effect(() => {
+		if (!translating) untrack(() => translations.stop());
 	});
-	function translate(on: boolean) {
-		translating = on;
-		remember(TRANSLATE_KEY, on ? '1' : '0');
-		// Turned on again: what failed is asked for again; turned off: nothing more is asked.
-		if (!on) translations.stop();
-	}
 	/** Translations by original text, as they come in. */
 	let translated = $state<Record<string, Translation>>({});
 	const translations = new Translations((text, translation) => {
@@ -377,10 +373,6 @@
 </script>
 
 <section class="history" data-block="transcript" bind:this={list}>
-	<div class="language" role="group" aria-label="對話紀錄的語言">
-		<button aria-pressed={translating} onclick={() => translate(true)}>中文</button>
-		<button aria-pressed={!translating} onclick={() => translate(false)}>原文</button>
-	</div>
 	{#if unplaced && card}
 		<div class="placed">{@render card()}</div>
 	{/if}
@@ -569,29 +561,6 @@
 	}
 	.text {
 		overflow-wrap: anywhere;
-	}
-	/* Two halves of one small switch, at the right above the conversation. */
-	.language {
-		display: inline-flex;
-		align-self: flex-end;
-		border: 1px solid var(--line);
-		border-radius: var(--radius-pill);
-		overflow: hidden;
-	}
-	.language button {
-		padding: 0.1rem 0.7rem;
-		border: 0;
-		border-radius: 0;
-		background: none;
-		color: var(--muted);
-		font: inherit;
-		font-size: max(0.8rem, var(--min-font, 0px));
-		cursor: pointer;
-	}
-	.language button[aria-pressed='true'] {
-		background: var(--surface);
-		color: var(--text);
-		font-weight: 600;
 	}
 	.translating {
 		display: inline-flex;

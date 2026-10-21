@@ -105,7 +105,7 @@ const USER = 'Please fix the build and push the branch now.';
 /** The reply's item, found by a piece of its original text. */
 const said = (text: string) =>
 	`[...document.querySelectorAll('.detail [data-block="transcript"] li.said')].find((li) => li.innerText.includes(${JSON.stringify(text)}))`;
-const switchButton = (label: string) => `[...document.querySelectorAll('.detail .language button')].find((b) => b.innerText === ${JSON.stringify(label)})`;
+const SWITCH = `document.querySelector('.detail button.translate')`;
 
 let fixture: Fixture;
 let cookie: string;
@@ -180,14 +180,15 @@ async function open() {
 
 test.skipIf(!CHROME)('off on a new device and sends nothing; on, English replies turn from 翻譯中 to Chinese, the rest untouched; remembered after a reload', async () => {
 	await visit(1280);
-	expect(await tab.eval(`${switchButton('原文')}.getAttribute('aria-pressed')`)).toBe('true');
-	expect(await tab.eval(`${switchButton('中文')}.getAttribute('aria-pressed')`)).toBe('false');
+	expect(await tab.eval(`${SWITCH}.getAttribute('aria-pressed')`)).toBe('false');
+	expect(await tab.eval(`${SWITCH}.getAttribute('aria-label')`)).toBe('翻譯成中文');
+	expect(await tab.eval(`document.querySelector('.detail .language')`)).toBeNull();
 	await sleep(800);
 	expect(await tab.eval('window.translateRequests')).toBe(0);
 	expect(codexCalls()).toEqual([]);
 	expect(await tab.eval(`document.querySelectorAll('.detail [data-translation]').length`)).toBe(0);
 
-	await tab.eval(`${switchButton('中文')}.click()`);
+	await tab.eval(`${SWITCH}.click()`);
 	await tab.until(`${said('All green')}?.dataset.translation === 'pending'`, 'the English reply marked as being translated');
 	expect(await tab.eval<string>(`${said('All green')}.querySelector('.meta').innerText`)).toContain('翻譯中');
 	// Shown as it was meanwhile.
@@ -215,12 +216,12 @@ test.skipIf(!CHROME)('off on a new device and sends nothing; on, English replies
 
 	// Remembered across a reload; the saved translation shows without asking Codex again.
 	await open();
-	expect(await tab.eval(`${switchButton('中文')}.getAttribute('aria-pressed')`)).toBe('true');
+	expect(await tab.eval(`${SWITCH}.getAttribute('aria-pressed')`)).toBe('true');
 	await tab.until(`${said('譯：')}?.dataset.translation === 'done'`, 'the saved translation');
 	expect(codexCalls()).toHaveLength(1);
 
 	// Back to 原文: the English as written, and nothing more is asked.
-	await tab.eval(`${switchButton('原文')}.click()`);
+	await tab.eval(`${SWITCH}.click()`);
 	await tab.until(`!!${said('All green')} && !document.querySelector('.detail [data-translation]')`, 'the originals');
 	const requests = await tab.eval<number>('window.translateRequests');
 	appendFileSync(record, line('assistant', 'Another English reply arrived while the switch was off.'));
@@ -232,7 +233,7 @@ test.skipIf(!CHROME)('off on a new device and sends nothing; on, English replies
 
 test.skipIf(!CHROME)('a reply pushed while on is translated; a failure leaves the original with a quiet note and no toast, and is tried again on reopening after the hold', async () => {
 	await visit(1280);
-	await tab.eval(`${switchButton('中文')}.click()`);
+	await tab.eval(`${SWITCH}.click()`);
 	await tab.until(`${said('譯：I fixed')}?.dataset.translation === 'done'`, 'the first translation');
 
 	codexPlan({ prefix: '譯：' });
@@ -256,18 +257,35 @@ test.skipIf(!CHROME)('a reply pushed while on is translated; a failure leaves th
 	await tab.until(`${said('譯：This reply will fail')}?.dataset.translation === 'done'`, 'the failed one translated on reopening');
 }, 60_000);
 
-test.skipIf(!CHROME)("at a phone's width the switch shows above the conversation and nothing scrolls sideways", async () => {
-	await visit(390);
-	await tab.eval(`${switchButton('中文')}.click()`);
-	await tab.until(`${said('譯：I fixed')}?.dataset.translation === 'done'`, 'the translation');
-	const [switchBox, firstItem] = await tab.eval<number[]>(
-		`[document.querySelector('.detail .language').getBoundingClientRect().bottom, document.querySelector('.detail [data-block="transcript"] li').getBoundingClientRect().top]`
-	);
-	expect(switchBox).toBeLessThanOrEqual(firstItem);
-	await tab.eval(`[...${said('譯：I fixed')}.querySelectorAll('button')].find((b) => b.innerText === '看原文').click()`);
-	await tab.until(`!!${said('譯：I fixed')}.querySelector('.original')`, 'the original');
-	expect(await tab.eval(FITS)).toBe(true);
-}, 60_000);
+test.skipIf(!CHROME)("the button is at the right end of the tab row on the 對話紀錄 tab only, fixed there at a phone's width, and nothing scrolls sideways", async () => {
+	for (const width of [1280, 390]) {
+		await visit(width);
+		// One row: the button right of the last tab, inside the strip's line, and the tabs share the width.
+		const row = `(() => {
+			const barEl = document.querySelector('.detail .tabbar');
+			const bar = barEl.getBoundingClientRect();
+			const edge = bar.right - parseFloat(getComputedStyle(barEl).paddingRight);
+			const button = ${SWITCH}.getBoundingClientRect();
+			const tabs = [...document.querySelectorAll('.detail .tabbar [role=tab]')].map((t) => t.getBoundingClientRect());
+			const last = tabs.at(-1);
+			return { rightEdge: Math.abs(edge - button.right) <= 2, afterTabs: button.left >= last.right, oneRow: tabs.every((t) => t.top === tabs[0].top) && button.top >= bar.top && button.bottom <= bar.bottom, widths: tabs.map((t) => Math.round(t.width)) };
+		})()`;
+		const layout = await tab.eval<{ rightEdge: boolean; afterTabs: boolean; oneRow: boolean; widths: number[] }>(row);
+		expect(layout).toMatchObject({ rightEdge: true, afterTabs: true, oneRow: true });
+		if (width < 761) expect(Math.max(...layout.widths) - Math.min(...layout.widths)).toBeLessThanOrEqual(20);
+		await tab.eval(`${SWITCH}.click()`);
+		await tab.until(`${said('譯：I fixed')}?.dataset.translation === 'done'`, 'the translation');
+		expect(await tab.eval(`${SWITCH}.title`)).toContain('已開啟');
+		await tab.eval(`[...${said('譯：I fixed')}.querySelectorAll('button')].find((b) => b.innerText === '看原文').click()`);
+		await tab.until(`!!${said('譯：I fixed')}.querySelector('.original')`, 'the original');
+		expect(await tab.eval(FITS)).toBe(true);
+		// Another tab has no button; back on 對話紀錄 it is there, still pressed.
+		await tab.eval(`document.querySelector('#tab-sent').click()`);
+		await tab.until(`document.querySelector('.detail button.translate') === null`, 'the button gone on another tab');
+		await tab.eval(`document.querySelector('#tab-transcript').click()`);
+		await tab.until(`document.querySelector('.detail button.translate')?.getAttribute('aria-pressed') === 'true'`, 'the button back, pressed');
+	}
+}, 120_000);
 
 test.skipIf(!CHROME)('loading an earlier part translates only the replies it brought', async () => {
 	codexPlan({ prefix: '譯：' });
@@ -283,7 +301,7 @@ test.skipIf(!CHROME)('loading an earlier part translates only the replies it bro
 	await tab.navigate(`${fixture.url}/?controller=${orin.session_id}`);
 	await tab.until(`!!(${said('reply number 59 ')})`, "orin's conversation");
 	const before = codexCalls().length;
-	await tab.eval(`${switchButton('中文')}.click()`);
+	await tab.eval(`${SWITCH}.click()`);
 	await tab.until(`!!${said('譯：Long history reply number 10 ')} && !!${said('譯：Long history reply number 59 ')}`, 'the first page translated');
 	const firstPage = codexCalls().slice(before);
 	expect(firstPage).toHaveLength(50);
