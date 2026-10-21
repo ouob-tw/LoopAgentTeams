@@ -3,6 +3,7 @@
 // from a server that is down.
 import type { ArchivePage } from './archive.ts';
 import type { QuotaSnapshot } from './quota.ts';
+import type { UsageStyle } from './usage.ts';
 import type { BoardSnapshot, InboxQuestion } from './types.ts';
 
 export type LinkState = 'connecting' | 'live' | 'offline';
@@ -18,6 +19,8 @@ export interface ConnectionOptions {
 	onAgentAction?(agentId: string): void;
 	/** The accounts' quotas as the server last read them; not part of the snapshot. */
 	onQuota?(quota: QuotaSnapshot): void;
+	/** How the usage line reads, the same on every device; sent on connecting and at every change. */
+	onUsageStyle?(style: UsageStyle): void;
 	fetch?: typeof fetch;
 	retryMs?: number;
 }
@@ -30,6 +33,8 @@ export interface Connection {
 	refresh(): Promise<void>;
 	/** Mark an inbox report read or unread; every device gets the new state through the stream. */
 	mark(key: string, read: boolean): Promise<void>;
+	/** Save how the usage line reads for every device; throws when it could not be saved. */
+	setUsageStyle(style: UsageStyle): Promise<void>;
 	/** One page of the processed items, newest first: the newest, or the one after `before`. */
 	archive(before?: string | null): Promise<ArchivePage>;
 	/** One controller's answered questions. */
@@ -63,6 +68,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		else if (event === 'tab-moved') options.onTabMoved?.();
 		else if (event === 'agent-action') options.onAgentAction?.(JSON.parse(data).agentId);
 		else if (event === 'quota') options.onQuota?.(JSON.parse(data));
+		else if (event === 'usage-style') options.onUsageStyle?.(JSON.parse(data).style);
 	}
 
 	async function listen(): Promise<void> {
@@ -123,6 +129,17 @@ export function connectBoard(options: ConnectionOptions): Connection {
 			if (response.status === 401) return unpaired();
 			// 409: it was archived in the meantime, which the next snapshot shows.
 			if (!response.ok && response.status !== 409) throw new Error(`HTTP ${response.status}`);
+		},
+		async setUsageStyle(style) {
+			const response = await request('/api/usage-style', {
+				method: 'PUT',
+				headers: { 'content-type': 'application/json' },
+				body: JSON.stringify({ style })
+			});
+			if (response.status === 401) return unpaired();
+			if (!response.ok) throw new Error(`HTTP ${response.status}`);
+			// Not left to the push alone: that waits on the stream, which may be down.
+			options.onUsageStyle?.(style);
 		},
 		async archive(before = null) {
 			const response = await request(before === null ? '/api/archive' : `/api/archive?before=${encodeURIComponent(before)}`);
