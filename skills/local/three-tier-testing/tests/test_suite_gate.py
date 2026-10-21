@@ -1368,11 +1368,11 @@ class DetectionTests(unittest.TestCase):
 
 
 
-def run_hook(command, cwd, env=None):
+def run_hook(command, cwd, env=None, hook_cwd=None):
     payload = json.dumps({'hook_event_name': 'PreToolUse', 'tool_name': 'Bash',
                           'tool_input': {'command': command}, 'cwd': str(cwd)})
     return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=payload, text=True,
-                          capture_output=True, env=env, timeout=60)
+                          capture_output=True, env=env, timeout=60, cwd=hook_cwd)
 
 
 def rewrite_of(stderr):
@@ -1495,8 +1495,9 @@ class HookTests(GateCase):
             self.assertIsNone(gate.gate_rewrite(gate.gate_command('pytest'), self.repo))
         finally:
             gate.split_commands = original
-        # A payload cwd that does not exist falls back to the hook's own directory.
-        self.assertEqual(run_hook('pytest', self.tmp / 'gone', self.env).returncode, 2)
+        # A payload cwd that does not exist falls back to the hook's own directory (here one with
+        # no registry, so the default rules apply whatever repo the tests run from).
+        self.assertEqual(run_hook('pytest', self.tmp / 'gone', self.env, hook_cwd=self.tmp).returncode, 2)
 
 
 OTHER_GROUPS = [

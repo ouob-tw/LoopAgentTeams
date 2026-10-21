@@ -4,7 +4,7 @@
 // standing in for an extension's content script, opens the page in headless Chrome once per
 // kind of change, and reports whether the board still came up.
 //
-//   bun run build && bun run repro:hydration                   every kind of change but `replace`
+//   bun run build:test && bun run repro:hydration              every kind of change but `replace`
 //   bun run repro:hydration style-after wrap                   only these
 //   bun run repro:hydration --serve none                       keep serving, for any browser
 //

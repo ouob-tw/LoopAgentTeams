@@ -10,7 +10,11 @@
 		"board": "bun src/cli.ts",
 		"prepare": "svelte-kit sync || echo ''",
 		"check": "svelte-kit sync && svelte-check --tsconfig ./tsconfig.json",
-		"test": "vite build && bun test",
+		"build:test": "LAT_BOARD_BUILD_DIR=build-test vite build",
+		"test": "bun test",
+		"test:server": "bun run build:test && bun test ./tests/server",
+		"test:browser": "bun run build:test && bun test ./tests/browser",
+		"test:all": "bun run build:test && bun test ./tests",
 		"repro:hydration": "bun scripts/hydration-repro.ts",
 		"measure:commandline": "bun scripts/measure-commandline.ts"
 	},

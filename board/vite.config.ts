@@ -9,7 +9,8 @@ export default defineConfig({
 				runes: ({ filename }) =>
 					filename.split(/[/\\]/).includes('node_modules') ? undefined : true
 			},
-			adapter: adapter()
+			// `bun run build:test` sets LAT_BOARD_BUILD_DIR so the tests never write the `build/` the running board serves.
+			adapter: adapter({ out: process.env.LAT_BOARD_BUILD_DIR ?? 'build' })
 		})
 	]
 });

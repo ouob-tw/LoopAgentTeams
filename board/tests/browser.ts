@@ -5,10 +5,13 @@ import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-/** Where a Chrome may be; `CHROME` in the environment names one first. */
-export const CHROME_PATHS = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
-/** The Chrome the tests use, or undefined (they skip) when the host has none. */
-export const CHROME = CHROME_PATHS.find((path) => path && existsSync(path));
+/** Where a Chrome may be; `CHROME` in the environment names the only one to use. */
+export const CHROME_PATHS = process.env.CHROME ? [process.env.CHROME] : ['/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
+const found = CHROME_PATHS.find((path) => existsSync(path));
+// A browser test without Chrome fails instead of skipping, so a host without one never reads as a pass.
+if (!found) throw new Error(`找不到 Chrome（找過 ${CHROME_PATHS.join('、')}）：安裝 Chrome 或 Chromium，或以環境變數 CHROME 指定執行檔`);
+/** The Chrome the tests use. */
+export const CHROME: string = found;
 
 const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
 
@@ -152,7 +155,6 @@ function endProcess(chrome: ChildProcess) {
  * `screen` is what `Tab.until` reports when a wait times out.
  */
 export async function launchChrome(options: { scripts?: string[]; screen?: string } = {}): Promise<Browser> {
-	if (!CHROME) throw new Error('no Chrome on this host');
 	const profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
 	const chrome = spawn(
 		CHROME,

@@ -17,6 +17,7 @@
 | 變數 | 用途 | 預設 |
 | --- | --- | --- |
 | `HOST`、`PORT` | 監聽位址與連接埠（也可用 `start` 的 `--host`、`--port`） | `0.0.0.0`、`7100` |
+| `LAT_BOARD_BUILD_DIR` | 建置輸出到哪個目錄、`start` 啟動哪一份建置（相對看板目錄）；`bun run build:test` 設為 `build-test`，讓測試不改寫常駐看板正在用的 `build/` | `build` |
 | `LAT_BOARD_LAT_DIR` | LAT 技能目錄 | `~/.agents/skills/lat` |
 | `LAT_BOARD_HELPER_COMMAND` | 直接指定輔助工具指令（JSON 字串陣列），看板會在後面加上 `board list` 等參數 | 由技能目錄組出 |
 | `LAT_BOARD_STATE_DIR` | 看板自己的狀態目錄（已登入裝置、密碼雜湊、回報的已讀與封存、用量列樣式 `usage-style.json`、送出紀錄） | `$XDG_STATE_HOME/lat/board` |
@@ -130,7 +131,7 @@
 - **存放**：譯文以原文的 SHA-256 為鍵存在狀態目錄的 `translations.json`（權限 600，不存原文），所有裝置共用，重開頁面或換裝置直接用、不再呼叫 Codex。同一段文字正在翻時又被要求，等同一次翻譯。每段記最後使用時間（最多一小時更新一次），每次請求與每次存檔時清掉超過 `LAT_BOARD_TRANSLATE_KEEP_DAYS` 天沒用到的。失敗不存；同一段失敗後 5 分鐘內再被要求，直接回同一個失敗原因、不再呼叫 Codex（只記在記憶體，重啟看板就清掉），過了才會再翻。
 - **顯示**：還沒翻好的段落顯示原文並在標頭標「翻譯中」，翻好原地換成中文，下方「看原文」可展開／收起該段英文原文。失敗時留著原文，下方小字「翻譯失敗，顯示原文（原因）」，不跳浮動通知；換到別的對話再回來、重新整理，或關閉再開啟翻譯時會重試（失敗後 5 分鐘內重試會得到同一個失敗，見上一項）。
 - **紀錄**：失敗寫一行 `[translate] Codex translation failed: …` 到錯誤紀錄，附 Codex 標準錯誤輸出的最後 300 字；對話文字（原文與換成記號後的文字）在讀取時就換成「…」，再截短，所以再長的原文被 Codex 原樣印出也不會留下片段。
-- 測試以 `tests/fake-codex.mjs` 代替 Codex：`tests/translate.test.ts`（英文判斷、記號、快取命中與過期、同時數、失敗與 5 分鐘內沿用、出錯不中斷、頁面離開取消排隊、頁面請求）、`tests/translate-server.test.ts`（登入、串流、重啟後沿用、30 天過期、失敗與逾時、頁面離開取消排隊）、`tests/translate-page.test.ts`（真瀏覽器：預設關閉不送請求、翻譯中與替換、看原文、重新整理回到原文、失敗小字、載入更早只翻新的一頁、手機寬度）、`tests/translate-mode.test.ts`（共用偏好的讀寫：未登入、不合法的值、跨裝置推送與重啟後沿用、存檔失敗、壞檔）、`tests/translate-mode-page.test.ts`（真瀏覽器，使用起點加 77 與加 78：兩種偏好的頁面行為、圖示只改目前對話、他處改變即時跟隨、存檔失敗的通知、舊的裝置開關被清掉）；自動翻譯下三種頁面的行為見 `tests/page-navigation.test.ts`。
+- 測試以 `tests/fake-codex.mjs` 代替 Codex：`tests/unit/translate.test.ts`（英文判斷、記號、快取命中與過期、同時數、失敗與 5 分鐘內沿用、出錯不中斷、頁面離開取消排隊、頁面請求）、`tests/server/translate-server.test.ts`（登入、串流、重啟後沿用、30 天過期、失敗與逾時、頁面離開取消排隊）、`tests/browser/translate-page.test.ts`（真瀏覽器：預設關閉不送請求、翻譯中與替換、看原文、重新整理回到原文、失敗小字、載入更早只翻新的一頁、手機寬度）、`tests/server/translate-mode.test.ts`（共用偏好的讀寫：未登入、不合法的值、跨裝置推送與重啟後沿用、存檔失敗、壞檔）、`tests/browser/translate-mode-page.test.ts`（真瀏覽器，使用起點加 77 與加 78：兩種偏好的頁面行為、圖示只改目前對話、他處改變即時跟隨、存檔失敗的通知、舊的裝置開關被清掉）；自動翻譯下三種頁面的行為見 `tests/browser/page-navigation.test.ts`。
 
 ## Herdr 分頁
 
@@ -333,35 +334,40 @@ journalctl --user -u lat-board -o cat | grep '"message":"client_error"' | jq .
 ```bash
 bun run dev -- --host 0.0.0.0 --port 7110
 bun run check
-bun run test        # 先 build，再以暫存目錄與假的輔助工具啟動伺服器
+bun run test           # 單元測試（tests/unit/）：不啟動伺服器、不開瀏覽器；裸跑 bun test 也只跑這層
+bun run test:server    # 先建置到 build-test/，再跑 tests/server/：以暫存目錄與假的輔助工具啟動伺服器
+bun run test:browser   # 先建置到 build-test/，再跑 tests/browser/：伺服器加無頭 Chrome
+bun run test:all       # 先建置到 build-test/，再跑以上三層
 ```
 
-測試不讀寫真實的 `.lat/`、綁定登記或回報紀錄，也不會對真實的主控輸入文字或送出答案。測試用 Node 啟動伺服器，PATH 上沒有 Node 時改用執行測試的 Bun，所以只有 Bun 的主機也能跑完整套（`bun run test`）。測試伺服器和瀏覽器測試用的 Chrome 都綁連接埠 0，由系統挑一個沒人用的，所以不受主機上其他服務占用的連接埠影響，測試也不需要設定連接埠。
+測試分三層放在 `tests/unit/`、`tests/server/`、`tests/browser/`；共用的 `harness.ts`、`browser.ts`、`fake-*.mjs` 與 `fixtures/` 在 `tests/` 底下。後三個腳本的建置輸出到 `build-test/`（不進版控），測試伺服器只從那裡啟動，不會改寫常駐看板正在用的 `build/`；正式的 `bun run build` 仍輸出到 `build/`。`test:server`、`test:browser`、`test:all` 是整套測試，Agent 要經整套測試閘門執行（登記在 repo 根目錄的 `.suite-gate.json`）。
+
+測試不讀寫真實的 `.lat/`、綁定登記或回報紀錄，也不會對真實的主控輸入文字或送出答案。測試用 Node 啟動伺服器，PATH 上沒有 Node 時改用執行測試的 Bun，所以只有 Bun 的主機也能跑完整套（`bun run test:all`）。瀏覽器測試找不到 Chrome 或 Chromium（`CHROME` 有指定時只找它）就失敗並寫明原因，不會略過。測試伺服器和瀏覽器測試用的 Chrome 都綁連接埠 0，由系統挑一個沒人用的，所以不受主機上其他服務占用的連接埠影響，測試也不需要設定連接埠。
 
 瀏覽器擴充功能（例如 Dark Reader）會在頁面啟動前，在樣式表旁邊插入或搬動節點；樣式表放在頁面元件的範本裡就會讓首頁變成錯誤頁，所以一律放在 `<head>`。
 
 ```bash
-bun run build && bun run repro:hydration   # 無頭 Chrome 模擬這些改動；有一種讓看板壞掉就以 1 結束
+bun run build:test && bun run repro:hydration   # 無頭 Chrome 模擬這些改動；有一種讓看板壞掉就以 1 結束
 bun run repro:hydration --serve none       # 只啟動已登入的假資料看板，給裝了真實擴充功能的瀏覽器開
 ```
 
 需要本機有 Chrome 或 Chromium（可用 `CHROME` 指定），使用測試連接埠起點加 12 與加 13 的兩個連接埠。
 
-`tests/back-navigation.test.ts` 也用無頭 Chrome（同樣可用 `CHROME` 指定，使用起點加 29 與加 30）在真的瀏覽器裡走返回與重新整理；本機沒有 Chrome 時這些測試略過。
+`tests/browser/back-navigation.test.ts` 也用無頭 Chrome（同樣可用 `CHROME` 指定，使用起點加 29 與加 30）在真的瀏覽器裡走返回與重新整理。
 
-`tests/page-navigation.test.ts` 也用無頭 Chrome（使用起點加 72 與加 73）在同一分頁以整頁載入輪流開主控頁、Herdr Agent 頁與已關閉 Agent 頁（桌機與手機寬度各三輪），確認暫存的頁面不占住連線、翻譯照常完成；並確認從別的頁面按上一頁回到看板時重新載入、即時更新照常、指令列草稿仍在。
+`tests/browser/page-navigation.test.ts` 也用無頭 Chrome（使用起點加 72 與加 73）在同一分頁以整頁載入輪流開主控頁、Herdr Agent 頁與已關閉 Agent 頁（桌機與手機寬度各三輪），確認暫存的頁面不占住連線、翻譯照常完成；並確認從別的頁面按上一頁回到看板時重新載入、即時更新照常、指令列草稿仍在。
 
-`tests/agents-page.test.ts` 以同樣方式（使用起點加 32 與加 33）在電腦與手機寬度操作「Herdr」分頁（含傳話、中斷、關閉與操作紀錄），並檢查畫面不會左右捲動。傳話與中斷的伺服器端行為在 `tests/agent-control.test.ts`（起點加 34），關閉在 `tests/agent-close.test.ts`（起點加 35），切換模型、繼續切換與放棄切換在 `tests/agent-switch.test.ts`（起點加 37）。
+`tests/browser/agents-page.test.ts` 以同樣方式（使用起點加 32 與加 33）在電腦與手機寬度操作「Herdr」分頁（含傳話、中斷、關閉與操作紀錄），並檢查畫面不會左右捲動。傳話與中斷的伺服器端行為在 `tests/server/agent-control.test.ts`（起點加 34），關閉在 `tests/server/agent-close.test.ts`（起點加 35），切換模型、繼續切換與放棄切換在 `tests/server/agent-switch.test.ts`（起點加 37）。
 
-`tests/model-defaults-page.test.ts` 以同樣方式（使用起點加 44 與加 45）檢查新建主控與開新 Agent 表單的預設項目，以及新主控第一回合開始後不重新整理頁面，指令列模型標籤就顯示實際模型；client 設定寫在測試暫存的家目錄，不讀真的 `~/.claude`、`~/.codex`。
+`tests/browser/model-defaults-page.test.ts` 以同樣方式（使用起點加 44 與加 45）檢查新建主控與開新 Agent 表單的預設項目，以及新主控第一回合開始後不重新整理頁面，指令列模型標籤就顯示實際模型；client 設定寫在測試暫存的家目錄，不讀真的 `~/.claude`、`~/.codex`。
 
 寬版底部指令列的版面規則：單行時目標標籤、輸入框文字與送出按鈕的垂直中心相差不超過 2px；輸入框隨多行內容長高時，標籤與按鈕都貼齊輸入框最下面一行，位置不跳動；送出按鈕在輸入框框線內的右側，輸入的文字不會跑到按鈕底下。量測（深色與淺色、整體大小 80／100／150 %）：
 
 ```bash
-bun run build && bun run measure:commandline   # 無頭 Chrome；違反規則就以 1 結束；使用測試連接埠起點加 16 與加 17
+bun run build:test && bun run measure:commandline   # 無頭 Chrome；違反規則就以 1 結束；使用測試連接埠起點加 16 與加 17
 bun scripts/measure-commandline.ts --serve     # 啟動已登入的假資料看板，再用 scripts/measure-commandline.py 以 WebKit 量同樣的案例
 ```
 
-錯誤紀錄的伺服器端在 `tests/server-log.test.ts`（起點加 63），格式與限頻本身在 `tests/log.test.ts`；`tests/client-error-page.test.ts` 用無頭 Chrome（起點加 64 與加 65）讓頁面變成 Internal Error，檢查 journal 那一行。
+錯誤紀錄的伺服器端在 `tests/server/server-log.test.ts`（起點加 63），格式與限頻本身在 `tests/unit/log.test.ts`；`tests/browser/client-error-page.test.ts` 用無頭 Chrome（起點加 64 與加 65）讓頁面變成 Internal Error，檢查 journal 那一行。
 
 封存與 30 天保留的期限都用看板的時鐘計算。測試以 `LAT_BOARD_CLOCK_FILE` 指定一個檔案，內容是一個 ISO 時間，看板就把它當成現在；沒有設定或檔案讀不出時間時用系統時間。
