@@ -46,4 +46,7 @@ test('a push that brings nothing new keeps the same view, so nothing is worked o
 	expect(withLatest(view, { items: [...items, text(6)], before: null, skipped: 0 })).not.toBe(view);
 	expect(withLatest(view, { items: [...items.slice(0, 4), text(5, '改過')], before: null, skipped: 0 })).not.toBe(view);
 	expect(withLatest(view, { items, before: null, skipped: 1 })).not.toBe(view);
+	// An empty conversation pushed again stays the same view too.
+	const empty = withLatest(null, { items: [], before: null, skipped: 0 });
+	expect(withLatest(empty, { items: [], before: null, skipped: 0 })).toBe(empty);
 });

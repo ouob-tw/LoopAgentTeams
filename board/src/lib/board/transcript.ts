@@ -63,8 +63,8 @@ const startOf = (page: Pick<TranscriptPage, 'items' | 'before'>) => page.items[0
 export function withLatest(view: TranscriptView | null, page: TranscriptPage): TranscriptView {
 	const start = startOf(page);
 	const last = view?.items.at(-1)?.seq;
-	if (!view || last === undefined || start > last + 1) return { items: page.items, before: page.before, skipped: page.skipped };
-	const kept = view.items.filter((item) => item.seq < start);
+	if (!view) return { items: page.items, before: page.before, skipped: page.skipped };
+	const kept = last === undefined || start > last + 1 ? [] : view.items.filter((item) => item.seq < start);
 	const next = { items: [...kept, ...page.items], before: kept.length ? view.before : page.before, skipped: page.skipped };
 	return sameView(view, next) ? view : next;
 }
