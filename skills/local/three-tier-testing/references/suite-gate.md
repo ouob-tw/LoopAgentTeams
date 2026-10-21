@@ -4,6 +4,8 @@
 
 專案登記檔有對照表時，每張票改用 `affected` 只跑這次改動影響到的測試，整套只在整批合併後與發布前跑，並且要標明用途（見[受影響測試與對照表](#受影響測試與對照表)）。
 
+推送到 main 或推送標籤前，可以用 Git pre-push 檢查確認這份內容已有每一套整套的通過紀錄（見[推送前把關](#推送前把關pre-push)）。
+
 以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫，只支援 Linux。
 
 ## 跑整套測試
@@ -140,7 +142,8 @@ LoopAgentTeams 風格的例子：
 `suite-gate.py hook` 是 Claude 與 Codex 的 PreToolUse hook（matcher `Bash`），讓 Agent 不經閘門就跑整套測試時被擋下：
 
 - 指令裡有整套測試（照上面的判斷，以 hook 輸入的 `cwd` 找專案登記檔）且不是透過 `suite-gate.py run` 執行時擋下（結束碼 2），在 stderr 回覆可直接執行的改寫指令：只把整套測試那一個指令原地換成閘門指令，其餘（`cd`、`export`、管線、轉向、之後的 `echo`）照原樣保留，例如 `cd board && bun test 2>&1 | tail -30` 改寫為 `cd board && uv run --no-project python <skill>/scripts/suite-gate.py run -- 'bun test' 2>&1 | tail -30`。這樣紀錄的結束碼是測試自己的，不會被 `| tail` 或之後的 `echo` 蓋掉。包在 `bash -c '...'` 裡的整套測試，只改寫 `-c` 後面那段內容，外層 shell 與它前面的變數設定、選項照舊。包進閘門的那段以 `/bin/sh` 執行，只看得到已 export 的變數。只有登記檔的樣式要整串指令才對得上時，整串包進去。
-- 放行：透過 `suite-gate.py run` 的指令（含 `--rerun`）、指定檔案或篩選範圍的測試、非測試指令。同一串指令裡另有沒包裝的整套測試時仍擋下。
+- 有對照表的專案（登記檔的 `affected.map` 非空）：同樣擋下，但回覆的可直接執行指令是把整套測試那一個指令原地換成 `suite-gate.py affected`，其餘照原樣保留，例如 `cd board && bun test 2>&1 | tail -30` 改為 `cd board && uv run --no-project python <skill>/scripts/suite-gate.py affected 2>&1 | tail -30`。回覆另附整套的寫法：同樣原地改寫成 `run --reason '<why the full suite is needed>' -- '<整套指令>'`，並說明可改用 `--purpose post-merge` 或 `--purpose release`。
+- 放行：透過 `suite-gate.py run` 的指令（含 `--rerun`、`--purpose`、`--reason`）、指定檔案或篩選範圍的測試、非測試指令。同一串指令裡另有沒包裝的整套測試時仍擋下。有對照表的專案中沒帶用途的 `run` 也會被 hook 放行，由 `run` 自己拒絕並回覆 `affected` 指令。
 - Claude 送字串；Codex 送字串或 `["bash", "-lc", "<指令>"]`，兩種都讀。回覆方式兩邊相同。
 - 讀不懂時比照派工把關與廣播攔截寧可多擋，但不讓 Agent 卡死：hook 輸入不是可讀的 JSON 就放行（無從判斷）；指令讀到一半出錯時，只要像測試執行器（pytest、jest、`npm test` 等）且不含 `suite-gate.py` 就擋下。被擋下時照回覆的改寫指令執行一定會放行；被誤擋時同樣改用閘門，或改成指定檔案的寫法。
 - 使用者在終端機自己打的指令不經 hook。
@@ -164,6 +167,35 @@ uv run --no-project python <skill>/scripts/suite-gate.py install --client codex
 - Claude Code 重啟後在 `/hooks` 確認；Codex 重啟後須在 `/hooks` 檢查並信任這個 command，搬動技能或更新 command 後要重新信任。已在執行的 Agent 重啟後才生效。
 
 驗證：在 Agent 內執行一個整套測試指令（例如 `pytest`），應被擋下並收到改寫指令；照改寫指令執行會跑測試，第二次同內容會直接拿到上次結果。
+
+## 推送前把關（pre-push）
+
+有登記檔的 repo 可以裝 Git pre-push 檢查：推送到 `main` 或推送任何標籤時，要求被推送的 commit 在閘門已有 `full_suites` 每一套的可沿用通過紀錄，缺任何一套就擋下推送。只查紀錄、不跑測試；內容相同時沿用，例如整批合併後（`post-merge`）的通過紀錄，發布前推送直接可用。
+
+- 指紋與閘門相同：被推送 commit 的 tree，加上**推送當下工作區**中 `fingerprint_include` 列的檔案，連同該套的指令文字與執行目錄。所以測試後改了 `.env.test` 等檔案會被擋下，照補跑指令重跑後就能推送。登記檔（`full_suites`、`fingerprint_include`）也讀工作區的。
+- 被擋下時列出缺紀錄的參照、commit 與每一套，以及可直接執行的補跑指令：`cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py run --purpose release -- '<整套指令>'`。指令要在那個 commit 的乾淨內容下執行；工作區內容和它不同時會另外提醒（例如先 `git switch --detach <commit>`）。
+- 推送其他分支、刪除遠端參照都不檢查。緊急時 `git push --no-verify` 可略過，屬使用者自行選擇。
+- 登記檔讀不到或 `full_suites` 有誤時一律擋下並說明。
+
+### 安裝與移除
+
+```bash
+uv run --no-project python <skill>/scripts/suite-gate.py install-pre-push --repo <repo> --preview
+uv run --no-project python <skill>/scripts/suite-gate.py install-pre-push --repo <repo>
+uv run --no-project python <skill>/scripts/suite-gate.py uninstall-pre-push --repo <repo>
+```
+
+- 只裝在命令列指定的 repo，而且 repo 根要有登記檔、`full_suites` 正確，否則拒絕。
+- 寫進該 repo 自己的 `<git-common-dir>/hooks/pre-push`（同一 repo 的所有工作區共用）。`--preview` 只印差異。
+- 已有 pre-push 時保留原內容：在第一行（須是 sh、bash 等 shell 的 `#!`）之後插入一段有標記的區塊，原 hook 照樣收到推送的參照；寫入前備份為同目錄的 `pre-push.suite-gate-backup-*`。原 hook 不是 shell 腳本或沒有執行權限時拒絕，請先手動處理。
+- 重跑不重複；技能搬了位置，重跑會就地更新區塊中的路徑。`uninstall-pre-push` 只移除這段區塊；剩下只有 `#!` 一行時刪掉整個檔案。
+- 設了 `core.hooksPath`（例如全主機共用的 hooks 目錄）時，Git 只跑那個目錄裡的 hook。安裝仍只寫 repo 自己的 hooks 目錄、絕不改共用目錄，並提醒：共用目錄的 `pre-push` 要轉交給 repo 自己的 hook，檢查才會執行，例如：
+
+  ```sh
+  local_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"
+  [ -x "$local_hook" ] && exec "$local_hook" "$@"
+  exit 0
+  ```
 
 ## 紀錄與設定位置
 
