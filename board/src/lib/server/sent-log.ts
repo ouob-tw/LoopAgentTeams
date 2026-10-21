@@ -1,6 +1,6 @@
 // The board's sent log: one JSON line per attempt to send a message to a controller, per
 // answer the helper accepted, per attempt to start a new controller, per attempt to wake one and
-// per action on an agent of the 所有 Agent tab, kept in the board's state directory so every logged-in device sees the same history. Lines are only appended; what became
+// per action on an agent of the Herdr 分頁, kept in the board's state directory so every logged-in device sees the same history. Lines are only appended; what became
 // of an answer, a launch or a resume is a later line of its own.
 //
 // The board is the only writer, so the parsed lines are kept per state directory and read again only

@@ -224,7 +224,7 @@ export async function check(board: Board, controllerId: string, confirm = false)
 
 /**
  * Resume the conversation in the Herdr workspace of the controller's project, or in the `prefer`red
- * one while Herdr still lists it (an agent of the 所有 Agent tab). The attempt is in
+ * one while Herdr still lists it (an agent of the Herdr 分頁). The attempt is in
  * the sent log, still open, before hcom runs, and hcom does not run unless it is: a board stopped
  * while hcom starts the client, or a result that cannot be written, leaves it open for the next
  * wake to check. Nothing else would stop that wake from resuming the conversation a second time.

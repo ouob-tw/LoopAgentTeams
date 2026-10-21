@@ -1,5 +1,5 @@
 // Which Herdr workspace a controller's new tab opens in. Only where Herdr's panes are matters,
-// never the agent state Herdr shows for them. The 所有 Agent tab is the exception: it lists every
+// never the agent state Herdr shows for them. The Herdr 分頁 is the exception: it lists every
 // agent Herdr detects, and shows Herdr's state for those hcom does not reach (ADR 0003).
 import { createConnection } from 'node:net';
 import { basename } from 'node:path';

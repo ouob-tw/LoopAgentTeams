@@ -30,7 +30,7 @@ export const COMMAND_DRAFT_KEY = 'lat-board-command-draft';
 /** The same for each agent's own draft, as JSON from agent ID to text. */
 export const AGENT_DRAFTS_KEY = 'lat-board-agent-drafts';
 
-/** Which list the middle column shows: the inbox, or the 所有 Agent tab. */
+/** Which list the middle column shows: the inbox, or the Herdr 分頁. */
 export const MIDDLE_TAB_KEY = 'lat-board-middle-tab';
 
 /** '1' while an information page shows its details (path, Herdr place). */

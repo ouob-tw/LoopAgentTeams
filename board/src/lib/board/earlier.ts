@@ -3,7 +3,7 @@
 import { createRequest, type Request } from './api.ts';
 import type { TranscriptUpdate } from './transcript.ts';
 
-/** Whose conversation: a controller's on its information page, or an agent's on the 所有 Agent tab. */
+/** Whose conversation: a controller's on its information page, or an agent's on the Herdr 分頁. */
 export type TranscriptFeed = 'controller' | 'agent';
 
 /** Where a conversation's pages are read, or with `events` its live feed. */

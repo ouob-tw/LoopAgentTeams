@@ -1,4 +1,4 @@
-// What the user does to an agent on the 所有 Agent tab: the shared shapes of its operation record.
+// What the user does to an agent on the Herdr 分頁: the shared shapes of its operation record.
 import type { Agent, Controller } from './types.ts';
 
 /** What was done: text typed into the agent's input box, its turn interrupted, it closed, its
