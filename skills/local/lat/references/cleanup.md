@@ -1,6 +1,6 @@
 # 清理指令
 
-`.lat` 的舊資料只經這個指令、在使用者確認後刪除。分兩步：先「列出」，主控把清單交給使用者，真人答覆後才「執行」。敏感判定與硬限制寫在 `scripts/_lat_cleanup.py`，之後的自動清理也用同一份規則。
+`.lat` 的舊資料只經這個指令、在使用者確認後刪除。分兩步：先「列出」，主控把清單交給使用者，真人答覆後才「執行」。敏感判定與硬限制寫在 `scripts/_lat_cleanup.py`，[自動清理](#自動清理) 也用同一份規則。
 
 ## 列出
 
@@ -60,3 +60,29 @@ uv run --no-project python "$lat_dir/scripts/lat-clean.py" execute --workspace "
 - active session 依賴的檔案：進度檔、待決目錄、任務卡目錄與其頂層任務卡（`done/` 不在內）、該主控的問題檔與歸檔檔及其鎖、`watch/<session-id>.*`、`watch/<名稱>/`，以及該主控與其頂層任務卡 Agent 的等待紀錄。
 - 開啟中票的資料：任何 `.lat` 的 `runs/`、`progress/`、`evidence/`、`prototypes/`、`handoffs/` 中名稱帶該票號的項目，以及含有這類項目的資料夾；開啟中的票內文或留言提到的路徑、其中的檔案與所在的票資料夾。
 - 有任何 session 紀錄讀不出來時，整次不刪。
+
+## 自動清理
+
+預設關閉。一次性清理執行完、使用者確認的項目都刪除後，寫入開啟標記 `.lat/autoclean-enabled.json`（記下開啟時間與 tracker repo）：
+
+```bash
+uv run --no-project python "$lat_dir/scripts/lat-autoclean.py" enable --workspace "$workspace" \
+  --repo <tracker repo，OWNER/NAME>
+```
+
+- **觸發**：主控 `activate` 成功與 `deactivate` 後自動觸發，在背景執行，不等待、也不讓 activate／deactivate 失敗（無法啟動時只印「自動清理未啟動」）。未開啟時只在 `.lat/cleanup.log` 記一行「未開啟」，不刪任何東西。開啟後同一工作區 24 小時最多執行一次（上次時間記在 `.lat/cleanup.last-run`）；24 小時內或另一次仍在執行時，只記跳過原因。
+- **只清四類**（只看共用 `.lat`；每次重新讀 session 紀錄與 tracker）：
+
+| 類別 | 條件 |
+|---|---|
+| 票資料夾 `runs/issue-<N>/` | tracker 上該票為關閉，且最近一次關閉時間（`closedAt`）滿 40 天；不看檔案時間。票開啟中、已重開、tracker 查不到時不清 |
+| 監控殘留 `watch/<session-id>.log`／`.lock` | 該 session 紀錄已結束且 `ended_at_utc` 滿 40 天 |
+| 監控殘留 `watch/<名稱>/` | 該名稱沒有 active session，同名每筆紀錄都有結束時間，且最近一筆滿 40 天 |
+| 已完成任務卡 `tasks/done/*.md` | 卡片檔本身最後修改滿 40 天 |
+| 等待紀錄 `watch/waits/<Agent>.json` 與其鎖檔 | 檔案本身最後修改滿 40 天，且該 Agent 不是 active 主控或其頂層任務卡的 Agent；鎖檔也要滿 40 天 |
+
+- 沒有結束時間的舊 session（含 `completed`／`cancelled`）、沒有 session 紀錄的監控檔、`runs/misc-*`、`progress/`、根目錄舊問題檔與其他舊資料不自動清，由上方清理指令列給使用者。
+- 每項刪除前仍經上方 [硬限制](#硬限制) 核對，刪除方式依 [敏感判定](#敏感判定)。`gh` 查詢失敗或標記沒有 repo 時只跳過票資料夾這一類，其他三類照清。
+- **紀錄**：`.lat/cleanup.log` 一行一筆，以 tab 分隔：時間（UTC）、類別、相對 `.lat` 的路徑、大小（bytes）、刪除方式（`trash`／`shred`）或「跳過：原因」。票資料夾與監控殘留中未達條件的項目也寫原因；未滿 40 天的任務卡與等待紀錄不寫。
+- **預覽**：`run --workspace "$workspace" --repo <repo> --dry-run` 印出一次執行會刪什麼，未開啟時也能用；不刪、不寫紀錄。
+- **關閉**：以 trash-put 移除開啟標記即可。

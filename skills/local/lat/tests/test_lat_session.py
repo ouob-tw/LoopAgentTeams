@@ -1696,6 +1696,24 @@ class SessionTests(unittest.TestCase):
         self.assertNotIn('ended_at_utc', current)
         self.assertEqual(current['history'][0]['ended_at_utc'], ended['ended_at_utc'])
 
+    def test_activate_and_deactivate_trigger_autoclean_and_never_fail_on_it(self):
+        log = self.work / '.lat/cleanup.log'
+        self.activate()
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        self.assertEqual([line.split('\t')[4] for line in log.read_text().splitlines()],
+                         ['未開啟'] * 2)
+
+        log.unlink()
+        log.mkdir()
+        started = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                           '--decisions', self.decisions)
+        self.assertEqual(started.returncode, 0, started.stderr)
+        self.assertIn('自動清理未啟動', started.stdout)
+        ended = self.cli('deactivate', '--workspace', self.work)
+        self.assertEqual(ended.returncode, 0, ended.stderr)
+        self.assertIn('自動清理未啟動', ended.stdout)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'ended')
+
     def test_hook_recovers_legacy_record_without_starting_watcher(self):
         self.write_legacy_record()
         expected_command = (
