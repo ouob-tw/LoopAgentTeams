@@ -155,14 +155,16 @@ class GateCase(unittest.TestCase):
         empty.mkdir()
         self.env['SUITE_GATE_CGROUP_ROOT'] = str(empty)
 
-    def scopes_that_fall_back(self):
-        """Make the gate see cgroup v2 and systemd-run, but have every scope fail to start, so
-        a queued suite expects a scope and the started suite falls back to a session."""
+    def scopes_that_fall_back(self, probe_starts=True):
+        """Make the gate see cgroup v2 and systemd-run, but have every suite's scope fail to
+        start, so the started suite falls back to a session. With probe_starts the empty probe
+        scope (`... true`) starts, so the queued suite still expects a scope."""
         root, fake_bin = self.tmp / 'cgroup', self.tmp / 'scope-bin'
         root.mkdir()
         (root / 'cgroup.controllers').write_text('cpu memory pids\n')
         fake_bin.mkdir()
-        (fake_bin / 'systemd-run').write_text('#!/bin/sh\necho no user bus >&2\nexit 1\n')
+        probe = 'for last; do :; done; [ "$last" = true ] && exit 0\n' if probe_starts else ''
+        (fake_bin / 'systemd-run').write_text(f'#!/bin/sh\n{probe}echo no user bus >&2\nexit 1\n')
         (fake_bin / 'systemd-run').chmod(0o755)
         self.env['SUITE_GATE_CGROUP_ROOT'] = str(root)
         self.env['PATH'] = f'{fake_bin}:{os.environ["PATH"]}'
@@ -1218,6 +1220,9 @@ class ReservationTests(GateCase):
             {'cpu_cores': 2.5, 'mem_bytes': GIB, 'source': 'measured'}],
             message='profile_history reread')
         self.set_config(min_slots=1, max_slots=1)
+        self.wait_until(lambda: self.reservations()[1] == [
+            {'cpu_cores': 5.5, 'mem_bytes': 3 * GIB, 'source': 'measured'}],
+            message='profile_history back to 5')
         # Another run of the same command finishes while this one waits; no config change.
         self.write_ledger([{'profile_key': key, 'profile': {
             'cpu_peak_cores': 12.0, 'mem_peak_bytes': 6 * GIB, 'fallback': False}}], mode='a')
@@ -1249,6 +1254,19 @@ class ReservationTests(GateCase):
         release.touch()
         self.assertEqual(self.finish(queued)[0], 0)
         self.finish(hold)
+
+    def test_without_a_user_service_the_default_is_reserved_before_admission(self):
+        self.scopes_that_fall_back(probe_starts=False)
+        self.fake_host(cores=16, idle=0.5)  # 8 idle cores: 12 measured do not fit, 4 do
+        command = self.suite()
+        key = gate.fingerprint(self.repo, [command])['profile_key']
+        self.write_ledger([{'profile_key': key, 'profile': {
+            'cpu_peak_cores': 12.0, 'mem_peak_bytes': GIB, 'fallback': False}}])
+        self.set_config(min_slots=0, max_slots=8)
+        result = self.gate('run', '--', command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('running the suite in a new session instead', result.stderr)
+        self.assertEqual(self.runs(), 1)
 
 
 class CutoverTests(GateCase):

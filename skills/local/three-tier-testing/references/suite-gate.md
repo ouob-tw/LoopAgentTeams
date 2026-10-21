@@ -34,7 +34,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
    - 閘門被強制殺掉而測試還在跑：名額與指紋鎖繼續被佔用，直到群組內的程序全部結束。
    - 測試正常結束後群組內仍有程序：印出警告列出這些程序（PID 與指令），紀錄的 `profile.leftover_processes` 記下數量；閘門不殺它們，名額與鎖照常釋放。
    - 群組在閘門讀完最終用量前不會被回收（閘門在群組內留一個等待程序，讀完才讓它結束）。
-4. 主機沒有 cgroup v2 或 systemd 使用者服務（例如沒有 `XDG_RUNTIME_DIR`、連不上使用者 bus）時，印出警告並退回舊做法：測試在新工作階段中執行，名額以這個工作階段是否還有程序判斷，另開新工作階段的程序不計入，也不量用量（`profile.fallback` 為 `true`），預約量一律用預設值（排隊時就看不到 cgroup v2 或 `systemd-run` 的，排隊時也用預設值；排隊時看得到、開跑時才退回的，開跑後改回預設值）。
+4. 主機沒有 cgroup v2 或 systemd 使用者服務（例如沒有 `XDG_RUNTIME_DIR`、連不上使用者 bus）時，印出警告並退回舊做法：測試在新工作階段中執行，名額以這個工作階段是否還有程序判斷，另開新工作階段的程序不計入，也不量用量（`profile.fallback` 為 `true`），預約量一律用預設值：排隊前閘門先試開一個空的使用者 scope（`systemd-run --user --scope ... true`，名稱 `suite-gate-probe-<編號>`），開不起來就從排隊起用預設值；試開成功、開跑時才退回的，開跑後改回預設值。
 
 ### 放行計算
 

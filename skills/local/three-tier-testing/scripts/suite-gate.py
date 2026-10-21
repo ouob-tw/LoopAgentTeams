@@ -1047,6 +1047,7 @@ class Gate:
         self.finished = False  # the suite exited by itself
         self.key = None  # what its measured usage is filed under
         self.measured = None  # ((profile_history, ledger version), reservation) for self.key
+        self.scopes = None  # whether an empty user scope started, probed once before queueing
         self.me = {'id': uuid.uuid4().hex, 'pid': os.getpid(),
                    'start': proc_stat(os.getpid())[2], 'sid': None, 'cgroup': None,
                    'agent': agent_name(), 'command': self.command, 'cwd': str(cwd),
@@ -1090,7 +1091,7 @@ class Gate:
         """The measured reservation for this suite's command, read again when the ledger or
         profile_history changes; None means the configured default, which is also what a
         suite that will run without a scope (fallback) reserves."""
-        if not (cgroup_v2() and shutil.which('systemd-run')):
+        if not self.scopes:
             return None
         try:
             stat = (state_dir() / 'ledger.jsonl').stat()
@@ -1102,9 +1103,27 @@ class Gate:
             self.measured = (seen, measured_reservation(self.key, seen[0]))
         return self.measured[1]
 
+    def probe_scopes(self):
+        """Whether a systemd user scope starts here: an empty one is tried once, outside the
+        state lock, so a suite that will fall back to a session queues with the default."""
+        if self.scopes is None:
+            self.scopes = bool(cgroup_v2() and shutil.which('systemd-run'))
+            if self.scopes:
+                prefix = os.environ.get('SUITE_GATE_UNIT_PREFIX') or 'suite-gate'
+                try:
+                    self.scopes = subprocess.run(
+                        ['systemd-run', '--user', '--scope', '--quiet', '--collect',
+                         f"--unit={prefix}-probe-{self.me['id'][:12]}", 'true'],
+                        capture_output=True, timeout=30).returncode == 0
+                except (OSError, subprocess.TimeoutExpired):
+                    self.scopes = False
+        return self.scopes
+
     def acquire_slot(self):
         """Queue first come, first served; only the first in the queue may start, when
         admission() lets it. Every other waiter records why it waits."""
+        self.probe_scopes()
+
         def attempt(state):
             mine = next((w for w in state['waiters'] if w['id'] == self.me['id']
                          and w.get('kind') == 'slot'), None)
