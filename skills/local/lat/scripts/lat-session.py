@@ -393,10 +393,15 @@ def release_own_wait(workspace, name):
         if original is None:
             return
         declaration = json.loads(original)
-        if not isinstance(declaration, dict) or not declaration.get('active', True):
+        if not isinstance(declaration, dict) or not (
+                declaration.get('active', True) or declaration.get('expiry_nudge_pending')
+                or declaration.get('expiry_notice')):
             return
+        # Also drop an expiry nudge or notice still queued for delivery, as a normal release does.
+        declaration.pop('expiry_notice', None)
         declaration.update(active=False, released_reason='deactivated',
                            released_at_utc=datetime.now(timezone.utc).isoformat(),
+                           expiry_count=0, expiry_declared_at=[], expiry_notified=False,
                            expiry_nudge_pending=False)
         write_json_atomic(path, declaration, expected=original)
 

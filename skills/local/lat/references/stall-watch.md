@@ -1,6 +1,6 @@
 # 停住監控
 
-主控 activate 時，`lat-session.py` 自動在背景啟動 `scripts/lat-watch.py run`；deactivate 停止它，並解除主控自己仍有效的等待聲明（記為 `deactivated`），之後重新 activate 不會再收到舊等待的到期催促；compact／resume 發現它不在時重新啟動（見 [主控恢復程序](recovery.md)）。每個主控一支，每分鐘檢查一次。以下 `$lat_dir`、`$workspace`、`$tasks` 是主控 activate 時用的 LAT 技能目錄、工作區根目錄與任務卡目錄絕對路徑。
+主控 activate 時，`lat-session.py` 自動在背景啟動 `scripts/lat-watch.py run`；deactivate 停止它，並解除主控自己的等待聲明（記為 `deactivated`），連同已到期但還沒送出的催促與通知一起清掉，之後重新 activate 不會再收到舊等待的到期催促；compact／resume 發現它不在時重新啟動（見 [主控恢復程序](recovery.md)）。每個主控一支，每分鐘檢查一次。以下 `$lat_dir`、`$workspace`、`$tasks` 是主控 activate 時用的 LAT 技能目錄、工作區根目錄與任務卡目錄絕對路徑。
 
 ## 技能文字更新通知
 
@@ -92,7 +92,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 
 ## 等待期限與連續到期
 
-等待 Agent 預設 50 分鐘，短於 Claude 一小時的提示快取，醒來時快取還在；可在 `wait` 加上 `--minutes 1..720` 指定分鐘數。決策等待沒有期限，指定 `--minutes` 會被拒絕。`--for` 的 Agent 名稱依清單解析成完整名稱；解析後是自己時拒絕，保留原聲明，提示改用 `alarm`。
+等待 Agent 預設 50 分鐘，短於 Claude 一小時的提示快取，多數情況醒來時快取還在；下方的延長（最多到 80 分鐘）或等待者自己忙碌而晚送催促時，仍可能超過一小時；可在 `wait` 加上 `--minutes 1..720` 指定分鐘數。決策等待沒有期限，指定 `--minutes` 會被拒絕。`--for` 的 Agent 名稱依清單解析成完整名稱；解析後是自己時拒絕，保留原聲明，提示改用 `alarm`。
 
 期限到時，被等的 Agent 必須同屬這支監控的對象，而且最近 20 分鐘有進展或前景仍在執行指令，才延長到下一輪判斷；只有背景程序在跑、或它自己處於有效等待，都不算有進展。延長最多到原期限後 30 分鐘，之後不論對方狀態都到期。每筆聲明只記錄第一次延長。否則聲明立刻失效，原因為 `expired`，監控在等待者視窗輸入 `[lat-watch] ` 催促，寫明對象、已等多久，請它查看對方狀態後繼續工作或重新聲明。與鬧鐘共用「回合已結束、視窗就緒且輸入框為空」的判斷；視窗忙碌或輸入框有字時下一輪再試，回合結束後殘留的背景程序不阻擋催促。送達後回到原有停住處理。
 
