@@ -303,11 +303,16 @@ def linked_tickets(path, repo_root, issues):
 
 def tracker_texts(repo):
     """Every ticket as (number, state, body and comments); raises ValueError when gh fails."""
+    return issue_texts(tracker_issues(repo, ('number', 'state', 'body', 'comments')))
+
+
+def issue_texts(issues):
+    """`gh issue list` items with body and comments as (number, state, joined text)."""
     try:
         return [(issue['number'], issue['state'],
                  '\n'.join([issue.get('body') or '',
                             *((comment.get('body') or '') for comment in issue.get('comments') or [])]))
-                for issue in tracker_issues(repo, ('number', 'state', 'body', 'comments'))]
+                for issue in issues]
     except (KeyError, TypeError, AttributeError) as error:
         raise ValueError(f'gh issue list returned unexpected data: {error!r}') from error
 

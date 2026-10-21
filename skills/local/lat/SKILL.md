@@ -22,7 +22,7 @@ LAT 管理角色、階段轉換與交接；各階段的做法交給對應 Matt s
 - **壓縮或接回先恢復**：收到恢復提示或發現規則不完整時，先依「主控恢復」完整重讀規則、進度與待決紀錄，再做任何相依動作。
 - **使用者訊息加標籤**：對使用者的每則訊息最後一行以 `DECIDE: `、`HELP: `、`DONE: ` 或 `NO REPLY: ` 開頭，用法見「使用者訊息格式」。
 
-啟動時讀取專案 `AGENTS.md`／`CLAUDE.md` 與 `docs/agents/issue-tracker.md`（由 /setup-matt-pocock-skills 設定），依配置的 issue tracker 讀寫 Spec 與 Tickets。尚未設定時，若專案 repo 是公開的，建議另建私人 `<repo>-work` repo 存放 issues，避免交接與證據中的內網位址、本機路徑或帳號資訊公開。證據、交接／未解事項及學習說明分開保存：票的證據與草稿放 `.lat/runs/issue-<N>/`（見 [任務卡](references/task-cards.md#票資料位置)），其餘位置依專案設定；交接與未解事項建立 tracker issues，決策依下方「交接」規則保存。`.lat` 的舊資料只經 [清理指令](references/cleanup.md) 刪除：主控以待決題把清單交給使用者，真人答覆後才執行。
+啟動時讀取專案 `AGENTS.md`／`CLAUDE.md` 與 `docs/agents/issue-tracker.md`（由 /setup-matt-pocock-skills 設定），依配置的 issue tracker 讀寫 Spec 與 Tickets。尚未設定時，若專案 repo 是公開的，建議另建私人 `<repo>-work` repo 存放 issues，避免交接與證據中的內網位址、本機路徑或帳號資訊公開。證據、交接／未解事項及學習說明分開保存：票的證據與草稿放 `.lat/runs/issue-<N>/`（見 [任務卡](references/task-cards.md#票資料位置)），其餘位置依專案設定；交接與未解事項建立 tracker issues，決策依下方「交接」規則保存。`.lat` 的舊資料只經 [清理指令](references/cleanup.md) 刪除：主控以待決題把清單交給使用者，真人答覆後才執行；一次性清理完成後開啟的 [自動清理](references/cleanup.md#自動清理) 只清四類滿 40 天的資料。
 
 ## 主控恢復
 

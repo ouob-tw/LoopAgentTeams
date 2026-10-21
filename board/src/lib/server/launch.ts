@@ -33,7 +33,7 @@ import { boundOf, readLaunches } from './sent-views.ts';
 const LISTED_LAUNCHES = 20;
 
 /** The folders controllers have run in, each once, the most recently reported first. */
-export async function listProjects(board: Board): Promise<Project[]> {
+async function listProjects(board: Board): Promise<Project[]> {
 	const latest = new Map<string, string>();
 	for (const file of (await board.sources()).reportFiles) {
 		for (const report of file.reports) {

@@ -32,6 +32,7 @@ MATCHER = '^(compact|resume)$'
 # Pre-rename installs used codex-lat-session.py; recognize them so install/uninstall migrate.
 COMMAND_NAMES = ('lat-session.py', 'codex-lat-session.py')
 WATCH_SCRIPT = SKILL_DIR / 'scripts/lat-watch.py'
+AUTOCLEAN_SCRIPT = SKILL_DIR / 'scripts/lat-autoclean.py'
 HCOM_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
 # Older records stored 'completed' or 'cancelled'; all three mean the round ended.
 ENDED = ('ended', 'completed', 'cancelled')
@@ -381,6 +382,18 @@ def activate(args):
         print('面板未啟用，略過綁定')
     if ensure_watcher(record, path) is None:
         raise ValueError('Session was deactivated while starting its watcher')
+    start_autoclean(workspace)
+
+
+def start_autoclean(workspace):
+    """Hand off to automatic cleanup, which logs and returns at once; it never fails the caller."""
+    try:
+        spec = importlib.util.spec_from_file_location('lat_autoclean', AUTOCLEAN_SCRIPT)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        module.trigger(workspace)
+    except Exception as error:  # noqa: BLE001 - cleanup must never block a round starting or ending
+        print(f'自動清理未啟動：{error}')
 
 
 def pointer(path, record):
@@ -483,6 +496,7 @@ def deactivate(args):
         write_json_atomic(path, record, expected=original)
     print(path)
     print(json.dumps({'removed': removed}))
+    start_autoclean(workspace)
 
 
 def duty_path(sid):

@@ -286,7 +286,7 @@ export async function resume(board: Board, controller: Pick<Controller, 'workspa
 
 /** How long after hcom's run a model switch's resumed client may take to run in Herdr. Herdr
  *  spots a client within a second of its start; one not running by then has exited. */
-export const RESUME_RUN_GRACE_MS = 15_000;
+const RESUME_RUN_GRACE_MS = 15_000;
 
 /**
  * Where an open resume of a model switch stands: `succeeded` once hcom lists its session and Herdr
@@ -295,7 +295,7 @@ export const RESUME_RUN_GRACE_MS = 15_000;
  * hcom's run, or by the end of the wait; `wait` otherwise, and while Herdr's list (`herdr`, null)
  * was not read.
  */
-export function switchResumeVerdict(
+function switchResumeVerdict(
 	wake: WakeView,
 	agents: HcomAgent[],
 	herdr: HerdrAgent[] | null,

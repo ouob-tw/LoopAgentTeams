@@ -92,7 +92,7 @@ export function createFolder(path: string): string | null {
 }
 
 /** How an absolute, normalized folder stands now. */
-export function folderTarget(path: string): FolderTarget {
+function folderTarget(path: string): FolderTarget {
 	try {
 		const folder = statSync(path).isDirectory();
 		return { state: folder ? 'folder' : 'not-folder', git: folder && inGit(path), cannotCreate: null };

@@ -29,8 +29,8 @@ export function codexMultiAuthDir(env: Env = process.env): string {
 	return join(env.CODEX_HOME?.trim() || join(homedir(), '.codex'), 'multi-auth');
 }
 
-export const CODEX_ACCOUNTS_FILE = 'openai-codex-accounts.json';
-export const CODEX_QUOTA_FILE = 'quota-cache.json';
+const CODEX_ACCOUNTS_FILE = 'openai-codex-accounts.json';
+const CODEX_QUOTA_FILE = 'quota-cache.json';
 
 /** A window's name by its length; codex-multi-auth names none. */
 function windowLabel(minutes: number | null, fallback: string): string {
@@ -205,7 +205,7 @@ export function parseClaudeList(stdout: string, code: number | null, timedOut: b
 	};
 }
 
-export const CLAUDE_LIST_ARGS = ['list', '--json', '--cached-only'];
+const CLAUDE_LIST_ARGS = ['list', '--json', '--cached-only'];
 
 export async function readClaudeQuota(command: string[], timeoutMs: number): Promise<QuotaGroup> {
 	const result = await runCommand(command, CLAUDE_LIST_ARGS, { timeoutMs });
@@ -213,12 +213,12 @@ export async function readClaudeQuota(command: string[], timeoutMs: number): Pro
 	return parseClaudeList(result.stdout, result.code, result.timedOut);
 }
 
-export interface QuotaSources {
+interface QuotaSources {
 	claude(): Promise<QuotaGroup>;
 	codex(): Promise<QuotaGroup>;
 }
 
-export interface QuotaPoller {
+interface QuotaPoller {
 	/** The last reading; null until the first one is done. */
 	current(): QuotaSnapshot | null;
 	close(): void;
