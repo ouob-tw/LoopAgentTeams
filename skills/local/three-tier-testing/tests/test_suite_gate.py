@@ -20,6 +20,25 @@ def load():
 
 
 gate = load()
+BASE_COMMIT = 'f61eb8d'  # the last suite-gate.py before suites ran in scopes
+
+
+def scope_unavailable():
+    """Why this host cannot run suites in systemd user scopes, or None when it can."""
+    if not Path('/sys/fs/cgroup/cgroup.controllers').is_file():
+        return 'cgroup v2 is not mounted at /sys/fs/cgroup'
+    try:
+        probe = subprocess.run(['systemd-run', '--user', '--scope', '--quiet', '--collect',
+                                f'--unit=suite-gate-test-probe-{os.getpid()}', 'true'],
+                               capture_output=True, text=True, timeout=30)
+    except FileNotFoundError:
+        return 'systemd-run is not installed'
+    if probe.returncode != 0:
+        return f'no systemd user scope: {probe.stderr.strip()}'
+    return None
+
+
+SCOPE_SKIP = scope_unavailable()
 
 
 def replace(path, text):
@@ -47,6 +66,11 @@ class GateCase(unittest.TestCase):
                         HCOM_TAG='t', GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t',
                         GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@t')
         self.env.pop('CLAUDE_CODE_SESSION_ID', None)
+        # Scopes this test starts share its unique prefix; whatever is left of them is killed.
+        self.env['SUITE_GATE_UNIT_PREFIX'] = self.tmp.name
+        if not SCOPE_SKIP:
+            self.addCleanup(subprocess.run, ['systemctl', '--user', 'kill', '--signal=KILL',
+                                             f'{self.tmp.name}-*.scope'], capture_output=True)
         self.repo = self.tmp / 'repo'
         self.repo.mkdir()
         git(self.repo, 'init', '-q', '-b', 'main')
@@ -60,7 +84,8 @@ class GateCase(unittest.TestCase):
 
     def set_config(self, **values):
         self.config.write_text(json.dumps(
-            dict({'poll_seconds': 0.05, 'report_seconds': 0.2}, **values)))
+            dict({'poll_seconds': 0.05, 'report_seconds': 0.2, 'sample_seconds': 0.1},
+                 **values)))
 
     def commit(self, cwd, message):
         subprocess.run(['git', 'commit', '-qm', message], cwd=cwd, check=True,
@@ -120,6 +145,16 @@ class GateCase(unittest.TestCase):
         proc = self.start('run', '--', f'while [ ! -f {release} ]; do sleep 0.05; done',
                           cwd=directory)
         return proc, release
+
+    def without_scopes(self):
+        """Make the gate see no cgroup v2, so suites run in a plain new session."""
+        empty = self.tmp / 'no-cgroup'
+        empty.mkdir()
+        self.env['SUITE_GATE_CGROUP_ROOT'] = str(empty)
+
+    def alive(self, pid):
+        stat = gate.proc_stat(pid)
+        return stat is not None and stat[0] != 'Z'
 
 
 class RunAndReuseTests(GateCase):
@@ -394,7 +429,8 @@ class SessionTests(GateCase):
         self.assertEqual(self.records(), [])
         self.assertEqual(self.status()['running'], [])
 
-    def test_lock_and_slot_stay_held_while_a_finished_suite_leaves_processes(self):
+    def test_without_scopes_a_finished_suite_holds_while_its_session_leaves_processes(self):
+        self.without_scopes()
         pidfile = self.tmp / 'left.pid'
         self.kill_session_later(pidfile)
         command = f'sleep 60 <&- >&- 2>&- & echo $! > {pidfile}; exit 1'
@@ -409,7 +445,7 @@ class SessionTests(GateCase):
             'import importlib.util, os, signal, sys\n'
             f'spec = importlib.util.spec_from_file_location("g", {str(SCRIPT)!r})\n'
             'g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)\n'
-            'g.Gate.set_session = lambda self, sid: os.kill(os.getpid(), signal.SIGKILL)\n'
+            'g.Gate.set_session = lambda self, *a: os.kill(os.getpid(), signal.SIGKILL)\n'
             'g.main(sys.argv[1:])\n')
         result = subprocess.run([sys.executable, '-c', snippet, 'run', '--', self.suite()],
                                 cwd=self.repo, env=self.env, capture_output=True, timeout=60)
@@ -449,6 +485,287 @@ class SessionTests(GateCase):
         self.assertEqual(self.finish(waiting)[0], 0)
         self.assertEqual(self.records()[-1]['fingerprint'], None)
         self.assertEqual(len(self.records()), 1, 'the killed run writes no record')
+
+
+@unittest.skipIf(SCOPE_SKIP, f'needs systemd user scopes: {SCOPE_SKIP}')
+class ScopeTests(GateCase):
+    """Suites in real systemd user scopes (cgroup v2)."""
+
+    def sleeper(self, name, ignore_term=False):
+        """Shell text that starts one process in a new session and writes its pid to a file
+        (an ignored TERM stays ignored across exec)."""
+        pidfile = self.tmp / f'{name}.pid'
+        trap = 'trap "" TERM; ' if ignore_term else ''
+        return pidfile, (f"setsid sh -c '{trap}echo $$ > {pidfile}; exec sleep 60' "
+                         f"</dev/null >/dev/null 2>&1 &")
+
+    def test_each_suite_runs_in_its_own_scope_and_records_its_profile(self):
+        groups = []
+        for n in range(2):
+            seen = self.tmp / f'cgroup-{n}'
+            result = self.gate('run', '--rerun', 'again', '--',
+                               f'cut -d: -f3 /proc/self/cgroup > {seen}; sleep 0.3')
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertNotIn('new session', result.stderr)
+            groups.append(seen.read_text().strip())
+        self.assertNotEqual(groups[0], groups[1])
+        for group in groups:
+            self.assertTrue(group.endswith('.scope') and self.tmp.name in group, group)
+        profile = self.records()[-1]['profile']
+        self.assertEqual(set(profile), {'cpu_peak_cores', 'cpu_avg_cores', 'cpu_seconds',
+                                        'mem_peak_bytes', 'sample_seconds', 'fallback',
+                                        'leftover_processes'})
+        self.assertEqual((profile['fallback'], profile['leftover_processes'],
+                          profile['sample_seconds']), (False, 0, 0.1))
+        for field in ('cpu_peak_cores', 'cpu_avg_cores', 'cpu_seconds'):
+            self.assertIsInstance(profile[field], float, field)
+        self.assertGreater(profile['mem_peak_bytes'], 0)
+
+    def test_the_holder_records_the_group_and_the_main_session(self):
+        seen = self.tmp / 'seen'
+        release = self.tmp / 'release'
+        proc = self.start('run', '--', f'cut -d: -f3 /proc/self/cgroup > {seen}; echo $$ >> {seen}; '
+                                       f'while [ ! -f {release} ]; do sleep 0.05; done')
+        self.wait_until(lambda: len(seen.read_text().split()) == 2 if seen.exists() else False,
+                        message='suite started')
+        group, pid = seen.read_text().split()
+        [holder] = self.status()['running']
+        self.assertEqual((holder['cgroup'], holder['sid']), (group, int(pid)))
+        [lock] = self.status()['locks'].values()
+        self.assertEqual((lock['cgroup'], lock['sid']), (group, int(pid)))
+        release.touch()
+        self.assertEqual(self.finish(proc)[0], 0)
+
+    def test_a_suite_shorter_than_the_interval_and_a_late_memory_peak_are_measured(self):
+        self.set_config(sample_seconds=30)
+        # About 0.3 s of CPU on one core, then 200 MiB touched right before the suite exits.
+        script = ('import os, time\n'
+                  'os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})\n'
+                  'end = time.process_time() + 0.3\n'
+                  'while time.process_time() < end: pass\n'
+                  'block = bytearray(200 * 2**20)\n')
+        (self.tmp / 'load.py').write_text(script)
+        result = self.gate('run', '--', f'{sys.executable} {self.tmp / "load.py"}')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        profile = self.records()[-1]['profile']
+        self.assertGreaterEqual(profile['mem_peak_bytes'], 200 * 2**20)
+        self.assertGreaterEqual(profile['cpu_seconds'], 0.3)
+        self.assertGreater(profile['cpu_peak_cores'], 0.2)
+        self.assertEqual(profile['sample_seconds'], 30)
+
+    def test_cpu_used_right_after_the_start_counts_toward_the_peak(self):
+        self.set_config(sample_seconds=30)
+        script = ('import os, time\n'
+                  'os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})\n'
+                  'end = time.process_time() + 0.3\n'
+                  'while time.process_time() < end: pass\n')
+        (self.tmp / 'load.py').write_text(script)
+        # A gate that stalls just before taking its CPU baseline must still count the suite's
+        # first second.
+        snippet = (
+            'import importlib.util, sys, time\n'
+            f'spec = importlib.util.spec_from_file_location("g", {str(SCRIPT)!r})\n'
+            'g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)\n'
+            'init = g.Sampler.__init__\n'
+            'def slow(self, *a):\n'
+            '    time.sleep(1)\n'
+            '    init(self, *a)\n'
+            'g.Sampler.__init__ = slow\n'
+            'sys.exit(g.main(sys.argv[1:]))\n')
+        result = subprocess.run([sys.executable, '-c', snippet, 'run', '--',
+                                 f'{sys.executable} {self.tmp / "load.py"}'], cwd=self.repo,
+                                env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        profile = self.records()[-1]['profile']
+        self.assertGreaterEqual(profile['cpu_seconds'], 0.3)
+        self.assertGreater(profile['cpu_peak_cores'], 0.2)
+
+    def test_status_shows_current_usage_of_running_suites(self):
+        release = self.tmp / 'release'
+        proc = self.start('run', '--', f'while [ ! -f {release} ]; do sleep 0.05; done')
+        self.wait_until(lambda: any((h.get('sample') or {}).get('cpu_cores') is not None
+                                    for h in self.status()['running']), message='a sample')
+        [holder] = self.status()['running']
+        self.assertIsInstance(holder['usage']['cpu_cores'], float)
+        self.assertGreater(holder['usage']['mem_bytes'], 0)
+        text = self.gate('status').stdout
+        self.assertRegex(text, r'cpu \d+\.\d cores, mem \d+\.\d (KiB|MiB)')
+        release.touch()
+        self.assertEqual(self.finish(proc)[0], 0)
+
+    def test_a_new_session_keeps_the_slot_after_the_gate_is_killed(self):
+        self.set_config(max_slots=1)
+        pidfile, start = self.sleeper('detached')
+        proc = self.start('run', '--', f'{start} while :; do sleep 0.1; done')
+        self.wait_until(pidfile.exists, message='detached process started')
+        detached = int(pidfile.read_text())
+        proc.kill()
+        proc.wait()
+        [holder] = self.status()['running']
+        self.assertIsNone(holder['usage']['cpu_cores'], 'no gate samples it any more')
+        self.assertGreater(holder['usage']['mem_bytes'], 0)
+        os.killpg(holder['sid'], signal.SIGKILL)  # only the other session is left
+        self.wait_until(lambda: gate.session_pids(holder['sid']) == [], message='session gone')
+        self.assertTrue(self.alive(detached))
+        self.assertIn('its group still has processes', self.gate('status').stdout)
+
+        waiting, release = self.blocker('next')
+        release.touch()
+        self.wait_until(lambda: len(self.status()['waiting']) == 1, message='next queued')
+        time.sleep(0.3)
+        self.assertIsNone(waiting.poll(), 'the slot must stay taken')
+        self.assertEqual(len(self.status()['locks']), 1)
+        os.kill(detached, signal.SIGKILL)
+        self.assertEqual(self.finish(waiting)[0], 0)
+        self.assertEqual(self.status()['locks'], {})
+        self.assertEqual(len(self.records()), 1, 'the killed run writes no record')
+
+    def test_interrupt_ends_the_whole_group_with_new_sessions_and_writes_no_record(self):
+        stubborn, start_stubborn = self.sleeper('stubborn', ignore_term=True)
+        polite, start_polite = self.sleeper('polite')
+        proc = self.start('run', '--', f'{start_stubborn} {start_polite} '
+                                       f'while :; do sleep 0.1; done')
+        self.wait_until(lambda: stubborn.exists() and polite.exists(), message='both started')
+        pids = [int(stubborn.read_text()), int(polite.read_text())]
+        sent = time.monotonic()
+        proc.send_signal(signal.SIGINT)
+        code, _, err = self.finish(proc)
+        self.assertGreaterEqual(time.monotonic() - sent, gate.KILL_GRACE_SECONDS,
+                                'the stubborn process outlives SIGTERM until the group is killed')
+        self.assertEqual(code, 128 + signal.SIGINT)
+        self.assertIn('interrupted', err)
+        for pid in pids:
+            self.assertFalse(self.alive(pid), pid)
+        self.assertEqual(self.records(), [])
+        status = self.status()
+        self.assertEqual((status['running'], status['locks']), ([], {}))
+
+    def test_processes_left_after_a_normal_end_are_listed_recorded_kept_and_free_the_slot(self):
+        pidfile, start = self.sleeper('left')
+        result = self.gate('run', '--', f'{start} while [ ! -s {pidfile} ]; do sleep 0.05; done')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        left = int(pidfile.read_text())
+        self.assertIn('left 1 process(es) running in its group', result.stderr)
+        self.assertIn(f'  {left} sleep 60', result.stderr)
+        self.assertEqual(self.records()[-1]['profile']['leftover_processes'], 1)
+        self.assertTrue(self.alive(left), 'the gate must not stop it')
+        status = self.status()
+        self.assertEqual((status['running'], status['locks']), ([], {}))
+
+    def test_without_a_user_service_the_suite_falls_back_to_a_session(self):
+        for var in ('XDG_RUNTIME_DIR', 'DBUS_SESSION_BUS_ADDRESS'):
+            self.env.pop(var, None)
+        result = self.gate('run', '--', self.suite())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('could not start a systemd user scope', result.stderr)
+        self.assertIn('running the suite in a new session instead', result.stderr)
+        self.assertTrue(self.records()[-1]['profile']['fallback'])
+        self.assertEqual(self.runs(), 1)
+
+
+class FallbackTests(GateCase):
+    def test_without_cgroup_v2_the_suite_runs_in_a_session_and_is_not_measured(self):
+        self.without_scopes()
+        release = self.tmp / 'release'
+        proc = self.start('run', '--', f'echo run >> {self.counter}; '
+                                       f'while [ ! -f {release} ]; do sleep 0.05; done')
+        self.wait_until(lambda: self.runs() == 1, message='suite started')
+        [holder] = self.status()['running']
+        self.assertIsNone(holder['cgroup'])
+        self.assertIsInstance(holder['sid'], int)
+        self.assertEqual(holder['usage'], {'cpu_cores': None, 'mem_bytes': None})
+        release.touch()
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 0)
+        self.assertIn('cgroup v2 is not mounted', err)
+        self.assertIn('running the suite in a new session instead', err)
+        self.assertEqual(self.records()[-1]['profile'], {
+            'cpu_peak_cores': None, 'cpu_avg_cores': None, 'cpu_seconds': None,
+            'mem_peak_bytes': None, 'sample_seconds': None, 'fallback': True,
+            'leftover_processes': None})
+
+
+class CompatibilityTests(GateCase):
+    """Holders written by the previous suite-gate.py, and that version reading ours."""
+
+    def old_holder(self, sid):
+        """A holder in the previous format whose gate is gone (its start time differs)."""
+        return {'id': f'old-{sid}', 'pid': os.getpid(), 'start': 0, 'sid': sid, 'agent': 'old',
+                'command': 'old suite', 'cwd': str(self.tmp), 'fingerprint': None,
+                'since': time.time()}
+
+    def test_a_holder_without_a_group_is_alive_while_its_session_has_processes(self):
+        self.set_config(max_slots=1)
+        session = subprocess.Popen(['sleep', '60'], start_new_session=True)
+        self.addCleanup(session.kill)
+        self.state.mkdir()
+        (self.state / 'state.json').write_text(json.dumps({
+            'seq': 0, 'waiters': [], 'locks': {},
+            'slots': [self.old_holder(session.pid), self.old_holder(None)]}))
+        status = self.status()
+        self.assertEqual([h['sid'] for h in status['running']], [session.pid])
+        waiting, release = self.blocker('next')
+        release.touch()
+        self.wait_until(lambda: len(self.status()['waiting']) == 1, message='queued')
+        time.sleep(0.3)
+        self.assertIsNone(waiting.poll(), 'the old holder must keep the slot')
+        session.kill()
+        session.wait()
+        self.assertEqual(self.finish(waiting)[0], 0)
+
+    def old_gate(self):
+        """The previous suite-gate.py, from the base commit, as a runnable file."""
+        shown = subprocess.run(['git', 'show', f'{BASE_COMMIT}:skills/local/three-tier-testing/'
+                                'scripts/suite-gate.py'], cwd=SCRIPT.parent,
+                               capture_output=True, text=True)
+        if shown.returncode != 0:
+            self.skipTest(f'the previous version is not in Git here: {shown.stderr.strip()}')
+        path = self.tmp / 'old/suite-gate.py'
+        path.parent.mkdir()
+        path.write_text(shown.stdout)
+        return path
+
+    def old(self, *args):
+        result = subprocess.run([sys.executable, str(self.old_path), *args], cwd=self.repo,
+                                env=self.env, capture_output=True, text=True, timeout=60)
+        return result
+
+    def old_status(self):
+        result = self.old('status', '--json', '--limit', '100')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)
+
+    def test_the_previous_version_keeps_our_holders_while_the_gate_or_session_lives(self):
+        self.old_path = self.old_gate()
+        self.set_config(max_slots=1)
+        release = self.tmp / 'release'
+        ours = self.start('run', '--', f'echo run >> {self.counter}; '
+                                       f'while [ ! -f {release} ]; do sleep 0.05; done')
+        self.wait_until(lambda: self.runs() == 1, message='our suite started')
+        for _ in range(2):  # the gate lives, then only the suite's session does
+            status = self.old_status()
+            self.assertEqual((len(status['running']), len(status['locks'])), (1, 1))
+            saved = json.loads((self.state / 'state.json').read_text())
+            self.assertEqual(saved['slots'][0]['cgroup'], status['running'][0]['cgroup'])
+            if ours.poll() is None:
+                ours.kill()
+                ours.wait()
+
+        plain = self.tmp / 'plain-old'
+        plain.mkdir()
+        theirs = subprocess.Popen([sys.executable, str(self.old_path), 'run', '--',
+                                   f'echo run >> {self.counter}'], cwd=plain, env=self.env,
+                                  stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+        self.procs.append(theirs)
+        self.wait_until(lambda: len(self.old_status()['waiting']) == 1, message='old run queued')
+        time.sleep(0.3)
+        self.assertEqual(self.runs(), 1, 'the old version must not take the held slot')
+        self.assertEqual(len(self.status()['locks']), 1)
+        release.touch()
+        self.assertEqual(self.finish(theirs)[0], 0)
+        self.assertEqual(self.runs(), 2)
+        status = self.status()
+        self.assertEqual((status['running'], status['locks']), ([], {}))
 
 
 class StatusTests(GateCase):
