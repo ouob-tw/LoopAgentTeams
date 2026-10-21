@@ -1,5 +1,6 @@
 // Translating a conversation's English replies into Chinese: which texts count as English, and
 // what the page and the board server send each other for it.
+import { createRequest, type Fetch, type Request } from './api.ts';
 import { codeBlockLines } from './markdown.ts';
 
 /** Most texts one request may ask for, and the longest one. */
@@ -42,7 +43,7 @@ export function isEnglish(text: string): boolean {
 /** Where one English text stands: on its way, translated, or failed and shown as it was. */
 export type Translation = { status: 'pending' } | { status: 'done'; text: string } | { status: 'failed'; reason: string };
 
-type Request = (url: string, init: RequestInit) => Promise<Response>;
+
 
 /**
  * The page's translation requests. Texts asked for in one go are sent together, newest first as
@@ -55,15 +56,13 @@ export class Translations {
 	#queued: string[] = [];
 	readonly #changed: (text: string, translation: Translation | undefined) => void;
 	readonly #request: Request;
-	readonly #unpaired: () => void;
 
 	constructor(
 		changed: (text: string, translation: Translation | undefined) => void,
-		{ request = (url, init) => fetch(url, init), unpaired = () => location.reload() }: { request?: Request; unpaired?: () => void } = {}
+		{ request, unpaired }: { request?: Fetch; unpaired?: () => void } = {}
 	) {
 		this.#changed = changed;
-		this.#request = request;
-		this.#unpaired = unpaired;
+		this.#request = createRequest({ fetch: request, unpaired });
 	}
 
 	#set(text: string, translation: Translation | undefined): void {
@@ -107,17 +106,23 @@ export class Translations {
 		const answered = new Set<number>();
 		let reason = '沒有收到看板伺服器的回應';
 		try {
-			const response = await this.#request('/api/translate', {
-				method: 'POST',
-				headers: { 'content-type': 'application/json' },
-				body: JSON.stringify({ texts }),
-				signal: abort.signal
-			});
-			if (abort.signal.aborted) return;
-			if (response.status === 401) return this.#unpaired();
-			if (!response.ok || !response.body) {
-				const body = (await response.json().catch(() => null)) as { error?: unknown } | null;
-				reason = typeof body?.error === 'string' ? body.error : `看板伺服器回應 ${response.status}`;
+			const result = await this.#request(
+				'/api/translate',
+				{
+					method: 'POST',
+					headers: { 'content-type': 'application/json' },
+					body: JSON.stringify({ texts }),
+					signal: abort.signal
+				},
+				async (response) => response
+			);
+			if (abort.signal.aborted || (!result.ok && result.unpaired)) return;
+			// No answer: the reason above.
+			if (!result.ok && result.kind === 'network') return;
+			const response = result.ok ? result.value : null;
+			if (!response?.body) {
+				const body = (result.ok ? null : result.body) as { error?: unknown } | null;
+				reason = typeof body?.error === 'string' ? body.error : `看板伺服器回應 ${result.ok ? result.value.status : result.status}`;
 				return;
 			}
 			let rest = '';

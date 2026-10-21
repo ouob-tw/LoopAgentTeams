@@ -120,7 +120,9 @@ function readLog(config: BoardConfig, reading: Reading): SentLog | Error {
 function createBoard(): Board {
 	const config = loadConfig();
 	const readReports = createReportReader(config.reportsDir);
-	const helperDirs = helperDirectories();
+	/** The helper's registry and notification directories; null until Herdr has said where they are,
+	 *  which the board does not wait for: they are only watched, never read. */
+	let helperDirs: { config: string; state: string } | null = null;
 	const streams = new Set<Stream>();
 	const agentRoster = createAgentRoster();
 	const closedRoster = createClosedRoster(config);
@@ -174,6 +176,21 @@ function createBoard(): Board {
 			debounce = undefined;
 			void refresh();
 		}, config.debounceMs);
+	});
+	/** What the last read says to watch: the reports, the helper's files once their directories
+	 *  are known, and each active controller's question file. */
+	function watchTargets(): WatchTargets {
+		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
+		if (helperDirs) {
+			addFile(targets, join(helperDirs.config, 'bindings.json'));
+			addFile(targets, join(helperDirs.state, 'pending-notifications.json'));
+		}
+		for (const controller of lastActive) addFile(targets, controller.questions_path);
+		return targets;
+	}
+	void helperDirectories(config).then((dirs) => {
+		helperDirs = dirs;
+		if (!closed) sourceWatcher.sync(watchTargets());
 	});
 	// Created up front so the device list can be watched before the first device logs in.
 	mkdirSync(config.stateDir, { recursive: true, mode: 0o700 });
@@ -339,11 +356,7 @@ function createBoard(): Board {
 			answeredError: answered.ok ? null : answered.reason
 		};
 
-		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
-		addFile(targets, join(helperDirs.config, 'bindings.json'));
-		addFile(targets, join(helperDirs.state, 'pending-notifications.json'));
-		for (const controller of lastActive) addFile(targets, controller.questions_path);
-		if (!closed) sourceWatcher.sync(targets);
+		if (!closed) sourceWatcher.sync(watchTargets());
 
 		publish(sources);
 		pruneAfter(reports.files);

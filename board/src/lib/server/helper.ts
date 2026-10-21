@@ -1,11 +1,11 @@
 // The only way the board reads and writes question files, and reads a controller's conversation:
 // the LAT panel helper's `board` commands.
-import { spawn, type ChildProcess } from 'node:child_process';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import { fixedModel, type CurrentSettings } from '../board/models.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
 import { usageFrom } from '../board/usage.ts';
 import type { BoardConfig } from './config.ts';
+import { parseJsonOutput, runCommand } from './external.ts';
 
 export type HelperList =
 	| { ok: true; controllers: HelperController[] }
@@ -15,63 +15,21 @@ const MAX_OUTPUT = 64 * 1024 * 1024;
 
 /** Run one `board` command. Aborting `signal` ends the helper and everything it started: the
  *  helper command is a wrapper (`uv run`) whose Python child would otherwise keep running. */
-function run(config: BoardConfig, args: string[], signal?: AbortSignal): Promise<{ stdout: string; failure: string | null }> {
-	const [command, ...prefix] = config.helperCommand;
-	return new Promise((resolve) => {
-		let child: ChildProcess;
-		try {
-			// Only an abortable run leads its own process group, so the whole group can be ended.
-			child = spawn(command, [...prefix, 'board', ...args], { detached: signal !== undefined, stdio: ['ignore', 'pipe', 'pipe'] });
-		} catch (error) {
-			// An argument that cannot be passed to a command at all, such as one holding a NUL character.
-			return resolve({ stdout: '', failure: (error as Error).message });
-		}
-		const output = { stdout: [] as Buffer[], stderr: [] as Buffer[] };
-		const bytes = { stdout: 0, stderr: 0 };
-		let failure: string | null = null;
-		/** End the helper: its whole group when it leads one. */
-		const kill = () => {
-			try {
-				if (signal) process.kill(-child.pid!, 'SIGKILL');
-				else child.kill();
-			} catch {
-				// Already gone.
-			}
-		};
-		const fail = (reason: string) => {
-			failure ??= reason;
-			kill();
-		};
-		const text = (stream: 'stdout' | 'stderr') => Buffer.concat(output[stream]).toString('utf8');
-		for (const stream of ['stdout', 'stderr'] as const) {
-			child[stream]!.on('data', (chunk: Buffer) => {
-				if (bytes[stream] > MAX_OUTPUT) return;
-				bytes[stream] += chunk.length;
-				if (bytes[stream] <= MAX_OUTPUT) return void output[stream].push(chunk);
-				// As before: the last line of what stderr had said, or which stream ran over.
-				fail(text('stderr').trim().split('\n').at(-1) || `${stream} maxBuffer length exceeded`);
-			});
-		}
-		const timer = setTimeout(() => fail(`輔助工具逾時（${config.helperTimeoutMs / 1000} 秒）`), config.helperTimeoutMs);
-		const stop = () => fail('已取消');
-		child.on('error', (error) => {
-			// A helper that could not start may never close.
-			clearTimeout(timer);
-			resolve({ stdout: text('stdout'), failure: failure ?? error.message });
-		});
-		child.on('close', (code, killedBy) => {
-			clearTimeout(timer);
-			signal?.removeEventListener('abort', stop);
-			if (code !== 0 && !failure) {
-				failure = text('stderr').trim().split('\n').at(-1) || `輔助工具結束碼 ${code ?? killedBy}`;
-			}
-			resolve({ stdout: text('stdout'), failure });
-		});
-		if (!signal || child.pid === undefined) return;
-		if (signal.aborted) stop();
-		else signal.addEventListener('abort', stop, { once: true });
+async function run(config: BoardConfig, args: string[], signal?: AbortSignal): Promise<{ stdout: string; failure: string | null }> {
+	const result = await runCommand(config.helperCommand, ['board', ...args], {
+		timeoutMs: config.helperTimeoutMs,
+		maxBuffer: MAX_OUTPUT,
+		signal,
+		// Only an abortable run leads its own process group, so the whole group can be ended.
+		killGroup: signal !== undefined
 	});
+	let failure = result.failure;
+	if (result.timedOut) failure = `輔助工具逾時（${config.helperTimeoutMs / 1000} 秒）`;
+	else if (result.ended === 'exit') failure = lastLine(result.stderr) || `輔助工具結束碼 ${result.code ?? result.signal}`;
+	return { stdout: result.stdout, failure };
 }
+
+const lastLine = (text: string) => text.trim().split('\n').at(-1);
 
 function isController(value: unknown): value is HelperController {
 	const item = value as HelperController;
@@ -88,13 +46,11 @@ function isController(value: unknown): value is HelperController {
 }
 
 export async function listControllers(config: BoardConfig): Promise<HelperList> {
-	const { stdout, failure } = await run(config, ['list']);
-	let payload: { controllers?: unknown; reason?: unknown };
-	try {
-		payload = JSON.parse(stdout);
-	} catch {
-		return { ok: false, reason: failure ?? '輔助工具的輸出不是 JSON' };
-	}
+	const listed = await run(config, ['list']);
+	const { failure } = listed;
+	const parsed = parseJsonOutput<{ controllers?: unknown; reason?: unknown }>(listed, '輔助工具的輸出不是 JSON');
+	if (!parsed.ok) return parsed;
+	const payload = parsed.value;
 	// The helper prints one JSON object even when it fails; its reason is the useful one.
 	const reason = typeof payload?.reason === 'string' ? payload.reason : failure;
 	if (failure || !Array.isArray(payload?.controllers) || !payload.controllers.every(isController)) {
@@ -106,15 +62,12 @@ export async function listControllers(config: BoardConfig): Promise<HelperList> 
 /** The questions one question file holds now, whether or not its controller is still bound; null
  *  when the helper could not read it. */
 export async function readQuestions(config: BoardConfig, questionsPath: string): Promise<HelperQuestion[] | null> {
-	const { stdout, failure } = await run(config, ['questions', `--questions=${questionsPath}`]);
-	if (failure) return null;
-	try {
-		const questions = JSON.parse(stdout)?.questions;
-		const usable = Array.isArray(questions) && questions.every((question) => typeof question === 'object' && question !== null);
-		return usable ? questions : null;
-	} catch {
-		return null;
-	}
+	const read = await run(config, ['questions', `--questions=${questionsPath}`]);
+	if (read.failure) return null;
+	const parsed = parseJsonOutput<{ questions?: unknown } | null>(read, '');
+	const questions = parsed.ok ? parsed.value?.questions : null;
+	const usable = Array.isArray(questions) && questions.every((question) => typeof question === 'object' && question !== null);
+	return usable ? questions : null;
 }
 
 /** One question file's answered questions, as `board answered` prints them. */
@@ -153,17 +106,15 @@ export interface AnsweredSources {
 /** The answered questions each of these question files and its archive hold. */
 export async function readAnswered(config: BoardConfig, { paths, controllers }: AnsweredSources): Promise<HelperAnswered> {
 	if (!paths.length && !controllers.length) return { ok: true, files: [] };
-	const { stdout, failure } = await run(config, [
+	const read = await run(config, [
 		'answered',
 		...paths.map((path) => `--questions=${path}`),
 		...controllers.flatMap((controller) => [`--workspace=${controller.workspace}`, `--hcom-name=${controller.hcomName}`])
 	]);
-	let payload: { files?: unknown; reason?: unknown };
-	try {
-		payload = JSON.parse(stdout);
-	} catch {
-		return { ok: false, reason: failure ?? '輔助工具的輸出不是 JSON' };
-	}
+	const { failure } = read;
+	const parsed = parseJsonOutput<{ files?: unknown; reason?: unknown }>(read, '輔助工具的輸出不是 JSON');
+	if (!parsed.ok) return parsed;
+	const payload = parsed.value;
 	if (failure || !Array.isArray(payload?.files) || !payload.files.every(isAnsweredFile)) {
 		return { ok: false, reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出缺少答過的題目' };
 	}
@@ -179,16 +130,12 @@ export interface HelperResult {
 }
 
 async function writeCommand(config: BoardConfig, args: string[]): Promise<HelperResult> {
-	const { stdout, failure } = await run(config, args);
-	let payload: { status?: unknown; reason?: unknown; notified?: unknown } | null;
-	try {
-		payload = JSON.parse(stdout);
-	} catch {
-		payload = null;
-	}
+	const written = await run(config, args);
+	const parsed = parseJsonOutput<{ status?: unknown; reason?: unknown; notified?: unknown } | null>(written, '輔助工具的輸出不是預期的格式');
+	const payload = parsed.ok ? parsed.value : null;
 	if (typeof payload?.status !== 'string') {
 		// Nothing usable was printed: a timeout, a usage error, or a helper that could not start.
-		return { status: 'error', reason: failure ?? '輔助工具的輸出不是預期的格式', notified: null };
+		return { status: 'error', reason: written.failure ?? '輔助工具的輸出不是預期的格式', notified: null };
 	}
 	return {
 		status: payload.status,
@@ -250,13 +197,14 @@ export async function readTranscript(
 ): Promise<HelperTranscript> {
 	const args = ['transcript', `--client=${client}`, `--session-id=${sessionId}`];
 	if (before !== null) args.push(`--before=${before}`);
-	const { stdout, failure } = await run(config, args, signal);
-	let payload: Partial<TranscriptPage> & { status?: unknown; reason?: unknown; path?: unknown; permission?: unknown };
-	try {
-		payload = JSON.parse(stdout);
-	} catch {
-		return { ok: false, reason: failure ?? '輔助工具的輸出不是 JSON' };
-	}
+	const read = await run(config, args, signal);
+	const { failure } = read;
+	const parsed = parseJsonOutput<Partial<TranscriptPage> & { status?: unknown; reason?: unknown; path?: unknown; permission?: unknown }>(
+		read,
+		'輔助工具的輸出不是 JSON'
+	);
+	if (!parsed.ok) return parsed;
+	const payload = parsed.value;
 	if (failure || payload?.status !== 'ok' || !Array.isArray(payload.items) || !payload.items.every(isItem) || typeof payload.path !== 'string') {
 		const reason = typeof payload?.reason === 'string' ? payload.reason : failure;
 		return { ok: false, reason: reason ?? '輔助工具的輸出缺少對話紀錄', ...(payload?.status === 'not_found' && { missing: true }) };
@@ -290,16 +238,13 @@ export type LaunchArgs = { ok: true; args: string[] } | { ok: false; reason: str
 /** The arguments hcom stored for the launch of the agent with this session ID, read by the helper
  *  from hcom's own data; hcom repeats them on every resume. */
 export async function readLaunchArgs(config: BoardConfig, sessionId: string, signal?: AbortSignal): Promise<LaunchArgs> {
-	const { stdout, failure } = await run(config, ['launch-args', `--session-id=${sessionId}`], signal);
-	let payload: { status?: unknown; reason?: unknown; args?: unknown } | null;
-	try {
-		payload = JSON.parse(stdout);
-	} catch {
-		payload = null;
-	}
+	const read = await run(config, ['launch-args', `--session-id=${sessionId}`], signal);
+	const parsed = parseJsonOutput<{ status?: unknown; reason?: unknown; args?: unknown } | null>(read, '輔助工具的輸出不是預期的格式');
+	if (!parsed.ok) return parsed;
+	const payload = parsed.value;
 	const args = payload?.args;
 	if (payload?.status === 'ok' && Array.isArray(args) && args.every((arg) => typeof arg === 'string')) return { ok: true, args };
-	return { ok: false, reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出不是預期的格式' };
+	return { ok: false, reason: textOrNull(payload?.reason) ?? read.failure ?? '輔助工具的輸出不是預期的格式' };
 }
 
 /** Whether a Codex controller's launch fixes its model, from the arguments hcom stored for it.
@@ -330,21 +275,18 @@ const isFailure = (value: unknown): value is { session_id: string; reason: strin
 /** Delete these sessions' report files when their newest report was issued 30 days or more before
  *  `now`, through the helper: only it can take the lock the turn-end hook appends under. */
 export async function pruneReports(config: BoardConfig, now: number, sessionIds: string[]): Promise<PruneResult> {
-	const { stdout, failure } = await run(config, [
+	const pruned = await run(config, [
 		'prune-reports',
 		`--reports-dir=${config.reportsDir}`,
 		`--now=${new Date(now).toISOString()}`,
 		...sessionIds.map((sessionId) => `--session-id=${sessionId}`)
 	]);
-	let payload: { status?: unknown; reason?: unknown; deleted?: unknown; failed?: unknown } | null;
-	try {
-		payload = JSON.parse(stdout);
-	} catch {
-		payload = null;
-	}
+	const parsed = parseJsonOutput<{ status?: unknown; reason?: unknown; deleted?: unknown; failed?: unknown } | null>(pruned, '輔助工具的輸出不是預期的格式');
+	if (!parsed.ok) return { reason: parsed.reason };
+	const payload = parsed.value;
 	const { deleted, failed } = payload ?? {};
 	if (payload?.status === 'ok' && Array.isArray(deleted) && deleted.every((id) => typeof id === 'string') && Array.isArray(failed) && failed.every(isFailure)) {
 		return { reason: failed.map((item) => `${item.session_id}：${item.reason}`).join('；') || null };
 	}
-	return { reason: textOrNull(payload?.reason) ?? failure ?? '輔助工具的輸出不是預期的格式' };
+	return { reason: textOrNull(payload?.reason) ?? pruned.failure ?? '輔助工具的輸出不是預期的格式' };
 }

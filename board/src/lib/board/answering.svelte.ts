@@ -8,6 +8,7 @@ import {
 	type NotifyResponse,
 	type NotifyStatus
 } from './answers.ts';
+import { request as ask } from './api.ts';
 import { messaging } from './messaging.svelte.ts';
 import type { HelperQuestion, InboxQuestion } from './types.ts';
 
@@ -67,19 +68,15 @@ export function complete(question: HelperQuestion, draft: Draft): boolean {
 	return question.kind === 'single' ? count === 1 : count >= 1;
 }
 
-async function post<T>(path: string, body: unknown): Promise<{ status: number; body: T | null } | null> {
-	try {
-		const response = await fetch(path, {
-			method: 'POST',
-			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify(body)
-		});
-		// The server sends a browser that is not logged in to the login screen.
-		if (response.status === 401) location.reload();
-		return { status: response.status, body: await response.json().catch(() => null) };
-	} catch {
-		return null;
-	}
+async function post<T>(path: string, body: unknown): Promise<{ status?: number; body: T | null } | null> {
+	const result = await ask<T>(path, {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify(body)
+	});
+	if (result.ok) return { body: result.value };
+	if (result.kind === 'network') return null;
+	return { status: result.status, body: (result.body as T | undefined) ?? null };
 }
 
 class Answering {

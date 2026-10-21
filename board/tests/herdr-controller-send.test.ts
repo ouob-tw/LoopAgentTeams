@@ -555,6 +555,56 @@ test.skipIf(!CHROME)('a resume that is still open refuses a second wake, and can
 	}
 }, 60_000);
 
+// A menu of the model picker by keys: it opens with the chosen item in focus; the arrows, Home and
+// End move round the list; Escape closes it and gives the focus back to its part; a click
+// anywhere else closes it too.
+const KEY_CODES = { ArrowDown: 40, ArrowUp: 38, Home: 36, End: 35, Escape: 27 } as const;
+async function press(name: keyof typeof KEY_CODES) {
+	for (const type of ['keyDown', 'keyUp']) await tab.send('Input.dispatchKeyEvent', { type, key: name, code: name, windowsVirtualKeyCode: KEY_CODES[name] });
+}
+async function menuKeys(part: string, menu: string, value: string, outside: string) {
+	const items = `[...document.querySelectorAll('${menu} [role="menuitemradio"]')]`;
+	const at = () => tab.eval<number>(`${items}.indexOf(document.activeElement)`);
+	const open = () =>
+		tab.until(
+			`(() => { const part = document.querySelector('${part}'); if (part.getAttribute('aria-expanded') !== 'true') part.click(); return !!document.querySelector('${menu}'); })()`,
+			'the menu'
+		);
+	await open();
+	await tab.eval(`${items}.find((b) => b.querySelector('small')?.innerText === ${JSON.stringify(value)}).click()`);
+	await tab.until(`!document.querySelector('${menu}')`, 'the menu closed by the pick');
+	await open();
+	const count = await tab.eval<number>(`${items}.length`);
+	const chosen = await tab.eval<number>(`${items}.findIndex((b) => b.querySelector('small')?.innerText === ${JSON.stringify(value)})`);
+	expect(count).toBeGreaterThan(2);
+	expect(await tab.eval(`${items}[${chosen}].getAttribute('aria-checked')`)).toBe('true');
+	expect(await at()).toBe(chosen);
+	await press('ArrowDown');
+	expect(await at()).toBe((chosen + 1) % count);
+	await press('ArrowUp');
+	expect(await at()).toBe(chosen);
+	await press('End');
+	expect(await at()).toBe(count - 1);
+	await press('ArrowDown');
+	expect(await at()).toBe(0);
+	await press('ArrowUp');
+	expect(await at()).toBe(count - 1);
+	await press('Home');
+	expect(await at()).toBe(0);
+	await press('Escape');
+	await tab.until(`!document.querySelector('${menu}')`, 'the menu closed by Escape');
+	expect(await tab.eval(`document.activeElement === document.querySelector('${part}')`)).toBe(true);
+	await open();
+	await tab.pointerClick(outside);
+	await tab.until(`!document.querySelector('${menu}')`, 'the menu closed by a click elsewhere');
+}
+
+test.skipIf(!CHROME)("the controller's model picker is worked by keys, and a click elsewhere closes its menu", async () => {
+	await visit(1280, '?controller=s-gone');
+	await tab.until(`${pageOf('dusk')} && document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, "the closed controller's page");
+	await menuKeys('.dock .pill-slot .part[aria-label^="思考強度："]', '.dock [role="menu"][aria-label="思考強度"]', 'high', '.detail .profile h2');
+}, 60_000);
+
 test.skipIf(!CHROME)("an ordinary agent is still written to as an agent, from a draft of its own", async () => {
 	await visit(1280, '?agent=s-plain');
 	await tab.until(`!!document.querySelector('.detail [data-agent="s-plain"]') && !!document.querySelector(${JSON.stringify(BOX)})`, 'the agent page');

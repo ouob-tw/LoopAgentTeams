@@ -57,14 +57,25 @@ const startOf = (page: Pick<TranscriptPage, 'items' | 'before'>) => page.items[0
 /**
  * Take in the latest page. Earlier pages already loaded are kept as long as the new page follows
  * on from them; when more changed than one page holds, only the new page is kept, and the rest
- * can be loaded again from its cursor.
+ * can be loaded again from its cursor. A page that brings nothing new (a push for the usage
+ * alone) gives back the same view, so nothing worked out from it is worked out again.
  */
 export function withLatest(view: TranscriptView | null, page: TranscriptPage): TranscriptView {
 	const start = startOf(page);
 	const last = view?.items.at(-1)?.seq;
-	if (!view || last === undefined || start > last + 1) return { items: page.items, before: page.before, skipped: page.skipped };
-	const kept = view.items.filter((item) => item.seq < start);
-	return { items: [...kept, ...page.items], before: kept.length ? view.before : page.before, skipped: page.skipped };
+	if (!view) return { items: page.items, before: page.before, skipped: page.skipped };
+	const kept = last === undefined || start > last + 1 ? [] : view.items.filter((item) => item.seq < start);
+	const next = { items: [...kept, ...page.items], before: kept.length ? view.before : page.before, skipped: page.skipped };
+	return sameView(view, next) ? view : next;
+}
+
+function sameView(a: TranscriptView, b: TranscriptView): boolean {
+	return (
+		a.before === b.before &&
+		a.skipped === b.skipped &&
+		a.items.length === b.items.length &&
+		a.items.every((item, index) => JSON.stringify(item) === JSON.stringify(b.items[index]))
+	);
 }
 
 /** Put a page loaded with the cursor `requested` in front of the view. A page that answers an

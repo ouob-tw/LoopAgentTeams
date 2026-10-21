@@ -8,7 +8,7 @@ import { createHash } from 'node:crypto';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import type { QuotaAccount, QuotaGroup, QuotaSnapshot, QuotaWindow } from '../board/quota.ts';
-import { runExternal } from './external.ts';
+import { runCommand } from './external.ts';
 
 type Env = Record<string, string | undefined>;
 type Json = Record<string, unknown>;
@@ -208,7 +208,7 @@ export function parseClaudeList(stdout: string, code: number | null, timedOut: b
 export const CLAUDE_LIST_ARGS = ['list', '--json', '--cached-only'];
 
 export async function readClaudeQuota(command: string[], timeoutMs: number): Promise<QuotaGroup> {
-	const result = await runExternal(command, CLAUDE_LIST_ARGS, { timeoutMs });
+	const result = await runCommand(command, CLAUDE_LIST_ARGS, { timeoutMs });
 	if (result.code === null && !result.timedOut && !result.stdout) return { ok: false, reason: '找不到或無法啟動 cswap 指令' };
 	return parseClaudeList(result.stdout, result.code, result.timedOut);
 }

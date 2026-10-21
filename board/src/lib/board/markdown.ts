@@ -22,6 +22,30 @@ for (const instance of [md, links]) {
 
 export const renderMarkdown = (text: string) => md.render(text);
 
+/** Each text's HTML by its key, rendered once: a conversation's push renders only the texts that
+ *  are new or changed, not every one loaded before. */
+export class RenderedMarkdown {
+	readonly #known = new Map<number, { text: string; html: string }>();
+	readonly #render: (text: string) => string;
+
+	constructor(render = renderMarkdown) {
+		this.#render = render;
+	}
+
+	html(key: number, text: string): string {
+		const known = this.#known.get(key);
+		if (known?.text === text) return known.html;
+		const html = this.#render(text);
+		this.#known.set(key, { text, html });
+		return html;
+	}
+
+	/** Forget every text: another conversation's keys mean other texts. */
+	clear(): void {
+		this.#known.clear();
+	}
+}
+
 /** The lines of each code block as it would be shown, fenced or indented, inside lists and quotes
  *  too: `[first, end)`, counted from 0, in order. */
 export function codeBlockLines(text: string): [number, number][] {

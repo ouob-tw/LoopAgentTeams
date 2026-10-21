@@ -6,7 +6,7 @@ import { basename } from 'node:path';
 import type { HerdrPlace } from '../board/format.ts';
 import type { HerdrWorkspace } from '../board/types.ts';
 import type { BoardConfig } from './config.ts';
-import { runExternal } from './external.ts';
+import { parseJsonOutput, runCommand } from './external.ts';
 
 export type WorkspaceChoice =
 	| { ok: true; id: string; label: string; created: boolean }
@@ -25,14 +25,11 @@ interface Workspace {
 
 /** Runs one Herdr command and returns its `result`, or why there is none. */
 async function herdr(config: BoardConfig, args: string[]): Promise<{ result: Record<string, unknown> } | { reason: string }> {
-	const run = await runExternal(config.herdrCommand, args, { timeoutMs: config.herdrTimeoutMs });
+	const run = await runCommand(config.herdrCommand, args, { timeoutMs: config.herdrTimeoutMs });
 	if (run.failure) return { reason: run.failure };
-	try {
-		const result = JSON.parse(run.stdout)?.result;
-		if (typeof result === 'object' && result !== null) return { result };
-	} catch {
-		// Reported below.
-	}
+	const parsed = parseJsonOutput<{ result?: unknown } | null>(run, '輸出不是預期的 JSON');
+	const result = parsed.ok ? parsed.value?.result : null;
+	if (typeof result === 'object' && result !== null) return { result: result as Record<string, unknown> };
 	return { reason: '輸出不是預期的 JSON' };
 }
 
@@ -303,7 +300,7 @@ export function closePane(config: BoardConfig, pane: string): Promise<HerdrAct> 
  * standard error, `{"error":{"code","message"}}`; its message is the reason given.
  */
 async function herdrAct(config: BoardConfig, args: string[]): Promise<HerdrAct> {
-	const run = await runExternal(config.herdrCommand, args, { timeoutMs: config.herdrTimeoutMs });
+	const run = await runCommand(config.herdrCommand, args, { timeoutMs: config.herdrTimeoutMs });
 	if (!run.failure) return { ok: true };
 	let error: { code?: unknown; message?: unknown } | undefined;
 	try {
