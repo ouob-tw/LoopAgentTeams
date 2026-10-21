@@ -22,13 +22,18 @@ const stateDir = join(dir, 'board-state');
 const time = new Date(Date.now() - 5_000).toISOString();
 const env = { ...process.env };
 // Herdr is out of reach: its socket answers every request with an error.
-const herdr = createServer((connection) =>
+const herdr = createServer((connection) => {
+	let buffer = '';
 	connection.on('data', (chunk) => {
-		for (const line of chunk.toString().split('\n').filter(Boolean)) {
-			connection.write(JSON.stringify({ id: JSON.parse(line).id, error: { message: 'no herdr here' } }) + '\n');
+		buffer += chunk.toString();
+		let end: number;
+		while ((end = buffer.indexOf('\n')) >= 0) {
+			const request = JSON.parse(buffer.slice(0, end));
+			buffer = buffer.slice(end + 1);
+			connection.write(JSON.stringify({ id: request.id, error: { message: 'no herdr here' } }) + '\n');
 		}
-	})
-);
+	});
+});
 let board: Board;
 
 const binding: HelperController = {
