@@ -75,7 +75,8 @@ export function createReportReader(directory: string) {
 	const cache = new Map<string, Cached>();
 	const dutyCache = new Map<string, { stamp: string; duty: RecordedDuty | null }>();
 
-	async function readOne(name: string): Promise<ReportFile> {
+	/** Null for a file deleted since the directory was listed, as the board's pruning does. */
+	async function readOne(name: string): Promise<ReportFile | null> {
 		const sessionId = name.slice(0, -'.jsonl'.length);
 		const path = join(directory, name);
 		try {
@@ -94,6 +95,7 @@ export function createReportReader(directory: string) {
 			return file;
 		} catch (error) {
 			cache.delete(name);
+			if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null;
 			return { sessionId, reports: [], invalidLines: 0, error: (error as Error).message };
 		}
 	}
@@ -134,6 +136,6 @@ export function createReportReader(directory: string) {
 			const duty = duties[index];
 			if (duty) bySession.set(name.slice(0, -DUTY_SUFFIX.length), duty);
 		});
-		return { files, duties: bySession, error: null };
+		return { files: files.filter((file) => file !== null), duties: bySession, error: null };
 	};
 }
