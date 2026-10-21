@@ -258,6 +258,25 @@ test('stderr redaction preserves overlapping secret ranges across window boundar
 	expect(lines[0]).toContain('fatal overlap quit');
 });
 
+test('provider failure reasons redact the union of overlapping batched replies in both orders', async () => {
+	for (const texts of [['ABCDE_PRIVATE', 'PRIVATE_FGHIJ'], ['PRIVATE_FGHIJ', 'ABCDE_PRIVATE']]) {
+		const { config } = setUp();
+		config.translateCommand = [NODE, '--eval', `require('node:readline').createInterface({ input: process.stdin }).on('line', (line) => { const message = JSON.parse(line); console.log(JSON.stringify({ id: message.id, error: { message: 'ABCDE_PRIVATE_FGHIJ' } })); });`];
+		const lines: string[] = [];
+		const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => void lines.push(args.join(' ')));
+		try {
+			const got: Outcome<string>[] = [];
+			await createTranslator(config).translate(texts, (index, outcome) => (got[index] = outcome));
+			expect(got.every((outcome) => !outcome.ok)).toBe(true);
+		} finally {
+			spy.mockRestore();
+		}
+		expect(lines).toHaveLength(1);
+		expect(lines[0]).toContain('Codex initialize');
+		for (const part of ['ABCDE', 'PRIVATE', 'FGHIJ']) expect(lines[0]).not.toContain(part);
+	}
+});
+
 test('Codex is asked with gpt-6-luna at low effort, and the reply comes back in Traditional Chinese', async () => {
 	const { calls, translator, ask } = setUp(async () => ({ ok: true, value: '<reply id="1">软件已经更新</reply>' }));
 	expect(await ask(translator(), ['The software was updated.'])).toEqual([{ ok: true, value: '軟體已經更新' }]);
