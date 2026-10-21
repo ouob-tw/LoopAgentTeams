@@ -125,7 +125,8 @@ for (const width of [1280, 360]) {
 		const rows = await tab.eval<{ text: string; cls: string | null }[]>(windows);
 		expect(rows.length).toBe(3);
 		expect(await tab.eval(`document.querySelectorAll('.quota .bar, .quota .fill').length`)).toBe(0);
-		expect(rows[0].text).toMatch(/^5 小時 60% \d\d:\d\d 重置$/);
+		// A reset past local midnight shows its date too (the board shows the date unless the reset is today).
+		expect(rows[0].text).toMatch(/^5 小時 60% (\d+\/\d+ )?\d\d:\d\d 重置$/);
 		expect(rows[1].text).toMatch(/^7 天 15% \d+\/\d+ \d\d:\d\d 重置$/);
 		expect(rows[2].text).toMatch(/^Fable 4% \d+\/\d+ \d\d:\d\d 重置$/);
 		expect(rows.map((row) => row.cls)).toEqual(['percent', 'percent warn', 'percent danger']);
