@@ -784,6 +784,8 @@ CLAUDE_LAT_COMMAND = '<command-name>/lat</command-name>'
 CODEX_LAT_NAME = '<name>lat</name>'
 CODEX_LAT_SKILL = re.compile(r'\s*<skill>\s*' + re.escape(CODEX_LAT_NAME))
 # Raw-line prefilter: every line invoked_lat can accept contains one of these.
+SCAN_RETENTION = 30 * 86400
+SCAN_CLEANUP_INTERVAL = 86400
 LAT_MARKERS = dict(claude=(CLAUDE_LAT_COMMAND, '"Skill"'), codex=(CODEX_LAT_NAME,))
 
 
@@ -830,18 +832,65 @@ def invoked_lat(client, record):
                for block in payload['content'])
 
 
+def activation_directory():
+    state = os.environ.get('XDG_STATE_HOME')
+    base = Path(state) if state and Path(state).is_absolute() else Path.home() / '.local/state'
+    return base / 'lat/activation'
+
+
+def load_scan(path, transcript, status):
+    """Where the last Stop stopped reading this transcript (`status`: its open file): `(offset, format confirmed)`."""
+    try:
+        saved = json.loads(path.read_text(encoding='utf-8'))
+        offset = saved['offset']
+        if (saved['path'] == str(transcript) and saved['inode'] == status.st_ino
+                and type(offset) is int and 0 <= offset <= status.st_size
+                and isinstance(saved['records'], bool)):
+            return offset, saved['records']
+    except (OSError, ValueError, TypeError, KeyError):
+        pass
+    return 0, False
+
+
+def save_scan(path, transcript, inode, offset, records):
+    directory = path.parent
+    directory.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # At most once a day, drop positions of sessions that went quiet (the report retention).
+    marker = directory / '.cleanup'
+    now = time.time()
+    if not marker.exists() or now - marker.stat().st_mtime >= SCAN_CLEANUP_INTERVAL:
+        for stale in directory.glob('*.json'):
+            if now - stale.stat().st_mtime >= SCAN_RETENTION:
+                stale.unlink(missing_ok=True)
+        marker.touch()
+        os.utime(marker, (now, now))
+    write_json_atomic(path, dict(path=str(transcript), inode=inode, offset=offset,
+                                 records=records), mode=0o600)
+
+
 def lat_transcript(client, payload, sid):
-    """Read the conversation's transcript; True when it shows the LAT skill was called up."""
+    """Read the conversation's transcript; True when it shows the LAT skill was called up.
+
+    Reads resume where the previous Stop for this session stopped, unless the file was
+    replaced or shortened; a half-written last line is read again once it is complete.
+    """
     path = payload.get('transcript_path')
     if path is None:
         path = panel_module('transcript').transcript_path(client, sid)
     elif not isinstance(path, str) or not Path(path).is_absolute():
         raise ValueError(f'transcript_path is not an absolute path: {path!r}')
+    scan = activation_directory() / f'{client}-{sid}.json'
     # Transcripts can be large: parse lines until one confirms the format, then only marker lines.
     markers = LAT_MARKERS[client]
-    records = False
-    with open(path, encoding='utf-8') as stream:
-        for line in stream:
+    with open(path, 'rb') as stream:
+        status = os.fstat(stream.fileno())
+        inode = status.st_ino
+        offset, records = load_scan(scan, path, status)
+        stream.seek(offset)
+        for raw in stream:
+            line = raw.decode('utf-8')
+            if raw.endswith(b'\n'):
+                offset += len(raw)
             if records and not any(marker in line for marker in markers):
                 continue
             try:
@@ -854,6 +903,10 @@ def lat_transcript(client, payload, sid):
                     return True
     if not records:
         raise ValueError(f'no transcript records in {path}')
+    try:
+        save_scan(scan, path, inode, offset, records)
+    except (OSError, ValueError) as exc:
+        print(f'LAT activation check warning: {exc}', file=sys.stderr)
     return False
 
 
