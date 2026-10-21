@@ -138,8 +138,8 @@ const cache = new Map<string, Cached>();
 const prunedAt = new Map<string, number>();
 
 /** The reads of the board under way, by state directory: each is handed every line appended in
- *  this process while it lasts (`openLog`). */
-const live = new Map<string, Set<(line: Line) => void>>();
+ *  this process while it lasts (`openLog`), or null for one joined onto a line cut short. */
+const live = new Map<string, Set<(line: Line | null) => void>>();
 
 /** How many times the whole file was read and parsed; tests count the reads with it. */
 export const sentLogReads = { count: 0 };
@@ -210,7 +210,7 @@ export function appendSent(stateDir: string, entry: Line): void {
 	appendFileSync(path, raw + '\n', { mode: 0o600 });
 	const line = parse(raw)!;
 	// Joined onto a line cut short, it is no line of its own: a read of the file leaves it out too.
-	if (whole) for (const add of live.get(stateDir) ?? []) add(line);
+	for (const add of live.get(stateDir) ?? []) add(whole ? line : null);
 	if (!keep) return;
 	const size = cached!.size + Buffer.byteLength(raw + '\n');
 	const after = stamp(path);
@@ -319,13 +319,17 @@ function readCached(stateDir: string): Cached | null {
  * cache's own.
  */
 export function readLines(stateDir: string, now: number): readonly Line[] {
+	return readRows(stateDir, now)?.lines ?? [];
+}
+
+function readRows(stateDir: string, now: number): Cached | null {
 	let cached = readCached(stateDir);
 	const last = prunedAt.get(stateDir);
 	if (last === undefined || now - last >= PRUNE_EVERY_MS) {
 		prunedAt.set(stateDir, now);
 		if (cached) cached = prune(stateDir, cached, now);
 	}
-	return cached?.lines ?? [];
+	return cached;
 }
 
 /** The lines one read of the board works from (`openLog`), and how it adds one; `append` throws
@@ -344,8 +348,17 @@ export interface SentLog {
  * file then would give.
  */
 export function openLog(stateDir: string, now: number): SentLog {
-	const lines = [...readLines(stateDir, now)];
-	const add = (line: Line) => void lines.push(line);
+	const read = readRows(stateDir, now);
+	const lines = [...(read?.lines ?? [])];
+	// A last line with no newline after it: the next line appended joins it, and a read of the file
+	// then leaves out both.
+	let tail = read && !read.whole ? (read.rows.at(-1)?.line ?? null) : null;
+	const add = (line: Line | null) => {
+		if (line) lines.push(line);
+		else if (tail) lines.splice(lines.lastIndexOf(tail), 1);
+		// The file ends with a newline now, or with what someone else wrote.
+		tail = null;
+	};
 	const reads = live.get(stateDir) ?? new Set();
 	live.set(stateDir, reads.add(add));
 	return {

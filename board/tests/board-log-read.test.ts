@@ -180,12 +180,12 @@ test('a read of the board reads the sent log once, and settles answers, launches
 		// The relaunch is settled on its session's queue after the read, from the same lines.
 		await until(() => keys().length > BEFORE.length + 3);
 		expect(keys().slice(BEFORE.length + 3)).toEqual(['switch-step:s1:resume-failed']);
-		// The one read is `openLog`'s own; settling the relaunch read nothing more.
+		// The one read is `openLog`; settling the relaunch read nothing more.
 		expect(opens).toHaveBeenCalledTimes(1);
-		expect(reads).toHaveBeenCalledTimes(1);
+		expect(reads).toHaveBeenCalledTimes(0);
 		await board.refresh();
 		expect(opens).toHaveBeenCalledTimes(2);
-		expect(reads).toHaveBeenCalledTimes(2);
+		expect(reads).toHaveBeenCalledTimes(0);
 		// Nothing is settled twice: the second read saw what the first appended.
 		expect(logged()).toHaveLength(BEFORE.length + 4);
 	} finally {
@@ -276,6 +276,15 @@ test('a line appended onto one cut short is no more in a log kept up with than i
 		expect(ids(log.lines)).toEqual(['t1', 't3', 't5']);
 		expect(ids(log.lines)).toEqual(ids(sentLog.readLines(own, Date.now())));
 		log.close();
+		// A whole line, but its newline never written: the next line joins it, and both are lost.
+		writeFileSync(file, JSON.stringify(wake('u1')) + '\n' + JSON.stringify(wake('u2')));
+		const cut = sentLog.openLog(own, Date.now());
+		expect(ids(cut.lines)).toEqual(['u1', 'u2']);
+		sentLog.appendSent(own, wake('u3'));
+		sentLog.appendSent(own, wake('u4'));
+		expect(ids(cut.lines)).toEqual(['u1', 'u4']);
+		expect(ids(cut.lines)).toEqual(ids(sentLog.readLines(own, Date.now())));
+		cut.close();
 	} finally {
 		rmSync(own, { recursive: true, force: true });
 	}
