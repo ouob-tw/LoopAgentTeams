@@ -287,6 +287,8 @@ export async function startFixture(
 	for (const name of ['reports', 'herdr-config', 'herdr-state', 'home']) mkdirSync(join(dir, name));
 
 	const socketPath = join(dir, 'herdr.sock');
+	const herdrCommand = options.env?.LAT_BOARD_HERDR_COMMAND;
+	const herdrDir = herdrCommand ? JSON.parse(herdrCommand).at(-1) as string : dir;
 	const herdrSocket = createServer((connection) => {
 		let buffer = '';
 		connection.on('data', (chunk) => {
@@ -294,7 +296,7 @@ export async function startFixture(
 			let end: number;
 			while ((end = buffer.indexOf('\n')) >= 0) {
 				const request = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
-				void answerHerdrList(dir, request, true).then((answer) => {
+				void answerHerdrList(herdrDir, request, true).then((answer) => {
 					if (!connection.destroyed) connection.end(answer ?? JSON.stringify({ id: request.id, result: { type: 'tab_moved' } }) + '\n');
 				});
 			}
