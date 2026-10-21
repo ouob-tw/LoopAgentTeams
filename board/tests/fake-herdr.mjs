@@ -9,6 +9,8 @@
 // checking the pane; `pane close` takes the pane and its agent out of the panes and agents listed;
 // `tab rename <tab> <label>` gives the listed tab that label.
 // `slowMs: { <command>: ms }` makes a command wait that long before it answers.
+// `failSeries: { <command>: [...] }` gives that command's next calls in turn: an entry `{ exit, stderr }`
+// acts out a failure, null answers as usual; once the series is used up, `fail` applies again.
 import { appendFileSync, existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 
@@ -26,7 +28,9 @@ appendFileSync(join(dir, listing ? 'herdr-list-calls.jsonl' : 'herdr-calls.jsonl
 const planFile = join(dir, 'herdr.json');
 const plan = existsSync(planFile) ? JSON.parse(readFileSync(planFile, 'utf8')) : {};
 
-const failure = plan.fail?.[command];
+const series = plan.failSeries?.[command];
+const failure = series?.length ? series.shift() : plan.fail?.[command];
+if (series) write(planFile, JSON.stringify(plan));
 if (plan.slowMs?.[command]) await new Promise((resolve) => setTimeout(resolve, plan.slowMs[command]));
 if (plan.raw?.[command] !== undefined) {
 	process.stdout.write(plan.raw[command]);
