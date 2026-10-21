@@ -8,6 +8,7 @@ import sqlite3
 import time
 
 
+# --- Conversation history for the board ------------------------------------
 TRANSCRIPT_PAGE_TEXTS = 50
 
 
@@ -17,15 +18,19 @@ _SUMMARY_LIMIT = 80
 _SESSION_ID = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*")
 
 
+# Text that arrives as user input but was put there by a tool, not typed by a person.
 _INJECTED_INPUT = re.compile(
     r"\s*(<hcom[\s>]|\[lat-watch\]|(read (any|your) unread hcom|you have unread hcom))",
     re.IGNORECASE,
 )
 
 
+# What HCOM delivers inside a hook: `<hcom>…` or `[request #12] sender → receiver: …`.
 _HCOM_DELIVERY = re.compile(r"\s*(<hcom>|\[(?:\d+ )?(?:new message|request|inform|ack)\b[^\]]*\])")
 
 
+# What the client itself wraps around output it puts into the conversation (older records
+# have no `origin` to tell typed text apart).
 _CLIENT_WRAPPER = re.compile(
     r"\s*(<(local-command-[a-z]+|bash-(input|stdout|stderr)|task-notification|system-reminder)>"
     r"|\[Request interrupted|Caveat: )"
@@ -110,6 +115,8 @@ def _one_line(text, limit=_SUMMARY_LIMIT):
     return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
+# A command made only of these characters cannot carry quoted text, expansions or redirections,
+# so it is safe to show as it is.
 _SAFE_COMMAND = re.compile(r"[A-Za-z0-9 \-_./:=,@+%]+")
 
 
@@ -175,6 +182,7 @@ def _notice(time, text):
     return _tool(time, "hook", "hook 提示")
 
 
+# Claude tools whose main argument is safe to show: (label, input key, is a path).
 _CLAUDE_TOOLS = {
     "Bash": ("執行指令", "command", False),
     "Read": ("讀檔", "file_path", True),

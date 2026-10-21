@@ -259,6 +259,8 @@ class QuestionOptions(NamedTuple):
     reason: str | None
 
 
+# Options are list items: "- A. label" (single) or "- [ ] label" (multi); the older
+# unlisted "A. label" still parses.
 _SINGLE_OPTION = re.compile(r"^(?P<listed>- )?(?P<key>[A-Z])\.\s+(?P<label>\S.*)$")
 
 
@@ -410,6 +412,8 @@ def question_context(question):
     return "\n".join(kept).strip("\n")
 
 
+# A fence opens with three or more ` or ~ (a ` fence's info string has no `) and closes
+# on a line of the same character, at least as long, with nothing after it.
 _FENCE_OPEN = re.compile(r"^[ \t]*(?P<fence>`{3,}(?=[^`]*$)|~{3,})")
 
 
@@ -422,6 +426,8 @@ _INLINE_CODE = re.compile(r"(?<!`)(`+)(?!`)(.+?)(?<!`)\1(?!`)")
 _LINK = re.compile(r"\[([^\]\n]+)\]\(([^)\s]+)\)")
 
 
+# Emphasis marks around text; `*` may sit inside CJK words but not between ASCII letters or digits,
+# `_` only outside words, so 2*3*4 and snake_case stay as written.
 _EMPHASIS = (
     re.compile(r"\*\*(?=\S)(.+?)(?<=\S)\*\*"),
     re.compile(r"(?<!\w)__(?=\S)(.+?)(?<=\S)__(?!\w)"),
