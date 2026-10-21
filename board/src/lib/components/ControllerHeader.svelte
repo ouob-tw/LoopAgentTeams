@@ -5,7 +5,7 @@
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { onMount } from 'svelte';
 	import { clock } from '#lib/board/clock.svelte.ts';
-	import { noticeTime, placeText, type HerdrPlace } from '#lib/board/format.ts';
+	import { noticeTime, placeText } from '#lib/board/format.ts';
 	import { INFO_DETAILS_KEY, remember, remembered } from '#lib/board/prefs.ts';
 	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
@@ -33,34 +33,7 @@
 		remember(INFO_DETAILS_KEY, details ? '1' : '0');
 	}
 
-	/** The Herdr names and places, by controller ID; a string says why they are unknown. */
-	let places = $state<Record<string, HerdrPlace | string>>({});
-	const place = $derived(places[controller.id]);
-
-	// Read again with every new board data (each hands this page a new `controller` object), as
-	// tabs may have moved since, and whenever the server announces a tab move, which changes no
-	// board data: the board moves a resumed controller's tab to the front.
-	$effect(() => {
-		const id = controller.id;
-		void tabMoves;
-		if (!controller.herdr) return;
-		const abort = new AbortController();
-		read(id, abort.signal);
-		return () => abort.abort();
-	});
-
-	function read(id: string, signal: AbortSignal) {
-		fetch(`/api/herdr-place?controller=${encodeURIComponent(id)}`, { signal })
-			.then((response) => {
-				// The server sends a browser that is not logged in to the login screen.
-				if (response.status === 401) location.reload();
-				return response.json();
-			})
-			.then((body) => (places[id] = body.ok ? body.place : (body.reason ?? '讀不到位置')))
-			.catch(() => {
-				if (!signal.aborted) places[id] = '沒有收到看板伺服器的回應';
-			});
-	}
+	const place = $derived(controller.herdrPlace ?? undefined);
 </script>
 
 <article class="profile">

@@ -2,6 +2,8 @@
 // directories and a fake helper command. Nothing here reads or writes real LAT data.
 import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:net';
+import { runHerdr } from './fake-herdr.mjs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { ArchivePage } from '../src/lib/board/archive.ts';
@@ -19,8 +21,21 @@ import type {
 	Report
 } from '../src/lib/board/types.ts';
 
+/** Answer list requests from the exact same plan and failure controls as the fake CLI. */
+export async function answerHerdrList(dir: string, request: { id: string; method: string; params?: { tab_id?: string; insert_index?: number } }, moves = false): Promise<string | null> {
+	if (!(moves ? ['agent.list', 'workspace.list', 'tab.list', 'tab.move'] : ['agent.list', 'workspace.list', 'tab.list']).includes(request.method)) return null;
+	const args = request.method === 'tab.move' ? ['tab', 'move', request.params?.tab_id ?? '', String(request.params?.insert_index ?? 0)] : request.method.split('.');
+	const run = await runHerdr(dir, args, 'socket');
+	if (run.code) return JSON.stringify({ id: request.id, error: { message: run.stderr } }) + '\n';
+	try {
+		return JSON.stringify({ ...JSON.parse(run.stdout), id: request.id }) + '\n';
+	} catch {
+		return run.stdout + '\n';
+	}
+}
+
 const ROOT = join(import.meta.dir, '..');
-// Each test file takes its own offsets from this base; the highest one in use is 62 (46 and 47 are left to another branch).
+// Each test file takes its own offsets from this base; refresh acceptance uses offsets 88–90.
 export const PORT_BASE = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110);
 
 /** What runs the server and the fake commands: Node when the host has it, otherwise the Bun that
@@ -70,7 +85,7 @@ export function keptAgentShellEnv(fixture: Fixture, command: string) {
 		kept: {
 			HCOM_DIR: AGENT_SHELL_ENV.HCOM_DIR,
 			CODEX_HOME: AGENT_SHELL_ENV.CODEX_HOME,
-			HERDR_SOCKET_PATH: AGENT_SHELL_ENV.HERDR_SOCKET_PATH,
+			HERDR_SOCKET_PATH: join(fixture.dir, 'herdr.sock'),
 			HOME: join(fixture.dir, 'home'),
 			PATH: process.env.PATH ?? ''
 		}
@@ -271,6 +286,21 @@ export async function startFixture(
 	const configDir = join(dir, 'herdr-config');
 	for (const name of ['reports', 'herdr-config', 'herdr-state', 'home']) mkdirSync(join(dir, name));
 
+	const socketPath = join(dir, 'herdr.sock');
+	const herdrSocket = createServer((connection) => {
+		let buffer = '';
+		connection.on('data', (chunk) => {
+			buffer += chunk.toString();
+			let end: number;
+			while ((end = buffer.indexOf('\n')) >= 0) {
+				const request = JSON.parse(buffer.slice(0, end)); buffer = buffer.slice(end + 1);
+				void answerHerdrList(dir, request, true).then((answer) => {
+					if (!connection.destroyed) connection.end(answer ?? JSON.stringify({ id: request.id, result: { type: 'tab_moved' } }) + '\n');
+				});
+			}
+		});
+	});
+	await new Promise<void>((resolve) => herdrSocket.listen(socketPath, resolve));
 	const env: Record<string, string> = {
 		PATH: process.env.PATH ?? '',
 		HOME: join(dir, 'home'),
@@ -291,7 +321,8 @@ export async function startFixture(
 		CODEX_MULTI_AUTH_DIR: join(dir, 'codex-multi-auth'),
 		HERDR_PLUGIN_CONFIG_DIR: configDir,
 		HERDR_PLUGIN_STATE_DIR: join(dir, 'herdr-state'),
-		...options.env
+		...options.env,
+		HERDR_SOCKET_PATH: options.env?.HERDR_SOCKET_PATH && options.env.HERDR_SOCKET_PATH !== AGENT_SHELL_ENV.HERDR_SOCKET_PATH ? options.env.HERDR_SOCKET_PATH : socketPath
 	};
 	let server: ChildProcess | undefined;
 	let output = '';
@@ -477,6 +508,7 @@ export async function startFixture(
 		async cleanup() {
 			for (const watch of watches) watch.close();
 			await fixture.stop();
+			herdrSocket.close();
 			rmSync(dir, { recursive: true, force: true });
 		}
 	};
