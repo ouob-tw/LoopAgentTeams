@@ -130,6 +130,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 	);
 	return {
 		stateDir: env.LAT_BOARD_STATE_DIR || join(stateHome(env), 'lat/board'),
+		// 須與 `skills/local/lat/scripts/_lat_common.py` 一致
 		reportsDir: env.LAT_REPORTS_DIR || join(stateHome(env), 'lat/reports'),
 		usageDir: env.LAT_USAGE_DIR || join(stateHome(env), 'lat/usage'),
 		userStylePath: join(env.LAT_BOARD_CONFIG_DIR || join(configHome(env), 'lat/board'), 'user.css'),

@@ -20,6 +20,8 @@ import time
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import (read_advisor_error, read_decision_kind, read_decision_status,
                                  read_spec_consensus_error)
+from _lat_common import (reports_directory, run_cli, watcher_process_matches,
+                         write_json_atomic)
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 GROUP_NAME = 'lat-codex-recovery'
@@ -101,24 +103,6 @@ def current_bytes(path):
         return None
 
 
-def write_json(path, value, expected):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
-        temp = Path(stream.name)
-        try:
-            json.dump(value, stream, indent=2, ensure_ascii=False)
-            stream.write('\n')
-            stream.flush()
-            os.fsync(stream.fileno())
-            if current_bytes(path) != expected:
-                raise ValueError(f'Concurrent change detected: {path}; retry after inspection')
-            if path.exists():
-                os.chmod(temp, path.stat().st_mode & 0o777)
-            temp.replace(path)
-        finally:
-            temp.unlink(missing_ok=True)
-
-
 def legacy_record(record):
     return 'tasks_path' not in record and 'hcom_name' not in record
 
@@ -176,40 +160,10 @@ def read_pid(path):
     return value if value > 1 else None
 
 
-def process_command(pid):
-    try:
-        stat = Path(f'/proc/{pid}/stat').read_text()
-        if stat[stat.rfind(')') + 2:].split(maxsplit=1)[0] == 'Z':
-            return None
-        return tuple(part.decode() for part in Path(f'/proc/{pid}/cmdline').read_bytes().split(b'\0')
-                     if part)
-    except (FileNotFoundError, PermissionError, UnicodeDecodeError):
-        return None
-
-
 def watcher_running(record, pid=None):
     pid_path, _, _ = watcher_paths(record)
     pid = pid or read_pid(pid_path)
-    command = process_command(pid) if pid is not None else None
-    if command is None:
-        return False
-    expected = tuple(watcher_command(record)[5:])
-    return any(Path(command[index]).name == 'lat-watch.py'
-               and command[index + 1:index + 1 + len(expected)] == expected
-               for index in range(len(command) - len(expected)))
-
-
-def write_pid(path, pid):
-    path.parent.mkdir(parents=True, exist_ok=True)
-    with tempfile.NamedTemporaryFile(mode='w', dir=path.parent, delete=False) as stream:
-        temp = Path(stream.name)
-        try:
-            stream.write(f'{pid}\n')
-            stream.flush()
-            os.fsync(stream.fileno())
-            temp.replace(path)
-        finally:
-            temp.unlink(missing_ok=True)
+    return watcher_process_matches(pid, watcher_command(record)[5:])
 
 
 def _ensure_watcher_locked(record):
@@ -222,7 +176,7 @@ def _ensure_watcher_locked(record):
             watcher_command(record), cwd=record['workspace'], stdin=subprocess.DEVNULL,
             stdout=output, stderr=subprocess.STDOUT, start_new_session=True, close_fds=True,
         )
-    write_pid(pid_path, process.pid)
+    write_json_atomic(pid_path, process.pid)
     return process.pid
 
 
@@ -260,12 +214,10 @@ def ensure_tab_label(hcom_name):
         return
     label = f'lat-{hcom_name.rsplit("-", 1)[-1]}'
     try:
-        result = subprocess.run(['herdr', 'tab', 'get', tab], capture_output=True, text=True,
-                                timeout=5, check=True)
-        if json.loads(result.stdout)['result']['tab']['label'] == label:
+        output = run_cli(['herdr', 'tab', 'get', tab], timeout=5)
+        if json.loads(output)['result']['tab']['label'] == label:
             return
-        subprocess.run(['herdr', 'tab', 'rename', tab, label], capture_output=True,
-                       timeout=5, check=True)
+        run_cli(['herdr', 'tab', 'rename', tab, label], timeout=5)
     except (OSError, subprocess.SubprocessError, ValueError, KeyError, TypeError):
         pass
 
@@ -388,7 +340,7 @@ def activate(args):
         raise ValueError(
             f'{error}；請修復 Herdr 後重新執行：{command}'
         ) from error
-    write_json(path, record, original)
+    write_json_atomic(path, record, expected=original)
     print(path)
     print(f'已開始第 {len(record.get("history", [])) + 1} 輪')
     if enabled:
@@ -459,7 +411,7 @@ def deactivate(args):
         record['status'] = 'ended'
         if args.successor:
             record['successor'] = args.successor
-        write_json(path, record, original)
+        write_json_atomic(path, record, expected=original)
     print(path)
     print(json.dumps({'removed': removed}))
 
@@ -561,7 +513,7 @@ def configure(args):
                                          delete=False) as backup:
             backup.write(original)
             print(f'Backup: {backup.name}')
-    write_json(path, updated, original)
+    write_json_atomic(path, updated, expected=original)
     if args.client == 'codex':
         print(f'Updated {path}; review changed hooks through Codex /hooks before use')
     else:
@@ -742,14 +694,7 @@ def stop_check(record, payload):
 
 
 def reports_path(record):
-    override = os.environ.get('LAT_REPORTS_DIR')
-    state = os.environ.get('XDG_STATE_HOME')
-    directory = (Path(override) if override else
-                 (Path(state) if state and Path(state).is_absolute() else
-                  Path.home() / '.local/state') / 'lat/reports')
-    if not directory.is_absolute():
-        raise ValueError('LAT_REPORTS_DIR must be absolute')
-    return directory / f'{record["session_id"]}.jsonl'
+    return reports_directory() / f'{record["session_id"]}.jsonl'
 
 
 def append_report(record, message):
