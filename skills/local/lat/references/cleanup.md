@@ -79,10 +79,10 @@ uv run --no-project python "$lat_dir/scripts/lat-autoclean.py" enable --workspac
 | 監控殘留 `watch/<session-id>.log`／`.lock` | 該 session 紀錄已結束且 `ended_at_utc` 滿 40 天 |
 | 監控殘留 `watch/<名稱>/` | 該名稱沒有 active session，同名每筆紀錄都有結束時間，且最近一筆滿 40 天 |
 | 已完成任務卡 `tasks/done/*.md` | 卡片檔本身最後修改滿 40 天 |
-| 等待紀錄 `watch/waits/<Agent>.json` 與其鎖檔 | 檔案本身最後修改滿 40 天，且該 Agent 不是 active 主控或其頂層任務卡的 Agent；鎖檔也要滿 40 天 |
+| 等待紀錄 `watch/waits/<Agent>.json` 與其鎖檔 `.<Agent>.lock` | 各自的最後修改滿 40 天，且該 Agent 不是 active 主控或其頂層任務卡的 Agent；鎖檔在等待紀錄仍存在時不刪 |
 
 - 沒有結束時間的舊 session（含 `completed`／`cancelled`）、沒有 session 紀錄的監控檔、`runs/misc-*`、`progress/`、根目錄舊問題檔與其他舊資料不自動清，由上方清理指令列給使用者。
-- 每項刪除前仍經上方 [硬限制](#硬限制) 核對，刪除方式依 [敏感判定](#敏感判定)。`gh` 查詢失敗或標記沒有 repo 時只跳過票資料夾這一類，其他三類照清。
-- **紀錄**：`.lat/cleanup.log` 一行一筆，以 tab 分隔：時間（UTC）、類別、相對 `.lat` 的路徑、大小（bytes）、刪除方式（`trash`／`shred`）或「跳過：原因」。票資料夾與監控殘留中未達條件的項目也寫原因；未滿 40 天的任務卡與等待紀錄不寫。
+- 每項刪除前重新讀取 session 紀錄，經上方 [硬限制](#硬限制) 核對（執行中才 activate 的主控也受保護），刪除方式依 [敏感判定](#敏感判定)。`gh` 查詢失敗或標記沒有 repo 時只跳過票資料夾這一類，其他三類照清。
+- **紀錄**：`.lat/cleanup.log` 一行一筆，以 tab 分隔：時間（UTC）、類別、相對 `.lat` 的路徑、大小（bytes）、刪除方式（`trash`／`shred`）或「跳過：原因」。四類中每個未刪的項目都寫原因（例如未滿 40 天、票仍開啟、active session 仍需要）。
 - **預覽**：`run --workspace "$workspace" --repo <repo> --dry-run` 印出一次執行會刪什麼，未開啟時也能用；不刪、不寫紀錄。
 - **關閉**：以 trash-put 移除開啟標記即可。

@@ -16,7 +16,7 @@ import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _lat_cleanup import (ENDED, Protection, deletion_method, delete, issue_texts,
-                          session_records, tracker_issues, usage)
+                          lat_directories, session_records, tracker_issues, usage)
 from _lat_common import shared_lat_dir, write_json_atomic
 
 MARKER = 'autoclean-enabled.json'
@@ -56,7 +56,10 @@ class Log:
         if self.dry_run:
             print(line)
             return
-        with (self.lat / LOG).open('a', encoding='utf-8') as stream:
+        # Non-blocking, so a log that is a FIFO without a reader fails instead of hanging.
+        descriptor = os.open(self.lat / LOG, os.O_WRONLY | os.O_APPEND | os.O_CREAT | os.O_NONBLOCK,
+                             0o600)
+        with os.fdopen(descriptor, 'a', encoding='utf-8') as stream:
             stream.write(line + '\n')
 
 
@@ -122,30 +125,34 @@ def watch_leftovers(lat, records, now):
             yield path, ended_before(by_session.get(match.group('sid'), []))
 
 
+def _untouched(paths, now):
+    """Files among `paths` as (path, None) when last modified 40 days ago, else (path, why kept)."""
+    for path in paths:
+        if path.is_file() and not path.is_symlink():
+            modified = _modified(path)
+            yield path, None if modified <= now - AGE else (
+                f'未滿 40 天（{modified.isoformat(timespec="seconds")}）')
+
+
 def done_cards(lat, now):
-    for path in sorted((lat / 'tasks/done').glob('*.md')):
-        if path.is_file() and not path.is_symlink() and _modified(path) <= now - AGE:
-            yield path, None
+    return _untouched(sorted((lat / 'tasks/done').glob('*.md')), now)
 
 
 def waits(lat, now):
-    """Wait declarations untouched for 40 days, each followed by its lock when that is too."""
-    for path in sorted((lat / 'watch/waits').glob('*.json')):
-        if path.is_symlink() or _modified(path) > now - AGE:
-            continue
-        yield path, None
-        lock = path.with_name(f'.{path.stem}.lock')
-        if lock.is_file() and not lock.is_symlink():
-            yield lock, None if _modified(lock) <= now - AGE else '鎖檔未滿 40 天'
+    """Wait declarations, then their locks; a lock goes only after its declaration."""
+    folder = lat / 'watch/waits'
+    return _untouched([*sorted(folder.glob('*.json')), *sorted(folder.glob('.*.lock'))], now)
 
 
 def _remove(log, protection, category, candidates, *, dry_run):
+    """`protection` returns a fresh Protection: a controller may activate during an earlier
+    deletion, so the hard limits are read again before each one."""
     going = set()
     for path, kept in candidates:
         if kept:
             log.write(category, f'跳過：{kept}', path)
             continue
-        reason = protection.reason(path, going=frozenset(going))
+        reason = protection().reason(path, going=frozenset(going))
         if reason:
             log.write(category, f'跳過：{reason}', path)
             continue
@@ -167,7 +174,7 @@ def _remove(log, protection, category, candidates, *, dry_run):
 def clean(lat, repo, log, *, dry_run=False):
     """One pass over the four categories, from fresh session records and tracker state."""
     now = datetime.now(timezone.utc)
-    issues, error = None, None
+    issues, texts, error = None, None, None
     if not repo:
         error = '未設定 tracker repo'
     else:
@@ -176,12 +183,15 @@ def clean(lat, repo, log, *, dry_run=False):
             texts = issue_texts(issues)
         except ValueError as failure:
             issues, error = None, str(failure)
-    protection = Protection(lat, issues=None if issues is None else texts, tracker_error=error)
+
+    def protection():
+        return Protection(lat, issues=texts, tracker_error=error)
+
     if issues is None:
         log.write(TICKET_FOLDER, f'跳過整類：{error}')
     else:
         _remove(log, protection, TICKET_FOLDER, ticket_folders(lat, issues, now), dry_run=dry_run)
-    records, _ = session_records(protection.lat_dirs)
+    records, _ = session_records(lat_directories(lat))
     _remove(log, protection, WATCH_LEFTOVER, watch_leftovers(lat, records, now), dry_run=dry_run)
     _remove(log, protection, DONE_CARD, done_cards(lat, now), dry_run=dry_run)
     _remove(log, protection, WAIT, waits(lat, now), dry_run=dry_run)
@@ -218,17 +228,18 @@ def run(lat, repo=None):
 def trigger(workspace):
     """Called by activate and deactivate; never raises and never waits for the cleanup.
 
-    While off it only logs that; otherwise it starts `run` in its own session.
+    While off it only logs that; otherwise it starts `run` in its own session and returns
+    that process.
     """
     try:
         lat = Path(os.path.realpath(shared_lat_dir(workspace)))
         if not enabled(lat):
             Log(lat).write('自動清理', '未開啟')
             return
-        subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'run',
-                          '--workspace', str(workspace)],
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
+        return subprocess.Popen([sys.executable, str(Path(__file__).resolve()), 'run',
+                                 '--workspace', str(workspace)],
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True, close_fds=True)
     except (OSError, ValueError) as error:
         print(f'自動清理未啟動：{error}')
 

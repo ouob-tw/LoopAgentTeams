@@ -4,6 +4,7 @@ import importlib.util
 import io
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import time
@@ -64,8 +65,11 @@ class AutocleanTestCase(CleanTestCase):
             self.write(f'watch/waits/.{agent}.lock')
         self.write('watch/waits/young-lock.json', '{}')
         self.write('watch/waits/.young-lock.lock')
+        self.write('watch/waits/fresh.json', '{}')
+        self.write('watch/waits/.fresh.lock')
+        self.write('watch/waits/.orphan.lock')
         age(self.lat, 100)
-        for path in ('tasks/done/new-card.md', 'watch/waits/.young-lock.lock'):
+        for path in ('tasks/done/new-card.md', 'watch/waits/.young-lock.lock', 'watch/waits/fresh.json'):
             age(self.lat / path, 5)
         # A file deep in a ticket folder changed today; only the close time counts.
         (self.lat / 'runs/issue-1/notes.md').write_text('touched today\n')
@@ -141,7 +145,8 @@ class EnabledTests(AutocleanTestCase):
 
         for removed in ('runs/issue-1', f'watch/{ENDED_SID}.log', f'watch/{ENDED_SID}.lock',
                         'watch/gone', 'tasks/done/old-card.md', 'watch/waits/old-agent.json',
-                        'watch/waits/.old-agent.lock', 'watch/waits/young-lock.json'):
+                        'watch/waits/.old-agent.lock', 'watch/waits/young-lock.json',
+                        'watch/waits/.orphan.lock'):
             self.assertFalse(self.exists(removed), removed)
         self.assertEqual(self.outcome('runs/issue-1'), 'shred')
         self.assertEqual(self.outcome('tasks/done/old-card.md'), 'trash')
@@ -159,13 +164,14 @@ class EnabledTests(AutocleanTestCase):
             'watch/legacy': '無結束時間', 'watch/unknown': '沒有 session 紀錄',
             'watch/live': '仍有 active session', 'watch/waits/live.json': 'active session 仍需要',
             'watch/waits/helper.json': 'active session 仍需要',
-            'watch/waits/.young-lock.lock': '鎖檔未滿 40 天',
+            'watch/waits/.young-lock.lock': '未滿 40 天', 'tasks/done/new-card.md': '未滿 40 天',
+            'watch/waits/fresh.json': '未滿 40 天', 'watch/waits/.fresh.lock': '現存檔案的鎖',
+            'watch/waits/.live.lock': 'active session 仍需要',
         }
         for path, reason in kept.items():
             self.assertTrue(self.exists(path), path)
             self.assertIn(reason, self.outcome(path) or '', path)
-        for path in ('runs/misc-2026-08-01-proto', 'progress/issue-1-notes.md',
-                     'tasks/done/new-card.md', 'watch/waits/.live.lock'):
+        for path in ('runs/misc-2026-08-01-proto', 'progress/issue-1-notes.md'):
             self.assertTrue(self.exists(path), path)
         self.assertNotIn('misc-', ' '.join(self.removal_calls()))
         self.assertNotIn('progress', ' '.join(self.removal_calls()))
@@ -197,8 +203,11 @@ class EnabledTests(AutocleanTestCase):
 
         stamp = self.lat / 'cleanup.last-run'
         stamp.write_text(ago(1.1) + '\n')
+        age(self.lat / 'watch/waits/.young-lock.lock', 100)
         self.run_once()
         self.assertFalse(self.exists('tasks/done/later.md'))
+        # The lock left behind by the first pass ages on its own and goes in a later one.
+        self.assertFalse(self.exists('watch/waits/.young-lock.lock'))
 
     def test_reactivated_session_and_reopened_ticket_are_no_longer_cleaned(self):
         self.enable()
@@ -233,12 +242,47 @@ class EnabledTests(AutocleanTestCase):
         module = load()
         with mock.patch.dict(os.environ, self.env, clear=True):
             started = time.monotonic()
-            module.trigger(self.work)
+            process = module.trigger(self.work)
             self.assertLess(time.monotonic() - started, 2)
-        deadline = time.monotonic() + 60
-        while time.monotonic() < deadline and not any(line[4] == '結束' for line in self.log_lines()):
-            time.sleep(0.1)
+        self.addCleanup(process.wait)
+        self.addCleanup(process.kill)
+        self.assertEqual(process.wait(timeout=60), 0)
+        self.assertEqual(self.log_lines()[-1][4], '結束')
         self.assertFalse(self.exists('runs/issue-1'))
+
+    def test_a_controller_activating_mid_pass_keeps_its_files(self):
+        self.enable()
+        module = load()
+        deleted = []
+
+        def delete(path, method):
+            if not deleted:
+                record = self.lat / f'sessions/{ENDED_SID}.json'
+                record.write_text(json.dumps(dict(json.loads(record.read_text()), status='active')))
+                self.session('55555555-5555-4555-8555-555555555555', 'old-agent', 'active')
+            deleted.append(os.path.relpath(path, self.lat))
+            shutil.rmtree(path) if Path(path).is_dir() else Path(path).unlink()
+
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(module, 'delete', delete):
+            module.clean(self.lat, REPO, module.Log(self.lat))
+        self.assertEqual(deleted[0], 'runs/issue-1')
+        for path in (f'watch/{ENDED_SID}.log', 'watch/gone'):
+            self.assertTrue(self.exists(path), path)
+            self.assertIn('active session', self.outcome(path), path)
+        # Wait records are only judged by the hard limits, read again before each deletion.
+        for path in ('watch/waits/old-agent.json', 'watch/waits/.old-agent.lock'):
+            self.assertTrue(self.exists(path), path)
+            self.assertIn('active session 仍需要', self.outcome(path), path)
+        self.assertIn('tasks/done/old-card.md', deleted)
+
+    def test_a_log_nobody_reads_never_blocks_the_trigger(self):
+        os.mkfifo(self.lat / 'cleanup.log')
+        started = time.monotonic()
+        with mock.patch('sys.stdout', new_callable=io.StringIO) as output:
+            self.assertIsNone(load().trigger(self.work))
+        self.assertLess(time.monotonic() - started, 2)
+        self.assertIn('自動清理未啟動', output.getvalue())
 
     def test_trigger_never_raises(self):
         module = load()
