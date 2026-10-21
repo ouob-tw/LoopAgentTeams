@@ -1401,7 +1401,7 @@ class SessionTests(unittest.TestCase):
         helper = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(helper)
 
-        self.assertIsNone(helper.process_command(zombie.pid))
+        self.assertFalse(helper.watcher_process_matches(zombie.pid, ('run',)))
 
     def test_hook_restarts_a_dead_active_watcher_without_extra_output(self):
         self.activate()

@@ -5,6 +5,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 
 /** Mirrors the helper's own lookup order for its config and state directories. */
+// 須與 `skills/local/lat/scripts/_lat_common.py` 一致
 export function helperDirectories(): { config: string; state: string } {
 	const env = process.env;
 	let config = env.HERDR_PLUGIN_CONFIG_DIR;
