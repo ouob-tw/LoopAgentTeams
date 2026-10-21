@@ -1,5 +1,6 @@
 """Behavior and CLI contract tests for the LAT stall watcher."""
 import argparse
+import fcntl
 import importlib.util
 import json
 import os
@@ -4288,6 +4289,91 @@ esac
         self.assertEqual(errors, [])
         self.assertEqual(order, ['wait-written', 'monitor-locked'])
         self.assertEqual(json.loads(path.read_text()), {'agent': 'worker-open', 'monitor': True})
+
+    def assert_wait_lock_available_during_command(self, path, command):
+        # A fresh descriptor in another thread bypasses wait_lock's reentrancy.
+        results = []
+
+        def probe():
+            try:
+                with path.with_name(f'.{path.stem}.lock').open('a') as lock:
+                    fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                    fcntl.flock(lock, fcntl.LOCK_UN)
+                results.append('acquired')
+            except OSError as error:
+                results.append(error)
+
+        competing = threading.Thread(target=probe)
+        competing.start()
+        competing.join(10)
+        self.assertFalse(competing.is_alive(), command)
+        self.assertEqual(results, ['acquired'], command)
+
+    def test_expired_wait_unlocks_before_observing_target_command(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'orch')
+        watch.write_object(path, dict(
+            agent='orch', kind='agent', target='worker-open', active=True,
+            declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00', deadline_at=60))
+        real_run = watch.run_command
+        intercepted = []
+
+        def run(command, **kwargs):
+            if command[:3] == ['hcom', 'term', 'worker-open']:
+                intercepted.append(command[:3])
+                self.assert_wait_lock_available_during_command(path, command)
+            return real_run(command, **kwargs)
+
+        with patch.object(watch, 'run_command', side_effect=run):
+            self.run_cycles(watch, 60)
+
+        self.assertEqual(intercepted, [['hcom', 'term', 'worker-open']])
+        self.assertTrue(json.loads(path.read_text())['deadline_extended'])
+
+    def test_wait_release_unlocks_before_reading_hcom_events(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(
+            agent='worker-open', kind='agent', target='absent', active=True,
+            declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00', deadline_at=3600))
+        real_run = watch.run_command
+        intercepted = []
+
+        def run(command, **kwargs):
+            if command[:2] == ['hcom', 'events'] and '--after' in command:
+                intercepted.append(command[:2])
+                self.assert_wait_lock_available_during_command(path, command)
+            return real_run(command, **kwargs)
+
+        with patch.object(watch, 'run_command', side_effect=run):
+            self.run_cycles(watch, 0)
+
+        self.assertEqual(intercepted, [['hcom', 'events']])
+        self.assertEqual(json.loads(path.read_text())['released_reason'], 'message-delivered')
+
+    def test_alarm_delivery_unlocks_before_hcom_and_herdr_commands(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch, agent='orch')
+        # A busy prompt makes the normal deadline path notify the user.
+        Path(str(self.hcom_log) + '.busy').touch()
+        real_run = watch.run_command
+        intercepted = []
+
+        def run(command, **kwargs):
+            if (command[:2] == ['hcom', 'send']
+                    or command[:3] == ['herdr', 'notification', 'show']):
+                intercepted.append(command[:2])
+                self.assert_wait_lock_available_during_command(path, command)
+            return real_run(command, **kwargs)
+
+        with patch.object(watch, 'run_command', side_effect=run):
+            self.run_cycles(watch, 660)
+
+        self.assertEqual(intercepted, [['hcom', 'send'], ['herdr', 'notification']])
+        self.assertTrue(json.loads(path.read_text())['alarm_notified'])
 
     def test_alarm_write_back_after_external_command_detects_change(self):
         watch = load_watch()
