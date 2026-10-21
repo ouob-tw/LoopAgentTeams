@@ -121,7 +121,7 @@ docker compose -f compose.e2e.yml -p <project>_e2e_review --env-file .env.e2e --
 - 修正產品程式缺陷時，回歸測試須在修復前版本因目標缺陷失敗，並在修復後通過；由實作者做一次，QA 與主控不重做；新功能與只改測試的修正不適用。保留版本、指令與結果。Import、fixture 或環境錯誤不算重現。無法取得基準或重現時，將「測試能攔下原缺陷」標為 `UNPROVEN` 並記原因，修復後結果另列，不抹除其他有效證據。
 - 偶發失敗的測試先查出原因，修好後對該測試檔做一次重複跑；不以連跑多次整套作為證明。
 - 結果區分 `PASS`、`FAIL`、`UNPROVEN`（證據不足）與 `NOT_EXECUTED`（未執行），記錄原因；未測與無法證明不能彙總成通過。
-- 整套測試經閘門執行，同內容已通過就沿用上次結果；用法見 [references/suite-gate.md](references/suite-gate.md)。
+- 整套測試經閘門執行，同內容已通過就沿用上次結果；專案登記檔有對照表時，每張票改跑 `suite-gate.py affected`，整套須標明用途。用法見 [references/suite-gate.md](references/suite-gate.md)。
 
 ## 測試歸屬判斷
 

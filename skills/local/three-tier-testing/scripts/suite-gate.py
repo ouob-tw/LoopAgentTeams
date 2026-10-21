@@ -3,7 +3,10 @@
 
 `run [--rerun "<reason>"] -- <cmd>` reuses a passing result for identical content, lets
 only one of several identical requests run, and caps how many full suites run on the host
-at once. `status` lists running and queued suites and recent records. `is_full_suite()`
+at once; in a project with an affected-test map it needs a purpose. `affected [--base
+<rev>]` runs only the tests the map selects for this change, or the registered full suites
+through the gate when the change leaves the map. `status` lists running and queued suites
+and recent records. `is_full_suite()`
 decides whether a shell command is a full suite run (project registry first, then the
 default runner rules). `hook` is the PreToolUse hook that blocks full suites run outside
 the gate, and `install` / `uninstall --client claude|codex` add or remove it.
@@ -603,6 +606,8 @@ def reusable_record(fp):
     Records whose content changed mid-run describe no single content and are skipped.
     """
     for record in reversed(read_records()):
+        if record.get('kind') == 'affected':
+            continue
         if record.get('fingerprint') == fp and not record.get('content_changed'):
             return record if record.get('reusable') else None
     return None
@@ -611,11 +616,12 @@ def reusable_record(fp):
 # ---------------------------------------------------------------- run
 
 class Gate:
-    def __init__(self, argv, cwd, rerun, config):
+    def __init__(self, argv, cwd, rerun, config, extra=None):
         self.argv = argv
         self.cwd = cwd
         self.rerun = rerun
         self.config = config
+        self.extra = extra or {}  # written into the record over the defaults
         self.command = normalize_command(argv)
         self.child = None
         self.me = {'id': uuid.uuid4().hex, 'pid': os.getpid(),
@@ -778,7 +784,9 @@ class Gate:
             'output_tail': tail.text(), 'agent': self.me['agent'], 'time': start_iso,
             'finished': now_iso(), 'rerun_reason': self.rerun, 'content_changed': changed,
             'reusable': info is not None and code == 0 and not changed,
+            'purpose': None, 'purpose_reason': None,
         }
+        record.update(self.extra)
         append_record(record)
         if changed:
             warn('content changed during the run: this result is recorded but will not be '
@@ -833,6 +841,8 @@ def print_reuse(record, command):
           f"({record.get('duration_s')}s, exit {record.get('exit_code')})")
     print(f"  command:     {record.get('command')}")
     print(f"  cwd:         {record.get('cwd')}")
+    if record.get('purpose'):
+        print(f"  purpose:     {describe_purpose(record)}")
     if record.get('rerun_reason'):
         print(f"  rerun reason: {record['rerun_reason']}")
     if record.get('output_tail'):
@@ -846,28 +856,276 @@ def print_reuse(record, command):
     print(f'  suite-gate.py run --rerun "<reason>" -- {command}')
 
 
-def cmd_run(rerun, argv):
-    if rerun is not None and not rerun.strip():
-        warn('--rerun needs a reason')
-        return 2
-    gate = Gate(argv, Path.cwd(), rerun.strip() if rerun else None, load_config())
-    for sig in SIGNALS:
-        signal.signal(sig, _raise_interrupted)
+def describe_purpose(record):
+    purpose = record.get('purpose')
+    if purpose == 'reason':
+        return f"reason: {record.get('purpose_reason')}"
+    if purpose == 'map-fallback':
+        return 'map fallback, triggered by ' + ', '.join(record.get('trigger_files') or [])
+    return purpose
+
+
+def _drive(gate, action):
+    """action() with the gate's entries released after; an interrupt ends the test
+    session and is raised again."""
     try:
-        return gate.run()
-    except Interrupted as exc:
+        return action()
+    except Interrupted:
         child = gate.child
         if child is not None:
             for sig in SIGNALS:
                 signal.signal(sig, signal.SIG_IGN)
             warn('interrupted: ending the test session; no record written')
             end_session(child.pid, child)
+        raise
+    finally:
+        gate.release()
+
+
+def _guarded(body):
+    """body() with interrupts and gate errors turned into exit codes."""
+    for sig in SIGNALS:
+        signal.signal(sig, _raise_interrupted)
+    try:
+        return body()
+    except Interrupted as exc:
         return 128 + exc.signum
     except RuntimeError as exc:
         warn(str(exc))
         return 2
-    finally:
-        gate.release()
+
+
+def cmd_run(rerun, purpose, reason, argv):
+    if rerun is not None and not rerun.strip():
+        warn('--rerun needs a reason')
+        return 2
+    if reason is not None and not reason.strip():
+        warn('--reason needs text')
+        return 2
+    if purpose and reason:
+        warn('give either --purpose or --reason, not both')
+        return 2
+    if reason:
+        purpose = 'reason'
+    if purpose is None and is_mapped(load_registry(Path.cwd()) or {}):
+        warn('this project has an affected-test map, so a full suite needs a purpose. '
+             'For the tests this change affects, run instead:\n'
+             f'  {affected_command()}\n'
+             'For a full suite, add one after `run`: --purpose post-merge (after a batch '
+             'is merged), --purpose release (before a release), or --reason "<why the full '
+             'suite is needed>"')
+        return 2
+    extra = {'purpose': purpose, 'purpose_reason': reason.strip() if reason else None}
+    gate = Gate(argv, Path.cwd(), rerun.strip() if rerun else None, load_config(), extra)
+    return _guarded(lambda: _drive(gate, gate.run))
+
+
+# ---------------------------------------------------------------- affected tests
+
+def is_mapped(registry):
+    """True when the registry has an affected-test map."""
+    affected = registry.get('affected') if isinstance(registry, dict) else None
+    return isinstance(affected, dict) and bool(affected.get('map'))
+
+
+def affected_command():
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'affected'])
+
+
+def _strings(value, what, allow_empty=True):
+    if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value) \
+            or (not allow_empty and not value):
+        raise ValueError(f'{what} must be a list of non-empty strings')
+    return value
+
+
+def _dir_key(path):
+    path = path.strip('/')
+    return '.' if path in ('', '.') else os.path.normpath(path)
+
+
+def read_map(registry):
+    """The checked affected-test map: commands by directory, rules, shared paths, full
+    suites and the integration branch. ValueError names the bad field."""
+    affected = registry['affected']
+    commands = affected.get('commands')
+    if not isinstance(commands, dict) or not commands:
+        raise ValueError('affected.commands must map directories to command templates')
+    for directory, template in commands.items():
+        if not isinstance(template, str) or '{tests}' not in template:
+            raise ValueError(f'affected.commands["{directory}"] must be a string with {{tests}}')
+    rules = affected['map']
+    if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
+        raise ValueError('affected.map must be a list of {"paths": [...], "tests": [...]}')
+    for i, rule in enumerate(rules):
+        _strings(rule.get('paths'), f'affected.map[{i}].paths', allow_empty=False)
+        _strings(rule.get('tests'), f'affected.map[{i}].tests')
+    shared = _strings(affected.get('shared', []), 'affected.shared')
+    suites = registry.get('full_suites')
+    if not isinstance(suites, list) or not suites or not all(
+            isinstance(s, dict) and isinstance(s.get('command'), str) and s['command'].strip()
+            and isinstance(s.get('cwd', '.'), str) for s in suites):
+        raise ValueError('full_suites must list {"command": "...", "cwd": "<dir>"} entries')
+    branch = registry.get('integration_branch')
+    if branch is not None and (not isinstance(branch, str) or not branch):
+        raise ValueError('integration_branch must be a branch name')
+    return {'commands': {_dir_key(k): v for k, v in commands.items()}, 'rules': rules,
+            'shared': shared, 'branch': branch,
+            'suites': [{'command': s['command'].strip(), 'cwd': _dir_key(s.get('cwd', '.'))}
+                       for s in suites]}
+
+
+def glob_match(path, pattern):
+    """Path glob: `*` and `?` stay within one directory, `**` spans directories."""
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith('**/', i):
+            out.append('(?:.*/)?')
+            i += 3
+        elif pattern.startswith('**', i):
+            out.append('.*')
+            i += 2
+        else:
+            out.append({'*': '[^/]*', '?': '[^/]'}.get(pattern[i]) or re.escape(pattern[i]))
+            i += 1
+    return re.fullmatch(''.join(out), path) is not None
+
+
+def _git_paths(args, root):
+    result = git([args[0], '-z', *args[1:]], root)
+    if result.returncode != 0:
+        raise RuntimeError(f'git {" ".join(args[:2])} failed: {result.stderr.strip()}')
+    return [p for p in result.stdout.split('\0') if p]
+
+
+def change_base(root, base, branch):
+    """(commit, description) the change is measured from: base when given, else the
+    merge-base of HEAD and the integration branch."""
+    if base is None and branch is None:
+        raise RuntimeError('the registry names no integration_branch; add it or pass --base')
+    if base is not None:
+        result = git(['rev-parse', '--verify', '--quiet', base + '^{commit}'], root)
+        if result.returncode != 0:
+            raise RuntimeError(f'--base {base} is not a commit')
+        return result.stdout.strip(), base
+    result = git(['merge-base', 'HEAD', branch], root)
+    if result.returncode != 0:
+        raise RuntimeError(f'no merge-base of HEAD and {branch}: {result.stderr.strip()}')
+    return result.stdout.strip(), f'merge-base of HEAD and {branch}'
+
+
+def changed_files(root, base):
+    """Files that differ from base: committed, uncommitted and new files not ignored."""
+    diff = _git_paths(['diff', '--name-only', '--no-renames', base, '--'], root)
+    new = _git_paths(['ls-files', '--others', '--exclude-standard'], root)
+    return sorted(set(diff) | set(new))
+
+
+def select_tests(root, changed, amap):
+    """({test: [why]}, [(file, why)] that need the full suite) for the changed files."""
+    files = [p for p in _git_paths(['ls-files', '-co', '--exclude-standard'], root)
+             if (root / p).is_file()]
+    rules = amap['rules']
+    test_patterns = [p for rule in rules for p in rule['tests']]
+    selected, fallback = {}, []
+    for path in changed:
+        shared = next((p for p in amap['shared'] if glob_match(path, p)), None)
+        if shared:
+            fallback.append((path, f'shared path {shared}'))
+            continue
+        handled = False
+        if any(glob_match(path, p) for p in test_patterns):
+            handled = True
+            if (root / path).is_file():
+                selected.setdefault(path, []).append('test file changed')
+        for rule in rules:
+            hit = next((p for p in rule['paths'] if glob_match(path, p)), None)
+            if hit is None:
+                continue
+            handled = True
+            tests = [t for t in files if any(glob_match(t, p) for p in rule['tests'])]
+            if rule['tests'] and not tests:
+                fallback.append((path, f'{hit} maps to tests that match no file: '
+                                       + ', '.join(rule['tests'])))
+            for test in tests:
+                selected.setdefault(test, []).append(f'{path} matches {hit}')
+        if not handled:
+            fallback.append((path, 'not in the affected-test map'))
+    return selected, fallback
+
+
+def command_dir(test, commands):
+    """The longest directory in commands that holds test, or None."""
+    found = [d for d in commands if d == '.' or test.startswith(d + '/')]
+    return max(found, key=len) if found else None
+
+
+def cmd_affected(base):
+    def body():
+        root = repo_root(Path.cwd())
+        registry = load_registry(Path.cwd()) if root else None
+        if not is_mapped(registry or {}):
+            warn('no affected-test map in this project (`affected.map` in '
+                 f'{REGISTRY_NAME}); run the full suite through `suite-gate.py run`')
+            return 2
+        try:
+            amap = read_map(registry)
+        except ValueError as exc:
+            warn(f'{root / REGISTRY_NAME}: {exc}')
+            return 2
+        commit, origin = change_base(root, base, amap['branch'])
+        changed = changed_files(root, commit)
+        warn(f'change against {origin} ({commit[:12]}): {len(changed)} file(s)')
+        for path in changed:
+            warn(f'  {path}')
+        selected, fallback = select_tests(root, changed, amap)
+        groups = {}
+        for test in sorted(selected):
+            directory = command_dir(test, amap['commands'])
+            if directory is None:
+                fallback.append((test, 'no affected.commands directory holds this test'))
+            else:
+                groups.setdefault(directory, []).append(test)
+        if fallback:
+            return run_fallback(root, amap, fallback)
+        if not groups:
+            warn('no tests selected for this change; nothing to run')
+            return 0
+        warn('selected tests:')
+        for test in sorted(selected):
+            warn(f"  {test}  ({'; '.join(selected[test])})")
+        code = 0
+        for directory, tests in groups.items():
+            rel = [t if directory == '.' else t[len(directory) + 1:] for t in tests]
+            text = amap['commands'][directory].replace('{tests}', ' '.join(map(shlex.quote, rel)))
+            cwd = root if directory == '.' else root / directory
+            warn(f'running in {directory}: {text}')
+            gate = Gate([text], cwd, None, load_config(), {
+                'kind': 'affected', 'reusable': False, 'base': commit,
+                'changed_files': changed, 'selected_tests': tests,
+                'why': {t: selected[t] for t in tests}})
+            info = fingerprint(cwd, [text])
+            result = _drive(gate, lambda: gate.execute(info))
+            code = code or result
+        return code
+    return _guarded(body)
+
+
+def run_fallback(root, amap, fallback):
+    """Run (or reuse) every registered full suite through the gate."""
+    warn('this change needs the full suite (map fallback):')
+    for path, why in fallback:
+        warn(f'  {path}: {why}')
+    triggers = sorted({path for path, _ in fallback})
+    code = 0
+    for suite in amap['suites']:
+        cwd = root if suite['cwd'] == '.' else root / suite['cwd']
+        warn(f"full suite in {suite['cwd']}: {suite['command']}")
+        gate = Gate([suite['command']], cwd, None, load_config(),
+                    {'purpose': 'map-fallback', 'trigger_files': triggers})
+        result = _drive(gate, gate.run)
+        code = code or result
+    return code
 
 
 # ---------------------------------------------------------------- status
@@ -909,10 +1167,14 @@ def cmd_status(as_json, fp_prefix, limit):
                 'content changed' if r.get('content_changed') else 'not in Git') + ')'
         else:
             result = f"FAIL exit {r.get('exit_code')}"
+        if r.get('kind') == 'affected':
+            result = ('PASS' if r.get('exit_code') == 0 else f"FAIL exit {r.get('exit_code')}") \
+                + ' (affected tests)'
         rerun = f"  rerun: {r['rerun_reason']}" if r.get('rerun_reason') else ''
+        purpose = f"  purpose: {describe_purpose(r)}" if r.get('purpose') else ''
         print(f"  {r.get('time')}  {result}  fp {(r.get('fingerprint') or '-')[:12]}  "
               f"{r.get('agent')}  {r.get('duration_s')}s  {r.get('cwd')}  "
-              f"{r.get('command')}{rerun}")
+              f"{r.get('command')}{rerun}{purpose}")
     return 0
 
 
@@ -1134,7 +1396,7 @@ def cmd_configure(action, client, claude_settings, codex_home, preview):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     # A hook that exits 2 would block every command, so only run and status check this.
-    if not sys.platform.startswith('linux') and argv[:1] in (['run'], ['status']):
+    if not sys.platform.startswith('linux') and argv[:1] in (['run'], ['status'], ['affected']):
         warn('only Linux is supported')
         return 2
     command = []
@@ -1145,6 +1407,14 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='action', required=True)
     run = sub.add_parser('run', help='run a full suite through the gate: run [--rerun "<reason>"] -- <cmd>')
     run.add_argument('--rerun', metavar='REASON', help='run even if this content already passed')
+    run.add_argument('--purpose', choices=('post-merge', 'release'),
+                     help='why a full suite runs; required with an affected-test map')
+    run.add_argument('--reason', metavar='TEXT',
+                     help='a free-text purpose instead of --purpose')
+    affected = sub.add_parser('affected', help='run the tests the affected-test map selects '
+                                               'for this change: affected [--base <rev>]')
+    affected.add_argument('--base', metavar='REV', help='measure the change from this commit '
+                          'instead of the merge-base of HEAD and the integration branch')
     status = sub.add_parser('status', help='show running and queued suites and recent records')
     status.add_argument('--json', action='store_true')
     status.add_argument('--fingerprint', metavar='PREFIX', help='only records for this fingerprint')
@@ -1163,11 +1433,13 @@ def main(argv=None):
     if args.action == 'run':
         if not command:
             parser.error('run needs the suite command after --')
-        return cmd_run(args.rerun, command)
+        return cmd_run(args.rerun, args.purpose, args.reason, command)
     if command:
         parser.error(f'{args.action} takes no command')
     if args.action == 'hook':
         return cmd_hook()
+    if args.action == 'affected':
+        return cmd_affected(args.base)
     if args.action in ('install', 'uninstall'):
         try:
             return cmd_configure(args.action, args.client, args.claude_settings,

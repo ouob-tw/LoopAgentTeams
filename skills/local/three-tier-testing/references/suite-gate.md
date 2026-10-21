@@ -2,6 +2,8 @@
 
 整套測試一律透過 `scripts/suite-gate.py` 執行。同一份程式內容用同一個指令跑過且通過時直接回報上次結果；相同請求同時送出只跑一次；整個主機同時最多跑 2 套，其餘排隊。只跑單一檔案或指定範圍的測試不必經過閘門。
 
+專案登記檔有對照表時，每張票改用 `affected` 只跑這次改動影響到的測試，整套只在整批合併後與發布前跑，並且要標明用途（見[受影響測試與對照表](#受影響測試與對照表)）。
+
 以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫，只支援 Linux。
 
 ## 跑整套測試
@@ -15,6 +17,15 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
 - 測試的輸出與結束碼原樣轉出。閘門自己的訊息印在 stderr，開頭是 `suite-gate:`。
 - 已通過時不執行，印出上次的執行者、時間、耗時、指令與輸出結尾，以 0 結束，並提醒把這筆當作結果回報：別人要求「再跑一次」本身不是重跑的理由，有具體原因（環境變了、在查偶發失敗等）才用 `--rerun`。
 - 資料庫、外部服務或沒進版控的設定改了、需要重跑時，用 `--rerun` 寫原因；原因會記進紀錄。`--rerun` 同樣要排隊。
+- 有對照表的專案，`run` 必須標明用途，否則不執行、以結束碼 2 回覆 `affected` 指令：
+
+  ```bash
+  uv run --no-project python <skill>/scripts/suite-gate.py run --purpose post-merge -- '<整套測試指令>'  # 整批合併後
+  uv run --no-project python <skill>/scripts/suite-gate.py run --purpose release -- '<整套測試指令>'     # 發布前
+  uv run --no-project python <skill>/scripts/suite-gate.py run --reason "<為什麼需要整套>" -- '<整套測試指令>'
+  ```
+
+  用途與原因寫進紀錄，不進指紋：整批合併後的通過紀錄，發布前可以直接沿用。`--rerun` 只管「要不要沿用」，不能代替用途。沒有對照表的專案不需要用途，可以照舊帶。
 
 ### 怎樣算「同一份內容」
 
@@ -58,6 +69,72 @@ repo 根目錄放 `.suite-gate.json`（進版控）：
 
 判斷時換行與 `;`、`&&`、`|` 一樣當作分隔，轉向（`2>&1`、`> out.txt`）連同目標一起略過，引號外、位於字首的 `#` 到行尾當作註解；登記的樣式也照同樣方式整理後再比對。
 
+## 受影響測試與對照表
+
+在專案登記檔加上對照表後，用一條指令跑出這次改動影響到的測試：
+
+```bash
+uv run --no-project python <skill>/scripts/suite-gate.py affected
+uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit>
+```
+
+- **這次改動**：工作區相對基準點的所有差異，包含已提交、已暫存、未暫存與沒被忽略的新檔，刪除的檔案也算。基準點預設是 HEAD 與 `integration_branch` 的共同祖先；`--base` 直接指定基準 commit。
+- **怎麼挑**：每個改動檔依序判斷——
+  1. 符合 `shared`：改跑整套。
+  2. 本身符合任一規則的 `tests`（是測試檔）：選它自己；已刪除的測試檔不執行。
+  3. 符合規則的 `paths`：選該規則 `tests` 對到的現有檔案。`tests` 是空清單代表不需要測試（例如文件）；不是空的卻一個檔案都對不到，改跑整套。
+  4. 以上都不符合：沒列在表上，改跑整套。
+- 選出的測試依所在目錄分組（取 `affected.commands` 中最長的符合目錄），把相對該目錄的路徑代入 `{tests}`，在該目錄以 `/bin/sh` 執行。沒有目錄涵蓋的測試，改跑整套。
+- 輸出（stderr）列出基準點、改動檔、選出的測試與原因、每組執行的指令；測試輸出與結束碼原樣轉出，多組時回傳第一個非 0 的結束碼。
+- 受影響測試不佔整套名額、不排隊、不沿用；每組寫一筆紀錄（`kind: "affected"`），含基準 commit、改動檔、該組選出的測試與原因。沒有選出任何測試時不執行、不寫紀錄。
+- **改跑整套**（對照表退回整套）：列出觸發的檔案與原因，再對 `full_suites` 的每一套照 `run` 的規則經閘門執行——同樣排隊、佔名額、同內容沿用。紀錄的用途是 `map-fallback`，並記下觸發的檔案（`trigger_files`）。被觸發時把缺的檔案補進對照表；審查者核對對照表的變更。
+
+### 對照表欄位
+
+都寫在 repo 根的 `.suite-gate.json`，進版控。路徑一律相對 repo 根；樣式中 `*`、`?` 不跨目錄，`**` 跨任意層目錄。
+
+| 欄位 | 內容 |
+| ---- | ---- |
+| `integration_branch` | 整合分支名稱，用來算基準點。 |
+| `full_suites` | 每一套整套測試：`command`（一整串 shell 指令文字）與 `cwd`（執行目錄，預設 `.`）。對照表退回整套時跑的就是這些；手動跑時在該目錄用 `run -- '<command>'`（一個引號字串），指紋才會相同。 |
+| `affected.commands` | 執行目錄 → 受影響測試指令樣板，`{tests}` 會換成選出的測試路徑（相對該目錄、已加引號）。 |
+| `affected.map` | 對應規則清單：`paths`（程式路徑樣式）→ `tests`（測試檔或測試路徑樣式，任一層都可以）。`tests` 只能對到可以直接執行的測試檔，不要對到共用的輔助檔。 |
+| `affected.shared` | 改到就改跑整套的路徑樣式，例如依賴鎖定檔、測試共用設定、建置設定。 |
+
+`affected.map` 非空就算「有對照表」：`run` 要求用途、`affected` 可用。`affected` 與 `full_suites` 不影響指紋；`suites`（給 hook 判斷用）照舊另外列。
+
+LoopAgentTeams 風格的例子：
+
+```json
+{
+  "suites": ["bun run test", "uv run --no-project python -m unittest discover -s skills/local/*/tests"],
+  "integration_branch": "dev",
+  "full_suites": [
+    {"cwd": "board", "command": "bun run test"},
+    {"cwd": ".", "command": "uv run --no-project python -m unittest discover -s skills/local/lat/tests"},
+    {"cwd": ".", "command": "uv run --no-project python -m unittest discover -s skills/local/three-tier-testing/tests"}
+  ],
+  "affected": {
+    "commands": {
+      "board": "bun test {tests}",
+      "skills/local/lat": "uv run --no-project python -m unittest {tests}",
+      "skills/local/three-tier-testing": "uv run --no-project python -m unittest {tests}"
+    },
+    "map": [
+      {"paths": ["board/src/lib/server/**"], "tests": ["board/tests/server/**/*.test.ts"]},
+      {"paths": ["board/src/routes/**"], "tests": ["board/tests/*-page.test.ts"]},
+      {"paths": ["skills/local/lat/scripts/lat-watch.py"], "tests": ["skills/local/lat/tests/test_lat_watch.py"]},
+      {"paths": ["skills/local/lat/scripts/_lat_common.py"], "tests": ["skills/local/lat/tests/test_*.py"]},
+      {"paths": ["skills/local/three-tier-testing/scripts/**"], "tests": ["skills/local/three-tier-testing/tests/test_*.py"]},
+      {"paths": ["**/*.md", "docs/**", ".suite-gate.json"], "tests": []}
+    ],
+    "shared": ["board/package.json", "board/bun.lock", "board/bunfig.toml", "board/vite.config.ts", "skills/local/lat/tests/fixtures/**"]
+  }
+}
+```
+
+改到 `skills/local/lat/scripts/lat-watch.py` 時，在 `skills/local/lat` 執行 `uv run --no-project python -m unittest tests/test_lat_watch.py`；改到 `board/bun.lock` 或沒列在表上的檔案時，經閘門跑（或沿用）三套整套。
+
 ## 執行前的 hook
 
 `suite-gate.py hook` 是 Claude 與 Codex 的 PreToolUse hook（matcher `Bash`），讓 Agent 不經閘門就跑整套測試時被擋下：
@@ -95,7 +172,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py install --client codex
 | 紀錄、名額與鎖 | `$XDG_STATE_HOME/suite-gate/`（預設 `~/.local/state/suite-gate/`） | 環境變數 `SUITE_GATE_STATE_DIR` |
 | 設定 | `$XDG_CONFIG_HOME/suite-gate/config.json`（預設 `~/.config/suite-gate/config.json`） | 環境變數 `SUITE_GATE_CONFIG` |
 
-整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用。
+整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用，以及用途（`purpose`：`post-merge`、`release`、`map-fallback`、`reason` 或 `null`）與自填原因（`purpose_reason`）；對照表退回整套另有 `trigger_files`。受影響測試的紀錄標 `kind: "affected"`，另有 `base`、`changed_files`、`selected_tests` 與 `why`（每個測試被選的原因），一律不可沿用。
 
 設定檔欄位（都可省略）：
 

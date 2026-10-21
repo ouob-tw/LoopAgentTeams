@@ -478,6 +478,287 @@ class StatusTests(GateCase):
         self.finish(b)
 
 
+class AffectedCase(GateCase):
+    """A mapped project: src/ and web/ map to their tests, docs need none, deps.lock is shared."""
+
+    def setUp(self):
+        super().setUp()
+        self.log = self.tmp / 'affected.log'
+        files = {'src/app.py': '', 'src/util.py': '', 'tests/test_app.py': '',
+                 'tests/test_util.py': '', 'web/src/page.ts': '', 'web/tests/page.test.ts': '',
+                 'docs/guide.md': '', 'deps.lock': '', 'README.md': ''}
+        for name, text in files.items():
+            (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / name).write_text(text)
+        self.registry = {
+            'integration_branch': 'main',
+            'full_suites': [{'command': self.full('root'), 'cwd': '.'},
+                            {'command': self.full('web'), 'cwd': 'web'}],
+            'affected': {
+                'commands': {'.': f'echo "$PWD {{tests}}" >> {self.log}',
+                             'web': f'echo "$PWD {{tests}}" >> {self.log}'},
+                'map': [
+                    {'paths': ['src/app.py'], 'tests': ['tests/test_app.py']},
+                    {'paths': ['src/util.py'], 'tests': ['tests/test_*.py']},
+                    {'paths': ['web/src/**'], 'tests': ['web/tests/**/*.test.ts']},
+                    {'paths': ['docs/**', '.suite-gate.json', '.gitignore'], 'tests': []},
+                ],
+                'shared': ['deps.lock'],
+            },
+        }
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'mapped project')
+        git(self.repo, 'checkout', '-qb', 'feature')
+
+    def write_registry(self):
+        (self.repo / '.suite-gate.json').write_text(json.dumps(self.registry))
+
+    def full(self, name):
+        return f'echo {name} >> {self.counter}'
+
+    def full_runs(self):
+        return self.counter.read_text().split() if self.counter.exists() else []
+
+    def ran(self):
+        """(directory relative to the repo, [tests]) for each affected command that ran."""
+        if not self.log.exists():
+            return []
+        out = []
+        for line in self.log.read_text().splitlines():
+            directory, *tests = line.split()
+            out.append((os.path.relpath(directory, self.repo), tests))
+        return out
+
+    def touch(self, name, text='changed\n'):
+        path = self.repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
+class AffectedTests(AffectedCase):
+    def test_mapped_change_runs_selected_tests_per_directory_and_records_them(self):
+        self.touch('src/util.py')
+        self.touch('web/src/page.ts')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py', 'tests/test_util.py']),
+                                      ('web', ['tests/page.test.ts'])])
+        self.assertEqual(self.full_runs(), [])
+        for text in ('src/util.py', 'web/src/page.ts', 'merge-base of HEAD and main',
+                     'tests/test_app.py  (src/util.py matches src/util.py)',
+                     'web/tests/page.test.ts  (web/src/page.ts matches web/src/**)'):
+            self.assertIn(text, result.stderr)
+        root, web = self.records()
+        self.assertEqual((root['kind'], web['kind']), ('affected', 'affected'))
+        self.assertEqual(root['changed_files'], ['src/util.py', 'web/src/page.ts'])
+        self.assertEqual(root['selected_tests'], ['tests/test_app.py', 'tests/test_util.py'])
+        self.assertEqual(web['selected_tests'], ['web/tests/page.test.ts'])
+        self.assertEqual(web['rel_cwd'], 'web')
+        self.assertEqual(root['exit_code'], 0)
+        self.assertFalse(root['reusable'])
+        head = subprocess.run(['git', 'rev-parse', 'main'], cwd=self.repo, capture_output=True,
+                              text=True).stdout.strip()
+        self.assertEqual(root['base'], head)
+        status = self.gate('status').stdout
+        self.assertIn('(affected tests)', status)
+
+    def test_affected_runs_do_not_take_or_wait_for_a_host_slot_and_are_never_reused(self):
+        self.set_config(max_slots=1)
+        hold, release = self.blocker('hold')
+        self.wait_until(lambda: len(self.status()['running']) == 1, message='blocker running')
+        self.touch('src/app.py')
+        for _ in range(2):
+            result = self.gate('affected')
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.ran()), 2)
+        release.touch()
+        self.finish(hold)
+
+    def test_a_changed_test_file_is_selected_and_a_deleted_one_is_not_run(self):
+        self.touch('tests/test_util.py')
+        (self.repo / 'web/tests/page.test.ts').unlink()
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('tests/test_util.py  (test file changed)', result.stderr)
+        self.assertEqual(self.ran(), [('.', ['tests/test_util.py'])])
+
+    def test_the_change_counts_commits_staged_unstaged_and_new_files_since_the_merge_base(self):
+        self.touch('src/app.py')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'committed change')
+        git(self.repo, 'checkout', '-q', 'main')
+        self.touch('web/src/page.ts')  # on main after the branch point: not this change
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'main moves on')
+        git(self.repo, 'checkout', '-q', 'feature')
+        self.touch('tests/test_util.py')
+        git(self.repo, 'add', 'tests/test_util.py')  # staged
+        self.touch('docs/guide.md')  # unstaged
+        self.touch('src/new_test_helper.txt')  # new and not ignored
+        self.touch('ignored/cache.py')  # ignored
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)  # the new file falls back
+        self.assertEqual(self.records()[-1]['trigger_files'], ['src/new_test_helper.txt'])
+        (self.repo / 'src/new_test_helper.txt').unlink()
+        self.log.unlink(missing_ok=True)
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.records()[-1]['changed_files'],
+                         ['docs/guide.md', 'src/app.py', 'tests/test_util.py'])
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py', 'tests/test_util.py'])])
+
+    def test_base_can_be_given_and_a_missing_branch_or_bad_base_is_an_error(self):
+        self.touch('src/app.py')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'one')
+        self.touch('web/src/page.ts')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.records()[-1]['changed_files'], ['web/src/page.ts'])
+        self.assertEqual(self.gate('affected', '--base', 'nope').returncode, 2)
+        del self.registry['integration_branch']
+        self.write_registry()
+        missing = self.gate('affected')
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn('integration_branch', missing.stderr)
+
+    def test_paths_mapped_to_no_tests_run_nothing(self):
+        self.touch('docs/guide.md')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('nothing to run', result.stderr)
+        self.assertEqual((self.ran(), self.full_runs(), self.records()), ([], [], []))
+
+    def test_a_failing_affected_test_command_passes_its_exit_code_through(self):
+        self.registry['affected']['commands']['.'] = 'echo {tests}; exit 4'
+        self.write_registry()
+        self.touch('src/app.py')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 4)
+        self.assertIn('tests/test_app.py', result.stdout)
+        self.assertEqual(self.records()[-1]['exit_code'], 4)
+
+    def test_no_map_or_a_bad_map_is_refused(self):
+        self.registry['affected']['commands'] = {'.': 'echo no placeholder'}
+        self.write_registry()
+        bad = self.gate('affected')
+        self.assertEqual(bad.returncode, 2)
+        self.assertIn('{tests}', bad.stderr)
+        (self.repo / '.suite-gate.json').unlink()
+        none = self.gate('affected')
+        self.assertEqual(none.returncode, 2)
+        self.assertIn('no affected-test map', none.stderr)
+
+
+class MapFallbackTests(AffectedCase):
+    def test_an_unmapped_file_runs_every_full_suite_through_the_gate_then_reuses_it(self):
+        self.touch('README.md')
+        self.touch('src/app.py')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('needs the full suite (map fallback)', result.stderr)
+        self.assertIn('README.md: not in the affected-test map', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+        self.assertEqual(self.ran(), [])
+        root, web = self.records()
+        for record in (root, web):
+            self.assertEqual(record['purpose'], 'map-fallback')
+            self.assertEqual(record['trigger_files'], ['README.md'])
+            self.assertTrue(record['reusable'])
+            self.assertNotIn('kind', record)
+        self.assertEqual(web['rel_cwd'], 'web')
+        self.assertEqual(root['fingerprint'],
+                         gate.fingerprint(self.repo, [self.full('root')])['fingerprint'])
+        again = self.gate('affected')
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(again.stdout.count('already passed'), 2)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
+    def test_a_shared_path_falls_back_and_waits_for_a_host_slot(self):
+        self.set_config(max_slots=1)
+        hold, release = self.blocker('hold')
+        self.wait_until(lambda: len(self.status()['running']) == 1, message='blocker running')
+        self.touch('deps.lock')
+        proc = self.start('affected')
+        self.wait_until(lambda: len(self.status()['waiting']) == 1, message='fallback queued')
+        time.sleep(0.4)
+        self.assertEqual(self.full_runs(), [], 'the fallback must wait for the slot')
+        release.touch()
+        code, _, err = self.finish(proc)
+        self.finish(hold)
+        self.assertEqual(code, 0, err)
+        self.assertIn('deps.lock: shared path deps.lock', err)
+        self.assertIn('waiting for a host slot', err)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
+    def test_mapped_tests_that_match_no_file_or_have_no_command_fall_back(self):
+        self.registry['affected']['map'][0]['tests'] = ['tests/gone_*.py']
+        self.write_registry()
+        self.touch('src/app.py')
+        result = self.gate('affected')
+        self.assertIn('maps to tests that match no file', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+        self.counter.unlink()
+        self.registry['affected']['map'][0]['tests'] = ['tests/test_app.py']
+        del self.registry['affected']['commands']['.']
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertIn('no affected.commands directory holds this test', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
+    def test_a_failing_full_suite_fails_the_fallback(self):
+        self.registry['full_suites'][1]['command'] = 'exit 3'
+        self.write_registry()
+        self.touch('README.md')
+        self.assertEqual(self.gate('affected').returncode, 3)
+        self.assertEqual(self.full_runs(), ['root'])
+
+
+class PurposeTests(AffectedCase):
+    def test_an_unmarked_full_suite_is_refused_with_the_affected_command(self):
+        result = self.gate('run', '--', self.full('root'))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(gate.affected_command(), result.stderr)
+        self.assertIn('--purpose post-merge', result.stderr)
+        self.assertEqual((self.full_runs(), self.records()), ([], []))
+        rerun = self.gate('run', '--rerun', 'env changed', '--', self.full('root'))
+        self.assertEqual(rerun.returncode, 2)
+
+    def test_purposes_are_recorded_outside_the_fingerprint(self):
+        merged = self.gate('run', '--purpose', 'post-merge', '--', self.full('root'))
+        self.assertEqual(merged.returncode, 0, merged.stderr)
+        record = self.records()[-1]
+        self.assertEqual((record['purpose'], record['purpose_reason']), ('post-merge', None))
+        release = self.gate('run', '--purpose', 'release', '--', self.full('root'))
+        self.assertEqual(release.returncode, 0, release.stderr)
+        self.assertIn('already passed', release.stdout)
+        self.assertIn('purpose:     post-merge', release.stdout)
+        self.assertEqual(self.full_runs(), ['root'])
+        self.touch('src/app.py')
+        reason = self.gate('run', '--reason', 'investigating a flaky test', '--',
+                           self.full('root'))
+        self.assertEqual(reason.returncode, 0, reason.stderr)
+        record = self.records()[-1]
+        self.assertEqual((record['purpose'], record['purpose_reason']),
+                         ('reason', 'investigating a flaky test'))
+        self.assertIn('reason: investigating a flaky test', self.gate('status').stdout)
+
+    def test_bad_purpose_arguments_are_refused(self):
+        for args in (['--reason', ' '], ['--purpose', 'post-merge', '--reason', 'x'],
+                     ['--purpose', 'map-fallback']):
+            with self.subTest(args=args):
+                self.assertEqual(self.gate('run', *args, '--', self.full('root')).returncode, 2)
+        self.assertEqual(self.full_runs(), [])
+
+    def test_a_project_without_a_map_needs_no_purpose(self):
+        del self.registry['affected']
+        self.write_registry()
+        result = self.gate('run', '--', self.full('root'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.records()[-1]['purpose'])
+
+
 class DetectionTests(unittest.TestCase):
     def test_default_rules_treat_runners_without_targets_as_full(self):
         full = [
