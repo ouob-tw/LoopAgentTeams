@@ -2,7 +2,7 @@
 
 供 Codex 與 Claude 的 LAT 主控使用。閱讀／審查 LAT、安裝技能與執行 Agent 不啟用。helper 只用 Python 標準函式庫，以 `uv run --no-project python` 執行。所有子指令的 `--client` 預設 `codex`，Claude 主控一律加 `--client claude`。
 
-Claude 壓縮後只重新附上每個技能前 5,000 tokens（合計 25,000），LAT 後段規則、references 與 hcom-spawn 可能遺失，因此同樣需要此 hook。
+Claude 壓縮後只重新附上每個技能前 5,000 tokens（合計 25,000），references 不會附回，因此同樣需要此 hook。Claude 的恢復提示直接附上 `references/agents.md` 與 `references/task-cards.md` 全文（壓縮後最常漏掉的派工與收尾規則），合計須低於 Claude 的 10,000 字上限；Codex 的提示上限約 2,500 tokens，仍只給路徑由主控自行重讀。
 
 ## 主控啟動與結束
 
@@ -34,7 +34,7 @@ activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；C
 
    安裝或更新技能後，從不同技能目錄執行 hook／deactivate 仍會辨認並沿用本輪既有的監控；需要重啟時，使用紀錄的 `skill_dir/scripts/lat-watch.py`，與本輪的技能文字更新基準一致。
 
-3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`，以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的 `.lat/questions-<hcom-name>.md`（尚未寫題時不存在，不算缺檔）。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。hook 發現紀錄仍 active 但停住監控沒在執行時，會在提示前自動重新啟動它。面板啟用且 hook 取得 Herdr workspace／tab／pane 編號時，也會把自己的面板綁定更新為目前位置；取不到就保持原綁定。
+3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`（Claude 的提示已附這兩份全文，不必另讀），以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的 `.lat/questions-<hcom-name>.md`（尚未寫題時不存在，不算缺檔）。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。hook 發現紀錄仍 active 但停住監控沒在執行時，會在提示前自動重新啟動它。面板啟用且 hook 取得 Herdr workspace／tab／pane 編號時，也會把自己的面板綁定更新為目前位置；取不到就保持原綁定。
 4. 交付、取消或換班時停用，紀錄狀態一律改為 `ended`（舊紀錄的 `completed`／`cancelled` 視同 `ended`）。換班時加 `--successor <新主控 HCOM 名稱>` 記下接手者。deactivate 會停止自己的停住監控並解除自己的綁定，沒有綁定也不報錯；成功後紀錄保留，後續 compact／resume 不再提示。
 
 ```bash

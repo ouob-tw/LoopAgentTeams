@@ -1320,6 +1320,50 @@ class SessionTests(unittest.TestCase):
         self.wait_for(lambda: not self.process_exists(pid))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
 
+    def test_deactivate_releases_only_the_controllers_own_wait(self):
+        self.activate()
+        waits = self.work / '.lat/watch/waits'
+        waits.mkdir(parents=True, exist_ok=True)
+        declaration = dict(agent='orch', kind='agent', target='worker', active=True,
+                           declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
+                           deadline_at=3000)
+        (waits / 'orch.json').write_text(json.dumps(declaration))
+        (waits / 'worker.json').write_text(json.dumps(dict(declaration, agent='worker',
+                                                           target='orch')))
+
+        result = self.cli('deactivate', '--workspace', self.work)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        own = json.loads((waits / 'orch.json').read_text())
+        self.assertFalse(own['active'])
+        self.assertEqual(own['released_reason'], 'deactivated')
+        self.assertTrue(json.loads((waits / 'worker.json').read_text())['active'])
+
+    def test_deactivate_drops_an_expiry_nudge_still_waiting_for_delivery(self):
+        self.activate()
+        waits = self.work / '.lat/watch/waits'
+        waits.mkdir(parents=True, exist_ok=True)
+        expired = dict(agent='orch', kind='agent', target='worker', active=False,
+                       declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
+                       deadline_at=3000, released_reason='expired', expiry_nudge_pending=True,
+                       expiry_count=2, expiry_declared_at=['a', 'b'],
+                       expiry_notice=dict(target='worker', declared_at=['a', 'b'],
+                                          conversation_delivered=False, delivered=False))
+        (waits / 'orch.json').write_text(json.dumps(expired))
+
+        result = self.cli('deactivate', '--workspace', self.work)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        saved = json.loads((waits / 'orch.json').read_text())
+        self.assertEqual(saved['released_reason'], 'deactivated')
+        spec = importlib.util.spec_from_file_location('lat_watch', SCRIPT.with_name('lat-watch.py'))
+        watch = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(watch)
+        ready = watch.Observation('orch', 'listening', True, False, 10, 10, 1,
+                                  is_orchestrator=True)
+        _, actions, events = watch.decide_wait(saved, ready, None, None, 4000)
+        self.assertEqual((actions, events), ([], []))
+
     def test_stale_pid_for_unrelated_process_is_replaced_without_signalling_it(self):
         unrelated = subprocess.Popen(['sleep', '30'], start_new_session=True)
         self.addCleanup(self.terminate_process, unrelated)
@@ -1981,6 +2025,31 @@ class SessionTests(unittest.TestCase):
         result = self.cli('deactivate', '--client', 'claude', '--workspace', self.work, '--session-id', SESSION, session=OTHER)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assert_silent(self.cli('hook', '--client', 'claude', payload=payload))
+
+    def test_recovery_inlines_dispatch_references_for_claude_only(self):
+        references = [SKILL / 'references/agents.md', SKILL / 'references/task-cards.md']
+        result = self.cli(
+            'activate', '--client', 'claude', '--workspace', self.work,
+            '--progress', self.progress, '--decisions', self.decisions,
+            session='', claude_session=SESSION,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+        result = self.cli('hook', '--client', 'claude', payload=dict(
+            hook_event_name='SessionStart', source='compact', cwd=str(self.work),
+            session_id=SESSION))
+        context = json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
+        for reference in references:
+            self.assertIn(f'===== {reference} =====\n{reference.read_text()}', context)
+        # Claude Code moves context over 10,000 characters to a file and shows a 2,000-character
+        # preview; keep room for longer workspace paths and the legacy-upgrade suffix.
+        self.assertLess(len(context), 9_000)
+        self.cli('deactivate', '--client', 'claude', '--workspace', self.work,
+                 '--session-id', SESSION, session=OTHER)
+        self.record.unlink()
+        self.activate()
+        context = json.loads(self.hook().stdout)['hookSpecificOutput']['additionalContext']
+        self.assertIn('skill_dir/references/agents.md', context)
+        self.assertNotIn('=====', context)
 
     def test_claude_activation_requires_claude_session_id(self):
         result = self.cli('activate', '--client', 'claude', '--workspace', self.work,
