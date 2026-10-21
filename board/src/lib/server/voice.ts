@@ -2,16 +2,13 @@
 // Traditional Chinese and is turned into Taiwan's Traditional Chinese here. Long speech is then
 // tidied by a Codex app server started for the one request (codex-turn.ts). The service's token
 // never leaves the server: no answer to the page carries it.
-import * as OpenCC from 'opencc-js/cn2t';
 import { isShort, type VoiceResult } from '../board/voice.ts';
 import { codexTurn, type Outcome } from './codex-turn.ts';
 import type { BoardConfig } from './config.ts';
+import { toTraditional } from './traditional.ts';
 
 const MODEL_ID = 'whisper-large-v3-turbo';
 const DIALECT_ID = 'zh';
-
-/** Taiwan's standard, with its own words (软件 → 軟體), not only its characters. */
-export const toTraditional = OpenCC.Converter({ from: 'cn', to: 'twp' });
 
 /** What browsers record in: Chrome and Firefox WebM or Ogg, Safari MP4. */
 const EXTENSIONS: Record<string, string> = { 'audio/webm': 'webm', 'audio/ogg': 'ogg', 'audio/mp4': 'm4a' };

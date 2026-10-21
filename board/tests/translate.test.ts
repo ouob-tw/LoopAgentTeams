@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import { isEnglish, Translations, type Translation } from '../src/lib/board/translate.ts';
 import { codexTurn, type CodexTurn, type Outcome } from '../src/lib/server/codex-turn.ts';
 import { loadConfig } from '../src/lib/server/config.ts';
-import { createTranslator, protect, restore } from '../src/lib/server/translate.ts';
+import { createTranslator, FAILURE_HOLD_MS, protect, restore, translationStream, type Translator } from '../src/lib/server/translate.ts';
 import { NODE } from './harness.ts';
 
 const DAY = 24 * 60 * 60_000;
@@ -156,17 +156,99 @@ test('no more Codex translations run at once than the limit; the rest wait their
 	expect(most).toBe(2);
 });
 
-test('a failed translation is not saved, so the next request tries again; one that lost its code is a failure', async () => {
+test('a failed translation is not saved; it is answered as it was for a while, then tried again; one that lost its code is a failure', async () => {
 	let answer: Outcome<string> = { ok: false, reason: 'Codex 逾時（60 秒）' };
-	const { dir, calls, translator, ask } = setUp(async () => answer);
+	const { dir, calls, translator, ask, advance } = setUp(async () => answer);
 	const made = translator();
 	expect(await ask(made, ['Please run `make` now.'])).toEqual([{ ok: false, reason: 'Codex 逾時（60 秒）' }]);
 	expect(existsSync(join(dir, 'translations.json'))).toBe(false);
+	// Asked again soon, as a reopened page would: the same failure, without Codex.
+	advance(FAILURE_HOLD_MS - 1000);
+	expect(await ask(made, ['Please run `make` now.'])).toEqual([{ ok: false, reason: 'Codex 逾時（60 秒）' }]);
+	expect(calls).toHaveLength(1);
+
+	advance(2000);
 	answer = { ok: true, value: '請現在執行。' };
 	expect(await ask(made, ['Please run `make` now.'])).toEqual([{ ok: false, reason: '譯文少了原文的程式碼、網址或路徑' }]);
+	expect(calls).toHaveLength(2);
+	advance(FAILURE_HOLD_MS);
 	answer = { ok: true, value: '請現在執行 ⟦0⟧。' };
 	expect(await ask(made, ['Please run `make` now.'])).toEqual([{ ok: true, value: '請現在執行 `make`。' }]);
 	expect(calls).toHaveLength(3);
+});
+
+test('a translation that throws is a failure for every request that wanted it, never a rejection', async () => {
+	const { translator, ask } = setUp(async () => {
+		throw new Error('child exploded');
+	});
+	const made = translator();
+	const [one, two] = await Promise.all([ask(made, ['Same text twice here.']), ask(made, ['Same text twice here.'])]);
+	expect(one).toEqual([{ ok: false, reason: '翻譯時出錯：child exploded' }]);
+	expect(two).toEqual(one);
+});
+
+test('a text still waiting for a Codex place is dropped once every request that wanted it is aborted', async () => {
+	const releases: (() => void)[] = [];
+	const { calls, translator } = setUp(
+		(turn) => new Promise((resolve) => releases.push(() => resolve({ ok: true, value: `譯：${turn.input}` }))),
+		{ LAT_BOARD_TRANSLATE_CONCURRENCY: '1' }
+	);
+	const made = translator();
+	const told: string[] = [];
+	const asking = (texts: string[], signal?: AbortSignal) => made.translate(texts, (index, outcome) => told.push(`${texts[index]}=${outcome.ok}`), signal);
+	const first = asking(['Holds the only place.']);
+	const gone = new AbortController();
+	const left = asking(['Only the gone page wants this.'], gone.signal);
+	const oneOfTwo = new AbortController();
+	const shared = [asking(['Two pages want this one.'], oneOfTwo.signal), asking(['Two pages want this one.'])];
+	await Bun.sleep(5);
+	gone.abort();
+	oneOfTwo.abort();
+	await left;
+	releases.shift()!();
+	await first;
+	await Bun.sleep(5);
+	releases.shift()!();
+	await Promise.all(shared);
+	expect(calls.map((call) => call.input)).toEqual(['<reply>\nHolds the only place.\n</reply>', '<reply>\nTwo pages want this one.\n</reply>']);
+	// The aborted requests are told nothing; the one still there gets its translation.
+	expect(told).toEqual(['Holds the only place.=true', 'Two pages want this one.=true']);
+	// Dropped is not a failure: asked again, it is translated.
+	const again = asking(['Only the gone page wants this.']);
+	await Bun.sleep(5);
+	releases.shift()!();
+	await again;
+	expect(told.at(-1)).toBe('Only the gone page wants this.=true');
+});
+
+/** Every line of a stream, parsed. */
+async function streamed(stream: ReadableStream<Uint8Array>): Promise<object[]> {
+	return (await new Response(stream).text()).trim().split('\n').map((line) => JSON.parse(line));
+}
+
+test('the answer fails every text the translator did not answer when it breaks, then ends', async () => {
+	const rejecting: Translator = {
+		translate: async (_texts, each) => {
+			each(1, { ok: true, value: '好' });
+			throw new Error('broken');
+		}
+	};
+	const throwing: Translator = {
+		translate: () => {
+			throw new Error('broken at once');
+		}
+	};
+	const spy = spyOn(console, 'error').mockImplementation(() => {});
+	try {
+		expect(await streamed(translationStream(rejecting, ['A one.', 'B two.', 'x'.repeat(20_001)], new AbortController().signal))).toEqual([
+			{ index: 2, error: '太長，不翻譯（超過 20000 字）' },
+			{ index: 1, text: '好' },
+			{ index: 0, error: '看板伺服器翻譯時出錯' }
+		]);
+		expect(await streamed(translationStream(throwing, ['A one.'], new AbortController().signal))).toEqual([{ index: 0, error: '看板伺服器翻譯時出錯' }]);
+	} finally {
+		spy.mockRestore();
+	}
 });
 
 test("a long reply Codex repeats on stderr before failing stays out of the journal, whole or in part", async () => {

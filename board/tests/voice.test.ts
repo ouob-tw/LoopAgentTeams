@@ -2,7 +2,7 @@
 // the turn into Taiwan's Traditional Chinese. No server and no browser.
 import { expect, test } from 'bun:test';
 import { insertAt, isShort, SHORT_LIMIT, TAP_GAP_MS, tapCounter, UNLOCK_TAPS } from '../src/lib/board/voice.ts';
-import { toTraditional } from '../src/lib/server/voice.ts';
+import { toTraditional } from '../src/lib/server/traditional.ts';
 
 test('Simplified Chinese becomes Taiwan Traditional, words included; Traditional stays as it is', () => {
 	expect(toTraditional('打开设置页面')).toBe('開啟設定頁面');

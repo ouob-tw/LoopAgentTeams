@@ -122,7 +122,24 @@ test('a translation unused for 30 days is dropped and translated again when aske
 	expect(codexCalls()).toHaveLength(1);
 });
 
-test('Codex failing or timing out gives a reason for that text, and nothing is saved for it', async () => {
+test('a page that leaves drops what it alone wanted and Codex has not started; what is running finishes', async () => {
+	codexPlan({ prefix: '譯：', delayMs: 1200 });
+	// The three Codex places are taken by these.
+	const busy = lines(['Busy one is running.', 'Busy two is running.', 'Busy three is running.']);
+	await Bun.sleep(300);
+	const leaving = new AbortController();
+	const left = fixture
+		.fetch('/api/translate', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ texts: ['Waiting four never runs.', 'Waiting five never runs.'] }), cookie, signal: leaving.signal })
+		.catch(() => null);
+	await Bun.sleep(300);
+	leaving.abort();
+	await left;
+	expect(Object.values(await busy).every((line) => line.text?.startsWith('譯：'))).toBe(true);
+	await Bun.sleep(1500);
+	expect(codexCalls().map((call) => call.text)).toEqual(['Busy one is running.', 'Busy two is running.', 'Busy three is running.'].map((text) => `<reply>\n${text}\n</reply>`));
+});
+
+test('Codex failing or timing out gives a reason for that text, and nothing is saved for it; the failure is answered as it was for 5 minutes', async () => {
 	codexPlan({ fail: true });
 	expect(await lines(['This one fails.'])).toEqual({ 0: { error: 'Codex 沒有完成：usage limit reached' } });
 	codexPlan({ hang: true });
@@ -130,6 +147,9 @@ test('Codex failing or timing out gives a reason for that text, and nothing is s
 	codexPlan({ reply: '丟掉了程式碼' });
 	expect(await lines(['Run `make` please.'])).toEqual({ 0: { error: '譯文少了原文的程式碼、網址或路徑' } });
 	codexPlan({ prefix: '譯：' });
+	expect(await lines(['This one fails.'])).toEqual({ 0: { error: 'Codex 沒有完成：usage limit reached' } });
+	expect(codexCalls()).toHaveLength(3);
+	fixture.setClock(START + 31 * DAY + 5 * 60_000 + 1000);
 	expect((await lines(['This one fails.']))[0].text).toBe('譯：This one fails.');
 	// The conversation stays out of the journal.
 	expect(fixture.serverOutput()).toContain('[translate] Codex translation failed');

@@ -2,7 +2,8 @@
 // its DevTools protocol, on the built board with a fake Codex. The 中文／原文 switch starts at 原文
 // and sends nothing; switched on, English replies show 翻譯中 and then the translation, each with
 // its original a click away, while the user's messages and Chinese replies stay as they are. The
-// choice is kept across a reload, a failure is a quiet note, and the phone's width fits. Skipped
+// choice is kept across a reload, a failure is a quiet note tried again once the board's hold on
+// it is over, and the phone's width fits. Skipped
 // when the host has no Chrome.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -229,7 +230,7 @@ test.skipIf(!CHROME)('off on a new device and sends nothing; on, English replies
 	expect(codexCalls()).toHaveLength(1);
 }, 60_000);
 
-test.skipIf(!CHROME)('a reply pushed while on is translated; a failure leaves the original with a quiet note and no toast, and is tried again on reopening', async () => {
+test.skipIf(!CHROME)('a reply pushed while on is translated; a failure leaves the original with a quiet note and no toast, and is tried again on reopening after the hold', async () => {
 	await visit(1280);
 	await tab.eval(`${switchButton('中文')}.click()`);
 	await tab.until(`${said('譯：I fixed')}?.dataset.translation === 'done'`, 'the first translation');
@@ -246,7 +247,11 @@ test.skipIf(!CHROME)('a reply pushed while on is translated; a failure leaves th
 	expect(await tab.eval<string>(`${failed}.querySelector('.text').innerText`)).toContain('This reply will fail to translate today.');
 	expect(await tab.eval(`document.querySelectorAll('.toast').length`)).toBe(0);
 
+	// Reopened soon, it is the same failure; once the board's hold on it is over, it is tried again.
 	codexPlan({ prefix: '譯：' });
+	await open();
+	await tab.until(`${said('fail to translate')}?.dataset.translation === 'failed'`, 'the failure, held');
+	fixture.setClock(Date.now() + 6 * 60_000);
 	await open();
 	await tab.until(`${said('譯：This reply will fail')}?.dataset.translation === 'done'`, 'the failed one translated on reopening');
 }, 60_000);
