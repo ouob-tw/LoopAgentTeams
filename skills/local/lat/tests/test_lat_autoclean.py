@@ -298,18 +298,17 @@ class EnabledTests(AutocleanTestCase):
 class BoundaryTests(RunnerTestCase):
     """The 40 days and 24 hours are pinned here as literals, apart from the script's constants.
 
-    Each fixture is dated from the current time just before the pass, so "exactly" is at least
-    the stated age when the pass reads it.
+    The pass runs in this process on a frozen clock, so "exactly" is exact and one second
+    either side lands on the other side of the rule.
     """
-    UNDER, EXACT, OVER = (timedelta(days=39, hours=23), timedelta(days=40),
-                          timedelta(days=40, hours=1))
+    CLOCK = datetime(2026, 10, 22, 12, 0, tzinfo=timezone.utc)
+    SECOND = timedelta(seconds=1)
 
     def setUp(self):
         super().setUp()
         self.enable()
-        now = datetime.now(timezone.utc)
-        self.when = {label: now - delta for label, delta in
-                     (('under', self.UNDER), ('exact', self.EXACT), ('over', self.OVER))}
+        exact = self.CLOCK - timedelta(days=40)
+        self.when = dict(under=exact + self.SECOND, exact=exact, over=exact - self.SECOND)
         self.sids = {label: f'{number}' * 8 + '-0000-4000-8000-000000000000'
                      for number, label in enumerate(self.when, 1)}
         issues = []
@@ -321,13 +320,27 @@ class BoundaryTests(RunnerTestCase):
             self.session(sid, label, 'ended', ended_at_utc=moment.isoformat())
             self.write(f'watch/{sid}.log', 'log\n')
             self.write(f'watch/{label}/watch.jsonl', '{}\n')
+            seconds = int(moment.timestamp()) * 10**9
             for relative in (f'tasks/done/{label}.md', f'watch/waits/{label}.json',
                              f'watch/waits/.{label}-orphan.lock'):
-                os.utime(self.write(relative, 'x'), (moment.timestamp(),) * 2)
+                os.utime(self.write(relative, 'x'), ns=(seconds, seconds))
         self.set_issues(issues)
 
+    def run_frozen(self):
+        module = load()
+        clock = self.CLOCK
+
+        class Frozen(datetime):
+            @classmethod
+            def now(cls, tz=None):
+                return clock if tz else clock.replace(tzinfo=None)
+
+        with mock.patch.dict(os.environ, self.env, clear=True), \
+                mock.patch.object(module, 'datetime', Frozen):
+            module.run(Path(os.path.realpath(self.lat)))
+
     def test_each_category_cleans_from_exactly_40_days(self):
-        self.run_once()
+        self.run_frozen()
         for number, label in enumerate(self.when, 1):
             paths = (f'runs/issue-{number}', f'watch/{self.sids[label]}.log', f'watch/{label}',
                      f'tasks/done/{label}.md', f'watch/waits/{label}.json',
@@ -338,16 +351,15 @@ class BoundaryTests(RunnerTestCase):
 
     def test_a_second_pass_waits_exactly_24_hours(self):
         stamp = self.lat / 'cleanup.last-run'
-        for delta, runs in ((timedelta(hours=23, minutes=55), False), (timedelta(hours=24), True),
-                            (timedelta(hours=24, minutes=5), True)):
+        day = timedelta(hours=24)
+        for delta, runs in ((day - self.SECOND, False), (day, True), (day + self.SECOND, True)):
             with self.subTest(delta=delta):
-                stamp.write_text((datetime.now(timezone.utc) - delta).isoformat() + '\n')
+                stamp.write_text((self.CLOCK - delta).isoformat() + '\n')
                 before = len(self.log_lines())
-                self.run_once()
+                self.run_frozen()
                 started = [line[4] for line in self.log_lines()[before:]]
                 self.assertEqual('開始' in started, runs, started)
                 self.assertEqual(any('24 小時內已執行' in item for item in started), not runs)
-
 
 def load():
     spec = importlib.util.spec_from_file_location('lat_autoclean_under_test', SCRIPT)
