@@ -882,6 +882,11 @@ def read_records():
     return records
 
 
+def record_fingerprint(record):
+    """The content a record is about; a reuse note keeps it as `reused_fingerprint`."""
+    return record.get('fingerprint') or record.get('reused_fingerprint')
+
+
 def reusable_record(fp):
     """The latest record for this content when it passed; None when it failed or is absent.
 
@@ -1258,11 +1263,13 @@ class Gate:
             return self.execute(info)
 
     def reuse(self, record, info):
-        """Report the earlier pass; a run with a purpose also notes the reuse in the ledger."""
+        """Report the earlier pass; a run with a purpose also notes the reuse in the ledger.
+        The note keeps the fingerprint as `reused_fingerprint`, so a reader that ignores
+        `kind` (an older gate) still finds the pass as the latest record for it."""
         print_reuse(record, self.command)
         if self.extra.get('purpose'):
             append_record({
-                'kind': 'reuse', 'fingerprint': info['fingerprint'], 'tree': info['tree'],
+                'kind': 'reuse', 'reused_fingerprint': info['fingerprint'], 'tree': info['tree'],
                 'repo': info['repo'], 'command': self.command, 'cwd': str(self.cwd),
                 'rel_cwd': info['rel_cwd'], 'exit_code': 0, 'agent': self.me['agent'],
                 'time': now_iso(), 'reusable': False, 'reused_time': record.get('time'),
@@ -2032,7 +2039,7 @@ def cmd_status(as_json, fp_prefix, limit):
     state, host, running = with_state(look)
     records = read_records()
     if fp_prefix:
-        records = [r for r in records if (r.get('fingerprint') or '').startswith(fp_prefix)]
+        records = [r for r in records if (record_fingerprint(r) or '').startswith(fp_prefix)]
     records = records[-limit:]
     cap, floor = config['max_slots'], min(config['min_slots'], config['max_slots'])
     unused_cpu = sum(h['unused'][0] for h in running)
@@ -2113,7 +2120,7 @@ def cmd_status(as_json, fp_prefix, limit):
                 + ' (affected tests)'
         rerun = f"  rerun: {r['rerun_reason']}" if r.get('rerun_reason') else ''
         purpose = f"  purpose: {describe_purpose(r)}" if r.get('purpose') else ''
-        print(f"  {r.get('time')}  {result}  fp {(r.get('fingerprint') or '-')[:12]}  "
+        print(f"  {r.get('time')}  {result}  fp {(record_fingerprint(r) or '-')[:12]}  "
               f"{r.get('agent')}  {r.get('duration_s')}s  {r.get('cwd')}  "
               f"{r.get('command')}{rerun}{purpose}")
     print(f'Test cleanup ({len(cleanup)} suites):')

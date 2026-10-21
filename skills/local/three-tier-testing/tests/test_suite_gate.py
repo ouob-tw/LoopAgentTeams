@@ -1090,7 +1090,7 @@ class MapFallbackTests(AffectedCase):
         self.assertEqual(again.stdout.count('already passed'), 2)
         self.assertEqual(self.full_runs(), ['root', 'web'])
         notes = self.records()[2:]
-        self.assertEqual([(n['kind'], n['purpose'], n['trigger_files'], n['fingerprint'])
+        self.assertEqual([(n['kind'], n['purpose'], n['trigger_files'], n['reused_fingerprint'])
                           for n in notes],
                          [('reuse', 'map-fallback', ['README.md'], r['fingerprint'])
                           for r in (root, web)])
@@ -1174,6 +1174,7 @@ class PurposeTests(AffectedCase):
         self.assertEqual(merged.returncode, 0, merged.stderr)
         record = self.records()[-1]
         self.assertEqual((record['purpose'], record['purpose_reason']), ('post-merge', None))
+        merged_fp = record['fingerprint']
         release = self.gate('run', '--purpose', 'release', '--', self.full('root'))
         self.assertEqual(release.returncode, 0, release.stderr)
         self.assertIn('already passed', release.stdout)
@@ -1181,6 +1182,14 @@ class PurposeTests(AffectedCase):
         self.assertEqual(self.full_runs(), ['root'])
         note = self.records()[-1]
         self.assertEqual((note['kind'], note['purpose']), ('reuse', 'release'))
+        # A reader that ignores `kind` (an older gate) takes the latest record for this
+        # content; the note must not hide the pass from it.
+        latest = [r for r in self.records() if r.get('fingerprint') == merged_fp][-1]
+        self.assertEqual((latest['purpose'], latest['reusable']), ('post-merge', True))
+        self.assertNotIn('fingerprint', note)
+        self.assertEqual(note['reused_fingerprint'], merged_fp)
+        self.assertIn(f'REUSED pass of {latest["time"]}  fp {merged_fp[:12]}',
+                      self.gate('status', '--fingerprint', merged_fp[:12]).stdout)
         self.touch('src/app.py')
         reason = self.gate('run', '--reason', 'investigating a flaky test', '--',
                            self.full('root'))

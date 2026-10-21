@@ -29,7 +29,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
   uv run --no-project python <skill>/scripts/suite-gate.py run --reason "<為什麼需要整套>" -- '<整套測試指令>'
   ```
 
-  用途與原因寫進紀錄，不進指紋：整批合併後的通過紀錄，發布前可以直接沿用。帶用途的執行沿用了上次結果時，另寫一筆沿用紀錄（`kind: "reuse"`，含用途、被沿用那筆的時間與執行者），本身不能再被沿用。`--rerun` 只管「要不要沿用」，不能代替用途。沒有對照表的專案不需要用途，可以照舊帶。
+  用途與原因寫進紀錄，不進指紋：整批合併後的通過紀錄，發布前可以直接沿用。帶用途的執行沿用了上次結果時，另寫一筆沿用紀錄（`kind: "reuse"`，含用途、被沿用那筆的時間與執行者），本身不能再被沿用；指紋記在 `reused_fingerprint`，不寫 `fingerprint`，所以不看 `kind` 的讀者（例如舊版閘門）找同一指紋的最新紀錄時仍是那筆通過紀錄。`--rerun` 只管「要不要沿用」，不能代替用途。沒有對照表的專案不需要用途，可以照舊帶。
 
 ### 怎樣算「同一份內容」
 
@@ -295,7 +295,7 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 
 讀不到的值記為 `null`，不記 0。
 
-對照表退回整套另有 `trigger_files`。受影響測試的紀錄標 `kind: "affected"`，另有 `base`、`changed_files`、`selected_tests` 與 `why`（每個測試被選的原因），一律不可沿用。帶用途的執行沿用上次結果時的沿用紀錄標 `kind: "reuse"`，另有 `reused_time`、`reused_agent`。
+對照表退回整套另有 `trigger_files`。受影響測試的紀錄標 `kind: "affected"`，另有 `base`、`changed_files`、`selected_tests` 與 `why`（每個測試被選的原因），一律不可沿用。帶用途的執行沿用上次結果時的沿用紀錄標 `kind: "reuse"`，另有 `reused_fingerprint`（沒有 `fingerprint`）、`reused_time`、`reused_agent`。
 
 執行中的測試，`status` 顯示目前的 CPU 核數與記憶體，`status --json` 在 `running` 每一筆的 `usage`（`cpu_cores`、`mem_bytes`）。CPU 核數取自閘門最近一次取樣，閘門不在時為空；記憶體讀群組當下的值。名額持有者紀錄有資源群組路徑 `cgroup` 與測試主工作階段 `sid`。
 
