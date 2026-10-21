@@ -1,8 +1,8 @@
 # LAT 使用者決策保留方案
 
-> **已被取代（2026-10-22）。** 本文是參謀機制出現前的早期設計，沒有提到參謀與 `lat_decision_status.py`，現行做法以 [ADR 0002](adr/0002-lat-orchestrator-advisors.md) 與 `skills/local/lat/references/advisors.md` 為準；下方內容只保留作歷史紀錄。
+> **已被取代（2026-10-22）。** 本文是參謀機制出現前的早期設計，沒有提到參謀與 `lat_decision_status.py`，現行做法以 [ADR 0002](adr/0002-lat-orchestrator-advisors.md) 與 [advisors.md](../skills/local/lat/references/advisors.md) 為準；下方內容只保留作歷史紀錄。
 
-日期：2026-09-18。狀態：流程重點已寫入 repo 的 `skills/local/lat/SKILL.md`；尚未建立決策工具或實作工具層強制檢查。
+日期：2026-09-18。撰寫當時的狀態：流程重點已寫入 repo 的 `skills/local/lat/SKILL.md`；尚未建立決策工具或實作工具層強制檢查。
 
 ## 問題與目標
 
