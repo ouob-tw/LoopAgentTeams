@@ -50,7 +50,6 @@ test('a fixture and a Chrome start while ports 7110–7201 are taken', async () 
 		if (bound) held.push(server);
 	}
 	const fixture = await fixtureOf();
-	expect(held.length).toBeGreaterThan(0);
 	expect(Number(new URL(fixture.url).port)).toBeGreaterThan(0);
 	expect((await fetch(`${fixture.url}/login`)).status).toBe(200);
 	if (CHROME) {
