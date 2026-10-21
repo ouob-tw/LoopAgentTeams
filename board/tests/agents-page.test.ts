@@ -1216,3 +1216,42 @@ for (const width of [1280, 390]) {
 		expect(log).toContain('label refused');
 	}, 30_000);
 }
+
+for (const width of [1280, 390]) {
+	const touch = width < 761;
+	test.skipIf(!CHROME)(`${width}px: a controller's card adds its duty to ${touch ? 'its long-press menu' : 'its hover explanation and menu'}; the card itself does not show it`, async () => {
+		const duty = join(fixture.reportsDir, 's-lead.duty.json');
+		writeFileSync(duty, JSON.stringify({ text: '整理看板名冊', expected: '名冊顯示職責', time: new Date().toISOString() }));
+		try {
+			await freshTabs();
+			await visit(width);
+			if (touch) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+			await openTab();
+			await tab.until(`!!document.querySelector(${JSON.stringify(CARD('s-lead'))})`, 'the list');
+			expect(await tab.eval<string>(`document.querySelector(${JSON.stringify(CARD('s-lead'))}).innerText`)).not.toContain('整理看板名冊');
+			expect(await tab.eval(`document.querySelector('[data-agent="s-lead"]').hasAttribute('title')`)).toBe(false);
+
+			if (!touch) {
+				await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...(await point(CARD('s-lead'), 40)) });
+				await tab.until(`document.querySelector('#agent-tip')?.innerText.includes('整理看板名冊')`, "the controller's explanation");
+				const tip = await tab.eval<string>(`document.querySelector('#agent-tip').innerText`);
+				// Where it is first, then its duty and the result it expects.
+				expect(tip.indexOf('分頁 分頁-s-lead')).toBeGreaterThan(-1);
+				expect(tip.indexOf('分頁 分頁-s-lead')).toBeLessThan(tip.indexOf('整理看板名冊'));
+				expect(tip).toContain('預期結果');
+				// An agent that is no controller is explained without a duty.
+				await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...(await point(CARD('s-plain'), 40)) });
+				await tab.until(`document.querySelector('#agent-tip')?.innerText.includes('分頁-s-plain')`, "the other agent's explanation");
+				expect(await tab.eval<string>(`document.querySelector('#agent-tip').innerText`)).not.toContain('預期結果');
+			}
+
+			await openMenu(touch, 's-lead');
+			expect(await tab.eval<string>(`document.querySelector('.menu').innerText`)).toMatch(/^整理看板名冊\s+預期結果\s*名冊顯示職責/);
+			expect(await tab.eval(`[...document.querySelectorAll('.menu button')].map((item) => item.innerText)`)).toEqual(['改分頁名稱']);
+			expect(await tab.eval(`!!document.querySelector('#agent-tip')`)).toBe(false);
+			expect(await tab.eval(FITS)).toBe(true);
+		} finally {
+			rmSync(duty, { force: true });
+		}
+	}, 30_000);
+}
