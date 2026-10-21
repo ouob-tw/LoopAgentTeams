@@ -10,7 +10,7 @@ let cookie: string;
 const at = (offsetMs: number) => new Date(Date.now() + offsetMs).toISOString();
 
 beforeAll(async () => {
-	fixture = await startFixture(71);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 });
 afterAll(() => fixture.cleanup());
