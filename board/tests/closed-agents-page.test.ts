@@ -1,3 +1,4 @@
+import { answerHerdrList } from './harness.ts';
 // The Herdr tab's 已關閉 section in a real browser: headless Chrome driven over its DevTools
 // protocol, on the built board with fake hcom, Herdr and helper, wide and at a phone's width. The
 // board runs in Taipei time, so its calendar days are not the test host's. Skipped when the host
@@ -143,8 +144,11 @@ const CLOSED = ['s-today', 's-yesterday', 's-week', 's-lead', 's-fail', 's-switc
 
 beforeAll(async () => {
 	socket = createServer((connection) =>
-		connection.on('data', (chunk) => {
+		connection.on('data', async (chunk) => {
 			const request = JSON.parse(chunk.toString().trim());
+			if (!fixture) return connection.write(JSON.stringify({ id: request.id, result: { agents: [], workspaces: [], tabs: [] } }) + '\n');
+			const listing = await answerHerdrList(fixture.dir, request);
+			if (listing !== null) return connection.write(listing);
 			appendFileSync(join(fixture.dir, 'herdr-calls.jsonl'), JSON.stringify(['socket', request.method, request.params]) + '\n');
 			connection.write(JSON.stringify({ id: request.id, result: { type: 'tab_moved' } }) + '\n');
 		})

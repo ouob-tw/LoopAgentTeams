@@ -172,6 +172,8 @@ export interface Project {
 
 /** What `GET /api/launches` answers. */
 export interface LaunchList {
+	/** Milliseconds until the earliest starting launch expires, on the server clock. */
+	refreshAfterMs: number | null;
 	projects: Project[];
 	/** Why the folders could not be listed; `projects` is empty then. */
 	projectsError: string | null;

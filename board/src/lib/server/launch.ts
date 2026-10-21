@@ -65,9 +65,11 @@ export async function listLaunches(board: Board): Promise<LaunchList> {
 		// Each form lists its own kind: as many plain agents as controllers.
 		const all = readLaunches(stateDir, board.config.now(), launchWaitMs);
 		const launches = [...all.filter((launch) => launch.role !== 'agent').slice(0, LISTED_LAUNCHES), ...all.filter((launch) => launch.role === 'agent').slice(0, LISTED_LAUNCHES)];
-		return { projects, projectsError, launches, logError: null, modelOptions: board.config.modelOptions, home: homedir() };
+		const deadlines = launches.filter((launch) => launch.state === 'starting').map((launch) => Date.parse(launch.time) + launchWaitMs);
+		const refreshAfterMs = deadlines.length ? Math.max(0, Math.min(...deadlines) - board.config.now()) : null;
+		return { refreshAfterMs, projects, projectsError, launches, logError: null, modelOptions: board.config.modelOptions, home: homedir() };
 	} catch (error) {
-		return { projects, projectsError, launches: [], logError: (error as Error).message, modelOptions: board.config.modelOptions, home: homedir() };
+		return { refreshAfterMs: null, projects, projectsError, launches: [], logError: (error as Error).message, modelOptions: board.config.modelOptions, home: homedir() };
 	}
 }
 

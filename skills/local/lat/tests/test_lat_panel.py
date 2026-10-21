@@ -1165,7 +1165,7 @@ class NotificationTests(unittest.TestCase):
                         "hcom_name": target,
                         "questions_path": str(questions),
                     }
-                    with patch.object(panel.subprocess, "run", return_value=receipt):
+                    with patch.object(panel.bindings.subprocess, "run", return_value=receipt):
                         ok, _reason = panel.send_pending_notification(
                             questions, binding, state_dir=state_dir,
                         )
@@ -1245,7 +1245,7 @@ class NotificationTests(unittest.TestCase):
                     command, 0, json.dumps({"delivered_to": ["alpha"]}), ""
                 )
 
-            with patch.object(panel.subprocess, "run", side_effect=deliver_after_new_change):
+            with patch.object(panel.bindings.subprocess, "run", side_effect=deliver_after_new_change):
                 result = panel.send_pending_notification(
                     questions, binding, state_dir=state_dir,
                 )

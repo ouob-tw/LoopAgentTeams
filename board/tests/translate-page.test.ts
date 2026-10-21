@@ -312,11 +312,12 @@ test.skipIf(!CHROME)('loading an earlier part translates only the replies it bro
 	await tab.eval(`${SWITCH}.click()`);
 	await tab.until(`!!${said('譯：Long history reply number 10 ')} && !!${said('譯：Long history reply number 59 ')}`, 'the first page translated');
 	const firstPage = codexCalls().slice(before);
-	expect(firstPage).toHaveLength(50);
+	expect(firstPage.length).toBeLessThanOrEqual(7);
+	expect(firstPage.flatMap((text) => [...text.matchAll(/number (\d+)/g)].map((match) => Number(match[1]))).sort((a, b) => a - b)).toEqual(Array.from({ length: 50 }, (_, index) => index + 10));
 	expect(firstPage.some((text) => text.includes('number 9 '))).toBe(false);
 
 	await tab.eval(`document.querySelector('.detail button.earlier').scrollIntoView()`);
 	await tab.until(`!!${said('譯：Long history reply number 0 ')}`, 'the earlier part translated');
-	const earlier = codexCalls().slice(before + 50);
-	expect(earlier.map((text) => Number(/number (\d+)/.exec(text)![1])).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
+	const earlier = codexCalls().slice(before + firstPage.length);
+	expect(earlier.flatMap((text) => [...text.matchAll(/number (\d+)/g)].map((match) => Number(match[1]))).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 }, 60_000);
