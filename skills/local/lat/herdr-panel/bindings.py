@@ -12,8 +12,11 @@ import uuid
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
 from lat_decision_status import read_decision_kind
-from _lat_common import plugin_directory, run_cli, write_text_atomic as _replace_locked
+from _lat_common import (
+    plugin_directory, run_cli, shared_lat_dir, write_text_atomic as _replace_locked,
+)
 from questions import (
+    QUESTIONS_DIR,
     _answer_text_and_note,
     _decision_state,
     _full_section_sha256,
@@ -24,6 +27,7 @@ from questions import (
     _record_submitted_answers,
     _section_sha256,
     _sections,
+    panel_journal_path,
     parse_questions,
     question_provenance,
 )
@@ -120,10 +124,34 @@ def _safe_controller_name(hcom_name):
     return safe
 
 
-def controller_questions_path(workspace, hcom_name):
-    """The questions file a controller with this name in this workspace is bound to."""
+def legacy_questions_path(workspace, hcom_name):
+    """The root ``.lat`` file bindings made before ``.lat/questions/``; never moved or rewritten."""
     workspace = Path(workspace).expanduser().resolve()
     return workspace / ".lat" / f"questions-{_safe_controller_name(hcom_name)}.md"
+
+
+def new_questions_path(workspace, hcom_name):
+    """The ``.lat/questions/`` file of this name, in the ``.lat`` every worktree shares."""
+    workspace = Path(workspace).expanduser().resolve()
+    return shared_lat_dir(workspace) / QUESTIONS_DIR / f"{_safe_controller_name(hcom_name)}.md"
+
+
+def controller_questions_path(workspace, hcom_name):
+    """The questions file a new binding of this name in this workspace gets.
+
+    That is the ``.lat/questions/`` file, unless the older root file still has a
+    question waiting for an answer or for recording: that one stays in use until
+    they are done.
+    """
+    legacy = legacy_questions_path(workspace, hcom_name)
+    try:
+        open_questions = any(
+            question["status_label"] == "待答"
+            for question in parse_questions(legacy.read_text(encoding="utf-8"))
+        )
+    except FileNotFoundError:
+        open_questions = False
+    return legacy if open_questions else new_questions_path(workspace, hcom_name)
 
 
 def bind_controller(
@@ -146,7 +174,7 @@ def bind_controller(
         "client": client,
         "session_id": session_id,
         "workspace": str(workspace),
-        "questions_path": str(controller_questions_path(workspace, hcom_name)),
+        "questions_path": None,
         "herdr_workspace": herdr_workspace,
         "herdr_tab": herdr_tab,
         "herdr_pane": herdr_pane,
@@ -160,6 +188,14 @@ def bind_controller(
             legacy_ignored = error.count
             bindings = {}
         replaced = bindings.get(session_id)
+        # A session already bound is in the same round, which keeps its file.
+        same_round = replaced and all(
+            replaced.get(key) == binding[key] for key in ("hcom_name", "workspace")
+        )
+        binding["questions_path"] = (
+            replaced["questions_path"] if same_round
+            else str(controller_questions_path(workspace, hcom_name))
+        )
         bindings[session_id] = binding
         _write_bindings(path, bindings)
     return binding, replaced, legacy_ignored
@@ -502,7 +538,7 @@ def _owed_answers(questions_path):
     recorded by hand.
     """
     questions_path = Path(questions_path)
-    journal_path = questions_path.parent / "panel-journal.jsonl"
+    journal_path = panel_journal_path(questions_path)
     try:
         sections = _sections(questions_path.read_text(encoding="utf-8"))
     except (OSError, ValueError):

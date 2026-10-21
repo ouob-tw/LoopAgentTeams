@@ -17,10 +17,18 @@ client=codex           # Claude 主控改為 claude
 hcom_name=<主控自己的 HCOM 名稱>
 session_id="$CODEX_THREAD_ID"   # Claude：$CLAUDE_CODE_SESSION_ID
 decisions=/absolute/path/to/shared/decisions
-questions="$workspace/.lat/questions-$hcom_name.md"  # 以 bind 輸出的 questions_path 為準
+lat="$workspace/.lat"   # 在 worktree 裡的主控改用主工作區的 .lat
+questions=<activate 或 bind 輸出的 questions_path>
 ```
 
-每個主控各用一份問題檔。面板紀錄在 `$workspace/.lat/panel-journal.jsonl`，歸檔檔是問題檔同目錄的 `<問題檔名不含副檔名>-archive.md`。
+每個主控各用一份問題檔。新綁定的問題檔在 `$lat/questions/<名稱>.md`，名稱是 HCOM 名稱轉成小寫、非英數字元換成 `-`；歸檔檔是問題檔同目錄的 `<問題檔名不含副檔名>-archive.md`，鎖檔是同目錄的 `.<問題檔名>.lock`。所有 worktree 共用主工作區的 `.lat`。面板紀錄固定在 `$lat/panel-journal.jsonl`，每筆以問題檔的絕對路徑標記是哪一份。
+
+根目錄的舊問題檔 `.lat/questions-<名稱>.md` 與它的歸檔檔、鎖檔留在原處，不搬也不改；其中已送出未記錄的答覆、已記錄題目的歸檔照舊以舊路徑運作。下列情況繼續綁定舊檔：
+
+- 本輪開始時就綁定舊檔的主控，到本輪 deactivate 前都沿用（恢復時重綁也一樣）。
+- 同一名稱的舊檔仍有「待答」題目（含已送出、還沒記錄的），新一輪仍綁定舊檔，直到那些題目處理完。
+
+任何指令都沒有預設問題檔，`--questions` 一律明確給。
 
 ## 綁定
 
@@ -147,7 +155,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pe
   --questions "$questions" --decisions "$decisions"
 ```
 
-檢查會搜尋 `--questions` 同目錄下所有 `questions-*.md` 與 `questions-*-archive.md`，確認 pending 決策都有待答題；反向檢查只看 `--questions` 指定的問題檔，列出待答題的決策已非 pending 或找不到決策紀錄。回合結束的 DECIDE／HELP 檢查沿用相同結果。有問題時以非零結束，不印「沒有遺漏」；依輸出處理後重跑：
+檢查會搜尋 `.lat` 根目錄的 `questions-*.md`（舊位置）與 `.lat/questions/*.md`（新位置），以及兩處的 `-archive.md` 歸檔檔，確認 pending 決策都有待答題；反向檢查只看 `--questions` 指定的問題檔，列出待答題的決策已非 pending 或找不到決策紀錄。回合結束的 DECIDE／HELP 檢查沿用相同結果。有問題時以非零結束，不印「沒有遺漏」；依輸出處理後重跑：
 
 | 輸出 | 處理 |
 | --- | --- |
@@ -244,7 +252,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question withdraw
    ```bash
    uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question provenance \
      --questions "$snapshot" --source-questions "$questions" \
-     --journal "$workspace/.lat/panel-journal.jsonl" --id "<ID>"
+     --journal "$lat/panel-journal.jsonl" --id "<ID>"
    ```
 
    成功時輸出 `"status": "ok"`、面板紀錄路徑、行號、`time` 與 `section_sha256`，表示快照中這一題與面板最後一次寫入的內容相同。未勾選、沒有面板紀錄、舊紀錄缺少逐題雜湊，或該題之後又被修改時，指令失敗並說明原因。
@@ -306,7 +314,9 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question archive-
 
 ## 解除綁定
 
-`lat-session.py deactivate` 會自動解除自己的綁定並恢復側欄原名。只有需要單獨清除遺留綁定時才執行：
+`lat-session.py deactivate` 會自動解除自己的綁定並恢復側欄原名，並收尾自己在 `.lat/questions/` 的問題檔：先照「清理題目」清理，清理後沒有任何題目時刪除這份問題檔，歸檔檔與鎖檔保留；仍有待答或已送出未記錄的題目時不刪。收尾失敗只印一行「問題檔未收尾」，不影響停用。根目錄的舊問題檔不清理也不刪除。
+
+只有需要單獨清除遺留綁定時才執行：
 
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" unbind --session-id "$session_id"
@@ -367,7 +377,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" board answered \
   [--questions "$questions"]... [--workspace "<工作區>" --hcom-name "<名稱>"]...
 ```
 
-`--workspace` 與 `--hcom-name` 成對給，表示已不在綁定裡的主控，由輔助工具依綁定時的規則找出它的問題檔；看板不自己拼檔名。輸出 `{"files": [{"questions_path": "…", "questions": [...], "error": null}, ...]}`，先依序列出 `--questions`，再依序列出每一對，每個一筆，成對給的那幾筆另帶 `workspace` 與 `hcom_name`；名稱拼不出檔名時那一筆的 `questions_path` 為 null、`error` 說明原因。`--workspace` 與 `--hcom-name` 個數不同時輸出 `{"status": "error", …}`，結束碼 1；其餘結束碼 0。`questions` 是這份問題檔與它的封存檔（`<問題檔名>-archive.md`）裡已記錄且有答覆的題目，欄位與 `board list` 相同；同一題號取最新的一段（封存檔在前、問題檔在後），最新一段不是已記錄的答覆時那題不列。檔案不存在時為空陣列；讀不出來時只有那一筆的 `error` 說明原因。看板用它列「已處理」的答過題目。不寫入任何檔案。
+`--workspace` 與 `--hcom-name` 成對給，表示已不在綁定裡的主控，由輔助工具依綁定時的規則找出它的問題檔；看板不自己拼檔名。輸出 `{"files": [{"questions_path": "…", "questions": [...], "error": null}, ...]}`，先依序列出 `--questions`，再依序列出每一對，每個一筆，成對給的那幾筆另帶 `workspace` 與 `hcom_name`；名稱拼不出檔名時那一筆的 `questions_path` 為 null、`error` 說明原因。`--workspace` 與 `--hcom-name` 個數不同時輸出 `{"status": "error", …}`，結束碼 1；其餘結束碼 0。`questions` 是這份問題檔與它的封存檔（`<問題檔名>-archive.md`），加上同名的另一個位置（根目錄舊檔或 `.lat/questions/` 新檔；成對給時另含該工作區 `.lat` 根目錄的舊檔）與其封存檔裡已記錄且有答覆的題目，欄位與 `board list` 相同；同一題號取最新的一段（舊檔在前、新檔在後，各自封存檔在前、問題檔在後），最新一段不是已記錄的答覆時那題不列。檔案不存在時為空陣列；讀不出來時只有那一筆的 `error` 說明原因。看板用它列「已處理」的答過題目。不寫入任何檔案。
 
 ### 寫入並送出答案
 

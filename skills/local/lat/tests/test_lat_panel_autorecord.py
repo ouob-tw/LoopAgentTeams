@@ -66,7 +66,7 @@ class RecordedTests(AutoRecordTestCase):
         section_sha256 = next(change["section_sha256"] for change in submit["changed_questions"]
                               if change["id"] == "Q4")
         self.assertIn(
-            f"- 來源：面板，{self.questions.parent / 'panel-journal.jsonl'} "
+            f"- 來源：面板，{self.questions.parents[1] / 'panel-journal.jsonl'} "
             f"第 {self.journal_line('batch-submit')} 行，time {submit['time']}，"
             f"section_sha256 {section_sha256}\n", record)
 
