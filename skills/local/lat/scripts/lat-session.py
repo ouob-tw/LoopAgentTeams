@@ -5,6 +5,7 @@ import copy
 import difflib
 from datetime import datetime, timezone
 import fcntl
+import importlib
 import importlib.util
 import json
 import os
@@ -44,14 +45,12 @@ QUESTION_SEPARATOR = '\n\n' + '─' * 20 + '\n\n'
 HCOM_PROMPT = re.compile(r'(?:\s*<hcom>)+\s*')
 
 
-def panel_module():
-    path = SKILL_DIR / 'herdr-panel/lat_panel.py'
-    spec = importlib.util.spec_from_file_location('lat_panel', path)
-    if spec is None or spec.loader is None:
-        raise ValueError(f'Cannot load LAT panel helper: {path}')
-    module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
-    return module
+def panel_module(name='bindings'):
+    """Load only the panel capability needed by this hook path."""
+    directory = SKILL_DIR / 'herdr-panel'
+    if str(directory) not in sys.path:
+        sys.path.insert(0, str(directory))
+    return importlib.import_module(name)
 
 
 def activate_command(client, workspace, progress, decisions, tasks, hcom_name):
@@ -572,8 +571,9 @@ def own_questions_path(panel, record):
     return Path(binding['questions_path'])
 
 
-def read_questions(panel, path):
-    return panel.parse_questions(path.read_text(encoding='utf-8')) if path.exists() else []
+def read_questions(path):
+    return panel_module('questions').parse_questions(
+        path.read_text(encoding='utf-8')) if path.exists() else []
 
 
 def waiting_question(questions, identifier, revision):
@@ -593,14 +593,14 @@ def question_delivery(record, message):
         path = own_questions_path(panel, record)
         if path is None:
             return '', ''
-        questions = read_questions(panel, path)
+        questions = read_questions(path)
         shown, missing = [], []
         for identifier, revision in listed_questions(message):
             question = waiting_question(questions, identifier, revision)
             if question is None:
                 missing.append(f'{identifier} r{revision}')
             else:
-                shown.append(panel.question_plain_text(question))
+                shown.append(panel_module('questions').question_plain_text(question))
     except Exception as exc:  # noqa: BLE001 - never let delivery break the Stop hook
         return '', f'LAT 題目代送失敗，請到面板查看題目：{exc}'
     warning = ('LAT 題目代送失敗：自己的問題檔沒有 ' + '、'.join(missing)
@@ -666,11 +666,11 @@ def stop_check(record, payload):
     panel = panel_module()
     questions_path = own_questions_path(panel, record)
     if questions_path is not None:
-        questions = read_questions(panel, questions_path)
+        questions = read_questions(questions_path)
         for identifier, revision in sorted(identifiers):
             if waiting_question(questions, identifier, revision) is None:
                 problems.append(f'{identifier} r{revision}：自己的面板缺少同版本待答題目')
-        _, missing, inconsistent, unreadable, reverse = panel.pending_question_gaps(questions_path, decisions)
+        _, missing, inconsistent, unreadable, reverse = panel_module('questions').pending_question_gaps(questions_path, decisions)
         problems.extend(f'{identifier}：遺漏檢查缺少面板題目' for identifier in missing)
         problems.extend(f'{identifier}：遺漏檢查不一致（{reason}）'
                         for identifier, reason, _ in inconsistent)
@@ -821,7 +821,7 @@ def lat_transcript(client, payload, sid):
     """Read the conversation's transcript; True when it shows the LAT skill was called up."""
     path = payload.get('transcript_path')
     if path is None:
-        path = panel_module().transcript_path(client, sid)
+        path = panel_module('transcript').transcript_path(client, sid)
     elif not isinstance(path, str) or not Path(path).is_absolute():
         raise ValueError(f'transcript_path is not an absolute path: {path!r}')
     # Transcripts can be large: parse lines until one confirms the format, then only marker lines.
@@ -868,7 +868,7 @@ def waiting_questions(record):
     path = panel.controller_questions_path(record['workspace'], record['hcom_name'])
     decisions = Path(record['decisions_path'])
     waiting = []
-    for question in panel.board_questions(path):
+    for question in panel_module('board').board_questions(path):
         # A submitted answer waits for the controller to record it, not for the user.
         if question['status'] != 'pending':
             continue

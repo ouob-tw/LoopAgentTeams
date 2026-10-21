@@ -1668,7 +1668,7 @@ class Panel(App):
 
     def mark_pending(self):
         try:
-            lat_panel.mark_notification_pending(self.path)
+            lat_panel.bindings.mark_notification_pending(self.path)
         except (OSError, ValueError) as error:
             # Keep the obligation in memory so retry and close persist it first.
             self.unrecorded_notification = True
@@ -1688,7 +1688,7 @@ class Panel(App):
             target = ""
             if self.unrecorded_notification:
                 try:
-                    await asyncio.to_thread(lat_panel.mark_notification_pending, self.path)
+                    await asyncio.to_thread(lat_panel.bindings.mark_notification_pending, self.path)
                 except (OSError, ValueError) as error:
                     self.set_notice("notify", notify_failure_line(f"無法記錄待送通知：{error}"))
                     return False

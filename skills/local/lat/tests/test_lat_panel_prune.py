@@ -165,7 +165,7 @@ class RetentionTests(PruneTestCase):
                     stream.write(record(NOW) + "\n")
             return expired
 
-        with mock.patch.object(self.core, "_report_expired", checked):
+        with mock.patch.object(self.core.questions, "_report_expired", checked):
             self.assertEqual(self.prune()[0], [])
         self.assertEqual(calls, [True, False])
         self.assertEqual(len((self.reports / "s-old.jsonl").read_text().splitlines()), 2)
@@ -206,7 +206,7 @@ class RetentionTests(PruneTestCase):
                 self.assertNotIn("first in-lock", logged())
             return real(path, now)
 
-        with mock.patch.object(self.core, "_report_expired", checked):
+        with mock.patch.object(self.core.questions, "_report_expired", checked):
             self.assertEqual(self.prune()[0], ["s-old"])
 
         # The first hook gets the lock once the old file is gone, and writes a new one.
