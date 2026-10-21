@@ -7,6 +7,7 @@
 	import type { Controller } from '#lib/board/types.ts';
 	import ClosedResume from './ClosedResume.svelte';
 	import StatusMark from './StatusMark.svelte';
+	import TranslateToggle from './TranslateToggle.svelte';
 	import Transcript from './Transcript.svelte';
 
 	let {
@@ -49,7 +50,10 @@
 
 <ClosedResume {agent} {controllers} />
 
-<h3 class="records">對話紀錄</h3>
+<div class="records">
+	<h3>對話紀錄</h3>
+	<TranslateToggle />
+</div>
 <Transcript controller={speaker} feed="agent" />
 
 <style>
@@ -124,9 +128,14 @@
 	}
 	/* Drawn like the running agent's open 對話紀錄 tab. */
 	.records {
+		display: flex;
+		align-items: center;
+		justify-content: space-between;
+		border-bottom: 1px solid var(--line);
+	}
+	.records h3 {
 		margin: 0;
 		padding: 0.4rem 0.8rem;
-		border-bottom: 1px solid var(--line);
 		font-size: max(0.85rem, var(--min-font, 0px));
 	}
 </style>
