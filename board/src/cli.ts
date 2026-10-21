@@ -2,6 +2,7 @@
 // logged-in devices. Runs under Bun, or under Node 22.18+ (22.17 with --experimental-strip-types).
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
+import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { loadConfig } from './lib/server/config.ts';
 import { listDevices, revokeDevice } from './lib/server/devices.ts';
@@ -73,9 +74,11 @@ async function main(argv: string[]): Promise<number> {
 	const config = loadConfig();
 
 	if (command === 'start') {
-		const entry = fileURLToPath(new URL('../build/index.js', import.meta.url));
+		// LAT_BOARD_BUILD_DIR names another build, relative to the board directory (the tests run `build-test/`).
+		const build = process.env.LAT_BOARD_BUILD_DIR ?? 'build';
+		const entry = join(fileURLToPath(new URL('..', import.meta.url)), build, 'index.js');
 		if (!existsSync(entry)) {
-			console.error('找不到 build/，請先在 board 目錄執行 build。');
+			console.error(`找不到 ${build}/，請先在 board 目錄執行 build。`);
 			return 1;
 		}
 		const env = {

@@ -35,6 +35,8 @@ export async function answerHerdrList(dir: string, request: { id: string; method
 }
 
 const ROOT = join(import.meta.dir, '..');
+/** The build the test servers run: `bun run build:test` writes it, never the `build/` the running board serves. */
+const BUILD = join(ROOT, 'build-test/index.js');
 // Test servers and Chrome bind port 0, so the system picks a free port; the server says which one
 // on its standard output (`Listening on http://host:port`), Chrome in its profile's DevToolsActivePort.
 
@@ -284,7 +286,7 @@ export async function startFixture(
 		runtime?: string;
 	} = {}
 ): Promise<Fixture> {
-	if (!existsSync(join(ROOT, 'build/index.js'))) throw new Error('build/ is missing: run `bun run build` first');
+	if (!existsSync(BUILD)) throw new Error('build-test/ is missing: run `bun run build:test` first');
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-test-'));
 	// Known once the server has said where it listens; a restart asks for the same port again.
 	let port = 0;
@@ -492,7 +494,7 @@ export async function startFixture(
 			return watch;
 		},
 		async start() {
-			server = spawn(options.runtime ?? NODE, [join(ROOT, 'build/index.js')], { env: { ...env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
+			server = spawn(options.runtime ?? NODE, [BUILD], { env: { ...env, PORT: String(port) }, stdio: ['ignore', 'pipe', 'pipe'] });
 			const child = server;
 			let heard = '';
 			child.stderr!.on('data', (chunk) => ((output += chunk), process.stderr.write(chunk)));
