@@ -4307,6 +4307,35 @@ esac
                 watch.deliver_alarm_notice(action, declaration, path, original, 'orch', self.work)
         self.assertEqual(json.loads(path.read_text())['new'], True)
 
+    def test_cycle_holds_wait_lock_from_read_to_write(self):
+        self.alarm_cycle_environment()
+        watch = load_watch()
+        path = self.save_alarm(watch)
+        real_decide = watch.decide_alarm
+        real_write = watch.write_object
+        blocked = []
+
+        def replace():
+            with watch.wait_lock(path):
+                real_write(path, {'agent': 'worker-open', 'kind': 'alarm', 'replaced': True})
+
+        competing = threading.Thread(target=replace)
+
+        def decide_alarm(*args):
+            competing.start()
+            competing.join(0.3)
+            blocked.append(competing.is_alive())
+            return real_decide(*args)
+
+        with patch.object(watch, 'decide_alarm', side_effect=decide_alarm):
+            self.run_cycles(watch, 0)
+        competing.join(10)
+
+        self.assertEqual(blocked, [True])
+        self.assertFalse([record for record in self.watch_records()
+                          if record.get('decision') == 'observation-failed'])
+        self.assertTrue(json.loads(path.read_text())['replaced'])
+
 
 if __name__ == '__main__':
     unittest.main()

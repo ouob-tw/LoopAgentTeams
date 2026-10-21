@@ -2004,38 +2004,46 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 unavailable_alarm(workspace, orchestrator, agent, previous, now, log)
                 raise
             previous = states.get(agent)
-            declaration, wait_original = read_alarm_wait(wait_path(workspace, agent))
-            if declaration and 'kind' not in declaration:
-                declaration['kind'] = ('decision' if pending_decision(decisions, declaration['target'])
-                                       is not None else 'agent')
-            target_observation, target_state = None, None
-            if (declaration and declaration.get('kind') == 'agent'
-                    and declaration.get('active', True)
-                    and now >= declaration.get('deadline_at', declaration['declared_at'] + 3600)):
-                target = declaration['target']
-                target_info = agent_info(hcom, target)
-                if target_info:
-                    target = target_info['name']
-                if target in agents and target in hcom and hcom[target].get('status') != 'inactive':
-                    try:
-                        target_observation = current_observation(target)
-                        target_state, _ = decide(states.get(target), target_observation, now)
-                    except (OSError, ValueError, TypeError, KeyError):
-                        target_observation, target_state = None, None
-            if declaration and declaration.get('kind') == 'alarm':
-                met = (alarm_condition_met(declaration) if declaration.get('active', True)
-                       and declaration.get('due_at') is None else False)
-                saved_wait, wait_actions, wait_events = decide_alarm(declaration, observation, met, now)
-            else:
-                saved_wait, wait_actions, wait_events = decide_wait(
-                    declaration, observation, target_observation, target_state, now)
-            if saved_wait is not None:
-                observation = observation._replace(
-                    wait_active=saved_wait.get('active', True),
-                    wait_released=observation.wait_released or 'wait-expired' in wait_events)
-                wait_original = write_wait(wait_path(workspace, agent), saved_wait,
-                                             expected=wait_original)
-                ALARM_DELIVERIES.pop(str(wait_path(workspace, agent)), None)
+            wait_file = wait_path(workspace, agent)
+            with contextlib.ExitStack() as wait_held:
+                wait_held.enter_context(wait_lock(wait_file))
+                declaration, wait_original = read_alarm_wait(wait_file)
+                if declaration and 'kind' not in declaration:
+                    declaration['kind'] = ('decision' if pending_decision(
+                        decisions, declaration['target']) is not None else 'agent')
+                target_observation, target_state = None, None
+                if (declaration and declaration.get('kind') == 'agent'
+                        and declaration.get('active', True)
+                        and now >= declaration.get('deadline_at', declaration['declared_at'] + 3600)):
+                    target = declaration['target']
+                    target_info = agent_info(hcom, target)
+                    if target_info:
+                        target = target_info['name']
+                    if target in agents and target in hcom and hcom[target].get('status') != 'inactive':
+                        # Observing the target runs hcom, so release the lock and compare on return.
+                        wait_held.close()
+                        try:
+                            target_observation = current_observation(target)
+                            target_state, _ = decide(states.get(target), target_observation, now)
+                        except (OSError, ValueError, TypeError, KeyError):
+                            target_observation, target_state = None, None
+                        wait_held.enter_context(wait_lock(wait_file))
+                        if read_wait(wait_file)[1] != wait_original:
+                            raise ValueError(f'Concurrent change detected: {wait_file}')
+                if declaration and declaration.get('kind') == 'alarm':
+                    met = (alarm_condition_met(declaration) if declaration.get('active', True)
+                           and declaration.get('due_at') is None else False)
+                    saved_wait, wait_actions, wait_events = decide_alarm(
+                        declaration, observation, met, now)
+                else:
+                    saved_wait, wait_actions, wait_events = decide_wait(
+                        declaration, observation, target_observation, target_state, now)
+                if saved_wait is not None:
+                    observation = observation._replace(
+                        wait_active=saved_wait.get('active', True),
+                        wait_released=observation.wait_released or 'wait-expired' in wait_events)
+                    wait_original = write_object(wait_file, saved_wait, expected=wait_original)
+                    ALARM_DELIVERIES.pop(str(wait_file), None)
             for event in wait_events:
                 append_log(log, {'at': now, 'agent': agent, 'decision': event,
                                  'wait': saved_wait})
