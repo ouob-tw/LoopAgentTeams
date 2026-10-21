@@ -243,9 +243,9 @@ class EnabledTests(AutocleanTestCase):
         with mock.patch.dict(os.environ, self.env, clear=True):
             started = time.monotonic()
             process = module.trigger(self.work)
+            self.addCleanup(process.wait)
+            self.addCleanup(process.kill)
             self.assertLess(time.monotonic() - started, 2)
-        self.addCleanup(process.wait)
-        self.addCleanup(process.kill)
         self.assertEqual(process.wait(timeout=60), 0)
         self.assertEqual(self.log_lines()[-1][4], '結束')
         self.assertFalse(self.exists('runs/issue-1'))
