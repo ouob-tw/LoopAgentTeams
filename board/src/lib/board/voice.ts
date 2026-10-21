@@ -3,7 +3,7 @@
 
 /** Speech this long or shorter (in characters, once in Traditional Chinese) goes straight in;
  *  anything longer is tidied by Codex first. */
-export const SHORT_LIMIT = 10;
+export const SHORT_LIMIT = 20;
 
 export function isShort(text: string): boolean {
 	return [...text.trim()].length <= SHORT_LIMIT;
