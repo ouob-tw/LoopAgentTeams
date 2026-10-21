@@ -37,3 +37,13 @@ test('a text whose words changed under the same seq is rendered again; clearing 
 	markdown.html(1, '**b**');
 	expect(rendered).toBe(3);
 });
+
+test('a push that brings nothing new keeps the same view, so nothing is worked out again', () => {
+	const items = Array.from({ length: 5 }, (_, index) => text(index + 1));
+	const view = withLatest(null, { items, before: null, skipped: 0 });
+	// The usage alone changed: the same items again, as new objects.
+	expect(withLatest(view, { items: structuredClone(items), before: null, skipped: 0, usage: null })).toBe(view);
+	expect(withLatest(view, { items: [...items, text(6)], before: null, skipped: 0 })).not.toBe(view);
+	expect(withLatest(view, { items: [...items.slice(0, 4), text(5, '改過')], before: null, skipped: 0 })).not.toBe(view);
+	expect(withLatest(view, { items, before: null, skipped: 1 })).not.toBe(view);
+});

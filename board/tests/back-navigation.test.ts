@@ -968,3 +968,28 @@ test.skipIf(!CHROME)('phone: a question opened after its turn ended, its message
 	fixture.list([luna, sol]);
 	await fixture.refresh(cookie);
 }, 30_000);
+
+// A push bringing one text renders that text's Markdown alone, not every text shown before it:
+// counted with the browser's own call counts, as markdown-it's `render` keeps its name in the build.
+test.skipIf(!CHROME)("a conversation's push of one new text renders only that text's Markdown", async () => {
+	await visit(1400, `?controller=${sol.session_id}`);
+	await tab.until(`document.querySelectorAll('.history li.said').length > 2`, 'the conversation');
+	const shown = await tab.eval<number>(`document.querySelectorAll('.history li.said').length`);
+	await tab.send('Profiler.enable');
+	await tab.send('Profiler.startPreciseCoverage', { callCount: true, detailed: false });
+	try {
+		// Taking the counts sets them back to zero.
+		await tab.send('Profiler.takePreciseCoverage');
+		say('只多一則的推送 **粗體**');
+		await tab.until(`document.querySelector('.history')?.innerText.includes('只多一則的推送')`, 'the new text');
+		await sleep(500);
+		const { result } = await tab.send('Profiler.takePreciseCoverage');
+		const calls = (name: string) =>
+			Math.max(0, ...result.flatMap((script: any) => script.functions.filter((fn: any) => fn.functionName === name).map((fn: any) => fn.ranges[0].count)));
+		// Every text shown asked for its HTML; only the new one was rendered.
+		expect(calls('html')).toBeGreaterThan(shown);
+		expect(calls('render')).toBe(1);
+	} finally {
+		await tab.send('Profiler.stopPreciseCoverage');
+	}
+}, 30_000);
