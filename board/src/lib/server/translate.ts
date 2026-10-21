@@ -75,6 +75,9 @@ interface Job {
 /** What a dropped text resolves to; no request is left to be told. */
 const DROPPED: Outcome<string> = { ok: false, reason: '沒有頁面在等，沒有翻譯' };
 
+/** What kind of error was thrown, for the journal: its message may quote the conversation. */
+const kindOf = (error: unknown) => (error instanceof Error ? error.name : typeof error);
+
 export function createTranslator(config: BoardConfig, turn: Turn = codexTurn): Translator {
 	const file = join(config.stateDir, FILE);
 	let saved = new Map<string, Saved>();
@@ -174,9 +177,9 @@ export function createTranslator(config: BoardConfig, turn: Turn = codexTurn): T
 		if (current) return current;
 		const job: Job = { outcome: Promise.resolve(DROPPED), wanted: 0, drop: null };
 		job.outcome = translateOne(key, text, job)
-			.catch((error: Error) => {
-				console.error(`[translate] translating failed: ${error.message}`);
-				return { ok: false as const, reason: `翻譯時出錯：${error.message}` };
+			.catch((error: unknown) => {
+				console.error(`[translate] translating failed: ${kindOf(error)}`);
+				return { ok: false as const, reason: '翻譯時出錯' };
 			})
 			.then((outcome) => {
 				if (running.get(key) === job) running.delete(key);
@@ -228,12 +231,14 @@ export function createTranslator(config: BoardConfig, turn: Turn = codexTurn): T
 					}
 					const failure = failed.get(key);
 					if (failure) return each(index, { ok: false, reason: failure.reason });
+					// Gone before it asked: nothing new is started for it.
+					if (signal?.aborted) return;
 					waits.push(share(jobFor(key, text), key, signal, (outcome) => each(index, outcome)));
 				});
 				if (changed) save();
 				await Promise.all(waits);
 			} catch (error) {
-				console.error(`[translate] translating failed: ${(error as Error).message}`);
+				console.error(`[translate] translating failed: ${kindOf(error)}`);
 			}
 		}
 	};
@@ -251,7 +256,10 @@ export function translationStream(translator: Translator, texts: string[], signa
 		open = false;
 		gone.abort();
 	};
-	signal.addEventListener('abort', leave, { once: true });
+	// A request already gone never adds a listener's call: checked here, and by `translate` itself
+	// for one that goes before it runs.
+	if (signal.aborted) leave();
+	else signal.addEventListener('abort', leave, { once: true });
 	return new ReadableStream<Uint8Array>({
 		start(controller) {
 			const answered = new Set<number>();
@@ -276,15 +284,14 @@ export function translationStream(translator: Translator, texts: string[], signa
 						gone.signal
 					)
 				)
-				.catch((error: Error) => console.error(`[translate] translating failed: ${error.message}`))
+				.catch((error: unknown) => console.error(`[translate] translating failed: ${kindOf(error)}`))
 				.then(() => {
 					texts.forEach((_, index) => send(index, { ok: false, reason: '看板伺服器翻譯時出錯' }));
 					signal.removeEventListener('abort', leave);
-					if (!open) return;
 					try {
 						controller.close();
 					} catch {
-						// Already closed by the browser.
+						// Already cancelled by the page.
 					}
 				});
 		},

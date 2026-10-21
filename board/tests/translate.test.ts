@@ -27,6 +27,16 @@ test('a mostly English reply is English; Chinese, Chinese naming English terms, 
 	expect(isEnglish('看 https://example.com/some/long/english/path 與 /home/user/project/src/file.ts')).toBe(false);
 });
 
+test('English starts at 3 words of two letters or more, with at most half as many Chinese characters as words', () => {
+	expect(isEnglish('Fixed it now')).toBe(true);
+	expect(isEnglish('Fixed it')).toBe(false);
+	// One-letter words do not count.
+	expect(isEnglish('Fixed a b c d')).toBe(false);
+	// 4 words: 2 Chinese characters are allowed, 3 are not.
+	expect(isEnglish('Fixed the board bug 看板')).toBe(true);
+	expect(isEnglish('Fixed the board bug 看板頁')).toBe(false);
+});
+
 test('code, links and paths go to Codex as markers and come back as written', () => {
 	const text = 'Run `bun test` in board/, see https://example.com/x.\n\n```sh\necho "keep me"\n```\n\n- Done';
 	const { text: masked, kept } = protect(text);
@@ -124,6 +134,18 @@ test('a translation unused for the kept time is dropped; one used meanwhile stay
 	expect(calls.map((call) => call.input)).toEqual(['<reply>\nOld unused reply here.\n</reply>']);
 });
 
+test('a translation unused for exactly the kept time stays; a moment more and it is dropped', async () => {
+	const { dir, translator, ask, advance } = setUp(undefined, { LAT_BOARD_TRANSLATE_KEEP_DAYS: '30' });
+	const made = translator();
+	await ask(made, ['Kept to the very day.']);
+	advance(30 * DAY);
+	await ask(made, ['Another reply to trigger expiry.']);
+	expect(readFileSync(join(dir, 'translations.json'), 'utf8')).toContain('Kept to the very day');
+	advance(1);
+	await ask(made, ['One more reply to trigger expiry.']);
+	expect(readFileSync(join(dir, 'translations.json'), 'utf8')).not.toContain('Kept to the very day');
+});
+
 test('the same text asked for by two pages at once is translated once', async () => {
 	let release = () => {};
 	const { calls, translator, ask } = setUp(
@@ -177,14 +199,21 @@ test('a failed translation is not saved; it is answered as it was for a while, t
 	expect(calls).toHaveLength(3);
 });
 
-test('a translation that throws is a failure for every request that wanted it, never a rejection', async () => {
-	const { translator, ask } = setUp(async () => {
-		throw new Error('child exploded');
+test('a translation that throws is a failure for every request that wanted it, never a rejection, and its message stays out of the journal', async () => {
+	const { translator, ask } = setUp(async (turn) => {
+		throw new Error(`child exploded on ${turn.input}`);
 	});
-	const made = translator();
-	const [one, two] = await Promise.all([ask(made, ['Same text twice here.']), ask(made, ['Same text twice here.'])]);
-	expect(one).toEqual([{ ok: false, reason: '翻譯時出錯：child exploded' }]);
-	expect(two).toEqual(one);
+	const lines: string[] = [];
+	const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => void lines.push(args.join(' ')));
+	try {
+		const made = translator();
+		const [one, two] = await Promise.all([ask(made, ['Private words of the reply.']), ask(made, ['Private words of the reply.'])]);
+		expect(one).toEqual([{ ok: false, reason: '翻譯時出錯' }]);
+		expect(two).toEqual(one);
+	} finally {
+		spy.mockRestore();
+	}
+	expect(lines).toEqual(['[translate] translating failed: Error']);
 });
 
 test('a text still waiting for a Codex place is dropped once every request that wanted it is aborted', async () => {
@@ -226,6 +255,29 @@ async function streamed(stream: ReadableStream<Uint8Array>): Promise<object[]> {
 	return (await new Response(stream).text()).trim().split('\n').map((line) => JSON.parse(line));
 }
 
+test('a request gone before the translator runs, or already gone when it comes, starts no Codex', async () => {
+	const releases: (() => void)[] = [];
+	const { calls, translator } = setUp(
+		(turn) => new Promise((resolve) => releases.push(() => resolve({ ok: true, value: `譯：${turn.input}` }))),
+		{ LAT_BOARD_TRANSLATE_CONCURRENCY: '1' }
+	);
+	const made = translator();
+	const first = made.translate(['Holds the only place.'], () => {});
+	// Cancelled at once, before the translator is called.
+	const cancelled = translationStream(made, ['Cancelled before it starts.'], new AbortController().signal);
+	await cancelled.cancel();
+	// A request that had already gone when it came.
+	const gone = new AbortController();
+	gone.abort();
+	const late = translationStream(made, ['Already gone when it came.'], gone.signal);
+	await Bun.sleep(5);
+	releases.shift()!();
+	await first;
+	await new Response(late).text();
+	await Bun.sleep(5);
+	expect(calls.map((call) => call.input)).toEqual(['<reply>\nHolds the only place.\n</reply>']);
+});
+
 test('the answer fails every text the translator did not answer when it breaks, then ends', async () => {
 	const rejecting: Translator = {
 		translate: async (_texts, each) => {
@@ -246,6 +298,18 @@ test('the answer fails every text the translator did not answer when it breaks, 
 			{ index: 0, error: '看板伺服器翻譯時出錯' }
 		]);
 		expect(await streamed(translationStream(throwing, ['A one.'], new AbortController().signal))).toEqual([{ index: 0, error: '看板伺服器翻譯時出錯' }]);
+		// Not an Error at all.
+		for (const thrown of [null, undefined]) {
+			const odd: Translator = { translate: () => Promise.reject(thrown) };
+			const oddAtOnce: Translator = {
+				translate: () => {
+					throw thrown;
+				}
+			};
+			for (const translator of [odd, oddAtOnce]) {
+				expect(await streamed(translationStream(translator, ['A one.'], new AbortController().signal))).toEqual([{ index: 0, error: '看板伺服器翻譯時出錯' }]);
+			}
+		}
 	} finally {
 		spy.mockRestore();
 	}
