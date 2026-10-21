@@ -68,8 +68,9 @@ class GateCase(unittest.TestCase):
         self.env.pop('CLAUDE_CODE_SESSION_ID', None)
         # Scopes this test starts share its unique prefix; whatever is left of them is killed.
         self.env['SUITE_GATE_UNIT_PREFIX'] = self.tmp.name
-        self.addCleanup(subprocess.run, ['systemctl', '--user', 'kill', '--signal=KILL',
-                                         f'{self.tmp.name}-*.scope'], capture_output=True)
+        if not SCOPE_SKIP:
+            self.addCleanup(subprocess.run, ['systemctl', '--user', 'kill', '--signal=KILL',
+                                             f'{self.tmp.name}-*.scope'], capture_output=True)
         self.repo = self.tmp / 'repo'
         self.repo.mkdir()
         git(self.repo, 'init', '-q', '-b', 'main')
@@ -551,6 +552,33 @@ class ScopeTests(GateCase):
         self.assertGreaterEqual(profile['cpu_seconds'], 0.3)
         self.assertGreater(profile['cpu_peak_cores'], 0.2)
         self.assertEqual(profile['sample_seconds'], 30)
+
+    def test_cpu_used_right_after_the_start_counts_toward_the_peak(self):
+        self.set_config(sample_seconds=30)
+        script = ('import os, time\n'
+                  'os.sched_setaffinity(0, {min(os.sched_getaffinity(0))})\n'
+                  'end = time.process_time() + 0.3\n'
+                  'while time.process_time() < end: pass\n')
+        (self.tmp / 'load.py').write_text(script)
+        # A gate that stalls just before taking its CPU baseline must still count the suite's
+        # first second.
+        snippet = (
+            'import importlib.util, sys, time\n'
+            f'spec = importlib.util.spec_from_file_location("g", {str(SCRIPT)!r})\n'
+            'g = importlib.util.module_from_spec(spec); spec.loader.exec_module(g)\n'
+            'init = g.Sampler.__init__\n'
+            'def slow(self, *a):\n'
+            '    time.sleep(1)\n'
+            '    init(self, *a)\n'
+            'g.Sampler.__init__ = slow\n'
+            'sys.exit(g.main(sys.argv[1:]))\n')
+        result = subprocess.run([sys.executable, '-c', snippet, 'run', '--',
+                                 f'{sys.executable} {self.tmp / "load.py"}'], cwd=self.repo,
+                                env=self.env, capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        profile = self.records()[-1]['profile']
+        self.assertGreaterEqual(profile['cpu_seconds'], 0.3)
+        self.assertGreater(profile['cpu_peak_cores'], 0.2)
 
     def test_status_shows_current_usage_of_running_suites(self):
         release = self.tmp / 'release'

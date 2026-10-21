@@ -922,7 +922,7 @@ class Gate:
     def _start(self, argv, scoped):
         """Start the suite held on fd 3 until its session (and group) is recorded.
 
-        In a scope, also sets self.group, self.keeper and self.keeper_pid. Returns the
+        In a scope, also sets self.group, self.sampler, self.keeper and self.keeper_pid. Returns the
         child, or None when the scope could not be set up; the suite has not run then.
         """
         # The suite waits for a byte on fd 3 until its session is recorded; if the gate is
@@ -974,6 +974,8 @@ class Gate:
                 self.group, self.keeper = group, keep_write
             self.child = child
             self.set_session(child.pid, self.group)
+            if scoped:  # the CPU baseline comes before the suite can use any
+                self.sampler = Sampler(group, self.config['sample_seconds'], self.store_sample)
             os.write(go_write, b'go\n')
             if scoped:
                 with report:
@@ -1028,8 +1030,6 @@ class Gate:
         except OSError as exc:
             warn(f'could not start /bin/sh: {exc}')
             return 127
-        if self.group:
-            self.sampler = Sampler(self.group, self.config['sample_seconds'], self.store_sample)
         tail = Tail()
         pumps = [threading.Thread(target=pump, args=(stream, out, tail), daemon=True)
                  for stream, out in ((child.stdout, sys.stdout.buffer),
