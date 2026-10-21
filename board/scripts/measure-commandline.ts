@@ -11,31 +11,23 @@
 //                the label stays outside the box, the send button inside its frame with the
 //                box's text kept clear of it (its right padding is wider than the button).
 //
-// CHROME names the browser; LAT_BOARD_TEST_PORT_BASE moves the board's port (base + 16, Chrome debugging base + 17).
+// CHROME names the browser. The board and Chrome both take a port the system picks.
 // --serve only starts the board (already logged in) and prints its address and cookie, for
 // scripts/measure-commandline.py, which measures the same cases in WebKit.
 // --shots <dir> saves a screenshot of every case there.
-import { spawn } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
+import { launchChrome } from '../tests/browser.ts';
 import { startFixture } from '../tests/harness.ts';
 
 const TOLERANCE = 2;
 const THEMES = ['dark', 'light'] as const;
 const SCALES = [80, 100, 150] as const;
 
-function findChrome(): string {
-	const candidates = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'];
-	const found = candidates.find((path) => path && existsSync(path));
-	if (!found) throw new Error('no Chrome found: set CHROME to a Chrome or Chromium binary');
-	return found;
-}
-
 const shotsAt = process.argv.includes('--shots') ? process.argv[process.argv.indexOf('--shots') + 1] : undefined;
 if (shotsAt) mkdirSync(shotsAt, { recursive: true });
 
-const fixture = await startFixture(16);
+const fixture = await startFixture();
 const cookie = await fixture.login('measure-commandline');
 fixture.list([fixture.bound('alpha', 'luna')]);
 await fixture.refresh(cookie);
@@ -45,13 +37,8 @@ if (process.argv.includes('--serve')) {
 	await new Promise(() => {});
 }
 
-const profile = mkdtempSync(join(tmpdir(), 'lat-board-b120-chrome-'));
-const debugPort = Number(process.env.LAT_BOARD_TEST_PORT_BASE ?? 7110) + 17;
-const chrome = spawn(
-	findChrome(),
-	['--headless=new', '--no-sandbox', '--disable-gpu', `--user-data-dir=${profile}`, `--remote-debugging-port=${debugPort}`, 'about:blank'],
-	{ stdio: 'ignore' }
-);
+const browser = await launchChrome();
+const debugPort = browser.debugPort;
 
 async function connect(): Promise<WebSocket> {
 	for (let attempt = 0; attempt < 100; attempt++) {
@@ -187,9 +174,8 @@ for (const theme of THEMES) {
 }
 
 socket.close();
-chrome.kill();
+await browser.close();
 await fixture.cleanup();
-rmSync(profile, { recursive: true, force: true });
 if (failures.length) {
 	console.error(`\n${failures.length} failure(s):\n${failures.join('\n')}`);
 	process.exit(1);

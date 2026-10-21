@@ -8,14 +8,13 @@ import { join } from 'node:path';
 import { CLIENT_ERRORS_PER_WINDOW, MAX_CLIENT_ERROR_CHARS, MAX_FRAMES, MAX_USER_AGENT } from '../src/lib/server/client-errors.ts';
 import { logged, PASSWORD, question, startFixture, type Fixture } from './harness.ts';
 
-// Offset 63 is used by no other file.
 let fixture: Fixture;
 let cookie: string;
 /** Where this test's part of the server output starts. */
 let mark = 0;
 
 beforeAll(async () => {
-	fixture = await startFixture(63);
+	fixture = await startFixture();
 	cookie = await fixture.login('server-log');
 });
 afterAll(() => fixture.cleanup());

@@ -10,7 +10,7 @@ const lines = (name: string): any[] => {
 	const file = join(fixture.dir, name);
 	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').filter(Boolean).map(line => JSON.parse(line)) : [];
 };
-beforeAll(async () => { fixture = await startFixture(90); cookie = await fixture.login(); });
+beforeAll(async () => { fixture = await startFixture(); cookie = await fixture.login(); });
 afterAll(async () => { await fixture?.cleanup(); });
 test('second stop read overlaps the last event by one second; failures keep the successful cursor', async () => {
 	await fixture.stop();

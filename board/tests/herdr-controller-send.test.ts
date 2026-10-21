@@ -5,97 +5,17 @@
 // in its sent log. An ordinary agent is still written to as an agent. The controllers share one
 // draft; what was typed to a controller as an agent before is moved into it once. Skipped when the
 // host has no Chrome.
-import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
 import type { SentEntry } from '../src/lib/board/answers.ts';
 import { AGENT_DRAFTS_KEY, COMMAND_DRAFT_KEY } from '../src/lib/board/prefs.ts';
-import { NODE, PORT_BASE, question, sleep, startFixture, type Fixture } from './harness.ts';
+import { DAY, jsonLines, NODE, question, sleep, startFixture, type Fixture } from './harness.ts';
+import { CHROME, launchChrome, type Browser, type Tab } from './browser.ts';
 
-const CHROME = [process.env.CHROME, '/usr/bin/google-chrome', '/usr/bin/chromium', '/usr/bin/chromium-browser'].find(
-	(path) => path && existsSync(path)
-);
-const DEBUG_PORT = PORT_BASE + 70;
 
-/** One Chrome tab, spoken to over the DevTools protocol. */
-class Tab {
-	#socket: WebSocket;
-	#next = 0;
-	#waiting = new Map<number, (message: { result?: unknown; error?: { message: string } }) => void>();
-	/** The documents that have loaded, by the loader that loaded them. */
-	#loaded = new Set<string>();
-	constructor(socket: WebSocket) {
-		this.#socket = socket;
-		socket.addEventListener('message', (event) => {
-			const message = JSON.parse(String(event.data));
-			if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') this.#loaded.add(message.params.loaderId);
-			this.#waiting.get(message.id)?.(message);
-			this.#waiting.delete(message.id);
-		});
-	}
-	static async open(): Promise<Tab> {
-		const deadline = Date.now() + 10_000;
-		let target: { webSocketDebuggerUrl: string } | undefined;
-		while (!target) {
-			if (Date.now() > deadline) throw new Error('timed out waiting for Chrome to listen');
-			target = await fetch(`http://127.0.0.1:${DEBUG_PORT}/json/new?about:blank`, { method: 'PUT' }).then(
-				(response) => response.json(),
-				() => undefined
-			);
-			if (!target) await sleep(100);
-		}
-		const socket = new WebSocket(target.webSocketDebuggerUrl);
-		await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-		const tab = new Tab(socket);
-		await tab.send('Page.enable');
-		await tab.send('Page.setLifecycleEventsEnabled', { enabled: true });
-		return tab;
-	}
-	send(method: string, params: object = {}): Promise<any> {
-		const id = ++this.#next;
-		this.#socket.send(JSON.stringify({ id, method, params }));
-		return new Promise((resolve, reject) =>
-			this.#waiting.set(id, (message) => (message.error ? reject(new Error(message.error.message)) : resolve(message.result)))
-		);
-	}
-	async eval<T = unknown>(expression: string): Promise<T> {
-		const { result, exceptionDetails } = await this.send('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true });
-		if (exceptionDetails) throw new Error(`${expression}: ${exceptionDetails.exception?.description ?? exceptionDetails.text}`);
-		return result.value;
-	}
-	/** A click with the pointer at the centre of the first element matching `selector`: it lands on
-	 *  whatever is on top there, which an element's own click() does not. */
-	async pointerClick(selector: string) {
-		const { x, y } = await this.eval<{ x: number; y: number }>(
-			`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: r.x + r.width / 2, y: r.y + r.height / 2 }; })()`
-		);
-		for (const type of ['mouseMoved', 'mousePressed', 'mouseReleased']) {
-			await this.send('Input.dispatchMouseEvent', { type, x, y, button: 'left', clickCount: 1 });
-		}
-	}
-	/** Load a new document and wait until it has loaded. */
-	async navigate(url: string) {
-		const { loaderId, errorText } = await this.send('Page.navigate', { url });
-		if (errorText) throw new Error(`${url}: ${errorText}`);
-		const deadline = Date.now() + 10_000;
-		while (!this.#loaded.has(loaderId)) {
-			if (Date.now() > deadline) throw new Error(`timed out loading ${url}`);
-			await sleep(20);
-		}
-	}
-	async until(expression: string, what = expression) {
-		const deadline = Date.now() + 10_000;
-		while (!(await this.eval(expression).catch(() => false))) {
-			if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}; the page shows ${JSON.stringify(await this.eval(SCREEN))}`);
-			await sleep(50);
-		}
-	}
-	close() {
-		this.#socket.close();
-	}
-}
 
 const SCREEN = `({ search: location.search, detail: document.querySelector('.detail')?.innerText ?? '', notices: document.querySelector('.dock')?.innerText ?? '' })`;
 const FITS = `document.documentElement.scrollWidth <= window.innerWidth`;
@@ -110,15 +30,26 @@ const click = (scope: string, text: string) =>
 	`[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.innerText.includes(${JSON.stringify(text)})).click()`;
 const pageOf = (header: string) => `document.querySelector('.detail .profile h2')?.innerText === ${JSON.stringify(header)}`;
 
-const minutesAgo = (minutes: number) => new Date(Date.now() - minutes * 60_000).toISOString();
+/** The host's offset from UTC: `bun test` runs with TZ=UTC, while the board and Chrome use the host's zone. */
+const HOST_OFFSET_MS = (() => {
+	const zone = spawnSync('date', ['+%z'], { encoding: 'utf8', env: { PATH: process.env.PATH } }).stdout.trim();
+	return (zone[0] === '-' ? -1 : 1) * (Number(zone.slice(1, 3)) * 60 + Number(zone.slice(3, 5))) * 60_000;
+})();
+/** The host's calendar day of a time. */
+const hostDay = (time: number) => Math.floor((time + HOST_OFFSET_MS) / DAY);
+/** Minutes before now, shrunk in the first half hour of the host's day so that none of the fixtures'
+ *  times (the longest is 30 minutes) falls on yesterday, which the board shows with a date. */
+const minutesAgo = (minutes: number) => {
+	const room = Math.max(0, Date.now() - (hostDay(Date.now()) * DAY - HOST_OFFSET_MS) - 60_000);
+	return new Date(Date.now() - Math.min(minutes * 60_000, (room * minutes) / 31)).toISOString();
+};
 /** When luna's report was issued, fixed once for the setup and the assertions on it. */
 const LUNA_REPORTED_AT = minutesAgo(15);
 
 const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-inject-'));
 let fixture: Fixture;
 let cookie: string;
-let chrome: ChildProcess | undefined;
-let profile: string;
+let browser: Browser | undefined;
 let tab: Tab;
 let lead: ReturnType<Fixture['bound']>;
 let gone: ReturnType<Fixture['bound']>;
@@ -154,7 +85,7 @@ function record(session: string, said: { kind: 'user' | 'assistant'; minutes: nu
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
 	writeFileSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), said.map(({ kind, minutes, text }) => JSON.stringify({ kind, time: minutesAgo(minutes), text }) + '\n').join(''));
 }
-const lines = (file: string): any[] => (existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : []);
+const lines = jsonLines;
 const injects = (): string[][] => lines(join(injectDir, 'inject-calls.jsonl'));
 /** The Herdr commands that act on an agent, not the lists every read makes. */
 const herdrCalls = (): string[][] => lines(join(fixture.dir, 'herdr-calls.jsonl'));
@@ -170,7 +101,7 @@ async function agentLog(agentId: string): Promise<unknown[]> {
 
 beforeAll(async () => {
 	if (!CHROME) return;
-	fixture = await startFixture(50, {
+	fixture = await startFixture({
 		env: {
 			LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, 'fake-inject.mjs'), injectDir]),
 			LAT_BOARD_HCOM_TIMEOUT_SECONDS: '1',
@@ -203,12 +134,7 @@ beforeEach(() => {
 	for (const file of ['hcom-calls.jsonl', 'herdr-calls.jsonl']) rmSync(join(fixture.dir, file), { force: true });
 });
 afterEach(async () => {
-	if (!chrome || chrome.exitCode !== null || chrome.signalCode !== null) return;
-	tab?.close();
-	const exited = new Promise((resolve) => chrome!.once('exit', resolve));
-	chrome.kill('SIGKILL');
-	await exited;
-	rmSync(profile, { recursive: true, force: true });
+	await browser?.close();
 });
 afterAll(async () => {
 	await fixture?.cleanup();
@@ -218,13 +144,8 @@ afterAll(async () => {
 /** A new Chrome, logged in, on the board at `search` in a window `width` wide; `stored` is put in
  *  the page's storage before the board starts. */
 async function visit(width: number, search = '', stored: Record<string, string> = {}) {
-	profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	chrome = spawn(
-		CHROME!,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, `--remote-debugging-port=${DEBUG_PORT}`, 'about:blank'],
-		{ stdio: 'ignore' }
-	);
-	tab = await Tab.open();
+	browser = await launchChrome({ screen: SCREEN });
+	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width < 761 });
@@ -316,11 +237,7 @@ test.skipIf(!CHROME)('a controller not at work keeps its wake button, with no in
 		await visit(1280, search);
 		await tab.until(`${pageOf(header)} && document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === '喚醒'`, `${header}'s page`);
 		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(false);
-		tab.close();
-		const exited = new Promise((resolve) => chrome!.once('exit', resolve));
-		chrome!.kill('SIGKILL');
-		await exited;
-		rmSync(profile, { recursive: true, force: true });
+		await browser?.close();
 	}
 }, 60_000);
 
@@ -512,8 +429,8 @@ test.skipIf(!CHROME)("a controller's last report of today shows the time only (t
 	await tab.until(pageOf('moon'), "luna's page");
 	const shown = await tab.eval<string>(`[...document.querySelectorAll('.detail .chip')].map((chip) => chip.innerText).find((text) => text.includes('最後回報'))`);
 	// Her report is 15 minutes old: today unless midnight just passed.
-	const reportedOn = new Date(LUNA_REPORTED_AT).toDateString();
-	expect(shown).toMatch(reportedOn === new Date().toDateString() ? /最後回報 \d{2}:\d{2}:\d{2}$/ : /最後回報 \d+\/\d+ \d{2}:\d{2}:\d{2}$/);
+	const reportedToday = hostDay(Date.parse(LUNA_REPORTED_AT)) === hostDay(Date.now());
+	expect(shown).toMatch(reportedToday ? /最後回報 \d{2}:\d{2}:\d{2}$/ : /最後回報 \d+\/\d+ \d{2}:\d{2}:\d{2}$/);
 }, 60_000);
 
 // Wide: a new LAT round and an effort; a phone: the same conversation with another model.

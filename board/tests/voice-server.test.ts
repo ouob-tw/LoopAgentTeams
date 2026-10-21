@@ -48,7 +48,7 @@ let fixture: Fixture;
 let cookie: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(38, {
+	fixture = await startFixture({
 		env: {
 			LAT_BOARD_ASR_URL: `http://127.0.0.1:${asr.port}/`,
 			LAT_BOARD_ASR_TOKEN: TOKEN,
@@ -185,7 +185,7 @@ test('a device that is not logged in gets nothing from it', async () => {
 });
 
 test('without a configured service, voice input says so', async () => {
-	const bare = await startFixture(39);
+	const bare = await startFixture();
 	try {
 		const login = await bare.login();
 		const response = await bare.fetch('/api/voice', { method: 'POST', headers: { 'content-type': 'audio/webm' }, body: new Blob([new Uint8Array(10)]), cookie: login });

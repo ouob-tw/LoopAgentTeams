@@ -6,15 +6,15 @@ import { spawn, spawnSync, type ChildProcess } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, rmSync, symlinkSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { PORT_BASE, sleep } from './harness.ts';
+import { sleep } from './harness.ts';
 
 const ROOT = join(import.meta.dir, '..');
 const nodeBinary = Bun.which('node');
 
 // Node 22 before 22.18 runs TypeScript only with the flag; later versions accept it as well.
 const hosts = [
-	{ name: 'Bun', binary: process.execPath, cmd: 'bun', args: [], offset: 16 },
-	{ name: 'Node', binary: nodeBinary, cmd: 'node', args: ['--experimental-strip-types'], offset: 17 }
+	{ name: 'Bun', binary: process.execPath, cmd: 'bun', args: [] },
+	{ name: 'Node', binary: nodeBinary, cmd: 'node', args: ['--experimental-strip-types'] }
 ];
 
 for (const host of hosts) {
@@ -63,17 +63,21 @@ for (const host of hosts) {
 		});
 
 		test('start serves the board', async () => {
-			const port = PORT_BASE + host.offset;
-			server = spawn(run, command('start', '--host', '127.0.0.1', '--port', String(port)), {
+			// Port 0: the system picks one, and the server says which on its standard output.
+			server = spawn(run, command('start', '--host', '127.0.0.1', '--port', '0'), {
 				env,
 				stdio: ['ignore', 'pipe', 'pipe']
 			});
 			let output = '';
+			let heard = '';
 			server.stderr!.on('data', (chunk) => (output += chunk));
+			server.stdout!.on('data', (chunk) => (heard += chunk));
 
 			const deadline = Date.now() + 10_000;
 			for (;;) {
+				const port = /Listening on http:\/\/[^\s:]+:(\d+)/.exec(heard)?.[1];
 				try {
+					if (!port) throw new Error('the server has not said where it listens');
 					const page = await fetch(`http://127.0.0.1:${port}/login`);
 					expect(page.status).toBe(200);
 					return;

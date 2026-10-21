@@ -98,7 +98,7 @@ let cookie: string;
 let home: string;
 
 beforeAll(async () => {
-	fixture = await startFixture(17);
+	fixture = await startFixture();
 	cookie = await fixture.login();
 	home = join(fixture.dir, 'home');
 });
