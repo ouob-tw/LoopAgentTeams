@@ -54,7 +54,7 @@ export function wakesOf(lines: readonly Line[], now: number, waitMs: number): Wa
  * is stopped, its latest resume tells the rest: open is `resuming`, its session seen is `done`,
  * anything else is `resume-failed`.
  */
-export function switchesOf(lines: readonly Line[], wakes: WakeView[]): SwitchView[] {
+function switchesOf(lines: readonly Line[], wakes: WakeView[]): SwitchView[] {
 	const steps = new Map<string, SwitchStep[]>();
 	for (const line of lines) if (line.kind === 'switch-step') steps.set(line.switchId, [...(steps.get(line.switchId) ?? []), line]);
 	const resumes = new Map<string, WakeView>();

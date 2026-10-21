@@ -32,20 +32,20 @@ import { loadTranslateMode, saveTranslateMode } from './translate-mode.ts';
 import type { TranslateMode } from '../board/translate-mode.ts';
 
 /** The style with its revision: it grows with every save, so a page can tell which of two reports of the style is newer. */
-export interface UsageStyleState {
+interface UsageStyleState {
 	style: UsageStyle;
 	revision: number;
 }
 
 /** The translation mode with its revision, as the usage style has. */
-export interface TranslateModeState {
+interface TranslateModeState {
 	mode: TranslateMode;
 	revision: number;
 }
 
 const HEARTBEAT_MS = 15_000;
 
-export interface Stream {
+interface Stream {
 	/** Token of the logged-in device that opened the stream. */
 	token: string;
 	send(event: string, data: string): void;

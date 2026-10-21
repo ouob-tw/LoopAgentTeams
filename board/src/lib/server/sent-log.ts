@@ -73,7 +73,7 @@ export interface ResumeResult {
 }
 
 /** The Herdr pane a resume attempt runs in, learned after the attempt was logged. */
-export interface ResumePane {
+interface ResumePane {
 	kind: 'resume-pane';
 	wakeId: string;
 	pane: string;

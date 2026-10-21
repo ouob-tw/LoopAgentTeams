@@ -3,7 +3,7 @@
 // no extra field can replace them; every line written while a request is handled carries its id.
 import { AsyncLocalStorage } from 'node:async_hooks';
 
-export type LogLevel = 'INFO' | 'WARNING' | 'ERROR';
+type LogLevel = 'INFO' | 'WARNING' | 'ERROR';
 
 const LAYER = 'lat-board';
 const FIXED = new Set(['ts', 'level', 'logger', 'layer', 'message', 'request_id']);

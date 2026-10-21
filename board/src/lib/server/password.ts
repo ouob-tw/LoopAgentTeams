@@ -5,7 +5,7 @@ import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
 
-export const PASSWORD_FILE = 'password.json';
+const PASSWORD_FILE = 'password.json';
 
 interface StoredPassword {
 	scheme: 'scrypt';
