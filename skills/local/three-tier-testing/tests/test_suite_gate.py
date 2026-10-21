@@ -1,4 +1,5 @@
 import importlib.util
+import fcntl
 import json
 import os
 import signal
@@ -8,6 +9,7 @@ import tempfile
 import time
 import unittest
 from pathlib import Path
+from unittest import mock
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/suite-gate.py'
 
@@ -21,6 +23,7 @@ def load():
 
 gate = load()
 BASE_COMMIT = 'f61eb8d'  # the last suite-gate.py before suites ran in scopes
+GIB = 2 ** 30
 
 
 def scope_unavailable():
@@ -156,6 +159,47 @@ class GateCase(unittest.TestCase):
         stat = gate.proc_stat(pid)
         return stat is not None and stat[0] != 'Z'
 
+    def fake_host(self, cores=32, idle=0.5, mem_gb=64, io=0.0, cpu=0.0, skip=()):
+        """Point the gate's host readings at fake files: /proc/stat with `cores` CPUs `idle`
+        idle since boot (the file never moves, so that is the idle share the gate sees),
+        MemAvailable in GiB and pressure `some avg10` percentages. Paths in skip are left
+        out; calling again rewrites the files."""
+        root = self.tmp / 'proc'
+        (root / 'pressure').mkdir(parents=True, exist_ok=True)
+        total = 1_000_000 * cores
+        files = {
+            'stat': f'cpu  {total - int(total * idle)} 0 0 {int(total * idle)} 0 0 0 0 0 0\n'
+                    + ''.join(f'cpu{n} 0 0 0 0 0 0 0 0 0 0\n' for n in range(cores)),
+            'meminfo': f'MemTotal: {128 * 2**20} kB\nMemAvailable: {int(mem_gb * 2**20)} kB\n',
+            'pressure/io': f'some avg10={io:.2f} avg60=0.00 avg300=0.00 total=0\n'
+                           'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n',
+            'pressure/cpu': f'some avg10={cpu:.2f} avg60=0.00 avg300=0.00 total=0\n'
+                            'full avg10=0.00 avg60=0.00 avg300=0.00 total=0\n',
+        }
+        for name, text in files.items():
+            path = root / name
+            if name in skip:
+                path.unlink(missing_ok=True)
+            else:
+                replace(path, text)
+        self.env['SUITE_GATE_PROC_ROOT'] = str(root)
+        return root
+
+    def old_gate(self):
+        """The previous suite-gate.py, from the base commit, as a runnable file."""
+        shown = subprocess.run(['git', 'show', f'{BASE_COMMIT}:skills/local/three-tier-testing/'
+                                'scripts/suite-gate.py'], cwd=SCRIPT.parent,
+                               capture_output=True, text=True)
+        if shown.returncode != 0:
+            self.skipTest(f'the previous version is not in Git here: {shown.stderr.strip()}')
+        path = self.tmp / 'old/suite-gate.py'
+        path.parent.mkdir()
+        path.write_text(shown.stdout)
+        return path
+
+    def waiting_reason(self):
+        return [w.get('reason') for w in self.status()['waiting'] if w.get('kind') == 'slot']
+
 
 class RunAndReuseTests(GateCase):
     def test_first_run_executes_records_and_passes_output_and_exit_code_through(self):
@@ -171,6 +215,7 @@ class RunAndReuseTests(GateCase):
         self.assertEqual(record['exit_code'], 3)
         self.assertEqual(record['agent'], 't-tester')
         self.assertEqual(record['rel_cwd'], '.')
+        self.assertEqual(record['profile_key'], info['profile_key'])
         self.assertIn('suite-out', record['output_tail'])
         self.assertIsNone(record['rerun_reason'])
         self.assertFalse(record['reusable'])
@@ -702,8 +747,13 @@ class CompatibilityTests(GateCase):
         (self.state / 'state.json').write_text(json.dumps({
             'seq': 0, 'waiters': [], 'locks': {},
             'slots': [self.old_holder(session.pid), self.old_holder(None)]}))
+        self.fake_host()
         status = self.status()
         self.assertEqual([h['sid'] for h in status['running']], [session.pid])
+        self.assertEqual(status['running'][0]['reservation'],
+                         {'cpu_cores': 4.0, 'mem_bytes': 4 * GIB, 'source': 'default'})
+        self.assertEqual(status['host']['unused_reservation'],
+                         {'cpu_cores': 4.0, 'mem_bytes': 4 * GIB})
         waiting, release = self.blocker('next')
         release.touch()
         self.wait_until(lambda: len(self.status()['waiting']) == 1, message='queued')
@@ -712,18 +762,6 @@ class CompatibilityTests(GateCase):
         session.kill()
         session.wait()
         self.assertEqual(self.finish(waiting)[0], 0)
-
-    def old_gate(self):
-        """The previous suite-gate.py, from the base commit, as a runnable file."""
-        shown = subprocess.run(['git', 'show', f'{BASE_COMMIT}:skills/local/three-tier-testing/'
-                                'scripts/suite-gate.py'], cwd=SCRIPT.parent,
-                               capture_output=True, text=True)
-        if shown.returncode != 0:
-            self.skipTest(f'the previous version is not in Git here: {shown.stderr.strip()}')
-        path = self.tmp / 'old/suite-gate.py'
-        path.parent.mkdir()
-        path.write_text(shown.stdout)
-        return path
 
     def old(self, *args):
         result = subprocess.run([sys.executable, str(self.old_path), *args], cwd=self.repo,
@@ -793,6 +831,370 @@ class StatusTests(GateCase):
         release_b.touch()
         self.finish(a)
         self.finish(b)
+
+
+class AdmissionRuleTests(unittest.TestCase):
+    """admission() and unused_reservation() with exact numbers."""
+    # 12.5 cores and 21 GiB are left of a host with 16 idle cores and 32 GiB available.
+    RUNNING = [(2.0, 2 * GIB), (1.5, 1 * GIB)]
+
+    def config(self, **values):
+        return dict(gate.DEFAULTS, **values)
+
+    def host(self, free=16.0, mem_gb=32, brake=False, io=0.0, cpu=0.0, unreadable=()):
+        return {'cpu_free_cores': free, 'mem_available_bytes': mem_gb * GIB,
+                'pressure': {'io': io, 'cpu': cpu}, 'brake': {'on': brake},
+                'unreadable': {'load': list(unreadable), 'pressure': []}}
+
+    def test_a_reservation_that_just_fits_starts_and_one_just_over_waits(self):
+        config, host, running = self.config(), self.host(), self.RUNNING
+        self.assertEqual(gate.admission(config, running, (12.5, 21 * GIB), host), (True, None))
+        self.assertEqual(gate.admission(config, running, (12.75, 21 * GIB), host),
+                         (False, 'not enough CPU: needs 12.75 cores, 12.5 available'))
+        self.assertEqual(gate.admission(config, running, (12.5, 21.25 * GIB), host),
+                         (False, 'not enough memory: needs 21.25 GiB, 21 GiB available'))
+        self.assertFalse(gate.admission(config, running, (12.5, 21 * GIB + 1), host)[0])
+        self.assertEqual(gate.admission(config, running, (13, 22 * GIB), host)[1],
+                         'not enough CPU: needs 13 cores, 12.5 available; '
+                         'not enough memory: needs 22 GiB, 21 GiB available')
+        self.assertEqual(gate.admission(self.config(mem_reserve_gb=0), running,
+                                        (12.5, 29 * GIB), host), (True, None))
+
+    def test_the_cap_comes_first_and_below_the_floor_nothing_else_counts(self):
+        running = self.RUNNING
+        self.assertEqual(gate.admission(self.config(max_slots=2), running, (0, 0), self.host()),
+                         (False, 'host cap reached: 2/2 suites running'))
+        awful = self.host(free=0, mem_gb=0, brake=True, io=90, unreadable=['/proc/meminfo'])
+        self.assertEqual(gate.admission(self.config(min_slots=3), running, (64, 64 * GIB),
+                                        awful), (True, None))
+        above_cap = self.config(min_slots=5, max_slots=3)
+        self.assertEqual(gate.admission(above_cap, running, (64, 64 * GIB), awful), (True, None))
+        self.assertEqual(gate.admission(above_cap, running + [(0, 0)], (0, 0), self.host()),
+                         (False, 'host cap reached: 3/3 suites running'))
+
+    def test_at_the_floor_unreadable_data_then_the_brake_then_the_fit_decide(self):
+        config, running, small = self.config(), self.RUNNING, (1, GIB)
+        self.assertEqual(gate.admission(config, running, small,
+                                        self.host(brake=True, unreadable=['/x/meminfo'])),
+                         (False, 'host data unreadable: /x/meminfo'))
+        self.assertEqual(gate.admission(config, running, small, self.host(brake=True, io=45)),
+                         (False, 'brake on: disk wait 45%, above 40%'))
+        self.assertEqual(gate.admission(config, running, small,
+                                        self.host(brake=True, io=10, cpu=55.5)),
+                         (False, 'brake on: CPU wait 55.5%, above 50%'))
+        self.assertEqual(gate.admission(config, running, small,
+                                        self.host(brake=True, io=30, cpu=5)),
+                         (False, 'brake on until disk wait < 20% and CPU wait < 25% '
+                                 '(now disk wait 30%, CPU wait 5%)'))
+
+    def test_a_running_suite_holds_what_it_does_not_use_yet_of_its_reservation(self):
+        root = Path(tempfile.mkdtemp(prefix='suite-gate-cgroup-'))
+        self.addCleanup(subprocess.run, ['rm', '-rf', str(root)])
+        (root / 'x.scope').mkdir()
+        memory = root / 'x.scope/memory.current'
+        holder = {'pid': os.getpid(), 'start': gate.proc_stat(os.getpid())[2],
+                  'cgroup': '/x.scope', 'sample': {'cpu_cores': 2.5},
+                  'reservation': {'cpu_cores': 6, 'mem_bytes': 6 * GIB}}
+        config = self.config()
+        with mock.patch.dict(os.environ, SUITE_GATE_CGROUP_ROOT=str(root)):
+            memory.write_text(f'{GIB}\n')
+            self.assertEqual(gate.unused_reservation(holder, config), (3.5, 5 * GIB))
+            memory.write_text(f'{7 * GIB}\n')
+            self.assertEqual(gate.unused_reservation(dict(holder, sample={'cpu_cores': 8.0}),
+                                                     config), (0.0, 0))
+            memory.write_text(f'{GIB}\n')  # the gate is gone: its CPU use is unknown
+            self.assertEqual(gate.unused_reservation(dict(holder, gate_done=True), config),
+                             (6, 5 * GIB))
+            memory.unlink()
+            self.assertEqual(gate.unused_reservation(holder, config), (3.5, 6 * GIB))
+        old = {'pid': os.getpid(), 'start': 0, 'sid': 1}  # no group and no reservation
+        self.assertEqual(gate.unused_reservation(old, config), (4.0, 4 * GIB))
+
+
+class AdmissionTests(GateCase):
+    """Who starts and why the rest wait, on fake host readings. Suites run in plain sessions,
+    so their current use is unknown and each running suite holds all of its reservation."""
+
+    def setUp(self):
+        super().setUp()
+        self.without_scopes()
+
+    def running(self):
+        return len(self.status()['running'])
+
+    def test_the_floor_starts_suites_under_pressure_then_the_brake_and_memory_hold_the_rest(self):
+        self.set_config(min_slots=2, max_slots=4)
+        self.fake_host(cores=32, idle=0.5, mem_gb=1, io=45)
+        a, release_a = self.blocker('a')
+        b, release_b = self.blocker('b')
+        self.wait_until(lambda: self.running() == 2, message='two below the floor')
+        c, release_c = self.blocker('c')
+        self.wait_until(lambda: self.waiting_reason() == ['brake on: disk wait 45%, above 40%'],
+                        message='brake reason')
+        time.sleep(0.3)  # one waiting report
+        self.fake_host(cores=32, idle=0.5, mem_gb=1, io=30)
+        self.wait_until(lambda: self.waiting_reason() == [
+            'brake on until disk wait < 20% and CPU wait < 25% (now disk wait 30%, CPU wait 0%)'],
+            message='brake still on between the marks')
+        self.fake_host(cores=32, idle=0.5, mem_gb=1, io=10)
+        # 16 idle cores - 2 x 4 reserved = 8 left; 1 GiB - 2 x 4 GiB - 8 GiB reserve = -15 GiB.
+        self.wait_until(lambda: self.waiting_reason() == [
+            'not enough memory: needs 4 GiB, -15 GiB available'], message='memory reason')
+        status = self.status()
+        self.assertEqual((status['host']['cpu_left_cores'], status['host']['mem_left_bytes']),
+                         (8.0, -15 * GIB))
+        self.assertFalse(status['host']['brake']['on'])
+        self.assertEqual([h['reservation'] for h in status['running']],
+                         [{'cpu_cores': 4.0, 'mem_bytes': 4 * GIB, 'source': 'default'}] * 2)
+        text = self.gate('status').stdout
+        self.assertIn('host slot: not enough memory: needs 4 GiB, -15 GiB available', text)
+        self.assertIn('Host: CPU 16 of 32 cores idle, 8 left after unused reservations; '
+                      'memory 1 GiB available, -15 GiB left after unused reservations and the '
+                      '8 GiB reserve; brake off (disk wait 10%, CPU wait 0%); '
+                      '2 start regardless of load, at most 4 run', text)
+        self.assertIn('reserves 4 cores, 4 GiB (default)', text)
+        self.fake_host(cores=32, idle=0.5, mem_gb=20, io=10)  # exactly 4 GiB left
+        self.wait_until(lambda: self.running() == 3, message='third admitted')
+        for release in (release_a, release_b, release_c):
+            release.touch()
+        self.assertEqual(self.finish(a)[0], 0)
+        self.assertEqual(self.finish(b)[0], 0)
+        code, _, err = self.finish(c)
+        self.assertEqual(code, 0)
+        self.assertIn('waiting for a host slot (2/4 in use: t-tester', err)
+        self.assertIn('ahead): brake on: disk wait 45%, above 40%', err)
+
+    def test_not_enough_cpu_waits_and_a_config_change_applies_on_the_next_check(self):
+        self.set_config(min_slots=1, max_slots=4)
+        self.fake_host(cores=8, idle=0.5)
+        a, release_a = self.blocker('a')
+        self.wait_until(lambda: self.running() == 1, message='one below the floor')
+        b, release_b = self.blocker('b')
+        self.wait_until(lambda: self.waiting_reason() == [
+            'not enough CPU: needs 4 cores, 0 available'], message='CPU reason')
+        self.set_config(min_slots=1, max_slots=4, default_cores=2)
+        self.wait_until(lambda: self.running() == 2, message='admitted with smaller reservations')
+        release_a.touch()
+        release_b.touch()
+        self.assertEqual((self.finish(a)[0], self.finish(b)[0]), (0, 0))
+
+    def test_the_cap_follows_the_config_and_lowering_it_stops_nothing(self):
+        self.set_config(min_slots=1, max_slots=1)
+        self.fake_host()
+        a, release_a = self.blocker('a')
+        self.wait_until(lambda: self.running() == 1, message='a running')
+        b, release_b = self.blocker('b')
+        self.wait_until(lambda: len(self.status()['waiting']) == 1, message='b queued')
+        c, release_c = self.blocker('c')
+        self.wait_until(lambda: self.waiting_reason() == ['host cap reached: 1/1 suites running',
+                                                          '1 suite(s) queued ahead'],
+                        message='b at the cap, c behind it')
+        self.set_config(min_slots=1, max_slots=2)
+        self.wait_until(lambda: self.running() == 2, message='b admitted after raising the cap')
+        self.set_config(min_slots=1, max_slots=1)
+        self.wait_until(lambda: self.waiting_reason() == ['host cap reached: 2/1 suites running'],
+                        message='c at the lowered cap')
+        time.sleep(0.3)
+        self.assertEqual(self.running(), 2)
+        self.assertIsNone(a.poll())
+        self.assertIsNone(b.poll())
+        release_c.touch()
+        release_a.touch()
+        release_b.touch()
+        self.assertEqual([self.finish(p)[0] for p in (a, b, c)], [0, 0, 0])
+
+    def test_unreadable_host_data_admits_only_to_the_floor_and_unreadable_pressure_is_ignored(self):
+        self.set_config(min_slots=1, max_slots=4)
+        root = self.fake_host(skip=('meminfo', 'pressure/io'))
+        a, release_a = self.blocker('a')
+        self.wait_until(lambda: self.running() == 1, message='one below the floor')
+        b, release_b = self.blocker('b')
+        self.wait_until(lambda: self.waiting_reason() == [
+            f'host data unreadable: {root}/meminfo'], message='unreadable reason')
+        status = self.status()
+        self.assertEqual(status['host']['unreadable'], {'load': [f'{root}/meminfo'],
+                                                        'pressure': [f'{root}/pressure/io']})
+        self.assertFalse(status['host']['brake']['on'])
+        shown = self.gate('status')
+        self.assertIn(f'cannot read {root}/pressure/io: the brake ignores it', shown.stdout)
+        self.assertIn(f'cannot read {root}/meminfo: only 1 start until it can be read',
+                      shown.stdout)
+        self.assertIn(f'cannot read {root}/pressure/io: the brake ignores disk wait', shown.stderr)
+        self.fake_host(skip=('pressure/io',))
+        self.wait_until(lambda: self.running() == 2, message='admitted once meminfo reads')
+        release_a.touch()
+        release_b.touch()
+        self.assertEqual((self.finish(a)[0], self.finish(b)[0]), (0, 0))
+
+
+class BrakeTests(GateCase):
+    def test_the_brake_has_two_marks_and_is_shared_through_the_state(self):
+        steps = [(40, 50, False), (45, 0, True), (20, 0, True), (19.99, 30, True),
+                 (19.99, 24.99, False), (39, 49, False), (10, 55, True)]
+        for io, cpu, on in steps:
+            with self.subTest(io=io, cpu=cpu):
+                self.fake_host(io=io, cpu=cpu)
+                self.assertEqual(self.status()['host']['brake']['on'], on)
+                saved = json.loads((self.state / 'state.json').read_text())['brake']
+                self.assertEqual((saved['on'], saved['io'], saved['cpu']), (on, io, cpu))
+
+
+class ConfigTests(GateCase):
+    def status_of(self):
+        result = self.gate('status', '--json')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout), result.stderr
+
+    def test_defaults_and_a_config_with_only_max_slots(self):
+        self.config.unlink()
+        status, _ = self.status_of()
+        self.assertEqual((status['min_slots'], status['max_slots']), (2, 8))
+        self.assertEqual(status['config'], gate.DEFAULTS)
+        self.config.write_text('{"max_slots": 1}')
+        status, _ = self.status_of()
+        self.assertEqual((status['min_slots'], status['max_slots']), (1, 1))
+
+    def test_unusable_values_keep_their_defaults_with_a_warning(self):
+        self.config.write_text(json.dumps({
+            'max_slots': 'x', 'min_slots': -1, 'profile_history': 2.5, 'brake_io_low': 50,
+            'brake_cpu_high': 20, 'mem_reserve_gb': 3, 'default_cores': 1.5}))
+        status, err = self.status_of()
+        self.assertEqual(status['config'], dict(gate.DEFAULTS, mem_reserve_gb=3.0,
+                                                default_cores=1.5))
+        for text in ('config max_slots="x" is not usable; using 8',
+                     'config min_slots=-1 is not usable; using 2',
+                     'config profile_history=2.5 is not usable; using 5',
+                     'config brake_io_low (50.0) is above brake_io_high (40.0); '
+                     'using 20.0 and 40.0',
+                     'config brake_cpu_low (25.0) is above brake_cpu_high (20.0); '
+                     'using 25.0 and 50.0'):
+            self.assertIn(text, err)
+
+    def test_a_queued_suite_keeps_going_through_bad_and_broken_config(self):
+        self.set_config(min_slots=1, max_slots=1, brake_io_high='x')
+        hold, release = self.blocker('hold')
+        self.wait_until(lambda: len(self.status()['running']) == 1, message='blocker running')
+        queued = self.start('run', '--', self.suite())
+        self.wait_until(lambda: self.waiting_reason() == ['host cap reached: 1/1 suites running'],
+                        message='queued at the cap')
+        time.sleep(0.3)  # several checks, each rereading the config
+        self.config.write_text('{not json')
+        code, _, err = self.finish(queued)  # the defaults have a floor of 2
+        self.assertEqual(code, 0, err)
+        self.assertEqual(err.count('config brake_io_high="x" is not usable'), 1)
+        self.assertEqual(err.count('ignoring unreadable config'), 1)
+        release.touch()
+        self.finish(hold)
+
+
+class ReservationTests(GateCase):
+    def test_worktrees_of_a_repo_share_a_profile_key_and_other_repos_do_not(self):
+        (self.repo / 'sub').mkdir()
+        (self.repo / 'sub/a.py').write_text('')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'sub')
+        worktree = self.tmp / 'wt'
+        git(self.repo, 'worktree', 'add', '-q', str(worktree), 'HEAD')
+        other = self.tmp / 'other'
+        (other / 'sub').mkdir(parents=True)
+        git(other, 'init', '-q')
+        keys = [gate.fingerprint(root / 'sub', [f'cd {root}/sub && make; ls {root}-old'])
+                ['profile_key'] for root in (self.repo, worktree, other)]
+        self.assertEqual(keys[0], {'repo': str((self.repo / '.git').resolve()), 'rel_cwd': 'sub',
+                                   'command': f'cd <worktree>/sub && make; ls {self.repo}-old'})
+        self.assertEqual(keys[1], dict(keys[0], command=f'cd <worktree>/sub && make; '
+                                                        f'ls {worktree}-old'))
+        self.assertEqual(keys[2]['repo'], str((other / '.git').resolve()))
+        same_text = [gate.fingerprint(root / 'sub', ['cd <worktree>/sub && make'])['profile_key']
+                     for root in (self.repo, worktree, other)]
+        self.assertEqual(same_text[0], same_text[1])
+        self.assertNotEqual(same_text[0], same_text[2])
+
+    def test_the_reservation_is_the_highest_of_the_latest_measured_runs(self):
+        command = self.suite()
+        key = gate.fingerprint(self.repo, [command])['profile_key']
+
+        def run(cpu, mem, key=key, **extra):
+            return {'profile_key': key, 'profile': dict(
+                {'cpu_peak_cores': cpu, 'mem_peak_bytes': mem, 'fallback': False}, **extra)}
+        history = [run(20, 20 * GIB),  # sixth newest measured run: outside profile_history
+                   run(3, GIB), run(5.5, 2 * GIB),
+                   run(30, 30 * GIB, fallback=True), run(None, 9 * GIB),  # not measured
+                   run(25, 25 * GIB, key=dict(key, repo='/elsewhere/.git')),  # another repo
+                   run(2, 3 * GIB), run(1, int(1.5 * GIB)), run(2.5, GIB)]
+        self.state.mkdir()
+        (self.state / 'ledger.jsonl').write_text(''.join(json.dumps(r) + '\n' for r in history))
+        self.set_config(min_slots=1, max_slots=1)
+        hold, release = self.blocker('hold')
+        self.wait_until(lambda: len(self.status()['running']) == 1, message='blocker running')
+        queued = self.start('run', '--', command)
+
+        def reservations():
+            status = self.status()
+            return ([h['reservation'] for h in status['running']],
+                    [w['reservation'] for w in status['waiting'] if w.get('kind') == 'slot'])
+        default = {'cpu_cores': 4.0, 'mem_bytes': 4 * GIB, 'source': 'default'}
+        self.wait_until(lambda: reservations() == (
+            [default], [{'cpu_cores': 5.5, 'mem_bytes': 3 * GIB, 'source': 'measured'}]),
+            message='measured reservation')
+        self.set_config(min_slots=1, max_slots=1, profile_history=1)
+        self.wait_until(lambda: reservations()[1] == [
+            {'cpu_cores': 2.5, 'mem_bytes': GIB, 'source': 'measured'}],
+            message='profile_history reread')
+        release.touch()
+        self.assertEqual(self.finish(queued)[0], 0)
+        self.finish(hold)
+        self.assertEqual(self.records()[-1]['profile_key'], key)
+
+
+class CutoverTests(GateCase):
+    """The process checks of the documented cutover, against the previous version."""
+
+    def documented(self, prefix):
+        doc = SCRIPT.parents[1] / 'references/suite-gate.md'
+        return next(line for line in doc.read_text().splitlines() if line.startswith(prefix))
+
+    def listed(self, check):
+        result = subprocess.run(['bash', '-c', check], capture_output=True, text=True,
+                                timeout=30)
+        return {int(line.split()[0]) for line in result.stdout.splitlines()}
+
+    def background(self, args, **kwargs):
+        proc = subprocess.Popen(args, env=self.env, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True, **kwargs)
+
+        def kill():
+            try:
+                os.killpg(proc.pid, signal.SIGKILL)
+            except ProcessLookupError:
+                pass
+            proc.wait()
+        self.addCleanup(kill)
+        return proc
+
+    def test_the_checks_list_old_runs_still_fingerprinting_and_old_statuses_still_running(self):
+        old = self.old_gate()
+        fake_bin, fingerprinting = self.tmp / 'bin', self.tmp / 'fingerprinting'
+        fake_bin.mkdir()
+        (fake_bin / 'git').write_text(f'#!/bin/sh\ntouch {fingerprinting}\nexec sleep 60\n')
+        (fake_bin / 'git').chmod(0o755)
+        self.env['PATH'] = f'{fake_bin}:{os.environ["PATH"]}'
+        run = self.background([sys.executable, str(old), 'run', '--', 'true'], cwd=self.repo)
+        self.wait_until(fingerprinting.exists, message='the old run to compute its fingerprint')
+        self.state.mkdir()
+        with open(self.state / 'state.lock', 'a') as lock:
+            fcntl.flock(lock, fcntl.LOCK_EX)  # the old status waits for the state lock
+            status = self.background([sys.executable, str(old), 'status'])
+            time.sleep(1.2)
+            self.assertIsNone(status.poll(), 'the old status must still be running')
+            self.assertLessEqual({run.pid, status.pid}, self.listed(self.documented('pgrep ')))
+            installed = int(time.time())
+            time.sleep(2.2)
+            later = self.background([sys.executable, '-c', 'import time; time.sleep(60)',
+                                     str(old), 'status'])
+            found = self.listed(f'installed={installed}; ' + self.documented('ps -eo '))
+            self.assertLessEqual({run.pid, status.pid}, found)
+            self.assertNotIn(later.pid, found, 'started after the install')
 
 
 class DetectionTests(unittest.TestCase):

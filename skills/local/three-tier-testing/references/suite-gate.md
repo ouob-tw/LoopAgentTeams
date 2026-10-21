@@ -1,6 +1,6 @@
 # 整套測試閘門（suite-gate）
 
-整套測試一律透過 `scripts/suite-gate.py` 執行。同一份程式內容用同一個指令跑過且通過時直接回報上次結果；相同請求同時送出只跑一次；整個主機同時最多跑 2 套，其餘排隊。只跑單一檔案或指定範圍的測試不必經過閘門。
+整套測試一律透過 `scripts/suite-gate.py` 執行。同一份程式內容用同一個指令跑過且通過時直接回報上次結果；相同請求同時送出只跑一次；排隊中的整套測試依主機剩餘的 CPU 與記憶體放行（至少同時 2 套、最多 8 套，可在設定檔調整），主機壓力過高時暫停放行。只跑單一檔案或指定範圍的測試不必經過閘門。
 
 以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫，只支援 Linux。
 
@@ -28,13 +28,45 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
 ### 等待與名額
 
 1. 同一指紋有人正在跑時先等它（每隔一段時間印出對方名稱與已等時間）。它通過就沿用，失敗才自己跑。
-2. 再排主機名額，等待時印出正在跑的是誰、前面還有幾個。順序固定是先指紋、後名額。
+2. 再排主機名額，先來後到：只有排第一的可以開跑，排第一的放不下時後面較小的也要等。等待時每隔一段時間印出正在跑的是誰、前面還有幾個與卡住的原因。順序固定是先指紋、後名額。設定檔每次檢查都重讀，排隊中改設定，下一次檢查就套用。
 3. 每套測試在自己的資源群組（systemd 使用者 scope，cgroup v2，名稱 `suite-gate-<編號>.scope`）中執行，測試另開新工作階段的背景程式也在群組裡。名額以「閘門還在，或群組內還有程序」判斷：
    - Ctrl-C 或終止訊號：先對群組內所有程序送 SIGTERM，5 秒內沒結束就以群組的 kill 結束全部，再退出，不寫紀錄。
    - 閘門被強制殺掉而測試還在跑：名額與指紋鎖繼續被佔用，直到群組內的程序全部結束。
    - 測試正常結束後群組內仍有程序：印出警告列出這些程序（PID 與指令），紀錄的 `profile.leftover_processes` 記下數量；閘門不殺它們，名額與鎖照常釋放。
    - 群組在閘門讀完最終用量前不會被回收（閘門在群組內留一個等待程序，讀完才讓它結束）。
-4. 主機沒有 cgroup v2 或 systemd 使用者服務（例如沒有 `XDG_RUNTIME_DIR`、連不上使用者 bus）時，印出警告並退回舊做法：測試在新工作階段中執行，名額以這個工作階段是否還有程序判斷，另開新工作階段的程序不計入，也不量用量（`profile.fallback` 為 `true`）。
+4. 主機沒有 cgroup v2 或 systemd 使用者服務（例如沒有 `XDG_RUNTIME_DIR`、連不上使用者 bus）時，印出警告並退回舊做法：測試在新工作階段中執行，名額以這個工作階段是否還有程序判斷，另開新工作階段的程序不計入，也不量用量（`profile.fallback` 為 `true`），預約量照下面的規則計算。
+
+### 放行計算
+
+**預約量**：每套測試以「同一指令」最近 `profile_history` 筆有效用量紀錄中最高的 CPU 核數（`profile.cpu_peak_cores`）與最高的記憶體（`profile.mem_peak_bytes`）為預約量。「同一指令」的鍵是：repository（同一 repo 各 worktree 共用的 Git 共同目錄）、執行目錄相對於 worktree 根的路徑、指令文字；指令文字中出現的 worktree 根絕對路徑先換成 `<worktree>`，所以不同 worktree 對到同一鍵，不同專案不共用。退回模式或缺值的紀錄不算有效。沒有有效紀錄（第一次跑、不在 Git 工作區）時用 `default_cores` 核與 `default_mem_gb` GB。
+
+**每次檢查**（在共用狀態的鎖內，只有排第一的等待者）依序：
+
+1. 執行中已達上限 `max_slots` → 等待。熱更新把上限調低時只是不再放行，已在跑的照跑。
+2. 執行中少於有效下限 `min(min_slots, max_slots)` → 直接放行，不看下面任何條件。
+3. 讀不到 `/proc/stat` 或 `/proc/meminfo` → 等待（只放行到下限為止）。
+4. 煞車開啟 → 等待。
+5. 以下兩條都成立才放行，否則等待：
+   - 主機剩餘 CPU 核數 − 所有執行中測試的未用 CPU 預約 ≥ 候選的 CPU 預約量。剩餘核數是總核數乘以最近 10–20 秒的閒置比例（`/proc/stat`，閒置含 iowait）。
+   - `MemAvailable`（`/proc/meminfo`）− 所有執行中測試的未用記憶體預約 − `mem_reserve_gb` ≥ 候選的記憶體預約量。
+
+未用預約是每套執行中測試的「預約量 − 目前用量」，最少 0：CPU 用閘門最近一次取樣，記憶體讀群組當下的 `memory.current`。目前用量不知道時（閘門已不在、還沒取樣、退回模式、舊版留下沒有資源群組的名額）保留整份預約量；舊版的名額沒有預約量，以預設值計。
+
+**煞車**：讀主機的 `/proc/pressure/io` 與 `/proc/pressure/cpu` 的 `some avg10`。硬碟等待 > `brake_io_high` 或 CPU 等待 > `brake_cpu_high` 時開啟；開啟後要兩者都 < `brake_io_low` 與 `brake_cpu_low` 才關閉。煞車狀態存在共用狀態（`state.json` 的 `brake`），所有閘門看到的一樣；每次檢查與 `status` 都會更新。讀不到某個壓力檔時，該項不觸發也不阻擋煞車，印出警告，`status` 也會列出。
+
+**卡住原因**：放不下時把原因寫成一句存進該等待者的紀錄（`reason`），等待訊息與 `status` 都會顯示。例如：
+
+| 原因 | 訊息 |
+| ---- | ---- |
+| 前面還有人 | `2 suite(s) queued ahead` |
+| 已達上限 | `host cap reached: 8/8 suites running` |
+| 讀不到主機資料 | `host data unreadable: /proc/meminfo` |
+| 煞車剛開啟或仍在高門檻之上 | `brake on: disk wait 45%, above 40%` |
+| 煞車中、還沒降到低門檻 | `brake on until disk wait < 20% and CPU wait < 25% (now disk wait 30%, CPU wait 5%)` |
+| CPU 不足 | `not enough CPU: needs 4 cores, 2.5 available` |
+| 記憶體不足 | `not enough memory: needs 12 GiB, 9 GiB available` |
+
+CPU 與記憶體都不足時兩句以 `; ` 連接。訊息中的 GB 都是 GiB（1024³ 位元組）；「available」是已扣掉未用預約（記憶體另扣保留量）後的值。
 
 ## 查狀態與紀錄
 
@@ -43,7 +75,12 @@ uv run --no-project python <skill>/scripts/suite-gate.py status
 uv run --no-project python <skill>/scripts/suite-gate.py status --fingerprint <開頭幾碼> --limit 20 --json
 ```
 
-列出正在跑、排隊中與最近的紀錄。核對別人宣稱的整套測試結果時，用回報中的指紋查紀錄，不要自己重跑。
+列出主機狀況、正在跑、排隊中與最近的紀錄。核對別人宣稱的整套測試結果時，用回報中的指紋查紀錄，不要自己重跑。
+
+- 主機狀況：閒置 CPU 核數與扣掉未用預約後剩下的核數、`MemAvailable` 與扣掉未用預約和保留量後剩下的記憶體、煞車開關與目前的硬碟與 CPU 等待、上下限；讀不到的主機檔案另列一行。
+- 每套執行中測試：預約量（`measured` 實測或 `default` 預設）、目前用量。
+- 每個排隊者：卡住的原因與預約量。
+- `--json`：`min_slots`（有效下限）、`max_slots`、`config`（實際套用的設定）、`host`（`cores`、`cpu_idle`、`cpu_free_cores`、`mem_available_bytes`、`unused_reservation`、`mem_reserve_bytes`、`cpu_left_cores`、`mem_left_bytes`、`pressure`、`brake`、`unreadable`）、`running`（每筆另有 `usage` 與 `reservation`）、`waiting`（每筆另有 `reason` 與 `reservation`）、`locks`、`records`。
 
 ## 專案登記檔
 
@@ -100,7 +137,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py install --client codex
 | 紀錄、名額與鎖 | `$XDG_STATE_HOME/suite-gate/`（預設 `~/.local/state/suite-gate/`） | 環境變數 `SUITE_GATE_STATE_DIR` |
 | 設定 | `$XDG_CONFIG_HOME/suite-gate/config.json`（預設 `~/.config/suite-gate/config.json`） | 環境變數 `SUITE_GATE_CONFIG` |
 
-整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用，以及這次的用量 `profile`：
+整台主機的所有專案與工作區共用同一份紀錄（`ledger.jsonl`，每行一筆）。每筆紀錄有：指紋、tree、repo、指令、執行目錄、結束碼、耗時、輸出結尾、執行者（HCOM 名稱或 session ID，取不到記 `unknown`）、開始與結束時間、`--rerun` 原因、是否執行中內容改變、是否可沿用、預約量的鍵 `profile_key`（`repo`、`rel_cwd`、`command`，不在 Git 工作區時為 `null`），以及這次的用量 `profile`：
 
 | 欄位 | 意思 |
 | ---- | ---- |
@@ -119,17 +156,59 @@ uv run --no-project python <skill>/scripts/suite-gate.py install --client codex
 設定檔欄位（都可省略）：
 
 ```json
-{"max_slots": 2, "poll_seconds": 1, "report_seconds": 30, "sample_seconds": 2}
+{"min_slots": 2, "max_slots": 8, "brake_io_high": 40, "brake_io_low": 20,
+ "brake_cpu_high": 50, "brake_cpu_low": 25, "default_cores": 4, "default_mem_gb": 4,
+ "mem_reserve_gb": 8, "profile_history": 5, "sample_seconds": 2,
+ "poll_seconds": 1, "report_seconds": 30}
 ```
 
-`max_slots` 是主機同時可跑的整套測試數；`poll_seconds` 是排隊時多久檢查一次；`report_seconds` 是多久印一次等待狀況；`sample_seconds` 是執行中多久讀一次群組的 CPU 與記憶體。
+| 欄位 | 預設 | 意思 |
+| ---- | ---- | ---- |
+| `min_slots` | 2 | 下限：執行中少於這個數（且少於上限）時一律放行。整數，可為 0 |
+| `max_slots` | 8 | 上限：同時執行的整套測試最多幾套。整數，至少 1。舊設定只寫這一項時照樣是上限（例如只寫 1 就同時只跑 1 套，下限也跟著是 1） |
+| `brake_io_high`、`brake_io_low` | 40、20 | 硬碟等待（IO some avg10，%）的煞車開啟與關閉門檻 |
+| `brake_cpu_high`、`brake_cpu_low` | 50、25 | CPU 等待（CPU some avg10，%）的煞車開啟與關閉門檻 |
+| `default_cores`、`default_mem_gb` | 4、4 | 沒有實測紀錄時的預約量（核、GiB） |
+| `mem_reserve_gb` | 8 | 放行時另外保留不用的記憶體（GiB） |
+| `profile_history` | 5 | 預約量取最近幾筆有效紀錄的最大值。整數，至少 1 |
+| `sample_seconds` | 2 | 執行中多久讀一次群組的 CPU 與記憶體 |
+| `poll_seconds` | 1 | 排隊時多久檢查一次 |
+| `report_seconds` | 30 | 多久印一次等待狀況 |
 
-測試用的環境變數：`SUITE_GATE_CGROUP_ROOT` 改指 cgroup 檔案的根目錄（預設 `/sys/fs/cgroup`），`SUITE_GATE_UNIT_PREFIX` 改資源群組名稱的開頭（預設 `suite-gate`）。
+設定檔每次檢查都重讀。檔案讀不到或不是 JSON 物件時全部用預設；個別欄位型別不對、是負數（或低於上面寫的最小值）、整數欄位給了小數時，那一欄用預設；同一組煞車門檻的關閉門檻大於開啟門檻時，那一組兩欄都用預設。以上都印出警告（同一個警告每個閘門程序只印一次），閘門照常運作。
+
+測試用的環境變數：`SUITE_GATE_PROC_ROOT` 改指 `pressure/`、`stat`、`meminfo` 的根目錄（預設 `/proc`；各程序的存活判斷仍讀真的 `/proc`），`SUITE_GATE_CGROUP_ROOT` 改指 cgroup 檔案的根目錄（預設 `/sys/fs/cgroup`），`SUITE_GATE_UNIT_PREFIX` 改資源群組名稱的開頭（預設 `suite-gate`）。主機負載的讀取（壓力、`/proc/stat`、`/proc/meminfo`、cgroup 檔案）都集中在 `suite-gate.py` 的「host readings」一節。
+
+## 換版：暫停後切換
+
+舊版看不到資源群組：閘門被殺而只剩測試另開工作階段的程序時，舊版會提早清掉名額與指紋鎖；舊版的 `status` 也會改寫名額紀錄。所以不長期讓新舊版混跑，安裝新版依下面五步。主機上 Claude、Codex 的 hook 與 Agent 直接呼叫都用同一份安裝目錄的程式，一次安裝就全部換新。
+
+1. 以 HCOM 通知所有使用閘門的主控暫停執行所有閘門指令（含 `run` 與 `status`；舊版 `status` 也會改寫名額紀錄），取得目前活著的主控回覆。
+2. 以程序清單（不是 `status`）確認主機上沒有任何 `suite-gate.py` 程序（`run`、`status` 等任何子指令），包含仍在計算指紋、尚未登記的 `run`；有就等它結束再查。Agent 每次執行 Bash 時 hook 會短暫啟動 `suite-gate.py hook`，它不讀寫名額，列出時隔幾秒再查即可。
+3. 安裝新版，核對安裝目錄的檔案與交付版本相同，裝好立刻記下時間。
+4. 再以程序清單確認沒有任何在安裝時間之前啟動的 `suite-gate.py` 程序（任何子指令）；若有人在步驟 2 之後仍啟動了舊版，等它結束後再查。
+5. 通知恢復。
+
+檢查指令（沒有輸出才算通過）：
+
+```bash
+# 步驟 2：列出所有 suite-gate.py 程序
+pgrep -af 'suite-gate\.py'
+# 步驟 3：安裝並核對後記下時間
+installed=$(date +%s)
+# 步驟 4：列出安裝時間之前就啟動、還在跑的 suite-gate.py 程序
+ps -eo pid=,etimes=,args= | awk -v age="$(( $(date +%s) - installed ))" '$2 >= age && /suite-gate\.py/'
+```
+
+兩個指令的樣式都寫成 `suite-gate\.py`，所以不會列出執行檢查的 shell 自己。步驟 4 以整秒計，安裝同一秒內啟動的程序也會列出，寧可多等。
 
 ## 限制
 
 - 只認程式檔內容；資料庫、外部服務、容器狀態與被忽略的設定檔（除非列入 `fingerprint_include`）不在指紋內，需要時用 `--rerun` 寫原因。
 - 測試期間改檔又改回原樣偵測不到。
 - 測試自己產生的檔案（例如 `__pycache__/`、`.pytest_cache/`、建置輸出）要列進 `.gitignore`，否則每次都會被當成「執行中內容改變」而無法沿用；被標成這樣時，用 `git status --porcelain` 查是哪些檔案變了。
-- 測試執行期間另開新工作階段的背景程式算在名額與用量內；測試正常結束後還留著的，閘門只警告、不殺，也不再佔名額，但它們仍吃主機資源。退回模式下這類程式不算名額。
+- 測試執行期間另開新工作階段的背景程式算在名額與用量內；測試正常結束後還留著的，閘門只警告、不殺，也不再佔名額，但它們仍吃主機資源（會反映在主機剩餘量裡）。退回模式下這類程式不算名額。
+- 預約量取過去實測的高峰；沒跑過的指令先用預設值，跑過一次才改用實測值。剛開跑、還沒爬到高峰的測試保留未用的那段，所以預約量偏大時會少放幾套。
+- 未滿下限時不看預約、記憶體保留與煞車，主機極忙時仍會跑到下限套數。
+- 硬碟讀寫量不列入預約（使用者 systemd 沒開放 IO 控制器），只用硬碟等待當煞車。
 - 預設判斷只看指令文字，可能誤判；專案登記可讓判斷準確。

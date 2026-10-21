@@ -2,8 +2,9 @@
 """Host-wide full-suite gate.
 
 `run [--rerun "<reason>"] -- <cmd>` reuses a passing result for identical content, lets
-only one of several identical requests run, and caps how many full suites run on the host
-at once. `status` lists running and queued suites and recent records. `is_full_suite()`
+only one of several identical requests run, and starts a queued full suite when the host has
+room for its measured peak (with a floor, a cap and a pressure brake). `status` lists running
+and queued suites, why the queue waits, and recent records. `is_full_suite()`
 decides whether a shell command is a full suite run (project registry first, then the
 default runner rules). `hook` is the PreToolUse hook that blocks full suites run outside
 the gate, and `install` / `uninstall --client claude|codex` add or remove it.
@@ -19,6 +20,7 @@ import fcntl
 import fnmatch
 import hashlib
 import json
+import math
 import os
 import re
 import shlex
@@ -34,7 +36,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 REGISTRY_NAME = '.suite-gate.json'
-DEFAULTS = {'max_slots': 2, 'poll_seconds': 1.0, 'report_seconds': 30.0, 'sample_seconds': 2.0}
+DEFAULTS = {'min_slots': 2, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds': 30.0,
+            'sample_seconds': 2.0, 'brake_io_high': 40.0, 'brake_io_low': 20.0,
+            'brake_cpu_high': 50.0, 'brake_cpu_low': 25.0, 'default_cores': 4.0,
+            'default_mem_gb': 4.0, 'mem_reserve_gb': 8.0, 'profile_history': 5}
+# The smallest value each key accepts; an int default takes whole numbers only.
+MINIMUMS = {'min_slots': 0, 'max_slots': 1, 'profile_history': 1, 'poll_seconds': 0.01,
+            'report_seconds': 0.01, 'sample_seconds': 0.01}
+BRAKE_PAIRS = (('brake_io_low', 'brake_io_high'), ('brake_cpu_low', 'brake_cpu_high'))
+GIB = 2 ** 30
+CPU_WINDOW_SECONDS = 10.0
+WORKTREE_PLACEHOLDER = '<worktree>'
 TAIL_LINES = 20
 TAIL_BYTES = 8192
 KILL_GRACE_SECONDS = 5.0
@@ -71,6 +83,8 @@ def config_path():
 
 
 def load_config():
+    """The config file over the defaults. A value it cannot use (wrong type, out of range, a
+    brake low mark above its high mark) keeps the default with a warning; read on every poll."""
     config = dict(DEFAULTS)
     path = config_path()
     try:
@@ -78,17 +92,46 @@ def load_config():
     except FileNotFoundError:
         return config
     except (OSError, ValueError) as exc:
-        warn(f'ignoring unreadable config {path}: {exc}')
+        warn_once(f'ignoring unreadable config {path}: {exc}')
+        return config
+    if not isinstance(data, dict):
+        warn_once(f'ignoring config {path}: expected a JSON object')
         return config
     for key, default in DEFAULTS.items():
-        value = data.get(key) if isinstance(data, dict) else None
-        if isinstance(value, (int, float)) and not isinstance(value, bool) and value > 0:
+        if key not in data:
+            continue
+        value = data[key]
+        try:
+            number = isinstance(value, (int, float)) and not isinstance(value, bool) \
+                and math.isfinite(value) \
+                and (not isinstance(default, int) or float(value).is_integer())
+        except OverflowError:  # an integer too large for a float
+            number = False
+        if number and value >= MINIMUMS.get(key, 0):
             config[key] = type(default)(value)
+        else:
+            warn_once(f'config {key}={json.dumps(value)} is not usable; using {default}')
+    for low, high in BRAKE_PAIRS:
+        if config[low] > config[high]:
+            warn_once(f'config {low} ({config[low]}) is above {high} ({config[high]}); '
+                      f'using {DEFAULTS[low]} and {DEFAULTS[high]}')
+            config[low], config[high] = DEFAULTS[low], DEFAULTS[high]
     return config
 
 
 def warn(text):
     print(f'suite-gate: {text}', file=sys.stderr, flush=True)
+
+
+_warned = set()
+
+
+def warn_once(text):
+    """warn, but only the first time this process sees the text (the config is reread on
+    every poll)."""
+    if text not in _warned:
+        _warned.add(text)
+        warn(text)
 
 
 def agent_name():
@@ -470,7 +513,8 @@ def normalize_command(argv):
 
 
 def fingerprint(cwd, argv):
-    """Dict with fingerprint, tree, repo and relative cwd; None outside a Git work tree."""
+    """Dict with fingerprint, tree, repo, relative cwd and profile key; None outside a Git
+    work tree."""
     root = repo_root(cwd)
     if root is None:
         return None
@@ -482,7 +526,19 @@ def fingerprint(cwd, argv):
     mode = 'shell' if len(argv) == 1 else 'exec'
     command = normalize_command(argv)
     digest = hashlib.sha256(f'{tree}\0{mode}\0{command}\0{rel}'.encode()).hexdigest()
-    return {'fingerprint': digest, 'tree': tree, 'repo': str(root), 'rel_cwd': rel}
+    return {'fingerprint': digest, 'tree': tree, 'repo': str(root), 'rel_cwd': rel,
+            'profile_key': profile_key(root, rel, command)}
+
+
+def profile_key(root, rel, command):
+    """What a suite's measured usage is filed under: the repository (the Git common dir its
+    worktrees share), the cwd relative to the worktree, and the command with the worktree's
+    absolute path replaced, so every worktree of a repo shares it and other repos do not."""
+    common = git(['rev-parse', '--git-common-dir'], root).stdout.strip()
+    for path in sorted({str(root), str(root.resolve())}, key=len, reverse=True):
+        command = re.sub(re.escape(path) + r'(?![\w.-])', WORKTREE_PLACEHOLDER, command)
+    return {'repo': str((root / common).resolve()) if common else str(root.resolve()),
+            'rel_cwd': rel, 'command': command}
 
 
 # ---------------------------------------------------------------- process liveness
@@ -567,6 +623,61 @@ def end_group(group, child):
 
 
 # ---------------------------------------------------------------- host readings
+# Every reading of host load (pressure, /proc/stat, /proc/meminfo, cgroup files) is here;
+# SUITE_GATE_PROC_ROOT and SUITE_GATE_CGROUP_ROOT point them at fake files in tests.
+
+def proc_root():
+    return Path(os.environ.get('SUITE_GATE_PROC_ROOT') or '/proc')
+
+
+def read_pressure(name):
+    """The `some avg10` percentage of /proc/pressure/<name> (io, cpu), or None."""
+    try:
+        lines = (proc_root() / 'pressure' / name).read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        fields = line.split()
+        if fields[:1] == ['some']:
+            for field in fields[1:]:
+                if field.startswith('avg10='):
+                    try:
+                        return float(field[6:])
+                    except ValueError:
+                        return None
+    return None
+
+
+def read_cpu_times():
+    """(cores, total ticks, idle ticks) of the host from /proc/stat, or None."""
+    try:
+        lines = (proc_root() / 'stat').read_text().splitlines()
+    except OSError:
+        return None
+    cores = sum(1 for line in lines if re.match(r'cpu\d', line))
+    total = next((line.split()[1:] for line in lines if line.startswith('cpu ')), None)
+    try:
+        # user nice system idle iowait irq softirq steal; guest time is already in user.
+        ticks = [int(value) for value in total[:8]]
+    except (TypeError, ValueError):
+        return None
+    if cores == 0 or len(ticks) < 5 or sum(ticks) <= 0:
+        return None
+    return cores, sum(ticks), ticks[3] + ticks[4]
+
+
+def read_mem_available():
+    """MemAvailable of /proc/meminfo in bytes, or None."""
+    try:
+        lines = (proc_root() / 'meminfo').read_text().splitlines()
+    except OSError:
+        return None
+    for line in lines:
+        fields = line.split()
+        if fields[:1] == ['MemAvailable:'] and len(fields) > 1 and fields[1].isdigit():
+            return int(fields[1]) * 1024
+    return None
+
 
 def cgroup_root():
     return Path(os.environ.get('SUITE_GATE_CGROUP_ROOT') or '/sys/fs/cgroup')
@@ -761,6 +872,165 @@ def reusable_record(fp):
     return None
 
 
+# ---------------------------------------------------------------- admission
+
+def _number(value):
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def measured_reservation(key, history):
+    """The highest CPU peak and memory peak of the latest `history` measured runs filed under
+    key, or None when there are none. Unmeasured runs (fallback, missing values) do not count."""
+    if key is None:
+        return None
+    found = []
+    for record in reversed(read_records()):
+        if not isinstance(record, dict):
+            continue
+        profile = record.get('profile')
+        if record.get('profile_key') == key and isinstance(profile, dict) \
+                and not profile.get('fallback') and _number(profile.get('cpu_peak_cores')) \
+                and _number(profile.get('mem_peak_bytes')):
+            found.append(profile)
+            if len(found) >= history:
+                break
+    if not found:
+        return None
+    return {'cpu_cores': max(p['cpu_peak_cores'] for p in found),
+            'mem_bytes': max(p['mem_peak_bytes'] for p in found)}
+
+
+def reservation_of(holder, config):
+    """(cores, bytes, source) a suite reserves: its measured peak, or the configured default
+    (also for holders written before reservations existed)."""
+    measured = holder.get('reservation')
+    if isinstance(measured, dict) and _number(measured.get('cpu_cores')) \
+            and _number(measured.get('mem_bytes')):
+        return measured['cpu_cores'], measured['mem_bytes'], 'measured'
+    return config['default_cores'], config['default_mem_gb'] * GIB, 'default'
+
+
+def unused_reservation(holder, config):
+    """(cores, bytes) of a running suite's reservation it does not use yet; all of it when
+    its current use is unknown."""
+    cpu, mem, _ = reservation_of(holder, config)
+    usage = holder_usage(holder)
+    return (cpu if usage['cpu_cores'] is None else max(0.0, cpu - usage['cpu_cores']),
+            mem if usage['mem_bytes'] is None else max(0, mem - usage['mem_bytes']))
+
+
+def update_brake(state, pressure, config, now):
+    """The shared brake after this reading: it goes on when disk or CPU wait is above its high
+    mark and off only when both are below their low marks. An unreadable signal counts as
+    neither above nor below."""
+    old = state.get('brake') if isinstance(state.get('brake'), dict) else {}
+    io, cpu = pressure['io'], pressure['cpu']
+    over = (io is not None and io > config['brake_io_high']) \
+        or (cpu is not None and cpu > config['brake_cpu_high'])
+    under = (io is None or io < config['brake_io_low']) \
+        and (cpu is None or cpu < config['brake_cpu_low'])
+    on = over or (bool(old.get('on')) and not under)
+    since = old.get('since') if old.get('on') and on else (now if on else None)
+    state['brake'] = {'on': on, 'since': since, 'io': io, 'cpu': cpu, 'time': now}
+    return state['brake']
+
+
+def host_view(state, config):
+    """Read the host and update the shared CPU window and brake in state.
+
+    Idle CPU is measured over the last 10-20 s: state keeps up to two /proc/stat readings,
+    the older one is the base. Without a recent base the gate reads twice, 0.25 s apart;
+    readings that do not move (fake files) fall back to the counters since boot.
+    """
+    now = time.time()
+    unreadable = {'load': [], 'pressure': []}
+    pressure = {}
+    for name, what in (('io', 'disk'), ('cpu', 'CPU')):
+        pressure[name] = read_pressure(name)
+        if pressure[name] is None:
+            path = proc_root() / 'pressure' / name
+            unreadable['pressure'].append(str(path))
+            warn_once(f'cannot read {path}: the brake ignores {what} wait')
+    cores = idle = None
+    times = read_cpu_times()
+    if times is not None:
+        window = [w for w in state.get('host_cpu') or []
+                  if isinstance(w, list) and len(w) == 3 and all(_number(v) for v in w)
+                  and 0 <= now - w[0] < 3 * CPU_WINDOW_SECONDS]
+        if not window:
+            window = [[now, times[1], times[2]]]
+            time.sleep(0.25)
+            times = read_cpu_times() or times
+            now = time.time()
+        elif now - window[-1][0] >= CPU_WINDOW_SECONDS:
+            window = [window[-1], [now, times[1], times[2]]]
+        state['host_cpu'] = window
+        cores, total, idle_ticks = times
+        base = window[0]
+        if total > base[1] and idle_ticks >= base[2]:
+            idle = (idle_ticks - base[2]) / (total - base[1])
+        else:
+            idle = idle_ticks / total
+    mem = read_mem_available()
+    floor = min(config['min_slots'], config['max_slots'])
+    for path, value in ((proc_root() / 'stat', times), (proc_root() / 'meminfo', mem)):
+        if value is None:
+            unreadable['load'].append(str(path))
+            warn_once(f'cannot read {path}: queued suites start only while fewer than '
+                      f'{floor} run')
+    return {'cores': cores, 'cpu_idle': None if idle is None else round(idle, 4),
+            'cpu_free_cores': None if idle is None else cores * idle,
+            'mem_available_bytes': mem, 'pressure': pressure,
+            'brake': update_brake(state, pressure, config, now), 'unreadable': unreadable}
+
+
+def fmt_num(value):
+    return f'{value:.2f}'.rstrip('0').rstrip('.')
+
+
+def brake_reason(host, config):
+    pressure = host['pressure']
+    marks = (('disk wait', pressure['io'], config['brake_io_high'], config['brake_io_low']),
+             ('CPU wait', pressure['cpu'], config['brake_cpu_high'], config['brake_cpu_low']))
+    over = [f'{name} {fmt_num(value)}%, above {fmt_num(high)}%'
+            for name, value, high, _ in marks if value is not None and value > high]
+    if over:
+        return 'brake on: ' + '; '.join(over)
+    now = ', '.join(f'{name} {"?" if value is None else fmt_num(value)}%'
+                    for name, value, _, _ in marks)
+    return ('brake on until ' + ' and '.join(f'{name} < {fmt_num(low)}%'
+                                             for name, _, _, low in marks) + f' (now {now})')
+
+
+def admission(config, running, candidate, host):
+    """(admit, reason why not) for the first suite in the queue.
+
+    running: (cores, bytes) of unused reservation per running suite; candidate: (cores, bytes)
+    it reserves; host: from host_view. The cap comes first, then the floor (below it nothing
+    else is checked), then the brake, then whether the reservation fits.
+    """
+    count, cap = len(running), config['max_slots']
+    if count >= cap:
+        return False, f'host cap reached: {count}/{cap} suites running'
+    if count < min(config['min_slots'], cap):
+        return True, None
+    if host['unreadable']['load']:
+        return False, 'host data unreadable: ' + ', '.join(host['unreadable']['load'])
+    if host['brake']['on']:
+        return False, brake_reason(host, config)
+    cpu_left = host['cpu_free_cores'] - sum(cpu for cpu, _ in running)
+    mem_left = (host['mem_available_bytes'] - sum(mem for _, mem in running)
+                - config['mem_reserve_gb'] * GIB)
+    short = []
+    if cpu_left < candidate[0]:
+        short.append(f'not enough CPU: needs {fmt_num(candidate[0])} cores, '
+                     f'{fmt_num(cpu_left)} available')
+    if mem_left < candidate[1]:
+        short.append(f'not enough memory: needs {fmt_num(candidate[1] / GIB)} GiB, '
+                     f'{fmt_num(mem_left / GIB)} GiB available')
+    return not short, '; '.join(short) or None
+
+
 # ---------------------------------------------------------------- run
 
 class Gate:
@@ -775,10 +1045,12 @@ class Gate:
         self.sampler = None
         self.keeper = self.keeper_pid = None  # holds the group open until it is measured
         self.finished = False  # the suite exited by itself
+        self.key = None  # what its measured usage is filed under
+        self.measured = None  # (profile_history, measured reservation) read for self.key
         self.me = {'id': uuid.uuid4().hex, 'pid': os.getpid(),
                    'start': proc_stat(os.getpid())[2], 'sid': None, 'cgroup': None,
                    'agent': agent_name(), 'command': self.command, 'cwd': str(cwd),
-                   'fingerprint': None}
+                   'fingerprint': None, 'reservation': None}
 
     def _holder(self, **extra):
         return dict(self.me, since=time.time(), **extra)
@@ -786,6 +1058,7 @@ class Gate:
     def _wait(self, attempt, describe):
         started = last = time.monotonic()
         while True:
+            self.config = load_config()
             outcome = with_state(attempt)
             if outcome is not None:
                 return outcome
@@ -813,7 +1086,17 @@ class Gate:
 
         self._wait(attempt, describe)
 
+    def reservation(self):
+        """The measured reservation for this suite's command, read again when
+        profile_history changes; None means the configured default."""
+        history = self.config['profile_history']
+        if self.measured is None or self.measured[0] != history:
+            self.measured = (history, measured_reservation(self.key, history))
+        return self.measured[1]
+
     def acquire_slot(self):
+        """Queue first come, first served; only the first in the queue may start, when
+        admission() lets it. Every other waiter records why it waits."""
         def attempt(state):
             mine = next((w for w in state['waiters'] if w['id'] == self.me['id']
                          and w.get('kind') == 'slot'), None)
@@ -821,12 +1104,20 @@ class Gate:
                 state['seq'] += 1
                 mine = self._holder(kind='slot', seq=state['seq'])
                 state['waiters'].append(mine)
+            self.me['reservation'] = mine['reservation'] = self.reservation()
             ahead = [w for w in state['waiters']
                      if w.get('kind') == 'slot' and w['seq'] < mine['seq']]
-            if len(state['slots']) + len(ahead) < self.config['max_slots']:
+            if ahead:
+                mine['reason'] = f'{len(ahead)} suite(s) queued ahead'
+                return None
+            running = [unused_reservation(h, self.config) for h in state['slots']]
+            admit, reason = admission(self.config, running, reservation_of(mine, self.config)[:2],
+                                      host_view(state, self.config))
+            if admit:
                 state['waiters'].remove(mine)
                 state['slots'].append(self._holder())
                 return True
+            mine['reason'] = reason
             return None
 
         def describe(state):
@@ -836,7 +1127,7 @@ class Gate:
             ahead = sum(1 for w in state['waiters'] if w.get('kind') == 'slot'
                         and mine and w['seq'] < mine['seq'])
             return (f'waiting for a host slot ({len(state["slots"])}/{self.config["max_slots"]}'
-                    f' in use: {running}; {ahead} ahead)')
+                    f' in use: {running}; {ahead} ahead): {(mine or {}).get("reason")}')
 
         self._wait(attempt, describe)
 
@@ -885,6 +1176,7 @@ class Gate:
             info = fingerprint(self.cwd, self.argv)
             fp = info and info['fingerprint']
             self.me['fingerprint'] = fp
+            self.key = info and info['profile_key']
             if info is None:
                 warn('not in a Git work tree: queueing only, the result will not be reused')
             elif not self.rerun:
@@ -1052,6 +1344,7 @@ class Gate:
             'output_tail': tail.text(), 'agent': self.me['agent'], 'time': start_iso,
             'finished': now_iso(), 'rerun_reason': self.rerun, 'content_changed': changed,
             'reusable': info is not None and code == 0 and not changed, 'profile': profile,
+            'profile_key': info and info['profile_key'],
         }
         append_record(record)
         if changed:
@@ -1156,20 +1449,61 @@ def cmd_run(rerun, argv):
 # ---------------------------------------------------------------- status
 
 def cmd_status(as_json, fp_prefix, limit):
-    state = with_state(lambda current: current)
+    config = load_config()
+
+    def look(state):
+        host = host_view(state, config)
+        running = []
+        for holder in state['slots']:
+            cpu, mem, source = reservation_of(holder, config)
+            running.append(dict(holder, usage=holder_usage(holder), unused=unused_reservation(
+                holder, config), reservation={'cpu_cores': cpu, 'mem_bytes': mem,
+                                              'source': source}))
+        return copy.deepcopy(state), host, running
+
+    state, host, running = with_state(look)
     records = read_records()
     if fp_prefix:
         records = [r for r in records if (r.get('fingerprint') or '').startswith(fp_prefix)]
     records = records[-limit:]
-    max_slots = load_config()['max_slots']
-    running = [dict(h, usage=holder_usage(h)) for h in state['slots']]
+    cap, floor = config['max_slots'], min(config['min_slots'], config['max_slots'])
+    unused_cpu = sum(h['unused'][0] for h in running)
+    unused_mem = sum(h['unused'][1] for h in running)
+    reserve = config['mem_reserve_gb'] * GIB
+    free, avail = host['cpu_free_cores'], host['mem_available_bytes']
+    host.update({
+        'unused_reservation': {'cpu_cores': unused_cpu, 'mem_bytes': unused_mem},
+        'mem_reserve_bytes': reserve,
+        'cpu_left_cores': None if free is None else free - unused_cpu,
+        'mem_left_bytes': None if avail is None else avail - unused_mem - reserve})
+    waiting = []
+    for waiter in state['waiters']:
+        cpu, mem, source = reservation_of(waiter, config)
+        waiting.append(dict(waiter, reservation={'cpu_cores': cpu, 'mem_bytes': mem,
+                                                 'source': source}))
     if as_json:
-        print(json.dumps({'max_slots': max_slots, 'running': running,
-                          'waiting': state['waiters'], 'locks': state['locks'],
-                          'records': records}, ensure_ascii=False, indent=1))
+        shown = [{k: v for k, v in h.items() if k != 'unused'} for h in running]
+        print(json.dumps({'min_slots': floor, 'max_slots': cap, 'config': config,
+                          'host': host, 'running': shown, 'waiting': waiting, 'locks': state['locks'], 'records': records},
+                         ensure_ascii=False, indent=1))
         return 0
     now = time.time()
-    print(f"Running ({len(state['slots'])}/{max_slots} host slots):")
+    brake, pressure = host['brake'], host['pressure']
+    waits = ', '.join(f'{name} wait {"?" if pressure[key] is None else fmt_num(pressure[key])}%'
+                      for key, name in (('io', 'disk'), ('cpu', 'CPU')))
+    cpu_text = ('CPU unreadable' if free is None else
+                f"CPU {fmt_num(free)} of {host['cores']} cores idle, "
+                f"{fmt_num(host['cpu_left_cores'])} left after unused reservations")
+    mem_text = ('memory unreadable' if avail is None else
+                f'memory {fmt_num(avail / GIB)} GiB available, '
+                f"{fmt_num(host['mem_left_bytes'] / GIB)} GiB left after unused reservations "
+                f'and the {fmt_num(config["mem_reserve_gb"])} GiB reserve')
+    print(f"Host: {cpu_text}; {mem_text}; brake {'on' if brake['on'] else 'off'} ({waits}); "
+          f'{floor} start regardless of load, at most {cap} run')
+    for path in host['unreadable']['load'] + host['unreadable']['pressure']:
+        print(f'  cannot read {path}' + (': the brake ignores it' if '/pressure/' in path
+                                         else f': only {floor} start until it can be read'))
+    print(f"Running ({len(running)}/{cap} host slots):")
     for h in running:
         note = '' if gate_alive(h) else (' (gate gone, its group still has processes)'
                                          if h.get('cgroup') else
@@ -1177,16 +1511,20 @@ def cmd_status(as_json, fp_prefix, limit):
         cores, mem = h['usage']['cpu_cores'], h['usage']['mem_bytes']
         usage = (f"cpu {'-' if cores is None else f'{cores:.1f} cores'}, "
                  f"mem {'-' if mem is None else fmt_bytes(mem)}")
-        print(f"  {h['agent']}  {fmt_seconds(now - h['since'])}  {usage}  "
-              f"fp {(h.get('fingerprint') or '-')[:12]}  {h['cwd']}  {h['command']}{note}")
-    if not state['slots']:
+        print(f"  {h['agent']}  {fmt_seconds(now - h['since'])}  {fmt_reservation(h)}  "
+              f"{usage}  fp {(h.get('fingerprint') or '-')[:12]}  {h['cwd']}  "
+              f"{h['command']}{note}")
+    if not running:
         print('  none')
     print('Waiting:')
-    for h in sorted(state['waiters'], key=lambda w: w['since']):
-        why = 'host slot' if h.get('kind') == 'slot' else 'same content running'
+    for h in sorted(waiting, key=lambda w: w['since']):
+        if h.get('kind') == 'slot':
+            why = f"host slot: {h.get('reason') or 'not checked yet'}  {fmt_reservation(h)}"
+        else:
+            why = 'same content running'
         print(f"  {h['agent']}  {fmt_seconds(now - h['since'])}  {why}  "
               f"fp {(h.get('fingerprint') or '-')[:12]}  {h['cwd']}  {h['command']}")
-    if not state['waiters']:
+    if not waiting:
         print('  none')
     print(f'Recent records ({len(records)}):')
     for r in records:
@@ -1202,6 +1540,12 @@ def cmd_status(as_json, fp_prefix, limit):
               f"{r.get('agent')}  {r.get('duration_s')}s  {r.get('cwd')}  "
               f"{r.get('command')}{rerun}")
     return 0
+
+
+def fmt_reservation(holder):
+    reservation = holder['reservation']
+    return (f"reserves {fmt_num(reservation['cpu_cores'])} cores, "
+            f"{fmt_num(reservation['mem_bytes'] / GIB)} GiB ({reservation['source']})")
 
 
 # ---------------------------------------------------------------- hook
