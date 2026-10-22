@@ -47,6 +47,8 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_TIDY_COMMAND` | 整理長語音用的 Codex app server 指令（JSON 字串陣列），每次整理啟動一個、以標準輸入輸出溝通，用完即結束；模型固定為 `gpt-6-luna`、思考強度 `low`。預設指令關掉 apps、hooks、memories、plugins、skills 說明與各種工具（`config.ts` 的 `TEXT_ONLY_CODEX`），自訂時照用所設的值、不會自動補上 | `["codex","app-server","-c","features.apps=false",…]` |
 | `LAT_BOARD_TIDY_TIMEOUT_SECONDS` | Codex 整理多久沒完成就改放原始辨識文字並提示 | `30` |
 | `LAT_BOARD_TRANSLATE_COMMAND` | 翻譯對話紀錄英文回覆用的 Codex app server 指令（JSON 字串陣列），每段翻譯啟動一個、用完即結束；模型固定為 `gpt-6-luna`、思考強度 `low`（見「對話翻譯」）；預設指令與自訂時的做法同上 | 同上 |
+| `LAT_BOARD_SKILLS_COMMAND` | 列出 Codex 在某資料夾能用的 skill 時啟動的 Codex app server 指令（JSON 字串陣列），以 `skills/list` 詢問，用完即結束（見「傳話給主控」的 skill 名稱提示） | `["codex","app-server"]` |
+| `LAT_BOARD_SKILLS_TIMEOUT_SECONDS` | 等 Codex 回 skill 清單多久，逾時就不提示 | `15` |
 | `LAT_BOARD_TRANSLATE_TIMEOUT_SECONDS` | 一段翻譯多久沒完成就算失敗，該段留著原文並小字註明 | `60` |
 | `LAT_BOARD_TRANSLATE_CONCURRENCY` | 同時最多幾個 Codex 在翻譯，其餘排隊；所有頁面共用 | `3` |
 | `LAT_BOARD_TRANSLATE_KEEP_DAYS` | 存下的譯文多久沒用到就清掉 | `30` |
@@ -182,6 +184,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 送出前會重讀資料，確認主控仍啟用；對象是閒置或已關閉的主控時改為喚醒（見下節）。不自動重試，也不改走別的管道。
 - 每次傳話不論成敗都記在狀態目錄的 `sent-log.jsonl`，在該主控的資訊頁可以看到，所有已登入裝置看到的相同。
 - 多行文字以一則訊息送出：行與行之間送的是換行字元（LF），最後才送出 Enter（CR）。文字裡的 CR 會先換成 LF，否則會提早送出。頁面上 Enter 與 Shift+Enter 的規則（寬度 760px 以下或沒有滑鼠時 Enter 換行）在指令列元件裡，輸入法選字時的 Enter 不送出。
+- skill 名稱提示：`MessageBox.svelte` 帶 `skillsFor`（收件 client 與工作資料夾；指令列取開著的 Agent 的 `client`／`folder` 或對象主控的 `client`／`workspace`，新建表單取所選 client 與資料夾）時才提示，觸發、篩選與插入規則在 `src/lib/board/skills.ts`。清單由 `GET /api/skills?client=&folder=`（要登入，`folder` 須是完整路徑）提供，頁面依 client 與資料夾各讀一次、5 分鐘後再讀，失敗 30 秒內不重問（`skill-hints.svelte.ts`）。Claude 的照 Claude Code 2.1 啟動時列出的位置讀檔（`src/lib/server/skills.ts`）：`~/.claude/skills/<資料夾>/SKILL.md`、該資料夾往上到 Git 專案根目錄（不在 Git 專案裡就到 `/`）每層的 `.claude/skills`，以及使用者與專案設定 `enabledPlugins` 開著的外掛（`installed_plugins.json` 的 `installPath`）的 `skills/`，外掛的寫成 `外掛名:資料夾`；使用者設定的 `extraKnownMarketplaces` 寫的來源與 `known_marketplaces.json` 不同的 marketplace，Claude 不載入（`claude plugin list` 寫 added but ignored），它的外掛也不列；名稱用資料夾名（與 Claude 相同）。已知限制：Claude Code 內建（`/simplify` 等）與 claude.ai 帳號帶來的 skill（`anthropic-skills:*`）沒有檔案，只有開一個 Claude session（會跑它的啟動 hook）才列得出來，所以不列，與 client 內建指令同樣看待。Codex 的外掛與停用設定取決於它自己的狀態，所以直接問 Codex app server 的 `skills/list`（`LAT_BOARD_SKILLS_COMMAND`，`cwds` 是該資料夾），只列 `enabled` 的（含 Codex 自己裝在 `~/.codex/skills/.system` 的 `system` skill），同一資料夾的答案留 60 秒；問不到回 502，頁面就不提示。描述只取第一句（`firstSentence`）。
 - 中斷主控這一回合：對象是 `herdr` 不為空、而且 client 這一回合正在跑的主控（`controllerInterruptible`），回合狀態取自資料裡同一個 session 的 Agent（`agents`），不看主控的 LAT 狀態：狀態來自 hcom 時要是 `working`（hcom `active`）或 `blocked`，來自 Herdr 時（hcom 沒有它）照一般 Agent 的規則，不是閒置或已完成；不在 Herdr 清單上或有未完成的模型切換就沒有停止鈕。指令列又沒有打字時，送出鈕換成 Agent 頁面那顆紅色停止鈕，按下先問一次（`CONTROLLER_INTERRUPT_CONFIRM_TEXT`），確認後呼叫與 Agent 相同的 `POST /api/agents/interrupt`（`session` 是主控的 session ID）。伺服器照 Agent 的規則重讀清單，以 Herdr 這次列出的窗格送 `herdr agent send-keys <窗格> esc`，不在 Herdr 清單上或有未完成的模型切換就拒絕，只試一次；結果照樣寫一行 `agent-action`（`interrupt`）。通知寫「已對 @名稱 送出 Esc。」或失敗原因。主控資訊頁與 Herdr 分頁的主控頁都一樣。
 
 ## 喚醒閒置或已關閉的主控
@@ -320,6 +323,8 @@ bun run repro:hydration --serve none       # 只啟動已登入的假資料看�
 `tests/browser/page-navigation.test.ts` 也用無頭 Chrome（使用起點加 72 與加 73）在同一分頁以整頁載入輪流開主控頁、Herdr Agent 頁與已關閉 Agent 頁（桌機與手機寬度各三輪），確認暫存的頁面不占住連線、翻譯照常完成；並確認從別的頁面按上一頁回到看板時重新載入、即時更新照常、指令列草稿仍在。
 
 `tests/browser/agents-page.test.ts` 以同樣方式（使用起點加 32 與加 33）在電腦與手機寬度操作「Herdr」分頁（含傳話、中斷、關閉與操作紀錄），並檢查畫面不會左右捲動。傳話與中斷的伺服器端行為在 `tests/server/agent-control.test.ts`（起點加 34），關閉在 `tests/server/agent-close.test.ts`（起點加 35），切換模型、繼續切換與放棄切換在 `tests/server/agent-switch.test.ts`（起點加 37）。
+
+`tests/browser/skill-hints-page.test.ts` 以同樣方式在指令列（電腦與手機寬度）與新建主控、開新 Agent 表單檢查 skill 名稱提示；Claude 的 skill 寫在測試暫存的家目錄與專案資料夾，Codex 的由假的 Codex app server（`tests/fake-codex.mjs`）回答。
 
 `tests/browser/model-defaults-page.test.ts` 以同樣方式（使用起點加 44 與加 45）檢查新建主控與開新 Agent 表單的預設項目，以及新主控第一回合開始後不重新整理頁面，指令列模型標籤就顯示實際模型；client 設定寫在測試暫存的家目錄，不讀真的 `~/.claude`、`~/.codex`。
 

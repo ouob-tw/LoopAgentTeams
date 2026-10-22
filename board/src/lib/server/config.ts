@@ -59,6 +59,9 @@ export interface BoardConfig {
 	/** The same for translating English replies of a conversation into Chinese. */
 	translateCommand: string[];
 	translateTimeoutMs: number;
+	/** Command that runs a Codex app server as the user's own, to list the skills Codex can call in a folder. */
+	skillsCommand: string[];
+	skillsTimeoutMs: number;
 	/** How many Codex app servers translate at once; more requests wait their turn. */
 	translateConcurrency: number;
 	/** How long a saved translation is kept after it was last used. */
@@ -185,6 +188,8 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		tidyTimeoutMs: seconds(env.LAT_BOARD_TIDY_TIMEOUT_SECONDS, 30_000),
 		translateCommand: commandFrom(env, 'LAT_BOARD_TRANSLATE_COMMAND') ?? [...TEXT_ONLY_CODEX],
 		translateTimeoutMs: seconds(env.LAT_BOARD_TRANSLATE_TIMEOUT_SECONDS, 60_000),
+		skillsCommand: commandFrom(env, 'LAT_BOARD_SKILLS_COMMAND') ?? ['codex', 'app-server'],
+		skillsTimeoutMs: seconds(env.LAT_BOARD_SKILLS_TIMEOUT_SECONDS, 15_000),
 		translateConcurrency: Math.max(1, Math.floor(Number(env.LAT_BOARD_TRANSLATE_CONCURRENCY)) || 3),
 		// Days: read as seconds, then a second becomes a day.
 		translateKeepMs: seconds(env.LAT_BOARD_TRANSLATE_KEEP_DAYS, 30_000) * DAY_SECONDS,
