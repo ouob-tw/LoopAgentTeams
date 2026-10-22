@@ -494,7 +494,7 @@ class KeepTests(ReapTestCase):
                                services=['agent-server'])
         tree = self.node('dead-root', [self.node('no-marker', env={}),
                                        self.node('listener', listen=True),
-                                       self.node('lat-script', script=str(self.lat_script)),
+                                       self.node('lat-script', script=str(self.lat_script), options=['-O']),
                                        self.node('hcom-tool', exe=str(self.bin / 'hcom'),
                       env=self.agent_env('hcomtool'))])
         others = self.spawn(tree, self.agent_env('dead'))
