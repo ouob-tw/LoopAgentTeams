@@ -421,6 +421,24 @@ class ReapTests(ReapTestCase):
                               if record['result'] == 'not judged']), 1)
         self.assertTrue(self.alive(hidden))
         self.assertIn('cannot be read', self.keep(hidden).stdout)
+        unreadable = self.run_reaper('scan', '--all').stdout.split('Unreadable: 1')[1]
+        self.assertIn(f'PID {hidden} (', unreadable)
+        self.assertIn('Permission denied', unreadable)
+        os.kill(hidden, signal.SIGKILL)
+        self.assertTrue(self.gone(hidden))
+        self.reap()
+        summaries = [record for record in self.log() if record['result'] == 'not judged']
+        self.assertEqual([summary['unreadable'] for summary in summaries[1:]], [{}])
+
+    def test_agent_option_reports_an_unreadable_process(self):
+        hidden = self.spawn(self.unreadable_node('lone-service'),
+                            self.agent_env('lone'))['lone-service']
+        result = self.reap('--agent', 'test-lone')
+        self.assertIn('no process carries', result.stdout)
+        self.assertIn(f'Not judged: 1 unreadable process(es): {hidden}', result.stdout)
+        [summary] = self.log()
+        self.assertEqual(list(summary['unreadable']), [str(hidden)])
+        self.assertTrue(self.alive(hidden))
 
     def test_processes_below_an_unreadable_live_client_are_never_signalled(self):
         # HCOM forgot the agent; its client still runs but its details cannot be read.

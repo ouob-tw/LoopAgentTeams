@@ -537,6 +537,10 @@ def reap(args):
                                    'trigger': trigger, 'result': 'aborted', 'reason': str(error)})
             print(f'Nothing closed: {error}')
             return 1
+        log_unjudged(directory, world, trigger, moment)
+        if world.unreadable:
+            print(f'Not judged: {len(world.unreadable)} unreadable process(es): '
+                  + ', '.join(map(str, sorted(world.unreadable))))
         only = None
         if args.agent:
             only, listed = resolve_agent(args.agent, world)
@@ -552,10 +556,6 @@ def reap(args):
         records = close(targets, world, directory, trigger) if targets else []
         if live_keeps != keeps:
             write_keeps(directory, live_keeps)
-        log_unjudged(directory, world, trigger, moment)
-    if world.unreadable:
-        print(f'Not judged: {len(world.unreadable)} unreadable process(es): '
-              + ', '.join(map(str, sorted(world.unreadable))))
     for keep, why in released:
         print(f'Keep on PID {keep["pid"]} ended ({why}); closing it')
     for record in records:
