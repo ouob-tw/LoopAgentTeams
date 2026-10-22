@@ -8,7 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { appendFileSync, chmodSync, createReadStream, lstatSync, mkdirSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
-import { attachmentKind, CHUNK_BYTES } from '../board/attachments.ts';
+import { attachmentKind, CHUNK_BYTES, shownByBrowser } from '../board/attachments.ts';
 import type { BoardConfig } from './config.ts';
 
 type Result = { status: number; body: Record<string, unknown> };
@@ -129,12 +129,15 @@ const TYPES: Record<string, string> = {
 	m4v: 'video/mp4',
 	webm: 'video/webm',
 	mov: 'video/quicktime',
-	ogv: 'video/ogg'
+	ogv: 'video/ogg',
+	pdf: 'application/pdf'
 };
 
 /** One attached file, read back by its full path; only files under the upload directory that have
- *  finished uploading. Images and videos are shown in the page, with byte ranges for seeking; any
- *  other file downloads. Nothing served can run as part of the board's pages. */
+ *  finished uploading. Images and videos are shown in the page, with byte ranges for seeking, and a
+ *  PDF in the browser's own viewer; any other file downloads (the page reads the start of a text
+ *  file to preview it). The sandbox keeps anything served from running as part of the board's
+ *  pages; Chrome's PDF viewer still shows a PDF under it. */
 export function serveUpload(config: BoardConfig, path: string | null, range: string | null): Response {
 	const missing = () => new Response('not found', { status: 404 });
 	if (!path) return missing();
@@ -152,15 +155,15 @@ export function serveUpload(config: BoardConfig, path: string | null, range: str
 	}
 
 	const name = real.slice(real.lastIndexOf(sep) + 1);
-	const kind = attachmentKind(name);
+	const inline = shownByBrowser(attachmentKind(name));
 	const headers: Record<string, string> = {
-		'content-type': kind === 'file' ? 'application/octet-stream' : TYPES[name.toLowerCase().split('.').pop() ?? ''],
+		'content-type': inline ? TYPES[name.toLowerCase().split('.').pop() ?? ''] : 'application/octet-stream',
 		'x-content-type-options': 'nosniff',
 		'content-security-policy': 'sandbox',
 		'cache-control': 'private, max-age=86400',
 		'accept-ranges': 'bytes'
 	};
-	if (kind === 'file') headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
+	if (!inline) headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
 
 	const asked = range?.match(/^bytes=(\d*)-(\d*)$/);
 	if (asked && (asked[1] || asked[2])) {

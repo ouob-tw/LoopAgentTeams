@@ -98,6 +98,32 @@ test('any other file downloads instead of opening in the page', async () => {
 	expect(response.headers.get('content-disposition')).toBe("attachment; filename*=UTF-8''" + encodeURIComponent(path.split('/').pop()!));
 });
 
+test('a PDF opens in the browser, still sandboxed, so its own viewer shows it and nothing in it runs as the board', async () => {
+	const path = await upload('報告.PDF', new TextEncoder().encode('%PDF-1.4\n'));
+	const response = await read(path);
+	expect(response.status).toBe(200);
+	expect(response.headers.get('content-type')).toBe('application/pdf');
+	expect(response.headers.get('content-disposition')).toBeNull();
+	expect(response.headers.get('content-security-policy')).toBe('sandbox');
+	expect(response.headers.get('x-content-type-options')).toBe('nosniff');
+});
+
+test('a text file downloads, and its preview reads only the first 200KB', async () => {
+	const bytes = new TextEncoder().encode('x'.repeat(204_800 + 10));
+	const path = await upload('long.md', bytes);
+	const whole = await read(path);
+	expect(whole.headers.get('content-type')).toBe('application/octet-stream');
+	expect(whole.headers.get('content-disposition')).toContain('attachment;');
+	expect(new Uint8Array(await whole.arrayBuffer())).toEqual(bytes);
+	const start = await read(path, { range: 'bytes=0-204799' });
+	expect(start.status).toBe(206);
+	expect(start.headers.get('content-range')).toBe('bytes 0-204799/204810');
+	expect(start.headers.get('content-length')).toBe('204800');
+	expect((await start.arrayBuffer()).byteLength).toBe(204_800);
+	// An empty file has no range to give; the preview reads that as empty.
+	expect((await read(await upload('empty.txt', new Uint8Array()), { range: 'bytes=0-204799' })).status).toBe(416);
+});
+
 test('pieces must come in order, fit the piece size and stop at the announced size', async () => {
 	const started = await start('order.bin', 300);
 	const { id, path } = await started.json();

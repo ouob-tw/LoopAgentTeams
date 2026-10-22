@@ -1,0 +1,366 @@
+// Attached files previewed in a real browser, in the sent log and in the conversation: Markdown laid
+// out and any other text as it is, inside a window over the page; an image at full size in the same
+// window; a PDF in a tab of its own, in Chrome's viewer; anything else still downloads. Nothing in a
+// file runs, a long text shows its first 200KB only, and the window closes by Esc, a click around it
+// or 關閉, leaving the page where it was.
+import { spawn } from 'node:child_process';
+import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
+import { withAttachments } from '../../src/lib/board/attachments.ts';
+import { NODE, startFixture, type Fixture } from '../harness.ts';
+import { CHROME, launchChrome, Tab, type Browser } from '../browser.ts';
+
+/** A 1×1 PNG. */
+const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+
+/** A one-page PDF that says PREVIEW PDF. */
+function pdf(): Buffer {
+	const text = 'BT /F1 24 Tf 40 60 Td (PREVIEW PDF) Tj ET';
+	const objects = [
+		'<< /Type /Catalog /Pages 2 0 R >>',
+		'<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+		'<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 144] /Contents 4 0 R /Resources << /Font << /F1 5 0 R >> >> >>',
+		`<< /Length ${text.length} >>\nstream\n${text}\nendstream`,
+		'<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>'
+	];
+	let out = '%PDF-1.4\n';
+	const offsets = objects.map((object, index) => {
+		const offset = out.length;
+		out += `${index + 1} 0 obj\n${object}\nendobj\n`;
+		return offset;
+	});
+	const xref = out.length;
+	out += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n${offsets.map((offset) => `${String(offset).padStart(10, '0')} 00000 n \n`).join('')}`;
+	out += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+	return Buffer.from(out);
+}
+
+// Probes: each would set window.pwned if it ever ran.
+const PROBES = '<script>window.pwned = 1</script><img src=x onerror="window.pwned = 2"><b onclick="window.pwned = 3">粗體標籤</b>';
+const MARKDOWN = `# 預覽標題\n\n- 第一點\n- 第二點\n\n${PROBES}\n\n[壞連結](javascript:window.pwned=4)\n\n${'很長的一行'.repeat(80)}\n`;
+const PYTHON = 'def main():\n    if True:\n        print("縮排")\n\n\treturn  # tab\n';
+const TEXT = `第一行\n  兩格縮排\n${'longwordwithoutspaces'.repeat(40)}\n`;
+const TAIL = 'TAIL-MARKER-PAST-200KB';
+// 204,799 ASCII bytes and a 3-byte character across the cut, then the tail.
+const BIG = `${'a'.repeat(200 * 1024 - 1)}一${'b'.repeat(100_000)}${TAIL}\n`;
+
+const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-preview-inject-'));
+const downloads = mkdtempSync(join(tmpdir(), 'lat-board-preview-downloads-'));
+let fixture: Fixture;
+let cookie: string;
+let browser: Browser | undefined;
+let tab: Tab;
+const paths: Record<string, string> = {};
+let session: string;
+
+async function upload(name: string, bytes: Buffer | string): Promise<string> {
+	const body = Buffer.from(bytes);
+	const started = await fixture.fetch('/api/uploads', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ name, size: body.length }), cookie });
+	const { id, path } = await started.json();
+	for (let offset = 0; offset < body.length; offset += 256 * 1024) {
+		const put = await fixture.fetch(`/api/uploads/${id}?offset=${offset}`, { method: 'PUT', headers: { 'content-type': 'application/octet-stream' }, body: body.subarray(offset, offset + 256 * 1024), cookie });
+		expect(put.status).toBe(200);
+	}
+	return path;
+}
+
+beforeAll(async () => {
+	fixture = await startFixture({ env: { LAT_BOARD_INJECT_COMMAND: JSON.stringify([NODE, join(import.meta.dir, '../fake-inject.mjs'), injectDir]) } });
+	cookie = await fixture.login('attachment-preview');
+	const files: Record<string, Buffer | string> = {
+		'notes.md': MARKDOWN,
+		'main.py': PYTHON,
+		'plain.txt': TEXT,
+		'page.html': PROBES,
+		'big.log': BIG,
+		'empty.txt': '',
+		'pixel.png': PNG,
+		'report.pdf': pdf(),
+		'letter.docx': 'not really a word file',
+		'bundle.zip': 'PK not really a zip',
+		'vanish.txt': 'soon gone'
+	};
+	for (const [name, bytes] of Object.entries(files)) paths[name] = await upload(name, bytes);
+
+	const lead = fixture.bound('lat', 'lead', { session_id: 's-lead' });
+	session = lead.session_id;
+	fixture.list([lead]);
+	fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'listening' }] });
+	const text = withAttachments('看附件', Object.values(paths));
+	const sent = await fixture.fetch('/api/messages', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ controllerId: session, text }), cookie });
+	expect(sent.status).toBe(200);
+	// The same message, as the conversation holds it, with a few lines before it to scroll past.
+	const filler = Array.from({ length: 40 }, (_, index) => ({ kind: 'assistant', time: null, text: `前面的回覆 ${index}` }));
+	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
+	writeFileSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), [...filler, { kind: 'user', time: null, text }, ...filler].map((line) => JSON.stringify(line)).join('\n') + '\n');
+	await fixture.refresh(cookie);
+}, 60_000);
+
+afterEach(async () => {
+	await browser?.close();
+	browser = undefined;
+});
+
+afterAll(async () => {
+	await fixture?.cleanup();
+	rmSync(injectDir, { recursive: true, force: true });
+	rmSync(downloads, { recursive: true, force: true });
+});
+
+/** The page's reads of attachments: URL, method, Range header, status and bytes received. */
+const RECORD = `window.reads = []; const original = window.fetch; window.fetch = async (input, init) => {
+	const response = await original(input, init);
+	if (String(input).includes('/api/uploads/file')) {
+		const bytes = init?.method === 'HEAD' ? 0 : (await response.clone().arrayBuffer()).byteLength;
+		window.reads.push({ url: String(input), method: init?.method ?? 'GET', range: new Headers(init?.headers).get('range'), status: response.status, bytes });
+	}
+	return response;
+};`;
+
+const SENT = '#panel-sent:not([hidden])';
+const TRANSCRIPT = '#panel-transcript';
+const DIALOG = 'dialog.preview[open]';
+
+async function visit(where: 'sent' | 'transcript', width = 1280) {
+	browser = await launchChrome({ screen: `document.querySelector('${DIALOG}')?.innerText ?? document.body.innerText` });
+	tab = browser.tab;
+	const [name, value] = cookie.split('=');
+	await tab.send('Network.setCookie', { name, value, url: fixture.url });
+	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width <= 760 });
+	await tab.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads });
+	await tab.navigate(`${fixture.url}/?controller=${session}`);
+	await tab.eval(RECORD);
+	if (where === 'sent') await showSent();
+	await tab.until(`!!document.querySelector('${scope(where)} .attached img')`, 'the attachments');
+}
+
+/** The sent log's tab, clicked until its panel shows: a click before the page is ready does nothing. */
+async function showSent() {
+	await tab.until(`(document.querySelector('#tab-sent')?.click(), !!document.querySelector('${SENT}'))`, 'the sent log');
+}
+
+const scope = (where: 'sent' | 'transcript') => (where === 'sent' ? SENT : `${TRANSCRIPT} li.said[data-kind="user"]`);
+
+/** The attachment entry of a file, in the list of `where`. */
+const entry = (where: 'sent' | 'transcript', name: string) =>
+	`[...document.querySelectorAll('${scope(where)} .attached li')].find((li) => li.title === ${JSON.stringify(paths[name])})`;
+
+async function openPreview(where: 'sent' | 'transcript', name: string) {
+	await tab.eval(`${entry(where, name)}.querySelector('button').click()`);
+	await tab.until(`!!document.querySelector('${DIALOG}')`, `the preview of ${name}`);
+}
+
+const dialogText = () => tab.eval<string>(`document.querySelector('${DIALOG} .content').innerText`);
+
+for (const where of ['sent', 'transcript'] as const) {
+	test(`${where}: Markdown is laid out and nothing in it runs; other text keeps its lines and indents`, async () => {
+		await visit(where);
+		await openPreview(where, 'notes.md');
+		await tab.until(`!!document.querySelector('${DIALOG} .md h1')`, 'the Markdown laid out');
+		expect(await tab.eval<string>(`document.querySelector('${DIALOG} h2').innerText`)).toBe(paths['notes.md'].split('/').pop()!);
+		expect(await tab.eval<number>(`document.querySelectorAll('${DIALOG} .md li').length`)).toBe(2);
+		// Raw HTML is text, a javascript: link is not a link, and none of the probes ran.
+		expect(await dialogText()).toContain('<script>window.pwned = 1');
+		expect(await tab.eval<number>(`document.querySelectorAll('${DIALOG} .md :is(script, img, b, a[href^="javascript"])').length`)).toBe(0);
+		await tab.eval(`document.querySelector('${DIALOG} .md').click()`);
+		await tab.eval('new Promise((resolve) => setTimeout(resolve, 300))');
+		expect(await tab.eval('window.pwned ?? null')).toBeNull();
+		// A click inside the window leaves it open.
+		expect(await tab.eval<boolean>(`!!document.querySelector('${DIALOG}')`)).toBe(true);
+		await tab.eval(`document.querySelector('${DIALOG} button').click()`);
+		await tab.until(`!document.querySelector('${DIALOG}')`, 'the window closed by 關閉');
+
+		for (const [name, text] of [
+			['main.py', PYTHON],
+			['plain.txt', TEXT],
+			['page.html', PROBES]
+		]) {
+			await openPreview(where, name);
+			await tab.until(`!!document.querySelector('${DIALOG} pre')`, `${name} as text`);
+			// The same characters, line breaks and indents as the file, in a fixed-width font.
+			expect(await tab.eval<string>(`document.querySelector('${DIALOG} pre').textContent`)).toBe(text);
+			expect(await tab.eval<string>(`getComputedStyle(document.querySelector('${DIALOG} pre')).whiteSpace`)).toBe('pre-wrap');
+			expect(await tab.eval<string>(`getComputedStyle(document.querySelector('${DIALOG} pre')).fontFamily`)).toMatch(/mono/i);
+			expect(await tab.eval<number>(`document.querySelectorAll('${DIALOG} .content :is(script, img, b)').length`)).toBe(0);
+			await tab.eval(`document.querySelector('${DIALOG}').close()`);
+		}
+		expect(await tab.eval('window.pwned ?? null')).toBeNull();
+		expect(tab.errors).toEqual([]);
+	}, 60_000);
+
+	test(`${where}: an image opens at full size in the window, not in a new tab`, async () => {
+		await visit(where);
+		const pages = async () => (await fetch(`http://127.0.0.1:${browser!.debugPort}/json/list`).then((response) => response.json())).filter((target: { type: string }) => target.type === 'page').length;
+		const before = await pages();
+		await tab.eval(`${entry(where, 'pixel.png')}.scrollIntoView()`);
+		await tab.until(`${entry(where, 'pixel.png')}.querySelector('img').naturalWidth === 1`, 'the thumbnail');
+		await openPreview(where, 'pixel.png');
+		await tab.until(`document.querySelector('${DIALOG} .content img')?.naturalWidth === 1`, 'the image at full size');
+		expect(await tab.eval<string>(`document.querySelector('${DIALOG} a[download]').getAttribute('href')`)).toBe(`/api/uploads/file?path=${encodeURIComponent(paths['pixel.png'])}`);
+		expect(await pages()).toBe(before);
+	}, 60_000);
+}
+
+test('Esc, a click around the window and 關閉 each close it, and the page stays where it was', async () => {
+	await visit('transcript');
+	const scroller = `(() => { let node = ${entry('transcript', 'notes.md')}; while (node && !(node.scrollHeight > node.clientHeight && /auto|scroll/.test(getComputedStyle(node).overflowY))) node = node.parentElement; return node ?? document.scrollingElement; })()`;
+	await tab.eval(`${entry('transcript', 'notes.md')}.scrollIntoView({ block: 'center' })`);
+	const position = () => tab.eval<number>(`${scroller}.scrollTop`);
+	const at = await position();
+	expect(at).toBeGreaterThan(0);
+
+	const closers: [string, () => Promise<unknown>][] = [
+		['Esc', () => tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }).then(() => tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }))],
+		['a click around it', () => Promise.all(['mouseMoved', 'mousePressed', 'mouseReleased'].map((type) => tab.send('Input.dispatchMouseEvent', { type, x: 5, y: 400, button: 'left', clickCount: 1 })))],
+		['關閉', () => tab.pointerClick(`${DIALOG} header button`)]
+	];
+	for (const name of ['plain.txt', 'pixel.png']) {
+		for (const [how, close] of closers) {
+			await tab.eval(`${entry('transcript', name)}.querySelector('button').focus()`);
+			await openPreview('transcript', name);
+			// Inside the window, a click does not close it.
+			await tab.pointerClick(`${DIALOG} h2`);
+			expect(await tab.eval<boolean>(`!!document.querySelector('${DIALOG}')`)).toBe(true);
+			await close();
+			await tab.until(`!document.querySelector('${DIALOG}')`, `${name} closed by ${how}`);
+			expect(await position()).toBe(at);
+			expect(await tab.eval<boolean>(`document.activeElement === ${entry('transcript', name)}.querySelector('button')`)).toBe(true);
+		}
+	}
+	// Another file opened after one closed shows its own content, not the last one's.
+	await openPreview('transcript', 'main.py');
+	await tab.until(`document.querySelector('${DIALOG} pre')?.textContent === ${JSON.stringify(PYTHON)}`, 'main.py, not plain.txt');
+	await tab.eval(`document.querySelector('${DIALOG}').close()`);
+	await openPreview('transcript', 'empty.txt');
+	await tab.until(`!!document.querySelector('${DIALOG} pre')`, 'the empty file');
+	expect(await tab.eval<string>(`document.querySelector('${DIALOG} pre').textContent`)).toBe('');
+}, 60_000);
+
+test('a text over 200KB shows its first 204,800 bytes only, says so, and downloads whole', async () => {
+	await visit('sent');
+	await openPreview('sent', 'big.log');
+	await tab.until(`!!document.querySelector('${DIALOG} pre')`, 'the start of big.log');
+	expect(await tab.eval<string>(`document.querySelector('${DIALOG} .truncated').innerText`)).toContain('只顯示開頭 200KB');
+	const shown = await tab.eval<string>(`document.querySelector('${DIALOG} pre').textContent`);
+	// The character the cut splits is left out, and nothing past the cut is there.
+	expect(shown).toBe('a'.repeat(200 * 1024 - 1));
+	expect(shown).not.toContain(TAIL);
+	const reads = await tab.eval<{ url: string; method: string; range: string | null; bytes: number }[]>(`window.reads.filter((read) => read.method === 'GET')`);
+	expect(reads).toEqual([{ url: `/api/uploads/file?path=${encodeURIComponent(paths['big.log'])}`, method: 'GET', range: 'bytes=0-204799', status: 206, bytes: 204_800 } as never]);
+
+	await tab.eval(`document.querySelector('${DIALOG} .truncated a').click()`);
+	const file = join(downloads, paths['big.log'].split('/').pop()!);
+	const deadline = Date.now() + 10_000;
+	while (!existsSync(file) && Date.now() < deadline) await Bun.sleep(100);
+	expect(readFileSync(file, 'utf8')).toBe(BIG);
+}, 60_000);
+
+test('a Word file and an archive still download, and open no window', async () => {
+	await visit('sent');
+	for (const name of ['letter.docx', 'bundle.zip']) {
+		expect(await tab.eval<number>(`${entry('sent', name)}.querySelectorAll('a.file[download]').length`)).toBe(1);
+		await tab.eval(`${entry('sent', name)}.querySelector('a.file').click()`);
+		const file = join(downloads, paths[name].split('/').pop()!);
+		const deadline = Date.now() + 10_000;
+		while (!existsSync(file) && Date.now() < deadline) await Bun.sleep(100);
+		expect(readFileSync(file, 'utf8')).toBe(readFileSync(paths[name], 'utf8'));
+		expect(await tab.eval<boolean>(`!!document.querySelector('${DIALOG}')`)).toBe(false);
+	}
+}, 60_000);
+
+test('a file gone between the list and opening it says so, and opens no window', async () => {
+	await visit('sent');
+	await tab.until(`window.reads.some((read) => read.method === 'HEAD' && read.url.includes(${JSON.stringify(encodeURIComponent(paths['vanish.txt']))}) && read.status === 200)`, 'the file there when listed');
+	renameSync(paths['vanish.txt'], `${paths['vanish.txt']}.moved`);
+	try {
+		await tab.eval(`${entry('sent', 'vanish.txt')}.querySelector('button').click()`);
+		await tab.until(`document.querySelector('${SENT}').innerText.includes(${JSON.stringify(`檔案已不在：${paths['vanish.txt']}`)})`, 'the missing file noted');
+		expect(await tab.eval<boolean>(`!!document.querySelector('${DIALOG}')`)).toBe(false);
+	} finally {
+		renameSync(`${paths['vanish.txt']}.moved`, paths['vanish.txt']);
+	}
+}, 60_000);
+
+test('at 390px the window fills the screen and nothing scrolls sideways', async () => {
+	await visit('transcript', 390);
+	for (const name of ['notes.md', 'plain.txt', 'pixel.png']) {
+		await openPreview('transcript', name);
+		await tab.until(`!!document.querySelector('${DIALOG} :is(.md, pre, .content img)')`, name);
+		const layout = await tab.eval<{ width: number; height: number; left: number; top: number; viewport: number; tall: number; page: number; content: number; contentWidth: number; buttons: boolean }>(`(() => {
+			const dialog = document.querySelector('${DIALOG}').getBoundingClientRect();
+			const content = document.querySelector('${DIALOG} .content');
+			const inView = (element) => { const r = element.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.width > 0; };
+			return { width: dialog.width, height: dialog.height, left: dialog.left, top: dialog.top, viewport: innerWidth, tall: innerHeight, page: document.scrollingElement.scrollWidth, content: content.scrollWidth, contentWidth: content.clientWidth, buttons: [...document.querySelectorAll('${DIALOG} header :is(a, button)')].every(inView) };
+		})()`);
+		expect(layout.viewport).toBe(390);
+		expect(layout).toMatchObject({ width: 390, height: layout.tall, left: 0, top: 0, page: 390, buttons: true });
+		expect(layout.content).toBeLessThanOrEqual(layout.contentWidth);
+		await tab.eval(`document.querySelector('${DIALOG}').close()`);
+	}
+}, 60_000);
+
+/**
+ * Chrome as the user runs it, with its process sandbox on: the PDF viewer draws nothing in a Chrome
+ * started with --no-sandbox, as the other browser tests start it.
+ */
+async function sandboxedChrome(): Promise<{ debugPort: number; tab: Tab; close: () => void }> {
+	const profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
+	const chrome = spawn(CHROME, ['--headless=new', '--no-first-run', `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'], { stdio: 'ignore', detached: true });
+	const close = () => {
+		try {
+			process.kill(-chrome.pid!, 'SIGKILL');
+		} catch {}
+		rmSync(profile, { recursive: true, force: true });
+	};
+	try {
+		const file = join(profile, 'DevToolsActivePort');
+		const deadline = Date.now() + 10_000;
+		while (!(existsSync(file) && readFileSync(file, 'utf8').includes('\n'))) {
+			if (Date.now() > deadline || chrome.exitCode !== null) throw new Error('Chrome with its sandbox did not start');
+			await Bun.sleep(50);
+		}
+		const debugPort = Number(readFileSync(file, 'utf8').split('\n')[0]);
+		return { debugPort, tab: await Tab.open(debugPort), close };
+	} catch (error) {
+		close();
+		throw error;
+	}
+}
+
+test('a PDF opens in a new tab and Chrome’s viewer shows its page', async () => {
+	const chrome = await sandboxedChrome();
+	try {
+		tab = chrome.tab;
+		const [name, value] = cookie.split('=');
+		await tab.send('Network.setCookie', { name, value, url: fixture.url });
+		await tab.navigate(`${fixture.url}/?controller=${session}`);
+		await showSent();
+		await tab.until(`!!${entry('sent', 'report.pdf')}?.querySelector('a.file[target="_blank"]')`, 'the PDF link');
+		// A click of the user's: a page's own click() opens no tab.
+		await tab.eval(`${entry('sent', 'report.pdf')}.querySelector('a.file').id = 'pdf-link'`);
+		await tab.eval(`document.querySelector('#pdf-link').scrollIntoView({ block: 'center' })`);
+		await tab.pointerClick('#pdf-link');
+		const url = `${fixture.url}/api/uploads/file?path=${encodeURIComponent(paths['report.pdf'])}`;
+		const targets = () => fetch(`http://127.0.0.1:${chrome.debugPort}/json/list`).then((response) => response.json() as Promise<{ type: string; url: string; webSocketDebuggerUrl: string }[]>);
+		let state = '';
+		const deadline = Date.now() + 20_000;
+		while (state !== 'success' && Date.now() < deadline) {
+			await Bun.sleep(250);
+			const list = await targets();
+			const viewer = list.find((target) => target.type === 'webview' && target.url.startsWith('chrome-extension://'));
+			if (!list.some((target) => target.type === 'page' && target.url === url) || !viewer) continue;
+			const socket = new WebSocket(viewer.webSocketDebuggerUrl);
+			await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
+			const inside = new Tab(socket);
+			state = await inside.eval<string>(`document.querySelector('pdf-viewer')?.loadState_ ?? ''`).catch(() => '');
+			inside.close();
+		}
+		// The board's own tab is still the board.
+		expect(await tab.eval<boolean>(`!!document.querySelector('#tab-sent')`)).toBe(true);
+		expect(state, JSON.stringify((await targets()).map((target) => [target.type, target.url]))).toBe('success');
+	} finally {
+		chrome.close();
+	}
+}, 60_000);
