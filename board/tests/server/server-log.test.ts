@@ -20,8 +20,41 @@ beforeAll(async () => {
 afterAll(() => fixture.cleanup());
 beforeEach(() => (mark = fixture.serverOutput().length));
 
-const output = () => fixture.serverOutput().slice(mark);
+const SENTINEL = 'flush-sentinel';
+/** Whole lines only (a line still arriving is not there yet), without the flush markers. */
+const output = () => {
+	const text = fixture.serverOutput().slice(mark);
+	return text
+		.slice(0, text.lastIndexOf('\n') + 1)
+		.split('\n')
+		.filter((line) => !line.includes(SENTINEL))
+		.join('\n');
+};
 const lines = (message: string) => logged(output(), message);
+
+const until = async (done: () => boolean, what: string) => {
+	const deadline = Date.now() + 5_000;
+	while (!done()) {
+		if (Date.now() > deadline) throw new Error(`timed out waiting for ${what}`);
+		await Bun.sleep(10);
+	}
+};
+/** The server's output reaches the test after its response does: wait until `count` such lines are there. */
+const waitLines = async (message: string, count = 1) => {
+	await until(() => lines(message).length >= count, `${count} "${message}" line(s)`);
+	return lines(message);
+};
+/**
+ * Before asserting something was not logged: the server writes in order, so once a report from a
+ * device of its own shows up, everything written before it has arrived too.
+ */
+const settled = async () => {
+	const device = await fixture.login(`flush-${crypto.randomUUID()}`);
+	const text = () => fixture.serverOutput().slice(mark);
+	const seen = text().split(SENTINEL).length;
+	expect((await post('/api/client-error', report(), { cookie: device, headers: { 'user-agent': SENTINEL } })).status).toBe(204);
+	await until(() => text().split(SENTINEL).length > seen && text().lastIndexOf(SENTINEL) < text().lastIndexOf('\n'), 'the flush marker');
+};
 const post = (path: string, body: unknown, init: { cookie?: string; headers?: Record<string, string> } = { cookie }) =>
 	fixture.fetch(path, {
 		method: 'POST',
@@ -43,7 +76,7 @@ test('a 502 from a helper failure is one JSON line with the path, status and rea
 	);
 
 	expect(response.status).toBe(502);
-	const [line, ...rest] = lines('http_error');
+	const [line, ...rest] = await waitLines('http_error');
 	expect(rest).toEqual([]);
 	expect(line).toMatchObject({
 		level: 'ERROR',
@@ -68,7 +101,7 @@ test('a message that cannot be passed to the input command is logged without its
 	const response = await post('/api/messages', { controllerId: luna.session_id, text: secret });
 
 	expect(response.status).toBe(502);
-	const [line] = lines('http_error');
+	const [line] = await waitLines('http_error');
 	expect(line).toMatchObject({ path: '/api/messages', status: 502 });
 	expect(String(line.reason)).toContain('Received [omitted]');
 	expect(output()).not.toContain('訊息內文');
@@ -96,7 +129,7 @@ test('the answer is taken out however the reason repeats it, whatever the reques
 		fixture.setHelper({ output: { controllers: [luna] }, answer: { output: { status: 'error', reason }, exit: 1 } });
 		expect((await answer(text, contentType)).status).toBe(502);
 	}
-	const reasons = lines('http_error').map((line) => line.reason);
+	const reasons = (await waitLines('http_error', cases.length)).map((line) => line.reason);
 	expect(reasons).toEqual([
 		'failed: [omitted]',
 		'failed: [omitted]',
@@ -117,7 +150,7 @@ test('a 500 is logged with its error and without the password, and a request id 
 	} finally {
 		writeFileSync(path, saved);
 	}
-	const [line] = lines('http_error');
+	const [line] = await waitLines('http_error');
 	expect(line).toMatchObject({ path: '/api/login', status: 500, error: 'password_unreadable' });
 	expect(line.request_id).toMatch(/^[0-9a-f-]{36}$/);
 	expect(output()).not.toContain(PASSWORD);
@@ -133,12 +166,12 @@ test('an exception nothing caught leaves its path and whole stack, with the same
 	} finally {
 		rmSync(stateFile);
 	}
-	const [crash] = lines('unhandled_error');
+	const [crash] = await waitLines('unhandled_error');
 	expect(crash).toMatchObject({ level: 'ERROR', request_id: 'req-crash', method: 'GET', path: '/api/archive' });
 	expect(crash.exc_type).toBeString();
 	expect(crash.exc_message).toBeString();
 	expect(String(crash.traceback)).toContain('\n    at ');
-	expect(lines('http_error')).toMatchObject([{ request_id: 'req-crash', path: '/api/archive', status: 500 }]);
+	expect(await waitLines('http_error')).toMatchObject([{ request_id: 'req-crash', path: '/api/archive', status: 500 }]);
 });
 
 test('a failure in the hook itself before the page is rendered still logs its 500 and stack under the request id', async () => {
@@ -152,8 +185,8 @@ test('a failure in the hook itself before the page is rendered still logs its 50
 	} finally {
 		writeFileSync(devices, saved);
 	}
-	expect(lines('http_error')).toMatchObject([{ request_id: 'req-hook', method: 'GET', path: '/', status: 500 }]);
-	const [crash] = lines('unhandled_error');
+	expect(await waitLines('http_error')).toMatchObject([{ request_id: 'req-hook', method: 'GET', path: '/', status: 500 }]);
+	const [crash] = await waitLines('unhandled_error');
 	expect(crash).toMatchObject({ request_id: 'req-hook', path: '/', exc_type: 'SyntaxError' });
 	expect(String(crash.traceback)).toContain('findDevice');
 	expect(output()).not.toContain('PRIVATE-STATE');
@@ -164,6 +197,7 @@ test('ordinary refusals and successes write nothing', async () => {
 	expect((await post('/api/answers', {})).status).toBe(400);
 	expect((await fixture.fetch('/no-such-page', { cookie })).status).toBe(404);
 	expect((await fixture.fetch('/api/board', { cookie })).status).toBe(200);
+	await settled();
 	expect(output().split('\n').filter((line) => line.startsWith('{'))).toEqual([]);
 });
 
@@ -186,7 +220,7 @@ test('a browser error from a logged-in device is one line of what the server che
 	const response = await post('/api/client-error', report(), { cookie, headers: { 'user-agent': 'TestBrowser/1.0' } });
 
 	expect(response.status).toBe(204);
-	const [line, ...rest] = lines('client_error');
+	const [line, ...rest] = await waitLines('client_error');
 	expect(rest).toEqual([]);
 	expect(line).toMatchObject({
 		level: 'ERROR',
@@ -213,7 +247,7 @@ test('known engine messages are logged by their canonical text, never with what 
 	};
 	for (const message of Object.keys(messages)) expect((await post('/api/client-error', { ...report(), type: 'TypeError', message })).status).toBe(204);
 
-	expect(lines('client_error').map((line) => line.exc_message)).toEqual(Object.values(messages));
+	expect((await waitLines('client_error', 5)).map((line) => line.exc_message)).toEqual(Object.values(messages));
 	expect(output()).not.toMatch(/secret-?answer/i);
 });
 
@@ -239,7 +273,7 @@ test('anything a report says that the server does not recognise reaches the log 
 	});
 
 	expect(response.status).toBe(204);
-	const [line] = lines('client_error');
+	const [line] = await waitLines('client_error');
 	expect(line).toMatchObject({
 		kind: '[omitted]',
 		exc_type: '[omitted]',
@@ -252,7 +286,7 @@ test('anything a report says that the server does not recognise reaches the log 
 	mark = fixture.serverOutput().length;
 	await post('/api/client-error', { ...report(), message: `https://svelte.dev/e/${'not_a_code'}`, url: `http://elsewhere.example/${answer}` });
 	await post('/api/client-error', { ...report(), url: at(`/${token}/PRIVATE-ANSWER`) });
-	expect(lines('client_error')).toMatchObject([
+	expect(await waitLines('client_error', 2)).toMatchObject([
 		{ exc_message: 'svelte:unknown', url: '[omitted]' },
 		{ url: '[omitted]' }
 	]);
@@ -265,6 +299,7 @@ test('a device that is not logged in is refused and nothing is logged', async ()
 
 	expect(anonymous.status).toBe(401);
 	expect(revoked.status).toBe(401);
+	await settled();
 	expect(lines('client_error')).toEqual([]);
 	expect(output()).not.toContain('not-a-token');
 });
@@ -272,7 +307,7 @@ test('a device that is not logged in is refused and nothing is logged', async ()
 test('long content is cut: frames past the limit and a long user agent; a huge body is refused', async () => {
 	const frames = Array.from({ length: MAX_FRAMES + 5 }, (_, i) => `    at ${at(CHUNK!)}:${i + 1}:1`).join('\n');
 	expect((await post('/api/client-error', { ...report(), stack: frames }, { cookie, headers: { 'user-agent': 'a'.repeat(2_000) } })).status).toBe(204);
-	const [line] = lines('client_error');
+	const [line] = await waitLines('client_error');
 	expect(String(line.traceback).split('\n')).toHaveLength(MAX_FRAMES + 1);
 	expect(String(line.traceback).split('\n').at(-1)).toBe('…[truncated]');
 	expect(line.user_agent).toBe('a'.repeat(MAX_USER_AGENT) + '…[truncated]');
@@ -284,11 +319,12 @@ test('long content is cut: frames past the limit and a long user agent; a huge b
 	mark = fixture.serverOutput().length;
 	const cut = await post('/api/client-error', report(), { cookie: fresh, headers: { 'user-agent': 'a'.repeat(MAX_USER_AGENT - 10) + token } });
 	expect(cut.status).toBe(204);
-	expect(lines('client_error')).toMatchObject([{ user_agent: 'a'.repeat(MAX_USER_AGENT - 10) + '[omitted]' }]);
+	expect(await waitLines('client_error')).toMatchObject([{ user_agent: 'a'.repeat(MAX_USER_AGENT - 10) + '[omitted]' }]);
 	expect(output()).not.toContain(token.slice(0, 8));
 
 	mark = fixture.serverOutput().length;
 	expect((await post('/api/client-error', { message: 'x'.repeat(100_000) })).status).toBe(413);
+	await settled();
 	expect(lines('client_error')).toEqual([]);
 });
 
@@ -299,10 +335,14 @@ test('many reports in a short time from one device log only a few; another devic
 
 	expect(statuses.filter((status) => status === 204)).toHaveLength(CLIENT_ERRORS_PER_WINDOW);
 	expect(statuses.filter((status) => status === 429)).toHaveLength(15);
+	await waitLines('client_error', CLIENT_ERRORS_PER_WINDOW);
+	await settled();
 	expect(lines('client_error')).toHaveLength(CLIENT_ERRORS_PER_WINDOW);
 
 	const other = await fixture.login('other');
 	expect((await post('/api/client-error', report(), { cookie: other })).status).toBe(204);
+	await waitLines('client_error', CLIENT_ERRORS_PER_WINDOW + 1);
+	await settled();
 	expect(lines('client_error')).toHaveLength(CLIENT_ERRORS_PER_WINDOW + 1);
 });
 
@@ -312,6 +352,7 @@ test('a report that is not one JSON object is refused with 400 and nothing is lo
 		const response = await post('/api/client-error', body, { cookie: device });
 		expect({ body, status: response.status }).toEqual({ body, status: 400 });
 	}
+	await settled();
 	expect(lines('client_error')).toEqual([]);
 });
 
@@ -353,5 +394,7 @@ test('a body over the limit is refused with 413 whether its Content-Length says 
 	// Just within the limit is taken.
 	const within = JSON.stringify({ ...report(), message: 'x'.repeat(MAX_CLIENT_ERROR_CHARS - small.length - 100) });
 	expect((await post('/api/client-error', within, { cookie: device })).status).toBe(204);
+	await waitLines('client_error');
+	await settled();
 	expect(lines('client_error')).toHaveLength(1);
 });
