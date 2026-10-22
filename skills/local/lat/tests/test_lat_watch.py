@@ -2612,7 +2612,6 @@ esac
                 for agent in agents:
                     agent['status'] = 'listening'
                 listing.write_text(json.dumps(agents))
-                # hcom misses its ready hint when Claude shows a background-task count instead.
                 lines = (['❯', '─' * 40, '  Opus 5.5 M · ~/repo', f'  {footer}']
                          if footer else approval)
                 Path(self.env['FAKE_TERMINAL']).write_text(json.dumps(
@@ -2631,6 +2630,7 @@ esac
                     self.assertTrue(row['observation']['terminal_ready'])
                     self.assertEqual(len(self.injections()), 2)
                     self.assertEqual(json.loads(alarm_path.read_text())['released_reason'], 'rang')
+                    self.assertFalse(json.loads(wait_path.read_text())['expiry_nudge_pending'])
                 else:
                     self.assertFalse(row['observation']['terminal_ready'])
                     self.assertEqual(self.injections(), [])

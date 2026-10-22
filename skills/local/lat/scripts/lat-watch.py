@@ -54,10 +54,6 @@ KEEPALIVE = ('[lat-watch] Prompt cache keep-alive. Read any unread HCOM messages
 NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 NAME = re.compile(NAME_PATTERN)
 CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
-# Claude replaces its "(shift+tab to cycle)" hint with a background-task count, which hcom
-# reads as not ready although the prompt is idle.
-CLAUDE_BACKGROUND_FOOTER = re.compile(
-    r'(?:⏵⏵|⏸) .* on · \d+ [a-z]+(?: [a-z]+)?(?:, \d+ [a-z]+(?: [a-z]+)?)*(?: · ↓ to manage)?')
 ENVELOPE_FIELDS = ('live actions', 'preflight')
 CLIENT_PROFILES = {
     'codex': {
@@ -76,6 +72,11 @@ CLIENT_PROFILES = {
             r'^Usage limit reached\s+·\s+continuing automatically at\b.*'
             r'·\s+esc to cancel$', re.IGNORECASE),
         'footer': re.compile(r'^\s{2}⚠\s+Usage limit reached\b', re.IGNORECASE),
+        # Replaces the "(shift+tab to cycle)" hint while background tasks run, which hcom
+        # reads as not ready although the prompt is idle.
+        'background': re.compile(
+            r'(?:⏵⏵|⏸) .* on · \d+ [a-z]+(?: [a-z]+)?(?:, \d+ [a-z]+(?: [a-z]+)?)*'
+            r'(?: · ↓ to manage)?', re.IGNORECASE),
         'model': re.compile(
             r'^\s*((?:Opus|Sonnet|Haiku)[A-Za-z0-9. -]*?)\s+'
             r'(?:low|medium|high|max)\s+·', re.IGNORECASE),
@@ -1524,14 +1525,15 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
                 orchestrator_wait_started_at = declared_at
     ready = terminal.get('ready') is True
     background_running = background_process_running(agent, info, processes)
+    background_footer = CLIENT_PROFILES.get(client.lower(), {}).get('background')
+    idle_footer = background_footer is not None and any(
+        isinstance(line, str) and background_footer.fullmatch(line.strip()) for line in lines)
     return Observation(
         agent=agent,
         status=info.get('status', 'missing'),
         prompt_empty=prompt_empty,
         command_running=not ready or background_running,
-        terminal_ready=ready or (client.lower() == 'claude' and any(
-            isinstance(line, str) and CLAUDE_BACKGROUND_FOOTER.fullmatch(line.strip())
-            for line in lines)),
+        terminal_ready=ready or idle_footer,
         screen_working=any(
             isinstance(line, str) and re.search(
                 r'^(?:Working\s*\(|[✢✳✶✻✽·*]\s+).*esc to interrupt', line.strip(), re.IGNORECASE)
