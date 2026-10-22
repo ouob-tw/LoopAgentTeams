@@ -23,7 +23,8 @@ interface Pending {
 /** Uploads not yet complete, by ID. An upload cut off by a restart is chosen again. */
 const pending = new Map<string, Pending>();
 
-const MAX_NAME = 120;
+// A file name is at most 255 bytes; the stored name adds `<16 hex>-` and its hidden form a dot.
+const MAX_NAME_BYTES = 255 - 1 - 16 - 1;
 
 /** Where an upload is written until it is complete: its own name, hidden. */
 const partial = (path: string) => join(dirname(path), `.${basename(path)}`);
@@ -36,11 +37,16 @@ export function safeName(name: string): string {
 		.replace(/[\p{Cc}\p{Cf}]/gu, '')
 		.replace(/\s+/g, '_')
 		.replace(/^\.+/, '');
-	const chars = [...cleaned];
-	if (chars.length <= MAX_NAME) return cleaned || 'file';
-	// Keep the extension when cutting a long name.
+	const bytes = (text: string) => Buffer.byteLength(text);
+	if (bytes(cleaned) <= MAX_NAME_BYTES) return cleaned || 'file';
+	// Keep the extension when cutting a long name, and never split a character.
 	const extension = cleaned.match(/\.[\w]{1,10}$/)?.[0] ?? '';
-	return chars.slice(0, MAX_NAME - extension.length).join('') + extension;
+	let stem = '';
+	for (const char of cleaned.slice(0, cleaned.length - extension.length)) {
+		if (bytes(stem + char + extension) > MAX_NAME_BYTES) break;
+		stem += char;
+	}
+	return stem + extension;
 }
 
 /** The upload directory, made if missing; null with the reason when it is not safe to use. */

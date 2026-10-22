@@ -38,6 +38,8 @@ test('a file name loses directories, control characters, spaces and a leading do
 	expect(safeName('a\u0000b\u202ec.txt')).toBe('abc.txt');
 	expect(safeName('...')).toBe('file');
 	const long = safeName(`${'長'.repeat(200)}.mp4`);
-	expect([...long].length).toBe(120);
-	expect(long.endsWith('.mp4')).toBe(true);
+	expect(Buffer.byteLength(long)).toBe(235);
+	expect(long).toBe(`${'長'.repeat(77)}.mp4`);
+	expect(safeName(`${'a'.repeat(300)}.mp4`)).toBe(`${'a'.repeat(233)}.mp4`);
+	expect(safeName(`${'長'.repeat(80)}.txt`)).toBe(`${'長'.repeat(77)}.txt`);
 });

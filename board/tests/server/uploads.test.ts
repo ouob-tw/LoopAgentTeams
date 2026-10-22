@@ -60,6 +60,17 @@ test('a file arrives in pieces and reads back the same, kept only for the board 
 	expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
 });
 
+test('a file name of 80 CJK characters plus .txt still uploads and reads back', async () => {
+	const bytes = new Uint8Array(randomBytes(100));
+	const path = await upload(`${'長'.repeat(80)}.txt`, bytes);
+	expect(path.endsWith('.txt')).toBe(true);
+	expect(Buffer.byteLength(path.slice(path.lastIndexOf('/') + 1))).toBeLessThanOrEqual(254);
+	expect(new Uint8Array(readFileSync(path))).toEqual(bytes);
+	const response = await read(path);
+	expect(response.status).toBe(200);
+	expect(new Uint8Array(await response.arrayBuffer())).toEqual(bytes);
+});
+
 test('a video is read in byte ranges, for seeking', async () => {
 	const bytes = new Uint8Array(randomBytes(5000));
 	const path = await upload('clip.mp4', bytes);
