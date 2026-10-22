@@ -48,10 +48,12 @@ export const DAY = 24 * 60 * 60 * 1000;
 
 /** What a board started from inside an agent's shell in a Herdr pane inherits (the names a QA
  *  board really had): that agent's hcom and client identity, the pane's own place in Herdr, plus
- *  the settings that are not identity. Test values only. */
+ *  the settings that are not identity. Test values only, but for `HCOM_PROCESS_ID`: the LAT
+ *  reaper stops processes whose agent by that ID is no longer running, so the test server carries
+ *  the ID of the agent running the tests, or none outside one. */
 export const AGENT_SHELL_ENV: Record<string, string> = {
 	HCOM_INSTANCE_NAME: 'rape',
-	HCOM_PROCESS_ID: '00000000-0000-0000-0000-000000000000',
+	...(process.env.HCOM_PROCESS_ID ? { HCOM_PROCESS_ID: process.env.HCOM_PROCESS_ID } : {}),
 	HCOM_LAUNCHED: '1',
 	HCOM_LAUNCHED_BY: 'nabo',
 	HCOM_LAUNCHED_PRESET: 'herdr',
