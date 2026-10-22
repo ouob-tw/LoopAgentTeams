@@ -28,6 +28,20 @@ const FIRST = 'textarea[aria-label="第一句話"]';
 const SHOWN = `JSON.stringify([...document.querySelectorAll('[role="listbox"][aria-label="Skill"] strong')].map((name) => name.textContent))`;
 const shows = (names: string[]) => until(`${SHOWN} === ${JSON.stringify(JSON.stringify(names))}`, `the list shows ${names.join(', ')}`);
 const closed = (what: string) => until(`!document.querySelector('[role="listbox"][aria-label="Skill"]')`, what);
+/** Every listed skill is in sight: the list lies inside the window, above or under its box, and
+ *  holds its few skills without being scrolled. */
+async function fits() {
+	const seen = await evaluate<{ top: number; bottom: number; left: number; right: number; width: number; height: number; scrolls: number }>(`(() => {
+		const list = document.querySelector('[role="listbox"][aria-label="Skill"]');
+		const r = list.getBoundingClientRect();
+		return { top: r.top, bottom: r.bottom, left: r.left, right: r.right, width: innerWidth, height: innerHeight, scrolls: list.scrollHeight - list.clientHeight };
+	})()`);
+	expect(seen.scrolls).toBeLessThanOrEqual(1);
+	expect(seen.top).toBeGreaterThanOrEqual(0);
+	expect(seen.bottom).toBeLessThanOrEqual(seen.height);
+	expect(seen.left).toBeGreaterThanOrEqual(0);
+	expect(seen.right).toBeLessThanOrEqual(seen.width);
+}
 const valueOf = (box: string) => evaluate<string>(`document.querySelector(${JSON.stringify(box)}).value`);
 
 /** Empty a box and put the focus in it. */
@@ -68,6 +82,7 @@ beforeAll(async () => {
 	project = luna.workspace;
 	mkdirSync(join(project, '.git'), { recursive: true });
 	skill(join(home, '.claude/skills'), 'user-one', 'User skill. More words.');
+	skill(join(home, '.claude/skills'), 'zz-a-very-long-skill-name-that-the-list-still-shows-in-full', 'A long description that goes on and on, wider than the list itself on a phone. More.');
 	skill(join(project, '.claude/skills'), 'project-one', '專案的 skill。');
 	skill(join(project, '.agents/skills'), 'codex-project', 'Codex only.');
 	writeFileSync(
@@ -100,7 +115,8 @@ test.skipIf(!CHROME)("the command line hints the recipient's own skills: `/` for
 	await until(`!!document.querySelector('#folder-box')?.value`, 'the page hydrated');
 	await clear(LINE);
 	await type('@luna /');
-	await shows(['/project-one', '/user-one']);
+	await shows(['/project-one', '/user-one', '/zz-a-very-long-skill-name-that-the-list-still-shows-in-full']);
+		await fits();
 	expect(await evaluate<string>(`document.querySelector('[role="listbox"][aria-label="Skill"]').textContent`)).toContain('User skill.');
 	expect(await evaluate<string>(`document.querySelector('[role="listbox"][aria-label="Skill"]').textContent`)).not.toContain('More words');
 	await type('us');
@@ -157,7 +173,8 @@ test.skipIf(!CHROME)('no list opens while an input method is composing', async (
 	// The Enter Safari sends to confirm a candidate (key code 229) is the input method's, not the list's.
 	await clear(LINE);
 	await type('@luna /');
-	await shows(['/project-one', '/user-one']);
+	await shows(['/project-one', '/user-one', '/zz-a-very-long-skill-name-that-the-list-still-shows-in-full']);
+		await fits();
 	for (const kind of ['keyDown', 'keyUp']) await tab().send('Input.dispatchKeyEvent', { type: kind, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 229 });
 	await Bun.sleep(200);
 	expect(await valueOf(LINE)).toBe('@luna /');
@@ -195,7 +212,8 @@ test.skipIf(!CHROME)('the new-controller and new-agent forms hint the chosen cli
 		const box = url.includes('new-agent') ? 'textarea[aria-label="第一則訊息（選填）"]' : FIRST;
 		await clear(box);
 		await type('請 /');
-		await shows(['/project-one', '/user-one']);
+		await shows(['/project-one', '/user-one', '/zz-a-very-long-skill-name-that-the-list-still-shows-in-full']);
+		await fits();
 		await tab().pointerClick('[role="listbox"][aria-label="Skill"] li:nth-child(2) button');
 		await closed('the list closed by the tap');
 		expect(await valueOf(box)).toBe('請 /user-one ');
@@ -215,7 +233,8 @@ test.skipIf(!CHROME)('on a phone the list fits the screen, above the line and in
 	await until(`!!document.querySelector('#folder-box')?.value`, 'the page hydrated');
 	await clear(LINE);
 	await type('@luna /');
-	await shows(['/project-one', '/user-one']);
+	await shows(['/project-one', '/user-one', '/zz-a-very-long-skill-name-that-the-list-still-shows-in-full']);
+		await fits();
 	const box = await evaluate<{ left: number; right: number; top: number; bottom: number; line: number }>(`(() => {
 		const r = document.querySelector('[role="listbox"][aria-label="Skill"]').getBoundingClientRect();
 		return { left: r.left, right: r.right, top: r.top, bottom: r.bottom, line: document.querySelector(${JSON.stringify(LINE)}).getBoundingClientRect().top };
