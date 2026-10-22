@@ -1,12 +1,17 @@
 ---
 name: lat-handover
-description: "把 LAT 主控換成新的 Agent 時手動觸發：整理交接文件、用 HCOM 開新主控接手，確認接手後通知協作者、停用自己的 LAT 紀錄並關閉自己。"
+description: "把 LAT 主控換成新的 Agent，或把手上工作交給新的 LAT 主控時手動觸發：整理交接文件、用 HCOM 開新主控接手，確認接手後通知協作者、停用自己的 LAT 紀錄並關閉自己。"
 disable-model-invocation: true
 ---
 
 # LAT 主控換班
 
-只有 LAT 主控執行。
+執行者通常是 LAT 主控。不是 LAT 主控（工作區沒有自己的 `.lat/sessions/<session-id>.json`）時也照本流程交接，只有以下差異：
+
+- 略過第 1、5、6 步，它們只處理 LAT 紀錄與 LAT 協作者。
+- 第 2 步沒有 LAT session 紀錄可寫，改寫明「沒有前任 LAT 紀錄」。
+- 第 3 步請新主控呼叫 /lat 開新的 LAT 流程，不走恢復程序。
+- 其他步驟照做，第 8 步一樣要關閉自己。
 
 依序執行，任一步失敗就停下並向使用者回報，不要跳到關閉自己。
 
@@ -15,6 +20,7 @@ disable-model-invocation: true
    - 自己的 LAT session 紀錄路徑（`.lat/sessions/<session-id>.json`），以及其中的工作區、進度索引、待決目錄、任務卡目錄，讓新主控用相同路徑 activate。
    - 目前執行 Agent 的 HCOM 名稱、角色、進行中的工作與等待中的回覆。
    - 換班原因與使用者對新主控的指示。
+   - 自己這段對話中所有還沒結束的事，不限 LAT 工作：自己啟動或停下、尚未恢復的服務與程序，等使用者決定的事項，做到一半的修改。逐項寫明交給新主控，或在第 7 步交還使用者。
 3. **開新主控**：依 /hcom-spawn 召喚新主控。client、模型、herdr 工作區沒有另外指定時，沿用自己的設定（同一工作區時帶 `HERDR_WORKSPACE_ID="$HERDR_WORKSPACE_ID"`）。任務交代寫明：
    - 讀交接文件（附絕對路徑）與其中引用的文件。
    - 呼叫 /lat，依主控恢復程序以自己的 session 與 HCOM 名稱 activate，沿用交接文件中的路徑。
@@ -23,4 +29,4 @@ disable-model-invocation: true
 5. **通知協作者**：用 HCOM 通知所有參謀與執行 Agent：主控已換成新名稱，之後的回報、提問與審查結果一律送給新主控。
 6. **停用自己的 LAT 紀錄**：依 /lat 主控恢復程序執行 deactivate，加上 `--successor <新主控 HCOM 名稱>`。
 7. **向使用者回報**：新主控名稱、交接文件路徑、尚未解決的事項；第 4 步沒能移動新主控分頁時，附上原因（沒有 `HERDR_TAB_ID` 或工具印出的失敗訊息）。
-8. **關閉自己**（必須是最後一個動作）：先用 `herdr tab get "$HERDR_TAB_ID"` 查看 `pane_count`。只有 1（只有自己）時執行 `herdr tab close "$HERDR_TAB_ID"`；還有其他窗格時只執行 `herdr pane close "$HERDR_PANE_ID"`，不要關掉別人的窗格。沒有 `HERDR_TAB_ID`／`HERDR_PANE_ID` 時不關閉，請使用者自行結束本對話。
+8. **關閉自己**（必須是最後一個動作）：不能自行判斷略過。認為不該關閉（例如還有事沒人接手）時，在第 7 步列出原因並問使用者，使用者同意留下才不關閉。先用 `herdr tab get "$HERDR_TAB_ID"` 查看 `pane_count`。只有 1（只有自己）時執行 `herdr tab close "$HERDR_TAB_ID"`；還有其他窗格時只執行 `herdr pane close "$HERDR_PANE_ID"`，不要關掉別人的窗格。沒有 `HERDR_TAB_ID`／`HERDR_PANE_ID` 時不關閉，請使用者自行結束本對話。
