@@ -33,8 +33,8 @@ import {
 } from '../board/wake.ts';
 import type { Board } from './board.ts';
 import { findAgent, listAgents, resumeAgent, type HcomAgent } from './hcom.ts';
-import { runningIn, waitToAppear } from './appear.ts';
-import { chooseWorkspace, listHerdrAgents, paneExists, type HerdrAgent } from './herdr.ts';
+import { runningIn } from './appear.ts';
+import { chooseWorkspace, listHerdrAgents, paneExists, tabToFront, type HerdrAgent } from './herdr.ts';
 import { moveToFront } from './launch.ts';
 import { inject, queued, typedText } from './send.ts';
 import { modelLock, readCurrent } from './helper.ts';
@@ -263,8 +263,8 @@ export async function resume(board: Board, controller: Pick<Controller, 'workspa
 	entry.outcome = resumed.outcome;
 	entry.error = resumed.reason;
 	entry.resumedName = resumed.hcomName;
-	// A model switch's is left to the board's reads (`settleResumes`): hcom may list the session in
-	// the pane the switch closed for a while yet.
+	// A model switch's pane is left to the board's reads (`settleResumes`): hcom may list the
+	// session in the pane the switch closed for a while yet.
 	if (resumed.outcome !== 'failed' && !entry.switchId) {
 		// The pane the resumed client runs in, so a later wake can tell when it is gone.
 		const list = await listAgents(board.config);
@@ -290,26 +290,47 @@ export async function resume(board: Board, controller: Pick<Controller, 'workspa
 	return { abandon: null, logged: true, logError: null };
 }
 
-/** Resumes whose new tab this board process moves itself (`toFront`), from hcom's run on, kept
- *  after it moved; the board's reads move only the others' tabs (`settleResumes`), those of a
- *  board restarted meanwhile. */
+/** Resumes whose new tab this board process is moving itself (`toFront`), from hcom's run until
+ *  it moved or the wait is over; the board's reads move only the others' tabs (`settleResumes`),
+ *  those of a board restarted meanwhile. */
 const fronting = new Set<string>();
 
 /**
- * The new tab goes first in its workspace once Herdr runs the session there (`started`: hcom did
- * not fail): hcom may not list its pane yet, or, after a model switch's stop, still list the
- * closed one. Not waited for: where it ends up does not change the outcome, and a slow Herdr must
- * not hold up the answer. Open pages hear when it moved.
+ * The new tab goes first in its workspace (`started`: hcom did not fail): the one of the pane hcom
+ * listed for it, or else once Herdr runs the session: hcom may not list its pane yet, or, after a
+ * model switch's stop, still list the closed one. That pane is noted then, so the board's reads
+ * do not move the tab again. Not waited for:
+ * where it ends up does not change the outcome, and a slow Herdr must not hold up the answer.
+ * Open pages hear when it moved.
  */
 function toFront(board: Board, entry: SentWake, started: boolean): void {
 	const { config } = board;
 	if (!started) return void fronting.delete(entry.id);
-	void waitToAppear(config, { sessionId: entry.controllerId }, config.now() + config.launchWaitMs, `@${entry.resumedName ?? entry.hcomName}`)
-		.then(async (appeared) => {
-			if (appeared.found && (await moveToFront(config, appeared.found.tab)) === null) board.tabMoved();
-		})
-		.catch(() => undefined);
+	const deadline = config.now() + config.launchWaitMs;
+	const follow = async () => {
+		if (entry.pane) {
+			if ((await tabToFront(config, entry.pane)) === null) board.tabMoved();
+			return;
+		}
+		for (;;) {
+			const herdr = await listHerdrAgents(config);
+			const runs = herdr.ok ? herdr.agents.find((agent) => agent.sessionId === entry.controllerId) : undefined;
+			if (runs) {
+				appendSent(config.stateDir, { kind: 'resume-pane', wakeId: entry.id, pane: runs.pane, time: new Date(config.now()).toISOString() });
+				if ((await moveToFront(config, runs.tab)) === null) board.tabMoved();
+				return;
+			}
+			if (config.now() >= deadline) return;
+			await new Promise((resolve) => setTimeout(resolve, FRONT_POLL_MS));
+		}
+	};
+	void follow()
+		.catch(() => undefined)
+		.finally(() => fronting.delete(entry.id));
 }
+
+/** How often a resume's new tab is looked for in Herdr. */
+const FRONT_POLL_MS = 1_000;
 
 /** How long after hcom's run a model switch's resumed client may take to run in Herdr. Herdr
  *  spots a client within a second of its start; one not running by then has exited. */
@@ -357,8 +378,8 @@ export function closeResume(stateDir: string, wakeId: string, result: ResumeClos
 
 /**
  * Close every open resume whose session is in hcom's agent list now, and note the Herdr pane of
- * those hcom shows under their session or HCOM name (a model switch's, the pane Herdr runs its
- * session in), its tab then moved to the front (`onPane`) unless this board process waits to
+ * those Herdr runs the session of, or else hcom shows under their session or HCOM name (not for
+ * a model switch), its tab then moved to the front (`onPane`) unless this board process waits to
  * move it itself (`toFront`). Called with every fresh read while any
  * resume is open, so a wake shows as succeeded without the user waking it again.
  *
@@ -379,11 +400,11 @@ export function settleResumes(
 	for (const wake of openResumes(log.lines, now, waitMs)) {
 		const verdict = wake.switchId ? switchResumeVerdict(wake, agents, herdr, now, waitMs) : null;
 		const running = verdict ? verdict === 'succeeded' : agents.find((agent) => agent.sessionId === wake.controllerId);
-		// A model switch's pane is the one Herdr runs the session in: hcom may still list the session,
-		// or its name, in the pane the stop closed.
-		const pane = wake.switchId
-			? herdr && runningIn({ sessionId: wake.controllerId }, agents, herdr).herdr?.pane
-			: findAgent(agents, wake.controllerId, [wake.hcomName, wake.resumedName])?.pane;
+		// The pane Herdr runs the session in, else hcom's; never hcom's for a model switch: it may
+		// still list the session, or its name, in the pane the stop closed.
+		const pane =
+			(herdr && runningIn({ sessionId: wake.controllerId }, agents, herdr).herdr?.pane) ||
+			(wake.switchId ? null : findAgent(agents, wake.controllerId, [wake.hcomName, wake.resumedName])?.pane);
 		try {
 			if (!wake.pane && pane) {
 				log.append({ kind: 'resume-pane', wakeId: wake.id, pane, time: new Date(now).toISOString() });
