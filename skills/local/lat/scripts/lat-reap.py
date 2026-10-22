@@ -539,8 +539,7 @@ def reap(args):
             return 1
         log_unjudged(directory, world, trigger, moment)
         if world.unreadable:
-            print(f'Not judged: {len(world.unreadable)} unreadable process(es): '
-                  + ', '.join(map(str, sorted(world.unreadable))))
+            print(f'Not judged: {len(world.unreadable)} unreadable process(es) (list them with scan --all)')
         only = None
         if args.agent:
             only, listed = resolve_agent(args.agent, world)

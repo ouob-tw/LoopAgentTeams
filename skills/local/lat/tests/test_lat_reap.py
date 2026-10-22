@@ -411,7 +411,7 @@ class ReapTests(ReapTestCase):
         result = self.reap()
         self.assertTrue(self.gone(leftover))
         self.assertTrue(self.alive(hidden))
-        self.assertIn(f'Not judged: 1 unreadable process(es): {hidden}', result.stdout)
+        self.assertIn('Not judged: 1 unreadable process(es) (list them with scan --all)', result.stdout)
         [summary] = [record for record in self.log() if record['result'] == 'not judged']
         self.assertEqual(list(summary['unreadable']), [str(hidden)])
         self.assertIn('Permission denied', summary['unreadable'][str(hidden)])
@@ -435,7 +435,7 @@ class ReapTests(ReapTestCase):
                             self.agent_env('lone'))['lone-service']
         result = self.reap('--agent', 'test-lone')
         self.assertIn('no process carries', result.stdout)
-        self.assertIn(f'Not judged: 1 unreadable process(es): {hidden}', result.stdout)
+        self.assertIn('Not judged: 1 unreadable process(es) (list them with scan --all)', result.stdout)
         [summary] = self.log()
         self.assertEqual(list(summary['unreadable']), [str(hidden)])
         self.assertTrue(self.alive(hidden))
