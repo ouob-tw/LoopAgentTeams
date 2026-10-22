@@ -88,9 +88,27 @@ test('an empty file previews as empty, a missing one says it is gone, and any ot
 	expect(await readTextPreview('/up/gone.txt', serving(null).fetcher)).toBe('gone');
 	const broken = (async () => new Response('oops', { status: 500 })) as unknown as typeof fetch;
 	await expect(readTextPreview('/up/a.txt', broken)).rejects.toThrow('500');
-	// A server that ignores the range still shows only the first 200KB.
-	const whole = (async () => new Response('y'.repeat(PREVIEW_BYTES + 5))) as unknown as typeof fetch;
+});
+
+test('a server that ignores the range is read no further than the first 200KB and a piece', async () => {
+	const PIECE = 64 * 1024;
+	let sent = 0;
+	// A 10MB file, sent whole in pieces as the reader asks for them.
+	const whole = (async () =>
+		new Response(
+			new ReadableStream({
+				pull(controller) {
+					if (sent >= 10 * 1024 * 1024) return controller.close();
+					controller.enqueue(new TextEncoder().encode('y'.repeat(PIECE)));
+					sent += PIECE;
+				}
+			})
+		)) as unknown as typeof fetch;
 	expect(await readTextPreview('/up/a.txt', whole)).toEqual({ text: 'y'.repeat(PREVIEW_BYTES), truncated: true });
+	expect(sent).toBeLessThanOrEqual(PREVIEW_BYTES + 2 * PIECE);
+	// A whole file under the limit is not taken for a longer one.
+	const short = (async () => new Response('y'.repeat(PREVIEW_BYTES))) as unknown as typeof fetch;
+	expect(await readTextPreview('/up/a.txt', short)).toEqual({ text: 'y'.repeat(PREVIEW_BYTES), truncated: false });
 });
 
 test('a file name loses directories, control characters, spaces and a leading dot, and is cut keeping its extension', () => {

@@ -39,12 +39,17 @@ function pdf(): Buffer {
 
 // Probes: each would set window.pwned if it ever ran.
 const PROBES = '<script>window.pwned = 1</script><img src=x onerror="window.pwned = 2"><b onclick="window.pwned = 3">粗體標籤</b>';
-const MARKDOWN = `# 預覽標題\n\n- 第一點\n- 第二點\n\n${PROBES}\n\n[壞連結](javascript:window.pwned=4)\n\n${'很長的一行'.repeat(80)}\n`;
+const MARKDOWN = `# 預覽標題\n\n- 第一點\n- 第二點\n\n${PROBES}\n\n[壞連結](javascript:window.pwned=4)\n\n${'很長的一行'.repeat(80)}\n\n\`\`\`\n${'code_without_any_break_'.repeat(30)}\n\`\`\`\n\n| ${Array.from({ length: 8 }, (_, index) => `column_heading_${index}_long`).join(' | ')} |\n|${' --- |'.repeat(8)}\n| ${'cell_value_that_is_long '.repeat(8).trim().split(' ').join(' | ')} |\n`;
+/** A long name, cut to fit on the host as any long name is. */
+const LONG = `${'很長的附件檔名'.repeat(12)}.md`;
+/** An image far larger than a phone's screen. */
+const WIDE = '<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000"><rect width="3000" height="2000" fill="teal"/></svg>';
 const PYTHON = 'def main():\n    if True:\n        print("縮排")\n\n\treturn  # tab\n';
 const TEXT = `第一行\n  兩格縮排\n${'longwordwithoutspaces'.repeat(40)}\n`;
 const TAIL = 'TAIL-MARKER-PAST-200KB';
 // 204,799 ASCII bytes and a 3-byte character across the cut, then the tail.
 const BIG = `${'a'.repeat(200 * 1024 - 1)}一${'b'.repeat(100_000)}${TAIL}\n`;
+const BIG_MARKDOWN = `# 很長的筆記\n\n${'- 一項\n'.repeat(40_000)}${TAIL}\n`;
 
 const injectDir = mkdtempSync(join(tmpdir(), 'lat-board-preview-inject-'));
 const downloads = mkdtempSync(join(tmpdir(), 'lat-board-preview-downloads-'));
@@ -71,6 +76,9 @@ beforeAll(async () => {
 	cookie = await fixture.login('attachment-preview');
 	const files: Record<string, Buffer | string> = {
 		'notes.md': MARKDOWN,
+		[LONG]: '# 長檔名\n',
+		'big.md': BIG_MARKDOWN,
+		'wide.svg': WIDE,
 		'main.py': PYTHON,
 		'plain.txt': TEXT,
 		'page.html': PROBES,
@@ -200,6 +208,15 @@ for (const where of ['sent', 'transcript'] as const) {
 		await tab.until(`document.querySelector('${DIALOG} .content img')?.naturalWidth === 1`, 'the image at full size');
 		expect(await tab.eval<string>(`document.querySelector('${DIALOG} a[download]').getAttribute('href')`)).toBe(`/api/uploads/file?path=${encodeURIComponent(paths['pixel.png'])}`);
 		expect(await pages()).toBe(before);
+		// 下載 saves the file and leaves the board where it is.
+		const board = await tab.eval<string>('location.href');
+		await tab.eval(`document.querySelector('${DIALOG} header a[download]').click()`);
+		const file = join(downloads, paths['pixel.png'].split('/').pop()!);
+		const deadline = Date.now() + 10_000;
+		while (!existsSync(file) && Date.now() < deadline) await Bun.sleep(100);
+		expect(readFileSync(file)).toEqual(PNG);
+		rmSync(file);
+		expect(await tab.eval<string>('location.href')).toBe(board);
 	}, 60_000);
 }
 
@@ -207,9 +224,10 @@ test('Esc, a click around the window and 關閉 each close it, and the page stay
 	await visit('transcript');
 	const scroller = `(() => { let node = ${entry('transcript', 'notes.md')}; while (node && !(node.scrollHeight > node.clientHeight && /auto|scroll/.test(getComputedStyle(node).overflowY))) node = node.parentElement; return node ?? document.scrollingElement; })()`;
 	await tab.eval(`${entry('transcript', 'notes.md')}.scrollIntoView({ block: 'center' })`);
+	// Thumbnails that load later move the page by themselves.
+	await tab.until(`[...document.querySelectorAll('${scope('transcript')} .attached img')].every((img) => img.complete && img.naturalWidth > 0)`, 'the thumbnails loaded');
 	const position = () => tab.eval<number>(`${scroller}.scrollTop`);
-	const at = await position();
-	expect(at).toBeGreaterThan(0);
+	expect(await position()).toBeGreaterThan(0);
 
 	const closers: [string, () => Promise<unknown>][] = [
 		['Esc', () => tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }).then(() => tab.send('Input.dispatchKeyEvent', { type: 'keyUp', key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27 }))],
@@ -218,7 +236,9 @@ test('Esc, a click around the window and 關閉 each close it, and the page stay
 	];
 	for (const name of ['plain.txt', 'pixel.png']) {
 		for (const [how, close] of closers) {
+			// Focusing the opener, as clicking it would, may bring it into view: the place to return to is after that.
 			await tab.eval(`${entry('transcript', name)}.querySelector('button').focus()`);
+			const at = await position();
 			await openPreview('transcript', name);
 			// Inside the window, a click does not close it.
 			await tab.pointerClick(`${DIALOG} h2`);
@@ -229,6 +249,12 @@ test('Esc, a click around the window and 關閉 each close it, and the page stay
 			expect(await tab.eval<boolean>(`document.activeElement === ${entry('transcript', name)}.querySelector('button')`)).toBe(true);
 		}
 	}
+	// A file opened while another is still being read shows its own content, not the other's.
+	await tab.eval(`${entry('transcript', 'big.log')}.querySelector('button').click(); document.querySelector('dialog.preview[open]').close(); ${entry('transcript', 'main.py')}.querySelector('button').click()`);
+	await tab.until(`document.querySelector('${DIALOG} pre')?.textContent === ${JSON.stringify(PYTHON)}`, 'main.py, not big.log');
+	await Bun.sleep(500);
+	expect(await tab.eval<string>(`document.querySelector('${DIALOG} pre').textContent`)).toBe(PYTHON);
+	await tab.eval(`document.querySelector('${DIALOG}').close()`);
 	// Another file opened after one closed shows its own content, not the last one's.
 	await openPreview('transcript', 'main.py');
 	await tab.until(`document.querySelector('${DIALOG} pre')?.textContent === ${JSON.stringify(PYTHON)}`, 'main.py, not plain.txt');
@@ -255,6 +281,15 @@ test('a text over 200KB shows its first 204,800 bytes only, says so, and downloa
 	const deadline = Date.now() + 10_000;
 	while (!existsSync(file) && Date.now() < deadline) await Bun.sleep(100);
 	expect(readFileSync(file, 'utf8')).toBe(BIG);
+
+	// Markdown over 200KB: its start laid out, with the same note.
+	await openPreview('sent', 'big.md');
+	await tab.until(`!!document.querySelector('${DIALOG} .md h1')`, 'the start of big.md laid out');
+	expect(await tab.eval<string>(`document.querySelector('${DIALOG} .truncated').innerText`)).toContain('只顯示開頭 200KB');
+	const items = await tab.eval<number>(`document.querySelectorAll('${DIALOG} .md li').length`);
+	expect(items).toBeGreaterThan(10_000);
+	expect(items).toBeLessThan(40_000);
+	expect(await dialogText()).not.toContain(TAIL);
 }, 60_000);
 
 test('a Word file and an archive still download, and open no window', async () => {
@@ -285,17 +320,17 @@ test('a file gone between the list and opening it says so, and opens no window',
 
 test('at 390px the window fills the screen and nothing scrolls sideways', async () => {
 	await visit('transcript', 390);
-	for (const name of ['notes.md', 'plain.txt', 'pixel.png']) {
+	for (const name of ['notes.md', LONG, 'plain.txt', 'wide.svg']) {
 		await openPreview('transcript', name);
 		await tab.until(`!!document.querySelector('${DIALOG} :is(.md, pre, .content img)')`, name);
-		const layout = await tab.eval<{ width: number; height: number; left: number; top: number; viewport: number; tall: number; page: number; content: number; contentWidth: number; buttons: boolean }>(`(() => {
+		const layout = await tab.eval<{ width: number; height: number; left: number; top: number; viewport: number; tall: number; page: number; content: number; contentWidth: number; sideways: string[]; buttons: boolean }>(`(() => {
 			const dialog = document.querySelector('${DIALOG}').getBoundingClientRect();
 			const content = document.querySelector('${DIALOG} .content');
 			const inView = (element) => { const r = element.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.width > 0; };
-			return { width: dialog.width, height: dialog.height, left: dialog.left, top: dialog.top, viewport: innerWidth, tall: innerHeight, page: document.scrollingElement.scrollWidth, content: content.scrollWidth, contentWidth: content.clientWidth, buttons: [...document.querySelectorAll('${DIALOG} header :is(a, button)')].every(inView) };
+			return { width: dialog.width, height: dialog.height, left: dialog.left, top: dialog.top, viewport: innerWidth, tall: innerHeight, page: document.scrollingElement.scrollWidth, content: content.scrollWidth, contentWidth: content.clientWidth, sideways: [content, ...content.querySelectorAll('*')].filter((element) => element.clientWidth && element.scrollWidth > element.clientWidth).map((element) => element.tagName), buttons: [...document.querySelectorAll('${DIALOG} header :is(a, button)')].every(inView) };
 		})()`);
 		expect(layout.viewport).toBe(390);
-		expect(layout).toMatchObject({ width: 390, height: layout.tall, left: 0, top: 0, page: 390, buttons: true });
+		expect(layout).toMatchObject({ width: 390, height: layout.tall, left: 0, top: 0, page: 390, buttons: true, sideways: [] });
 		expect(layout.content).toBeLessThanOrEqual(layout.contentWidth);
 		await tab.eval(`document.querySelector('${DIALOG}').close()`);
 	}

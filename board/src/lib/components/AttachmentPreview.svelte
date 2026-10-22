@@ -157,6 +157,16 @@
 		white-space: pre-wrap;
 		overflow-wrap: anywhere;
 	}
+	/* The same in Markdown: its code blocks and tables wrap instead of scrolling sideways. */
+	.content :global(.md pre) {
+		white-space: pre-wrap;
+		overflow-wrap: anywhere;
+	}
+	.content :global(.md table) {
+		display: table;
+		width: 100%;
+		table-layout: fixed;
+	}
 	.note {
 		margin: 0 0 0.6rem;
 		font-size: max(0.8rem, var(--min-font, 0px));

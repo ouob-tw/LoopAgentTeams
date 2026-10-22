@@ -29,10 +29,18 @@
 		}
 	});
 
+	// Saved as a file by a link of its own: an image or PDF the board serves for showing would open
+	// in the page instead.
 	async function download(event: MouseEvent, path: string) {
 		event.preventDefault();
-		if (await present(path)) location.href = attachmentUrl(path);
-		else gone[path] = true;
+		if (!(await present(path))) {
+			gone[path] = true;
+			return;
+		}
+		const link = document.createElement('a');
+		link.href = attachmentUrl(path);
+		link.download = fileName(path);
+		link.click();
 	}
 
 	async function openTab(event: MouseEvent, path: string) {

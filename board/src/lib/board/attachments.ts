@@ -45,12 +45,29 @@ export async function readTextPreview(path: string, fetcher: typeof fetch = fetc
 	// An empty file has no first byte to give.
 	if (response.status === 416) return { text: '', truncated: false };
 	if (!response.ok) throw new Error(`讀取失敗（HTTP ${response.status}）`);
-	const received = new Uint8Array(await response.arrayBuffer());
-	const total = response.status === 206 ? Number(response.headers.get('content-range')?.split('/')[1]) : received.length;
+	// A server that ignores the range sends the whole file: one byte past the limit tells it is longer.
+	const received = await readAtMost(response, PREVIEW_BYTES + 1);
+	const total = Number(response.headers.get('content-range')?.split('/')[1]) || received.length;
 	const truncated = total > PREVIEW_BYTES;
 	// Decoding as a stream keeps back the bytes of a character not yet complete.
 	const text = new TextDecoder().decode(received.subarray(0, PREVIEW_BYTES), { stream: truncated });
 	return { text, truncated };
+}
+
+/** At most `limit` bytes of a response's body; the rest is never read. */
+async function readAtMost(response: Response, limit: number): Promise<Uint8Array> {
+	const bytes = new Uint8Array(limit);
+	let length = 0;
+	const reader = response.body?.getReader();
+	while (reader && length < limit) {
+		const { done, value } = await reader.read();
+		if (done) break;
+		const part = value.subarray(0, limit - length);
+		bytes.set(part, length);
+		length += part.length;
+	}
+	await reader?.cancel();
+	return bytes.subarray(0, length);
 }
 
 /** The text to send: the typed text, then a blank line and the attached paths, one per line.
