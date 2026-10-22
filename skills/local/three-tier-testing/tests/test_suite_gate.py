@@ -1071,6 +1071,7 @@ class AffectedTests(AffectedCase):
         result = self.gate('affected')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('nothing to run', result.stderr)
+        self.assertIn('--base <commit>', result.stderr)
         self.assertEqual((self.ran(), self.full_runs(), self.records()), ([], [], []))
 
     def test_a_failing_affected_test_command_passes_its_exit_code_through(self):

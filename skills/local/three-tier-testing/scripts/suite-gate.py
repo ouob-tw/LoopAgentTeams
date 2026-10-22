@@ -1784,6 +1784,8 @@ def cmd_affected(base):
             return run_fallback(root, amap, fallback)
         if not groups:
             warn('no tests selected for this change; nothing to run')
+            warn('hint: on an integration branch the base must be given with --base <commit> '
+                 '(the commit this work started from); without it the change is empty')
             return 0
         warn('selected tests:')
         for test in sorted(selected):

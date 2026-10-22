@@ -5,8 +5,8 @@ import { expect, test } from 'bun:test';
 import { attachmentKind, attachmentUrl, PREVIEW_BYTES, readTextPreview, splitAttachments, withAttachments } from '../../src/lib/board/attachments.ts';
 import { safeName } from '../../src/lib/server/uploads.ts';
 
-const A = '/tmp/lat-board-uploads/2026-10-22/0123456789abcdef-截圖.png';
-const B = '/tmp/lat-board-uploads/2026-10-22/fedcba9876543210-demo.mp4';
+const A = '/srv/lat-board-uploads/2026-10-22/0123456789abcdef-截圖.png';
+const B = '/srv/lat-board-uploads/2026-10-22/fedcba9876543210-demo.mp4';
 
 test('paths go after the typed text, a blank line and a heading, one per line', () => {
 	expect(withAttachments('看一下這張圖\n', [A, B])).toBe(`看一下這張圖\n\n附件：\n${A}\n${B}`);

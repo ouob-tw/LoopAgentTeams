@@ -350,8 +350,8 @@ Claude 主控的這些數字只有狀態列拿得到，要先在 `~/.claude/sett
 
 1. 在專案目錄 `git pull`。
 2. 重新安裝技能（指令見 [README](../README.md#本地開發) 的「修改後同步安裝」），看板才會用到新版的面板輔助工具。
-3. 在 `board` 目錄執行 `bun install` 與 `bun run build`。
-4. 若有跑背景服務：`systemctl --user restart lat-board`。
+3. 在 `board` 目錄執行 `bun install`。
+4. 部署：有跑背景服務時執行 `bash scripts/deploy.sh`（在 `board` 目錄），它只用已提交的 `HEAD` 建置，不帶工作資料夾裡未提交的修改：在臨時的 git worktree 建置到 `build-new`，換成 `build`（舊版暫存為 `build-prev`），重啟 `lat-board`，等 `http://127.0.0.1:7100/login` 回 200 後丟掉舊版與臨時資料夾。建置失敗時正在用的 `build` 不動；換上後重啟失敗或登入頁一直不回 200，會把舊版放回去再重啟一次，結束碼為 1。服務名稱、連接埠與等待秒數可用環境變數改（見 [board/README.md](../board/README.md#部署)）。沒有背景服務時，在 `board` 目錄執行 `bun run build`。
 
 技能更新後，正在跑的主控要從它的下一個回合才開始留下回報紀錄，更新前的訊息不會補上。
 

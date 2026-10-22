@@ -101,6 +101,23 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 經看板送出的答案記在 `sent-log.jsonl`，和傳話紀錄一起顯示在該主控的資訊頁，狀態會從「已送出，等主控記錄」變成「已記錄」；送出後題目被主控改版則顯示「題目已改版」。在 Herdr 面板作答的不在這份紀錄裡。
 - 主控停用 LAT 時還在等記錄的答覆，看板會再讀一次它留下的問題檔：已記錄就顯示「已記錄」，題目已改版照樣顯示「題目已改版」，沒有記錄則顯示「主控已停用 LAT，沒有記錄這份答覆」；問題檔或那一題讀不到時顯示「主控已停用 LAT，無法確認這份答覆有沒有被記錄」。之後不再重讀，除非同一個主控再次啟用。
 
+## 部署
+
+使用說明：[更新](../docs/lat-board.md#更新)。
+
+`scripts/deploy.sh` 把已提交的 `HEAD` 部署到常駐看板：`git worktree add --detach` 開臨時資料夾、連結 `node_modules`、以 `LAT_BOARD_BUILD_DIR=<看板目錄>/build-new`（絕對路徑）建置，成功且有 `build-new/index.js` 才換：`build` → `build-prev`、`build-new` → `build`，再重啟並輪詢登入頁。換之前的任何失敗都只清掉臨時資料夾與 `build-new`；換之後失敗則放回 `build-prev` 並重啟。用 `trash` 刪除（沒有 `trash` 指令的主機要先裝）。設定（環境變數）：
+
+| 變數 | 用途 | 預設 |
+| --- | --- | --- |
+| `LAT_DEPLOY_BOARD_DIR` | 要部署的看板目錄 | 腳本所在的看板目錄 |
+| `LAT_DEPLOY_UNIT` | 重啟的 systemd 使用者服務名稱 | `lat-board` |
+| `LAT_DEPLOY_RESTART` | 重啟指令（交給 `sh -c`） | `systemctl --user restart <服務名稱>` |
+| `LAT_DEPLOY_BUILD` | 在臨時資料夾的看板目錄執行的建置指令 | `bun run build` |
+| `PORT` | 確認登入頁用的連接埠（位址固定 127.0.0.1） | `7100` |
+| `LAT_DEPLOY_WAIT` | 等登入頁回 200 的秒數 | `60` |
+
+測試在 `tests/unit/deploy-script.test.ts`：用暫存的 git 倉庫與看板目錄、複製檔案當建置、寫紀錄當重啟、測試內的假伺服器當登入頁，不碰正在跑的服務與 7100。
+
 ## 資料怎麼更新
 
 使用方式見[使用說明](../docs/lat-board.md#資料怎麼更新)。實作上：伺服器監看面板綁定登記、各主控的問題檔與回報紀錄目錄，有變動才重讀；保底重讀的間隔見設定表的 `LAT_BOARD_FALLBACK_SECONDS`，為什麼有固定間隔見 ADR 0003 決定 1 的補記。
@@ -306,6 +323,8 @@ bun run test:all       # 先建置到 build-test/，再跑以上三層
 ```
 
 測試分三層放在 `tests/unit/`、`tests/server/`、`tests/browser/`；共用的 `harness.ts`、`browser.ts`、`fake-*.mjs` 與 `fixtures/` 在 `tests/` 底下。後三個腳本的建置輸出到 `build-test/`（不進版控），測試伺服器只從那裡啟動，不會改寫常駐看板正在用的 `build/`；正式的 `bun run build` 仍輸出到 `build/`。`test:server`、`test:browser`、`test:all` 是整套測試，Agent 要經整套測試閘門執行（登記在 repo 根目錄的 `.suite-gate.json`）。
+
+測試檔不得寫死 `/tmp/` 之類的固定暫存路徑，要用 `mkdtemp(join(tmpdir(), …))` 開暫存資料夾並在結束時刪掉；`tests/unit/no-hardcoded-tmp.test.ts` 掃描 `tests/` 底下的 `.ts`、`.mjs`、`.js`，發現就失敗並列出檔案與行號。
 
 測試不讀寫真實的 `.lat/`、綁定登記或回報紀錄，也不會對真實的主控輸入文字或送出答案。測試用 Node 啟動伺服器，PATH 上沒有 Node 時改用執行測試的 Bun，所以只有 Bun 的主機也能跑完整套（`bun run test:all`）。瀏覽器測試找不到 Chrome 或 Chromium（`CHROME` 有指定時只找它）就失敗並寫明原因，不會略過。測試伺服器和瀏覽器測試用的 Chrome 都綁連接埠 0，由系統挑一個沒人用的，所以不受主機上其他服務占用的連接埠影響，測試也不需要設定連接埠。
 

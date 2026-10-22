@@ -1,12 +1,13 @@
 // Requirements-first attachment acceptance, real Chrome + isolated fake-command board.
-// Evidence persists outside the fixture; no live agents or production board are used.
+// Evidence goes to a temporary directory that is removed afterwards; no live agents or production board are used.
 import { spawnSync } from 'node:child_process';
 import { beforeAll, afterAll, afterEach, test, expect } from 'bun:test';
-import { readFileSync, writeFileSync, mkdirSync, statSync, readdirSync, renameSync, symlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync, rmSync, statSync, readdirSync, renameSync, symlinkSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { startFixture, NODE, jsonLines, type Fixture } from '../harness.ts';
 import { launchChrome, type Browser, type Tab } from '../browser.ts';
-const E = '/tmp/naru-attachments-qa';
+let E: string;
 const BOX = '.dock .cmd textarea';
 const SEND = '.dock .cmd .send-slot button[aria-label="送出"]';
 let f: Fixture, cookie: string, b: Browser | undefined, t: Tab;
@@ -26,18 +27,18 @@ async function send() { await t.eval(`document.querySelector('${SEND}').click()`
 async function paths() { return t.eval<string[]>(`[...document.querySelectorAll('.dock .tray li')].map(x=>x.title)`); }
 async function log(controller: boolean) { await t.eval(`document.querySelector('${controller ? '#tab-sent' : '#agent-tab-log'}')?.click()`); }
 beforeAll(async () => {
- mkdirSync(E, { recursive: true });
+ E = mkdtempSync(join(tmpdir(), 'lat-attachments-qa-'));
  for(const [name,args] of [['image.png',['-f','lavfi','-i','color=c=red:s=32x32','-frames:v','1']],['clip.webm',['-f','lavfi','-i','color=c=blue:s=320x180:d=4','-c:v','libvpx-vp9']]] as [string,string[]][]){const r=spawnSync('ffmpeg',['-hide_banner','-loglevel','error',...args,'-threads','1','-y',join(E,name)]);if(r.status!==0)throw new Error('ffmpeg fixture failed: '+r.stderr);}
  writeFileSync(join(E, 'note.txt'), 'attachment bytes 一二三\n');
  const bytes=Buffer.alloc(3*1024*1024+17); for(let i=0;i<bytes.length;i++)bytes[i]=i%251; writeFileSync(join(E,'large.bin'),bytes);
  f=await startFixture({env:{LAT_BOARD_INJECT_COMMAND:JSON.stringify([NODE,join(import.meta.dir,'../fake-inject.mjs'),E])}}); cookie=await f.login('attachment-qa');
  const lead=f.bound('lat','lead',{session_id:'s-lead'}); f.list([lead]);
  f.setHcom({agents:['lead','plain','other'].map(name=>({name,session_id:'s-'+name,status:'listening',launch_context:{pane_id:'wA:p-s-'+name}}))});
- const agents=['lead','plain','other'].map(name=>({agent:'claude',agent_session:{kind:'id',value:'s-'+name},agent_status:'idle',cwd:'/tmp/qa-'+name,pane_id:'wA:p-s-'+name,tab_id:'wA:t-s-'+name,workspace_id:'wA'}));
+ const agents=['lead','plain','other'].map(name=>({agent:'claude',agent_session:{kind:'id',value:'s-'+name},agent_status:'idle',cwd:'/work/qa-'+name,pane_id:'wA:p-s-'+name,tab_id:'wA:t-s-'+name,workspace_id:'wA'}));
  writeFileSync(join(f.dir,'herdr.json'),JSON.stringify({agents,workspaces:[{workspace_id:'wA',number:1,label:'QA'}],tabs:agents.map(a=>({tab_id:a.tab_id,workspace_id:'wA',label:a.agent_session.value}))})); await f.refresh(cookie);
  evidence('fixture',{url:f.url,dir:f.dir});
 });
-afterEach(async()=>{if(b){await shot('latest-browser').catch(()=>{}); evidence('latest-dom',await t.eval('document.body.innerText').catch(()=>'')); await b.close();b=undefined;}}); afterAll(async()=>{await f?.cleanup();});
+afterEach(async()=>{if(b){await shot('latest-browser').catch(()=>{}); evidence('latest-dom',await t.eval('document.body.innerText').catch(()=>'')); await b.close();b=undefined;}}); afterAll(async()=>{await f?.cleanup(); if(E) rmSync(E,{recursive:true,force:true});});
 test('1+4: file input previews, chunk bytes, controller and agent sends and sent logs',async()=>{
  await visit(); await t.pointerClick('.dock button[aria-label="附加檔案"]');
  await pick(['image.png','clip.webm','note.txt','large.bin'].map(x=>join(E,x))); await done(4);
