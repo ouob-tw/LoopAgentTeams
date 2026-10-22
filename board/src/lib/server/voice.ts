@@ -45,6 +45,9 @@ async function recognize(config: BoardConfig, audio: Blob): Promise<Outcome<stri
 /** The model that tidies long speech, fixed so a change to Codex's own default does not change it. */
 const TIDY_MODEL = 'gpt-6-luna';
 
+/** Replaces Codex's own coding-agent instructions, which a tidy turn has no use for. */
+const TIDY_BASE_INSTRUCTIONS = 'You are a text cleanup engine, not a coding agent. You have no tools. Follow the developer instructions and output only the cleaned text.';
+
 const TIDY_INSTRUCTIONS = [
 	'You tidy up text produced by speech recognition. The user message holds the transcript inside <transcript> tags.',
 	'Fix recognition errors such as wrong homophones and typos, remove filler words, stutters, repeated words and slips of the tongue (keep only the corrected version when the speaker corrects themselves), and fix punctuation.',
@@ -59,6 +62,7 @@ export async function tidy(config: BoardConfig, text: string): Promise<Outcome<s
 		timeoutMs: config.tidyTimeoutMs,
 		model: TIDY_MODEL,
 		effort: 'low',
+		baseInstructions: TIDY_BASE_INSTRUCTIONS,
 		instructions: TIDY_INSTRUCTIONS,
 		input: `<transcript>\n${text}\n</transcript>`,
 		// Neither the speech nor the service's token goes in the journal.
