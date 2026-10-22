@@ -15,6 +15,7 @@
 	import { EarlierReads, transcriptUrl, type TranscriptFeed } from '#lib/board/earlier.ts';
 	import { askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
+	import { splitAttachments } from '#lib/board/attachments.ts';
 	import { RenderedMarkdown } from '#lib/board/markdown.ts';
 		import { toasts } from '#lib/board/toasts.svelte.ts';
 	import {
@@ -39,6 +40,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	import { itemLabel, type Controller, type InboxQuestion, type InboxReport } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
 	import { onMount, untrack, type Snippet } from 'svelte';
+	import AttachmentList from './AttachmentList.svelte';
 
 	/** How long a question not found waits for the next page before it is judged without one. */
 	const JUDGE_WITHOUT_PAGE_MS = 5_000;
@@ -447,6 +449,11 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 								{#if originals[segment.key]}
 									<div class="text md original" lang="en">{@html markdown.html(segment.item.seq, segment.item.text)}</div>
 								{/if}
+							{:else if segment.item.kind === 'user'}
+								<!-- What the user attached from the board shows as the files themselves. -->
+								{@const parts = splitAttachments(segment.item.text)}
+								{#if parts.body.trim()}<div class="text md">{@html markdown.html(segment.item.seq, parts.body)}</div>{/if}
+								<AttachmentList paths={parts.paths} />
 							{:else}
 								<div class="text md">{@html markdown.html(segment.item.seq, segment.item.text)}</div>
 								{#if translation?.status === 'failed'}
