@@ -16,7 +16,7 @@ import {
 	type SwitchView
 } from '../../src/lib/board/models.ts';
 import type { Agent } from '../../src/lib/board/types.ts';
-import { checkRunHere, startFixture, type Fixture } from '../harness.ts';
+import { checkRunHere, startFixture, until, type Fixture } from '../harness.ts';
 
 let fixture: Fixture;
 let cookie: string;
@@ -36,7 +36,7 @@ beforeAll(async () => {
 afterAll(() => fixture.cleanup());
 beforeEach(async () => {
 	checkRunHere(fixture.dir);
-	for (const file of ['herdr-calls.jsonl', 'herdr.json', 'hcom.json', 'hcom-calls.jsonl', 'hcom-added.json', 'launch-args.json']) {
+	for (const file of ['herdr-calls.jsonl', 'herdr-socket-calls.jsonl', 'herdr.json', 'hcom.json', 'hcom-calls.jsonl', 'hcom-added.json', 'hcom-events.jsonl', 'launch-args.json']) {
 		rmSync(join(fixture.dir, file), { force: true });
 	}
 	rmSync(join(fixture.dir, 'board-state', 'sent-log.jsonl'), { force: true });
@@ -44,6 +44,7 @@ beforeEach(async () => {
 	setHerdr(['s-claude', 's-codex', 's-plain', 's-board']);
 	fixture.setHcom({ agents: [hcomAgent('clio', 's-claude'), hcomAgent('coxa', 's-codex'), hcomAgent('boro', 's-board')] });
 	for (const session of ['s-claude', 's-codex']) lastTurn(session, session === 's-codex' ? 'gpt-6.1-sol' : 'claude-opus-5-5');
+	rmSync(join(fixture.dir, 'transcripts', 's-claude.permission.json'), { force: true });
 	await fixture.refresh(cookie);
 });
 
@@ -136,6 +137,52 @@ test('a listening agent linked to hcom is stopped and resumed in its own workspa
 	expect(await find('s-claude')).toMatchObject({ inHerdr: true, switch: null, herdr: { pane: 'wA:p-new' } });
 	const { switches } = await record('s-claude');
 	expect(switches.map((view) => view.state)).toEqual(['done']);
+});
+
+test("a switch keeps the Claude session's permission mode, which hcom's stored arguments lack, with the new settings after it", async () => {
+	writeFileSync(join(fixture.dir, 'transcripts', 's-claude.permission.json'), JSON.stringify({ mode: 'bypassPermissions' }));
+	// Started outside hcom: the arguments hcom stored for it are only the last switch's.
+	hcomPlan({
+		agents: [{ ...hcomAgent('clio', 's-claude'), launch_args: JSON.stringify(['--model', 'claude-opus-5-5']) }, hcomAgent('coxa', 's-codex')],
+		resumed: hcomAgent('clio', 's-claude', 'listening', 'wA:p-new'),
+		resumedHerdr: herdrAgent('s-claude', 'wA:p-new')
+	});
+	expect((await change('s-claude', 'claude-sonnet-5-5', 'high')).status).toBe(200);
+	expect(hcomCalls()[1].slice(6)).toEqual(['--permission-mode', 'bypassPermissions', '--model', 'claude-sonnet-5-5', '--effort', 'high']);
+});
+
+test('a switch adds no permission argument when the stored ones keep the mode, and never turns another mode into bypass permissions', async () => {
+	writeFileSync(join(fixture.dir, 'transcripts', 's-claude.permission.json'), JSON.stringify({ mode: 'bypassPermissions' }));
+	const stored = (args: string[]) => ({ ...hcomAgent('clio', 's-claude'), launch_args: JSON.stringify(args) });
+	hcomPlan({ agents: [stored(['--dangerously-skip-permissions']), hcomAgent('coxa', 's-codex')], resumed: hcomAgent('clio', 's-claude', 'listening', 'wA:p-new'), resumedHerdr: herdrAgent('s-claude', 'wA:p-new') });
+	expect((await change('s-claude', 'claude-sonnet-5-5', null)).status).toBe(200);
+	expect(hcomCalls()[1].slice(6)).toEqual(['--model', 'claude-sonnet-5-5', '--effort', 'medium']);
+
+	// In auto mode now, though its last launch was in bypass permissions by `--permission-mode`.
+	rmSync(join(fixture.dir, 'hcom-calls.jsonl'), { force: true });
+	writeFileSync(join(fixture.dir, 'transcripts', 's-claude.permission.json'), JSON.stringify({ mode: 'auto' }));
+	setHerdr(['s-claude', 's-codex', 's-plain', 's-board']);
+	hcomPlan({ agents: [stored(['--permission-mode', 'bypassPermissions']), hcomAgent('coxa', 's-codex')], resumed: hcomAgent('clio', 's-claude', 'listening', 'wA:p-new'), resumedHerdr: herdrAgent('s-claude', 'wA:p-new') });
+	rmSync(join(fixture.dir, 'hcom-added.json'), { force: true });
+	await fixture.refresh(cookie);
+	expect((await change('s-claude', 'claude-opus-5-5', null)).status).toBe(200);
+	expect(hcomCalls()[1].slice(6)).toEqual(['--permission-mode', 'auto', '--model', 'claude-opus-5-5', '--effort', 'medium']);
+});
+
+test("the resumed tab goes to the front of its workspace once Herdr runs it, though hcom still lists the session in the pane the stop closed", async () => {
+	const herdrFile = join(fixture.dir, 'herdr.json');
+	const tabs = () => JSON.parse(readFileSync(herdrFile, 'utf8')).tabs.map((tab: { tab_id: string }) => tab.tab_id);
+	const before = tabs();
+	hcomPlan({ resumed: hcomAgent('clio', 's-claude'), resumedHerdr: { ...herdrAgent('s-claude', 'wA:p-new'), tab_id: 'wA:t-new' } });
+	expect((await change('s-claude', 'claude-sonnet-5-5', 'high')).status).toBe(200);
+	await fixture.refresh(cookie);
+	const moves = () => lines(join(fixture.dir, 'herdr-socket-calls.jsonl')).filter((call: string[]) => call[0] === 'tab' && call[1] === 'move');
+	await until(() => moves().length > 0 && tabs()[0] === 'wA:t-new', 5000, 'the tab moved');
+	expect(moves()).toEqual([['tab', 'move', 'wA:t-new', '0']]);
+	// The others keep their order; the old tab closed with its pane is still listed by this fake.
+	expect(tabs()).toEqual(['wA:t-new', ...before]);
+	const panes = lines(join(fixture.dir, 'board-state', 'sent-log.jsonl')).filter((line: { kind: string }) => line.kind === 'resume-pane').map((line: { pane: string }) => line.pane);
+	expect(panes).toEqual(['wA:p-new']);
 });
 
 test('a Codex keeps the effort when only the model changes: -c overrides only, the latest effort carried', async () => {

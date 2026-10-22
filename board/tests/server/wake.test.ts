@@ -1,7 +1,7 @@
 // Waking an ended controller from the board, against fake hcom, Herdr and input commands. Nothing
 // here types into, resumes or opens anything real.
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SentEntry } from '../../src/lib/board/answers.ts';
@@ -46,6 +46,7 @@ beforeEach(() => {
 		'hcom-env.jsonl',
 		'hcom-list-calls.jsonl',
 		'hcom-added.json',
+		'hcom-events.jsonl',
 		'herdr-calls.jsonl',
 		'inject-calls.jsonl',
 		'inject-typed.jsonl',
@@ -202,6 +203,69 @@ test('a client that is gone is resumed by session ID in a Herdr tab of its proje
 	// The board runs inside an agent's shell here; none of that agent's identity reaches the resume.
 	expect(readLog('hcom-env.jsonl')).toEqual([keptAgentShellEnv(fixture, 'r')]);
 	expect(injects()).toEqual([]);
+});
+
+/** The session's record, last with this permission mode; and the arguments hcom kept from its
+ *  last launch, in a `stopped` event of it, when given. */
+let stops = 0;
+function recorded(sessionId: string, mode: string | null, stored?: string[]) {
+	const dir = join(fixture.dir, 'transcripts');
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, `${sessionId}.jsonl`), JSON.stringify({ kind: 'user', time: '2026-10-22T12:00:00.000Z', text: '開始' }) + '\n');
+	if (mode) writeFileSync(join(dir, `${sessionId}.permission.json`), JSON.stringify({ mode }));
+	if (!stored) return;
+	const snapshot = { name: 'x', session_id: sessionId, tool: 'claude', directory: '/', launch_args: JSON.stringify(stored) };
+	const event = { data: { action: 'stopped', by: 'cli', reason: 'killed', snapshot }, id: ++stops, instance: 'x', ts: '2026-10-22T12:00:00Z', type: 'life' };
+	appendFileSync(join(commandDir, 'hcom-events.jsonl'), JSON.stringify(event) + '\n');
+}
+const resumeArgs = async (target: { id: string }) => {
+	hcomPlan({});
+	expect((await wake(target.id, '繼續')).body.ok).toBe(true);
+	return resumes().at(-1)!.args.slice(8);
+};
+
+test("a Claude resume keeps the permission mode its record last had, which hcom's stored arguments lack", async () => {
+	// Started outside hcom in bypass permissions: hcom has nothing of that to repeat.
+	const bypass = await ended();
+	recorded(bypass.id, 'bypassPermissions');
+	expect(await resumeArgs(bypass)).toEqual(['--permission-mode', 'bypassPermissions']);
+	expect((await wakes(bypass.id))[0].extraArgs).toEqual(['--permission-mode', 'bypassPermissions']);
+
+	// hcom kept arguments without it: the last stop's are the ones it repeats.
+	const later = await ended();
+	recorded(later.id, 'bypassPermissions', ['--dangerously-skip-permissions']);
+	recorded(later.id, 'bypassPermissions', ['--model', 'claude-opus-5-5']);
+	expect(await resumeArgs(later)).toEqual(['--permission-mode', 'bypassPermissions']);
+});
+
+test('a resume adds nothing when the stored arguments give the mode already, or the mode is not known', async () => {
+	const flagged = await ended();
+	recorded(flagged.id, 'bypassPermissions', ['--model', 'claude-opus-5-5', '--dangerously-skip-permissions']);
+	expect(await resumeArgs(flagged)).toEqual([]);
+
+	const given = await ended();
+	recorded(given.id, 'plan', ['--permission-mode', 'plan']);
+	expect(await resumeArgs(given)).toEqual([]);
+
+	const unknown = await ended();
+	recorded(unknown.id, null);
+	expect(await resumeArgs(unknown)).toEqual([]);
+
+	// Codex keeps its own permission arguments.
+	const codex = await ended('codex');
+	recorded(codex.id, 'bypassPermissions');
+	expect(await resumeArgs(codex)).toEqual([]);
+});
+
+test('a session that was in another mode comes back in it, never in bypass permissions', async () => {
+	const auto = await ended();
+	recorded(auto.id, 'auto');
+	expect(await resumeArgs(auto)).toEqual(['--permission-mode', 'auto']);
+
+	// Stored in bypass permissions by its last launch, then changed in the client: the record wins.
+	const changed = await ended();
+	recorded(changed.id, 'default', ['--permission-mode', 'bypassPermissions']);
+	expect(await resumeArgs(changed)).toEqual(['--permission-mode', 'default']);
 });
 
 test('a resume with a ticked box has the LAT start command in its first message', async () => {

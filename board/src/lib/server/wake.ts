@@ -39,6 +39,7 @@ import { inject, queued, typedText } from './send.ts';
 import { modelLock, readCurrent } from './helper.ts';
 import { appendSent, readLines, type ResumeMark, type ResumeResult, type SentLog } from './sent-log.ts';
 import { openResume, openResumes, openSwitch } from './sent-views.ts';
+import { keepPermission } from './permission.ts';
 
 /** Where a model switch has stopped its client without seeing it gone. */
 const UNSETTLED_STOP = new Set<SwitchState>(['stopping', 'stop-failed', 'stop-unknown']);
@@ -229,7 +230,7 @@ export async function check(board: Board, controllerId: string, confirm = false)
  * while hcom starts the client, or a result that cannot be written, leaves it open for the next
  * wake to check. Nothing else would stop that wake from resuming the conversation a second time.
  */
-export async function resume(board: Board, controller: Pick<Controller, 'workspace'>, entry: SentWake, prefer?: string): Promise<Delivery> {
+export async function resume(board: Board, controller: Pick<Controller, 'workspace' | 'client'>, entry: SentWake, prefer?: string): Promise<Delivery> {
 	const { stateDir } = board.config;
 	entry.route = 'resume';
 	entry.outcome = 'failed';
@@ -238,6 +239,7 @@ export async function resume(board: Board, controller: Pick<Controller, 'workspa
 		entry.error = workspace.reason;
 		return { abandon: null, logged: false, logError: null };
 	}
+	entry.extraArgs = [...(await keepPermission(board.config, controller.client, entry.controllerId)), ...entry.extraArgs];
 	entry.herdrWorkspace = workspace.id;
 	entry.herdrWorkspaceLabel = workspace.label;
 	entry.workspaceCreated = workspace.created;
@@ -258,7 +260,9 @@ export async function resume(board: Board, controller: Pick<Controller, 'workspa
 	entry.outcome = resumed.outcome;
 	entry.error = resumed.reason;
 	entry.resumedName = resumed.hcomName;
-	if (resumed.outcome !== 'failed') {
+	// A model switch's is left to the board's reads (`settleResumes`): hcom may list the session in
+	// the pane the switch closed for a while yet.
+	if (resumed.outcome !== 'failed' && !entry.switchId) {
 		// The pane the resumed client runs in, so a later wake can tell when it is gone.
 		const list = await listAgents(board.config);
 		if (list.ok) entry.pane = findAgent(list.agents, entry.controllerId, [entry.hcomName, entry.resumedName])?.pane ?? null;
@@ -330,7 +334,8 @@ export function closeResume(stateDir: string, wakeId: string, result: ResumeClos
 
 /**
  * Close every open resume whose session is in hcom's agent list now, and note the Herdr pane of
- * those hcom shows under their session or HCOM name. Called with every fresh read while any
+ * those hcom shows under their session or HCOM name (a model switch's, the pane Herdr runs its
+ * session in), its tab then moved to the front (`onPane`). Called with every fresh read while any
  * resume is open, so a wake shows as succeeded without the user waking it again.
  *
  * A model switch's resume needs Herdr to run the client too (`herdr`, null when Herdr's list was
@@ -350,11 +355,15 @@ export function settleResumes(
 	for (const wake of openResumes(log.lines, now, waitMs)) {
 		const verdict = wake.switchId ? switchResumeVerdict(wake, agents, herdr, now, waitMs) : null;
 		const running = verdict ? verdict === 'succeeded' : agents.find((agent) => agent.sessionId === wake.controllerId);
-		const seen = findAgent(agents, wake.controllerId, [wake.hcomName, wake.resumedName]);
+		// A model switch's pane is the one Herdr runs the session in: hcom may still list the session,
+		// or its name, in the pane the stop closed.
+		const pane = wake.switchId
+			? herdr && runningIn({ sessionId: wake.controllerId }, agents, herdr).herdr?.pane
+			: findAgent(agents, wake.controllerId, [wake.hcomName, wake.resumedName])?.pane;
 		try {
-			if (!wake.pane && seen?.pane) {
-				log.append({ kind: 'resume-pane', wakeId: wake.id, pane: seen.pane, time: new Date(now).toISOString() });
-				onPane(seen.pane);
+			if (!wake.pane && pane) {
+				log.append({ kind: 'resume-pane', wakeId: wake.id, pane, time: new Date(now).toISOString() });
+				onPane(pane);
 			}
 			if (running) log.append(resumeClosed(wake.id, 'succeeded', now));
 			else if (verdict && typeof verdict === 'object') log.append(resumeClosed(wake.id, 'failed', now, verdict.failed));

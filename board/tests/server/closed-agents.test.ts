@@ -434,6 +434,20 @@ test('接回 resumes the same conversation in a new tab of its old workspace, mo
 	expect(log.entries[0]).toMatchObject({ action: 'resume', ok: true });
 });
 
+test("接回 keeps a Claude session's permission mode that hcom's stored arguments lack", async () => {
+	record('s-a');
+	writeFileSync(join(fixture.dir, 'transcripts', 's-a.permission.json'), JSON.stringify({ mode: 'bypassPermissions' }));
+	await seeThenGone('s-a');
+	stopEvent('s-a', 'pty', { name: 'aaaa', reason: 'closed' });
+	fixture.setHcom({ agents: [], resumed: { name: 'aaaa', session_id: 's-a', status: 'listening', launch_context: { pane_id: 'wA:p-new' } } });
+
+	expect((await resume('s-a')).status).toBe(200);
+	expect(hcomCalls().filter((call) => call.args[0] === 'r').map((call) => call.args)).toEqual([
+		['r', 's-a', '--terminal', 'herdr', '--no-run-here', '--go', '--permission-mode', 'bypassPermissions']
+	]);
+	await until(() => sentLog().find((line) => line.kind === 'agent-action' && line.action === 'resume'), 10_000, 'the resume to be logged');
+});
+
 test('with its old workspace gone, 接回 opens where its folder is', async () => {
 	record('s-a');
 	await seeThenGone('s-a');

@@ -152,6 +152,43 @@ export function killAgent(config: BoardConfig, name: string): Promise<ExternalRe
 	return runCommand(config.hcomCommand, ['kill', name], { timeoutMs: config.hcomListTimeoutMs });
 }
 
+/** The arguments hcom repeats when it resumes this session: those its latest `stopped` event kept
+ *  of the launch before. An empty list when hcom never stopped it (a session started outside hcom
+ *  has none to repeat); null when they cannot be read. */
+export async function storedLaunchArgs(config: BoardConfig, sessionId: string): Promise<string[] | null> {
+	// Only the session's own events. The ID goes into hcom's SQL: nothing but letters, digits, underscores and dashes.
+	if (!/^[\w-]+$/.test(sessionId)) return null;
+	const sql = `data like '%${sessionId}%'`;
+	const args = ['events', '--type', 'life', '--action', 'stopped', '--full', '--last', '20', '--sql', sql];
+	const run = await runCommand(config.hcomCommand, args, { timeoutMs: config.hcomListTimeoutMs });
+	if (run.failure) return null;
+	let latest: { id: number; args: string[] | null } | null = null;
+	for (const line of run.stdout.split('\n')) {
+		if (!line.trim()) continue;
+		let event: { id?: unknown; data?: { snapshot?: { session_id?: unknown; launch_args?: unknown } } };
+		try {
+			event = JSON.parse(line);
+		} catch {
+			return null;
+		}
+		const snapshot = event?.data?.snapshot;
+		if (typeof event?.id !== 'number' || snapshot?.session_id !== sessionId || (latest && latest.id > event.id)) continue;
+		latest = { id: event.id, args: launchArgsOf(snapshot.launch_args) };
+	}
+	return latest ? latest.args : [];
+}
+
+/** hcom keeps the arguments as a JSON list in a string; null when they are in another shape. */
+function launchArgsOf(value: unknown): string[] | null {
+	if (value === null || value === undefined || value === '') return [];
+	try {
+		const args: unknown = typeof value === 'string' ? JSON.parse(value) : null;
+		return Array.isArray(args) && args.every((arg) => typeof arg === 'string') ? args : null;
+	} catch {
+		return null;
+	}
+}
+
 /** One `stopped` life event of hcom: who stopped which session, and when. */
 export interface HcomStop {
 	/** hcom's event ID: a later stop has a higher one. */

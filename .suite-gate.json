@@ -323,6 +323,8 @@
        "tests": ["board/tests/*/voice*.test.ts"]},
       {"paths": ["board/src/lib/server/wake.ts"],
        "tests": ["board/tests/server/wake.test.ts", "board/tests/server/closed.test.ts", "board/tests/unit/closed-agents-rules.test.ts", "board/tests/server/closed-agents.test.ts", "board/tests/unit/log.test.ts"]},
+      {"paths": ["board/src/lib/server/permission.ts"],
+       "tests": ["board/tests/unit/permission.test.ts", "board/tests/server/wake.test.ts", "board/tests/server/agent-switch.test.ts", "board/tests/server/closed-agents.test.ts"]},
       {"paths": ["board/src/lib/board/wake.ts"],
        "tests": ["board/tests/server/wake.test.ts", "board/tests/server/closed.test.ts", "board/tests/unit/closed-agents-rules.test.ts", "board/tests/server/closed-agents.test.ts", "board/tests/unit/log.test.ts", "board/tests/unit/sent-log-cache.test.ts", "board/tests/unit/sent-log-retention.test.ts"]},
       {"paths": ["board/src/routes/api/wake/**"],
