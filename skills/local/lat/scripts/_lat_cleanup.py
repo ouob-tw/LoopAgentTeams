@@ -373,7 +373,8 @@ def delete(path, method):
                 raise ValueError(f'file has other hard links, not shredded: {entry}')
             files.append(str(entry))
         for directory in dirs:  # a read-only directory blocks unlinking its files
-            directory.chmod(directory.stat().st_mode | stat.S_IWUSR)
+            if not os.access(directory, os.W_OK):
+                directory.chmod(directory.stat().st_mode | stat.S_IWUSR)
         for start in range(0, len(files), _SHRED_BATCH):
             run_cli(['shred', '-f', '-u', '--', *files[start:start + _SHRED_BATCH]], timeout=600)
     if os.path.lexists(path):
