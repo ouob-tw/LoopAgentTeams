@@ -541,6 +541,44 @@ def record_duty(args):
     print(path)
 
 
+def duty_reminder(decisions, question_id):
+    """One line on the current duty for a confirmation question, or None unless the caller is
+    an active controller. Never raises."""
+    try:
+        text = (Path(decisions) / f'{question_id}.md').read_text(encoding='utf-8')
+        advisor = next((line.split(':', 1)[1].lower().split() for line in text.splitlines()
+                        if re.match(r'^- advisor:', line, re.IGNORECASE)), [])
+        if advisor[:2] not in (['exempt', 'ticket-confirmation'], ['exempt', 'spec-confirmation']):
+            return None
+        workspace = Path(decisions).resolve().parent.parent
+        for client, variable in SESSION_ENV.items():
+            value = os.environ.get(variable)
+            if not value:
+                continue
+            try:
+                record = read_json(Path(decisions).parent / 'sessions'
+                                   / f'{session_id(value)}.json')
+            except (OSError, ValueError):
+                continue
+            if (Path(str(record.get('workspace'))).resolve() == workspace and all(
+                    record.get(key) == expected for key, expected in dict(
+                        client=client, session_id=value, role='orchestrator',
+                        status='active').items())):
+                break
+        else:
+            return None
+        try:
+            duty = read_json(duty_path(record['session_id'])).get('text')
+        except (OSError, ValueError):
+            duty = None
+        duty = ' '.join(duty.split()) if isinstance(duty, str) else None
+        current = f'目前職責：{duty}' if duty else '目前沒有職責紀錄'
+        return (f'{current}。任務改變就覆蓋職責，寫一句涵蓋本輪所有任務：'
+                f'{duty_command(record)}')
+    except Exception:
+        return None
+
+
 def missing_duty(record, message):
     """Why this DECIDE/HELP/DONE Stop should be held for a duty not on record, or None."""
     lines = [line for line in message.splitlines() if line.strip()]

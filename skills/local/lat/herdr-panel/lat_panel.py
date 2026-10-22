@@ -88,6 +88,7 @@ prints argparse's message on stderr and exits 2.
 """
 
 from datetime import datetime
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -452,6 +453,18 @@ def _build_parser():
     return parser
 
 
+def _duty_reminder(decisions, question_id):
+    """The controller duty line for confirmation questions; any failure means no line."""
+    try:
+        path = Path(__file__).resolve().parents[1] / "scripts/lat-session.py"
+        spec = importlib.util.spec_from_file_location("lat_session", path)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module.duty_reminder(decisions, question_id)
+    except Exception:
+        return None
+
+
 def _warn_display(result):
     if result["status"] == "failed":
         print(f"lat-panel: sidebar not updated: {result['reason']}", file=sys.stderr)
@@ -468,6 +481,9 @@ def main(argv=None):
                 decisions_path=args.decisions
             )
             print(f"{args.id} r{revision}")
+            reminder = _duty_reminder(args.decisions, args.id)
+            if reminder:
+                print(reminder)
             _warn_display(refresh_status_display(args.questions, notify=written))
             return 0
         if args.command == "question" and args.question_command == "provenance":

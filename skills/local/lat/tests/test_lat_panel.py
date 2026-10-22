@@ -153,6 +153,99 @@ class LockedReplaceTests(unittest.TestCase):
             }])
 
 
+class DutyReminderTests(unittest.TestCase):
+    SID = "duty-session-1"
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.decisions = self.root / ".lat/decisions"
+        self.decisions.mkdir(parents=True)
+        self.sessions = self.root / ".lat/sessions"
+        self.sessions.mkdir()
+        self.reports = self.root / "reports"
+        self.reports.mkdir()
+        self.section = self.root / "section.md"
+        self.section.write_text("## Go?\n\nBody.\n\n- A. Yes\n- B. No\n")
+
+    def record(self, **changes):
+        record = dict(client="claude", session_id=self.SID, role="orchestrator",
+                      workspace=str(self.root), status="active")
+        record.update(changes)
+        (self.sessions / f"{self.SID}.json").write_text(json.dumps(record))
+
+    def upsert(self, advisor, session=SID):
+        (self.decisions / "Q1.md").write_text(f"# Q\n- status: pending\n- advisor: {advisor}\n")
+        env = {key: value for key, value in os.environ.items()
+               if key not in ("CLAUDE_CODE_SESSION_ID", "CODEX_THREAD_ID")}
+        env.update(HERDR_PLUGIN_CONFIG_DIR=str(self.root / "plugin-config"),
+                   LAT_REPORTS_DIR=str(self.reports))
+        if session:
+            env["CLAUDE_CODE_SESSION_ID"] = session
+        return subprocess.run(
+            [sys.executable, str(MODULE), "question", "upsert",
+             "--questions", str(self.root / ".lat/questions.md"),
+             "--decisions", str(self.decisions), "--id", "Q1", "--file", str(self.section)],
+            text=True, capture_output=True, env=env, cwd=self.root)
+
+    def test_both_confirmation_kinds_print_duty_and_overwrite_command(self):
+        self.record()
+        (self.reports / f"{self.SID}.duty.json").write_text(
+            json.dumps(dict(text="修正浮框", expected="浮框不超出")))
+        for advisor in ("exempt ticket-confirmation", "exempt spec-confirmation"):
+            result = self.upsert(advisor)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            lines = result.stdout.splitlines()
+            self.assertRegex(lines[0], r"^Q1 r\d+$")
+            self.assertEqual(len(lines), 2, result.stdout)
+            self.assertIn("修正浮框", lines[1])
+            self.assertIn("lat-session.py duty", lines[1])
+            self.assertIn("--client claude", lines[1])
+            self.assertIn("涵蓋本輪所有任務", lines[1])
+
+    def test_multiline_duty_stays_on_one_line(self):
+        self.record()
+        (self.reports / f"{self.SID}.duty.json").write_text(
+            json.dumps(dict(text="第一行\n第二行", expected="x")))
+        result = self.upsert("exempt ticket-confirmation")
+        self.assertEqual(len(result.stdout.splitlines()), 2, result.stdout)
+        self.assertIn("第一行 第二行", result.stdout)
+
+    def test_record_for_another_workspace_prints_nothing_extra(self):
+        self.record(workspace=str(self.root / "elsewhere"))
+        result = self.upsert("exempt ticket-confirmation")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertRegex(result.stdout, r"^Q1 r\d+\n$")
+
+    def test_other_advisor_values_print_nothing_extra(self):
+        self.record()
+        for advisor in ("exempt requirement-discussion", "needs-human", "late resolved"):
+            result = self.upsert(advisor)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            self.assertRegex(result.stdout, r"^Q1 r\d+\n$")
+
+    def test_missing_duty_file_says_there_is_none(self):
+        self.record()
+        result = self.upsert("exempt ticket-confirmation")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = result.stdout.splitlines()
+        self.assertEqual(len(lines), 2)
+        self.assertIn("沒有", lines[1])
+        self.assertIn("lat-session.py duty", lines[1])
+
+    def test_no_active_orchestrator_record_prints_nothing_extra_and_succeeds(self):
+        cases = (("no record", None, "claude-other"), ("not active", dict(status="ended"), self.SID),
+                 ("not orchestrator", dict(role="agent"), self.SID), ("no session env", {}, None))
+        for name, changes, session in cases:
+            with self.subTest(name):
+                if changes is not None:
+                    self.record(**changes)
+                result = self.upsert("exempt ticket-confirmation", session=session)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertRegex(result.stdout, r"^Q1 r\d+\n$")
+
+
 class QuestionCliTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
