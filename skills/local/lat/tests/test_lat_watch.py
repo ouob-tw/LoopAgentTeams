@@ -4998,7 +4998,8 @@ esac
         with patch.object(time, 'monotonic', side_effect=lambda: next(clock, 105.0)):
             self.cycle(taipei(0, 59, 58))
         self.assertEqual(self.injections(), [])
-        self.cycle(taipei(0, 59, 59))
+        with patch.object(time, 'monotonic', return_value=100.0):
+            self.cycle(taipei(0, 59, 59))
         self.assertEqual(len(self.injections()), 1)
 
 
