@@ -44,3 +44,4 @@ Agent 為測試開的服務在 Agent 結束後仍活著，2026-10-22 曾有 12 �
 - Codex 會在工具指令結束時結束同一程序群組的背景程序（實測 `nohup … &` 未脫離就被關掉），只有 `setsid` 之類脫離後的程序會留下來，這類程序仍帶編號，會被回收。
 - 測試以 `LAT_REAP_HCOM_LIST`（假的 HCOM 名單檔）、`LAT_REAP_TEST_SCOPE`（只看此前綴的編號，其他程序一律當成沒有編號）、`LAT_REAP_GRACE_SECONDS`、`LAT_REAP_LOCK_SECONDS` 與 `LAT_REAP_PROTECTED_PORTS` 替換外部依賴；正式使用不設定這些變數。
 - 主機上沒有任何 LAT 主控時沒有定期掃描，遺留程序要等下一個主控啟動後才被收。
+- 同一使用者但讀不到 `/proc` 資料的程序（例如關閉 dumpable 的 sshd、gpg-agent）無法判斷，永不處理；位在其下的帶編號程序也不處理，因為上層可能是讀不到存活證據的 client。從 ssh 終端機直接開的 Agent 因此不會被回收。讀不到的程序列在 `scan --all` 與 `reap` 輸出，清單改變時在關閉紀錄寫一筆 `not judged`。

@@ -73,9 +73,13 @@ def protected_ports():
 
 
 def read_processes(proc_root=Path('/proc')):
-    """This user's processes; others are never read, listed or signalled."""
+    """This user's processes, and {pid: error} for those of them that cannot be read.
+
+    Other users' processes are never read, listed or signalled; one that exits while being
+    read is skipped.
+    """
     uid, scope = os.getuid(), os.environ.get('LAT_REAP_TEST_SCOPE')
-    processes = {}
+    processes, unreadable = {}, {}
     for directory in proc_root.iterdir():
         if not directory.name.isdigit():
             continue
@@ -90,7 +94,13 @@ def read_processes(proc_root=Path('/proc')):
                          for value in (directory / 'cmdline').read_bytes().split(b'\0') if value)
             env = dict(value.decode(errors='replace').partition('=')[::2]
                        for value in (directory / 'environ').read_bytes().split(b'\0') if value)
-        except (FileNotFoundError, PermissionError, ProcessLookupError, ValueError, IndexError):
+        except (FileNotFoundError, ProcessLookupError):
+            continue
+        except (OSError, ValueError, IndexError) as error:
+            # Tests only count unreadable processes that carry their scope on the command line.
+            with contextlib.suppress(OSError):
+                if not scope or scope.encode() in (directory / 'cmdline').read_bytes():
+                    unreadable[int(directory.name)] = str(error)
             continue
         # Tests only see their own fake agents: other processes count as unmarked, so they
         # still form the process tree but are never judged or signalled.
@@ -98,7 +108,7 @@ def read_processes(proc_root=Path('/proc')):
             env = {}
         processes[int(directory.name)] = Process(int(directory.name), int(stat[1]), int(stat[19]),
                                                  stat[0], comm.partition('(')[2], argv, env)
-    return processes
+    return processes, unreadable
 
 
 def same_process(process):
@@ -277,12 +287,13 @@ class World(NamedTuple):
     agents: dict
     alive: set
     protected: dict
+    unreadable: dict
 
 
 def observe():
     """Read HCOM and /proc once, and work out which processes are never handled."""
     agents = hcom_agents()
-    processes = read_processes()
+    processes, unreadable = read_processes()
     children = children_map(processes)
     callers = {os.getpid()} | ancestors(os.getpid(), processes)
     marked = {process.env[MARKER] for process in processes.values() if process.env.get(MARKER)}
@@ -300,6 +311,9 @@ def observe():
             reason = 'no HCOM_PROCESS_ID'
         elif process.pid in callers:
             reason = 'caller or its ancestor'
+        elif ancestors(process.pid, processes) & unreadable.keys():
+            # It may run under a live client whose evidence of life cannot be read.
+            reason = 'ancestor unreadable'
         elif process.pid in ports:
             reason = 'listens on a protected port'
         elif process.pid in base:
@@ -310,7 +324,7 @@ def observe():
             reason = 'LAT process'
         if reason:
             protected[process.pid] = reason
-    return World(processes, agents, alive, protected)
+    return World(processes, agents, alive, protected, unreadable)
 
 
 def parse_time(value):
@@ -538,6 +552,10 @@ def reap(args):
         records = close(targets, world, directory, trigger) if targets else []
         if live_keeps != keeps:
             write_keeps(directory, live_keeps)
+        log_unjudged(directory, world, trigger, moment)
+    if world.unreadable:
+        print(f'Not judged: {len(world.unreadable)} unreadable process(es): '
+              + ', '.join(map(str, sorted(world.unreadable))))
     for keep, why in released:
         print(f'Keep on PID {keep["pid"]} ended ({why}); closing it')
     for record in records:
@@ -572,6 +590,9 @@ def keep(args):
             print(f'Refused: {error}')
             return 1
         process = world.processes.get(args.pid)
+        if args.pid in world.unreadable:
+            print(f'Refused: PID {args.pid} cannot be read ({world.unreadable[args.pid]})')
+            return 1
         if process is None or process.state == 'Z':
             print(f'Refused: PID {args.pid} is not running')
             return 1
@@ -615,6 +636,26 @@ def release(args):
     return 0
 
 
+def unjudged(world):
+    """Unreadable processes, and the agent processes protected because one is above them."""
+    return {'unreadable': {str(pid): why for pid, why in sorted(world.unreadable.items())},
+            'ancestor_unreadable': sorted(pid for pid, why in world.protected.items()
+                                          if why == 'ancestor unreadable')}
+
+
+def log_unjudged(directory, world, trigger, moment):
+    """Log the unjudged processes once each time they change, not on every periodic reap."""
+    current = unjudged(world)
+    previous = {'unreadable': {}, 'ancestor_unreadable': []}
+    for record in reversed(recent_closures(directory, 0)):
+        if record.get('result') == 'not judged':
+            previous = {key: record.get(key) for key in previous}
+            break
+    if current != previous:
+        append_log(directory, {'time': moment.isoformat(timespec='seconds'), 'trigger': trigger,
+                               'result': 'not judged', **current})
+
+
 def recent_closures(directory, limit):
     try:
         lines = (directory / LOG).read_text().splitlines()
@@ -654,8 +695,9 @@ def scan(args):
             rows['Never handled'].append(f'{line} ({world.protected[process.pid]})')
         elif process_id in world.alive:
             rows['Agent still running'].append(line)
+    rows['Unreadable'] = [f'PID {pid} ({why})' for pid, why in sorted(world.unreadable.items())]
     for title, lines in rows.items():
-        if title == 'Never handled' and not args.all:
+        if title in ('Never handled', 'Unreadable') and not args.all:
             print(f'{title}: {len(lines)} (show with --all)')
             continue
         print(f'{title}: {len(lines)}')
@@ -666,6 +708,10 @@ def scan(args):
     for record in closures:
         if record.get('result') == 'aborted':
             print(f'  {record.get("time")} {record.get("trigger")} aborted: {record.get("reason")}')
+        elif record.get('result') == 'not judged':
+            print(f'  {record.get("time")} {record.get("trigger")} not judged: unreadable PIDs '
+                  f'{", ".join(record.get("unreadable") or {}) or "none"}; agent processes below '
+                  f'them {record.get("ancestor_unreadable")}')
         else:
             print(f'  {record.get("time")} {record.get("trigger")} PID {record.get("pid")} '
                   f'{record.get("agent")} {record.get("signal")} {record.get("result")} '

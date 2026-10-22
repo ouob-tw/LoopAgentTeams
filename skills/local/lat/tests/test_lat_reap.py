@@ -374,6 +374,91 @@ class ReapTests(ReapTestCase):
         self.assertEqual(self.log(), [])
 
 
+    def test_no_shell_branch_is_base_while_live_and_collected_after_the_owner_ends(self):
+        tree = self.node('ns-client', [self.node('ns-helper', [self.node('ns-worker')])])
+        pids = self.spawn(tree, self.agent_env('ns'))
+        client = self.roots[-1]
+        self.set_hcom([('ns', 'ns', pids['ns-client'])])
+        for label in ('ns-helper', 'ns-worker'):
+            self.assertIn('base process', self.keep(pids[label]).stdout, label)
+        never_handled = self.run_reaper('scan', '--all').stdout.split('Never handled:')[1]
+        for label in ('ns-helper', 'ns-worker'):
+            self.assertIn(f'PID {pids[label]} ', never_handled, label)
+        self.reap()
+        self.assertTrue(all(map(self.alive, pids.values())))
+        self.assertEqual(self.log(), [])
+        self.set_hcom([])
+        client.kill()
+        client.wait(timeout=10)
+        self.reap()
+        self.assertTrue(self.gone(pids['ns-helper']) and self.gone(pids['ns-worker']))
+        self.assertEqual(sorted(self.closed_pids()), sorted([pids['ns-helper'], pids['ns-worker']]))
+        self.assertEqual({record['why'] for record in self.log()}, {'owner agent ended'})
+
+    def unreadable_node(self, label, children=(), **options):
+        """A node that turns off PR_SET_DUMPABLE, so this user cannot read its /proc environ."""
+        script = self.root / 'unreadable.py'
+        script.write_text('import ctypes\nctypes.CDLL(None).prctl(4, 0, 0, 0, 0)\n' + NODE)
+        # The reaper's test scope only counts unreadable processes naming it in their argv.
+        return self.node(label, children, script=str(script), extra=[self.scope], **options)
+
+    def test_unreadable_process_is_not_signalled_and_reported_once(self):
+        hidden = self.spawn(self.unreadable_node('hidden-service'),
+                            self.agent_env('hidden'))['hidden-service']
+        with self.assertRaises(PermissionError):
+            Path(f'/proc/{hidden}/environ').read_bytes()
+        leftover = self.dead_agent('plain')
+        result = self.reap()
+        self.assertTrue(self.gone(leftover))
+        self.assertTrue(self.alive(hidden))
+        self.assertIn(f'Not judged: 1 unreadable process(es): {hidden}', result.stdout)
+        [summary] = [record for record in self.log() if record['result'] == 'not judged']
+        self.assertEqual(list(summary['unreadable']), [str(hidden)])
+        self.assertIn('Permission denied', summary['unreadable'][str(hidden)])
+        self.assertEqual(self.closed_pids(), [leftover])
+        self.reap('--trigger', 'periodic')
+        self.assertEqual(len([record for record in self.log()
+                              if record['result'] == 'not judged']), 1)
+        self.assertTrue(self.alive(hidden))
+        self.assertIn('cannot be read', self.keep(hidden).stdout)
+
+    def test_processes_below_an_unreadable_live_client_are_never_signalled(self):
+        # HCOM forgot the agent; its client still runs but its details cannot be read.
+        tree = self.unreadable_node('uc-client', [self.shell('uc-shell', [
+            self.node('uc-server', script=str(self.node_script))])], exe=str(self.bin / 'claude'))
+        pids = self.spawn(tree, self.agent_env('uc', 'claude'))
+        never_handled = self.run_reaper('scan', '--all').stdout.split('Never handled:')[1]
+        for label in ('uc-shell', 'uc-server'):
+            self.assertIn(f'PID {pids[label]} ', never_handled, label)
+        self.assertIn('ancestor unreadable', self.keep(pids['uc-server']).stdout)
+        self.reap()
+        self.assertTrue(all(map(self.alive, pids.values())))
+        self.assertEqual(self.closed_pids(), [])
+        [summary] = self.log()
+        self.assertEqual(summary['unreadable'].keys(), {str(pids['uc-client'])})
+        self.assertIn(pids['uc-shell'], summary['ancestor_unreadable'])
+        self.assertIn(pids['uc-server'], summary['ancestor_unreadable'])
+
+    def test_processes_of_another_user_are_never_listed_or_signalled(self):
+        """Caller-side UID simulation, not a process owned by another user.
+
+        Without privileges no test process can belong to another user, so the real reaper CLI
+        runs with os.getuid() reporting a different UID; the real /proc owner check then sees
+        every process here as foreign. A plain reap afterwards proves the fixture was a leftover.
+        """
+        service = self.dead_agent('foreign')
+        shim = ('import os, runpy, sys; uid = os.getuid() + 1; os.getuid = lambda: uid; '
+                'sys.argv = sys.argv[1:]; runpy.run_path(sys.argv[0], run_name="__main__")')
+        for action in ('scan', 'reap'):
+            result = subprocess.run([PYTHON, '-c', shim, str(SCRIPT), action], text=True,
+                                    capture_output=True, env=self.env, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertNotIn(f'PID {service} ', result.stdout, action)
+        self.assertTrue(self.alive(service))
+        self.assertEqual(self.log(), [])
+        self.reap()
+        self.assertTrue(self.gone(service))
+
 class SignalTimeIdentityTests(ReapTestCase):
     # Exception to the CLI-only entry point (orchestrator decision): an unprivileged test
     # cannot force a real PID reuse between scan and signal, so close() is called directly.
@@ -384,11 +469,10 @@ class SignalTimeIdentityTests(ReapTestCase):
         pid = self.dead_agent('reused')
         seen = reap.Process(pid, os.getpid(), self.started['reused-service'][1] - 1, 'S',
                             'python3', ('python3',), {})
-        world = reap.World({pid: seen}, {}, set(), {})
+        world = reap.World({pid: seen}, {}, set(), {}, {})
         [record] = reap.close({pid: 'owner agent ended'}, world, self.root / 'log', 'manual')
         self.assertEqual((record['signal'], record['result']), (None, 'gone before signal'))
         self.assertTrue(self.alive(pid))
-
 
 class KeepTests(ReapTestCase):
     def test_kept_leftover_survives_until_expiry(self):
@@ -541,7 +625,6 @@ class KeepTests(ReapTestCase):
         for label in ('cx-node', 'cx-codex', 'cx-helper', 'cx-shell'):
             self.assertTrue(self.alive(pids[label]), label)
 
-
 class SharedStateTests(ReapTestCase):
     def test_projects_share_keeps(self):
         project_a, project_b = self.root / 'a', self.root / 'b'
@@ -596,6 +679,33 @@ class SharedStateTests(ReapTestCase):
         self.reap()
         self.assertGreaterEqual(time.monotonic() - began, 0.9)
         self.assertTrue(self.gone(service))
+
+    def test_deactivate_waits_for_the_lock_then_gives_up_with_the_reason(self):
+        service = self.dead_agent('deact')
+        self.hold_lock()
+        began = time.monotonic()
+        result = self.run_reaper('reap', '--trigger', 'deactivate',
+                                 env={'LAT_REAP_LOCK_SECONDS': '0.5'})
+        self.assertGreaterEqual(time.monotonic() - began, 0.5)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('another reap holds the lock (waited too long)', result.stdout)
+        self.assertTrue(self.alive(service))
+        self.assertEqual(self.log(), [])
+
+    def test_state_defaults_to_the_home_state_folder_without_xdg_state_home(self):
+        home = self.root / 'home'
+        home.mkdir()
+        service = self.dead_agent('home')
+        environment = {key: value for key, value in self.env.items() if key != 'XDG_STATE_HOME'}
+        result = subprocess.run([PYTHON, str(SCRIPT), 'reap'], text=True, capture_output=True,
+                                env={**environment, 'HOME': str(home)}, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertTrue(self.gone(service))
+        reaper = home / '.local/state/lat/reaper'
+        [record] = [json.loads(line) for line in (reaper / 'closed.jsonl').read_text().splitlines()]
+        self.assertEqual(record['pid'], service)
+        self.assertTrue((reaper / 'reap.lock').exists())
+        self.assertFalse(self.state.exists())
 
     def test_scan_is_read_only(self):
         orchestrator = self.live_agent('orch', services=['orch-server'])
