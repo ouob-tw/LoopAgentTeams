@@ -1,5 +1,6 @@
 """Behavior and CLI contract tests for the LAT stall watcher."""
 import argparse
+from datetime import datetime, timedelta, timezone
 import fcntl
 import importlib.util
 import json
@@ -9,11 +10,13 @@ import subprocess
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-watch.py'
+TAIPEI = timezone(timedelta(hours=8))
 
 
 def load_watch():
@@ -1337,7 +1340,7 @@ esac
         self.run_cycles(load_watch(), 4000)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
         self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
-        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 1, 'alarm': 1})
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 1})
         result = self.alarm_cli('--after', 1, agent='worker-open')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
@@ -4313,7 +4316,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 1, 'alarm': 1}},
+                     'feature_versions': {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 1}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -4337,7 +4340,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 1, 'alarm': 1}},
+                     'feature_versions': {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 1}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
@@ -4608,6 +4611,365 @@ esac
         self.assertFalse([record for record in self.watch_records()
                           if record.get('decision') == 'observation-failed'])
         self.assertTrue(json.loads(path.read_text())['replaced'])
+
+
+# Prompt-cache keep-alive (temp usage dir, pinned Asia/Taipei time zone).
+def taipei(hour, minute=0):
+    return datetime(2026, 10, 22, hour, minute, tzinfo=TAIPEI).timestamp()
+
+
+class PinnedEnvironment(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.usage = self.root / 'usage'
+        self.usage.mkdir()
+        environment = patch.dict(os.environ, {'LAT_USAGE_DIR': str(self.usage),
+                                              'TZ': 'Asia/Taipei'})
+        environment.start()
+        self.addCleanup(time.tzset)
+        self.addCleanup(environment.stop)
+        time.tzset()
+
+    def write_usage(self, expires_at, session='claude-session', warm=True):
+        (self.usage / f'{session}.json').write_text(json.dumps({
+            'session_id': session, 'observed_at': expires_at - 3600,
+            'prompt_cache': {'caching_observed': True, 'warm': warm, 'hit_ratio': 0.9,
+                             'expires_at': expires_at}}))
+
+
+class KeepaliveDecisionTests(PinnedEnvironment):
+    def setUp(self):
+        super().setUp()
+        self.watch = load_watch()
+        self.idle = self.watch.Observation('worker', 'listening', True, False, 10, 10, 1,
+                                           wait_active=True, client='claude',
+                                           terminal_ready=True)
+        self.info = {'session_id': 'claude-session'}
+
+    def due(self, declaration, now, observation=None, state=None, info=None):
+        return self.watch.keepalive_due(declaration, observation or self.idle,
+                                        self.info if info is None else info, state or {}, now)
+
+    def agent_wait(self, **fields):
+        return {**dict(agent='worker', kind='agent', target='reviewer', active=True,
+                       declared_at=taipei(10), deadline_at=taipei(10) + 3000), **fields}
+
+    def test_agent_wait_with_four_minutes_left_is_kept_warm_once_per_expiry(self):
+        now = taipei(10, 30)
+        self.write_usage(now + 240)
+        self.assertEqual(self.due(self.agent_wait(), now), now + 240)
+        sent = {'keepalive': {'expires_at': now + 240}}
+        self.assertIsNone(self.due(self.agent_wait(), now + 60, state=sent))
+        self.write_usage(now + 3900)
+        self.assertEqual(self.due(self.agent_wait(), now + 3700, state=sent), now + 3900)
+
+    def test_threshold_is_five_minutes_and_expired_cache_is_given_up(self):
+        now = taipei(10, 30)
+        for remaining, expected in ((301, False), (300, True), (1, True), (0, False),
+                                    (-60, False)):
+            with self.subTest(remaining=remaining):
+                self.write_usage(now + remaining)
+                self.assertEqual(self.due(self.agent_wait(), now) is not None, expected)
+
+    def test_alarm_wait_is_kept_warm(self):
+        now = taipei(3)
+        self.write_usage(now + 120)
+        alarm = dict(agent='worker', kind='alarm', active=True, declared_at=now - 3600,
+                     due_at=now + 1800, condition={'kind': 'time', 'minutes': 90})
+        # Agent waits and alarms are not limited by the decision quiet hours.
+        self.assertEqual(self.due(alarm, now), now + 120)
+        self.assertEqual(self.due(self.agent_wait(declared_at=now - 5 * 3600), now), now + 120)
+
+    def test_decision_wait_stops_after_three_hours(self):
+        declared = taipei(10)
+        decision = dict(agent='worker', kind='decision', target='HELP-1', active=True,
+                        declared_at=declared)
+        for elapsed, expected in ((3 * 3600 - 1, True), (3 * 3600, False), (5 * 3600, False)):
+            with self.subTest(elapsed=elapsed):
+                self.write_usage(declared + elapsed + 120)
+                self.assertEqual(self.due(decision, declared + elapsed) is not None, expected)
+
+    def test_decision_wait_is_quiet_from_one_to_nine_local_time(self):
+        cases = [(taipei(0, 59), True), (taipei(1), False), (taipei(4, 30), False),
+                 (taipei(8, 59), False), (taipei(9), True)]
+        for now, expected in cases:
+            with self.subTest(hour=datetime.fromtimestamp(now, TAIPEI).strftime('%H:%M')):
+                decision = dict(agent='worker', kind='decision', target='HELP-1', active=True,
+                                declared_at=now - 3600)
+                self.write_usage(now + 120)
+                self.assertEqual(self.due(decision, now) is not None, expected)
+        # 09:00 resumes only inside the three-hour limit.
+        late = dict(agent='worker', kind='decision', target='HELP-1', active=True,
+                    declared_at=taipei(5, 59))
+        self.write_usage(taipei(9) + 120)
+        self.assertIsNone(self.due(late, taipei(9)))
+
+    def test_quiet_hours_follow_host_local_time_zone(self):
+        now = taipei(4)  # 20:00 UTC the previous day
+        decision = dict(agent='worker', kind='decision', target='HELP-1', active=True,
+                        declared_at=now - 60)
+        self.write_usage(now + 120)
+        self.assertIsNone(self.due(decision, now))
+        with patch.dict(os.environ, {'TZ': 'UTC'}):
+            time.tzset()
+            self.assertEqual(self.due(decision, now), now + 120)
+        time.tzset()
+
+    def test_no_keepalive_without_a_valid_wait_or_ready_claude_prompt(self):
+        now = taipei(10, 30)
+        self.write_usage(now + 240)
+        wait = self.agent_wait()
+        cases = {
+            'no declaration': (None, self.idle, self.info),
+            'released wait': (dict(wait, active=False, released_reason='expired'),
+                              self.idle, self.info),
+            'codex agent': (wait, self.idle._replace(client='codex', codex_turn_finished=True),
+                            self.info),
+            'turn not ended': (wait, self.idle._replace(status='active'), self.info),
+            'working screen': (wait, self.idle._replace(screen_working=True), self.info),
+            'terminal not ready': (wait, self.idle._replace(terminal_ready=False), self.info),
+            'prompt has text': (wait, self.idle._replace(prompt_empty=False, input_text='x'),
+                                self.info),
+            'no session id': (wait, self.idle, {}),
+            'unsafe session id': (wait, self.idle, {'session_id': '../claude-session'}),
+            'unknown session': (wait, self.idle, {'session_id': 'other-session'}),
+        }
+        for name, (declaration, observation, info) in cases.items():
+            with self.subTest(name):
+                self.assertIsNone(self.due(declaration, now, observation, info=info))
+
+    def test_missing_corrupt_or_cold_usage_file_sends_nothing(self):
+        now = taipei(10, 30)
+        path = self.usage / 'claude-session.json'
+        cases = {
+            'missing': None,
+            'corrupt': '{"prompt_cache": ',
+            'not an object': '[]',
+            'no cache': json.dumps({'session_id': 'claude-session'}),
+            'warm false': json.dumps({'prompt_cache': {'warm': False, 'expires_at': now + 60}}),
+            'warm missing': json.dumps({'prompt_cache': {'expires_at': now + 60}}),
+            'expiry text': json.dumps({'prompt_cache': {'warm': True, 'expires_at': '1'}}),
+            'expiry bool': json.dumps({'prompt_cache': {'warm': True, 'expires_at': True}}),
+        }
+        for name, content in cases.items():
+            with self.subTest(name):
+                path.unlink(missing_ok=True)
+                if content is not None:
+                    path.write_text(content)
+                self.assertIsNone(self.due(self.agent_wait(), now))
+
+    def test_usage_directory_resolution_matches_the_status_line_recorder(self):
+        cases = [
+            ({'LAT_USAGE_DIR': '/custom/usage', 'XDG_STATE_HOME': '/state'}, '/custom/usage'),
+            ({'LAT_USAGE_DIR': '', 'XDG_STATE_HOME': '/state'}, '/state/lat/usage'),
+            ({'XDG_STATE_HOME': 'relative'}, str(Path.home() / '.local/state/lat/usage')),
+            ({}, str(Path.home() / '.local/state/lat/usage')),
+        ]
+        for environment, expected in cases:
+            with self.subTest(environment=environment):
+                with patch.dict(os.environ, environment):
+                    for name in {'LAT_USAGE_DIR', 'XDG_STATE_HOME'} - environment.keys():
+                        os.environ.pop(name, None)
+                    self.assertEqual(str(self.watch.usage_dir()), expected)
+
+    def test_keepalive_reply_is_not_progress(self):
+        watch = self.watch
+        observation = self.idle._replace(transcript_size=0)
+        state, _ = watch.decide(None, observation, 0)
+        state['keepalive'] = {'expires_at': 300, 'fingerprint': state['fingerprint'],
+                              'sent_at': 60}
+        transcript = self.root / 'transcript.jsonl'
+        transcript.write_text(
+            json.dumps({'type': 'user', 'message': {'role': 'user', 'content': watch.KEEPALIVE}})
+            + '\n' + json.dumps({'type': 'assistant', 'message': {
+                'role': 'assistant', 'content': [{'type': 'text', 'text': 'Still waiting.'}]}})
+            + '\n')
+        observed = observation._replace(transcript_size=transcript.stat().st_size,
+                                        transcript_mtime_ns=99)
+        observed = watch.nudge_only_observation(state, observed,
+                                                {'transcript_path': str(transcript)}, 'orch')
+        self.assertTrue(observed.keepalive_only)
+        saved, _ = watch.decide(state, observed, 120)
+        self.assertEqual(saved['last_progress_at'], 0)
+        # Real work after the keep-alive is progress again.
+        with transcript.open('a') as stream:
+            stream.write(json.dumps({'type': 'assistant', 'message': {'role': 'assistant',
+                         'content': [{'type': 'tool_use', 'name': 'Edit', 'input': {}}]}}) + '\n')
+        later = observed._replace(transcript_size=transcript.stat().st_size,
+                                  transcript_mtime_ns=100, keepalive_only=False)
+        later = watch.nudge_only_observation(saved, later,
+                                             {'transcript_path': str(transcript)}, 'orch')
+        self.assertFalse(later.keepalive_only)
+        saved, _ = watch.decide(saved, later, 180)
+        self.assertEqual(saved['last_progress_at'], 180)
+
+
+class KeepaliveCycleTests(PinnedEnvironment):
+    """run_cycle with a fake hcom: one Claude task agent at an empty ready prompt."""
+
+    def setUp(self):
+        super().setUp()
+        self.work = self.root / 'work'
+        (self.work / '.git').mkdir(parents=True)
+        self.tasks = self.work / '.lat/tasks'
+        self.tasks.mkdir(parents=True)
+        (self.tasks / 'open.md').write_text(
+            '- agent：worker (Claude)\n- orchestrator：orch\n- status：in progress\n'
+            '- live actions：無\n- preflight：無\n- next step：\n')
+        self.decisions = self.work / '.lat/decisions'
+        self.decisions.mkdir()
+        self.transcript = self.root / 'transcript.jsonl'
+        self.transcript.write_text('')
+        self.hcom_log = self.root / 'hcom.log'
+        self.hcom_log.write_text('')
+        binary = self.root / 'bin'
+        binary.mkdir()
+        agents = json.dumps([
+            {'name': 'orch', 'status': 'listening', 'tool': 'claude'},
+            {'name': 'worker', 'status': 'listening', 'tool': 'claude',
+             'session_id': 'claude-session', 'transcript_path': str(self.transcript)}])
+        hcom = binary / 'hcom'
+        hcom.write_text(f'''#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_HCOM_LOG"
+case "$1" in
+list) printf '%s\\n' '{agents}';;
+term) if [ "$2" = inject ]; then
+        if [ -f "$FAKE_HCOM_LOG.fail" ]; then exit 1; fi
+      elif [ -f "$FAKE_HCOM_LOG.busy" ]; then
+        printf '%s\\n' '{{"ready":true,"prompt_empty":false,"input_text":"draft","lines":[]}}'
+      else printf '%s\\n' '{{"ready":true,"prompt_empty":true,"lines":[]}}'; fi;;
+esac
+''')
+        hcom.chmod(0o755)
+        environment = patch.dict(os.environ, {'PATH': f'{binary}:{os.environ["PATH"]}',
+                                              'FAKE_HCOM_LOG': str(self.hcom_log)})
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.watch = load_watch()
+        self.wait_file = self.watch.wait_path(self.work, 'worker')
+
+    def declare(self, **fields):
+        self.watch.write_object(self.wait_file, {**dict(
+            agent='worker', target='reviewer', reason='review', active=True,
+            declared_at=self.start, declared_at_utc=datetime.fromtimestamp(
+                self.start, timezone.utc).isoformat()), **fields})
+
+    def cycle(self, *times):
+        for now in times:
+            self.watch.run_cycle(self.work, self.tasks, self.decisions, 'orch', now=now)
+
+    def injections(self):
+        return [line for line in self.hcom_log.read_text().splitlines()
+                if line.startswith('term inject worker')]
+
+    def records(self, decision='cache-keepalive'):
+        path = self.work / '.lat/watch/orch/watch.jsonl'
+        return [record for record in map(json.loads, path.read_text().splitlines())
+                if record.get('decision') == decision]
+
+    def state(self):
+        return json.loads((self.work / '.lat/watch/orch/state.json').read_text())
+
+    def reply_to_keepalive(self):
+        with self.transcript.open('a') as stream:
+            stream.write(json.dumps({'type': 'user', 'message': {
+                'role': 'user', 'content': self.watch.KEEPALIVE}}) + '\n')
+            stream.write(json.dumps({'type': 'assistant', 'message': {
+                'role': 'assistant', 'content': [{'type': 'text', 'text': 'Waiting.'}]}}) + '\n')
+
+    def test_agent_wait_keepalive_is_sent_once_and_reply_changes_nothing(self):
+        self.start = taipei(10)
+        self.declare(kind='agent', deadline_at=self.start + 3000)
+        self.cycle(self.start)
+        before = self.wait_file.read_bytes()
+        self.write_usage(self.start + 1200 + 240)
+        self.cycle(self.start + 1200, self.start + 1260)
+        self.assertEqual(len(self.injections()), 1)
+        self.assertIn(self.watch.KEEPALIVE, self.injections()[0])
+        self.assertEqual([(r['agent'], r['kind'], r['expires_at'], r['result'])
+                          for r in self.records()],
+                         [('worker', 'agent', self.start + 1440, 'sent')])
+        self.reply_to_keepalive()
+        self.write_usage(self.start + 1320 + 3600)
+        self.cycle(self.start + 1320, self.start + 1380)
+        state = self.state()
+        self.assertEqual(state['worker']['last_progress_at'], self.start)
+        self.assertFalse(state['worker']['nudged'])
+        self.assertEqual(state['worker']['decision'], 'valid-wait')
+        self.assertEqual(self.wait_file.read_bytes(), before)
+        self.assertEqual(state['orch']['feature_versions'],
+                         {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 1})
+        # The wait still expires at its original deadline, counted once, with the real
+        # idle time, and the agent is nudged for the expiry rather than as a stall.
+        self.cycle(self.start + 3000)
+        saved = json.loads(self.wait_file.read_text())
+        self.assertFalse(saved['active'])
+        self.assertEqual(saved['expiry_count'], 1)
+        self.assertEqual(len(self.injections()), 2)
+        self.assertIn('expired after 50 minutes', self.injections()[1])
+        self.assertFalse(any(line.startswith('send ') and 'agent worker' in line
+                             for line in self.hcom_log.read_text().splitlines()))
+
+    def test_busy_or_failed_input_retries_and_expired_cache_is_given_up(self):
+        self.start = taipei(10)
+        self.declare(kind='agent', deadline_at=self.start + 3000)
+        self.write_usage(self.start + 240)
+        busy = Path(f'{self.hcom_log}.busy')
+        busy.touch()
+        self.cycle(self.start)
+        self.assertEqual(self.injections(), [])
+        busy.unlink()
+        failed = Path(f'{self.hcom_log}.fail')
+        failed.touch()
+        self.cycle(self.start + 60)
+        self.assertEqual(self.records()[-1]['result'], 'failed')
+        self.assertNotIn('expires_at', self.state()['worker'].get('keepalive', {}))
+        self.assertFalse(self.state()['worker']['nudged'])
+        failed.unlink()
+        self.cycle(self.start + 120)
+        self.assertEqual([r['result'] for r in self.records()], ['failed', 'sent'])
+        # A cache that already expired is not chased.
+        self.write_usage(self.start + 600)
+        busy.touch()
+        self.cycle(self.start + 400)
+        busy.unlink()
+        self.cycle(self.start + 600, self.start + 660)
+        # One failed attempt and one delivered keep-alive; nothing after expiry.
+        self.assertEqual(len(self.injections()), 2)
+
+    def test_alarm_is_kept_warm_and_still_rings_on_time(self):
+        self.start = taipei(10)
+        self.declare(kind='alarm', due_at=self.start + 90 * 60,
+                     condition={'kind': 'time', 'minutes': 90})
+        self.write_usage(self.start + 3000)
+        self.cycle(self.start, self.start + 2800)
+        self.assertEqual(len(self.injections()), 1)
+        self.assertIn(self.watch.KEEPALIVE, self.injections()[0])
+        self.assertEqual(self.records()[0]['kind'], 'alarm')
+        self.reply_to_keepalive()
+        self.write_usage(self.start + 2860 + 3600)
+        self.cycle(self.start + 2860, self.start + 5340)
+        self.assertEqual(len(self.injections()), 1)
+        self.cycle(self.start + 5400)
+        self.assertEqual(len(self.injections()), 2)
+        self.assertIn('Your alarm condition met', self.injections()[1])
+        self.assertEqual(json.loads(self.wait_file.read_text())['rang_at'], self.start + 5400)
+
+    def test_decision_wait_is_skipped_during_quiet_hours(self):
+        (self.decisions / 'HELP-1.md').write_text('# Q\n- version: r1\n- status: pending\n')
+        self.start = taipei(0, 30)
+        self.declare(kind='decision', target='HELP-1')
+        self.write_usage(taipei(1))
+        self.cycle(taipei(0, 56))
+        self.assertEqual(len(self.injections()), 1)
+        self.assertEqual(self.records()[0]['kind'], 'decision')
+        self.reply_to_keepalive()
+        self.write_usage(taipei(2))
+        self.cycle(taipei(1, 56), taipei(1, 58))
+        self.assertEqual(len(self.injections()), 1)
+        self.assertTrue(json.loads(self.wait_file.read_text())['active'])
 
 
 if __name__ == '__main__':

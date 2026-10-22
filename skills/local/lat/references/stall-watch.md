@@ -104,6 +104,18 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 
 舊格式 Agent 聲明以 `declared_at` 加 60 分鐘為期限；決策聲明仍不設期限。到期狀態、連續次數與待送催促存在等待聲明檔，並保存於主控監控狀態；重啟後保留。監控每輪在主控狀態的 `feature_versions.wait_deadline` 寫入 `1`，表示支援等待期限；同時寫入 `feature_versions.alarm=1` 表示支援鬧鐘。新的聲明取代舊的；監控保存時核對原先讀取的版本，避免催促後寫回舊聲明蓋掉新聲明。重新聲明前也核對上一筆是否已因新訊息或回報正常解除，避免延續舊計數。輸入成功與存檔之間當機，重啟後可能重送一次。
 
+## 快取保溫
+
+Claude 的提示快取在最後一次請求後約一小時失效，失效後下一回合要整段重寫。監控每輪對監控對象中的 Claude Agent（主控本人與任務卡 Agent）檢查快取，快過期時叫醒它一次；Codex 沒有快取到期時間，不保溫。
+
+- 到期時間讀狀態列記錄器寫的 `<session_id>.json` 的 `prompt_cache.expires_at`（秒）：目錄為 `$LAT_USAGE_DIR`，未設時為 `$XDG_STATE_HOME/lat/usage`，再預設 `~/.local/state/lat/usage`；session 以 `hcom list --json` 的 `session_id` 對應。檔案不存在、讀不出、`warm` 不是 `true` 或已過期時不動作。
+- 條件：有有效等待聲明，與鬧鐘共用「回合已結束、視窗就緒且輸入框為空」的判斷，快取剩 5 分鐘以內，且這一輪沒有其他催促要送。
+- 範圍：等 Agent（`kind=agent`）與鬧鐘（`kind=alarm`）一律保溫；等決策（`kind=decision`）從聲明起最多 3 小時，且主機當地時間 01:00–09:00 不保溫（以送出時刻判斷，09:00 起恢復，仍受 3 小時上限）。
+- 動作：在視窗輸入一句 `[lat-watch] Prompt cache keep-alive.` 開頭的英文，請它讀未讀訊息；沒有新事就保持原等待、不重新聲明，用最短的回覆結束回合。
+- 同一個 `expires_at` 只送一次；送出後快取時間更新，下一次在新的到期前再送。視窗忙碌或輸入失敗時下一輪重試，快取已過期就放棄這一次。
+- 保溫提示與其簡短回覆不算進展，不讓等待聲明失效，不消耗或重設該段停住的催促與上報，也不改等待期限、延長判斷與連續到期計數；鬧鐘照原時間響。回覆中有工具操作、較長文字或傳出訊息時照常算進展。
+- 每次嘗試在 `watch.jsonl` 記 `cache-keepalive`（`agent`、`kind`、`expires_at`、`result` 為 `sent` 或 `failed`，失敗附 `error`）。監控狀態以 `feature_versions.cache_keepalive=1` 表示支援；依下一節重啟監控後才生效。
+
 ## 更新監控程式後重啟
 
 安裝新檔案不會替換執行中的監控；重跑 activate 若監控仍在也不會換新。必須由擁有監控的主控自己確認其 `$workspace/.lat/watch/<session-id>.pid` 內的 PID 與程序身分，停止自己的監控程序，再重跑自己原本的同一條 `lat-session.py activate` 指令。保留 session 紀錄、面板綁定、等待聲明及監控狀態，不執行 deactivate，不刪檔。
@@ -119,6 +131,8 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 3. 真的沒有可做的事，依上一節聲明等待後結束回合。
 
 催促本身不用回覆，也不必向召喚者報告被催過。
+
+開頭是 `[lat-watch] Prompt cache keep-alive.` 的是[快取保溫](#快取保溫)：有未讀訊息就照上面處理；沒有新事就保持原等待，不要重新聲明，也不要執行工具，用最短的一句話結束回合。
 
 ## 主控處理監控通知
 
