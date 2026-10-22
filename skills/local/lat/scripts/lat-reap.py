@@ -26,6 +26,7 @@ from _lat_common import process_starttime, run_cli, write_json_atomic
 SKILL_DIR = Path(__file__).resolve().parents[1]
 MARKER = 'HCOM_PROCESS_ID'
 INTERPRETER = re.compile(r'(python[0-9.]*|bash|sh|dash|zsh)')
+VALUE_OPTIONS = {'-X', '-W', '-o', '-O'}  # interpreter options whose value is the next argument
 SHELLS = {'bash', 'sh', 'zsh', 'dash', 'fish', 'ksh', 'mksh', 'tcsh', 'csh', 'ash', 'yash'}
 TRIGGERS = ('periodic', 'deactivate', 'manual')
 GRACE_SECONDS = 10
@@ -248,8 +249,14 @@ def in_skill_dir(process):
         cwd, paths = None, []
     # The executable, or the script an interpreter runs (`python [-u] x.py`, `uv run python
     # x.py`); other file arguments, such as a file open in an editor, do not count.
-    interpreter = False
+    interpreter, option_value = False, False
     for index, arg in enumerate(process.argv):
+        if option_value:
+            option_value = False
+            continue
+        if interpreter and arg in VALUE_OPTIONS:
+            option_value = True
+            continue
         if index == 0 or (interpreter and not arg.startswith('-')):
             paths.append(Path(arg) if arg.startswith('/') or cwd is None else cwd / arg)
         if not arg.startswith('-'):

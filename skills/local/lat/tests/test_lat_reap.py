@@ -45,7 +45,8 @@ if spec.get('listen'):
         stream.write(str(port))
 
 def command(child):
-    return [child.get('exe', child['python']), child.get('script', __file__), json.dumps(child),
+    return [child.get('exe', child['python']), *child.get('options', []),
+            child.get('script', __file__), json.dumps(child),
             *child.get('extra', [])]
 
 def environment(child):
@@ -328,7 +329,7 @@ class ReapTests(ReapTestCase):
         tree = self.node('dead-root', [
             self.node('no-marker', env={}),
             self.node('listener', listen=True),
-            self.node('lat-script', script=str(self.lat_script)),
+            self.node('lat-script', script=str(self.lat_script), options=['-X', 'dev']),
             self.node('plain'),
         ])
         pids = self.spawn(tree, self.agent_env('dead'))
