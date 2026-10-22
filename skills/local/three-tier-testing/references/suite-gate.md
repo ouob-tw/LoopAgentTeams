@@ -163,7 +163,7 @@ LoopAgentTeams 風格的例子：
   ],
   "affected": {
     "commands": {
-      "board": "if printf '%s\\n' {tests} | grep -qv '^tests/unit/'; then bun run build:test || exit; fi; bun test {tests}",
+      "board": "if printf '%s\\n' {tests} | grep -qv '^tests/unit/'; then bun run build:test || exit; fi; bun test $(printf './%s\\n' {tests})",
       "skills/local/lat": "uv run --no-project python -m unittest {tests}",
       "skills/local/three-tier-testing": "uv run --no-project python -m unittest {tests}"
     },
@@ -180,7 +180,7 @@ LoopAgentTeams 風格的例子：
 }
 ```
 
-這裡的 board 只有 `tests/unit/` 不需要建置；`suites` 只列跑伺服器或瀏覽器測試的整套指令，單跑 `bun test`（只有單元測試）不算整套。樣板因此只在選到 `tests/unit/` 以外的測試時先建置，建置失敗就停下並回傳它的結束碼。
+這裡的 board 只有 `tests/unit/` 不需要建置；`suites` 只列跑伺服器或瀏覽器測試的整套指令，單跑 `bun test`（只有單元測試）不算整套。樣板因此只在選到 `tests/unit/` 以外的測試時先建置，建置失敗就停下並回傳它的結束碼。board 的 `bunfig.toml` 把測試根目錄設在 `tests/unit`，`bun test` 會把不以 `./` 開頭的參數當成篩選字串、只在單元測試裡找，所以樣板替每個路徑加上 `./`（路徑不能含空白）。
 
 改到 `skills/local/lat/scripts/lat-watch.py` 時，在 `skills/local/lat` 執行 `uv run --no-project python -m unittest tests/test_lat_watch.py`；改到 `board/bun.lock` 或沒列在表上的檔案時，經閘門跑（或沿用）三套整套。
 
