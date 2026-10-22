@@ -99,6 +99,8 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 
 只有任務卡明列待完成後續工作時可暫留，例如 QA 保留 worktree 供複驗；後續工作完成後立即收尾。
 
+交付前以 `uv run --no-project python <lat_dir>/scripts/lat-reap.py scan --limit 0` 列出本輪期間關閉的程序與仍保留的服務，寫入交付回報。
+
 [Spec 文件審查](spec-review.md#收尾) 沒有 commit，不適用上述合併門檻：使用者確認或放棄該 Spec 後，主控先將 status 改為 `completed`、deliverable commit 填「無（證據為 issue 留言）」並把任務卡移至 `.lat/tasks/done/`，再關閉審查者。
 
 參謀沒有 commit：階段交界、任務交付或取消時，主控將 status 改為 `completed`、deliverable commit 填「無（參謀無提交）」，先移卡至 `.lat/tasks/done/`，再關閉 Agent。
