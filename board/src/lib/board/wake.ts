@@ -34,8 +34,11 @@ export interface SentWake {
 	/** The name the resume output gave the agent, when it gave one: hcom keeps the controller's
 	 *  name when it had one, so this is usually the same. */
 	resumedName: string | null;
-	/** The Herdr pane the resumed client runs in, when hcom's agent list showed one. */
+	/** The Herdr pane the resumed client runs in, when hcom's agent list or Herdr showed one. */
 	pane: string | null;
+	/** Herdr panes that ran the session before the resume, so none of them is taken for the resumed
+	 *  client's. Missing when there were none. */
+	earlierPanes?: string[];
 	/** Client arguments added after the resume's own flags: the model and effort chosen. */
 	extraArgs: string[];
 	/** The model and effort chosen for a resume; missing on wakes logged before there was a choice. */
