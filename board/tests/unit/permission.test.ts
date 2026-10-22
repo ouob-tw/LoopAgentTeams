@@ -23,6 +23,16 @@ test('nothing is added for a mode not known, or not recorded', () => {
 	expect(permissionArgs([], '--dangerously-skip-permissions')).toEqual([]);
 });
 
-test('stored with the bypass flag, which no argument overrides, nothing is added', () => {
-	expect(permissionArgs(['--dangerously-skip-permissions', '--model', 'claude-opus-5-5'], 'auto')).toEqual([]);
+const DISABLE_BYPASS = '{"permissions":{"disableBypassPermissionsMode":"disable"}}';
+
+test('stored with the bypass flag, another mode also turns bypass permissions off, which lets the mode win', () => {
+	const forced = ['--dangerously-skip-permissions', '--model', 'claude-opus-5-5'];
+	expect(permissionArgs(forced, 'auto')).toEqual(['--settings', DISABLE_BYPASS, '--permission-mode', 'auto']);
+	expect(permissionArgs(forced, 'plan')).toEqual(['--settings', DISABLE_BYPASS, '--permission-mode', 'plan']);
+	// Resumed so before: hcom stored those too; only a changed mode is added again.
+	const before = [...forced, '--settings', DISABLE_BYPASS, '--permission-mode', 'auto'];
+	expect(permissionArgs(before, 'auto')).toEqual([]);
+	expect(permissionArgs(before, 'default')).toEqual(['--permission-mode', 'default']);
+	// Other settings of its own are not the one that turns bypass permissions off.
+	expect(permissionArgs([...forced, '--settings', '{}', '--permission-mode', 'auto'], 'auto')).toEqual(['--settings', DISABLE_BYPASS, '--permission-mode', 'auto']);
 });

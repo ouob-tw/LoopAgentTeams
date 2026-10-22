@@ -33,8 +33,9 @@ import {
 } from '../board/wake.ts';
 import type { Board } from './board.ts';
 import { findAgent, listAgents, resumeAgent, type HcomAgent } from './hcom.ts';
-import { runningIn } from './appear.ts';
-import { chooseWorkspace, listHerdrAgents, paneExists, tabToFront, type HerdrAgent } from './herdr.ts';
+import { runningIn, waitToAppear } from './appear.ts';
+import { chooseWorkspace, listHerdrAgents, paneExists, type HerdrAgent } from './herdr.ts';
+import { moveToFront } from './launch.ts';
 import { inject, queued, typedText } from './send.ts';
 import { modelLock, readCurrent } from './helper.ts';
 import { appendSent, readLines, type ResumeMark, type ResumeResult, type SentLog } from './sent-log.ts';
@@ -251,6 +252,8 @@ export async function resume(board: Board, controller: Pick<Controller, 'workspa
 		entry.error = `寫不進送出紀錄，沒有接回：${(error as Error).message}`;
 		return { abandon: null, logged: false, logError: (error as Error).message };
 	}
+	// The board's reads leave its tab to this request from now on (`toFront`).
+	fronting.add(entry.id);
 	const resumed = await resumeAgent(board.config, {
 		sessionId: entry.controllerId,
 		herdrWorkspace: workspace.id,
@@ -279,13 +282,33 @@ export async function resume(board: Board, controller: Pick<Controller, 'workspa
 	try {
 		appendSent(stateDir, result);
 	} catch (error) {
+		fronting.delete(entry.id);
 		// The attempt stays open as logged; the next wake checks it like any other open one.
 		return { abandon: null, logged: true, logError: (error as Error).message };
 	}
-	// The new tab goes first in its workspace. Not waited for: where it ends up does not change
-	// the outcome, and a slow Herdr must not hold up the answer. Open pages hear when it moved.
-	if (entry.pane) void tabToFront(board.config, entry.pane).then((reason) => reason === null && board.tabMoved());
+	toFront(board, entry, resumed.outcome !== 'failed');
 	return { abandon: null, logged: true, logError: null };
+}
+
+/** Resumes whose new tab this board process moves itself (`toFront`), from hcom's run on, kept
+ *  after it moved; the board's reads move only the others' tabs (`settleResumes`), those of a
+ *  board restarted meanwhile. */
+const fronting = new Set<string>();
+
+/**
+ * The new tab goes first in its workspace once Herdr runs the session there (`started`: hcom did
+ * not fail): hcom may not list its pane yet, or, after a model switch's stop, still list the
+ * closed one. Not waited for: where it ends up does not change the outcome, and a slow Herdr must
+ * not hold up the answer. Open pages hear when it moved.
+ */
+function toFront(board: Board, entry: SentWake, started: boolean): void {
+	const { config } = board;
+	if (!started) return void fronting.delete(entry.id);
+	void waitToAppear(config, { sessionId: entry.controllerId }, config.now() + config.launchWaitMs, `@${entry.resumedName ?? entry.hcomName}`)
+		.then(async (appeared) => {
+			if (appeared.found && (await moveToFront(config, appeared.found.tab)) === null) board.tabMoved();
+		})
+		.catch(() => undefined);
 }
 
 /** How long after hcom's run a model switch's resumed client may take to run in Herdr. Herdr
@@ -335,7 +358,8 @@ export function closeResume(stateDir: string, wakeId: string, result: ResumeClos
 /**
  * Close every open resume whose session is in hcom's agent list now, and note the Herdr pane of
  * those hcom shows under their session or HCOM name (a model switch's, the pane Herdr runs its
- * session in), its tab then moved to the front (`onPane`). Called with every fresh read while any
+ * session in), its tab then moved to the front (`onPane`) unless this board process waits to
+ * move it itself (`toFront`). Called with every fresh read while any
  * resume is open, so a wake shows as succeeded without the user waking it again.
  *
  * A model switch's resume needs Herdr to run the client too (`herdr`, null when Herdr's list was
@@ -363,7 +387,7 @@ export function settleResumes(
 		try {
 			if (!wake.pane && pane) {
 				log.append({ kind: 'resume-pane', wakeId: wake.id, pane, time: new Date(now).toISOString() });
-				onPane(pane);
+				if (!fronting.has(wake.id)) onPane(pane);
 			}
 			if (running) log.append(resumeClosed(wake.id, 'succeeded', now));
 			else if (verdict && typeof verdict === 'object') log.append(resumeClosed(wake.id, 'failed', now, verdict.failed));

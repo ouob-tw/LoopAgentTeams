@@ -48,6 +48,7 @@ beforeEach(() => {
 		'hcom-added.json',
 		'hcom-events.jsonl',
 		'herdr-calls.jsonl',
+		'herdr-socket-calls.jsonl',
 		'inject-calls.jsonl',
 		'inject-typed.jsonl',
 		'hcom.json',
@@ -266,6 +267,20 @@ test('a session that was in another mode comes back in it, never in bypass permi
 	const changed = await ended();
 	recorded(changed.id, 'default', ['--permission-mode', 'bypassPermissions']);
 	expect(await resumeArgs(changed)).toEqual(['--permission-mode', 'default']);
+
+	// Stored with the bypass flag, which wins over any mode: bypass permissions is turned off too.
+	const forced = await ended();
+	recorded(forced.id, 'auto', ['--dangerously-skip-permissions']);
+	expect(await resumeArgs(forced)).toEqual(['--settings', '{"permissions":{"disableBypassPermissionsMode":"disable"}}', '--permission-mode', 'auto']);
+});
+
+test('the resumed tab goes to the front once Herdr runs it, though hcom had no pane for it when the resume ended', async () => {
+	const target = await ended();
+	hcomPlan({ resumed: agent(target.name, target.id) });
+	expect((await wake(target.id, '繼續')).body.entry).toMatchObject({ outcome: 'started', pane: null });
+	const moves = () => readLog<string[]>('herdr-socket-calls.jsonl').filter((call) => call[0] === 'tab' && call[1] === 'move');
+	await until(() => moves().length > 0, 5000, 'the tab moved');
+	expect(moves()).toEqual([['tab', 'move', `wP:t-${target.id}`, '0']]);
 });
 
 test('a resume with a ticked box has the LAT start command in its first message', async () => {
