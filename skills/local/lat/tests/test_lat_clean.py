@@ -292,10 +292,10 @@ class ExecuteTests(Fixture):
         calls = self.removal_calls()
         home = self.lat / 'evidence/home-copy'
         fixture = self.lat / 'progress/issue-5-fixture'
-        self.assertIn(f'shred -u -- {home}/codex-home/auth.json', calls)
+        self.assertIn(f'shred -f -u -- {home}/codex-home/auth.json', calls)
         self.assertIn(f'trash-put -- {home}', calls)
-        self.assertIn(f'shred -u -- {fixture}/state/password.json', calls)
-        self.assertIn(f'shred -u -- {self.lat}/watch/prompt-gone-abc.txt', calls)
+        self.assertIn(f'shred -f -u -- {fixture}/state/password.json', calls)
+        self.assertIn(f'shred -f -u -- {self.lat}/watch/prompt-gone-abc.txt', calls)
         self.assertIn(f'trash-put -- {self.lat}/evidence/notes', calls)
         self.assertIn(f'trash-put -- {self.lat}/questions-gone.md', calls)
         # The lock goes last, once its question file is gone.
@@ -454,6 +454,50 @@ class RealToolsTests(unittest.TestCase):
             self.assertEqual(trashed, {'plain', 'secret'})
             self.assertTrue((data / 'Trash/files/plain/notes.md').exists())
             self.assertEqual(list((data / 'Trash/files/secret').iterdir()), [])
+
+    def shred_read_only(self, make_read_only):
+        """Shred an item of read-only files (and optionally dirs); return what is left."""
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            secret = root / '.lat/evidence/secret'
+            objects = secret / 'git/objects/ab'
+            objects.mkdir(parents=True)
+            (secret / 'auth.json').write_text('token')
+            (objects / 'cdef').write_text('object')
+            data = root / 'data'
+            saved = os.environ.copy()
+            os.environ['XDG_DATA_HOME'] = str(data)
+            try:
+                make_read_only(secret)
+                _lat_cleanup.delete(secret, 'shred')
+            finally:
+                os.environ.clear()
+                os.environ.update(saved)
+                for path in [secret, *secret.rglob('*')] if secret.exists() else []:
+                    path.chmod(0o755)
+            return secret.exists(), list((data / 'Trash/files/secret').rglob('*'))
+
+    def test_shred_handles_read_only_files(self):
+        def make_read_only(secret):
+            for path in secret.rglob('*'):
+                if path.is_file():
+                    path.chmod(0o444)
+
+        exists, leftovers = self.shred_read_only(make_read_only)
+
+        self.assertFalse(exists)
+        self.assertFalse([path for path in leftovers if path.is_file()])
+
+    def test_shred_handles_read_only_directories(self):
+        def make_read_only(secret):
+            for path in secret.rglob('*'):
+                path.chmod(0o444 if path.is_file() else 0o555)
+            secret.chmod(0o555)
+
+        exists, leftovers = self.shred_read_only(make_read_only)
+
+        self.assertFalse(exists)
+        self.assertFalse([path for path in leftovers if path.is_file()])
 
 
 if __name__ == '__main__':

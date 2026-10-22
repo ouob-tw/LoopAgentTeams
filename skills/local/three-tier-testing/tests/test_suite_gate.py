@@ -2,6 +2,7 @@ import importlib.util
 import fcntl
 import json
 import os
+import shlex
 import signal
 import subprocess
 import sys
@@ -51,8 +52,18 @@ def replace(path, text):
     os.replace(tmp, path)
 
 
+# The host's global, system and environment Git config (e.g. a shared core.hooksPath) stay
+# out of tests.
+GIT_ENV = dict({k: v for k, v in os.environ.items()
+                if not k.startswith(('GIT_CONFIG', 'GIT_DIR', 'GIT_WORK_TREE', 'GIT_INDEX'))},
+               GIT_CONFIG_GLOBAL=os.devnull, GIT_CONFIG_NOSYSTEM='1',
+               GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t', GIT_COMMITTER_NAME='t',
+               GIT_COMMITTER_EMAIL='t@t')
+
+
 def git(cwd, *args):
-    subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True)
+    subprocess.run(['git', *args], cwd=cwd, check=True, capture_output=True, text=True,
+                   env=GIT_ENV)
 
 
 class GateCase(unittest.TestCase):
@@ -64,11 +75,17 @@ class GateCase(unittest.TestCase):
         self.state = self.tmp / 'state'
         self.config = self.tmp / 'config.json'
         self.set_config(max_slots=2)
-        self.env = dict(os.environ, SUITE_GATE_STATE_DIR=str(self.state),
+        self.env = dict(GIT_ENV, SUITE_GATE_STATE_DIR=str(self.state),
                         SUITE_GATE_CONFIG=str(self.config), HCOM_INSTANCE_NAME='tester',
-                        HCOM_TAG='t', GIT_AUTHOR_NAME='t', GIT_AUTHOR_EMAIL='t@t',
-                        GIT_COMMITTER_NAME='t', GIT_COMMITTER_EMAIL='t@t')
+                        HCOM_TAG='t', HOME=str(self.tmp / 'home'),
+                        XDG_CONFIG_HOME=str(self.tmp / 'xdg-config'),
+                        XDG_STATE_HOME=str(self.tmp / 'xdg-state'),
+                        XDG_DATA_HOME=str(self.tmp / 'xdg-data'),
+                        XDG_CACHE_HOME=str(self.tmp / 'xdg-cache'),
+                        GH_CONFIG_DIR=str(self.tmp / 'gh-config'))
         self.env.pop('CLAUDE_CODE_SESSION_ID', None)
+        self.env.pop('SUITE_GATE_TEST_TODAY', None)
+        self.install_fake_gh()
         # Scopes this test starts share its unique prefix; whatever is left of them is killed.
         self.env['SUITE_GATE_UNIT_PREFIX'] = self.tmp.name
         if not SCOPE_SKIP:
@@ -84,6 +101,39 @@ class GateCase(unittest.TestCase):
         self.counter = self.tmp / 'count'
         self.procs = []
         self.addCleanup(self.stop_procs)
+
+    def install_fake_gh(self):
+        """A `gh` first on PATH that logs its arguments; the real one is never reached.
+
+        `issue list` prints gh/open.json (default `[]`), `issue view` gh/view.json (default
+        an open issue); with gh/fail present every call fails."""
+        self.gh_dir = self.tmp / 'gh'
+        self.gh_dir.mkdir()
+        fake = self.tmp / 'bin/gh'
+        fake.parent.mkdir()
+        fake.write_text(f"""#!{sys.executable}
+import json, sys
+from pathlib import Path
+d = Path({str(self.gh_dir)!r})
+with open(d / 'calls.jsonl', 'a') as log:
+    log.write(json.dumps(sys.argv[1:]) + '\\n')
+if (d / 'fail').exists():
+    sys.exit('gh: HTTP 502')
+if sys.argv[1:3] == ['issue', 'list']:
+    print((d / 'open.json').read_text() if (d / 'open.json').exists() else '[]')
+elif sys.argv[1:3] == ['issue', 'view']:
+    view = d / 'view.json'
+    print(view.read_text() if view.exists() else json.dumps(
+        {{'state': 'OPEN', 'url': 'https://github.com/o/r/issues/' + sys.argv[3]}}))
+elif sys.argv[1:3] == ['issue', 'create']:
+    print('https://github.com/o/r/issues/7')
+""")
+        fake.chmod(0o755)
+        self.env['PATH'] = f"{fake.parent}{os.pathsep}{self.env['PATH']}"
+
+    def gh_calls(self):
+        path = self.gh_dir / 'calls.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
 
     def set_config(self, **values):
         self.config.write_text(json.dumps(
@@ -167,7 +217,7 @@ class GateCase(unittest.TestCase):
         (fake_bin / 'systemd-run').write_text(f'#!/bin/sh\n{probe}echo no user bus >&2\nexit 1\n')
         (fake_bin / 'systemd-run').chmod(0o755)
         self.env['SUITE_GATE_CGROUP_ROOT'] = str(root)
-        self.env['PATH'] = f'{fake_bin}:{os.environ["PATH"]}'
+        self.env['PATH'] = f'{fake_bin}:{self.env["PATH"]}'
 
     def alive(self, pid):
         stat = gate.proc_stat(pid)
@@ -847,6 +897,612 @@ class StatusTests(GateCase):
         self.finish(b)
 
 
+class AffectedCase(GateCase):
+    """A mapped project: src/ and web/ map to their tests, docs need none, deps.lock is shared."""
+
+    def setUp(self):
+        super().setUp()
+        self.log = self.tmp / 'affected.log'
+        files = {'src/app.py': '', 'src/util.py': '', 'tests/test_app.py': '',
+                 'tests/test_util.py': '', 'web/src/page.ts': '', 'web/tests/page.test.ts': '',
+                 'docs/guide.md': '', 'deps.lock': '', 'README.md': ''}
+        for name, text in files.items():
+            (self.repo / name).parent.mkdir(parents=True, exist_ok=True)
+            (self.repo / name).write_text(text)
+        self.registry = {
+            'integration_branch': 'main',
+            'full_suites': [{'command': self.full('root'), 'cwd': '.'},
+                            {'command': self.full('web'), 'cwd': 'web'}],
+            'affected': {
+                'commands': {'.': f'echo "$PWD {{tests}}" >> {self.log}',
+                             'web': f'echo "$PWD {{tests}}" >> {self.log}'},
+                'map': [
+                    {'paths': ['src/app.py'], 'tests': ['tests/test_app.py']},
+                    {'paths': ['src/util.py'], 'tests': ['tests/test_*.py']},
+                    {'paths': ['web/src/**'], 'tests': ['web/tests/**/*.test.ts']},
+                    {'paths': ['docs/**', '.suite-gate.json', '.gitignore'], 'tests': []},
+                ],
+                'shared': ['deps.lock'],
+            },
+        }
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'mapped project')
+        git(self.repo, 'checkout', '-qb', 'feature')
+
+    def write_registry(self):
+        (self.repo / '.suite-gate.json').write_text(json.dumps(self.registry))
+
+    def full(self, name):
+        return f'echo {name} >> {self.counter}'
+
+    def full_runs(self):
+        return self.counter.read_text().split() if self.counter.exists() else []
+
+    def ran(self):
+        """(directory relative to the repo, [tests]) for each affected command that ran."""
+        if not self.log.exists():
+            return []
+        out = []
+        for line in self.log.read_text().splitlines():
+            directory, *tests = line.split()
+            out.append((os.path.relpath(directory, self.repo), tests))
+        return out
+
+    def touch(self, name, text='changed\n'):
+        path = self.repo / name
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text)
+
+
+class AffectedTests(AffectedCase):
+    def test_mapped_change_runs_selected_tests_per_directory_and_records_them(self):
+        self.touch('src/util.py')
+        self.touch('web/src/page.ts')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py', 'tests/test_util.py']),
+                                      ('web', ['tests/page.test.ts'])])
+        self.assertEqual(self.full_runs(), [])
+        for text in ('src/util.py', 'web/src/page.ts', 'merge-base of HEAD and main',
+                     'tests/test_app.py  (src/util.py matches src/util.py)',
+                     'web/tests/page.test.ts  (web/src/page.ts matches web/src/**)'):
+            self.assertIn(text, result.stderr)
+        root, web = self.records()
+        self.assertEqual((root['kind'], web['kind']), ('affected', 'affected'))
+        self.assertEqual(root['changed_files'], ['src/util.py', 'web/src/page.ts'])
+        self.assertEqual(root['selected_tests'], ['tests/test_app.py', 'tests/test_util.py'])
+        self.assertEqual(web['selected_tests'], ['web/tests/page.test.ts'])
+        self.assertEqual(web['rel_cwd'], 'web')
+        self.assertEqual(root['exit_code'], 0)
+        self.assertFalse(root['reusable'])
+        head = subprocess.run(['git', 'rev-parse', 'main'], cwd=self.repo, capture_output=True,
+                              text=True).stdout.strip()
+        self.assertEqual(root['base'], head)
+        status = self.gate('status').stdout
+        self.assertIn('(affected tests)', status)
+
+    def test_affected_runs_do_not_take_or_wait_for_a_host_slot_and_are_never_reused(self):
+        self.set_config(max_slots=1)
+        hold, release = self.blocker('hold')
+        self.wait_until(lambda: len(self.status()['running']) == 1, message='blocker running')
+        self.touch('src/app.py')
+        for _ in range(2):
+            result = self.gate('affected')
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(len(self.ran()), 2)
+        release.touch()
+        self.finish(hold)
+
+    def test_a_changed_test_file_is_selected_and_a_deleted_one_is_not_run(self):
+        self.touch('tests/test_util.py')
+        (self.repo / 'web/tests/page.test.ts').unlink()
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('tests/test_util.py  (test file changed)', result.stderr)
+        self.assertEqual(self.ran(), [('.', ['tests/test_util.py'])])
+
+    def test_the_change_counts_commits_staged_unstaged_and_new_files_since_the_merge_base(self):
+        self.touch('src/app.py')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'committed change')
+        git(self.repo, 'checkout', '-q', 'main')
+        self.touch('web/src/page.ts')  # on main after the branch point: not this change
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'main moves on')
+        git(self.repo, 'checkout', '-q', 'feature')
+        self.touch('tests/test_util.py')
+        git(self.repo, 'add', 'tests/test_util.py')  # staged
+        self.touch('docs/guide.md')  # unstaged
+        self.touch('src/new_test_helper.txt')  # new and not ignored
+        self.touch('ignored/cache.py')  # ignored
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)  # the new file falls back
+        self.assertEqual(self.records()[-1]['trigger_files'], ['src/new_test_helper.txt'])
+        (self.repo / 'src/new_test_helper.txt').unlink()
+        self.log.unlink(missing_ok=True)
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.records()[-1]['changed_files'],
+                         ['docs/guide.md', 'src/app.py', 'tests/test_util.py'])
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py', 'tests/test_util.py'])])
+
+    def test_base_can_be_given_and_a_missing_branch_or_bad_base_is_an_error(self):
+        self.touch('src/app.py')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'one')
+        self.touch('web/src/page.ts')
+        result = self.gate('affected', '--base', 'HEAD')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.records()[-1]['changed_files'], ['web/src/page.ts'])
+        self.assertEqual(self.gate('affected', '--base', 'nope').returncode, 2)
+        del self.registry['integration_branch']
+        self.write_registry()
+        missing = self.gate('affected')
+        self.assertEqual(missing.returncode, 2)
+        self.assertIn('integration_branch', missing.stderr)
+
+    def test_paths_mapped_to_no_tests_run_nothing(self):
+        self.touch('docs/guide.md')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('nothing to run', result.stderr)
+        self.assertEqual((self.ran(), self.full_runs(), self.records()), ([], [], []))
+
+    def test_a_failing_affected_test_command_passes_its_exit_code_through(self):
+        self.registry['affected']['commands']['.'] = 'echo {tests}; exit 4'
+        self.write_registry()
+        self.touch('src/app.py')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 4)
+        self.assertIn('tests/test_app.py', result.stdout)
+        self.assertEqual(self.records()[-1]['exit_code'], 4)
+
+    def test_no_map_or_a_bad_map_is_refused(self):
+        self.registry['affected']['commands'] = {'.': 'echo no placeholder'}
+        self.write_registry()
+        bad = self.gate('affected')
+        self.assertEqual(bad.returncode, 2)
+        self.assertIn('{tests}', bad.stderr)
+        (self.repo / '.suite-gate.json').unlink()
+        none = self.gate('affected')
+        self.assertEqual(none.returncode, 2)
+        self.assertIn('no affected-test map', none.stderr)
+
+
+class MapFallbackTests(AffectedCase):
+    def test_an_unmapped_file_runs_every_full_suite_through_the_gate_then_reuses_it(self):
+        self.touch('README.md')
+        self.touch('src/app.py')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('needs the full suite (map fallback)', result.stderr)
+        self.assertIn('README.md: not in the affected-test map', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+        self.assertEqual(self.ran(), [])
+        root, web = self.records()
+        for record in (root, web):
+            self.assertEqual(record['purpose'], 'map-fallback')
+            self.assertEqual(record['trigger_files'], ['README.md'])
+            self.assertTrue(record['reusable'])
+            self.assertNotIn('kind', record)
+        self.assertEqual(web['rel_cwd'], 'web')
+        self.assertEqual(root['fingerprint'],
+                         gate.fingerprint(self.repo, [self.full('root')])['fingerprint'])
+        again = self.gate('affected')
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(again.stdout.count('already passed'), 2)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+        notes = self.records()[2:]
+        self.assertEqual([(n['kind'], n['purpose'], n['trigger_files'], n['reused_fingerprint'])
+                          for n in notes],
+                         [('reuse', 'map-fallback', ['README.md'], r['fingerprint'])
+                          for r in (root, web)])
+        self.assertIn('REUSED pass of', self.gate('status').stdout)
+        self.gate('affected')
+        self.assertEqual(self.full_runs(), ['root', 'web'], 'reuse notes never block reuse')
+
+    def test_a_fallback_reusing_a_post_merge_pass_records_the_fallback(self):
+        self.touch('README.md')
+        for suite in self.registry['full_suites']:
+            cwd = self.repo / suite['cwd']
+            result = self.gate('run', '--purpose', 'post-merge', '--', suite['command'], cwd=cwd)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.gate('affected').returncode, 0)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+        notes = self.records()[2:]
+        self.assertEqual([(n['kind'], n['purpose'], n['trigger_files'], n['reused_agent'])
+                          for n in notes], [('reuse', 'map-fallback', ['README.md'], 't-tester')] * 2)
+
+    def test_a_shared_path_falls_back_and_waits_for_a_host_slot(self):
+        self.set_config(max_slots=1)
+        hold, release = self.blocker('hold')
+        self.wait_until(lambda: len(self.status()['running']) == 1, message='blocker running')
+        self.touch('deps.lock')
+        proc = self.start('affected')
+        self.wait_until(lambda: len(self.status()['waiting']) == 1, message='fallback queued')
+        time.sleep(0.4)
+        self.assertEqual(self.full_runs(), [], 'the fallback must wait for the slot')
+        release.touch()
+        code, _, err = self.finish(proc)
+        self.finish(hold)
+        self.assertEqual(code, 0, err)
+        self.assertIn('deps.lock: shared path deps.lock', err)
+        self.assertIn('waiting for a host slot', err)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
+    def test_mapped_tests_that_match_no_file_or_have_no_command_fall_back(self):
+        self.registry['affected']['map'][0]['tests'] = ['tests/gone_*.py']
+        self.write_registry()
+        self.touch('src/app.py')
+        result = self.gate('affected')
+        self.assertIn('maps to tests that match no file', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+        self.counter.unlink()
+        self.registry['affected']['map'][0]['tests'] = ['tests/test_app.py']
+        del self.registry['affected']['commands']['.']
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertIn('no affected.commands directory holds this test', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
+    def test_affected_tests_are_no_cleanup_unit_but_fallback_suites_are(self):
+        self.touch('src/app.py')
+        self.assertEqual(self.gate('affected').returncode, 0)
+        self.assertEqual(self.status()['cleanup'], [])
+        self.touch('README.md')
+        self.assertEqual(self.gate('affected').returncode, 0)
+        self.assertEqual(sorted((u['rel_cwd'], u['command']) for u in self.status()['cleanup']),
+                         [('.', self.full('root')), ('web', self.full('web'))])
+
+    def test_a_failing_full_suite_fails_the_fallback(self):
+        self.registry['full_suites'][1]['command'] = 'exit 3'
+        self.write_registry()
+        self.touch('README.md')
+        self.assertEqual(self.gate('affected').returncode, 3)
+        self.assertEqual(self.full_runs(), ['root'])
+
+
+class PurposeTests(AffectedCase):
+    def test_an_unmarked_full_suite_is_refused_with_the_affected_command(self):
+        result = self.gate('run', '--', self.full('root'))
+        self.assertEqual(result.returncode, 2)
+        self.assertIn(gate.affected_command(), result.stderr)
+        self.assertIn('--purpose post-merge', result.stderr)
+        self.assertEqual((self.full_runs(), self.records()), ([], []))
+        rerun = self.gate('run', '--rerun', 'env changed', '--', self.full('root'))
+        self.assertEqual(rerun.returncode, 2)
+
+    def test_purposes_are_recorded_outside_the_fingerprint(self):
+        merged = self.gate('run', '--purpose', 'post-merge', '--', self.full('root'))
+        self.assertEqual(merged.returncode, 0, merged.stderr)
+        record = self.records()[-1]
+        self.assertEqual((record['purpose'], record['purpose_reason']), ('post-merge', None))
+        merged_fp = record['fingerprint']
+        release = self.gate('run', '--purpose', 'release', '--', self.full('root'))
+        self.assertEqual(release.returncode, 0, release.stderr)
+        self.assertIn('already passed', release.stdout)
+        self.assertIn('purpose:     post-merge', release.stdout)
+        self.assertEqual(self.full_runs(), ['root'])
+        note = self.records()[-1]
+        self.assertEqual((note['kind'], note['purpose']), ('reuse', 'release'))
+        # A reader that ignores `kind` (an older gate) takes the latest record for this
+        # content; the note must not hide the pass from it.
+        latest = [r for r in self.records() if r.get('fingerprint') == merged_fp][-1]
+        self.assertEqual((latest['purpose'], latest['reusable']), ('post-merge', True))
+        self.assertNotIn('fingerprint', note)
+        self.assertEqual(note['reused_fingerprint'], merged_fp)
+        self.assertIn(f'REUSED pass of {latest["time"]}  fp {merged_fp[:12]}',
+                      self.gate('status', '--fingerprint', merged_fp[:12]).stdout)
+        self.touch('src/app.py')
+        reason = self.gate('run', '--reason', 'investigating a flaky test', '--',
+                           self.full('root'))
+        self.assertEqual(reason.returncode, 0, reason.stderr)
+        record = self.records()[-1]
+        self.assertEqual((record['purpose'], record['purpose_reason']),
+                         ('reason', 'investigating a flaky test'))
+        self.assertIn('reason: investigating a flaky test', self.gate('status').stdout)
+
+    def test_bad_purpose_arguments_are_refused(self):
+        for args in (['--reason', ' '], ['--purpose', 'post-merge', '--reason', 'x'],
+                     ['--purpose', 'map-fallback']):
+            with self.subTest(args=args):
+                self.assertEqual(self.gate('run', *args, '--', self.full('root')).returncode, 2)
+        self.assertEqual(self.full_runs(), [])
+
+    def test_a_project_without_a_map_needs_no_purpose(self):
+        del self.registry['affected']
+        self.write_registry()
+        result = self.gate('run', '--', self.full('root'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIsNone(self.records()[-1]['purpose'])
+        self.assertIn('already passed', self.gate('run', '--', self.full('root')).stdout)
+        self.assertEqual(len(self.records()), 1, 'a reuse without a purpose writes nothing')
+
+
+class CleanupCase(GateCase):
+    """One full suite whose delay and exit code come from files outside the repo, in a
+    project whose registry names a GitHub tracker (the fake `gh`)."""
+
+    def setUp(self):
+        super().setUp()
+        self.registry = {'cleanup': {'github_repo': 'o/r', 'label': 'test-cleanup'}}
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'registry')
+        self.delay_file, self.code_file = self.tmp / 'delay', self.tmp / 'code'
+        self.before = self.tmp / 'before.sh'  # runs first; may change the repo mid-run
+        self.before.write_text('')
+        self.command = (f'sh {self.before}; echo run >> {self.counter}; '
+                        f'sleep $(cat {self.delay_file}); '
+                        f'echo suite-out; exit $(cat {self.code_file})')
+
+    def write_registry(self):
+        (self.repo / '.suite-gate.json').write_text(json.dumps(self.registry))
+
+    def run_suite(self, day, delay=0, code=0, rerun=True):
+        """Run the suite on day (YYYY-MM-DD); rerun makes it run even for passed content."""
+        self.delay_file.write_text(str(delay))
+        self.code_file.write_text(str(code))
+        self.env['SUITE_GATE_TEST_TODAY'] = day
+        flags = ['--rerun', 'speed sample'] if rerun else []
+        result = self.gate('run', *flags, '--', self.command)
+        self.assertEqual(result.returncode, code, result.stderr)
+        if 'already passed' not in result.stdout:
+            self.assertEqual(result.stdout, 'suite-out\n', 'the check never touches stdout')
+        return result
+
+    def unit(self):
+        [unit] = self.status()['cleanup']
+        return unit
+
+    def actions(self):
+        """The gh calls other than looking up the open issue."""
+        return [call[:3] for call in self.gh_calls()
+                if call[:2] not in (['issue', 'list'], ['issue', 'view'])]
+
+    def set_speed(self, baseline, samples):
+        """Replace the unit's baseline and later passes with exact numbers of seconds."""
+        path = self.state / 'state.json'
+        state = json.loads(path.read_text())
+        [unit] = state['cleanup'].values()
+        unit.update(baseline=baseline, baseline_source='given', samples=samples,
+                    sample_count=len(samples))
+        path.write_text(json.dumps(state))
+
+
+class CleanupTests(CleanupCase):
+    def test_the_first_run_starts_a_window_today_with_its_time_as_the_baseline(self):
+        self.run_suite('2026-01-01', delay=0.1)
+        unit = self.unit()
+        self.assertEqual((unit['last_cleanup'], unit['rel_cwd'], unit['command']),
+                         ('2026-01-01', '.', self.command))
+        self.assertEqual(unit['project'], str(self.repo))
+        self.assertEqual(unit['baseline_source'], 'first pass')
+        self.assertGreaterEqual(unit['baseline'], 0.1)
+        self.assertEqual((unit['sample_count'], unit['median'], unit['due']), (0, None, []))
+        self.assertEqual(self.gh_calls(), [])
+        text = self.gate('status').stdout
+        self.assertIn('Test cleanup (1 suites):', text)
+        self.assertIn('not due: `' + self.command, text)
+        self.assertIn('Last cleanup: 2026-01-01', text)
+
+    def test_more_than_30_days_triggers_on_any_run_even_a_failed_one(self):
+        self.run_suite('2026-01-01')
+        self.run_suite('2026-01-31', code=1)
+        self.assertEqual(self.gh_calls(), [], 'exactly 30 days is not due')
+        result = self.run_suite('2026-02-01', code=1)
+        list_call, create = self.gh_calls()
+        self.assertEqual(list_call, ['issue', 'list', '--state', 'open', '--label',
+                                     'test-cleanup', '--json', 'number,url', '--limit', '1',
+                                     '--repo', 'o/r'])
+        self.assertEqual(create[:4], ['issue', 'create', '--title', f'Test cleanup: {self.repo.name}'])
+        self.assertEqual(create[4:6], ['--label', 'test-cleanup'])
+        self.assertEqual(create[-2:], ['--repo', 'o/r'])
+        body = create[create.index('--body') + 1]
+        self.assertIn('31 days since the last cleanup (2026-01-01)', body)
+        self.assertIn('references/cleanup.md', body)
+        self.assertIn('cleanup-done', body)
+        self.assertIn('opened https://github.com/o/r/issues/7', result.stderr)
+        self.assertTrue(self.unit()['due'])
+
+    def test_a_run_whose_content_changed_is_checked_but_is_no_sample(self):
+        self.before.write_text(f'echo x >> {self.repo}/app.py\n')
+        self.run_suite('2026-01-01')
+        self.assertTrue(self.records()[-1]['content_changed'])
+        self.assertIsNone(self.unit()['baseline'], 'a run that is not reusable is no sample')
+        self.run_suite('2026-03-01')
+        self.assertTrue(self.records()[-1]['content_changed'])
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+
+    def test_a_reused_result_is_not_checked(self):
+        self.run_suite('2026-01-01', rerun=False)
+        result = self.run_suite('2026-03-01', rerun=False)
+        self.assertEqual(self.runs(), 1)
+        self.assertNotIn('cleanup', result.stderr)
+        self.assertEqual(self.gh_calls(), [])
+        self.run_suite('2026-03-01')
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+
+    def test_30_percent_slower_triggers_once_three_later_passes_exist(self):
+        self.run_suite('2026-01-01', delay=0.2)
+        self.run_suite('2026-01-02', code=1, delay=0.6)
+        self.run_suite('2026-01-02', delay=0.4)
+        self.run_suite('2026-01-02', delay=0.4)
+        unit = self.unit()
+        self.assertEqual((unit['sample_count'], unit['median'], unit['due']), (2, None, []),
+                         'a failed run is no sample, and two samples are not judged')
+        self.assertEqual(self.gh_calls(), [])
+        self.run_suite('2026-01-02', delay=0.4)
+        unit = self.unit()
+        self.assertEqual(unit['sample_count'], 3)
+        self.assertGreaterEqual(unit['median'], unit['baseline'] * 1.3)
+        [reason] = unit['due']
+        self.assertIn('of the latest 3 passes', reason)
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+
+    def test_a_median_of_exactly_130_percent_triggers_and_just_below_does_not(self):
+        self.run_suite('2026-01-01')
+        self.set_speed(100, [129, 129, 129])
+        self.run_suite('2026-01-02', code=1)  # a failed run is checked but adds no sample
+        self.assertEqual((self.unit()['median'], self.unit()['due']), (129, []))
+        self.assertEqual(self.gh_calls(), [])
+        self.set_speed(100, [130, 130, 130])
+        self.run_suite('2026-01-02', code=1)
+        [reason] = self.unit()['due']
+        self.assertIn('median 130s of the latest 3 passes is 130% of the baseline 100s', reason)
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+
+    def test_a_single_slow_run_does_not_trigger(self):
+        for delay in (0.2, 0.2, 0.8, 0.2, 0.2):
+            self.run_suite('2026-01-02', delay=delay)
+        unit = self.unit()
+        self.assertEqual(unit['sample_count'], 4)
+        self.assertLess(unit['median'], unit['baseline'] * 1.3)
+        self.assertEqual(unit['due'], [])
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_the_median_uses_only_the_latest_five_later_passes(self):
+        for delay in (0.2, 0.6, 0.6, 0.6, 0.2, 0.2, 0.2):
+            self.run_suite('2026-01-02', delay=delay)
+        unit = self.unit()
+        self.assertEqual((unit['sample_count'], len(unit['samples'])), (6, 5))
+        self.assertEqual(unit['due'], [], 'latest five: 0.6 0.6 0.2 0.2 0.2')
+
+    def test_cleanup_done_starts_a_new_window_without_the_old_samples(self):
+        for delay in (0.2, 0.4, 0.4, 0.4):
+            self.run_suite('2026-01-02', delay=delay)
+        self.assertTrue(self.unit()['due'])
+        self.env['SUITE_GATE_TEST_TODAY'] = '2026-01-05'
+        done = self.gate('cleanup-done')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertIn('last cleanup 2026-01-05, baseline the next passing run', done.stdout)
+        unit = self.unit()
+        self.assertEqual((unit['last_cleanup'], unit['baseline'], unit['samples'],
+                          unit['sample_count'], unit['due']), ('2026-01-05', None, [], 0, []))
+        calls = len(self.gh_calls())
+        for delay in (0.4, 0.4, 0.4, 0.4):
+            self.run_suite('2026-01-05', delay=delay)
+        unit = self.unit()
+        self.assertEqual((unit['baseline_source'], unit['sample_count'], unit['due']),
+                         ('first pass', 3, []))
+        self.assertEqual(len(self.gh_calls()), calls)
+
+    def test_cleanup_done_can_set_the_baseline_and_status_shows_due(self):
+        self.assertEqual(self.gate('cleanup-done', '--baseline', '0.1').returncode, 2)
+        self.env['SUITE_GATE_TEST_TODAY'] = '2026-01-02'
+        done = self.gate('cleanup-done', '--command', self.command, '--baseline', '0.1')
+        self.assertEqual(done.returncode, 0, done.stderr)
+        self.assertEqual((self.unit()['baseline'], self.unit()['baseline_source']), (0.1, 'given'))
+        for _ in range(3):
+            self.run_suite('2026-01-02', delay=0.3)
+        self.assertEqual(self.unit()['sample_count'], 3)
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+        text = self.gate('status').stdout
+        self.assertIn('DUE: `' + self.command, text)
+        self.assertIn('Baseline: 0.1s (given)', text)
+        self.assertIn('of the baseline 0.1s, at least 130%', text)
+
+    def test_cleanup_done_does_not_allow_a_second_action_the_same_day(self):
+        for delay in (0.2, 0.4, 0.4, 0.4):
+            self.run_suite('2026-01-02', delay=delay)
+        self.assertEqual(len(self.actions()), 1)
+        self.env['SUITE_GATE_TEST_TODAY'] = '2026-01-02'
+        self.gate('cleanup-done', '--command', self.command, '--baseline', '0.1')
+        for _ in range(3):
+            result = self.run_suite('2026-01-02', delay=0.3)
+        self.assertTrue(self.unit()['due'])
+        self.assertIn('already updated today', result.stderr)
+        self.assertEqual(len(self.actions()), 1)
+
+    def test_a_very_short_suite_keeps_a_positive_baseline(self):
+        for _ in range(4):
+            result = self.run_suite('2026-01-01')
+            self.assertNotIn('check skipped', result.stderr)
+        unit = self.unit()
+        self.assertGreater(unit['baseline'], 0)
+        self.assertIsNotNone(unit['median'])
+        result = self.run_suite('2026-03-01')
+        self.assertNotIn('check skipped', result.stderr)
+        self.assertIn('59 days since the last cleanup', self.gh_calls()[-1][-3])
+
+    def test_an_open_cleanup_ticket_gets_a_comment_once_per_day(self):
+        (self.gh_dir / 'open.json').write_text(
+            json.dumps([{'number': 5, 'url': 'https://github.com/o/r/issues/5'}]))
+        self.run_suite('2026-01-01')
+        result = self.run_suite('2026-02-15')
+        self.assertIn('commented on https://github.com/o/r/issues/5', result.stderr)
+        [comment] = self.actions()
+        self.assertEqual(comment, ['issue', 'comment', '5'])
+        body = self.gh_calls()[-1][4]
+        self.assertTrue(body.startswith('Updated numbers'), body)
+        self.assertIn('45 days since the last cleanup', body)
+        again = self.run_suite('2026-02-15')
+        self.assertIn('already updated today', again.stderr)
+        self.assertEqual(len(self.actions()), 1)
+        self.run_suite('2026-02-16')
+        self.assertEqual(len(self.actions()), 2)
+
+    def test_the_opened_issue_gets_the_next_comment_even_before_the_label_list_shows_it(self):
+        self.run_suite('2026-01-01')
+        self.run_suite('2026-02-01')
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']])
+        result = self.run_suite('2026-02-02')  # the label list still returns []
+        self.assertIn('commented on https://github.com/o/r/issues/7', result.stderr)
+        self.assertEqual(self.gh_calls()[-2][:5], ['issue', 'view', '7', '--json', 'state,url'])
+        self.assertEqual(self.actions(), [['issue', 'create', '--title'],
+                                          ['issue', 'comment', '7']])
+
+    def test_after_our_issue_is_closed_the_label_list_decides_again(self):
+        self.run_suite('2026-01-01')
+        self.run_suite('2026-02-01')
+        (self.gh_dir / 'view.json').write_text(
+            json.dumps({'state': 'CLOSED', 'url': 'https://github.com/o/r/issues/7'}))
+        (self.gh_dir / 'open.json').write_text(
+            json.dumps([{'number': 5, 'url': 'https://github.com/o/r/issues/5'}]))
+        result = self.run_suite('2026-02-02')
+        self.assertIn('commented on https://github.com/o/r/issues/5', result.stderr)
+        (self.gh_dir / 'open.json').unlink()
+        self.run_suite('2026-02-03')
+        self.assertEqual(self.actions(), [['issue', 'create', '--title'],
+                                          ['issue', 'comment', '5'],
+                                          ['issue', 'create', '--title']])
+
+    def test_a_failing_tracker_only_prints_the_ticket_and_is_retried(self):
+        (self.gh_dir / 'fail').touch()
+        self.run_suite('2026-01-01')
+        result = self.run_suite('2026-03-01', code=3)
+        self.assertIn('could not be updated (gh issue list failed: gh: HTTP 502)', result.stderr)
+        self.assertIn(f'Title: Test cleanup: {self.repo.name}', result.stderr)
+        self.assertIn('59 days since the last cleanup', result.stderr)
+        self.assertEqual(self.records()[-1]['exit_code'], 3)
+        (self.gh_dir / 'fail').unlink()
+        self.run_suite('2026-03-01')
+        self.assertEqual(self.actions(), [['issue', 'create', '--title']],
+                         'a failed attempt does not use up the day')
+
+    def test_without_a_tracker_the_ticket_is_printed(self):
+        del self.registry['cleanup']
+        self.write_registry()
+        self.run_suite('2026-01-01')
+        result = self.run_suite('2026-03-01')
+        self.assertIn('registry names no tracker', result.stderr)
+        self.assertIn('59 days since the last cleanup', result.stderr)
+        self.assertEqual(self.gh_calls(), [])
+
+    def test_worktrees_of_one_project_share_a_unit(self):
+        self.run_suite('2026-01-01')
+        other = self.tmp / 'wt'
+        git(self.repo, 'worktree', 'add', '-q', '--detach', str(other))
+        self.env['SUITE_GATE_TEST_TODAY'] = '2026-01-02'
+        self.code_file.write_text('0')
+        self.delay_file.write_text('0')
+        result = self.gate('run', '--rerun', 'other tree', '--', self.command, cwd=other)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        unit = self.unit()
+        self.assertEqual((unit['project'], unit['sample_count']), (str(self.repo), 1))
+
+
 class AdmissionRuleTests(unittest.TestCase):
     """admission() and unused_reservation() with exact numbers."""
     # 12.5 cores and 21 GiB are left of a host with 16 idle cores and 32 GiB available.
@@ -1296,11 +1952,11 @@ class CutoverTests(GateCase):
 
     def test_the_checks_list_old_runs_still_fingerprinting_and_old_statuses_still_running(self):
         old = self.old_gate()
-        fake_bin, fingerprinting = self.tmp / 'bin', self.tmp / 'fingerprinting'
+        fake_bin, fingerprinting = self.tmp / 'git-bin', self.tmp / 'fingerprinting'
         fake_bin.mkdir()
         (fake_bin / 'git').write_text(f'#!/bin/sh\ntouch {fingerprinting}\nexec sleep 60\n')
         (fake_bin / 'git').chmod(0o755)
-        self.env['PATH'] = f'{fake_bin}:{os.environ["PATH"]}'
+        self.env['PATH'] = f'{fake_bin}:{self.env["PATH"]}'
         run = self.background([sys.executable, str(old), 'run', '--', 'true'], cwd=self.repo)
         self.wait_until(fingerprinting.exists, message='the old run to compute its fingerprint')
         self.state.mkdir()
@@ -1498,6 +2154,308 @@ class HookTests(GateCase):
         # A payload cwd that does not exist falls back to the hook's own directory (here one with
         # no registry, so the default rules apply whatever repo the tests run from).
         self.assertEqual(run_hook('pytest', self.tmp / 'gone', self.env, hook_cwd=self.tmp).returncode, 2)
+
+
+def cli(*args):
+    """A gate command line as the gate prints it, built here rather than by the gate."""
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), *args])
+
+
+AFFECTED = cli('affected')
+WHY = ('--reason', '<why the full suite is needed>')
+BEGIN, END = '# >>> suite-gate pre-push >>>\n', '# <<< suite-gate pre-push <<<\n'
+
+
+def mapped_reply(stderr):
+    """(affected command, full suite with a purpose) from a mapped project's block message."""
+    affected = stderr.split('Run this instead:\n  ', 1)[1].split('\nIt runs the tests', 1)[0]
+    full = stderr.split('with a purpose:\n  ', 1)[1].split('\nReplace --reason', 1)[0]
+    return affected, full
+
+
+class MappedHookTests(AffectedCase):
+    """With an affected-test map the hook answers a full suite with the affected command."""
+
+    def formats(self, text):
+        return {'claude': text, 'codex-list': ['bash', '-lc', text]}
+
+    def test_an_unwrapped_full_suite_gets_the_affected_command_and_the_purpose_syntax(self):
+        a, q = AFFECTED, shlex.quote
+        cases = {
+            'pytest': (a, cli('run', *WHY, '--', 'pytest')),
+            'cd web && bun test 2>&1 | tail -30':
+                (f'cd web && {a} 2>&1 | tail -30',
+                 f"cd web && {cli('run', *WHY, '--', 'bun test')} 2>&1 | tail -30"),
+            "bash -lc 'pytest -q' | tail":
+                (f'bash -lc {q(a)} | tail',
+                 f"bash -lc {q(cli('run', *WHY, '--', 'pytest -q'))} | tail"),
+        }
+        for text, expected in cases.items():
+            for client, command in self.formats(text).items():
+                with self.subTest(client=client, text=text):
+                    result = run_hook(command, self.repo, self.env)
+                    self.assertEqual(result.returncode, 2, result.stderr)
+                    self.assertEqual(mapped_reply(result.stderr), expected)
+                    self.assertIn('--purpose post-merge', result.stderr)
+                    self.assertIn('--purpose release', result.stderr)
+
+    def test_the_affected_reply_passes_the_hook_and_runs_the_selected_tests(self):
+        self.touch('src/app.py')
+        blocked = run_hook('cd web && bun test 2>&1 | tail -30', self.repo, self.env)
+        affected, _ = mapped_reply(blocked.stderr)
+        self.assertEqual(run_hook(affected, self.repo, self.env).returncode, 0)
+        result = subprocess.run(affected, shell=True, cwd=self.repo, env=self.env,
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py'])])
+        self.assertEqual(self.full_runs(), [])
+
+    def test_wrapped_runs_with_a_purpose_pass_and_the_purpose_reply_runs(self):
+        self.registry['suites'] = [self.full('root')]
+        self.write_registry()
+        for flags in (('--purpose', 'post-merge'), ('--purpose', 'release'),
+                      ('--reason', 'flaky test')):
+            with self.subTest(flags=flags):
+                result = run_hook(cli('run', *flags, '--', self.full('root')), self.repo,
+                                  self.env)
+                self.assertEqual((result.returncode, result.stderr), (0, ''))
+        blocked = run_hook(self.full('root'), self.repo, self.env)
+        self.assertEqual(blocked.returncode, 2, blocked.stderr)
+        _, full = mapped_reply(blocked.stderr)
+        self.assertEqual(run_hook(full, self.repo, self.env).returncode, 0)
+        result = subprocess.run(full, shell=True, cwd=self.repo, env=self.env,
+                                capture_output=True, text=True, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), ['root'])
+        self.assertEqual(self.records()[-1]['purpose'], 'reason')
+
+    def test_an_unmapped_project_keeps_the_gate_rewrite(self):
+        del self.registry['affected']
+        self.write_registry()
+        result = run_hook('cd web && bun test 2>&1 | tail -30', self.repo, self.env)
+        self.assertEqual(result.returncode, 2)
+        self.assertEqual(rewrite_of(result.stderr),
+                         f"cd web && {cli('run', '--', 'bun test')} 2>&1 | tail -30")
+        self.assertNotIn(AFFECTED, result.stderr)
+
+
+def head(cwd, rev='HEAD'):
+    return subprocess.run(['git', 'rev-parse', rev], cwd=cwd, check=True, capture_output=True,
+                          text=True, env=GIT_ENV).stdout.strip()
+
+
+class PrePushCase(AffectedCase):
+    """A mapped project with a bare remote; the pre-push check is installed in the temp repo."""
+
+    def setUp(self):
+        super().setUp()
+        self.remote = self.tmp / 'remote.git'
+        git(self.tmp, 'init', '-q', '--bare', str(self.remote))
+        git(self.repo, 'remote', 'add', 'origin', str(self.remote))
+        self.hook = self.repo / '.git/hooks/pre-push'
+
+    def install(self, *extra, repo=None):
+        return self.gate('install-pre-push', '--repo', str(repo or self.repo), *extra)
+
+    def push(self, *args):
+        return subprocess.run(['git', 'push', '-q', 'origin', *args], cwd=self.repo,
+                              env=self.env, capture_output=True, text=True, timeout=120)
+
+    def fill(self, refused):
+        """Run every release command a refused push printed."""
+        prefix = 'suite-gate:   cd '
+        commands = [line[len(prefix) - 3:] for line in refused.stderr.splitlines()
+                    if line.startswith(prefix)]
+        self.assertTrue(commands, refused.stderr)
+        for command in commands:
+            self.assertIn('run --purpose release --', command)
+            result = subprocess.run(command, shell=True, cwd=self.tmp, env=self.env,
+                                    capture_output=True, text=True, timeout=60)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        return commands
+
+
+class PrePushTests(PrePushCase):
+    def setUp(self):
+        super().setUp()
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_main_and_tags_need_a_pass_of_every_registered_suite(self):
+        self.assertEqual(self.push('feature').returncode, 0)
+        refused = self.push('main')
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('push refused', refused.stderr)
+        self.assertIn(f"    .: {self.full('root')}", refused.stderr)
+        self.assertIn(f"    web: {self.full('web')}", refused.stderr)
+        self.assertNotIn('work tree differs', refused.stderr)
+        self.assertEqual(self.full_runs(), [], 'the check itself runs nothing')
+        self.assertEqual(len(self.fill(refused)), 2)
+        self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
+        self.assertEqual({r['purpose'] for r in self.records()}, {'release'})
+        self.assertEqual(self.push('main').returncode, 0)
+        git(self.repo, 'tag', 'v1')
+        self.assertEqual(self.push('v1').returncode, 0)
+        self.touch('src/app.py')
+        git(self.repo, 'commit', '-qam', 'change')
+        self.assertEqual(self.push('feature').returncode, 0, 'other branches are not checked')
+        git(self.repo, 'tag', '-a', 'v2', '-m', 'v2')
+        refused = self.push('v2')
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('refs/tags/v2', refused.stderr)
+        self.assertIn('--no-verify', refused.stderr)
+        self.assertEqual(self.push('--no-verify', 'v2').returncode, 0)
+        self.assertEqual(self.push(':refs/tags/v2').returncode, 0, 'deletions are not checked')
+        for cwd in (self.repo, self.repo / 'web'):
+            suite = self.full('root' if cwd == self.repo else 'web')
+            result = self.gate('run', '--purpose', 'post-merge', '--', suite, cwd=cwd)
+            self.assertEqual(result.returncode, 0, result.stderr)
+        runs = len(self.full_runs())
+        self.assertEqual(self.push('v2').returncode, 0, 'a post-merge pass counts')
+        self.assertEqual(len(self.full_runs()), runs)
+
+    def test_fingerprint_include_files_come_from_the_work_tree(self):
+        self.registry['fingerprint_include'] = ['.env.test']
+        self.write_registry()
+        (self.repo / '.env.test').write_text('A=1\n')
+        git(self.repo, 'commit', '-qam', 'include')
+        self.fill(self.push('HEAD:refs/tags/t1'))
+        self.assertEqual(self.push('HEAD:refs/tags/t1').returncode, 0)
+        (self.repo / '.env.test').write_text('A=2\n')
+        refused = self.push('HEAD:refs/tags/t2')
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('refs/tags/t2', refused.stderr)
+        self.fill(refused)
+        self.assertEqual(self.push('HEAD:refs/tags/t2').returncode, 0)
+
+    def test_a_symlinked_suite_directory_matches_the_gate(self):
+        (self.repo / 'web-alias').symlink_to('web')
+        self.registry['full_suites'] = [{'command': self.full('web'), 'cwd': 'web-alias'}]
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        git(self.repo, 'commit', '-qm', 'alias')
+        self.fill(self.push('HEAD:refs/tags/a1'))
+        self.assertEqual(self.push('HEAD:refs/tags/a1').returncode, 0)
+
+    def test_the_stdin_protocol(self):
+        sha, zero = head(self.repo), '0' * 40
+        cases = {
+            f'refs/heads/feature {sha} refs/heads/feature {zero}': 0,
+            f'refs/heads/feature {sha} refs/heads/mainline {zero}': 0,
+            f'(delete) {zero} refs/heads/main {sha}': 0,
+            f'(delete) {zero} refs/tags/v1 {sha}': 0,
+            f'refs/heads/feature {sha} refs/heads/main {zero}': 1,
+            f'refs/tags/v1 {sha} refs/tags/v1 {zero}': 1,
+        }
+        for line, code in cases.items():
+            with self.subTest(line=line):
+                result = self.gate('pre-push', 'origin', str(self.remote), input=line + '\n')
+                self.assertEqual(result.returncode, code, result.stderr)
+        both = self.gate('pre-push', 'origin', str(self.remote),
+                         input=f'refs/heads/main {sha} refs/heads/main {zero}\n'
+                               f'refs/tags/v1 {sha} refs/tags/v1 {zero}\n')
+        self.assertEqual(both.returncode, 1)
+        self.assertIn('refs/heads/main, refs/tags/v1', both.stderr)
+        self.assertEqual(both.stderr.count('run --purpose release'), 2)
+        self.touch('src/app.py')
+        dirty = self.gate('pre-push', 'origin', str(self.remote),
+                          input=f'refs/heads/main {sha} refs/heads/main {zero}\n')
+        self.assertIn('work tree differs', dirty.stderr)
+        self.assertEqual(self.full_runs(), [])
+
+
+class PrePushInstallTests(PrePushCase):
+    OLD = '#!/bin/sh\necho "$@" > {out}.args\ncat > {out}\nexit 0\n'
+
+    def backups(self):
+        return sorted(self.hook.parent.glob('pre-push.suite-gate-backup-*'))
+
+    def test_preview_install_and_uninstall_of_a_new_hook(self):
+        preview = self.install('--preview')
+        self.assertEqual(preview.returncode, 0, preview.stderr)
+        self.assertIn('+' + BEGIN, preview.stdout)
+        self.assertFalse(self.hook.exists())
+        self.assertEqual(self.install().returncode, 0)
+        text = self.hook.read_text()
+        self.assertTrue(text.startswith('#!/bin/sh\n' + BEGIN) and text.endswith(END), text)
+        self.assertIn(cli('pre-push'), text)
+        self.assertTrue(os.access(self.hook, os.X_OK))
+        self.assertEqual(self.push('feature').returncode, 0)
+        self.assertIn('push refused', self.push('main').stderr)
+        self.assertIn('No changes', self.install().stdout)
+        self.assertEqual(self.backups(), [])
+        self.assertEqual(self.gate('uninstall-pre-push', '--repo', str(self.repo),
+                                   '--preview').returncode, 0)
+        self.assertTrue(self.hook.exists())
+        self.assertEqual(self.gate('uninstall-pre-push', '--repo', str(self.repo)).returncode, 0)
+        self.assertFalse(self.hook.exists())
+
+    def test_an_existing_hook_is_kept_and_still_gets_the_pushed_refs(self):
+        out = self.tmp / 'old-hook'
+        original = self.OLD.format(out=out)
+        self.hook.write_text(original)
+        self.hook.chmod(0o755)
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = self.hook.read_text()
+        self.assertTrue(text.startswith('#!/bin/sh\n' + BEGIN), text)
+        self.assertTrue(text.endswith(original.split('\n', 1)[1]))
+        [backup] = self.backups()
+        self.assertEqual(backup.read_text(), original)
+        self.hook.write_text(text.replace(str(SCRIPT), '/old/suite-gate.py'))
+        self.assertEqual(self.install().returncode, 0)
+        self.assertEqual(self.hook.read_text(), text, 'a moved skill is updated in place')
+        self.assertIn('No changes', self.install().stdout)
+        self.assertEqual(self.push('feature').returncode, 0)
+        self.assertIn(f"refs/heads/feature {head(self.repo)} refs/heads/feature", out.read_text())
+        self.assertEqual(Path(f'{out}.args').read_text().split(), ['origin', str(self.remote)])
+        self.assertEqual(self.gate('uninstall-pre-push', '--repo', str(self.repo)).returncode, 0)
+        self.assertEqual(self.hook.read_text(), original)
+        self.assertIn('No changes',
+                      self.gate('uninstall-pre-push', '--repo', str(self.repo)).stdout)
+
+    def test_a_shared_hooks_path_is_never_written(self):
+        shared = self.tmp / 'shared-hooks'
+        shared.mkdir()
+        git(self.repo, 'config', 'core.hooksPath', str(shared))
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for out in (result.stdout, self.install('--preview').stdout, self.install().stdout):
+            self.assertIn(f'Installed but NOT active: core.hooksPath={shared}', out)
+            self.assertIn('exec "$local_hook" "$@"', out)
+        self.assertTrue(self.hook.exists())
+        self.assertEqual(list(shared.iterdir()), [])
+
+    def test_refused_without_a_registry_or_with_a_hook_it_cannot_extend(self):
+        plain = self.tmp / 'plain'
+        plain.mkdir()
+        git(plain, 'init', '-q')
+        result = self.install(repo=plain)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('only for repos with a registry', result.stderr)
+        self.assertFalse((plain / '.git/hooks/pre-push').exists())
+        for text, mode in (('#!/usr/bin/env python3\nprint(1)\n', 0o755),
+                           (self.OLD.format(out=self.tmp / 'x'), 0o644)):
+            with self.subTest(text=text, mode=mode):
+                self.hook.write_text(text)
+                self.hook.chmod(mode)
+                self.assertEqual(self.install().returncode, 1)
+                self.assertEqual(self.hook.read_text(), text)
+        for marks in ((BEGIN, BEGIN, END), (BEGIN, END, END), (END, BEGIN), (BEGIN,)):
+            broken = '#!/bin/sh\n' + 'echo keep\n'.join(marks) + 'exit 0\n'
+            self.hook.write_text(broken)
+            self.hook.chmod(0o755)
+            for action in ('install-pre-push', 'uninstall-pre-push'):
+                with self.subTest(marks=marks, action=action):
+                    self.assertEqual(self.gate(action, '--repo', str(self.repo)).returncode, 1)
+                    self.assertEqual(self.hook.read_text(), broken)
+
+    def test_an_existing_shebang_only_hook_survives_uninstall(self):
+        self.hook.write_text('#!/bin/sh\n')
+        self.hook.chmod(0o755)
+        self.assertEqual(self.install().returncode, 0)
+        self.assertEqual(self.gate('uninstall-pre-push', '--repo', str(self.repo)).returncode, 0)
+        self.assertEqual(self.hook.read_text(), '#!/bin/sh\n')
 
 
 OTHER_GROUPS = [

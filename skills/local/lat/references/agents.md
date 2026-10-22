@@ -15,7 +15,7 @@ hcom-spawn 裡的「自身名稱」就是發起委派的那一方：主控派工
 - 外部 Agent 的第一則任務訊息照 /hcom-spawn 的固定欄位寫，再補上 SKILL.md「交接」要求的項目，以及「做完才收工」規則和填好主控 `$lat_dir`、`$workspace` 絕對路徑的 `lat-watch wait` 與 `lat-watch alarm` 指令（格式見 [停住監控](stall-watch.md#結束回合前)）。鬧鐘範例須填好路徑與 Agent 完整名稱：`uv run --no-project python <主控 lat_dir>/scripts/lat-watch.py alarm --workspace <主控 workspace> --agent <執行 Agent 完整名稱> --after 30 --reason 'Continue after the cooldown'`；並寫明不要用背景程式傳訊息給自己，HCOM 會拒收。
 - 第一則任務訊息須帶上任務卡 `runs` 欄的絕對路徑（主工作區 `.lat/runs/issue-<N>/`，見 [任務卡](task-cards.md#票資料位置)），QA 草稿、路徑清單、測試清單與證據都放那裡；需要隔離 client 家目錄時放 `.lat` 以外的暫存位置，規則見 [任務卡](task-cards.md#隔離-client-家目錄)。
 - 第一則任務訊息須帶上任務卡 `live actions` 與 `preflight` 兩欄的完整內容（沒有現場動作也寫明「無」），以及執行 Agent 在額度內的做法與回報時機；填法與行為見 [任務卡](task-cards.md#現場動作額度)。
-- 派實作時，第一則任務訊息寫明以下覆蓋 /implement 的做法：修正與審查期間只跑受影響的測試檔；「最後跑一次整套」指該票審查都通過後的最終版本，依任務卡 `整套測試` 欄由誰經閘門跑一次；修正後複查只看修正差異。
+- 派實作時，第一則任務訊息寫明以下覆蓋 /implement 的做法：修正與審查期間只跑受影響的測試檔；票內跑哪些測試依 three-tier-testing（有對照表的專案跑受影響測試，審查者核對對照表變更，整批合併後的整套由主控指定一人以 `post-merge` 用途跑；沒有對照表的專案照 three-tier-testing 的舊規則），依任務卡 `整套測試` 欄由誰經閘門跑；修正後複查只看修正差異。
 - 派 /code-review 審查者前（實作者再委派時亦同），先跑 `uv run --no-project python <lat_dir>/scripts/review-size.py <審查基準>` 取得建議，由主控決定：小改動、只改測試或文件派一位 Standards 審查者，其他派兩個面向；門檻與理由見腳本說明。Standards 面向照 /hcom-spawn 預設選模型；派兩位時 Spec 面向一律派給 `gpt-6-astra`，effort `medium`。使用者另行指定時從其指定。
 - 派 Designer 寫 Spec 與拆票（/to-spec、/to-tickets）時寫明：「現有測試全部通過」只寫在 Spec 層級，全部合併後由一人跑一次，不寫進各票驗收條件。
 - [Spec 文件審查](spec-review.md) 派給全新、與 Designer 不同家模型的 Agent：Designer 是 Claude 時派 Codex `gpt-6-astra`、effort `medium`；Designer 是 Codex 時派 Claude，模型依 /hcom-spawn 預設。它在確認前審 Spec 本身，與上一條實作後審程式的 Spec 面向不同，不互相取代。

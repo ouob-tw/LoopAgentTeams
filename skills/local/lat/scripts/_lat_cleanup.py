@@ -353,7 +353,7 @@ def usage(path):
 
 
 def delete(path, method):
-    """Remove one item with trash-put; for 'shred', `shred -u` its regular files first.
+    """Remove one item with trash-put; for 'shred', `shred -f -u` its regular files first.
 
     A shred item holding a file with other hard links is refused before anything changes:
     shredding would destroy the other copy, and trashing it would keep the content.
@@ -362,16 +362,21 @@ def delete(path, method):
     if method not in ('trash', 'shred'):
         raise ValueError(f'unknown deletion method: {method}')
     if method == 'shred':
-        files = []
+        files, dirs = [], []
         for entry in entries(path):
             info = entry.lstat()
+            if stat.S_ISDIR(info.st_mode):
+                dirs.append(entry)
             if not stat.S_ISREG(info.st_mode):
                 continue
             if info.st_nlink > 1:
                 raise ValueError(f'file has other hard links, not shredded: {entry}')
             files.append(str(entry))
+        for directory in dirs:  # a read-only directory blocks unlinking its files
+            if not os.access(directory, os.W_OK):
+                directory.chmod(directory.stat().st_mode | stat.S_IWUSR)
         for start in range(0, len(files), _SHRED_BATCH):
-            run_cli(['shred', '-u', '--', *files[start:start + _SHRED_BATCH]], timeout=600)
+            run_cli(['shred', '-f', '-u', '--', *files[start:start + _SHRED_BATCH]], timeout=600)
     if os.path.lexists(path):
         run_cli(['trash-put', '--', str(path)], timeout=600)
 

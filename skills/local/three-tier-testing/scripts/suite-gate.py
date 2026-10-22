@@ -3,11 +3,19 @@
 
 `run [--rerun "<reason>"] -- <cmd>` reuses a passing result for identical content, lets
 only one of several identical requests run, and starts a queued full suite when the host has
-room for its measured peak (with a floor, a cap and a pressure brake). `status` lists running
-and queued suites, why the queue waits, and recent records. `is_full_suite()`
+room for its measured peak (with a floor, a cap and a pressure brake); in a project with an
+affected-test map it needs a purpose. After each full suite that ran it checks whether the
+project is due for a test cleanup and opens or updates a cleanup ticket; `cleanup-done
+[--command <cmd> [--baseline <s>]]` starts a new cleanup window. `affected [--base <rev>]`
+runs only the tests the map selects for this change, or the registered full suites through
+the gate when the change leaves the map. `status` lists running and queued suites, why the
+queue waits, recent records and cleanup state. `is_full_suite()`
 decides whether a shell command is a full suite run (project registry first, then the
 default runner rules). `hook` is the PreToolUse hook that blocks full suites run outside
-the gate, and `install` / `uninstall --client claude|codex` add or remove it.
+the gate (with an affected-test map it points at `affected` instead), and `install` /
+`uninstall --client claude|codex` add or remove it. `pre-push` is the Git pre-push check
+that refuses pushing main or a tag without a passing record of every registered full
+suite; `install-pre-push` / `uninstall-pre-push --repo <dir>` add or remove it.
 
 Linux only: each suite runs in its own systemd user scope (cgroup v2), and slot and lock
 holders stay counted while that group has processes. Without a user scope the suite runs
@@ -26,13 +34,14 @@ import re
 import shlex
 import shutil
 import signal
+import statistics
 import subprocess
 import sys
 import tempfile
 import threading
 import time
 import uuid
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 REGISTRY_NAME = '.suite-gate.json'
@@ -478,17 +487,21 @@ def repo_root(cwd):
     return Path(result.stdout.strip())
 
 
-def content_tree(root, include=()):
-    """Tree hash of tracked plus unignored new files (and `include` paths), via a
-    throwaway index so the real one is untouched."""
+def content_tree(root, include=(), commit=None):
+    """Tree hash of tracked plus unignored new files (or of commit's tree when given), plus
+    the `include` paths from the work tree, via a throwaway index so the real one is
+    untouched."""
     with tempfile.TemporaryDirectory(prefix='suite-gate-') as tmp:
         index = Path(tmp) / 'index'
-        real = git(['rev-parse', '--git-path', 'index'], root).stdout.strip()
-        if real and (root / real).is_file():
-            # copy2 keeps the index mtime, which Git needs to re-check racily clean entries
-            shutil.copy2(root / real, index)
         env = dict(os.environ, GIT_INDEX_FILE=str(index))
-        steps = [['add', '-A', '--', '.']]
+        if commit:
+            steps = [['read-tree', commit]]
+        else:
+            real = git(['rev-parse', '--git-path', 'index'], root).stdout.strip()
+            if real and (root / real).is_file():
+                # copy2 keeps the index mtime, which Git needs to re-check racily clean entries
+                shutil.copy2(root / real, index)
+            steps = [['add', '-A', '--', '.']]
         extra = sorted({str(p.relative_to(root)) for pattern in include
                         for p in root.glob(pattern) if p.is_file()})
         if extra:
@@ -512,22 +525,30 @@ def normalize_command(argv):
     return shlex.join(argv)
 
 
+def include_patterns(registry):
+    return [p for p in registry.get('fingerprint_include') or [] if isinstance(p, str)]
+
+
+def digest(tree, argv, rel):
+    mode = 'shell' if len(argv) == 1 else 'exec'
+    command = normalize_command(argv)
+    return hashlib.sha256(f'{tree}\0{mode}\0{command}\0{rel}'.encode()).hexdigest()
+
+
+def rel_cwd(root, cwd):
+    return os.path.relpath(Path(cwd).resolve(), root.resolve())
+
+
 def fingerprint(cwd, argv):
     """Dict with fingerprint, tree, repo, relative cwd and profile key; None outside a Git
     work tree."""
     root = repo_root(cwd)
     if root is None:
         return None
-    registry = load_registry(cwd) or {}
-    include = registry.get('fingerprint_include') or []
-    include = [p for p in include if isinstance(p, str)]
-    tree = content_tree(root, include)
-    rel = os.path.relpath(Path(cwd).resolve(), root.resolve())
-    mode = 'shell' if len(argv) == 1 else 'exec'
-    command = normalize_command(argv)
-    digest = hashlib.sha256(f'{tree}\0{mode}\0{command}\0{rel}'.encode()).hexdigest()
-    return {'fingerprint': digest, 'tree': tree, 'repo': str(root), 'rel_cwd': rel,
-            'profile_key': profile_key(root, rel, command)}
+    tree = content_tree(root, include_patterns(load_registry(cwd) or {}))
+    rel = rel_cwd(root, cwd)
+    return {'fingerprint': digest(tree, argv, rel), 'tree': tree, 'repo': str(root),
+            'rel_cwd': rel, 'profile_key': profile_key(root, rel, normalize_command(argv))}
 
 
 def profile_key(root, rel, command):
@@ -861,12 +882,20 @@ def read_records():
     return records
 
 
+def record_fingerprint(record):
+    """The content a record is about; a reuse note keeps it as `reused_fingerprint`."""
+    return record.get('fingerprint') or record.get('reused_fingerprint')
+
+
 def reusable_record(fp):
     """The latest record for this content when it passed; None when it failed or is absent.
 
-    Records whose content changed mid-run describe no single content and are skipped.
+    Records whose content changed mid-run describe no single content and are skipped, as
+    are affected-test runs and reuse notes (records with a `kind`).
     """
     for record in reversed(read_records()):
+        if record.get('kind'):
+            continue
         if record.get('fingerprint') == fp and not record.get('content_changed'):
             return record if record.get('reusable') else None
     return None
@@ -1034,11 +1063,12 @@ def admission(config, running, candidate, host):
 # ---------------------------------------------------------------- run
 
 class Gate:
-    def __init__(self, argv, cwd, rerun, config):
+    def __init__(self, argv, cwd, rerun, config, extra=None):
         self.argv = argv
         self.cwd = cwd
         self.rerun = rerun
         self.config = config
+        self.extra = extra or {}  # written into the record over the defaults
         self.command = normalize_command(argv)
         self.child = None
         self.group = None  # the suite's cgroup, None in a plain session
@@ -1048,6 +1078,7 @@ class Gate:
         self.key = None  # what its measured usage is filed under
         self.measured = None  # ((profile_history, ledger version), reservation) for self.key
         self.scopes = None  # whether an empty user scope started, probed once before queueing
+        self.ran = None  # a full suite that ran, for the cleanup check
         self.me = {'id': uuid.uuid4().hex, 'pid': os.getpid(),
                    'start': proc_stat(os.getpid())[2], 'sid': None, 'cgroup': None,
                    'agent': agent_name(), 'command': self.command, 'cwd': str(cwd),
@@ -1214,16 +1245,14 @@ class Gate:
             elif not self.rerun:
                 record = reusable_record(fp)
                 if record:
-                    print_reuse(record, self.command)
-                    return 0
+                    return self.reuse(record, info)
             if fp:
                 self.acquire_lock(fp)
                 if not self.rerun:
                     record = reusable_record(fp)
                     if record:
                         self.release()
-                        print_reuse(record, self.command)
-                        return 0
+                        return self.reuse(record, info)
             self.acquire_slot()
             if info is not None:
                 again = fingerprint(self.cwd, self.argv)
@@ -1232,6 +1261,21 @@ class Gate:
                     self.release()
                     continue
             return self.execute(info)
+
+    def reuse(self, record, info):
+        """Report the earlier pass; a run with a purpose also notes the reuse in the ledger.
+        The note keeps the fingerprint as `reused_fingerprint`, so a reader that ignores
+        `kind` (an older gate) still finds the pass as the latest record for it."""
+        print_reuse(record, self.command)
+        if self.extra.get('purpose'):
+            append_record({
+                'kind': 'reuse', 'reused_fingerprint': info['fingerprint'], 'tree': info['tree'],
+                'repo': info['repo'], 'command': self.command, 'cwd': str(self.cwd),
+                'rel_cwd': info['rel_cwd'], 'exit_code': 0, 'agent': self.me['agent'],
+                'time': now_iso(), 'reusable': False, 'reused_time': record.get('time'),
+                'reused_agent': record.get('agent'), 'purpose': None, 'purpose_reason': None,
+                **self.extra})
+        return 0
 
     def _scope_ready(self):
         """True when the suite can run in a systemd user scope; warns why not otherwise."""
@@ -1366,7 +1410,8 @@ class Gate:
             thread.join(timeout=2)
         profile = self.measure(time.monotonic() - started)
         code = 128 - code if code < 0 else code
-        duration = round(time.monotonic() - started, 1)
+        seconds = time.monotonic() - started
+        duration = round(seconds, 1)
         after = fingerprint(self.cwd, self.argv) if info else None
         changed = info is not None and after['fingerprint'] != info['fingerprint']
         record = {
@@ -1375,10 +1420,14 @@ class Gate:
             'rel_cwd': info and info['rel_cwd'], 'exit_code': code, 'duration_s': duration,
             'output_tail': tail.text(), 'agent': self.me['agent'], 'time': start_iso,
             'finished': now_iso(), 'rerun_reason': self.rerun, 'content_changed': changed,
-            'reusable': info is not None and code == 0 and not changed, 'profile': profile,
+            'reusable': info is not None and code == 0 and not changed,
+            'purpose': None, 'purpose_reason': None, 'profile': profile,
             'profile_key': info and info['profile_key'],
         }
+        record.update(self.extra)
         append_record(record)
+        if info is not None and not record.get('kind'):
+            self.ran = {'info': info, 'seconds': seconds, 'sample': record['reusable']}
         if changed:
             warn('content changed during the run: this result is recorded but will not be '
                  'reused; do not edit files while the suite runs, and git-ignore files the '
@@ -1440,6 +1489,8 @@ def print_reuse(record, command):
           f"({record.get('duration_s')}s, exit {record.get('exit_code')})")
     print(f"  command:     {record.get('command')}")
     print(f"  cwd:         {record.get('cwd')}")
+    if record.get('purpose'):
+        print(f"  purpose:     {describe_purpose(record)}")
     if record.get('rerun_reason'):
         print(f"  rerun reason: {record['rerun_reason']}")
     if record.get('output_tail'):
@@ -1453,16 +1504,21 @@ def print_reuse(record, command):
     print(f'  suite-gate.py run --rerun "<reason>" -- {command}')
 
 
-def cmd_run(rerun, argv):
-    if rerun is not None and not rerun.strip():
-        warn('--rerun needs a reason')
-        return 2
-    gate = Gate(argv, Path.cwd(), rerun.strip() if rerun else None, load_config())
-    for sig in SIGNALS:
-        signal.signal(sig, _raise_interrupted)
+def describe_purpose(record):
+    purpose = record.get('purpose')
+    if purpose == 'reason':
+        return f"reason: {record.get('purpose_reason')}"
+    if purpose == 'map-fallback':
+        return 'map fallback, triggered by ' + ', '.join(record.get('trigger_files') or [])
+    return purpose
+
+
+def _drive(gate, action):
+    """action() with the gate's entries released after, then the cleanup check of a full
+    suite that ran; an interrupt ends the test session and is raised again."""
     try:
-        return gate.run()
-    except Interrupted as exc:
+        result = action()
+    except Interrupted:
         if gate.child is not None and not gate.finished:
             for sig in SIGNALS:
                 signal.signal(sig, signal.SIG_IGN)
@@ -1470,12 +1526,516 @@ def cmd_run(rerun, argv):
             gate.end_suite()
         elif gate.child is not None:
             warn('interrupted: no record written')
+        raise
+    finally:
+        gate.release()
+    if gate.ran:
+        check_cleanup(gate.ran, gate.command, gate.cwd)
+    return result
+
+
+def _guarded(body):
+    """body() with interrupts and gate errors turned into exit codes."""
+    for sig in SIGNALS:
+        signal.signal(sig, _raise_interrupted)
+    try:
+        return body()
+    except Interrupted as exc:
         return 128 + exc.signum
     except RuntimeError as exc:
         warn(str(exc))
         return 2
-    finally:
-        gate.release()
+
+
+def cmd_run(rerun, purpose, reason, argv):
+    if rerun is not None and not rerun.strip():
+        warn('--rerun needs a reason')
+        return 2
+    if reason is not None and not reason.strip():
+        warn('--reason needs text')
+        return 2
+    if purpose and reason:
+        warn('give either --purpose or --reason, not both')
+        return 2
+    if reason:
+        purpose = 'reason'
+    if purpose is None and is_mapped(load_registry(Path.cwd()) or {}):
+        warn('this project has an affected-test map, so a full suite needs a purpose. '
+             'For the tests this change affects, run instead:\n'
+             f'  {affected_command()}\n'
+             'For a full suite, add one after `run`: --purpose post-merge (after a batch '
+             'is merged), --purpose release (before a release), or --reason "<why the full '
+             'suite is needed>"')
+        return 2
+    extra = {'purpose': purpose, 'purpose_reason': reason.strip() if reason else None}
+    gate = Gate(argv, Path.cwd(), rerun.strip() if rerun else None, load_config(), extra)
+    return _guarded(lambda: _drive(gate, gate.run))
+
+
+# ---------------------------------------------------------------- affected tests
+
+def is_mapped(registry):
+    """True when the registry has an affected-test map."""
+    affected = registry.get('affected') if isinstance(registry, dict) else None
+    return isinstance(affected, dict) and bool(affected.get('map'))
+
+
+def affected_command():
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'affected'])
+
+
+def _strings(value, what, allow_empty=True):
+    if not isinstance(value, list) or not all(isinstance(v, str) and v for v in value) \
+            or (not allow_empty and not value):
+        raise ValueError(f'{what} must be a list of non-empty strings')
+    return value
+
+
+def _dir_key(path):
+    path = path.strip('/')
+    return '.' if path in ('', '.') else os.path.normpath(path)
+
+
+def read_map(registry):
+    """The checked affected-test map: commands by directory, rules, shared paths, full
+    suites and the integration branch. ValueError names the bad field."""
+    affected = registry['affected']
+    commands = affected.get('commands')
+    if not isinstance(commands, dict) or not commands:
+        raise ValueError('affected.commands must map directories to command templates')
+    for directory, template in commands.items():
+        if not isinstance(template, str) or '{tests}' not in template:
+            raise ValueError(f'affected.commands["{directory}"] must be a string with {{tests}}')
+    rules = affected['map']
+    if not isinstance(rules, list) or not all(isinstance(r, dict) for r in rules):
+        raise ValueError('affected.map must be a list of {"paths": [...], "tests": [...]}')
+    for i, rule in enumerate(rules):
+        _strings(rule.get('paths'), f'affected.map[{i}].paths', allow_empty=False)
+        _strings(rule.get('tests'), f'affected.map[{i}].tests')
+    shared = _strings(affected.get('shared', []), 'affected.shared')
+    suites = read_full_suites(registry)
+    branch = registry.get('integration_branch')
+    if branch is not None and (not isinstance(branch, str) or not branch):
+        raise ValueError('integration_branch must be a branch name')
+    return {'commands': {_dir_key(k): v for k, v in commands.items()}, 'rules': rules,
+            'shared': shared, 'branch': branch, 'suites': suites}
+
+
+def read_full_suites(registry):
+    """The registry's full suites as [{command, cwd}]. ValueError when missing or bad."""
+    suites = registry.get('full_suites')
+    if not isinstance(suites, list) or not suites or not all(
+            isinstance(s, dict) and isinstance(s.get('command'), str) and s['command'].strip()
+            and isinstance(s.get('cwd', '.'), str) for s in suites):
+        raise ValueError('full_suites must list {"command": "...", "cwd": "<dir>"} entries')
+    return [{'command': s['command'].strip(), 'cwd': _dir_key(s.get('cwd', '.'))}
+            for s in suites]
+
+
+def glob_match(path, pattern):
+    """Path glob: `*` and `?` stay within one directory, `**` spans directories."""
+    out, i = [], 0
+    while i < len(pattern):
+        if pattern.startswith('**/', i):
+            out.append('(?:.*/)?')
+            i += 3
+        elif pattern.startswith('**', i):
+            out.append('.*')
+            i += 2
+        else:
+            out.append({'*': '[^/]*', '?': '[^/]'}.get(pattern[i]) or re.escape(pattern[i]))
+            i += 1
+    return re.fullmatch(''.join(out), path) is not None
+
+
+def _git_paths(args, root):
+    result = git([args[0], '-z', *args[1:]], root)
+    if result.returncode != 0:
+        raise RuntimeError(f'git {" ".join(args[:2])} failed: {result.stderr.strip()}')
+    return [p for p in result.stdout.split('\0') if p]
+
+
+def change_base(root, base, branch):
+    """(commit, description) the change is measured from: base when given, else the
+    merge-base of HEAD and the integration branch."""
+    if base is None and branch is None:
+        raise RuntimeError('the registry names no integration_branch; add it or pass --base')
+    if base is not None:
+        result = git(['rev-parse', '--verify', '--quiet', base + '^{commit}'], root)
+        if result.returncode != 0:
+            raise RuntimeError(f'--base {base} is not a commit')
+        return result.stdout.strip(), base
+    result = git(['merge-base', 'HEAD', branch], root)
+    if result.returncode != 0:
+        raise RuntimeError(f'no merge-base of HEAD and {branch}: {result.stderr.strip()}')
+    return result.stdout.strip(), f'merge-base of HEAD and {branch}'
+
+
+def changed_files(root, base):
+    """Files that differ from base: committed, uncommitted and new files not ignored."""
+    diff = _git_paths(['diff', '--name-only', '--no-renames', base, '--'], root)
+    new = _git_paths(['ls-files', '--others', '--exclude-standard'], root)
+    return sorted(set(diff) | set(new))
+
+
+def select_tests(root, changed, amap):
+    """({test: [why]}, [(file, why)] that need the full suite) for the changed files."""
+    files = [p for p in _git_paths(['ls-files', '-co', '--exclude-standard'], root)
+             if (root / p).is_file()]
+    rules = amap['rules']
+    test_patterns = [p for rule in rules for p in rule['tests']]
+    selected, fallback = {}, []
+    for path in changed:
+        shared = next((p for p in amap['shared'] if glob_match(path, p)), None)
+        if shared:
+            fallback.append((path, f'shared path {shared}'))
+            continue
+        handled = False
+        if any(glob_match(path, p) for p in test_patterns):
+            handled = True
+            if (root / path).is_file():
+                selected.setdefault(path, []).append('test file changed')
+        for rule in rules:
+            hit = next((p for p in rule['paths'] if glob_match(path, p)), None)
+            if hit is None:
+                continue
+            handled = True
+            tests = [t for t in files if any(glob_match(t, p) for p in rule['tests'])]
+            if rule['tests'] and not tests:
+                fallback.append((path, f'{hit} maps to tests that match no file: '
+                                       + ', '.join(rule['tests'])))
+            for test in tests:
+                selected.setdefault(test, []).append(f'{path} matches {hit}')
+        if not handled:
+            fallback.append((path, 'not in the affected-test map'))
+    return selected, fallback
+
+
+def command_dir(test, commands):
+    """The longest directory in commands that holds test, or None."""
+    found = [d for d in commands if d == '.' or test.startswith(d + '/')]
+    return max(found, key=len) if found else None
+
+
+def cmd_affected(base):
+    def body():
+        root = repo_root(Path.cwd())
+        registry = load_registry(Path.cwd()) if root else None
+        if not is_mapped(registry or {}):
+            warn('no affected-test map in this project (`affected.map` in '
+                 f'{REGISTRY_NAME}); run the full suite through `suite-gate.py run`')
+            return 2
+        try:
+            amap = read_map(registry)
+        except ValueError as exc:
+            warn(f'{root / REGISTRY_NAME}: {exc}')
+            return 2
+        commit, origin = change_base(root, base, amap['branch'])
+        changed = changed_files(root, commit)
+        warn(f'change against {origin} ({commit[:12]}): {len(changed)} file(s)')
+        for path in changed:
+            warn(f'  {path}')
+        selected, fallback = select_tests(root, changed, amap)
+        groups = {}
+        for test in sorted(selected):
+            directory = command_dir(test, amap['commands'])
+            if directory is None:
+                fallback.append((test, 'no affected.commands directory holds this test'))
+            else:
+                groups.setdefault(directory, []).append(test)
+        if fallback:
+            return run_fallback(root, amap, fallback)
+        if not groups:
+            warn('no tests selected for this change; nothing to run')
+            return 0
+        warn('selected tests:')
+        for test in sorted(selected):
+            warn(f"  {test}  ({'; '.join(selected[test])})")
+        code = 0
+        for directory, tests in groups.items():
+            rel = [t if directory == '.' else t[len(directory) + 1:] for t in tests]
+            text = amap['commands'][directory].replace('{tests}', ' '.join(map(shlex.quote, rel)))
+            cwd = root if directory == '.' else root / directory
+            warn(f'running in {directory}: {text}')
+            gate = Gate([text], cwd, None, load_config(), {
+                'kind': 'affected', 'reusable': False, 'base': commit,
+                'changed_files': changed, 'selected_tests': tests,
+                'why': {t: selected[t] for t in tests}})
+            info = fingerprint(cwd, [text])
+            result = _drive(gate, lambda: gate.execute(info))
+            code = code or result
+        return code
+    return _guarded(body)
+
+
+def run_fallback(root, amap, fallback):
+    """Run (or reuse) every registered full suite through the gate."""
+    warn('this change needs the full suite (map fallback):')
+    for path, why in fallback:
+        warn(f'  {path}: {why}')
+    triggers = sorted({path for path, _ in fallback})
+    code = 0
+    for suite in amap['suites']:
+        cwd = root if suite['cwd'] == '.' else root / suite['cwd']
+        warn(f"full suite in {suite['cwd']}: {suite['command']}")
+        gate = Gate([suite['command']], cwd, None, load_config(),
+                    {'purpose': 'map-fallback', 'trigger_files': triggers})
+        result = _drive(gate, gate.run)
+        code = code or result
+    return code
+
+
+# ---------------------------------------------------------------- test cleanup
+
+CLEANUP_DAYS = 30        # due when the last cleanup is more than this many days ago
+CLEANUP_GROWTH = 1.3     # due when the median of later passes reaches baseline x this
+CLEANUP_MIN_SAMPLES = 3  # later passes needed before the speed is judged
+CLEANUP_LATEST = 5       # the median is taken over at most this many latest passes
+CLEANUP_LABEL = 'test-cleanup'
+TRACKER_TIMEOUT = 10
+
+
+def today():
+    """Today's date. SUITE_GATE_TEST_TODAY (YYYY-MM-DD) replaces it; for tests only."""
+    fake = os.environ.get('SUITE_GATE_TEST_TODAY')
+    return date.fromisoformat(fake) if fake else date.today()
+
+
+def project_root(root):
+    """The main work tree of root's repository, shared by all of its worktrees."""
+    common = git(['rev-parse', '--path-format=absolute', '--git-common-dir'], root).stdout.strip()
+    return Path(common).parent if common and Path(common).name == '.git' else root
+
+
+def unit_key(project, rel, command):
+    return json.dumps([str(project), rel, command])
+
+
+def new_window(unit, baseline=None):
+    """Start a cleanup window today: the baseline is given or the next pass. The day of
+    the last tracker action stays, so a reset never allows a second action that day."""
+    unit.update(last_cleanup=today().isoformat(), window_start=now_iso(), baseline=baseline,
+                baseline_source='given' if baseline else None, samples=[], sample_count=0)
+    return unit
+
+
+def new_unit(project, rel, command, baseline=None):
+    return new_window({'project': str(project), 'rel_cwd': rel, 'command': command,
+                       'acted': None}, baseline)
+
+
+def secs(value):
+    return f'{round(value, 2)}s'
+
+
+def add_sample(unit, seconds):
+    """A reusable pass: the window's first one is the baseline, later ones are samples."""
+    if unit['baseline'] is None:
+        unit['baseline'], unit['baseline_source'] = seconds, 'first pass'
+    else:
+        unit['samples'] = (unit['samples'] + [seconds])[-CLEANUP_LATEST:]
+        unit['sample_count'] += 1
+
+
+def cleanup_median(unit):
+    """Median of the latest later passes, or None until enough of them exist."""
+    if not unit['baseline'] or unit['sample_count'] < CLEANUP_MIN_SAMPLES:
+        return None
+    return statistics.median(unit['samples'])
+
+
+def cleanup_due(unit):
+    """The reasons this unit is due for a cleanup; empty when it is not."""
+    reasons = []
+    days = (today() - date.fromisoformat(unit['last_cleanup'])).days
+    if days > CLEANUP_DAYS:
+        reasons.append(f"{days} days since the last cleanup ({unit['last_cleanup']}), "
+                       f'more than {CLEANUP_DAYS}')
+    median = cleanup_median(unit)
+    if median is not None and median >= unit['baseline'] * CLEANUP_GROWTH:
+        reasons.append(f"median {secs(median)} of the latest {len(unit['samples'])} passes "
+                       f"is {median / unit['baseline']:.0%} of the baseline "
+                       f"{secs(unit['baseline'])}, "
+                       f'at least {CLEANUP_GROWTH:.0%}')
+    return reasons
+
+
+def cleanup_numbers(unit):
+    """The unit's cleanup state as Markdown list lines."""
+    median = cleanup_median(unit)
+    if unit['baseline'] is None:
+        speed = 'no baseline yet (set by the next passing run)'
+    elif median is None:
+        speed = (f"{unit['sample_count']} pass(es) after the baseline; "
+                 f'{CLEANUP_MIN_SAMPLES} needed before the speed is judged')
+    else:
+        speed = (f"{secs(median)}, median of the latest {len(unit['samples'])} passes "
+                 f"({median / unit['baseline']:.0%} of the baseline)")
+    return [f"- Project: {unit['project']}",
+            f"- Suite: `{unit['command']}` in `{unit['rel_cwd']}`",
+            f"- Last cleanup: {unit['last_cleanup']} (window since {unit['window_start']})",
+            "- Baseline: " + (f"{secs(unit['baseline'])} ({unit['baseline_source']})"
+                               if unit['baseline'] is not None else 'none yet'),
+            f'- Current: {speed}']
+
+
+def cleanup_ticket(unit, reasons):
+    """(title, body, comment) for a cleanup ticket of this unit's project."""
+    numbers = [f'- Due ({today().isoformat()}): ' + '; '.join(reasons), *cleanup_numbers(unit)]
+    title = f"Test cleanup: {Path(unit['project']).name}"
+    body = '\n'.join([
+        'The suite gate found this project due for a test cleanup.', '', *numbers, '',
+        'Follow the cleanup procedure in the three-tier-testing skill '
+        '(`references/cleanup.md`). When closing this ticket, run '
+        '`suite-gate.py cleanup-done` in the project to start a new window.'])
+    comment = '\n'.join(['Updated numbers from the suite gate:', '', *numbers])
+    return title, body, comment
+
+
+def read_tracker(registry):
+    """{'repo', 'label'} from the registry's `cleanup`, or None without a GitHub repo."""
+    cleanup = registry.get('cleanup')
+    if not isinstance(cleanup, dict):
+        return None
+    repo, label = cleanup.get('github_repo'), cleanup.get('label', CLEANUP_LABEL)
+    if not isinstance(repo, str) or not repo.strip() or not isinstance(label, str) \
+            or not label.strip():
+        return None
+    return {'repo': repo.strip(), 'label': label.strip()}
+
+
+def gh(args, tracker):
+    result = subprocess.run(['gh', *args, '--repo', tracker['repo']], capture_output=True,
+                            text=True, stdin=subprocess.DEVNULL, timeout=TRACKER_TIMEOUT)
+    if result.returncode != 0:
+        detail = (result.stderr.strip().splitlines() or [f'exit {result.returncode}'])[-1]
+        raise RuntimeError(f'gh {args[0]} {args[1]} failed: {detail}')
+    return result.stdout
+
+
+def tracker_key(tracker):
+    return json.dumps([tracker['repo'], tracker['label']])
+
+
+def post_cleanup(tracker, title, body, comment, opened):
+    """Comment on the open cleanup issue, or open one; returns (what was done, the number of
+    an issue opened now or None). opened is the issue this gate opened last: it is asked
+    first, since a new issue can be missing from the label list for a while."""
+    if opened is not None:
+        issue = json.loads(gh(['issue', 'view', str(opened), '--json', 'state,url'], tracker))
+        if issue['state'] == 'OPEN':
+            gh(['issue', 'comment', str(opened), '--body', comment], tracker)
+            return f"commented on {issue['url']}", None
+    found = json.loads(gh(['issue', 'list', '--state', 'open', '--label', tracker['label'],
+                           '--json', 'number,url', '--limit', '1'], tracker))
+    if found:
+        gh(['issue', 'comment', str(found[0]['number']), '--body', comment], tracker)
+        return f"commented on {found[0]['url']}", None
+    url = gh(['issue', 'create', '--title', title, '--label', tracker['label'],
+              '--body', body], tracker).strip()
+    number = re.search(r'/issues/(\d+)$', url)
+    return f'opened {url}', int(number.group(1)) if number else None
+
+
+def check_cleanup(finished, command, cwd):
+    """After a full suite ran: count a reusable pass as a speed sample, then open or update
+    the cleanup ticket when the unit is due. Never changes the suite's output or exit."""
+    try:
+        _check_cleanup(finished, command, cwd)
+    except Interrupted:
+        raise
+    except Exception as exc:  # the cleanup check must never fail the suite
+        warn(f'test cleanup check skipped: {exc}')
+
+
+def _check_cleanup(finished, command, cwd):
+    info = finished['info']
+    project = project_root(Path(info['repo']))
+    key = unit_key(project, info['rel_cwd'], command)
+    tracker = read_tracker(load_registry(cwd) or {})
+    day = today().isoformat()
+
+    def update(state):
+        unit = state.setdefault('cleanup', {}).setdefault(
+            key, new_unit(project, info['rel_cwd'], command))
+        if finished['sample']:
+            add_sample(unit, finished['seconds'])
+        reasons = cleanup_due(unit)
+        previous = unit['acted']
+        claimed = bool(reasons) and tracker is not None and previous != day
+        if claimed:
+            unit['acted'] = day  # at most one tracker action per unit per day
+        opened = state.get('cleanup_issues', {}).get(tracker_key(tracker)) if claimed else None
+        return dict(unit), reasons, claimed, previous, opened
+
+    unit, reasons, claimed, previous, opened = with_state(update)
+    if not reasons:
+        return
+    title, body, comment = cleanup_ticket(unit, reasons)
+    if tracker is None:
+        warn('test cleanup is due, and the registry names no tracker (`cleanup.github_repo` '
+             f'in {REGISTRY_NAME}). Open a cleanup ticket in this project\'s tracker:\n'
+             f'Title: {title}\n{body}')
+        return
+    if not claimed:
+        warn(f"test cleanup is due; the cleanup ticket in {tracker['repo']} was already "
+             'updated today')
+        return
+    try:
+        done, number = post_cleanup(tracker, title, body, comment, opened)
+    except Interrupted:
+        raise
+    except Exception as exc:
+        def unclaim(state):
+            stored = state.get('cleanup', {}).get(key)
+            if stored and stored['acted'] == day:
+                stored['acted'] = previous
+        with_state(unclaim)
+        warn(f"test cleanup is due, but the tracker {tracker['repo']} could not be updated "
+             f"({exc}). Open or update the open `{tracker['label']}` issue by hand:\n"
+             f'Title: {title}\n{body}')
+        return
+    if number is not None:
+        def remember(state):
+            state.setdefault('cleanup_issues', {})[tracker_key(tracker)] = number
+        with_state(remember)
+    warn(f'test cleanup is due: {done}')
+
+
+def cmd_cleanup_done(command, baseline):
+    if baseline is not None and (command is None or baseline <= 0):
+        warn('--baseline needs --command and a number of seconds above 0')
+        return 2
+    root = repo_root(Path.cwd())
+    if root is None:
+        warn('not in a Git work tree')
+        return 2
+    project = project_root(root)
+    rel = rel_cwd(root, Path.cwd())
+
+    def change(state):
+        units = state.setdefault('cleanup', {})
+        if command is not None:
+            text = normalize_command([command])
+            key = unit_key(project, rel, text)
+            if key not in units:
+                units[key] = new_unit(project, rel, text, baseline)
+                return [dict(units[key])]
+            keys = [key]
+        else:
+            keys = [k for k, u in units.items() if u['project'] == str(project)]
+        return [dict(new_window(units[k], baseline)) for k in keys]
+
+    done = with_state(change)
+    if not done:
+        print(f'No full suite of {project} has run through the gate yet; the first one '
+              'starts its cleanup window today.')
+        return 0
+    for unit in done:
+        print(f"New cleanup window for `{unit['command']}` in {unit['project']}/"
+              f"{unit['rel_cwd']}: last cleanup {unit['last_cleanup']}, baseline "
+              + (secs(unit['baseline']) if unit['baseline'] else 'the next passing run'))
+    return 0
 
 
 # ---------------------------------------------------------------- status
@@ -1496,7 +2056,7 @@ def cmd_status(as_json, fp_prefix, limit):
     state, host, running = with_state(look)
     records = read_records()
     if fp_prefix:
-        records = [r for r in records if (r.get('fingerprint') or '').startswith(fp_prefix)]
+        records = [r for r in records if (record_fingerprint(r) or '').startswith(fp_prefix)]
     records = records[-limit:]
     cap, floor = config['max_slots'], min(config['min_slots'], config['max_slots'])
     unused_cpu = sum(h['unused'][0] for h in running)
@@ -1513,11 +2073,13 @@ def cmd_status(as_json, fp_prefix, limit):
         cpu, mem, source = reservation_of(waiter, config)
         waiting.append(dict(waiter, reservation={'cpu_cores': cpu, 'mem_bytes': mem,
                                                  'source': source}))
+    cleanup = [dict(unit, median=cleanup_median(unit), due=cleanup_due(unit))
+               for unit in state.get('cleanup', {}).values()]
     if as_json:
         shown = [{k: v for k, v in h.items() if k != 'unused'} for h in running]
         print(json.dumps({'min_slots': floor, 'max_slots': cap, 'config': config,
                           'host': host, 'running': shown, 'waiting': waiting,
-                          'locks': state['locks'], 'records': records},
+                          'locks': state['locks'], 'records': records, 'cleanup': cleanup},
                          ensure_ascii=False, indent=1))
         return 0
     now = time.time()
@@ -1568,10 +2130,23 @@ def cmd_status(as_json, fp_prefix, limit):
                 'content changed' if r.get('content_changed') else 'not in Git') + ')'
         else:
             result = f"FAIL exit {r.get('exit_code')}"
+        if r.get('kind') == 'reuse':
+            result = f"REUSED pass of {r.get('reused_time')}"
+        elif r.get('kind') == 'affected':
+            result = ('PASS' if r.get('exit_code') == 0 else f"FAIL exit {r.get('exit_code')}") \
+                + ' (affected tests)'
         rerun = f"  rerun: {r['rerun_reason']}" if r.get('rerun_reason') else ''
-        print(f"  {r.get('time')}  {result}  fp {(r.get('fingerprint') or '-')[:12]}  "
+        purpose = f"  purpose: {describe_purpose(r)}" if r.get('purpose') else ''
+        print(f"  {r.get('time')}  {result}  fp {(record_fingerprint(r) or '-')[:12]}  "
               f"{r.get('agent')}  {r.get('duration_s')}s  {r.get('cwd')}  "
-              f"{r.get('command')}{rerun}")
+              f"{r.get('command')}{rerun}{purpose}")
+    print(f'Test cleanup ({len(cleanup)} suites):')
+    for unit in cleanup:
+        print(f"  {'DUE' if unit['due'] else 'not due'}: `{unit['command']}` in "
+              f"{unit['project']}/{unit['rel_cwd']}")
+        # The first two lines name the project and suite, already on the heading line.
+        for line in cleanup_numbers(unit)[2:] + [f'- Due: {why}' for why in unit['due']]:
+            print(f'    {line[2:]}')
     return 0
 
 
@@ -1590,9 +2165,13 @@ LOOKS_LIKE_TESTS = re.compile(
     r'|bun\s+test|(npm|pnpm|yarn|bun)\s+(run\s+)?(test|t))\b')
 
 
-def gate_command(text):
+REASON_FLAGS = ('--reason', '<why the full suite is needed>')
+
+
+def gate_command(text, flags=()):
     """The ready-to-run command that sends text through the gate."""
-    return shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'run', '--', text])
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'run', *flags,
+                       '--', text])
 
 
 def _is_gate_run(words):
@@ -1611,8 +2190,8 @@ def shell_text(command):
     return command if isinstance(command, str) else ''
 
 
-def _wrap_suites(text, cwd, registry):
-    """text with each full-suite simple command replaced in place by its gate command.
+def _wrap_suites(text, cwd, registry, wrap):
+    """text with each full-suite simple command replaced in place by wrap(command text).
 
     The rest of the text (cd, export, pipes, a later echo) stays as written, so the gate
     records the suite's own exit code. In `bash -c '<body>'` only the body argument is
@@ -1624,12 +2203,12 @@ def _wrap_suites(text, cwd, registry):
             continue
         index = _shell_body_index(words)
         if index is not None:
-            body = _wrap_suites(words[index], cwd, registry)
+            body = _wrap_suites(words[index], cwd, registry, wrap)
             start, end = spans[index]
             replacement = None if body == words[index] else shlex.quote(body)
         elif is_full_suite(shlex.join(words), cwd, registry):
             start, end = spans[0][0], spans[-1][1]
-            replacement = gate_command(text[start:end])
+            replacement = wrap(text[start:end])
         else:
             replacement = None
         if replacement is not None:
@@ -1638,9 +2217,9 @@ def _wrap_suites(text, cwd, registry):
     return ''.join(parts) + text[last:]
 
 
-def gate_rewrite(text, cwd):
+def gate_rewrite(text, cwd, wrap=gate_command):
     """The command to run instead of text, or None when text runs no full suite outside
-    `suite-gate.py run`."""
+    `suite-gate.py run`. wrap turns a suite's text into what replaces it."""
     try:
         commands = [words for words in split_commands(text) if not _is_gate_run(words)]
         if not commands:
@@ -1649,26 +2228,44 @@ def gate_rewrite(text, cwd):
         if not is_full_suite(' ; '.join(shlex.join(words) for words in commands), cwd,
                              registry):
             return None
-        rewritten = _wrap_suites(text, cwd, registry)
+        rewritten = _wrap_suites(text, cwd, registry, wrap)
         # Only the commands together match a registry pattern: send all of them.
-        return rewritten if rewritten != text else gate_command(text)
+        return rewritten if rewritten != text else wrap(text)
     except Exception:  # unreadable text or a hook bug: block what looks like a runner
         if SCRIPT.name not in text and LOOKS_LIKE_TESTS.search(text):
-            return gate_command(text)
+            return wrap(text)
         return None
 
 
 def cmd_hook():
-    """PreToolUse (matcher Bash) for Claude and Codex: exit 2 with the rewrite on stderr."""
+    """PreToolUse (matcher Bash) for Claude and Codex: exit 2 with the rewrite on stderr.
+
+    In a project with an affected-test map the rewrite runs the affected tests instead,
+    and the reply shows how to run a full suite with a purpose."""
     try:
         payload = json.load(sys.stdin)
         text = shell_text(payload.get('tool_input', {}).get('command', ''))
         cwd = payload.get('cwd') or os.getcwd()
     except (ValueError, AttributeError):
         return 0  # nothing to read; never leave the agent stuck
-    rewrite = text.strip() and gate_rewrite(text, cwd if os.path.isdir(cwd) else os.getcwd())
+    cwd = cwd if os.path.isdir(cwd) else os.getcwd()
+    rewrite = text.strip() and gate_rewrite(text, cwd)
     if not rewrite:
         return 0
+    if is_mapped(load_registry(cwd) or {}):
+        affected = gate_rewrite(text, cwd, lambda _suite: affected_command())
+        full = gate_rewrite(text, cwd, lambda suite: gate_command(suite, REASON_FLAGS))
+        print('Blocked: this project has an affected-test map, so a ticket runs only the '
+              'tests its change affects, not the full suite. Run this instead:\n'
+              f'  {affected}\n'
+              'It runs the tests the map selects for the changed files, or the registered '
+              'full suites through the gate when a change is not covered by the map.\n'
+              'When a full suite is really needed, run it through the gate with a purpose:\n'
+              f'  {full}\n'
+              'Replace --reason \'<...>\' with --purpose post-merge after a batch is merged, '
+              'or --purpose release before a release. The purpose is recorded with the result.',
+              file=sys.stderr)
+        return 2
     print('Blocked: this runs a full test suite outside the suite gate. Run this instead; '
           'the gate reuses a passing result for the same content and queues when the host '
           'is busy:\n'
@@ -1771,6 +2368,18 @@ def cmd_configure(action, client, claude_settings, codex_home, preview):
     if preview:
         print(diff, end='')
         return 0
+    write_file(path, original, after)
+    print(diff, end='')
+    if client == 'codex':
+        print(f'Updated {path}; restart Codex and trust the hook in /hooks')
+    else:
+        print(f'Updated {path}; restart Claude Code and confirm the hook in /hooks')
+    return 0
+
+
+def write_file(path, original, after, mode=0o644):
+    """Replace path with after (None removes it) after backing up original; refuses when
+    path changed since original was read. A new file gets mode, an old one keeps its own."""
     path.parent.mkdir(parents=True, exist_ok=True)
     current = path.read_bytes() if path.exists() else None
     if current != original:
@@ -1780,17 +2389,195 @@ def cmd_configure(action, client, claude_settings, codex_home, preview):
                                          delete=False) as backup:
             backup.write(original)
         print(f'Backup: {backup.name}')
+    if after is None:
+        path.unlink()
+        return
     with tempfile.NamedTemporaryFile('w', prefix=path.name + '.', dir=path.parent,
                                      delete=False) as tmp:
         tmp.write(after)
     if original is not None:
         shutil.copymode(path, tmp.name)
-    os.replace(tmp.name, path)
-    print(diff, end='')
-    if client == 'codex':
-        print(f'Updated {path}; restart Codex and trust the hook in /hooks')
     else:
-        print(f'Updated {path}; restart Claude Code and confirm the hook in /hooks')
+        os.chmod(tmp.name, mode)
+    os.replace(tmp.name, path)
+
+
+# ---------------------------------------------------------------- pre-push
+
+PRE_PUSH_BEGIN = '# >>> suite-gate pre-push >>>'
+PRE_PUSH_END = '# <<< suite-gate pre-push <<<'
+SH_SHEBANG = re.compile(r'#!\s*(?:\S*/)?(?:env\s+)?(?:\S*/)?(?:sh|bash|dash|zsh)(?:\s.*)?')
+
+
+def is_release_ref(ref):
+    return ref == 'refs/heads/main' or ref.startswith('refs/tags/')
+
+
+def pushed_commits(root, lines):
+    """{commit: [remote refs]} for pre-push stdin lines that push main or a tag; other
+    branches and deletions are not checked."""
+    found = {}
+    for line in lines:
+        parts = line.split()
+        if len(parts) != 4:
+            continue
+        _local_ref, local_oid, remote_ref, _remote_oid = parts
+        if not local_oid.strip('0') or not is_release_ref(remote_ref):
+            continue
+        result = git(['rev-parse', '--verify', '--quiet', local_oid + '^{commit}'], root)
+        if result.returncode != 0:
+            raise RuntimeError(f'{remote_ref}: {local_oid} is not a commit')
+        found.setdefault(result.stdout.strip(), []).append(remote_ref)
+    return found
+
+
+def release_command(root, suite):
+    cwd = root if suite['cwd'] == '.' else root / suite['cwd']
+    run = gate_command(suite['command'], ('--purpose', 'release'))
+    return f'cd {shlex.quote(str(cwd))} && {run}'
+
+
+def cmd_pre_push():
+    """Git pre-push: refuse pushing main or a tag unless every registered full suite has a
+    reusable pass for the pushed commit (its tree plus `fingerprint_include` files from the
+    work tree, the command and its directory: the fingerprint the gate would compute)."""
+    root = repo_root(Path.cwd())
+    lines = sys.stdin.read().splitlines()
+    if root is None:
+        warn('pre-push: not in a Git work tree; nothing checked')
+        return 0
+    try:
+        commits = pushed_commits(root, lines)
+        if not commits:
+            return 0
+        registry = load_registry(root) or {}
+        suites = read_full_suites(registry)
+        include = include_patterns(registry)
+        missing, differs = {}, []
+        for commit, refs in commits.items():
+            tree = content_tree(root, include, commit)
+            lacking = [s for s in suites if not reusable_record(
+                digest(tree, [s['command']], rel_cwd(root, root / s['cwd'])))]
+            if lacking:
+                missing[commit] = (refs, lacking)
+                if content_tree(root, include) != tree:
+                    differs.append(commit)
+    except (RuntimeError, ValueError) as exc:
+        warn(f'push refused: {exc}. `git push --no-verify` skips this check.')
+        return 1
+    if not missing:
+        warn('pre-push: every registered full suite passed for the pushed content')
+        return 0
+    warn('push refused: no passing full-suite record for the pushed content:')
+    commands = []
+    for commit, (refs, lacking) in missing.items():
+        warn(f"  {', '.join(refs)} at {commit[:12]}:")
+        for suite in lacking:
+            warn(f"    {suite['cwd']}: {suite['command']}")
+            if release_command(root, suite) not in commands:
+                commands.append(release_command(root, suite))
+    warn('Run each missing suite through the gate on that content (purpose release), then '
+         'push again:')
+    for command in commands:
+        warn(f'  {command}')
+    for commit in differs:
+        warn(f'The work tree differs from {commit[:12]}; run the commands in a clean checkout '
+             f'of it (for example `git switch --detach {commit[:12]}`).')
+    warn('`git push --no-verify` skips this check.')
+    return 1
+
+
+PRE_PUSH_CREATED = '# suite-gate created this file; uninstall removes it.\n'
+
+
+def pre_push_block(created=False):
+    run = shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'pre-push'])
+    return (f'{PRE_PUSH_BEGIN}\n'
+            + (PRE_PUSH_CREATED if created else '') +
+            '# Added by suite-gate.py install-pre-push; remove with uninstall-pre-push.\n'
+            '# The pushed refs are kept for the rest of this hook on stdin.\n'
+            'suite_gate_refs=$(mktemp) || exit 1\n'
+            'trap \'rm -f "$suite_gate_refs"; exit 1\' HUP INT TERM\n'
+            'cat > "$suite_gate_refs" || { rm -f "$suite_gate_refs"; exit 1; }\n'
+            f'{run} "$@" < "$suite_gate_refs" || {{ rm -f "$suite_gate_refs"; exit 1; }}\n'
+            'exec < "$suite_gate_refs"\n'
+            'rm -f "$suite_gate_refs"\n'
+            'trap - HUP INT TERM\n'
+            f'{PRE_PUSH_END}\n')
+
+
+def updated_hook(text, action):
+    """The pre-push hook text with this check installed or removed; None removes the file."""
+    lines = (text or '').splitlines(True)
+    marks = [i for i, line in enumerate(lines) if line.rstrip('\n') in (PRE_PUSH_BEGIN,
+                                                                          PRE_PUSH_END)]
+    if marks and [lines[i].rstrip('\n') for i in marks] != [PRE_PUSH_BEGIN, PRE_PUSH_END]:
+        raise ValueError('the suite-gate block is broken; inspect the hook')
+    # Only a file this installer created is removed; any other keeps all its own lines.
+    created = bool(marks) and PRE_PUSH_CREATED in lines[marks[0]:marks[1]]
+    if action == 'uninstall':
+        if not marks:
+            return text
+        rest = lines[:marks[0]] + lines[marks[1] + 1:]
+        return None if created and ''.join(rest) == '#!/bin/sh\n' else ''.join(rest)
+    block = pre_push_block(created)
+    if marks:
+        return ''.join(lines[:marks[0]]) + block + ''.join(lines[marks[1] + 1:])
+    if text is None:
+        return '#!/bin/sh\n' + pre_push_block(created=True)
+    if not lines or not SH_SHEBANG.fullmatch(lines[0].strip()):
+        raise ValueError('the existing pre-push hook is not a sh or bash script, so it was '
+                         'left unchanged. To chain it, move it to another name, make '
+                         'pre-push a sh script that runs it with "$@" (passing stdin on), '
+                         'then install again')
+    head = lines[0] if lines[0].endswith('\n') else lines[0] + '\n'
+    return head + block + ''.join(lines[1:])
+
+
+def cmd_pre_push_configure(action, repo, preview):
+    root = repo_root(Path(repo))
+    if root is None:
+        raise ValueError(f'{repo} is not a Git work tree')
+    if action == 'install':
+        registry = load_registry(root)
+        if registry is None:
+            raise ValueError(f'no {REGISTRY_NAME} at {root}: the pre-push check is only for '
+                             'repos with a registry')
+        read_full_suites(registry)
+    # Always the repo's own hooks dir: a core.hooksPath may be shared by every repo.
+    common = git(['rev-parse', '--git-common-dir'], root).stdout.strip()
+    path = (root / common).resolve() / 'hooks/pre-push'
+    active = (root / git(['rev-parse', '--git-path', 'hooks'], root).stdout.strip()).resolve()
+    inactive = None
+    if action == 'install' and active != path.parent:
+        inactive = (f'Installed but NOT active: core.hooksPath={active} runs hooks from '
+                    f'there, not from {path.parent}. Add a hand-over to {active}/pre-push, '
+                    'for example:\n'
+                    '  local_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"\n'
+                    '  [ -x "$local_hook" ] && exec "$local_hook" "$@"\n'
+                    '  exit 0')
+    try:
+        original = path.read_bytes()
+    except FileNotFoundError:
+        original = None
+    before = original.decode() if original is not None else None
+    if action == 'install' and original is not None and not os.access(path, os.X_OK):
+        raise ValueError(f'{path} exists but is not executable, so Git ignores it; it was '
+                         'left unchanged. Make it executable (it will then run on every push) '
+                         'or remove it, then install again')
+    after = updated_hook(before, action)
+    if after == before:
+        print(f'No changes: {path}')
+    else:
+        diff = ''.join(difflib.unified_diff((before or '').splitlines(True),
+                                            (after or '').splitlines(True),
+                                            fromfile=str(path), tofile=str(path)))
+        print(diff, end='')
+        if not preview:
+            write_file(path, original, after, mode=0o755)
+            print(f'Removed {path}' if after is None else f'Updated {path}')
+    if inactive:
+        print(inactive)
     return 0
 
 
@@ -1799,7 +2586,8 @@ def cmd_configure(action, client, claude_settings, codex_home, preview):
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     # A hook that exits 2 would block every command, so only run and status check this.
-    if not sys.platform.startswith('linux') and argv[:1] in (['run'], ['status']):
+    if not sys.platform.startswith('linux') and argv[:1] in (['run'], ['status'], ['affected'],
+                                                             ['cleanup-done']):
         warn('only Linux is supported')
         return 2
     command = []
@@ -1810,12 +2598,34 @@ def main(argv=None):
     sub = parser.add_subparsers(dest='action', required=True)
     run = sub.add_parser('run', help='run a full suite through the gate: run [--rerun "<reason>"] -- <cmd>')
     run.add_argument('--rerun', metavar='REASON', help='run even if this content already passed')
+    run.add_argument('--purpose', choices=('post-merge', 'release'),
+                     help='why a full suite runs; required with an affected-test map')
+    run.add_argument('--reason', metavar='TEXT',
+                     help='a free-text purpose instead of --purpose')
+    affected = sub.add_parser('affected', help='run the tests the affected-test map selects '
+                                               'for this change: affected [--base <rev>]')
+    affected.add_argument('--base', metavar='REV', help='measure the change from this commit '
+                          'instead of the merge-base of HEAD and the integration branch')
     status = sub.add_parser('status', help='show running and queued suites and recent records')
     status.add_argument('--json', action='store_true')
     status.add_argument('--fingerprint', metavar='PREFIX', help='only records for this fingerprint')
     status.add_argument('--limit', type=int, default=10)
+    done = sub.add_parser('cleanup-done', help='a test cleanup of this project is finished: '
+                          'start a new cleanup window for its full suites')
+    done.add_argument('--command', metavar='TEXT', help='only this full-suite command, as '
+                      'run through the gate from the current directory')
+    done.add_argument('--baseline', type=float, metavar='SECONDS', help='the new baseline '
+                      '(needs --command); default: the next passing run')
     sub.add_parser('hook', help='PreToolUse hook (matcher Bash) for Claude and Codex; '
                                 'reads the payload on stdin')
+    pre_push = sub.add_parser('pre-push', help='Git pre-push hook: refuse pushing main or a '
+                              'tag without a passing record of every registered full suite')
+    pre_push.add_argument('remote', nargs='*', help='remote name and URL, as Git passes them')
+    for action in ('install-pre-push', 'uninstall-pre-push'):
+        config = sub.add_parser(action, help=f'{action.split("-")[0]} the pre-push check in '
+                                'a repo with a registry')
+        config.add_argument('--repo', required=True, help='the repo (work tree) to change')
+        config.add_argument('--preview', action='store_true', help='show the diff, write nothing')
     for action in ('install', 'uninstall'):
         config = sub.add_parser(action, help=f'{action} the hook in a client\'s settings')
         config.add_argument('--client', choices=('claude', 'codex'), required=True)
@@ -1828,11 +2638,23 @@ def main(argv=None):
     if args.action == 'run':
         if not command:
             parser.error('run needs the suite command after --')
-        return cmd_run(args.rerun, command)
+        return cmd_run(args.rerun, args.purpose, args.reason, command)
     if command:
         parser.error(f'{args.action} takes no command')
     if args.action == 'hook':
         return cmd_hook()
+    if args.action == 'affected':
+        return cmd_affected(args.base)
+    if args.action == 'cleanup-done':
+        return cmd_cleanup_done(args.command, args.baseline)
+    if args.action == 'pre-push':
+        return cmd_pre_push()
+    if args.action in ('install-pre-push', 'uninstall-pre-push'):
+        try:
+            return cmd_pre_push_configure(args.action.split('-')[0], args.repo, args.preview)
+        except (OSError, ValueError) as exc:
+            warn(str(exc))
+            return 1
     if args.action in ('install', 'uninstall'):
         try:
             return cmd_configure(args.action, args.client, args.claude_settings,
