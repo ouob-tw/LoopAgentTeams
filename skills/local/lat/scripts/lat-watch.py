@@ -10,6 +10,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import shutil
 import subprocess
 import sys
@@ -738,6 +739,8 @@ def decide(previous, observation, now):
 
 
 COMMAND_TIMEOUT_SECONDS = 30
+# A reap may wait out the 10-second SIGTERM grace period; it must still end within one cycle.
+REAP_TIMEOUT_SECONDS = 45
 _WAIT_LOCKS = threading.local()
 
 
@@ -2262,16 +2265,16 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     return stop_reason
 
 
-def log_cycle_failure(log, previous, error, now):
+def log_cycle_failure(log, previous, error, now, decision='cycle-failed'):
     """Log a failed cycle; repeat an identical failure at most once per hour."""
     message = f'{type(error).__name__}: {error}'
     repeats = previous['repeats'] + 1 if previous and previous['error'] == message else 0
     if repeats and now - previous['logged_at'] < FAILURE_REPEAT_SECONDS:
         return {**previous, 'repeats': repeats}
-    record = {'at': now, 'decision': 'cycle-failed', 'actions': [], 'error': message}
+    record = {'at': now, 'decision': decision, 'actions': [], 'error': message}
     if repeats:
         record['repeats'] = repeats
-    print(f'LAT watch cycle failed: {message}', file=sys.stderr, flush=True)
+    print(f'LAT watch {decision.replace("-", " ")}: {message}', file=sys.stderr, flush=True)
     try:
         append_log(log, record)
     except OSError as log_error:
@@ -2317,12 +2320,19 @@ def stop_self(workspace, orchestrator, reason, now, pgid=None):
     return sid
 
 
+def reap_command(*args):
+    """The service reaper beside this script; LAT_REAP_COMMAND replaces it in tests."""
+    replacement = shlex.split(os.environ.get('LAT_REAP_COMMAND', ''))
+    return [*(replacement or [sys.executable, str(Path(__file__).with_name('lat-reap.py'))]),
+            *args]
+
+
 def run_forever(args):
     workspace = args.workspace.resolve(strict=True)
     tasks = args.tasks.resolve()
     decisions = args.decisions.resolve(strict=True)
     log = state_path(workspace, args.orchestrator).with_name('watch.jsonl')
-    failure = None
+    failure = reap_failure = None
     while True:
         now = time.time()
         try:
@@ -2334,6 +2344,13 @@ def run_forever(args):
         if reason:
             stop_self(workspace, args.orchestrator, reason, now)
             return
+        # Close services that ended HCOM agents left behind; a failed reap never stops watching.
+        try:
+            run_cli(reap_command('reap', '--trigger', 'periodic'), timeout=REAP_TIMEOUT_SECONDS,
+                    failure='lat-reap failed')
+            reap_failure = None
+        except Exception as error:
+            reap_failure = log_cycle_failure(log, reap_failure, error, now, 'reap-failed')
         time.sleep(CHECK_SECONDS)
 
 

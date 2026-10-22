@@ -41,6 +41,7 @@ QUESTION_TAGS = ('DECIDE:', 'HELP:')
 # A last line with one of these tags needs the controller's duty on record first.
 DUTY_TAGS = QUESTION_TAGS + ('DONE:',)
 DUTY_LIMIT = 40
+REAP_TIMEOUT_SECONDS = 60
 HOOK_EVENTS = ('SessionStart', 'Stop', 'UserPromptSubmit')
 INLINE_REFERENCES = ('references/agents.md', 'references/task-cards.md')
 QUESTION_HEADING = re.compile(r'^❓ \*\*([A-Za-z0-9_.-]+) r([0-9]+)\*\*', re.MULTILINE)
@@ -396,6 +397,33 @@ def start_autoclean(workspace):
         print(f'自動清理未啟動：{error}')
 
 
+def reap_command(*args):
+    """The service reaper beside this script; LAT_REAP_COMMAND replaces it in tests."""
+    replacement = shlex.split(os.environ.get('LAT_REAP_COMMAND', ''))
+    return [*(replacement or [sys.executable, str(Path(__file__).with_name('lat-reap.py'))]),
+            *args]
+
+
+def reap_on_deactivate(record):
+    """End this controller's keeps, then close leftovers; a failure prints one line only."""
+    steps = [('reap', '--trigger', 'deactivate')]
+    if record.get('hcom_name'):
+        steps.insert(0, ('release', '--by', record['hcom_name']))
+    for step in steps:
+        try:
+            # The reaper waits up to 30 seconds for its lock, then 10 for SIGTERM to work.
+            result = subprocess.run(reap_command(*step), text=True, capture_output=True,
+                                    timeout=REAP_TIMEOUT_SECONDS)
+        except (OSError, subprocess.TimeoutExpired) as error:
+            print(f'服務回收未完成：{error}')
+            return
+        if result.returncode:
+            lines = (result.stderr.strip() or result.stdout.strip()).splitlines()
+            print(f'服務回收未完成：{lines[-1] if lines else f"exit {result.returncode}"}')
+            return
+        print(result.stdout, end='')
+
+
 def pointer(path, record):
     # Claude compaction drops references; inline the two that dispatch and closing rely on.
     # Codex caps hook context near 2,500 tokens, so it keeps re-reading them itself.
@@ -496,6 +524,7 @@ def deactivate(args):
         write_json_atomic(path, record, expected=original)
     print(path)
     print(json.dumps({'removed': removed}))
+    reap_on_deactivate(record)
     start_autoclean(workspace)
 
 

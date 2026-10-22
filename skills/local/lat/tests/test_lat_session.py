@@ -24,6 +24,13 @@ OTHER = '22222222-2222-4222-8222-222222222222'
 SEPARATOR = '\n\n' + '─' * 20 + '\n\n'
 
 
+def setUpModule():
+    # No test may run a real reap against the host; tests that check the call replace this.
+    patcher = patch.dict(os.environ, LAT_REAP_COMMAND='true')
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 class SessionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -1429,6 +1436,53 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.wait_for(lambda: not self.process_exists(pid))
         self.assertFalse((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+
+    def fake_reaper(self, body):
+        """A stand-in reap command that logs its arguments; never the real reaper."""
+        calls = self.root / 'reap.log'
+        reaper = self.binary / 'fake-reap'
+        reaper.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{calls}"\n{body}\n')
+        reaper.chmod(0o755)
+        return calls, {'LAT_REAP_COMMAND': str(reaper)}
+
+    def test_deactivate_releases_own_keeps_then_reaps_and_prints_the_result(self):
+        self.activate()
+        calls, environment = self.fake_reaper(
+            'case "$1" in release) echo "Released 1 keep(s) made by $3";;\n'
+            '  reap) echo "PID 4242 (worker): exited after SIGTERM [keep ended]";; esac')
+
+        result = self.cli('deactivate', '--workspace', self.work, extra_env=environment)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(calls.read_text().splitlines(),
+                         ['release --by orch', 'reap --trigger deactivate'])
+        self.assertIn('Released 1 keep(s) made by orch', result.stdout)
+        self.assertIn('PID 4242 (worker): exited after SIGTERM [keep ended]', result.stdout)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'ended')
+
+    def test_failed_reap_prints_one_line_and_does_not_block_deactivation(self):
+        self.activate()
+        pid = self.watcher_pid()
+        self.wait_for(lambda: self.fake_uv_log.exists())
+        for step in ('release', 'reap'):
+            with self.subTest(step=step):
+                self.record.write_text(json.dumps(
+                    dict(json.loads(self.record.read_text()), status='active')))
+                calls, environment = self.fake_reaper(
+                    f'test "$1" = {step} || exit 0\n'
+                    'echo "Waiting for the reap lock"\n'
+                    'echo "Skipped: another reap holds the lock (waited too long)"; exit 1')
+
+                result = self.cli('deactivate', '--workspace', self.work, extra_env=environment)
+
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertEqual(json.loads(self.record.read_text())['status'], 'ended')
+                failures = [line for line in result.stdout.splitlines() if '服務回收' in line]
+                self.assertEqual(len(failures), 1, result.stdout)
+                self.assertIn('Skipped: another reap holds the lock', failures[0])
+                self.assertNotIn('Waiting for the reap lock', result.stdout)
+                calls.unlink()
+        self.wait_for(lambda: not self.process_exists(pid))
 
     def test_deactivate_releases_only_the_controllers_own_wait(self):
         self.activate()

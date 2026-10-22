@@ -95,8 +95,11 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 - 清理任務卡列明且屬於本任務的資源；普通暫存檔用 trash-cli，含機密者（含隔離 client 家目錄）先用 `shred -u`，再移除所在 worktree。核對 `temp paths` 列出的位置都已不存在、`.lat` 內沒有家目錄副本。
 - 以 `git worktree remove` 移除該任務的獨立 worktree，以 `git branch -d` 刪除任務分支；`-D` 僅限使用者明確確認放棄該分支。
 - **先**將任務卡移至 `.lat/tasks/done/`，**再**關閉 Agent；移走後停住監控不再盯該 Agent。卡片仍在而 Agent 消失會被視為意外消失並通知主控。
+- `hcom kill` 關閉 Agent 並核對已停止後，立即執行 `uv run --no-project python <lat_dir>/scripts/lat-reap.py reap --agent <Agent 名稱>` 收掉它留下的服務。
 
 只有任務卡明列待完成後續工作時可暫留，例如 QA 保留 worktree 供複驗；後續工作完成後立即收尾。
+
+交付前以 `uv run --no-project python <lat_dir>/scripts/lat-reap.py scan --limit 0` 列出本輪期間關閉的程序與仍保留的服務，寫入交付回報。
 
 [Spec 文件審查](spec-review.md#收尾) 沒有 commit，不適用上述合併門檻：使用者確認或放棄該 Spec 後，主控先將 status 改為 `completed`、deliverable commit 填「無（證據為 issue 留言）」並把任務卡移至 `.lat/tasks/done/`，再關閉審查者。
 

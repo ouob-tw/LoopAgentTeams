@@ -369,6 +369,8 @@
        "tests": ["skills/local/lat/tests/test_lat_session.py", "skills/local/lat/tests/test_lat_autoclean.py", "skills/local/lat/tests/test_lat_activation_check.py", "skills/local/lat/tests/test_lat_common.py", "skills/local/lat/tests/test_lat_panel_prune.py"]},
       {"paths": ["skills/local/lat/scripts/lat-consensus.py"],
        "tests": ["skills/local/lat/tests/test_lat_consensus.py"]},
+      {"paths": ["skills/local/lat/scripts/lat-reap.py"],
+       "tests": ["skills/local/lat/tests/test_lat_reap.py"]},
       {"paths": ["skills/local/lat/scripts/review-size.py"],
        "tests": ["skills/local/lat/tests/test_review_size.py"]},
       {"paths": ["skills/local/lat/scripts/_lat_common.py", "skills/local/lat/scripts/lat_decision_status.py"],
