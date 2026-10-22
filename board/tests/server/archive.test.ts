@@ -108,8 +108,8 @@ test('the archive lists newest first and is the same on another paired device', 
 	const times = mine.map(processedTime);
 	expect(times).toEqual(times.toSorted((a, b) => b - a));
 	expect(await fixture.archive(other)).toEqual(mine);
-	const { generatedAt: _mine, ...here } = await fixture.board(cookie);
-	const { generatedAt: _theirs, ...there } = await fixture.board(other);
+	const { generatedAt: _mine, revision: _mineRevision, ...here } = await fixture.board(cookie);
+	const { generatedAt: _theirs, revision: _theirRevision, ...there } = await fixture.board(other);
 	expect(there).toEqual(here);
 });
 
