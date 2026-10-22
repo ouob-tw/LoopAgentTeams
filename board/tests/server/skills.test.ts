@@ -65,7 +65,7 @@ test("Claude's: the user's skills and the project's, with each description's fir
 	expect(list.map((entry: { name: string }) => entry.name)).not.toContain('codex-project');
 });
 
-test("Codex's: as its app server lists them for the folder, without those turned off or its own, asked again only after a while", async () => {
+test("Codex's: as its app server lists them for the folder, its own system ones too, without those turned off, asked again only after a while", async () => {
 	codexPlan({
 		skills: [
 			{ name: 'codex-project', description: 'Codex only. More.', enabled: true, scope: 'repo' },
@@ -78,6 +78,7 @@ test("Codex's: as its app server lists them for the folder, without those turned
 	expect(response.status).toBe(200);
 	expect((await response.json()).skills).toEqual([
 		{ name: 'codex-project', summary: 'Codex only.' },
+		{ name: 'skill-installer', summary: 'Comes with Codex.' },
 		{ name: 'visualize:visualize', summary: 'Charts!' }
 	]);
 	expect(codexAsks()).toEqual([{ cwds: [project] }]);

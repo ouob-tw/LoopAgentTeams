@@ -52,9 +52,10 @@ export function insertSkill(text: string, start: number, caret: number, trigger:
 	return { value, caret: start + trigger.length + name.length + (written.endsWith(' ') ? 1 : 0) };
 }
 
-/** The first sentence of a description: up to its first full stop, or its first line. */
+/** The first sentence of a description: up to its first full stop, a sentence going on over
+ *  several lines read as one line; the whole of it without a full stop. */
 export function firstSentence(description: string): string {
-	const text = description.trim().split('\n')[0]!.trim();
+	const text = description.trim().replace(/\s+/g, ' ');
 	const end = /[.!?](?=\s|$)|[。！？]/u.exec(text);
 	return end ? text.slice(0, end.index + 1) : text;
 }

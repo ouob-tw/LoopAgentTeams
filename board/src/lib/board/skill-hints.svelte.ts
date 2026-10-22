@@ -1,6 +1,7 @@
 // The skill lists the hints show, read from the server per client and folder when a hint first
 // needs one, and again once it is old, so a skill installed meanwhile shows up. A list that could
-// not be read shows no hints and never stops a message being sent; it is asked for again later.
+// not be read, the first time or again, shows no hints and never stops a message being sent; it is
+// asked for again a little later.
 import { request } from './api.ts';
 import type { Skill, SkillList } from './skills.ts';
 
@@ -28,6 +29,7 @@ class SkillHints {
 		this.#askedAt.set(key, Date.now());
 		const result = await request<SkillList>(`/api/skills?client=${encodeURIComponent(client)}&folder=${encodeURIComponent(folder)}`);
 		if (result.ok && Array.isArray(result.value.skills)) this.lists[key] = result.value.skills;
+		else delete this.lists[key];
 	}
 }
 

@@ -154,6 +154,14 @@ test.skipIf(!CHROME)('no list opens while an input method is composing', async (
 	await Bun.sleep(300);
 	expect(await evaluate(SHOWN)).toBe('[]');
 	expect(await valueOf(LINE)).toBe('@luna ／');
+	// The Enter Safari sends to confirm a candidate (key code 229) is the input method's, not the list's.
+	await clear(LINE);
+	await type('@luna /');
+	await shows(['/project-one', '/user-one']);
+	for (const kind of ['keyDown', 'keyUp']) await tab().send('Input.dispatchKeyEvent', { type: kind, key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 229 });
+	await Bun.sleep(200);
+	expect(await valueOf(LINE)).toBe('@luna /');
+	await press('Escape');
 }, 30_000);
 
 test.skipIf(!CHROME)('a skill list that cannot be read shows no hints and the line still sends', async () => {
@@ -201,7 +209,7 @@ test.skipIf(!CHROME)('the new-controller and new-agent forms hint the chosen cli
 	}
 }, 30_000);
 
-test.skipIf(!CHROME)('on a phone the list fits the screen above the line and takes a tap', async () => {
+test.skipIf(!CHROME)('on a phone the list fits the screen, above the line and in the new form, and takes a tap', async () => {
 	await tab().send('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 2, mobile: true });
 	await tab().navigate(`${fixture.url}/?launch`);
 	await until(`!!document.querySelector('#folder-box')?.value`, 'the page hydrated');
@@ -219,5 +227,27 @@ test.skipIf(!CHROME)('on a phone the list fits the screen above the line and tak
 	await tab().pointerClick('[role="listbox"][aria-label="Skill"] li:nth-child(1) button');
 	await closed('the list closed by the tap');
 	expect(await valueOf(LINE)).toBe('@luna /project-one ');
+
+	// The new form's first message, on the same phone.
+	await evaluate(`(() => {
+		const box = document.querySelector('#folder-box');
+		box.value = ${JSON.stringify(project)};
+		box.dispatchEvent(new Event('input', { bubbles: true }));
+		document.querySelector('input[type=radio][value="codex"]').click();
+	})()`);
+	await clear(FIRST);
+	await type('$');
+	await shows(['$codex-project', '$tdd']);
+	const form = await evaluate<{ left: number; right: number; top: number }>(`(() => {
+		const r = document.querySelector('[role="listbox"][aria-label="Skill"]').getBoundingClientRect();
+		return { left: r.left, right: r.right, top: r.top };
+	})()`);
+	expect(form.left).toBeGreaterThanOrEqual(0);
+	expect(form.right).toBeLessThanOrEqual(390);
+	expect(form.top).toBeGreaterThanOrEqual(0);
+	await tab().pointerClick('[role="listbox"][aria-label="Skill"] li:nth-child(2) button');
+	await closed('the list closed by the tap');
+	expect(await valueOf(FIRST)).toBe('$tdd ');
+	await evaluate(`document.querySelector('input[type=radio][value="claude"]').click()`);
 	await tab().send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
 }, 30_000);

@@ -1,6 +1,7 @@
 // The skills a client can call in a folder, for the hints in the command line and the new form.
-// Only skills: none of a client's own commands, nor the skills that come with the client itself
-// (Claude Code's built-in ones, Codex's `system` ones) or with the claude.ai account.
+// Only skills: none of a client's own commands. Claude Code's built-in skills and those the
+// claude.ai account gives are not listed either: they have no files, and only a Claude session
+// (which runs its start-up hooks) could list them.
 //
 // Claude, as Claude Code 2.1 lists them at start: `~/.claude/skills/<dir>/SKILL.md`, then
 // `.claude/skills` in the folder and each folder above it up to its Git project's root (up to `/`
@@ -9,7 +10,8 @@
 // called by its folder's name.
 //
 // Codex is asked itself (`skills/list` of its app server): which of its plugins count, and which
-// skills its settings turn off, depends on its own state. Those it lists as `system` are its own.
+// skills its settings turn off, depends on its own state. Its `system` skills are files it
+// installs itself (`~/.codex/skills/.system`), so they are listed too.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
@@ -152,7 +154,7 @@ function end(child: ChildProcess): void {
 	}
 }
 
-/** The skills Codex turns on for the folder, as its app server lists them, but its own; null when it could not
+/** The skills Codex turns on for the folder, as its app server lists them; null when it could not
  *  be asked or did not answer in time. */
 export function askCodex(command: string[], folder: string, timeoutMs: number): Promise<Skill[] | null> {
 	const [program, ...args] = command;
@@ -177,7 +179,7 @@ export function askCodex(command: string[], folder: string, timeoutMs: number): 
 		child.stdin!.on('error', () => finish(null));
 		const write = (message: object) => child.stdin!.write(JSON.stringify(message) + '\n');
 		createInterface({ input: child.stdout! }).on('line', (line) => {
-			let message: { id?: number; method?: string; result?: { data?: { skills?: { name?: unknown; description?: unknown; enabled?: unknown; scope?: unknown }[] }[] } };
+			let message: { id?: number; method?: string; result?: { data?: { skills?: { name?: unknown; description?: unknown; enabled?: unknown }[] }[] } };
 			try {
 				message = JSON.parse(line);
 			} catch {
@@ -191,7 +193,7 @@ export function askCodex(command: string[], folder: string, timeoutMs: number): 
 				const listed = message.result?.data?.[0]?.skills;
 				if (!Array.isArray(listed)) return finish(null);
 				const skills = listed
-					.filter((skill) => skill.enabled !== false && skill.scope !== 'system' && typeof skill.name === 'string' && skill.name)
+					.filter((skill) => skill.enabled !== false && typeof skill.name === 'string' && skill.name)
 					.map((skill) => ({ name: skill.name as string, summary: firstSentence(typeof skill.description === 'string' ? skill.description : '') }));
 				finish(once(skills));
 			}

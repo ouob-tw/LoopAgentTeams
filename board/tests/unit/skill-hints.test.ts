@@ -74,7 +74,7 @@ describe('the summary', () => {
 		expect(firstSentence('使用者指定 LAT 時使用。協調討論。')).toBe('使用者指定 LAT 時使用。');
 		expect(firstSentence('No full stop at all')).toBe('No full stop at all');
 		expect(firstSentence('  Version 1.5 is fine! Then more.')).toBe('Version 1.5 is fine!');
-		expect(firstSentence('Line one\nline two')).toBe('Line one');
+		expect(firstSentence('Create a report\nfor the project. More details.')).toBe('Create a report for the project.');
 		expect(firstSentence('')).toBe('');
 	});
 });

@@ -69,7 +69,8 @@
 
 	function keydown(event: KeyboardEvent) {
 		quiet = false;
-		if (hinting && !event.isComposing && hintKey(event)) return;
+		// 229: the input method still has the key, as Safari reports the Enter confirming a candidate.
+		if (hinting && !event.isComposing && event.keyCode !== 229 && hintKey(event)) return;
 		if (!sendsOnEnter(event, enterMakesNewline.current)) return;
 		event.preventDefault();
 		onsend();
@@ -105,6 +106,10 @@
 		return listed && typing ? matchSkills(listed, typing.query).slice(0, HINTS_SHOWN) : [];
 	});
 	const hinting = $derived(hints.length > 0 && typing !== null && typing.start !== dismissed && !disabled);
+	// A list read again can be shorter: the highlight stays on one that is there.
+	$effect.pre(() => {
+		if (active >= hints.length) active = 0;
+	});
 	// The highlighted one stays in sight.
 	$effect(() => {
 		if (hinting) document.getElementById(`${id}-skill-${active}`)?.scrollIntoView({ block: 'nearest' });
@@ -123,7 +128,7 @@
 	 *  text as it is. Whether the key was the list's. */
 	function hintKey(event: KeyboardEvent): boolean {
 		if (event.key === 'ArrowDown' || event.key === 'ArrowUp') active = (active + (event.key === 'ArrowDown' ? 1 : hints.length - 1)) % hints.length;
-		else if ((event.key === 'Enter' || event.key === 'Tab') && !event.shiftKey) void pickSkill(hints[active]!);
+		else if ((event.key === 'Enter' || event.key === 'Tab') && !event.shiftKey) void pickSkill(hints[Math.min(active, hints.length - 1)]!);
 		else if (event.key === 'Escape') dismissed = typing!.start;
 		else return false;
 		event.preventDefault();
