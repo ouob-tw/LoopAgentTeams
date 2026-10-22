@@ -21,7 +21,8 @@
 	}
 
 	// An image or video says so itself when it cannot load; any other file is asked about when shown.
-	// Every file is asked about again when it is opened or downloaded, as it may have gone since.
+	// An image or a PDF is asked about again when opened, and any file when downloaded, as it may have
+	// gone since; a text file's preview finds that out by reading it.
 	$effect(() => {
 		for (const path of paths) {
 			const kind = attachmentKind(path);
@@ -43,10 +44,14 @@
 		link.click();
 	}
 
+	/** Counts the images opened, so an answer that comes after a later click opens nothing. */
+	let opening = 0;
+
 	// A thumbnail already loaded would still show from the page's copy after the file is gone.
 	async function openImage(path: string) {
-		if (await present(path)) preview?.show(path);
-		else gone[path] = true;
+		const ticket = ++opening;
+		if (!(await present(path))) gone[path] = true;
+		else if (ticket === opening) preview?.show(path);
 	}
 
 	async function openTab(event: MouseEvent, path: string) {
