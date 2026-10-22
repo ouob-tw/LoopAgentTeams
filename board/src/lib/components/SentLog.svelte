@@ -11,6 +11,7 @@
 	import { choiceText, settingsText, SWITCH_STATE_TEXT } from '#lib/board/models.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import { RESUME_CLOSE_TEXT, RESUME_OVERDUE_TEXT, wakeText } from '#lib/board/wake.ts';
+	import SentText from './SentText.svelte';
 
 	let { controller }: { controller: Controller } = $props();
 
@@ -89,7 +90,7 @@
 								<span class="failed">{RESUME_OVERDUE_TEXT}</span>
 							{/if}
 						</p>
-						{#if entry.text}<p class="text">{entry.text}</p>{/if}
+						{#if entry.text}<SentText text={entry.text} />{/if}
 						{#if entry.choice && (entry.choice.model || entry.choice.effort)}
 							<p class="title">{choiceText(entry.choice)}{entry.carriedEffort ? `（思考強度沿用 ${entry.carriedEffort}）` : ''}</p>
 						{/if}
@@ -112,7 +113,7 @@
 								<span class="failed">✗ 沒有送達：{entry.error}</span>
 							{/if}
 						</p>
-						<p class="text">{entry.text}</p>
+						<SentText text={entry.text} />
 					{/if}
 				</li>
 			{/each}

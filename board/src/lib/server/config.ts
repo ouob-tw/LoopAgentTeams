@@ -49,6 +49,10 @@ export interface BoardConfig {
 	/** The service's access token. It stays on the server: no response to a page carries it. */
 	asrToken: string | null;
 	asrTimeoutMs: number;
+	/** Where files attached to a message are kept; the message carries their paths. */
+	uploadDir: string;
+	/** The largest file that may be attached. */
+	uploadMaxBytes: number;
 	/** Command that runs a Codex app server over standard input and output, to tidy long speech. */
 	tidyCommand: string[];
 	tidyTimeoutMs: number;
@@ -175,6 +179,8 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		asrUrl: env.LAT_BOARD_ASR_URL?.replace(/\/+$/, '') || null,
 		asrToken: env.LAT_BOARD_ASR_TOKEN || null,
 		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),
+		uploadDir: env.LAT_BOARD_UPLOAD_DIR || '/tmp/lat-board-uploads',
+		uploadMaxBytes: (Number(env.LAT_BOARD_UPLOAD_MAX_MB) > 0 ? Number(env.LAT_BOARD_UPLOAD_MAX_MB) : 250) * 1024 * 1024,
 		tidyCommand: commandFrom(env, 'LAT_BOARD_TIDY_COMMAND') ?? [...TEXT_ONLY_CODEX],
 		tidyTimeoutMs: seconds(env.LAT_BOARD_TIDY_TIMEOUT_SECONDS, 30_000),
 		translateCommand: commandFrom(env, 'LAT_BOARD_TRANSLATE_COMMAND') ?? [...TEXT_ONLY_CODEX],

@@ -41,6 +41,8 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_ASR_URL` | 語音輸入用的語音辨識服務（gohakka-infra）網址，例如 `http://localhost:8025`；看板呼叫它的 `/v1/asr/sync`（`whisper-large-v3-turbo`、`zh`）。沒設定或缺下一項時，按麥克風只會提示未設定 | 不設定 |
 | `LAT_BOARD_ASR_TOKEN` | 該服務的 JWT。只留在看板伺服器，不會出現在任何給瀏覽器的回應 | 不設定 |
 | `LAT_BOARD_ASR_TIMEOUT_SECONDS` | 語音辨識多久沒回應就放棄 | `60` |
+| `LAT_BOARD_UPLOAD_DIR` | 附件存放的資料夾（見「附件」）；資料夾是連結或不屬於看板的帳號時拒絕使用 | `/tmp/lat-board-uploads` |
+| `LAT_BOARD_UPLOAD_MAX_MB` | 單一附件的大小上限（MB） | `250` |
 | `BODY_SIZE_LIMIT` | 伺服器收的請求大小上限（adapter-node 的設定）。約 3 分鐘的錄音會超過預設的 512K，用語音輸入時設成 `2M` | `512K` |
 | `LAT_BOARD_TIDY_COMMAND` | 整理長語音用的 Codex app server 指令（JSON 字串陣列），每次整理啟動一個、以標準輸入輸出溝通，用完即結束；模型固定為 `gpt-6-luna`、思考強度 `low`。預設指令關掉 apps、hooks、memories、plugins、skills 說明與各種工具（`config.ts` 的 `TEXT_ONLY_CODEX`），自訂時照用所設的值、不會自動補上 | `["codex","app-server","-c","features.apps=false",…]` |
 | `LAT_BOARD_TIDY_TIMEOUT_SECONDS` | Codex 整理多久沒完成就改放原始辨識文字並提示 | `30` |
@@ -240,6 +242,15 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 錄音送到看板伺服器的 `/api/voice`，由伺服器帶著憑證轉給語音辨識服務（見「設定」的 `LAT_BOARD_ASR_*`）；結果用 opencc-js 轉成台灣正體（含用詞）。放入時只取代選取的文字；錄音最長約 3 分鐘（略短於語音辨識服務的 180 秒上限）。
 - 20 個字以內直接放到游標處；更長的先交給 Codex app server 修錯字、去掉口誤與贅字再放入。Codex 失敗、看不懂或逾時就放轉換後的原文，並以通知說明原因。
 - 測試以 Bun 啟動的假語音辨識服務與 `tests/fake-codex.mjs`（假的 Codex app server）代替真的服務，不會呼叫外部服務。
+
+## 附件
+
+使用方式見[使用說明](../docs/lat-board.md#附件)。實作上：
+
+- 瀏覽器把檔案切成每塊 256KB 依序上傳：`POST /api/uploads`（`name`、`size`）先建立空檔並回傳 `id` 與完整路徑，再以 `PUT /api/uploads/<id>?offset=<位置>` 逐塊附加；每塊都在 `BODY_SIZE_LIMIT` 預設的 512K 以內，所以傳附件不用調整這個上限。位置不接續、超過宣告大小或單塊超過 256KB 都回 409；超過 `LAT_BOARD_UPLOAD_MAX_MB` 在建立時就回 413。傳完最後一塊之前檔案以開頭加一個點的隱藏名稱存放（完成的檔名開頭不會是點），不會被讀回；未完成的上傳只記在記憶體，看板重啟後要重新選檔，留下的隱藏檔不會被當成附件。
+- 檔案存在 `LAT_BOARD_UPLOAD_DIR/<日期>/<16 碼隨機字>-<檔名>`，資料夾權限 700、檔案 600；檔名去掉路徑、控制字元與開頭的點，空白換成 `_`，最長 120 字（保留副檔名）。看板不會自己刪附件，放在 `/tmp` 時交給系統清理。
+- 送出時在訊息最後空一行接上「附件：」與每個檔案的完整路徑（一行一個），Agent 自己開檔案；送出紀錄（主控與 Agent）找到這段就改顯示成附件；讀不回來的檔案改寫「檔案已不在」（一般檔案在顯示時與點下載時各以 `HEAD` 確認一次）。附件依輸入框的草稿分組：主控共用一組，每個 Agent 各一組。
+- `GET /api/uploads/file?path=<完整路徑>` 讀回附件，只給附件資料夾內（解開連結後）已傳完的檔案，其他一律 404。圖片與影片照類型顯示並支援分段讀取（影片拖曳進度要用），其他檔案一律以下載方式回應；所有回應都帶 `Content-Security-Policy: sandbox` 與 `nosniff`，上傳的網頁或 SVG 不會以看板的身分執行。
 
 ## 版面與外觀
 

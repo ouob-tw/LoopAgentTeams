@@ -322,6 +322,7 @@ export async function startFixture(
 		LAT_USAGE_DIR: join(dir, 'usage'),
 		LAT_BOARD_CLOCK_FILE: join(dir, 'clock'),
 		LAT_BOARD_CONFIG_DIR: join(dir, 'board-config'),
+		LAT_BOARD_UPLOAD_DIR: join(dir, 'uploads'),
 		LAT_BOARD_HELPER_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-helper.mjs'), dir]),
 		// Every read asks hcom which clients still run; never the real one.
 		LAT_BOARD_HCOM_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-hcom.mjs'), dir]),

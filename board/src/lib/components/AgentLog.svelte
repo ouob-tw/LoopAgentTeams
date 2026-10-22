@@ -8,6 +8,7 @@
 	import { formatTime } from '#lib/board/format.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { KnownAgent } from '#lib/board/types.ts';
+	import SentText from './SentText.svelte';
 
 	let { agent }: { agent: KnownAgent } = $props();
 
@@ -54,7 +55,7 @@
 								<span class="failed">✗ {entry.error}</span>
 							{/if}
 						</p>
-						{#if entry.text !== null}<p class="text">{entry.text}</p>{/if}
+						{#if entry.text !== null}<SentText text={entry.text} />{/if}
 					</li>
 				{:else}
 					{@const entry = item.entry}

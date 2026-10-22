@@ -2,11 +2,16 @@
 	// A multi-line message box that grows with its text up to a limit. Whether Enter sends or
 	// makes a new line depends on the device; Enter during input-method composition never sends.
 	// Where voice input is unlocked, a mic before the box puts what was said at the cursor.
+	// A box that takes attachments has a paperclip before it too; files can also be pasted or
+	// dropped on it, and show above it while they upload.
 	import { tick } from 'svelte';
+	import { attaching } from '#lib/board/attaching.svelte.ts';
 	import { sendsOnEnter } from '#lib/board/messages.ts';
 	import { enterMakesNewline } from '#lib/board/messaging.svelte.ts';
 	import { voice } from '#lib/board/voice.svelte.ts';
 	import { insertAt } from '#lib/board/voice.ts';
+	import AttachButton from './AttachButton.svelte';
+	import AttachmentTray from './AttachmentTray.svelte';
 	import VoiceButton from './VoiceButton.svelte';
 
 	let {
@@ -14,8 +19,17 @@
 		label,
 		placeholder = '',
 		disabled = false,
+		attachTo,
 		onsend
-	}: { value: string; label: string; placeholder?: string; disabled?: boolean; onsend: () => void } = $props();
+	}: {
+		value: string;
+		label: string;
+		placeholder?: string;
+		disabled?: boolean;
+		/** Whose attachments the box takes; none without it. */
+		attachTo?: string;
+		onsend: () => void;
+	} = $props();
 
 	let box: HTMLTextAreaElement;
 
@@ -64,9 +78,37 @@
 		box.focus();
 		box.setSelectionRange(placed.caret, placed.caret);
 	}
+
+	/** Pasted files are attached; pasted text goes in as usual. */
+	function paste(event: ClipboardEvent) {
+		const files = [...(event.clipboardData?.files ?? [])];
+		if (!attachTo || disabled || !files.length) return;
+		event.preventDefault();
+		attaching.add(attachTo, files);
+	}
+
+	let dropping = $state(false);
+	function dragover(event: DragEvent) {
+		if (!attachTo || disabled || !event.dataTransfer?.types.includes('Files')) return;
+		event.preventDefault();
+		dropping = true;
+	}
+	function drop(event: DragEvent) {
+		dropping = false;
+		const files = [...(event.dataTransfer?.files ?? [])];
+		if (!attachTo || disabled || !files.length) return;
+		event.preventDefault();
+		attaching.add(attachTo, files);
+	}
 </script>
 
-<div class="message-box">
+{#if attachTo}
+	<AttachmentTray owner={attachTo} />
+{/if}
+<div class="message-box" class:dropping role="group" ondragover={dragover} ondragleave={() => (dropping = false)} ondrop={drop}>
+	{#if attachTo}
+		<AttachButton owner={attachTo} {disabled} />
+	{/if}
 	{#if voice.unlocked}
 		<VoiceButton {disabled} oninsert={insert} />
 	{/if}
@@ -79,6 +121,7 @@
 		{disabled}
 		inputmode={quiet ? 'none' : undefined}
 		onkeydown={keydown}
+		onpaste={paste}
 		onpointerdown={() => (quiet = false)}
 		onblur={() => (quiet = false)}
 	></textarea>
@@ -89,6 +132,10 @@
 		display: flex;
 		align-items: flex-end;
 		gap: 0.4rem;
+	}
+	.message-box.dropping textarea {
+		border-color: var(--accent);
+		outline: 2px dashed var(--accent);
 	}
 	textarea {
 		display: block;

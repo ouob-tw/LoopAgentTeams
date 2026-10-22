@@ -10,6 +10,7 @@
 	// A controller's page on the Herdr tab is written to as the controller it is, from the controllers' draft.
 	// A controller in a turn in a Herdr pane is interrupted the same way, while nothing is typed; its
 	// turn is read from the Herdr tab's list of agents, not from its LAT status.
+	// Files attached to a draft go with it, their paths in a block at the end of the message.
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import MessageSquare from '@lucide/svelte/icons/message-square';
@@ -23,6 +24,8 @@
 		controllerInterruptible
 	} from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
+	import { attaching } from '#lib/board/attaching.svelte.ts';
+	import { withAttachments } from '#lib/board/attachments.ts';
 	import { shortName } from '#lib/board/agents.ts';
 	import { CLOSED_SEND_TEXT, type ClosedAgent } from '#lib/board/closed-agents.ts';
 	import { AGENT_DRAFTS_KEY, COMMAND_DRAFT_KEY, COMMAND_HIDDEN_KEY, forget, remember, remembered, rememberedText } from '#lib/board/prefs.ts';
@@ -135,6 +138,10 @@
 	}
 	const owner = $derived(agent?.id ?? closed?.id ?? null);
 	const draft = $derived(read(owner));
+	/** Whose attachments the box holds: the open agent's, or the controllers' draft's. */
+	const attachOwner = $derived(owner === null ? 'controllers' : `agent:${owner}`);
+	/** Something to send: typed text or an attached file. */
+	const filled = $derived(!!draft.trim() || attaching.list(attachOwner).length > 0);
 	const named = $derived(draft.trimStart().startsWith('@'));
 	/** The open agent is the recipient: a line without a name while its page is open. */
 	const toAgent = $derived(agent !== undefined && !named);
@@ -147,7 +154,7 @@
 	);
 	// An interrupt presses Esc in its pane through Herdr, whether hcom reaches it or not.
 	const stoppable = $derived(
-		toAgent && !!agent && agent.inHerdr && !agent.switch && agent.status !== 'idle' && agent.status !== 'done' && !draft.trim()
+		toAgent && !!agent && agent.inHerdr && !agent.switch && agent.status !== 'idle' && agent.status !== 'done' && !filled
 	);
 	let interrupting = $state<Record<string, boolean>>({});
 	let confirmingStop = $state(false);
@@ -160,7 +167,7 @@
 	const stopping = $derived(
 		stoppable && agent
 			? { id: agent.id, name: agent.name, confirm: AGENT_INTERRUPT_CONFIRM_TEXT }
-			: !toAgent && !draft.trim() && recipient && controllerInterruptible(recipient, agents)
+			: !toAgent && !filled && recipient && controllerInterruptible(recipient, agents)
 				? { id: recipient.id, name: `@${recipient.hcomName}`, confirm: CONTROLLER_INTERRUPT_CONFIRM_TEXT }
 				: null
 	);
@@ -195,12 +202,16 @@
 
 	async function submit() {
 		const from = owner;
+		const files = attachOwner;
 		const sentText = draft;
-		if (!sentText.trim() || toClosed) return;
-		if (toAgent && agent) return sendAgent(agent.id, sentText);
+		if (!filled || toClosed) return;
+		const attached = attaching.ready(files);
+		if (!attached.ok) return toasts.show('failed', attached.reason);
+		const paths = attached.paths;
+		if (toAgent && agent) return sendAgent(agent.id, sentText, files, paths);
 		if (sending) return;
 		// Names are checked against the board's data at the moment of sending.
-		const parsed = command;
+		const parsed = paths.length ? parseCommand(withAttachments(sentText, paths), controllers, target, true) : command;
 		if (!parsed.ok) return toasts.show('failed', parsed.reason);
 		const to = parsed.controller;
 		const wake = needsWake(to);
@@ -213,6 +224,7 @@
 			: await messaging.send(to.id, parsed.text);
 		sending = false;
 		if (result.ok && read(from) === sentText) write(from, '');
+		if (result.ok) attaching.sent(files, paths);
 		if (result.ok) {
 			delete newRound[to.id];
 			delete model[to.id];
@@ -230,12 +242,13 @@
 		toasts.show('failed', `${result.reason}（文字還在輸入框裡）`);
 	}
 
-	async function sendAgent(id: string, sentText: string) {
+	async function sendAgent(id: string, sentText: string, files: string, paths: string[]) {
 		if (agentSending[id] || agentBlocked) return;
 		agentSending[id] = true;
-		const result = await agentControl.send(id, sentText);
+		const result = await agentControl.send(id, withAttachments(sentText, paths));
 		agentSending[id] = false;
 		if (result.ok && agentDrafts[id] === sentText) agentDrafts[id] = '';
+		if (result.ok) attaching.sent(files, paths);
 		if (result.ok) {
 			sent++;
 			if (result.reason) toasts.show('failed', result.reason);
@@ -291,6 +304,7 @@
 					? CLOSED_SEND_TEXT
 					: `${agent ? `傳話給 ${agentName}` : '@名稱 指定主控'}・${enterMakesNewline.current ? 'Enter 換行・按鈕送出' : 'Enter 送出・Shift+Enter 換行'}`}
 			disabled={(toAgent && agentBlocked !== null) || toClosed}
+			attachTo={attachOwner}
 			onsend={submit}
 		/>
 		<!-- A wake keeps its word: it brings a controller back and spends quota. One button either
@@ -316,7 +330,7 @@
 					icon={waking ? undefined : sendIcon}
 					sending={toAgent && agent ? (agentSending[agent.id] ?? false) : sending}
 					{sent}
-					disabled={!draft.trim() || (toAgent && agentBlocked !== null) || toClosed}
+					disabled={!filled || (toAgent && agentBlocked !== null) || toClosed}
 				/>
 			{/if}
 		</span>
