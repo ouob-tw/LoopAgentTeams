@@ -2598,6 +2598,44 @@ esac
                 self.assertEqual(json.loads(alarm_path.read_text())['released_reason'], 'rang')
                 self.assertFalse(json.loads(wait_path.read_text())['expiry_nudge_pending'])
 
+    def test_claude_background_task_footer_does_not_block_alarm_or_expiry(self):
+        footers = ['⏵⏵ bypass permissions on · 1 shell',
+                   '⏵⏵ auto mode on · 3 shells · ↓ to manage',
+                   '⏸ manual mode on · 1 shell, 1 monitor']
+        approval = ['⏺ Bash(touch probe-file.txt)', ' Do you want to proceed?', ' ❯ 1. Yes',
+                    '   4. No', ' Esc to cancel · Tab to amend']
+        for footer in [*footers, None]:
+            with self.subTest(footer=footer):
+                self.finished_codex_fixture('claude')
+                listing = Path(self.env['FAKE_AGENTS'])
+                agents = json.loads(listing.read_text())
+                for agent in agents:
+                    agent['status'] = 'listening'
+                listing.write_text(json.dumps(agents))
+                # hcom misses its ready hint when Claude shows a background-task count instead.
+                lines = (['❯', '─' * 40, '  Opus 5.5 M · ~/repo', f'  {footer}']
+                         if footer else approval)
+                Path(self.env['FAKE_TERMINAL']).write_text(json.dumps(
+                    {'ready': False, 'prompt_empty': True, 'input_text': '', 'lines': lines}))
+                self.hcom_log.write_text('')
+                watch = load_watch()
+                alarm_path = self.save_alarm(watch)
+                wait_path = watch.wait_path(self.work, 'orch')
+                watch.write_object(wait_path, dict(agent='orch', kind='agent', target='absent',
+                                   declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
+                                   deadline_at=60, active=True))
+                self.run_finished_cycles(watch, 0, 60)
+                row = next(r for r in reversed(self.watch_records()) if r.get('agent') == 'worker-open')
+                self.assertTrue(row['observation']['command_running'])
+                if footer:
+                    self.assertTrue(row['observation']['terminal_ready'])
+                    self.assertEqual(len(self.injections()), 2)
+                    self.assertEqual(json.loads(alarm_path.read_text())['released_reason'], 'rang')
+                else:
+                    self.assertFalse(row['observation']['terminal_ready'])
+                    self.assertEqual(self.injections(), [])
+                    self.assertTrue(json.loads(alarm_path.read_text())['active'])
+
     def test_real_a07_cycle_preserves_alarm_during_foreground_work(self):
         for client in ('codex', 'claude'):
             with self.subTest(client=client):
