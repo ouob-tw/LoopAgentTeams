@@ -63,6 +63,14 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		options.onUsageStyle?.(style);
 	}
 
+	/** The same for the translation mode. */
+	let modeRevision = 0;
+	function hearMode({ mode, revision }: { mode: TranslateMode; revision: number }): void {
+		if (revision <= modeRevision) return;
+		modeRevision = revision;
+		options.onTranslateMode?.(mode);
+	}
+
 	/** The newest board shown, by the server's revision of it: the stream and the answers to refreshes
 	 *  arrive in any order, and only a newer revision replaces what is shown. */
 	let boardRevision = 0;
@@ -70,14 +78,6 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		if (snapshot.revision <= boardRevision) return;
 		boardRevision = snapshot.revision;
 		options.onSnapshot(snapshot);
-	}
-
-	/** The same for the translation mode. */
-	let modeRevision = 0;
-	function hearMode({ mode, revision }: { mode: TranslateMode; revision: number }): void {
-		if (revision <= modeRevision) return;
-		modeRevision = revision;
-		options.onTranslateMode?.(mode);
 	}
 
 	function unpaired(): void {
