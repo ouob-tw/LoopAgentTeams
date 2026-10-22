@@ -1203,6 +1203,61 @@ for (const width of [1280, 390]) {
 	}, 30_000);
 }
 
+/** The edges of the hovered controller's explanation, with the window's height. */
+const TIP_EDGES = `(() => { const box = document.querySelector('#agent-tip').getBoundingClientRect(); return { top: box.top, bottom: box.bottom, height: innerHeight }; })()`;
+
+test.skipIf(!CHROME)('a tall explanation stays inside the window at its top and bottom; a short one stays beside its card', async () => {
+	const duty = join(fixture.reportsDir, 's-lead.duty.json');
+	try {
+		await freshTabs();
+		await visit(1280);
+		await openTab();
+		await tab.until(`!!document.querySelector(${JSON.stringify(CARD('s-lead'))})`, 'the list');
+		const hover = async (text: string, height: number) => {
+			writeFileSync(duty, JSON.stringify({ text, expected: '名冊顯示職責', time: new Date().toISOString() }));
+			await fixture.refresh(cookie);
+			await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height, deviceScaleFactor: 1, mobile: false });
+			await tab.until(`innerHeight === ${height}`, 'the window height');
+			await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', x: 1, y: 1 });
+			await tab.until(`!document.querySelector('#agent-tip')`, 'no explanation');
+			await tab.until(`!!document.querySelector(${JSON.stringify(CARD('s-lead'))})`, 'the card');
+			const card = await tab.eval<{ top: number; bottom: number }>(`(() => { const box = document.querySelector(${JSON.stringify(CARD('s-lead'))}).getBoundingClientRect(); return { top: box.top, bottom: box.bottom }; })()`);
+			await tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...(await point(CARD('s-lead'), 40)) });
+			await tab.until(`document.querySelector('#agent-tip')?.innerText.includes(${JSON.stringify(text.slice(0, 4))})`, 'the explanation');
+			await tab.until(`!!document.querySelector('#agent-tip') && document.querySelector('#agent-tip').getBoundingClientRect().height > 0`, 'it drawn');
+			return { card, ...(await tab.eval<{ top: number; bottom: number; height: number }>(TIP_EDGES)) };
+		};
+		const tall = Array.from({ length: 60 }, (_, line) => `第${line}行職責內容`).join('\n');
+
+		// Short: it keeps lining up with the card's top, as before.
+		const short = await hover('整理看板名冊', 800);
+		expect(short.top).toBeCloseTo(short.card.top, 0);
+
+		// Not taller than the window, yet too low for it: the box moves up and is not cut.
+		const medium = Array.from({ length: 38 }, (_, line) => `第${line}行職責內容`).join('\n');
+		const moved = await hover(medium, 500);
+		expect(moved.card.top + moved.card.bottom).toBeLessThan(moved.height);
+		expect(moved.bottom - moved.top).toBeLessThan(moved.height - 16);
+		expect(moved.card.top + (moved.bottom - moved.top)).toBeGreaterThan(moved.height - 8);
+		expect(moved.top).toBeLessThan(moved.card.top);
+		expect(moved.bottom).toBeCloseTo(moved.height - 8, 0);
+
+		// Tall, the card in the upper half: the box would run off the bottom.
+		const upper = await hover(tall, 500);
+		expect(upper.card.top + upper.card.bottom).toBeLessThan(upper.height);
+		expect(upper.top).toBeGreaterThanOrEqual(8 - 0.5);
+		expect(upper.bottom).toBeLessThanOrEqual(upper.height - 8 + 0.5);
+
+		// Tall, the card in the lower half: the box would run off the top.
+		const lower = await hover(tall, 240);
+		expect(lower.card.top + lower.card.bottom).toBeGreaterThan(lower.height);
+		expect(lower.top).toBeGreaterThanOrEqual(8 - 0.5);
+		expect(lower.bottom).toBeLessThanOrEqual(lower.height - 8 + 0.5);
+	} finally {
+		rmSync(duty, { force: true });
+	}
+}, 30_000);
+
 for (const width of [1280, 390]) {
 	const touch = width < 761;
 	test.skipIf(!CHROME)(`${width}px: a controller's card adds its duty to ${touch ? 'its long-press menu' : 'its hover explanation and menu'}; the card itself does not show it`, async () => {

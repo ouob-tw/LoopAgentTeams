@@ -7,8 +7,9 @@ const LONG_PRESS_MS = 450;
 /** How long the explanation stays after a long press is released. */
 const LINGER_MS = 1800;
 
-/** Where an explanation goes: beside its element, growing away from the nearer edge of the window.
- *  Fixed coordinates, so a scrolling list does not clip it. */
+/** Where an explanation goes: beside its element, growing away from the nearer edge of the window
+ *  (ExplainTip then moves it up or down if that leaves it outside). Fixed coordinates, so a
+ *  scrolling list does not clip it. */
 export interface TipPlace {
 	left: number;
 	top: number | null;
