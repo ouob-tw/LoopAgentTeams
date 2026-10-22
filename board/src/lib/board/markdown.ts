@@ -1,9 +1,11 @@
 // Markdown as the board shows it: raw HTML in the text is escaped, never run, and links whose
 // scheme is not safe are dropped by markdown-it's own check. Single line breaks stay line breaks.
 import MarkdownIt from 'markdown-it';
+import cjkFriendly from 'markdown-it-cjk-friendly';
 
+// Emphasis next to CJK punctuation or text (`**目前行為：**頁面`) closes as the writer meant.
 // Images are off: text from a controller must not make the browser fetch other hosts.
-const md = new MarkdownIt({ html: false, linkify: true, breaks: true }).disable('image');
+const md = new MarkdownIt({ html: false, linkify: true, breaks: true }).disable('image').use(cjkFriendly);
 
 // Plain text with its web addresses made links and nothing else, for one-line titles: a `*` or
 // `_` in a summary stays as it is.

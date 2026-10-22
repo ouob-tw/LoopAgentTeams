@@ -28,3 +28,18 @@ test('an option body as the helper gives it renders its paragraphs and nested li
 		'<p>第一段。</p>\n<ul>\n<li>子項目\n<ul>\n<li>更深</li>\n</ul>\n</li>\n</ul>\n<pre><code>code\n</code></pre>\n'
 	);
 });
+
+test('emphasis closes next to CJK punctuation followed directly by text', () => {
+	expect(renderMarkdown('**粗體：**文字')).toBe('<p><strong>粗體：</strong>文字</p>\n');
+	expect(renderMarkdown('- **目前行為：**頁面只有')).toBe('<ul>\n<li><strong>目前行為：</strong>頁面只有</li>\n</ul>\n');
+	expect(renderMarkdown('*斜體：*文字')).toBe('<p><em>斜體：</em>文字</p>\n');
+	expect(renderMarkdown('~~刪除：~~文字')).toBe('<p><s>刪除：</s>文字</p>\n');
+});
+
+test('English emphasis parses as before', () => {
+	expect(renderMarkdown('**Current behaviour:** The page *is* ~~old~~ here')).toBe(
+		'<p><strong>Current behaviour:</strong> The page <em>is</em> <s>old</s> here</p>\n'
+	);
+	expect(renderMarkdown('**Current:**The page')).toBe('<p>**Current:**The page</p>\n');
+	expect(renderMarkdown('snake_case_name and 2*3*4')).toBe('<p>snake_case_name and 2<em>3</em>4</p>\n');
+});
