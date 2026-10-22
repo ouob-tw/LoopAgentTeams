@@ -37,6 +37,9 @@ FAILURE_REPEAT_SECONDS = 60 * 60
 ORCHESTRATOR_GONE_SECONDS = 60 * 60
 LOG_ROTATE_BYTES = 1024 * 1024
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
+KEEPALIVE_SECONDS = 5 * 60
+KEEPALIVE_DECISION_SECONDS = 3 * 60 * 60
+KEEPALIVE_QUIET_HOURS = (1, 9)
 # Successful deliveries awaiting a session-record save; retained across retry cycles.
 RULE_DELIVERIES = {}
 ALARM_DELIVERIES = {}
@@ -44,6 +47,9 @@ _UNSET = object()
 NUDGE = ('[lat-watch] Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
          'with lat-watch wait.')
+KEEPALIVE = ('[lat-watch] Prompt cache keep-alive. Read any unread HCOM messages. If nothing '
+             'is new, run no tools, keep your current wait without declaring it again and '
+             'end your turn with the shortest possible reply.')
 NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 NAME = re.compile(NAME_PATTERN)
 CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
@@ -102,6 +108,7 @@ class Observation(NamedTuple):
     quota_issue: object = None
     codex_turn_finished: object = None
     nudge_only: bool = False
+    keepalive_only: bool = False
     terminal_ready: object = None
     screen_working: bool = False
 
@@ -351,6 +358,10 @@ def nudge_transcript_only(transcript, offset, size, client, nudge=NUDGE):
             content = message.get('content', [])
         if role in ('user', 'assistant'):
             if isinstance(content, list):
+                if role == 'assistant':
+                    # Claude extended thinking is not work; only the visible text is measured.
+                    content = [item for item in content if not isinstance(item, dict)
+                               or item.get('type') not in ('thinking', 'redacted_thinking')]
                 if any(not isinstance(item, dict) or item.get('type') not in
                        ('text', 'Text', 'input_text', 'output_text')
                        or not isinstance(item.get('text'), str) for item in content):
@@ -390,22 +401,14 @@ def nudge_transcript_only(transcript, offset, size, client, nudge=NUDGE):
     return saw_nudge
 
 
-def nudge_only_observation(previous, observation, info, orchestrator):
-    """Exclude only the injected prompt's transcript and lifecycle events."""
-    if not previous or not previous.get('nudged'):
-        return observation
-    fingerprint = [observation.transcript_size, observation.transcript_mtime_ns,
-                   observation.event_id]
-    if previous.get('fingerprint') == fingerprint:
-        return observation
-    baseline = previous.get('nudge_fingerprint', previous.get('fingerprint'))
+def injected_only(baseline, observation, info, orchestrator, text):
+    """True when everything since baseline is the injected text and its lifecycle events."""
     if (not isinstance(baseline, list) or len(baseline) != 3
             or any(not isinstance(value, int) or value < 0 for value in baseline)):
-        return observation
+        return False
     if not nudge_transcript_only(info.get('transcript_path'), baseline[0],
-                                 observation.transcript_size, observation.client,
-                                 previous.get('nudge_text', NUDGE)):
-        return observation
+                                 observation.transcript_size, observation.client, text):
+        return False
     if observation.event_id != baseline[2]:
         events = session_events(orchestrator, info, '--last', '1000', after_id=baseline[2])
         # Never hide another agent's messages, including ones followed by status.
@@ -415,8 +418,27 @@ def nudge_only_observation(previous, observation, info, orchestrator):
                 or latest_event_id(events) != observation.event_id
                 or any(event.get('type') != 'status' or status_context(event) not in lifecycle
                        for event in events)):
-            return observation
-    return observation._replace(nudge_only=True)
+            return False
+    return True
+
+
+def nudge_only_observation(previous, observation, info, orchestrator):
+    """Exclude only an injected nudge or keep-alive, its short reply and lifecycle events."""
+    if not previous:
+        return observation
+    fingerprint = [observation.transcript_size, observation.transcript_mtime_ns,
+                   observation.event_id]
+    if previous.get('fingerprint') == fingerprint:
+        return observation
+    if previous.get('nudged') and injected_only(
+            previous.get('nudge_fingerprint', previous.get('fingerprint')), observation, info,
+            orchestrator, previous.get('nudge_text', NUDGE)):
+        observation = observation._replace(nudge_only=True)
+    keepalive = previous.get('keepalive')
+    if isinstance(keepalive, dict) and injected_only(
+            keepalive.get('fingerprint'), observation, info, orchestrator, KEEPALIVE):
+        observation = observation._replace(keepalive_only=True)
+    return observation
 
 
 def current_claude_quota_notice(transcript):
@@ -534,6 +556,8 @@ def decide(previous, observation, now):
                    observation.event_id]
     progressed = (previous is None or previous.get('fingerprint') != fingerprint)
     if previous and previous.get('nudged') and observation.nudge_only:
+        progressed = False
+    if previous and observation.keepalive_only:
         progressed = False
     quota_cleared = bool(previous and previous.get('quota_active')
                          and observation.quota_issue is None)
@@ -1111,6 +1135,51 @@ def idle_prompt(observation):
     return (observation.status == 'listening'
             or (observation.status == 'active' and observation.client.lower() == 'codex'
                 and observation.codex_turn_finished is True))
+
+
+def usage_dir():
+    """Where the status line recorder writes <session_id>.json."""
+    configured = os.environ.get('LAT_USAGE_DIR')
+    if configured:
+        return Path(configured)
+    state = os.environ.get('XDG_STATE_HOME', '')
+    return (Path(state) if state.startswith('/') else Path.home() / '.local/state') / 'lat/usage'
+
+
+def cache_expires_at(session_id, now):
+    """Return the warm, unexpired prompt-cache expiry for a session, else None."""
+    if not isinstance(session_id, str) or not NAME.fullmatch(session_id):
+        return None
+    try:
+        record = json.loads((usage_dir() / f'{session_id}.json').read_text())
+    except (OSError, ValueError):
+        return None
+    cache = record.get('prompt_cache') if isinstance(record, dict) else None
+    if not isinstance(cache, dict) or cache.get('warm') is not True:
+        return None
+    expires_at = cache.get('expires_at')
+    if type(expires_at) not in (int, float) or expires_at <= now:
+        return None
+    return expires_at
+
+
+def keepalive_due(declaration, observation, info, state, now):
+    """Return the cache expiry a keep-alive should refresh now, or None."""
+    if (observation.client.lower() != 'claude' or not declaration
+            or not declaration.get('active', True) or not idle_prompt(observation)):
+        return None
+    if declaration.get('kind') == 'decision':
+        start, end = KEEPALIVE_QUIET_HOURS
+        if (now - declaration['declared_at'] >= KEEPALIVE_DECISION_SECONDS
+                or start <= time.localtime(now).tm_hour < end):
+            return None
+    expires_at = cache_expires_at(info.get('session_id'), now)
+    if expires_at is None or expires_at - now > KEEPALIVE_SECONDS:
+        return None
+    sent = state.get('keepalive')
+    if isinstance(sent, dict) and sent.get('expires_at') == expires_at:
+        return None
+    return expires_at
 
 
 def expire_alarm(saved, now, failure):
@@ -1896,6 +1965,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     Returns a stop reason once the orchestrator has been gone from HCOM long enough.
     """
     now = time.time() if now is None else now
+    started = time.monotonic()
     orchestrator = valid_name(orchestrator)
     path = state_path(workspace, orchestrator)
     log = path.with_name('watch.jsonl')
@@ -2070,15 +2140,38 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                     raise
                 reset_agent_state(path, log, now, agent, f'{type(error).__name__}: {error}')
                 state, actions = decide(None, observation, now)
+            kept = previous.get('keepalive') if previous else None
+            if isinstance(kept, dict) and 'keepalive' not in state:
+                # Progress ends the reply window but the same expiry is still sent only once.
+                state['keepalive'] = {'expires_at': kept.get('expires_at')}
             if saved_wait and (saved_wait.get('expiry_nudge_pending')
                                or (saved_wait.get('kind') == 'alarm'
                                    and (saved_wait.get('active', True) or wait_actions))):
                 actions = [action for action in actions if action.kind != 'nudge']
             actions = [*wait_actions, *actions]
+            keepalive_expires_at = None
+            if not actions and saved_wait and observation.wait_active:
+                # Observing the agents takes time; judge by when the keep-alive is typed.
+                send_at = now + time.monotonic() - started
+                keepalive_expires_at = keepalive_due(saved_wait, observation, info, state, send_at)
+                if keepalive_expires_at is not None:
+                    actions = [Action('nudge', agent, text=KEEPALIVE, category='cache-keepalive')]
             results = []
             for action in actions:
                 try:
-                    if action.category == 'alarm-ring':
+                    if action.category == 'cache-keepalive':
+                        record = {'at': now, 'agent': agent, 'decision': 'cache-keepalive',
+                                  'kind': saved_wait.get('kind'),
+                                  'expires_at': keepalive_expires_at}
+                        try:
+                            delivery = perform(action, orchestrator, workspace)
+                        except (OSError, ValueError) as error:
+                            append_log(log, {**record, 'result': 'failed', 'error': str(error)})
+                            raise
+                        state['keepalive'] = {'expires_at': keepalive_expires_at,
+                                              'fingerprint': state['fingerprint'], 'sent_at': now}
+                        append_log(log, {**record, 'result': 'sent'})
+                    elif action.category == 'alarm-ring':
                         try:
                             delivery = perform(action, orchestrator, workspace)
                         except (OSError, ValueError):
@@ -2132,7 +2225,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                         apply_prompt_recovery_result(state, delivery, now)
                     results.append({'kind': action.kind, 'status': 'done', **delivery})
                 except (OSError, ValueError) as error:
-                    if not action.category.startswith(('wait-expiry', 'alarm-')):
+                    if not action.category.startswith(('wait-expiry', 'alarm-', 'cache-keepalive')):
                         roll_back(action, state)
                     results.append({'kind': action.kind, 'status': 'failed',
                                     'error': str(error)})
@@ -2155,7 +2248,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 'actions': [], 'error': str(error),
             })
     own = states.setdefault(orchestrator, {})
-    own['feature_versions'] = {'wait_deadline': 1, 'alarm': 1}
+    own['feature_versions'] = {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 1}
     own.pop('missing_since', None)
     stop_reason = None
     if orchestrator_gone:
