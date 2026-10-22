@@ -285,6 +285,102 @@ test('Codex is asked with gpt-6-luna at low effort, and the reply comes back in 
 	expect(calls[0].input).toBe('<reply id="1">\nThe software was updated.\n</reply>');
 });
 
+test('the default translate and tidy commands start Codex without apps, hooks, memories, plugins or skills; a set command is used as given', () => {
+	const config = loadConfig({});
+	for (const command of [config.translateCommand, config.tidyCommand]) {
+		expect(command.slice(0, 2)).toEqual(['codex', 'app-server']);
+		const args = command.join(' ');
+		for (const feature of ['apps', 'hooks', 'memories', 'plugins']) expect(args).toContain(`-c features.${feature}=false`);
+		expect(args).toContain('-c skills.include_instructions=false');
+	}
+	expect(loadConfig({ LAT_BOARD_TRANSLATE_COMMAND: '["my-codex","app-server"]' }).translateCommand).toEqual(['my-codex', 'app-server']);
+});
+
+test('a Codex turn starts its thread with every MCP server Codex lists turned off and the given base instructions', async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'lat-board-codex-'));
+	dirs.push(dir);
+	writeFileSync(join(dir, 'codex.json'), JSON.stringify({ reply: 'done', mcpServers: { serena: { command: 'serena' }, context7: { url: 'https://example.com' } } }));
+	const ask = (baseInstructions?: string) =>
+		codexTurn({ command: [NODE, join(import.meta.dir, '../fake-codex.mjs'), dir], timeoutMs: 5000, model: 'gpt-6-luna', effort: 'low', instructions: 'rules', baseInstructions, input: 'hi', secrets: [], journal: '[test] Codex' });
+	expect(await ask('Only translate.')).toEqual({ ok: true, value: 'done' });
+	expect(await ask()).toEqual({ ok: true, value: 'done' });
+	const [given, plain] = readFileSync(join(dir, 'codex-threads.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line));
+	expect(given.config).toEqual({ 'mcp_servers.serena.enabled': false, 'mcp_servers.context7.enabled': false });
+	expect(given.baseInstructions).toBe('Only translate.');
+	expect(given.developerInstructions).toBe('rules');
+	expect(plain).not.toHaveProperty('baseInstructions');
+});
+
+test('a translation turn is a translation engine with no tools, keeping the translation rules', async () => {
+	const { calls, translator, ask } = setUp();
+	await ask(translator(), ['Base instructions reply.']);
+	expect(calls[0].baseInstructions).toBe('You are a translation engine, not a coding agent. You have no tools. Follow the developer instructions and output only the translation.');
+	expect(calls[0].instructions).toContain('Markers such as ⟦0⟧');
+});
+
+test('a Codex turn reports the agent message so far as it grows, before the turn ends', async () => {
+	const dir = mkdtempSync(join(tmpdir(), 'lat-board-codex-'));
+	dirs.push(dir);
+	writeFileSync(join(dir, 'codex.json'), JSON.stringify({ prefix: '譯：', holdUntil: 'go' }));
+	const seen: string[] = [];
+	const done = codexTurn({
+		command: [NODE, join(import.meta.dir, '../fake-codex.mjs'), dir],
+		timeoutMs: 5000,
+		model: 'gpt-6-luna',
+		effort: 'low',
+		instructions: '',
+		input: '<reply id="1">\nOne.\n</reply>\n<reply id="2">\nTwo.\n</reply>',
+		secrets: [],
+		journal: '[test] Codex',
+		onText: (text) => seen.push(text)
+	});
+	while (!seen.length) await Bun.sleep(10);
+	expect(seen).toEqual(['<reply id="1">譯：One.</reply>']);
+	writeFileSync(join(dir, 'go'), '');
+	expect(await done).toEqual({ ok: true, value: '<reply id="1">譯：One.</reply>\n<reply id="2">譯：Two.</reply>' });
+	expect(seen.at(-1)).toBe('<reply id="1">譯：One.</reply>\n<reply id="2">譯：Two.</reply>');
+});
+
+test('each reply is answered and saved as soon as it closes; one losing its marker fails alone; the rest come at the turn end', async () => {
+	let release = () => {};
+	const got: (Outcome<string> | undefined)[] = [];
+	const { dir, calls, translator } = setUp(
+		(turn) =>
+			new Promise((resolve) => {
+				turn.onText!('<reply id="1">第一 ⟦0⟧</reply>\n<reply id="2">壞了</reply>\n<reply id="3">第');
+				release = () => resolve({ ok: true, value: '<reply id="1">第一 ⟦0⟧</reply>\n<reply id="2">壞了</reply>\n<reply id="3">第三</reply>' });
+			})
+	);
+	const made = translator();
+	const texts = ['First `one`.', 'Second `two`.', 'Third.'];
+	const lines: string[] = [];
+	const spy = spyOn(console, 'error').mockImplementation((...args: unknown[]) => void lines.push(args.join(' ')));
+	const asked = made.translate(texts, (index, outcome) => (got[index] = outcome));
+	try {
+		while (!calls.length) await Bun.sleep(1);
+		expect(got).toEqual([{ ok: true, value: '第一 `one`' }, { ok: false, reason: '譯文少了原文的程式碼、網址或路徑' }]);
+		release();
+		await asked;
+	} finally {
+		spy.mockRestore();
+	}
+	expect(got).toEqual([{ ok: true, value: '第一 `one`' }, { ok: false, reason: '譯文少了原文的程式碼、網址或路徑' }, { ok: true, value: '第三' }]);
+	expect(lines).toHaveLength(1);
+	expect(Object.keys(JSON.parse(readFileSync(join(dir, 'translations.json'), 'utf8')).translations)).toHaveLength(2);
+});
+
+test('replies already answered from the stream stay answered when the turn then fails; the rest fail', async () => {
+	const { calls, translator, ask } = setUp(async (turn) => {
+		turn.onText!('<reply id="1">第一</reply>\n<reply id="2">第');
+		return { ok: false, reason: 'Codex 逾時（60 秒）' };
+	});
+	const made = translator();
+	const texts = ['Streamed first.', 'Streamed second.'];
+	expect(await ask(made, texts)).toEqual([{ ok: true, value: '第一' }, { ok: false, reason: 'Codex 逾時（60 秒）' }]);
+	expect(await ask(translator(), [texts[0]])).toEqual([{ ok: true, value: '第一' }]);
+	expect(calls).toHaveLength(1);
+});
+
 test('a translated text is saved: asked again, or by another board start on the same directory, Codex is not called', async () => {
 	const { dir, calls, translator, ask } = setUp();
 	const first = translator();

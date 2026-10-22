@@ -5,8 +5,12 @@
 // only as a completed item (the finished turn lists none) and `garbled` ends the turn with no turn,
 // `junk` answers with that text on a line of its own, which is not JSON; `prefix` answers with it
 // followed by what the input holds inside its tags, as a translation that keeps every marker would;
-// `omitReply` drops that numbered translation; `delayMs` waits that long before ending the turn.
+// `omitReply` drops that numbered translation, `dropMarkers` takes the markers out of that one;
+// `delayMs` waits that long before ending the turn.
 // `stderr` is written to standard error first, as Codex does with its own complaints.
+// The agent message also comes as deltas before the turn ends, one per numbered reply; with
+// `holdUntil` the rest waits after the first reply until that file exists in <dir>. `mcpServers`
+// is what `config/read` lists; each thread/start's params go to <dir>/codex-threads.jsonl.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
@@ -21,7 +25,11 @@ if (plan.stderr) process.stderr.write(plan.stderr + '\n');
 createInterface({ input: process.stdin }).on('line', async (line) => {
 	const message = JSON.parse(line);
 	if (message.method === 'initialize') write({ id: message.id, result: { userAgent: 'fake' } });
-	else if (message.method === 'thread/start') write({ id: message.id, result: { thread: { id: 'thread-1' }, params: message.params } });
+	else if (message.method === 'config/read') write({ id: message.id, result: { config: { mcp_servers: plan.mcpServers ?? {} } } });
+	else if (message.method === 'thread/start') {
+		appendFileSync(join(dir, 'codex-threads.jsonl'), JSON.stringify(message.params) + '\n');
+		write({ id: message.id, result: { thread: { id: 'thread-1' }, params: message.params } });
+	}
 	else if (message.method === 'turn/start') {
 		const text = message.params.input[0].text;
 		appendFileSync(join(dir, 'codex-calls.jsonl'), JSON.stringify({ text, model: message.params.model, effort: message.params.effort }) + '\n');
@@ -35,9 +43,16 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
 		const translated = text.includes('<reply id="')
 			? [...text.matchAll(/<reply id="(\d+)">\n?([\s\S]*?)\n?<\/reply>/g)]
 				.filter((match) => match[1] !== String(plan.omitReply))
-				.map((match) => `<reply id="${match[1]}">${plan.prefix}${match[2]}</reply>`).join('\n')
+				.map((match) => `<reply id="${match[1]}">${plan.prefix}${match[1] === String(plan.dropMarkers) ? match[2].replace(/⟦\d+⟧/g, '') : match[2]}</reply>`).join('\n')
 			: plan.prefix + inner;
 		const item = { type: 'agentMessage', id: 'm1', text: plan.prefix !== undefined ? translated : (plan.reply ?? '') };
+		/** @param {string} text */
+		const delta = (text) => write({ method: 'item/agentMessage/delta', params: { threadId: 'thread-1', turnId: 'turn-1', itemId: 'm1', delta: text } });
+		const chunks = item.text.split(/(?<=<\/reply>)/);
+		for (const [index, chunk] of chunks.entries()) {
+			delta(chunk);
+			if (index === 0 && plan.holdUntil) while (!existsSync(join(dir, plan.holdUntil))) await new Promise((resolve) => setTimeout(resolve, 20));
+		}
 		if (plan.itemOnly) {
 			write({ method: 'item/completed', params: { threadId: 'thread-1', turnId: 'turn-1', item } });
 			return write({ method: 'turn/completed', params: { threadId: 'thread-1', turn: { id: 'turn-1', status: 'completed', items: [], error: null } } });

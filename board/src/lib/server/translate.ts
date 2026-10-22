@@ -5,6 +5,7 @@
 // unused for the kept time; a text asked for again while it is being translated waits for that
 // one translation, and a failure is answered as it was for a few minutes. At most a few Codex
 // translations run at once; a text still waiting for its turn is dropped once no page wants it.
+// Each translation is answered as soon as Codex closes its reply, before the rest of the batch.
 import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
@@ -24,6 +25,9 @@ const USE_PRECISION_MS = 60 * 60_000;
 /** How long a failure is answered as it was without asking Codex again; after that a reopened
  *  page tries again. */
 export const FAILURE_HOLD_MS = 5 * 60_000;
+
+/** Replaces Codex's own coding-agent instructions for translation turns. */
+const BASE_INSTRUCTIONS = 'You are a translation engine, not a coding agent. You have no tools. Follow the developer instructions and output only the translation.';
 
 const INSTRUCTIONS = [
 	'You translate replies written by a coding agent into Traditional Chinese as used in Taiwan. The user message holds replies inside numbered <reply id="1"> tags. Translate each reply separately, preserving its tags and id.',
@@ -130,45 +134,69 @@ export function createTranslator(config: BoardConfig, turn: Turn = codexTurn): T
 	}
 
 	async function translateBatch(batch: Job[]): Promise<void> {
+		const answered = new Set<Job>();
+		/** How much of the streamed text held no new closed reply. */
+		let scanned = 0;
+		/** Answer one job with its translated reply; none, or more than one, is a failure. */
+		const answer = (job: Job, parts: string[] | undefined) => {
+			answered.add(job);
+			const restored = parts?.length === 1 ? restore(toTraditional(parts[0]), job.kept) : null;
+			if (restored === null) {
+				console.error('[translate] Codex translation failed: a reply or marker was dropped or repeated');
+				finish(job, { ok: false, reason: '譯文少了原文的程式碼、網址或路徑' });
+				return;
+			}
+			saved.set(job.key, { text: restored, used: config.now() });
+			finish(job, { ok: true, value: restored });
+		};
+		/** Each numbered reply Codex has closed in the text, by its number. */
+		const repliesIn = (text: string) => {
+			const replies = new Map<string, string[]>();
+			for (const match of text.matchAll(/<reply id="(\d+)">([\s\S]*?)<\/reply>/g)) {
+				const parts = replies.get(match[1]) ?? [];
+				parts.push(match[2].trim());
+				replies.set(match[1], parts);
+			}
+			return replies;
+		};
 		try {
 			const done = await turn({
 				command: config.translateCommand,
 				timeoutMs: config.translateTimeoutMs,
 				model: MODEL,
 				effort: 'low',
+				baseInstructions: BASE_INSTRUCTIONS,
 				instructions: INSTRUCTIONS,
 				input: batch.map((job, index) => `<reply id="${index + 1}">\n${job.masked}\n</reply>`).join('\n'),
 				// Every original and masked reply stays out of the journal.
 				secrets: batch.flatMap((job) => [job.text, job.masked]),
-				journal: '[translate] Codex translation'
+				journal: '[translate] Codex translation',
+				// A reply goes out once Codex closes it; a later repeat of it is not seen. Only what came
+				// after the last closed reply is looked through again.
+				onText: (text) => {
+					if (!text.includes('</reply>', scanned)) return;
+					scanned = text.lastIndexOf('</reply>') + '</reply>'.length;
+					const replies = repliesIn(text);
+					batch.forEach((job, index) => {
+						const parts = replies.get(String(index + 1));
+						if (parts && !answered.has(job)) answer(job, parts.slice(0, 1));
+					});
+				}
 			});
 			if (!done.ok) {
-				batch.forEach((job) => finish(job, done));
+				batch.forEach((job) => answered.has(job) || finish(job, done));
 				return;
 			}
-			const replies = new Map<string, string[]>();
-			for (const match of done.value.matchAll(/<reply id="(\d+)">([\s\S]*?)<\/reply>/g)) {
-				const parts = replies.get(match[1]) ?? [];
-				parts.push(match[2].trim());
-				replies.set(match[1], parts);
-			}
-			batch.forEach((job, index) => {
-				const parts = replies.get(String(index + 1));
-				const restored = parts?.length === 1 ? restore(toTraditional(parts[0]), job.kept) : null;
-				if (restored === null) {
-					console.error('[translate] Codex translation failed: a reply or marker was dropped or repeated');
-					finish(job, { ok: false, reason: '譯文少了原文的程式碼、網址或路徑' });
-					return;
-				}
-				saved.set(job.key, { text: restored, used: config.now() });
-				finish(job, { ok: true, value: restored });
-			});
-			expire(config.now());
-			if (batch.some((job) => saved.has(job.key))) save();
+			const replies = repliesIn(done.value);
+			batch.forEach((job, index) => answered.has(job) || answer(job, replies.get(String(index + 1))));
 		} catch (error) {
 			console.error(`[translate] translating failed: ${kindOf(error)}`);
-			batch.forEach((job) => finish(job, { ok: false, reason: '翻譯時出錯' }));
+			batch.forEach((job) => answered.has(job) || finish(job, { ok: false, reason: '翻譯時出錯' }));
 		} finally {
+			if (batch.some((job) => saved.has(job.key))) {
+				expire(config.now());
+				save();
+			}
 			active--;
 			schedule();
 		}

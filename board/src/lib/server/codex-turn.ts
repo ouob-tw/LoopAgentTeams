@@ -1,6 +1,6 @@
 // One turn of a Codex app server started for the one request: speech tidying and transcript
 // translation both ask Codex this way. The server speaks JSON-RPC over standard input and output;
-// the thread is ephemeral, read-only and never asks for approval.
+// the thread is ephemeral, read-only, never asks for approval and starts none of Codex's MCP servers.
 import { spawn, type ChildProcess } from 'node:child_process';
 import { tmpdir } from 'node:os';
 import { createInterface } from 'node:readline';
@@ -15,6 +15,10 @@ export interface CodexTurn {
 	effort: string;
 	/** The thread's developer instructions. */
 	instructions: string;
+	/** Replaces Codex's own coding-agent instructions for the thread when given. */
+	baseInstructions?: string;
+	/** Told the agent message so far each time Codex adds to it, before the turn ends. */
+	onText?: (text: string) => void;
 	/** The user message. */
 	input: string;
 	/** Taken out of the journal line should the child or an error message repeat them. */
@@ -133,22 +137,36 @@ export function codexTurn(turn: CodexTurn): Promise<Outcome<string>> {
 		let lastId = 0;
 		const waiting = new Map<number, (result: { result?: Record<string, unknown>; error?: { message?: string } }) => void>();
 		const write = (message: object) => child.stdin!.write(JSON.stringify(message) + '\n');
-		const request = (method: string, params: object) =>
+		/** An `optional` request that fails is answered with nothing instead of failing the turn. */
+		const request = (method: string, params: object, optional = false) =>
 			new Promise<Record<string, unknown>>((answered) => {
 				const id = ++lastId;
 				waiting.set(id, (reply) =>
-					reply.error || !reply.result ? finish({ ok: false, reason: `Codex ${method}：${reply.error?.message ?? '沒有結果'}` }) : answered(reply.result)
+					reply.error || !reply.result
+						? optional
+							? answered({})
+							: finish({ ok: false, reason: `Codex ${method}：${reply.error?.message ?? '沒有結果'}` })
+						: answered(reply.result)
 				);
 				write({ id, method, params });
 			});
 
 		/** The last agent message so far; a finished turn may also list it. */
 		let reply: string | undefined;
+		/** The agent message being written, as its deltas came. */
+		let streaming = { item: '', text: '' };
 		const read = (line: string) => {
+			// Lines after the end, read from the same chunk, change nothing.
+			if (settled) return;
 			const message: { id?: number; method?: string; params?: Record<string, any>; result?: Record<string, unknown>; error?: { message?: string } } = JSON.parse(line);
 			if (message.method === undefined && message.id !== undefined) return waiting.get(message.id)?.(message);
 			// A request of its own, such as an approval; nothing here can answer one.
 			if (message.id !== undefined) return void write({ id: message.id, error: { code: -32601, message: 'not supported' } });
+			if (message.method === 'item/agentMessage/delta' && turn.onText) {
+				if (message.params?.itemId !== streaming.item) streaming = { item: message.params?.itemId, text: '' };
+				streaming.text += message.params?.delta ?? '';
+				turn.onText(streaming.text);
+			}
 			if (message.method === 'item/completed' && message.params?.item?.type === 'agentMessage') reply = message.params.item.text;
 			if (message.method !== 'turn/completed') return;
 			const done = message.params?.turn as { status: string; error: { message?: string } | null; items?: { type: string; text?: string }[] };
@@ -167,12 +185,16 @@ export function codexTurn(turn: CodexTurn): Promise<Outcome<string>> {
 		void (async () => {
 			await request('initialize', { clientInfo: { name: 'lat-board', title: 'LAT 看板', version: '1' }, capabilities: null });
 			write({ method: 'initialized' });
+			// Each MCP server Codex is set up with would start, and be waited for, on every turn.
+			const { config } = (await request('config/read', { cwd: tmpdir() }, true)) as { config?: { mcp_servers?: Record<string, unknown> | null } };
 			const started = await request('thread/start', {
 				ephemeral: true,
 				model: turn.model,
 				cwd: tmpdir(),
 				sandbox: 'read-only',
 				approvalPolicy: 'never',
+				config: Object.fromEntries(Object.keys(config?.mcp_servers ?? {}).map((name) => [`mcp_servers.${name}.enabled`, false])),
+				...(turn.baseInstructions === undefined ? {} : { baseInstructions: turn.baseInstructions }),
 				developerInstructions: turn.instructions
 			});
 			const threadId = (started.thread as { id: string }).id;

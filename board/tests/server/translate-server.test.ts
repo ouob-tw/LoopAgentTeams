@@ -147,6 +147,32 @@ test('a saved translation comes at once, before one still being translated, and 
 	expect(codexCalls()).toEqual([]);
 });
 
+test('the first reply of a batch reaches the page before Codex ends the turn; one that lost its marker fails alone', async () => {
+	rmSync(join(codexDir, 'go'), { force: true });
+	codexPlan({ prefix: '譯：', holdUntil: 'go', dropMarkers: 2 });
+	const response = await ask(['Streamed first reply here.', 'Streamed second runs `make` now.', 'Streamed third reply here.']);
+	const reader = response.body!.getReader();
+	const decoder = new TextDecoder();
+	let text = '';
+	while (!text.includes('\n')) {
+		const read = await reader.read();
+		if (read.done) throw new Error(`the answer ended before its first line: ${text}`);
+		text += decoder.decode(read.value, { stream: true });
+	}
+	// Codex is still holding the rest of its turn.
+	expect(JSON.parse(text.split('\n')[0])).toEqual({ index: 0, text: '譯：Streamed first reply here.' });
+	expect(existsSync(join(codexDir, 'go'))).toBe(false);
+	writeFileSync(join(codexDir, 'go'), '');
+	for (let read = await reader.read(); !read.done; read = await reader.read()) text += decoder.decode(read.value, { stream: true });
+	const got = Object.fromEntries(text.trim().split('\n').map((line) => { const { index, ...rest } = JSON.parse(line); return [index, rest]; }));
+	expect(got).toEqual({
+		0: { text: '譯：Streamed first reply here.' },
+		1: { error: '譯文少了原文的程式碼、網址或路徑' },
+		2: { text: '譯：Streamed third reply here.' }
+	});
+	rmSync(join(codexDir, 'go'), { force: true });
+});
+
 test('a translation unused for 30 days is dropped and translated again when asked', async () => {
 	await lines(['Reply to be forgotten.']);
 	fixture.setClock(START + 31 * DAY);

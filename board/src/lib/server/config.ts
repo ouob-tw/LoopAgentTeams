@@ -102,6 +102,23 @@ function commandFrom(env: Env, name: string): string[] | undefined {
 	return parsed;
 }
 
+/** A Codex app server for turns that only rewrite text: none of the coding agent's apps, hooks,
+ *  memories, plugins, skills or tools, which only slow every turn and fill its prompt. Its MCP
+ *  servers are turned off per thread (codex-turn.ts). Features go as `-c features.<name>=false`,
+ *  which a later Codex without that feature ignores, where `--disable` would refuse to start. */
+const TEXT_ONLY_CODEX = [
+	'codex',
+	'app-server',
+	...[
+		...['apps', 'hooks', 'memories', 'plugins', 'multi_agent', 'goals', 'tool_suggest', 'skill_search'],
+		...['shell_tool', 'unified_exec', 'view_image', 'image_generation', 'browser_use', 'computer_use']
+	].flatMap((feature) => ['-c', `features.${feature}=false`]),
+	...[
+		...['skills.include_instructions=false', 'web_search="disabled"', 'include_permissions_instructions=false'],
+		...['include_collaboration_mode_instructions=false', 'include_environment_context=false']
+	].flatMap((setting) => ['-c', setting])
+];
+
 function helperCommand(env: Env): string[] {
 	const given = commandFrom(env, 'LAT_BOARD_HELPER_COMMAND');
 	if (given) return given;
@@ -158,9 +175,9 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		asrUrl: env.LAT_BOARD_ASR_URL?.replace(/\/+$/, '') || null,
 		asrToken: env.LAT_BOARD_ASR_TOKEN || null,
 		asrTimeoutMs: seconds(env.LAT_BOARD_ASR_TIMEOUT_SECONDS, 60_000),
-		tidyCommand: commandFrom(env, 'LAT_BOARD_TIDY_COMMAND') ?? ['codex', 'app-server'],
+		tidyCommand: commandFrom(env, 'LAT_BOARD_TIDY_COMMAND') ?? [...TEXT_ONLY_CODEX],
 		tidyTimeoutMs: seconds(env.LAT_BOARD_TIDY_TIMEOUT_SECONDS, 30_000),
-		translateCommand: commandFrom(env, 'LAT_BOARD_TRANSLATE_COMMAND') ?? ['codex', 'app-server'],
+		translateCommand: commandFrom(env, 'LAT_BOARD_TRANSLATE_COMMAND') ?? [...TEXT_ONLY_CODEX],
 		translateTimeoutMs: seconds(env.LAT_BOARD_TRANSLATE_TIMEOUT_SECONDS, 60_000),
 		translateConcurrency: Math.max(1, Math.floor(Number(env.LAT_BOARD_TRANSLATE_CONCURRENCY)) || 3),
 		// Days: read as seconds, then a second becomes a day.
