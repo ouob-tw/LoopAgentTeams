@@ -218,6 +218,7 @@ test.skipIf(!CHROME)('the new-controller and new-agent forms hint the chosen cli
 		await tab().send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 300, deviceScaleFactor: 1, mobile: false });
 		await until(`document.querySelector('[role="listbox"][aria-label="Skill"]').getBoundingClientRect().bottom <= innerHeight`, 'the list fitted to the shorter window');
 		await tab().send('Emulation.setDeviceMetricsOverride', { width: 1200, height: 800, deviceScaleFactor: 1, mobile: false });
+		await until(`(() => { const list = document.querySelector('[role="listbox"][aria-label="Skill"]'); return list.scrollHeight - list.clientHeight <= 1; })()`, 'the list fitted to the taller window again');
 		await fits();
 		await tab().pointerClick('[role="listbox"][aria-label="Skill"] li:nth-child(2) button');
 		await closed('the list closed by the tap');
