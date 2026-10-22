@@ -66,14 +66,14 @@ describe('the line', () => {
 	});
 
 	test('every part in its safe range is left off, and the line is then empty', () => {
-		expect(usageParts(full, NOW)).toEqual([]);
+		expect(usageParts({ ...full, context: 10 }, NOW)).toEqual([]);
 	});
 
 	test('each part is left off past its boundary, and shown on it', () => {
 		const only = (usage: Partial<Usage>) => texts({ context: null, limits: [], cache: null, permission: null, ...usage });
-		// Context used: shown from 55%.
-		expect(only({ context: 54 })).toBe('');
-		expect(only({ context: 55 })).toBe('上下文已用 55%');
+		// Context used: shown from 11%, hidden at 10%.
+		expect(only({ context: 10 })).toBe('');
+		expect(only({ context: 11 })).toBe('上下文已用 11%');
 		// Quota left: the 5h window shown up to 45%, the 7d window up to 30%.
 		expect(only({ limits: [{ minutes: 300, used: 55 }] })).toBe('5 小時額度剩 45%');
 		expect(only({ limits: [{ minutes: 300, used: 54 }] })).toBe('');
@@ -243,9 +243,9 @@ describe('the compact line', () => {
 	});
 
 	test('the same parts are left off as in the detailed line, with the same colours', () => {
-		expect(usageParts(full, NOW, { style: 'compact' })).toEqual([]);
-		expect(only({ context: 54 })).toBe('');
-		expect(only({ context: 55 })).toBe('Ctx 55%');
+		expect(usageParts({ ...full, context: 10 }, NOW, { style: 'compact' })).toEqual([]);
+		expect(only({ context: 10 })).toBe('');
+		expect(only({ context: 11 })).toBe('Ctx 11%');
 		expect(only({ limits: [{ minutes: 300, used: 54 }] })).toBe('');
 		expect(only({ limits: [{ minutes: 10080, used: 70 }] })).toBe('7d 30%');
 		const usage: Usage = {
