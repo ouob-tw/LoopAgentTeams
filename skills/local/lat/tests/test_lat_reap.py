@@ -5,6 +5,7 @@ agents and processes are never judged or signalled; teardown kills only PIDs it 
 """
 from datetime import datetime, timedelta, timezone
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -21,7 +22,7 @@ import uuid
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-reap.py'
 LAT_FILE = SCRIPT.parent / 'lat-watch.py'
-PORT = 7952
+PORTS = range(7950, 7960)  # this ticket's reserved test ports
 PYTHON = os.path.realpath(sys.executable)
 # Each node writes its PID once ready; a 'shell' node is a real sh running its children.
 NODE = r'''
@@ -70,6 +71,17 @@ def starttime(pid):
         return None
 
 
+def free_port():
+    for port in PORTS:
+        with socket.socket() as probe:
+            try:
+                probe.bind(('127.0.0.1', port))
+                return port
+            except OSError:
+                continue
+    raise unittest.SkipTest('ports 7950-7959 are all in use')
+
+
 def iso(seconds):
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
@@ -95,9 +107,10 @@ class ReapTestCase(unittest.TestCase):
         self.addCleanup(self.kill_started)
         self.env = {key: value for key, value in os.environ.items()
                     if not key.startswith(('HCOM_', 'LAT_REAP_'))}
+        self.port = free_port()
         self.env.update(XDG_STATE_HOME=str(self.state), LAT_REAP_HCOM_LIST=str(self.hcom),
                         LAT_REAP_TEST_SCOPE=self.scope, LAT_REAP_GRACE_SECONDS='1',
-                        LAT_REAP_PROTECTED_PORTS=str(PORT))
+                        LAT_REAP_PROTECTED_PORTS=str(self.port))
 
     def kill_started(self):
         for label, (pid, start) in self.started.items():
@@ -169,6 +182,13 @@ class ReapTestCase(unittest.TestCase):
         return self.run_reaper('keep', '--pid', str(pid), '--reason', reason,
                                '--until', until or iso(3600), '--by', by,
                                '--session', 'session-1', **options)
+
+    def expire_keeps(self):
+        path = self.state / 'lat/reaper/keeps.json'
+        value = json.loads(path.read_text())
+        for keep in value['keeps']:
+            keep['until'] = iso(-1)
+        path.write_text(json.dumps(value))
 
     def alive(self, pid):
         return starttime(pid) is not None
@@ -281,10 +301,26 @@ class ReapTests(ReapTestCase):
         self.assertTrue(self.alive(service))
         self.assertIn('keep records unreadable', self.log()[0]['reason'])
 
+    def test_keep_records_with_wrong_types_close_nothing(self):
+        service = self.dead_agent('typed')
+        (self.state / 'lat/reaper').mkdir(parents=True)
+        (self.state / 'lat/reaper/keeps.json').write_text(json.dumps({'keeps': [{
+            'pid': str(service), 'starttime': self.started['typed-service'][1],
+            'process_id': self.scope + 'typed', 'reason': 'r', 'until': iso(600), 'by': 'b'}]}))
+        result = self.run_reaper('reap')
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(self.alive(service))
+        self.assertIn('unexpected format', self.log()[0]['reason'])
+
+    def test_lat_documents_do_not_make_a_process_a_lat_process(self):
+        viewer = self.dead_agent('viewer', extra=[str(SCRIPT.parents[1] / 'SKILL.md')])
+        self.reap()
+        self.assertTrue(self.gone(viewer))
+
     def test_never_handled_processes_survive_a_reap(self):
         tree = self.node('dead-root', [
             self.node('no-marker', env={}),
-            self.node('listener', listen=PORT),
+            self.node('listener', listen=self.port),
             self.node('lat-script', extra=[str(LAT_FILE)]),
             self.node('plain'),
         ])
@@ -330,18 +366,32 @@ class ReapTests(ReapTestCase):
         self.assertEqual(self.log(), [])
 
 
+class SignalTimeIdentityTests(ReapTestCase):
+    def test_pid_with_a_new_start_time_is_not_signalled(self):
+        spec = importlib.util.spec_from_file_location('lat_reap', SCRIPT)
+        reap = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(reap)
+        pid = self.dead_agent('reused')
+        seen = reap.Process(pid, os.getpid(), self.started['reused-service'][1] - 1, 'S',
+                            'python3', ('python3',), {})
+        world = reap.World({pid: seen}, {}, set(), {})
+        [record] = reap.close({pid: 'owner agent ended'}, world, self.root / 'log', 'manual')
+        self.assertEqual((record['signal'], record['result']), (None, 'gone before signal'))
+        self.assertTrue(self.alive(pid))
+
+
 class KeepTests(ReapTestCase):
     def test_kept_leftover_survives_until_expiry(self):
         orchestrator = self.live_agent('orch')
         self.set_hcom([('orch', 'orch', orchestrator['orch-client'])])
         service = self.dead_agent('held')
-        result = self.keep(service, until=iso(2))
+        result = self.keep(service)
         self.assertEqual(result.returncode, 0, result.stdout)
         self.reap()
         self.assertTrue(self.alive(service))
         scan = self.run_reaper('scan').stdout
         self.assertIn(f'PID {service}', scan.split('Kept:')[1])
-        time.sleep(2.2)
+        self.expire_keeps()
         self.reap()
         self.assertTrue(self.gone(service))
         self.assertIn('keep expired', self.log()[0]['why'])
@@ -361,9 +411,9 @@ class KeepTests(ReapTestCase):
     def test_expired_keep_closes_even_while_the_owner_runs(self):
         pids = self.live_agent('owner', helpers=['owner-mcp'], services=['owner-server'])
         self.set_hcom([('owner', 'owner', pids['owner-client'])])
-        result = self.keep(pids['owner-server'], until=iso(1), by='test-owner')
+        result = self.keep(pids['owner-server'], by='test-owner')
         self.assertEqual(result.returncode, 0, result.stdout)
-        time.sleep(1.2)
+        self.expire_keeps()
         self.reap()
         self.assertTrue(self.gone(pids['owner-server']))
         for label in ('owner-client', 'owner-mcp', 'owner-shell'):
@@ -404,6 +454,20 @@ class KeepTests(ReapTestCase):
         self.assertTrue(self.alive(other))
         self.assertEqual({record['trigger'] for record in self.log()}, {'deactivate'})
 
+    def test_valid_keep_inside_a_released_keep_survives(self):
+        tree = self.node('outer', [self.node('inner', [self.node('inner-worker')]),
+                                   self.node('outer-worker')])
+        pids = self.spawn(tree, self.agent_env('nest'))
+        orchestrator = self.live_agent('orch')
+        self.set_hcom([('orch', 'orch', orchestrator['orch-client'])])
+        self.assertEqual(self.keep(pids['outer']).returncode, 0)
+        self.expire_keeps()
+        self.assertEqual(self.keep(pids['inner']).returncode, 0)
+        self.reap()
+        self.assertTrue(self.gone(pids['outer-worker']))
+        for label in ('inner', 'inner-worker'):
+            self.assertTrue(self.alive(pids[label]), label)
+
     def test_keep_ends_when_its_orchestrator_is_gone(self):
         owner = self.live_agent('owner', services=['owner-server'])
         self.set_hcom([('owner', 'owner', owner['owner-client']), ('orch', 'orch', owner['owner-client'])])
@@ -419,7 +483,7 @@ class KeepTests(ReapTestCase):
         pids = self.live_agent('agent', tool='codex', helpers=['agent-helper'],
                                services=['agent-server'])
         tree = self.node('dead-root', [self.node('no-marker', env={}),
-                                       self.node('listener', listen=PORT),
+                                       self.node('listener', listen=self.port),
                                        self.node('lat-script', extra=[str(LAT_FILE)]),
                                        self.node('hcom-tool', exe=str(self.bin / 'hcom'),
                       env=self.agent_env('hcomtool'))])
@@ -460,8 +524,8 @@ class KeepTests(ReapTestCase):
         self.set_hcom([('cx', 'cx', pids['cx-node']), ('orch', 'orch', pids['cx-node'])])
         for label in ('cx-node', 'cx-codex', 'cx-helper', 'cx-shell'):
             self.assertIn('base process', self.keep(pids[label]).stdout, label)
-        self.assertEqual(self.keep(pids['cx-server'], until=iso(1)).returncode, 0)
-        time.sleep(1.2)
+        self.assertEqual(self.keep(pids['cx-server']).returncode, 0)
+        self.expire_keeps()
         self.reap()
         self.assertTrue(self.gone(pids['cx-server']))
         for label in ('cx-node', 'cx-codex', 'cx-helper', 'cx-shell'):
@@ -517,8 +581,8 @@ class SharedStateTests(ReapTestCase):
         timed_out = self.run_reaper('reap', env={'LAT_REAP_LOCK_SECONDS': '0.5'})
         self.assertEqual(timed_out.returncode, 1)
         self.assertIn('waited too long', timed_out.stdout)
-        threading.Timer(1, lambda: fcntl.flock(lock, fcntl.LOCK_UN)).start()
         began = time.monotonic()
+        threading.Timer(1, lambda: fcntl.flock(lock, fcntl.LOCK_UN)).start()
         self.reap()
         self.assertGreaterEqual(time.monotonic() - began, 0.9)
         self.assertTrue(self.gone(service))

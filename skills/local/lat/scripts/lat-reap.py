@@ -20,7 +20,7 @@ import time
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import run_cli, write_json_atomic
+from _lat_common import process_starttime, run_cli, write_json_atomic
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 MARKER = 'HCOM_PROCESS_ID'
@@ -97,14 +97,6 @@ def read_processes(proc_root=Path('/proc')):
     return processes
 
 
-def process_starttime(pid):
-    try:
-        fields = Path(f'/proc/{pid}/stat').read_text().rpartition(') ')[2].split()
-        return None if fields[0] == 'Z' else int(fields[19])
-    except (OSError, ValueError, IndexError):
-        return None
-
-
 def same_process(process):
     return process_starttime(process.pid) == process.starttime
 
@@ -155,19 +147,20 @@ def name_matches(process, name):
 def client_processes(process_id, processes, agents):
     """Running client processes of one agent.
 
-    With an HCOM record the client is the marked process with the recorded start time.
+    With an HCOM record the client is the topmost marked process with the recorded start
+    time (hcom list gives no PID; a child started in the same clock tick is not a client).
     Without one, any marked hcom wrapper, or a process whose executable or script is named
     after its HCOM_TOOL, counts as a client. Names only ever keep an agent alive.
     """
     starttime = agents.get(process_id, {}).get('starttime')
-    clients = set()
-    for process in processes.values():
-        if process.env.get(MARKER) != process_id or process.state == 'Z':
-            continue
+    marked = [process for process in processes.values()
+              if process.env.get(MARKER) == process_id and process.state != 'Z']
+    recorded = {process.pid for process in marked if process.starttime == starttime}
+    clients = {pid for pid in recorded if processes[pid].ppid not in recorded}
+    for process in marked:
         names = {Path(arg).name for arg in process.argv[:2]}
         tool = process.env.get('HCOM_TOOL')
-        if (process.starttime == starttime or process.comm == 'hcom'
-                or (tool and tool in names)):
+        if process.comm == 'hcom' or (tool and tool in names):
             clients.add(process.pid)
     return clients
 
@@ -251,10 +244,10 @@ def in_skill_dir(process):
         paths = [Path(os.readlink(f'/proc/{process.pid}/exe'))]
     except OSError:
         cwd, paths = None, []
-    for arg in process.argv:
-        path = Path(arg) if arg.startswith('/') or cwd is None else cwd / arg
-        if '/' in arg or arg.endswith('.py'):
-            paths.append(path)
+    # The executable, or a script it runs; other file arguments (an open document) do not count.
+    for index, arg in enumerate(process.argv):
+        if index == 0 or arg.endswith(('.py', '.sh')):
+            paths.append(Path(arg) if arg.startswith('/') or cwd is None else cwd / arg)
     for path in paths:
         try:
             if path.is_file() and any(map(is_lat_skill, path.resolve().parents)):
@@ -319,9 +312,12 @@ def read_keeps(directory):
     except (OSError, ValueError) as error:
         raise Failure(f'keep records unreadable: {error}') from error
     keeps = value.get('keeps') if isinstance(value, dict) else None
-    required = ('pid', 'starttime', 'process_id', 'reason', 'until', 'by')
+    fields = {'pid': int, 'starttime': int, 'process_id': str, 'reason': str, 'until': str,
+              'by': str}
     if not isinstance(keeps, list) or any(
-            not isinstance(keep, dict) or any(field not in keep for field in required)
+            not isinstance(keep, dict) or any(
+                not isinstance(keep.get(name), kind) or isinstance(keep.get(name), bool)
+                for name, kind in fields.items())
             for keep in keeps):
         raise Failure('keep records unreadable: unexpected format')
     try:
@@ -378,8 +374,10 @@ def plan(world, keeps, moment, only=None):
         if (process_id and process_id not in world.alive and process.pid not in kept
                 and (only is None or process_id in only)):
             targets.setdefault(process.pid, 'owner agent ended')
+    # A valid keep also holds inside the group of a released keep around it.
     targets = {pid: why for pid, why in targets.items()
-               if pid not in world.protected and world.processes[pid].state != 'Z'}
+               if pid not in world.protected and pid not in kept
+               and world.processes[pid].state != 'Z'}
     return targets, kept, live_keeps, released
 
 
