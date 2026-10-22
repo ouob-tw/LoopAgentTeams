@@ -213,6 +213,8 @@
        "tests": ["board/tests/unit/messages.test.ts", "board/tests/server/send.test.ts", "board/tests/server/real-hcom.test.ts", "board/tests/server/agent-control.test.ts", "board/tests/browser/herdr-controller-send.test.ts"]},
       {"paths": ["board/src/lib/components/SendButton.svelte"],
        "tests": ["board/tests/unit/messages.test.ts", "board/tests/server/send.test.ts", "board/tests/server/real-hcom.test.ts", "board/tests/server/agent-control.test.ts", "board/tests/browser/herdr-controller-send.test.ts"]},
+      {"paths": ["board/src/lib/board/client.ts"],
+       "tests": ["board/tests/unit/snapshot-order.test.ts", "board/tests/server/inbox.test.ts", "board/tests/browser/herdr-controller-page.test.ts"]},
       {"paths": ["board/src/lib/server/model.ts"],
        "tests": ["board/tests/*/model*.test.ts", "board/tests/browser/answer-torn.test.ts", "board/tests/unit/closed-agents-rules.test.ts", "board/tests/server/closed-agents.test.ts", "board/tests/unit/controller-agent.test.ts", "board/tests/unit/controller-status.test.ts", "board/tests/unit/log.test.ts", "board/tests/unit/roster-order.test.ts", "board/tests/server/duty.test.ts"]},
       {"paths": ["board/src/routes/api/model/**"],
