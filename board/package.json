@@ -27,6 +27,7 @@
 		"@types/markdown-it": "^14.2.0",
 		"@types/node": "^22",
 		"markdown-it": "^15.0.2",
+		"markdown-it-cjk-friendly": "3.0.0",
 		"opencc-js": "^1.4.2",
 		"smol-toml": "^1.9.1",
 		"svelte": "^5.57.1",
