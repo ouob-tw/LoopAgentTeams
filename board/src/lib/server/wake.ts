@@ -271,7 +271,7 @@ export async function resume(board: Board, controller: Pick<Controller, 'workspa
 	if (resumed.outcome !== 'failed' && !entry.switchId) {
 		// The pane the resumed client runs in, so a later wake can tell when it is gone.
 		const list = await listAgents(board.config);
-		if (list.ok) entry.pane = findAgent(list.agents, entry.controllerId, [entry.hcomName, entry.resumedName])?.pane ?? null;
+		if (list.ok) entry.pane = hcomPane(entry, list.agents);
 	}
 	const result: ResumeResult = {
 		kind: 'resume-result',
@@ -335,6 +335,12 @@ function toFront(board: Board, entry: SentWake, started: boolean): void {
 /** The Herdr agent that runs the resumed session: not one in a pane that ran it before. */
 const resumedIn = (wake: Pick<SentWake, 'controllerId' | 'earlierPanes'>, herdr: HerdrAgent[]) =>
 	herdr.find((agent) => agent.sessionId === wake.controllerId && !wake.earlierPanes?.includes(agent.pane));
+
+/** The pane hcom shows the resumed session, or its name, in: not one that ran it before. */
+function hcomPane(wake: Pick<SentWake, 'controllerId' | 'hcomName' | 'resumedName' | 'earlierPanes'>, agents: HcomAgent[]): string | null {
+	const pane = findAgent(agents, wake.controllerId, [wake.hcomName, wake.resumedName])?.pane ?? null;
+	return pane && !wake.earlierPanes?.includes(pane) ? pane : null;
+}
 
 /** How often a resume's new tab is looked for in Herdr. */
 const FRONT_POLL_MS = 1_000;
@@ -411,7 +417,7 @@ export function settleResumes(
 		// it may still list the session, or its name, in the pane the stop closed.
 		const pane =
 			(herdr && resumedIn(wake, herdr)?.pane) ||
-			(wake.switchId ? null : findAgent(agents, wake.controllerId, [wake.hcomName, wake.resumedName])?.pane);
+			(wake.switchId ? null : hcomPane(wake, agents));
 		try {
 			if (!wake.pane && pane) {
 				log.append({ kind: 'resume-pane', wakeId: wake.id, pane, time: new Date(now).toISOString() });

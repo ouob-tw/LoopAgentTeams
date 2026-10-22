@@ -81,7 +81,7 @@ const agent = (name: string, sessionId: string | null, pane?: string): Agent => 
 });
 /** The agents earlier resumes added leave hcom's list. */
 const leaveList = () => rmSync(join(commandDir, 'hcom-added.json'), { force: true });
-const hcomPlan = (plan: { agents?: Agent[]; resumed?: Agent; exit?: number; sleepMs?: number; stderr?: string; listFail?: object; names?: (string | null)[]; readOnly?: string }) =>
+const hcomPlan = (plan: { agents?: Agent[]; resumed?: Agent; resumedHerdr?: object; exit?: number; sleepMs?: number; stderr?: string; listFail?: object; names?: (string | null)[]; readOnly?: string }) =>
 	writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
 function herdrPlan(plan: { panes?: { workspace_id: string; cwd: string; pane_id?: string }[]; workspaces?: [string, number, string][]; fail?: object }) {
 	const workspaces = (plan.workspaces ?? []).map(([workspace_id, number, label]) => ({ workspace_id, number, label }));
@@ -281,6 +281,22 @@ test('the resumed tab goes to the front once Herdr runs it, though hcom had no p
 	const moves = () => readLog<string[]>('herdr-socket-calls.jsonl').filter((call) => call[0] === 'tab' && call[1] === 'move');
 	await until(() => moves().length > 0, 5000, 'the tab moved');
 	expect(moves()).toEqual([['tab', 'move', `wP:t-${target.id}`, '0']]);
+});
+
+test('a pane that ran the session before the resume is never taken for the resumed one, from Herdr or from hcom', async () => {
+	const target = await ended();
+	// Herdr still lists the closed session in its old pane, and hcom shows the resumed one there too.
+	const herdrAt = (pane: string, tab: string) => ({ agent: 'claude', agent_status: 'idle', cwd: target.workspace, pane_id: pane, tab_id: tab, workspace_id: 'wP', agent_session: { value: target.id } });
+	const herdr = JSON.parse(readFileSync(join(commandDir, 'herdr.json'), 'utf8'));
+	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify({ ...herdr, agents: [herdrAt('wP:p-old', 'wP:t-old')] }));
+	hcomPlan({ resumed: agent(target.name, target.id, 'wP:p-old'), resumedHerdr: herdrAt('wP:p-new', 'wP:t-new') });
+	const { entry } = (await wake(target.id, '繼續')).body;
+	expect(entry).toMatchObject({ outcome: 'started', pane: null, earlierPanes: ['wP:p-old'] });
+	const moves = () => readLog<string[]>('herdr-socket-calls.jsonl').filter((call) => call[0] === 'tab' && call[1] === 'move');
+	await until(() => moves().length > 0, 5000, 'the tab moved');
+	await fixture.refresh(cookie);
+	expect(moves()).toEqual([['tab', 'move', 'wP:t-new', '0']]);
+	expect((await wakes(target.id))[0]).toMatchObject({ pane: 'wP:p-new', closed: 'succeeded' });
 });
 
 test('a board restarted before Herdr ran the resumed session moves its tab by its reads, also once the resume succeeded', async () => {
