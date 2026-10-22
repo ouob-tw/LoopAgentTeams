@@ -1,11 +1,13 @@
 #!/usr/bin/env python3
 """PreToolUse hook that keeps agents from starving a shared host.
 
-Two rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
+Three rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
 - whole-disk scans: find / du / grep -r / rg / fd / tree / ls -R rooted at /, /mnt,
   /media or a configured extra root are blocked;
 - CPU load generators (busy loops, stress, stress-ng, sysbench cpu, yes > /dev/null)
-  must run on a limited set of cores via taskset, systemd-run or cpulimit.
+  must run on a limited set of cores via taskset, systemd-run or cpulimit;
+- an unquoted heredoc whose body holds `...` or $(...) is blocked: the shell runs those
+  commands while writing what was meant as text (a brief, a message).
 """
 import argparse
 import copy
@@ -37,6 +39,9 @@ LIMIT = re.compile(r'\btaskset\b|\bcpulimit\b|\bsystemd-run\b[^\n]*(?:AllowedCPU
 TASKSET_LIST = re.compile(r'\btaskset\s+(?:-\S*c\S*\s+|--cpu-list\s+)(?P<list>[\d,\-]+)')
 # Heredoc bodies and quoted text are data (messages, prompts), except a script after `-c`.
 HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re.S | re.M)
+# An unquoted delimiter (`<<EOF`, not `<<'EOF'` or `<<\EOF`) lets the shell expand the body.
+UNQUOTED_HEREDOC = re.compile(r'(?<!<)<<-?\s*([A-Za-z_]\w*)[^\n]*\n(.*?)^\s*\1\s*$', re.S | re.M)
+SUBSTITUTION = re.compile(r'(?<!\\)(?:`|\$\()')
 QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
 SCRIPT_RUN = re.compile(r'(?:^|[;&|(\s])(?:(?:ba|z|da)?sh\s+(?:-\S+\s+)*)?'
                         r'(?P<path>(?:[\w.~/-]*/)?[\w.-]+\.sh)\b')
@@ -51,6 +56,11 @@ LOAD_MESSAGE = ('Blocked: this generates CPU load on every core ({where}). Other
                 '`taskset -c 0-{last} <command>` (child processes inherit the limit, so wrapping '
                 'the script that starts the load is enough), or '
                 '`systemd-run --user --scope -p AllowedCPUs=0-{last} <command>`.')
+HEREDOC_MESSAGE = ('Blocked: the heredoc <<{name} is unquoted and its body contains {what}, so the '
+                   'shell runs that as a command while writing the text. Quote the delimiter '
+                   "(<<'{name}') to keep the body literal, or write the file with the Write tool "
+                   'and pass it with --file. If you meant to insert command output, run the '
+                   'command into a variable first and use the variable in the heredoc.')
 
 
 def config_path():
@@ -77,6 +87,15 @@ def code_only(text):
     """Shell text with heredoc bodies and quoted data blanked; `sh -c '...'` kept."""
     text = HEREDOC.sub('', text)
     return QUOTED.sub(lambda m: m.group(0) if m.group(1) else '""', text)
+
+
+def expanding_heredoc(command):
+    """(delimiter, what) for the first unquoted heredoc whose body substitutes a command."""
+    for match in UNQUOTED_HEREDOC.finditer(command):
+        found = SUBSTITUTION.search(match.group(2))
+        if found:
+            return match.group(1), 'a backtick' if found.group(0) == '`' else '$('
+    return None
 
 
 def scan_root(command, roots):
@@ -176,6 +195,10 @@ def cmd_hook():
     root = scan_root(command, config['roots'])
     if root:
         print(SCAN_MESSAGE.format(root=root), file=sys.stderr)
+        return 2
+    heredoc = expanding_heredoc(command)
+    if heredoc:
+        print(HEREDOC_MESSAGE.format(name=heredoc[0], what=heredoc[1]), file=sys.stderr)
         return 2
     where = load_problem(command, cwd if os.path.isdir(cwd) else os.getcwd(), config['cores'])
     if where:

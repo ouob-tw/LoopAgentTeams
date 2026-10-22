@@ -84,6 +84,34 @@ def state_dir():
     return Path(base) / 'suite-gate'
 
 
+def reaper_log():
+    """The LAT service reaper's record of the processes it ended (lat-reap.py); may not exist."""
+    state = os.environ.get('XDG_STATE_HOME', '')
+    base = Path(state) if state.startswith('/') else Path.home() / '.local/state'
+    return base / 'lat/reaper/closed.jsonl'
+
+
+def reaped_during(cwd, since, until):
+    """The processes the reaper ended between since and until that ran in or under cwd."""
+    try:
+        lines = reaper_log().read_text(errors='replace').splitlines()
+    except OSError:
+        return []
+    root, found = str(cwd), []
+    for line in lines:
+        try:
+            entry = json.loads(line)
+            moment = datetime.fromisoformat(entry['time'])
+        except (ValueError, KeyError, TypeError):
+            continue
+        where = entry.get('cwd')
+        if 'pid' not in entry or not isinstance(where, str) or moment.tzinfo is None:
+            continue
+        if since <= moment <= until and (where == root or where.startswith(root + '/')):
+            found.append({key: entry.get(key) for key in ('time', 'pid', 'command', 'agent', 'why')})
+    return found
+
+
 def config_path():
     if os.environ.get('SUITE_GATE_CONFIG'):
         return Path(os.environ['SUITE_GATE_CONFIG'])
@@ -1392,6 +1420,8 @@ class Gate:
     def execute(self, info):
         argv = ['/bin/sh', '-c', self.argv[0]] if len(self.argv) == 1 else self.argv
         started, start_iso = time.monotonic(), now_iso()
+        # The reaper logs whole seconds; a kill in the run's first second must still count.
+        started_at = datetime.now(timezone.utc).replace(microsecond=0)
         try:
             child = self._start(argv, True) if self._scope_ready() else None
             child = child or self._start(argv, False)
@@ -1406,6 +1436,7 @@ class Gate:
             thread.start()
         code = child.wait()
         self.finished = True
+        reaped = reaped_during(self.cwd, started_at, datetime.now(timezone.utc))
         for thread in pumps:
             thread.join(timeout=2)
         profile = self.measure(time.monotonic() - started)
@@ -1422,7 +1453,7 @@ class Gate:
             'finished': now_iso(), 'rerun_reason': self.rerun, 'content_changed': changed,
             'reusable': info is not None and code == 0 and not changed,
             'purpose': None, 'purpose_reason': None, 'profile': profile,
-            'profile_key': info and info['profile_key'],
+            'profile_key': info and info['profile_key'], 'reaped': reaped,
         }
         record.update(self.extra)
         append_record(record)
@@ -1433,6 +1464,12 @@ class Gate:
                  'reused; do not edit files while the suite runs, and git-ignore files the '
                  'tests generate (e.g. __pycache__/, .pytest_cache/, build output). '
                  'Run `git status --porcelain` to see what changed')
+        if reaped:
+            shown = '; '.join(f"pid {e['pid']} {str(e['command'])[:80]}" for e in reaped[:3])
+            warn(f'the LAT service reaper ended {len(reaped)} process(es) under {self.cwd} during '
+                 f'the run, taking them for leftovers of an ended agent ({shown}). Failures such as '
+                 f'connection refused may come from that rather than the change; details in '
+                 f'{reaper_log()}')
         warn(f"recorded exit {code} in {duration}s"
              + (f" for fingerprint {info['fingerprint'][:12]}" if info else ''))
         return code

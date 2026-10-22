@@ -334,6 +334,30 @@ class RunAndReuseTests(GateCase):
         self.assertEqual(self.gate('run', '--', failing).returncode, 1)
         self.assertEqual(self.runs(), 5)
 
+    def test_processes_the_reaper_ended_under_the_suite_during_the_run_are_reported(self):
+        log = self.tmp / 'xdg-state/lat/reaper/closed.jsonl'
+        log.parent.mkdir(parents=True)
+        old = {'time': '2020-01-01T00:00:00+00:00', 'pid': 1, 'cwd': str(self.repo),
+               'command': 'node old', 'agent': 'x'}
+        log.write_text(json.dumps(old) + '\n')
+        entry = lambda where, pid: json.dumps({'pid': pid, 'cwd': where, 'agent': 'nabo-qa-rape',
+                                               'command': 'node build-test/index.js',
+                                               'why': 'owner agent ended'})
+        now = "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
+        write = lambda where, pid: (f"printf '%s\\n' \"{{\\\"time\\\": \\\"{now}\\\", "
+                                    f"{json.dumps(entry(where, pid))[2:-1]}\" >> {log}")
+        command = (f'echo run >> {self.counter}; {write(str(self.repo / "board"), 4242)}; '
+                   f'{write("/elsewhere", 7)}')
+        result = self.gate('run', '--', command)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('reaper ended 1 process(es)', result.stderr)
+        self.assertIn('pid 4242 node build-test/index.js', result.stderr)
+        self.assertEqual([e['pid'] for e in self.records()[-1]['reaped']], [4242])
+
+    def test_a_run_without_reaper_kills_records_none(self):
+        self.gate('run', '--', self.suite())
+        self.assertEqual(self.records()[-1]['reaped'], [])
+
     def test_later_failure_of_the_same_content_stops_reuse(self):
         code_file = self.tmp / 'code'
         code_file.write_text('0')

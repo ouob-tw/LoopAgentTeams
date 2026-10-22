@@ -128,6 +128,26 @@ class LoadTests(HookCase):
         self.assert_allowed(self.bash('bash loadcmp.sh'))
 
 
+class HeredocTests(HookCase):
+
+    def test_an_unquoted_heredoc_that_substitutes_a_command_is_blocked(self):
+        for command, name in [('cat > brief.md <<EOF\nNever run `bun run build`.\nEOF', 'EOF'),
+                              ('cat <<-MSG\n\tnow: $(date)\n\tMSG', 'MSG'),
+                              ('git commit -m "$(cat <<EOF\nfix `x`\nEOF\n)"', 'EOF')]:
+            with self.subTest(command):
+                self.assert_blocked(self.bash(command), f"(<<'{name}')")
+
+    def test_literal_or_variable_only_heredocs_pass(self):
+        for command in ["cat > brief.md <<'EOF'\nNever run `bun run build` or $(pkill).\nEOF",
+                        'cat > brief.md <<"EOF"\nrun `x`\nEOF',
+                        'cat <<\\EOF\nrun `x`\nEOF',
+                        'cat <<EOF\nhome is $HOME, cost \\$(not run) and \\`literal\\`\nEOF',
+                        'grep -c x <<<"`echo`"',
+                        'echo "`date`"']:
+            with self.subTest(command):
+                self.assert_allowed(self.bash(command))
+
+
 class InstallTests(unittest.TestCase):
 
     def setUp(self):

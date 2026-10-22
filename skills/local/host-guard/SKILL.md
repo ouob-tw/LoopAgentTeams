@@ -1,11 +1,11 @@
 ---
 name: host-guard
-description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench) or searching for files across the whole filesystem on a host shared with other agents. Covers how to pin load to a few cores, how to search narrowly, and how to install the hook.
+description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench) or searching for files across the whole filesystem on a host shared with other agents. Covers how to pin load to a few cores, how to search narrowly, how to write heredocs that stay literal, and how to install the hook.
 ---
 
 # 共用主機保護（host-guard）
 
-多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下兩類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
+多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下三類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
 
 ## 從根目錄搜尋整個磁碟
 
@@ -25,6 +25,14 @@ systemd-run --user --scope -p AllowedCPUs=0-3 stress-ng --cpu 4 -t 60
 ```
 
 `taskset -c` 指定的核心數超過上限也會擋。要模擬「主機很忙」，在限制的核心上製造負載，並把被測程式放在同一組核心上跑。
+
+## 會執行指令的 heredoc
+
+結束標記沒加引號的 heredoc（`<<EOF`），內文裡的反引號與 `$(…)` 會在寫檔當下被 shell 執行。寫任務說明或訊息時，內文提到的 `` `bun run build` `` 就會真的跑起來。內文含反引號或 `$(` 且標記沒加引號時擋下；前面加反斜線跳脫的不算。
+
+- 內文照字面保留：標記加引號，`<<'EOF'`。
+- 長文字：先用 Write 工具寫檔，再以 `--file` 傳。
+- 真的要放指令結果：先存進變數（`now=$(date)`），heredoc 裡只用 `$now`。
 
 ## 設定
 
