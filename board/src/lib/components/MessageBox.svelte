@@ -116,8 +116,7 @@
 	/** Where the list fits: above the box, or under it when there is more room there than above
 	 *  and not room enough above; at most as tall as that room. */
 	let place = $state({ below: false, room: LIST_MAX_PX });
-	$effect(() => {
-		if (!hinting) return;
+	function fitList() {
 		const frame = box.getBoundingClientRect();
 		// What can be seen: the window, less whatever an ancestor that scrolls or clips cuts off.
 		let top = 0;
@@ -132,6 +131,20 @@
 		const under = bottom - frame.bottom - LIST_GAP_PX;
 		const below = above < LIST_MAX_PX && under > above;
 		place = { below, room: Math.max(0, below ? under : above) };
+	}
+	// Fitted when it opens, and again while it is open as the window, a scrolled ancestor or the box changes.
+	$effect(() => {
+		if (!hinting) return;
+		fitList();
+		const observer = new ResizeObserver(fitList);
+		observer.observe(box);
+		window.addEventListener('resize', fitList);
+		document.addEventListener('scroll', fitList, true);
+		return () => {
+			observer.disconnect();
+			window.removeEventListener('resize', fitList);
+			document.removeEventListener('scroll', fitList, true);
+		};
 	});
 	// The highlighted one stays in sight.
 	$effect(() => {
