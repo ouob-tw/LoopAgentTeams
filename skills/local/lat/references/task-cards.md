@@ -93,7 +93,7 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 每項任務合併至整合分支且整合後驗證通過後，由 Orchestrator 在關閉 Agent 的同一步驟完成以下清理，不等整批結束：
 
 - 清理任務卡列明且屬於本任務的資源；普通暫存檔用 trash-cli，含機密者（含隔離 client 家目錄）先用 `shred -u`，再移除所在 worktree。核對 `temp paths` 列出的位置都已不存在、`.lat` 內沒有家目錄副本。
-- 以 `git worktree remove` 移除該任務的獨立 worktree，以 `git branch -d` 刪除任務分支；`-D` 僅限使用者明確確認放棄該分支。
+- 以 `git worktree remove` 移除該任務的獨立 worktree，在整合分支所在的工作區執行 `git branch -d` 刪除任務分支（`-d` 只認目前分支已含的 commit，在整合分支尚未合入的主工作區執行會失敗）；`-D` 僅限使用者明確確認放棄該分支。
 - **先**將任務卡移至 `.lat/tasks/done/`，**再**關閉 Agent；移走後停住監控不再盯該 Agent。卡片仍在而 Agent 消失會被視為意外消失並通知主控。
 - `hcom kill` 關閉 Agent 並核對已停止後，立即執行 `uv run --no-project python <lat_dir>/scripts/lat-reap.py reap --agent <Agent 名稱>` 收掉它留下的服務。
 
