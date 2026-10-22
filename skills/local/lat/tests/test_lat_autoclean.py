@@ -153,7 +153,7 @@ class EnabledTests(AutocleanTestCase):
         self.assertEqual(self.outcome('runs/issue-1'), 'shred')
         self.assertEqual(self.outcome('tasks/done/old-card.md'), 'trash')
         self.assertEqual(self.outcome(f'watch/{ENDED_SID}.log'), 'trash')
-        self.assertTrue(any(call.startswith('shred -u -- ') and 'auth.json' in call
+        self.assertTrue(any(call.startswith('shred -f -u -- ') and 'auth.json' in call
                             for call in self.removal_calls()))
         size = [line[3] for line in self.log_lines() if line[2] == 'tasks/done/old-card.md'][0]
         self.assertEqual(size, '5')
