@@ -11,6 +11,8 @@
 // The agent message also comes as deltas before the turn ends, one per numbered reply; with
 // `holdUntil` the rest waits after the first reply until that file exists in <dir>. `mcpServers`
 // is what `config/read` lists; each thread/start's params go to <dir>/codex-threads.jsonl.
+// `skills/list` answers with `skills` for each folder asked about, logged to <dir>/codex-skills.jsonl;
+// `skillsExit` quits instead.
 import { appendFileSync, existsSync, readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { join } from 'node:path';
@@ -26,6 +28,11 @@ createInterface({ input: process.stdin }).on('line', async (line) => {
 	const message = JSON.parse(line);
 	if (message.method === 'initialize') write({ id: message.id, result: { userAgent: 'fake' } });
 	else if (message.method === 'config/read') write({ id: message.id, result: { config: { mcp_servers: plan.mcpServers ?? {} } } });
+	else if (message.method === 'skills/list') {
+		appendFileSync(join(dir, 'codex-skills.jsonl'), JSON.stringify(message.params) + '\n');
+		if (plan.skillsExit) process.exit(1);
+		write({ id: message.id, result: { data: message.params.cwds.map((/** @type {string} */ cwd) => ({ cwd, skills: plan.skills ?? [], errors: [] })) } });
+	}
 	else if (message.method === 'thread/start') {
 		appendFileSync(join(dir, 'codex-threads.jsonl'), JSON.stringify(message.params) + '\n');
 		write({ id: message.id, result: { thread: { id: 'thread-1' }, params: message.params } });

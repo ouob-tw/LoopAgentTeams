@@ -11,6 +11,7 @@
 	// A controller in a turn in a Herdr pane is interrupted the same way, while nothing is typed; its
 	// turn is read from the Herdr tab's list of agents, not from its LAT status.
 	// Files attached to a draft go with it, their paths in a block at the end of the message.
+	// The box hints the skills of whoever the line goes to, by its client and the folder it works in.
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import MessageSquare from '@lucide/svelte/icons/message-square';
@@ -172,6 +173,9 @@
 				: null
 	);
 	const waking = $derived(recipient !== undefined && needsWake(recipient));
+	const skillsFor = $derived(
+		toAgent && agent ? { client: agent.client, folder: agent.folder } : recipient ? { client: recipient.client, folder: recipient.workspace } : null
+	);
 
 	// The wake's options, by controller ID. '' keeps the current model or effort.
 	let newRound = $state<Record<string, boolean>>({});
@@ -305,6 +309,7 @@
 					: `${agent ? `傳話給 ${agentName}` : '@名稱 指定主控'}・${enterMakesNewline.current ? 'Enter 換行・按鈕送出' : 'Enter 送出・Shift+Enter 換行'}`}
 			disabled={(toAgent && agentBlocked !== null) || toClosed}
 			attachTo={attachOwner}
+			{skillsFor}
 			onsend={submit}
 		/>
 		<!-- A wake keeps its word: it brings a controller back and spends quota. One button either

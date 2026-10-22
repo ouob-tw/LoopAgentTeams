@@ -6,6 +6,7 @@
 	// as its target it is the Herdr tab's new-agent form instead: a plain agent in that workspace,
 	// with an optional tab name and first message, no LAT start command and no Git project needed,
 	// followed until Herdr lists it. A folder that is not there yet is created when the form is sent.
+	// The message box hints the skills of the chosen client in the chosen folder.
 	import { untrack } from 'svelte';
 	import { folderName, listKey, pathMatches, shownSearch, suggestedFolders } from '#lib/board/folder-search.ts';
 	import { formatTime } from '#lib/board/format.ts';
@@ -366,6 +367,7 @@
 			bind:value={form.text}
 			label={target ? '第一則訊息（選填）' : '第一句話'}
 			placeholder={`${target ? '第一則訊息（選填）' : '第一句話'}（${enterMakesNewline.current ? 'Enter 換行，按鈕送出' : 'Enter 送出，Shift+Enter 換行'}）`}
+			skillsFor={form.folderPath ? { client: form.client, folder: form.folderPath } : null}
 			onsend={submit}
 		/>
 
