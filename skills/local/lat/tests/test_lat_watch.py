@@ -26,6 +26,13 @@ def load_watch():
     return module
 
 
+def setUpModule():
+    # No test may run a real reap against the host; tests that check the call replace this.
+    patcher = patch.dict(os.environ, LAT_REAP_COMMAND='true')
+    patcher.start()
+    unittest.addModuleCleanup(patcher.stop)
+
+
 class WatchDecisionTests(unittest.TestCase):
     def test_zero_idle_work_is_nudged_once_after_ten_minutes(self):
         watch = load_watch()
@@ -4241,6 +4248,71 @@ esac
         self.assertEqual(sleeper.call_args_list,
                          [unittest.mock.call(60), unittest.mock.call(60)])
 
+
+    def fake_reaper(self, body='exit 0'):
+        """A stand-in reap command that logs its arguments; never the real reaper."""
+        calls = self.root / 'reap.log'
+        reaper = self.root / 'fake-reap'
+        reaper.write_text(f'#!/bin/sh\nprintf "%s\\n" "$*" >> "{calls}"\n{body}\n')
+        reaper.chmod(0o755)
+        return calls, {'LAT_REAP_COMMAND': str(reaper)}
+
+    def test_default_reap_command_is_the_reaper_beside_the_running_watcher(self):
+        watch = load_watch()
+        environment = {key: value for key, value in os.environ.items()
+                       if key != 'LAT_REAP_COMMAND'}
+        with patch.dict(os.environ, environment, clear=True):
+            command = watch.reap_command('reap', '--trigger', 'periodic')
+        self.assertEqual(command, [sys.executable, str(SCRIPT.with_name('lat-reap.py')),
+                                   'reap', '--trigger', 'periodic'])
+
+    def test_every_cycle_runs_one_periodic_reap(self):
+        watch = load_watch()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        args = argparse.Namespace(workspace=self.work, tasks=self.tasks,
+                                  decisions=decisions, orchestrator='orch')
+        calls, environment = self.fake_reaper()
+        stop = RuntimeError('stop test loop')
+
+        with patch.dict(os.environ, environment), \
+                patch.object(watch, 'run_cycle', return_value=None) as cycle, \
+                patch.object(watch.time, 'sleep', side_effect=[None, None, stop]):
+            with self.assertRaisesRegex(RuntimeError, 'stop test loop'):
+                watch.run_forever(args)
+
+        self.assertEqual(cycle.call_count, 3)
+        self.assertEqual(calls.read_text().splitlines(), ['reap --trigger periodic'] * 3)
+
+    def test_failed_or_slow_reap_is_logged_and_watching_continues(self):
+        self.listing_hcom(orch='listening', worker_open='listening')
+        watch = load_watch()
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        args = argparse.Namespace(workspace=self.work, tasks=self.tasks,
+                                  decisions=decisions, orchestrator='orch')
+        calls, environment = self.fake_reaper(
+            'test -e "$0.slow" && exec sleep 5\ntouch "$0.slow"\n'
+            'echo "Nothing closed: HCOM list unreadable"; exit 1')
+        stop = RuntimeError('stop test loop')
+
+        with patch.dict(os.environ, {**self.env, **environment}), patch('sys.stderr'), \
+                patch.object(watch, 'REAP_TIMEOUT_SECONDS', 0.5), \
+                patch.object(watch.time, 'sleep', side_effect=[None, stop]) as sleeper:
+            with self.assertRaisesRegex(RuntimeError, 'stop test loop'):
+                watch.run_forever(args)
+
+        self.assertEqual(len(calls.read_text().splitlines()), 2)
+        self.assertEqual(sleeper.call_args_list,
+                         [unittest.mock.call(60), unittest.mock.call(60)])
+        failed = [record for record in self.watch_records()
+                  if record.get('decision') == 'reap-failed']
+        self.assertEqual(len(failed), 2)
+        self.assertIn('Nothing closed: HCOM list unreadable', failed[0]['error'])
+        self.assertIn('timed out', failed[1]['error'])
+        self.assertFalse(any(record.get('decision') == 'cycle-failed'
+                             for record in self.watch_records()))
+        self.assertIn('worker-open', self.watch_state())
 
     def test_failed_cycles_are_logged_rate_limited_and_the_loop_continues(self):
         watch = load_watch()
