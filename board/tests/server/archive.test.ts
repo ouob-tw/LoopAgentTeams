@@ -108,8 +108,8 @@ test('the archive lists newest first and is the same on another paired device', 
 	const times = mine.map(processedTime);
 	expect(times).toEqual(times.toSorted((a, b) => b - a));
 	expect(await fixture.archive(other)).toEqual(mine);
-	const { generatedAt: _mine, ...here } = await fixture.board(cookie);
-	const { generatedAt: _theirs, ...there } = await fixture.board(other);
+	const { generatedAt: _mine, revision: _mineRevision, ...here } = await fixture.board(cookie);
+	const { generatedAt: _theirs, revision: _theirRevision, ...there } = await fixture.board(other);
 	expect(there).toEqual(here);
 });
 
@@ -178,7 +178,7 @@ test('an unusable state file is reported without making up which reports are rea
 	writeFileSync(stateFile, '{ not json');
 	const stale = await fixture.refresh(cookie);
 	expect(stale.errors.join()).toContain('回報沿用上次讀到的狀態');
-	expect({ ...stale, errors: [] as string[], generatedAt: '' }).toEqual({ ...before, generatedAt: '' });
+	expect({ ...stale, errors: [] as string[], generatedAt: '', revision: 0 }).toEqual({ ...before, generatedAt: '', revision: 0 });
 	expect((await fixture.markRead(cookie, titled(stale, '晚發仍保留')!.key)).status).toBe(500);
 	expect((await fixture.fetch('/api/archive', { cookie })).status).toBe(500);
 	expect(readFileSync(stateFile, 'utf8')).toBe('{ not json');
@@ -197,6 +197,6 @@ test('an unusable state file is reported without making up which reports are rea
 	// Putting the file back brings the read marks and the archive back.
 	writeFileSync(stateFile, good);
 	const repaired = await fixture.refresh(cookie);
-	expect({ ...repaired, generatedAt: '' }).toEqual({ ...before, generatedAt: '' });
+	expect({ ...repaired, generatedAt: '', revision: 0 }).toEqual({ ...before, generatedAt: '', revision: 0 });
 	expect(await archived('早發已封存')).toBeDefined();
 });

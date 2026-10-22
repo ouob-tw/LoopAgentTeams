@@ -71,6 +71,15 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		options.onTranslateMode?.(mode);
 	}
 
+	/** The newest board shown, by the server's revision of it: the stream and the answers to refreshes
+	 *  arrive in any order, and only a newer revision replaces what is shown. */
+	let boardRevision = 0;
+	function hearBoard(snapshot: BoardSnapshot): void {
+		if (snapshot.revision <= boardRevision) return;
+		boardRevision = snapshot.revision;
+		options.onSnapshot(snapshot);
+	}
+
 	function unpaired(): void {
 		closed = true;
 		options.onUnpaired();
@@ -91,7 +100,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 		}
 		// Any event proves the link works, including the keep-alive.
 		options.onState('live');
-		if (event === 'board') options.onSnapshot(JSON.parse(data));
+		if (event === 'board') hearBoard(JSON.parse(data));
 		else if (event === 'unpaired') unpaired();
 		else if (event === 'tab-moved') options.onTabMoved?.();
 		else if (event === 'agent-action') options.onAgentAction?.(JSON.parse(data).agentId);
@@ -147,7 +156,7 @@ export function connectBoard(options: ConnectionOptions): Connection {
 				headers: { 'content-type': 'application/json' }
 			});
 			const snapshot = valueOf(result, null);
-			if (snapshot) options.onSnapshot(snapshot);
+			if (snapshot) hearBoard(snapshot);
 		},
 		async mark(key, read) {
 			// The answer's body is not used.

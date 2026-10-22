@@ -208,6 +208,31 @@ test('a report marked read on one device is read on another paired device within
 	expect((titled(await fixture.board(cookie), '兩台裝置都會看到') as InboxReport).readAt).toBe(seen);
 });
 
+test('every snapshot is newer than the one before, the pushed ones and refresh answers', async () => {
+	const luna = fixture.bound('alpha', 'luna');
+	fixture.report(luna.session_id, { tag: 'DONE', summary: '版本一路往上', hcom_name: 'luna', workspace: luna.workspace });
+	fixture.list([luna]);
+	const refreshed = await fixture.refresh(cookie);
+	const page = fixture.watch(cookie);
+	await until(() => titled(page.latest(), '版本一路往上'), 5_000, 'the report on the page');
+
+	await fixture.markRead(cookie, titled(refreshed, '版本一路往上')!.key);
+	const pushed = await until(() => page.snapshots.find((each) => (titled(each, '版本一路往上') as InboxReport | undefined)?.readAt), 5_000, 'the read pushed');
+	// A slower answer to the refresh before the read is told apart from the read by its revision.
+	expect(pushed.revision).toBeGreaterThan(refreshed.revision);
+	expect((await fixture.refresh(cookie)).revision).toBeGreaterThan(pushed.revision);
+	const revisions = page.snapshots.map((each) => each.revision);
+	expect(revisions).toEqual([...revisions].sort((a, b) => a - b));
+	page.close();
+}, 15_000);
+
+test('the first snapshot after a restart is newer than the last one before it', async () => {
+	const before = (await fixture.refresh(cookie)).revision;
+	await fixture.stop();
+	await fixture.start();
+	expect((await fixture.board(cookie)).revision).toBeGreaterThan(before);
+}, 15_000);
+
 test('read state survives a restart of the board', async () => {
 	const luna = fixture.bound('alpha', 'luna');
 	fixture.report(luna.session_id, { tag: 'DONE', summary: '重啟後仍是已讀', hcom_name: 'luna', workspace: luna.workspace });

@@ -129,6 +129,8 @@ function createBoard(): Board {
 	/** Whether a Herdr list has been read yet: until then no agent is known to be closed. */
 	let herdrRead = false;
 	let snapshot: BoardSnapshot | null = null;
+	/** The last snapshot's revision; see `BoardSnapshot.revision`. */
+	let revision = Date.now();
 	let lastActive: HelperController[] = [];
 	let lastAnswered: AnsweredFile[] = [];
 	/** Session IDs in hcom's last list that could be read; null until one could. */
@@ -153,7 +155,7 @@ function createBoard(): Board {
 	/** The open model switches as last read from the sent log. */
 	let lastSwitches: SwitchView[] = [];
 
-	const comparable = (value: BoardSnapshot) => JSON.stringify({ ...value, generatedAt: '' });
+	const comparable = (value: BoardSnapshot) => JSON.stringify({ ...value, generatedAt: '', revision: 0 });
 
 	function dropRevoked(): void {
 		for (const stream of streams) {
@@ -394,7 +396,7 @@ function createBoard(): Board {
 
 		if (!problem) lastState = state;
 
-		const next = buildSnapshot(from, state, now);
+		const next: BoardSnapshot = { ...buildSnapshot(from, state, now), revision: ++revision };
 		for (const controller of [...next.controllers, ...next.offRoster]) {
 			const target = controller.herdr;
 			if (!target) {
@@ -448,6 +450,7 @@ function createBoard(): Board {
 				// Unexpected source data must not take the server down or leave pages without an answer.
 				snapshot = {
 					generatedAt: new Date().toISOString(),
+					revision: ++revision,
 					controllers: [],
 					offRoster: [],
 					inbox: [],

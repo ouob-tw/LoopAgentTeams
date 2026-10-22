@@ -189,6 +189,10 @@ export function itemLabel(item: InboxItem): string {
 
 export interface BoardSnapshot {
 	generatedAt: string;
+	/** Counts up with every snapshot the server builds, from its start time so one built after a
+	 *  restart is newer too. A snapshot reaches the page by the stream and by refresh answers in any
+	 *  order; one not newer than the page shows is left out. */
+	revision: number;
 	controllers: Controller[];
 	/** Bound controllers whose client is closed and whose reports are all archived: off the roster,
 	 *  but controllers on the Herdr tab, opened and woken as one. */
