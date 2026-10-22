@@ -1,6 +1,6 @@
 <script lang="ts">
-	// The settings of this device: theme, overall size and smallest text size; and the board's, which every
-	// device shares: how the usage line reads and whether conversations open translated.
+	// Two groups: this device's settings (theme, overall size, smallest text size) and the board's, which every
+	// device shares (how the usage line reads, whether conversations open translated).
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { MIN_FONT, SCALE } from '#lib/board/prefs.ts';
 	import { translatePref } from '#lib/board/translate-pref.svelte.ts';
@@ -27,77 +27,85 @@
 			<h2 id="settings-title">設定</h2>
 			<button onclick={() => dialog.close()}>關閉</button>
 		</header>
-		<p class="note">主題、整體大小與最小字體只記在這台裝置的瀏覽器裡；用量列與對話翻譯所有已登入的裝置共用。</p>
 
-		<section>
-			<h3>主題</h3>
-			<div class="choices" role="group" aria-label="主題">
-				<button aria-pressed={appearance.theme === 'dark'} onclick={() => appearance.setTheme('dark')}>深色</button>
-				<button aria-pressed={appearance.theme === 'light'} onclick={() => appearance.setTheme('light')}>
-					淺色（高對比）
-				</button>
-			</div>
+		<section class="group">
+			<h3>本地設置</h3>
+			<p class="note">只存在這台裝置的瀏覽器</p>
+
+			<section>
+				<h4>主題</h4>
+				<div class="choices" role="group" aria-label="主題">
+					<button aria-pressed={appearance.theme === 'dark'} onclick={() => appearance.setTheme('dark')}>深色</button>
+					<button aria-pressed={appearance.theme === 'light'} onclick={() => appearance.setTheme('light')}>
+						淺色（高對比）
+					</button>
+				</div>
+			</section>
+
+			<section>
+				<h4>整體大小</h4>
+				<div class="choices" role="group" aria-label="整體大小">
+					<button
+						aria-label="縮小"
+						disabled={appearance.scale <= SCALE.min}
+						onclick={() => appearance.setScale(appearance.scale - SCALE.step)}>－</button
+					>
+					<output aria-live="polite">{appearance.scale}%</output>
+					<button
+						aria-label="放大"
+						disabled={appearance.scale >= SCALE.max}
+						onclick={() => appearance.setScale(appearance.scale + SCALE.step)}>＋</button
+					>
+					<button disabled={appearance.scale === SCALE.base} onclick={() => appearance.resetScale()}>還原預設</button>
+				</div>
+			</section>
+
+			<section>
+				<h4>最小字體</h4>
+				<div class="choices" role="group" aria-label="最小字體">
+					<button
+						aria-label="調小"
+						disabled={appearance.minFont === null || appearance.minFont <= MIN_FONT.min}
+						onclick={() => appearance.setMinFont(appearance.minFont! - MIN_FONT.step)}>－</button
+					>
+					<output aria-live="polite">{appearance.minFont === null ? '不限' : `${appearance.minFont}px`}</output>
+					<button
+						aria-label="調大"
+						disabled={appearance.minFont !== null && appearance.minFont >= MIN_FONT.max}
+						onclick={() => appearance.setMinFont(appearance.minFont === null ? MIN_FONT.start : appearance.minFont + MIN_FONT.step)}
+						>＋</button
+					>
+					<button disabled={appearance.minFont === null} onclick={() => appearance.resetMinFont()}>不限</button>
+				</div>
+				<p class="note">比這更小的字會放大到這個大小。</p>
+			</section>
 		</section>
 
-		<section>
-			<h3>整體大小</h3>
-			<div class="choices" role="group" aria-label="整體大小">
-				<button
-					aria-label="縮小"
-					disabled={appearance.scale <= SCALE.min}
-					onclick={() => appearance.setScale(appearance.scale - SCALE.step)}>－</button
-				>
-				<output aria-live="polite">{appearance.scale}%</output>
-				<button
-					aria-label="放大"
-					disabled={appearance.scale >= SCALE.max}
-					onclick={() => appearance.setScale(appearance.scale + SCALE.step)}>＋</button
-				>
-				<button disabled={appearance.scale === SCALE.base} onclick={() => appearance.resetScale()}>還原預設</button>
-			</div>
-			<p class="note">文字與間距一起縮放，範圍 {SCALE.min}% 到 {SCALE.max}%。</p>
-		</section>
+		<section class="group">
+			<h3>全局設置</h3>
+			<p class="note">所有已登入的裝置共用</p>
 
-		<section>
-			<h3>最小字體</h3>
-			<div class="choices" role="group" aria-label="最小字體">
-				<button
-					aria-label="調小"
-					disabled={appearance.minFont === null || appearance.minFont <= MIN_FONT.min}
-					onclick={() => appearance.setMinFont(appearance.minFont! - MIN_FONT.step)}>－</button
-				>
-				<output aria-live="polite">{appearance.minFont === null ? '不限' : `${appearance.minFont}px`}</output>
-				<button
-					aria-label="調大"
-					disabled={appearance.minFont !== null && appearance.minFont >= MIN_FONT.max}
-					onclick={() => appearance.setMinFont(appearance.minFont === null ? MIN_FONT.start : appearance.minFont + MIN_FONT.step)}
-					>＋</button
-				>
-				<button disabled={appearance.minFont === null} onclick={() => appearance.resetMinFont()}>不限</button>
-			</div>
-			<p class="note">比這個小的字一律放大到這個大小，範圍 {MIN_FONT.min}px 到 {MIN_FONT.max}px。</p>
-		</section>
+			<section>
+				<h4>用量列</h4>
+				<div class="choices" role="group" aria-label="用量列">
+					<button aria-pressed={appearance.usageStyle === 'detailed'} onclick={() => onusagestyle('detailed')}>
+						詳細
+					</button>
+					<button aria-pressed={appearance.usageStyle === 'compact'} onclick={() => onusagestyle('compact')}>
+						精簡
+					</button>
+				</div>
+				<p class="note">資訊頁的用量小字。</p>
+			</section>
 
-		<section>
-			<h3>用量列</h3>
-			<div class="choices" role="group" aria-label="用量列">
-				<button aria-pressed={appearance.usageStyle === 'detailed'} onclick={() => onusagestyle('detailed')}>
-					詳細
-				</button>
-				<button aria-pressed={appearance.usageStyle === 'compact'} onclick={() => onusagestyle('compact')}>
-					精簡
-				</button>
-			</div>
-			<p class="note">所有裝置共用。資訊頁的用量小字；精簡用英文縮寫，例如 Ctx 62% • 5h 40%。</p>
-		</section>
-
-		<section>
-			<h3>對話翻譯</h3>
-			<div class="choices" role="group" aria-label="對話翻譯">
-				<button aria-pressed={translatePref.mode === 'auto'} onclick={() => ontranslatemode('auto')}>自動翻譯</button>
-				<button aria-pressed={translatePref.mode === 'manual'} onclick={() => ontranslatemode('manual')}>手動切換</button>
-			</div>
-			<p class="note">所有裝置共用。自動翻譯：打開對話紀錄就顯示中文；手動切換：顯示原文，按分頁列的翻譯圖示才翻。圖示只切換目前這個對話。</p>
+			<section>
+				<h4>對話翻譯</h4>
+				<div class="choices" role="group" aria-label="對話翻譯">
+					<button aria-pressed={translatePref.mode === 'auto'} onclick={() => ontranslatemode('auto')}>自動翻譯</button>
+					<button aria-pressed={translatePref.mode === 'manual'} onclick={() => ontranslatemode('manual')}>手動切換</button>
+				</div>
+				<p class="note">手動切換時，按分頁列的翻譯圖示才翻，只影響目前對話。</p>
+			</section>
 		</section>
 	</div>
 </dialog>
@@ -131,8 +139,19 @@
 		margin: 0;
 		font-size: max(1rem, var(--min-font, 0px));
 	}
-	h3 {
-		margin-bottom: 0.35rem;
+	/* A group is a section of sections: a thin rule and an unmuted heading set it apart from its items. */
+	.group {
+		display: flex;
+		flex-direction: column;
+		gap: 0.9rem;
+		padding-top: 0.9rem;
+		border-top: 1px solid var(--line);
+	}
+	.group > .note {
+		margin: -0.6rem 0 0;
+	}
+	h4 {
+		margin: 0 0 0.35rem;
 		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
@@ -151,8 +170,5 @@
 		margin: 0.35rem 0 0;
 		font-size: max(0.8rem, var(--min-font, 0px));
 		color: var(--muted);
-	}
-	header + .note {
-		margin: 0;
 	}
 </style>

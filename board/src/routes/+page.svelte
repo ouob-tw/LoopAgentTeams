@@ -329,7 +329,7 @@
 {/snippet}
 
 {#snippet openSettings()}
-	<button class="tool icon" onclick={() => settings.open()} aria-label="設定" title="設定：主題、整體大小、最小字體與用量列">
+	<button class="tool icon" onclick={() => settings.open()} aria-label="設定" title="設定">
 		<SettingsIcon size="1.1em" />
 	</button>
 {/snippet}
