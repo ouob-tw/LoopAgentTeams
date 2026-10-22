@@ -70,7 +70,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		/** The cards of the questions one message asked, in its order. */
 		questionCards?: Snippet<[InboxQuestion[]]>;
 		/** A DONE report's card, shown in place of the text it carries. */
-		reportCard?: Snippet<[InboxReport]>;
+		reportCard?: Snippet<[InboxReport, Translation | null]>;
 		/** The report or question this page was opened at. */
 		target?: PlacedTarget;
 		/** Changes with every opening of the target, the same one again too. */
@@ -191,13 +191,13 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		return askingTexts(texts, opened ? [opened, ...questionList.filter((question) => question.key !== opened.key)] : questionList);
 	});
 	/** The `seq` of each reply shown as text that is mostly English: only these are translated,
-	 *  never the user's messages, the questions' cards or a DONE report shown as its card. A
-	 *  report listed as text, with its mark, is translated like any reply. */
+	 *  never the user's messages or the questions' cards. A report, listed as text with its mark or
+	 *  shown as its card, is translated like any reply. */
 	const english = $derived.by(() => {
 		const seqs = new Set<number>();
 		if (!translating) return seqs;
 		for (const row of shown) {
-			if (row.kind === 'text' && row.item.kind === 'assistant' && !(reportCard && reported.get(row.item.seq)?.tag === 'DONE') && !asking.has(row.item.seq) && isEnglish(row.item.text)) seqs.add(row.item.seq);
+			if (row.kind === 'text' && row.item.kind === 'assistant' && !asking.has(row.item.seq) && isEnglish(row.item.text)) seqs.add(row.item.seq);
 		}
 		return seqs;
 	});
@@ -423,7 +423,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 					{:else if segment.kind === 'text' && questionCards && asking.has(segment.item.seq)}
 						<li class="asking" data-seq={segment.item.seq}>{@render questionCards(asking.get(segment.item.seq)!)}</li>
 					{:else if segment.kind === 'text' && reportCard && reported.get(segment.item.seq)?.tag === 'DONE'}
-						<li class="report" data-seq={segment.item.seq}>{@render reportCard(reported.get(segment.item.seq)!)}</li>
+						{@const translation = english.has(segment.item.seq) ? (translated[segment.item.text] ?? { status: 'pending' as const }) : null}
+						<li class="report" data-seq={segment.item.seq}>{@render reportCard(reported.get(segment.item.seq)!, translation)}</li>
 					{:else if segment.kind === 'text'}
 						{@const marked = reported.get(segment.item.seq)}
 						{@const translation = english.has(segment.item.seq) ? (translated[segment.item.text] ?? { status: 'pending' }) : null}

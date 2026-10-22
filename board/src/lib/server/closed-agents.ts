@@ -2,8 +2,10 @@
 // (its tab's name, workspace, folder, client, HCOM name and session ID) in the board's state
 // directory; an agent no longer listed is closed by hcom's last `stopped` event of its session.
 // Only stops by the user, Herdr or the client itself count: `cli` (the board's 關閉 or `hcom kill`),
-// `pty` (its Herdr pane closed), `session` (the client ended) and `system` (its process ended).
-// Another agent's name (a controller winding up its agents) and `subagent` do not. It must also
+// `pty` (its Herdr pane closed), `session` (the client ended) and `system` (its process ended),
+// and the agent's own name (it closed itself). Another agent's name (a controller winding up its
+// agents) and `subagent` do not. A controller the board never saw in Herdr is listed from its
+// reports, with the folder and client they carry and no Herdr workspace of its own. It must also
 // have a saved conversation to bring back (a client never used exits at once when resumed, ADR
 // 0004), no open model switch (its own stop; the switch is continued or given up instead), and
 // have stopped less than 7×24 hours ago; older records are dropped.
@@ -78,7 +80,7 @@ export function closedCandidates(seen: SeenAgent[], stops: HcomStop[], present: 
 	const last = lastStops(stops);
 	return seen.flatMap((agent) => {
 		const stop = last.get(agent.sessionId);
-		if (!stop || !LISTED_BY.has(stop.by) || now - stop.time >= CLOSED_KEEP_MS) return [];
+		if (!stop || !(LISTED_BY.has(stop.by) || stop.by === stop.name) || now - stop.time >= CLOSED_KEEP_MS) return [];
 		const id = agent.sessionId;
 		if (present.inHerdr.has(id) || present.running.has(id) || present.switching.has(id)) return [];
 		return [{ agent, stop }];
@@ -131,6 +133,8 @@ interface ClosedRoster {
 	 *  Herdr list has been read, `running` while no hcom list has: then none is listed. */
 	update(input: {
 		agents: Agent[] | null;
+		/** Controllers with reports, as the roster knows them: closed ones the board never saw in Herdr are listed too. */
+		controllers?: SeenAgent[];
 		running: Set<string> | null;
 		stops: StopList;
 		switching: Set<string>;
@@ -209,7 +213,7 @@ export function createClosedRoster(config: BoardConfig): ClosedRoster {
 
 	return {
 		readStops: () => listStops(config, latestStopTime === null ? config.now() - CLOSED_KEEP_MS : latestStopTime - 1000),
-		async update({ agents, running, stops, switching, now }) {
+		async update({ agents, controllers = [], running, stops, switching, now }) {
 			if (agents && remember(agents, now)) unsaved = true;
 			if (stops.ok) {
 				for (const stop of stops.stops) latestStopTime = Math.max(latestStopTime ?? stop.time, stop.time);
@@ -240,7 +244,8 @@ export function createClosedRoster(config: BoardConfig): ClosedRoster {
 			// One being brought back stays on its row, with how it goes, until Herdr runs it: hcom
 			// lists a resumed client before then, also one that never comes up.
 			const held: Present = { ...present, running: new Set([...running].filter((id) => !resumes.has(id))) };
-			const candidates = closedCandidates([...seen.values()], lastStopList, held, now);
+			const unseen = controllers.filter((controller) => !seen.has(controller.sessionId));
+			const candidates = closedCandidates([...seen.values(), ...unseen], lastStopList, held, now);
 			const told = await Promise.all(candidates.map(({ agent, stop }) => savedFor(agent, stop, now)));
 			const rows = candidates
 				.filter((_, index) => told[index])

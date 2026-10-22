@@ -148,3 +148,13 @@ test('a row shows the time of day, with the date unless it stopped today', () =>
 	expect(stoppedText('2026-10-20T03:05:00Z', NOW, 'Asia/Taipei')).toBe('11:05');
 	expect(stoppedText('2026-10-19T03:05:00Z', NOW, 'Asia/Taipei')).toBe('10/19 11:05');
 });
+
+test('one that closed itself, by its own name, is listed; another agent winding it up is not', () => {
+	expect(listed([seen('a'), seen('b')], [stop('a', 'a'), stop('b', 'lelu')])).toEqual(['a']);
+});
+
+test('a controller the board never saw in Herdr is listed from its reports, the same rules applying', () => {
+	const unseen = seen('c', { tab: null, workspace: '', workspaceLabel: '未記錄' });
+	expect(listed([unseen], [stop('c', 'cli')])).toEqual(['c']);
+	expect(listed([unseen], [stop('c', 'lelu')])).toEqual([]);
+});

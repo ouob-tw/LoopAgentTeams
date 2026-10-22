@@ -7,6 +7,7 @@
 	import type { LiveBoard } from '#lib/board/live.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { questionPlace, withLatest, type TranscriptUpdate, type TranscriptView } from '#lib/board/transcript.ts';
+	import type { Translation } from '#lib/board/translate.ts';
 	import type { Controller, InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
 	import ControllerInfo from './ControllerInfo.svelte';
 	import ItemContent from './ItemContent.svelte';
@@ -122,11 +123,12 @@
 	/>
 {/snippet}
 
-{#snippet doneCard(report: InboxReport)}
+{#snippet doneCard(report: InboxReport, translation: Translation | null = null)}
 	<ItemContent
 		item={report}
 		listed
 		handle={report.hcomName}
+		{translation}
 		onunread={(key) => board.mark(key, false)}
 		onread={(key) => board.mark(key, true)}
 	/>

@@ -15,6 +15,7 @@
 	import { messaging } from '#lib/board/messaging.svelte.ts';
 	import { withAnswered } from '#lib/board/question-message.ts';
 	import type { Controller, InboxItem, InboxQuestion, InboxReport, KnownAgent } from '#lib/board/types.ts';
+	import type { Translation } from '#lib/board/translate.ts';
 	import type { PlacedTarget } from '#lib/board/transcript.ts';
 	import type { Usage } from '#lib/board/usage.ts';
 	import AgentClose from './AgentClose.svelte';
@@ -70,7 +71,7 @@
 		/** The cards of the questions one message asked, in its order; see Transcript. */
 		questionCards?: Snippet<[InboxQuestion[]]>;
 		/** A DONE report's card, in place of its text; see Transcript. */
-		reportCard?: Snippet<[InboxReport]>;
+		reportCard?: Snippet<[InboxReport, Translation | null]>;
 	} = $props();
 
 	const sorted = $derived(sortByTime(items));

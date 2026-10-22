@@ -7,6 +7,7 @@
 	import { noticeTime } from '#lib/board/format.ts';
 	import { renderLinks, renderMarkdown } from '#lib/board/markdown.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
+	import type { Translation } from '#lib/board/translate.ts';
 	import { isAnswered, itemLabel, type HelperOption, type InboxItem } from '#lib/board/types.ts';
 
 	let {
@@ -14,6 +15,7 @@
 		listed,
 		recorded = false,
 		handle,
+		translation = null,
 		onunread,
 		onread
 	}: {
@@ -25,10 +27,14 @@
 		recorded?: boolean;
 		/** The controller's name, shown before the time where the item stands among its messages. */
 		handle?: string;
+		/** A report's message translated, as Transcript has it: shown in place of the message. */
+		translation?: Translation | null;
 		onunread: (key: string) => Promise<void>;
 		/** Given where opening the report does not read it: an unread report offers to be marked read. */
 		onread?: (key: string) => Promise<void>;
 	} = $props();
+
+	let showOriginal = $state(false);
 
 	const KIND_TEXT = { single: '單選', multi: '複選', text: '純文字' };
 
@@ -286,8 +292,14 @@
 			{/if}
 		{/if}
 	{:else}
-		{#if item.message}
+		{#if translation?.status === 'done'}
+			<div class="text message md" lang="zh-Hant-TW">{@html renderMarkdown(translation.text)}</div>
+			<button class="original-toggle" aria-expanded={showOriginal} onclick={() => (showOriginal = !showOriginal)}>{showOriginal ? '收起原文' : '看原文'}</button>
+			{#if showOriginal}<div class="text message md original" lang="en">{@html renderMarkdown(item.message)}</div>{/if}
+		{:else if item.message}
+			{#if translation?.status === 'pending'}<p class="state" role="status">翻譯中</p>{/if}
 			<div class="text message md">{@html renderMarkdown(item.message)}</div>
+			{#if translation?.status === 'failed'}<p class="state">翻譯失敗，顯示原文（{translation.reason}）</p>{/if}
 		{:else}
 			<p class="text message">（這筆回報沒有內容）</p>
 		{/if}
@@ -465,6 +477,21 @@
 	}
 	.recommendation .text {
 		margin: 0;
+	}
+	.original-toggle {
+		padding: 0.1rem 0;
+		border: 0;
+		background: none;
+		color: var(--muted);
+		font: inherit;
+		font-size: max(0.8rem, var(--min-font, 0px));
+		cursor: pointer;
+	}
+	.original {
+		margin-top: 0.3rem;
+		padding-left: 0.6rem;
+		border-left: 2px solid var(--line);
+		color: var(--muted);
 	}
 	.state {
 		margin: 0;

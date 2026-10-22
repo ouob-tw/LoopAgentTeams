@@ -336,6 +336,12 @@ function createBoard(): Board {
 		herdrRead ||= herdrAgents.ok;
 		const closedAgents = await closedRoster.update({
 			agents: herdrRead ? allAgents.agents : null,
+			controllers: reports.files.flatMap((file) => {
+				const latest = file.reports.at(-1);
+				if (!latest) return [];
+				const at = Date.parse(latest.time);
+				return [{ sessionId: file.sessionId, hcomName: latest.hcom_name, client: latest.client, folder: latest.workspace, tab: null, workspace: '', workspaceLabel: '未記錄', seenAt: Number.isNaN(at) ? 0 : at }];
+			}),
 			running: lastRunning,
 			stops,
 			switching: new Set(lastSwitches.map((view) => view.controllerId)),
