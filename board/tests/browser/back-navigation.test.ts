@@ -350,6 +350,8 @@ test.skipIf(!CHROME)('phone: the top-bar title opens the controller at its top f
 	await showsList();
 
 	await unread('交付第二張票');
+	// Marked unread through the API: the page lists it again once the pushed snapshot is in.
+	await tab.until(`[...document.querySelectorAll('.inbox button')].some((b) => b.innerText.includes('交付第二張票'))`, 'the report unread in the inbox');
 	await tab.eval(click('.inbox', '交付第二張票'));
 	await tab.until(`location.search.startsWith('?item=') && !location.search.startsWith('?item=q')`, 'the report');
 	const report = await tab.eval<string>('location.search');
