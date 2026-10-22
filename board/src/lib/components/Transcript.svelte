@@ -191,12 +191,13 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		return askingTexts(texts, opened ? [opened, ...questionList.filter((question) => question.key !== opened.key)] : questionList);
 	});
 	/** The `seq` of each reply shown as text that is mostly English: only these are translated,
-	 *  never the user's messages, reports or questions. */
+	 *  never the user's messages, the questions' cards or a DONE report shown as its card. A
+	 *  report listed as text, with its mark, is translated like any reply. */
 	const english = $derived.by(() => {
 		const seqs = new Set<number>();
 		if (!translating) return seqs;
 		for (const row of shown) {
-			if (row.kind === 'text' && row.item.kind === 'assistant' && !reported.has(row.item.seq) && !asking.has(row.item.seq) && isEnglish(row.item.text)) seqs.add(row.item.seq);
+			if (row.kind === 'text' && row.item.kind === 'assistant' && !(reportCard && reported.get(row.item.seq)?.tag === 'DONE') && !asking.has(row.item.seq) && isEnglish(row.item.text)) seqs.add(row.item.seq);
 		}
 		return seqs;
 	});

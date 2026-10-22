@@ -242,3 +242,30 @@ test.skipIf(!CHROME)('loading an earlier part translates only the replies it bro
 	const earlier = codexCalls().slice(before + firstPage.length);
 	expect(earlier.flatMap((text) => [...text.matchAll(/number (\d+)/g)].map((match) => Number(match[1]))).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 }, 60_000);
+
+test.skipIf(!CHROME)('an English reply that is a pending DONE or HELP report is translated and keeps its 完成／求助 mark', async () => {
+	codexPlan({ prefix: '譯：' });
+	const done = fixture.bound('gamma', 'mira');
+	const help = fixture.bound('delta', 'kai');
+	fixture.list([luna, done, help]);
+	const DONE = 'The settings page change is done, and you can see it now on the preview.';
+	const HELP = 'I am blocked on the deploy step and need your help to continue.';
+	for (const [session, text, tag] of [[done, DONE, 'DONE'], [help, HELP, 'HELP']] as const) {
+		writeFileSync(
+			join(fixture.dir, 'transcripts', `${session.session_id}.jsonl`),
+			line('assistant', 'I fixed the failing build and pushed the branch to origin.') + line('assistant', text)
+		);
+		fixture.report(session.session_id, { tag, time: '2026-10-21T01:05:01Z', message: text, summary: tag, hcom_name: session.hcom_name, workspace: session.workspace, final: true });
+	}
+	await fixture.refresh(cookie);
+	await visit(1280);
+	for (const [session, text, mark] of [[done, DONE, '完成'], [help, HELP, '求助']] as const) {
+		await tab.navigate(`${fixture.url}/?controller=${session.session_id}`);
+		await tab.until(`!!(${said(text.slice(0, 20))})`, 'the newest reply');
+		await tab.eval(`${SWITCH}.click()`);
+		const newest = `document.querySelector('.detail [data-block="transcript"] li.said.reported')`;
+		await tab.until(`${newest}?.dataset.translation === 'done'`, `the ${mark} report translated`);
+		expect(await tab.eval<string>(`${newest}.querySelector('.text').innerText`)).toContain(`譯：${text}`);
+		expect(await tab.eval<string>(`${newest}.querySelector('.label').innerText`)).toContain(mark);
+	}
+}, 60_000);
