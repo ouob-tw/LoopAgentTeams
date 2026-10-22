@@ -4614,8 +4614,8 @@ esac
 
 
 # Prompt-cache keep-alive (temp usage dir, pinned Asia/Taipei time zone).
-def taipei(hour, minute=0):
-    return datetime(2026, 10, 22, hour, minute, tzinfo=TAIPEI).timestamp()
+def taipei(hour, minute=0, second=0):
+    return datetime(2026, 10, 22, hour, minute, second, tzinfo=TAIPEI).timestamp()
 
 
 class PinnedEnvironment(unittest.TestCase):
@@ -4712,10 +4712,12 @@ class KeepaliveDecisionTests(PinnedEnvironment):
                         declared_at=now - 60)
         self.write_usage(now + 120)
         self.assertIsNone(self.due(decision, now))
-        with patch.dict(os.environ, {'TZ': 'UTC'}):
+        try:
+            with patch.dict(os.environ, {'TZ': 'UTC'}):
+                time.tzset()
+                self.assertEqual(self.due(decision, now), now + 120)
+        finally:
             time.tzset()
-            self.assertEqual(self.due(decision, now), now + 120)
-        time.tzset()
 
     def test_no_keepalive_without_a_valid_wait_or_ready_claude_prompt(self):
         now = taipei(10, 30)
@@ -4791,7 +4793,22 @@ class KeepaliveDecisionTests(PinnedEnvironment):
         observed = watch.nudge_only_observation(state, observed,
                                                 {'transcript_path': str(transcript)}, 'orch')
         self.assertTrue(observed.keepalive_only)
-        saved, _ = watch.decide(state, observed, 120)
+        # Claude writes extended thinking as its own content blocks before the short reply.
+        for thinking in ({'type': 'thinking', 'thinking': 'y' * 500, 'signature': 'sig'},
+                         {'type': 'redacted_thinking', 'data': 'opaque'}):
+            with self.subTest(thinking=thinking['type']):
+                with transcript.open('a') as stream:
+                    stream.write(json.dumps({'type': 'assistant', 'message': {
+                        'role': 'assistant', 'content': [thinking]}}) + '\n')
+                    stream.write(json.dumps({'type': 'assistant', 'message': {
+                        'role': 'assistant', 'content': [thinking, {
+                            'type': 'text', 'text': 'Waiting.'}]}}) + '\n')
+                observed = observed._replace(transcript_size=transcript.stat().st_size,
+                                             keepalive_only=False)
+                self.assertTrue(watch.nudge_only_observation(
+                    state, observed, {'transcript_path': str(transcript)},
+                    'orch').keepalive_only)
+        saved, _ = watch.decide(state, observed._replace(keepalive_only=True), 120)
         self.assertEqual(saved['last_progress_at'], 0)
         # Real work after the keep-alive is progress again.
         with transcript.open('a') as stream:
@@ -4970,6 +4987,19 @@ esac
         self.cycle(taipei(1, 56), taipei(1, 58))
         self.assertEqual(len(self.injections()), 1)
         self.assertTrue(json.loads(self.wait_file.read_text())['active'])
+
+    def test_send_time_not_cycle_start_decides_quiet_hours(self):
+        (self.decisions / 'HELP-1.md').write_text('# Q\n- version: r1\n- status: pending\n')
+        self.start = taipei(0, 30)
+        self.declare(kind='decision', target='HELP-1')
+        self.write_usage(taipei(1, 3))
+        # The cycle starts at 00:59:58 but observing the agents takes five seconds.
+        clock = iter([100.0])
+        with patch.object(time, 'monotonic', side_effect=lambda: next(clock, 105.0)):
+            self.cycle(taipei(0, 59, 58))
+        self.assertEqual(self.injections(), [])
+        self.cycle(taipei(0, 59, 59))
+        self.assertEqual(len(self.injections()), 1)
 
 
 if __name__ == '__main__':
