@@ -39,7 +39,7 @@ import { moveToFront } from './launch.ts';
 import { inject, queued, typedText } from './send.ts';
 import { modelLock, readCurrent } from './helper.ts';
 import { appendSent, readLines, type ResumeMark, type ResumeResult, type SentLog } from './sent-log.ts';
-import { openResume, openResumes, openSwitch } from './sent-views.ts';
+import { openResume, openResumes, openSwitch, unplacedResumes } from './sent-views.ts';
 import { keepPermission } from './permission.ts';
 
 /** Where a model switch has stopped its client without seeing it gone. */
@@ -380,8 +380,8 @@ export function closeResume(stateDir: string, wakeId: string, result: ResumeClos
  * Close every open resume whose session is in hcom's agent list now, and note the Herdr pane of
  * those Herdr runs the session of, or else hcom shows under their session or HCOM name (not for
  * a model switch), its tab then moved to the front (`onPane`) unless this board process waits to
- * move it itself (`toFront`). Called with every fresh read while any
- * resume is open, so a wake shows as succeeded without the user waking it again.
+ * move it itself (`toFront`); likewise for one that succeeded before its pane was known. Called
+ * with every fresh read, so a wake shows as succeeded without the user waking it again.
  *
  * A model switch's resume needs Herdr to run the client too (`herdr`, null when Herdr's list was
  * not read): hcom lists a resumed client for a while that has already exited. One that has not
@@ -415,6 +415,18 @@ export function settleResumes(
 		} catch (error) {
 			return (error as Error).message;
 		}
+	}
+	// One closed before Herdr ran its session (by a board restarted meanwhile, say): its pane and
+	// tab once Herdr does, within the wait.
+	for (const wake of unplacedResumes(log.lines, now, waitMs)) {
+		const pane = herdr?.find((agent) => agent.sessionId === wake.controllerId)?.pane;
+		if (!pane) continue;
+		try {
+			log.append({ kind: 'resume-pane', wakeId: wake.id, pane, time: new Date(now).toISOString() });
+		} catch (error) {
+			return (error as Error).message;
+		}
+		if (!fronting.has(wake.id)) onPane(pane);
 	}
 	return null;
 }

@@ -283,25 +283,33 @@ test('the resumed tab goes to the front once Herdr runs it, though hcom had no p
 	expect(moves()).toEqual([['tab', 'move', `wP:t-${target.id}`, '0']]);
 });
 
-test('a board restarted before Herdr ran the resumed session moves its tab by its reads, by the pane Herdr runs it in', async () => {
+test('a board restarted before Herdr ran the resumed session moves its tab by its reads, also once the resume succeeded', async () => {
 	const target = await ended();
 	// Neither hcom nor Herdr has its session yet.
 	hcomPlan({ resumed: agent(target.name, null) });
 	expect((await wake(target.id, '繼續')).body.entry).toMatchObject({ outcome: 'started', pane: null });
 	await fixture.stop();
-	// Then hcom lists it with no pane, and Herdr runs it.
+	// Then hcom lists it with no pane, before Herdr runs it: the first read closes the resume.
 	leaveList();
 	hcomPlan({ agents: [agent(target.name, target.id)] });
-	const herdr = JSON.parse(readFileSync(join(commandDir, 'herdr.json'), 'utf8'));
-	const runs = { agent: 'claude', agent_status: 'idle', cwd: target.workspace, pane_id: 'wP:p-new', tab_id: 'wP:t-new', workspace_id: 'wP', agent_session: { value: target.id } };
-	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify({ ...herdr, agents: [runs], panes: [...herdr.panes, { pane_id: 'wP:p-new', workspace_id: 'wP', cwd: target.workspace, tab_id: 'wP:t-new' }] }));
 	await fixture.start();
 	cookie = await fixture.login();
 	await fixture.refresh(cookie);
+	expect((await wakes(target.id))[0]).toMatchObject({ pane: null, closed: 'succeeded' });
 	const moves = () => readLog<string[]>('herdr-socket-calls.jsonl').filter((call) => call[0] === 'tab' && call[1] === 'move');
+	expect(moves()).toEqual([]);
+
+	// Herdr runs it now.
+	const herdr = JSON.parse(readFileSync(join(commandDir, 'herdr.json'), 'utf8'));
+	const runs = { agent: 'claude', agent_status: 'idle', cwd: target.workspace, pane_id: 'wP:p-new', tab_id: 'wP:t-new', workspace_id: 'wP', agent_session: { value: target.id } };
+	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify({ ...herdr, agents: [runs], panes: [...herdr.panes, { pane_id: 'wP:p-new', workspace_id: 'wP', cwd: target.workspace, tab_id: 'wP:t-new' }] }));
+	await fixture.refresh(cookie);
 	await until(() => moves().length > 0, 5000, 'the tab moved');
 	expect(moves()).toEqual([['tab', 'move', 'wP:t-new', '0']]);
 	expect((await wakes(target.id))[0]).toMatchObject({ pane: 'wP:p-new', closed: 'succeeded' });
+	// Moved once: later reads leave it.
+	await fixture.refresh(cookie);
+	expect(moves()).toHaveLength(1);
 });
 
 test('a resume with a ticked box has the LAT start command in its first message', async () => {
