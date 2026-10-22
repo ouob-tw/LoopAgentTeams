@@ -185,7 +185,7 @@
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? '已放棄前一次接回，可以再按「繼續切換」。' : (result.reason ?? '放棄失敗'));
 	}
 
-	/** Give up the unfinished switch as a whole, as the 所有 Agent tab does: nothing is run. */
+	/** Give up the unfinished switch as a whole, as the Herdr 分頁 does: nothing is run. */
 	async function giveUpSwitch() {
 		const { id: target, hcomName } = controller!;
 		close(true);

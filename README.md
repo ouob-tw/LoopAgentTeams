@@ -100,13 +100,13 @@ Spec 確認後，已授權範圍內的實作、修正、測試與排程由 Orche
 - 事先保留須由使用者核准的事項。
 - Codex 無可用的訂閱帳號，或 Claude 額度耗盡，須決定等待、兌換額度重置或改採替代方案。Codex 額度耗盡時會先自動切換至其他仍有額度的訂閱帳號，不切換至 API 計費帳號，也不自動兌換額度重置。Claude 額度耗盡時，唯一例外是後端實作任務自動改派 GPT 並事後回報。參謀缺一家時改用兩位同家參謀、不問使用者；兩家都不可用才就帳號、等待或替代方案詢問，原本要諮詢的事暫停。
 
-待決事項記錄於專案的 `.lat/decisions/`，只阻擋相依工作，其餘已授權工作持續進行；僅採信使用者本人的答覆，其他 Agent 轉述不視為核准。這些是技能層的流程約束，工具只在主控結束回合時核對 DECIDE（見下段），不阻擋檔案或指令。設計細節見[決策設計](docs/lat-user-decisions-design.md)。
+待決事項記錄於專案的 `.lat/decisions/`，只阻擋相依工作，其餘已授權工作持續進行；僅採信使用者本人的答覆，其他 Agent 轉述不視為核准。這些是技能層的流程約束，工具只在主控結束回合時核對 DECIDE（見下段），不阻擋檔案或指令。設計取捨見 [ADR 0002](docs/adr/0002-lat-orchestrator-advisors.md)，參謀的做法見 [advisors.md](skills/local/lat/references/advisors.md)。
 
 參謀定案的事同樣留下待決紀錄，含兩位參謀的意見與引用的授權來源；參謀定案不是真人核准，引用不到已確認的 Spec 或使用者答覆就不能定案。主控不即時通知這些定案，改在每批 Tickets 整合完成的成果回報與交付回報列出參謀定案清單，使用者可隨時推翻。已問過使用者的事只有使用者答覆能解除，參謀不能改判。安裝[壓縮恢復 hook](#安裝) 後，主控結束回合時若 DECIDE 的題目缺少待決紀錄、參謀結論或例外類別，會被攔下並要求補做。
 
 ## LAT 看板
 
-LAT 看板是跑在主機上的網頁服務，電腦與手機用同一個網址，就能看到所有專案的 LAT 主控狀態、收它們的交付與求助回報、回答待決題並傳話。連線沒有加密，只適合內網或私人網路。安裝、配對與背景常駐見[使用說明](docs/lat-board.md)。
+LAT 看板是跑在主機上的網頁服務，電腦與手機用同一個網址，就能看到所有專案的 LAT 主控狀態、收它們的交付與求助回報、回答待決題並傳話。連線沒有加密，只適合內網或私人網路。安裝、登入與背景常駐見[使用說明](docs/lat-board.md)。
 
 ## 技能組成
 
@@ -213,12 +213,18 @@ Codex 重啟後在 `/hooks` 信任 command 結尾為 `host-guard.py hook` 的項
 
 - [LAT 流程與規則](skills/local/lat/SKILL.md)
 - [LAT 停住監控](skills/local/lat/references/stall-watch.md)、[設計取捨](docs/adr/0001-lat-stall-watcher.md)
+- [LAT 參謀機制：設計取捨](docs/adr/0002-lat-orchestrator-advisors.md)
+- [LAT 看板：安裝與使用](docs/lat-board.md)、[資料界線與取捨](docs/adr/0003-lat-board-data-boundaries.md)、[啟動與切換取捨](docs/adr/0004-lat-board-launch-and-switch.md)
+- [整機測試閘門：設計取捨](docs/adr/0005-host-wide-suite-gate.md)、[每票只跑受影響的測試](docs/adr/0006-affected-tests-per-ticket.md)、[閘門的預約與放行](docs/adr/0007-suite-gate-reservation-admission.md)
 - [LAT 的派工與收尾規則](skills/local/lat/references/agents.md)
 - [hcom-spawn：召喚 Agent 協作](skills/local/hcom-spawn/SKILL.md)
 - [三層測試](skills/local/three-tier-testing/SKILL.md)
 - [共用主機保護](skills/local/host-guard/SKILL.md)
 - [HCOM／HERDR workspace 設定](docs/hcom-herdr-setup.md)
 - [LAT 壓縮後恢復：安裝與使用](docs/lat-recovery.md)
+- [HCOM 疑難排解](docs/hcom-troubleshooting.md)
+- 研究紀錄：[Herdr 工作區路由](docs/herdr-workspace-routing-research.md)、[Herdr 與 HCOM 的狀態落差](docs/herdr-hcom-status-research.md)
+- [已被取代的早期決策設計](docs/lat-user-decisions-design.md)（現行做法見 ADR 0002）
 
 ## 本地開發
 

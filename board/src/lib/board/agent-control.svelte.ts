@@ -1,4 +1,4 @@
-// What the page keeps about actions on the 所有 Agent tab's agents: the operation record of the
+// What the page keeps about actions on the Herdr 分頁's agents: the operation record of the
 // agents it has opened, what a model switch may offer them, and one attempt at a time of sending
 // text, interrupting, closing or switching.
 import type { AgentAction, AgentActionResponse } from './agent-actions.ts';

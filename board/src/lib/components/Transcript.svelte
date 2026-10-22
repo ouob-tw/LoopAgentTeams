@@ -60,7 +60,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	}: {
 		/** Whose conversation; an agent's is its session ID, its HCOM name or else its tab's title, and no report time. */
 		controller: Pick<Controller, 'id' | 'hcomName' | 'lastReportAt'>;
-		/** A controller's conversation, or an agent's on the 所有 Agent tab. */
+		/** A controller's conversation, or an agent's on the Herdr 分頁. */
 		feed?: TranscriptFeed;
 		/** This controller's reports in the inbox: the texts they carry are marked as reports. */
 		reports?: InboxReport[];

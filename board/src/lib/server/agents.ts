@@ -1,4 +1,4 @@
-// The 所有 Agent tab's list: every agent Herdr lists, paired with hcom's list to tell which are
+// The Herdr 分頁's list: every agent Herdr lists, paired with hcom's list to tell which are
 // reached through hcom. Either list that cannot be read is stood in for by the last one that could.
 // An agent with an open model switch is listed too when Herdr does not list it, from what the
 // switch kept, until the switch is over or given up.

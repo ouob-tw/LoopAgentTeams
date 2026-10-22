@@ -20,7 +20,7 @@ export async function transcriptSource(board: Board, controllerId: string): Prom
 	return controller ? { client: controller.client, sessionId: controller.id } : null;
 }
 
-/** The client and session of an agent the 所有 Agent tab lists, or its 已關閉 section, by the
+/** The client and session of an agent the Herdr 分頁 lists, or its 已關閉 section, by the
  *  client it was closed with; null for any other session ID. */
 export async function agentTranscriptSource(board: Board, sessionId: string): Promise<{ client: string; sessionId: string } | null> {
 	const { agents, closed } = await board.current();

@@ -1,4 +1,4 @@
-// Acting on an agent of the 所有 Agent tab: typing text into its input box, interrupting its
+// Acting on an agent of the Herdr 分頁: typing text into its input box, interrupting its
 // turn and closing it. Each request reads Herdr's and hcom's lists again and acts on what they say now, never on
 // what the page sent. One attempt each, no retry, logged in the sent log either way.
 import { randomUUID } from 'node:crypto';

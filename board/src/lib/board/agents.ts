@@ -1,4 +1,4 @@
-// The 所有 Agent tab's list as the page shows it: grouped by Herdr workspace, in the server's order.
+// The Herdr 分頁's list as the page shows it: grouped by Herdr workspace, in the server's order.
 import type { Agent, AgentStatus, ControllerStatus, HerdrWorkspace } from './types.ts';
 
 export interface AgentGroup {

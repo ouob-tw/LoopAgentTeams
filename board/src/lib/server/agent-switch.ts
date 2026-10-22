@@ -1,4 +1,4 @@
-// Switching the model and effort of an agent of the 所有 Agent tab: only one linked to hcom, and the
+// Switching the model and effort of an agent of the Herdr 分頁: only one linked to hcom, and the
 // way a controller's is switched (ADR 0004 decision 2, `switch.ts`), keyed by its session ID. An
 // open switch keeps the agent listed while Herdr does not list it (`agents.ts`); from there it is
 // only continued or given up. Giving it up writes the sent log and runs nothing.

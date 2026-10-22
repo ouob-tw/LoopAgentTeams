@@ -120,7 +120,7 @@ export interface ModelStatus {
 	lockReason: string | null;
 }
 
-/** What `GET /api/agents/model` answers for one agent of the 所有 Agent tab. */
+/** What `GET /api/agents/model` answers for one agent of the Herdr 分頁. */
 export interface AgentModelStatus {
 	/** What the form offers its client; null for a client the board cannot switch. */
 	options: ClientOptions | null;
@@ -135,7 +135,7 @@ export interface AgentModelStatus {
  * the stop command failed; `stop-unknown` it ran out of time or the client could not be seen to be
  * gone; `stopped` gone, not resumed yet; `resuming` resumed, its session not seen yet;
  * `resume-failed` the resume failed or was found over without the session showing up; `done` the
- * session showed up again; `abandoned` the user gave up the whole switch from the 所有 Agent tab,
+ * session showed up again; `abandoned` the user gave up the whole switch from the Herdr 分頁,
  * wherever it was. `refused` nothing was done. `sent` and `failed` are only on switches
  * logged before Claude was switched this way, when `/model` and `/effort` were typed in.
  */
@@ -173,7 +173,7 @@ export interface SentSwitch {
 	 *  the record when the settings were chosen or the client was last stopped; null when it could
 	 *  not be read. Missing when nothing is carried, and on switches logged before this was kept. */
 	carriedEffort?: string | null;
-	/** Set on a switch asked for on the 所有 Agent tab: where Herdr listed the agent then, so it is
+	/** Set on a switch asked for on the Herdr 分頁: where Herdr listed the agent then, so it is
 	 *  still listed, and resumed there, while its switch is open and Herdr no longer lists it. */
 	agent?: SwitchAgent;
 	/** Set when the client had no saved conversation yet, so there is nothing to resume: it is
@@ -192,7 +192,7 @@ export interface SwitchRelaunch {
 	tabIndex: number | null;
 }
 
-/** An agent of the 所有 Agent tab as its switch keeps it. */
+/** An agent of the Herdr 分頁 as its switch keeps it. */
 export interface SwitchAgent {
 	name: string;
 	folder: string;
@@ -256,7 +256,7 @@ export const SWITCH_STATE_TEXT: Record<SwitchState, string> = {
 	abandoned: '已放棄這次切換'
 };
 
-/** The same for an agent of the 所有 Agent tab. */
+/** The same for an agent of the Herdr 分頁. */
 export const AGENT_SWITCH_STATE_TEXT: Record<SwitchState, string> = {
 	...SWITCH_STATE_TEXT,
 	stopping: '正在停止 Agent，結果不明',
@@ -277,7 +277,7 @@ export const AGENT_SWITCH_UNFINISHED_TEXT = '這個 Agent 的模型切換未完�
 export const AGENT_SWITCH_UNFINISHED_REASON = `${AGENT_SWITCH_UNFINISHED_TEXT}，沒有執行。`;
 export const AGENT_NO_OPEN_SWITCH_REASON = '這個 Agent 沒有未完成的切換，不用放棄。';
 
-/** What a switch from the 所有 Agent tab does, asked before it is sent. */
+/** What a switch from the Herdr 分頁 does, asked before it is sent. */
 export const agentSwitchConfirmText = (choice: ModelChoice) =>
 	`切換為${choiceText(choice)}？看板會停止這個 Agent，再以新設定在新分頁接回同一段對話，原分頁會關掉。還沒有對話的 Agent 沒有可接回的內容，會改用新設定重新啟動（HCOM 名稱會換新）。`;
 
