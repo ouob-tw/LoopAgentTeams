@@ -212,6 +212,9 @@ test.skipIf(!CHROME)("the button is at the right end of the tab row on the 對�
 	}
 }, 120_000);
 
+/** How many of the long history's replies show their translation. */
+const TRANSLATED = `[...document.querySelectorAll('.detail [data-block="transcript"] li.said')].filter((li) => li.innerText.includes('譯：Long history reply number')).length`;
+
 test.skipIf(!CHROME)('loading an earlier part translates only the replies it brought', async () => {
 	codexPlan({ prefix: '譯：' });
 	const orin = fixture.bound('beta', 'orin');
@@ -227,14 +230,15 @@ test.skipIf(!CHROME)('loading an earlier part translates only the replies it bro
 	await tab.until(`!!(${said('reply number 59 ')})`, "orin's conversation");
 	const before = codexCalls().length;
 	await tab.eval(`${SWITCH}.click()`);
-	await tab.until(`!!${said('譯：Long history reply number 10 ')} && !!${said('譯：Long history reply number 59 ')}`, 'the first page translated');
+	// Every reply of the page, not just the first and last: the batches finish in any order.
+	await tab.until(`${TRANSLATED} === 50`, 'the first page translated');
 	const firstPage = codexCalls().slice(before);
 	expect(firstPage.length).toBeLessThanOrEqual(7);
 	expect(firstPage.flatMap((text) => [...text.matchAll(/number (\d+)/g)].map((match) => Number(match[1]))).sort((a, b) => a - b)).toEqual(Array.from({ length: 50 }, (_, index) => index + 10));
 	expect(firstPage.some((text) => text.includes('number 9 '))).toBe(false);
 
 	await tab.eval(`document.querySelector('.detail button.earlier').scrollIntoView()`);
-	await tab.until(`!!${said('譯：Long history reply number 0 ')}`, 'the earlier part translated');
+	await tab.until(`${TRANSLATED} === 60`, 'the earlier part translated');
 	const earlier = codexCalls().slice(before + firstPage.length);
 	expect(earlier.flatMap((text) => [...text.matchAll(/number (\d+)/g)].map((match) => Number(match[1]))).sort((a, b) => a - b)).toEqual([0, 1, 2, 3, 4, 5, 6, 7, 8, 9]);
 }, 60_000);
