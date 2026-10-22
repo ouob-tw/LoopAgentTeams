@@ -20,8 +20,8 @@
 		return response?.status !== 404;
 	}
 
-	// An image or video says so itself when it cannot load; any other file is asked about when shown,
-	// and again when it is opened or downloaded, as it may have gone since.
+	// An image or video says so itself when it cannot load; any other file is asked about when shown.
+	// Every file is asked about again when it is opened or downloaded, as it may have gone since.
 	$effect(() => {
 		for (const path of paths) {
 			const kind = attachmentKind(path);
@@ -43,6 +43,12 @@
 		link.click();
 	}
 
+	// A thumbnail already loaded would still show from the page's copy after the file is gone.
+	async function openImage(path: string) {
+		if (await present(path)) preview?.show(path);
+		else gone[path] = true;
+	}
+
 	async function openTab(event: MouseEvent, path: string) {
 		event.preventDefault();
 		if (await present(path)) open(attachmentUrl(path), '_blank', 'noopener');
@@ -58,7 +64,7 @@
 				{#if gone[path]}
 					<span class="gone">檔案已不在：{path}</span>
 				{:else if kind === 'image'}
-					<button class="thumb" aria-label="預覽 {fileName(path)}" onclick={() => preview?.show(path)}>
+					<button class="thumb" aria-label="預覽 {fileName(path)}" onclick={() => openImage(path)}>
 						<img src={attachmentUrl(path)} alt={fileName(path)} loading="lazy" onerror={() => (gone[path] = true)} />
 					</button>
 				{:else if kind === 'video'}

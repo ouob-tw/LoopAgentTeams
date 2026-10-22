@@ -88,7 +88,8 @@ beforeAll(async () => {
 		'report.pdf': pdf(),
 		'letter.docx': 'not really a word file',
 		'bundle.zip': 'PK not really a zip',
-		'vanish.txt': 'soon gone'
+		'vanish.txt': 'soon gone',
+		'vanish.png': PNG
 	};
 	for (const [name, bytes] of Object.entries(files)) paths[name] = await upload(name, bytes);
 
@@ -315,6 +316,20 @@ test('a file gone between the list and opening it says so, and opens no window',
 		expect(await tab.eval<boolean>(`!!document.querySelector('${DIALOG}')`)).toBe(false);
 	} finally {
 		renameSync(`${paths['vanish.txt']}.moved`, paths['vanish.txt']);
+	}
+}, 60_000);
+
+test('an image gone after its thumbnail loaded says so when clicked, instead of showing the copy the page still holds', async () => {
+	await visit('sent');
+	await tab.eval(`${entry('sent', 'vanish.png')}.scrollIntoView()`);
+	await tab.until(`${entry('sent', 'vanish.png')}.querySelector('img').naturalWidth === 1`, 'the thumbnail loaded');
+	renameSync(paths['vanish.png'], `${paths['vanish.png']}.moved`);
+	try {
+		await tab.eval(`${entry('sent', 'vanish.png')}.querySelector('button').click()`);
+		await tab.until(`document.querySelector('${SENT}').innerText.includes(${JSON.stringify(`檔案已不在：${paths['vanish.png']}`)})`, 'the missing image noted');
+		expect(await tab.eval<boolean>(`!!document.querySelector('${DIALOG}')`)).toBe(false);
+	} finally {
+		renameSync(`${paths['vanish.png']}.moved`, paths['vanish.png']);
 	}
 }, 60_000);
 
