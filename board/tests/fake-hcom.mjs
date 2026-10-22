@@ -6,7 +6,8 @@
 //   - `sleepMs`: wait this long after printing, before exiting.
 //   - `resumed`: an agent a resume adds to the agent list, as `list --json` prints one.
 //   - `resumedHerdr`: an agent a resume adds to the fake Herdr's <dir>/herdr.json, as `agent list`
-//     prints one, with its pane (in the agent's workspace and folder). Without it, a `resumed`
+//     prints one, with its pane (in the agent's workspace and folder) and, when herdr.json lists
+//     tabs, its tab at the end. Without it, a `resumed`
 //     agent with a session is added in its pane (or a new one) of the workspace hcom was given,
 //     unless `resumedExits` is set: then hcom lists it, but nothing runs in Herdr.
 //   - `readOnly`: a file a resume makes read-only while it runs, so the board cannot write it.
@@ -26,7 +27,7 @@
 // `kill <name>` is logged to hcom-calls.jsonl like a launch and follows `kill`: `exit`, `stderr`,
 // `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
 // Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it, and a
-// `stopped` event by `cli` is added for it.
+// `stopped` event by `cli` is added for it, with the agent's `launch_args` when it has them.
 // `events` (the board asks for `stopped` life events in full form, `--after` a time) prints the
 // events of <dir>/hcom-events.jsonl, one JSON object per line as `hcom events --full` does, those
 // at or after `--after` alone; it is logged to <dir>/hcom-events-calls.jsonl. `eventsFail:
@@ -103,7 +104,13 @@ if (args[0] === 'kill') {
 			const eventsFile = join(dir, 'hcom-events.jsonl');
 			for (const agent of gone) {
 				const id = existsSync(eventsFile) ? readFileSync(eventsFile, 'utf8').split('\n').filter(Boolean).length + 1 : 1;
-				const snapshot = { name: agent.name, session_id: agent.session_id ?? null, tool: agent.tool ?? 'claude', directory: agent.directory ?? '/' };
+				const snapshot = {
+					name: agent.name,
+					session_id: agent.session_id ?? null,
+					tool: agent.tool ?? 'claude',
+					directory: agent.directory ?? '/',
+					...(agent.launch_args !== undefined && { launch_args: agent.launch_args })
+				};
 				const event = { data: { action: 'stopped', by: 'cli', reason: 'killed', snapshot }, id, instance: agent.name, ts: new Date().toISOString(), type: 'life' };
 				appendFileSync(eventsFile, JSON.stringify(event) + '\n');
 			}
@@ -144,7 +151,11 @@ if (args[0] === 'kill') {
 		const herdr = existsSync(herdrFile) ? JSON.parse(readFileSync(herdrFile, 'utf8')) : {};
 		const resumed = resumedHerdr;
 		herdr.agents = [...(herdr.agents ?? []), resumed];
-		herdr.panes = [...(herdr.panes ?? []), { pane_id: resumed.pane_id, workspace_id: resumed.workspace_id, cwd: resumed.cwd }];
+		herdr.panes = [...(herdr.panes ?? []), { pane_id: resumed.pane_id, workspace_id: resumed.workspace_id, cwd: resumed.cwd, tab_id: resumed.tab_id }];
+		// Its new tab goes last, as Herdr adds one.
+		if (herdr.tabs && !herdr.tabs.some((/** @type {any} */ tab) => tab.tab_id === resumed.tab_id)) {
+			herdr.tabs = [...herdr.tabs, { tab_id: resumed.tab_id, workspace_id: resumed.workspace_id, label: 'resumed' }];
+		}
 		write(herdrFile, JSON.stringify(herdr));
 	}
 	if (args[0] === 'r' && plan.readOnly) chmodSync(plan.readOnly, 0o444);

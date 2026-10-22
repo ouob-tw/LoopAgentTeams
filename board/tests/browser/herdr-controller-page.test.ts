@@ -3,7 +3,7 @@
 // width. The page is the controller's information page plus the agent's close and operation
 // record: its question and report cards answer and read as the inbox does. An ordinary agent's page
 // and the information page stay as they were. Skipped when the host has no Chrome.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import type { HelperQuestion } from '../../src/lib/board/types.ts';
@@ -440,6 +440,49 @@ test.skipIf(!CHROME)('a controller whose model switch is unfinished stays in the
 	expect(await tab.eval(TABS)).toEqual(['對話紀錄', '操作紀錄']);
 	expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"], .detail .questions')`)).toBe(false);
 	await tab.until(`!!document.querySelector('.dock .pill-slot [data-pick]')`, "the agent's model picker with its continue and give up");
+}, 60_000);
+
+test.skipIf(!CHROME)("after a switch a controller's information page shows what it sent until the resumed session has a turn, then that turn", async () => {
+	const clio = fixture.bound('ctl', 'clio', { session_id: 's-clio' });
+	fixture.list([lead, clio]);
+	setHerdr([...LISTED, 's-clio']);
+	const current = (model: string, time: string) =>
+		writeFileSync(join(fixture.dir, 'transcripts', 's-clio.current.json'), JSON.stringify({ model, effort: 'medium', time }));
+	writeFileSync(join(fixture.dir, 'transcripts', 's-clio.jsonl'), '');
+	current('claude-opus-5-5', minutesAgo(1));
+	fixture.setHcom({
+		agents: HCOM_AGENTS,
+		resumed: { ...hcomAgent('clio', 's-clio'), launch_context: { pane_id: 'wA:p-new' } },
+		resumedHerdr: { ...herdrAgent('s-clio'), pane_id: 'wA:p-new', tab_id: 'wA:t-new' }
+	});
+	const modelPart = `document.querySelector('.dock .pill-slot .part')`;
+	try {
+		await fixture.refresh(cookie);
+		const response = await fixture.fetch('/api/model', {
+			method: 'POST',
+			headers: { 'content-type': 'application/json' },
+			body: JSON.stringify({ controllerId: 's-clio', model: 'claude-sonnet-5-5', effort: null }),
+			cookie
+		});
+		expect(response.status).toBe(200);
+		await fixture.refresh(cookie);
+
+		await visit(1280, '?controller=s-clio');
+		await tab.until(`${modelPart}?.title.includes('claude-sonnet-5-5')`, 'the model sent');
+		expect(await tab.eval<string>(`${modelPart}.title`)).toContain('已送出切換，等下一回合確認');
+
+		// Its first turn after the switch: that turn now.
+		current('claude-sonnet-5-5', new Date(Date.now() + 1000).toISOString());
+		writeFileSync(join(fixture.dir, 'transcripts', 's-clio.jsonl'), JSON.stringify({ kind: 'user', time: new Date().toISOString(), text: '繼續' }) + '\n');
+		await tab.until(`!${modelPart}.title.includes('等下一回合確認')`, 'the new turn');
+		expect(await tab.eval<string>(`${modelPart}.title`)).toContain('claude-sonnet-5-5');
+	} finally {
+		rmSync(join(fixture.dir, 'hcom-added.json'), { force: true });
+		fixture.setHcom({ agents: HCOM_AGENTS });
+		fixture.list([lead, sol]);
+		setHerdr(LISTED);
+		await fixture.refresh(cookie);
+	}
 }, 60_000);
 
 /** A real press on the first button in `scope` whose text includes `text`: moved to its middle and

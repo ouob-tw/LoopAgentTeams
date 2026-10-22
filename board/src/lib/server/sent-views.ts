@@ -195,6 +195,11 @@ export function openResumes(lines: readonly Line[], now: number, waitMs: number)
 	return wakesOf(lines, now, waitMs).filter((wake) => wake.open);
 }
 
+/** Resumes that succeeded within the wait with no pane known: their tab still has to go first. */
+export function unplacedResumes(lines: readonly Line[], now: number, waitMs: number): WakeView[] {
+	return wakesOf(lines, now, waitMs).filter((wake) => wake.closed === 'succeeded' && !wake.pane && now - Date.parse(wake.time) < waitMs);
+}
+
 /** The controller's open resume attempt, or null. There is at most one: a wake checks it first. */
 export function openResume(lines: readonly Line[], controllerId: string, now: number, waitMs: number): WakeView | null {
 	return openResumes(lines, now, waitMs).findLast((wake) => wake.controllerId === controllerId) ?? null;

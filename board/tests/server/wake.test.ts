@@ -1,7 +1,7 @@
 // Waking an ended controller from the board, against fake hcom, Herdr and input commands. Nothing
 // here types into, resumes or opens anything real.
 import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:test';
-import { chmodSync, existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { appendFileSync, chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { SentEntry } from '../../src/lib/board/answers.ts';
@@ -46,7 +46,9 @@ beforeEach(() => {
 		'hcom-env.jsonl',
 		'hcom-list-calls.jsonl',
 		'hcom-added.json',
+		'hcom-events.jsonl',
 		'herdr-calls.jsonl',
+		'herdr-socket-calls.jsonl',
 		'inject-calls.jsonl',
 		'inject-typed.jsonl',
 		'hcom.json',
@@ -79,7 +81,7 @@ const agent = (name: string, sessionId: string | null, pane?: string): Agent => 
 });
 /** The agents earlier resumes added leave hcom's list. */
 const leaveList = () => rmSync(join(commandDir, 'hcom-added.json'), { force: true });
-const hcomPlan = (plan: { agents?: Agent[]; resumed?: Agent; exit?: number; sleepMs?: number; stderr?: string; listFail?: object; names?: (string | null)[]; readOnly?: string }) =>
+const hcomPlan = (plan: { agents?: Agent[]; resumed?: Agent; resumedHerdr?: object; exit?: number; sleepMs?: number; stderr?: string; listFail?: object; names?: (string | null)[]; readOnly?: string }) =>
 	writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
 function herdrPlan(plan: { panes?: { workspace_id: string; cwd: string; pane_id?: string }[]; workspaces?: [string, number, string][]; fail?: object }) {
 	const workspaces = (plan.workspaces ?? []).map(([workspace_id, number, label]) => ({ workspace_id, number, label }));
@@ -202,6 +204,128 @@ test('a client that is gone is resumed by session ID in a Herdr tab of its proje
 	// The board runs inside an agent's shell here; none of that agent's identity reaches the resume.
 	expect(readLog('hcom-env.jsonl')).toEqual([keptAgentShellEnv(fixture, 'r')]);
 	expect(injects()).toEqual([]);
+});
+
+/** The session's record, last with this permission mode; and the arguments hcom kept from its
+ *  last launch, in a `stopped` event of it, when given. */
+let stops = 0;
+function recorded(sessionId: string, mode: string | null, stored?: string[]) {
+	const dir = join(fixture.dir, 'transcripts');
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, `${sessionId}.jsonl`), JSON.stringify({ kind: 'user', time: '2026-10-22T12:00:00.000Z', text: '開始' }) + '\n');
+	if (mode) writeFileSync(join(dir, `${sessionId}.permission.json`), JSON.stringify({ mode }));
+	if (!stored) return;
+	const snapshot = { name: 'x', session_id: sessionId, tool: 'claude', directory: '/', launch_args: JSON.stringify(stored) };
+	const event = { data: { action: 'stopped', by: 'cli', reason: 'killed', snapshot }, id: ++stops, instance: 'x', ts: '2026-10-22T12:00:00Z', type: 'life' };
+	appendFileSync(join(commandDir, 'hcom-events.jsonl'), JSON.stringify(event) + '\n');
+}
+const resumeArgs = async (target: { id: string }) => {
+	hcomPlan({});
+	expect((await wake(target.id, '繼續')).body.ok).toBe(true);
+	return resumes().at(-1)!.args.slice(8);
+};
+
+test("a Claude resume keeps the permission mode its record last had, which hcom's stored arguments lack", async () => {
+	// Started outside hcom in bypass permissions: hcom has nothing of that to repeat.
+	const bypass = await ended();
+	recorded(bypass.id, 'bypassPermissions');
+	expect(await resumeArgs(bypass)).toEqual(['--permission-mode', 'bypassPermissions']);
+	expect((await wakes(bypass.id))[0].extraArgs).toEqual(['--permission-mode', 'bypassPermissions']);
+
+	// hcom kept arguments without it: the last stop's are the ones it repeats.
+	const later = await ended();
+	recorded(later.id, 'bypassPermissions', ['--dangerously-skip-permissions']);
+	recorded(later.id, 'bypassPermissions', ['--model', 'claude-opus-5-5']);
+	expect(await resumeArgs(later)).toEqual(['--permission-mode', 'bypassPermissions']);
+});
+
+test('a resume adds nothing when the stored arguments give the mode already, or the mode is not known', async () => {
+	const flagged = await ended();
+	recorded(flagged.id, 'bypassPermissions', ['--model', 'claude-opus-5-5', '--dangerously-skip-permissions']);
+	expect(await resumeArgs(flagged)).toEqual([]);
+
+	const given = await ended();
+	recorded(given.id, 'plan', ['--permission-mode', 'plan']);
+	expect(await resumeArgs(given)).toEqual([]);
+
+	const unknown = await ended();
+	recorded(unknown.id, null);
+	expect(await resumeArgs(unknown)).toEqual([]);
+
+	// Codex keeps its own permission arguments.
+	const codex = await ended('codex');
+	recorded(codex.id, 'bypassPermissions');
+	expect(await resumeArgs(codex)).toEqual([]);
+});
+
+test('a session that was in another mode comes back in it, never in bypass permissions', async () => {
+	const auto = await ended();
+	recorded(auto.id, 'auto');
+	expect(await resumeArgs(auto)).toEqual(['--permission-mode', 'auto']);
+
+	// Stored in bypass permissions by its last launch, then changed in the client: the record wins.
+	const changed = await ended();
+	recorded(changed.id, 'default', ['--permission-mode', 'bypassPermissions']);
+	expect(await resumeArgs(changed)).toEqual(['--permission-mode', 'default']);
+
+	// Stored with the bypass flag, which wins over any mode: bypass permissions is turned off too.
+	const forced = await ended();
+	recorded(forced.id, 'auto', ['--dangerously-skip-permissions']);
+	expect(await resumeArgs(forced)).toEqual(['--settings', '{"permissions":{"disableBypassPermissionsMode":"disable"}}', '--permission-mode', 'auto']);
+});
+
+test('the resumed tab goes to the front once Herdr runs it, though hcom had no pane for it when the resume ended', async () => {
+	const target = await ended();
+	hcomPlan({ resumed: agent(target.name, target.id) });
+	expect((await wake(target.id, '繼續')).body.entry).toMatchObject({ outcome: 'started', pane: null });
+	const moves = () => readLog<string[]>('herdr-socket-calls.jsonl').filter((call) => call[0] === 'tab' && call[1] === 'move');
+	await until(() => moves().length > 0, 5000, 'the tab moved');
+	expect(moves()).toEqual([['tab', 'move', `wP:t-${target.id}`, '0']]);
+});
+
+test('a pane that ran the session before the resume is never taken for the resumed one, from Herdr or from hcom', async () => {
+	const target = await ended();
+	// Herdr still lists the closed session in its old pane, and hcom shows the resumed one there too.
+	const herdrAt = (pane: string, tab: string) => ({ agent: 'claude', agent_status: 'idle', cwd: target.workspace, pane_id: pane, tab_id: tab, workspace_id: 'wP', agent_session: { value: target.id } });
+	const herdr = JSON.parse(readFileSync(join(commandDir, 'herdr.json'), 'utf8'));
+	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify({ ...herdr, agents: [herdrAt('wP:p-old', 'wP:t-old')] }));
+	hcomPlan({ resumed: agent(target.name, target.id, 'wP:p-old'), resumedHerdr: herdrAt('wP:p-new', 'wP:t-new') });
+	const { entry } = (await wake(target.id, '繼續')).body;
+	expect(entry).toMatchObject({ outcome: 'started', pane: null, earlierPanes: ['wP:p-old'] });
+	const moves = () => readLog<string[]>('herdr-socket-calls.jsonl').filter((call) => call[0] === 'tab' && call[1] === 'move');
+	await until(() => moves().length > 0, 5000, 'the tab moved');
+	await fixture.refresh(cookie);
+	expect(moves()).toEqual([['tab', 'move', 'wP:t-new', '0']]);
+	expect((await wakes(target.id))[0]).toMatchObject({ pane: 'wP:p-new', closed: 'succeeded' });
+});
+
+test('a board restarted before Herdr ran the resumed session moves its tab by its reads, also once the resume succeeded', async () => {
+	const target = await ended();
+	// Neither hcom nor Herdr has its session yet.
+	hcomPlan({ resumed: agent(target.name, null) });
+	expect((await wake(target.id, '繼續')).body.entry).toMatchObject({ outcome: 'started', pane: null });
+	await fixture.stop();
+	// Then hcom lists it with no pane, before Herdr runs it: the first read closes the resume.
+	leaveList();
+	hcomPlan({ agents: [agent(target.name, target.id)] });
+	await fixture.start();
+	cookie = await fixture.login();
+	await fixture.refresh(cookie);
+	expect((await wakes(target.id))[0]).toMatchObject({ pane: null, closed: 'succeeded' });
+	const moves = () => readLog<string[]>('herdr-socket-calls.jsonl').filter((call) => call[0] === 'tab' && call[1] === 'move');
+	expect(moves()).toEqual([]);
+
+	// Herdr runs it now.
+	const herdr = JSON.parse(readFileSync(join(commandDir, 'herdr.json'), 'utf8'));
+	const runs = { agent: 'claude', agent_status: 'idle', cwd: target.workspace, pane_id: 'wP:p-new', tab_id: 'wP:t-new', workspace_id: 'wP', agent_session: { value: target.id } };
+	writeFileSync(join(commandDir, 'herdr.json'), JSON.stringify({ ...herdr, agents: [runs], panes: [...herdr.panes, { pane_id: 'wP:p-new', workspace_id: 'wP', cwd: target.workspace, tab_id: 'wP:t-new' }] }));
+	await fixture.refresh(cookie);
+	await until(() => moves().length > 0, 5000, 'the tab moved');
+	expect(moves()).toEqual([['tab', 'move', 'wP:t-new', '0']]);
+	expect((await wakes(target.id))[0]).toMatchObject({ pane: 'wP:p-new', closed: 'succeeded' });
+	// Moved once: later reads leave it.
+	await fixture.refresh(cookie);
+	expect(moves()).toHaveLength(1);
 });
 
 test('a resume with a ticked box has the LAT start command in its first message', async () => {

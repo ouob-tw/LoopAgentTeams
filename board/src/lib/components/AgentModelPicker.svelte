@@ -13,6 +13,7 @@
 	// are staged and sent as one switch with the apply button, after the user confirms it. A ⚠ beside
 	// them opens a switch left unfinished, to continue or give up. The current settings are those of
 	// its latest turn, as its open conversation's live feed reads them; unknown before its first.
+	// While the latest switch waits for a turn after it, they are what it sent, like a controller's.
 	import Check from '@lucide/svelte/icons/check';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import X from '@lucide/svelte/icons/x';
@@ -29,8 +30,11 @@
 		agentSwitchConfirmText,
 		carryNote,
 		choiceText,
+		lastApplied,
 		LOCK_UNKNOWN_TEXT,
 		settingsText,
+		shownSettings,
+		SWITCH_WAITING_TEXT,
 		type ModelChoice
 	} from '#lib/board/models.ts';
 	import { switching as feeds } from '#lib/board/switching.svelte.ts';
@@ -67,16 +71,23 @@
 	const pending = (kind: Kind) => staged[id]?.[kind] ?? '';
 	const anyStaged = $derived(!!(staged[id]?.model || staged[id]?.effort));
 	const choice = $derived<ModelChoice>({ model: staged[id]?.model ?? null, effort: staged[id]?.effort ?? null });
-	const current = $derived(feeds.current[id] ?? null);
+	/** The latest turn's settings, or what a switch sent while its next turn is still to come. The
+	 *  switches are the agent's record, which its page keeps loaded. */
+	const shownNow = $derived(shownSettings(lastApplied(agentControl.switches[id] ?? []), feeds.current[id] ?? null));
+	const current = $derived(shownNow.settings ?? null);
 	const shown = (kind: Kind) => pending(kind) || current?.[kind] || PLACEHOLDER[kind];
 	function part(kind: Kind): Part {
 		const unknown = shown(kind) === PLACEHOLDER[kind];
+		const waiting = shownNow.waiting && !pending(kind) && !unknown;
 		return {
 			text: unknown ? PLACEHOLDER[kind] : short(kind, shown(kind)),
 			label: `${NAME[kind]}：${unknown ? '不明' : shown(kind)}`,
-			title: reason(kind) ?? `${NAME[kind]}：${unknown ? '還不知道（它還沒做完一回合）' : shown(kind)}（選好後按 ✓ 套用）`,
+			title:
+				reason(kind) ??
+				`${NAME[kind]}：${unknown ? '還不知道（它還沒做完一回合）' : shown(kind)}${waiting ? `（${SWITCH_WAITING_TEXT}）` : ''}（選好後按 ✓ 套用）`,
 			picked: !!pending(kind),
 			unknown,
+			waiting,
 			disabled: !!reason(kind)
 		};
 	}

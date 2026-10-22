@@ -292,12 +292,16 @@ export const settingsText = (settings: Partial<ModelChoice> | null | undefined) 
 export const choiceText = (choice: ModelChoice) =>
 	`模型 ${choice.model ?? '保持目前'}・思考強度 ${choice.effort ?? '保持目前'}`;
 
+/** Settings sent: what was chosen, and the effort carried with a new model, not chosen (none
+ *  when it carries none). */
+export type Applied = { time: string; to: ModelChoice; carriedEffort?: string | null };
+
 /** The latest settings sent to the controller: a switch typed in or resumed, or a wake that
  *  resumed with a choice. Entries come newest first. */
-export function lastApplied(entries: readonly SentEntry[]): { time: string; to: ModelChoice } | null {
+export function lastApplied(entries: readonly SentEntry[]): Applied | null {
 	for (const entry of entries) {
 		if (entry.kind === 'switch' && (entry.state === 'sent' || entry.state === 'resuming' || entry.state === 'done')) {
-			return { time: entry.appliedAt ?? entry.time, to: entry.to };
+			return { time: entry.appliedAt ?? entry.time, to: entry.to, carriedEffort: entry.carriedEffort };
 		}
 		if (
 			entry.kind === 'wake' &&
@@ -306,7 +310,7 @@ export function lastApplied(entries: readonly SentEntry[]): { time: string; to: 
 			(entry.outcome === 'started' || entry.outcome === 'pending') &&
 			chose(entry.choice)
 		) {
-			return { time: entry.time, to: entry.choice };
+			return { time: entry.time, to: entry.choice, carriedEffort: entry.carriedEffort };
 		}
 	}
 	return null;
@@ -316,7 +320,7 @@ export function lastApplied(entries: readonly SentEntry[]): { time: string; to: 
  * What the record says about the latest settings sent: `waiting` until a turn started after them;
  * then `took` when every chosen value is what that turn used, or `missed` with what it used.
  */
-export function switchCheck(applied: { time: string; to: ModelChoice } | null, current: CurrentSettings | null): 'waiting' | 'took' | 'missed' | null {
+export function switchCheck(applied: Applied | null, current: CurrentSettings | null): 'waiting' | 'took' | 'missed' | null {
 	if (!applied) return null;
 	if (!current?.time || Date.parse(current.time) <= Date.parse(applied.time)) return 'waiting';
 	const { model, effort } = applied.to;
@@ -328,15 +332,17 @@ export const SWITCH_WAITING_TEXT = '已送出切換，等下一回合確認';
 /**
  * The settings to show as the controller's: the latest turn's, except while the latest settings
  * sent wait for a turn after them (the switch took the client down and back up, but the record
- * still ends with the turn before). Then what was sent, with `waiting`, the rest from that turn.
+ * still ends with the turn before). Then what was sent, with `waiting`: the effort carried with it
+ * when it was not chosen, the rest from that turn.
  */
 export function shownSettings(
-	applied: { time: string; to: ModelChoice } | null,
+	applied: Applied | null,
 	current: CurrentSettings | null | undefined
 ): { settings: CurrentSettings | null | undefined; waiting: boolean } {
 	if (!applied || switchCheck(applied, current ?? null) !== 'waiting') return { settings: current, waiting: false };
+	const effort = applied.to.effort ?? applied.carriedEffort ?? current?.effort ?? null;
 	return {
-		settings: { model: applied.to.model ?? current?.model ?? null, effort: applied.to.effort ?? current?.effort ?? null, time: current?.time ?? null },
+		settings: { model: applied.to.model ?? current?.model ?? null, effort, time: current?.time ?? null },
 		waiting: true
 	};
 }

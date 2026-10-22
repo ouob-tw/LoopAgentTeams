@@ -33,4 +33,8 @@ test('a switch waiting for its next turn shows what it sent; a later turn shows 
 	expect(shownSettings(applied, after)).toEqual({ settings: after, waiting: false });
 	expect(shownSettings(null, before)).toEqual({ settings: before, waiting: false });
 	expect(shownSettings(applied, undefined).waiting).toBe(true);
+	// The effort carried with a new model is the one sent, whether or not the record reads.
+	const carried = { ...applied, to: { model: 'claude-opus-5-5', effort: null }, carriedEffort: 'high' };
+	expect(shownSettings(carried, null).settings).toEqual({ model: 'claude-opus-5-5', effort: 'high', time: null });
+	expect(shownSettings(carried, before).settings?.effort).toBe('high');
 });

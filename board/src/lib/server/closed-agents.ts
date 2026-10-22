@@ -28,6 +28,7 @@ import { listStops, resumeAgent, type HcomStop, type StopList } from './hcom.ts'
 import { readTranscript } from './helper.ts';
 import { chooseWorkspace } from './herdr.ts';
 import { inLaunchQueue, moveToFront } from './launch.ts';
+import { keepPermission } from './permission.ts';
 import { appendSent } from './sent-log.ts';
 import { wakeController } from './wake.ts';
 
@@ -366,7 +367,8 @@ async function attempt(board: Board, sessionId: string, wake: ClosedWake): Promi
 
 	const workspace = await chooseWorkspace(config, row.folder, row.workspace);
 	if (!workspace.ok) return { value: fail(`沒有接回：${workspace.reason}`) };
-	const resumed = await resumeAgent(config, { sessionId, herdrWorkspace: workspace.id, prompt: '', extraArgs: [] });
+	const extraArgs = await keepPermission(config, row.client, sessionId);
+	const resumed = await resumeAgent(config, { sessionId, herdrWorkspace: workspace.id, prompt: '', extraArgs });
 	if (resumed.outcome === 'failed') return { value: fail(resumed.reason ?? '接回失敗', 'hcom') };
 	const body = { ok: true, reason: resumed.outcome === 'pending' ? resumed.reason : null, logError: null, abandon: null };
 	return { value: { status: 200, body }, follow: followBack(`開在工作區「${workspace.label}」`, true) };

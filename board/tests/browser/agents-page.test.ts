@@ -590,6 +590,45 @@ for (const width of [1280, 390]) {
 	}, 30_000);
 }
 
+test.skipIf(!CHROME)('after a switch the parts show what it sent until the resumed session has a turn, then that turn', async () => {
+	for (const file of ['hcom-calls.jsonl', 'hcom-added.json', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
+	const current = (model: string, effort: string, time: string) =>
+		writeFileSync(join(fixture.dir, 'transcripts', 's-link.current.json'), JSON.stringify({ model, effort, time }));
+	setLinked({
+		resumed: { name: 'lino', session_id: 's-link', status: 'listening', launch_context: { pane_id: 'wA:p-new' } },
+		resumedHerdr: { ...LINKED, pane_id: 'wA:p-new', tab_id: 'wA:t-new' }
+	});
+	current('claude-opus-5-5', 'medium', '2026-10-19T09:00:00.000Z');
+	await fixture.refresh(cookie);
+	try {
+		await visit(1280, '?agent=s-link');
+		await tab.until(`${pickable('model')} && document.querySelector(${JSON.stringify(part('model'))}).title.includes('claude-opus-5-5')`, 'the latest turn');
+		await pickSetting('model', 'claude-sonnet-5-5');
+		await click(APPLY);
+		await tab.until(`!!document.querySelector('.dock [data-action="confirm-switch"]')`, 'the confirmation');
+		await click('.dock [data-action="confirm-switch"]');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('已切換 lino')`, 'the switch sent');
+		expect(hcomCalls().map((args) => args[0])).toEqual(['kill', 'r']);
+
+		// Back, and no turn yet: what the switch sent, the effort the one before used.
+		await tab.until(`document.querySelector(${JSON.stringify(part('model'))})?.title.includes('claude-sonnet-5-5')`, 'the model sent');
+		expect(await partTitle('model')).toContain('已送出切換，等下一回合確認');
+		expect(await partTitle('effort')).toContain('medium');
+		expect(await tab.eval(`document.querySelector(${JSON.stringify(part('model'))}).classList.contains('waiting')`)).toBe(true);
+
+		// Its first turn after the switch, which the conversation's live feed reads: that turn now.
+		current('claude-sonnet-5-5', 'medium', new Date(Date.now() + 1000).toISOString());
+		record('s-link', ['你好', '好的', '繼續', '收到']);
+		await tab.until(`!document.querySelector(${JSON.stringify(part('model'))}).title.includes('等下一回合確認')`, 'the new turn');
+		expect(await partTitle('model')).toContain('claude-sonnet-5-5');
+	} finally {
+		rmSync(join(fixture.dir, 'transcripts', 's-link.current.json'), { force: true });
+		setHerdr(AGENTS);
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+		await fixture.refresh(cookie);
+	}
+}, 30_000);
+
 // The agent's menus by keys: it opens with the chosen item in focus; the arrows, Home and End
 // move round the list; Escape closes it and gives the focus back to its part; a click anywhere
 // else closes it too.
