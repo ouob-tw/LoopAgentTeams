@@ -374,6 +374,8 @@ class ReapTests(ReapTestCase):
 
 
 class SignalTimeIdentityTests(ReapTestCase):
+    # Exception to the CLI-only entry point (orchestrator decision): an unprivileged test
+    # cannot force a real PID reuse between scan and signal, so close() is called directly.
     def test_pid_with_a_new_start_time_is_not_signalled(self):
         spec = importlib.util.spec_from_file_location('lat_reap', SCRIPT)
         reap = importlib.util.module_from_spec(spec)
