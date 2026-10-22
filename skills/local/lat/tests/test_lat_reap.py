@@ -22,7 +22,6 @@ import uuid
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-reap.py'
 LAT_FILE = SCRIPT.parent / 'lat-watch.py'
-PORTS = range(7950, 7960)  # this ticket's reserved test ports
 PYTHON = os.path.realpath(sys.executable)
 # Each node writes its PID once ready; a 'shell' node is a real sh running its children.
 NODE = r'''
@@ -31,13 +30,23 @@ spec = json.loads(sys.argv[1])
 if spec.get('ignore_term'):
     signal.signal(signal.SIGTERM, signal.SIG_IGN)
 if spec.get('listen'):
-    server = socket.socket()
-    server.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    server.bind(('127.0.0.1', spec['listen']))
+    # The first free port of this ticket's range 7950-7959, reported to the test.
+    for port in range(7950, 7960):
+        server = socket.socket()
+        try:
+            server.bind(('127.0.0.1', port))
+            break
+        except OSError:
+            server.close()
+    else:
+        sys.exit('ports 7950-7959 are all in use')
     server.listen()
+    with open(os.path.join(spec['dir'], spec['label'] + '.port'), 'w') as stream:
+        stream.write(str(port))
 
 def command(child):
-    return [child.get('exe', child['python']), __file__, json.dumps(child), *child.get('extra', [])]
+    return [child.get('exe', child['python']), child.get('script', __file__), json.dumps(child),
+            *child.get('extra', [])]
 
 def environment(child):
     env = dict(os.environ)
@@ -71,17 +80,6 @@ def starttime(pid):
         return None
 
 
-def free_port():
-    for port in PORTS:
-        with socket.socket() as probe:
-            try:
-                probe.bind(('127.0.0.1', port))
-                return port
-            except OSError:
-                continue
-    raise unittest.SkipTest('ports 7950-7959 are all in use')
-
-
 def iso(seconds):
     return (datetime.now(timezone.utc) + timedelta(seconds=seconds)).isoformat()
 
@@ -95,6 +93,12 @@ class ReapTestCase(unittest.TestCase):
         self.pids.mkdir()
         self.node_script = self.root / 'node.py'
         self.node_script.write_text(NODE)
+        # A disposable LAT skill copy, so a process can really run a script inside one.
+        self.lat_copy = self.root / 'lat-copy'
+        (self.lat_copy / 'scripts').mkdir(parents=True)
+        (self.lat_copy / 'SKILL.md').write_text('---\nname: lat\n---\n')
+        self.lat_script = self.lat_copy / 'scripts/idle.py'
+        self.lat_script.write_text(NODE)
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         for name in ('claude', 'hcom'):
@@ -107,10 +111,8 @@ class ReapTestCase(unittest.TestCase):
         self.addCleanup(self.kill_started)
         self.env = {key: value for key, value in os.environ.items()
                     if not key.startswith(('HCOM_', 'LAT_REAP_'))}
-        self.port = free_port()
         self.env.update(XDG_STATE_HOME=str(self.state), LAT_REAP_HCOM_LIST=str(self.hcom),
-                        LAT_REAP_TEST_SCOPE=self.scope, LAT_REAP_GRACE_SECONDS='1',
-                        LAT_REAP_PROTECTED_PORTS=str(self.port))
+                        LAT_REAP_TEST_SCOPE=self.scope, LAT_REAP_GRACE_SECONDS='1')
 
     def kill_started(self):
         for label, (pid, start) in self.started.items():
@@ -143,7 +145,8 @@ class ReapTestCase(unittest.TestCase):
                 collect(child)
         collect(tree)
         base = {key: value for key, value in os.environ.items() if not key.startswith('HCOM_')}
-        process = subprocess.Popen([tree.get('exe', PYTHON), str(self.node_script), json.dumps(tree),
+        process = subprocess.Popen([tree.get('exe', PYTHON), tree.get('script', str(self.node_script)),
+                                    json.dumps(tree),
                                     *tree.get('extra', [])], env={**base, **env},
                                    cwd=tree.get('cwd'))
         self.roots.append(process)
@@ -159,6 +162,8 @@ class ReapTestCase(unittest.TestCase):
             if time.monotonic() > deadline:
                 self.fail(f'process tree not ready: {sorted(set(labels) - set(found))}')
             time.sleep(0.02)
+        for path in self.pids.glob('*.port'):
+            self.env['LAT_REAP_PROTECTED_PORTS'] = path.read_text()
         return found
 
     def set_hcom(self, agents):
@@ -313,15 +318,17 @@ class ReapTests(ReapTestCase):
         self.assertIn('unexpected format', self.log()[0]['reason'])
 
     def test_lat_documents_do_not_make_a_process_a_lat_process(self):
-        viewer = self.dead_agent('viewer', extra=[str(SCRIPT.parents[1] / 'SKILL.md')])
+        viewer = self.dead_agent('viewer', extra=[str(LAT_FILE), str(self.lat_script)])
+        reader = self.dead_agent('reader', extra=[str(SCRIPT.parents[1] / 'SKILL.md')])
         self.reap()
         self.assertTrue(self.gone(viewer))
+        self.assertTrue(self.gone(reader))
 
     def test_never_handled_processes_survive_a_reap(self):
         tree = self.node('dead-root', [
             self.node('no-marker', env={}),
-            self.node('listener', listen=self.port),
-            self.node('lat-script', extra=[str(LAT_FILE)]),
+            self.node('listener', listen=True),
+            self.node('lat-script', script=str(self.lat_script)),
             self.node('plain'),
         ])
         pids = self.spawn(tree, self.agent_env('dead'))
@@ -483,8 +490,8 @@ class KeepTests(ReapTestCase):
         pids = self.live_agent('agent', tool='codex', helpers=['agent-helper'],
                                services=['agent-server'])
         tree = self.node('dead-root', [self.node('no-marker', env={}),
-                                       self.node('listener', listen=self.port),
-                                       self.node('lat-script', extra=[str(LAT_FILE)]),
+                                       self.node('listener', listen=True),
+                                       self.node('lat-script', script=str(self.lat_script)),
                                        self.node('hcom-tool', exe=str(self.bin / 'hcom'),
                       env=self.agent_env('hcomtool'))])
         others = self.spawn(tree, self.agent_env('dead'))

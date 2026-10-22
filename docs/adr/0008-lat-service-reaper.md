@@ -22,7 +22,7 @@ Agent 為測試開的服務在 Agent 結束後仍活著，2026-10-22 曾有 12 �
 3. **永不處理清單優先於一切規則，保留到期或解除也不能覆蓋，並逐一套用在每個要送訊號的程序與每個 `keep` 目標：**
    - 沒有 `HCOM_PROCESS_ID` 的程序；其他使用者的程序（根本不讀取）；呼叫者自己與其所有祖先；監聽受保護埠（預設 7100）的程序。
    - 基礎程序：存活 Agent 的 client、其祖先，以及從 client 往下每條分支直到第一個 shell（以執行檔名稱 `bash`、`sh`、`zsh`、`dash`、`fish` 等辨認）為止、含該 shell 的程序。分支上沒有 shell 的程序（例如 Codex 的 `codex-code-mode`、MCP 伺服器）在 Agent 存活期間都是基礎程序。實測結構：Codex 為 `hcom pty` → `node …/codex` → `codex` → 常駐輔助程序／工具 `bash` → 服務；Claude 為 `hcom pty` → `claude` → 工具 `bash` → 服務。
-   - LAT 自己的程序（執行檔，或參數中執行的 `.py`／`.sh` 腳本位在 LAT 技能資料夾內；開著 LAT 文件的程序不算；LAT 技能資料夾指本工具所在的技能，或任何 `SKILL.md` 名稱為 `lat` 的資料夾，涵蓋安裝副本與 QA 副本）與 HCOM 自己的程序（執行檔名稱為 `hcom`）。
+   - LAT 自己的程序（執行檔，或直譯器（python、bash 等）執行的腳本位在 LAT 技能資料夾內；只是開著 LAT 檔案的程序不算；LAT 技能資料夾指本工具所在的技能，或任何 `SKILL.md` 名稱為 `lat` 的資料夾，涵蓋安裝副本與 QA 副本）與 HCOM 自己的程序（執行檔名稱為 `hcom`）。
    - 為什麼：不能因為保留到期或主控停用就關掉主控正在用的 client、MCP 或監控；以第一個 shell 為界，shell 底下 Agent 開出的一般服務仍能回收（使用者於 HUZU-SPEC-1 選定）。
    - 代價：Agent 不經 shell 直接啟動的服務在 Agent 存活期間無法以保留到期收掉；依執行檔名稱辨認 shell，改名的 shell 會被當成一般程序。
 

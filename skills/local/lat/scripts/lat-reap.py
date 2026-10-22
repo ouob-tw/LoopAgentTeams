@@ -14,6 +14,7 @@ import functools
 import json
 import os
 from pathlib import Path
+import re
 import signal
 import sys
 import time
@@ -24,6 +25,7 @@ from _lat_common import process_starttime, run_cli, write_json_atomic
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 MARKER = 'HCOM_PROCESS_ID'
+INTERPRETER = re.compile(r'(python[0-9.]*|bash|sh|dash|zsh)')
 SHELLS = {'bash', 'sh', 'zsh', 'dash', 'fish', 'ksh', 'mksh', 'tcsh', 'csh', 'ash', 'yash'}
 TRIGGERS = ('periodic', 'deactivate', 'manual')
 GRACE_SECONDS = 10
@@ -244,10 +246,14 @@ def in_skill_dir(process):
         paths = [Path(os.readlink(f'/proc/{process.pid}/exe'))]
     except OSError:
         cwd, paths = None, []
-    # The executable, or a script it runs; other file arguments (an open document) do not count.
+    # The executable, or the script an interpreter runs (`python [-u] x.py`, `uv run python
+    # x.py`); other file arguments, such as a file open in an editor, do not count.
+    interpreter = False
     for index, arg in enumerate(process.argv):
-        if index == 0 or arg.endswith(('.py', '.sh')):
+        if index == 0 or (interpreter and not arg.startswith('-')):
             paths.append(Path(arg) if arg.startswith('/') or cwd is None else cwd / arg)
+        if not arg.startswith('-'):
+            interpreter = bool(INTERPRETER.fullmatch(Path(arg).name))
     for path in paths:
         try:
             if path.is_file() and any(map(is_lat_skill, path.resolve().parents)):
