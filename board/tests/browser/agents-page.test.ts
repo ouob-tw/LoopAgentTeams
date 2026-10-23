@@ -974,6 +974,22 @@ test.skipIf(!CHROME)('a card is titled by its tab, then the short hcom name, whi
 	}
 }, 30_000);
 
+test.skipIf(!CHROME)('one session open in two panes lists a card for each, and the page keeps working', async () => {
+	const again = { ...herdrAgent('s-plain', { status: 'idle', client: 'codex' }), pane_id: 'wA:p-s-plain-again', tab_id: 'wA:t-s-plain-again' };
+	try {
+		setHerdr([...AGENTS, again]);
+		await fixture.refresh(cookie);
+		await visit(1280);
+		await openTab();
+		await tab.until(`document.querySelectorAll('.inbox [data-agent="s-plain"]').length === 2`, 'a card for each pane');
+		await openAgent('s-plain');
+		await tab.until(`document.querySelector('.detail')?.innerText.includes('測試都過了。')`, 'the conversation');
+	} finally {
+		setHerdr(AGENTS);
+		await fixture.refresh(cookie);
+	}
+}, 30_000);
+
 test.skipIf(!CHROME)('the list tabs stay on one line, and the address names the tab shown', async () => {
 	await visit(390);
 	await openTab();
@@ -1086,8 +1102,8 @@ test.skipIf(!CHROME)('a Codex started with a fixed model offers only its effort 
 	}
 }, 60_000);
 
-/** A card in the list, and its drag handle. */
-const CARD = (id: string) => `.inbox [data-card="${id}"]`;
+/** A card in the list by its fixture session, keyed by the pane herdrAgent gives it, and its drag handle. */
+const CARD = (id: string) => `.inbox [data-card$=":p-${id}"]`;
 const GRIP = (id: string) => `${CARD(id)} .grip`;
 const RENAME = '.inbox input.rename';
 /** The middle of an element on the screen, or this far from its left edge. */
@@ -1095,9 +1111,9 @@ const point = (selector: string, fromLeft?: number) =>
 	tab.eval<{ x: number; y: number }>(
 		`(() => { const box = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); return { x: ${fromLeft === undefined ? 'box.left + box.width / 2' : `box.left + ${fromLeft}`}, y: box.top + box.height / 2 }; })()`
 	);
-/** The cards of a workspace, in the order the list shows them. */
+/** The sessions of a workspace's cards, in the order the list shows them. */
 const cardsOf = (workspace: string) =>
-	tab.eval<string[]>(`[...document.querySelectorAll('.inbox [data-workspace="${workspace}"] [data-card]')].map((card) => card.dataset.card)`);
+	tab.eval<string[]>(`[...document.querySelectorAll('.inbox [data-workspace="${workspace}"] [data-card]')].map((card) => card.dataset.card.replace(/^.*:p-/, ''))`);
 const hasClass = (selector: string, name: string) => tab.eval<boolean>(`!!document.querySelector(${JSON.stringify(selector)})?.classList.contains('${name}')`);
 
 /** Press at `from`, move to `to` in steps, run `meanwhile` while still pressed, then let go: with
@@ -1156,7 +1172,7 @@ for (const width of [1280, 390]) {
 			expect(await hasClass(CARD('s-plain'), 'dragging')).toBe(true);
 			expect(await hasClass(CARD('s-lead'), 'drop-before')).toBe(true);
 		});
-		await tab.until(`JSON.stringify([...document.querySelectorAll('.inbox [data-workspace="wA"] [data-card]')].map((card) => card.dataset.card)) === '["s-plain","s-lead"]'`, 'Herdr’s new order');
+		await tab.until(`JSON.stringify([...document.querySelectorAll('.inbox [data-workspace="wA"] [data-card]')].map((card) => card.dataset.card)) === '["wA:p-s-plain","wA:p-s-lead"]'`, 'Herdr’s new order');
 		expect(herdrCalls() as unknown[][]).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-s-plain', insert_index: 0 }]]);
 		// Dragging by the handle does not open the agent.
 		expect((await screen()).search).not.toContain('agent=');

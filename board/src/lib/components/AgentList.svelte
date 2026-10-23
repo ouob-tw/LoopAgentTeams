@@ -40,8 +40,9 @@
 	} = $props();
 
 	const groups = $derived(agentGroups(agents, workspaces));
-	/** A card's key: its session, or its pane while Herdr has no session for it. */
-	const keyOf = (agent: Agent) => agent.id ?? agent.herdr.pane;
+	/** A card's key: its Herdr pane, since one session can be open in two panes; its session when
+	 *  it is listed only from its switch and has no pane. */
+	const keyOf = (agent: Agent) => (agent.inHerdr || !agent.id ? agent.herdr.pane : agent.id);
 	const dutyOf = (agent: Agent) => (agent.controller ? (controllers.find((controller) => controller.id === agent.id)?.duty ?? null) : null);
 
 	/** A touch's long press opens the card's menu instead, so only hovering and focus explain a card. */
