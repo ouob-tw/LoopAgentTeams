@@ -10,6 +10,7 @@ import type { QuotaSnapshot } from './quota.ts';
 import { translatePref } from './translate-pref.svelte.ts';
 import type { TranslateMode } from './translate-mode.ts';
 import type { UsageStyle } from './usage.ts';
+import { justRecorded } from './question-message.ts';
 import type { BoardSnapshot, InboxQuestion } from './types.ts';
 
 export class LiveBoard {
@@ -36,6 +37,9 @@ export class LiveBoard {
 	#archiveLoads = 0;
 	#answeredLoads = 0;
 	#answeredShown = 0;
+	/** Questions shown as answered since they left the inbox recorded, as the inbox last had them:
+	 *  kept while the board still has them recorded and the answered list read does not have them yet. */
+	#recorded: InboxQuestion[] = [];
 
 	constructor(initial: BoardSnapshot) {
 		this.snapshot = $state(initial);
@@ -44,7 +48,17 @@ export class LiveBoard {
 	/** Start listening; returns the function that stops it. */
 	connect(): () => void {
 		this.#connection = connectBoard({
-			onSnapshot: (snapshot) => (this.snapshot = snapshot),
+			onSnapshot: (snapshot) => {
+				const { controllerId, questions } = this.answered;
+				const recorded = justRecorded(this.snapshot.inbox, snapshot, controllerId).filter(
+					(item) => !questions.some((entry) => entry.key === item.key)
+				);
+				if (recorded.length) {
+					this.#recorded.push(...recorded);
+					this.answered = { controllerId, questions: [...questions, ...recorded] };
+				}
+				this.snapshot = snapshot;
+			},
 			onState: (state) => (this.link = state),
 			onTabMoved: () => this.tabMoves++,
 			onQuota: (quota) => (this.quota = quota),
@@ -114,7 +128,10 @@ export class LiveBoard {
 	 *  slow to come back does not keep the earlier ones from showing. */
 	async loadAnswered(controllerId: string): Promise<void> {
 		const load = ++this.#answeredLoads;
-		if (this.answered.controllerId !== controllerId) this.answered = { controllerId, questions: [] };
+		if (this.answered.controllerId !== controllerId) {
+			this.answered = { controllerId, questions: [] };
+			this.#recorded = [];
+		}
 		let questions: InboxQuestion[];
 		try {
 			questions = (await this.#connection?.answered(controllerId)) ?? [];
@@ -123,7 +140,10 @@ export class LiveBoard {
 		}
 		if (load < this.#answeredShown || this.answered.controllerId !== controllerId) return;
 		this.#answeredShown = load;
-		this.answered = { controllerId, questions };
+		this.#recorded = this.#recorded.filter(
+			(item) => this.snapshot.recordedKeys.includes(item.key) && !questions.some((question) => question.key === item.key)
+		);
+		this.answered = { controllerId, questions: [...questions, ...this.#recorded] };
 	}
 
 	#earlierLoad: Promise<void> | undefined;

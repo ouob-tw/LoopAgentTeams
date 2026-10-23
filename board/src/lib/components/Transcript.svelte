@@ -16,6 +16,7 @@
 	import { askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { splitAttachments } from '#lib/board/attachments.ts';
+	import { answering } from '#lib/board/answering.svelte.ts';
 	import { RenderedMarkdown } from '#lib/board/markdown.ts';
 		import { toasts } from '#lib/board/toasts.svelte.ts';
 	import {
@@ -44,6 +45,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 
 	/** How long a question not found waits for the next page before it is judged without one. */
 	const JUDGE_WITHOUT_PAGE_MS = 5_000;
+	/** How long an answered card is kept in place once its answer is sent. */
+	const HOLD_MS = 2_500;
 
 	let {
 		controller,
@@ -289,14 +292,75 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	}
 	$effect(() => () => stopAligning());
 
-	/** Empty space after the conversation, only while a report is shown in it. */
+	/** Empty space after the conversation, only while a report is shown in it, or once an answered
+	 *  card was kept in place. */
 	let tail = $state<HTMLElement>();
+	/** The question whose card was last kept in place in this conversation; the room after the
+	 *  conversation is kept for it. */
+	let held = $state<string | null>(null);
+	/** Stops keeping the answered card in place; set while it is kept. */
+	let stopHolding = () => {};
 
-	// Earlier parts loaded under the placed card take the place of the room made for it.
+	const cardOf = (key: string) => list?.querySelector<HTMLElement>(`[data-content="${CSS.escape(key)}"]`);
+
+	/** What ends keeping a card in place: scrolling, a click anywhere but the conversation's cards,
+	 *  and a key anywhere but their options and text boxes, where the user may go on to answer the
+	 *  next one; other keys may scroll. */
+	const HOLD_ENDS = ['wheel', 'touchmove', 'pointerdown', 'keydown'] as const;
+
+	/** Keep the card of a question just answered where it is on screen while its answer is sent and
+	 *  the card turns into the answered one, a while after too, until the user scrolls or clicks
+	 *  elsewhere: the card gets shorter, and with little after it the page would scroll back; with
+	 *  its question recorded it is shown again. Going on to another card keeps that one in place
+	 *  instead, so the answered one getting shorter above it does not move it, whether or not the
+	 *  browser keeps what has focus in place by itself. The room needed is made after the
+	 *  conversation. */
+	function hold(event: SubmitEvent) {
+		const card = (event.target as Element).closest<HTMLElement>('[data-content]');
+		const sent = card?.dataset.content;
+		if (!card || !sent) return;
+		stopHolding();
+		let key = (held = sent);
+		let at = card.getBoundingClientRect().top;
+		let until = performance.now() + HOLD_MS;
+		let frame = 0;
+		const stop = (event?: Event) => {
+			const target = event?.target instanceof Element && list?.contains(event.target) ? event.target : null;
+			const choosing = event?.type === 'pointerdown' || (event?.type === 'keydown' && !!target?.matches('input, textarea'));
+			const next = target && choosing ? target.closest<HTMLElement>('[data-content]') : null;
+			if (next?.dataset.content) {
+				key = held = next.dataset.content;
+				at = next.getBoundingClientRect().top;
+				return;
+			}
+			cancelAnimationFrame(frame);
+			for (const type of HOLD_ENDS) removeEventListener(type, stop, true);
+		};
+		const step = () => {
+			if (answering.sending[sent] || answering.sending[key]) until = performance.now() + HOLD_MS;
+			const element = cardOf(key);
+			const top = element?.getBoundingClientRect().top;
+			if (element && top !== undefined && Math.abs(top - at) >= 1) {
+				makeRoom(element, at);
+				(scrollerOf(element) ?? window).scrollBy(0, element.getBoundingClientRect().top - at);
+			}
+			if (performance.now() < until) frame = requestAnimationFrame(step);
+			else stop();
+		};
+		for (const type of HOLD_ENDS) addEventListener(type, stop, { capture: true, passive: true });
+		frame = requestAnimationFrame(step);
+		stopHolding = stop;
+	}
+	$effect(() => () => stopHolding());
+
+	// Earlier parts loaded under the placed card, or the card kept in place, take the place of the
+	// room made for it.
 	$effect(() => {
 		void view;
-		const element = untrack(() => tail && list && placedIn(list));
-		if (element) makeRoom(element, keptAt);
+		const placed = untrack(() => tail && list && placedIn(list));
+		const kept = untrack(() => !placed && tail && held && cardOf(held));
+		if (placed) makeRoom(placed, keptAt);
+		else if (kept) makeRoom(kept, kept.getBoundingClientRect().top);
 	});
 
 	/** The nearest box the element scrolls in; null when it scrolls with the page. */
@@ -315,10 +379,11 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		const page = !scroller;
 		const port = page ? window.innerHeight : scroller!.clientHeight;
 		const portTop = page ? 0 : scroller!.getBoundingClientRect().top;
-		const scrolled = page ? window.scrollY : scroller!.scrollTop;
 		// Measured with the space at a full screen, so the content overflows: a container's scroll
 		// height never reports less than its own height, which would hide how short the content is.
+		// The scroll position too, as a page the content got too short for may scroll back with it.
 		tail.style.height = `${port}px`;
+		const scrolled = page ? window.scrollY : scroller!.scrollTop;
 		const height = page ? document.documentElement.scrollHeight : scroller!.scrollHeight;
 		// What follows the card's top, without the space.
 		const below = height - port - (scrolled + element.getBoundingClientRect().top - portTop);
@@ -343,8 +408,10 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		untrack(() => translations.retry());
 		loadingEarlier = false;
 		earlierFailed = null;
-		// Another controller's conversation: the room made for the last report goes.
+		// Another controller's conversation: the room made for the last report or card goes.
 		if (untrack(() => tail)) tail!.style.height = '';
+		untrack(() => stopHolding());
+		held = null;
 		const source = new EventSource(transcriptUrl(feed, controllerId, true));
 		untrack(() => (switching.watched[controllerId] = (switching.watched[controllerId] ?? 0) + 1));
 		source.addEventListener('transcript', (event) => {
@@ -400,7 +467,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	});
 </script>
 
-<section class="history" data-block="transcript" bind:this={list}>
+<section class="history" data-block="transcript" bind:this={list} onsubmitcapture={hold}>
 	{#if unplaced && card}
 		<div class="placed">{@render card()}</div>
 	{/if}
@@ -496,7 +563,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	{:else}
 		<p class="empty loading" role="status" aria-busy="true"><span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>讀取中…</p>
 	{/if}
-	{#if target}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
+	{#if target || held}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
 </section>
 
 <style>
