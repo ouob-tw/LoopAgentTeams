@@ -564,6 +564,15 @@ class UnknownOwnerTests(ReapTestCase):
         scan = self.run_reaper('scan').stdout
         self.assertIn(f'PID {service} ', scan.split('Unknown owner:')[1].split('Never handled:')[0])
         self.assertNotIn(f'PID {service} ', scan.split('Leftover:')[1].split('Kept:')[0])
+        # Nor through a keep: keep refuses it, and an ended keep made earlier closes nothing.
+        result = self.keep(service)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('nil HCOM_PROCESS_ID', result.stdout)
+        (directory / 'keeps.json').write_text(json.dumps({'keeps': [{
+            'pid': service, 'starttime': self.started['nil-service'][1], 'process_id': nil,
+            'reason': 'demo', 'until': iso(-1), 'by': 'test-orch'}]}))
+        scan = self.run_reaper('scan').stdout
+        self.assertNotIn(f'PID {service} ', scan.split('Leftover:')[1].split('Kept:')[0])
 
     def test_corrupt_seen_records_close_nothing(self):
         service = self.dead_agent('amnesia')

@@ -148,6 +148,12 @@ def hcom_agents():
     return agents
 
 
+def nil_id(process):
+    """The all-zero id test harnesses use; it never belongs to a real agent."""
+    process_id = process.env.get(MARKER)
+    return bool(process_id) and not process_id.strip('0-')
+
+
 def launch_owner(process):
     """(HCOM name, launch batch) the process inherited, or None when either is missing."""
     name = process.env.get('HCOM_INSTANCE_NAME', '')
@@ -394,7 +400,7 @@ def observe(seen):
             base |= base_processes(clients, processes, children)
     known = [process for process in processes.values()
              if process.env.get(MARKER) and process.env[MARKER] not in alive
-             and process.env[MARKER].strip('0-') and launch_owner(process)
+             and not nil_id(process) and launch_owner(process)
              and seen.get(process.env[MARKER]) == launch_owner(process)[0]]
     stopped = stopped_owners({launch_owner(process) for process in known})
     ended = {process.pid for process in known if launch_owner(process) in stopped}
@@ -498,9 +504,11 @@ def plan(world, keeps, moment, only=None):
         if (process.pid in world.ended and process.pid not in kept
                 and (only is None or process_id in only)):
             targets.setdefault(process.pid, 'owner agent ended')
-    # A valid keep also holds inside the group of a released keep around it.
+    # A valid keep also holds inside the group of a released keep around it; the nil id is
+    # never closed, not even by a keep that ended.
     targets = {pid: why for pid, why in targets.items()
                if pid not in world.protected and pid not in kept
+               and not nil_id(world.processes[pid])
                and world.processes[pid].state != 'Z'}
     return targets, kept, live_keeps, released
 
@@ -706,6 +714,9 @@ def keep(args):
             return 1
         if process is None or process.state == 'Z':
             print(f'Refused: PID {args.pid} is not running')
+            return 1
+        if nil_id(process):
+            print(f'Refused: PID {args.pid} carries the nil HCOM_PROCESS_ID of test harnesses')
             return 1
         if args.pid in world.protected:
             print(f'Refused: PID {args.pid} is never handled ({world.protected[args.pid]})')
