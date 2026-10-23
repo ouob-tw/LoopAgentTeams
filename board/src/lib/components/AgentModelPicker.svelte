@@ -25,6 +25,7 @@
 		AGENT_FIXED_MODEL_REASON,
 		AGENT_HCOM_UNKNOWN_SWITCH_REASON,
 		AGENT_NOT_LINKED_SWITCH_REASON,
+		AGENT_PAUSED_SWITCH_REASON,
 		AGENT_SWITCH_STATE_TEXT,
 		AGENT_SWITCH_UNFINISHED_TEXT,
 		agentSwitchConfirmText,
@@ -59,6 +60,7 @@
 	const blocked = $derived.by((): string | null => {
 		if (agent.switch || !agent.inHerdr) return AGENT_SWITCH_UNFINISHED_TEXT;
 		if (agent.hcom === 'none') return AGENT_NOT_LINKED_SWITCH_REASON;
+		if (agent.hcom === 'paused') return AGENT_PAUSED_SWITCH_REASON;
 		if (agent.hcom === 'unknown') return AGENT_HCOM_UNKNOWN_SWITCH_REASON;
 		if (!modelStatus) return '讀取中…';
 		if (!modelStatus.options) return `看板不會切換 ${agent.client} 的模型與思考強度`;

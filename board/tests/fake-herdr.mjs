@@ -7,7 +7,9 @@
 // "agent send-keys", "pane close", "tab rename") a failure to act out, `fail: { exit, stderr }`, or output to
 // print instead, `raw: <text>`. `agent prompt` and `agent send-keys` succeed otherwise, without
 // checking the pane; `pane close` takes the pane and its agent out of the panes and agents listed;
-// `tab rename <tab> <label>` gives the listed tab that label.
+// `tab rename <tab> <label>` gives the listed tab that label. `reconnect: { <pane>: <agent> }` has an
+// `agent prompt` to that pane add the agent to the fake hcom's list (<dir>/hcom-added.json), the way
+// typing `hcom start --as` brings one back.
 // `slowMs: { <command>: ms }` makes a command wait that long before it answers.
 // `failSeries: { <command>: [...] }` gives that command's next calls in turn: an entry `{ exit, stderr }`
 // acts out a failure, null answers as usual; once the series is used up, `fail` applies again.
@@ -74,6 +76,12 @@ export async function runHerdr(/** @type {string} */ dir, /** @type {string[]} *
 		write(planFile, JSON.stringify(plan));
 		stdout += JSON.stringify({ id: 'cli:tab:rename', result: { type: 'ok' } });
 	} else if (command === 'agent prompt' || command === 'agent send-keys') {
+		const back = command === 'agent prompt' ? plan.reconnect?.[args[2]] : undefined;
+		if (back) {
+			const addedFile = join(dir, 'hcom-added.json');
+			const added = existsSync(addedFile) ? JSON.parse(readFileSync(addedFile, 'utf8')) : [];
+			write(addedFile, JSON.stringify([...added, back]));
+		}
 		stdout += JSON.stringify({ id: `cli:agent:${args[1]}`, result: { type: 'ok' } });
 	} else {
 		stderr += `unexpected herdr command: ${args.join(' ')}\n`;

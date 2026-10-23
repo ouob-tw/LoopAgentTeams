@@ -74,6 +74,7 @@ function snapshotOf(agents: Agent[], archived: string[] = [], closed: Omit<Close
 		duties: new Map(),
 		reportsError: null,
 		running: new Set(running),
+		paused: new Set(),
 		hcomError: null,
 		agents,
 		herdrError: null,

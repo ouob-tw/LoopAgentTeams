@@ -23,7 +23,7 @@ import time
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import process_starttime, run_cli, write_json_atomic
+from _lat_common import process_starttime, run_cli, write_json_atomic, read_hcom_pauses
 
 SKILL_DIR = Path(__file__).resolve().parents[1]
 MARKER = 'HCOM_PROCESS_ID'
@@ -458,12 +458,15 @@ def read_keeps(directory):
     return keeps
 
 
-def keep_release(keep, agents, moment):
+def keep_release(keep, agents, moment, paused=None):
     """Why a keep no longer holds, or None while it does."""
     if keep.get('released_at'):
         return 'released by its orchestrator'
     if parse_time(keep['until']) <= moment:
         return 'expired'
+    paused = read_hcom_pauses() if paused is None else paused
+    if keep['by'] in paused:
+        return None
     if not any(keep['by'] in (agent['name'], agent['base']) for agent in agents.values()):
         return 'its orchestrator is no longer running'
     return None
@@ -484,12 +487,13 @@ def same_id_descendants(pid, world, children):
 def plan(world, keeps, moment, only=None):
     """Return (targets, kept, live keeps, released keeps); targets map pid -> why."""
     children = children_map(world.processes)
+    paused = read_hcom_pauses()
     targets, kept, live_keeps, released = {}, {}, [], []
     for keep in keeps:
         process = world.processes.get(keep['pid'])
         if process is None or process.starttime != keep['starttime']:
             continue
-        why = keep_release(keep, world.agents, moment)
+        why = keep_release(keep, world.agents, moment, paused)
         group = {process.pid} | same_id_descendants(process.pid, world, children)
         if why is None:
             live_keeps.append(keep)

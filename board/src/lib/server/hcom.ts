@@ -152,6 +152,12 @@ export function killAgent(config: BoardConfig, name: string): Promise<ExternalRe
 	return runCommand(config.hcomCommand, ['kill', name], { timeoutMs: config.hcomListTimeoutMs });
 }
 
+/** Take one agent off hcom without closing it: its process and Herdr pane stay. Whether it left
+ *  hcom's list is for the caller to check. */
+export function stopAgent(config: BoardConfig, name: string): Promise<ExternalResult> {
+	return runCommand(config.hcomCommand, ['stop', name], { timeoutMs: config.hcomListTimeoutMs });
+}
+
 /** The arguments hcom repeats when it resumes this session: those its latest `stopped` event kept
  *  of the launch before. An empty list when hcom never stopped it (a session started outside hcom
  *  has none to repeat); null when they cannot be read. */

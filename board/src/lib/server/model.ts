@@ -36,6 +36,9 @@ export interface Sources {
 	reportsError: string | null;
 	/** Session IDs in hcom's last list that could be read; null until one could. */
 	running: Set<string> | null;
+	/** Session IDs with a pause record whose session hcom's list does not have on its link: a
+	 *  controller among them is still running, though hcom does not reach it. */
+	paused: Set<string>;
 	/** Set when `running` is not from this read: why hcom's list could not be read. */
 	hcomError: string | null;
 	/** Every agent Herdr lists, for the Herdr 分頁: the last list that could be read. */
@@ -72,8 +75,16 @@ export function withRecorded(controllers: HelperController[], answered: Answered
 /** Whether this controller was bound at the last read and its client is gone from hcom's list.
  *  Without any list read yet nothing is closed, nor is a controller bound since the last read. */
 export function isClosed(sources: Sources, sessionId: string): boolean {
-	return sources.running !== null && !sources.running.has(sessionId) && sources.active.some((binding) => binding.session_id === sessionId);
+	return (
+		sources.running !== null &&
+		!sources.running.has(sessionId) &&
+		!sources.paused.has(sessionId) &&
+		sources.active.some((binding) => binding.session_id === sessionId)
+	);
 }
+
+/** Whether this controller's HCOM link is paused. */
+export const isPaused = (sources: Pick<Sources, 'paused'>, sessionId: string): boolean => sources.paused.has(sessionId);
 
 /** The roster's order of status groups. */
 const STATUS_ORDER: ControllerStatus[] = ['waiting', 'working', 'delivered', 'idle', 'closed'];
@@ -317,6 +328,7 @@ function activeController(binding: HelperController, file: ReportFile | undefine
 		client: binding.client,
 		status,
 		running: true,
+		paused: false,
 		phase: latest ? latest.summary : null,
 		pendingCount,
 		herdr: { workspace: binding.herdr_workspace, tab: binding.herdr_tab, pane: binding.herdr_pane },
@@ -331,18 +343,21 @@ function closedController(binding: HelperController, file: ReportFile | undefine
 	return { ...activeController(binding, file, duty), status: 'closed', running: false, pendingCount: 0, herdr: null, error: reportError(file) };
 }
 
-/** A controller whose LAT round is no longer bound: 閒置 while its conversation is in hcom's list,
- *  or before any list was read; 已關閉 once it is gone from it. */
-function endedController(file: ReportFile, running: Set<string> | null, duty: RecordedDuty | undefined): Controller {
+/** A controller whose LAT round is no longer bound: 閒置 while its conversation is in hcom's list
+ *  or paused, or before any list was read; 已關閉 once it is gone from it. */
+function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'paused'>, duty: RecordedDuty | undefined): Controller {
 	const latest = file.reports.at(-1)!;
+	const running = sources.running;
+	const paused = isPaused(sources, file.sessionId);
 	return {
 		id: file.sessionId,
 		hcomName: latest.hcom_name,
 		project: basename(latest.workspace),
 		workspace: latest.workspace,
 		client: latest.client,
-		status: running === null || running.has(file.sessionId) ? 'idle' : 'closed',
-		running: running?.has(file.sessionId) ?? false,
+		status: running === null || running.has(file.sessionId) || paused ? 'idle' : 'closed',
+		running: (running?.has(file.sessionId) ?? false) || paused,
+		paused,
 		phase: latest.summary,
 		pendingCount: 0,
 		herdr: null,
@@ -371,7 +386,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		// (read ones count), like an unbound one; still bound, it is a controller on the Herdr tab.
 		const closed = isClosed(sources, binding.session_id);
 		const duty = sources.duties.get(binding.session_id);
-		const controller = closed ? closedController(binding, file, duty) : activeController(binding, file, duty);
+		const controller = closed ? closedController(binding, file, duty) : { ...activeController(binding, file, duty), paused: isPaused(sources, binding.session_id) };
 		if (sources.helperError) {
 			controller.error = joinErrors(`資料可能過期，輔助工具失敗：${sources.helperError}`, controller.error);
 		}
@@ -396,7 +411,7 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 	// on the roster only while one of their reports is not yet archived (read ones count).
 	for (const file of files.values()) {
 		if (withInboxReport.has(file.sessionId)) {
-			const controller = endedController(file, sources.running, sources.duties.get(file.sessionId));
+			const controller = endedController(file, sources, sources.duties.get(file.sessionId));
 			if (sources.helperError) {
 				// Without the registry there is no telling whether it has really ended.
 				controller.error = joinErrors(

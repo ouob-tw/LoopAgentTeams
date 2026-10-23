@@ -9,7 +9,7 @@
 
 <strong>{controller.project}</strong>
 <span class="handle">@{controller.hcomName}</span>
-<span>{STATUS_LABEL[controller.status]}：{phaseText(controller)}</span>
+<span>{STATUS_LABEL[controller.status]}{controller.paused ? '・暫停通訊' : ''}：{phaseText(controller)}</span>
 {#if controller.pendingCount}<span>待決 {controller.pendingCount} 題</span>{/if}
 {#if controller.error}<span class="error">⚠ {controller.error}</span>{/if}
 {#if controller.duty}

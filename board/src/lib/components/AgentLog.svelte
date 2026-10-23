@@ -23,9 +23,12 @@
 	);
 	/** A switch whose result is good or still on its way is not shown as a failure. */
 	const switchFailed = (entry: SwitchView) => entry.state !== 'done' && entry.state !== 'resuming' && entry.state !== 'abandoned';
-	const DONE_LABEL = { send: '已送出', interrupt: '已送出 Esc', close: '已關閉', move: '已移動', rename: '已改名', resume: '已接回' } as const;
+	const DONE_LABEL = { send: '已送出', interrupt: '已送出 Esc', close: '已關閉', move: '已移動', rename: '已改名', resume: '已接回', pause: '已暫停通訊', unpause: '已恢復通訊' } as const;
 	function routeLabel(entry: AgentAction): string {
-		if (entry.route === 'hcom') return entry.action === 'close' ? '（hcom kill）' : entry.action === 'resume' ? '（hcom r）' : '（HCOM 輸入框）';
+		if (entry.route === 'hcom') {
+			const command = { close: '（hcom kill）', resume: '（hcom r）', pause: '（hcom stop）' } as Partial<Record<AgentAction['action'], string>>;
+			return command[entry.action] ?? '（HCOM 輸入框）';
+		}
 		return entry.route === 'herdr' ? '（Herdr）' : '';
 	}
 	// Each new board data hands this component a new `agent` object, so the record is read again

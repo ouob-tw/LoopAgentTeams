@@ -6,6 +6,7 @@ import type { SwitchAgent, SwitchView } from '../board/models.ts';
 import { AGENT_STATUSES, type Agent, type AgentStatus, type AgentSwitch, type HerdrWorkspace } from '../board/types.ts';
 import type { AgentList, HcomAgent } from './hcom.ts';
 import type { HerdrAgent } from './herdr.ts';
+import { isConnected, type PauseRecord } from './paused.ts';
 
 export type HerdrAgentList = { ok: true; agents: HerdrAgent[]; workspaces: HerdrWorkspace[] } | { ok: false; reason: string };
 
@@ -40,13 +41,14 @@ function switchOf(view: SwitchView | undefined): AgentSwitch | null {
 const pairingKey = (agent: HerdrAgent) => agent.sessionId ?? `pane:${agent.pane}`;
 
 interface AgentRoster {
-	/** Fold in this read's lists and the open model switches; returns the agents and Herdr's
-	 *  workspaces to show and, when Herdr's list is not this read's, why. */
+	/** Fold in this read's lists, pause records and open model switches; returns the agents and
+	 *  Herdr's workspaces to show and, when Herdr's list is not this read's, why. */
 	update(
 		herdr: HerdrAgentList,
 		hcom: AgentList,
 		controllers: Set<string>,
-		switches: SwitchView[]
+		switches: SwitchView[],
+		paused?: Map<string, PauseRecord>
 	): { agents: Agent[]; workspaces: HerdrWorkspace[]; herdrError: string | null };
 }
 
@@ -59,7 +61,7 @@ export function createAgentRoster(): AgentRoster {
 	let pairings = new Map<string, HcomAgent | null>();
 
 	return {
-		update(herdr, hcom, controllers, switches) {
+		update(herdr, hcom, controllers, switches, paused = new Map()) {
 			if (herdr.ok) {
 				lastHerdr = herdr.agents;
 				lastWorkspaces = herdr.workspaces;
@@ -70,12 +72,18 @@ export function createAgentRoster(): AgentRoster {
 				// A list that cannot be read does not mean an agent is not linked: the last pairing stands,
 				// and one that appeared since no list was read is not known either way.
 				const paired = pairings.get(pairingKey(agent));
-				const linked = paired ?? undefined;
-				const hcomState = linked ? 'linked' : paired === null ? 'none' : 'unknown';
+				// Paused unless hcom has it on its link again: listed but not bound (a Codex `!hcom
+				// start` registers, then fails) is still paused. Whether it is cannot be told without a
+				// list read now: the last one may be from before the stop.
+				const record = agent.sessionId ? paused.get(agent.sessionId) : undefined;
+				const pausedNow = record !== undefined && (!hcom.ok || !(paired && isConnected(paired)));
+				const linked = pausedNow ? undefined : (paired ?? undefined);
+				const hcomState = pausedNow ? (hcom.ok ? 'paused' : 'unknown') : linked ? 'linked' : paired === null ? 'none' : 'unknown';
+				const hcomName = pausedNow ? record.hcom_name : (linked?.name ?? null);
 				return {
 					id: agent.sessionId,
-					name: linked?.name ?? agent.title ?? agent.pane,
-					hcomName: linked?.name ?? null,
+					name: hcomName ?? agent.title ?? agent.pane,
+					hcomName,
 					hcom: hcomState,
 					client: agent.client,
 					folder: agent.cwd,
