@@ -179,7 +179,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 改分頁名稱（`POST /api/agents/tab/rename`，`session`、`workspace`、`tab`、`label`）：卡片按右鍵（觸控長按 450ms，移動超過 8px 取消）開自訂選單，唯一項目「改分頁名稱」，卡片標題變成預填目前分頁名稱的輸入框；Enter 儲存（輸入法選字的 Enter 不算），Esc 或失焦取消，空白不送出（伺服器去掉前後空白後是空的也回 400），名稱沒變不送出。執行 `herdr tab rename <分頁> <名稱>`。
 - 兩者都先以 `herdr tab list --workspace` 確認分頁仍在那個工作區（`onto` 也要在），不在或清單讀不到就拒絕（409）、不呼叫 Herdr；Herdr 拒絕或逾時回 502 並附上原因。看板自己所在的分頁也能排序與改名。同一工作區的請求依序執行（`queued`）。不論結果都先重讀資料才回應，所以清單顯示的是 Herdr 實際的順序與名稱；頁面不先自己挪動卡片。每次都寫一行操作紀錄（`action` 是 `move` 或 `rename`，文字欄寫移動或改名的內容），記在拖曳或改名的那張卡片的 Agent 下（卡片還沒有 session ID 時 `agentId` 是空字串）。只在 Herdr 清單上的 Agent 有把手與選單；只因切換未完成而列出的沒有。看板不提供分割、搬到新分頁、跨工作區搬移或關閉整個分頁。
 - 開新 Agent：見「新建主控」的實作說明最後一段。
-- 暫停通訊（`POST /api/agents/pause`，`session`）：只給這次讀到有接 HCOM 的 Agent，按鈕在「關閉 Agent」旁（`AgentClose.svelte`，主控從 Herdr 分頁打開時也有）。看板自己的窗格（Herdr 的或 hcom 記的）拒絕；先重讀 `hcom list --json`，這個名稱仍是同一個 session 才做。先以暫存檔改名寫暫停紀錄（`<session_id>.json`，欄位 `session_id`、`hcom_name`、`client`、`pane`、`paused_at`），寫不進去就不停止，再執行 `hcom stop <HCOM 名稱>`（逾時同 `LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS`）。之後重讀 hcom 清單（最多 5 次、每次隔 0.4 秒）：不在連線上就成功；仍在連線上就刪掉紀錄並回 502；都讀不到時保留紀錄、回 502 說明無法確認，畫面顯示「HCOM 連線無法確認」，等讀得到清單再判斷。暫停中的 Agent 標示「暫停通訊」，傳話走 Herdr 直接輸入，不能切換模型，關閉走 `herdr pane close`；暫停中的主控仍算進行中（不是已關閉），待答題目照列，從主控資訊頁傳話也改走 Herdr。
+- 暫停通訊（`POST /api/agents/pause`，`session`）：只給這次讀到有接 HCOM 的 Agent，按鈕在「關閉 Agent」旁（`AgentClose.svelte`，主控資訊頁與 Herdr 分頁的主控頁也有），按下就送出、不再確認；旁邊的說明圖示（`aria-expanded` 的按鈕）點開在按鈕下方列出 `AGENT_PAUSE_POINTS` 的重點，再點一次、點別處或按 Esc 收起。看板自己的窗格（Herdr 的或 hcom 記的）拒絕；先重讀 `hcom list --json`，這個名稱仍是同一個 session 才做。先以暫存檔改名寫暫停紀錄（`<session_id>.json`，欄位 `session_id`、`hcom_name`、`client`、`pane`、`paused_at`），寫不進去就不停止，再執行 `hcom stop <HCOM 名稱>`（逾時同 `LAT_BOARD_HCOM_LIST_TIMEOUT_SECONDS`）。之後重讀 hcom 清單（最多 5 次、每次隔 0.4 秒）：不在連線上就成功；仍在連線上就刪掉紀錄並回 502；都讀不到時保留紀錄、回 502 說明無法確認，畫面顯示「HCOM 連線無法確認」，等讀得到清單再判斷。暫停中的 Agent 標示「暫停通訊」，傳話走 Herdr 直接輸入，不能切換模型，關閉走 `herdr pane close`；暫停中的主控仍算進行中（不是已關閉），待答題目照列，從主控資訊頁傳話也改走 Herdr。
 - 恢復通訊（`POST /api/agents/unpause`，`session`）：只給暫停中的 Agent。Herdr 顯示它在工作或停在確認畫面時拒絕；hcom 清單讀不到、或同名已被另一個 session 用著時也拒絕。以 `herdr agent prompt <窗格> <文字>` 打入接回指令：Claude 用 `!hcom start --as <名稱>`；Codex 的 `!` 指令不會跑回合，hcom 綁不回去（約 40 秒後標成 launch_failed），所以 Codex 與其他 client 改打一句請它執行 `hcom start --as <名稱>` 的話。之後每秒讀 hcom 清單，等到同一個 session 以原名稱、狀態為 `listening`／`active`／`blocked` 出現才算成功並刪紀錄；同名不同 session 不算。等滿 `LAT_BOARD_UNPAUSE_WAIT_SECONDS` 仍沒有就回 502 並保留紀錄。
 - 暫停紀錄的清除：每次讀取資料時，該 session 回到 hcom 清單的連線上（不論怎麼接回的）、或它的窗格已不在 Herdr（`agent list` 沒有它時再以 `pane list` 確認）就刪掉；清單讀不到時不刪，讀取開始前之後才寫的紀錄與正在暫停中的也不刪。關閉成功時也刪。讀不出來或欄位不全的檔案當成沒有。
 - 已關閉（`src/lib/server/closed-agents.ts`、`ClosedAgents.svelte`）：每次讀到 Herdr 清單時，把清單上有 session ID 的 Agent 記在看板狀態目錄的 `seen-agents.json`（session ID、HCOM 名稱、client、資料夾、分頁名稱、工作區 ID 與名稱、最後看到的時間；時間最多每小時更新一次，其他欄位有變才寫）。同一次讀取另執行 `hcom events --type life --action stopped --full --after <看板時鐘往回 7×24 小時> --last 100000`；只有 `--full` 的事件帶 `snapshot.session_id`，`ts` 沒帶時區時當成 UTC（hcom 0.7.30 實測）。列入條件：看板記過它；目前不在 Herdr 清單、不在 hcom 清單（依 session ID）、沒有未結案的模型切換；這個 session 最後一筆停止事件（依事件 ID）的 `by` 是 `cli`（看板關閉或 `hcom kill`）、`pty`（Herdr 窗格關掉）、`session`（client 自己結束）或 `system`（程序結束），其他 Agent 名稱與 `subagent` 不列（2026-10-20 核對 hcom 0.7.30 的實際紀錄：只見過這六類）；停止未滿 7×24 小時；有已保存的對話：以 `board transcript` 往回讀（最多 20 頁）找得到 `kind: user`，`not_found` 或沒有使用者訊息都不列，讀不出來也不列（同一筆停止 1 分鐘內不再問；確定的結果依 session 與停止事件記在記憶體）。Herdr 或 hcom 清單看板啟動後還沒讀到過時都不列；停止紀錄讀不到時沿用上次的並在區塊裡說明。停止滿 7×24 小時（沒有停止紀錄的看最後看到的時間）、又不在 Herdr 清單上的紀錄從檔案刪掉；停止紀錄讀不到時不刪。資料推送帶 `snapshot.closed`（`agents` 新到舊、`error`、看板主機的時區 `timeZone`）；在主控名冊上的標 `controller`。
@@ -225,7 +225,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 接回開出的新分頁會移到該工作區的最前面（喚醒與切換模型都一樣）：窗格一查到（接回當下，或之後補記 `resume-pane` 時；切換模型的接回只補記，窗格取 Herdr 執行這個 session 的窗格，因為停止後 hcom 清單可能還列著已關閉的舊窗格），看板從 `herdr pane list` 找出它的分頁，再經 Herdr 的連線介面送 `tab.move`（`insert_index: 0`；Herdr 0.9.3 的 CLI 沒有移動分頁的指令）。連線介面預設是 `~/.config/herdr/herdr.sock`，可用 `HERDR_SOCKET_PATH` 指定。移動在結果寫進紀錄之後才做、不等它完成，失敗也不影響接回。
 - 未結案的接回由後來追加的行結案：`resume-closed` 記結果（`succeeded`、`ended`、`abandoned`），`resume-pane` 補記後來才查到的窗格。每次讀取資料讀到的 hcom 清單上出現該 session，就結案為成功。
 - 再次喚醒前的查證依序是：session 在 hcom 清單上 → 結案為成功，改走輸入框；清單上有主控原本的名稱或接回輸出的名稱（含還沒綁定的 Agent）或記下的窗格還在 `herdr pane list` 裡 → 拒絕；記下的窗格已不在 → 結案為已結束，照常接回；沒記到窗格 → 拒絕並回傳可放棄的那一筆（`abandon`）。窗格清單讀不到也拒絕。等待時間只用來顯示提示，不會放行。
-- 閒置主控的資訊頁有「關閉」（`ControllerInfo.svelte`），與 Herdr 分頁的「關閉 Agent」共用 `AgentClose.svelte` 與 `POST /api/agents/close`：拒絕條件、確認與結果通知都相同，確認文字一律說明可以從主控資訊頁喚醒接回，與從 Herdr 分頁打開它時相同。按鈕只在這次讀到的 Herdr 清單上有同一個 session ID 的 Agent 時出現，找不到時說明無法從這裡關閉；它有未完成的模型切換時，與 Agent 頁面一樣不顯示按鈕、只說明要先處理切換；其他狀態的主控沒有這個按鈕；進行中的主控在 Herdr 清單上有接 HCOM 或暫停通訊時，改成只有「暫停通訊」／「恢復通訊」（`AgentClose.svelte` 的 `close={false}`；有未完成的模型切換時照 Agent 頁只說明要先處理切換）。關閉後 session 從 hcom 清單消失，下一次讀取資料就顯示為已關閉。
+- 閒置主控的資訊頁有「關閉」（`ControllerInfo.svelte`），與 Herdr 分頁的「關閉 Agent」共用 `AgentClose.svelte` 與 `POST /api/agents/close`：拒絕條件、確認與結果通知都相同，確認文字一律說明可以從主控資訊頁喚醒接回，與從 Herdr 分頁打開它時相同。按鈕只在這次讀到的 Herdr 清單上有同一個 session ID 的 Agent 時出現，找不到時說明無法從這裡關閉；它有未完成的模型切換時，與 Agent 頁面一樣不顯示按鈕、只說明要先處理切換；進行中的主控同樣在 Herdr 清單上找得到時有「關閉 Agent」（與 Herdr 分頁的主控頁相同），有接 HCOM 或暫停通訊時旁邊另有「暫停通訊」／「恢復通訊」；有未完成的模型切換時照 Agent 頁只說明要先處理切換。關閉後 session 從 hcom 清單消失，下一次讀取資料就顯示為已關閉。
 - 測試以 `tests/fake-hcom.mjs`（`list --json` 與 `r`）、`tests/fake-herdr.mjs`、`tests/fake-inject.mjs` 代替真的指令。
 
 ## 模型與思考強度
@@ -268,7 +268,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 
 使用方式見[使用說明](../docs/lat-board.md#語音輸入)。實作上：功能開關記在瀏覽器的 localStorage，連按「待辦」分頁 5 次切換。
 
-- 錄音送到看板伺服器的 `/api/voice`，由伺服器帶著憑證轉給語音辨識服務（見「設定」的 `LAT_BOARD_ASR_*`）；結果用 opencc-js 轉成台灣正體（含用詞）。放入時只取代選取的文字；錄音最長約 3 分鐘（略短於語音辨識服務的 180 秒上限）。
+- 錄音送到看板伺服器的 `/api/voice`，由伺服器帶著憑證轉給語音辨識服務（見「設定」的 `LAT_BOARD_ASR_*`）；結果用 opencc-js 轉成台灣正體字（`traditional.ts` 的 `toTraditionalChars`，`cn` → `tw`，只轉字、不換用詞；翻譯用的 `toTraditional` 仍是 `twp`、含用詞），Codex 整理的提示也要它保留原本的用詞。放入時只取代選取的文字；錄音最長約 3 分鐘（略短於語音辨識服務的 180 秒上限）。
 - 20 個字以內直接放到游標處；更長的先交給 Codex app server 修錯字、去掉口誤與贅字再放入。Codex 失敗、看不懂或逾時就放轉換後的原文，並以通知說明原因。
 - 測試以 Bun 啟動的假語音辨識服務與 `tests/fake-codex.mjs`（假的 Codex app server）代替真的服務，不會呼叫外部服務。
 
@@ -360,6 +360,8 @@ bun run repro:hydration --serve none       # 只啟動已登入的假資料看�
 bun run build:test && bun run measure:commandline   # 無頭 Chrome；違反規則就以 1 結束；使用測試連接埠起點加 16 與加 17
 bun scripts/measure-commandline.ts --serve     # 啟動已登入的假資料看板，再用 scripts/measure-commandline.py 以 WebKit 量同樣的案例
 ```
+
+手機寬度（760px 以下）的指令列分兩行：迴紋針與麥克風由 `CommandLine.svelte` 自己放（`MessageBox` 的 `tools={false}`，麥克風呼叫它的 `insert`），寬版時仍在輸入框左邊、外觀與放在框內時相同；手機時外層改成 `display: contents`，以 `order` 排成第一行只有輸入框，第二行迴紋針、模型與思考強度、麥克風、喚醒選項、收起鈕（最右）。模型標籤的選單在手機改從指令列左側往上展開。`tests/browser/command-line-layout.test.ts` 檢查寬版一行與 360、390px 兩行的順序、每個按鈕點得到、沒有橫向捲動，以及收起後能再展開。
 
 錯誤紀錄的伺服器端在 `tests/server/server-log.test.ts`（起點加 63），格式與限頻本身在 `tests/unit/log.test.ts`；`tests/browser/client-error-page.test.ts` 用無頭 Chrome（起點加 64 與加 65）讓頁面變成 Internal Error，檢查 journal 那一行。
 
