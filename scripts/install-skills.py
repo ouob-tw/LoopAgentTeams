@@ -10,8 +10,10 @@ bunx reads a snapshot of the checked content, so a change made meanwhile is not 
 """
 import argparse
 import importlib.util
+import os
 import re
 import shlex
+import shutil
 import subprocess
 import sys
 import tempfile
@@ -89,15 +91,32 @@ def check(gate, folders):
     return tree, lacking
 
 
+def find_bunx():
+    """bunx from PATH, else ~/.bun/bin/bunx (Bun's installer puts it there, and agent shells
+    often lack that directory on PATH); None when neither exists."""
+    found = shutil.which('bunx')
+    if found:
+        return found
+    fallback = Path.home() / '.bun/bin/bunx'
+    if fallback.is_file() and os.access(fallback, os.X_OK):
+        return str(fallback)
+    return None
+
+
 def install(tree, names, folders):
     """Run bunx on a snapshot of the folders as they are in tree."""
+    bunx = find_bunx()
+    if not bunx:
+        raise RuntimeError(f"bunx not found: not on PATH and not at "
+                           f"{Path.home() / '.bun/bin/bunx'}. "
+                           'Install Bun (https://bun.sh) or add ~/.bun/bin to PATH.')
     with tempfile.TemporaryDirectory(prefix='lat-skills-') as snapshot:
         archive = subprocess.run(['git', 'archive', '--format=tar', tree, '--', *folders],
                                  cwd=ROOT, capture_output=True)
         if archive.returncode != 0:
             raise RuntimeError(f'git archive failed: {archive.stderr.decode().strip()}')
         subprocess.run(['tar', '-x', '-C', snapshot], input=archive.stdout, check=True)
-        command = ['bunx', 'skills', 'add', snapshot, '--skill', *names,
+        command = [bunx, 'skills', 'add', snapshot, '--skill', *names,
                    '--global', '--agent', 'claude-code', 'codex', '--yes']
         print(shlex.join(command), flush=True)
         return subprocess.run(command).returncode

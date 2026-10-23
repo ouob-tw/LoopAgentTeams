@@ -46,7 +46,7 @@ systemd-run --user --scope -p AllowedCPUs=0-3 stress-ng --cpu 4 -t 60
 uv run --no-project python <repo>/scripts/install-skills.py [--skill NAME ...]
 ```
 
-腳本只在每個要裝的技能資料夾目前內容都有通過的整套測試紀錄時才安裝；被拒時照它列出的指令透過 suite-gate 跑完測試再裝。不要繞過 hook 改用其他寫法直接安裝。
+腳本只在每個要裝的技能資料夾目前內容都有通過的整套測試紀錄時才安裝；被拒時照它列出的指令透過 suite-gate 跑完測試再裝。腳本會自己找 `bunx`（PATH 上沒有就用 `~/.bun/bin/bunx`），Agent 的 shell PATH 沒有 `~/.bun/bin` 也不必處理。不要繞過 hook 改用其他寫法直接安裝。
 
 ## 設定
 
