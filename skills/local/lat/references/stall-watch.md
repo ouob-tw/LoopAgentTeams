@@ -209,3 +209,27 @@ Codex 的觀察紀錄以 `codex_turn_finished` 表示回合已結束（`true`）
 彈出通知只有一行：`<client><原因>: <workspace> <分頁> <Agent 名稱>`，原因為「額度不足」「模型滿載」「停住」「待核准」「輸入未送出」之一，例如 `claude額度不足: LAT 1 vare`；查不到 Herdr 位置時省略 workspace 與分頁。細節只寫在主控對話的說明裡。
 
 主控回到工作後讀到這些說明時，照上一節處理該 Agent；使用者已經收到通知，不必另外轉述，除非需要使用者決定或協助。
+
+
+## Paused HCOM communication
+
+The board writes one `<session_id>.json` per paused agent, using a temporary file and rename.
+The shared directory is the absolute `LAT_HCOM_PAUSED_DIR` override, otherwise
+`$XDG_STATE_HOME/lat/hcom-paused/`. An unset or relative `XDG_STATE_HOME` falls back to
+`~/.local/state/lat/hcom-paused/`; a relative pause-directory override is ignored.
+Each record contains `session_id`, full `hcom_name`, `client`, nullable Herdr `pane`,
+and `paused_at` (UTC ISO 8601). The filename must match `session_id`.
+Unreadable or incomplete records are ignored with one warning per invalid path until
+repaired or removed; the watcher records this as `pause-record-invalid`.
+
+Before observing the orchestrator or a task-card agent, the watcher checks its full
+HCOM name against these records. During a pause it sends no nudge, keep-alive or alarm,
+and emits no disappearance or unavailable-alarm notification. Missing-agent counters
+stay unchanged; the orchestrator's missing timer is cleared, so a pause cannot stop
+its watcher after 60 minutes. Each observed pause segment produces one `paused` entry
+in `watch.jsonl`, including across watcher restarts. Once the record disappears, the
+next cycle applies the normal rules, including existing alarm deadlines.
+
+The board owns record creation and removal. Tests must set `LAT_HCOM_PAUSED_DIR` and
+all other state directories to temporary locations. For retained services, see
+[task cleanup](task-cards.md#paused-orchestrators-and-retained-services).

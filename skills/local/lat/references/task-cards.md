@@ -106,3 +106,12 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 [Spec 文件審查](spec-review.md#收尾) 沒有 commit，不適用上述合併門檻：使用者確認或放棄該 Spec 後，主控先將 status 改為 `completed`、deliverable commit 填「無（證據為 issue 留言）」並把任務卡移至 `.lat/tasks/done/`，再關閉審查者。
 
 參謀沒有 commit：階段交界、任務交付或取消時，主控將 status 改為 `completed`、deliverable commit 填「無（參謀無提交）」，先移卡至 `.lat/tasks/done/`，再關閉 Agent。
+
+
+### Paused orchestrators and retained services
+
+`lat-reap.py` reads the [shared pause records](stall-watch.md#paused-hcom-communication)
+when evaluating service keeps. A paused full HCOM name counts as a present orchestrator,
+including when another orchestrator's watcher triggers periodic reaping. Its unexpired
+keeps remain valid. Explicit release and expiration still take precedence; removing
+the pause record restores the ordinary absent-orchestrator rule on the next reap.

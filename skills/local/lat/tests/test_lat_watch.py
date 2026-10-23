@@ -30,7 +30,11 @@ def load_watch():
 
 def setUpModule():
     # No test may run a real reap against the host; tests that check the call replace this.
-    patcher = patch.dict(os.environ, LAT_REAP_COMMAND='true')
+    isolated = tempfile.TemporaryDirectory()
+    unittest.addModuleCleanup(isolated.cleanup)
+    patcher = patch.dict(os.environ, LAT_REAP_COMMAND='true',
+                         LAT_HCOM_PAUSED_DIR=isolated.name + '/paused',
+                         XDG_STATE_HOME=isolated.name + '/state')
     patcher.start()
     unittest.addModuleCleanup(patcher.stop)
 
@@ -4869,7 +4873,8 @@ class PinnedEnvironment(unittest.TestCase):
         self.usage = self.root / 'usage'
         self.usage.mkdir()
         environment = patch.dict(os.environ, {'LAT_USAGE_DIR': str(self.usage),
-                                              'TZ': 'Asia/Taipei'})
+                                              'TZ': 'Asia/Taipei',
+                                              'LAT_HCOM_PAUSED_DIR': str(self.root / 'paused')})
         environment.start()
         self.addCleanup(time.tzset)
         self.addCleanup(environment.stop)
@@ -5131,6 +5136,78 @@ esac
         self.watch = load_watch()
         self.wait_file = self.watch.wait_path(self.work, 'worker')
         self.agents = json.loads(agents)
+        self.start = taipei(10)
+
+    def pause(self, agent):
+        directory = self.root / 'paused'
+        directory.mkdir(exist_ok=True)
+        path = directory / f'{agent}-session.json'
+        path.write_text(json.dumps(dict(session_id=f'{agent}-session', hcom_name=agent,
+                                        client='claude', pane=None,
+                                        paused_at='2026-10-23T00:00:00Z')))
+        return path
+
+    def test_paused_missing_agents_do_not_notify_or_stop_and_resume_next_cycle(self):
+        paths = [self.pause(agent) for agent in ('worker', 'helper')]
+        Path(f'{self.hcom_log}.agents').write_text('[]')
+        self.declare(kind='alarm', due_at=self.start, expires_at=self.start + 60)
+        for now in (self.start, self.start + 7200, self.start + 10800):
+            self.assertIsNone(self.watch.run_cycle(
+                self.work, self.tasks, self.decisions, 'worker', now=now))
+        self.assertEqual(len(self.records('paused')), 2)
+        self.assertNotIn('missing_since', self.state()['worker'])
+        self.assertNotIn('missing_cycles', self.state()['helper'])
+        self.assertEqual(self.records('agent-disappeared'), [])
+        self.assertEqual(self.records('alarm-notified'), [])
+        self.assertFalse(any(line.startswith(('term inject', 'send '))
+                             for line in self.hcom_log.read_text().splitlines()))
+        for path in paths:
+            path.unlink()
+        self.cycle(self.start + 10860, self.start + 10920)
+        self.assertEqual(self.state()['helper']['missing_cycles'], 2)
+        self.assertTrue(self.records('agent-disappeared'))
+        self.assertTrue(self.records('alarm-notified'))
+        self.assertIsNotNone(self.watch.run_cycle(
+            self.work, self.tasks, self.decisions, 'worker', now=self.start + 14460))
+
+    def test_paused_listed_agents_skip_due_nudges_and_alarm_then_resume(self):
+        self.cycle(self.start)
+        paths = [self.pause(agent) for agent in ('worker', 'helper')]
+        self.declare(kind='alarm', due_at=self.start + 30, expires_at=self.start + 3600)
+        self.cycle(self.start + 600, self.start + 900)
+        self.assertEqual(self.injections(), [])
+        self.assertEqual(self.records('alarm-ring'), [])
+        self.assertFalse(any(line.startswith('term inject helper')
+                             for line in self.hcom_log.read_text().splitlines()))
+        for path in paths:
+            path.unlink()
+        self.cycle(self.start + 960)
+        self.assertEqual(len(self.records('alarm-ring')), 1)
+        self.assertTrue(any(line.startswith('term inject helper')
+                            for line in self.hcom_log.read_text().splitlines()))
+        self.pause('worker')
+        self.cycle(self.start + 1020)
+        self.assertEqual(len(self.records('paused')), 3)
+
+    def test_pause_suppresses_keepalive_until_record_is_removed(self):
+        path = self.pause('worker')
+        self.declare(deadline_at=self.start + 3600)
+        self.write_usage(self.start + 600)
+        self.cycle(self.start, self.start + 60)
+        self.assertEqual(self.injections(), [])
+        path.unlink()
+        self.cycle(self.start + 120)
+        self.assertEqual(len(self.injections()), 1)
+        self.assertIn('Prompt cache keep-alive', self.injections()[0])
+
+    def test_invalid_pause_records_warn_once_without_aborting_cycle(self):
+        directory = self.root / 'paused'
+        directory.mkdir()
+        (directory / 'broken.json').write_text('{')
+        (directory / 'incomplete.json').write_text('{"hcom_name":"worker"}')
+        self.cycle(self.start, self.start + 600)
+        self.assertEqual(len(self.records('pause-record-invalid')), 2)
+        self.assertEqual(len(self.injections()), 1)
 
     def show(self, status='listening', **terminal):
         """Make the worker report this HCOM status and hcom term result."""

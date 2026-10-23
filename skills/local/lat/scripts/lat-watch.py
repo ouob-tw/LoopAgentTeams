@@ -22,7 +22,7 @@ from typing import NamedTuple
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import DecisionStatus, read_decision_status
 from _lat_common import (process_starttime, run_cli, shared_lat_dir, watcher_process_matches,
-                         write_json_atomic)
+                         write_json_atomic, read_hcom_pauses)
 
 
 IDLE_SECONDS = 10 * 60
@@ -2287,7 +2287,12 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     orchestrator = valid_name(orchestrator)
     path = state_path(workspace, orchestrator)
     log = path.with_name('watch.jsonl')
-    check_rule_changes(workspace, orchestrator, log, now)
+    paused = read_hcom_pauses(lambda path, error: append_log(log, {
+        'at': now, 'decision': 'pause-record-invalid', 'path': str(path),
+        'error': error, 'actions': [],
+    }))
+    if orchestrator not in paused:
+        check_rule_changes(workspace, orchestrator, log, now)
     missing_tasks = path.with_name('tasks-missing')
     incomplete = {}
     if tasks.is_dir():
@@ -2348,6 +2353,16 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
     for agent in agents:
         info = hcom.get(agent)
         previous = states.get(agent, {})
+        if agent in paused:
+            record = paused[agent]
+            segment = [record['session_id'], record['paused_at']]
+            if previous.get('pause_segment') != segment:
+                append_log(log, {'at': now, 'agent': agent, 'decision': 'paused',
+                                 'actions': []})
+            previous['pause_segment'] = segment
+            states[agent] = previous
+            continue
+        previous.pop('pause_segment', None)
         if info is not None:
             previous['last_seen_status'] = info.get('status', 'unknown')
             previous['last_seen_at'] = now
@@ -2432,7 +2447,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                     target_info = agent_info(hcom, target)
                     if target_info:
                         target = target_info['name']
-                    if target in agents and target in hcom and hcom[target].get('status') != 'inactive':
+                    if (target in agents and target not in paused and target in hcom
+                            and hcom[target].get('status') != 'inactive'):
                         # Observing the target runs hcom, so release the lock and compare on return.
                         wait_held.close()
                         try:

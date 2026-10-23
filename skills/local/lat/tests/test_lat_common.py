@@ -152,5 +152,57 @@ class InstalledLayoutTests(unittest.TestCase):
                     self.assertIn('usage:', result.stdout)
 
 
+class HcomPauseTests(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name)
+        environment = patch.dict(os.environ, LAT_HCOM_PAUSED_DIR=str(self.root / 'paused'),
+                                 XDG_STATE_HOME=str(self.root / 'state'))
+        environment.start()
+        self.addCleanup(environment.stop)
+        self.paused = common.hcom_paused_dir()
+        self.paused.mkdir()
+        self.record = dict(session_id='session-1', hcom_name='tag-full-name', client='codex',
+                           pane=None, paused_at='2026-10-23T00:00:00Z')
+
+    def test_directory_precedence_and_relative_xdg_fallback(self):
+        self.assertEqual(common.hcom_paused_dir(), self.paused)
+        with patch.dict(os.environ, LAT_HCOM_PAUSED_DIR=''):
+            self.assertEqual(common.hcom_paused_dir(), self.root / 'state/lat/hcom-paused')
+            with patch.dict(os.environ, XDG_STATE_HOME='relative'), \
+                    patch.object(Path, 'home', return_value=self.root):
+                self.assertEqual(common.hcom_paused_dir(), self.root / '.local/state/lat/hcom-paused')
+
+    def test_invalid_records_warn_once_and_valid_record_survives(self):
+        good = self.paused / 'session-1.json'
+        good.write_text(json.dumps(self.record))
+        (self.paused / 'broken.json').write_bytes(b'\xff')
+        bad = self.paused / 'bad.json'
+        bad.write_text('{}')
+        warnings = []
+        for _ in range(2):
+            self.assertEqual(common.read_hcom_pauses(lambda *args: warnings.append(args)),
+                             {'tag-full-name': self.record})
+        self.assertEqual(len(warnings), 2)
+        bad.write_text(json.dumps({**self.record, 'session_id': 'bad', 'pane': 'pane-1'}))
+        self.assertEqual(common.read_hcom_pauses()['tag-full-name']['session_id'], 'session-1')
+        good.unlink()
+        bad.unlink()
+        self.assertEqual(common.read_hcom_pauses(lambda *args: warnings.append(args)), {})
+
+    def test_incomplete_and_invalid_fields_are_ignored(self):
+        path = self.paused / 'session-1.json'
+        mutations = [{key: value for key, value in self.record.items() if key != missing}
+                     for missing in self.record]
+        mutations += [{**self.record, **change} for change in (
+            {'pane': 42}, {'session_id': 'another'}, {'paused_at': 'yesterday'},
+            {'paused_at': '2026-10-23T00:00:00'}, {'paused_at': '2026-10-23T00:00:00+08:00'})]
+        for record in mutations:
+            with self.subTest(record=record):
+                path.write_text(json.dumps(record))
+                self.assertEqual(common.read_hcom_pauses(lambda *_: None), {})
+
+
 if __name__ == '__main__':
     unittest.main()

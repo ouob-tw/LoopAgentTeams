@@ -117,7 +117,8 @@ class ReapTestCase(unittest.TestCase):
                     if not key.startswith(('HCOM_', 'LAT_REAP_'))}
         self.env.update(XDG_STATE_HOME=str(self.state), LAT_REAP_HCOM_LIST=str(self.hcom),
                         LAT_REAP_HCOM_EVENTS=str(self.events),
-                        LAT_REAP_TEST_SCOPE=self.scope, LAT_REAP_GRACE_SECONDS='1')
+                        LAT_REAP_TEST_SCOPE=self.scope, LAT_REAP_GRACE_SECONDS='1',
+                        LAT_HCOM_PAUSED_DIR=str(self.root / 'paused'))
 
     def kill_started(self):
         for label, (pid, start) in self.started.items():
@@ -652,6 +653,26 @@ class SignalTimeIdentityTests(ReapTestCase):
         self.assertTrue(self.alive(pid))
 
 class KeepTests(ReapTestCase):
+    def test_other_orchestrator_reap_preserves_paused_keep_until_expiry(self):
+        owner = self.live_agent('owner', services=['owner-server'])
+        self.set_hcom([('owner', 'owner', owner['owner-client']),
+                       ('orch', 'orch', owner['owner-client'])])
+        self.assertEqual(self.keep(owner['owner-server']).returncode, 0)
+        directory = self.root / 'paused'
+        directory.mkdir()
+        (directory / 'session-1.json').write_text(json.dumps(dict(
+            session_id='session-1', hcom_name='test-orch', client='claude',
+            pane=None, paused_at='2026-10-23T00:00:00Z')))
+        # Another watcher runs the same periodic reap against the shared keeps.
+        self.set_hcom([('owner', 'owner', owner['owner-client'])])
+        self.reap('--trigger', 'periodic')
+        self.assertTrue(self.alive(owner['owner-server']))
+        self.assertEqual(self.log(), [])
+        self.expire_keeps()
+        self.reap('--trigger', 'periodic')
+        self.assertTrue(self.gone(owner['owner-server']))
+        self.assertIn('keep expired', self.log()[0]['why'])
+
     def test_kept_leftover_survives_until_expiry(self):
         orchestrator = self.live_agent('orch')
         self.set_hcom([('orch', 'orch', orchestrator['orch-client'])])
