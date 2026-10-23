@@ -239,10 +239,14 @@ def resolve_path(text, cwd):
 
 def operators(code):
     """The separators in code, without a newline that only continues a line after && || |."""
-    found = []
-    for sep in re.findall(SEPARATORS, code):
-        if not (sep == '\n' and found[-1:] in (['&&'], ['||'], ['|'])):
+    found, end = [], 0
+    for match in re.finditer(SEPARATORS, code):
+        sep = match.group(0)
+        waiting = (found[-1:] in (['&&'], ['||'], ['|'])
+                   and not code[end:match.start()].strip(' \t\\'))
+        if not (sep == '\n' and waiting):
             found.append(sep)
+        end = match.end()
     return found
 
 

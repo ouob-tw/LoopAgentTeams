@@ -205,7 +205,8 @@ class DeleteTests(HookCase):
                         'true || cd /tmp && trash-put projects',
                         'printf x | cd /tmp && trash-put projects',
                         'true ||\n cd /tmp && trash-put projects',
-                        'printf x | \\\n cd /tmp && trash-put projects']:
+                        'printf x | \\\n cd /tmp && trash-put projects',
+                        'cd /nonexistent && printf ready\ntrash-put projects']:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command, cwd=claude), '.claude/projects')
 
@@ -217,7 +218,8 @@ class DeleteTests(HookCase):
                              ('(cd /tmp && trash-put projects)', claude),
                              ('cd /tmp; cd /tmp && trash-put .claude', self.tmp),
                              ('ls && cd /tmp && trash-put projects', claude),
-                             ('cd /tmp &&\n  trash-put projects', claude)]:
+                             ('cd /tmp &&\n  trash-put projects', claude),
+                             ('printf x | cat\ncd /tmp && trash-put .claude', self.tmp)]:
             with self.subTest(command):
                 self.assert_allowed(self.bash(command, cwd=cwd))
 
@@ -239,7 +241,8 @@ class DeleteOverrideTests(DeleteTests):
     def setUp(self):
         super().setUp()
         self.extra_env = {'CLAUDE_CONFIG_DIR': str(self.tmp / 'cc'),
-                          'CODEX_HOME': str(self.tmp / 'cx'), 'XDG_STATE_HOME': str(self.tmp / 'st')}
+                          'CODEX_HOME': str(self.tmp / 'cx'),
+                          'XDG_STATE_HOME': str(self.tmp / 'st')}
 
     def test_agent_record_and_state_folders_are_blocked(self):
         for command, path in [('trash-put "$CODEX_HOME/sessions"', 'cx/sessions'),
