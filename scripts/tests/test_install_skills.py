@@ -43,7 +43,13 @@ class InstallSkillsTests(unittest.TestCase):
         bin_dir = self.tmp / 'bin'
         bin_dir.mkdir()
         bunx = bin_dir / 'bunx'
-        bunx.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {self.bunx_log}\n')
+        # Records its arguments and the alpha SKILL.md it was given, after an optional
+        # change to the repo's copy (a merge landing while bunx starts).
+        bunx.write_text(f'#!/bin/sh\nprintf "%s\\n" "$@" > {self.bunx_log}\n'
+                        f'[ -n "$RACE" ] && echo "$RACE" > {self.repo / "skills/local/alpha"}'
+                        '/SKILL.md\n'
+                        f'cat "$3/skills/local/alpha/SKILL.md" > {self.tmp}/seen 2>/dev/null\n'
+                        f'(cd "$3" && find . -type f | sort) > {self.tmp}/files\n')
         bunx.chmod(0o755)
         self.env = dict(GIT_ENV, SUITE_GATE_STATE_DIR=str(self.state),
                         PATH=f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
@@ -86,9 +92,12 @@ class InstallSkillsTests(unittest.TestCase):
 
     def assert_installed(self, result, skills):
         self.assertEqual(result.returncode, 0, result.stderr)
-        self.assertEqual(self.bunx_args(),
-                         ['skills', 'add', str(self.repo), '--skill', *skills, '--global',
+        args = self.bunx_args()
+        self.assertEqual(args[:2] + args[3:],
+                         ['skills', 'add', '--skill', *skills, '--global',
                           '--agent', 'claude-code', 'codex', '--yes'])
+        self.assertIn('lat-skills-', args[2])
+        self.assertFalse(Path(args[2]).exists())  # the snapshot is removed afterwards
 
     def assert_refused(self, result, why):
         self.assertEqual(result.returncode, 1, result.stderr)
@@ -101,6 +110,16 @@ class InstallSkillsTests(unittest.TestCase):
     def test_a_passing_record_for_the_current_content_installs(self):
         self.record()
         self.assert_installed(self.install(), ['alpha', 'beta'])
+
+    def test_bunx_reads_the_checked_content_of_the_chosen_skills_only(self):
+        self.record()
+        checked = (self.repo / 'skills/local/alpha/SKILL.md').read_text()
+        self.env['RACE'] = 'changed after the check'
+        self.assert_installed(self.install('--skill', 'alpha'), ['alpha'])
+        self.assertEqual((self.tmp / 'seen').read_text(), checked)
+        self.assertEqual((self.tmp / 'files').read_text().split(),
+                         ['./skills/local/alpha/SKILL.md',
+                          './skills/local/alpha/tests/test_alpha.py'])
 
     def test_a_pass_recorded_by_the_real_gate_installs(self):
         cwd = self.repo / 'skills/local/alpha'

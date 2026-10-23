@@ -45,11 +45,16 @@ HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re
 UNQUOTED_HEREDOC = re.compile(r'(?<!<)<<-?\s*([A-Za-z_]\w*)[^\n]*\n(.*?)^\s*\1\s*$', re.S | re.M)
 SUBSTITUTION = re.compile(r'(?<!\\)(?:`|\$\()')
 QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
-# `bunx skills add <args>` (or npx, bun x, pnpm dlx; an @version may follow `skills`).
-SKILLS_ADD = re.compile(r'(?:^|[(\'"])\s*' + WRAPPERS
-                        + r'(?:bunx|npx|bun\s+x|pnpm\s+dlx)\s+(?:-\S+\s+)*'
+# `bunx skills add <args>` at the start of a command (or npx, bun x, pnpm dlx, by path or
+# behind VAR=value and wrappers; an @version may follow `skills`).
+ASSIGNS = r'(?:\w+=\S*\s+)*'
+SKILLS_ADD = re.compile(r'^\s*\(?\s*' + ASSIGNS + WRAPPERS + ASSIGNS
+                        + r'(?:\S*/)?(?:bunx|npx|bun\s+x|pnpm\s+dlx)\s+(?:-\S+\s+)*'
                         r'skills(?:@\S+)?\s+(?:add|a|install|i)\b(?P<args>[^;&|\n`)]*)')
-CD = re.compile(r'^\s*cd\s+(?P<dir>\S+)\s*$')
+CD = re.compile(r'^\s*\(?\s*cd\s+(?P<dir>\'[^\']*\'|"[^"]*"|\S+)\s*$')
+# `sh -c '<body>'`: the body is code, so it is read in place of the quoted string.
+SHELL_BODY = re.compile(r'\b(?:ba|z|da)?sh\s+(?:-\S+\s+)*?-\w*c\s+'
+                        r"""(?:'([^']*)'|"((?:\\.|[^"\\])*)")""")
 INSTALL_SCRIPT = 'scripts/install-skills.py'
 SCRIPT_RUN = re.compile(r'(?:^|[;&|(\s])(?:(?:ba|z|da)?sh\s+(?:-\S+\s+)*)?'
                         r'(?P<path>(?:[\w.~/-]*/)?[\w.-]+\.sh)\b')
@@ -198,13 +203,16 @@ def repo_install(command, cwd):
     """The LoopAgentTeams checkout a `bunx skills add` in command installs from, or None.
 
     A source is a word that looks like a path (~, /, ., $VAR or a slash); skill names and
-    options are not. A relative source is read from the last `cd DIR` before it, or cwd."""
+    options are not. A relative source is read from the last `cd DIR` before it, or cwd.
+    Quoted text is data (`echo "bunx skills add ..."`), except a `sh -c` body."""
     base = Path(cwd)
 
     def where(word):
         return base / os.path.expanduser(os.path.expandvars(word.strip('\'"')))
 
-    for part in re.split(r'&&|\|\||[;&|\n]', HEREDOC.sub('', command)):
+    text = SHELL_BODY.sub(lambda m: '\n' + (m.group(1) or m.group(2) or '') + '\n',
+                          HEREDOC.sub('', command))
+    for part in re.split(r'&&|\|\||\$\(|[;&|\n]', text):
         found = CD.match(part)
         if found:
             base = where(found.group('dir'))

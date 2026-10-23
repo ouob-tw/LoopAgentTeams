@@ -6,6 +6,7 @@ A skill folder that holds a registered full suite (`full_suites` in `.suite-gate
 needs a reusable pass in the suite gate's ledger whose run saw the same folder content as
 the work tree now; otherwise nothing is installed and the missing suites are listed with
 the gate command that runs them. Skills without a full suite are installed as they are.
+bunx reads a snapshot of the checked content, so a change made meanwhile is not installed.
 """
 import argparse
 import importlib.util
@@ -13,6 +14,7 @@ import re
 import shlex
 import subprocess
 import sys
+import tempfile
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -68,7 +70,8 @@ def suite_result(records, suite, folder, current):
 
 
 def check(gate, folders):
-    """[(skill, suite, result)] for each suite under the folders that has no reusable pass."""
+    """(content tree, [(skill, suite, result)] for each suite under the folders that has no
+    reusable pass)."""
     registry = gate.load_registry(ROOT) or {}
     suites = gate.read_full_suites(registry)
     tree = gate.content_tree(ROOT, gate.include_patterns(registry))
@@ -83,7 +86,21 @@ def check(gate, folders):
                 result = suite_result(records, suite, folder, current)
                 if result != 'passed':
                     lacking.append((name, suite, result))
-    return lacking
+    return tree, lacking
+
+
+def install(tree, names, folders):
+    """Run bunx on a snapshot of the folders as they are in tree."""
+    with tempfile.TemporaryDirectory(prefix='lat-skills-') as snapshot:
+        archive = subprocess.run(['git', 'archive', '--format=tar', tree, '--', *folders],
+                                 cwd=ROOT, capture_output=True)
+        if archive.returncode != 0:
+            raise RuntimeError(f'git archive failed: {archive.stderr.decode().strip()}')
+        subprocess.run(['tar', '-x', '-C', snapshot], input=archive.stdout, check=True)
+        command = ['bunx', 'skills', 'add', snapshot, '--skill', *names,
+                   '--global', '--agent', 'claude-code', 'codex', '--yes']
+        print(shlex.join(command), flush=True)
+        return subprocess.run(command).returncode
 
 
 def main(argv=None):
@@ -99,7 +116,7 @@ def main(argv=None):
             parser.error(f"unknown skill: {', '.join(unknown)} "
                          f"(this repo has: {', '.join(sorted(skills))})")
         names = args.skill or sorted(skills)
-        lacking = check(gate, {name: skills[name] for name in names})
+        tree, lacking = check(gate, {name: skills[name] for name in names})
     except (RuntimeError, ValueError) as exc:
         print(f'install-skills: {exc}', file=sys.stderr)
         return 1
@@ -120,10 +137,11 @@ def main(argv=None):
         for command in commands:
             print(f'  {command}', file=sys.stderr)
         return 1
-    command = ['bunx', 'skills', 'add', str(ROOT), '--skill', *names,
-               '--global', '--agent', 'claude-code', 'codex', '--yes']
-    print(shlex.join(command), flush=True)
-    return subprocess.run(command).returncode
+    try:
+        return install(tree, names, [skills[name] for name in names])
+    except (RuntimeError, subprocess.CalledProcessError) as exc:
+        print(f'install-skills: {exc}', file=sys.stderr)
+        return 1
 
 
 if __name__ == '__main__':

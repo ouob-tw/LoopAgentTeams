@@ -175,7 +175,14 @@ class SkillsAddTests(HookCase):
                 ('cd ~/LoopAgentTeams && bunx skills add . --skill lat', None),
                 ('bunx skills add ./ --skill lat', self.repo / 'skills'),
                 ("bash -lc 'bunx skills add ~/LoopAgentTeams --skill lat'", None),
-                ('timeout 300 bunx skills add ~/LoopAgentTeams 2>&1 | tail', None)]:
+                ('timeout 300 bunx skills add ~/LoopAgentTeams 2>&1 | tail', None),
+                (f'CI=1 bunx skills add {self.repo}', None),
+                (f'env FOO=1 bunx skills add {self.repo}', None),
+                ('/usr/local/bin/bunx skills add ~/LoopAgentTeams', None),
+                ("bash -lc 'cd ~/LoopAgentTeams && bunx skills add .'", None),
+                ('cd "$HOME/LoopAgentTeams" && bunx skills add .', None),
+                ('(cd ~/LoopAgentTeams; bunx skills add .)', None),
+                ('out=$(bunx skills add ~/LoopAgentTeams)', None)]:
             with self.subTest(command):
                 result = self.bash(command, cwd)
                 self.assert_blocked(result, f'{self.repo}/scripts/install-skills.py')
@@ -187,6 +194,9 @@ class SkillsAddTests(HookCase):
                         'bunx skills add ~/other --skill lat',
                         'cd ~/LoopAgentTeams && bunx skills add ~/other',
                         'bunx skills list', 'echo bunx skills add ~/LoopAgentTeams',
+                        "echo 'bunx skills add ~/LoopAgentTeams'",
+                        'printf \'%s\\n\' "bunx skills add $HOME/LoopAgentTeams"',
+                        'git commit -m "block bunx skills add ~/LoopAgentTeams"',
                         'uv run --no-project python ~/LoopAgentTeams/scripts/install-skills.py']:
             with self.subTest(command):
                 self.assert_allowed(self.bash(command, self.repo))
