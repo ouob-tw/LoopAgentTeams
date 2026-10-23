@@ -24,11 +24,20 @@ port=${PORT:-7100}
 wait_seconds=${LAT_DEPLOY_WAIT:-60}
 worktree=
 swapped=
+moving=
+
+# An agent shell often has no bun on PATH: add Bun's folder and the PATH the service itself uses.
+unit_path=$(systemctl --user show "$unit" -p Environment --value 2>/dev/null | tr ' ' '\n' | sed -n 's/^PATH=//p')
+PATH=$PATH:$HOME/.bun/bin${unit_path:+:$unit_path}
 
 say() { printf 'deploy: %s\n' "$*" >&2; }
 die() { say "$*"; exit 1; }
 
 cleanup() {
+	# Interrupted (or failed) between the two renames: put the live build back.
+	if [ -n "$moving" ] && [ ! -d "$board/build" ] && [ -d "$board/build-prev" ]; then
+		mv "$board/build-prev" "$board/build"
+	fi
 	if [ -n "$worktree" ]; then
 		git -C "$repo" worktree remove --force "$worktree" 2>/dev/null || trash "$worktree" 2>/dev/null
 		git -C "$repo" worktree prune
@@ -37,6 +46,7 @@ cleanup() {
 	return 0
 }
 trap cleanup EXIT
+trap 'exit 130' INT TERM HUP
 
 wait_for_login() {
 	local deadline=$((SECONDS + wait_seconds)) code
@@ -65,8 +75,10 @@ ln -s "$board/node_modules" "$worktree/${prefix}node_modules"
 	|| die "the build failed; build/ is untouched"
 [ -f "$board/build-new/index.js" ] || die "the build left no build-new/index.js; build/ is untouched"
 
+moving=1
 [ -d "$board/build" ] && mv "$board/build" "$board/build-prev"
-mv "$board/build-new" "$board/build" || die "could not move build-new into place"
+mv "$board/build-new" "$board/build" || die "could not move build-new into place; build/ is untouched"
+moving=
 swapped=1
 say "swapped in $head; restarting"
 
@@ -78,12 +90,15 @@ if sh -c "$restart" >&2 && wait_for_login; then
 fi
 
 say "restart or login check failed; putting the previous build back"
-if [ -d "$board/build-prev" ]; then
-	trash "$board/build"
-	mv "$board/build-prev" "$board/build"
-	sh -c "$restart" >&2
-	say "rolled back; the previous build is running again"
+if [ ! -d "$board/build-prev" ]; then
+	say "there was no previous build to put back; the new build is still in place"
+	exit 1
+fi
+trash "$board/build"
+mv "$board/build-prev" "$board/build"
+if sh -c "$restart" >&2 && wait_for_login; then
+	say "previous build restored and running"
 else
-	say "there was no previous build to put back"
+	say "previous build restored, but the restart or login check failed; check the service"
 fi
 exit 1

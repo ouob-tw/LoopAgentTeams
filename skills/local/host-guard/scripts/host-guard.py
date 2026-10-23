@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """PreToolUse hook that keeps agents from starving a shared host.
 
-Four rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
+Five rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
 - whole-disk scans: find / du / grep -r / rg / fd / tree / ls -R rooted at /, /mnt,
   /media or a configured extra root are blocked;
 - CPU load generators (busy loops, stress, stress-ng, sysbench cpu, yes > /dev/null)
@@ -10,7 +10,9 @@ Four rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
   commands while writing what was meant as text (a brief, a message);
 - rm / trash-put / trash / gio trash is blocked when a path ends in a substitution that
   deletes the parent folder if it comes out empty, or when it targets a folder of agent
-  conversation records or state (or a folder above one).
+  conversation records or state (or a folder above one);
+- `bunx skills add` from a LoopAgentTeams checkout is blocked: its install script installs
+  only skills whose full suite passed for their current content.
 """
 import argparse
 import copy
@@ -42,9 +44,8 @@ LIMIT = re.compile(r'\btaskset\b|\bcpulimit\b|\bsystemd-run\b[^\n]*(?:AllowedCPU
 TASKSET_LIST = re.compile(r'\btaskset\s+(?:-\S*c\S*\s+|--cpu-list\s+)(?P<list>[\d,\-]+)')
 # Heredoc bodies and quoted text are data (messages, prompts), except a script after `-c`.
 HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re.S | re.M)
-# An unquoted delimiter (`<<EOF`, not `<<'EOF'` or `<<\EOF`) lets the shell expand the body.
-UNQUOTED_HEREDOC = re.compile(r'(?<!<)<<-?\s*([A-Za-z_]\w*)[^\n]*\n(.*?)^\s*\1\s*$', re.S | re.M)
-SUBSTITUTION = re.compile(r'(?<!\\)(?:`|\$\()')
+# `<<`, not `<<<`; the delimiter word ends at whitespace or a shell operator.
+HEREDOC_START = re.compile(r'(?<!<)<<(?!<)(-?)[ \t]*((?:\\.|\'[^\']*\'|"(?:\\.|[^"\\])*"|[^\s;&|()<>\'"\\])+)')
 QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
 DELETE = re.compile(r'(?:^|[;&|({\n]|\b(?:then|do|else|elif)\s|-\w*c\s+[\'"])\s*'
                     r'(?:\w+=\S*\s+)*' + WRAPPERS + r'(?:\w+=\S*\s+)*'
@@ -55,6 +56,15 @@ SEPARATORS = r'&&|\|\||[;&|()\n]'
 # Placeholders for a $, backtick or ~ that quotes keep literal.
 LITERAL = {'$': '\x01', '`': '\x02', '~': '\x03'}
 BARE_SUBSTITUTION = re.compile(r'\$\{?\w+\}?|\$\(.*\)|`.*`', re.S)
+# Command words for the `bunx skills add` rule, read with shell quoting.
+OPERATORS = ';&|()\n'
+# Options of PREFIXES that take the next word as their value (sudo -u USER, nice -n 10).
+VALUE_OPTIONS = {'-u', '-g', '-n', '-s', '-k', '-C', '-D', '-p', '-r', '-t', '-U', '-c', '-S'}
+SHELLS = {'sh', 'bash', 'zsh', 'dash'}
+PREFIXES = {'sudo', 'nice', 'ionice', 'env', 'exec', 'command', 'xargs', 'nohup', 'time',
+            'timeout'}
+ASSIGNMENT = re.compile(r'^[A-Za-z_]\w*=')
+INSTALL_SCRIPT = 'scripts/install-skills.py'
 SCRIPT_RUN = re.compile(r'(?:^|[;&|(\s])(?:(?:ba|z|da)?sh\s+(?:-\S+\s+)*)?'
                         r'(?P<path>(?:[\w.~/-]*/)?[\w.-]+\.sh)\b')
 
@@ -79,6 +89,14 @@ EMPTY_MESSAGE = ('Blocked: {tool} {word} ends in a substitution. If it comes out
 PROTECTED_MESSAGE = ('Blocked: {tool} {word} would delete {path}, which holds agent conversation '
                      'records or state that other sessions use. Delete single files inside it '
                      'instead (as the session-manager skill does), or ask the user.')
+
+INSTALL_MESSAGE = ('Blocked: this installs skills straight from the LoopAgentTeams repo at '
+                   '{repo}, which skips the check that each skill passed its full suite for '
+                   'its current content. Run the install script instead; it installs only '
+                   'verified skills and otherwise lists the suites to run first:\n'
+                   '  uv run --no-project python {script} [--skill NAME ...]\n'
+                   'Installs from other sources (for example mattpocock/skills) are not '
+                   'affected.')
 
 
 def config_path():
@@ -107,12 +125,18 @@ def code_only(text):
     return QUOTED.sub(lambda m: m.group(0) if m.group(1) else '""', text)
 
 
-def expanding_heredoc(command):
-    """(delimiter, what) for the first unquoted heredoc whose body substitutes a command."""
-    for match in UNQUOTED_HEREDOC.finditer(command):
-        found = SUBSTITUTION.search(match.group(2))
-        if found:
-            return match.group(1), 'a backtick' if found.group(0) == '`' else '$('
+def substitution(body):
+    """'a backtick' or '$(' for the first expansion the shell runs in a heredoc body, else None."""
+    i = 0
+    while i < len(body):
+        if body[i] == '\\':
+            i += 2
+            continue
+        if body[i] == '`':
+            return 'a backtick'
+        if body.startswith('$(', i):
+            return '$('
+        i += 1
     return None
 
 
@@ -295,6 +319,84 @@ def risky_delete(command, cwd):
     return None
 
 
+def heredoc_word(word):
+    """(delimiter, quoted) for the word after `<<`."""
+    name = re.sub(r'\\(.)|\'([^\']*)\'|"((?:\\.|[^"\\])*)"',
+                  lambda m: m.group(1) or m.group(2) or m.group(3) or '', word)
+    return name, any(c in word for c in '\'"\\')
+
+
+def _quote_states(line):
+    """Yield (index, char, quote) with the quote in force before each character; a backslash
+    outside single quotes escapes the next character."""
+    quote, skip = None, False
+    for i, char in enumerate(line):
+        if skip:
+            skip = False
+        elif quote == "'":
+            yield i, char, quote
+            quote = None if char == "'" else quote
+            continue
+        elif char == '\\':
+            yield i, char, quote
+            skip = True
+            continue
+        else:
+            yield i, char, quote
+            if quote:
+                quote = None if char == quote else quote
+            elif char in '\'"':
+                quote = char
+            continue
+        yield i, char, quote
+
+
+def shell_text_end(line):
+    """Where the live shell text of a line ends: the start of an unquoted `# comment`."""
+    for i, char, quote in _quote_states(line):
+        if char == '#' and not quote and (i == 0 or line[i - 1] in ' \t'):
+            return i
+    return len(line)
+
+
+def quoted_at(line, index):
+    """True when index sits inside a quoted string of the line."""
+    return any(i == index and quote for i, _, quote in _quote_states(line))
+
+
+def expanding_heredoc(command):
+    """(delimiter, what) for the first unquoted heredoc whose body substitutes a command.
+
+    Walks the heredocs in order and skips each body, so text inside a quoted heredoc that
+    looks like another heredoc is not read as one. Several openers on one line take their
+    bodies one after the other.
+    """
+    position = 0
+    while True:
+        match = HEREDOC_START.search(command, position)
+        if not match:
+            return None
+        line_end = command.find('\n', match.end())
+        if line_end < 0:
+            return None
+        header = command[match.end():line_end]
+        header = header[:shell_text_end(header)]
+        openers = [match, *(m for m in HEREDOC_START.finditer(header)
+                            if not quoted_at(header, m.start()))]
+        position = line_end + 1
+        for opener in openers:
+            name, quoted = heredoc_word(opener.group(2))
+            strip = r'\t*' if opener.group(1) else ''
+            end = re.compile(r'^' + strip + re.escape(name) + r'$', re.M).search(command, position)
+            if not quoted:
+                found = substitution(command[position:end.start() if end else len(command)])
+                if found:
+                    return name, found
+            if not end:
+                return None
+            position = end.end() + 1
+
+
 def scan_root(command, roots):
     """The protected root a shell command scans, or None."""
     for match in SCAN.finditer(code_only(command)):
@@ -367,6 +469,121 @@ def load_problem(command, cwd, cores):
     return None
 
 
+def lat_repo(path):
+    """The LoopAgentTeams checkout that holds path (it has the install script), or None."""
+    for folder in (path, *path.parents):
+        if (folder / INSTALL_SCRIPT).is_file() and (folder / 'skills').is_dir():
+            return folder
+    return None
+
+
+def repo_install(command, cwd):
+    """The LoopAgentTeams checkout a `bunx skills add` in command installs from, or None.
+
+    The command is split into words and operators with shell quoting, so quoted text is
+    data (`echo "x; bunx skills add ..."`); a `sh -c` body is read as a command of its own.
+    `cd DIR` moves the directory relative sources are read from, within its `( )` or
+    `sh -c` scope. A source is a word that looks like a path (~, /, ., $VAR or a slash);
+    skill names and options are not."""
+    tokens = shell_tokens(HEREDOC.sub('', command))
+    base, scopes, words = Path(cwd), [], []
+    for token in [*tokens, (';',)]:
+        if isinstance(token, str):
+            words.append(token)
+            continue
+        repo, base = command_install(words, base)
+        if repo:
+            return repo
+        words = []
+        if token == ('(',):
+            scopes.append(base)
+        elif token == (')',) and scopes:
+            base = scopes.pop()
+    return None
+
+
+def shell_tokens(text):
+    """Words (quotes removed) and operators (1-tuples) of shell text. An operator is only
+    an unquoted, unescaped character of OPERATORS; `#` starting a word comments out the
+    rest of the line. An unclosed quote runs to the end of the text."""
+    tokens, word, quoted, i = [], [], False, 0
+
+    def end_word():
+        nonlocal word, quoted
+        if word or quoted:
+            tokens.append(''.join(word))
+        word, quoted = [], False
+
+    while i < len(text):
+        char = text[i]
+        if char == '\\' and i + 1 < len(text):
+            if text[i + 1] != '\n':  # a line continuation joins the lines
+                word.append(text[i + 1])
+            i += 2
+            continue
+        if char in '\'"':
+            close = i + 1
+            while close < len(text) and text[close] != char:
+                close += 2 if char == '"' and text[close] == '\\' else 1
+            word.append(text[i + 1:close])
+            quoted, i = True, close + 1
+            continue
+        if char == '#' and not word and not quoted:
+            i = text.find('\n', i)
+            i = len(text) if i < 0 else i
+            continue
+        if char in OPERATORS:
+            end_word()
+            tokens.append((char,))
+        elif char in ' \t\r':
+            end_word()
+        else:
+            word.append(char)
+        i += 1
+    end_word()
+    return tokens
+
+
+def command_install(words, base):
+    """(checkout the simple command installs from or None, directory after it)."""
+    def where(word):
+        return base / os.path.expanduser(os.path.expandvars(word))
+
+    prefixed = False
+    while words and (ASSIGNMENT.match(words[0]) or os.path.basename(words[0]) in PREFIXES
+                     or prefixed and (words[0].startswith('-') or words[0][:1].isdigit())):
+        prefixed = prefixed or os.path.basename(words[0]) in PREFIXES
+        words = words[2:] if prefixed and words[0] in VALUE_OPTIONS else words[1:]
+    name = os.path.basename(words[0]) if words else ''
+    if name == 'cd':
+        target = [w for w in words[1:] if w not in ('--', '-L', '-P', '-e', '-@')]
+        return None, where(target[0] if target else '~')
+    if name in SHELLS:
+        flag = next((i for i, w in enumerate(words[1:], 1)
+                     if w.startswith('-') and not w.startswith('--') and 'c' in w), None)
+        body = words[flag + 1] if flag is not None and flag + 1 < len(words) else None
+        return (repo_install(body, base) if body else None), base
+    if name in ('bunx', 'npx'):
+        rest = words[1:]
+    elif (name, words[1:2]) in (('bun', ['x']), ('pnpm', ['dlx'])):
+        rest = words[2:]
+    else:
+        return None, base
+    while rest and rest[0].startswith('-'):
+        rest = rest[1:]
+    if len(rest) < 2 or not re.fullmatch(r'skills(@\S+)?', rest[0]) \
+            or rest[1] not in ('add', 'a', 'install', 'i'):
+        return None, base
+    for word in rest[2:]:
+        if word.startswith('-') or not (word.startswith(('~', '.', '$')) or '/' in word):
+            continue
+        source = where(word).resolve()
+        repo = source.is_dir() and lat_repo(source)
+        if repo:
+            return repo, base
+    return None, base
+
+
 def shell_text(command):
     if isinstance(command, list):
         return command[-1] if command[:1] and command[0].endswith('sh') else ' '.join(command)
@@ -400,6 +617,10 @@ def cmd_hook():
     deleting = risky_delete(command, cwd if os.path.isdir(cwd) else os.getcwd())
     if deleting:
         print(deleting[0].format(**deleting[1]), file=sys.stderr)
+        return 2
+    repo = repo_install(command, cwd if os.path.isdir(cwd) else os.getcwd())
+    if repo:
+        print(INSTALL_MESSAGE.format(repo=repo, script=repo / INSTALL_SCRIPT), file=sys.stderr)
         return 2
     where = load_problem(command, cwd if os.path.isdir(cwd) else os.getcwd(), config['cores'])
     if where:

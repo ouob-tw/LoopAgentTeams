@@ -105,7 +105,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 
 使用說明：[更新](../docs/lat-board.md#更新)。
 
-`scripts/deploy.sh` 把已提交的 `HEAD` 部署到常駐看板：`git worktree add --detach` 開臨時資料夾、連結 `node_modules`、以 `LAT_BOARD_BUILD_DIR=<看板目錄>/build-new`（絕對路徑）建置，成功且有 `build-new/index.js` 才換：`build` → `build-prev`、`build-new` → `build`，再重啟並輪詢登入頁。換之前的任何失敗都只清掉臨時資料夾與 `build-new`；換之後失敗則放回 `build-prev` 並重啟。用 `trash` 刪除（沒有 `trash` 指令的主機要先裝）。設定（環境變數）：
+`scripts/deploy.sh` 把已提交的 `HEAD` 部署到常駐看板：`git worktree add --detach` 開臨時資料夾、連結 `node_modules`、以 `LAT_BOARD_BUILD_DIR=<看板目錄>/build-new`（絕對路徑）建置，成功且有 `build-new/index.js` 才換：`build` → `build-prev`、`build-new` → `build`，再重啟並輪詢登入頁。換之前的任何失敗都只清掉臨時資料夾與 `build-new`；兩次改名之間失敗或被中斷會把 `build-prev` 放回 `build`；換之後重啟失敗或登入頁不回 200，則放回 `build-prev`、重啟並再確認一次登入頁，通過才說「previous build restored and running」，否則提示檢查服務，兩種情況結束碼都是 1。腳本會把 `~/.bun/bin` 與服務單元的 PATH 補進自己的 PATH，Agent 的 shell 找不到 bun 也能跑。用 `trash` 刪除（沒有 `trash` 指令的主機要先裝）。設定（環境變數）：
 
 | 變數 | 用途 | 預設 |
 | --- | --- | --- |

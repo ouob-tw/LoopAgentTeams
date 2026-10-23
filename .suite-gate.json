@@ -65,7 +65,8 @@
     {"cwd": "skills/local/three-tier-testing", "command": "uv run --no-project python -m unittest discover -s tests"},
     {"cwd": "skills/local/hcom-spawn", "command": "uv run --no-project python -m unittest discover -s tests"},
     {"cwd": "skills/local/lat-handover", "command": "uv run --no-project python -m unittest discover -s tests"},
-    {"cwd": "skills/local/host-guard", "command": "uv run --no-project python -m unittest discover -s tests"}
+    {"cwd": "skills/local/host-guard", "command": "uv run --no-project python -m unittest discover -s tests"},
+    {"cwd": "scripts", "command": "uv run --no-project python -m unittest discover -s tests"}
   ],
   "affected": {
     "commands": {
@@ -74,7 +75,8 @@
       "skills/local/three-tier-testing/tests": "uv run --no-project python -m unittest {tests}",
       "skills/local/hcom-spawn/tests": "uv run --no-project python -m unittest {tests}",
       "skills/local/lat-handover/tests": "uv run --no-project python -m unittest {tests}",
-      "skills/local/host-guard/tests": "uv run --no-project python -m unittest {tests}"
+      "skills/local/host-guard/tests": "uv run --no-project python -m unittest {tests}",
+      "scripts/tests": "uv run --no-project python -m unittest {tests}"
     },
     "map": [
       {"paths": ["board/src/lib/server/agents.ts"],
@@ -424,7 +426,7 @@
       {"paths": ["skills/local/lat/scripts/lat-autoclean.py"],
        "tests": ["skills/local/lat/tests/test_lat_autoclean.py"]},
       {"paths": ["skills/local/three-tier-testing/scripts/**"],
-       "tests": ["skills/local/three-tier-testing/tests/test_*.py"]},
+       "tests": ["skills/local/three-tier-testing/tests/test_*.py", "scripts/tests/test_install_skills.py"]},
       {"paths": ["skills/local/hcom-spawn/scripts/block-broadcast.py"],
        "tests": ["skills/local/hcom-spawn/tests/test_block_broadcast.py"]},
       {"paths": ["skills/local/hcom-spawn/scripts/spawn-guard.py"],
@@ -435,6 +437,8 @@
        "tests": ["skills/local/lat-handover/tests/test_*.py"]},
       {"paths": ["skills/local/host-guard/scripts/**"],
        "tests": ["skills/local/host-guard/tests/test_*.py"]},
+      {"paths": ["scripts/install-skills.py"],
+       "tests": ["scripts/tests/test_install_skills.py"]},
       {"paths": ["**/*.md", "docs/**", "LICENSE", "scripts/install-matt-skills.py", "skills/matt/**", ".serena/**"],
        "tests": []}
     ],

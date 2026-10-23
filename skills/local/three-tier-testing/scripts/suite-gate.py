@@ -92,6 +92,28 @@ def reaper_log():
     return base / 'lat/reaper/closed.jsonl'
 
 
+# Results lat-reap logs for a process it really ended; the other results (gone before the
+# signal, a signalling error, still running after SIGKILL) are not kills.
+REAPED_RESULTS = ('exited after SIGTERM', 'killed')
+# lat-reap writes its records only after it has waited out the whole signalled batch, up to
+# its grace period (10 s) and the kill wait, so a failed run looks for them this long.
+REAP_WAIT_SECONDS = 12.0
+
+
+def reaped_after_failure(cwd, since, until):
+    """reaped_during, retried for a short window: the records may land after the suite exits."""
+    try:
+        wait = float(os.environ.get('SUITE_GATE_REAP_WAIT', REAP_WAIT_SECONDS))
+    except ValueError:
+        wait = REAP_WAIT_SECONDS
+    deadline = time.monotonic() + wait
+    while True:
+        found = reaped_during(cwd, since, until)
+        if found or time.monotonic() >= deadline:
+            return found
+        time.sleep(0.25)
+
+
 def reaped_during(cwd, since, until):
     """The processes the reaper ended between since and until that ran in or under cwd."""
     try:
@@ -108,8 +130,11 @@ def reaped_during(cwd, since, until):
         where = entry.get('cwd')
         if 'pid' not in entry or not isinstance(where, str) or moment.tzinfo is None:
             continue
+        if entry.get('result') not in REAPED_RESULTS:
+            continue
         if since <= moment <= until and (where == root or where.startswith(root + '/')):
-            found.append({key: entry.get(key) for key in ('time', 'pid', 'command', 'agent', 'why')})
+            found.append({key: entry.get(key) for key in
+                          ('time', 'pid', 'command', 'agent', 'why', 'signal', 'result')})
     return found
 
 
@@ -1466,7 +1491,9 @@ class Gate:
             thread.start()
         code = child.wait()
         self.finished = True
-        reaped = reaped_during(self.cwd, started_at, datetime.now(timezone.utc))
+        ended_at = datetime.now(timezone.utc)
+        reaped = (reaped_during(self.cwd, started_at, ended_at) if code == 0
+                  else reaped_after_failure(self.cwd, started_at, ended_at))
         for thread in pumps:
             thread.join(timeout=2)
         profile = self.measure(time.monotonic() - started)

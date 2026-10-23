@@ -133,7 +133,17 @@ class HeredocTests(HookCase):
     def test_an_unquoted_heredoc_that_substitutes_a_command_is_blocked(self):
         for command, name in [('cat > brief.md <<EOF\nNever run `bun run build`.\nEOF', 'EOF'),
                               ('cat <<-MSG\n\tnow: $(date)\n\tMSG', 'MSG'),
-                              ('git commit -m "$(cat <<EOF\nfix `x`\nEOF\n)"', 'EOF')]:
+                              ('git commit -m "$(cat <<EOF\nfix `x`\nEOF\n)"', 'EOF'),
+                              ('cat <<EOF-TEXT\nrun `x`\nEOF-TEXT', 'EOF-TEXT'),
+                              ('cat <<END.X > f\nnow $(date)\nEND.X', 'END.X'),
+                              ('cat <<EOF\npath \\\\$(date)\nEOF', 'EOF'),
+                              ("cat <<'A'\nplain\nA\ncat <<B\nrun `x`\nB", 'B'),
+                              ('cat <<EOF\nEOF  \n$(printf expanded)\nEOF', 'EOF'),
+                              ('cat <<-EOF\n  EOF\n$(date)\n\tEOF', 'EOF'),
+                              ("cat <<'A' # <<'B'\nliteral\nA\ncat <<B\n$(printf x)\nB", 'B'),
+                              ("cat <<'A'; echo \\\"; cat <<B\nliteral\nA\n$(printf x)\nB", 'B'),
+                              ("cat <<'A' <<B; echo \"<<'C'\"\nliteral\nA\n$(printf x)\nB", 'B'),
+                              ("cat <<'A' <<B\nliteral\nA\n$(date)\nB", 'B')]:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command), f"(<<'{name}')")
 
@@ -142,6 +152,11 @@ class HeredocTests(HookCase):
                         'cat > brief.md <<"EOF"\nrun `x`\nEOF',
                         'cat <<\\EOF\nrun `x`\nEOF',
                         'cat <<EOF\nhome is $HOME, cost \\$(not run) and \\`literal\\`\nEOF',
+                        'cat <<EOF\nthree backslashes \\\\\\$(not run)\nEOF',
+                        "cat <<'EOF'\nwrite <<EOF and `x`\nmore\nEOF",
+                        "cat <<'EOF'\nExample:\ncat <<TXT\nrun $(date)\nTXT\nEOF",
+                        'cat <<"EOF-TEXT"\nrun `x`\nEOF-TEXT',
+                        "cat <<'A' <<'B'\nrun `x`\nA\nrun $(y)\nB",
                         'grep -c x <<<"`echo`"',
                         'echo "`date`"']:
             with self.subTest(command):
@@ -255,6 +270,81 @@ class DeleteOverrideTests(DeleteTests):
         claude = self.tmp / 'cc'
         claude.mkdir()
         self.assert_blocked(self.bash('(cd /tmp); trash-put projects', cwd=claude), 'cc/projects')
+
+
+class SkillsAddTests(HookCase):
+    """`bunx skills add` from a LoopAgentTeams checkout (it has the install script)."""
+
+    def setUp(self):
+        super().setUp()
+        self.home = self.tmp / 'home'
+        self.repo = self.home / 'LoopAgentTeams'
+        (self.repo / 'scripts').mkdir(parents=True)
+        (self.repo / 'scripts/install-skills.py').write_text('')
+        (self.repo / 'skills/local/lat').mkdir(parents=True)
+        (self.home / 'other/skills').mkdir(parents=True)
+
+    def hook(self, payload):
+        env = dict(os.environ, HOST_GUARD_CONFIG=str(self.config), HOME=str(self.home))
+        return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=json.dumps(payload),
+                              env=env, capture_output=True, text=True)
+
+    def test_installs_from_the_repo_are_blocked(self):
+        for command, cwd in [
+                ('bunx skills add ~/LoopAgentTeams --skill lat --global --yes', None),
+                (f'bunx skills add {self.repo} --skill lat hcom-spawn', None),
+                ('bunx skills@latest add "$HOME/LoopAgentTeams/" -g -y', None),
+                ('npx skills add ~/LoopAgentTeams/skills/local/lat', None),
+                ('bun x skills add ~/LoopAgentTeams', None),
+                ('cd ~/LoopAgentTeams && bunx skills add . --skill lat', None),
+                ('bunx skills add ./ --skill lat', self.repo / 'skills'),
+                ("bash -lc 'bunx skills add ~/LoopAgentTeams --skill lat'", None),
+                ('timeout 300 bunx skills add ~/LoopAgentTeams 2>&1 | tail', None),
+                (f'CI=1 bunx skills add {self.repo}', None),
+                (f'env FOO=1 bunx skills add {self.repo}', None),
+                ('/usr/local/bin/bunx skills add ~/LoopAgentTeams', None),
+                ("bash -lc 'cd ~/LoopAgentTeams && bunx skills add .'", None),
+                ('cd "$HOME/LoopAgentTeams" && bunx skills add .', None),
+                ('(cd ~/LoopAgentTeams; bunx skills add .)', None),
+                ('out=$(bunx skills add ~/LoopAgentTeams)', None),
+                (f"FOO='a b' bunx skills add {self.repo}", None),
+                ('nice -n 10 bunx skills add ~/LoopAgentTeams', None),
+                ("bash -lc 'cd /tmp' && bunx skills add .", self.repo),
+                ('(cd /tmp) && bunx skills add .', self.repo),
+                ("# update the user's skills\nbunx skills add ~/LoopAgentTeams", None),
+                ('cd -- ~/LoopAgentTeams && bunx skills add .', None),
+                ('sudo -u swy bunx skills add ~/LoopAgentTeams', None),
+                ('bunx skills add ~/Loop\\AgentTeams', None),
+                ('bunx skills add "$HOME"/\'LoopAgentTeams\'', None),
+                ('CI=1 \\\n  bunx skills add ~/LoopAgentTeams', None),
+                ('env CI=1 \\\n  bunx \\\n  skills add ~/LoopAgentTeams --skill lat', None)]:
+            with self.subTest(command):
+                result = self.bash(command, cwd)
+                self.assert_blocked(result, f'{self.repo}/scripts/install-skills.py')
+                self.assertIn(f'from the LoopAgentTeams repo at {self.repo}', result.stderr)
+
+    def test_installs_from_other_sources_pass(self):
+        for command in ['bunx skills add mattpocock/skills --skill tdd --global --yes',
+                        'bunx skills add ouob-tw/LoopAgentTeams --skill lat',
+                        'bunx skills add ~/other --skill lat',
+                        'cd ~/LoopAgentTeams && bunx skills add ~/other',
+                        'bunx skills list', 'echo bunx skills add ~/LoopAgentTeams',
+                        "echo 'bunx skills add ~/LoopAgentTeams'",
+                        'printf \'%s\\n\' "bunx skills add $HOME/LoopAgentTeams"',
+                        'git commit -m "block bunx skills add ~/LoopAgentTeams"',
+                        "printf '%s\\n' 'example; bunx skills add ~/LoopAgentTeams'",
+                        'echo "example\nbunx skills add ~/LoopAgentTeams"',
+                        'echo "bash -lc \'bunx skills add ~/LoopAgentTeams\'"',
+                        "cd /tmp && bash -c 'cd ~/LoopAgentTeams' && bunx skills add .",
+                        'cd ~/other && (cd ~/LoopAgentTeams) && bunx skills add .',
+                        "echo ';' bunx skills add ~/LoopAgentTeams",
+                        'echo \\; bunx skills add ~/LoopAgentTeams',
+                        "printf '%s\\n' '&&' bunx skills add ~/LoopAgentTeams",
+                        '# bunx skills add ~/LoopAgentTeams',
+                        'echo done # bunx skills add ~/LoopAgentTeams',
+                        'uv run --no-project python ~/LoopAgentTeams/scripts/install-skills.py']:
+            with self.subTest(command):
+                self.assert_allowed(self.bash(command, self.repo))
 
 
 class InstallTests(unittest.TestCase):
