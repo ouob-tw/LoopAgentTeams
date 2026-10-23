@@ -1213,8 +1213,10 @@ def keepalive_due(declaration, observation, info, state, now, busy=False):
     nothing is due: the cache is not within five minutes of
     expiring, is cold or expired, this expiry was already kept warm, or there is no wait.
     """
-    if (observation.client.lower() != 'claude' or not declaration
-            or not declaration.get('active', True)):
+    if observation.client.lower() != 'claude':
+        return None, None
+    reason = keepalive_blocker(declaration, observation, now, busy)
+    if reason == 'no-wait':
         return None, None
     if read_prompt_cache(info.get('session_id')) is None:
         return None, 'usage-missing'
@@ -1223,9 +1225,6 @@ def keepalive_due(declaration, observation, info, state, now, busy=False):
         return None, None
     sent = state.get('keepalive')
     if isinstance(sent, dict) and sent.get('expires_at') == expires_at:
-        return None, None
-    reason = keepalive_blocker(declaration, observation, now, busy)
-    if reason == 'no-wait':
         return None, None
     return expires_at, reason
 
@@ -2019,8 +2018,16 @@ def unavailable_alarm(workspace, orchestrator, agent, state, now, log):
 def log_keepalive_skipped(log, agent, declaration, state, reason, expires_at, now):
     """Record a keep-alive not typed although the cache expires within five minutes.
 
-    Each reason is logged once per expiry; a missing usage file has no expiry to key on.
+    Each reason is logged once per expiry; a missing usage file has no expiry to key on and
+    is logged once until the file is readable again.
     """
+    if reason == 'usage-missing':
+        if state.get('keepalive_usage_missing'):
+            return
+        state['keepalive_usage_missing'] = True
+        append_log(log, {'at': now, 'agent': agent, 'decision': 'cache-keepalive-skipped',
+                         'kind': declaration.get('kind'), 'expires_at': None, 'reason': reason})
+        return
     skipped = state.get('keepalive_skipped')
     if not isinstance(skipped, dict) or skipped.get('expires_at') != expires_at:
         skipped = {'expires_at': expires_at, 'reasons': []}
@@ -2238,7 +2245,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             if isinstance(kept, dict) and 'keepalive' not in state:
                 # Progress ends the reply window but the same expiry is still sent only once.
                 state['keepalive'] = {'expires_at': kept.get('expires_at')}
-            for key in ('keepalive_last', 'keepalive_skipped'):
+            for key in ('keepalive_last', 'keepalive_skipped', 'keepalive_usage_missing'):
                 if previous and key in previous and key not in state:
                     state[key] = previous[key]
             check_prompt_readable(log, agent, observation, previous, state, now)
@@ -2256,6 +2263,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                                                            busy=bool(actions))}
                 keepalive_expires_at, skipped = keepalive_due(
                     saved_wait, observation, info, state, send_at, busy=bool(actions))
+                if read_prompt_cache(info.get('session_id')) is not None:
+                    state.pop('keepalive_usage_missing', None)
                 if skipped:
                     log_keepalive_skipped(log, agent, saved_wait, state, skipped,
                                           keepalive_expires_at, now)
@@ -2641,15 +2650,30 @@ def declare_wait(args):
     print(json.dumps(declaration, ensure_ascii=False))
 
 
-def cache_status(info, state):
-    """The prompt cache expiry, whether the last cycle could keep it warm, and the last try."""
+def cache_status(info, state, now=None):
+    """The prompt cache expiry, whether it can be kept warm now, and the last try.
+
+    The cache file and HCOM status are read now; the prompt and wait come from the last
+    watcher cycle (checked_at).
+    """
+    now = time.time() if now is None else now
     cache = read_prompt_cache(info.get('session_id'))
     check = state.get('keepalive_check') if isinstance(state.get('keepalive_check'), dict) else {}
-    reason = 'usage-missing' if cache is None else check.get('reason')
+    status = info.get('status', 'missing')
+    if cache is None:
+        reason, possible = 'usage-missing', False
+    elif cache_expires_at(info.get('session_id'), now) is None:
+        reason, possible = 'cache-expired' if cache.get('warm') is True else 'cache-cold', False
+    elif status != 'listening':
+        reason, possible = f'status-{status}', False
+    else:
+        # Unknown until a watcher cycle has judged this agent.
+        reason = check.get('reason')
+        possible = reason is None if check else None
     return {
         'expires_at': cache.get('expires_at') if cache else None,
         'warm': cache.get('warm') if cache else None,
-        'can_keep_alive': None if cache is not None and not check else reason is None,
+        'can_keep_alive': possible,
         'reason': reason,
         'checked_at': check.get('at'),
         'last_keepalive': state.get('keepalive_last'),
@@ -2664,30 +2688,43 @@ def transcript_time(value):
 
 
 def api_calls(transcript):
-    """(time, cache read tokens, cache write tokens) per main-thread Claude API request."""
-    calls, seen = [], set()
+    """[asked at, last reply block at, cache read, cache write] per main-thread API request.
+
+    A request is asked when the last user entry before it (prompt or tool result) was
+    written, or at its first reply block when there is none.
+    """
+    calls, requests, asked_at = [], {}, None
     with open(transcript, encoding='utf-8', errors='replace') as stream:
         for line in stream:
             try:
                 entry = json.loads(line)
             except ValueError:
                 continue
-            if not isinstance(entry, dict) or entry.get('type') != 'assistant' or entry.get('isSidechain'):
+            if not isinstance(entry, dict) or entry.get('isSidechain'):
+                continue
+            at = transcript_time(entry.get('timestamp'))
+            if at is None:
+                continue
+            if entry.get('type') == 'user':
+                asked_at = at
                 continue
             message = entry.get('message')
             usage = message.get('usage') if isinstance(message, dict) else None
-            at = transcript_time(entry.get('timestamp'))
             # Error placeholders are written as <synthetic> without a request.
-            if not isinstance(usage, dict) or at is None or message.get('model') == '<synthetic>':
+            if (entry.get('type') != 'assistant' or not isinstance(usage, dict)
+                    or message.get('model') == '<synthetic>'):
                 continue
             # A streamed reply repeats one request's usage on every content block.
             key = entry.get('requestId') or message.get('id')
-            if key in seen:
+            if key in requests:
+                requests[key][1] = max(requests[key][1], at)
                 continue
-            seen.add(key)
-            calls.append((at, usage.get('cache_read_input_tokens') or 0,
-                          usage.get('cache_creation_input_tokens') or 0))
-    return sorted(calls)
+            requests[key] = [at if asked_at is None else asked_at, at,
+                             usage.get('cache_read_input_tokens') or 0,
+                             usage.get('cache_creation_input_tokens') or 0]
+            calls.append(requests[key])
+            asked_at = None
+    return calls
 
 
 def keepalive_records(workspace, agent):
@@ -2710,10 +2747,11 @@ def keepalive_records(workspace, agent):
 
 
 def cache_history(transcript, keepalives=()):
-    """Idle gaps over five minutes and whether the next request read or rewrote the cache."""
+    """Idle gaps over five minutes, from the end of one reply to the next request being
+    asked, and whether that request read or rewrote the cache."""
     gaps = []
     calls = api_calls(transcript)
-    for (start, _, _), (end, read, write) in zip(calls, calls[1:]):
+    for (_, start, _, _), (end, _, read, write) in zip(calls, calls[1:]):
         if end - start <= KEEPALIVE_SECONDS:
             continue
         verdict = 'rewrite' if write > read else 'hit' if read else 'unknown'
@@ -2737,7 +2775,7 @@ def find_transcript(session_id):
 def show_cache_history(args):
     agent, session, transcript = None, args.session, None
     try:
-        agents = list_hcom(args.agent)
+        agents = list_hcom()
     except (OSError, ValueError):
         if args.agent:
             raise

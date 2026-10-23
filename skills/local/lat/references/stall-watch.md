@@ -122,7 +122,7 @@ Claude 的提示快取在最後一次請求後約一小時失效，失效後下�
 - 同一個 `expires_at` 只送一次；送出後快取時間更新，下一次在新的到期前再送。視窗忙碌或輸入失敗時下一輪重試，快取已過期就放棄這一次。
 - 保溫提示與其簡短回覆不算進展，不讓等待聲明失效，不消耗或重設該段停住的催促與上報，也不改等待期限、延長判斷與連續到期計數；鬧鐘照原時間響。回覆中有工具操作、較長文字或傳出訊息時照常算進展。
 - 每次嘗試在 `watch.jsonl` 記 `cache-keepalive`（`agent`、`kind`、`expires_at`、`result` 為 `sent` 或 `failed`，失敗附 `error`）。
-- 有有效等待、快取剩 5 分鐘以內卻沒送時記 `cache-keepalive-skipped`（`agent`、`kind`、`expires_at`、`reason`），同一個 `expires_at` 同一原因只記一次。`reason` 為：`status-<HCOM 狀態>`（如 `status-active`、`status-blocked`）、`prompt-not-empty`、`prompt-unreadable`（選單等畫面判不出輸入框）、`screen-working`、`decision-quiet-hours`、`decision-over-3h`、`other-action`（這一輪有其他催促或鬧鐘要送）、`usage-missing`（找不到或讀不出記錄器的檔案，`expires_at` 為 `null`，到檔案恢復前只記一次）。快取已冷或已過期不記。
+- 有有效等待、快取剩 5 分鐘以內卻沒送時記 `cache-keepalive-skipped`（`agent`、`kind`、`expires_at`、`reason`），同一個 `expires_at` 同一原因只記一次。`reason` 為：`status-<HCOM 狀態>`（如 `status-active`、`status-blocked`）、`prompt-not-empty`、`prompt-unreadable`（選單等畫面判不出輸入框）、`screen-working`、`decision-quiet-hours`、`decision-over-3h`、`other-action`（這一輪有其他催促或鬧鐘要送）、`usage-missing`（找不到或讀不出記錄器的檔案，`expires_at` 為 `null`，到檔案恢復前只記一次，不影響其他原因的去重）。快取已冷或已過期不記。
 - Claude 狀態 `listening` 但 `prompt_empty` 連續 15 分鐘不是布林值時記一筆 `prompt-unreadable`（`since` 與最後 8 行畫面，每行截到 200 字元），同一段只記一次；能判讀或狀態改變後重新計算。用來發現 Claude Code 改版後監控判不出輸入框、保溫一直送不出去的情況。
 - 監控狀態以 `feature_versions.cache_keepalive=2` 表示支援上述紀錄與以 HCOM 狀態判斷；依下一節重啟監控後才生效。
 
@@ -130,7 +130,7 @@ Claude 的提示快取在最後一次請求後約一小時失效，失效後下�
 
 查快取：
 
-- `status` 的每位 Claude Agent 有 `cache`：`expires_at`、`warm`（讀記錄器檔案的當下值）、`can_keep_alive` 與 `reason`（監控最近一輪 `checked_at` 判斷的「現在能否保溫」，與快取剩多久無關；`no-wait` 表示沒有有效等待；找不到記錄器檔案時為 `usage-missing`）、`last_keepalive`（上次嘗試的 `at`、`result`、`expires_at`，失敗附 `error`）。
+- `status` 的每位 Claude Agent 有 `cache`：`expires_at`、`warm`（讀記錄器檔案的當下值）、`can_keep_alive` 與 `reason`（現在能否保溫，與快取剩多久無關：記錄器檔案與 HCOM 狀態以查詢當下為準，依序可能是 `usage-missing`、`cache-cold`、`cache-expired`、`status-<狀態>`；其餘如輸入框與等待聲明取監控最近一輪 `checked_at` 的判斷，`no-wait` 表示沒有有效等待；監控尚未判斷過時 `can_keep_alive` 為 `null`）、`last_keepalive`（上次嘗試的 `at`、`result`、`expires_at`，失敗附 `error`）。
 - 查某次閒置後是讀快取還是整段重寫：
 
 ```bash
@@ -140,7 +140,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" cache-history --agent
 uv run --no-project python "$lat_dir/scripts/lat-watch.py" cache-history --session <session ID>
 ```
 
-讀該 session 的 Claude 對話紀錄，列出主對話兩次請求間隔超過 5 分鐘的每段閒置：起訖時間、長度，以及之後第一個請求讀快取（`cache_read_tokens`）與寫快取（`cache_write_tokens`）的 token 數；寫多於讀判為 `rewrite`（整段重寫），否則 `hit`，兩者皆 0 為 `unknown`。同一請求分段寫入的多筆只算一次，子 Agent 與錯誤佔位紀錄不算。加 `--workspace` 時一併標出該段期間這位 Agent 的 `cache-keepalive` 與 `cache-keepalive-skipped` 紀錄。
+讀該 session 的 Claude 對話紀錄，列出主對話每段超過 5 分鐘的閒置（從上一個請求最後一段回覆寫入，到下一個請求前最後一筆使用者紀錄，即提示或工具結果寫入；不含回覆延遲）：起訖時間、長度，以及之後第一個請求讀快取（`cache_read_tokens`）與寫快取（`cache_write_tokens`）的 token 數；寫多於讀判為 `rewrite`（整段重寫），否則 `hit`，兩者皆 0 為 `unknown`。同一請求分段寫入的多筆只算一次，子 Agent 與錯誤佔位紀錄不算。加 `--workspace` 時一併標出該段期間這位 Agent 的 `cache-keepalive` 與 `cache-keepalive-skipped` 紀錄。
 
 ## 更新監控程式後重啟
 

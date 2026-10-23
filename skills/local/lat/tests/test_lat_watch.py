@@ -2615,7 +2615,7 @@ esac
                 self.assertFalse(json.loads(wait_path.read_text())['expiry_nudge_pending'])
 
     def test_claude_alarm_and_expiry_follow_hcom_status_not_the_footer(self):
-        # Shapes recorded live in .lat/runs/issue-268/probes.md; the footer text is arbitrary.
+        # Screen shapes recorded live for issue #268; the footer text is arbitrary.
         model_menu = ['   Select model', '   ❯ 3.  Sonnet 5.5 ✔', '   ○ Low effort ←/→ to adjust']
         approval = [' Do you want to proceed?', ' ❯ 1. Yes', '   4. No', ' Esc to cancel · Tab to amend']
         idle = ['❯', '─' * 40, '  ⏵⏵ some future mode · 7 widgets · ↓ to manage']
@@ -5146,7 +5146,7 @@ esac
         for name, (terminal, reason) in cases.items():
             with self.subTest(name):
                 self.hcom_log.write_text('')
-                (self.work / '.lat/watch').exists() and shutil.rmtree(self.work / '.lat/watch')
+                shutil.rmtree(self.work / '.lat/watch', ignore_errors=True)
                 self.start = taipei(10)
                 self.declare(kind='agent', deadline_at=self.start + 3000)
                 self.show(**terminal)
@@ -5178,17 +5178,27 @@ esac
                           for r in self.records('cache-keepalive-skipped')],
                          [('status-active', self.start + 280, 'agent'),
                           ('prompt-not-empty', self.start + 280, 'agent')])
+        # A missing usage file in between does not forget what was logged for this expiry.
+        (self.usage / 'claude-session.json').unlink()
+        self.cycle(self.start + 220, self.start + 230)
+        self.write_usage(self.start + 280)
+        self.cycle(self.start + 240)
+        self.assertEqual([r['reason'] for r in self.records('cache-keepalive-skipped')],
+                         ['status-active', 'prompt-not-empty', 'usage-missing'])
         # A new expiry starts a new record set.
         self.write_usage(self.start + 3800)
         self.cycle(self.start + 3600)
         self.assertEqual([r['expires_at'] for r in self.records('cache-keepalive-skipped')],
-                         [self.start + 280] * 2 + [self.start + 3800])
+                         [self.start + 280] * 2 + [None, self.start + 3800])
         # Without a valid wait nothing is logged.
         self.watch.write_object(self.wait_file, {**json.loads(self.wait_file.read_text()),
                                                  'active': False})
         self.write_usage(self.start + 7400)
         self.cycle(self.start + 7200)
-        self.assertEqual(len(self.records('cache-keepalive-skipped')), 3)
+        self.assertEqual(len(self.records('cache-keepalive-skipped')), 4)
+        (self.usage / 'claude-session.json').unlink()
+        self.cycle(self.start + 7260)
+        self.assertEqual(len(self.records('cache-keepalive-skipped')), 4)
 
     def test_decision_other_action_and_missing_usage_reasons(self):
         (self.decisions / 'HELP-1.md').write_text('# Q\n- version: r1\n- status: pending\n')
@@ -5246,38 +5256,51 @@ esac
                                 capture_output=True, text=True, check=True)
         return {row['agent']: row for row in json.loads(result.stdout)['targets']}
 
+    def cache(self, now, status=None):
+        """status's cache block for the worker as the CLI computes it at this time."""
+        info = {**self.agents[1], 'status': status or self.agents[1]['status']}
+        return self.watch.cache_status(info, self.state()['worker'], now)
+
     def test_status_shows_cache_expiry_keepalive_possibility_and_last_try(self):
         self.start = taipei(10)
         self.declare(kind='agent', deadline_at=self.start + 3000)
         self.show(status='active')
         self.write_usage(self.start + 1000)
         self.cycle(self.start)
-        cache = self.status()['worker']['cache']
-        self.assertEqual(cache, {'expires_at': self.start + 1000, 'warm': True,
-                                 'can_keep_alive': False, 'reason': 'status-active',
-                                 'checked_at': self.start, 'last_keepalive': None})
+        self.assertEqual(self.cache(self.start, 'active'),
+                         {'expires_at': self.start + 1000, 'warm': True,
+                          'can_keep_alive': False, 'reason': 'status-active',
+                          'checked_at': self.start, 'last_keepalive': None})
         Path(f'{self.hcom_log}.fail').touch()
         self.show()
         self.write_usage(self.start + 240)
         self.cycle(self.start + 60)
         Path(f'{self.hcom_log}.fail').unlink()
-        cache = self.status()['worker']['cache']
+        cache = self.cache(self.start + 60)
         self.assertTrue(cache['can_keep_alive'])
         self.assertIsNone(cache['reason'])
         self.assertEqual({key: cache['last_keepalive'][key] for key in ('at', 'result')},
                          {'at': self.start + 60, 'result': 'failed'})
+        # Current HCOM status and cache file win over the last cycle's judgement.
+        self.assertEqual(self.cache(self.start + 60, 'active')['reason'], 'status-active')
+        self.assertEqual(self.cache(self.start + 300)['reason'], 'cache-expired')
+        self.write_usage(self.start + 240, warm=False)
+        self.assertEqual((self.cache(self.start + 60)['can_keep_alive'],
+                          self.cache(self.start + 60)['reason']), (False, 'cache-cold'))
+        self.write_usage(self.start + 240)
         self.cycle(self.start + 120)
         # The reply to a keep-alive is not progress, so the last try survives it.
         self.reply_to_keepalive()
         self.cycle(self.start + 180)
-        self.assertEqual(self.status()['worker']['cache']['last_keepalive'],
+        self.assertEqual(self.cache(self.start + 180)['last_keepalive'],
                          {'at': self.start + 120, 'result': 'sent', 'expires_at': self.start + 240})
         (self.usage / 'claude-session.json').unlink()
-        cache = self.status()['worker']['cache']
+        cache = self.cache(self.start + 180)
         self.assertEqual((cache['expires_at'], cache['can_keep_alive'], cache['reason']),
                          (None, False, 'usage-missing'))
+        # The CLI shows the block for Claude agents only.
+        self.assertEqual(self.status()['worker']['cache']['reason'], 'usage-missing')
         self.assertEqual(self.status()['orch']['cache']['reason'], 'usage-missing')
-        # Only Claude agents carry cache information.
         agents = Path(f'{self.hcom_log}.agents')
         agents.write_text(json.dumps([{**self.agents[0], 'tool': 'codex'}, self.agents[1]]))
         self.assertNotIn('cache', self.status()['orch'])
@@ -5297,26 +5320,25 @@ esac
         self.assertEqual(len(self.injections()), 1)
 
 
-
 class CacheHistoryTests(PinnedEnvironment):
-    # Request rows (UTC time, request ID, cache read, cache write) excerpted from nahu's
-    # session 2cb4432d: 22:23 -> 23:33 local rewrote the cache, 00:00 -> 00:40 hit it.
+    # Request rows (UTC time, request ID, cache read, cache write) excerpted from a real
+    # orchestrator session: 22:23 -> 23:33 local rewrote the cache, 00:00 -> 00:40 hit it.
     # Streamed replies repeat a request's usage on every content block.
     REAL_REQUESTS = [
-        ('2026-10-22T14:23:42.722Z', 'req_011CgHRjAEFJLVv6NS2LQT9j', 175230, 844),
-        ('2026-10-22T15:33:12.004Z', 'req_011CgHX2b6XwsvkXAJDjwtfB', 28437, 147948),
-        ('2026-10-22T15:33:13.676Z', 'req_011CgHX2b6XwsvkXAJDjwtfB', 28437, 147948),
-        ('2026-10-22T15:35:42.963Z', 'req_011CgHXDGMD6WjcBjLUKnRem', 199873, 1365),
-        ('2026-10-22T16:00:10.550Z', 'req_011CgHZ5gxomFPVJDGTJBXG2', 214179, 344),
-        ('2026-10-22T16:40:28.640Z', 'req_011CgHc9xSwvDrEPkzN9MnJP', 214523, 1215),
-        ('2026-10-22T16:40:30.259Z', 'req_011CgHc9xSwvDrEPkzN9MnJP', 214523, 1215),
+        ('2026-10-22T14:23:42.722Z', 'req-1', 175230, 844),
+        ('2026-10-22T15:33:12.004Z', 'req-2', 28437, 147948),
+        ('2026-10-22T15:33:13.676Z', 'req-2', 28437, 147948),
+        ('2026-10-22T15:35:42.963Z', 'req-3', 199873, 1365),
+        ('2026-10-22T16:00:10.550Z', 'req-4', 214179, 344),
+        ('2026-10-22T16:40:28.640Z', 'req-5', 214523, 1215),
+        ('2026-10-22T16:40:30.259Z', 'req-5', 214523, 1215),
     ]
 
     def setUp(self):
         super().setUp()
         self.watch = load_watch()
-        self.FIXTURE = self.root / 'nahu.jsonl'
-        self.FIXTURE.write_text(''.join(json.dumps({
+        self.transcript = self.root / 'nahu.jsonl'
+        self.transcript.write_text(''.join(json.dumps({
             'type': 'assistant', 'timestamp': at, 'requestId': request, 'isSidechain': False,
             'message': {'id': request, 'model': 'claude-opus-5-5', 'role': 'assistant',
                         'content': [], 'usage': {'cache_read_input_tokens': read,
@@ -5328,7 +5350,7 @@ class CacheHistoryTests(PinnedEnvironment):
             gap['start_at'], TAIPEI).strftime('%m-%d %H:%M') == start)
 
     def test_real_transcript_rewrite_and_hit(self):
-        gaps = self.watch.cache_history(self.FIXTURE)
+        gaps = self.watch.cache_history(self.transcript)
         rewrite = self.gap(gaps, '10-22 22:23')
         self.assertEqual(datetime.fromtimestamp(rewrite['end_at'], TAIPEI).strftime('%H:%M'),
                          '23:33')
@@ -5357,7 +5379,24 @@ class CacheHistoryTests(PinnedEnvironment):
         transcript.write_text('\n'.join(rows) + '\n')
         gaps = self.watch.cache_history(transcript)
         self.assertEqual([(gap['idle_seconds'], gap['verdict']) for gap in gaps],
-                         [(3600, 'unknown')])
+                         [(1798, 'unknown')])
+
+    def test_idle_runs_from_the_last_reply_block_to_the_next_user_entry(self):
+        # Real shape: the reply ends 14:08:34, the prompt arrives 14:13:30 and its first reply
+        # block is written later, which must not stretch the idle time past five minutes.
+        transcript = self.root / 'latency.jsonl'
+        def reply(clock, request):
+            return {'type': 'assistant', 'timestamp': f'2026-10-23T{clock}Z', 'requestId': request,
+                    'message': {'id': request, 'model': 'claude', 'usage': {
+                        'cache_read_input_tokens': 10, 'cache_creation_input_tokens': 1}}}
+        rows = [reply('06:08:20.000', 'a'), reply('06:08:34.971', 'a'),
+                {'type': 'user', 'timestamp': '2026-10-23T06:13:30.760Z'},
+                reply('06:13:36.000', 'b'),
+                {'type': 'user', 'timestamp': '2026-10-23T06:20:00.000Z'},
+                reply('06:20:05.000', 'c')]
+        transcript.write_text(''.join(json.dumps(row) + '\n' for row in rows))
+        gaps = self.watch.cache_history(transcript)
+        self.assertEqual([gap['idle_seconds'] for gap in gaps], [384])
 
     def test_keepalives_between_requests_are_marked_and_cli_supports_json(self):
         work = self.root / 'work'
@@ -5376,7 +5415,7 @@ class CacheHistoryTests(PinnedEnvironment):
         hcom = binary / 'hcom'
         hcom.write_text('#!/bin/sh\nprintf \'%s\\n\' \'' + json.dumps([
             {'name': 'nahu', 'session_id': 'nahu-session',
-             'transcript_path': str(self.FIXTURE)}]) + '\'\n')
+             'transcript_path': str(self.transcript)}]) + '\'\n')
         hcom.chmod(0o755)
         environment = {**os.environ, 'PATH': f'{binary}:{os.environ["PATH"]}'}
         def history(*args):
@@ -5396,7 +5435,7 @@ class CacheHistoryTests(PinnedEnvironment):
         # Without HCOM the session is found under the Claude config directory.
         config = self.root / 'claude'
         (config / 'projects/repo').mkdir(parents=True)
-        (config / 'projects/repo/lost-session.jsonl').write_text(self.FIXTURE.read_text())
+        (config / 'projects/repo/lost-session.jsonl').write_text(self.transcript.read_text())
         hcom.write_text('#!/bin/sh\nexit 1\n')
         environment['CLAUDE_CONFIG_DIR'] = str(config)
         result = json.loads(history('--session', 'lost-session', '--json').stdout)
