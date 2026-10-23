@@ -86,3 +86,12 @@ uv run --no-project python "$lat_dir/scripts/lat-autoclean.py" enable --workspac
 - **紀錄**：`.lat/cleanup.log` 一行一筆，以 tab 分隔：時間（UTC）、類別、相對 `.lat` 的路徑、大小（bytes）、刪除方式（`trash`／`shred`）或「跳過：原因」。四類中每個未刪的項目都寫原因（例如未滿 40 天、票仍開啟、active session 仍需要）。
 - **預覽**：`run --workspace "$workspace" --repo <repo> --dry-run` 印出一次執行會刪什麼，未開啟時也能用；不刪、不寫紀錄。
 - **關閉**：以 trash-put 移除開啟標記即可。
+
+
+## Paused orchestrators and retained services
+
+`lat-reap.py` reads the [shared pause records](stall-watch.md#paused-hcom-communication)
+when evaluating service keeps. A paused full HCOM name counts as a present orchestrator,
+including when another orchestrator's watcher triggers periodic reaping. Its unexpired
+keeps remain valid. Explicit release and expiration still take precedence; removing
+the pause record restores the ordinary absent-orchestrator rule on the next reap.

@@ -232,4 +232,4 @@ next cycle applies the normal rules, including existing alarm deadlines.
 
 The board owns record creation and removal. Tests must set `LAT_HCOM_PAUSED_DIR` and
 all other state directories to temporary locations. For retained services, see
-[task cleanup](task-cards.md#paused-orchestrators-and-retained-services).
+[service cleanup](cleanup.md#paused-orchestrators-and-retained-services).
