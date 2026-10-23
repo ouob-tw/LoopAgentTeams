@@ -140,6 +140,8 @@ class HeredocTests(HookCase):
                               ("cat <<'A'\nplain\nA\ncat <<B\nrun `x`\nB", 'B'),
                               ('cat <<EOF\nEOF  \n$(printf expanded)\nEOF', 'EOF'),
                               ('cat <<-EOF\n  EOF\n$(date)\n\tEOF', 'EOF'),
+                              ("cat <<'A' # <<'B'\nliteral\nA\ncat <<B\n$(printf x)\nB", 'B'),
+                              ("cat <<'A' <<B; echo \"<<'C'\"\nliteral\nA\n$(printf x)\nB", 'B'),
                               ("cat <<'A' <<B\nliteral\nA\n$(date)\nB", 'B')]:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command), f"(<<'{name}')")

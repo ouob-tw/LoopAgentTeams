@@ -110,6 +110,32 @@ def heredoc_word(word):
     return name, any(c in word for c in '\'"\\')
 
 
+def shell_text_end(line):
+    """Where the live shell text of a line ends: the start of an unquoted `# comment`."""
+    quote = None
+    for i, char in enumerate(line):
+        if quote:
+            quote = None if char == quote else quote
+        elif char in '\'"':
+            quote = char
+        elif char == '\\':
+            continue
+        elif char == '#' and (i == 0 or line[i - 1] in ' \t'):
+            return i
+    return len(line)
+
+
+def quoted_at(line, index):
+    """True when index sits inside a quoted string of the line."""
+    quote = None
+    for i, char in enumerate(line[:index]):
+        if quote:
+            quote = None if char == quote else quote
+        elif char in '\'"':
+            quote = char
+    return quote is not None
+
+
 def expanding_heredoc(command):
     """(delimiter, what) for the first unquoted heredoc whose body substitutes a command.
 
@@ -125,7 +151,10 @@ def expanding_heredoc(command):
         line_end = command.find('\n', match.end())
         if line_end < 0:
             return None
-        openers = [match, *HEREDOC_START.finditer(command, match.end(), line_end)]
+        header = command[match.end():line_end]
+        header = header[:shell_text_end(header)]
+        openers = [match, *(m for m in HEREDOC_START.finditer(header)
+                            if not quoted_at(header, m.start()))]
         position = line_end + 1
         for opener in openers:
             name, quoted = heredoc_word(opener.group(2))
