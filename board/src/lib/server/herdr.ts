@@ -8,7 +8,7 @@ import type { HerdrWorkspace } from '../board/types.ts';
 import type { BoardConfig } from './config.ts';
 import { parseJsonOutput, runCommand } from './external.ts';
 
-type WorkspaceChoice =
+export type WorkspaceChoice =
 	| { ok: true; id: string; label: string; created: boolean }
 	| { ok: false; reason: string };
 
@@ -80,8 +80,12 @@ export async function chooseWorkspace(config: BoardConfig, scope: string, prefer
 		.sort((a, b) => counts.get(b.workspace_id)! - counts.get(a.workspace_id)! || a.number - b.number)[0];
 	if (best) return { ok: true, id: best.workspace_id, label: best.label, created: false };
 
-	const label = basename(scope) || scope;
-	const created = await herdr(config, ['workspace', 'create', '--cwd', scope, '--label', label, '--no-focus']);
+	return createWorkspace(config, scope, basename(scope) || scope);
+}
+
+/** A new workspace with this label, its first tab in `cwd`, created without taking the focus. */
+export async function createWorkspace(config: BoardConfig, cwd: string, label: string): Promise<WorkspaceChoice> {
+	const created = await herdr(config, ['workspace', 'create', '--cwd', cwd, '--label', label, '--no-focus']);
 	if ('reason' in created) return { ok: false, reason: `建立 Herdr 工作區失敗：${created.reason}` };
 	const id = (created.result.workspace as Partial<Workspace> | undefined)?.workspace_id;
 	if (typeof id !== 'string') return { ok: false, reason: '建立 Herdr 工作區失敗：輸出缺少工作區編號' };

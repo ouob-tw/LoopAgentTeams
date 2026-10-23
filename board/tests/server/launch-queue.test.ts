@@ -125,7 +125,7 @@ async function launch(folder: string, agent: boolean): Promise<{ status: number;
 	const response = await fixture.fetch('/api/launches', {
 		method: 'POST',
 		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ client: 'claude', folder, text: agent ? '' : '做一件事', gitInit: false, model: null, effort: null, ...(agent ? { agent: { workspace: 'wA', tabName: '' } } : {}) }),
+		body: JSON.stringify({ client: 'claude', folder, text: agent ? '' : '做一件事', gitInit: false, model: null, effort: null, ...(agent ? { workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } } : {}) }),
 		cookie
 	});
 	return { status: response.status, body: await response.json(), at: Date.now() };

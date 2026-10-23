@@ -19,6 +19,14 @@ export function latCommand(client: LaunchClient, text: string): string {
 /** Longest tab name the new-agent form takes. */
 export const TAB_NAME_MAX = 60;
 
+/** Longest name the new-workspace field takes. */
+export const WORKSPACE_NAME_MAX = 60;
+
+/** Which Herdr workspace a launch opens in: the one `auto`matically chosen for the folder's
+ *  project (created when it has none), an `existing` one, or a `new` one with this label, created
+ *  when the form is sent. */
+export type WorkspacePick = { kind: 'auto' } | { kind: 'existing'; id: string } | { kind: 'new'; label: string };
+
 /** What `POST /api/launches` takes. */
 export interface LaunchRequest {
 	client: LaunchClient;
@@ -28,9 +36,11 @@ export interface LaunchRequest {
 	text: string;
 	/** Run `git init` first when the folder is not in a Git project. Always false for a plain agent. */
 	gitInit: boolean;
-	/** Set for a plain agent: the Herdr workspace its tab opens in, and the tab's name ('' keeps
-	 *  the name hcom and Herdr give it). No LAT start command, no Git project needed. */
-	agent?: { workspace: string; tabName: string } | null;
+	/** Where the agent opens. A controller left without one goes `auto`; a plain agent must say. */
+	workspace?: WorkspacePick;
+	/** Set for a plain agent: its tab's name ('' keeps the name hcom and Herdr give it). No LAT
+	 *  start command, no Git project needed. */
+	agent?: { tabName: string } | null;
 	/** Null: the client's own default, and no argument for it. */
 	model: string | null;
 	effort: string | null;
