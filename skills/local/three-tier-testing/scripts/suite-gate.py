@@ -45,6 +45,7 @@ from datetime import date, datetime, timezone
 from pathlib import Path
 
 REGISTRY_NAME = '.suite-gate.json'
+MAP_DIR = '.suite-gate.d'  # more affected.map rules, one file per topic
 DEFAULTS = {'min_slots': 2, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds': 30.0,
             'sample_seconds': 2.0, 'brake_io_high': 40.0, 'brake_io_low': 20.0,
             'brake_cpu_high': 50.0, 'brake_cpu_low': 25.0, 'default_cores': 4.0,
@@ -466,7 +467,31 @@ def load_registry(cwd):
     except (OSError, ValueError) as exc:
         warn(f'ignoring unreadable registry {path}: {exc}')
         return None
-    return data if isinstance(data, dict) else None
+    if not isinstance(data, dict):
+        return None
+    try:
+        add_map_files(root, data)
+    except (OSError, ValueError) as exc:
+        warn(f'ignoring the registry: {exc}')
+        return None
+    return data
+
+
+def add_map_files(root, data):
+    """Append the rules of each .suite-gate.d/*.json ({"map": [...]}), in name order, to
+    affected.map, so parallel work adds its own file instead of editing the same lines."""
+    for path in sorted((root / MAP_DIR).glob('*.json')):
+        try:
+            rules = json.loads(path.read_text()).get('map')
+        except AttributeError:
+            rules = None
+        except ValueError as exc:
+            raise ValueError(f'{path}: {exc}') from None
+        affected = data.setdefault('affected', {})
+        if not isinstance(rules, list) or not isinstance(affected, dict) \
+                or not isinstance(affected.setdefault('map', []), list):
+            raise ValueError(f'{path} must be {{"map": [...]}} and affected.map a list')
+        affected['map'].extend(rules)
 
 
 def _normalize_words(words):
