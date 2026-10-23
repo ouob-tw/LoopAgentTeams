@@ -141,6 +141,7 @@ class HeredocTests(HookCase):
                               ('cat <<EOF\nEOF  \n$(printf expanded)\nEOF', 'EOF'),
                               ('cat <<-EOF\n  EOF\n$(date)\n\tEOF', 'EOF'),
                               ("cat <<'A' # <<'B'\nliteral\nA\ncat <<B\n$(printf x)\nB", 'B'),
+                              ("cat <<'A'; echo \\\"; cat <<B\nliteral\nA\n$(printf x)\nB", 'B'),
                               ("cat <<'A' <<B; echo \"<<'C'\"\nliteral\nA\n$(printf x)\nB", 'B'),
                               ("cat <<'A' <<B\nliteral\nA\n$(date)\nB", 'B')]:
             with self.subTest(command):

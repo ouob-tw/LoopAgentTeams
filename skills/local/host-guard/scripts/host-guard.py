@@ -110,30 +110,42 @@ def heredoc_word(word):
     return name, any(c in word for c in '\'"\\')
 
 
+def _quote_states(line):
+    """Yield (index, char, quote) with the quote in force before each character; a backslash
+    outside single quotes escapes the next character."""
+    quote, skip = None, False
+    for i, char in enumerate(line):
+        if skip:
+            skip = False
+        elif quote == "'":
+            yield i, char, quote
+            quote = None if char == "'" else quote
+            continue
+        elif char == '\\':
+            yield i, char, quote
+            skip = True
+            continue
+        else:
+            yield i, char, quote
+            if quote:
+                quote = None if char == quote else quote
+            elif char in '\'"':
+                quote = char
+            continue
+        yield i, char, quote
+
+
 def shell_text_end(line):
     """Where the live shell text of a line ends: the start of an unquoted `# comment`."""
-    quote = None
-    for i, char in enumerate(line):
-        if quote:
-            quote = None if char == quote else quote
-        elif char in '\'"':
-            quote = char
-        elif char == '\\':
-            continue
-        elif char == '#' and (i == 0 or line[i - 1] in ' \t'):
+    for i, char, quote in _quote_states(line):
+        if char == '#' and not quote and (i == 0 or line[i - 1] in ' \t'):
             return i
     return len(line)
 
 
 def quoted_at(line, index):
     """True when index sits inside a quoted string of the line."""
-    quote = None
-    for i, char in enumerate(line[:index]):
-        if quote:
-            quote = None if char == quote else quote
-        elif char in '\'"':
-            quote = char
-    return quote is not None
+    return any(i == index and quote for i, _, quote in _quote_states(line))
 
 
 def expanding_heredoc(command):
