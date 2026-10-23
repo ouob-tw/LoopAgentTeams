@@ -393,7 +393,7 @@ test.skipIf(!CHROME)("the controller's information page is as it was: no close, 
 	expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick]')`)).toBe(false);
 }, 60_000);
 
-test.skipIf(!CHROME)("a running controller's information page pauses and resumes its HCOM link, and still offers no close", async () => {
+test.skipIf(!CHROME)("a running controller's information page pauses its HCOM link, then offers its resume, and never a close", async () => {
 	const pausedDir = join(fixture.dir, 'hcom-paused');
 	try {
 		await visit(390, '?controller=s-lead');
