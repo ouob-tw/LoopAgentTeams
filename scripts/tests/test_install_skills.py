@@ -165,6 +165,40 @@ class InstallSkillsTests(unittest.TestCase):
         self.assertIn('unknown skill: nope', result.stderr)
         self.assertIsNone(self.bunx_args())
 
+    def without_bunx_on_path(self):
+        """PATH holding only git, tar and the fake bunx's helpers, and a fake HOME; the host's own bunx stays out."""
+        tools = self.tmp / 'tools'
+        tools.mkdir()
+        for tool in ('git', 'tar', 'find', 'sort', 'cat'):
+            (tools / tool).symlink_to(shutil.which(tool))
+        home = self.tmp / 'home'
+        home.mkdir()
+        self.env.update(PATH=str(tools), HOME=str(home))
+        return home
+
+    def test_bunx_on_path_is_used(self):
+        result = self.install('--skill', 'beta')
+        self.assertIn(f"{self.tmp / 'bin/bunx'} skills add ", result.stdout)
+        self.assert_installed(result, ['beta'])
+
+    def test_bunx_only_in_home_bun_bin_is_found(self):
+        home = self.without_bunx_on_path()
+        (home / '.bun/bin').mkdir(parents=True)
+        shutil.copy(self.tmp / 'bin/bunx', home / '.bun/bin/bunx')
+        result = self.install('--skill', 'beta')
+        self.assertIn(f"{home / '.bun/bin/bunx'} skills add ", result.stdout)
+        self.assert_installed(result, ['beta'])
+
+    def test_missing_bunx_reports_where_it_looked_without_a_traceback(self):
+        home = self.without_bunx_on_path()
+        result = self.install('--skill', 'beta')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIsNone(self.bunx_args())
+        self.assertNotIn('Traceback', result.stderr)
+        self.assertIn(f"bunx not found: not on PATH and not at {home / '.bun/bin/bunx'}",
+                      result.stderr)
+        self.assertIn('add ~/.bun/bin to PATH', result.stderr)
+
 
 if __name__ == '__main__':
     unittest.main()
