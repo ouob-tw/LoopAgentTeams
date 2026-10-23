@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """PreToolUse hook that keeps agents from starving a shared host.
 
-Three rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
+Four rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
 - whole-disk scans: find / du / grep -r / rg / fd / tree / ls -R rooted at /, /mnt,
   /media or a configured extra root are blocked;
 - CPU load generators (busy loops, stress, stress-ng, sysbench cpu, yes > /dev/null)
   must run on a limited set of cores via taskset, systemd-run or cpulimit;
 - an unquoted heredoc whose body holds `...` or $(...) is blocked: the shell runs those
-  commands while writing what was meant as text (a brief, a message).
+  commands while writing what was meant as text (a brief, a message);
+- rm / trash-put / trash / gio trash is blocked when a path ends in a substitution that
+  deletes the parent folder if it comes out empty, or when it targets a folder of agent
+  conversation records or state (or a folder above one).
 """
 import argparse
 import copy
@@ -43,6 +46,10 @@ HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re
 UNQUOTED_HEREDOC = re.compile(r'(?<!<)<<-?\s*([A-Za-z_]\w*)[^\n]*\n(.*?)^\s*\1\s*$', re.S | re.M)
 SUBSTITUTION = re.compile(r'(?<!\\)(?:`|\$\()')
 QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
+DELETE = re.compile(r'(?:^|[;&|(\n]|-c\s+[\'"])\s*' + WRAPPERS
+                    + r'(?P<tool>rm|trash-put|trash|gio\s+trash)(?=\s)')
+# A last path component that is only a substitution: `$x`, `${x}`, `$(cmd)` or `cmd`.
+BARE_SUBSTITUTION = re.compile(r'\$\{?\w+\}?|\$\(.*\)|`.*`', re.S)
 SCRIPT_RUN = re.compile(r'(?:^|[;&|(\s])(?:(?:ba|z|da)?sh\s+(?:-\S+\s+)*)?'
                         r'(?P<path>(?:[\w.~/-]*/)?[\w.-]+\.sh)\b')
 
@@ -61,6 +68,12 @@ HEREDOC_MESSAGE = ('Blocked: the heredoc <<{name} is unquoted and its body conta
                    "(<<'{name}') to keep the body literal, or write the file with the Write tool "
                    'and pass it with --file. If you meant to insert command output, run the '
                    'command into a variable first and use the variable in the heredoc.')
+EMPTY_MESSAGE = ('Blocked: {tool} {word} ends in a substitution. If it comes out empty, {tool} '
+                 'deletes the parent folder instead. Check the value first, or write it as '
+                 '${{name:?}} so the shell stops on an empty value.')
+PROTECTED_MESSAGE = ('Blocked: {tool} {word} would delete {path}, which holds agent conversation '
+                     'records or state that other sessions use. Delete single files inside it '
+                     'instead (as the session-manager skill does), or ask the user.')
 
 
 def config_path():
@@ -95,6 +108,92 @@ def expanding_heredoc(command):
         found = SUBSTITUTION.search(match.group(2))
         if found:
             return match.group(1), 'a backtick' if found.group(0) == '`' else '$('
+    return None
+
+
+def protected_dirs():
+    """Folders of agent conversation records and state: never deleted as a whole."""
+    home = Path.home()
+    claude = Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude')
+    codex = Path(os.environ.get('CODEX_HOME') or home / '.codex')
+    state = Path(os.environ.get('XDG_STATE_HOME') or home / '.local/state')
+    return {os.path.normpath(p) for p in (claude, claude / 'projects', codex, codex / 'sessions',
+                                          codex / 'archived_sessions', home / '.hcom',
+                                          state / 'lat')}
+
+
+def command_words(text, start):
+    """The raw words of the shell command starting at start, up to ; & | or a newline."""
+    words, word, depth, quote, i = [], [], 0, None, start
+    while i < len(text):
+        char = text[i]
+        if quote:
+            quote = None if char == quote else quote
+        elif char in '\'"`':
+            quote = char
+        elif text.startswith('$(', i):
+            depth += 1
+            word.append('$(')
+            i += 2
+            continue
+        elif char == ')' and depth:
+            depth -= 1
+        elif not depth and char in ';&|)\n':
+            break
+        elif not depth and char.isspace():
+            if word:
+                words.append(''.join(word))
+                word = []
+            i += 1
+            continue
+        word.append(char)
+        i += 1
+    if word:
+        words.append(''.join(word))
+    return words
+
+
+def split_last(word):
+    """(parent, last component) of a path, splitting only on slashes outside $(...)."""
+    word, depth, cut = word.rstrip('/'), 0, -1
+    for i, char in enumerate(word):
+        if word.startswith('$(', i):
+            depth += 1
+        elif char == ')' and depth:
+            depth -= 1
+        elif char == '/' and not depth:
+            cut = i
+    return word[:max(cut, 0)], word[cut + 1:]
+
+
+def resolve_path(word, cwd):
+    """The path a delete argument names, or None when it holds an unknown substitution."""
+    path = re.sub(r'\$\{?HOME\}?', str(Path.home()), word)
+    path = str(Path.home()) + path[1:] if path == '~' or path.startswith('~/') else path
+    if '$' in path or '`' in path:
+        return None
+    return os.path.normpath(os.path.join(cwd, path))
+
+
+def risky_delete(command, cwd):
+    """(message, fields) for a delete that can wipe a folder by mistake, or None."""
+    text = HEREDOC.sub('', command)
+    protected = protected_dirs()
+    projects = os.path.join(os.path.normpath(Path(os.environ.get('CLAUDE_CONFIG_DIR')
+                                                  or Path.home() / '.claude')), 'projects')
+    for match in DELETE.finditer(text):
+        tool = ' '.join(match.group('tool').split())
+        for word in command_words(text, match.end()):
+            bare = word.replace('"', '').replace("'", '')
+            if bare.startswith('-'):
+                continue
+            parent, last = split_last(bare)
+            if parent and BARE_SUBSTITUTION.fullmatch(last):
+                return EMPTY_MESSAGE, {'tool': tool, 'word': bare}
+            path = resolve_path(bare, cwd)
+            if path and (path in protected or os.path.dirname(path) == projects
+                         or any(p.startswith(path.rstrip('/') + '/') for p in protected)):
+                return PROTECTED_MESSAGE, {'tool': tool, 'word': bare, 'path': path}
     return None
 
 
@@ -199,6 +298,10 @@ def cmd_hook():
     heredoc = expanding_heredoc(command)
     if heredoc:
         print(HEREDOC_MESSAGE.format(name=heredoc[0], what=heredoc[1]), file=sys.stderr)
+        return 2
+    deleting = risky_delete(command, cwd if os.path.isdir(cwd) else os.getcwd())
+    if deleting:
+        print(deleting[0].format(**deleting[1]), file=sys.stderr)
         return 2
     where = load_problem(command, cwd if os.path.isdir(cwd) else os.getcwd(), config['cores'])
     if where:

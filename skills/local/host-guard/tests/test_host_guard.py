@@ -148,6 +148,46 @@ class HeredocTests(HookCase):
                 self.assert_allowed(self.bash(command))
 
 
+class DeleteTests(HookCase):
+    """Deletes that wipe a folder of agent conversation records or state by mistake."""
+
+    def hook(self, payload):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_STATE_HOME')}
+        env.update(HOME=str(self.tmp), HOST_GUARD_CONFIG=str(self.config))
+        return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=json.dumps(payload),
+                              env=env, capture_output=True, text=True)
+
+    def test_a_path_ending_in_a_substitution_is_blocked(self):
+        # The 2026-10-23 case: the substitution came out empty and trashed a whole project folder.
+        for command in ["trash-put ~/.claude/projects/-x/$(cut -d' ' -f2 /dev/null) 2>/dev/null",
+                        'rm -rf "$T/$name"', 'rm -f $dir/${file}', 'trash $out/`ls`',
+                        'sudo rm -r /srv/$(date)', 'xargs rm -rf build/$x',
+                        'gio trash ./$x']:
+            with self.subTest(command):
+                self.assert_blocked(self.bash(command), 'ends in a substitution')
+
+    def test_agent_record_and_state_folders_are_blocked(self):
+        for command, path in [('trash-put ~/.hcom', '.hcom'),
+                              ('rm -rf ~/.claude/projects', '.claude/projects'),
+                              ('rm -rf ~/.claude/projects/-home-x-proj/',
+                               '.claude/projects/-home-x-proj'),
+                              ('rm -rf $HOME/.codex/sessions', '.codex/sessions'),
+                              ('trash-put ~/.local/state/lat', '.local/state/lat'),
+                              ('bash -c "rm -rf ~/.local/state"', '.local/state'),
+                              ('cd x; trash-put ~', str(self.tmp))]:
+            with self.subTest(command):
+                self.assert_blocked(self.bash(command), path)
+
+    def test_ordinary_deletes_pass(self):
+        for command in ['rm ~/.claude/projects/-home-x-proj/abc.jsonl', 'trash-put $S/deploy',
+                        'rm -rf "${T:?}/${name:?}"', 'trash-put build-prev', 'trash-put $T',
+                        'git rm --cached x', 'echo "rm -rf ~/.hcom"', 'shred -u $T/$pw',
+                        "cat <<'EOF'\nrm -rf ~/.hcom $a/$b\nEOF"]:
+            with self.subTest(command):
+                self.assert_allowed(self.bash(command))
+
+
 class InstallTests(unittest.TestCase):
 
     def setUp(self):
