@@ -95,13 +95,13 @@ test('short speech goes straight back in Traditional characters, without Codex; 
 });
 
 test('twenty characters go straight back; twenty-one are tidied', async () => {
-	answer = transcript('一二三四五六七八九十我的电脑内存不够用');
-	expect(await speak()).toEqual({ status: 200, body: { text: '一二三四五六七八九十我的電腦內存不夠用', notice: null } });
-	expect(codexCalls()).toEqual([]);
 	answer = transcript('一二三四五六七八九十我的电脑内存不够用了');
-	codexPlan({ reply: '一二三四五六七八九十我的電腦內存不夠用了。' });
-	expect(await speak()).toEqual({ status: 200, body: { text: '一二三四五六七八九十我的電腦內存不夠用了。', notice: null } });
-	expect(codexCalls().map((call) => call.text)).toEqual(['<transcript>\n一二三四五六七八九十我的電腦內存不夠用了\n</transcript>']);
+	expect(await speak()).toEqual({ status: 200, body: { text: '一二三四五六七八九十我的電腦內存不夠用了', notice: null } });
+	expect(codexCalls()).toEqual([]);
+	answer = transcript('一二三四五六七八九十我的电脑内存不够用了吧');
+	codexPlan({ reply: '一二三四五六七八九十我的電腦內存不夠用了吧。' });
+	expect(await speak()).toEqual({ status: 200, body: { text: '一二三四五六七八九十我的電腦內存不夠用了吧。', notice: null } });
+	expect(codexCalls().map((call) => call.text)).toEqual(['<transcript>\n一二三四五六七八九十我的電腦內存不夠用了吧\n</transcript>']);
 });
 
 test('the page and every file the browser loads leave the token out', async () => {

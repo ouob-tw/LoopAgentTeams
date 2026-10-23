@@ -21,16 +21,21 @@
 	// (the server refuses it too).
 	const closable = $derived(agent.hcom !== 'unknown');
 
-	// What a pause does shows after a tap on the icon, until a tap on it again or anywhere else.
-	let pauseInfo = $state(false);
+	const linkable = $derived(agent.hcom === 'linked' || agent.hcom === 'paused');
+	// What a pause does shows after a tap on the icon, until a tap on it again or anywhere else; only
+	// for the agent it was opened for.
+	let infoFor = $state<string | null>(null);
+	const pauseInfo = $derived(infoFor === agent.id && linkable);
 	let infoButton = $state<HTMLButtonElement>();
+	let infoList = $state<HTMLElement>();
 	$effect(() => {
 		if (!pauseInfo) return;
 		const close = (event: Event) => {
-			if (!(event.target instanceof Node && infoButton?.contains(event.target))) pauseInfo = false;
+			const target = event.target;
+			if (!(target instanceof Node && (infoButton?.contains(target) || infoList?.contains(target)))) infoFor = null;
 		};
 		const escape = (event: KeyboardEvent) => {
-			if (event.key === 'Escape') pauseInfo = false;
+			if (event.key === 'Escape') infoFor = null;
 		};
 		document.addEventListener('pointerdown', close);
 		document.addEventListener('keydown', escape);
@@ -81,7 +86,7 @@
 		{:else}
 			<div class="actions">
 				<button type="button" data-action="close" disabled={!closable || busy[agent.id]} onclick={() => (confirming[agent.id] = true)}>{label}</button>
-				{#if agent.hcom === 'linked' || agent.hcom === 'paused'}
+				{#if linkable}
 					{@const action = agent.hcom === 'linked' ? 'pause' : 'unpause'}
 					<button type="button" data-action={action} disabled={busy[agent.id]} onclick={() => link(action)}
 						>{busy[agent.id] ? '處理中…' : action === 'pause' ? '暫停通訊' : '恢復通訊'}</button
@@ -93,14 +98,14 @@
 						aria-expanded={pauseInfo}
 						aria-controls="pause-info-{agent.id}"
 						bind:this={infoButton}
-						onclick={() => (pauseInfo = !pauseInfo)}
+						onclick={() => (infoFor = pauseInfo ? null : agent.id)}
 					>
 						<Info size="1.1em" />
 					</button>
 				{/if}
 			</div>
-			{#if pauseInfo && (agent.hcom === 'linked' || agent.hcom === 'paused')}
-				<ul id="pause-info-{agent.id}" class="pause-info">
+			{#if pauseInfo}
+				<ul id="pause-info-{agent.id}" class="pause-info" bind:this={infoList}>
 					{#each AGENT_PAUSE_POINTS as point (point)}<li>{point}</li>{/each}
 				</ul>
 			{/if}

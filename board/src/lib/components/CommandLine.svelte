@@ -349,7 +349,7 @@
 							icon={waking ? undefined : sendIcon}
 							sending={toAgent && agent ? (agentSending[agent.id] ?? false) : sending}
 							{sent}
-							disabled={!filled || (toAgent && agentBlocked !== null) || toClosed}
+							disabled={!filled || boxDisabled}
 						/>
 					{/if}
 				</span>

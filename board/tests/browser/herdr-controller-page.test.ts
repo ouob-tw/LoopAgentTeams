@@ -413,6 +413,10 @@ test.skipIf(!CHROME)("a running controller's information page closes it after a 
 		await tab.until(infoShown, 'the info');
 		const points = await tab.eval<string>(`document.querySelector('.detail .pause-info').innerText`);
 		for (const point of ['直接失敗', '照常送得進去', '不會催促', '原名稱接回']) expect(points).toContain(point);
+		// A tap on the info itself leaves it open.
+		await tab.eval(`document.querySelector('.detail .pause-info').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
+		await Bun.sleep(100);
+		expect(await tab.eval(infoShown)).toBe(true);
 		expect(await tab.eval(FITS)).toBe(true);
 		await tab.eval(`${info}.click()`);
 		await tab.until(`!${infoShown}`, 'closed by its icon');

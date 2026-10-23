@@ -445,7 +445,7 @@ const hcomCalls = (): string[][] => {
 	const file = join(fixture.dir, 'hcom-calls.jsonl');
 	return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line).args) : [];
 };
-test.skipIf(!CHROME)("an idle controller's information page closes it as the 所有 Agent tab does, with the same confirmation, then it is 已關閉; a running one has no 關閉", async () => {
+test.skipIf(!CHROME)("an idle controller's information page closes it as the 所有 Agent tab does, with the same confirmation, then it is 已關閉; a running one has its 關閉 Agent too", async () => {
 	// idol deactivated LAT: unbound, with a report kept, its conversation still in hcom's list and in Herdr.
 	const idle = herdrAgent('s-idle', { status: 'idle' });
 	const agents = [...AGENTS, idle];
@@ -463,7 +463,8 @@ test.skipIf(!CHROME)("an idle controller's information page closes it as the 所
 		await fixture.refresh(cookie);
 		await visit(1280, '?controller=s-lead');
 		await tab.until(`(${header}).includes('@lead')`, "the running controller's page");
-		expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"]')`)).toBe(false);
+		// A running controller is closed from its page too (#280).
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"]')`)).toBe(true);
 
 		// Opened from the Herdr tab it asks what its controller page asks.
 		await tab.eval('window.beforeNavigate = true');
