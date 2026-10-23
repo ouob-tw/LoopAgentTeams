@@ -16,6 +16,7 @@
 	import { askingTexts } from '#lib/board/question-message.ts';
 	import { formatTime } from '#lib/board/format.ts';
 	import { splitAttachments } from '#lib/board/attachments.ts';
+	import { answering } from '#lib/board/answering.svelte.ts';
 	import { RenderedMarkdown } from '#lib/board/markdown.ts';
 		import { toasts } from '#lib/board/toasts.svelte.ts';
 	import {
@@ -44,6 +45,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 
 	/** How long a question not found waits for the next page before it is judged without one. */
 	const JUDGE_WITHOUT_PAGE_MS = 5_000;
+	/** How long an answered card is kept in place once its answer is sent. */
+	const HOLD_MS = 2_500;
 
 	let {
 		controller,
@@ -289,8 +292,47 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	}
 	$effect(() => () => stopAligning());
 
-	/** Empty space after the conversation, only while a report is shown in it. */
+	/** Empty space after the conversation, only while a report is shown in it, or once an answered
+	 *  card was kept in place. */
 	let tail = $state<HTMLElement>();
+	/** A card was kept in place since this conversation was opened. */
+	let held = $state(false);
+	/** Stops keeping the answered card in place; set while it is kept. */
+	let stopHolding = () => {};
+
+	/** Keep the card of a question just answered where it is on screen while its answer is sent and
+	 *  the card turns into the answered one, a while after too, until the user scrolls or clicks:
+	 *  the card gets shorter, and with little after it the page would scroll back; with its
+	 *  question recorded it is shown again. The room it needs is made after the conversation. */
+	function hold(event: SubmitEvent) {
+		const card = (event.target as Element).closest<HTMLElement>('[data-content]');
+		const key = card?.dataset.content;
+		if (!card || !key) return;
+		stopHolding();
+		held = true;
+		const at = card.getBoundingClientRect().top;
+		let until = performance.now() + HOLD_MS;
+		let frame = 0;
+		const stop = () => {
+			cancelAnimationFrame(frame);
+			for (const type of USER_SCROLL) removeEventListener(type, stop, true);
+		};
+		const step = () => {
+			if (answering.sending[key]) until = performance.now() + HOLD_MS;
+			const element = list?.querySelector<HTMLElement>(`[data-content="${CSS.escape(key)}"]`);
+			const top = element?.getBoundingClientRect().top;
+			if (element && top !== undefined && Math.abs(top - at) >= 1) {
+				makeRoom(element, at);
+				(scrollerOf(element) ?? window).scrollBy(0, element.getBoundingClientRect().top - at);
+			}
+			if (performance.now() < until) frame = requestAnimationFrame(step);
+			else stop();
+		};
+		for (const type of USER_SCROLL) addEventListener(type, stop, { capture: true, passive: true });
+		frame = requestAnimationFrame(step);
+		stopHolding = stop;
+	}
+	$effect(() => () => stopHolding());
 
 	// Earlier parts loaded under the placed card take the place of the room made for it.
 	$effect(() => {
@@ -315,10 +357,11 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		const page = !scroller;
 		const port = page ? window.innerHeight : scroller!.clientHeight;
 		const portTop = page ? 0 : scroller!.getBoundingClientRect().top;
-		const scrolled = page ? window.scrollY : scroller!.scrollTop;
 		// Measured with the space at a full screen, so the content overflows: a container's scroll
 		// height never reports less than its own height, which would hide how short the content is.
+		// The scroll position too, as a page the content got too short for may scroll back with it.
 		tail.style.height = `${port}px`;
+		const scrolled = page ? window.scrollY : scroller!.scrollTop;
 		const height = page ? document.documentElement.scrollHeight : scroller!.scrollHeight;
 		// What follows the card's top, without the space.
 		const below = height - port - (scrolled + element.getBoundingClientRect().top - portTop);
@@ -343,8 +386,10 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		untrack(() => translations.retry());
 		loadingEarlier = false;
 		earlierFailed = null;
-		// Another controller's conversation: the room made for the last report goes.
+		// Another controller's conversation: the room made for the last report or card goes.
 		if (untrack(() => tail)) tail!.style.height = '';
+		untrack(() => stopHolding());
+		held = false;
 		const source = new EventSource(transcriptUrl(feed, controllerId, true));
 		untrack(() => (switching.watched[controllerId] = (switching.watched[controllerId] ?? 0) + 1));
 		source.addEventListener('transcript', (event) => {
@@ -400,7 +445,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	});
 </script>
 
-<section class="history" data-block="transcript" bind:this={list}>
+<section class="history" data-block="transcript" bind:this={list} onsubmitcapture={hold}>
 	{#if unplaced && card}
 		<div class="placed">{@render card()}</div>
 	{/if}
@@ -496,7 +541,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	{:else}
 		<p class="empty loading" role="status" aria-busy="true"><span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>讀取中…</p>
 	{/if}
-	{#if target}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
+	{#if target || held}<div class="tail" bind:this={tail} aria-hidden="true"></div>{/if}
 </section>
 
 <style>

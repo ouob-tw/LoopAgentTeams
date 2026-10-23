@@ -1,7 +1,7 @@
 // Which chat message asked a panel question, from the cases shared with the Herdr side panel.
 import { expect, test } from 'bun:test';
 import fixture from '../fixtures/question-message-match.json';
-import { askedTogether, askingReport, askingTexts, withAnswered } from '../../src/lib/board/question-message.ts';
+import { askedTogether, askingReport, askingTexts, justRecorded, withAnswered } from '../../src/lib/board/question-message.ts';
 import type { InboxItem, InboxQuestion } from '../../src/lib/board/types.ts';
 
 for (const entry of fixture.cases) {
@@ -68,4 +68,15 @@ test('a question both in the inbox and answered is listed once, as the inbox has
 	const other = asked('B-1', 2);
 	expect(withAnswered([inbox], [recorded, other])).toEqual([inbox, other]);
 	expect(askedTogether(inbox, withAnswered([inbox], [recorded, other])).map((entry) => entry.key)).toEqual(['q:s1:B-1', 'q:s1:A-1']);
+});
+
+test('a question that left the inbox as recorded stays, recorded, until the answered list is read again', () => {
+	const sent = { ...asked('A-1', 1), unsent: false, question: { id: 'A-1', revision: 1, status: 'submitted', answer: 'A. 甲' } } as unknown as InboxQuestion;
+	const other = asked('B-1', 2, message, 's2');
+	const removed = asked('C-1', 1);
+	const kept = { ...asked('D-1', 1) } as InboxQuestion;
+	const left = justRecorded([sent, other, removed, kept], { inbox: [kept], recordedKeys: [sent.key, other.key] }, 's1');
+	// Only this controller's, only the recorded ones: a question removed for another reason goes.
+	expect(left.map((item) => [item.key, item.question.status, item.question.answer])).toEqual([[sent.key, 'recorded', 'A. 甲']]);
+	expect(justRecorded([sent], { inbox: [sent], recordedKeys: [] }, 's1')).toEqual([]);
 });

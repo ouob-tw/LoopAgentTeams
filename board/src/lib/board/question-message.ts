@@ -50,6 +50,27 @@ export function withAnswered<T extends InboxItem>(inbox: T[], answered: InboxQue
 }
 
 /**
+ * The controller's questions that this snapshot took out of the inbox because they are recorded, as
+ * the inbox last had them and marked recorded. The answered list is read again only after the inbox
+ * changed, so until then they are shown among the answered ones: their cards stay where they are
+ * instead of going and coming back.
+ */
+export function justRecorded(
+	before: InboxItem[],
+	after: { inbox: InboxItem[]; recordedKeys: string[] },
+	controllerId: string
+): InboxQuestion[] {
+	return before.flatMap((item) =>
+		item.kind === 'question' &&
+		item.controllerId === controllerId &&
+		after.recordedKeys.includes(item.key) &&
+		!after.inbox.some((entry) => entry.key === item.key)
+			? [{ ...item, unsent: false, question: { ...item.question, status: 'recorded' as const } }]
+			: []
+	);
+}
+
+/**
  * The question and the others of the inbox its asking message asked too, in the order the message
  * names them; only the question itself when it was asked alone, or in no message found.
  */
