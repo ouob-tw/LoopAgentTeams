@@ -2,9 +2,15 @@
 // the turn into Taiwan's Traditional Chinese. No server and no browser.
 import { expect, test } from 'bun:test';
 import { insertAt, isShort, SHORT_LIMIT, TAP_GAP_MS, tapCounter, UNLOCK_TAPS } from '../../src/lib/board/voice.ts';
-import { toTraditional } from '../../src/lib/server/traditional.ts';
+import { toTraditional, toTraditionalChars } from '../../src/lib/server/traditional.ts';
 
-test('Simplified Chinese becomes Taiwan Traditional, words included; Traditional stays as it is', () => {
+test('speech turns into Taiwan Traditional characters only; mainland words stay as they were said', () => {
+	expect(toTraditionalChars('软件视频信息')).toBe('軟件視頻信息');
+	expect(toTraditionalChars('打开设置页面')).toBe('打開設置頁面');
+	expect(toTraditionalChars('這個裡面, ok')).toBe('這個裡面, ok');
+});
+
+test('translation still turns Simplified into Taiwan Traditional, words included; Traditional stays as it is', () => {
 	expect(toTraditional('打开设置页面')).toBe('開啟設定頁面');
 	expect(toTraditional('用户在手机上输入密码以后没有反应')).toBe('使用者在手機上輸入密碼以後沒有反應');
 	expect(toTraditional('軟體記憶體')).toBe('軟體記憶體');

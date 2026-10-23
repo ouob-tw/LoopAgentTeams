@@ -85,25 +85,23 @@ async function speak(audio = new Blob([new Uint8Array(400)], { type: 'audio/webm
 	return { status: response.status, body: JSON.parse(text) };
 }
 
-test('short speech goes straight back in Traditional Chinese, without Codex', async () => {
+test('short speech goes straight back in Traditional characters, without Codex; the words stay', async () => {
 	answer = transcript('打开设置页面');
-	expect(await speak()).toEqual({ status: 200, body: { text: '開啟設定頁面', notice: null } });
+	expect(await speak()).toEqual({ status: 200, body: { text: '打開設置頁面', notice: null } });
 	expect(heard).toEqual([
 		{ method: 'POST', path: '/v1/asr/sync', authorization: `Bearer ${TOKEN}`, modelId: 'whisper-large-v3-turbo', dialectId: 'zh', fileName: 'speech.webm', bytes: 400 }
 	]);
 	expect(codexCalls()).toEqual([]);
 });
 
-test('the twenty-character limit is counted after the conversion', async () => {
-	// Nineteen characters heard, twenty once 内存 becomes 記憶體: still short.
-	answer = transcript('一二三四五六七八九十电脑内存不够用了吧');
-	expect(await speak()).toEqual({ status: 200, body: { text: '一二三四五六七八九十電腦記憶體不夠用了吧', notice: null } });
+test('twenty characters go straight back; twenty-one are tidied', async () => {
+	answer = transcript('一二三四五六七八九十我的电脑内存不够用');
+	expect(await speak()).toEqual({ status: 200, body: { text: '一二三四五六七八九十我的電腦內存不夠用', notice: null } });
 	expect(codexCalls()).toEqual([]);
-	// Twenty heard, twenty-one once converted: tidied.
 	answer = transcript('一二三四五六七八九十我的电脑内存不够用了');
-	codexPlan({ reply: '一二三四五六七八九十我的電腦記憶體不夠用了。' });
-	expect(await speak()).toEqual({ status: 200, body: { text: '一二三四五六七八九十我的電腦記憶體不夠用了。', notice: null } });
-	expect(codexCalls().map((call) => call.text)).toEqual(['<transcript>\n一二三四五六七八九十我的電腦記憶體不夠用了\n</transcript>']);
+	codexPlan({ reply: '一二三四五六七八九十我的電腦內存不夠用了。' });
+	expect(await speak()).toEqual({ status: 200, body: { text: '一二三四五六七八九十我的電腦內存不夠用了。', notice: null } });
+	expect(codexCalls().map((call) => call.text)).toEqual(['<transcript>\n一二三四五六七八九十我的電腦內存不夠用了\n</transcript>']);
 });
 
 test('the page and every file the browser loads leave the token out', async () => {
@@ -126,14 +124,14 @@ test('the page and every file the browser loads leave the token out', async () =
 	}
 });
 
-test('long speech is tidied by Codex and comes back in Traditional Chinese', async () => {
+test('long speech is tidied by Codex and comes back in Traditional characters', async () => {
 	answer = transcript('嗯,那个,我想要请你帮我看一下,这个这个登录页面的问题');
 	codexPlan({ reply: '我想请你帮我看一下这个登录页面的问题。' });
-	expect(await speak()).toEqual({ status: 200, body: { text: '我想請你幫我看一下這個登入頁面的問題。', notice: null } });
+	expect(await speak()).toEqual({ status: 200, body: { text: '我想請你幫我看一下這個登錄頁面的問題。', notice: null } });
 	const calls = codexCalls();
 	expect(calls).toHaveLength(1);
 	// Codex gets the converted transcript, marked off as text to tidy, on the fixed model at low effort.
-	expect(calls[0].text).toBe('<transcript>\n嗯,那個,我想要請你幫我看一下,這個這個登入頁面的問題\n</transcript>');
+	expect(calls[0].text).toBe('<transcript>\n嗯,那個,我想要請你幫我看一下,這個這個登錄頁面的問題\n</transcript>');
 	expect(calls[0].model).toBe('gpt-6-luna');
 	expect(calls[0].effort).toBe('low');
 });
