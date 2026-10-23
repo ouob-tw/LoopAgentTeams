@@ -182,7 +182,11 @@ class SkillsAddTests(HookCase):
                 ("bash -lc 'cd ~/LoopAgentTeams && bunx skills add .'", None),
                 ('cd "$HOME/LoopAgentTeams" && bunx skills add .', None),
                 ('(cd ~/LoopAgentTeams; bunx skills add .)', None),
-                ('out=$(bunx skills add ~/LoopAgentTeams)', None)]:
+                ('out=$(bunx skills add ~/LoopAgentTeams)', None),
+                (f"FOO='a b' bunx skills add {self.repo}", None),
+                ('nice -n 10 bunx skills add ~/LoopAgentTeams', None),
+                ("bash -lc 'cd /tmp' && bunx skills add .", self.repo),
+                ('(cd /tmp) && bunx skills add .', self.repo)]:
             with self.subTest(command):
                 result = self.bash(command, cwd)
                 self.assert_blocked(result, f'{self.repo}/scripts/install-skills.py')
@@ -197,6 +201,11 @@ class SkillsAddTests(HookCase):
                         "echo 'bunx skills add ~/LoopAgentTeams'",
                         'printf \'%s\\n\' "bunx skills add $HOME/LoopAgentTeams"',
                         'git commit -m "block bunx skills add ~/LoopAgentTeams"',
+                        "printf '%s\\n' 'example; bunx skills add ~/LoopAgentTeams'",
+                        'echo "example\nbunx skills add ~/LoopAgentTeams"',
+                        'echo "bash -lc \'bunx skills add ~/LoopAgentTeams\'"',
+                        "cd /tmp && bash -c 'cd ~/LoopAgentTeams' && bunx skills add .",
+                        'cd ~/other && (cd ~/LoopAgentTeams) && bunx skills add .',
                         'uv run --no-project python ~/LoopAgentTeams/scripts/install-skills.py']:
             with self.subTest(command):
                 self.assert_allowed(self.bash(command, self.repo))

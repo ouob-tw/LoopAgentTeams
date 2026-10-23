@@ -45,16 +45,12 @@ HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re
 UNQUOTED_HEREDOC = re.compile(r'(?<!<)<<-?\s*([A-Za-z_]\w*)[^\n]*\n(.*?)^\s*\1\s*$', re.S | re.M)
 SUBSTITUTION = re.compile(r'(?<!\\)(?:`|\$\()')
 QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
-# `bunx skills add <args>` at the start of a command (or npx, bun x, pnpm dlx, by path or
-# behind VAR=value and wrappers; an @version may follow `skills`).
-ASSIGNS = r'(?:\w+=\S*\s+)*'
-SKILLS_ADD = re.compile(r'^\s*\(?\s*' + ASSIGNS + WRAPPERS + ASSIGNS
-                        + r'(?:\S*/)?(?:bunx|npx|bun\s+x|pnpm\s+dlx)\s+(?:-\S+\s+)*'
-                        r'skills(?:@\S+)?\s+(?:add|a|install|i)\b(?P<args>[^;&|\n`)]*)')
-CD = re.compile(r'^\s*\(?\s*cd\s+(?P<dir>\'[^\']*\'|"[^"]*"|\S+)\s*$')
-# `sh -c '<body>'`: the body is code, so it is read in place of the quoted string.
-SHELL_BODY = re.compile(r'\b(?:ba|z|da)?sh\s+(?:-\S+\s+)*?-\w*c\s+'
-                        r"""(?:'([^']*)'|"((?:\\.|[^"\\])*)")""")
+# Command words for the `bunx skills add` rule, read with shell quoting (shlex).
+OPERATORS = ';&|()\n'
+SHELLS = {'sh', 'bash', 'zsh', 'dash'}
+PREFIXES = {'sudo', 'nice', 'ionice', 'env', 'exec', 'command', 'xargs', 'nohup', 'time',
+            'timeout'}
+ASSIGNMENT = re.compile(r'^[A-Za-z_]\w*=')
 INSTALL_SCRIPT = 'scripts/install-skills.py'
 SCRIPT_RUN = re.compile(r'(?:^|[;&|(\s])(?:(?:ba|z|da)?sh\s+(?:-\S+\s+)*)?'
                         r'(?P<path>(?:[\w.~/-]*/)?[\w.-]+\.sh)\b')
@@ -202,36 +198,71 @@ def lat_repo(path):
 def repo_install(command, cwd):
     """The LoopAgentTeams checkout a `bunx skills add` in command installs from, or None.
 
-    A source is a word that looks like a path (~, /, ., $VAR or a slash); skill names and
-    options are not. A relative source is read from the last `cd DIR` before it, or cwd.
-    Quoted text is data (`echo "bunx skills add ..."`), except a `sh -c` body."""
-    base = Path(cwd)
-
-    def where(word):
-        return base / os.path.expanduser(os.path.expandvars(word.strip('\'"')))
-
-    text = SHELL_BODY.sub(lambda m: '\n' + (m.group(1) or m.group(2) or '') + '\n',
-                          HEREDOC.sub('', command))
-    for part in re.split(r'&&|\|\||\$\(|[;&|\n]', text):
-        found = CD.match(part)
-        if found:
-            base = where(found.group('dir'))
-            continue
-        found = SKILLS_ADD.search(part)
-        if not found:
-            continue
-        try:
-            words = shlex.split(found.group('args'))
-        except ValueError:
-            words = found.group('args').split()
-        for word in words:
-            if word.startswith('-') or not (word.startswith(('~', '.', '$')) or '/' in word):
-                continue
-            source = where(word).resolve()
-            repo = source.is_dir() and lat_repo(source)
+    The command is split into words and operators with shell quoting, so quoted text is
+    data (`echo "x; bunx skills add ..."`); a `sh -c` body is read as a command of its own.
+    `cd DIR` moves the directory relative sources are read from, within its `( )` or
+    `sh -c` scope. A source is a word that looks like a path (~, /, ., $VAR or a slash);
+    skill names and options are not."""
+    lexer = shlex.shlex(HEREDOC.sub('', command), posix=True, punctuation_chars=OPERATORS)
+    lexer.whitespace, lexer.whitespace_split, lexer.commenters = ' \t\r', True, ''
+    try:
+        tokens = list(lexer)
+    except ValueError:
+        return None  # unbalanced quotes: the shell will not run it either
+    base, scopes, words = Path(cwd), [], []
+    for token in [*tokens, ';']:
+        if token and set(token) <= set(OPERATORS):
+            repo, base = command_install(words, base)
             if repo:
                 return repo
+            words = []
+            for char in token:
+                if char == '(':
+                    scopes.append(base)
+                elif char == ')' and scopes:
+                    base = scopes.pop()
+        else:
+            words.append(token)
     return None
+
+
+def command_install(words, base):
+    """(checkout the simple command installs from or None, directory after it)."""
+    def where(word):
+        return base / os.path.expanduser(os.path.expandvars(word))
+
+    prefixed = False
+    while words and (ASSIGNMENT.match(words[0]) or os.path.basename(words[0]) in PREFIXES
+                     or prefixed and (words[0].startswith('-') or words[0][:1].isdigit())):
+        prefixed = prefixed or os.path.basename(words[0]) in PREFIXES
+        words = words[1:]
+    name = os.path.basename(words[0]) if words else ''
+    if name == 'cd':
+        return None, where(words[1] if len(words) > 1 else '~')
+    if name in SHELLS:
+        flag = next((i for i, w in enumerate(words[1:], 1)
+                     if w.startswith('-') and not w.startswith('--') and 'c' in w), None)
+        body = words[flag + 1] if flag is not None and flag + 1 < len(words) else None
+        return (repo_install(body, base) if body else None), base
+    if name in ('bunx', 'npx'):
+        rest = words[1:]
+    elif (name, words[1:2]) in (('bun', ['x']), ('pnpm', ['dlx'])):
+        rest = words[2:]
+    else:
+        return None, base
+    while rest and rest[0].startswith('-'):
+        rest = rest[1:]
+    if len(rest) < 2 or not re.fullmatch(r'skills(@\S+)?', rest[0]) \
+            or rest[1] not in ('add', 'a', 'install', 'i'):
+        return None, base
+    for word in rest[2:]:
+        if word.startswith('-') or not (word.startswith(('~', '.', '$')) or '/' in word):
+            continue
+        source = where(word).resolve()
+        repo = source.is_dir() and lat_repo(source)
+        if repo:
+            return repo, base
+    return None, base
 
 
 def shell_text(command):
