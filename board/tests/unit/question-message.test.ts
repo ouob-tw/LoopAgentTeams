@@ -74,7 +74,7 @@ test('a question that left the inbox as recorded stays, recorded, until the answ
 	const sent = { ...asked('A-1', 1), unsent: false, question: { id: 'A-1', revision: 1, status: 'submitted', answer: 'A. 甲' } } as unknown as InboxQuestion;
 	const other = asked('B-1', 2, message, 's2');
 	const removed = asked('C-1', 1);
-	const kept = { ...asked('D-1', 1) } as InboxQuestion;
+	const kept = asked('D-1', 1);
 	const left = justRecorded([sent, other, removed, kept], { inbox: [kept], recordedKeys: [sent.key, other.key] }, 's1');
 	// Only this controller's, only the recorded ones: a question removed for another reason goes.
 	expect(left.map((item) => [item.key, item.question.status, item.question.answer])).toEqual([[sent.key, 'recorded', 'A. 甲']]);

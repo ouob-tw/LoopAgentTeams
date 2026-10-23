@@ -295,10 +295,13 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	/** Empty space after the conversation, only while a report is shown in it, or once an answered
 	 *  card was kept in place. */
 	let tail = $state<HTMLElement>();
-	/** A card was kept in place since this conversation was opened. */
-	let held = $state(false);
+	/** The question whose card was last kept in place in this conversation; the room after the
+	 *  conversation is kept for it. */
+	let held = $state<string | null>(null);
 	/** Stops keeping the answered card in place; set while it is kept. */
 	let stopHolding = () => {};
+
+	const cardOf = (key: string) => list?.querySelector<HTMLElement>(`[data-content="${CSS.escape(key)}"]`);
 
 	/** Keep the card of a question just answered where it is on screen while its answer is sent and
 	 *  the card turns into the answered one, a while after too, until the user scrolls or clicks:
@@ -309,7 +312,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		const key = card?.dataset.content;
 		if (!card || !key) return;
 		stopHolding();
-		held = true;
+		held = key;
 		const at = card.getBoundingClientRect().top;
 		let until = performance.now() + HOLD_MS;
 		let frame = 0;
@@ -319,7 +322,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		};
 		const step = () => {
 			if (answering.sending[key]) until = performance.now() + HOLD_MS;
-			const element = list?.querySelector<HTMLElement>(`[data-content="${CSS.escape(key)}"]`);
+			const element = cardOf(key);
 			const top = element?.getBoundingClientRect().top;
 			if (element && top !== undefined && Math.abs(top - at) >= 1) {
 				makeRoom(element, at);
@@ -334,11 +337,14 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	}
 	$effect(() => () => stopHolding());
 
-	// Earlier parts loaded under the placed card take the place of the room made for it.
+	// Earlier parts loaded under the placed card, or the card kept in place, take the place of the
+	// room made for it.
 	$effect(() => {
 		void view;
-		const element = untrack(() => tail && list && placedIn(list));
-		if (element) makeRoom(element, keptAt);
+		const placed = untrack(() => tail && list && placedIn(list));
+		const kept = untrack(() => !placed && tail && held && cardOf(held));
+		if (placed) makeRoom(placed, keptAt);
+		else if (kept) makeRoom(kept, kept.getBoundingClientRect().top);
 	});
 
 	/** The nearest box the element scrolls in; null when it scrolls with the page. */
@@ -389,7 +395,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		// Another controller's conversation: the room made for the last report or card goes.
 		if (untrack(() => tail)) tail!.style.height = '';
 		untrack(() => stopHolding());
-		held = false;
+		held = null;
 		const source = new EventSource(transcriptUrl(feed, controllerId, true));
 		untrack(() => (switching.watched[controllerId] = (switching.watched[controllerId] ?? 0) + 1));
 		source.addEventListener('transcript', (event) => {

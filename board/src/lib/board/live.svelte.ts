@@ -37,9 +37,9 @@ export class LiveBoard {
 	#archiveLoads = 0;
 	#answeredLoads = 0;
 	#answeredShown = 0;
-	/** Questions shown as answered since they left the inbox recorded, with how many answered reads
-	 *  had started by then: kept until a read started after that comes back with the list. */
-	#recorded: { loads: number; item: InboxQuestion }[] = [];
+	/** Questions shown as answered since they left the inbox recorded, as the inbox last had them:
+	 *  kept while the board still has them recorded and the answered list read does not have them yet. */
+	#recorded: InboxQuestion[] = [];
 
 	constructor(initial: BoardSnapshot) {
 		this.snapshot = $state(initial);
@@ -54,7 +54,7 @@ export class LiveBoard {
 					(item) => !questions.some((entry) => entry.key === item.key)
 				);
 				if (recorded.length) {
-					this.#recorded.push(...recorded.map((item) => ({ loads: this.#answeredLoads, item })));
+					this.#recorded.push(...recorded);
 					this.answered = { controllerId, questions: [...questions, ...recorded] };
 				}
 				this.snapshot = snapshot;
@@ -140,8 +140,10 @@ export class LiveBoard {
 		}
 		if (load < this.#answeredShown || this.answered.controllerId !== controllerId) return;
 		this.#answeredShown = load;
-		this.#recorded = this.#recorded.filter((entry) => entry.loads >= load && !questions.some((question) => question.key === entry.item.key));
-		this.answered = { controllerId, questions: [...questions, ...this.#recorded.map((entry) => entry.item)] };
+		this.#recorded = this.#recorded.filter(
+			(item) => this.snapshot.recordedKeys.includes(item.key) && !questions.some((question) => question.key === item.key)
+		);
+		this.answered = { controllerId, questions: [...questions, ...this.#recorded] };
 	}
 
 	#earlierLoad: Promise<void> | undefined;
