@@ -1059,6 +1059,10 @@ class WatchCliTests(unittest.TestCase):
         self.write_task('done/finished.md', 'worker-done', 'orch', 'in progress')
         binary = self.root / 'bin'
         binary.mkdir()
+        # Quota recovery must not consult the host account store in transport tests.
+        cswap = binary / 'cswap'
+        cswap.write_text('#!/bin/sh\nexit 1\n')
+        cswap.chmod(0o755)
         self.hcom_log = self.root / 'hcom.log'
         self.herdr_log = self.root / 'herdr.log'
         hcom = binary / 'hcom'
@@ -5097,6 +5101,10 @@ class KeepaliveCycleTests(PinnedEnvironment):
         self.hcom_log.write_text('')
         binary = self.root / 'bin'
         binary.mkdir()
+        # Quota recovery must not consult the host account store in transport tests.
+        cswap = binary / 'cswap'
+        cswap.write_text('#!/bin/sh\nexit 1\n')
+        cswap.chmod(0o755)
         agents = json.dumps([
             {'name': 'helper', 'status': 'listening', 'tool': 'claude'},
             {'name': 'worker', 'status': 'listening', 'tool': 'claude',
@@ -5741,7 +5749,7 @@ class ClaudeQuotaRecoveryTests(unittest.TestCase):
         menu = self.watch.claude_quota_menu(self.terminal)
         values = dict(agent='worker', status='listening', prompt_empty=False,
                       command_running=True, transcript_size=1, transcript_mtime_ns=1,
-                      event_id=0, client='claude', quota_menu_screen=menu,
+                      event_id=0, client='claude', quota_screen=menu,
                       quota_issue=self.watch.QuotaIssue('rate-limit', 'menu') if menu else None)
         values.update(changes)
         return self.watch.Observation(**values)
@@ -5951,6 +5959,47 @@ class ClaudeQuotaRecoveryTests(unittest.TestCase):
             self.assertTrue(state[name]['quota_notified'])
         self.assertEqual(state['orch']['feature_versions']['claude_quota_resume'], 1)
         self.assertEqual([a.kind for a in self.notifications], ['notify-user', 'notify-orchestrator'])
+
+    def test_status_only_quota_logs_unknown_or_missing_screen_each_cycle_without_keys(self):
+        info = {'status': 'inactive', 'status_context': 'failure:rate_limit', 'tool': 'claude'}
+        for lines in (['Changed quota dialog', 'x' * 400], []):
+            for available in (True, False):
+                with self.subTest(lines=lines, available=available):
+                    self.state, self.notifications = {}, []
+                    self.terminal = {'ready': False, 'prompt_empty': None,
+                                     'input_text': None, 'lines': lines}
+                    self.quota['accounts'][0]['usage']['fiveHour']['pct'] = 0 if available else 100
+                    with patch.object(self.watch, 'session_events', return_value=[]):
+                        observation = self.watch.observe(
+                            self.root, self.root / 'decisions', 'orch', 'worker', info,
+                            processes=[])
+                    before = len(self.records()) if self.log.exists() else 0
+                    for _ in range(2):
+                        previous, self.state = self.state, {}
+                        self.watch.recover_claude_quota(observation, previous, self.state,
+                                                       'orch', self.root, self.log, 1000)
+                    records = self.records()[before:] if self.log.exists() else []
+                    detected = [r for r in records if r['step'] == 'detected']
+                    self.assertEqual([r['screen'] for r in detected],
+                                     [[line[:300] for line in lines]] * 2)
+                    self.assertEqual(len([r for r in records if r['step'] == 'skip']), 2)
+                    self.assertEqual(self.keys(), [])
+                    self.assertEqual(len(self.notifications), 1 if available else 0)
+
+    def test_changed_footer_listening_menu_notifies_once_without_keys(self):
+        self.terminal['lines'][-2] = '  Enter to confirm · Escape to cancel'
+        info = {'status': 'listening', 'tool': 'claude'}
+        with patch.object(self.watch, 'session_events', return_value=[]):
+            observation = self.watch.observe(self.root, self.root / 'decisions',
+                                             'orch', 'worker', info, processes=[])
+        self.assertIsNotNone(observation.quota_issue)
+        for _ in range(2):
+            previous, self.state = self.state, {}
+            self.watch.recover_claude_quota(observation, previous, self.state,
+                                           'orch', self.root, self.log, 1000)
+        self.assertEqual(self.keys(), [])
+        self.assertEqual(len(self.notifications), 1)
+        self.assertEqual(self.notifications[0].kind, 'notify-orchestrator')
 
 
 def re_option(line):

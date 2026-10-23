@@ -119,7 +119,7 @@ class Observation(NamedTuple):
     # False when hcom term reports no boolean prompt_empty (menus such as /model).
     prompt_readable: bool = True
     screen_tail: tuple = ()
-    quota_menu_screen: tuple = ()
+    quota_screen: tuple = ()
 
 
 class QuotaIssue(NamedTuple):
@@ -198,7 +198,7 @@ def quota_notice(observation):
     line_end = '' if issue.line.endswith(('.', '!', '?')) else '.'
     recovery = ('The watcher checks the active cswap account each cycle and only resumes '
                 'a verified Claude quota menu when both usage windows are below 100%. '
-                if observation.quota_menu_screen else 'No terminal nudge was injected. ')
+                if observation.quota_screen else 'No terminal nudge was injected. ')
     message = (f'LAT stall watcher: quota or model-capacity issue for agent '
                f'{observation.agent}. Client: {observation.client}. Model: '
                f'{observation.model}. Matched line: {issue.line}{line_end}{reset} '
@@ -549,8 +549,7 @@ def claude_quota_menu(terminal):
     if not separators:
         return ()
     block = tuple(line.strip() for line in lines[separators[-1] + 1:] if line.strip())
-    if (len(block) < 3 or block[0] != 'What do you want to do?'
-            or block[-1] != 'Enter to confirm · Esc to cancel'):
+    if len(block) < 3 or block[0] != 'What do you want to do?':
         return ()
     # A changed quota menu still deserves a fallback notice, but generic questions do not.
     if not any('Stop and wait for limit to reset' in line or 'usage credits' in line
@@ -625,7 +624,7 @@ def recover_claude_quota(observation, previous, state, orchestrator, workspace, 
     if observation.client.lower() != 'claude':
         return
     episode = dict((previous or {}).get('quota_recovery', {}))
-    if not episode and not observation.quota_menu_screen:
+    if not episode and observation.quota_issue is None:
         return
     if observation.quota_issue is None:
         episode['clear_rounds'] = episode.get('clear_rounds', 0) + 1
@@ -635,7 +634,7 @@ def recover_claude_quota(observation, previous, state, orchestrator, workspace, 
     else:
         episode['clear_rounds'] = 0
     state['quota_recovery'] = episode
-    if not observation.quota_menu_screen and not episode.get('failure'):
+    if observation.quota_issue is None and not episode.get('failure'):
         return
 
     def record(step, **fields):
@@ -688,9 +687,9 @@ def recover_claude_quota(observation, previous, state, orchestrator, workspace, 
 
     if episode.get('failure'):
         notify_failure()
-    if not observation.quota_menu_screen:
+    if observation.quota_issue is None:
         return
-    record('detected', screen=[line[:300] for line in observation.quota_menu_screen])
+    record('detected', screen=[line[:300] for line in observation.quota_screen])
     if episode.get('attempted'):
         record('skip', reason='already attempted this quota episode')
         return
@@ -1818,7 +1817,8 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
         prompt_readable=prompt_readable,
         screen_tail=tuple(line[:SCREEN_TAIL_CHARS] for line in lines[-SCREEN_TAIL_LINES:]
                           if isinstance(line, str)),
-        quota_menu_screen=menu_screen,
+        quota_screen=(tuple(lines[-30:])
+                      if client.lower() == 'claude' and (screen_issue or status_issue) else ()),
     )
 
 
@@ -2068,7 +2068,7 @@ def observation_record(observation):
     record = observation._asdict()
     text = record.pop('input_text')
     record.pop('screen_tail')
-    record.pop('quota_menu_screen')
+    record.pop('quota_screen')
     record['input_text_length'] = len(text)
     return record
 
