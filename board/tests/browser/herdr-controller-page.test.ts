@@ -393,6 +393,29 @@ test.skipIf(!CHROME)("the controller's information page is as it was: no close, 
 	expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick]')`)).toBe(false);
 }, 60_000);
 
+test.skipIf(!CHROME)("a running controller's information page pauses and resumes its HCOM link, and still offers no close", async () => {
+	const pausedDir = join(fixture.dir, 'hcom-paused');
+	try {
+		await visit(390, '?controller=s-lead');
+		await tab.until(`${leadPage} && !!document.querySelector('.detail [data-action="pause"]')`, 'the information page');
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"], .detail [data-action="unpause"]')`)).toBe(false);
+		await tab.eval(`document.querySelector('.detail [data-action="pause"]').click()`);
+		await tab.until(`!!document.querySelector('.detail [data-action="confirm-pause"]')`, 'the confirmation');
+		await tab.eval(`document.querySelector('.detail [data-action="confirm-pause"]').click()`);
+		await tab.until(`document.querySelector('.dock').innerText.includes('已暫停 lead 的 HCOM 通訊')`, 'the pause notice');
+		expect(hcomCalls().filter((args) => args[0] === 'stop')).toEqual([['stop', 'lead']]);
+		// Paused: still the running controller's page, now offering the resume, marked paused.
+		await tab.until(`!!document.querySelector('.detail [data-action="unpause"]')`, 'its resume');
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"], .detail [data-action="pause"]')`)).toBe(false);
+		expect(await tab.eval(`document.querySelector('.detail .profile').innerText`)).toContain('暫停通訊');
+		expect(await tab.eval(FITS)).toBe(true);
+	} finally {
+		rmSync(pausedDir, { recursive: true, force: true });
+		fixture.setHcom({ agents: HCOM_AGENTS });
+		await fixture.refresh(cookie);
+	}
+}, 60_000);
+
 test.skipIf(!CHROME)('a controller is closed as an agent is: asked, confirmed, then closed', async () => {
 	await visit(390, '?agent=s-luna');
 	await tab.until(`document.querySelector('.detail .profile h2')?.innerText === 'moon'`, "the idle controller's page");
