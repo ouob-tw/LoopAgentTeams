@@ -142,13 +142,21 @@ hcom kill tag:<自身名稱>-<主題> --name <自身名稱>   # 整組都符合�
 
 ### 接回已關閉的 Agent
 
-`hcom r` 會自己重放原本的啟動參數，所以**不要重複傳 `--model` 或 `--yolo`**，重複會讓 Codex 啟動失敗。
+`hcom r` 會重放它記下的上次啟動參數，再接上你附的參數，所以**不要重複傳 `--model` 或 `--yolo`**，重複會讓 Codex 啟動失敗。
 
 需要 HCOM >= 0.7.27。明確指定已記錄的名稱或 session ID，不用 `--last`。一般接回沿用原模型、effort 與權限：
 
 ```bash
 hcom r <名稱或session-ID> --go --name <自身名稱>
 ```
+
+權限只靠記下的參數還原，Claude 接回時不會從對話紀錄恢復權限模式。不是由 hcom 啟動的 session（使用者自己開、之後才被 hcom 接手）沒有記下權限參數，接回後會回到 Claude 的預設模式。接回前先查記下的參數：
+
+```bash
+hcom events --agent <名稱> --type life --action stopped --full --last 1 --name <自身名稱>
+```
+
+看 `snapshot.launch_args`。Claude 原本是免確認模式、記下的參數卻沒有 `--dangerously-skip-permissions` 時，在接回指令最後補上它。
 
 只有要改 effort（例如卡住升級）時，才在指令最後附上已選定的新 effort，模型與權限維持原值：
 
