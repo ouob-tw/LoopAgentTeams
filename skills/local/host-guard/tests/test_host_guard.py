@@ -137,7 +137,10 @@ class HeredocTests(HookCase):
                               ('cat <<EOF-TEXT\nrun `x`\nEOF-TEXT', 'EOF-TEXT'),
                               ('cat <<END.X > f\nnow $(date)\nEND.X', 'END.X'),
                               ('cat <<EOF\npath \\\\$(date)\nEOF', 'EOF'),
-                              ("cat <<'A'\nplain\nA\ncat <<B\nrun `x`\nB", 'B')]:
+                              ("cat <<'A'\nplain\nA\ncat <<B\nrun `x`\nB", 'B'),
+                              ('cat <<EOF\nEOF  \n$(printf expanded)\nEOF', 'EOF'),
+                              ('cat <<-EOF\n  EOF\n$(date)\n\tEOF', 'EOF'),
+                              ("cat <<'A' <<B\nliteral\nA\n$(date)\nB", 'B')]:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command), f"(<<'{name}')")
 
@@ -150,6 +153,7 @@ class HeredocTests(HookCase):
                         "cat <<'EOF'\nwrite <<EOF and `x`\nmore\nEOF",
                         "cat <<'EOF'\nExample:\ncat <<TXT\nrun $(date)\nTXT\nEOF",
                         'cat <<"EOF-TEXT"\nrun `x`\nEOF-TEXT',
+                        "cat <<'A' <<'B'\nrun `x`\nA\nrun $(y)\nB",
                         'grep -c x <<<"`echo`"',
                         'echo "`date`"']:
             with self.subTest(command):

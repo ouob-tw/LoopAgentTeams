@@ -103,33 +103,41 @@ def substitution(body):
     return None
 
 
+def heredoc_word(word):
+    """(delimiter, quoted) for the word after `<<`."""
+    name = re.sub(r'\\(.)|\'([^\']*)\'|"((?:\\.|[^"\\])*)"',
+                  lambda m: m.group(1) or m.group(2) or m.group(3) or '', word)
+    return name, any(c in word for c in '\'"\\')
+
+
 def expanding_heredoc(command):
     """(delimiter, what) for the first unquoted heredoc whose body substitutes a command.
 
     Walks the heredocs in order and skips each body, so text inside a quoted heredoc that
-    looks like another heredoc is not read as one.
+    looks like another heredoc is not read as one. Several openers on one line take their
+    bodies one after the other.
     """
     position = 0
     while True:
         match = HEREDOC_START.search(command, position)
         if not match:
             return None
-        word = match.group(2)
-        quoted = any(c in word for c in '\'"\\')
-        name = re.sub(r'\\(.)|\'([^\']*)\'|"((?:\\.|[^"\\])*)"', lambda m: m.group(1) or m.group(2) or m.group(3) or '', word)
         line_end = command.find('\n', match.end())
         if line_end < 0:
             return None
-        strip = r'[ \t]*' if match.group(1) else ''
-        end = re.compile(r'^' + strip + re.escape(name) + r'[ \t]*$', re.M).search(command, line_end + 1)
-        body = command[line_end + 1:end.start() if end else len(command)]
-        if not quoted:
-            found = substitution(body)
-            if found:
-                return name, found
-        if not end:
-            return None
-        position = end.end()
+        openers = [match, *HEREDOC_START.finditer(command, match.end(), line_end)]
+        position = line_end + 1
+        for opener in openers:
+            name, quoted = heredoc_word(opener.group(2))
+            strip = r'\t*' if opener.group(1) else ''
+            end = re.compile(r'^' + strip + re.escape(name) + r'$', re.M).search(command, position)
+            if not quoted:
+                found = substitution(command[position:end.start() if end else len(command)])
+                if found:
+                    return name, found
+            if not end:
+                return None
+            position = end.end() + 1
 
 
 def scan_root(command, roots):

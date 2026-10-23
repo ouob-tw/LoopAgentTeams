@@ -8,7 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -369,9 +369,10 @@ class RunAndReuseTests(GateCase):
 
     def test_a_failed_run_waits_for_reaper_records_written_after_the_suite_exits(self):
         self.env['SUITE_GATE_REAP_WAIT'] = '8'
-        proc = self.start('run', '--', 'exit 1')
-        time.sleep(1.5)  # the suite has failed; lat-reap is still waiting out its grace period
-        record = {'time': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'pid': 4242,
+        proc = self.start('run', '--', 'sleep 2; exit 1')
+        during = datetime.now(timezone.utc) + timedelta(seconds=1)
+        time.sleep(3)  # the suite has failed; lat-reap is still waiting out its grace period
+        record = {'time': during.isoformat(timespec='seconds'), 'pid': 4242,
                   'cwd': str(self.repo), 'command': 'node build-test/index.js',
                   'signal': 'SIGTERM', 'result': 'exited after SIGTERM'}
         with self.reaper_log().open('a') as stream:
@@ -381,9 +382,11 @@ class RunAndReuseTests(GateCase):
         self.assertEqual([e['pid'] for e in self.records()[-1]['reaped']], [4242])
         self.env['SUITE_GATE_REAP_WAIT'] = '0.5'
         self.reaper_log().write_text('')
+        late = dict(record, time=(datetime.now(timezone.utc) + timedelta(seconds=30)).isoformat(timespec='seconds'))
+        self.reaper_log().write_text(json.dumps(late) + '\n')
         started = time.monotonic()
         self.gate('run', '--rerun', 'again', '--', 'exit 1')
-        self.assertEqual(self.records()[-1]['reaped'], [])
+        self.assertEqual(self.records()[-1]['reaped'], [], 'a kill dated after the suite exited is not its')
         self.assertLess(time.monotonic() - started, 5, 'a failure with no kills waits only the window')
 
     def test_a_run_without_reaper_kills_records_none(self):

@@ -68,6 +68,7 @@ async function deploy(env: Record<string, string> = {}) {
 			HOME: dir,
 			TMPDIR: dir,
 			LAT_DEPLOY_BOARD_DIR: board,
+			LAT_DEPLOY_UNIT: 'lat-board-deploy-test',
 			PORT: String(server.port),
 			LAT_DEPLOY_WAIT: '2',
 			LAT_DEPLOY_BUILD: 'test -d node_modules && mkdir -p "$LAT_BOARD_BUILD_DIR" && cp source.txt "$LAT_BOARD_BUILD_DIR/index.js"',

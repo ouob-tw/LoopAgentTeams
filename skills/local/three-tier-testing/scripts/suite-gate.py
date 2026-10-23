@@ -99,7 +99,7 @@ REAPED_RESULTS = ('exited after SIGTERM', 'killed')
 REAP_WAIT_SECONDS = 12.0
 
 
-def reaped_after_failure(cwd, since):
+def reaped_after_failure(cwd, since, until):
     """reaped_during, retried for a short window: the records may land after the suite exits."""
     try:
         wait = float(os.environ.get('SUITE_GATE_REAP_WAIT', REAP_WAIT_SECONDS))
@@ -107,7 +107,7 @@ def reaped_after_failure(cwd, since):
         wait = REAP_WAIT_SECONDS
     deadline = time.monotonic() + wait
     while True:
-        found = reaped_during(cwd, since, datetime.now(timezone.utc))
+        found = reaped_during(cwd, since, until)
         if found or time.monotonic() >= deadline:
             return found
         time.sleep(0.25)
@@ -1461,8 +1461,9 @@ class Gate:
             thread.start()
         code = child.wait()
         self.finished = True
-        reaped = (reaped_during(self.cwd, started_at, datetime.now(timezone.utc)) if code == 0
-                  else reaped_after_failure(self.cwd, started_at))
+        ended_at = datetime.now(timezone.utc)
+        reaped = (reaped_during(self.cwd, started_at, ended_at) if code == 0
+                  else reaped_after_failure(self.cwd, started_at, ended_at))
         for thread in pumps:
             thread.join(timeout=2)
         profile = self.measure(time.monotonic() - started)
