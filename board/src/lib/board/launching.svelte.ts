@@ -3,7 +3,7 @@
 // and the recent launches.
 import { request } from './api.ts';
 import { latestOnly, typedFolder } from './folder-search.ts';
-import type { FolderSearch, LaunchClient, LaunchList, LaunchResponse } from './launch.ts';
+import type { FolderSearch, LaunchClient, LaunchList, LaunchResponse, WorkspaceOption, WorkspacePick } from './launch.ts';
 import type { LaunchDefaults } from './models.ts';
 
 export interface StartResult {
@@ -11,6 +11,8 @@ export interface StartResult {
 	reason: string | null;
 	/** The launch's ID in the sent log, when one was made. */
 	launchId?: string;
+	/** The workspace the launch created, even when it failed after that. */
+	created?: { id: string; label: string };
 }
 
 /** No answer came back, so a controller may or may not have been started. */
@@ -19,6 +21,12 @@ const UNKNOWN_OUTCOME = '沒有收到看板伺服器的回應，不確定有沒�
 class Launching {
 	/** The plain-agent form's Herdr workspace; null for the new-controller form. */
 	workspace = $state<string | null>(null);
+	/** Where the agent opens; each time the form is opened it starts from its default. */
+	workspaceOption = $state<WorkspaceOption>({ kind: 'auto' });
+	/** The label of the existing workspace chosen, kept should Herdr stop listing it. */
+	chosenLabel = $state('');
+	/** The new workspace's name as typed; null follows the folder's name. */
+	workspaceName = $state<string | null>(null);
 	/** The plain agent's tab name; '' keeps the default one. */
 	tabName = $state('');
 	/** A plain agent's launch whose message and tab name are cleared from the form only once it
@@ -102,8 +110,8 @@ class Launching {
 		this.loadFailed = !list;
 	}
 
-	/** One attempt with the form as it is; the form is kept when it fails. */
-	async start(): Promise<StartResult> {
+	/** One attempt with the form as it is, opening in `workspace`; the form is kept when it fails. */
+	async start(workspace: WorkspacePick): Promise<StartResult> {
 		const result = await request<LaunchResponse>('/api/launches', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
@@ -114,7 +122,8 @@ class Launching {
 				gitInit: this.workspace === null && this.gitInit,
 				model: this.model || null,
 				effort: this.effort || null,
-				agent: this.workspace === null ? null : { workspace: this.workspace, tabName: this.tabName.trim() }
+				workspace,
+				agent: this.workspace === null ? null : { tabName: this.tabName.trim() }
 			})
 		});
 		if (!result.ok && result.kind === 'network') {
@@ -127,7 +136,9 @@ class Launching {
 		void this.load();
 		if (!body) return { ok: false, reason: UNKNOWN_OUTCOME };
 		const logNote = body.logError ? `（送出紀錄寫入失敗：${body.logError}）` : '';
-		return { ok: body.ok, reason: body.ok ? logNote || null : body.reason + logNote, launchId: body.entry?.id };
+		const entry = body.entry;
+		const created = entry?.workspaceCreated && entry.herdrWorkspace ? { id: entry.herdrWorkspace, label: entry.herdrWorkspaceLabel ?? entry.herdrWorkspace } : undefined;
+		return { ok: body.ok, reason: body.ok ? logNote || null : body.reason + logNote, launchId: entry?.id, created };
 	}
 }
 

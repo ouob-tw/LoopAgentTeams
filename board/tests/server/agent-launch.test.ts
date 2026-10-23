@@ -5,7 +5,7 @@ import { afterAll, afterEach, beforeAll, beforeEach, expect, test } from 'bun:te
 import { appendFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer, type Server } from 'node:net';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { basename, join } from 'node:path';
 import type { LaunchList, LaunchResponse, LaunchView } from '../../src/lib/board/launch.ts';
 import { gitRoot } from '../../src/lib/server/git.ts';
 import { checkRunHere, NODE, sleep, startFixture, type Fixture } from '../harness.ts';
@@ -202,7 +202,7 @@ test('a plain Claude opens in the chosen workspace through hcom, without the LAT
 		text: '看一下\r\n測試',
 		model: 'claude-sonnet-5-5',
 		effort: 'high',
-		agent: { workspace: 'wA', tabName: '' }
+		workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' }
 	});
 
 	expect(status).toBe(200);
@@ -223,7 +223,7 @@ test('a plain Codex with no first message gets no --hcom-prompt and no permissio
 	hcomPlan([{ name: 'kilo', workspace: 'wA' }]);
 	const repo = folder('codexed', true);
 
-	const { status, body } = await launch({ client: 'codex', folder: repo, text: '  \n ', agent: { workspace: 'wA', tabName: '' } });
+	const { status, body } = await launch({ client: 'codex', folder: repo, text: '  \n ', workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } });
 
 	expect(status).toBe(200);
 	expect(body.entry?.text).toBe('');
@@ -236,7 +236,7 @@ needsPlain('a folder outside any Git project opens as it is: no git init, nothin
 	hcomPlan([{ name: 'pexo', workspace: 'wE' }]);
 	const plain = folder('plain', false);
 
-	const { status, body } = await launch({ folder: plain, agent: { workspace: 'wE', tabName: '' } });
+	const { status, body } = await launch({ folder: plain, workspace: { kind: 'existing', id: 'wE' }, agent: { tabName: '' } });
 
 	expect(status).toBe(200);
 	expect(body.entry).toMatchObject({ scope: plain, gitInit: false, herdrWorkspace: 'wE' });
@@ -249,7 +249,7 @@ test('a folder that does not exist outside the home folder is refused with the r
 	herdrPlan();
 	const missing = join(fixture.dir, 'nowhere');
 
-	const { status, body } = await launch({ folder: missing, agent: { workspace: 'wA', tabName: '' } });
+	const { status, body } = await launch({ folder: missing, workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } });
 
 	expect(status).toBe(409);
 	expect(body).toMatchObject({ ok: false, entry: null });
@@ -258,25 +258,123 @@ test('a folder that does not exist outside the home folder is refused with the r
 	expect(hcomCalls()).toEqual([]);
 });
 
-test('a workspace Herdr no longer lists is a failure, and nothing is started', async () => {
+test('a workspace Herdr no longer lists is a failure: nothing is started, created, or opened elsewhere', async () => {
 	herdrPlan();
-	const { status, body } = await launch({ folder: folder('gone', true), agent: { workspace: 'wGone', tabName: '' } });
+	const missing = join(fixture.dir, 'home', 'gone-workspace');
+	const { status, body } = await launch({ folder: missing, workspace: { kind: 'existing', id: 'wGone' }, agent: { tabName: '' } });
 	expect(status).toBe(502);
-	expect(body.reason).toBe('Herdr 裡已經沒有這個工作區，沒有開新 Agent');
+	expect(body.reason).toBe('Herdr 裡已經沒有所選的工作區，沒有開新 Agent');
+	expect(existsSync(missing)).toBe(false);
+	expect(herdrCalls().some((call) => call[0] === 'workspace')).toBe(false);
 	expect(hcomCalls()).toEqual([]);
 });
 
-test('the form\'s own rules: git init, a long or two-line tab name, no workspace are refused before anything runs', async () => {
+// --- Choosing the workspace -----------------------------------------------------------------------
+
+test('another existing workspace than the one the form was opened from is where the agent opens', async () => {
+	herdrPlan();
+	hcomPlan([{ name: 'elsa', workspace: 'wE' }]);
+	const { status, body } = await launch({ folder: folder('other', true), workspace: { kind: 'existing', id: 'wE' }, agent: { tabName: '' } });
+	expect(status).toBe(200);
+	expect(body.entry).toMatchObject({ herdrWorkspace: 'wE', herdrWorkspaceLabel: 'Empty', workspaceCreated: false });
+	expect(hcomCalls().map((call) => call.workspace)).toEqual(['wE']);
+	await followed(body.entry!.id);
+});
+
+test('auto opens a plain agent in the workspace holding its project\'s panes, creating none', async () => {
+	const repo = folder('auto-found', true);
+	herdrPlan({ panes: [{ pane_id: 'wE:p1', workspace_id: 'wE', cwd: join(repo, 'src'), tab_id: 'wE:t1' }] });
+	hcomPlan([{ name: 'aufo', workspace: 'wE', folder: repo }]);
+	const { status, body } = await launch({ folder: repo, workspace: { kind: 'auto' }, agent: { tabName: '' } });
+	expect(status).toBe(200);
+	expect(body.entry).toMatchObject({ herdrWorkspace: 'wE', herdrWorkspaceLabel: 'Empty', workspaceCreated: false, scope: repo });
+	expect(herdrCalls().some((call) => call[0] === 'workspace')).toBe(false);
+	await followed(body.entry!.id);
+});
+
+test('auto creates a workspace named after the project when none of its panes is open', async () => {
+	const repo = folder('auto-new', true);
+	herdrPlan({ created: 'wAuto' });
+	hcomPlan([{ name: 'aune', workspace: 'wAuto', folder: repo }]);
+	const { status, body } = await launch({ folder: repo, workspace: { kind: 'auto' }, agent: { tabName: '' } });
+	expect(status).toBe(200);
+	expect(body.entry).toMatchObject({ herdrWorkspace: 'wAuto', herdrWorkspaceLabel: basename(repo), workspaceCreated: true });
+	expect(herdrCalls()).toContainEqual(['workspace', 'create', '--cwd', repo, '--label', basename(repo), '--no-focus']);
+	expect(hcomCalls().map((call) => call.workspace)).toEqual(['wAuto']);
+	await followed(body.entry!.id);
+});
+
+test('a new workspace is created with the name as typed, in the folder, and the agent opens in it', async () => {
+	const repo = folder('named', true);
+	const inside = join(repo, 'sub');
+	mkdirSync(inside);
+	herdrPlan({ created: 'wMine' });
+	hcomPlan([{ name: 'nami', workspace: 'wMine', folder: inside }]);
+	const { status, body } = await launch({ folder: inside, workspace: { kind: 'new', label: ' 我的工作區 ' }, agent: { tabName: '' } });
+	expect(status).toBe(200);
+	expect(body.entry).toMatchObject({ herdrWorkspace: 'wMine', herdrWorkspaceLabel: '我的工作區', workspaceCreated: true });
+	expect(herdrCalls()).toContainEqual(['workspace', 'create', '--cwd', inside, '--label', '我的工作區', '--no-focus']);
+	expect(hcomCalls().map((call) => call.workspace)).toEqual(['wMine']);
+	await followed(body.entry!.id);
+});
+
+test('a new workspace that cannot be created is a failure with Herdr\'s reason, and nothing is started', async () => {
+	herdrPlan({ fail: { 'workspace create': { exit: 1, stderr: 'no room' } } });
+	const { status, body } = await launch({ folder: folder('create-fails', true), workspace: { kind: 'new', label: 'n' }, agent: { tabName: '' } });
+	expect(status).toBe(502);
+	expect(body.reason).toBe('建立 Herdr 工作區失敗：no room，沒有開新 Agent');
+	expect(body.entry).toMatchObject({ state: 'failed', herdrWorkspace: null });
+	expect(hcomCalls()).toEqual([]);
+});
+
+test('a controller goes to the chosen workspace, existing or new, instead of its project\'s', async () => {
+	const repo = folder('ctrl-pick', true);
+	herdrPlan({ panes: [{ pane_id: 'wA:p1', workspace_id: 'wA', cwd: repo, tab_id: 'wA:t1' }], created: 'wCtl' });
+	hcomPlan([
+		{ name: 'cexi', workspace: 'wE', folder: repo },
+		{ name: 'cnew', workspace: 'wCtl', folder: repo }
+	]);
+	const there = await launch({ folder: repo, text: '做事', workspace: { kind: 'existing', id: 'wE' } });
+	expect(there.body.entry).toMatchObject({ herdrWorkspace: 'wE', workspaceCreated: false });
+	const made = await launch({ folder: repo, text: '做事', workspace: { kind: 'new', label: '主控區' } });
+	expect(made.body.entry).toMatchObject({ herdrWorkspace: 'wCtl', herdrWorkspaceLabel: '主控區', workspaceCreated: true });
+	expect(hcomCalls().map((call) => call.workspace)).toEqual(['wE', 'wCtl']);
+});
+
+test('a controller\'s new workspace that cannot be created is a failure, and nothing is started', async () => {
+	const repo = folder('ctrl-create-fails', true);
+	herdrPlan({ fail: { 'workspace create': { exit: 1, stderr: 'no room' } } });
+	const { status, body } = await launch({ folder: repo, text: '做事', workspace: { kind: 'new', label: 'n' } });
+	expect(status).toBe(502);
+	expect(body.reason).toBe('建立 Herdr 工作區失敗：no room，沒有啟動主控');
+	expect(hcomCalls()).toEqual([]);
+});
+
+needsPlain('a controller\'s chosen workspace that is gone stops it before git init or anything else', async () => {
+	herdrPlan();
+	const plain = folder('not-git', false);
+	const { status, body } = await launch({ folder: plain, text: '做事', gitInit: true, workspace: { kind: 'existing', id: 'wGone' } });
+	expect(status).toBe(502);
+	expect(body.reason).toBe('Herdr 裡已經沒有所選的工作區，沒有啟動主控');
+	expect(existsSync(join(plain, '.git'))).toBe(false);
+	expect(hcomCalls()).toEqual([]);
+});
+
+test('the form\'s own rules: git init, a long or two-line tab or workspace name, no workspace are refused before anything runs', async () => {
 	herdrPlan();
 	const repo = folder('rules', true);
 	for (const body of [
-		{ folder: repo, gitInit: true, agent: { workspace: 'wA', tabName: '' } },
-		{ folder: repo, agent: { workspace: 'wA', tabName: 'x'.repeat(61) } },
-		{ folder: repo, agent: { workspace: 'wA', tabName: 'a\nb' } },
-		{ folder: repo, agent: { workspace: '', tabName: '' } },
+		{ folder: repo, gitInit: true, workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } },
+		{ folder: repo, workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: 'x'.repeat(61) } },
+		{ folder: repo, workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: 'a\nb' } },
+		{ folder: repo, workspace: { kind: 'existing', id: '' }, agent: { tabName: '' } },
 		{ folder: repo, agent: { tabName: '' } },
-		{ folder: 'relative', agent: { workspace: 'wA', tabName: '' } },
-		{ folder: repo, model: 'not-offered', agent: { workspace: 'wA', tabName: '' } }
+		{ folder: repo, workspace: { kind: 'elsewhere' }, agent: { tabName: '' } },
+		{ folder: repo, workspace: { kind: 'new', label: '  ' }, agent: { tabName: '' } },
+		{ folder: repo, workspace: { kind: 'new', label: 'x'.repeat(61) }, agent: { tabName: '' } },
+		{ folder: repo, workspace: { kind: 'new', label: 'a\nb' }, agent: { tabName: '' } },
+		{ folder: 'relative', workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } },
+		{ folder: repo, model: 'not-offered', workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } }
 	]) {
 		expect((await launch(body)).status).toBe(400);
 	}
@@ -291,7 +389,7 @@ test('once Herdr lists it, the tab is renamed, then moved to the front, and the 
 	herdrPlan();
 	hcomPlan([{ name: 'tavi', workspace: 'wA' }]);
 
-	const { body } = await launch({ folder: folder('renamed', true), agent: { workspace: 'wA', tabName: ' 查 bug ' } });
+	const { body } = await launch({ folder: folder('renamed', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: ' 查 bug ' } });
 	expect(body.entry?.tabName).toBe('查 bug');
 	const view = await followed(body.entry!.id);
 
@@ -320,7 +418,7 @@ test('it is told apart by the name hcom printed, not by another agent that appea
 	];
 	writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
 
-	const { body } = await launch({ folder: folder('exact', true), agent: { workspace: 'wA', tabName: '' } });
+	const { body } = await launch({ folder: folder('exact', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } });
 	await followed(body.entry!.id);
 
 	expect(herdrCalls()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-real', insert_index: 0 }]]);
@@ -329,7 +427,7 @@ test('it is told apart by the name hcom printed, not by another agent that appea
 test('no tab name keeps the default one: no rename, only the move', async () => {
 	herdrPlan();
 	hcomPlan([{ name: 'zelo', workspace: 'wA' }]);
-	const { body } = await launch({ folder: folder('unnamed', true), agent: { workspace: 'wA', tabName: '' } });
+	const { body } = await launch({ folder: folder('unnamed', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } });
 	await followed(body.entry!.id);
 	expect(herdrCalls()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-zelo', insert_index: 0 }]]);
 });
@@ -338,7 +436,7 @@ test('a rename that fails still moves the tab; the agent counts as opened and th
 	herdrPlan({ fail: { 'tab rename': { exit: 1, stderr: JSON.stringify({ error: { code: 'bad_label', message: 'label too long' } }) } } });
 	hcomPlan([{ name: 'rifa', workspace: 'wA' }]);
 
-	const { body } = await launch({ folder: folder('rename-fails', true), agent: { workspace: 'wA', tabName: 'name' } });
+	const { body } = await launch({ folder: folder('rename-fails', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: 'name' } });
 	const view = await followed(body.entry!.id);
 
 	expect(view).toMatchObject({ state: 'appeared', follow: { renameError: '改分頁名稱失敗：label too long', moveError: null } });
@@ -350,7 +448,7 @@ test('a move that fails leaves the agent opened and renamed; the record says the
 	hcomPlan([{ name: 'mofa', workspace: 'wA' }]);
 	moveFails = 'insert_index out of bounds';
 
-	const { body } = await launch({ folder: folder('move-fails', true), agent: { workspace: 'wA', tabName: 'kept' } });
+	const { body } = await launch({ folder: folder('move-fails', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: 'kept' } });
 	const view = await followed(body.entry!.id);
 
 	expect(view).toMatchObject({ state: 'appeared', follow: { renameError: null, moveError: '移動分頁失敗：insert_index out of bounds' } });
@@ -360,7 +458,7 @@ test('an agent that never appears in Herdr times out with the reason; nothing is
 	herdrPlan();
 	hcomPlan([{ name: 'lost', workspace: 'wA', appears: false }]);
 
-	const { body } = await launch({ folder: folder('never', true), agent: { workspace: 'wA', tabName: 'x' } });
+	const { body } = await launch({ folder: folder('never', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: 'x' } });
 	const view = await followed(body.entry!.id);
 
 	expect(view.state).toBe('overdue');
@@ -371,7 +469,7 @@ test('an agent that never appears in Herdr times out with the reason; nothing is
 test('an hcom failure is logged with its reason and not followed', async () => {
 	herdrPlan();
 	hcomPlan([{ name: 'fail', workspace: 'wA' }], { exit: 1, stderr: 'boom\n' });
-	const { status, body } = await launch({ folder: folder('hcom-fails', true), agent: { workspace: 'wA', tabName: '' } });
+	const { status, body } = await launch({ folder: folder('hcom-fails', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } });
 	expect(status).toBe(502);
 	expect(body.entry).toMatchObject({ state: 'failed', follow: null });
 	expect(body.reason).toStartWith('hcom 啟動失敗');
@@ -380,7 +478,7 @@ test('an hcom failure is logged with its reason and not followed', async () => {
 test('the list keeps plain agents and controllers apart, and a plain agent never becomes a controller', async () => {
 	herdrPlan();
 	hcomPlan([{ name: 'solo', workspace: 'wA' }]);
-	const { body } = await launch({ folder: folder('apart', true), agent: { workspace: 'wA', tabName: '' } });
+	const { body } = await launch({ folder: folder('apart', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } });
 	await followed(body.entry!.id);
 	// Even when a controller binds under the same name.
 	fixture.list([fixture.bound('p', 'solo')]);

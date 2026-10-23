@@ -6,6 +6,8 @@
 	// as its target it is the Herdr tab's new-agent form instead: a plain agent in that workspace,
 	// with an optional tab name and first message, no LAT start command and no Git project needed,
 	// followed until Herdr lists it. A folder that is not there yet is created when the form is sent.
+	// Either form chooses the Herdr workspace: the new-agent form's own, the project's, one Herdr
+	// lists, or a new one named after the folder unless renamed, created when the form is sent.
 	// The message box hints the skills of the chosen client in the chosen folder.
 	import { untrack } from 'svelte';
 	import { folderName, listKey, pathMatches, shownSearch, suggestedFolders } from '#lib/board/folder-search.ts';
@@ -13,26 +15,32 @@
 	import {
 		AGENT_LAUNCH_STATE_TEXT,
 		CLIENT_LABEL,
+		defaultWorkspaceOption,
 		LAUNCH_CLIENTS,
 		LAUNCH_STATE_TEXT,
 		latCommand,
 		launchLink,
 		launchSettingsText,
+		newWorkspaceName,
 		TAB_NAME_MAX,
+		WORKSPACE_NAME_MAX,
+		workspaceToSend,
 		type LaunchClient,
 		type LaunchView,
-		type Project
+		type Project,
+		type WorkspaceOption
 	} from '#lib/board/launch.ts';
 	import { agentLaunching, launching } from '#lib/board/launching.svelte.ts';
 	import { enterMakesNewline } from '#lib/board/messaging.svelte.ts';
 	import { DEFAULT_UNREADABLE_TEXT, defaultEffort, modelShort } from '#lib/board/models.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
-	import type { Agent, Controller } from '#lib/board/types.ts';
+	import type { Agent, Controller, HerdrWorkspace } from '#lib/board/types.ts';
 	import MessageBox from './MessageBox.svelte';
 
 	let {
 		controllers,
 		agents,
+		workspaces,
 		stamp,
 		onopen,
 		onagent,
@@ -41,12 +49,14 @@
 		controllers: Controller[];
 		/** Herdr's agents, as the board data lists them: a launch's tab may have appeared. */
 		agents: Agent[];
+		/** The workspaces Herdr lists, any of which the agent may open in. */
+		workspaces: HerdrWorkspace[];
 		/** Changes with every new board data: a launch may have become a controller. */
 		stamp: string;
 		onopen: (controllerId: string) => void;
 		/** Opens an agent's page on the board. */
 		onagent: (agentId: string) => void;
-		/** The Herdr workspace a plain agent is to open in, with the folders its agents work in, the
+		/** The Herdr workspace whose + opened the new-agent form, with the folders its agents work in, the
 		 *  most used first; null for a new controller. */
 		target?: { workspace: string; label: string; folders: string[] } | null;
 	} = $props();
@@ -179,11 +189,14 @@
 		untrack(() => {
 			if (agentLaunching.workspace !== target.workspace) {
 				agentLaunching.workspace = target.workspace;
+				agentLaunching.workspaceOption = defaultWorkspaceOption(target.workspace);
 				agentLaunching.tabName = '';
 				pick(fallback);
 			} else if (agentLaunching.folder === '' && !agentLaunching.folderEdited && fallback) pick(fallback);
 		});
 	});
+	// The workspace field starts where the button that opened the form says, each time it is opened.
+	untrack(() => (form.workspaceOption = defaultWorkspaceOption(target?.workspace ?? null)));
 	// A new controller starts from the most recent folder, unless the box was typed in.
 	$effect(() => {
 		if (target) return;
@@ -244,9 +257,40 @@
 	// then the server judges it.
 	const folderKnown = $derived(typed !== null || searchFailed);
 
+	// --- The workspace field ------------------------------------------------------------------------
+
+	/** The field's value for an option: one string per option of the select. */
+	const optionValue = (option: WorkspaceOption) => (option.kind === 'existing' ? `in:${option.id}` : option.kind);
+	/** The workspaces to choose from: all Herdr lists but the form's own, which is `current`. */
+	const others = $derived(workspaces.filter((workspace) => workspace.id !== target?.workspace));
+	/** A chosen workspace Herdr no longer lists stays chosen: sending it says it is gone. */
+	const chosenGone = $derived.by(() => {
+		const option = form.workspaceOption;
+		return option.kind === 'existing' && !workspaces.some((workspace) => workspace.id === option.id);
+	});
+	function chooseWorkspace(value: string) {
+		if (value.startsWith('in:')) {
+			const id = value.slice(3);
+			form.workspaceOption = { kind: 'existing', id };
+			form.chosenLabel = workspaces.find((workspace) => workspace.id === id)?.label ?? id;
+		} else if (value === 'current' || value === 'auto' || value === 'new') form.workspaceOption = { kind: value };
+		// Anything else is no option of the field: the choice stays as it was.
+	}
+	const newName = $derived(newWorkspaceName(form.workspaceName, form.folderPath));
+	const sendTo = $derived(workspaceToSend(form.workspaceOption, target?.workspace ?? null, newName));
+	/** Where the agent opens, as the title says it. */
+	const placeText = $derived.by(() => {
+		const option = form.workspaceOption;
+		if (option.kind === 'current') return target?.label ?? '';
+		if (option.kind === 'existing') return form.chosenLabel;
+		if (option.kind === 'new') return `新工作區「${newName.trim()}」`;
+		return '自動選擇的工作區';
+	});
+
 	let sending = $state(false);
 	const ready = $derived(
 		!sending &&
+			sendTo !== null &&
 			folderProblem === null &&
 			folderKnown &&
 			(target !== null || (form.text.trim() !== '' && (!needsInit || form.gitInit)))
@@ -272,9 +316,17 @@
 		const sentText = sent.text;
 		const sentTab = sent.tabName;
 		const sentFolder = sent.folder;
+		const sentOption = sent.workspaceOption;
 		sending = true;
-		const result = await sent.start();
+		const result = await sent.start(sendTo!);
 		sending = false;
+		// A workspace made for this launch, even one that failed after, is not made again by
+		// sending the form once more: the field goes to it.
+		if (result.created && sentOption.kind === 'new' && sent.workspaceOption === sentOption) {
+			sent.workspaceOption = { kind: 'existing', id: result.created.id };
+			sent.chosenLabel = result.created.label;
+			sent.workspaceName = null;
+		}
 		// The folder may have been created: what the box says about it is read again.
 		if (sent.folder === sentFolder && sent.folderPath !== null) void sent.find(sentFolder);
 		if (target) {
@@ -302,7 +354,7 @@
 </script>
 
 <section class="new">
-	<h2>{target ? `在 ${target.label} 開新 Agent` : '新建主控'}</h2>
+	<h2>{target ? `在 ${placeText} 開新 Agent` : form.workspaceOption.kind === 'auto' ? '新建主控' : `在 ${placeText} 新建主控`}</h2>
 	<form
 		onsubmit={(event) => {
 			event.preventDefault();
@@ -362,6 +414,39 @@
 				<label class="init"><input type="checkbox" bind:checked={form.gitInit} /> 不在 Git 專案裡：先 git init 再開</label>
 			{/if}
 		</div>
+
+		<div class="where">
+			<label>
+				Herdr 工作區
+				<select value={optionValue(form.workspaceOption)} onchange={(event) => chooseWorkspace(event.currentTarget.value)}>
+					{#if target}<option value="current">當前工作區（{target.label}）</option>{/if}
+					<option value="auto">自動（依資料夾挑選，沒有就新增）</option>
+					{#each others as workspace (workspace.id)}
+						<option value={`in:${workspace.id}`}>{workspace.label}</option>
+					{/each}
+					{#if chosenGone}
+						<option value={optionValue(form.workspaceOption)}>{form.chosenLabel}（Herdr 已不列出）</option>
+					{/if}
+					<option value="new">新建工作區…</option>
+				</select>
+			</label>
+			{#if form.workspaceOption.kind === 'new'}
+				<label class="workspace-name">
+					新工作區名稱
+					<input
+						value={newName}
+						oninput={(event) => (form.workspaceName = event.currentTarget.value)}
+						maxlength={WORKSPACE_NAME_MAX}
+						placeholder="工作區名稱"
+					/>
+				</label>
+			{/if}
+		</div>
+		{#if chosenGone}
+			<p class="failed">Herdr 已不列出這個工作區；送出會失敗，請改選。</p>
+		{:else if form.workspaceOption.kind === 'new' && !newName.trim()}
+			<p class="failed">請輸入新工作區的名稱。</p>
+		{/if}
 
 		<MessageBox
 			bind:value={form.text}
@@ -559,20 +644,23 @@
 		border-radius: var(--radius);
 		font-size: max(0.85rem, var(--min-font, 0px));
 	}
-	.settings {
+	.settings,
+	.where {
 		display: flex;
 		flex-wrap: wrap;
 		align-items: flex-end;
 		gap: 0.5rem 1rem;
 	}
-	.settings > label {
+	.settings > label,
+	.where > label {
 		display: flex;
 		flex-direction: column;
 		gap: 0.2rem;
 		min-width: 0;
 		font-size: max(0.85rem, var(--min-font, 0px));
 	}
-	.settings select {
+	.settings select,
+	.where select {
 		max-width: 100%;
 	}
 	.clients {
@@ -580,7 +668,8 @@
 		gap: 0.8rem;
 		padding-bottom: 0.4rem;
 	}
-	.tab-name {
+	.tab-name,
+	.workspace-name {
 		flex: 1 1 12rem;
 	}
 	button:disabled {

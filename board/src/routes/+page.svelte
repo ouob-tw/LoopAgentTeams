@@ -489,10 +489,10 @@
 						<p class="empty">這個 Agent 已不在 Herdr 的清單上：它已關閉。</p>
 					{/if}
 				{:else if view.kind === 'launch'}
-					<NewController {controllers} {agents} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} />
+					<NewController {controllers} {agents} {workspaces} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} />
 				{:else if view.kind === 'new-agent'}
 					{#if newTarget}
-						<NewController {controllers} {agents} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} target={newTarget} />
+						<NewController {controllers} {agents} {workspaces} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} target={newTarget} />
 					{:else}
 						<p class="empty">Herdr 裡已經沒有這個工作區。</p>
 					{/if}

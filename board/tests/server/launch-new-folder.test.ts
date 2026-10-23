@@ -70,7 +70,8 @@ async function launch(body: object): Promise<{ status: number; body: LaunchRespo
 	return { status: response.status, body: await response.json() };
 }
 const launches = async () => ((await (await fixture.fetch('/api/launches', { cookie })).json()) as LaunchList).launches;
-const agent = { workspace: 'wA', tabName: '' };
+/** A plain agent in that workspace, as the form sends it. */
+const agent = { workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } };
 
 needsPlain('a new controller in a folder not there yet creates it with the levels above it, runs git init and starts there', async () => {
 	const folder = join(home, 'new', 'deeper', 'project');
@@ -99,7 +100,7 @@ needsPlain('a new folder inside a Git project is still made a project of its own
 needsPlain('a plain agent gets the folder created, and nothing else: no git init', async () => {
 	const folder = join(home, 'agent-new', 'here');
 
-	const { status, body } = await launch({ folder, text: '', agent });
+	const { status, body } = await launch({ folder, text: '', ...agent });
 
 	expect(status).toBe(200);
 	expect(existsSync(folder)).toBe(true);
@@ -112,7 +113,7 @@ needsPlain('a folder already there is not counted as created', async () => {
 	const folder = join(home, 'existing');
 	mkdirSync(folder);
 
-	const { body } = await launch({ folder, agent, text: '' });
+	const { body } = await launch({ folder, ...agent, text: '' });
 
 	expect(body.entry).toMatchObject({ folderCreated: false });
 });
@@ -125,7 +126,7 @@ needsPlain('outside the home folder, or out of it through a link, nothing is cre
 	for (const [folder, extra] of [
 		[join(outside, 'new'), {}],
 		[join(home, 'out-link', 'new'), {}],
-		[join(home, 'out-link', 'new'), { agent, text: '' }]
+		[join(home, 'out-link', 'new'), { ...agent, text: '' }]
 	] as const) {
 		const { status, body } = await launch({ folder, ...extra });
 		expect(status).toBe(409);
@@ -156,7 +157,7 @@ test.skipIf(plainDir === null || asRoot)('a folder that cannot be created fails 
 needsPlain('failing part way removes the levels the launch made, and keeps those there before', async () => {
 	mkdirSync(join(home, 'before'));
 	// The first new level is made; the next one has a name too long for the file system.
-	const { status, body } = await launch({ folder: join(home, 'before', 'made', 'x'.repeat(300), 'c'), agent, text: '' });
+	const { status, body } = await launch({ folder: join(home, 'before', 'made', 'x'.repeat(300), 'c'), ...agent, text: '' });
 	expect(status).toBe(502);
 	expect(body.reason).toContain('建立資料夾失敗：ENAMETOOLONG');
 	expect(existsSync(join(home, 'before'))).toBe(true);
