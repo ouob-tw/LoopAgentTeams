@@ -86,6 +86,7 @@ test('groups by status, newest report first within a group, no report last, then
 		duties: new Map(),
 		reportsError: null,
 		running: new Set(['w', 'k-new', 'k-old', 'k-none', 'd-b', 'd-a2', 'd-a1', 'e-new']),
+		paused: new Set(),
 		hcomError: null,
 		agents: [],
 		herdrError: null,

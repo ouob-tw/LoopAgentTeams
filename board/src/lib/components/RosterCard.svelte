@@ -6,6 +6,7 @@
 	import { phaseText, type Controller } from '#lib/board/types.ts';
 	import ControllerExplain from './ControllerExplain.svelte';
 	import ExplainTip from './ExplainTip.svelte';
+	import HcomBadge from './HcomBadge.svelte';
 	import StatusMark from './StatusMark.svelte';
 
 	let { controller, current, onopen }: { controller: Controller; current: boolean; onopen: (id: string) => void } = $props();
@@ -33,6 +34,9 @@
 	<span class="who">
 		<StatusMark status={controller.status} />
 		<span class="handle">@{controller.hcomName}</span>
+		{#if controller.paused}
+			<HcomBadge hcom="paused" />
+		{/if}
 		{#if controller.pendingCount}
 			<span class="badge" title="待決題數">{controller.pendingCount}</span>
 		{/if}

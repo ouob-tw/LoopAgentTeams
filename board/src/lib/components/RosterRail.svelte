@@ -40,6 +40,7 @@
 
 	const label = (controller: Controller) =>
 		`${controller.project} @${controller.hcomName}：${STATUS_LABEL[controller.status]}` +
+		(controller.paused ? '，暫停通訊' : '') +
 		(controller.pendingCount ? `，待決 ${controller.pendingCount} 題` : '');
 </script>
 

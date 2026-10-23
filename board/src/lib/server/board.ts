@@ -21,6 +21,7 @@ import { settleRelaunches } from './relaunch.ts';
 import { settleResumes } from './wake.ts';
 import { createAgentRoster, type HerdrAgentList } from './agents.ts';
 import { createClosedRoster } from './closed-agents.ts';
+import { linkedAgain, settlePauses } from './paused.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
@@ -288,6 +289,8 @@ function createBoard(): Board {
 	}
 
 	async function readWith(reading: Reading): Promise<BoardSnapshot> {
+		// Real clock: pause records carry the real time they were written.
+		const listedAt = Date.now();
 		const [[helper, reports, answered, settled, log], agents, herdrAgents, stops] = await Promise.all([
 			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
 				// Read after the list: the files are those of the controllers bound now, and of the
@@ -332,7 +335,8 @@ function createBoard(): Board {
 		} catch {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
 		}
-		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches);
+		const paused = await settlePauses(config, agents, herdrAgents, listedAt);
+		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
 		herdrRead ||= herdrAgents.ok;
 		const closedAgents = await closedRoster.update({
 			agents: herdrRead ? allAgents.agents : null,
@@ -354,6 +358,8 @@ function createBoard(): Board {
 			duties: reports.duties,
 			reportsError: reports.error,
 			running: lastRunning,
+			// Listed but not on its link (a half-done reconnect) is still paused; without a list a record says so.
+			paused: new Set([...paused.keys()].filter((id) => !(agents.ok && linkedAgain(agents.agents, id)))),
 			hcomError: agents.ok ? null : agents.reason,
 			agents: allAgents.agents,
 			herdrError: allAgents.herdrError,
