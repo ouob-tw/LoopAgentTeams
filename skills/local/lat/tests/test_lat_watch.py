@@ -5,6 +5,7 @@ import fcntl
 import importlib.util
 import json
 import os
+import re
 import shutil
 from pathlib import Path
 import subprocess
@@ -1363,7 +1364,7 @@ esac
         self.run_cycles(load_watch(), 4000)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
         self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
-        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3})
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3, 'claude_quota_resume': 1})
         result = self.alarm_cli('--after', 1, agent='worker-open')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
@@ -4554,7 +4555,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3, 'claude_quota_resume': 1}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -4578,7 +4579,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3, 'claude_quota_resume': 1}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
@@ -5181,7 +5182,7 @@ esac
         self.assertEqual(state['worker']['decision'], 'valid-wait')
         self.assertEqual(self.wait_file.read_bytes(), before)
         self.assertEqual(state['worker']['feature_versions'],
-                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3})
+                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3, 'claude_quota_resume': 1})
         # The wait still expires at its original deadline, counted once, with the real
         # idle time, and the agent is nudged for the expiry rather than as a stall.
         self.cycle(self.start + 3000)
@@ -5618,6 +5619,342 @@ class CacheHistoryTests(PinnedEnvironment):
                                   'none'], capture_output=True, text=True, env=environment)
         self.assertEqual(missing.returncode, 1)
         self.assertIn('No Claude transcript found for session none', missing.stderr)
+
+
+# Raw hcom terminal fixtures from private issue #271, captured 2026-10-23.
+# exhausted: .lat/runs/issue-271/screen-vete-1405.json (real quota limit).
+# manual: probe-menu-status.txt (manual opening; HCOM listening, Herdr blocked).
+# HCOM 0.7.31 / Herdr 0.9.5 / Claude Code 2.1.309. Cursor/text variants below are synthetic.
+CLAUDE_QUOTA_SCREENS = {'manual': {'cursor': [9, 2],
+            'input_text': None,
+            'lines': ['▝▜██████▀  Sonnet 5.5 with low effort · Claude Max',
+                      ' ▝▝   ▝▝   ~/LoopAgentTeams',
+                      '',
+                      '',
+                      '❯ /rate-limit-options',
+                      '',
+                      '──────────────────────────────────────────────────────────────',
+                      '  What do you want to do?',
+                      '',
+                      '  ❯ 1. Stop and wait for limit to reset',
+                      '    2. Add funds to continue with usage credits',
+                      '    3. Upgrade your plan',
+                      '',
+                      '  Enter to confirm · Esc to cancel',
+                      ''],
+            'prompt_empty': None,
+            'ready': False,
+            'size': [15, 62]},
+ 'exhausted': {'cursor': [8, 2],
+               'input_text': None,
+               'lines': ['',
+                         '✻ Churned for 0s · done 下午1:55',
+                         '',
+                         '❯ /rate-limit-options',
+                         '',
+                         '──────────────────────────────────────────────────────────────',
+                         '  What do you want to do?',
+                         '',
+                         '  ❯ 1. Stop and wait for limit to reset',
+                         '    2. Wait here, then continue automatically at 4:50pm',
+                         '    3. Switch to usage credits',
+                         '    4. Upgrade your plan',
+                         '',
+                         '  Enter to confirm · Esc to cancel',
+                         ''],
+               'prompt_empty': None,
+               'ready': False,
+               'size': [15, 62]}}
+
+
+class ClaudeQuotaRecoveryTests(unittest.TestCase):
+    """Synthetic cswap/terminal transport; real screen provenance is above the fixtures."""
+
+    def setUp(self):
+        self.watch = load_watch()
+        self.temp = tempfile.TemporaryDirectory(prefix='huve-impl271-test-')
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.log = self.root / 'watch.jsonl'
+        self.terminal = self.fixture('manual')
+        self.commands = []
+        self.quota = {
+            'schemaVersion': 1, 'cachedOnly': True, 'activeAccountNumber': 1,
+            'accounts': [{'number': 1, 'active': True, 'usageStatus': 'ok',
+                          'usage': {'fiveHour': {'pct': 12}, 'sevenDay': {'pct': 35}}}],
+        }
+        self.state = {}
+        self.corrupt_after_up = False
+        self.fail_key = None
+        self.notifications = []
+        patcher = patch.object(self.watch, 'run_command', side_effect=self.command)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        patcher = patch.object(self.watch, 'perform', side_effect=self.notify)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.watch.PROMPT_SETTLE_SECONDS = 0
+
+    def fixture(self, name):
+        return json.loads(json.dumps(CLAUDE_QUOTA_SCREENS[name]))
+
+    def select(self, index):
+        self.terminal['lines'] = [line.replace('❯ ', '  ') if re_option(line) else line
+                                  for line in self.terminal['lines']]
+        rows = [i for i, line in enumerate(self.terminal['lines']) if re_option(line)]
+        self.terminal['lines'][rows[index]] = '  ❯ ' + self.terminal['lines'][rows[index]].strip()
+        self.terminal['cursor'] = [rows[index], 2]
+
+    def command(self, command, failure=None):
+        self.commands.append(command)
+        if command[0] == 'cswap':
+            self.assertEqual(command, ['cswap', 'list', '--json', '--cached-only'])
+            return json.dumps(self.quota)
+        if command[:2] == ['hcom', 'term'] and command[2] != 'inject':
+            return json.dumps(self.terminal)
+        if command[:3] == ['hcom', 'term', 'inject']:
+            value = command[4]
+            if self.fail_key == value:
+                raise ValueError('injection delivery uncertain')
+            if value == '\x1b[A':
+                selected = self.watch.quota_menu_selection(
+                    self.watch.claude_quota_menu(self.terminal))
+                self.select(selected - 1)
+                if self.corrupt_after_up:
+                    self.terminal['lines'][-2] = 'Changed screen'
+            elif value == '--enter':
+                if self.watch.claude_quota_menu(self.terminal):
+                    self.assertEqual(self.watch.quota_menu_selection(
+                        self.watch.claude_quota_menu(self.terminal)), 0)
+                self.terminal = {'ready': True, 'prompt_empty': True,
+                                 'input_text': '', 'lines': []}
+            else:
+                self.terminal.update(input_text=value, prompt_empty=False, ready=False)
+            return ''
+        raise AssertionError(command)
+
+    def notify(self, action, orchestrator, workspace):
+        self.notifications.append(action)
+        return {'delivery': 'fake'}
+
+    def observation(self, **changes):
+        menu = self.watch.claude_quota_menu(self.terminal)
+        values = dict(agent='worker', status='listening', prompt_empty=False,
+                      command_running=True, transcript_size=1, transcript_mtime_ns=1,
+                      event_id=0, client='claude', quota_menu_screen=menu,
+                      quota_issue=self.watch.QuotaIssue('rate-limit', 'menu') if menu else None)
+        values.update(changes)
+        return self.watch.Observation(**values)
+
+    def recover(self, **changes):
+        previous = self.state
+        self.state = {}  # simulate decide() resetting unrelated progress state
+        self.watch.recover_claude_quota(self.observation(**changes), previous, self.state,
+                                       'orch', self.root, self.log, 1000)
+
+    def keys(self):
+        return [c[4] for c in self.commands if c[:3] == ['hcom', 'term', 'inject']]
+
+    def records(self):
+        return [json.loads(line) for line in self.log.read_text().splitlines()]
+
+    def test_both_real_menu_shapes_all_cursor_positions(self):
+        for name, count in [('manual', 3), ('exhausted', 4)]:
+            for selected in range(count):
+                with self.subTest(name=name, selected=selected):
+                    self.terminal = self.fixture(name)
+                    self.select(selected)
+                    self.state, self.commands = {}, []
+                    self.recover()
+                    self.assertEqual(self.keys(), ['\x1b[A'] * selected + [
+                        '--enter', self.watch.QUOTA_CONTINUE, '--enter'])
+                    self.assertTrue(self.state['quota_recovery']['completed'])
+                    self.assertEqual(self.commands[0][0], 'cswap')
+        self.assertEqual(self.notifications, [])
+        records = self.records()
+        self.assertTrue(any(r['step'] == 'detected' and r['screen'] for r in records))
+        key_index = next(i for i, r in enumerate(records) if r['step'] == 'key')
+        self.assertTrue(any(r['step'] == 'verified' for r in records[:key_index]))
+        self.assertEqual(records[-1]['text'], self.watch.QUOTA_CONTINUE)
+
+    def test_exhausted_and_unknown_quota_send_no_keys_then_retry_same_episode(self):
+        for window in ('fiveHour', 'sevenDay'):
+            self.quota['accounts'][0]['usage'][window]['pct'] = 100
+            self.recover()
+            self.recover()
+            self.assertEqual(self.keys(), [])
+            self.quota['accounts'][0]['usage'][window]['pct'] = 0
+        self.assertEqual(sum(c[0] == 'cswap' for c in self.commands), 4)
+        self.assertFalse(self.state['quota_recovery'].get('attempted'))
+        self.recover()
+        self.assertEqual(self.keys(), ['--enter', self.watch.QUOTA_CONTINUE, '--enter'])
+        # Same episode may keep showing the menu even after progress/events change.
+        self.terminal = self.fixture('manual')
+        self.recover(event_id=200, transcript_size=300)
+        self.assertEqual(len(self.keys()), 3)
+
+    def test_quota_reader_fails_closed_on_missing_invalid_or_other_account_data(self):
+        original = json.dumps(self.quota)
+        variants = [None, {}, {'schemaVersion': 2},
+                    {**self.quota, 'activeAccountNumber': None},
+                    {**self.quota, 'activeAccountNumber': 2},
+                    {**self.quota, 'accounts': []}]
+        for field, value in [('usageStatus', 'unavailable'), ('usage', None), ('active', False)]:
+            data = json.loads(original)
+            data['accounts'][0][field] = value
+            variants.append(data)
+        for value in (None, True, '0', -1, 101, float('nan'), float('inf')):
+            data = json.loads(original)
+            data['accounts'][0]['usage']['fiveHour']['pct'] = value
+            variants.append(data)
+        data = json.loads(original)
+        data['accounts'][0]['usage']['sevenDay'] = {}
+        variants.append(data)
+        data = json.loads(original)
+        data['accounts'].append({'number': 2, 'active': True, 'usageStatus': 'ok',
+                                 'usage': data['accounts'][0]['usage']})
+        variants.append(data)
+        for data in variants:
+            with self.subTest(data=data):
+                self.quota = data
+                self.recover()
+                self.assertEqual(self.keys(), [])
+                self.assertFalse(self.records()[-1].get('available', False))
+        with patch.object(self.watch, 'run_command', side_effect=OSError('cswap missing')):
+            self.assertFalse(self.watch.active_claude_quota()['available'])
+
+    def test_unknown_menu_cursor_or_labels_notifies_once_without_keys(self):
+        for change in ('label', 'cursor', 'two-cursors'):
+            self.state, self.notifications = {}, []
+            self.terminal = self.fixture('manual')
+            if change == 'label':
+                self.terminal['lines'][9] = '  ❯ 1. Different action'
+            elif change == 'cursor':
+                self.terminal['lines'][9] = '    1. Stop and wait for limit to reset'
+            else:
+                self.terminal['lines'][10] = '  ❯ 2. Add funds to continue with usage credits'
+            self.recover()
+            self.recover()
+            self.assertEqual(self.keys(), [])
+            self.assertEqual(len(self.notifications), 1)
+            self.assertEqual(self.notifications[0].kind, 'notify-orchestrator')
+
+    def test_navigation_screen_race_stops_before_enter_and_never_retries_keys(self):
+        self.select(2)
+        self.corrupt_after_up = True
+        self.recover(is_orchestrator=True)
+        self.assertEqual(self.keys(), ['\x1b[A'])
+        self.assertEqual(self.notifications[0].kind, 'notify-user')
+        self.terminal = self.fixture('manual')
+        self.recover()
+        self.assertEqual(self.keys(), ['\x1b[A'])
+
+    def test_enter_rechecks_current_selection_and_failed_typing_is_not_submitted(self):
+        original = self.command
+        reads = 0
+
+        def race(command, failure=None):
+            nonlocal reads
+            if command[:3] == ['hcom', 'term', 'worker']:
+                reads += 1
+                if reads == 2:
+                    self.select(1)
+            return original(command, failure)
+
+        with patch.object(self.watch, 'run_command', side_effect=race):
+            self.recover()
+        self.assertEqual(self.keys(), [])
+        self.state = {}
+        self.terminal = self.fixture('manual')
+        self.fail_key = self.watch.QUOTA_CONTINUE
+        self.recover()
+        self.assertEqual(self.keys(), ['--enter', self.watch.QUOTA_CONTINUE])
+        self.assertFalse(self.state['quota_recovery'].get('completed'))
+
+    def test_new_episode_requires_two_clear_observations(self):
+        self.recover()
+        self.recover()  # clear once
+        self.terminal = self.fixture('manual')
+        self.recover()
+        self.assertEqual(len(self.keys()), 3)
+        self.terminal = {'ready': True, 'prompt_empty': True, 'input_text': '', 'lines': []}
+        self.recover()
+        self.recover()
+        self.terminal = self.fixture('manual')
+        self.recover()
+        self.assertEqual(len(self.keys()), 6)
+
+    def test_truncated_input_is_not_submitted_and_failed_notice_retries_without_keys(self):
+        original = self.command
+
+        def truncated(command, failure=None):
+            result = original(command, failure)
+            if command[:3] == ['hcom', 'term', 'inject'] and command[4] == self.watch.QUOTA_CONTINUE:
+                self.terminal['input_text'] = '[lat-watch]'
+            return result
+
+        with patch.object(self.watch, 'run_command', side_effect=truncated), \
+                patch.object(self.watch, 'perform', side_effect=ValueError('notice unavailable')):
+            self.recover()
+        self.assertEqual(self.keys(), ['--enter', self.watch.QUOTA_CONTINUE])
+        self.assertFalse(self.state['quota_recovery'].get('notified'))
+        self.recover()  # menu exited, but fallback delivery still needs retry
+        self.assertEqual(len(self.notifications), 1)
+        self.assertEqual(len(self.keys()), 2)
+
+    def test_non_quota_screens_and_codex_never_receive_recovery_keys(self):
+        sample = self.fixture('manual')
+        for title in ('Select model', 'Do you want to proceed?', 'Which option?'):
+            terminal = json.loads(json.dumps(sample))
+            terminal['lines'][7] = title
+            self.assertFalse(self.watch.claude_quota_menu(terminal))
+        # Quoted content, historical menu above a new prompt, and an ordinary question.
+        for terminal in (
+                {**sample, 'ready': True, 'prompt_empty': True, 'input_text': ''},
+                {**sample, 'lines': ['● ' + line for line in sample['lines']]},
+                {**sample, 'lines': sample['lines'] + ['────', '❯ ']},
+                {**sample, 'lines': ['────', 'What do you want to do?', '❯ 1. Yes',
+                                    '2. No', 'Enter to confirm · Esc to cancel']}):
+            self.assertFalse(self.watch.claude_quota_menu(terminal))
+        self.recover(client='codex')
+        self.assertEqual(self.commands, [])
+
+    def test_cycle_recovers_owner_and_task_card_despite_hcom_listening(self):
+        tasks = self.root / '.lat/tasks'
+        tasks.mkdir(parents=True)
+        (self.root / '.git').mkdir()
+        (tasks / 'worker.md').write_text('- agent：worker\n- orchestrator：orch\n'
+                                        '- status：active\n- live actions：none\n- preflight：none\n')
+        hcom = {name: {'name': name, 'status': 'listening', 'tool': 'claude',
+                       'session_id': name} for name in ('orch', 'worker')}
+        original = self.command
+        terminals = {name: self.fixture('manual') for name in hcom}
+
+        def transport(command, failure=None):
+            if command[0] == 'hcom' and command[1] == 'term':
+                name = command[3] if command[2] == 'inject' else command[2]
+                self.terminal = terminals[name]
+                result = original(command, failure)
+                terminals[name] = self.terminal
+                return result
+            return original(command, failure)
+
+        with patch.object(self.watch, 'list_hcom', return_value=hcom), \
+                patch.object(self.watch, 'session_events', return_value=[]), \
+                patch.object(self.watch, 'read_processes', return_value=[]), \
+                patch.object(self.watch, 'run_command', side_effect=transport):
+            self.watch.run_cycle(self.root, tasks, self.root / '.lat/decisions', 'orch', now=1000)
+        self.assertEqual(len(self.keys()), 6)
+        state = json.loads(self.watch.state_path(self.root, 'orch').read_text())
+        for name in hcom:
+            self.assertTrue(state[name]['quota_recovery']['completed'])
+            self.assertTrue(state[name]['quota_notified'])
+        self.assertEqual(state['orch']['feature_versions']['claude_quota_resume'], 1)
+        self.assertEqual([a.kind for a in self.notifications], ['notify-user', 'notify-orchestrator'])
+
+
+def re_option(line):
+    return bool(re.match(r'^\s*(?:❯\s*)?\d\.', line))
 
 
 if __name__ == '__main__':

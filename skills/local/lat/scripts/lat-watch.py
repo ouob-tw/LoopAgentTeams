@@ -54,6 +54,7 @@ NUDGE = ('[lat-watch] Read any unread HCOM messages and finish all work not bloc
 KEEPALIVE = ('[lat-watch] Prompt cache keep-alive. Read any unread HCOM messages. If nothing '
              'is new, run no tools, keep your current wait without declaring it again and '
              'end your turn with the shortest possible reply.')
+QUOTA_CONTINUE = '[lat-watch] Please continue.'
 NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 NAME = re.compile(NAME_PATTERN)
 CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
@@ -118,6 +119,7 @@ class Observation(NamedTuple):
     # False when hcom term reports no boolean prompt_empty (menus such as /model).
     prompt_readable: bool = True
     screen_tail: tuple = ()
+    quota_menu_screen: tuple = ()
 
 
 class QuotaIssue(NamedTuple):
@@ -194,10 +196,13 @@ def quota_notice(observation):
         'the user decides whether to wait or choose another recovery action',
     )
     line_end = '' if issue.line.endswith(('.', '!', '?')) else '.'
+    recovery = ('The watcher checks the active cswap account each cycle and only resumes '
+                'a verified Claude quota menu when both usage windows are below 100%. '
+                if observation.quota_menu_screen else 'No terminal nudge was injected. ')
     message = (f'LAT stall watcher: quota or model-capacity issue for agent '
                f'{observation.agent}. Client: {observation.client}. Model: '
                f'{observation.model}. Matched line: {issue.line}{line_end}{reset} '
-               f'No terminal nudge was injected. Action needed: {action_needed}.')
+               f'{recovery}Action needed: {action_needed}.')
     kind = 'notify-user' if observation.is_orchestrator else 'notify-orchestrator'
     return Action(kind, observation.agent, message, category='quota',
                   label='模型滿載' if issue.kind == 'model-capacity' else '額度不足')
@@ -530,6 +535,206 @@ def hcom_quota_issue(info):
             and (context == 'failure:rate_limit' or detail == 'rate_limit')):
         return QuotaIssue('rate-limit', 'inactive (failure:rate_limit)')
     return None
+
+
+def claude_quota_menu(terminal):
+    """Recognize the live bottom dialog, independently of HCOM's listening status."""
+    if (terminal.get('ready') is not False or terminal.get('prompt_empty') is not None
+            or terminal.get('input_text') is not None):
+        return ()
+    lines = terminal.get('lines', [])
+    if not isinstance(lines, list) or not all(isinstance(line, str) for line in lines):
+        return ()
+    separators = [i for i, line in enumerate(lines) if screen_separator(line)]
+    if not separators:
+        return ()
+    block = tuple(line.strip() for line in lines[separators[-1] + 1:] if line.strip())
+    if (len(block) < 3 or block[0] != 'What do you want to do?'
+            or block[-1] != 'Enter to confirm · Esc to cancel'):
+        return ()
+    # A changed quota menu still deserves a fallback notice, but generic questions do not.
+    if not any('Stop and wait for limit to reset' in line or 'usage credits' in line
+               for line in block):
+        return ()
+    return tuple(lines[-30:])
+
+
+def quota_menu_selection(screen):
+    """Accept only the two captured menus and exactly one visible selection marker."""
+    lines = [line.strip() for line in screen if line.strip()]
+    try:
+        start = len(lines) - 1 - lines[::-1].index('What do you want to do?')
+    except ValueError:
+        raise ValueError('quota menu heading missing') from None
+    options = lines[start + 1:-1]
+    labels, selected = [], []
+    for index, line in enumerate(options):
+        match = re.fullmatch(r'(❯ )?(\d)\. (.+)', line)
+        if not match or int(match[2]) != index + 1:
+            raise ValueError('quota menu options changed')
+        labels.append(match[3])
+        if match[1]:
+            selected.append(index)
+    valid = (labels == ['Stop and wait for limit to reset',
+                        'Add funds to continue with usage credits', 'Upgrade your plan']
+             or (len(labels) == 4 and labels[0] == 'Stop and wait for limit to reset'
+                 and re.fullmatch(r'Wait here, then continue automatically (?:at .+|shortly)',
+                                  labels[1])
+                 and labels[2:] == ['Switch to usage credits', 'Upgrade your plan']))
+    if not valid or len(selected) != 1 or lines[-1] != 'Enter to confirm · Esc to cancel':
+        raise ValueError('quota menu labels or cursor cannot be verified')
+    return selected[0]
+
+
+def active_claude_quota():
+    """cswap's cached-only route reads the live login identity and usage store; no writes."""
+    try:
+        data = run_json(['cswap', 'list', '--json', '--cached-only'])
+        if (not isinstance(data, dict) or data.get('schemaVersion') != 1
+                or data.get('cachedOnly') is not True):
+            raise ValueError('unsupported cswap cached payload')
+        number = data.get('activeAccountNumber')
+        accounts = data.get('accounts')
+        if type(number) is not int or not isinstance(accounts, list):
+            raise ValueError('active cswap account is unknown')
+        active = [a for a in accounts if isinstance(a, dict) and a.get('active') is True]
+        if len(active) != 1 or active[0].get('number') != number:
+            raise ValueError('active cswap account is ambiguous')
+        account = active[0]
+        usage = account.get('usage')
+        if account.get('usageStatus') != 'ok' or not isinstance(usage, dict):
+            raise ValueError('active cswap usage is unavailable')
+        values = []
+        for window in ('fiveHour', 'sevenDay'):
+            entry = usage.get(window)
+            value = entry.get('pct') if isinstance(entry, dict) else None
+            if type(value) not in (int, float) or not 0 <= value <= 100:
+                raise ValueError(f'active cswap {window} usage is invalid')
+            values.append(value)
+        return {'available': all(value < 100 for value in values), 'account': number,
+                'five_hour': values[0], 'seven_day': values[1],
+                'fetched_at': account.get('usageFetchedAt'),
+                'reason': 'quota available' if all(value < 100 for value in values)
+                else 'active account quota exhausted'}
+    except (OSError, ValueError) as error:
+        return {'available': False, 'reason': f'cswap quota unavailable: {error}'}
+
+
+def recover_claude_quota(observation, previous, state, orchestrator, workspace, log, now):
+    """Handle one menu episode; uncertain key delivery is never retried automatically."""
+    if observation.client.lower() != 'claude':
+        return
+    episode = dict((previous or {}).get('quota_recovery', {}))
+    if not episode and not observation.quota_menu_screen:
+        return
+    if observation.quota_issue is None:
+        episode['clear_rounds'] = episode.get('clear_rounds', 0) + 1
+        if episode['clear_rounds'] >= QUOTA_CLEAR_ROUNDS:
+            state.pop('quota_recovery', None)
+            return
+    else:
+        episode['clear_rounds'] = 0
+    state['quota_recovery'] = episode
+    if not observation.quota_menu_screen and not episode.get('failure'):
+        return
+
+    def record(step, **fields):
+        append_log(log, {'at': now, 'agent': observation.agent,
+                         'decision': 'quota-recovery', 'step': step, **fields})
+
+    def screen():
+        terminal = run_json(['hcom', 'term', observation.agent, '--json', '--name', orchestrator])
+        if not isinstance(terminal, dict):
+            raise ValueError('terminal snapshot unavailable')
+        record('screen', screen=[line[:300] for line in terminal.get('lines', [])[-30:]
+                                 if isinstance(line, str)])
+        return terminal
+
+    def key(label, text=None, enter=False):
+        episode['attempted'] = True
+        record('key', key=label, text=text)
+        command = ['hcom', 'term', 'inject', observation.agent]
+        if text is not None:
+            command.append(text)
+        if enter:
+            command.append('--enter')
+        run_command([*command, '--name', orchestrator])
+        record('key-sent', key=label)
+
+    def settled(predicate):
+        deadline = time.monotonic() + PROMPT_SETTLE_SECONDS
+        while True:
+            terminal = screen()
+            if predicate(terminal):
+                return terminal
+            if time.monotonic() >= deadline:
+                raise ValueError('terminal did not reach the expected state')
+            time.sleep(PROMPT_POLL_SECONDS)
+
+    def notify_failure():
+        if episode.get('notified'):
+            return
+        action = Action('notify-user' if observation.is_orchestrator else 'notify-orchestrator',
+                        observation.agent,
+                        f'LAT stall watcher: agent {observation.agent} quota-menu recovery '
+                        f'stopped: {episode["failure"]}. Inspect its window before continuing.',
+                        category='quota-recovery', label='額度不足')
+        try:
+            delivery = perform(action, orchestrator, workspace)
+            episode['notified'] = True
+            record('fallback-notified', **delivery)
+        except (OSError, ValueError) as error:
+            record('fallback-failed', reason=str(error))
+
+    if episode.get('failure'):
+        notify_failure()
+    if not observation.quota_menu_screen:
+        return
+    record('detected', screen=[line[:300] for line in observation.quota_menu_screen])
+    if episode.get('attempted'):
+        record('skip', reason='already attempted this quota episode')
+        return
+    quota = active_claude_quota()
+    record('quota', **quota)
+    if not quota['available']:
+        record('skip', reason=quota['reason'])
+        return
+    try:
+        current = screen()
+        selected = quota_menu_selection(claude_quota_menu(current))
+        record('verified', selected=selected + 1)
+        while selected:
+            key('Up', '\x1b[A')
+            expected = selected - 1
+
+            def moved(terminal):
+                actual = quota_menu_selection(claude_quota_menu(terminal))
+                if actual not in (selected, expected):
+                    raise ValueError('quota menu cursor moved unexpectedly')
+                return actual == expected
+
+            settled(moved)
+            selected = expected
+            record('verified', selected=selected + 1)
+        # Re-read even if the cursor started on option 1; never Enter on an old snapshot.
+        if quota_menu_selection(claude_quota_menu(screen())) != 0:
+            raise ValueError('Stop and wait selection changed before Enter')
+        record('verified', selected=1, target='Stop and wait for limit to reset')
+        key('menu-Enter', enter=True)
+        settled(lambda terminal: terminal.get('ready') is True
+                and terminal.get('prompt_empty') is True and terminal.get('input_text') == '')
+        record('verified', prompt='empty after menu exit')
+        key('continue-text', QUOTA_CONTINUE)
+        settled(lambda terminal: terminal.get('prompt_empty') is False
+                and terminal.get('input_text') == QUOTA_CONTINUE)
+        record('verified', prompt=QUOTA_CONTINUE)
+        key('continue-Enter', enter=True)
+        episode['completed'] = True
+        record('completed', text=QUOTA_CONTINUE)
+    except (OSError, ValueError) as error:
+        episode['failure'] = str(error)
+        record('skip', reason=str(error))
+        notify_failure()
 
 
 def screen_model(lines, client):
@@ -1543,6 +1748,9 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
     transcript = info.get('transcript_path')
     claude_notice = current_claude_quota_notice(transcript)
     screen_issue = detect_screen_quota(lines, client, claude_notice=claude_notice)
+    menu_screen = claude_quota_menu(terminal) if client.lower() == 'claude' else ()
+    if menu_screen:
+        screen_issue = QuotaIssue('rate-limit', 'Claude rate-limit-options menu')
     prompt_empty = terminal.get('prompt_empty')
     prompt_readable = isinstance(prompt_empty, bool)
     if not prompt_readable:
@@ -1610,6 +1818,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
         prompt_readable=prompt_readable,
         screen_tail=tuple(line[:SCREEN_TAIL_CHARS] for line in lines[-SCREEN_TAIL_LINES:]
                           if isinstance(line, str)),
+        quota_menu_screen=menu_screen,
     )
 
 
@@ -1859,6 +2068,7 @@ def observation_record(observation):
     record = observation._asdict()
     text = record.pop('input_text')
     record.pop('screen_tail')
+    record.pop('quota_menu_screen')
     record['input_text_length'] = len(text)
     return record
 
@@ -2364,6 +2574,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                         roll_back(action, state)
                     results.append({'kind': action.kind, 'status': 'failed',
                                     'error': str(error)})
+            recover_claude_quota(observation, previous, state, orchestrator, workspace, log, now)
             if saved_wait:
                 state['wait'] = saved_wait
             state['last_seen_status'] = info.get('status', 'unknown')
@@ -2383,7 +2594,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 'actions': [], 'error': str(error),
             })
     own = states.setdefault(orchestrator, {})
-    own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3}
+    own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3,
+                               'claude_quota_resume': 1}
     own.pop('missing_since', None)
     stop_reason = None
     if orchestrator_gone:
