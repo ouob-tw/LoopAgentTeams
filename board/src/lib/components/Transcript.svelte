@@ -303,25 +303,40 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 
 	const cardOf = (key: string) => list?.querySelector<HTMLElement>(`[data-content="${CSS.escape(key)}"]`);
 
+	/** What ends keeping a card in place: scrolling, and a click or key anywhere but the
+	 *  conversation's cards, where the user may go on to answer the next one. */
+	const HOLD_ENDS = ['wheel', 'touchmove', 'pointerdown', 'keydown'] as const;
+
 	/** Keep the card of a question just answered where it is on screen while its answer is sent and
-	 *  the card turns into the answered one, a while after too, until the user scrolls or clicks:
-	 *  the card gets shorter, and with little after it the page would scroll back; with its
-	 *  question recorded it is shown again. The room it needs is made after the conversation. */
+	 *  the card turns into the answered one, a while after too, until the user scrolls or clicks
+	 *  elsewhere: the card gets shorter, and with little after it the page would scroll back; with
+	 *  its question recorded it is shown again. Going on to another card keeps that one in place
+	 *  instead, so the answered one getting shorter above it does not move it, whether or not the
+	 *  browser keeps what has focus in place by itself. The room needed is made after the
+	 *  conversation. */
 	function hold(event: SubmitEvent) {
 		const card = (event.target as Element).closest<HTMLElement>('[data-content]');
-		const key = card?.dataset.content;
-		if (!card || !key) return;
+		const sent = card?.dataset.content;
+		if (!card || !sent) return;
 		stopHolding();
-		held = key;
-		const at = card.getBoundingClientRect().top;
+		let key = (held = sent);
+		let at = card.getBoundingClientRect().top;
 		let until = performance.now() + HOLD_MS;
 		let frame = 0;
-		const stop = () => {
+		const stop = (event?: Event) => {
+			const next = event?.type !== 'wheel' && event?.type !== 'touchmove' && event?.target instanceof Element && list?.contains(event.target)
+				? event.target.closest<HTMLElement>('[data-content]')
+				: null;
+			if (next?.dataset.content) {
+				key = held = next.dataset.content;
+				at = next.getBoundingClientRect().top;
+				return;
+			}
 			cancelAnimationFrame(frame);
-			for (const type of USER_SCROLL) removeEventListener(type, stop, true);
+			for (const type of HOLD_ENDS) removeEventListener(type, stop, true);
 		};
 		const step = () => {
-			if (answering.sending[key]) until = performance.now() + HOLD_MS;
+			if (answering.sending[sent] || answering.sending[key]) until = performance.now() + HOLD_MS;
 			const element = cardOf(key);
 			const top = element?.getBoundingClientRect().top;
 			if (element && top !== undefined && Math.abs(top - at) >= 1) {
@@ -331,7 +346,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 			if (performance.now() < until) frame = requestAnimationFrame(step);
 			else stop();
 		};
-		for (const type of USER_SCROLL) addEventListener(type, stop, { capture: true, passive: true });
+		for (const type of HOLD_ENDS) addEventListener(type, stop, { capture: true, passive: true });
 		frame = requestAnimationFrame(step);
 		stopHolding = stop;
 	}

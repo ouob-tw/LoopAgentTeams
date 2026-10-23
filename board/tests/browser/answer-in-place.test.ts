@@ -39,8 +39,13 @@ const LINE = 24;
 
 /** Open the conversation of a controller that asked Q-1 and Q-2 in one message, after `older`
  *  long messages and before three short ones; the controller records an answer at once when
- *  `records`. */
-async function open(project: string, width: number, older: number, records: boolean, opened?: string, height = 800) {
+ *  `records`. Opened at the `opened` question when given; without `anchoring`, the page does not
+ *  keep what is on screen in place by itself, as Safari does not. */
+async function open(
+	project: string,
+	width: number,
+	{ older = 0, records = false, opened, height = 800, anchoring = true }: { older?: number; records?: boolean; opened?: string; height?: number; anchoring?: boolean }
+) {
 	const controller = fixture.bound(project, 'rana', {
 		questions: [
 			question({ id: 'Q-1', title: '第一題', kind: 'single', options: options(['甲', '乙']), asked_at: ASKED_AT }),
@@ -62,7 +67,9 @@ async function open(project: string, width: number, older: number, records: bool
 	const path = opened ? `/?item=${encodeURIComponent(key(opened))}` : `/?controller=${encodeURIComponent(controller.session_id)}`;
 	await send('Page.navigate', { url: fixture.url + path });
 	await browser!.tab.until(`document.querySelectorAll('.history form.answer').length === 2`);
-	// An opened question is scrolled to and kept there for a moment first.
+	if (!anchoring) await evaluate(`document.head.append(Object.assign(document.createElement('style'), { textContent: '* { overflow-anchor: none !important; }' }))`);
+	// An opened question is scrolled to and kept there for a moment first (2.5 s), not to be
+	// mistaken for keeping an answered card.
 	await sleep(opened ? 3000 : 500);
 	return key;
 }
@@ -86,9 +93,9 @@ async function scrollTo(width: number, key: string, place: (height: number, end:
 	await sleep(200);
 }
 
-/** Choose the card's first option and send it. */
-async function sendAnswer(key: string) {
-	await click(`${cardOf(key)}.querySelector('input[type=radio]')`);
+/** Choose the card's option, the first unless told, and send it. */
+async function sendAnswer(key: string, option = 0) {
+	await click(`${cardOf(key)}.querySelectorAll('input[type=radio]')[${option}]`);
 	await click(`[...${cardOf(key)}.querySelectorAll('button')].find((button) => button.innerText.includes('送出答覆'))`);
 }
 
@@ -122,6 +129,7 @@ async function watch(key: string, now = false) {
 /** Once the card shows its answer, and a while after: what `watch` saw. */
 async function settled(key: string) {
 	await browser!.tab.until(`!${cardOf(key)}?.querySelector('form.answer')`);
+	// Past the 2.5 s an answered card is kept in place, so a move after it would show too.
 	await sleep(4200);
 	return evaluate<{ from: number; moved: number; replaced: boolean }>(`window.__held`);
 }
@@ -134,6 +142,10 @@ async function answer(width: number, key: string, place: (height: number, end: n
 	return settled(key);
 }
 
+function expectStayed(held: { from: number; moved: number; replaced: boolean }, id?: string) {
+	expect({ id, ...held, moved: held.moved <= LINE }).toEqual({ id, from: held.from, moved: true, replaced: false });
+}
+
 /** Near the top of the screen, and low on it with its send button just above the command line. */
 const HIGH = () => 120;
 const LOW = (height: number, end: number) => end - height - 40;
@@ -141,56 +153,61 @@ const LOW = (height: number, end: number) => end - height - 40;
 for (const width of [1280, 390]) {
 	for (const [length, older] of [['long', 30], ['short', 0]] as const) {
 		for (const records of [false, true]) {
-			test.skipIf(!CHROME)(`${width}px, a ${length} conversation${records ? ', recorded at once' : ''}: each of two cards of one message stays put when answered`, async () => {
-				const key = await open(`in-place-${width}-${length}-${records}`, width, older, records);
-				for (const [id, place] of [['Q-1', HIGH], ['Q-2', LOW]] as const) {
-					const held = await answer(width, key(id), place);
-					expect({ id, ...held, moved: held.moved <= LINE }).toEqual({ id, from: held.from, moved: true, replaced: false });
-					expect(await evaluate<string>(`document.querySelector('.history [data-content="${key(id)}"]').innerText`)).toContain('✓');
-				}
-				expect(await evaluate<number>(`document.querySelectorAll('.history .asking [data-content]').length`)).toBe(2);
-			}, 60_000);
+			for (const anchoring of [true, false]) {
+				const name = `${width}px, a ${length} conversation${records ? ', recorded at once' : ''}${anchoring ? '' : ', without scroll anchoring'}`;
+				test.skipIf(!CHROME)(`${name}: each of two cards of one message stays put when answered`, async () => {
+					const key = await open(`in-place-${width}-${length}-${records}-${anchoring}`, width, { older, records, anchoring });
+					for (const [id, place] of [['Q-1', HIGH], ['Q-2', LOW]] as const) {
+						const held = await answer(width, key(id), place);
+						expectStayed(held, id);
+						expect(await evaluate<string>(`${cardOf(key(id))}.innerText`)).toContain('✓');
+					}
+					expect(await evaluate<number>(`document.querySelectorAll('.history .asking [data-content]').length`)).toBe(2);
+				}, 60_000);
+			}
 		}
 	}
 }
 
 for (const width of [1280, 390]) {
-	test.skipIf(!CHROME)(`${width}px, a short conversation, recorded at once: the next card, chosen while the first is still on its way, stays put`, async () => {
-		const key = await open(`next-${width}`, width, 0, true, undefined, 1000);
-		// Q-1's top just above the screen, so the page cannot keep Q-2 in place by itself; both
-		// send buttons on screen.
-		await scrollTo(width, key('Q-2'), (height) => height - 80);
-		// Q-1's answer is held on its way until the next card is chosen, then a moment to think
-		// before sending that one.
-		const tab = browser!.tab;
-		tab.paused = [];
-		await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/answers*' }] });
-		try {
-			await sendAnswer(key('Q-1'));
-			await tab.until(`!!document.querySelector('.history [data-content="${key('Q-1')}"] button.primary:disabled')`);
-			while (!tab.paused.length) await sleep(20);
-			await watch(key('Q-2'), true);
-			await click(`${cardOf(key('Q-2'))}.querySelector('input[type=radio]')`);
-		} finally {
-			await send('Fetch.disable');
-			for (const requestId of tab.paused) await send('Fetch.continueRequest', { requestId }).catch(() => {});
-		}
-		await tab.until(`!${cardOf(key('Q-1'))}?.querySelector('form.answer')`);
-		await sleep(1500);
-		await sendAnswer(key('Q-2'));
-		const held = await settled(key('Q-2'));
-		expect({ ...held, moved: held.moved <= LINE }).toEqual({ from: held.from, moved: true, replaced: false });
-		for (const id of ['Q-1', 'Q-2']) expect(await evaluate<string>(`${cardOf(key(id))}.innerText`)).toContain('✓');
-	}, 60_000);
+	for (const anchoring of [true, false]) {
+		test.skipIf(!CHROME)(`${width}px, a long conversation, recorded at once${anchoring ? '' : ', without scroll anchoring'}: the next card, chosen while the first is still on its way, stays put`, async () => {
+			const key = await open(`next-${width}-${anchoring}`, width, { older: 30, records: true, height: 1000, anchoring });
+			// Q-1's top just above the screen, so what the page keeps in place by itself may be in
+			// it; its second option and both send buttons on screen.
+			await scrollTo(width, key('Q-1'), () => -30);
+			// Q-1's answer is held on its way until the next card is chosen, then a moment to think
+			// before sending that one.
+			const tab = browser!.tab;
+			tab.paused = [];
+			await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/answers*' }] });
+			try {
+				await sendAnswer(key('Q-1'), 1);
+				await tab.until(`!!document.querySelector('.history [data-content="${key('Q-1')}"] button.primary:disabled')`);
+				while (!tab.paused.length) await sleep(20);
+				await watch(key('Q-2'), true);
+				await click(`${cardOf(key('Q-2'))}.querySelector('input[type=radio]')`);
+			} finally {
+				await send('Fetch.disable');
+				for (const requestId of tab.paused) await send('Fetch.continueRequest', { requestId }).catch(() => {});
+			}
+			await tab.until(`!${cardOf(key('Q-1'))}?.querySelector('form.answer')`);
+			await sleep(1500);
+			await sendAnswer(key('Q-2'));
+			const held = await settled(key('Q-2'));
+			expectStayed(held);
+			for (const id of ['Q-1', 'Q-2']) expect(await evaluate<string>(`${cardOf(key(id))}.innerText`)).toContain('✓');
+		}, 60_000);
+	}
 
 	test.skipIf(!CHROME)(`${width}px, a short conversation, recorded at once: the opened question's card stays put when answered, after being scrolled to`, async () => {
-		const key = await open(`opened-${width}`, width, 0, true, 'Q-2');
+		const key = await open(`opened-${width}`, width, { records: true, opened: 'Q-2' });
 		// Scrolled to on opening, below the guide to newer messages.
 		expect(await evaluate<boolean>(`!!document.querySelector('.history .placed [data-content="${key('Q-2')}"]')`)).toBe(true);
 		const top = await evaluate<number>(`${cardOf(key('Q-2'))}.getBoundingClientRect().top`);
 		expect(top).toBeGreaterThanOrEqual(0);
 		expect(top).toBeLessThan(160);
 		const held = await answer(width, key('Q-2'), HIGH);
-		expect({ ...held, moved: held.moved <= LINE }).toEqual({ from: held.from, moved: true, replaced: false });
+		expectStayed(held);
 	}, 60_000);
 }
