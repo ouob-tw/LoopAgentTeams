@@ -5,6 +5,7 @@ import fcntl
 import importlib.util
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -958,6 +959,21 @@ class WaitDeadlineDecisionTests(unittest.TestCase):
         self.assertFalse(saved['active'])
         self.assertEqual(events, ['wait-expired'])
 
+    def test_claude_target_foreground_work_is_judged_by_status(self):
+        watch = load_watch()
+        waiter = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
+        declaration = dict(agent='worker', target='reviewer', declared_at=0, active=True,
+                           declared_at_utc='1970-01-01T00:00:00+00:00')
+        # A background shell turns the Claude footer "not ready" while it is listening.
+        for status, extended in (('listening', False), ('active', True)):
+            with self.subTest(status=status):
+                target = waiter._replace(agent='reviewer', status=status, client='claude',
+                                         command_running=True, terminal_ready=False)
+                saved, _, events = watch.decide_wait(
+                    declaration, waiter, target, {'last_progress_at': 0}, 3600)
+                self.assertEqual(saved['active'], extended)
+                self.assertEqual(events, ['wait-extended' if extended else 'wait-expired'])
+
     def test_extension_stops_at_cap_while_target_stays_busy(self):
         watch = load_watch()
         waiter = watch.Observation('worker', 'listening', True, False, 10, 10, 1)
@@ -1347,7 +1363,7 @@ esac
         self.run_cycles(load_watch(), 4000)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
         self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
-        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 1})
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 2})
         result = self.alarm_cli('--after', 1, agent='worker-open')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
@@ -2598,24 +2614,28 @@ esac
                 self.assertEqual(json.loads(alarm_path.read_text())['released_reason'], 'rang')
                 self.assertFalse(json.loads(wait_path.read_text())['expiry_nudge_pending'])
 
-    def test_claude_background_task_footer_does_not_block_alarm_or_expiry(self):
-        footers = ['⏵⏵ bypass permissions on · 1 shell',
-                   '⏵⏵ auto mode on · 3 shells · ↓ to manage',
-                   '⏸ manual mode on · 1 shell, 1 monitor']
-        approval = ['⏺ Bash(touch probe-file.txt)', ' Do you want to proceed?', ' ❯ 1. Yes',
-                    '   4. No', ' Esc to cancel · Tab to amend']
-        for footer in [*footers, None]:
-            with self.subTest(footer=footer):
+    def test_claude_alarm_and_expiry_follow_hcom_status_not_the_footer(self):
+        # Shapes recorded live in .lat/runs/issue-268/probes.md; the footer text is arbitrary.
+        model_menu = ['   Select model', '   ❯ 3.  Sonnet 5.5 ✔', '   ○ Low effort ←/→ to adjust']
+        approval = [' Do you want to proceed?', ' ❯ 1. Yes', '   4. No', ' Esc to cancel · Tab to amend']
+        idle = ['❯', '─' * 40, '  ⏵⏵ some future mode · 7 widgets · ↓ to manage']
+        cases = {
+            'listening, background footer, not ready': ('listening', False, True, '', idle, 2),
+            'active': ('active', True, True, '', idle, 0),
+            'blocked approval': ('blocked', False, None, None, approval, 0),
+            'prompt has text': ('listening', True, False, 'draft', idle, 0),
+            'listening /model menu': ('listening', False, None, None, model_menu, 0),
+        }
+        for name, (status, ready, empty, text, lines, sent) in cases.items():
+            with self.subTest(name):
                 self.finished_codex_fixture('claude')
                 listing = Path(self.env['FAKE_AGENTS'])
                 agents = json.loads(listing.read_text())
                 for agent in agents:
-                    agent['status'] = 'listening'
+                    agent['status'] = status
                 listing.write_text(json.dumps(agents))
-                lines = (['❯', '─' * 40, '  Opus 5.5 M · ~/repo', f'  {footer}']
-                         if footer else approval)
                 Path(self.env['FAKE_TERMINAL']).write_text(json.dumps(
-                    {'ready': False, 'prompt_empty': True, 'input_text': '', 'lines': lines}))
+                    {'ready': ready, 'prompt_empty': empty, 'input_text': text, 'lines': lines}))
                 self.hcom_log.write_text('')
                 watch = load_watch()
                 alarm_path = self.save_alarm(watch)
@@ -2624,17 +2644,13 @@ esac
                                    declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00',
                                    deadline_at=60, active=True))
                 self.run_finished_cycles(watch, 0, 60)
-                row = next(r for r in reversed(self.watch_records()) if r.get('agent') == 'worker-open')
-                self.assertTrue(row['observation']['command_running'])
-                if footer:
-                    self.assertTrue(row['observation']['terminal_ready'])
-                    self.assertEqual(len(self.injections()), 2)
-                    self.assertEqual(json.loads(alarm_path.read_text())['released_reason'], 'rang')
-                    self.assertFalse(json.loads(wait_path.read_text())['expiry_nudge_pending'])
-                else:
-                    self.assertFalse(row['observation']['terminal_ready'])
-                    self.assertEqual(self.injections(), [])
-                    self.assertTrue(json.loads(alarm_path.read_text())['active'])
+                self.assertEqual(len(self.injections()), sent)
+                self.assertEqual(json.loads(alarm_path.read_text()).get('released_reason'),
+                                 'rang' if sent else None)
+                self.assertEqual(json.loads(wait_path.read_text())['expiry_nudge_pending'],
+                                 not sent)
+                self.assertFalse([r for r in self.watch_records()
+                                  if r.get('decision') == 'observation-failed'])
 
     def test_real_a07_cycle_preserves_alarm_during_foreground_work(self):
         for client in ('codex', 'claude'):
@@ -4426,7 +4442,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 1}},
+                     'feature_versions': {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 2}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -4450,7 +4466,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 1}},
+                     'feature_versions': {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 2}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
@@ -4758,9 +4774,15 @@ class KeepaliveDecisionTests(PinnedEnvironment):
                                            terminal_ready=True)
         self.info = {'session_id': 'claude-session'}
 
-    def due(self, declaration, now, observation=None, state=None, info=None):
+    def check(self, declaration, now, observation=None, state=None, info=None, busy=False):
         return self.watch.keepalive_due(declaration, observation or self.idle,
-                                        self.info if info is None else info, state or {}, now)
+                                        self.info if info is None else info, state or {}, now,
+                                        busy=busy)
+
+    def due(self, *args, **fields):
+        """The expiry a keep-alive is typed for, or None when it is skipped or not due."""
+        expires_at, reason = self.check(*args, **fields)
+        return None if reason else expires_at
 
     def agent_wait(self, **fields):
         return {**dict(agent='worker', kind='agent', target='reviewer', active=True,
@@ -4841,7 +4863,6 @@ class KeepaliveDecisionTests(PinnedEnvironment):
                             self.info),
             'turn not ended': (wait, self.idle._replace(status='active'), self.info),
             'working screen': (wait, self.idle._replace(screen_working=True), self.info),
-            'terminal not ready': (wait, self.idle._replace(terminal_ready=False), self.info),
             'prompt has text': (wait, self.idle._replace(prompt_empty=False, input_text='x'),
                                 self.info),
             'no session id': (wait, self.idle, {}),
@@ -4961,9 +4982,11 @@ class KeepaliveCycleTests(PinnedEnvironment):
         hcom.write_text(f'''#!/bin/sh
 printf '%s\\n' "$*" >> "$FAKE_HCOM_LOG"
 case "$1" in
-list) printf '%s\\n' '{agents}';;
+list) if [ -f "$FAKE_HCOM_LOG.agents" ]; then cat "$FAKE_HCOM_LOG.agents";
+      else printf '%s\\n' '{agents}'; fi;;
 term) if [ "$2" = inject ]; then
         if [ -f "$FAKE_HCOM_LOG.fail" ]; then exit 1; fi
+      elif [ -f "$FAKE_HCOM_LOG.term" ]; then cat "$FAKE_HCOM_LOG.term"
       elif [ -f "$FAKE_HCOM_LOG.busy" ]; then
         printf '%s\\n' '{{"ready":true,"prompt_empty":false,"input_text":"draft","lines":[]}}'
       else printf '%s\\n' '{{"ready":true,"prompt_empty":true,"lines":[]}}'; fi;;
@@ -4976,6 +4999,15 @@ esac
         self.addCleanup(environment.stop)
         self.watch = load_watch()
         self.wait_file = self.watch.wait_path(self.work, 'worker')
+        self.agents = json.loads(agents)
+
+    def show(self, status='listening', **terminal):
+        """Make the worker report this HCOM status and hcom term result."""
+        agents = [dict(agent) for agent in self.agents]
+        agents[1]['status'] = status
+        Path(f'{self.hcom_log}.agents').write_text(json.dumps(agents))
+        Path(f'{self.hcom_log}.term').write_text(json.dumps(
+            {'ready': True, 'prompt_empty': True, 'input_text': '', 'lines': [], **terminal}))
 
     def declare(self, **fields):
         self.watch.write_object(self.wait_file, {**dict(
@@ -5027,7 +5059,7 @@ esac
         self.assertEqual(state['worker']['decision'], 'valid-wait')
         self.assertEqual(self.wait_file.read_bytes(), before)
         self.assertEqual(state['orch']['feature_versions'],
-                         {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 1})
+                         {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 2})
         # The wait still expires at its original deadline, counted once, with the real
         # idle time, and the agent is nudged for the expiry rather than as a stall.
         self.cycle(self.start + 3000)
@@ -5098,6 +5130,158 @@ esac
         self.assertEqual(len(self.injections()), 1)
         self.assertTrue(json.loads(self.wait_file.read_text())['active'])
 
+    def test_claude_keepalive_follows_hcom_status_not_the_footer(self):
+        footer = ['❯', '─' * 40, '  ⏵⏵ some future mode · 2 monitors · ↓ to manage']
+        cases = {
+            'listening, not ready, background footer': (
+                dict(status='listening', ready=False, lines=footer), None),
+            'active': (dict(status='active', lines=footer), 'status-active'),
+            'blocked': (dict(status='blocked', ready=False, prompt_empty=None,
+                             input_text=None), 'status-blocked'),
+            'prompt has text': (dict(prompt_empty=False, input_text='draft'),
+                                'prompt-not-empty'),
+            'menu': (dict(ready=False, prompt_empty=None, input_text=None,
+                          lines=['   Select model']), 'prompt-unreadable'),
+        }
+        for name, (terminal, reason) in cases.items():
+            with self.subTest(name):
+                self.hcom_log.write_text('')
+                (self.work / '.lat/watch').exists() and shutil.rmtree(self.work / '.lat/watch')
+                self.start = taipei(10)
+                self.declare(kind='agent', deadline_at=self.start + 3000)
+                self.show(**terminal)
+                self.write_usage(self.start + 240)
+                self.cycle(self.start, self.start + 60)
+                self.assertEqual(len(self.injections()), 0 if reason else 1)
+                self.assertEqual([r['reason'] for r in self.records('cache-keepalive-skipped')],
+                                 [reason] if reason else [])
+                if reason:
+                    self.assertEqual(self.records('cache-keepalive-skipped')[0]['expires_at'],
+                                     self.start + 240)
+                    self.assertEqual(self.state()['worker']['keepalive_check']['reason'], reason)
+
+    def test_skip_reasons_are_logged_once_per_expiry_and_reason(self):
+        self.start = taipei(10)
+        self.declare(kind='agent', deadline_at=self.start + 10000)
+        self.show(status='active')
+        # Far from expiry nothing is logged.
+        self.write_usage(self.start + 3000)
+        self.cycle(self.start)
+        self.assertEqual(self.records('cache-keepalive-skipped'), [])
+        self.write_usage(self.start + 280)
+        self.cycle(self.start + 60, self.start + 120)
+        self.show(prompt_empty=False, input_text='draft')
+        self.cycle(self.start + 180)
+        self.show(status='active')
+        self.cycle(self.start + 200)
+        self.assertEqual([(r['reason'], r['expires_at'], r['kind'])
+                          for r in self.records('cache-keepalive-skipped')],
+                         [('status-active', self.start + 280, 'agent'),
+                          ('prompt-not-empty', self.start + 280, 'agent')])
+        # A new expiry starts a new record set.
+        self.write_usage(self.start + 3800)
+        self.cycle(self.start + 3600)
+        self.assertEqual([r['expires_at'] for r in self.records('cache-keepalive-skipped')],
+                         [self.start + 280] * 2 + [self.start + 3800])
+        # Without a valid wait nothing is logged.
+        self.watch.write_object(self.wait_file, {**json.loads(self.wait_file.read_text()),
+                                                 'active': False})
+        self.write_usage(self.start + 7400)
+        self.cycle(self.start + 7200)
+        self.assertEqual(len(self.records('cache-keepalive-skipped')), 3)
+
+    def test_decision_other_action_and_missing_usage_reasons(self):
+        (self.decisions / 'HELP-1.md').write_text('# Q\n- version: r1\n- status: pending\n')
+        self.start = taipei(0, 30)
+        self.declare(kind='decision', target='HELP-1')
+        self.show()
+        self.write_usage(taipei(1, 3))
+        self.cycle(taipei(1))
+        self.write_usage(taipei(4, 3))
+        self.cycle(taipei(4))
+        (self.usage / 'claude-session.json').unlink()
+        self.cycle(taipei(4, 1), taipei(4, 2))
+        self.assertEqual([(r['reason'], r['expires_at'])
+                          for r in self.records('cache-keepalive-skipped')],
+                         [('decision-quiet-hours', taipei(1, 3)),
+                          ('decision-over-3h', taipei(4, 3)), ('usage-missing', None)])
+        # An alarm ringing in the same cycle takes the turn.
+        self.declare(kind='alarm', due_at=taipei(10), condition={'kind': 'time', 'minutes': 1})
+        self.write_usage(taipei(10, 3))
+        self.cycle(taipei(10))
+        self.assertEqual(self.records('cache-keepalive-skipped')[-1]['reason'], 'other-action')
+        self.assertIn('Your alarm', self.injections()[-1])
+
+    def test_unreadable_listening_prompt_is_logged_once_after_fifteen_minutes(self):
+        # The fake shows the same screen for the orchestrator; count the worker only.
+        self.unreadable = lambda: [r for r in self.records('prompt-unreadable')
+                                   if r['agent'] == 'worker']
+        self.start = taipei(10)
+        menu = [f'line {index} ' + 'x' * 300 for index in range(12)]
+        self.show(ready=False, prompt_empty=None, input_text=None, lines=menu)
+        self.cycle(*(self.start + minute * 60 for minute in range(15)))
+        self.assertEqual(self.unreadable(), [])
+        self.cycle(self.start + 900, self.start + 960)
+        records = self.unreadable()
+        self.assertEqual(len(records), 1)
+        self.assertEqual(records[0]['since'], self.start)
+        self.assertEqual(len(records[0]['lines']), 8)
+        self.assertTrue(records[0]['lines'][0].startswith('line 4 '))
+        self.assertEqual(len(records[0]['lines'][0]), 200)
+        self.assertEqual(self.records('observation-failed'), [])
+        # A readable prompt ends the episode; the next one is logged again.
+        self.show()
+        self.cycle(self.start + 1020)
+        self.show(ready=False, prompt_empty=None, input_text=None, lines=menu)
+        self.cycle(self.start + 1080, self.start + 1080 + 900)
+        self.assertEqual(len(self.unreadable()), 2)
+        # Other states do not count toward it.
+        self.show(status='blocked', ready=False, prompt_empty=None, input_text=None)
+        self.cycle(self.start + 3000, self.start + 3000 + 1800)
+        self.assertEqual(len(self.unreadable()), 2)
+
+    def status(self):
+        result = subprocess.run([sys.executable, str(SCRIPT), 'status', '--workspace', self.work,
+                                 '--orchestrator', 'orch', '--tasks', self.tasks],
+                                capture_output=True, text=True, check=True)
+        return {row['agent']: row for row in json.loads(result.stdout)['targets']}
+
+    def test_status_shows_cache_expiry_keepalive_possibility_and_last_try(self):
+        self.start = taipei(10)
+        self.declare(kind='agent', deadline_at=self.start + 3000)
+        self.show(status='active')
+        self.write_usage(self.start + 1000)
+        self.cycle(self.start)
+        cache = self.status()['worker']['cache']
+        self.assertEqual(cache, {'expires_at': self.start + 1000, 'warm': True,
+                                 'can_keep_alive': False, 'reason': 'status-active',
+                                 'checked_at': self.start, 'last_keepalive': None})
+        Path(f'{self.hcom_log}.fail').touch()
+        self.show()
+        self.write_usage(self.start + 240)
+        self.cycle(self.start + 60)
+        Path(f'{self.hcom_log}.fail').unlink()
+        cache = self.status()['worker']['cache']
+        self.assertTrue(cache['can_keep_alive'])
+        self.assertIsNone(cache['reason'])
+        self.assertEqual({key: cache['last_keepalive'][key] for key in ('at', 'result')},
+                         {'at': self.start + 60, 'result': 'failed'})
+        self.cycle(self.start + 120)
+        # The reply to a keep-alive is not progress, so the last try survives it.
+        self.reply_to_keepalive()
+        self.cycle(self.start + 180)
+        self.assertEqual(self.status()['worker']['cache']['last_keepalive'],
+                         {'at': self.start + 120, 'result': 'sent', 'expires_at': self.start + 240})
+        (self.usage / 'claude-session.json').unlink()
+        cache = self.status()['worker']['cache']
+        self.assertEqual((cache['expires_at'], cache['can_keep_alive'], cache['reason']),
+                         (None, False, 'usage-missing'))
+        self.assertEqual(self.status()['orch']['cache']['reason'], 'usage-missing')
+        # Only Claude agents carry cache information.
+        agents = Path(f'{self.hcom_log}.agents')
+        agents.write_text(json.dumps([{**self.agents[0], 'tool': 'codex'}, self.agents[1]]))
+        self.assertNotIn('cache', self.status()['orch'])
+
     def test_send_time_not_cycle_start_decides_quiet_hours(self):
         (self.decisions / 'HELP-1.md').write_text('# Q\n- version: r1\n- status: pending\n')
         self.start = taipei(0, 30)
@@ -5111,6 +5295,117 @@ esac
         with patch.object(time, 'monotonic', return_value=100.0):
             self.cycle(taipei(0, 59, 59))
         self.assertEqual(len(self.injections()), 1)
+
+
+
+class CacheHistoryTests(PinnedEnvironment):
+    # Request rows (UTC time, request ID, cache read, cache write) excerpted from nahu's
+    # session 2cb4432d: 22:23 -> 23:33 local rewrote the cache, 00:00 -> 00:40 hit it.
+    # Streamed replies repeat a request's usage on every content block.
+    REAL_REQUESTS = [
+        ('2026-10-22T14:23:42.722Z', 'req_011CgHRjAEFJLVv6NS2LQT9j', 175230, 844),
+        ('2026-10-22T15:33:12.004Z', 'req_011CgHX2b6XwsvkXAJDjwtfB', 28437, 147948),
+        ('2026-10-22T15:33:13.676Z', 'req_011CgHX2b6XwsvkXAJDjwtfB', 28437, 147948),
+        ('2026-10-22T15:35:42.963Z', 'req_011CgHXDGMD6WjcBjLUKnRem', 199873, 1365),
+        ('2026-10-22T16:00:10.550Z', 'req_011CgHZ5gxomFPVJDGTJBXG2', 214179, 344),
+        ('2026-10-22T16:40:28.640Z', 'req_011CgHc9xSwvDrEPkzN9MnJP', 214523, 1215),
+        ('2026-10-22T16:40:30.259Z', 'req_011CgHc9xSwvDrEPkzN9MnJP', 214523, 1215),
+    ]
+
+    def setUp(self):
+        super().setUp()
+        self.watch = load_watch()
+        self.FIXTURE = self.root / 'nahu.jsonl'
+        self.FIXTURE.write_text(''.join(json.dumps({
+            'type': 'assistant', 'timestamp': at, 'requestId': request, 'isSidechain': False,
+            'message': {'id': request, 'model': 'claude-opus-5-5', 'role': 'assistant',
+                        'content': [], 'usage': {'cache_read_input_tokens': read,
+                                                 'cache_creation_input_tokens': write}}}) + '\n'
+            for at, request, read, write in self.REAL_REQUESTS))
+
+    def gap(self, gaps, start):
+        return next(gap for gap in gaps if datetime.fromtimestamp(
+            gap['start_at'], TAIPEI).strftime('%m-%d %H:%M') == start)
+
+    def test_real_transcript_rewrite_and_hit(self):
+        gaps = self.watch.cache_history(self.FIXTURE)
+        rewrite = self.gap(gaps, '10-22 22:23')
+        self.assertEqual(datetime.fromtimestamp(rewrite['end_at'], TAIPEI).strftime('%H:%M'),
+                         '23:33')
+        self.assertEqual(rewrite['idle_seconds'] // 60, 69)
+        self.assertEqual((rewrite['cache_read_tokens'], rewrite['cache_write_tokens'],
+                          rewrite['verdict']), (28437, 147948, 'rewrite'))
+        hit = self.gap(gaps, '10-23 00:00')
+        self.assertEqual(hit['idle_seconds'] // 60, 40)
+        self.assertEqual((hit['cache_read_tokens'], hit['cache_write_tokens'], hit['verdict']),
+                         (214523, 1215, 'hit'))
+        self.assertTrue(all(gap['idle_seconds'] > 300 for gap in gaps))
+
+    def test_repeated_blocks_sidechains_and_error_placeholders_are_not_requests(self):
+        transcript = self.root / 'session.jsonl'
+        def entry(clock, request, read, write, **fields):
+            return json.dumps({'type': 'assistant', 'timestamp': f'2026-10-23T{clock}Z',
+                               'requestId': request, **fields, 'message': {
+                                   'id': request, 'model': fields.pop('model', 'claude'),
+                                   'usage': {'cache_read_input_tokens': read,
+                                             'cache_creation_input_tokens': write}}})
+        rows = [entry('01:00:00', 'a', 100, 5), entry('01:00:02', 'a', 100, 5),
+                entry('01:20:00', 'side', 0, 900, isSidechain=True),
+                '{not json', json.dumps({'type': 'user', 'timestamp': '2026-10-23T01:30:00Z'}),
+                entry('01:40:00', 'err', 0, 0, model='<synthetic>'),
+                entry('02:00:00', 'b', 0, 0), entry('02:03:00', 'c', 50, 9)]
+        transcript.write_text('\n'.join(rows) + '\n')
+        gaps = self.watch.cache_history(transcript)
+        self.assertEqual([(gap['idle_seconds'], gap['verdict']) for gap in gaps],
+                         [(3600, 'unknown')])
+
+    def test_keepalives_between_requests_are_marked_and_cli_supports_json(self):
+        work = self.root / 'work'
+        (work / '.git').mkdir(parents=True)
+        log = work / '.lat/watch/orch/watch.jsonl'
+        log.parent.mkdir(parents=True)
+        at = datetime(2026, 10, 22, 23, 20, tzinfo=TAIPEI).timestamp()
+        log.write_text(''.join(json.dumps(record) + '\n' for record in [
+            {'at': at, 'agent': 'nahu', 'decision': 'cache-keepalive-skipped',
+             'kind': 'agent', 'expires_at': at + 200, 'reason': 'status-active'},
+            {'at': at, 'agent': 'other', 'decision': 'cache-keepalive', 'result': 'sent'},
+            {'at': at + 3600 * 3, 'agent': 'nahu', 'decision': 'cache-keepalive',
+             'result': 'sent'}]))
+        binary = self.root / 'bin'
+        binary.mkdir()
+        hcom = binary / 'hcom'
+        hcom.write_text('#!/bin/sh\nprintf \'%s\\n\' \'' + json.dumps([
+            {'name': 'nahu', 'session_id': 'nahu-session',
+             'transcript_path': str(self.FIXTURE)}]) + '\'\n')
+        hcom.chmod(0o755)
+        environment = {**os.environ, 'PATH': f'{binary}:{os.environ["PATH"]}'}
+        def history(*args):
+            return subprocess.run([sys.executable, str(SCRIPT), 'cache-history', *args],
+                                  capture_output=True, text=True, check=True, env=environment)
+        result = json.loads(history('--agent', 'nahu', '--workspace', work, '--json').stdout)
+        self.assertEqual((result['agent'], result['session_id']), ('nahu', 'nahu-session'))
+        rewrite = self.gap(result['gaps'], '10-22 22:23')
+        self.assertEqual(rewrite['keepalives'],
+                         [{'at': at, 'decision': 'cache-keepalive-skipped',
+                           'reason': 'status-active', 'expires_at': at + 200}])
+        self.assertEqual(sum(len(gap['keepalives']) for gap in result['gaps']), 1)
+        text = history('--session', 'nahu-session', '--workspace', work).stdout
+        self.assertIn('2026-10-22 22:23 -> 23:33  idle 69m  read 28437  write 147948  rewrite'
+                      '  [cache-keepalive-skipped 23:20 status-active]', text)
+        self.assertIn('2026-10-23 00:00 -> 00:40  idle 40m  read 214523  write 1215  hit', text)
+        # Without HCOM the session is found under the Claude config directory.
+        config = self.root / 'claude'
+        (config / 'projects/repo').mkdir(parents=True)
+        (config / 'projects/repo/lost-session.jsonl').write_text(self.FIXTURE.read_text())
+        hcom.write_text('#!/bin/sh\nexit 1\n')
+        environment['CLAUDE_CONFIG_DIR'] = str(config)
+        result = json.loads(history('--session', 'lost-session', '--json').stdout)
+        self.assertIsNone(result['agent'])
+        self.assertEqual(self.gap(result['gaps'], '10-23 00:00')['verdict'], 'hit')
+        missing = subprocess.run([sys.executable, str(SCRIPT), 'cache-history', '--session',
+                                  'none'], capture_output=True, text=True, env=environment)
+        self.assertEqual(missing.returncode, 1)
+        self.assertIn('No Claude transcript found for session none', missing.stderr)
 
 
 if __name__ == '__main__':

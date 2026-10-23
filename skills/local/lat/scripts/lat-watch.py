@@ -41,6 +41,9 @@ TRANSCRIPT_TAIL_BYTES = 256 * 1024
 KEEPALIVE_SECONDS = 5 * 60
 KEEPALIVE_DECISION_SECONDS = 3 * 60 * 60
 KEEPALIVE_QUIET_HOURS = (1, 9)
+PROMPT_UNREADABLE_SECONDS = 15 * 60
+SCREEN_TAIL_LINES = 8
+SCREEN_TAIL_CHARS = 200
 # Successful deliveries awaiting a session-record save; retained across retry cycles.
 RULE_DELIVERIES = {}
 ALARM_DELIVERIES = {}
@@ -72,11 +75,6 @@ CLIENT_PROFILES = {
             r'^Usage limit reached\s+·\s+continuing automatically at\b.*'
             r'·\s+esc to cancel$', re.IGNORECASE),
         'footer': re.compile(r'^\s{2}⚠\s+Usage limit reached\b', re.IGNORECASE),
-        # Replaces the "(shift+tab to cycle)" hint while background tasks run, which hcom
-        # reads as not ready although the prompt is idle.
-        'background': re.compile(
-            r'(?:⏵⏵|⏸) .* on · \d+ [a-z]+(?: [a-z]+)?(?:, \d+ [a-z]+(?: [a-z]+)?)*'
-            r'(?: · ↓ to manage)?', re.IGNORECASE),
         'model': re.compile(
             r'^\s*((?:Opus|Sonnet|Haiku)[A-Za-z0-9. -]*?)\s+'
             r'(?:low|medium|high|max)\s+·', re.IGNORECASE),
@@ -117,6 +115,9 @@ class Observation(NamedTuple):
     keepalive_only: bool = False
     terminal_ready: object = None
     screen_working: bool = False
+    # False when hcom term reports no boolean prompt_empty (menus such as /model).
+    prompt_readable: bool = True
+    screen_tail: tuple = ()
 
 
 class QuotaIssue(NamedTuple):
@@ -1000,8 +1001,9 @@ def task_card_revision(card):
     return json.dumps([card['status'], card.get('next step', '')], ensure_ascii=False)
 
 
-def list_hcom(orchestrator):
-    value = run_json(['hcom', 'list', '--json', '--name', orchestrator])
+def list_hcom(orchestrator=None):
+    caller = ['--name', orchestrator] if orchestrator else []
+    value = run_json(['hcom', 'list', '--json', *caller])
     if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
         raise ValueError('hcom list returned an invalid agent list')
     return {item.get('name'): item for item in value if isinstance(item.get('name'), str)}
@@ -1134,6 +1136,10 @@ def wait_release_reason(declaration, participant_events, target_replied, decisio
 
 def idle_prompt(observation):
     """An empty ready terminal is usable only after the agent's turn ends."""
+    if observation.client.lower() == 'claude':
+        # Claude hooks report the turn end; the screen only confirms an empty prompt.
+        return (observation.status == 'listening' and observation.prompt_empty is True
+                and not observation.input_text and not observation.screen_working)
     ready = (observation.terminal_ready if observation.terminal_ready is not None
              else not observation.command_running)
     if not observation.prompt_empty or not ready or observation.screen_working:
@@ -1154,8 +1160,8 @@ def usage_dir():
     return (Path(state) if state.startswith('/') else Path.home() / '.local/state') / 'lat/usage'
 
 
-def cache_expires_at(session_id, now):
-    """Return the warm, unexpired prompt-cache expiry for a session, else None."""
+def read_prompt_cache(session_id):
+    """Return the status line recorder's prompt_cache object for a session, else None."""
     if not isinstance(session_id, str) or not NAME.fullmatch(session_id):
         return None
     try:
@@ -1163,7 +1169,13 @@ def cache_expires_at(session_id, now):
     except (OSError, ValueError):
         return None
     cache = record.get('prompt_cache') if isinstance(record, dict) else None
-    if not isinstance(cache, dict) or cache.get('warm') is not True:
+    return cache if isinstance(cache, dict) else None
+
+
+def cache_expires_at(session_id, now):
+    """Return the warm, unexpired prompt-cache expiry for a session, else None."""
+    cache = read_prompt_cache(session_id)
+    if cache is None or cache.get('warm') is not True:
         return None
     expires_at = cache.get('expires_at')
     if type(expires_at) not in (int, float) or expires_at <= now:
@@ -1171,23 +1183,51 @@ def cache_expires_at(session_id, now):
     return expires_at
 
 
-def keepalive_due(declaration, observation, info, state, now):
-    """Return the cache expiry a keep-alive should refresh now, or None."""
-    if (observation.client.lower() != 'claude' or not declaration
-            or not declaration.get('active', True) or not idle_prompt(observation)):
-        return None
+def keepalive_blocker(declaration, observation, now, busy=False):
+    """Why a keep-alive cannot be typed now regardless of the cache expiry, else None."""
+    if not declaration or not declaration.get('active', True) or not observation.wait_active:
+        return 'no-wait'
+    if busy:
+        return 'other-action'
+    if observation.status != 'listening':
+        return f'status-{observation.status}'
+    if not observation.prompt_readable:
+        return 'prompt-unreadable'
+    if observation.screen_working:
+        return 'screen-working'
+    if not idle_prompt(observation):
+        return 'prompt-not-empty'
     if declaration.get('kind') == 'decision':
+        if now - declaration['declared_at'] >= KEEPALIVE_DECISION_SECONDS:
+            return 'decision-over-3h'
         start, end = KEEPALIVE_QUIET_HOURS
-        if (now - declaration['declared_at'] >= KEEPALIVE_DECISION_SECONDS
-                or start <= time.localtime(now).tm_hour < end):
-            return None
+        if start <= time.localtime(now).tm_hour < end:
+            return 'decision-quiet-hours'
+    return None
+
+
+def keepalive_due(declaration, observation, info, state, now, busy=False):
+    """Return (cache expiry, skip reason); send the keep-alive when only the expiry is set.
+
+    A skipped keep-alive keeps its expiry (None for usage-missing). Both are None when
+    nothing is due: the cache is not within five minutes of
+    expiring, is cold or expired, this expiry was already kept warm, or there is no wait.
+    """
+    if (observation.client.lower() != 'claude' or not declaration
+            or not declaration.get('active', True)):
+        return None, None
+    if read_prompt_cache(info.get('session_id')) is None:
+        return None, 'usage-missing'
     expires_at = cache_expires_at(info.get('session_id'), now)
     if expires_at is None or expires_at - now > KEEPALIVE_SECONDS:
-        return None
+        return None, None
     sent = state.get('keepalive')
     if isinstance(sent, dict) and sent.get('expires_at') == expires_at:
-        return None
-    return expires_at
+        return None, None
+    reason = keepalive_blocker(declaration, observation, now, busy)
+    if reason == 'no-wait':
+        return None, None
+    return expires_at, reason
 
 
 def expire_alarm(saved, now, failure):
@@ -1231,6 +1271,13 @@ def decide_alarm(declaration, observation, condition_met, now):
     return saved, actions, events
 
 
+def foreground_running(observation):
+    """Claude reports a running turn as active; other clients by the terminal not ready."""
+    if observation.client.lower() == 'claude':
+        return observation.status == 'active'
+    return observation.terminal_ready is False
+
+
 def decide_wait(declaration, observation, target_observation, target_state, now):
     """Return a deadline declaration, delivery requests and lifecycle log events."""
     if not declaration or declaration.get('kind') in ('decision', 'alarm'):
@@ -1242,7 +1289,7 @@ def decide_wait(declaration, observation, target_observation, target_state, now)
         # Background processes alone do not count, and the extension is capped.
         extending = (now < deadline + WAIT_EXTENSION_SECONDS
                      and target_observation is not None and not target_observation.wait_active
-                     and (target_observation.terminal_ready is False
+                     and (foreground_running(target_observation)
                           or (target_state is not None
                               and now - target_state['last_progress_at'] < ACTIVE_SECONDS)))
         if extending:
@@ -1492,8 +1539,12 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
     claude_notice = current_claude_quota_notice(transcript)
     screen_issue = detect_screen_quota(lines, client, claude_notice=claude_notice)
     prompt_empty = terminal.get('prompt_empty')
-    if not isinstance(prompt_empty, bool):
-        if info.get('status') == 'blocked' or screen_issue or status_issue:
+    prompt_readable = isinstance(prompt_empty, bool)
+    if not prompt_readable:
+        # A menu opened at a listening Claude prompt (/model, /rate-limit-options) has no
+        # input box; typing there would pick a menu entry.
+        listening_claude = client.lower() == 'claude' and info.get('status') == 'listening'
+        if info.get('status') == 'blocked' or screen_issue or status_issue or listening_claude:
             prompt_empty = False
         else:
             raise ValueError(f'hcom term omitted boolean prompt_empty for {agent}')
@@ -1525,15 +1576,12 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
                 orchestrator_wait_started_at = declared_at
     ready = terminal.get('ready') is True
     background_running = background_process_running(agent, info, processes)
-    background_footer = CLIENT_PROFILES.get(client.lower(), {}).get('background')
-    idle_footer = background_footer is not None and any(
-        isinstance(line, str) and background_footer.fullmatch(line.strip()) for line in lines)
     return Observation(
         agent=agent,
         status=info.get('status', 'missing'),
         prompt_empty=prompt_empty,
         command_running=not ready or background_running,
-        terminal_ready=ready or idle_footer,
+        terminal_ready=ready,
         screen_working=any(
             isinstance(line, str) and re.search(
                 r'^(?:Working\s*\(|[✢✳✶✻✽·*]\s+).*esc to interrupt', line.strip(), re.IGNORECASE)
@@ -1554,6 +1602,9 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
         quota_issue=screen_issue or status_issue,
         codex_turn_finished=(codex_turn_finished(transcript)
                              if client.lower() == 'codex' else None),
+        prompt_readable=prompt_readable,
+        screen_tail=tuple(line[:SCREEN_TAIL_CHARS] for line in lines[-SCREEN_TAIL_LINES:]
+                          if isinstance(line, str)),
     )
 
 
@@ -1802,6 +1853,7 @@ def apply_prompt_recovery_result(state, result, now):
 def observation_record(observation):
     record = observation._asdict()
     text = record.pop('input_text')
+    record.pop('screen_tail')
     record['input_text_length'] = len(text)
     return record
 
@@ -1962,6 +2014,37 @@ def unavailable_alarm(workspace, orchestrator, agent, state, now, log):
                              'delivery': delivery})
     except (OSError, ValueError, TypeError, KeyError) as error:
         append_log(log, {'at': now, 'agent': agent, 'decision': 'alarm-check-failed', 'error': str(error)})
+
+
+def log_keepalive_skipped(log, agent, declaration, state, reason, expires_at, now):
+    """Record a keep-alive not typed although the cache expires within five minutes.
+
+    Each reason is logged once per expiry; a missing usage file has no expiry to key on.
+    """
+    skipped = state.get('keepalive_skipped')
+    if not isinstance(skipped, dict) or skipped.get('expires_at') != expires_at:
+        skipped = {'expires_at': expires_at, 'reasons': []}
+    if reason in skipped['reasons']:
+        return
+    skipped['reasons'].append(reason)
+    state['keepalive_skipped'] = skipped
+    append_log(log, {'at': now, 'agent': agent, 'decision': 'cache-keepalive-skipped',
+                     'kind': declaration.get('kind'), 'expires_at': expires_at,
+                     'reason': reason})
+
+
+def check_prompt_readable(log, agent, observation, previous, state, now):
+    """Warn once when a listening Claude prompt stays unreadable for 15 minutes."""
+    if (observation.client.lower() != 'claude' or observation.status != 'listening'
+            or observation.prompt_readable):
+        state.pop('prompt_unreadable', None)
+        return
+    unreadable = dict((previous or {}).get('prompt_unreadable') or {'since': now})
+    if not unreadable.get('logged') and now - unreadable['since'] >= PROMPT_UNREADABLE_SECONDS:
+        append_log(log, {'at': now, 'agent': agent, 'decision': 'prompt-unreadable',
+                         'since': unreadable['since'], 'lines': list(observation.screen_tail)})
+        unreadable['logged'] = True
+    state['prompt_unreadable'] = unreadable
 
 
 def log_signature(observation, state):
@@ -2155,17 +2238,28 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             if isinstance(kept, dict) and 'keepalive' not in state:
                 # Progress ends the reply window but the same expiry is still sent only once.
                 state['keepalive'] = {'expires_at': kept.get('expires_at')}
+            for key in ('keepalive_last', 'keepalive_skipped'):
+                if previous and key in previous and key not in state:
+                    state[key] = previous[key]
+            check_prompt_readable(log, agent, observation, previous, state, now)
             if saved_wait and (saved_wait.get('expiry_nudge_pending')
                                or (saved_wait.get('kind') == 'alarm'
                                    and (saved_wait.get('active', True) or wait_actions))):
                 actions = [action for action in actions if action.kind != 'nudge']
             actions = [*wait_actions, *actions]
             keepalive_expires_at = None
-            if not actions and saved_wait and observation.wait_active:
+            if observation.client.lower() == 'claude':
                 # Observing the agents takes time; judge by when the keep-alive is typed.
                 send_at = now + time.monotonic() - started
-                keepalive_expires_at = keepalive_due(saved_wait, observation, info, state, send_at)
-                if keepalive_expires_at is not None:
+                state['keepalive_check'] = {
+                    'at': now, 'reason': keepalive_blocker(saved_wait, observation, send_at,
+                                                           busy=bool(actions))}
+                keepalive_expires_at, skipped = keepalive_due(
+                    saved_wait, observation, info, state, send_at, busy=bool(actions))
+                if skipped:
+                    log_keepalive_skipped(log, agent, saved_wait, state, skipped,
+                                          keepalive_expires_at, now)
+                elif keepalive_expires_at is not None:
                     actions = [Action('nudge', agent, text=KEEPALIVE, category='cache-keepalive')]
             results = []
             for action in actions:
@@ -2177,10 +2271,15 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                         try:
                             delivery = perform(action, orchestrator, workspace)
                         except (OSError, ValueError) as error:
+                            state['keepalive_last'] = {'at': now, 'result': 'failed',
+                                                       'expires_at': keepalive_expires_at,
+                                                       'error': str(error)}
                             append_log(log, {**record, 'result': 'failed', 'error': str(error)})
                             raise
                         state['keepalive'] = {'expires_at': keepalive_expires_at,
                                               'fingerprint': state['fingerprint'], 'sent_at': now}
+                        state['keepalive_last'] = {'at': now, 'result': 'sent',
+                                                   'expires_at': keepalive_expires_at}
                         append_log(log, {**record, 'result': 'sent'})
                     elif action.category == 'alarm-ring':
                         try:
@@ -2259,7 +2358,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 'actions': [], 'error': str(error),
             })
     own = states.setdefault(orchestrator, {})
-    own['feature_versions'] = {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 1}
+    own['feature_versions'] = {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 2}
     own.pop('missing_since', None)
     stop_reason = None
     if orchestrator_gone:
@@ -2542,6 +2641,139 @@ def declare_wait(args):
     print(json.dumps(declaration, ensure_ascii=False))
 
 
+def cache_status(info, state):
+    """The prompt cache expiry, whether the last cycle could keep it warm, and the last try."""
+    cache = read_prompt_cache(info.get('session_id'))
+    check = state.get('keepalive_check') if isinstance(state.get('keepalive_check'), dict) else {}
+    reason = 'usage-missing' if cache is None else check.get('reason')
+    return {
+        'expires_at': cache.get('expires_at') if cache else None,
+        'warm': cache.get('warm') if cache else None,
+        'can_keep_alive': None if cache is not None and not check else reason is None,
+        'reason': reason,
+        'checked_at': check.get('at'),
+        'last_keepalive': state.get('keepalive_last'),
+    }
+
+
+def transcript_time(value):
+    try:
+        return datetime.fromisoformat(value.replace('Z', '+00:00')).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def api_calls(transcript):
+    """(time, cache read tokens, cache write tokens) per main-thread Claude API request."""
+    calls, seen = [], set()
+    with open(transcript, encoding='utf-8', errors='replace') as stream:
+        for line in stream:
+            try:
+                entry = json.loads(line)
+            except ValueError:
+                continue
+            if not isinstance(entry, dict) or entry.get('type') != 'assistant' or entry.get('isSidechain'):
+                continue
+            message = entry.get('message')
+            usage = message.get('usage') if isinstance(message, dict) else None
+            at = transcript_time(entry.get('timestamp'))
+            # Error placeholders are written as <synthetic> without a request.
+            if not isinstance(usage, dict) or at is None or message.get('model') == '<synthetic>':
+                continue
+            # A streamed reply repeats one request's usage on every content block.
+            key = entry.get('requestId') or message.get('id')
+            if key in seen:
+                continue
+            seen.add(key)
+            calls.append((at, usage.get('cache_read_input_tokens') or 0,
+                          usage.get('cache_creation_input_tokens') or 0))
+    return sorted(calls)
+
+
+def keepalive_records(workspace, agent):
+    records = []
+    for path in sorted(watch_dir(workspace).glob('*/watch.jsonl*')):
+        try:
+            lines = path.read_text(errors='replace').splitlines()
+        except OSError:
+            continue
+        for line in lines:
+            try:
+                record = json.loads(line)
+            except ValueError:
+                continue
+            if (isinstance(record, dict) and record.get('agent') == agent
+                    and record.get('decision') in ('cache-keepalive', 'cache-keepalive-skipped')
+                    and type(record.get('at')) in (int, float)):
+                records.append(record)
+    return sorted(records, key=lambda record: record['at'])
+
+
+def cache_history(transcript, keepalives=()):
+    """Idle gaps over five minutes and whether the next request read or rewrote the cache."""
+    gaps = []
+    calls = api_calls(transcript)
+    for (start, _, _), (end, read, write) in zip(calls, calls[1:]):
+        if end - start <= KEEPALIVE_SECONDS:
+            continue
+        verdict = 'rewrite' if write > read else 'hit' if read else 'unknown'
+        marks = [{key: record[key] for key in ('at', 'decision', 'result', 'reason', 'expires_at')
+                  if key in record}
+                 for record in keepalives if start <= record['at'] <= end]
+        gaps.append({'start_at': start, 'end_at': end, 'idle_seconds': round(end - start),
+                     'cache_read_tokens': read, 'cache_write_tokens': write,
+                     'verdict': verdict, 'keepalives': marks})
+    return gaps
+
+
+def find_transcript(session_id):
+    base = Path(os.environ.get('CLAUDE_CONFIG_DIR') or Path.home() / '.claude')
+    matches = sorted((base / 'projects').glob(f'*/{session_id}.jsonl'))
+    if not matches:
+        raise ValueError(f'No Claude transcript found for session {session_id}')
+    return str(matches[0])
+
+
+def show_cache_history(args):
+    agent, session, transcript = None, args.session, None
+    try:
+        agents = list_hcom(args.agent)
+    except (OSError, ValueError):
+        if args.agent:
+            raise
+        agents = {}
+    if args.agent:
+        agent = resolve_agent_name(agents, valid_name(args.agent), required=True)
+        session = agents[agent].get('session_id')
+        transcript = agents[agent].get('transcript_path')
+    else:
+        valid_name(session)
+        for name, info in agents.items():
+            if info.get('session_id') == session:
+                agent, transcript = name, info.get('transcript_path')
+    if not isinstance(transcript, str) or not transcript:
+        transcript = find_transcript(session)
+    keepalives = (keepalive_records(args.workspace.resolve(strict=True), agent)
+                  if args.workspace and agent else [])
+    gaps = cache_history(transcript, keepalives)
+    if args.json:
+        print(json.dumps({'agent': agent, 'session_id': session, 'transcript': transcript,
+                          'gaps': gaps}, indent=2, ensure_ascii=False))
+        return
+    print(f'{agent or session}: {transcript}')
+    if not gaps:
+        print('No idle gap over 5 minutes.')
+    for gap in gaps:
+        start = datetime.fromtimestamp(gap['start_at']).strftime('%Y-%m-%d %H:%M')
+        end = datetime.fromtimestamp(gap['end_at']).strftime('%H:%M')
+        notes = ''.join(
+            f"  [{mark['decision']} {datetime.fromtimestamp(mark['at']).strftime('%H:%M')} "
+            f"{mark.get('result') or mark.get('reason')}]" for mark in gap['keepalives'])
+        print(f"{start} -> {end}  idle {gap['idle_seconds'] // 60}m  "
+              f"read {gap['cache_read_tokens']}  write {gap['cache_write_tokens']}  "
+              f"{gap['verdict']}{notes}")
+
+
 def show_status(args):
     workspace = args.workspace.resolve(strict=True)
     agents = monitored_agents(args.tasks.resolve(strict=True), args.orchestrator)
@@ -2555,6 +2787,8 @@ def show_status(args):
         declaration = read_object(wait_path(workspace, agent))
         if declaration is not None:
             row['wait'] = declaration
+        if info.get('tool') == 'claude':
+            row['cache'] = cache_status(info, states.get(agent) or {})
         target_rows.append(row)
     print(json.dumps({'orchestrator': args.orchestrator, 'targets': target_rows},
                      indent=2, ensure_ascii=False))
@@ -2583,6 +2817,14 @@ def main():
     status.add_argument('--workspace', type=Path, required=True)
     status.add_argument('--orchestrator', required=True)
     status.add_argument('--tasks', type=Path, required=True)
+    history = commands.add_parser(
+        'cache-history', help='List idle gaps of a Claude session and prompt cache hits')
+    owner = history.add_mutually_exclusive_group(required=True)
+    owner.add_argument('--agent')
+    owner.add_argument('--session')
+    history.add_argument('--workspace', type=Path,
+                         help='Mark keep-alives logged by the watchers of this workspace')
+    history.add_argument('--json', action='store_true')
     run = commands.add_parser('run', help='Run one watcher loop per orchestrator')
     run.add_argument('--workspace', type=Path, required=True)
     run.add_argument('--orchestrator', required=True)
@@ -2596,6 +2838,8 @@ def main():
             declare_alarm(args)
         elif args.command == 'status':
             show_status(args)
+        elif args.command == 'cache-history':
+            show_cache_history(args)
         else:
             run_forever(args)
     except (OSError, ValueError, TypeError, KeyError) as error:
