@@ -1,11 +1,11 @@
 ---
 name: host-guard
-description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench) or searching for files across the whole filesystem on a host shared with other agents. Covers how to pin load to a few cores, how to search narrowly, how to write heredocs that stay literal, and how to install the hook.
+description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench) or searching for files across the whole filesystem on a host shared with other agents. Covers how to pin load to a few cores, how to search narrowly, how to write heredocs that stay literal, how to install LoopAgentTeams skills when `bunx skills add` was blocked, and how to install the hook.
 ---
 
 # 共用主機保護（host-guard）
 
-多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下三類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
+多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下四類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
 
 ## 從根目錄搜尋整個磁碟
 
@@ -33,6 +33,20 @@ systemd-run --user --scope -p AllowedCPUs=0-3 stress-ng --cpu 4 -t 60
 - 內文照字面保留：標記加引號，`<<'EOF'`。
 - 長文字：先用 Write 工具寫檔，再以 `--file` 傳。
 - 真的要放指令結果：先存進變數（`now=$(date)`），heredoc 裡只用 `$now`。
+
+## 直接從 LoopAgentTeams 安裝技能
+
+`bunx skills add`（`npx`、`bun x`、`pnpm dlx` 也算）的來源是 LoopAgentTeams 的本地 clone 或其 worktree 時擋下，包含其中的子資料夾、`~`、`$HOME` 與 `cd <repo> && bunx skills add .` 的寫法。判斷依據是來源資料夾往上找得到 `scripts/install-skills.py`。其他來源（`mattpocock/skills`、GitHub 上的 `ouob-tw/LoopAgentTeams`）不擋。
+
+指令依 shell 的引號與註解規則拆開：引號裡的文字只是資料（`echo "bunx skills add ~/LoopAgentTeams"` 不擋）；`bash -c '…'` 的內容當成指令讀；`VAR=值`、`env`、`sudo`、`timeout` 等前綴會跳過。這條規則是提醒 Agent 改用腳本，不是安全邊界，以下寫法不解析：雙引號裡的 `$(…)` 或反引號、`eval` 或 `xargs` 組出來的指令。
+
+改用 repo 的安裝腳本：
+
+```bash
+uv run --no-project python <repo>/scripts/install-skills.py [--skill NAME ...]
+```
+
+腳本只在每個要裝的技能資料夾目前內容都有通過的整套測試紀錄時才安裝；被拒時照它列出的指令透過 suite-gate 跑完測試再裝。不要繞過 hook 改用其他寫法直接安裝。
 
 ## 設定
 

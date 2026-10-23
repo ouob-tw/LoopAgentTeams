@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """PreToolUse hook that keeps agents from starving a shared host.
 
-Three rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
+Four rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
 - whole-disk scans: find / du / grep -r / rg / fd / tree / ls -R rooted at /, /mnt,
   /media or a configured extra root are blocked;
 - CPU load generators (busy loops, stress, stress-ng, sysbench cpu, yes > /dev/null)
   must run on a limited set of cores via taskset, systemd-run or cpulimit;
 - an unquoted heredoc whose body holds `...` or $(...) is blocked: the shell runs those
-  commands while writing what was meant as text (a brief, a message).
+  commands while writing what was meant as text (a brief, a message);
+- `bunx skills add` from a LoopAgentTeams checkout is blocked: its install script installs
+  only skills whose full suite passed for their current content.
 """
 import argparse
 import copy
@@ -42,6 +44,15 @@ HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re
 # `<<`, not `<<<`; the delimiter word ends at whitespace or a shell operator.
 HEREDOC_START = re.compile(r'(?<!<)<<(?!<)(-?)[ \t]*((?:\\.|\'[^\']*\'|"(?:\\.|[^"\\])*"|[^\s;&|()<>\'"\\])+)')
 QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
+# Command words for the `bunx skills add` rule, read with shell quoting.
+OPERATORS = ';&|()\n'
+# Options of PREFIXES that take the next word as their value (sudo -u USER, nice -n 10).
+VALUE_OPTIONS = {'-u', '-g', '-n', '-s', '-k', '-C', '-D', '-p', '-r', '-t', '-U', '-c', '-S'}
+SHELLS = {'sh', 'bash', 'zsh', 'dash'}
+PREFIXES = {'sudo', 'nice', 'ionice', 'env', 'exec', 'command', 'xargs', 'nohup', 'time',
+            'timeout'}
+ASSIGNMENT = re.compile(r'^[A-Za-z_]\w*=')
+INSTALL_SCRIPT = 'scripts/install-skills.py'
 SCRIPT_RUN = re.compile(r'(?:^|[;&|(\s])(?:(?:ba|z|da)?sh\s+(?:-\S+\s+)*)?'
                         r'(?P<path>(?:[\w.~/-]*/)?[\w.-]+\.sh)\b')
 
@@ -60,6 +71,14 @@ HEREDOC_MESSAGE = ('Blocked: the heredoc <<{name} is unquoted and its body conta
                    "(<<'{name}') to keep the body literal, or write the file with the Write tool "
                    'and pass it with --file. If you meant to insert command output, run the '
                    'command into a variable first and use the variable in the heredoc.')
+
+INSTALL_MESSAGE = ('Blocked: this installs skills straight from the LoopAgentTeams repo at '
+                   '{repo}, which skips the check that each skill passed its full suite for '
+                   'its current content. Run the install script instead; it installs only '
+                   'verified skills and otherwise lists the suites to run first:\n'
+                   '  uv run --no-project python {script} [--skill NAME ...]\n'
+                   'Installs from other sources (for example mattpocock/skills) are not '
+                   'affected.')
 
 
 def config_path():
@@ -253,6 +272,121 @@ def load_problem(command, cwd, cores):
     return None
 
 
+def lat_repo(path):
+    """The LoopAgentTeams checkout that holds path (it has the install script), or None."""
+    for folder in (path, *path.parents):
+        if (folder / INSTALL_SCRIPT).is_file() and (folder / 'skills').is_dir():
+            return folder
+    return None
+
+
+def repo_install(command, cwd):
+    """The LoopAgentTeams checkout a `bunx skills add` in command installs from, or None.
+
+    The command is split into words and operators with shell quoting, so quoted text is
+    data (`echo "x; bunx skills add ..."`); a `sh -c` body is read as a command of its own.
+    `cd DIR` moves the directory relative sources are read from, within its `( )` or
+    `sh -c` scope. A source is a word that looks like a path (~, /, ., $VAR or a slash);
+    skill names and options are not."""
+    tokens = shell_tokens(HEREDOC.sub('', command))
+    base, scopes, words = Path(cwd), [], []
+    for token in [*tokens, (';',)]:
+        if isinstance(token, str):
+            words.append(token)
+            continue
+        repo, base = command_install(words, base)
+        if repo:
+            return repo
+        words = []
+        if token == ('(',):
+            scopes.append(base)
+        elif token == (')',) and scopes:
+            base = scopes.pop()
+    return None
+
+
+def shell_tokens(text):
+    """Words (quotes removed) and operators (1-tuples) of shell text. An operator is only
+    an unquoted, unescaped character of OPERATORS; `#` starting a word comments out the
+    rest of the line. An unclosed quote runs to the end of the text."""
+    tokens, word, quoted, i = [], [], False, 0
+
+    def end_word():
+        nonlocal word, quoted
+        if word or quoted:
+            tokens.append(''.join(word))
+        word, quoted = [], False
+
+    while i < len(text):
+        char = text[i]
+        if char == '\\' and i + 1 < len(text):
+            if text[i + 1] != '\n':  # a line continuation joins the lines
+                word.append(text[i + 1])
+            i += 2
+            continue
+        if char in '\'"':
+            close = i + 1
+            while close < len(text) and text[close] != char:
+                close += 2 if char == '"' and text[close] == '\\' else 1
+            word.append(text[i + 1:close])
+            quoted, i = True, close + 1
+            continue
+        if char == '#' and not word and not quoted:
+            i = text.find('\n', i)
+            i = len(text) if i < 0 else i
+            continue
+        if char in OPERATORS:
+            end_word()
+            tokens.append((char,))
+        elif char in ' \t\r':
+            end_word()
+        else:
+            word.append(char)
+        i += 1
+    end_word()
+    return tokens
+
+
+def command_install(words, base):
+    """(checkout the simple command installs from or None, directory after it)."""
+    def where(word):
+        return base / os.path.expanduser(os.path.expandvars(word))
+
+    prefixed = False
+    while words and (ASSIGNMENT.match(words[0]) or os.path.basename(words[0]) in PREFIXES
+                     or prefixed and (words[0].startswith('-') or words[0][:1].isdigit())):
+        prefixed = prefixed or os.path.basename(words[0]) in PREFIXES
+        words = words[2:] if prefixed and words[0] in VALUE_OPTIONS else words[1:]
+    name = os.path.basename(words[0]) if words else ''
+    if name == 'cd':
+        target = [w for w in words[1:] if w not in ('--', '-L', '-P', '-e', '-@')]
+        return None, where(target[0] if target else '~')
+    if name in SHELLS:
+        flag = next((i for i, w in enumerate(words[1:], 1)
+                     if w.startswith('-') and not w.startswith('--') and 'c' in w), None)
+        body = words[flag + 1] if flag is not None and flag + 1 < len(words) else None
+        return (repo_install(body, base) if body else None), base
+    if name in ('bunx', 'npx'):
+        rest = words[1:]
+    elif (name, words[1:2]) in (('bun', ['x']), ('pnpm', ['dlx'])):
+        rest = words[2:]
+    else:
+        return None, base
+    while rest and rest[0].startswith('-'):
+        rest = rest[1:]
+    if len(rest) < 2 or not re.fullmatch(r'skills(@\S+)?', rest[0]) \
+            or rest[1] not in ('add', 'a', 'install', 'i'):
+        return None, base
+    for word in rest[2:]:
+        if word.startswith('-') or not (word.startswith(('~', '.', '$')) or '/' in word):
+            continue
+        source = where(word).resolve()
+        repo = source.is_dir() and lat_repo(source)
+        if repo:
+            return repo, base
+    return None, base
+
+
 def shell_text(command):
     if isinstance(command, list):
         return command[-1] if command[:1] and command[0].endswith('sh') else ' '.join(command)
@@ -282,6 +416,10 @@ def cmd_hook():
     heredoc = expanding_heredoc(command)
     if heredoc:
         print(HEREDOC_MESSAGE.format(name=heredoc[0], what=heredoc[1]), file=sys.stderr)
+        return 2
+    repo = repo_install(command, cwd if os.path.isdir(cwd) else os.getcwd())
+    if repo:
+        print(INSTALL_MESSAGE.format(repo=repo, script=repo / INSTALL_SCRIPT), file=sys.stderr)
         return 2
     where = load_problem(command, cwd if os.path.isdir(cwd) else os.getcwd(), config['cores'])
     if where:
