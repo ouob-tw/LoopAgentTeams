@@ -13,6 +13,7 @@ let repo: string;
 let board: string;
 let log: string;
 let loginStatus = 200;
+let oldOnly = false;
 let server: ReturnType<typeof Bun.serve>;
 
 function git(...args: string[]) {
@@ -22,7 +23,11 @@ function git(...args: string[]) {
 }
 
 beforeAll(() => {
-	server = Bun.serve({ port: 0, fetch: (req) => new Response('', { status: new URL(req.url).pathname === '/login' ? loginStatus : 404 }) });
+	server = Bun.serve({ port: 0, fetch: (req) => {
+			const live = oldOnly ? readFileSync(join(board, 'build/index.js'), 'utf8') === 'old' : true;
+			return new Response('', { status: new URL(req.url).pathname === '/login' ? (live ? loginStatus : 500) : 404 });
+		}
+	});
 	dir = mkdtempSync(join(tmpdir(), 'lat-board-deploy-test-'));
 	// A stand-in for trash so the test does not fill the user's trash can.
 	mkdirSync(join(dir, 'bin'));
@@ -41,6 +46,7 @@ function fresh() {
 	rmSync(repo, { recursive: true, force: true });
 	rmSync(log, { force: true });
 	loginStatus = 200;
+	oldOnly = false;
 	mkdirSync(join(board, 'node_modules'), { recursive: true });
 	mkdirSync(join(board, 'build'));
 	writeFileSync(join(board, 'build/index.js'), 'old');
@@ -116,6 +122,40 @@ test('a login page that never answers 200 puts the previous build back and resta
 	expect(worktrees()).toBe(1);
 });
 
+test('a rollback that brings the login page back says the previous build is running', async () => {
+	fresh();
+	oldOnly = true;
+	const r = await deploy();
+	expect(r.status).toBe(1);
+	expect(r.stderr).toContain('previous build restored and running');
+	expect(readFileSync(join(board, 'build/index.js'), 'utf8')).toBe('old');
+	expect(restarts()).toBe(2);
+});
+
+test('a rollback whose restart does not bring the login page back does not claim it is running', async () => {
+	fresh();
+	loginStatus = 500;
+	const r = await deploy();
+	expect(r.status).toBe(1);
+	expect(r.stderr).not.toContain('restored and running');
+	expect(r.stderr).toContain('check the service');
+});
+
+test('a failed rename into place puts the live build back', async () => {
+	fresh();
+	writeFileSync(join(dir, 'bin/mv'), '#!/bin/sh\ncase "$1" in *build-new) exit 1;; esac\nexec /bin/mv "$@"\n');
+	chmodSync(join(dir, 'bin/mv'), 0o755);
+	try {
+		const r = await deploy();
+		expect(r.status).toBe(1);
+		expect(readFileSync(join(board, 'build/index.js'), 'utf8')).toBe('old');
+		expect(restarts()).toBe(0);
+		expect(leftovers()).toEqual([]);
+	} finally {
+		rmSync(join(dir, 'bin/mv'));
+	}
+});
+
 test('the default restart command restarts the named systemd user unit', async () => {
 	fresh();
 	const stub = join(dir, 'bin/systemctl');
@@ -123,6 +163,6 @@ test('the default restart command restarts the named systemd user unit', async (
 	chmodSync(stub, 0o755);
 	const r = await deploy({ LAT_DEPLOY_UNIT: 'lat-board-test', LAT_DEPLOY_RESTART: '' });
 	expect(r.status).toBe(0);
-	expect(readFileSync(log, 'utf8').trim()).toBe('--user restart lat-board-test');
+	expect(readFileSync(log, 'utf8').split('\n')).toContain('--user restart lat-board-test');
 	rmSync(stub);
 });

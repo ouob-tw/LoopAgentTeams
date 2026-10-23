@@ -133,7 +133,11 @@ class HeredocTests(HookCase):
     def test_an_unquoted_heredoc_that_substitutes_a_command_is_blocked(self):
         for command, name in [('cat > brief.md <<EOF\nNever run `bun run build`.\nEOF', 'EOF'),
                               ('cat <<-MSG\n\tnow: $(date)\n\tMSG', 'MSG'),
-                              ('git commit -m "$(cat <<EOF\nfix `x`\nEOF\n)"', 'EOF')]:
+                              ('git commit -m "$(cat <<EOF\nfix `x`\nEOF\n)"', 'EOF'),
+                              ('cat <<EOF-TEXT\nrun `x`\nEOF-TEXT', 'EOF-TEXT'),
+                              ('cat <<END.X > f\nnow $(date)\nEND.X', 'END.X'),
+                              ('cat <<EOF\npath \\\\$(date)\nEOF', 'EOF'),
+                              ("cat <<'A'\nplain\nA\ncat <<B\nrun `x`\nB", 'B')]:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command), f"(<<'{name}')")
 
@@ -142,6 +146,10 @@ class HeredocTests(HookCase):
                         'cat > brief.md <<"EOF"\nrun `x`\nEOF',
                         'cat <<\\EOF\nrun `x`\nEOF',
                         'cat <<EOF\nhome is $HOME, cost \\$(not run) and \\`literal\\`\nEOF',
+                        'cat <<EOF\nthree backslashes \\\\\\$(not run)\nEOF',
+                        "cat <<'EOF'\nwrite <<EOF and `x`\nmore\nEOF",
+                        "cat <<'EOF'\nExample:\ncat <<TXT\nrun $(date)\nTXT\nEOF",
+                        'cat <<"EOF-TEXT"\nrun `x`\nEOF-TEXT',
                         'grep -c x <<<"`echo`"',
                         'echo "`date`"']:
             with self.subTest(command):

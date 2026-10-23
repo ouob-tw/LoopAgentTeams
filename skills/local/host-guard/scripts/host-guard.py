@@ -39,9 +39,8 @@ LIMIT = re.compile(r'\btaskset\b|\bcpulimit\b|\bsystemd-run\b[^\n]*(?:AllowedCPU
 TASKSET_LIST = re.compile(r'\btaskset\s+(?:-\S*c\S*\s+|--cpu-list\s+)(?P<list>[\d,\-]+)')
 # Heredoc bodies and quoted text are data (messages, prompts), except a script after `-c`.
 HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re.S | re.M)
-# An unquoted delimiter (`<<EOF`, not `<<'EOF'` or `<<\EOF`) lets the shell expand the body.
-UNQUOTED_HEREDOC = re.compile(r'(?<!<)<<-?\s*([A-Za-z_]\w*)[^\n]*\n(.*?)^\s*\1\s*$', re.S | re.M)
-SUBSTITUTION = re.compile(r'(?<!\\)(?:`|\$\()')
+# `<<`, not `<<<`; the delimiter word ends at whitespace or a shell operator.
+HEREDOC_START = re.compile(r'(?<!<)<<(?!<)(-?)[ \t]*((?:\\.|\'[^\']*\'|"(?:\\.|[^"\\])*"|[^\s;&|()<>\'"\\])+)')
 QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
 SCRIPT_RUN = re.compile(r'(?:^|[;&|(\s])(?:(?:ba|z|da)?sh\s+(?:-\S+\s+)*)?'
                         r'(?P<path>(?:[\w.~/-]*/)?[\w.-]+\.sh)\b')
@@ -89,13 +88,48 @@ def code_only(text):
     return QUOTED.sub(lambda m: m.group(0) if m.group(1) else '""', text)
 
 
-def expanding_heredoc(command):
-    """(delimiter, what) for the first unquoted heredoc whose body substitutes a command."""
-    for match in UNQUOTED_HEREDOC.finditer(command):
-        found = SUBSTITUTION.search(match.group(2))
-        if found:
-            return match.group(1), 'a backtick' if found.group(0) == '`' else '$('
+def substitution(body):
+    """'a backtick' or '$(' for the first expansion the shell runs in a heredoc body, else None."""
+    i = 0
+    while i < len(body):
+        if body[i] == '\\':
+            i += 2
+            continue
+        if body[i] == '`':
+            return 'a backtick'
+        if body.startswith('$(', i):
+            return '$('
+        i += 1
     return None
+
+
+def expanding_heredoc(command):
+    """(delimiter, what) for the first unquoted heredoc whose body substitutes a command.
+
+    Walks the heredocs in order and skips each body, so text inside a quoted heredoc that
+    looks like another heredoc is not read as one.
+    """
+    position = 0
+    while True:
+        match = HEREDOC_START.search(command, position)
+        if not match:
+            return None
+        word = match.group(2)
+        quoted = any(c in word for c in '\'"\\')
+        name = re.sub(r'\\(.)|\'([^\']*)\'|"((?:\\.|[^"\\])*)"', lambda m: m.group(1) or m.group(2) or m.group(3) or '', word)
+        line_end = command.find('\n', match.end())
+        if line_end < 0:
+            return None
+        strip = r'[ \t]*' if match.group(1) else ''
+        end = re.compile(r'^' + strip + re.escape(name) + r'[ \t]*$', re.M).search(command, line_end + 1)
+        body = command[line_end + 1:end.start() if end else len(command)]
+        if not quoted:
+            found = substitution(body)
+            if found:
+                return name, found
+        if not end:
+            return None
+        position = end.end()
 
 
 def scan_root(command, roots):

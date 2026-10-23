@@ -8,6 +8,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from datetime import datetime, timezone
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -75,7 +76,7 @@ class GateCase(unittest.TestCase):
         self.state = self.tmp / 'state'
         self.config = self.tmp / 'config.json'
         self.set_config(max_slots=2)
-        self.env = dict(GIT_ENV, SUITE_GATE_STATE_DIR=str(self.state),
+        self.env = dict(GIT_ENV, SUITE_GATE_STATE_DIR=str(self.state), SUITE_GATE_REAP_WAIT='0',
                         SUITE_GATE_CONFIG=str(self.config), HCOM_INSTANCE_NAME='tester',
                         HCOM_TAG='t', HOME=str(self.tmp / 'home'),
                         XDG_CONFIG_HOME=str(self.tmp / 'xdg-config'),
@@ -334,25 +335,56 @@ class RunAndReuseTests(GateCase):
         self.assertEqual(self.gate('run', '--', failing).returncode, 1)
         self.assertEqual(self.runs(), 5)
 
-    def test_processes_the_reaper_ended_under_the_suite_during_the_run_are_reported(self):
+    def reaper_log(self):
         log = self.tmp / 'xdg-state/lat/reaper/closed.jsonl'
-        log.parent.mkdir(parents=True)
+        log.parent.mkdir(parents=True, exist_ok=True)
+        return log
+
+    def append_reaper_record(self, where, pid, result='exited after SIGTERM', signal='SIGTERM'):
+        """Shell command that appends a lat-reap record stamped with the time it runs."""
+        record = {'pid': pid, 'cwd': where, 'agent': 'nabo-qa-rape', 'why': 'owner agent ended',
+                  'command': 'node build-test/index.js', 'signal': signal, 'result': result}
+        head, tail = '{"time": "', '", ' + json.dumps(record)[1:]
+        now = '"$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"'
+        return f"printf '%s\\n' {shlex.quote(head)}{now}{shlex.quote(tail)} >> {self.reaper_log()}"
+
+    def test_processes_the_reaper_ended_under_the_suite_during_the_run_are_reported(self):
         old = {'time': '2020-01-01T00:00:00+00:00', 'pid': 1, 'cwd': str(self.repo),
-               'command': 'node old', 'agent': 'x'}
-        log.write_text(json.dumps(old) + '\n')
-        entry = lambda where, pid: json.dumps({'pid': pid, 'cwd': where, 'agent': 'nabo-qa-rape',
-                                               'command': 'node build-test/index.js',
-                                               'why': 'owner agent ended'})
-        now = "$(date -u +%Y-%m-%dT%H:%M:%S+00:00)"
-        write = lambda where, pid: (f"printf '%s\\n' \"{{\\\"time\\\": \\\"{now}\\\", "
-                                    f"{json.dumps(entry(where, pid))[2:-1]}\" >> {log}")
-        command = (f'echo run >> {self.counter}; {write(str(self.repo / "board"), 4242)}; '
-                   f'{write("/elsewhere", 7)}')
+               'command': 'node old', 'agent': 'x', 'result': 'killed'}
+        self.reaper_log().write_text(json.dumps(old) + '\n')
+        board = str(self.repo / 'board')
+        command = '; '.join([
+            f'echo run >> {self.counter}',
+            self.append_reaper_record(board, 4242),
+            self.append_reaper_record('/elsewhere', 7),
+            self.append_reaper_record(board, 8, 'gone before signal', None),
+            self.append_reaper_record(board, 9, 'still running after SIGKILL', 'SIGKILL')])
         result = self.gate('run', '--', command)
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('reaper ended 1 process(es)', result.stderr)
         self.assertIn('pid 4242 node build-test/index.js', result.stderr)
+        reaped = self.records()[-1]['reaped']
+        self.assertEqual([e['pid'] for e in reaped], [4242])
+        self.assertEqual((reaped[0]['signal'], reaped[0]['result']), ('SIGTERM', 'exited after SIGTERM'))
+
+    def test_a_failed_run_waits_for_reaper_records_written_after_the_suite_exits(self):
+        self.env['SUITE_GATE_REAP_WAIT'] = '8'
+        proc = self.start('run', '--', 'exit 1')
+        time.sleep(1.5)  # the suite has failed; lat-reap is still waiting out its grace period
+        record = {'time': datetime.now(timezone.utc).isoformat(timespec='seconds'), 'pid': 4242,
+                  'cwd': str(self.repo), 'command': 'node build-test/index.js',
+                  'signal': 'SIGTERM', 'result': 'exited after SIGTERM'}
+        with self.reaper_log().open('a') as stream:
+            stream.write(json.dumps(record) + '\n')
+        code, _, _ = self.finish(proc)
+        self.assertEqual(code, 1)
         self.assertEqual([e['pid'] for e in self.records()[-1]['reaped']], [4242])
+        self.env['SUITE_GATE_REAP_WAIT'] = '0.5'
+        self.reaper_log().write_text('')
+        started = time.monotonic()
+        self.gate('run', '--rerun', 'again', '--', 'exit 1')
+        self.assertEqual(self.records()[-1]['reaped'], [])
+        self.assertLess(time.monotonic() - started, 5, 'a failure with no kills waits only the window')
 
     def test_a_run_without_reaper_kills_records_none(self):
         self.gate('run', '--', self.suite())
