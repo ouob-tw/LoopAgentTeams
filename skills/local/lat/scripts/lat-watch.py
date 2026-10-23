@@ -2666,10 +2666,12 @@ def cache_status(info, state, now=None):
         reason, possible = 'cache-expired' if cache.get('warm') is True else 'cache-cold', False
     elif status != 'listening':
         reason, possible = f'status-{status}', False
+    elif not check or str(check.get('reason')).startswith('status-'):
+        # The last cycle did not judge the prompt and wait at a listening agent: unknown.
+        reason, possible = None, None
     else:
-        # Unknown until a watcher cycle has judged this agent.
         reason = check.get('reason')
-        possible = reason is None if check else None
+        possible = reason is None
     return {
         'expires_at': cache.get('expires_at') if cache else None,
         'warm': cache.get('warm') if cache else None,
@@ -2710,9 +2712,11 @@ def api_calls(transcript):
                 continue
             message = entry.get('message')
             usage = message.get('usage') if isinstance(message, dict) else None
-            # Error placeholders are written as <synthetic> without a request.
-            if (entry.get('type') != 'assistant' or not isinstance(usage, dict)
-                    or message.get('model') == '<synthetic>'):
+            if entry.get('type') != 'assistant' or not isinstance(usage, dict):
+                continue
+            if message.get('model') == '<synthetic>':
+                # A failed request leaves a placeholder; a retry is asked after it.
+                asked_at = None
                 continue
             # A streamed reply repeats one request's usage on every content block.
             key = entry.get('requestId') or message.get('id')

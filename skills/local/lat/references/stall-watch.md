@@ -130,7 +130,7 @@ Claude 的提示快取在最後一次請求後約一小時失效，失效後下�
 
 查快取：
 
-- `status` 的每位 Claude Agent 有 `cache`：`expires_at`、`warm`（讀記錄器檔案的當下值）、`can_keep_alive` 與 `reason`（現在能否保溫，與快取剩多久無關：記錄器檔案與 HCOM 狀態以查詢當下為準，依序可能是 `usage-missing`、`cache-cold`、`cache-expired`、`status-<狀態>`；其餘如輸入框與等待聲明取監控最近一輪 `checked_at` 的判斷，`no-wait` 表示沒有有效等待；監控尚未判斷過時 `can_keep_alive` 為 `null`）、`last_keepalive`（上次嘗試的 `at`、`result`、`expires_at`，失敗附 `error`）。
+- `status` 的每位 Claude Agent 有 `cache`：`expires_at`、`warm`（讀記錄器檔案的當下值）、`can_keep_alive` 與 `reason`（現在能否保溫，與快取剩多久無關：記錄器檔案與 HCOM 狀態以查詢當下為準，依序可能是 `usage-missing`、`cache-cold`、`cache-expired`、`status-<狀態>`；其餘如輸入框與等待聲明取監控最近一輪 `checked_at` 的判斷，`no-wait` 表示沒有有效等待；HCOM 已回到 `listening` 而監控尚未重新判斷，或從未判斷過時，`can_keep_alive` 與 `reason` 為 `null`）、`last_keepalive`（上次嘗試的 `at`、`result`、`expires_at`，失敗附 `error`）。
 - 查某次閒置後是讀快取還是整段重寫：
 
 ```bash
@@ -140,7 +140,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" cache-history --agent
 uv run --no-project python "$lat_dir/scripts/lat-watch.py" cache-history --session <session ID>
 ```
 
-讀該 session 的 Claude 對話紀錄，列出主對話每段超過 5 分鐘的閒置（從上一個請求最後一段回覆寫入，到下一個請求前最後一筆使用者紀錄，即提示或工具結果寫入；不含回覆延遲）：起訖時間、長度，以及之後第一個請求讀快取（`cache_read_tokens`）與寫快取（`cache_write_tokens`）的 token 數；寫多於讀判為 `rewrite`（整段重寫），否則 `hit`，兩者皆 0 為 `unknown`。同一請求分段寫入的多筆只算一次，子 Agent 與錯誤佔位紀錄不算。加 `--workspace` 時一併標出該段期間這位 Agent 的 `cache-keepalive` 與 `cache-keepalive-skipped` 紀錄。
+讀該 session 的 Claude 對話紀錄，列出主對話每段超過 5 分鐘的閒置（從上一個請求最後一段回覆寫入，到下一個請求前最後一筆使用者紀錄，即提示或工具結果寫入；不含回覆延遲）：起訖時間、長度，以及之後第一個請求讀快取（`cache_read_tokens`）與寫快取（`cache_write_tokens`）的 token 數；寫多於讀判為 `rewrite`（整段重寫），否則 `hit`，兩者皆 0 為 `unknown`。同一請求分段寫入的多筆只算一次，子 Agent 與錯誤佔位紀錄不算；錯誤後自動重試的請求以它第一段回覆的時間為準。加 `--workspace` 時一併標出該段期間這位 Agent 的 `cache-keepalive` 與 `cache-keepalive-skipped` 紀錄。
 
 ## 更新監控程式後重啟
 

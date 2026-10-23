@@ -5271,6 +5271,9 @@ esac
                          {'expires_at': self.start + 1000, 'warm': True,
                           'can_keep_alive': False, 'reason': 'status-active',
                           'checked_at': self.start, 'last_keepalive': None})
+        # Back at listening, the stale status reason no longer applies and is unknown.
+        self.assertEqual((self.cache(self.start)['can_keep_alive'],
+                          self.cache(self.start)['reason']), (None, None))
         Path(f'{self.hcom_log}.fail').touch()
         self.show()
         self.write_usage(self.start + 240)
@@ -5379,7 +5382,7 @@ class CacheHistoryTests(PinnedEnvironment):
         transcript.write_text('\n'.join(rows) + '\n')
         gaps = self.watch.cache_history(transcript)
         self.assertEqual([(gap['idle_seconds'], gap['verdict']) for gap in gaps],
-                         [(1798, 'unknown')])
+                         [(3598, 'unknown')])
 
     def test_idle_runs_from_the_last_reply_block_to_the_next_user_entry(self):
         # Real shape: the reply ends 14:08:34, the prompt arrives 14:13:30 and its first reply
