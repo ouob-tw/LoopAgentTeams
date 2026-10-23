@@ -38,7 +38,8 @@ FAILURE_REPEAT_SECONDS = 60 * 60
 ORCHESTRATOR_GONE_SECONDS = 60 * 60
 LOG_ROTATE_BYTES = 1024 * 1024
 TRANSCRIPT_TAIL_BYTES = 256 * 1024
-KEEPALIVE_SECONDS = 5 * 60
+KEEPALIVE_SECONDS = 10 * 60
+IDLE_GAP_SECONDS = 5 * 60
 KEEPALIVE_DECISION_SECONDS = 3 * 60 * 60
 KEEPALIVE_QUIET_HOURS = (1, 9)
 PROMPT_UNREADABLE_SECONDS = 15 * 60
@@ -1418,7 +1419,7 @@ def keepalive_due(declaration, observation, info, state, now, busy=False):
     """Return (cache expiry, skip reason); send the keep-alive when only the expiry is set.
 
     A skipped keep-alive keeps its expiry (None for usage-missing). Both are None when
-    nothing is due: the cache is not within five minutes of
+    nothing is due: the cache is not within ten minutes of
     expiring, is cold or expired, this expiry was already kept warm, or there is no wait.
     """
     if observation.client.lower() != 'claude':
@@ -2232,7 +2233,7 @@ def unavailable_alarm(workspace, orchestrator, agent, state, now, log):
 
 
 def log_keepalive_skipped(log, agent, declaration, state, reason, expires_at, now):
-    """Record a keep-alive not typed although the cache expires within five minutes.
+    """Record a keep-alive not typed although the cache expires within ten minutes.
 
     Each reason is logged once per expiry; a missing usage file has no expiry to key on and
     is logged once until the file is readable again.
@@ -2594,7 +2595,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 'actions': [], 'error': str(error),
             })
     own = states.setdefault(orchestrator, {})
-    own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3,
+    own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 4,
                                'claude_quota_resume': 1}
     own.pop('missing_since', None)
     stop_reason = None
@@ -2992,7 +2993,7 @@ def cache_history(transcript, keepalives=()):
     gaps = []
     calls = api_calls(transcript)
     for (_, start, _, _), (end, _, read, write) in zip(calls, calls[1:]):
-        if end - start <= KEEPALIVE_SECONDS:
+        if end - start <= IDLE_GAP_SECONDS:
             continue
         verdict = 'rewrite' if write > read else 'hit' if read else 'unknown'
         marks = [{key: record[key] for key in ('at', 'decision', 'result', 'reason', 'expires_at')

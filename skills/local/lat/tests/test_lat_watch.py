@@ -1368,7 +1368,7 @@ esac
         self.run_cycles(load_watch(), 4000)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
         self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
-        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3, 'claude_quota_resume': 1})
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 4, 'claude_quota_resume': 1})
         result = self.alarm_cli('--after', 1, agent='worker-open')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
@@ -4559,7 +4559,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3, 'claude_quota_resume': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 4, 'claude_quota_resume': 1}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -4583,7 +4583,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3, 'claude_quota_resume': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 4, 'claude_quota_resume': 1}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
@@ -4924,9 +4924,9 @@ class KeepaliveDecisionTests(PinnedEnvironment):
                                                 self.idle._replace(is_orchestrator=False),
                                                 info=info), (None, None))
 
-    def test_threshold_is_five_minutes_and_expired_cache_is_given_up(self):
+    def test_threshold_is_ten_minutes_and_expired_cache_is_given_up(self):
         now = taipei(10, 30)
-        for remaining, expected in ((301, False), (300, True), (1, True), (0, False),
+        for remaining, expected in ((601, False), (600, True), (301, True), (1, True), (0, False),
                                     (-60, False)):
             with self.subTest(remaining=remaining):
                 self.write_usage(now + remaining)
@@ -5190,7 +5190,7 @@ esac
         self.assertEqual(state['worker']['decision'], 'valid-wait')
         self.assertEqual(self.wait_file.read_bytes(), before)
         self.assertEqual(state['worker']['feature_versions'],
-                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3, 'claude_quota_resume': 1})
+                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 4, 'claude_quota_resume': 1})
         # The wait still expires at its original deadline, counted once, with the real
         # idle time, and the agent is nudged for the expiry rather than as a stall.
         self.cycle(self.start + 3000)
@@ -5544,6 +5544,24 @@ class CacheHistoryTests(PinnedEnvironment):
         self.assertEqual((hit['cache_read_tokens'], hit['cache_write_tokens'], hit['verdict']),
                          (214523, 1215, 'hit'))
         self.assertTrue(all(gap['idle_seconds'] > 300 for gap in gaps))
+
+    def test_idle_gap_threshold_stays_five_minutes_apart_from_keepalive_window(self):
+        self.assertEqual(self.watch.IDLE_GAP_SECONDS, 300)
+        self.assertEqual(self.watch.KEEPALIVE_SECONDS, 600)
+        transcript = self.root / 'threshold.jsonl'
+        def reply(clock, request):
+            return json.dumps({'type': 'assistant', 'timestamp': f'2026-10-23T{clock}Z',
+                               'requestId': request, 'message': {'id': request, 'model': 'claude',
+                               'usage': {'cache_read_input_tokens': 10,
+                                         'cache_creation_input_tokens': 1}}})
+        def user(clock):
+            return json.dumps({'type': 'user', 'timestamp': f'2026-10-23T{clock}Z'})
+        # 300 s is not a gap; 301 s and a 9-minute pause (inside the keep-alive window) are.
+        rows = [reply('01:00:00', 'a'), user('01:05:00'), reply('01:05:01', 'b'),
+                user('01:10:02'), reply('01:10:03', 'c'), user('01:19:03'), reply('01:19:04', 'd')]
+        transcript.write_text('\n'.join(rows) + '\n')
+        gaps = self.watch.cache_history(transcript)
+        self.assertEqual([gap['idle_seconds'] for gap in gaps], [301, 540])
 
     def test_repeated_blocks_sidechains_and_error_placeholders_are_not_requests(self):
         transcript = self.root / 'session.jsonl'
