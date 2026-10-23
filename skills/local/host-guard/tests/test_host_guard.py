@@ -154,16 +154,20 @@ class DeleteTests(HookCase):
     def hook(self, payload):
         env = {k: v for k, v in os.environ.items()
                if k not in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_STATE_HOME')}
-        env.update(HOME=str(self.tmp), HOST_GUARD_CONFIG=str(self.config))
+        env.update(HOME=str(self.tmp), HOST_GUARD_CONFIG=str(self.config), **self.extra_env)
         return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=json.dumps(payload),
                               env=env, capture_output=True, text=True)
+
+    extra_env = {}
 
     def test_a_path_ending_in_a_substitution_is_blocked(self):
         # The 2026-10-23 case: the substitution came out empty and trashed a whole project folder.
         for command in ["trash-put ~/.claude/projects/-x/$(cut -d' ' -f2 /dev/null) 2>/dev/null",
                         'rm -rf "$T/$name"', 'rm -f $dir/${file}', 'trash $out/`ls`',
                         'sudo rm -r /srv/$(date)', 'xargs rm -rf build/$x',
-                        'gio trash ./$x']:
+                        'gio trash ./$x', 'rm -rf "$T"/"$name"',
+                        'trash-put ~/.claude/projects/-x/`cut -f2 /nonexistent`',
+                        "trash-put ~/.claude/projects/-x/$(cut -d')' -f2 /nonexistent)"]:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command), 'ends in a substitution')
 
@@ -175,7 +179,14 @@ class DeleteTests(HookCase):
                               ('rm -rf $HOME/.codex/sessions', '.codex/sessions'),
                               ('trash-put ~/.local/state/lat', '.local/state/lat'),
                               ('bash -c "rm -rf ~/.local/state"', '.local/state'),
-                              ('cd x; trash-put ~', str(self.tmp))]:
+                              ('cd x; trash-put ~', str(self.tmp)),
+                              ('/bin/rm -rf ~/.hcom', '.hcom'),
+                              ('bash -lc "trash-put ~/.hcom"', '.hcom'),
+                              ('if true; then trash-put ~/.hcom; fi', '.hcom'),
+                              ('env LANG=C trash-put ~/.hcom', '.hcom'),
+                              ('LANG=C rm -rf ~/.hcom', '.hcom'),
+                              ('{ rm -rf ~/.hcom; }', '.hcom'),
+                              ('cd ~/.claude && trash-put projects', '.claude/projects')]:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command), path)
 
@@ -183,9 +194,28 @@ class DeleteTests(HookCase):
         for command in ['rm ~/.claude/projects/-home-x-proj/abc.jsonl', 'trash-put $S/deploy',
                         'rm -rf "${T:?}/${name:?}"', 'trash-put build-prev', 'trash-put $T',
                         'git rm --cached x', 'echo "rm -rf ~/.hcom"', 'shred -u $T/$pw',
-                        "cat <<'EOF'\nrm -rf ~/.hcom $a/$b\nEOF"]:
+                        "cat <<'EOF'\nrm -rf ~/.hcom $a/$b\nEOF",
+                        'git commit -m "fix: document cleanup; rm -rf ~/.hcom"',
+                        "trash-put '/tmp/$x'", "trash-put '/tmp/a/$x'", 'rm -rf "${T:?}"/x',
+                        'cd /tmp && trash-put projects']:
             with self.subTest(command):
                 self.assert_allowed(self.bash(command))
+
+
+class DeleteOverrideTests(DeleteTests):
+    """The client and state folders follow CLAUDE_CONFIG_DIR, CODEX_HOME and XDG_STATE_HOME."""
+
+    def setUp(self):
+        super().setUp()
+        self.extra_env = {'CLAUDE_CONFIG_DIR': str(self.tmp / 'cc'),
+                          'CODEX_HOME': str(self.tmp / 'cx'), 'XDG_STATE_HOME': str(self.tmp / 'st')}
+
+    def test_agent_record_and_state_folders_are_blocked(self):
+        for command, path in [('trash-put "$CODEX_HOME/sessions"', 'cx/sessions'),
+                              ('rm -rf ${CLAUDE_CONFIG_DIR}/projects', 'cc/projects'),
+                              ('trash-put $XDG_STATE_HOME/lat', 'st/lat')]:
+            with self.subTest(command):
+                self.assert_blocked(self.bash(command), path)
 
 
 class InstallTests(unittest.TestCase):

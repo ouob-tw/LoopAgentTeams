@@ -472,8 +472,8 @@ def load_registry(cwd):
     try:
         add_map_files(root, data)
     except (OSError, ValueError) as exc:
-        warn(f'ignoring the registry: {exc}')
-        return None
+        # Still a mapped project: hook and run keep their rules, affected stops on this.
+        data['map_error'] = str(exc)
     return data
 
 
@@ -491,6 +491,11 @@ def add_map_files(root, data):
         if not isinstance(rules, list) or not isinstance(affected, dict) \
                 or not isinstance(affected.setdefault('map', []), list):
             raise ValueError(f'{path} must be {{"map": [...]}} and affected.map a list')
+        for i, rule in enumerate(rules):
+            if not isinstance(rule, dict):
+                raise ValueError(f'{path}: map[{i}] must be {{"paths": [...], "tests": [...]}}')
+            _strings(rule.get('paths'), f'{path}: map[{i}].paths', allow_empty=False)
+            _strings(rule.get('tests'), f'{path}: map[{i}].tests')
         affected['map'].extend(rules)
 
 
@@ -1638,6 +1643,8 @@ def cmd_run(rerun, purpose, reason, argv):
 
 def is_mapped(registry):
     """True when the registry has an affected-test map."""
+    if isinstance(registry, dict) and registry.get('map_error'):
+        return True
     affected = registry.get('affected') if isinstance(registry, dict) else None
     return isinstance(affected, dict) and bool(affected.get('map'))
 
@@ -1661,6 +1668,8 @@ def _dir_key(path):
 def read_map(registry):
     """The checked affected-test map: commands by directory, rules, shared paths, full
     suites and the integration branch. ValueError names the bad field."""
+    if registry.get('map_error'):
+        raise ValueError(registry['map_error'])
     affected = registry['affected']
     commands = affected.get('commands')
     if not isinstance(commands, dict) or not commands:

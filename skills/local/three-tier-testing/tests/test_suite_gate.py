@@ -1029,6 +1029,22 @@ class AffectedTests(AffectedCase):
         self.assertIn('.suite-gate.d/bad.json', result.stderr)
         self.assertEqual((self.ran(), self.full_runs()), ([], []))
 
+    def test_a_bad_suite_gate_d_rule_names_its_file(self):
+        (self.repo / '.suite-gate.d').mkdir()
+        (self.repo / '.suite-gate.d/odd.json').write_text('{"map": [null]}')
+        self.touch('src/app.py')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('.suite-gate.d/odd.json: map[0]', result.stderr)
+
+    def test_a_bad_suite_gate_d_file_keeps_the_project_mapped_for_run(self):
+        (self.repo / '.suite-gate.d').mkdir()
+        (self.repo / '.suite-gate.d/bad.json').write_text('{"map": [')
+        result = self.gate('run', '--', self.full('root'))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('--purpose post-merge', result.stderr)
+        self.assertEqual(self.full_runs(), [])
+
     def test_affected_runs_do_not_take_or_wait_for_a_host_slot_and_are_never_reused(self):
         self.set_config(max_slots=1)
         hold, release = self.blocker('hold')

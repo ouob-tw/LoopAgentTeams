@@ -46,8 +46,10 @@ HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re
 UNQUOTED_HEREDOC = re.compile(r'(?<!<)<<-?\s*([A-Za-z_]\w*)[^\n]*\n(.*?)^\s*\1\s*$', re.S | re.M)
 SUBSTITUTION = re.compile(r'(?<!\\)(?:`|\$\()')
 QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
-DELETE = re.compile(r'(?:^|[;&|(\n]|-c\s+[\'"])\s*' + WRAPPERS
-                    + r'(?P<tool>rm|trash-put|trash|gio\s+trash)(?=\s)')
+DELETE = re.compile(r'(?:^|[;&|({\n]|\b(?:then|do|else|elif)\s|-\w*c\s+[\'"])\s*'
+                    r'(?:\w+=\S*\s+)*' + WRAPPERS + r'(?:\w+=\S*\s+)*'
+                    r'(?P<tool>(?:[\w.~-]*/)*(?:rm|trash-put|trash)|gio\s+trash)(?=\s)')
+CD = re.compile(r'(?:^|[;&|(\n])\s*cd\s+(\S+)')
 # A last path component that is only a substitution: `$x`, `${x}`, `$(cmd)` or `cmd`.
 BARE_SUBSTITUTION = re.compile(r'\$\{?\w+\}?|\$\(.*\)|`.*`', re.S)
 SCRIPT_RUN = re.compile(r'(?:^|[;&|(\s])(?:(?:ba|z|da)?sh\s+(?:-\S+\s+)*)?'
@@ -122,53 +124,82 @@ def protected_dirs():
                                           state / 'lat')}
 
 
-def command_words(text, start):
-    """The raw words of the shell command starting at start, up to ; & | or a newline."""
-    words, word, depth, quote, i = [], [], 0, None, start
-    while i < len(text):
-        char = text[i]
-        if quote:
-            quote = None if char == quote else quote
-        elif char in '\'"`':
-            quote = char
-        elif text.startswith('$(', i):
-            depth += 1
-            word.append('$(')
-            i += 2
-            continue
-        elif char == ')' and depth:
-            depth -= 1
-        elif not depth and char in ';&|)\n':
-            break
-        elif not depth and char.isspace():
-            if word:
-                words.append(''.join(word))
-                word = []
+def blank_data(text):
+    """text with heredoc bodies and quoted data turned to spaces, same length and lines; the
+    script after `-c` is kept, since it runs."""
+    def spaces(match):
+        return re.sub(r'[^\n]', ' ', match.group(0))
+    text = HEREDOC.sub(spaces, text)
+    return QUOTED.sub(lambda m: m.group(0) if m.group(1) else spaces(m), text)
+
+
+def scan_word(word):
+    """Yield (index, char, quoted) for each char of a shell word: quoted is the quote or
+    substitution the char sits in ("'", '"', '$(' or a backtick), or None at top level.
+    An escaped char is skipped."""
+    stack, i = [], 0
+    while i < len(word):
+        char, top = word[i], stack[-1] if stack else None
+        yield i, char, top
+        if top == "'":
+            if char == "'":
+                stack.pop()
+        elif char == '\\':
             i += 1
-            continue
-        word.append(char)
+        elif char == top and char in '`"':
+            stack.pop()
+        elif word.startswith('$(', i):
+            stack.append('$(')
+            i += 1
+        elif char == ')' and top == '$(':
+            stack.pop()
+        elif char in '`"' or char == "'" and top != '"':
+            stack.append(char)
         i += 1
-    if word:
-        words.append(''.join(word))
+
+def command_words(text, start):
+    """The raw words of the shell command starting at start, up to ; & | ) or a newline."""
+    words, begin = [], None
+    for i, char, quoted in scan_word(text[start:] + '\n'):
+        if quoted is None and (char.isspace() or char in ';&|)'):
+            if begin is not None:
+                words.append(text[start + begin:start + i])
+                begin = None
+            if char != ' ' and char != '\t':
+                break
+        elif begin is None:
+            begin = i
+    else:
+        if begin is not None:  # an unclosed quote: the rest is one word (a `-c "..."` script)
+            words.append(text[start + begin:].rstrip())
     return words
 
 
 def split_last(word):
-    """(parent, last component) of a path, splitting only on slashes outside $(...)."""
-    word, depth, cut = word.rstrip('/'), 0, -1
-    for i, char in enumerate(word):
-        if word.startswith('$(', i):
-            depth += 1
-        elif char == ')' and depth:
-            depth -= 1
-        elif char == '/' and not depth:
-            cut = i
-    return word[:max(cut, 0)], word[cut + 1:]
+    """(parent, last component, literal) of a raw word, split on the last slash outside a
+    substitution; literal is True when that slash sits in single quotes."""
+    word = word.rstrip('/')
+    slashes = [(i, quoted) for i, char, quoted in scan_word(word)
+               if char == '/' and quoted not in ('$(', '`')]
+    cut, quoted = slashes[-1] if slashes else (-1, None)
+    return word[:max(cut, 0)], word[cut + 1:], quoted == "'"
+
+
+def unquote(part):
+    """A raw word part without its quotes, or None when it is all inside single quotes."""
+    if len(part) > 1 and part[0] == "'" and part[-1] == "'":
+        return None
+    return part.replace('"', '').replace("'", '')
 
 
 def resolve_path(word, cwd):
     """The path a delete argument names, or None when it holds an unknown substitution."""
-    path = re.sub(r'\$\{?HOME\}?', str(Path.home()), word)
+    path = word
+    for name, default in (('CLAUDE_CONFIG_DIR', None), ('CODEX_HOME', None),
+                          ('XDG_STATE_HOME', None), ('HOME', str(Path.home()))):
+        value = os.environ.get(name) or default
+        if value:
+            path = re.sub(r'\$\{?' + name + r'\}?(?![\w])', lambda _: value, path)
     path = str(Path.home()) + path[1:] if path == '~' or path.startswith('~/') else path
     if '$' in path or '`' in path:
         return None
@@ -177,20 +208,27 @@ def resolve_path(word, cwd):
 
 def risky_delete(command, cwd):
     """(message, fields) for a delete that can wipe a folder by mistake, or None."""
-    text = HEREDOC.sub('', command)
+    code = blank_data(command)
     protected = protected_dirs()
     projects = os.path.join(os.path.normpath(Path(os.environ.get('CLAUDE_CONFIG_DIR')
                                                   or Path.home() / '.claude')), 'projects')
-    for match in DELETE.finditer(text):
-        tool = ' '.join(match.group('tool').split())
-        for word in command_words(text, match.end()):
+    moves = [(m.start(), m.group(1)) for m in CD.finditer(code)]
+    for match in DELETE.finditer(code):
+        here = cwd
+        for at, target in moves:
+            moved = resolve_path(unquote(target) or target, here) if at < match.start() else None
+            here = moved or here
+        tool = os.path.basename(' '.join(match.group('tool').split()))
+        for word in command_words(command, match.end()):
             bare = word.replace('"', '').replace("'", '')
             if bare.startswith('-'):
                 continue
-            parent, last = split_last(bare)
-            if parent and BARE_SUBSTITUTION.fullmatch(last):
+            parent, last, literal = split_last(word)
+            last = unquote(last)
+            if parent and not literal and last is not None \
+                    and BARE_SUBSTITUTION.fullmatch(last):
                 return EMPTY_MESSAGE, {'tool': tool, 'word': bare}
-            path = resolve_path(bare, cwd)
+            path = resolve_path(bare, here) if unquote(word) is not None else None
             if path and (path in protected or os.path.dirname(path) == projects
                          or any(p.startswith(path.rstrip('/') + '/') for p in protected)):
                 return PROTECTED_MESSAGE, {'tool': tool, 'word': bare, 'path': path}
