@@ -298,6 +298,10 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	/** The question whose card was last kept in place in this conversation; the room after the
 	 *  conversation is kept for it. */
 	let held = $state<string | null>(null);
+	/** Empty space before the conversation, once a card was kept in place: what is above it got
+	 *  shorter while the page was at its top and could not scroll back. Taken out once scrolled
+	 *  past, the page scrolled so that nothing on screen moves. */
+	let head = $state<HTMLElement>();
 	/** Stops keeping the answered card in place; set while it is kept. */
 	let stopHolding = () => {};
 
@@ -343,6 +347,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 			if (element && top !== undefined && Math.abs(top - at) >= 1) {
 				makeRoom(element, at);
 				(scrollerOf(element) ?? window).scrollBy(0, element.getBoundingClientRect().top - at);
+				// Moved up past where the page can scroll back to.
+				const short = at - element.getBoundingClientRect().top;
+				if (head && short >= 1) head.style.height = `${head.offsetHeight + short}px`;
 			}
 			if (performance.now() < until) frame = requestAnimationFrame(step);
 			else stop();
@@ -352,6 +359,23 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		stopHolding = stop;
 	}
 	$effect(() => () => stopHolding());
+
+	// The space before the conversation goes once it is scrolled out of view above.
+	$effect(() => {
+		if (!head) return;
+		const absorb = () => {
+			if (!head?.offsetHeight) return;
+			const scroller = scrollerOf(head);
+			if (head.getBoundingClientRect().bottom > (scroller ? scroller.getBoundingClientRect().top : 0)) return;
+			// What follows stays where it is, whether or not the browser keeps it there by itself.
+			const next = head.nextElementSibling;
+			const was = next?.getBoundingClientRect().top;
+			head.style.height = '';
+			if (next && was !== undefined) (scroller ?? window).scrollBy(0, next.getBoundingClientRect().top - was);
+		};
+		addEventListener('scroll', absorb, { capture: true, passive: true });
+		return () => removeEventListener('scroll', absorb, true);
+	});
 
 	// Earlier parts loaded under the placed card, or the card kept in place, take the place of the
 	// room made for it.
@@ -468,6 +492,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 </script>
 
 <section class="history" data-block="transcript" bind:this={list} onsubmitcapture={hold}>
+	{#if held}<div class="head" bind:this={head} aria-hidden="true"></div>{/if}
 	{#if unplaced && card}
 		<div class="placed">{@render card()}</div>
 	{/if}
@@ -571,6 +596,11 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		display: flex;
 		flex-direction: column;
 		gap: 0.35rem;
+	}
+	/* Takes no room until it is given some: the list's gap after it is taken back. */
+	.head {
+		flex: none;
+		margin-bottom: -0.35rem;
 	}
 	/* minmax(0, …): a wide code block or table must not widen the list past its column; it
 	   scrolls sideways in its own box instead. */
