@@ -50,6 +50,7 @@ DELETE = re.compile(r'(?:^|[;&|({\n]|\b(?:then|do|else|elif)\s|-\w*c\s+[\'"])\s*
                     r'(?:\w+=\S*\s+)*' + WRAPPERS + r'(?:\w+=\S*\s+)*'
                     r'(?P<tool>(?:[\w.~-]*/)*(?:rm|trash-put|trash)|gio\s+trash)(?=\s)')
 CD = re.compile(r'(?:^|[;&|(\n])\s*cd(?=\s)')
+SEPARATORS = r'&&|\|\||[;&|()\n]'
 # A last path component that is only a substitution: `$x`, `${x}`, `$(cmd)` or `cmd`.
 # Placeholders for a $, backtick or ~ that quotes keep literal.
 LITERAL = {'$': '\x01', '`': '\x02', '~': '\x03'}
@@ -237,8 +238,9 @@ def resolve_path(text, cwd):
 
 
 def places(command, code, before, cwd):
-    """Every folder a command may run in at offset before. A cd joined to it only by && is
-    sure to apply; any other cd (after ;, in a subshell or a pipeline) may or may not."""
+    """Every folder a command may run in at offset before. A cd that starts a statement and
+    is joined to the delete only by && is sure to apply; any other cd (skipped after ||, in
+    a pipeline or a subshell, followed by ;) may or may not."""
     found = {cwd}
     for match in CD.finditer(code):
         if match.start() >= before:
@@ -246,10 +248,12 @@ def places(command, code, before, cwd):
         words = command_words(command, match.end())
         if not words:
             continue
-        moved = {p for p in (resolve_path(word_text(words[0]), here) for here in found) if p}
-        between = re.findall(r'&&|\|\||[;&|()\n]', code[match.end():before])
-        sure = between and all(sep == '&&' for sep in between) and len(moved) == len(found)
-        found = moved if sure else found | moved
+        moved = [resolve_path(word_text(words[0]), here) for here in found]
+        ahead = re.findall(SEPARATORS, code[:match.end() - 2])
+        between = re.findall(SEPARATORS, code[match.end():before])
+        sure = (all(moved) and ahead[-1:] != ['||'] and ahead[-1:] != ['|']
+                and between and all(sep == '&&' for sep in between))
+        found = set(moved) if sure else found | {p for p in moved if p}
     return found
 
 
