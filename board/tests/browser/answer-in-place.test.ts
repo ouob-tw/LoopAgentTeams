@@ -34,6 +34,7 @@ afterAll(async () => {
 const options = (labels: string[]) => labels.map((label, index) => ({ letter: 'ABC'[index]!, label, impact: '', recommended: index === 0 }));
 const ASKED_AT = '2026-10-20T01:00:00.000Z';
 const MESSAGE = '請決定。\n\nDECIDE: Q-1 r1 · 第一題；Q-2 r1 · 第二題';
+const ALONE = '請決定。\n\nDECIDE: Q-1 r1 · 第一題';
 /** About a line of text: how far the card may move. */
 const LINE = 24;
 
@@ -44,29 +45,36 @@ const LINE = 24;
 async function open(
 	project: string,
 	width: number,
-	{ older = 0, records = false, opened, height = 800, anchoring = true }: { older?: number; records?: boolean; opened?: string; height?: number; anchoring?: boolean }
+	{
+		older = 0,
+		records = false,
+		opened,
+		height = 800,
+		anchoring = true,
+		alone = false
+	}: { older?: number; records?: boolean; opened?: string; height?: number; anchoring?: boolean; alone?: boolean }
 ) {
 	const controller = fixture.bound(project, 'rana', {
 		questions: [
 			question({ id: 'Q-1', title: '第一題', kind: 'single', options: options(['甲', '乙']), asked_at: ASKED_AT }),
 			question({ id: 'Q-2', title: '第二題', kind: 'single', options: options(['丙', '丁']), asked_at: ASKED_AT, section_sha256: 'b'.repeat(64) })
-		]
+		].slice(0, alone ? 1 : 2)
 	});
 	const lines = [
 		...Array.from({ length: older }, (_, index) => ({ kind: 'assistant', time: '2026-10-20T00:30:00.000Z', text: `早先的訊息 ${index}。\n\n${'一些內容。'.repeat(40)}` })),
-		{ kind: 'assistant', time: '2026-10-20T01:00:30.000Z', text: MESSAGE },
+		{ kind: 'assistant', time: '2026-10-20T01:00:30.000Z', text: alone ? ALONE : MESSAGE },
 		...Array.from({ length: 3 }, (_, index) => ({ kind: 'assistant', time: '2026-10-20T01:01:00.000Z', text: `之後的訊息 ${index}。` }))
 	];
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
 	writeFileSync(join(fixture.dir, 'transcripts', `${controller.session_id}.jsonl`), lines.map((line) => JSON.stringify(line) + '\n').join(''));
-	fixture.report(controller.session_id, { tag: 'DECIDE', summary: '等你決定', message: MESSAGE, hcom_name: 'rana', workspace: controller.workspace, time: '2026-10-20T01:00:31.000Z' });
+	fixture.report(controller.session_id, { tag: 'DECIDE', summary: '等你決定', message: alone ? ALONE : MESSAGE, hcom_name: 'rana', workspace: controller.workspace, time: '2026-10-20T01:00:31.000Z' });
 	fixture.setHelper({ output: { controllers: [controller] }, recordOnAnswer: records });
 	await fixture.refresh(cookie);
 	const key = (id: string) => `q:${controller.session_id}:${id}`;
 	await send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: width < 600 });
 	const path = opened ? `/?item=${encodeURIComponent(key(opened))}` : `/?controller=${encodeURIComponent(controller.session_id)}`;
 	await send('Page.navigate', { url: fixture.url + path });
-	await browser!.tab.until(`document.querySelectorAll('.history form.answer').length === 2`);
+	await browser!.tab.until(`document.querySelectorAll('.history form.answer').length === ${alone ? 1 : 2}`);
 	if (!anchoring) await evaluate(`document.head.append(Object.assign(document.createElement('style'), { textContent: '* { overflow-anchor: none !important; }' }))`);
 	// An opened question is scrolled to and kept there for a moment first (2.5 s), not to be
 	// mistaken for keeping an answered card.
@@ -235,4 +243,35 @@ for (const width of [1280, 390]) {
 			for (const requestId of tab.paused) await send('Fetch.continueRequest', { requestId }).catch(() => {});
 		}
 	}, 60_000);
+}
+
+for (const width of [1280, 390]) {
+	for (const [length, older] of [['short', 0], ['long', 30]] as const) {
+		for (const anchoring of [true, false]) {
+			const name = `${width}px, a ${length} conversation at its top${anchoring ? '' : ', without scroll anchoring'}`;
+			test.skipIf(!CHROME)(`${name}: a lone card stays put though the bar above goes with its answer`, async () => {
+				const key = await open(`top-${width}-${length}-${anchoring}`, width, { older, records: true, height: 1200, anchoring, alone: true });
+				const scroller = scrollerAt(width);
+				await evaluate(`${scroller}.scrollTop = 0`);
+				expect(await evaluate<number>(`document.querySelectorAll('.questions .question').length`)).toBe(1);
+				await watch(key('Q-1'));
+				await sendAnswer(key('Q-1'));
+				const held = await settled(key('Q-1'));
+				// The bar went with the recorded answer.
+				expect(await evaluate<number>(`document.querySelectorAll('.questions .question').length`)).toBe(0);
+				expectStayed(held);
+				if (length === 'short') return;
+				// Scrolled down past the room made for it, as a person does: the room goes, and nothing
+				// on screen moves for it.
+				const head = `document.querySelector('.history .head')`;
+				const past = await evaluate<number>(`${head}.getBoundingClientRect().bottom + 100`);
+				expect(past).toBeGreaterThan(100);
+				const top = await evaluate<number>(`${cardOf(key('Q-1'))}.getBoundingClientRect().top`);
+				await evaluate(`window.dispatchEvent(new WheelEvent('wheel')); ${scroller}.scrollBy(0, ${past})`);
+				await sleep(300);
+				expect(await evaluate<number>(`${head}?.offsetHeight ?? 0`)).toBe(0);
+				expect(Math.abs((await evaluate<number>(`${cardOf(key('Q-1'))}.getBoundingClientRect().top`)) - (top - past))).toBeLessThan(2);
+			}, 60_000);
+		}
+	}
 }
