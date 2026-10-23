@@ -128,15 +128,16 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 Claude 的提示快取在最後一次請求後約一小時失效，失效後下一回合要整段重寫。監控每輪只對 Claude 主控本人檢查快取，快過期時叫醒它一次；任務卡上的附屬 Agent（含參謀）不論等待種類，一律不保溫，也不寫保溫或跳過保溫紀錄。Codex 沒有快取到期時間，不保溫。
 
 - 到期時間讀狀態列記錄器寫的 `<session_id>.json` 的 `prompt_cache.expires_at`（秒）：目錄為 `$LAT_USAGE_DIR`，未設時為 `$XDG_STATE_HOME/lat/usage`，再預設 `~/.local/state/lat/usage`；session 以 `hcom list --json` 的 `session_id` 對應。檔案不存在、讀不出、`warm` 不是 `true` 或已過期時不動作。
-- 條件：主控本人在 HCOM 顯示額度卡住（`inactive`／`rate_limit`）時不送；其餘須有有效等待聲明，與鬧鐘共用「回合已結束、可以輸入」的判斷（Claude 以 HCOM `listening` 為準），快取剩 5 分鐘以內，且這一輪沒有其他催促要送。
-- 主控的等待種類：等 Agent（`kind=agent`）與鬧鐘（`kind=alarm`）一律保溫；等決策（`kind=decision`）從聲明起最多 3 小時，且主機當地時間 01:00–09:00 不保溫（以送出時刻判斷，09:00 起恢復，仍受 3 小時上限）。到期、5 分鐘門檻與 3 小時上限也以送出時刻判斷，不用該輪開始的時間。
+- 窗口設 10 分鐘的原因：Claude Code 的閒置壓縮（`"idleCompaction"`，預設開啟）約在快取失效前 5 分鐘觸發，保溫必須搶在它之前；保溫被跳過時，由閒置壓縮兜底。
+- 條件：主控本人在 HCOM 顯示額度卡住（`inactive`／`rate_limit`）時不送；其餘須有有效等待聲明，與鬧鐘共用「回合已結束、可以輸入」的判斷（Claude 以 HCOM `listening` 為準），快取剩 10 分鐘以內，且這一輪沒有其他催促要送。
+- 主控的等待種類：等 Agent（`kind=agent`）與鬧鐘（`kind=alarm`）一律保溫；等決策（`kind=decision`）從聲明起最多 3 小時，且主機當地時間 01:00–09:00 不保溫（以送出時刻判斷，09:00 起恢復，仍受 3 小時上限）。到期、10 分鐘門檻與 3 小時上限也以送出時刻判斷，不用該輪開始的時間。
 - 動作：在視窗輸入一句 `[lat-watch] Prompt cache keep-alive.` 開頭的英文，請它讀未讀訊息；沒有新事就保持原等待、不重新聲明，用最短的回覆結束回合。
 - 同一個 `expires_at` 只送一次；送出後快取時間更新，下一次在新的到期前再送。視窗忙碌或輸入失敗時下一輪重試，快取已過期就放棄這一次。
 - 保溫提示與其簡短回覆不算進展，不讓等待聲明失效，不消耗或重設該段停住的催促與上報，也不改等待期限、延長判斷與連續到期計數；鬧鐘照原時間響。回覆中有工具操作、較長文字或傳出訊息時照常算進展。
 - 每次嘗試在 `watch.jsonl` 記 `cache-keepalive`（`agent`、`kind`、`expires_at`、`result` 為 `sent` 或 `failed`，失敗附 `error`）。
-- 有有效等待、快取剩 5 分鐘以內卻沒送時記 `cache-keepalive-skipped`（`agent`、`kind`、`expires_at`、`reason`），同一個 `expires_at` 同一原因只記一次。`reason` 為：`rate-limited`（主控額度卡住）、`status-<HCOM 狀態>`（如 `status-active`、`status-blocked`）、`prompt-not-empty`、`prompt-unreadable`（選單等畫面判不出輸入框）、`screen-working`、`decision-quiet-hours`、`decision-over-3h`、`other-action`（這一輪有其他催促或鬧鐘要送）、`usage-missing`（找不到或讀不出記錄器的檔案，`expires_at` 為 `null`，到檔案恢復前只記一次，不影響其他原因的去重）。快取已冷或已過期不記。
+- 有有效等待、快取剩 10 分鐘以內卻沒送時記 `cache-keepalive-skipped`（`agent`、`kind`、`expires_at`、`reason`），同一個 `expires_at` 同一原因只記一次。`reason` 為：`rate-limited`（主控額度卡住）、`status-<HCOM 狀態>`（如 `status-active`、`status-blocked`）、`prompt-not-empty`、`prompt-unreadable`（選單等畫面判不出輸入框）、`screen-working`、`decision-quiet-hours`、`decision-over-3h`、`other-action`（這一輪有其他催促或鬧鐘要送）、`usage-missing`（找不到或讀不出記錄器的檔案，`expires_at` 為 `null`，到檔案恢復前只記一次，不影響其他原因的去重）。快取已冷或已過期不記。
 - Claude 狀態 `listening` 但 `prompt_empty` 連續 15 分鐘不是布林值時記一筆 `prompt-unreadable`（`since` 與最後 8 行畫面，每行截到 200 字元），同一段只記一次；能判讀或狀態改變後重新計算。用來發現 Claude Code 改版後監控判不出輸入框、保溫一直送不出去的情況。
-- 監控狀態以 `feature_versions.cache_keepalive=3` 表示只保主控、額度卡住時跳過，並保留上述紀錄與 HCOM 狀態判斷；依下一節重啟監控後才生效。
+- 監控狀態以 `feature_versions.cache_keepalive=4` 表示只保主控、額度卡住時跳過，保溫窗口為快取剩 10 分鐘，並保留上述紀錄與 HCOM 狀態判斷；依下一節重啟監控後才生效。
 
 提示內容一變，快取就整段作廢，保溫救不回來：修改 `~/.claude/CLAUDE.md`、記憶檔或技能文字後，正在跑的 Claude 下一回合會整段重寫（2026-10-23 實測只閒置 43 分鐘就重寫）。要改這些檔案時，預期所有在跑的 Claude 都會重寫一次。
 
