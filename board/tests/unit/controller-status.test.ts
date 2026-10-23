@@ -55,6 +55,7 @@ function sources(running: Set<string> | null, agents: Agent[] = [], extraBound: 
 		duties: new Map(),
 		reportsError: null,
 		running,
+		paused: new Set(),
 		hcomError: null,
 		agents,
 		herdrError: null,

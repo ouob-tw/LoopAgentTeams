@@ -111,6 +111,8 @@ export interface Controller {
 	/** Whether its client is running: bound and not closed, or ended in LAT but still in hcom's
 	 *  list, as a woken one is until it binds again. */
 	running: boolean;
+	/** Its HCOM link is paused from the board: still a running controller, reached through Herdr. */
+	paused: boolean;
 	/** Where the controller runs in Herdr; null once it is idle or closed. */
 	herdr: { workspace: string; tab: string; pane: string } | null;
 	/** Herdr location from the same roster read; a string explains a failed read. */
@@ -239,14 +241,16 @@ export const AGENT_STATUS_LABEL: Record<AgentStatus, string> = {
 
 /**
  * Whether an agent is reached through hcom: `linked` when hcom's list has its session ID or its
- * Herdr pane, `none` when a list that could be read has neither, `unknown` when no list read since
+ * Herdr pane, `paused` when it has a pause record and a list that could be read does not have it on
+ * its link, `none` when a list that could be read has neither, `unknown` when no list read since
  * the agent appeared tells (none read since the board started, or it appeared while the list could
- * not be read).
+ * not be read) or a paused one's list cannot be read now.
  */
-export type AgentHcom = 'linked' | 'none' | 'unknown';
+export type AgentHcom = 'linked' | 'paused' | 'none' | 'unknown';
 
 export const AGENT_HCOM_LABEL: Record<AgentHcom, string> = {
 	linked: '有接 HCOM',
+	paused: '暫停通訊',
 	none: '沒接 HCOM',
 	unknown: 'HCOM 連線無法確認'
 };
@@ -256,9 +260,9 @@ export interface Agent {
 	/** The client's session ID, as Herdr reports it: the agent's key everywhere on the board. Null
 	 *  while Herdr does not know it yet: such an agent is listed but cannot be opened. */
 	id: string | null;
-	/** Its HCOM name when linked, otherwise its Herdr tab's title. */
+	/** Its HCOM name when linked or paused, otherwise its Herdr tab's title. */
 	name: string;
-	/** The HCOM name, as last read; null unless linked. */
+	/** The HCOM name, as last read, or the one it was paused under; null unless linked or paused. */
 	hcomName: string | null;
 	hcom: AgentHcom;
 	/** The client, as Herdr names it: `claude`, `codex` and the like. */

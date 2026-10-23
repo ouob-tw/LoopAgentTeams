@@ -1,13 +1,15 @@
 // Sending a message to a controller: the text is typed into the controller's client input and
 // submitted, the way the stall watcher nudges an agent. Never an HCOM message, so the controller
-// treats it as the user typing in that tab. One attempt, no retry, no other channel.
+// treats it as the user typing in that tab. One attempt, no retry, no other channel. A controller
+// whose HCOM link is paused is typed into through Herdr instead, as an agent hcom does not reach.
 import { randomUUID } from 'node:crypto';
 import { CLOSED_REASON, ENDED_REASON, UNKNOWN_CONTROLLER_REASON, type SendResponse, type SentMessage } from '../board/messages.ts';
 import type { Board } from './board.ts';
 import type { BoardConfig } from './config.ts';
 import { runCommand } from './external.ts';
 import { listControllers } from './helper.ts';
-import { isClosed } from './model.ts';
+import { agentCommand } from './herdr.ts';
+import { isClosed, isPaused } from './model.ts';
 import { appendSent } from './sent-log.ts';
 
 /**
@@ -101,6 +103,12 @@ async function attempt(board: Board, controllerId: string, rawText: string) {
 	} else if (isClosed(await board.sources(), controllerId)) {
 		// Its client is gone from hcom's list: there is no input box to type into; the page wakes it.
 		reason = CLOSED_REASON;
+	} else if (isPaused(await board.sources(), controllerId)) {
+		const sources = await board.sources();
+		const pane = sources.agents.find((agent) => agent.id === controllerId)?.herdr.pane || binding.herdr_pane;
+		const act = await agentCommand(board.config, ['prompt', pane, text]);
+		reason = act.ok ? null : `HCOM 通訊暫停中，改由 Herdr 輸入也沒有送出：${act.reason}`;
+		status = reason ? 502 : 200;
 	} else {
 		reason = await inject(board.config, hcomName, text);
 		status = reason ? 502 : 200;

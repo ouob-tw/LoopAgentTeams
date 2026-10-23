@@ -9,6 +9,7 @@
 	import { INFO_DETAILS_KEY, remember, remembered } from '#lib/board/prefs.ts';
 	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
+	import HcomBadge from './HcomBadge.svelte';
 	import DutyText from './DutyText.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import UsageLine from './UsageLine.svelte';
@@ -42,6 +43,7 @@
 		<span class="status"><StatusMark status={controller.status} />{STATUS_LABEL[controller.status]}</span>
 		<h2>{controller.project}</h2>
 		<span class="handle">@{controller.hcomName}</span>
+		{#if controller.paused}<span class="chip"><HcomBadge hcom="paused" /></span>{/if}
 		{#if controller.lastReportAt}<span class="chip">最後回報 {noticeTime(controller.lastReportAt, clock.now, clock.timeZone)}</span>{/if}
 		<button type="button" class="more" aria-expanded={details} onclick={toggleDetails}>
 			詳細資料<span class="chevron" class:open={details}><ChevronDown size="1em" /></span>

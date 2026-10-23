@@ -269,6 +269,7 @@ export const AGENT_NOT_RUNNING_REASON = 'hcom 的 Agent 清單裡沒有這個 Ag
 export const AGENT_FIXED_MODEL_REASON =
 	'這個 Codex Agent 啟動時指定了模型（--model、-m 或 --oss），接回後無法換模型，只能改思考強度';
 export const AGENT_NOT_LINKED_SWITCH_REASON = '這個 Agent 沒有接 HCOM，看板只能替有接 HCOM 的 Agent 切換模型與思考強度';
+export const AGENT_PAUSED_SWITCH_REASON = '這個 Agent 暫停通訊中，先按「恢復通訊」接回 HCOM 才能切換模型與思考強度';
 export const AGENT_HCOM_UNKNOWN_SWITCH_REASON =
 	'HCOM 連線無法確認：hcom 的清單讀不到，不知道這個 Agent 有沒有接 HCOM，沒有切換；讀到清單後就能切換。';
 export const AGENT_SWITCH_OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，停止會連看板一起關掉，沒有切換。';

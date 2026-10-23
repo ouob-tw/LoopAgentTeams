@@ -28,6 +28,10 @@
 // `sleepMs` as above; unless `stays` is set, the agent leaves the list and its pane, with the
 // Herdr agent in it, leaves the fake Herdr's <dir>/herdr.json, the way hcom closes it, and a
 // `stopped` event by `cli` is added for it, with the agent's `launch_args` when it has them.
+// `stop <name>` is logged the same way and follows `stop` (`exit`, `stderr`, `sleepMs`, `stays`) like
+// `kill`, but takes the agent off the list only, and before it sleeps (so a stop that runs out of time
+// has still stopped it): its pane and Herdr agent stay, as `hcom stop` leaves them. `breaksList:
+// { exit, stderr }` makes every list after it fail that way, as `listFail` does.
 // `events` (the board asks for `stopped` life events in full form, `--after` a time) prints the
 // events of <dir>/hcom-events.jsonl, one JSON object per line as `hcom events --full` does, those
 // at or after `--after` alone; it is logged to <dir>/hcom-events-calls.jsonl. `eventsFail:
@@ -96,7 +100,19 @@ const agentLike = Object.keys(process.env).filter((name) => /^(HCOM_|CLAUDE|CODE
 const kept = Object.fromEntries(['HCOM_DIR', 'CODEX_HOME', 'HERDR_SOCKET_PATH', 'HOME', 'PATH'].map((name) => [name, process.env[name] ?? null]));
 appendFileSync(join(dir, 'hcom-env.jsonl'), JSON.stringify({ command: args[0], agentLike, kept }) + '\n');
 
-if (args[0] === 'kill') {
+if (args[0] === 'stop') {
+	const stop = plan.stop ?? {};
+	if (!stop.exit && !stop.stays) {
+		plan.agents = (plan.agents ?? []).filter((/** @type {any} */ agent) => agent.name !== args[1]);
+		write(addedFile, JSON.stringify(added().filter((/** @type {any} */ agent) => agent.name !== args[1])));
+	}
+	if (stop.breaksList) plan.listFail = stop.breaksList;
+	write(planFile, JSON.stringify(plan));
+	setTimeout(() => {
+		process.stderr.write(stop.stderr ?? '');
+		process.exitCode = stop.exit ?? 0;
+	}, stop.sleepMs ?? 0);
+} else if (args[0] === 'kill') {
 	const kill = plan.kill ?? {};
 	setTimeout(() => {
 		if (!kill.exit && !kill.stays) {

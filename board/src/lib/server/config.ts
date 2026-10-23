@@ -39,6 +39,10 @@ export interface BoardConfig {
 	launchWaitMs: number;
 	/** The Herdr pane the board itself runs in, when it was started inside one; null otherwise. */
 	ownPane: string | null;
+	/** Where an agent whose HCOM link is paused has its pause record, shared with LAT's stall watcher. */
+	pausedDir: string;
+	/** How long a resumed link may take to show in hcom's list before the board says it did not. */
+	unpauseWaitMs: number;
 	/** Longest a change the file watch missed may take to be read and pushed to the pages. */
 	fallbackMs: number;
 	debounceMs: number;
@@ -176,6 +180,10 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		herdrSocket: env.HERDR_SOCKET_PATH || join(configHome(env), 'herdr/herdr.sock'),
 		launchWaitMs: seconds(env.LAT_BOARD_LAUNCH_WAIT_SECONDS, 180_000),
 		ownPane: env.HERDR_PANE_ID || null,
+		// The same folder LAT's `lat-watch.py` and `lat-reap.py` read.
+		pausedDir: env.LAT_HCOM_PAUSED_DIR && isAbsolute(env.LAT_HCOM_PAUSED_DIR) ? env.LAT_HCOM_PAUSED_DIR : join(stateHome(env), 'lat/hcom-paused'),
+		// A Codex agent runs one short turn to reconnect.
+		unpauseWaitMs: seconds(env.LAT_BOARD_UNPAUSE_WAIT_SECONDS, 60_000),
 		fallbackMs,
 		debounceMs: 200,
 		loginLockMs: seconds(env.LAT_BOARD_LOGIN_LOCK_SECONDS, 60_000),

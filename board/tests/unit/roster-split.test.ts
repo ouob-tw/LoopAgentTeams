@@ -17,6 +17,7 @@ function controller(hcomName: string, status: ControllerStatus, lastReportAt: st
 		client: 'claude',
 		status,
 		running: status !== 'idle' && status !== 'closed',
+		paused: false,
 		phase: null,
 		pendingCount: 0,
 		herdr: null,

@@ -1,6 +1,6 @@
 // What the page keeps about actions on the Herdr 分頁's agents: the operation record of the
 // agents it has opened, what a model switch may offer them, and one attempt at a time of sending
-// text, interrupting, closing or switching.
+// text, interrupting, closing, pausing or resuming its HCOM link, or switching.
 import type { AgentAction, AgentActionResponse } from './agent-actions.ts';
 import { request } from './api.ts';
 import type { ClosedResumeResponse } from './closed-agents.ts';
@@ -79,6 +79,16 @@ class AgentControl {
 	/** Close the agent and its Herdr pane, after the user confirmed it. */
 	close(agentId: string): Promise<Outcome> {
 		return this.#post('/api/agents/close', agentId, {});
+	}
+
+	/** Pause the agent's HCOM link, after the user confirmed it. */
+	pause(agentId: string): Promise<Outcome> {
+		return this.#post('/api/agents/pause', agentId, {});
+	}
+
+	/** Resume its paused HCOM link, after the user confirmed it; answers once it is back or the wait ran out. */
+	unpause(agentId: string): Promise<Outcome> {
+		return this.#post('/api/agents/unpause', agentId, {});
 	}
 
 	/** Move the card's Herdr tab next to the tab `onto`, the one it was dropped on, in its workspace. */

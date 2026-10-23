@@ -1351,3 +1351,50 @@ for (const width of [1280, 390]) {
 		}
 	}, 30_000);
 }
+
+test.skipIf(!CHROME)('the pause of the HCOM link shows for a linked agent, its resume for a paused one, neither for one not linked; pausing marks the controller paused', async () => {
+	const pausedDir = join(fixture.dir, 'hcom-paused');
+	rmSync(join(fixture.dir, 'hcom-calls.jsonl'), { force: true });
+	// Not linked to hcom, but paused from the board earlier.
+	mkdirSync(pausedDir, { recursive: true });
+	const pausedAt = new Date(Date.now() - 60_000).toISOString();
+	writeFileSync(join(pausedDir, 's-plain.json'), JSON.stringify({ session_id: 's-plain', hcom_name: 'plai', client: 'codex', pane: 'wA:p-s-plain', paused_at: pausedAt }));
+	try {
+		await fixture.refresh(cookie);
+		await visit(390, '?agent=s-long');
+		await tab.until(`!!document.querySelector('.detail [data-action="close"]')`, 'the page of one not linked');
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="pause"], .detail [data-action="unpause"]')`)).toBe(false);
+
+		await openTab();
+		await tab.until(`!!document.querySelector('.inbox [data-agent="s-plain"]')`, 'the agent list');
+		expect(await tab.eval<string>(`document.querySelector('.inbox [data-agent="s-plain"]').closest('li, .row, article')?.innerText ?? document.querySelector('.inbox [data-agent="s-plain"]').innerText`)).toContain('暫停通訊');
+		await openAgent('s-plain');
+		await tab.until(`!!document.querySelector('.detail [data-action="unpause"]')`, 'the paused agent\'s page');
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="pause"]')`)).toBe(false);
+		expect((await screen()).detail).toContain('暫停通訊');
+		expect((await screen()).detail).not.toContain('沒接 HCOM');
+		expect(await tab.eval(FITS)).toBe(true);
+
+		// The linked controller, opened from the Herdr tab: pause, asked first.
+		await openTab();
+		await openAgent('s-lead');
+		await tab.until(`!!document.querySelector('.detail [data-action="pause"]')`, 'the controller\'s page');
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="unpause"]')`)).toBe(false);
+		await click('.detail [data-action="pause"]');
+		await tab.until(`!!document.querySelector('.detail [data-action="confirm-pause"]')`, 'the confirmation');
+		expect(await tab.eval<string>(`document.querySelector('.detail .confirm').innerText`)).toContain('hcom stop');
+		expect(await tab.eval(FITS)).toBe(true);
+		await click('.detail [data-action="confirm-pause"]');
+		await tab.until(`document.querySelector('.dock')?.innerText.includes('已暫停 lead 的 HCOM 通訊')`, 'the pause notice');
+		await tab.until(`!!document.querySelector('.detail [data-action="unpause"]')`, 'its resume');
+		expect(JSON.parse(readFileSync(join(pausedDir, 's-lead.json'), 'utf8'))).toMatchObject({ hcom_name: 'lead', pane: 'wA:p-s-lead' });
+		// Still a controller at work, marked paused, not closed.
+		expect((await screen()).detail).toContain('暫停通訊');
+		expect((await screen()).detail).not.toContain('已關閉');
+	} finally {
+		rmSync(pausedDir, { recursive: true, force: true });
+		fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'active' }] });
+		setHerdr(AGENTS);
+		await fixture.refresh(cookie);
+	}
+}, 30_000);
