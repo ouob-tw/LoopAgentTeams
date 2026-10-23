@@ -88,7 +88,14 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 
 鬧鐘以 `kind=alarm` 存入等待聲明；每位 Agent 只保留最後一筆，新 `wait` 或 `alarm` 取代舊聲明。有效期間視為正常等待，收到其他訊息仍保留。計時保存 `due_at`；檔案與程序保存 `timeout_at`，第一次觀察到條件成立時保存 `due_at`，若未成立而逾時則以原 `timeout_at` 作為 `due_at`。條件已成立後不再重算時間或結果。
 
-監控每分鐘檢查，該響後在空輸入框輸入 `[lat-watch] ` 開頭的英文，包含 `alarm`、`condition met` 或 `timed out` 與登記原因。視窗忙碌或輸入失敗時下輪再試，成功才標為已響。空輸入框且視窗已就緒仍須確認回合已結束：HCOM 為 `listening`，或 Codex 雖仍 `active`，但紀錄已確認回合結束；若紀錄仍在回合中或畫面有正在工作的提示，則不輸入。Claude 的 `active` 視為仍在工作。回合結束後留下的背景程序不阻擋鬧鐘；Claude 底部提示改成背景工作數（如 `⏵⏵ bypass permissions on · 1 shell`）時 HCOM 回報未就緒，監控仍視為就緒。送達期限固定為 `due_at` 加 10 分鐘，不因監控中斷順延；恢復時已超過期限，空輸入框仍先叫醒一次，否則以 `undelivered` 結束等待並通知上一層，附 Agent、原因與送不進去的狀況；輸入失敗也到期。Agent 消失或視窗讀不到時仍依原期限到期，通知說明視窗無法使用。通知失敗下輪重試，送達後不重送。
+監控每分鐘檢查，該響後在空輸入框輸入 `[lat-watch] ` 開頭的英文，包含 `alarm`、`condition met` 或 `timed out` 與登記原因。視窗忙碌或輸入失敗時下輪再試，成功才標為已響。
+
+「回合已結束、可以輸入」（鬧鐘、等待到期催促與快取保溫共用）依 client 判斷：
+
+- Claude 以 HCOM 狀態為準：`listening` 才算回合結束，`active`、`blocked` 不輸入。畫面只用來確認 `hcom term --json` 的 `prompt_empty` 為 `true` 且輸入框沒有字，以及沒有正在工作的提示；不看 `ready` 與底部提示文字，所以底部顯示背景工作（如 `· 1 shell`）時照常輸入。使用者打開的 `/model`、`/rate-limit-options` 等選單時 HCOM 仍是 `listening`，但 `prompt_empty` 不是布林值，監控視為輸入框不可用而不輸入（在選單裡打字會選到項目）；等核准與 AskUserQuestion 畫面是 `blocked`。
+- Codex 不變：空輸入框且視窗已就緒，HCOM 為 `listening`，或雖仍 `active` 但紀錄已確認回合結束；紀錄仍在回合中或畫面有正在工作的提示時不輸入。
+
+回合結束後留下的背景程序不阻擋鬧鐘。送達期限固定為 `due_at` 加 10 分鐘，不因監控中斷順延；恢復時已超過期限，空輸入框仍先叫醒一次，否則以 `undelivered` 結束等待並通知上一層，附 Agent、原因與送不進去的狀況；輸入失敗也到期。Agent 消失或視窗讀不到時仍依原期限到期，通知說明視窗無法使用。通知失敗下輪重試，送達後不重送。
 
 聲明、該響時間、是否已響與待送通知均保存在聲明檔，監控狀態也鏡映聲明；已響聲明另保存催促時間、進展指紋與上報狀態，監控狀態保存失敗或重啟後依時間還原較新的已響紀錄，再由目前觀察辨識後來的真正進展，不還原已被新進展取代的舊催促。可恢復的存檔失敗會保留已送達結果並重試保存，不再次輸入或重送通知；只有輸入成功後、保存前程序中斷可能重響一次。鬧鐘文字不算進展，響起算該段停住唯一一次催促，10 分鐘沒有進展則沿用停住上報，回合已結束的空輸入框不因背景程序仍在執行而延後上報；正在工作的回合不因視窗回報 ready 而當作停住。未送達後由原有停住規則接手。
 
@@ -98,7 +105,7 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 
 等待 Agent 預設 50 分鐘，短於 Claude 一小時的提示快取，多數情況醒來時快取還在；下方的延長（最多到 80 分鐘）或等待者自己忙碌而晚送催促時，仍可能超過一小時；可在 `wait` 加上 `--minutes 1..720` 指定分鐘數。決策等待沒有期限，指定 `--minutes` 會被拒絕。`--for` 的 Agent 名稱依清單解析成完整名稱；解析後是自己時拒絕，保留原聲明，提示改用 `alarm`。
 
-期限到時，被等的 Agent 必須同屬這支監控的對象，而且最近 20 分鐘有進展或前景仍在執行指令，才延長到下一輪判斷；只有背景程序在跑、或它自己處於有效等待，都不算有進展。延長最多到原期限後 30 分鐘，之後不論對方狀態都到期。每筆聲明只記錄第一次延長。否則聲明立刻失效，原因為 `expired`，監控在等待者視窗輸入 `[lat-watch] ` 催促，寫明對象、已等多久，請它查看對方狀態後繼續工作或重新聲明。與鬧鐘共用「回合已結束、視窗就緒且輸入框為空」的判斷；視窗忙碌或輸入框有字時下一輪再試，回合結束後殘留的背景程序不阻擋催促。送達後回到原有停住處理。
+期限到時，被等的 Agent 必須同屬這支監控的對象，而且最近 20 分鐘有進展或前景仍在執行指令（Claude 看 HCOM 狀態是否 `active`，其他 client 看視窗是否未就緒），才延長到下一輪判斷；只有背景程序在跑、或它自己處於有效等待，都不算有進展。延長最多到原期限後 30 分鐘，之後不論對方狀態都到期。每筆聲明只記錄第一次延長。否則聲明立刻失效，原因為 `expired`，監控在等待者視窗輸入 `[lat-watch] ` 催促，寫明對象、已等多久，請它查看對方狀態後繼續工作或重新聲明。與鬧鐘共用「回合已結束、可以輸入」的判斷；視窗忙碌或輸入框有字時下一輪再試，回合結束後殘留的背景程序不阻擋催促。送達後回到原有停住處理。
 
 同一對象連續第二次到期，另通知上一層一次，附等待者、對象與兩筆聲明時間：執行 Agent 通知主控，主控則通知使用者並在主控對話留說明。第三次以後只催促等待者，直到原有條件正常解除等待或下一筆換對象，計數才歸零。通知失敗下一輪重試，成功後不重送。有 Herdr 但彈出通知暫時失敗時，保留已送達的對話說明，只重試彈出通知；沒有 Herdr 時沿用只留對話說明的方式。
 
@@ -109,12 +116,31 @@ uv run --no-project python "$lat_dir/scripts/lat-watch.py" alarm --workspace "$w
 Claude 的提示快取在最後一次請求後約一小時失效，失效後下一回合要整段重寫。監控每輪對監控對象中的 Claude Agent（主控本人與任務卡 Agent）檢查快取，快過期時叫醒它一次；Codex 沒有快取到期時間，不保溫。
 
 - 到期時間讀狀態列記錄器寫的 `<session_id>.json` 的 `prompt_cache.expires_at`（秒）：目錄為 `$LAT_USAGE_DIR`，未設時為 `$XDG_STATE_HOME/lat/usage`，再預設 `~/.local/state/lat/usage`；session 以 `hcom list --json` 的 `session_id` 對應。檔案不存在、讀不出、`warm` 不是 `true` 或已過期時不動作。
-- 條件：有有效等待聲明，與鬧鐘共用「回合已結束、視窗就緒且輸入框為空」的判斷，快取剩 5 分鐘以內，且這一輪沒有其他催促要送。
+- 條件：有有效等待聲明，與鬧鐘共用「回合已結束、可以輸入」的判斷（Claude 以 HCOM `listening` 為準），快取剩 5 分鐘以內，且這一輪沒有其他催促要送。
 - 範圍：等 Agent（`kind=agent`）與鬧鐘（`kind=alarm`）一律保溫；等決策（`kind=decision`）從聲明起最多 3 小時，且主機當地時間 01:00–09:00 不保溫（以送出時刻判斷，09:00 起恢復，仍受 3 小時上限）。到期、5 分鐘門檻與 3 小時上限也以送出時刻判斷，不用該輪開始的時間。
 - 動作：在視窗輸入一句 `[lat-watch] Prompt cache keep-alive.` 開頭的英文，請它讀未讀訊息；沒有新事就保持原等待、不重新聲明，用最短的回覆結束回合。
 - 同一個 `expires_at` 只送一次；送出後快取時間更新，下一次在新的到期前再送。視窗忙碌或輸入失敗時下一輪重試，快取已過期就放棄這一次。
 - 保溫提示與其簡短回覆不算進展，不讓等待聲明失效，不消耗或重設該段停住的催促與上報，也不改等待期限、延長判斷與連續到期計數；鬧鐘照原時間響。回覆中有工具操作、較長文字或傳出訊息時照常算進展。
-- 每次嘗試在 `watch.jsonl` 記 `cache-keepalive`（`agent`、`kind`、`expires_at`、`result` 為 `sent` 或 `failed`，失敗附 `error`）。監控狀態以 `feature_versions.cache_keepalive=1` 表示支援；依下一節重啟監控後才生效。
+- 每次嘗試在 `watch.jsonl` 記 `cache-keepalive`（`agent`、`kind`、`expires_at`、`result` 為 `sent` 或 `failed`，失敗附 `error`）。
+- 有有效等待、快取剩 5 分鐘以內卻沒送時記 `cache-keepalive-skipped`（`agent`、`kind`、`expires_at`、`reason`），同一個 `expires_at` 同一原因只記一次。`reason` 為：`status-<HCOM 狀態>`（如 `status-active`、`status-blocked`）、`prompt-not-empty`、`prompt-unreadable`（選單等畫面判不出輸入框）、`screen-working`、`decision-quiet-hours`、`decision-over-3h`、`other-action`（這一輪有其他催促或鬧鐘要送）、`usage-missing`（找不到或讀不出記錄器的檔案，`expires_at` 為 `null`，到檔案恢復前只記一次，不影響其他原因的去重）。快取已冷或已過期不記。
+- Claude 狀態 `listening` 但 `prompt_empty` 連續 15 分鐘不是布林值時記一筆 `prompt-unreadable`（`since` 與最後 8 行畫面，每行截到 200 字元），同一段只記一次；能判讀或狀態改變後重新計算。用來發現 Claude Code 改版後監控判不出輸入框、保溫一直送不出去的情況。
+- 監控狀態以 `feature_versions.cache_keepalive=2` 表示支援上述紀錄與以 HCOM 狀態判斷；依下一節重啟監控後才生效。
+
+提示內容一變，快取就整段作廢，保溫救不回來：修改 `~/.claude/CLAUDE.md`、記憶檔或技能文字後，正在跑的 Claude 下一回合會整段重寫（2026-10-23 實測只閒置 43 分鐘就重寫）。要改這些檔案時，預期所有在跑的 Claude 都會重寫一次。
+
+查快取：
+
+- `status` 的每位 Claude Agent 有 `cache`：`expires_at`、`warm`（讀記錄器檔案的當下值）、`can_keep_alive` 與 `reason`（現在能否保溫，與快取剩多久無關：記錄器檔案與 HCOM 狀態以查詢當下為準，依序可能是 `usage-missing`、`cache-cold`、`cache-expired`、`status-<狀態>`；其餘如輸入框與等待聲明取監控最近一輪 `checked_at` 的判斷，`no-wait` 表示沒有有效等待；HCOM 已回到 `listening` 而監控尚未重新判斷，或從未判斷過時，`can_keep_alive` 與 `reason` 為 `null`）、`last_keepalive`（上次嘗試的 `at`、`result`、`expires_at`，失敗附 `error`）。
+- 查某次閒置後是讀快取還是整段重寫：
+
+```bash
+uv run --no-project python "$lat_dir/scripts/lat-watch.py" cache-history --agent <HCOM 名稱> \
+  [--workspace "$workspace"] [--json]
+# 或以 session ID 查（HCOM 查不到時從 $CLAUDE_CONFIG_DIR 或 ~/.claude 的 projects/ 找紀錄檔）
+uv run --no-project python "$lat_dir/scripts/lat-watch.py" cache-history --session <session ID>
+```
+
+讀該 session 的 Claude 對話紀錄，列出主對話每段超過 5 分鐘的閒置（從上一個請求最後一段回覆寫入，到下一個請求前最後一筆使用者紀錄，即提示或工具結果寫入；不含回覆延遲）：起訖時間、長度，以及之後第一個請求讀快取（`cache_read_tokens`）與寫快取（`cache_write_tokens`）的 token 數；寫多於讀判為 `rewrite`（整段重寫），否則 `hit`，兩者皆 0 為 `unknown`。同一請求分段寫入的多筆只算一次，子 Agent 與錯誤佔位紀錄不算；錯誤後自動重試的請求以它第一段回覆的時間為準。加 `--workspace` 時一併標出該段期間這位 Agent 的 `cache-keepalive` 與 `cache-keepalive-skipped` 紀錄。
 
 ## 更新監控程式後重啟
 
@@ -144,7 +170,7 @@ Claude 的提示快取在最後一次請求後約一小時失效，失效後下�
 - **額度用完、模型滿載**：只通知一次，不催。Codex 模型滿載時改用其他模型；Codex 額度通知只作為查證訊號，依 /hcom-spawn 的「Codex 額度與換帳號」程序即時查證後恢復。沒有可用訂閱帳號，或 Claude 遇到額度限制時，由使用者決定；唯一例外是 Claude 後端實作任務，依 /hcom-spawn 自動改派 GPT 並事後回報。監控本身不會換帳號、換模型或重開 Agent。
 - **輸入框殘留文字處理結果**：通知寫明結果（已存檔清除，或存檔失敗、文字有變動、排隊訊息已消失、清除無法確認而未清），並附原文與存檔位置；先看結果再判斷輸入框是否已清空，未清就依 /hcom-spawn 的排查程序人工處理。原文不是真人答覆證據；看起來像使用者打到一半的答覆時，在聊天請使用者重新送出。
 
-需要總覽時查目前監控對象、各自狀態與等待聲明（`deadline_at` 為期限，`expiry_count` 為連續到期次數）：
+需要總覽時查目前監控對象、各自狀態、等待聲明（`deadline_at` 為期限，`expiry_count` 為連續到期次數）與 Claude 的快取（見[快取保溫](#快取保溫)）：
 
 ```bash
 uv run --no-project python "$lat_dir/scripts/lat-watch.py" status --workspace "$workspace" \
