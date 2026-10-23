@@ -273,7 +273,8 @@
 			const id = value.slice(3);
 			form.workspaceOption = { kind: 'existing', id };
 			form.chosenLabel = workspaces.find((workspace) => workspace.id === id)?.label ?? id;
-		} else form.workspaceOption = { kind: value as 'current' | 'auto' | 'new' };
+		} else if (value === 'current' || value === 'auto' || value === 'new') form.workspaceOption = { kind: value };
+		// Anything else is no option of the field: the choice stays as it was.
 	}
 	const newName = $derived(newWorkspaceName(form.workspaceName, form.folderPath));
 	const sendTo = $derived(workspaceToSend(form.workspaceOption, target?.workspace ?? null, newName));
