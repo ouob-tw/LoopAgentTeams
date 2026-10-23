@@ -192,6 +192,17 @@ class ReapTestCase(unittest.TestCase):
         self.record_life('batch_launched', agent, batch_id=f'batch-{agent}', instances=[agent])
         self.record_life('stopped', agent, reason='killed')
 
+    def remember(self, agent, directory=None):
+        """An earlier reap saw HCOM list the agent's id under its name."""
+        path = (directory or self.state / 'lat/reaper') / 'seen.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        seen = json.loads(path.read_text())['seen'] if path.exists() else {}
+        path.write_text(json.dumps({'seen': {**seen, self.scope + agent: agent}}))
+
+    def seen(self):
+        path = self.state / 'lat/reaper/seen.json'
+        return json.loads(path.read_text())['seen'] if path.exists() else {}
+
     def run_reaper(self, *args, cwd=None, env=None, timeout=60):
         return subprocess.run([PYTHON, str(SCRIPT), *args], text=True, capture_output=True,
                               env={**self.env, **(env or {})}, cwd=cwd, timeout=timeout)
@@ -234,10 +245,12 @@ class ReapTestCase(unittest.TestCase):
     def dead_agent(self, agent, label=None, recorded=True, **options):
         """A leftover service of an agent HCOM no longer lists and whose client is gone.
 
-        recorded: HCOM recorded the agent as stopped; otherwise it never saw the agent.
+        recorded: a reap saw HCOM list the agent and HCOM recorded it as stopped; otherwise
+        HCOM never saw the agent.
         """
         label = label or f'{agent}-service'
         if recorded:
+            self.remember(agent)
             self.record_stopped(agent)
         return self.spawn(self.node(label, **options), self.agent_env(agent))[label]
 
@@ -322,7 +335,7 @@ class ReapTests(ReapTestCase):
 
     def test_corrupt_keep_records_close_nothing(self):
         service = self.dead_agent('corrupt')
-        (self.state / 'lat/reaper').mkdir(parents=True)
+        (self.state / 'lat/reaper').mkdir(parents=True, exist_ok=True)
         (self.state / 'lat/reaper/keeps.json').write_text('{"keeps": [{"pid": 1}]}')
         result = self.run_reaper('reap')
         self.assertEqual(result.returncode, 1)
@@ -331,7 +344,7 @@ class ReapTests(ReapTestCase):
 
     def test_keep_records_with_wrong_types_close_nothing(self):
         service = self.dead_agent('typed')
-        (self.state / 'lat/reaper').mkdir(parents=True)
+        (self.state / 'lat/reaper').mkdir(parents=True, exist_ok=True)
         (self.state / 'lat/reaper/keeps.json').write_text(json.dumps({'keeps': [{
             'pid': str(service), 'starttime': self.started['typed-service'][1],
             'process_id': self.scope + 'typed', 'reason': 'r', 'until': iso(600), 'by': 'b'}]}))
@@ -355,6 +368,7 @@ class ReapTests(ReapTestCase):
             self.node('plain'),
         ])
         pids = self.spawn(tree, self.agent_env('dead'))
+        self.remember('dead')
         self.record_stopped('dead')
         self.reap()
         self.assertTrue(self.gone(pids['plain']))
@@ -410,6 +424,7 @@ class ReapTests(ReapTestCase):
         self.reap()
         self.assertTrue(all(map(self.alive, pids.values())))
         self.assertEqual(self.log(), [])
+        self.assertEqual(self.seen(), {self.scope + 'ns': 'ns'})
         self.set_hcom([])
         client.kill()
         client.wait(timeout=10)
@@ -418,6 +433,8 @@ class ReapTests(ReapTestCase):
         self.assertTrue(self.gone(pids['ns-helper']) and self.gone(pids['ns-worker']))
         self.assertEqual(sorted(self.closed_pids()), sorted([pids['ns-helper'], pids['ns-worker']]))
         self.assertEqual({record['why'] for record in self.log()}, {'owner agent ended'})
+        self.reap()
+        self.assertEqual(self.seen(), {})
 
     def unreadable_node(self, label, children=(), **options):
         """A node that turns off PR_SET_DUMPABLE, so this user cannot read its /proc environ."""
@@ -498,6 +515,8 @@ class ReapTests(ReapTestCase):
             self.assertNotIn(f'PID {service} ', result.stdout, action)
         self.assertTrue(self.alive(service))
         self.assertEqual(self.log(), [])
+        # The simulated reap saw no process carrying the id, so it forgot the seen record.
+        self.remember('foreign')
         self.reap()
         self.assertTrue(self.gone(service))
 
@@ -512,20 +531,55 @@ class UnknownOwnerTests(ReapTestCase):
         self.record_life('stopped', 'foreign', reason='killed')
         odd = self.spawn(self.node('odd-service'), {**self.agent_env('odd'),
                                                     'HCOM_INSTANCE_NAME': "o'dd"})
-        unknown = [zero, bare['bare-service'], foreign, odd['odd-service']]
+        # A stop pair alone is not enough: no reap ever saw HCOM list this id.
+        unseen = self.dead_agent('unseen', recorded=False)
+        self.record_stopped('unseen')
+        # The id was seen, but under another name than the process inherited.
+        renamed = self.dead_agent('renamed', recorded=False)
+        self.record_stopped('renamed')
+        self.remember('renamed')
+        seen = self.seen()
+        seen[self.scope + 'renamed'] = 'someone'
+        (self.state / 'lat/reaper/seen.json').write_text(json.dumps({'seen': seen}))
+        unknown = [zero, bare['bare-service'], foreign, odd['odd-service'], unseen, renamed]
         for args in (('--trigger', 'periodic'), ()):
             result = self.reap(*args)
-            self.assertIn('Not closed: 4 process(es) whose owner HCOM has no stop record', result.stdout)
+            self.assertIn('Not closed: 6 process(es) whose owner is not recorded as stopped', result.stdout)
         self.assertTrue(all(map(self.alive, unknown)))
         self.assertEqual(self.log(), [])
-        rows = self.run_reaper('scan').stdout.split('Unknown owner: 4')[1].split('Never handled:')[0]
+        rows = self.run_reaper('scan').stdout.split('Unknown owner: 6')[1].split('Never handled:')[0]
         for pid in unknown:
             self.assertIn(f'PID {pid} ', rows)
+
+    def test_nil_id_is_never_closed(self):
+        # Only scan here: in the nil scope, other nil-id processes on the host are visible.
+        nil = '00000000-0000-0000-0000-000000000000'
+        self.env['LAT_REAP_TEST_SCOPE'] = nil
+        service = self.spawn(self.node('nil-service'),
+                             {**self.agent_env('nil'), 'HCOM_PROCESS_ID': nil})['nil-service']
+        self.record_stopped('nil')
+        directory = self.state / 'lat/reaper'
+        directory.mkdir(parents=True, exist_ok=True)
+        (directory / 'seen.json').write_text(json.dumps({'seen': {nil: 'nil'}}))
+        scan = self.run_reaper('scan').stdout
+        self.assertIn(f'PID {service} ', scan.split('Unknown owner:')[1].split('Never handled:')[0])
+        self.assertNotIn(f'PID {service} ', scan.split('Leftover:')[1].split('Kept:')[0])
+
+    def test_corrupt_seen_records_close_nothing(self):
+        service = self.dead_agent('amnesia')
+        (self.state / 'lat/reaper/seen.json').write_text('{"seen": {"x": 1}}')
+        result = self.run_reaper('reap')
+        self.assertEqual(result.returncode, 1)
+        self.assertTrue(self.alive(service))
+        [record] = self.log()
+        self.assertEqual(record['result'], 'aborted')
+        self.assertIn('seen agent records unreadable', record['reason'])
 
     def test_stop_before_the_launch_belongs_to_an_earlier_agent_of_that_name(self):
         self.record_life('stopped', 'reused', reason='killed')
         self.record_life('batch_launched', 'reused', batch_id='batch-reused', instances=['reused'])
         service = self.dead_agent('reused', recorded=False)
+        self.remember('reused')
         self.reap()
         self.assertTrue(self.alive(service))
         self.record_life('stopped', 'reused', reason='killed')
@@ -535,8 +589,9 @@ class UnknownOwnerTests(ReapTestCase):
     def test_agent_option_closes_only_with_a_stop_record(self):
         service = self.dead_agent('quiet', recorded=False)
         result = self.reap('--agent', 'test-quiet')
-        self.assertIn('Not closed: 1 process(es) whose owner HCOM has no stop record', result.stdout)
+        self.assertIn('Not closed: 1 process(es) whose owner is not recorded as stopped', result.stdout)
         self.assertTrue(self.alive(service))
+        self.remember('quiet')
         self.record_stopped('quiet')
         self.reap('--agent', 'test-quiet')
         self.assertTrue(self.gone(service))
@@ -552,8 +607,24 @@ class UnknownOwnerTests(ReapTestCase):
         [record] = self.log()
         self.assertEqual(record['result'], 'aborted')
         self.assertIn('HCOM stop records unreadable', record['reason'])
-        self.events.write_text(json.dumps({'id': 'x', 'data': {}}) + '\n')
-        self.assertIn('unexpected format', self.run_reaper('scan').stdout)
+        malformed = [{'id': 'x', 'data': {}},
+                     {'id': 1, 'instance': [], 'data': {'action': 'stopped'}},
+                     {'id': 1, 'data': {'action': 'batch_launched', 'batch_id': [],
+                                        'instances': ['blind']}},
+                     {'id': 1, 'data': {'action': 'batch_launched', 'batch_id': 'batch-blind',
+                                        'instances': 'blind'}},
+                     {'id': 1, 'data': {'action': 'batch_launched', 'batch_id': 'batch-blind',
+                                        'instances': [1]}}]
+        for event in malformed:
+            self.events.write_text('')
+            self.record_stopped('blind')
+            with open(self.events, 'a') as stream:
+                stream.write(json.dumps(event) + '\n')
+            result = self.run_reaper('reap')
+            self.assertEqual(result.returncode, 1, event)
+            self.assertIn('unexpected format', result.stdout, event)
+            self.assertTrue(self.alive(service), event)
+        self.assertEqual({record['result'] for record in self.log()}, {'aborted'})
 
 
 class SignalTimeIdentityTests(ReapTestCase):
@@ -792,7 +863,9 @@ class SharedStateTests(ReapTestCase):
     def test_state_defaults_to_the_home_state_folder_without_xdg_state_home(self):
         home = self.root / 'home'
         home.mkdir()
-        service = self.dead_agent('home')
+        service = self.dead_agent('home', recorded=False)
+        self.record_stopped('home')
+        self.remember('home', home / '.local/state/lat/reaper')
         environment = {key: value for key, value in self.env.items() if key != 'XDG_STATE_HOME'}
         result = subprocess.run([PYTHON, str(SCRIPT), 'reap'], text=True, capture_output=True,
                                 env={**environment, 'HOME': str(home)}, timeout=60)
@@ -825,7 +898,7 @@ class SharedStateTests(ReapTestCase):
         self.assertIn('Recent close records', sections)
 
     def test_scan_creates_no_state_folder(self):
-        self.dead_agent('fresh')
+        self.dead_agent('fresh', recorded=False)
         result = self.run_reaper('scan')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertFalse(self.state.exists())

@@ -2,9 +2,9 @@
 """Close processes that HCOM agents left behind (stdlib only).
 
 A process belongs to the agent whose HCOM_PROCESS_ID it inherited. It is a leftover once
-that agent has ended: HCOM no longer lists it, no client process of it is running, and HCOM
-recorded the agent it inherited (name and launch batch) as stopped. Owners HCOM never
-recorded as stopped are unknown and never closed.
+that agent has ended: HCOM no longer lists it, no client process of it is running, an
+earlier reap saw HCOM list that id under the inherited name, and HCOM recorded the agent it
+inherited (name and launch batch) as stopped. Other owners are unknown and never closed.
 Keeps, the close log and the lock live in one user-level folder shared by every project.
 See docs/adr/0008-lat-service-reaper.md.
 """
@@ -40,7 +40,7 @@ RECENT_CLOSURES = 10
 EVENT_LIMIT = 100000
 # Names and batch ids go into an SQL filter, so only these characters are accepted.
 SAFE_VALUE = re.compile(r'[A-Za-z0-9_.-]+')
-KEEPS, LOG, LOCK = 'keeps.json', 'closed.jsonl', 'reap.lock'
+KEEPS, LOG, LOCK, SEEN = 'keeps.json', 'closed.jsonl', 'reap.lock', 'seen.json'
 
 
 class Process(NamedTuple):
@@ -184,15 +184,20 @@ def stopped_owners(owners):
     for event in events:
         data = event.get('data') if isinstance(event, dict) else None
         number = event.get('id') if isinstance(event, dict) else None
-        if not isinstance(data, dict) or not isinstance(number, int) or isinstance(number, bool):
+        action = data.get('action') if isinstance(data, dict) else None
+        instances = data.get('instances') if action == 'batch_launched' else None
+        if (not isinstance(data, dict) or not isinstance(number, int) or isinstance(number, bool)
+                or (action == 'batch_launched' and (
+                    not isinstance(data.get('batch_id'), str) or not isinstance(instances, list)
+                    or any(not isinstance(name, str) for name in instances)))
+                or (action == 'stopped' and not isinstance(event.get('instance'), str))):
             raise Failure('HCOM stop records unreadable: unexpected format')
-        if data.get('action') == 'batch_launched' and isinstance(data.get('instances'), list):
-            for name in data['instances']:
-                if isinstance(name, str):
-                    key = (name, data.get('batch_id'))
-                    launched[key] = min(number, launched.get(key, number))
-        elif data.get('action') == 'stopped':
-            stopped[event.get('instance')] = max(number, stopped.get(event.get('instance'), number))
+        if action == 'batch_launched':
+            for name in instances:
+                key = (name, data['batch_id'])
+                launched[key] = min(number, launched.get(key, number))
+        elif action == 'stopped':
+            stopped[event['instance']] = max(number, stopped.get(event['instance'], number))
     return {owner for owner in owners
             if owner in launched and stopped.get(owner[0], -1) > launched[owner]}
 
@@ -342,11 +347,40 @@ class World(NamedTuple):
     alive: set
     protected: dict
     unreadable: dict
-    stopped: set
+    ended: set
 
 
-def observe():
-    """Read HCOM and /proc once, and work out which processes are never handled."""
+def read_seen(directory):
+    """{HCOM_PROCESS_ID: name} for every id an earlier reap saw HCOM list."""
+    try:
+        value = json.loads((directory / SEEN).read_text())
+    except FileNotFoundError:
+        return {}
+    except (OSError, ValueError) as error:
+        raise Failure(f'seen agent records unreadable: {error}') from error
+    seen = value.get('seen') if isinstance(value, dict) else None
+    if not isinstance(seen, dict) or any(not isinstance(name, str) for name in seen.values()):
+        raise Failure('seen agent records unreadable: unexpected format')
+    return seen
+
+
+def remember_agents(directory, world, seen):
+    """Record the ids HCOM lists now; forget ids neither listed nor carried by a process."""
+    carried = {process.env.get(MARKER) for process in world.processes.values()}
+    current = {process_id: name for process_id, name in seen.items() if process_id in carried}
+    current.update((process_id, agent['base']) for process_id, agent in world.agents.items()
+                   if isinstance(agent['base'], str))
+    if current != seen:
+        write_json_atomic(directory / SEEN, {'seen': current})
+
+
+def observe(seen):
+    """Read HCOM and /proc once, and work out which processes are never handled.
+
+    A process counts as ended only when its id is not the nil UUID that test harnesses use,
+    an earlier reap saw HCOM list that id under the name it inherited, and HCOM recorded that
+    name and launch batch as stopped.
+    """
     agents = hcom_agents()
     processes, unreadable = read_processes()
     children = children_map(processes)
@@ -358,9 +392,12 @@ def observe():
         if process_id in agents or clients:
             alive.add(process_id)
             base |= base_processes(clients, processes, children)
-    stopped = stopped_owners({launch_owner(process) for process in processes.values()
-                              if process.env.get(MARKER) and process.env[MARKER] not in alive}
-                             - {None})
+    known = [process for process in processes.values()
+             if process.env.get(MARKER) and process.env[MARKER] not in alive
+             and process.env[MARKER].strip('0-') and launch_owner(process)
+             and seen.get(process.env[MARKER]) == launch_owner(process)[0]]
+    stopped = stopped_owners({launch_owner(process) for process in known})
+    ended = {process.pid for process in known if launch_owner(process) in stopped}
     protected = {}
     ports = listening_pids(processes, protected_ports())
     for process in processes.values():
@@ -382,7 +419,7 @@ def observe():
             reason = 'LAT process'
         if reason:
             protected[process.pid] = reason
-    return World(processes, agents, alive, protected, unreadable, stopped)
+    return World(processes, agents, alive, protected, unreadable, ended)
 
 
 def parse_time(value):
@@ -458,8 +495,7 @@ def plan(world, keeps, moment, only=None):
             live_keeps.append(keep)
     for process in world.processes.values():
         process_id = process.env.get(MARKER)
-        if (process_id and process_id not in world.alive and process.pid not in kept
-                and launch_owner(process) in world.stopped
+        if (process.pid in world.ended and process.pid not in kept
                 and (only is None or process_id in only)):
             targets.setdefault(process.pid, 'owner agent ended')
     # A valid keep also holds inside the group of a released keep around it.
@@ -470,7 +506,7 @@ def plan(world, keeps, moment, only=None):
 
 
 def unknown_owner(world, targets, kept, only=None):
-    """Leftovers whose owner HCOM has no stop record for; they are never closed."""
+    """Leftovers whose owner is not known to have stopped; they are never closed."""
     return {process.pid for process in world.processes.values()
             if process.env.get(MARKER) and process.env[MARKER] not in world.alive
             and (only is None or process.env[MARKER] in only) and process.state != 'Z'
@@ -599,12 +635,14 @@ def reap(args):
         moment = now_utc()
         try:
             keeps = read_keeps(directory)
-            world = observe()
+            seen = read_seen(directory)
+            world = observe(seen)
         except Failure as error:
             append_log(directory, {'time': moment.isoformat(timespec='seconds'),
                                    'trigger': trigger, 'result': 'aborted', 'reason': str(error)})
             print(f'Nothing closed: {error}')
             return 1
+        remember_agents(directory, world, seen)
         log_unjudged(directory, world, trigger, moment)
         if world.unreadable:
             print(f'Not judged: {len(world.unreadable)} unreadable process(es) (list them with scan --all)')
@@ -632,7 +670,7 @@ def reap(args):
     if not records:
         print('Nothing to close')
     if unknown:
-        print(f'Not closed: {len(unknown)} process(es) whose owner HCOM has no stop record '
+        print(f'Not closed: {len(unknown)} process(es) whose owner is not recorded as stopped '
               '(list them with scan)')
     return 0
 
@@ -656,10 +694,12 @@ def keep(args):
             return 1
         try:
             keeps = read_keeps(directory)
-            world = observe()
+            seen = read_seen(directory)
+            world = observe(seen)
         except Failure as error:
             print(f'Refused: {error}')
             return 1
+        remember_agents(directory, world, seen)
         process = world.processes.get(args.pid)
         if args.pid in world.unreadable:
             print(f'Refused: PID {args.pid} cannot be read ({world.unreadable[args.pid]})')
@@ -744,7 +784,7 @@ def scan(args):
     moment = now_utc()
     try:
         keeps = read_keeps(directory)
-        world = observe()
+        world = observe(read_seen(directory))
     except Failure as error:
         print(f'Cannot judge: {error}')
         return 1
@@ -765,7 +805,7 @@ def scan(args):
             rows['Kept'].append(f'{line} (until {keep_record["until"]} by {keep_record["by"]}: '
                                 f'{keep_record["reason"]})')
         elif process.pid in unknown:
-            rows['Unknown owner'].append(f'{line} (HCOM has no stop record; never closed)')
+            rows['Unknown owner'].append(f'{line} (owner not recorded as stopped; never closed)')
         elif process.pid in world.protected:
             rows['Never handled'].append(f'{line} ({world.protected[process.pid]})')
         elif process_id in world.alive:
