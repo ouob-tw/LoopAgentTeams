@@ -76,8 +76,10 @@ ln -s "$board/node_modules" "$worktree/${prefix}node_modules"
 [ -f "$board/build-new/index.js" ] || die "the build left no build-new/index.js; build/ is untouched"
 
 moving=1
-[ -d "$board/build" ] && mv "$board/build" "$board/build-prev"
-mv "$board/build-new" "$board/build" || die "could not move build-new into place; build/ is untouched"
+if [ -d "$board/build" ]; then
+	mv -T "$board/build" "$board/build-prev" || die "could not move build/ aside; build/ is untouched"
+fi
+mv -T "$board/build-new" "$board/build" || die "could not move build-new into place; build/ is untouched"
 moving=
 swapped=1
 say "swapped in $head; restarting"

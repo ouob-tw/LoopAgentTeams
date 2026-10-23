@@ -142,9 +142,26 @@ test('a rollback whose restart does not bring the login page back does not claim
 	expect(r.stderr).toContain('check the service');
 });
 
+test('a failed first rename stops before the restart and leaves build/ and its contents alone', async () => {
+	fresh();
+	writeFileSync(join(dir, 'bin/mv'), '#!/bin/sh\nfor last; do :; done\ncase "$last" in *build-prev) exit 62;; esac\nexec /bin/mv "$@"\n');
+	chmodSync(join(dir, 'bin/mv'), 0o755);
+	try {
+		const r = await deploy();
+		expect(r.status).toBe(1);
+		expect(r.stderr).not.toContain('deployed');
+		expect(readFileSync(join(board, 'build/index.js'), 'utf8')).toBe('old');
+		expect(existsSync(join(board, 'build/build-new'))).toBe(false);
+		expect(restarts()).toBe(0);
+		expect(leftovers()).toEqual([]);
+	} finally {
+		rmSync(join(dir, 'bin/mv'));
+	}
+});
+
 test('a failed rename into place puts the live build back', async () => {
 	fresh();
-	writeFileSync(join(dir, 'bin/mv'), '#!/bin/sh\ncase "$1" in *build-new) exit 1;; esac\nexec /bin/mv "$@"\n');
+	writeFileSync(join(dir, 'bin/mv'), '#!/bin/sh\ncase "$2" in *build-new) exit 1;; esac\nexec /bin/mv "$@"\n');
 	chmodSync(join(dir, 'bin/mv'), 0o755);
 	try {
 		const r = await deploy();
