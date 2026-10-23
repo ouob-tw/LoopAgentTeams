@@ -101,6 +101,7 @@ QA 逐項記錄 `PASS`（證據支持）、`FAIL`（結果不符）、`UNPROVEN`
 - **Agent 機制**：內建 Agent 能套用 /hcom-spawn 選定的設定時優先使用，否則透過 HCOM 啟動；內建 Agent 用原生訊息管道協調，外部 Agent 用 HCOM 訊息協調。
 - **工作區**：平行實作或需要保留現有工作區時，使用獨立 Git worktree 與分支，預設放在專案的 `.worktrees/<task-id>/`，不放 Temp；建立前確認 `.worktrees/` 已被 Git 忽略。單一實作且工作區乾淨時，可直接開發。
 - **共用狀態**：更動共用 Docker images／networks／預設名稱容器、共用資料庫等全域資源前，透過上述通訊管道公告影響範圍，與使用該資源的 Agents 協調；整合分支亦依整合步驟先公告再合併。公告不取代既有授權。
+- **派工工具**：外部 Agent 啟動後，可用 `scripts/lat-dispatch.py` 以同一個 tag 建任務卡（`card`），再由四段小檔加任務卡產生任務說明並印出送出指令（`brief`），用法見 [Agent 設定](references/agents.md#派工)；手寫任務卡與任務說明仍然允許。
 
 ## 交接
 

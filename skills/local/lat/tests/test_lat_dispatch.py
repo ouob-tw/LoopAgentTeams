@@ -1,0 +1,326 @@
+"""CLI contract tests for lat-dispatch.py: subprocess, temp dirs, a fake HCOM list file."""
+import importlib.util
+import json
+import os
+from pathlib import Path
+import re
+import subprocess
+import sys
+import tempfile
+import unittest
+
+SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-dispatch.py'
+WATCH = SCRIPT.parent / 'lat-watch.py'
+LIVE = '重建 staging 最多 2 次；最長 45 分鐘；出現 429 即停'
+PREFLIGHT = '測試帳號 qa-01 已登入（主控已核對）；重建失敗時切回上一個映像'
+BRIEF = '''## 目標與完成條件
+修正 #123 的登入逾時；驗收條件 1–3 全部有測試並通過。
+
+### 小標題
+- 清單項目
+
+## 範圍與不能碰
+只改 server/auth；不碰資料庫結構。
+
+## 其他 Agent 與分工
+QA 由 nanu-qa123-xxxx 負責。
+
+## 現場動作額度
+依任務卡；補充說明。
+'''
+
+
+class DispatchCase(unittest.TestCase):
+    def setUp(self):
+        directory = tempfile.TemporaryDirectory()
+        self.addCleanup(directory.cleanup)
+        self.root = Path(directory.name).resolve()
+        self.workspace = self.root / 'ws'
+        self.tasks = self.workspace / '.lat' / 'tasks'
+        self.tasks.mkdir(parents=True)
+        self.agents = [{'name': 'nanu-impl123-fida', 'base_name': 'fida', 'tag': 'nanu-impl123'}]
+
+    def run_script(self, *args, agents='default'):
+        listing = self.root / 'hcom-list.json'
+        listing.write_text(json.dumps(self.agents if agents == 'default' else agents))
+        env = {**os.environ, 'LAT_DISPATCH_HCOM_LIST': str(listing)}
+        return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
+                              text=True, env=env, timeout=60)
+
+    def card_args(self, *extra, tag='nanu-impl123', live=LIVE, preflight=PREFLIGHT):
+        args = ['card', '--tag', tag, '--tasks', str(self.tasks), '--orchestrator', 'nanu',
+                '--date', '2026-10-23', '--runs', str(self.workspace / '.lat/runs/issue-123')]
+        if live is not None:
+            args += ['--live-actions', live]
+        if preflight is not None:
+            args += ['--preflight', preflight]
+        return args + list(extra)
+
+    def make_card(self, **kwargs):
+        result = self.run_script(*self.card_args(**kwargs))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return Path(result.stdout.splitlines()[0])
+
+    def write_brief(self, text=BRIEF, name='brief.md'):
+        path = self.root / name
+        path.write_text(text)
+        return path
+
+
+class CardTests(DispatchCase):
+    def test_unique_tag_creates_card_in_template_order_with_full_name(self):
+        result = self.run_script(*self.card_args('--model', 'codex gpt-6-astra medium'))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        card = self.tasks / '2026-10-23-nanu-impl123.md'
+        self.assertEqual(result.stdout.splitlines()[0], str(card))
+        lines = card.read_text().splitlines()
+        self.assertEqual(lines[0], '接續：無')
+        names = [re.match(r'- ([^：]+)：', line).group(1) for line in lines[2:]]
+        self.assertEqual(names, [
+            'agent', 'orchestrator', 'model', 'branch', 'worktree', 'base commit', 'status',
+            'owned resources', 'live actions', 'preflight', '預計檢查數', '整套測試', 'runs',
+            'temp paths', 'done so far', 'next step', 'deliverable commit'])
+        text = card.read_text()
+        self.assertIn('- agent：nanu-impl123-fida\n', text)
+        self.assertIn('- orchestrator：nanu\n', text)
+        self.assertIn('- model：codex gpt-6-astra medium\n', text)
+        self.assertIn('- status：dispatched\n', text)
+        self.assertIn(f'- live actions：{LIVE}\n', text)
+        self.assertIn(f'- preflight：{PREFLIGHT}\n', text)
+        self.assertIn('- branch：無\n', text)
+        self.assertIn(f'- runs：{self.workspace}/.lat/runs/issue-123\n', text)
+
+    def test_missing_or_ambiguous_tag_fails_without_creating_a_card(self):
+        for agents, reason in (
+                ([], 'no HCOM agent carries tag'),
+                ([{'name': 'other-tag-aaaa', 'tag': 'other'}], 'no HCOM agent carries tag'),
+                ([{'name': 'nanu-impl123-fida', 'tag': 'nanu-impl123'},
+                  {'name': 'nanu-impl123-gape', 'tag': 'nanu-impl123'}], 'not unique')):
+            with self.subTest(reason=reason, count=len(agents)):
+                result = self.run_script(*self.card_args(), agents=agents)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(reason, result.stderr)
+                self.assertEqual(list(self.tasks.iterdir()), [])
+
+    def test_unreadable_hcom_list_fails_without_creating_a_card(self):
+        listing = self.root / 'missing.json'
+        env = {**os.environ, 'LAT_DISPATCH_HCOM_LIST': str(listing)}
+        result = subprocess.run([sys.executable, str(SCRIPT), *self.card_args()],
+                                capture_output=True, text=True, env=env, timeout=60)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('unreadable', result.stderr)
+        self.assertEqual(list(self.tasks.iterdir()), [])
+
+    def test_missing_live_actions_or_preflight_is_refused(self):
+        for kwargs in ({'live': None}, {'preflight': None}, {'live': '  '}, {'preflight': ''}):
+            with self.subTest(kwargs=kwargs):
+                result = self.run_script(*self.card_args(**kwargs))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(list(self.tasks.iterdir()), [])
+
+    def test_explicit_none_is_accepted_for_both_fields(self):
+        card = self.make_card(live='無', preflight='無')
+        self.assertIn('- live actions：無\n', card.read_text())
+
+    def test_same_day_redispatch_gets_suffix_and_links_the_previous_card(self):
+        first = self.make_card()
+        first_text = first.read_text()
+        second = self.make_card()
+        third = self.make_card()
+        self.assertEqual(second.name, '2026-10-23-nanu-impl123-2.md')
+        self.assertEqual(third.name, '2026-10-23-nanu-impl123-3.md')
+        self.assertEqual(second.read_text().splitlines()[0], f'接續：{first}')
+        self.assertEqual(third.read_text().splitlines()[0], f'接續：{second}')
+        self.assertEqual(first.read_text(), first_text)
+
+    def test_other_day_or_tag_does_not_collide(self):
+        self.make_card()
+        result = self.run_script(*self.card_args(), '--date', '2026-10-24')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue((self.tasks / '2026-10-24-nanu-impl123.md').is_file())
+
+    def test_archived_card_of_the_same_day_still_counts(self):
+        first = self.make_card()
+        (self.tasks / 'done').mkdir()
+        archived = self.tasks / 'done' / first.name
+        first.rename(archived)
+        second = self.make_card()
+        self.assertEqual(second.name, '2026-10-23-nanu-impl123-2.md')
+        self.assertEqual(second.read_text().splitlines()[0], f'接續：{archived}')
+
+    def test_multiline_value_is_refused(self):
+        result = self.run_script(*self.card_args('--branch', 'a\nb'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(list(self.tasks.iterdir()), [])
+
+    def test_missing_task_directory_is_refused(self):
+        args = self.card_args()
+        args[args.index('--tasks') + 1] = str(self.root / 'nope')
+        result = self.run_script(*args)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('does not exist', result.stderr)
+
+
+class BriefTests(DispatchCase):
+    def brief(self, text=BRIEF, *extra, card=None):
+        source = self.write_brief(text)
+        card = card or self.make_card()
+        result = self.run_script('brief', '--card', str(card), '--input', str(source), *extra)
+        return source, card, result
+
+    def test_complete_input_produces_filled_brief_and_leaves_the_input_alone(self):
+        source, card, result = self.brief(
+            BRIEF, '--lat-dir', '/skills/lat')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(source.read_text(), BRIEF)
+        output = self.root / 'brief.brief.md'
+        text = output.read_text()
+        for section in ('目標與完成條件', '範圍與不能碰', '其他 Agent 與分工', '現場動作額度'):
+            self.assertIn(f'## {section}\n', text)
+        self.assertIn('### 小標題\n- 清單項目', text)
+        agent, ws = 'nanu-impl123-fida', self.workspace
+        for expected in (
+                f'Report to: nanu', f'Working directory: {ws}', f'{card}',
+                f'{ws}/.lat/runs/issue-123', f'{ws}/.lat/decisions',
+                f'`hcom send @nanu --name {agent}`',
+                f'/skills/lat/scripts/lat-watch.py wait --workspace {ws} --agent {agent} --for',
+                f'/skills/lat/scripts/lat-watch.py alarm --workspace {ws} --agent {agent} --after 30',
+                'Never run `hcom send` without `@`', 'Nobody watches your terminal',
+                'Stuck rule', 'Do not use background programs to message yourself'):
+            self.assertIn(expected, text)
+        self.assertNotIn('{', text.replace('<decision ID or agent name>', ''))
+
+    def test_printed_send_command_uses_file(self):
+        _, _, result = self.brief()
+        output = self.root / 'brief.brief.md'
+        self.assertIn(
+            f'hcom send @nanu-impl123-fida --intent request --name nanu --file {output}',
+            result.stdout)
+        self.assertNotIn('<<', result.stdout)
+
+    def test_live_actions_and_preflight_are_copied_verbatim_with_quota_rules(self):
+        _, _, result = self.brief()
+        text = (self.root / 'brief.brief.md').read_text()
+        self.assertIn(f'- live actions：{LIVE}', text)
+        self.assertIn(f'- preflight：{PREFLIGHT}', text)
+        for rule in ('Before acting, check every `preflight` item',
+                     'inside the `live actions` quota yourself', 'stop and report',
+                     'never replaces them'):
+            self.assertIn(rule, text)
+
+    def test_no_live_actions_card_still_carries_both_fields_and_rules(self):
+        card = self.make_card(live='無', preflight='無')
+        self.brief(BRIEF, card=card)
+        text = (self.root / 'brief.brief.md').read_text()
+        self.assertIn('- live actions：無\n- preflight：無\n', text)
+        self.assertIn('Before acting, check every `preflight` item', text)
+
+    def test_section_text_cannot_replace_the_card_fields(self):
+        text = BRIEF.replace('依任務卡；補充說明。', '無現場動作，不必填卡片。')
+        self.brief(text)
+        out = (self.root / 'brief.brief.md').read_text()
+        self.assertIn(f'- live actions：{LIVE}', out)
+
+    def test_output_option_and_default_location(self):
+        target = self.root / 'out' / 'task.md'
+        _, _, result = self.brief(BRIEF, '--output', str(target))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertTrue(target.is_file())
+        self.assertIn(f'--file {target}', result.stdout)
+
+    def test_output_equal_to_input_is_refused(self):
+        source = self.write_brief()
+        card = self.make_card()
+        result = self.run_script('brief', '--card', str(card), '--input', str(source),
+                                 '--output', str(source))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(source.read_text(), BRIEF)
+
+    def test_bad_inputs_are_refused_with_the_problem_named(self):
+        cases = {
+            'missing': (BRIEF.replace('## 其他 Agent 與分工', '## 別的'), '其他 Agent 與分工'),
+            'empty': (BRIEF.replace('只改 server/auth；不碰資料庫結構。\n', ''),
+                      'empty section: ## 範圍與不能碰'),
+            'before': ('前言\n' + BRIEF, 'text before the first heading'),
+            'duplicate': (BRIEF + '\n## 目標與完成條件\n再寫一次\n',
+                          'duplicate heading: ## 目標與完成條件'),
+        }
+        for name, (text, expected) in cases.items():
+            with self.subTest(name):
+                source, _, result = self.brief(text)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(expected, result.stderr)
+                self.assertFalse((self.root / 'brief.brief.md').exists())
+
+    def test_heading_inside_a_code_fence_is_content_not_a_heading(self):
+        text = BRIEF.replace('- 清單項目', '```\n## 目標與完成條件\n```')
+        _, _, result = self.brief(text)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_missing_unreadable_or_incomplete_card_is_refused(self):
+        source = self.write_brief()
+        result = self.run_script('brief', '--input', str(source))
+        self.assertNotEqual(result.returncode, 0)
+        result = self.run_script('brief', '--card', str(self.root / 'none.md'),
+                                 '--input', str(source))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('unreadable', result.stderr)
+        card = self.make_card()
+        for field in ('live actions', 'preflight'):
+            with self.subTest(field=field):
+                text = card.read_text()
+                broken = self.root / f'broken-{field.replace(" ", "")}.md'
+                broken.write_text('\n'.join(
+                    line for line in text.splitlines() if not line.startswith(f'- {field}：')))
+                result = self.run_script('brief', '--card', str(broken), '--input', str(source))
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(field, result.stderr)
+                empty = self.root / f'empty-{field.replace(" ", "")}.md'
+                empty.write_text(text.replace(
+                    f'- {field}：{LIVE if field == "live actions" else PREFLIGHT}',
+                    f'- {field}：'))
+                result = self.run_script('brief', '--card', str(empty), '--input', str(source))
+                self.assertNotEqual(result.returncode, 0)
+
+    def test_card_outside_lat_tasks_needs_an_explicit_workspace(self):
+        card = self.root / 'loose-card.md'
+        card.write_text(self.make_card().read_text())
+        source = self.write_brief()
+        result = self.run_script('brief', '--card', str(card), '--input', str(source))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--workspace', result.stderr)
+        result = self.run_script('brief', '--card', str(card), '--input', str(source),
+                                 '--workspace', str(self.workspace))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
+class WatchCompatibilityTests(DispatchCase):
+    @staticmethod
+    def load_watch():
+        spec = importlib.util.spec_from_file_location('lat_watch', WATCH)
+        module = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(module)
+        return module
+
+    def test_hand_written_template_card_is_still_monitored(self):
+        hand = self.tasks / '2026-10-23-hand.md'
+        hand.write_text('接續：無（重派時填上一張任務卡路徑）\n\n'
+                        '- agent：nanu-hand-kiza (HCOM tag nanu-hand)\n'
+                        '- orchestrator：nanu\n- status：in progress\n'
+                        f'- live actions：{LIVE}\n- preflight：{PREFLIGHT}\n'
+                        '- next step：\n')
+        incomplete = {}
+        cards, skipped = self.load_watch().monitored_task_cards(self.tasks, 'nanu', incomplete)
+        self.assertEqual(skipped, {})
+        self.assertEqual(incomplete, {})
+        self.assertIn('nanu-hand-kiza', cards)
+
+    def test_tool_made_card_is_monitored_by_the_watch(self):
+        self.make_card()
+        cards, skipped = self.load_watch().monitored_task_cards(self.tasks, 'nanu', {})
+        self.assertEqual(skipped, {})
+        self.assertEqual(cards['nanu-impl123-fida']['status'], 'dispatched')
+
+
+if __name__ == '__main__':
+    unittest.main()

@@ -4,6 +4,8 @@
 
 每張派工建立 `.lat/tasks/YYYY-MM-DD-<tag>.md`，日期為派發日期。外部 Agent 的 tag 使用 /hcom-spawn 規則下的 HCOM `--tag`；內建 Agent 由 Orchestrator 指派唯一任務 tag。同日同 tag 重派依序加 `-2`、`-3`，第一行註明接續的任務卡。
 
+HCOM Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（自動填完整名稱、依下方模板、重派自動加序號與接續行，用法見 [Agent 設定](agents.md#派工)）；手寫任務卡仍然允許，停住監控照舊認得。
+
 ## 欄位模板
 
 ```markdown
