@@ -49,8 +49,10 @@ QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
 DELETE = re.compile(r'(?:^|[;&|({\n]|\b(?:then|do|else|elif)\s|-\w*c\s+[\'"])\s*'
                     r'(?:\w+=\S*\s+)*' + WRAPPERS + r'(?:\w+=\S*\s+)*'
                     r'(?P<tool>(?:[\w.~-]*/)*(?:rm|trash-put|trash)|gio\s+trash)(?=\s)')
-CD = re.compile(r'(?:^|[;&|(\n])\s*cd\s+(\S+)')
+CD = re.compile(r'(?:^|[;&|(\n])\s*cd(?=\s)')
 # A last path component that is only a substitution: `$x`, `${x}`, `$(cmd)` or `cmd`.
+# Placeholders for a $, backtick or ~ that quotes keep literal.
+LITERAL = {'$': '\x01', '`': '\x02', '~': '\x03'}
 BARE_SUBSTITUTION = re.compile(r'\$\{?\w+\}?|\$\(.*\)|`.*`', re.S)
 SCRIPT_RUN = re.compile(r'(?:^|[;&|(\s])(?:(?:ba|z|da)?sh\s+(?:-\S+\s+)*)?'
                         r'(?P<path>(?:[\w.~/-]*/)?[\w.-]+\.sh)\b')
@@ -134,13 +136,13 @@ def blank_data(text):
 
 
 def scan_word(word):
-    """Yield (index, char, quoted) for each char of a shell word: quoted is the quote or
-    substitution the char sits in ("'", '"', '$(' or a backtick), or None at top level.
-    An escaped char is skipped."""
+    """Yield (index, char, stack) for each char of a shell word: stack is the tuple of quotes
+    and substitutions ("'", '"', '$(' or a backtick) the char sits in, innermost last. An
+    escaped char is skipped."""
     stack, i = [], 0
     while i < len(word):
         char, top = word[i], stack[-1] if stack else None
-        yield i, char, top
+        yield i, char, tuple(stack)
         if top == "'":
             if char == "'":
                 stack.pop()
@@ -149,19 +151,23 @@ def scan_word(word):
         elif char == top and char in '`"':
             stack.pop()
         elif word.startswith('$(', i):
-            stack.append('$(')
-            i += 1
+            stack.append('$(')  # the ( comes next, already inside the substitution
         elif char == ')' and top == '$(':
             stack.pop()
         elif char in '`"' or char == "'" and top != '"':
             stack.append(char)
         i += 1
 
+
+def in_substitution(stack):
+    return '$(' in stack or '`' in stack
+
+
 def command_words(text, start):
     """The raw words of the shell command starting at start, up to ; & | ) or a newline."""
     words, begin = [], None
-    for i, char, quoted in scan_word(text[start:] + '\n'):
-        if quoted is None and (char.isspace() or char in ';&|)'):
+    for i, char, stack in scan_word(text[start:] + '\n'):
+        if not stack and (char.isspace() or char in ';&|)'):
             if begin is not None:
                 words.append(text[start + begin:start + i])
                 begin = None
@@ -175,26 +181,48 @@ def command_words(text, start):
     return words
 
 
-def split_last(word):
-    """(parent, last component, literal) of a raw word, split on the last slash outside a
-    substitution; literal is True when that slash sits in single quotes."""
-    word = word.rstrip('/')
-    slashes = [(i, quoted) for i, char, quoted in scan_word(word)
-               if char == '/' and quoted not in ('$(', '`')]
-    cut, quoted = slashes[-1] if slashes else (-1, None)
-    return word[:max(cut, 0)], word[cut + 1:], quoted == "'"
+def shell_chars(word):
+    """[(index, char)] of the word as the shell reads it, quotes removed. Substitutions stay as
+    written; a $, backtick or ~ that quotes keep literal becomes its LITERAL placeholder."""
+    out = []
+    for i, char, stack in scan_word(word):
+        if in_substitution(stack):
+            out.append((i, char))
+        elif stack[-1:] == ("'",):
+            if char != "'":
+                out.append((i, LITERAL.get(char, char)))
+        elif char == '"' or char == "'" and not stack:
+            continue
+        elif stack and char == '~':
+            out.append((i, LITERAL['~']))
+        else:
+            out.append((i, char))
+    return out
 
 
-def unquote(part):
-    """A raw word part without its quotes, or None when it is all inside single quotes."""
-    if len(part) > 1 and part[0] == "'" and part[-1] == "'":
-        return None
-    return part.replace('"', '').replace("'", '')
+def word_text(word):
+    return ''.join(char for _, char in shell_chars(word))
 
 
-def resolve_path(word, cwd):
-    """The path a delete argument names, or None when it holds an unknown substitution."""
-    path = word
+def last_component(word):
+    """(parent, last) of the shell text of a word, split on its last slash outside a
+    substitution, trailing slashes ignored; parent is empty when there is no such slash."""
+    chars = shell_chars(word)
+    cut = None
+    for i, char, stack in scan_word(word):
+        if char == '/' and not in_substitution(stack) and word[i + 1:].strip("/'\""):
+            cut = i
+    if cut is None:
+        return '', ''.join(char for _, char in chars).rstrip('/')
+    parent = ''.join(char for i, char in chars if i < cut)
+    last = ''.join(char for i, char in chars if i > cut)
+    return parent or '/', last.rstrip('/')
+
+
+def resolve_path(text, cwd):
+    """The path a delete argument's shell text names, or None when it holds a substitution
+    the hook cannot know."""
+    path = text
     for name, default in (('CLAUDE_CONFIG_DIR', None), ('CODEX_HOME', None),
                           ('XDG_STATE_HOME', None), ('HOME', str(Path.home()))):
         value = os.environ.get(name) or default
@@ -203,7 +231,22 @@ def resolve_path(word, cwd):
     path = str(Path.home()) + path[1:] if path == '~' or path.startswith('~/') else path
     if '$' in path or '`' in path:
         return None
+    for char, placeholder in LITERAL.items():
+        path = path.replace(placeholder, char)
     return os.path.normpath(os.path.join(cwd, path))
+
+
+def places(command, code, before, cwd):
+    """Every folder a command may run in at offset before: the start folder and each one a
+    cd before it moves to (a cd inside a subshell or pipeline may or may not apply)."""
+    found = {cwd}
+    for match in CD.finditer(code):
+        if match.start() >= before:
+            break
+        words = command_words(command, match.end())
+        if words:
+            found |= {p for p in (resolve_path(word_text(words[0]), here) for here in found) if p}
+    return found
 
 
 def risky_delete(command, cwd):
@@ -212,26 +255,22 @@ def risky_delete(command, cwd):
     protected = protected_dirs()
     projects = os.path.join(os.path.normpath(Path(os.environ.get('CLAUDE_CONFIG_DIR')
                                                   or Path.home() / '.claude')), 'projects')
-    moves = [(m.start(), m.group(1)) for m in CD.finditer(code)]
     for match in DELETE.finditer(code):
-        here = cwd
-        for at, target in moves:
-            moved = resolve_path(unquote(target) or target, here) if at < match.start() else None
-            here = moved or here
         tool = os.path.basename(' '.join(match.group('tool').split()))
+        folders = places(command, code, match.start(), cwd)
         for word in command_words(command, match.end()):
-            bare = word.replace('"', '').replace("'", '')
-            if bare.startswith('-'):
+            text = word_text(word)
+            shown = text.translate({ord(v): k for k, v in LITERAL.items()})
+            if text.startswith('-'):
                 continue
-            parent, last, literal = split_last(word)
-            last = unquote(last)
-            if parent and not literal and last is not None \
-                    and BARE_SUBSTITUTION.fullmatch(last):
-                return EMPTY_MESSAGE, {'tool': tool, 'word': bare}
-            path = resolve_path(bare, here) if unquote(word) is not None else None
-            if path and (path in protected or os.path.dirname(path) == projects
-                         or any(p.startswith(path.rstrip('/') + '/') for p in protected)):
-                return PROTECTED_MESSAGE, {'tool': tool, 'word': bare, 'path': path}
+            parent, last = last_component(word)
+            if parent and BARE_SUBSTITUTION.fullmatch(last):
+                return EMPTY_MESSAGE, {'tool': tool, 'word': shown}
+            for folder in folders:
+                path = resolve_path(text, folder)
+                if path and (path in protected or os.path.dirname(path) == projects
+                             or any(p.startswith(path.rstrip('/') + '/') for p in protected)):
+                    return PROTECTED_MESSAGE, {'tool': tool, 'word': shown, 'path': path}
     return None
 
 

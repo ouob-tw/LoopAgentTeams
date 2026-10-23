@@ -167,7 +167,11 @@ class DeleteTests(HookCase):
                         'sudo rm -r /srv/$(date)', 'xargs rm -rf build/$x',
                         'gio trash ./$x', 'rm -rf "$T"/"$name"',
                         'trash-put ~/.claude/projects/-x/`cut -f2 /nonexistent`',
-                        "trash-put ~/.claude/projects/-x/$(cut -d')' -f2 /nonexistent)"]:
+                        "trash-put ~/.claude/projects/-x/$(cut -d')' -f2 /nonexistent)",
+                        "trash-put ~/.claude/projects/-x/$(cut -f2 '/nonexistent')",
+                        'trash-put ~/.claude/projects/-x/$(cut -f2 "/nonexistent")',
+                        "trash-put '/tmp/parent/'$name", "trash-put '/tmp/parent/'\"$name\"",
+                        'rm -rf /$x']:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command), 'ends in a substitution')
 
@@ -186,9 +190,19 @@ class DeleteTests(HookCase):
                               ('env LANG=C trash-put ~/.hcom', '.hcom'),
                               ('LANG=C rm -rf ~/.hcom', '.hcom'),
                               ('{ rm -rf ~/.hcom; }', '.hcom'),
-                              ('cd ~/.claude && trash-put projects', '.claude/projects')]:
+                              ('cd ~/.claude && trash-put projects', '.claude/projects'),
+                              ('cd "$HOME/.claude" && trash-put projects', '.claude/projects'),
+                              (f"trash-put '{self.tmp}/.hcom'", '.hcom'),
+                              (f"rm -rf '{self.tmp}/.claude'", '.claude')]:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command), path)
+
+    def test_a_cd_that_may_not_apply_still_counts_the_start_folder(self):
+        claude = self.tmp / '.claude'
+        claude.mkdir()
+        for command in ['(cd /tmp); trash-put projects', 'cd /tmp | trash-put projects']:
+            with self.subTest(command):
+                self.assert_blocked(self.bash(command, cwd=claude), '.claude/projects')
 
     def test_ordinary_deletes_pass(self):
         for command in ['rm ~/.claude/projects/-home-x-proj/abc.jsonl', 'trash-put $S/deploy',
@@ -216,6 +230,11 @@ class DeleteOverrideTests(DeleteTests):
                               ('trash-put $XDG_STATE_HOME/lat', 'st/lat')]:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command), path)
+
+    def test_a_cd_that_may_not_apply_still_counts_the_start_folder(self):
+        claude = self.tmp / 'cc'
+        claude.mkdir()
+        self.assert_blocked(self.bash('(cd /tmp); trash-put projects', cwd=claude), 'cc/projects')
 
 
 class InstallTests(unittest.TestCase):
