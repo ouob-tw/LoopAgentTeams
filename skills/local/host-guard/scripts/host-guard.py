@@ -1,13 +1,15 @@
 #!/usr/bin/env python3
 """PreToolUse hook that keeps agents from starving a shared host.
 
-Three rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
+Four rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
 - whole-disk scans: find / du / grep -r / rg / fd / tree / ls -R rooted at /, /mnt,
   /media or a configured extra root are blocked;
 - CPU load generators (busy loops, stress, stress-ng, sysbench cpu, yes > /dev/null)
   must run on a limited set of cores via taskset, systemd-run or cpulimit;
 - an unquoted heredoc whose body holds `...` or $(...) is blocked: the shell runs those
-  commands while writing what was meant as text (a brief, a message).
+  commands while writing what was meant as text (a brief, a message);
+- `bunx skills add` from a LoopAgentTeams checkout is blocked: its install script installs
+  only skills whose full suite passed for their current content.
 """
 import argparse
 import copy
@@ -43,6 +45,12 @@ HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re
 UNQUOTED_HEREDOC = re.compile(r'(?<!<)<<-?\s*([A-Za-z_]\w*)[^\n]*\n(.*?)^\s*\1\s*$', re.S | re.M)
 SUBSTITUTION = re.compile(r'(?<!\\)(?:`|\$\()')
 QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
+# `bunx skills add <args>` (or npx, bun x, pnpm dlx; an @version may follow `skills`).
+SKILLS_ADD = re.compile(r'(?:^|[(\'"])\s*' + WRAPPERS
+                        + r'(?:bunx|npx|bun\s+x|pnpm\s+dlx)\s+(?:-\S+\s+)*'
+                        r'skills(?:@\S+)?\s+(?:add|a|install|i)\b(?P<args>[^;&|\n`)]*)')
+CD = re.compile(r'^\s*cd\s+(?P<dir>\S+)\s*$')
+INSTALL_SCRIPT = 'scripts/install-skills.py'
 SCRIPT_RUN = re.compile(r'(?:^|[;&|(\s])(?:(?:ba|z|da)?sh\s+(?:-\S+\s+)*)?'
                         r'(?P<path>(?:[\w.~/-]*/)?[\w.-]+\.sh)\b')
 
@@ -61,6 +69,14 @@ HEREDOC_MESSAGE = ('Blocked: the heredoc <<{name} is unquoted and its body conta
                    "(<<'{name}') to keep the body literal, or write the file with the Write tool "
                    'and pass it with --file. If you meant to insert command output, run the '
                    'command into a variable first and use the variable in the heredoc.')
+
+INSTALL_MESSAGE = ('Blocked: this installs skills straight from the LoopAgentTeams repo at '
+                   '{repo}, which skips the check that each skill passed its full suite for '
+                   'its current content. Run the install script instead; it installs only '
+                   'verified skills and otherwise lists the suites to run first:\n'
+                   '  uv run --no-project python {script} [--skill NAME ...]\n'
+                   'Installs from other sources (for example mattpocock/skills) are not '
+                   'affected.')
 
 
 def config_path():
@@ -170,6 +186,46 @@ def load_problem(command, cwd, cores):
     return None
 
 
+def lat_repo(path):
+    """The LoopAgentTeams checkout that holds path (it has the install script), or None."""
+    for folder in (path, *path.parents):
+        if (folder / INSTALL_SCRIPT).is_file() and (folder / 'skills').is_dir():
+            return folder
+    return None
+
+
+def repo_install(command, cwd):
+    """The LoopAgentTeams checkout a `bunx skills add` in command installs from, or None.
+
+    A source is a word that looks like a path (~, /, ., $VAR or a slash); skill names and
+    options are not. A relative source is read from the last `cd DIR` before it, or cwd."""
+    base = Path(cwd)
+
+    def where(word):
+        return base / os.path.expanduser(os.path.expandvars(word.strip('\'"')))
+
+    for part in re.split(r'&&|\|\||[;&|\n]', HEREDOC.sub('', command)):
+        found = CD.match(part)
+        if found:
+            base = where(found.group('dir'))
+            continue
+        found = SKILLS_ADD.search(part)
+        if not found:
+            continue
+        try:
+            words = shlex.split(found.group('args'))
+        except ValueError:
+            words = found.group('args').split()
+        for word in words:
+            if word.startswith('-') or not (word.startswith(('~', '.', '$')) or '/' in word):
+                continue
+            source = where(word).resolve()
+            repo = source.is_dir() and lat_repo(source)
+            if repo:
+                return repo
+    return None
+
+
 def shell_text(command):
     if isinstance(command, list):
         return command[-1] if command[:1] and command[0].endswith('sh') else ' '.join(command)
@@ -199,6 +255,10 @@ def cmd_hook():
     heredoc = expanding_heredoc(command)
     if heredoc:
         print(HEREDOC_MESSAGE.format(name=heredoc[0], what=heredoc[1]), file=sys.stderr)
+        return 2
+    repo = repo_install(command, cwd if os.path.isdir(cwd) else os.getcwd())
+    if repo:
+        print(INSTALL_MESSAGE.format(repo=repo, script=repo / INSTALL_SCRIPT), file=sys.stderr)
         return 2
     where = load_problem(command, cwd if os.path.isdir(cwd) else os.getcwd(), config['cores'])
     if where:

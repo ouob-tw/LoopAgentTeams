@@ -175,7 +175,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client cl
 uv run --no-project python "$lat_dir/scripts/lat-session.py" install --client claude
 ```
 
-**4. 共用主機保護 hook**（多個 Agent 共用一台主機時建議安裝）：擋下從根目錄搜尋整個磁碟的指令，以及沒有限制 CPU 核心的壓力測試。需要 `uv`。
+**4. 共用主機保護 hook**（多個 Agent 共用一台主機時建議安裝）：擋下從根目錄搜尋整個磁碟的指令、沒有限制 CPU 核心的壓力測試，以及 Agent 直接從本 repo 的本地 clone 執行 `bunx skills add`（改用下方[本地開發](#本地開發)的安裝腳本）。需要 `uv`。
 
 ```bash
 guard="$HOME/.agents/skills/host-guard/scripts/host-guard.py"
@@ -238,14 +238,16 @@ Codex 重啟後在 `/hooks` 信任 command 結尾為 `host-guard.py hook` 的項
 git clone https://github.com/ouob-tw/LoopAgentTeams.git ~/LoopAgentTeams
 ```
 
-修改後同步安裝到 Claude Code 與 Codex（可重複執行）：
+修改後用安裝腳本同步安裝到 Claude Code 與 Codex（可重複執行）：
 
 ```bash
-bunx skills add ~/LoopAgentTeams \
-  --skill lat hcom-spawn three-tier-testing host-guard to-spec to-tickets implement grill-with-docs wayfinder handoff \
-  --skill setup-matt-pocock-skills triage to-questionnaire --global \
-  --agent claude-code codex --yes
+uv run --no-project python ~/LoopAgentTeams/scripts/install-skills.py
+uv run --no-project python ~/LoopAgentTeams/scripts/install-skills.py --skill lat host-guard  # 只裝部分技能
 ```
+
+腳本預設安裝 repo 內所有技能，固定帶 `--global --agent claude-code codex --yes` 執行 `bunx skills add`。有登記整套測試的技能（`.suite-gate.json` 的 `full_suites`），資料夾目前內容須有 three-tier-testing 閘門的通過紀錄，且最近一次跑同樣內容的結果是通過；任一技能不符時整批不安裝，列出缺紀錄的技能與要透過閘門執行的測試指令。資料夾外的改動不影響判斷。
+
+安裝 host-guard hook 後，Agent 直接對本地 clone 執行 `bunx skills add` 會被擋下並提示改用腳本；使用者在自己的終端機執行不受影響。
 
 ## 授權
 
