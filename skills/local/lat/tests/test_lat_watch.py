@@ -1363,7 +1363,7 @@ esac
         self.run_cycles(load_watch(), 4000)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
         self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
-        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 2})
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3})
         result = self.alarm_cli('--after', 1, agent='worker-open')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
@@ -2183,7 +2183,7 @@ esac
         self.assertFalse(saved['active'])
         self.assertFalse(saved['expiry_nudge_pending'])
         self.assertEqual(saved['expiry_count'], 1)
-        self.assertEqual(self.watch_state()['orch']['feature_versions']['wait_deadline'], 1)
+        self.assertEqual(self.watch_state()['orch']['feature_versions']['wait_deadline'], 2)
         result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'absent', '--reason', 'again', '--minutes', '1')
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -2206,6 +2206,118 @@ esac
         result = self.cli('wait', '--workspace', self.work, '--agent', 'worker-open',
                           '--for', 'other', '--reason', 'different')
         self.assertEqual(json.loads(result.stdout)['expiry_count'], 0)
+
+    def test_owner_wait_names_have_no_deadline_and_reject_minutes_without_replacing(self):
+        self.wait_session(name='team-orch')
+        self.write_task('open.md', 'worker-open', 'team-orch', 'in progress')
+        self.install_hcom("#!/bin/sh\nprintf '%s\\n' "
+                          "'[{\"name\":\"team-orch\"},{\"name\":\"worker-open\"}]'\n")
+        path = self.work / '.lat/watch/waits/worker-open.json'
+        for target in ('orch', 'team-orch'):
+            with self.subTest(target=target):
+                result = self.cli('wait', '--workspace', self.work, '--agent', 'open',
+                                  '--for', target, '--reason', 'await assignment')
+                self.assertEqual(result.returncode, 0, result.stderr)
+                declaration = json.loads(result.stdout)
+                self.assertEqual(declaration['target'], 'team-orch')
+                self.assertEqual(declaration['kind'], 'agent')
+                self.assertNotIn('deadline_at', declaration)
+                before = path.read_bytes()
+                result = self.cli('wait', '--workspace', self.work, '--agent', 'open',
+                                  '--for', target, '--reason', 'await assignment', '--minutes', '50')
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('owning orchestrator', result.stderr)
+                self.assertEqual(path.read_bytes(), before)
+        # A different orchestrator is an ordinary agent target for this worker.
+        result = self.cli('wait', '--workspace', self.work, '--agent', 'open',
+                          '--for', 'other-orch', '--reason', 'review')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        declaration = json.loads(result.stdout)
+        self.assertEqual(declaration['deadline_at'] - declaration['declared_at'], 3000)
+
+    def test_owner_wait_survives_restart_and_legacy_deadlines_without_expiry_actions(self):
+        self.install_hcom('''#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_HCOM_LOG"
+case "$1" in
+list) printf '%s\\n' '[{"name":"orch","status":"inactive","status_context":"failure:rate_limit"},{"name":"worker-open","status":"listening"}]';;
+term) printf '%s\\n' '{"ready":true,"prompt_empty":true,"lines":[]}';;
+esac
+''')
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        for legacy in (False, True):
+            with self.subTest(legacy=legacy):
+                declaration = dict(agent='worker-open', target='orch', active=True,
+                                   declared_at=0, declared_at_utc='1970-01-01T00:00:00+00:00')
+                if legacy:
+                    declaration.update(deadline_at=3000, expiry_count=2,
+                                       expiry_declared_at=['old', 'older'], expiry_nudge_pending=True,
+                                       expiry_notice=dict(target='orch', declared_at=['old', 'older'],
+                                                          conversation_delivered=False, delivered=False))
+                watch.write_object(path, declaration)
+                for now in (0, 3000, 4800, 86400):
+                    self.run_cycles(load_watch(), now)
+                    self.assertEqual(json.loads(path.read_text()), {**declaration, 'kind': 'agent'})
+                    self.assertEqual(self.watch_state()['worker-open']['decision'], 'valid-wait')
+        records = self.watch_records()
+        self.assertFalse([r for r in records if r.get('decision') in
+                          ('wait-expired', 'wait-extended', 'wait-expiry-notified', 'observation-failed')])
+        commands = self.hcom_log.read_text()
+        self.assertNotIn('term inject worker-open', commands)
+        self.assertNotIn('consecutive expired waits', commands)
+
+    def test_legacy_ambiguous_target_retains_ordinary_expiry(self):
+        self.install_hcom('''#!/bin/sh
+case "$1" in
+list) printf '%s\\n' '[{"name":"orch","status":"listening"},{"name":"worker-open","status":"listening"},{"name":"team-target","base_name":"target","status":"listening"},{"name":"other-target","base_name":"target","status":"listening"}]';;
+term) printf '%s\\n' '{"ready":true,"prompt_empty":true,"lines":[]}';;
+esac
+''')
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(agent='worker-open', target='target', kind='agent',
+                                     active=True, declared_at=0, deadline_at=60,
+                                     declared_at_utc='1970-01-01T00:00:00+00:00'))
+        self.run_cycles(watch, 60)
+        saved = json.loads(path.read_text())
+        self.assertFalse(saved['active'])
+        self.assertEqual(saved['released_reason'], 'expired')
+        self.assertEqual(saved['expiry_count'], 1)
+        self.assertFalse([r for r in self.watch_records()
+                          if r.get('decision') == 'observation-failed'])
+
+    def test_owner_wait_releases_on_incoming_message_or_owner_successful_send(self):
+        transcript = self.root / 'owner.jsonl'
+        transcript.write_text('')
+        self.install_hcom(f'''#!/bin/sh
+case "$1" in
+list) printf '%s\\n' '[{{"name":"orch","status":"listening","transcript_path":"{transcript}"}},{{"name":"worker-open","status":"listening","session_id":"waiter-session"}}]';;
+term) printf '%s\\n' '{{"ready":true,"prompt_empty":true,"lines":[]}}';;
+events) if [ -f "$FAKE_HCOM_LOG.message" ]; then
+          printf '%s\\n' '{{"id":1,"type":"status","data":{{"session":"waiter-session","context":"deliver:someone-else"}}}}'; fi;;
+esac
+''')
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        for reason in ('message-delivered', 'target-replied'):
+            with self.subTest(reason=reason):
+                watch.write_object(path, dict(agent='worker-open', kind='agent', target='orch',
+                                             active=True, declared_at=0,
+                                             declared_at_utc='1970-01-01T00:00:00+00:00'))
+                if reason == 'message-delivered':
+                    Path(f'{self.hcom_log}.message').touch()
+                else:
+                    Path(f'{self.hcom_log}.message').unlink()
+                    transcript.write_text(json.dumps(dict(
+                        timestamp='1970-01-02T00:00:00+00:00', type='event_msg',
+                        payload=dict(type='item_completed', item=dict(
+                            type='CommandExecution', command=['hcom send @worker-open -- done'],
+                            status='completed', exit_code=0, stdout='Sent to: worker-open')))) + '\n')
+                self.run_cycles(load_watch(), 86400)
+                saved = json.loads(path.read_text())
+                self.assertFalse(saved['active'])
+                self.assertEqual(saved['released_reason'], reason)
+                self.assertNotIn('deadline_at', saved)
 
     def test_wait_deadline_range_and_decision_rejection(self):
         decisions = self.wait_session()
@@ -4442,7 +4554,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 2}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -4466,7 +4578,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 2}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
@@ -4771,7 +4883,7 @@ class KeepaliveDecisionTests(PinnedEnvironment):
         self.watch = load_watch()
         self.idle = self.watch.Observation('worker', 'listening', True, False, 10, 10, 1,
                                            wait_active=True, client='claude',
-                                           terminal_ready=True)
+                                           terminal_ready=True, is_orchestrator=True)
         self.info = {'session_id': 'claude-session'}
 
     def check(self, declaration, now, observation=None, state=None, info=None, busy=False):
@@ -4796,6 +4908,16 @@ class KeepaliveDecisionTests(PinnedEnvironment):
         self.assertIsNone(self.due(self.agent_wait(), now + 60, state=sent))
         self.write_usage(now + 3900)
         self.assertEqual(self.due(self.agent_wait(), now + 3700, state=sent), now + 3900)
+
+    def test_subordinate_is_ineligible_for_every_wait_kind_even_without_usage(self):
+        now = taipei(10, 30)
+        self.write_usage(now + 240)
+        for kind in ('agent', 'decision', 'alarm'):
+            for info in (self.info, {}):
+                with self.subTest(kind=kind, info=info):
+                    self.assertEqual(self.check(self.agent_wait(kind=kind), now,
+                                                self.idle._replace(is_orchestrator=False),
+                                                info=info), (None, None))
 
     def test_threshold_is_five_minutes_and_expired_cache_is_given_up(self):
         now = taipei(10, 30)
@@ -4955,7 +5077,7 @@ class KeepaliveDecisionTests(PinnedEnvironment):
 
 
 class KeepaliveCycleTests(PinnedEnvironment):
-    """run_cycle with a fake hcom: one Claude task agent at an empty ready prompt."""
+    """run_cycle with a fake hcom: one Claude orchestrator and one task agent at an empty ready prompt."""
 
     def setUp(self):
         super().setUp()
@@ -4964,7 +5086,7 @@ class KeepaliveCycleTests(PinnedEnvironment):
         self.tasks = self.work / '.lat/tasks'
         self.tasks.mkdir(parents=True)
         (self.tasks / 'open.md').write_text(
-            '- agent：worker (Claude)\n- orchestrator：orch\n- status：in progress\n'
+            '- agent：helper (Claude)\n- orchestrator：worker\n- status：in progress\n'
             '- live actions：無\n- preflight：無\n- next step：\n')
         self.decisions = self.work / '.lat/decisions'
         self.decisions.mkdir()
@@ -4975,7 +5097,7 @@ class KeepaliveCycleTests(PinnedEnvironment):
         binary = self.root / 'bin'
         binary.mkdir()
         agents = json.dumps([
-            {'name': 'orch', 'status': 'listening', 'tool': 'claude'},
+            {'name': 'helper', 'status': 'listening', 'tool': 'claude'},
             {'name': 'worker', 'status': 'listening', 'tool': 'claude',
              'session_id': 'claude-session', 'transcript_path': str(self.transcript)}])
         hcom = binary / 'hcom'
@@ -5017,19 +5139,19 @@ esac
 
     def cycle(self, *times):
         for now in times:
-            self.watch.run_cycle(self.work, self.tasks, self.decisions, 'orch', now=now)
+            self.watch.run_cycle(self.work, self.tasks, self.decisions, 'worker', now=now)
 
     def injections(self):
         return [line for line in self.hcom_log.read_text().splitlines()
                 if line.startswith('term inject worker')]
 
     def records(self, decision='cache-keepalive'):
-        path = self.work / '.lat/watch/orch/watch.jsonl'
+        path = self.work / '.lat/watch/worker/watch.jsonl'
         return [record for record in map(json.loads, path.read_text().splitlines())
                 if record.get('decision') == decision]
 
     def state(self):
-        return json.loads((self.work / '.lat/watch/orch/state.json').read_text())
+        return json.loads((self.work / '.lat/watch/worker/state.json').read_text())
 
     def reply_to_keepalive(self):
         with self.transcript.open('a') as stream:
@@ -5058,8 +5180,8 @@ esac
         self.assertFalse(state['worker']['nudged'])
         self.assertEqual(state['worker']['decision'], 'valid-wait')
         self.assertEqual(self.wait_file.read_bytes(), before)
-        self.assertEqual(state['orch']['feature_versions'],
-                         {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 2})
+        self.assertEqual(state['worker']['feature_versions'],
+                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3})
         # The wait still expires at its original deadline, counted once, with the real
         # idle time, and the agent is nudged for the expiry rather than as a stall.
         self.cycle(self.start + 3000)
@@ -5097,6 +5219,54 @@ esac
         self.cycle(self.start + 600, self.start + 660)
         # One failed attempt and one delivered keep-alive; nothing after expiry.
         self.assertEqual(len(self.injections()), 2)
+
+    def test_subordinate_and_advisor_waits_never_receive_or_log_keepalive(self):
+        self.start = taipei(10)
+        (self.decisions / 'HELP.md').write_text('- status: pending\n')
+        self.agents[0]['session_id'] = 'helper-session'
+        self.write_usage(self.start + 240, session='helper-session')
+        path = self.watch.wait_path(self.work, 'helper')
+        for role in ('Implementer', 'Advisor'):
+            (self.tasks / 'open.md').write_text(
+                f'- agent：helper ({role})\n- orchestrator：worker\n- status：in progress\n'
+                '- live actions：無\n- preflight：無\n')
+            for status in ('listening', 'inactive'):
+                self.agents[1].update(status=status, status_context='failure:rate_limit')
+                self.show(status=status)
+                for kind in ('agent', 'decision', 'alarm'):
+                    with self.subTest(role=role, status=status, kind=kind):
+                        self.watch.write_object(path, dict(
+                            agent='helper', kind=kind, target='HELP' if kind == 'decision' else 'worker',
+                            active=True, declared_at=self.start,
+                            declared_at_utc=datetime.fromtimestamp(self.start, timezone.utc).isoformat(),
+                            due_at=self.start + 600, condition={'kind': 'time', 'minutes': 10}))
+                        self.cycle(self.start, self.start + 60)
+                        self.assertTrue(json.loads(path.read_text())['active'])
+        self.assertEqual(self.records(), [])
+        self.assertEqual(self.records('cache-keepalive-skipped'), [])
+        self.assertNotIn('term inject helper', self.hcom_log.read_text())
+        self.assertEqual(self.records('observation-failed'), [])
+
+    def test_rate_limited_orchestrator_skips_once_and_recovers(self):
+        self.start = taipei(10)
+        self.declare(kind='agent', deadline_at=self.start + 3000)
+        self.write_usage(self.start + 240)
+        for field, value in (('status_context', 'failure:rate_limit'),
+                             ('context', 'failure:rate_limit'), ('status_detail', 'rate_limit')):
+            with self.subTest(field=field):
+                agents = [self.agents[0], {**self.agents[1], 'status': 'inactive', field: value}]
+                Path(f'{self.hcom_log}.agents').write_text(json.dumps(agents))
+                self.cycle(self.start, self.start + 60)
+                self.assertEqual(self.injections(), [])
+                self.assertEqual([r['reason'] for r in self.records('cache-keepalive-skipped')],
+                                 ['rate-limited'])
+                cache = self.watch.cache_status(agents[1], self.state()['worker'], self.start)
+                self.assertEqual((cache['can_keep_alive'], cache['reason']), (False, 'rate-limited'))
+        self.assertIsNone(self.cache(self.start)['can_keep_alive'])
+        self.show()
+        self.cycle(self.start + 120)
+        self.assertEqual(len(self.injections()), 1)
+        self.assertEqual(self.records()[0]['result'], 'sent')
 
     def test_alarm_is_kept_warm_and_still_rings_on_time(self):
         self.start = taipei(10)
@@ -5223,7 +5393,7 @@ esac
         self.assertIn('Your alarm', self.injections()[-1])
 
     def test_unreadable_listening_prompt_is_logged_once_after_fifteen_minutes(self):
-        # The fake shows the same screen for the orchestrator; count the worker only.
+        # The fake shows the same screen for the helper; count the orchestrator only.
         self.unreadable = lambda: [r for r in self.records('prompt-unreadable')
                                    if r['agent'] == 'worker']
         self.start = taipei(10)
@@ -5252,7 +5422,7 @@ esac
 
     def status(self):
         result = subprocess.run([sys.executable, str(SCRIPT), 'status', '--workspace', self.work,
-                                 '--orchestrator', 'orch', '--tasks', self.tasks],
+                                 '--orchestrator', 'worker', '--tasks', self.tasks],
                                 capture_output=True, text=True, check=True)
         return {row['agent']: row for row in json.loads(result.stdout)['targets']}
 
@@ -5303,10 +5473,10 @@ esac
                          (None, False, 'usage-missing'))
         # The CLI shows the block for Claude agents only.
         self.assertEqual(self.status()['worker']['cache']['reason'], 'usage-missing')
-        self.assertEqual(self.status()['orch']['cache']['reason'], 'usage-missing')
+        self.assertEqual(self.status()['helper']['cache']['reason'], 'usage-missing')
         agents = Path(f'{self.hcom_log}.agents')
         agents.write_text(json.dumps([{**self.agents[0], 'tool': 'codex'}, self.agents[1]]))
-        self.assertNotIn('cache', self.status()['orch'])
+        self.assertNotIn('cache', self.status()['helper'])
 
     def test_send_time_not_cycle_start_decides_quiet_hours(self):
         (self.decisions / 'HELP-1.md').write_text('# Q\n- version: r1\n- status: pending\n')
