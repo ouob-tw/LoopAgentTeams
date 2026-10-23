@@ -237,15 +237,19 @@ def resolve_path(text, cwd):
 
 
 def places(command, code, before, cwd):
-    """Every folder a command may run in at offset before: the start folder and each one a
-    cd before it moves to (a cd inside a subshell or pipeline may or may not apply)."""
+    """Every folder a command may run in at offset before. A cd joined to it only by && is
+    sure to apply; any other cd (after ;, in a subshell or a pipeline) may or may not."""
     found = {cwd}
     for match in CD.finditer(code):
         if match.start() >= before:
             break
         words = command_words(command, match.end())
-        if words:
-            found |= {p for p in (resolve_path(word_text(words[0]), here) for here in found) if p}
+        if not words:
+            continue
+        moved = {p for p in (resolve_path(word_text(words[0]), here) for here in found) if p}
+        between = re.findall(r'&&|\|\||[;&|()\n]', code[match.end():before])
+        sure = between and all(sep == '&&' for sep in between) and len(moved) == len(found)
+        found = moved if sure else found | moved
     return found
 
 
@@ -257,7 +261,7 @@ def risky_delete(command, cwd):
                                                   or Path.home() / '.claude')), 'projects')
     for match in DELETE.finditer(code):
         tool = os.path.basename(' '.join(match.group('tool').split()))
-        folders = places(command, code, match.start(), cwd)
+        folders = places(command, code, match.start('tool'), cwd)
         for word in command_words(command, match.end()):
             text = word_text(word)
             shown = text.translate({ord(v): k for k, v in LITERAL.items()})

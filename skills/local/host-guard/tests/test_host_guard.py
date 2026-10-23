@@ -200,9 +200,19 @@ class DeleteTests(HookCase):
     def test_a_cd_that_may_not_apply_still_counts_the_start_folder(self):
         claude = self.tmp / '.claude'
         claude.mkdir()
-        for command in ['(cd /tmp); trash-put projects', 'cd /tmp | trash-put projects']:
+        for command in ['(cd /tmp); trash-put projects', 'cd /tmp | trash-put projects',
+                        'cd /tmp; trash-put projects', 'cd /tmp && true; trash-put projects']:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command, cwd=claude), '.claude/projects')
+
+    def test_a_cd_joined_by_and_moves_the_delete(self):
+        claude = self.tmp / '.claude'
+        claude.mkdir()
+        for command, cwd in [('cd /tmp && trash-put projects', claude),
+                             ('cd /tmp && ls && trash-put .claude', self.tmp),
+                             ('(cd /tmp && trash-put projects)', claude)]:
+            with self.subTest(command):
+                self.assert_allowed(self.bash(command, cwd=cwd))
 
     def test_ordinary_deletes_pass(self):
         for command in ['rm ~/.claude/projects/-home-x-proj/abc.jsonl', 'trash-put $S/deploy',
