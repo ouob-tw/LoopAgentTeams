@@ -979,7 +979,8 @@ class AffectedCase(GateCase):
                     {'paths': ['src/app.py'], 'tests': ['tests/test_app.py']},
                     {'paths': ['src/util.py'], 'tests': ['tests/test_*.py']},
                     {'paths': ['web/src/**'], 'tests': ['web/tests/**/*.test.ts']},
-                    {'paths': ['docs/**', '.suite-gate.json', '.gitignore'], 'tests': []},
+                    {'paths': ['docs/**', '.suite-gate.json', '.suite-gate.d/**', '.gitignore'],
+                     'tests': []},
                 ],
                 'shared': ['deps.lock'],
             },
@@ -1040,6 +1041,44 @@ class AffectedTests(AffectedCase):
         self.assertEqual(root['base'], head)
         status = self.gate('status').stdout
         self.assertIn('(affected tests)', status)
+
+    def test_rules_in_suite_gate_d_files_are_added_to_the_map(self):
+        (self.repo / '.suite-gate.d').mkdir()
+        (self.repo / '.suite-gate.d/b-docs.json').write_text(json.dumps(
+            {'map': [{'paths': ['docs/guide.md'], 'tests': ['tests/test_util.py']}]}))
+        (self.repo / '.suite-gate.d/a-new.json').write_text(json.dumps(
+            {'map': [{'paths': ['src/new.py'], 'tests': ['tests/test_app.py']}]}))
+        self.touch('src/new.py')
+        self.touch('docs/guide.md')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py', 'tests/test_util.py'])])
+        self.assertEqual(self.full_runs(), [])
+
+    def test_a_bad_suite_gate_d_file_stops_affected_and_names_the_file(self):
+        (self.repo / '.suite-gate.d').mkdir()
+        (self.repo / '.suite-gate.d/bad.json').write_text('{"map": [')
+        self.touch('src/app.py')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('.suite-gate.d/bad.json', result.stderr)
+        self.assertEqual((self.ran(), self.full_runs()), ([], []))
+
+    def test_a_bad_suite_gate_d_rule_names_its_file(self):
+        (self.repo / '.suite-gate.d').mkdir()
+        (self.repo / '.suite-gate.d/odd.json').write_text('{"map": [null]}')
+        self.touch('src/app.py')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('.suite-gate.d/odd.json: map[0]', result.stderr)
+
+    def test_a_bad_suite_gate_d_file_keeps_the_project_mapped_for_run(self):
+        (self.repo / '.suite-gate.d').mkdir()
+        (self.repo / '.suite-gate.d/bad.json').write_text('{"map": [')
+        result = self.gate('run', '--', self.full('root'))
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('--purpose post-merge', result.stderr)
+        self.assertEqual(self.full_runs(), [])
 
     def test_affected_runs_do_not_take_or_wait_for_a_host_slot_and_are_never_reused(self):
         self.set_config(max_slots=1)

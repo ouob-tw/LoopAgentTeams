@@ -444,6 +444,7 @@
     ],
     "shared": [
       ".suite-gate.json",
+      ".suite-gate.d/**",
       ".gitignore",
       "board/package.json",
       "board/bun.lock",

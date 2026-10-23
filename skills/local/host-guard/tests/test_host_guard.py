@@ -163,6 +163,115 @@ class HeredocTests(HookCase):
                 self.assert_allowed(self.bash(command))
 
 
+class DeleteTests(HookCase):
+    """Deletes that wipe a folder of agent conversation records or state by mistake."""
+
+    def hook(self, payload):
+        env = {k: v for k, v in os.environ.items()
+               if k not in ('CLAUDE_CONFIG_DIR', 'CODEX_HOME', 'XDG_STATE_HOME')}
+        env.update(HOME=str(self.tmp), HOST_GUARD_CONFIG=str(self.config), **self.extra_env)
+        return subprocess.run([sys.executable, str(SCRIPT), 'hook'], input=json.dumps(payload),
+                              env=env, capture_output=True, text=True)
+
+    extra_env = {}
+
+    def test_a_path_ending_in_a_substitution_is_blocked(self):
+        # The 2026-10-23 case: the substitution came out empty and trashed a whole project folder.
+        for command in ["trash-put ~/.claude/projects/-x/$(cut -d' ' -f2 /dev/null) 2>/dev/null",
+                        'rm -rf "$T/$name"', 'rm -f $dir/${file}', 'trash $out/`ls`',
+                        'sudo rm -r /srv/$(date)', 'xargs rm -rf build/$x',
+                        'gio trash ./$x', 'rm -rf "$T"/"$name"',
+                        'trash-put ~/.claude/projects/-x/`cut -f2 /nonexistent`',
+                        "trash-put ~/.claude/projects/-x/$(cut -d')' -f2 /nonexistent)",
+                        "trash-put ~/.claude/projects/-x/$(cut -f2 '/nonexistent')",
+                        'trash-put ~/.claude/projects/-x/$(cut -f2 "/nonexistent")',
+                        "trash-put '/tmp/parent/'$name", "trash-put '/tmp/parent/'\"$name\"",
+                        'rm -rf /$x']:
+            with self.subTest(command):
+                self.assert_blocked(self.bash(command), 'ends in a substitution')
+
+    def test_agent_record_and_state_folders_are_blocked(self):
+        for command, path in [('trash-put ~/.hcom', '.hcom'),
+                              ('rm -rf ~/.claude/projects', '.claude/projects'),
+                              ('rm -rf ~/.claude/projects/-home-x-proj/',
+                               '.claude/projects/-home-x-proj'),
+                              ('rm -rf $HOME/.codex/sessions', '.codex/sessions'),
+                              ('trash-put ~/.local/state/lat', '.local/state/lat'),
+                              ('bash -c "rm -rf ~/.local/state"', '.local/state'),
+                              ('cd x; trash-put ~', str(self.tmp)),
+                              ('/bin/rm -rf ~/.hcom', '.hcom'),
+                              ('bash -lc "trash-put ~/.hcom"', '.hcom'),
+                              ('if true; then trash-put ~/.hcom; fi', '.hcom'),
+                              ('env LANG=C trash-put ~/.hcom', '.hcom'),
+                              ('LANG=C rm -rf ~/.hcom', '.hcom'),
+                              ('{ rm -rf ~/.hcom; }', '.hcom'),
+                              ('cd ~/.claude && trash-put projects', '.claude/projects'),
+                              ('cd "$HOME/.claude" && trash-put projects', '.claude/projects'),
+                              (f"trash-put '{self.tmp}/.hcom'", '.hcom'),
+                              (f"rm -rf '{self.tmp}/.claude'", '.claude')]:
+            with self.subTest(command):
+                self.assert_blocked(self.bash(command), path)
+
+    def test_a_cd_that_may_not_apply_still_counts_the_start_folder(self):
+        claude = self.tmp / '.claude'
+        claude.mkdir()
+        for command in ['(cd /tmp); trash-put projects', 'cd /tmp | trash-put projects',
+                        'cd /tmp; trash-put projects', 'cd /tmp && true; trash-put projects',
+                        'true || cd /tmp && trash-put projects',
+                        'printf x | cd /tmp && trash-put projects',
+                        'true ||\n cd /tmp && trash-put projects',
+                        'printf x | \\\n cd /tmp && trash-put projects',
+                        'cd /nonexistent && printf ready\ntrash-put projects']:
+            with self.subTest(command):
+                self.assert_blocked(self.bash(command, cwd=claude), '.claude/projects')
+
+    def test_a_cd_joined_by_and_moves_the_delete(self):
+        claude = self.tmp / '.claude'
+        claude.mkdir()
+        for command, cwd in [('cd /tmp && trash-put projects', claude),
+                             ('cd /tmp && ls && trash-put .claude', self.tmp),
+                             ('(cd /tmp && trash-put projects)', claude),
+                             ('cd /tmp; cd /tmp && trash-put .claude', self.tmp),
+                             ('ls && cd /tmp && trash-put projects', claude),
+                             ('cd /tmp &&\n  trash-put projects', claude),
+                             ('printf x | cat\ncd /tmp && trash-put .claude', self.tmp)]:
+            with self.subTest(command):
+                self.assert_allowed(self.bash(command, cwd=cwd))
+
+    def test_ordinary_deletes_pass(self):
+        for command in ['rm ~/.claude/projects/-home-x-proj/abc.jsonl', 'trash-put $S/deploy',
+                        'rm -rf "${T:?}/${name:?}"', 'trash-put build-prev', 'trash-put $T',
+                        'git rm --cached x', 'echo "rm -rf ~/.hcom"', 'shred -u $T/$pw',
+                        "cat <<'EOF'\nrm -rf ~/.hcom $a/$b\nEOF",
+                        'git commit -m "fix: document cleanup; rm -rf ~/.hcom"',
+                        "trash-put '/tmp/$x'", "trash-put '/tmp/a/$x'", 'rm -rf "${T:?}"/x',
+                        'cd /tmp && trash-put projects']:
+            with self.subTest(command):
+                self.assert_allowed(self.bash(command))
+
+
+class DeleteOverrideTests(DeleteTests):
+    """The client and state folders follow CLAUDE_CONFIG_DIR, CODEX_HOME and XDG_STATE_HOME."""
+
+    def setUp(self):
+        super().setUp()
+        self.extra_env = {'CLAUDE_CONFIG_DIR': str(self.tmp / 'cc'),
+                          'CODEX_HOME': str(self.tmp / 'cx'),
+                          'XDG_STATE_HOME': str(self.tmp / 'st')}
+
+    def test_agent_record_and_state_folders_are_blocked(self):
+        for command, path in [('trash-put "$CODEX_HOME/sessions"', 'cx/sessions'),
+                              ('rm -rf ${CLAUDE_CONFIG_DIR}/projects', 'cc/projects'),
+                              ('trash-put $XDG_STATE_HOME/lat', 'st/lat')]:
+            with self.subTest(command):
+                self.assert_blocked(self.bash(command), path)
+
+    def test_a_cd_that_may_not_apply_still_counts_the_start_folder(self):
+        claude = self.tmp / 'cc'
+        claude.mkdir()
+        self.assert_blocked(self.bash('(cd /tmp); trash-put projects', cwd=claude), 'cc/projects')
+
+
 class SkillsAddTests(HookCase):
     """`bunx skills add` from a LoopAgentTeams checkout (it has the install script)."""
 

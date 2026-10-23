@@ -1,13 +1,16 @@
 #!/usr/bin/env python3
 """PreToolUse hook that keeps agents from starving a shared host.
 
-Four rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
+Five rules, for Claude Code (Bash, Grep, Glob) and Codex (Bash):
 - whole-disk scans: find / du / grep -r / rg / fd / tree / ls -R rooted at /, /mnt,
   /media or a configured extra root are blocked;
 - CPU load generators (busy loops, stress, stress-ng, sysbench cpu, yes > /dev/null)
   must run on a limited set of cores via taskset, systemd-run or cpulimit;
 - an unquoted heredoc whose body holds `...` or $(...) is blocked: the shell runs those
   commands while writing what was meant as text (a brief, a message);
+- rm / trash-put / trash / gio trash is blocked when a path ends in a substitution that
+  deletes the parent folder if it comes out empty, or when it targets a folder of agent
+  conversation records or state (or a folder above one);
 - `bunx skills add` from a LoopAgentTeams checkout is blocked: its install script installs
   only skills whose full suite passed for their current content.
 """
@@ -44,6 +47,15 @@ HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re
 # `<<`, not `<<<`; the delimiter word ends at whitespace or a shell operator.
 HEREDOC_START = re.compile(r'(?<!<)<<(?!<)(-?)[ \t]*((?:\\.|\'[^\']*\'|"(?:\\.|[^"\\])*"|[^\s;&|()<>\'"\\])+)')
 QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
+DELETE = re.compile(r'(?:^|[;&|({\n]|\b(?:then|do|else|elif)\s|-\w*c\s+[\'"])\s*'
+                    r'(?:\w+=\S*\s+)*' + WRAPPERS + r'(?:\w+=\S*\s+)*'
+                    r'(?P<tool>(?:[\w.~-]*/)*(?:rm|trash-put|trash)|gio\s+trash)(?=\s)')
+CD = re.compile(r'(?:^|[;&|(\n])\s*cd(?=\s)')
+SEPARATORS = r'&&|\|\||[;&|()\n]'
+# A last path component that is only a substitution: `$x`, `${x}`, `$(cmd)` or `cmd`.
+# Placeholders for a $, backtick or ~ that quotes keep literal.
+LITERAL = {'$': '\x01', '`': '\x02', '~': '\x03'}
+BARE_SUBSTITUTION = re.compile(r'\$\{?\w+\}?|\$\(.*\)|`.*`', re.S)
 # Command words for the `bunx skills add` rule, read with shell quoting.
 OPERATORS = ';&|()\n'
 # Options of PREFIXES that take the next word as their value (sudo -u USER, nice -n 10).
@@ -71,6 +83,12 @@ HEREDOC_MESSAGE = ('Blocked: the heredoc <<{name} is unquoted and its body conta
                    "(<<'{name}') to keep the body literal, or write the file with the Write tool "
                    'and pass it with --file. If you meant to insert command output, run the '
                    'command into a variable first and use the variable in the heredoc.')
+EMPTY_MESSAGE = ('Blocked: {tool} {word} ends in a substitution. If it comes out empty, {tool} '
+                 'deletes the parent folder instead. Check the value first, or write it as '
+                 '${{name:?}} so the shell stops on an empty value.')
+PROTECTED_MESSAGE = ('Blocked: {tool} {word} would delete {path}, which holds agent conversation '
+                     'records or state that other sessions use. Delete single files inside it '
+                     'instead (as the session-manager skill does), or ask the user.')
 
 INSTALL_MESSAGE = ('Blocked: this installs skills straight from the LoopAgentTeams repo at '
                    '{repo}, which skips the check that each skill passed its full suite for '
@@ -119,6 +137,185 @@ def substitution(body):
         if body.startswith('$(', i):
             return '$('
         i += 1
+    return None
+
+
+def protected_dirs():
+    """Folders of agent conversation records and state: never deleted as a whole."""
+    home = Path.home()
+    claude = Path(os.environ.get('CLAUDE_CONFIG_DIR') or home / '.claude')
+    codex = Path(os.environ.get('CODEX_HOME') or home / '.codex')
+    state = Path(os.environ.get('XDG_STATE_HOME') or home / '.local/state')
+    return {os.path.normpath(p) for p in (claude, claude / 'projects', codex, codex / 'sessions',
+                                          codex / 'archived_sessions', home / '.hcom',
+                                          state / 'lat')}
+
+
+def blank_data(text):
+    """text with heredoc bodies and quoted data turned to spaces, same length and lines; the
+    script after `-c` is kept, since it runs."""
+    def spaces(match):
+        return re.sub(r'[^\n]', ' ', match.group(0))
+    text = HEREDOC.sub(spaces, text)
+    return QUOTED.sub(lambda m: m.group(0) if m.group(1) else spaces(m), text)
+
+
+def scan_word(word):
+    """Yield (index, char, stack) for each char of a shell word: stack is the tuple of quotes
+    and substitutions ("'", '"', '$(' or a backtick) the char sits in, innermost last. An
+    escaped char is skipped."""
+    stack, i = [], 0
+    while i < len(word):
+        char, top = word[i], stack[-1] if stack else None
+        yield i, char, tuple(stack)
+        if top == "'":
+            if char == "'":
+                stack.pop()
+        elif char == '\\':
+            i += 1
+        elif char == top and char in '`"':
+            stack.pop()
+        elif word.startswith('$(', i):
+            stack.append('$(')  # the ( comes next, already inside the substitution
+        elif char == ')' and top == '$(':
+            stack.pop()
+        elif char in '`"' or char == "'" and top != '"':
+            stack.append(char)
+        i += 1
+
+
+def in_substitution(stack):
+    return '$(' in stack or '`' in stack
+
+
+def command_words(text, start):
+    """The raw words of the shell command starting at start, up to ; & | ) or a newline."""
+    words, begin = [], None
+    for i, char, stack in scan_word(text[start:] + '\n'):
+        if not stack and (char.isspace() or char in ';&|)'):
+            if begin is not None:
+                words.append(text[start + begin:start + i])
+                begin = None
+            if char != ' ' and char != '\t':
+                break
+        elif begin is None:
+            begin = i
+    else:
+        if begin is not None:  # an unclosed quote: the rest is one word (a `-c "..."` script)
+            words.append(text[start + begin:].rstrip())
+    return words
+
+
+def shell_chars(word):
+    """[(index, char)] of the word as the shell reads it, quotes removed. Substitutions stay as
+    written; a $, backtick or ~ that quotes keep literal becomes its LITERAL placeholder."""
+    out = []
+    for i, char, stack in scan_word(word):
+        if in_substitution(stack):
+            out.append((i, char))
+        elif stack[-1:] == ("'",):
+            if char != "'":
+                out.append((i, LITERAL.get(char, char)))
+        elif char == '"' or char == "'" and not stack:
+            continue
+        elif stack and char == '~':
+            out.append((i, LITERAL['~']))
+        else:
+            out.append((i, char))
+    return out
+
+
+def word_text(word):
+    return ''.join(char for _, char in shell_chars(word))
+
+
+def last_component(word):
+    """(parent, last) of the shell text of a word, split on its last slash outside a
+    substitution, trailing slashes ignored; parent is empty when there is no such slash."""
+    chars = shell_chars(word)
+    cut = None
+    for i, char, stack in scan_word(word):
+        if char == '/' and not in_substitution(stack) and word[i + 1:].strip("/'\""):
+            cut = i
+    if cut is None:
+        return '', ''.join(char for _, char in chars).rstrip('/')
+    parent = ''.join(char for i, char in chars if i < cut)
+    last = ''.join(char for i, char in chars if i > cut)
+    return parent or '/', last.rstrip('/')
+
+
+def resolve_path(text, cwd):
+    """The path a delete argument's shell text names, or None when it holds a substitution
+    the hook cannot know."""
+    path = text
+    for name, default in (('CLAUDE_CONFIG_DIR', None), ('CODEX_HOME', None),
+                          ('XDG_STATE_HOME', None), ('HOME', str(Path.home()))):
+        value = os.environ.get(name) or default
+        if value:
+            path = re.sub(r'\$\{?' + name + r'\}?(?![\w])', lambda _: value, path)
+    path = str(Path.home()) + path[1:] if path == '~' or path.startswith('~/') else path
+    if '$' in path or '`' in path:
+        return None
+    for char, placeholder in LITERAL.items():
+        path = path.replace(placeholder, char)
+    return os.path.normpath(os.path.join(cwd, path))
+
+
+def operators(code):
+    """The separators in code, without a newline that only continues a line after && || |."""
+    found, end = [], 0
+    for match in re.finditer(SEPARATORS, code):
+        sep = match.group(0)
+        waiting = (found[-1:] in (['&&'], ['||'], ['|'])
+                   and not code[end:match.start()].strip(' \t\\'))
+        if not (sep == '\n' and waiting):
+            found.append(sep)
+        end = match.end()
+    return found
+
+
+def places(command, code, before, cwd):
+    """Every folder a command may run in at offset before. A cd that starts a statement and
+    is joined to the delete only by && is sure to apply; any other cd (skipped after ||, in
+    a pipeline or a subshell, followed by ;) may or may not."""
+    found = {cwd}
+    for match in CD.finditer(code):
+        if match.start() >= before:
+            break
+        words = command_words(command, match.end())
+        if not words:
+            continue
+        moved = [resolve_path(word_text(words[0]), here) for here in found]
+        ahead = operators(code[:match.end() - 2])
+        between = operators(code[match.end():before])
+        sure = (all(moved) and ahead[-1:] != ['||'] and ahead[-1:] != ['|']
+                and between and all(sep == '&&' for sep in between))
+        found = set(moved) if sure else found | {p for p in moved if p}
+    return found
+
+
+def risky_delete(command, cwd):
+    """(message, fields) for a delete that can wipe a folder by mistake, or None."""
+    code = blank_data(command)
+    protected = protected_dirs()
+    projects = os.path.join(os.path.normpath(Path(os.environ.get('CLAUDE_CONFIG_DIR')
+                                                  or Path.home() / '.claude')), 'projects')
+    for match in DELETE.finditer(code):
+        tool = os.path.basename(' '.join(match.group('tool').split()))
+        folders = places(command, code, match.start('tool'), cwd)
+        for word in command_words(command, match.end()):
+            text = word_text(word)
+            shown = text.translate({ord(v): k for k, v in LITERAL.items()})
+            if text.startswith('-'):
+                continue
+            parent, last = last_component(word)
+            if parent and BARE_SUBSTITUTION.fullmatch(last):
+                return EMPTY_MESSAGE, {'tool': tool, 'word': shown}
+            for folder in folders:
+                path = resolve_path(text, folder)
+                if path and (path in protected or os.path.dirname(path) == projects
+                             or any(p.startswith(path.rstrip('/') + '/') for p in protected)):
+                    return PROTECTED_MESSAGE, {'tool': tool, 'word': shown, 'path': path}
     return None
 
 
@@ -416,6 +613,10 @@ def cmd_hook():
     heredoc = expanding_heredoc(command)
     if heredoc:
         print(HEREDOC_MESSAGE.format(name=heredoc[0], what=heredoc[1]), file=sys.stderr)
+        return 2
+    deleting = risky_delete(command, cwd if os.path.isdir(cwd) else os.getcwd())
+    if deleting:
+        print(deleting[0].format(**deleting[1]), file=sys.stderr)
         return 2
     repo = repo_install(command, cwd if os.path.isdir(cwd) else os.getcwd())
     if repo:

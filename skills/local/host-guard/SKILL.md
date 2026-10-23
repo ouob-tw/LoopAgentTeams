@@ -1,11 +1,11 @@
 ---
 name: host-guard
-description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench) or searching for files across the whole filesystem on a host shared with other agents. Covers how to pin load to a few cores, how to search narrowly, how to write heredocs that stay literal, how to install LoopAgentTeams skills when `bunx skills add` was blocked, and how to install the hook.
+description: Use when a command was blocked by host-guard, or before running a CPU load or stress test (busy loops, stress-ng, sysbench), searching for files across the whole filesystem, or deleting a path built from a variable on a host shared with other agents. Covers how to pin load to a few cores, how to search narrowly, how to write heredocs that stay literal, how to delete safely, how to install LoopAgentTeams skills when `bunx skills add` was blocked, and how to install the hook.
 ---
 
 # 共用主機保護（host-guard）
 
-多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下四類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
+多個 Agent 共用同一台主機時，一個人的指令就能拖慢所有人。`scripts/host-guard.py hook` 是 Claude 與 Codex 的 PreToolUse hook，擋下五類指令。以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫。
 
 ## 從根目錄搜尋整個磁碟
 
@@ -33,6 +33,15 @@ systemd-run --user --scope -p AllowedCPUs=0-3 stress-ng --cpu 4 -t 60
 - 內文照字面保留：標記加引號，`<<'EOF'`。
 - 長文字：先用 Write 工具寫檔，再以 `--file` 傳。
 - 真的要放指令結果：先存進變數（`now=$(date)`），heredoc 裡只用 `$now`。
+
+## 可能刪錯資料夾的刪除
+
+`rm`、`trash-put`、`trash`、`gio trash` 遇到下列兩種路徑時擋下：
+
+- **最後一段只有變數或指令結果**，例如 `"$T/$name"`、`dir/$(cut …)`。值是空的時候，刪掉的會是上一層整個資料夾。2026-10-23 就有 Agent 因此把自己的整個對話紀錄資料夾丟進垃圾桶。改法：先確認值不是空的，或寫成 `${name:?}`，值是空的時 shell 會直接停下。
+- **Agent 對話紀錄與狀態資料夾本身，或它們的上層**：`~/.claude`、`~/.claude/projects` 與其中任一個專案資料夾、`~/.codex`、`~/.codex/sessions`、`~/.codex/archived_sessions`、`~/.hcom`、`~/.local/state/lat`（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_STATE_HOME` 有設定時依設定），以及 `~` 等上層資料夾。刪裡面的單一檔案照常放行，例如 session-manager 刪一個 `.jsonl`。前面有 `cd` 時，也照刪除時可能所在的每個資料夾檢查。
+
+這條規則只看指令文字，用來接住手誤，不能完整解析 shell；`eval`、腳本檔裡的刪除或刻意繞過都不會被擋。
 
 ## 直接從 LoopAgentTeams 安裝技能
 
