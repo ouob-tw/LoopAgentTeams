@@ -72,10 +72,13 @@ export const AGENT_OWN_PANE_REASON = '這個 Agent 所在的 Herdr 窗格就是�
 
 export const AGENT_OWN_PANE_PAUSE_REASON = '這個 Agent 所在的 Herdr 窗格就是看板自己所在的窗格，沒有暫停通訊。';
 
-export const AGENT_PAUSE_CONFIRM_TEXT =
-	'暫停這個 Agent 的 HCOM 通訊（hcom stop）？它的視窗與對話都保留；暫停期間別的 Agent 傳給它的訊息會直接傳送失敗、不會排隊，LAT 監控也不會往它的輸入框打字。你在看板傳的話照常送進輸入框。';
-
-export const AGENT_UNPAUSE_CONFIRM_TEXT = '恢復這個 Agent 的 HCOM 通訊？看板會在它的輸入框打入接回指令，它會因此跑一個很短的回合。';
+/** What pausing the HCOM link does, in the info beside the pause and resume. */
+export const AGENT_PAUSE_POINTS = [
+	'暫停後其他 Agent 傳來的訊息會直接失敗、不會排隊。',
+	'你在看板上親手傳的話照常送得進去。',
+	'LAT 監控暫停期間不會催促它。',
+	'恢復時用原名稱接回，它會跑一個很短的回合。'
+];
 
 /** What closing the agent does, and whether the board can bring its conversation back after. */
 export function agentCloseConfirmText(agent: Pick<Agent, 'hcom' | 'hcomName' | 'controller'>): string {

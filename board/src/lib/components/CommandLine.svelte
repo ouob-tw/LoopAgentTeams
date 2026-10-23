@@ -37,7 +37,11 @@
 	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
 	import { needsWake, type Agent, type Controller, type KnownAgent } from '#lib/board/types.ts';
 	import { ABANDON_CONFIRM_TEXT } from '#lib/board/wake.ts';
+	import { voice } from '#lib/board/voice.svelte.ts';
+	import AttachButton from './AttachButton.svelte';
+	import AttachmentTray from './AttachmentTray.svelte';
 	import MessageBox from './MessageBox.svelte';
+	import VoiceButton from './VoiceButton.svelte';
 	import AgentModelPicker from './AgentModelPicker.svelte';
 	import ModelPicker from './ModelPicker.svelte';
 	import SendButton from './SendButton.svelte';
@@ -141,6 +145,7 @@
 	const draft = $derived(read(owner));
 	/** Whose attachments the box holds: the open agent's, or the controllers' draft's. */
 	const attachOwner = $derived(owner === null ? 'controllers' : `agent:${owner}`);
+	let messageBox = $state<MessageBox>();
 	/** Something to send: typed text or an attached file. */
 	const filled = $derived(!!draft.trim() || attaching.list(attachOwner).length > 0);
 	const named = $derived(draft.trimStart().startsWith('@'));
@@ -163,6 +168,7 @@
 	/** A line for the closed agent whose page is open, without a name or naming it (a closed
 	 *  controller): not sent; it is brought back from its page. */
 	const toClosed = $derived(closed !== undefined && (!named || (command.ok && command.controller.id === closed.id)));
+	const boxDisabled = $derived((toAgent && agentBlocked !== null) || toClosed);
 	const recipient = $derived(toClosed ? undefined : command.ok ? command.controller : named || toAgent ? undefined : target);
 	/** Whose turn the send button interrupts instead, as the notice names it; null when it sends. */
 	const stopping = $derived(
@@ -293,52 +299,62 @@
 		void submit();
 	}}
 >
-	<button type="button" class="hide" aria-label="收起輸入列" title="收起輸入列" onclick={() => setHidden(true)}>
-		<ChevronDown size="1.1em" />
-	</button>
 	<span class="to" class:other={recipient !== undefined && recipient.id !== target?.id} title={toAgent && agent?.hcomName ? `@${agent.hcomName}` : undefined}>→ {toAgent && agent ? agentName : toClosed && closed ? `@${closed.hcomName}` : recipient ? `@${recipient.hcomName}` : '@名稱'}</span>
-	<!-- The send button sits inside the box at its right edge; the box keeps its text clear of it. -->
-	<div class="box" style:--send-w="{sendWidth}px">
-		<MessageBox
-			bind:value={() => draft, (value) => write(owner, value)}
-			label={toAgent && agent ? `指令列：傳話給 ${agentName}` : toClosed && closed ? `指令列：@${closed.hcomName} 已關閉` : recipient ? `指令列：${waking ? '喚醒' : '傳話給'} @${recipient.hcomName}` : '指令列'}
-			placeholder={toAgent && agentBlocked
-				? agentBlocked
-				: toClosed
-					? CLOSED_SEND_TEXT
-					: `${agent ? `傳話給 ${agentName}` : '@名稱 指定主控'}・${enterMakesNewline.current ? 'Enter 換行・按鈕送出' : 'Enter 送出・Shift+Enter 換行'}`}
-			disabled={(toAgent && agentBlocked !== null) || toClosed}
-			attachTo={attachOwner}
-			{skillsFor}
-			onsend={submit}
-		/>
-		<!-- A wake keeps its word: it brings a controller back and spends quota. One button either
-		     way, so its check stays through the change. -->
-		<span class="send-slot" bind:clientWidth={sendWidth}>
-			{#if stopping}
-				<button
-					type="button"
-					class="primary send square stop"
-					aria-label="中斷這一回合"
-					title="中斷這一回合（等同在它的終端機按 Esc）"
-					aria-expanded={confirmingStop}
-					data-action="interrupt"
-					disabled={interrupting[stopping.id]}
-					onclick={() => ((confirmingStop = !confirmingStop), (optionsOpen = false))}
-				>
-					<Square size="1em" fill="currentColor" />
-				</button>
-			{:else}
-				<SendButton
-					class="send"
-					label={waking ? '喚醒' : '送出'}
-					icon={waking ? undefined : sendIcon}
-					sending={toAgent && agent ? (agentSending[agent.id] ?? false) : sending}
-					{sent}
-					disabled={!filled || (toAgent && agentBlocked !== null) || toClosed}
-				/>
+	<!-- The paperclip and the mic sit before the box as they do in a message box of its own, and the
+	     files above both; placed here so a phone can move them to the row under the box. The send
+	     button sits inside the box at its right edge; the box keeps its text clear of it. -->
+	<div class="field">
+		<div class="tray-slot"><AttachmentTray owner={attachOwner} /></div>
+		<div class="field-row">
+			<span class="attach-slot"><AttachButton owner={attachOwner} disabled={boxDisabled} /></span>
+			{#if voice.unlocked}
+				<span class="voice-slot"><VoiceButton disabled={boxDisabled} oninsert={(text) => messageBox?.insert(text)} /></span>
 			{/if}
-		</span>
+			<div class="box" style:--send-w="{sendWidth}px">
+				<MessageBox
+					bind:this={messageBox}
+					bind:value={() => draft, (value) => write(owner, value)}
+					label={toAgent && agent ? `指令列：傳話給 ${agentName}` : toClosed && closed ? `指令列：@${closed.hcomName} 已關閉` : recipient ? `指令列：${waking ? '喚醒' : '傳話給'} @${recipient.hcomName}` : '指令列'}
+					placeholder={toAgent && agentBlocked
+						? agentBlocked
+						: toClosed
+							? CLOSED_SEND_TEXT
+							: `${agent ? `傳話給 ${agentName}` : '@名稱 指定主控'}・${enterMakesNewline.current ? 'Enter 換行・按鈕送出' : 'Enter 送出・Shift+Enter 換行'}`}
+					disabled={boxDisabled}
+					attachTo={attachOwner}
+					tools={false}
+					{skillsFor}
+					onsend={submit}
+				/>
+				<!-- A wake keeps its word: it brings a controller back and spends quota. One button either
+				     way, so its check stays through the change. -->
+				<span class="send-slot" bind:clientWidth={sendWidth}>
+					{#if stopping}
+						<button
+							type="button"
+							class="primary send square stop"
+							aria-label="中斷這一回合"
+							title="中斷這一回合（等同在它的終端機按 Esc）"
+							aria-expanded={confirmingStop}
+							data-action="interrupt"
+							disabled={interrupting[stopping.id]}
+							onclick={() => ((confirmingStop = !confirmingStop), (optionsOpen = false))}
+						>
+							<Square size="1em" fill="currentColor" />
+						</button>
+					{:else}
+						<SendButton
+							class="send"
+							label={waking ? '喚醒' : '送出'}
+							icon={waking ? undefined : sendIcon}
+							sending={toAgent && agent ? (agentSending[agent.id] ?? false) : sending}
+							{sent}
+							disabled={!filled || boxDisabled}
+						/>
+					{/if}
+				</span>
+			</div>
+		</div>
 	</div>
 	<!-- An agent has no wake; a closed one is brought back from its page. -->
 	{#if toAgent && agent}
@@ -368,6 +384,9 @@
 			<SlidersHorizontal size="1.1em" />
 		</button>
 	{/if}
+	<button type="button" class="hide" aria-label="收起輸入列" title="收起輸入列" onclick={() => setHidden(true)}>
+		<ChevronDown size="1.1em" />
+	</button>
 
 	<!-- Said here too, as a draft kept from before hides the placeholder. -->
 	{#if toClosed && draft.trim()}
@@ -508,10 +527,24 @@
 		color: var(--danger);
 		border-color: var(--danger);
 	}
+	/* The files above, and the paperclip and the mic before the box, bottom-aligned as it grows. */
+	.field {
+		min-width: 0;
+	}
+	.field-row {
+		display: flex;
+		align-items: flex-end;
+		gap: 0.4rem;
+	}
+	.attach-slot,
+	.voice-slot {
+		display: flex;
+	}
 	/* The box's frame holds the send button at its right, bottom-aligned as it grows; its text and
 	   tips stop short of the button. */
 	.box {
 		position: relative;
+		flex: 1;
 		min-width: 0;
 	}
 	.box :global(textarea) {
@@ -547,7 +580,8 @@
 	.reopen {
 		display: none;
 	}
-	/* A phone: the box takes its own row, the recipient and the controls the row under it. */
+	/* A phone: the box takes its own row, the controls the row under it: the paperclip, the model
+	   and effort, the mic, the rest, and the button that puts the line away at the far right. */
 	@media (max-width: 760px) {
 		.cmd.hidden {
 			display: none;
@@ -596,21 +630,53 @@
 		.options.idle {
 			display: none;
 		}
+		.field,
+		.field-row {
+			display: contents;
+		}
+		.tray-slot {
+			order: -2;
+			flex-basis: 100%;
+		}
+		.tray-slot:empty {
+			display: none;
+		}
 		.box {
 			order: -1;
 			flex-basis: 100%;
 		}
+		.attach-slot {
+			order: 1;
+		}
+		.pill-slot {
+			order: 2;
+		}
+		/* Near the left edge now, its menus float above the whole line from its left instead. */
+		.pill-slot :global(.picker) {
+			position: static;
+		}
+		.pill-slot :global(.picker .menu) {
+			left: 0.6rem;
+			right: auto;
+		}
+		.voice-slot {
+			order: 3;
+		}
+		.options {
+			order: 4;
+		}
+		.hide {
+			order: 5;
+			margin-left: auto;
+		}
 		/* The top bar already names the open controller; the line names its recipient only when it
 		   is someone else, in full on a short row above the box, so it is never cut. */
-		.hide {
-			margin-right: auto;
-		}
 		.to {
 			display: none;
 		}
 		.to.other {
 			display: block;
-			order: -2;
+			order: -3;
 			flex-basis: 100%;
 			height: auto;
 			overflow-wrap: anywhere;

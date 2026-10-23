@@ -3,7 +3,8 @@
 	// makes a new line depends on the device; Enter during input-method composition never sends.
 	// Where voice input is unlocked, a mic before the box puts what was said at the cursor.
 	// A box that takes attachments has a paperclip before it too; files can also be pasted or
-	// dropped on it, and show above it while they upload.
+	// dropped on it, and show above it while they upload. Without `tools` the parent places the
+	// paperclip, the mic (calling `insert`) and the files itself.
 	// A box that knows its recipient's client and folder lists that client's skills as one is typed:
 	// `/` for Claude, `$` for Codex, at the start or after a space (skills.ts), never while an input
 	// method is composing; arrows move, Enter or Tab puts the name in, Esc closes, a tap picks one.
@@ -26,6 +27,7 @@
 		disabled = false,
 		attachTo,
 		skillsFor = null,
+		tools = true,
 		onsend
 	}: {
 		value: string;
@@ -36,6 +38,8 @@
 		attachTo?: string;
 		/** Whose skills are hinted: the recipient's client and the folder it works in; none without it. */
 		skillsFor?: { client: string; folder: string } | null;
+		/** Whether the paperclip, the mic and the attached files are shown by the box itself. */
+		tools?: boolean;
 		onsend: () => void;
 	} = $props();
 	const id = $props.id();
@@ -81,7 +85,7 @@
 	let quiet = $state(false);
 
 	/** Put spoken text where the cursor is, over a selection like typing would be, keeping the rest. */
-	async function insert(text: string) {
+	export async function insert(text: string) {
 		const placed = insertAt(value, box.selectionStart, box.selectionEnd, text);
 		value = placed.value;
 		quiet = true;
@@ -205,14 +209,14 @@
 	}
 </script>
 
-{#if attachTo}
+{#if attachTo && tools}
 	<AttachmentTray owner={attachTo} />
 {/if}
 <div class="message-box" class:dropping role="group" ondragover={dragover} ondragleave={() => (dropping = false)} ondrop={drop}>
-	{#if attachTo}
+	{#if attachTo && tools}
 		<AttachButton owner={attachTo} {disabled} />
 	{/if}
-	{#if voice.unlocked}
+	{#if voice.unlocked && tools}
 		<VoiceButton {disabled} oninsert={insert} />
 	{/if}
 	<textarea
