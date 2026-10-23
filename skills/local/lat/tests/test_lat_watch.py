@@ -2266,6 +2266,26 @@ esac
         self.assertNotIn('term inject worker-open', commands)
         self.assertNotIn('consecutive expired waits', commands)
 
+    def test_legacy_ambiguous_target_retains_ordinary_expiry(self):
+        self.install_hcom('''#!/bin/sh
+case "$1" in
+list) printf '%s\\n' '[{"name":"orch","status":"listening"},{"name":"worker-open","status":"listening"},{"name":"team-target","base_name":"target","status":"listening"},{"name":"other-target","base_name":"target","status":"listening"}]';;
+term) printf '%s\\n' '{"ready":true,"prompt_empty":true,"lines":[]}';;
+esac
+''')
+        watch = load_watch()
+        path = watch.wait_path(self.work, 'worker-open')
+        watch.write_object(path, dict(agent='worker-open', target='target', kind='agent',
+                                     active=True, declared_at=0, deadline_at=60,
+                                     declared_at_utc='1970-01-01T00:00:00+00:00'))
+        self.run_cycles(watch, 60)
+        saved = json.loads(path.read_text())
+        self.assertFalse(saved['active'])
+        self.assertEqual(saved['released_reason'], 'expired')
+        self.assertEqual(saved['expiry_count'], 1)
+        self.assertFalse([r for r in self.watch_records()
+                          if r.get('decision') == 'observation-failed'])
+
     def test_owner_wait_releases_on_incoming_message_or_owner_successful_send(self):
         transcript = self.root / 'owner.jsonl'
         transcript.write_text('')

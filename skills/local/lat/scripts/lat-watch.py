@@ -2207,7 +2207,11 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 target_observation, target_state = None, None
                 waits_for_orchestrator = False
                 if declaration and declaration.get('kind') == 'agent':
-                    target = resolve_agent_name(hcom, declaration['target'], required=False)
+                    try:
+                        target = resolve_agent_name(hcom, declaration['target'], required=False)
+                    except ValueError:
+                        # Legacy short targets can become ambiguous; keep their normal expiry.
+                        target = declaration['target']
                     waits_for_orchestrator = agent != orchestrator and target == orchestrator
                 if (declaration and declaration.get('kind') == 'agent'
                         and not waits_for_orchestrator
