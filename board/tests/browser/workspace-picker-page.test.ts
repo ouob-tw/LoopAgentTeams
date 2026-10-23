@@ -111,7 +111,8 @@ test.skipIf(!CHROME)("a workspace's + form starts in that workspace and offers t
 	await evaluate(`document.querySelector('form > .primary').click()`);
 	expect((await sent()).workspace).toEqual({ kind: 'existing', id: 'wE' });
 
-	// A value the field does not offer, such as a workspace the page has not listed yet, changes nothing.
+	// Setting a value the field does not offer, such as a workspace the page has not listed yet,
+	// leaves the select at '' (no option): that changes nothing either.
 	await pick('in:wE');
 	await pick('in:wNotListed');
 	expect(JSON.parse(await evaluate<string>(`JSON.stringify([${TITLE}, document.querySelector('.where input')])`))).toEqual(['在 Empty 開新 Agent', null]);
