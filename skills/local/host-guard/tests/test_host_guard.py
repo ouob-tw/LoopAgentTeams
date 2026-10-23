@@ -191,7 +191,9 @@ class SkillsAddTests(HookCase):
                 ('cd -- ~/LoopAgentTeams && bunx skills add .', None),
                 ('sudo -u swy bunx skills add ~/LoopAgentTeams', None),
                 ('bunx skills add ~/Loop\\AgentTeams', None),
-                ('bunx skills add "$HOME"/\'LoopAgentTeams\'', None)]:
+                ('bunx skills add "$HOME"/\'LoopAgentTeams\'', None),
+                ('CI=1 \\\n  bunx skills add ~/LoopAgentTeams', None),
+                ('env CI=1 \\\n  bunx \\\n  skills add ~/LoopAgentTeams --skill lat', None)]:
             with self.subTest(command):
                 result = self.bash(command, cwd)
                 self.assert_blocked(result, f'{self.repo}/scripts/install-skills.py')

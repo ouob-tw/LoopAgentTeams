@@ -237,7 +237,8 @@ def shell_tokens(text):
     while i < len(text):
         char = text[i]
         if char == '\\' and i + 1 < len(text):
-            word.append(text[i + 1])
+            if text[i + 1] != '\n':  # a line continuation joins the lines
+                word.append(text[i + 1])
             i += 2
             continue
         if char in '\'"':
