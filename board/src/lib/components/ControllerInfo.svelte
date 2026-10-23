@@ -1,6 +1,7 @@
 <script lang="ts">
 	// A controller's information page, made of blocks: its header, a close for an idle one (its
-	// conversation still open in Herdr, as on the Herdr 分頁), a bar for each question waiting
+	// conversation still open in Herdr, as on the Herdr 分頁) or the pause or resume of a running
+	// one's HCOM link, a bar for each question waiting
 	// for an answer, then its conversation, its reports not yet archived and what was sent to it, one
 	// tab at a time. Its model and effort, and messages and wakes, go through the command line at the
 	// bottom of the screen.
@@ -107,6 +108,9 @@
 	{:else}
 		<p class="note">Herdr 的清單上找不到它的分頁，無法從這裡關閉。</p>
 	{/if}
+{:else if controller.herdr && !agent && (idleAgent?.hcom === 'linked' || idleAgent?.hcom === 'paused')}
+	<!-- A running controller is not closed from here; its HCOM link is paused or resumed. -->
+	<AgentClose agent={idleAgent} close={false} />
 {/if}
 
 <PendingQuestions status={controller.status} {questions} {onopen} />

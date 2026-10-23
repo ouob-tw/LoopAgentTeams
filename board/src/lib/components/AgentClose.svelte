@@ -2,7 +2,8 @@
 	// An agent's close, asked for and then confirmed, and beside it the pause of its HCOM link (one
 	// linked now) or its resume (one paused), confirmed the same way. An agent with a switch left
 	// unfinished is pointed to the command line to continue or give it up instead; one Herdr no longer
-	// lists is shown only for that. An idle controller's information page closes its agent this way too.
+	// lists is shown only for that. An idle controller's information page closes its agent this way too;
+	// a running one's offers only the pause or resume (`close` false).
 	import {
 		AGENT_HCOM_UNKNOWN_REASON,
 		AGENT_PAUSE_CONFIRM_TEXT,
@@ -14,7 +15,7 @@
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { KnownAgent } from '#lib/board/types.ts';
 
-	let { agent, label = '關閉 Agent' }: { agent: KnownAgent; label?: string } = $props();
+	let { agent, label = '關閉 Agent', close: closeOffered = true }: { agent: KnownAgent; label?: string; close?: boolean } = $props();
 
 	/** Agents whose confirmation of an action is open, and which one: one at a time per agent. */
 	let confirming = $state<Record<string, 'close' | 'pause' | 'unpause'>>({});
@@ -52,7 +53,7 @@
 	{:else if agent.switch}
 		<p class="note">{AGENT_SWITCH_UNFINISHED_TEXT}：按下方輸入列模型旁的 ⚠ 處理。</p>
 	{:else}
-		{#if !closable}
+		{#if !closable && closeOffered}
 			<p class="note">{AGENT_HCOM_UNKNOWN_REASON}</p>
 		{/if}
 		{#if confirming[agent.id] === 'close'}
@@ -74,7 +75,9 @@
 			</div>
 		{:else}
 			<div class="actions">
-				<button type="button" data-action="close" disabled={!closable || busy[agent.id]} onclick={() => (confirming[agent.id] = 'close')}>{label}</button>
+				{#if closeOffered}
+					<button type="button" data-action="close" disabled={!closable || busy[agent.id]} onclick={() => (confirming[agent.id] = 'close')}>{label}</button>
+				{/if}
 				{#if agent.hcom === 'linked'}
 					<button type="button" data-action="pause" disabled={busy[agent.id]} onclick={() => (confirming[agent.id] = 'pause')}
 						>{busy[agent.id] ? '處理中…' : '暫停通訊'}</button

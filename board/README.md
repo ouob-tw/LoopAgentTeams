@@ -224,7 +224,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 接回開出的新分頁會移到該工作區的最前面（喚醒與切換模型都一樣）：窗格一查到（接回當下，或之後補記 `resume-pane` 時；切換模型的接回只補記，窗格取 Herdr 執行這個 session 的窗格，因為停止後 hcom 清單可能還列著已關閉的舊窗格），看板從 `herdr pane list` 找出它的分頁，再經 Herdr 的連線介面送 `tab.move`（`insert_index: 0`；Herdr 0.9.3 的 CLI 沒有移動分頁的指令）。連線介面預設是 `~/.config/herdr/herdr.sock`，可用 `HERDR_SOCKET_PATH` 指定。移動在結果寫進紀錄之後才做、不等它完成，失敗也不影響接回。
 - 未結案的接回由後來追加的行結案：`resume-closed` 記結果（`succeeded`、`ended`、`abandoned`），`resume-pane` 補記後來才查到的窗格。每次讀取資料讀到的 hcom 清單上出現該 session，就結案為成功。
 - 再次喚醒前的查證依序是：session 在 hcom 清單上 → 結案為成功，改走輸入框；清單上有主控原本的名稱或接回輸出的名稱（含還沒綁定的 Agent）或記下的窗格還在 `herdr pane list` 裡 → 拒絕；記下的窗格已不在 → 結案為已結束，照常接回；沒記到窗格 → 拒絕並回傳可放棄的那一筆（`abandon`）。窗格清單讀不到也拒絕。等待時間只用來顯示提示，不會放行。
-- 閒置主控的資訊頁有「關閉」（`ControllerInfo.svelte`），與 Herdr 分頁的「關閉 Agent」共用 `AgentClose.svelte` 與 `POST /api/agents/close`：拒絕條件、確認與結果通知都相同，確認文字一律說明可以從主控資訊頁喚醒接回，與從 Herdr 分頁打開它時相同。按鈕只在這次讀到的 Herdr 清單上有同一個 session ID 的 Agent 時出現，找不到時說明無法從這裡關閉；它有未完成的模型切換時，與 Agent 頁面一樣不顯示按鈕、只說明要先處理切換；其他狀態的主控沒有這個按鈕。關閉後 session 從 hcom 清單消失，下一次讀取資料就顯示為已關閉。
+- 閒置主控的資訊頁有「關閉」（`ControllerInfo.svelte`），與 Herdr 分頁的「關閉 Agent」共用 `AgentClose.svelte` 與 `POST /api/agents/close`：拒絕條件、確認與結果通知都相同，確認文字一律說明可以從主控資訊頁喚醒接回，與從 Herdr 分頁打開它時相同。按鈕只在這次讀到的 Herdr 清單上有同一個 session ID 的 Agent 時出現，找不到時說明無法從這裡關閉；它有未完成的模型切換時，與 Agent 頁面一樣不顯示按鈕、只說明要先處理切換；其他狀態的主控沒有這個按鈕；進行中的主控在 Herdr 清單上有接 HCOM 或暫停通訊時，改成只有「暫停通訊」／「恢復通訊」（`AgentClose.svelte` 的 `close={false}`；有未完成的模型切換時照 Agent 頁只說明要先處理切換）。關閉後 session 從 hcom 清單消失，下一次讀取資料就顯示為已關閉。
 - 測試以 `tests/fake-hcom.mjs`（`list --json` 與 `r`）、`tests/fake-herdr.mjs`、`tests/fake-inject.mjs` 代替真的指令。
 
 ## 模型與思考強度
