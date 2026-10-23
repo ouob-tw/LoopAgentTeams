@@ -41,12 +41,11 @@ export function matchSkills(skills: Skill[], query: string): Skill[] {
 	return [...starting, ...holding];
 }
 
-/** The text with the name typed from `start` (its trigger) replaced by the trigger and the skill's
- *  name, with a space after it unless one follows already, and where the cursor goes. */
+/** The text with the name typed from `start` (its trigger) up to the cursor replaced by the trigger
+ *  and the skill's name, with a space after it unless whitespace follows already (a space
+ *  also ends the text when nothing follows); what follows the cursor stays as it is. Where the cursor goes. */
 export function insertSkill(text: string, start: number, caret: number, trigger: string, name: string): { value: string; caret: number } {
-	let end = caret;
-	while (end < text.length && !/\s/.test(text[end]!)) end++;
-	const rest = text.slice(end);
+	const rest = text.slice(caret);
 	const written = `${trigger}${name}${rest && /^\s/.test(rest) ? '' : ' '}`;
 	const value = text.slice(0, start) + written + rest;
 	return { value, caret: start + trigger.length + name.length + (written.endsWith(' ') ? 1 : 0) };

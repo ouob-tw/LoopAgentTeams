@@ -63,8 +63,22 @@ describe('what goes in', () => {
 		expect(insertSkill('/la\nnext', 0, 3, '/', 'lat')).toEqual({ value: '/lat\nnext', caret: 4 });
 		expect(insertSkill('x /', 2, 3, '/', 'frontend-design:frontend-design')).toEqual({ value: 'x /frontend-design:frontend-design ', caret: 35 });
 	});
-	test('the rest of the name already typed after the cursor is replaced too', () => {
-		expect(insertSkill('/latxx rest', 0, 2, '/', 'lat')).toEqual({ value: '/lat rest', caret: 4 });
+	test('text right after the cursor is kept whole, a space put between', () => {
+		expect(insertSkill('/la現在有個情況', 0, 3, '/', 'lat')).toEqual({ value: '/lat 現在有個情況', caret: 5 });
+		expect(insertSkill('$td2024', 0, 3, '$', 'tdd')).toEqual({ value: '$tdd 2024', caret: 5 });
+		expect(insertSkill('/laabc', 0, 3, '/', 'lat')).toEqual({ value: '/lat abc', caret: 5 });
+		expect(insertSkill('/la，好', 0, 3, '/', 'lat')).toEqual({ value: '/lat ，好', caret: 5 });
+		expect(insertSkill('@tose /la!', 6, 9, '/', 'lat')).toEqual({ value: '@tose /lat !', caret: 11 });
+	});
+	test('a cursor inside the name keeps the letters after it', () => {
+		expect(insertSkill('/lat more', 0, 3, '/', 'lat')).toEqual({ value: '/lat t more', caret: 5 });
+		expect(insertSkill('/latxx rest', 0, 2, '/', 'lat')).toEqual({ value: '/lat atxx rest', caret: 5 });
+		expect(insertSkill('$tdd', 0, 3, '$', 'tdd')).toEqual({ value: '$tdd d', caret: 5 });
+	});
+	test('whitespace or nothing after the cursor is as before', () => {
+		expect(insertSkill('/la next', 0, 3, '/', 'lat')).toEqual({ value: '/lat next', caret: 4 });
+		expect(insertSkill('/la\tnext', 0, 3, '/', 'lat')).toEqual({ value: '/lat\tnext', caret: 4 });
+		expect(insertSkill('/la', 0, 3, '/', 'lat')).toEqual({ value: '/lat ', caret: 5 });
 	});
 });
 
