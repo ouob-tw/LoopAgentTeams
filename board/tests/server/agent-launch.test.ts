@@ -341,6 +341,15 @@ test('a controller goes to the chosen workspace, existing or new, instead of its
 	expect(hcomCalls().map((call) => call.workspace)).toEqual(['wE', 'wCtl']);
 });
 
+test('a controller\'s new workspace that cannot be created is a failure, and nothing is started', async () => {
+	const repo = folder('ctrl-create-fails', true);
+	herdrPlan({ fail: { 'workspace create': { exit: 1, stderr: 'no room' } } });
+	const { status, body } = await launch({ folder: repo, text: '做事', workspace: { kind: 'new', label: 'n' } });
+	expect(status).toBe(502);
+	expect(body.reason).toBe('建立 Herdr 工作區失敗：no room，沒有啟動主控');
+	expect(hcomCalls()).toEqual([]);
+});
+
 needsPlain('a controller\'s chosen workspace that is gone stops it before git init or anything else', async () => {
 	herdrPlan();
 	const plain = folder('not-git', false);

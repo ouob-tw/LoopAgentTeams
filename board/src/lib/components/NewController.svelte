@@ -195,6 +195,8 @@
 			} else if (agentLaunching.folder === '' && !agentLaunching.folderEdited && fallback) pick(fallback);
 		});
 	});
+	// The workspace field starts where the button that opened the form says, each time it is opened.
+	untrack(() => (form.workspaceOption = defaultWorkspaceOption(target?.workspace ?? null)));
 	// A new controller starts from the most recent folder, unless the box was typed in.
 	$effect(() => {
 		if (target) return;
@@ -317,9 +319,11 @@
 		sending = true;
 		const result = await sent.start(sendTo!);
 		sending = false;
-		// A workspace made for this launch is not made again by sending the form once more.
-		if (result.ok && sentOption.kind === 'new' && sent.workspaceOption === sentOption) {
-			sent.workspaceOption = defaultWorkspaceOption(target?.workspace ?? null);
+		// A workspace made for this launch, even one that failed after, is not made again by
+		// sending the form once more: the field goes to it.
+		if (result.created && sentOption.kind === 'new' && sent.workspaceOption === sentOption) {
+			sent.workspaceOption = { kind: 'existing', id: result.created.id };
+			sent.chosenLabel = result.created.label;
 			sent.workspaceName = null;
 		}
 		// The folder may have been created: what the box says about it is read again.
@@ -426,7 +430,7 @@
 				</select>
 			</label>
 			{#if form.workspaceOption.kind === 'new'}
-				<label class="tab-name">
+				<label class="workspace-name">
 					新工作區名稱
 					<input
 						value={newName}
@@ -663,7 +667,8 @@
 		gap: 0.8rem;
 		padding-bottom: 0.4rem;
 	}
-	.tab-name {
+	.tab-name,
+	.workspace-name {
 		flex: 1 1 12rem;
 	}
 	button:disabled {

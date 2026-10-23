@@ -11,6 +11,8 @@ export interface StartResult {
 	reason: string | null;
 	/** The launch's ID in the sent log, when one was made. */
 	launchId?: string;
+	/** The workspace the launch created, even when it failed after that. */
+	created?: { id: string; label: string };
 }
 
 /** No answer came back, so a controller may or may not have been started. */
@@ -19,8 +21,7 @@ const UNKNOWN_OUTCOME = '沒有收到看板伺服器的回應，不確定有沒�
 class Launching {
 	/** The plain-agent form's Herdr workspace; null for the new-controller form. */
 	workspace = $state<string | null>(null);
-	/** Where the agent opens; the new-agent form resets it to its own workspace when it is opened
-	 *  from another one. */
+	/** Where the agent opens; each time the form is opened it starts from its default. */
 	workspaceOption = $state<WorkspaceOption>({ kind: 'auto' });
 	/** The label of the existing workspace chosen, kept should Herdr stop listing it. */
 	chosenLabel = $state('');
@@ -135,7 +136,9 @@ class Launching {
 		void this.load();
 		if (!body) return { ok: false, reason: UNKNOWN_OUTCOME };
 		const logNote = body.logError ? `（送出紀錄寫入失敗：${body.logError}）` : '';
-		return { ok: body.ok, reason: body.ok ? logNote || null : body.reason + logNote, launchId: body.entry?.id };
+		const entry = body.entry;
+		const created = entry?.workspaceCreated && entry.herdrWorkspace ? { id: entry.herdrWorkspace, label: entry.herdrWorkspaceLabel ?? entry.herdrWorkspace } : undefined;
+		return { ok: body.ok, reason: body.ok ? logNote || null : body.reason + logNote, launchId: entry?.id, created };
 	}
 }
 

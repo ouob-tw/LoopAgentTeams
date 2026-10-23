@@ -1,12 +1,12 @@
 // Starting a new controller from the board: check the folder (creating it under the home folder
 // when it is not there yet, and running `git init` when the user asked for it or the folder is
-// new), pick the Herdr workspace the form chose (by default the one of its project), and have
-// hcom open the client there
+// new), pick the Herdr workspace the form chose (by default its project's), and have hcom open
+// the client there
 // with the LAT start command and the user's first message. Every attempt that got past the form's
 // own rules is logged, and followed until a binding with its HCOM name appears.
 //
 // A plain agent from the Herdr tab goes the same way, without the LAT start command or a Git
-// project. Either form may choose the workspace: its project's, one Herdr lists, or a new one. Either one is then followed until Herdr lists it under
+// project. Either form may choose its project's workspace, one Herdr lists, or a new one. Either one is then followed until Herdr lists it under
 // its HCOM name: a plain agent's tab is renamed when a name was asked for, and either one's tab is
 // moved to the front of its workspace.
 import { randomUUID } from 'node:crypto';
@@ -270,10 +270,11 @@ function resolveFolder(asked: string): { folder: string } | Stop {
 	}
 }
 
-/** The workspace a launch opens in, as the form chose it: the project's (`chooseWorkspace`), a
- *  new one with its first tab in the folder, or the existing one `lookFirst` found. Never another. */
-async function placeIn(config: BoardConfig, pick: WorkspacePick, early: WorkspaceChoice | null, scope: string, folder: string): Promise<WorkspaceChoice> {
-	if (early) return early;
+/** The workspace a launch opens in, as the form chose it: the existing one `lookFirst` found
+ *  `listed`, the project's (`chooseWorkspace`), or a new one with its first tab in the folder.
+ *  Never another. */
+async function placeIn(config: BoardConfig, pick: WorkspacePick, listed: WorkspaceChoice | null, scope: string, folder: string): Promise<WorkspaceChoice> {
+	if (listed) return listed;
 	if (pick.kind === 'new') return createWorkspace(config, folder, pick.label);
 	return chooseWorkspace(config, scope);
 }
@@ -288,9 +289,12 @@ async function lookFirst(config: BoardConfig, pick: WorkspacePick): Promise<Work
 	return { ok: true, id: pick.id, label: place.label, created: false };
 }
 
+/** Why there is no workspace, and so no `what`. */
+const unplaced = (reason: string, what: string): Stop => ({ reason: `${reason}，沒有${what}` });
+
 /** Record the workspace on the entry; resolves with why there is none, and nothing was started. */
 function placed(workspace: WorkspaceChoice, entry: SentLaunch, what: string): Stop | null {
-	if (!workspace.ok) return { reason: `${workspace.reason}，沒有${what}` };
+	if (!workspace.ok) return unplaced(workspace.reason, what);
 	entry.herdrWorkspace = workspace.id;
 	entry.herdrWorkspaceLabel = workspace.label;
 	entry.workspaceCreated = workspace.created;
@@ -299,15 +303,15 @@ function placed(workspace: WorkspaceChoice, entry: SentLaunch, what: string): St
 
 /** Everything before hcom runs for a plain agent: the folder must exist, in a Git project or not. */
 async function prepareAgent(board: Board, asked: string, pick: WorkspacePick, entry: SentLaunch, missing: boolean): Promise<Stop | Prepared> {
-	const early = await lookFirst(board.config, pick);
-	if (early && !early.ok) return placed(early, entry, '開新 Agent')!;
+	const listed = await lookFirst(board.config, pick);
+	if (listed && !listed.ok) return unplaced(listed.reason, '開新 Agent');
 	const failed = missing ? create(asked, entry, '開新 Agent') : null;
 	if (failed) return failed;
 	const resolved = resolveFolder(asked);
 	if ('reason' in resolved) return resolved;
 	entry.scope = gitRoot(resolved.folder) ?? resolved.folder;
-	const unplaced = placed(await placeIn(board.config, pick, early, entry.scope, resolved.folder), entry, '開新 Agent');
-	if (unplaced) return unplaced;
+	const stop = placed(await placeIn(board.config, pick, listed, entry.scope, resolved.folder), entry, '開新 Agent');
+	if (stop) return stop;
 	return { startIn: resolved.folder, bound: [] };
 }
 
@@ -325,8 +329,8 @@ async function prepare(board: Board, request: LaunchRequest, pick: WorkspacePick
 	// not the new controller. Without them a launch could not be told from an earlier agent's.
 	const before = await listControllers(board.config);
 	if (!before.ok) return { reason: `讀不到面板綁定登記，沒有${missing ? '建立資料夾，也沒有' : ''}啟動主控：${before.reason}` };
-	const early = await lookFirst(board.config, pick);
-	if (early && !early.ok) return placed(early, entry, '啟動主控')!;
+	const listed = await lookFirst(board.config, pick);
+	if (listed && !listed.ok) return unplaced(listed.reason, '啟動主控');
 	const failed = missing ? create(request.folder, entry, '啟動主控') : null;
 	if (failed) return failed;
 	const resolved = resolveFolder(request.folder);
@@ -344,11 +348,8 @@ async function prepare(board: Board, request: LaunchRequest, pick: WorkspacePick
 		scope = folder;
 	}
 	entry.scope = scope;
-	const workspace = await placeIn(board.config, pick, early, scope, folder);
-	// The project's own workspace keeps the reason as it always was.
-	if (!workspace.ok && pick.kind === 'auto') return { reason: workspace.reason };
-	const unplaced = placed(workspace, entry, '啟動主控');
-	if (unplaced) return unplaced;
+	const stop = placed(await placeIn(board.config, pick, listed, scope, folder), entry, '啟動主控');
+	if (stop) return stop;
 	return { startIn: folder, bound: before.controllers };
 }
 

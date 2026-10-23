@@ -36,8 +36,9 @@ const type = (box: string, text: string) =>
 		box.value = ${JSON.stringify(text)};
 		box.dispatchEvent(new Event('input', { bubbles: true }));
 	})()`);
-/** Answer the next launch in the page, keeping what the form sent in `window.sentLaunch`. */
-const catchLaunch = () =>
+/** Answer the next launch in the page, keeping what the form sent in `window.sentLaunch`; by
+ *  default a refusal, so nothing changes on the form. */
+const catchLaunch = (answer: object = { ok: false, reason: '測試不開', entry: null, logError: null }, status = 409) =>
 	evaluate(`(() => {
 		window.sentLaunch = null;
 		const fetch = window.realFetch ?? window.fetch;
@@ -45,7 +46,7 @@ const catchLaunch = () =>
 		window.fetch = (input, init) => {
 			if (String(input).endsWith('/api/launches') && init?.method === 'POST') {
 				window.sentLaunch = JSON.parse(init.body);
-				return Promise.resolve(new Response(JSON.stringify({ ok: false, reason: '測試不開', entry: null, logError: null }), { status: 409, headers: { 'content-type': 'application/json' } }));
+				return Promise.resolve(new Response(${JSON.stringify(JSON.stringify(answer))}, { status: ${status}, headers: { 'content-type': 'application/json' } }));
 			}
 			return fetch(input, init);
 		};
@@ -143,6 +144,16 @@ test.skipIf(!CHROME)('a new workspace is named after the folder until the name i
 	await until(`document.querySelector('form > .primary').disabled`);
 	expect(await evaluate<string>(`document.querySelector('.new .failed')?.textContent`)).toBe('請輸入新工作區的名稱。');
 	await type(NAME, '我的工作區');
+
+	// A launch that created the workspace, then failed: sending again goes to that workspace, not a new one.
+	const entry = { id: 'l1', kind: 'launch', role: 'agent', time: new Date().toISOString(), client: 'claude', folder: alpha, scope: alpha, text: '', gitInit: false, herdrWorkspace: 'wMine', herdrWorkspaceLabel: '我的工作區', workspaceCreated: true, hcomName: null, earlierSessions: [], outcome: 'failed', error: 'hcom 啟動失敗', state: 'failed', controllerId: null, follow: null };
+	await catchLaunch({ ok: false, reason: 'hcom 啟動失敗', entry, logError: null }, 502);
+	await evaluate(`document.querySelector('form > .primary').click()`);
+	await sent();
+	await until(`${SELECT}.value === 'in:wMine' && ${TITLE} === '在 我的工作區 開新 Agent'`);
+	await catchLaunch();
+	await evaluate(`document.querySelector('form > .primary').click()`);
+	expect((await sent()).workspace).toEqual({ kind: 'existing', id: 'wMine' });
 }, 30_000);
 
 test.skipIf(!CHROME)('the new-controller form starts automatically, as before, and has no current workspace', async () => {
@@ -163,7 +174,12 @@ test.skipIf(!CHROME)('the new-controller form starts automatically, as before, a
 	await catchLaunch();
 	await evaluate(`document.querySelector('form > .primary').click()`);
 	expect((await sent()).workspace).toEqual({ kind: 'existing', id: 'wE' });
-	await pick('auto');
+
+	// Opened again, each form is back on its button's default.
+	await send('Page.navigate', { url: `${fixture.url}/?new-agent=wA` });
+	await until(`${SELECT}?.value === 'current'`);
+	await send('Page.navigate', { url: `${fixture.url}/?launch` });
+	await until(`${SELECT}?.value === 'auto'`);
 }, 30_000);
 
 test.skipIf(!CHROME)('at a phone\'s width the field and the name box fit without scrolling sideways', async () => {
