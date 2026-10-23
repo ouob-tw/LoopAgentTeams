@@ -1,5 +1,7 @@
 """Shared LAT storage, CLI, watcher identity and directory rules (stdlib only)."""
+from datetime import datetime, timedelta
 import json
+import logging
 import os
 from pathlib import Path
 import subprocess
@@ -126,3 +128,67 @@ def plugin_directory(kind, env=None):
         return base / 'herdr/plugins/config/lat.panel'
     base = Path(env.get('XDG_STATE_HOME', Path.home() / '.local/state'))
     return base / 'herdr/plugins/lat.panel'
+
+
+_PAUSE_WARNED = set()
+
+
+def hcom_paused_dir():
+    """Shared board/watcher pause records; only absolute overrides are accepted."""
+    override = os.environ.get('LAT_HCOM_PAUSED_DIR', '')
+    if override and Path(override).is_absolute():
+        return Path(override)
+    state = os.environ.get('XDG_STATE_HOME', '')
+    root = Path(state) if state and Path(state).is_absolute() else Path.home() / '.local/state'
+    return root / 'lat/hcom-paused'
+
+
+def read_hcom_pauses(warn=None):
+    """Read complete pause records by full HCOM name; warn once per invalid path.
+
+    Missing records are normal. A repaired or removed file resets its warning.
+    """
+    warn = warn or (lambda path, error: logging.warning('Invalid HCOM pause record %s: %s', path, error))
+    directory = hcom_paused_dir()
+    invalid = set()
+
+    def reject(path, error):
+        key = str(path)
+        invalid.add(key)
+        if key not in _PAUSE_WARNED:
+            warn(path, str(error))
+            _PAUSE_WARNED.add(key)
+
+    try:
+        paths = sorted(directory.iterdir())
+    except FileNotFoundError:
+        paths = []
+    except OSError as error:
+        reject(directory, error)
+        paths = []
+    records = {}
+    for path in paths:
+        if path.suffix != '.json':
+            continue
+        try:
+            record = json.loads(path.read_text(encoding='utf-8'))
+            if not isinstance(record, dict):
+                raise ValueError('expected an object')
+            if any(not isinstance(record.get(field), str) or not record[field].strip()
+                   for field in ('session_id', 'hcom_name', 'client', 'paused_at')):
+                raise ValueError('missing or invalid pause field')
+            if 'pane' not in record or (record['pane'] is not None
+                                       and not isinstance(record['pane'], str)):
+                raise ValueError('pane must be a string or null')
+            if path.stem != record['session_id']:
+                raise ValueError('session_id must match filename')
+            paused_at = datetime.fromisoformat(record['paused_at'].replace('Z', '+00:00'))
+            if paused_at.utcoffset() != timedelta(0):
+                raise ValueError('paused_at must be UTC ISO 8601')
+            records[record['hcom_name']] = record
+        except (OSError, ValueError, TypeError) as error:
+            reject(path, error)
+    _PAUSE_WARNED.difference_update(
+        key for key in tuple(_PAUSE_WARNED)
+        if (key == str(directory) or str(Path(key).parent) == str(directory)) and key not in invalid)
+    return records
