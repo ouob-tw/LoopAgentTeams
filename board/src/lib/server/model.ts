@@ -36,8 +36,8 @@ export interface Sources {
 	reportsError: string | null;
 	/** Session IDs in hcom's last list that could be read; null until one could. */
 	running: Set<string> | null;
-	/** Session IDs with a pause record: a controller among them is still running, though hcom does
-	 *  not list it. */
+	/** Session IDs with a pause record whose session hcom's list does not have on its link: a
+	 *  controller among them is still running, though hcom does not reach it. */
 	paused: Set<string>;
 	/** Set when `running` is not from this read: why hcom's list could not be read. */
 	hcomError: string | null;
@@ -83,9 +83,8 @@ export function isClosed(sources: Sources, sessionId: string): boolean {
 	);
 }
 
-/** Whether this controller's HCOM link is paused: it has a pause record and hcom does not list it. */
-export const isPaused = (sources: Pick<Sources, 'running' | 'paused'>, sessionId: string): boolean =>
-	sources.paused.has(sessionId) && !sources.running?.has(sessionId);
+/** Whether this controller's HCOM link is paused. */
+export const isPaused = (sources: Pick<Sources, 'paused'>, sessionId: string): boolean => sources.paused.has(sessionId);
 
 /** The roster's order of status groups. */
 const STATUS_ORDER: ControllerStatus[] = ['waiting', 'working', 'delivered', 'idle', 'closed'];

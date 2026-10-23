@@ -28,7 +28,8 @@ function isRecord(value: unknown): value is PauseRecord {
 		typeof record.hcom_name === 'string' &&
 		typeof record.client === 'string' &&
 		(record.pane === null || typeof record.pane === 'string') &&
-		typeof record.paused_at === 'string'
+		typeof record.paused_at === 'string' &&
+		!Number.isNaN(Date.parse(record.paused_at))
 	);
 }
 
@@ -80,8 +81,8 @@ export function linkedAgain(agents: HcomAgent[], sessionId: string): HcomAgent |
 	return agents.find((agent) => agent.sessionId === sessionId && isConnected(agent));
 }
 
-/** Sessions with a pause or resume under way: the board's reads leave their records alone meanwhile,
- *  since a record is written before `hcom stop`, while hcom still lists the agent. */
+/** Sessions with a pause under way: the board's reads leave their records alone meanwhile, since a
+ *  record is written before `hcom stop`, while hcom still lists the agent on its link. */
 export const pausing = new Set<string>();
 
 /**

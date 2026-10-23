@@ -113,7 +113,9 @@ export function sendToAgent(board: Board, agentId: string, rawText: string) {
 	const text = typedText(rawText);
 	return queued(agentId, () =>
 		attempt(board, agentId, 'send', text, async (agent) => {
-			if (agent.hcom === 'unknown') return { route: null, reason: AGENT_HCOM_UNKNOWN_REASON };
+			// A paused one is typed into through Herdr, whether or not hcom's list can be read now.
+			const paused = agent.hcom === 'paused' || (agent.hcom === 'unknown' && readPauses(board.config.pausedDir).has(agent.id!));
+			if (agent.hcom === 'unknown' && !paused) return { route: null, reason: AGENT_HCOM_UNKNOWN_REASON };
 			if (agent.hcom === 'linked') return { route: 'hcom', reason: await inject(board.config, agent.hcomName!, text) };
 			// Herdr takes the argument after the pane as the text, whatever it looks like.
 			const act = await agentCommand(board.config, ['prompt', agent.herdr.pane, text]);
@@ -254,6 +256,7 @@ export function pauseAgent(board: Board, agentId: string) {
 				}
 				const stop = await stopAgent(config, name);
 				const after = await afterStop(board, record.session_id, stop);
+				const stopped = stop.failure ? `hcom stop ${stop.timedOut ? stop.failure : `失敗：${stop.failure}`}` : null;
 				if (after === 'stopped') return { route: 'hcom', reason: null };
 				if (after === 'linked') {
 					try {
@@ -261,11 +264,9 @@ export function pauseAgent(board: Board, agentId: string) {
 					} catch {
 						// Still on its link, so a later read removes it.
 					}
-					const why = stop.failure ? `hcom stop ${stop.timedOut ? stop.failure : `失敗：${stop.failure}`}` : '已送出 hcom stop';
-					return { route: 'hcom', reason: `${why}，重讀清單它仍接著 HCOM，沒有暫停通訊。` };
+					return { route: 'hcom', reason: `${stopped ?? '已送出 hcom stop'}，重讀清單它仍接著 HCOM，沒有暫停通訊。` };
 				}
-				const why = stop.failure ? `hcom stop ${stop.timedOut ? stop.failure : `失敗：${stop.failure}`}，` : '';
-				return { route: 'hcom', reason: `${why}讀不到 hcom 的清單，無法確認是否已暫停通訊：${after.reason}。暫停紀錄先保留，讀到清單後看板會自己判斷。` };
+				return { route: 'hcom', reason: `${stopped ? `${stopped}，` : ''}讀不到 hcom 的清單，無法確認是否已暫停通訊：${after.reason}。暫停紀錄先保留，讀到清單後看板會自己判斷。` };
 			} finally {
 				pausing.delete(record.session_id);
 				await board.refresh();
@@ -336,7 +337,7 @@ async function waitForLink(board: Board, record: PauseRecord): Promise<true | st
 		const other = list.agents.find((agent) => agent.name === record.hcom_name && isConnected(agent));
 		// Its own session back under another name is linked all the same: the next read removes the record.
 		why = back
-			? `它以另一個名稱 @${back.name} 接上 HCOM，不是暫停時的 @${record.hcom_name}。`
+			? `它以另一個名稱 @${back.name} 接回 HCOM，不是暫停時的 @${record.hcom_name}；暫停紀錄會在下次讀取時清除。`
 			: `${seconds} 秒內它沒有以原本的 @${record.hcom_name} 回到 hcom 的清單${other ? `（清單上的 @${record.hcom_name} 是另一個 session，不算接回）` : ''}。暫停紀錄保留，可以再按一次「恢復通訊」。`;
 	}
 	return why;

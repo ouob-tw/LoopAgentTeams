@@ -346,7 +346,7 @@ bun run repro:hydration --serve none       # 只啟動已登入的假資料看�
 
 `tests/browser/page-navigation.test.ts` 也用無頭 Chrome（使用起點加 72 與加 73）在同一分頁以整頁載入輪流開主控頁、Herdr Agent 頁與已關閉 Agent 頁（桌機與手機寬度各三輪），確認暫存的頁面不占住連線、翻譯照常完成；並確認從別的頁面按上一頁回到看板時重新載入、即時更新照常、指令列草稿仍在。
 
-`tests/browser/agents-page.test.ts` 以同樣方式（使用起點加 32 與加 33）在電腦與手機寬度操作「Herdr」分頁（含傳話、中斷、關閉與操作紀錄），並檢查畫面不會左右捲動。傳話與中斷的伺服器端行為在 `tests/server/agent-control.test.ts`（起點加 34），關閉在 `tests/server/agent-close.test.ts`（起點加 35），切換模型、繼續切換與放棄切換在 `tests/server/agent-switch.test.ts`（起點加 37）。
+`tests/browser/agents-page.test.ts` 以同樣方式（使用起點加 32 與加 33）在電腦與手機寬度操作「Herdr」分頁（含傳話、中斷、關閉與操作紀錄），並檢查畫面不會左右捲動。傳話與中斷的伺服器端行為在 `tests/server/agent-control.test.ts`（起點加 34），關閉在 `tests/server/agent-close.test.ts`（起點加 35），切換模型、繼續切換與放棄切換在 `tests/server/agent-switch.test.ts`（起點加 37）。暫停與恢復通訊在 `tests/server/agent-pause.test.ts`，暫停紀錄的讀寫在 `tests/unit/pause-records.test.ts`。
 
 `tests/browser/skill-hints-page.test.ts` 以同樣方式在指令列（電腦與手機寬度）與新建主控、開新 Agent 表單檢查 skill 名稱提示；Claude 的 skill 寫在測試暫存的家目錄與專案資料夾，Codex 的由假的 Codex app server（`tests/fake-codex.mjs`）回答。
 

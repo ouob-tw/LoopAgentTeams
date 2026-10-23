@@ -19,7 +19,7 @@
 	/** Agents whose confirmation of an action is open, and which one: one at a time per agent. */
 	let confirming = $state<Record<string, 'close' | 'pause' | 'unpause'>>({});
 	/** Agents with an action under way: no other is offered until it answers. */
-	let closing = $state<Record<string, boolean>>({});
+	let busy = $state<Record<string, boolean>>({});
 	// Whether hcom reaches it decides which command closes it; until that is known it is not done
 	// (the server refuses it too).
 	const closable = $derived(agent.hcom !== 'unknown');
@@ -28,9 +28,9 @@
 		// Once closed it leaves the list and this page with it; the notice is what shows the result.
 		const { id, name } = agent;
 		delete confirming[id];
-		closing[id] = true;
+		busy[id] = true;
 		const result = await agentControl.close(id);
-		closing[id] = false;
+		busy[id] = false;
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已關閉 ${name}。${result.reason ?? ''}` : (result.reason ?? '關閉失敗'));
 	}
 
@@ -38,9 +38,9 @@
 	async function link(action: 'pause' | 'unpause') {
 		const { id, name } = agent;
 		delete confirming[id];
-		closing[id] = true;
+		busy[id] = true;
 		const result = await (action === 'pause' ? agentControl.pause(id) : agentControl.unpause(id));
-		closing[id] = false;
+		busy[id] = false;
 		const done = action === 'pause' ? `已暫停 ${name} 的 HCOM 通訊。` : `${name} 已恢復 HCOM 通訊。`;
 		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `${done}${result.reason ?? ''}` : (result.reason ?? `${action === 'pause' ? '暫停' : '恢復'}通訊失敗`));
 	}
@@ -74,12 +74,14 @@
 			</div>
 		{:else}
 			<div class="actions">
-				<button type="button" data-action="close" disabled={!closable || closing[agent.id]} onclick={() => (confirming[agent.id] = 'close')}>{label}</button>
+				<button type="button" data-action="close" disabled={!closable || busy[agent.id]} onclick={() => (confirming[agent.id] = 'close')}>{label}</button>
 				{#if agent.hcom === 'linked'}
-					<button type="button" data-action="pause" disabled={closing[agent.id]} onclick={() => (confirming[agent.id] = 'pause')}>暫停通訊</button>
+					<button type="button" data-action="pause" disabled={busy[agent.id]} onclick={() => (confirming[agent.id] = 'pause')}
+						>{busy[agent.id] ? '處理中…' : '暫停通訊'}</button
+					>
 				{:else if agent.hcom === 'paused'}
-					<button type="button" data-action="unpause" disabled={closing[agent.id]} onclick={() => (confirming[agent.id] = 'unpause')}
-						>{closing[agent.id] ? '恢復中…' : '恢復通訊'}</button
+					<button type="button" data-action="unpause" disabled={busy[agent.id]} onclick={() => (confirming[agent.id] = 'unpause')}
+						>{busy[agent.id] ? '處理中…' : '恢復通訊'}</button
 					>
 				{/if}
 			</div>

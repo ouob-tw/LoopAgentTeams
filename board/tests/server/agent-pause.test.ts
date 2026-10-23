@@ -310,3 +310,17 @@ test('a paused controller stays on the roster as running, marked paused, with it
 	expect(response.status).toBe(200);
 	expect(herdrCalls()).toEqual([['agent', 'prompt', pane('s-linked'), 'keep going']]);
 });
+
+test('while hcom\'s list cannot be read, a paused agent is still typed into through Herdr', async () => {
+	await act('pause', 's-linked');
+	fixture.setHcom({ ...hcomPlan(), listFail: { exit: 1, stderr: 'down' } });
+	expect((await agent('s-linked'))?.hcom).toBe('unknown');
+	const response = await fixture.fetch('/api/agents/send', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ session: 's-linked', text: 'still there?' }),
+		cookie
+	});
+	expect(response.status).toBe(200);
+	expect(herdrCalls()).toEqual([['agent', 'prompt', pane('s-linked'), 'still there?']]);
+});

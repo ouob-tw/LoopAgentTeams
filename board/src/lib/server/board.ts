@@ -21,7 +21,7 @@ import { settleRelaunches } from './relaunch.ts';
 import { settleResumes } from './wake.ts';
 import { createAgentRoster, type HerdrAgentList } from './agents.ts';
 import { createClosedRoster } from './closed-agents.ts';
-import { settlePauses } from './paused.ts';
+import { linkedAgain, settlePauses } from './paused.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
@@ -358,7 +358,8 @@ function createBoard(): Board {
 			duties: reports.duties,
 			reportsError: reports.error,
 			running: lastRunning,
-			paused: new Set(paused.keys()),
+			// Listed but not on its link (a half-done reconnect) is still paused; without a list a record says so.
+			paused: new Set([...paused.keys()].filter((id) => !(agents.ok && linkedAgain(agents.agents, id)))),
 			hcomError: agents.ok ? null : agents.reason,
 			agents: allAgents.agents,
 			herdrError: allAgents.herdrError,
