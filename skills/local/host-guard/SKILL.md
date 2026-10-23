@@ -39,7 +39,9 @@ systemd-run --user --scope -p AllowedCPUs=0-3 stress-ng --cpu 4 -t 60
 `rm`、`trash-put`、`trash`、`gio trash` 遇到下列兩種路徑時擋下：
 
 - **最後一段只有變數或指令結果**，例如 `"$T/$name"`、`dir/$(cut …)`。值是空的時候，刪掉的會是上一層整個資料夾。2026-10-23 就有 Agent 因此把自己的整個對話紀錄資料夾丟進垃圾桶。改法：先確認值不是空的，或寫成 `${name:?}`，值是空的時 shell 會直接停下。
-- **Agent 對話紀錄與狀態資料夾本身，或它們的上層**：`~/.claude`、`~/.claude/projects` 與其中任一個專案資料夾、`~/.codex`、`~/.codex/sessions`、`~/.codex/archived_sessions`、`~/.hcom`、`~/.local/state/lat`（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_STATE_HOME` 有設定時依設定），以及 `~` 等上層資料夾。刪裡面的單一檔案照常放行，例如 session-manager 刪一個 `.jsonl`。
+- **Agent 對話紀錄與狀態資料夾本身，或它們的上層**：`~/.claude`、`~/.claude/projects` 與其中任一個專案資料夾、`~/.codex`、`~/.codex/sessions`、`~/.codex/archived_sessions`、`~/.hcom`、`~/.local/state/lat`（`CLAUDE_CONFIG_DIR`、`CODEX_HOME`、`XDG_STATE_HOME` 有設定時依設定），以及 `~` 等上層資料夾。刪裡面的單一檔案照常放行，例如 session-manager 刪一個 `.jsonl`。前面有 `cd` 時，也照刪除時可能所在的每個資料夾檢查。
+
+這條規則只看指令文字，用來接住手誤，不能完整解析 shell；`eval`、腳本檔裡的刪除或刻意繞過都不會被擋。
 
 ## 設定
 

@@ -203,7 +203,9 @@ class DeleteTests(HookCase):
         for command in ['(cd /tmp); trash-put projects', 'cd /tmp | trash-put projects',
                         'cd /tmp; trash-put projects', 'cd /tmp && true; trash-put projects',
                         'true || cd /tmp && trash-put projects',
-                        'printf x | cd /tmp && trash-put projects']:
+                        'printf x | cd /tmp && trash-put projects',
+                        'true ||\n cd /tmp && trash-put projects',
+                        'printf x | \\\n cd /tmp && trash-put projects']:
             with self.subTest(command):
                 self.assert_blocked(self.bash(command, cwd=claude), '.claude/projects')
 
@@ -214,7 +216,8 @@ class DeleteTests(HookCase):
                              ('cd /tmp && ls && trash-put .claude', self.tmp),
                              ('(cd /tmp && trash-put projects)', claude),
                              ('cd /tmp; cd /tmp && trash-put .claude', self.tmp),
-                             ('ls && cd /tmp && trash-put projects', claude)]:
+                             ('ls && cd /tmp && trash-put projects', claude),
+                             ('cd /tmp &&\n  trash-put projects', claude)]:
             with self.subTest(command):
                 self.assert_allowed(self.bash(command, cwd=cwd))
 

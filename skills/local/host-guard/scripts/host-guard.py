@@ -237,6 +237,15 @@ def resolve_path(text, cwd):
     return os.path.normpath(os.path.join(cwd, path))
 
 
+def operators(code):
+    """The separators in code, without a newline that only continues a line after && || |."""
+    found = []
+    for sep in re.findall(SEPARATORS, code):
+        if not (sep == '\n' and found[-1:] in (['&&'], ['||'], ['|'])):
+            found.append(sep)
+    return found
+
+
 def places(command, code, before, cwd):
     """Every folder a command may run in at offset before. A cd that starts a statement and
     is joined to the delete only by && is sure to apply; any other cd (skipped after ||, in
@@ -249,8 +258,8 @@ def places(command, code, before, cwd):
         if not words:
             continue
         moved = [resolve_path(word_text(words[0]), here) for here in found]
-        ahead = re.findall(SEPARATORS, code[:match.end() - 2])
-        between = re.findall(SEPARATORS, code[match.end():before])
+        ahead = operators(code[:match.end() - 2])
+        between = operators(code[match.end():before])
         sure = (all(moved) and ahead[-1:] != ['||'] and ahead[-1:] != ['|']
                 and between and all(sep == '&&' for sep in between))
         found = set(moved) if sure else found | {p for p in moved if p}
