@@ -45,8 +45,10 @@ HEREDOC = re.compile(r'<<-?\s*([\'"]?)([A-Za-z_]\w*)\1[^\n]*\n.*?^\s*\2\s*$', re
 UNQUOTED_HEREDOC = re.compile(r'(?<!<)<<-?\s*([A-Za-z_]\w*)[^\n]*\n(.*?)^\s*\1\s*$', re.S | re.M)
 SUBSTITUTION = re.compile(r'(?<!\\)(?:`|\$\()')
 QUOTED = re.compile(r"""(-\w*c\s+)?('[^']*'|"(?:\\.|[^"\\])*")""")
-# Command words for the `bunx skills add` rule, read with shell quoting (shlex).
+# Command words for the `bunx skills add` rule, read with shell quoting.
 OPERATORS = ';&|()\n'
+# Options of PREFIXES that take the next word as their value (sudo -u USER, nice -n 10).
+VALUE_OPTIONS = {'-u', '-g', '-n', '-s', '-k', '-C', '-D', '-p', '-r', '-t', '-U', '-c', '-S'}
 SHELLS = {'sh', 'bash', 'zsh', 'dash'}
 PREFIXES = {'sudo', 'nice', 'ionice', 'env', 'exec', 'command', 'xargs', 'nohup', 'time',
             'timeout'}
@@ -203,27 +205,62 @@ def repo_install(command, cwd):
     `cd DIR` moves the directory relative sources are read from, within its `( )` or
     `sh -c` scope. A source is a word that looks like a path (~, /, ., $VAR or a slash);
     skill names and options are not."""
-    lexer = shlex.shlex(HEREDOC.sub('', command), posix=True, punctuation_chars=OPERATORS)
-    lexer.whitespace, lexer.whitespace_split, lexer.commenters = ' \t\r', True, ''
-    try:
-        tokens = list(lexer)
-    except ValueError:
-        return None  # unbalanced quotes: the shell will not run it either
+    tokens = shell_tokens(HEREDOC.sub('', command))
     base, scopes, words = Path(cwd), [], []
-    for token in [*tokens, ';']:
-        if token and set(token) <= set(OPERATORS):
-            repo, base = command_install(words, base)
-            if repo:
-                return repo
-            words = []
-            for char in token:
-                if char == '(':
-                    scopes.append(base)
-                elif char == ')' and scopes:
-                    base = scopes.pop()
-        else:
+    for token in [*tokens, (';',)]:
+        if isinstance(token, str):
             words.append(token)
+            continue
+        repo, base = command_install(words, base)
+        if repo:
+            return repo
+        words = []
+        if token == ('(',):
+            scopes.append(base)
+        elif token == (')',) and scopes:
+            base = scopes.pop()
     return None
+
+
+def shell_tokens(text):
+    """Words (quotes removed) and operators (1-tuples) of shell text. An operator is only
+    an unquoted, unescaped character of OPERATORS; `#` starting a word comments out the
+    rest of the line. An unclosed quote runs to the end of the text."""
+    tokens, word, quoted, i = [], [], False, 0
+
+    def end_word():
+        nonlocal word, quoted
+        if word or quoted:
+            tokens.append(''.join(word))
+        word, quoted = [], False
+
+    while i < len(text):
+        char = text[i]
+        if char == '\\' and i + 1 < len(text):
+            word.append(text[i + 1])
+            i += 2
+            continue
+        if char in '\'"':
+            close = i + 1
+            while close < len(text) and text[close] != char:
+                close += 2 if char == '"' and text[close] == '\\' else 1
+            word.append(text[i + 1:close])
+            quoted, i = True, close + 1
+            continue
+        if char == '#' and not word and not quoted:
+            i = text.find('\n', i)
+            i = len(text) if i < 0 else i
+            continue
+        if char in OPERATORS:
+            end_word()
+            tokens.append((char,))
+        elif char in ' \t\r':
+            end_word()
+        else:
+            word.append(char)
+        i += 1
+    end_word()
+    return tokens
 
 
 def command_install(words, base):
@@ -235,10 +272,11 @@ def command_install(words, base):
     while words and (ASSIGNMENT.match(words[0]) or os.path.basename(words[0]) in PREFIXES
                      or prefixed and (words[0].startswith('-') or words[0][:1].isdigit())):
         prefixed = prefixed or os.path.basename(words[0]) in PREFIXES
-        words = words[1:]
+        words = words[2:] if prefixed and words[0] in VALUE_OPTIONS else words[1:]
     name = os.path.basename(words[0]) if words else ''
     if name == 'cd':
-        return None, where(words[1] if len(words) > 1 else '~')
+        target = [w for w in words[1:] if w not in ('--', '-L', '-P', '-e', '-@')]
+        return None, where(target[0] if target else '~')
     if name in SHELLS:
         flag = next((i for i, w in enumerate(words[1:], 1)
                      if w.startswith('-') and not w.startswith('--') and 'c' in w), None)
