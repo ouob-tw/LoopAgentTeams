@@ -1,29 +1,44 @@
 <script lang="ts">
 	// An agent's close, asked for and then confirmed, and beside it the pause of its HCOM link (one
-	// linked now) or its resume (one paused), confirmed the same way. An agent with a switch left
-	// unfinished is pointed to the command line to continue or give it up instead; one Herdr no longer
-	// lists is shown only for that. An idle controller's information page closes its agent this way too;
-	// a running one's offers only the pause or resume (`close` false).
-	import {
-		AGENT_HCOM_UNKNOWN_REASON,
-		AGENT_PAUSE_CONFIRM_TEXT,
-		AGENT_UNPAUSE_CONFIRM_TEXT,
-		agentCloseConfirmText
-	} from '#lib/board/agent-actions.ts';
+	// linked now) or its resume (one paused), done at once, with an icon that tells what a pause does.
+	// An agent with a switch left unfinished is pointed to the command line to continue or give it up
+	// instead; one Herdr no longer lists is shown only for that. A controller's information page
+	// closes its agent this way too.
+	import Info from '@lucide/svelte/icons/info';
+	import { AGENT_HCOM_UNKNOWN_REASON, AGENT_PAUSE_POINTS, agentCloseConfirmText } from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { AGENT_SWITCH_UNFINISHED_TEXT } from '#lib/board/models.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { KnownAgent } from '#lib/board/types.ts';
 
-	let { agent, label = '關閉 Agent', close: closeOffered = true }: { agent: KnownAgent; label?: string; close?: boolean } = $props();
+	let { agent, label = '關閉 Agent' }: { agent: KnownAgent; label?: string } = $props();
 
-	/** Agents whose confirmation of an action is open, and which one: one at a time per agent. */
-	let confirming = $state<Record<string, 'close' | 'pause' | 'unpause'>>({});
+	/** Agents whose close confirmation is open. */
+	let confirming = $state<Record<string, boolean>>({});
 	/** Agents with an action under way: no other is offered until it answers. */
 	let busy = $state<Record<string, boolean>>({});
 	// Whether hcom reaches it decides which command closes it; until that is known it is not done
 	// (the server refuses it too).
 	const closable = $derived(agent.hcom !== 'unknown');
+
+	// What a pause does shows after a tap on the icon, until a tap on it again or anywhere else.
+	let pauseInfo = $state(false);
+	let infoButton = $state<HTMLButtonElement>();
+	$effect(() => {
+		if (!pauseInfo) return;
+		const close = (event: Event) => {
+			if (!(event.target instanceof Node && infoButton?.contains(event.target))) pauseInfo = false;
+		};
+		const escape = (event: KeyboardEvent) => {
+			if (event.key === 'Escape') pauseInfo = false;
+		};
+		document.addEventListener('pointerdown', close);
+		document.addEventListener('keydown', escape);
+		return () => {
+			document.removeEventListener('pointerdown', close);
+			document.removeEventListener('keydown', escape);
+		};
+	});
 
 	async function close() {
 		// Once closed it leaves the list and this page with it; the notice is what shows the result.
@@ -38,7 +53,6 @@
 	/** Pause or resume its HCOM link; a resume answers once it is back, or the wait ran out. */
 	async function link(action: 'pause' | 'unpause') {
 		const { id, name } = agent;
-		delete confirming[id];
 		busy[id] = true;
 		const result = await (action === 'pause' ? agentControl.pause(id) : agentControl.unpause(id));
 		busy[id] = false;
@@ -53,10 +67,10 @@
 	{:else if agent.switch}
 		<p class="note">{AGENT_SWITCH_UNFINISHED_TEXT}：按下方輸入列模型旁的 ⚠ 處理。</p>
 	{:else}
-		{#if !closable && closeOffered}
+		{#if !closable}
 			<p class="note">{AGENT_HCOM_UNKNOWN_REASON}</p>
 		{/if}
-		{#if confirming[agent.id] === 'close'}
+		{#if confirming[agent.id]}
 			<div class="confirm" role="group" aria-label="確認關閉">
 				<p class="warn">{agentCloseConfirmText(agent)}</p>
 				<div class="actions">
@@ -64,30 +78,32 @@
 					<button type="button" onclick={() => delete confirming[agent.id]}>取消</button>
 				</div>
 			</div>
-		{:else if confirming[agent.id] === 'pause' || confirming[agent.id] === 'unpause'}
-			{@const action = confirming[agent.id] as 'pause' | 'unpause'}
-			<div class="confirm" role="group" aria-label={action === 'pause' ? '確認暫停通訊' : '確認恢復通訊'}>
-				<p class="warn">{action === 'pause' ? AGENT_PAUSE_CONFIRM_TEXT : AGENT_UNPAUSE_CONFIRM_TEXT}</p>
-				<div class="actions">
-					<button type="button" data-action="confirm-{action}" onclick={() => link(action)}>{action === 'pause' ? '確認暫停' : '確認恢復'}</button>
-					<button type="button" onclick={() => delete confirming[agent.id]}>取消</button>
-				</div>
-			</div>
 		{:else}
 			<div class="actions">
-				{#if closeOffered}
-					<button type="button" data-action="close" disabled={!closable || busy[agent.id]} onclick={() => (confirming[agent.id] = 'close')}>{label}</button>
-				{/if}
-				{#if agent.hcom === 'linked'}
-					<button type="button" data-action="pause" disabled={busy[agent.id]} onclick={() => (confirming[agent.id] = 'pause')}
-						>{busy[agent.id] ? '處理中…' : '暫停通訊'}</button
+				<button type="button" data-action="close" disabled={!closable || busy[agent.id]} onclick={() => (confirming[agent.id] = true)}>{label}</button>
+				{#if agent.hcom === 'linked' || agent.hcom === 'paused'}
+					{@const action = agent.hcom === 'linked' ? 'pause' : 'unpause'}
+					<button type="button" data-action={action} disabled={busy[agent.id]} onclick={() => link(action)}
+						>{busy[agent.id] ? '處理中…' : action === 'pause' ? '暫停通訊' : '恢復通訊'}</button
 					>
-				{:else if agent.hcom === 'paused'}
-					<button type="button" data-action="unpause" disabled={busy[agent.id]} onclick={() => (confirming[agent.id] = 'unpause')}
-						>{busy[agent.id] ? '處理中…' : '恢復通訊'}</button
+					<button
+						type="button"
+						class="info"
+						aria-label="暫停通訊說明"
+						aria-expanded={pauseInfo}
+						aria-controls="pause-info-{agent.id}"
+						bind:this={infoButton}
+						onclick={() => (pauseInfo = !pauseInfo)}
 					>
+						<Info size="1.1em" />
+					</button>
 				{/if}
 			</div>
+			{#if pauseInfo && (agent.hcom === 'linked' || agent.hcom === 'paused')}
+				<ul id="pause-info-{agent.id}" class="pause-info">
+					{#each AGENT_PAUSE_POINTS as point (point)}<li>{point}</li>{/each}
+				</ul>
+			{/if}
 		{/if}
 	{/if}
 </section>
@@ -117,6 +133,24 @@
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.4rem;
+	}
+	/* The icon alone, its tap target as tall as the buttons beside it. */
+	button.info {
+		display: inline-flex;
+		align-items: center;
+		padding-inline: 0.5em;
+		background: none;
+		border: none;
+		color: var(--muted);
+		cursor: help;
+	}
+	.pause-info {
+		margin: 0;
+		padding: 0.4rem 0.6rem 0.4rem 1.6rem;
+		border: 1px solid var(--line);
+		border-radius: var(--radius);
+		font-size: max(0.85rem, var(--min-font, 0px));
+		overflow-wrap: anywhere;
 	}
 	button.danger {
 		color: var(--danger);

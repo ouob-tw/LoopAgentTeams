@@ -1375,16 +1375,13 @@ test.skipIf(!CHROME)('the pause of the HCOM link shows for a linked agent, its r
 		expect((await screen()).detail).not.toContain('沒接 HCOM');
 		expect(await tab.eval(FITS)).toBe(true);
 
-		// The linked controller, opened from the Herdr tab: pause, asked first.
+		// The linked controller, opened from the Herdr tab: paused at once, its info beside.
 		await openTab();
 		await openAgent('s-lead');
 		await tab.until(`!!document.querySelector('.detail [data-action="pause"]')`, 'the controller\'s page');
 		expect(await tab.eval(`!!document.querySelector('.detail [data-action="unpause"]')`)).toBe(false);
+		expect(await tab.eval(`!!document.querySelector('.detail [aria-label="暫停通訊說明"]')`)).toBe(true);
 		await click('.detail [data-action="pause"]');
-		await tab.until(`!!document.querySelector('.detail [data-action="confirm-pause"]')`, 'the confirmation');
-		expect(await tab.eval<string>(`document.querySelector('.detail .confirm').innerText`)).toContain('hcom stop');
-		expect(await tab.eval(FITS)).toBe(true);
-		await click('.detail [data-action="confirm-pause"]');
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('已暫停 lead 的 HCOM 通訊')`, 'the pause notice');
 		await tab.until(`!!document.querySelector('.detail [data-action="unpause"]')`, 'its resume');
 		expect(JSON.parse(readFileSync(join(pausedDir, 's-lead.json'), 'utf8'))).toMatchObject({ hcom_name: 'lead', pane: 'wA:p-s-lead' });

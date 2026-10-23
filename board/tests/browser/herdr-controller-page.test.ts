@@ -3,7 +3,7 @@
 // width. The page is the controller's information page plus the agent's close and operation
 // record: its question and report cards answer and read as the inbox does. An ordinary agent's page
 // and the information page stay as they were. Skipped when the host has no Chrome.
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import type { HelperQuestion } from '../../src/lib/board/types.ts';
@@ -384,34 +384,62 @@ for (const width of [1280, 390]) {
 	}, 60_000);
 }
 
-test.skipIf(!CHROME)("the controller's information page is as it was: no close, no operation record, reports as marked text", async () => {
+test.skipIf(!CHROME)("the controller's information page is as it was: no operation record, reports as marked text", async () => {
 	await visit(1280, '?controller=s-lead');
 	await tab.until(`${leadPage} && document.querySelectorAll('.history li.asking article').length === 2`, 'the information page');
 	expect(await tab.eval(TABS)).toEqual(['對話紀錄', '回報', '送出紀錄']);
-	expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"], .history li.report')`)).toBe(false);
+	expect(await tab.eval(`!!document.querySelector('.history li.report')`)).toBe(false);
 	expect(await tab.eval(`document.querySelectorAll('.history li.said.reported').length`)).toBe(2);
 	expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick]')`)).toBe(false);
 }, 60_000);
 
-test.skipIf(!CHROME)("a running controller's information page pauses its HCOM link, then offers its resume, and never a close", async () => {
+test.skipIf(!CHROME)("a running controller's information page closes it after a confirmation, and pauses and resumes its HCOM link at once", async () => {
 	const pausedDir = join(fixture.dir, 'hcom-paused');
+	const info = `document.querySelector('.detail [aria-label="暫停通訊說明"]')`;
+	const infoShown = `!!document.querySelector('.detail .pause-info')`;
 	try {
 		await visit(390, '?controller=s-lead');
 		await tab.until(`${leadPage} && !!document.querySelector('.detail [data-action="pause"]')`, 'the information page');
-		expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"], .detail [data-action="unpause"]')`)).toBe(false);
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="unpause"]')`)).toBe(false);
+		// Its close is asked first, as on the Herdr tab; cancelled, nothing is closed.
+		await tab.eval(`document.querySelector('.detail [data-action="close"]').click()`);
+		await tab.until(`!!document.querySelector('.detail [data-action="confirm-close"]')`, 'the confirmation');
+		expect(await tab.eval<string>(`document.querySelector('.detail .confirm').innerText`)).toContain('喚醒');
+		await tab.eval(click('.detail .confirm', '取消'));
+		await tab.until(`!document.querySelector('.detail [data-action="confirm-close"]')`, 'cancelled');
+		expect(hcomCalls().filter((args) => args[0] === 'kill')).toEqual([]);
+		// The info beside the pause opens with a tap, closes with another, and with a tap elsewhere.
+		await tab.eval(`${info}.click()`);
+		await tab.until(infoShown, 'the info');
+		const points = await tab.eval<string>(`document.querySelector('.detail .pause-info').innerText`);
+		for (const point of ['直接失敗', '照常送得進去', '不會催促', '原名稱接回']) expect(points).toContain(point);
+		expect(await tab.eval(FITS)).toBe(true);
+		await tab.eval(`${info}.click()`);
+		await tab.until(`!${infoShown}`, 'closed by its icon');
+		await tab.eval(`${info}.click()`);
+		await tab.until(infoShown, 'the info again');
+		await tab.eval(`document.querySelector('.detail .profile').dispatchEvent(new PointerEvent('pointerdown', { bubbles: true }))`);
+		await tab.until(`!${infoShown}`, 'closed by a tap elsewhere');
+		// The pause is done at once, without a confirmation.
 		await tab.eval(`document.querySelector('.detail [data-action="pause"]').click()`);
-		await tab.until(`!!document.querySelector('.detail [data-action="confirm-pause"]')`, 'the confirmation');
-		await tab.eval(`document.querySelector('.detail [data-action="confirm-pause"]').click()`);
 		await tab.until(`document.querySelector('.dock').innerText.includes('已暫停 lead 的 HCOM 通訊')`, 'the pause notice');
+		expect(await tab.eval(`!!document.querySelector('.detail .confirm')`)).toBe(false);
 		expect(hcomCalls().filter((args) => args[0] === 'stop')).toEqual([['stop', 'lead']]);
-		// Paused: still the running controller's page, now offering the resume, marked paused.
+		// Paused: still the running controller's page, now offering the resume beside its close, marked paused.
 		await tab.until(`!!document.querySelector('.detail [data-action="unpause"]')`, 'its resume');
-		expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"], .detail [data-action="pause"]')`)).toBe(false);
+		expect(await tab.eval(`!!document.querySelector('.detail [data-action="close"]') && !document.querySelector('.detail [data-action="pause"]')`)).toBe(true);
 		expect(await tab.eval(`document.querySelector('.detail .profile').innerText`)).toContain('暫停通訊');
 		expect(await tab.eval(FITS)).toBe(true);
+		// The resume is done at once too: the reconnect line typed into its pane puts it back on hcom.
+		const plan = JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8'));
+		writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify({ ...plan, reconnect: { 'wA:p-s-lead': hcomAgent('lead', 's-lead') } }));
+		await tab.eval(`document.querySelector('.detail [data-action="unpause"]').click()`);
+		await tab.until(`document.querySelector('.dock').innerText.includes('lead 已恢復 HCOM 通訊')`, 'the resume notice');
+		expect(await tab.eval(`!!document.querySelector('.detail .confirm')`)).toBe(false);
 	} finally {
 		rmSync(pausedDir, { recursive: true, force: true });
 		fixture.setHcom({ agents: HCOM_AGENTS });
+		setHerdr(LISTED);
 		await fixture.refresh(cookie);
 	}
 }, 60_000);
