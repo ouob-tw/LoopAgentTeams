@@ -303,8 +303,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 
 	const cardOf = (key: string) => list?.querySelector<HTMLElement>(`[data-content="${CSS.escape(key)}"]`);
 
-	/** What ends keeping a card in place: scrolling, and a click or key anywhere but the
-	 *  conversation's cards, where the user may go on to answer the next one. */
+	/** What ends keeping a card in place: scrolling, a click anywhere but the conversation's cards,
+	 *  and a key anywhere but their options and text boxes, where the user may go on to answer the
+	 *  next one; other keys may scroll. */
 	const HOLD_ENDS = ['wheel', 'touchmove', 'pointerdown', 'keydown'] as const;
 
 	/** Keep the card of a question just answered where it is on screen while its answer is sent and
@@ -324,9 +325,9 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		let until = performance.now() + HOLD_MS;
 		let frame = 0;
 		const stop = (event?: Event) => {
-			const next = event?.type !== 'wheel' && event?.type !== 'touchmove' && event?.target instanceof Element && list?.contains(event.target)
-				? event.target.closest<HTMLElement>('[data-content]')
-				: null;
+			const target = event?.target instanceof Element && list?.contains(event.target) ? event.target : null;
+			const choosing = event?.type === 'pointerdown' || (event?.type === 'keydown' && !!target?.matches('input, textarea'));
+			const next = target && choosing ? target.closest<HTMLElement>('[data-content]') : null;
 			if (next?.dataset.content) {
 				key = held = next.dataset.content;
 				at = next.getBoundingClientRect().top;

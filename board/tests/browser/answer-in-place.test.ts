@@ -211,3 +211,28 @@ for (const width of [1280, 390]) {
 		expectStayed(held);
 	}, 60_000);
 }
+
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`${width}px: a key that is not for choosing or typing ends keeping the card, so the page scrolls with it`, async () => {
+		const key = await open(`keys-${width}`, width, { older: 30 });
+		await scrollTo(width, key('Q-1'), HIGH);
+		const tab = browser!.tab;
+		const scroller = scrollerAt(width);
+		tab.paused = [];
+		await send('Fetch.enable', { patterns: [{ urlPattern: '*/api/answers*' }] });
+		try {
+			await sendAnswer(key('Q-1'));
+			while (!tab.paused.length) await sleep(20);
+			// While the answer is on its way, a key on the card itself (not an option or text box)
+			// and the page scrolled as that key would.
+			await evaluate(`${cardOf(key('Q-1'))}.querySelector('header').dispatchEvent(new KeyboardEvent('keydown', { key: 'PageDown', bubbles: true }))`);
+			const before = await evaluate<number>(`${scroller}.scrollTop`);
+			await evaluate(`${scroller}.scrollTop += 300`);
+			await sleep(500);
+			expect(Math.round((await evaluate<number>(`${scroller}.scrollTop`)) - before)).toBe(300);
+		} finally {
+			await send('Fetch.disable');
+			for (const requestId of tab.paused) await send('Fetch.continueRequest', { requestId }).catch(() => {});
+		}
+	}, 60_000);
+}
