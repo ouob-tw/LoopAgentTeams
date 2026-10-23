@@ -46,11 +46,12 @@ FIXED = '''## Fixed fields
 
 - Task card: {card}. Update it at the start, at checkpoints and at the end.
 - Runs folder: {runs}
-- Decisions directory: {decisions} (check pending decisions before starting).
+- Decisions directory: {decisions}. Check pending decisions before starting and before resuming or taking a follow-up instruction: stop work that depends on a pending decision and report it; keep going on authorized work it does not affect. No reply from the user is not approval.
+- Other agents named in the sections above: contact them directly for what you need from them; do not route it through {orchestrator}.
 - Finish all work before ending a turn. When only waiting is left, declare it with:
-  `uv run --no-project python {lat_dir}/scripts/lat-watch.py wait --workspace {workspace} --agent {agent} --for <decision ID or agent name> --reason '<one sentence>'`
+  `uv run --no-project python {lat_script} wait --workspace {workspace} --agent {agent} --for <decision ID or agent name> --reason '<one sentence>'`
 - For a timed wait, register an alarm:
-  `uv run --no-project python {lat_dir}/scripts/lat-watch.py alarm --workspace {workspace} --agent {agent} --after 30 --reason 'Continue after the cooldown'`
+  `uv run --no-project python {lat_script} alarm --workspace {workspace} --agent {agent} --after 30 --reason 'Continue after the cooldown'`
 - Do not use background programs to message yourself; HCOM rejects them.
 '''
 
@@ -174,9 +175,14 @@ def split_sections(text):
     bodies, problems, current, seen_fence = {}, [], None, None
     for line in text.splitlines():
         stripped = line.strip()
-        if re.match(r'(```|~~~)', stripped):
-            marker = stripped[:3]
-            seen_fence = None if seen_fence == marker else (seen_fence or marker)
+        fence = re.match(r'(`{3,}|~{3,})(.*)', stripped)
+        if fence:
+            marker = fence.group(1)
+            if seen_fence is None:
+                seen_fence = marker
+            elif (marker[0] == seen_fence[0] and len(marker) >= len(seen_fence)
+                  and not fence.group(2).strip()):
+                seen_fence = None
         match = None if seen_fence else re.fullmatch(r'##[ \t]+(.+?)[ \t]*#*[ \t]*', line)
         title = match.group(1).strip() if match else None
         if title in SECTIONS:
@@ -234,8 +240,9 @@ def make_brief(args):
                  f'{LIVE_RULES}\n')
     parts.append(FIXED.format(
         workdir=workdir, orchestrator=card['orchestrator'], agent=card['agent'],
-        card=card_path, runs=card.get('runs') or NONE, workspace=workspace,
-        decisions=workspace / '.lat' / 'decisions', lat_dir=args.lat_dir.resolve()))
+        card=card_path, runs=card.get('runs') or NONE, workspace=shlex.quote(str(workspace)),
+        decisions=workspace / '.lat' / 'decisions',
+        lat_script=shlex.quote(str(args.lat_dir.resolve() / 'scripts' / 'lat-watch.py'))))
     write_text_atomic(output, '\n'.join(parts), mode=0o644)
     print(f'brief: {output}')
     print('send: hcom send @{} --intent request --name {} --file {}'.format(

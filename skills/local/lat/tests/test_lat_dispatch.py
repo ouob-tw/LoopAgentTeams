@@ -190,6 +190,32 @@ class BriefTests(DispatchCase):
             self.assertIn(expected, text)
         self.assertNotIn('{', text.replace('<decision ID or agent name>', ''))
 
+    def test_wait_and_alarm_commands_quote_paths_with_spaces(self):
+        import shlex
+        lat = self.root / 'LAT skills'
+        _, _, result = self.brief(BRIEF, '--lat-dir', str(lat))
+        text = (self.root / 'brief.brief.md').read_text()
+        commands = [line.strip().strip('`') for line in text.splitlines()
+                    if 'lat-watch.py' in line]
+        self.assertEqual(len(commands), 2)
+        for command in commands:
+            words = shlex.split(command.replace("<decision ID or agent name>", 'x'))
+            self.assertEqual(words[4], str(lat / 'scripts/lat-watch.py'))
+            self.assertEqual(words[words.index('--workspace') + 1], str(self.workspace))
+
+    def test_fixed_section_carries_decision_and_direct_contact_rules(self):
+        self.brief()
+        text = (self.root / 'brief.brief.md').read_text()
+        self.assertIn('stop work that depends on a pending decision', text)
+        self.assertIn('No reply from the user is not approval', text)
+        self.assertIn('contact them directly', text)
+
+    def test_longer_fence_may_contain_a_shorter_fence_with_a_heading(self):
+        text = BRIEF.replace('- 清單項目', '````\n```\n## 目標與完成條件\n```\n````')
+        source, _, result = self.brief(text)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('## 目標與完成條件\n```\n````', (self.root / 'brief.brief.md').read_text())
+
     def test_printed_send_command_uses_file(self):
         _, _, result = self.brief()
         output = self.root / 'brief.brief.md'
