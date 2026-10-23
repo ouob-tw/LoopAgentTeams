@@ -1185,8 +1185,12 @@ def cache_expires_at(session_id, now):
 
 def keepalive_blocker(declaration, observation, now, busy=False):
     """Why a keep-alive cannot be typed now regardless of the cache expiry, else None."""
+    if not observation.is_orchestrator:
+        return 'not-orchestrator'
     if not declaration or not declaration.get('active', True) or not observation.wait_active:
         return 'no-wait'
+    if observation.quota_issue and observation.quota_issue.kind == 'rate-limit':
+        return 'rate-limited'
     if busy:
         return 'other-action'
     if observation.status != 'listening':
@@ -1216,7 +1220,7 @@ def keepalive_due(declaration, observation, info, state, now, busy=False):
     if observation.client.lower() != 'claude':
         return None, None
     reason = keepalive_blocker(declaration, observation, now, busy)
-    if reason == 'no-wait':
+    if reason in ('no-wait', 'not-orchestrator'):
         return None, None
     if read_prompt_cache(info.get('session_id')) is None:
         return None, 'usage-missing'
@@ -1277,9 +1281,11 @@ def foreground_running(observation):
     return observation.terminal_ready is False
 
 
-def decide_wait(declaration, observation, target_observation, target_state, now):
+def decide_wait(declaration, observation, target_observation, target_state, now,
+                *, waits_for_orchestrator=False):
     """Return a deadline declaration, delivery requests and lifecycle log events."""
-    if not declaration or declaration.get('kind') in ('decision', 'alarm'):
+    if (not declaration or declaration.get('kind') in ('decision', 'alarm')
+            or waits_for_orchestrator):
         return declaration, [], []
     saved = dict(declaration)
     actions, events = [], []
@@ -2199,7 +2205,12 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                     declaration['kind'] = ('decision' if pending_decision(
                         decisions, declaration['target']) is not None else 'agent')
                 target_observation, target_state = None, None
+                waits_for_orchestrator = False
+                if declaration and declaration.get('kind') == 'agent':
+                    target = resolve_agent_name(hcom, declaration['target'], required=False)
+                    waits_for_orchestrator = agent != orchestrator and target == orchestrator
                 if (declaration and declaration.get('kind') == 'agent'
+                        and not waits_for_orchestrator
                         and declaration.get('active', True)
                         and now >= declaration.get('deadline_at', declaration['declared_at'] + 3600)):
                     target = declaration['target']
@@ -2224,7 +2235,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                         declaration, observation, met, now)
                 else:
                     saved_wait, wait_actions, wait_events = decide_wait(
-                        declaration, observation, target_observation, target_state, now)
+                        declaration, observation, target_observation, target_state, now,
+                        waits_for_orchestrator=waits_for_orchestrator)
                 if saved_wait is not None:
                     observation = observation._replace(
                         wait_active=saved_wait.get('active', True),
@@ -2367,7 +2379,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 'actions': [], 'error': str(error),
             })
     own = states.setdefault(orchestrator, {})
-    own['feature_versions'] = {'wait_deadline': 1, 'alarm': 1, 'cache_keepalive': 2}
+    own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 3}
     own.pop('missing_since', None)
     stop_reason = None
     if orchestrator_gone:
@@ -2621,11 +2633,16 @@ def declare_wait(args):
     declaration['kind'] = 'decision' if decision_target else 'agent'
     if decision_target and args.minutes is not None:
         raise ValueError('--minutes is not allowed for a decision target')
+    waits_for_orchestrator = False
     if not decision_target:
         declaration['target'] = resolve_agent_name(agents, declaration['target'], required=False)
         if declaration['target'] == agent:
             raise ValueError('Cannot wait on yourself; use lat-watch alarm instead')
-        declaration['deadline_at'] = declaration['declared_at'] + (args.minutes or WAIT_DEFAULT_MINUTES) * 60
+        waits_for_orchestrator = any(declaration['target'] == owner for owner, _ in owners)
+        if waits_for_orchestrator and args.minutes is not None:
+            raise ValueError('--minutes is not allowed when waiting for your owning orchestrator')
+        if not waits_for_orchestrator:
+            declaration['deadline_at'] = declaration['declared_at'] + (args.minutes or WAIT_DEFAULT_MINUTES) * 60
     path = wait_path(workspace, agent)
     previous, wait_original = read_wait(path)
     if previous and previous.get('expiry_count', 0):
@@ -2637,7 +2654,7 @@ def declare_wait(args):
     with wait_lock(path):
         previous, wait_original = read_wait(path)
         previous = previous or {}
-        same_target = previous.get('target') == declaration['target']
+        same_target = not waits_for_orchestrator and previous.get('target') == declaration['target']
         declaration['expiry_count'] = previous.get('expiry_count', 0) if same_target else 0
         if same_target and declaration['expiry_count']:
             for key in ('expiry_declared_at', 'expiry_notified', 'expiry_notice'):
@@ -2664,9 +2681,12 @@ def cache_status(info, state, now=None):
         reason, possible = 'usage-missing', False
     elif cache_expires_at(info.get('session_id'), now) is None:
         reason, possible = 'cache-expired' if cache.get('warm') is True else 'cache-cold', False
+    elif hcom_quota_issue(info):
+        reason, possible = 'rate-limited', False
     elif status != 'listening':
         reason, possible = f'status-{status}', False
-    elif not check or str(check.get('reason')).startswith('status-'):
+    elif (not check or str(check.get('reason')).startswith('status-')
+          or check.get('reason') == 'rate-limited'):
         # The last cycle did not judge the prompt and wait at a listening agent: unknown.
         reason, possible = None, None
     else:
