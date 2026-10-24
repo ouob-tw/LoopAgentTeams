@@ -3,6 +3,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { parseModelOptions, type ModelOptions } from '../board/models.ts';
+import { ASK_EXECUTION_WAIT_MS } from '../board/board-asks.ts';
 import { codexMultiAuthDir } from './quota.ts';
 
 type Env = Record<string, string | undefined>;
@@ -43,6 +44,9 @@ export interface BoardConfig {
 	pausedDir: string;
 	/** The folder the board-ask hook and the board share: the asks, their results and the board's heartbeat. */
 	asksDir: string;
+	/** How long a permission Codex was allowed after its turn ended waits to be seen run before the
+	 *  board stops waiting: 7 days. */
+	askExecutionWaitMs: number;
 	/** How long a resumed link may take to show in hcom's list before the board says it did not. */
 	unpauseWaitMs: number;
 	/** Longest a change the file watch missed may take to be read and pushed to the pages. */
@@ -194,6 +198,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		pausedDir: env.LAT_HCOM_PAUSED_DIR && isAbsolute(env.LAT_HCOM_PAUSED_DIR) ? env.LAT_HCOM_PAUSED_DIR : join(stateHome(env), 'lat/hcom-paused'),
 		// Next to the pause records; `hooks/board-ask.py` works it out the same way.
 		asksDir: env.LAT_BOARD_ASKS_DIR && isAbsolute(env.LAT_BOARD_ASKS_DIR) ? env.LAT_BOARD_ASKS_DIR : join(stateHome(env), 'lat/board-asks'),
+		askExecutionWaitMs: seconds(env.LAT_BOARD_ASK_EXECUTION_WAIT_SECONDS, ASK_EXECUTION_WAIT_MS),
 		// A Codex agent runs one short turn to reconnect.
 		unpauseWaitMs: seconds(env.LAT_BOARD_UNPAUSE_WAIT_SECONDS, 60_000),
 		fallbackMs,

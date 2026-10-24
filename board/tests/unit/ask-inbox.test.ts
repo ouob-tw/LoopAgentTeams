@@ -15,6 +15,12 @@ const ask = (id: string, over: Partial<BoardAsk> = {}): BoardAsk => ({
 	tool: null,
 	folder: null,
 	questions: [{ question: `Q ${id}?`, options: [] }],
+	toolInput: null,
+	decision: null,
+	reason: null,
+	actual: null,
+	notAdopted: false,
+	turnEnded: false,
 	createdAt: at('09:00'),
 	deadlineAt: at('09:10'),
 	state: 'waiting',
@@ -79,4 +85,11 @@ test('processed list: ended asks join the archive by when they ended, those olde
 	const keys = (list: ReturnType<typeof mergeProcessed>) => list.map((entry) => (entry.kind === 'item' ? entry.item.key : entry.row.ask.id));
 	expect(keys(mergeProcessed(items, rows, false))).toEqual(['late', 'r1', 'mid', 'r2', 'early']);
 	expect(keys(mergeProcessed(items, rows, true))).toEqual(['late', 'r1', 'mid', 'r2']);
+});
+
+test('a permission ask that ended is processed; one allowed and not yet seen run stays an entry', () => {
+	const ended: BoardAskState[] = ['handed_back', 'terminal', 'terminal_denied', 'result_unknown', 'notified', 'allowed_expired', 'allowed_unmatched'];
+	const open: BoardAskState[] = ['sent', 'allowed_waiting', 'executed'];
+	const rows = askRows([...ended, ...open].map((state, index) => ask(`p${index}`, { kind: 'permission', tool: 'Bash', state, endedAt: ended.includes(state) ? at('09:30') : null })), AGENTS);
+	expect(rows.filter((row) => row.open).map((row) => row.ask.state)).toEqual(open);
 });

@@ -25,7 +25,7 @@ import { linkedAgain, settlePauses } from './paused.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
-import { HEARTBEAT_MS as ASK_HEARTBEAT_MS, isAskFile, readAsks, settleAsks, touchHeartbeat } from './board-asks.ts';
+import { HEARTBEAT_MS as ASK_HEARTBEAT_MS, isAskFile, notifyExecuted, readAsks, settleAsks, touchHeartbeat } from './board-asks.ts';
 import type { BoardAsk } from '../board/board-asks.ts';
 import type { QuotaSnapshot } from '../board/quota.ts';
 import { createQuotaPoller, readClaudeQuota, readCodexQuota } from './quota.ts';
@@ -364,7 +364,9 @@ function createBoard(): Board {
 		const rosterNow = () => agentRoster.update(newer(herdrAgents, listedAt, newest.herdr), newer(agents, listedAt, newest.agents), new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
 		const allAgents = rosterNow();
 		settleAsks(config, allAgents.agents);
-		lastAsks = readAsks(config.asksDir);
+		lastAsks = readAsks(config.asksDir, { executionWaitMs: config.askExecutionWaitMs });
+		// Telling Codex an allowed tool ran goes through the relay, which reads the lists again.
+		if (lastAsks.some((ask) => ask.state === 'executed')) void notifyExecuted(board);
 		herdrRead ||= herdrAgents.ok;
 		const closedAgents = await closedRoster.update({
 			agents: herdrRead ? allAgents.agents : null,
