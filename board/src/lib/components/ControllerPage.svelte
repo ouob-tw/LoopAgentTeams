@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { lastSegment } from '#lib/board/agents.ts';
 	// A controller's page in the content column: its information page; one of its items opened in
 	// its conversation; or, opened from the Herdr tab, the agent's page, whose bars and report list
 	// open their question or report in the conversation without leaving the tab. A question whose
 	// asking message is not found is shown alone, and its conversation is watched for that message.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import { askedTogether, withAnswered } from '#lib/board/question-message.ts';
 	import type { LiveBoard } from '#lib/board/live.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';

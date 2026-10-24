@@ -4,6 +4,7 @@
 	// apply button, so changing both restarts it once; for an ended or closed one they only set what
 	// the wake will use. A ⚠ beside them opens what needs the user about the last switch: one left
 	// unfinished to continue or give up, a resume to give up, or a switch the next turn did not take.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import Check from '@lucide/svelte/icons/check';
 	import TriangleAlert from '@lucide/svelte/icons/triangle-alert';
 	import X from '@lucide/svelte/icons/x';
@@ -193,7 +194,7 @@
 		const result = await agentControl.abandonSwitch(target);
 		await messaging.load(target);
 		givingUp[target] = false;
-		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已放棄 ${hcomName} 的這次切換。${result.reason ?? ''}` : (result.reason ?? '放棄失敗'));
+		toasts.show(result.ok ? 'ok' : 'failed', result.ok ? `已放棄 @${lastSegment(hcomName)} 的這次切換。${result.reason ?? ''}` : (result.reason ?? '放棄失敗'));
 	}
 
 	function pick(kind: Kind, value: string) {

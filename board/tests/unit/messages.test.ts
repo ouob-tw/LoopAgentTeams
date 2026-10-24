@@ -97,3 +97,9 @@ test('a last part that fits two controllers sends nothing and lists the full nam
 	if (!result.ok) expect(result.reason).toContain('名稱重複，請打完整名稱：@a-tevu、@b-tevu');
 	expect(parseCommand('@a-tevu 好', [a, b], luna)).toEqual({ ok: true, controller: a, text: '好' });
 });
+
+test('a stopped controller with the same last part does not make a running one ambiguous', () => {
+	const old = { id: 's-7', hcomName: 'old-tevu', status: 'closed' as const };
+	const live = { id: 's-8', hcomName: 'new-tevu', status: 'working' as const };
+	expect(parseCommand('@tevu 好', [old, live], luna)).toEqual({ ok: true, controller: live, text: '好' });
+});

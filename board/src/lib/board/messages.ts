@@ -54,8 +54,8 @@ export type Command<T extends Target> = { ok: true; controller: T; text: string 
 /**
  * Who a command line is for: a leading `@name` picks that controller by its full hcom name or by
  * its last part (`@tevu` for `dipo-latpstack-tevu`), otherwise the one that is open. A last part
- * that fits more than one controller picks none. Never falls back to another controller. An idle or closed controller is refused unless
- * the caller `wakes` it instead of sending.
+ * that fits more than one running controller picks none. Never falls back to another controller.
+ * An idle or closed controller is refused unless the caller `wakes` it instead of sending.
  */
 export function parseCommand<T extends Target>(input: string, controllers: T[], open: T | undefined, wakes = false): Command<T> {
 	const addressed = /^@(\S*)\s*([\s\S]*)$/.exec(input.trimStart());
@@ -66,7 +66,9 @@ export function parseCommand<T extends Target>(input: string, controllers: T[], 
 		let matches = controllers.filter((candidate) => candidate.hcomName === name);
 		if (!matches.length) {
 			matches = controllers.filter((candidate) => lastSegment(candidate.hcomName) === name);
-			const names = [...new Set(matches.map((candidate) => candidate.hcomName))];
+			// A stopped controller does not make a running one's last part ambiguous.
+			const running = matches.filter((candidate) => !isInactive(candidate.status));
+			const names = [...new Set((running.length ? running : matches).map((candidate) => candidate.hcomName))];
 			if (names.length > 1) return { ok: false, reason: `名稱重複，請打完整名稱：${names.map((full) => `@${full}`).join('、')}。沒有送出。` };
 		}
 		// A name can be reused after a controller stopped; the one still running is the one meant.
@@ -76,7 +78,7 @@ export function parseCommand<T extends Target>(input: string, controllers: T[], 
 	}
 	if (!controller) return { ok: false, reason: '請用 @名稱 指定主控，或先點開一個主控。' };
 	if (isInactive(controller.status) && !wakes) {
-		return { ok: false, reason: `@${controller.hcomName} ${STATUS_LABEL[controller.status]}，無法傳話。` };
+		return { ok: false, reason: `@${lastSegment(controller.hcomName)} ${STATUS_LABEL[controller.status]}，無法傳話。` };
 	}
 	if (!text.trim()) return { ok: false, reason: '請輸入要傳的訊息。' };
 	return { ok: true, controller, text };

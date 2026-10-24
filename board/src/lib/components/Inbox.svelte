@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { lastSegment } from '#lib/board/agents.ts';
 	// The inbox list, by time or by project, or the processed items (已處理).
+	import { lastSegment } from '#lib/board/agents.ts';
 	import { groupByProject, sortByTime, type InboxSort } from '#lib/board/inbox.ts';
 	import type { ArchivePage } from '#lib/board/archive.ts';
 	import type { Controller, InboxItem } from '#lib/board/types.ts';

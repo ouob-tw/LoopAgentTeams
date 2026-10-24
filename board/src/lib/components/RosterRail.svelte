@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { lastSegment } from '#lib/board/agents.ts';
 	// The folded roster of the wide layout: one status mark per controller. A mark opens its
 	// controller and leaves the roster folded; the blank of the rail unfolds it. Hovering a
 	// mark, or pressing and holding it on a touch screen, explains it.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import PanelLeftOpen from '@lucide/svelte/icons/panel-left-open';
 	import type { Snippet } from 'svelte';
 	import { splitRoster } from '#lib/board/roster.ts';

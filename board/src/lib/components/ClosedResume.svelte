@@ -1,9 +1,9 @@
 <script lang="ts">
-	import { lastSegment } from '#lib/board/agents.ts';
 	// A closed agent's 接回, under its information card where a running agent's 關閉 sits: a plain
 	// agent is resumed in a new Herdr tab; a controller's opens the wake's options first (model,
 	// effort, a new LAT round, a first message, giving up a stuck resume) and is woken like one. How it
 	// goes shows under the button until the agent is back in Herdr and its page becomes the agent's.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import type { ClosedAgent } from '#lib/board/closed-agents.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';

@@ -1,6 +1,6 @@
 <script lang="ts">
-	import { lastSegment } from '#lib/board/agents.ts';
 	// One inbox item in a list: kind, title, owner label and time.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
 	import { isAnswered, itemLabel, type InboxItem } from '#lib/board/types.ts';

@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { lastSegment } from '#lib/board/agents.ts';
 	// A controller's header: one line of who and where it stands
 	// with its latest phase (the details behind a disclosure, its duty first) and, while it runs, its context use,
 	// quota, prompt cache and permission mode in small print.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { onMount } from 'svelte';
 	import { clock } from '#lib/board/clock.svelte.ts';

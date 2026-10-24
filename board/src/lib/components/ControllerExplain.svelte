@@ -1,7 +1,7 @@
 <script lang="ts">
-	import { lastSegment } from '#lib/board/agents.ts';
 	// What explaining a controller shows, beside its card or its mark: who and where it stands, then
 	// what it is responsible for.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
 	import DutyText from './DutyText.svelte';
 

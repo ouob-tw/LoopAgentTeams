@@ -1,8 +1,8 @@
 <script lang="ts">
-	import { lastSegment } from '#lib/board/agents.ts';
 	// What the user sent to this controller from the board, on any logged-in device: messages typed
 	// into its client, answers to its questions, the launch that started it, its wakes, its
 	// model switches and the interrupts of its turn.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import { AGENT_ACTION_LABEL } from '#lib/board/agent-actions.ts';
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { formatTime } from '#lib/board/format.ts';
