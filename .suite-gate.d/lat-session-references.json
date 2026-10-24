@@ -1,0 +1,4 @@
+{"map": [
+  {"paths": ["skills/local/lat/references/agents.md", "skills/local/lat/references/task-cards.md"],
+   "tests": ["skills/local/lat/tests/test_lat_session.py"]}
+]}
