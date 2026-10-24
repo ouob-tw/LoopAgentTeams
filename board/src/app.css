@@ -103,6 +103,8 @@ select {
 /* The native list stays (keyboard, phones); only its arrow is drawn here, from two gradients so
    it follows the theme's text colour. */
 select {
+	/* The size of the board's text boxes, not of the small label it sits in. */
+	font-size: max(1rem, var(--min-font, 0px));
 	appearance: none;
 	padding-right: 2rem;
 	cursor: pointer;

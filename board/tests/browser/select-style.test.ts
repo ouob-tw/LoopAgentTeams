@@ -34,6 +34,7 @@ const PROPS = ['fontFamily', 'fontSize', 'color', 'backgroundColor', 'borderTopC
 /** The computed look of the first drop-down of the form, and of a text box put beside it in the same label. */
 const LOOK = (disabled: boolean) => `(() => {
 	const select = document.querySelector('.settings select');
+	const folder = document.querySelector('#folder-box');
 	const box = select.parentElement.appendChild(document.createElement('input'));
 	select.disabled = ${disabled};
 	box.disabled = ${disabled};
@@ -42,7 +43,7 @@ const LOOK = (disabled: boolean) => `(() => {
 	const look = { select: read(select), box: read(box) };
 	box.remove();
 	select.disabled = false;
-	return JSON.stringify({ ...look, appearance: own.appearance, arrow: own.backgroundImage, option: getComputedStyle(select.options[0]).color + '|' + getComputedStyle(select.options[0]).backgroundColor });
+	return JSON.stringify({ ...look, folderHeight: getComputedStyle(folder).height, selectHeights: [...document.querySelectorAll('select')].map((one) => getComputedStyle(one).height), appearance: own.appearance, arrow: own.backgroundImage, option: getComputedStyle(select.options[0]).color + '|' + getComputedStyle(select.options[0]).backgroundColor });
 })()`;
 
 for (const theme of ['dark', 'light']) {
@@ -56,11 +57,12 @@ for (const theme of ['dark', 'light']) {
 			await evaluate(`document.documentElement.dataset.theme = ${JSON.stringify(theme)}`);
 			for (const disabled of [false, true]) {
 				const look = JSON.parse(await evaluate<string>(LOOK(disabled)));
-				const { height: selectHeight, ...select } = look.select;
-				const { height: boxHeight, ...box } = look.box;
+				const { height: _selectHeight, fontSize: selectSize, ...select } = look.select;
+				const { height: _boxHeight, ...box } = look.box;
 				expect(select).toEqual(box);
-				// A drop-down is a line taller or shorter than a text box by no more than a pixel or two.
-				expect(Math.abs(parseFloat(selectHeight) - parseFloat(boxHeight))).toBeLessThan(3);
+				expect(selectSize).toBe(await evaluate<string>(`getComputedStyle(document.querySelector('#folder-box')).fontSize`));
+				// As tall as the folder box above it, which every drop-down of the form sits beside.
+				for (const height of look.selectHeights) expect(Math.abs(parseFloat(height) - parseFloat(look.folderHeight))).toBeLessThan(2);
 				expect(look.appearance).toBe('none');
 				expect(look.arrow).toContain('linear-gradient');
 				const [optionColor, optionBackground] = look.option.split('|');
