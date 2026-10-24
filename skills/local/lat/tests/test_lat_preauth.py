@@ -171,11 +171,38 @@ class ErrorTests(PreauthCase):
                 self.assertEqual(verdict['verdict'], 'ask')
                 self.assertIn(reason, verdict['reasons'][0])
 
+    def test_version_must_be_the_integer_one(self):
+        for text in ('version = true\n', 'version = 1.0\n', 'version = 2\n'):
+            with self.subTest(text=text):
+                self.assert_asks(text, 'version must be 1')
+
+    def test_undecodable_file_asks(self):
+        self.global_file.parent.mkdir(parents=True)
+        self.global_file.write_bytes(b'\xff\n')
+        result = self.run_tool('check', '--action', 'merge', '--branch', 'dev')
+        self.assertEqual(result.returncode, 1, result.stderr)
+        self.assertIn('unreadable', result.stdout)
+
     def test_bad_controller_field_asks(self):
         self.session({'actions': {'merge': {'allow': True, 'oops': 1}}})
         verdict = self.check('merge', '--branch', 'dev')
         self.assertEqual(verdict['verdict'], 'ask')
         self.assertIn('unknown key `oops`', ' '.join(verdict['reasons']))
+
+    def test_malformed_controller_envelope_asks(self):
+        self.write(self.project_file, '[actions.merge]\nallow = false\nbranches = ["dev"]\n')
+        settings = {'actions': {'merge': {'allow': True}}}
+        for label, preauth, history in (
+                ('missing round', {'settings': settings}, []),
+                ('boolean round', {'round': True, 'settings': settings}, []),
+                ('extra key', {'round': 1, 'oops': True, 'settings': settings}, []),
+                ('broken history', {'round': 1, 'settings': settings}, 'broken')):
+            with self.subTest(label):
+                self.write(self.sessions / f'{SESSION}.json', json.dumps(
+                    dict(status='active', history=history, preauth=preauth)))
+                verdict = self.check('merge', '--branch', 'dev')
+                self.assertEqual(verdict['verdict'], 'ask')
+                self.assertIn('controller layer', ' '.join(verdict['reasons']))
 
 
 class ConditionTests(PreauthCase):
@@ -232,6 +259,16 @@ class ConditionTests(PreauthCase):
         self.write(self.global_file, '[actions.deploy-test]\nallow = true\ntarget = "x"\n')
         self.assertIn('the project layer does not set actions.deploy-test.target',
                       self.check('deploy-test')['reasons'])
+        self.assertNotIn('target = "x"', self.run_tool('show').stdout)
+
+    def test_show_and_check_name_the_project_target_over_narrower_layers(self):
+        self.allow_all()
+        self.session({'actions': {'deploy-test': {'target': 'production'}}})
+        self.assertIn('target="staging on :9000" from project [actions.deploy-test]',
+                      self.check('deploy-test')['basis'])
+        out = self.run_tool('show').stdout
+        self.assertIn('    target = "staging on :9000"  ← project', out)
+        self.assertNotIn('production', out)
 
 
 if __name__ == '__main__':

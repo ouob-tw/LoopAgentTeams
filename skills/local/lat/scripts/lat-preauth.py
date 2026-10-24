@@ -67,7 +67,7 @@ def validate(data, where):
     problems = []
     for key in data.keys() - TOP_KEYS:
         problems.append(f'{where}: unknown key `{key}`')
-    if 'version' in data and data['version'] != VERSION:
+    if 'version' in data and (type(data['version']) is not int or data['version'] != VERSION):
         problems.append(f'{where}: version must be {VERSION}')
     if 'experiment' in data and not isinstance(data['experiment'], bool):
         problems.append(f'{where}: experiment must be true or false')
@@ -109,7 +109,7 @@ def file_layer(name, path):
     except FileNotFoundError:
         layer.note = 'no file'
         return layer, []
-    except OSError as error:
+    except (OSError, UnicodeDecodeError) as error:
         return layer, [f'{name} layer {path}: unreadable ({error})']
     layer.present = True
     try:
@@ -145,10 +145,16 @@ def controller_layer(workspace, session):
         layer.note = 'no `preauth` field'
         return layer, []
     history = record.get('history', [])
-    current = len(history) + 1 if isinstance(history, list) else None
-    if not isinstance(value, dict) or not isinstance(value.get('settings'), dict):
-        return layer, [f'controller layer {path}: `preauth` must hold `round` and `settings`']
-    if value.get('round') != current:
+    if not isinstance(history, list) or not all(isinstance(item, dict) for item in history):
+        return layer, [f'controller layer {path}: session `history` is not a list of objects']
+    current = len(history) + 1
+    round_number = value.get('round') if isinstance(value, dict) else None
+    if (not isinstance(value, dict) or value.keys() != {'round', 'settings'}
+            or not isinstance(value['settings'], dict)
+            or type(round_number) is not int or round_number < 1):
+        return layer, [f'controller layer {path}: `preauth` must hold exactly a positive '
+                       'integer `round` and a `settings` table']
+    if round_number != current:
         layer.note = f'written for round {value.get("round")}, this is round {current}'
         return layer, []
     layer.present, layer.data = True, value['settings']
@@ -187,6 +193,17 @@ def resolve(layers, path, keys):
             if values is not None and key in values:
                 effective[key] = (values[key], layer.name, values.get('source'))
                 break
+    return effective
+
+
+def action_settings(layers, action):
+    """Effective keys of one action. Only the project knows what its test environment is,
+    so `target` comes from the project layer alone."""
+    effective = resolve(layers, ('actions', action), ACTION_KEYS)
+    effective.pop('target', None)
+    project = section(layers[1], ('actions', action)) if layers[1].present else None
+    if project and 'target' in project:
+        effective['target'] = (project['target'], 'project', project.get('source'))
     return effective
 
 
@@ -250,8 +267,7 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
     if problems:
         result['reasons'] += problems
         return result
-    path = ('actions', action)
-    effective = resolve(layers, path, ACTION_KEYS)
+    effective = action_settings(layers, action)
     label = f'actions.{action}'
     allow = effective.get('allow')
     if allow is None:
@@ -275,13 +291,11 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
     if action in MAIN_CHECKOUT_ACTIONS:
         result['reasons'] += main_checkout_problems(top, integration_branch(top, session))
     if action == 'deploy-test':
-        # Only the project knows what its test environment is; other layers cannot name it.
-        project = section(layers[1], path) if layers[1].present else None
-        if not project or 'target' not in project:
+        found = effective.get('target')
+        if found is None:
             result['reasons'].append('the project layer does not set actions.deploy-test.target')
         else:
-            result['basis'].append(describe('target', project['target'], 'project',
-                                            project.get('source'), label))
+            result['basis'].append(describe('target', *found, label))
     if action == 'push' or action in MAIN_CHECKOUT_ACTIONS:
         result['reasons'].append(GATE_PENDING)
     if not result['reasons']:
@@ -318,7 +332,7 @@ def cmd_show(args):
         lines += [f'  - {problem}' for problem in problems]
     lines.append('Effective settings:')
     for name in ACTIONS:
-        effective = resolve(layers, ('actions', name), ACTION_KEYS)
+        effective = action_settings(layers, name)
         lines.append(f'  [actions.{name}]' + ('' if effective else ' (not set; asks)'))
         lines += [f'    {key} = {json.dumps(value, ensure_ascii=False)}  ← {origin(layer, src)}'
                   for key, (value, layer, src) in effective.items()]
