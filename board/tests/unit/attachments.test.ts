@@ -134,11 +134,11 @@ test('a stored file shows the name it was uploaded as, without the board\'s uplo
 	expect(uploadedName('/x/notes.md')).toBe('notes.md');
 });
 
-test('a name splits into a start that may be cut and an end kept whole: the extension and six characters before it', () => {
-	expect(nameParts('Screenshot_2026-10-24-12-00-00_com.android.chrome.jpg')).toEqual({ start: 'Screenshot_2026-10-24-12-00-00_com.android.', end: 'chrome.jpg' });
-	expect(nameParts('README')).toEqual({ start: '', end: 'README' });
-	expect(nameParts('a.md')).toEqual({ start: '', end: 'a.md' });
-	expect(nameParts('很長的附件檔名很長的附件檔名.md')).toEqual({ start: '很長的附件檔名很', end: '長的附件檔名.md' });
+test('a name splits into a start, the six characters before the extension, and the extension', () => {
+	expect(nameParts('Screenshot_2026-10-24-12-00-00_com.android.chrome.jpg')).toEqual({ start: 'Screenshot_2026-10-24-12-00-00_com.android.', tail: 'chrome', extension: '.jpg' });
+	expect(nameParts('README')).toEqual({ start: '', tail: 'README', extension: '' });
+	expect(nameParts('a.md')).toEqual({ start: '', tail: 'a', extension: '.md' });
+	expect(nameParts('很長的附件檔名很長的附件檔名.md')).toEqual({ start: '很長的附件檔名很', tail: '長的附件檔名', extension: '.md' });
 	// A character outside the BMP stays whole.
-	expect(nameParts('😀😀😀😀😀😀😀😀.png')).toEqual({ start: '😀😀', end: '😀😀😀😀😀😀.png' });
+	expect(nameParts('😀😀😀😀😀😀😀😀.png')).toEqual({ start: '😀😀', tail: '😀😀😀😀😀😀', extension: '.png' });
 });

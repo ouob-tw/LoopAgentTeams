@@ -5,7 +5,7 @@
 	// download link. A file no longer on the host (the upload directory may be cleared) shows its path.
 	import FileIcon from '@lucide/svelte/icons/file';
 	import FileTextIcon from '@lucide/svelte/icons/file-text';
-	import { attachmentKind, attachmentUrl, fileName } from '#lib/board/attachments.ts';
+	import { attachmentKind, attachmentUrl, fileName, uploadedName } from '#lib/board/attachments.ts';
 	import AttachmentPreview from './AttachmentPreview.svelte';
 
 	let { paths }: { paths: string[] } = $props();
@@ -31,17 +31,16 @@
 	});
 
 	// Saved as a file by a link of its own: an image or PDF the board serves for showing would open
-	// in the page instead. The name is the one the clicked link suggests.
+	// in the page instead. It is saved under the name it was uploaded as.
 	async function download(event: MouseEvent, path: string) {
 		event.preventDefault();
-		const name = (event.currentTarget as HTMLAnchorElement).download;
 		if (!(await present(path))) {
 			gone[path] = true;
 			return;
 		}
 		const link = document.createElement('a');
 		link.href = attachmentUrl(path);
-		link.download = name;
+		link.download = uploadedName(path);
 		link.click();
 	}
 
@@ -81,7 +80,7 @@
 				{:else if kind === 'markdown' || kind === 'text'}
 					<button class="file text" onclick={() => preview?.show(path)}><FileTextIcon size="1.1em" />{fileName(path)}</button>
 				{:else}
-					<a class="file" href={attachmentUrl(path)} download={fileName(path)} onclick={(event) => download(event, path)}><FileIcon size="1.1em" />{fileName(path)}</a>
+					<a class="file" href={attachmentUrl(path)} download={uploadedName(path)} onclick={(event) => download(event, path)}><FileIcon size="1.1em" />{fileName(path)}</a>
 				{/if}
 			</li>
 		{/each}

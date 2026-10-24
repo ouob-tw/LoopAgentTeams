@@ -103,14 +103,19 @@ export function uploadedName(path: string): string {
 	return fileName(path).replace(/^[0-9a-f]{16}-(?=.)/, '');
 }
 
-/** A name in two parts for one line: the start, cut short with … when the line is too narrow, and
- *  the end kept whole, the extension and the few characters before it. */
-export function nameParts(name: string): { start: string; end: string } {
+/** How many characters before the extension a name shown on one line keeps when it can. */
+const TAIL_CHARACTERS = 6;
+
+/** A name in three parts for one line: the start, cut short with … when the line is too narrow;
+ *  the tail, the six characters before the extension, which give way next; and the extension
+ *  (a dot and up to ten characters after the last dot), kept whole. */
+export function nameParts(name: string): { start: string; tail: string; extension: string } {
 	// By characters, so a character outside the BMP is never split.
 	const characters = [...name];
 	const extension = [...(name.match(/\.[^.]{1,10}$/)?.[0] ?? '')];
-	const cut = Math.max(0, characters.length - extension.length - 6);
-	return { start: characters.slice(0, cut).join(''), end: characters.slice(cut).join('') };
+	const end = characters.length - extension.length;
+	const cut = Math.max(0, end - TAIL_CHARACTERS);
+	return { start: characters.slice(0, cut).join(''), tail: characters.slice(cut, end).join(''), extension: extension.join('') };
 }
 
 /** A size as people read it. */

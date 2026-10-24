@@ -74,6 +74,8 @@ const LONG = `${'很長的附件檔名'.repeat(12)}.md`;
 const WIDE = '<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000"><rect width="3000" height="2000" fill="teal"/></svg>';
 /** A phone's screenshot, upright, under the long name a phone gives it. */
 const SHOT = 'Screenshot_2026-10-24-12-00-00-123_com.android.chrome.png';
+/** A name whose wide characters before a long extension fill a phone's title by themselves. */
+const WIDE_TAIL = 'Screenshot_畫面截圖測試.svelte';
 const PYTHON = 'def main():\n    if True:\n        print("縮排")\n\n\treturn  # tab\n';
 const TEXT = `第一行\n  兩格縮排\n${'longwordwithoutspaces'.repeat(40)}\n`;
 const TAIL = 'TAIL-MARKER-PAST-200KB';
@@ -116,6 +118,7 @@ beforeAll(async () => {
 		'empty.txt': '',
 		'pixel.png': PNG,
 		[SHOT]: png(1080, 2400),
+		[WIDE_TAIL]: '<p>畫面</p>\n',
 		'report.pdf': pdf(),
 		'letter.docx': 'not really a word file',
 		'bundle.zip': 'PK not really a zip',
@@ -205,7 +208,7 @@ for (const where of ['sent', 'transcript'] as const) {
 		await visit(where);
 		await openPreview(where, 'notes.md');
 		await tab.until(`!!document.querySelector('${DIALOG} .md h1')`, 'the Markdown laid out');
-		expect(await tab.eval<string>(`document.querySelector('${DIALOG} h2').innerText`)).toBe('notes.md');
+		expect(await tab.eval<string>(`document.querySelector('${DIALOG} h2').textContent`)).toBe('notes.md');
 		expect(await tab.eval<number>(`document.querySelectorAll('${DIALOG} .md li').length`)).toBe(2);
 		// Raw HTML is text, a javascript: link is not a link, and none of the probes ran.
 		expect(await dialogText()).toContain('<script>window.pwned = 1');
@@ -453,32 +456,46 @@ test('a PDF opens in a new tab and Chrome’s viewer shows its page', async () =
 	}
 }, 60_000);
 
-/** The title's parts: its text, how many lines it takes, whether its start is cut short, and whether
- *  its end and the buttons are in the window. */
+/** The title's parts: its text, how many lines it takes, whether its start is cut short, how wide
+ *  its start shows, whether its extension is whole and clear of the buttons, and whether the
+ *  buttons are in the window. */
 const TITLE = `(() => {
 	const h2 = document.querySelector('${DIALOG} h2');
 	const start = h2.querySelector('.start');
-	const end = h2.querySelector('.end').getBoundingClientRect();
+	const extension = h2.querySelector('.extension').getBoundingClientRect();
+	const download = document.querySelector('${DIALOG} header a[download]');
 	const range = document.createRange();
 	range.selectNodeContents(h2);
 	const inView = (element) => { const r = element.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.width > 0; };
 	return {
 		text: h2.textContent,
-		end: h2.querySelector('.end').textContent,
-		lines: new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size,
+		extension: h2.querySelector('.extension').textContent,
+		lines: new Set([...range.getClientRects()].filter((rect) => rect.width).map((rect) => Math.round(rect.top))).size,
 		cut: start.scrollWidth > start.clientWidth,
-		endShown: end.left >= h2.getBoundingClientRect().left && end.right <= innerWidth,
-		download: document.querySelector('${DIALOG} header a[download]').getAttribute('download'),
+		startShown: start.getBoundingClientRect().width,
+		extensionShown: extension.left >= h2.getBoundingClientRect().left && extension.right <= h2.getBoundingClientRect().right + 0.5 && extension.right <= download.getBoundingClientRect().left,
+		download: download.getAttribute('download'),
 		buttons: [...document.querySelectorAll('${DIALOG} header :is(a, button)')].every(inView)
 	};
 })()`;
+type Title = { text: string; extension: string; lines: number; cut: boolean; startShown: number; extensionShown: boolean; download: string; buttons: boolean };
 
 test('at 390px with the largest text the title is one line: the uploaded name, its start cut short, its extension kept', async () => {
 	await visit('transcript', 390, { touch: true, minFont: 24 });
 	await openPreview('transcript', SHOT);
-	const long = await tab.eval<{ text: string; end: string; lines: number; cut: boolean; endShown: boolean; download: string; buttons: boolean }>(TITLE);
-	expect(long).toMatchObject({ text: SHOT, end: 'chrome.png', lines: 1, cut: true, endShown: true, download: SHOT, buttons: true });
+	const long = await tab.eval<Title>(TITLE);
+	expect(long).toMatchObject({ text: SHOT, extension: '.png', lines: 1, cut: true, extensionShown: true, download: SHOT, buttons: true });
+	// The start keeps its first characters, and some of the characters before the extension show.
+	expect(long.startShown).toBeGreaterThanOrEqual(2.9 * 24);
+	expect(await tab.eval<number>(`document.querySelector('${DIALOG} h2 .tail').clientWidth`)).toBeGreaterThan(24);
 	expect(await tab.eval<string>(`document.querySelector('${DIALOG} h2').title`)).toBe(paths[SHOT]);
+	await tab.eval(`document.querySelector('${DIALOG}').close()`);
+	// Wide characters before a long extension: the start keeps its first characters and the
+	// extension stays whole, clear of the buttons; the characters between give way.
+	await openPreview('transcript', WIDE_TAIL);
+	const wide = await tab.eval<Title>(TITLE);
+	expect(wide).toMatchObject({ text: WIDE_TAIL, extension: '.svelte', lines: 1, cut: true, extensionShown: true, buttons: true });
+	expect(wide.startShown).toBeGreaterThanOrEqual(2.9 * 24);
 	await tab.eval(`document.querySelector('${DIALOG}').close()`);
 	// A short name whole, with no … in it.
 	await openPreview('transcript', 'pixel.png');

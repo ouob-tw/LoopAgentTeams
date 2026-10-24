@@ -21,7 +21,7 @@
 
 	const kind = $derived(path ? attachmentKind(path) : null);
 	const name = $derived(path ? uploadedName(path) : '');
-	const title = $derived(nameParts(name));
+	const parts = $derived(nameParts(name));
 
 	// An image's zoom: its scale (1 is whole in the window) and how far it is moved from the middle.
 	let content = $state<HTMLElement>();
@@ -118,8 +118,9 @@
 >
 	{#if path}
 		<header>
-			<!-- The start gives way to … when the line is short; the end, with the extension, stays. -->
-			<h2 title={path}><span class="start">{title.start}</span><span class="end">{title.end}</span></h2>
+			<!-- A short line cuts the start down to its first characters and …, then the tail from its
+			     own start; the first characters and the extension stay. -->
+			<h2 title={path} aria-label={name}><span class="start" class:long={[...parts.start].length > 6}>{parts.start}</span><span class="tail"><span>{parts.tail}</span></span><span class="extension">{parts.extension}</span></h2>
 			<a class="button" href={attachmentUrl(path)} download={name} onclick={(event) => ondownload(event, path!)}>下載</a>
 			<button onclick={() => dialog.close()}>關閉</button>
 		</header>
@@ -209,15 +210,33 @@
 		min-width: 0;
 		margin: 0;
 		display: flex;
+		overflow: hidden;
 		font-size: max(1rem, var(--min-font, 0px));
 		white-space: nowrap;
 	}
+	/* Gives way well before the tail does. */
 	.start {
+		flex-shrink: 1000;
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
-	.end {
+	/* Its first characters always show; a start shorter than that is never cut. */
+	.start.long {
+		min-width: 3em;
+	}
+	/* Gives way once the start is down to its least: what is cut is its own start, the characters
+	   next to the extension stay. */
+	.tail {
+		min-width: 0;
+		overflow: hidden;
+		direction: rtl;
+	}
+	.tail span {
+		direction: ltr;
+		unicode-bidi: isolate;
+	}
+	.extension {
 		flex: none;
 	}
 	.button {

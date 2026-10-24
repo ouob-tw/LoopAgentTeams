@@ -57,6 +57,7 @@
 	}
 
 	// The open tab in view in its strip, however it was opened: a click, an arrow key or the page.
+	// The strip's behaviour and look are RecordTabs.svelte's; keep the two in step.
 	let strip = $state<HTMLElement>();
 	$effect(() => {
 		const button = strip?.querySelector<HTMLElement>(`[data-tab="${tab}"]`);
