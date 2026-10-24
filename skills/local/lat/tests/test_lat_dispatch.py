@@ -527,6 +527,21 @@ class LedgerLifecycleTests(LedgerCase):
         self.assertIn(f'- deliverable commit：{self.sha}\n', text)
         self.assertEqual(self.items()[0]['status'], 'done')
 
+    def test_card_branch_lets_done_accept_a_commit_that_is_not_integrated_yet(self):
+        git(self.workspace, 'switch', '-q', '-c', 'feat/x')
+        (self.workspace / 'b.txt').write_text('b\n')
+        git(self.workspace, 'add', 'b.txt')
+        git(self.workspace, 'commit', '-q', '-m', 'work')
+        sha = git(self.workspace, 'rev-parse', 'HEAD')
+        git(self.workspace, 'switch', '-q', 'dev')
+        card = self.ledger_card('--branch', 'feat/x')
+        self.assertEqual(self.items()[0]['branch'], 'feat/x')
+        _, (start, _update, done) = self.brief_commands(card)
+        self.run_command(start)
+        self.run_command(done.replace('--commit <sha> --gate <fingerprint> --file <absolute path>',
+                                      f'--commit {sha}'))
+        self.assertIn(f'- deliverable commit：{sha}\n', card.read_text())
+
     def test_file_evidence_closes_the_card_as_completed(self):
         card = self.ledger_card(evidence='file')
         report = self.root / 'report.md'

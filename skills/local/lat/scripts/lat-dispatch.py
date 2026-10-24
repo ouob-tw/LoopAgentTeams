@@ -16,7 +16,6 @@ import os
 from pathlib import Path
 import re
 import shlex
-import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -192,11 +191,11 @@ def ledger_request(args):
 
 def run_ledger(args, command, *rest):
     script = args.lat_dir.resolve() / 'scripts' / 'lat-ledger.py'
-    result = subprocess.run([sys.executable, str(script), command, *rest], capture_output=True,
-                            text=True, timeout=60)
-    if result.returncode:
-        raise Failure(f'lat-ledger {command} failed: {result.stderr.strip() or result.stdout.strip()}')
-    return result.stdout.strip()
+    try:
+        return run_cli([sys.executable, str(script), command, *rest], timeout=60,
+                       failure=f'lat-ledger {command} failed').strip()
+    except ValueError as error:
+        raise Failure(str(error)) from error
 
 
 def open_ledger_row(args, ledger, orchestrator, agent, card):
@@ -206,6 +205,8 @@ def open_ledger_row(args, ledger, orchestrator, agent, card):
         add += ['--evidence', evidence]
     if args.depends:
         add += ['--depends', args.depends]
+    if args.branch != NONE:
+        add += ['--branch', args.branch.strip()]
     row = run_ledger(args, 'add', *base, *add)
     if not row.isdigit():
         raise Failure(f'lat-ledger add printed an unexpected row number: {row!r}')
