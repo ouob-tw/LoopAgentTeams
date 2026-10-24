@@ -444,7 +444,7 @@
       {"paths": ["skills/local/host-guard/scripts/**"],
        "tests": ["skills/local/host-guard/tests/test_*.py"]},
       {"paths": ["board/src/app.css"],
-       "tests": ["board/tests/browser/select-style.test.ts", "board/tests/unit/theme.test.ts", "board/tests/browser/model-defaults-page.test.ts", "board/tests/browser/workspace-picker-page.test.ts", "board/tests/browser/herdr-controller-page.test.ts", "board/tests/browser/command-line-layout.test.ts"]},
+       "tests": ["board/tests/browser/select-style.test.ts", "board/tests/unit/theme.test.ts", "board/tests/browser/model-defaults-page.test.ts", "board/tests/browser/workspace-picker-page.test.ts", "board/tests/browser/controller-page.test.ts", "board/tests/browser/herdr-controller-page.test.ts", "board/tests/browser/command-line-layout.test.ts"]},
       {"paths": ["scripts/install-skills.py"],
        "tests": ["scripts/tests/test_install_skills.py"]},
       {"paths": ["**/*.md", "docs/**", "LICENSE", "scripts/install-matt-skills.py", "skills/matt/**", ".serena/**"],

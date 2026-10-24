@@ -30,7 +30,7 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-const PROPS = ['fontFamily', 'fontSize', 'color', 'backgroundColor', 'borderTopColor', 'borderTopWidth', 'borderTopStyle', 'borderTopLeftRadius', 'height'];
+const PROPS = ['fontFamily', 'fontSize', 'color', 'backgroundColor', 'borderTopColor', 'borderTopWidth', 'borderTopStyle', 'borderTopLeftRadius', 'height', 'opacity'];
 /** The computed look of the first drop-down of the form, and of a text box put beside it in the same label. */
 const LOOK = (disabled: boolean) => `(() => {
 	const select = document.querySelector('.settings select');
