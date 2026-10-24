@@ -184,7 +184,7 @@ test.each(['blocked', 'throwing'] as const)('with browser storage %s the startup
 
 const LONG_NAME = 'luna-lat-handoff-nova-next-miro-fix42-vega';
 
-test('a long controller name is whole on the card and in the rail explanation', async () => {
+test('a long controller name is its last part on the card and in the rail, whole on hover', async () => {
 	const long = fixture.bound('alpha', LONG_NAME, { questions: [question({ id: 'Q-1' }), question({ id: 'Q-2' })] });
 	fixture.report(long.session_id, { tag: 'NO REPLY', summary: '實作第二張票', hcom_name: LONG_NAME, workspace: long.workspace });
 	fixture.list([long]);
@@ -192,11 +192,11 @@ test('a long controller name is whole on the card and in the rail explanation', 
 
 	const html = await page();
 
-	// The roster card and phone tag: project and full name, then the phase; hovering or a long
-	// press explains it whole, as the folded rail's mark is explained.
-	expect(html).toMatch(new RegExp(`<button[^>]*class="person[^>]*>[^]*?alpha[^]*?@${LONG_NAME}[^]*?實作第二張票`));
+	// The roster card and phone tag: project and the name's last part, with the full name on hover,
+	// then the phase; hovering or a long press explains it whole, as the folded rail's mark is explained.
+	expect(html).toMatch(new RegExp(`<button[^>]*class="person[^>]*>[^]*?alpha[^]*?title="@${LONG_NAME}"[^>]*>@vega[^]*?實作第二張票`));
 	// The folded rail's mark says whose it is, its status and how many questions wait.
-	expect(html).toMatch(new RegExp(`<button[^>]*class="entry[^>]*aria-label="alpha @${LONG_NAME}：等你，待決 2 題"`));
+	expect(html).toMatch(new RegExp(`<button[^>]*class="entry[^>]*aria-label="alpha @vega：等你，待決 2 題"`));
 });
 
 test('the page offers the settings entry, the fold control and both column handles', async () => {
