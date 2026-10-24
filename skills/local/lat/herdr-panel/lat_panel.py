@@ -79,7 +79,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   board notify --questions PATH
   board transcript --client (claude|codex) --session-id ID [--before SEQ]
   board launch-args --session-id ID
-  board ledger [--workspace ROOT --session-id ID]...
+  board ledger [--workspace ROOT --session-id ID]... [--seconds N]
   board prune-reports --reports-dir DIR --now TIME --session-id ID...
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
@@ -302,6 +302,7 @@ from transcript import (
 )
 import board
 from board import (
+    LEDGERS_SECONDS,
     _answered_entry,
     _answered_questions,
     _asked_times,
@@ -352,7 +353,7 @@ def _run_board(args):
         elif args.board_command == "ledger":
             if len(args.workspace) != len(args.session_id):
                 raise ValueError("each --workspace needs one --session-id")
-            result = {"ledgers": board_ledgers(list(zip(args.workspace, args.session_id)))}
+            result = {"ledgers": board_ledgers(list(zip(args.workspace, args.session_id)), args.seconds)}
             code = 0
         elif args.board_command == "prune-reports":
             now = datetime.fromisoformat(args.now)
@@ -459,6 +460,7 @@ def _build_parser():
     ledger = board_commands.add_parser("ledger")
     ledger.add_argument("--workspace", type=Path, action="append", default=[])
     ledger.add_argument("--session-id", action="append", default=[])
+    ledger.add_argument("--seconds", type=float, default=LEDGERS_SECONDS)
     prune = board_commands.add_parser("prune-reports")
     prune.add_argument("--reports-dir", required=True, type=Path)
     prune.add_argument("--now", required=True)

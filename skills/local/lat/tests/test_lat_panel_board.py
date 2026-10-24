@@ -1008,9 +1008,11 @@ class LedgerTests(BoardTestCase):
         )
         self.assertEqual(result.returncode, 0, result.stderr)
 
-    def read(self, *pairs):
+    def read(self, *pairs, seconds=None):
         pairs = pairs or ((self.workspace, "s-a"),)
         args = [arg for workspace, sid in pairs for arg in ("--workspace", workspace, "--session-id", sid)]
+        if seconds is not None:
+            args += ["--seconds", seconds]
         return self.board("ledger", *args)["ledgers"]
 
     def test_ledger_is_shown_as_the_ledger_tool_prints_it(self):
@@ -1068,11 +1070,35 @@ class LedgerTests(BoardTestCase):
             started = time.monotonic()
             held, fine = self.read((self.workspace, "s-a"), (other, "s-b"))
             elapsed = time.monotonic() - started
+            # The board's shortest helper time: one second, half of it for the reads.
+            started = time.monotonic()
+            short, _ = self.read((self.workspace, "s-a"), (other, "s-b"), seconds=0.5)
+            short_elapsed = time.monotonic() - started
 
         self.assertEqual(held["status"], "error")
         self.assertIn("逾時", held["reason"])
         self.assertEqual(fine["status"], "none")
-        self.assertLess(elapsed, 10)
+        self.assertLess(elapsed, 5)
+        self.assertEqual(short["status"], "error")
+        self.assertLess(short_elapsed, 1)
+
+    def test_finding_the_records_is_inside_the_time_too(self):
+        board = sys.modules["board"]
+        original = board.session_record
+
+        def slow(workspace, session_id):
+            time.sleep(0.05)
+            return original(workspace, session_id)
+
+        board.session_record = slow
+        self.addCleanup(setattr, board, "session_record", original)
+        started = time.monotonic()
+        results = board.board_ledgers([(self.workspace, "s-a")] * 40, seconds=0.1)
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.2)
+        self.assertEqual(len(results), 40)
+        self.assertIn("時間用完了", results[-1]["reason"])
 
     def test_unpaired_options_are_refused(self):
         result = self.board("ledger", "--workspace", self.workspace, code=1)

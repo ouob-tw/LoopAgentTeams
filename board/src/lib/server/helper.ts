@@ -302,11 +302,14 @@ export interface ReadLedger {
 type HelperLedgers = { ok: true; ledgers: Map<string, ReadLedger> } | { ok: false; reason: string };
 
 /** These controllers' work ledgers, by session ID, in one run of the helper: it finds each one's
- *  ledger in its session record and reads it with `lat-ledger show --json`. */
+ *  ledger in its session record and reads it with `lat-ledger show --json`. The reads get half the
+ *  helper's time, the rest left for it to start and print, so a ledger whose writer holds it fails
+ *  alone. */
 export async function readLedgers(config: BoardConfig, controllers: { workspace: string; sessionId: string }[]): Promise<HelperLedgers> {
 	if (!controllers.length) return { ok: true, ledgers: new Map() };
 	const read = await run(config, [
 		'ledger',
+		`--seconds=${config.helperTimeoutMs / 2000}`,
 		...controllers.flatMap((controller) => [`--workspace=${controller.workspace}`, `--session-id=${controller.sessionId}`])
 	]);
 	const parsed = parseJsonOutput<{ ledgers?: unknown; reason?: unknown } | null>(read, '輔助工具的輸出不是 JSON');

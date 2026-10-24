@@ -40,7 +40,7 @@ test('each controller shows its own ledger, no ledger or the reason it could not
 	// The rest of the page is read as before.
 	expect(named(snapshot, 'vega')!.error).toBeNull();
 	const [call] = fixture.helperArgs('ledger').slice(-1);
-	expect(call).toEqual(['board', 'ledger', ...[luna, nova, vega].flatMap((c) => [`--workspace=${c.workspace}`, `--session-id=${c.session_id}`])]);
+	expect(call).toEqual(['board', 'ledger', expect.stringMatching(/^--seconds=/), ...[luna, nova, vega].flatMap((c) => [`--workspace=${c.workspace}`, `--session-id=${c.session_id}`])]);
 });
 
 test('a failed helper run shows its reason on every ledger and leaves the roster alone', async () => {
@@ -51,6 +51,20 @@ test('a failed helper run shows its reason on every ledger and leaves the roster
 
 	expect(named(snapshot, 'luna')!.ledger).toMatchObject({ state: 'error' });
 	expect(named(snapshot, 'luna')!.status).toBe('working');
+});
+
+test('the ledger reads get half the helper time, however short the board sets it', async () => {
+	const short = await startFixture({ env: { LAT_BOARD_FALLBACK_SECONDS: '5' } });
+	try {
+		const luna = short.bound('alpha', 'luna');
+		short.list([luna]);
+		await short.refresh(await short.login());
+
+		// Five seconds between fallback reads leave the helper one second.
+		expect(short.helperArgs('ledger').at(-1)?.[2]).toBe('--seconds=0.5');
+	} finally {
+		await short.cleanup();
+	}
 });
 
 test('a write to the ledger file is read in without a manual refresh', async () => {

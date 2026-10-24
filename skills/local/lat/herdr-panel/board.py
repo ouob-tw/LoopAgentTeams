@@ -1,10 +1,11 @@
 """Board question and answer JSON assembly."""
 
-from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
+import queue
 import re
 import sys
+import threading
 import time
 
 from questions import (
@@ -51,8 +52,8 @@ from _lat_common import run_cli
 
 LEDGER_TOOL = Path(__file__).resolve().parents[1] / "scripts/lat-ledger.py"
 # A read waits for a ledger's writer, which may hold its lock while checking evidence. Each read
-# and the whole batch stay well inside the board's helper timeout (15 seconds by default), so one
-# held ledger fails alone instead of taking the others with it.
+# and the whole batch stay inside the time the board gives the helper, so one held ledger fails
+# alone instead of taking the others with it.
 LEDGER_READ_SECONDS = 3
 LEDGERS_SECONDS = 8
 _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
@@ -249,11 +250,36 @@ def board_controllers(*, config_dir=None, state_dir=None):
     return controllers
 
 
-def board_ledgers(controllers):
-    """``board_ledger`` of each (workspace, session ID), read side by side within the batch's time."""
-    deadline = time.monotonic() + LEDGERS_SECONDS
-    with ThreadPoolExecutor(max_workers=8) as pool:
-        return list(pool.map(lambda pair: board_ledger(*pair, deadline=deadline), controllers))
+_TIME_UP = "這次重讀的時間用完了，下次重讀再試"
+
+
+def board_ledgers(controllers, seconds=LEDGERS_SECONDS):
+    """``board_ledger`` of each (workspace, session ID), read side by side.
+
+    Returns after ``seconds`` at most: a read not done by then is an error. The workers are
+    daemon threads, so one still stuck does not keep the helper from exiting.
+    """
+    deadline = time.monotonic() + seconds
+    results = [None] * len(controllers)
+    pending = queue.SimpleQueue()
+    for index in range(len(controllers)):
+        pending.put(index)
+
+    def work():
+        while True:
+            try:
+                index = pending.get_nowait()
+            except queue.Empty:
+                return
+            results[index] = board_ledger(*controllers[index], deadline=deadline)
+
+    workers = [threading.Thread(target=work, daemon=True) for _ in range(min(8, len(controllers)))]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(max(0, deadline - time.monotonic()))
+    return [result or {"session_id": session_id, "status": "error", "reason": _TIME_UP}
+            for result, (_, session_id) in zip(list(results), controllers)]
 
 
 def board_ledger(workspace, session_id, *, deadline=None):
@@ -263,6 +289,8 @@ def board_ledger(workspace, session_id, *, deadline=None):
     or ``error`` with the ``reason`` the record or the ledger could not be read.
     ``ledger_path`` is there whenever the record names one, so the board can watch it.
     """
+    if deadline is not None and time.monotonic() >= deadline:
+        return {"session_id": session_id, "status": "error", "reason": _TIME_UP}
     if not _SESSION_ID.fullmatch(session_id):
         return {"session_id": session_id, "status": "error", "reason": f"不是 session ID：{session_id}"}
     try:
@@ -275,7 +303,7 @@ def board_ledger(workspace, session_id, *, deadline=None):
     result = {"session_id": session_id, "ledger_path": str(path)}
     left = LEDGER_READ_SECONDS if deadline is None else min(LEDGER_READ_SECONDS, deadline - time.monotonic())
     if left <= 0:
-        return {**result, "status": "error", "reason": "這次重讀的時間用完了，下次重讀再試"}
+        return {**result, "status": "error", "reason": _TIME_UP}
     try:
         output = run_cli([sys.executable, str(LEDGER_TOOL), "show", "--json", "--ledger", str(path)],
                          timeout=left, failure="lat-ledger show")
