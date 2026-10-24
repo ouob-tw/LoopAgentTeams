@@ -103,19 +103,24 @@ export function uploadedName(path: string): string {
 	return fileName(path).replace(/^[0-9a-f]{16}-(?=.)/, '');
 }
 
+/** How many characters a name shown on one line always keeps at its opening. */
+const OPENING_CHARACTERS = 3;
 /** How many characters before the extension a name shown on one line keeps when it can. */
 const TAIL_CHARACTERS = 6;
 
-/** A name in three parts for one line: the start, cut short with … when the line is too narrow;
- *  the tail, the six characters before the extension, which give way next; and the extension
- *  (a dot and up to ten characters after the last dot), kept whole. */
-export function nameParts(name: string): { start: string; tail: string; extension: string } {
+/** A name in four parts for one line: its first three characters, always shown; the middle, cut
+ *  short with … when the line is too narrow; the tail, the six characters before the extension,
+ *  which give way next; and the extension (a dot and up to ten characters after the last dot),
+ *  kept whole. */
+export function nameParts(name: string): { opening: string; middle: string; tail: string; extension: string } {
 	// By characters, so a character outside the BMP is never split.
 	const characters = [...name];
 	const extension = [...(name.match(/\.[^.]{1,10}$/)?.[0] ?? '')];
 	const end = characters.length - extension.length;
-	const cut = Math.max(0, end - TAIL_CHARACTERS);
-	return { start: characters.slice(0, cut).join(''), tail: characters.slice(cut, end).join(''), extension: extension.join('') };
+	const tail = Math.max(0, end - TAIL_CHARACTERS);
+	const middle = Math.min(tail, OPENING_CHARACTERS);
+	const text = (from: number, to: number) => characters.slice(from, to).join('');
+	return { opening: text(0, middle), middle: text(middle, tail), tail: text(tail, end), extension: extension.join('') };
 }
 
 /** A size as people read it. */

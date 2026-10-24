@@ -76,6 +76,8 @@ const WIDE = '<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000"
 const SHOT = 'Screenshot_2026-10-24-12-00-00-123_com.android.chrome.png';
 /** A name whose wide characters before a long extension fill a phone's title by themselves. */
 const WIDE_TAIL = 'Screenshot_畫面截圖測試.svelte';
+/** The same with a start of six wide characters. */
+const SHORT_WIDE = '畫面截圖測試畫面截圖測試.svelte';
 const PYTHON = 'def main():\n    if True:\n        print("縮排")\n\n\treturn  # tab\n';
 const TEXT = `第一行\n  兩格縮排\n${'longwordwithoutspaces'.repeat(40)}\n`;
 const TAIL = 'TAIL-MARKER-PAST-200KB';
@@ -119,6 +121,7 @@ beforeAll(async () => {
 		'pixel.png': PNG,
 		[SHOT]: png(1080, 2400),
 		[WIDE_TAIL]: '<p>畫面</p>\n',
+		[SHORT_WIDE]: '<p>畫面</p>\n',
 		'report.pdf': pdf(),
 		'letter.docx': 'not really a word file',
 		'bundle.zip': 'PK not really a zip',
@@ -461,7 +464,7 @@ test('a PDF opens in a new tab and Chrome’s viewer shows its page', async () =
  *  buttons are in the window. */
 const TITLE = `(() => {
 	const h2 = document.querySelector('${DIALOG} h2');
-	const start = h2.querySelector('.start');
+	const middle = h2.querySelector('.middle');
 	const extension = h2.querySelector('.extension').getBoundingClientRect();
 	const download = document.querySelector('${DIALOG} header a[download]');
 	const range = document.createRange();
@@ -471,32 +474,36 @@ const TITLE = `(() => {
 		text: h2.textContent,
 		extension: h2.querySelector('.extension').textContent,
 		lines: new Set([...range.getClientRects()].filter((rect) => rect.width).map((rect) => Math.round(rect.top))).size,
-		cut: start.scrollWidth > start.clientWidth,
-		startShown: start.getBoundingClientRect().width,
+		cut: middle.scrollWidth > middle.clientWidth,
+		opening: h2.querySelector('.opening').textContent,
+		openingShown: h2.querySelector('.opening').getBoundingClientRect().left >= h2.getBoundingClientRect().left && h2.querySelector('.opening').getBoundingClientRect().width > 0,
 		extensionShown: extension.left >= h2.getBoundingClientRect().left && extension.right <= h2.getBoundingClientRect().right + 0.5 && extension.right <= download.getBoundingClientRect().left,
 		download: download.getAttribute('download'),
 		buttons: [...document.querySelectorAll('${DIALOG} header :is(a, button)')].every(inView)
 	};
 })()`;
-type Title = { text: string; extension: string; lines: number; cut: boolean; startShown: number; extensionShown: boolean; download: string; buttons: boolean };
+type Title = { text: string; extension: string; lines: number; cut: boolean; opening: string; openingShown: boolean; extensionShown: boolean; download: string; buttons: boolean };
 
 test('at 390px with the largest text the title is one line: the uploaded name, its start cut short, its extension kept', async () => {
 	await visit('transcript', 390, { touch: true, minFont: 24 });
 	await openPreview('transcript', SHOT);
 	const long = await tab.eval<Title>(TITLE);
 	expect(long).toMatchObject({ text: SHOT, extension: '.png', lines: 1, cut: true, extensionShown: true, download: SHOT, buttons: true });
-	// The start keeps its first characters, and some of the characters before the extension show.
-	expect(long.startShown).toBeGreaterThanOrEqual(2.9 * 24);
+	// Its first characters, and some of the characters before the extension, show.
+	expect(long).toMatchObject({ opening: 'Scr', openingShown: true });
 	expect(await tab.eval<number>(`document.querySelector('${DIALOG} h2 .tail').clientWidth`)).toBeGreaterThan(24);
 	expect(await tab.eval<string>(`document.querySelector('${DIALOG} h2').title`)).toBe(paths[SHOT]);
 	await tab.eval(`document.querySelector('${DIALOG}').close()`);
-	// Wide characters before a long extension: the start keeps its first characters and the
-	// extension stays whole, clear of the buttons; the characters between give way.
-	await openPreview('transcript', WIDE_TAIL);
-	const wide = await tab.eval<Title>(TITLE);
-	expect(wide).toMatchObject({ text: WIDE_TAIL, extension: '.svelte', lines: 1, cut: true, extensionShown: true, buttons: true });
-	expect(wide.startShown).toBeGreaterThanOrEqual(2.9 * 24);
-	await tab.eval(`document.querySelector('${DIALOG}').close()`);
+	// Wide characters before a long extension, after a long start or a short one: the first
+	// characters and the extension stay whole, clear of the buttons; the characters between give way.
+	for (const [name, opening] of [
+		[WIDE_TAIL, 'Scr'],
+		[SHORT_WIDE, '畫面截']
+	]) {
+		await openPreview('transcript', name);
+		expect(await tab.eval<Title>(TITLE)).toMatchObject({ text: name, opening, openingShown: true, extension: '.svelte', lines: 1, extensionShown: true, buttons: true });
+		await tab.eval(`document.querySelector('${DIALOG}').close()`);
+	}
 	// A short name whole, with no … in it.
 	await openPreview('transcript', 'pixel.png');
 	expect(await tab.eval(TITLE)).toMatchObject({ text: 'pixel.png', lines: 1, cut: false, download: 'pixel.png', buttons: true });

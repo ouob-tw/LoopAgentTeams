@@ -118,9 +118,9 @@
 >
 	{#if path}
 		<header>
-			<!-- A short line cuts the start down to its first characters and …, then the tail from its
-			     own start; the first characters and the extension stay. -->
-			<h2 title={path} aria-label={name}><span class="start" class:long={[...parts.start].length > 6}>{parts.start}</span><span class="tail"><span>{parts.tail}</span></span><span class="extension">{parts.extension}</span></h2>
+			<!-- A short line cuts the middle to …, then the tail from its own start, with … there; the
+			     first three characters and the extension always stay. -->
+			<h2 title={path} aria-label={name}><span class="opening">{parts.opening}</span><span class="middle">{parts.middle}</span><span class="tail"><span>{parts.tail}</span></span><span class="extension">{parts.extension}</span></h2>
 			<a class="button" href={attachmentUrl(path)} download={name} onclick={(event) => ondownload(event, path!)}>下載</a>
 			<button onclick={() => dialog.close()}>關閉</button>
 		</header>
@@ -214,22 +214,22 @@
 		font-size: max(1rem, var(--min-font, 0px));
 		white-space: nowrap;
 	}
+	.opening {
+		flex: none;
+	}
 	/* Gives way well before the tail does. */
-	.start {
+	.middle {
 		flex-shrink: 1000;
 		min-width: 0;
 		overflow: hidden;
 		text-overflow: ellipsis;
 	}
-	/* Its first characters always show; a start shorter than that is never cut. */
-	.start.long {
-		min-width: 3em;
-	}
-	/* Gives way once the start is down to its least: what is cut is its own start, the characters
-	   next to the extension stay. */
+	/* Gives way once the middle is gone: what is cut is its own start, marked with …, and the
+	   characters next to the extension stay. */
 	.tail {
 		min-width: 0;
 		overflow: hidden;
+		text-overflow: ellipsis;
 		direction: rtl;
 	}
 	.tail span {
