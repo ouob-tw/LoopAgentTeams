@@ -152,7 +152,7 @@ test('a LAT controller asking through the menu is denied: no card on the board a
 	const panel = join(fixture.dir, 'panel-config');
 	mkdirSync(panel, { recursive: true });
 	writeFileSync(join(panel, 'bindings.json'), JSON.stringify({ version: 2, bindings: { 's-ask': { hcom_name: 'tene', client: 'claude', session_id: 's-ask', workspace: '/work', questions_path: '/work/.lat/questions/tene.md', herdr_workspace: 'wA', herdr_tab: 'wA:t-s-ask', herdr_pane: 'wA:p-s-ask' } } }));
-	const inbox = async () => (await fetch(`${fixture.url}/api/inbox`, { headers: { cookie } })).text();
+	const inbox = async () => JSON.stringify((await fixture.refresh(cookie)).inbox);
 	const before = await inbox();
 	const files = () => readdirSync(join(fixture.dir, 'board-asks')).sort();
 	const filesBefore = files();
@@ -169,10 +169,10 @@ test('a LAT controller asking through the menu is denied: no card on the board a
 	expect(JSON.parse(stdout).hookSpecificOutput).toMatchObject({ hookEventName: 'PreToolUse', permissionDecision: 'deny' });
 	expect(files()).toEqual(filesBefore);
 
-	await fixture.refresh(cookie);
+	const after = await inbox();
 	await Bun.sleep(1000);
 	expect(await tab.eval(`document.querySelector('[data-agent="s-ask"]').innerText.includes('等你回答')`)).toBe(false);
 	expect(await cards()).toBe(cardsBefore);
-	expect(await inbox()).toBe(before);
+	expect(after).toBe(before);
 	expect(tab.errors).toEqual([]);
 }, 60_000);
