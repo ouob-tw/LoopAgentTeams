@@ -65,3 +65,61 @@ test('uninstall takes out only this hook', () => {
 	expect(read()).toEqual(ORIGINAL);
 	expect(cli('uninstall').stdout).toContain('No changes');
 });
+
+test('Claude gets the permission request hook too, for every tool', () => {
+	cli('install');
+	expect(read().hooks.PermissionRequest).toEqual([
+		{ hooks: [{ type: 'command', command: `uv run --no-project python ${HOOK} hook`, timeout: 660, statusMessage: '正在等看板作答，按 Esc 可中斷改在終端機回答' }] }
+	]);
+});
+
+// Codex's hooks.json, in a temporary Codex home only.
+const CODEX_ORIGINAL = {
+	hooks: {
+		Stop: [{ hooks: [{ type: 'command', command: 'uv run --no-project python /x/lat-session.py hook' }], name: 'lat-codex-recovery' }],
+		PreToolUse: [{ matcher: 'Bash', hooks: [{ type: 'command', command: 'uv run --no-project python /x/host-guard.py hook' }], name: 'host-guard' }]
+	}
+};
+function codex(...args: string[]) {
+	const run = Bun.spawnSync(['uv', 'run', '--no-project', 'python', HOOK, ...args, '--client', 'codex', '--codex-home', dir], {
+		env: { PATH: Bun.env.PATH ?? '', HOME: Bun.env.HOME ?? '' }
+	});
+	return { code: run.exitCode, stdout: run.stdout.toString(), stderr: run.stderr.toString() };
+}
+const hooksJson = () => join(dir, 'hooks.json');
+
+test('Codex: --preview writes nothing; install adds PermissionRequest, Stop and PostToolUse with a name and keeps the rest; again changes nothing; uninstall takes out only these', () => {
+	writeFileSync(hooksJson(), JSON.stringify(CODEX_ORIGINAL, null, 2) + '\n');
+	const before = readFileSync(hooksJson(), 'utf8');
+	const preview = codex('install', '--preview');
+	expect(preview.code).toBe(0);
+	expect(preview.stdout).toContain('"PermissionRequest"');
+	expect(readFileSync(hooksJson(), 'utf8')).toBe(before);
+	expect(readdirSync(dir).filter((name) => name.startsWith('hooks.json'))).toEqual(['hooks.json']);
+
+	const { code, stdout } = codex('install');
+	expect(code).toBe(0);
+	expect(stdout).toContain('/hooks');
+	const installed = JSON.parse(readFileSync(hooksJson(), 'utf8'));
+	const command = `uv run --no-project python ${HOOK} hook --client codex`;
+	expect(installed.hooks.PreToolUse).toEqual(CODEX_ORIGINAL.hooks.PreToolUse);
+	expect(installed.hooks.Stop).toEqual([...CODEX_ORIGINAL.hooks.Stop, { name: 'board-ask', hooks: [{ type: 'command', command, timeout: 10 }] }]);
+	expect(installed.hooks.PostToolUse).toEqual([{ name: 'board-ask', hooks: [{ type: 'command', command, timeout: 10 }] }]);
+	expect(installed.hooks.PermissionRequest).toEqual([
+		{ name: 'board-ask', hooks: [{ type: 'command', command, timeout: 660, statusMessage: '正在等看板作答，按 Esc 可中斷改在終端機回答' }] }
+	]);
+
+	expect(codex('install').stdout).toContain('No changes');
+	expect(JSON.parse(readFileSync(hooksJson(), 'utf8'))).toEqual(installed);
+
+	expect(codex('uninstall').code).toBe(0);
+	expect(JSON.parse(readFileSync(hooksJson(), 'utf8'))).toEqual(CODEX_ORIGINAL);
+	expect(codex('uninstall').stdout).toContain('No changes');
+});
+
+test('Codex: install into a home with no hooks.json yet', () => {
+	expect(codex('install').code).toBe(0);
+	expect(Object.keys(JSON.parse(readFileSync(hooksJson(), 'utf8')).hooks).toSorted()).toEqual(['PermissionRequest', 'PostToolUse', 'Stop']);
+	codex('uninstall');
+	expect(JSON.parse(readFileSync(hooksJson(), 'utf8'))).toEqual({ hooks: {} });
+});
