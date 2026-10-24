@@ -4,7 +4,7 @@
 
 每張派工建立 `.lat/tasks/YYYY-MM-DD-<tag>.md`，日期為派發日期。外部 Agent 的 tag 用 /hcom-spawn 的 HCOM `--tag`；內建 Agent 由 Orchestrator 指派唯一任務 tag。同日同 tag 重派依序加 `-2`、`-3`，第一行註明接續的任務卡。
 
-Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（自動填完整名稱與模板、重派加序號與接續行，見 [Agent 設定](agents.md#派工)）；手寫仍然允許。
+HCOM Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（自動填完整名稱與模板、重派加序號與接續行，見 [Agent 設定](agents.md#派工)）；手寫仍然允許。
 
 ## 欄位模板
 
@@ -20,7 +20,7 @@ Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（自動填�
 - status：dispatched
 - ledger row：（選填；`card --ledger` 自動寫入，格式 `<列編號> (<總表絕對路徑>)`）
 - owned resources：ports、containers、images、sandbox prefix
-- live actions：無（有現場動作時寫額度，見下節）
+- live actions：無（有現場動作時寫額度，見「現場動作額度」）
 - preflight：無（有現場動作時寫動手前的核對事項）
 - 預計檢查數：無（派 QA 時寫預計的檢查數量級，如約 10 項）
 - 整套測試：無（派實作與 QA 時必填：由誰、何時經閘門跑一次；有對照表的專案寫「受影響測試，依 three-tier-testing」，整批合併後的整套寫明指定的人與 `post-merge` 用途；沒有對照表的專案照 three-tier-testing 的舊規則；QA 寫「不跑，查實作者的閘門紀錄」）
@@ -37,7 +37,7 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 
 每張票的 QA 情境草稿、實作路徑清單、測試清單、證據、截圖與重測結果，放在主工作區的 `.lat/runs/issue-<N>/`，N 是 tracker 的票號。沒有票號的工作（研究、原型）放 `.lat/runs/misc-<YYYY-MM-DD>-<tag>/`。主控進度索引維持單一檔案 `.lat/progress/<hcom-name>.md`，`progress/` 下不建子資料夾或票的筆記。不再新建 `.lat/evidence/`、`.lat/prototypes/`、`.lat/handoffs/`；原型放 `runs/`，交接寫 tracker。舊資料不搬，經 [清理指令](cleanup.md) 由使用者確認後刪除。
 
-任務卡的 `runs` 欄寫該票資料夾的絕對路徑，派工訊息也帶同一個路徑。路徑一律指向主工作區的 `.lat`（所有 worktree 共用），不在 worktree 內另建。證據只存結論、指令輸出與必要的截圖或單一檔案節錄；通過的項目不存 Playwright trace，只存截圖或輸出（失敗才留 trace，設定見 three-tier-testing）。
+任務卡的 `runs` 欄寫該票資料夾的絕對路徑，派工訊息也帶同一個路徑。路徑一律指向主工作區的 `.lat`（所有 worktree 共用），不在 worktree 內另建。證據只存結論、指令輸出、必要截圖與單一檔案節錄；通過的項目不存 Playwright trace，只存截圖或輸出（失敗才留 trace，設定見 three-tier-testing）。
 
 ## 隔離 client 家目錄
 
