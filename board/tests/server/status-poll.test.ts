@@ -2,7 +2,7 @@
 // Herdr's lists alone, every few seconds, and pushed only when one changed; the full read is not involved.
 // Herdr, hcom and the helper are the harness's fakes. The test servers poll every 0.5 s here.
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
-import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Agent } from '../../src/lib/board/types.ts';
 import { jsonLines, sleep, startFixture, until, type Fixture } from '../harness.ts';
@@ -158,21 +158,29 @@ test('an interrupt from the board is followed by a read within seconds, whatever
 	page.close();
 }, 30_000);
 
-test('a read asked for while a full read is under way follows it, not waits for the next interval', async () => {
+test('a status change shows while a full read waits on the helper, and the older full read does not undo it', async () => {
 	setLists(slowAction, 'listening');
 	await slowAction.refresh(actionCookie);
 	const page = slowAction.watch(actionCookie);
 	await until(() => status(page.latest()) === 'idle', 5_000, 'the first snapshot');
-	const slow = { output: { controllers: [] }, sleepMs: 1_500, answered: { output: { status: 'ok', files: [] }, sleepMs: 1_500 } };
+	const slow = { output: { controllers: [] }, sleepMs: 3_000, answered: { output: { status: 'ok', files: [] }, sleepMs: 3_000 } };
+	let full: Promise<unknown> = Promise.resolve();
+	let fullEndsAt = 0;
 	try {
-		const action = interrupt(slowAction, actionCookie, () => {
+		const doneAt = await interrupt(slowAction, actionCookie, () => {
 			// The full read listed idle just now and is still waiting on the helper; the change comes after.
 			slowAction.setHelper(slow);
-			void slowAction.refresh(actionCookie);
+			full = slowAction.refresh(actionCookie).then(() => (fullEndsAt = Date.now()));
 			setTimeout(() => setLists(slowAction, 'active', 'idle', { slowMs: { 'agent send-keys': 700 } }), 150);
 		}, 1_000);
-		await action;
-		await until(() => status(page.latest()) === 'working', 8_000, 'the read after the full read');
+		await until(() => status(page.latest()) === 'working', 8_000, 'the status during the full read');
+		// Well before that read, six seconds long, was over.
+		expect(fullEndsAt).toBe(0);
+		expect(Date.now() - doneAt).toBeLessThan(3_000);
+		await full;
+		await sleep(300);
+		expect(status(page.latest())).toBe('working');
+		expect(status(await slowAction.board(actionCookie))).toBe('working');
 	} finally {
 		slowAction.setHelper({ output: { controllers: [] } });
 	}
@@ -202,17 +210,20 @@ test('two actions in a row do not push the first one\'s read back', async () => 
 
 test('a stale pause record does not hold the status read: Herdr\'s pane list is not asked', async () => {
 	const dir = join(fixture.dir, 'hcom-paused');
+	const file = join(dir, 's-gone.json');
+	setLists(fixture, 'listening', 'idle', { slowMs: { 'pane list': 6_000 } });
+	await fixture.refresh(cookie);
+	const page = fixture.watch(cookie);
+	await until(() => status(page.latest()) === 'idle', 15_000, 'the first snapshot');
+	// Written after the full read, which would settle it by asking Herdr.
 	mkdirSync(dir, { recursive: true });
-	writeFileSync(join(dir, 's-gone.json'), JSON.stringify({ session_id: 's-gone', hcom_name: 'gone', client: 'claude', pane: 'wA:p-gone', paused_at: new Date(Date.now() - 60_000).toISOString() }));
+	writeFileSync(file, JSON.stringify({ session_id: 's-gone', hcom_name: 'gone', client: 'claude', pane: 'wA:p-gone', paused_at: new Date(Date.now() - 60_000).toISOString() }));
 	try {
-		setLists(fixture, 'listening', 'idle', { slowMs: { 'pane list': 6_000 } });
-		await fixture.refresh(cookie);
-		const page = fixture.watch(cookie);
-		await until(() => status(page.latest()) === 'idle', 15_000, 'the first snapshot');
 		setLists(fixture, 'active', 'idle', { slowMs: { 'pane list': 6_000 } });
 		await until(() => status(page.latest()) === 'working', 4_000, 'the status without waiting for the pane list');
-		page.close();
+		expect(existsSync(file)).toBe(true);
 	} finally {
+		page.close();
 		rmSync(dir, { recursive: true, force: true });
 	}
 }, 30_000);

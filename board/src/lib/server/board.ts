@@ -294,7 +294,7 @@ function createBoard(): Board {
 	async function readWith(reading: Reading): Promise<BoardSnapshot> {
 		// Real clock: pause records carry the real time they were written.
 		const listedAt = Date.now();
-		const [[helper, reports, answered, settled, log], agents, herdrAgents, stops] = await Promise.all([
+		const [[helper, reports, answered, settled, log], listedAgents, listedHerdr, stops] = await Promise.all([
 			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
 				// Read after the list: the files are those of the controllers bound now, and of the
 				// sessions that reported. The sent answers settle against the same list alongside, so
@@ -313,6 +313,10 @@ function createBoard(): Board {
 			listHerdrAgents(config),
 			closedRoster.readStops()
 		]);
+		// The lists were asked for at the start but only arrive once the helper is done; a status poll
+		// that began after that holds newer ones, which an older read must not overwrite.
+		const agents = polled.agents && polled.at > listedAt && polled.agents.ok ? polled.agents : listedAgents;
+		const herdrAgents = polled.herdr && polled.at > listedAt && polled.herdr.ok ? polled.herdr : listedHerdr;
 		if (herdrAgents.ok) herdrPlaces = herdrAgents;
 		herdrPlaceError = herdrAgents.ok ? null : herdrAgents.reason;
 		if (answered.ok) lastAnswered = answered.files;
@@ -442,42 +446,36 @@ function createBoard(): Board {
 		if (!closed) void refresh();
 	}
 
-	/** Bumped by every full read; a status read that began before one is dropped, as the read has newer lists. */
-	let readCount = 0;
 	let polling = false;
+	/** The lists of the last status poll that applied, and when it began. */
+	const polled: { at: number; agents: AgentList | null; herdr: Awaited<ReturnType<typeof listHerdrAgents>> | null } = { at: 0, agents: null, herdr: null };
 	/** A poll asked for while one was under way: its lists may predate the ask, so one more follows. */
 	let pollAgain = false;
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let soonTimer: ReturnType<typeof setTimeout> | undefined;
 
-	/** Read hcom's and Herdr's lists alone and push the agents if a status changed. Never overlaps
-	 *  itself or a full read; a list that cannot be read in time leaves the last one standing. */
+	/** Read hcom's and Herdr's lists alone and push the agents if a status changed, also while a full
+	 *  read waits on the helper. Never overlaps itself; a list that cannot be read in time leaves the last one standing. */
 	async function pollStatus(): Promise<void> {
 		if (closed || !sources || streams.size === 0) return;
-		// A full read under way may hold lists older than this ask: one more poll follows it.
-		if (polling || running) {
+		if (polling) {
 			pollAgain = true;
 			return;
 		}
 		polling = true;
-		const began = readCount;
+		const began = Date.now();
 		const limited = { ...config, hcomListTimeoutMs: config.statusPollTimeoutMs, herdrTimeoutMs: config.statusPollTimeoutMs };
 		try {
 			const [agents, herdrAgents] = await Promise.all([listAgents(limited), listHerdrAgents(limited)]);
 			if (closed || !sources || (!agents.ok && !herdrAgents.ok)) return;
-			if (running || readCount !== began) {
-				pollAgain = true;
-				return;
-			}
 			// Without Herdr's pane check, which is outside this read's time limit: the full read ends a pause that only that check can.
 			const paused = await settlePauses(config, agents, herdrAgents, Date.now(), false);
-			if (running || readCount !== began) {
-				pollAgain = true;
-				return;
-			}
 			if (herdrAgents.ok) herdrPlaces = herdrAgents;
 			herdrPlaceError = herdrAgents.ok ? null : herdrAgents.reason;
 			if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
+			polled.at = began;
+			polled.agents = agents;
+			polled.herdr = herdrAgents;
 			const rostered = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
 			sources = { ...sources, agents: rostered.agents, workspaces: rostered.workspaces, running: lastRunning };
 			publish(sources);
@@ -518,7 +516,6 @@ function createBoard(): Board {
 
 	function start(): Promise<BoardSnapshot> {
 		queued = null;
-		readCount++;
 		clearTimeout(fallback);
 		if (!closed) fallback = setTimeout(() => void refresh(), fallbackGapMs);
 		running = read()
@@ -542,10 +539,6 @@ function createBoard(): Board {
 			})
 			.finally(() => {
 				running = null;
-				if (pollAgain) {
-					pollAgain = false;
-					void pollStatus();
-				}
 			});
 		return running;
 	}
