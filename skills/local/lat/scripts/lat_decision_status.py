@@ -89,3 +89,20 @@ def read_decision_kind(path):
             words = match.group(1).strip().lower().split()
             return 'help' if words[:1] == ['help'] else 'decide'
     return 'decide'
+
+
+def read_decision_action(path):
+    """`(action, branch, commit)` from the first `- action:` line, or None without one.
+
+    merge and push name the branch before the commit; the other actions take no branch,
+    so their second word is the commit. Missing words are None; an empty line gives ''.
+    """
+    for line in Path(path).read_text(encoding='utf-8').splitlines():
+        match = re.match(r'^- action:(.*)$', line, re.IGNORECASE)
+        if match:
+            words = match.group(1).split() + [None, None]
+            action = words[0] or ''
+            if action in ('merge', 'push'):
+                return action, words[1], words[2]
+            return action, None, words[1]
+    return None
