@@ -11,6 +11,8 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (typeof session !== 'string' || !session || typeof text !== 'string' || !typedText(text).trim()) {
 		return json({ error: 'invalid_message' }, { status: 400 });
 	}
-	const result = await sendToAgent(getBoard(), session, text);
+	const board = getBoard();
+	const result = await sendToAgent(board, session, text);
+	board.pollSoon();
 	return json(result.body, { status: result.status });
 };

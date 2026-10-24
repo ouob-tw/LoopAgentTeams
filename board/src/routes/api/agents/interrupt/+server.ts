@@ -8,6 +8,8 @@ export const POST: RequestHandler = async ({ request }) => {
 	const body = await request.json().catch(() => null);
 	const session = body?.session;
 	if (typeof session !== 'string' || !session) return json({ error: 'invalid_session' }, { status: 400 });
-	const result = await interruptAgent(getBoard(), session);
+	const board = getBoard();
+	const result = await interruptAgent(board, session);
+	board.pollSoon();
 	return json(result.body, { status: result.status });
 };

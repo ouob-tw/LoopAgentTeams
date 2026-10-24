@@ -79,6 +79,14 @@ export interface BoardConfig {
 	codexMultiAuthDir: string;
 	/** How often the 額度 tab's sources are read. */
 	quotaIntervalMs: number;
+	/** How often the agents' statuses (hcom's and Herdr's lists only) are read while a page is connected. */
+	statusPollMs: number;
+	/** The same while an agent works through hcom, so that a turn ended by Esc, which hcom never reports, is noticed in time. */
+	statusWorkingPollMs: number;
+	/** The longest one such read may take; each list is cut off at it. */
+	statusPollTimeoutMs: number;
+	/** How soon after a send or an interrupt from the board the statuses are read once more. */
+	statusAfterActionMs: number;
 	/** The current time in milliseconds. Read state and archiving use this, never `Date.now()`. */
 	now(): number;
 }
@@ -209,6 +217,10 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		cswapTimeoutMs: seconds(env.LAT_BOARD_CSWAP_TIMEOUT_SECONDS, 10_000),
 		codexMultiAuthDir: codexMultiAuthDir(env),
 		quotaIntervalMs: seconds(env.LAT_BOARD_QUOTA_SECONDS, 30_000),
+		statusPollMs: seconds(env.LAT_BOARD_STATUS_POLL_SECONDS, 5_000),
+		statusWorkingPollMs: seconds(env.LAT_BOARD_STATUS_WORKING_POLL_SECONDS, 2_000),
+		statusPollTimeoutMs: seconds(env.LAT_BOARD_STATUS_POLL_TIMEOUT_SECONDS, 4_000),
+		statusAfterActionMs: seconds(env.LAT_BOARD_STATUS_AFTER_ACTION_SECONDS, 2_000),
 		now: clock(env)
 	};
 }

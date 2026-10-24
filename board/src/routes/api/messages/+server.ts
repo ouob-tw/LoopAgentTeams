@@ -12,7 +12,9 @@ export const POST: RequestHandler = async ({ request }) => {
 	if (typeof controllerId !== 'string' || !controllerId || typeof text !== 'string' || !typedText(text).trim()) {
 		return json({ error: 'invalid_message' }, { status: 400 });
 	}
-	const result = await sendMessage(getBoard(), controllerId, text);
+	const board = getBoard();
+	const result = await sendMessage(board, controllerId, text);
+	board.pollSoon();
 	return json(result.body, { status: result.status });
 };
 
