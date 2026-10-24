@@ -2,7 +2,7 @@
 	// Wide: roster, inbox and content side by side, the roster foldable into a rail and both
 	// column borders draggable. Narrow: the roster strip above the inbox, and one content screen
 	// at a time once something is opened.
-	import { onMount, untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
@@ -22,6 +22,7 @@
 	import { everyController, type InboxItem, type KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
 	import AgentList from '#lib/components/AgentList.svelte';
+	import { askRows, type AskRow } from '#lib/board/ask-inbox.ts';
 	import BoardAskCard from '#lib/components/BoardAskCard.svelte';
 	import ClosedAgentInfo from '#lib/components/ClosedAgentInfo.svelte';
 	import ClosedAgents from '#lib/components/ClosedAgents.svelte';
@@ -94,8 +95,12 @@
 
 	const controllers = $derived(board.snapshot.controllers);
 	const inbox = $derived(board.snapshot.inbox);
-	const processedCount = $derived(board.snapshot.processedCount);
 	const agents = $derived(board.snapshot.agents);
+	/** The board asks as inbox rows: those not ended are in the inbox, the ended ones among the processed. */
+	const askList = $derived(askRows(board.snapshot.asks, agents));
+	const openAsks = $derived(askList.filter((row) => row.open));
+	const endedAsks = $derived(askList.filter((row) => !row.open));
+	const processedCount = $derived(board.snapshot.processedCount + endedAsks.length);
 	const workspaces = $derived(board.snapshot.workspaces);
 	const closed = $derived(board.snapshot.closed);
 	/** The report opened from the inbox list: it stays there, read, until another screen is shown. */
@@ -145,6 +150,7 @@
 			},
 			shown(next, scrollY) {
 				detail.scrollTop = 0;
+				askScreenShown = true;
 				// On a phone the button that was just pressed is hidden now; keep the keyboard on screen.
 				if (next !== null) detail.focus({ preventScroll: true });
 				window.scrollTo(0, scrollY);
@@ -284,6 +290,32 @@
 			board.mark(listed.key, true).catch(() => toasts.show('failed', '沒有標為已讀，請重新點開再試一次。'));
 		}
 	}
+	/** The ask whose card the screen being opened scrolls to, and whether that screen is shown (it
+	 *  starts at the top, so the card is scrolled to after). Dropped after a few seconds, so a card
+	 *  that never comes does not pull a later visit. */
+	let askToShow = $state<string | null>(null);
+	let askScreenShown = $state(false);
+	let askTimer: ReturnType<typeof setTimeout> | undefined;
+	/** A permission ask of a controller opens the controller's page; every other ask opens its agent's. */
+	function openAsk(row: AskRow) {
+		const owner = row.ask.kind === 'permission' ? controllers.find((entry) => entry.id === row.ask.sessionId) : undefined;
+		askToShow = row.ask.id;
+		askScreenShown = false;
+		clearTimeout(askTimer);
+		askTimer = setTimeout(() => (askToShow = null), 5_000);
+		navigation.go(owner ? { kind: 'controller', id: owner.id } : { kind: 'agent', id: row.ask.sessionId });
+	}
+	$effect(() => {
+		if (askToShow === null || !askScreenShown) return;
+		void board.snapshot.asks;
+		const card = detail?.querySelector(`[data-ask="${CSS.escape(askToShow)}"]`);
+		if (!card) return;
+		// The page may be on its operation record, which hides the card: back to the conversation first.
+		const reveal = card.closest('[hidden]') ? detail.querySelector<HTMLElement>('[data-tab="transcript"]') : null;
+		reveal?.click();
+		askToShow = null;
+		void tick().then(() => card.scrollIntoView({ block: 'center' }));
+	});
 	const openController = (id: string) => navigation.go({ kind: 'controller', id });
 	/** The phone's top-bar title: from an item it opens the controller's page; on that page it only
 	 *  scrolls back to the top, so there is no new history entry. */
@@ -415,6 +447,8 @@
 			{:else}
 				<Inbox
 					items={listedInbox}
+					asks={openAsks}
+					{endedAsks}
 					{controllers}
 					{sort}
 					{showArchive}
@@ -430,6 +464,7 @@
 						void board.loadArchive();
 					}}
 					onopen={openItem}
+					onask={openAsk}
 					oncontroller={openController}
 				/>
 			{/if}
