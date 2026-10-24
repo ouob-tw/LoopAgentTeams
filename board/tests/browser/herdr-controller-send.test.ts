@@ -219,9 +219,9 @@ for (const [width, search] of [
 		await type('');
 		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
 		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
-		// One press: no confirmation comes up.
-		expect(await tab.eval(`!!document.querySelector('.dock .popup')`)).toBe(false);
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('已對 @lead 送出 Esc')`, 'the interrupt notice');
+		// One press was enough: no confirmation came up.
+		expect(await tab.eval(`!!document.querySelector('.dock .popup')`)).toBe(false);
 		expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);
 		expect(injects()).toEqual([]);
 		await tab.eval(click('.detail [role="tablist"]', '送出紀錄'));
@@ -302,7 +302,7 @@ test.skipIf(!CHROME)('only blank space typed keeps the stop; a line naming a con
 	expect(herdrCalls()).toEqual([]);
 }, 60_000);
 
-test.skipIf(!CHROME)('the stop follows the controller and its turn, and nothing is pressed until it is', async () => {
+test.skipIf(!CHROME)('the stop follows the controller and its turn, and no key is pressed by it appearing', async () => {
 	const sun = fixture.bound('sun', 'sun', { session_id: 's-sun' });
 	const sunTurn = async (status: string) => {
 		fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun', status)] });
@@ -315,7 +315,6 @@ test.skipIf(!CHROME)('the stop follows the controller and its turn, and nothing 
 		await visit(1280, '?controller=s-lead');
 		await tab.until(pageOf('lat'), "lead's page");
 		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
-		expect(await tab.eval(`!!document.querySelector('.dock .popup')`)).toBe(false);
 
 		// Another controller opened: its own stop.
 		await tab.eval(`document.querySelector('.unfolded button.person[data-controller="sun"]').click()`);

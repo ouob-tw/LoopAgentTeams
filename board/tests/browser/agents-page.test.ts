@@ -256,8 +256,8 @@ for (const width of [1280, 390]) {
 
 		// One press: no confirmation comes up.
 		await click(STOP);
-		expect(await tab.eval(`!!document.querySelector('.dock .popup')`)).toBe(false);
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('已對')`, 'the interrupt notice');
+		expect(await tab.eval(`!!document.querySelector('.dock .popup')`)).toBe(false);
 		expect(herdrCalls()).toEqual([
 			['agent', 'prompt', 'wA:p-s-plain', '請先停下來'],
 			['agent', 'send-keys', 'wA:p-s-plain', 'esc']
@@ -338,6 +338,7 @@ test.skipIf(!CHROME)('an action from another device shows in an open record at o
 }, 30_000);
 
 test.skipIf(!CHROME)('an interrupt\'s notice names the agent interrupted, even when another one is open by then', async () => {
+	rmSync(join(fixture.dir, 'herdr-calls.jsonl'), { force: true });
 	setHerdr(AGENTS, { slowMs: { 'agent send-keys': 1_500 } });
 	try {
 		await visit(1280, '?agent=s-plain');
@@ -345,6 +346,7 @@ test.skipIf(!CHROME)('an interrupt\'s notice names the agent interrupted, even w
 		await click(STOP);
 		// Until Herdr answers the stop is off, so a second press sends nothing more.
 		await tab.until(`document.querySelector(${JSON.stringify(STOP)}).disabled`, 'the stop off while it is sent');
+		await click(STOP);
 		await openTab();
 		await openAgent('s-other');
 		await tab.until(`location.search === '?agent=s-other'`, 'the other agent');
@@ -352,6 +354,8 @@ test.skipIf(!CHROME)('an interrupt\'s notice names the agent interrupted, even w
 		const notices = (await screen()).notices;
 		expect(notices).toContain('已對 分頁-s-plain 送出 Esc');
 		expect(notices).not.toContain('分頁-s-other');
+		// The second press did nothing: Herdr was asked once.
+		expect(herdrCalls().filter((call) => call[1] === 'send-keys')).toHaveLength(1);
 	} finally {
 		setHerdr(AGENTS);
 	}
