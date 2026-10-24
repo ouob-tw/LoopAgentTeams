@@ -1,6 +1,6 @@
 # 預先授權
 
-使用者事先寫好、程式查得到的常設授權（實驗）。主控做合併、推送、部署、更新主機技能前，先以 `check` 查詢：結果 `allow` 才可不問直接做；`ask` 就照「使用者待決事項」提問。工具只回答能不能做，不執行動作本身。
+使用者事先寫好、程式查得到的常設授權（實驗）。主控做合併、推送、部署、更新主機技能前，先以 `check` 查詢：結果 `allow` 才可不問直接做，做完以 `record` 記一筆；`ask` 就照「使用者待決事項」提問。工具只回答能不能做，不執行動作本身。
 
 ## 查詢
 
@@ -62,3 +62,43 @@ source = "<待決紀錄 ID>"
   - 整套測試閘門：見下方。
 - `deploy-test`、`deploy-prod`、`install-host`：在主工作區執行，且 HEAD 等於整合分支的最新版本；給了 `--commit` 時必須就是 HEAD。整合分支取本輪工作總表的 `integration_branch`，總表沒寫（例如 `activate` 建立的總表）才取設定的 `integration_branch`，兩者都沒有就 `ask`。`deploy-test` 另要求專案層寫了 `target`。
 - 整套測試閘門（`push`、`deploy-test`、`deploy-prod`、`install-host`）：沿用 three-tier-testing 閘門推送前檢查的同一段程式，依該版本的內容、每一套整套命令與執行目錄算出指紋，登記檔 `full_suites` 的每一套都要有可沿用的通過紀錄。沒有紀錄、只有失敗紀錄、或版本內容變了使舊紀錄不適用，都 `ask` 並寫出缺的那一套；登記檔沒列整套也 `ask`。只讀閘門紀錄，不跑測試。
+
+## 寫入設定：grant
+
+使用者答應「以後（或這一輪）某動作不必問」時，主控在該待決紀錄的 `## 核准範圍` 段寫一行 `- grant: <層> <動作> <鍵=值…>`，再以工具寫入：
+
+```bash
+uv run --no-project python "$lat_dir/scripts/lat-preauth.py" grant --layer global|project|controller --action <動作> [--allow true|false] [--branches <分支>…] --source <待決紀錄 ID>
+```
+
+- 例：`- grant: project push allow=true branches=dev` 對應 `grant --layer project --action push --allow true --branches dev --source <ID>`。多個分支在 `- grant:` 行寫成 `branches=dev,release`，指令寫 `--branches dev release`。
+- 工具只在全部成立時寫入，否則印 `refused, nothing changed: <原因>`、結束碼 1、不改任何檔：本輪 session 為 `active`；紀錄狀態為 `answered` 或 `approved`，且 `## 答覆…` 段有 `- 來源：` 行；`## 核准範圍` 段有一行 `- grant:` 與這次的層、動作、鍵值完全相同。`controller` 層另要求紀錄的 `- session:` 是本 session，且答覆標題的時間晚於上一輪結束。
+- 寫入的規則旁記下 `source = "<待決紀錄 ID>"`。全域與專案檔只改 `[actions.<動作>]` 段裡要寫的鍵（沒有該段就加在檔尾），其他段落與註解原樣保留；檔案本身有錯時拒絕，請先手動修好。主控層寫進 session 紀錄的 `preauth` 欄位，停用或開新一輪即失效。
+- 寫入後若記不進本輪紀錄，工具會把設定還原並以結束碼 2 回報；還原也失敗時訊息會寫明要手動移除。
+- 工具不判斷答覆的意思；`- grant:` 行是否忠於答覆由主控負責，所以每次寫入都列進 `report` 的「設定寫入」。
+
+## 記錄：record
+
+依預先授權做完一件事（含失敗）就記一筆；紀錄存主工作區 `.lat/preauth-records/<session>-r<輪數>.jsonl`。
+
+```bash
+# 依預先授權執行
+uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --action <動作> [--branch <分支>] --commit <版本> --basis '<check 印的那行>' --result succeeded|failed \
+  [--started <ISO 時間> --notice-before <HCOM 事件編號> --notice-after <HCOM 事件編號>]
+# 引用舊答覆定案
+uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind precedent --decision <本題 ID> --source '<舊紀錄 ID> r<版本>' --basis '<為何同類>'
+# 免確認開短流程 bug 票
+uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-intake --issue <票> --source '<使用者原訊息位置>' \
+  --self-reported '<…>' --clear-expected '<…>' --single-ticket '<…>' --restores-stated '<…>'
+```
+
+- `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區）與前後兩則 HCOM 通知的事件編號（`hcom send` 後以 `hcom events --from <自己> --last 1` 查 `id`）。工具以 `hcom events` 核對：兩則都由本主控送出、以 `@名稱` 指定對象（不是廣播）、前一則早於 `--started`、後一則晚於 `--started` 也晚於前一則；不符就拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
+- `precedent` 的 `--source` 必須有真人答覆（同 `grant` 的核對）；`bug-intake` 的四項依據都要寫。
+
+## 交付回報：report
+
+```bash
+uv run --no-project python "$lat_dir/scripts/lat-preauth.py" report
+```
+
+只列本 session 本輪的紀錄，分四組：依預先授權自動執行、引用舊答覆定案（每筆附「建議寫成規則」）、免確認開工、設定寫入；沒有的組印「- 無」。交付回報把整段輸出原樣貼在「參謀定案清單」旁，讓使用者事後檢查或推翻；本輪停用後仍可執行。
