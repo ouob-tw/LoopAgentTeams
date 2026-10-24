@@ -136,7 +136,7 @@ docker compose -f compose.e2e.yml -p <project>_e2e_review --env-file .env.e2e --
 
 專案登記檔（`.suite-gate.json`）有受影響測試對照表時：
 
-- **每張票**：只跑 `suite-gate.py affected` 選出的受影響測試，不在票內跑整套。改到對照表沒列的檔案或標為共用的路徑時，指令會自動改跑整套（用途 `map-fallback`）。在整合分支上直接跑時要加 `--base <提交>` 指定這批工作的起點；沒加而什麼都沒選到時，指令會提示這件事。
+- **每張票**：只跑 `suite-gate.py affected` 選出的受影響測試，不在票內跑整套。改到對照表沒列的檔案或標為共用的路徑時，指令會自動改跑整套（用途 `map-fallback`；只跑觸發檔所在目錄的那幾套，範圍見 references/suite-gate.md）。在整合分支上直接跑時要加 `--base <提交>` 指定這批工作的起點；沒加而什麼都沒選到時，指令會提示這件事。
 - **對照表維護**：新增程式檔或測試檔時，實作者順手補進對照表；新規則放進 `.suite-gate.d/<主題>.json`，不改 `.suite-gate.json` 既有的行，平行的票合併時才不會衝突（格式見 [suite-gate](references/suite-gate.md)）。審查者核對對照表的變更是否涵蓋新增的檔案。
 - **整批合併後**：全部票合併後，由主控指定一人以 `run --purpose post-merge` 跑一次整套；內容相同時閘門沿用，視同完成。
 - **發布前**：推送 main 或版本標籤前，每一套登記的整套測試須有通過紀錄（`--purpose release`，或沿用合併後的紀錄）；推送前檢查的做法見 [references/suite-gate.md](references/suite-gate.md)。

@@ -128,14 +128,15 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
 - **這次改動**：工作區相對基準點的所有差異，包含已提交、已暫存、未暫存與沒被忽略的新檔，刪除的檔案也算。基準點預設是 HEAD 與 `integration_branch` 的共同祖先；`--base` 直接指定基準 commit。
 - **怎麼挑**：每個改動檔依序判斷——
   1. 是現存的 `.suite-gate.d/*.json` 對照表片段：選它每條規則 `tests` 對到的現有檔案，即使片段也列在 `shared`；對不到任何檔案時改跑整套。刪除的片段照下面各項判斷。
-  2. 符合 `shared`：改跑整套。
-  3. 本身符合任一規則的 `tests`（是測試檔）：選它自己；已刪除的測試檔不執行。
-  4. 符合規則的 `paths`：選該規則 `tests` 對到的現有檔案。`tests` 是空清單代表不需要測試（例如文件）；不是空的卻一個檔案都對不到，改跑整套。
-  5. 以上都不符合：沒列在表上，改跑整套。
+  2. 是 repo 根的 `.suite-gate.json`，且現在或基準點的版本把它列在 `shared`：跟基準點的版本比，只新增或修改 `affected.map` 規則時，選那些規則（修改後的版本）`tests` 對到的現有檔案，對不到任何檔案時改跑整套；修改是指在原位置改寫規則，某條舊規則的位置沒有新規則接替就算刪除（即使別處另有新增）。刪除規則、改到 `map` 以外的欄位、或基準點沒有這個檔時，改跑整套。只改排版不選任何測試。
+  3. 符合 `shared`：改跑整套。
+  4. 本身符合任一規則的 `tests`（是測試檔）：選它自己；已刪除的測試檔不執行。
+  5. 符合規則的 `paths`：選該規則 `tests` 對到的現有檔案。`tests` 是空清單代表不需要測試（例如文件）；不是空的卻一個檔案都對不到，改跑整套。
+  6. 以上都不符合：沒列在表上，改跑整套。
 - 選出的測試依所在目錄分組（取 `affected.commands` 中最長的符合目錄），把相對該目錄的路徑代入 `{tests}`，在該目錄以 `/bin/sh` 執行。沒有目錄涵蓋的測試，改跑整套。
 - 輸出（stderr）列出基準點、改動檔、選出的測試與原因、每組執行的指令；測試輸出與結束碼原樣轉出，多組時回傳第一個非 0 的結束碼。
 - 受影響測試不佔整套名額、不排隊、不沿用；每組寫一筆紀錄（`kind: "affected"`），含基準 commit、改動檔、該組選出的測試與原因。沒有選出任何測試時不執行、不寫紀錄。
-- **改跑整套**（對照表退回整套）：列出觸發的檔案與原因，再對 `full_suites` 的每一套照 `run` 的規則經閘門執行——同樣排隊、佔名額、同內容沿用。紀錄的用途是 `map-fallback`，並記下觸發的檔案（`trigger_files`）；沿用上次結果時寫在沿用紀錄裡。被觸發時把缺的檔案補進對照表；審查者核對對照表的變更。
+- **改跑整套**（對照表退回整套）：列出觸發的檔案與原因，再對要跑的整套照 `run` 的規則經閘門執行——同樣排隊、佔名額、同內容沿用。觸發的檔案都落在某幾套的 `cwd` 目錄內（例如 `board/`）時只跑那幾套；有任一觸發檔不在任何套件目錄內（例如根目錄的 `.gitignore`；`cwd` 是 `.` 的套件不算）時跑 `full_suites` 的每一套。選出的測試不在要跑的整套目錄內時，照上面的方式另外執行；結束碼取第一個非 0 的。紀錄的用途是 `map-fallback`，並記下觸發的檔案（`trigger_files`）；沿用上次結果時寫在沿用紀錄裡。被觸發時把缺的檔案補進對照表；審查者核對對照表的變更。
 
 ### 對照表欄位
 
@@ -149,7 +150,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
 | `affected.map` | 對應規則清單：`paths`（程式路徑樣式）→ `tests`（測試檔或測試路徑樣式，任一層都可以）。`tests` 只能對到可以直接執行的測試檔，不要對到共用的輔助檔。 |
 | `affected.shared` | 改到就改跑整套的路徑樣式，例如依賴鎖定檔、測試共用設定、建置設定。 |
 
-`affected.map` 的規則也可以分放在 repo 根的 `.suite-gate.d/*.json`，每個檔案是 `{"map": [...]}`，依檔名順序接在 `.suite-gate.json` 的規則後面。同一路徑可以出現在多條規則，選到的測試會合併，所以要替既有路徑多對一個測試時，新增一條規則就好，不必改既有那一行。平行進行的工作各自新增檔案（例如 `.suite-gate.d/skill-hints.json`），合併時就不會在同一行衝突。只新增或修改一個片段時，`affected` 只跑該片段對到的測試，不退回整套；`.suite-gate.json` 本身列在 `shared` 時照樣退回整套。任一檔案讀不懂時，`affected` 寫出檔名後停止。
+`affected.map` 的規則也可以分放在 repo 根的 `.suite-gate.d/*.json`，每個檔案是 `{"map": [...]}`，依檔名順序接在 `.suite-gate.json` 的規則後面。同一路徑可以出現在多條規則，選到的測試會合併，所以要替既有路徑多對一個測試時，新增一條規則就好，不必改既有那一行。平行進行的工作各自新增檔案（例如 `.suite-gate.d/skill-hints.json`），合併時就不會在同一行衝突。只新增或修改一個片段時，`affected` 只跑該片段對到的測試，不退回整套；`.suite-gate.json` 本身的改動照上面第 2 項判斷。任一檔案讀不懂時，`affected` 寫出檔名後停止。
 
 `affected.map` 非空就算「有對照表」：`run` 要求用途、`affected` 可用。`affected` 與 `full_suites` 不影響指紋；`suites`（給 hook 判斷用）照舊另外列。
 
@@ -185,7 +186,7 @@ LoopAgentTeams 風格的例子：
 
 這裡的 board 只有 `tests/unit/` 不需要建置；`suites` 只列跑伺服器或瀏覽器測試的整套指令，單跑 `bun test`（只有單元測試）不算整套。樣板因此只在選到 `tests/unit/` 以外的測試時先建置，建置失敗就停下並回傳它的結束碼。board 的 `bunfig.toml` 把測試根目錄設在 `tests/unit`，`bun test` 會把不以 `./` 開頭的參數當成篩選字串、只在單元測試裡找，所以樣板替每個路徑加上 `./`（路徑不能含空白）。
 
-改到 `skills/local/lat/scripts/lat-watch.py` 時，在 `skills/local/lat` 執行 `uv run --no-project python -m unittest tests/test_lat_watch.py`；改到 `board/bun.lock` 或沒列在表上的檔案時，經閘門跑（或沿用）三套整套。
+改到 `skills/local/lat/scripts/lat-watch.py` 時，在 `skills/local/lat` 執行 `uv run --no-project python -m unittest tests/test_lat_watch.py`；改到 `board/bun.lock` 時，經閘門只跑（或沿用）board 那一套整套；改到根目錄沒列在表上的檔案時，三套都跑。
 
 ## 執行前的 hook
 

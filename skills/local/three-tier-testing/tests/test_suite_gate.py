@@ -1306,6 +1306,169 @@ class MapFallbackTests(AffectedCase):
         self.assertEqual(self.full_runs(), ['root'])
 
 
+class FallbackScopeTests(AffectedCase):
+    """A fallback runs only the full suites whose directory holds the trigger files."""
+
+    def share(self, *paths):
+        self.registry['affected']['shared'].extend(paths)
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'more shared paths')
+
+    def test_a_shared_file_inside_a_suite_directory_runs_only_that_suite(self):
+        self.share('web/package.json')
+        self.touch('web/package.json')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('web/package.json: shared path web/package.json', result.stderr)
+        self.assertEqual(self.full_runs(), ['web'])
+        self.assertEqual(self.ran(), [])
+        (web,) = self.records()
+        self.assertEqual((web['rel_cwd'], web['purpose'], web['trigger_files']),
+                         ('web', 'map-fallback', ['web/package.json']))
+
+    def test_a_shared_file_in_no_suite_directory_runs_every_suite(self):
+        self.share('.gitignore')
+        self.touch('.gitignore')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+        for record in self.records():
+            self.assertEqual((record['purpose'], record['trigger_files']),
+                             ('map-fallback', ['.gitignore']))
+
+    def test_a_trigger_in_no_suite_directory_widens_a_scoped_fallback(self):
+        self.share('web/package.json')
+        self.touch('web/package.json')
+        self.touch('README.md')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+        for record in self.records():
+            self.assertEqual(record['trigger_files'], ['README.md', 'web/package.json'])
+
+    def test_tests_outside_the_fallback_suites_still_run(self):
+        self.share('web/package.json')
+        self.touch('web/package.json')
+        self.touch('web/src/page.ts')
+        self.touch('src/app.py')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), ['web'])
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py'])])
+
+    def test_a_failing_fallback_suite_fails_even_when_the_other_tests_pass(self):
+        self.share('web/package.json')
+        self.registry['full_suites'][1]['command'] = 'exit 3'
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'failing web suite')
+        self.touch('web/package.json')
+        self.touch('src/app.py')
+        self.assertEqual(self.gate('affected').returncode, 3)
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py'])])
+
+
+class RegistryMapChangeTests(AffectedCase):
+    """A changed .suite-gate.json selects the tests of its added or changed map rules."""
+
+    def setUp(self):
+        super().setUp()
+        # As in a real project, which lists the registry as a shared path.
+        self.registry['affected']['shared'].append('.suite-gate.json')
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'registry shared')
+        git(self.repo, 'checkout', '-q', 'main')
+        git(self.repo, 'merge', '-q', 'feature')
+        git(self.repo, 'checkout', '-q', 'feature')
+
+    def test_an_added_rule_selects_only_its_tests(self):
+        self.registry['affected']['map'].append(
+            {'paths': ['src/new.py'], 'tests': ['tests/test_util.py']})
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [('.', ['tests/test_util.py'])])
+        self.assertEqual(self.full_runs(), [])
+        self.assertIn('tests/test_util.py  (.suite-gate.json maps src/new.py)', result.stderr)
+
+    def test_a_changed_rule_selects_only_its_current_tests(self):
+        self.registry['affected']['map'][0]['tests'] = ['tests/test_util.py']
+        self.registry['affected']['map'].insert(0, {'paths': ['src/new.py'], 'tests': []})
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [('.', ['tests/test_util.py'])])
+        self.assertEqual(self.full_runs(), [])
+
+    def test_a_reformatted_registry_selects_nothing(self):
+        (self.repo / '.suite-gate.json').write_text(json.dumps(self.registry, indent=2))
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual((self.ran(), self.full_runs()), ([], []))
+
+    def test_a_removed_rule_falls_back(self):
+        del self.registry['affected']['map'][1]
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertIn('.suite-gate.json: a map rule was removed', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+        self.assertEqual(self.ran(), [])
+
+    def test_a_removed_rule_falls_back_even_with_a_rule_added_elsewhere(self):
+        del self.registry['affected']['map'][0]
+        self.registry['affected']['map'].append({'paths': ['docs/new/**'], 'tests': []})
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertIn('.suite-gate.json: a map rule was removed', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
+    def test_a_change_outside_the_map_falls_back(self):
+        changes = {
+            'commands': lambda r: r['affected']['commands'].update({'.': 'echo {tests}'}),
+            'shared': lambda r: r['affected']['shared'].append('README.md'),
+            'full_suites': lambda r: r['full_suites'].append({'command': 'true'}),
+            'suites': lambda r: r.update({'suites': ['make test']}),
+        }
+        for field, change in changes.items():
+            with self.subTest(field=field):
+                git(self.repo, 'checkout', '-q', '--', '.suite-gate.json')
+                self.counter.unlink(missing_ok=True)
+                registry = json.loads(json.dumps(self.registry))
+                change(registry)
+                registry['affected']['map'].append(
+                    {'paths': ['src/new.py'], 'tests': ['tests/test_util.py']})
+                (self.repo / '.suite-gate.json').write_text(json.dumps(registry))
+                result = self.gate('affected')
+                self.assertIn('.suite-gate.json: shared path .suite-gate.json', result.stderr)
+                self.assertGreaterEqual(len(self.full_runs()), 2)
+                self.assertEqual(self.ran(), [])
+
+    def test_dropping_the_registry_from_shared_falls_back(self):
+        self.registry['affected']['shared'].remove('.suite-gate.json')
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertIn('.suite-gate.json: no longer a shared path', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
+    def test_an_added_rule_mapping_to_no_file_falls_back(self):
+        self.registry['affected']['map'].append(
+            {'paths': ['src/new.py'], 'tests': ['tests/gone_*.py']})
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertIn('.suite-gate.json maps to tests that match no file', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
+    def test_a_new_registry_falls_back(self):
+        git(self.repo, 'checkout', '-q', 'main')
+        git(self.repo, 'rm', '-q', '.suite-gate.json')
+        self.commit(self.repo, 'no registry yet')
+        git(self.repo, 'checkout', '-q', 'feature')
+        git(self.repo, 'merge', '-q', 'main')
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertIn('.suite-gate.json: shared path .suite-gate.json', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
+
 class PurposeTests(AffectedCase):
     def test_an_unmarked_full_suite_is_refused_with_the_affected_command(self):
         result = self.gate('run', '--', self.full('root'))

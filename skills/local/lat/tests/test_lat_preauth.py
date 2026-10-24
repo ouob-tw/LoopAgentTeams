@@ -1,5 +1,7 @@
-"""CLI contract tests for lat-preauth.py: temp HOME/XDG config, temp Git repos, fake session."""
+"""CLI contract tests for lat-preauth.py: temp HOME/XDG config, temp Git repos, fake session,
+and a temp suite-gate record store standing in for the host's gate."""
 import fcntl
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -9,13 +11,26 @@ import tempfile
 import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-preauth.py'
+SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
-GATE = 'full-suite gate check is not wired yet'
+SUITES = [{'command': 'uv run pytest', 'cwd': '.'}, {'command': 'bun test', 'cwd': 'web'}]
+
+
+def load_suite_gate():
+    spec = importlib.util.spec_from_file_location('suite_gate_for_tests', SUITE_GATE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+# Fixture Git ignores the host's Git config and hooks, so pushes to the temp remote run no
+# installed hook.
+GIT_ENV = dict(os.environ, GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull)
 
 
 def git(cwd, *args):
-    return subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True,
-                          text=True).stdout.strip()
+    return subprocess.run(['git', '-c', f'core.hooksPath={os.devnull}', '-C', str(cwd), *args],
+                          check=True, capture_output=True, text=True, env=GIT_ENV).stdout.strip()
 
 
 class PreauthCase(unittest.TestCase):
@@ -29,8 +44,10 @@ class PreauthCase(unittest.TestCase):
         git(self.repo, 'config', 'user.email', 't@example.com')
         git(self.repo, 'config', 'user.name', 'T')
         (self.repo / 'a.txt').write_text('a\n')
-        git(self.repo, 'add', 'a.txt')
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'full_suites': SUITES}))
+        git(self.repo, 'add', 'a.txt', '.suite-gate.json')
         git(self.repo, 'commit', '-q', '-m', 'first')
+        self.gate_state = self.root / 'gate-state'
         self.config = self.root / 'xdg'
         self.global_file = self.config / 'lat' / 'preauth.toml'
         self.project_file = self.repo / '.lat' / 'preauth.toml'
@@ -39,7 +56,11 @@ class PreauthCase(unittest.TestCase):
     def run_tool(self, *args, cwd=None, session=SESSION, path=None, wait=True):
         environment = {key: value for key, value in os.environ.items()
                        if key not in ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')}
-        environment.update(HOME=str(self.root / 'home'), XDG_CONFIG_HOME=str(self.config))
+        environment.update(HOME=str(self.root / 'home'), XDG_CONFIG_HOME=str(self.config),
+                           GIT_CONFIG_NOSYSTEM='1', GIT_CONFIG_GLOBAL=os.devnull,
+                           XDG_STATE_HOME=str(self.root / 'state'),
+                           SUITE_GATE_STATE_DIR=str(self.gate_state))
+        environment.pop('SUITE_GATE_CONFIG', None)
         if path:
             environment['PATH'] = path
         if session:
@@ -63,14 +84,34 @@ class PreauthCase(unittest.TestCase):
         path.write_text(text)
 
     def session(self, settings, *, status='active', round_number=1, history=0,
-                integration='dev'):
+                integration='dev', tickets=('313',)):
         ledger = self.repo / '.lat' / 'ledgers' / 'round.json'
-        self.write(ledger, json.dumps({'integration_branch': integration}))
+        self.write(ledger, json.dumps({'integration_branch': integration,
+                                       'items': [{'ticket': t} for t in tickets]}))
         record = dict(status=status, history=[{}] * history, ledger_path=str(ledger),
                       hcom_name='orch', decisions_path=str(self.repo / '.lat' / 'decisions'))
         if settings is not None:
             record['preauth'] = {'round': round_number, 'settings': settings}
         self.write(self.sessions / f'{SESSION}.json', json.dumps(record))
+
+
+    def commit(self, message, name='b.txt'):
+        (self.repo / name).write_text(message + '\n')
+        git(self.repo, 'add', name)
+        git(self.repo, 'commit', '-q', '-m', message)
+        return git(self.repo, 'rev-parse', 'HEAD')
+
+    def gate_record(self, ref='HEAD', suites=SUITES, passed=True):
+        """A record in the temp gate store, fingerprinted the way the gate computes it."""
+        gate = load_suite_gate()
+        tree = gate.content_tree(self.repo, (), git(self.repo, 'rev-parse', ref))
+        self.gate_state.mkdir(exist_ok=True)
+        with open(self.gate_state / 'ledger.jsonl', 'a') as ledger:
+            for suite in suites:
+                fingerprint = gate.digest(tree, [suite['command']],
+                                          gate.rel_cwd(self.repo, self.repo / suite['cwd']))
+                ledger.write(json.dumps({'fingerprint': fingerprint, 'reusable': passed,
+                                         'exit_code': 0 if passed else 1}) + '\n')
 
 
 class LayerTests(PreauthCase):
@@ -223,21 +264,41 @@ class ConditionTests(PreauthCase):
         self.assertIn('no layer sets actions.merge.branches',
                       self.check('merge', '--branch', 'dev')['reasons'])
 
-    def test_push_waits_for_the_gate_check(self):
-        self.write(self.global_file, '[actions.push]\nallow = true\nbranches = ["dev"]\n')
-        self.assertEqual(self.check('push', '--branch', 'dev')['reasons'], [GATE])
-
     def allow_all(self):
         self.write(self.global_file, ''.join(f'[actions.{name}]\nallow = true\n' for name in
                                              ('deploy-test', 'deploy-prod', 'install-host')))
         self.write(self.project_file, '[actions.deploy-test]\ntarget = "staging on :9000"\n')
         self.session(None)
 
-    def test_main_checkout_at_integration_tip_only_waits_for_the_gate(self):
+    def test_main_checkout_at_integration_tip_with_passing_gate_allows(self):
         self.allow_all()
+        self.gate_record()
+        head = git(self.repo, 'rev-parse', 'HEAD')
         for action in ('deploy-test', 'deploy-prod', 'install-host'):
             with self.subTest(action=action):
-                self.assertEqual(self.check(action)['reasons'], [GATE])
+                verdict = self.check(action)
+                self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+                self.assertIn('integration branch `dev` from the round ledger', verdict['basis'])
+                self.assertIn(f'every registered full suite passed for {head[:12]}',
+                              verdict['basis'])
+
+    def test_deploy_and_install_check_the_gate(self):
+        self.allow_all()
+        self.gate_record(suites=SUITES[:1])
+        head = git(self.repo, 'rev-parse', 'HEAD')
+        for action in ('deploy-test', 'deploy-prod', 'install-host'):
+            with self.subTest(action=action):
+                self.assertEqual(self.check(action)['reasons'], [
+                    f'no passing full-suite record for {head[:12]}: bun test (in web)'])
+
+    def test_deploy_commit_must_be_head(self):
+        self.allow_all()
+        self.gate_record()
+        first = git(self.repo, 'rev-parse', 'HEAD')
+        self.commit('later')
+        self.gate_record()
+        self.assertEqual(self.check('deploy-prod', '--commit', first)['reasons'],
+                         [f'commit `{first}` is not HEAD'])
 
     def test_linked_worktree_asks(self):
         self.allow_all()
@@ -257,9 +318,47 @@ class ConditionTests(PreauthCase):
 
     def test_unknown_integration_branch_asks(self):
         self.allow_all()
-        self.session(None, integration='')
-        self.assertIn('integration branch unknown (no active round ledger names one)',
-                      self.check('install-host')['reasons'])
+        self.session(None, integration=None)
+        self.assertIn('integration branch unknown (the round ledger names none and no layer '
+                      'sets integration_branch)', self.check('install-host')['reasons'])
+
+    def test_integration_branch_setting_fills_a_null_ledger_value(self):
+        self.allow_all()
+        self.gate_record()
+        self.session(None, integration=None)
+        self.write(self.global_file, 'integration_branch = "main"\n' +
+                   self.global_file.read_text())
+        self.write(self.project_file, 'integration_branch = "dev"\n' +
+                   self.project_file.read_text())
+        verdict = self.check('install-host')
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+        self.assertIn('integration branch `dev` from project integration_branch',
+                      verdict['basis'])
+        self.assertIn('  integration_branch = "dev"  ← project', self.run_tool('show').stdout)
+
+    def test_ledger_integration_branch_wins_over_the_setting(self):
+        self.allow_all()
+        self.gate_record()
+        self.write(self.project_file, 'integration_branch = "main"\n' +
+                   self.project_file.read_text())
+        verdict = self.check('install-host')
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+        self.assertIn('integration branch `dev` from the round ledger', verdict['basis'])
+
+    def test_controller_layer_integration_branch_wins_over_project(self):
+        self.allow_all()
+        self.gate_record()
+        self.session({'integration_branch': 'dev'}, integration=None)
+        self.write(self.project_file, 'integration_branch = "main"\n' +
+                   self.project_file.read_text())
+        self.assertIn('integration branch `dev` from controller integration_branch',
+                      self.check('install-host')['basis'])
+
+    def test_integration_branch_setting_must_be_a_name(self):
+        self.allow_all()
+        self.write(self.project_file, 'integration_branch = ""\n')
+        self.assertIn('integration_branch must be a branch name',
+                      ' '.join(self.check('install-host')['reasons']))
 
     def test_deploy_test_needs_the_project_target(self):
         self.allow_all()
@@ -277,6 +376,113 @@ class ConditionTests(PreauthCase):
         out = self.run_tool('show').stdout
         self.assertIn('    target = "staging on :9000"  ← project', out)
         self.assertNotIn('production', out)
+
+
+class PushTests(PreauthCase):
+    """Push: listed branch, every full suite passed, unpushed commits only of this round."""
+
+    def setUp(self):
+        super().setUp()
+        remote = self.root / 'remote.git'
+        git(self.root, 'init', '-q', '--bare', str(remote))
+        git(self.repo, 'remote', 'add', 'origin', str(remote))
+        git(self.repo, 'push', '-q', 'origin', 'dev')
+        self.write(self.global_file, '[actions.push]\nallow = true\nbranches = ["dev"]\n')
+        self.session(None, tickets=('313', 'ouob-tw/LoopAgentTeams-work#314'))
+
+    def test_listed_branch_passing_gate_and_round_commits_allow(self):
+        self.commit('feat(lat): gate check (#313)')
+        sha = self.commit('fix(lat): edge (ouob-tw/LoopAgentTeams-work#314)', 'c.txt')
+        self.gate_record()
+        result = self.run_tool('check', '--action', 'push', '--branch', 'dev')
+        self.assertEqual(result.returncode, 0, result.stdout)
+        self.assertIn('allow push dev — basis: ', result.stdout)
+        self.assertIn(f'every unpushed commit of {sha[:12]} references only tickets of the '
+                      'round ledger', result.stdout)
+        self.assertIn(f'every registered full suite passed for {sha[:12]}', result.stdout)
+
+    def test_missing_failed_or_stale_gate_records_ask_and_name_the_suite(self):
+        first = self.commit('feat(lat): one (#313)')
+        missing = f'no passing full-suite record for {first[:12]}: '
+        with self.subTest('no record'):
+            self.assertEqual(self.check('push', '--branch', 'dev')['reasons'], [
+                missing + 'uv run pytest (in .)', missing + 'bun test (in web)'])
+        with self.subTest('one suite missing'):
+            self.gate_record(suites=SUITES[:1])
+            self.assertEqual(self.check('push', '--branch', 'dev')['reasons'],
+                             [missing + 'bun test (in web)'])
+        with self.subTest('only a failed record'):
+            self.gate_record(suites=SUITES[1:], passed=False)
+            self.assertEqual(self.check('push', '--branch', 'dev')['reasons'],
+                             [missing + 'bun test (in web)'])
+        with self.subTest('content changed after the records'):
+            self.gate_record(suites=SUITES[1:])
+            self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+            second = self.commit('feat(lat): two (#313)', 'c.txt')
+            self.assertEqual(len(self.check('push', '--branch', 'dev')['reasons']), 2)
+            self.assertIn(f'no passing full-suite record for {second[:12]}: uv run pytest',
+                          self.check('push', '--branch', 'dev')['reasons'][0])
+
+    def test_commits_outside_the_round_ask_and_are_listed(self):
+        own = self.commit('feat(lat): mine (#313)')
+        bare = self.commit('chore: tidy', 'c.txt')
+        other = self.commit('feat: theirs (#999)', 'd.txt')
+        mixed = self.commit('fix: both #313 and other/repo#42', 'e.txt')
+        self.gate_record()
+        reasons = self.check('push', '--branch', 'dev')['reasons']
+        self.assertEqual(len(reasons), 1, reasons)
+        self.assertTrue(reasons[0].startswith(
+            "unpushed commits outside this round's tickets (#313, ouob-tw/loopagentteams-work#314): "),
+            reasons[0])
+        self.assertIn(f'{bare[:12]} "chore: tidy" (no ticket)', reasons[0])
+        self.assertIn(f'{other[:12]} "feat: theirs (#999)" (#999)', reasons[0])
+        self.assertIn(f'{mixed[:12]} "fix: both #313 and other/repo#42" (other/repo#42)',
+                      reasons[0])
+        self.assertNotIn(own[:12], reasons[0])
+
+    def test_same_number_in_another_repo_is_not_a_round_ticket(self):
+        self.session(None, tickets=('ouob-tw/LoopAgentTeams-work#313', '314'))
+        own = self.commit('feat: mine (ouob-tw/LoopAgentTeams-work#313)')
+        bare = self.commit('feat: bare (#313)', 'c.txt')
+        other = self.commit('feat: theirs (someone/else#313)', 'd.txt')
+        loose = self.commit('feat: theirs too (someone/else#314)', 'e.txt')
+        self.gate_record()
+        reasons = self.check('push', '--branch', 'dev')['reasons']
+        self.assertEqual(len(reasons), 1, reasons)
+        self.assertIn(f'{other[:12]} "feat: theirs (someone/else#313)" (someone/else#313)',
+                      reasons[0])
+        self.assertIn(f'{loose[:12]} "feat: theirs too (someone/else#314)" '
+                      '(someone/else#314)', reasons[0])
+        self.assertNotIn(own[:12], reasons[0])
+        self.assertNotIn(bare[:12], reasons[0])
+
+    def test_commits_the_remote_has_are_not_listed(self):
+        self.commit('chore: no ticket but pushed')
+        git(self.repo, 'push', '-q', 'origin', 'dev')
+        self.commit('feat(lat): mine (#313)', 'c.txt')
+        self.gate_record()
+        self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+
+    def test_without_a_round_ledger_push_asks(self):
+        self.commit('feat(lat): mine (#313)')
+        self.gate_record()
+        self.session(None, status='ended')
+        self.assertIn('no active round ledger to tell whose tickets the unpushed commits '
+                      'belong to', self.check('push', '--branch', 'dev')['reasons'])
+
+    def test_unresolvable_version_and_missing_registry_ask(self):
+        self.assertIn('cannot resolve the version to push (`nope`)',
+                      self.check('push', '--branch', 'dev', '--commit', 'nope')['reasons'])
+        with self.subTest('non-object gate record lines are skipped'):
+            self.commit('feat(lat): mine (#313)')
+            self.gate_state.mkdir(exist_ok=True)
+            (self.gate_state / 'ledger.jsonl').write_text('null\n[1]\n')
+            self.assertEqual(len(self.check('push', '--branch', 'dev')['reasons']), 2)
+            self.gate_record()
+            self.assertEqual(self.check('push', '--branch', 'dev')['verdict'], 'allow')
+        (self.repo / '.suite-gate.json').unlink()
+        self.assertIn('full-suite gate check failed: full_suites must list',
+                      ' '.join(self.check('push', '--branch', 'dev')['reasons']))
 
 
 ANSWER = ('## 答覆（r1，面板，{time}）\n\n- 題目：{id} r1\n- 答覆：A. 可以\n'
