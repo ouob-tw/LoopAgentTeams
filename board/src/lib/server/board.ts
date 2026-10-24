@@ -315,8 +315,9 @@ function createBoard(): Board {
 		]);
 		// The lists were asked for at the start but only arrive once the helper is done; a status poll
 		// that began after that holds newer ones, which an older read must not overwrite.
-		const agents = polled.agents && polled.at > listedAt && polled.agents.ok ? polled.agents : listedAgents;
-		const herdrAgents = polled.herdr && polled.at > listedAt && polled.herdr.ok ? polled.herdr : listedHerdr;
+		keepNewest(listedAt, listedAgents, listedHerdr);
+		const agents = newer(listedAgents, listedAt, newest.agents);
+		const herdrAgents = newer(listedHerdr, listedAt, newest.herdr);
 		if (herdrAgents.ok) herdrPlaces = herdrAgents;
 		herdrPlaceError = herdrAgents.ok ? null : herdrAgents.reason;
 		if (answered.ok) lastAnswered = answered.files;
@@ -343,7 +344,8 @@ function createBoard(): Board {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
 		}
 		const paused = await settlePauses(config, agents, herdrAgents, listedAt);
-		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
+		// Pausing and the sent log took time too: the newest lists as of now go into the roster.
+		const allAgents = agentRoster.update(newer(herdrAgents, listedAt, newest.herdr), newer(agents, listedAt, newest.agents), new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
 		herdrRead ||= herdrAgents.ok;
 		const closedAgents = await closedRoster.update({
 			agents: herdrRead ? allAgents.agents : null,
@@ -447,8 +449,15 @@ function createBoard(): Board {
 	}
 
 	let polling = false;
-	/** The lists of the last status poll that applied, and when it began. */
-	const polled: { at: number; agents: AgentList | null; herdr: Awaited<ReturnType<typeof listHerdrAgents>> | null } = { at: 0, agents: null, herdr: null };
+	/** The newest list of each source that could be read, with when its read began: a full read and a
+	 *  status poll overlap, and whichever applies last must not put an older list back. */
+	const newest: { agents: { at: number; list: Extract<AgentList, { ok: true }> } | null; herdr: { at: number; list: Extract<Awaited<ReturnType<typeof listHerdrAgents>>, { ok: true }> } | null } = { agents: null, herdr: null };
+	function keepNewest(at: number, agents: AgentList, herdr: Awaited<ReturnType<typeof listHerdrAgents>>): void {
+		if (agents.ok && (!newest.agents || at >= newest.agents.at)) newest.agents = { at, list: agents };
+		if (herdr.ok && (!newest.herdr || at >= newest.herdr.at)) newest.herdr = { at, list: herdr };
+	}
+	/** `own`, read from `at`, unless a list that began after `at` has been read since. */
+	const newer = <T>(own: T, at: number, kept: { at: number; list: T } | null): T => (kept && kept.at > at ? kept.list : own);
 	/** A poll asked for while one was under way: its lists may predate the ask, so one more follows. */
 	let pollAgain = false;
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
@@ -468,15 +477,16 @@ function createBoard(): Board {
 		try {
 			const [agents, herdrAgents] = await Promise.all([listAgents(limited), listHerdrAgents(limited)]);
 			if (closed || !sources || (!agents.ok && !herdrAgents.ok)) return;
+			keepNewest(began, agents, herdrAgents);
 			// Without Herdr's pane check, which is outside this read's time limit: the full read ends a pause that only that check can.
 			const paused = await settlePauses(config, agents, herdrAgents, Date.now(), false);
-			if (herdrAgents.ok) herdrPlaces = herdrAgents;
-			herdrPlaceError = herdrAgents.ok ? null : herdrAgents.reason;
-			if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
-			polled.at = began;
-			polled.agents = agents;
-			polled.herdr = herdrAgents;
-			const rostered = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
+			// The newest lists as of now: a full read may have read newer ones meanwhile.
+			const useAgents = newer(agents, began, newest.agents);
+			const useHerdr = newer(herdrAgents, began, newest.herdr);
+			if (useHerdr.ok) herdrPlaces = useHerdr;
+			herdrPlaceError = useHerdr.ok ? null : useHerdr.reason;
+			if (useAgents.ok) lastRunning = new Set(useAgents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
+			const rostered = agentRoster.update(useHerdr, useAgents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
 			sources = { ...sources, agents: rostered.agents, workspaces: rostered.workspaces, running: lastRunning };
 			publish(sources);
 		} catch {

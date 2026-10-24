@@ -227,3 +227,27 @@ test('a stale pause record does not hold the status read: Herdr\'s pane list is 
 		rmSync(dir, { recursive: true, force: true });
 	}
 }, 30_000);
+
+test('a full read that waits on Herdr\'s pane list after listing does not put its older statuses back', async () => {
+	const dir = join(fixture.dir, 'hcom-paused');
+	setLists(fixture, 'listening', 'idle', { slowMs: { 'pane list': 3_000 } });
+	await fixture.refresh(cookie);
+	const page = fixture.watch(cookie);
+	await until(() => status(page.latest()) === 'idle', 15_000, 'the first snapshot');
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, 's-gone.json'), JSON.stringify({ session_id: 's-gone', hcom_name: 'gone', client: 'claude', pane: 'wA:p-gone', paused_at: new Date(Date.now() - 60_000).toISOString() }));
+	try {
+		// The full read lists idle, then waits on the pane list for the stale record; the change comes meanwhile.
+		const full = fixture.refresh(cookie);
+		await sleep(400);
+		setLists(fixture, 'active', 'idle', { slowMs: { 'pane list': 3_000 } });
+		await until(() => status(page.latest()) === 'working', 2_500, 'the status during the full read');
+		const snapshot = await full;
+		expect(status(snapshot)).toBe('working');
+		await sleep(300);
+		expect(status(page.latest())).toBe('working');
+	} finally {
+		page.close();
+		rmSync(dir, { recursive: true, force: true });
+	}
+}, 30_000);
