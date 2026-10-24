@@ -1099,6 +1099,24 @@ def _write_decision_answer(decision_path, section, proof, answer, note, *, now=N
         return text, updated
 
 
+def set_decision_preauth(decision_path, verdict_line, *, now=None):
+    """Write the recheck result as the record's ``- preauth:`` line, for reading only.
+
+    Replaces the first ``- preauth:`` line, else goes right after the ``- action:`` line.
+    """
+    decision_path = Path(decision_path)
+    line = f"- preauth: {verdict_line}（重查於 {_iso_time(now)}）"
+    with _path_lock(decision_path):
+        text = _read_text_exact(decision_path)
+        old = re.search(r"^- preauth:.*$", text, re.MULTILINE | re.IGNORECASE)
+        if old is None:
+            old = re.search(r"^- action:.*$", text, re.MULTILINE | re.IGNORECASE)
+            updated = text[:old.end()] + "\n" + line + text[old.end():]
+        else:
+            updated = text[:old.start()] + line + text[old.end():]
+        _replace_locked(decision_path, updated)
+
+
 def _restore_decision(decision_path, written, previous):
     """Undo ``_write_decision_answer`` unless the record changed since."""
     with _path_lock(decision_path):

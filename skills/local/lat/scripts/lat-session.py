@@ -20,8 +20,8 @@ import time
 from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from lat_decision_status import (read_advisor_error, read_decision_kind, read_decision_status,
-                                 read_spec_consensus_error)
+from lat_decision_status import (read_advisor_error, read_decision_action, read_decision_kind,
+                                 read_decision_status, read_spec_consensus_error)
 from _lat_common import (reports_directory, run_cli, shared_lat_dir, watcher_process_matches,
                          write_json_atomic)
 
@@ -35,6 +35,7 @@ COMMAND_NAMES = ('lat-session.py', 'codex-lat-session.py')
 WATCH_SCRIPT = SKILL_DIR / 'scripts/lat-watch.py'
 AUTOCLEAN_SCRIPT = SKILL_DIR / 'scripts/lat-autoclean.py'
 LEDGER_SCRIPT = SKILL_DIR / 'scripts/lat-ledger.py'
+PREAUTH_SCRIPT = SKILL_DIR / 'scripts/lat-preauth.py'
 LEDGER_TIMEOUT_SECONDS = 120
 # Whole recovery prompt: Claude Code moves context over 10,000 characters to a file;
 # Codex caps hook context near 2,500 tokens.
@@ -995,6 +996,66 @@ def announced_questions(record):
     return announced
 
 
+def preauth_module():
+    spec = importlib.util.spec_from_file_location('lat_preauth', PREAUTH_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def question_sent(session_id, questions_path, identifier):
+    """Whether a question already reached the user, in any revision.
+
+    It did when it is in the controller's own question file or that file's archive, or
+    when a DECIDE/HELP this session reported named it.
+    """
+    if questions_path is not None:
+        for path in (Path(questions_path), panel_module('questions')._archive_path(questions_path)):
+            if any(question['id'] == identifier for question in read_questions(path)):
+                return True
+    return any(name == identifier
+               for name, _ in announced_questions(dict(session_id=session_id)))
+
+
+def question_preauth(decision_path, *, workspace, session_id, questions_path):
+    """`(verdict, check line, sent)` rechecked under the current settings, or None when
+    the record has no `- action:` line. An earlier `- preauth:` line is never read."""
+    found = read_decision_action(decision_path)
+    if found is None:
+        return None
+    action, branch, commit = found
+    module = preauth_module()
+    result = module.evaluate(action, branch=branch, commit=commit, workspace=workspace,
+                             session=session_id)
+    sent = question_sent(session_id, questions_path, Path(decision_path).stem)
+    return result['verdict'], module.verdict_line(result), sent
+
+
+def preauth_stop_check(record, message):
+    """`(reason, notes)`: hold questions not yet sent that the current settings allow;
+    a sent one passes with a reminder, since only the user can release it."""
+    decisions = Path(record['decisions_path'])
+    questions_path = own_questions_path(panel_module(), record)
+    held, notes = [], []
+    for identifier in sorted({name for name, _ in question_identifiers(message)}):
+        path = decisions / f'{identifier}.md'
+        if not path.is_file():
+            continue
+        found = question_preauth(path, workspace=record['workspace'],
+                                 session_id=record['session_id'], questions_path=questions_path)
+        if found is None or found[0] != 'allow':
+            continue
+        if found[2]:
+            notes.append(f'LAT 預先授權提醒：{identifier} 此題目前已預先授權，可由使用者決定撤回'
+                         f'（{found[1]}）。')
+        else:
+            held.append(f'{identifier}（{found[1]}）')
+    reason = ('LAT 預先授權檢查未通過：' + '；'.join(held)
+              + ' 尚未送出，依當下設定可以不問直接做。不要提問：直接執行，做完以 '
+              '`lat-preauth.py record` 記一筆，並在待決紀錄寫明改依預先授權處理。') if held else None
+    return reason, notes
+
+
 def stop_check(record, payload):
     """Why this DECIDE/HELP Stop should be held, or None when it passes."""
     message = payload['last_assistant_message']
@@ -1152,6 +1213,14 @@ def report_stop(record, payload):
             else:
                 if reason:
                     reasons.append(reason)
+            try:
+                reason, reminders = preauth_stop_check(record, message)
+            except Exception as exc:  # noqa: BLE001 - a broken recheck never holds the Stop
+                notes.append(f'LAT 預先授權重查發生錯誤，未攔下：{exc}')
+            else:
+                if reason:
+                    reasons.append(reason)
+                notes += reminders
         # Hold only the first Stop of a turn; later ones pass with a visible warning.
         if reasons and not payload.get('stop_hook_active'):
             print(json.dumps({'decision': 'block', 'reason': '\n\n'.join(reasons)},
