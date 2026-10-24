@@ -9,8 +9,9 @@
 	// for a question, the question where the message that asked it is. Any message that asked
 	// questions still in the inbox, or answered ones, shows their cards in its place.
 	// Opened from the Herdr tab, the page is also the agent's: its close, and what was done to it
-	// as a last tab.
+	// as a last tab. Its permission requests on the board show above its conversation, newest first.
 	import type { Snippet } from 'svelte';
+	import type { BoardAsk } from '#lib/board/board-asks.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { sortByTime } from '#lib/board/inbox.ts';
 	import { messaging } from '#lib/board/messaging.svelte.ts';
@@ -21,6 +22,7 @@
 	import type { Usage } from '#lib/board/usage.ts';
 	import AgentClose from './AgentClose.svelte';
 	import AgentLog from './AgentLog.svelte';
+	import BoardAskCard from './BoardAskCard.svelte';
 	import ControllerHeader from './ControllerHeader.svelte';
 	import PendingQuestions from './PendingQuestions.svelte';
 	import RecordTabs from './RecordTabs.svelte';
@@ -43,7 +45,8 @@
 		card,
 		copy,
 		questionCards,
-		reportCard
+		reportCard,
+		asks = []
 	}: {
 		controller: Controller;
 		/** The controller as the Herdr tab lists it, when opened from there. */
@@ -73,6 +76,8 @@
 		questionCards?: Snippet<[InboxQuestion[]]>;
 		/** A DONE report's card, in place of its text; see Transcript. */
 		reportCard?: Snippet<[InboxReport, Translation | null]>;
+		/** Its board asks, oldest first: its permission requests (its menu questions are refused). */
+		asks?: BoardAsk[];
 	} = $props();
 
 	const sorted = $derived(sortByTime(items));
@@ -122,6 +127,9 @@
 <RecordTabs {tabs} bind:tab ariaLabel="主控的紀錄" translateTab="transcript">
 	{#snippet panel(id)}
 		{#if id === 'transcript'}
+			{#each asks.toReversed() as ask (ask.id)}
+				<BoardAskCard {ask} />
+			{/each}
 			<Transcript {controller} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
 		{:else if id === 'reports'}
 			<ReportList {reports} {onopen} />

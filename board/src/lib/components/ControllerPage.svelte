@@ -57,6 +57,8 @@
 	const inbox = $derived(board.snapshot.inbox);
 	const items = $derived(inbox.filter((entry) => entry.controllerId === controller.id));
 	const answered = $derived(board.answered.questions.filter((entry) => entry.controllerId === controller.id));
+	/** The controller's board asks: its permission requests, answered on every page that shows it. */
+	const asks = $derived(board.snapshot.asks.filter((ask) => ask.sessionId === controller.id));
 
 	/** The question or report of the agent's page last opened from its own bars and report list. */
 	let agentOpened = $state.raw<InboxItem | null>(null);
@@ -170,6 +172,7 @@
 		questionCards={askedCards}
 		reportCard={doneCard}
 		card={agentCard}
+		{asks}
 	/>
 {:else if item && item.key !== lost}
 	<!-- A report is the controller's last text of its turn, and a question was asked in one: shown
@@ -188,6 +191,7 @@
 		onunplaced={item.kind === 'question' ? () => lose(item.key) : undefined}
 		questionCards={askedCards}
 		card={togetherCards}
+		{asks}
 	/>
 {:else if item}
 	<p class="empty">找不到提出這題的原訊息。</p>
@@ -198,7 +202,7 @@
 		{item.project} · @{item.hcomName}　看主控資訊 →
 	</button>
 {:else}
-	<ControllerInfo tabMoves={board.tabMoves} {controller} {idleAgent} {items} {answered} {onopen} questionCards={askedCards} />
+	<ControllerInfo tabMoves={board.tabMoves} {controller} {idleAgent} {items} {answered} {onopen} questionCards={askedCards} {asks} />
 {/if}
 
 <style>

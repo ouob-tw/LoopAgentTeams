@@ -16,11 +16,13 @@
 	// has no place for. All the questions are sent together. Once taken it is read-only, what was
 	// picked marked among the options. Once the hook stopped waiting it still takes an answer, sent
 	// to the agent as a message; one the board may not have sent (結果不明) can be sent again.
+	// A permission request has its own card.
 	import { ASK_TAKEN_REASON, askAnswerable, BOARD_ASK_STATE_TEXT, EMPTY_PICK, RESEND_NOTE, pickComplete, type AskAnswerResponse, type AskQuestion, type BoardAsk } from '#lib/board/board-asks.ts';
 	import { request } from '#lib/board/api.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
+	import PermissionAskCard from './PermissionAskCard.svelte';
 
 	let { ask }: { ask: BoardAsk } = $props();
 
@@ -83,6 +85,9 @@
 	}
 </script>
 
+{#if ask.kind === 'permission'}
+	<PermissionAskCard {ask} />
+{:else}
 <article class="content" data-ask={ask.id} data-state={takenHere[ask.id] ? 'taken' : ask.state}>
 	<header>
 		<span class="label">看板提問</span>
@@ -178,6 +183,7 @@
 		<p class="state" role="status">{takenHere[ask.id] ? `${ASK_TAKEN_REASON}${ask.state === 'filled' || ask.state === 'relayed' ? `・${BOARD_ASK_STATE_TEXT[ask.state]}` : ''}` : BOARD_ASK_STATE_TEXT[ask.state]}</p>
 	{/if}
 </article>
+{/if}
 
 {#snippet body(label: string, description: string | undefined)}
 	<div>
