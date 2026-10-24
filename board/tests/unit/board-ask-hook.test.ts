@@ -8,16 +8,29 @@ import { afterEach, beforeEach, expect, test } from 'bun:test';
 import { HEARTBEAT_MS, readAsks, takeAsk } from '../../src/lib/server/board-asks.ts';
 
 const HOOK = join(import.meta.dir, '../../hooks/board-ask.py');
+// The real panel helper, which the hook asks about the session; its bindings live in a temporary folder.
+const LAT_DIR = join(import.meta.dir, '../../../skills/local/lat');
 
 let dir: string;
+let panelConfig: string;
 beforeEach(() => {
 	dir = mkdtempSync(join(tmpdir(), 'board-ask-hook-'));
+	panelConfig = mkdtempSync(join(tmpdir(), 'board-ask-panel-'));
 	beat();
 });
 afterEach(() => {
 	chmodSync(dir, 0o700);
 	rmSync(dir, { recursive: true, force: true });
+	rmSync(panelConfig, { recursive: true, force: true });
 });
+
+/** The panel's binding registry with a controller bound to each of these sessions. */
+function bindControllers(...sessions: string[]) {
+	const bindings = Object.fromEntries(
+		sessions.map((id) => [id, { hcom_name: 'tene', client: 'claude', session_id: id, workspace: '/work', questions_path: '/work/.lat/questions/tene.md', herdr_workspace: 'wA', herdr_tab: 'wA:t1', herdr_pane: 'wA:p1' }])
+	);
+	writeFileSync(join(panelConfig, 'bindings.json'), JSON.stringify({ version: 2, bindings }));
+}
 
 /** The board's heartbeat, `ageSeconds` old. */
 function beat(ageSeconds = 0) {
@@ -50,7 +63,7 @@ function hook(payload: unknown, env: Record<string, string> = {}) {
 		stdin: new TextEncoder().encode(typeof payload === 'string' ? payload : JSON.stringify(payload)),
 		stdout: 'pipe',
 		stderr: 'pipe',
-		env: { PATH: Bun.env.PATH ?? '', HOME: Bun.env.HOME ?? '', LAT_BOARD_ASKS_DIR: dir, HERDR_PANE_ID: 'wA:p1', LAT_BOARD_ASK_WAIT_SECONDS: '20', ...env }
+		env: { PATH: Bun.env.PATH ?? '', HOME: Bun.env.HOME ?? '', LAT_BOARD_ASKS_DIR: dir, HERDR_PANE_ID: 'wA:p1', LAT_BOARD_ASK_WAIT_SECONDS: '20', LAT_BOARD_LAT_DIR: LAT_DIR, HERDR_PLUGIN_CONFIG_DIR: panelConfig, ...env }
 	});
 	return {
 		done: Promise.all([process.exited, new Response(process.stdout).text(), new Response(process.stderr).text()]).then(([code, stdout, stderr]) => ({ code, stdout, stderr }))
@@ -161,6 +174,59 @@ for (const [when, setup] of passes) {
 		expect(askFiles()).toEqual([]);
 		// Left to the client at once, not after a wait.
 		expect(Date.now() - started).toBeLessThan(10_000);
+	});
+}
+
+test('a LAT controller is denied at once with the panel reminder and no ask is written', async () => {
+	bindControllers('session-ask');
+	const started = Date.now();
+	const { code, stdout } = await hook(input()).done;
+	expect(code).toBe(0);
+	expect(JSON.parse(stdout)).toEqual({
+		hookSpecificOutput: {
+			hookEventName: 'PreToolUse',
+			permissionDecision: 'deny',
+			permissionDecisionReason:
+				"You are the LAT controller, so do not ask with AskUserQuestion. Write the question with the question panel's `question upsert` and end your message with DECIDE."
+		}
+	});
+	expect(askFiles()).toEqual([]);
+	expect(Date.now() - started).toBeLessThan(10_000);
+});
+
+test('a session the registry does not list is an ordinary agent: it asks the board and waits', async () => {
+	bindControllers('another-session');
+	const run = hook(input());
+	const ask = await waitingAsk();
+	takeAsk(dir, ask.id, { 'Pick a color?': 'Red', 'Pick fruits?': 'Apple' });
+	expect(JSON.parse((await run.done).stdout).hookSpecificOutput.permissionDecision).toBe('allow');
+});
+
+const lookupFailures: [string, () => Record<string, string>][] = [
+	['the registry is not readable', () => (writeFileSync(join(panelConfig, 'bindings.json'), '{not json'), {})],
+	['the registry is an older version', () => (writeFileSync(join(panelConfig, 'bindings.json'), JSON.stringify({ bindings: { 'session-ask': {} } })), {})],
+	['the helper cannot be run', () => (bindControllers('session-ask'), { LAT_BOARD_HELPER_COMMAND: JSON.stringify(['/nonexistent/helper']) })],
+	['the helper command is not a JSON list', () => (bindControllers('session-ask'), { LAT_BOARD_HELPER_COMMAND: 'not json' })]
+];
+for (const [when, setup] of lookupFailures) {
+	test(`the board treats the agent as ordinary when ${when}`, async () => {
+		const run = hook(input(), setup());
+		const ask = await waitingAsk();
+		takeAsk(dir, ask.id, { 'Pick a color?': 'Red', 'Pick fruits?': 'Apple' });
+		expect(JSON.parse((await run.done).stdout).hookSpecificOutput.permissionDecision).toBe('allow');
+	});
+}
+
+for (const [when, overrides, env] of [
+	['a Task sub-agent of a controller asks', { agent_id: 'agent-1' }, {}],
+	['the controller\'s board is not running', {}, { _stale: '1' }]
+] as [string, Record<string, unknown>, Record<string, string>][]) {
+	test(`no decision and no ask when ${when}`, async () => {
+		bindControllers('session-ask');
+		if (env._stale) beat(91);
+		const { code, stdout } = await hook(input(overrides)).done;
+		expect([code, stdout]).toEqual([0, '']);
+		expect(askFiles()).toEqual([]);
 	});
 }
 

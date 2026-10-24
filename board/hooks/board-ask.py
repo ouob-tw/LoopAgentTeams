@@ -28,6 +28,7 @@ import json
 import os
 import shlex
 import shutil
+import subprocess
 import sys
 import tempfile
 import time
@@ -42,6 +43,10 @@ HEARTBEAT_STALE_SECONDS = 90
 WAIT_SECONDS = 600
 HOOK_TIMEOUT_SECONDS = 660
 POLL_SECONDS = 0.2
+HELPER_SECONDS = 10
+CONTROLLER_REASON = (
+    'You are the LAT controller, so do not ask with AskUserQuestion. Write the question with '
+    "the question panel's `question upsert` and end your message with DECIDE.")
 STATUS_MESSAGE = '正在等看板作答，按 Esc 可中斷改在終端機回答'
 # Shown in the terminal and given to the model when the wait runs out and the turn ends.
 STOP_REASON = '看板作答等太久，先結束這一回合；使用者會在看板上回答，答案會以訊息傳給你，收到前不要自己猜答案。'
@@ -72,6 +77,32 @@ def board_running(folder, now):
     try:
         return now - (folder / HEARTBEAT).stat().st_mtime <= HEARTBEAT_STALE_SECONDS
     except OSError:
+        return False
+
+
+def helper_command(env):
+    """The panel helper's command, the way the board finds it; None when it cannot be told."""
+    given = env.get('LAT_BOARD_HELPER_COMMAND')
+    if given:
+        command = json.loads(given)
+        if not isinstance(command, list) or not command \
+                or any(not isinstance(part, str) for part in command):
+            return None
+        return command
+    lat_dir = env.get('LAT_BOARD_LAT_DIR') or str(Path.home() / '.agents/skills/lat')
+    return ['uv', 'run', '--no-project', 'python', str(Path(lat_dir) / 'herdr-panel/lat_panel.py')]
+
+
+def is_controller(session_id, env):
+    """Whether the panel helper has a controller binding for this session; any failure is no."""
+    try:
+        command = helper_command(env)
+        if command is None:
+            return False
+        done = subprocess.run([*command, 'resolve', '--session-id', session_id], env=env,
+                              capture_output=True, text=True, timeout=HELPER_SECONDS)
+        return done.returncode == 0 and isinstance(json.loads(done.stdout), dict)
+    except Exception:  # noqa: BLE001 - a failed lookup treats the agent as an ordinary one
         return False
 
 
@@ -151,6 +182,14 @@ def run_hook(text, env, clock=time.time, sleep=time.sleep):
     now = clock()
     if not board_running(folder, now):
         return None
+
+    # The controller asks through the question panel, not the board: no ask file, no waiting.
+    if is_controller(session_id, env):
+        return {'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'permissionDecision': 'deny',
+            'permissionDecisionReason': CONTROLLER_REASON,
+        }}
 
     ask_id = uuid.uuid4().hex
     deadline = now + wait_seconds(env)
