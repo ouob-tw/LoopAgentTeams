@@ -85,6 +85,7 @@ body {
 
 input,
 textarea,
+select,
 button {
 	font: inherit;
 	color: inherit;
@@ -92,10 +93,30 @@ button {
 }
 
 input,
-textarea {
+textarea,
+select {
 	background: var(--bg);
 	border: 1px solid var(--line);
 	padding: 0.5rem 0.6rem;
+}
+
+/* The native list stays (keyboard, phones); only its arrow is drawn here, from two gradients so
+   it follows the theme's text colour. */
+select {
+	/* The size of the board's text boxes, not of the small label it sits in. */
+	font-size: max(1rem, var(--min-font, 0px));
+	appearance: none;
+	padding-right: 2rem;
+	cursor: pointer;
+	background-image: linear-gradient(45deg, transparent 50%, var(--text) 50%), linear-gradient(135deg, var(--text) 50%, transparent 50%);
+	background-position: calc(100% - 1.1rem) 50%, calc(100% - 0.75rem) 50%;
+	background-size: 0.35rem 0.35rem;
+	background-repeat: no-repeat;
+}
+/* The opened list is drawn by the browser; give its rows the board's colours. */
+select option {
+	background: var(--bg);
+	color: var(--text);
 }
 
 input[type='radio'],
@@ -131,17 +152,21 @@ button[aria-pressed='true'] {
 
 button:disabled,
 input:disabled,
-textarea:disabled {
+textarea:disabled,
+select:disabled {
 	opacity: var(--disabled-opacity);
 	cursor: default;
 }
 
 /* Without translucency a disabled control is told apart by its grey frame and text, and a
    button also by its struck-through label. */
-:root[data-theme='light'] :is(button, input, textarea):disabled {
-	background: var(--bg);
+:root[data-theme='light'] :is(button, input, textarea, select):disabled {
+	background-color: var(--bg);
 	border: 1px solid var(--muted);
 	color: var(--muted);
+}
+:root[data-theme='light'] select:disabled {
+	background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
 }
 :root[data-theme='light'] button:disabled {
 	text-decoration: line-through;
