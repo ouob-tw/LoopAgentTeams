@@ -132,7 +132,8 @@ export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 					statusSource: linked ? 'hcom' : 'herdr',
 					controller: agent.sessionId !== null && controllers.has(agent.sessionId),
 					inHerdr: true,
-					switch: switchOf(switches.find((view) => view.controllerId === agent.sessionId))
+					switch: switchOf(switches.find((view) => view.controllerId === agent.sessionId)),
+					asking: false
 				};
 			});
 			lagging = nextLagging;
@@ -160,7 +161,8 @@ export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 					statusSource: 'hcom',
 					controller: controllers.has(view.controllerId),
 					inHerdr: false,
-					switch: switchOf(view)
+					switch: switchOf(view),
+					asking: false
 				});
 			}
 			// In Herdr's own order, so a new status never moves a row: by workspace as Herdr numbers

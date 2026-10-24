@@ -108,7 +108,8 @@ test('lists every Herdr agent across workspaces, named and stated by hcom when l
 		statusSource: 'herdr',
 		controller: false,
 		inHerdr: true,
-		switch: null
+		switch: null,
+		asking: false
 	});
 	// The roster of controllers is untouched.
 	expect(snapshot.controllers.map((controller) => controller.hcomName)).toEqual(['lead']);

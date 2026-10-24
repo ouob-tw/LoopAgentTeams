@@ -40,6 +40,8 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `HERDR_SOCKET_PATH` | Herdr 的連線介面，用於 CLI 沒有的移動分頁（接回與開新後移到最前面、在「Herdr」分頁調整順序）；逾時同上一項 | `$XDG_CONFIG_HOME/herdr/herdr.sock` |
 | `LAT_BOARD_LAUNCH_WAIT_SECONDS` | 新建後多久還沒出現綁定，就在新建紀錄提示「已開分頁，但主控尚未啟用」；喚醒接回後多久還沒在 hcom 清單出現，就在送出紀錄提示「接回後仍未出現」 | `180` |
 | `LAT_HCOM_PAUSED_DIR` | 暫停通訊紀錄的目錄（絕對路徑；不是絕對路徑時當成沒設），LAT 停住監控與程序回收讀同一個目錄 | `$XDG_STATE_HOME/lat/hcom-paused` |
+| `LAT_BOARD_ASKS_DIR` | 看板提問的共用目錄（絕對路徑；不是絕對路徑時當成沒設），hook 與看板讀寫同一個目錄，兩邊要一致 | `$XDG_STATE_HOME/lat/board-asks` |
+| `LAT_BOARD_ASK_WAIT_SECONDS` | hook 讀的：問完原地等多久（秒），測試用來縮短 | `600` |
 | `LAT_BOARD_UNPAUSE_WAIT_SECONDS` | 恢復通訊打入接回指令後，最多等多久它以原名稱與原 session 回到 hcom 清單 | `60` |
 | `LAT_BOARD_ASR_URL` | 語音輸入用的語音辨識服務（gohakka-infra）網址，例如 `http://localhost:8025`；看板呼叫它的 `/v1/asr/sync`（`whisper-large-v3-turbo`、`zh`）。沒設定或缺下一項時，按麥克風只會提示未設定 | 不設定 |
 | `LAT_BOARD_ASR_TOKEN` | 該服務的 JWT。只留在看板伺服器，不會出現在任何給瀏覽器的回應 | 不設定 |
@@ -187,6 +189,16 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 - 已關閉的介面：所有工作區之後一列摺疊的「已關閉 N」，展開後依停止時間分「今天」「昨天」「近 7 天」，以看板主機時區的日曆日判斷（頁面每分鐘更新一次今天是哪天），組內新到舊。每列顯示分頁名稱（沒有時用 HCOM 名稱）、HCOM 名稱、client、資料夾、原工作區與停止時間（今天的只顯示時刻），主控標「主控」，接回中或失敗時另顯示一行。整列是按鈕，點了以 `?agent=<session ID>` 打開它的頁面（`ClosedAgentInfo.svelte`，與 Agent 頁同一個網址與返回行為；`viewOf` 認得「已關閉」清單上的 session）：資訊卡（已關閉、分頁名稱與 HCOM 名稱、client、資料夾、原工作區、停止時間、session ID），下方是「接回」（`ClosedResume.svelte`），再下方是對話紀錄（與 Agent 頁相同的 `Transcript.svelte`，可往前翻頁）；操作紀錄端點只認 Herdr 清單上的 Agent，所以這頁沒有操作紀錄分頁。指令列在這頁停用，提示「已關閉，先接回才能傳訊息」；之前留下的草稿（含以 `@名稱` 指定它本身的）也不送，草稿擋住提示時，提示改顯示在指令列上方。接回後同一個 session 出現在 Herdr 清單上，頁面就換成 Agent 頁或主控頁。
 - 接回（`POST /api/agents/closed/resume`，`session`；主控另帶喚醒選項 `text`、`newRound`、`model`、`effort`）：只接受這次重讀後仍在「已關閉」清單上的；不在清單上或正在接回時拒絕（409），也寫一行操作紀錄。這次的 hcom 清單、Herdr 清單或停止紀錄讀不到（只有上次的可用），或這個 session 最後一筆停止事件已不是列入時那筆，也拒絕，不執行任何指令。用 `hcom r <session ID> --terminal herdr --no-run-here --go`（不帶第一則訊息與其他參數）接回同一段對話，工作區以原工作區為優先、不在時依資料夾挑（`chooseWorkspace` 的 `prefer`，與 Agent 切換模型的接回相同）。與新建主控、開新 Agent 共用同一個排隊（`inLaunchQueue`），一次只跑一個，等前一個出現或逾時才開始下一個。hcom 跑完就回應；之後等它在 Herdr 執行（`waitToAppear`，以 session ID 認），出現後把分頁移到該工作區最前面。成功或任何一步失敗都寫一行操作紀錄（`action: resume`，成功時文字寫開在哪個工作區，移動失敗也寫在文字裡）；進行中與失敗原因只記在看板程序的記憶體，顯示在它的頁面與該列（失敗時該列保留，可以再按）；hcom 在 Herdr 執行它之前就會列出接回的 client（一直沒起來的也是），所以接回中或失敗的列在 Herdr 執行它之前不因 hcom 清單有它而離開，這段期間再按接回會被拒絕。接回後 hcom 清單有這個 session 就離開「已關閉」，回到清單主體。主控的「接回」先在它的頁面展開喚醒選項（模型與思考強度用 `ModelPicker.svelte`，只有確定 client 不在執行時才帶上；開新一輪 LAT；可留空的第一則訊息；前一次接回卡住時的「放棄前一次接回」），按「喚醒接回」後伺服器以 `wakeController` 喚醒（同主控資訊頁：排在該主控的隊伍、檢查未結案的接回、記在主控的送出紀錄），喚醒允許沒有訊息，但主控其實還在執行時拒絕而不打空白進去；之後同樣等它在 Herdr 執行（分頁由喚醒移到最前面），出現才寫成功的 `resume` 操作紀錄，沒出現或失敗都寫原因並留在該列。
 - 測試以 `tests/fake-herdr.mjs`（`agent list`、`tab list`、`agent prompt`、`agent send-keys`、`pane close`、`tab rename`；每次讀取資料的清單呼叫另記在 `herdr-list-calls.jsonl`）與 `tests/fake-hcom.mjs`（含 `kill`，kill 時記一筆 `by: cli` 的停止事件；`events` 印出 `hcom-events.jsonl` 的停止事件；接回時可用 `resumedHerdr` 把 Agent 加回假的 Herdr）代替真的指令；harness 預設就用假的 Herdr，所以測試不會讀到真的 Herdr。
+
+## 看板提問
+
+使用方式見[使用說明](../docs/lat-board.md#在看板回答-agent-的提問)。實作上，hook 與看板只靠共用目錄（`LAT_BOARD_ASKS_DIR`）裡的檔案溝通，見 ADR 0009；檔案格式寫在 `hooks/board-ask.py` 開頭。
+
+- hook：`hooks/board-ask.py hook` 是 Claude 的 PreToolUse hook（matcher `AskUserQuestion`，`timeout` 660 秒，等待 600 秒，依 #284 的實測）。只用標準函式庫。心跳超過 90 秒、共用目錄寫不進去、輸入看不懂、沒有 `HERDR_PANE_ID`、輸入帶 `agent_id`（Task 子 Agent）、不是 PreToolUse（Claude 在 PreToolUse 沒給決定時也會為 AskUserQuestion 發 PermissionRequest），或任何例外，都不輸出、以 0 結束、不留提問檔。例外是 LAT 主控：看板在執行（心跳未過期）時，hook 以 session ID 呼叫面板輔助工具 `resolve --session-id`（指令格式與預設路徑和看板相同，但這兩個環境變數讀的是 Agent 自己的環境，不是看板服務的：`LAT_BOARD_HELPER_COMMAND`、`LAT_BOARD_LAT_DIR`；10 秒逾時），退出碼 0 且輸出是 JSON 物件就是主控，立即輸出 `permissionDecision: deny` 與固定英文提醒（改用待答面板的 `question upsert`、以 DECIDE 結尾），不寫提問檔、不等待；查詢失敗、逾時或輸出看不懂都當一般 Agent。
+- 提問檔 `<id>.json` 以暫存檔改名寫入；結果檔 `<id>.result.json` 先寫暫存檔再 hard link 到位，已存在就失敗，看板的答案與 hook 的逾時標記搶同一個位置，只有一方成功。hook 讀到答案後以 `allow` 加 `updatedInput`（原題目加 `answers`，以題目文字對應答案）填回，並在提問檔記 `outcome: filled`；時間到先搶到逾時標記就記 `timed_out`、不輸出決定。檔案權限 0600、目錄 0700。
+- 看板：啟動時與每 30 秒寫一次心跳檔 `heartbeat`；監看共用目錄（不含心跳檔與 `.` 開頭的暫存檔），和其他資料一起重讀，放進 `snapshot.asks`，有等待中提問的 Agent 標 `asking`，清單與 Agent 頁面的狀態改顯示「等你回答」。
+- 作答：`POST /api/asks/answer`（`id` 與每題一份 `select`、`other`、`text`）。每題都要答；單選取選項標籤，複選以 `, ` 連接，「其他」的文字接在最後。搶到回 200 `accepted`，已被搶走回 409 `taken`（「已有人作答」）；兩者都以 `board-ask` 動作寫進送出紀錄（操作紀錄的「看板提問」）。
+- 測試：hook 在 `tests/unit/board-ask-hook.test.ts`（暫存共用目錄與假心跳，主控判斷用真的輔助工具讀暫存綁定登記，含兩個程序同時搶結果檔、答案與截止同時發生），安裝在 `tests/unit/board-ask-install.test.ts`（只用暫存設定檔），伺服器端在 `tests/server/board-asks.test.ts`（含重啟），瀏覽器端在 `tests/browser/board-ask.test.ts`（真的 hook 程序對測試看板提問，含兩個瀏覽器同時送出）。
 
 ## 用量與快取
 

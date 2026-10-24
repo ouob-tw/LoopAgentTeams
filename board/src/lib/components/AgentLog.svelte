@@ -23,7 +23,7 @@
 	);
 	/** A switch whose result is good or still on its way is not shown as a failure. */
 	const switchFailed = (entry: SwitchView) => entry.state !== 'done' && entry.state !== 'resuming' && entry.state !== 'abandoned';
-	const DONE_LABEL = { send: '已送出', interrupt: '已送出 Esc', close: '已關閉', move: '已移動', rename: '已改名', resume: '已接回', pause: '已暫停通訊', unpause: '已恢復通訊' } as const;
+	const DONE_LABEL = { send: '已送出', interrupt: '已送出 Esc', close: '已關閉', move: '已移動', rename: '已改名', resume: '已接回', pause: '已暫停通訊', unpause: '已恢復通訊', 'board-ask': '已送出答案' } as const;
 	function routeLabel(entry: AgentAction): string {
 		if (entry.route === 'hcom') {
 			const command = { close: '（hcom kill）', resume: '（hcom r）', pause: '（hcom stop）' } as Partial<Record<AgentAction['action'], string>>;

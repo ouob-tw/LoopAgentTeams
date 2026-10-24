@@ -41,6 +41,8 @@ export interface BoardConfig {
 	ownPane: string | null;
 	/** Where an agent whose HCOM link is paused has its pause record, shared with LAT's stall watcher. */
 	pausedDir: string;
+	/** The folder the board-ask hook and the board share: the asks, their results and the board's heartbeat. */
+	asksDir: string;
 	/** How long a resumed link may take to show in hcom's list before the board says it did not. */
 	unpauseWaitMs: number;
 	/** Longest a change the file watch missed may take to be read and pushed to the pages. */
@@ -190,6 +192,8 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		ownPane: env.HERDR_PANE_ID || null,
 		// The same folder LAT's `lat-watch.py` and `lat-reap.py` read.
 		pausedDir: env.LAT_HCOM_PAUSED_DIR && isAbsolute(env.LAT_HCOM_PAUSED_DIR) ? env.LAT_HCOM_PAUSED_DIR : join(stateHome(env), 'lat/hcom-paused'),
+		// Next to the pause records; `hooks/board-ask.py` works it out the same way.
+		asksDir: env.LAT_BOARD_ASKS_DIR && isAbsolute(env.LAT_BOARD_ASKS_DIR) ? env.LAT_BOARD_ASKS_DIR : join(stateHome(env), 'lat/board-asks'),
 		// A Codex agent runs one short turn to reconnect.
 		unpauseWaitMs: seconds(env.LAT_BOARD_UNPAUSE_WAIT_SECONDS, 60_000),
 		fallbackMs,
