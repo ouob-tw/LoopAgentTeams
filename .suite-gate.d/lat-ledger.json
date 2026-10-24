@@ -1,0 +1,4 @@
+{"map": [
+  {"paths": ["skills/local/lat/scripts/lat-ledger.py"], "tests": ["skills/local/lat/tests/test_lat_ledger.py"]},
+  {"paths": ["skills/local/three-tier-testing/scripts/suite-gate.py"], "tests": ["skills/local/lat/tests/test_lat_ledger.py"]}
+]}

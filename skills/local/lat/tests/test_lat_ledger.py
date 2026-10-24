@@ -185,6 +185,41 @@ class StorageTests(LedgerCase):
         self.assertFalse(self.ledger.exists())
         self.assertIn('no ledger', self.fails('show'))
 
+    def test_unjournaled_write_is_refused_until_repair(self):
+        self.init()
+        item = self.started(evidence='file')
+        report = self.root / 'r.md'
+        report.write_text('ok\n')
+        lines = self.journal_lines()
+        self.ok('done', str(item), '--file', str(report))
+        self.journal.write_text('\n'.join(lines) + '\n')  # the done entry never reached it
+        self.assertIn('journal does not end with this ledger state', self.fails('show'))
+        result = self.run_ledger('check')
+        self.assertEqual(result.returncode, 1)
+        self.ok('repair', '--reason', 'journal append failed after the done write')
+        self.assertEqual(self.item(item)['status'], 'done')
+        self.ok('check')
+        self.assertIn('nothing to repair', self.fails('repair', '--reason', 'again'))
+
+    def test_concurrent_writers_all_land(self):
+        self.init()
+        environment = {**os.environ, 'LAT_LEDGER_NOW': NOW, 'HCOM_INSTANCE_NAME': 'orch'}
+        writers = [subprocess.Popen([sys.executable, str(SCRIPT), 'add', '--ledger',
+                                     str(self.ledger), '--ticket', f'#{n}', '--stage', 'impl',
+                                     '--evidence', 'file'], env=environment,
+                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
+                   for n in range(8)]
+        ids = []
+        for writer in writers:
+            out, err = writer.communicate(timeout=60)
+            self.assertEqual(writer.returncode, 0, err)
+            ids.append(int(out))
+        self.assertEqual(sorted(ids), list(range(1, 9)))
+        self.assertEqual(sorted(i['ticket'] for i in self.doc()['items']),
+                         sorted(f'#{n}' for n in range(8)))
+        self.assertEqual(len(self.journal_lines()), 9)
+        self.ok('show')
+
     def test_journal_snapshot_not_matching_its_seal_is_corrupt(self):
         self.init()
         lines = self.journal_lines()
@@ -274,6 +309,32 @@ class FieldTests(LedgerCase):
         self.assertEqual((row['status'], row['depends_on'], row['blocked_reason']),
                          ('unassigned', [replacement], None))
 
+    def test_dependency_changes_and_cancel_keep_cancelled_dependencies_blocking(self):
+        first = self.add()
+        running = self.started()
+        self.ok('cancel', str(first), '--reason', 'dropped')
+        self.ok('update', str(running), '--depends', str(first), '--reason', 'needs it')
+        row = self.item(running)
+        self.assertEqual((row['status'], row['blocked_from'], row['blocked_reason']),
+                         ('blocked', 'in_progress', '依賴已取消'))
+        self.assertIn('needs assigned or in_progress',
+                      self.fails('done', str(running), '--commit', self.merged))
+        other = self.add()
+        waiting = self.add('--depends', str(other))
+        self.ok('block', str(waiting), '--reason', 'waits for TEVU-REG-11')
+        self.ok('cancel', str(other), '--reason', 'merged into another ticket')
+        self.assertEqual(self.item(waiting)['blocked_reason'], '依賴已取消；waits for TEVU-REG-11')
+        self.ok('update', str(waiting), '--depends', '', '--reason', 'dependency dropped')
+        row = self.item(waiting)
+        self.assertEqual((row['status'], row['blocked_reason']),
+                         ('blocked', 'waits for TEVU-REG-11'))
+
+    def test_reassign_needs_a_prior_assignment(self):
+        item = self.add()
+        self.ok('block', str(item), '--reason', 'x')
+        self.assertIn('never assigned', self.fails('reassign', str(item), '--agent', 'new',
+                                                   '--reason', 'replacement'))
+
     def test_reassign_keeps_the_row_and_history(self):
         item = self.started()
         self.ok('reassign', str(item), '--agent', 'impl2', '--reason', 'impl vanished')
@@ -339,6 +400,9 @@ class DoneTests(LedgerCase):
                                                               self.merged))
         self.assertIn('gate evidence was not declared',
                       self.fails('done', str(item), '--gate', FP, '--commit', self.merged))
+        error = self.fails('done', str(item), '--commit', 'deadbeef')
+        self.assertIn('file evidence is required', error)
+        self.assertIn('commit deadbeef: not found', error)
 
     def test_gate_fingerprint_and_file_evidence_close(self):
         report = self.root / 'report.md'

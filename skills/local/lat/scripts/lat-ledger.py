@@ -186,7 +186,27 @@ def load(store):
     if sealed != digest(data):
         raise Failure(f'ledger was modified outside lat-ledger (seal mismatch): {store.path}; '
                       'inspect the change, then accept it with repair --reason "<why>"')
+    if journal_tail_seal(store) != sealed:
+        raise Failure(f'journal does not end with this ledger state (a write did not finish): '
+                      f'{store.journal}; inspect the ledger, then accept it with '
+                      'repair --reason "<why>"')
     return doc, data
+
+
+def journal_tail_seal(store):
+    """Seal of the last journal line, or None when it cannot be read."""
+    try:
+        with open(store.journal, 'rb') as stream:
+            stream.seek(0, os.SEEK_END)
+            end = position = stream.tell()
+            tail = b''
+            while position and tail.count(b'\n') < 2:
+                position = max(0, position - 65536)
+                stream.seek(position)
+                tail = stream.read(end - position)
+        return json.loads(tail.rstrip(b'\n').rpartition(b'\n')[2])['seal']
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
 
 
 def save(store, doc, expected, entry):
@@ -261,6 +281,33 @@ def record(args, item, action, changes, reason=None):
             item[field] = value
     item['history'].append({'at': stamp(now()), 'by': actor(args), 'action': action,
                             'changes': diff, 'reason': reason})
+
+
+def block_for_cancelled_dependency(args, item, why):
+    """Block an open item; an item already blocked keeps its own reason after the prefix."""
+    if item['status'] == 'blocked':
+        if item['blocked_reason'].startswith(DEP_CANCELLED):
+            return
+        changes = {'blocked_reason': f'{DEP_CANCELLED}；{item["blocked_reason"]}'}
+    elif item['status'] in ('unassigned', 'assigned', 'in_progress'):
+        changes = {'status': 'blocked', 'blocked_from': item['status'],
+                   'blocked_reason': DEP_CANCELLED}
+    else:
+        return
+    record(args, item, 'block', changes, why)
+
+
+def sync_cancelled_dependencies(args, doc, item, why):
+    """Block while any dependency is cancelled; release that block once none is."""
+    if any(find(doc, dep)['status'] == 'cancelled' for dep in item['depends_on']):
+        block_for_cancelled_dependency(args, item, why)
+    elif item['status'] == 'blocked' and item['blocked_reason'].startswith(DEP_CANCELLED):
+        rest = item['blocked_reason'][len(DEP_CANCELLED) + 1:]
+        if rest:
+            record(args, item, 'block', {'blocked_reason': rest}, why)
+        else:
+            record(args, item, 'unblock', {'status': item['blocked_from'], 'blocked_from': None,
+                                           'blocked_reason': None}, why)
 
 
 def require_status(item, allowed, action):
@@ -451,9 +498,7 @@ def cmd_add(args):
         doc['items'].append(item)
         item['history'].append({'at': stamp(at), 'by': actor(args), 'action': 'add',
                                 'changes': {'status': [None, 'unassigned']}, 'reason': None})
-        if any(find(doc, dep)['status'] == 'cancelled' for dep in deps):
-            record(args, item, 'block', {'status': 'blocked', 'blocked_from': 'unassigned',
-                                         'blocked_reason': DEP_CANCELLED})
+        sync_cancelled_dependencies(args, doc, item, 'depends on a cancelled item')
     print(item['id'])
 
 
@@ -511,11 +556,8 @@ def cmd_update(args):
                 raise Failure(f'--depends names an unknown item or the item itself: {args.depends}')
             changes['depends_on'] = deps
         record(args, item, 'update', changes, reason)
-        if (args.depends is not None and item['status'] == 'blocked'
-                and item['blocked_reason'] == DEP_CANCELLED
-                and not any(find(doc, d)['status'] == 'cancelled' for d in item['depends_on'])):
-            record(args, item, 'unblock', {'status': item['blocked_from'], 'blocked_from': None,
-                                           'blocked_reason': None}, 'dependencies changed')
+        if args.depends is not None:
+            sync_cancelled_dependencies(args, doc, item, 'dependencies changed')
 
 
 def cmd_block(args):
@@ -548,8 +590,9 @@ def cmd_done(args):
                     item['evidence_kinds'] if not given[kind]]
         problems += [f'{kind} evidence was not declared for this item' for kind in KINDS
                      if given[kind] and kind not in item['evidence_kinds']]
-        if not problems:
-            resolved, problems = verify(doc, item, given)
+        resolved, failed = verify(doc, item, {kind: given[kind]
+                                              for kind in item['evidence_kinds']})
+        problems += failed
         if problems:
             raise Failure(f'item {item["id"]} not closed:\n' +
                           '\n'.join(f'  - {problem}' for problem in problems))
@@ -567,11 +610,8 @@ def cmd_cancel(args):
         require_status(item, ('unassigned',) + OPEN, 'cancel')
         record(args, item, 'cancel', {'status': 'cancelled', 'cancel_reason': reason}, reason)
         for other in doc['items']:
-            if item['id'] in other['depends_on'] and other['status'] in (
-                    'unassigned', 'assigned', 'in_progress'):
-                record(args, other, 'block', {'status': 'blocked', 'blocked_from': other['status'],
-                                              'blocked_reason': DEP_CANCELLED},
-                       f'item {item["id"]} was cancelled')
+            if item['id'] in other['depends_on']:
+                block_for_cancelled_dependency(args, other, f'item {item["id"]} was cancelled')
 
 
 def cmd_reassign(args):
@@ -580,6 +620,8 @@ def cmd_reassign(args):
     with transaction(args, 'reassign', args.id, reason) as doc:
         item = find(doc, args.id)
         require_status(item, OPEN, 'reassign')
+        if not item['agent']:
+            raise Failure(f'item {item["id"]} was never assigned; use assign')
         changes = {'agent': agent, 'assigned_at': stamp(now()), 'started_at': None,
                    'estimate': None}
         if args.card:
@@ -717,8 +759,8 @@ def cmd_repair(args):
                 raise Failure(f'ledger is malformed ({error}); use repair --from-journal, '
                               'which rebuilds it from the journal') from error
             sealed = store.seal.read_text().strip() if store.seal.exists() else None
-            if sealed == digest(data):
-                raise Failure('ledger seal matches; nothing to repair')
+            if sealed == digest(data) and journal_tail_seal(store) == sealed:
+                raise Failure('ledger seal and journal match; nothing to repair')
             entry['action'] = 'repair-seal'
         doc['history'].append({key: entry[key] for key in ('at', 'by', 'action', 'reason')})
         doc['updated_at'] = at
