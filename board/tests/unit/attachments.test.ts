@@ -136,10 +136,12 @@ test('a stored file shows the name it was uploaded as, without the board\'s uplo
 
 test('a name splits into its first three characters, the middle, the six characters before the extension, and the extension', () => {
 	expect(nameParts('Screenshot_2026-10-24-12-00-00_com.android.chrome.jpg')).toEqual({ opening: 'Scr', middle: 'eenshot_2026-10-24-12-00-00_com.android.', tail: 'chrome', extension: '.jpg' });
-	expect(nameParts('README')).toEqual({ opening: '', middle: '', tail: 'README', extension: '' });
-	expect(nameParts('a.md')).toEqual({ opening: '', middle: '', tail: 'a', extension: '.md' });
+	expect(nameParts('README')).toEqual({ opening: 'REA', middle: '', tail: 'DME', extension: '' });
+	expect(nameParts('a.md')).toEqual({ opening: 'a', middle: '', tail: '', extension: '.md' });
+	expect(nameParts('畫面截圖測試.svelte')).toEqual({ opening: '畫面截', middle: '', tail: '圖測試', extension: '.svelte' });
 	expect(nameParts('畫面截圖測試畫面截圖測試.svelte')).toEqual({ opening: '畫面截', middle: '圖測試', tail: '畫面截圖測試', extension: '.svelte' });
-	expect(nameParts('ab234567.md')).toEqual({ opening: 'ab', middle: '', tail: '234567', extension: '.md' });
+	expect(nameParts('ab234567.md')).toEqual({ opening: 'ab2', middle: '', tail: '34567', extension: '.md' });
+	expect(nameParts('abc1234567.md')).toEqual({ opening: 'abc', middle: '1', tail: '234567', extension: '.md' });
 	// A character outside the BMP stays whole.
-	expect(nameParts('😀😀😀😀😀😀😀😀.png')).toEqual({ opening: '😀😀', middle: '', tail: '😀😀😀😀😀😀', extension: '.png' });
+	expect(nameParts('😀😀😀😀😀😀😀😀.png')).toEqual({ opening: '😀😀😀', middle: '', tail: '😀😀😀😀😀', extension: '.png' });
 });

@@ -109,18 +109,18 @@ const OPENING_CHARACTERS = 3;
 const TAIL_CHARACTERS = 6;
 
 /** A name in four parts for one line: its first three characters, always shown; the middle, cut
- *  short with … when the line is too narrow; the tail, the six characters before the extension,
- *  which give way next; and the extension (a dot and up to ten characters after the last dot),
- *  kept whole. */
+ *  short with … when the line is too narrow; the tail, up to six characters before the extension
+ *  after the first three, which give way next; and the extension (a dot and up to ten characters
+ *  after the last dot), kept whole. */
 export function nameParts(name: string): { opening: string; middle: string; tail: string; extension: string } {
 	// By characters, so a character outside the BMP is never split.
 	const characters = [...name];
 	const extension = [...(name.match(/\.[^.]{1,10}$/)?.[0] ?? '')];
 	const end = characters.length - extension.length;
-	const tail = Math.max(0, end - TAIL_CHARACTERS);
-	const middle = Math.min(tail, OPENING_CHARACTERS);
+	const middleAt = Math.min(end, OPENING_CHARACTERS);
+	const tailAt = Math.max(middleAt, end - TAIL_CHARACTERS);
 	const text = (from: number, to: number) => characters.slice(from, to).join('');
-	return { opening: text(0, middle), middle: text(middle, tail), tail: text(tail, end), extension: extension.join('') };
+	return { opening: text(0, middleAt), middle: text(middleAt, tailAt), tail: text(tailAt, end), extension: extension.join('') };
 }
 
 /** A size as people read it. */
