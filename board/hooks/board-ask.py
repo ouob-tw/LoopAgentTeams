@@ -17,6 +17,8 @@ The shared folder, one board ask per file (all 0600):
   `{"kind": "interrupted", ...}` once the hook's process is gone with nothing taken (Esc).
 - `<id>.late.json`: an answer to a timed-out ask, which the board sends as a message: written once
   by the board the same way, then again whole with `outcome` (`relayed` or `gone`).
+- `<id>.resend.json`: the user's resend of a late answer the board may not have sent (it stopped
+  while sending): written once by the board the same way, then again whole with `outcome`.
 - `heartbeat`: the board touches it every 30 seconds; older than 90 seconds means no board runs.
 
 Only the standard library; run with `uv run --no-project python`.

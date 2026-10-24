@@ -192,16 +192,52 @@ test('an ask whose hook process was ended while it waited reads as interrupted a
 	]);
 });
 
-test('an answer a board took and stopped while sending is not sent again after a restart', async () => {
-	putAsk('late-orphan');
-	timeOut('late-orphan');
-	writeFileSync(join(asksDir, 'late-orphan.late.json'), JSON.stringify({ kind: 'answer', answers: { 'Pick a color?': 'Red' }, picks: null, at: new Date().toISOString() }));
+/** A late answer a board took and stopped while sending, and optionally a resend it stopped in too. */
+function orphan(id: string, resendToo = false) {
+	putAsk(id);
+	timeOut(id);
+	writeFileSync(join(asksDir, `${id}.late.json`), JSON.stringify({ kind: 'answer', answers: { 'Pick a color?': 'Red' }, picks: null, at: new Date().toISOString() }));
+	if (resendToo) writeFileSync(join(asksDir, `${id}.resend.json`), JSON.stringify({ kind: 'resend', at: new Date().toISOString() }));
+}
+async function resend(id: string) {
+	const response = await fixture.fetch('/api/asks/resend', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ id }), cookie });
+	return { status: response.status, body: await response.json() };
+}
+
+test('an answer a board took and stopped while sending reads 結果不明 after a restart and is sent again only when asked, once', async () => {
+	orphan('late-orphan');
 	await fixture.stop();
 	await fixture.start();
-	// It may have been typed in before the board stopped: over, and said so.
+	// It may have been typed in before the board stopped: not sent again by itself.
 	expect((await fixture.refresh(cookie)).asks.find((ask) => ask.id === 'late-orphan')).toMatchObject({ state: 'relay_unknown', answers: { 'Pick a color?': 'Red' } });
 	expect(await answer('late-orphan', [2])).toMatchObject({ status: 409, body: { status: 'taken' } });
 	expect([herdrCalls(), injectCalls()]).toEqual([[], []]);
+
+	// 再送一次 from two devices at once: the taken answer goes once.
+	const results = await Promise.all([resend('late-orphan'), resend('late-orphan')]);
+	expect(results.map((result) => result.body.status).toSorted()).toEqual(['accepted', 'taken']);
+	const prompts = herdrCalls().filter((call) => call[1] === 'prompt');
+	expect(prompts).toHaveLength(1);
+	expect(prompts[0][3]).toContain('問題：Pick a color?');
+	expect(prompts[0][3]).toContain('回答：Red');
+	expect(await stateOf('late-orphan')).toBe('relayed');
+	expect((await resend('late-orphan')).status).toBe(409);
+	expect(herdrCalls().filter((call) => call[1] === 'prompt')).toHaveLength(1);
+	expect((await boardAskEntries()).filter((entry) => entry.ok).map((entry) => entry.text)).toEqual([prompts[0][3]]);
+});
+
+test('a resend that could not go, or that a stopped board left, can be sent again', async () => {
+	orphan('late-resend', true);
+	expect(await stateOf('late-resend')).toBe('relay_unknown');
+	setHerdr(true, { fail: { 'agent list': { exit: 1, stderr: 'server not running' } } });
+	const failed = await resend('late-resend');
+	expect(failed.body.status).toBe('error');
+	expect(failed.body.reason).toContain('無法確認這個 Agent 仍在 Herdr 的清單上');
+	setHerdr(true);
+	expect(await stateOf('late-resend')).toBe('relay_unknown');
+	expect(await resend('late-resend')).toMatchObject({ status: 200, body: { status: 'accepted' } });
+	expect(herdrCalls().filter((call) => call[1] === 'prompt')).toHaveLength(1);
+	expect(await stateOf('late-resend')).toBe('relayed');
 });
 
 test('an ask that ended 7 days ago is removed with its files; a newer one, and one still open, stay', async () => {

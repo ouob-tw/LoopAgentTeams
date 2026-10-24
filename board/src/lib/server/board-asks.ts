@@ -87,27 +87,38 @@ function readJson(path: string): unknown {
 	}
 }
 
-/** Late answers this board is sending now. A late file without an outcome that is not one of them
- *  was left by a board that stopped while sending: whether it typed the message in is not known,
- *  so the ask is over as `relay_unknown` and is not sent again. */
+/** A resend of a late answer the board may not have sent: taken once, then written again with
+ *  what its message came to. The answer is the late file's. */
+interface ResendFile {
+	kind: 'resend';
+	at: string;
+	outcome?: 'relayed' | 'gone';
+	outcome_at?: string;
+}
+
+/** Asks whose late answer this board is sending now. A late or resend file without an outcome
+ *  that is not one of them was left by a board that stopped while sending: whether it typed the
+ *  message in is not known, so the ask reads `relay_unknown`, is not sent again by itself, and the
+ *  user may resend it. */
 const relaying = new Set<string>();
 
-function stateOf(ask: AskFile, result: ResultFile | null, late: LateFile | null): BoardAskState {
+function stateOf(ask: AskFile, result: ResultFile | null, late: LateFile | null, resend: ResendFile | null): BoardAskState {
 	if (result?.kind === 'interrupted') return 'interrupted';
 	if (result?.kind === 'timeout') {
 		if (late?.outcome) return late.outcome;
 		if (!late) return 'timed_out';
-		return relaying.has(ask.id) ? 'relaying' : 'relay_unknown';
+		if (relaying.has(ask.id)) return 'relaying';
+		return resend?.outcome ?? 'relay_unknown';
 	}
 	if (result?.kind === 'answer') return ask.outcome === 'filled' ? 'filled' : 'answered';
 	return 'waiting';
 }
 
-function endedAt(state: BoardAskState, ask: AskFile, result: ResultFile | null, late: LateFile | null): string | null {
+function endedAt(state: BoardAskState, ask: AskFile, result: ResultFile | null, late: LateFile | null, resend: ResendFile | null): string | null {
 	if (!ENDED_ASK_STATES.has(state)) return null;
 	if (state === 'filled') return ask.outcome_at ?? result?.at ?? ask.created_at;
 	if (state === 'interrupted') return result?.at ?? ask.created_at;
-	return late?.outcome_at ?? late?.at ?? ask.created_at;
+	return resend?.outcome_at ?? late?.outcome_at ?? late?.at ?? ask.created_at;
 }
 
 /** Every ask in the folder that can be read, oldest first; a folder that does not exist holds none. */
@@ -125,7 +136,8 @@ export function readAsks(dir: string): BoardAsk[] {
 		if (!isAsk(ask) || `${ask.id}.json` !== name) continue;
 		const result = readJson(join(dir, `${ask.id}.result.json`)) as ResultFile | null;
 		const late = result?.kind === 'timeout' ? (readJson(join(dir, `${ask.id}.late.json`)) as LateFile | null) : null;
-		const state = stateOf(ask, result, late);
+		const resend = late && !late.outcome ? (readJson(join(dir, `${ask.id}.resend.json`)) as ResendFile | null) : null;
+		const state = stateOf(ask, result, late, resend);
 		const taken = result?.kind === 'answer' ? result : late;
 		asks.push({
 			id: ask.id,
@@ -135,7 +147,7 @@ export function readAsks(dir: string): BoardAsk[] {
 			createdAt: ask.created_at,
 			deadlineAt: ask.deadline_at,
 			state,
-			endedAt: endedAt(state, ask, result, late),
+			endedAt: endedAt(state, ask, result, late, resend),
 			answers: taken ? taken.answers : null,
 			picks: taken && Array.isArray(taken.picks) ? taken.picks : null
 		});
@@ -210,7 +222,7 @@ export function settleAsks(config: Pick<BoardConfig, 'asksDir' | 'stateDir'>, ag
 	const dir = config.asksDir;
 	for (const ask of readAsks(dir)) {
 		if (ask.endedAt !== null && now - Date.parse(ask.endedAt) >= ASK_RETENTION_MS) {
-			for (const suffix of ['.json', '.result.json', '.late.json']) rmSync(join(dir, `${ask.id}${suffix}`), { force: true });
+			for (const suffix of ['.json', '.result.json', '.late.json', '.resend.json']) rmSync(join(dir, `${ask.id}${suffix}`), { force: true });
 			continue;
 		}
 		if (ask.state !== 'waiting') continue;
@@ -253,20 +265,20 @@ function takeLate(dir: string, id: string, answers: Record<string, string>, pick
 }
 
 /**
- * Send an answer to a timed-out ask as a message, through the same relay as any text for the agent.
- * Taken once first, so of two devices only one sends. Sent, or the agent read off Herdr's list, the
- * ask is over; not sent this time, it is given up again so the user can retry.
+ * Send an answer to a timed-out ask as a message, through the same relay as any text for the agent,
+ * once `file` (the late file, or the resend file) was taken for it, so of two devices only one
+ * sends. Sent, or the agent read off Herdr's list, `file` is written again with that; not sent this
+ * time, `file` is given up again so the user can retry.
  */
-async function relayLate(board: Board, ask: BoardAsk, answers: Record<string, string>, picks: AskPick[]): Promise<{ status: number; body: AskAnswerResponse }> {
+async function relayLate(board: Board, ask: BoardAsk, answers: Record<string, string>, file: string): Promise<{ status: number; body: AskAnswerResponse }> {
 	const dir = board.config.asksDir;
 	relaying.add(ask.id);
 	try {
 		const relayed = await relayToAgent(board, ask.sessionId, 'board-ask', lateAnswerMessage(answers));
-		const name = `${ask.id}.late.json`;
-		if (relayed.outcome === 'failed') rmSync(join(dir, name), { force: true });
+		if (relayed.outcome === 'failed') rmSync(join(dir, file), { force: true });
 		else {
-			const taken = (readJson(join(dir, name)) as LateFile | null) ?? { kind: 'answer', answers, picks, at: new Date().toISOString() };
-			writeWhole(dir, name, { ...taken, outcome: relayed.outcome === 'sent' ? 'relayed' : 'gone', outcome_at: new Date().toISOString() });
+			const taken = readJson(join(dir, file)) as object | null;
+			writeWhole(dir, file, { ...taken, outcome: relayed.outcome === 'sent' ? 'relayed' : 'gone', outcome_at: new Date().toISOString() });
 		}
 		const { reason, logError } = relayed.body;
 		if (relayed.outcome === 'sent') return { status: 200, body: { status: 'accepted', reason: null, logError } };
@@ -275,6 +287,66 @@ async function relayLate(board: Board, ask: BoardAsk, answers: Record<string, st
 		relaying.delete(ask.id);
 		void board.refresh();
 	}
+}
+
+/** Write an attempt the board did not act on, or handed to the hook, in the asking agent's
+ *  operation record, and answer the page with it. */
+async function logAttempt(board: Board, ask: BoardAsk, text: string, taken: boolean): Promise<{ status: number; body: AskAnswerResponse }> {
+	const agent = (await board.current()).agents.find((candidate) => candidate.id === ask.sessionId);
+	const entry: AgentAction = {
+		id: randomUUID(),
+		kind: 'agent-action',
+		action: 'board-ask',
+		time: new Date().toISOString(),
+		agentId: ask.sessionId,
+		name: agent?.name ?? '',
+		route: null,
+		pane: agent?.herdr.pane ?? null,
+		text,
+		ok: taken,
+		error: taken ? null : ASK_TAKEN_REASON
+	};
+	let logError: string | null = null;
+	try {
+		appendSent(board.config.stateDir, entry);
+	} catch (error) {
+		// Taken or not either way; that outcome is what the page must show.
+		logError = (error as Error).message;
+	}
+	board.agentActed(ask.sessionId);
+	void board.refresh();
+	return taken
+		? { status: 200, body: { status: 'accepted', reason: null, logError } }
+		: { status: 409, body: { status: 'taken', reason: ASK_TAKEN_REASON, logError } };
+}
+
+/**
+ * Send again the late answer of an ask whose message may or may not have gone (`relay_unknown`),
+ * as the user asked: the same message through the same relay. Taken once through the resend file,
+ * so of two devices only one sends; a resend file left by a board that stopped while sending is
+ * taken again, the ask being `relay_unknown` once more.
+ */
+export async function resendAsk(board: Board, id: string): Promise<{ status: number; body: AskAnswerResponse }> {
+	const dir = board.config.asksDir;
+	const ask = readAsks(dir).find((candidate) => candidate.id === id);
+	if (!ask) return { status: 404, body: { status: 'gone', reason: '這一題已經不在看板上。', logError: null } };
+	const answers = ask.answers ?? {};
+	const name = `${id}.resend.json`;
+	let taken = false;
+	try {
+		if (ask.state === 'relay_unknown' && !relaying.has(id)) {
+			const record: ResendFile = { kind: 'resend', at: new Date().toISOString() };
+			taken = claim(dir, name, record);
+			if (!taken && !(readJson(join(dir, name)) as ResendFile | null)?.outcome) {
+				rmSync(join(dir, name), { force: true });
+				taken = claim(dir, name, record);
+			}
+		}
+	} catch (error) {
+		return { status: 500, body: { status: 'error', reason: `寫不進共用目錄：${(error as Error).message}`, logError: null } };
+	}
+	if (taken) return relayLate(board, ask, answers, name);
+	return logAttempt(board, ask, answersText(answers), false);
 }
 
 /**
@@ -304,31 +376,6 @@ export async function answerAsk(board: Board, id: string, picks: AskPick[]): Pro
 	} catch (error) {
 		return { status: 500, body: { status: 'error', reason: `答案寫不進共用目錄：${(error as Error).message}`, logError: null } };
 	}
-	if (late && taken) return relayLate(board, ask, answers, picks);
-	const agent = (await board.current()).agents.find((candidate) => candidate.id === ask.sessionId);
-	const entry: AgentAction = {
-		id: randomUUID(),
-		kind: 'agent-action',
-		action: 'board-ask',
-		time: new Date().toISOString(),
-		agentId: ask.sessionId,
-		name: agent?.name ?? '',
-		route: null,
-		pane: agent?.herdr.pane ?? null,
-		text: answersText(answers),
-		ok: taken,
-		error: taken ? null : ASK_TAKEN_REASON
-	};
-	let logError: string | null = null;
-	try {
-		appendSent(config.stateDir, entry);
-	} catch (error) {
-		// Taken or not either way; that outcome is what the page must show.
-		logError = (error as Error).message;
-	}
-	board.agentActed(ask.sessionId);
-	void board.refresh();
-	return taken
-		? { status: 200, body: { status: 'accepted', reason: null, logError } }
-		: { status: 409, body: { status: 'taken', reason: ASK_TAKEN_REASON, logError } };
+	if (late && taken) return relayLate(board, ask, answers, `${id}.late.json`);
+	return logAttempt(board, ask, answersText(answers), taken);
 }

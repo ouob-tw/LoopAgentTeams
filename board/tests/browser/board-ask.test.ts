@@ -222,6 +222,28 @@ test('a timed-out card stays on the page of an agent that left Herdr\'s list, an
 	}
 }, 60_000);
 
+test('a late answer a board may not have sent reads 結果不明 and is sent again with 再送一次', async () => {
+	// Left as a board that stopped while sending leaves it: the hook's timeout, the late answer, no outcome.
+	const dir = join(fixture.dir, 'board-asks');
+	const now = Date.now();
+	writeFileSync(join(dir, 'orphan-ask.json'), JSON.stringify({ id: 'orphan-ask', client: 'claude', session_id: 's-ask', hcom_name: null, herdr_pane: 'wA:p-s-ask', cwd: '/work', kind: 'question', tool_use_id: 'toolu_9', tool_input: { questions: [QUESTIONS[0]] }, created_at: new Date(now + 60_000).toISOString(), deadline_at: new Date(now + 61_000).toISOString(), hook_pid: process.pid, outcome: 'timed_out', outcome_at: new Date(now).toISOString() }));
+	writeFileSync(join(dir, 'orphan-ask.result.json'), JSON.stringify({ kind: 'timeout', at: new Date(now).toISOString() }));
+	writeFileSync(join(dir, 'orphan-ask.late.json'), JSON.stringify({ kind: 'answer', answers: { 'Pick a color?': 'Blue' }, picks: [{ select: [2], other: false, text: '' }], at: new Date(now).toISOString() }));
+	const tab = await open();
+	await tab.eval(`document.querySelector('[data-agent="s-ask"]').click()`);
+	const unknown = `.detail [data-ask="orphan-ask"]`;
+	await tab.until(`document.querySelector('${unknown}[data-state="relay_unknown"]')`, 'the 結果不明 card');
+	expect(await tab.eval(`document.querySelector('${unknown} [role="status"]').innerText`)).toBe('結果不明，請看對話紀錄・可能已送過，請先看對話紀錄');
+	expect(await tab.eval(`[...document.querySelectorAll('${unknown} li.picked')].map((li) => li.innerText.replace(/\\s+/g, ' ').trim())`)).toEqual(['✓ Blue Choose blue.']);
+	const calls = join(fixture.dir, 'herdr-calls.jsonl');
+	const prompts = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call[1] === 'prompt') : []);
+	const before = prompts().length;
+	await tab.until(`(document.querySelector('${unknown} button').click(), true)`, 'the button');
+	await tab.until(`document.querySelector('${unknown}').dataset.state === 'relayed'`, 'the card to read 已傳話');
+	expect(prompts().slice(before).map((call) => call[3].includes('回答：Blue'))).toEqual([true]);
+	expect(tab.errors).toEqual([]);
+}, 60_000);
+
 test('a LAT controller asking through the menu is denied: no card on the board and nothing new in 待辦', async () => {
 	// The real panel helper reads a registry that binds this session as a controller.
 	const panel = join(fixture.dir, 'panel-config');

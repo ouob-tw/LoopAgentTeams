@@ -21,7 +21,7 @@ export interface AskQuestion {
  * hook has not handed it back yet; `filled`, handed back to the client; `timed_out`, the hook's
  * wait ran out first and ended the turn, so an answer now goes as a message; `relaying`, such an
  * answer taken and being sent; `relayed`, sent as a message; `relay_unknown`, the board stopped
- * while sending it, so whether it went is not known; `gone`, its agent no longer in Herdr's
+ * while sending it, so whether it went is not known, and the user may send it again; `gone`, its agent no longer in Herdr's
  * list, so the answer went nowhere; `interrupted`, the hook's process ended with nothing taken
  * (Esc in the terminal, or the agent closed).
  */
@@ -128,6 +128,9 @@ export interface AskAnswerResponse {
 }
 
 export const ASK_TAKEN_REASON = '已有人作答';
+
+/** What a `relay_unknown` card says beside its button to send the answer again. */
+export const RESEND_NOTE = '可能已送過，請先看對話紀錄';
 
 /** Why an ask's operation record says nothing was answered: its hook was ended in the terminal. */
 export const ASK_INTERRUPTED_REASON = '已在終端機中斷，沒有作答';

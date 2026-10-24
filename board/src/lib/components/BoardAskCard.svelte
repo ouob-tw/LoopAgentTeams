@@ -15,8 +15,8 @@
 	// (one or several to pick, or 其他 with text of one's own) but no note, which the client's answer
 	// has no place for. All the questions are sent together. Once taken it is read-only, what was
 	// picked marked among the options. Once the hook stopped waiting it still takes an answer, sent
-	// to the agent as a message.
-	import { ASK_TAKEN_REASON, askAnswerable, BOARD_ASK_STATE_TEXT, EMPTY_PICK, pickComplete, type AskAnswerResponse, type AskQuestion, type BoardAsk } from '#lib/board/board-asks.ts';
+	// to the agent as a message; one the board may not have sent (結果不明) can be sent again.
+	import { ASK_TAKEN_REASON, askAnswerable, BOARD_ASK_STATE_TEXT, EMPTY_PICK, RESEND_NOTE, pickComplete, type AskAnswerResponse, type AskQuestion, type BoardAsk } from '#lib/board/board-asks.ts';
 	import { request } from '#lib/board/api.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
@@ -54,13 +54,14 @@
 		edit(index, question.multiSelect ? { other: !pickOf(index).other } : { select: [], other: true });
 	}
 
-	async function submit() {
-		if (sending || !complete) return;
+	/** Send the picks, or with `resend` the answer already taken again. */
+	async function submit(resend = false) {
+		if (sending || (!resend && !complete)) return;
 		sending = true;
-		const result = await request<AskAnswerResponse>('/api/asks/answer', {
+		const result = await request<AskAnswerResponse>(resend ? '/api/asks/resend' : '/api/asks/answer', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ id: ask.id, picks: ask.questions.map((_, index) => pickOf(index)) })
+			body: JSON.stringify(resend ? { id: ask.id } : { id: ask.id, picks: ask.questions.map((_, index) => pickOf(index)) })
 		});
 		sending = false;
 		if (!result.ok && result.unpaired) return;
@@ -168,6 +169,11 @@
 				<span class="state" role="status">{BOARD_ASK_STATE_TEXT[ask.state]}{ask.questions.length > 1 && !complete ? '・每一題都要作答' : ''}</span>
 			{/if}
 		</form>
+	{:else if ask.state === 'relay_unknown' && !takenHere[ask.id]}
+		<div class="actions">
+			<button class="primary" disabled={sending} onclick={() => submit(true)}>{sending ? '送出中…' : '再送一次'}</button>
+			<span class="state" role="status">{BOARD_ASK_STATE_TEXT.relay_unknown}・{RESEND_NOTE}</span>
+		</div>
 	{:else}
 		<p class="state" role="status">{takenHere[ask.id] ? `${ASK_TAKEN_REASON}${ask.state === 'filled' || ask.state === 'relayed' ? `・${BOARD_ASK_STATE_TEXT[ask.state]}` : ''}` : BOARD_ASK_STATE_TEXT[ask.state]}</p>
 	{/if}
@@ -188,7 +194,7 @@
 		border-radius: var(--radius);
 		padding: 0.9rem 1rem;
 	}
-	.content:not([data-state='waiting'], [data-state='timed_out']) {
+	.content:not([data-state='waiting'], [data-state='timed_out'], [data-state='relay_unknown']) {
 		border-left-color: var(--ok);
 	}
 	header {
