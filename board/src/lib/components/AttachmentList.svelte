@@ -31,16 +31,17 @@
 	});
 
 	// Saved as a file by a link of its own: an image or PDF the board serves for showing would open
-	// in the page instead.
+	// in the page instead. The name is the one the clicked link suggests.
 	async function download(event: MouseEvent, path: string) {
 		event.preventDefault();
+		const name = (event.currentTarget as HTMLAnchorElement).download;
 		if (!(await present(path))) {
 			gone[path] = true;
 			return;
 		}
 		const link = document.createElement('a');
 		link.href = attachmentUrl(path);
-		link.download = fileName(path);
+		link.download = name;
 		link.click();
 	}
 

@@ -56,6 +56,17 @@
 		(event.currentTarget as HTMLElement).querySelector<HTMLElement>(`[data-tab="${tab}"]`)?.focus();
 	}
 
+	// The open tab in view in its strip, however it was opened: a click, an arrow key or the page.
+	let strip = $state<HTMLElement>();
+	$effect(() => {
+		const button = strip?.querySelector<HTMLElement>(`[data-tab="${tab}"]`);
+		if (!strip || !button) return;
+		const shown = strip.getBoundingClientRect();
+		const at = button.getBoundingClientRect();
+		if (at.left < shown.left) strip.scrollLeft -= shown.left - at.left;
+		else if (at.right > shown.right) strip.scrollLeft += at.right - shown.right;
+	});
+
 	// Whose texts the conversation shows: by its short name, as its page and the command line say it.
 	const speaker = $derived({ id: agent.id, hcomName: shortName(agent), lastReportAt: null });
 	const where = $derived.by(() => {
@@ -104,7 +115,7 @@
 
 <!-- svelte-ignore a11y_interactive_supports_focus -->
 <div class="tabbar">
-<div class="tabs" role="tablist" aria-label="Agent 的紀錄" onkeydown={tabKeys}>
+<div class="tabs" bind:this={strip} role="tablist" aria-label="Agent 的紀錄" onkeydown={tabKeys}>
 	{#each TABS as entry (entry.id)}
 		<button
 			type="button"
@@ -233,17 +244,23 @@
 		display: flex;
 		border-bottom: 1px solid var(--line);
 	}
+	/* Tabs that do not fit scroll sideways inside the strip; the page itself never does. The strip,
+	   not each tab, reaches over the line, so its scrolling does not cut the open tab's underline. */
 	.tabs {
 		display: flex;
 		flex: 1;
 		min-width: 0;
 		gap: 0.2rem;
+		margin-bottom: -1px;
+		overflow-x: auto;
+		scrollbar-width: thin;
 	}
 	.tabs button {
 		display: inline-flex;
+		flex: none;
 		align-items: center;
 		gap: 0.35rem;
-		margin-bottom: -1px;
+		white-space: nowrap;
 		padding: 0.4rem 0.8rem;
 		border: 0;
 		border-bottom: 2px solid transparent;
@@ -276,10 +293,11 @@
 	:global(:root[data-theme='light']) .tabs button[aria-selected='true'] {
 		border-bottom-color: var(--text);
 	}
-	/* A phone: the tabs share the width. */
+	/* A phone: the tabs share the width, none narrower than its label and count. */
 	@media (max-width: 760px) {
 		.tabs button {
-			flex: 1;
+			flex: 1 0 0;
+			min-width: max-content;
 			justify-content: center;
 			padding: 0.5rem 0.3rem;
 		}

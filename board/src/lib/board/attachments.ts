@@ -98,6 +98,21 @@ export function fileName(path: string): string {
 	return path.slice(path.lastIndexOf('/') + 1);
 }
 
+/** The name a file was uploaded as: its stored name without the `<16 hex>-` the board puts before it. */
+export function uploadedName(path: string): string {
+	return fileName(path).replace(/^[0-9a-f]{16}-(?=.)/, '');
+}
+
+/** A name in two parts for one line: the start, cut short with … when the line is too narrow, and
+ *  the end kept whole, the extension and the few characters before it. */
+export function nameParts(name: string): { start: string; end: string } {
+	// By characters, so a character outside the BMP is never split.
+	const characters = [...name];
+	const extension = [...(name.match(/\.[^.]{1,10}$/)?.[0] ?? '')];
+	const cut = Math.max(0, characters.length - extension.length - 6);
+	return { start: characters.slice(0, cut).join(''), end: characters.slice(cut).join('') };
+}
+
 /** A size as people read it. */
 export function fileSize(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;

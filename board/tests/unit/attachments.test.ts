@@ -2,7 +2,7 @@
 // shown, how much of a text file a preview reads, and what a file name becomes on the host. No
 // server and no browser: the preview's reads go to a stand-in for fetch.
 import { expect, test } from 'bun:test';
-import { attachmentKind, attachmentUrl, PREVIEW_BYTES, readTextPreview, splitAttachments, withAttachments } from '../../src/lib/board/attachments.ts';
+import { attachmentKind, attachmentUrl, nameParts, PREVIEW_BYTES, readTextPreview, splitAttachments, uploadedName, withAttachments } from '../../src/lib/board/attachments.ts';
 import { safeName } from '../../src/lib/server/uploads.ts';
 
 const A = '/srv/lat-board-uploads/2026-10-22/0123456789abcdef-截圖.png';
@@ -122,4 +122,23 @@ test('a file name loses directories, control characters, spaces and a leading do
 	expect(long).toBe(`${'長'.repeat(77)}.mp4`);
 	expect(safeName(`${'a'.repeat(300)}.mp4`)).toBe(`${'a'.repeat(233)}.mp4`);
 	expect(safeName(`${'長'.repeat(80)}.txt`)).toBe(`${'長'.repeat(77)}.txt`);
+});
+
+test('a stored file shows the name it was uploaded as, without the board\'s upload number', () => {
+	expect(uploadedName(A)).toBe('截圖.png');
+	expect(uploadedName('/x/0123456789abcdef-Screenshot_2026-10-24.jpg')).toBe('Screenshot_2026-10-24.jpg');
+	// Only the board's own prefix: 16 lowercase hex digits and a dash, with a name after it.
+	expect(uploadedName('/x/0123456789ABCDEF-a.png')).toBe('0123456789ABCDEF-a.png');
+	expect(uploadedName('/x/0123456789abcde-a.png')).toBe('0123456789abcde-a.png');
+	expect(uploadedName('/x/0123456789abcdef-')).toBe('0123456789abcdef-');
+	expect(uploadedName('/x/notes.md')).toBe('notes.md');
+});
+
+test('a name splits into a start that may be cut and an end kept whole: the extension and six characters before it', () => {
+	expect(nameParts('Screenshot_2026-10-24-12-00-00_com.android.chrome.jpg')).toEqual({ start: 'Screenshot_2026-10-24-12-00-00_com.android.', end: 'chrome.jpg' });
+	expect(nameParts('README')).toEqual({ start: '', end: 'README' });
+	expect(nameParts('a.md')).toEqual({ start: '', end: 'a.md' });
+	expect(nameParts('很長的附件檔名很長的附件檔名.md')).toEqual({ start: '很長的附件檔名很', end: '長的附件檔名.md' });
+	// A character outside the BMP stays whole.
+	expect(nameParts('😀😀😀😀😀😀😀😀.png')).toEqual({ start: '😀😀', end: '😀😀😀😀😀😀.png' });
 });

@@ -7,6 +7,7 @@ import { spawn } from 'node:child_process';
 import { existsSync, mkdirSync, mkdtempSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { deflateSync } from 'node:zlib';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { withAttachments } from '../../src/lib/board/attachments.ts';
 import { NODE, startFixture, type Fixture } from '../harness.ts';
@@ -14,6 +15,33 @@ import { CHROME, launchChrome, Tab, type Browser } from '../browser.ts';
 
 /** A 1×1 PNG. */
 const PNG = Buffer.from('iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg==', 'base64');
+
+/** A PNG `width` × `height`, one colour. */
+function png(width: number, height: number): Buffer {
+	const chunk = (type: string, data: Buffer) => {
+		const length = Buffer.alloc(4);
+		length.writeUInt32BE(data.length);
+		const body = Buffer.concat([Buffer.from(type), data]);
+		const crc = Buffer.alloc(4);
+		crc.writeUInt32BE(crc32(body));
+		return Buffer.concat([length, body, crc]);
+	};
+	const header = Buffer.alloc(13);
+	header.writeUInt32BE(width, 0);
+	header.writeUInt32BE(height, 4);
+	header.set([8, 2, 0, 0, 0], 8);
+	const row = Buffer.concat([Buffer.from([0]), Buffer.alloc(width * 3, 0x60)]);
+	const pixels = deflateSync(Buffer.concat(Array.from({ length: height }, () => row)));
+	return Buffer.concat([Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]), chunk('IHDR', header), chunk('IDAT', pixels), chunk('IEND', Buffer.alloc(0))]);
+}
+function crc32(bytes: Buffer): number {
+	let crc = ~0;
+	for (const byte of bytes) {
+		crc ^= byte;
+		for (let bit = 0; bit < 8; bit++) crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+	}
+	return ~crc >>> 0;
+}
 
 /** A one-page PDF that says PREVIEW PDF. */
 function pdf(): Buffer {
@@ -44,6 +72,8 @@ const MARKDOWN = `# 預覽標題\n\n- 第一點\n- 第二點\n\n${PROBES}\n\n[�
 const LONG = `${'很長的附件檔名'.repeat(12)}.md`;
 /** An image far larger than a phone's screen. */
 const WIDE = '<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000"><rect width="3000" height="2000" fill="teal"/></svg>';
+/** A phone's screenshot, upright, under the long name a phone gives it. */
+const SHOT = 'Screenshot_2026-10-24-12-00-00-123_com.android.chrome.png';
 const PYTHON = 'def main():\n    if True:\n        print("縮排")\n\n\treturn  # tab\n';
 const TEXT = `第一行\n  兩格縮排\n${'longwordwithoutspaces'.repeat(40)}\n`;
 const TAIL = 'TAIL-MARKER-PAST-200KB';
@@ -85,6 +115,7 @@ beforeAll(async () => {
 		'big.log': BIG,
 		'empty.txt': '',
 		'pixel.png': PNG,
+		[SHOT]: png(1080, 2400),
 		'report.pdf': pdf(),
 		'letter.docx': 'not really a word file',
 		'bundle.zip': 'PK not really a zip',
@@ -132,12 +163,18 @@ const SENT = '#panel-sent:not([hidden])';
 const TRANSCRIPT = '#panel-transcript';
 const DIALOG = 'dialog.preview[open]';
 
-async function visit(where: 'sent' | 'transcript', width = 1280) {
-	browser = await launchChrome({ screen: `document.querySelector('${DIALOG}')?.innerText ?? document.body.innerText` });
+/** The board in a new Chrome, `width` × `height`; `touch` makes it a phone or tablet with a touch
+ *  screen, `minFont` sets the smallest text size. */
+async function visit(where: 'sent' | 'transcript', width = 1280, { height = 800, touch = false, minFont }: { height?: number; touch?: boolean; minFont?: number } = {}) {
+	browser = await launchChrome({
+		screen: `document.querySelector('${DIALOG}')?.innerText ?? document.body.innerText`,
+		scripts: minFont ? [`localStorage.setItem('lat-board-min-font', '${minFont}')`] : []
+	});
 	tab = browser.tab;
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
-	await tab.send('Emulation.setDeviceMetricsOverride', { width, height: 800, deviceScaleFactor: 1, mobile: width <= 760 });
+	await tab.send('Emulation.setDeviceMetricsOverride', { width, height, deviceScaleFactor: 1, mobile: touch || width <= 760 });
+	if (touch) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 5 });
 	await tab.send('Page.setDownloadBehavior', { behavior: 'allow', downloadPath: downloads });
 	await tab.navigate(`${fixture.url}/?controller=${session}`);
 	await tab.eval(RECORD);
@@ -168,7 +205,7 @@ for (const where of ['sent', 'transcript'] as const) {
 		await visit(where);
 		await openPreview(where, 'notes.md');
 		await tab.until(`!!document.querySelector('${DIALOG} .md h1')`, 'the Markdown laid out');
-		expect(await tab.eval<string>(`document.querySelector('${DIALOG} h2').innerText`)).toBe(paths['notes.md'].split('/').pop()!);
+		expect(await tab.eval<string>(`document.querySelector('${DIALOG} h2').innerText`)).toBe('notes.md');
 		expect(await tab.eval<number>(`document.querySelectorAll('${DIALOG} .md li').length`)).toBe(2);
 		// Raw HTML is text, a javascript: link is not a link, and none of the probes ran.
 		expect(await dialogText()).toContain('<script>window.pwned = 1');
@@ -212,7 +249,8 @@ for (const where of ['sent', 'transcript'] as const) {
 		// 下載 saves the file and leaves the board where it is.
 		const board = await tab.eval<string>('location.href');
 		await tab.eval(`document.querySelector('${DIALOG} header a[download]').click()`);
-		const file = join(downloads, paths['pixel.png'].split('/').pop()!);
+		// Under the name it was uploaded as, without the board's upload number.
+		const file = join(downloads, 'pixel.png');
 		const deadline = Date.now() + 10_000;
 		while (!existsSync(file) && Date.now() < deadline) await Bun.sleep(100);
 		expect(readFileSync(file)).toEqual(PNG);
@@ -278,7 +316,7 @@ test('a text over 200KB shows its first 204,800 bytes only, says so, and downloa
 	expect(reads).toEqual([{ url: `/api/uploads/file?path=${encodeURIComponent(paths['big.log'])}`, method: 'GET', range: 'bytes=0-204799', status: 206, bytes: 204_800 } as never]);
 
 	await tab.eval(`document.querySelector('${DIALOG} .truncated a').click()`);
-	const file = join(downloads, paths['big.log'].split('/').pop()!);
+	const file = join(downloads, 'big.log');
 	const deadline = Date.now() + 10_000;
 	while (!existsSync(file) && Date.now() < deadline) await Bun.sleep(100);
 	expect(readFileSync(file, 'utf8')).toBe(BIG);
@@ -298,7 +336,7 @@ test('a Word file and an archive still download, and open no window', async () =
 	for (const name of ['letter.docx', 'bundle.zip']) {
 		expect(await tab.eval<number>(`${entry('sent', name)}.querySelectorAll('a.file[download]').length`)).toBe(1);
 		await tab.eval(`${entry('sent', name)}.querySelector('a.file').click()`);
-		const file = join(downloads, paths[name].split('/').pop()!);
+		const file = join(downloads, name);
 		const deadline = Date.now() + 10_000;
 		while (!existsSync(file) && Date.now() < deadline) await Bun.sleep(100);
 		expect(readFileSync(file, 'utf8')).toBe(readFileSync(paths[name], 'utf8'));
@@ -413,4 +451,153 @@ test('a PDF opens in a new tab and Chrome’s viewer shows its page', async () =
 	} finally {
 		chrome.close();
 	}
+}, 60_000);
+
+/** The title's parts: its text, how many lines it takes, whether its start is cut short, and whether
+ *  its end and the buttons are in the window. */
+const TITLE = `(() => {
+	const h2 = document.querySelector('${DIALOG} h2');
+	const start = h2.querySelector('.start');
+	const end = h2.querySelector('.end').getBoundingClientRect();
+	const range = document.createRange();
+	range.selectNodeContents(h2);
+	const inView = (element) => { const r = element.getBoundingClientRect(); return r.left >= 0 && r.right <= innerWidth && r.width > 0; };
+	return {
+		text: h2.textContent,
+		end: h2.querySelector('.end').textContent,
+		lines: new Set([...range.getClientRects()].map((rect) => Math.round(rect.top))).size,
+		cut: start.scrollWidth > start.clientWidth,
+		endShown: end.left >= h2.getBoundingClientRect().left && end.right <= innerWidth,
+		download: document.querySelector('${DIALOG} header a[download]').getAttribute('download'),
+		buttons: [...document.querySelectorAll('${DIALOG} header :is(a, button)')].every(inView)
+	};
+})()`;
+
+test('at 390px with the largest text the title is one line: the uploaded name, its start cut short, its extension kept', async () => {
+	await visit('transcript', 390, { touch: true, minFont: 24 });
+	await openPreview('transcript', SHOT);
+	const long = await tab.eval<{ text: string; end: string; lines: number; cut: boolean; endShown: boolean; download: string; buttons: boolean }>(TITLE);
+	expect(long).toMatchObject({ text: SHOT, end: 'chrome.png', lines: 1, cut: true, endShown: true, download: SHOT, buttons: true });
+	expect(await tab.eval<string>(`document.querySelector('${DIALOG} h2').title`)).toBe(paths[SHOT]);
+	await tab.eval(`document.querySelector('${DIALOG}').close()`);
+	// A short name whole, with no … in it.
+	await openPreview('transcript', 'pixel.png');
+	expect(await tab.eval(TITLE)).toMatchObject({ text: 'pixel.png', lines: 1, cut: false, download: 'pixel.png', buttons: true });
+}, 60_000);
+
+/** Where the image is in the window, and its proportions. */
+const IMAGE = `(() => {
+	const content = document.querySelector('${DIALOG} .content');
+	const img = content.querySelector('img');
+	const box = content.getBoundingClientRect();
+	const r = img.getBoundingClientRect();
+	return {
+		inside: r.left >= box.left - 0.5 && r.right <= box.right + 0.5 && r.top >= box.top - 0.5 && r.bottom <= box.bottom + 0.5,
+		ratio: r.width / r.height,
+		natural: img.naturalWidth / img.naturalHeight,
+		width: r.width,
+		left: r.left,
+		top: r.top,
+		scrolls: content.scrollHeight > content.clientHeight || content.scrollWidth > content.clientWidth
+	};
+})()`;
+type Shape = { inside: boolean; ratio: number; natural: number; width: number; left: number; top: number; scrolls: boolean };
+
+async function openShot() {
+	await openPreview('transcript', SHOT);
+	await tab.until(`document.querySelector('${DIALOG} .content img')?.naturalWidth === 1080`, 'the screenshot');
+	return tab.eval<Shape>(IMAGE);
+}
+
+for (const [device, width, height] of [
+	['a phone upright', 390, 800],
+	['a tablet on its side', 1180, 820]
+] as const) {
+	test(`on ${device} an upright screenshot opens whole in the window, its proportions kept`, async () => {
+		await visit('transcript', width, { height, touch: true });
+		const shape = await openShot();
+		expect(shape).toMatchObject({ inside: true, scrolls: false });
+		expect(shape.ratio).toBeCloseTo(shape.natural, 2);
+	}, 60_000);
+}
+
+/** Fingers on the touch screen, each a point; none lifts them all. */
+const touch = (type: 'touchStart' | 'touchMove' | 'touchEnd', points: [number, number][]) =>
+	tab.send('Input.dispatchTouchEvent', { type, touchPoints: points.map(([x, y], id) => ({ x, y, id })) });
+
+test('on a touch screen two fingers enlarge the image and one then moves it', async () => {
+	await visit('transcript', 390, { touch: true });
+	const before = await openShot();
+	const middle = { x: before.left + before.width / 2, y: before.top + 200 };
+	// Two fingers spread apart.
+	await touch('touchStart', [[middle.x - 20, middle.y], [middle.x + 20, middle.y]]);
+	for (let step = 1; step <= 10; step++) await touch('touchMove', [[middle.x - 20 - step * 8, middle.y], [middle.x + 20 + step * 8, middle.y]]);
+	await touch('touchEnd', []);
+	const zoomed = await tab.eval<Shape>(IMAGE);
+	expect(zoomed.width / before.width).toBeGreaterThan(2.5);
+	expect(zoomed.ratio).toBeCloseTo(before.natural, 2);
+	// One finger moves it to see another part.
+	await touch('touchStart', [[middle.x, middle.y]]);
+	for (let step = 1; step <= 5; step++) await touch('touchMove', [[middle.x + step * 10, middle.y + step * 10]]);
+	await touch('touchEnd', []);
+	const moved = await tab.eval<Shape>(IMAGE);
+	expect(moved.left - zoomed.left).toBeCloseTo(50, 0);
+	expect(moved.top - zoomed.top).toBeCloseTo(50, 0);
+	expect(moved.width).toBeCloseTo(zoomed.width, 0);
+	// Opened again, the image is whole.
+	await tab.eval(`document.querySelector('${DIALOG}').close()`);
+	expect(await openShot()).toMatchObject({ inside: true, width: before.width });
+}, 60_000);
+
+/** The board's own scrolling part around the conversation. */
+const SCROLLER = `(() => { let node = ${entry('transcript', SHOT)}; while (node && !(node.scrollHeight > node.clientHeight && /auto|scroll/.test(getComputedStyle(node).overflowY))) node = node.parentElement; return node ?? document.scrollingElement; })()`;
+
+/** A finger's swipe up at the middle of the part of `selector` in the window, as a phone scrolls. */
+async function swipe(selector: string, distance = -300) {
+	const { x, y } = await tab.eval<{ x: number; y: number }>(`(() => { const r = document.querySelector(${JSON.stringify(selector)}).getBoundingClientRect(); const top = Math.max(r.top, 0); const bottom = Math.min(r.bottom, innerHeight); return { x: r.x + r.width / 2, y: (top + bottom) / 2 }; })()`);
+	await touch('touchStart', [[x, y]]);
+	for (let step = 1; step <= 10; step++) await touch('touchMove', [[x, y + (distance * step) / 10]]);
+	await touch('touchEnd', []);
+	await Bun.sleep(300);
+}
+
+test('on a phone the page behind the window never scrolls, and is where it was when the window closes', async () => {
+	await visit('transcript', 390, { touch: true });
+	await tab.eval(`${entry('transcript', SHOT)}.scrollIntoView({ block: 'center' })`);
+	await tab.until(`[...document.querySelectorAll('${scope('transcript')} .attached img')].every((img) => img.complete && img.naturalWidth > 0)`, 'the thumbnails loaded');
+	const position = () => tab.eval<{ board: number; page: number }>(`({ board: ${SCROLLER}.scrollTop, page: document.scrollingElement.scrollTop })`);
+	// The same swipe on the board itself does scroll it.
+	const before = await position();
+	await swipe(TRANSCRIPT, 300);
+	// Until the fling has stopped.
+	let at = await position();
+	for (let last = null as typeof at | null; JSON.stringify(last) !== JSON.stringify(at); ) {
+		last = at;
+		await Bun.sleep(300);
+		at = await position();
+	}
+	expect(at.board).toBeLessThan(before.board - 100);
+
+	// A swipe on the title, and on an image shown whole.
+	await openShot();
+	await swipe(`${DIALOG} header`);
+	await swipe(`${DIALOG} header`, 300);
+	await swipe(`${DIALOG} .content img`);
+	await swipe(`${DIALOG} .content img`, 300);
+	expect(await position()).toEqual(at);
+	await tab.pointerClick(`${DIALOG} header button`);
+	await tab.until(`!document.querySelector('${DIALOG}')`, 'the window closed');
+	expect(await position()).toEqual(at);
+
+	// A long text scrolls inside the window; past its end, a swipe moves nothing behind it.
+	await openPreview('transcript', 'big.log');
+	await tab.until(`!!document.querySelector('${DIALOG} pre')`, 'big.log');
+	await swipe(`${DIALOG} .content`);
+	expect(await tab.eval<number>(`document.querySelector('${DIALOG} .content').scrollTop`)).toBeGreaterThan(100);
+	await tab.eval(`(() => { const content = document.querySelector('${DIALOG} .content'); content.scrollTop = content.scrollHeight; })()`);
+	await swipe(`${DIALOG} .content`);
+	await swipe(`${DIALOG} header`);
+	expect(await position()).toEqual(at);
+	await tab.eval(`document.querySelector('${DIALOG}').close()`);
+	expect(await position()).toEqual(at);
 }, 60_000);
