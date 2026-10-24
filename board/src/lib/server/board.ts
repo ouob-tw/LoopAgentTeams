@@ -19,7 +19,7 @@ import { settleAnswers } from './answer.ts';
 import { settleLaunches } from './launch.ts';
 import { settleRelaunches } from './relaunch.ts';
 import { settleResumes } from './wake.ts';
-import { createAgentRoster, type HerdrAgentList } from './agents.ts';
+import { createAgentRoster, LAG_CONFIRM_MS, type HerdrAgentList } from './agents.ts';
 import { createClosedRoster } from './closed-agents.ts';
 import { linkedAgain, settlePauses } from './paused.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
@@ -385,6 +385,7 @@ function createBoard(): Board {
 		if (!closed) sourceWatcher.sync(watchTargets());
 
 		publish(sources);
+		confirmLater();
 		pruneAfter(reports.files);
 		return snapshot!;
 	}
@@ -465,6 +466,16 @@ function createBoard(): Board {
 	let pollAgain = false;
 	let pollTimer: ReturnType<typeof setInterval> | undefined;
 	let soonTimer: ReturnType<typeof setTimeout> | undefined;
+	let confirmTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/** hcom says an agent works and Herdr says it is idle: read once more, a moment apart, to tell whether hcom is behind. */
+	function confirmLater(): void {
+		if (closed || streams.size === 0 || !agentRoster.confirming()) return;
+		confirmTimer ??= setTimeout(() => {
+			confirmTimer = undefined;
+			void pollStatus();
+		}, LAG_CONFIRM_MS);
+	}
 
 	/** Read hcom's and Herdr's lists alone and push the agents if a status changed, also while a full
 	 *  read waits on the helper. Never overlaps itself; a list that cannot be read in time leaves the last one standing. */
@@ -492,6 +503,7 @@ function createBoard(): Board {
 			const rostered = agentRoster.update(useHerdr, useAgents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
 			sources = { ...sources, agents: rostered.agents, workspaces: rostered.workspaces, running: lastRunning };
 			publish(sources);
+			confirmLater();
 		} catch {
 			// The last statuses stand; the next tick reads again.
 		} finally {
@@ -510,6 +522,8 @@ function createBoard(): Board {
 			pollTimer = undefined;
 			clearTimeout(soonTimer);
 			soonTimer = undefined;
+			clearTimeout(confirmTimer);
+			confirmTimer = undefined;
 		} else pollTimer ??= setInterval(() => void (polling || pollStatus()), config.statusPollMs);
 	}
 
@@ -610,6 +624,7 @@ function createBoard(): Board {
 			clearTimeout(fallback);
 			clearInterval(pollTimer);
 			clearTimeout(soonTimer);
+			clearTimeout(confirmTimer);
 			clearInterval(heartbeat);
 			sourceWatcher.close();
 			deviceWatcher.close();

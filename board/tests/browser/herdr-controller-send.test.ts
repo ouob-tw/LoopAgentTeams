@@ -57,7 +57,7 @@ function herdrAgent(session: string, cwd = `/home/someone/projects/${session}`) 
 	return {
 		agent: 'claude',
 		agent_session: { kind: 'id', value: session },
-		agent_status: 'idle',
+		agent_status: ['s-lead', 's-sun'].includes(session) ? 'working' : 'idle',
 		cwd,
 		pane_id: `wA:p-${session}`,
 		tab_id: `wA:t-${session}`,

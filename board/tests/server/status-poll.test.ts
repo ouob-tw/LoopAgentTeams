@@ -41,7 +41,7 @@ const herdrAgent = (session: string, status = 'idle') => ({
 });
 const hcomAgent = (name: string, session: string, status: string) => ({ name, session_id: session, status, launch_context: { pane_id: `wA:p-${session}` } });
 
-function setLists(f: Fixture, hcomStatus: string, herdrStatus = 'idle', extra: object = {}) {
+function setLists(f: Fixture, hcomStatus: string, herdrStatus = hcomStatus === 'active' ? 'working' : 'idle', extra: object = {}) {
 	const agents = [herdrAgent('s-one', herdrStatus)];
 	const tabs = [{ tab_id: 'wA:t-s-one', workspace_id: 'wA', label: 'tab-one', number: 1, pane_count: 1 }];
 	writeFileSync(join(f.dir, 'herdr.json'), JSON.stringify({ agents, workspaces: [{ workspace_id: 'wA', number: 1, label: 'Alpha', focused: false }], tabs, ...extra }));
@@ -107,7 +107,7 @@ test('a list that cannot be read leaves the last statuses and the other data alo
 	expect(status(page.latest())).toBe('working');
 	expect(page.snapshots.length).toBe(before);
 	// Herdr's list breaks too: still nothing changes, then both come back.
-	setLists(fixture, 'active', 'idle', { fail: { 'agent list': { exit: 1, stderr: 'herdr down' } } });
+	setLists(fixture, 'active', 'working', { fail: { 'agent list': { exit: 1, stderr: 'herdr down' } } });
 	fixture.setHcom({ listFail: { exit: 1, stderr: 'hcom down' } });
 	await sleep(1_500);
 	expect(status(page.latest())).toBe('working');
@@ -151,7 +151,7 @@ test('an interrupt from the board is followed by a read within seconds, whatever
 	const page = slowAction.watch(actionCookie);
 	await until(() => status(page.latest()) === 'idle', 5_000, 'the first snapshot');
 	const calls = listCalls(slowAction);
-	const doneAt = await interrupt(slowAction, actionCookie, () => setLists(slowAction, 'active', 'idle', { slowMs: { 'agent send-keys': 700 } }));
+	const doneAt = await interrupt(slowAction, actionCookie, () => setLists(slowAction, 'active', 'working', { slowMs: { 'agent send-keys': 700 } }));
 	await until(() => status(page.latest()) === 'working', 3_000, 'the read after the interrupt');
 	expect(Date.now() - doneAt).toBeLessThan(2_000);
 	expect(listCalls(slowAction)).toBeGreaterThan(calls + 1);
@@ -171,7 +171,7 @@ test('a status change shows while a full read waits on the helper, and the older
 			// The full read listed idle just now and is still waiting on the helper; the change comes after.
 			slowAction.setHelper(slow);
 			full = slowAction.refresh(actionCookie).then(() => (fullEndsAt = Date.now()));
-			setTimeout(() => setLists(slowAction, 'active', 'idle', { slowMs: { 'agent send-keys': 700 } }), 150);
+			setTimeout(() => setLists(slowAction, 'active', 'working', { slowMs: { 'agent send-keys': 700 } }), 150);
 		}, 1_000);
 		await until(() => status(page.latest()) === 'working', 8_000, 'the status during the full read');
 		// Well before that read, six seconds long, was over.
@@ -198,7 +198,7 @@ test('two actions in a row do not push the first one\'s read back', async () => 
 		const firstDone = await interrupt(third, thirdCookie, () => {}, 300);
 		await sleep(1_200);
 		// The change comes while the second one's key command runs, after its own read of the lists.
-		await interrupt(third, thirdCookie, () => setLists(third, 'active', 'idle', { slowMs: { 'agent send-keys': 300 } }), 600);
+		await interrupt(third, thirdCookie, () => setLists(third, 'active', 'working', { slowMs: { 'agent send-keys': 300 } }), 600);
 		await until(() => status(page.latest()) === 'working', 6_000, 'the first one\'s read');
 		// 2 s after the first action, not 2 s after the second.
 		expect(Date.now() - firstDone).toBeLessThan(3_100);
@@ -219,7 +219,7 @@ test('a stale pause record does not hold the status read: Herdr\'s pane list is 
 	mkdirSync(dir, { recursive: true });
 	writeFileSync(file, JSON.stringify({ session_id: 's-gone', hcom_name: 'gone', client: 'claude', pane: 'wA:p-gone', paused_at: new Date(Date.now() - 60_000).toISOString() }));
 	try {
-		setLists(fixture, 'active', 'idle', { slowMs: { 'pane list': 6_000 } });
+		setLists(fixture, 'active', 'working', { slowMs: { 'pane list': 6_000 } });
 		await until(() => status(page.latest()) === 'working', 4_000, 'the status without waiting for the pane list');
 		expect(existsSync(file)).toBe(true);
 	} finally {
@@ -240,7 +240,7 @@ test('a full read that waits on Herdr\'s pane list after listing does not put it
 		// The full read lists idle, then waits on the pane list for the stale record; the change comes meanwhile.
 		const full = fixture.refresh(cookie);
 		await sleep(400);
-		setLists(fixture, 'active', 'idle', { slowMs: { 'pane list': 3_000 } });
+		setLists(fixture, 'active', 'working', { slowMs: { 'pane list': 3_000 } });
 		await until(() => status(page.latest()) === 'working', 2_500, 'the status during the full read');
 		const snapshot = await full;
 		expect(status(snapshot)).toBe('working');
@@ -251,3 +251,20 @@ test('a full read that waits on Herdr\'s pane list after listing does not put it
 		rmSync(dir, { recursive: true, force: true });
 	}
 }, 30_000);
+
+test('hcom still active after an Esc ended the turn: Herdr idle on two reads turns the agent idle within seconds, and working again follows hcom at once', async () => {
+	setLists(fixture, 'active', 'working');
+	await fixture.refresh(cookie);
+	const page = fixture.watch(cookie);
+	await until(() => status(page.latest()) === 'working', 5_000, 'the first snapshot');
+	// The Esc: Herdr says idle, hcom never hears of it.
+	setLists(fixture, 'active', 'idle');
+	const endedAt = Date.now();
+	await until(() => status(page.latest()) === 'idle', 6_000, 'the button going after the Esc');
+	// Not on the first sighting: the confirming read is a second or so later, well inside the 5 s poll.
+	expect(Date.now() - endedAt).toBeLessThan(3_500);
+	// A new turn: Herdr working again.
+	setLists(fixture, 'active', 'working');
+	await until(() => status(page.latest()) === 'working', 4_000, 'the next turn');
+	page.close();
+});
