@@ -79,7 +79,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
      --questions "$questions" --decisions "$decisions" --id "<ID>" --file /path/to/section.md
    ```
 
-4. 寫入前會自動清理同一份問題檔，條件見下方「清理題目」；正在寫入的同一題號保留，維持升版行為。`--decisions` 必填，缺少或目錄不存在時拒絕寫入。指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。確認題（參謀行為 `exempt ticket-confirmation` 或 `exempt spec-confirmation`）會多印一行目前職責與覆蓋指令；任務改變就照著覆蓋。實際寫入新題或升版時，另在 `panel-journal.jsonl` 寫一筆 `upsert`，記錄題號、版本與時間；內容相同而沒有寫入時不寫。升版規則見下方「版本」。
+4. 寫入前會自動清理同一份問題檔，條件見下方「清理題目」；正在寫入的同一題號保留，維持升版行為。`--decisions` 必填，缺少或目錄不存在時拒絕寫入。指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。確認題（參謀行為 `exempt ticket-confirmation` 或 `exempt spec-confirmation`）會多印一行目前職責與覆蓋指令；任務改變就照著覆蓋。實際寫入新題或升版時，另在 `panel-journal.jsonl` 寫一筆 `upsert`，記錄題號、版本與時間；內容相同而沒有寫入時不寫。升版規則見下方「版本」。紀錄有 `- action:` 的授權題，寫入前會依當下設定重查預先授權：尚未送出且可直接做時拒絕寫入；已送出的照常寫入並提醒，見 [預先授權](preauth.md#接上提問)。
 5. 發出 `DECIDE:`／`HELP:` 前完成下方「待決題目檢查」，通過後依「聊天提問格式」提問；使用者可在面板或聊天作答。
 
 ### 題目格式

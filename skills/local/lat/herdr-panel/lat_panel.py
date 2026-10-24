@@ -197,6 +197,7 @@ from questions import (
     render_answer_area,
     resolve_help,
     save_panel_edit,
+    set_decision_preauth,
     set_question_status,
     submit_question_answers,
     upsert_question,
@@ -469,15 +470,48 @@ def _build_parser():
     return parser
 
 
+def _lat_session():
+    path = Path(__file__).resolve().parents[1] / "scripts/lat-session.py"
+    spec = importlib.util.spec_from_file_location("lat_session", path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 def _duty_reminder(decisions, question_id):
     """The controller duty line for confirmation questions; any failure means no line."""
     try:
-        path = Path(__file__).resolve().parents[1] / "scripts/lat-session.py"
-        spec = importlib.util.spec_from_file_location("lat_session", path)
-        module = importlib.util.module_from_spec(spec)
-        spec.loader.exec_module(module)
-        return module.duty_reminder(decisions, question_id)
+        return _lat_session().duty_reminder(decisions, question_id)
     except Exception:
+        return None
+
+
+def _preauth_recheck(questions, decisions, question_id):
+    """``(verdict, check line, sent)`` for a record with ``- action:``, else None.
+
+    The questions file's binding names the session and workspace; unbound, the client
+    session environment and the current directory do. A failed recheck warns and counts
+    as no recheck, so the question is still written and the user still asked.
+    """
+    path = Path(decisions) / f"{question_id}.md"
+    if not path.is_file():
+        return None
+    try:
+        module = _lat_session()
+        target = Path(questions).resolve()
+        binding = next((item for item in list_bindings()
+                        if Path(item["questions_path"]).resolve() == target), None)
+        if binding is not None:
+            session, workspace = binding["session_id"], binding["workspace"]
+        else:
+            session = next((os.environ[key] for key in module.SESSION_ENV.values()
+                            if os.environ.get(key)), None)
+            workspace = None
+        return module.question_preauth(path, workspace=workspace, session_id=session,
+                                       questions_paths=[questions])
+    except Exception as error:  # noqa: BLE001 - asking the user stays the safe side
+        print(f"lat-panel: pre-authorization recheck failed, writing the question anyway: "
+              f"{error}", file=sys.stderr)
         return None
 
 
@@ -492,11 +526,25 @@ def main(argv=None):
         return _run_board(args)
     try:
         if args.command == "question" and args.question_command == "upsert":
+            preauth = _preauth_recheck(args.questions, args.decisions, args.id)
+            if preauth is not None and preauth[0] == "allow" and not preauth[2]:
+                print(f"lat-panel: refused, nothing written: {args.id} is pre-authorized under "
+                      f"the current settings ({preauth[1]}). Do not ask: do it, then log it "
+                      "with lat-preauth.py record.", file=sys.stderr)
+                return 1
             revision, written = upsert_question_written(
                 args.questions, args.id, args.file.read_text(encoding="utf-8"),
                 decisions_path=args.decisions
             )
             print(f"{args.id} r{revision}")
+            if preauth is not None:
+                try:
+                    set_decision_preauth(Path(args.decisions) / f"{args.id}.md", preauth[1])
+                except (OSError, ValueError) as error:
+                    # The question is written; the line is only for reading.
+                    print(f"lat-panel: - preauth: line not written: {error}", file=sys.stderr)
+                if preauth[0] == "allow":
+                    print(f"提醒：{args.id} 此題目前已預先授權，可由使用者決定撤回（{preauth[1]}）")
             reminder = _duty_reminder(args.decisions, args.id)
             if reminder:
                 print(reminder)
