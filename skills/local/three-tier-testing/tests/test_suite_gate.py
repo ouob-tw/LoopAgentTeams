@@ -1,5 +1,4 @@
 import importlib.util
-import fcntl
 import json
 import os
 import shlex
@@ -2031,47 +2030,43 @@ class CutoverTests(GateCase):
         doc = SCRIPT.parents[1] / 'references/suite-gate.md'
         return next(line for line in doc.read_text().splitlines() if line.startswith(prefix))
 
-    def listed(self, check):
+    def listed(self, check, processes):
+        # Exercise the documented shell filters on a private process table. Host-wide
+        # pgrep/ps output races with unrelated agents starting and stopping gates.
+        fake_bin = self.tmp / 'process-bin'
+        fake_bin.mkdir(exist_ok=True)
+        commands = {
+            'pgrep': 'printf "%s\\n" "$CUTOVER_PGREP" | grep -E -- "$2"',
+            'ps': 'printf "%s\\n" "$CUTOVER_PS"',
+            'date': 'printf "1000\\n"',
+        }
+        for name, body in commands.items():
+            path = fake_bin / name
+            path.write_text('#!/bin/sh\n' + body + '\n')
+            path.chmod(0o755)
+        env = dict(self.env, PATH=f'{fake_bin}:{self.env["PATH"]}',
+                   CUTOVER_PGREP='\n'.join(f'{pid} {args}' for pid, age, args in processes),
+                   CUTOVER_PS='\n'.join(f'{pid} {age} {args}' for pid, age, args in processes))
         result = subprocess.run(['bash', '-c', check], capture_output=True, text=True,
-                                timeout=30)
+                                timeout=30, env=env)
+        self.assertEqual(result.returncode, 0, result.stderr)
         return {int(line.split()[0]) for line in result.stdout.splitlines()}
 
-    def background(self, args, **kwargs):
-        proc = subprocess.Popen(args, env=self.env, stdout=subprocess.DEVNULL,
-                                stderr=subprocess.DEVNULL, start_new_session=True, **kwargs)
-
-        def kill():
-            try:
-                os.killpg(proc.pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
-            proc.wait()
-        self.addCleanup(kill)
-        return proc
-
     def test_the_checks_list_old_runs_still_fingerprinting_and_old_statuses_still_running(self):
-        old = self.old_gate()
-        fake_bin, fingerprinting = self.tmp / 'git-bin', self.tmp / 'fingerprinting'
-        fake_bin.mkdir()
-        (fake_bin / 'git').write_text(f'#!/bin/sh\ntouch {fingerprinting}\nexec sleep 60\n')
-        (fake_bin / 'git').chmod(0o755)
-        self.env['PATH'] = f'{fake_bin}:{self.env["PATH"]}'
-        run = self.background([sys.executable, str(old), 'run', '--', 'true'], cwd=self.repo)
-        self.wait_until(fingerprinting.exists, message='the old run to compute its fingerprint')
-        self.state.mkdir()
-        with open(self.state / 'state.lock', 'a') as lock:
-            fcntl.flock(lock, fcntl.LOCK_EX)  # the old status waits for the state lock
-            status = self.background([sys.executable, str(old), 'status'])
-            time.sleep(1.2)
-            self.assertIsNone(status.poll(), 'the old status must still be running')
-            self.assertLessEqual({run.pid, status.pid}, self.listed(self.documented('pgrep ')))
-            installed = int(time.time())
-            time.sleep(2.2)
-            later = self.background([sys.executable, '-c', 'import time; time.sleep(60)',
-                                     str(old), 'status'])
-            found = self.listed(f'installed={installed}; ' + self.documented('ps -eo '))
-            self.assertLessEqual({run.pid, status.pid}, found)
-            self.assertNotIn(later.pid, found, 'started after the install')
+        # run need not have registered in gate state yet; status is also a writer in
+        # the old version. Installation at t=990 must include that exact second.
+        processes = [
+            (101, 30, 'python /old/suite-gate.py run -- true'),
+            (102, 20, 'python /old/suite-gate.py status'),
+            (103, 10, 'python /old/suite-gate.py status'),
+            (104, 2, 'python /new/suite-gate.py status'),
+            (105, 40, 'python unrelated.py'),
+            (106, 40, "pgrep -af 'suite-gate\\.py'"),
+            (107, 40, 'python suite-gateXpy status'),
+        ]
+        self.assertEqual(self.listed(self.documented('pgrep '), processes), {101, 102, 103, 104})
+        self.assertEqual(self.listed('installed=990; ' + self.documented('ps -eo '), processes),
+                         {101, 102, 103})
 
 
 class DetectionTests(unittest.TestCase):

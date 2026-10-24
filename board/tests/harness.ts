@@ -171,6 +171,8 @@ interface FixedOutput {
 	raw?: string;
 	exit?: number;
 	sleepMs?: number;
+	/** Signal that this output was captured, then wait for the test to release it. */
+	barrier?: { ready: string; release: string };
 	/** Spaces written to standard error before the output. */
 	stderrBytes?: number;
 	/** Spaces written to standard output before the output. */
