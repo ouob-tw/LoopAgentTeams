@@ -1372,7 +1372,7 @@ esac
         self.run_cycles(load_watch(), 4000)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
         self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
-        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 4, 'claude_quota_resume': 1})
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1})
         result = self.alarm_cli('--after', 1, agent='worker-open')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
@@ -4563,7 +4563,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 4, 'claude_quota_resume': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -4587,7 +4587,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 4, 'claude_quota_resume': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
@@ -4942,8 +4942,12 @@ class KeepaliveDecisionTests(PinnedEnvironment):
         self.write_usage(now + 120)
         alarm = dict(agent='worker', kind='alarm', active=True, declared_at=now - 3600,
                      due_at=now + 1800, condition={'kind': 'time', 'minutes': 90})
-        # Agent waits and alarms are not limited by the decision quiet hours.
-        self.assertEqual(self.due(alarm, now), now + 120)
+        # Agent waits are not limited by the quiet hours; alarms are (see the alarm tests below).
+        self.assertIsNone(self.due(alarm, now))
+        self.write_usage(taipei(10) + 120)
+        self.assertEqual(self.due(dict(alarm, declared_at=taipei(10) - 3600), taipei(10)),
+                         taipei(10) + 120)
+        self.write_usage(now + 120)
         self.assertEqual(self.due(self.agent_wait(declared_at=now - 5 * 3600), now), now + 120)
 
     def test_decision_wait_stops_after_three_hours(self):
@@ -5267,7 +5271,7 @@ esac
         self.assertEqual(state['worker']['decision'], 'valid-wait')
         self.assertEqual(self.wait_file.read_bytes(), before)
         self.assertEqual(state['worker']['feature_versions'],
-                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 4, 'claude_quota_resume': 1})
+                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1})
         # The wait still expires at its original deadline, counted once, with the real
         # idle time, and the agent is nudged for the expiry rather than as a stall.
         self.cycle(self.start + 3000)
@@ -5371,6 +5375,65 @@ esac
         self.assertEqual(len(self.injections()), 2)
         self.assertIn('Your alarm condition met', self.injections()[1])
         self.assertEqual(json.loads(self.wait_file.read_text())['rang_at'], self.start + 5400)
+
+    def test_alarm_keepalive_stops_after_3h_and_in_quiet_hours(self):
+        self.start = taipei(22)
+        self.declare(kind='alarm', due_at=self.start + 20 * 3600,
+                     condition={'kind': 'time', 'minutes': 1200})
+        # Within 3 h and outside quiet hours: sent.
+        self.write_usage(taipei(23, 3))
+        self.cycle(taipei(23))
+        self.assertEqual(len(self.injections()), 1)
+        self.reply_to_keepalive()
+        # Past 3 h from declaration (01:00 is also quiet; the 3 h cap is checked first).
+        after_3h = taipei(1) + 86400
+        self.write_usage(after_3h + 180)
+        self.cycle(after_3h)
+        self.assertEqual(self.records('cache-keepalive-skipped')[-1]['reason'], 'alarm-over-3h')
+        self.assertEqual(len(self.injections()), 1)
+        # Alarm ring time is unchanged by the skipped keep-alive.
+        self.assertTrue(json.loads(self.wait_file.read_text())['active'])
+        self.assertEqual(json.loads(self.wait_file.read_text())['due_at'], self.start + 20 * 3600)
+
+    def test_alarm_keepalive_stops_after_3h_outside_quiet_hours(self):
+        self.start = taipei(10)
+        self.declare(kind='alarm', due_at=self.start + 20 * 3600,
+                     condition={'kind': 'time', 'minutes': 1200})
+        self.write_usage(taipei(14, 3))
+        self.cycle(taipei(14))
+        self.assertEqual(self.injections(), [])
+        self.assertEqual([r['reason'] for r in self.records('cache-keepalive-skipped')],
+                         ['alarm-over-3h'])
+
+    def test_alarm_keepalive_skips_quiet_hours_and_resumes_at_nine(self):
+        self.start = taipei(0, 30)
+        self.declare(kind='alarm', due_at=self.start + 20 * 3600,
+                     condition={'kind': 'time', 'minutes': 1200})
+        self.write_usage(taipei(1))
+        self.cycle(taipei(0, 56))
+        self.assertEqual(len(self.injections()), 1)
+        self.reply_to_keepalive()
+        self.write_usage(taipei(2))
+        self.cycle(taipei(1, 56), taipei(1, 58))
+        self.assertEqual(len(self.injections()), 1)
+        self.assertEqual([r['reason'] for r in self.records('cache-keepalive-skipped')],
+                         ['alarm-quiet-hours'])
+        self.assertEqual(self.records('cache-keepalive-skipped')[0]['kind'], 'alarm')
+        # 09:00 onwards the keep-alive resumes while still within 3 h of the declaration.
+        self.start = taipei(8, 30)
+        self.declare(kind='alarm', due_at=self.start + 20 * 3600,
+                     condition={'kind': 'time', 'minutes': 1200})
+        self.write_usage(taipei(9, 5))
+        self.cycle(taipei(9))
+        self.assertEqual(len(self.injections()), 2)
+
+    def test_agent_wait_keepalive_ignores_3h_cap_and_quiet_hours(self):
+        self.start = taipei(0, 30)
+        self.declare(kind='agent', deadline_at=self.start + 20 * 3600)
+        self.write_usage(taipei(4, 3))
+        self.cycle(taipei(4))
+        self.assertEqual(len(self.injections()), 1)
+        self.assertEqual(self.records('cache-keepalive-skipped'), [])
 
     def test_decision_wait_is_skipped_during_quiet_hours(self):
         (self.decisions / 'HELP-1.md').write_text('# Q\n- version: r1\n- status: pending\n')
