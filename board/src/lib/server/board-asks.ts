@@ -43,6 +43,7 @@ interface AskFile {
 	id: string;
 	client: string;
 	session_id: string;
+	cwd?: string;
 	tool_input: { questions: AskQuestion[] };
 	created_at: string;
 	deadline_at: string;
@@ -143,6 +144,9 @@ export function readAsks(dir: string): BoardAsk[] {
 			id: ask.id,
 			sessionId: ask.session_id,
 			client: ask.client,
+			kind: 'question',
+			tool: null,
+			folder: typeof ask.cwd === 'string' && ask.cwd ? ask.cwd : null,
 			questions: ask.tool_input.questions,
 			createdAt: ask.created_at,
 			deadlineAt: ask.deadline_at,
