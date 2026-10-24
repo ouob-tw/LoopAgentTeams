@@ -192,8 +192,10 @@
 		const { top, bottom } = visibleEdges(scroller);
 		const down = y - (bottom - SCROLL_EDGE_PX);
 		const up = top + SCROLL_EDGE_PX - y;
-		const step = down > 0 ? Math.min(down / SCROLL_EDGE_PX, 1) * SCROLL_MAX_PX : up > 0 ? -Math.min(up / SCROLL_EDGE_PX, 1) * SCROLL_MAX_PX : 0;
-		if (!step) return;
+		const near = down > 0 ? Math.min(down / SCROLL_EDGE_PX, 1) : up > 0 ? -Math.min(up / SCROLL_EDGE_PX, 1) : 0;
+		if (!near) return;
+		// At least a whole pixel, which a scroller that snaps to pixels would otherwise drop.
+		const step = Math.sign(near) * Math.max(1, Math.abs(near) * SCROLL_MAX_PX);
 		const before = scroller.scrollTop;
 		scroller.scrollTop += step;
 		// At the end it stops until the pointer moves again.
