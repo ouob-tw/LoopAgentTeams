@@ -85,7 +85,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		onplaced?: () => void;
 		/** Called when the target's text is not found in the conversation, or it cannot be read. */
 		onunplaced?: () => void;
-		card?: Snippet;
+		card?: Snippet<[Translation | null]>;
 		/** A box over the page until the target is placed, a copy of its card first in it, which
 		 *  the user may scroll meanwhile: the card is placed where its copy is on screen, and
 		 *  scrolling the box does not stop keeping it there. */
@@ -206,9 +206,15 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		}
 		return seqs;
 	});
+	/** The message of an opened report's card, translated like the report's card in the conversation,
+	 *  whether the card is placed at a text or shown above the conversation. A question's card is not
+	 *  translated. */
+	const placedText = $derived(translating && target && !isQuestion(target) ? target.message : null);
+	const placedTranslation = $derived(placedText && isEnglish(placedText) ? (translated[placedText] ?? { status: 'pending' as const }) : null);
 	// Newest first, what is loaded and not asked for yet; pushed and earlier parts as they come.
 	$effect(() => {
 		const texts = shown.flatMap((row) => (row.kind === 'text' && english.has(row.item.seq) ? [row.item.text] : []));
+		if (placedTranslation && placedText) texts.unshift(placedText);
 		untrack(() => translations.want(texts));
 	});
 	$effect(() => () => translations.stop());
@@ -494,7 +500,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 <section class="history" data-block="transcript" bind:this={list} onsubmitcapture={hold}>
 	{#if held}<div class="head" bind:this={head} aria-hidden="true"></div>{/if}
 	{#if unplaced && card}
-		<div class="placed">{@render card()}</div>
+		<div class="placed">{@render card(placedTranslation)}</div>
 	{/if}
 	{#if view}
 		{#if view.skipped}
@@ -509,7 +515,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 							<li class="guide"><ArrowUp size="1em" />較新的訊息</li>
 						{/if}
 						<li class="placed" data-seq={segment.seq ?? undefined}>
-							{#if questionCards && placedQuestions.length}{@render questionCards(placedQuestions)}{:else}{@render card?.()}{/if}
+							{#if questionCards && placedQuestions.length}{@render questionCards(placedQuestions)}{:else}{@render card?.(placedTranslation)}{/if}
 						</li>
 						{#if index < shown.length - 1 || view.before !== null}
 							<li class="guide"><ArrowDown size="1em" />較早的訊息</li>

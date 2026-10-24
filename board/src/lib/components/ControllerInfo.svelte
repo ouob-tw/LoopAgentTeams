@@ -66,7 +66,7 @@
 		onplaced?: () => void;
 		/** Called when the target's text is not found in the conversation, or it cannot be read. */
 		onunplaced?: () => void;
-		card?: Snippet;
+		card?: Snippet<[Translation | null]>;
 		/** A box over the page with a copy of the target's card until it is placed; see Transcript. */
 		copy?: HTMLElement | null;
 		/** The cards of the questions one message asked, in its order; see Transcript. */
