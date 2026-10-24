@@ -345,7 +345,8 @@ function createBoard(): Board {
 		}
 		const paused = await settlePauses(config, agents, herdrAgents, listedAt);
 		// Pausing and the sent log took time too: the newest lists as of now go into the roster.
-		const allAgents = agentRoster.update(newer(herdrAgents, listedAt, newest.herdr), newer(agents, listedAt, newest.agents), new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
+		const rosterNow = () => agentRoster.update(newer(herdrAgents, listedAt, newest.herdr), newer(agents, listedAt, newest.agents), new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
+		const allAgents = rosterNow();
 		herdrRead ||= herdrAgents.ok;
 		const closedAgents = await closedRoster.update({
 			agents: herdrRead ? allAgents.agents : null,
@@ -360,6 +361,8 @@ function createBoard(): Board {
 			switching: new Set(lastSwitches.map((view) => view.controllerId)),
 			now: config.now()
 		});
+		// Closing took time too: the statuses as of now, with no await before they are published.
+		const finalAgents = rosterNow();
 		sources = {
 			active: lastActive,
 			helperError: helper.ok ? null : helper.reason,
@@ -370,9 +373,9 @@ function createBoard(): Board {
 			// Listed but not on its link (a half-done reconnect) is still paused; without a list a record says so.
 			paused: new Set([...paused.keys()].filter((id) => !(agents.ok && linkedAgain(agents.agents, id)))),
 			hcomError: agents.ok ? null : agents.reason,
-			agents: allAgents.agents,
-			herdrError: allAgents.herdrError,
-			workspaces: allAgents.workspaces,
+			agents: finalAgents.agents,
+			herdrError: finalAgents.herdrError,
+			workspaces: finalAgents.workspaces,
 			closed: closedAgents,
 			pruneError,
 			answered: lastAnswered,
