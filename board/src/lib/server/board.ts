@@ -453,8 +453,9 @@ function createBoard(): Board {
 	/** Read hcom's and Herdr's lists alone and push the agents if a status changed. Never overlaps
 	 *  itself or a full read; a list that cannot be read in time leaves the last one standing. */
 	async function pollStatus(): Promise<void> {
-		if (closed || running || !sources || streams.size === 0) return;
-		if (polling) {
+		if (closed || !sources || streams.size === 0) return;
+		// A full read under way may hold lists older than this ask: one more poll follows it.
+		if (polling || running) {
 			pollAgain = true;
 			return;
 		}
@@ -463,9 +464,17 @@ function createBoard(): Board {
 		const limited = { ...config, hcomListTimeoutMs: config.statusPollTimeoutMs, herdrTimeoutMs: config.statusPollTimeoutMs };
 		try {
 			const [agents, herdrAgents] = await Promise.all([listAgents(limited), listHerdrAgents(limited)]);
-			if (closed || running || readCount !== began || !sources || (!agents.ok && !herdrAgents.ok)) return;
-			const paused = await settlePauses(config, agents, herdrAgents, Date.now());
-			if (closed || running || readCount !== began || !sources) return;
+			if (closed || !sources || (!agents.ok && !herdrAgents.ok)) return;
+			if (running || readCount !== began) {
+				pollAgain = true;
+				return;
+			}
+			// Without Herdr's pane check, which is outside this read's time limit: the full read ends a pause that only that check can.
+			const paused = await settlePauses(config, agents, herdrAgents, Date.now(), false);
+			if (running || readCount !== began) {
+				pollAgain = true;
+				return;
+			}
 			if (herdrAgents.ok) herdrPlaces = herdrAgents;
 			herdrPlaceError = herdrAgents.ok ? null : herdrAgents.reason;
 			if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
@@ -533,6 +542,10 @@ function createBoard(): Board {
 			})
 			.finally(() => {
 				running = null;
+				if (pollAgain) {
+					pollAgain = false;
+					void pollStatus();
+				}
 			});
 		return running;
 	}
@@ -557,8 +570,11 @@ function createBoard(): Board {
 		},
 		pollSoon() {
 			if (closed || streams.size === 0) return;
-			clearTimeout(soonTimer);
-			soonTimer = setTimeout(() => void pollStatus(), config.statusAfterActionMs);
+			// The earliest pending read stands: a later action must not push it back.
+			soonTimer ??= setTimeout(() => {
+				soonTimer = undefined;
+				void pollStatus();
+			}, config.statusAfterActionMs);
 		},
 		tabMoved,
 		agentActed(agentId) {

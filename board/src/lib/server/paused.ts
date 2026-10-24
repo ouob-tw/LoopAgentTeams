@@ -93,13 +93,13 @@ export const pausing = new Set<string>();
  * milliseconds) or while its pause is under way. A record that cannot be removed stays, to be tried
  * again at the next read.
  */
-export async function settlePauses(config: BoardConfig, hcom: AgentList, herdr: HerdrAgentList, listedAt: number): Promise<Map<string, PauseRecord>> {
+export async function settlePauses(config: BoardConfig, hcom: AgentList, herdr: HerdrAgentList, listedAt: number, askHerdr = true): Promise<Map<string, PauseRecord>> {
 	const records = readPauses(config.pausedDir);
 	for (const record of [...records.values()]) {
 		const id = record.session_id;
 		if (pausing.has(id) || !(Date.parse(record.paused_at) < listedAt)) continue;
 		let over = hcom.ok && linkedAgain(hcom.agents, id) !== undefined;
-		if (!over && herdr.ok && record.pane && !herdr.agents.some((agent) => agent.sessionId === id || agent.pane === record.pane)) {
+		if (!over && askHerdr && herdr.ok && record.pane && !herdr.agents.some((agent) => agent.sessionId === id || agent.pane === record.pane)) {
 			const pane = await paneExists(config, record.pane);
 			over = 'exists' in pane && !pane.exists;
 		}

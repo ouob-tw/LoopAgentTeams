@@ -2,7 +2,7 @@
 // Herdr's lists alone, every few seconds, and pushed only when one changed; the full read is not involved.
 // Herdr, hcom and the helper are the harness's fakes. The test servers poll every 0.5 s here.
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
-import { rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { Agent } from '../../src/lib/board/types.ts';
 import { jsonLines, sleep, startFixture, until, type Fixture } from '../harness.ts';
@@ -130,19 +130,89 @@ test('a slow read does not overlap the next one and is cut off at its limit', as
 	await sleep(1_500);
 }, 30_000);
 
-test('a send or an interrupt from the board is followed by a read within seconds, whatever the poll interval', async () => {
+/** Press the interrupt; Herdr's key command takes `ms`, so a change made meanwhile comes after the action's own read of the lists. */
+async function interrupt(f: Fixture, cookie: string, whileKeys: () => void, ms = 700): Promise<number> {
+	setLists(f, 'listening', 'idle', { slowMs: { 'agent send-keys': ms } });
+	const pressed = f.fetch('/api/agents/interrupt', {
+		method: 'POST',
+		headers: { 'content-type': 'application/json' },
+		body: JSON.stringify({ session: 's-one' }),
+		cookie
+	});
+	await sleep(ms / 2);
+	whileKeys();
+	expect((await pressed).status).toBe(200);
+	return Date.now();
+}
+
+test('an interrupt from the board is followed by a read within seconds, whatever the poll interval', async () => {
 	setLists(slowAction, 'listening');
 	await slowAction.refresh(actionCookie);
 	const page = slowAction.watch(actionCookie);
 	await until(() => status(page.latest()) === 'idle', 5_000, 'the first snapshot');
-	setLists(slowAction, 'active');
-	const response = await slowAction.fetch('/api/agents/interrupt', {
-		method: 'POST',
-		headers: { 'content-type': 'application/json' },
-		body: JSON.stringify({ session: 's-one' }),
-		cookie: actionCookie
-	});
-	expect(response.status).toBe(200);
+	const calls = listCalls(slowAction);
+	const doneAt = await interrupt(slowAction, actionCookie, () => setLists(slowAction, 'active', 'idle', { slowMs: { 'agent send-keys': 700 } }));
 	await until(() => status(page.latest()) === 'working', 3_000, 'the read after the interrupt');
+	expect(Date.now() - doneAt).toBeLessThan(2_000);
+	expect(listCalls(slowAction)).toBeGreaterThan(calls + 1);
 	page.close();
-});
+}, 30_000);
+
+test('a read asked for while a full read is under way follows it, not waits for the next interval', async () => {
+	setLists(slowAction, 'listening');
+	await slowAction.refresh(actionCookie);
+	const page = slowAction.watch(actionCookie);
+	await until(() => status(page.latest()) === 'idle', 5_000, 'the first snapshot');
+	const slow = { output: { controllers: [] }, sleepMs: 1_500, answered: { output: { status: 'ok', files: [] }, sleepMs: 1_500 } };
+	try {
+		const action = interrupt(slowAction, actionCookie, () => {
+			// The full read listed idle just now and is still waiting on the helper; the change comes after.
+			slowAction.setHelper(slow);
+			void slowAction.refresh(actionCookie);
+			setTimeout(() => setLists(slowAction, 'active', 'idle', { slowMs: { 'agent send-keys': 700 } }), 150);
+		}, 1_000);
+		await action;
+		await until(() => status(page.latest()) === 'working', 8_000, 'the read after the full read');
+	} finally {
+		slowAction.setHelper({ output: { controllers: [] } });
+	}
+	page.close();
+}, 40_000);
+
+test('two actions in a row do not push the first one\'s read back', async () => {
+	const third = await startFixture({ env: { LAT_BOARD_STATUS_POLL_SECONDS: '60', LAT_BOARD_STATUS_AFTER_ACTION_SECONDS: '2' } });
+	try {
+		const thirdCookie = await third.login();
+		setLists(third, 'listening');
+		await third.refresh(thirdCookie);
+		const page = third.watch(thirdCookie);
+		await until(() => status(page.latest()) === 'idle', 5_000, 'the first snapshot');
+		const firstDone = await interrupt(third, thirdCookie, () => {}, 300);
+		await sleep(1_200);
+		// The change comes while the second one's key command runs, after its own read of the lists.
+		await interrupt(third, thirdCookie, () => setLists(third, 'active', 'idle', { slowMs: { 'agent send-keys': 300 } }), 600);
+		await until(() => status(page.latest()) === 'working', 6_000, 'the first one\'s read');
+		// 2 s after the first action, not 2 s after the second.
+		expect(Date.now() - firstDone).toBeLessThan(3_100);
+		page.close();
+	} finally {
+		await third.cleanup();
+	}
+}, 30_000);
+
+test('a stale pause record does not hold the status read: Herdr\'s pane list is not asked', async () => {
+	const dir = join(fixture.dir, 'hcom-paused');
+	mkdirSync(dir, { recursive: true });
+	writeFileSync(join(dir, 's-gone.json'), JSON.stringify({ session_id: 's-gone', hcom_name: 'gone', client: 'claude', pane: 'wA:p-gone', paused_at: new Date(Date.now() - 60_000).toISOString() }));
+	try {
+		setLists(fixture, 'listening', 'idle', { slowMs: { 'pane list': 6_000 } });
+		await fixture.refresh(cookie);
+		const page = fixture.watch(cookie);
+		await until(() => status(page.latest()) === 'idle', 15_000, 'the first snapshot');
+		setLists(fixture, 'active', 'idle', { slowMs: { 'pane list': 6_000 } });
+		await until(() => status(page.latest()) === 'working', 4_000, 'the status without waiting for the pane list');
+		page.close();
+	} finally {
+		rmSync(dir, { recursive: true, force: true });
+	}
+}, 30_000);
