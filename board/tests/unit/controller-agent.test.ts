@@ -55,7 +55,8 @@ const agent = (id: string | null, name: string, isBound = false): Agent => ({
 	statusSource: 'hcom',
 	controller: isBound,
 	inHerdr: true,
-	switch: null
+	switch: null,
+	asking: false
 });
 
 const RUNNING = ['s-bound', 's-ended', 's-quiet', 's-plain', 's-twin'];

@@ -2,6 +2,7 @@
 import type { HerdrPlace } from './format.ts';
 import type { SwitchView } from './models.ts';
 import type { ClosedList } from './closed-agents.ts';
+import type { BoardAsk } from './board-asks.ts';
 
 /** Checked top to bottom; the first row that holds wins. */
 export type ControllerStatus = 'idle' | 'closed' | 'waiting' | 'delivered' | 'working';
@@ -213,6 +214,8 @@ export interface BoardSnapshot {
 	workspaces: HerdrWorkspace[];
 	/** The agents of the Herdr tab's 已關閉 section. */
 	closed: ClosedList;
+	/** The board asks in the shared folder, oldest first: each shows on its agent's page. */
+	asks: BoardAsk[];
 	/** Source failures that cannot be attributed to one controller. */
 	errors: string[];
 }
@@ -290,6 +293,8 @@ export interface Agent {
 	inHerdr: boolean;
 	/** Its open model switch, to continue or give up; null when it has none. */
 	switch: AgentSwitch | null;
+	/** A board ask of its waits for the user: its status shows 等你回答, whatever hcom or Herdr says. */
+	asking: boolean;
 }
 
 /** An agent's open model switch, as its list entry carries it. */

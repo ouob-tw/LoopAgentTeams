@@ -3,7 +3,8 @@
 	// of who and where it stands, the details of where it runs, its close, then its conversation and
 	// what was done to it, one tab at a time. Text, an interrupt and a model switch are sent to it
 	// from the command line. The status is hcom's when hcom reaches it and Herdr's otherwise (ADR
-	// 0003).
+	// 0003), or 等你回答 while a board ask of its waits; its board asks show where its conversation is
+	// newest, above it.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { onMount } from 'svelte';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
@@ -13,14 +14,16 @@
 	import { AGENT_STATUS_LABEL, type KnownAgent } from '#lib/board/types.ts';
 	import AgentClose from './AgentClose.svelte';
 	import AgentLog from './AgentLog.svelte';
+	import BoardAskCard from './BoardAskCard.svelte';
 	import HcomBadge from './HcomBadge.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import TranslateToggle from './TranslateToggle.svelte';
 	import Transcript from './Transcript.svelte';
 	import UsageLine from './UsageLine.svelte';
 	import type { Usage } from '#lib/board/usage.ts';
+	import { ASKING_STATUS_TEXT, type BoardAsk } from '#lib/board/board-asks.ts';
 
-	let { agent }: { agent: KnownAgent } = $props();
+	let { agent, asks = [] }: { agent: KnownAgent; /** Its board asks, oldest first. */ asks?: BoardAsk[] } = $props();
 
 	/** As the conversation's live feed last told; shown only while Herdr lists it. */
 	let usage = $state<Usage | null>(null);
@@ -66,7 +69,7 @@
 
 <article class="profile" data-agent={agent.id}>
 	<header>
-		<span class="status"><StatusMark status={AGENT_MARK[agent.status]} decorative />{AGENT_STATUS_LABEL[agent.status]}</span>
+		<span class="status"><StatusMark status={AGENT_MARK[agent.status]} decorative />{agent.asking ? ASKING_STATUS_TEXT : AGENT_STATUS_LABEL[agent.status]}</span>
 		<h2 title={agent.name}>{shortName(agent)}</h2>
 		{#if tabShown(agent)}<span class="handle"><span class="dot" aria-hidden="true">·</span>{tabShown(agent)}</span>{/if}
 		<!-- Not linked shows no badge, as on the list. -->
@@ -122,6 +125,10 @@
 
 <!-- Both stay mounted, so the conversation keeps its place and its live feed. -->
 <div class="tabpanel" role="tabpanel" id="agent-panel-transcript" aria-labelledby="agent-tab-transcript" hidden={tab !== 'transcript'}>
+	<!-- Newest first, like the conversation under them. -->
+	{#each asks.toReversed() as ask (ask.id)}
+		<BoardAskCard {ask} />
+	{/each}
 	<Transcript controller={speaker} feed="agent" bind:usage />
 </div>
 <div class="tabpanel" role="tabpanel" id="agent-panel-log" aria-labelledby="agent-tab-log" hidden={tab !== 'log'}>

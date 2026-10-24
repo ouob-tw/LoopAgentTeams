@@ -327,6 +327,8 @@ export async function startFixture(
 		LAT_BOARD_UPLOAD_DIR: join(dir, 'uploads'),
 		// Pause records go here; never the real folder LAT's watcher reads.
 		LAT_HCOM_PAUSED_DIR: join(dir, 'hcom-paused'),
+		// The board-ask folder and its heartbeat; never the real one the hook reads.
+		LAT_BOARD_ASKS_DIR: join(dir, 'board-asks'),
 		LAT_BOARD_HELPER_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-helper.mjs'), dir]),
 		// Every read asks hcom which clients still run; never the real one.
 		LAT_BOARD_HCOM_COMMAND: JSON.stringify([NODE, join(ROOT, 'tests/fake-hcom.mjs'), dir]),

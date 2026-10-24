@@ -2,12 +2,12 @@
 import { watch, type FSWatcher } from 'node:fs';
 import { basename, dirname } from 'node:path';
 
-/** Directory → file names that matter in it; null means every file. */
-export type WatchTargets = Map<string, Set<string> | null>;
+/** Directory → file names that matter in it, or which of them do; null means every file. */
+export type WatchTargets = Map<string, Set<string> | ((name: string) => boolean) | null>;
 
 export function addFile(targets: WatchTargets, path: string): void {
 	const names = targets.get(dirname(path));
-	if (names === null) return;
+	if (names === null || typeof names === 'function') return;
 	targets.set(dirname(path), (names ?? new Set()).add(basename(path)));
 }
 
@@ -44,7 +44,7 @@ export function createSourceWatcher(onChange: () => void) {
 				return onChange();
 			}
 			const names = targets.get(directory);
-			if (names === null || names?.has(name)) onChange();
+			if (names === null || (typeof names === 'function' ? names(name) : names?.has(name))) onChange();
 		});
 	}
 

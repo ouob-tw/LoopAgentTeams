@@ -25,6 +25,8 @@ import { linkedAgain, settlePauses } from './paused.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
+import { HEARTBEAT_MS as ASK_HEARTBEAT_MS, isAskFile, readAsks, touchHeartbeat } from './board-asks.ts';
+import type { BoardAsk } from '../board/board-asks.ts';
 import type { QuotaSnapshot } from '../board/quota.ts';
 import { createQuotaPoller, readClaudeQuota, readCodexQuota } from './quota.ts';
 import { loadUsageStyle, saveUsageStyle } from './usage-style.ts';
@@ -155,6 +157,8 @@ function createBoard(): Board {
 	let translateMode: TranslateModeState | null = null;
 	/** The open model switches as last read from the sent log. */
 	let lastSwitches: SwitchView[] = [];
+	/** The board asks as last read from the shared folder. */
+	let lastAsks: BoardAsk[] = [];
 
 	const comparable = (value: BoardSnapshot) => JSON.stringify({ ...value, generatedAt: '', revision: 0 });
 
@@ -180,10 +184,12 @@ function createBoard(): Board {
 			void refresh();
 		}, config.debounceMs);
 	});
-	/** What the last read says to watch: the reports, the helper's files once their directories
+	/** What the last read says to watch: the reports, the board asks, the helper's files once their directories
 	 *  are known, and each active controller's question file. */
 	function watchTargets(): WatchTargets {
 		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
+		// Not the heartbeat the board itself touches.
+		targets.set(config.asksDir, isAskFile);
 		if (helperDirs) {
 			addFile(targets, join(helperDirs.config, 'bindings.json'));
 			addFile(targets, join(helperDirs.state, 'pending-notifications.json'));
@@ -215,6 +221,10 @@ function createBoard(): Board {
 			}
 		}
 	);
+
+	// Tells the board-ask hook a board runs: without it the hook leaves the client's own menu.
+	touchHeartbeat(config.asksDir);
+	const askHeartbeat = setInterval(() => touchHeartbeat(config.asksDir), ASK_HEARTBEAT_MS);
 
 	const heartbeat = setInterval(() => {
 		dropRevoked();
@@ -336,6 +346,7 @@ function createBoard(): Board {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
 		}
 		const paused = await settlePauses(config, agents, herdrAgents, listedAt);
+		lastAsks = readAsks(config.asksDir);
 		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
 		herdrRead ||= herdrAgents.ok;
 		const closedAgents = await closedRoster.update({
@@ -408,7 +419,14 @@ function createBoard(): Board {
 
 		if (!problem) lastState = state;
 
-		const next: BoardSnapshot = { ...buildSnapshot(from, state, now), revision: ++revision };
+		const built = buildSnapshot(from, state, now);
+		const asking = new Set(lastAsks.filter((ask) => ask.state === 'waiting').map((ask) => ask.sessionId));
+		const next: BoardSnapshot = {
+			...built,
+			agents: built.agents.map((agent) => ({ ...agent, asking: agent.id !== null && asking.has(agent.id) })),
+			asks: lastAsks,
+			revision: ++revision
+		};
 		for (const controller of [...next.controllers, ...next.offRoster]) {
 			const target = controller.herdr;
 			if (!target) {
@@ -471,6 +489,7 @@ function createBoard(): Board {
 					agents: [],
 					workspaces: [],
 					closed: EMPTY_CLOSED,
+					asks: [],
 					errors: [`讀取資料失敗：${error.message}`]
 				};
 				for (const stream of streams) stream.send('board', JSON.stringify(snapshot));
@@ -523,6 +542,7 @@ function createBoard(): Board {
 			clearTimeout(debounce);
 			clearTimeout(fallback);
 			clearInterval(heartbeat);
+			clearInterval(askHeartbeat);
 			sourceWatcher.close();
 			deviceWatcher.close();
 			for (const stream of streams) stream.close();

@@ -369,7 +369,7 @@ function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'p
 
 /** `state` must already have had `archiveDue` applied for `now`. When it is null nothing is known
  *  about which reports are read or archived, so no report is listed at all. */
-export function buildSnapshot(sources: Sources, state: InboxState | null, now: number): Omit<BoardSnapshot, 'revision'> {
+export function buildSnapshot(sources: Sources, state: InboxState | null, now: number): Omit<BoardSnapshot, 'revision' | 'asks'> {
 	const reports = state ? reportItems(sources, state, now) : [];
 	const inboxReports = reports.filter((item) => !(item.key in state!.archived));
 	const withInboxReport = new Set(inboxReports.map((item) => item.controllerId));
