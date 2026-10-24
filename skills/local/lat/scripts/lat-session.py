@@ -669,6 +669,8 @@ def deactivate(args):
         if record['status'] not in ENDED:
             record['ended_at_utc'] = datetime.now(timezone.utc).isoformat()
         record['status'] = 'ended'
+        # The controller pre-authorization layer lives only as long as this round.
+        record.pop('preauth', None)
         if args.successor:
             record['successor'] = args.successor
         if forced:

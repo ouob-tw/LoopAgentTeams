@@ -35,10 +35,12 @@ class PreauthCase(unittest.TestCase):
         self.project_file = self.repo / '.lat' / 'preauth.toml'
         self.sessions = self.repo / '.lat' / 'sessions'
 
-    def run_tool(self, *args, cwd=None, session=SESSION):
+    def run_tool(self, *args, cwd=None, session=SESSION, path=None):
         environment = {key: value for key, value in os.environ.items()
                        if key not in ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')}
         environment.update(HOME=str(self.root / 'home'), XDG_CONFIG_HOME=str(self.config))
+        if path:
+            environment['PATH'] = path
         if session:
             environment['CLAUDE_CODE_SESSION_ID'] = session
         return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
@@ -59,7 +61,8 @@ class PreauthCase(unittest.TestCase):
                 integration='dev'):
         ledger = self.repo / '.lat' / 'ledgers' / 'round.json'
         self.write(ledger, json.dumps({'integration_branch': integration}))
-        record = dict(status=status, history=[{}] * history, ledger_path=str(ledger))
+        record = dict(status=status, history=[{}] * history, ledger_path=str(ledger),
+                      hcom_name='orch', decisions_path=str(self.repo / '.lat' / 'decisions'))
         if settings is not None:
             record['preauth'] = {'round': round_number, 'settings': settings}
         self.write(self.sessions / f'{SESSION}.json', json.dumps(record))
@@ -269,6 +272,253 @@ class ConditionTests(PreauthCase):
         out = self.run_tool('show').stdout
         self.assertIn('    target = "staging on :9000"  ← project', out)
         self.assertNotIn('production', out)
+
+
+ANSWER = ('## 答覆（r1，面板，{time}）\n\n- 題目：{id} r1\n- 答覆：A. 可以\n'
+          '- 來源：面板，/x/panel-journal.jsonl 第 3 行，time {time}\n')
+
+
+class WriteCase(PreauthCase):
+    def setUp(self):
+        super().setUp()
+        self.session(None)
+        self.decisions = self.repo / '.lat' / 'decisions'
+
+    def decision(self, identifier, grants=(), *, status='answered', answer=True,
+                 session=SESSION, time='2026-10-25T00:30:34+08:00'):
+        text = f'# Q\n- version: r1\n- status: {status}\n- session: {session}\n\n## 問題與選項\n'
+        text += '- grant: global push allow=true branches=dev\n'  # outside the approved scope
+        if answer:
+            text += '\n' + ANSWER.format(time=time, id=identifier)
+        text += '\n## 核准範圍（主控判斷）\n使用者同意。\n' + ''.join(f'{g}\n' for g in grants)
+        self.write(self.decisions / f'{identifier}.md', text)
+
+    def grant(self, *args, session=SESSION):
+        return self.run_tool('grant', *args, session=session)
+
+    def records(self, round_number=1):
+        path = self.repo / '.lat' / 'preauth-records' / f'{SESSION}-r{round_number}.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()] if path.exists() else []
+
+
+class GrantTests(WriteCase):
+    def test_refusals_leave_every_file_unchanged(self):
+        self.write(self.project_file, '# mine\n[actions.push]\nallow = false\n')
+        before = self.project_file.read_bytes()
+        args = ('--layer', 'project', '--action', 'push', '--allow', 'true',
+                '--branches', 'dev', '--source', 'D-1')
+        line = '- grant: project push allow=true branches=dev'
+        for label, kwargs, reason in (
+                ('no human answer', dict(grants=[line], status='pending', answer=False),
+                 'status is pending'),
+                ('answered without a source line', dict(grants=[line], answer=False),
+                 'no answer section'),
+                ('no grant line', dict(), 'has no `- grant:` line'),
+                ('grant line differs', dict(grants=['- grant: project push allow=true '
+                                                    'branches=main']),
+                 'no `- grant:` line matches'),
+                ('grant names another layer', dict(grants=['- grant: global push allow=true '
+                                                           'branches=dev']),
+                 'no `- grant:` line matches')):
+            with self.subTest(label):
+                self.decision('D-1', **kwargs)
+                result = self.grant(*args)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn('refused, nothing changed', result.stderr)
+                self.assertIn(reason, result.stderr)
+                self.assertEqual(self.project_file.read_bytes(), before)
+                self.assertEqual(self.records(), [])
+        with self.subTest('missing record'):
+            self.assertIn('not found', self.grant('--layer', 'project', '--action', 'push',
+                                                  '--allow', 'true', '--source', 'D-9').stderr)
+
+    def test_project_grant_writes_the_rule_with_its_source(self):
+        self.decision('D-2', ['- grant: project push allow=true branches=dev'])
+        result = self.grant('--layer', 'project', '--action', 'push', '--allow', 'true',
+                            '--branches', 'dev', '--source', 'D-2')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.project_file.read_text(),
+                         '[actions.push]\nallow = true\nbranches = ["dev"]\nsource = "D-2"\n')
+        self.assertIn('    allow = true  ← project (source D-2)', self.run_tool('show').stdout)
+        self.assertEqual([(r['kind'], r['grant'], r['source']) for r in self.records()],
+                         [('grant', 'project push allow=true branches=dev', 'D-2')])
+
+    def test_global_grant_keeps_hand_written_comments_and_sections(self):
+        original = ('# my settings, keep me\nversion = 1\n\n'
+                    '[actions.merge]  # merges\nallow = true # yes\n'
+                    'branches = [\n  "dev",  # only dev\n]\nsource = "OLD"\n\n'
+                    '# about pushes\n[actions.push]\nallow = false\n\n'
+                    '[advisor]\nextended = true\nmust_ask = ["money"]  # never\n')
+        self.write(self.global_file, original)
+        self.decision('D-3', ['- grant: global merge branches=dev,release'])
+        result = self.grant('--layer', 'global', '--action', 'merge', '--branches', 'dev',
+                            'release', '--source', 'D-3')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.global_file.read_text(), original.replace(
+            'branches = [\n  "dev",  # only dev\n]\nsource = "OLD"\n',
+            'branches = ["dev", "release"]\nsource = "D-3"\n'))
+        self.decision('D-4', ['- grant: global deploy-prod allow=false'])
+        self.assertEqual(self.grant('--layer', 'global', '--action', 'deploy-prod', '--allow',
+                                    'false', '--source', 'D-4').returncode, 0)
+        text = self.global_file.read_text()
+        self.assertTrue(text.startswith(original.replace(
+            'branches = [\n  "dev",  # only dev\n]\nsource = "OLD"\n',
+            'branches = ["dev", "release"]\nsource = "D-3"\n')))
+        self.assertTrue(text.endswith('\n[actions.deploy-prod]\nallow = false\nsource = "D-4"\n'))
+
+    def test_broken_file_is_refused_not_rewritten(self):
+        self.write(self.global_file, '[actions.merge\n')
+        self.decision('D-5', ['- grant: global merge allow=true'])
+        result = self.grant('--layer', 'global', '--action', 'merge', '--allow', 'true',
+                            '--source', 'D-5')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('not readable TOML', result.stderr)
+        self.assertEqual(self.global_file.read_text(), '[actions.merge\n')
+
+    def test_controller_grant_needs_this_sessions_current_round(self):
+        line = ['- grant: controller merge allow=true branches=dev']
+        args = ('--layer', 'controller', '--action', 'merge', '--allow', 'true', '--branches',
+                'dev', '--source', 'D-6')
+        self.decision('D-6', line, session='22222222-2222-4222-8222-222222222222')
+        result = self.grant(*args)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('not this session', result.stderr)
+        record = json.loads((self.sessions / f'{SESSION}.json').read_text())
+        record['history'] = [{'ended_at_utc': '2026-10-25T00:00:00+00:00'}]
+        self.write(self.sessions / f'{SESSION}.json', json.dumps(record))
+        self.decision('D-6', line, time='2026-10-24T23:00:00+00:00')
+        result = self.grant(*args)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('earlier round', result.stderr)
+        self.assertNotIn('preauth', json.loads((self.sessions / f'{SESSION}.json').read_text()))
+
+        self.decision('D-6', line, time='2026-10-25T01:00:00+00:00')
+        result = self.grant(*args)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        stored = json.loads((self.sessions / f'{SESSION}.json').read_text())['preauth']
+        self.assertEqual(stored, {'round': 2, 'settings': {'actions': {'merge': {
+            'allow': True, 'branches': ['dev'], 'source': 'D-6'}}}})
+        self.assertEqual(self.check('merge', '--branch', 'dev')['verdict'], 'allow')
+        self.assertEqual(self.records(2)[0]['grant'], 'controller merge allow=true branches=dev')
+
+    def test_grant_needs_an_active_round_and_a_real_action(self):
+        self.decision('D-7', ['- grant: project spend allow=true'])
+        self.assertIn('not a pre-authorizable action',
+                      self.grant('--layer', 'project', '--action', 'spend', '--allow', 'true',
+                                 '--source', 'D-7').stderr)
+        self.session(None, status='ended')
+        self.decision('D-7', ['- grant: project merge allow=true'])
+        result = self.grant('--layer', 'project', '--action', 'merge', '--allow', 'true',
+                            '--source', 'D-7')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('only an active round can write', result.stderr)
+        self.assertFalse(self.project_file.exists())
+
+
+class RecordTests(WriteCase):
+    def setUp(self):
+        super().setUp()
+        self.bin = self.root / 'bin'
+        self.bin.mkdir()
+        self.events = self.root / 'events.json'
+        hcom = self.bin / 'hcom'
+        hcom.write_text(f'#!{sys.executable}\n' + (
+            'import json, sys\n'
+            'wanted = int(sys.argv[sys.argv.index("--sql") + 1].split("=")[1])\n'
+            f'for event in json.load(open({str(self.events)!r})):\n'
+            '    if event["id"] == wanted: print(json.dumps(event))\n'))
+        hcom.chmod(0o755)
+
+    def notice(self, identifier, ts, *, sender='orch', mentions=('zono',)):
+        return dict(id=identifier, type='message', ts=ts, data=dict(
+            sender=sender, **{'from': sender}, mentions=list(mentions),
+            scope='mentions' if mentions else 'broadcast'))
+
+    def record(self, *args):
+        return self.run_tool('record', *args, path=f'{self.bin}:{os.environ["PATH"]}')
+
+    def deploy(self, before=1, after=2, started='2026-10-25T10:05:00+00:00', result='succeeded'):
+        return self.record('--action', 'install-host', '--commit', 'abc123', '--basis',
+                           'allow install-host — basis: allow=true from global', '--result',
+                           result, '--started', started, '--notice-before', str(before),
+                           '--notice-after', str(after))
+
+    def test_deploy_notices_are_checked(self):
+        good = [self.notice(1, '2026-10-25T10:00:00+00:00'),
+                self.notice(2, '2026-10-25T10:10:00+00:00')]
+        for label, events, kwargs, reason in (
+                ('missing notice', good[:1], {}, 'after notice #2 not found'),
+                ('broadcast', [good[0], self.notice(2, '2026-10-25T10:10:00+00:00',
+                                                    mentions=())], {}, 'is a broadcast'),
+                ('reversed', [self.notice(1, '2026-10-25T10:10:00+00:00'),
+                              self.notice(2, '2026-10-25T10:00:00+00:00')], {},
+                 'not earlier than --started'),
+                ('after before before', good, dict(before=2, after=1),
+                 'is not later than before notice'),
+                ('someone else sent it', [self.notice(1, '2026-10-25T10:00:00+00:00',
+                                                      sender='zono'), good[1]], {},
+                 'not this controller orch')):
+            with self.subTest(label):
+                self.events.write_text(json.dumps(events))
+                result = self.deploy(**kwargs)
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(reason, result.stderr)
+                self.assertEqual(self.records(), [])
+        with self.subTest('no notices at all'):
+            result = self.record('--action', 'deploy-test', '--commit', 'abc', '--basis', 'x',
+                                 '--result', 'succeeded')
+            self.assertIn('needs --notice-before, --notice-after and --started', result.stderr)
+
+    def test_failed_deploy_is_recorded_with_its_notices(self):
+        self.events.write_text(json.dumps([self.notice(1, '2026-10-25T10:00:00+00:00'),
+                                           self.notice(2, '2026-10-25T10:10:00+00:00')]))
+        result = self.deploy(result='failed')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        [entry] = self.records()
+        self.assertEqual((entry['kind'], entry['action'], entry['result'], entry['notice_before'],
+                          entry['notice_after']), ('auto', 'install-host', 'failed', 1, 2))
+
+    def test_merge_needs_no_notices_and_precedent_needs_a_human_answer(self):
+        self.assertEqual(self.record('--action', 'merge', '--branch', 'dev', '--commit', 'abc',
+                                     '--basis', 'allow merge dev', '--result',
+                                     'succeeded').returncode, 0)
+        self.decision('OLD-1', status='pending', answer=False)
+        result = self.record('--kind', 'precedent', '--decision', 'NEW-1', '--source',
+                             'OLD-1 r1', '--basis', 'same project, same action')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('status is pending', result.stderr)
+        self.decision('OLD-1')
+        self.assertEqual(self.record('--kind', 'precedent', '--decision', 'NEW-1', '--source',
+                                     'OLD-1 r1', '--basis', 'same project').returncode, 0)
+        result = self.record('--kind', 'bug-intake', '--issue', '#9', '--source', 'chat 12:00')
+        self.assertIn('--self-reported', result.stderr)
+        self.assertEqual([entry['kind'] for entry in self.records()], ['auto', 'precedent'])
+
+    def test_report_lists_only_this_round_in_four_groups(self):
+        old = self.repo / '.lat' / 'preauth-records' / f'{SESSION}-r1.jsonl'
+        self.write(old, json.dumps(dict(kind='auto', action='push', commit='OLDROUND',
+                                        basis='b', result='succeeded')) + '\n')
+        self.session(None, history=1)
+        self.assertEqual(self.record('--action', 'push', '--branch', 'dev', '--commit',
+                                     'abc123', '--basis', 'allow push dev', '--result',
+                                     'succeeded').returncode, 0)
+        self.decision('OLD-2')
+        self.assertEqual(self.record('--kind', 'bug-intake', '--issue', '#9', '--source',
+                                     'chat 12:00', '--self-reported', 'user typed it',
+                                     '--clear-expected', 'says X should be Y', '--single-ticket',
+                                     'one file', '--restores-stated', 'back to Y').returncode, 0)
+        result = self.run_tool('report')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        out = result.stdout
+        self.assertIn(f'session {SESSION} 第 2 輪', out)
+        self.assertNotIn('OLDROUND', out)
+        auto, precedent, bug, grants = out.split('### ')[1:]
+        self.assertIn('依預先授權自動執行\n- push dev abc123：succeeded；依據：allow push dev', auto)
+        self.assertEqual(precedent, '引用舊答覆定案\n- 無\n\n')
+        self.assertIn('免確認開工\n- #9；原訊息：chat 12:00；本人回報：user typed it', bug)
+        self.assertEqual(grants, '設定寫入\n- 無\n')
+        self.session(None, status='ended', history=1)
+        self.assertIn('abc123', self.run_tool('report').stdout)
 
 
 if __name__ == '__main__':
