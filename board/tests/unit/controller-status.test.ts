@@ -111,6 +111,7 @@ const live = (id: string | null, status: Agent['status'], overrides: Partial<Age
 	controller: true,
 	inHerdr: true,
 	switch: null,
+	asking: false,
 	...overrides
 });
 const RUNNING_ALL = new Set(['bound-on', 'done-on', 'asking']);

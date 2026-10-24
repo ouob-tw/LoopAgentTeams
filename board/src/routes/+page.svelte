@@ -482,7 +482,7 @@
 					{#if agent && agentController}
 						<ControllerPage {board} controller={agentController} {agent} {known} {openKey} {listed} onopen={openItem} oncontroller={openController} />
 					{:else if agent}
-						<AgentInfo {agent} />
+						<AgentInfo {agent} asks={board.snapshot.asks.filter((ask) => ask.sessionId === agent.id)} />
 					{:else if closedAgent}
 						<ClosedAgentInfo agent={closedAgent} timeZone={closed.timeZone} controllers={herdrControllers} />
 					{:else}

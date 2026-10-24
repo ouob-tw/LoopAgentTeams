@@ -13,6 +13,7 @@
 	import { Explainer } from '#lib/board/explain.svelte.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { AGENT_HCOM_LABEL, AGENT_STATUS_LABEL, type Agent, type Controller, type HerdrWorkspace } from '#lib/board/types.ts';
+	import { ASKING_STATUS_TEXT } from '#lib/board/board-asks.ts';
 	import AgentCardName from './AgentCardName.svelte';
 	import DutyText from './DutyText.svelte';
 	import ExplainTip from './ExplainTip.svelte';
@@ -369,7 +370,7 @@
 		{/if}
 	</span>
 	<span class="facts">
-		<span class="status">{AGENT_STATUS_LABEL[agent.status]}</span>
+		<span class="status" class:asking={agent.asking}>{agent.asking ? ASKING_STATUS_TEXT : AGENT_STATUS_LABEL[agent.status]}</span>
 		<span>{agent.client}</span>
 		<!-- Not linked shows nothing, so the badge alone means linked; the tooltip still says it. -->
 		{#if agent.hcom !== 'none'}<HcomBadge hcom={agent.hcom} />{/if}
@@ -603,6 +604,10 @@
 	}
 	.status {
 		color: var(--text);
+	}
+	.status.asking {
+		color: var(--warn);
+		font-weight: 700;
 	}
 	/* Not a button: framed like one, but nothing to press. */
 	div.agent {

@@ -2,9 +2,9 @@
 import type { Agent, Controller } from './types.ts';
 
 /** What was done: text typed into the agent's input box, its turn interrupted, it closed, its
- *  Herdr tab moved or renamed, it brought back from the 已關閉 section, or its HCOM link paused or
- *  resumed. */
-export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename' | 'resume' | 'pause' | 'unpause';
+ *  Herdr tab moved or renamed, it brought back from the 已關閉 section, its HCOM link paused or
+ *  resumed, or its board ask answered. */
+export type AgentActionKind = 'send' | 'interrupt' | 'close' | 'move' | 'rename' | 'resume' | 'pause' | 'unpause' | 'board-ask';
 
 /** One line of the board's sent log: one attempt at an action on an agent, made or refused. */
 export interface AgentAction {
@@ -20,8 +20,8 @@ export interface AgentAction {
 	route: 'hcom' | 'herdr' | null;
 	/** The Herdr pane it was in then; null when it was not listed. */
 	pane: string | null;
-	/** The text sent, or what a tab move, a rename, a resume or a pause's resume typed; null for an
-	 *  interrupt, a close or a pause. */
+	/** The text sent, or what a tab move, a rename, a resume or a pause's resume typed, or a board
+	 *  ask's questions with their answers; null for an interrupt, a close or a pause. */
 	text: string | null;
 	ok: boolean;
 	/** Why it was not done; null when it was. */
@@ -45,7 +45,8 @@ export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = {
 	rename: '改分頁名稱',
 	resume: '接回',
 	pause: '暫停通訊',
-	unpause: '恢復通訊'
+	unpause: '恢復通訊',
+	'board-ask': '看板提問'
 };
 
 export const AGENT_INTERRUPT_CONFIRM_TEXT = '中斷這個 Agent 目前這一回合（等同在它的終端機按 Esc）？';
