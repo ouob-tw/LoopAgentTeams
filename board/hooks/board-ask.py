@@ -16,9 +16,10 @@ The shared folder, one board ask per file (all 0600):
   writes it again with `outcome` before it ends: `filled`, `timed_out`, `handed_back` (Codex's
   deadline), `terminal` (answered in Claude's terminal first), `sent` (a board answer to Claude's
   permission request, handed back while its dialog was open too) or `allowed` (Codex allowed after
-  its turn had ended). Once Claude ends the hook while it waits (Esc, or No in its dialog), the
-  hook writes it again with `watcher_pid`, the process that looks for that answer in the
-  transcript for 10 seconds; the board does not call it interrupted while that process runs.
+  its turn had ended). Once Claude ends the hook while it waits (No or Esc in its dialog), the
+  hook writes it again with `watcher_pid`, the process that looks for that refusal in the
+  transcript for 10 seconds; the board takes no answer and does not call it interrupted while
+  that process runs.
 - `<id>.result.json`: who took the ask, written once: a temporary file hard-linked into place,
   which fails when the file already exists. The board writes `{"kind": "answer", ...}` (a question's
   `answers`, a permission's `decision` and `reason`), the hook at its deadline `{"kind": "timeout"}`
@@ -497,7 +498,8 @@ def start_watcher(ask_path, env, ended=False):
 def run_ended(path, ask, clock, sleep):
     """The watcher of an ask whose hook Claude ended: an allow or a refusal (No or Esc) seen in the
     transcript takes the ask as answered in the terminal; nothing within the watch leaves it to
-    the board, which then reads it as interrupted."""
+    the board, which then reads it as interrupted. An answer the board took meanwhile never
+    reached Claude: what the transcript shows is recorded as what Claude did with it."""
     watch = TranscriptWatch(ask['transcript_path'], ask['tool_name'], ask['tool_input'],
                             ask['transcript_start'])
     until = clock() + ENDED_SECONDS
@@ -506,10 +508,17 @@ def run_ended(path, ask, clock, sleep):
         seen = watch.decision()
         if seen is None:
             sleep(POLL_SECONDS)
-    if seen is not None and claim(path.with_name(f'{ask["id"]}.result.json'),
-                                           {'kind': 'terminal', 'decision': seen,
-                                            'at': iso(clock())}):
+    result_path = path.with_name(f'{ask["id"]}.result.json')
+    if seen is not None and claim(result_path, {'kind': 'terminal', 'decision': seen,
+                                                'at': iso(clock())}):
         write_whole(path, {**ask, 'outcome': 'terminal', 'outcome_at': iso(clock())})
+        return
+    result = read_json(result_path)
+    if isinstance(result, dict) and result.get('kind') == 'answer':
+        write_whole(path, {**ask, 'outcome': 'sent', 'outcome_at': iso(clock()),
+                           'observe_until': iso(clock())})
+        record = {'decision': seen} if seen is not None else {'kind': 'unknown'}
+        claim(path.with_name(f'{ask["id"]}.observed.json'), {**record, 'at': iso(clock())})
 
 
 def run_observe(ask_path, ended=False, clock=time.time, sleep=time.sleep):

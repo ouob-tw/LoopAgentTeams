@@ -218,7 +218,8 @@ export const PERMISSION_DECISION_TEXT: Record<PermissionDecision, string> = { al
 /** What a permission card says above its buttons once Codex's turn ended while it waited. */
 export const TURN_ENDED_NOTE = '它已經停下這一回合，按允許後指令仍會執行';
 
-/** What a `terminal` or `terminal_denied` card adds when the board's answer, sent too, was not the one Claude took. */
+/** What a `terminal` or `terminal_denied` card adds when the board's answer, sent too, was not the
+ *  one Claude took. */
 export const NOT_ADOPTED_NOTE = '你在看板的選擇沒有被採用';
 
 /** A permission request's tool input in one line: the command, the file, or the input as JSON. */

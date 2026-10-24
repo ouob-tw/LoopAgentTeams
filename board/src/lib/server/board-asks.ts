@@ -377,8 +377,9 @@ function logEnd(stateDir: string, ask: BoardAsk, agents: Agent[], at: number, er
 }
 
 /**
- * Bring the folder up to date before it is read: an ask whose hook process is gone with nothing
- * taken was ended in the terminal (Esc, or the agent closed), so it is taken as interrupted, takes
+ * Bring the folder up to date before it is read: an ask whose hook process (and, for Claude's
+ * permission request, its watcher) is gone with nothing taken was ended in the terminal (Esc, or
+ * the agent closed), so it is taken as interrupted, takes
  * no answer, and goes in its agent's operation record; so does, once, a permission ask that ended
  * without the board's answer being used (see `endNote`); an ask that ended at least 7 days ago is
  * removed with its files. `agents` are the agents as listed now, for the record's name and pane.
@@ -554,10 +555,13 @@ export async function answerPermission(board: Board, id: string, decision: Permi
 	if (!ask) return { status: 404, body: { status: 'gone', reason: '這一題已經不在看板上。', logError: null } };
 	if (ask.kind !== 'permission') return { status: 400, body: { status: 'invalid', reason: '這一題不是權限確認。', logError: null } };
 	const reason = decision === 'deny' ? rawReason.trim() || null : null;
+	// Claude ended the hook (No or Esc in its dialog) and its watcher looks for the refusal: an
+	// answer now would reach no one.
+	const ended = Number.isInteger((readJson(join(config.asksDir, `${id}.json`)) as AskFile | null)?.watcher_pid);
 	let taken: boolean;
 	let late = false;
 	try {
-		taken = ask.state === 'waiting' && takePermission(config.asksDir, id, decision, reason);
+		taken = ask.state === 'waiting' && !ended && takePermission(config.asksDir, id, decision, reason);
 		late = !taken && findAsk(board, id)?.state === 'timed_out';
 		if (late) taken = claim(config.asksDir, `${id}.late.json`, { kind: 'answer', decision, reason: reason ?? '', at: new Date().toISOString() } satisfies LateFile);
 	} catch (error) {

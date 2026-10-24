@@ -254,3 +254,10 @@ test('an ended permission ask goes after 7 days with every file beside it', asyn
 	await fixture.refresh(cookie);
 	expect(readdirSync(asksDir).filter((name) => name.startsWith('old'))).toEqual([]);
 });
+
+test('while the watcher of an ended Claude hook looks for the refusal, the board takes no answer', async () => {
+	putAsk('watched', { extra: { watcher_pid: process.pid } });
+	const result = await answer('watched', 'allow');
+	expect(result).toMatchObject({ status: 409, body: { status: 'taken' } });
+	expect(existsSync(join(asksDir, 'watched.result.json'))).toBe(false);
+});

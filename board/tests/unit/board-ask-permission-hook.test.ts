@@ -439,4 +439,18 @@ test('a hook ended with nothing in the transcript (the agent closed) reads inter
 	settleAsks({ asksDir: dir, stateDir, askExecutionWaitMs: 60_000 }, []);
 	expect(stateOf(ask.id)!.state).toBe('interrupted');
 	rmSync(stateDir, { recursive: true, force: true });
+}, 20_000);
+
+test('a board answer taken after Claude ended the hook for a No: 已在終端機拒絕, the board\'s allow not taken', async () => {
+	writeFileSync(transcript, toolUse('toolu_race'));
+	const run = hook(claudeInput());
+	const ask = await waitingAsk();
+	// The board's answer lands after the hook ended and before the refusal is in the transcript.
+	const pid = hookPid(ask.id);
+	process.kill(pid, 'SIGTERM');
+	await run;
+	takePermission(dir, ask.id, 'allow');
+	appendFileSync(transcript, rejectedEntry('toolu_race') + interruptedEntry);
+	const ended = await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'answered' && entry.state !== 'waiting');
+	expect(ended).toMatchObject({ state: 'terminal_denied', decision: 'allow', actual: 'deny', notAdopted: true });
 });
