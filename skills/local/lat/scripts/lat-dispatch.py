@@ -31,6 +31,8 @@ CARD_AGENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?=$|[\s(（])')
 NONE = '無'
 LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
 LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends')
+CARD_RULE = 'Update it at the start, at checkpoints and at the end.'
+CARD_RULE_READ_ONLY = 'The orchestrator maintains the task card; do not edit it.'
 LIVE_RULES = '''- Before acting, check every `preflight` item. If any item does not hold, report to the orchestrator first and do not act.
 - Do live actions inside the `live actions` quota yourself; do not ask the orchestrator to approve each step.
 - Report to the orchestrator only when: (1) you are about to exceed or have exceeded any quota; (2) a stop condition triggers; (3) a login, human-verification or risk-control signal appears; (4) a decision outside the Spec comes up; (5) you have the final result.
@@ -49,7 +51,7 @@ FIXED = '''## Fixed fields
 
 ## LAT hand-off
 
-- Task card: {card}. Update it at the start, at checkpoints and at the end.
+- Task card: {card}. {card_rule}
 - Runs folder: {runs}
 - Decisions directory: {decisions}. Check pending decisions before starting and before resuming or taking a follow-up instruction: stop work that depends on a pending decision and report it; keep going on authorized work it does not affect. No reply from the user is not approval.
 - Other agents named in the sections above: contact them directly for what you need from them; do not route it through {orchestrator}.
@@ -92,13 +94,18 @@ def read_hcom_list():
     return value
 
 
-def agent_for_tag(tag):
+def agent_for_tag(tag, agent=None):
     names = sorted({item['name'] for item in read_hcom_list()
                     if item.get('tag') == tag and isinstance(item.get('name'), str)})
     if not names:
         raise Failure(f'no HCOM agent carries tag {tag!r}; launch it first, then rerun')
+    if agent is not None:
+        if agent not in names:
+            raise Failure(f'--agent {agent!r} is not among the agents carrying tag {tag!r}: '
+                          f'{", ".join(names)}')
+        return agent
     if len(names) > 1:
-        raise Failure(f'tag {tag!r} is not unique: {", ".join(names)}; use a tag of its own')
+        raise Failure(f'tag {tag!r} is not unique: {", ".join(names)}; use a tag of its own or pass --agent')
     return names[0]
 
 
@@ -125,7 +132,7 @@ def make_card(args):
     if not tasks.is_dir():
         raise Failure(f'task-card directory does not exist: {tasks}')
     ledger = ledger_request(args)
-    agent = agent_for_tag(tag)
+    agent = agent_for_tag(tag, args.agent)
     day = args.date or date.today().isoformat()
     options = {
         'model': args.model, 'branch': args.branch, 'worktree': args.worktree,
@@ -308,14 +315,23 @@ def make_brief(args):
         raise Failure('--output must differ from the input file')
     worktree = card.get('worktree', '')
     workdir = worktree if worktree.startswith('/') else str(workspace)
+    extra = None
+    if args.include:
+        try:
+            extra = Path(args.include).read_text(encoding='utf-8').strip('\n')
+        except (OSError, UnicodeError) as error:
+            raise Failure(f'--include unreadable: {error}') from error
     parts = [f'# Task brief for {card["agent"]}\n']
     parts += [f'## {title}\n\n{bodies[title]}\n' for title in SECTIONS]
+    if extra:
+        parts.append(extra + '\n')
     parts.append('## Task card live actions and preflight (authoritative; copied from the card)\n\n'
                  f'- live actions：{card["live actions"]}\n- preflight：{card["preflight"]}\n\n'
                  f'{LIVE_RULES}\n')
     fixed = FIXED.format(
         workdir=workdir, orchestrator=card['orchestrator'], agent=card['agent'],
-        card=card_path, runs=card.get('runs') or NONE, workspace=shlex.quote(str(workspace)),
+        card=card_path, card_rule=CARD_RULE_READ_ONLY if args.read_only else CARD_RULE,
+        runs=card.get('runs') or NONE, workspace=shlex.quote(str(workspace)),
         decisions=workspace / '.lat' / 'decisions',
         lat_script=shlex.quote(str(args.lat_dir.resolve() / 'scripts' / 'lat-watch.py')))
     if card['ledger row']:
@@ -340,6 +356,7 @@ def build_parser():
     commands = parser.add_subparsers(dest='command', required=True)
     card = commands.add_parser('card', help='Create the task card for a launched HCOM tag')
     card.add_argument('--tag', required=True)
+    card.add_argument('--agent', help='full HCOM name; picks one agent when the tag matches several')
     card.add_argument('--tasks', type=Path, required=True,
                       help='shared task-card directory (<workspace>/.lat/tasks)')
     card.add_argument('--orchestrator', required=True, help='HCOM name of the orchestrator')
@@ -363,6 +380,10 @@ def build_parser():
     brief.add_argument('--card', type=Path)
     brief.add_argument('--input', type=Path, required=True)
     brief.add_argument('--output', type=Path, help='default: <input>.brief.md beside the input')
+    brief.add_argument('--read-only', action='store_true',
+                       help='read-only task: the agent must not edit the task card')
+    brief.add_argument('--include', type=Path,
+                       help='file appended after the four sections, before the live actions block')
     brief.add_argument('--workspace', type=Path,
                        help='main workspace; default derived from the card location')
     brief.add_argument('--lat-dir', type=Path, default=LAT_DIR,
