@@ -6,6 +6,7 @@ from datetime import datetime, timezone
 import fcntl
 import functools
 import hashlib
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -43,11 +44,15 @@ IDLE_GAP_SECONDS = 5 * 60
 KEEPALIVE_DECISION_SECONDS = 3 * 60 * 60
 KEEPALIVE_QUIET_HOURS = (1, 9)
 PROMPT_UNREADABLE_SECONDS = 15 * 60
+LEDGER_START_SECONDS = 10 * 60
+LEDGER_USER_SECONDS = 10 * 60
 SCREEN_TAIL_LINES = 8
 SCREEN_TAIL_CHARS = 200
 # Successful deliveries awaiting a session-record save; retained across retry cycles.
 RULE_DELIVERIES = {}
 ALARM_DELIVERIES = {}
+# Latest ledger delivery state per watcher state file; survives a failed state save.
+LEDGER_DELIVERIES = {}
 _UNSET = object()
 NUDGE = ('[lat-watch] Read any unread HCOM messages and finish all work not blocked by pending '
          'decisions. If nothing remains, declare exactly what you are waiting for '
@@ -1905,7 +1910,7 @@ def show_popup(agent, orchestrator, label):
 
 
 def perform_notify_user(action, orchestrator, workspace=None):
-    if action.category not in ('wait-expiry-popup', 'alarm-popup'):
+    if action.category not in ('wait-expiry-popup', 'alarm-popup', 'ledger-user-popup'):
         send_notification(action, orchestrator, 'inform')
     try:
         show_popup(action.agent, orchestrator, action.label or '停住')
@@ -2110,6 +2115,228 @@ def roll_back(action, state):
         state.pop(field, None)
 
 
+LEDGER_SCRIPT = Path(__file__).resolve().with_name('lat-ledger.py')
+LEDGER_DECISIONS = {'start': 'ledger-start-missing', 'estimate': 'ledger-estimate-passed',
+                    'deadline': 'ledger-deadline-passed', 'user': 'ledger-user-notified'}
+
+
+@functools.lru_cache(maxsize=None)
+def ledger_module():
+    spec = importlib.util.spec_from_file_location('lat_ledger', LEDGER_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def ledger_location(workspace, orchestrator, fallback=None):
+    """This round's ledger: `ledger_path` in the orchestrator's active session record.
+
+    `fallback` (the run --ledger argument) applies when no such record names one; None means
+    the round has no ledger and the due checks are skipped.
+    """
+    for path in sorted((lat_dir(workspace) / 'sessions').glob('*.json')):
+        try:
+            record = read_object(path, {})
+        except (OSError, ValueError):
+            continue
+        if (record.get('role') == 'orchestrator' and record.get('status') == 'active'
+                and record.get('hcom_name') == orchestrator
+                and record.get('workspace') == str(workspace) and record.get('ledger_path')):
+            return Path(record['ledger_path'])
+    return None if fallback is None else Path(fallback)
+
+
+def read_ledger(location):
+    ledger = ledger_module()
+    store = ledger.Store(location)
+    try:
+        with ledger.locked(store, exclusive=False):
+            return ledger.load(store)[0]
+    except ledger.Failure as error:
+        raise ValueError(str(error)) from error
+
+
+def ledger_time(text):
+    return datetime.fromisoformat(text.replace('Z', '+00:00')).timestamp()
+
+
+def ledger_dues(item):
+    """{key: (kind, due epoch, due text)} for every check the item's status keeps open.
+
+    A key is the kind, the item number and that time, so a new dispatch, estimate or
+    deadline starts a new check while a delivered one is never repeated.
+    """
+    dues = {}
+    status = item['status']
+    if status == 'assigned' and item.get('assigned_at'):
+        dues['start'] = (ledger_time(item['assigned_at']) + LEDGER_START_SECONDS,
+                         item['assigned_at'])
+    if status == 'in_progress' and item.get('estimate'):
+        dues['estimate'] = (ledger_time(item['estimate']), item['estimate'])
+    if status in ('assigned', 'in_progress', 'blocked') and item.get('deadline'):
+        dues['deadline'] = (ledger_time(item['deadline']), item['deadline'])
+        dues['user'] = dues['deadline']
+    return {f'{kind}:{item["id"]}:{text}': (kind, due, text) for kind, (due, text) in dues.items()}
+
+
+def ledger_message(kind, item, location, now, notified_at=None):
+    late = None if kind == 'start' else int(
+        (now - ledger_time(item['estimate' if kind == 'estimate' else 'deadline'])) // 60)
+    ledger = f'uv run --no-project python {shlex.quote(str(LEDGER_SCRIPT))}'
+    where = f'--ledger {shlex.quote(str(location))}'
+    name = f'Ledger item {item["id"]} ({item["ticket"]})'
+    if kind == 'start':
+        return (f'[lat-watch] {name} was assigned to you at {item["assigned_at"]} and is not '
+                f'started. Register it now: {ledger} start {item["id"]} {where} '
+                '--eta <ISO 8601 or +N[m|h|d]>')
+    if kind == 'estimate':
+        return (f'[lat-watch] {name} passed your estimate {item["estimate"]} by {late} '
+                f'minutes. Record progress with a reason and a new estimate: {ledger} update '
+                f'{item["id"]} {where} --eta <ISO 8601 or +N[m|h|d]> --reason "<why>"; or '
+                f'close it with {ledger} done {item["id"]} {where} and its evidence.')
+    owner = item['agent'] or 'nobody'
+    if kind == 'deadline':
+        return (f'LAT stall watcher: ledger item {item["id"]} ({item["ticket"]}, stage '
+                f'{item["stage"]}) owned by {owner} is {item["status"]} and passed its deadline '
+                f'{item["deadline"]} by {late} minutes. Ledger: {location}. Check the agent, '
+                'then reassign, block, cancel or extend the deadline with update --deadline '
+                '--reason. If its status, owner and deadline stay unchanged for 10 minutes, '
+                'the user is notified.')
+    return (f'LAT stall watcher: ledger item {item["id"]} ({item["ticket"]}) owned by {owner} '
+            f'passed its deadline {item["deadline"]} by {late} minutes. The orchestrator was '
+            f'notified {int((now - notified_at) // 60)} minutes ago and its status, owner and '
+            f'deadline are unchanged since. Ledger: {location}.')
+
+
+def ledger_snapshot(item):
+    return [item['status'], item['agent'], item['deadline']]
+
+
+def ledger_handled(item, notice):
+    """True once the row's status, owner or deadline changed after the deadline notice.
+
+    The row history is append-only, so entries past the length seen at delivery are the
+    later ones, even within the same second.
+    """
+    return (notice['snapshot'] != ledger_snapshot(item)
+            or any({'status', 'agent', 'deadline'} & set(entry.get('changes') or {})
+                   for entry in item['history'][notice['history_seen']:]))
+
+
+def deliver_ledger(kind, item, entry, location, orchestrator, workspace, observe_agent, now,
+                   notified_at=None):
+    """Try one due check; return the delivery, None to wait for a later cycle, or raise."""
+    message = ledger_message(kind, item, location, now, notified_at)
+    if kind in ('start', 'estimate'):
+        agent = item['agent']
+        observation = observe_agent(agent)
+        if observation is None:
+            return None
+        if observation.input_text:
+            raise ValueError('input box has text')
+        if not idle_prompt(observation):
+            return None
+        return perform(Action('nudge', agent, text=message, category=LEDGER_DECISIONS[kind]),
+                       orchestrator, workspace)
+    if kind == 'deadline':
+        return perform(Action('notify-orchestrator', item['agent'] or orchestrator, message,
+                              category=LEDGER_DECISIONS[kind]), orchestrator, workspace)
+    category = 'ledger-user-popup' if entry.get('conversation_delivered') else 'ledger-user'
+    delivery = perform(Action('notify-user', item['agent'] or orchestrator, message,
+                              category=category, label='逾期'), orchestrator, workspace)
+    entry['conversation_delivered'] = True
+    if delivery.get('herdr_error') and shutil.which('herdr') is not None:
+        raise ValueError(f'Herdr notification failed: {delivery["herdr_error"]}')
+    return delivery
+
+
+def check_ledger(location, saved, orchestrator, workspace, observe_agent, paused, log, now):
+    """Run the ledger due checks once; return the delivery state to save.
+
+    Each check is pending until it is due and deliverable, failed after an attempt that did
+    not arrive (retried next cycle) and sent once it arrives; only sent ones are deduplicated.
+    """
+    if location is None:
+        return {}
+    state = json.loads(json.dumps(saved or {}))
+    if state.get('ledger') != str(location):
+        # Item numbers and times restart with each round's ledger.
+        state = {'ledger': str(location)}
+    deliveries = state.setdefault('deliveries', {})
+    try:
+        doc = read_ledger(location)
+    except (OSError, ValueError) as error:
+        message = str(error)
+        if state.get('error') != message:
+            append_log(log, {'at': now, 'agent': orchestrator, 'decision': 'ledger-unreadable',
+                             'ledger': str(location), 'error': message, 'actions': []})
+        state['error'] = message
+        return state
+    state.pop('error', None)
+    current = {}
+    items = {}
+    open_items = set()
+    for item in doc['items']:
+        if item['status'] in ('assigned', 'in_progress', 'blocked'):
+            open_items.add(item['id'])
+        for key, due in ledger_dues(item).items():
+            current[key] = due
+            items[key] = item
+    # A delivered check stays delivered while its row is open, even when a status change
+    # pauses it; undelivered ones restart from their current due time.
+    for key, entry in list(deliveries.items()):
+        if key not in current and (entry['status'] != 'sent' or entry['item'] not in open_items):
+            deliveries.pop(key)
+    nudged = set()
+    for key, (kind, due, text) in sorted(current.items(), key=lambda pair: pair[1][1]):
+        item = items[key]
+        entry = deliveries.get(key)
+        if entry and entry['status'] == 'sent':
+            continue
+        notified_at = None
+        if kind == 'user':
+            notice = deliveries.get(key.replace('user:', 'deadline:', 1))
+            if not notice or notice['status'] != 'sent' or notice.get('handled'):
+                continue
+            if ledger_handled(item, notice):
+                notice['handled'] = True
+                continue
+            notified_at = notice['sent_at']
+            due = notified_at + LEDGER_USER_SECONDS
+        if now < due:
+            continue
+        entry = deliveries.setdefault(key, {'kind': kind, 'item': item['id'], 'due': text,
+                                            'status': 'pending', 'attempts': 0})
+        target = item['agent'] if kind in ('start', 'estimate') else orchestrator
+        if target in paused or target in nudged:
+            continue
+        record = {'at': now, 'agent': item['agent'], 'decision': LEDGER_DECISIONS[kind],
+                  'item': item['id'], 'ticket': item['ticket'], 'due': text,
+                  'ledger': str(location), 'actions': []}
+        try:
+            delivery = deliver_ledger(kind, item, entry, location, orchestrator, workspace,
+                                      observe_agent, now, notified_at)
+        except (OSError, ValueError, TypeError, KeyError) as error:
+            entry['attempts'] += 1
+            if entry['status'] != 'failed' or entry.get('error') != str(error):
+                append_log(log, {**record, 'result': 'failed', 'attempt': entry['attempts'],
+                                 'error': str(error)})
+            entry.update(status='failed', error=str(error))
+            continue
+        if delivery is None:
+            continue
+        entry['attempts'] += 1
+        entry.pop('error', None)
+        entry.update(status='sent', sent_at=now)
+        if kind == 'deadline':
+            entry.update(snapshot=ledger_snapshot(item), history_seen=len(item['history']))
+        if kind in ('start', 'estimate'):
+            nudged.add(item['agent'])
+        append_log(log, {**record, 'result': 'sent', 'attempt': entry['attempts'],
+                         'delivery': delivery})
+    return state
+
+
 def check_rule_changes(workspace, orchestrator, log, now):
     """Advance each owning session's rule baseline only after delivery succeeds."""
     for path in sorted((lat_dir(workspace) / 'sessions').glob('*.json')):
@@ -2278,7 +2505,7 @@ def log_signature(observation, state):
             observation.prompt_empty, state['quota_active'], state['nudged']]
 
 
-def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
+def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
     """Observe every owned agent once, execute actions, and persist state/logs.
 
     Returns a stop reason once the orchestrator has been gone from HCOM long enough.
@@ -2326,6 +2553,9 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
         except (TypeError, ValueError, OverflowError, OSError) as error:
             reset_agent_state(path, log, now, agent, f'{type(error).__name__}: {error}')
             states.pop(agent)
+    ledger_saved = LEDGER_DELIVERIES.get(str(path),
+                                         states.get(orchestrator, {}).get('ledger', {}))
+    acted = set()
     missing_since = states.get(orchestrator, {}).get('missing_since')
     if type(missing_since) not in (int, float):
         missing_since = None
@@ -2599,6 +2829,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
             state['last_seen_at'] = now
             state['log_signature'] = log_signature(observation, state)
             states[agent] = state
+            if actions:
+                acted.add(agent)
             if (actions or state['log_signature'] != logged
                     or any(result['status'] == 'failed' for result in results)):
                 append_log(log, {
@@ -2611,9 +2843,33 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 'at': now, 'agent': agent, 'decision': 'observation-failed',
                 'actions': [], 'error': str(error),
             })
+
+    def ledger_observation(agent):
+        """The agent's observation this cycle; None while another action just used it."""
+        if agent in acted:
+            return None
+        info = hcom.get(agent)
+        if info is None or info.get('status') == 'inactive':
+            raise ValueError('agent window unavailable: '
+                             + ('missing from HCOM list' if info is None else 'inactive'))
+        return current_observation(agent)
+
+    try:
+        ledger_state = check_ledger(ledger_location(workspace, orchestrator, ledger),
+                                    ledger_saved, orchestrator, workspace, ledger_observation,
+                                    paused, log, now)
+    except (OSError, ValueError, TypeError, KeyError) as error:
+        ledger_state = ledger_saved
+        append_log(log, {'at': now, 'agent': orchestrator, 'decision': 'ledger-check-failed',
+                         'actions': [], 'error': f'{type(error).__name__}: {error}'})
+    LEDGER_DELIVERIES[str(path)] = ledger_state
     own = states.setdefault(orchestrator, {})
     own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5,
-                               'claude_quota_resume': 1}
+                               'claude_quota_resume': 1, 'ledger_due': 1}
+    if ledger_state:
+        own['ledger'] = ledger_state
+    else:
+        own.pop('ledger', None)
     own.pop('missing_since', None)
     stop_reason = None
     if orchestrator_gone:
@@ -2698,7 +2954,8 @@ def run_forever(args):
     while True:
         now = time.time()
         try:
-            reason = run_cycle(workspace, tasks, decisions, args.orchestrator, now)
+            reason = run_cycle(workspace, tasks, decisions, args.orchestrator, now,
+                               ledger=args.ledger)
             failure = None
         except Exception as error:
             reason = None
@@ -3126,6 +3383,8 @@ def main():
     run.add_argument('--orchestrator', required=True)
     run.add_argument('--tasks', type=Path, required=True)
     run.add_argument('--decisions', type=Path, required=True)
+    run.add_argument('--ledger', type=Path,
+                     help='Ledger to check when the active session record names none')
     args = parser.parse_args()
     try:
         if args.command == 'wait':

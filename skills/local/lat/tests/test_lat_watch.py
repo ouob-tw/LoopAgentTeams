@@ -19,6 +19,7 @@ from unittest.mock import patch
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-watch.py'
 TAIPEI = timezone(timedelta(hours=8))
+_UNSET_LEDGER = object()
 
 
 def load_watch():
@@ -1372,7 +1373,7 @@ esac
         self.run_cycles(load_watch(), 4000)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
         self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
-        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1})
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1})
         result = self.alarm_cli('--after', 1, agent='worker-open')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
@@ -3590,7 +3591,7 @@ esac
         (root / 'sid.pid').write_text(str(os.getpgrp()))
         (root / 'other.pid').write_text('999999')
         self.run_cycles(watch, *range(0, 3541, 60))
-        args = argparse.Namespace(workspace=self.work, tasks=self.tasks,
+        args = argparse.Namespace(workspace=self.work, tasks=self.tasks, ledger=None,
                                   decisions=self.work / '.lat/decisions', orchestrator='orch')
         with patch.dict(os.environ, self.env), patch.object(watch.time, 'time', return_value=3600), \
                 patch.object(watch.time, 'sleep', side_effect=AssertionError('kept running')):
@@ -4410,7 +4411,7 @@ esac
         watch = load_watch()
         decisions = self.work / '.lat/decisions'
         decisions.mkdir()
-        args = argparse.Namespace(workspace=self.work, tasks=self.tasks,
+        args = argparse.Namespace(workspace=self.work, tasks=self.tasks, ledger=None,
                                   decisions=decisions, orchestrator='orch')
         stop = RuntimeError('stop test loop')
 
@@ -4445,7 +4446,7 @@ esac
         watch = load_watch()
         decisions = self.work / '.lat/decisions'
         decisions.mkdir()
-        args = argparse.Namespace(workspace=self.work, tasks=self.tasks,
+        args = argparse.Namespace(workspace=self.work, tasks=self.tasks, ledger=None,
                                   decisions=decisions, orchestrator='orch')
         calls, environment = self.fake_reaper()
         stop = RuntimeError('stop test loop')
@@ -4464,7 +4465,7 @@ esac
         watch = load_watch()
         decisions = self.work / '.lat/decisions'
         decisions.mkdir()
-        args = argparse.Namespace(workspace=self.work, tasks=self.tasks,
+        args = argparse.Namespace(workspace=self.work, tasks=self.tasks, ledger=None,
                                   decisions=decisions, orchestrator='orch')
         calls, environment = self.fake_reaper(
             'test -e "$0.slow" && exec sleep 5\ntouch "$0.slow"\n'
@@ -4493,14 +4494,14 @@ esac
         watch = load_watch()
         decisions = self.work / '.lat/decisions'
         decisions.mkdir()
-        args = argparse.Namespace(workspace=self.work, tasks=self.tasks,
+        args = argparse.Namespace(workspace=self.work, tasks=self.tasks, ledger=None,
                                   decisions=decisions, orchestrator='orch')
         failures = [ValueError('hcom failed: busy'), ValueError('hcom failed: busy'),
                     ValueError('hcom failed: busy'), OSError('disk'), None,
                     ValueError('hcom failed: busy')]
         clock = iter([0, 60, 3600, 3660, 3720, 3780])
 
-        def cycle(*_):
+        def cycle(*_, **__):
             error = failures.pop(0)
             if error:
                 raise error
@@ -4528,7 +4529,7 @@ esac
         watch = load_watch()
         decisions = self.work / '.lat/decisions'
         decisions.mkdir()
-        args = argparse.Namespace(workspace=self.work, tasks=self.tasks,
+        args = argparse.Namespace(workspace=self.work, tasks=self.tasks, ledger=None,
                                   decisions=decisions, orchestrator='orch')
         stop = RuntimeError('stop test loop')
 
@@ -4563,7 +4564,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -4587,7 +4588,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
@@ -5271,7 +5272,7 @@ esac
         self.assertEqual(state['worker']['decision'], 'valid-wait')
         self.assertEqual(self.wait_file.read_bytes(), before)
         self.assertEqual(state['worker']['feature_versions'],
-                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1})
+                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1})
         # The wait still expires at its original deadline, counted once, with the real
         # idle time, and the agent is nudged for the expiry rather than as a stall.
         self.cycle(self.start + 3000)
@@ -6162,6 +6163,281 @@ class ClaudeQuotaRecoveryTests(unittest.TestCase):
 
 def re_option(line):
     return bool(re.match(r'^\s*(?:❯\s*)?\d\.', line))
+
+
+class LedgerDueTests(unittest.TestCase):
+    """Ledger due checks against a real ledger, fake hcom/herdr and fixed clocks."""
+    START = datetime(2026, 10, 24, tzinfo=timezone.utc).timestamp()
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.work = self.root / 'work'
+        (self.work / '.git').mkdir(parents=True)
+        self.tasks = self.work / '.lat/tasks'
+        self.tasks.mkdir(parents=True)
+        self.decisions = self.work / '.lat/decisions'
+        self.decisions.mkdir()
+        self.ledger_path = self.work / '.lat/ledgers/round.json'
+        binary = self.root / 'bin'
+        binary.mkdir()
+        self.hcom_log = self.root / 'hcom.log'
+        self.herdr_log = self.root / 'herdr.log'
+        self.hcom_log.touch()
+        self.herdr_log.touch()
+        (binary / 'hcom').write_text('''#!/bin/sh
+printf '%s\\n' "$*" >> "$FAKE_HCOM_LOG"
+case "$1" in
+list) if [ -f "$FAKE_HCOM_LOG.gone" ]; then printf '%s\\n' '[{"name":"orch","status":"listening"}]';
+      else printf '%s\\n' '[{"name":"orch","status":"listening"},{"name":"worker","status":"listening","tool":"claude"}]'; fi;;
+term) if [ "$2" != inject ]; then
+        if [ "$2" = worker ] && [ -f "$FAKE_HCOM_LOG.busy" ]; then
+          printf '%s\\n' '{"ready":true,"prompt_empty":false,"input_text":"draft","lines":[]}';
+        else printf '%s\\n' '{"ready":true,"prompt_empty":true,"input_text":"","lines":[]}'; fi
+      elif [ -f "$FAKE_HCOM_LOG.fail" ]; then exit 1; fi;;
+send) if [ -f "$FAKE_HCOM_LOG.fail" ]; then exit 1; fi;;
+esac
+''')
+        (binary / 'herdr').write_text('#!/bin/sh\nprintf "%s\\n" "$*" >> "$FAKE_HERDR_LOG"\n')
+        for tool in ('hcom', 'herdr'):
+            (binary / tool).chmod(0o755)
+        self.env = dict(os.environ, PATH=f'{binary}:{os.environ["PATH"]}',
+                        FAKE_HCOM_LOG=str(self.hcom_log), FAKE_HERDR_LOG=str(self.herdr_log))
+        self.ledger('init', '--workspace', self.work)
+        self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file')
+
+    def ledger(self, command, *args, at=0):
+        when = datetime.fromtimestamp(self.START + at, timezone.utc).isoformat()
+        result = subprocess.run(
+            [sys.executable, str(SCRIPT.with_name('lat-ledger.py')), command,
+             '--ledger', str(self.ledger_path), '--by', 'orch', *map(str, args)],
+            text=True, capture_output=True, env=dict(self.env, LAT_LEDGER_NOW=when))
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def assign(self, deadline='+2h'):
+        self.ledger('assign', 1, '--agent', 'worker', '--card', self.tasks / 'worker.md',
+                    '--deadline', deadline)
+
+    def flag(self, name, present=True):
+        path = Path(f'{self.hcom_log}.{name}')
+        path.touch() if present else path.unlink()
+
+    def cycles(self, *offsets, watch=None, ledger=_UNSET_LEDGER):
+        watch = watch or load_watch()
+        location = self.ledger_path if ledger is _UNSET_LEDGER else ledger
+        with patch.dict(os.environ, self.env):
+            for offset in offsets:
+                watch.run_cycle(self.work, self.tasks, self.decisions, 'orch',
+                                now=self.START + offset, ledger=location)
+        return watch
+
+    def injects(self, words):
+        return [line for line in self.hcom_log.read_text().splitlines()
+                if line.startswith('term inject worker') and words in line]
+
+    def notices(self, words):
+        return [line for line in self.hcom_log.read_text().splitlines()
+                if line.startswith('send ') and words in line]
+
+    def records(self, decision):
+        path = self.work / '.lat/watch/orch/watch.jsonl'
+        return [json.loads(line) for line in path.read_text().splitlines()
+                if json.loads(line).get('decision') == decision]
+
+    def deliveries(self):
+        state = json.loads((self.work / '.lat/watch/orch/state.json').read_text())
+        return state['orch']['ledger']['deliveries']
+
+    def test_unstarted_item_is_nudged_once_ten_minutes_after_dispatch(self):
+        self.assign()
+        watch = self.cycles(0, 599)
+        self.assertEqual(self.injects('Ledger item 1'), [])
+        self.cycles(600, 660, watch=watch)
+        nudges = self.injects('Ledger item 1 (#1) was assigned to you')
+        self.assertEqual(len(nudges), 1)
+        self.assertIn(f'start 1 --ledger {self.ledger_path}', nudges[0])
+        # A restarted watcher keeps the delivered check.
+        self.cycles(720, 780)
+        self.assertEqual(len(self.injects('Ledger item 1')), 1)
+        [record] = self.records('ledger-start-missing')
+        self.assertEqual((record['item'], record['result'], record['agent']), (1, 'sent', 'worker'))
+        state = json.loads((self.work / '.lat/watch/orch/state.json').read_text())
+        self.assertEqual(state['orch']['feature_versions']['ledger_due'], 1)
+        [entry] = state['orch']['ledger']['deliveries'].values()
+        self.assertEqual((entry['kind'], entry['status'], entry['sent_at']),
+                         ('start', 'sent', self.START + 600))
+
+    def test_passed_estimate_is_nudged_once_and_update_restarts_the_check(self):
+        self.assign()
+        self.ledger('start', 1, '--eta', '+5m', at=60)
+        watch = self.cycles(359, 600)
+        self.assertEqual(len(self.injects('passed your estimate')), 1)
+        self.assertEqual(self.injects('was assigned to you'), [])
+        self.ledger('update', 1, '--eta', '+20m', '--reason', 'tests slow', at=700)
+        self.cycles(720, 1899, watch=watch)
+        self.assertEqual(len(self.injects('passed your estimate')), 1)
+        self.cycles(1900, 1960, watch=watch)
+        nudges = self.injects('passed your estimate')
+        self.assertEqual(len(nudges), 2)
+        self.assertIn('--reason', nudges[1])
+        self.assertEqual([r['due'] for r in self.records('ledger-estimate-passed')],
+                         ['2026-10-24T00:06:00Z', '2026-10-24T00:31:40Z'])
+
+    def test_deadline_notifies_orchestrator_then_user_ten_minutes_after_delivery(self):
+        self.assign(deadline='+30m')
+        self.ledger('start', 1, '--eta', '+3h', at=60)
+        self.flag('fail')
+        watch = self.cycles(1799, 1800)
+        # The fake hcom logs the failed attempt too.
+        self.assertEqual(len(self.notices('Check the agent')), 1)
+        self.flag('fail', present=False)
+        self.cycles(1860, 2459, watch=watch)
+        notice = self.notices('Check the agent')[-1]
+        self.assertIn('--intent request', notice)
+        self.assertIn('owned by worker is in_progress', notice)
+        self.assertEqual(self.herdr_log.read_text(), '')
+        self.cycles(2460, 2520, 4000, watch=watch)
+        user = self.notices('The orchestrator was notified 10 minutes ago')
+        self.assertEqual(len(user), 1)
+        self.assertIn('passed its deadline 2026-10-24T00:30:00Z by 11 minutes', user[0])
+        self.assertIn('--intent inform', user[0])
+        self.assertEqual(len(self.notices('Check the agent')), 2)
+        # The idle orchestrator gets its own stall popup; count only the overdue one.
+        popups = [line for line in self.herdr_log.read_text().splitlines()
+                  if line.startswith('notification show') and '逾期' in line]
+        self.assertEqual(popups, ['notification show claude逾期: worker --sound request'])
+        deadline = self.records('ledger-deadline-passed')
+        self.assertEqual([r['result'] for r in deadline], ['failed', 'sent'])
+        [user_record] = self.records('ledger-user-notified')
+        self.assertEqual((user_record['at'], user_record['result']), (self.START + 2460, 'sent'))
+
+    def test_owner_change_after_deadline_notice_keeps_the_user_out(self):
+        self.assign(deadline='+30m')
+        watch = self.cycles(1800)
+        self.ledger('reassign', 1, '--agent', 'worker2', '--reason', 'worker left', at=1900)
+        self.cycles(2400, 3000, watch=watch)
+        self.assertEqual(len(self.notices('Check the agent')), 1)
+        self.assertEqual(self.records('ledger-user-notified'), [])
+
+    def test_block_and_unblock_between_polls_counts_as_handling(self):
+        self.assign(deadline='+30m')
+        watch = self.cycles(1800)
+        self.ledger('block', 1, '--reason', 'waits for TEVU-1', at=1810)
+        self.ledger('unblock', 1, '--reason', 'answered', at=1820)
+        self.cycles(1860, 2400, 2500, watch=watch)
+        self.assertEqual(self.records('ledger-user-notified'), [])
+
+    def test_a_change_just_before_the_notice_still_lets_the_user_be_notified(self):
+        self.assign(deadline='+30m')
+        self.ledger('block', 1, '--reason', 'waits for TEVU-1', at=1800)
+        self.cycles(1800.5, 2401, 2460)
+        self.assertEqual(len(self.records('ledger-user-notified')), 1)
+
+    def test_a_delivered_estimate_is_not_repeated_after_block_and_unblock(self):
+        self.assign()
+        self.ledger('start', 1, '--eta', '+5m', at=60)
+        watch = self.cycles(360)
+        self.ledger('block', 1, '--reason', 'waits for TEVU-1', at=400)
+        self.cycles(420, watch=watch)
+        self.ledger('unblock', 1, at=440)
+        self.cycles(480, 540, watch=watch)
+        self.assertEqual(len(self.injects('passed your estimate')), 1)
+
+    def test_a_new_round_ledger_starts_with_no_deliveries(self):
+        self.assign(deadline='+30m')
+        watch = self.cycles(1800)
+        self.ledger_path = self.work / '.lat/ledgers/next.json'
+        self.ledger('init', '--workspace', self.work)
+        self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file')
+        self.assign(deadline='+30m')
+        self.cycles(1860, watch=watch)
+        self.assertEqual(len(self.notices('Check the agent')), 2)
+
+    def test_blocked_item_is_not_nudged_but_its_deadline_is_reported_once(self):
+        self.assign(deadline='+30m')
+        self.ledger('start', 1, '--eta', '+5m', at=60)
+        self.ledger('block', 1, '--reason', 'waits for TEVU-1', at=120)
+        self.cycles(700, 1800, 1860)
+        self.assertEqual(self.injects('Ledger item'), [])
+        [notice] = self.notices('Check the agent')
+        self.assertIn('is blocked', notice)
+
+    def test_input_text_send_failure_and_missing_window_retry_until_delivered(self):
+        self.assign()
+        self.flag('busy')
+        watch = self.cycles(600)
+        self.flag('busy', present=False)
+        self.flag('gone')
+        self.cycles(660, watch=watch)
+        self.flag('gone', present=False)
+        self.flag('fail')
+        self.cycles(720, 780, watch=watch)
+        self.flag('fail', present=False)
+        self.cycles(840, 900, watch=watch)
+        self.assertEqual(len([line for line in self.injects('Ledger item 1')]), 3)
+        results = [(r['result'], r.get('error', '')) for r in self.records('ledger-start-missing')]
+        self.assertEqual([result for result, _ in results], ['failed'] * 3 + ['sent'])
+        self.assertEqual(results[0][1], 'input box has text')
+        self.assertIn('missing from HCOM list', results[1][1])
+        self.assertIn('hcom inject failed', results[2][1])
+        self.assertEqual(self.records('ledger-start-missing')[-1]['attempt'], 5)
+
+    def interrupted(self, offset):
+        """A watcher that delivers, then dies before its state file is saved."""
+        watch = load_watch()
+        state = watch.state_path(self.work, 'orch')
+        original = watch.write_object
+
+        def write(path, *args, **kwargs):
+            if path == state:
+                raise OSError('killed before the state save')
+            return original(path, *args, **kwargs)
+
+        with patch.object(watch, 'write_object', write), self.assertRaises(OSError):
+            self.cycles(offset, watch=watch)
+
+    def test_interrupted_saves_repeat_a_delivery_once_per_interruption(self):
+        self.assign()
+        self.cycles(0)
+        self.interrupted(600)
+        self.cycles(660, 720)
+        self.assertEqual(len(self.injects('was assigned to you')), 2)
+        self.ledger('update', 1, '--deadline', '+1m', '--reason', 'tight', at=730)
+        self.interrupted(800)
+        self.interrupted(860)
+        self.cycles(920, 980)
+        self.assertEqual(len(self.notices('Check the agent')), 3)
+
+    def test_normal_operation_never_repeats_a_delivery(self):
+        self.assign(deadline='+15m')
+        self.cycles(*range(0, 3600, 60))
+        self.assertEqual(len(self.injects('was assigned to you')), 1)
+        self.assertEqual(len(self.notices('Check the agent')), 1)
+        self.assertEqual(len(self.notices('The orchestrator was notified')), 1)
+
+    def test_session_record_names_the_ledger_and_bad_ledgers_are_logged_once(self):
+        self.assign()
+        skill = self.root / 'skill'
+        (skill / 'references').mkdir(parents=True)
+        (skill / 'SKILL.md').write_text('rules')
+        session = self.work / '.lat/sessions/sid.json'
+        session.parent.mkdir(parents=True)
+        session.write_text(json.dumps({
+            'session_id': 'sid', 'role': 'orchestrator', 'status': 'active',
+            'workspace': str(self.work), 'hcom_name': 'orch', 'skill_dir': str(skill),
+            'ledger_path': str(self.ledger_path)}))
+        watch = self.cycles(600, ledger=None)
+        self.assertEqual(len(self.injects('was assigned to you')), 1)
+        self.ledger_path.write_text(self.ledger_path.read_text() + ' ')
+        self.cycles(660, 720, watch=watch, ledger=None)
+        [record] = self.records('ledger-unreadable')
+        self.assertIn('seal mismatch', record['error'])
+        self.assertIn('start:1:', next(iter(self.deliveries())))
+        session.write_text(json.dumps({**json.loads(session.read_text()), 'ledger_path': None}))
+        self.cycles(780, watch=watch, ledger=None)
+        state = json.loads((self.work / '.lat/watch/orch/state.json').read_text())
+        self.assertNotIn('ledger', state['orch'])
 
 
 if __name__ == '__main__':

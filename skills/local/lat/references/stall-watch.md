@@ -58,6 +58,26 @@ activate 在自己的 session 紀錄保存 `skill_dir` 與 `rule_fingerprint`（
 
 主控收到後依 [任務卡](task-cards.md#現場動作額度) 補上兩欄，並把補上的內容傳給該執行 Agent。
 
+## 工作總表到期檢查
+
+監控每輪讀本輪的工作總表（`lat-ledger.py`）：位置取自該主控 active session 紀錄的 `ledger_path`（工作區、HCOM 名稱都要符合）；紀錄沒寫時改用 `run --ledger <絕對路徑>`，兩者都沒有就不做這項檢查。總表讀不到、印記不符或格式損壞時不出手，`watch.jsonl` 記一筆 `ledger-unreadable`（同一錯誤只記一次），已送出的紀錄保留，總表恢復後接著檢查。總表上的負責 Agent 不必有任務卡。
+
+| 列的狀態 | 到期條件 | 監控的動作 | 紀錄 |
+|---|---|---|---|
+| 已派 | 派出滿 10 分鐘仍未 `start` | 在負責 Agent 視窗輸入 `[lat-watch]` 催促，附 `start` 指令 | `ledger-start-missing` |
+| 進行中 | 過預計完成時間 | 同上，請它 `update`（寫原因與新預計時間）或 `done` | `ledger-estimate-passed` |
+| 已派、進行中、受阻 | 過最晚期限 | HCOM `--intent request` 通知主控，附列編號、負責人、狀態與遲多久 | `ledger-deadline-passed` |
+| 同上 | 通知主控成功送達後 10 分鐘，該列狀態、負責人、最晚期限都沒變 | Herdr 彈出通知（標題含「逾期」）加主控對話說明（`--intent inform`） | `ledger-user-notified` |
+
+受阻列不催 Agent，期限到了仍通知主控。通知主控送達後，該列歷史有任何狀態、負責人或最晚期限的變更（即使之後改回原值，例如受阻後又解除），就不再通知使用者；改了最晚期限算新的到期，重新通知主控。
+
+送達規則：
+- 每項檢查以「種類＋列編號＋該次到期時間」（派出時間、預計完成或最晚期限）為鍵，狀態是待送（`pending`）、失敗（`failed`）或已送達（`sent`）。只有已送達的才不再送；`reassign` 重派、`update` 改預計或期限都會得到新鍵，重新計算。已送達的紀錄在該列結案或取消前一直保留，受阻後解除、時間改走又改回同一個值都不重送。紀錄只對同一份總表有效：`ledger_path` 換成新一輪的總表時，從頭計算。
+- 視窗輸入沿用「回合已結束、可以輸入」判斷：Agent 還在忙就保持待送；輸入框有字、HCOM 傳送失敗、視窗不可用（不在 HCOM 清單或 `inactive`）算失敗，下一輪重試。同一輪停住監控剛對該 Agent 出過手，或一個 Agent 有多項待催，就留到下一輪。HCOM 暫停的對象不送，保持待送。
+- 通知使用者時對話說明已送達、只有 Herdr 失敗，下一輪只重試彈出通知（主機沒有 Herdr 時對話說明送達即算完成）。
+- 每次送出或失敗在 `watch.jsonl` 記一筆，含 `item`、`due`、`result`（`sent`／`failed`）、`attempt` 與送達內容或錯誤；連續相同的失敗只記第一次。
+- 去重狀態存在監控狀態檔 `state.json` 主控項下的 `ledger`，重啟後不重發已送達的檢查；狀態新增 `feature_versions.ledger_due=1`，依[更新監控程式後重啟](#更新監控程式後重啟)重新啟動監控後才生效。送出與存檔不是同一筆操作：每次在送達後、存檔前中斷，重啟後會再送一次，連續中斷會累積重複；正常運作不重複。
+
 ## 主控掉線時自停
 
 主控連續 60 分鐘不在 HCOM 清單時，監控自行停止（清單中仍列為 `inactive` 不算查不到）：移除自己的 `.lat/watch/<session-id>.pid`，在 session 紀錄寫入 `watcher_stopped`（停止時間 `at_utc` 與原因 `reason`），在 `.lat/watch/<session-id>.log` 寫一行 `LAT watch stopped: <原因>`，`watch.jsonl` 記 `watcher-stopped`。session 維持 active；之後 compact／resume 時恢復 hook 照常重新啟動監控（見 [主控恢復程序](recovery.md)）。期間主控只要重新出現一次就重新計時，短暫消失不會停止；HCOM 清單讀取失敗算檢查出錯，不算消失。
