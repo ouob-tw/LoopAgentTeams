@@ -288,6 +288,18 @@ class LedgerTests(CleanTestCase):
         for suffix in LEDGER_FILES:
             self.assertFalse(Path(f'{ledger}{suffix}').exists(), suffix)
 
+    def test_a_ledger_lock_whose_ledger_stays_is_skipped(self):
+        _, _, items = self.list_items()
+        ledger = self.ledgers['gone'][0]
+        lock = Path(f'{ledger}.lock')
+
+        result = self.execute('--only', str(items[f'ledgers/{lock.name}']['id']))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('跳過：現存檔案的鎖', result.stdout)
+        self.assertTrue(lock.exists())
+        self.assertEqual(_lat_cleanup.lock_targets(lock), [ledger])
+
     def test_automatic_cleanup_never_touches_ledgers(self):
         script = SCRIPT.with_name('lat-autoclean.py')
         for path in (self.lat / 'ledgers').iterdir():

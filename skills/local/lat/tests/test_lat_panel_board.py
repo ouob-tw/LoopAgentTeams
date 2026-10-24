@@ -4,6 +4,7 @@ The Herdr comparison needs Textual:
   uv run --no-project --with textual==8.2.8 python -m unittest discover -s "$lat_dir/tests"
 """
 import asyncio
+import fcntl
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -12,6 +13,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -1053,6 +1055,24 @@ class LedgerTests(BoardTestCase):
         self.ledger.write_text(self.ledger.read_text().replace('"items": []', '"items": [] '))
         [edited] = self.read()
         self.assertIn("seal mismatch", edited["reason"])
+
+    def test_a_ledger_held_by_a_writer_fails_alone_within_the_time_limit(self):
+        self.ledger_tool("init", "--workspace", str(self.workspace))
+        self.record(ledger_path=str(self.ledger))
+        other = self.root / "project-b"
+        (other / ".lat/sessions").mkdir(parents=True)
+        (other / ".lat/sessions/s-b.json").write_text(json.dumps({"session_id": "s-b"}))
+        lock = self.ledger.with_name(self.ledger.name + ".lock")
+        with open(lock, "a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            started = time.monotonic()
+            held, fine = self.read((self.workspace, "s-a"), (other, "s-b"))
+            elapsed = time.monotonic() - started
+
+        self.assertEqual(held["status"], "error")
+        self.assertIn("逾時", held["reason"])
+        self.assertEqual(fine["status"], "none")
+        self.assertLess(elapsed, 10)
 
     def test_unpaired_options_are_refused(self):
         result = self.board("ledger", "--workspace", self.workspace, code=1)

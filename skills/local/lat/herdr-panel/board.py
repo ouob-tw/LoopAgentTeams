@@ -1,9 +1,11 @@
 """Board question and answer JSON assembly."""
 
+from concurrent.futures import ThreadPoolExecutor
 import json
 from pathlib import Path
 import re
 import sys
+import time
 
 from questions import (
     QUESTIONS_DIR,
@@ -48,6 +50,11 @@ from bindings import (
 from _lat_common import run_cli
 
 LEDGER_TOOL = Path(__file__).resolve().parents[1] / "scripts/lat-ledger.py"
+# A read waits for a ledger's writer, which may hold its lock while checking evidence. Each read
+# and the whole batch stay well inside the board's helper timeout (15 seconds by default), so one
+# held ledger fails alone instead of taking the others with it.
+LEDGER_READ_SECONDS = 3
+LEDGERS_SECONDS = 8
 _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
@@ -242,7 +249,14 @@ def board_controllers(*, config_dir=None, state_dir=None):
     return controllers
 
 
-def board_ledger(workspace, session_id):
+def board_ledgers(controllers):
+    """``board_ledger`` of each (workspace, session ID), read side by side within the batch's time."""
+    deadline = time.monotonic() + LEDGERS_SECONDS
+    with ThreadPoolExecutor(max_workers=8) as pool:
+        return list(pool.map(lambda pair: board_ledger(*pair, deadline=deadline), controllers))
+
+
+def board_ledger(workspace, session_id, *, deadline=None):
     """One controller's work ledger, as ``lat-ledger show --json`` prints it.
 
     ``status`` is ``ok`` with ``ledger``, ``none`` when the session record names no ledger,
@@ -259,12 +273,18 @@ def board_ledger(workspace, session_id):
     if not path:
         return {"session_id": session_id, "status": "none"}
     result = {"session_id": session_id, "ledger_path": str(path)}
+    left = LEDGER_READ_SECONDS if deadline is None else min(LEDGER_READ_SECONDS, deadline - time.monotonic())
+    if left <= 0:
+        return {**result, "status": "error", "reason": "這次重讀的時間用完了，下次重讀再試"}
     try:
         output = run_cli([sys.executable, str(LEDGER_TOOL), "show", "--json", "--ledger", str(path)],
-                         timeout=30, failure="lat-ledger show")
+                         timeout=left, failure="lat-ledger show")
         return {**result, "status": "ok", "ledger": json.loads(output)}
     except ValueError as error:
-        return {**result, "status": "error", "reason": str(error)}
+        # run_cli names the interpreter and the script path; a timeout says what it means instead.
+        reason = (f"lat-ledger show 逾時（{left:.0f} 秒內沒讀完，可能正在寫入），下次重讀再試"
+                  if "timed out" in str(error) else str(error))
+        return {**result, "status": "error", "reason": reason}
 
 
 def _board_answer(section, selections, text, note):

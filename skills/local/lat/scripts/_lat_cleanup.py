@@ -80,8 +80,11 @@ def ticket_numbers(path, lat):
 
 
 def lock_targets(path):
-    """Files a `.<name>.lock` guards: `<name>`, or `<name>.json` for wait declarations."""
+    """Files a `.<name>.lock` guards: `<name>`, or `<name>.json` for wait declarations; and the
+    ledger a `ledgers/<name>.json.lock` guards."""
     path = Path(path)
+    if path.parent.name == 'ledgers' and path.name.endswith('.json.lock'):
+        return [path.with_name(path.name.removesuffix('.lock'))]
     if not (path.name.startswith('.') and path.name.endswith('.lock')):
         return []
     name = path.name[1:-len('.lock')]

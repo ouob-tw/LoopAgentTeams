@@ -314,6 +314,7 @@ from board import (
     board_answered,
     board_controllers,
     board_ledger,
+    board_ledgers,
     board_questions,
     notify_controller,
 )
@@ -351,10 +352,7 @@ def _run_board(args):
         elif args.board_command == "ledger":
             if len(args.workspace) != len(args.session_id):
                 raise ValueError("each --workspace needs one --session-id")
-            result = {"ledgers": [
-                board_ledger(workspace, session_id)
-                for workspace, session_id in zip(args.workspace, args.session_id)
-            ]}
+            result = {"ledgers": board_ledgers(list(zip(args.workspace, args.session_id)))}
             code = 0
         elif args.board_command == "prune-reports":
             now = datetime.fromisoformat(args.now)
