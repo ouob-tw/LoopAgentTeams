@@ -103,6 +103,19 @@ class CardTests(DispatchCase):
                 self.assertIn(reason, result.stderr)
                 self.assertEqual(list(self.tasks.iterdir()), [])
 
+    def test_agent_option_picks_one_of_several_agents_sharing_a_tag(self):
+        pair = [{'name': 'nanu-impl123-fida', 'tag': 'nanu-impl123'},
+                {'name': 'nanu-impl123-gape', 'tag': 'nanu-impl123'}]
+        result = self.run_script(*self.card_args('--agent', 'nanu-impl123-gape'), agents=pair)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('- agent：nanu-impl123-gape\n',
+                      (self.tasks / '2026-10-23-nanu-impl123.md').read_text())
+        for other in ('nanu-impl123-zzzz', 'nanu-impl123'):
+            with self.subTest(agent=other):
+                result = self.run_script(*self.card_args('--agent', other), agents=pair)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn('is not among the agents', result.stderr)
+
     def test_unreadable_hcom_list_fails_without_creating_a_card(self):
         listing = self.root / 'missing.json'
         env = {**os.environ, 'LAT_DISPATCH_HCOM_LIST': str(listing)}
@@ -190,6 +203,35 @@ class BriefTests(DispatchCase):
                 'Stuck rule', 'Do not use background programs to message yourself'):
             self.assertIn(expected, text)
         self.assertNotIn('{', text.replace('<decision ID or agent name>', ''))
+
+    def test_read_only_swaps_the_card_update_sentence(self):
+        _, _, result = self.brief(BRIEF, '--read-only')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.root / 'brief.brief.md').read_text()
+        self.assertNotIn('Update it at the start', text)
+        self.assertIn('do not edit it', text)
+
+    def test_default_brief_keeps_the_card_update_sentence(self):
+        self.brief()
+        text = (self.root / 'brief.brief.md').read_text()
+        self.assertIn('Update it at the start, at checkpoints and at the end', text)
+        self.assertNotIn('do not edit it', text)
+
+    def test_include_sits_after_the_four_sections_and_before_live_actions(self):
+        extra = self.root / 'shared.md'
+        extra.write_text('SHARED-MARKER $(not run)\n')
+        _, _, result = self.brief(BRIEF, '--include', str(extra))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.root / 'brief.brief.md').read_text()
+        marker = text.index('SHARED-MARKER $(not run)')
+        self.assertLess(text.index('## 現場動作額度'), marker)
+        self.assertLess(marker, text.index('## Task card live actions'))
+
+    def test_missing_include_file_is_refused(self):
+        _, _, result = self.brief(BRIEF, '--include', str(self.root / 'nope.md'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('--include unreadable', result.stderr)
+        self.assertFalse((self.root / 'brief.brief.md').exists())
 
     def test_wait_and_alarm_commands_quote_paths_with_spaces(self):
         import shlex
