@@ -515,6 +515,35 @@ def _preauth_recheck(questions, decisions, question_id):
         return None
 
 
+def preauthorized_questions(questions, question_ids):
+    """The ids among ``question_ids`` the panel marks as pre-authorized now.
+
+    A question is marked when its record has ``- action:``, it was already sent and a
+    fresh recheck under the current settings allows it. Any failed recheck marks nothing;
+    the question itself stays pending either way.
+    """
+    try:
+        target = Path(questions).resolve()
+        binding = next(item for item in list_bindings()
+                       if Path(item["questions_path"]).resolve() == target)
+        decisions = _binding_decisions_path(binding)
+        module = _lat_session()
+    except Exception:  # noqa: BLE001 - no marker is the safe side
+        return set()
+    marked = set()
+    for question_id in question_ids:
+        path = decisions / f"{question_id}.md"
+        try:
+            found = path.is_file() and module.question_preauth(
+                path, workspace=binding["workspace"], session_id=binding["session_id"],
+                questions_paths=[questions])
+        except Exception:  # noqa: BLE001 - no marker is the safe side
+            continue
+        if found and found[0] == "allow" and found[2]:
+            marked.add(question_id)
+    return marked
+
+
 def _warn_display(result):
     if result["status"] == "failed":
         print(f"lat-panel: sidebar not updated: {result['reason']}", file=sys.stderr)
