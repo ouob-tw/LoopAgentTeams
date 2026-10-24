@@ -238,6 +238,10 @@ const act =
 							? prune
 							: notify;
 const result = command === 'list' ? plan : (plan[command] ?? act());
+if (result.barrier) {
+	writeFileSync(result.barrier.ready, 'ready');
+	while (!existsSync(result.barrier.release)) await new Promise((resolve) => setTimeout(resolve, 10));
+}
 setTimeout(() => {
 	// `stderrBytes` and `padBytes` make the output too large: spaces before the real output.
 	if (result.stderrBytes) process.stderr.write(' '.repeat(result.stderrBytes));
