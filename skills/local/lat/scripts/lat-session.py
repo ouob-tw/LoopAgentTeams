@@ -1004,11 +1004,17 @@ def stop_check(record, payload):
     decisions = Path(record['decisions_path'])
     if not decisions.is_dir():
         raise ValueError(f'待決目錄不存在：{decisions}')
+    panel = panel_module()
+    questions_path = own_questions_path(panel, record)
+    # Another controller's broken record is theirs to fix; ours and unowned ones block.
+    foreign = panel_module('questions').foreign_decision_ids(
+        questions_path, decisions, record['session_id'])
     statuses = {}
     for path in sorted(decisions.glob('*.md')):
         status = read_decision_status(path)
         statuses[path.stem] = status
-        if status.error:
+        if status.error and (path.stem not in foreign
+                             or any(path.stem == identifier for identifier, _ in identifiers)):
             problems.append(f'{path.name}：讀不出狀態（{status.error}）')
     for identifier, revision in sorted(identifiers):
         status = statuses.get(identifier)
@@ -1027,14 +1033,13 @@ def stop_check(record, payload):
                 consensus_error = read_spec_consensus_error(decisions / f'{identifier}.md', message)
                 if consensus_error:
                     problems.append(f'{identifier} r{revision}：{consensus_error}')
-    panel = panel_module()
-    questions_path = own_questions_path(panel, record)
     if questions_path is not None:
         questions = read_questions(questions_path)
         for identifier, revision in sorted(identifiers):
             if waiting_question(questions, identifier, revision) is None:
                 problems.append(f'{identifier} r{revision}：自己的面板缺少同版本待答題目')
-        _, missing, inconsistent, unreadable, reverse = panel_module('questions').pending_question_gaps(questions_path, decisions)
+        _, missing, inconsistent, unreadable, reverse = panel_module('questions').pending_question_gaps(
+            questions_path, decisions, session_id=record['session_id'])
         problems.extend(f'{identifier}：遺漏檢查缺少面板題目' for identifier in missing)
         problems.extend(f'{identifier}：遺漏檢查不一致（{reason}）'
                         for identifier, reason, _ in inconsistent)

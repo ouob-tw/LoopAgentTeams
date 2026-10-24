@@ -72,6 +72,15 @@ def read_spec_consensus_error(path, message):
     return None
 
 
+def read_decision_session(path):
+    """The first `- session:` value, or None when the record names no session."""
+    for line in Path(path).read_text(encoding='utf-8').splitlines():
+        match = re.match(r'^- session:(.*)$', line, re.IGNORECASE)
+        if match:
+            return match.group(1).strip() or None
+    return None
+
+
 def read_decision_kind(path):
     """Return 'help' when the first kind line says help; every other record is 'decide'."""
     for line in Path(path).read_text(encoding='utf-8').splitlines():
