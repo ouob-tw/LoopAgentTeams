@@ -69,6 +69,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" grant --layer globa
 - 例：`- grant: project push allow=true branches=dev` 對應 `grant --layer project --action push --allow true --branches dev --source <ID>`。多個分支在 `- grant:` 行寫成 `branches=dev,release`，指令寫 `--branches dev release`。
 - 工具只在全部成立時寫入，否則印 `refused, nothing changed: <原因>`、結束碼 1、不改任何檔：本輪 session 為 `active`；紀錄狀態為 `answered` 或 `approved`，且 `## 答覆…` 段有 `- 來源：` 行；`## 核准範圍` 段有一行 `- grant:` 與這次的層、動作、鍵值完全相同。`controller` 層另要求紀錄的 `- session:` 是本 session，且答覆標題的時間晚於上一輪結束。
 - 寫入的規則旁記下 `source = "<待決紀錄 ID>"`。全域與專案檔只改 `[actions.<動作>]` 段裡要寫的鍵（沒有該段就加在檔尾），其他段落與註解原樣保留；檔案本身有錯時拒絕，請先手動修好。主控層寫進 session 紀錄的 `preauth` 欄位，停用或開新一輪即失效。
+- 寫入後若記不進本輪紀錄，工具會把設定還原並以結束碼 2 回報；還原也失敗時訊息會寫明要手動移除。
 - 工具不判斷答覆的意思；`- grant:` 行是否忠於答覆由主控負責，所以每次寫入都列進 `report` 的「設定寫入」。
 
 ## 記錄：record
@@ -86,7 +87,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-i
   --self-reported '<…>' --clear-expected '<…>' --single-ticket '<…>' --restores-stated '<…>'
 ```
 
-- `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區）與前後兩則 HCOM 通知的事件編號（`hcom send` 後以 `hcom events --from <自己> --last 1` 查 `id`）。工具以 `hcom events` 核對：兩則都由本主控送出、以 `@名稱` 指定對象（不是廣播）、前一則早於 `--started`、後一則晚於前一則；不符就拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
+- `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區）與前後兩則 HCOM 通知的事件編號（`hcom send` 後以 `hcom events --from <自己> --last 1` 查 `id`）。工具以 `hcom events` 核對：兩則都由本主控送出、以 `@名稱` 指定對象（不是廣播）、前一則早於 `--started`、後一則晚於 `--started` 也晚於前一則；不符就拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
 - `precedent` 的 `--source` 必須有真人答覆（同 `grant` 的核對）；`bug-intake` 的四項依據都要寫。
 
 ## 交付回報：report

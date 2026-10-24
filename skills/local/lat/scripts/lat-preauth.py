@@ -12,8 +12,10 @@ done under pre-authorization and `report` lists this round's log for the deliver
 The tool never runs the action itself.
 """
 import argparse
+from contextlib import contextmanager, nullcontext
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -365,15 +367,34 @@ def session_of(args):
         (os.environ[key] for key in SESSION_ENVS if os.environ.get(key)), None)
 
 
-def current_round(args, *, active=True):
-    """(top, session ID, session path, record, its bytes, round number) of this round."""
+@contextmanager
+def locked(lock_path):
+    lock_path.parent.mkdir(parents=True, exist_ok=True)
+    with lock_path.open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        yield
+
+
+def round_owner(args):
+    """(top, session ID) the write belongs to."""
     workspace = Path(args.workspace or Path.cwd())
     top = git(workspace, 'rev-parse', '--show-toplevel')
     if not top:
         raise Refused(f'{workspace} is not in a Git repository')
     top, session = Path(top), session_of(args)
-    if not session:
-        raise Refused('no session ID (--session-id, $CLAUDE_CODE_SESSION_ID or $CODEX_THREAD_ID)')
+    if not session or not DECISION_ID.fullmatch(session):
+        raise Refused('no valid session ID (--session-id, $CLAUDE_CODE_SESSION_ID or '
+                      '$CODEX_THREAD_ID)')
+    return top, session
+
+
+def session_lock(top, session):
+    """The lock lat-session holds while it changes this session record (deactivate)."""
+    return shared_lat_dir(top) / 'watch' / f'{session}.lock'
+
+
+def current_round(top, session, *, active=True):
+    """(session path, record, its bytes, round number) of this round; hold session_lock."""
     path = shared_lat_dir(top) / 'sessions' / f'{session}.json'
     try:
         original = path.read_bytes()
@@ -388,7 +409,7 @@ def current_round(args, *, active=True):
     if active and record.get('status') != 'active':
         raise Refused(f'session {session} is {record.get("status") or "not active"}; '
                       'only an active round can write')
-    return top, session, path, record, original, len(history) + 1
+    return path, record, original, len(history) + 1
 
 
 def records_path(top, session, round_number):
@@ -405,6 +426,16 @@ def append_record(top, session, round_number, entry):
     text = (original or b'').decode('utf-8') + json.dumps(entry, ensure_ascii=False) + '\n'
     write_text_atomic(path, text, expected=original)
     return path
+
+
+def restore(path, original, written):
+    """Undo one write of ours; `original` None means the file did not exist."""
+    if original is None:
+        if path.read_bytes() != written:
+            raise ValueError(f'{path} changed after our write')
+        path.unlink()
+    else:
+        write_text_atomic(path, original.decode('utf-8'), expected=written)
 
 
 def decision_path(top, record, decision):
@@ -534,9 +565,10 @@ TABLE_HEADER = re.compile(r'^\s*\[\s*([^\[\]]+?)\s*\]\s*(?:#.*)?$')
 def edit_action_section(text, action, values):
     """Set `values` inside [actions.<action>] and leave every other byte of `text` alone."""
     lines = text.splitlines(keepends=True)
-    names = (f'actions.{action}', f'actions."{action}"')
+    header = re.compile(rf'actions\s*\.\s*(?:{re.escape(action)}|"{re.escape(action)}"|'
+                        rf"'{re.escape(action)}')")
     start = next((index for index, line in enumerate(lines)
-                  if (match := TABLE_HEADER.match(line)) and match[1] in names), None)
+                  if (match := TABLE_HEADER.match(line)) and header.fullmatch(match[1])), None)
     assignments = {key: f'{key} = {toml_value(value)}\n' for key, value in values.items()}
     if start is None:
         prefix = text if not text or text.endswith('\n') else text + '\n'
@@ -546,11 +578,15 @@ def edit_action_section(text, action, values):
                 if lines[index].lstrip().startswith('[')), len(lines))
     body = lines[start + 1:end]
     for key, assignment in assignments.items():
-        pattern = re.compile(rf'^\s*{re.escape(key)}\s*=')
+        pattern = re.compile(rf'^\s*(?:{key}|"{key}"|\'{key}\')\s*=')
         index = next((i for i, line in enumerate(body) if pattern.match(line)), None)
         if index is None:
             last = max((i for i, line in enumerate(body)
                         if line.strip() and not line.lstrip().startswith('#')), default=-1)
+            if last >= 0 and not body[last].endswith('\n'):
+                body[last] += '\n'  # the file's final line, written without a newline
+            elif last < 0 and not lines[start].endswith('\n'):
+                lines[start] += '\n'
             body.insert(last + 1, assignment)
             continue
         stop = index + 1
@@ -583,7 +619,7 @@ def write_file_layer(path, action, values):
     if result != expected or validate(result, str(path)):
         raise Refused(f'could not edit [actions.{action}] in {path} without touching other '
                       'settings; edit the file by hand')
-    write_text_atomic(path, updated, expected=original)
+    return original, write_text_atomic(path, updated, expected=original)
 
 
 def write_controller_layer(path, record, original, round_number, action, values):
@@ -595,8 +631,9 @@ def write_controller_layer(path, record, original, round_number, action, values)
     settings.setdefault('actions', {}).setdefault(action, {}).update(values)
     if problems := validate(settings, f'controller layer {path}'):
         raise Refused('; '.join(problems))
-    write_json_atomic(path, dict(record, preauth={'round': round_number, 'settings': settings}),
-                      expected=original)
+    return original, write_json_atomic(
+        path, dict(record, preauth={'round': round_number, 'settings': settings}),
+        expected=original)
 
 
 def cmd_grant(args):
@@ -610,7 +647,19 @@ def cmd_grant(args):
         values['branches'] = args.branches
     if not values:
         raise Refused('nothing to write: give --allow and/or --branches')
-    top, session, path, record, original, round_number = current_round(args)
+    top, session = round_owner(args)
+    if args.layer == 'controller':
+        target = None
+    else:
+        target = global_path() if args.layer == 'global' else shared_lat_dir(top) / 'preauth.toml'
+    # The session lock also serializes this round's log; the file lock covers other sessions.
+    file_lock = locked(target.with_name(f'.{target.name}.lock')) if target else nullcontext()
+    with locked(session_lock(top, session)), file_lock:
+        return grant_locked(args, top, session, target, values)
+
+
+def grant_locked(args, top, session, target, values):
+    path, record, original, round_number = current_round(top, session)
     source = decision_path(top, record, args.source)
     problems, text = human_answer_problems(source)
     if text:
@@ -620,16 +669,27 @@ def cmd_grant(args):
     if problems:
         raise Refused('; '.join(problems))
     values['source'] = args.source
-    if args.layer == 'controller':
-        write_controller_layer(path, record, original, round_number, args.action, values)
+    if target is None:
+        changed = path
+        before, written = write_controller_layer(path, record, original, round_number,
+                                                 args.action, values)
         where = f'{path} `preauth`'
     else:
-        target = global_path() if args.layer == 'global' else shared_lat_dir(top) / 'preauth.toml'
-        write_file_layer(target, args.action, values)
+        changed = target
+        before, written = write_file_layer(target, args.action, values)
         where = str(target)
     line = ' '.join(grant_words(args.layer, args.action, values))
-    append_record(top, session, round_number,
-                  dict(kind='grant', grant=line, source=args.source, file=where))
+    try:
+        append_record(top, session, round_number,
+                      dict(kind='grant', grant=line, source=args.source, file=where))
+    except (OSError, ValueError) as error:
+        # A grant that report cannot list must not stay in effect.
+        try:
+            restore(changed, before, written)
+        except (OSError, ValueError) as undo:
+            raise ValueError(f'granted {line} to {where} but could not log it ({error}) nor '
+                             f'undo it ({undo}); remove it by hand') from None
+        raise ValueError(f'could not log the grant ({error}); {where} was restored') from None
     print(f'granted {line} (source {args.source}) → {where}')
     return 0
 
@@ -671,7 +731,13 @@ def notice_problems(label, event_id, sender):
 
 
 def cmd_record(args):
-    top, session, _, record, _, round_number = current_round(args)
+    top, session = round_owner(args)
+    with locked(session_lock(top, session)):
+        return record_locked(args, top, session)
+
+
+def record_locked(args, top, session):
+    _, record, _, round_number = current_round(top, session)
     if args.kind == 'auto':
         entry = auto_entry(args, record)
     elif args.kind == 'precedent':
@@ -728,6 +794,9 @@ def auto_entry(args, record):
     if before and after and after <= before:
         problems.append(f'after notice #{args.notice_after} is not later than before notice '
                         f'#{args.notice_before}')
+    if after and after <= started:
+        problems.append(f'after notice #{args.notice_after} ({after.isoformat()}) is not later '
+                        f'than --started {started.isoformat()}')
     if problems:
         raise Refused('; '.join(problems))
     return dict(entry, started=started.isoformat(), notice_before=args.notice_before,
@@ -754,7 +823,8 @@ def report_line(entry):
 
 
 def cmd_report(args):
-    top, session, _, _, _, round_number = current_round(args, active=False)
+    top, session = round_owner(args)
+    _, _, _, round_number = current_round(top, session, active=False)
     path = records_path(top, session, round_number)
     entries = []
     try:

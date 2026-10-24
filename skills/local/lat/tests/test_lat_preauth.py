@@ -1,4 +1,5 @@
 """CLI contract tests for lat-preauth.py: temp HOME/XDG config, temp Git repos, fake session."""
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -35,7 +36,7 @@ class PreauthCase(unittest.TestCase):
         self.project_file = self.repo / '.lat' / 'preauth.toml'
         self.sessions = self.repo / '.lat' / 'sessions'
 
-    def run_tool(self, *args, cwd=None, session=SESSION, path=None):
+    def run_tool(self, *args, cwd=None, session=SESSION, path=None, wait=True):
         environment = {key: value for key, value in os.environ.items()
                        if key not in ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')}
         environment.update(HOME=str(self.root / 'home'), XDG_CONFIG_HOME=str(self.config))
@@ -43,8 +44,12 @@ class PreauthCase(unittest.TestCase):
             environment['PATH'] = path
         if session:
             environment['CLAUDE_CODE_SESSION_ID'] = session
-        return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
-                              text=True, cwd=cwd or self.repo, env=environment, timeout=60)
+        command = [sys.executable, str(SCRIPT), *args]
+        if not wait:
+            return subprocess.Popen(command, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True, cwd=cwd or self.repo, env=environment)
+        return subprocess.run(command, capture_output=True, text=True, cwd=cwd or self.repo,
+                              env=environment, timeout=60)
 
     def check(self, action, *extra, **kwargs):
         result = self.run_tool('check', '--action', action, *extra, '--json', **kwargs)
@@ -366,6 +371,50 @@ class GrantTests(WriteCase):
             'branches = ["dev", "release"]\nsource = "D-3"\n')))
         self.assertTrue(text.endswith('\n[actions.deploy-prod]\nallow = false\nsource = "D-4"\n'))
 
+    def test_quoted_keys_and_a_missing_final_newline_are_edited_in_place(self):
+        self.write(self.project_file, '[ actions."push" ]\n"allow" = false\nbranches = ["dev"]')
+        self.decision('D-8', ['- grant: project push allow=true'])
+        result = self.grant('--layer', 'project', '--action', 'push', '--allow', 'true',
+                            '--source', 'D-8')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.project_file.read_text(), '[ actions."push" ]\nallow = true\n'
+                         'branches = ["dev"]\nsource = "D-8"\n')
+
+    def test_grant_that_cannot_be_logged_is_undone(self):
+        self.write(self.project_file, '# mine\n[actions.push]\nallow = false\n')
+        before = self.project_file.read_bytes()
+        self.write(self.repo / '.lat' / 'preauth-records', 'not a directory')
+        self.decision('D-9', ['- grant: project push allow=true'])
+        result = self.grant('--layer', 'project', '--action', 'push', '--allow', 'true',
+                            '--source', 'D-9')
+        self.assertEqual(result.returncode, 2)
+        self.assertIn('was restored', result.stderr)
+        self.assertEqual(self.project_file.read_bytes(), before)
+        self.decision('D-9', ['- grant: global push allow=true'])
+        result = self.grant('--layer', 'global', '--action', 'push', '--allow', 'true',
+                            '--source', 'D-9')
+        self.assertIn('was restored', result.stderr)
+        self.assertFalse(self.global_file.exists())
+
+    def test_grant_waits_for_deactivate_and_then_refuses(self):
+        self.decision('D-10', ['- grant: controller merge allow=true'])
+        lock = self.repo / '.lat' / 'watch' / f'{SESSION}.lock'
+        lock.parent.mkdir(parents=True)
+        with lock.open('a') as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            process = self.run_tool('grant', '--layer', 'controller', '--action', 'merge',
+                                    '--allow', 'true', '--source', 'D-10', wait=False)
+            self.addCleanup(process.kill)
+            with self.assertRaises(subprocess.TimeoutExpired):
+                process.wait(timeout=1)
+            record = json.loads((self.sessions / f'{SESSION}.json').read_text())
+            self.write(self.sessions / f'{SESSION}.json', json.dumps(dict(record, status='ended')))
+        _, stderr = process.communicate(timeout=60)
+        self.assertEqual(process.returncode, 1)
+        self.assertIn('only an active round can write', stderr)
+        self.assertEqual(json.loads((self.sessions / f'{SESSION}.json').read_text())['status'],
+                         'ended')
+
     def test_broken_file_is_refused_not_rewritten(self):
         self.write(self.global_file, '[actions.merge\n')
         self.decision('D-5', ['- grant: global merge allow=true'])
@@ -455,6 +504,8 @@ class RecordTests(WriteCase):
                  'not earlier than --started'),
                 ('after before before', good, dict(before=2, after=1),
                  'is not later than before notice'),
+                ('both before the start', [good[0], self.notice(2, '2026-10-25T10:01:00+00:00')],
+                 {}, 'is not later than --started'),
                 ('someone else sent it', [self.notice(1, '2026-10-25T10:00:00+00:00',
                                                       sender='zono'), good[1]], {},
                  'not this controller orch')):
