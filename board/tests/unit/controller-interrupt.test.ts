@@ -136,3 +136,31 @@ test('a natural end still follows hcom at once; blocked and a list that cannot b
 	expect(controllerInterruptible(lead, fresh.read('idle', HCOM_DOWN))).toBe(true);
 	expect(controllerInterruptible(lead, fresh.read('idle'))).toBe(false);
 });
+
+test('one list read counts once, however often the roster is rebuilt from it', () => {
+	const { advance, read, roster } = clocked();
+	const same = { ok: true as const, agents: [herdrAgent('idle')], workspaces: [] };
+	expect(controllerInterruptible(lead, read('idle', hcomWith('active'), same))).toBe(true);
+	advance(1_500);
+	// The same lists again (a full read rebuilds the roster after its closed-agents check): still one sighting.
+	expect(controllerInterruptible(lead, read('idle', hcomWith('active'), same))).toBe(true);
+	expect(roster.confirming()).toBe(true);
+	// A fresh read is the second.
+	expect(controllerInterruptible(lead, read('idle'))).toBe(false);
+	expect(roster.confirming()).toBe(false);
+});
+
+test('a list that cannot be read keeps the last verdict, even after enough time has passed', () => {
+	const { advance, read, roster } = clocked();
+	expect(controllerInterruptible(lead, read('idle'))).toBe(true);
+	advance(200);
+	expect(controllerInterruptible(lead, read('idle'))).toBe(true);
+	advance(900);
+	// Two sightings, but never two a second apart so far: the failure does not decide.
+	expect(controllerInterruptible(lead, read('idle', HCOM_DOWN))).toBe(true);
+	expect(roster.confirming()).toBe(true);
+	expect(controllerInterruptible(lead, read('idle'))).toBe(false);
+	// Confirmed, and a failed list keeps it so.
+	advance(5_000);
+	expect(controllerInterruptible(lead, read('idle', HCOM_DOWN))).toBe(false);
+});

@@ -43,7 +43,7 @@ const pairingKey = (agent: HerdrAgent) => agent.sessionId ?? `pane:${agent.pane}
 interface AgentRoster {
 	/** Fold in this read's lists, pause records and open model switches; returns the agents and
 	 *  Herdr's workspaces to show and, when Herdr's list is not this read's, why. */
-	/** Whether some agent awaits a second read to tell whether hcom is behind: one is due soon. */
+	/** Whether some agent awaits another read, a second after its first, to tell whether hcom is behind: one is due soon. */
 	confirming(): boolean;
 	update(
 		herdr: HerdrAgentList,
@@ -70,10 +70,10 @@ export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 	 *  hcom marks a turn over from the client's stop hook, which an Esc interrupt does not run, so hcom
 	 *  can say `active` long after the turn ended; one read of Herdr saying so could be Herdr lagging
 	 *  at a turn's start instead, so it takes two reads apart. */
-	let lagging = new Map<string, { since: number; reads: number }>();
+	let lagging = new Map<string, { since: number; reads: number; list: unknown; confirmed: boolean }>();
 
 	return {
-		confirming: () => [...lagging.values()].some((entry) => entry.reads < 2),
+		confirming: () => [...lagging.values()].some((entry) => !entry.confirmed),
 		update(herdr, hcom, controllers, switches, paused = new Map()) {
 			if (herdr.ok) {
 				lastHerdr = herdr.agents;
@@ -81,21 +81,25 @@ export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 			}
 			const listed = lastHerdr ?? [];
 			if (hcom.ok) pairings = new Map(listed.map((agent) => [pairingKey(agent), pair(agent, hcom.agents)]));
-			const nextLagging = new Map<string, { since: number; reads: number }>();
+			const nextLagging = new Map<string, { since: number; reads: number; list: unknown; confirmed: boolean }>();
 			/** hcom says the turn goes on and Herdr says it is over, on two reads at least `LAG_MS` apart. Lists
 			 *  that could not both be read this time count as neither: the last verdict stands. */
 			const hcomBehind = (agent: HerdrAgent, linked: HcomAgent): boolean => {
-				const key = pairingKey(agent);
-				const before = lagging.get(key);
 				if (linked.status !== 'active') return false;
-				let entry = before;
+				const key = pairingKey(agent);
+				let entry = lagging.get(key);
 				if (herdr.ok && hcom.ok) {
 					if (agent.status !== 'idle' && agent.status !== 'done') return false;
-					entry = { since: before?.since ?? now(), reads: (before?.reads ?? 0) + 1 };
+					// One list read counts once, however often the roster is rebuilt from it.
+					if (entry?.list !== herdr) {
+						const since = entry?.since ?? now();
+						const reads = (entry?.reads ?? 0) + 1;
+						entry = { since, reads, list: herdr, confirmed: reads >= 2 && now() - since >= LAG_MS };
+					}
 				}
 				if (!entry) return false;
 				nextLagging.set(key, entry);
-				return entry.reads >= 2 && now() - entry.since >= LAG_MS;
+				return entry.confirmed;
 			};
 			const agents = listed.map((agent): Agent => {
 				// A list that cannot be read does not mean an agent is not linked: the last pairing stands,
