@@ -1,7 +1,7 @@
 // The command line's layout in a real browser: headless Chrome on the built board with fake data,
 // voice input unlocked so every control is there. A wide screen keeps one row; a phone gives the box
-// a row of its own and puts the controls on the row under it, the button that puts the line away at
-// the far right. Skipped when the host has no Chrome.
+// a row of its own and puts the controls on the row under it, the model picker first and the button
+// that puts the line away at the far right. Skipped when the host has no Chrome.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
 import { CHROME, launchChrome, type Browser } from '../browser.ts';
@@ -81,12 +81,12 @@ test.skipIf(!CHROME)('a wide screen keeps one row: recipient, paperclip, mic, bo
 });
 
 for (const width of [360, 390]) {
-	test.skipIf(!CHROME)(`${width}px: the box alone on top; paperclip, model and effort, mic, the rest, and put away at the far right`, async () => {
+	test.skipIf(!CHROME)(`${width}px: the box alone on top; model and effort, paperclip, mic, the rest, and put away at the far right`, async () => {
 		const at = await visit(width);
 		// No recipient for the open controller, and the box takes the whole row.
 		expect(at.to).toBeNull();
 		expect(at.box!.right - at.box!.left).toBeGreaterThan(width * 0.9);
-		const row = [at.attach, at.pill, at.voice, ...(at.options ? [at.options] : []), at.hide] as NonNullable<Box>[];
+		const row = [at.pill, at.attach, at.voice, ...(at.options ? [at.options] : []), at.hide] as NonNullable<Box>[];
 		for (const [index, box] of row.entries()) {
 			expect(box).not.toBeNull();
 			expect(box.hit).toBe(true);

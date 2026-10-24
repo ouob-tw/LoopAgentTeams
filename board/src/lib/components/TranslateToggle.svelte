@@ -19,12 +19,11 @@
 		display: inline-flex;
 		align-items: center;
 		justify-content: center;
-		width: 2rem;
+		width: 1.7rem;
 		height: 1.7rem;
 		margin-left: 0.3rem;
 		padding: 0;
 		border: 1px solid var(--line);
-		border-radius: 6px;
 		background: none;
 		color: var(--muted);
 		font-size: max(1rem, var(--min-font, 0px));

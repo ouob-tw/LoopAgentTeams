@@ -123,6 +123,8 @@
 		padding: 0.35rem 0;
 		background: none;
 		border-color: transparent;
+		/* A mark over its count, two lines: small corners like the cards. */
+		border-radius: var(--radius);
 		/* A long press explains the mark; it must not select text or open the browser's own menu. */
 		user-select: none;
 		-webkit-user-select: none;

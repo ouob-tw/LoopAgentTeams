@@ -89,12 +89,12 @@ select,
 button {
 	font: inherit;
 	color: inherit;
-	border-radius: var(--radius);
 }
 
 input,
 textarea,
 select {
+	border-radius: var(--radius);
 	background: var(--bg);
 	border: 1px solid var(--line);
 	padding: 0.5rem 0.6rem;
@@ -124,11 +124,20 @@ input[type='checkbox'] {
 	accent-color: var(--selected-bg);
 }
 
+/* A button of one line is a pill, and a square one (only an icon) a circle. A button that is a card
+   or a menu's row, holding more than one line, keeps the small corners in its own style. */
 button {
 	background: var(--surface);
 	border: 1px solid var(--line);
+	border-radius: var(--radius-pill);
 	padding: 0.5rem 0.8rem;
 	cursor: pointer;
+}
+/* Only an icon or one symbol: as wide as a one-line button is tall, so its corners draw a circle. */
+button.circle {
+	box-sizing: border-box;
+	width: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
+	padding-inline: 0;
 }
 
 button.primary {

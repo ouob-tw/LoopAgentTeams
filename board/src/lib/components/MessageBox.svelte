@@ -332,6 +332,7 @@
 		min-height: 2.5rem;
 		padding: 0.35rem 0.6rem;
 		border: 0;
+		border-radius: var(--radius);
 		background: none;
 		color: inherit;
 		text-align: left;

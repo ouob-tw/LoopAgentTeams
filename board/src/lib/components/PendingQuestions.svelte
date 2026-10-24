@@ -49,6 +49,8 @@
 		padding: 0.5rem 0.7rem;
 		border: 1px solid color-mix(in srgb, var(--warn) 60%, var(--bg));
 		background: color-mix(in srgb, var(--warn) 10%, var(--bg));
+		/* A long title wraps: small corners, not a button's pill. */
+		border-radius: var(--radius);
 		text-align: left;
 	}
 	.question .title {

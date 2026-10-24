@@ -104,6 +104,7 @@
 	align-items: baseline;
 	padding: 0.35rem 0.6rem;
 	border: 0;
+	border-radius: var(--radius);
 	background: none;
 	font-size: max(0.85rem, var(--min-font, 0px));
 	text-align: left;
@@ -151,6 +152,7 @@
 .picker .menu .wide {
 	justify-content: center;
 	border: 1px solid var(--line);
+	border-radius: var(--radius-pill);
 	background: var(--surface);
 	font-family: inherit;
 }

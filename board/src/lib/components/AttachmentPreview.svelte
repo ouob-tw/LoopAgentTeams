@@ -242,7 +242,7 @@
 	.button {
 		padding: 0.25rem 0.6rem;
 		border: 1px solid var(--line);
-		border-radius: var(--radius);
+		border-radius: var(--radius-pill);
 		color: var(--text);
 		text-decoration: none;
 	}

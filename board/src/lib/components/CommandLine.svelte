@@ -452,8 +452,11 @@
 	.options {
 		display: inline-flex;
 		align-items: center;
+		justify-content: center;
+		box-sizing: border-box;
+		width: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
 		height: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
-		padding: 0 0.6rem;
+		padding: 0;
 	}
 	/* Floats above the line; opening it moves nothing. */
 	.closed-note {
@@ -549,7 +552,6 @@
 	.box :global(.send.square) {
 		width: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px - 8px);
 		padding: 0;
-		border-radius: calc(var(--radius) - 2px);
 	}
 	/* The interrupt beside the send button: red, like the other stops. */
 	.box :global(.send.stop) {
@@ -562,8 +564,8 @@
 	.reopen {
 		display: none;
 	}
-	/* A phone: the box takes its own row, the controls the row under it: the paperclip, the model
-	   and effort, the mic, the rest, and the button that puts the line away at the far right. */
+	/* A phone: the box takes its own row, the controls the row under it: the model and effort, the
+	   paperclip, the mic, the rest, and the button that puts the line away at the far right. */
 	@media (max-width: 760px) {
 		.cmd.hidden {
 			display: none;
@@ -627,10 +629,10 @@
 			order: -1;
 			flex-basis: 100%;
 		}
-		.attach-slot {
+		.pill-slot {
 			order: 1;
 		}
-		.pill-slot {
+		.attach-slot {
 			order: 2;
 		}
 		/* Near the left edge now, its menus float above the whole line from its left instead. */

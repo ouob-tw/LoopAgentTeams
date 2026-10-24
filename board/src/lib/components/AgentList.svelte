@@ -530,6 +530,8 @@
 		min-width: 0;
 		text-align: left;
 		padding: 0.55rem 0.6rem;
+		/* A card of several lines: small corners, not a button's pill. */
+		border-radius: var(--radius);
 	}
 	/* Room for the handle, which lies over the card's right edge. */
 	.card:has(.grip) > .agent {
@@ -654,6 +656,7 @@
 		width: 100%;
 		min-height: 2.4rem;
 		border: none;
+		border-radius: var(--radius);
 		text-align: left;
 	}
 	.agent.current {
