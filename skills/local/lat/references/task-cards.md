@@ -18,6 +18,7 @@ HCOM Agent 啟動後可用 `scripts/lat-dispatch.py card` 依 tag 建卡（自�
 - worktree：
 - base commit：
 - status：dispatched
+- ledger row：（選填；用 `lat-dispatch card --ledger` 建卡時自動寫入，格式 `<列編號> (<總表絕對路徑>)`）
 - owned resources：ports、containers、images、sandbox prefix
 - live actions：無（有現場動作時寫額度，見「現場動作額度」）
 - preflight：無（有現場動作時寫動手前的核對事項）
@@ -97,6 +98,7 @@ agent 欄以 HCOM 名稱開頭，要加說明時接空白或半形／全形括�
 - 清理任務卡列明且屬於本任務的資源；普通暫存檔用 trash-cli，含機密者（含隔離 client 家目錄）先用 `shred -u`，再移除所在 worktree。核對 `temp paths` 列出的位置都已不存在、`.lat` 內沒有家目錄副本。
 - 以 `git worktree remove` 移除該任務的獨立 worktree，在整合分支所在的工作區執行 `git branch -d` 刪除任務分支（未設定上游分支時，`-d` 檢查任務分支是否已合入該工作區的 `HEAD`；已設定上游分支時，則檢查是否已合入上游分支）；`-D` 僅限使用者明確確認放棄該分支。
 - **先**將任務卡移至 `.lat/tasks/done/`，**再**關閉 Agent；移走後停住監控不再盯該 Agent。卡片仍在而 Agent 消失會被視為意外消失並通知主控。
+- 卡上有 `ledger row` 時，移卡後立刻執行 `uv run --no-project python <lat_dir>/scripts/lat-ledger.py update <列編號> --ledger <總表> --card <done/ 下的新路徑>`，總表的卡路徑才會跟上，`show` 不再標示任務卡不一致。結案時 `lat-ledger done` 已自動把卡的 `status` 改為 `committed`（檔案證據為 `completed`）並填入 deliverable commit，不必手填。
 - `hcom kill` 關閉 Agent 並核對已停止後，立即執行 `uv run --no-project python <lat_dir>/scripts/lat-reap.py reap --agent <Agent 名稱>` 收掉它留下的服務。
 
 只有任務卡明列待完成後續工作時可暫留，例如 QA 保留 worktree 供複驗；後續工作完成後立即收尾。

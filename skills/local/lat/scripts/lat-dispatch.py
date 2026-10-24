@@ -5,6 +5,9 @@
 comes from `hcom list --json`. `brief` turns a four-section Markdown file plus that card into
 a ready-to-send task brief and prints the `hcom send` command. It never launches agents and
 never sends anything. Hand-written cards and briefs stay allowed.
+
+With --ledger, `card` also opens and assigns a row in the LAT work ledger (lat-ledger.py) and
+writes the row into the card; `brief` then carries the row and the start/update/done commands.
 """
 import argparse
 from datetime import date
@@ -13,6 +16,7 @@ import os
 from pathlib import Path
 import re
 import shlex
+import subprocess
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
@@ -26,6 +30,8 @@ TAG = re.compile(r'[A-Za-z0-9][A-Za-z0-9_.-]*')
 CARD_FIELD = re.compile(r'-\s+([^：\n]+)：\s*(.*)')
 CARD_AGENT = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}(?=$|[\s(（])')
 NONE = '無'
+LEDGER_ROW = re.compile(r'(\d+)\s*\((/.+)\)')
+LEDGER_OPTIONS = ('ticket', 'stage', 'evidence', 'deadline', 'depends')
 LIVE_RULES = '''- Before acting, check every `preflight` item. If any item does not hold, report to the orchestrator first and do not act.
 - Do live actions inside the `live actions` quota yourself; do not ask the orchestrator to approve each step.
 - Report to the orchestrator only when: (1) you are about to exceed or have exceeded any quota; (2) a stop condition triggers; (3) a login, human-verification or risk-control signal appears; (4) a decision outside the Spec comes up; (5) you have the final result.
@@ -53,6 +59,20 @@ FIXED = '''## Fixed fields
 - For a timed wait, register an alarm:
   `uv run --no-project python {lat_script} alarm --workspace {workspace} --agent {agent} --after 30 --reason 'Continue after the cooldown'`
 - Do not use background programs to message yourself; HCOM rejects them.
+'''
+LEDGER_FIXED = '''
+## Work ledger
+
+- Your ledger row is {row} in {ledger}. Register with these commands (the ledger is in the main workspace; always use this absolute path, even from a worktree):
+  - Start, with your own estimate of the finish time: `{cmd} start {row} --ledger {ledger_arg} --by {agent} --eta +<N>m`
+  - At each checkpoint: `{cmd} update {row} --ledger {ledger_arg} --by {agent} --progress '<one sentence>'`; when the estimate or deadline moves, add `--eta` or `--deadline` and `--reason`.
+  - Close, with the evidence the row declares (a commit, a suite-gate fingerprint and/or a report file; the tool checks it exists): `{cmd} done {row} --ledger {ledger_arg} --by {agent} --commit <sha> --gate <fingerprint> --file <absolute path>` (pass only the kinds the row declares).
+- `done` writes `status` and `deliverable commit` into the task card; do not fill them by hand.
+'''
+LEDGER_MISSING = '''
+## Work ledger
+
+- This card has no ledger row, so there are no ledger commands to run; report to {orchestrator} as usual.
 '''
 
 
@@ -105,6 +125,7 @@ def make_card(args):
     tasks = args.tasks.resolve()
     if not tasks.is_dir():
         raise Failure(f'task-card directory does not exist: {tasks}')
+    ledger = ledger_request(args)
     agent = agent_for_tag(tag)
     day = args.date or date.today().isoformat()
     options = {
@@ -135,13 +156,64 @@ def make_card(args):
             break
         previous = done if done.exists() and not path.exists() else path
         number += 1
+    if ledger:
+        row = open_ledger_row(args, ledger, fields[1][1], agent, path)
+        fields.insert(7, ('ledger row', f'{row} ({ledger["path"]})'))
     try:
         with open(path, 'x', encoding='utf-8') as stream:
             stream.write(card_text(previous, fields))
     except FileExistsError as error:
-        raise Failure(f'task card appeared meanwhile: {path}; rerun') from error
+        where = f' (ledger row {row} is already assigned to it)' if ledger else ''
+        raise Failure(f'task card appeared meanwhile: {path}{where}; rerun') from error
     print(path)
     print(f'agent: {agent}')
+    if ledger:
+        print(f'ledger row: {row}')
+
+
+def ledger_request(args):
+    """Validate the ledger options of `card`; None when the card is made without a row."""
+    given = [name for name in LEDGER_OPTIONS if getattr(args, name)]
+    if not args.ledger:
+        if given:
+            raise Failure('--ticket, --stage, --evidence, --deadline and --depends need --ledger')
+        return None
+    missing = [f'--{name}' for name in ('ticket', 'stage', 'evidence', 'deadline')
+               if not getattr(args, name)]
+    if missing:
+        raise Failure(f'--ledger also needs {", ".join(missing)}')
+    path = args.ledger
+    if not path.is_absolute():
+        raise Failure(f'--ledger must be an absolute path: {path}')
+    if not path.is_file():
+        raise Failure(f'ledger does not exist: {path}; create it with lat-ledger.py init first')
+    return {'path': str(path)}
+
+
+def run_ledger(args, command, *rest):
+    script = args.lat_dir.resolve() / 'scripts' / 'lat-ledger.py'
+    result = subprocess.run([sys.executable, str(script), command, *rest], capture_output=True,
+                            text=True, timeout=60)
+    if result.returncode:
+        raise Failure(f'lat-ledger {command} failed: {result.stderr.strip() or result.stdout.strip()}')
+    return result.stdout.strip()
+
+
+def open_ledger_row(args, ledger, orchestrator, agent, card):
+    base = ['--ledger', ledger['path'], '--by', orchestrator]
+    add = ['--ticket', args.ticket, '--stage', args.stage, '--deadline', args.deadline]
+    for evidence in args.evidence:
+        add += ['--evidence', evidence]
+    if args.depends:
+        add += ['--depends', args.depends]
+    row = run_ledger(args, 'add', *base, *add)
+    if not row.isdigit():
+        raise Failure(f'lat-ledger add printed an unexpected row number: {row!r}')
+    try:
+        run_ledger(args, 'assign', row, *base, '--agent', agent, '--card', str(card))
+    except Failure as error:
+        raise Failure(f'{error}; ledger row {row} was added but not assigned, no card made') from error
+    return row
 
 
 def read_card(path):
@@ -167,6 +239,8 @@ def read_card(path):
     if not match:
         raise Failure(f'task card agent field must start with an HCOM name: {fields["agent"]!r}')
     fields['agent'] = match.group(0)
+    row = LEDGER_ROW.fullmatch(fields.get('ledger row', ''))
+    fields['ledger row'] = row.groups() if row else None
     return fields
 
 
@@ -238,11 +312,22 @@ def make_brief(args):
     parts.append('## Task card live actions and preflight (authoritative; copied from the card)\n\n'
                  f'- live actions：{card["live actions"]}\n- preflight：{card["preflight"]}\n\n'
                  f'{LIVE_RULES}\n')
-    parts.append(FIXED.format(
+    fixed = FIXED.format(
         workdir=workdir, orchestrator=card['orchestrator'], agent=card['agent'],
         card=card_path, runs=card.get('runs') or NONE, workspace=shlex.quote(str(workspace)),
         decisions=workspace / '.lat' / 'decisions',
-        lat_script=shlex.quote(str(args.lat_dir.resolve() / 'scripts' / 'lat-watch.py'))))
+        lat_script=shlex.quote(str(args.lat_dir.resolve() / 'scripts' / 'lat-watch.py')))
+    if card['ledger row']:
+        row, ledger = card['ledger row']
+        fixed += LEDGER_FIXED.format(
+            row=row, ledger=ledger, ledger_arg=shlex.quote(ledger), agent=card['agent'],
+            cmd='uv run --no-project python ' + shlex.quote(
+                str(args.lat_dir.resolve() / 'scripts' / 'lat-ledger.py')))
+    else:
+        print(f'lat-dispatch: warning: card {card_path} has no ledger row; the brief carries '
+              'no ledger commands', file=sys.stderr)
+        fixed += LEDGER_MISSING.format(orchestrator=card['orchestrator'])
+    parts.append(fixed)
     write_text_atomic(output, '\n'.join(parts), mode=0o644)
     print(f'brief: {output}')
     print('send: hcom send @{} --intent request --name {} --file {}'.format(
@@ -263,6 +348,16 @@ def build_parser():
     for option in ('model', 'branch', 'worktree', 'base-commit', 'owned-resources',
                    'expected-checks', 'full-suite', 'runs', 'temp-paths', 'next-step'):
         card.add_argument(f'--{option}', default=NONE)
+    card.add_argument('--ledger', type=Path,
+                      help='absolute path of the work ledger; adds and assigns a row for this card')
+    card.add_argument('--ticket', help='ledger row: ticket')
+    card.add_argument('--stage', help='ledger row: stage (see lat-ledger.py add --help)')
+    card.add_argument('--evidence', action='append',
+                      help='ledger row: evidence kinds (commit, gate, file); comma-separated or repeated')
+    card.add_argument('--deadline', help='ledger row: latest finish, ISO 8601 or +N[m|h|d]')
+    card.add_argument('--depends', help='ledger row: comma-separated item numbers it waits for')
+    card.add_argument('--lat-dir', type=Path, default=LAT_DIR,
+                      help='LAT skill directory holding scripts/lat-ledger.py')
     brief = commands.add_parser('brief', help='Build the task brief from four sections + a card')
     brief.add_argument('--card', type=Path)
     brief.add_argument('--input', type=Path, required=True)
