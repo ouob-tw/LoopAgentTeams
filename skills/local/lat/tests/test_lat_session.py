@@ -3011,6 +3011,66 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(final['final'])
         self.assertEqual((final['force_unfinished_reason'], final['force_unfinished_saved_in']),
                          ('ledger lost', 'session'))
+    def test_done_stop_and_deactivate_recheck_evidence_removed_after_closing(self):
+        self.activate()
+        item = self.open_item('#6')
+        self.close_item(item)
+        report = self.root / f'report-{item}.md'
+        report.unlink()
+        output = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn(f'item 1 (#6 impl): file {report}: does not exist', output['reason'])
+        refused = self.deactivate()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn(f'file {report}: does not exist', refused.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+
+    def test_hand_edited_ledger_asks_for_a_reseal_not_a_rebuild(self):
+        self.activate()
+        self.open_item()
+        ledger = json.loads(self.ledger_path().read_text())
+        ledger['items'][0]['ticket'] = '#edited'
+        self.ledger_path().write_text(json.dumps(ledger))
+        journal = self.ledger_path().with_name(self.ledger_path().name + '.journal.jsonl')
+        journal.unlink()  # a reseal keeps the edit, so a lost journal does not allow force
+        output = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertIn('seal mismatch', output['reason'])
+        self.assertIn(f'repair --ledger {self.ledger_path()} --reason', output['reason'])
+        for extra in ((), ('--force-unfinished', '--reason', 'edited')):
+            with self.subTest(extra=extra):
+                refused = self.deactivate(*extra)
+                self.assertEqual(refused.returncode, 1)
+                self.assertIn(f'repair --ledger {self.ledger_path()} --reason', refused.stderr)
+                self.assertNotIn('--from-journal`', refused.stderr)
+                self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+
+    def test_deleted_ledger_is_rebuilt_from_journal_before_deactivate(self):
+        self.activate()
+        self.open_item()
+        self.ledger_path().unlink()
+        refused = self.deactivate('--force-unfinished', '--reason', 'gone')
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn('ledger missing', refused.stderr)
+        self.assertIn('repair --ledger', refused.stderr)
+        self.assertIn('--from-journal --reason', refused.stderr)
+        self.ledger_path().with_name(self.ledger_path().name + '.journal.jsonl').unlink()
+        self.assertEqual(self.deactivate().returncode, 1)
+        forced = self.deactivate('--force-unfinished', '--reason', 'ledger and journal lost')
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['force_unfinished_saved_in'], 'session')
+        self.assertFalse(self.ledger_path().exists())
+    def test_recovery_ledger_error_stays_within_the_limit_and_keeps_the_hint(self):
+        spec = importlib.util.spec_from_file_location('lat_session_limit', SCRIPT)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        failure = SimpleNamespace(returncode=1, stdout='',
+                                  stderr='x' * 20_000 + ' rebuild it with repair --from-journal')
+        with patch.object(helper, 'ledger_cli', return_value=failure):
+            context = helper.ledger_context(
+                dict(client='claude', ledger_path=str(self.ledger_path())), 'p' * 9_000)
+        self.assertLessEqual(len(context), 9_800)
+        self.assertIn('repair --from-journal', context)
+        self.assertTrue(context.endswith('never recreate it by hand.'))
 
 if __name__ == '__main__':
     unittest.main()

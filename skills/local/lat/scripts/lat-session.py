@@ -442,14 +442,24 @@ def ledger_check(path):
     return 'unreadable', result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
 
 
-def ledger_rebuildable(path):
-    """Whether `repair --from-journal` could rebuild the ledger from its journal."""
+def ledger_repair(path):
+    """The repair that would make an unreadable ledger readable again, or None when none can.
+
+    A well-formed ledger whose seal no longer matches keeps its content (`repair --reason`);
+    a missing or malformed one is rebuilt from its journal while that is usable.
+    """
     module = ledger_module()
+    store = module.Store(path)
     try:
-        module.read_journal(module.Store(path))
+        module.parse_ledger(store.path.read_bytes())
+        return ledger_command('repair', path, '--reason', '<原因>')
+    except (OSError, ValueError, UnicodeError):
+        pass
+    try:
+        module.read_journal(store)
     except module.Failure:
-        return False
-    return True
+        return None
+    return ledger_command('repair', path, '--from-journal', '--reason', '<原因>')
 
 
 def ledger_gate(record, args):
@@ -473,13 +483,13 @@ def ledger_gate(record, args):
         except module.Failure as exc:
             raise ValueError(f'強制停用原因寫不進工作總表，未停用：{exc}') from exc
         return dict(reason=args.reason, saved_in='ledger', check=text)
-    repair = ledger_command('repair', path, '--from-journal', '--reason', '<原因>')
+    repair = ledger_repair(path)
+    if repair:
+        raise ValueError(f'工作總表無法讀取，拒絕停用：{text}\n先執行 `{repair}` 修復，'
+                         '再重跑 deactivate（修復前強制停用也會拒絕）。')
     if not args.force_unfinished:
-        raise ValueError(f'工作總表無法讀取，拒絕停用：{text}\n先執行 `{repair}` 從流水帳重建，'
-                         f'再重跑 deactivate；重建不了時加 `--force-unfinished --reason "<原因>"` 強制停用。')
-    if ledger_rebuildable(path):
-        raise ValueError(f'工作總表無法讀取，但流水帳還能重建，未停用：{text}\n先執行 `{repair}`，'
-                         '再重跑 deactivate。')
+        raise ValueError(f'工作總表無法讀取，流水帳也重建不了，拒絕停用：{text}\n'
+                         '確定要結束時加 `--force-unfinished --reason "<原因>"` 強制停用。')
     return dict(reason=args.reason, saved_in='session', check=text)
 
 
@@ -493,13 +503,18 @@ def ledger_context(record, text):
         result = ledger_cli('show', '--ledger', path)
     except (OSError, subprocess.SubprocessError) as exc:
         result = SimpleNamespace(returncode=1, stdout='', stderr=str(exc))
+    limit = CONTEXT_LIMITS[record['client']]
     if result.returncode:
         detail = result.stderr.strip() or f'exit {result.returncode}'
-        return (f'{text}\n\nLAT work ledger error: {detail}\nLedger: {path}. Stop dependent '
-                'work and report; repair it as the error says, never recreate it by hand.')
+        tail = (f'\nLedger: {path}. Stop dependent work and report; repair it as the error '
+                'says, never recreate it by hand.')
+        room = max(0, limit - len(text) - len(tail) - len('\n\nLAT work ledger error: '))
+        if len(detail) > room:
+            # The repair hint ends lat-ledger's messages; keep the end.
+            detail = '…' + detail[len(detail) - max(0, room - 1):]
+        return f'{text}\n\nLAT work ledger error: {detail}{tail}'
     full = f'{text}{LEDGER_HEADING}its `show` output follows and counts as running `{command}`\n\n'
     table = result.stdout.rstrip('\n')
-    limit = CONTEXT_LIMITS[record['client']]
     if len(full) + len(table) <= limit:
         return full + table
     cut = f'{text}{LEDGER_HEADING}`show` output cut to fit the hook limit; run `{command}` for the rest\n\n'
@@ -1053,9 +1068,9 @@ def ledger_stop_check(record, message):
     if state == 'fail':
         return ('LAT 交付檢查未通過：工作總表還有未結案或缺證據的工作項。\n' + text
                 + '\n補做（結案並附證據，或由主控取消並寫原因）後再照原樣結束回合。')
-    return (f'LAT 交付檢查未通過：工作總表無法讀取（{text}）。依錯誤修復總表'
-            f'（`{ledger_command("repair", record["ledger_path"], "--from-journal", "--reason", "<原因>")}`'
-            '）後再照原樣結束回合。')
+    repair = ledger_repair(record['ledger_path'])
+    fix = f'先執行 `{repair}` 修復' if repair else '總表與流水帳都無法修復，向使用者回報'
+    return f'LAT 交付檢查未通過：工作總表無法讀取（{text}）。{fix}，再照原樣結束回合。'
 
 
 def reports_path(record):
