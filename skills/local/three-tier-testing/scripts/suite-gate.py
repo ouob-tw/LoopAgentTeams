@@ -22,6 +22,7 @@ holders stay counted while that group has processes. Without a user scope the su
 in a new session instead, which is then what counts.
 """
 import argparse
+import collections
 import copy
 import difflib
 import fcntl
@@ -1776,25 +1777,69 @@ def changed_files(root, base):
     return sorted(set(diff) | set(new))
 
 
-def select_tests(root, changed, amap):
-    """({test: [why]}, [(file, why)] that need the full suite) for the changed files."""
+def _split_registry(data):
+    """(registry without affected.map, [rule as sorted JSON]), or None when it has no map list."""
+    affected = data.get('affected') if isinstance(data, dict) else None
+    if not isinstance(affected, dict) or not isinstance(affected.get('map'), list):
+        return None
+    rest = dict(data, affected={k: v for k, v in affected.items() if k != 'map'})
+    return rest, [json.dumps(rule, sort_keys=True) for rule in affected['map']]
+
+
+def registry_map_changes(root, base):
+    """The affected.map rules .suite-gate.json added or changed since base, or a reason the
+    change needs the full suite: a rule was removed, or more than the map changed (including
+    a registry that is new or gone). None means the reason is the shared path itself."""
+    result = git(['show', f'{base}:{REGISTRY_NAME}'], root)
+    try:
+        old = _split_registry(json.loads(result.stdout)) if result.returncode == 0 else None
+        new = _split_registry(json.loads((root / REGISTRY_NAME).read_text()))
+    except (OSError, ValueError):
+        return None
+    if old is None or new is None or old[0] != new[0]:
+        return None
+    removed = collections.Counter(old[1]) - collections.Counter(new[1])
+    added = collections.Counter(new[1]) - collections.Counter(old[1])
+    # A changed rule shows up as one removed and one added; more removed means a deletion.
+    if sum(removed.values()) > sum(added.values()):
+        return 'a map rule was removed'
+    return [json.loads(rule) for rule in added.elements()]
+
+
+def select_tests(root, changed, amap, base=None):
+    """({test: [why]}, [(file, why)] that need the full suite) for the changed files.
+    base (the commit the change is measured from) lets a changed .suite-gate.json select
+    the tests of its added or changed map rules instead of falling back."""
     files = [p for p in _git_paths(['ls-files', '-co', '--exclude-standard'], root)
              if (root / p).is_file()]
     rules = amap['rules']
     test_patterns = [p for rule in rules for p in rule['tests']]
     selected, fallback = {}, []
+
+    def select_rules(path, new_rules):
+        """Select what each of new_rules (rules added in path) maps to."""
+        for rule in new_rules:
+            tests = [t for t in files if any(glob_match(t, p) for p in rule['tests'])]
+            if rule['tests'] and not tests:
+                fallback.append((path, f'{path} maps to tests that match no file: '
+                                       + ', '.join(rule['tests'])))
+            for test in tests:
+                selected.setdefault(test, []).append(f"{path} maps {', '.join(rule['paths'])}")
+
     for path in changed:
         if glob_match(path, f'{MAP_DIR}/*.json') and (root / path).is_file():
             # A map file only adds rules: run the tests it maps to, even when shared.
-            for rule in json.loads((root / path).read_text())['map']:
-                tests = [t for t in files if any(glob_match(t, p) for p in rule['tests'])]
-                if rule['tests'] and not tests:
-                    fallback.append((path, f'{path} maps to tests that match no file: '
-                                           + ', '.join(rule['tests'])))
-                for test in tests:
-                    selected.setdefault(test, []).append(f"{path} maps {', '.join(rule['paths'])}")
+            select_rules(path, json.loads((root / path).read_text())['map'])
             continue
         shared = next((p for p in amap['shared'] if glob_match(path, p)), None)
+        if shared and path == REGISTRY_NAME and base is not None:
+            changes = registry_map_changes(root, base)
+            if isinstance(changes, list):
+                select_rules(path, changes)
+                continue
+            if changes:
+                fallback.append((path, changes))
+                continue
         if shared:
             fallback.append((path, f'shared path {shared}'))
             continue
@@ -1843,7 +1888,7 @@ def cmd_affected(base):
         warn(f'change against {origin} ({commit[:12]}): {len(changed)} file(s)')
         for path in changed:
             warn(f'  {path}')
-        selected, fallback = select_tests(root, changed, amap)
+        selected, fallback = select_tests(root, changed, amap, commit)
         groups = {}
         for test in sorted(selected):
             directory = command_dir(test, amap['commands'])
@@ -1851,17 +1896,24 @@ def cmd_affected(base):
                 fallback.append((test, 'no affected.commands directory holds this test'))
             else:
                 groups.setdefault(directory, []).append(test)
+        code = 0
         if fallback:
-            return run_fallback(root, amap, fallback)
-        if not groups:
+            suites = fallback_suites(amap['suites'], [path for path, _ in fallback])
+            code = run_fallback(root, suites, fallback)
+            # The full suites run the tests in their directories; the rest still run here.
+            groups = {d: kept for d, tests in groups.items()
+                      if (kept := [t for t in tests if not any(
+                          s['cwd'] == '.' or t.startswith(s['cwd'] + '/') for s in suites)])}
+            if not groups:
+                return code
+        elif not groups:
             warn('no tests selected for this change; nothing to run')
             warn('hint: on an integration branch the base must be given with --base <commit> '
                  '(the commit this work started from); without it the change is empty')
             return 0
         warn('selected tests:')
-        for test in sorted(selected):
+        for test in sorted(t for tests in groups.values() for t in tests):
             warn(f"  {test}  ({'; '.join(selected[test])})")
-        code = 0
         for directory, tests in groups.items():
             rel = [t if directory == '.' else t[len(directory) + 1:] for t in tests]
             text = amap['commands'][directory].replace('{tests}', ' '.join(map(shlex.quote, rel)))
@@ -1878,14 +1930,27 @@ def cmd_affected(base):
     return _guarded(body)
 
 
-def run_fallback(root, amap, fallback):
-    """Run (or reuse) every registered full suite through the gate."""
+def fallback_suites(suites, triggers):
+    """The full suites a fallback runs: those whose directory holds a trigger file, or all of
+    them when some trigger lies in no suite directory (a suite run from `.` holds none)."""
+    chosen = set()
+    for path in triggers:
+        holders = {i for i, s in enumerate(suites)
+                   if s['cwd'] != '.' and path.startswith(s['cwd'] + '/')}
+        if not holders:
+            return suites
+        chosen |= holders
+    return [s for i, s in enumerate(suites) if i in chosen]
+
+
+def run_fallback(root, suites, fallback):
+    """Run (or reuse) the given full suites through the gate."""
     warn('this change needs the full suite (map fallback):')
     for path, why in fallback:
         warn(f'  {path}: {why}')
     triggers = sorted({path for path, _ in fallback})
     code = 0
-    for suite in amap['suites']:
+    for suite in suites:
         cwd = root if suite['cwd'] == '.' else root / suite['cwd']
         warn(f"full suite in {suite['cwd']}: {suite['command']}")
         gate = Gate([suite['command']], cwd, None, load_config(),
