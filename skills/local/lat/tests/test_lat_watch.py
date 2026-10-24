@@ -413,6 +413,50 @@ class WatchDecisionTests(unittest.TestCase):
                          'decision-resolved')
         self.assertIsNone(watch.wait_release_reason(declaration, [], False, True))
 
+    def test_unrelated_inform_and_ack_keep_a_wait_but_request_and_target_release_it(self):
+        watch = load_watch()
+        declaration = {'agent': 'worker', 'target': 'reviewer'}
+        names = {'reviewer', 'rev'}
+
+        def deliver(sender, position):
+            return {'type': 'status', 'data': {'context': f'deliver:{sender}',
+                                               'position': position}}
+
+        events = [deliver('other', 1), deliver('another', 2)]
+        intents = {1: 'inform', 2: 'ack'}
+        self.assertIsNone(watch.wait_release_reason(
+            declaration, events, False, True, names, intents))
+        intents[2] = 'request'
+        self.assertEqual(watch.wait_release_reason(
+            declaration, events, False, True, names, intents), 'message-delivered')
+        for sender in ('reviewer', 'rev'):
+            self.assertEqual(watch.wait_release_reason(
+                declaration, [deliver(sender, 3)], False, True, names, {3: 'inform'}),
+                'message-delivered')
+        # An unknown intent keeps the old behaviour: release.
+        self.assertEqual(watch.wait_release_reason(
+            declaration, [deliver('other', 4)], False, True, names, {}), 'message-delivered')
+        # Decision change and target reply are unaffected by intent filtering.
+        self.assertEqual(watch.wait_release_reason(
+            declaration, [deliver('other', 1)], False, False, names, {1: 'inform'}),
+            'decision-resolved')
+        self.assertEqual(watch.wait_release_reason(
+            declaration, [], True, True, names, {}), 'target-replied')
+
+    def test_delivered_message_intents_reads_message_events_by_position(self):
+        watch = load_watch()
+        events = [{'type': 'status', 'data': {'context': 'deliver:x', 'position': 7}},
+                  {'type': 'status', 'data': {'context': 'tool:Bash'}}]
+        sent = []
+        def fake(orchestrator, *filters):
+            sent.append(filters)
+            return [{'type': 'message', 'id': 7, 'data': {'intent': 'inform'}}]
+        with patch.object(watch, 'hcom_events', fake):
+            self.assertEqual(watch.delivered_message_intents('orch', events), {7: 'inform'})
+            self.assertEqual(watch.delivered_message_intents('orch', events[1:]), {})
+        self.assertEqual(len(sent), 1)
+        self.assertIn('id IN (7)', sent[0])
+
     def test_real_session_status_shapes_release_canonical_agent_waits(self):
         watch = load_watch()
         declaration = {
@@ -4330,6 +4374,40 @@ esac
         self.assertEqual(reason, 'message-delivered')
         self.assertEqual(json.loads(watch.wait_path(self.work, 'worker-open').read_text())
                          ['expiry_count'], 0)
+
+    def test_unrelated_inform_leaves_wait_active_and_request_releases_it(self):
+        hcom = Path(self.env['PATH'].split(':', 1)[0]) / 'hcom'
+        hcom.write_text(
+            '#!/bin/sh\n'
+            'case " $* " in\n'
+            '  *" list --json "*)\n'
+            '    printf \'%s\\n\' \'[{"name":"worker-open","base_name":"open",'
+            '"session_id":"worker-session"}]\' ;;\n'
+            '  *"--type message"*)\n'
+            '    printf \'%s\\n\' "{\\"id\\":90,\\"type\\":\\"message\\",'
+            '\\"data\\":{\\"intent\\":\\"$FAKE_INTENT\\"}}" ;;\n'
+            '  *"worker-session"*)\n'
+            '    printf \'%s\\n\' \'{"id":91,"type":"status","data":{'
+            '"context":"deliver:stranger","position":90,"session":"worker-session"}}\' ;;\n'
+            'esac\n'
+        )
+        hcom.chmod(0o755)
+        decisions = self.work / '.lat/decisions'
+        decisions.mkdir()
+        watch = load_watch()
+        declaration = {
+            'agent': 'worker-open', 'target': 'reviewer', 'reason': 'review',
+            'declared_at_utc': '2026-10-04T00:00:00+00:00', 'active': True,
+        }
+        watch.write_object(watch.wait_path(self.work, 'worker-open'), declaration)
+        for intent, expected in (('inform', None), ('ack', None),
+                                 ('request', 'message-delivered')):
+            with patch.dict(os.environ, {**self.env, 'FAKE_INTENT': intent}):
+                reason = watch.release_wait_if_needed(
+                    self.work, decisions, 'orch', declaration)
+            self.assertEqual(reason, expected, intent)
+            saved = json.loads(watch.wait_path(self.work, 'worker-open').read_text())
+            self.assertEqual(saved['active'], expected is None)
 
     def test_run_cycle_logs_missing_observation_failure_and_retries_failed_nudge(self):
         self.write_task('broken.md', 'worker-broken', 'orch', 'in progress')

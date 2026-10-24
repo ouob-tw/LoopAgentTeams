@@ -25,7 +25,7 @@ Spec issue 最上面供使用者確認的版本化條列重點，與正文一致
 _Avoid_: Spec 全文摘要、Ticket 摘要
 
 **等待聲明**：
-Agent 結束回合前以 `lat-watch wait` 記錄唯一等待對象與原因，或以 `lat-watch alarm` 登記鬧鐘；Agent 對象有期限，決策對象沒有期限。收到新訊息、決策解除、對方成功回報或期限到期後失效。
+Agent 結束回合前以 `lat-watch wait` 記錄唯一等待對象與原因，或以 `lat-watch alarm` 登記鬧鐘；Agent 對象有期限，決策對象沒有期限。等待對象傳來訊息、任何人傳來 `request` 訊息、決策解除、對方成功回報或期限到期後失效；其他 Agent 的 `inform`、`ack` 不使其失效。
 _Avoid_: 永久待命、停住豁免
 
 **鬧鐘**：
