@@ -81,8 +81,12 @@ OBSERVE_SECONDS = 60
 # How long the transcript is watched after Claude ended the hook while it waited: answering No in
 # its dialog ends the hook at once, before the answer is in the transcript.
 ENDED_SECONDS = 10
-# What Claude adds to the tool result when Esc ended the turn, unlike a No in its dialog.
+# What Claude writes right after the rejected tool result when Esc ended the turn, unlike a No in
+# its dialog (2.1.310: a separate entry a millisecond later). A rejection counts as a No only once
+# this long has passed with no such line among the next few entries.
 INTERRUPTED_MARK = '[Request interrupted by user'
+INTERRUPTED_LINES = 3
+REJECTED_GRACE_SECONDS = 2
 TRANSCRIPT_SECONDS = 1
 
 
@@ -318,14 +322,15 @@ def content_text(content):
     return content if isinstance(content, str) else ''
 
 
-def tool_result_decision(item, interrupted):
-    """Whether Claude ran the tool the transcript's tool result is for: `allow`, or `deny` when the
-    use was rejected in the terminal or denied by the board, or `interrupted` when Esc ended the
-    turn (`interrupted`: the entry says so). A refusal is an error result; a tool's own output
-    that only quotes such text is not one."""
+def tool_result_decision(item):
+    """Whether Claude ran the tool the transcript's tool result is for: `allow`, `deny` when the
+    board denied it, or `rejected` when the user rejected it in the terminal, by No or by Esc. A
+    refusal is an error result; a tool's own output that only quotes such text is not one."""
     text = content_text(item.get('content'))
-    if item.get('is_error') is True and (text.startswith(REJECTED_PREFIX) or DENY_MESSAGE in text):
-        return 'interrupted' if interrupted and text.startswith(REJECTED_PREFIX) else 'deny'
+    if item.get('is_error') is True and text.startswith(REJECTED_PREFIX):
+        return 'rejected'
+    if item.get('is_error') is True and DENY_MESSAGE in text:
+        return 'deny'
     return 'allow'
 
 
@@ -336,8 +341,12 @@ class TranscriptWatch:
     input whose result was not already written before the request (before `start`, a byte offset).
     Two such calls cannot be told apart: `ambiguous`, and nothing is said of either."""
 
-    def __init__(self, path, tool_name, tool_input, start=None):
+    def __init__(self, path, tool_name, tool_input, start=None, clock=time.time):
         self.path = Path(path)
+        self.clock = clock
+        self.lines = 0
+        self.marks = set()
+        self.rejected_seen = None
         self.tool_name = tool_name
         self.tool_input = tool_input
         self.uses = set()
@@ -360,9 +369,13 @@ class TranscriptWatch:
             return
         end = chunk.rfind(b'\n') + 1
         at = self.position
-        for line in chunk[:end].split(b'\n'):
+        for line in chunk[:end].split(b'\n')[:-1]:
             line_at = at
             at += len(line) + 1
+            number = self.lines
+            self.lines += 1
+            if INTERRUPTED_MARK.encode() in line:
+                self.marks.add(number)
             if b'"tool_use"' not in line and b'"tool_result"' not in line:
                 continue
             try:
@@ -370,22 +383,20 @@ class TranscriptWatch:
             except ValueError:
                 continue
             content = (entry.get('message') or {}).get('content') if isinstance(entry, dict) else None
-            items = content if isinstance(content, list) else []
-            interrupted = any(isinstance(item, dict) and INTERRUPTED_MARK in content_text(
-                [item] if item.get('type') == 'text' else item.get('content')) for item in items)
-            for item in items:
+            for item in content if isinstance(content, list) else []:
                 if not isinstance(item, dict):
                     continue
                 if item.get('type') == 'tool_use' and item.get('name') == self.tool_name \
                         and item.get('input') == self.tool_input:
                     self.uses.add(item.get('id'))
                 elif item.get('type') == 'tool_result' and isinstance(item.get('tool_use_id'), str):
-                    self.results.setdefault(item['tool_use_id'], (item, line_at, interrupted))
+                    self.results.setdefault(item['tool_use_id'], (item, line_at, number))
         self.position += end
 
     def decision(self):
         """`allow`, `deny` or `interrupted` once the call's result is written; None before, or
-        when ambiguous."""
+        when ambiguous. A rejection in the terminal is `interrupted` once the interrupted line
+        follows it, `deny` (a No) once the grace passed without one."""
         self.read()
         calls = [use for use in self.uses
                  if use not in self.results or self.results[use][1] >= self.start]
@@ -393,8 +404,15 @@ class TranscriptWatch:
             self.ambiguous = True
         if len(calls) != 1 or calls[0] not in self.results:
             return None
-        item, _, interrupted = self.results[calls[0]]
-        return tool_result_decision(item, interrupted)
+        item, _, number = self.results[calls[0]]
+        decision = tool_result_decision(item)
+        if decision != 'rejected':
+            return decision
+        if any(number <= mark <= number + INTERRUPTED_LINES for mark in self.marks):
+            return 'interrupted'
+        if self.rejected_seen is None:
+            self.rejected_seen = self.clock()
+        return 'deny' if self.clock() - self.rejected_seen >= REJECTED_GRACE_SECONDS else None
 
 
 def ask_permission(payload, env, client, clock, sleep):
@@ -412,7 +430,7 @@ def ask_permission(payload, env, client, clock, sleep):
     if not board_running(folder, now):
         return None
     transcript = payload.get('transcript_path')
-    watch = TranscriptWatch(transcript, tool_name, tool_input) \
+    watch = TranscriptWatch(transcript, tool_name, tool_input, clock=clock) \
         if client == 'claude' and isinstance(transcript, str) and transcript else None
     deadline = now + wait_seconds(env)
     ask = {**new_ask(payload, env, client, 'permission', tool_input, now, deadline),
@@ -506,7 +524,7 @@ def run_ended(path, ask, clock, sleep):
     the ask as answered in the terminal; Esc, or nothing within the watch, leaves it to the board,
     which then reads it as interrupted."""
     watch = TranscriptWatch(ask['transcript_path'], ask['tool_name'], ask['tool_input'],
-                            ask['transcript_start'])
+                            ask['transcript_start'], clock)
     until = clock() + ENDED_SECONDS
     seen = None
     while seen is None and not watch.ambiguous and clock() < until:
@@ -531,7 +549,7 @@ def run_observe(ask_path, ended=False, clock=time.time, sleep=time.sleep):
     observed = path.with_name(f'{ask["id"]}.observed.json')
     until = datetime.fromisoformat(ask['observe_until'].replace('Z', '+00:00')).timestamp()
     watch = TranscriptWatch(ask['transcript_path'], ask['tool_name'], ask['tool_input'],
-                            ask['transcript_start'])
+                            ask['transcript_start'], clock)
     while True:
         seen = watch.decision()
         if seen is not None or watch.ambiguous or clock() >= until:

@@ -180,15 +180,15 @@ for (const [said, content, decision] of [
 	test(`Claude answered in its terminal (${said}): the ask says so, no decision, and none at the deadline`, async () => {
 		// An earlier identical call already answered does not count.
 		writeFileSync(transcript, toolUse('toolu_old') + toolResult('toolu_old', 'old') + toolUse('toolu_now'));
-		const run = hook(claudeInput(), { env: { LAT_BOARD_ASK_WAIT_SECONDS: '4' } });
+		const run = hook(claudeInput(), { env: { LAT_BOARD_ASK_WAIT_SECONDS: '6' } });
 		const ask = await waitingAsk();
 		await Bun.sleep(1_200);
 		expect(existsSync(join(dir, `${ask.id}.result.json`))).toBe(false);
 		appendFileSync(transcript, toolResult('toolu_now', content, decision === 'deny'));
 		const started = Date.now();
 		expect(await run).toEqual({ code: 0, stdout: '' });
-		// Ended at once, well before the 4 seconds were up.
-		expect(Date.now() - started).toBeLessThan(3_000);
+		// Ended well before the 6 seconds were up; a rejection waits 2 seconds to tell No from Esc.
+		expect(Date.now() - started).toBeLessThan(decision === 'deny' ? 4_500 : 2_500);
 		expect(result(ask.id)).toMatchObject({ kind: 'terminal', decision });
 		expect(stateOf(ask.id)).toMatchObject({ state: 'terminal', actual: decision, notAdopted: false });
 		expect(takePermission(dir, ask.id, 'allow')).toBe(false);
@@ -392,12 +392,11 @@ test('a tool\'s own output that quotes the board\'s deny is not a denial: 已填
 	expect((await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'sent')).state).toBe('filled');
 });
 
-/** Claude's tool result for a No in its dialog, as 2.1.310 writes it, and for Esc, which adds the
- *  interrupted line to the same entry. */
+/** Claude's tool result for a No in its dialog, as 2.1.310 writes it; Esc writes the same and then
+ *  the interrupted line as an entry of its own, a millisecond later. */
 const rejectedEntry = (id: string) =>
 	JSON.stringify({ type: 'user', toolDenialKind: 'user-rejected', toolUseResult: 'User rejected tool use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: REJECTED, is_error: true }] } }) + '\n';
-const escapedEntry = (id: string) =>
-	JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: REJECTED, is_error: true }, { type: 'text', text: '[Request interrupted by user for tool use]' }] } }) + '\n';
+const interruptedEntry = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } }) + '\n';
 const hookPid = (id: string): number => JSON.parse(readFileSync(join(dir, `${id}.json`), 'utf8')).hook_pid;
 
 test('Claude ends the hook for a No in its dialog before writing it: the ask reads 已在終端機回答, not interrupted', async () => {
@@ -427,7 +426,10 @@ test('Esc in Claude\'s dialog ends the hook and the turn: interrupted once the w
 	process.kill(hookPid(ask.id), 'SIGTERM');
 	await run;
 	const watcher = await until(() => JSON.parse(readFileSync(join(dir, `${ask.id}.json`), 'utf8')).watcher_pid as number | undefined, Boolean);
-	appendFileSync(transcript, escapedEntry('toolu_esc'));
+	appendFileSync(transcript, rejectedEntry('toolu_esc'));
+	// The interrupted line lands a little after the rejection, as a separate write.
+	await Bun.sleep(300);
+	appendFileSync(transcript, interruptedEntry);
 	// The watcher sees Esc and ends without taking the ask.
 	await until(() => existsSync(`/proc/${watcher}`), (alive) => !alive, 15_000);
 	expect(existsSync(join(dir, `${ask.id}.result.json`))).toBe(false);
