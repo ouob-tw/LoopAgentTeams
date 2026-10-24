@@ -58,7 +58,7 @@ for (const theme of ['dark', 'light']) {
 			for (const disabled of [false, true]) {
 				const look = JSON.parse(await evaluate<string>(LOOK(disabled)));
 				const { height: _selectHeight, fontSize: selectSize, ...select } = look.select;
-				const { height: _boxHeight, ...box } = look.box;
+				const { height: _boxHeight, fontSize: _boxSize, ...box } = look.box;
 				expect(select).toEqual(box);
 				expect(selectSize).toBe(await evaluate<string>(`getComputedStyle(document.querySelector('#folder-box')).fontSize`));
 				// As tall as the folder box above it, which every drop-down of the form sits beside.
