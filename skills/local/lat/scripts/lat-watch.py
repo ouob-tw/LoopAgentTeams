@@ -2213,12 +2213,14 @@ def ledger_snapshot(item):
 
 
 def ledger_handled(item, notice):
-    """True once the row's status, owner or deadline changed after the deadline notice."""
-    since = int(notice['sent_at'])
+    """True once the row's status, owner or deadline changed after the deadline notice.
+
+    The row history is append-only, so entries past the length seen at delivery are the
+    later ones, even within the same second.
+    """
     return (notice['snapshot'] != ledger_snapshot(item)
-            or any(ledger_time(entry['at']) >= since
-                   and {'status', 'agent', 'deadline'} & set(entry.get('changes') or {})
-                   for entry in item['history']))
+            or any({'status', 'agent', 'deadline'} & set(entry.get('changes') or {})
+                   for entry in item['history'][notice['history_seen']:]))
 
 
 def deliver_ledger(kind, item, entry, location, orchestrator, workspace, observe_agent, now,
@@ -2327,7 +2329,7 @@ def check_ledger(location, saved, orchestrator, workspace, observe_agent, paused
         entry.pop('error', None)
         entry.update(status='sent', sent_at=now)
         if kind == 'deadline':
-            entry['snapshot'] = ledger_snapshot(item)
+            entry.update(snapshot=ledger_snapshot(item), history_seen=len(item['history']))
         if kind in ('start', 'estimate'):
             nudged.add(item['agent'])
         append_log(log, {**record, 'result': 'sent', 'attempt': entry['attempts'],

@@ -6328,6 +6328,12 @@ esac
         self.cycles(1860, 2400, 2500, watch=watch)
         self.assertEqual(self.records('ledger-user-notified'), [])
 
+    def test_a_change_just_before_the_notice_still_lets_the_user_be_notified(self):
+        self.assign(deadline='+30m')
+        self.ledger('block', 1, '--reason', 'waits for TEVU-1', at=1800)
+        self.cycles(1800.5, 2401, 2460)
+        self.assertEqual(len(self.records('ledger-user-notified')), 1)
+
     def test_a_delivered_estimate_is_not_repeated_after_block_and_unblock(self):
         self.assign()
         self.ledger('start', 1, '--eta', '+5m', at=60)
