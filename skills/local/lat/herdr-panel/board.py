@@ -2,6 +2,11 @@
 
 import json
 from pathlib import Path
+import queue
+import re
+import sys
+import threading
+import time
 
 from questions import (
     QUESTIONS_DIR,
@@ -41,7 +46,17 @@ from bindings import (
     notification_is_pending,
     record_submitted_answers,
     send_pending_notification,
+    session_record,
 )
+from _lat_common import run_cli
+
+LEDGER_TOOL = Path(__file__).resolve().parents[1] / "scripts/lat-ledger.py"
+# A read waits for a ledger's writer, which may hold its lock while checking evidence. Each read
+# and the whole batch stay inside the time the board gives the helper, so one held ledger fails
+# alone instead of taking the others with it.
+LEDGER_READ_SECONDS = 3
+LEDGERS_SECONDS = 8
+_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 def _asked_times(questions_path):
@@ -233,6 +248,71 @@ def board_controllers(*, config_dir=None, state_dir=None):
             controller["error"] = str(error)
         controllers.append(controller)
     return controllers
+
+
+_TIME_UP = "這次重讀的時間用完了，下次重讀再試"
+
+
+def board_ledgers(controllers, seconds=LEDGERS_SECONDS):
+    """``board_ledger`` of each (workspace, session ID), read side by side.
+
+    Returns after ``seconds`` at most: a read not done by then is an error. The workers are
+    daemon threads, so one still stuck does not keep the helper from exiting.
+    """
+    deadline = time.monotonic() + seconds
+    results = [None] * len(controllers)
+    pending = queue.SimpleQueue()
+    for index in range(len(controllers)):
+        pending.put(index)
+
+    def work():
+        while True:
+            try:
+                index = pending.get_nowait()
+            except queue.Empty:
+                return
+            results[index] = board_ledger(*controllers[index], deadline=deadline)
+
+    workers = [threading.Thread(target=work, daemon=True) for _ in range(min(8, len(controllers)))]
+    for worker in workers:
+        worker.start()
+    for worker in workers:
+        worker.join(max(0, deadline - time.monotonic()))
+    return [result or {"session_id": session_id, "status": "error", "reason": _TIME_UP}
+            for result, (_, session_id) in zip(list(results), controllers)]
+
+
+def board_ledger(workspace, session_id, *, deadline=None):
+    """One controller's work ledger, as ``lat-ledger show --json`` prints it.
+
+    ``status`` is ``ok`` with ``ledger``, ``none`` when the session record names no ledger,
+    or ``error`` with the ``reason`` the record or the ledger could not be read.
+    ``ledger_path`` is there whenever the record names one, so the board can watch it.
+    """
+    if deadline is not None and time.monotonic() >= deadline:
+        return {"session_id": session_id, "status": "error", "reason": _TIME_UP}
+    if not _SESSION_ID.fullmatch(session_id):
+        return {"session_id": session_id, "status": "error", "reason": f"不是 session ID：{session_id}"}
+    try:
+        record = session_record(workspace, session_id)
+    except (OSError, ValueError) as error:
+        return {"session_id": session_id, "status": "error", "reason": f"讀不到 session 紀錄：{error}"}
+    path = record.get("ledger_path") if isinstance(record, dict) else None
+    if not path:
+        return {"session_id": session_id, "status": "none"}
+    result = {"session_id": session_id, "ledger_path": str(path)}
+    left = LEDGER_READ_SECONDS if deadline is None else min(LEDGER_READ_SECONDS, deadline - time.monotonic())
+    if left <= 0:
+        return {**result, "status": "error", "reason": _TIME_UP}
+    try:
+        output = run_cli([sys.executable, str(LEDGER_TOOL), "show", "--json", "--ledger", str(path)],
+                         timeout=left, failure="lat-ledger show")
+        return {**result, "status": "ok", "ledger": json.loads(output)}
+    except ValueError as error:
+        # run_cli names the interpreter and the script path; a timeout says what it means instead.
+        reason = (f"lat-ledger show 逾時（{left:.0f} 秒內沒讀完，可能正在寫入），下次重讀再試"
+                  if "timed out" in str(error) else str(error))
+        return {**result, "status": "error", "reason": reason}
 
 
 def _board_answer(section, selections, text, note):

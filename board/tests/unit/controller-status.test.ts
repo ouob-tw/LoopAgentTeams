@@ -63,6 +63,8 @@ function sources(running: Set<string> | null, agents: Agent[] = [], extraBound: 
 		pruneError: null,
 		answered: [],
 		answeredError: null,
+		ledgers: new Map(),
+		ledgersError: null,
 		closed: EMPTY_CLOSED
 	};
 }

@@ -1,5 +1,6 @@
-// The only way the board reads and writes question files, and reads a controller's conversation:
-// the LAT panel helper's `board` commands.
+// The only way the board reads and writes question files, and reads a controller's conversation
+// and work ledger: the LAT panel helper's `board` commands.
+import { ledgerFrom, type LedgerView } from '../board/ledger.ts';
 import type { HelperController, HelperQuestion } from '../board/types.ts';
 import { fixedModel, type CurrentSettings } from '../board/models.ts';
 import type { TranscriptItem, TranscriptPage } from '../board/transcript.ts';
@@ -289,4 +290,38 @@ export async function pruneReports(config: BoardConfig, now: number, sessionIds:
 		return { reason: failed.map((item) => `${item.session_id}：${item.reason}`).join('；') || null };
 	}
 	return { reason: textOrNull(payload?.reason) ?? pruned.failure ?? '輔助工具的輸出不是預期的格式' };
+}
+
+/** A controller's ledger as read, with the ledger file to watch; `path` is null when its session
+ *  record names none. */
+export interface ReadLedger {
+	view: LedgerView;
+	path: string | null;
+}
+
+type HelperLedgers = { ok: true; ledgers: Map<string, ReadLedger> } | { ok: false; reason: string };
+
+/** These controllers' work ledgers, by session ID, in one run of the helper: it finds each one's
+ *  ledger in its session record and reads it with `lat-ledger show --json`. The reads get half the
+ *  helper's time, the rest left for it to start and print, so a ledger whose writer holds it fails
+ *  alone. */
+export async function readLedgers(config: BoardConfig, controllers: { workspace: string; sessionId: string }[]): Promise<HelperLedgers> {
+	if (!controllers.length) return { ok: true, ledgers: new Map() };
+	const read = await run(config, [
+		'ledger',
+		`--seconds=${config.helperTimeoutMs / 2000}`,
+		...controllers.flatMap((controller) => [`--workspace=${controller.workspace}`, `--session-id=${controller.sessionId}`])
+	]);
+	const parsed = parseJsonOutput<{ ledgers?: unknown; reason?: unknown } | null>(read, '輔助工具的輸出不是 JSON');
+	if (!parsed.ok) return parsed;
+	const entries = parsed.value?.ledgers;
+	const usable = (entry: unknown): entry is { session_id: string; ledger_path?: unknown; status?: unknown; reason?: unknown; ledger?: unknown } =>
+		typeof (entry as { session_id?: unknown })?.session_id === 'string';
+	if (read.failure || !Array.isArray(entries) || !entries.every(usable)) {
+		return { ok: false, reason: textOrNull(parsed.value?.reason) ?? read.failure ?? '輔助工具的輸出缺少總表' };
+	}
+	return {
+		ok: true,
+		ledgers: new Map(entries.map((entry) => [entry.session_id, { view: ledgerFrom(entry), path: textOrNull(entry.ledger_path) }]))
+	};
 }

@@ -1,0 +1,14 @@
+{"map": [
+  {"paths": ["board/src/lib/board/ledger.ts", "board/src/lib/components/LedgerBlock.svelte"],
+   "tests": ["board/tests/unit/ledger.test.ts", "board/tests/browser/ledger-page.test.ts"]},
+  {"paths": ["board/src/lib/components/ControllerInfo.svelte"],
+   "tests": ["board/tests/browser/ledger-page.test.ts", "board/tests/browser/controller-page.test.ts"]},
+  {"paths": ["board/src/lib/server/helper.ts", "board/src/lib/server/model.ts", "board/src/lib/server/board.ts", "board/tests/fake-helper.mjs"],
+   "tests": ["board/tests/server/ledger.test.ts"]},
+  {"paths": ["skills/local/lat/herdr-panel/board.py", "skills/local/lat/herdr-panel/bindings.py", "skills/local/lat/herdr-panel/lat_panel.py"],
+   "tests": ["skills/local/lat/tests/test_lat_panel_board.py", "skills/local/lat/tests/test_lat_panel_modules.py", "board/tests/server/ledger.test.ts"]},
+  {"paths": ["skills/local/lat/scripts/lat-clean.py", "skills/local/lat/scripts/_lat_cleanup.py"],
+   "tests": ["skills/local/lat/tests/test_lat_clean.py", "skills/local/lat/tests/test_lat_autoclean.py"]},
+  {"paths": ["skills/local/lat/scripts/lat-ledger.py"],
+   "tests": ["skills/local/lat/tests/test_lat_panel_board.py"]}
+]}

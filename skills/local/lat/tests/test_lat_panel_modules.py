@@ -141,6 +141,9 @@ assert not {{'questions', 'bindings', 'board', 'lat_panel'}} & sys.modules.keys(
                     (decisions / 'Q1.md').write_text('# Choose?\n- version: r1\n- status: pending\n- kind: help\n')
                     results.append(subprocess.run([sys.executable, str(script), *args],
                                                   env=env, cwd=state, capture_output=True))
+                if args == ['board', '--help']:
+                    # `board ledger` came after the split; test_lat_panel_board.py covers it.
+                    results[1].stdout = results[1].stdout.replace(b',ledger', b'')
                 if args[0] == 'bind':
                     # New bindings moved from the root .lat to .lat/questions/ after the split.
                     results[0].stdout = results[0].stdout.replace(b'questions-ctl.md', b'questions/ctl.md')

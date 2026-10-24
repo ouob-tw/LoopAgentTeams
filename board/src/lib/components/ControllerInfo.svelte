@@ -2,7 +2,7 @@
 	// A controller's information page, made of blocks: its header, a close for an idle or running one
 	// (its conversation still open in Herdr, as on the Herdr 分頁) with a running one's HCOM pause or
 	// resume beside, a bar for each question waiting
-	// for an answer, then its conversation, its reports not yet archived and what was sent to it, one
+	// for an answer, its work ledger, then its conversation, its reports not yet archived and what was sent to it, one
 	// tab at a time. Its model and effort, and messages and wakes, go through the command line at the
 	// bottom of the screen.
 	// Opened for a report, the conversation shows that report where it is in the history; opened
@@ -22,6 +22,7 @@
 	import AgentClose from './AgentClose.svelte';
 	import AgentLog from './AgentLog.svelte';
 	import ControllerHeader from './ControllerHeader.svelte';
+	import LedgerBlock from './LedgerBlock.svelte';
 	import PendingQuestions from './PendingQuestions.svelte';
 	import RecordTabs from './RecordTabs.svelte';
 	import ReportList from './ReportList.svelte';
@@ -114,6 +115,8 @@
 {/if}
 
 <PendingQuestions status={controller.status} {questions} {onopen} />
+
+<LedgerBlock ledger={controller.ledger} />
 
 {#if agent}
 	<AgentClose {agent} />

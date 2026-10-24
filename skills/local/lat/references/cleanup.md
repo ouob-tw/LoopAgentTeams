@@ -25,6 +25,7 @@ uv run --no-project python "$lat_dir/scripts/lat-clean.py" list --workspace "$wo
 | 等待紀錄 | `watch/waits/<Agent>.json` |
 | 輸入備份 | `watch/prompt-*.txt` |
 | 已完成任務卡 | `tasks/done/*.md` |
+| 已結束 session 的總表檔 | 已結束 session 紀錄的 `ledger_path`（含 `history` 中前幾輪的）所指的 `ledgers/<session-id>-r<輪次>.json`，與同名的 `.seal`、`.journal.jsonl`、`.lock`；說明欄寫主控名稱 |
 
 - **連到的票**：以 `gh issue list` 讀 tracker 所有票的內文與留言，找出提到 `.lat/<路徑>` 的票並標開啟／關閉；查不到寫「未查到」。查詢失敗時每項寫「查詢失敗：原因」，清單照常產生。
 - **票號**：取名稱中的 `issue-N` 與兩位數以上的數字；日期與 commit 雜湊不算，tracker 沒有的號碼不算。
@@ -57,7 +58,7 @@ uv run --no-project python "$lat_dir/scripts/lat-clean.py" execute --workspace "
 
 - 共用 `.lat` 與任何 worktree `.lat` 的 `decisions/`、`sessions/`、`panel-journal.jsonl`，以及包含它們的資料夾。
 - 目標檔仍存在的 `.lock`。
-- active session 依賴的檔案：進度檔、待決目錄、任務卡目錄與其頂層任務卡（`done/` 不在內）、該主控的問題檔與歸檔檔及其鎖、`watch/<session-id>.*`、`watch/<名稱>/`，以及該主控與其頂層任務卡 Agent 的等待紀錄。
+- active session 依賴的檔案：進度檔、待決目錄、任務卡目錄與其頂層任務卡（`done/` 不在內）、該主控的問題檔與歸檔檔及其鎖、`watch/<session-id>.*`、`watch/<名稱>/`、各輪工作總表與其印記、流水帳、鎖檔，以及該主控與其頂層任務卡 Agent 的等待紀錄。
 - 開啟中票的資料：任何 `.lat` 的 `runs/`、`progress/`、`evidence/`、`prototypes/`、`handoffs/` 中名稱帶該票號的項目，以及含有這類項目的資料夾；開啟中的票內文或留言提到的路徑、其中的檔案與所在的票資料夾。
 - 有任何 session 紀錄讀不出來時，整次不刪。
 

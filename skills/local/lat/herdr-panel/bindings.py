@@ -313,17 +313,22 @@ def _show_notification(text, env=None):
         return "unknown"
 
 
-def _binding_decisions_path(binding):
-    """The decisions directory in the bound controller's session record.
+def session_record(workspace, session_id):
+    """A controller's session record.
 
     Records live in the shared .lat; an older one in a worktree's own .lat is still read there.
     """
-    workspace = Path(binding["workspace"])
-    name = f"{binding['session_id']}.json"
+    workspace = Path(workspace)
+    name = f"{session_id}.json"
     record_path = shared_lat_dir(workspace) / "sessions" / name
     if not record_path.exists():
         record_path = workspace / ".lat/sessions" / name
-    return Path(json.loads(record_path.read_text(encoding="utf-8"))["decisions_path"])
+    return json.loads(record_path.read_text(encoding="utf-8"))
+
+
+def _binding_decisions_path(binding):
+    """The decisions directory in the bound controller's session record."""
+    return Path(session_record(binding["workspace"], binding["session_id"])["decisions_path"])
 
 
 def _bound_decisions_path(questions_path, config_dir=None):

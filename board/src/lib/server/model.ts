@@ -21,6 +21,7 @@ import { archivePage, DAY_MS, RETAIN_MS, sortArchive, type ArchivePage } from '.
 import { askingReport } from '../board/question-message.ts';
 import { reportedAt } from '../board/roster.ts';
 import type { ClosedAgent, ClosedList } from '../board/closed-agents.ts';
+import type { LedgerView } from '../board/ledger.ts';
 import type { AnsweredFile, AnsweredSources } from './helper.ts';
 import type { InboxState } from './inbox-state.ts';
 import type { RecordedDuty, ReportFile } from './reports.ts';
@@ -56,6 +57,10 @@ export interface Sources {
 	answered: AnsweredFile[];
 	/** Set when `answered` is the last one that could be read rather than a fresh one. */
 	answeredError: string | null;
+	/** The work ledger of each controller in `active` or with a report file, by session ID. */
+	ledgers: Map<string, LedgerView>;
+	/** Why the ledgers could not be read at this read; `ledgers` is empty then. */
+	ledgersError: string | null;
 }
 
 /** The controllers with every question that the answered list of the same read already has
@@ -173,6 +178,16 @@ export function answeredSources(active: HelperController[], files: ReportFile[])
 		controllers.set(`${latest.workspace}\n${latest.hcom_name}`, { workspace: latest.workspace, hcomName: latest.hcom_name });
 	}
 	return { paths: active.map((binding) => binding.questions_path), controllers: [...controllers.values()] };
+}
+
+/** The controllers whose ledgers to read: every bound one and every one with a report file. */
+export function ledgerSources(active: HelperController[], files: ReportFile[]): { workspace: string; sessionId: string }[] {
+	const found = new Map(active.map((binding) => [binding.session_id, binding.workspace]));
+	for (const file of files) {
+		const latest = file.reports.at(-1);
+		if (latest && !found.has(file.sessionId)) found.set(file.sessionId, latest.workspace);
+	}
+	return [...found].map(([sessionId, workspace]) => ({ workspace, sessionId }));
 }
 
 /**
@@ -302,6 +317,12 @@ function reportError(file: ReportFile | undefined): string | null {
 
 const joinErrors = (...errors: (string | null)[]) => errors.filter(Boolean).join('；') || null;
 
+function ledgerOf(sources: Pick<Sources, 'ledgers' | 'ledgersError'>, sessionId: string): LedgerView {
+	const read = sources.ledgers.get(sessionId);
+	if (read) return read;
+	return sources.ledgersError ? { state: 'error', reason: `輔助工具失敗：${sources.ledgersError}` } : { state: 'none' };
+}
+
 /** The recorded duty with what was delivered since: a DONE from before it is another task's. */
 function dutyOf(recorded: RecordedDuty | undefined, file: ReportFile | undefined): Duty | null {
 	if (!recorded) return null;
@@ -310,7 +331,7 @@ function dutyOf(recorded: RecordedDuty | undefined, file: ReportFile | undefined
 	return { text: recorded.text, expected: recorded.expected, delivered: done?.summary || null };
 }
 
-function activeController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined): Controller {
+function activeController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined, ledger: LedgerView): Controller {
 	const latest = file?.reports.at(-1);
 	const pendingCount = binding.questions.filter((question) => question.status === 'pending').length;
 
@@ -334,18 +355,19 @@ function activeController(binding: HelperController, file: ReportFile | undefine
 		herdr: { workspace: binding.herdr_workspace, tab: binding.herdr_tab, pane: binding.herdr_pane },
 		lastReportAt: latest?.time ?? null,
 		duty: dutyOf(duty, file),
+		ledger,
 		error: joinErrors(binding.error && `問題檔讀不出來：${binding.error}`, reportError(file))
 	};
 }
 
 /** A bound controller whose client is gone: shown like an unbound one, from its binding. */
-function closedController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined): Controller {
-	return { ...activeController(binding, file, duty), status: 'closed', running: false, pendingCount: 0, herdr: null, error: reportError(file) };
+function closedController(binding: HelperController, file: ReportFile | undefined, duty: RecordedDuty | undefined, ledger: LedgerView): Controller {
+	return { ...activeController(binding, file, duty, ledger), status: 'closed', running: false, pendingCount: 0, herdr: null, error: reportError(file) };
 }
 
 /** A controller whose LAT round is no longer bound: 閒置 while its conversation is in hcom's list
  *  or paused, or before any list was read; 已關閉 once it is gone from it. */
-function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'paused'>, duty: RecordedDuty | undefined): Controller {
+function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'paused' | 'ledgers' | 'ledgersError'>, duty: RecordedDuty | undefined): Controller {
 	const latest = file.reports.at(-1)!;
 	const running = sources.running;
 	const paused = isPaused(sources, file.sessionId);
@@ -363,6 +385,7 @@ function endedController(file: ReportFile, sources: Pick<Sources, 'running' | 'p
 		herdr: null,
 		lastReportAt: latest.time,
 		duty: dutyOf(duty, file),
+		ledger: ledgerOf(sources, file.sessionId),
 		error: reportError(file)
 	};
 }
@@ -386,7 +409,10 @@ export function buildSnapshot(sources: Sources, state: InboxState | null, now: n
 		// (read ones count), like an unbound one; still bound, it is a controller on the Herdr tab.
 		const closed = isClosed(sources, binding.session_id);
 		const duty = sources.duties.get(binding.session_id);
-		const controller = closed ? closedController(binding, file, duty) : { ...activeController(binding, file, duty), paused: isPaused(sources, binding.session_id) };
+		const ledger = ledgerOf(sources, binding.session_id);
+		const controller = closed
+			? closedController(binding, file, duty, ledger)
+			: { ...activeController(binding, file, duty, ledger), paused: isPaused(sources, binding.session_id) };
 		if (sources.helperError) {
 			controller.error = joinErrors(`資料可能過期，輔助工具失敗：${sources.helperError}`, controller.error);
 		}

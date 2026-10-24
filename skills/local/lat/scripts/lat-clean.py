@@ -10,9 +10,9 @@ import re
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_cleanup import (ENDED, TICKET_DATA, Protection, delete, fingerprint, linked_tickets,
-                          lock_targets, sensitive_reason, session_records, ticket_numbers,
-                          tracker_texts, usage, watcher_alive)
+from _lat_cleanup import (ENDED, TICKET_DATA, Protection, delete, fingerprint, ledger_files,
+                          linked_tickets, lock_targets, sensitive_reason, session_records,
+                          ticket_numbers, tracker_texts, usage, watcher_alive)
 from _lat_common import shared_lat_dir, write_text_atomic
 
 LIST_VERSION = 1
@@ -30,6 +30,7 @@ CATEGORIES = {
     'stale-wait': '等待紀錄',
     'prompt-backup': '輸入備份',
     'done-task-card': '已完成任務卡',
+    'ended-ledger': '已結束 session 的總表檔',
 }
 LEGACY_FILES = ('questions.md', 'demo-questions.md')
 SESSION_FILE = re.compile(r'(?P<sid>[A-Za-z0-9_-]{1,128})\.(?:log|lock|pid)')
@@ -136,6 +137,11 @@ def scan(protection):
         add(path, 'stale-wait', f'Agent {path.stem}')
     for path in sorted((lat / 'tasks/done').glob('*.md')):
         add(path, 'done-task-card')
+    for record in records:
+        if record.get('status') in ENDED:
+            for path in ledger_files(record):
+                if path.exists():
+                    add(path, 'ended-ledger', f'主控 {record.get("hcom_name") or "?"}')
 
     listed = {path for path, _, _ in found}
     locks = [*lat.glob('.*.lock'), *(lat / 'questions').glob('.*.lock'),

@@ -221,6 +221,98 @@ class ListTests(Fixture):
         self.assertTrue(reasons['evidence/issue-5-qa'].startswith('票狀態無法確認'))
 
 
+LEDGER_FILES = ('', '.seal', '.journal.jsonl', '.lock')
+
+
+class LedgerTests(CleanTestCase):
+    """Work ledgers: an ended session's are listed for the user, an active session's are kept."""
+
+    def setUp(self):
+        super().setUp()
+        self.ledgers = {}
+        for sid, name, status in ((ACTIVE, 'live', 'active'), (ENDED_SID, 'gone', 'ended')):
+            current, earlier = (self.ledger(f'{sid}-r{round}.json') for round in (2, 1))
+            self.ledgers[name] = (current, earlier)
+            self.session(sid, name, status, ledger_path=str(current),
+                         history=[dict(round=1, ledger_path=str(earlier))])
+        self.write('sessions/33333333-3333-4333-8333-333333333333.json', json.dumps(dict(
+            session_id='33333333-3333-4333-8333-333333333333', status='ended', hcom_name='old')))
+
+    def ledger(self, name):
+        for suffix in LEDGER_FILES:
+            self.write(f'ledgers/{name}{suffix}', '{}\n')
+        return self.lat / 'ledgers' / name
+
+    def test_ended_sessions_ledger_files_are_listed_and_active_ones_are_left_out(self):
+        _, document, items = self.list_items()
+
+        ended = [f'ledgers/{ledger.name}{suffix}' for ledger in self.ledgers['gone']
+                 for suffix in LEDGER_FILES]
+        self.assertEqual({key: items[key]['category'] for key in ended},
+                         dict.fromkeys(ended, 'ended-ledger'))
+        self.assertTrue(all(items[key]['method'] == 'trash' for key in ended))
+        self.assertIn('gone', items[ended[0]]['note'])
+        for ledger in self.ledgers['live']:
+            for suffix in LEDGER_FILES:
+                self.assertNotIn(f'ledgers/{ledger.name}{suffix}', items)
+        self.assertIn('| 已結束 session 的總表檔 | .lat/ledgers/', self.cli(
+            'list', '--workspace', self.work, '--repo', REPO, '--output', self.list_file).stdout)
+
+    def test_active_sessions_ledger_files_are_a_hard_limit(self):
+        _, document, _ = self.list_items()
+        template = document['items'][0]
+        protected = [Path(f'{ledger}{suffix}') for ledger in self.ledgers['live']
+                     for suffix in LEDGER_FILES]
+        document['items'] = [dict(template, id=index, path=str(path),
+                                  fingerprint=_lat_cleanup.fingerprint(path))
+                             for index, path in enumerate(protected, 1)]
+        self.list_file.write_text(json.dumps(document))
+
+        result = self.execute()
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.removal_calls(), [])
+        self.assertEqual(result.stdout.count('跳過：active session 仍需要'), len(protected))
+        for path in protected:
+            self.assertTrue(path.exists(), path)
+
+    def test_listed_ended_ledger_is_deleted_on_execute(self):
+        _, _, items = self.list_items()
+        ledger = self.ledgers['gone'][0]
+        wanted = ','.join(str(items[f'ledgers/{ledger.name}{suffix}']['id'])
+                          for suffix in LEDGER_FILES)
+
+        result = self.execute('--only', wanted)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        for suffix in LEDGER_FILES:
+            self.assertFalse(Path(f'{ledger}{suffix}').exists(), suffix)
+
+    def test_a_ledger_lock_whose_ledger_stays_is_skipped(self):
+        _, _, items = self.list_items()
+        ledger = self.ledgers['gone'][0]
+        lock = Path(f'{ledger}.lock')
+
+        result = self.execute('--only', str(items[f'ledgers/{lock.name}']['id']))
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('跳過：現存檔案的鎖', result.stdout)
+        self.assertTrue(lock.exists())
+        self.assertEqual(_lat_cleanup.lock_targets(lock), [ledger])
+
+    def test_automatic_cleanup_never_touches_ledgers(self):
+        script = SCRIPT.with_name('lat-autoclean.py')
+        for path in (self.lat / 'ledgers').iterdir():
+            os.utime(path, (0, 0))
+        result = subprocess.run(['uv', 'run', '--no-project', 'python', str(script), 'run',
+                                 '--workspace', str(self.work), '--repo', REPO, '--dry-run'],
+                                text=True, capture_output=True, env=self.env, timeout=120)
+
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('ledgers', result.stdout)
+        self.assertEqual(self.removal_calls(), [])
+
+
 class ExecuteTests(Fixture):
     def test_wrong_hash_or_edited_list_is_refused_without_deleting(self):
         self.list_items()

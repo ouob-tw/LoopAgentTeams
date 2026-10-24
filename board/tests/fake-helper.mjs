@@ -14,7 +14,9 @@
 // the child's PID to transcript-child.pid (`launchArgsChildMs` does the same for `board launch-args`). `board launch-args` prints what <dir>/launch-args.json holds for the
 // session: a list of arguments, or `{ "unknown": reason }`. `board prune-reports` deletes nothing,
 // unless the plan sets `realPrune` to a Python interpreter: then that runs the real helper's command,
-// on the test's own reports directory that the board passes it. Each call is logged to
+// on the test's own reports directory that the board passes it. `board ledger` prints, for each
+// session, the plan's `ledgers` entry for it (`status`, and `ledger` or `reason`), or no ledger.
+// Each call is logged to
 // <dir>/helper-calls.log, and as JSON to helper-calls.jsonl.
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -215,6 +217,12 @@ function launchArgs() {
 	return { output: { status: 'unknown', reason: stored?.unknown ?? `hcom 沒有 session ${session} 的 Agent` }, exit: 1 };
 }
 
+/** Each session's planned ledger, as the real command prints it. */
+function ledger() {
+	const sessions = options()['session-id'] ?? [];
+	return { output: { ledgers: sessions.map((session) => ({ session_id: session, ...(plan.ledgers?.[session] ?? { status: 'none' }) })) } };
+}
+
 /** The real helper's `board prune-reports`, with the arguments the board gave. */
 function prune() {
 	if (!plan.realPrune) return { output: { status: 'ok', deleted: [], failed: [] } };
@@ -236,7 +244,9 @@ const act =
 						? launchArgs
 						: command === 'prune-reports'
 							? prune
-							: notify;
+							: command === 'ledger'
+								? ledger
+								: notify;
 const result = command === 'list' ? plan : (plan[command] ?? act());
 if (result.barrier) {
 	writeFileSync(result.barrier.ready, 'ready');

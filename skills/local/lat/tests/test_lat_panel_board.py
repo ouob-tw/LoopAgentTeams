@@ -4,6 +4,7 @@ The Herdr comparison needs Textual:
   uv run --no-project --with textual==8.2.8 python -m unittest discover -s "$lat_dir/tests"
 """
 import asyncio
+import fcntl
 from datetime import datetime, timezone
 import importlib.util
 import json
@@ -12,6 +13,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import time
 import unittest
 
 
@@ -981,6 +983,126 @@ if HAS_TEXTUAL:
 
             self.assertEqual(self.questions.read_text(), FOUR_ANSWERED)
             self.assertEqual(board_questions.read_bytes(), self.questions.read_bytes())
+
+
+LEDGER_TOOL = MODULE.parents[1] / "scripts/lat-ledger.py"
+
+
+class LedgerTests(BoardTestCase):
+    """`board ledger`: the controller's work ledger, found through its session record."""
+
+    def setUp(self):
+        super().setUp()
+        self.workspace = self.root / "project-a"
+        self.ledger = self.workspace / ".lat/ledgers/s-a-r1.json"
+
+    def record(self, **fields):
+        path = self.workspace / ".lat/sessions/s-a.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(session_id="s-a", status="active", **fields)))
+
+    def ledger_tool(self, *args):
+        result = subprocess.run(
+            [sys.executable, str(LEDGER_TOOL), *args, "--ledger", str(self.ledger), "--by", "orch"],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def read(self, *pairs, seconds=None):
+        pairs = pairs or ((self.workspace, "s-a"),)
+        args = [arg for workspace, sid in pairs for arg in ("--workspace", workspace, "--session-id", sid)]
+        if seconds is not None:
+            args += ["--seconds", seconds]
+        return self.board("ledger", *args)["ledgers"]
+
+    def test_ledger_is_shown_as_the_ledger_tool_prints_it(self):
+        self.ledger_tool("init", "--workspace", str(self.workspace))
+        self.ledger_tool("add", "--ticket", "#302", "--stage", "impl", "--evidence", "commit",
+                         "--deadline", "2020-01-01T00:00:00+00:00")
+        card = self.workspace / ".lat/tasks/card.md"
+        card.parent.mkdir(parents=True)
+        card.write_text("- status：dispatched\n")
+        self.ledger_tool("assign", "1", "--agent", "tevu-impl302-zaga", "--card", str(card))
+        self.record(ledger_path=str(self.ledger))
+
+        [result] = self.read()
+
+        self.assertEqual((result["session_id"], result["status"], result["ledger_path"]),
+                         ("s-a", "ok", str(self.ledger)))
+        [item] = result["ledger"]["items"]
+        self.assertEqual(item["ticket"], "#302")
+        self.assertGreater(item["late_minutes"]["deadline"], 0)
+
+    def test_record_without_a_ledger_is_none(self):
+        for fields in ({}, {"ledger_path": None}):
+            self.record(**fields)
+            self.assertEqual(self.read(), [{"session_id": "s-a", "status": "none"}])
+
+    def test_each_unreadable_record_or_ledger_is_its_own_error_with_its_reason(self):
+        other = self.root / "project-b"
+        (other / ".lat/sessions").mkdir(parents=True)
+        (other / ".lat/sessions/s-b.json").write_text(json.dumps({"session_id": "s-b"}))
+        missing, fine, bad_id = self.read((self.workspace, "s-a"), (other, "s-b"), (other, "../x"))
+        self.assertEqual(missing["status"], "error")
+        self.assertIn("s-a.json", missing["reason"])
+        self.assertEqual(fine["status"], "none")
+        self.assertEqual(bad_id["status"], "error")
+
+        self.record(ledger_path=str(self.ledger))
+        [unread] = self.read()
+        self.assertEqual((unread["status"], unread["ledger_path"]), ("error", str(self.ledger)))
+        self.assertIn("no ledger at", unread["reason"])
+
+        self.ledger_tool("init", "--workspace", str(self.workspace))
+        self.ledger.write_text(self.ledger.read_text().replace('"items": []', '"items": [] '))
+        [edited] = self.read()
+        self.assertIn("seal mismatch", edited["reason"])
+
+    def test_a_ledger_held_by_a_writer_fails_alone_within_the_time_limit(self):
+        self.ledger_tool("init", "--workspace", str(self.workspace))
+        self.record(ledger_path=str(self.ledger))
+        other = self.root / "project-b"
+        (other / ".lat/sessions").mkdir(parents=True)
+        (other / ".lat/sessions/s-b.json").write_text(json.dumps({"session_id": "s-b"}))
+        lock = self.ledger.with_name(self.ledger.name + ".lock")
+        with open(lock, "a") as handle:
+            fcntl.flock(handle, fcntl.LOCK_EX)
+            started = time.monotonic()
+            held, fine = self.read((self.workspace, "s-a"), (other, "s-b"))
+            elapsed = time.monotonic() - started
+            # The board's shortest helper time: one second, half of it for the reads.
+            started = time.monotonic()
+            short, _ = self.read((self.workspace, "s-a"), (other, "s-b"), seconds=0.5)
+            short_elapsed = time.monotonic() - started
+
+        self.assertEqual(held["status"], "error")
+        self.assertIn("逾時", held["reason"])
+        self.assertEqual(fine["status"], "none")
+        self.assertLess(elapsed, 5)
+        self.assertEqual(short["status"], "error")
+        self.assertLess(short_elapsed, 1)
+
+    def test_finding_the_records_is_inside_the_time_too(self):
+        board = sys.modules["board"]
+        original = board.session_record
+
+        def slow(workspace, session_id):
+            time.sleep(0.05)
+            return original(workspace, session_id)
+
+        board.session_record = slow
+        self.addCleanup(setattr, board, "session_record", original)
+        started = time.monotonic()
+        results = board.board_ledgers([(self.workspace, "s-a")] * 40, seconds=0.1)
+        elapsed = time.monotonic() - started
+
+        self.assertLess(elapsed, 0.2)
+        self.assertEqual(len(results), 40)
+        self.assertIn("時間用完了", results[-1]["reason"])
+
+    def test_unpaired_options_are_refused(self):
+        result = self.board("ledger", "--workspace", self.workspace, code=1)
+        self.assertEqual(result["status"], "error")
 
 
 if __name__ == "__main__":
