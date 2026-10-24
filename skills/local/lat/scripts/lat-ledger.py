@@ -215,15 +215,23 @@ def save(store, doc, expected, entry):
     data = write_text_atomic(store.path, text, expected=expected, mode=0o644)
     sealed = digest(data)
     write_text_atomic(store.seal, sealed + '\n', mode=0o644)
-    line = dict(entry, seal=sealed, snapshot=doc)
-    with open(store.journal, 'a', encoding='utf-8') as stream:
-        stream.write(json.dumps(line, ensure_ascii=False) + '\n')
+    line = json.dumps(dict(entry, seal=sealed, snapshot=doc), ensure_ascii=False) + '\n'
+    with open(store.journal, 'a+b') as stream:
+        if stream.tell():
+            stream.seek(-1, os.SEEK_END)
+            if stream.read(1) != b'\n':
+                line = '\n' + line  # an interrupted append left a partial line; end it
+        stream.write(line.encode('utf-8'))
         stream.flush()
         os.fsync(stream.fileno())
 
 
 def read_journal(store):
-    """The newest journal snapshot, checked against its seal; Failure when unusable."""
+    """The last journal snapshot, checked against its seal; Failure when unusable.
+
+    Earlier unreadable lines (a partial append that a later write ended) are skipped with a
+    warning, since every line holds a full snapshot; the last line must be valid.
+    """
     try:
         lines = store.journal.read_text(encoding='utf-8').splitlines()
     except FileNotFoundError:
@@ -231,19 +239,23 @@ def read_journal(store):
                       'no empty ledger is created') from None
     except (OSError, UnicodeError) as error:
         raise Failure(f'journal unreadable: {error}') from error
-    snapshot = None
-    for number, line in enumerate(lines, 1):
-        try:
-            entry = json.loads(line)
-            snapshot = entry['snapshot']
-            validate(snapshot)
-            if digest(serialize(snapshot).encode('utf-8')) != entry['seal']:
-                raise ValueError('snapshot does not match its seal')
-        except (ValueError, KeyError, TypeError) as error:
-            raise Failure(f'journal line {number} is corrupt ({error}): {store.journal}; '
-                          'the ledger cannot be rebuilt and no empty ledger is created') from error
-    if snapshot is None:
+    if not lines:
         raise Failure(f'journal is empty: {store.journal}; the ledger cannot be rebuilt')
+    try:
+        entry = json.loads(lines[-1])
+        snapshot = entry['snapshot']
+        validate(snapshot)
+        if digest(serialize(snapshot).encode('utf-8')) != entry['seal']:
+            raise ValueError('snapshot does not match its seal')
+    except (ValueError, KeyError, TypeError) as error:
+        raise Failure(f'journal line {len(lines)} is corrupt ({error}): {store.journal}; '
+                      'the ledger cannot be rebuilt and no empty ledger is created') from error
+    for number, line in enumerate(lines[:-1], 1):
+        try:
+            json.loads(line)['seal']
+        except (ValueError, KeyError, TypeError):
+            print(f'lat-ledger: warning: skipped unreadable journal line {number}',
+                  file=sys.stderr)
     return snapshot
 
 
@@ -766,6 +778,7 @@ def cmd_repair(args):
         doc['updated_at'] = at
         current = store.path.read_bytes() if store.path.exists() else None
         save(store, doc, current, entry)
+        load(store)  # report failure rather than success when the repair did not take
     print(f'ledger repaired ({entry["action"]}): {store.path}')
     if args.from_journal:
         cmd_show(argparse.Namespace(ledger=args.ledger, json=False))

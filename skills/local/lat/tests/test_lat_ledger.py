@@ -201,6 +201,24 @@ class StorageTests(LedgerCase):
         self.ok('check')
         self.assertIn('nothing to repair', self.fails('repair', '--reason', 'again'))
 
+    def test_partial_journal_append_is_repaired_and_history_kept(self):
+        self.init()
+        item = self.started(evidence='file')
+        report = self.root / 'r.md'
+        report.write_text('ok\n')
+        lines = self.journal_lines()
+        self.ok('done', str(item), '--file', str(report))
+        self.journal.write_text('\n'.join(lines) + '\n{"at":')  # append cut off mid-line
+        self.assertEqual(self.run_ledger('check').returncode, 1)
+        self.ok('repair', '--reason', 'partial journal append')
+        self.ok('check')
+        self.assertEqual(len(self.journal_lines()), len(lines) + 2)
+        self.ledger.write_text('broken')
+        result = self.run_ledger('repair', '--from-journal', '--reason', 'disk')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn(f'skipped unreadable journal line {len(lines) + 1}', result.stderr)
+        self.assertEqual(self.item(item)['status'], 'done')
+
     def test_concurrent_writers_all_land(self):
         self.init()
         environment = {**os.environ, 'LAT_LEDGER_NOW': NOW, 'HCOM_INSTANCE_NAME': 'orch'}
