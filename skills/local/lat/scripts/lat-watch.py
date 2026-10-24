@@ -1364,15 +1364,23 @@ def delivered_messages(orchestrator, waiting_info, participant_events, after):
     """Message events delivered to the waiting agent since the wait began.
 
     One deliver status can stand for a batch (its context names the first sender, its position
-    the last message), so read the messages themselves.
+    the last message), so read the messages themselves. A message sent before the wait but
+    delivered after it counts, so the lower bound is the last delivery before the wait, not
+    the wait's own time (no earlier delivery: no lower bound).
     """
     positions = [position for event in participant_events if delivery_sender(event) is not None
                  and type(position := event_value(event, 'position', 'status')) is int]
     names = {waiting_info.get('name'), waiting_info.get('base_name')} - {None}
     if not positions or not names:
         return []
-    messages = hcom_events(orchestrator, '--type', 'message', '--after', after,
-                           '--sql', f'id <= {max(positions)}')
+    earlier = [position for event in session_events(
+        orchestrator, waiting_info, '--context', 'deliver:*', '--before', after, '--last', '1')
+        if delivery_sender(event) is not None
+        and type(position := event_value(event, 'position', 'status')) is int]
+    # With no earlier delivery every message to the waiter is part of this window.
+    floor = f'id > {max(earlier)} AND ' if earlier else ''
+    messages = hcom_events(orchestrator, '--type', 'message', '--sql',
+                           f'{floor}id <= {max(positions)}')
     return [message for message in messages if message.get('type') == 'message'
             and names & set(event_value(message, 'delivered_to', 'data') or ())]
 

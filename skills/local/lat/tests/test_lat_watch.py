@@ -455,6 +455,42 @@ class WatchDecisionTests(unittest.TestCase):
         self.assertEqual(len(sent), 1)
         self.assertIn('id <= 7', sent[0])
 
+    def test_request_sent_before_the_wait_but_delivered_after_it_releases_in_a_batch(self):
+        watch = load_watch()
+        info = {'name': 'worker-open', 'base_name': 'open', 'session_id': 'worker-session'}
+        deliver = {'type': 'status', 'data': {
+            'context': 'deliver:x', 'position': 12, 'session': 'worker-session'}}
+        sent = []
+
+        def fake(orchestrator, *filters):
+            sent.append(filters)
+            if '--context' in filters:
+                return [{'type': 'status', 'data': {
+                    'context': 'deliver:y', 'position': 5, 'session': 'worker-session'}}]
+            # request 10 sent before the wait, inform 12 after it, both delivered after it
+            return [{'type': 'message', 'id': 10, 'timestamp': '2026-10-24T23:59:59+00:00',
+                     'data': {'from': 'x', 'intent': 'request', 'delivered_to': ['open']}},
+                    {'type': 'message', 'id': 12, 'timestamp': '2026-10-25T00:00:01+00:00',
+                     'data': {'from': 'z', 'intent': 'inform', 'delivered_to': ['open']}}]
+
+        with patch.object(watch, 'hcom_events', fake):
+            messages = watch.delivered_messages(
+                'orch', info, [deliver], '2026-10-25T00:00:00+00:00')
+        self.assertIn('id > 5 AND id <= 12', sent[-1])
+        self.assertNotIn('--after', sent[-1])
+        self.assertEqual(watch.wait_release_reason(
+            {'agent': 'worker-open', 'target': 'reviewer'}, [deliver], False, True,
+            {'reviewer'}, messages), 'message-delivered')
+        # First-ever delivery: no earlier cursor, so no lower bound at all.
+        with patch.object(watch, 'hcom_events',
+                          lambda o, *f: [] if '--context' in f else sent.append(f) or []):
+            watch.delivered_messages('orch', info, [deliver], '2026-10-25T00:00:00+00:00')
+        self.assertEqual(sent[-1][-1], 'id <= 12')
+        self.assertNotIn('--after', sent[-1])
+        self.assertEqual(watch.wait_release_reason(
+            {'agent': 'worker-open', 'target': 'reviewer'}, [deliver], False, True,
+            {'reviewer'}, messages), 'message-delivered')
+
     def test_real_session_status_shapes_release_canonical_agent_waits(self):
         watch = load_watch()
         declaration = {
