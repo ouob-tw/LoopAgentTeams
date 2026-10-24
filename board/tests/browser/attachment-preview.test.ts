@@ -76,7 +76,7 @@ const WIDE = '<svg xmlns="http://www.w3.org/2000/svg" width="3000" height="2000"
 const SHOT = 'Screenshot_2026-10-24-12-00-00-123_com.android.chrome.png';
 /** A name whose wide characters before a long extension fill a phone's title by themselves. */
 const WIDE_TAIL = 'Screenshot_畫面截圖測試.svelte';
-/** The same with a start of six wide characters, and with no start at all. */
+/** The same with a start of six wide characters, and with only six characters before the extension (no middle). */
 const SHORT_WIDE = '畫面截圖測試畫面截圖測試.svelte';
 const SIX_WIDE = '畫面截圖測試.svelte';
 const PYTHON = 'def main():\n    if True:\n        print("縮排")\n\n\treturn  # tab\n';

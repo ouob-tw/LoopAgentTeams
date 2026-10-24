@@ -134,7 +134,7 @@ test('a stored file shows the name it was uploaded as, without the board\'s uplo
 	expect(uploadedName('/x/notes.md')).toBe('notes.md');
 });
 
-test('a name splits into its first three characters, the middle, the six characters before the extension, and the extension', () => {
+test('a name splits into its first three characters, the middle, up to six characters before the extension, and the extension', () => {
 	expect(nameParts('Screenshot_2026-10-24-12-00-00_com.android.chrome.jpg')).toEqual({ opening: 'Scr', middle: 'eenshot_2026-10-24-12-00-00_com.android.', tail: 'chrome', extension: '.jpg' });
 	expect(nameParts('README')).toEqual({ opening: 'REA', middle: '', tail: 'DME', extension: '' });
 	expect(nameParts('a.md')).toEqual({ opening: 'a', middle: '', tail: '', extension: '.md' });
