@@ -983,5 +983,81 @@ if HAS_TEXTUAL:
             self.assertEqual(board_questions.read_bytes(), self.questions.read_bytes())
 
 
+LEDGER_TOOL = MODULE.parents[1] / "scripts/lat-ledger.py"
+
+
+class LedgerTests(BoardTestCase):
+    """`board ledger`: the controller's work ledger, found through its session record."""
+
+    def setUp(self):
+        super().setUp()
+        self.workspace = self.root / "project-a"
+        self.ledger = self.workspace / ".lat/ledgers/s-a-r1.json"
+
+    def record(self, **fields):
+        path = self.workspace / ".lat/sessions/s-a.json"
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(dict(session_id="s-a", status="active", **fields)))
+
+    def ledger_tool(self, *args):
+        result = subprocess.run(
+            [sys.executable, str(LEDGER_TOOL), *args, "--ledger", str(self.ledger), "--by", "orch"],
+            text=True, capture_output=True,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def read(self, *pairs):
+        pairs = pairs or ((self.workspace, "s-a"),)
+        args = [arg for workspace, sid in pairs for arg in ("--workspace", workspace, "--session-id", sid)]
+        return self.board("ledger", *args)["ledgers"]
+
+    def test_ledger_is_shown_as_the_ledger_tool_prints_it(self):
+        self.ledger_tool("init", "--workspace", str(self.workspace))
+        self.ledger_tool("add", "--ticket", "#302", "--stage", "impl", "--evidence", "commit",
+                         "--deadline", "2020-01-01T00:00:00+00:00")
+        card = self.workspace / ".lat/tasks/card.md"
+        card.parent.mkdir(parents=True)
+        card.write_text("- status：dispatched\n")
+        self.ledger_tool("assign", "1", "--agent", "tevu-impl302-zaga", "--card", str(card))
+        self.record(ledger_path=str(self.ledger))
+
+        [result] = self.read()
+
+        self.assertEqual((result["session_id"], result["status"], result["ledger_path"]),
+                         ("s-a", "ok", str(self.ledger)))
+        [item] = result["ledger"]["items"]
+        self.assertEqual(item["ticket"], "#302")
+        self.assertGreater(item["late_minutes"]["deadline"], 0)
+
+    def test_record_without_a_ledger_is_none(self):
+        for fields in ({}, {"ledger_path": None}):
+            self.record(**fields)
+            self.assertEqual(self.read(), [{"session_id": "s-a", "status": "none"}])
+
+    def test_each_unreadable_record_or_ledger_is_its_own_error_with_its_reason(self):
+        other = self.root / "project-b"
+        (other / ".lat/sessions").mkdir(parents=True)
+        (other / ".lat/sessions/s-b.json").write_text(json.dumps({"session_id": "s-b"}))
+        missing, fine, bad_id = self.read((self.workspace, "s-a"), (other, "s-b"), (other, "../x"))
+        self.assertEqual(missing["status"], "error")
+        self.assertIn("s-a.json", missing["reason"])
+        self.assertEqual(fine["status"], "none")
+        self.assertEqual(bad_id["status"], "error")
+
+        self.record(ledger_path=str(self.ledger))
+        [unread] = self.read()
+        self.assertEqual((unread["status"], unread["ledger_path"]), ("error", str(self.ledger)))
+        self.assertIn("no ledger at", unread["reason"])
+
+        self.ledger_tool("init", "--workspace", str(self.workspace))
+        self.ledger.write_text(self.ledger.read_text().replace('"items": []', '"items": [] '))
+        [edited] = self.read()
+        self.assertIn("seal mismatch", edited["reason"])
+
+    def test_unpaired_options_are_refused(self):
+        result = self.board("ledger", "--workspace", self.workspace, code=1)
+        self.assertEqual(result["status"], "error")
+
+
 if __name__ == "__main__":
     unittest.main()

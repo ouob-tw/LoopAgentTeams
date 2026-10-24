@@ -23,6 +23,7 @@ function controller(hcomName: string, status: ControllerStatus, lastReportAt: st
 		herdr: null,
 		lastReportAt,
 		duty: null,
+		ledger: { state: 'none' },
 		error: null
 	};
 }

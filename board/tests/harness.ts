@@ -206,6 +206,10 @@ export interface HelperPlan extends FixedOutput {
 	 *  deleting nothing; see `uvPython`. */
 	realPrune?: string;
 	'prune-reports'?: FixedOutput;
+	/** What `board ledger` prints for a session, by session ID: `status` with `ledger` or
+	 *  `reason`, and `ledger_path`; a session not named has no ledger. */
+	ledgers?: Record<string, Record<string, unknown>>;
+	ledger?: FixedOutput;
 }
 
 export interface Fixture {

@@ -143,6 +143,16 @@ def session_records(lat_dirs):
     return records, errors
 
 
+def ledger_files(record):
+    """A session's work ledgers, this round's and earlier rounds', each with the seal, journal
+    and lock lat-ledger keeps beside it."""
+    rounds = [record, *(entry for entry in record.get('history') or [] if isinstance(entry, dict))]
+    ledgers = dict.fromkeys(Path(entry['ledger_path']) for entry in rounds
+                            if isinstance(entry.get('ledger_path'), str) and entry['ledger_path'])
+    return [ledger.with_name(ledger.name + suffix) for ledger in ledgers
+            for suffix in ('', '.seal', '.journal.jsonl', '.lock')]
+
+
 def _monitored_agents(record, watcher):
     """HCOM names an active controller monitors: itself and the agents on its task cards."""
     name = record.get('hcom_name')
@@ -175,6 +185,7 @@ def active_dependencies(lat, lat_dirs):
         for key in ('progress_path', 'decisions_path'):
             if record.get(key):
                 paths.add(Path(record[key]))
+        paths.update(ledger_files(record))
         if record.get('tasks_path'):
             tasks = Path(record['tasks_path'])
             directories.add(tasks)

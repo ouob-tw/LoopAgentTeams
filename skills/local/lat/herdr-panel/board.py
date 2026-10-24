@@ -2,6 +2,8 @@
 
 import json
 from pathlib import Path
+import re
+import sys
 
 from questions import (
     QUESTIONS_DIR,
@@ -41,7 +43,12 @@ from bindings import (
     notification_is_pending,
     record_submitted_answers,
     send_pending_notification,
+    session_record,
 )
+from _lat_common import run_cli
+
+LEDGER_TOOL = Path(__file__).resolve().parents[1] / "scripts/lat-ledger.py"
+_SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 def _asked_times(questions_path):
@@ -233,6 +240,31 @@ def board_controllers(*, config_dir=None, state_dir=None):
             controller["error"] = str(error)
         controllers.append(controller)
     return controllers
+
+
+def board_ledger(workspace, session_id):
+    """One controller's work ledger, as ``lat-ledger show --json`` prints it.
+
+    ``status`` is ``ok`` with ``ledger``, ``none`` when the session record names no ledger,
+    or ``error`` with the ``reason`` the record or the ledger could not be read.
+    ``ledger_path`` is there whenever the record names one, so the board can watch it.
+    """
+    if not _SESSION_ID.fullmatch(session_id):
+        return {"session_id": session_id, "status": "error", "reason": f"不是 session ID：{session_id}"}
+    try:
+        record = session_record(workspace, session_id)
+    except (OSError, ValueError) as error:
+        return {"session_id": session_id, "status": "error", "reason": f"讀不到 session 紀錄：{error}"}
+    path = record.get("ledger_path") if isinstance(record, dict) else None
+    if not path:
+        return {"session_id": session_id, "status": "none"}
+    result = {"session_id": session_id, "ledger_path": str(path)}
+    try:
+        output = run_cli([sys.executable, str(LEDGER_TOOL), "show", "--json", "--ledger", str(path)],
+                         timeout=30, failure="lat-ledger show")
+        return {**result, "status": "ok", "ledger": json.loads(output)}
+    except ValueError as error:
+        return {**result, "status": "error", "reason": str(error)}
 
 
 def _board_answer(section, selections, text, note):

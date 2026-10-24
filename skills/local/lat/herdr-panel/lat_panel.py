@@ -46,7 +46,9 @@ Public API used by the Textual panel and LAT controller:
   Claude or Codex session record that ``transcript_path`` finds, with the
   model and effort of the latest turn (``current_settings``).
   ``board_launch_args`` reads the arguments hcom stored for an agent's launch,
-  read-only from hcom's own database. ``prune_reports`` deletes the named
+  read-only from hcom's own database. ``board_ledger`` reads a controller's
+  work ledger through ``lat-ledger show --json``, from the path in its session
+  record. ``prune_reports`` deletes the named
   controller report files whose newest record is past the board's retention,
   under the same lock the turn-end hook appends with.
 
@@ -77,6 +79,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
   board notify --questions PATH
   board transcript --client (claude|codex) --session-id ID [--before SEQ]
   board launch-args --session-id ID
+  board ledger [--workspace ROOT --session-id ID]...
   board prune-reports --reports-dir DIR --now TIME --session-id ID...
 
 All commands are prefixed with ``uv run --no-project python lat_panel.py``.
@@ -310,6 +313,7 @@ from board import (
     answer_question,
     board_answered,
     board_controllers,
+    board_ledger,
     board_questions,
     notify_controller,
 )
@@ -344,6 +348,14 @@ def _run_board(args):
         elif args.board_command == "launch-args":
             result = board_launch_args(args.session_id)
             code = 0 if result["status"] == "ok" else 1
+        elif args.board_command == "ledger":
+            if len(args.workspace) != len(args.session_id):
+                raise ValueError("each --workspace needs one --session-id")
+            result = {"ledgers": [
+                board_ledger(workspace, session_id)
+                for workspace, session_id in zip(args.workspace, args.session_id)
+            ]}
+            code = 0
         elif args.board_command == "prune-reports":
             now = datetime.fromisoformat(args.now)
             if now.tzinfo is None:
@@ -446,6 +458,9 @@ def _build_parser():
     transcript.add_argument("--before", type=int)
     launch_args = board_commands.add_parser("launch-args")
     launch_args.add_argument("--session-id", required=True)
+    ledger = board_commands.add_parser("ledger")
+    ledger.add_argument("--workspace", type=Path, action="append", default=[])
+    ledger.add_argument("--session-id", action="append", default=[])
     prune = board_commands.add_parser("prune-reports")
     prune.add_argument("--reports-dir", required=True, type=Path)
     prune.add_argument("--now", required=True)

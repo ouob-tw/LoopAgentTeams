@@ -6,9 +6,9 @@ import type { ArchivePage } from '../board/archive.ts';
 import type { BoardSnapshot, HelperController, InboxQuestion } from '../board/types.ts';
 import { loadConfig, READ_SLACK_MS, type BoardConfig } from './config.ts';
 import { DEVICES_FILE, findDevice } from './devices.ts';
-import { listControllers, pruneReports, readAnswered, readQuestions, type AnsweredFile } from './helper.ts';
+import { listControllers, pruneReports, readAnswered, readLedgers, readQuestions, type AnsweredFile } from './helper.ts';
 import { loadInboxState, saveInboxState, type InboxState } from './inbox-state.ts';
-import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, mark, processedPage, type MarkResult, type Sources, withRecorded } from './model.ts';
+import { answeredOf, answeredSources, archiveDue, buildSnapshot, dropSessions, expiredSessions, ledgerSources, mark, processedPage, type MarkResult, type Sources, withRecorded } from './model.ts';
 import { createReportReader, type ReportFile } from './reports.ts';
 import { listAgents, type AgentList } from './hcom.ts';
 import { openLog, type SentLog } from './sent-log.ts';
@@ -162,6 +162,8 @@ function createBoard(): Board {
 	let lastSwitches: SwitchView[] = [];
 	/** The board asks as last read from the shared folder. */
 	let lastAsks: BoardAsk[] = [];
+	/** The ledger files the last read of the ledgers named, watched so a write to one is read in. */
+	let ledgerPaths: string[] = [];
 
 	const comparable = (value: BoardSnapshot) => JSON.stringify({ ...value, generatedAt: '', revision: 0 });
 
@@ -188,7 +190,7 @@ function createBoard(): Board {
 		}, config.debounceMs);
 	});
 	/** What the last read says to watch: the reports, the board asks, the helper's files once their directories
-	 *  are known, and each active controller's question file. */
+	 *  are known, each active controller's question file, and the controllers' ledgers. */
 	function watchTargets(): WatchTargets {
 		const targets: WatchTargets = new Map([[config.reportsDir, null]]);
 		// Not the heartbeat the board itself touches.
@@ -198,6 +200,7 @@ function createBoard(): Board {
 			addFile(targets, join(helperDirs.state, 'pending-notifications.json'));
 		}
 		for (const controller of lastActive) addFile(targets, controller.questions_path);
+		for (const path of ledgerPaths) addFile(targets, path);
 		return targets;
 	}
 	void helperDirectories(config).then((dirs) => {
@@ -304,20 +307,22 @@ function createBoard(): Board {
 	async function readWith(reading: Reading): Promise<BoardSnapshot> {
 		// Real clock: pause records carry the real time they were written.
 		const listedAt = Date.now();
-		const [[helper, reports, answered, settled, log], listedAgents, listedHerdr, stops] = await Promise.all([
+		const [[helper, reports, answered, settled, log, ledgers], listedAgents, listedHerdr, stops] = await Promise.all([
 			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
 				// Read after the list: the files are those of the controllers bound now, and of the
-				// sessions that reported. The sent answers settle against the same list alongside, so
-				// a read runs the helper at most twice in a row. hcom's and Herdr's lists are not
-				// waited for.
+				// sessions that reported. The sent answers settle and the ledgers are read against the
+				// same list alongside, so a read runs the helper at most twice in a row. hcom's and
+				// Herdr's lists are not waited for.
 				const log = readLog(config, reading);
-				const [answered, settled] = await Promise.all([
-					readAnswered(config, answeredSources(helper.ok ? helper.controllers : lastActive, reports.files)),
+				const bound = helper.ok ? helper.controllers : lastActive;
+				const [answered, settled, ledgers] = await Promise.all([
+					readAnswered(config, answeredSources(bound, reports.files)),
 					helper.ok && !(log instanceof Error)
 						? settleAnswers(log, helper.controllers, config.now(), (path) => readQuestions(config, path)).catch((error: Error) => error)
-						: null
+						: null,
+					readLedgers(config, ledgerSources(bound, reports.files))
 				]);
-				return [helper, reports, answered, settled, log] as const;
+				return [helper, reports, answered, settled, log, ledgers] as const;
 			}),
 			listAgents(config),
 			listHerdrAgents(config),
@@ -331,6 +336,7 @@ function createBoard(): Board {
 		if (herdrAgents.ok) herdrPlaces = herdrAgents;
 		herdrPlaceError = herdrAgents.ok ? null : herdrAgents.reason;
 		if (answered.ok) lastAnswered = answered.files;
+		if (ledgers.ok) ledgerPaths = [...ledgers.ledgers.values()].flatMap((read) => (read.path ? [read.path] : []));
 		// A list that cannot be read must not close every controller: the last one read stands in.
 		if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
 		if (helper.ok) {
@@ -391,7 +397,9 @@ function createBoard(): Board {
 			closed: closedAgents,
 			pruneError,
 			answered: lastAnswered,
-			answeredError: answered.ok ? null : answered.reason
+			answeredError: answered.ok ? null : answered.reason,
+			ledgers: ledgers.ok ? new Map([...ledgers.ledgers].map(([id, read]) => [id, read.view])) : new Map(),
+			ledgersError: ledgers.ok ? null : ledgers.reason
 		};
 
 		if (!closed) sourceWatcher.sync(watchTargets());

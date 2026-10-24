@@ -3,6 +3,7 @@ import type { HerdrPlace } from './format.ts';
 import type { SwitchView } from './models.ts';
 import type { ClosedList } from './closed-agents.ts';
 import type { BoardAsk } from './board-asks.ts';
+import type { LedgerView } from './ledger.ts';
 
 /** Checked top to bottom; the first row that holds wins. */
 export type ControllerStatus = 'idle' | 'closed' | 'waiting' | 'delivered' | 'working';
@@ -121,6 +122,8 @@ export interface Controller {
 	lastReportAt: string | null;
 	/** What the controller recorded it is responsible for; null until it recorded it. */
 	duty: Duty | null;
+	/** Its work ledger, from the path in its session record. */
+	ledger: LedgerView;
 	/** Why some of this controller's sources could not be read; null when all were. */
 	error: string | null;
 }
