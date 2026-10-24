@@ -1784,6 +1784,16 @@ def select_tests(root, changed, amap):
     test_patterns = [p for rule in rules for p in rule['tests']]
     selected, fallback = {}, []
     for path in changed:
+        if glob_match(path, f'{MAP_DIR}/*.json') and (root / path).is_file():
+            # A map file only adds rules: run the tests it maps to, even when shared.
+            for rule in json.loads((root / path).read_text())['map']:
+                tests = [t for t in files if any(glob_match(t, p) for p in rule['tests'])]
+                if rule['tests'] and not tests:
+                    fallback.append((path, f'{path} maps to tests that match no file: '
+                                           + ', '.join(rule['tests'])))
+                for test in tests:
+                    selected.setdefault(test, []).append(f"{path} maps {', '.join(rule['paths'])}")
+            continue
         shared = next((p for p in amap['shared'] if glob_match(path, p)), None)
         if shared:
             fallback.append((path, f'shared path {shared}'))

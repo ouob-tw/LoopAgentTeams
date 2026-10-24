@@ -1054,6 +1054,51 @@ class AffectedTests(AffectedCase):
         self.assertEqual(self.ran(), [('.', ['tests/test_app.py', 'tests/test_util.py'])])
         self.assertEqual(self.full_runs(), [])
 
+    def test_a_new_suite_gate_d_file_selects_only_its_own_tests(self):
+        # As in a real project, which lists the map files as shared paths.
+        self.registry['affected']['shared'].append('.suite-gate.d/**')
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'map files shared')
+        self.touch('.suite-gate.d/new.json', json.dumps(
+            {'map': [{'paths': ['src/new.py'], 'tests': ['tests/test_app.py']}]}))
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [('.', ['tests/test_app.py'])])
+        self.assertEqual(self.full_runs(), [])
+        self.assertIn('tests/test_app.py  (.suite-gate.d/new.json maps src/new.py)',
+                      result.stderr)
+
+    def test_a_changed_suite_gate_d_file_selects_only_its_current_tests(self):
+        self.touch('.suite-gate.d/web.json', json.dumps(
+            {'map': [{'paths': ['web/src/page.ts'], 'tests': ['web/tests/**/*.test.ts']}]}))
+        git(self.repo, 'checkout', '-q', 'main')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'web map file')
+        git(self.repo, 'checkout', '-q', 'feature')
+        git(self.repo, 'merge', '-q', 'main')
+        self.touch('.suite-gate.d/web.json', json.dumps(
+            {'map': [{'paths': ['web/src/page.ts'], 'tests': ['web/tests/**/*.test.ts']},
+                     {'paths': ['src/new.py'], 'tests': ['tests/test_util.py']}]}))
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.ran(), [('.', ['tests/test_util.py']),
+                                      ('web', ['tests/page.test.ts'])])
+        self.assertEqual(self.full_runs(), [])
+
+    def test_a_suite_gate_d_file_mapping_to_no_file_falls_back(self):
+        self.touch('.suite-gate.d/new.json', json.dumps(
+            {'map': [{'paths': ['src/new.py'], 'tests': ['tests/gone_*.py']}]}))
+        result = self.gate('affected')
+        self.assertIn('.suite-gate.d/new.json maps to tests that match no file', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
+    def test_a_shared_suite_gate_json_still_falls_back(self):
+        self.registry['affected']['shared'].append('.suite-gate.json')
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertIn('.suite-gate.json: shared path .suite-gate.json', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
     def test_a_bad_suite_gate_d_file_stops_affected_and_names_the_file(self):
         (self.repo / '.suite-gate.d').mkdir()
         (self.repo / '.suite-gate.d/bad.json').write_text('{"map": [')

@@ -127,10 +127,11 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
 
 - **這次改動**：工作區相對基準點的所有差異，包含已提交、已暫存、未暫存與沒被忽略的新檔，刪除的檔案也算。基準點預設是 HEAD 與 `integration_branch` 的共同祖先；`--base` 直接指定基準 commit。
 - **怎麼挑**：每個改動檔依序判斷——
-  1. 符合 `shared`：改跑整套。
-  2. 本身符合任一規則的 `tests`（是測試檔）：選它自己；已刪除的測試檔不執行。
-  3. 符合規則的 `paths`：選該規則 `tests` 對到的現有檔案。`tests` 是空清單代表不需要測試（例如文件）；不是空的卻一個檔案都對不到，改跑整套。
-  4. 以上都不符合：沒列在表上，改跑整套。
+  1. 是現存的 `.suite-gate.d/*.json` 對照表片段：選它每條規則 `tests` 對到的現有檔案，即使片段也列在 `shared`；對不到任何檔案時改跑整套。刪除的片段照下面各項判斷。
+  2. 符合 `shared`：改跑整套。
+  3. 本身符合任一規則的 `tests`（是測試檔）：選它自己；已刪除的測試檔不執行。
+  4. 符合規則的 `paths`：選該規則 `tests` 對到的現有檔案。`tests` 是空清單代表不需要測試（例如文件）；不是空的卻一個檔案都對不到，改跑整套。
+  5. 以上都不符合：沒列在表上，改跑整套。
 - 選出的測試依所在目錄分組（取 `affected.commands` 中最長的符合目錄），把相對該目錄的路徑代入 `{tests}`，在該目錄以 `/bin/sh` 執行。沒有目錄涵蓋的測試，改跑整套。
 - 輸出（stderr）列出基準點、改動檔、選出的測試與原因、每組執行的指令；測試輸出與結束碼原樣轉出，多組時回傳第一個非 0 的結束碼。
 - 受影響測試不佔整套名額、不排隊、不沿用；每組寫一筆紀錄（`kind: "affected"`），含基準 commit、改動檔、該組選出的測試與原因。沒有選出任何測試時不執行、不寫紀錄。
@@ -148,7 +149,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
 | `affected.map` | 對應規則清單：`paths`（程式路徑樣式）→ `tests`（測試檔或測試路徑樣式，任一層都可以）。`tests` 只能對到可以直接執行的測試檔，不要對到共用的輔助檔。 |
 | `affected.shared` | 改到就改跑整套的路徑樣式，例如依賴鎖定檔、測試共用設定、建置設定。 |
 
-`affected.map` 的規則也可以分放在 repo 根的 `.suite-gate.d/*.json`，每個檔案是 `{"map": [...]}`，依檔名順序接在 `.suite-gate.json` 的規則後面。同一路徑可以出現在多條規則，選到的測試會合併，所以要替既有路徑多對一個測試時，新增一條規則就好，不必改既有那一行。平行進行的工作各自新增檔案（例如 `.suite-gate.d/skill-hints.json`），合併時就不會在同一行衝突。任一檔案讀不懂時，`affected` 寫出檔名後停止。
+`affected.map` 的規則也可以分放在 repo 根的 `.suite-gate.d/*.json`，每個檔案是 `{"map": [...]}`，依檔名順序接在 `.suite-gate.json` 的規則後面。同一路徑可以出現在多條規則，選到的測試會合併，所以要替既有路徑多對一個測試時，新增一條規則就好，不必改既有那一行。平行進行的工作各自新增檔案（例如 `.suite-gate.d/skill-hints.json`），合併時就不會在同一行衝突。只新增或修改一個片段時，`affected` 只跑該片段對到的測試，不退回整套；`.suite-gate.json` 本身列在 `shared` 時照樣退回整套。任一檔案讀不懂時，`affected` 寫出檔名後停止。
 
 `affected.map` 非空就算「有對照表」：`run` 要求用途、`affected` 可用。`affected` 與 `full_suites` 不影響指紋；`suites`（給 hook 判斷用）照舊另外列。
 
