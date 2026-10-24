@@ -55,6 +55,7 @@ NO_QUESTIONS = "目前沒有待答問題"
 OTHER_LABEL = "其他（自己輸入）"
 SUBMITTED = "已送出，等待記錄"
 RECORDED = "✔ 已記錄"
+PREAUTHORIZED = "目前已預先授權，可由你決定撤回"
 LOCKED = "已送出或已記錄的題目不能修改；要改答案請在聊天告訴主控"
 FORGED = "答覆或備註不能有單獨一行寫成「- [x] 送出」、「答覆：」或題目標題；這次輸入沒有儲存"
 TAB_TITLE_CELLS = 16
@@ -551,6 +552,8 @@ class Panel(App):
         self.units = []
         self.tab_spans = []
         self.revised = {}
+        self.preauthorized = set()
+        self.preauth_running = False
         self.saved = ""
         self.conflict = False
         self.close_armed = False
@@ -852,7 +855,30 @@ class Panel(App):
             f"題號重複：{'、'.join(duplicates)}，請按 Ctrl+E 修正" if duplicates else ""
         )
         self.notices["submission"] = submission_error_text(text)
+        self.recheck_preauth()
         self.refresh_view()
+
+    def recheck_preauth(self):
+        """Start one background recheck of the pending questions; Git stays off the UI loop."""
+        if self.preauth_running:
+            return
+        self.preauth_running = True
+        self.run_worker(self.apply_preauth(), group="preauth")
+
+    async def apply_preauth(self):
+        """Mark pending questions the current settings pre-authorize; redraw on a change."""
+        try:
+            ids = [draft.id for draft in self.drafts.values() if draft.editable]
+            marked = await asyncio.to_thread(
+                lat_panel.preauthorized_questions, self.path, ids
+            ) if ids else set()
+        finally:
+            self.preauth_running = False
+        # A question that stopped being pending meanwhile drops its mark now.
+        marked &= {draft.id for draft in self.drafts.values() if draft.editable}
+        if marked != self.preauthorized:
+            self.preauthorized = marked
+            self.refresh_view()
 
     def render_revised(self):
         """Keep 題目已更新 visible until the user answers that question again."""
@@ -906,6 +932,8 @@ class Panel(App):
             rows.append(("", RECORDED, accent))
         elif draft.status == "broken":
             rows.append(("", "題目格式錯誤：找不到答覆或送出標記。請按 Ctrl+E 修正", "bold"))
+        if draft.editable and draft.id in self.preauthorized:
+            rows.append(("", PREAUTHORIZED, accent))
         keys += [("text", 0)] * (len(rows) - 1)
         paragraphs = [text for text in re.split(r"\n(?:[ \t]*\n)+", draft.context) if text]
         for number, paragraph in enumerate(paragraphs, 1):
@@ -1583,6 +1611,7 @@ class Panel(App):
                 self.save()
             elif not self.raw_mode:
                 self.archive_recorded()
+                self.recheck_preauth()
             return
         if self.raw_mode and self.editor.text != self.saved:
             self.enter_conflict()

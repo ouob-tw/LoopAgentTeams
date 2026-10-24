@@ -1,12 +1,16 @@
 """Pre-authorization recheck where questions are asked: panel `question upsert` and the
-DECIDE/HELP Stop check. Temp HOME/XDG, a temp Git workspace and a fake herdr only."""
+DECIDE/HELP Stop check, and the panel's marker. Temp HOME/XDG, a temp Git workspace and
+fake herdr and hcom only."""
+import importlib.util
 import json
 import os
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
+from unittest.mock import patch
 
 SKILL = Path(__file__).resolve().parents[1]
 SESSION_SCRIPT = SKILL / 'scripts/lat-session.py'
@@ -15,6 +19,7 @@ SESSION = '11111111-1111-4111-8111-111111111111'
 ALLOW_MERGE = '[actions.merge]\nallow = true\nbranches = ["dev"]\nsource = "P-1"\n'
 RECORD = '- status: pending\n- advisor: needs-human\n- action: merge dev\n'
 QUESTION = '## 合併到 dev？\n要合併嗎？\n\n- A. 合併\n- B. 先不要\n'
+HAS_TEXTUAL = importlib.util.find_spec('textual') is not None
 
 
 class PreauthQuestionTests(unittest.TestCase):
@@ -267,6 +272,89 @@ class StopTests(PreauthQuestionTests):
                 self.project.write_text(ALLOW_MERGE)
                 self.assertEqual(self.stop('問題全文\nDECIDE: LAT-P r2', client), {})
                 (self.reports / f'{SESSION}.jsonl').unlink()
+
+
+@unittest.skipUnless(HAS_TEXTUAL, 'needs textual==8.2.8 (uv run --with textual==8.2.8)')
+class PanelMarkerTests(PreauthQuestionTests, unittest.IsolatedAsyncioTestCase):
+    MARKER = '目前已預先授權，可由你決定撤回'
+
+    def setUp(self):
+        super().setUp()
+        hcom = self.root / 'bin/hcom'
+        hcom.write_text('#!/bin/sh\nprintf \'{"delivered_to": ["orch"]}\\n\'\n')
+        hcom.chmod(0o755)
+        self.controller()
+        self.questions = self.bind()
+        # Sent while the settings still ask.
+        self.assertEqual(self.upsert(self.questions).returncode, 0)
+        environment = patch.dict(os.environ, self.env(), clear=True)
+        environment.start()
+        self.addCleanup(environment.stop)
+        spec = importlib.util.spec_from_file_location('lat_panel_marker',
+                                                      SKILL / 'herdr-panel/panel.py')
+        self.panel = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(self.panel)
+
+    def make_app(self):
+        app_class = type('TestPanel', (self.panel.Panel,), {'POLL_INTERVAL': 0.1})
+        return app_class(str(self.questions), 'herdr-workspace', '', session_id=SESSION)
+
+    def view(self, app):
+        return str(app.query_one('#view').render())
+
+    async def test_marker_follows_the_settings_on_the_next_refresh(self):
+        async with self.make_app().run_test() as pilot:
+            await pilot.pause(0.3)
+            self.assertIn('要合併嗎？', self.view(pilot.app))
+            self.assertNotIn(self.MARKER, self.view(pilot.app))
+            self.project.write_text(ALLOW_MERGE)
+            await pilot.pause(0.3)
+            self.assertIn(self.MARKER, self.view(pilot.app))
+            self.project.write_text('[actions.merge]\nallow = false\nbranches = ["dev"]\n')
+            await pilot.pause(0.3)
+            self.assertNotIn(self.MARKER, self.view(pilot.app))
+        self.assertIn('LAT-P · r1 · 待答', self.questions.read_text())
+
+    async def test_marked_question_is_answered_as_before(self):
+        self.project.write_text(ALLOW_MERGE)
+        async with self.make_app().run_test() as pilot:
+            await pilot.pause(0.3)
+            self.assertIn(self.MARKER, self.view(pilot.app))
+            await pilot.press('1', 'right', 'enter')
+            await pilot.pause(0.3)
+        text = self.questions.read_text()
+        self.assertIn('答覆：A', text)
+        self.assertIn('- [x] 送出', text)
+
+    async def test_recheck_runs_off_the_ui_thread(self):
+        self.project.write_text(ALLOW_MERGE)
+        check = self.panel.lat_panel.preauthorized_questions
+        threads = []
+
+        def recorded(*args):
+            threads.append(threading.current_thread())
+            return check(*args)
+
+        with patch.object(self.panel.lat_panel, 'preauthorized_questions', side_effect=recorded):
+            async with self.make_app().run_test() as pilot:
+                await pilot.pause(0.3)
+                self.assertIn(self.MARKER, self.view(pilot.app))
+        self.assertTrue(threads)
+        self.assertNotIn(threading.main_thread(), threads)
+
+    async def test_record_without_action_or_a_failed_recheck_shows_no_marker(self):
+        self.project.write_text(ALLOW_MERGE)
+        self.decision.write_text('- status: pending\n- advisor: needs-human\n')
+        async with self.make_app().run_test() as pilot:
+            await pilot.pause(0.3)
+            self.assertIn('要合併嗎？', self.view(pilot.app))
+            self.assertNotIn(self.MARKER, self.view(pilot.app))
+        self.decision.write_text(RECORD)
+        with patch.object(self.panel.lat_panel, '_lat_session', side_effect=OSError('broken')):
+            async with self.make_app().run_test() as pilot:
+                await pilot.pause(0.3)
+                self.assertIn('要合併嗎？', self.view(pilot.app))
+                self.assertNotIn(self.MARKER, self.view(pilot.app))
 
 
 if __name__ == '__main__':
