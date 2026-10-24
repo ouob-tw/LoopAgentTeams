@@ -7,7 +7,7 @@ import { appendFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmS
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { readAsks, takePermission } from '../../src/lib/server/board-asks.ts';
+import { readAsks, settleAsks, takePermission } from '../../src/lib/server/board-asks.ts';
 
 const HOOK = join(import.meta.dir, '../../hooks/board-ask.py');
 const LAT_DIR = join(import.meta.dir, '../../../skills/local/lat');
@@ -390,4 +390,49 @@ test('a tool\'s own output that quotes the board\'s deny is not a denial: 已填
 	await run;
 	appendFileSync(transcript, toolResult('toolu_1', 'grep hit: 使用者在看板拒絕了這個操作。'));
 	expect((await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'sent')).state).toBe('filled');
+});
+
+/** Claude's tool result for a No in its dialog, as 2.1.310 writes it, and for Esc, which adds the
+ *  interrupted line to the same entry. */
+const rejectedEntry = (id: string) =>
+	JSON.stringify({ type: 'user', toolDenialKind: 'user-rejected', toolUseResult: 'User rejected tool use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: REJECTED, is_error: true }] } }) + '\n';
+const escapedEntry = (id: string) =>
+	JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: REJECTED, is_error: true }, { type: 'text', text: '[Request interrupted by user for tool use]' }] } }) + '\n';
+const hookPid = (id: string): number => JSON.parse(readFileSync(join(dir, `${id}.json`), 'utf8')).hook_pid;
+
+test('Claude ends the hook for a No in its dialog before writing it: the ask reads 已在終端機回答, not interrupted', async () => {
+	writeFileSync(transcript, toolUse('toolu_no'));
+	const run = hook(claudeInput());
+	const ask = await waitingAsk();
+	process.kill(hookPid(ask.id), 'SIGTERM');
+	expect(await run).toEqual({ code: 0, stdout: '' });
+	// The board looks while the watcher runs: not interrupted.
+	const stateDir = mkdtempSync(join(tmpdir(), 'board-ask-perm-state-'));
+	const config = { asksDir: dir, stateDir, askExecutionWaitMs: 60_000 };
+	await until(() => JSON.parse(readFileSync(join(dir, `${ask.id}.json`), 'utf8')).watcher_pid, Boolean);
+	settleAsks(config, []);
+	expect(stateOf(ask.id)!.state).toBe('waiting');
+	appendFileSync(transcript, rejectedEntry('toolu_no'));
+	const ended = await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'waiting');
+	expect(ended).toMatchObject({ state: 'terminal', actual: 'deny', notAdopted: false });
+	settleAsks(config, []);
+	expect(stateOf(ask.id)!.state).toBe('terminal');
+	rmSync(stateDir, { recursive: true, force: true });
+});
+
+test('Esc in Claude\'s dialog ends the hook and the turn: interrupted once the watcher is done, not 已在終端機回答', async () => {
+	writeFileSync(transcript, toolUse('toolu_esc'));
+	const run = hook(claudeInput());
+	const ask = await waitingAsk();
+	process.kill(hookPid(ask.id), 'SIGTERM');
+	await run;
+	const watcher = await until(() => JSON.parse(readFileSync(join(dir, `${ask.id}.json`), 'utf8')).watcher_pid as number | undefined, Boolean);
+	appendFileSync(transcript, escapedEntry('toolu_esc'));
+	// The watcher sees Esc and ends without taking the ask.
+	await until(() => existsSync(`/proc/${watcher}`), (alive) => !alive, 15_000);
+	expect(existsSync(join(dir, `${ask.id}.result.json`))).toBe(false);
+	const stateDir = mkdtempSync(join(tmpdir(), 'board-ask-perm-state-'));
+	settleAsks({ asksDir: dir, stateDir, askExecutionWaitMs: 60_000 }, []);
+	expect(stateOf(ask.id)!.state).toBe('interrupted');
+	rmSync(stateDir, { recursive: true, force: true });
 });

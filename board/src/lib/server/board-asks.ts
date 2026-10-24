@@ -66,6 +66,8 @@ interface AskFile {
 	created_at: string;
 	deadline_at: string;
 	hook_pid?: number;
+	/** The hook's watcher, once Claude ended the hook while it waited (see `hooks/board-ask.py`). */
+	watcher_pid?: number;
 	outcome: 'filled' | 'timed_out' | 'handed_back' | 'terminal' | 'sent' | 'allowed' | null;
 	outcome_at?: string | null;
 	observe_until?: string;
@@ -394,8 +396,11 @@ export function settleAsks(config: Pick<BoardConfig, 'asksDir' | 'stateDir' | 'a
 			continue;
 		}
 		if (ask.state !== 'waiting') continue;
-		const pid = (readJson(join(dir, `${ask.id}.json`)) as AskFile | null)?.hook_pid;
+		const file = readJson(join(dir, `${ask.id}.json`)) as AskFile | null;
+		const pid = file?.hook_pid;
 		if (!Number.isInteger(pid) || running(pid!)) continue;
+		// Its watcher still looks for an answer in Claude's dialog that ended the hook.
+		if (Number.isInteger(file?.watcher_pid) && running(file!.watcher_pid!)) continue;
 		let interrupted: boolean;
 		try {
 			// Lost to an answer or the deadline that came first: that one stands.

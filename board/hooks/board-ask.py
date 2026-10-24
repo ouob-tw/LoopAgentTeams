@@ -16,7 +16,9 @@ The shared folder, one board ask per file (all 0600):
   writes it again with `outcome` before it ends: `filled`, `timed_out`, `handed_back` (Codex's
   deadline), `terminal` (answered in Claude's terminal first), `sent` (a board answer to Claude's
   permission request, handed back while its dialog was open too) or `allowed` (Codex allowed after
-  its turn had ended).
+  its turn had ended). Once Claude ends the hook while it waits (Esc, or No in its dialog), the
+  hook writes it again with `watcher_pid`, the process that looks for that answer in the
+  transcript for 10 seconds; the board does not call it interrupted while that process runs.
 - `<id>.result.json`: who took the ask, written once: a temporary file hard-linked into place,
   which fails when the file already exists. The board writes `{"kind": "answer", ...}` (a question's
   `answers`, a permission's `decision` and `reason`), the hook at its deadline `{"kind": "timeout"}`
@@ -46,6 +48,7 @@ import json
 import os
 import shlex
 import shutil
+import signal
 import subprocess
 import sys
 import tempfile
@@ -75,6 +78,11 @@ DENY_MESSAGE = '使用者在看板拒絕了這個操作。'
 REJECTED_PREFIX = "The user doesn't want to proceed with this tool use"
 # How long a board answer to Claude's permission request is watched for in its transcript.
 OBSERVE_SECONDS = 60
+# How long the transcript is watched after Claude ended the hook while it waited: answering No in
+# its dialog ends the hook at once, before the answer is in the transcript.
+ENDED_SECONDS = 10
+# What Claude adds to the tool result when Esc ended the turn, unlike a No in its dialog.
+INTERRUPTED_MARK = '[Request interrupted by user'
 TRANSCRIPT_SECONDS = 1
 
 
@@ -302,17 +310,22 @@ def permission_output(decision, reason=None, interrupt=False):
     return {'hookSpecificOutput': {'hookEventName': 'PermissionRequest', 'decision': body}}
 
 
-def tool_result_decision(item):
-    """Whether Claude ran the tool the transcript's tool result is for: `allow`, or `deny` when the
-    use was rejected in the terminal, denied by the board, or interrupted. A refusal is an error
-    result; a tool's own output that only quotes such text is not one."""
-    content = item.get('content')
+def content_text(content):
+    """A transcript content's text: a string as it is, a list's text parts joined."""
     if isinstance(content, list):
-        content = '\n'.join(part.get('text', '') for part in content
-                            if isinstance(part, dict) and isinstance(part.get('text'), str))
-    text = content if isinstance(content, str) else ''
+        return '\n'.join(part.get('text', '') for part in content
+                         if isinstance(part, dict) and isinstance(part.get('text'), str))
+    return content if isinstance(content, str) else ''
+
+
+def tool_result_decision(item, interrupted):
+    """Whether Claude ran the tool the transcript's tool result is for: `allow`, or `deny` when the
+    use was rejected in the terminal or denied by the board, or `interrupted` when Esc ended the
+    turn (`interrupted`: the entry says so). A refusal is an error result; a tool's own output
+    that only quotes such text is not one."""
+    text = content_text(item.get('content'))
     if item.get('is_error') is True and (text.startswith(REJECTED_PREFIX) or DENY_MESSAGE in text):
-        return 'deny'
+        return 'interrupted' if interrupted and text.startswith(REJECTED_PREFIX) else 'deny'
     return 'allow'
 
 
@@ -357,18 +370,22 @@ class TranscriptWatch:
             except ValueError:
                 continue
             content = (entry.get('message') or {}).get('content') if isinstance(entry, dict) else None
-            for item in content if isinstance(content, list) else []:
+            items = content if isinstance(content, list) else []
+            interrupted = any(isinstance(item, dict) and INTERRUPTED_MARK in content_text(
+                [item] if item.get('type') == 'text' else item.get('content')) for item in items)
+            for item in items:
                 if not isinstance(item, dict):
                     continue
                 if item.get('type') == 'tool_use' and item.get('name') == self.tool_name \
                         and item.get('input') == self.tool_input:
                     self.uses.add(item.get('id'))
                 elif item.get('type') == 'tool_result' and isinstance(item.get('tool_use_id'), str):
-                    self.results.setdefault(item['tool_use_id'], (item, line_at))
+                    self.results.setdefault(item['tool_use_id'], (item, line_at, interrupted))
         self.position += end
 
     def decision(self):
-        """`allow` or `deny` once the call's result is written; None before, or when ambiguous."""
+        """`allow`, `deny` or `interrupted` once the call's result is written; None before, or
+        when ambiguous."""
         self.read()
         calls = [use for use in self.uses
                  if use not in self.results or self.results[use][1] >= self.start]
@@ -376,7 +393,8 @@ class TranscriptWatch:
             self.ambiguous = True
         if len(calls) != 1 or calls[0] not in self.results:
             return None
-        return tool_result_decision(self.results[calls[0]][0])
+        item, _, interrupted = self.results[calls[0]]
+        return tool_result_decision(item, interrupted)
 
 
 def ask_permission(payload, env, client, clock, sleep):
@@ -410,12 +428,24 @@ def ask_permission(payload, env, client, clock, sleep):
     def answered_in_terminal():
         """True once the transcript shows the call answered and that took the ask."""
         seen = watch.decision() if watch is not None else None
-        if seen is None or not claim(result_path, {'kind': 'terminal', 'decision': seen,
-                                                   'at': iso(clock())}):
+        if seen not in ('allow', 'deny') or not claim(result_path, {'kind': 'terminal',
+                                                                    'decision': seen,
+                                                                    'at': iso(clock())}):
             return False
         write_whole(ask_path, {**ask, 'outcome': 'terminal', 'outcome_at': iso(clock())})
         return True
 
+    def ended(signum, frame):
+        """Claude ended the hook while it waited: Esc, or No in its dialog. A watcher looks at the
+        transcript for the answer; the board leaves the ask alone while the watcher runs."""
+        if not result_path.exists():
+            watcher = start_watcher(ask_path, env, ended=True)
+            if watcher is not None:
+                write_whole(ask_path, {**ask, 'watcher_pid': watcher.pid})
+        os._exit(0)
+
+    if watch is not None:
+        signal.signal(signal.SIGTERM, ended)
     result = None
     looked = now
     while result is None and clock() < deadline:
@@ -439,6 +469,7 @@ def ask_permission(payload, env, client, clock, sleep):
     while result is None:
         sleep(POLL_SECONDS)
         result = read_json(result_path)
+    signal.signal(signal.SIGTERM, signal.SIG_DFL)
     decision = result.get('decision') if result.get('kind') == 'answer' else None
     if decision not in ('allow', 'deny'):
         return None
@@ -458,20 +489,43 @@ def ask_permission(payload, env, client, clock, sleep):
     return permission_output(decision, reason.strip())
 
 
-def start_watcher(ask_path, env):
-    """Watch Claude's transcript for what it did with a sent answer, after the hook has ended."""
+def start_watcher(ask_path, env, ended=False):
+    """Watch Claude's transcript after the hook has ended: for what it did with a sent answer, or
+    with `ended` for an answer in its dialog that ended the hook. The process, or None."""
     try:
-        subprocess.Popen([sys.executable, str(SCRIPT), 'observe', str(ask_path)], env=env,
-                         stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
-                         stderr=subprocess.DEVNULL, start_new_session=True)
+        return subprocess.Popen([sys.executable, str(SCRIPT), 'observe', str(ask_path),
+                                 *(['--ended'] if ended else [])], env=env,
+                                stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                stderr=subprocess.DEVNULL, start_new_session=True)
     except OSError:
-        pass  # The board marks it 結果不明 once the watch would have ended.
+        return None  # The board marks it 結果不明, or 已在終端機中斷, as without a watcher.
 
 
-def run_observe(ask_path, clock=time.time, sleep=time.sleep):
-    """The watcher: what Claude did with a sent permission answer, once, in `<id>.observed.json`."""
+def run_ended(path, ask, clock, sleep):
+    """The watcher of an ask whose hook Claude ended: an allow or a No seen in the transcript takes
+    the ask as answered in the terminal; Esc, or nothing within the watch, leaves it to the board,
+    which then reads it as interrupted."""
+    watch = TranscriptWatch(ask['transcript_path'], ask['tool_name'], ask['tool_input'],
+                            ask['transcript_start'])
+    until = clock() + ENDED_SECONDS
+    seen = None
+    while seen is None and not watch.ambiguous and clock() < until:
+        seen = watch.decision()
+        if seen is None:
+            sleep(POLL_SECONDS)
+    if seen in ('allow', 'deny') and claim(path.with_name(f'{ask["id"]}.result.json'),
+                                           {'kind': 'terminal', 'decision': seen,
+                                            'at': iso(clock())}):
+        write_whole(path, {**ask, 'outcome': 'terminal', 'outcome_at': iso(clock())})
+
+
+def run_observe(ask_path, ended=False, clock=time.time, sleep=time.sleep):
+    """The watcher: what Claude did with a sent permission answer, once, in `<id>.observed.json`;
+    with `ended`, see `run_ended`."""
     path = Path(ask_path)
     ask = read_json(path)
+    if ended and isinstance(ask, dict) and ask.get('outcome') is None:
+        return run_ended(path, ask, clock, sleep)
     if not isinstance(ask, dict) or ask.get('outcome') != 'sent':
         return
     observed = path.with_name(f'{ask["id"]}.observed.json')
@@ -483,7 +537,7 @@ def run_observe(ask_path, clock=time.time, sleep=time.sleep):
         if seen is not None or watch.ambiguous or clock() >= until:
             break
         sleep(TRANSCRIPT_SECONDS)
-    record = {'decision': seen} if seen is not None else {'kind': 'unknown'}
+    record = {'decision': seen} if seen in ('allow', 'deny') else {'kind': 'unknown'}
     claim(observed, {**record, 'at': iso(clock())})
 
 
@@ -708,6 +762,7 @@ def main(argv=None):
     observe = sub.add_parser('observe', help="watch Claude's transcript for what it did with a "
                                              'permission answer (started by the hook)')
     observe.add_argument('ask', help="the ask file's path")
+    observe.add_argument('--ended', action='store_true', help='the hook was ended while it waited')
     for action in ('install', 'uninstall'):
         config = sub.add_parser(action, help=f'{action} the hook in a client\'s settings')
         config.add_argument('--client', choices=('claude', 'codex'), required=True)
@@ -721,7 +776,7 @@ def main(argv=None):
         return cmd_hook(args.client)
     if args.action == 'observe':
         try:
-            run_observe(args.ask)
+            run_observe(args.ask, args.ended)
         except Exception:  # noqa: BLE001 - the board marks it 結果不明 once the watch is over
             pass
         return 0
