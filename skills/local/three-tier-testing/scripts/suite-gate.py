@@ -959,9 +959,11 @@ def read_records():
     records = []
     for line in lines:
         try:
-            records.append(json.loads(line))
+            record = json.loads(line)
         except ValueError:
             continue
+        if isinstance(record, dict):
+            records.append(record)
     return records
 
 

@@ -43,8 +43,7 @@ BRANCH_ACTIONS = ('merge', 'push')
 MAIN_CHECKOUT_ACTIONS = ('deploy-test', 'deploy-prod', 'install-host')
 GATE_ACTIONS = ('push', *MAIN_CHECKOUT_ACTIONS)
 SUITE_GATE = Path(__file__).resolve().parents[2] / 'three-tier-testing/scripts/suite-gate.py'
-ISSUE_REF = re.compile(r'(?<![\w&/])(?:[\w.-]+/[\w.-]+)?#(\d+)\b')
-LISTED_COMMITS = 20  # an ask lists at most this many unpushed commits
+ISSUE_REF = re.compile(r'(?<![\w&/])(?:([\w.-]+/[\w.-]+))?#(\d+)\b')
 SESSION_ENVS = ('CLAUDE_CODE_SESSION_ID', 'CODEX_THREAD_ID')
 ENDED = ('ended', 'completed', 'cancelled')
 
@@ -272,15 +271,29 @@ def integration_branch(ledger, layers):
 
 
 def round_tickets(ledger):
-    """Issue numbers of the tickets in the round ledger."""
+    """The round ledger's tickets as {(repo or '', number)}; a bare number has no repo."""
     items = ledger.get('items') if ledger else None
-    numbers = set()
+    tickets = set()
     for item in items if isinstance(items, list) else []:
         ticket = item.get('ticket') if isinstance(item, dict) else None
-        found = re.fullmatch(r'\s*(?:[\w.-]+/[\w.-]+)?#?(\d+)\s*', str(ticket or ''))
+        found = re.fullmatch(r'\s*(?:([\w.-]+/[\w.-]+)#|#)?(\d+)\s*', str(ticket or ''))
         if found:
-            numbers.add(found[1])
-    return numbers
+            tickets.add(((found[1] or '').lower(), found[2]))
+    return tickets
+
+
+def ticket_name(ticket):
+    return f'{ticket[0]}#{ticket[1]}' if ticket[0] else f'#{ticket[1]}'
+
+
+def is_round_ticket(ref, tickets):
+    """A reference names a round ticket with the same number and, when both name a repo, the
+    same repo. A bare ledger number takes a qualified reference only from a repo some
+    qualified ledger ticket names, if any does."""
+    repos = {repo for repo, _ in tickets if repo}
+    return any(number == ref[1] and (
+        repo == ref[0] if repo and ref[0] else not (ref[0] and repos and ref[0] not in repos))
+        for repo, number in tickets)
 
 
 def unpushed_commit_problems(top, version, ledger):
@@ -294,19 +307,16 @@ def unpushed_commit_problems(top, version, ledger):
     foreign = []
     for entry in filter(None, (part.strip('\n') for part in log.split('\x1e'))):
         sha, subject, body = entry.split('\x1f', 2)
-        refs = set(ISSUE_REF.findall(body))
+        refs = {(repo.lower(), number) for repo, number in ISSUE_REF.findall(body)}
+        others = sorted(ticket_name(ref) for ref in refs if not is_round_ticket(ref, tickets))
         if not refs:
             foreign.append(f'{sha[:12]} "{subject}" (no ticket)')
-        elif refs - tickets:
-            others = ', '.join(f'#{number}' for number in sorted(refs - tickets, key=int))
-            foreign.append(f'{sha[:12]} "{subject}" ({others})')
+        elif others:
+            foreign.append(f'{sha[:12]} "{subject}" ({", ".join(others)})')
     if not foreign:
         return []
-    listed = foreign[:LISTED_COMMITS]
-    if len(foreign) > len(listed):
-        listed.append(f'and {len(foreign) - len(listed)} more')
-    return ['unpushed commits outside this round\'s tickets '
-            f'({", ".join(sorted(tickets, key=int)) or "none"}): ' + '; '.join(listed)]
+    names = ', '.join(sorted(ticket_name(ticket) for ticket in tickets)) or 'none'
+    return [f"unpushed commits outside this round's tickets ({names}): " + '; '.join(foreign)]
 
 
 def load_suite_gate():
