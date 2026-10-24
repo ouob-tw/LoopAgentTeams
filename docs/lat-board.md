@@ -388,7 +388,7 @@ Claude 主控的這些數字只有狀態列拿得到，要先在 `~/.claude/sett
 | `--accent`、`--warn`、`--ok`、`--danger` | 強調、待決與求助、交付、錯誤 |
 | `--status-waiting`、`--status-working`、`--status-delivered`、`--status-ended` | 狀態標記的顏色（閒置與已關閉共用 `--status-ended`） |
 | `--selected-bg`、`--selected-text` | 選中的控制項 |
-| `--radius`、`--radius-pill` | 圓角：`--radius` 是輸入框、卡片、視窗與選單的小圓角；`--radius-pill` 是按鈕的膠囊形（只有圖示的按鈕是圓形）與標籤 |
+| `--radius`、`--radius-pill` | 圓角 |
 | `--sans`、`--mono` | 字型，例如 `--sans: 'Noto Sans TC', sans-serif;` |
 
 變數寫在 `:root` 對深色與淺色主題都生效；只想改其中一個主題時，用 `:root[data-theme='light']` 或 `:root[data-theme='dark']`。內建淺色主題的顏色在白底上的對比都不低於 7:1；自己覆蓋的顏色不會被檢查。

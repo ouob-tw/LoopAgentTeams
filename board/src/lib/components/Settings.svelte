@@ -46,14 +46,12 @@
 				<h4>整體大小</h4>
 				<div class="choices" role="group" aria-label="整體大小">
 					<button
-						class="circle"
 						aria-label="縮小"
 						disabled={appearance.scale <= SCALE.min}
 						onclick={() => appearance.setScale(appearance.scale - SCALE.step)}>－</button
 					>
 					<output aria-live="polite">{appearance.scale}%</output>
 					<button
-						class="circle"
 						aria-label="放大"
 						disabled={appearance.scale >= SCALE.max}
 						onclick={() => appearance.setScale(appearance.scale + SCALE.step)}>＋</button
@@ -66,14 +64,12 @@
 				<h4>最小字體</h4>
 				<div class="choices" role="group" aria-label="最小字體">
 					<button
-						class="circle"
 						aria-label="調小"
 						disabled={appearance.minFont === null || appearance.minFont <= MIN_FONT.min}
 						onclick={() => appearance.setMinFont(appearance.minFont! - MIN_FONT.step)}>－</button
 					>
 					<output aria-live="polite">{appearance.minFont === null ? '不限' : `${appearance.minFont}px`}</output>
 					<button
-						class="circle"
 						aria-label="調大"
 						disabled={appearance.minFont !== null && appearance.minFont >= MIN_FONT.max}
 						onclick={() => appearance.setMinFont(appearance.minFont === null ? MIN_FONT.start : appearance.minFont + MIN_FONT.step)}

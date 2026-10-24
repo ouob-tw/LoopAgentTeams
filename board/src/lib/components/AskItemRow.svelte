@@ -80,8 +80,6 @@
 		padding: 0;
 		background: none;
 		border: 0;
-		/* The row's body: its corners are the row's. */
-		border-radius: var(--radius);
 		text-align: left;
 	}
 	/* The keyboard position shows as the row's frame, the same as the open row, not as a ring

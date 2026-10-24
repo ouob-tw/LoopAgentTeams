@@ -452,11 +452,8 @@
 	.options {
 		display: inline-flex;
 		align-items: center;
-		justify-content: center;
-		box-sizing: border-box;
-		width: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
 		height: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px);
-		padding: 0;
+		padding: 0 0.6rem;
 	}
 	/* Floats above the line; opening it moves nothing. */
 	.closed-note {
@@ -552,6 +549,7 @@
 	.box :global(.send.square) {
 		width: calc(1.5 * max(1rem, var(--min-font, 0px)) + 1rem + 2px - 8px);
 		padding: 0;
+		border-radius: calc(var(--radius) - 2px);
 	}
 	/* The interrupt beside the send button: red, like the other stops. */
 	.box :global(.send.stop) {

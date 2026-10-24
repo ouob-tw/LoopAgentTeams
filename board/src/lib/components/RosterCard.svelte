@@ -64,8 +64,6 @@
 		min-width: 0;
 		text-align: left;
 		padding: 0.55rem 0.6rem;
-		/* A card of several lines: small corners, not a button's pill. */
-		border-radius: var(--radius);
 		/* A long press explains the card; it must not select text or open the browser's own menu. */
 		user-select: none;
 		-webkit-user-select: none;

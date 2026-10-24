@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/src/lib/components/model-picker.css", "board/src/lib/components/ModelPicker.svelte", "board/src/lib/components/AgentModelPicker.svelte", "board/src/lib/components/PickerMenu.svelte", "board/src/lib/components/CommandLine.svelte", "board/src/app.css"],
+      "tests": ["board/tests/browser/picker-shape.test.ts"]
+    }
+  ]
+}

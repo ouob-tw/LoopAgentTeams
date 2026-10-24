@@ -476,7 +476,7 @@
 				<p class="empty">{middle === 'agents' ? '從 Herdr 清單選一個 Agent，看它的對話紀錄。' : '從待辦選一則，或點主控名稱看它的資訊。'}</p>
 			{:else}
 				<div class="topbar">
-					<button class="circle" onclick={() => navigation.back()} aria-label="返回">←</button>
+					<button onclick={() => navigation.back()} aria-label="返回">←</button>
 					{#if agent}
 						<span class="whose" title="{agent.folder} {agent.name}">
 							<strong>{folderName(agent.folder)}</strong>
@@ -896,8 +896,6 @@
 		padding: 0;
 		border: 0;
 		background: none;
-		/* Two lines: small corners, not a button's pill. */
-		border-radius: var(--radius);
 		color: inherit;
 		font: inherit;
 		text-align: left;
