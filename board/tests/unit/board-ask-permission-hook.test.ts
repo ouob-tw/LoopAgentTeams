@@ -454,3 +454,18 @@ test('a board answer taken after Claude ended the hook for a No: 已在終端機
 	const ended = await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'answered' && entry.state !== 'waiting');
 	expect(ended).toMatchObject({ state: 'terminal_denied', decision: 'allow', actual: 'deny', notAdopted: true });
 });
+
+test('a board answer taken just before Claude ended the hook for a No: the watcher still runs, 已在終端機拒絕', async () => {
+	writeFileSync(transcript, toolUse('toolu_race2'));
+	const run = hook(claudeInput(), { env: { LAT_BOARD_ASK_WAIT_SECONDS: '20' } });
+	const ask = await waitingAsk();
+	takePermission(dir, ask.id, 'allow');
+	process.kill(hookPid(ask.id), 'SIGTERM');
+	const { stdout } = await run;
+	appendFileSync(transcript, rejectedEntry('toolu_race2'));
+	const ended = await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'answered' && entry.state !== 'waiting' && entry.state !== 'sent');
+	// The hook either handed the allow back first (sent, then the transcript shows the refusal) or
+	// was ended before it could; either way the card ends with the board's choice not taken.
+	expect(ended).toMatchObject({ state: 'terminal_denied', decision: 'allow', actual: 'deny', notAdopted: true });
+	expect(['', JSON.stringify({ hookSpecificOutput: { hookEventName: 'PermissionRequest', decision: { behavior: 'allow' } } })]).toContain(stdout.trim());
+});

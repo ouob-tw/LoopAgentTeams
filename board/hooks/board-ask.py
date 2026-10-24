@@ -431,8 +431,11 @@ def ask_permission(payload, env, client, clock, sleep):
     def ended(signum, frame):
         """Claude ended the hook while it waited: No or Esc in its dialog, which both refuse the
         tool, or the agent closed. A watcher looks at the transcript for the refusal; the board
-        leaves the ask alone while the watcher runs."""
-        if not result_path.exists():
+        leaves the ask alone while the watcher runs. A board answer taken just before never
+        reached Claude: the watcher records what Claude did instead."""
+        # The result file is linked into place whole, so it reads as missing or complete.
+        taken = read_json(result_path)
+        if taken is None or taken.get('kind') == 'answer':
             watcher = start_watcher(ask_path, env, ended=True)
             if watcher is not None:
                 write_whole(ask_path, {**ask, 'watcher_pid': watcher.pid})
