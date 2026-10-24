@@ -63,6 +63,20 @@ source = "<待決紀錄 ID>"
 - `deploy-test`、`deploy-prod`、`install-host`：在主工作區執行，且 HEAD 等於整合分支的最新版本；給了 `--commit` 時必須就是 HEAD。整合分支取本輪工作總表的 `integration_branch`，總表沒寫（例如 `activate` 建立的總表）才取設定的 `integration_branch`，兩者都沒有就 `ask`。`deploy-test` 另要求專案層寫了 `target`。
 - 整套測試閘門（`push`、`deploy-test`、`deploy-prod`、`install-host`）：沿用 three-tier-testing 閘門推送前檢查的同一段程式，依該版本的內容、每一套整套命令與執行目錄算出指紋，登記檔 `full_suites` 的每一套都要有可沿用的通過紀錄。沒有紀錄、只有失敗紀錄、或版本內容變了使舊紀錄不適用，都 `ask` 並寫出缺的那一套；登記檔沒列整套也 `ask`。只讀閘門紀錄，不跑測試。
 
+## 舊答覆：check --precedent
+
+參謀要引用使用者以前的答覆定案時，先帶上舊待決紀錄查詢：
+
+```bash
+uv run --no-project python "$lat_dir/scripts/lat-preauth.py" check --action <動作> [--branch <分支>] [--commit <版本>] --precedent <舊待決紀錄 ID>
+```
+
+- 任一層對該動作寫了 `allow`（true 或 false）時以設定為準，舊答覆不適用：結果與不帶 `--precedent` 相同，並註明 `does not apply`。`allow = false` 就是使用者明確要求要問。
+- 三層都沒寫 `allow` 時，舊答覆補上 `allow`：舊紀錄狀態要是 `answered` 或 `approved` 且有 `- 來源：` 行；舊紀錄有 `- action:` 行時動作要相同。固定條件照樣強制；`target`、`branches` 這類條件資料可單獨寫在設定裡，不算寫了決定。
+- `merge`、`push` 的分支兩項都要符合：任一層寫了 `branches` 時要在清單內，而且要等於舊紀錄 `- action:` 行同意的分支。舊紀錄沒有 `- action:` 行時工具無法核對分支，basis 會註明，參謀須在 `- authority:` 寫明舊答覆同意的分支。
+- 工具不判斷是否同類：同一專案、使用者答「做」、之後沒有同動作且答案相反的真人答覆，由參謀判斷，見 [參謀](advisors.md#參謀結論)。
+- 定案後主控以 `record --kind precedent` 記一筆，`report` 把它列為「建議寫成規則」。
+
 ## 寫入設定：grant
 
 使用者答應「以後（或這一輪）某動作不必問」時，主控在該待決紀錄的 `## 核准範圍` 段寫一行 `- grant: <層> <動作> <鍵=值…>`，再以工具寫入：
@@ -94,6 +108,17 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" record --kind bug-i
 
 - `deploy-test`、`deploy-prod`、`install-host` 必須附 `--started`（帶時區）與前後兩則 HCOM 通知的事件編號（`hcom send` 後以 `hcom events --from <自己> --last 1` 查 `id`）。工具以 `hcom events` 核對：兩則都由本主控送出、以 `@名稱` 指定對象（不是廣播）、前一則早於 `--started`、後一則晚於 `--started` 也晚於前一則；不符就拒絕。動作失敗也要記，`--result failed`，後一則通知寫明失敗。
 - `precedent` 的 `--source` 必須有真人答覆（同 `grant` 的核對）；`bug-intake` 的四項依據都要寫。
+
+## 免確認開短流程 bug 票
+
+下列四項全部成立時，主控照常建立短流程 tracker issue，但不發 `exempt ticket-confirmation` 確認題，改以 `record --kind bug-intake` 記下使用者原訊息位置與四項各自的依據；之後派工、審查、驗收照短流程：
+
+1. 使用者本人回報：真人親自在聊天或面板寫的；Agent 轉述與 HCOM 訊息不算。
+2. 寫清楚哪裡錯、應該怎樣。
+3. 一張票做得完。
+4. 修好只是回到使用者說的樣子，不新增或改變需求。
+
+任一項不成立或拿不準，照舊發確認題。
 
 ## 交付回報：report
 

@@ -1,4 +1,5 @@
 {"map": [
   {"paths": ["skills/local/lat/scripts/lat-preauth.py"], "tests": ["skills/local/lat/tests/test_lat_preauth.py"]},
-  {"paths": ["skills/local/three-tier-testing/scripts/suite-gate.py"], "tests": ["skills/local/lat/tests/test_lat_preauth.py"]}
+  {"paths": ["skills/local/three-tier-testing/scripts/suite-gate.py"], "tests": ["skills/local/lat/tests/test_lat_preauth.py"]},
+  {"paths": ["skills/local/lat/scripts/lat_decision_status.py"], "tests": ["skills/local/lat/tests/test_lat_preauth.py"]}
 ]}

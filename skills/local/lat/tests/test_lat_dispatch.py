@@ -41,10 +41,10 @@ class DispatchCase(unittest.TestCase):
         self.tasks.mkdir(parents=True)
         self.agents = [{'name': 'nanu-impl123-fida', 'base_name': 'fida', 'tag': 'nanu-impl123'}]
 
-    def run_script(self, *args, agents='default'):
+    def run_script(self, *args, agents='default', env=None):
         listing = self.root / 'hcom-list.json'
         listing.write_text(json.dumps(self.agents if agents == 'default' else agents))
-        env = {**os.environ, 'LAT_DISPATCH_HCOM_LIST': str(listing)}
+        env = {**os.environ, 'LAT_DISPATCH_HCOM_LIST': str(listing), **(env or {})}
         return subprocess.run([sys.executable, str(SCRIPT), *args], capture_output=True,
                               text=True, env=env, timeout=60)
 
@@ -618,6 +618,51 @@ class LedgerLifecycleTests(LedgerCase):
 
     def items_with_mismatch(self):
         return self.items()[0]['card_mismatch']
+
+
+class PreauthBriefTests(DispatchCase):
+    """brief --preauth carries the actions lat-preauth check allows now, and nothing else."""
+
+    def setUp(self):
+        super().setUp()
+        git(self.workspace, 'init', '-q', '-b', 'dev')
+        (self.workspace / '.lat' / 'preauth.toml').write_text(
+            '[actions.merge]\nallow = true\nbranches = ["dev"]\nsource = "FUBE-PA-3"\n')
+        self.env = {'XDG_CONFIG_HOME': str(self.root / 'xdg'), 'CLAUDE_CODE_SESSION_ID': '',
+                    'CODEX_THREAD_ID': ''}
+
+    def brief(self, *extra):
+        source = self.write_brief()
+        card = self.make_card()
+        result = self.run_script('brief', '--card', str(card), '--input', str(source),
+                                 *extra, env=self.env)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return (self.root / 'brief.brief.md').read_text(), result
+
+    def test_allowed_actions_go_into_the_brief_with_the_recheck_command(self):
+        text, result = self.brief('--preauth', 'merge:dev', '--preauth', 'merge:main',
+                                  '--session-id', 'sess-1')
+        section = text[text.index('## Pre-authorized actions'):text.index('## Fixed fields')]
+        self.assertLess(text.index('## Task card live actions'), text.index(section))
+        self.assertIn('- allow merge dev — basis: allow=true from project (source FUBE-PA-3)',
+                      section)
+        self.assertNotIn('main', section.split('These held')[0])
+        self.assertIn(f'lat-preauth.py check --workspace {self.workspace} --session-id sess-1 '
+                      '--action <action> [--branch <branch>]', section)
+        self.assertIn('report the action, the commit and that line to nanu', section)
+        self.assertIn('not pre-authorized, left out of the brief: ask merge main', result.stderr)
+
+    def test_no_section_when_nothing_is_pre_authorized_or_asked_for(self):
+        for extra in ((), ('--preauth', 'push:dev')):
+            with self.subTest(extra=extra):
+                text, _ = self.brief(*extra)
+                self.assertNotIn('Pre-authorized actions', text)
+
+    def test_malformed_request_is_refused(self):
+        result = self.run_script('brief', '--card', str(self.make_card()), '--input',
+                                 str(self.write_brief()), '--preauth', 'Merge dev', env=self.env)
+        self.assertEqual(result.returncode, 1)
+        self.assertIn("--preauth must be ACTION or ACTION:BRANCH, not 'Merge dev'", result.stderr)
 
 
 if __name__ == '__main__':
