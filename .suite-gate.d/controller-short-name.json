@@ -17,14 +17,18 @@
         "board/src/lib/components/RosterRail.svelte",
         "board/src/lib/components/SentLog.svelte",
         "board/src/lib/components/Transcript.svelte",
-        "board/src/routes/+page.svelte"
+        "board/src/routes/+page.svelte",
+        "board/src/lib/components/ItemContent.svelte",
+        "board/src/lib/components/ModelPicker.svelte"
       ],
       "tests": [
         "board/tests/unit/messages.test.ts",
         "board/tests/browser/controller-short-name.test.ts",
         "board/tests/browser/controller-page.test.ts",
         "board/tests/browser/herdr-controller-send.test.ts",
-        "board/tests/browser/closed-agents-page.test.ts"
+        "board/tests/browser/closed-agents-page.test.ts",
+        "board/tests/server/appearance.test.ts",
+        "board/tests/browser/herdr-off-roster.test.ts"
       ]
     },
     {
