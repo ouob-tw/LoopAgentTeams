@@ -13,7 +13,7 @@
       "tests": ["board/tests/browser/board-ask.test.ts"]
     },
     {
-      "paths": ["board/src/lib/components/AgentInfo.svelte", "board/src/lib/components/AgentList.svelte", "board/src/lib/components/AgentLog.svelte", "board/src/lib/board/agent-actions.ts", "board/src/lib/server/agents.ts", "board/src/lib/server/watch.ts"],
+      "paths": ["board/src/routes/+page.svelte", "board/src/lib/components/AgentInfo.svelte", "board/src/lib/components/AgentList.svelte", "board/src/lib/components/AgentLog.svelte", "board/src/lib/board/agent-actions.ts", "board/src/lib/server/agents.ts", "board/src/lib/server/watch.ts"],
       "tests": ["board/tests/browser/board-ask.test.ts", "board/tests/server/board-asks.test.ts"]
     },
     {
