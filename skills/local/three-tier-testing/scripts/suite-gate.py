@@ -2547,10 +2547,20 @@ def release_command(root, suite):
     return f'cd {shlex.quote(str(cwd))} && {run}'
 
 
+def lacking_full_suites(root, commit, registry):
+    """The registered full suites with no reusable pass for commit's content (its tree plus
+    `fingerprint_include` files from the work tree, the command and its directory: the
+    fingerprint the gate would compute). ValueError when the registry lists no full suites,
+    RuntimeError when Git fails. LAT's pre-authorization check calls this too."""
+    suites = read_full_suites(registry)
+    tree = content_tree(root, include_patterns(registry), commit)
+    return [s for s in suites if not reusable_record(
+        digest(tree, [s['command']], rel_cwd(root, root / s['cwd'])))]
+
+
 def cmd_pre_push():
     """Git pre-push: refuse pushing main or a tag unless every registered full suite has a
-    reusable pass for the pushed commit (its tree plus `fingerprint_include` files from the
-    work tree, the command and its directory: the fingerprint the gate would compute)."""
+    reusable pass for the pushed commit (lacking_full_suites)."""
     root = repo_root(Path.cwd())
     lines = sys.stdin.read().splitlines()
     if root is None:
@@ -2561,16 +2571,13 @@ def cmd_pre_push():
         if not commits:
             return 0
         registry = load_registry(root) or {}
-        suites = read_full_suites(registry)
         include = include_patterns(registry)
         missing, differs = {}, []
         for commit, refs in commits.items():
-            tree = content_tree(root, include, commit)
-            lacking = [s for s in suites if not reusable_record(
-                digest(tree, [s['command']], rel_cwd(root, root / s['cwd'])))]
+            lacking = lacking_full_suites(root, commit, registry)
             if lacking:
                 missing[commit] = (refs, lacking)
-                if content_tree(root, include) != tree:
+                if content_tree(root, include) != content_tree(root, include, commit):
                     differs.append(commit)
     except (RuntimeError, ValueError) as exc:
         warn(f'push refused: {exc}. `git push --no-verify` skips this check.')

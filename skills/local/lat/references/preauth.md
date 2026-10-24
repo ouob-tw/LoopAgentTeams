@@ -30,6 +30,7 @@ uv run --no-project python "$lat_dir/scripts/lat-preauth.py" show
 ```toml
 version = 1
 experiment = true
+integration_branch = "dev"
 
 [actions.merge]
 allow = true
@@ -46,6 +47,7 @@ must_ask = ["…"]
 source = "<待決紀錄 ID>"
 ```
 
+- 最上層的鍵：`version`（只能是 1）、`experiment`、`integration_branch`（整合分支名稱；本輪工作總表沒寫整合分支時才用，哪一層都可寫，窄層優先）。
 - 動作段 `[actions.<動作>]` 的鍵：`allow`（true／false）、`branches`（字串清單）、`target`（字串，只取專案層，其他層寫了不生效）、`source`（字串）。`[advisor]` 的鍵：`extended`、`may_settle`、`must_ask`、`source`。`source` 是出處，不參與判斷，`show` 與 `check` 附在該層的值旁。
 - 動作固定五種：`merge`（合併到整合分支）、`push`（推送到遠端）、`deploy-test`、`deploy-prod`、`install-host`（更新主機上安裝的 Skills 與 hooks）。
 - 修改或縮減已確認驗收（`change-acceptance`）、花錢或動帳號額度（`spend`）、刪使用者資料或 shred（`delete-user-data`）、開新票擴大工作量（`new-ticket`）永遠要問：查詢一律 `ask`，寫進設定算錯誤。
@@ -55,5 +57,8 @@ source = "<待決紀錄 ID>"
 工具強制，設定沒有鍵能拿掉：
 
 - `merge`、`push`：要給 `--branch`，且分支在有效的 `branches` 清單內；沒有任何層寫 `branches` 就 `ask`。
-- `deploy-test`、`deploy-prod`、`install-host`：在主工作區執行，且 HEAD 等於整合分支（本輪工作總表的 `integration_branch`）的最新版本。`deploy-test` 另要求專案層寫了 `target`。
-- `push`、`deploy-test`、`deploy-prod`、`install-host` 的整套測試閘門核對尚未接上，目前一律 `ask`，原因為 `full-suite gate check is not wired yet`。
+- `push` 另核對兩件事，要推的版本是 `--commit`，沒給就是該分支的本地最新版本：
+  - 遠端沒有的提交（`git log <版本> --not --remotes`，不會先 fetch）每一個的提交訊息都要引用票號（`#313` 或 `owner/repo#313`），而且引用的票號全部是本輪工作總表上的票。沒有票號、或引用了總表以外的票時 `ask`，原因列出那些提交；找不到本輪工作總表也 `ask`。
+  - 整套測試閘門：見下方。
+- `deploy-test`、`deploy-prod`、`install-host`：在主工作區執行，且 HEAD 等於整合分支的最新版本；給了 `--commit` 時必須就是 HEAD。整合分支取本輪工作總表的 `integration_branch`，總表沒寫（例如 `activate` 建立的總表）才取設定的 `integration_branch`，兩者都沒有就 `ask`。`deploy-test` 另要求專案層寫了 `target`。
+- 整套測試閘門（`push`、`deploy-test`、`deploy-prod`、`install-host`）：沿用 three-tier-testing 閘門推送前檢查的同一段程式，依該版本的內容、每一套整套命令與執行目錄算出指紋，登記檔 `full_suites` 的每一套都要有可沿用的通過紀錄。沒有紀錄、只有失敗紀錄、或版本內容變了使舊紀錄不適用，都 `ask` 並寫出缺的那一套；登記檔沒列整套也 `ask`。只讀閘門紀錄，不跑測試。
