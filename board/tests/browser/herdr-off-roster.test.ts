@@ -225,7 +225,7 @@ for (const width of [1280, 390]) {
 		expect(await tab.eval(FITS)).toBe(true);
 		await tab.eval(`(() => { const box = document.querySelector('${WAKE} textarea'); box.value = ${JSON.stringify(text)}; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
 		await tab.eval(`document.querySelector('${WAKE} [data-action="wake"]').click()`);
-		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已開始接回 @gone-${width}')`, 'the notice');
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已開始接回 @${width}')`, 'the notice');
 		// A controller wake: resumed with its text, in its sent log, not as an agent.
 		expect(resumes()).toEqual([['r', session, '--terminal', 'herdr', '--no-run-here', '--go', '--hcom-prompt', text]]);
 		const wake = (await sentLog(session)).find((entry) => 'text' in entry && entry.text === text);

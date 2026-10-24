@@ -2,6 +2,7 @@
 	// One controller as the roster shows it: project, status and name, its current phase, and the
 	// duty it recorded, each cut to one line with an ellipsis. Hovering the card, or pressing and
 	// holding it on a touch screen, explains it with all of them.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import { Explainer } from '#lib/board/explain.svelte.ts';
 	import { phaseText, type Controller } from '#lib/board/types.ts';
 	import ControllerExplain from './ControllerExplain.svelte';
@@ -33,7 +34,7 @@
 	<strong class="project">{controller.project}</strong>
 	<span class="who">
 		<StatusMark status={controller.status} />
-		<span class="handle">@{controller.hcomName}</span>
+		<span class="handle" title="@{controller.hcomName}">@{lastSegment(controller.hcomName)}</span>
 		{#if controller.paused}
 			<HcomBadge hcom="paused" />
 		{/if}

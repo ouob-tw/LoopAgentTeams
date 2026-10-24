@@ -195,7 +195,7 @@ for (const width of [1280, 390]) {
 		]);
 		// Each row: the tab's and HCOM names, client, folder, old workspace and when it stopped.
 		const week = await rowText('s-week');
-		for (const part of ['分頁-s-week', '@n-s-week', 'codex', 's-week', 'Beta']) expect(week).toContain(part);
+		for (const part of ['分頁-s-week', '@week', 'codex', 's-week', 'Beta']) expect(week).toContain(part);
 		// 接回 is on the agent's page, not its row.
 		expect(week).not.toContain('接回');
 		expect(await tab.eval(`document.querySelectorAll('.inbox .closed [data-action="resume"]').length`)).toBe(0);
@@ -222,7 +222,7 @@ for (const width of [1280, 390]) {
 		expect(await tab.eval(`document.querySelector('[data-closed="s-yesterday"]').classList.contains('current')`)).toBe(true);
 		// Its card: closed, the tab's and HCOM names, folder, old workspace and when it stopped; then 接回.
 		const card = await tab.eval<string>(`document.querySelector('.detail [data-closed-agent]').innerText`);
-		for (const part of ['已關閉', '分頁-s-yesterday', '@n-s-yesterday', '/home/someone/projects/s-yesterday', 'Alpha', 's-yesterday']) expect(card).toContain(part);
+		for (const part of ['已關閉', '分頁-s-yesterday', '@yesterday', '/home/someone/projects/s-yesterday', 'Alpha', 's-yesterday']) expect(card).toContain(part);
 		expect(card).toMatch(/\d+\/\d+ 12:00/);
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(RESUME)})?.innerText`)).toBe('接回');
 		// The translation button sits at the right end of the 對話紀錄 heading row.
@@ -239,7 +239,7 @@ for (const width of [1280, 390]) {
 		const box = `.dock textarea`;
 		expect(await tab.eval(`document.querySelector('${box}').disabled`)).toBe(true);
 		expect(await tab.eval(`document.querySelector('${box}').placeholder`)).toBe('已關閉，先接回才能傳訊息。');
-		expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @n-s-yesterday');
+		expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @yesterday');
 		expect(await tab.eval(FITS)).toBe(true);
 
 		await tab.eval(`document.querySelector('.detail .topbar button[aria-label="返回"]').click()`);
@@ -271,7 +271,7 @@ test.skipIf(!CHROME)("a draft kept from before is not sent to the closed agent, 
 	);
 	const wakes = () => sentLog().filter((line) => line.kind === 'wake').length;
 	const before = wakes();
-	for (const [session, draft, to] of [['s-yesterday', '還沒送出', '@n-s-yesterday'], ['s-lead', '@lead 繼續', '@lead']]) {
+	for (const [session, draft, to] of [['s-yesterday', '還沒送出', '@yesterday'], ['s-lead', '@lead 繼續', '@lead']]) {
 		await openClosed(session);
 		await tab.until(`document.querySelector('.dock textarea').value === ${JSON.stringify(draft)}`, 'the kept draft');
 		expect(await tab.eval(`document.querySelector('.dock textarea').disabled`)).toBe(true);
@@ -315,7 +315,7 @@ test.skipIf(!CHROME)('a 接回 that fails stays on the page and the row with why
 	await tab.until(`(document.querySelector('.detail .controls')?.innerText ?? '').includes('接回失敗')`, 'the failure on the page');
 	expect(await tab.eval(`document.querySelector('.detail .controls').innerText`)).toContain('hcom 接回失敗');
 	expect(await rowText('s-fail')).toContain('hcom 接回失敗');
-	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('沒有接回 @n-s-fail')`, 'the failure notice');
+	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('沒有接回 @fail')`, 'the failure notice');
 	expect(sentLog().filter((line) => line.action === 'resume' && line.agentId === 's-fail')).toMatchObject([{ agentId: 's-fail', ok: false }]);
 	expect(await tab.eval(`document.querySelector(${JSON.stringify(RESUME)}).disabled`)).toBe(false);
 }, 30_000);
@@ -331,7 +331,7 @@ test.skipIf(!CHROME)("390px: 接回 from the page brings the agent back to its w
 	expect(await tab.eval(`!!document.querySelector('.detail [data-closed-agent]')`)).toBe(false);
 	expect((await screen()).search).toBe('?agent=s-today');
 	await tab.until(`!document.querySelector('[data-closed="s-today"]')`, 'the row to leave');
-	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已開始接回 @n-s-today')`, 'the notice');
+	await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已開始接回 @today')`, 'the notice');
 	const resumed = readFileSync(join(fixture.dir, 'hcom-calls.jsonl'), 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call.args[0] === 'r');
 	expect(resumed.at(-1)).toMatchObject({ args: ['r', 's-today', '--terminal', 'herdr', '--no-run-here', '--go'], workspace: 'wA' });
 	await until(() => sentLog().find((line) => line.action === 'resume' && line.ok), 10_000, 'the resume logged');

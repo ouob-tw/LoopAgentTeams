@@ -2,7 +2,7 @@
 	// A closed agent's page, opened from the 已關閉 section, laid out like a running agent's: who it
 	// was and where it ran, its 接回 where a running agent's 關閉 sits, then its conversation up to the
 	// stop. Nothing is sent to it from the command line until it is back.
-	import { folderName } from '#lib/board/agents.ts';
+	import { folderName, lastSegment } from '#lib/board/agents.ts';
 	import { stoppedText, type ClosedAgent } from '#lib/board/closed-agents.ts';
 	import type { Controller } from '#lib/board/types.ts';
 	import ClosedResume from './ClosedResume.svelte';
@@ -22,15 +22,15 @@
 		controllers: Controller[];
 	} = $props();
 
-	const name = $derived(agent.tab ?? `@${agent.hcomName}`);
+	const name = $derived(agent.tab ?? `@${lastSegment(agent.hcomName)}`);
 	const speaker = $derived({ id: agent.id, hcomName: agent.hcomName, lastReportAt: null });
 </script>
 
 <article class="profile" data-closed-agent={agent.id}>
 	<header>
 		<span class="status"><StatusMark status="closed" decorative />已關閉</span>
-		<h2>{name}</h2>
-		{#if agent.tab}<span class="handle"><span class="dot" aria-hidden="true">·</span>@{agent.hcomName}</span>{/if}
+		<h2 title={agent.tab ? undefined : `@${agent.hcomName}`}>{name}</h2>
+		{#if agent.tab}<span class="handle"><span class="dot" aria-hidden="true">·</span><span title="@{agent.hcomName}">@{lastSegment(agent.hcomName)}</span></span>{/if}
 		<span class="chip">{folderName(agent.folder)}・{agent.client}</span>
 		{#if agent.controller}
 			<span class="tag">LAT 主控</span>

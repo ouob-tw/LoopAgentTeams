@@ -603,7 +603,7 @@ for (const [width, name] of [[1280, 'vera'], [390, 'wren']] as const) {
 			await press(dialog, '放棄切換');
 			await tab.until(`document.querySelector(${JSON.stringify(dialog)}).innerText.includes('放棄這次切換？')`, 'the confirmation again');
 			await press(dialog, '確認放棄');
-			await tab.until(`document.querySelector('.toasts')?.innerText.includes('已放棄 ${name} 的這次切換')`, 'the result');
+			await tab.until(`document.querySelector('.toasts')?.innerText.includes('已放棄 @${name} 的這次切換')`, 'the result');
 			await tab.until(`!document.querySelector('.dock .pill-slot .alert')`, 'the ⚠ gone');
 			// Ended with no command.
 			expect(hcomCalls().length).toBe(before);

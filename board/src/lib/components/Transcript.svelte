@@ -9,6 +9,7 @@
 	// place; a message whose questions the board has no data for stays text. Given a report card, a
 	// DONE report of the inbox shows its card in place of its text. With 中文 picked above it, the
 	// English replies shown are translated, each with its original a click away.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
@@ -531,7 +532,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 						<li class="said" class:reported={!!marked} data-kind={segment.item.kind} data-translation={translation?.status}>
 							<p class="meta">
 								{#if marked}<span class="label">{itemLabel(marked)}</span>{/if}
-								<span>{segment.item.kind === 'user' ? '你' : `@${controller.hcomName}`}</span>
+								<span title={segment.item.kind === 'user' ? undefined : `@${controller.hcomName}`}>{segment.item.kind === 'user' ? '你' : `@${lastSegment(controller.hcomName)}`}</span>
 								{#if segment.item.time}
 									<time datetime={segment.item.time}>{formatTime(segment.item.time)}</time>
 								{/if}

@@ -1,6 +1,7 @@
 <script lang="ts">
 	// What explaining a controller shows, beside its card or its mark: who and where it stands, then
 	// what it is responsible for.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import { phaseText, STATUS_LABEL, type Controller } from '#lib/board/types.ts';
 	import DutyText from './DutyText.svelte';
 
@@ -8,7 +9,7 @@
 </script>
 
 <strong>{controller.project}</strong>
-<span class="handle">@{controller.hcomName}</span>
+<span class="handle" title="@{controller.hcomName}">@{lastSegment(controller.hcomName)}</span>
 <span>{STATUS_LABEL[controller.status]}{controller.paused ? '・暫停通訊' : ''}：{phaseText(controller)}</span>
 {#if controller.pendingCount}<span>待決 {controller.pendingCount} 題</span>{/if}
 {#if controller.error}<span class="error">⚠ {controller.error}</span>{/if}

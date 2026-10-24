@@ -1,6 +1,7 @@
 <script lang="ts">
 	// The full content of one inbox item. A question that is still waiting can be answered here; one
 	// that is answered is read-only, its choice marked among its options and the note under them.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import { ANSWER_STATE_TEXT, chosenIn } from '#lib/board/answers.ts';
 	import { answering, complete } from '#lib/board/answering.svelte.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
@@ -156,7 +157,7 @@
 			<span class="id">{item.question.id} r{item.question.revision}</span>
 			<span>{KIND_TEXT[item.question.kind] ?? item.question.kind}</span>
 		{/if}
-		{#if handle}<span class="handle">@{handle}</span>{/if}
+		{#if handle}<span class="handle" title="@{handle}">@{lastSegment(handle)}</span>{/if}
 		<time datetime={item.time}>{noticeTime(item.time, clock.now, clock.timeZone)}</time>
 	</header>
 	<h2>{@html item.title ? renderLinks(item.title) : '（沒有標題）'}</h2>

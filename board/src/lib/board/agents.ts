@@ -52,7 +52,12 @@ export function cardName(agent: Agent): { title: string; hcom: string | null } {
 /** Its name as its own page and the command line say it: an hcom name without the tags its
  *  launcher put in front (`lagu-composer-bure` is `bure`), else the name the list gives it. */
 export function shortName(agent: Agent): string {
-	return agent.hcomName ? agent.hcomName.split('-').at(-1) || agent.hcomName : agent.name;
+	return agent.hcomName ? lastSegment(agent.hcomName) : agent.name;
+}
+
+/** An hcom name without the tags its launcher put in front: its last `-` part. */
+export function lastSegment(hcomName: string): string {
+	return hcomName.split('-').at(-1) || hcomName;
 }
 
 /** The last part of a folder path, as a project name. */

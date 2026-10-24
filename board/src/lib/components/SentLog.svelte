@@ -2,6 +2,7 @@
 	// What the user sent to this controller from the board, on any logged-in device: messages typed
 	// into its client, answers to its questions, the launch that started it, its wakes, its
 	// model switches and the interrupts of its turn.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import { AGENT_ACTION_LABEL } from '#lib/board/agent-actions.ts';
 	import { ANSWER_STATE_TEXT } from '#lib/board/answers.ts';
 	import { formatTime } from '#lib/board/format.ts';
@@ -23,7 +24,7 @@
 	// Shown while the problem lasts, without pushing the log down.
 	$effect(() => {
 		const id = controller.id;
-		toasts.stand(`sent-read:${id}`, 'failed', messaging.loadFailed[id] ? `@${controller.hcomName} 的送出紀錄讀取失敗。` : null);
+		toasts.stand(`sent-read:${id}`, 'failed', messaging.loadFailed[id] ? `@${lastSegment(controller.hcomName)} 的送出紀錄讀取失敗。` : null);
 		const logError = messaging.logError[id];
 		toasts.stand(`sent-write:${id}`, 'failed', logError ? `送出紀錄寫入失敗，答覆的狀態可能不是最新的：${logError}` : null);
 		return () => {

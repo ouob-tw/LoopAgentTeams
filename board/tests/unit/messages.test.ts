@@ -81,3 +81,25 @@ test('Enter while the input method is composing never sends', () => {
 test('other keys never send', () => {
 	expect(sendsOnEnter(key({ key: 'a', keyCode: 65 }), false)).toBe(false);
 });
+
+test('@last part of a tagged name picks the same controller as the full name', () => {
+	const tagged = { id: 's-4', hcomName: 'dipo-latpstack-tevu', status: 'working' as const };
+	const list = [luna, tagged];
+	expect(parseCommand('@tevu 好', list, luna)).toEqual({ ok: true, controller: tagged, text: '好' });
+	expect(parseCommand('@dipo-latpstack-tevu 好', list, luna)).toEqual({ ok: true, controller: tagged, text: '好' });
+});
+
+test('a last part that fits two controllers sends nothing and lists the full names', () => {
+	const a = { id: 's-5', hcomName: 'a-tevu', status: 'working' as const };
+	const b = { id: 's-6', hcomName: 'b-tevu', status: 'waiting' as const };
+	const result = parseCommand('@tevu 好', [a, b], luna);
+	expect(result.ok).toBe(false);
+	if (!result.ok) expect(result.reason).toContain('名稱重複，請打完整名稱：@a-tevu、@b-tevu');
+	expect(parseCommand('@a-tevu 好', [a, b], luna)).toEqual({ ok: true, controller: a, text: '好' });
+});
+
+test('a stopped controller with the same last part does not make a running one ambiguous', () => {
+	const old = { id: 's-7', hcomName: 'old-tevu', status: 'closed' as const };
+	const live = { id: 's-8', hcomName: 'new-tevu', status: 'working' as const };
+	expect(parseCommand('@tevu 好', [old, live], luna)).toEqual({ ok: true, controller: live, text: '好' });
+});

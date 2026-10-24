@@ -1,5 +1,6 @@
 <script lang="ts">
 	// One inbox item in a list: kind, title, owner label and time.
+	import { lastSegment } from '#lib/board/agents.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
 	import { isAnswered, itemLabel, type InboxItem } from '#lib/board/types.ts';
@@ -39,9 +40,9 @@
 	<div class="under">
 		{#if showOwner}
 			{#if onowner}
-				<button class="owner" title="{item.project} · @{item.hcomName}" onclick={onowner}>{item.project} · @{item.hcomName}</button>
+				<button class="owner" title="{item.project} · @{item.hcomName}" onclick={onowner}>{item.project} · @{lastSegment(item.hcomName)}</button>
 			{:else}
-				<span class="owner" title="{item.project} · @{item.hcomName}">{item.project} · @{item.hcomName}</span>
+				<span class="owner" title="{item.project} · @{item.hcomName}">{item.project} · @{lastSegment(item.hcomName)}</span>
 			{/if}
 		{/if}
 		<span class="meta">

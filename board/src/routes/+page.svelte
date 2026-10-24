@@ -16,7 +16,7 @@
 	import { Navigation } from '#lib/board/navigation.svelte.ts';
 	import { appearance } from '#lib/board/appearance.svelte.ts';
 	import { voice } from '#lib/board/voice.svelte.ts';
-	import { folderName, workspaceFolders } from '#lib/board/agents.ts';
+	import { folderName, lastSegment, shortName, workspaceFolders } from '#lib/board/agents.ts';
 	import { remember, remembered, type Column } from '#lib/board/prefs.ts';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import { everyController, type InboxItem, type KnownAgent } from '#lib/board/types.ts';
@@ -335,7 +335,7 @@
 
 {#snippet names(owner: { project: string; hcomName: string })}
 	<strong>{owner.project}</strong>
-	<span class="handle">@{owner.hcomName}</span>
+	<span class="handle" title="@{owner.hcomName}">@{lastSegment(owner.hcomName)}</span>
 {/snippet}
 
 {#snippet refresh()}
@@ -480,12 +480,12 @@
 					{#if agent}
 						<span class="whose" title="{agent.folder} {agent.name}">
 							<strong>{folderName(agent.folder)}</strong>
-							<span class="handle">{agent.hcomName ? `@${agent.hcomName}` : agent.name}</span>
+							<span class="handle">{agent.hcomName ? `@${shortName(agent)}` : agent.name}</span>
 						</span>
 					{:else if closedAgent}
 						<span class="whose" title="{closedAgent.folder} @{closedAgent.hcomName}">
 							<strong>{folderName(closedAgent.folder)}</strong>
-							<span class="handle">@{closedAgent.hcomName}</span>
+							<span class="handle">@{lastSegment(closedAgent.hcomName)}</span>
 						</span>
 					{:else if owner}
 						<!-- Tappable while the controller is on the roster; an archived item of one that left is not. -->
@@ -577,7 +577,7 @@
 							onunread={(key) => board.mark(key, false)}
 						/>
 					{/key}
-					<p class="context">{item.project} · @{item.hcomName}（已不在名冊上）</p>
+					<p class="context">{item.project} · <span title="@{item.hcomName}">@{lastSegment(item.hcomName)}</span>（已不在名冊上）</p>
 				{/if}
 			{/if}
 		</section>
