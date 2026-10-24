@@ -6,12 +6,10 @@
 
 	let {
 		row,
-		current = false,
 		showOwner = true,
 		onopen
 	}: {
 		row: AskRow;
-		current?: boolean;
 		showOwner?: boolean;
 		onopen: (row: AskRow) => void;
 	} = $props();
@@ -28,8 +26,8 @@
 	const title = $derived(askTitle(row));
 </script>
 
-<div class="row" class:fresh={row.open} class:current data-item={row.key} data-ask-row={row.ask.id}>
-	<button class="main" aria-current={current ? 'true' : undefined} onclick={() => onopen(row)}>
+<div class="row" class:fresh={row.open} data-item={row.key} data-ask-row={row.ask.id}>
+	<button class="main" onclick={() => onopen(row)}>
 		<span class="clamp">
 			<span class="kind">{ASK_KIND_TEXT[row.ask.kind]}</span>
 			<span class="title">{title}</span>
@@ -64,9 +62,6 @@
 		width: 7px;
 		height: 7px;
 		border-radius: 50%;
-		background: var(--accent);
-	}
-	.row.fresh::before {
 		background: var(--warn);
 	}
 	.row.fresh {
@@ -75,9 +70,6 @@
 	}
 	.row.fresh .title {
 		font-weight: 500;
-	}
-	.row.current {
-		border-color: var(--accent);
 	}
 	.row:has(.main:focus-visible) {
 		border-color: var(--accent);
@@ -144,10 +136,8 @@
 		white-space: nowrap;
 	}
 
-	/* Light theme (e-ink): no unread dot and no gutter for it. What still wants attention has a
-	   frame and its label filled with the theme's dark green (完成) or dark orange (求助, 待決), near
-	   black on e-ink and still coloured on a screen, at least 7:1 against the white text. A read one
-	   keeps the outlined label; the open row has a heavy frame. */
+	/* Light theme (e-ink): no unread dot and no gutter for it; what can still be answered has a frame
+	   and its label filled with the theme's dark orange, at least 7:1 against the white text. */
 	:global(:root[data-theme='light']) .row {
 		padding-left: 0.6rem;
 	}
@@ -156,11 +146,6 @@
 	}
 	:global(:root[data-theme='light']) .row.fresh::before {
 		content: none;
-	}
-	:global(:root[data-theme='light']) .row.current {
-		border-color: var(--text);
-		outline: 2px solid var(--text);
-		outline-offset: -3px;
 	}
 	:global(:root[data-theme='light']) .row:has(.main:focus-visible) {
 		border-color: var(--text);

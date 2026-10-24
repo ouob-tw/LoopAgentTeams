@@ -146,3 +146,24 @@ test('a timed-out ask stays in 待辦; answering sends a message and moves it to
 	expect(await text(tab, row('s-two'))).toContain('已傳話');
 	expect(tab.errors).toEqual([]);
 }, 60_000);
+
+test('opening an older ask from 待辦 leaves the operation record, and scrolls to its card below newer ones', async () => {
+	await ask('s-one', { LAT_BOARD_ASK_WAIT_SECONDS: '1' }, { ...QUESTION, question: 'Older question?' });
+	await ask('s-one', { LAT_BOARD_ASK_WAIT_SECONDS: '1' }, { ...QUESTION, question: 'Newer question?' });
+	const tab = await open('/?agent=s-one');
+	await tab.send('Emulation.setDeviceMetricsOverride', { width: 1280, height: 420, deviceScaleFactor: 1, mobile: false });
+	await tab.eval(`document.querySelector('.detail [data-tab="log"]').click()`);
+	await tab.until(`document.querySelector('#agent-panel-transcript').hidden`, 'the operation record');
+	const older = `.inbox [data-ask-row]:has(.title)`;
+	await tab.eval(`document.querySelector('[data-middle="inbox"]').click()`);
+	const olderRow = `[...document.querySelectorAll('${older}')].find((entry) => entry.innerText.includes('Older question?'))`;
+	await tab.until(olderRow, 'the older ask in 待辦');
+	await tab.eval(`${olderRow}.querySelector('.main').click()`);
+	const olderCard = `.detail [data-ask]:has(h2)`;
+	await tab.until(`!document.querySelector('#agent-panel-transcript').hidden`, 'the conversation to be shown again');
+	await tab.until(
+		`(() => { const cards = [...document.querySelectorAll('${olderCard}')].filter((entry) => entry.innerText.includes('Older question?')); const box = cards[0]?.getBoundingClientRect(); return !!box && box.top >= 0 && box.bottom <= innerHeight; })()`,
+		'the older card in view'
+	);
+	expect(tab.errors).toEqual([]);
+}, 60_000);

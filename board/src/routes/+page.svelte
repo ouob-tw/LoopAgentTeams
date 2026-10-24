@@ -2,7 +2,7 @@
 	// Wide: roster, inbox and content side by side, the roster foldable into a rail and both
 	// column borders draggable. Narrow: the roster strip above the inbox, and one content screen
 	// at a time once something is opened.
-	import { onMount, untrack } from 'svelte';
+	import { onMount, tick, untrack } from 'svelte';
 	import { afterNavigate, goto } from '$app/navigation';
 	import { page } from '$app/state';
 	import PanelLeftClose from '@lucide/svelte/icons/panel-left-close';
@@ -150,6 +150,7 @@
 			},
 			shown(next, scrollY) {
 				detail.scrollTop = 0;
+				askScreenShown = true;
 				// On a phone the button that was just pressed is hidden now; keep the keyboard on screen.
 				if (next !== null) detail.focus({ preventScroll: true });
 				window.scrollTo(0, scrollY);
@@ -289,22 +290,31 @@
 			board.mark(listed.key, true).catch(() => toasts.show('failed', '沒有標為已讀，請重新點開再試一次。'));
 		}
 	}
-	/** The ask whose card the screen being opened scrolls to, once the card is there. */
+	/** The ask whose card the screen being opened scrolls to, and whether that screen is shown (it
+	 *  starts at the top, so the card is scrolled to after). Dropped after a few seconds, so a card
+	 *  that never comes does not pull a later visit. */
 	let askToShow = $state<string | null>(null);
+	let askScreenShown = $state(false);
+	let askTimer: ReturnType<typeof setTimeout> | undefined;
 	/** A permission ask of a controller opens the controller's page; every other ask opens its agent's. */
 	function openAsk(row: AskRow) {
 		const owner = row.ask.kind === 'permission' ? controllers.find((entry) => entry.id === row.ask.sessionId) : undefined;
 		askToShow = row.ask.id;
+		askScreenShown = false;
+		clearTimeout(askTimer);
+		askTimer = setTimeout(() => (askToShow = null), 5_000);
 		navigation.go(owner ? { kind: 'controller', id: owner.id } : { kind: 'agent', id: row.ask.sessionId });
 	}
 	$effect(() => {
-		if (askToShow === null) return;
-		if (view?.kind !== 'agent' && view?.kind !== 'controller') return;
+		if (askToShow === null || !askScreenShown) return;
 		void board.snapshot.asks;
 		const card = detail?.querySelector(`[data-ask="${CSS.escape(askToShow)}"]`);
 		if (!card) return;
-		card.scrollIntoView({ block: 'center' });
+		// The page may be on its operation record, which hides the card: back to the conversation first.
+		const reveal = card.closest('[hidden]') ? detail.querySelector<HTMLElement>('[data-tab="transcript"]') : null;
+		reveal?.click();
 		askToShow = null;
+		void tick().then(() => card.scrollIntoView({ block: 'center' }));
 	});
 	const openController = (id: string) => navigation.go({ kind: 'controller', id });
 	/** The phone's top-bar title: from an item it opens the controller's page; on that page it only

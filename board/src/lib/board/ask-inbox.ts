@@ -2,6 +2,7 @@
 // among the processed items (已處理) with its result. Pure, shared by the page and its tests.
 import { BOARD_ASK_STATE_TEXT, ENDED_ASK_STATES, type BoardAsk } from './board-asks.ts';
 import { processedTime } from './archive.ts';
+import type { InboxEntry } from './inbox.ts';
 import type { Agent, InboxItem } from './types.ts';
 
 /** A board ask as the inbox lists it, with the agent it belongs to. */
@@ -70,9 +71,9 @@ export const askEndedTime = (row: AskRow): number => Date.parse(row.ask.endedAt 
 
 /** The processed items loaded and the ended asks, newest handled first. While more items are to
  *  be loaded, an ask older than the oldest one loaded is left out: it comes with its page. */
-export function mergeProcessed(items: readonly InboxItem[], rows: readonly AskRow[], more: boolean): ({ item: InboxItem } | { row: AskRow })[] {
-	const loaded = items.map((item) => ({ item, at: processedTime(item) }));
+export function mergeProcessed(items: readonly InboxItem[], rows: readonly AskRow[], more: boolean): InboxEntry[] {
+	const loaded = items.map((item) => ({ entry: { kind: 'item', item } as InboxEntry, at: processedTime(item) }));
 	const oldest = more ? (loaded.at(-1)?.at ?? -Infinity) : -Infinity;
-	const asks = rows.filter((row) => askEndedTime(row) >= oldest).map((row) => ({ row, at: askEndedTime(row) }));
-	return [...loaded, ...asks].toSorted((a, b) => b.at - a.at).map(({ at: _at, ...entry }) => entry);
+	const asks = rows.filter((row) => askEndedTime(row) >= oldest).map((row) => ({ entry: { kind: 'ask', row } as InboxEntry, at: askEndedTime(row) }));
+	return [...loaded, ...asks].toSorted((a, b) => b.at - a.at).map(({ entry }) => entry);
 }

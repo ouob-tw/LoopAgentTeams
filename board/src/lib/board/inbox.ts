@@ -65,8 +65,8 @@ export function groupByProject(items: InboxItem[]): ProjectGroup[] {
 /** An inbox entry: an item, or a board ask. */
 export type InboxEntry = { kind: 'item'; item: InboxItem } | { kind: 'ask'; row: AskRow };
 
-const entryKey = (entry: InboxEntry) => (entry.kind === 'item' ? entry.item.key : entry.row.key);
-const entryStamp = (entry: InboxEntry) => (entry.kind === 'item' ? stamp(entry.item) : stamp({ time: entry.row.time } as InboxItem));
+export const entryKey = (entry: InboxEntry) => (entry.kind === 'item' ? entry.item.key : entry.row.key);
+const entryStamp = (entry: InboxEntry) => (entry.kind === 'item' ? stamp(entry.item) : Date.parse(entry.row.time));
 /** Unsent questions, and asks the user can still answer, go first. */
 const entryPinned = (entry: InboxEntry) => (entry.kind === 'item' ? pinned(entry.item) : entry.row.open);
 
@@ -119,5 +119,3 @@ export function groupEntriesByProject(items: InboxItem[], rows: AskRow[]): Proje
 		.map((project) => ({ ...project, agents: project.agents.toSorted((a, b) => first(rank(agentEntries(a)), rank(agentEntries(b)))) }))
 		.toSorted((a, b) => first(rank(entriesOf(a)), rank(entriesOf(b))));
 }
-
-export { entryKey };

@@ -55,7 +55,7 @@ test('the project is the agent\'s working folder; an agent no longer listed fall
 const report = (key: string, time: string): InboxReport =>
 	({ kind: 'report', key, time, title: key, readAt: time, controllerId: 'c', hcomName: 'luna', project: 'alpha', workspace: '/work/alpha', tag: 'DONE', message: '', archived: false }) as InboxReport;
 
-test('time order: asks waiting come first, then newest first, mixed with the other items', () => {
+test('time order: asks that can be answered come first, then newest first, mixed with the other items', () => {
 	const rows = askRows([ask('old', { createdAt: at('08:00') }), ask('new', { createdAt: at('10:00') }), ask('done', { state: 'filled', createdAt: at('11:00') })], AGENTS);
 	const order = sortEntries([report('r-mid', at('09:00')), report('r-late', at('12:00'))], rows).map((entry) => (entry.kind === 'item' ? entry.item.key : entry.row.ask.id));
 	expect(order).toEqual(['new', 'old', 'r-late', 'done', 'r-mid']);
@@ -76,7 +76,7 @@ test('processed list: ended asks join the archive by when they ended, those olde
 		AGENTS
 	);
 	const items = [report('r1', at('11:00')), report('r2', at('08:00'))];
-	const keys = (list: ReturnType<typeof mergeProcessed>) => list.map((entry) => ('item' in entry ? entry.item.key : entry.row.ask.id));
+	const keys = (list: ReturnType<typeof mergeProcessed>) => list.map((entry) => (entry.kind === 'item' ? entry.item.key : entry.row.ask.id));
 	expect(keys(mergeProcessed(items, rows, false))).toEqual(['late', 'r1', 'mid', 'r2', 'early']);
 	expect(keys(mergeProcessed(items, rows, true))).toEqual(['late', 'r1', 'mid', 'r2']);
 });
