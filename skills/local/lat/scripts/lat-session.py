@@ -1003,21 +1003,22 @@ def preauth_module():
     return module
 
 
-def question_sent(session_id, questions_path, identifier):
+def question_sent(session_id, questions_paths, identifier):
     """Whether a question already reached the user, in any revision.
 
-    It did when it is in the controller's own question file or that file's archive, or
-    when a DECIDE/HELP this session reported named it.
+    It did when it is in one of the controller's own question files or their archives,
+    or when a DECIDE/HELP this session reported named it.
     """
-    if questions_path is not None:
-        for path in (Path(questions_path), panel_module('questions')._archive_path(questions_path)):
+    archive = panel_module('questions')._archive_path
+    for questions_path in questions_paths:
+        for path in (Path(questions_path), archive(questions_path)):
             if any(question['id'] == identifier for question in read_questions(path)):
                 return True
     return any(name == identifier
                for name, _ in announced_questions(dict(session_id=session_id)))
 
 
-def question_preauth(decision_path, *, workspace, session_id, questions_path):
+def question_preauth(decision_path, *, workspace, session_id, questions_paths):
     """`(verdict, check line, sent)` rechecked under the current settings, or None when
     the record has no `- action:` line. An earlier `- preauth:` line is never read."""
     found = read_decision_action(decision_path)
@@ -1027,7 +1028,7 @@ def question_preauth(decision_path, *, workspace, session_id, questions_path):
     module = preauth_module()
     result = module.evaluate(action, branch=branch, commit=commit, workspace=workspace,
                              session=session_id)
-    sent = question_sent(session_id, questions_path, Path(decision_path).stem)
+    sent = question_sent(session_id, questions_paths, Path(decision_path).stem)
     return result['verdict'], module.verdict_line(result), sent
 
 
@@ -1035,14 +1036,20 @@ def preauth_stop_check(record, message):
     """`(reason, notes)`: hold questions not yet sent that the current settings allow;
     a sent one passes with a reminder, since only the user can release it."""
     decisions = Path(record['decisions_path'])
-    questions_path = own_questions_path(panel_module(), record)
+    panel = panel_module()
+    # A question stays sent after unbinding: the controller's files outlive the binding.
+    questions_paths = {own_questions_path(panel, record)} - {None}
+    if record.get('hcom_name'):
+        questions_paths |= {panel.new_questions_path(record['workspace'], record['hcom_name']),
+                            panel.legacy_questions_path(record['workspace'], record['hcom_name'])}
     held, notes = [], []
     for identifier in sorted({name for name, _ in question_identifiers(message)}):
         path = decisions / f'{identifier}.md'
         if not path.is_file():
             continue
         found = question_preauth(path, workspace=record['workspace'],
-                                 session_id=record['session_id'], questions_path=questions_path)
+                                 session_id=record['session_id'],
+                                 questions_paths=questions_paths)
         if found is None or found[0] != 'allow':
             continue
         if found[2]:

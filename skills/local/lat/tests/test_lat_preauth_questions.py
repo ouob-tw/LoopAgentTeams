@@ -206,6 +206,29 @@ class StopTests(PreauthQuestionTests):
                 self.assertIn('不再攔下', warning['systemMessage'])
                 (self.reports / f'{SESSION}.jsonl').unlink()
 
+    def test_unsent_allowed_help_question_is_held(self):
+        self.project.write_text(ALLOW_MERGE)
+        self.decision.write_text(RECORD + '- kind: help\n')
+        self.controller()
+        output = self.stop('問題全文\nHELP: LAT-P r1')
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn(self.HELD, output['reason'])
+
+    def test_question_on_the_panel_stays_sent_after_unbinding(self):
+        for client in ('codex', 'claude'):
+            with self.subTest(client=client):
+                self.controller(client)
+                questions = self.bind(client)
+                questions.unlink(missing_ok=True)
+                self.project.unlink(missing_ok=True)
+                self.assertEqual(self.upsert(questions).returncode, 0)
+                self.unbind()
+                self.project.write_text(ALLOW_MERGE)
+                output = self.stop('問題全文\nDECIDE: LAT-P r1', client)
+                self.assertEqual(set(output), {'systemMessage'})
+                self.assertIn(self.REMINDER, output['systemMessage'])
+                (self.reports / f'{SESSION}.jsonl').unlink()
+
     def test_question_asked_in_chat_then_allowed_passes_with_a_reminder(self):
         for client in ('codex', 'claude'):
             with self.subTest(client=client):

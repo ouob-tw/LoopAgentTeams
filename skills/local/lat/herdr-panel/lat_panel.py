@@ -508,7 +508,7 @@ def _preauth_recheck(questions, decisions, question_id):
                             if os.environ.get(key)), None)
             workspace = None
         return module.question_preauth(path, workspace=workspace, session_id=session,
-                                       questions_path=questions)
+                                       questions_paths=[questions])
     except Exception as error:  # noqa: BLE001 - asking the user stays the safe side
         print(f"lat-panel: pre-authorization recheck failed, writing the question anyway: "
               f"{error}", file=sys.stderr)

@@ -1111,6 +1111,8 @@ def set_decision_preauth(decision_path, verdict_line, *, now=None):
         old = re.search(r"^- preauth:.*$", text, re.MULTILINE | re.IGNORECASE)
         if old is None:
             old = re.search(r"^- action:.*$", text, re.MULTILINE | re.IGNORECASE)
+            if old is None:
+                raise ValueError(f"decision record has no - action: line: {decision_path}")
             updated = text[:old.end()] + "\n" + line + text[old.end():]
         else:
             updated = text[:old.start()] + line + text[old.end():]
