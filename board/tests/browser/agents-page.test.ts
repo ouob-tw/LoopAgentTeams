@@ -134,7 +134,6 @@ const openTab = () => tab.eval(`document.querySelector('[data-middle="agents"]')
 const BOX = '.dock .cmd textarea';
 const SEND = '.dock .cmd .send-slot button[aria-label="送出"]';
 const STOP = '.dock [data-action="interrupt"]';
-const CONFIRM_STOP = '.dock [data-action="confirm-interrupt"]';
 const click = (selector: string) => tab.eval(`document.querySelector(${JSON.stringify(selector)}).click()`);
 const openAgent = (id: string) => tab.eval(`document.querySelector('[data-agent="${id}"]').click()`);
 
@@ -245,7 +244,7 @@ const type = (text: string) =>
 const boxText = () => tab.eval<string>(`document.querySelector(${JSON.stringify(BOX)}).value`);
 
 for (const width of [1280, 390]) {
-	test.skipIf(!CHROME)(`${width}px: text is sent to an agent and an interrupt asks first; both show in its record`, async () => {
+	test.skipIf(!CHROME)(`${width}px: text is sent to an agent and an interrupt is one press; both show in its record`, async () => {
 		for (const file of ['herdr-calls.jsonl', 'board-state/sent-log.jsonl']) rmSync(join(fixture.dir, file), { force: true });
 		await visit(width, '?agent=s-plain');
 		// It waits on the user and nothing is typed: the send button is a stop.
@@ -255,13 +254,9 @@ for (const width of [1280, 390]) {
 		await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');
 		expect(herdrCalls()).toEqual([['agent', 'prompt', 'wA:p-s-plain', '請先停下來']]);
 
+		// One press: no confirmation comes up.
 		await click(STOP);
-		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
-		expect(await tab.eval(`document.querySelector('.dock .popup').innerText`)).toContain('Esc');
-		// Nothing is pressed before it is confirmed.
-		expect(herdrCalls()).toHaveLength(1);
-		expect(await tab.eval(FITS)).toBe(true);
-		await click(CONFIRM_STOP);
+		expect(await tab.eval(`!!document.querySelector('.dock .popup')`)).toBe(false);
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('已對')`, 'the interrupt notice');
 		expect(herdrCalls()).toEqual([
 			['agent', 'prompt', 'wA:p-s-plain', '請先停下來'],
@@ -314,8 +309,6 @@ test.skipIf(!CHROME)('while hcom cannot tell whether an agent is linked, its box
 		// Nor can it be closed: which of hcom and Herdr would close it is not known.
 		expect(await tab.eval(`document.querySelector('.detail [data-action="close"]').disabled`)).toBe(true);
 		await click(STOP);
-		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
-		await click(CONFIRM_STOP);
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('已對')`, 'the interrupt notice');
 		expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-new', 'esc']]);
 		expect(await tab.eval(FITS)).toBe(true);
@@ -350,8 +343,8 @@ test.skipIf(!CHROME)('an interrupt\'s notice names the agent interrupted, even w
 		await visit(1280, '?agent=s-plain');
 		await tab.until(`!!document.querySelector('.detail [data-agent="s-plain"]') && !!document.querySelector(${JSON.stringify(STOP)})`, 'the agent page');
 		await click(STOP);
-		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
-		await click(CONFIRM_STOP);
+		// Until Herdr answers the stop is off, so a second press sends nothing more.
+		await tab.until(`document.querySelector(${JSON.stringify(STOP)}).disabled`, 'the stop off while it is sent');
 		await openTab();
 		await openAgent('s-other');
 		await tab.until(`location.search === '?agent=s-other'`, 'the other agent');
@@ -844,8 +837,6 @@ test.skipIf(!CHROME)('an interrupt Herdr does not carry out says why, is recorde
 		await visit(390, '?agent=s-plain');
 		await tab.until(`!!document.querySelector('.detail [data-agent="s-plain"]') && !!document.querySelector(${JSON.stringify(STOP)})`, 'the agent page');
 		await click(STOP);
-		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
-		await click(CONFIRM_STOP);
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('pane went away')`, 'the reason');
 		const notices = (await screen()).notices;
 		expect(notices).toContain('Herdr 沒有送出 Esc：pane went away');
