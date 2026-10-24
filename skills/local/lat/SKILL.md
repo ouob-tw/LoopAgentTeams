@@ -26,7 +26,7 @@ LAT 管理角色、階段轉換與交接；各階段的做法交給對應 Matt s
 
 ## 主控恢復
 
-Codex 或 Claude 主控真正啟動 LAT 時，讀完專案設定後，第一個動作依 [主控恢復程序](references/recovery.md) 準備既有進度索引並以自己的 client activate，再建立執行清單；只閱讀／審查技能或擔任執行 Agent 不啟用。每個檢查點更新索引。compact／resume 收到提示時，依該程序完整重讀規則、references、進度與待決紀錄，核對 tracker 及授權後續作；交付／取消時 deactivate。activate 同時啟動停住監控，deactivate 停止它。
+Codex 或 Claude 主控真正啟動 LAT 時，讀完專案設定後，第一個動作依 [主控恢復程序](references/recovery.md) 準備既有進度索引並以自己的 client activate，再建立執行清單；只閱讀／審查技能或擔任執行 Agent 不啟用。每個檢查點更新索引。compact／resume 收到提示時，依該程序完整重讀規則、references、進度與待決紀錄，核對 tracker 及授權後續作；工作項進度以提示附上的工作總表 `show` 輸出為準。交付／取消時 deactivate。activate 同時啟動停住監控，deactivate 停止它。
 
 ## 角色
 
@@ -71,7 +71,7 @@ Orchestrator 啟動時，將下列清單建立為本次任務的進度紀錄。�
 - [ ] 驗收：Orchestrator 與 QA 先依下方「測試清單」合併需求與整合後實作的情境，再逐項執行；問題交回 Implementer 修正，更新受影響項目後複驗。
   - [ ] 使用者介面的驗收條件，須透過真實 UI 按使用者操作方式驗證；直接呼叫 API 可用於準備資料或診斷，不算 UI 驗收通過。
   - [ ] 對先前未攔下的缺陷，依證據辨別原因：缺少情境、走錯路徑、斷言不足、未執行／環境不符，或測試替換行為掩蓋缺陷；未知則保留未知。在同一修正與複驗流程補足覆蓋；修產品 bug 時，回歸證據依 three-tier-testing 的「測試可信度」要求處理。
-- [ ] 交付：Orchestrator 核對驗收證據，確認測試資源已依 three-tier-testing 清理或交接，並核對各任務已完成收尾或在任務卡明列待完成後續工作。回報成果與未完成事項；必要驗證未執行時，不宣告完成。
+- [ ] 交付：Orchestrator 核對驗收證據，確認測試資源已依 three-tier-testing 清理或交接，並核對各任務已完成收尾或在任務卡明列待完成後續工作；`DONE:` 與 deactivate 都會執行工作總表 `check`，未結案時 deactivate 只能以 `--force-unfinished --reason` 強制並留下原因。回報成果與未完成事項；必要驗證未執行時，不宣告完成。
   - [ ] 同步 tracker：本輪範圍內、每項驗收條件都有證據通過的 Ticket，留言交付 commit 與驗證證據後，依 tracker 說明關閉；本機檔案 tracker 把 Status 改為完成。驗收條件經使用者同意縮減時，留言寫明縮減內容並附同意出處；找不到同意紀錄就不關。部分完成、驗收未過或未驗證的 Ticket 保持開啟，留言寫明已完成與未完成項目。上層 Spec 在子票清單上所有 Ticket 都已關閉、測試清單在改動範圍內沒有 `FAIL`／`UNPROVEN`／`NOT_EXECUTED`，且 QA 未執行的主控項目（如主機安裝、首次實際執行）已有證據時，主控留言附證據後關閉，Spec 所出自的原 issue 一併關閉；不成立就保持開啟。拿不準就不關，列入交付回報的未完成事項。
 
 需要 Prototype／Wayfinder 時，加入對應子任務。後續修改或新證據若使先前驗證失效，重新開啟受影響項目；已關閉的 Ticket 一併重新打開並留言原因。
