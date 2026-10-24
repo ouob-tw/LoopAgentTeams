@@ -204,21 +204,17 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		for (const row of shown) {
 			if (row.kind === 'text' && row.item.kind === 'assistant' && !asking.has(row.item.seq) && isEnglish(row.item.text)) seqs.add(row.item.seq);
 		}
-		if (placedReport && isEnglish(placedReport.text)) seqs.add(placedReport.seq);
 		return seqs;
 	});
-	/** The text an opened report's card is placed in, translated like the report's card in the
-	 *  conversation; a question's card is not translated. */
-	const placedReport = $derived.by(() => {
-		if (!translating || !view || !target || isQuestion(target) || typeof place !== 'number') return null;
-		const text = view.items.find((item) => item.seq === place);
-		return text?.kind === 'assistant' ? text : null;
-	});
-	const placedTranslation = $derived(placedReport && english.has(placedReport.seq) ? (translated[placedReport.text] ?? { status: 'pending' as const }) : null);
+	/** The message of an opened report's card, translated like the report's card in the conversation,
+	 *  whether the card is placed at a text or shown above the conversation. A question's card is not
+	 *  translated. */
+	const placedText = $derived(translating && target && !isQuestion(target) ? target.message : null);
+	const placedTranslation = $derived(placedText && isEnglish(placedText) ? (translated[placedText] ?? { status: 'pending' as const }) : null);
 	// Newest first, what is loaded and not asked for yet; pushed and earlier parts as they come.
 	$effect(() => {
 		const texts = shown.flatMap((row) => (row.kind === 'text' && english.has(row.item.seq) ? [row.item.text] : []));
-		if (placedTranslation && placedReport) texts.unshift(placedReport.text);
+		if (placedTranslation && placedText) texts.unshift(placedText);
 		untrack(() => translations.want(texts));
 	});
 	$effect(() => () => translations.stop());
@@ -504,7 +500,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 <section class="history" data-block="transcript" bind:this={list} onsubmitcapture={hold}>
 	{#if held}<div class="head" bind:this={head} aria-hidden="true"></div>{/if}
 	{#if unplaced && card}
-		<div class="placed">{@render card(null)}</div>
+		<div class="placed">{@render card(placedTranslation)}</div>
 	{/if}
 	{#if view}
 		{#if view.skipped}

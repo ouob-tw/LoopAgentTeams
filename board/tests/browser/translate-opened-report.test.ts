@@ -13,6 +13,7 @@ const ROOT = join(import.meta.dir, '../..');
 const codexDir = mkdtempSync(join(tmpdir(), 'lat-board-codex-'));
 const DONE = 'The settings page change is done, and you can see it now on the preview.';
 const UNTRANSLATED = 'The migration script stopped halfway, and the team has to rerun it by hand.';
+const MISSING = 'The record of this turn is missing, so its report is shown without it.';
 const HELP = 'I am blocked on the deploy key, and I need you to send me a new one today.';
 const CARD = `document.querySelector('.detail .history li.placed article')`;
 
@@ -51,14 +52,18 @@ beforeAll(async () => {
 	cookie = await fixture.login('translate-opened-report');
 	const lead = fixture.bound('alpha', 'lead', { session_id: 's-lead' });
 	const helper = fixture.bound('beta', 'helper', { session_id: 's-helper' });
+	const ranger = fixture.bound('delta', 'ranger', { session_id: 's-ranger' });
 	const scout = fixture.bound('gamma', 'scout', { session_id: 's-scout' });
-	fixture.list([lead, helper, scout]);
+	fixture.list([lead, helper, scout, ranger]);
 	const time = new Date(Date.now() - 60_000).toISOString();
 	fixture.report('s-lead', { tag: 'DONE', summary: 'done-lead', message: DONE, time, hcom_name: 'lead', workspace: lead.workspace, final: true });
 	fixture.report('s-helper', { tag: 'HELP', summary: 'help-helper', message: HELP, time, hcom_name: 'helper', workspace: helper.workspace });
 	// Later tests report again for this one: opening a report reads it, and the inbox drops it.
 	fixture.report('s-scout', { tag: 'DONE', summary: 'done-scout', message: DONE, time, hcom_name: 'scout', workspace: scout.workspace, final: true });
+	// Its conversation does not hold the report's text: the card is shown above the conversation.
+	fixture.report('s-ranger', { tag: 'DONE', summary: 'done-ranger', message: MISSING, time, hcom_name: 'ranger', workspace: ranger.workspace, final: true });
 	mkdirSync(join(fixture.dir, 'transcripts'), { recursive: true });
+	writeFileSync(join(fixture.dir, 'transcripts', 's-ranger.jsonl'), JSON.stringify({ kind: 'assistant', time: null, text: 'Something else was said in this turn, and it has nothing to do with the report.' }) + '\n');
 	for (const [session, text] of [['s-lead', DONE], ['s-helper', HELP], ['s-scout', DONE]]) {
 		writeFileSync(join(fixture.dir, 'transcripts', `${session}.jsonl`), JSON.stringify({ kind: 'assistant', time, text }) + '\n');
 	}
@@ -94,6 +99,19 @@ test.skipIf(!CHROME)('in manual mode an opened report shows its original until �
 	expect(await tab.eval(`/譯：|翻譯中/.test(${CARD}.innerText)`)).toBe(false);
 	await tab.eval(`document.querySelector('.detail button.translate').click()`);
 	await tab.until(`${CARD}.innerText.includes('譯：${DONE}')`, 'the card translated');
+}, 60_000);
+
+test.skipIf(!CHROME)('a report whose text is not in its conversation is translated too, above the conversation', async () => {
+	await mode('auto');
+	const above = `document.querySelector('.detail .history div.placed article')`;
+	await tab.navigate(`${fixture.url}/?tab=inbox`);
+	await tab.until(
+		`(${above} || [...document.querySelectorAll('.row[data-item] .main')].find((row) => row.innerText.includes('done-ranger'))?.click(), !!${above})`,
+		'the card above the conversation'
+	);
+	await tab.until(`${above}.innerText.includes('譯：${MISSING}')`, 'the card translated');
+	await tab.eval(`[...${above}.querySelectorAll('button')].find((b) => b.innerText.includes('看原文')).click()`);
+	await tab.until(`${above}.querySelector('.original')?.innerText.includes(${JSON.stringify(MISSING)})`, 'the original');
 }, 60_000);
 
 test.skipIf(!CHROME)('a failed translation leaves the opened report as it was, with the failure note', async () => {
