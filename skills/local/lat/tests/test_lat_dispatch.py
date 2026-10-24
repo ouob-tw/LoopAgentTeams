@@ -4,6 +4,7 @@ import json
 import os
 from pathlib import Path
 import re
+import shlex
 import subprocess
 import sys
 import tempfile
@@ -346,6 +347,235 @@ class WatchCompatibilityTests(DispatchCase):
         cards, skipped = self.load_watch().monitored_task_cards(self.tasks, 'nanu', {})
         self.assertEqual(skipped, {})
         self.assertEqual(cards['nanu-impl123-fida']['status'], 'dispatched')
+
+
+LEDGER = SCRIPT.parent / 'lat-ledger.py'
+
+
+def git(cwd, *args):
+    return subprocess.run(['git', '-C', str(cwd), *args], check=True, capture_output=True,
+                          text=True).stdout.strip()
+
+
+class LedgerCase(DispatchCase):
+    """A real temp Git workspace with an initialised ledger; commands run as the agents would."""
+
+    def setUp(self):
+        super().setUp()
+        git(self.workspace, 'init', '-q', '-b', 'dev')
+        git(self.workspace, 'config', 'user.email', 't@example.com')
+        git(self.workspace, 'config', 'user.name', 'T')
+        (self.workspace / 'a.txt').write_text('a\n')
+        git(self.workspace, 'add', 'a.txt')
+        git(self.workspace, 'commit', '-q', '-m', 'first')
+        self.sha = git(self.workspace, 'rev-parse', 'HEAD')
+        self.ledger = self.workspace / '.lat' / 'ledgers' / 'round-1.json'
+        self.ledger_env = {**os.environ, 'SUITE_GATE_STATE_DIR': str(self.root / 'gate'),
+                           'XDG_CONFIG_HOME': str(self.root / 'config')}
+        self.ledger_env.pop('SUITE_GATE_CONFIG', None)
+        self.run_ledger('init', '--workspace', str(self.workspace), '--integration-branch', 'dev',
+                        '--orchestrator', 'nanu')
+
+    def run_ledger(self, *args):
+        result = subprocess.run(
+            [sys.executable, str(LEDGER), args[0], '--ledger', str(self.ledger), *args[1:]],
+            capture_output=True, text=True, env=self.ledger_env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def items(self):
+        return json.loads(self.run_ledger('show', '--json'))['items']
+
+    def ledger_card(self, *extra, evidence='commit'):
+        return self.card_with(
+            '--ledger', str(self.ledger), '--ticket', '#123', '--stage', 'impl',
+            '--evidence', evidence, '--deadline', '+2h', *extra)
+
+    def card_with(self, *extra):
+        result = self.run_script(*self.card_args(*extra))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return Path(result.stdout.splitlines()[0])
+
+    def brief_commands(self, card):
+        """The three ledger commands of a generated brief, with placeholders filled in."""
+        source = self.write_brief()
+        result = self.run_script('brief', '--card', str(card), '--input', str(source))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        text = (self.root / 'brief.brief.md').read_text()
+        commands = re.findall(r'`(uv run [^`]*lat-ledger\.py[^`]*)`', text)
+        self.assertEqual(len(commands), 3, text)
+        return text, commands
+
+
+class LedgerCardTests(LedgerCase):
+    def test_card_with_options_opens_assigns_and_records_the_row(self):
+        card = self.ledger_card('--depends', '')
+        row, = self.items()
+        self.assertEqual((row['id'], row['ticket'], row['stage'], row['status']),
+                         (1, '#123', 'impl', 'assigned'))
+        self.assertEqual((row['agent'], row['card']), ('nanu-impl123-fida', str(card)))
+        self.assertEqual(row['evidence_kinds'], ['commit'])
+        self.assertIsNotNone(row['deadline'])
+        text = card.read_text()
+        self.assertIn(f'- ledger row：1 ({self.ledger})\n', text)
+        self.assertIn('- status：dispatched\n', text)
+
+    def test_second_card_gets_the_next_row_and_can_depend_on_the_first(self):
+        self.ledger_card()
+        self.agents.append({'name': 'nanu-qa123-kora', 'tag': 'nanu-qa123'})
+        second = self.card_with('--ledger', str(self.ledger), '--ticket', '#123', '--stage', 'qa',
+                                '--evidence', 'file', '--deadline', '+3h', '--depends', '1')
+        self.assertIn('- ledger row：2 (', second.read_text())
+        self.assertEqual(self.items()[1]['depends_on'], [1])
+
+    def test_card_without_ledger_options_is_unchanged(self):
+        card = self.make_card()
+        self.assertNotIn('ledger row', card.read_text())
+        self.assertEqual(self.items(), [])
+
+    def test_ledger_options_need_the_ledger_and_the_ledger_needs_its_options(self):
+        stray = self.run_script(*self.card_args('--ticket', '#123'))
+        self.assertNotEqual(stray.returncode, 0)
+        self.assertIn('need --ledger', stray.stderr)
+        partial = self.run_script(*self.card_args('--ledger', str(self.ledger), '--ticket', '#1'))
+        self.assertNotEqual(partial.returncode, 0)
+        for name in ('--stage', '--evidence', '--deadline'):
+            self.assertIn(name, partial.stderr)
+        relative = self.run_script(*self.card_args(
+            '--ledger', 'ledger.json', '--ticket', '#1', '--stage', 'impl', '--evidence', 'commit',
+            '--deadline', '+1h'))
+        self.assertIn('absolute', relative.stderr)
+        missing = self.run_script(*self.card_args(
+            '--ledger', str(self.root / 'none.json'), '--ticket', '#1', '--stage', 'impl',
+            '--evidence', 'commit', '--deadline', '+1h'))
+        self.assertIn('does not exist', missing.stderr)
+        self.assertEqual(list(self.tasks.iterdir()), [])
+        self.assertEqual(self.items(), [])
+
+    def test_ledger_refusal_leaves_no_card(self):
+        result = self.run_script(*self.card_args(
+            '--ledger', str(self.ledger), '--ticket', '#1', '--stage', 'impl',
+            '--evidence', 'commit', '--deadline', '+1h', '--depends', '9'))
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('unknown item', result.stderr)
+        self.assertEqual(list(self.tasks.iterdir()), [])
+        self.assertEqual(self.items(), [])
+
+    def test_untagged_agent_is_refused_before_the_ledger_is_touched(self):
+        result = self.run_script(*self.card_args(
+            '--ledger', str(self.ledger), '--ticket', '#1', '--stage', 'impl',
+            '--evidence', 'commit', '--deadline', '+1h'), agents=[])
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(self.items(), [])
+
+    def test_ledger_card_is_still_monitored_by_the_watch(self):
+        self.ledger_card()
+        watch = WatchCompatibilityTests.load_watch()
+        cards, skipped = watch.monitored_task_cards(self.tasks, 'nanu', {})
+        self.assertEqual(skipped, {})
+        self.assertIn('nanu-impl123-fida', cards)
+
+
+class LedgerBriefTests(LedgerCase):
+    def test_fixed_section_names_the_row_and_the_three_commands_with_absolute_paths(self):
+        text, commands = self.brief_commands(self.ledger_card())
+        self.assertIn(f'Your ledger row is 1 in {self.ledger}', text)
+        for command, verb in zip(commands, ('start', 'update', 'done')):
+            self.assertIn(f'lat-ledger.py {verb} 1 --ledger {self.ledger} --by nanu-impl123-fida',
+                          command)
+            self.assertIn(str(LEDGER), command)
+
+    def test_ledger_path_with_spaces_is_quoted(self):
+        spaced = self.workspace / '.lat' / 'my ledgers' / 'round.json'
+        spaced.parent.mkdir()
+        self.ledger = spaced
+        self.run_ledger('init', '--workspace', str(self.workspace))
+        _, commands = self.brief_commands(self.ledger_card())
+        self.assertIn(f"--ledger '{spaced}'", commands[0])
+
+    def test_card_without_a_row_warns_but_still_produces_the_brief(self):
+        card = self.make_card()
+        source = self.write_brief()
+        result = self.run_script('brief', '--card', str(card), '--input', str(source))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('no ledger row', result.stderr)
+        text = (self.root / 'brief.brief.md').read_text()
+        self.assertIn('This card has no ledger row', text)
+        self.assertNotIn('lat-ledger.py', text)
+        self.assertIn('## Fixed fields', text)
+
+
+class LedgerLifecycleTests(LedgerCase):
+    def run_command(self, command, **fill):
+        for key, value in fill.items():
+            command = command.replace(f'<{key}>', value)
+        command = command.replace('+<N>m', '+30m')
+        result = subprocess.run(shlex.split(command), capture_output=True, text=True,
+                                env=self.ledger_env, timeout=60)
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_agent_runs_the_brief_commands_and_done_updates_the_card(self):
+        card = self.ledger_card()
+        _, (start, update, done) = self.brief_commands(card)
+        self.run_command(start)
+        self.run_command(update, **{'one sentence': 'half way'})
+        self.assertEqual(self.items()[0]['progress'], 'half way')
+        done = done.replace('--gate <fingerprint> --file <absolute path>', '')
+        self.run_command(done.replace('<sha>', self.sha))
+        text = card.read_text()
+        self.assertIn('- status：committed\n', text)
+        self.assertIn(f'- deliverable commit：{self.sha}\n', text)
+        self.assertEqual(self.items()[0]['status'], 'done')
+
+    def test_card_branch_lets_done_accept_a_commit_that_is_not_integrated_yet(self):
+        git(self.workspace, 'switch', '-q', '-c', 'feat/x')
+        (self.workspace / 'b.txt').write_text('b\n')
+        git(self.workspace, 'add', 'b.txt')
+        git(self.workspace, 'commit', '-q', '-m', 'work')
+        sha = git(self.workspace, 'rev-parse', 'HEAD')
+        git(self.workspace, 'switch', '-q', 'dev')
+        card = self.ledger_card('--branch', 'feat/x')
+        self.assertEqual(self.items()[0]['branch'], 'feat/x')
+        _, (start, _update, done) = self.brief_commands(card)
+        self.run_command(start)
+        self.run_command(done.replace('--commit <sha> --gate <fingerprint> --file <absolute path>',
+                                      f'--commit {sha}'))
+        self.assertIn(f'- deliverable commit：{sha}\n', card.read_text())
+
+    def test_file_evidence_closes_the_card_as_completed(self):
+        card = self.ledger_card(evidence='file')
+        report = self.root / 'report.md'
+        report.write_text('checked\n')
+        _, (start, _update, done) = self.brief_commands(card)
+        self.run_command(start)
+        done = done.replace('--commit <sha> --gate <fingerprint> --file <absolute path>',
+                            f'--file {report}')
+        self.run_command(done)
+        self.assertIn('- status：completed\n', card.read_text())
+
+    def test_missing_card_does_not_stop_done(self):
+        card = self.ledger_card()
+        _, (start, _update, done) = self.brief_commands(card)
+        self.run_command(start)
+        card.unlink()
+        self.run_command(done.replace('--commit <sha> --gate <fingerprint> --file <absolute path>',
+                                      f'--commit {self.sha}'))
+        self.assertEqual(self.items()[0]['status'], 'done')
+
+    def test_moving_the_card_to_done_then_updating_the_row_clears_the_mismatch(self):
+        card = self.ledger_card()
+        _, (start, _update, done) = self.brief_commands(card)
+        self.run_command(start)
+        self.run_command(done.replace('--commit <sha> --gate <fingerprint> --file <absolute path>',
+                                      f'--commit {self.sha}'))
+        (self.tasks / 'done').mkdir()
+        moved = card.rename(self.tasks / 'done' / card.name)
+        self.assertIn('task card unreadable', self.items_with_mismatch())
+        self.run_ledger('update', '1', '--card', str(moved))
+        self.assertIsNone(self.items_with_mismatch())
+
+    def items_with_mismatch(self):
+        return self.items()[0]['card_mismatch']
 
 
 if __name__ == '__main__':
