@@ -22,7 +22,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" activate --client "
   --tasks "$tasks" --hcom-name "$hcom_name"
 ```
 
-activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；Claude：`CLAUDE_CODE_SESSION_ID`），不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。`--workspace` 須是 Git worktree 根目錄。`--hcom-name` 一律必填，只接受明確值，不讀 `HCOM_INSTANCE_NAME`；缺少時不建立 session 紀錄，照錯誤中的完整指令補上名稱重跑。session 紀錄、監控 pid／log 與主控自己的等待聲明一律放在主工作區共用的 `.lat`；在 linked worktree 內 activate 也一樣，不在 worktree 內建 `.lat`（更新前已留在 worktree `.lat` 的紀錄照原位置讀取與停用，不搬移）。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑與「已開始第 N 輪」（沒有歷史的紀錄視為第 1 輪），紀錄 client、session、主控角色、工作區、active 狀態、HCOM 名稱與恢復路徑（含任務卡目錄），並在背景啟動停住監控 `lat-watch.py run`（pid 在 `.lat/watch/<session-id>.pid`，輸出在同名 `.log`）。active 紀錄內容不同時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
+activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；Claude：`CLAUDE_CODE_SESSION_ID`），不接受指定 ID；缺少時停止並回報，不猜 ID、不用 HCOM 名稱替代。`--workspace` 須是 Git worktree 根目錄。`--hcom-name` 一律必填，只接受明確值，不讀 `HCOM_INSTANCE_NAME`；缺少時不建立 session 紀錄，照錯誤中的完整指令補上名稱重跑。session 紀錄、監控 pid／log 與主控自己的等待聲明一律放在主工作區共用的 `.lat`；在 linked worktree 內 activate 也一樣，不在 worktree 內建 `.lat`（更新前已留在 worktree `.lat` 的紀錄照原位置讀取與停用，不搬移）。成功會印出 `.lat/sessions/<session-id>.json` 絕對路徑與「已開始第 N 輪」（沒有歷史的紀錄視為第 1 輪），紀錄 client、session、主控角色、工作區、active 狀態、HCOM 名稱與恢復路徑（含任務卡目錄），並在背景啟動停住監控 `lat-watch.py run`（pid 在 `.lat/watch/<session-id>.pid`，輸出在同名 `.log`）。activate 也在主工作區建立本輪工作總表 `.lat/ledgers/<session-id>-r<輪數>.json`，路徑寫入紀錄的 `ledger_path` 並印出；同輪重跑與 compact／resume 沿用同一份，新一輪建立新檔，上一輪的不動。active 紀錄內容不同時拒絕覆寫；相同內容可重跑。每個檢查點更新同一進度索引，保留 tracker 連結及下一步。
 
    同一對話在上一輪停用後，可在同一工作區用上方 activate 指令與本輪的路徑、HCOM 名稱開始新一輪。上一輪的狀態、結束時間、技能目錄、恢復路徑、HCOM 名稱與技能文字指紋依序保存在紀錄的 `history` 清單；目前欄位換成本輪內容（不帶結束時間），重新計算指紋，照常綁定面板、啟動監控與設定分頁名稱。deactivate、恢復 hook 與回合結束檢查只讀目前欄位；不清除或搬移共用的待決紀錄、任務卡、監控狀態與等待聲明。其他狀態或無法辨識的紀錄仍拒絕；不要刪除或手動重建 session 紀錄。
 
@@ -34,8 +34,8 @@ activate 直接讀取主控 shell 的 session ID（Codex：`CODEX_THREAD_ID`；C
 
    安裝或更新技能後，從不同技能目錄執行 hook／deactivate 仍會辨認並沿用本輪既有的監控；需要重啟時，使用紀錄的 `skill_dir/scripts/lat-watch.py`，與本輪的技能文字更新基準一致。
 
-3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`（Claude 的提示已附這兩份全文，不必另讀），以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的問題檔（綁定的 `questions_path`；新綁定在 `.lat/questions/`，見 [待答問題面板](question-panel.md#變數)；尚未寫題時不存在，不算缺檔）。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。hook 發現紀錄仍 active 但停住監控沒在執行時（包括主控掉線 60 分鐘後監控自停、紀錄留有 `watcher_stopped` 的情況，見 [停住監控](stall-watch.md#主控掉線時自停)），會在提示前自動重新啟動它。面板啟用且 hook 取得 Herdr workspace／tab／pane 編號時，也會把自己的面板綁定更新為目前位置；取不到就保持原綁定。
-4. 交付、取消或換班時停用，紀錄狀態一律改為 `ended`（舊紀錄的 `completed`／`cancelled` 視同 `ended`）。換班時加 `--successor <新主控 HCOM 名稱>` 記下接手者。deactivate 會停止自己的停住監控並解除自己的綁定，沒有綁定也不報錯；自己在 `.lat/questions/` 的問題檔清理後沒有題目時刪除（歸檔檔與鎖檔保留，根目錄舊問題檔不動，見 [解除綁定](question-panel.md#解除綁定)），並在紀錄寫入結束時間 `ended_at_utc`（已結束的紀錄再停用不改寫；沒有結束時間的舊紀錄不補）；成功後紀錄保留，後續 compact／resume 不再提示。
+3. 每次收到恢復提示，先讀紀錄，再完整讀 `skill_dir` 的 `SKILL.md`、`references/agents.md`、`references/task-cards.md`（Claude 的提示已附這兩份全文，不必另讀），以及 `progress_path` 與 `decisions_path` 內的待決紀錄；已綁定面板時另讀 `references/question-panel.md`，並以自己的 session 綁定查出、讀取專屬的問題檔（綁定的 `questions_path`；新綁定在 `.lat/questions/`，見 [待答問題面板](question-panel.md#變數)；尚未寫題時不存在，不算缺檔）。紀錄有 `ledger_path` 時，提示另附總表的 `show` 輸出（超過提示上限時截短並附完整指令），工作項的狀態、時間與證據以它為準；總表讀不出時照提示修復，不手動重建。核對 tracker 與真人授權再續作；索引可能落後，以查證結果更新既有清單。缺檔／損壞時停止相依工作並回報。hook 發現紀錄仍 active 但停住監控沒在執行時（包括主控掉線 60 分鐘後監控自停、紀錄留有 `watcher_stopped` 的情況，見 [停住監控](stall-watch.md#主控掉線時自停)），會在提示前自動重新啟動它。面板啟用且 hook 取得 Herdr workspace／tab／pane 編號時，也會把自己的面板綁定更新為目前位置；取不到就保持原綁定。
+4. 交付、取消或換班時停用，紀錄狀態一律改為 `ended`（舊紀錄的 `completed`／`cancelled` 視同 `ended`）。換班時加 `--successor <新主控 HCOM 名稱>` 記下接手者。deactivate 會停止自己的停住監控並解除自己的綁定，沒有綁定也不報錯；自己在 `.lat/questions/` 的問題檔清理後沒有題目時刪除（歸檔檔與鎖檔保留，根目錄舊問題檔不動，見 [解除綁定](question-panel.md#解除綁定)），並在紀錄寫入結束時間 `ended_at_utc`（已結束的紀錄再停用不改寫；沒有結束時間的舊紀錄不補）；成功後紀錄保留，後續 compact／resume 不再提示。紀錄有 `ledger_path` 時，deactivate 先執行總表 `check`，不通過就拒絕並列出未結案／缺證據的列；確定要結束時加 `--force-unfinished --reason "<原因>"`，原因寫入總表歷史，總表讀不出且流水帳也重建不了時改寫入紀錄的 `force_unfinished_reason`。總表還能修復時強制也會拒絕，先照提示修復：遺失或損壞用 `repair --from-journal`，格式合法但印記不符（被手改）用 `repair --reason`。
 
 ```bash
 uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client "$client" \
@@ -63,6 +63,8 @@ Stop hook 與恢復 hook 共用主控身分比對；Claude 與 Codex 的 DECIDE�
 
 首次未通過會輸出原因並要求主控繼續，重複標籤以外的補做順序是：寫待決紀錄 → 諮詢參謀或註明例外 → 更新 Spec 共識 → 跑檢查工具 → 確認題寫明共識版本（以上三步限 Spec 確認題） → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重新提問。若 payload 的 `stop_hook_active` 表示本回合已因 hook 繼續，不再攔下，只以 `systemMessage` 留使用者可見的警告；修正後重新提問能通過，不留舊警告，新回合可再次攔下。紀錄損壞、檔案讀取失敗等工具錯誤也只警告，讓回合結束。
 
+最後一行以 `DONE:` 開頭且紀錄有 `ledger_path` 時，另執行總表 `check`；有未結案或缺證據的列、或總表讀不出時，同樣首次攔下並列出，`stop_hook_active` 時只警告放行。沒有 `ledger_path` 的舊紀錄不做這項檢查。
+
 **題目代送**：已綁定面板時，檢查通過或只警告放行（含上述 `stop_hook_active` 與工具錯誤）後，依最後一行列出的題號與版本（沒列時改看標題行）的順序，從自己的問題檔讀出同版本待答題目，套成純文字放進 `systemMessage`，格式見 [聊天提問格式](question-panel.md#聊天提問格式)。同一次 Stop 只輸出一個 JSON 物件：題目在前，警告接在後面。首次攔下時不代送；未綁定、主控已停用時也不代送。讀不到綁定或問題檔、綁定與紀錄不符、題目不在問題檔或套版出錯時，只附一行「LAT 題目代送失敗」警告，不改變檢查結果。回報紀錄只存模型寫的訊息，不含代送的題目。
 
 **啟用檢查**：工作區沒有本 session 的 `.lat/sessions/<session-id>.json` 時，Stop hook 改查對話紀錄。紀錄裡有叫出 LAT 技能就擋下並要求依本程序 activate：Claude 是使用者訊息含 `<command-name>/lat</command-name>`，或主控用 Skill 工具叫出 `lat`／`<命名空間>:lat`；Codex 是使用者打 `$lat` 時注入、`<name>lat</name>` 的 `<skill>` 區塊。用讀檔或指令看 SKILL.md 不算，所以 Codex 自行讀技能檔不會被擋。只是閱讀或審查技能而被擋時，在回覆說明原因即可結束。
@@ -75,7 +77,7 @@ Stop 在訊息已顯示後才執行，無法撤回原訊息。DECIDE／HELP 檢�
 
 Claude 與 Codex 主控的既有 Stop hook 會在回合真正結束時自動追加回報，不需主控另跑指令。回報放在使用者層級的 `$XDG_STATE_HOME/lat/reports/`；未設定 XDG_STATE_HOME 或其值不是絕對路徑時，使用 `~/.local/state/lat/reports/`。不放在專案 `.lat/`。`LAT_REPORTS_DIR` 可指定另一個絕對目錄（測試必須指定暫存目錄）。
 
-每個對話一份 `<session-id>.jsonl`，每行是一個 JSON 物件：`time`（UTC 時間）、`session_id`、`hcom_name`、`client`、`workspace`、`round`（第幾輪，從 1 開始）、`tag`、`summary`、`message`（最後一則訊息全文）、`final`（是否為本輪停用後最後一筆）。最後一個非空行符合 `DECIDE:`、`HELP:`、`DONE:` 或 `NO REPLY:` 時，`tag` 記錄該標籤，`summary` 記錄冒號後去除開頭空白的文字；不符合時兩欄都是空字串，全文照存。空訊息也照存。
+每個對話一份 `<session-id>.jsonl`，每行是一個 JSON 物件：`time`（UTC 時間）、`session_id`、`hcom_name`、`client`、`workspace`、`round`（第幾輪，從 1 開始）、`tag`、`summary`、`message`（最後一則訊息全文）、`final`（是否為本輪停用後最後一筆）；強制停用後的最後一筆另有 `force_unfinished_reason`、`force_unfinished_saved_in`（`ledger` 或 `session`）與 `force_unfinished_check`（當時的核對輸出）。最後一個非空行符合 `DECIDE:`、`HELP:`、`DONE:` 或 `NO REPLY:` 時，`tag` 記錄該標籤，`summary` 記錄冒號後去除開頭空白的文字；不符合時兩欄都是空字串，全文照存。空訊息也照存。
 
 待決檢查攔下並要求繼續的 Stop 不寫回報；通過、只警告放行或檢查工具出錯放行的 Stop 才追加一筆。寫入失敗只在標準錯誤輸出留一則警告，不改變原本檢查結果。hook 只追加回報，不改寫；同目錄的 `<session-id>.lock` 防止同時追加互相干擾。LAT 看板會刪除最新一筆有效紀錄已發出滿 30 天的回報檔（在同一把鎖內再確認後才刪，鎖檔保留），之後同一對話再追加時重新建立檔案。
 

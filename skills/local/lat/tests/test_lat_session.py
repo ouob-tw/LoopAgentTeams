@@ -1803,6 +1803,7 @@ class SessionTests(unittest.TestCase):
         self.assertEqual(upgraded, dict(
             legacy, tasks_path=str(self.tasks), hcom_name='upgraded-orch',
             rule_fingerprint=upgraded['rule_fingerprint'],
+            ledger_path=str(self.work / f'.lat/ledgers/{SESSION}-r1.json'),
         ))
         pid = self.watcher_pid()
 
@@ -2018,7 +2019,7 @@ class SessionTests(unittest.TestCase):
             try:
                 args = argparse.Namespace(
                     workspace=self.work, client='codex', session_id=SESSION,
-                    successor=None,
+                    successor=None, force_unfinished=False, reason=None,
                 )
                 with patch('builtins.print'):
                     helper.deactivate(args)
@@ -2086,7 +2087,8 @@ class SessionTests(unittest.TestCase):
                          role='orchestrator', workspace=str(self.work), status='active',
                          skill_dir=str(SKILL), progress_path=str(self.progress),
                          decisions_path=str(self.decisions), tasks_path=str(self.tasks),
-                         hcom_name='orch', rule_fingerprint=record['rule_fingerprint']))
+                         hcom_name='orch', rule_fingerprint=record['rule_fingerprint'],
+                         ledger_path=str(self.work / f'.lat/ledgers/{SESSION}-r1.json')))
         sub = self.work / 'src'
         sub.mkdir()
         for source in ('compact', 'resume', 'compact'):
@@ -2357,7 +2359,10 @@ class SessionTests(unittest.TestCase):
         # preview; reserve 1,000 characters for paths and the legacy-upgrade suffix.
         # Charge a fixed path budget, not this checkout's absolute path lengths. Only
         # strip the generated path fields: reference prose must still count in full.
-        sized = context.replace(f'LAT recovery record: {self.record}\n', 'LAT recovery record: \n', 1)
+        # The work ledger section is cut to the hook limit on its own; see its tests.
+        self.assertLess(len(context), 10_000)
+        sized = context.split('\n\nWork ledger (', 1)[0].replace(
+            f'LAT recovery record: {self.record}\n', 'LAT recovery record: \n', 1)
         for reference in references:
             sized = sized.replace(f'===== {reference} =====\n', '===== =====\n', 1)
         self.assertLess(len(sized), 9_000)
@@ -2808,6 +2813,264 @@ class SessionTests(unittest.TestCase):
                 self.assertEqual(self.cli('uninstall', *flags).returncode, 0)
                 self.assertEqual(json.loads(path.read_text())['hooks']['UserPromptSubmit'], [other])
 
+    # ---- work ledger (#299) ------------------------------------------------------------
+
+    def ledger_path(self, round_number=1):
+        return self.work / '.lat/ledgers' / f'{SESSION}-r{round_number}.json'
+
+    def ledger(self, *args, round_number=1):
+        result = subprocess.run(
+            [sys.executable, str(SKILL / 'scripts/lat-ledger.py'), args[0], '--ledger',
+             str(self.ledger_path(round_number)), '--by', 'orch', *map(str, args[1:])],
+            text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return result.stdout
+
+    def open_item(self, ticket='#1'):
+        """Add one item with file evidence, assigned but not closed; returns its number."""
+        item = self.ledger('add', '--ticket', ticket, '--stage', 'impl', '--evidence', 'file',
+                           '--deadline', '+1d').strip()
+        self.ledger('assign', item, '--agent', 'worker', '--card', self.tasks / 'card.md')
+        return item
+
+    def close_item(self, item):
+        report = self.root / f'report-{item}.md'
+        report.write_text('done\n')
+        self.ledger('done', item, '--file', report)
+
+    def deactivate(self, *extra):
+        return self.cli('deactivate', '--workspace', self.work, *extra)
+
+    def test_ledger_is_created_per_round_and_reused_within_a_round(self):
+        result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                          '--decisions', self.decisions)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        first = self.ledger_path(1)
+        self.assertIn(f'工作總表：{first}', result.stdout)
+        self.assertEqual(json.loads(self.record.read_text())['ledger_path'], str(first))
+        self.assertEqual(json.loads(first.read_text())['orchestrator'], 'orch')
+        self.open_item()
+        before = first.read_bytes()
+        # A rerun in the same round and compact/resume keep the same ledger.
+        self.activate(duty=False)
+        for source in ('compact', 'resume'):
+            self.assertEqual(self.hook(source=source).returncode, 0)
+        self.assertEqual(json.loads(self.record.read_text())['ledger_path'], str(first))
+        self.assertEqual(first.read_bytes(), before)
+        self.assertEqual(self.deactivate('--force-unfinished', '--reason', 'next round').returncode, 0)
+        ended = first.read_bytes()
+        self.activate(duty=False)
+        record = json.loads(self.record.read_text())
+        self.assertEqual(record['ledger_path'], str(self.ledger_path(2)))
+        self.assertEqual(record['history'][0]['ledger_path'], str(first))
+        self.assertTrue(self.ledger_path(2).is_file())
+        self.assertEqual(first.read_bytes(), ended)
+
+    def test_activate_reuses_a_ledger_left_by_an_unfinished_activate(self):
+        self.ledger_path().parent.mkdir(parents=True)
+        subprocess.run([sys.executable, str(SKILL / 'scripts/lat-ledger.py'), 'init', '--ledger',
+                        str(self.ledger_path()), '--workspace', str(self.work)], check=True,
+                       capture_output=True)
+        before = self.ledger_path().read_bytes()
+        self.activate(duty=False)
+        self.assertEqual(json.loads(self.record.read_text())['ledger_path'], str(self.ledger_path()))
+        self.assertEqual(self.ledger_path().read_bytes(), before)
+
+    def recovery_context(self, client='codex'):
+        if client == 'claude':
+            result = self.cli('hook', '--client', 'claude', payload=dict(
+                hook_event_name='SessionStart', source='compact', cwd=str(self.work),
+                session_id=SESSION))
+        else:
+            result = self.hook()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        return json.loads(result.stdout)['hookSpecificOutput']['additionalContext']
+
+    def test_recovery_prompt_carries_the_ledger_table_within_the_client_limit(self):
+        self.activate()
+        self.open_item('#77')
+        context = self.recovery_context()
+        self.assertIn(f'show --ledger {self.ledger_path()}', context)
+        self.assertIn(f'工作總表 {self.ledger_path()}', context)
+        self.assertIn('| 1 | #77 | 實作 | worker | 已派 |', context)
+        self.assertNotIn('more lines not shown', context)
+        for number in range(2, 41):
+            self.open_item(f'#{number}')
+        for client, limit in (('codex', 3_000), ('claude', 9_800)):
+            with self.subTest(client=client):
+                record = json.loads(self.record.read_text())
+                record['client'] = client
+                self.record.write_text(json.dumps(record))
+                context = self.recovery_context(client)
+                self.assertLessEqual(len(context), limit)
+                self.assertIn('cut to fit the hook limit', context)
+                self.assertIn(f'show --ledger {self.ledger_path()}', context)
+                self.assertRegex(context, r'… [0-9]+ more lines not shown$')
+
+    def test_recovery_prompt_reports_an_unreadable_ledger(self):
+        self.activate()
+        self.ledger_path().write_text('{"hand": "edit"}\n')
+        context = self.recovery_context()
+        self.assertIn('LAT work ledger error:', context)
+        self.assertIn('repair --from-journal', context)
+
+    def test_done_stop_checks_the_ledger_once_per_turn(self):
+        self.activate()
+        item = self.open_item('#5')
+        # Only a DONE last line runs the check.
+        self.assert_silent(self.stop_hook('NO REPLY: working'))
+        result = self.stop_hook('Shipped\nDONE: delivered')
+        output = json.loads(result.stdout)
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('LAT 交付檢查未通過', output['reason'])
+        self.assertIn('item 1 (#5 impl): not closed: assigned', output['reason'])
+        self.assertEqual(len(self.reports()), 1)
+        warned = json.loads(self.stop_hook('DONE: delivered', stop_hook_active=True).stdout)
+        self.assertNotIn('decision', warned)
+        self.assertIn('item 1 (#5 impl)', warned['systemMessage'])
+        self.assertIn('不再攔下', warned['systemMessage'])
+        self.assertEqual(self.reports()[-1]['tag'], 'DONE')
+        self.close_item(item)
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+
+    def test_done_stop_holds_an_unreadable_ledger_and_skips_records_without_one(self):
+        self.activate()
+        self.ledger_path().write_text('not json\n')
+        output = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn('工作總表無法讀取', output['reason'])
+        self.assertIn('repair --ledger', output['reason'])
+        record = json.loads(self.record.read_text())
+        del record['ledger_path']
+        self.record.write_text(json.dumps(record))
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+
+    def test_deactivate_refuses_unfinished_ledger_and_force_keeps_reason(self):
+        self.activate()
+        self.open_item('#9')
+        refused = self.deactivate()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn('拒絕停用', refused.stderr)
+        self.assertIn('item 1 (#9 impl): not closed: assigned', refused.stderr)
+        self.assertIn('--force-unfinished', refused.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+        self.assertTrue((self.work / '.lat/watch' / f'{SESSION}.pid').exists())
+        for extra in (('--force-unfinished',), ('--force-unfinished', '--reason', '  '),
+                      ('--reason', 'why')):
+            with self.subTest(extra=extra):
+                self.assertEqual(self.deactivate(*extra).returncode, 1)
+                self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+        forced = self.deactivate('--force-unfinished', '--reason', 'user stopped the round')
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        self.assertIn('工作總表歷史', forced.stdout)
+        ledger = json.loads(self.ledger_path().read_text())
+        self.assertEqual({key: ledger['history'][-1][key] for key in ('action', 'by', 'reason')},
+                         dict(action='force-unfinished', by='orch', reason='user stopped the round'))
+        self.ledger('show')  # still sealed and readable
+        record = json.loads(self.record.read_text())
+        self.assertEqual(record['status'], 'ended')
+        self.assertEqual(record['force_unfinished_saved_in'], 'ledger')
+        self.assert_silent(self.stop_hook('DONE: stopped early'))
+        final = self.reports()[-1]
+        self.assertTrue(final['final'])
+        self.assertEqual(final['force_unfinished_reason'], 'user stopped the round')
+        self.assertEqual(final['force_unfinished_saved_in'], 'ledger')
+        self.assertIn('item 1 (#9 impl)', final['force_unfinished_check'])
+
+    def test_deactivate_passes_a_closed_ledger_without_force_fields(self):
+        self.activate()
+        self.close_item(self.open_item())
+        result = self.deactivate()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('force_unfinished_reason', json.loads(self.record.read_text()))
+        self.assert_silent(self.stop_hook('DONE: delivered'))
+        self.assertNotIn('force_unfinished_reason', self.reports()[-1])
+
+    def test_deactivate_with_broken_ledger_repairs_first_and_forces_only_without_journal(self):
+        self.activate()
+        self.open_item()
+        self.ledger_path().write_text('broken\n')
+        for extra in ((), ('--force-unfinished', '--reason', 'gone')):
+            with self.subTest(extra=extra):
+                refused = self.deactivate(*extra)
+                self.assertEqual(refused.returncode, 1)
+                self.assertIn('repair --ledger', refused.stderr)
+                self.assertIn('--from-journal', refused.stderr)
+                self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+        journal = self.ledger_path().with_name(self.ledger_path().name + '.journal.jsonl')
+        journal.write_text('also broken\n')
+        forced = self.deactivate('--force-unfinished', '--reason', 'ledger lost')
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        self.assertIn('session 紀錄', forced.stdout)
+        self.assertEqual(self.ledger_path().read_text(), 'broken\n')
+        record = json.loads(self.record.read_text())
+        self.assertEqual((record['force_unfinished_reason'], record['force_unfinished_saved_in']),
+                         ('ledger lost', 'session'))
+        self.assert_silent(self.stop_hook('DONE: stopped'))
+        final = self.reports()[-1]
+        self.assertTrue(final['final'])
+        self.assertEqual((final['force_unfinished_reason'], final['force_unfinished_saved_in']),
+                         ('ledger lost', 'session'))
+    def test_done_stop_and_deactivate_recheck_evidence_removed_after_closing(self):
+        self.activate()
+        item = self.open_item('#6')
+        self.close_item(item)
+        report = self.root / f'report-{item}.md'
+        report.unlink()
+        output = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertEqual(output['decision'], 'block')
+        self.assertIn(f'item 1 (#6 impl): file {report}: does not exist', output['reason'])
+        refused = self.deactivate()
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn(f'file {report}: does not exist', refused.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+
+    def test_hand_edited_ledger_asks_for_a_reseal_not_a_rebuild(self):
+        self.activate()
+        self.open_item()
+        ledger = json.loads(self.ledger_path().read_text())
+        ledger['items'][0]['ticket'] = '#edited'
+        self.ledger_path().write_text(json.dumps(ledger))
+        journal = self.ledger_path().with_name(self.ledger_path().name + '.journal.jsonl')
+        journal.unlink()  # a reseal keeps the edit, so a lost journal does not allow force
+        output = json.loads(self.stop_hook('DONE: delivered').stdout)
+        self.assertIn('seal mismatch', output['reason'])
+        self.assertIn(f'repair --ledger {self.ledger_path()} --reason', output['reason'])
+        for extra in ((), ('--force-unfinished', '--reason', 'edited')):
+            with self.subTest(extra=extra):
+                refused = self.deactivate(*extra)
+                self.assertEqual(refused.returncode, 1)
+                self.assertIn(f'repair --ledger {self.ledger_path()} --reason', refused.stderr)
+                self.assertNotIn('--from-journal`', refused.stderr)
+                self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+
+    def test_deleted_ledger_is_rebuilt_from_journal_before_deactivate(self):
+        self.activate()
+        self.open_item()
+        self.ledger_path().unlink()
+        refused = self.deactivate('--force-unfinished', '--reason', 'gone')
+        self.assertEqual(refused.returncode, 1)
+        self.assertIn('ledger missing', refused.stderr)
+        self.assertIn('repair --ledger', refused.stderr)
+        self.assertIn('--from-journal --reason', refused.stderr)
+        self.ledger_path().with_name(self.ledger_path().name + '.journal.jsonl').unlink()
+        self.assertEqual(self.deactivate().returncode, 1)
+        forced = self.deactivate('--force-unfinished', '--reason', 'ledger and journal lost')
+        self.assertEqual(forced.returncode, 0, forced.stderr)
+        self.assertEqual(json.loads(self.record.read_text())['force_unfinished_saved_in'], 'session')
+        self.assertFalse(self.ledger_path().exists())
+    def test_recovery_ledger_error_stays_within_the_limit_and_keeps_the_hint(self):
+        spec = importlib.util.spec_from_file_location('lat_session_limit', SCRIPT)
+        helper = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(helper)
+        failure = SimpleNamespace(returncode=1, stdout='',
+                                  stderr='x' * 20_000 + ' rebuild it with repair --from-journal')
+        with patch.object(helper, 'ledger_cli', return_value=failure):
+            context = helper.ledger_context(
+                dict(client='claude', ledger_path=str(self.ledger_path())), 'p' * 9_000)
+        self.assertLessEqual(len(context), 9_800)
+        self.assertIn('repair --from-journal', context)
+        self.assertTrue(context.endswith('never recreate it by hand.'))
 
 if __name__ == '__main__':
     unittest.main()

@@ -17,6 +17,7 @@ import subprocess
 import sys
 import tempfile
 import time
+from types import SimpleNamespace
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from lat_decision_status import (read_advisor_error, read_decision_kind, read_decision_status,
@@ -33,6 +34,12 @@ MATCHER = '^(compact|resume)$'
 COMMAND_NAMES = ('lat-session.py', 'codex-lat-session.py')
 WATCH_SCRIPT = SKILL_DIR / 'scripts/lat-watch.py'
 AUTOCLEAN_SCRIPT = SKILL_DIR / 'scripts/lat-autoclean.py'
+LEDGER_SCRIPT = SKILL_DIR / 'scripts/lat-ledger.py'
+LEDGER_TIMEOUT_SECONDS = 120
+# Whole recovery prompt: Claude Code moves context over 10,000 characters to a file;
+# Codex caps hook context near 2,500 tokens.
+CONTEXT_LIMITS = dict(claude=9_800, codex=3_000)
+LEDGER_HEADING = '\n\nWork ledger (authority for item state, times and evidence): '
 HCOM_NAME = re.compile(r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}')
 # Older records stored 'completed' or 'cancelled'; all three mean the round ended.
 ENDED = ('ended', 'completed', 'cancelled')
@@ -353,9 +360,13 @@ def activate(args):
         raise ValueError(
             f'{error}；請修復 Herdr 後重新執行：{command}'
         ) from error
+    round_number = len(record.get('history', [])) + 1
+    if not record.get('ledger_path'):
+        record['ledger_path'] = str(round_ledger(workspace, sid, round_number, args.hcom_name))
     write_json_atomic(path, record, expected=original)
     print(path)
-    print(f'已開始第 {len(record.get("history", [])) + 1} 輪')
+    print(f'已開始第 {round_number} 輪')
+    print(f'工作總表：{record["ledger_path"]}')
     print(f'看板職責：任務明確後執行（任務改變時再執行一次）：{duty_command(record)}')
     if enabled:
         try:
@@ -384,6 +395,137 @@ def activate(args):
     if ensure_watcher(record, path) is None:
         raise ValueError('Session was deactivated while starting its watcher')
     start_autoclean(workspace)
+
+
+def ledger_module():
+    spec = importlib.util.spec_from_file_location('lat_ledger', LEDGER_SCRIPT)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def ledger_cli(*args):
+    return subprocess.run([sys.executable, str(LEDGER_SCRIPT), *map(str, args)], text=True,
+                          capture_output=True, timeout=LEDGER_TIMEOUT_SECONDS)
+
+
+def ledger_command(action, path, *extra):
+    return shlex.join(['uv', 'run', '--no-project', 'python', str(LEDGER_SCRIPT), action,
+                       '--ledger', str(path), *extra])
+
+
+def round_ledger(workspace, sid, round_number, hcom_name):
+    """The round's ledger in the main checkout's .lat, created unless an earlier activate of
+    this round already made it."""
+    lat = shared_lat_dir(workspace)
+    path = lat / 'ledgers' / f'{sid}-r{round_number}.json'
+    store = ledger_module().Store(path)
+    if any(item.exists() for item in (store.path, store.seal, store.journal)):
+        return path
+    result = ledger_cli('init', '--ledger', path, '--workspace', lat.parent,
+                        '--orchestrator', hcom_name, '--by', hcom_name)
+    if result.returncode:
+        raise ValueError(f'工作總表建立失敗：{result.stderr.strip() or result.stdout.strip()}')
+    return path
+
+
+def ledger_check(path):
+    """`(state, text)` of `lat-ledger check`: ok, fail, or unreadable (never a pass)."""
+    try:
+        result = ledger_cli('check', '--ledger', path)
+    except (OSError, subprocess.SubprocessError) as exc:
+        return 'unreadable', f'lat-ledger check 無法執行：{exc}'
+    if result.returncode == 0:
+        return 'ok', result.stdout.strip()
+    if result.stdout.startswith('ledger check:'):
+        return 'fail', result.stdout.strip()
+    return 'unreadable', result.stderr.strip() or result.stdout.strip() or f'exit {result.returncode}'
+
+
+def ledger_repair(path):
+    """The repair that would make an unreadable ledger readable again, or None when none can.
+
+    A well-formed ledger whose seal no longer matches keeps its content (`repair --reason`);
+    a missing or malformed one is rebuilt from its journal while that is usable.
+    """
+    module = ledger_module()
+    store = module.Store(path)
+    try:
+        module.parse_ledger(store.path.read_bytes())
+        return ledger_command('repair', path, '--reason', '<原因>')
+    except (OSError, ValueError, UnicodeError):
+        pass
+    try:
+        module.read_journal(store)
+    except module.Failure:
+        return None
+    return ledger_command('repair', path, '--from-journal', '--reason', '<原因>')
+
+
+def ledger_gate(record, args):
+    """Check the round's ledger before deactivating; returns the forced-close note or None."""
+    path = record['ledger_path']
+    state, text = ledger_check(path)
+    if state == 'ok':
+        return None
+    force = ('補做（結案並附證據，或由主控取消並寫原因）後重跑；確定要結束時加 '
+             '`--force-unfinished --reason "<原因>"` 強制停用。')
+    if state == 'fail':
+        if not args.force_unfinished:
+            raise ValueError(f'工作總表核對未通過，拒絕停用：\n{text}\n{force}')
+        module = ledger_module()
+        by = record['hcom_name']
+        try:
+            with module.transaction(argparse.Namespace(ledger=path, by=by),
+                                    'force-unfinished', reason=args.reason) as doc:
+                doc['history'].append({'at': module.stamp(module.now()), 'by': by,
+                                       'action': 'force-unfinished', 'reason': args.reason})
+        except module.Failure as exc:
+            raise ValueError(f'強制停用原因寫不進工作總表，未停用：{exc}') from exc
+        return dict(reason=args.reason, saved_in='ledger', check=text)
+    repair = ledger_repair(path)
+    if repair:
+        raise ValueError(f'工作總表無法讀取，拒絕停用：{text}\n先執行 `{repair}` 修復，'
+                         '再重跑 deactivate（修復前強制停用也會拒絕）。')
+    if not args.force_unfinished:
+        raise ValueError(f'工作總表無法讀取，流水帳也重建不了，拒絕停用：{text}\n'
+                         '確定要結束時加 `--force-unfinished --reason "<原因>"` 強制停用。')
+    return dict(reason=args.reason, saved_in='session', check=text)
+
+
+def ledger_context(record, text):
+    """Append the round's `show` table to the recovery prompt, cut to the client's limit."""
+    path = record.get('ledger_path')
+    if not path:
+        return text
+    command = ledger_command('show', path)
+    try:
+        result = ledger_cli('show', '--ledger', path)
+    except (OSError, subprocess.SubprocessError) as exc:
+        result = SimpleNamespace(returncode=1, stdout='', stderr=str(exc))
+    limit = CONTEXT_LIMITS[record['client']]
+    if result.returncode:
+        detail = result.stderr.strip() or f'exit {result.returncode}'
+        tail = (f'\nLedger: {path}. Stop dependent work and report; repair it as the error '
+                'says, never recreate it by hand.')
+        room = max(0, limit - len(text) - len(tail) - len('\n\nLAT work ledger error: '))
+        if len(detail) > room:
+            # The repair hint ends lat-ledger's messages; keep the end.
+            detail = '…' + detail[len(detail) - max(0, room - 1):]
+        return f'{text}\n\nLAT work ledger error: {detail}{tail}'
+    full = f'{text}{LEDGER_HEADING}its `show` output follows and counts as running `{command}`\n\n'
+    table = result.stdout.rstrip('\n')
+    if len(full) + len(table) <= limit:
+        return full + table
+    cut = f'{text}{LEDGER_HEADING}`show` output cut to fit the hook limit; run `{command}` for the rest\n\n'
+    lines = table.splitlines()
+    kept = []
+    for line in lines:
+        note = f'\n… {len(lines) - len(kept)} more lines not shown'
+        if len(cut) + len('\n'.join(kept + [line])) + len(note) > limit:
+            break
+        kept.append(line)
+    return cut + '\n'.join(kept) + f'\n… {len(lines) - len(kept)} more lines not shown'
 
 
 def start_autoclean(workspace):
@@ -489,6 +631,11 @@ def remove_empty_questions(panel, workspace, record):
 def deactivate(args):
     if args.successor and not HCOM_NAME.fullmatch(args.successor):
         raise ValueError('Invalid successor HCOM name; record unchanged')
+    args.reason = (args.reason or '').strip()
+    if args.force_unfinished and not args.reason:
+        raise ValueError('--force-unfinished needs a non-empty --reason; record unchanged')
+    if args.reason and not args.force_unfinished:
+        raise ValueError('--reason only goes with --force-unfinished; record unchanged')
     workspace = args.workspace.resolve(strict=True)
     sid = session_id(args.session_id or os.environ.get(SESSION_ENV[args.client]))
     path = session_path(workspace, sid)
@@ -503,6 +650,9 @@ def deactivate(args):
                         workspace=str(workspace))
         if any(record.get(key) != value for key, value in expected.items()):
             raise ValueError('Controller identity does not match; record unchanged')
+        forced = None
+        if record['status'] == 'active' and record.get('ledger_path'):
+            forced = ledger_gate(record, args)
         _stop_watcher_locked(record)
         if record.get('hcom_name'):
             release_own_wait(workspace, record['hcom_name'])
@@ -521,9 +671,17 @@ def deactivate(args):
         record['status'] = 'ended'
         if args.successor:
             record['successor'] = args.successor
+        if forced:
+            # A readable ledger keeps the reason in its history; the copy here feeds the final report.
+            record.update(force_unfinished_reason=forced['reason'],
+                          force_unfinished_saved_in=forced['saved_in'],
+                          force_unfinished_check=forced['check'])
         write_json_atomic(path, record, expected=original)
     print(path)
     print(json.dumps({'removed': removed}))
+    if forced:
+        print(f'已強制停用，未結案原因寫入{"工作總表歷史" if forced["saved_in"] == "ledger" else "session 紀錄"}：'
+              f'{forced["reason"]}')
     reap_on_deactivate(record)
     start_autoclean(workspace)
 
@@ -899,6 +1057,22 @@ def stop_check(record, payload):
         '。Spec 確認題先更新 Spec 共識 → 跑檢查工具 → 確認題寫明共識版本。補做順序：寫待決紀錄 → 諮詢參謀或註明例外 → 寫入面板（已綁定時） → 遺漏檢查 → 依聊天提問格式重新提問。')
 
 
+def ledger_stop_check(record, message):
+    """Why a DONE Stop should be held for an unfinished ledger, or None."""
+    lines = [line for line in message.splitlines() if line.strip()]
+    if not record.get('ledger_path') or not lines or not lines[-1].startswith('DONE:'):
+        return None
+    state, text = ledger_check(record['ledger_path'])
+    if state == 'ok':
+        return None
+    if state == 'fail':
+        return ('LAT 交付檢查未通過：工作總表還有未結案或缺證據的工作項。\n' + text
+                + '\n補做（結案並附證據，或由主控取消並寫原因）後再照原樣結束回合。')
+    repair = ledger_repair(record['ledger_path'])
+    fix = f'先執行 `{repair}` 修復' if repair else '總表與流水帳都無法修復，向使用者回報'
+    return f'LAT 交付檢查未通過：工作總表無法讀取（{text}）。{fix}，再照原樣結束回合。'
+
+
 def reports_path(record):
     return reports_directory() / f'{record["session_id"]}.jsonl'
 
@@ -920,6 +1094,9 @@ def append_report(record, message):
                   client=record['client'], workspace=record['workspace'], round=round_number,
                   tag=match[1] if match else '', summary=match[2] if match else '',
                   message=message, final=final)
+    if final and record.get('force_unfinished_reason'):
+        report.update({key: record.get(key) for key in (
+            'force_unfinished_reason', 'force_unfinished_saved_in', 'force_unfinished_check')})
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (directory / f'{record["session_id"]}.lock').open('a') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
@@ -957,6 +1134,9 @@ def report_stop(record, payload):
         else:
             if duty:
                 reasons.append(duty)
+        ledger = ledger_stop_check(record, message)
+        if ledger:
+            reasons.append(ledger)
         if tag:
             try:
                 reason = stop_check(record, payload)
@@ -1239,7 +1419,7 @@ def hook(client):
         dependencies(record)
         if ensure_watcher(record, path, rebind=True) is None:
             return
-        context(pointer(path, record))
+        context(ledger_context(record, pointer(path, record)))
     except (OSError, ValueError, TypeError, KeyError, AttributeError) as exc:
         if event == 'UserPromptSubmit':
             warn_reminder(exc)
@@ -1271,6 +1451,9 @@ def main():
     # Accepted for older callers; every deactivation ends as 'ended'.
     stop.add_argument('--status', choices=('completed', 'cancelled'), help=argparse.SUPPRESS)
     stop.add_argument('--session-id', help='Explicit ID for manual stale-record deactivation')
+    stop.add_argument('--force-unfinished', action='store_true',
+                      help='End even though the work ledger check fails; needs --reason')
+    stop.add_argument('--reason', help='Why unfinished work is left; kept in the ledger history')
     duty = sub.add_parser('duty', help="Record this controller's duty for the board")
     duty.add_argument('--workspace', type=Path, required=True)
     duty.add_argument('--text', required=True, help=f'What it is responsible for, <= {DUTY_LIMIT} chars')
