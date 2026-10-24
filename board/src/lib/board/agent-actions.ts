@@ -48,10 +48,6 @@ export const AGENT_ACTION_LABEL: Record<AgentActionKind, string> = {
 	unpause: '恢復通訊'
 };
 
-export const AGENT_INTERRUPT_CONFIRM_TEXT = '中斷這個 Agent 目前這一回合（等同在它的終端機按 Esc）？';
-
-export const CONTROLLER_INTERRUPT_CONFIRM_TEXT = '中斷這個主控目前這一回合（等同在它的終端機按 Esc）？';
-
 /** Whether the controller's turn can be interrupted from its page: its own agent entry (same session
  *  ID) is in a Herdr pane and its client is in a turn, whatever its LAT status or binding. hcom tells
  *  the turn (active or blocked); for one hcom does not list, Herdr does, as for any agent. */

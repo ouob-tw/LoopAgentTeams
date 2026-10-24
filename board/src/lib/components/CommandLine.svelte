@@ -20,8 +20,6 @@
 	import { onMount, tick, untrack } from 'svelte';
 	import {
 		AGENT_HCOM_UNKNOWN_REASON,
-		AGENT_INTERRUPT_CONFIRM_TEXT,
-		CONTROLLER_INTERRUPT_CONFIRM_TEXT,
 		controllerInterruptible
 	} from '#lib/board/agent-actions.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
@@ -163,7 +161,6 @@
 		toAgent && !!agent && agent.inHerdr && !agent.switch && agent.status !== 'idle' && agent.status !== 'done' && !filled
 	);
 	let interrupting = $state<Record<string, boolean>>({});
-	let confirmingStop = $state(false);
 	const command = $derived(parseCommand(draft, controllers, target, true));
 	/** A line for the closed agent whose page is open, without a name or naming it (a closed
 	 *  controller): not sent; it is brought back from its page. */
@@ -173,9 +170,9 @@
 	/** Whose turn the send button interrupts instead, as the notice names it; null when it sends. */
 	const stopping = $derived(
 		stoppable && agent
-			? { id: agent.id, name: agent.name, confirm: AGENT_INTERRUPT_CONFIRM_TEXT }
+			? { id: agent.id, name: agent.name }
 			: !toAgent && !filled && recipient && controllerInterruptible(recipient, agents)
-				? { id: recipient.id, name: `@${recipient.hcomName}`, confirm: CONTROLLER_INTERRUPT_CONFIRM_TEXT }
+				? { id: recipient.id, name: `@${recipient.hcomName}` }
 				: null
 	);
 	const waking = $derived(recipient !== undefined && needsWake(recipient));
@@ -203,11 +200,6 @@
 		void id;
 		void owner;
 		optionsOpen = false;
-		confirmingStop = false;
-	});
-	// Nothing to interrupt any more closes it, so it does not come back by itself when there is again.
-	$effect.pre(() => {
-		if (!stopping) confirmingStop = false;
 	});
 
 	async function submit() {
@@ -271,7 +263,6 @@
 		if (!stopping) return;
 		// The notice names the one interrupted, even if another one is open by the time it answers.
 		const { id, name } = stopping;
-		confirmingStop = false;
 		interrupting[id] = true;
 		const result = await agentControl.interrupt(id);
 		interrupting[id] = false;
@@ -335,10 +326,9 @@
 							class="primary send square stop"
 							aria-label="中斷這一回合"
 							title="中斷這一回合（等同在它的終端機按 Esc）"
-							aria-expanded={confirmingStop}
 							data-action="interrupt"
 							disabled={interrupting[stopping.id]}
-							onclick={() => ((confirmingStop = !confirmingStop), (optionsOpen = false))}
+							onclick={() => ((optionsOpen = false), interrupt())}
 						>
 							<Square size="1em" fill="currentColor" />
 						</button>
@@ -379,7 +369,7 @@
 			title={waking ? '喚醒選項：開新一輪 LAT' : '只有閒置或已關閉的主控有喚醒選項'}
 			aria-expanded={optionsOpen}
 			disabled={!waking}
-			onclick={() => ((optionsOpen = !optionsOpen), (confirmingStop = false))}
+			onclick={() => (optionsOpen = !optionsOpen)}
 		>
 			<SlidersHorizontal size="1.1em" />
 		</button>
@@ -391,15 +381,6 @@
 	<!-- Said here too, as a draft kept from before hides the placeholder. -->
 	{#if toClosed && draft.trim()}
 		<p class="closed-note" role="status">{CLOSED_SEND_TEXT}</p>
-	{/if}
-	{#if confirmingStop && stopping}
-		<div class="popup" role="group" aria-label="確認中斷">
-			<p class="warn">{stopping.confirm}</p>
-			<div class="actions">
-				<button type="button" class="danger" data-action="confirm-interrupt" onclick={interrupt}>確認中斷</button>
-				<button type="button" onclick={() => (confirmingStop = false)}>取消</button>
-			</div>
-		</div>
 	{/if}
 	{#if optionsOpen && waking && recipient}
 		<div class="popup" role="group" aria-label="喚醒選項">
