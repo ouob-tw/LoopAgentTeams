@@ -113,12 +113,13 @@
 	});
 </script>
 
-{#snippet placedCard(item: InboxItem)}
+{#snippet placedCard(item: InboxItem, translation: Translation | null = null)}
 	<ItemContent
 		{item}
 		listed={item.key === openKey ? listed : known.some((entry) => entry.key === item.key)}
 		recorded={board.snapshot.recordedKeys.includes(item.key)}
 		handle={item.hcomName}
+		{translation}
 		onunread={(key) => board.mark(key, false)}
 	/>
 {/snippet}
@@ -141,18 +142,18 @@
 	{/each}
 {/snippet}
 
-{#snippet agentCard()}
+{#snippet agentCard(translation: Translation | null)}
 	{#if agentTarget?.kind === 'report' && agentTarget.tag === 'DONE'}
-		{@render doneCard(agentTarget)}
+		{@render doneCard(agentTarget, translation)}
 	{:else if agentTarget}
-		{@render placedCard(agentTarget)}
+		{@render placedCard(agentTarget, translation)}
 	{/if}
 {/snippet}
 
-{#snippet togetherCards()}
+{#snippet togetherCards(translation: Translation | null)}
 	<!-- The opened one is scrolled to; the others the same message asked are answerable too. -->
 	{#each together as entry (entry.key)}
-		<div class="asked" data-opened={entry.key === item?.key || undefined}>{@render placedCard(entry)}</div>
+		<div class="asked" data-opened={entry.key === item?.key || undefined}>{@render placedCard(entry, entry.key === item?.key ? translation : null)}</div>
 	{/each}
 {/snippet}
 
