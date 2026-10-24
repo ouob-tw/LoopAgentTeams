@@ -5395,6 +5395,16 @@ esac
         self.assertTrue(json.loads(self.wait_file.read_text())['active'])
         self.assertEqual(json.loads(self.wait_file.read_text())['due_at'], self.start + 20 * 3600)
 
+    def test_alarm_keepalive_stops_after_3h_outside_quiet_hours(self):
+        self.start = taipei(10)
+        self.declare(kind='alarm', due_at=self.start + 20 * 3600,
+                     condition={'kind': 'time', 'minutes': 1200})
+        self.write_usage(taipei(14, 3))
+        self.cycle(taipei(14))
+        self.assertEqual(self.injections(), [])
+        self.assertEqual([r['reason'] for r in self.records('cache-keepalive-skipped')],
+                         ['alarm-over-3h'])
+
     def test_alarm_keepalive_skips_quiet_hours_and_resumes_at_nine(self):
         self.start = taipei(0, 30)
         self.declare(kind='alarm', due_at=self.start + 20 * 3600,
