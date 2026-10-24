@@ -880,7 +880,7 @@ test.skipIf(!CHROME)('text typed for one agent stays with it: another agent open
 		await openAgent('s-other');
 		await tab.until(shown('s-other'), 'the other agent');
 		expect(await boxText()).toBe('');
-		// Nothing to send for it: it works, so the button is its stop.
+		// It works: the stop is there, beside the send button.
 		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
 
 		// Sent to the other one, which is left before Herdr answers.

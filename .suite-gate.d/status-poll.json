@@ -1,0 +1,3 @@
+{"map": [
+  {"paths": ["board/tests/server/status-poll.test.ts"], "tests": ["board/tests/server/status-poll.test.ts"]}
+]}

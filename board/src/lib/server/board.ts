@@ -71,6 +71,9 @@ export interface Board {
 	/** One controller's answered questions, as the processed items have them. */
 	answered(controllerId: string): Promise<InboxQuestion[]>;
 	subscribe(stream: Stream): () => void;
+	/** Read the agents' statuses once more soon (within `statusAfterActionMs`): an agent takes a moment
+	 *  to start or end a turn after the board sent to it or interrupted it. */
+	pollSoon(): void;
 	/** Tell every open page that a Herdr tab moved: nothing in the snapshot shows tab order. */
 	tabMoved(): void;
 	/** Tell every open page that an agent's operation record grew: the snapshot does not hold it,
@@ -439,6 +442,57 @@ function createBoard(): Board {
 		if (!closed) void refresh();
 	}
 
+	/** Bumped by every full read; a status read that began before one is dropped, as the read has newer lists. */
+	let readCount = 0;
+	let polling = false;
+	/** A poll asked for while one was under way: its lists may predate the ask, so one more follows. */
+	let pollAgain = false;
+	let pollTimer: ReturnType<typeof setInterval> | undefined;
+	let soonTimer: ReturnType<typeof setTimeout> | undefined;
+
+	/** Read hcom's and Herdr's lists alone and push the agents if a status changed. Never overlaps
+	 *  itself or a full read; a list that cannot be read in time leaves the last one standing. */
+	async function pollStatus(): Promise<void> {
+		if (closed || running || !sources || streams.size === 0) return;
+		if (polling) {
+			pollAgain = true;
+			return;
+		}
+		polling = true;
+		const began = readCount;
+		const limited = { ...config, hcomListTimeoutMs: config.statusPollTimeoutMs, herdrTimeoutMs: config.statusPollTimeoutMs };
+		try {
+			const [agents, herdrAgents] = await Promise.all([listAgents(limited), listHerdrAgents(limited)]);
+			if (closed || running || readCount !== began || !sources || (!agents.ok && !herdrAgents.ok)) return;
+			const paused = await settlePauses(config, agents, herdrAgents, Date.now());
+			if (closed || running || readCount !== began || !sources) return;
+			if (herdrAgents.ok) herdrPlaces = herdrAgents;
+			herdrPlaceError = herdrAgents.ok ? null : herdrAgents.reason;
+			if (agents.ok) lastRunning = new Set(agents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
+			const rostered = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
+			sources = { ...sources, agents: rostered.agents, workspaces: rostered.workspaces, running: lastRunning };
+			publish(sources);
+		} catch {
+			// The last statuses stand; the next tick reads again.
+		} finally {
+			polling = false;
+			if (pollAgain) {
+				pollAgain = false;
+				void pollStatus();
+			}
+		}
+	}
+
+	/** Poll while a page is connected, and only then. */
+	function syncPoll(): void {
+		if (closed || streams.size === 0) {
+			clearInterval(pollTimer);
+			pollTimer = undefined;
+			clearTimeout(soonTimer);
+			soonTimer = undefined;
+		} else pollTimer ??= setInterval(() => void (polling || pollStatus()), config.statusPollMs);
+	}
+
 	function refresh(): Promise<BoardSnapshot> {
 		// A read already under way may have started before the change the caller knows about.
 		if (running) return (queued ??= running.then(start, start));
@@ -455,6 +509,7 @@ function createBoard(): Board {
 
 	function start(): Promise<BoardSnapshot> {
 		queued = null;
+		readCount++;
 		clearTimeout(fallback);
 		if (!closed) fallback = setTimeout(() => void refresh(), fallbackGapMs);
 		running = read()
@@ -494,7 +549,16 @@ function createBoard(): Board {
 		subscribe(stream) {
 			if (closed) stream.close();
 			else streams.add(stream);
-			return () => streams.delete(stream);
+			syncPoll();
+			return () => {
+				streams.delete(stream);
+				syncPoll();
+			};
+		},
+		pollSoon() {
+			if (closed || streams.size === 0) return;
+			clearTimeout(soonTimer);
+			soonTimer = setTimeout(() => void pollStatus(), config.statusAfterActionMs);
 		},
 		tabMoved,
 		agentActed(agentId) {
@@ -522,6 +586,8 @@ function createBoard(): Board {
 			quotaPoller.close();
 			clearTimeout(debounce);
 			clearTimeout(fallback);
+			clearInterval(pollTimer);
+			clearTimeout(soonTimer);
 			clearInterval(heartbeat);
 			sourceWatcher.close();
 			deviceWatcher.close();

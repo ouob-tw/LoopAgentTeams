@@ -20,7 +20,7 @@ import { CHROME, launchChrome, type Browser, type Tab } from '../browser.ts';
 const SCREEN = `({ search: location.search, detail: document.querySelector('.detail')?.innerText ?? '', notices: document.querySelector('.dock')?.innerText ?? '' })`;
 const FITS = `document.documentElement.scrollWidth <= window.innerWidth`;
 const BOX = '.dock .cmd textarea';
-const SEND = '.dock .cmd .send-slot button';
+const SEND = '.dock .cmd .send-slot button:not([data-action="interrupt"])';
 const OPTIONS = '.dock .cmd button.options';
 const POPUP = '.dock .popup[aria-label="喚醒選項"]';
 const STOP = '.dock [data-action="interrupt"]';
@@ -189,8 +189,9 @@ for (const width of [1280, 390]) {
 		await type(text);
 		if (width > 760) expect(await tab.eval(`document.querySelector('.dock .to').innerText`)).toBe('→ @lead');
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).getAttribute('aria-label')`)).toBe('送出');
-		// No interrupt and no agent's model picker: the line is the controller's.
-		expect(await tab.eval(`!!document.querySelector('.dock [data-action="interrupt"], .dock .pill-slot [data-pick]')`)).toBe(false);
+		// No agent's model picker: the line is the controller's. It is at work, so its stop sits beside the send button.
+		expect(await tab.eval(`!!document.querySelector('.dock .pill-slot [data-pick]')`)).toBe(false);
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
 		await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).click()`);
 		await tab.until(`document.querySelector(${JSON.stringify(BOX)}).value === ''`, 'the box emptied');
 		expect(injects()).toEqual([['lead', text, '--enter']]);
@@ -211,17 +212,19 @@ for (const [width, search] of [
 ] as const) {
 	test.skipIf(!CHROME)(`${width}px: a controller at work is interrupted by one press, named in the notice and in its sent log`, async () => {
 		await visit(width, search);
-		// Nothing typed: the send button is a stop.
+		// At work: the stop sits beside the send button, left of it, typed or not.
 		await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
+		const leftOfSend = `document.querySelector(${JSON.stringify(STOP)}).getBoundingClientRect().right <= document.querySelector(${JSON.stringify(SEND)}).getBoundingClientRect().left`;
+		expect(await tab.eval(leftOfSend)).toBe(true);
 		await type('先別停');
-		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(false);
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).getAttribute('aria-label')`)).toBe('送出');
-		await type('');
-		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
+		expect(await tab.eval(leftOfSend)).toBe(true);
 		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('已對 @lead 送出 Esc')`, 'the interrupt notice');
-		// One press was enough: no confirmation came up.
+		// One press was enough: no confirmation came up, and what was typed stays.
 		expect(await tab.eval(`!!document.querySelector('.dock .popup')`)).toBe(false);
+		expect(await tab.eval(`document.querySelector(${JSON.stringify(BOX)}).value`)).toBe('先別停');
 		expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);
 		expect(injects()).toEqual([]);
 		await tab.eval(click('.detail [role="tablist"]', '送出紀錄'));
@@ -285,21 +288,23 @@ test.skipIf(!CHROME)('an interrupt whose Herdr command times out says so, is tri
 	}
 }, 60_000);
 
-test.skipIf(!CHROME)('only blank space typed keeps the stop; a line naming a controller is sent or wakes instead', async () => {
+test.skipIf(!CHROME)('the stop stays whatever is typed; a line naming a controller still sends or wakes, and the stop is the page\'s own controller\'s', async () => {
 	await visit(1280, '?controller=s-lead');
 	await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
-	await type('  \n ');
-	await sleep(200);
-	expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
 	for (const [line, label] of [
-		['@lead 先別停', ''],
+		['  \n ', '送出'],
+		['@lead 先別停', '送出'],
 		['@luna 醒醒', '喚醒']
 	]) {
 		await type(line);
-		await tab.until(`document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === ${JSON.stringify(label)}`, `the ${label} button`);
-		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(false);
+		await tab.until(`document.querySelector(${JSON.stringify(SEND)})?.innerText.trim() === ${JSON.stringify(label === '送出' ? '' : label)}`, `the ${label} button`);
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
 	}
-	expect(herdrCalls()).toEqual([]);
+	// With @luna typed the stop still goes to the page's controller, lead.
+	await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
+	await tab.until(`document.querySelector('.dock')?.innerText.includes('已對 @lead 送出 Esc')`, 'the interrupt notice');
+	expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);
+	expect(await tab.eval(`document.querySelector(${JSON.stringify(BOX)}).value`)).toBe('@luna 醒醒');
 }, 60_000);
 
 test.skipIf(!CHROME)('the stop follows the controller and its turn, and no key is pressed by it appearing', async () => {
@@ -341,6 +346,34 @@ test.skipIf(!CHROME)('the stop follows the controller and its turn, and no key i
 		await fixture.refresh(cookie);
 	}
 }, 60_000);
+
+for (const width of [1280, 390]) {
+	test.skipIf(!CHROME)(`${width}px: the stop appears and goes within 5 seconds of its turn starting and ending, with no reload and no full read`, async () => {
+		const flip = (status: string) => fixture.setHcom({ agents: [hcomAgent('lead', 's-lead', status), ...HCOM_AGENTS.slice(1)] });
+		flip('listening');
+		await fixture.refresh(cookie);
+		try {
+			await visit(width, '?controller=s-lead');
+			await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(SEND)})`, "lead's page");
+			expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(false);
+			// Typed text stays through both changes.
+			await type('寫到一半');
+			flip('active');
+			const startedAt = Date.now();
+			await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop', 5_000);
+			expect(Date.now() - startedAt).toBeLessThanOrEqual(5_500);
+			flip('listening');
+			const endedAt = Date.now();
+			await tab.until(`!document.querySelector(${JSON.stringify(STOP)})`, 'the stop gone', 5_000);
+			expect(Date.now() - endedAt).toBeLessThanOrEqual(5_500);
+			expect(await tab.eval(`document.querySelector(${JSON.stringify(BOX)}).value`)).toBe('寫到一半');
+			expect(await tab.eval(FITS)).toBe(true);
+		} finally {
+			fixture.setHcom({ agents: HCOM_AGENTS });
+			await fixture.refresh(cookie);
+		}
+	}, 60_000);
+}
 
 // The stop follows the live agent with the controller's session, not the LAT reports. Each case
 // changes only what LAT or the live agent says of `lead` and puts it back.
