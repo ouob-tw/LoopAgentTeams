@@ -219,6 +219,20 @@ class StorageTests(LedgerCase):
         self.assertIn(f'skipped unreadable journal line {len(lines) + 1}', result.stderr)
         self.assertEqual(self.item(item)['status'], 'done')
 
+    def test_append_cut_inside_a_multibyte_character_is_repaired(self):
+        self.init()
+        item = self.add()
+        before = self.journal.read_bytes()
+        self.ok('block', str(item), '--reason', '等待決定')
+        self.journal.write_bytes(before + '{"reason":"等'.encode()[:-2])
+        self.assertEqual(self.run_ledger('check').returncode, 1)
+        self.ok('repair', '--reason', 'append cut mid-character')
+        self.ledger.write_text('broken')
+        result = self.run_ledger('repair', '--from-journal', '--reason', 'disk')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('skipped unreadable journal line 3', result.stderr)
+        self.assertEqual(self.item(item)['blocked_reason'], '等待決定')
+
     def test_concurrent_writers_all_land(self):
         self.init()
         environment = {**os.environ, 'LAT_LEDGER_NOW': NOW, 'HCOM_INSTANCE_NAME': 'orch'}

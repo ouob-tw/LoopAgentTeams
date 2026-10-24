@@ -233,11 +233,12 @@ def read_journal(store):
     warning, since every line holds a full snapshot; the last line must be valid.
     """
     try:
-        lines = store.journal.read_text(encoding='utf-8').splitlines()
+        lines = store.journal.read_bytes().splitlines()  # decode per line: a cut-off
+        # append may end inside a multibyte character
     except FileNotFoundError:
         raise Failure(f'journal missing: {store.journal}; the ledger cannot be rebuilt and '
                       'no empty ledger is created') from None
-    except (OSError, UnicodeError) as error:
+    except OSError as error:
         raise Failure(f'journal unreadable: {error}') from error
     if not lines:
         raise Failure(f'journal is empty: {store.journal}; the ledger cannot be rebuilt')
