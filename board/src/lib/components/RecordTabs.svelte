@@ -32,11 +32,40 @@
 		tab = tabs[(at + step + tabs.length) % tabs.length].id;
 		(event.currentTarget as HTMLElement).querySelector<HTMLElement>(`[data-tab="${tab}"]`)?.focus();
 	}
+
+	// The open tab in view in its strip, however it was opened: a click, an arrow key or the page.
+	// A count that arrives later widens the tabs: the open tab is brought back into view then only
+	// if it was whole in view just before, so a strip the user has slid elsewhere stays there.
+	let strip = $state<HTMLElement>();
+	/** The tab last brought into view, and whether it was whole in view before the counts changed. */
+	let revealed: string | undefined;
+	let wasWhole = false;
+	const open = () => strip?.querySelector<HTMLElement>(`[data-tab="${tab}"]`);
+	function whole(button: HTMLElement) {
+		const shown = strip!.getBoundingClientRect();
+		const at = button.getBoundingClientRect();
+		return at.left >= shown.left - 1 && at.right <= shown.right + 1;
+	}
+	$effect.pre(() => {
+		void tabs.map((entry) => entry.count);
+		const button = open();
+		wasWhole = !!button && whole(button);
+	});
+	$effect(() => {
+		void tabs.map((entry) => entry.count);
+		const button = open();
+		if (!strip || !button || (tab === revealed && !wasWhole)) return;
+		revealed = tab;
+		const shown = strip.getBoundingClientRect();
+		const at = button.getBoundingClientRect();
+		if (at.left < shown.left) strip.scrollLeft -= shown.left - at.left;
+		else if (at.right > shown.right) strip.scrollLeft += at.right - shown.right;
+	});
 </script>
 
 <!-- svelte-ignore a11y_interactive_supports_focus -->
 <div class="tabbar">
-	<div class="tabs" role="tablist" aria-label={ariaLabel} onkeydown={tabKeys}>
+	<div class="tabs" bind:this={strip} role="tablist" aria-label={ariaLabel} onkeydown={tabKeys}>
 		{#each tabs as entry (entry.id)}
 			<button
 				type="button"
@@ -66,17 +95,23 @@
 		display: flex;
 		border-bottom: 1px solid var(--line);
 	}
+	/* Tabs that do not fit scroll sideways inside the strip; the page itself never does. The strip,
+	   not each tab, reaches over the line, so its scrolling does not cut the open tab's underline. */
 	.tabs {
 		display: flex;
 		flex: 1;
 		min-width: 0;
 		gap: 0.2rem;
+		margin-bottom: -1px;
+		overflow-x: auto;
+		scrollbar-width: thin;
 	}
 	.tabs button {
 		display: inline-flex;
+		flex: none;
 		align-items: center;
 		gap: 0.35rem;
-		margin-bottom: -1px;
+		white-space: nowrap;
 		padding: 0.4rem 0.8rem;
 		border: 0;
 		border-bottom: 2px solid transparent;
@@ -111,10 +146,11 @@
 		border-bottom-color: var(--text);
 	}
 
-	/* A phone: the tabs share the width. */
+	/* A phone: the tabs share the width, none narrower than its label and count. */
 	@media (max-width: 760px) {
 		.tabs button {
-			flex: 1;
+			flex: 1 0 0;
+			min-width: max-content;
 			justify-content: center;
 			padding: 0.5rem 0.3rem;
 		}

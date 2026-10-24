@@ -8,7 +8,7 @@ import { randomBytes } from 'node:crypto';
 import { appendFileSync, chmodSync, createReadStream, lstatSync, mkdirSync, realpathSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import { basename, dirname, join, resolve, sep } from 'node:path';
 import { Readable } from 'node:stream';
-import { attachmentKind, CHUNK_BYTES, shownByBrowser } from '../board/attachments.ts';
+import { attachmentKind, CHUNK_BYTES, shownByBrowser, uploadedName } from '../board/attachments.ts';
 import type { BoardConfig } from './config.ts';
 
 type Result = { status: number; body: Record<string, unknown> };
@@ -163,7 +163,8 @@ export function serveUpload(config: BoardConfig, path: string | null, range: str
 		'cache-control': 'private, max-age=86400',
 		'accept-ranges': 'bytes'
 	};
-	if (!inline) headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(name)}`;
+	// Saved under the name it was uploaded as, not the stored one.
+	if (!inline) headers['content-disposition'] = `attachment; filename*=UTF-8''${encodeURIComponent(uploadedName(name))}`;
 
 	const asked = range?.match(/^bytes=(\d*)-(\d*)$/);
 	if (asked && (asked[1] || asked[2])) {

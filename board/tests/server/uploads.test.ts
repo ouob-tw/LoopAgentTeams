@@ -91,11 +91,11 @@ test('a completed file whose own name ends in .part is served like any other', a
 	expect(await response.text()).toBe('abc');
 });
 
-test('any other file downloads instead of opening in the page', async () => {
+test('any other file downloads instead of opening in the page, under the name it was uploaded as', async () => {
 	const path = await upload('page.html', new TextEncoder().encode('<script>alert(1)</script>'));
 	const response = await read(path);
 	expect(response.headers.get('content-type')).toBe('application/octet-stream');
-	expect(response.headers.get('content-disposition')).toBe("attachment; filename*=UTF-8''" + encodeURIComponent(path.split('/').pop()!));
+	expect(response.headers.get('content-disposition')).toBe("attachment; filename*=UTF-8''" + encodeURIComponent('page.html'));
 });
 
 test('a PDF opens in the browser, still sandboxed, so its own viewer shows it and nothing in it runs as the board', async () => {

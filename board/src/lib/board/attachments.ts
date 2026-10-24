@@ -98,6 +98,31 @@ export function fileName(path: string): string {
 	return path.slice(path.lastIndexOf('/') + 1);
 }
 
+/** The name a file was uploaded as: its stored name without the `<16 hex>-` the board puts before it. */
+export function uploadedName(path: string): string {
+	return fileName(path).replace(/^[0-9a-f]{16}-(?=.)/, '');
+}
+
+/** How many characters a name shown on one line always keeps at its opening. */
+const OPENING_CHARACTERS = 3;
+/** How many characters before the extension a name shown on one line keeps when it can. */
+const TAIL_CHARACTERS = 6;
+
+/** A name in four parts for one line: its first three characters, always shown; the middle, cut
+ *  short with … when the line is too narrow; the tail, up to six characters before the extension
+ *  after the first three, which give way next; and the extension (a dot and up to ten characters
+ *  after the last dot), kept whole. */
+export function nameParts(name: string): { opening: string; middle: string; tail: string; extension: string } {
+	// By characters, so a character outside the BMP is never split.
+	const characters = [...name];
+	const extension = [...(name.match(/\.[^.]{1,10}$/)?.[0] ?? '')];
+	const end = characters.length - extension.length;
+	const middleAt = Math.min(end, OPENING_CHARACTERS);
+	const tailAt = Math.max(middleAt, end - TAIL_CHARACTERS);
+	const text = (from: number, to: number) => characters.slice(from, to).join('');
+	return { opening: text(0, middleAt), middle: text(middleAt, tailAt), tail: text(tailAt, end), extension: extension.join('') };
+}
+
 /** A size as people read it. */
 export function fileSize(bytes: number): string {
 	if (bytes < 1024) return `${bytes} B`;
