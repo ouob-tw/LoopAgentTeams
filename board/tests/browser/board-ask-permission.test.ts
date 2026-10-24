@@ -155,7 +155,7 @@ test.skipIf(!CHROME)('Codex\'s MCP request with its turn ended says so and folds
 	await openAgent(tab, 's-ask');
 	await tab.until(`!!${card('term')} && !!${card('late')}`, "Claude's cards");
 	const term = await tab.eval<string>(text('term'));
-	expect(term).toContain('已在終端機回答：拒絕');
+	expect(term).toContain('已在終端機拒絕');
 	expect(term).toContain('你在看板的選擇沒有被採用');
 	expect(await tab.eval(`${card('term')}.querySelectorAll('button').length`)).toBe(0);
 	// Timed out: still answered, as a message.

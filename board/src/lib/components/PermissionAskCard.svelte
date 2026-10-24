@@ -57,7 +57,9 @@
 		if (takenHere[ask.id]) return ASK_TAKEN_REASON;
 		const said = BOARD_ASK_STATE_TEXT[ask.state];
 		const picked = ask.decision ? PERMISSION_DECISION_TEXT[ask.decision] : null;
-		if (ask.state === 'terminal') return `${said}：${ask.actual ? PERMISSION_DECISION_TEXT[ask.actual] : ''}${ask.notAdopted ? `・${NOT_ADOPTED_NOTE}（你選了${picked}）` : ''}`;
+		const notAdopted = ask.notAdopted ? `・${NOT_ADOPTED_NOTE}（你選了${picked}）` : '';
+		if (ask.state === 'terminal') return `${said}：${ask.actual ? PERMISSION_DECISION_TEXT[ask.actual] : ''}${notAdopted}`;
+		if (ask.state === 'terminal_denied') return `${said}${notAdopted}`;
 		if (ask.state === 'filled' && picked) return `${said}：${picked}`;
 		if (ask.state === 'sent' && picked) return `已送出：${picked}・等確認 Claude 採用的結果`;
 		return picked && ask.state !== 'allowed_waiting' ? `${said}・你的答案：${picked}` : said;

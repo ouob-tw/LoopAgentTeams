@@ -78,15 +78,9 @@ DENY_MESSAGE = '使用者在看板拒絕了這個操作。'
 REJECTED_PREFIX = "The user doesn't want to proceed with this tool use"
 # How long a board answer to Claude's permission request is watched for in its transcript.
 OBSERVE_SECONDS = 60
-# How long the transcript is watched after Claude ended the hook while it waited: answering No in
-# its dialog ends the hook at once, before the answer is in the transcript.
+# How long the transcript is watched after Claude ended the hook while it waited: No or Esc in its
+# dialog ends the hook at once, before the refusal is in the transcript.
 ENDED_SECONDS = 10
-# What Claude writes right after the rejected tool result when Esc ended the turn, unlike a No in
-# its dialog (2.1.310: a separate entry a millisecond later). A rejection counts as a No only once
-# this long has passed with no such line among the next few entries.
-INTERRUPTED_MARK = '[Request interrupted by user'
-INTERRUPTED_LINES = 3
-REJECTED_GRACE_SECONDS = 2
 TRANSCRIPT_SECONDS = 1
 
 
@@ -323,13 +317,12 @@ def content_text(content):
 
 
 def tool_result_decision(item):
-    """Whether Claude ran the tool the transcript's tool result is for: `allow`, `deny` when the
-    board denied it, or `rejected` when the user rejected it in the terminal, by No or by Esc. A
-    refusal is an error result; a tool's own output that only quotes such text is not one."""
+    """Whether Claude ran the tool the transcript's tool result is for: `allow`, or `deny` when the
+    user refused it in the terminal (No and Esc read the same in 2.1.310, and both count as a
+    refusal, RATI-ASK288-1) or the board denied it. A refusal is an error result; a tool's own
+    output that only quotes such text is not one."""
     text = content_text(item.get('content'))
-    if item.get('is_error') is True and text.startswith(REJECTED_PREFIX):
-        return 'rejected'
-    if item.get('is_error') is True and DENY_MESSAGE in text:
+    if item.get('is_error') is True and (text.startswith(REJECTED_PREFIX) or DENY_MESSAGE in text):
         return 'deny'
     return 'allow'
 
@@ -341,12 +334,8 @@ class TranscriptWatch:
     input whose result was not already written before the request (before `start`, a byte offset).
     Two such calls cannot be told apart: `ambiguous`, and nothing is said of either."""
 
-    def __init__(self, path, tool_name, tool_input, start=None, clock=time.time):
+    def __init__(self, path, tool_name, tool_input, start=None):
         self.path = Path(path)
-        self.clock = clock
-        self.lines = 0
-        self.marks = set()
-        self.rejected_seen = None
         self.tool_name = tool_name
         self.tool_input = tool_input
         self.uses = set()
@@ -369,13 +358,9 @@ class TranscriptWatch:
             return
         end = chunk.rfind(b'\n') + 1
         at = self.position
-        for line in chunk[:end].split(b'\n')[:-1]:
+        for line in chunk[:end].split(b'\n'):
             line_at = at
             at += len(line) + 1
-            number = self.lines
-            self.lines += 1
-            if INTERRUPTED_MARK.encode() in line:
-                self.marks.add(number)
             if b'"tool_use"' not in line and b'"tool_result"' not in line:
                 continue
             try:
@@ -390,13 +375,11 @@ class TranscriptWatch:
                         and item.get('input') == self.tool_input:
                     self.uses.add(item.get('id'))
                 elif item.get('type') == 'tool_result' and isinstance(item.get('tool_use_id'), str):
-                    self.results.setdefault(item['tool_use_id'], (item, line_at, number))
+                    self.results.setdefault(item['tool_use_id'], (item, line_at))
         self.position += end
 
     def decision(self):
-        """`allow`, `deny` or `interrupted` once the call's result is written; None before, or
-        when ambiguous. A rejection in the terminal is `interrupted` once the interrupted line
-        follows it, `deny` (a No) once the grace passed without one."""
+        """`allow` or `deny` once the call's result is written; None before, or when ambiguous."""
         self.read()
         calls = [use for use in self.uses
                  if use not in self.results or self.results[use][1] >= self.start]
@@ -404,15 +387,7 @@ class TranscriptWatch:
             self.ambiguous = True
         if len(calls) != 1 or calls[0] not in self.results:
             return None
-        item, _, number = self.results[calls[0]]
-        decision = tool_result_decision(item)
-        if decision != 'rejected':
-            return decision
-        if any(number <= mark <= number + INTERRUPTED_LINES for mark in self.marks):
-            return 'interrupted'
-        if self.rejected_seen is None:
-            self.rejected_seen = self.clock()
-        return 'deny' if self.clock() - self.rejected_seen >= REJECTED_GRACE_SECONDS else None
+        return tool_result_decision(self.results[calls[0]][0])
 
 
 def ask_permission(payload, env, client, clock, sleep):
@@ -430,7 +405,7 @@ def ask_permission(payload, env, client, clock, sleep):
     if not board_running(folder, now):
         return None
     transcript = payload.get('transcript_path')
-    watch = TranscriptWatch(transcript, tool_name, tool_input, clock=clock) \
+    watch = TranscriptWatch(transcript, tool_name, tool_input) \
         if client == 'claude' and isinstance(transcript, str) and transcript else None
     deadline = now + wait_seconds(env)
     ask = {**new_ask(payload, env, client, 'permission', tool_input, now, deadline),
@@ -446,16 +421,16 @@ def ask_permission(payload, env, client, clock, sleep):
     def answered_in_terminal():
         """True once the transcript shows the call answered and that took the ask."""
         seen = watch.decision() if watch is not None else None
-        if seen not in ('allow', 'deny') or not claim(result_path, {'kind': 'terminal',
-                                                                    'decision': seen,
-                                                                    'at': iso(clock())}):
+        if seen is None or not claim(result_path, {'kind': 'terminal', 'decision': seen,
+                                                   'at': iso(clock())}):
             return False
         write_whole(ask_path, {**ask, 'outcome': 'terminal', 'outcome_at': iso(clock())})
         return True
 
     def ended(signum, frame):
-        """Claude ended the hook while it waited: Esc, or No in its dialog. A watcher looks at the
-        transcript for the answer; the board leaves the ask alone while the watcher runs."""
+        """Claude ended the hook while it waited: No or Esc in its dialog, which both refuse the
+        tool, or the agent closed. A watcher looks at the transcript for the refusal; the board
+        leaves the ask alone while the watcher runs."""
         if not result_path.exists():
             watcher = start_watcher(ask_path, env, ended=True)
             if watcher is not None:
@@ -520,18 +495,18 @@ def start_watcher(ask_path, env, ended=False):
 
 
 def run_ended(path, ask, clock, sleep):
-    """The watcher of an ask whose hook Claude ended: an allow or a No seen in the transcript takes
-    the ask as answered in the terminal; Esc, or nothing within the watch, leaves it to the board,
-    which then reads it as interrupted."""
+    """The watcher of an ask whose hook Claude ended: an allow or a refusal (No or Esc) seen in the
+    transcript takes the ask as answered in the terminal; nothing within the watch leaves it to
+    the board, which then reads it as interrupted."""
     watch = TranscriptWatch(ask['transcript_path'], ask['tool_name'], ask['tool_input'],
-                            ask['transcript_start'], clock)
+                            ask['transcript_start'])
     until = clock() + ENDED_SECONDS
     seen = None
     while seen is None and not watch.ambiguous and clock() < until:
         seen = watch.decision()
         if seen is None:
             sleep(POLL_SECONDS)
-    if seen in ('allow', 'deny') and claim(path.with_name(f'{ask["id"]}.result.json'),
+    if seen is not None and claim(path.with_name(f'{ask["id"]}.result.json'),
                                            {'kind': 'terminal', 'decision': seen,
                                             'at': iso(clock())}):
         write_whole(path, {**ask, 'outcome': 'terminal', 'outcome_at': iso(clock())})
@@ -549,13 +524,13 @@ def run_observe(ask_path, ended=False, clock=time.time, sleep=time.sleep):
     observed = path.with_name(f'{ask["id"]}.observed.json')
     until = datetime.fromisoformat(ask['observe_until'].replace('Z', '+00:00')).timestamp()
     watch = TranscriptWatch(ask['transcript_path'], ask['tool_name'], ask['tool_input'],
-                            ask['transcript_start'], clock)
+                            ask['transcript_start'])
     while True:
         seen = watch.decision()
         if seen is not None or watch.ambiguous or clock() >= until:
             break
         sleep(TRANSCRIPT_SECONDS)
-    record = {'decision': seen} if seen in ('allow', 'deny') else {'kind': 'unknown'}
+    record = {'decision': seen} if seen is not None else {'kind': 'unknown'}
     claim(observed, {**record, 'at': iso(clock())})
 
 

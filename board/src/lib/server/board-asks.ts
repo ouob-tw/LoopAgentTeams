@@ -170,7 +170,8 @@ function standing(files: AskFiles, now: number, executionWaitMs: number): { stat
 	const at = (state: BoardAskState, endedAt: string | null | undefined) => ({ state, endedAt: ENDED_ASK_STATES.has(state) ? (endedAt ?? ask.created_at) : null });
 	const relayEnd = (taken: { at: string; outcome_at?: string } | null) => resend?.outcome_at ?? taken?.outcome_at ?? taken?.at;
 	if (!result) return at('waiting', null);
-	if (result.kind === 'interrupted' || result.kind === 'handed_back' || result.kind === 'terminal') return at(result.kind, result.at);
+	if (result.kind === 'terminal') return at(result.decision === 'deny' ? 'terminal_denied' : 'terminal', result.at);
+	if (result.kind === 'interrupted' || result.kind === 'handed_back') return at(result.kind, result.at);
 	if (result.kind === 'timeout') return at(relayState(ask.id, late, resend, 'timed_out', 'relayed'), relayEnd(late));
 	if (allowedLate(files)) {
 		const expires = Date.parse(ask.outcome_at ?? result.at ?? ask.created_at) + executionWaitMs;
@@ -184,7 +185,7 @@ function standing(files: AskFiles, now: number, executionWaitMs: number): { stat
 	if (ask.outcome === 'filled') return at('filled', ask.outcome_at ?? result.at);
 	if (ask.kind !== 'permission') return at('answered', null);
 	if (ask.outcome === 'sent') {
-		if (observed?.decision) return at(observed.decision === result.decision ? 'filled' : 'terminal', observed.at);
+		if (observed?.decision) return at(observed.decision === result.decision ? 'filled' : observed.decision === 'deny' ? 'terminal_denied' : 'terminal', observed.at);
 		const until = Date.parse(ask.observe_until ?? '') + OBSERVE_GRACE_MS;
 		if (observed?.kind === 'unknown') return at('result_unknown', observed.at);
 		if (now >= until) return at('result_unknown', new Date(until).toISOString());
@@ -249,7 +250,7 @@ export function readAsks(dir: string, { now = Date.now(), executionWaitMs = ASK_
 			decision,
 			reason: decision === 'deny' && typeof taken?.reason === 'string' && taken.reason ? taken.reason : null,
 			actual: result?.kind === 'terminal' && isDecision(result.decision) ? result.decision : isDecision(files.observed?.decision) ? files.observed.decision : null,
-			notAdopted: state === 'terminal' && answered !== null,
+			notAdopted: (state === 'terminal' || state === 'terminal_denied') && answered !== null,
 			turnEnded: files.stopped,
 			createdAt: ask.created_at,
 			deadlineAt: ask.deadline_at,
@@ -337,7 +338,10 @@ function endNote(ask: BoardAsk): string | null {
 	const actual = ask.actual ? PERMISSION_DECISION_TEXT[ask.actual] : '';
 	switch (ask.state) {
 		case 'terminal':
-			return ask.notAdopted ? `${NOT_ADOPTED_NOTE}：已在終端機回答（${actual}）` : `已在終端機回答（${actual}），看板沒有作答`;
+		case 'terminal_denied': {
+			const said = ask.state === 'terminal_denied' ? BOARD_ASK_STATE_TEXT.terminal_denied : `${BOARD_ASK_STATE_TEXT.terminal}（${actual}）`;
+			return ask.notAdopted ? `${NOT_ADOPTED_NOTE}：${said}` : `${said}，看板沒有作答`;
+		}
 		case 'result_unknown':
 			return ask.decision ? `${BOARD_ASK_STATE_TEXT.result_unknown}：看不到 Claude 採用了哪個答案` : null;
 		case 'handed_back':

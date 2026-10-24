@@ -27,7 +27,8 @@ export interface AskQuestion {
  * ended with nothing taken (Esc in the terminal, or the agent closed).
  *
  * A permission request only: `sent`, the board's answer handed to Claude while its own dialog was
- * open too, and what Claude did is not seen yet; `terminal`, answered in Claude's terminal first;
+ * open too, and what Claude did is not seen yet; `terminal`, allowed in Claude's terminal first;
+ * `terminal_denied`, refused there first, by No or Esc, which Claude records alike (RATI-ASK288-1);
  * `result_unknown`, what Claude did with a sent answer was not seen in time; `handed_back`, Codex's
  * wait ran out and its terminal shows the dialog again. Codex allowed after its turn had ended:
  * `allowed_waiting` until the tool is seen run, `executed` once it is and the board is telling it,
@@ -46,6 +47,7 @@ export type BoardAskState =
 	| 'interrupted'
 	| 'sent'
 	| 'terminal'
+	| 'terminal_denied'
 	| 'result_unknown'
 	| 'handed_back'
 	| 'allowed_waiting'
@@ -66,6 +68,7 @@ export const BOARD_ASK_STATE_TEXT: Record<BoardAskState, string> = {
 	interrupted: '已在終端機中斷',
 	sent: '已送出，等確認 Claude 採用的結果',
 	terminal: '已在終端機回答',
+	terminal_denied: '已在終端機拒絕',
 	result_unknown: '結果不明，請看對話紀錄',
 	handed_back: '已交回終端機，請在終端機回答',
 	allowed_waiting: '已允許，等它執行・還沒看到它執行',
@@ -83,6 +86,7 @@ export const ENDED_ASK_STATES: ReadonlySet<BoardAskState> = new Set([
 	'gone',
 	'interrupted',
 	'terminal',
+	'terminal_denied',
 	'result_unknown',
 	'handed_back',
 	'notified',
@@ -214,7 +218,7 @@ export const PERMISSION_DECISION_TEXT: Record<PermissionDecision, string> = { al
 /** What a permission card says above its buttons once Codex's turn ended while it waited. */
 export const TURN_ENDED_NOTE = '它已經停下這一回合，按允許後指令仍會執行';
 
-/** What a `terminal` card adds when the board's answer, sent too, was not the one Claude took. */
+/** What a `terminal` or `terminal_denied` card adds when the board's answer, sent too, was not the one Claude took. */
 export const NOT_ADOPTED_NOTE = '你在看板的選擇沒有被採用';
 
 /** A permission request's tool input in one line: the command, the file, or the input as JSON. */

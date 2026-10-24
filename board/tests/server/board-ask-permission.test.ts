@@ -167,7 +167,17 @@ test('handed back to Codex\'s terminal, or answered in Claude\'s: no answer take
 	expect((await entries()).map((entry) => entry.error)).toEqual(['已有人作答', '已在終端機回答（允許），看板沒有作答']);
 });
 
-test('Claude took the terminal\'s answer over the board\'s: 已在終端機回答, the record says the board\'s was not taken; the same answer reads 已填回; none seen, 結果不明', async () => {
+test('refused in Claude\'s terminal (No or Esc): 已在終端機拒絕, takes no answer, nothing sent, recorded once', async () => {
+	putAsk('term-no', { outcome: 'terminal' });
+	write('term-no.result.json', { kind: 'terminal', decision: 'deny', at: iso(Date.now()) });
+	expect(await askOf('term-no')).toMatchObject({ state: 'terminal_denied', actual: 'deny', notAdopted: false, endedAt: expect.any(String) });
+	expect((await answer('term-no', 'allow')).status).toBe(409);
+	await fixture.refresh(cookie);
+	expect(prompts()).toEqual([]);
+	expect((await entries()).map((entry) => entry.error)).toEqual(['已有人作答', '已在終端機拒絕，看板沒有作答']);
+});
+
+test('Claude took the terminal\'s refusal over the board\'s allow: 已在終端機拒絕, the record says the board\'s was not taken; the same answer reads 已填回; none seen, 結果不明', async () => {
 	for (const id of ['over', 'same', 'unseen']) {
 		putAsk(id);
 		expect((await answer(id, 'allow')).status).toBe(200);
@@ -178,13 +188,13 @@ test('Claude took the terminal\'s answer over the board\'s: 已在終端機回�
 	write('over.observed.json', { decision: 'deny', at: iso(Date.now()) });
 	write('same.observed.json', { decision: 'allow', at: iso(Date.now()) });
 	write('unseen.observed.json', { kind: 'unknown', at: iso(Date.now()) });
-	expect(await askOf('over')).toMatchObject({ state: 'terminal', decision: 'allow', actual: 'deny', notAdopted: true });
+	expect(await askOf('over')).toMatchObject({ state: 'terminal_denied', decision: 'allow', actual: 'deny', notAdopted: true });
 	expect(await askOf('same')).toMatchObject({ state: 'filled', actual: 'allow' });
 	expect((await askOf('unseen'))!.state).toBe('result_unknown');
 	const recorded = await entries();
 	expect(recorded.filter((entry) => entry.ok).map((entry) => entry.text)).toEqual(Array(3).fill('允許：Bash touch perm-probe.txt'));
 	expect(recorded.filter((entry) => !entry.ok).map((entry) => entry.error).toSorted()).toEqual([
-		'你在看板的選擇沒有被採用：已在終端機回答（拒絕）',
+		'你在看板的選擇沒有被採用：已在終端機拒絕',
 		'結果不明，請看對話紀錄：看不到 Claude 採用了哪個答案'
 	]);
 });

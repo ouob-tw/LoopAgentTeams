@@ -180,17 +180,17 @@ for (const [said, content, decision] of [
 	test(`Claude answered in its terminal (${said}): the ask says so, no decision, and none at the deadline`, async () => {
 		// An earlier identical call already answered does not count.
 		writeFileSync(transcript, toolUse('toolu_old') + toolResult('toolu_old', 'old') + toolUse('toolu_now'));
-		const run = hook(claudeInput(), { env: { LAT_BOARD_ASK_WAIT_SECONDS: '6' } });
+		const run = hook(claudeInput(), { env: { LAT_BOARD_ASK_WAIT_SECONDS: '4' } });
 		const ask = await waitingAsk();
 		await Bun.sleep(1_200);
 		expect(existsSync(join(dir, `${ask.id}.result.json`))).toBe(false);
 		appendFileSync(transcript, toolResult('toolu_now', content, decision === 'deny'));
 		const started = Date.now();
 		expect(await run).toEqual({ code: 0, stdout: '' });
-		// Ended well before the 6 seconds were up; a rejection waits 2 seconds to tell No from Esc.
-		expect(Date.now() - started).toBeLessThan(decision === 'deny' ? 4_500 : 2_500);
+		// Ended at once, well before the 4 seconds were up.
+		expect(Date.now() - started).toBeLessThan(3_000);
 		expect(result(ask.id)).toMatchObject({ kind: 'terminal', decision });
-		expect(stateOf(ask.id)).toMatchObject({ state: 'terminal', actual: decision, notAdopted: false });
+		expect(stateOf(ask.id)).toMatchObject({ state: decision === 'deny' ? 'terminal_denied' : 'terminal', actual: decision, notAdopted: false });
 		expect(takePermission(dir, ask.id, 'allow')).toBe(false);
 	});
 }
@@ -245,7 +245,7 @@ test('a board answer Claude took: 已填回 once its transcript shows it', async
 	expect((await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'sent')).state).toBe('filled');
 });
 
-test('the terminal answered first and the board sent the opposite: 已在終端機回答, the board\'s choice not taken', async () => {
+test('the terminal refused first and the board sent the opposite: 已在終端機拒絕, the board\'s choice not taken', async () => {
 	writeFileSync(transcript, toolUse('toolu_1'));
 	const run = hook(claudeInput());
 	const ask = await waitingAsk();
@@ -254,7 +254,7 @@ test('the terminal answered first and the board sent the opposite: 已在終端�
 	await run;
 	appendFileSync(transcript, toolResult('toolu_1', REJECTED, true));
 	const ended = await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'sent');
-	expect(ended).toMatchObject({ state: 'terminal', actual: 'deny', decision: 'allow', notAdopted: true });
+	expect(ended).toMatchObject({ state: 'terminal_denied', actual: 'deny', decision: 'allow', notAdopted: true });
 });
 
 test('a board deny Claude took: 已填回 by its own message in the tool result', async () => {
@@ -392,45 +392,47 @@ test('a tool\'s own output that quotes the board\'s deny is not a denial: 已填
 	expect((await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'sent')).state).toBe('filled');
 });
 
-/** Claude's tool result for a No in its dialog, as 2.1.310 writes it; Esc writes the same and then
- *  the interrupted line as an entry of its own, a millisecond later. */
+/** Claude's tool result for a No in its dialog, as 2.1.310 writes it; Esc writes the same. Both
+ *  may add the interrupted line as an entry of its own, a few milliseconds later. */
 const rejectedEntry = (id: string) =>
 	JSON.stringify({ type: 'user', toolDenialKind: 'user-rejected', toolUseResult: 'User rejected tool use', message: { role: 'user', content: [{ type: 'tool_result', tool_use_id: id, content: REJECTED, is_error: true }] } }) + '\n';
 const interruptedEntry = JSON.stringify({ type: 'user', message: { role: 'user', content: [{ type: 'text', text: '[Request interrupted by user for tool use]' }] } }) + '\n';
 const hookPid = (id: string): number => JSON.parse(readFileSync(join(dir, `${id}.json`), 'utf8')).hook_pid;
+const watcherPid = (id: string) => JSON.parse(readFileSync(join(dir, `${id}.json`), 'utf8')).watcher_pid as number | undefined;
 
-test('Claude ends the hook for a No in its dialog before writing it: the ask reads 已在終端機回答, not interrupted', async () => {
-	writeFileSync(transcript, toolUse('toolu_no'));
-	const run = hook(claudeInput());
-	const ask = await waitingAsk();
-	process.kill(hookPid(ask.id), 'SIGTERM');
-	expect(await run).toEqual({ code: 0, stdout: '' });
-	// The board looks while the watcher runs: not interrupted.
-	const stateDir = mkdtempSync(join(tmpdir(), 'board-ask-perm-state-'));
-	const config = { asksDir: dir, stateDir, askExecutionWaitMs: 60_000 };
-	await until(() => JSON.parse(readFileSync(join(dir, `${ask.id}.json`), 'utf8')).watcher_pid, Boolean);
-	settleAsks(config, []);
-	expect(stateOf(ask.id)!.state).toBe('waiting');
-	appendFileSync(transcript, rejectedEntry('toolu_no'));
-	const ended = await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'waiting');
-	expect(ended).toMatchObject({ state: 'terminal', actual: 'deny', notAdopted: false });
-	settleAsks(config, []);
-	expect(stateOf(ask.id)!.state).toBe('terminal');
-	rmSync(stateDir, { recursive: true, force: true });
-});
+for (const [said, entries] of [
+	['No', () => rejectedEntry('toolu_no')],
+	['Esc', () => rejectedEntry('toolu_no') + interruptedEntry]
+] as const) {
+	test(`Claude ends the hook for ${said} in its dialog before writing it: 已在終端機拒絕, not interrupted`, async () => {
+		writeFileSync(transcript, toolUse('toolu_no'));
+		const run = hook(claudeInput());
+		const ask = await waitingAsk();
+		process.kill(hookPid(ask.id), 'SIGTERM');
+		expect(await run).toEqual({ code: 0, stdout: '' });
+		// The board looks while the watcher runs: not interrupted.
+		const stateDir = mkdtempSync(join(tmpdir(), 'board-ask-perm-state-'));
+		const config = { asksDir: dir, stateDir, askExecutionWaitMs: 60_000 };
+		await until(() => watcherPid(ask.id), Boolean);
+		settleAsks(config, []);
+		expect(stateOf(ask.id)!.state).toBe('waiting');
+		appendFileSync(transcript, entries());
+		const ended = await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'waiting');
+		expect(ended).toMatchObject({ state: 'terminal_denied', actual: 'deny', notAdopted: false });
+		settleAsks(config, []);
+		expect(stateOf(ask.id)!.state).toBe('terminal_denied');
+		expect(takePermission(dir, ask.id, 'allow')).toBe(false);
+		rmSync(stateDir, { recursive: true, force: true });
+	});
+}
 
-test('Esc in Claude\'s dialog ends the hook and the turn: interrupted once the watcher is done, not 已在終端機回答', async () => {
-	writeFileSync(transcript, toolUse('toolu_esc'));
+test('a hook ended with nothing in the transcript (the agent closed) reads interrupted once the watcher is done', async () => {
+	writeFileSync(transcript, toolUse('toolu_gone'));
 	const run = hook(claudeInput());
 	const ask = await waitingAsk();
 	process.kill(hookPid(ask.id), 'SIGTERM');
 	await run;
-	const watcher = await until(() => JSON.parse(readFileSync(join(dir, `${ask.id}.json`), 'utf8')).watcher_pid as number | undefined, Boolean);
-	appendFileSync(transcript, rejectedEntry('toolu_esc'));
-	// The interrupted line lands a little after the rejection, as a separate write.
-	await Bun.sleep(300);
-	appendFileSync(transcript, interruptedEntry);
-	// The watcher sees Esc and ends without taking the ask.
+	const watcher = await until(() => watcherPid(ask.id), Boolean);
 	await until(() => existsSync(`/proc/${watcher}`), (alive) => !alive, 15_000);
 	expect(existsSync(join(dir, `${ask.id}.result.json`))).toBe(false);
 	const stateDir = mkdtempSync(join(tmpdir(), 'board-ask-perm-state-'));
