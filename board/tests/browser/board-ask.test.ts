@@ -73,6 +73,8 @@ const card = '.detail [data-ask]';
 const choose = (tab: Tab, index: number, label: string) =>
 	tab.eval(`[...document.querySelectorAll('${card} [data-question="${index}"] label')].find((entry) => entry.innerText.split('\\n')[0] === ${JSON.stringify(label)}).querySelector('input').click()`);
 const sendButton = `${card} form button`;
+/** Check Red, the first option of the first question, as a script expression. */
+const CHOOSE_RED = `[...document.querySelectorAll('${card} [data-question="0"] label')].find((entry) => entry.innerText.split('\\n')[0] === 'Red').querySelector('input').click()`;
 
 test('the question shows on its agent\'s page, is answered there and goes back to the client', async () => {
 	const answered = ask(QUESTIONS);
@@ -192,6 +194,13 @@ test('a timed-out card stays on the page of an agent that left Herdr\'s list, an
 		await fixture.refresh(cookie);
 		await tab.until(`document.querySelector('.detail').innerText.includes('這個 Agent 已不在 Herdr 的清單上')`, 'the page to say it left');
 		expect(await tab.eval(`document.querySelector('${card}')?.dataset.state`)).toBe('timed_out');
+		// Opened afresh, by its address: still there, still to be answered.
+		await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-ask` });
+		await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.until(`document.querySelector('${card}[data-state="timed_out"]')`, 'the timed-out card after a reload');
+		expect(await tab.eval(`document.querySelector('.detail').innerText`)).toContain('這個 Agent 已不在 Herdr 的清單上');
+		// A click before the page has taken over the card is lost: picked again until it counts.
+		await tab.until(`(${CHOOSE_RED}, !document.querySelector('${sendButton}').disabled)`, 'the pick to count');
 		const calls = join(fixture.dir, 'herdr-calls.jsonl');
 		const before = existsSync(calls) ? readFileSync(calls, 'utf8') : '';
 		await tab.eval(`document.querySelector('${sendButton}').click()`);
@@ -199,6 +208,13 @@ test('a timed-out card stays on the page of an agent that left Herdr\'s list, an
 		expect(await tab.eval(`document.querySelector('${card} [role="status"]').innerText`)).toBe('Agent 已不在，無法送出');
 		expect(await tab.eval(`document.querySelectorAll('${card} button').length`)).toBe(0);
 		expect(existsSync(calls) ? readFileSync(calls, 'utf8') : '').toBe(before);
+
+		// And again once answered.
+		await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-ask` });
+		await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.until(`document.querySelector('${card}')`, 'the card after a reload');
+		expect(await tab.eval(`document.querySelector('.detail').innerText`)).toContain('這個 Agent 已不在 Herdr 的清單上');
+		expect(await tab.eval(`document.querySelector('${card}').dataset.state`)).toBe('gone');
 	} finally {
 		writeFileSync(herdr, listed);
 		fixture.setHcom({ agents: [] });

@@ -114,7 +114,7 @@
 	/** The answered questions of the controller whose conversation is shown. */
 	const answered = $derived(board.answered.questions);
 	const known = $derived([...inbox, ...processed, ...answered]);
-	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers, agents, closed: closed.agents, workspaces });
+	const viewAt = (place: Place) => viewOf(place, { kept, items: known, controllers, agents, closed: closed.agents, asks: board.snapshot.asks, workspaces });
 
 	let detail: HTMLElement;
 	/** The screen shown and the browser's history. The middle column's list is in the address too,
