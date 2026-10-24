@@ -749,12 +749,46 @@ class SessionTests(unittest.TestCase):
             self.assert_stop_block(self.stop_hook(), '自己的面板')
         questions.write_text('## Question\nLAT-A · r1 · 待答\n')
         self.assert_stop_pass(self.stop_hook(), 'LAT-A r1 - Question')
-        self.decisions.joinpath('LAT-B.md').write_text('- status: pending\n- advisor: needs-human\n')
+        self.decisions.joinpath('LAT-B.md').write_text(
+            f'- status: pending\n- advisor: needs-human\n- session: {SESSION}\n')
         self.assert_stop_block(self.stop_hook(), 'LAT-B', '遺漏檢查')
         self.assert_stop_block(self.stop_hook('❓ **LAT-A r2** Question\nDECIDE: LAT-A r1'),
                                'LAT-A r2')
         questions.write_text(questions.read_text() + '\n## Next\nLAT-B · r1 · 待答\n')
         self.assert_stop_pass(self.stop_hook(stop_hook_active=True), 'LAT-A r1 - Question')
+
+    def test_stop_omission_check_skips_other_controllers_records(self):
+        self.write_legacy_record()
+        self.decisions.joinpath('LAT-A.md').write_text(
+            f'- status: pending\n- advisor: needs-human\n- kind: help\n- session: {SESSION}\n')
+        questions = self.bind_stop_panel()
+        questions.write_text('## Question\nLAT-A · r1 · 待答\n')
+        other = self.bind_stop_panel(session=OTHER, name='other')
+        # Controller B's own gaps: no question, a recorded question, an archived one.
+        self.decisions.joinpath('B-MISS.md').write_text(
+            f'- status: pending\n- advisor: needs-human\n- session: {OTHER}\n')
+        self.decisions.joinpath('B-REC.md').write_text(
+            f'- status: pending\n- advisor: needs-human\n- session: {OTHER}\n')
+        self.decisions.joinpath('B-ARCH.md').write_text('- status: pending\n- advisor: needs-human\n')
+        other.write_text('## Done\nB-REC · r1 · 已記錄 · 2026-10-19T00:00:00+00:00\n')
+        other.with_name(f'{other.stem}-archive.md').write_text('## Old\nB-ARCH · r1 · 已記錄\n')
+        for tag in ('DECIDE', 'HELP'):
+            self.assert_stop_pass(self.stop_hook(f'Question\n{tag}: LAT-A r1'),
+                                  'LAT-A r1 - Question')
+        # Controller A's own gaps still block, by session line or by its own files.
+        self.decisions.joinpath('A-MISS.md').write_text(
+            f'- status: pending\n- advisor: needs-human\n- session: {SESSION}\n')
+        self.decisions.joinpath('A-REC.md').write_text('- status: pending\n- advisor: needs-human\n')
+        self.decisions.joinpath('A-ARCH.md').write_text('- status: pending\n- advisor: needs-human\n')
+        questions.write_text(questions.read_text() +
+                             '\n## Done\nA-REC · r1 · 已記錄 · 2026-10-19T00:00:00+00:00\n')
+        questions.with_name(f'{questions.stem}-archive.md').write_text('## Old\nA-ARCH · r1 · 已記錄\n')
+        for tag in ('DECIDE', 'HELP'):
+            result = self.stop_hook(f'Question\n{tag}: LAT-A r1')
+            self.assert_stop_block(result, 'A-MISS：遺漏檢查缺少面板題目',
+                                   'A-REC：遺漏檢查不一致（問題檔已記錄）',
+                                   'A-ARCH：遺漏檢查不一致（問題已歸檔）')
+            self.assertNotIn('B-', json.loads(result.stdout)['reason'])
 
     QUESTION_A = (
         '## **要不要**合併？\nLAT-A · r1 · 待答\n\n審查通過 ✅，見 `dev`。\n\n'

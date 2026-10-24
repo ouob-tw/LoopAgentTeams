@@ -152,10 +152,10 @@ B. <選項>
 
 ```bash
 uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question check-pending \
-  --questions "$questions" --decisions "$decisions"
+  --questions "$questions" --decisions "$decisions" --session-id "$session_id"
 ```
 
-檢查會搜尋 `.lat` 根目錄的 `questions-*.md`（舊位置）與 `.lat/questions/*.md`（新位置），以及兩處的 `-archive.md` 歸檔檔；在 Git 專案中另含各 worktree 自己 `.lat` 根目錄的舊問題檔，確認 pending 決策都有待答題；反向檢查只看 `--questions` 指定的問題檔，列出待答題的決策已非 pending 或找不到決策紀錄。回合結束的 DECIDE／HELP 檢查沿用相同結果。有問題時以非零結束，不印「沒有遺漏」；依輸出處理後重跑：
+帶 `--session-id` 時只檢查屬於自己的決策紀錄：紀錄的 `- session:` 等於這個 session ID，或題號出現在 `--questions` 指定的問題檔或它的歸檔檔；共用決策目錄裡其他主控的紀錄不列出。不帶時檢查目錄內全部紀錄。檢查會搜尋 `.lat` 根目錄的 `questions-*.md`（舊位置）與 `.lat/questions/*.md`（新位置），以及兩處的 `-archive.md` 歸檔檔；在 Git 專案中另含各 worktree 自己 `.lat` 根目錄的舊問題檔，確認 pending 決策都有待答題；反向檢查只看 `--questions` 指定的問題檔，列出待答題的決策已非 pending 或找不到決策紀錄。回合結束的 DECIDE／HELP 檢查沿用帶自己 session ID 的結果。有問題時以非零結束，不印「沒有遺漏」；依輸出處理後重跑：
 
 | 輸出 | 處理 |
 | --- | --- |

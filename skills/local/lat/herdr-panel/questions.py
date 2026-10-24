@@ -14,7 +14,7 @@ import time
 from typing import NamedTuple
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from lat_decision_status import read_decision_kind, read_decision_status
+from lat_decision_status import read_decision_kind, read_decision_session, read_decision_status
 from _lat_common import run_cli, write_text_atomic as _replace_locked
 
 
@@ -1337,17 +1337,35 @@ def _lat_directories(questions_path):
     return list(dict.fromkeys(directories))
 
 
-def pending_question_gaps(questions_path, decisions_path):
-    """Check pending decisions across controllers and stale questions in this file."""
+def _own_question_ids(questions_path):
+    """IDs in this question file and its archive, whatever their status."""
+    ids = set()
+    for path in (questions_path, _archive_path(questions_path)):
+        if path.exists():
+            ids.update(question["id"] for question in parse_questions(_read_text_exact(path)))
+    return ids
+
+
+def pending_question_gaps(questions_path, decisions_path, *, session_id=None):
+    """Check pending decisions and stale questions in this file.
+
+    With ``session_id`` only this controller's decisions are checked: those whose
+    ``- session:`` is ``session_id`` or whose question is in this file or its archive.
+    Without it every decision in the shared directory is checked.
+    """
     questions_path = Path(questions_path)
     decisions_path = Path(decisions_path)
     if not decisions_path.is_dir():
         raise ValueError(f"decisions directory does not exist: {decisions_path}")
+    own_ids = _own_question_ids(questions_path) if session_id is not None else None
     pending_ids = []
     unreadable = []
     for decision in sorted(decisions_path.glob("*.md")):
         try:
             status = read_decision_status(decision)
+            if own_ids is not None and decision.stem not in own_ids and (
+                    read_decision_session(decision) != session_id):
+                continue
         except (OSError, UnicodeError) as error:
             unreadable.append((decision, str(error)))
             continue

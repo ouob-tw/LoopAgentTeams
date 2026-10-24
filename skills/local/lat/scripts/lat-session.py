@@ -1034,7 +1034,8 @@ def stop_check(record, payload):
         for identifier, revision in sorted(identifiers):
             if waiting_question(questions, identifier, revision) is None:
                 problems.append(f'{identifier} r{revision}：自己的面板缺少同版本待答題目')
-        _, missing, inconsistent, unreadable, reverse = panel_module('questions').pending_question_gaps(questions_path, decisions)
+        _, missing, inconsistent, unreadable, reverse = panel_module('questions').pending_question_gaps(
+            questions_path, decisions, session_id=record['session_id'])
         problems.extend(f'{identifier}：遺漏檢查缺少面板題目' for identifier in missing)
         problems.extend(f'{identifier}：遺漏檢查不一致（{reason}）'
                         for identifier, reason, _ in inconsistent)

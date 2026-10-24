@@ -62,7 +62,7 @@ Controller CLI (run from the project root unless ``--questions`` is supplied)::
       --expected-section-sha256 HASH
   question cleanup --questions PATH --decisions DIR
   question archive-recorded --questions PATH --older-than 300
-  question check-pending --questions PATH --decisions DIR
+  question check-pending --questions PATH --decisions DIR [--session-id ID]
   question resolve-help --questions PATH --decisions DIR --id ID \
       --evidence TEXT --location TEXT
   question withdraw --questions PATH --decisions DIR --id ID \
@@ -419,6 +419,7 @@ def _build_parser():
     check_pending = question_commands.add_parser("check-pending")
     check_pending.add_argument("--questions", required=True, type=Path)
     check_pending.add_argument("--decisions", required=True, type=Path)
+    check_pending.add_argument("--session-id")
     bind = commands.add_parser("bind")
     bind.add_argument("--hcom-name", required=True)
     bind.add_argument("--client", required=True)
@@ -576,7 +577,7 @@ def main(argv=None):
                 print("面板未啟用，略過檢查")
                 return 0
             present, missing, inconsistent, unreadable, reverse = pending_question_gaps(
-                args.questions, args.decisions
+                args.questions, args.decisions, session_id=args.session_id
             )
             if present:
                 print("已找到待答題目：")

@@ -1009,6 +1009,23 @@ class PendingCheckCliTests(unittest.TestCase):
         self.assertNotIn('OTHER', result.stdout)
         self.assertNotIn('沒有遺漏', result.stdout)
 
+    def test_check_with_session_id_skips_other_controllers_records(self):
+        self.questions.parent.mkdir()
+        self.questions.write_text('## Done?\nOWN-REC · r1 · 已記錄\n')
+        self.questions.with_name('questions-other.md').write_text('## Done?\nB-REC · r1 · 已記錄\n')
+        for identifier, session in (('OWN-MISS', 'own'), ('OWN-REC', None),
+                                    ('B-MISS', 'other'), ('B-REC', 'other')):
+            line = f'- session: {session}\n' if session else ''
+            (self.decisions / f'{identifier}.md').write_text(f'- status: pending\n{line}')
+        narrow = self.cli('question', 'check-pending', '--questions', self.questions,
+                          '--decisions', self.decisions, '--session-id', 'own')
+        self.assertEqual(narrow.returncode, 1, narrow.stderr)
+        self.assertIn('- OWN-MISS', narrow.stdout)
+        self.assertIn('OWN-REC：問題檔已記錄', narrow.stdout)
+        self.assertNotIn('B-', narrow.stdout)
+        # Without a session ID the whole shared directory is checked.
+        self.assertIn('B-REC：問題檔已記錄', self.check().stdout)
+
     def test_check_reports_pending_decision_missing_from_questions(self):
         self.decision('MISSING-1', 'pending')
 
