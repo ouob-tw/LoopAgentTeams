@@ -2,7 +2,7 @@ import { launchChrome, type Browser, type Tab } from '../browser.ts';
 // A board ask from end to end in a real browser: the real hook asks (as Claude would run it) into
 // the test board's shared folder, the agent's page shows the card, the answer goes back through the
 // hook. Two browsers answering at once: one answer counts, the other is told someone answered.
-import { mkdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
@@ -20,13 +20,13 @@ const QUESTIONS = [
 ];
 
 /** The hook as Claude runs it for the agent of session `s-ask`, asking into the board's folder. */
-function ask(questions: object[]) {
+function ask(questions: object[], env: Record<string, string> = {}) {
 	const child = Bun.spawn(['uv', 'run', '--no-project', 'python', HOOK, 'hook'], {
 		stdin: new TextEncoder().encode(
 			JSON.stringify({ session_id: 's-ask', cwd: '/work', hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions }, tool_use_id: 'toolu_1' })
 		),
 		stdout: 'pipe',
-		env: { PATH: Bun.env.PATH ?? '', HOME: Bun.env.HOME ?? '', LAT_BOARD_ASKS_DIR: join(fixture.dir, 'board-asks'), HERDR_PANE_ID: 'wA:p-s-ask', LAT_BOARD_ASK_WAIT_SECONDS: '60' }
+		env: { PATH: Bun.env.PATH ?? '', HOME: Bun.env.HOME ?? '', LAT_BOARD_ASKS_DIR: join(fixture.dir, 'board-asks'), HERDR_PANE_ID: 'wA:p-s-ask', LAT_BOARD_ASK_WAIT_SECONDS: '60', ...env }
 	});
 	return Promise.all([child.exited, new Response(child.stdout).text()]).then(([code, stdout]) => ({ code, stdout }));
 }
@@ -145,4 +145,34 @@ test('two browsers answering at once: one answer counts, the other is told someo
 	await loser.until(`document.querySelector('${card}').dataset.state === 'taken'`, 'the other to read 已有人作答');
 	expect(await loser.eval(`document.querySelector('${card}').innerText`)).toContain('已有人作答');
 	expect(await loser.eval(`document.querySelector('.dock .toasts').innerText`)).toContain('已有人作答');
+}, 60_000);
+
+test('a LAT controller asking through the menu is denied: no card on the board and nothing new in 待辦', async () => {
+	// The real panel helper reads a registry that binds this session as a controller.
+	const panel = join(fixture.dir, 'panel-config');
+	mkdirSync(panel, { recursive: true });
+	writeFileSync(join(panel, 'bindings.json'), JSON.stringify({ version: 2, bindings: { 's-ask': { hcom_name: 'tene', client: 'claude', session_id: 's-ask', workspace: '/work', questions_path: '/work/.lat/questions/tene.md', herdr_workspace: 'wA', herdr_tab: 'wA:t-s-ask', herdr_pane: 'wA:p-s-ask' } } }));
+	const inbox = async () => JSON.stringify((await fixture.refresh(cookie)).inbox);
+	const before = await inbox();
+	const files = () => readdirSync(join(fixture.dir, 'board-asks')).sort();
+	const filesBefore = files();
+
+	// Earlier tests left their cards on this agent's page: the denied ask must add none.
+	const tab = await open();
+	await tab.eval(`document.querySelector('[data-agent="s-ask"]').click()`);
+	await tab.until(`document.querySelector('.detail .profile')`, 'the agent page');
+	const cards = () => tab.eval(`document.querySelectorAll('${card}').length`);
+	const cardsBefore = await cards();
+
+	const { code, stdout } = await ask(QUESTIONS, { LAT_BOARD_LAT_DIR: join(import.meta.dir, '../../../skills/local/lat'), HERDR_PLUGIN_CONFIG_DIR: panel });
+	expect(code).toBe(0);
+	expect(JSON.parse(stdout).hookSpecificOutput).toMatchObject({ hookEventName: 'PreToolUse', permissionDecision: 'deny' });
+	expect(files()).toEqual(filesBefore);
+
+	const after = await inbox();
+	await Bun.sleep(1000);
+	expect(await tab.eval(`document.querySelector('[data-agent="s-ask"]').innerText.includes('等你回答')`)).toBe(false);
+	expect(await cards()).toBe(cardsBefore);
+	expect(after).toBe(before);
+	expect(tab.errors).toEqual([]);
 }, 60_000);

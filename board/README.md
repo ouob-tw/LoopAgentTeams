@@ -193,11 +193,11 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 
 使用方式見[使用說明](../docs/lat-board.md#在看板回答-agent-的提問)。實作上，hook 與看板只靠共用目錄（`LAT_BOARD_ASKS_DIR`）裡的檔案溝通，見 ADR 0009；檔案格式寫在 `hooks/board-ask.py` 開頭。
 
-- hook：`hooks/board-ask.py hook` 是 Claude 的 PreToolUse hook（matcher `AskUserQuestion`，`timeout` 660 秒，等待 600 秒，依 #284 的實測）。只用標準函式庫。心跳超過 90 秒、共用目錄寫不進去、輸入看不懂、沒有 `HERDR_PANE_ID`、輸入帶 `agent_id`（Task 子 Agent）、不是 PreToolUse（Claude 在 PreToolUse 沒給決定時也會為 AskUserQuestion 發 PermissionRequest），或任何例外，都不輸出、以 0 結束、不留提問檔。
+- hook：`hooks/board-ask.py hook` 是 Claude 的 PreToolUse hook（matcher `AskUserQuestion`，`timeout` 660 秒，等待 600 秒，依 #284 的實測）。只用標準函式庫。心跳超過 90 秒、共用目錄寫不進去、輸入看不懂、沒有 `HERDR_PANE_ID`、輸入帶 `agent_id`（Task 子 Agent）、不是 PreToolUse（Claude 在 PreToolUse 沒給決定時也會為 AskUserQuestion 發 PermissionRequest），或任何例外，都不輸出、以 0 結束、不留提問檔。例外是 LAT 主控：看板在執行（心跳未過期）時，hook 以 session ID 呼叫面板輔助工具 `resolve --session-id`（指令格式與預設路徑和看板相同，但這兩個環境變數讀的是 Agent 自己的環境，不是看板服務的：`LAT_BOARD_HELPER_COMMAND`、`LAT_BOARD_LAT_DIR`；10 秒逾時），退出碼 0 且輸出是 JSON 物件就是主控，立即輸出 `permissionDecision: deny` 與固定英文提醒（改用待答面板的 `question upsert`、以 DECIDE 結尾），不寫提問檔、不等待；查詢失敗、逾時或輸出看不懂都當一般 Agent。
 - 提問檔 `<id>.json` 以暫存檔改名寫入；結果檔 `<id>.result.json` 先寫暫存檔再 hard link 到位，已存在就失敗，看板的答案與 hook 的逾時標記搶同一個位置，只有一方成功。hook 讀到答案後以 `allow` 加 `updatedInput`（原題目加 `answers`，以題目文字對應答案）填回，並在提問檔記 `outcome: filled`；時間到先搶到逾時標記就記 `timed_out`、不輸出決定。檔案權限 0600、目錄 0700。
 - 看板：啟動時與每 30 秒寫一次心跳檔 `heartbeat`；監看共用目錄（不含心跳檔與 `.` 開頭的暫存檔），和其他資料一起重讀，放進 `snapshot.asks`，有等待中提問的 Agent 標 `asking`，清單與 Agent 頁面的狀態改顯示「等你回答」。
 - 作答：`POST /api/asks/answer`（`id` 與每題一份 `select`、`other`、`text`）。每題都要答；單選取選項標籤，複選以 `, ` 連接，「其他」的文字接在最後。搶到回 200 `accepted`，已被搶走回 409 `taken`（「已有人作答」）；兩者都以 `board-ask` 動作寫進送出紀錄（操作紀錄的「看板提問」）。
-- 測試：hook 在 `tests/unit/board-ask-hook.test.ts`（暫存共用目錄與假心跳，含兩個程序同時搶結果檔、答案與截止同時發生），安裝在 `tests/unit/board-ask-install.test.ts`（只用暫存設定檔），伺服器端在 `tests/server/board-asks.test.ts`（含重啟），瀏覽器端在 `tests/browser/board-ask.test.ts`（真的 hook 程序對測試看板提問，含兩個瀏覽器同時送出）。
+- 測試：hook 在 `tests/unit/board-ask-hook.test.ts`（暫存共用目錄與假心跳，主控判斷用真的輔助工具讀暫存綁定登記，含兩個程序同時搶結果檔、答案與截止同時發生），安裝在 `tests/unit/board-ask-install.test.ts`（只用暫存設定檔），伺服器端在 `tests/server/board-asks.test.ts`（含重啟），瀏覽器端在 `tests/browser/board-ask.test.ts`（真的 hook 程序對測試看板提問，含兩個瀏覽器同時送出）。
 
 ## 用量與快取
 
