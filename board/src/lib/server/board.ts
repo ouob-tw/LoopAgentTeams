@@ -19,7 +19,7 @@ import { settleAnswers } from './answer.ts';
 import { settleLaunches } from './launch.ts';
 import { settleRelaunches } from './relaunch.ts';
 import { settleResumes } from './wake.ts';
-import { createAgentRoster, type HerdrAgentList } from './agents.ts';
+import { createAgentRoster, LAG_CONFIRM_MS, type HerdrAgentList } from './agents.ts';
 import { createClosedRoster } from './closed-agents.ts';
 import { linkedAgain, settlePauses } from './paused.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
@@ -73,6 +73,9 @@ export interface Board {
 	/** One controller's answered questions, as the processed items have them. */
 	answered(controllerId: string): Promise<InboxQuestion[]>;
 	subscribe(stream: Stream): () => void;
+	/** Read the agents' statuses once more soon (within `statusAfterActionMs`): an agent takes a moment
+	 *  to start or end a turn after the board sent to it or interrupted it. */
+	pollSoon(): void;
 	/** Tell every open page that a Herdr tab moved: nothing in the snapshot shows tab order. */
 	tabMoved(): void;
 	/** Tell every open page that an agent's operation record grew: the snapshot does not hold it,
@@ -301,7 +304,7 @@ function createBoard(): Board {
 	async function readWith(reading: Reading): Promise<BoardSnapshot> {
 		// Real clock: pause records carry the real time they were written.
 		const listedAt = Date.now();
-		const [[helper, reports, answered, settled, log], agents, herdrAgents, stops] = await Promise.all([
+		const [[helper, reports, answered, settled, log], listedAgents, listedHerdr, stops] = await Promise.all([
 			Promise.all([listControllers(config), readReports()]).then(async ([helper, reports]) => {
 				// Read after the list: the files are those of the controllers bound now, and of the
 				// sessions that reported. The sent answers settle against the same list alongside, so
@@ -320,6 +323,11 @@ function createBoard(): Board {
 			listHerdrAgents(config),
 			closedRoster.readStops()
 		]);
+		// The lists were asked for at the start but only arrive once the helper is done; a status poll
+		// that began after that holds newer ones, which an older read must not overwrite.
+		keepNewest(listedAt, listedAgents, listedHerdr);
+		const agents = newer(listedAgents, listedAt, newest.agents);
+		const herdrAgents = newer(listedHerdr, listedAt, newest.herdr);
 		if (herdrAgents.ok) herdrPlaces = herdrAgents;
 		herdrPlaceError = herdrAgents.ok ? null : herdrAgents.reason;
 		if (answered.ok) lastAnswered = answered.files;
@@ -346,7 +354,9 @@ function createBoard(): Board {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
 		}
 		const paused = await settlePauses(config, agents, herdrAgents, listedAt);
-		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
+		// Pausing and the sent log took time too: the newest lists as of now go into the roster.
+		const rosterNow = () => agentRoster.update(newer(herdrAgents, listedAt, newest.herdr), newer(agents, listedAt, newest.agents), new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
+		const allAgents = rosterNow();
 		settleAsks(config, allAgents.agents);
 		lastAsks = readAsks(config.asksDir);
 		herdrRead ||= herdrAgents.ok;
@@ -363,6 +373,8 @@ function createBoard(): Board {
 			switching: new Set(lastSwitches.map((view) => view.controllerId)),
 			now: config.now()
 		});
+		// Closing took time too: the statuses as of now, with no await before they are published.
+		const finalAgents = rosterNow();
 		sources = {
 			active: lastActive,
 			helperError: helper.ok ? null : helper.reason,
@@ -373,9 +385,9 @@ function createBoard(): Board {
 			// Listed but not on its link (a half-done reconnect) is still paused; without a list a record says so.
 			paused: new Set([...paused.keys()].filter((id) => !(agents.ok && linkedAgain(agents.agents, id)))),
 			hcomError: agents.ok ? null : agents.reason,
-			agents: allAgents.agents,
-			herdrError: allAgents.herdrError,
-			workspaces: allAgents.workspaces,
+			agents: finalAgents.agents,
+			herdrError: finalAgents.herdrError,
+			workspaces: finalAgents.workspaces,
 			closed: closedAgents,
 			pruneError,
 			answered: lastAnswered,
@@ -385,6 +397,7 @@ function createBoard(): Board {
 		if (!closed) sourceWatcher.sync(watchTargets());
 
 		publish(sources);
+		confirmLater();
 		pruneAfter(reports.files);
 		return snapshot!;
 	}
@@ -458,6 +471,108 @@ function createBoard(): Board {
 		if (!closed) void refresh();
 	}
 
+	let polling = false;
+	/** The newest list of each source that could be read, with when its read began: a full read and a
+	 *  status poll overlap, and whichever applies last must not put an older list back. */
+	const newest: { agents: { at: number; list: Extract<AgentList, { ok: true }> } | null; herdr: { at: number; list: Extract<Awaited<ReturnType<typeof listHerdrAgents>>, { ok: true }> } | null } = { agents: null, herdr: null };
+	function keepNewest(at: number, agents: AgentList, herdr: Awaited<ReturnType<typeof listHerdrAgents>>): void {
+		if (agents.ok && (!newest.agents || at >= newest.agents.at)) newest.agents = { at, list: agents };
+		if (herdr.ok && (!newest.herdr || at >= newest.herdr.at)) newest.herdr = { at, list: herdr };
+	}
+	/** `own`, read from `at`, unless a list that began after `at` has been read since. */
+	const newer = <T>(own: T, at: number, kept: { at: number; list: T } | null): T => (kept && kept.at > at ? kept.list : own);
+	/** A poll asked for while one was under way: its lists may predate the ask, so one more follows. */
+	let pollAgain = false;
+	let pollTimer: ReturnType<typeof setTimeout> | undefined;
+	let soonTimer: ReturnType<typeof setTimeout> | undefined;
+	let confirmTimer: ReturnType<typeof setTimeout> | undefined;
+	let pollDueAt = 0;
+
+	/** hcom says an agent works and Herdr says it is idle: read once more, a moment apart, to tell whether hcom is behind. */
+	function confirmLater(): void {
+		tickSooner();
+		if (closed || streams.size === 0 || !agentRoster.confirming()) return;
+		confirmTimer ??= setTimeout(() => {
+			confirmTimer = undefined;
+			void pollStatus();
+		}, LAG_CONFIRM_MS);
+	}
+
+	/** Read hcom's and Herdr's lists alone and push the agents if a status changed, also while a full
+	 *  read waits on the helper. Never overlaps itself; a list that cannot be read in time leaves the last one standing. */
+	async function pollStatus(): Promise<void> {
+		if (closed || !sources || streams.size === 0) return;
+		if (polling) {
+			pollAgain = true;
+			return;
+		}
+		polling = true;
+		const began = Date.now();
+		const limited = { ...config, hcomListTimeoutMs: config.statusPollTimeoutMs, herdrTimeoutMs: config.statusPollTimeoutMs };
+		try {
+			const [agents, herdrAgents] = await Promise.all([listAgents(limited), listHerdrAgents(limited)]);
+			if (closed || !sources || (!agents.ok && !herdrAgents.ok)) return;
+			keepNewest(began, agents, herdrAgents);
+			// Without Herdr's pane check, which is outside this read's time limit: the full read ends a pause that only that check can.
+			const paused = await settlePauses(config, agents, herdrAgents, Date.now(), false);
+			// The newest lists as of now: a full read may have read newer ones meanwhile.
+			const useAgents = newer(agents, began, newest.agents);
+			const useHerdr = newer(herdrAgents, began, newest.herdr);
+			if (useHerdr.ok) herdrPlaces = useHerdr;
+			herdrPlaceError = useHerdr.ok ? null : useHerdr.reason;
+			if (useAgents.ok) lastRunning = new Set(useAgents.agents.flatMap((agent) => (agent.sessionId ? [agent.sessionId] : [])));
+			const rostered = agentRoster.update(useHerdr, useAgents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
+			sources = { ...sources, agents: rostered.agents, workspaces: rostered.workspaces, running: lastRunning };
+			publish(sources);
+			confirmLater();
+		} catch {
+			// The last statuses stand; the next tick reads again.
+		} finally {
+			polling = false;
+			if (pollAgain) {
+				pollAgain = false;
+				void pollStatus();
+			}
+		}
+	}
+
+	/** Poll while a page is connected, and only then. */
+	function syncPoll(): void {
+		if (closed || streams.size === 0) {
+			clearTimeout(pollTimer);
+			pollTimer = undefined;
+			clearTimeout(soonTimer);
+			soonTimer = undefined;
+			clearTimeout(confirmTimer);
+			confirmTimer = undefined;
+		} else scheduleTick();
+	}
+
+	/** The next poll: sooner while an agent works through hcom, so that the end of its turn, which hcom
+	 *  may never report after an Esc, is seen and confirmed inside the 5 seconds. */
+	function scheduleTick(): void {
+		if (closed || streams.size === 0 || pollTimer) return;
+		const delay = tickDelay();
+		pollDueAt = Date.now() + delay;
+		pollTimer = setTimeout(async () => {
+			pollTimer = undefined;
+			if (!polling) await pollStatus();
+			scheduleTick();
+		}, delay);
+	}
+	const tickDelay = () =>
+		sources?.agents.some((agent) => agent.statusSource === 'hcom' && agent.status === 'working')
+			? Math.min(config.statusWorkingPollMs, config.statusPollMs)
+			: config.statusPollMs;
+	/** A tick waiting out the slow rhythm is brought forward when an agent turns out to be working. */
+	function tickSooner(): void {
+		if (pollTimer && pollDueAt - Date.now() > tickDelay()) {
+			clearTimeout(pollTimer);
+			pollTimer = undefined;
+			scheduleTick();
+		}
+	}
+
 	function refresh(): Promise<BoardSnapshot> {
 		// A read already under way may have started before the change the caller knows about.
 		if (running) return (queued ??= running.then(start, start));
@@ -514,7 +629,19 @@ function createBoard(): Board {
 		subscribe(stream) {
 			if (closed) stream.close();
 			else streams.add(stream);
-			return () => streams.delete(stream);
+			syncPoll();
+			return () => {
+				streams.delete(stream);
+				syncPoll();
+			};
+		},
+		pollSoon() {
+			if (closed || streams.size === 0) return;
+			// The earliest pending read stands: a later action must not push it back.
+			soonTimer ??= setTimeout(() => {
+				soonTimer = undefined;
+				void pollStatus();
+			}, config.statusAfterActionMs);
 		},
 		tabMoved,
 		agentActed(agentId) {
@@ -542,6 +669,9 @@ function createBoard(): Board {
 			quotaPoller.close();
 			clearTimeout(debounce);
 			clearTimeout(fallback);
+			clearTimeout(pollTimer);
+			clearTimeout(soonTimer);
+			clearTimeout(confirmTimer);
 			clearInterval(heartbeat);
 			clearInterval(askHeartbeat);
 			sourceWatcher.close();

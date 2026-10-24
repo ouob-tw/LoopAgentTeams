@@ -880,7 +880,7 @@ test.skipIf(!CHROME)('text typed for one agent stays with it: another agent open
 		await openAgent('s-other');
 		await tab.until(shown('s-other'), 'the other agent');
 		expect(await boxText()).toBe('');
-		// Nothing to send for it: it works, so the button is its stop.
+		// It works: the stop is there, beside the send button.
 		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
 
 		// Sent to the other one, which is left before Herdr answers.
@@ -1191,6 +1191,92 @@ for (const width of [1280, 390]) {
 		expect(herdrCalls()).toHaveLength(2);
 		expect(await tab.eval(FITS)).toBe(true);
 	}, 30_000);
+
+	test.skipIf(!CHROME)(`${width}px: dragging a handle to the list's top or bottom edge scrolls it, and the drop counts the scroll`, async () => {
+		await freshTabs();
+		// A workspace taller than the screen, whose first card has to go after its last.
+		const crowd = Array.from({ length: 30 }, (_, i) => herdrAgent(`s-c${String(i).padStart(2, '0')}`, { workspace: 'wC' }));
+		setHerdr([...AGENTS, ...crowd]);
+		await fixture.refresh(cookie);
+		await visit(width);
+		if (touch) await tab.send('Emulation.setTouchEmulationEnabled', { enabled: true, maxTouchPoints: 1 });
+		await openTab();
+		await tab.until(`!!document.querySelector(${JSON.stringify(GRIP('s-c29'))})`, 'the crowded workspace');
+		// Whatever scrolls the list: its own box wide, the page at a phone's width.
+		const scrolled = () => tab.eval<number>(`Math.max(document.scrollingElement.scrollTop, document.querySelector('.inbox').scrollTop)`);
+		/** Where the list's bottom or top edge is on the screen, the command line aside. */
+		const edge = (side: 'top' | 'bottom', inside: number) =>
+			tab.eval<number>(`(() => {
+				const box = document.querySelector('.inbox').getBoundingClientRect();
+				const dock = document.querySelector('.dock').getBoundingClientRect();
+				const bottom = Math.min(box.bottom, innerHeight, getComputedStyle(document.querySelector('.dock')).position === 'fixed' ? dock.top : Infinity);
+				return ${side === 'top' ? 'Math.max(box.top, 0)' : 'bottom'} ${side === 'top' ? '+' : '-'} ${inside};
+			})()`);
+		const move = (at: { x: number; y: number }) =>
+			touch
+				? tab.send('Input.dispatchTouchEvent', { type: 'touchMove', touchPoints: [at] })
+				: tab.send('Input.dispatchMouseEvent', { type: 'mouseMoved', ...at, button: 'left', buttons: 1 });
+		const inView = (id: string) =>
+			tab.eval<boolean>(`(() => { const box = document.querySelector(${JSON.stringify(CARD(id))}).getBoundingClientRect(); return box.top >= 0 && box.bottom <= innerHeight; })()`);
+
+		await tab.eval(`document.querySelector(${JSON.stringify(CARD('s-c00'))}).scrollIntoView({ block: 'center' })`);
+		const grip = await point(GRIP('s-c00'));
+		const first = await scrolled();
+		expect(await inView('s-c29')).toBe(false);
+		await drag(touch, grip, { x: grip.x, y: await edge('bottom', 10) }, async () => {
+			await tab.until(`Math.max(document.scrollingElement.scrollTop, document.querySelector('.inbox').scrollTop) > ${first}`, 'the list scrolling down');
+			await tab.until(`(() => { const box = document.querySelector(${JSON.stringify(CARD('s-c29'))}).getBoundingClientRect(); return box.bottom <= innerHeight; })()`, 'the last card in view');
+			// The pointer rests on the last card: the line is drawn under it, and the dragged card follows the pointer.
+			const last = await point(CARD('s-c29'));
+			await move({ x: grip.x, y: last.y });
+			// The pointer may still be in the edge zone: it scrolls on to the end, where it stops.
+			let at = -1;
+			for (let tries = 0; tries < 50 && (await scrolled()) !== at; tries++) {
+				at = await scrolled();
+				await sleep(100);
+			}
+			expect(await scrolled()).toBe(at);
+			// Pointing at the last card again: the line is drawn under it, and the dragged card keeps up with the pointer.
+			const end = await point(CARD('s-c29'));
+			await move({ x: grip.x, y: end.y });
+			await tab.until(`!!document.querySelector(${JSON.stringify(CARD('s-c29'))}).classList.contains('drop-after')`, 'the line under the last card');
+			expect(Math.abs((await point(GRIP('s-c00'))).y - end.y)).toBeLessThan(30);
+		});
+		await tab.until(`document.querySelector('.dock .toasts')?.innerText.includes('已調整分頁順序')`, 'the move');
+		const calls = herdrCalls() as unknown[][];
+		expect(calls).toHaveLength(1);
+		expect(calls[0]).toEqual(['socket', 'tab.move', { tab_id: 'wC:t-s-c00', insert_index: 30 }]);
+
+		// Back up: the top edge scrolls up, and dropping on the first card puts the dragged one before it.
+		const bottomCard = (await cardsOf('wC')).at(-1)!;
+		expect(await scrolled()).toBeGreaterThan(0);
+		await tab.eval(`document.querySelector(${JSON.stringify(CARD(bottomCard))}).scrollIntoView({ block: 'center' })`);
+		const start = await point(GRIP(bottomCard));
+		await drag(touch, start, { x: start.x, y: await edge('top', 10) }, async () => {
+			// The workspace's first card scrolls into view from above; pointing at it leaves the edge, and the scrolling stops.
+			const top = (await cardsOf('wC'))[0];
+			const edgeTop = await edge('top', 60);
+			await tab.until(`(() => { const box = document.querySelector(${JSON.stringify(CARD(top))}).getBoundingClientRect(); return box.top > ${edgeTop} && box.bottom < innerHeight - 100; })()`, 'the first card coming into view', 15_000);
+			const first = await point(CARD(top));
+			await move({ x: grip.x, y: first.y });
+			await tab.until(`document.querySelector(${JSON.stringify(CARD(top))}).classList.contains('drop-before')`, 'the line over the first card');
+		});
+		for (let tries = 0; tries < 50 && herdrCalls().length < 2; tries++) await sleep(100);
+		expect((herdrCalls() as unknown[][])[1]).toEqual(['socket', 'tab.move', { tab_id: `wC:t-${bottomCard}`, insert_index: 0 }]);
+
+		// Letting go stops the scrolling.
+		await tab.eval(`document.scrollingElement.scrollTop = 200; document.querySelector('.inbox').scrollTop = 200`);
+		const hold = await point(GRIP(bottomCard));
+		const before = await scrolled();
+		await drag(touch, hold, { x: hold.x, y: await edge('bottom', 10) }, async () => {
+			await tab.until(`Math.max(document.scrollingElement.scrollTop, document.querySelector('.inbox').scrollTop) > ${before}`, 'the list scrolling');
+		});
+		const rest = await scrolled();
+		await sleep(300);
+		expect(await scrolled()).toBe(rest);
+		expect(await tab.eval(FITS)).toBe(true);
+		setHerdr(AGENTS);
+	}, 40_000);
 
 	test.skipIf(!CHROME)(`${width}px: ${touch ? 'a long press' : 'a right click'} opens the card's menu, and its one item renames the tab on the card`, async () => {
 		await freshTabs();

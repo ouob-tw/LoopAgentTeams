@@ -5,7 +5,7 @@
 	// pop-up behind a button that shows only then. A phone can put the line away behind a floating
 	// button, to read more of the page; what was typed stays, also across a reload. While an agent's
 	// page is open, a line without a name goes to that agent instead, from a draft of its own, also
-	// kept across a reload; while it works and nothing is typed, the send button interrupts its turn instead.
+	// kept across a reload; while it works, a stop button sits beside the send button, whether or not anything is typed.
 	// A closed agent's page, from the 已關閉 section, says it must be brought back first.
 	// A controller's page on the Herdr tab is written to as the controller it is, from the controllers' draft.
 	// A controller in a turn in a Herdr pane is interrupted the same way, while nothing is typed; its
@@ -158,7 +158,7 @@
 	);
 	// An interrupt presses Esc in its pane through Herdr, whether hcom reaches it or not.
 	const stoppable = $derived(
-		toAgent && !!agent && agent.inHerdr && !agent.switch && agent.status !== 'idle' && agent.status !== 'done' && !filled
+		!!agent && agent.inHerdr && !agent.switch && agent.status !== 'idle' && agent.status !== 'done'
 	);
 	let interrupting = $state<Record<string, boolean>>({});
 	const command = $derived(parseCommand(draft, controllers, target, true));
@@ -167,12 +167,13 @@
 	const toClosed = $derived(closed !== undefined && (!named || (command.ok && command.controller.id === closed.id)));
 	const boxDisabled = $derived((toAgent && agentBlocked !== null) || toClosed);
 	const recipient = $derived(toClosed ? undefined : command.ok ? command.controller : named || toAgent ? undefined : target);
-	/** Whose turn the send button interrupts instead, as the notice names it; null when it sends. */
+	/** Whose turn the stop button interrupts, as the notice names it: the page's own agent or
+	 *  controller, never the one a typed `@name` picks; null when it is not in a turn. */
 	const stopping = $derived(
 		stoppable && agent
 			? { id: agent.id, name: agent.name }
-			: !toAgent && !filled && recipient && controllerInterruptible(recipient, agents)
-				? { id: recipient.id, name: `@${recipient.hcomName}` }
+			: !agent && !closed && target && controllerInterruptible(target, agents)
+				? { id: target.id, name: `@${target.hcomName}` }
 				: null
 	);
 	const waking = $derived(recipient !== undefined && needsWake(recipient));
@@ -317,8 +318,8 @@
 					{skillsFor}
 					onsend={submit}
 				/>
-				<!-- A wake keeps its word: it brings a controller back and spends quota. One button either
-				     way, so its check stays through the change. -->
+				<!-- A wake keeps its word: it brings a controller back and spends quota. The stop button, only
+				     while a turn runs, sits left of the send button. -->
 				<span class="send-slot" bind:clientWidth={sendWidth}>
 					{#if stopping}
 						<button
@@ -332,16 +333,15 @@
 						>
 							<Square size="1em" fill="currentColor" />
 						</button>
-					{:else}
-						<SendButton
-							class="send"
-							label={waking ? '喚醒' : '送出'}
-							icon={waking ? undefined : sendIcon}
-							sending={toAgent && agent ? (agentSending[agent.id] ?? false) : sending}
-							{sent}
-							disabled={!filled || boxDisabled}
-						/>
 					{/if}
+					<SendButton
+						class="send"
+						label={waking ? '喚醒' : '送出'}
+						icon={waking ? undefined : sendIcon}
+						sending={toAgent && agent ? (agentSending[agent.id] ?? false) : sending}
+						{sent}
+						disabled={!filled || boxDisabled}
+					/>
 				</span>
 			</div>
 		</div>
@@ -536,6 +536,7 @@
 		right: 4px;
 		bottom: 4px;
 		display: flex;
+		gap: 4px;
 	}
 	.box :global(.send) {
 		display: inline-flex;
@@ -550,7 +551,7 @@
 		padding: 0;
 		border-radius: calc(var(--radius) - 2px);
 	}
-	/* The interrupt standing in for the send button: red, like the other stops. */
+	/* The interrupt beside the send button: red, like the other stops. */
 	.box :global(.send.stop) {
 		border-color: var(--danger);
 		background: var(--danger);

@@ -34,7 +34,7 @@ function agentsAfter(herdrStatus: string, hcom: AgentList): Agent[] {
 const lead = { id: 's-lead' };
 
 test('hcom decides: active or blocked offers the interrupt, listening does not', () => {
-	// Herdr's own status says the opposite each time, so only hcom's can have decided.
+	// Herdr's own status says the opposite each time, on one read: hcom's decides until Herdr has said so twice (below).
 	expect(controllerInterruptible(lead, agentsAfter('idle', hcomWith('active')))).toBe(true);
 	expect(controllerInterruptible(lead, agentsAfter('idle', hcomWith('blocked')))).toBe(true);
 	expect(controllerInterruptible(lead, agentsAfter('working', hcomWith('listening')))).toBe(false);
@@ -69,4 +69,98 @@ test('no interrupt without a Herdr place for it', () => {
 	expect(controllerInterruptible(lead, working.map((agent) => ({ ...agent, switch: { state: 'stopped' } as AgentSwitch })))).toBe(false);
 	// Another agent at work does not count.
 	expect(controllerInterruptible({ id: 's-other' }, working)).toBe(false);
+});
+
+/** A roster on a clock the test moves, reading hcom and Herdr as the board does. */
+function clocked() {
+	let time = 1_000_000;
+	const roster = createAgentRoster(() => time);
+	return {
+		advance: (ms: number) => (time += ms),
+		roster,
+		read: (herdr: string, hcom: AgentList = hcomWith('active'), herdrList: Parameters<typeof roster.update>[0] = { ok: true, agents: [herdrAgent(herdr)], workspaces: [] }) =>
+			roster.update(herdrList, hcom, new Set(['s-lead']), []).agents
+	};
+}
+
+test('hcom still active after an Esc ended the turn: Herdr idle or done on two reads a second apart takes the button away', () => {
+	for (const ended of ['idle', 'done']) {
+		const { advance, read, roster } = clocked();
+		expect(controllerInterruptible(lead, read('working'))).toBe(true);
+		// First read after the Esc: not yet, but a second read is asked for.
+		expect(controllerInterruptible(lead, read(ended))).toBe(true);
+		expect(roster.confirming()).toBe(true);
+		advance(1_100);
+		const agents = read(ended);
+		expect(controllerInterruptible(lead, agents)).toBe(false);
+		expect(agents[0].status).toBe('idle');
+		expect(roster.confirming()).toBe(false);
+		// And stays so while hcom is behind.
+		advance(5_000);
+		expect(controllerInterruptible(lead, read(ended))).toBe(false);
+	}
+});
+
+test('Herdr lagging at a turn\'s start does not hide the button: one idle read, then working', () => {
+	const { advance, read, roster } = clocked();
+	expect(controllerInterruptible(lead, read('idle'))).toBe(true);
+	advance(1_100);
+	expect(controllerInterruptible(lead, read('working'))).toBe(true);
+	expect(roster.confirming()).toBe(false);
+	// Idle again later is a new first read, not the second of the old one.
+	advance(5_000);
+	expect(controllerInterruptible(lead, read('idle'))).toBe(true);
+});
+
+test('two reads straight after each other are one sighting, not two', () => {
+	const { advance, read } = clocked();
+	expect(controllerInterruptible(lead, read('idle'))).toBe(true);
+	advance(200);
+	expect(controllerInterruptible(lead, read('idle'))).toBe(true);
+	advance(900);
+	expect(controllerInterruptible(lead, read('idle'))).toBe(false);
+});
+
+test('a natural end still follows hcom at once; blocked and a list that cannot be read keep the old rules', () => {
+	const { advance, read } = clocked();
+	expect(controllerInterruptible(lead, read('working', hcomWith('listening')))).toBe(false);
+	// blocked is a turn waiting on the user, whatever Herdr says.
+	for (let i = 0; i < 3; i++) {
+		advance(2_000);
+		expect(controllerInterruptible(lead, read('idle', hcomWith('blocked')))).toBe(true);
+	}
+	// A list that cannot be read counts as neither a sighting nor a reset.
+	const fresh = clocked();
+	expect(controllerInterruptible(lead, fresh.read('idle'))).toBe(true);
+	fresh.advance(1_100);
+	expect(controllerInterruptible(lead, fresh.read('idle', HCOM_DOWN))).toBe(true);
+	expect(controllerInterruptible(lead, fresh.read('idle'))).toBe(false);
+});
+
+test('one list read counts once, however often the roster is rebuilt from it', () => {
+	const { advance, read, roster } = clocked();
+	const same = { ok: true as const, agents: [herdrAgent('idle')], workspaces: [] };
+	expect(controllerInterruptible(lead, read('idle', hcomWith('active'), same))).toBe(true);
+	advance(1_500);
+	// The same lists again (a full read rebuilds the roster after its closed-agents check): still one sighting.
+	expect(controllerInterruptible(lead, read('idle', hcomWith('active'), same))).toBe(true);
+	expect(roster.confirming()).toBe(true);
+	// A fresh read is the second.
+	expect(controllerInterruptible(lead, read('idle'))).toBe(false);
+	expect(roster.confirming()).toBe(false);
+});
+
+test('a list that cannot be read keeps the last verdict, even after enough time has passed', () => {
+	const { advance, read, roster } = clocked();
+	expect(controllerInterruptible(lead, read('idle'))).toBe(true);
+	advance(200);
+	expect(controllerInterruptible(lead, read('idle'))).toBe(true);
+	advance(900);
+	// Two sightings, but never two a second apart so far: the failure does not decide.
+	expect(controllerInterruptible(lead, read('idle', HCOM_DOWN))).toBe(true);
+	expect(roster.confirming()).toBe(true);
+	expect(controllerInterruptible(lead, read('idle'))).toBe(false);
+	// Confirmed, and a failed list keeps it so.
+	advance(5_000);
+	expect(controllerInterruptible(lead, read('idle', HCOM_DOWN))).toBe(false);
 });

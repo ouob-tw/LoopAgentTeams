@@ -193,7 +193,7 @@ test.skipIf(!CHROME)('a skill list that cannot be read shows no hints and the li
 	await Bun.sleep(300);
 	expect(await evaluate(SHOWN)).toBe('[]');
 	await type(' 你好');
-	await evaluate(`document.querySelector('.cmd .send-slot button').click()`);
+	await evaluate(`document.querySelector('.cmd .send-slot button:not([data-action="interrupt"])').click()`);
 	await until(`document.querySelector(${JSON.stringify(LINE)}).value === ''`, 'the line sent and emptied');
 	expect(readFileSync(join(codexDir, 'inject-typed.jsonl'), 'utf8')).toContain('/us 你好');
 }, 30_000);

@@ -43,6 +43,8 @@ const pairingKey = (agent: HerdrAgent) => agent.sessionId ?? `pane:${agent.pane}
 interface AgentRoster {
 	/** Fold in this read's lists, pause records and open model switches; returns the agents and
 	 *  Herdr's workspaces to show and, when Herdr's list is not this read's, why. */
+	/** Whether some agent awaits another read, a second after its first, to tell whether hcom is behind: one is due soon. */
+	confirming(): boolean;
 	update(
 		herdr: HerdrAgentList,
 		hcom: AgentList,
@@ -52,15 +54,26 @@ interface AgentRoster {
 	): { agents: Agent[]; workspaces: HerdrWorkspace[]; herdrError: string | null };
 }
 
-export function createAgentRoster(): AgentRoster {
+/** How long Herdr must keep saying an agent is idle or done, on separate reads, while hcom still says it works, before hcom is taken to be behind. */
+const LAG_MS = 1_000;
+/** When to read once more after the first read that found hcom behind, so the second one is `LAG_MS` apart. */
+export const LAG_CONFIRM_MS = LAG_MS + 100;
+
+export function createAgentRoster(now: () => number = Date.now): AgentRoster {
 	/** Herdr's last list that could be read; null until one could. */
 	let lastHerdr: HerdrAgent[] | null = null;
 	let lastWorkspaces: HerdrWorkspace[] = [];
 	/** What hcom's last list that could be read made of each Herdr agent then listed: the hcom
 	 *  agent it is, or null when it is not linked. One not in here has not been told since. */
 	let pairings = new Map<string, HcomAgent | null>();
+	/** Agents hcom says work while Herdr says idle or done: since when and on how many reads in a row.
+	 *  hcom marks a turn over from the client's stop hook, which an Esc interrupt does not run, so hcom
+	 *  can say `active` long after the turn ended; one read of Herdr saying so could be Herdr lagging
+	 *  at a turn's start instead, so it takes two reads apart. */
+	let lagging = new Map<string, { since: number; reads: number; list: unknown; confirmed: boolean }>();
 
 	return {
+		confirming: () => [...lagging.values()].some((entry) => !entry.confirmed),
 		update(herdr, hcom, controllers, switches, paused = new Map()) {
 			if (herdr.ok) {
 				lastHerdr = herdr.agents;
@@ -68,6 +81,26 @@ export function createAgentRoster(): AgentRoster {
 			}
 			const listed = lastHerdr ?? [];
 			if (hcom.ok) pairings = new Map(listed.map((agent) => [pairingKey(agent), pair(agent, hcom.agents)]));
+			const nextLagging = new Map<string, { since: number; reads: number; list: unknown; confirmed: boolean }>();
+			/** hcom says the turn goes on and Herdr says it is over, on two reads at least `LAG_MS` apart. Lists
+			 *  that could not both be read this time count as neither: the last verdict stands. */
+			const hcomBehind = (agent: HerdrAgent, linked: HcomAgent): boolean => {
+				if (linked.status !== 'active') return false;
+				const key = pairingKey(agent);
+				let entry = lagging.get(key);
+				if (herdr.ok && hcom.ok) {
+					if (agent.status !== 'idle' && agent.status !== 'done') return false;
+					// One list read counts once, however often the roster is rebuilt from it.
+					if (entry?.list !== herdr) {
+						const since = entry?.since ?? now();
+						const reads = (entry?.reads ?? 0) + 1;
+						entry = { since, reads, list: herdr, confirmed: reads >= 2 && now() - since >= LAG_MS };
+					}
+				}
+				if (!entry) return false;
+				nextLagging.set(key, entry);
+				return entry.confirmed;
+			};
 			const agents = listed.map((agent): Agent => {
 				// A list that cannot be read does not mean an agent is not linked: the last pairing stands,
 				// and one that appeared since no list was read is not known either way.
@@ -95,7 +128,7 @@ export function createAgentRoster(): AgentRoster {
 						tabPlace: agent.tabPlace,
 						pane: agent.pane
 					},
-					status: linked ? (HCOM_STATUS[linked.status ?? ''] ?? 'unknown') : asStatus(agent.status),
+					status: linked ? (hcomBehind(agent, linked) ? 'idle' : (HCOM_STATUS[linked.status ?? ''] ?? 'unknown')) : asStatus(agent.status),
 					statusSource: linked ? 'hcom' : 'herdr',
 					controller: agent.sessionId !== null && controllers.has(agent.sessionId),
 					inHerdr: true,
@@ -103,6 +136,7 @@ export function createAgentRoster(): AgentRoster {
 					asking: false
 				};
 			});
+			lagging = nextLagging;
 			// Stopped by its switch and not back yet: listed from the switch, only to continue or give it up.
 			const listedIds = new Set(listed.map((agent) => agent.sessionId));
 			for (const view of switches) {

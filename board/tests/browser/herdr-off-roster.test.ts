@@ -20,7 +20,7 @@ const SCREEN = `({ search: location.search, detail: document.querySelector('.det
 const TABS = `[...document.querySelectorAll('.detail [role="tablist"] [role="tab"]')].map((b) => b.innerText.replace(/\\s*\\d+$/, '').trim())`;
 const FITS = `document.documentElement.scrollWidth <= window.innerWidth`;
 const BOX = '.dock .cmd textarea';
-const SEND = '.dock .cmd .send-slot button';
+const SEND = '.dock .cmd .send-slot button:not([data-action="interrupt"])';
 const OPTIONS = '.dock .cmd button.options';
 const POPUP = '.dock .popup[aria-label="喚醒選項"]';
 const CARD = `document.querySelector('.inbox button.agent[data-agent="s-old"]')`;
