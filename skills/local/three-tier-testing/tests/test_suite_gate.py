@@ -1,5 +1,4 @@
 import importlib.util
-import fcntl
 import json
 import os
 import shlex

@@ -86,7 +86,6 @@ try {
 	now = Math.max(now, fallback.at);
 	fallback.run();
 	await finishRead();
-	await ready(() => timers.size === 1);
 	let snapshot = await board.current();
 	await ready(() => {
 		void board.current().then((value) => { snapshot = value; });

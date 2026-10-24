@@ -2354,7 +2354,7 @@ class SessionTests(unittest.TestCase):
         for reference in references:
             self.assertIn(f'===== {reference} =====\n{reference.read_text()}', context)
         # Claude Code moves context over 10,000 characters to a file and shows a 2,000-character
-        # preview; keep room for longer workspace paths and the legacy-upgrade suffix.
+        # preview; reserve 1,000 characters for paths and the legacy-upgrade suffix.
         # Charge a fixed path budget, not this checkout's absolute path lengths. Only
         # strip the generated path fields: reference prose must still count in full.
         sized = context.replace(f'LAT recovery record: {self.record}\n', 'LAT recovery record: \n', 1)
