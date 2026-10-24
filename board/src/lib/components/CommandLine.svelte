@@ -562,8 +562,8 @@
 	.reopen {
 		display: none;
 	}
-	/* A phone: the box takes its own row, the controls the row under it: the paperclip, the model
-	   and effort, the mic, the rest, and the button that puts the line away at the far right. */
+	/* A phone: the box takes its own row, the controls the row under it: the model and effort, the
+	   paperclip, the mic, the rest, and the button that puts the line away at the far right. */
 	@media (max-width: 760px) {
 		.cmd.hidden {
 			display: none;
@@ -627,10 +627,10 @@
 			order: -1;
 			flex-basis: 100%;
 		}
-		.attach-slot {
+		.pill-slot {
 			order: 1;
 		}
-		.pill-slot {
+		.attach-slot {
 			order: 2;
 		}
 		/* Near the left edge now, its menus float above the whole line from its left instead. */

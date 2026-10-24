@@ -1,6 +1,7 @@
 /* The model and effort picker beside the send button, shared by the controllers' and the agents'
    pickers so both look the same. */
-/* One soft rounded tag holding both parts, shorter than the send button and centred beside it. */
+/* One tag holding both parts, shorter than the send button and centred beside it. It and its parts
+   have the small corners of the board's other buttons. */
 .picker {
 	position: relative;
 	display: inline-flex;
@@ -8,7 +9,7 @@
 	align-items: center;
 	gap: 4px;
 	padding: 3px 4px;
-	border-radius: var(--radius-pill);
+	border-radius: var(--radius);
 	background: color-mix(in srgb, var(--text) 7%, var(--bg));
 	font-size: max(0.8rem, var(--min-font, 0px));
 }
@@ -19,7 +20,7 @@
 	text-overflow: ellipsis;
 	white-space: nowrap;
 	border: 0;
-	border-radius: var(--radius-pill);
+	border-radius: var(--radius);
 	background: none;
 	color: var(--text);
 	line-height: 1.4;
@@ -27,13 +28,13 @@
 .picker .part:not([aria-disabled='true']):is(:hover, :focus-visible, [aria-expanded='true']) {
 	background: color-mix(in srgb, var(--text) 14%, var(--bg));
 }
-/* Apply and discard, round like the parts and as tall. */
+/* Apply and discard, cornered like the parts and as tall. */
 .picker .act {
 	display: inline-flex;
 	align-items: center;
 	padding: calc(2px + 0.2em) 0.35em;
 	border: 0;
-	border-radius: var(--radius-pill);
+	border-radius: var(--radius);
 	background: none;
 	color: var(--accent);
 	line-height: 1;
