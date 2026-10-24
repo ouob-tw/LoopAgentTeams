@@ -45,6 +45,10 @@ export interface BoardAsk {
 	state: BoardAskState;
 	/** The answers by question text, once taken; null before. */
 	answers: Record<string, string> | null;
+	/** What the board's answer picked, by question in order: the options the answers name cannot
+	 *  be read back from their text, as a label may hold a comma. Null before, or when the answer
+	 *  did not keep them. */
+	picks: AskPick[] | null;
 }
 
 /** What the user picked for one question: 1-based option positions, and 其他 with its text. */

@@ -13,8 +13,8 @@
 	// One board ask on its agent's page: the questions an agent's client asked through its menu,
 	// answered here as in the terminal, with the options as the pending-question card shows them
 	// (one or several to pick, or 其他 with text of one's own) but no note, which the client's answer
-	// has no place for. All the questions are sent together. Once taken it is read-only, its answers
-	// marked among the options.
+	// has no place for. All the questions are sent together. Once taken it is read-only, what was
+	// picked marked among the options.
 	import { ASK_TAKEN_REASON, BOARD_ASK_STATE_TEXT, EMPTY_PICK, pickComplete, type AskAnswerResponse, type AskQuestion, type BoardAsk } from '#lib/board/board-asks.ts';
 	import { request } from '#lib/board/api.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
@@ -53,16 +53,6 @@
 		edit(index, question.multiSelect ? { other: !pickOf(index).other } : { select: [], other: true });
 	}
 
-	/** The options an answer names, and what is left of it: the 其他 text. */
-	function chosen(question: AskQuestion, answer: string): { labels: Set<string>; other: string | null } {
-		const labels = new Set(question.options.map((option) => option.label));
-		if (labels.has(answer)) return { labels: new Set([answer]), other: null };
-		const parts = question.multiSelect ? answer.split(', ') : [answer];
-		const named = parts.filter((part) => labels.has(part));
-		const rest = parts.filter((part) => !labels.has(part)).join(', ');
-		return { labels: new Set(named), other: rest || null };
-	}
-
 	async function submit() {
 		if (sending || !complete) return;
 		sending = true;
@@ -98,7 +88,7 @@
 	{#each ask.questions as question, index (index)}
 		{@const pick = pickOf(index)}
 		{@const answer = ask.answers?.[question.question]}
-		{@const marked = answer === undefined ? null : chosen(question, answer)}
+		{@const marked = ask.picks?.[index] ?? null}
 		<section class="question" data-question={index}>
 			<h2>
 				{#if question.header}<span class="chip">{question.header}</span>{/if}
@@ -121,7 +111,7 @@
 								{@render body(option.label, option.description)}
 							</label>
 						</li>
-					{:else if marked?.labels.has(option.label)}
+					{:else if marked?.select.includes(position)}
 						<li class="picked"><span class="check" aria-label="你的答案">✓</span>{@render body(option.label, option.description)}</li>
 					{:else}
 						<li>{@render body(option.label, option.description)}</li>
@@ -150,7 +140,10 @@
 						{/if}
 					</li>
 				{:else if marked?.other}
-					<li class="picked"><span class="check" aria-label="你的答案">✓</span><span class="option text">其他：{marked.other}</span></li>
+					<li class="picked"><span class="check" aria-label="你的答案">✓</span><span class="option text">其他：{marked.text.trim()}</span></li>
+				{:else if !marked && answer !== undefined}
+					<!-- Taken without the picks it came from: the answer as the client got it. -->
+					<li class="picked"><span class="check" aria-label="你的答案">✓</span><span class="option text">{answer}</span></li>
 				{/if}
 			</ul>
 		</section>

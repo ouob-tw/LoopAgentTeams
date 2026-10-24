@@ -40,7 +40,7 @@ interface AskFile {
 	outcome: 'filled' | 'timed_out' | null;
 }
 
-type ResultFile = { kind: 'answer'; answers: Record<string, string> } | { kind: 'timeout' };
+type ResultFile = { kind: 'answer'; answers: Record<string, string>; picks?: AskPick[] } | { kind: 'timeout' };
 
 function isAsk(value: unknown): value is AskFile {
 	const ask = value as Partial<AskFile> | null;
@@ -91,7 +91,8 @@ export function readAsks(dir: string): BoardAsk[] {
 			createdAt: ask.created_at,
 			deadlineAt: ask.deadline_at,
 			state: stateOf(ask, result),
-			answers: result?.kind === 'answer' ? result.answers : null
+			answers: result?.kind === 'answer' ? result.answers : null,
+			picks: result?.kind === 'answer' && Array.isArray(result.picks) ? result.picks : null
 		});
 	}
 	return asks.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
@@ -108,14 +109,14 @@ export function touchHeartbeat(dir: string): void {
 	}
 }
 
-/** Take the ask with these answers: true when this call did, false when someone (another device,
- *  or the hook at its deadline) took it first. The file is written whole and then linked into
- *  place, which fails when it exists. */
-export function takeAsk(dir: string, id: string, answers: Record<string, string>): boolean {
+/** Take the ask with these answers, and the picks they came from for the board to show: true when
+ *  this call did, false when someone (another device, or the hook at its deadline) took it first.
+ *  The file is written whole and then linked into place, which fails when it exists. */
+export function takeAsk(dir: string, id: string, answers: Record<string, string>, picks: AskPick[] | null = null): boolean {
 	if (!safeId(id)) throw new Error(`ask ID ${id} 不能當檔名`);
 	const result = join(dir, `${id}.result.json`);
 	const temporary = join(dir, `.${id}.result.${randomUUID()}.tmp`);
-	writeFileSync(temporary, JSON.stringify({ kind: 'answer', answers, at: new Date().toISOString() }) + '\n', { mode: 0o600 });
+	writeFileSync(temporary, JSON.stringify({ kind: 'answer', answers, picks, at: new Date().toISOString() }) + '\n', { mode: 0o600 });
 	try {
 		linkSync(temporary, result);
 		return true;
@@ -145,7 +146,7 @@ export async function answerAsk(board: Board, id: string, picks: AskPick[]): Pro
 	const answers = Object.fromEntries(ask.questions.map((question, index) => [question.question, texts[index]!]));
 	let taken: boolean;
 	try {
-		taken = ask.state === 'waiting' && takeAsk(config.asksDir, id, answers);
+		taken = ask.state === 'waiting' && takeAsk(config.asksDir, id, answers, picks);
 	} catch (error) {
 		return { status: 500, body: { status: 'error', reason: `答案寫不進共用目錄：${(error as Error).message}`, logError: null } };
 	}

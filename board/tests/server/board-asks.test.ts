@@ -91,6 +91,8 @@ test('an answer is written as the result the hook reads, once; the next one is r
 	expect([taken.status, (await taken.json()).status]).toEqual([200, 'accepted']);
 	const result = JSON.parse(readFileSync(join(asksDir, 'ask-answered.result.json'), 'utf8'));
 	expect(result).toMatchObject({ kind: 'answer', answers: { 'Pick a color?': 'Blue', 'Pick fruits?': 'Apple, Cherry, Mango' } });
+	// Kept for the card: which options the text names cannot be read back from it.
+	expect(result.picks).toEqual([pick([2]), pick([1, 2], 'Mango')]);
 	expect(statSync(join(asksDir, 'ask-answered.result.json')).mode & 0o777).toBe(0o600);
 
 	const again = await answer('ask-answered', [pick([1]), pick([1])]);
@@ -98,7 +100,7 @@ test('an answer is written as the result the hook reads, once; the next one is r
 	expect(JSON.parse(readFileSync(join(asksDir, 'ask-answered.result.json'), 'utf8')).answers['Pick a color?']).toBe('Blue');
 
 	const snapshot = await fixture.refresh(cookie);
-	expect(snapshot.asks.find((ask) => ask.id === 'ask-answered')?.state).toBe('answered');
+	expect(snapshot.asks.find((ask) => ask.id === 'ask-answered')).toMatchObject({ state: 'answered', picks: [pick([2]), pick([1, 2], 'Mango')] });
 	const log = await (await fixture.fetch('/api/agents/log?session=s-ask', { cookie })).json();
 	const entries = log.entries.filter((entry: { action: string }) => entry.action === 'board-ask');
 	expect(entries.slice(0, 2)).toMatchObject([

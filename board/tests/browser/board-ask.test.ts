@@ -16,7 +16,7 @@ const browsers: Browser[] = [];
 
 const QUESTIONS = [
 	{ question: 'Pick a color?', header: 'Color', multiSelect: false, options: [{ label: 'Red', description: 'Choose red.' }, { label: 'Blue', description: 'Choose blue.' }] },
-	{ question: 'Pick fruits?', header: 'Fruit', multiSelect: true, options: [{ label: 'Apple', description: 'Crisp.' }, { label: 'Cherry', description: 'Small.' }] }
+	{ question: 'Pick fruits?', header: 'Fruit', multiSelect: true, options: [{ label: 'Apple', description: 'Crisp.' }, { label: 'Cherry, sour', description: 'Small.' }] }
 ];
 
 /** The hook as Claude runs it for the agent of session `s-ask`, asking into the board's folder. */
@@ -87,7 +87,7 @@ test('the question shows on its agent\'s page, is answered there and goes back t
 	);
 	expect(shown).toEqual([
 		{ question: 'Color Pick a color? 單選', options: ['Red Choose red.', 'Blue Choose blue.', '其他'] },
-		{ question: 'Fruit Pick fruits? 複選', options: ['Apple Crisp.', 'Cherry Small.', '其他'] }
+		{ question: 'Fruit Pick fruits? 複選', options: ['Apple Crisp.', 'Cherry, sour Small.', '其他'] }
 	]);
 	expect(await tab.eval(`document.querySelector('${card} [role="timer"]').innerText`)).toMatch(/^剩 [01]:\d\d/);
 
@@ -95,6 +95,8 @@ test('the question shows on its agent\'s page, is answered there and goes back t
 	// Both questions must be answered first.
 	expect(await tab.eval(`document.querySelector('${sendButton}').disabled`)).toBe(true);
 	await choose(tab, 1, 'Apple');
+	// A label with a comma in it is still one option once answered.
+	await choose(tab, 1, 'Cherry, sour');
 	await choose(tab, 1, '其他');
 	await tab.until(`document.querySelector('${card} [data-question="1"] textarea')`, 'the 其他 box');
 	await tab.eval(`(() => { const box = document.querySelector('${card} [data-question="1"] textarea'); box.value = 'Mango'; box.dispatchEvent(new Event('input', { bubbles: true })); })()`);
@@ -105,7 +107,7 @@ test('the question shows on its agent\'s page, is answered there and goes back t
 	expect(JSON.parse(stdout).hookSpecificOutput).toEqual({
 		hookEventName: 'PreToolUse',
 		permissionDecision: 'allow',
-		updatedInput: { questions: QUESTIONS, answers: { 'Pick a color?': 'Blue', 'Pick fruits?': 'Apple, Mango' } }
+		updatedInput: { questions: QUESTIONS, answers: { 'Pick a color?': 'Blue', 'Pick fruits?': 'Apple, Cherry, sour, Mango' } }
 	});
 	await tab.until(`document.querySelector('${card}').dataset.state === 'filled'`, 'the card to read 已填回');
 	expect(await tab.eval(`document.querySelector('${card}').innerText`)).toContain('已填回');
@@ -113,13 +115,14 @@ test('the question shows on its agent\'s page, is answered there and goes back t
 	expect(await tab.eval(`[...document.querySelectorAll('${card} li.picked')].map((li) => li.innerText.replace(/\\s+/g, ' ').trim())`)).toEqual([
 		'✓ Blue Choose blue.',
 		'✓ Apple Crisp.',
+		'✓ Cherry, sour Small.',
 		'✓ 其他：Mango'
 	]);
 	await tab.until(`!document.querySelector('[data-agent="s-ask"]').innerText.includes('等你回答')`, 'the list to stop saying 等你回答');
 
 	await tab.eval(`document.querySelector('.detail [data-tab="log"]').click()`);
 	await tab.until(`document.querySelector('.detail [data-action="board-ask"]')`, 'the operation record entry');
-	expect(await tab.eval(`document.querySelector('.detail [data-action="board-ask"]').innerText`)).toMatch(/看板提問[\s\S]*已送出答案[\s\S]*Pick a color\? → Blue\nPick fruits\? → Apple, Mango/);
+	expect(await tab.eval(`document.querySelector('.detail [data-action="board-ask"]').innerText`)).toMatch(/看板提問[\s\S]*已送出答案[\s\S]*Pick a color\? → Blue\nPick fruits\? → Apple, Cherry, sour, Mango/);
 	expect(tab.errors).toEqual([]);
 }, 60_000);
 
