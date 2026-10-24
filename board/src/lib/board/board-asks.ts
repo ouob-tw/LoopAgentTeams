@@ -126,3 +126,6 @@ export interface AskAnswerResponse {
 }
 
 export const ASK_TAKEN_REASON = '已有人作答';
+
+/** Why an ask's operation record says nothing was answered: its hook was ended in the terminal. */
+export const ASK_INTERRUPTED_REASON = '已在終端機中斷，沒有作答';

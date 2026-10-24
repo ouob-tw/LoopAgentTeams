@@ -9,6 +9,7 @@ import { join } from 'node:path';
 import type { AgentAction } from '../board/agent-actions.ts';
 import {
 	answersText,
+	ASK_INTERRUPTED_REASON,
 	ASK_RETENTION_MS,
 	ASK_TAKEN_REASON,
 	ENDED_ASK_STATES,
@@ -21,8 +22,10 @@ import {
 	type BoardAsk,
 	type BoardAskState
 } from '../board/board-asks.ts';
+import type { Agent } from '../board/types.ts';
 import { relayToAgent } from './agent-control.ts';
 import type { Board } from './board.ts';
+import type { BoardConfig } from './config.ts';
 import { appendSent } from './sent-log.ts';
 
 export const HEARTBEAT_FILE = 'heartbeat';
@@ -84,9 +87,18 @@ function readJson(path: string): unknown {
 	}
 }
 
+/** Late answers this board is sending now: a late file without an outcome that is not one of them
+ *  was left by a board that stopped while sending, and may be taken again: the ask reads as
+ *  timed out again. Whether that board typed it in before it stopped is not known; the agent's
+ *  operation record has an entry for each message it sent. */
+const relaying = new Set<string>();
+
 function stateOf(ask: AskFile, result: ResultFile | null, late: LateFile | null): BoardAskState {
 	if (result?.kind === 'interrupted') return 'interrupted';
-	if (result?.kind === 'timeout') return late ? (late.outcome ?? 'relaying') : 'timed_out';
+	if (result?.kind === 'timeout') {
+		if (late?.outcome) return late.outcome;
+		return late && relaying.has(ask.id) ? 'relaying' : 'timed_out';
+	}
 	if (result?.kind === 'answer') return ask.outcome === 'filled' ? 'filled' : 'answered';
 	return 'waiting';
 }
@@ -190,10 +202,12 @@ function running(pid: number): boolean {
 
 /**
  * Bring the folder up to date before it is read: an ask whose hook process is gone with nothing
- * taken was ended in the terminal (Esc, or the agent closed), so it is taken as interrupted and
- * takes no answer; an ask that ended at least 7 days ago is removed with its files.
+ * taken was ended in the terminal (Esc, or the agent closed), so it is taken as interrupted, takes
+ * no answer, and goes in its agent's operation record; an ask that ended at least 7 days ago is
+ * removed with its files. `agents` are the agents as listed now, for the record's name and pane.
  */
-export function settleAsks(dir: string, now = Date.now()): void {
+export function settleAsks(config: Pick<BoardConfig, 'asksDir' | 'stateDir'>, agents: Agent[], now = Date.now()): void {
+	const dir = config.asksDir;
 	for (const ask of readAsks(dir)) {
 		if (ask.endedAt !== null && now - Date.parse(ask.endedAt) >= ASK_RETENTION_MS) {
 			for (const suffix of ['.json', '.result.json', '.late.json']) rmSync(join(dir, `${ask.id}${suffix}`), { force: true });
@@ -202,18 +216,35 @@ export function settleAsks(dir: string, now = Date.now()): void {
 		if (ask.state !== 'waiting') continue;
 		const pid = (readJson(join(dir, `${ask.id}.json`)) as AskFile | null)?.hook_pid;
 		if (!Number.isInteger(pid) || running(pid!)) continue;
+		let interrupted: boolean;
 		try {
 			// Lost to an answer or the deadline that came first: that one stands.
-			claim(dir, `${ask.id}.result.json`, { kind: 'interrupted', at: new Date(now).toISOString() });
+			interrupted = claim(dir, `${ask.id}.result.json`, { kind: 'interrupted', at: new Date(now).toISOString() });
 		} catch {
 			// Tried again at the next read.
+			continue;
+		}
+		if (!interrupted) continue;
+		const agent = agents.find((candidate) => candidate.id === ask.sessionId);
+		try {
+			appendSent(config.stateDir, {
+				id: randomUUID(),
+				kind: 'agent-action',
+				action: 'board-ask',
+				time: new Date(now).toISOString(),
+				agentId: ask.sessionId,
+				name: agent?.name ?? '',
+				route: null,
+				pane: agent?.herdr.pane ?? null,
+				text: ask.questions.map((question) => question.question).join('\n'),
+				ok: false,
+				error: ASK_INTERRUPTED_REASON
+			});
+		} catch {
+			// The card says it all the same.
 		}
 	}
 }
-
-/** Late answers this board is sending now: a late file without an outcome that is not one of them
- *  was left by a board that stopped while sending, and may be taken again. */
-const relaying = new Set<string>();
 
 /** Take a timed-out ask with an answer to send as a message: true when this call did. */
 function takeLate(dir: string, id: string, answers: Record<string, string>, picks: AskPick[]): boolean {

@@ -346,9 +346,9 @@ function createBoard(): Board {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
 		}
 		const paused = await settlePauses(config, agents, herdrAgents, listedAt);
-		settleAsks(config.asksDir);
-		lastAsks = readAsks(config.asksDir);
 		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
+		settleAsks(config, allAgents.agents);
+		lastAsks = readAsks(config.asksDir);
 		herdrRead ||= herdrAgents.ok;
 		const closedAgents = await closedRoster.update({
 			agents: herdrRead ? allAgents.agents : null,

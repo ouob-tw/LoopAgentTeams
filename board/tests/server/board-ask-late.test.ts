@@ -7,6 +7,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterAll, beforeAll, beforeEach, expect, test } from 'bun:test';
 import type { AgentAction } from '../../src/lib/board/agent-actions.ts';
+import { ASK_TAKEN_REASON } from '../../src/lib/board/board-asks.ts';
 import { DAY, NODE, startFixture, until, type Fixture } from '../harness.ts';
 
 const HOOK = join(import.meta.dir, '../../hooks/board-ask.py');
@@ -183,6 +184,26 @@ test('an ask whose hook process was ended while it waited reads as interrupted a
 	expect(JSON.parse(readFileSync(join(asksDir, `${id}.result.json`), 'utf8')).kind).toBe('interrupted');
 	expect((await answer(id, [1])).status).toBe(409);
 	expect([herdrCalls(), injectCalls()]).toEqual([[], []]);
+	// Recorded once, the later reads leaving it as it is.
+	await fixture.refresh(cookie);
+	expect((await boardAskEntries()).map((entry) => [entry.ok, entry.error, entry.text, entry.name])).toEqual([
+		[false, ASK_TAKEN_REASON, 'Pick a color? → Red', 'asker'],
+		[false, '已在終端機中斷，沒有作答', 'Pick a color?', 'asker']
+	]);
+});
+
+test('an answer a board took and stopped before sending can be sent again after a restart', async () => {
+	putAsk('late-orphan');
+	timeOut('late-orphan');
+	writeFileSync(join(asksDir, 'late-orphan.late.json'), JSON.stringify({ kind: 'answer', answers: { 'Pick a color?': 'Red' }, picks: null, at: new Date().toISOString() }));
+	await fixture.stop();
+	await fixture.start();
+	expect(await stateOf('late-orphan')).toBe('timed_out');
+	expect(await answer('late-orphan', [2])).toMatchObject({ status: 200, body: { status: 'accepted' } });
+	const prompts = herdrCalls().filter((call) => call[1] === 'prompt');
+	expect(prompts).toHaveLength(1);
+	expect(prompts[0][3]).toContain('回答：Blue');
+	expect(await stateOf('late-orphan')).toBe('relayed');
 });
 
 test('an ask that ended 7 days ago is removed with its files; a newer one, and one still open, stay', async () => {
