@@ -1331,47 +1331,50 @@ def background_process_running(agent, info, processes, current_pid=None):
     return False
 
 
-def delivery_releases_wait(event, target_names, message_intents):
-    """A delivery frees a wait only from the wait target or as a request."""
+def delivery_sender(event):
     context = status_context(event)
-    if not (isinstance(context, str) and context.startswith('deliver:')):
-        return False
-    if message_intents is None:
-        return True
-    if context[len('deliver:'):] in target_names:
-        return True
-    position = event_value(event, 'position', 'status')
-    return message_intents.get(position) not in ('inform', 'ack')
+    if isinstance(context, str) and context.startswith('deliver:'):
+        return context[len('deliver:'):]
+    return None
+
+
+def message_releases_wait(message, target_names):
+    sender = event_value(message, 'from', 'data')
+    return sender in target_names or event_value(message, 'intent', 'data') not in ('inform', 'ack')
 
 
 def wait_release_reason(declaration, participant_events, target_replied, decision_pending,
-                        target_names=(), message_intents=None):
+                        target_names=(), messages=None):
     """Explain why a wait is no longer valid, or return None.
 
-    message_intents maps a delivered message id to its intent; None releases on any delivery.
+    messages are the message events delivered to the waiter; a delivery frees the wait only if
+    one is from the wait target or is not an inform/ack. None or empty releases on any delivery.
     """
     if target_replied:
         return 'target-replied'
-    for event in participant_events:
-        if delivery_releases_wait(event, target_names, message_intents):
+    if any(delivery_sender(event) is not None for event in participant_events):
+        if not messages or any(message_releases_wait(m, target_names) for m in messages):
             return 'message-delivered'
     if decision_pending is False:
         return 'decision-resolved'
     return None
 
 
-def delivered_message_intents(orchestrator, participant_events):
-    """Look up the intent of each message delivered to the waiting agent."""
-    ids = sorted({position for event in participant_events
-                  if isinstance(status_context(event), str)
-                  and status_context(event).startswith('deliver:')
-                  and type(position := event_value(event, 'position', 'status')) is int})
-    if not ids:
-        return {}
-    messages = hcom_events(orchestrator, '--type', 'message', '--sql',
-                           f"id IN ({','.join(map(str, ids))})")
-    return {event.get('id'): event_value(event, 'intent', 'data')
-            for event in messages if event.get('type') == 'message'}
+def delivered_messages(orchestrator, waiting_info, participant_events, after):
+    """Message events delivered to the waiting agent since the wait began.
+
+    One deliver status can stand for a batch (its context names the first sender, its position
+    the last message), so read the messages themselves.
+    """
+    positions = [position for event in participant_events if delivery_sender(event) is not None
+                 and type(position := event_value(event, 'position', 'status')) is int]
+    names = {waiting_info.get('name'), waiting_info.get('base_name')} - {None}
+    if not positions or not names:
+        return []
+    messages = hcom_events(orchestrator, '--type', 'message', '--after', after,
+                           '--sql', f'id <= {max(positions)}')
+    return [message for message in messages if message.get('type') == 'message'
+            and names & set(event_value(message, 'delivered_to', 'data') or ())]
 
 
 def idle_prompt(observation):
@@ -1752,7 +1755,7 @@ def release_wait_if_needed(workspace, decisions, orchestrator, declaration, agen
                     if name}
     reason = wait_release_reason(
         declaration, participant, target_replied, decision, target_names,
-        delivered_message_intents(orchestrator, participant))
+        delivered_messages(orchestrator, waiting_info or {}, participant, after))
     if reason:
         updated = dict(declaration, active=False, expiry_count=0, expiry_declared_at=[],
                        expiry_notified=False, expiry_nudge_pending=False, released_reason=reason,
