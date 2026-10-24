@@ -527,7 +527,7 @@ def mark_executed(payload, env, clock):
     """Codex's PostToolUse: the tool allowed on the board after the turn ended has run. The run
     names no request, so every allowed request of the turn with the same tool and input counts,
     in its turn or after it, seen run before or not: with two or more, which one ran is not
-    known, and those that outlived the turn are marked so."""
+    known. The board reads the mark only for a request that outlived its turn."""
     session_id = payload.get('session_id')
     if not isinstance(session_id, str):
         return None
@@ -546,9 +546,9 @@ def mark_executed(payload, env, clock):
     summary = response if isinstance(response, str) else json.dumps(response, ensure_ascii=False)
     record = {'kind': 'executed', 'summary': summary[:2000]} if len(allowed) == 1 \
         else {'kind': 'ambiguous'}
+    # Every one is marked, not only those already marked stopped: a Stop's mark may land later.
     for ask in allowed:
-        if (folder / f'{ask["id"]}.stopped.json').exists():
-            claim(folder / f'{ask["id"]}.executed.json', {**record, 'at': iso(clock())})
+        claim(folder / f'{ask["id"]}.executed.json', {**record, 'at': iso(clock())})
     return None
 
 

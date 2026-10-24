@@ -311,9 +311,9 @@ test('Codex: a Stop of another session, or after the answer, marks nothing', asy
 	await run;
 	await codexEvent('Stop');
 	expect(stateOf(ask.id)).toMatchObject({ state: 'filled', turnEnded: false });
-	// Allowed in its turn: its run is not watched for.
+	// Allowed in its turn: its run is marked, but means nothing for it.
 	await postToolUse();
-	expect(existsSync(join(dir, `${ask.id}.executed.json`))).toBe(false);
+	expect(stateOf(ask.id)!.state).toBe('filled');
 });
 
 test('Codex: a run two waiting allows match is marked on neither as theirs', async () => {
@@ -375,10 +375,10 @@ test('Codex: a Stop that saw the request waiting but marked it after the allow w
 	takePermission(dir, ask.id, 'allow');
 	await run;
 	expect(stateOf(ask.id)!.state).toBe('filled');
-	// The Stop's mark, written late, as its process lost the race to the hook.
-	writeFileSync(join(dir, `${ask.id}.stopped.json`), JSON.stringify({ at: new Date().toISOString() }));
-	expect(stateOf(ask.id)!.state).toBe('allowed_waiting');
+	// The run is seen before the Stop's mark lands, as the Stop's process lost both races.
 	await postToolUse();
+	expect(stateOf(ask.id)!.state).toBe('filled');
+	writeFileSync(join(dir, `${ask.id}.stopped.json`), JSON.stringify({ at: new Date().toISOString() }));
 	expect(stateOf(ask.id)!.state).toBe('executed');
 });
 

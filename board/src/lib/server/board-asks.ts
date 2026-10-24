@@ -9,8 +9,8 @@ import { join } from 'node:path';
 import type { AgentAction } from '../board/agent-actions.ts';
 import {
 	answersText,
-	ASK_INTERRUPTED_REASON,
 	ASK_EXECUTION_WAIT_MS,
+	ASK_INTERRUPTED_REASON,
 	ASK_RETENTION_MS,
 	ASK_TAKEN_REASON,
 	BOARD_ASK_STATE_TEXT,
