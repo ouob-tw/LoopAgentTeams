@@ -41,7 +41,8 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_LAUNCH_WAIT_SECONDS` | 新建後多久還沒出現綁定，就在新建紀錄提示「已開分頁，但主控尚未啟用」；喚醒接回後多久還沒在 hcom 清單出現，就在送出紀錄提示「接回後仍未出現」 | `180` |
 | `LAT_HCOM_PAUSED_DIR` | 暫停通訊紀錄的目錄（絕對路徑；不是絕對路徑時當成沒設），LAT 停住監控與程序回收讀同一個目錄 | `$XDG_STATE_HOME/lat/hcom-paused` |
 | `LAT_BOARD_ASKS_DIR` | 看板提問的共用目錄（絕對路徑；不是絕對路徑時當成沒設），hook 與看板讀寫同一個目錄，兩邊要一致 | `$XDG_STATE_HOME/lat/board-asks` |
-| `LAT_BOARD_ASK_EXECUTION_WAIT_SECONDS` | Codex 回合結束後才允許的權限確認，等看到它執行的最長時間（秒），測試用 | 604800（7 天） |
+| `LAT_BOARD_ASK_EXECUTION_WAIT_SECONDS` | Codex 回合結束後才允許的權限確認，等看到它執行的最長時間（秒），測試用 | `604800`（7 天） |
+| `LAT_BOARD_ASK_OBSERVE_SECONDS` | hook 讀的：看板的權限確認答案送出後，在 Claude 對話紀錄裡等它實際結果的秒數，測試用來縮短 | `60` |
 | `LAT_BOARD_ASK_WAIT_SECONDS` | hook 讀的：問完原地等多久（秒），測試用來縮短 | `600` |
 | `LAT_BOARD_UNPAUSE_WAIT_SECONDS` | 恢復通訊打入接回指令後，最多等多久它以原名稱與原 session 回到 hcom 清單 | `60` |
 | `LAT_BOARD_ASR_URL` | 語音輸入用的語音辨識服務（gohakka-infra）網址，例如 `http://localhost:8025`；看板呼叫它的 `/v1/asr/sync`（`whisper-large-v3-turbo`、`zh`）。沒設定或缺下一項時，按麥克風只會提示未設定 | 不設定 |

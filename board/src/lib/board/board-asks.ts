@@ -1,7 +1,7 @@
 // 看板提問: a question an agent's client asked through its menu (Claude's AskUserQuestion), or a
 // permission request of Claude or Codex, which the board-ask hook wrote to the shared folder and
-// waits on in place. Shared by the server and
-// the page; the folder's format is in `hooks/board-ask.py`.
+// waits on in place. Shared by the server and the page; the folder's format is in
+// `hooks/board-ask.py`.
 
 /** One option of a question, as the client gave it. */
 export interface AskOption {
@@ -92,6 +92,9 @@ export const ENDED_ASK_STATES: ReadonlySet<BoardAskState> = new Set([
 
 /** How long an ended ask is kept, its files and its card; its operation record keeps its own 30 days. */
 export const ASK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** How long a tool Codex was allowed after its turn ended is waited for to be seen run. */
+export const ASK_EXECUTION_WAIT_MS = 7 * 24 * 60 * 60 * 1000;
 
 /** Whether the board takes an answer to it: in place while the hook waits, as a message once the
  *  wait ran out. */

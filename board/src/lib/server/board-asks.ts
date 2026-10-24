@@ -10,6 +10,7 @@ import type { AgentAction } from '../board/agent-actions.ts';
 import {
 	answersText,
 	ASK_INTERRUPTED_REASON,
+	ASK_EXECUTION_WAIT_MS,
 	ASK_RETENTION_MS,
 	ASK_TAKEN_REASON,
 	BOARD_ASK_STATE_TEXT,
@@ -80,8 +81,9 @@ type ResultFile =
 /** An answer to a timed-out ask: taken once, then written again with what its message came to. */
 interface LateFile {
 	kind: 'answer';
-	answers: Record<string, string>;
-	picks: AskPick[] | null;
+	/** A question's answers and picks, or a permission request's decision and reason. */
+	answers?: Record<string, string>;
+	picks?: AskPick[] | null;
 	decision?: PermissionDecision;
 	reason?: string;
 	at: string;
@@ -166,20 +168,10 @@ function standing(files: AskFiles, now: number, executionWaitMs: number): { stat
 	const at = (state: BoardAskState, endedAt: string | null | undefined) => ({ state, endedAt: ENDED_ASK_STATES.has(state) ? (endedAt ?? ask.created_at) : null });
 	const relayEnd = (taken: { at: string; outcome_at?: string } | null) => resend?.outcome_at ?? taken?.outcome_at ?? taken?.at;
 	if (!result) return at('waiting', null);
-	if (result.kind === 'interrupted' || result.kind === 'handed_back' || result.kind === 'terminal') {
-		return at(result.kind === 'handed_back' ? 'handed_back' : result.kind, result.at);
-	}
+	if (result.kind === 'interrupted' || result.kind === 'handed_back' || result.kind === 'terminal') return at(result.kind, result.at);
 	if (result.kind === 'timeout') return at(relayState(ask.id, late, resend, 'timed_out', 'relayed'), relayEnd(late));
-	if (ask.kind !== 'permission' || ask.outcome === 'filled') return ask.outcome === 'filled' ? at('filled', ask.outcome_at ?? result.at) : at('answered', null);
-	if (ask.outcome === 'sent') {
-		if (observed?.decision) return at(observed.decision === result.decision ? 'filled' : 'terminal', observed.at);
-		const until = Date.parse(ask.observe_until ?? '') + OBSERVE_GRACE_MS;
-		if (observed?.kind === 'unknown') return at('result_unknown', observed.at);
-		if (now >= until) return at('result_unknown', new Date(until).toISOString());
-		return at('sent', null);
-	}
-	if (ask.outcome === 'allowed') {
-		const expires = Date.parse(ask.outcome_at ?? ask.created_at) + executionWaitMs;
+	if (allowedLate(files)) {
+		const expires = Date.parse(ask.outcome_at ?? result.at ?? ask.created_at) + executionWaitMs;
 		// Seen run after the wait ended counts for nothing: the card already said no one was told.
 		if (executed && Date.parse(executed.at) < expires) {
 			if (executed.kind === 'ambiguous') return at('allowed_unmatched', executed.at);
@@ -187,12 +179,28 @@ function standing(files: AskFiles, now: number, executionWaitMs: number): { stat
 		}
 		return now >= expires ? at('allowed_expired', new Date(expires).toISOString()) : at('allowed_waiting', null);
 	}
+	if (ask.outcome === 'filled') return at('filled', ask.outcome_at ?? result.at);
+	if (ask.kind !== 'permission') return at('answered', null);
+	if (ask.outcome === 'sent') {
+		if (observed?.decision) return at(observed.decision === result.decision ? 'filled' : 'terminal', observed.at);
+		const until = Date.parse(ask.observe_until ?? '') + OBSERVE_GRACE_MS;
+		if (observed?.kind === 'unknown') return at('result_unknown', observed.at);
+		if (now >= until) return at('result_unknown', new Date(until).toISOString());
+		return at('sent', null);
+	}
 	return at('answered', null);
+}
+
+/** Codex allowed after its turn ended: its Stop came while the request waited, so its mark counts
+ *  even when written after the hook took the allow and called the ask filled. Not before the hook
+ *  handed the allow back. */
+function allowedLate({ ask, result, stopped }: Pick<AskFiles, 'ask' | 'result' | 'stopped'>): boolean {
+	return ask.client === 'codex' && ask.kind === 'permission' && result?.kind === 'answer' && result.decision === 'allow' && (ask.outcome === 'allowed' || (ask.outcome === 'filled' && stopped));
 }
 
 /** Every ask in the folder that can be read, oldest first; a folder that does not exist holds none.
  *  `executionWaitMs` is how long a tool Codex was allowed after its turn ended is waited for. */
-export function readAsks(dir: string, { now = Date.now(), executionWaitMs = ASK_RETENTION_MS }: { now?: number; executionWaitMs?: number } = {}): BoardAsk[] {
+export function readAsks(dir: string, { now = Date.now(), executionWaitMs = ASK_EXECUTION_WAIT_MS }: { now?: number; executionWaitMs?: number } = {}): BoardAsk[] {
 	let names: string[];
 	try {
 		names = readdirSync(dir);
@@ -210,7 +218,9 @@ export function readAsks(dir: string, { now = Date.now(), executionWaitMs = ASK_
 		const late = result?.kind === 'timeout' ? (file('.late.json') as LateFile | null) : null;
 		const permission = ask.kind === 'permission';
 		const answered = result?.kind === 'answer' ? result : null;
-		const notified = permission && ask.outcome === 'allowed' ? (file('.notified.json') as NotifiedFile | null) : null;
+		const stopped = permission && file('.stopped.json') !== null;
+		const afterTurn = allowedLate({ ask, result, stopped });
+		const notified = afterTurn ? (file('.notified.json') as NotifiedFile | null) : null;
 		const relayed = late ?? notified;
 		const files: AskFiles = {
 			ask,
@@ -218,8 +228,8 @@ export function readAsks(dir: string, { now = Date.now(), executionWaitMs = ASK_
 			late,
 			resend: relayed && !relayed.outcome ? (file('.resend.json') as ResendFile | null) : null,
 			observed: permission && ask.outcome === 'sent' ? (file('.observed.json') as ObservedFile | null) : null,
-			stopped: permission && file('.stopped.json') !== null,
-			executed: permission && ask.outcome === 'allowed' ? (file('.executed.json') as ExecutedFile | null) : null,
+			stopped,
+			executed: afterTurn ? (file('.executed.json') as ExecutedFile | null) : null,
 			notified
 		};
 		const { state, endedAt } = standing(files, now, executionWaitMs);
@@ -540,7 +550,7 @@ export async function answerPermission(board: Board, id: string, decision: Permi
 	try {
 		taken = ask.state === 'waiting' && takePermission(config.asksDir, id, decision, reason);
 		late = !taken && findAsk(board, id)?.state === 'timed_out';
-		if (late) taken = claim(config.asksDir, `${id}.late.json`, { kind: 'answer', answers: {}, picks: null, decision, reason: reason ?? '', at: new Date().toISOString() } satisfies LateFile);
+		if (late) taken = claim(config.asksDir, `${id}.late.json`, { kind: 'answer', decision, reason: reason ?? '', at: new Date().toISOString() } satisfies LateFile);
 	} catch (error) {
 		return { status: 500, body: { status: 'error', reason: `答案寫不進共用目錄：${(error as Error).message}`, logError: null } };
 	}
@@ -568,8 +578,9 @@ export async function notifyExecuted(board: Board, now = Date.now()): Promise<vo
 		} catch {
 			continue;
 		}
+		// Set before the send: the refresh it ends with may come back here before it returns.
+		notifyTried.set(ask.id, now);
 		const sent = await relayFor(board, ask, relayMessage(ask), name);
-		if (sent.body.status === 'error') notifyTried.set(ask.id, now);
-		else notifyTried.delete(ask.id);
+		if (sent.body.status !== 'error') notifyTried.delete(ask.id);
 	}
 }

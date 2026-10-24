@@ -86,7 +86,7 @@ async function openAgent(tab: Tab, session: string) {
 	await tab.until(`new URLSearchParams(location.search).get('agent') === '${session}'`, `the page of ${session}`);
 }
 const card = (id: string) => `document.querySelector('.detail [data-ask="${id}"]')`;
-const text = (id: string) => `${card(id)}?.innerText ?? ''`;
+const text = (id: string) => `(${card(id)}?.innerText ?? '')`;
 const press = (id: string, label: string) => `[...${card(id)}.querySelectorAll('button')].find((b) => b.innerText === ${JSON.stringify(label)}).click()`;
 
 test.skipIf(!CHROME)('Claude\'s permission request shows its tool and command; a deny with a reason goes back through the hook', async () => {

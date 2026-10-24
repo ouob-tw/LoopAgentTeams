@@ -304,13 +304,14 @@ def permission_output(decision, reason=None, interrupt=False):
 
 def tool_result_decision(item):
     """Whether Claude ran the tool the transcript's tool result is for: `allow`, or `deny` when the
-    use was rejected in the terminal, denied by the board, or interrupted."""
+    use was rejected in the terminal, denied by the board, or interrupted. A refusal is an error
+    result; a tool's own output that only quotes such text is not one."""
     content = item.get('content')
     if isinstance(content, list):
         content = '\n'.join(part.get('text', '') for part in content
                             if isinstance(part, dict) and isinstance(part.get('text'), str))
     text = content if isinstance(content, str) else ''
-    if text.startswith(REJECTED_PREFIX) or DENY_MESSAGE in text:
+    if item.get('is_error') is True and (text.startswith(REJECTED_PREFIX) or DENY_MESSAGE in text):
         return 'deny'
     return 'allow'
 
@@ -445,7 +446,8 @@ def ask_permission(payload, env, client, clock, sleep):
     if client == 'codex':
         stopped = (folder / f'{ask["id"]}.stopped.json').exists()
         outcome = 'allowed' if stopped and decision == 'allow' else 'filled'
-        # Written before the decision goes out, so its PostToolUse finds the ask allowed.
+        # Written before the decision goes out. A Stop that saw the ask still waiting may write its
+        # mark only after this: the board then reads the ask as allowed after the turn all the same.
         write_whole(ask_path, {**ask, 'outcome': outcome, 'outcome_at': iso(clock())})
     else:
         # Claude's dialog may have been answered first: what it did is watched for after this.
@@ -488,7 +490,7 @@ def run_observe(ask_path, clock=time.time, sleep=time.sleep):
 # ---------------------------------------------------------------- Codex turn end and tool runs
 
 def codex_asks(folder, session_id):
-    """Codex's permission asks of this session, with their paths: (ask, path)."""
+    """Codex's permission asks of this session."""
     try:
         names = os.listdir(folder)
     except OSError:
@@ -522,12 +524,15 @@ def same_input(asked, ran):
 
 
 def mark_executed(payload, env, clock):
-    """Codex's PostToolUse: the tool allowed on the board after the turn ended has run."""
+    """Codex's PostToolUse: the tool allowed on the board after the turn ended has run. The run
+    names no request, so every allowed request of the turn with the same tool and input counts,
+    in its turn or after it, seen run before or not: with two or more, which one ran is not
+    known, and those that outlived the turn are marked so."""
     session_id = payload.get('session_id')
     if not isinstance(session_id, str):
         return None
     folder = asks_dir(env)
-    matches = []
+    allowed = []
     for ask in codex_asks(folder, session_id):
         result = read_json(folder / f'{ask["id"]}.result.json')
         if ask.get('turn_id') == payload.get('turn_id') \
@@ -535,16 +540,15 @@ def mark_executed(payload, env, clock):
                 and isinstance(ask.get('tool_input'), dict) \
                 and same_input(ask['tool_input'], payload.get('tool_input')) \
                 and isinstance(result, dict) and result.get('kind') == 'answer' \
-                and result.get('decision') == 'allow' \
-                and (folder / f'{ask["id"]}.stopped.json').exists() \
-                and not (folder / f'{ask["id"]}.executed.json').exists():
-            matches.append(ask)
+                and result.get('decision') == 'allow':
+            allowed.append(ask)
     response = payload.get('tool_response')
     summary = response if isinstance(response, str) else json.dumps(response, ensure_ascii=False)
-    for ask in matches:
-        record = {'kind': 'executed', 'summary': summary[:2000]} if len(matches) == 1 \
-            else {'kind': 'ambiguous'}
-        claim(folder / f'{ask["id"]}.executed.json', {**record, 'at': iso(clock())})
+    record = {'kind': 'executed', 'summary': summary[:2000]} if len(allowed) == 1 \
+        else {'kind': 'ambiguous'}
+    for ask in allowed:
+        if (folder / f'{ask["id"]}.stopped.json').exists():
+            claim(folder / f'{ask["id"]}.executed.json', {**record, 'at': iso(clock())})
     return None
 
 

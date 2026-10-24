@@ -3,7 +3,7 @@ import { readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { isAbsolute, join } from 'node:path';
 import { parseModelOptions, type ModelOptions } from '../board/models.ts';
-import { ASK_RETENTION_MS } from '../board/board-asks.ts';
+import { ASK_EXECUTION_WAIT_MS } from '../board/board-asks.ts';
 import { codexMultiAuthDir } from './quota.ts';
 
 type Env = Record<string, string | undefined>;
@@ -198,8 +198,8 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		pausedDir: env.LAT_HCOM_PAUSED_DIR && isAbsolute(env.LAT_HCOM_PAUSED_DIR) ? env.LAT_HCOM_PAUSED_DIR : join(stateHome(env), 'lat/hcom-paused'),
 		// Next to the pause records; `hooks/board-ask.py` works it out the same way.
 		asksDir: env.LAT_BOARD_ASKS_DIR && isAbsolute(env.LAT_BOARD_ASKS_DIR) ? env.LAT_BOARD_ASKS_DIR : join(stateHome(env), 'lat/board-asks'),
+		askExecutionWaitMs: seconds(env.LAT_BOARD_ASK_EXECUTION_WAIT_SECONDS, ASK_EXECUTION_WAIT_MS),
 		// A Codex agent runs one short turn to reconnect.
-		askExecutionWaitMs: seconds(env.LAT_BOARD_ASK_EXECUTION_WAIT_SECONDS, ASK_RETENTION_MS),
 		unpauseWaitMs: seconds(env.LAT_BOARD_UNPAUSE_WAIT_SECONDS, 60_000),
 		fallbackMs,
 		debounceMs: 200,

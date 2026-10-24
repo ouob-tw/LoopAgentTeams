@@ -352,3 +352,42 @@ for (const [when, payload, client] of [
 		expect(readdirSync(dir).filter((name) => name !== 'heartbeat')).toEqual([]);
 	});
 }
+
+test('Codex: a run that could be an allow in the turn or the one after it is marked on neither as theirs', async () => {
+	// One identical command allowed in its turn, then another that outlived the turn.
+	const first = hook(codexInput(), { client: 'codex' });
+	const inTurn = await waitingAsk();
+	takePermission(dir, inTurn.id, 'allow');
+	await first;
+	const second = hook(codexInput(), { client: 'codex' });
+	const outlived = await waitingAsk(2);
+	await codexEvent('Stop');
+	takePermission(dir, outlived.id, 'allow');
+	await second;
+	await postToolUse();
+	expect(stateOf(outlived.id)!.state).toBe('allowed_unmatched');
+	expect(stateOf(inTurn.id)!.state).toBe('filled');
+});
+
+test('Codex: a Stop that saw the request waiting but marked it after the allow was taken still counts', async () => {
+	const run = hook(codexInput(), { client: 'codex' });
+	const ask = await waitingAsk();
+	takePermission(dir, ask.id, 'allow');
+	await run;
+	expect(stateOf(ask.id)!.state).toBe('filled');
+	// The Stop's mark, written late, as its process lost the race to the hook.
+	writeFileSync(join(dir, `${ask.id}.stopped.json`), JSON.stringify({ at: new Date().toISOString() }));
+	expect(stateOf(ask.id)!.state).toBe('allowed_waiting');
+	await postToolUse();
+	expect(stateOf(ask.id)!.state).toBe('executed');
+});
+
+test('a tool\'s own output that quotes the board\'s deny is not a denial: 已填回 for the allow', async () => {
+	writeFileSync(transcript, toolUse('toolu_1'));
+	const run = hook(claudeInput());
+	const ask = await waitingAsk();
+	takePermission(dir, ask.id, 'allow');
+	await run;
+	appendFileSync(transcript, toolResult('toolu_1', 'grep hit: 使用者在看板拒絕了這個操作。'));
+	expect((await until(() => stateOf(ask.id)!, (entry) => entry.state !== 'sent')).state).toBe('filled');
+});
