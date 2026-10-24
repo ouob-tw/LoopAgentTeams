@@ -295,3 +295,25 @@ test('the poll is faster only while an agent works through hcom: an Esc is seen 
 		await fast.cleanup();
 	}
 }, 40_000);
+
+test('a turn learned by a full read brings the pending slow poll forward, so an Esc right after is still seen within 5 s', async () => {
+	const fast = await startFixture({ env: { LAT_BOARD_STATUS_POLL_SECONDS: '5', LAT_BOARD_STATUS_WORKING_POLL_SECONDS: '1' } });
+	try {
+		const fastCookie = await fast.login();
+		setLists(fast, 'listening');
+		await fast.refresh(fastCookie);
+		const page = fast.watch(fastCookie);
+		await until(() => status(page.latest()) === 'idle', 5_000, 'the first snapshot');
+		// The slow tick is now pending, about 5 s away; a full read, not that tick, learns the turn.
+		setLists(fast, 'active', 'working');
+		await fast.refresh(fastCookie);
+		await until(() => status(page.latest()) === 'working', 2_000, 'the turn');
+		setLists(fast, 'active', 'idle');
+		const endedAt = Date.now();
+		await until(() => status(page.latest()) === 'idle', 5_000, 'the Esc');
+		expect(Date.now() - endedAt).toBeLessThan(4_000);
+		page.close();
+	} finally {
+		await fast.cleanup();
+	}
+}, 40_000);

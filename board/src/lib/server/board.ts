@@ -467,9 +467,11 @@ function createBoard(): Board {
 	let pollTimer: ReturnType<typeof setTimeout> | undefined;
 	let soonTimer: ReturnType<typeof setTimeout> | undefined;
 	let confirmTimer: ReturnType<typeof setTimeout> | undefined;
+	let pollDueAt = 0;
 
 	/** hcom says an agent works and Herdr says it is idle: read once more, a moment apart, to tell whether hcom is behind. */
 	function confirmLater(): void {
+		tickSooner();
 		if (closed || streams.size === 0 || !agentRoster.confirming()) return;
 		confirmTimer ??= setTimeout(() => {
 			confirmTimer = undefined;
@@ -531,12 +533,25 @@ function createBoard(): Board {
 	 *  may never report after an Esc, is seen and confirmed inside the 5 seconds. */
 	function scheduleTick(): void {
 		if (closed || streams.size === 0 || pollTimer) return;
-		const working = sources?.agents.some((agent) => agent.statusSource === 'hcom' && agent.status === 'working');
+		const delay = tickDelay();
+		pollDueAt = Date.now() + delay;
 		pollTimer = setTimeout(async () => {
 			pollTimer = undefined;
 			if (!polling) await pollStatus();
 			scheduleTick();
-		}, working ? Math.min(config.statusWorkingPollMs, config.statusPollMs) : config.statusPollMs);
+		}, delay);
+	}
+	const tickDelay = () =>
+		sources?.agents.some((agent) => agent.statusSource === 'hcom' && agent.status === 'working')
+			? Math.min(config.statusWorkingPollMs, config.statusPollMs)
+			: config.statusPollMs;
+	/** A tick waiting out the slow rhythm is brought forward when an agent turns out to be working. */
+	function tickSooner(): void {
+		if (pollTimer && pollDueAt - Date.now() > tickDelay()) {
+			clearTimeout(pollTimer);
+			pollTimer = undefined;
+			scheduleTick();
+		}
 	}
 
 	function refresh(): Promise<BoardSnapshot> {
