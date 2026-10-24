@@ -1406,12 +1406,13 @@ def keepalive_blocker(declaration, observation, now, busy=False):
         return 'screen-working'
     if not idle_prompt(observation):
         return 'prompt-not-empty'
-    if declaration.get('kind') == 'decision':
+    kind = declaration.get('kind')
+    if kind in ('decision', 'alarm'):
         if now - declaration['declared_at'] >= KEEPALIVE_DECISION_SECONDS:
-            return 'decision-over-3h'
+            return f'{kind}-over-3h'
         start, end = KEEPALIVE_QUIET_HOURS
         if start <= time.localtime(now).tm_hour < end:
-            return 'decision-quiet-hours'
+            return f'{kind}-quiet-hours'
     return None
 
 
@@ -2611,7 +2612,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None):
                 'actions': [], 'error': str(error),
             })
     own = states.setdefault(orchestrator, {})
-    own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 4,
+    own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5,
                                'claude_quota_resume': 1}
     own.pop('missing_since', None)
     stop_reason = None
