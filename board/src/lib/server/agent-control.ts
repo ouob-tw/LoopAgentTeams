@@ -65,7 +65,7 @@ async function attempt(
 	action: AgentActionKind,
 	text: string | null,
 	act: (agent: Agent) => Promise<{ route: AgentAction['route']; reason: string | null; text?: string }>
-): Promise<{ status: number; body: AgentActionResponse }> {
+): Promise<{ status: number; body: AgentActionResponse; gone: boolean }> {
 	const listed = await listedNow(board, agentId);
 	let status = 409;
 	let route: AgentAction['route'] = null;
@@ -101,18 +101,29 @@ async function attempt(
 		logError = (error as Error).message;
 	}
 	board.agentActed(agentId);
-	return { status, body: { ok: entry.ok, reason, entry, logError } };
+	// Read off Herdr's list just now: nothing done, and nothing will be.
+	const gone = 'reason' in listed && listed.reason === AGENT_GONE_REASON;
+	return { status, body: { ok: entry.ok, reason, entry, logError }, gone };
 }
 
+/** What a relay came to: `sent`, typed into its input box; `gone`, Herdr's list read now no
+ *  longer has it, whatever hcom's says, so it never will be; `failed`, not sent this time, and
+ *  may be tried again (a list that cannot be read, a command that failed). */
+export type RelayOutcome = 'sent' | 'gone' | 'failed';
+
 /**
- * Type the text into the agent's input box and submit it: through hcom's input command when the
- * agent is linked, through `herdr agent prompt` when it is not. Refused while hcom cannot tell
- * which. Queued with everything else sent to the same session, controllers' sends included.
+ * Pass text on to the agent as the user's own words: typed into its input box through hcom's input
+ * command when the agent is linked, through `herdr agent prompt` when it is not; refused while hcom
+ * cannot tell which. Herdr's list is read again first and decides whether it can reach the agent at
+ * all. Queued with everything else sent to the same session, controllers' sends included, and
+ * logged as `action` in its operation record. The one way the board passes something on to an
+ * agent: a send from its page, and an answer the board takes for it once its client stopped
+ * waiting.
  */
-export function sendToAgent(board: Board, agentId: string, rawText: string) {
+export function relayToAgent(board: Board, agentId: string, action: AgentActionKind, rawText: string) {
 	const text = typedText(rawText);
-	return queued(agentId, () =>
-		attempt(board, agentId, 'send', text, async (agent) => {
+	return queued(agentId, async () => {
+		const done = await attempt(board, agentId, action, text, async (agent) => {
 			// A paused one is typed into through Herdr, whether or not hcom's list can be read now.
 			const paused = agent.hcom === 'paused' || (agent.hcom === 'unknown' && readPauses(board.config.pausedDir).has(agent.id!));
 			if (agent.hcom === 'unknown' && !paused) return { route: null, reason: AGENT_HCOM_UNKNOWN_REASON };
@@ -120,8 +131,16 @@ export function sendToAgent(board: Board, agentId: string, rawText: string) {
 			// Herdr takes the argument after the pane as the text, whatever it looks like.
 			const act = await agentCommand(board.config, ['prompt', agent.herdr.pane, text]);
 			return { route: 'herdr', reason: act.ok ? null : herdrReason(act, 'send') };
-		})
-	);
+		});
+		const outcome: RelayOutcome = done.body.ok ? 'sent' : done.gone ? 'gone' : 'failed';
+		return { status: done.status, body: done.body, outcome };
+	});
+}
+
+/** Type the text the user wrote on the agent's page into its input box and submit it. */
+export async function sendToAgent(board: Board, agentId: string, rawText: string) {
+	const { status, body } = await relayToAgent(board, agentId, 'send', rawText);
+	return { status, body };
 }
 
 /** Press Esc in the agent's pane through Herdr, linked to hcom or not, and also while hcom cannot

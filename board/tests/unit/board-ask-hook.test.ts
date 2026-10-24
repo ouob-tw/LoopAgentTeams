@@ -107,12 +107,25 @@ test('an answer that leaves a question out is not handed back', async () => {
 	expect([code, stdout]).toEqual([0, '']);
 });
 
-test('the deadline with no answer takes the ask as timed out and leaves the client its menu', async () => {
+/** What the hook prints when its wait runs out: deny, and the turn ends with a reason that says
+ *  the answer comes from the board as a message. */
+function expectStopped(stdout: string) {
+	const output = JSON.parse(stdout);
+	expect(output).toMatchObject({ continue: false, hookSpecificOutput: { hookEventName: 'PreToolUse', permissionDecision: 'deny' } });
+	for (const said of [output.stopReason, output.hookSpecificOutput.permissionDecisionReason]) {
+		expect(said).toContain('看板');
+		expect(said).toContain('訊息');
+	}
+}
+
+test('the deadline with no answer takes the ask as timed out and ends the turn', async () => {
 	const run = hook(input(), { LAT_BOARD_ASK_WAIT_SECONDS: '0.5' });
 	const ask = await waitingAsk();
 	const { code, stdout } = await run.done;
-	expect([code, stdout]).toEqual([0, '']);
+	expect(code).toBe(0);
+	expectStopped(stdout);
 	expect(readAsks(dir)[0]).toMatchObject({ id: ask.id, state: 'timed_out' });
+	expect(JSON.parse(readFileSync(join(dir, `${ask.id}.result.json`), 'utf8')).kind).toBe('timeout');
 	// The board's answer comes too late: the result is taken.
 	expect(takeAsk(dir, ask.id, { 'Pick a color?': 'Red', 'Pick fruits?': 'Apple' })).toBe(false);
 });
@@ -170,7 +183,7 @@ test('of two answers written at once only one takes the ask', async () => {
 	expect(readdirSync(dir).filter((name) => name.endsWith('.tmp'))).toEqual([]);
 });
 
-test('an answer and the deadline at the same moment: either handed back or timed out, never both', async () => {
+test('an answer and the deadline at the same moment: either handed back or the turn ended, never both', async () => {
 	for (let round = 0; round < 3; round++) {
 		const run = hook(input(), { LAT_BOARD_ASK_WAIT_SECONDS: '0.6' });
 		const ask = await waitingAsk();
@@ -179,7 +192,10 @@ test('an answer and the deadline at the same moment: either handed back or timed
 		const { stdout } = await run.done;
 		const state = readAsks(dir).find((entry) => entry.id === ask.id)!.state;
 		if (taken) expect([state, JSON.parse(stdout).hookSpecificOutput.permissionDecision]).toEqual(['filled', 'allow']);
-		else expect([state, stdout]).toEqual(['timed_out', '']);
+		else {
+			expect(state).toBe('timed_out');
+			expectStopped(stdout);
+		}
 		rmSync(join(dir, `${ask.id}.json`));
 		rmSync(join(dir, `${ask.id}.result.json`));
 	}

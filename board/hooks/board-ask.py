@@ -3,7 +3,8 @@
 
 The hook (`hook`, Claude's PreToolUse for AskUserQuestion) writes a board ask to the shared
 folder, waits in place for the board's answer and hands it back as `allow` with `updatedInput`.
-Anything that goes wrong gives no decision, so the client shows its own menu as before.
+At its deadline it ends the turn instead (`deny` with `continue: false`). Anything that goes
+wrong gives no decision, so the client shows its own menu as before.
 `install` and `uninstall` add or remove the hook in Claude's settings.
 
 The shared folder, one board ask per file (all 0600):
@@ -12,7 +13,10 @@ The shared folder, one board ask per file (all 0600):
   writes it again with `outcome` (`filled` or `timed_out`) before it ends.
 - `<id>.result.json`: who took the ask, written once: a temporary file hard-linked into place,
   which fails when the file already exists. The board writes `{"kind": "answer", ...}`, the hook
-  at its deadline `{"kind": "timeout", ...}`; whoever links first wins.
+  at its deadline `{"kind": "timeout", ...}`; whoever links first wins. The board also writes
+  `{"kind": "interrupted", ...}` once the hook's process is gone with nothing taken (Esc).
+- `<id>.late.json`: an answer to a timed-out ask, which the board sends as a message: written once
+  by the board the same way, then again whole with `outcome` (`relayed` or `gone`).
 - `heartbeat`: the board touches it every 30 seconds; older than 90 seconds means no board runs.
 
 Only the standard library; run with `uv run --no-project python`.
@@ -39,6 +43,8 @@ WAIT_SECONDS = 600
 HOOK_TIMEOUT_SECONDS = 660
 POLL_SECONDS = 0.2
 STATUS_MESSAGE = '正在等看板作答，按 Esc 可中斷改在終端機回答'
+# Shown in the terminal and given to the model when the wait runs out and the turn ends.
+STOP_REASON = '看板作答等太久，先結束這一回合；使用者會在看板上回答，答案會以訊息傳給你，收到前不要自己猜答案。'
 
 
 def asks_dir(env):
@@ -174,7 +180,12 @@ def run_hook(text, env, clock=time.time, sleep=time.sleep):
         result = read_json(result_path)
     if result is None and claim(result_path, {'kind': 'timeout', 'at': iso(clock())}):
         write_whole(ask_path, {**ask, 'outcome': 'timed_out', 'outcome_at': iso(clock())})
-        return None
+        # The turn ends; a later answer on the board comes as a message.
+        return {'continue': False, 'stopReason': STOP_REASON, 'hookSpecificOutput': {
+            'hookEventName': 'PreToolUse',
+            'permissionDecision': 'deny',
+            'permissionDecisionReason': STOP_REASON,
+        }}
     # Taken by the board: its answer counts even when it landed at the deadline.
     while result is None:
         sleep(POLL_SECONDS)

@@ -25,7 +25,7 @@ import { linkedAgain, settlePauses } from './paused.ts';
 import { EMPTY_CLOSED } from '../board/closed-agents.ts';
 import { helperDirectories } from './sources.ts';
 import { addFile, createSourceWatcher, type WatchTargets } from './watch.ts';
-import { HEARTBEAT_MS as ASK_HEARTBEAT_MS, isAskFile, readAsks, touchHeartbeat } from './board-asks.ts';
+import { HEARTBEAT_MS as ASK_HEARTBEAT_MS, isAskFile, readAsks, settleAsks, touchHeartbeat } from './board-asks.ts';
 import type { BoardAsk } from '../board/board-asks.ts';
 import type { QuotaSnapshot } from '../board/quota.ts';
 import { createQuotaPoller, readClaudeQuota, readCodexQuota } from './quota.ts';
@@ -346,6 +346,7 @@ function createBoard(): Board {
 			// The last ones read stand in; the sent log's own views say why it cannot be read.
 		}
 		const paused = await settlePauses(config, agents, herdrAgents, listedAt);
+		settleAsks(config.asksDir);
 		lastAsks = readAsks(config.asksDir);
 		const allAgents = agentRoster.update(herdrAgents, agents, new Set(lastActive.map((binding) => binding.session_id)), lastSwitches, paused);
 		herdrRead ||= herdrAgents.ok;

@@ -1,13 +1,18 @@
 // The board's side of the shared board-ask folder (format in `hooks/board-ask.py`): reading the
-// asks the hook wrote, touching the heartbeat that tells the hook a board runs, and taking an ask
-// with the user's answer, which only one writer can do.
+// asks the hook wrote, touching the heartbeat that tells the hook a board runs, taking an ask with
+// the user's answer, which only one writer can do, sending an answer that came after the hook's
+// deadline as a message, marking asks whose hook was ended in the terminal, and removing asks
+// 7 days after they ended.
 import { randomUUID } from 'node:crypto';
-import { linkSync, mkdirSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { linkSync, mkdirSync, readdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import type { AgentAction } from '../board/agent-actions.ts';
 import {
 	answersText,
+	ASK_RETENTION_MS,
 	ASK_TAKEN_REASON,
+	ENDED_ASK_STATES,
+	lateAnswerMessage,
 	pickComplete,
 	pickText,
 	type AskAnswerResponse,
@@ -16,6 +21,7 @@ import {
 	type BoardAsk,
 	type BoardAskState
 } from '../board/board-asks.ts';
+import { relayToAgent } from './agent-control.ts';
 import type { Board } from './board.ts';
 import { appendSent } from './sent-log.ts';
 
@@ -37,10 +43,25 @@ interface AskFile {
 	tool_input: { questions: AskQuestion[] };
 	created_at: string;
 	deadline_at: string;
+	hook_pid?: number;
 	outcome: 'filled' | 'timed_out' | null;
+	outcome_at?: string | null;
 }
 
-type ResultFile = { kind: 'answer'; answers: Record<string, string>; picks?: AskPick[] } | { kind: 'timeout' };
+type ResultFile =
+	| { kind: 'answer'; answers: Record<string, string>; picks?: AskPick[]; at?: string }
+	| { kind: 'timeout'; at?: string }
+	| { kind: 'interrupted'; at: string };
+
+/** An answer to a timed-out ask: taken once, then written again with what its message came to. */
+interface LateFile {
+	kind: 'answer';
+	answers: Record<string, string>;
+	picks: AskPick[] | null;
+	at: string;
+	outcome?: 'relayed' | 'gone';
+	outcome_at?: string;
+}
 
 function isAsk(value: unknown): value is AskFile {
 	const ask = value as Partial<AskFile> | null;
@@ -63,10 +84,18 @@ function readJson(path: string): unknown {
 	}
 }
 
-function stateOf(ask: AskFile, result: ResultFile | null): BoardAskState {
-	if (result?.kind === 'timeout') return 'timed_out';
+function stateOf(ask: AskFile, result: ResultFile | null, late: LateFile | null): BoardAskState {
+	if (result?.kind === 'interrupted') return 'interrupted';
+	if (result?.kind === 'timeout') return late ? (late.outcome ?? 'relaying') : 'timed_out';
 	if (result?.kind === 'answer') return ask.outcome === 'filled' ? 'filled' : 'answered';
 	return 'waiting';
+}
+
+function endedAt(state: BoardAskState, ask: AskFile, result: ResultFile | null, late: LateFile | null): string | null {
+	if (!ENDED_ASK_STATES.has(state)) return null;
+	if (state === 'filled') return ask.outcome_at ?? result?.at ?? ask.created_at;
+	if (state === 'interrupted') return result?.at ?? ask.created_at;
+	return late?.outcome_at ?? late?.at ?? ask.created_at;
 }
 
 /** Every ask in the folder that can be read, oldest first; a folder that does not exist holds none. */
@@ -83,6 +112,9 @@ export function readAsks(dir: string): BoardAsk[] {
 		const ask = readJson(join(dir, name));
 		if (!isAsk(ask) || `${ask.id}.json` !== name) continue;
 		const result = readJson(join(dir, `${ask.id}.result.json`)) as ResultFile | null;
+		const late = result?.kind === 'timeout' ? (readJson(join(dir, `${ask.id}.late.json`)) as LateFile | null) : null;
+		const state = stateOf(ask, result, late);
+		const taken = result?.kind === 'answer' ? result : late;
 		asks.push({
 			id: ask.id,
 			sessionId: ask.session_id,
@@ -90,9 +122,10 @@ export function readAsks(dir: string): BoardAsk[] {
 			questions: ask.tool_input.questions,
 			createdAt: ask.created_at,
 			deadlineAt: ask.deadline_at,
-			state: stateOf(ask, result),
-			answers: result?.kind === 'answer' ? result.answers : null,
-			picks: result?.kind === 'answer' && Array.isArray(result.picks) ? result.picks : null
+			state,
+			endedAt: endedAt(state, ask, result, late),
+			answers: taken ? taken.answers : null,
+			picks: taken && Array.isArray(taken.picks) ? taken.picks : null
 		});
 	}
 	return asks.sort((a, b) => Date.parse(a.createdAt) - Date.parse(b.createdAt));
@@ -109,16 +142,13 @@ export function touchHeartbeat(dir: string): void {
 	}
 }
 
-/** Take the ask with these answers, and the picks they came from for the board to show: true when
- *  this call did, false when someone (another device, or the hook at its deadline) took it first.
- *  The file is written whole and then linked into place, which fails when it exists. */
-export function takeAsk(dir: string, id: string, answers: Record<string, string>, picks: AskPick[] | null = null): boolean {
-	if (!safeId(id)) throw new Error(`ask ID ${id} 不能當檔名`);
-	const result = join(dir, `${id}.result.json`);
-	const temporary = join(dir, `.${id}.result.${randomUUID()}.tmp`);
-	writeFileSync(temporary, JSON.stringify({ kind: 'answer', answers, picks, at: new Date().toISOString() }) + '\n', { mode: 0o600 });
+/** Write the record to the file only if nobody has: true when this call did. The record is
+ *  written whole and then linked into place, which fails when the file exists. */
+function claim(dir: string, name: string, record: object): boolean {
+	const temporary = join(dir, `.${name}.${randomUUID()}.tmp`);
+	writeFileSync(temporary, JSON.stringify(record) + '\n', { mode: 0o600 });
 	try {
-		linkSync(temporary, result);
+		linkSync(temporary, join(dir, name));
 		return true;
 	} catch (error) {
 		if ((error as NodeJS.ErrnoException).code === 'EEXIST') return false;
@@ -128,10 +158,104 @@ export function takeAsk(dir: string, id: string, answers: Record<string, string>
 	}
 }
 
+/** The record as the file's whole content: a temporary file renamed into place. */
+function writeWhole(dir: string, name: string, record: object): void {
+	const temporary = join(dir, `.${name}.${randomUUID()}.tmp`);
+	writeFileSync(temporary, JSON.stringify(record) + '\n', { mode: 0o600 });
+	renameSync(temporary, join(dir, name));
+}
+
+/** Take the ask with these answers, and the picks they came from for the board to show: true when
+ *  this call did, false when someone (another device, or the hook at its deadline) took it first. */
+export function takeAsk(dir: string, id: string, answers: Record<string, string>, picks: AskPick[] | null = null): boolean {
+	if (!safeId(id)) throw new Error(`ask ID ${id} 不能當檔名`);
+	return claim(dir, `${id}.result.json`, { kind: 'answer', answers, picks, at: new Date().toISOString() });
+}
+
+/** Whether a process with this ID still runs; a zombie, ended but not yet reaped, does not. */
+function running(pid: number): boolean {
+	try {
+		process.kill(pid, 0);
+	} catch (error) {
+		return (error as NodeJS.ErrnoException).code === 'EPERM';
+	}
+	try {
+		// `/proc/<pid>/stat`: `<pid> (<name>) <state> …`; the name may hold spaces and parentheses.
+		const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+		return stat.slice(stat.lastIndexOf(')') + 2, stat.lastIndexOf(')') + 3) !== 'Z';
+	} catch {
+		return true;
+	}
+}
+
 /**
- * Answer a waiting board ask with the user's picks, one per question in order. Taken or not, the
- * attempt goes in the asking agent's operation record as 看板提問; a request that is not an answer
- * to the ask is refused before that.
+ * Bring the folder up to date before it is read: an ask whose hook process is gone with nothing
+ * taken was ended in the terminal (Esc, or the agent closed), so it is taken as interrupted and
+ * takes no answer; an ask that ended at least 7 days ago is removed with its files.
+ */
+export function settleAsks(dir: string, now = Date.now()): void {
+	for (const ask of readAsks(dir)) {
+		if (ask.endedAt !== null && now - Date.parse(ask.endedAt) >= ASK_RETENTION_MS) {
+			for (const suffix of ['.json', '.result.json', '.late.json']) rmSync(join(dir, `${ask.id}${suffix}`), { force: true });
+			continue;
+		}
+		if (ask.state !== 'waiting') continue;
+		const pid = (readJson(join(dir, `${ask.id}.json`)) as AskFile | null)?.hook_pid;
+		if (!Number.isInteger(pid) || running(pid!)) continue;
+		try {
+			// Lost to an answer or the deadline that came first: that one stands.
+			claim(dir, `${ask.id}.result.json`, { kind: 'interrupted', at: new Date(now).toISOString() });
+		} catch {
+			// Tried again at the next read.
+		}
+	}
+}
+
+/** Late answers this board is sending now: a late file without an outcome that is not one of them
+ *  was left by a board that stopped while sending, and may be taken again. */
+const relaying = new Set<string>();
+
+/** Take a timed-out ask with an answer to send as a message: true when this call did. */
+function takeLate(dir: string, id: string, answers: Record<string, string>, picks: AskPick[]): boolean {
+	const name = `${id}.late.json`;
+	const record: LateFile = { kind: 'answer', answers, picks, at: new Date().toISOString() };
+	if (claim(dir, name, record)) return true;
+	const left = readJson(join(dir, name)) as LateFile | null;
+	if (left?.outcome || relaying.has(id)) return false;
+	rmSync(join(dir, name), { force: true });
+	return claim(dir, name, record);
+}
+
+/**
+ * Send an answer to a timed-out ask as a message, through the same relay as any text for the agent.
+ * Taken once first, so of two devices only one sends. Sent, or the agent read off Herdr's list, the
+ * ask is over; not sent this time, it is given up again so the user can retry.
+ */
+async function relayLate(board: Board, ask: BoardAsk, answers: Record<string, string>, picks: AskPick[]): Promise<{ status: number; body: AskAnswerResponse }> {
+	const dir = board.config.asksDir;
+	relaying.add(ask.id);
+	try {
+		const relayed = await relayToAgent(board, ask.sessionId, 'board-ask', lateAnswerMessage(answers));
+		const name = `${ask.id}.late.json`;
+		if (relayed.outcome === 'failed') rmSync(join(dir, name), { force: true });
+		else {
+			const taken = (readJson(join(dir, name)) as LateFile | null) ?? { kind: 'answer', answers, picks, at: new Date().toISOString() };
+			writeWhole(dir, name, { ...taken, outcome: relayed.outcome === 'sent' ? 'relayed' : 'gone', outcome_at: new Date().toISOString() });
+		}
+		const { reason, logError } = relayed.body;
+		if (relayed.outcome === 'sent') return { status: 200, body: { status: 'accepted', reason: null, logError } };
+		return { status: relayed.status, body: { status: relayed.outcome === 'gone' ? 'agent_gone' : 'error', reason, logError } };
+	} finally {
+		relaying.delete(ask.id);
+		void board.refresh();
+	}
+}
+
+/**
+ * Answer a board ask with the user's picks, one per question in order: handed to the hook while it
+ * waits, sent as a message once its wait ran out. Either way, taken or not, the attempt goes in the
+ * asking agent's operation record as 看板提問; a request that is not an answer to the ask is
+ * refused before that.
  */
 export async function answerAsk(board: Board, id: string, picks: AskPick[]): Promise<{ status: number; body: AskAnswerResponse }> {
 	const { config } = board;
@@ -145,11 +269,16 @@ export async function answerAsk(board: Board, id: string, picks: AskPick[]): Pro
 	}
 	const answers = Object.fromEntries(ask.questions.map((question, index) => [question.question, texts[index]!]));
 	let taken: boolean;
+	let late = false;
 	try {
 		taken = ask.state === 'waiting' && takeAsk(config.asksDir, id, answers, picks);
+		// The hook's wait ran out, now or before: the answer goes as a message.
+		late = !taken && readAsks(config.asksDir).find((candidate) => candidate.id === id)?.state === 'timed_out';
+		if (late) taken = takeLate(config.asksDir, id, answers, picks);
 	} catch (error) {
 		return { status: 500, body: { status: 'error', reason: `答案寫不進共用目錄：${(error as Error).message}`, logError: null } };
 	}
+	if (late && taken) return relayLate(board, ask, answers, picks);
 	const agent = (await board.current()).agents.find((candidate) => candidate.id === ask.sessionId);
 	const entry: AgentAction = {
 		id: randomUUID(),

@@ -2,7 +2,8 @@ import { launchChrome, type Browser, type Tab } from '../browser.ts';
 // A board ask from end to end in a real browser: the real hook asks (as Claude would run it) into
 // the test board's shared folder, the agent's page shows the card, the answer goes back through the
 // hook. Two browsers answering at once: one answer counts, the other is told someone answered.
-import { mkdirSync, writeFileSync } from 'node:fs';
+// Once the hook's wait ran out, the answer goes to the agent as a message instead.
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
@@ -20,13 +21,13 @@ const QUESTIONS = [
 ];
 
 /** The hook as Claude runs it for the agent of session `s-ask`, asking into the board's folder. */
-function ask(questions: object[]) {
+function ask(questions: object[], waitSeconds = '60') {
 	const child = Bun.spawn(['uv', 'run', '--no-project', 'python', HOOK, 'hook'], {
 		stdin: new TextEncoder().encode(
 			JSON.stringify({ session_id: 's-ask', cwd: '/work', hook_event_name: 'PreToolUse', tool_name: 'AskUserQuestion', tool_input: { questions }, tool_use_id: 'toolu_1' })
 		),
 		stdout: 'pipe',
-		env: { PATH: Bun.env.PATH ?? '', HOME: Bun.env.HOME ?? '', LAT_BOARD_ASKS_DIR: join(fixture.dir, 'board-asks'), HERDR_PANE_ID: 'wA:p-s-ask', LAT_BOARD_ASK_WAIT_SECONDS: '60' }
+		env: { PATH: Bun.env.PATH ?? '', HOME: Bun.env.HOME ?? '', LAT_BOARD_ASKS_DIR: join(fixture.dir, 'board-asks'), HERDR_PANE_ID: 'wA:p-s-ask', LAT_BOARD_ASK_WAIT_SECONDS: waitSeconds }
 	});
 	return Promise.all([child.exited, new Response(child.stdout).text()]).then(([code, stdout]) => ({ code, stdout }));
 }
@@ -145,4 +146,32 @@ test('two browsers answering at once: one answer counts, the other is told someo
 	await loser.until(`document.querySelector('${card}').dataset.state === 'taken'`, 'the other to read 已有人作答');
 	expect(await loser.eval(`document.querySelector('${card}').innerText`)).toContain('已有人作答');
 	expect(await loser.eval(`document.querySelector('.dock .toasts').innerText`)).toContain('已有人作答');
+}, 60_000);
+
+test('after the deadline the card says an answer goes as a message; of two browsers one sends it, the other is told someone answered', async () => {
+	const stopped = ask([QUESTIONS[0]], '1');
+	const tabs = await Promise.all([open(), open()]);
+	expect(JSON.parse((await stopped).stdout).continue).toBe(false);
+	for (const tab of tabs) {
+		await tab.eval(`document.querySelector('[data-agent="s-ask"]').click()`);
+		await tab.until(`document.querySelector('${card}[data-state="timed_out"]')`, 'the timed-out card');
+		expect(await tab.eval(`document.querySelector('${card} [role="status"]').innerText`)).toBe('已逾時，作答會當訊息傳給它');
+	}
+	await choose(tabs[0], 0, 'Red');
+	await choose(tabs[1], 0, 'Blue');
+	await Promise.all(tabs.map((tab) => tab.eval(`document.querySelector('${sendButton}').click()`)));
+
+	const calls = join(fixture.dir, 'herdr-calls.jsonl');
+	const prompts = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call[1] === 'prompt') : []);
+	const settled = (tab: Tab) => tab.until(`['relayed', 'taken'].includes(document.querySelector('${card}').dataset.state)`, 'the card to settle');
+	await Promise.all(tabs.map(settled));
+	const winner = (await tabs[0].eval(`document.querySelector('${card}').dataset.state`)) === 'relayed' ? 0 : 1;
+	const loser = tabs[1 - winner];
+	await loser.until(`document.querySelector('${card}').dataset.state === 'taken'`, 'the other to read 已有人作答');
+	expect(await loser.eval(`document.querySelector('${card}').innerText`)).toContain('已有人作答');
+	expect(await tabs[winner].eval(`document.querySelector('${card} [role="status"]').innerText`)).toBe('已傳話');
+	const sent = prompts();
+	expect(sent).toHaveLength(1);
+	expect(sent[0][3]).toContain(`回答：${winner === 0 ? 'Red' : 'Blue'}`);
+	expect(sent[0][3]).toContain('問題：Pick a color?');
 }, 60_000);

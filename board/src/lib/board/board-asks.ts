@@ -19,16 +19,33 @@ export interface AskQuestion {
 /**
  * Where a board ask stands: `waiting` for an answer; `answered`, the board's answer taken but the
  * hook has not handed it back yet; `filled`, handed back to the client; `timed_out`, the hook's
- * wait ran out first.
+ * wait ran out first and ended the turn, so an answer now goes as a message; `relaying`, such an
+ * answer taken and being sent; `relayed`, sent as a message; `gone`, its agent no longer in Herdr's
+ * list, so the answer went nowhere; `interrupted`, the hook's process ended with nothing taken
+ * (Esc in the terminal, or the agent closed).
  */
-export type BoardAskState = 'waiting' | 'answered' | 'filled' | 'timed_out';
+export type BoardAskState = 'waiting' | 'answered' | 'filled' | 'timed_out' | 'relaying' | 'relayed' | 'gone' | 'interrupted';
 
 export const BOARD_ASK_STATE_TEXT: Record<BoardAskState, string> = {
 	waiting: '等你回答',
 	answered: '已送出，等 Agent 接收',
 	filled: '已填回',
-	timed_out: '已逾時'
+	timed_out: '已逾時，作答會當訊息傳給它',
+	relaying: '傳話中',
+	relayed: '已傳話',
+	gone: 'Agent 已不在，無法送出',
+	interrupted: '已在終端機中斷'
 };
+
+/** The states an ask is over in: nothing more happens to it, and it is removed 7 days after. */
+export const ENDED_ASK_STATES: ReadonlySet<BoardAskState> = new Set(['filled', 'relayed', 'gone', 'interrupted']);
+
+/** How long an ended ask is kept, its files and its card; its operation record keeps its own 30 days. */
+export const ASK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;
+
+/** Whether the board takes an answer to it: in place while the hook waits, as a message once the
+ *  wait ran out. */
+export const askAnswerable = (state: BoardAskState) => state === 'waiting' || state === 'timed_out';
 
 /** What the status shows for an agent with a board ask waiting, whatever hcom or Herdr says. */
 export const ASKING_STATUS_TEXT = '等你回答';
@@ -43,6 +60,8 @@ export interface BoardAsk {
 	/** When the hook stops waiting. */
 	deadlineAt: string;
 	state: BoardAskState;
+	/** When it ended (see `ENDED_ASK_STATES`); null while it has not. */
+	endedAt: string | null;
 	/** The answers by question text, once taken; null before. */
 	answers: Record<string, string> | null;
 	/** What the board's answer picked, by question in order: the options the answers name cannot
@@ -88,8 +107,16 @@ export function answersText(answers: Record<string, string>): string {
 		.join('\n');
 }
 
-/** How the server answers an attempt to answer a board ask. */
-export type AskAnswerStatus = 'accepted' | 'taken' | 'invalid' | 'gone' | 'error';
+/** The message an answer to a timed-out ask is sent as: it starts with what it answers, as the
+ *  agent may be doing something else by then. */
+export function lateAnswerMessage(answers: Record<string, string>): string {
+	const lines = Object.entries(answers).flatMap(([question, answer]) => [`問題：${question}`, `回答：${answer}`]);
+	return ['這是你先前用選單問的問題的回答：那時等看板作答等太久已逾時，使用者後來在看板上作答了。', ...lines].join('\n');
+}
+
+/** How the server answers an attempt to answer a board ask: `accepted`, handed to the hook or sent
+ *  as a message; `agent_gone`, its agent is no longer in Herdr's list, so nothing was sent. */
+export type AskAnswerStatus = 'accepted' | 'taken' | 'invalid' | 'gone' | 'agent_gone' | 'error';
 
 export interface AskAnswerResponse {
 	status: AskAnswerStatus;
