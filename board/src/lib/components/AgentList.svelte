@@ -64,6 +64,10 @@
 	/** How far past its workspace a dragged card may go before it is outside it. */
 	const DRAG_SLOP_PX = 8;
 	const DRAG_SIDE_SLOP_PX = 40;
+	/** A dragged card within this far of the list's top or bottom edge scrolls it, faster the nearer. */
+	const SCROLL_EDGE_PX = 48;
+	const SCROLL_MAX_PX = 24;
+	const SCROLL_TICK_MS = 16;
 
 	/** Cards whose tab is being moved or renamed. */
 	let busy = $state<Record<string, true>>({});
@@ -73,12 +77,28 @@
 		startY: number;
 		x: number;
 		y: number;
+		/** How far the card is moved from its place: with the pointer and the list's scrolling, but never past the list's own ends, which it would otherwise grow. */
+		offset: number;
 		/** The card under the pointer and where its tab would go; null over the card's own tab. */
 		over: { key: string; tab: string; after: boolean } | null;
 		refused: boolean;
 	} | null>(null);
-	/** Where the dragged card's workspace and its cards were when the drag started. */
-	let dragFrame: { cards: Agent[]; index: number; bottoms: number[]; box: DOMRect } | null = null;
+	/** Where the dragged card's workspace and its cards were when the drag started, and what scrolls
+	 *  the list, from how far it was scrolled then. */
+	let dragFrame: {
+		cards: Agent[];
+		index: number;
+		bottoms: number[];
+		box: DOMRect;
+		scroller: Element;
+		scrolled: number;
+		/** How far up and down the dragged card may move before it would reach past the scroller's content. */
+		reach: { up: number; down: number };
+		/** The pointer's last place, which a scroll under it moves the drop target for. */
+		x: number;
+		y: number;
+	} | null = null;
+	let scrolling: ReturnType<typeof setTimeout> | null = null;
 	/** The card whose menu is open, and where. */
 	let menu = $state<{ agent: Agent; x: number; y: number } | null>(null);
 	let menuBox = $state<HTMLElement>();
@@ -88,6 +108,29 @@
 	/** Set when a long press opened the menu, so the click that ends it does not open the agent. */
 	let pressed = false;
 
+	/** What scrolls the list: its nearest ancestor with a scrollbar of its own, else the page. */
+	function scrollerOf(from: Element): Element {
+		for (let at = from.parentElement; at; at = at.parentElement) {
+			const { overflowY } = getComputedStyle(at);
+			if ((overflowY === 'auto' || overflowY === 'scroll') && at.scrollHeight > at.clientHeight) return at;
+		}
+		return document.scrollingElement ?? document.documentElement;
+	}
+
+	/** The scroller's own top and bottom on the screen; the page's are the window's. */
+	function scrollBox(scroller: Element) {
+		const page = scroller === document.scrollingElement || scroller === document.documentElement;
+		return page ? { top: 0, bottom: innerHeight } : scroller.getBoundingClientRect();
+	}
+
+	/** The top and bottom of what the scroller shows on the screen, a fixed command line left out. */
+	function visibleEdges(scroller: Element) {
+		const box = scrollBox(scroller);
+		const dock = document.querySelector('.dock');
+		const covered = dock && getComputedStyle(dock).position === 'fixed' ? dock.getBoundingClientRect().top : Infinity;
+		return { top: Math.max(box.top, 0), bottom: Math.min(box.bottom, innerHeight, covered) };
+	}
+
 	function grab(event: PointerEvent, agent: Agent, cards: Agent[]) {
 		if (event.button !== 0 || busy[keyOf(agent)]) return;
 		event.preventDefault();
@@ -95,21 +138,31 @@
 		const handle = event.currentTarget as HTMLElement;
 		handle.setPointerCapture(event.pointerId);
 		const group = handle.closest('.group')!;
+		const scroller = scrollerOf(group);
+		const card = handle.closest('[data-card]')!.getBoundingClientRect();
+		const top = card.top - scrollBox(scroller).top + scroller.scrollTop;
 		dragFrame = {
 			cards,
 			index: cards.indexOf(agent),
 			bottoms: [...group.querySelectorAll('[data-card]')].map((card) => card.getBoundingClientRect().bottom),
-			box: group.getBoundingClientRect()
+			box: group.getBoundingClientRect(),
+			scroller,
+			scrolled: scroller.scrollTop,
+			reach: { up: -top, down: scroller.scrollHeight - top - card.height },
+			x: event.clientX,
+			y: event.clientY
 		};
 		menu = null;
 		explainer.dismiss();
-		drag = { key: keyOf(agent), startY: event.clientY, x: event.clientX, y: event.clientY, over: null, refused: false };
+		drag = { key: keyOf(agent), startY: event.clientY, x: event.clientX, y: event.clientY, offset: 0, over: null, refused: false };
 	}
 
-	function dragTo(event: PointerEvent) {
+	/** The card under the pointer and whether the pointer left the workspace, counting how far the list has scrolled since the drag began. */
+	function aim() {
 		if (!drag || !dragFrame) return;
-		const { cards, index, bottoms, box } = dragFrame;
-		const { clientX: x, clientY: y } = event;
+		const { cards, index, bottoms, box, scroller, scrolled, reach, x, y: screenY } = dragFrame;
+		const moved = scroller.scrollTop - scrolled;
+		const y = screenY + moved;
 		const refused =
 			y < box.top - DRAG_SLOP_PX || y > box.bottom + DRAG_SLOP_PX || x < box.left - DRAG_SIDE_SLOP_PX || x > box.right + DRAG_SIDE_SLOP_PX;
 		let over = null;
@@ -120,7 +173,40 @@
 			const target = at === index ? null : tabDrop(cards, index, at);
 			over = target && { key: keyOf(cards[target.mark]), tab: target.tab, after: target.after };
 		}
-		drag = { ...drag, x, y, over, refused };
+		drag = { ...drag, x, y: screenY, offset: Math.min(Math.max(screenY - drag.startY + moved, reach.up), reach.down), over, refused };
+	}
+
+	function dragTo(event: PointerEvent) {
+		if (!drag || !dragFrame) return;
+		dragFrame.x = event.clientX;
+		dragFrame.y = event.clientY;
+		aim();
+		if (!scrolling) scrolling = setTimeout(autoScroll, SCROLL_TICK_MS);
+	}
+
+	/** How far to scroll this frame: toward the edge the pointer is within SCROLL_EDGE_PX of, more the nearer. */
+	function autoScroll() {
+		scrolling = null;
+		if (!drag || !dragFrame) return;
+		const { scroller, y } = dragFrame;
+		const { top, bottom } = visibleEdges(scroller);
+		const down = y - (bottom - SCROLL_EDGE_PX);
+		const up = top + SCROLL_EDGE_PX - y;
+		const near = down > 0 ? Math.min(down / SCROLL_EDGE_PX, 1) : up > 0 ? -Math.min(up / SCROLL_EDGE_PX, 1) : 0;
+		if (!near) return;
+		// At least a whole pixel, which a scroller that snaps to pixels would otherwise drop.
+		const step = Math.sign(near) * Math.max(1, Math.abs(near) * SCROLL_MAX_PX);
+		const before = scroller.scrollTop;
+		scroller.scrollTop += step;
+		// At the end it stops until the pointer moves again.
+		if (scroller.scrollTop === before) return;
+		aim();
+		scrolling = setTimeout(autoScroll, SCROLL_TICK_MS);
+	}
+
+	function stopScrolling() {
+		if (scrolling) clearTimeout(scrolling);
+		scrolling = null;
 	}
 
 	function drop(event: PointerEvent, agent: Agent) {
@@ -128,6 +214,7 @@
 		const { over, refused } = drag;
 		drag = null;
 		dragFrame = null;
+		stopScrolling();
 		if (event.type !== 'pointerup') return;
 		if (refused) toasts.show('info', '不能拖到別的工作區，已放回原位。');
 		else if (over) void act(agent, () => agentControl.moveTab(agent.id, place(agent), over.tab), '已調整分頁順序', '排序失敗');
@@ -190,6 +277,9 @@
 		if (pressed) pressed = false;
 		else onopen(id);
 	}
+
+	// A drag cut short by the list going away stops scrolling.
+	$effect(() => stopScrolling);
 
 	// Kept on the screen, however close to its edge it was opened; its one item takes the focus.
 	$effect(() => {
@@ -267,7 +357,7 @@
 				class:busy={busy[key]}
 				data-card={key}
 				data-tab={agent.herdr.tab}
-				style:transform={dragged ? `translateY(${drag!.y - drag!.startY}px)` : null}
+				style:transform={dragged ? `translateY(${drag!.offset}px)` : null}
 				role="presentation"
 				oncontextmenu={(event) => contextMenu(event, agent)}
 				onpointerdown={(event) => pressStart(event, agent)}
