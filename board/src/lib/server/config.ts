@@ -79,6 +79,8 @@ export interface BoardConfig {
 	quotaIntervalMs: number;
 	/** How often the agents' statuses (hcom's and Herdr's lists only) are read while a page is connected. */
 	statusPollMs: number;
+	/** The same while an agent works through hcom, so that a turn ended by Esc, which hcom never reports, is noticed in time. */
+	statusWorkingPollMs: number;
 	/** The longest one such read may take; each list is cut off at it. */
 	statusPollTimeoutMs: number;
 	/** How soon after a send or an interrupt from the board the statuses are read once more. */
@@ -212,6 +214,7 @@ export function loadConfig(env: Env = process.env): BoardConfig {
 		codexMultiAuthDir: codexMultiAuthDir(env),
 		quotaIntervalMs: seconds(env.LAT_BOARD_QUOTA_SECONDS, 30_000),
 		statusPollMs: seconds(env.LAT_BOARD_STATUS_POLL_SECONDS, 5_000),
+		statusWorkingPollMs: seconds(env.LAT_BOARD_STATUS_WORKING_POLL_SECONDS, 2_000),
 		statusPollTimeoutMs: seconds(env.LAT_BOARD_STATUS_POLL_TIMEOUT_SECONDS, 4_000),
 		statusAfterActionMs: seconds(env.LAT_BOARD_STATUS_AFTER_ACTION_SECONDS, 2_000),
 		now: clock(env)

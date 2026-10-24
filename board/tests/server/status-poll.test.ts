@@ -268,3 +268,30 @@ test('hcom still active after an Esc ended the turn: Herdr idle on two reads tur
 	await until(() => status(page.latest()) === 'working', 4_000, 'the next turn');
 	page.close();
 });
+
+test('the poll is faster only while an agent works through hcom: an Esc is seen and confirmed within 5 s whatever the phase', async () => {
+	const fast = await startFixture({ env: { LAT_BOARD_STATUS_POLL_SECONDS: '5', LAT_BOARD_STATUS_WORKING_POLL_SECONDS: '1' } });
+	try {
+		const fastCookie = await fast.login();
+		setLists(fast, 'listening');
+		await fast.refresh(fastCookie);
+		const page = fast.watch(fastCookie);
+		await until(() => status(page.latest()) === 'idle', 5_000, 'the first snapshot');
+		// Nothing works: the slow rhythm, one read in 3 s at most (plus the one under way).
+		await sleep(600);
+		const calls = listCalls(fast);
+		await sleep(3_000);
+		expect(listCalls(fast) - calls).toBeLessThanOrEqual(1);
+		// A turn the poll learns of at its slow rhythm, then the Esc at a poll phase of the test's choosing.
+		setLists(fast, 'active', 'working');
+		await until(() => status(page.latest()) === 'working', 7_000, 'the turn');
+		await sleep(700);
+		setLists(fast, 'active', 'idle');
+		const endedAt = Date.now();
+		await until(() => status(page.latest()) === 'idle', 5_000, 'the Esc');
+		expect(Date.now() - endedAt).toBeLessThan(4_500);
+		page.close();
+	} finally {
+		await fast.cleanup();
+	}
+}, 40_000);

@@ -464,7 +464,7 @@ function createBoard(): Board {
 	const newer = <T>(own: T, at: number, kept: { at: number; list: T } | null): T => (kept && kept.at > at ? kept.list : own);
 	/** A poll asked for while one was under way: its lists may predate the ask, so one more follows. */
 	let pollAgain = false;
-	let pollTimer: ReturnType<typeof setInterval> | undefined;
+	let pollTimer: ReturnType<typeof setTimeout> | undefined;
 	let soonTimer: ReturnType<typeof setTimeout> | undefined;
 	let confirmTimer: ReturnType<typeof setTimeout> | undefined;
 
@@ -518,13 +518,25 @@ function createBoard(): Board {
 	/** Poll while a page is connected, and only then. */
 	function syncPoll(): void {
 		if (closed || streams.size === 0) {
-			clearInterval(pollTimer);
+			clearTimeout(pollTimer);
 			pollTimer = undefined;
 			clearTimeout(soonTimer);
 			soonTimer = undefined;
 			clearTimeout(confirmTimer);
 			confirmTimer = undefined;
-		} else pollTimer ??= setInterval(() => void (polling || pollStatus()), config.statusPollMs);
+		} else scheduleTick();
+	}
+
+	/** The next poll: sooner while an agent works through hcom, so that the end of its turn, which hcom
+	 *  may never report after an Esc, is seen and confirmed inside the 5 seconds. */
+	function scheduleTick(): void {
+		if (closed || streams.size === 0 || pollTimer) return;
+		const working = sources?.agents.some((agent) => agent.statusSource === 'hcom' && agent.status === 'working');
+		pollTimer = setTimeout(async () => {
+			pollTimer = undefined;
+			if (!polling) await pollStatus();
+			scheduleTick();
+		}, working ? Math.min(config.statusWorkingPollMs, config.statusPollMs) : config.statusPollMs);
 	}
 
 	function refresh(): Promise<BoardSnapshot> {
@@ -622,7 +634,7 @@ function createBoard(): Board {
 			quotaPoller.close();
 			clearTimeout(debounce);
 			clearTimeout(fallback);
-			clearInterval(pollTimer);
+			clearTimeout(pollTimer);
 			clearTimeout(soonTimer);
 			clearTimeout(confirmTimer);
 			clearInterval(heartbeat);
