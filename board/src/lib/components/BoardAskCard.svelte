@@ -14,8 +14,9 @@
 	// answered here as in the terminal, with the options as the pending-question card shows them
 	// (one or several to pick, or 其他 with text of one's own) but no note, which the client's answer
 	// has no place for. All the questions are sent together. Once taken it is read-only, what was
-	// picked marked among the options.
-	import { ASK_TAKEN_REASON, BOARD_ASK_STATE_TEXT, EMPTY_PICK, pickComplete, type AskAnswerResponse, type AskQuestion, type BoardAsk } from '#lib/board/board-asks.ts';
+	// picked marked among the options. Once the hook stopped waiting it still takes an answer, sent
+	// to the agent as a message; one the board may not have sent (結果不明) can be sent again.
+	import { ASK_TAKEN_REASON, askAnswerable, BOARD_ASK_STATE_TEXT, EMPTY_PICK, RESEND_NOTE, pickComplete, type AskAnswerResponse, type AskQuestion, type BoardAsk } from '#lib/board/board-asks.ts';
 	import { request } from '#lib/board/api.ts';
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
@@ -32,7 +33,7 @@
 		return () => clearInterval(timer);
 	});
 
-	const answerable = $derived(ask.state === 'waiting' && !takenHere[ask.id]);
+	const answerable = $derived(askAnswerable(ask.state) && !takenHere[ask.id]);
 	const pickOf = (index: number) => picks[ask.id]?.[index] ?? EMPTY_PICK;
 	const complete = $derived(ask.questions.every((question, index) => pickComplete(question, pickOf(index))));
 	const left = $derived(Math.max(0, Math.ceil((Date.parse(ask.deadlineAt) - now) / 1000)));
@@ -53,13 +54,14 @@
 		edit(index, question.multiSelect ? { other: !pickOf(index).other } : { select: [], other: true });
 	}
 
-	async function submit() {
-		if (sending || !complete) return;
+	/** Send the picks, or with `resend` the answer already taken again. */
+	async function submit(resend = false) {
+		if (sending || (!resend && !complete)) return;
 		sending = true;
-		const result = await request<AskAnswerResponse>('/api/asks/answer', {
+		const result = await request<AskAnswerResponse>(resend ? '/api/asks/resend' : '/api/asks/answer', {
 			method: 'POST',
 			headers: { 'content-type': 'application/json' },
-			body: JSON.stringify({ id: ask.id, picks: ask.questions.map((_, index) => pickOf(index)) })
+			body: JSON.stringify(resend ? { id: ask.id } : { id: ask.id, picks: ask.questions.map((_, index) => pickOf(index)) })
 		});
 		sending = false;
 		if (!result.ok && result.unpaired) return;
@@ -67,6 +69,9 @@
 		if (body?.status === 'accepted') {
 			delete picks[ask.id];
 			if (body.logError) toasts.show('failed', `答案已經送出，但送出紀錄寫入失敗：${body.logError}。`);
+		} else if (body?.status === 'agent_gone') {
+			delete picks[ask.id];
+			toasts.show('failed', `沒有送出：${body.reason}`);
 		} else if (body?.status === 'taken') {
 			takenHere[ask.id] = true;
 			toasts.show('info', `${body.reason}，你的答案沒有送出。`);
@@ -158,10 +163,19 @@
 			}}
 		>
 			<button class="primary" disabled={sending || !complete}>{sending ? '送出中…' : '送出答案'}</button>
-			<span class="state" role="timer">剩 {leftText}{ask.questions.length > 1 && !complete ? '・每一題都要作答' : ''}</span>
+			{#if ask.state === 'waiting'}
+				<span class="state" role="timer">剩 {leftText}{ask.questions.length > 1 && !complete ? '・每一題都要作答' : ''}</span>
+			{:else}
+				<span class="state" role="status">{BOARD_ASK_STATE_TEXT[ask.state]}{ask.questions.length > 1 && !complete ? '・每一題都要作答' : ''}</span>
+			{/if}
 		</form>
+	{:else if ask.state === 'relay_unknown' && !takenHere[ask.id]}
+		<div class="actions">
+			<button class="primary" disabled={sending} onclick={() => submit(true)}>{sending ? '送出中…' : '再送一次'}</button>
+			<span class="state" role="status">{BOARD_ASK_STATE_TEXT.relay_unknown}・{RESEND_NOTE}</span>
+		</div>
 	{:else}
-		<p class="state" role="status">{takenHere[ask.id] ? `${ASK_TAKEN_REASON}${ask.state === 'filled' ? `・${BOARD_ASK_STATE_TEXT.filled}` : ''}` : BOARD_ASK_STATE_TEXT[ask.state]}</p>
+		<p class="state" role="status">{takenHere[ask.id] ? `${ASK_TAKEN_REASON}${ask.state === 'filled' || ask.state === 'relayed' ? `・${BOARD_ASK_STATE_TEXT[ask.state]}` : ''}` : BOARD_ASK_STATE_TEXT[ask.state]}</p>
 	{/if}
 </article>
 
@@ -180,7 +194,7 @@
 		border-radius: var(--radius);
 		padding: 0.9rem 1rem;
 	}
-	.content:not([data-state='waiting']) {
+	.content:not([data-state='waiting'], [data-state='timed_out'], [data-state='relay_unknown']) {
 		border-left-color: var(--ok);
 	}
 	header {

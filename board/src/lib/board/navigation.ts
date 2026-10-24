@@ -2,6 +2,7 @@
 // is one history entry, so the board's "←" and the phone's own back go to the screen before, and a
 // reload opens the same screen again.
 import type { Agent, Controller, HerdrWorkspace, InboxItem } from './types.ts';
+import type { BoardAsk } from './board-asks.ts';
 
 /** What the address names: an inbox item, a controller, the new-controller form, an agent of the
  *  Herdr 分頁 or its 已關閉 section by session ID, the new-agent form of a Herdr workspace, or
@@ -88,6 +89,8 @@ export function viewOf(
 		agents?: readonly Agent[];
 		/** The 已關閉 section's agents: their pages are the agent's too. */
 		closed?: readonly Pick<Agent, 'id'>[];
+		/** The board asks: an agent no longer listed still has a page while one of its asks is kept. */
+		asks?: readonly Pick<BoardAsk, 'sessionId'>[];
 		workspaces?: readonly HerdrWorkspace[];
 	}
 ): View {
@@ -97,7 +100,8 @@ export function viewOf(
 	}
 	if (place.kind === 'agent') {
 		const listed = (agents?: readonly Pick<Agent, 'id'>[]) => agents?.some((agent) => agent.id === place.id);
-		return listed(from.agents) || listed(from.closed) ? place : { kind: 'missing', what: 'agent' };
+		const asked = from.asks?.some((ask) => ask.sessionId === place.id);
+		return listed(from.agents) || listed(from.closed) || asked ? place : { kind: 'missing', what: 'agent' };
 	}
 	if (place.kind === 'controller') {
 		return from.controllers.some((controller) => controller.id === place.id)

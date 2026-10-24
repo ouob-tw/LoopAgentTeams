@@ -120,8 +120,8 @@ test('an ask the hook handed back reads as filled, and one it gave up on as time
 	const snapshot = await fixture.refresh(cookie);
 	const state = (id: string) => snapshot.asks.find((ask) => ask.id === id);
 	expect(state('ask-filled')).toMatchObject({ state: 'filled', answers: { 'Pick a color?': 'A small turtle' } });
+	// An answer to it now goes as a message (board-ask-late.test.ts).
 	expect(state('ask-late')?.state).toBe('timed_out');
-	expect((await answer('ask-late', [pick([1])])).status).toBe(409);
 });
 
 test('after a restart a waiting ask is still there and can be answered', async () => {

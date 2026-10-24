@@ -2,7 +2,8 @@ import { launchChrome, type Browser, type Tab } from '../browser.ts';
 // A board ask from end to end in a real browser: the real hook asks (as Claude would run it) into
 // the test board's shared folder, the agent's page shows the card, the answer goes back through the
 // hook. Two browsers answering at once: one answer counts, the other is told someone answered.
-import { mkdirSync, readdirSync, writeFileSync } from 'node:fs';
+// Once the hook's wait ran out, the answer goes to the agent as a message instead.
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
@@ -72,6 +73,8 @@ const card = '.detail [data-ask]';
 const choose = (tab: Tab, index: number, label: string) =>
 	tab.eval(`[...document.querySelectorAll('${card} [data-question="${index}"] label')].find((entry) => entry.innerText.split('\\n')[0] === ${JSON.stringify(label)}).querySelector('input').click()`);
 const sendButton = `${card} form button`;
+/** Check Red, the first option of the first question, as a script expression. */
+const CHOOSE_RED = `[...document.querySelectorAll('${card} [data-question="0"] label')].find((entry) => entry.innerText.split('\\n')[0] === 'Red').querySelector('input').click()`;
 
 test('the question shows on its agent\'s page, is answered there and goes back to the client', async () => {
 	const answered = ask(QUESTIONS);
@@ -145,6 +148,100 @@ test('two browsers answering at once: one answer counts, the other is told someo
 	await loser.until(`document.querySelector('${card}').dataset.state === 'taken'`, 'the other to read 已有人作答');
 	expect(await loser.eval(`document.querySelector('${card}').innerText`)).toContain('已有人作答');
 	expect(await loser.eval(`document.querySelector('.dock .toasts').innerText`)).toContain('已有人作答');
+}, 60_000);
+
+test('after the deadline the card says an answer goes as a message; of two browsers one sends it, the other is told someone answered', async () => {
+	const stopped = ask([QUESTIONS[0]], { LAT_BOARD_ASK_WAIT_SECONDS: '1' });
+	const tabs = await Promise.all([open(), open()]);
+	expect(JSON.parse((await stopped).stdout).continue).toBe(false);
+	for (const tab of tabs) {
+		await tab.eval(`document.querySelector('[data-agent="s-ask"]').click()`);
+		await tab.until(`document.querySelector('${card}[data-state="timed_out"]')`, 'the timed-out card');
+		expect(await tab.eval(`document.querySelector('${card} [role="status"]').innerText`)).toBe('已逾時，作答會當訊息傳給它');
+	}
+	await choose(tabs[0], 0, 'Red');
+	await choose(tabs[1], 0, 'Blue');
+	await Promise.all(tabs.map((tab) => tab.eval(`document.querySelector('${sendButton}').click()`)));
+
+	const calls = join(fixture.dir, 'herdr-calls.jsonl');
+	const prompts = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call[1] === 'prompt') : []);
+	const settled = (tab: Tab) => tab.until(`['relayed', 'taken'].includes(document.querySelector('${card}').dataset.state)`, 'the card to settle');
+	await Promise.all(tabs.map(settled));
+	const winner = (await tabs[0].eval(`document.querySelector('${card}').dataset.state`)) === 'relayed' ? 0 : 1;
+	const loser = tabs[1 - winner];
+	await loser.until(`document.querySelector('${card}').dataset.state === 'taken'`, 'the other to read 已有人作答');
+	expect(await loser.eval(`document.querySelector('${card}').innerText`)).toContain('已有人作答');
+	expect(await tabs[winner].eval(`document.querySelector('${card} [role="status"]').innerText`)).toBe('已傳話');
+	const sent = prompts();
+	expect(sent).toHaveLength(1);
+	expect(sent[0][3]).toContain(`回答：${winner === 0 ? 'Red' : 'Blue'}`);
+	expect(sent[0][3]).toContain('問題：Pick a color?');
+}, 60_000);
+
+test('a timed-out card stays on the page of an agent that left Herdr\'s list, and answering it there sends nothing', async () => {
+	const stopped = ask([QUESTIONS[0]], { LAT_BOARD_ASK_WAIT_SECONDS: '1' });
+	const tab = await open();
+	await stopped;
+	await tab.eval(`document.querySelector('[data-agent="s-ask"]').click()`);
+	await tab.until(`document.querySelector('${card}[data-state="timed_out"]')`, 'the timed-out card');
+	await choose(tab, 0, 'Red');
+	// Closed in Herdr; hcom still lists it.
+	const herdr = join(fixture.dir, 'herdr.json');
+	const listed = readFileSync(herdr, 'utf8');
+	writeFileSync(herdr, JSON.stringify({ ...JSON.parse(listed), agents: [], tabs: [] }));
+	fixture.setHcom({ agents: [{ name: 'asker', session_id: 's-ask', status: 'listening' }] });
+	try {
+		await fixture.refresh(cookie);
+		await tab.until(`document.querySelector('.detail').innerText.includes('這個 Agent 已不在 Herdr 的清單上')`, 'the page to say it left');
+		expect(await tab.eval(`document.querySelector('${card}')?.dataset.state`)).toBe('timed_out');
+		// Opened afresh, by its address: still there, still to be answered.
+		await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-ask` });
+		await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.until(`document.querySelector('${card}[data-state="timed_out"]')`, 'the timed-out card after a reload');
+		expect(await tab.eval(`document.querySelector('.detail').innerText`)).toContain('這個 Agent 已不在 Herdr 的清單上');
+		// A click before the page has taken over the card is lost: picked again until it counts.
+		await tab.until(`(${CHOOSE_RED}, !document.querySelector('${sendButton}').disabled)`, 'the pick to count');
+		const calls = join(fixture.dir, 'herdr-calls.jsonl');
+		const before = existsSync(calls) ? readFileSync(calls, 'utf8') : '';
+		await tab.eval(`document.querySelector('${sendButton}').click()`);
+		await tab.until(`document.querySelector('${card}').dataset.state === 'gone'`, 'the card to read Agent 已不在');
+		expect(await tab.eval(`document.querySelector('${card} [role="status"]').innerText`)).toBe('Agent 已不在，無法送出');
+		expect(await tab.eval(`document.querySelectorAll('${card} button').length`)).toBe(0);
+		expect(existsSync(calls) ? readFileSync(calls, 'utf8') : '').toBe(before);
+
+		// And again once answered.
+		await tab.send('Page.navigate', { url: `${fixture.url}/?agent=s-ask` });
+		await tab.until(`JSON.stringify(history.state).includes('depth')`, 'the board to start again');
+		await tab.until(`document.querySelector('${card}')`, 'the card after a reload');
+		expect(await tab.eval(`document.querySelector('.detail').innerText`)).toContain('這個 Agent 已不在 Herdr 的清單上');
+		expect(await tab.eval(`document.querySelector('${card}').dataset.state`)).toBe('gone');
+	} finally {
+		writeFileSync(herdr, listed);
+		fixture.setHcom({ agents: [] });
+		await fixture.refresh(cookie);
+	}
+}, 60_000);
+
+test('a late answer a board may not have sent reads 結果不明 and is sent again with 再送一次', async () => {
+	// Left as a board that stopped while sending leaves it: the hook's timeout, the late answer, no outcome.
+	const dir = join(fixture.dir, 'board-asks');
+	const now = Date.now();
+	writeFileSync(join(dir, 'orphan-ask.json'), JSON.stringify({ id: 'orphan-ask', client: 'claude', session_id: 's-ask', hcom_name: null, herdr_pane: 'wA:p-s-ask', cwd: '/work', kind: 'question', tool_use_id: 'toolu_9', tool_input: { questions: [QUESTIONS[0]] }, created_at: new Date(now + 60_000).toISOString(), deadline_at: new Date(now + 61_000).toISOString(), hook_pid: process.pid, outcome: 'timed_out', outcome_at: new Date(now).toISOString() }));
+	writeFileSync(join(dir, 'orphan-ask.result.json'), JSON.stringify({ kind: 'timeout', at: new Date(now).toISOString() }));
+	writeFileSync(join(dir, 'orphan-ask.late.json'), JSON.stringify({ kind: 'answer', answers: { 'Pick a color?': 'Blue' }, picks: [{ select: [2], other: false, text: '' }], at: new Date(now).toISOString() }));
+	const tab = await open();
+	await tab.eval(`document.querySelector('[data-agent="s-ask"]').click()`);
+	const unknown = `.detail [data-ask="orphan-ask"]`;
+	await tab.until(`document.querySelector('${unknown}[data-state="relay_unknown"]')`, 'the 結果不明 card');
+	expect(await tab.eval(`document.querySelector('${unknown} [role="status"]').innerText`)).toBe('結果不明，請看對話紀錄・可能已送過，請先看對話紀錄');
+	expect(await tab.eval(`[...document.querySelectorAll('${unknown} li.picked')].map((li) => li.innerText.replace(/\\s+/g, ' ').trim())`)).toEqual(['✓ Blue Choose blue.']);
+	const calls = join(fixture.dir, 'herdr-calls.jsonl');
+	const prompts = () => (existsSync(calls) ? readFileSync(calls, 'utf8').trim().split('\n').map((line) => JSON.parse(line)).filter((call) => call[1] === 'prompt') : []);
+	const before = prompts().length;
+	await tab.until(`(document.querySelector('${unknown} button').click(), true)`, 'the button');
+	await tab.until(`document.querySelector('${unknown}').dataset.state === 'relayed'`, 'the card to read 已傳話');
+	expect(prompts().slice(before).map((call) => call[3].includes('回答：Blue'))).toEqual([true]);
+	expect(tab.errors).toEqual([]);
 }, 60_000);
 
 test('a LAT controller asking through the menu is denied: no card on the board and nothing new in 待辦', async () => {

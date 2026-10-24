@@ -233,6 +233,12 @@ test('a closed agent of the 已關閉 section has the same place, until it is li
 	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents: [], closed: [{ id: 's-other' }] })).toEqual({ kind: 'missing', what: 'agent' });
 });
 
+test('an agent listed nowhere keeps its page while the board keeps one of its asks', () => {
+	const place = placeIn(new URLSearchParams('?agent=s-gone'));
+	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents: [], asks: [{ sessionId: 's-gone' }] })).toEqual({ kind: 'agent', id: 's-gone' });
+	expect(viewOf(place, { kept: new Map(), items: [], controllers: [], agents: [], asks: [{ sessionId: 's-other' }] })).toEqual({ kind: 'missing', what: 'agent' });
+});
+
 test('a workspace\'s new-agent form is named by the workspace, on the Herdr tab, and missing once Herdr no longer lists it', () => {
 	const place = placeIn(new URLSearchParams('?new-agent=wA%3A1'));
 	expect(place).toEqual({ kind: 'new-agent', workspace: 'wA:1' });

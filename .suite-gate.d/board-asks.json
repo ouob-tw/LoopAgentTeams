@@ -2,19 +2,23 @@
   "map": [
     {
       "paths": ["board/hooks/board-ask.py"],
-      "tests": ["board/tests/unit/board-ask-hook.test.ts", "board/tests/unit/board-ask-install.test.ts", "board/tests/browser/board-ask.test.ts"]
+      "tests": ["board/tests/unit/board-ask-hook.test.ts", "board/tests/unit/board-ask-install.test.ts", "board/tests/browser/board-ask.test.ts", "board/tests/server/board-ask-late.test.ts"]
     },
     {
       "paths": ["board/src/lib/server/board-asks.ts", "board/src/lib/board/board-asks.ts", "board/src/routes/api/asks/**"],
-      "tests": ["board/tests/unit/board-ask-hook.test.ts", "board/tests/server/board-asks.test.ts", "board/tests/browser/board-ask.test.ts"]
+      "tests": ["board/tests/unit/board-ask-hook.test.ts", "board/tests/server/board-asks.test.ts", "board/tests/browser/board-ask.test.ts", "board/tests/server/board-ask-late.test.ts"]
     },
     {
       "paths": ["board/src/lib/components/BoardAskCard.svelte"],
       "tests": ["board/tests/browser/board-ask.test.ts"]
     },
     {
-      "paths": ["board/src/lib/components/AgentInfo.svelte", "board/src/lib/components/AgentList.svelte", "board/src/lib/components/AgentLog.svelte", "board/src/lib/board/agent-actions.ts", "board/src/lib/server/agents.ts", "board/src/lib/server/watch.ts"],
+      "paths": ["board/src/routes/+page.svelte", "board/src/lib/components/AgentInfo.svelte", "board/src/lib/components/AgentList.svelte", "board/src/lib/components/AgentLog.svelte", "board/src/lib/board/agent-actions.ts", "board/src/lib/server/agents.ts", "board/src/lib/server/watch.ts"],
       "tests": ["board/tests/browser/board-ask.test.ts", "board/tests/server/board-asks.test.ts"]
+    },
+    {
+      "paths": ["board/src/lib/server/agent-control.ts", "board/src/lib/server/board.ts"],
+      "tests": ["board/tests/server/board-ask-late.test.ts", "board/tests/server/board-asks.test.ts"]
     }
   ]
 }
