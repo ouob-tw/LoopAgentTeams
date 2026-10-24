@@ -1,13 +1,17 @@
 <script lang="ts">
 	// The inbox list, by time or by project, or the processed items (已處理).
-	import { groupByProject, sortByTime, type InboxSort } from '#lib/board/inbox.ts';
+	import { mergeProcessed, type AskRow } from '#lib/board/ask-inbox.ts';
+	import { groupEntriesByProject, sortEntries, type InboxSort } from '#lib/board/inbox.ts';
 	import type { ArchivePage } from '#lib/board/archive.ts';
 	import type { Controller, InboxItem } from '#lib/board/types.ts';
+	import AskItemRow from './AskItemRow.svelte';
 	import ItemRow from './ItemRow.svelte';
 	import StatusMark from './StatusMark.svelte';
 
 	let {
 		items,
+		asks,
+		endedAsks,
 		controllers,
 		sort,
 		showArchive,
@@ -20,10 +24,15 @@
 		onearlier,
 		onretry,
 		onopen,
+		onask,
 		oncontroller
 	}: {
 		/** What the inbox lists: questions and unread reports, and the report open since it was read. */
 		items: InboxItem[];
+		/** The board asks that have not ended: each is an entry. */
+		asks: AskRow[];
+		/** The board asks that ended, kept 7 days: among the processed items. */
+		endedAsks: AskRow[];
 		controllers: Controller[];
 		sort: InboxSort;
 		showArchive: boolean;
@@ -40,12 +49,15 @@
 		/** Read the processed items again after they could not be read. */
 		onretry: () => void;
 		onopen: (item: InboxItem) => void;
+		onask: (row: AskRow) => void;
 		oncontroller: (id: string) => void;
 	} = $props();
 
 	const byId = $derived(new Map(controllers.map((controller) => [controller.id, controller])));
 	// The label opens the information page only while the controller is on the roster.
 	const owner = (item: InboxItem) => (byId.has(item.controllerId) ? () => oncontroller(item.controllerId) : undefined);
+
+	const processedEntries = $derived(typeof archive === 'object' && archive !== null ? mergeProcessed(archive.items, endedAsks, archive.before !== null) : []);
 
 	let end = $state<HTMLElement>();
 	// Watched again after every load, so an end that is still in view loads the next page. After a
@@ -76,8 +88,12 @@
 		<p class="none" role="alert">已處理的項目讀不出來。</p>
 		<button class="earlier" onclick={onretry}>再試一次</button>
 	{:else}
-		{#each archive.items as item (item.key)}
-			<ItemRow {item} processed current={item.key === currentKey} {onopen} onowner={owner(item)} />
+		{#each processedEntries as entry ('item' in entry ? entry.item.key : entry.row.key)}
+			{#if 'item' in entry}
+				<ItemRow item={entry.item} processed current={entry.item.key === currentKey} {onopen} onowner={owner(entry.item)} />
+			{:else}
+				<AskItemRow row={entry.row} current={entry.row.key === currentKey} onopen={onask} />
+			{/if}
 		{:else}
 			<p class="none">沒有已處理的項目。</p>
 		{/each}
@@ -88,13 +104,17 @@
 		{/if}
 	{/if}
 {:else if sort === 'time'}
-	{#each sortByTime(items) as item (item.key)}
-		<ItemRow {item} current={item.key === currentKey} {onopen} onowner={owner(item)} />
+	{#each sortEntries(items, asks) as entry (entry.kind === 'item' ? entry.item.key : entry.row.key)}
+		{#if entry.kind === 'item'}
+			<ItemRow item={entry.item} current={entry.item.key === currentKey} {onopen} onowner={owner(entry.item)} />
+		{:else}
+			<AskItemRow row={entry.row} current={entry.row.key === currentKey} onopen={onask} />
+		{/if}
 	{:else}
 		<p class="none">沒有待辦。</p>
 	{/each}
 {:else}
-	{#each groupByProject(items) as project (project.workspace)}
+	{#each groupEntriesByProject(items, asks) as project (project.workspace)}
 		<h3 title={project.workspace}>{project.project}</h3>
 		{#each project.controllers as group (group.controllerId)}
 			<button class="owner" onclick={() => oncontroller(group.controllerId)}>
@@ -104,6 +124,14 @@
 			<div class="nest">
 				{#each group.items as item (item.key)}
 					<ItemRow {item} current={item.key === currentKey} showOwner={false} {onopen} />
+				{/each}
+			</div>
+		{/each}
+		{#each project.agents as group (group.agentId)}
+			<span class="owner plain">{project.project} · {group.name}</span>
+			<div class="nest">
+				{#each group.rows as row (row.key)}
+					<AskItemRow {row} current={row.key === currentKey} showOwner={false} onopen={onask} />
 				{/each}
 			</div>
 		{/each}
@@ -172,6 +200,12 @@
 		color: var(--accent);
 		text-align: left;
 		overflow-wrap: anywhere;
+	}
+	.owner.plain {
+		color: var(--muted);
+	}
+	.owner.plain:hover {
+		text-decoration: none;
 	}
 	.owner:hover,
 	:global(:root[data-theme='light']) .owner {
