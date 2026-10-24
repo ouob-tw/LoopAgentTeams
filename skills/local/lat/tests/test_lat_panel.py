@@ -1013,8 +1013,8 @@ class PendingCheckCliTests(unittest.TestCase):
         self.questions.parent.mkdir()
         self.questions.write_text('## Done?\nOWN-REC · r1 · 已記錄\n')
         self.questions.with_name('questions-other.md').write_text('## Done?\nB-REC · r1 · 已記錄\n')
-        for identifier, session in (('OWN-MISS', 'own'), ('OWN-REC', None),
-                                    ('B-MISS', 'other'), ('B-REC', 'other')):
+        for identifier, session in (('OWN-MISS', 'own'), ('OWN-REC', None), ('NOBODY', None),
+                                    ('B-MISS', 'other'), ('B-REC', None)):
             line = f'- session: {session}\n' if session else ''
             (self.decisions / f'{identifier}.md').write_text(f'- status: pending\n{line}')
         narrow = self.cli('question', 'check-pending', '--questions', self.questions,
@@ -1022,6 +1022,7 @@ class PendingCheckCliTests(unittest.TestCase):
         self.assertEqual(narrow.returncode, 1, narrow.stderr)
         self.assertIn('- OWN-MISS', narrow.stdout)
         self.assertIn('OWN-REC：問題檔已記錄', narrow.stdout)
+        self.assertIn('- NOBODY', narrow.stdout)
         self.assertNotIn('B-', narrow.stdout)
         # Without a session ID the whole shared directory is checked.
         self.assertIn('B-REC：問題檔已記錄', self.check().stdout)

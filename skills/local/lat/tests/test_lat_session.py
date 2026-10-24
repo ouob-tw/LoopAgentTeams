@@ -749,8 +749,7 @@ class SessionTests(unittest.TestCase):
             self.assert_stop_block(self.stop_hook(), '自己的面板')
         questions.write_text('## Question\nLAT-A · r1 · 待答\n')
         self.assert_stop_pass(self.stop_hook(), 'LAT-A r1 - Question')
-        self.decisions.joinpath('LAT-B.md').write_text(
-            f'- status: pending\n- advisor: needs-human\n- session: {SESSION}\n')
+        self.decisions.joinpath('LAT-B.md').write_text('- status: pending\n- advisor: needs-human\n')
         self.assert_stop_block(self.stop_hook(), 'LAT-B', '遺漏檢查')
         self.assert_stop_block(self.stop_hook('❓ **LAT-A r2** Question\nDECIDE: LAT-A r1'),
                                'LAT-A r2')
@@ -772,9 +771,15 @@ class SessionTests(unittest.TestCase):
         self.decisions.joinpath('B-ARCH.md').write_text('- status: pending\n- advisor: needs-human\n')
         other.write_text('## Done\nB-REC · r1 · 已記錄 · 2026-10-19T00:00:00+00:00\n')
         other.with_name(f'{other.stem}-archive.md').write_text('## Old\nB-ARCH · r1 · 已記錄\n')
+        self.decisions.joinpath('B-BROKEN.md').write_text(f'# no status\n- session: {OTHER}\n')
         for tag in ('DECIDE', 'HELP'):
             self.assert_stop_pass(self.stop_hook(f'Question\n{tag}: LAT-A r1'),
                                   'LAT-A r1 - Question')
+        # A record with no owner evidence still counts as ours.
+        unowned = self.decisions.joinpath('U-MISS.md')
+        unowned.write_text('- status: pending\n- advisor: needs-human\n')
+        self.assert_stop_block(self.stop_hook(), 'U-MISS：遺漏檢查缺少面板題目')
+        unowned.unlink()
         # Controller A's own gaps still block, by session line or by its own files.
         self.decisions.joinpath('A-MISS.md').write_text(
             f'- status: pending\n- advisor: needs-human\n- session: {SESSION}\n')
@@ -783,11 +788,13 @@ class SessionTests(unittest.TestCase):
         questions.write_text(questions.read_text() +
                              '\n## Done\nA-REC · r1 · 已記錄 · 2026-10-19T00:00:00+00:00\n')
         questions.with_name(f'{questions.stem}-archive.md').write_text('## Old\nA-ARCH · r1 · 已記錄\n')
+        self.decisions.joinpath('A-BROKEN.md').write_text(f'# no status\n- session: {SESSION}\n')
         for tag in ('DECIDE', 'HELP'):
             result = self.stop_hook(f'Question\n{tag}: LAT-A r1')
             self.assert_stop_block(result, 'A-MISS：遺漏檢查缺少面板題目',
                                    'A-REC：遺漏檢查不一致（問題檔已記錄）',
-                                   'A-ARCH：遺漏檢查不一致（問題已歸檔）')
+                                   'A-ARCH：遺漏檢查不一致（問題已歸檔）',
+                                   'A-BROKEN.md：讀不出狀態')
             self.assertNotIn('B-', json.loads(result.stdout)['reason'])
 
     QUESTION_A = (

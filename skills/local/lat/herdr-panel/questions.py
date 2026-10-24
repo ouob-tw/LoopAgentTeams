@@ -1337,35 +1337,75 @@ def _lat_directories(questions_path):
     return list(dict.fromkeys(directories))
 
 
-def _own_question_ids(questions_path):
-    """IDs in this question file and its archive, whatever their status."""
-    ids = set()
-    for path in (questions_path, _archive_path(questions_path)):
-        if path.exists():
-            ids.update(question["id"] for question in parse_questions(_read_text_exact(path)))
-    return ids
+def _question_files(questions_path):
+    """Every question and archive file in the ``.lat`` of this file and its checkouts."""
+    # Root files are the older place, ``questions/`` the current one; both are read.
+    return sorted(
+        path for directory in _lat_directories(questions_path)
+        for pattern in ("questions-*.md", f"{QUESTIONS_DIR}/*.md")
+        for path in directory.glob(pattern)
+    )
+
+
+def _file_question_ids(path):
+    return {question["id"] for question in parse_questions(_read_text_exact(path))}
+
+
+def foreign_decision_ids(questions_path, decisions_path, session_id):
+    """Decisions that demonstrably belong to another controller.
+
+    A decision is this controller's when its ``- session:`` is ``session_id`` or its
+    question is in ``questions_path`` or that file's archive. Otherwise it is
+    another's when its ``- session:`` names a different session, or its question is
+    in another controller's question or archive file. Decisions with no owner
+    evidence are not returned. ``questions_path`` None (no panel binding) means no
+    own file, and question files are not read.
+    """
+    own = set()
+    others = set()
+    if questions_path is not None:
+        questions_path = Path(questions_path)
+        own_files = [questions_path, _archive_path(questions_path)]
+        for path in own_files:
+            if path.exists():
+                own |= _file_question_ids(path)
+        own_resolved = {path.resolve() for path in own_files}
+        for path in _question_files(questions_path):
+            if path.resolve() not in own_resolved:
+                others |= _file_question_ids(path)
+    foreign = set()
+    for decision in Path(decisions_path).glob("*.md"):
+        if decision.stem in own:
+            continue
+        try:
+            session = read_decision_session(decision)
+        except (OSError, UnicodeError):
+            continue
+        if session != session_id and (session is not None or decision.stem in others):
+            foreign.add(decision.stem)
+    return foreign
 
 
 def pending_question_gaps(questions_path, decisions_path, *, session_id=None):
     """Check pending decisions and stale questions in this file.
 
-    With ``session_id`` only this controller's decisions are checked: those whose
-    ``- session:`` is ``session_id`` or whose question is in this file or its archive.
-    Without it every decision in the shared directory is checked.
+    With ``session_id`` decisions of other controllers (``foreign_decision_ids``)
+    are skipped; decisions with no owner evidence are still checked. Without it
+    every decision in the shared directory is checked.
     """
     questions_path = Path(questions_path)
     decisions_path = Path(decisions_path)
     if not decisions_path.is_dir():
         raise ValueError(f"decisions directory does not exist: {decisions_path}")
-    own_ids = _own_question_ids(questions_path) if session_id is not None else None
+    foreign = (foreign_decision_ids(questions_path, decisions_path, session_id)
+               if session_id is not None else set())
     pending_ids = []
     unreadable = []
     for decision in sorted(decisions_path.glob("*.md")):
+        if decision.stem in foreign:
+            continue
         try:
             status = read_decision_status(decision)
-            if own_ids is not None and decision.stem not in own_ids and (
-                    read_decision_session(decision) != session_id):
-                continue
         except (OSError, UnicodeError) as error:
             unreadable.append((decision, str(error)))
             continue
@@ -1374,12 +1414,7 @@ def pending_question_gaps(questions_path, decisions_path, *, session_id=None):
         elif status.status == "pending":
             pending_ids.append(decision.stem)
 
-    # Root files are the older place, ``questions/`` the current one; both are read.
-    files = sorted(
-        path for directory in _lat_directories(questions_path)
-        for pattern in ("questions-*.md", f"{QUESTIONS_DIR}/*.md")
-        for path in directory.glob(pattern)
-    )
+    files = _question_files(questions_path)
     current = {}
     for path in files:
         if path.stem.endswith("-archive"):
