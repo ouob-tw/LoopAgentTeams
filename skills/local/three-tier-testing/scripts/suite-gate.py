@@ -22,7 +22,6 @@ holders stay counted while that group has processes. Without a user scope the su
 in a new session instead, which is then what counts.
 """
 import argparse
-import collections
 import copy
 import difflib
 import fcntl
@@ -1786,24 +1785,44 @@ def _split_registry(data):
     return rest, [json.dumps(rule, sort_keys=True) for rule in affected['map']]
 
 
-def registry_map_changes(root, base):
-    """The affected.map rules .suite-gate.json added or changed since base, or a reason the
-    change needs the full suite: a rule was removed, or more than the map changed (including
-    a registry that is new or gone). None means the reason is the shared path itself."""
+def base_registry(root, base):
+    """The parsed .suite-gate.json at commit base, or None when it is missing or unreadable."""
     result = git(['show', f'{base}:{REGISTRY_NAME}'], root)
     try:
-        old = _split_registry(json.loads(result.stdout)) if result.returncode == 0 else None
+        return json.loads(result.stdout) if result.returncode == 0 else None
+    except ValueError:
+        return None
+
+
+def shares_registry(data):
+    """True when registry data lists .suite-gate.json itself in affected.shared."""
+    affected = data.get('affected') if isinstance(data, dict) else None
+    shared = affected.get('shared') if isinstance(affected, dict) else None
+    return isinstance(shared, list) and any(
+        isinstance(p, str) and glob_match(REGISTRY_NAME, p) for p in shared)
+
+
+def registry_map_changes(root, before):
+    """The affected.map rules .suite-gate.json added or changed since before (its parsed
+    base version), or a reason the change needs the full suite: a rule was removed. None
+    means more than the map changed (including a registry new since the base)."""
+    try:
+        old = _split_registry(before)
         new = _split_registry(json.loads((root / REGISTRY_NAME).read_text()))
     except (OSError, ValueError):
         return None
     if old is None or new is None or old[0] != new[0]:
         return None
-    removed = collections.Counter(old[1]) - collections.Counter(new[1])
-    added = collections.Counter(new[1]) - collections.Counter(old[1])
-    # A changed rule shows up as one removed and one added; more removed means a deletion.
-    if sum(removed.values()) > sum(added.values()):
-        return 'a map rule was removed'
-    return [json.loads(rule) for rule in added.elements()]
+    added = []
+    matcher = difflib.SequenceMatcher(None, old[1], new[1], autojunk=False)
+    for op, i1, i2, j1, j2 in matcher.get_opcodes():
+        # A changed rule is replaced in place; an old rule left without a new one in its
+        # place was removed, even when other rules are added elsewhere.
+        if op in ('delete', 'replace') and i2 - i1 > j2 - j1:
+            return 'a map rule was removed'
+        if op in ('insert', 'replace'):
+            added.extend(json.loads(rule) for rule in new[1][j1:j2])
+    return added
 
 
 def select_tests(root, changed, amap, base=None):
@@ -1832,13 +1851,16 @@ def select_tests(root, changed, amap, base=None):
             select_rules(path, json.loads((root / path).read_text())['map'])
             continue
         shared = next((p for p in amap['shared'] if glob_match(path, p)), None)
-        if shared and path == REGISTRY_NAME and base is not None:
-            changes = registry_map_changes(root, base)
-            if isinstance(changes, list):
-                select_rules(path, changes)
-                continue
-            if changes:
-                fallback.append((path, changes))
+        if path == REGISTRY_NAME and base is not None:
+            before = base_registry(root, base)
+            # Shared at the base too, so dropping it from shared still counts as a change.
+            if shared or shares_registry(before):
+                changes = registry_map_changes(root, before)
+                if isinstance(changes, list):
+                    select_rules(path, changes)
+                else:
+                    fallback.append((path, changes or (f'shared path {shared}' if shared
+                                                       else 'no longer a shared path')))
                 continue
         if shared:
             fallback.append((path, f'shared path {shared}'))

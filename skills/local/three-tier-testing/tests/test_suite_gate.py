@@ -1336,6 +1336,16 @@ class FallbackScopeTests(AffectedCase):
             self.assertEqual((record['purpose'], record['trigger_files']),
                              ('map-fallback', ['.gitignore']))
 
+    def test_a_trigger_in_no_suite_directory_widens_a_scoped_fallback(self):
+        self.share('web/package.json')
+        self.touch('web/package.json')
+        self.touch('README.md')
+        result = self.gate('affected')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+        for record in self.records():
+            self.assertEqual(record['trigger_files'], ['README.md', 'web/package.json'])
+
     def test_tests_outside_the_fallback_suites_still_run(self):
         self.share('web/package.json')
         self.touch('web/package.json')
@@ -1403,6 +1413,14 @@ class RegistryMapChangeTests(AffectedCase):
         self.assertEqual(self.full_runs(), ['root', 'web'])
         self.assertEqual(self.ran(), [])
 
+    def test_a_removed_rule_falls_back_even_with_a_rule_added_elsewhere(self):
+        del self.registry['affected']['map'][0]
+        self.registry['affected']['map'].append({'paths': ['docs/new/**'], 'tests': []})
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertIn('.suite-gate.json: a map rule was removed', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
     def test_a_change_outside_the_map_falls_back(self):
         changes = {
             'commands': lambda r: r['affected']['commands'].update({'.': 'echo {tests}'}),
@@ -1423,6 +1441,13 @@ class RegistryMapChangeTests(AffectedCase):
                 self.assertIn('.suite-gate.json: shared path .suite-gate.json', result.stderr)
                 self.assertGreaterEqual(len(self.full_runs()), 2)
                 self.assertEqual(self.ran(), [])
+
+    def test_dropping_the_registry_from_shared_falls_back(self):
+        self.registry['affected']['shared'].remove('.suite-gate.json')
+        self.write_registry()
+        result = self.gate('affected')
+        self.assertIn('.suite-gate.json: no longer a shared path', result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
 
     def test_an_added_rule_mapping_to_no_file_falls_back(self):
         self.registry['affected']['map'].append(
