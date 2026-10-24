@@ -24,7 +24,6 @@ const SEND = '.dock .cmd .send-slot button';
 const OPTIONS = '.dock .cmd button.options';
 const POPUP = '.dock .popup[aria-label="喚醒選項"]';
 const STOP = '.dock [data-action="interrupt"]';
-const CONFIRM_STOP = '.dock [data-action="confirm-interrupt"]';
 /** Click the first button in `scope` whose text includes `text`. */
 const click = (scope: string, text: string) =>
 	`[...document.querySelectorAll(${JSON.stringify(`${scope} button`)})].find((b) => b.innerText.includes(${JSON.stringify(text)})).click()`;
@@ -210,7 +209,7 @@ for (const [width, search] of [
 	[1280, '?controller=s-lead'],
 	[390, '?agent=s-lead']
 ] as const) {
-	test.skipIf(!CHROME)(`${width}px: a controller at work is interrupted after a confirmation, named in the notice and in its sent log`, async () => {
+	test.skipIf(!CHROME)(`${width}px: a controller at work is interrupted by one press, named in the notice and in its sent log`, async () => {
 		await visit(width, search);
 		// Nothing typed: the send button is a stop.
 		await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
@@ -220,15 +219,9 @@ for (const [width, search] of [
 		await type('');
 		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
 		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
-		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
-		const popup = await tab.eval<string>(`document.querySelector('.dock .popup').innerText`);
-		expect(popup).toContain('主控');
-		expect(popup).toContain('Esc');
-		// Nothing is pressed before it is confirmed.
-		expect(herdrCalls()).toEqual([]);
-		expect(await tab.eval(FITS)).toBe(true);
-		await tab.eval(`document.querySelector(${JSON.stringify(CONFIRM_STOP)}).click()`);
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('已對 @lead 送出 Esc')`, 'the interrupt notice');
+		// One press was enough: no confirmation came up.
+		expect(await tab.eval(`!!document.querySelector('.dock .popup')`)).toBe(false);
 		expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);
 		expect(injects()).toEqual([]);
 		await tab.eval(click('.detail [role="tablist"]', '送出紀錄'));
@@ -256,8 +249,6 @@ test.skipIf(!CHROME)('an interrupt Herdr does not carry out says why, is not tri
 		await visit(1280, '?controller=s-lead');
 		await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
 		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
-		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
-		await tab.eval(`document.querySelector(${JSON.stringify(CONFIRM_STOP)}).click()`);
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('Herdr 沒有送出 Esc：pane went away')`, 'the reason');
 		expect(await tab.eval<string>(`document.querySelector('.dock').innerText`)).not.toContain('已對');
 		await sleep(500);
@@ -278,8 +269,6 @@ test.skipIf(!CHROME)('an interrupt whose Herdr command times out says so, is tri
 		await visit(1280, '?controller=s-lead');
 		await tab.until(`${pageOf('lat')} && !!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
 		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
-		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
-		await tab.eval(`document.querySelector(${JSON.stringify(CONFIRM_STOP)}).click()`);
 		await tab.until(`document.querySelector('.dock')?.innerText.includes('Herdr 的按鍵指令逾時（2 秒），不確定有沒有中斷。')`, 'the reason');
 		expect(await tab.eval<string>(`document.querySelector('.dock').innerText`)).not.toContain('已對');
 		// Past the slow command's own end: still the one attempt.
@@ -313,7 +302,7 @@ test.skipIf(!CHROME)('only blank space typed keeps the stop; a line naming a con
 	expect(herdrCalls()).toEqual([]);
 }, 60_000);
 
-test.skipIf(!CHROME)('the confirmation is cancelled without a key pressed, and closes when the controller changes or its turn ends', async () => {
+test.skipIf(!CHROME)('the stop follows the controller and its turn, and no key is pressed by it appearing', async () => {
 	const sun = fixture.bound('sun', 'sun', { session_id: 's-sun' });
 	const sunTurn = async (status: string) => {
 		fixture.setHcom({ agents: [...HCOM_AGENTS, hcomAgent('sun', 's-sun', status)] });
@@ -322,42 +311,28 @@ test.skipIf(!CHROME)('the confirmation is cancelled without a key pressed, and c
 	fixture.list([lead, gone, sun]);
 	setHerdr({}, ['s-sun']);
 	await sunTurn('active');
-	const open = async () => {
-		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
-		await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
-		await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
-	};
-	const confirmShown = () => tab.eval<boolean>(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`);
 	try {
 		await visit(1280, '?controller=s-lead');
 		await tab.until(pageOf('lat'), "lead's page");
-		await open();
-		await tab.eval(click('.dock .popup', '取消'));
-		await tab.until(`!document.querySelector('.dock .popup')`, 'the confirmation closed');
-		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
+		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop');
 
-		// Another controller opened: closed, and not shown for it.
-		await open();
+		// Another controller opened: its own stop.
 		await tab.eval(`document.querySelector('.unfolded button.person[data-controller="sun"]').click()`);
 		await tab.until(`${pageOf('sun')} && !!document.querySelector(${JSON.stringify(STOP)})`, "sun's page");
-		expect(await confirmShown()).toBe(false);
 
-		// A question waiting on the user does not end its turn: the stop and the confirmation stay.
-		await open();
+		// A question waiting on the user does not end its turn: the stop stays.
 		fixture.list([lead, gone, { ...sun, questions: [question()] }]);
 		await fixture.refresh(cookie);
 		await tab.until(`document.querySelector('.detail .status')?.innerText.includes('等你')`, 'sun waiting on the user');
-		expect(await confirmShown()).toBe(true);
-		// Its turn ends (hcom lists it listening): no stop, closed, the LAT status as it was; then a new
-		// turn: the stop is back, the confirmation is not.
+		expect(await tab.eval(`!!document.querySelector(${JSON.stringify(STOP)})`)).toBe(true);
+		// Its turn ends (hcom lists it listening): no stop, the LAT status as it was; then a new turn:
+		// the stop is back.
 		await sunTurn('listening');
 		await tab.until(`!document.querySelector(${JSON.stringify(STOP)})`, 'no stop once its turn ended');
-		expect(await confirmShown()).toBe(false);
 		expect(await tab.eval(`document.querySelector(${JSON.stringify(SEND)}).getAttribute('aria-label')`)).toBe('送出');
 		expect(await tab.eval<string>(`document.querySelector('.detail .status').innerText`)).toContain('等你');
 		await sunTurn('blocked');
 		await tab.until(`!!document.querySelector(${JSON.stringify(STOP)})`, 'the stop again');
-		expect(await confirmShown()).toBe(false);
 		expect(herdrCalls()).toEqual([]);
 	} finally {
 		fixture.list([lead, gone]);
@@ -411,10 +386,7 @@ for (const { name, report, ended, lat, hcom, herdr, stop } of LEAD_CASES) {
 					await tab.until(`!!document.querySelector(${JSON.stringify(POPUP)})`, 'the wake options');
 				}
 				await tab.eval(`document.querySelector(${JSON.stringify(STOP)}).click()`);
-				await tab.until(`!!document.querySelector(${JSON.stringify(CONFIRM_STOP)})`, 'the confirmation');
-				expect(await tab.eval(`document.querySelectorAll('.dock .popup').length`)).toBe(1);
 				expect(await tab.eval(`!!document.querySelector(${JSON.stringify(POPUP)})`)).toBe(false);
-				await tab.pointerClick(CONFIRM_STOP);
 				await tab.until(`document.querySelector('.dock')?.innerText.includes('已對 @lead 送出 Esc')`, 'the interrupt notice');
 				// The Esc went to the pane of the session that was open, nobody else's.
 				expect(herdrCalls()).toEqual([['agent', 'send-keys', 'wA:p-s-lead', 'esc']]);
