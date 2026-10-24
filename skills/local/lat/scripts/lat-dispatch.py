@@ -79,6 +79,9 @@ PREAUTH_FIXED = '''## Pre-authorized actions (lat-preauth check when this brief 
 {lines}
 
 These held when the brief was made; the conditions behind them (branch list, full-suite gate, main checkout at the integration branch's tip) can change before you act. Right before acting, rerun `{check}`. Act without asking only if it still prints allow, then report the action, the commit and that line to {orchestrator} so it logs them with `lat-preauth record`.
+{notices}'''
+PREAUTH_NOTICES = '''
+Deploying and installing ({actions}) also need two HCOM notices that {orchestrator} itself sends to the other controllers. After the recheck, ask {orchestrator} for the before notice and start only after it confirms it was sent; note the start time in ISO form with a time zone. When done, succeeded or failed, report the start time and the result to {orchestrator} so it sends the after notice and logs the action.
 '''
 LEDGER_MISSING = '''
 ## Work ledger
@@ -320,12 +323,13 @@ def preauth_part(args, workspace, orchestrator):
     preauth = load_preauth()
     session = args.session_id or next(
         (os.environ[key] for key in preauth.SESSION_ENVS if os.environ.get(key)), None)
-    lines = []
+    lines, notified = [], []
     for action, branch in requests:
         result = preauth.evaluate(action, branch=branch, workspace=workspace, session=session)
         line = preauth.verdict_line(result)
         if result['verdict'] == 'allow':
             lines.append(f'- {line}')
+            notified += [action] if action in preauth.MAIN_CHECKOUT_ACTIONS else []
         else:
             print(f'lat-dispatch: not pre-authorized, left out of the brief: {line}',
                   file=sys.stderr)
@@ -337,7 +341,10 @@ def preauth_part(args, workspace, orchestrator):
     if session:
         check += ['--session-id', session]
     check = shlex.join(check) + ' --action <action> [--branch <branch>]'
-    return PREAUTH_FIXED.format(lines='\n'.join(lines), check=check, orchestrator=orchestrator)
+    notices = PREAUTH_NOTICES.format(actions=', '.join(dict.fromkeys(notified)),
+                                     orchestrator=orchestrator) if notified else ''
+    return PREAUTH_FIXED.format(lines='\n'.join(lines), check=check, orchestrator=orchestrator,
+                                notices=notices)
 
 
 def make_brief(args):

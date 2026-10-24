@@ -658,6 +658,36 @@ class PreauthBriefTests(DispatchCase):
                 text, _ = self.brief(*extra)
                 self.assertNotIn('Pre-authorized actions', text)
 
+    def test_deploy_brief_has_the_controller_send_the_notices(self):
+        suite = {'command': 'uv run pytest', 'cwd': '.'}
+        (self.workspace / '.suite-gate.json').write_text(json.dumps({'full_suites': [suite]}))
+        for item in (['config', 'user.email', 't@example.com'], ['config', 'user.name', 'T'],
+                     ['add', '.suite-gate.json'], ['commit', '-q', '-m', 'first']):
+            git(self.workspace, *item)
+        spec = importlib.util.spec_from_file_location(
+            'suite_gate_for_dispatch', SCRIPT.parents[2] / 'three-tier-testing/scripts/suite-gate.py')
+        gate = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(gate)
+        tree = gate.content_tree(self.workspace, (), git(self.workspace, 'rev-parse', 'HEAD'))
+        state = self.root / 'gate-state'
+        state.mkdir()
+        (state / 'ledger.jsonl').write_text(json.dumps({'fingerprint': gate.digest(
+            tree, [suite['command']], gate.rel_cwd(self.workspace, self.workspace)),
+            'reusable': True, 'exit_code': 0}) + '\n')
+        (self.workspace / '.lat' / 'preauth.toml').write_text(
+            'integration_branch = "dev"\n[actions.merge]\nallow = true\nbranches = ["dev"]\n'
+            '[actions.deploy-test]\nallow = true\ntarget = "staging"\n')
+        self.env.update(SUITE_GATE_STATE_DIR=str(state), SUITE_GATE_CONFIG='',
+                        XDG_STATE_HOME=str(self.root / 'state'))
+        text, result = self.brief('--preauth', 'deploy-test')
+        self.assertIn('- allow deploy-test — basis: ', text, result.stderr)
+        self.assertIn('Deploying and installing (deploy-test) also need two HCOM notices that '
+                      'nanu itself sends', text)
+        self.assertIn('report the start time and the result to nanu', text)
+        text, _ = self.brief('--preauth', 'merge:dev')
+        self.assertIn('- allow merge dev', text)
+        self.assertNotIn('HCOM notices', text)
+
     def test_malformed_request_is_refused(self):
         result = self.run_script('brief', '--card', str(self.make_card()), '--input',
                                  str(self.write_brief()), '--preauth', 'Merge dev', env=self.env)
