@@ -553,6 +553,7 @@ class Panel(App):
         self.tab_spans = []
         self.revised = {}
         self.preauthorized = set()
+        self.preauth_running = False
         self.saved = ""
         self.conflict = False
         self.close_armed = False
@@ -858,9 +859,23 @@ class Panel(App):
         self.refresh_view()
 
     def recheck_preauth(self):
+        """Start one background recheck of the pending questions; Git stays off the UI loop."""
+        if self.preauth_running:
+            return
+        self.preauth_running = True
+        self.run_worker(self.apply_preauth(), group="preauth")
+
+    async def apply_preauth(self):
         """Mark pending questions the current settings pre-authorize; redraw on a change."""
-        ids = [draft.id for draft in self.drafts.values() if draft.editable]
-        marked = lat_panel.preauthorized_questions(self.path, ids) if ids else set()
+        try:
+            ids = [draft.id for draft in self.drafts.values() if draft.editable]
+            marked = await asyncio.to_thread(
+                lat_panel.preauthorized_questions, self.path, ids
+            ) if ids else set()
+        finally:
+            self.preauth_running = False
+        # A question that stopped being pending meanwhile drops its mark now.
+        marked &= {draft.id for draft in self.drafts.values() if draft.editable}
         if marked != self.preauthorized:
             self.preauthorized = marked
             self.refresh_view()

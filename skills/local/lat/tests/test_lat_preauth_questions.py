@@ -8,6 +8,7 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import threading
 import unittest
 from unittest.mock import patch
 
@@ -324,6 +325,22 @@ class PanelMarkerTests(PreauthQuestionTests, unittest.IsolatedAsyncioTestCase):
         text = self.questions.read_text()
         self.assertIn('答覆：A', text)
         self.assertIn('- [x] 送出', text)
+
+    async def test_recheck_runs_off_the_ui_thread(self):
+        self.project.write_text(ALLOW_MERGE)
+        check = self.panel.lat_panel.preauthorized_questions
+        threads = []
+
+        def recorded(*args):
+            threads.append(threading.current_thread())
+            return check(*args)
+
+        with patch.object(self.panel.lat_panel, 'preauthorized_questions', side_effect=recorded):
+            async with self.make_app().run_test() as pilot:
+                await pilot.pause(0.3)
+                self.assertIn(self.MARKER, self.view(pilot.app))
+        self.assertTrue(threads)
+        self.assertNotIn(threading.main_thread(), threads)
 
     async def test_record_without_action_or_a_failed_recheck_shows_no_marker(self):
         self.project.write_text(ALLOW_MERGE)
