@@ -52,11 +52,19 @@ export const askAnswerable = (state: BoardAskState) => state === 'waiting' || st
 /** What the status shows for an agent with a board ask waiting, whatever hcom or Herdr says. */
 export const ASKING_STATUS_TEXT = '等你回答';
 
+export type AskKind = 'question' | 'permission';
+
 export interface BoardAsk {
 	id: string;
 	/** The asking agent's session ID: the agent on the Herdr 分頁 whose page shows it. */
 	sessionId: string;
 	client: string;
+	/** What the client asked: a menu question, or for approval to run a tool. */
+	kind: AskKind;
+	/** The tool a permission ask is about (`Bash`, an MCP tool's name); null for a question. */
+	tool: string | null;
+	/** The folder its agent worked in when it asked; null when the hook did not record it. */
+	folder: string | null;
 	questions: AskQuestion[];
 	createdAt: string;
 	/** When the hook stops waiting. */
