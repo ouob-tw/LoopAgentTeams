@@ -215,3 +215,40 @@ test.skipIf(!CHROME)('opening a report from the controller page brings the conve
 	await tab.until(`document.querySelector('#tab-transcript').getAttribute('aria-selected') === 'true'`, 'the conversation open');
 	await untilShownWhole('transcript');
 }, 60_000);
+
+test.skipIf(!CHROME)('counts that arrive after the last tab opened bring it back into view, but leave a strip slid elsewhere where it is', async () => {
+	browser = await launchChrome({ scripts: [`localStorage.setItem('lat-board-min-font', '24')`] });
+	tab = browser.tab;
+	const [name, value] = cookie.split('=');
+	await tab.send('Network.setCookie', { name, value, url: fixture.url });
+	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: true });
+	// The sent log and the operation record held back: the tabs show without their counts.
+	await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/messages?controller=*' }, { urlPattern: '*/api/agents/log*' }] });
+	await tab.navigate(`${fixture.url}/?agent=s-lead`);
+	await tab.until(`document.querySelectorAll('[role="tab"]').length === 4`, 'the tab strip');
+	const release = async () => {
+		await tab.send('Fetch.disable');
+		for (const requestId of tab.paused.splice(0)) await tab.send('Fetch.continueRequest', { requestId }).catch(() => {});
+	};
+	try {
+		await tab.until(`(document.querySelector('#tab-log').click(), document.querySelector('#tab-log').getAttribute('aria-selected') === 'true')`, 'the last tab open');
+		await untilShownWhole('log');
+		expect(await tab.eval<number>(`document.querySelectorAll('[role="tab"] small').length`)).toBeLessThan(3);
+		await release();
+		await tab.until(`document.querySelectorAll('[role="tab"] small').length === 3`, 'the counts');
+		await untilShownWhole('log');
+	} finally {
+		await release();
+	}
+
+	// Slid back to the start by hand, a count that changes leaves the strip there. The new report
+	// is this test's last step: the other tests count one report.
+	await tab.eval(`document.querySelector('[role="tablist"]').scrollLeft = 0`);
+	const before = (await strip()).strip.scrollLeft;
+	fixture.report('s-lead', { tag: 'DONE', summary: '交付第二張票', hcom_name: 'lead', workspace: fixture.listed()[0].workspace });
+	await fixture.refresh(cookie);
+	await tab.until(`document.querySelector('#tab-reports small')?.textContent === '2'`, 'the report count up by one');
+	await Bun.sleep(300);
+	expect((await strip()).strip.scrollLeft).toBe(before);
+	expect(shownWhole(await strip(), 'log')).toBe(false);
+}, 60_000);

@@ -58,10 +58,28 @@
 
 	// The open tab in view in its strip, however it was opened: a click, an arrow key or the page.
 	// The strip's behaviour and look are RecordTabs.svelte's; keep the two in step.
+	// A count that arrives later widens the tabs: the open tab is brought back into view then only
+	// if it was whole in view just before, so a strip the user has slid elsewhere stays there.
 	let strip = $state<HTMLElement>();
+	/** The tab last brought into view, and whether it was whole in view before the counts changed. */
+	let revealed: string | undefined;
+	let wasWhole = false;
+	const open = () => strip?.querySelector<HTMLElement>(`[data-tab="${tab}"]`);
+	function whole(button: HTMLElement) {
+		const shown = strip!.getBoundingClientRect();
+		const at = button.getBoundingClientRect();
+		return at.left >= shown.left - 1 && at.right <= shown.right + 1;
+	}
+	$effect.pre(() => {
+		void logCount;
+		const button = open();
+		wasWhole = !!button && whole(button);
+	});
 	$effect(() => {
-		const button = strip?.querySelector<HTMLElement>(`[data-tab="${tab}"]`);
-		if (!strip || !button) return;
+		void logCount;
+		const button = open();
+		if (!strip || !button || (tab === revealed && !wasWhole)) return;
+		revealed = tab;
 		const shown = strip.getBoundingClientRect();
 		const at = button.getBoundingClientRect();
 		if (at.left < shown.left) strip.scrollLeft -= shown.left - at.left;
