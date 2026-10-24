@@ -20,11 +20,12 @@ export interface AskQuestion {
  * Where a board ask stands: `waiting` for an answer; `answered`, the board's answer taken but the
  * hook has not handed it back yet; `filled`, handed back to the client; `timed_out`, the hook's
  * wait ran out first and ended the turn, so an answer now goes as a message; `relaying`, such an
- * answer taken and being sent; `relayed`, sent as a message; `gone`, its agent no longer in Herdr's
+ * answer taken and being sent; `relayed`, sent as a message; `relay_unknown`, the board stopped
+ * while sending it, so whether it went is not known; `gone`, its agent no longer in Herdr's
  * list, so the answer went nowhere; `interrupted`, the hook's process ended with nothing taken
  * (Esc in the terminal, or the agent closed).
  */
-export type BoardAskState = 'waiting' | 'answered' | 'filled' | 'timed_out' | 'relaying' | 'relayed' | 'gone' | 'interrupted';
+export type BoardAskState = 'waiting' | 'answered' | 'filled' | 'timed_out' | 'relaying' | 'relayed' | 'relay_unknown' | 'gone' | 'interrupted';
 
 export const BOARD_ASK_STATE_TEXT: Record<BoardAskState, string> = {
 	waiting: '等你回答',
@@ -33,12 +34,13 @@ export const BOARD_ASK_STATE_TEXT: Record<BoardAskState, string> = {
 	timed_out: '已逾時，作答會當訊息傳給它',
 	relaying: '傳話中',
 	relayed: '已傳話',
+	relay_unknown: '結果不明，請看對話紀錄',
 	gone: 'Agent 已不在，無法送出',
 	interrupted: '已在終端機中斷'
 };
 
 /** The states an ask is over in: nothing more happens to it, and it is removed 7 days after. */
-export const ENDED_ASK_STATES: ReadonlySet<BoardAskState> = new Set(['filled', 'relayed', 'gone', 'interrupted']);
+export const ENDED_ASK_STATES: ReadonlySet<BoardAskState> = new Set(['filled', 'relayed', 'relay_unknown', 'gone', 'interrupted']);
 
 /** How long an ended ask is kept, its files and its card; its operation record keeps its own 30 days. */
 export const ASK_RETENTION_MS = 7 * 24 * 60 * 60 * 1000;

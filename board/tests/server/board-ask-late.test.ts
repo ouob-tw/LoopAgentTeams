@@ -192,18 +192,16 @@ test('an ask whose hook process was ended while it waited reads as interrupted a
 	]);
 });
 
-test('an answer a board took and stopped before sending can be sent again after a restart', async () => {
+test('an answer a board took and stopped while sending is not sent again after a restart', async () => {
 	putAsk('late-orphan');
 	timeOut('late-orphan');
 	writeFileSync(join(asksDir, 'late-orphan.late.json'), JSON.stringify({ kind: 'answer', answers: { 'Pick a color?': 'Red' }, picks: null, at: new Date().toISOString() }));
 	await fixture.stop();
 	await fixture.start();
-	expect(await stateOf('late-orphan')).toBe('timed_out');
-	expect(await answer('late-orphan', [2])).toMatchObject({ status: 200, body: { status: 'accepted' } });
-	const prompts = herdrCalls().filter((call) => call[1] === 'prompt');
-	expect(prompts).toHaveLength(1);
-	expect(prompts[0][3]).toContain('回答：Blue');
-	expect(await stateOf('late-orphan')).toBe('relayed');
+	// It may have been typed in before the board stopped: over, and said so.
+	expect((await fixture.refresh(cookie)).asks.find((ask) => ask.id === 'late-orphan')).toMatchObject({ state: 'relay_unknown', answers: { 'Pick a color?': 'Red' } });
+	expect(await answer('late-orphan', [2])).toMatchObject({ status: 409, body: { status: 'taken' } });
+	expect([herdrCalls(), injectCalls()]).toEqual([[], []]);
 });
 
 test('an ask that ended 7 days ago is removed with its files; a newer one, and one still open, stay', async () => {

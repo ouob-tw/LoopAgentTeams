@@ -87,17 +87,17 @@ function readJson(path: string): unknown {
 	}
 }
 
-/** Late answers this board is sending now: a late file without an outcome that is not one of them
- *  was left by a board that stopped while sending, and may be taken again: the ask reads as
- *  timed out again. Whether that board typed it in before it stopped is not known; the agent's
- *  operation record has an entry for each message it sent. */
+/** Late answers this board is sending now. A late file without an outcome that is not one of them
+ *  was left by a board that stopped while sending: whether it typed the message in is not known,
+ *  so the ask is over as `relay_unknown` and is not sent again. */
 const relaying = new Set<string>();
 
 function stateOf(ask: AskFile, result: ResultFile | null, late: LateFile | null): BoardAskState {
 	if (result?.kind === 'interrupted') return 'interrupted';
 	if (result?.kind === 'timeout') {
 		if (late?.outcome) return late.outcome;
-		return late && relaying.has(ask.id) ? 'relaying' : 'timed_out';
+		if (!late) return 'timed_out';
+		return relaying.has(ask.id) ? 'relaying' : 'relay_unknown';
 	}
 	if (result?.kind === 'answer') return ask.outcome === 'filled' ? 'filled' : 'answered';
 	return 'waiting';
@@ -249,12 +249,7 @@ export function settleAsks(config: Pick<BoardConfig, 'asksDir' | 'stateDir'>, ag
 /** Take a timed-out ask with an answer to send as a message: true when this call did. */
 function takeLate(dir: string, id: string, answers: Record<string, string>, picks: AskPick[]): boolean {
 	const name = `${id}.late.json`;
-	const record: LateFile = { kind: 'answer', answers, picks, at: new Date().toISOString() };
-	if (claim(dir, name, record)) return true;
-	const left = readJson(join(dir, name)) as LateFile | null;
-	if (left?.outcome || relaying.has(id)) return false;
-	rmSync(join(dir, name), { force: true });
-	return claim(dir, name, record);
+	return claim(dir, name, { kind: 'answer', answers, picks, at: new Date().toISOString() } satisfies LateFile);
 }
 
 /**
