@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { lastSegment } from '#lib/board/agents.ts';
 	// A controller's header: one line of who and where it stands
 	// with its latest phase (the details behind a disclosure, its duty first) and, while it runs, its context use,
 	// quota, prompt cache and permission mode in small print.
@@ -42,7 +43,7 @@
 	<header>
 		<span class="status"><StatusMark status={controller.status} />{STATUS_LABEL[controller.status]}</span>
 		<h2>{controller.project}</h2>
-		<span class="handle">@{controller.hcomName}</span>
+		<span class="handle" title="@{controller.hcomName}">@{lastSegment(controller.hcomName)}</span>
 		{#if controller.paused}<span class="chip"><HcomBadge hcom="paused" /></span>{/if}
 		{#if controller.lastReportAt}<span class="chip">最後回報 {noticeTime(controller.lastReportAt, clock.now, clock.timeZone)}</span>{/if}
 		<button type="button" class="more" aria-expanded={details} onclick={toggleDetails}>

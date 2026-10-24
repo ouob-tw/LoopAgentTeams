@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { lastSegment } from '#lib/board/agents.ts';
 	// The controller's conversation as its client recorded it: every message the user typed and every
 	// text reply, with the operations between two texts folded into one line until opened. Newest
 	// first and kept up to date while the page is open; earlier parts load when the end of the list
@@ -531,7 +532,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 						<li class="said" class:reported={!!marked} data-kind={segment.item.kind} data-translation={translation?.status}>
 							<p class="meta">
 								{#if marked}<span class="label">{itemLabel(marked)}</span>{/if}
-								<span>{segment.item.kind === 'user' ? '你' : `@${controller.hcomName}`}</span>
+								<span title={segment.item.kind === 'user' ? undefined : `@${controller.hcomName}`}>{segment.item.kind === 'user' ? '你' : `@${lastSegment(controller.hcomName)}`}</span>
 								{#if segment.item.time}
 									<time datetime={segment.item.time}>{formatTime(segment.item.time)}</time>
 								{/if}

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { lastSegment } from '#lib/board/agents.ts';
 	// The inbox list, by time or by project, or the processed items (已處理).
 	import { groupByProject, sortByTime, type InboxSort } from '#lib/board/inbox.ts';
 	import type { ArchivePage } from '#lib/board/archive.ts';
@@ -99,7 +100,7 @@
 		{#each project.controllers as group (group.controllerId)}
 			<button class="owner" onclick={() => oncontroller(group.controllerId)}>
 				<StatusMark status={byId.get(group.controllerId)?.status ?? 'closed'} />
-				{project.project} · @{group.hcomName}
+				{project.project} · <span title="@{group.hcomName}">@{lastSegment(group.hcomName)}</span>
 			</button>
 			<div class="nest">
 				{#each group.items as item (item.key)}

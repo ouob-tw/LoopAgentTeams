@@ -1,5 +1,6 @@
 // Messages the user sends to a controller from the board: the shared shapes, and the two rules
 // the page applies before anything is sent (who a command line is for, what Enter does).
+import { lastSegment } from './agents.ts';
 import { isInactive, STATUS_LABEL, type Controller } from './types.ts';
 
 /** One line of the board's sent log: an attempt to type a message into a controller's client. */
@@ -51,8 +52,9 @@ type Target = Pick<Controller, 'id' | 'hcomName' | 'status'>;
 export type Command<T extends Target> = { ok: true; controller: T; text: string } | { ok: false; reason: string };
 
 /**
- * Who a command line is for: a leading `@name` picks that controller, otherwise the one that is
- * open. Never falls back to another controller. An idle or closed controller is refused unless
+ * Who a command line is for: a leading `@name` picks that controller by its full hcom name or by
+ * its last part (`@tevu` for `dipo-latpstack-tevu`), otherwise the one that is open. A last part
+ * that fits more than one controller picks none. Never falls back to another controller. An idle or closed controller is refused unless
  * the caller `wakes` it instead of sending.
  */
 export function parseCommand<T extends Target>(input: string, controllers: T[], open: T | undefined, wakes = false): Command<T> {
@@ -61,7 +63,12 @@ export function parseCommand<T extends Target>(input: string, controllers: T[], 
 	let text = input;
 	if (addressed) {
 		const name = addressed[1];
-		const matches = controllers.filter((candidate) => candidate.hcomName === name);
+		let matches = controllers.filter((candidate) => candidate.hcomName === name);
+		if (!matches.length) {
+			matches = controllers.filter((candidate) => lastSegment(candidate.hcomName) === name);
+			const names = [...new Set(matches.map((candidate) => candidate.hcomName))];
+			if (names.length > 1) return { ok: false, reason: `名稱重複，請打完整名稱：${names.map((full) => `@${full}`).join('、')}。沒有送出。` };
+		}
 		// A name can be reused after a controller stopped; the one still running is the one meant.
 		controller = matches.find((candidate) => !isInactive(candidate.status)) ?? matches[0];
 		if (!controller) return { ok: false, reason: `找不到主控 @${name}，沒有送出。` };

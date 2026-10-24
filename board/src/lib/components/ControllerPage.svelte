@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { lastSegment } from '#lib/board/agents.ts';
 	// A controller's page in the content column: its information page; one of its items opened in
 	// its conversation; or, opened from the Herdr tab, the agent's page, whose bars and report list
 	// open their question or report in the conversation without leaving the tab. A question whose
@@ -195,7 +196,7 @@
 		<ItemContent {item} {listed} recorded={board.snapshot.recordedKeys.includes(item.key)} onunread={(key) => board.mark(key, false)} />
 	{/key}
 	<button class="context" onclick={() => oncontroller(controller.id)}>
-		{item.project} · @{item.hcomName}　看主控資訊 →
+		{item.project} · <span title="@{item.hcomName}">@{lastSegment(item.hcomName)}</span>　看主控資訊 →
 	</button>
 {:else}
 	<ControllerInfo tabMoves={board.tabMoves} {controller} {idleAgent} {items} {answered} {onopen} questionCards={askedCards} />

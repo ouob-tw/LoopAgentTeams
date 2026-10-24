@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { lastSegment } from '#lib/board/agents.ts';
 	// The folded roster of the wide layout: one status mark per controller. A mark opens its
 	// controller and leaves the roster folded; the blank of the rail unfolds it. Hovering a
 	// mark, or pressing and holding it on a touch screen, explains it.
@@ -39,7 +40,7 @@
 	}
 
 	const label = (controller: Controller) =>
-		`${controller.project} @${controller.hcomName}：${STATUS_LABEL[controller.status]}` +
+		`${controller.project} @${lastSegment(controller.hcomName)}：${STATUS_LABEL[controller.status]}` +
 		(controller.paused ? '，暫停通訊' : '') +
 		(controller.pendingCount ? `，待決 ${controller.pendingCount} 題` : '');
 </script>

@@ -1,4 +1,5 @@
 <script lang="ts">
+	import { lastSegment } from '#lib/board/agents.ts';
 	// A closed agent's 接回, under its information card where a running agent's 關閉 sits: a plain
 	// agent is resumed in a new Herdr tab; a controller's opens the wake's options first (model,
 	// effort, a new LAT round, a first message, giving up a stuck resume) and is woken like one. How it
@@ -56,11 +57,11 @@
 		if (agent.controller) void messaging.load(id);
 		if (outcome.ok) {
 			for (const option of [text, newRound, model, effort, abandonable, waking]) delete option[id];
-			toasts.show('ok', `已開始接回 @${agent.hcomName}。${outcome.reason ?? ''}`);
+			toasts.show('ok', `已開始接回 @${lastSegment(agent.hcomName)}。${outcome.reason ?? ''}`);
 			return;
 		}
 		if (outcome.abandon) abandonable[id] = outcome.abandon;
-		toasts.show('failed', `沒有接回 @${agent.hcomName}：${outcome.reason}`);
+		toasts.show('failed', `沒有接回 @${lastSegment(agent.hcomName)}：${outcome.reason}`);
 	}
 
 	async function abandon(agent: ClosedAgent) {

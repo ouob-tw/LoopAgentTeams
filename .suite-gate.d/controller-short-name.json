@@ -1,0 +1,39 @@
+{
+  "map": [
+    {
+      "paths": [
+        "board/src/lib/board/agents.ts",
+        "board/src/lib/board/messages.ts",
+        "board/src/lib/components/ClosedAgentInfo.svelte",
+        "board/src/lib/components/ClosedAgents.svelte",
+        "board/src/lib/components/ClosedResume.svelte",
+        "board/src/lib/components/CommandLine.svelte",
+        "board/src/lib/components/ControllerExplain.svelte",
+        "board/src/lib/components/ControllerHeader.svelte",
+        "board/src/lib/components/ControllerPage.svelte",
+        "board/src/lib/components/Inbox.svelte",
+        "board/src/lib/components/ItemRow.svelte",
+        "board/src/lib/components/RosterCard.svelte",
+        "board/src/lib/components/RosterRail.svelte",
+        "board/src/lib/components/SentLog.svelte",
+        "board/src/lib/components/Transcript.svelte",
+        "board/src/routes/+page.svelte"
+      ],
+      "tests": [
+        "board/tests/unit/messages.test.ts",
+        "board/tests/browser/controller-short-name.test.ts",
+        "board/tests/browser/controller-page.test.ts",
+        "board/tests/browser/herdr-controller-send.test.ts",
+        "board/tests/browser/closed-agents-page.test.ts"
+      ]
+    },
+    {
+      "paths": [
+        "board/tests/browser/controller-short-name.test.ts"
+      ],
+      "tests": [
+        "board/tests/browser/controller-short-name.test.ts"
+      ]
+    }
+  ]
+}

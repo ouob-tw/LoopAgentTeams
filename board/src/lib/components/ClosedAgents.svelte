@@ -5,7 +5,7 @@
 	// old workspace and how a 接回 goes, and opens the agent's page, where its conversation is read
 	// and it is brought back.
 	import ChevronRight from '@lucide/svelte/icons/chevron-right';
-	import { folderName } from '#lib/board/agents.ts';
+	import { folderName, lastSegment } from '#lib/board/agents.ts';
 	import { closedGroups, stoppedText, type ClosedList } from '#lib/board/closed-agents.ts';
 	import StatusMark from './StatusMark.svelte';
 
@@ -55,8 +55,8 @@
 				{#each group.agents as agent (agent.id)}
 					<button type="button" class="row" class:current={agent.id === currentId} data-closed={agent.id} onclick={() => onopen(agent.id)}>
 						<span class="who">
-							<strong class="tab">{agent.tab ?? `@${agent.hcomName}`}</strong>
-							{#if agent.tab}<span class="handle">@{agent.hcomName}</span>{/if}
+							<strong class="tab" title={agent.tab ? undefined : `@${agent.hcomName}`}>{agent.tab ?? `@${lastSegment(agent.hcomName)}`}</strong>
+							{#if agent.tab}<span class="handle" title="@{agent.hcomName}">@{lastSegment(agent.hcomName)}</span>{/if}
 							{#if agent.controller}<span class="tag" title="LAT 主控">主控</span>{/if}
 						</span>
 						<span class="facts">

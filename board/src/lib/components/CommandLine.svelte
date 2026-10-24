@@ -25,7 +25,7 @@
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
 	import { attaching } from '#lib/board/attaching.svelte.ts';
 	import { withAttachments } from '#lib/board/attachments.ts';
-	import { shortName } from '#lib/board/agents.ts';
+	import { lastSegment, shortName } from '#lib/board/agents.ts';
 	import { CLOSED_SEND_TEXT, type ClosedAgent } from '#lib/board/closed-agents.ts';
 	import { AGENT_DRAFTS_KEY, COMMAND_DRAFT_KEY, COMMAND_HIDDEN_KEY, forget, remember, remembered, rememberedText } from '#lib/board/prefs.ts';
 	import { parseCommand } from '#lib/board/messages.ts';
@@ -173,7 +173,7 @@
 		stoppable && agent
 			? { id: agent.id, name: agent.name }
 			: !agent && !closed && target && controllerInterruptible(target, agents)
-				? { id: target.id, name: `@${target.hcomName}` }
+				? { id: target.id, name: `@${lastSegment(target.hcomName)}` }
 				: null
 	);
 	const waking = $derived(recipient !== undefined && needsWake(recipient));
@@ -291,7 +291,7 @@
 		void submit();
 	}}
 >
-	<span class="to" class:other={recipient !== undefined && recipient.id !== target?.id} title={toAgent && agent?.hcomName ? `@${agent.hcomName}` : undefined}>→ {toAgent && agent ? agentName : toClosed && closed ? `@${closed.hcomName}` : recipient ? `@${recipient.hcomName}` : '@名稱'}</span>
+	<span class="to" class:other={recipient !== undefined && recipient.id !== target?.id} title={toAgent && agent?.hcomName ? `@${agent.hcomName}` : toClosed && closed ? `@${closed.hcomName}` : recipient ? `@${recipient.hcomName}` : undefined}>→ {toAgent && agent ? agentName : toClosed && closed ? `@${lastSegment(closed.hcomName)}` : recipient ? `@${lastSegment(recipient.hcomName)}` : '@名稱'}</span>
 	<!-- The paperclip and the mic sit before the box as they do in a message box of its own, and the
 	     files above both; placed here so a phone can move them to the row under the box. The send
 	     button sits inside the box at its right edge; the box keeps its text clear of it. -->
@@ -306,7 +306,7 @@
 				<MessageBox
 					bind:this={messageBox}
 					bind:value={() => draft, (value) => write(owner, value)}
-					label={toAgent && agent ? `指令列：傳話給 ${agentName}` : toClosed && closed ? `指令列：@${closed.hcomName} 已關閉` : recipient ? `指令列：${waking ? '喚醒' : '傳話給'} @${recipient.hcomName}` : '指令列'}
+					label={toAgent && agent ? `指令列：傳話給 ${agentName}` : toClosed && closed ? `指令列：@${lastSegment(closed.hcomName)} 已關閉` : recipient ? `指令列：${waking ? '喚醒' : '傳話給'} @${lastSegment(recipient.hcomName)}` : '指令列'}
 					placeholder={toAgent && agentBlocked
 						? agentBlocked
 						: toClosed
@@ -389,7 +389,7 @@
 				開新一輪 LAT
 			</label>
 			<p class="note">
-				@{recipient.hcomName} {recipient.status === 'closed' ? '已關閉' : recipient.status === 'working' ? '已停用 LAT（正在工作）' : '閒置中'}。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪
+				<span title="@{recipient.hcomName}">@{lastSegment(recipient.hcomName)}</span> {recipient.status === 'closed' ? '已關閉' : recipient.status === 'working' ? '已停用 LAT（正在工作）' : '閒置中'}。它的分頁還開著就直接送進去；分頁已關會在 Herdr 開新分頁接回這段對話，並開始消耗額度。勾選「開新一輪
 				LAT」會在前面加上 LAT 啟動指令。
 			</p>
 			{#if abandonable[id]}
