@@ -7,7 +7,8 @@ controller (the `preauth` field of this round's session record). Each key is rea
 narrowest layer that sets it: controller > project > global. `check` answers allow or ask for
 one action after the fixed conditions the tool enforces (branch list, the full-suite gate's
 passing records, which tickets the unpushed commits belong to, main checkout at the
-integration branch's tip); `show` prints the effective settings and where each value came
+integration branch's tip); with --precedent, an earlier human answer to the same action stands
+in for `allow` when no layer sets it, and the fixed conditions still hold. `show` prints the effective settings and where each value came
 from. Any unreadable or unknown setting makes every check ask. `grant` writes one rule that a
 human-answered decision record names; `record` logs what was done under pre-authorization and
 `report` lists this round's log for the delivery report. The tool never runs the action itself.
@@ -28,7 +29,8 @@ import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 from _lat_common import shared_lat_dir, write_json_atomic, write_text_atomic
-from lat_decision_status import read_decision_session, read_decision_status
+from lat_decision_status import (read_decision_action, read_decision_session,
+                                 read_decision_status)
 
 LAYERS = ('controller', 'project', 'global')  # narrowest first
 ACTIONS = {'merge': 'merge into the integration branch', 'push': 'push to the remote',
@@ -354,7 +356,38 @@ def resolve_version(top, ref):
     return git(top, 'rev-parse', '--verify', '--quiet', f'{ref}^{{commit}}') if top else None
 
 
-def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
+def decisions_dir(top, session):
+    """The decisions directory the round's session record names, else the shared default."""
+    try:
+        record = json.loads((shared_lat_dir(top) / 'sessions' / f'{session}.json').read_text())
+        directory = record.get('decisions_path')
+    except (OSError, ValueError, AttributeError, TypeError):
+        directory = None
+    return Path(directory) if isinstance(directory, str) else shared_lat_dir(top) / 'decisions'
+
+
+def precedent_problems(top, session, decision, action):
+    """(problems, the branch the earlier answer approved, or None when its record has no
+    `- action:` line). Whether the answer said yes and was never reversed is the advisors' call."""
+    if top is None:
+        return ['not in a Git repository'], None
+    if not DECISION_ID.fullmatch(decision):
+        return [f'invalid decision record ID `{decision}`'], None
+    path = decisions_dir(top, session) / f'{decision}.md'
+    problems, text = human_answer_problems(path)
+    if not text:
+        return problems, None
+    named = read_decision_action(path)
+    if named is None:
+        return problems, None
+    if named[0] != action:
+        problems.append(f'earlier answer {decision} is for `{named[0]}`, not `{action}`')
+    elif action in BRANCH_ACTIONS and not named[1]:
+        problems.append(f'earlier answer {decision} names no branch on its `- action:` line')
+    return problems, named[1] or ''
+
+
+def evaluate(action, *, branch=None, commit=None, workspace=None, session=None, precedent=None):
     """The check's verdict as a dict: verdict, action, target, basis lines, reasons."""
     workspace = Path(workspace or Path.cwd())
     session = session or next((os.environ[key] for key in SESSION_ENVS if os.environ.get(key)),
@@ -375,24 +408,45 @@ def evaluate(action, *, branch=None, commit=None, workspace=None, session=None):
     effective = action_settings(layers, action)
     label = f'actions.{action}'
     allow = effective.get('allow')
-    if allow is None:
+    # A set `allow` is the user's decision; an earlier answer only fills in a missing one.
+    set_aside = (f'; {label}.allow is set, so earlier answer {precedent} does not apply'
+                 if precedent else '')
+    by_precedent = precedent and allow is None
+    if by_precedent:
+        problems, approved = precedent_problems(top, session, precedent, action)
+        result['reasons'] += problems
+        if not problems:
+            result['basis'].append(f'earlier answer {precedent} stands in for {label}.allow, '
+                                   'which no layer sets')
+    elif allow is None:
         result['reasons'].append(f'no layer sets {label}.allow')
     elif allow[0] is False:
-        result['reasons'].append(f'{label}.allow=false from {origin(allow[1], allow[2])}')
+        result['reasons'].append(f'{label}.allow=false from {origin(allow[1], allow[2])}'
+                                 + set_aside)
     else:
-        result['basis'].append(describe('allow', *allow, label))
+        result['basis'].append(describe('allow', *allow, label) + set_aside)
     if action in BRANCH_ACTIONS:
         branches = effective.get('branches')
         if not branch:
             result['reasons'].append('--branch is required for this action')
         elif branches is None:
-            result['reasons'].append(f'no layer sets {label}.branches')
+            if not by_precedent:  # on the precedent path the list applies only when set
+                result['reasons'].append(f'no layer sets {label}.branches')
         elif branch not in branches[0]:
             result['reasons'].append(f'branch `{branch}` is not in {label}.branches '
                                      f'{json.dumps(branches[0])} from '
                                      f'{origin(branches[1], branches[2])}')
         else:
             result['basis'].append(describe('branches', *branches, label))
+        if by_precedent and branch and approved is not None:
+            if approved and approved != branch:
+                result['reasons'].append(f'branch `{branch}` is not the branch earlier answer '
+                                         f'{precedent} approved (`{approved}`)')
+            elif approved:
+                result['basis'].append(f'earlier answer {precedent} approved branch `{branch}`')
+        elif by_precedent and branch:
+            result['basis'].append(f'earlier answer {precedent} has no `- action:` line; the '
+                                   'advisors must name its branch in `- authority:`')
     ledger = round_ledger(top, session) if action in GATE_ACTIONS else None
     version = None
     if action in MAIN_CHECKOUT_ACTIONS:
@@ -440,7 +494,8 @@ def verdict_line(result):
 
 def cmd_check(args):
     result = evaluate(args.action, branch=args.branch, commit=args.commit,
-                      workspace=args.workspace, session=args.session_id)
+                      workspace=args.workspace, session=args.session_id,
+                      precedent=args.precedent)
     print(json.dumps(result, ensure_ascii=False, indent=2) if args.json else verdict_line(result))
     return 0 if result['verdict'] == 'allow' else 1
 
@@ -974,6 +1029,9 @@ def build_parser():
     sub.add_argument('--action', required=True, help=', '.join(ACTIONS))
     sub.add_argument('--branch', help='target branch (merge, push)')
     sub.add_argument('--commit', help='commit the action uses')
+    sub.add_argument('--precedent', metavar='DECISION_ID',
+                     help='earlier human-answered decision record for the same action; it '
+                          'stands in for allow only when no layer sets allow')
     sub.add_argument('--json', action='store_true')
     commands.add_parser('show', parents=[common],
                         help='effective settings and where each value came from')

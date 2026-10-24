@@ -8,9 +8,12 @@ never sends anything. Hand-written cards and briefs stay allowed.
 
 With --ledger, `card` also opens and assigns a row in the LAT work ledger (lat-ledger.py) and
 writes the row into the card; `brief` then carries the row and the start/update/done commands.
+With --preauth, `brief` runs lat-preauth's check for each named action and carries the ones
+that are pre-authorized right now.
 """
 import argparse
 from datetime import date
+import importlib.util
 import json
 import os
 from pathlib import Path
@@ -69,6 +72,16 @@ LEDGER_FIXED = '''
   - At each checkpoint: `{cmd} update {row} --ledger {ledger_arg} --by {agent} --progress '<one sentence>'`; when the estimate or deadline moves, add `--eta` or `--deadline` and `--reason`.
   - Close, with the evidence the row declares (a commit, a suite-gate fingerprint and/or a report file; the tool checks it exists): `{cmd} done {row} --ledger {ledger_arg} --by {agent} --commit <sha> --gate <fingerprint> --file <absolute path>` (pass only the kinds the row declares).
 - `done` writes `status` and `deliverable commit` into the task card; do not fill them by hand.
+'''
+PREAUTH_REQUEST = re.compile(r'([a-z][a-z-]*)(?::(\S+))?')
+PREAUTH_FIXED = '''## Pre-authorized actions (lat-preauth check when this brief was made)
+
+{lines}
+
+These held when the brief was made; the conditions behind them (branch list, full-suite gate, main checkout at the integration branch's tip) can change before you act. Right before acting, rerun `{check}`. Act without asking only if it still prints allow, then report the action, the commit and that line to {orchestrator} so it logs them with `lat-preauth record`.
+{notices}'''
+PREAUTH_NOTICES = '''
+Deploying and installing ({actions}) also need two HCOM notices that {orchestrator} itself sends to the other controllers. After the recheck, ask {orchestrator} for the before notice and start only after it confirms it was sent; note the start time in ISO form with a time zone. When done, succeeded or failed, report the start time and the result to {orchestrator} so it sends the after notice and logs the action.
 '''
 LEDGER_MISSING = '''
 ## Work ledger
@@ -288,6 +301,52 @@ def split_sections(text):
     return {title: '\n'.join(lines).strip('\n') for title, lines in bodies.items()}, problems
 
 
+def load_preauth():
+    path = Path(__file__).resolve().parent / 'lat-preauth.py'
+    spec = importlib.util.spec_from_file_location('lat_preauth', path)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
+def preauth_part(args, workspace, orchestrator):
+    """The pre-authorized-actions section for the --preauth requests that check allows, or
+    None when none does; the ones that ask are named on stderr."""
+    requests = []
+    for request in args.preauth or ():
+        match = PREAUTH_REQUEST.fullmatch(request)
+        if not match:
+            raise Failure(f'--preauth must be ACTION or ACTION:BRANCH, not {request!r}')
+        requests.append(match.groups())
+    if not requests:
+        return None
+    preauth = load_preauth()
+    session = args.session_id or next(
+        (os.environ[key] for key in preauth.SESSION_ENVS if os.environ.get(key)), None)
+    lines, notified = [], []
+    for action, branch in requests:
+        result = preauth.evaluate(action, branch=branch, workspace=workspace, session=session)
+        line = preauth.verdict_line(result)
+        if result['verdict'] == 'allow':
+            lines.append(f'- {line}')
+            notified += [action] if action in preauth.MAIN_CHECKOUT_ACTIONS else []
+        else:
+            print(f'lat-dispatch: not pre-authorized, left out of the brief: {line}',
+                  file=sys.stderr)
+    if not lines:
+        return None
+    check = ['uv', 'run', '--no-project', 'python',
+             str(Path(__file__).resolve().parent / 'lat-preauth.py'), 'check',
+             '--workspace', str(workspace)]
+    if session:
+        check += ['--session-id', session]
+    check = shlex.join(check) + ' --action <action> [--branch <branch>]'
+    notices = PREAUTH_NOTICES.format(actions=', '.join(dict.fromkeys(notified)),
+                                     orchestrator=orchestrator) if notified else ''
+    return PREAUTH_FIXED.format(lines='\n'.join(lines), check=check, orchestrator=orchestrator,
+                                notices=notices)
+
+
 def make_brief(args):
     card = read_card(args.card)
     source = Path(args.input)
@@ -328,6 +387,9 @@ def make_brief(args):
     parts.append('## Task card live actions and preflight (authoritative; copied from the card)\n\n'
                  f'- live actions：{card["live actions"]}\n- preflight：{card["preflight"]}\n\n'
                  f'{LIVE_RULES}\n')
+    preauth = preauth_part(args, workspace, card['orchestrator'])
+    if preauth:
+        parts.append(preauth)
     fixed = FIXED.format(
         workdir=workdir, orchestrator=card['orchestrator'], agent=card['agent'],
         card=card_path, card_rule=CARD_RULE_READ_ONLY if args.read_only else CARD_RULE,
@@ -388,6 +450,11 @@ def build_parser():
                        help='main workspace; default derived from the card location')
     brief.add_argument('--lat-dir', type=Path, default=LAT_DIR,
                        help='LAT skill directory used in the wait/alarm commands')
+    brief.add_argument('--preauth', action='append', metavar='ACTION[:BRANCH]',
+                       help='action the task may take (e.g. merge:dev, deploy-test); repeatable. '
+                            'Those lat-preauth check allows now go into the brief')
+    brief.add_argument('--session-id', help='controller session ID for --preauth; default '
+                                            '$CLAUDE_CODE_SESSION_ID, then $CODEX_THREAD_ID')
     return parser
 
 

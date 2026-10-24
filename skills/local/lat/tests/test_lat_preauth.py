@@ -496,8 +496,10 @@ class WriteCase(PreauthCase):
         self.decisions = self.repo / '.lat' / 'decisions'
 
     def decision(self, identifier, grants=(), *, status='answered', answer=True,
-                 session=SESSION, time='2026-10-25T00:30:34+08:00'):
-        text = f'# Q\n- version: r1\n- status: {status}\n- session: {session}\n\n## 問題與選項\n'
+                 session=SESSION, time='2026-10-25T00:30:34+08:00', action=None):
+        text = f'# Q\n- version: r1\n- status: {status}\n- session: {session}\n'
+        text += f'- action: {action}\n' if action else ''
+        text += '\n## 問題與選項\n'
         text += '- grant: global push allow=true branches=dev\n'  # outside the approved scope
         if answer:
             text += '\n' + ANSWER.format(time=time, id=identifier)
@@ -776,6 +778,103 @@ class RecordTests(WriteCase):
         self.assertEqual(grants, '設定寫入\n- 無\n')
         self.session(None, status='ended', history=1)
         self.assertIn('abc123', self.run_tool('report').stdout)
+
+
+class PrecedentTests(WriteCase):
+    """check --precedent: a set `allow` wins; otherwise the earlier answer fills it in and the
+    fixed conditions still hold."""
+
+    def setUp(self):
+        super().setUp()
+        remote = self.root / 'remote.git'
+        git(self.root, 'init', '-q', '--bare', str(remote))
+        git(self.repo, 'remote', 'add', 'origin', str(remote))
+        git(self.repo, 'push', '-q', 'origin', 'dev')
+        git(self.repo, 'branch', 'main')
+        self.commit('feat(lat): mine (#313)')
+        self.gate_record()
+
+    def precedent(self, action, *extra):
+        return self.check(action, *extra, '--precedent', 'OLD-1')
+
+    def test_a_set_allow_false_asks_even_with_an_earlier_yes(self):
+        self.write(self.global_file, '[actions.deploy-prod]\nallow = false\n')
+        self.decision('OLD-1', action='deploy-prod')
+        verdict = self.precedent('deploy-prod')
+        self.assertEqual(verdict['verdict'], 'ask')
+        self.assertIn('actions.deploy-prod.allow=false from global; actions.deploy-prod.allow '
+                      'is set, so earlier answer OLD-1 does not apply', verdict['reasons'])
+
+    def test_a_set_allow_keeps_its_branch_list_over_the_earlier_answer(self):
+        self.write(self.global_file, '[actions.push]\nallow = true\nbranches = ["dev"]\n')
+        self.decision('OLD-1', action='push main')
+        verdict = self.precedent('push', '--branch', 'main')
+        self.assertEqual(verdict['verdict'], 'ask')
+        self.assertIn('branch `main` is not in actions.push.branches ["dev"] from global',
+                      verdict['reasons'][0])
+
+    def test_branch_list_alone_and_the_same_branch_allow_push(self):
+        self.write(self.global_file, '[actions.push]\nbranches = ["dev"]\n')
+        self.decision('OLD-1', action='push dev')
+        self.assertEqual(self.check('push', '--branch', 'dev')['reasons'],
+                         ['no layer sets actions.push.allow'])
+        verdict = self.precedent('push', '--branch', 'dev')
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+        self.assertIn('earlier answer OLD-1 stands in for actions.push.allow, which no layer '
+                      'sets', verdict['basis'])
+        self.assertIn('earlier answer OLD-1 approved branch `dev`', verdict['basis'])
+        with self.subTest('the earlier answer approved main, a branch outside the list'):
+            self.decision('OLD-1', action='push main')
+            reasons = self.precedent('push', '--branch', 'main')['reasons']
+            self.assertIn('branch `main` is not in actions.push.branches', reasons[0])
+            self.assertEqual(self.precedent('push', '--branch', 'dev')['reasons'], [
+                'branch `dev` is not the branch earlier answer OLD-1 approved (`main`)'])
+        with self.subTest('with no list set, only the approved branch'):
+            self.write(self.global_file, '')
+            self.assertEqual(self.precedent('push', '--branch', 'dev')['reasons'], [
+                'branch `dev` is not the branch earlier answer OLD-1 approved (`main`)'])
+            self.decision('OLD-1', action='push dev')
+            self.assertEqual(self.precedent('push', '--branch', 'dev')['verdict'], 'allow')
+        with self.subTest('the fixed conditions still hold'):
+            self.commit('chore: no ticket', 'c.txt')
+            self.gate_record()
+            reasons = self.precedent('push', '--branch', 'dev')['reasons']
+            self.assertIn("unpushed commits outside this round's tickets", reasons[0])
+
+    def test_target_alone_and_an_earlier_yes_allow_deploy_test(self):
+        self.write(self.project_file, '[actions.deploy-test]\ntarget = "staging on :9000"\n')
+        self.decision('OLD-1', action='deploy-test')
+        self.assertEqual(self.check('deploy-test')['reasons'],
+                         ['no layer sets actions.deploy-test.allow'])
+        verdict = self.precedent('deploy-test')
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+        self.assertIn('target="staging on :9000" from project [actions.deploy-test]',
+                      verdict['basis'])
+        with self.subTest('the fixed conditions still hold'):
+            git(self.repo, 'checkout', '-q', 'main')
+            self.assertIn('HEAD is not the tip of integration branch `dev`',
+                          self.precedent('deploy-test')['reasons'])
+
+    def test_the_earlier_record_must_hold_a_human_answer_to_the_same_action(self):
+        self.write(self.project_file, '[actions.deploy-test]\ntarget = "staging"\n')
+        self.decision('OLD-1', status='pending', answer=False, action='deploy-test')
+        reasons = self.precedent('deploy-test')['reasons']
+        self.assertIn('OLD-1 status is pending, not answered or approved', reasons)
+        self.assertIn('OLD-1 has no answer section with a `- 來源：` line', reasons)
+        self.decision('OLD-1', action='install-host')
+        self.assertEqual(self.precedent('deploy-test')['reasons'],
+                         ['earlier answer OLD-1 is for `install-host`, not `deploy-test`'])
+        self.assertEqual(self.check('deploy-test', '--precedent', 'NOPE')['verdict'], 'ask')
+
+    def test_without_an_action_line_the_advisors_name_the_branch(self):
+        self.decision('OLD-1')
+        verdict = self.precedent('push', '--branch', 'dev')
+        self.assertEqual(verdict['verdict'], 'allow', verdict['reasons'])
+        self.assertIn('earlier answer OLD-1 has no `- action:` line; the advisors must name its '
+                      'branch in `- authority:`', verdict['basis'])
+        self.decision('OLD-1', action='push')
+        self.assertEqual(self.precedent('push', '--branch', 'dev')['reasons'],
+                         ['earlier answer OLD-1 names no branch on its `- action:` line'])
 
 
 if __name__ == '__main__':
