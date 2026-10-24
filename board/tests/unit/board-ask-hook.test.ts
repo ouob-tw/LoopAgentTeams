@@ -5,7 +5,7 @@ import { chmodSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, ut
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { afterEach, beforeEach, expect, test } from 'bun:test';
-import { readAsks, takeAsk } from '../../src/lib/server/board-asks.ts';
+import { HEARTBEAT_MS, readAsks, takeAsk } from '../../src/lib/server/board-asks.ts';
 
 const HOOK = join(import.meta.dir, '../../hooks/board-ask.py');
 
@@ -115,6 +115,17 @@ test('the deadline with no answer takes the ask as timed out and leaves the clie
 	expect(readAsks(dir)[0]).toMatchObject({ id: ask.id, state: 'timed_out' });
 	// The board's answer comes too late: the result is taken.
 	expect(takeAsk(dir, ask.id, { 'Pick a color?': 'Red', 'Pick fruits?': 'Apple' })).toBe(false);
+});
+
+test('by default the hook waits 10 minutes, and a heartbeat up to 90 seconds old counts as a running board', async () => {
+	// Three beats fit in the 90 seconds, so one late beat does not turn the board off.
+	expect(HEARTBEAT_MS).toBe(30_000);
+	beat(85);
+	const run = hook(input(), { LAT_BOARD_ASK_WAIT_SECONDS: '' });
+	const ask = await waitingAsk();
+	expect(Date.parse(ask.deadlineAt) - Date.parse(ask.createdAt)).toBe(600_000);
+	takeAsk(dir, ask.id, { 'Pick a color?': 'Red', 'Pick fruits?': 'Apple' });
+	expect(JSON.parse((await run.done).stdout).hookSpecificOutput.permissionDecision).toBe('allow');
 });
 
 const passes: [string, () => { payload: unknown; env?: Record<string, string> }][] = [
