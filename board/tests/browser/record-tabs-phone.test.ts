@@ -133,10 +133,20 @@ const shownWhole = (shape: Strip, id: string) => {
 	return button.left >= shape.strip.left - 1 && button.right <= shape.strip.right + 1;
 };
 
+/** Wait until a tab is whole in view; the strip moves after the tab opens. */
+async function untilShownWhole(id: string) {
+	const deadline = Date.now() + 5_000;
+	while (!shownWhole(await strip(), id)) {
+		if (Date.now() > deadline) throw new Error(`${id} not whole in view: ${JSON.stringify(await strip())}`);
+		await Bun.sleep(50);
+	}
+}
+
 for (const { page, search, ids, prefix } of PAGES) {
 	test.skipIf(!CHROME)(`${page}'s page at 390px with the largest text: one line a tab, the strip scrolls, the open tab in view`, async () => {
 		await visit(search, 390, 24);
-		await tab.until(`document.querySelectorAll('[role="tab"]').length === ${ids.length} && !!document.querySelector('.translate')`, 'the tab strip');
+		// Every count in, as one arriving later widens its tab.
+		await tab.until(`document.querySelectorAll('[role="tab"]').length === ${ids.length} && document.querySelectorAll('[role="tab"] small').length === ${ids.length - 1} && !!document.querySelector('.translate')`, 'the tab strip and its counts');
 		let shape = await strip();
 		expect(shape.tabs.map((entry) => entry.id)).toEqual([...ids]);
 		for (const entry of shape.tabs) expect({ id: entry.id, lines: entry.lines, oneLine: entry.oneLine }).toEqual({ id: entry.id, lines: 1, oneLine: true });
@@ -156,14 +166,14 @@ for (const { page, search, ids, prefix } of PAGES) {
 
 		// Back at the start, the last tab opened by a tap is brought into view whole.
 		await tab.eval(`document.querySelector('[role="tablist"]').scrollLeft = 0`);
-		await tab.eval(`document.querySelector('#${prefix}${ids.at(-1)}').click()`);
-		await tab.until(`document.querySelector('#${prefix}${ids.at(-1)}').getAttribute('aria-selected') === 'true'`, 'the last tab open');
-		expect(shownWhole(await strip(), ids.at(-1)!)).toBe(true);
+		// Tapped until it opens: a tap before the page is ready does nothing.
+		await tab.until(`(document.querySelector('#${prefix}${ids.at(-1)}').click(), document.querySelector('#${prefix}${ids.at(-1)}').getAttribute('aria-selected') === 'true')`, 'the last tab open');
+		await untilShownWhole(ids.at(-1)!);
 		// The arrow key from the last tab goes round to the first, and brings it into view too.
 		await tab.eval(`document.querySelector('#${prefix}${ids.at(-1)}').focus()`);
 		await tab.send('Input.dispatchKeyEvent', { type: 'keyDown', key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39 });
 		await tab.until(`document.querySelector('#${prefix}transcript').getAttribute('aria-selected') === 'true'`, 'the first tab open');
-		expect(shownWhole(await strip(), 'transcript')).toBe(true);
+		await untilShownWhole('transcript');
 		expect(tab.errors).toEqual([]);
 	}, 60_000);
 
@@ -196,12 +206,12 @@ for (const { page, search, ids, prefix } of PAGES) {
 
 test.skipIf(!CHROME)('opening a report from the controller page brings the conversation tab back into view', async () => {
 	await visit('?agent=s-lead', 390, 24);
-	await tab.until(`!!document.querySelector('#tab-reports')`, 'the tab strip');
-	await tab.eval(`document.querySelector('#tab-reports').click()`);
-	await tab.until(`!!document.querySelector('#panel-reports:not([hidden]) button.main')`, 'the reports');
+	await tab.until(`document.querySelectorAll('[role="tab"] small').length === 3`, 'the tab strip and its counts');
+	// Clicked until its panel shows: a click before the page is ready does nothing.
+	await tab.until(`(document.querySelector('#tab-reports').click(), !!document.querySelector('#panel-reports:not([hidden]) button.main'))`, 'the reports');
 	await tab.eval(`document.querySelector('[role="tablist"]').scrollLeft = 1e6`);
 	expect(shownWhole(await strip(), 'transcript')).toBe(false);
 	await tab.eval(`document.querySelector('#panel-reports button.main').click()`);
 	await tab.until(`document.querySelector('#tab-transcript').getAttribute('aria-selected') === 'true'`, 'the conversation open');
-	expect(shownWhole(await strip(), 'transcript')).toBe(true);
+	await untilShownWhole('transcript');
 }, 60_000);
