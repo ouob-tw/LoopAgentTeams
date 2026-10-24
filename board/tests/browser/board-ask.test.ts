@@ -176,6 +176,36 @@ test('after the deadline the card says an answer goes as a message; of two brows
 	expect(sent[0][3]).toContain('問題：Pick a color?');
 }, 60_000);
 
+test('a timed-out card stays on the page of an agent that left Herdr\'s list, and answering it there sends nothing', async () => {
+	const stopped = ask([QUESTIONS[0]], { LAT_BOARD_ASK_WAIT_SECONDS: '1' });
+	const tab = await open();
+	await stopped;
+	await tab.eval(`document.querySelector('[data-agent="s-ask"]').click()`);
+	await tab.until(`document.querySelector('${card}[data-state="timed_out"]')`, 'the timed-out card');
+	await choose(tab, 0, 'Red');
+	// Closed in Herdr; hcom still lists it.
+	const herdr = join(fixture.dir, 'herdr.json');
+	const listed = readFileSync(herdr, 'utf8');
+	writeFileSync(herdr, JSON.stringify({ ...JSON.parse(listed), agents: [], tabs: [] }));
+	fixture.setHcom({ agents: [{ name: 'asker', session_id: 's-ask', status: 'listening' }] });
+	try {
+		await fixture.refresh(cookie);
+		await tab.until(`document.querySelector('.detail').innerText.includes('這個 Agent 已不在 Herdr 的清單上')`, 'the page to say it left');
+		expect(await tab.eval(`document.querySelector('${card}')?.dataset.state`)).toBe('timed_out');
+		const calls = join(fixture.dir, 'herdr-calls.jsonl');
+		const before = existsSync(calls) ? readFileSync(calls, 'utf8') : '';
+		await tab.eval(`document.querySelector('${sendButton}').click()`);
+		await tab.until(`document.querySelector('${card}').dataset.state === 'gone'`, 'the card to read Agent 已不在');
+		expect(await tab.eval(`document.querySelector('${card} [role="status"]').innerText`)).toBe('Agent 已不在，無法送出');
+		expect(await tab.eval(`document.querySelectorAll('${card} button').length`)).toBe(0);
+		expect(existsSync(calls) ? readFileSync(calls, 'utf8') : '').toBe(before);
+	} finally {
+		writeFileSync(herdr, listed);
+		fixture.setHcom({ agents: [] });
+		await fixture.refresh(cookie);
+	}
+}, 60_000);
+
 test('a LAT controller asking through the menu is denied: no card on the board and nothing new in 待辦', async () => {
 	// The real panel helper reads a registry that binds this session as a controller.
 	const panel = join(fixture.dir, 'panel-config');

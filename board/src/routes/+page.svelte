@@ -22,6 +22,7 @@
 	import { everyController, type InboxItem, type KnownAgent } from '#lib/board/types.ts';
 	import AgentInfo from '#lib/components/AgentInfo.svelte';
 	import AgentList from '#lib/components/AgentList.svelte';
+	import BoardAskCard from '#lib/components/BoardAskCard.svelte';
 	import ClosedAgentInfo from '#lib/components/ClosedAgentInfo.svelte';
 	import ClosedAgents from '#lib/components/ClosedAgents.svelte';
 	import CommandLine from '#lib/components/CommandLine.svelte';
@@ -183,6 +184,9 @@
 	/** The open agent of the Herdr 分頁; undefined once Herdr no longer lists it. */
 	const agentId = $derived(view?.kind === 'agent' ? view.id : null);
 	const agent = $derived(agentId === null ? undefined : agents.find((candidate): candidate is KnownAgent => candidate.id === agentId));
+	/** The open agent's board asks, oldest first: still shown once it left Herdr's list, so a timed-out
+	 *  one can be answered there and read Agent 已不在 after. */
+	const agentAsks = $derived(agentId === null ? [] : board.snapshot.asks.filter((ask) => ask.sessionId === agentId));
 	/** The open agent while the 已關閉 section lists it instead: once 接回 brings it back to Herdr,
 	 *  its page is the agent's again. */
 	const closedAgent = $derived(agentId === null || agent ? undefined : closed.agents.find((candidate) => candidate.id === agentId));
@@ -482,11 +486,18 @@
 					{#if agent && agentController}
 						<ControllerPage {board} controller={agentController} {agent} {known} {openKey} {listed} onopen={openItem} oncontroller={openController} />
 					{:else if agent}
-						<AgentInfo {agent} asks={board.snapshot.asks.filter((ask) => ask.sessionId === agent.id)} />
-					{:else if closedAgent}
-						<ClosedAgentInfo agent={closedAgent} timeZone={closed.timeZone} controllers={herdrControllers} />
+						<AgentInfo {agent} asks={agentAsks} />
 					{:else}
-						<p class="empty">這個 Agent 已不在 Herdr 的清單上：它已關閉。</p>
+						<div class="left-herdr">
+							{#if closedAgent}
+								<ClosedAgentInfo agent={closedAgent} timeZone={closed.timeZone} controllers={herdrControllers} />
+							{:else}
+								<p class="empty">這個 Agent 已不在 Herdr 的清單上：它已關閉。</p>
+							{/if}
+							{#each agentAsks.toReversed() as ask (ask.id)}
+								<BoardAskCard {ask} />
+							{/each}
+						</div>
 					{/if}
 				{:else if view.kind === 'launch'}
 					<NewController {controllers} {agents} {workspaces} stamp={board.snapshot.generatedAt} onopen={openController} onagent={openAgent} />
@@ -804,6 +815,11 @@
 	.empty {
 		margin: 0;
 		color: var(--muted);
+	}
+	.left-herdr {
+		display: flex;
+		flex-direction: column;
+		gap: 0.8rem;
 	}
 	@media (min-width: 761px) {
 		/* Tighter gaps between the three columns. */
