@@ -2179,8 +2179,9 @@ def ledger_dues(item):
     return {f'{kind}:{item["id"]}:{text}': (kind, due, text) for kind, (due, text) in dues.items()}
 
 
-def ledger_message(kind, item, location, now, due):
-    late = int((now - due) // 60)
+def ledger_message(kind, item, location, now, notified_at=None):
+    late = None if kind == 'start' else int(
+        (now - ledger_time(item['estimate' if kind == 'estimate' else 'deadline'])) // 60)
     ledger = f'uv run --no-project python {shlex.quote(str(LEDGER_SCRIPT))}'
     where = f'--ledger {shlex.quote(str(location))}'
     name = f'Ledger item {item["id"]} ({item["ticket"]})'
@@ -2203,18 +2204,27 @@ def ledger_message(kind, item, location, now, due):
                 'the user is notified.')
     return (f'LAT stall watcher: ledger item {item["id"]} ({item["ticket"]}) owned by {owner} '
             f'passed its deadline {item["deadline"]} by {late} minutes. The orchestrator was '
-            'notified 10 minutes ago and its status, owner and deadline are unchanged. '
-            f'Ledger: {location}.')
+            f'notified {int((now - notified_at) // 60)} minutes ago and its status, owner and '
+            f'deadline are unchanged since. Ledger: {location}.')
 
 
 def ledger_snapshot(item):
     return [item['status'], item['agent'], item['deadline']]
 
 
+def ledger_handled(item, notice):
+    """True once the row's status, owner or deadline changed after the deadline notice."""
+    since = int(notice['sent_at'])
+    return (notice['snapshot'] != ledger_snapshot(item)
+            or any(ledger_time(entry['at']) >= since
+                   and {'status', 'agent', 'deadline'} & set(entry.get('changes') or {})
+                   for entry in item['history']))
+
+
 def deliver_ledger(kind, item, entry, location, orchestrator, workspace, observe_agent, now,
-                   due):
+                   notified_at=None):
     """Try one due check; return the delivery, None to wait for a later cycle, or raise."""
-    message = ledger_message(kind, item, location, now, due)
+    message = ledger_message(kind, item, location, now, notified_at)
     if kind in ('start', 'estimate'):
         agent = item['agent']
         observation = observe_agent(agent)
@@ -2247,6 +2257,9 @@ def check_ledger(location, saved, orchestrator, workspace, observe_agent, paused
     if location is None:
         return {}
     state = json.loads(json.dumps(saved or {}))
+    if state.get('ledger') != str(location):
+        # Item numbers and times restart with each round's ledger.
+        state = {'ledger': str(location)}
     deliveries = state.setdefault('deliveries', {})
     try:
         doc = read_ledger(location)
@@ -2260,26 +2273,34 @@ def check_ledger(location, saved, orchestrator, workspace, observe_agent, paused
     state.pop('error', None)
     current = {}
     items = {}
+    open_items = set()
     for item in doc['items']:
+        if item['status'] in ('assigned', 'in_progress', 'blocked'):
+            open_items.add(item['id'])
         for key, due in ledger_dues(item).items():
             current[key] = due
             items[key] = item
-    for key in set(deliveries) - set(current):
-        deliveries.pop(key)
+    # A delivered check stays delivered while its row is open, even when a status change
+    # pauses it; undelivered ones restart from their current due time.
+    for key, entry in list(deliveries.items()):
+        if key not in current and (entry['status'] != 'sent' or entry['item'] not in open_items):
+            deliveries.pop(key)
     nudged = set()
     for key, (kind, due, text) in sorted(current.items(), key=lambda pair: pair[1][1]):
         item = items[key]
         entry = deliveries.get(key)
         if entry and entry['status'] == 'sent':
             continue
+        notified_at = None
         if kind == 'user':
             notice = deliveries.get(key.replace('user:', 'deadline:', 1))
             if not notice or notice['status'] != 'sent' or notice.get('handled'):
                 continue
-            if notice['snapshot'] != ledger_snapshot(item):
+            if ledger_handled(item, notice):
                 notice['handled'] = True
                 continue
-            due = notice['sent_at'] + LEDGER_USER_SECONDS
+            notified_at = notice['sent_at']
+            due = notified_at + LEDGER_USER_SECONDS
         if now < due:
             continue
         entry = deliveries.setdefault(key, {'kind': kind, 'item': item['id'], 'due': text,
@@ -2292,7 +2313,7 @@ def check_ledger(location, saved, orchestrator, workspace, observe_agent, paused
                   'ledger': str(location), 'actions': []}
         try:
             delivery = deliver_ledger(kind, item, entry, location, orchestrator, workspace,
-                                      observe_agent, now, due)
+                                      observe_agent, now, notified_at)
         except (OSError, ValueError, TypeError, KeyError) as error:
             entry['attempts'] += 1
             if entry['status'] != 'failed' or entry.get('error') != str(error):

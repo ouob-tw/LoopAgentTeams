@@ -6300,6 +6300,7 @@ esac
         self.cycles(2460, 2520, 4000, watch=watch)
         user = self.notices('The orchestrator was notified 10 minutes ago')
         self.assertEqual(len(user), 1)
+        self.assertIn('passed its deadline 2026-10-24T00:30:00Z by 11 minutes', user[0])
         self.assertIn('--intent inform', user[0])
         self.assertEqual(len(self.notices('Check the agent')), 2)
         # The idle orchestrator gets its own stall popup; count only the overdue one.
@@ -6318,6 +6319,34 @@ esac
         self.cycles(2400, 3000, watch=watch)
         self.assertEqual(len(self.notices('Check the agent')), 1)
         self.assertEqual(self.records('ledger-user-notified'), [])
+
+    def test_block_and_unblock_between_polls_counts_as_handling(self):
+        self.assign(deadline='+30m')
+        watch = self.cycles(1800)
+        self.ledger('block', 1, '--reason', 'waits for TEVU-1', at=1810)
+        self.ledger('unblock', 1, '--reason', 'answered', at=1820)
+        self.cycles(1860, 2400, 2500, watch=watch)
+        self.assertEqual(self.records('ledger-user-notified'), [])
+
+    def test_a_delivered_estimate_is_not_repeated_after_block_and_unblock(self):
+        self.assign()
+        self.ledger('start', 1, '--eta', '+5m', at=60)
+        watch = self.cycles(360)
+        self.ledger('block', 1, '--reason', 'waits for TEVU-1', at=400)
+        self.cycles(420, watch=watch)
+        self.ledger('unblock', 1, at=440)
+        self.cycles(480, 540, watch=watch)
+        self.assertEqual(len(self.injects('passed your estimate')), 1)
+
+    def test_a_new_round_ledger_starts_with_no_deliveries(self):
+        self.assign(deadline='+30m')
+        watch = self.cycles(1800)
+        self.ledger_path = self.work / '.lat/ledgers/next.json'
+        self.ledger('init', '--workspace', self.work)
+        self.ledger('add', '--ticket', '#1', '--stage', 'impl', '--evidence', 'file')
+        self.assign(deadline='+30m')
+        self.cycles(1860, watch=watch)
+        self.assertEqual(len(self.notices('Check the agent')), 2)
 
     def test_blocked_item_is_not_nudged_but_its_deadline_is_reported_once(self):
         self.assign(deadline='+30m')
