@@ -2,8 +2,8 @@
 // frame and every part inside, not a pill's round ends; a chosen model's and effort's names are not
 // cut at a phone's width with the largest smallest-text size. The buttons and boxes around it keep
 // the corners they had. Both themes, on a phone and a wide screen, for a closed controller's picker
-// (names picked to wake it with) and an agent's. Headless Chrome over its DevTools protocol, on the built board with fake data. Skipped
-// when the host has no Chrome.
+// (names picked to wake it with) and an agent's. Headless Chrome over its DevTools protocol, on the
+// built board with fake data. Skipped when the host has no Chrome.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
