@@ -2018,6 +2018,20 @@ def clean_checkout(root, commit):
                  '`git worktree prune`')
 
 
+def copy_included(root, checkout, registry):
+    """Copy the ignored `fingerprint_include` files of root into checkout. The fingerprint
+    takes these files from the work tree, so the checkout gets the original tree's ignored
+    ones and its records match that tree; tracked and new files stay as checked out."""
+    found = sorted({str(p.relative_to(root)) for pattern in include_patterns(registry)
+                    for p in root.glob(pattern) if p.is_file()})
+    if found:
+        for rel in _git_paths(['ls-files', '--others', '--ignored', '--exclude-standard',
+                               '--', *found], root):
+            target = checkout / rel
+            target.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(root / rel, target)
+
+
 def prepare_dependencies(directory):
     """Install the dependencies directory's lockfile names; what failed, or None. It runs
     in its own session, ended with whatever it left running however it ends."""
@@ -2078,17 +2092,7 @@ def cmd_run_registered(names, rerun, purpose, reason):
         except ValueError as exc:
             warn(f'run --registered: {exc}')
             return 2
-        # The fingerprint takes these files from the work tree, so the checkout gets the
-        # original tree's ignored ones and its records match that tree; tracked and new
-        # files stay as HEAD has them.
-        found = sorted({str(p.relative_to(root)) for pattern in include_patterns(registry)
-                        for p in root.glob(pattern) if p.is_file()})
-        if found:
-            for rel in _git_paths(['ls-files', '--others', '--ignored', '--exclude-standard',
-                                   '--', *found], root):
-                target = checkout / rel
-                target.parent.mkdir(parents=True, exist_ok=True)
-                shutil.copy2(root / rel, target)
+        copy_included(root, checkout, registry)
         unknown = [n for n in names if not any(named(s, n) for s in suites)]
         if unknown:
             warn(f"run --registered: no registered full suite {', '.join(unknown)}; the "
@@ -2377,45 +2381,69 @@ def cmd_affected(base):
         for path in changed:
             warn(f'  {path}')
         selected, fallback = select_tests(root, changed, amap, commit)
-        groups = {}
-        for test in sorted(selected):
-            directory = command_dir(test, amap['commands'])
-            if directory is None:
-                fallback.append((test, 'no affected.commands directory holds this test'))
-            else:
-                groups.setdefault(directory, []).append(test)
-        code = 0
-        if fallback:
-            suites = fallback_suites(amap['suites'], [path for path, _ in fallback])
-            code = run_fallback(root, suites, fallback)
-            # The full suites run the tests in their directories; the rest still run here.
-            groups = {d: kept for d, tests in groups.items()
-                      if (kept := [t for t in tests if not any(
-                          s['cwd'] == '.' or t.startswith(s['cwd'] + '/') for s in suites)])}
-            if not groups:
-                return code
-        elif not groups:
+        code = run_selected(root, amap, selected, fallback, {'base': commit,
+                                                             'changed_files': changed})[0]
+        if code is None:
             warn('no tests selected for this change; nothing to run')
             warn('hint: on an integration branch the base must be given with --base <commit> '
                  '(the commit this work started from); without it the change is empty')
             return 0
-        warn('selected tests:')
-        for test in sorted(t for tests in groups.values() for t in tests):
-            warn(f"  {test}  ({'; '.join(selected[test])})")
-        for directory, tests in groups.items():
-            rel = [t if directory == '.' else t[len(directory) + 1:] for t in tests]
-            text = amap['commands'][directory].replace('{tests}', ' '.join(map(shlex.quote, rel)))
-            cwd = root if directory == '.' else root / directory
-            warn(f'running in {directory}: {text}')
-            gate = Gate([text], cwd, None, load_config(), {
-                'kind': 'affected', 'reusable': False, 'base': commit,
-                'changed_files': changed, 'selected_tests': tests,
-                'why': {t: selected[t] for t in tests}})
-            info = fingerprint(cwd, [text])
-            result = _drive(gate, lambda: gate.execute(info))
-            code = code or result
         return code
     return _guarded(body)
+
+
+def run_selected(root, amap, selected, fallback, extra, prepare=None, via=None):
+    """Run the selected tests per affected.commands directory, and the full suites a fallback
+    needs, through the gate. (exit code, [(directory, command, tests) that failed]); the code
+    is None when nothing was selected. prepare(cwd) installs a directory's dependencies first
+    and returns what failed, or None; via is recorded as what started the run."""
+    groups = {}
+    for test in sorted(selected):
+        directory = command_dir(test, amap['commands'])
+        if directory is None:
+            fallback.append((test, 'no affected.commands directory holds this test'))
+        else:
+            groups.setdefault(directory, []).append(test)
+    code, failed = 0, []
+
+    def prepared(cwd, what):
+        reason = prepare(cwd) if prepare else None
+        if reason:
+            warn(f'not run: preparing {what} failed ({reason}); this is not a test result')
+        return not reason
+
+    if fallback:
+        suites = fallback_suites(amap['suites'], [path for path, _ in fallback])
+        code, failed = run_fallback(root, suites, fallback, prepared, via)
+        # The full suites run the tests in their directories; the rest still run here.
+        groups = {d: kept for d, tests in groups.items()
+                  if (kept := [t for t in tests if not any(
+                      s['cwd'] == '.' or t.startswith(s['cwd'] + '/') for s in suites)])}
+        if not groups:
+            return code, failed
+    elif not groups:
+        return None, []
+    warn('selected tests:')
+    for test in sorted(t for tests in groups.values() for t in tests):
+        warn(f"  {test}  ({'; '.join(selected[test])})")
+    for directory, tests in groups.items():
+        rel = [t if directory == '.' else t[len(directory) + 1:] for t in tests]
+        text = amap['commands'][directory].replace('{tests}', ' '.join(map(shlex.quote, rel)))
+        cwd = root if directory == '.' else root / directory
+        if not prepared(cwd, directory):
+            code = code or 2
+            failed.append((directory, text, tests))
+            continue
+        warn(f'running in {directory}: {text}')
+        gate = Gate([text], cwd, None, load_config(), dict(
+            extra, kind='affected', reusable=False, selected_tests=tests,
+            why={t: selected[t] for t in tests}, **({'via': via} if via else {})))
+        info = fingerprint(cwd, [text])
+        result = _drive(gate, lambda: gate.execute(info))
+        if result:
+            failed.append((directory, text, tests))
+        code = code or result
+    return code, failed
 
 
 def fallback_suites(suites, triggers):
@@ -2431,20 +2459,29 @@ def fallback_suites(suites, triggers):
     return [s for i, s in enumerate(suites) if i in chosen]
 
 
-def run_fallback(root, suites, fallback):
-    """Run (or reuse) the given full suites through the gate."""
+def run_fallback(root, suites, fallback, prepared=None, via=None):
+    """Run (or reuse) the given full suites through the gate: (exit code, [(directory,
+    command, None) that failed]). prepared(cwd, what) is False when a suite's directory
+    could not be prepared; via is recorded as what started the run."""
     warn('this change needs the full suite (map fallback):')
     for path, why in fallback:
         warn(f'  {path}: {why}')
     triggers = sorted({path for path, _ in fallback})
-    code = 0
+    code, failed = 0, []
     for suite in suites:
         warn(f"full suite in {suite['cwd']}: {suite['command']}")
-        gate = Gate([suite['command']], suite_cwd(root, suite), None, load_config(),
-                    {'purpose': 'map-fallback', 'trigger_files': triggers})
-        result = _drive(gate, gate.run)
+        cwd = suite_cwd(root, suite)
+        if prepared and not prepared(cwd, suite['cwd']):
+            result = 2
+        else:
+            gate = Gate([suite['command']], cwd, None, load_config(),
+                        {'purpose': 'map-fallback', 'trigger_files': triggers,
+                         **({'via': via} if via else {})})
+            result = _drive(gate, gate.run)
+        if result:
+            failed.append((suite['cwd'], suite['command'], None))
         code = code or result
-    return code
+    return code, failed
 
 
 # ---------------------------------------------------------------- test cleanup
@@ -3105,8 +3142,7 @@ def write_file(path, original, after, mode=0o644):
 
 # ---------------------------------------------------------------- pre-push
 
-PRE_PUSH_BEGIN = '# >>> suite-gate pre-push >>>'
-PRE_PUSH_END = '# <<< suite-gate pre-push <<<'
+HOOKS = ('pre-push', 'pre-commit')
 SH_SHEBANG = re.compile(r'#!\s*(?:\S*/)?(?:env\s+)?(?:\S*/)?(?:sh|bash|dash|zsh)(?:\s.*)?')
 
 
@@ -3194,14 +3230,22 @@ def cmd_pre_push():
     return 1
 
 
-PRE_PUSH_CREATED = '# suite-gate created this file; uninstall removes it.\n'
+HOOK_CREATED = '# suite-gate created this file; uninstall removes it.\n'
 
 
-def pre_push_block(created=False):
-    run = shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'pre-push'])
-    return (f'{PRE_PUSH_BEGIN}\n'
-            + (PRE_PUSH_CREATED if created else '') +
-            '# Added by suite-gate.py install-pre-push; remove with uninstall-pre-push.\n'
+def hook_marks(hook):
+    """The lines that open and close this check's block in a Git hook."""
+    return f'# >>> suite-gate {hook} >>>', f'# <<< suite-gate {hook} <<<'
+
+
+def hook_block(hook, created=False):
+    run = shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), hook])
+    begin, end = hook_marks(hook)
+    head = (f'{begin}\n' + (HOOK_CREATED if created else '') +
+            f'# Added by suite-gate.py install-{hook}; remove with uninstall-{hook}.\n')
+    if hook == 'pre-commit':
+        return head + f'{run} || exit 1\n{end}\n'
+    return (head +
             '# The pushed refs are kept for the rest of this hook on stdin.\n'
             'suite_gate_refs=$(mktemp) || exit 1\n'
             'trap \'rm -f "$suite_gate_refs"; exit 1\' HUP INT TERM\n'
@@ -3210,57 +3254,66 @@ def pre_push_block(created=False):
             'exec < "$suite_gate_refs"\n'
             'rm -f "$suite_gate_refs"\n'
             'trap - HUP INT TERM\n'
-            f'{PRE_PUSH_END}\n')
+            f'{end}\n')
 
 
-def updated_hook(text, action):
-    """The pre-push hook text with this check installed or removed; None removes the file."""
+def updated_hook(text, action, hook='pre-push'):
+    """The hook text with this check installed or removed; None removes the file."""
     lines = (text or '').splitlines(True)
-    marks = [i for i, line in enumerate(lines) if line.rstrip('\n') in (PRE_PUSH_BEGIN,
-                                                                          PRE_PUSH_END)]
-    if marks and [lines[i].rstrip('\n') for i in marks] != [PRE_PUSH_BEGIN, PRE_PUSH_END]:
+    begin, end = hook_marks(hook)
+    marks = [i for i, line in enumerate(lines) if line.rstrip('\n') in (begin, end)]
+    if marks and [lines[i].rstrip('\n') for i in marks] != [begin, end]:
         raise ValueError('the suite-gate block is broken; inspect the hook')
     # Only a file this installer created is removed; any other keeps all its own lines.
-    created = bool(marks) and PRE_PUSH_CREATED in lines[marks[0]:marks[1]]
+    created = bool(marks) and HOOK_CREATED in lines[marks[0]:marks[1]]
     if action == 'uninstall':
         if not marks:
             return text
         rest = lines[:marks[0]] + lines[marks[1] + 1:]
         return None if created and ''.join(rest) == '#!/bin/sh\n' else ''.join(rest)
-    block = pre_push_block(created)
+    block = hook_block(hook, created)
     if marks:
         return ''.join(lines[:marks[0]]) + block + ''.join(lines[marks[1] + 1:])
     if text is None:
-        return '#!/bin/sh\n' + pre_push_block(created=True)
+        return '#!/bin/sh\n' + hook_block(hook, created=True)
     if not lines or not SH_SHEBANG.fullmatch(lines[0].strip()):
-        raise ValueError('the existing pre-push hook is not a sh or bash script, so it was '
+        stdin = ' (passing stdin on)' if hook == 'pre-push' else ''
+        raise ValueError(f'the existing {hook} hook is not a sh or bash script, so it was '
                          'left unchanged. To chain it, move it to another name, make '
-                         'pre-push a sh script that runs it with "$@" (passing stdin on), '
-                         'then install again')
+                         f'{hook} a sh script that runs it with "$@"{stdin}, then install '
+                         'again')
     head = lines[0] if lines[0].endswith('\n') else lines[0] + '\n'
     return head + block + ''.join(lines[1:])
 
 
-def cmd_pre_push_configure(action, repo, preview):
+def cmd_hook_configure(hook, action, repo, preview):
+    """Install or remove this check's block in repo's own Git hook (pre-push or pre-commit)."""
     root = repo_root(Path(repo))
     if root is None:
         raise ValueError(f'{repo} is not a Git work tree')
     if action == 'install':
         registry = load_registry(root)
         if registry is None:
-            raise ValueError(f'no {REGISTRY_NAME} at {root}: the pre-push check is only for '
+            raise ValueError(f'no {REGISTRY_NAME} at {root}: the {hook} check is only for '
                              'repos with a registry')
-        read_full_suites(registry)
+        if hook == 'pre-push':
+            read_full_suites(registry)
+        elif not is_mapped(registry):
+            raise ValueError(f'{root / REGISTRY_NAME} has no affected-test map '
+                             '(`affected.map`); the pre-commit check runs the tests it selects')
+        elif not read_map(registry)['branch']:
+            raise ValueError(f'{root / REGISTRY_NAME} names no integration_branch; the '
+                             'pre-commit check runs only on commits to that branch')
     # Always the repo's own hooks dir: a core.hooksPath may be shared by every repo.
     common = git(['rev-parse', '--git-common-dir'], root).stdout.strip()
-    path = (root / common).resolve() / 'hooks/pre-push'
+    path = (root / common).resolve() / 'hooks' / hook
     active = (root / git(['rev-parse', '--git-path', 'hooks'], root).stdout.strip()).resolve()
     inactive = None
     if action == 'install' and active != path.parent:
         inactive = (f'Installed but NOT active: core.hooksPath={active} runs hooks from '
-                    f'there, not from {path.parent}. Add a hand-over to {active}/pre-push, '
+                    f'there, not from {path.parent}. Add a hand-over to {active}/{hook}, '
                     'for example:\n'
-                    '  local_hook="$(git rev-parse --git-common-dir)/hooks/pre-push"\n'
+                    f'  local_hook="$(git rev-parse --git-common-dir)/hooks/{hook}"\n'
                     '  [ -x "$local_hook" ] && exec "$local_hook" "$@"\n'
                     '  exit 0')
     try:
@@ -3270,9 +3323,9 @@ def cmd_pre_push_configure(action, repo, preview):
     before = original.decode() if original is not None else None
     if action == 'install' and original is not None and not os.access(path, os.X_OK):
         raise ValueError(f'{path} exists but is not executable, so Git ignores it; it was '
-                         'left unchanged. Make it executable (it will then run on every push) '
-                         'or remove it, then install again')
-    after = updated_hook(before, action)
+                         f'left unchanged. Make it executable (it will then run on every '
+                         f'{hook.split("-")[1]}) or remove it, then install again')
+    after = updated_hook(before, action, hook)
     if after == before:
         print(f'No changes: {path}')
     else:
@@ -3288,13 +3341,117 @@ def cmd_pre_push_configure(action, repo, preview):
     return 0
 
 
+# ---------------------------------------------------------------- pre-commit
+
+def staged_tree(root):
+    """Tree hash of the index the commit records (Git names it in GIT_INDEX_FILE while the
+    hook runs), written from a copy so the index itself is untouched."""
+    index = root / git(['rev-parse', '--git-path', 'index'], root).stdout.strip()
+    with tempfile.TemporaryDirectory(prefix='suite-gate-') as tmp:
+        copy = Path(tmp) / 'index'
+        shutil.copy2(index, copy)
+        result = git(['write-tree'], root, dict(os.environ, GIT_INDEX_FILE=str(copy)))
+    if result.returncode != 0:
+        raise RuntimeError(f'git write-tree failed: {result.stderr.strip()}')
+    return result.stdout.strip()
+
+
+def cmd_pre_commit():
+    """Git pre-commit: on the integration branch, run the tests the affected-test map selects
+    for the staged change against HEAD, on the staged content in a temporary checkout, and
+    refuse the commit when any fails. Merge commits are not checked."""
+    root = repo_root(Path.cwd())
+    if root is None:
+        return 0
+    # The staged registry, so an unstaged edit cannot turn the check off; when it is
+    # unreadable HEAD's names the branch, and the check below refuses it.
+    registry = None
+    for rev in ('', 'HEAD'):
+        shown = git(['show', f'{rev}:{REGISTRY_NAME}'], root)
+        if shown.returncode != 0:
+            break
+        try:
+            registry = json.loads(shown.stdout)
+        except ValueError:
+            continue
+        if isinstance(registry, dict):
+            break
+    branch = registry.get('integration_branch') if isinstance(registry, dict) else None
+    if not branch or git(['symbolic-ref', '--quiet', '--short', 'HEAD'],
+                         root).stdout.strip() != branch:
+        return 0
+    if git(['rev-parse', '--quiet', '--verify', 'MERGE_HEAD'], root).returncode == 0:
+        warn('pre-commit: a merge commit; not checked')
+        return 0
+    head = git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], root).stdout.strip()
+    if not head:
+        return 0
+    rerun = shlex.join(['uv', 'run', '--no-project', 'python', str(SCRIPT), 'pre-commit'])
+
+    def body():
+        tree = staged_tree(root)
+        # The tests start Git in other repos (and the checkout has its own index), so none
+        # of the hook's repository settings may reach them.
+        for name in git(['rev-parse', '--local-env-vars'], root).stdout.split():
+            os.environ.pop(name, None)
+        changed = _git_paths(['diff', '--name-only', '--no-renames', head, tree, '--'], root)
+        if not changed:
+            return 0
+        with clean_checkout(root, head) as checkout:
+            result = git(['read-tree', '-u', '--reset', tree], checkout)
+            if result.returncode != 0:
+                raise RuntimeError(f'git read-tree failed: {result.stderr.strip()}')
+            staged = load_registry(checkout)
+            if staged is None and (checkout / REGISTRY_NAME).exists():
+                warn(f'commit refused: the staged {REGISTRY_NAME} is not a readable JSON '
+                     'object. `git commit --no-verify` skips this check.')
+                return 1
+            if not is_mapped(staged or {}):
+                return 0
+            try:
+                amap = read_map(staged)
+            except ValueError as exc:
+                warn(f'commit refused: the staged {REGISTRY_NAME}: {exc}. '
+                     '`git commit --no-verify` skips this check.')
+                return 1
+            copy_included(root, checkout, staged)
+            selected, fallback = select_tests(checkout, changed, amap, head)
+            if not selected and not fallback:
+                return 0
+            warn(f'pre-commit: testing the staged change against HEAD ({len(changed)} '
+                 f'file(s)) in a temporary checkout: {checkout}')
+            prepared = {}
+
+            def prepare(cwd):
+                if cwd not in prepared:
+                    prepared[cwd] = prepare_dependencies(cwd)
+                return prepared[cwd]
+            code, failed = run_selected(checkout, amap, selected, fallback,
+                                        {'base': head, 'changed_files': changed}, prepare,
+                                        'pre-commit')
+        if not code:
+            return 0
+        warn('commit refused: these failed on the staged content:')
+        for directory, command, tests in failed:
+            warn(f"  {directory}: {', '.join(tests) if tests else 'full suite ' + command}")
+        warn(f'Fix them, stage the fix and commit again. To repeat this check on what is '
+             f'staged: cd {shlex.quote(str(root))} && {rerun}')
+        for directory, command, tests in failed:
+            if tests:
+                cwd = root if directory == '.' else root / directory
+                warn(f'  the tests in the work tree: cd {shlex.quote(str(cwd))} && {command}')
+        warn('`git commit --no-verify` skips this check.')
+        return code
+    return _guarded(body)
+
+
 # ---------------------------------------------------------------- entry
 
 def main(argv=None):
     argv = list(sys.argv[1:] if argv is None else argv)
     # A hook that exits 2 would block every command, so only run and status check this.
     if not sys.platform.startswith('linux') and argv[:1] in (['run'], ['status'], ['affected'],
-                                                             ['cleanup-done']):
+                                                             ['cleanup-done'], ['pre-commit']):
         warn('only Linux is supported')
         return 2
     command = []
@@ -3333,9 +3490,11 @@ def main(argv=None):
     pre_push = sub.add_parser('pre-push', help='Git pre-push hook: refuse pushing main or a '
                               'tag without a passing record of every registered full suite')
     pre_push.add_argument('remote', nargs='*', help='remote name and URL, as Git passes them')
-    for action in ('install-pre-push', 'uninstall-pre-push'):
-        config = sub.add_parser(action, help=f'{action.split("-")[0]} the pre-push check in '
-                                'a repo with a registry')
+    sub.add_parser('pre-commit', help='Git pre-commit hook: on the integration branch, run '
+                   'the tests the affected-test map selects on the staged content')
+    for action in (f'{a}-{h}' for h in HOOKS for a in ('install', 'uninstall')):
+        config = sub.add_parser(action, help=f'{action.split("-")[0]} the '
+                                f'{action.split("-", 1)[1]} check in a repo with a registry')
         config.add_argument('--repo', required=True, help='the repo (work tree) to change')
         config.add_argument('--preview', action='store_true', help='show the diff, write nothing')
     for action in ('install', 'uninstall'):
@@ -3365,9 +3524,12 @@ def main(argv=None):
         return cmd_cleanup_done(args.command, args.baseline)
     if args.action == 'pre-push':
         return cmd_pre_push()
-    if args.action in ('install-pre-push', 'uninstall-pre-push'):
+    if args.action == 'pre-commit':
+        return cmd_pre_commit()
+    if args.action.split('-', 1)[-1] in HOOKS:
         try:
-            return cmd_pre_push_configure(args.action.split('-')[0], args.repo, args.preview)
+            action, hook = args.action.split('-', 1)
+            return cmd_hook_configure(hook, action, args.repo, args.preview)
         except (OSError, ValueError) as exc:
             warn(str(exc))
             return 1
