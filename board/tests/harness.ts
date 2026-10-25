@@ -292,12 +292,14 @@ export async function startFixture(
 		password?: string | null;
 		/** What runs the server instead of `NODE`, such as the Bun that runs the tests. */
 		runtime?: string;
+		/** The port to listen on; 0 (the default) lets the system pick one. */
+		port?: number;
 	} = {}
 ): Promise<Fixture> {
 	if (!existsSync(BUILD)) throw new Error('build-test/ is missing: run `bun run build:test` first');
 	const dir = mkdtempSync(join(tmpdir(), 'lat-board-test-'));
 	// Known once the server has said where it listens; a restart asks for the same port again.
-	let port = 0;
+	let port = options.port ?? 0;
 	let url = '';
 	const reportsDir = join(dir, 'reports');
 	const configDir = join(dir, 'herdr-config');
