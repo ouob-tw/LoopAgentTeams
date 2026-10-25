@@ -114,6 +114,8 @@ export class Tab {
 				reject(error);
 			};
 			const timer = setTimeout(() => {
+				// A tab that closed meanwhile fails the request with why it closed, once that is known.
+				if (this.#gone) return;
 				this.#failures.delete(fail);
 				this.#waiting.delete(id);
 				reject(new Error(`no answer from Chrome in ${ms} ms to ${describe(method, params)}`));
@@ -156,18 +158,18 @@ export class Tab {
 	/** Wait for an expression in the page to be true. */
 	async until(expression: string, what = expression, ms = 10_000) {
 		const deadline = Date.now() + ms;
-		// A check that is never answered ends with the deadline, or CHECK_MS after it, not at Bun's timeout.
-		let unanswered = '';
+		// A check Chrome does not answer within the time left (at most REQUEST_MS) ends the wait: a page
+		// that stopped answering would only keep the test waiting until Bun's timeout.
 		const check = () =>
-			this.eval(expression, Math.max(deadline - Date.now(), CHECK_MS)).catch((error: Error) => {
+			this.eval(expression, Math.min(Math.max(deadline - Date.now(), CHECK_MS), REQUEST_MS)).catch((error: Error) => {
 				if (this.#gone) throw error;
-				unanswered = error.message.startsWith('no answer from Chrome') ? `; the last check got ${error.message}` : '';
+				if (error.message.startsWith('no answer from Chrome')) throw new Error(`timed out waiting for ${what}: ${error.message}`);
 				return false;
 			});
 		while (!(await check())) {
 			if (Date.now() > deadline) {
 				const shown = this.screen ? `; the page shows ${JSON.stringify(await this.eval(this.screen, SCREEN_MS).catch(() => null))}` : '';
-				throw new Error(`timed out waiting for ${what}${unanswered}${shown}`);
+				throw new Error(`timed out waiting for ${what}${shown}`);
 			}
 			await sleep(50);
 		}

@@ -20,12 +20,16 @@ test('an unanswered request fails its test by name and the next test still reach
 	expect(output).toMatch(/ 1 pass\n 1 fail\n/);
 }, 60_000);
 
-test('Tab.until ends at its deadline when a check is never answered', async () => {
+test('Tab.until ends when a check is never answered, at its deadline or after REQUEST_MS', async () => {
 	browser = await launchChrome();
-	const started = Date.now();
-	const error = await browser.tab.until('new Promise(() => {})', 'a check that never answers', 500).catch((error: Error) => error);
+	const never = (ms: number) => browser!.tab.until('new Promise(() => {})', 'a check that never answers', ms).catch((error: Error) => error);
+	let started = Date.now();
+	expect(String(await never(500))).toContain('timed out waiting for a check that never answers: no answer from Chrome in 1000 ms');
 	expect(Date.now() - started).toBeLessThan(3_000);
-	expect(String(error)).toContain('timed out waiting for a check that never answers; the last check got no answer from Chrome in');
+	// A longer wait still gives one check no more than REQUEST_MS, well before Bun's 30 s.
+	started = Date.now();
+	expect(String(await never(30_000))).toContain(`timed out waiting for a check that never answers: no answer from Chrome in ${REQUEST_MS} ms`);
+	expect(Date.now() - started).toBeLessThan(REQUEST_MS + 2_000);
 }, 30_000);
 
 test('a request waiting when Chrome ends fails at once with how Chrome ended, and so does the next', async () => {
