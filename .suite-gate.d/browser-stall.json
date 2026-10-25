@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/tests/browser/browser-stall.test.ts", "board/tests/browser/stall-case.ts"],
+      "tests": ["board/tests/browser/browser-stall.test.ts"]
+    }
+  ]
+}
