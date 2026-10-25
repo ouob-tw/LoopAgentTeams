@@ -2499,6 +2499,8 @@ class DetectionTests(unittest.TestCase):
             ("echo -e 'bun\\x20test' | tee f", "echo -e 'bun\\x20test' | sh"),
             ("cat > f <<'EOF'\n$(echo \\); bun run test:all)\nEOF",
              'cat > f <<EOF\n$(echo \\); bun run test:all)\nEOF'),
+            ('cat > f <<EOF\nbuilt "$(date)" by bun run test:all\nEOF',
+             'cat > f <<EOF\n"$(bun run test:all)"\nEOF'),
         ]
         for data, run in pairs:
             self.assertFalse(gate.is_full_suite(data, registry=registry), data)

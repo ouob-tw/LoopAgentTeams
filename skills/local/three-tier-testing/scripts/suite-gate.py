@@ -423,8 +423,9 @@ def _stdin_heredoc(heredocs):
 
 
 class UnreadableShellInput(ValueError):
-    """A shell reads piped echo/printf text the hook does not render (a `%d` or `%b` form,
-    an escape other than `\\n`), so the command counts as a full suite."""
+    """Text the shell runs that the hook does not read: piped echo/printf text with a `%d`
+    or `%b` form or an escape other than `\\n`, or a heredoc `$(...)` holding quotes or
+    backslashes. The command counts as a full suite."""
 
 
 def _piped_text(words, stdin):
@@ -528,7 +529,8 @@ def _shell_body_index(words):
 def _open_shell(words, heredocs=(), stdin=()):
     """The commands words run, given its heredocs and the heredocs it reads on stdin.
 
-    UnreadableShellInput when a shell reads text that cannot be rendered."""
+    UnreadableShellInput when a shell reads text, or a heredoc holds a substitution, that
+    cannot be read."""
     index = _shell_body_index(words)
     if index is not None:
         opened = split_commands(words[index])
@@ -539,11 +541,34 @@ def _open_shell(words, heredocs=(), stdin=()):
     else:
         opened = [words]
     # The shell runs the `$(...)` and backticks of an unquoted heredoc before the command
-    # reads it; such a body is read as commands as a whole (a backtick as a separator)
-    # rather than picking the substitutions out.
-    return opened + [inner for body, expands, *_ in heredocs
-                     if expands and ('$(' in body or '`' in body)
-                     for inner in split_commands(body.replace('`', '\n'))]
+    # reads it, whatever quotes surround them in the body.
+    return opened + [inner for body, expands, *_ in heredocs if expands
+                     for text in _substitutions(body) for inner in split_commands(text)]
+
+
+def _substitutions(text):
+    """The text inside each `$(...)` and backtick pair of a heredoc body the shell expands.
+
+    UnreadableShellInput when one holds a quote or backslash, which can move its end."""
+    found, i = [], 0
+    while i < len(text):
+        if text.startswith('$(', i):
+            depth, j = 1, i + 2
+            while j < len(text) and depth:
+                depth += {'(': 1, ')': -1}.get(text[j], 0)
+                j += 1
+            found.append(text[i + 2:j - 1 if depth == 0 else j])
+            i = j
+        elif text[i] == '`':
+            j = text.find('`', i + 1)
+            j = len(text) if j < 0 else j
+            found.append(text[i + 1:j])
+            i = j + 1
+        else:
+            i += 2 if text[i] == '\\' else 1
+    if any(c in inner for inner in found for c in '\'"\\'):
+        raise UnreadableShellInput('quotes or escapes in a heredoc substitution')
+    return found
 
 
 def _strip_assignments(words):
