@@ -316,6 +316,30 @@ class ReapTests(ReapTestCase):
         self.assertTrue(self.alive(other))
         self.assertEqual(self.closed_pids(), [mine])
 
+    def test_agent_option_waits_for_a_client_that_exits_after_hcom_stopped(self):
+        # HCOM no longer lists the agent, but its client process exits only a moment later.
+        tree = self.node('slow-client', [self.shell('slow-shell', [self.node('slow-server')])],
+                         exe=str(self.bin / 'claude'))
+        pids = self.spawn(tree, self.agent_env('slow', 'claude'))
+        self.remember('slow')
+        self.record_stopped('slow')
+        timer = threading.Timer(1.5, os.kill, [pids['slow-client'], signal.SIGKILL])
+        timer.start()
+        self.addCleanup(timer.cancel)
+        result = self.reap('--agent', 'test-slow', env={'LAT_REAP_AGENT_WAIT_SECONDS': '10'})
+        self.assertNotIn('still running', result.stdout)
+        self.assertTrue(self.gone(pids['slow-server']), result.stdout)
+        self.assertIn(pids['slow-server'], self.closed_pids())
+
+    def test_agent_option_gives_up_waiting_on_a_client_that_keeps_running(self):
+        tree = self.node('stuck-client', [], exe=str(self.bin / 'claude'))
+        pids = self.spawn(tree, self.agent_env('stuck', 'claude'))
+        started = time.monotonic()
+        result = self.reap('--agent', 'test-stuck', env={'LAT_REAP_AGENT_WAIT_SECONDS': '1'})
+        self.assertGreaterEqual(time.monotonic() - started, 1)
+        self.assertIn('still running', result.stdout)
+        self.assertTrue(self.alive(pids['stuck-client']))
+
     def test_agent_option_refuses_a_running_agent(self):
         pids = self.live_agent('runner', services=['runner-server'])
         self.set_hcom([('runner', 'runner', pids['runner-client'])])
@@ -926,6 +950,37 @@ class SharedStateTests(ReapTestCase):
         self.assertIn(f'PID {kept}', sections.split('Kept:')[1].split('Never handled:')[0])
         self.assertIn(f'PID {orchestrator["orch-client"]}', sections.split('Never handled:')[1])
         self.assertIn('Recent close records', sections)
+
+    def test_scan_folds_older_not_judged_records_unless_all(self):
+        reaper = self.state / 'lat/reaper'
+        reaper.mkdir(parents=True)
+        judged = lambda minute, pids: {
+            'time': f'2026-10-25T10:0{minute}:00+00:00', 'trigger': 'periodic',
+            'result': 'not judged', 'ancestor_unreadable': [],
+            'unreadable': {str(pid): 'Permission denied' for pid in pids}}
+        closed = {'time': '2026-10-25T10:03:00+00:00', 'trigger': 'manual', 'pid': 4242,
+                  'agent': 'test-old', 'signal': 'SIGTERM', 'result': 'exited after SIGTERM',
+                  'command': 'old-service'}
+        log = reaper / 'closed.jsonl'
+        log.write_text(''.join(json.dumps(record) + '\n' for record in [
+            judged(0, [1111, 1112]), judged(1, [2221]), closed, judged(2, [3331, 3332, 3333]),
+            judged(4, [4441, 4442])]))
+        before = log.read_bytes()
+        default = self.run_reaper('scan', '--limit', '0')
+        self.assertEqual(default.returncode, 0, default.stderr)
+        records = default.stdout.split('Recent close records:')[1]
+        for pid in (1111, 1112, 2221, 3331, 3332, 3333, 4441, 4442):
+            self.assertNotIn(str(pid), records)
+        self.assertIn('另有 2 個無法判斷，加 --all 可列出', records)
+        self.assertIn('另有 3 筆較舊的無法判斷紀錄', records)
+        self.assertIn('PID 4242', records)
+        full = self.run_reaper('scan', '--limit', '0', '--all')
+        self.assertEqual(full.returncode, 0, full.stderr)
+        records = full.stdout.split('Recent close records:')[1]
+        for pid in (1111, 1112, 2221, 3331, 3332, 3333, 4441, 4442):
+            self.assertIn(str(pid), records)
+        self.assertNotIn('較舊的無法判斷紀錄', records)
+        self.assertEqual(log.read_bytes(), before)
 
     def test_scan_creates_no_state_folder(self):
         self.dead_agent('fresh', recorded=False)
