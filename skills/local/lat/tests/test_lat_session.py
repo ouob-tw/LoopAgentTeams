@@ -307,6 +307,42 @@ class SessionTests(unittest.TestCase):
         self.assertIn(f'lat-session.py duty --client codex --workspace {self.work} --text',
                       result.stdout)
 
+    def test_activate_with_duty_text_registers_it_and_the_first_stop_passes(self):
+        result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                          '--decisions', self.decisions, '--duty-text', ' 整理看板名冊 ',
+                          '--duty-expected', '名冊顯示職責')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        duty = json.loads(self.duty_file().read_text())
+        self.assertEqual((duty['text'], duty['expected']), ('整理看板名冊', '名冊顯示職責'))
+        self.assertIn(f'看板職責已登記：{self.duty_file()}', result.stdout)
+        self.assertNotIn('lat-session.py duty --client', result.stdout)
+        self.assert_silent(self.stop_hook('Work done\nDONE: delivered'))
+
+    def test_activate_finishes_when_the_duty_cannot_be_written(self):
+        blocker = self.root / 'not-a-directory'
+        blocker.write_text('')
+        result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                          '--decisions', self.decisions, '--duty-text', '職責',
+                          '--duty-expected', '結果',
+                          extra_env={'LAT_REPORTS_DIR': str(blocker / 'reports')})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('看板職責未登記：', result.stdout)
+        self.assertIn('lat-session.py duty --client codex', result.stdout)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+
+    def test_activate_refuses_invalid_or_half_given_duty_before_activating(self):
+        for extra, detail in ((('--duty-text', '職責'), 'together'),
+                              (('--duty-expected', '結果'), 'together'),
+                              (('--duty-text', '職' * 41, '--duty-expected', '結果'), 'at most 40'),
+                              (('--duty-text', ' ', '--duty-expected', '結果'), 'must not be empty')):
+            with self.subTest(extra=extra):
+                result = self.cli('activate', '--workspace', self.work, '--progress',
+                                  self.progress, '--decisions', self.decisions, *extra)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(detail, result.stderr)
+                self.assertFalse(self.record.exists())
+                self.assertFalse(self.duty_file().exists())
+
     def test_duty_needs_this_sessions_active_controller(self):
         self.activate(duty=False)
         other = self.record_duty(session=OTHER)
@@ -755,6 +791,35 @@ class SessionTests(unittest.TestCase):
                                'LAT-A r2')
         questions.write_text(questions.read_text() + '\n## Next\nLAT-B · r1 · 待答\n')
         self.assert_stop_pass(self.stop_hook(stop_hook_active=True), 'LAT-A r1 - Question')
+
+    def test_stop_passes_for_questions_asked_with_question_ask(self):
+        self.write_legacy_record()
+        questions = self.bind_stop_panel()
+
+        def ask(identifier, section, *extra):
+            path = self.root / f'{identifier}-section.md'
+            path.write_text(section)
+            result = subprocess.run(
+                [sys.executable, str(PANEL), 'question', 'ask', '--questions', str(questions),
+                 '--decisions', str(self.decisions), '--id', identifier, '--file', str(path),
+                 *extra],
+                text=True, capture_output=True,
+                env=self.cli_environment(extra_env=self.panel_env()), cwd=self.work)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('沒有遺漏', result.stdout)
+
+        def assert_pass(message, heading):
+            output = json.loads(self.stop_hook(message).stdout)
+            self.assertEqual(set(output), {'systemMessage'})
+            self.assertTrue(output['systemMessage'].startswith(f'❓ {heading}\n'))
+
+        ask('LAT-A', '## 要合併嗎？\n\n背景。\n\n- A. 合併\n- B. 不合併\n', '--advisor', 'needs-human')
+        ask('LAT-H', '## 請登入\n\n背景。\n\n- A. 已完成\n', '--advisor', 'needs-human',
+            '--help-question')
+        assert_pass('DECIDE: LAT-A r1', 'LAT-A r1 - 要合併嗎？')
+        assert_pass('HELP: LAT-H r1', 'LAT-H r1 - 請登入')
+        ask('LAT-A', '## 要合併嗎？\n\n背景改了。\n\n- A. 合併\n- B. 不合併\n')
+        assert_pass('DECIDE: LAT-A r2', 'LAT-A r2 - 要合併嗎？')
 
     def test_stop_omission_check_skips_other_controllers_records(self):
         self.write_legacy_record()

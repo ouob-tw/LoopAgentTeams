@@ -309,6 +309,12 @@ def activate(args):
     )
     if not args.hcom_name or not HCOM_NAME.fullmatch(args.hcom_name):
         raise ValueError(f'A valid explicit --hcom-name is required; rerun: {command}')
+    duty = None
+    if (args.duty_text is None) != (args.duty_expected is None):
+        raise ValueError('--duty-text and --duty-expected go together; nothing activated')
+    if args.duty_text is not None:
+        duty = checked_duty(args.duty_text, args.duty_expected,
+                            ('--duty-text', '--duty-expected'))
     record = dict(client=args.client, session_id=sid, role='orchestrator',
                   workspace=str(workspace), status='active', skill_dir=str(SKILL_DIR),
                   progress_path=str(args.progress.resolve(strict=True)),
@@ -368,7 +374,14 @@ def activate(args):
     print(path)
     print(f'已開始第 {round_number} 輪')
     print(f'工作總表：{record["ledger_path"]}')
-    print(f'看板職責：任務明確後執行（任務改變時再執行一次）：{duty_command(record)}')
+    if duty is None:
+        print(f'看板職責：任務明確後執行（任務改變時再執行一次）：{duty_command(record)}')
+    else:
+        try:
+            print(f'看板職責已登記：{write_duty(sid, *duty)}')
+        except OSError as error:
+            # The record is already active; finish activating and leave the duty to retry.
+            print(f'看板職責未登記：{error}；請執行：{duty_command(record)}')
     if enabled:
         try:
             binding, replaced, legacy_ignored = panel.bind_controller(
@@ -715,14 +728,32 @@ def duty_command(record):
     ])
 
 
+def checked_duty(text, expected, flags=('--text', '--expected')):
+    """The stripped duty fields, or ValueError naming ``flags`` when they are unusable."""
+    text, expected = text.strip(), expected.strip()
+    if not text or not expected:
+        raise ValueError(f'{flags[0]} and {flags[1]} must not be empty; duty unchanged')
+    if '\n' in text or len(text) > DUTY_LIMIT:
+        raise ValueError(f'{flags[0]} must be one line of at most {DUTY_LIMIT} characters '
+                         f'(got {len(text)}); duty unchanged')
+    return text, expected
+
+
+def write_duty(sid, text, expected):
+    path = duty_path(sid)
+    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+    # The report lock: the board's pruning deletes this file with the report file under it.
+    with (path.parent / f'{sid}.lock').open('a') as lock:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        write_json_atomic(path, dict(
+            text=text, expected=expected,
+            time=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')))
+    return path
+
+
 def record_duty(args):
     """Write or replace this controller's duty, which the board shows on its card."""
-    text, expected = args.text.strip(), args.expected.strip()
-    if not text or not expected:
-        raise ValueError('--text and --expected must not be empty; duty unchanged')
-    if '\n' in text or len(text) > DUTY_LIMIT:
-        raise ValueError(f'--text must be one line of at most {DUTY_LIMIT} characters '
-                         f'(got {len(text)}); duty unchanged')
+    text, expected = checked_duty(args.text, args.expected)
     workspace = args.workspace.resolve(strict=True)
     sid = session_id(os.environ.get(SESSION_ENV[args.client]))
     try:
@@ -733,15 +764,7 @@ def record_duty(args):
                              workspace=str(workspace), status='active')
     if any(record.get(key) != value for key, value in expected_identity.items()):
         raise ValueError('No active controller record for this session; duty unchanged')
-    path = duty_path(sid)
-    path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
-    # The report lock: the board's pruning deletes this file with the report file under it.
-    with (path.parent / f'{sid}.lock').open('a') as lock:
-        fcntl.flock(lock, fcntl.LOCK_EX)
-        write_json_atomic(path, dict(
-            text=text, expected=expected,
-            time=datetime.now(timezone.utc).isoformat().replace('+00:00', 'Z')))
-    print(path)
+    print(write_duty(sid, text, expected))
 
 
 def duty_reminder(decisions, question_id):
@@ -1597,6 +1620,9 @@ def main():
     start.add_argument('--decisions', type=Path, required=True)
     start.add_argument('--tasks', type=Path, required=True)
     start.add_argument('--hcom-name')
+    start.add_argument('--duty-text', help=f'Register the duty too: what it is responsible for, '
+                       f'<= {DUTY_LIMIT} chars')
+    start.add_argument('--duty-expected', help='With --duty-text: what the user will see when done')
     stop = sub.add_parser('deactivate', help='End a controller, retaining its record')
     stop.add_argument('--workspace', type=Path, required=True)
     stop.add_argument('--successor', help='HCOM name of the controller taking over')

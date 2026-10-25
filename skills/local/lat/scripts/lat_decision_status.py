@@ -29,24 +29,28 @@ def read_advisor_error(path):
     """Validate the first advisor line, returning a diagnostic or None."""
     for line in Path(path).read_text(encoding='utf-8').splitlines():
         match = re.match(r'^- advisor:(.*)$', line, re.IGNORECASE)
-        if not match:
-            continue
-        words = match.group(1).strip().lower().split()
-        if not words:
-            return '參謀行沒有結論'
-        if words[0] == 'needs-human':
-            return None
-        allowed = {'exempt': ('spec-confirmation', 'ticket-confirmation',
-                               'requirement-discussion', 'account-quota'),
-                   'late': ('needs-human', 'resolved', 'self-check')}
-        if words[0] not in allowed:
-            return f'未知參謀結論：{words[0]}'
-        if len(words) < 2:
-            return f'參謀 {words[0]} 缺少第二個字'
-        if words[1] not in allowed[words[0]]:
-            return f'參謀 {words[0]} 的第二個字不在清單內：{words[1]}'
-        return None
+        if match:
+            return advisor_error(match.group(1))
     return '沒有參謀行（- advisor:）'
+
+
+def advisor_error(value):
+    """Validate one advisor line's value, returning a diagnostic or None."""
+    words = value.strip().lower().split()
+    if not words:
+        return '參謀行沒有結論'
+    if words[0] == 'needs-human':
+        return None
+    allowed = {'exempt': ('spec-confirmation', 'ticket-confirmation',
+                           'requirement-discussion', 'account-quota'),
+               'late': ('needs-human', 'resolved', 'self-check')}
+    if words[0] not in allowed:
+        return f'未知參謀結論：{words[0]}'
+    if len(words) < 2:
+        return f'參謀 {words[0]} 缺少第二個字'
+    if words[1] not in allowed[words[0]]:
+        return f'參謀 {words[0]} 的第二個字不在清單內：{words[1]}'
+    return None
 
 
 def read_spec_consensus_error(path, message):

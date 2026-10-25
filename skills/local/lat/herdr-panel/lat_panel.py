@@ -55,6 +55,11 @@ Public API used by the Textual panel and LAT controller:
 Controller CLI (run from the project root unless ``--questions`` is supplied)::
 
   question upsert --questions PATH --decisions DIR --id ID --file section.md
+  question ask --questions PATH --decisions DIR --id ID --file section.md \
+      [--advisor TEXT] [--help-question] [--session-id ID] [--question TEXT] \
+      [--authority-gap TEXT] [--blocked-work TEXT]
+  question record-chat --questions PATH --decisions DIR --id ID --text TEXT \
+      --source TEXT
   question section-hash --questions PATH --id ID
   question provenance --questions SNAPSHOT --source-questions PATH --id ID \
       --journal panel-journal.jsonl
@@ -99,7 +104,7 @@ import sys
 import argparse
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "scripts"))
-from lat_decision_status import read_decision_kind, read_decision_status
+from lat_decision_status import advisor_error, read_decision_kind, read_decision_status
 from _lat_common import plugin_directory, run_cli, write_text_atomic as _replace_locked
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 import questions
@@ -177,7 +182,9 @@ from questions import (
     _write_decision_answer,
     _write_question_answer_locked,
     archive_recorded_questions,
+    check_done_option,
     cleanup_questions,
+    decision_revision,
     locked_replace,
     malformed_submission_ids,
     parse_question_answer,
@@ -193,6 +200,7 @@ from questions import (
     question_provenance,
     question_recommendation,
     question_section_sha256,
+    record_chat_answer,
     remove_empty_questions,
     render_answer_area,
     resolve_help,
@@ -200,6 +208,8 @@ from questions import (
     set_decision_preauth,
     set_question_status,
     submit_question_answers,
+    sync_decision_record,
+    new_decision_record,
     upsert_question,
     upsert_question_written,
     withdraw_question,
@@ -381,6 +391,20 @@ def _build_parser():
     upsert.add_argument("--decisions", required=True, type=Path)
     upsert.add_argument("--id", required=True)
     upsert.add_argument("--file", required=True, type=Path)
+    ask = question_commands.add_parser("ask")
+    ask.add_argument("--questions", required=True, type=Path)
+    ask.add_argument("--decisions", required=True, type=Path)
+    ask.add_argument("--id", required=True)
+    ask.add_argument("--file", required=True, type=Path)
+    ask.add_argument("--help-question", action="store_true")
+    for field in ASK_RECORD_FIELDS:
+        ask.add_argument(field)
+    record_chat = question_commands.add_parser("record-chat")
+    record_chat.add_argument("--questions", required=True, type=Path)
+    record_chat.add_argument("--decisions", required=True, type=Path)
+    record_chat.add_argument("--id", required=True)
+    record_chat.add_argument("--text", required=True)
+    record_chat.add_argument("--source", required=True)
     provenance = question_commands.add_parser("provenance")
     provenance.add_argument("--questions", required=True, type=Path)
     provenance.add_argument("--source-questions", type=Path)
@@ -544,6 +568,146 @@ def preauthorized_questions(questions, question_ids):
     return marked
 
 
+# Fields only a new record takes; --session-id defaults from the binding or the client.
+ASK_RECORD_FIELDS = ("--advisor", "--session-id", "--question", "--authority-gap",
+                     "--blocked-work")
+
+
+def _upsert(questions, decisions, question_id, text, first_revision=1):
+    """``question upsert`` with its rechecks and reminders: ``(code, revision, written)``."""
+    preauth = _preauth_recheck(questions, decisions, question_id)
+    if preauth is not None and preauth[0] == "allow" and not preauth[2]:
+        print(f"lat-panel: refused, nothing written: {question_id} is pre-authorized under "
+              f"the current settings ({preauth[1]}). Do not ask: do it, then log it "
+              "with lat-preauth.py record.", file=sys.stderr)
+        return 1, None, False
+    revision, written = upsert_question_written(
+        questions, question_id, text, decisions_path=decisions, first_revision=first_revision
+    )
+    print(f"{question_id} r{revision}")
+    if preauth is not None:
+        try:
+            set_decision_preauth(Path(decisions) / f"{question_id}.md", preauth[1])
+        except (OSError, ValueError) as error:
+            # The question is written; the line is only for reading.
+            print(f"lat-panel: - preauth: line not written: {error}", file=sys.stderr)
+        if preauth[0] == "allow":
+            print(f"提醒：{question_id} 此題目前已預先授權，可由使用者決定撤回（{preauth[1]}）")
+    reminder = _duty_reminder(decisions, question_id)
+    if reminder:
+        print(reminder)
+    _warn_display(refresh_status_display(questions, notify=written))
+    return 0, revision, written
+
+
+def _ask_session(questions):
+    """The session a new record names: the questions file's binding, else the client's."""
+    target = Path(questions).resolve()
+    binding = next((item for item in list_bindings()
+                    if Path(item["questions_path"]).resolve() == target), None)
+    if binding is not None:
+        return binding["session_id"]
+    return next((os.environ[key] for key in _lat_session().SESSION_ENV.values()
+                 if os.environ.get(key)), None)
+
+
+def _ask(args):
+    """One controller command per question: record, panel question, version, gap check."""
+    text = args.file.read_text(encoding="utf-8")
+    incoming = _question_input(text)
+    path = Path(args.decisions) / f"{args.id}.md"
+    if not Path(args.decisions).is_dir():
+        raise ValueError(f"decisions directory does not exist: {args.decisions}")
+    given = [field for field in ASK_RECORD_FIELDS
+             if getattr(args, field[2:].replace("-", "_")) is not None]
+    created = not path.exists()
+    if created:
+        if args.advisor is None:
+            raise ValueError(f"a new record needs --advisor: {path}")
+        error = advisor_error(args.advisor)
+        if error:
+            raise ValueError(f"--advisor: {error}")
+        session = args.session_id or _ask_session(args.questions)
+        help_question = args.help_question
+    else:
+        if given:
+            raise ValueError(f"{path} exists; {' '.join(given)} only apply to a new record")
+        status = read_decision_status(path)
+        if status.error:
+            raise ValueError(f"decision record status unreadable: {status.error}")
+        help_question = args.help_question or read_decision_kind(path) == "help"
+        # A question already archived from the panel continues from the record's version.
+        known = decision_revision(path) or 0
+        first_revision = max(1, known + (status.status != "pending"))
+    if help_question:
+        check_done_option(args.id, incoming)
+    if created:
+        with _path_lock(path):
+            if path.exists():
+                raise ValueError(f"decision record appeared while asking: {path}")
+            _replace_locked(path, new_decision_record(
+                args.id, incoming, advisor=args.advisor, session_id=session,
+                question=args.question, authority_gap=args.authority_gap,
+                blocked_work=args.blocked_work, help_question=help_question))
+    code = 1
+    try:
+        code, revision, written = _upsert(args.questions, args.decisions, args.id, text,
+                                          1 if created else first_revision)
+    finally:
+        # No question was written, so the new record would be a pending decision with no question.
+        if created and code:
+            path.unlink(missing_ok=True)
+    if code:
+        return code
+    if created:
+        # The panel may already hold this ID at a later revision; the record follows it.
+        sync_decision_record(path, revision)
+        print(f"已建立待決紀錄：{path}")
+    else:
+        reopen = status.status != "pending"
+        # An earlier ask that wrote the panel but failed to sync may be rerun to finish.
+        if reopen and not written and decision_revision(path) == revision:
+            raise ValueError(f"{args.id} is {status.status} and the question is unchanged; "
+                             "change the question to ask again")
+        sync_decision_record(path, revision, reopen=reopen,
+                             help_question=args.help_question)
+    return _report_pending(args.questions, args.decisions, _ask_session(args.questions))
+
+
+def _report_pending(questions, decisions, session_id):
+    """Print the pending check; 1 when anything needs fixing."""
+    if not panel_enabled():
+        print("面板未啟用，略過檢查")
+        return 0
+    present, missing, inconsistent, unreadable, reverse = pending_question_gaps(
+        questions, decisions, session_id=session_id
+    )
+    if present:
+        print("已找到待答題目：")
+        for identifier, path in present:
+            print(f"- {identifier}：{path}")
+    if missing:
+        print("遺漏待答題目：")
+        for identifier in missing:
+            print(f"- {identifier}")
+    if inconsistent:
+        print("狀態不一致（決策仍為 pending）：")
+        for identifier, reason, path in inconsistent:
+            print(f"- {identifier}：{reason}：{path}")
+    if unreadable:
+        print("讀不出狀態：")
+        for path, reason in unreadable:
+            print(f"- {path}：{reason}")
+    if reverse:
+        print("待答題目需處理：")
+        for identifier, reason, path in reverse:
+            print(f"- {identifier}：{reason}：{path}")
+    if missing or inconsistent or unreadable or reverse:
+        return 1
+    print("沒有遺漏")
+    return 0
+
+
 def _warn_display(result):
     if result["status"] == "failed":
         print(f"lat-panel: sidebar not updated: {result['reason']}", file=sys.stderr)
@@ -555,29 +719,15 @@ def main(argv=None):
         return _run_board(args)
     try:
         if args.command == "question" and args.question_command == "upsert":
-            preauth = _preauth_recheck(args.questions, args.decisions, args.id)
-            if preauth is not None and preauth[0] == "allow" and not preauth[2]:
-                print(f"lat-panel: refused, nothing written: {args.id} is pre-authorized under "
-                      f"the current settings ({preauth[1]}). Do not ask: do it, then log it "
-                      "with lat-preauth.py record.", file=sys.stderr)
-                return 1
-            revision, written = upsert_question_written(
-                args.questions, args.id, args.file.read_text(encoding="utf-8"),
-                decisions_path=args.decisions
-            )
-            print(f"{args.id} r{revision}")
-            if preauth is not None:
-                try:
-                    set_decision_preauth(Path(args.decisions) / f"{args.id}.md", preauth[1])
-                except (OSError, ValueError) as error:
-                    # The question is written; the line is only for reading.
-                    print(f"lat-panel: - preauth: line not written: {error}", file=sys.stderr)
-                if preauth[0] == "allow":
-                    print(f"提醒：{args.id} 此題目前已預先授權，可由使用者決定撤回（{preauth[1]}）")
-            reminder = _duty_reminder(args.decisions, args.id)
-            if reminder:
-                print(reminder)
-            _warn_display(refresh_status_display(args.questions, notify=written))
+            return _upsert(args.questions, args.decisions, args.id,
+                           args.file.read_text(encoding="utf-8"))[0]
+        if args.command == "question" and args.question_command == "ask":
+            return _ask(args)
+        if args.command == "question" and args.question_command == "record-chat":
+            result = record_chat_answer(args.questions, args.decisions, args.id,
+                                        args.text, args.source)
+            print(json.dumps(result, ensure_ascii=False))
+            _warn_display(refresh_status_display(args.questions))
             return 0
         if args.command == "question" and args.question_command == "provenance":
             print(json.dumps(
@@ -650,36 +800,7 @@ def main(argv=None):
             _warn_display(refresh_status_display(args.questions))
             return 0
         if args.command == "question" and args.question_command == "check-pending":
-            if not panel_enabled():
-                print("面板未啟用，略過檢查")
-                return 0
-            present, missing, inconsistent, unreadable, reverse = pending_question_gaps(
-                args.questions, args.decisions, session_id=args.session_id
-            )
-            if present:
-                print("已找到待答題目：")
-                for identifier, path in present:
-                    print(f"- {identifier}：{path}")
-            if missing:
-                print("遺漏待答題目：")
-                for identifier in missing:
-                    print(f"- {identifier}")
-            if inconsistent:
-                print("狀態不一致（決策仍為 pending）：")
-                for identifier, reason, path in inconsistent:
-                    print(f"- {identifier}：{reason}：{path}")
-            if unreadable:
-                print("讀不出狀態：")
-                for path, reason in unreadable:
-                    print(f"- {path}：{reason}")
-            if reverse:
-                print("待答題目需處理：")
-                for identifier, reason, path in reverse:
-                    print(f"- {identifier}：{reason}：{path}")
-            if missing or inconsistent or unreadable or reverse:
-                return 1
-            print("沒有遺漏")
-            return 0
+            return _report_pending(args.questions, args.decisions, args.session_id)
         if args.command == "bind":
             binding, replaced, legacy_ignored = bind_controller(
                 args.hcom_name, args.client, args.session_id, args.workspace,
