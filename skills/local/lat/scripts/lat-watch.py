@@ -64,8 +64,8 @@ KEEPALIVE = ('[lat-watch] Prompt cache keep-alive. Read any unread HCOM messages
              'end your turn with the shortest possible reply.')
 QUOTA_CONTINUE = '[lat-watch] Please continue.'
 CAPACITY_CONTINUE = 'Continue'
-# One Continue per Codex capacity episode; kept until the episode re-arms.
-CAPACITY_KEYS = ('capacity_continue_at', 'capacity_continue_notified')
+# One Continue per Codex capacity episode; kept until a new reply or another error.
+CAPACITY_KEYS = ('capacity_continue_at', 'capacity_continue_notified', 'capacity_reply')
 NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 NAME = re.compile(NAME_PATTERN)
 CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
@@ -136,6 +136,8 @@ class Observation(NamedTuple):
     screen_tail: tuple = ()
     quota_screen: tuple = ()
     screen_digest: str = ''
+    # Last Codex reply or tool line ('• '); a different one is new output.
+    last_reply: str = ''
 
 
 class QuotaIssue(NamedTuple):
@@ -871,11 +873,19 @@ def decide(previous, observation, now):
         state.pop('prompt_recovery_uncertain', None)
     actions = ()
     state.update(quota_dedupe(previous, observation.quota_issue))
-    for key in CAPACITY_KEYS:
-        if state['quota_notified'] and previous and key in previous:
-            state[key] = previous[key]
-        else:
+    # A Continue episode ends on new output or another error, not on a passing clear screen.
+    new_output = (previous is not None and observation.last_reply
+                  and observation.last_reply != previous.get('capacity_reply'))
+    other_error = (observation.quota_issue is not None
+                   and observation.quota_issue.kind != 'model-capacity')
+    if previous and 'capacity_continue_at' in previous and not new_output and not other_error:
+        state.update({key: previous[key] for key in CAPACITY_KEYS if key in previous})
+        state['quota_notified'] = True
+    else:
+        for key in CAPACITY_KEYS:
             state.pop(key, None)
+        if previous and 'capacity_continue_at' in previous:
+            state['quota_notified'] = False
     if observation.quota_issue is None:
         for key in ('quota_notified_at', 'quota_screen_digest', 'quota_screen_since'):
             state.pop(key, None)
@@ -927,13 +937,15 @@ def decide(previous, observation, now):
             state['quota_notified'] = True
             state['quota_notified_at'] = now
             state['capacity_continue_at'] = now
+            state['capacity_reply'] = observation.last_reply
         elif not crash_unconfirmed:
             actions = (quota_notice(observation, input_has_text=input_has_text),)
             state['quota_notified'] = True
             state['quota_notified_at'] = now
-    elif (observation.quota_issue is not None and continue_at is not None
+    elif (capacity and continue_at is not None
           and not state.get('capacity_continue_notified')):
-        if now - continue_at >= CAPACITY_CONTINUE_SECONDS:
+        if (observation.status != 'inactive'
+                and now - continue_at >= CAPACITY_CONTINUE_SECONDS):
             actions = (quota_notice(observation,
                                     continue_minutes=int((now - continue_at) // 60)),)
             state['capacity_continue_notified'] = True
@@ -1967,6 +1979,8 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
         quota_screen=(tuple(lines[-30:]) if client.lower() == 'claude' and quota_issue
                       and quota_issue.kind != 'crash' else ()),
         screen_digest=hashlib.sha256('\n'.join(lines).encode()).hexdigest(),
+        last_reply=next((line for line in reversed(lines) if isinstance(line, str)
+                         and line.startswith('• ') and 'esc to interrupt' not in line), ''),
     )
 
 
@@ -2249,7 +2263,11 @@ def perform(action, orchestrator, workspace=None):
 def roll_back(action, state):
     _handler, flag, cleanup_fields = action_policy(action.kind)
     if action.category == 'quota':
-        state['quota_notified'] = False
+        if 'capacity_continue_at' in state:
+            # Keep the episode so Continue is not typed again; the notice retries next cycle.
+            state['capacity_continue_notified'] = False
+        else:
+            state['quota_notified'] = False
         return
     if action.kind == 'capacity-continue':
         state['quota_notified'] = False

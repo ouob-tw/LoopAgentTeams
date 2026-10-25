@@ -4057,23 +4057,55 @@ esac
                 state, recovered._replace(transcript_size=minute), now=minute * 60)
             self.assertEqual(actions, ())
 
-        # Capacity again after the recovery is a new episode: one more Continue.
-        state, actions = watch.decide(state, stuck._replace(transcript_size=20), now=13 * 60)
+        # Capacity again right after one round of new output is a new episode.
+        _, again = self.observe_screen({'ready': True, 'prompt_empty': True, 'input_text': '',
+                                        'lines': [*self.RECOVERED_LINES[:3],
+                                                  *self.CAPACITY_LINES]})
+        self.assertEqual(again.quota_issue.kind, 'model-capacity')
+        _, actions = watch.decide(state, again._replace(transcript_size=20), now=13 * 60)
         self.assertEqual([a.kind for a in actions], ['capacity-continue'])
-        state, actions = watch.decide(state, stuck._replace(transcript_size=21), now=14 * 60)
+        state, _ = watch.decide(None, stuck, now=0)
+        state, _ = watch.decide(state, recovered._replace(transcript_size=1), now=60)
+        state, actions = watch.decide(state, stuck._replace(transcript_size=20), now=120)
+        self.assertEqual([a.kind for a in actions], ['capacity-continue'])
+        state, actions = watch.decide(state, stuck._replace(transcript_size=21), now=180)
         self.assertEqual(actions, ())
 
-    def test_codex_capacity_one_clear_round_is_still_the_same_episode(self):
+    def test_codex_capacity_working_without_new_output_is_still_the_same_episode(self):
         watch, stuck = self.capacity_screen()
-        _, recovered = self.observe_screen({'ready': False, 'prompt_empty': True,
-                                            'input_text': '', 'lines': self.RECOVERED_LINES})
+        _, working = self.observe_screen({'ready': False, 'prompt_empty': True, 'input_text': '',
+                                          'lines': [*self.CAPACITY_LINES[:1], '› Continue',
+                                                    'Working (3s · esc to interrupt)']})
+        self.assertIsNone(working.quota_issue)
         state, _ = watch.decide(None, stuck, now=0)
-        state, actions = watch.decide(state, recovered._replace(transcript_size=1), now=60)
+        for minute in (1, 2, 3):
+            state, actions = watch.decide(
+                state, working._replace(transcript_size=minute), now=minute * 60)
+            self.assertEqual(actions, ())
+        state, actions = watch.decide(state, stuck._replace(transcript_size=4), now=4 * 60)
         self.assertEqual(actions, ())
-        state, actions = watch.decide(state, stuck._replace(transcript_size=2), now=120)
-        self.assertEqual(actions, ())
-        state, actions = watch.decide(state, stuck._replace(transcript_size=2), now=5 * 60)
+        state, actions = watch.decide(state, stuck._replace(transcript_size=4), now=5 * 60)
         self.assertIn('Continue was sent 5 minutes ago', actions[0].message)
+
+    def test_codex_capacity_followed_by_another_error_or_close_skips_the_handoff_notice(self):
+        watch, stuck = self.capacity_screen()
+        _, quota = self.observe_screen({'ready': True, 'prompt_empty': True, 'input_text': '',
+                                        'lines': ['■ Quota exceeded. Check your plan.',
+                                                  *self.CAPACITY_LINES[1:]]})
+        state, _ = watch.decide(None, stuck, now=0)
+        state, actions = watch.decide(state, quota._replace(transcript_size=1), now=2 * 60)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+        self.assertNotIn('Continue was sent', actions[0].message)
+        for minute in (5, 10):
+            state, actions = watch.decide(state, quota._replace(transcript_size=1),
+                                          now=minute * 60)
+            self.assertEqual(actions, ())
+
+        state, _ = watch.decide(None, stuck, now=0)
+        for minute in (5, 30):
+            state, actions = watch.decide(state, stuck._replace(status='inactive'),
+                                          now=minute * 60)
+            self.assertEqual(actions, ())
 
     def test_codex_capacity_with_text_in_the_input_box_only_notifies(self):
         watch, stuck = self.capacity_screen(input_text='half typed reply')
@@ -4105,6 +4137,16 @@ esac
         watch.roll_back(action, state)
         _, actions = watch.decide(state, stuck, now=60)
         self.assertEqual([a.kind for a in actions], ['capacity-continue'])
+
+        # A failed notice after the Continue retries the notice, never a second Continue.
+        state, _ = watch.decide(state, stuck, now=60)
+        for now in (6 * 60, 30 * 60):
+            state, actions = watch.decide(state, stuck, now=now)
+            self.assertEqual(actions[0].kind, 'notify-orchestrator')
+            watch.roll_back(actions[0], state)
+            state, actions = watch.decide(state, stuck, now=now + 60)
+            self.assertEqual([a.kind for a in actions], ['notify-orchestrator'])
+            self.assertIn('Continue was sent', actions[0].message)
 
     def test_escalation_actions_use_hcom_and_request_sound_without_real_services(self):
         watch = load_watch()
