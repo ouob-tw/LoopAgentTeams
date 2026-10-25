@@ -63,7 +63,7 @@ def owned_processes(root):
     owned = {pid for pid, v in seen.items() if v[4]}
     # A group counts only when its leader is itself owned (a group the test's process made);
     # a foreign group that an owned process merely joined stays out.
-    groups = {seen[pid][3] for pid in owned if seen[pid][3] == pid}
+    groups = {seen[pid][3] for pid in owned if seen[pid][3] == pid and pid > 1 and pid != os.getpgrp()}
     changed = True
     while changed:
         changed = False
