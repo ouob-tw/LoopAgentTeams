@@ -2,7 +2,7 @@
 // workspace's name following the folder until it is typed, what the form sends, and that the field
 // fits a phone's width. Sending is answered in the page, so nothing is launched; what the server
 // does with each choice is in tests/server/agent-launch.test.ts. Skipped when the host has no Chrome.
-import { writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
@@ -62,6 +62,9 @@ beforeAll(async () => {
 	const cookie = await fixture.login('workspace-picker');
 	const luna = fixture.bound('alpha', 'luna');
 	alpha = luna.workspace;
+	// The form starts on this folder; whether it is in a Git project is found by looking up the tree
+	// for a `.git`, so it holds one itself rather than depend on what the temp folder sits in.
+	mkdirSync(join(alpha, '.git'), { recursive: true });
 	const sol = fixture.bound('beta', 'sol');
 	beta = sol.workspace;
 	fixture.report(luna.session_id, { tag: 'DONE', summary: '好了', hcom_name: 'luna', workspace: alpha });
