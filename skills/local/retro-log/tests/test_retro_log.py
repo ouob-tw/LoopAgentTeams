@@ -124,8 +124,11 @@ class RetroLogTests(unittest.TestCase):
         self.add('three sessions', 'g', T1)
         self.occur(5, 'h', T1)
         self.occur(5, 'i', T1)
+        self.add('recurrent', 'j', T1)
+        self.ok('done', '6', '--commit', 'c1', '--time', T2)
+        self.occur(6, 'k', T3)
         out = self.ok('list', '--status', 'ready').splitlines()
-        self.assertEqual([line.split(' ')[0] for line in out], ['#3', '#5', '#4', '#2'])
+        self.assertEqual([line.split(' ')[0] for line in out], ['#3', '#6', '#5', '#4', '#2'])
         self.assertEqual(len(self.ok('list', '--status', 'ready', '--limit', '2').splitlines()), 2)
         self.assertEqual(self.ok('list', '--status', 'observing').split(' ')[0], '#1')
 
@@ -291,6 +294,23 @@ class RetroLogTests(unittest.TestCase):
         self.ok('ready', '1', '--time', '2026-10-07T10:00:00+08:00')
         for entry_id in (1, 2):
             self.assertEqual(self.state(entry_id), ('ready', 'false'))
+
+    def test_unsevere_keeps_closed_and_recurrence_ready_entries_as_they_are(self):
+        self.add('dropped', 's1', T1)
+        self.ok('wontfix', '1', '--reason', 'meh', '--time', T2)
+        self.ok('severe', '1', '--reason', 'r', '--time', T3)
+        self.ok('severe', '1', '--unset', '--time', T4)
+        self.assertEqual(self.state(1), ('wontfix', 'false'))
+        self.add('fixed', 's1', T1)
+        self.ok('done', '2', '--commit', 'c1', '--time', T2)
+        self.ok('severe', '2', '--unset', '--time', T3)
+        self.assertEqual(self.state(2), ('done', 'false'))
+        self.add('recurred', 's1', T1)
+        self.ok('done', '3', '--commit', 'c1', '--time', T2)
+        self.occur(3, 's2', T3)
+        self.ok('severe', '3', '--reason', 'r', '--time', T4)
+        self.ok('severe', '3', '--unset', '--time', T5)
+        self.assertEqual(self.state(3), ('ready', 'true'))
 
     def test_processing_sorts_after_occurrence_at_same_time_and_second_record_at_same_time_is_refused(self):
         self.add('same instant', 's1', T1)
