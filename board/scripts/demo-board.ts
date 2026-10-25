@@ -141,8 +141,8 @@ async function main() {
 				{ question: '哪些畫面要先改？', header: '範圍', multiSelect: true, options: [{ label: '總覽', description: '' }, { label: '設定', description: '' }, { label: '額度', description: '' }] }
 			] } })),
 			stdout: 'ignore', stderr: 'ignore',
-			// The server's own environment (temporary HOME, fake helper, Herdr config), so the hook never reaches the host's bindings.
-			env: { ...fixture.serverEnv(), LAT_BOARD_ASKS_DIR: join(dir, 'board-asks'), HERDR_PANE_ID: 'wA:p-s-ask', LAT_BOARD_ASK_WAIT_SECONDS: '86400' }
+			// The server's environment (temporary HOME and Herdr config) so the hook never reaches the host's bindings; `false` as the helper means "s-ask is no controller" without asking anyone.
+			env: { ...fixture.serverEnv(), LAT_BOARD_HELPER_COMMAND: JSON.stringify(['false']), LAT_BOARD_ASKS_DIR: join(dir, 'board-asks'), HERDR_PANE_ID: 'wA:p-s-ask', LAT_BOARD_ASK_WAIT_SECONDS: '86400' }
 		});
 
 		// Closed agents: known to Herdr first, then stopped.

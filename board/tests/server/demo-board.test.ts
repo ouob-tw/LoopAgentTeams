@@ -2,7 +2,7 @@
 // stylesheet applied, and its folder gone after SIGTERM. Never uses the live board's port 7100.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
 import { spawn, type ChildProcess } from 'node:child_process';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, readdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { PASSWORD } from '../harness.ts';
@@ -55,6 +55,10 @@ test('serves the given stylesheet and the made-up board behind the printed passw
 	expect(await (await fetch(`${url}/`, { headers: { cookie } })).text()).toContain('href="/user.css"');
 	const board = await (await fetch(`${url}/api/board`, { headers: { cookie } })).json() as { controllers: { hcomName: string }[] };
 	expect(board.controllers.map((c) => c.hcomName).sort()).toEqual(['luna', 'rana']);
+	// The seeded board ask reached the board's folder: the hook did not take s-ask for a controller.
+	const folder = /\/[^"]*?lat-board-test-\w+/.exec(JSON.stringify(board))![0];
+	const asks = readdirSync(join(folder, 'board-asks'));
+	expect(asks.some((name) => name.endsWith('.json') && name !== 'heartbeat.json')).toBe(true);
 });
 
 test('SIGTERM stops the server and deletes its temporary folder', async () => {
