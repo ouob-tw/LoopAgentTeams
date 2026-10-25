@@ -162,7 +162,7 @@ Claude 的提示快取在最後一次請求後約一小時失效，失效後下�
 - 保溫提示與其簡短回覆不算進展，不讓等待聲明失效，不消耗或重設該段停住的催促與上報，也不改等待期限、延長判斷與連續到期計數；鬧鐘照原時間響。回覆中有工具操作、較長文字或傳出訊息時照常算進展。
 - 每次嘗試在 `watch.jsonl` 記 `cache-keepalive`（`agent`、`kind`、`expires_at`、`result` 為 `sent` 或 `failed`，失敗附 `error`）。
 - 有有效等待、快取剩 10 分鐘以內卻沒送時記 `cache-keepalive-skipped`（`agent`、`kind`、`expires_at`、`reason`），同一個 `expires_at` 同一原因只記一次。`reason` 為：`rate-limited`（主控額度卡住）、`status-<HCOM 狀態>`（如 `status-active`、`status-blocked`）、`prompt-not-empty`、`prompt-unreadable`（選單等畫面判不出輸入框）、`screen-working`、`decision-quiet-hours`、`decision-over-3h`、`alarm-quiet-hours`、`alarm-over-3h`、`other-action`（這一輪有其他催促或鬧鐘要送）、`usage-missing`（找不到或讀不出記錄器的檔案，`expires_at` 為 `null`，到檔案恢復前只記一次，不影響其他原因的去重）。快取已冷或已過期不記。
-- Claude 狀態 `listening` 但 `prompt_empty` 連續 15 分鐘不是布林值時記一筆 `prompt-unreadable`（`since` 與最後 8 行畫面，每行截到 200 字元），同一段只記一次；能判讀或狀態改變後重新計算。用來發現 Claude Code 改版後監控判不出輸入框、保溫一直送不出去的情況。
+- Claude 狀態 `listening` 但 `prompt_empty` 不是布林值，且畫面內容連續 15 分鐘完全沒變時，記一筆 `prompt-unreadable`（`since` 與最後 15 行畫面，每行截到 200 字元），並通知主控（本身是主控則通知使用者），內文附同樣的最後 15 行，請人去回應內建選單（例如 Autocompact 詢問）。同一個畫面只記、只通知一次；畫面內容一變就重新計時，新畫面滿 15 分鐘再通知；能判讀或狀態改變後重新計算。通知送不出去時下一輪重送，不重複記錄。
 - 監控狀態以 `feature_versions.cache_keepalive=5` 表示只保主控、額度卡住時跳過，鬧鐘等待與等決策同樣有 3 小時上限與夜間暫停，快取剩 10 分鐘內就保溫，並保留上述紀錄與 HCOM 狀態判斷；依下一節重啟監控後才生效。
 
 提示內容一變，快取就整段作廢，保溫救不回來：修改 `~/.claude/CLAUDE.md`、記憶檔或技能文字後，正在跑的 Claude 下一回合會整段重寫（2026-10-23 實測只閒置 43 分鐘就重寫）。要改這些檔案時，預期所有在跑的 Claude 都會重寫一次。

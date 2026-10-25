@@ -5975,8 +5975,8 @@ esac
         records = self.unreadable()
         self.assertEqual(len(records), 1)
         self.assertEqual(records[0]['since'], self.start)
-        self.assertEqual(len(records[0]['lines']), 8)
-        self.assertTrue(records[0]['lines'][0].startswith('line 4 '))
+        self.assertEqual(len(records[0]['lines']), 12)
+        self.assertTrue(records[0]['lines'][0].startswith('line 0 '))
         self.assertEqual(len(records[0]['lines'][0]), 200)
         self.assertEqual(self.records('observation-failed'), [])
         # A readable prompt ends the episode; the next one is logged again.
@@ -5989,6 +5989,42 @@ esac
         self.show(status='blocked', ready=False, prompt_empty=None, input_text=None)
         self.cycle(self.start + 3000, self.start + 3000 + 1800)
         self.assertEqual(len(self.unreadable()), 2)
+
+    def unreadable_notices(self):
+        # The notice is multi-line, so split the log by command rather than by line.
+        sends = re.findall(r'^send .*?(?=^(?:send|term|list) |\Z)', self.hcom_log.read_text(),
+                           re.MULTILINE | re.DOTALL)
+        return [send for send in sends if 'agent worker has shown' in send]
+
+    def test_unreadable_screen_notifies_once_with_last_lines_and_restarts_on_change(self):
+        self.start = taipei(10)
+        menu = [f'menu {index}' for index in range(20)] + ['Autocompact at 400k?']
+        self.show(ready=False, prompt_empty=None, input_text=None, lines=menu)
+        self.cycle(*(self.start + minute * 60 for minute in range(15)))
+        self.assertEqual(self.unreadable_notices(), [])
+        self.cycle(self.start + 900, self.start + 960, self.start + 1800)
+        notices = self.unreadable_notices()
+        self.assertEqual(len(notices), 1)
+        self.assertIn('worker', notices[0])
+        self.assertIn('Autocompact at 400k?', notices[0])
+        self.assertIn('menu 6', notices[0])
+        self.assertNotIn('menu 5', notices[0])
+        # A changed screen restarts the timer; the new one is announced after its own 15 minutes.
+        changed = menu[:-1] + ['Autocompact at 500k?']
+        self.show(ready=False, prompt_empty=None, input_text=None, lines=changed)
+        self.cycle(self.start + 1860, self.start + 1860 + 899)
+        self.assertEqual(len(self.unreadable_notices()), 1)
+        self.cycle(self.start + 1860 + 900)
+        self.assertEqual(len(self.unreadable_notices()), 2)
+        self.assertIn('Autocompact at 500k?', self.unreadable_notices()[1])
+
+    def test_unreadable_screen_changing_every_cycle_never_notifies(self):
+        self.start = taipei(10)
+        for minute in range(40):
+            self.show(ready=False, prompt_empty=None, input_text=None,
+                      lines=[f'tick {minute}'])
+            self.cycle(self.start + minute * 60)
+        self.assertEqual(self.unreadable_notices(), [])
 
     def status(self):
         result = subprocess.run([sys.executable, str(SCRIPT), 'status', '--workspace', self.work,

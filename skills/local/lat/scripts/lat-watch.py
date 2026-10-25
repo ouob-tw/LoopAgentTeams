@@ -48,7 +48,7 @@ KEEPALIVE_QUIET_HOURS = (1, 9)
 PROMPT_UNREADABLE_SECONDS = 15 * 60
 LEDGER_START_SECONDS = 10 * 60
 LEDGER_USER_SECONDS = 10 * 60
-SCREEN_TAIL_LINES = 8
+SCREEN_TAIL_LINES = 15
 SCREEN_TAIL_CHARS = 200
 # Successful deliveries awaiting a session-record save; retained across retry cycles.
 RULE_DELIVERIES = {}
@@ -2304,6 +2304,10 @@ def roll_back(action, state):
         else:
             state['quota_notified'] = False
         return
+    if action.category == 'unreadable-screen':
+        # The notice retries next cycle; the log line is already written.
+        state.get('prompt_unreadable', {}).pop('notified', None)
+        return
     if action.kind == 'capacity-continue':
         state['quota_notified'] = False
         state.pop('capacity_continue_at', None)
@@ -2684,18 +2688,41 @@ def log_keepalive_skipped(log, agent, declaration, state, reason, expires_at, no
                      'reason': reason})
 
 
+def unreadable_screen_notice(observation):
+    screen = '\n'.join(observation.screen_tail)
+    message = (f'LAT stall watcher: agent {observation.agent} has shown the same unreadable '
+               f'screen for {PROMPT_UNREADABLE_SECONDS // 60} minutes; the prompt box cannot '
+               f'be found, so this may be a built-in menu or question waiting for a person. '
+               f'Last screen lines:\n{screen}\n'
+               f'Action needed: open the agent and answer it, or ask the user to.')
+    kind = 'notify-user' if observation.is_orchestrator else 'notify-orchestrator'
+    return Action(kind, observation.agent, message, category='unreadable-screen',
+                  label='畫面待處理')
+
+
 def check_prompt_readable(log, agent, observation, previous, state, now):
-    """Warn once when a listening Claude prompt stays unreadable for 15 minutes."""
+    """Warn once when one unreadable listening Claude screen stays for 15 minutes.
+
+    Returns the notice to send. A changed screen restarts the timer and allows a new notice.
+    """
     if (observation.client.lower() != 'claude' or observation.status != 'listening'
             or observation.prompt_readable):
         state.pop('prompt_unreadable', None)
-        return
-    unreadable = dict((previous or {}).get('prompt_unreadable') or {'since': now})
-    if not unreadable.get('logged') and now - unreadable['since'] >= PROMPT_UNREADABLE_SECONDS:
-        append_log(log, {'at': now, 'agent': agent, 'decision': 'prompt-unreadable',
-                         'since': unreadable['since'], 'lines': list(observation.screen_tail)})
-        unreadable['logged'] = True
+        return ()
+    unreadable = dict((previous or {}).get('prompt_unreadable') or {})
+    if unreadable.get('digest') != observation.screen_digest:
+        unreadable = {'since': now, 'digest': observation.screen_digest}
+    notice = ()
+    if not unreadable.get('notified') and now - unreadable['since'] >= PROMPT_UNREADABLE_SECONDS:
+        if not unreadable.get('logged'):
+            append_log(log, {'at': now, 'agent': agent, 'decision': 'prompt-unreadable',
+                             'since': unreadable['since'],
+                             'lines': list(observation.screen_tail)})
+            unreadable['logged'] = True
+        unreadable['notified'] = True
+        notice = (unreadable_screen_notice(observation),)
     state['prompt_unreadable'] = unreadable
+    return notice
 
 
 def log_signature(observation, state):
@@ -2921,7 +2948,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
             for key in ('keepalive_last', 'keepalive_skipped', 'keepalive_usage_missing'):
                 if previous and key in previous and key not in state:
                     state[key] = previous[key]
-            check_prompt_readable(log, agent, observation, previous, state, now)
+            actions = [*actions,
+                       *check_prompt_readable(log, agent, observation, previous, state, now)]
             if saved_wait and (saved_wait.get('expiry_nudge_pending')
                                or (saved_wait.get('kind') == 'alarm'
                                    and (saved_wait.get('active', True) or wait_actions))):
