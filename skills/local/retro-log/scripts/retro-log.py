@@ -131,7 +131,9 @@ def free_text(name, value):
 
 def render(entry):
     state = entry.state()
-    front = {'id': entry.id, 'title': entry.title, 'status': state['status'], 'severe': state['severe'],
+    merged = entry.merged_into is not None  # a merged entry keeps only its id and text; it has no status
+    front = {'id': entry.id, 'title': entry.title, 'status': None if merged else state['status'],
+             'severe': state['severe'],
              'severe_reason': state['severe_reason'], 'recurring': state['recurring'],
              'merged_into': entry.merged_into, 'suspected': entry.suspected}
     lines = ['---', *(f'{k}: {json.dumps(front[k], ensure_ascii=False)}' for k in FRONT_KEYS), '---', '',
@@ -284,9 +286,16 @@ def backlog_root():
 # ---- commands ----
 
 def summary(entry):
+    if entry.merged_into is not None:
+        return f'#{entry.id} [已併入 #{entry.merged_into}] {entry.title}'
     state = entry.state()
-    flags = ''.join(['［嚴重］' if state['severe'] else '', '［復發］' if state['recurring'] else ''])
+    flags = ''.join(['［嚴重］' if state['severe'] else '', '［復發］' if state['recurring'] else '',
+                     f'［疑似 {suspects(entry)}］' if entry.suspected else ''])
     return f'#{entry.id} [{STATUS_LABELS[state["status"]]}]{flags} {entry.title}（{state["sessions"]} 個 session）'
+
+
+def suspects(entry):
+    return '、'.join(f'#{n}' for n in entry.suspected)
 
 
 def occurrence_from(args):
@@ -323,10 +332,11 @@ def cmd_add(backlog, args):
         occurrence = occurrence_from(args)
         entry = Entry(backlog.next_id(), one_line('標題', args.title, allow_pipe=True),
                       free_text('問題描述', args.description), free_text('建議做法', args.suggestion),
-                      [occurrence])
+                      [occurrence], suspected=sorted({live(backlog, n).id for n in args.suspected or []}))
         if args.severe is not None:
             add_processing(entry, Processing(occurrence.time, 'severe', one_line('嚴重理由', args.severe, allow_pipe=True)))
-        return [entry], f'feat: add #{entry.id} {entry.title}', f'已新增 {summary(entry)}'
+        unsure = f'\n拿不準：#{entry.id} 疑似與 {suspects(entry)} 相同，候選條目未改動' if entry.suspected else ''
+        return [entry], f'feat: add #{entry.id} {entry.title}', f'已新增 {summary(entry)}{unsure}'
     return backlog.transaction(change)
 
 
@@ -409,6 +419,47 @@ def cmd_ready(backlog, args):
     return backlog.transaction(change)
 
 
+def cmd_unsuspect(backlog, args):
+    def change():
+        entry = live(backlog, args.id)
+        if not entry.suspected:
+            return [], '', f'#{entry.id} 沒有疑似相同標記'
+        entry.suspected = []
+        return [entry], f'chore: clear suspected duplicates of #{entry.id}', f'已清除疑似標記 {summary(entry)}'
+    return backlog.transaction(change)
+
+
+def cmd_merge(backlog, args):
+    def change():
+        if args.source == args.target:
+            raise Refused(f'不能把 #{args.source} 併入自己')
+        source, target = backlog.get(args.source), live(backlog, args.target)
+        if source.merged_into == target.id:  # the same merge already succeeded, e.g. a rerun after a lost reply
+            return [], '', f'已併入 #{target.id}：#{source.id} 先前已併入，未改動'
+        source = live(backlog, source.id)
+        merge_time = normalize_time(args.time)
+        severe = [f'#{e.id} 為嚴重：{e.state()["severe_reason"]}' for e in (source, target) if e.state()['severe']]
+        occurrences = {}
+        for o in sorted(target.occurrences + source.occurrences, key=lambda o: when(o.time)):
+            occurrences.setdefault(o.session, o)  # the earlier time of a session wins
+        # even identical records at the same time clash: the Spec refuses any two at one time after a merge
+        labelled = [(f'#{e.id}', p) for e in (target, source) for p in e.processing]
+        if severe:
+            labelled.append(('合併新增', Processing(merge_time, 'severe', f'合併時 {"；".join(severe)}')))
+        clashes = [(label, p) for label, p in labelled if sum(when(q.time) == when(p.time) for _, q in labelled) > 1]
+        if clashes:
+            raise Refused('合併後會有時間相同的處理紀錄，拒絕合併；請用 --time 改其中一筆的時間後再合併：\n'
+                          + '\n'.join(f'  {label} {p.time} | {p.kind} | {p.detail}'
+                                       for label, p in sorted(clashes, key=lambda c: when(c[1].time))))
+        target.occurrences, target.processing = list(occurrences.values()), [p for _, p in labelled]
+        target.suspected = sorted(set(target.suspected + source.suspected) - {source.id, target.id})
+        source.occurrences, source.processing, source.merged_into = [], [], target.id
+        # target first, so a failure in between leaves the source unmarked; the rollback undoes both anyway
+        return ([target, source], f'chore: merge #{source.id} into #{target.id}',
+                f'已將 #{source.id} 併入 #{target.id}：{summary(target)}')
+    return backlog.transaction(change)
+
+
 def recorded(entry, verb, status):
     if entry.state()['status'] != status:
         verb += f'（之後還有其他紀錄，目前不是{STATUS_LABELS[status]}）'
@@ -428,10 +479,17 @@ def rank_key(entry):
 
 
 def cmd_list(backlog, args):
-    entries = [e for e in backlog.all() if e.merged_into is None]
-    if args.status:
-        entries = [e for e in entries if e.state()['status'] == args.status]
-    entries.sort(key=rank_key)
+    if args.merged:
+        if args.status or args.suspected:
+            raise Refused('--merged 不能和 --status 或 --suspected 一起用：已併入的條目沒有狀態')
+        entries = [e for e in backlog.all() if e.merged_into is not None]
+    else:
+        entries = [e for e in backlog.all() if e.merged_into is None]
+        if args.suspected:
+            entries = [e for e in entries if e.suspected]
+        if args.status:
+            entries = [e for e in entries if e.state()['status'] == args.status]
+        entries.sort(key=rank_key)
     if args.limit is not None:
         entries = entries[:args.limit]
     return '\n'.join(summary(e) for e in entries) or '沒有符合的條目'
@@ -446,7 +504,7 @@ def cmd_search(backlog, args):
         if score:
             hits.append((-score, entry.id, entry))
     hits.sort(key=lambda h: h[:2])
-    lines = [summary(e) + (f' → 已併入 #{e.merged_into}' if e.merged_into else '') for _, _, e in hits[:args.limit]]
+    lines = [summary(e) for _, _, e in hits[:args.limit]]
     return '\n'.join(lines) or '沒有符合的條目'
 
 
@@ -489,6 +547,8 @@ def build_parser():
     p.add_argument('--description', required=True)
     p.add_argument('--suggestion', required=True)
     p.add_argument('--severe', metavar='REASON', help='新增時就標嚴重，附一句理由')
+    p.add_argument('--suspected', nargs='+', type=positive, metavar='ID',
+                   help='拿不準時附上疑似相同的候選編號；候選條目不改動')
     occurrence_args(p)
     p = sub.add_parser('occur', help='對既有條目記一次出現')
     p.add_argument('id', type=positive)
@@ -510,8 +570,16 @@ def build_parser():
     p = sub.add_parser('ready', help='手動設可處理')
     p.add_argument('id', type=positive)
     p.add_argument('--time', help='處理時間（ISO 8601），預設現在')
-    p = sub.add_parser('list', help='依狀態列清單')
+    p = sub.add_parser('unsuspect', help='確認不同後清除疑似相同標記')
+    p.add_argument('id', type=positive)
+    p = sub.add_parser('merge', help='把來源條目併入目標條目')
+    p.add_argument('source', type=positive)
+    p.add_argument('target', type=positive)
+    p.add_argument('--time', help='合併時間（ISO 8601），預設現在；嚴重的合併紀錄用這個時間')
+    p = sub.add_parser('list', help='依狀態列清單（不含已併入）')
     p.add_argument('--status', choices=list(STATUS_LABELS))
+    p.add_argument('--suspected', action='store_true', help='只列有疑似相同標記的條目')
+    p.add_argument('--merged', action='store_true', help='改列已併入的條目')
     p.add_argument('--limit', type=positive)
     p = sub.add_parser('search', help='關鍵字搜尋標題與內文')
     p.add_argument('keywords', nargs='+')
@@ -523,8 +591,8 @@ def build_parser():
 
 
 COMMANDS = {'init': cmd_init, 'add': cmd_add, 'occur': cmd_occur, 'severe': cmd_severe, 'done': cmd_done,
-            'wontfix': cmd_wontfix, 'ready': cmd_ready, 'list': cmd_list, 'search': cmd_search, 'show': cmd_show,
-            'restore': cmd_restore}
+            'wontfix': cmd_wontfix, 'ready': cmd_ready, 'unsuspect': cmd_unsuspect, 'merge': cmd_merge,
+            'list': cmd_list, 'search': cmd_search, 'show': cmd_show, 'restore': cmd_restore}
 
 
 def main(argv=None):

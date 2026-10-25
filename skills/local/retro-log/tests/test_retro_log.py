@@ -337,6 +337,150 @@ class RetroLogTests(unittest.TestCase):
         self.assertEqual(self.commits(), commits)
         self.assertEqual(before.count('| done |'), 1)
 
+    def merge(self, source, target, *extra):
+        return self.ok('merge', str(source), str(target), '--time', '2026-10-09T10:00:00+08:00', *extra)
+
+    def test_unsure_entry_keeps_candidate_unchanged_and_can_be_found_and_cleared(self):
+        self.add('candidate', 's1', T1)
+        self.occur(1, 's2', T2)
+        candidate, commits = self.ok('show', '1'), len(self.commits())
+        self.assertIn('#9', self.refused('add', '--title', 'x', '--description', 'd', '--suggestion', 's',
+                                         '--project', 'p', '--client', 'codex', '--session', 's3', '--evidence', 'e',
+                                         '--suspected', '9'))
+        self.assertEqual(len(self.commits()), commits)
+        out = self.add('maybe the same', 's3', T3, '--suspected', '1')
+        self.assertIn('#2 [觀察中]', out)
+        self.assertIn('疑似 #1', out)
+        self.assertEqual(self.ok('show', '1'), candidate)
+        self.assertIn('suspected: [1]', self.ok('show', '2'))
+        self.assertEqual([line.split(' ')[0] for line in self.ok('list', '--suspected').splitlines()], ['#2'])
+        self.assertIn('已清除', self.ok('unsuspect', '2'))
+        self.assertEqual(self.front(2)['suspected'], '[]')
+        self.assertIn('沒有符合', self.ok('list', '--suspected'))
+
+    def test_merge_moves_all_records_keeps_earlier_session_time_and_marks_source(self):
+        self.add('target', 's1', T2)
+        self.add('source', 's1', T1, '--severe', 'r')
+        self.occur(2, 's2', T3)
+        self.ok('severe', '2', '--unset', '--time', T4)
+        self.ok('ready', '2', '--time', T5)
+        out = self.merge(2, 1)
+        self.assertIn('已將 #2 併入 #1', out)
+        self.assertIn('#1 [可處理]', out)
+        records = self.records(1)
+        self.assertIn(f'{T1} | proj | claude | s1 |', records)
+        self.assertNotIn(T2, records)
+        for part in (f'{T3} | proj2 | codex | s2', f'{T1} | severe | r', f'{T4} | unsevere', f'{T5} | ready'):
+            self.assertIn(part, records)
+        self.assertEqual(self.front(2)['merged_into'], '1')
+        self.assertEqual(self.records(2).split('## 處理紀錄')[0].strip(), '')
+        self.assertEqual(self.commits()[0], 'chore: merge #2 into #1')
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_merge_into_done_target_recurs_only_for_occurrences_after_the_fix(self):
+        for title in ('fixed', 'fixed too'):
+            self.add(title, 's1', T1)
+        self.ok('done', '1', '--commit', 'c1', '--time', T3)
+        self.ok('done', '2', '--commit', 'c1', '--time', T3)
+        self.add('seen before fix', 's2', T2)
+        self.add('seen after fix', 's3', T4)
+        self.merge(3, 1)
+        self.assertEqual(self.state(1), ('done', 'false'))
+        self.assertIn('#2 [可處理]［復發］', self.merge(4, 2))
+
+    def test_merge_into_wontfix_target_reopens_after_two_new_sessions(self):
+        for entry_id in (1, 2):
+            self.add(f'skip {entry_id}', 's1', T1)
+            self.ok('wontfix', str(entry_id), '--reason', 'meh', '--time', T3)
+        self.add('before and after', 's2', T2)
+        self.occur(3, 's3', T4)
+        self.merge(3, 1)
+        self.assertEqual(self.state(1), ('wontfix', 'false'))
+        self.add('two after', 's4', T4)
+        self.occur(4, 's5', T5)
+        self.merge(4, 2)
+        self.assertEqual(self.state(2), ('ready', 'false'))
+
+    def test_merge_keeps_severe_from_source_with_a_record_at_merge_time(self):
+        self.add('plain target', 's1', T1)
+        self.add('severe source', 's2', T1, '--severe', 'shipped a broken build')
+        self.assertIn('#1 [可處理]［嚴重］', self.merge(2, 1))
+        self.assertIn('2026-10-09T10:00:00+08:00 | severe | 合併時 #2 為嚴重：shipped a broken build', self.records(1))
+        self.assertIn('#1 [可處理]［嚴重］', self.occur(1, 's3', '2026-10-10T10:00:00+08:00'))
+
+    def test_merge_with_same_time_processing_is_refused_in_both_directions(self):
+        self.add('done at T2', 's1', T1)
+        self.add('wontfix at T2', 's2', T1)
+        self.ok('done', '1', '--commit', 'c1', '--time', T2)
+        self.ok('wontfix', '2', '--reason', 'meh', '--time', T2)
+        commits = self.commits()
+        for source, target in ((1, 2), (2, 1)):
+            err = self.refused('merge', str(source), str(target))
+            self.assertIn(f'#1 {T2} | done | commit c1', err)
+            self.assertIn(f'#2 {T2} | wontfix | meh', err)
+        self.assertEqual(self.commits(), commits)
+        self.add('ready at T3', 's3', T1)
+        self.add('ready at T3 too', 's4', T1)
+        self.ok('ready', '3', '--time', T3)
+        self.ok('ready', '4', '--time', T3)
+        commits = self.commits()
+        self.assertIn(f'#3 {T3} | ready', self.refused('merge', '4', '3'))  # identical records clash too
+        self.assertEqual(self.commits(), commits)
+
+    def test_merge_refuses_self_and_merged_entries_except_a_repeat_of_the_same_merge(self):
+        for session in ('s1', 's2', 's3'):
+            self.add(f'entry {session}', session, T1)
+        self.assertIn('自己', self.refused('merge', '1', '1'))
+        self.merge(2, 1)
+        commits = self.commits()
+        self.assertIn('#2 已併入 #1', self.refused('merge', '3', '2'))
+        self.assertIn('#2 已併入 #1', self.refused('merge', '2', '3'))
+        self.assertIn('已併入 #1', self.merge(2, 1))
+        self.assertEqual(self.commits(), commits)
+
+    def test_list_leaves_out_merged_entries_unless_asked(self):
+        self.add('kept', 's1', T1)
+        self.add('merged away', 's2', T1)
+        self.merge(2, 1)
+        self.assertEqual([line.split(' ')[0] for line in self.ok('list').splitlines()], ['#1'])
+        self.assertEqual([line.split(' ')[0] for line in self.ok('list', '--status', 'ready').splitlines()], ['#1'])
+        self.add('merged too', 's3', T1)
+        self.merge(3, 1)
+        self.assertEqual([line.split(' ')[0] for line in self.ok('list', '--merged').splitlines()], ['#2', '#3'])
+        self.assertIn('#2 [已併入 #1]', self.ok('list', '--merged', '--limit', '1'))
+        self.assertEqual(len(self.ok('list', '--merged', '--limit', '1').splitlines()), 1)
+        self.assertIn('--merged', self.refused('list', '--merged', '--status', 'ready'))
+
+    def assert_merge_rolls_back_and_reruns(self, break_write, repair):
+        self.add('target', 's1', T1)
+        self.add('source', 's2', T2)
+        self.occur(2, 's1', T3)
+        files, commits = [self.ok('show', n) for n in ('1', '2')], self.commits()
+        break_write()
+        result = self.cli('merge', '2', '1', '--time', T4)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('已還原', result.stderr)
+        self.assertEqual(self.commits(), commits)
+        self.assertEqual(self.git('status', '--porcelain'), '')
+        self.assertEqual([self.ok('show', n) for n in ('1', '2')], files)
+        repair()
+        self.assertIn('#1 [可處理] target（2 個 session）', self.ok('merge', '2', '1', '--time', T4))
+        self.assertEqual(self.records(1).count(' | s1 | '), 1)
+        self.assertIn(f'{T2} | proj | claude | s2', self.records(1))
+
+    def test_merge_commit_failure_restores_and_rerun_merges_once(self):
+        hook = self.backlog / '.git/hooks/pre-commit'
+
+        def break_commit():
+            hook.write_text('#!/bin/sh\nexit 1\n')
+            hook.chmod(0o755)
+        self.assert_merge_rolls_back_and_reruns(break_commit, hook.unlink)
+
+    def test_merge_failing_after_one_side_is_written_restores_and_rerun_merges_once(self):
+        def block_source_file():  # the target is written first; a folder in the way fails the source write
+            (self.backlog / 'entries/.0002.md.tmp').mkdir()
+        self.assert_merge_rolls_back_and_reruns(block_source_file, lambda: None)
+
 
 if __name__ == '__main__':
     unittest.main()
