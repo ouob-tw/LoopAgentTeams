@@ -510,6 +510,7 @@
 	{#if launches.length}
 		<ol>
 			{#each launches as launch (launch.id)}
+				{@const link = launchLink(launch, form.list?.launches ?? [], controllers, agents)}
 				<li data-state={launch.state}>
 					<p class="meta">
 						<time datetime={launch.time}>{formatTime(launch.time)}</time>
@@ -537,13 +538,10 @@
 					{#if launch.role !== 'agent' && launch.follow?.error && launch.state !== 'active'}
 						<p class="state warn">{launch.follow.error}</p>
 					{/if}
-					{#if launch.role !== 'agent'}
-						{@const link = launchLink(launch, form.list?.launches ?? [], controllers, agents)}
-						{#if link?.kind === 'controller'}
-							<button class="open" onclick={() => onopen(link.id)}>看主控資訊 →</button>
-						{:else if link}
-							<button class="open" onclick={() => onagent(link.id)}>看這個 Agent →</button>
-						{/if}
+					{#if link?.kind === 'controller'}
+						<button class="open" onclick={() => onopen(link.id)}>看主控資訊 →</button>
+					{:else if link}
+						<button class="open" onclick={() => onagent(link.id)}>看這個 Agent →</button>
 					{/if}
 					{#if launch.role !== 'agent'}
 						<p class="text">{latCommand(launch.client, launch.text)}</p>
