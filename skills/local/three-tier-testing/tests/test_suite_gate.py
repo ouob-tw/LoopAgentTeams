@@ -3093,11 +3093,41 @@ class RegisteredCheckoutTests(PrePushCase):
         self.assertIn('x = 1', result.stdout, 'the suite saw the committed app.py')
         self.assertNotIn('uncommitted', result.stdout)
 
-    def fake_bun(self, code):
-        """A `bun` first on PATH that logs where it ran and exits with code."""
+    def test_only_ignored_include_files_are_copied_from_the_original_tree(self):
+        self.registry['fingerprint_include'] = ['.env*']
+        self.registry['full_suites'][0]['command'] = 'cat ../.env.example ../.env.test'
+        self.write_registry()
+        self.touch('.env.example', 'committed\n')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'include')
+        self.touch('.env.example', 'dirty\n')
+        self.touch('.env.test', 'ignored\n')
+        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(result.stdout, 'committed\nignored\n')
+
+    def fake_bun(self, code, script=''):
+        """A `bun` first on PATH that logs where it ran, runs script and exits with code."""
         fake = self.tmp / 'bin/bun'
-        fake.write_text(f'#!/bin/sh\necho "$PWD $*" >> {self.tmp / "bun.log"}\nexit {code}\n')
+        fake.write_text(f'#!/bin/sh\necho "$PWD $*" >> {self.tmp / "bun.log"}\n{script}\n'
+                        f'exit {code}\n')
         fake.chmod(0o755)
+
+    def test_an_interrupted_preparation_ends_what_it_started(self):
+        (self.repo / 'web/bun.lock').write_text('{}\n')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'web dependencies')
+        child = self.tmp / 'child.pid'
+        self.fake_bun(0, f'sleep 300 & echo $! > {child}.tmp; mv {child}.tmp {child}; wait')
+        proc = self.start('run', '--registered', '--purpose', 'post-merge')
+        self.wait_until(child.exists, message='the preparation to start')
+        pid = int(child.read_text())
+        proc.send_signal(signal.SIGINT)
+        code, _out, err = self.finish(proc)
+        self.assertEqual(code, 128 + signal.SIGINT, err)
+        self.wait_until(lambda: not self.alive(pid), timeout=10, message='the child to end')
+        self.assertEqual(self.full_runs(), [])
+        self.assertEqual(self.checkouts_left(), ([], []))
 
     def test_a_directory_with_a_bun_lockfile_gets_its_dependencies_first(self):
         self.registry['full_suites'].append({'command': self.full('root'), 'cwd': '.'})

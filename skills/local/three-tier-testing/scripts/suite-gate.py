@@ -1992,8 +1992,15 @@ def clean_checkout(root, commit):
     state dir; the directory and its worktree entry are removed however the block ends."""
     parent = state_dir() / 'checkouts'
     parent.mkdir(parents=True, exist_ok=True)
-    path = Path(tempfile.mkdtemp(prefix='checkout-', dir=parent))
+    # No signal between creating the directory and the try that removes it.
+    old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
     try:
+        path = Path(tempfile.mkdtemp(prefix='checkout-', dir=parent))
+    except OSError:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        raise
+    try:
+        signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
         result = git(['worktree', 'add', '--detach', '--quiet', str(path), commit], root)
         if result.returncode != 0:
             raise RuntimeError(f'git worktree add failed: {result.stderr.strip()}')
@@ -2012,14 +2019,24 @@ def clean_checkout(root, commit):
 
 
 def prepare_dependencies(directory):
-    """Install the dependencies directory's lockfile names; what failed, or None."""
+    """Install the dependencies directory's lockfile names; what failed, or None. It runs
+    in its own session, ended with whatever it left running however it ends."""
     for lockfile, command in PREPARE_STEPS:
         if (directory / lockfile).is_file():
             warn(f'preparing {directory}: {shlex.join(command)}')
+            # No signal between starting it and the try that ends it.
+            old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
             try:
-                code = subprocess.run(command, cwd=directory).returncode
+                child = subprocess.Popen(command, cwd=directory, start_new_session=True,
+                                         preexec_fn=_child_setup({}))
             except OSError as exc:
+                signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
                 return f'{shlex.join(command)} could not start: {exc}'
+            try:
+                signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+                code = child.wait()
+            finally:
+                end_session(child.pid, child)
             return f'{shlex.join(command)} exited {code}' if code else None
     return None
 
@@ -2056,14 +2073,17 @@ def cmd_run_registered(names, rerun, purpose, reason):
         except ValueError as exc:
             warn(f'run --registered: {exc}')
             return 2
-        # The fingerprint takes these (usually ignored) files from the work tree, so the
-        # checkout gets the original tree's copies and its records match that tree.
-        for pattern in include_patterns(registry):
-            for path in root.glob(pattern):
-                if path.is_file():
-                    target = checkout / path.relative_to(root)
-                    target.parent.mkdir(parents=True, exist_ok=True)
-                    shutil.copy2(path, target)
+        # The fingerprint takes these files from the work tree, so the checkout gets the
+        # original tree's ignored ones and its records match that tree; tracked and new
+        # files stay as HEAD has them.
+        found = sorted({str(p.relative_to(root)) for pattern in include_patterns(registry)
+                        for p in root.glob(pattern) if p.is_file()})
+        if found:
+            for rel in _git_paths(['ls-files', '--others', '--ignored', '--exclude-standard',
+                                   '--', *found], root):
+                target = checkout / rel
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(root / rel, target)
         unknown = [n for n in names if not any(named(s, n) for s in suites)]
         if unknown:
             warn(f"run --registered: no registered full suite {', '.join(unknown)}; the "
