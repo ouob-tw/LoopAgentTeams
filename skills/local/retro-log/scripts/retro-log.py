@@ -5,8 +5,10 @@ commit it started from. Entry status and recurrence are computed from the timest
 occurrence and processing records, never edited by hand.
 """
 import argparse
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from datetime import datetime
+import fcntl
 import json
 import os
 from pathlib import Path
@@ -206,8 +208,23 @@ class Backlog:
     def next_id(self):
         return max((e.id for e in self.all()), default=0) + 1
 
+    @contextmanager
+    def locked(self):
+        """Hold an exclusive lock on the backlog folder itself, so no lock file enters the repo."""
+        self.root.mkdir(parents=True, exist_ok=True)
+        fd = os.open(self.root, os.O_RDONLY)
+        try:
+            fcntl.flock(fd, fcntl.LOCK_EX)
+            yield
+        finally:
+            os.close(fd)
+
     def transaction(self, change):
-        """Run change() -> (entries to write, commit message, output); commit, or restore the start commit."""
+        """Run change() -> (entries to write, commit message, output) under the lock; commit, or restore."""
+        with self.locked():
+            return self.commit_change(change)
+
+    def commit_change(self, change):
         start = None
         if self.exists():
             leftover = self.dirty()
@@ -355,10 +372,11 @@ def cmd_show(backlog, args):
 def cmd_restore(backlog, args):
     if not backlog.exists():
         return '反饋庫不存在，沒有需要還原的改動'
-    leftover = backlog.dirty()
-    if not leftover:
-        return '沒有未提交的改動'
-    backlog.discard(backlog.head())
+    with backlog.locked():
+        leftover = backlog.dirty()
+        if not leftover:
+            return '沒有未提交的改動'
+        backlog.discard(backlog.head())
     return '已還原到最後一次 commit，捨棄：\n' + '\n'.join(f'  {f}' for f in leftover)
 
 

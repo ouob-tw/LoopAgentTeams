@@ -182,6 +182,19 @@ class RetroLogTests(unittest.TestCase):
         self.assertTrue((self.backlog / '.git/index.lock').exists())
         self.assertNotIn('s2', (self.backlog / 'entries/0001.md').read_text())
 
+    def test_concurrent_adds_get_distinct_ids(self):
+        self.add()
+        writers = [subprocess.Popen([sys.executable, str(SCRIPT), 'add', '--title', f'Writer {n}', '--description', 'd',
+                                     '--suggestion', 's', '--project', 'p', '--client', 'codex', '--session', f'w{n}',
+                                     '--evidence', 'e'], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
+                                    text=True) for n in range(4)]
+        for writer in writers:
+            _, err = writer.communicate()
+            self.assertEqual(writer.returncode, 0, err)
+        titles = sorted(self.front(n)['title'] for n in range(2, 6))
+        self.assertEqual(titles, [f'"Writer {n}"' for n in range(4)])
+        self.assertEqual(len(self.commits()), 5)
+
     def test_leftover_changes_block_writes_until_restore(self):
         self.add()
         (self.backlog / 'entries/0001.md').write_text('half written')
