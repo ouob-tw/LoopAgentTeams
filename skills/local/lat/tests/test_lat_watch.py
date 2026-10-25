@@ -3926,20 +3926,28 @@ esac
                 watch, stuck = self.observe_screen(terminal)
                 self.assertEqual(stuck.quota_issue.kind, kind)
 
+                # Capacity and quota notify at once; a crash waits for the stall threshold.
+                first = 20 * 60 if kind == 'crash' else 0
                 state, actions = watch.decide(None, stuck, now=0)
+                if first:
+                    self.assertEqual(actions, ())
+                    state, actions = watch.decide(state, stuck, now=first - 1)
+                    self.assertEqual(actions, ())
+                    state, actions = watch.decide(state, stuck, now=first)
                 self.assertEqual(actions[0].kind, 'notify-orchestrator')
                 self.assertIn('worker-open', actions[0].message)
-                state, actions = watch.decide(state, stuck, now=20 * 60 - 1)
+                state, actions = watch.decide(state, stuck, now=first + 20 * 60 - 1)
                 self.assertEqual(actions, ())
-                state, actions = watch.decide(state, stuck, now=20 * 60)
+                state, actions = watch.decide(state, stuck, now=first + 20 * 60)
                 self.assertEqual(actions[0].kind, 'notify-orchestrator')
-                self.assertIn('unchanged for 20 minutes', actions[0].message)
-                state, actions = watch.decide(state, stuck, now=40 * 60)
+                self.assertIn(f'unchanged for {(first + 20 * 60) // 60} minutes',
+                              actions[0].message)
+                state, actions = watch.decide(state, stuck, now=first + 40 * 60)
                 self.assertEqual(actions[0].kind, 'notify-orchestrator')
 
                 _, recovered = self.observe_screen(healthy)
                 self.assertIsNone(recovered.quota_issue)
-                for minute in (41, 61, 81, 120):
+                for minute in (61, 81, 101, 140):
                     state, actions = watch.decide(
                         state, recovered._replace(event_id=minute), now=minute * 60)
                     self.assertEqual(actions, ())
@@ -3948,6 +3956,14 @@ esac
         self.assertIn('The application panicked',
                       self.observe_screen(crash)[1].quota_issue.line)
         self.assertEqual(watch.quota_notice(self.observe_screen(crash)[1]).label, '程式崩潰')
+
+        # Crash text on the screen of an agent that keeps making progress never notifies.
+        _, crashed = self.observe_screen(crash)
+        state = None
+        for minute in range(0, 61, 5):
+            state, actions = watch.decide(
+                state, crashed._replace(transcript_size=minute + 1), now=minute * 60)
+            self.assertEqual(actions, ())
 
     def test_changed_error_screen_restarts_the_repeat_timer(self):
         lines = ['■ Selected model is at capacity. Please try a different model.', '',
@@ -3977,6 +3993,9 @@ esac
              '• Resumed after capacity returned.', *codex_ui],
             ['• The failing test printed "thread \'main\' panicked at lib.rs" and',
              '  a Backtrace line; both are fixed now.', *codex_ui],
+            # A newer error the watcher does not classify still replaces the older one.
+            ['■ Selected model is at capacity. Please try a different model.',
+             '■ Error: stream disconnected before completion.', *codex_ui],
         ]
         for lines in old_errors:
             with self.subTest(lines=lines[0]):

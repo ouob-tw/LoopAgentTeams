@@ -283,7 +283,8 @@ def screen_message(lines, start):
 def codex_error_is_current(lines, index):
     for line in lines[index + 1:]:
         stripped = line.strip()
-        if stripped.startswith('Working (') or line.startswith('• '):
+        # A newer error, even one the watcher does not classify, replaces this one.
+        if stripped.startswith('Working (') or line.startswith(('• ', '■ ')):
             return False
         if line.startswith('› ') and stripped != '› Ask Codex to do anything':
             return False
@@ -892,10 +893,14 @@ def decide(previous, observation, now):
         state['orchestrator_handled'] = True
     prompt_stalled = (queued_prompt
                       and now - state['prompt_text_since'] >= PROMPT_SECONDS)
+    # Crash words can appear on a working agent's screen; wait for the stall threshold.
+    crash_unconfirmed = (observation.quota_issue is not None
+                         and observation.quota_issue.kind == 'crash' and not active_stalled)
     if observation.quota_issue is not None and not state['quota_notified']:
-        actions = (quota_notice(observation),)
-        state['quota_notified'] = True
-        state['quota_notified_at'] = now
+        if not crash_unconfirmed:
+            actions = (quota_notice(observation),)
+            state['quota_notified'] = True
+            state['quota_notified_at'] = now
     elif observation.quota_issue is not None:
         # Repeat to the orchestrator while the agent stays on the same error screen.
         unchanged_since = max(state['quota_notified_at'], state['quota_screen_since'])
