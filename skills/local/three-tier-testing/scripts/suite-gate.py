@@ -19,7 +19,9 @@ suite; `install-pre-push` / `uninstall-pre-push --repo <dir>` add or remove it.
 
 Linux only: each suite runs in its own systemd user scope (cgroup v2), and slot and lock
 holders stay counted while that group has processes. Without a user scope the suite runs
-in a new session instead, which is then what counts.
+in a new session instead, which is then what counts. Once a holder's gate has been seen gone
+for `reclaim_grace_seconds`, the next gate that reads the state stops what is left and frees
+the slot.
 """
 import argparse
 import copy
@@ -49,7 +51,8 @@ MAP_DIR = '.suite-gate.d'  # more affected.map rules, one file per topic
 DEFAULTS = {'min_slots': 2, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds': 30.0,
             'sample_seconds': 2.0, 'brake_io_high': 40.0, 'brake_io_low': 20.0,
             'brake_cpu_high': 50.0, 'brake_cpu_low': 25.0, 'default_cores': 4.0,
-            'default_mem_gb': 4.0, 'mem_reserve_gb': 8.0, 'profile_history': 5}
+            'default_mem_gb': 4.0, 'mem_reserve_gb': 8.0, 'profile_history': 5,
+            'reclaim_grace_seconds': 600.0}
 # The smallest value each key accepts; an int default takes whole numbers only.
 MINIMUMS = {'min_slots': 0, 'max_slots': 1, 'profile_history': 1, 'poll_seconds': 0.01,
             'report_seconds': 0.01, 'sample_seconds': 0.01}
@@ -60,6 +63,7 @@ WORKTREE_PLACEHOLDER = '<worktree>'
 TAIL_LINES = 20
 TAIL_BYTES = 8192
 KILL_GRACE_SECONDS = 5.0
+RECLAIM_HISTORY = 10  # reclaim records kept in the shared state
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 FALLBACK_NOTE = ('running the suite in a new session instead; its usage is not measured and '
                  'processes it starts in another session are not counted')
@@ -689,7 +693,8 @@ def holder_alive(holder):
 def _wait_until(done, child):
     deadline = time.monotonic() + KILL_GRACE_SECONDS
     while time.monotonic() < deadline:
-        child.poll()
+        if child:
+            child.poll()
         if done():
             return True
         time.sleep(0.05)
@@ -706,7 +711,8 @@ def end_session(sid, child):
                 pass
         if _wait_until(lambda: not session_pids(sid), child):
             return
-    child.poll()
+    if child:
+        child.poll()
 
 
 def end_group(group, child):
@@ -723,7 +729,8 @@ def end_group(group, child):
     except OSError:
         pass
     _wait_until(lambda: not cgroup_pids(group), child)
-    child.poll()
+    if child:
+        child.poll()
 
 
 # ---------------------------------------------------------------- host readings
@@ -909,8 +916,49 @@ def _raise_interrupted(signum, _frame):
     raise Interrupted(signum)
 
 
+def reclaim_leftovers(state, config):
+    """Stop what holders whose gate is gone left in their group (session without one) once
+    it has been seen for the grace period, and drop those holders. The first time a holder is
+    seen that way stamps `leftover_since` on it; a holder whose gate runs is never touched."""
+    now = time.time()
+    holders = [*state['locks'].values(), *state['slots']]
+    expired = {}
+    for holder in holders:
+        if gate_alive(holder):
+            continue
+        since = holder.get('leftover_since')
+        if not _number(since):
+            holder['leftover_since'] = now
+        elif now - since >= config['reclaim_grace_seconds']:
+            expired[holder['id']] = holder
+    for holder_id, holder in expired.items():
+        group, sid = holder.get('cgroup'), holder.get('sid')
+        pids = cgroup_pids(group) if group else session_pids(sid)
+        processes = [{'pid': pid, 'command': command_line(pid)} for pid in pids]
+        if group:
+            end_group(group, None)
+        else:
+            end_session(sid, None)
+        lock = next((fp for fp, h in state['locks'].items() if h['id'] == holder_id), None)
+        record = {'time': now_iso(), 'agent': holder.get('agent'),
+                  'command': holder.get('command'), 'cwd': holder.get('cwd'),
+                  'fingerprint': holder.get('fingerprint'), 'cgroup': group, 'sid': sid,
+                  'slot': any(h['id'] == holder_id for h in state['slots']), 'lock': lock,
+                  'leftover_since': holder['leftover_since'],
+                  'grace_seconds': config['reclaim_grace_seconds'],
+                  'process_count': len(processes), 'processes': processes}
+        state['reclaims'] = (state.get('reclaims') or [])[-(RECLAIM_HISTORY - 1):] + [record]
+        warn(f"reclaimed the slot of {record['agent']} ({record['command']} in "
+             f"{record['cwd']}): its gate was gone for "
+             f"{fmt_seconds(now - holder['leftover_since'])}; stopped {len(processes)} "
+             'process(es):\n' + '\n'.join(f"  {p['pid']} {p['command']}" for p in processes))
+    state['locks'] = {k: v for k, v in state['locks'].items() if v['id'] not in expired}
+    state['slots'] = [h for h in state['slots'] if h['id'] not in expired]
+
+
 def with_state(change):
-    """Run change(state) under the host-wide state lock, with dead holders pruned."""
+    """Run change(state) under the host-wide state lock, with dead holders pruned and
+    leftovers past the grace period reclaimed."""
     directory = state_dir()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / 'state.json'
@@ -926,6 +974,7 @@ def with_state(change):
             state['locks'] = {k: v for k, v in state.get('locks', {}).items() if holder_alive(v)}
             state['slots'] = [h for h in state.get('slots', []) if holder_alive(h)]
             state['waiters'] = [h for h in state.get('waiters', []) if holder_alive(h)]
+            reclaim_leftovers(state, load_config())
             result = change(state)
             tmp = path.with_suffix('.tmp')
             tmp.write_text(json.dumps(state, indent=1))
@@ -2278,7 +2327,8 @@ def cmd_status(as_json, fp_prefix, limit):
         shown = [{k: v for k, v in h.items() if k != 'unused'} for h in running]
         print(json.dumps({'min_slots': floor, 'max_slots': cap, 'config': config,
                           'host': host, 'running': shown, 'waiting': waiting,
-                          'locks': state['locks'], 'records': records, 'cleanup': cleanup},
+                          'locks': state['locks'], 'records': records, 'cleanup': cleanup,
+                          'reclaims': state.get('reclaims') or []},
                          ensure_ascii=False, indent=1))
         return 0
     now = time.time()
@@ -2299,9 +2349,12 @@ def cmd_status(as_json, fp_prefix, limit):
                                          else f': only {floor} start until it can be read'))
     print(f"Running ({len(running)}/{cap} host slots):")
     for h in running:
-        note = '' if gate_alive(h) else (' (gate gone, its group still has processes)'
-                                         if h.get('cgroup') else
-                                         ' (gate gone, test session still alive)')
+        note = ''
+        if not gate_alive(h):
+            left = ('its group still has processes' if h.get('cgroup')
+                    else 'test session still alive')
+            note = (f' (gate gone, {left}; reclaimed in {reclaim_due(h, config, now)} '
+                    'if still there)')
         cores, mem = h['usage']['cpu_cores'], h['usage']['mem_bytes']
         usage = (f"cpu {'-' if cores is None else f'{cores:.1f} cores'}, "
                  f"mem {'-' if mem is None else fmt_bytes(mem)}")
@@ -2339,6 +2392,12 @@ def cmd_status(as_json, fp_prefix, limit):
         print(f"  {r.get('time')}  {result}  fp {(record_fingerprint(r) or '-')[:12]}  "
               f"{r.get('agent')}  {r.get('duration_s')}s  {r.get('cwd')}  "
               f"{r.get('command')}{rerun}{purpose}")
+    reclaim = (state.get('reclaims') or [None])[-1]
+    if reclaim:
+        print(f"Latest reclaim: {reclaim['time']} stopped {reclaim['process_count']} "
+              f"process(es) left by {reclaim['agent']}  {reclaim['cwd']}  {reclaim['command']}")
+        for process in reclaim['processes']:
+            print(f"  {process['pid']} {process['command']}")
     print(f'Test cleanup ({len(cleanup)} suites):')
     for unit in cleanup:
         print(f"  {'DUE' if unit['due'] else 'not due'}: `{unit['command']}` in "
@@ -2347,6 +2406,13 @@ def cmd_status(as_json, fp_prefix, limit):
         for line in cleanup_numbers(unit)[2:] + [f'- Due: {why}' for why in unit['due']]:
             print(f'    {line[2:]}')
     return 0
+
+
+def reclaim_due(holder, config, now):
+    """How long until a leftover holder is reclaimed; one whose gate ended after the state was
+    read is not stamped yet and has the whole grace period."""
+    left = config['reclaim_grace_seconds'] - (now - holder.get('leftover_since', now))
+    return fmt_seconds(max(0.0, left))
 
 
 def fmt_reservation(holder):
