@@ -36,6 +36,7 @@ PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
 QUOTA_CLEAR_ROUNDS = 2
 QUOTA_REPEAT_SECONDS = 20 * 60
+CAPACITY_CONTINUE_SECONDS = 5 * 60
 FAILURE_REPEAT_SECONDS = 60 * 60
 ORCHESTRATOR_GONE_SECONDS = 60 * 60
 LOG_ROTATE_BYTES = 1024 * 1024
@@ -62,6 +63,9 @@ KEEPALIVE = ('[lat-watch] Prompt cache keep-alive. Read any unread HCOM messages
              'is new, run no tools, keep your current wait without declaring it again and '
              'end your turn with the shortest possible reply.')
 QUOTA_CONTINUE = '[lat-watch] Please continue.'
+CAPACITY_CONTINUE = 'Continue'
+# One Continue per Codex capacity episode; kept until the episode re-arms.
+CAPACITY_KEYS = ('capacity_continue_at', 'capacity_continue_notified')
 NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 NAME = re.compile(NAME_PATTERN)
 CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
@@ -200,7 +204,8 @@ def owner_notice(observation, state, now, reason):
                   label='待核准' if reason == 'blocked' else '')
 
 
-def quota_notice(observation, unchanged_minutes=None):
+def quota_notice(observation, unchanged_minutes=None, continue_minutes=None,
+                 input_has_text=False):
     issue = observation.quota_issue
     reset = f' Reset time: {issue.reset_time}.' if issue.reset_time else ''
     if issue.kind == 'crash':
@@ -211,9 +216,16 @@ def quota_notice(observation, unchanged_minutes=None):
             'the user decides whether to wait or choose another recovery action',
         )
     line_end = '' if issue.line.endswith(('.', '!', '?')) else '.'
-    recovery = ('The watcher checks the active cswap account each cycle and only resumes '
-                'a verified Claude quota menu when both usage windows are below 100%. '
-                if observation.quota_screen else 'No terminal nudge was injected. ')
+    if continue_minutes is not None:
+        recovery = f'Continue was sent {continue_minutes} minutes ago with no reaction. '
+        action_needed = 'hand the work to another agent'
+    elif observation.quota_screen:
+        recovery = ('The watcher checks the active cswap account each cycle and only resumes '
+                    'a verified Claude quota menu when both usage windows are below 100%. ')
+    elif input_has_text:
+        recovery = 'No terminal nudge was injected because the input box has text. '
+    else:
+        recovery = 'No terminal nudge was injected. '
     subject = ('crash' if issue.kind == 'crash'
                else 'quota or model-capacity issue')
     repeat = (f' Still on screen: the screen has been unchanged for {unchanged_minutes} '
@@ -859,6 +871,11 @@ def decide(previous, observation, now):
         state.pop('prompt_recovery_uncertain', None)
     actions = ()
     state.update(quota_dedupe(previous, observation.quota_issue))
+    for key in CAPACITY_KEYS:
+        if state['quota_notified'] and previous and key in previous:
+            state[key] = previous[key]
+        else:
+            state.pop(key, None)
     if observation.quota_issue is None:
         for key in ('quota_notified_at', 'quota_screen_digest', 'quota_screen_since'):
             state.pop(key, None)
@@ -896,10 +913,30 @@ def decide(previous, observation, now):
     # Crash words can appear on a working agent's screen; wait for the stall threshold.
     crash_unconfirmed = (observation.quota_issue is not None
                          and observation.quota_issue.kind == 'crash' and not active_stalled)
+    # Codex capacity gets one Continue unless the input box has text to keep.
+    capacity = (observation.quota_issue is not None
+                and observation.quota_issue.kind == 'model-capacity'
+                and observation.client.lower() == 'codex')
+    input_has_text = capacity and (observation.prompt_empty is not True
+                                   or bool(observation.input_text))
+    capacity_continue = capacity and observation.status != 'inactive' and not input_has_text
+    continue_at = state.get('capacity_continue_at')
     if observation.quota_issue is not None and not state['quota_notified']:
-        if not crash_unconfirmed:
-            actions = (quota_notice(observation),)
+        if capacity_continue:
+            actions = (Action('capacity-continue', observation.agent, text=CAPACITY_CONTINUE),)
             state['quota_notified'] = True
+            state['quota_notified_at'] = now
+            state['capacity_continue_at'] = now
+        elif not crash_unconfirmed:
+            actions = (quota_notice(observation, input_has_text=input_has_text),)
+            state['quota_notified'] = True
+            state['quota_notified_at'] = now
+    elif (observation.quota_issue is not None and continue_at is not None
+          and not state.get('capacity_continue_notified')):
+        if now - continue_at >= CAPACITY_CONTINUE_SECONDS:
+            actions = (quota_notice(observation,
+                                    continue_minutes=int((now - continue_at) // 60)),)
+            state['capacity_continue_notified'] = True
             state['quota_notified_at'] = now
     elif observation.quota_issue is not None:
         # Repeat to the orchestrator while the agent stays on the same error screen.
@@ -907,7 +944,9 @@ def decide(previous, observation, now):
         if (not observation.is_orchestrator and observation.status != 'inactive'
                 and now - unchanged_since >= QUOTA_REPEAT_SECONDS):
             actions = (quota_notice(
-                observation, int((now - state['quota_screen_since']) // 60)),)
+                observation, int((now - state['quota_screen_since']) // 60),
+                continue_minutes=(None if continue_at is None
+                                  else int((now - continue_at) // 60))),)
             state['quota_notified_at'] = now
     elif prompt_stalled and not state['prompt_recovery_attempted']:
         actions = (Action(
@@ -2191,6 +2230,7 @@ ACTION_POLICIES = {
     ),
     'notify-user': (perform_notify_user, 'user_notified', ()),
     'recover-prompt': (perform_prompt_recovery, None, ()),
+    'capacity-continue': (perform_nudge, None, ()),
 }
 
 
@@ -2210,6 +2250,10 @@ def roll_back(action, state):
     _handler, flag, cleanup_fields = action_policy(action.kind)
     if action.category == 'quota':
         state['quota_notified'] = False
+        return
+    if action.kind == 'capacity-continue':
+        state['quota_notified'] = False
+        state.pop('capacity_continue_at', None)
         return
     if flag is not None:
         state[flag] = False
@@ -2967,7 +3011,8 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
     LEDGER_DELIVERIES[str(path)] = ledger_state
     own = states.setdefault(orchestrator, {})
     own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5,
-                               'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1}
+                               'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1,
+                               'capacity_continue': 1}
     if ledger_state:
         own['ledger'] = ledger_state
     else:
