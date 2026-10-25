@@ -3145,6 +3145,98 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(context.endswith('never recreate it by hand.'))
 
 
+class ListActiveTests(unittest.TestCase):
+    """list --active: records are checked against a fake `hcom list --json` file."""
+
+    def setUp(self):
+        temp = tempfile.TemporaryDirectory()
+        self.addCleanup(temp.cleanup)
+        self.root = Path(temp.name)
+        self.work = self.root / 'work'
+        (self.work / '.git').mkdir(parents=True)
+
+    def cli(self, *args, extra_env=None):
+        env = dict(os.environ, **(extra_env or {}))
+        return subprocess.run([sys.executable, str(SCRIPT), *map(str, args)], text=True,
+                              capture_output=True, env=env, cwd=self.work)
+
+    def write_record(self, sid, **fields):
+        record = dict(dict(client='codex', session_id=sid, role='orchestrator', status='active',
+                           workspace=str(self.work), hcom_name='orch'), **fields)
+        path = self.work / '.lat/sessions' / f'{sid}.json'
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(json.dumps(record))
+        return path
+
+    def list_active(self, agents, *args):
+        listing = self.root / 'hcom-list.json'
+        listing.write_text(json.dumps(agents))
+        return self.cli('list', '--active', '--workspace', self.work, *args,
+                        extra_env=dict(LAT_SESSION_HCOM_LIST=str(listing)))
+
+    def test_running_agents_are_listed_and_missing_ones_marked_stale(self):
+        self.write_record(SESSION, hcom_name='alpha-gafe', client='claude')
+        self.write_record(OTHER, hcom_name='beta-lepe')
+        result = self.list_active([dict(name='alpha-gafe', base_name='gafe')])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        lines = {line.split()[0]: line for line in result.stdout.splitlines()}
+        self.assertNotIn('紀錄過期', lines['alpha-gafe'])
+        self.assertIn('claude', lines['alpha-gafe'])
+        self.assertIn(str(self.work), lines['alpha-gafe'])
+        self.assertIn('紀錄過期', lines['beta-lepe'])
+
+    def test_a_record_naming_the_base_name_counts_as_running(self):
+        self.write_record(SESSION, hcom_name='gafe')
+        result = self.list_active([dict(name='alpha-gafe', base_name='gafe')])
+        self.assertNotIn('紀錄過期', result.stdout)
+
+    def test_ended_records_are_not_listed(self):
+        path = self.write_record(SESSION, hcom_name='alpha-gafe')
+        record = json.loads(path.read_text())
+        record['status'] = 'ended'
+        path.write_text(json.dumps(record))
+        result = self.list_active([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotIn('alpha-gafe', result.stdout)
+
+    def test_a_start_time_is_shown_when_the_record_has_one(self):
+        self.write_record(SESSION, hcom_name='alpha-gafe', started_at_utc='2026-10-25T01:02:00+00:00')
+        result = self.list_active([dict(name='alpha-gafe')])
+        self.assertIn(datetime(2026, 10, 25, 1, 2, tzinfo=timezone.utc).astimezone()
+                      .strftime('%Y-%m-%d %H:%M'), result.stdout)
+
+    def test_a_record_without_an_hcom_name_cannot_be_checked(self):
+        path = self.write_record(SESSION)
+        record = json.loads(path.read_text())
+        del record['hcom_name']
+        path.write_text(json.dumps(record))
+        result = self.list_active([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('無法核對', result.stdout)
+        self.assertNotIn('紀錄過期', result.stdout)
+
+    def test_an_unreadable_hcom_list_fails_instead_of_marking_everything_stale(self):
+        self.write_record(SESSION, hcom_name='alpha-gafe')
+        listing = self.root / 'bad.json'
+        listing.write_text('not json')
+        result = self.cli('list', '--active', '--workspace', self.work,
+                          extra_env=dict(LAT_SESSION_HCOM_LIST=str(listing)))
+        self.assertEqual(result.returncode, 1)
+        self.assertNotIn('紀錄過期', result.stdout)
+        self.assertIn('HCOM', result.stderr)
+
+    def test_no_active_records(self):
+        result = self.list_active([])
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('沒有現役', result.stdout)
+
+    def test_records_are_read_only(self):
+        path = self.write_record(SESSION, hcom_name='alpha-gafe')
+        before = path.read_bytes()
+        self.list_active([])
+        self.assertEqual(path.read_bytes(), before)
+
+
 class InlineReferenceBudgetTests(unittest.TestCase):
     """The references lat-session inlines into the Claude recovery prompt, by its own list."""
     # Same budget as test_recovery_inlines_dispatch_references_for_claude_only: path fields
