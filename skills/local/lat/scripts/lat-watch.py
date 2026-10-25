@@ -353,11 +353,11 @@ def codex_turn_finished(transcript):
     return finished
 
 
-def nudge_transcript_only(transcript, offset, size, client, nudge=NUDGE, reply_chars=200):
+def nudge_transcript_only(transcript, offset, size, client, nudge=NUDGE):
     """Recognize an exact watcher prompt plus client bookkeeping/error/echo only.
 
     Unknown, replaced, oversized or corrupt data keeps the old progress behavior.
-    A tool, assistant text longer than reply_chars, or other user input is progress.
+    A tool, assistant text longer than 200 characters, or other user input is progress.
     """
     if (client.lower() not in ('claude', 'codex') or not transcript
             or size <= offset or size - offset > TRANSCRIPT_TAIL_BYTES):
@@ -421,7 +421,7 @@ def nudge_transcript_only(transcript, offset, size, client, nudge=NUDGE, reply_c
                 saw_nudge = True
             elif not saw_nudge:
                 return False
-            elif not record.get('isApiErrorMessage') and len(content.strip()) > reply_chars:
+            elif not record.get('isApiErrorMessage') and len(content.strip()) > 200:
                 return False
         elif client.lower() == 'claude':
             # Snapshots also precede the injected user record; deltas still reset.
@@ -445,6 +445,40 @@ def nudge_transcript_only(transcript, offset, size, client, nudge=NUDGE, reply_c
         else:
             return False
     return saw_nudge
+
+
+def codex_output_since(transcript, offset, size):
+    """True only for a complete Codex reply or tool record after offset; unknown is False."""
+    if not isinstance(transcript, (str, Path)) or not transcript or size <= offset:
+        return False
+    start = max(offset, size - TRANSCRIPT_TAIL_BYTES)
+    try:
+        with Path(transcript).open('rb') as stream:
+            stream.seek(start)
+            lines = stream.read(size - start).split(b'\n')
+    except OSError:
+        return False
+    # The last piece is empty or a record still being written; a cut first line is partial.
+    lines = lines[1:-1] if start > offset else lines[:-1]
+    for raw in lines:
+        try:
+            record = json.loads(raw)
+        except (ValueError, RecursionError):
+            continue
+        payload = record.get('payload') if isinstance(record, dict) else None
+        if not isinstance(payload, dict):
+            continue
+        if record.get('type') == 'response_item':
+            if (payload.get('role') == 'assistant'
+                    or payload.get('type') not in ('message', 'reasoning')):
+                return True
+        elif record.get('type') == 'event_msg':
+            item = payload.get('item')
+            if (payload.get('type') == 'agent_message'
+                    or (payload.get('type') == 'item_completed' and isinstance(item, dict)
+                        and item.get('type') == 'AgentMessage')):
+                return True
+    return False
 
 
 def injected_only(baseline, observation, info, orchestrator, text):
@@ -482,10 +516,8 @@ def nudge_only_observation(previous, observation, info, orchestrator):
         observation = observation._replace(nudge_only=True)
     offset = previous.get('capacity_offset')
     if isinstance(offset, int) and observation.transcript_size > offset:
-        # Any reply or tool call after the Continue is new output; the echo and errors are not.
-        observation = observation._replace(capacity_output=not nudge_transcript_only(
-            info.get('transcript_path'), offset, observation.transcript_size,
-            observation.client, CAPACITY_CONTINUE, reply_chars=0))
+        observation = observation._replace(capacity_output=codex_output_since(
+            info.get('transcript_path'), offset, observation.transcript_size))
     keepalive = previous.get('keepalive')
     if isinstance(keepalive, dict) and injected_only(
             keepalive.get('fingerprint'), observation, info, orchestrator, KEEPALIVE):

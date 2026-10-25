@@ -4086,22 +4086,35 @@ esac
             'short reply': {'type': 'event_msg', 'payload': {'type': 'agent_message',
                                                              'message': 'OK'}},
         }
-        cases = {'echo only': [], **{name: [record] for name, record in outputs.items()}}
-        for name, extra in cases.items():
+        other_user = {'type': 'event_msg', 'payload': {'type': 'user_message',
+                                                       'message': 'New instructions'}}
+        # Only complete reply or tool records count; unknown data keeps the episode.
+        developer = {'type': 'response_item', 'payload': {'type': 'message', 'role': 'developer',
+                                                          'content': []}}
+        cases = {'echo only': ([], '', False),
+                 'other user input': ([other_user, developer], '', False),
+                 'partial record': ([], '{"type":"response_item","payload":{"ty', False),
+                 'unreadable': ([], None, False),
+                 **{name: ([record], '', True) for name, record in outputs.items()}}
+        for name, (extra, tail, expected) in cases.items():
             with self.subTest(name=name):
                 transcript.write_text('{"type":"session_meta","payload":{}}\n')
                 offset = transcript.stat().st_size
                 with transcript.open('a') as stream:
                     for record in [*echo, *extra]:
                         stream.write(json.dumps(record) + '\n')
+                    stream.write(tail or '')
+                size = transcript.stat().st_size
+                if tail is None:
+                    transcript.unlink()
                 observation = watch.Observation(
                     agent='worker-open', status='active', prompt_empty=True,
-                    command_running=False, transcript_size=transcript.stat().st_size,
+                    command_running=False, transcript_size=size,
                     transcript_mtime_ns=1, event_id=0, client='codex')
                 result = watch.nudge_only_observation(
                     {'fingerprint': [offset, 0, 0], 'capacity_offset': offset}, observation,
                     {'transcript_path': str(transcript)}, 'orch')
-                self.assertEqual(result.capacity_output, name != 'echo only')
+                self.assertEqual(result.capacity_output, expected)
 
     def test_codex_capacity_working_without_new_output_is_still_the_same_episode(self):
         watch, stuck = self.capacity_screen()
