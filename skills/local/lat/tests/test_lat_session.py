@@ -3230,6 +3230,28 @@ class ListActiveTests(unittest.TestCase):
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn('沒有現役', result.stdout)
 
+    def test_a_legacy_record_in_a_linked_worktree_is_listed_once(self):
+        main = self.root / 'main'
+        subprocess.run(['git', 'init', '-q', str(main)], check=True)
+        subprocess.run(['git', '-C', str(main), '-c', 'user.name=t', '-c', 'user.email=t@t',
+                        'commit', '-q', '--allow-empty', '-m', 'x'], check=True)
+        linked = self.root / 'linked'
+        subprocess.run(['git', '-C', str(main), 'worktree', 'add', '-q', str(linked)], check=True)
+        for directory, name in ((linked, 'legacy-only'), (linked, 'both'), (main, 'both')):
+            path = directory / '.lat/sessions' / f'{name}.json'
+            path.parent.mkdir(parents=True, exist_ok=True)
+            path.write_text(json.dumps(dict(client='codex', status='active', workspace=str(linked),
+                                            hcom_name=f'{name}-{directory.name}')))
+        listing = self.root / 'hcom-list.json'
+        listing.write_text('[]')
+        result = subprocess.run([sys.executable, str(SCRIPT), 'list', '--active', '--workspace', linked],
+                                text=True, capture_output=True, cwd=linked,
+                                env=dict(os.environ, LAT_SESSION_HCOM_LIST=str(listing)))
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('legacy-only-linked', result.stdout)
+        self.assertIn('both-main', result.stdout)
+        self.assertNotIn('both-linked', result.stdout)
+
     def test_records_are_read_only(self):
         path = self.write_record(SESSION, hcom_name='alpha-gafe')
         before = path.read_bytes()

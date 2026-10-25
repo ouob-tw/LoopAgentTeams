@@ -1450,9 +1450,14 @@ def hcom_names():
 
 def list_active(args):
     """Print each active controller record; read-only."""
-    sessions = shared_lat_dir(workspace_root(args.workspace.resolve(strict=True))) / 'sessions'
+    workspace = workspace_root(args.workspace.resolve(strict=True))
+    # Same lookup as session_path: the shared record wins over an older one in the worktree's own .lat.
+    found = {}
+    for sessions in (workspace / '.lat/sessions', shared_lat_dir(workspace) / 'sessions'):
+        for path in sorted(sessions.glob('*.json')) if sessions.is_dir() else ():
+            found[path.name] = path
     records = []
-    for path in sorted(sessions.glob('*.json')) if sessions.is_dir() else ():
+    for path in sorted(found.values()):
         try:
             record = read_json(path)
         except (OSError, ValueError):
@@ -1475,8 +1480,12 @@ def list_active(args):
         if started:
             when = local_time(started)
         else:
-            when = datetime.fromtimestamp(path.stat().st_mtime).astimezone().strftime('%Y-%m-%d %H:%M')
-            when += '（紀錄最後更新）'
+            try:
+                when = datetime.fromtimestamp(path.stat().st_mtime).astimezone().strftime('%Y-%m-%d %H:%M')
+            except OSError:
+                when = '不明'
+            else:
+                when += '（紀錄最後更新）'
         print(f'{name or "-"} {record.get("client", "?")} {record.get("workspace", "?")} {when}{note}')
 
 
