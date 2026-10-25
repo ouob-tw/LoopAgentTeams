@@ -536,6 +536,21 @@ class NextAndCheckTests(LedgerCase):
         self.assertEqual(result.returncode, 1)
         self.assertIn('lookup failed', result.stdout)
 
+    def test_check_passes_after_the_task_branch_is_merged_then_deleted(self):
+        item = self.started('--branch', 'side')
+        self.ok('done', str(item), '--commit', self.side)
+        git(self.workspace, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side')
+        git(self.workspace, 'branch', '-q', '-D', 'side')
+        self.ok('check')
+
+    def test_check_fails_for_a_surviving_commit_outside_the_integration_branch(self):
+        item = self.started('--branch', 'side')
+        self.ok('done', str(item), '--commit', self.side)
+        git(self.workspace, 'branch', '-q', '-D', 'side')
+        result = self.run_ledger('check')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('is not reachable from side or dev', result.stdout)
+
     def test_check_fails_when_a_closed_commit_disappears(self):
         item = self.started('--branch', 'side')
         self.ok('done', str(item), '--commit', self.side)
