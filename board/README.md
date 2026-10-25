@@ -354,6 +354,22 @@ bun run test:all       # 先建置到 build-test/，再跑以上三層
 
 測試分三層放在 `tests/unit/`、`tests/server/`、`tests/browser/`；共用的 `harness.ts`、`browser.ts`、`fake-*.mjs` 與 `fixtures/` 在 `tests/` 底下。後三個腳本的建置輸出到 `build-test/`（不進版控），測試伺服器只從那裡啟動，不會改寫常駐看板正在用的 `build/`；正式的 `bun run build` 仍輸出到 `build/`。`test:server`、`test:browser`、`test:all` 是整套測試，Agent 要經整套測試閘門執行（登記在 repo 根目錄的 `.suite-gate.json`）。
 
+## 看板示意
+
+`bun run demo` 用測試用的建置（`build-test/`）、假資料和暫存資料夾啟動真的看板，可用 `--css` 套上一份樣式檔當 `user.css`，讓人在瀏覽器裡先看樣式改完的樣子，再決定要不要裝。不碰常駐看板（7100）、它的狀態與登入。
+
+```bash
+bun run build:test
+bun run demo --css ./proposed.css          # 預設 0.0.0.0:7110
+bun run demo --css ./proposed.css --port 7111 --host 127.0.0.1
+```
+
+- 不給 `--css` 就是預設外觀；`--port 0` 由系統挑；不收 7100。
+- 啟動後印出網址連接埠與登入密碼（測試用的固定值），Ctrl-C 或 SIGTERM 結束，暫存資料夾一併刪掉。要先 `bun run build:test`；它輸出到 `build-test/`，不會改寫常駐看板用的 `build/`。
+- 資料有兩個主控、待決題、Herdr Agent、已關閉的 Agent、額度與一則看板提問；程式在 `scripts/demo-board.ts`，種資料的方式和測試的 `tests/harness.ts` 相同。
+- **別把常駐看板的登入弄掉**：登入的 cookie 只認主機名稱，不分連接埠，同一個主機名稱開 7100 與 7110 會互相登出。用跟常駐看板不同的主機名稱開示意，例如常駐看板從 `s5.ouob.tw:7100` 開，示意就開 `s5.hs:7110`（反過來也行）；兩個名稱都要能連到這台主機。
+- 測試：`tests/unit/demo-board.test.ts`（參數）、`tests/server/demo-board.test.ts`（真的啟動：樣式套上、cookie 不帶 Domain、SIGTERM 後資料夾刪除）。
+
 測試檔不得寫死 `/tmp/` 之類的固定暫存路徑，要用 `mkdtemp(join(tmpdir(), …))` 開暫存資料夾並在結束時刪掉；`tests/unit/no-hardcoded-tmp.test.ts` 掃描 `tests/` 底下的 `.ts`、`.mjs`、`.js`，發現就失敗並列出檔案與行號。
 
 測試不讀寫真實的 `.lat/`、綁定登記或回報紀錄，也不會對真實的主控輸入文字或送出答案。測試用 Node 啟動伺服器，PATH 上沒有 Node 時改用執行測試的 Bun，所以只有 Bun 的主機也能跑完整套（`bun run test:all`）。瀏覽器測試找不到 Chrome 或 Chromium（`CHROME` 有指定時只找它）就失敗並寫明原因，不會略過。測試伺服器和瀏覽器測試用的 Chrome 都綁連接埠 0，由系統挑一個沒人用的，所以不受主機上其他服務占用的連接埠影響，測試也不需要設定連接埠。

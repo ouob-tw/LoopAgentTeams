@@ -542,8 +542,10 @@ def cmd_update(args):
     reason = args.reason.strip() if args.reason else None
     if (args.eta or args.deadline or args.depends is not None) and not reason:
         raise Failure('--reason is required when changing --eta, --deadline or --depends')
-    if not any((args.eta, args.deadline, args.progress, args.card, args.depends is not None)):
-        raise Failure('nothing to update; give --eta, --deadline, --progress, --card or --depends')
+    if not any((args.eta, args.deadline, args.progress, args.card, args.branch,
+                args.depends is not None)):
+        raise Failure('nothing to update; give --eta, --deadline, --progress, --card, --branch '
+                      'or --depends')
     with transaction(args, 'update', args.id, reason) as doc:
         item = find(doc, args.id)
         if args.eta or args.deadline or args.progress:
@@ -562,6 +564,8 @@ def cmd_update(args):
             changes['progress'] = args.progress.strip()
         if args.card:
             changes['card'] = args.card
+        if args.branch:
+            changes['branch'] = args.branch
         if args.depends is not None:
             deps = item_ids(args.depends)
             known = {other['id'] for other in doc['items']}
@@ -824,6 +828,7 @@ def build_parser():
     sub.add_argument('--deadline')
     sub.add_argument('--progress')
     sub.add_argument('--card')
+    sub.add_argument('--branch', help='branch the commit evidence must reach')
     sub.add_argument('--depends', help='replace dependencies; empty string clears them')
     sub.add_argument('--reason')
     sub = command('block', 'Mark an item blocked')

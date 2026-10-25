@@ -18,6 +18,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
 ```
 
 - `--` 之後可以是一整串 shell 指令（一個引號包住的字串，以 `sh -c` 執行），也可以是拆開的參數。指令文字會原樣算進指紋，引號或寫法不同就算不同指令；同一個整套測試請固定用同一種寫法。
+- 執行目錄與指令是登記表 `full_suites` 的某一套，但傳法（整串或拆開的參數）或寫法（多餘空白、引號）不同而指紋不同時，執行前印出提醒：這筆結果不會被推送前檢查與安裝檢查採用，並印出登記的寫法。不擋執行。
 - 測試的輸出與結束碼原樣轉出。閘門自己的訊息印在 stderr，開頭是 `suite-gate:`。
 - 已通過時不執行，印出上次的執行者、時間、耗時、指令與輸出結尾，以 0 結束，並提醒把這筆當作結果回報：別人要求「再跑一次」本身不是重跑的理由，有具體原因（環境變了、在查偶發失敗等）才用 `--rerun`。
 - 資料庫、外部服務或沒進版控的設定改了、需要重跑時，用 `--rerun` 寫原因；原因會記進紀錄。`--rerun` 同樣要排隊。
@@ -30,6 +31,15 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
   ```
 
   用途與原因寫進紀錄，不進指紋：整批合併後的通過紀錄，發布前可以直接沿用。帶用途的執行沿用了上次結果時，另寫一筆沿用紀錄（`kind: "reuse"`，含用途、被沿用那筆的時間與執行者），本身不能再被沿用；指紋記在 `reused_fingerprint`，不寫 `fingerprint`，所以不看 `kind` 的讀者（例如舊版閘門）找同一指紋的最新紀錄時仍是那筆通過紀錄。`--rerun` 只管「要不要沿用」，不能代替用途。沒有對照表的專案不需要用途，可以照舊帶。
+
+### 照登記寫法跑（`run --registered`）
+
+```bash
+uv run --no-project python <skill>/scripts/suite-gate.py run --registered --purpose release        # 每一套
+uv run --no-project python <skill>/scripts/suite-gate.py run --registered web --purpose post-merge # 指定的幾套
+```
+
+照登記表 `full_suites` 的指令文字與執行目錄依序跑全部或指定的整套，每套都經過閘門（同樣排隊、同內容沿用），結果就是推送前檢查與安裝檢查找的那筆。套件以執行目錄（例如 `web`、`.`）或完整指令文字指定，名稱對不上時不執行並列出登記的套件。一律要帶 `--purpose` 或 `--reason`（沒有對照表的專案也一樣），可加 `--rerun`；`--` 之後不能再接指令。結束碼取第一個非 0 的。
 
 ### 怎樣算「同一份內容」
 
@@ -46,7 +56,8 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
 2. 再排主機名額，先來後到：只有排第一的可以開跑，排第一的放不下時後面較小的也要等。等待時每隔一段時間印出正在跑的是誰、前面還有幾個與卡住的原因。順序固定是先指紋、後名額。設定檔每次檢查都重讀，排隊中改設定，下一次檢查就套用。
 3. 每套測試在自己的資源群組（systemd 使用者 scope，cgroup v2，名稱 `suite-gate-<編號>.scope`）中執行，測試另開新工作階段的背景程式也在群組裡。名額以「閘門還在，或群組內還有程序」判斷：
    - Ctrl-C 或終止訊號：先對群組內所有程序送 SIGTERM，5 秒內沒結束就以群組的 kill 結束全部，再退出，不寫紀錄。
-   - 閘門被強制殺掉而測試還在跑：名額與指紋鎖繼續被佔用，直到群組內的程序全部結束。
+   - 閘門被強制殺掉而測試還在跑：名額與指紋鎖繼續被佔用，直到群組內的程序全部結束，或被收回（見下一項）。
+   - **收回殘留**：閘門已不在（或已標記 `gate_done`）而群組（沒有群組時是工作階段）仍有程序的持有者，閘門第一次看到時把時間記在持有者的 `leftover_since`（更新前留下、沒有這個時間的持有者也從這時起算）。超過寬限時間 `reclaim_grace_seconds`（預設 600 秒）後，下一次有閘門讀共用狀態（`run` 排隊與開跑、`status`）時停掉群組內所有程序（先 SIGTERM，5 秒內沒結束就以群組的 kill 結束；沒有群組時對工作階段剩下的程序送 SIGKILL），移除持有者、釋放名額與鎖，印出警告，並在共用狀態的 `reclaims` 留一筆紀錄（最多保留 10 筆）。閘門還在的持有者不管多久都不收回。沒有常駐程序，沒人用閘門時殘留會一直留著；有人排隊時最多多等寬限時間。
    - 測試正常結束後群組內仍有程序：印出警告列出這些程序（PID 與指令），紀錄的 `profile.leftover_processes` 記下數量；閘門不殺它們，名額與鎖照常釋放。
    - 群組在閘門讀完最終用量前不會被回收（閘門在群組內留一個等待程序，讀完才讓它結束）。
 4. 主機沒有 cgroup v2 或 systemd 使用者服務（例如沒有 `XDG_RUNTIME_DIR`、連不上使用者 bus）時，印出警告並退回舊做法：測試在新工作階段中執行，名額以這個工作階段是否還有程序判斷，另開新工作階段的程序不計入，也不量用量（`profile.fallback` 為 `true`），預約量一律用預設值：排隊前閘門先試開一個空的使用者 scope（`systemd-run --user --scope ... true`，名稱 `suite-gate-probe-<編號>`），開不起來就從排隊起用預設值；試開成功、開跑時才退回的，開跑後改回預設值。
@@ -90,12 +101,13 @@ uv run --no-project python <skill>/scripts/suite-gate.py status
 uv run --no-project python <skill>/scripts/suite-gate.py status --fingerprint <開頭幾碼> --limit 20 --json
 ```
 
-列出主機狀況、正在跑、排隊中與最近的紀錄。核對別人宣稱的整套測試結果時，用回報中的指紋查紀錄，不要自己重跑。
+列出主機狀況、正在跑、排隊中、最近的紀錄與最近一次收回的殘留。核對別人宣稱的整套測試結果時，用回報中的指紋查紀錄，不要自己重跑。
 
 - 主機狀況：閒置 CPU 核數與扣掉未用預約後剩下的核數、`MemAvailable` 與扣掉未用預約和保留量後剩下的記憶體、煞車開關與目前的硬碟與 CPU 等待、上下限；讀不到的主機檔案另列一行。
-- 每套執行中測試：預約量（`measured` 實測或 `default` 預設）、目前用量。
+- 每套執行中測試：預約量（`measured` 實測或 `default` 預設）、目前用量；閘門已不在的另註明還有多久會被收回。
+- 最近一次收回（`Latest reclaim`）：時間、停掉幾個程序、原持有者的執行者、目錄與指令，以及每個程序的 PID 與指令。
 - 每個排隊者：卡住的原因與預約量。
-- `--json`：`min_slots`（有效下限）、`max_slots`、`config`（實際套用的設定）、`host`（`cores`、`cpu_idle`、`cpu_free_cores`、`mem_available_bytes`、`unused_reservation`、`mem_reserve_bytes`、`cpu_left_cores`、`mem_left_bytes`、`pressure`、`brake`、`unreadable`）、`running`（每筆另有 `usage` 與 `reservation`）、`waiting`（每筆另有 `reason` 與 `reservation`）、`locks`、`records`、`cleanup`（見[定期整理觸發](#定期整理觸發)）。
+- `--json`：`min_slots`（有效下限）、`max_slots`、`config`（實際套用的設定）、`host`（`cores`、`cpu_idle`、`cpu_free_cores`、`mem_available_bytes`、`unused_reservation`、`mem_reserve_bytes`、`cpu_left_cores`、`mem_left_bytes`、`pressure`、`brake`、`unreadable`）、`running`（每筆另有 `usage` 與 `reservation`）、`waiting`（每筆另有 `reason` 與 `reservation`）、`locks`、`records`、`cleanup`（見[定期整理觸發](#定期整理觸發)）、`reclaims`（收回紀錄，舊到新；每筆有 `time`、`agent`、`command`、`cwd`、`fingerprint`、`cgroup`、`sid`、是否佔名額 `slot`、佔的指紋鎖 `lock`、`leftover_since`、`grace_seconds`、`process_count` 與 `processes`（`pid`、`command`））。
 
 ## 專案登記檔
 
@@ -145,7 +157,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
 | 欄位 | 內容 |
 | ---- | ---- |
 | `integration_branch` | 整合分支名稱，用來算基準點。 |
-| `full_suites` | 每一套整套測試：`command`（一整串 shell 指令文字）與 `cwd`（執行目錄，預設 `.`）。對照表退回整套時跑的就是這些；手動跑時在該目錄用 `run -- '<command>'`（一個引號字串），指紋才會相同。 |
+| `full_suites` | 每一套整套測試：`command`（一整串 shell 指令文字）與 `cwd`（執行目錄，預設 `.`）。對照表退回整套時跑的就是這些；手動跑時在該目錄用 `run -- '<command>'`（一個引號字串），指紋才會相同；或用 `run --registered`。 |
 | `affected.commands` | 執行目錄 → 受影響測試指令樣板，`{tests}` 會換成選出的測試路徑（相對該目錄、已加引號）。 |
 | `affected.map` | 對應規則清單：`paths`（程式路徑樣式）→ `tests`（測試檔或測試路徑樣式，任一層都可以）。`tests` 只能對到可以直接執行的測試檔，不要對到共用的輔助檔。 |
 | `affected.shared` | 改到就改跑整套的路徑樣式，例如依賴鎖定檔、測試共用設定、建置設定。 |
@@ -313,7 +325,7 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 {"min_slots": 2, "max_slots": 8, "brake_io_high": 40, "brake_io_low": 20,
  "brake_cpu_high": 50, "brake_cpu_low": 25, "default_cores": 4, "default_mem_gb": 4,
  "mem_reserve_gb": 8, "profile_history": 5, "sample_seconds": 2,
- "poll_seconds": 1, "report_seconds": 30}
+ "poll_seconds": 1, "report_seconds": 30, "reclaim_grace_seconds": 600}
 ```
 
 | 欄位 | 預設 | 意思 |
@@ -328,6 +340,7 @@ cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py cl
 | `sample_seconds` | 2 | 執行中多久讀一次群組的 CPU 與記憶體 |
 | `poll_seconds` | 1 | 排隊時多久檢查一次 |
 | `report_seconds` | 30 | 多久印一次等待狀況 |
+| `reclaim_grace_seconds` | 600 | 閘門不在後殘留程序可以佔著名額多久（秒），超過就收回。可為 0（第二次看到時收回） |
 
 設定檔每次檢查都重讀。檔案讀不到或不是 JSON 物件時全部用預設；個別欄位型別不對、是負數（或低於上面寫的最小值）、整數欄位給了小數時，那一欄用預設；同一組煞車門檻的關閉門檻大於開啟門檻時，那一組兩欄都用預設。以上都印出警告（同一個警告每個閘門程序只印一次），閘門照常運作。
 

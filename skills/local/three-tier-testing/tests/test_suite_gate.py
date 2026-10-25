@@ -787,6 +787,24 @@ class ScopeTests(GateCase):
         self.assertEqual(self.status()['locks'], {})
         self.assertEqual(len(self.records()), 1, 'the killed run writes no record')
 
+    def test_after_the_grace_the_group_left_by_a_killed_gate_is_stopped(self):
+        self.set_config(reclaim_grace_seconds=0)
+        stubborn, start = self.sleeper('stubborn', ignore_term=True)
+        proc = self.start('run', '--', f'{start} while :; do sleep 0.1; done')
+        self.wait_until(stubborn.exists, message='stubborn process started')
+        pid = int(stubborn.read_text())
+        proc.kill()
+        proc.wait()
+        [holder] = self.status()['running']
+        self.assertTrue(self.alive(pid), 'the first observation only starts the count')
+        status = self.status()
+        self.assertEqual((status['running'], status['locks']), ([], {}))
+        self.assertFalse(self.alive(pid))
+        [record] = status['reclaims']
+        self.assertEqual(record['cgroup'], holder['cgroup'])
+        self.assertGreaterEqual(record['process_count'], 2)
+        self.assertIn('sleep 60', [p['command'] for p in record['processes']])
+
     def test_interrupt_ends_the_whole_group_with_new_sessions_and_writes_no_record(self):
         stubborn, start_stubborn = self.sleeper('stubborn', ignore_term=True)
         polite, start_polite = self.sleeper('polite')
@@ -926,6 +944,128 @@ class CompatibilityTests(GateCase):
         self.assertEqual(self.runs(), 2)
         status = self.status()
         self.assertEqual((status['running'], status['locks']), ([], {}))
+
+
+class ReclaimTests(GateCase):
+    """Holders whose gate is gone while their session still has processes."""
+
+    def leftover(self, **extra):
+        """A process in its own session, and a slot and lock holder for it whose gate is gone
+        (its start time differs) that started long ago."""
+        session = subprocess.Popen(['sleep', '60'], start_new_session=True)
+        self.addCleanup(session.wait)
+        self.addCleanup(session.kill)
+        holder = {'id': 'left', 'pid': os.getpid(), 'start': 0, 'sid': session.pid,
+                  'cgroup': None, 'agent': 'gone', 'command': 'left suite', 'cwd': str(self.tmp),
+                  'fingerprint': 'f' * 64, 'reservation': None, 'since': time.time() - 86400,
+                  **extra}
+        self.state.mkdir()
+        self.save_state({'seq': 0, 'waiters': [], 'locks': {'f' * 64: dict(holder)},
+                         'slots': [holder]})
+        return session
+
+    def saved(self):
+        return json.loads((self.state / 'state.json').read_text())
+
+    def save_state(self, state):
+        replace(self.state / 'state.json', json.dumps(state))
+
+    def age_leftovers(self, seconds):
+        """Move the first observation of every holder `seconds` into the past."""
+        state = self.saved()
+        for holder in [*state['locks'].values(), *state['slots']]:
+            holder['leftover_since'] -= seconds
+        self.save_state(state)
+
+    def assert_held(self, session):
+        status = self.status()
+        self.assertEqual(([h['id'] for h in status['running']], list(status['locks'])),
+                         (['left'], ['f' * 64]))
+        self.assertTrue(self.alive(session.pid))
+        self.assertEqual(status['reclaims'], [])
+
+    def assert_reclaimed(self, session):
+        status = self.status()
+        self.assertEqual(session.wait(timeout=10), -signal.SIGTERM)
+        self.assertEqual((status['running'], status['locks']), ([], {}))
+        [record] = status['reclaims']
+        self.assertEqual((record['agent'], record['command'], record['sid'], record['slot'],
+                          record['lock']), ('gone', 'left suite', session.pid, True, 'f' * 64))
+        self.assertEqual(record['process_count'], 1)
+        self.assertEqual(record['processes'], [{'pid': session.pid, 'command': 'sleep 60'}])
+        return record
+
+    def test_status_counts_from_the_first_observation_and_reclaims_after_the_grace(self):
+        session = self.leftover()
+        before = time.time()
+        self.assert_held(session)
+        stamps = {h['leftover_since'] for h in [*self.saved()['locks'].values(),
+                                                *self.saved()['slots']]}
+        self.assertEqual(len(stamps), 1)
+        self.assertGreaterEqual(stamps.pop(), before)
+        self.age_leftovers(gate.DEFAULTS['reclaim_grace_seconds'] - 60)
+        self.assert_held(session)
+        self.age_leftovers(120)
+        self.assert_reclaimed(session)
+        text = self.gate('status').stdout
+        self.assertIn('Latest reclaim:', text)
+        self.assertIn('stopped 1 process(es) left by gone', text)
+        self.assertIn(f'{session.pid} sleep 60', text)
+
+    def test_a_queued_run_reclaims_the_slot_after_the_grace_and_runs(self):
+        self.set_config(max_slots=1)
+        session = self.leftover()
+        self.assert_held(session)
+        self.age_leftovers(gate.DEFAULTS['reclaim_grace_seconds'] + 1)
+        result = self.gate('run', '--', self.suite())
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('reclaimed the slot of gone', result.stderr)
+        self.assertEqual(self.runs(), 1)
+        self.assert_reclaimed(session)
+
+    def test_a_run_already_queued_reclaims_the_slot_when_the_grace_runs_out(self):
+        self.set_config(max_slots=1)
+        session = self.leftover()
+        proc = self.start('run', '--', self.suite())
+        self.wait_until(lambda: len(self.status()['waiting']) == 1, message='queued')
+        time.sleep(0.3)
+        self.assertIsNone(proc.poll(), 'the leftover keeps the slot within the grace')
+        self.set_config(max_slots=1, reclaim_grace_seconds=0)  # reread on its next poll
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        self.assertIn('reclaimed the slot of gone', err)
+        self.assertEqual(self.runs(), 1)
+        self.assert_reclaimed(session)
+
+    def test_a_holder_without_a_first_observation_is_not_reclaimed_at_once(self):
+        self.set_config(reclaim_grace_seconds=0)
+        session = self.leftover()
+        self.assertNotIn('leftover_since', self.saved()['slots'][0])
+        self.assert_held(session)
+        self.assert_reclaimed(session)
+
+    def test_a_holder_marked_gate_done_is_reclaimed_while_its_gate_process_lives(self):
+        self.set_config(reclaim_grace_seconds=0)
+        live = subprocess.Popen(['sleep', '60'])
+        self.addCleanup(live.wait)
+        self.addCleanup(live.kill)
+        session = self.leftover(pid=live.pid, start=gate.proc_stat(live.pid)[2], gate_done=True)
+        self.assert_held(session)
+        self.assert_reclaimed(session)
+        self.assertTrue(self.alive(live.pid), 'only the group is stopped, not the gate')
+
+    def test_a_running_gate_is_never_reclaimed(self):
+        self.set_config(reclaim_grace_seconds=0)
+        proc, release = self.blocker('alive')
+        self.wait_until(lambda: len(self.status()['running']) == 1, message='running')
+        for _ in range(3):
+            status = self.status()
+            self.assertEqual((len(status['running']), status['reclaims']), (1, []))
+            self.assertNotIn('leftover_since', status['running'][0])
+            time.sleep(0.1)
+        self.assertIsNone(proc.poll())
+        release.touch()
+        self.assertEqual(self.finish(proc)[0], 0)
 
 
 class StatusTests(GateCase):
@@ -2771,6 +2911,88 @@ class PrePushTests(PrePushCase):
                           input=f'refs/heads/main {sha} refs/heads/main {zero}\n')
         self.assertIn('work tree differs', dirty.stderr)
         self.assertEqual(self.full_runs(), [])
+
+
+class RegisteredFormTests(PrePushCase):
+    """`run` of a registered suite in another form warns; `run --registered` uses the
+    registered form, so the push and install checks accept its records."""
+
+    def setUp(self):
+        super().setUp()
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def lacking(self):
+        """The suites the install check (lacking_full_suites) still wants for HEAD."""
+        with mock.patch.dict(os.environ, self.env):
+            return gate.lacking_full_suites(self.repo, head(self.repo), self.registry)
+
+    def test_another_form_of_a_registered_suite_warns_with_the_registered_form(self):
+        registered = gate.gate_command(self.full('root'), ('--purpose', 'post-merge'))
+        split = self.gate('run', '--purpose', 'post-merge', '--', *shlex.split(self.full('root')))
+        self.assertEqual(split.returncode, 0, split.stderr)
+        self.assertIn('not be accepted by the push and install checks', split.stderr)
+        self.assertIn(registered, split.stderr)
+        self.assertIn('run --registered', split.stderr)
+        self.assertEqual(self.records()[-1]['exit_code'], 0, 'the run is not blocked')
+        spaced = self.gate('run', '--reason', 'flaky', '--',
+                           self.full('root').replace(' ', '  '))
+        self.assertIn(gate.gate_command(self.full('root'), ('--reason', 'flaky')), spaced.stderr)
+        self.assertEqual(self.lacking(), self.registry['full_suites'])
+        for args, cwd in (([self.full('root')], self.repo),
+                          (shlex.split(self.full('root')), self.repo / 'web'),
+                          (['echo', 'other'], self.repo)):
+            with self.subTest(args=args, cwd=cwd):
+                result = self.gate('run', '--purpose', 'post-merge', '--', *args, cwd=cwd)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('not be accepted', result.stderr)
+
+    def test_run_registered_runs_every_suite_so_the_checks_accept_them(self):
+        self.assertNotEqual(self.push('main').returncode, 0)
+        result = self.gate('run', '--registered', '--purpose', 'release', cwd=self.repo / 'src')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
+        self.assertEqual({(r['cwd'], r['purpose']) for r in self.records()},
+                         {(str(self.repo), 'release'), (str(self.repo / 'web'), 'release')})
+        self.assertEqual(self.lacking(), [])
+        self.assertEqual(self.push('main').returncode, 0)
+        again = self.gate('run', '--registered', '--purpose', 'release')
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(len(self.full_runs()), 2, 'passed content is reused')
+
+    def test_run_registered_runs_the_later_suites_after_a_failure(self):
+        self.registry['full_suites'][0]['command'] = self.full('root') + '; exit 3'
+        self.write_registry()
+        result = self.gate('run', '--registered', '--purpose', 'release')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
+    def test_run_registered_runs_the_named_suites(self):
+        result = self.gate('run', '--registered', 'web', '--purpose', 'post-merge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), ['web'])
+        self.assertEqual(self.lacking(), self.registry['full_suites'][:1])
+        by_command = self.gate('run', '--registered', self.full('root'), '--reason', 'check')
+        self.assertEqual(by_command.returncode, 0, by_command.stderr)
+        self.assertEqual(self.lacking(), [])
+        unknown = self.gate('run', '--registered', 'nope', '--purpose', 'release')
+        self.assertEqual(unknown.returncode, 2)
+        self.assertIn('nope', unknown.stderr)
+        self.assertIn(f"web: {self.full('web')}", unknown.stderr)
+        self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
+
+    def test_run_registered_needs_a_purpose_even_without_a_map(self):
+        del self.registry['affected']
+        self.write_registry()
+        for args in ([], ['--rerun', 'env changed'], ['web']):
+            with self.subTest(args=args):
+                result = self.gate('run', '--registered', *args)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run --registered needs a purpose', result.stderr)
+                self.assertIn('--purpose release', result.stderr)
+        with_command = self.gate('run', '--registered', '--purpose', 'release', '--', 'true')
+        self.assertEqual(with_command.returncode, 2)
+        self.assertEqual((self.full_runs(), self.records()), ([], []))
 
 
 class PrePushInstallTests(PrePushCase):

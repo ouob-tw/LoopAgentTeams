@@ -415,6 +415,16 @@ def ledger_command(action, path, *extra):
                        '--ledger', str(path), *extra])
 
 
+def project_integration_branch(workspace, sid):
+    """The preauth config's `integration_branch`, or None when none is set or it cannot be read."""
+    preauth = preauth_module()
+    try:
+        found = preauth.integration_branch(None, preauth.load_layers(workspace, sid)[0])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return found[0] if found else None
+
+
 def round_ledger(workspace, sid, round_number, hcom_name):
     """The round's ledger in the main checkout's .lat, created unless an earlier activate of
     this round already made it."""
@@ -423,8 +433,11 @@ def round_ledger(workspace, sid, round_number, hcom_name):
     store = ledger_module().Store(path)
     if any(item.exists() for item in (store.path, store.seal, store.journal)):
         return path
-    result = ledger_cli('init', '--ledger', path, '--workspace', lat.parent,
-                        '--orchestrator', hcom_name, '--by', hcom_name)
+    flags = ['--orchestrator', hcom_name, '--by', hcom_name]
+    branch = project_integration_branch(workspace, sid)
+    if branch:
+        flags += ['--integration-branch', branch]
+    result = ledger_cli('init', '--ledger', path, '--workspace', lat.parent, *flags)
     if result.returncode:
         raise ValueError(f'工作總表建立失敗：{result.stderr.strip() or result.stdout.strip()}')
     return path
@@ -1420,6 +1433,62 @@ def local_time(value):
         return '不明'
 
 
+def hcom_names():
+    """Every name and base name HCOM lists; the LAT_SESSION_HCOM_LIST file stands in for it in tests."""
+    fake = os.environ.get('LAT_SESSION_HCOM_LIST')
+    try:
+        text = Path(fake).read_text() if fake else run_cli(
+            ['hcom', 'list', '--json'], timeout=30, failure='hcom list failed')
+        value = json.loads(text)
+    except (OSError, ValueError) as error:
+        raise ValueError(f'HCOM agent list unreadable: {error}') from error
+    if not isinstance(value, list) or any(not isinstance(item, dict) for item in value):
+        raise ValueError('HCOM agent list unreadable: not a list of agents')
+    return {item[key] for item in value for key in ('name', 'base_name')
+            if isinstance(item.get(key), str)}
+
+
+def list_active(args):
+    """Print each active controller record; read-only."""
+    workspace = workspace_root(args.workspace.resolve(strict=True))
+    # Same lookup as session_path: the shared record wins over an older one in the worktree's own .lat.
+    found = {}
+    for sessions in (workspace / '.lat/sessions', shared_lat_dir(workspace) / 'sessions'):
+        for path in sorted(sessions.glob('*.json')) if sessions.is_dir() else ():
+            found[path.name] = path
+    records = []
+    for path in sorted(found.values()):
+        try:
+            record = read_json(path)
+        except (OSError, ValueError):
+            continue
+        if record.get('status') == 'active':
+            records.append((path, record))
+    if not records:
+        print('沒有現役的主控紀錄')
+        return
+    names = hcom_names()
+    for path, record in records:
+        name = record.get('hcom_name')
+        if not isinstance(name, str) or not name:
+            note = '（舊紀錄沒有 HCOM 名稱，無法核對）'
+        elif name in names:
+            note = ''
+        else:
+            note = '（紀錄過期：HCOM 已沒有這個 Agent）'
+        started = record.get('started_at_utc')
+        if started:
+            when = local_time(started)
+        else:
+            try:
+                when = datetime.fromtimestamp(path.stat().st_mtime).astimezone().strftime('%Y-%m-%d %H:%M')
+            except OSError:
+                when = '不明'
+            else:
+                when += '（紀錄最後更新）'
+        print(f'{name or "-"} {record.get("client", "?")} {record.get("workspace", "?")} {when}{note}')
+
+
 def prompt_reminder(record, payload):
     """List the controller's waiting questions when the user sends a new message."""
     prompt = payload.get('prompt')
@@ -1541,6 +1610,10 @@ def main():
     duty.add_argument('--workspace', type=Path, required=True)
     duty.add_argument('--text', required=True, help=f'What it is responsible for, <= {DUTY_LIMIT} chars')
     duty.add_argument('--expected', required=True, help='What the user will see when it is done')
+    listing = sub.add_parser('list', help='List controller records and check them against hcom')
+    listing.add_argument('--active', action='store_true', required=True,
+                         help='List active records; mark those whose agent hcom no longer has')
+    listing.add_argument('--workspace', type=Path, required=True)
     sub.add_parser('hook', help='Read SessionStart, Stop or UserPromptSubmit payload on stdin')
     for action in ('install', 'uninstall'):
         config = sub.add_parser(action, help=f'{action.title()} the independent LAT hook group')
@@ -1559,6 +1632,8 @@ def main():
             deactivate(args)
         elif args.action == 'duty':
             record_duty(args)
+        elif args.action == 'list':
+            list_active(args)
         elif args.action == 'hook':
             hook(args.client)
         else:

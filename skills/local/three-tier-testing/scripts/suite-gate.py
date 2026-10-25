@@ -19,7 +19,9 @@ suite; `install-pre-push` / `uninstall-pre-push --repo <dir>` add or remove it.
 
 Linux only: each suite runs in its own systemd user scope (cgroup v2), and slot and lock
 holders stay counted while that group has processes. Without a user scope the suite runs
-in a new session instead, which is then what counts.
+in a new session instead, which is then what counts. Once a holder's gate has been seen gone
+for `reclaim_grace_seconds`, the next gate that reads the state stops what is left and frees
+the slot.
 """
 import argparse
 import copy
@@ -49,7 +51,8 @@ MAP_DIR = '.suite-gate.d'  # more affected.map rules, one file per topic
 DEFAULTS = {'min_slots': 2, 'max_slots': 8, 'poll_seconds': 1.0, 'report_seconds': 30.0,
             'sample_seconds': 2.0, 'brake_io_high': 40.0, 'brake_io_low': 20.0,
             'brake_cpu_high': 50.0, 'brake_cpu_low': 25.0, 'default_cores': 4.0,
-            'default_mem_gb': 4.0, 'mem_reserve_gb': 8.0, 'profile_history': 5}
+            'default_mem_gb': 4.0, 'mem_reserve_gb': 8.0, 'profile_history': 5,
+            'reclaim_grace_seconds': 600.0}
 # The smallest value each key accepts; an int default takes whole numbers only.
 MINIMUMS = {'min_slots': 0, 'max_slots': 1, 'profile_history': 1, 'poll_seconds': 0.01,
             'report_seconds': 0.01, 'sample_seconds': 0.01}
@@ -60,6 +63,7 @@ WORKTREE_PLACEHOLDER = '<worktree>'
 TAIL_LINES = 20
 TAIL_BYTES = 8192
 KILL_GRACE_SECONDS = 5.0
+RECLAIM_HISTORY = 10  # reclaim records kept in the shared state
 SIGNALS = (signal.SIGINT, signal.SIGTERM, signal.SIGHUP)
 FALLBACK_NOTE = ('running the suite in a new session instead; its usage is not measured and '
                  'processes it starts in another session are not counted')
@@ -875,7 +879,8 @@ def holder_alive(holder):
 def _wait_until(done, child):
     deadline = time.monotonic() + KILL_GRACE_SECONDS
     while time.monotonic() < deadline:
-        child.poll()
+        if child:
+            child.poll()
         if done():
             return True
         time.sleep(0.05)
@@ -892,7 +897,8 @@ def end_session(sid, child):
                 pass
         if _wait_until(lambda: not session_pids(sid), child):
             return
-    child.poll()
+    if child:
+        child.poll()
 
 
 def end_group(group, child):
@@ -909,7 +915,8 @@ def end_group(group, child):
     except OSError:
         pass
     _wait_until(lambda: not cgroup_pids(group), child)
-    child.poll()
+    if child:
+        child.poll()
 
 
 # ---------------------------------------------------------------- host readings
@@ -1095,8 +1102,49 @@ def _raise_interrupted(signum, _frame):
     raise Interrupted(signum)
 
 
+def reclaim_leftovers(state, config):
+    """Stop what holders whose gate is gone left in their group (session without one) once
+    it has been seen for the grace period, and drop those holders. The first time a holder is
+    seen that way stamps `leftover_since` on it; a holder whose gate runs is never touched."""
+    now = time.time()
+    holders = [*state['locks'].values(), *state['slots']]
+    expired = {}
+    for holder in holders:
+        if gate_alive(holder):
+            continue
+        since = holder.get('leftover_since')
+        if not _number(since):
+            holder['leftover_since'] = now
+        elif now - since >= config['reclaim_grace_seconds']:
+            expired[holder['id']] = holder
+    for holder_id, holder in expired.items():
+        group, sid = holder.get('cgroup'), holder.get('sid')
+        pids = cgroup_pids(group) if group else session_pids(sid)
+        processes = [{'pid': pid, 'command': command_line(pid)} for pid in pids]
+        if group:
+            end_group(group, None)
+        else:
+            end_session(sid, None)
+        lock = next((fp for fp, h in state['locks'].items() if h['id'] == holder_id), None)
+        record = {'time': now_iso(), 'agent': holder.get('agent'),
+                  'command': holder.get('command'), 'cwd': holder.get('cwd'),
+                  'fingerprint': holder.get('fingerprint'), 'cgroup': group, 'sid': sid,
+                  'slot': any(h['id'] == holder_id for h in state['slots']), 'lock': lock,
+                  'leftover_since': holder['leftover_since'],
+                  'grace_seconds': config['reclaim_grace_seconds'],
+                  'process_count': len(processes), 'processes': processes}
+        state['reclaims'] = (state.get('reclaims') or [])[-(RECLAIM_HISTORY - 1):] + [record]
+        warn(f"reclaimed the slot of {record['agent']} ({record['command']} in "
+             f"{record['cwd']}): its gate was gone for "
+             f"{fmt_seconds(now - holder['leftover_since'])}; stopped {len(processes)} "
+             'process(es):\n' + '\n'.join(f"  {p['pid']} {p['command']}" for p in processes))
+    state['locks'] = {k: v for k, v in state['locks'].items() if v['id'] not in expired}
+    state['slots'] = [h for h in state['slots'] if h['id'] not in expired]
+
+
 def with_state(change):
-    """Run change(state) under the host-wide state lock, with dead holders pruned."""
+    """Run change(state) under the host-wide state lock, with dead holders pruned and
+    leftovers past the grace period reclaimed."""
     directory = state_dir()
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / 'state.json'
@@ -1112,6 +1160,7 @@ def with_state(change):
             state['locks'] = {k: v for k, v in state.get('locks', {}).items() if holder_alive(v)}
             state['slots'] = [h for h in state.get('slots', []) if holder_alive(h)]
             state['waiters'] = [h for h in state.get('waiters', []) if holder_alive(h)]
+            reclaim_leftovers(state, load_config())
             result = change(state)
             tmp = path.with_suffix('.tmp')
             tmp.write_text(json.dumps(state, indent=1))
@@ -1829,29 +1878,128 @@ def _guarded(body):
         return 2
 
 
-def cmd_run(rerun, purpose, reason, argv):
+PURPOSE_CHOICES = ('--purpose post-merge (after a batch is merged), --purpose release (before '
+                   'a release), or --reason "<why the full suite is needed>"')
+
+
+def run_args_error(rerun, purpose, reason):
+    """What is wrong with run's --rerun, --purpose and --reason, or None."""
     if rerun is not None and not rerun.strip():
-        warn('--rerun needs a reason')
-        return 2
+        return '--rerun needs a reason'
     if reason is not None and not reason.strip():
-        warn('--reason needs text')
-        return 2
+        return '--reason needs text'
     if purpose and reason:
-        warn('give either --purpose or --reason, not both')
+        return 'give either --purpose or --reason, not both'
+    return None
+
+
+def purpose_flags(purpose, reason):
+    if reason:
+        return ('--reason', reason.strip())
+    return ('--purpose', purpose) if purpose else ()
+
+
+def command_words(argv):
+    """argv as the words it runs: a shell string split as sh would, None when it cannot be."""
+    if len(argv) != 1:
+        return list(argv)
+    try:
+        return shlex.split(argv[0])
+    except ValueError:
+        return None
+
+
+def registered_form(cwd, argv):
+    """The registered full suite that argv runs in cwd but written in another form (split
+    arguments or other spelling of the same words), so its fingerprint differs; None when
+    argv matches a registered suite exactly or none."""
+    root = repo_root(cwd)
+    if root is None:
+        return None
+    try:
+        suites = read_full_suites(load_registry(cwd) or {})
+    except ValueError:
+        return None
+    here = rel_cwd(root, cwd)
+    suites = [s for s in suites if rel_cwd(root, suite_cwd(root, s)) == here]
+    if any(len(argv) == 1 and normalize_command(argv) == s['command'] for s in suites):
+        return None
+    words = command_words(argv)
+    return next((s for s in suites if words and words == command_words([s['command']])),
+                None)
+
+
+def cmd_run(rerun, purpose, reason, argv):
+    error = run_args_error(rerun, purpose, reason)
+    if error:
+        warn(error)
         return 2
+    flags = purpose_flags(purpose, reason)
     if reason:
         purpose = 'reason'
     if purpose is None and is_mapped(load_registry(Path.cwd()) or {}):
         warn('this project has an affected-test map, so a full suite needs a purpose. '
              'For the tests this change affects, run instead:\n'
              f'  {affected_command()}\n'
-             'For a full suite, add one after `run`: --purpose post-merge (after a batch '
-             'is merged), --purpose release (before a release), or --reason "<why the full '
-             'suite is needed>"')
+             f'For a full suite, add one after `run`: {PURPOSE_CHOICES}')
         return 2
+    suite = registered_form(Path.cwd(), argv)
+    if suite:
+        warn('this is the registered full suite written in another form, so its result will '
+             'not be accepted by the push and install checks. The registered form:\n'
+             f"  {gate_command(suite['command'], flags)}\n"
+             'or run every registered full suite with: suite-gate.py run --registered '
+             '--purpose <purpose>')
     extra = {'purpose': purpose, 'purpose_reason': reason.strip() if reason else None}
     gate = Gate(argv, Path.cwd(), rerun.strip() if rerun else None, load_config(), extra)
     return _guarded(lambda: _drive(gate, gate.run))
+
+
+def cmd_run_registered(names, rerun, purpose, reason):
+    """Run the registered full suites, all or those named by directory or command, in their
+    registered form, each through the gate."""
+    error = run_args_error(rerun, purpose, reason)
+    if error:
+        warn(error)
+        return 2
+    if not purpose and not reason:
+        warn(f'run --registered needs a purpose: add {PURPOSE_CHOICES}')
+        return 2
+    root = repo_root(Path.cwd())
+    if root is None:
+        warn('run --registered: not in a Git work tree')
+        return 2
+    try:
+        suites = read_full_suites(load_registry(root) or {})
+    except ValueError as exc:
+        warn(f'run --registered: {exc}')
+        return 2
+
+    def named(suite, name):
+        return name.strip() == suite['command'] or _dir_key(name) == suite['cwd']
+
+    unknown = [n for n in names if not any(named(s, n) for s in suites)]
+    if unknown:
+        warn(f"run --registered: no registered full suite {', '.join(unknown)}; the "
+             'registered ones (name one by its directory or command):')
+        for suite in suites:
+            warn(f"  {suite['cwd']}: {suite['command']}")
+        return 2
+    if names:
+        suites = [s for s in suites if any(named(s, n) for n in names)]
+    extra = {'purpose': 'reason' if reason else purpose,
+             'purpose_reason': reason.strip() if reason else None}
+
+    def body():
+        code = 0
+        for suite in suites:
+            warn(f"full suite in {suite['cwd']}: {suite['command']}")
+            gate = Gate([suite['command']], suite_cwd(root, suite),
+                        rerun.strip() if rerun else None, load_config(), extra)
+            result = _drive(gate, gate.run)
+            code = code or result
+        return code
+    return _guarded(body)
 
 
 # ---------------------------------------------------------------- affected tests
@@ -1916,6 +2064,11 @@ def read_full_suites(registry):
         raise ValueError('full_suites must list {"command": "...", "cwd": "<dir>"} entries')
     return [{'command': s['command'].strip(), 'cwd': _dir_key(s.get('cwd', '.'))}
             for s in suites]
+
+
+def suite_cwd(root, suite):
+    """The directory a registered full suite runs in."""
+    return root if suite['cwd'] == '.' else root / suite['cwd']
 
 
 def glob_match(path, pattern):
@@ -2161,9 +2314,8 @@ def run_fallback(root, suites, fallback):
     triggers = sorted({path for path, _ in fallback})
     code = 0
     for suite in suites:
-        cwd = root if suite['cwd'] == '.' else root / suite['cwd']
         warn(f"full suite in {suite['cwd']}: {suite['command']}")
-        gate = Gate([suite['command']], cwd, None, load_config(),
+        gate = Gate([suite['command']], suite_cwd(root, suite), None, load_config(),
                     {'purpose': 'map-fallback', 'trigger_files': triggers})
         result = _drive(gate, gate.run)
         code = code or result
@@ -2464,7 +2616,8 @@ def cmd_status(as_json, fp_prefix, limit):
         shown = [{k: v for k, v in h.items() if k != 'unused'} for h in running]
         print(json.dumps({'min_slots': floor, 'max_slots': cap, 'config': config,
                           'host': host, 'running': shown, 'waiting': waiting,
-                          'locks': state['locks'], 'records': records, 'cleanup': cleanup},
+                          'locks': state['locks'], 'records': records, 'cleanup': cleanup,
+                          'reclaims': state.get('reclaims') or []},
                          ensure_ascii=False, indent=1))
         return 0
     now = time.time()
@@ -2485,9 +2638,12 @@ def cmd_status(as_json, fp_prefix, limit):
                                          else f': only {floor} start until it can be read'))
     print(f"Running ({len(running)}/{cap} host slots):")
     for h in running:
-        note = '' if gate_alive(h) else (' (gate gone, its group still has processes)'
-                                         if h.get('cgroup') else
-                                         ' (gate gone, test session still alive)')
+        note = ''
+        if not gate_alive(h):
+            left = ('its group still has processes' if h.get('cgroup')
+                    else 'test session still alive')
+            note = (f' (gate gone, {left}; reclaimed in {reclaim_due(h, config, now)} '
+                    'if still there)')
         cores, mem = h['usage']['cpu_cores'], h['usage']['mem_bytes']
         usage = (f"cpu {'-' if cores is None else f'{cores:.1f} cores'}, "
                  f"mem {'-' if mem is None else fmt_bytes(mem)}")
@@ -2525,6 +2681,12 @@ def cmd_status(as_json, fp_prefix, limit):
         print(f"  {r.get('time')}  {result}  fp {(record_fingerprint(r) or '-')[:12]}  "
               f"{r.get('agent')}  {r.get('duration_s')}s  {r.get('cwd')}  "
               f"{r.get('command')}{rerun}{purpose}")
+    reclaim = (state.get('reclaims') or [None])[-1]
+    if reclaim:
+        print(f"Latest reclaim: {reclaim['time']} stopped {reclaim['process_count']} "
+              f"process(es) left by {reclaim['agent']}  {reclaim['cwd']}  {reclaim['command']}")
+        for process in reclaim['processes']:
+            print(f"  {process['pid']} {process['command']}")
     print(f'Test cleanup ({len(cleanup)} suites):')
     for unit in cleanup:
         print(f"  {'DUE' if unit['due'] else 'not due'}: `{unit['command']}` in "
@@ -2533,6 +2695,13 @@ def cmd_status(as_json, fp_prefix, limit):
         for line in cleanup_numbers(unit)[2:] + [f'- Due: {why}' for why in unit['due']]:
             print(f'    {line[2:]}')
     return 0
+
+
+def reclaim_due(holder, config, now):
+    """How long until a leftover holder is reclaimed; one whose gate ended after the state was
+    read is not stamped yet and has the whole grace period."""
+    left = config['reclaim_grace_seconds'] - (now - holder.get('leftover_since', now))
+    return fmt_seconds(max(0.0, left))
 
 
 def fmt_reservation(holder):
@@ -2839,9 +3008,8 @@ def pushed_commits(root, lines):
 
 
 def release_command(root, suite):
-    cwd = root if suite['cwd'] == '.' else root / suite['cwd']
     run = gate_command(suite['command'], ('--purpose', 'release'))
-    return f'cd {shlex.quote(str(cwd))} && {run}'
+    return f'cd {shlex.quote(str(suite_cwd(root, suite)))} && {run}'
 
 
 def lacking_full_suites(root, commit, registry):
@@ -3010,12 +3178,16 @@ def main(argv=None):
         argv, command = argv[:cut], argv[cut + 1:]
     parser = argparse.ArgumentParser(prog='suite-gate.py', description=__doc__.split('\n')[0])
     sub = parser.add_subparsers(dest='action', required=True)
-    run = sub.add_parser('run', help='run a full suite through the gate: run [--rerun "<reason>"] -- <cmd>')
+    run = sub.add_parser('run', help='run a full suite through the gate: run [--rerun "<reason>"] -- <cmd>, '
+                         'or run --registered [suite ...] --purpose <purpose>')
     run.add_argument('--rerun', metavar='REASON', help='run even if this content already passed')
     run.add_argument('--purpose', choices=('post-merge', 'release'),
                      help='why a full suite runs; required with an affected-test map')
     run.add_argument('--reason', metavar='TEXT',
                      help='a free-text purpose instead of --purpose')
+    run.add_argument('--registered', nargs='*', metavar='SUITE',
+                     help='run the registered full suites (all, or those named by directory '
+                          'or command) in their registered form; needs a purpose')
     affected = sub.add_parser('affected', help='run the tests the affected-test map selects '
                                                'for this change: affected [--base <rev>]')
     affected.add_argument('--base', metavar='REV', help='measure the change from this commit '
@@ -3049,6 +3221,10 @@ def main(argv=None):
         config.add_argument('--codex-home', metavar='DIR', help='default: $CODEX_HOME or ~/.codex')
         config.add_argument('--preview', action='store_true', help='show the diff, write nothing')
     args = parser.parse_args(argv)
+    if args.action == 'run' and args.registered is not None:
+        if command:
+            parser.error('run --registered takes no command after --')
+        return cmd_run_registered(args.registered, args.rerun, args.purpose, args.reason)
     if args.action == 'run':
         if not command:
             parser.error('run needs the suite command after --')

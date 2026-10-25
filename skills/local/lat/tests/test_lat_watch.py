@@ -1451,7 +1451,7 @@ esac
         self.run_cycles(load_watch(), 4000)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
         self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
-        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1})
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1})
         result = self.alarm_cli('--after', 1, agent='worker-open')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
@@ -3888,6 +3888,125 @@ esac
         self.assertEqual(actions[0].kind, 'notify-orchestrator')
         self.assertFalse(state['nudged'])
 
+    def observe_screen(self, terminal, status='active'):
+        watch = load_watch()
+        info = {'status': status, 'tool': 'codex', 'unread_count': 0}
+        with patch.object(watch, 'run_json', return_value=terminal), \
+                patch.object(watch, 'session_events', return_value=[]), \
+                patch.object(watch, 'release_wait_if_needed', return_value=None):
+            return watch, watch.observe(
+                self.work, self.work / '.lat/decisions', 'orch', 'worker-open', info,
+                processes=[])
+
+    def test_active_agent_screen_errors_notify_and_repeat_every_20_minutes(self):
+        codex_ui = ['', '› Ask Codex to do anything', '',
+                    '  GPT-6.1-Sol medium · ~/repo · Context 0% used']
+        healthy = {'ready': False, 'prompt_empty': True, 'input_text': '', 'lines': [
+            '■ Selected model is at capacity. Please try a different model.',
+            '• Retrying the previous step now.', 'Working (5s · esc to interrupt)',
+            *codex_ui]}
+        screens = {
+            'model-capacity': {'ready': True, 'prompt_empty': True, 'input_text': '', 'lines': [
+                '■ Selected model is at capacity. Please try a different model.', *codex_ui]},
+            'usage-limit': {'ready': True, 'prompt_empty': True, 'input_text': '', 'lines': [
+                '■ Quota exceeded. Check your plan and billing details.', *codex_ui]},
+            # A Codex panic leaves the raw crash text with no prompt or input box.
+            'crash': {'ready': False, 'prompt_empty': None, 'input_text': None, 'lines': [
+                'Warning: SpanTrace capture is Unsupported.',
+                'The application panicked (crashed).',
+                'Message:  provider auth cwd must resolve: No such file or dire',
+                'ctory (os error 2)',
+                'Location: protocol/src/config_types.rs:629',
+                '',
+                'Backtrace omitted. Run with RUST_BACKTRACE=1 environment varia',
+                'ble to display it.']},
+        }
+        for kind, terminal in screens.items():
+            with self.subTest(kind=kind):
+                watch, stuck = self.observe_screen(terminal)
+                self.assertEqual(stuck.quota_issue.kind, kind)
+
+                # Capacity and quota notify at once; a crash waits for the stall threshold.
+                first = 20 * 60 if kind == 'crash' else 0
+                state, actions = watch.decide(None, stuck, now=0)
+                if first:
+                    self.assertEqual(actions, ())
+                    state, actions = watch.decide(state, stuck, now=first - 1)
+                    self.assertEqual(actions, ())
+                    state, actions = watch.decide(state, stuck, now=first)
+                self.assertEqual(actions[0].kind, 'notify-orchestrator')
+                self.assertIn('worker-open', actions[0].message)
+                state, actions = watch.decide(state, stuck, now=first + 20 * 60 - 1)
+                self.assertEqual(actions, ())
+                state, actions = watch.decide(state, stuck, now=first + 20 * 60)
+                self.assertEqual(actions[0].kind, 'notify-orchestrator')
+                self.assertIn(f'unchanged for {(first + 20 * 60) // 60} minutes',
+                              actions[0].message)
+                state, actions = watch.decide(state, stuck, now=first + 40 * 60)
+                self.assertEqual(actions[0].kind, 'notify-orchestrator')
+
+                _, recovered = self.observe_screen(healthy)
+                self.assertIsNone(recovered.quota_issue)
+                for minute in (61, 81, 101, 140):
+                    state, actions = watch.decide(
+                        state, recovered._replace(event_id=minute), now=minute * 60)
+                    self.assertEqual(actions, ())
+
+        crash = screens['crash']
+        self.assertIn('The application panicked',
+                      self.observe_screen(crash)[1].quota_issue.line)
+        self.assertEqual(watch.quota_notice(self.observe_screen(crash)[1]).label, '程式崩潰')
+
+        # Crash text on the screen of an agent that keeps making progress never notifies.
+        _, crashed = self.observe_screen(crash)
+        state = None
+        for minute in range(0, 61, 5):
+            state, actions = watch.decide(
+                state, crashed._replace(transcript_size=minute + 1), now=minute * 60)
+            self.assertEqual(actions, ())
+
+    def test_changed_error_screen_restarts_the_repeat_timer(self):
+        lines = ['■ Selected model is at capacity. Please try a different model.', '',
+                 '› Ask Codex to do anything', '', '  GPT-6.1-Sol medium · ~/repo']
+        terminal = {'ready': True, 'prompt_empty': True, 'input_text': '', 'lines': lines}
+        watch, stuck = self.observe_screen(terminal)
+        state, _ = watch.decide(None, stuck, now=0)
+        _, moved = self.observe_screen(dict(terminal, lines=['scrolled', *lines]))
+        state, actions = watch.decide(state, moved, now=15 * 60)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, moved, now=34 * 60)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, moved, now=35 * 60)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+
+    def test_old_error_in_scrollback_with_healthy_last_screen_does_not_notify(self):
+        codex_ui = ['', '› Ask Codex to do anything', '',
+                    '  GPT-6.1-Sol medium · ~/repo · Context 3% used']
+        old_errors = [
+            ['■ Quota exceeded. Check your plan and billing details.',
+             '• Switched accounts; continuing the task.', *codex_ui],
+            ['thread \'main\' panicked at src/main.rs:3:5:', 'stack backtrace:',
+             '╭──────────────────────────╮', '│ >_ OpenAI Codex          │',
+             '╰──────────────────────────╯', *codex_ui],
+            ['The application panicked (crashed).',
+             '■ Selected model is at capacity. Please try a different model.',
+             '• Resumed after capacity returned.', *codex_ui],
+            ['• The failing test printed "thread \'main\' panicked at lib.rs" and',
+             '  a Backtrace line; both are fixed now.', *codex_ui],
+            # A newer error the watcher does not classify still replaces the older one.
+            ['■ Selected model is at capacity. Please try a different model.',
+             '■ Error: stream disconnected before completion.', *codex_ui],
+        ]
+        for lines in old_errors:
+            with self.subTest(lines=lines[0]):
+                watch, observation = self.observe_screen(
+                    {'ready': True, 'prompt_empty': True, 'input_text': '', 'lines': lines})
+                self.assertIsNone(observation.quota_issue)
+                _, actions = watch.decide(None, observation, now=0)
+                self.assertEqual(actions, ())
+                _, actions = watch.decide(_, observation, now=40 * 60)
+                self.assertNotIn('notify-orchestrator', [action.kind for action in actions])
+
     def test_escalation_actions_use_hcom_and_request_sound_without_real_services(self):
         watch = load_watch()
 
@@ -4679,7 +4798,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -4703,7 +4822,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
@@ -5387,7 +5506,7 @@ esac
         self.assertEqual(state['worker']['decision'], 'valid-wait')
         self.assertEqual(self.wait_file.read_bytes(), before)
         self.assertEqual(state['worker']['feature_versions'],
-                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1})
+                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1})
         # The wait still expires at its original deadline, counted once, with the real
         # idle time, and the agent is nudged for the expiry rather than as a stall.
         self.cycle(self.start + 3000)
@@ -6199,6 +6318,8 @@ class ClaudeQuotaRecoveryTests(unittest.TestCase):
                                     '2. No', 'Enter to confirm · Esc to cancel']}):
             self.assertFalse(self.watch.claude_quota_menu(terminal))
         self.recover(client='codex')
+        self.assertEqual(self.commands, [])
+        self.recover(quota_issue=self.watch.QuotaIssue('crash', 'The application panicked'))
         self.assertEqual(self.commands, [])
 
     def test_cycle_recovers_owner_and_task_card_despite_hcom_listening(self):

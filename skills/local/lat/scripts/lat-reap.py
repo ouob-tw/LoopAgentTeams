@@ -35,6 +35,8 @@ TRIGGERS = ('periodic', 'deactivate', 'manual')
 GRACE_SECONDS = 10
 LOCK_SECONDS = 30
 KILL_WAIT_SECONDS = 2
+# How long reap --agent waits for a client HCOM already shows stopped to exit.
+AGENT_WAIT_SECONDS = 5
 COMMAND_CHARS = 120
 RECENT_CLOSURES = 10
 EVENT_LIMIT = 100000
@@ -661,6 +663,20 @@ def reap(args):
         only = None
         if args.agent:
             only, listed = resolve_agent(args.agent, world)
+            deadline = time.monotonic() + env_number('LAT_REAP_AGENT_WAIT_SECONDS',
+                                                     AGENT_WAIT_SECONDS)
+            while not listed and only & world.alive and time.monotonic() < deadline:
+                # HCOM shows the agent stopped; its client may still be exiting.
+                time.sleep(0.5)
+                try:
+                    world = observe(seen)
+                except Failure as error:
+                    append_log(directory, {'time': moment.isoformat(timespec='seconds'),
+                                           'trigger': trigger, 'result': 'aborted',
+                                           'reason': str(error)})
+                    print(f'Nothing closed: {error}')
+                    return 1
+                only, listed = resolve_agent(args.agent, world)
             running = sorted(only & world.alive)
             if listed or running:
                 print(f'Nothing closed: agent {args.agent} is still running'
@@ -835,17 +851,27 @@ def scan(args):
             print(f'  {line}')
     closures = recent_closures(directory, args.limit)
     print(f'Recent close records: {len(closures)}')
+    judged = [record for record in closures if record.get('result') == 'not judged']
+    # By default only the latest "not judged" record shows, as a count; older ones fold.
+    folded = [] if args.all else judged[:-1]
     for record in closures:
         if record.get('result') == 'aborted':
             print(f'  {record.get("time")} {record.get("trigger")} aborted: {record.get("reason")}')
         elif record.get('result') == 'not judged':
-            print(f'  {record.get("time")} {record.get("trigger")} not judged: unreadable PIDs '
-                  f'{", ".join(record.get("unreadable") or {}) or "none"}; agent processes below '
-                  f'them {record.get("ancestor_unreadable")}')
+            if any(record is old for old in folded):
+                continue
+            if args.all:
+                listing = (f'unreadable PIDs {", ".join(record.get("unreadable") or {}) or "none"}; '
+                           f'agent processes below them {record.get("ancestor_unreadable")}')
+            else:
+                listing = f'另有 {len(record.get("unreadable") or {})} 個無法判斷，加 --all 可列出'
+            print(f'  {record.get("time")} {record.get("trigger")} not judged: {listing}')
         else:
             print(f'  {record.get("time")} {record.get("trigger")} PID {record.get("pid")} '
                   f'{record.get("agent")} {record.get("signal")} {record.get("result")} '
                   f'{record.get("command")}')
+    if folded:
+        print(f'  另有 {len(folded)} 筆較舊的無法判斷紀錄')
     return 0
 
 
@@ -854,7 +880,7 @@ def main():
                                      formatter_class=argparse.RawDescriptionHelpFormatter)
     sub = parser.add_subparsers(dest='action', required=True)
     look = sub.add_parser('scan', help='List agent processes, leftovers and keeps; changes nothing')
-    look.add_argument('--all', action='store_true', help='Also list never-handled processes')
+    look.add_argument('--all', action='store_true', help='Also list never-handled and unreadable processes, and every not-judged record')
     look.add_argument('--limit', type=int, default=RECENT_CLOSURES, help='Close records to show')
     run = sub.add_parser('reap', help='Close leftovers and processes whose keep ended')
     run.add_argument('--agent', help='Only this HCOM agent (call right after hcom kill)')
