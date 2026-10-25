@@ -4054,7 +4054,8 @@ esac
         self.assertEqual(actions[0].kind, 'capacity-continue')
         for minute in range(1, 12):
             state, actions = watch.decide(
-                state, recovered._replace(transcript_size=minute), now=minute * 60)
+                state, recovered._replace(transcript_size=minute, capacity_output=True),
+                now=minute * 60)
             self.assertEqual(actions, ())
 
         # Capacity again right after one round of new output is a new episode.
@@ -4062,14 +4063,45 @@ esac
                                         'lines': [*self.RECOVERED_LINES[:3],
                                                   *self.CAPACITY_LINES]})
         self.assertEqual(again.quota_issue.kind, 'model-capacity')
-        _, actions = watch.decide(state, again._replace(transcript_size=20), now=13 * 60)
+        _, actions = watch.decide(state, again._replace(transcript_size=20, capacity_output=True),
+                                  now=13 * 60)
         self.assertEqual([a.kind for a in actions], ['capacity-continue'])
         state, _ = watch.decide(None, stuck, now=0)
-        state, _ = watch.decide(state, recovered._replace(transcript_size=1), now=60)
-        state, actions = watch.decide(state, stuck._replace(transcript_size=20), now=120)
+        # Even a heading identical to the old screen counts once the transcript shows output.
+        state, actions = watch.decide(
+            state, stuck._replace(transcript_size=20, capacity_output=True), now=120)
         self.assertEqual([a.kind for a in actions], ['capacity-continue'])
         state, actions = watch.decide(state, stuck._replace(transcript_size=21), now=180)
         self.assertEqual(actions, ())
+
+    def test_capacity_output_is_any_transcript_record_beyond_the_continue_echo(self):
+        watch = load_watch()
+        transcript = self.work / 'codex.jsonl'
+        echo = [{'type': 'event_msg', 'payload': {'type': 'user_message', 'message': 'Continue'}},
+                {'type': 'event_msg', 'payload': {'type': 'error',
+                                                  'message': 'Selected model is at capacity.'}}]
+        outputs = {
+            'tool call': {'type': 'response_item', 'payload': {
+                'type': 'function_call', 'name': 'shell', 'arguments': '{"command":"pwd"}'}},
+            'short reply': {'type': 'event_msg', 'payload': {'type': 'agent_message',
+                                                             'message': 'OK'}},
+        }
+        cases = {'echo only': [], **{name: [record] for name, record in outputs.items()}}
+        for name, extra in cases.items():
+            with self.subTest(name=name):
+                transcript.write_text('{"type":"session_meta","payload":{}}\n')
+                offset = transcript.stat().st_size
+                with transcript.open('a') as stream:
+                    for record in [*echo, *extra]:
+                        stream.write(json.dumps(record) + '\n')
+                observation = watch.Observation(
+                    agent='worker-open', status='active', prompt_empty=True,
+                    command_running=False, transcript_size=transcript.stat().st_size,
+                    transcript_mtime_ns=1, event_id=0, client='codex')
+                result = watch.nudge_only_observation(
+                    {'fingerprint': [offset, 0, 0], 'capacity_offset': offset}, observation,
+                    {'transcript_path': str(transcript)}, 'orch')
+                self.assertEqual(result.capacity_output, name != 'echo only')
 
     def test_codex_capacity_working_without_new_output_is_still_the_same_episode(self):
         watch, stuck = self.capacity_screen()

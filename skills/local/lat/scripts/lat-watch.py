@@ -64,8 +64,8 @@ KEEPALIVE = ('[lat-watch] Prompt cache keep-alive. Read any unread HCOM messages
              'end your turn with the shortest possible reply.')
 QUOTA_CONTINUE = '[lat-watch] Please continue.'
 CAPACITY_CONTINUE = 'Continue'
-# One Continue per Codex capacity episode; kept until a new reply or another error.
-CAPACITY_KEYS = ('capacity_continue_at', 'capacity_continue_notified', 'capacity_reply')
+# One Continue per Codex capacity episode; kept until new output or another error.
+CAPACITY_KEYS = ('capacity_continue_at', 'capacity_continue_notified', 'capacity_offset')
 NAME_PATTERN = r'[A-Za-z0-9][A-Za-z0-9_-]{0,127}'
 NAME = re.compile(NAME_PATTERN)
 CARD_AGENT = re.compile(rf'({NAME_PATTERN})(?=$|[\s(（])')
@@ -136,8 +136,8 @@ class Observation(NamedTuple):
     screen_tail: tuple = ()
     quota_screen: tuple = ()
     screen_digest: str = ''
-    # Last Codex reply or tool line ('• '); a different one is new output.
-    last_reply: str = ''
+    # The transcript has more than the watcher's Continue since it was typed.
+    capacity_output: bool = False
 
 
 class QuotaIssue(NamedTuple):
@@ -353,11 +353,11 @@ def codex_turn_finished(transcript):
     return finished
 
 
-def nudge_transcript_only(transcript, offset, size, client, nudge=NUDGE):
+def nudge_transcript_only(transcript, offset, size, client, nudge=NUDGE, reply_chars=200):
     """Recognize an exact watcher prompt plus client bookkeeping/error/echo only.
 
     Unknown, replaced, oversized or corrupt data keeps the old progress behavior.
-    A tool, assistant text longer than 200 characters, or other user input is progress.
+    A tool, assistant text longer than reply_chars, or other user input is progress.
     """
     if (client.lower() not in ('claude', 'codex') or not transcript
             or size <= offset or size - offset > TRANSCRIPT_TAIL_BYTES):
@@ -421,7 +421,7 @@ def nudge_transcript_only(transcript, offset, size, client, nudge=NUDGE):
                 saw_nudge = True
             elif not saw_nudge:
                 return False
-            elif not record.get('isApiErrorMessage') and len(content.strip()) > 200:
+            elif not record.get('isApiErrorMessage') and len(content.strip()) > reply_chars:
                 return False
         elif client.lower() == 'claude':
             # Snapshots also precede the injected user record; deltas still reset.
@@ -480,6 +480,12 @@ def nudge_only_observation(previous, observation, info, orchestrator):
             previous.get('nudge_fingerprint', previous.get('fingerprint')), observation, info,
             orchestrator, previous.get('nudge_text', NUDGE)):
         observation = observation._replace(nudge_only=True)
+    offset = previous.get('capacity_offset')
+    if isinstance(offset, int) and observation.transcript_size > offset:
+        # Any reply or tool call after the Continue is new output; the echo and errors are not.
+        observation = observation._replace(capacity_output=not nudge_transcript_only(
+            info.get('transcript_path'), offset, observation.transcript_size,
+            observation.client, CAPACITY_CONTINUE, reply_chars=0))
     keepalive = previous.get('keepalive')
     if isinstance(keepalive, dict) and injected_only(
             keepalive.get('fingerprint'), observation, info, orchestrator, KEEPALIVE):
@@ -874,8 +880,7 @@ def decide(previous, observation, now):
     actions = ()
     state.update(quota_dedupe(previous, observation.quota_issue))
     # A Continue episode ends on new output or another error, not on a passing clear screen.
-    new_output = (previous is not None and observation.last_reply
-                  and observation.last_reply != previous.get('capacity_reply'))
+    new_output = observation.capacity_output
     other_error = (observation.quota_issue is not None
                    and observation.quota_issue.kind != 'model-capacity')
     if previous and 'capacity_continue_at' in previous and not new_output and not other_error:
@@ -937,7 +942,7 @@ def decide(previous, observation, now):
             state['quota_notified'] = True
             state['quota_notified_at'] = now
             state['capacity_continue_at'] = now
-            state['capacity_reply'] = observation.last_reply
+            state['capacity_offset'] = observation.transcript_size
         elif not crash_unconfirmed:
             actions = (quota_notice(observation, input_has_text=input_has_text),)
             state['quota_notified'] = True
@@ -1979,8 +1984,6 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
         quota_screen=(tuple(lines[-30:]) if client.lower() == 'claude' and quota_issue
                       and quota_issue.kind != 'crash' else ()),
         screen_digest=hashlib.sha256('\n'.join(lines).encode()).hexdigest(),
-        last_reply=next((line for line in reversed(lines) if isinstance(line, str)
-                         and line.startswith('• ') and 'esc to interrupt' not in line), ''),
     )
 
 
