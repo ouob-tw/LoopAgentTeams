@@ -217,7 +217,7 @@ def quota_notice(observation, unchanged_minutes=None):
     subject = ('crash' if issue.kind == 'crash'
                else 'quota or model-capacity issue')
     repeat = (f' Still on screen: the screen has been unchanged for {unchanged_minutes} '
-              'minutes since the last notice.' if unchanged_minutes is not None else '')
+              'minutes.' if unchanged_minutes is not None else '')
     message = (f'LAT stall watcher: {subject} for agent '
                f'{observation.agent}.{repeat} Client: {observation.client}. Model: '
                f'{observation.model}. Matched line: {issue.line}{line_end}{reset} '
