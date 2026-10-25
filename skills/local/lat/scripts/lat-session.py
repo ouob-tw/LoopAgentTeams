@@ -377,7 +377,11 @@ def activate(args):
     if duty is None:
         print(f'看板職責：任務明確後執行（任務改變時再執行一次）：{duty_command(record)}')
     else:
-        print(f'看板職責已登記：{write_duty(sid, *duty)}')
+        try:
+            print(f'看板職責已登記：{write_duty(sid, *duty)}')
+        except OSError as error:
+            # The record is already active; finish activating and leave the duty to retry.
+            print(f'看板職責未登記：{error}；請執行：{duty_command(record)}')
     if enabled:
         try:
             binding, replaced, legacy_ignored = panel.bind_controller(

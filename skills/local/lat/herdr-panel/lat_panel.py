@@ -660,10 +660,13 @@ def _ask(args):
     if code:
         return code
     if created:
+        # The panel may already hold this ID at a later revision; the record follows it.
+        sync_decision_record(path, revision)
         print(f"已建立待決紀錄：{path}")
     else:
         reopen = status.status != "pending"
-        if reopen and not written:
+        # An earlier ask that wrote the panel but failed to sync may be rerun to finish.
+        if reopen and not written and decision_revision(path) == revision:
             raise ValueError(f"{args.id} is {status.status} and the question is unchanged; "
                              "change the question to ask again")
         sync_decision_record(path, revision, reopen=reopen,

@@ -5,7 +5,9 @@ from pathlib import Path
 import subprocess
 import sys
 import tempfile
+import importlib.util
 import unittest
+from unittest.mock import patch
 
 MODULE = Path(__file__).resolve().parents[1] / "herdr-panel/lat_panel.py"
 SESSION = "11111111-1111-4111-8111-111111111111"
@@ -14,6 +16,13 @@ SECTION = (
     "## 要合併到 dev 嗎？\n\n驗收都過了。\n\n"
     "- A. 合併，不推送（建議）\n  本機與 dev 一致。\n- B. 先不合併\n\n➡️ A：先讓本機一致。\n"
 )
+def load_module():
+    spec = importlib.util.spec_from_file_location("lat_panel_ask", MODULE)
+    module = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(module)
+    return module
+
+
 HELP_SECTION = "## 請登入看板\n\n要先登入才能驗收。\n\n- A. 已完成\n- B. 做不到\n"
 
 
@@ -143,6 +152,18 @@ class AskTests(AskTestCase):
         self.assertIn("- version: r2\n", self.record().read_text())
         self.assertIn("Q1 · r2 · 待答", self.questions.read_text())
 
+    def test_a_new_record_follows_a_question_already_in_the_panel(self):
+        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION.replace("驗收都過了。", "改了一次。"))
+        self.record().unlink()
+
+        result = self.ask(SECTION.replace("驗收都過了。", "又改了一次。"), "--advisor", "needs-human")
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertEqual(result.stdout.splitlines()[0], "Q1 r3")
+        self.assertIn("- version: r3\n", self.record().read_text())
+        self.assertNotIn("- version: r1", self.record().read_text())
+
     def test_unchanged_question_on_a_closed_record_is_refused_without_changes(self):
         self.ask(SECTION, "--advisor", "needs-human")
         self.record().write_text(self.record().read_text().replace(
@@ -176,10 +197,27 @@ class AskTests(AskTestCase):
         self.assertEqual(self.record().read_text(), before)
 
     def test_a_failed_panel_write_leaves_no_new_record(self):
-        result = self.ask("沒有標題\n", "--advisor", "needs-human")
+        # The section parses, so the record is written; the broken panel copy fails the upsert.
+        self.questions.write_text("## 要合併到 dev 嗎？\nQ1 · r1 · 待答\n\n沒有作答區\n")
+
+        result = self.ask(SECTION, "--advisor", "needs-human")
 
         self.assertEqual(result.returncode, 1)
+        self.assertIn("missing answer or submit marker", result.stderr)
         self.assertFalse(self.record().exists())
+
+    def test_rerun_finishes_a_reopen_whose_record_sync_failed(self):
+        self.ask(SECTION, "--advisor", "needs-human")
+        self.ask(SECTION.replace("驗收都過了。", "改過一次。"))
+        # As if the panel was written at r2 but the record stayed approved at r1.
+        self.record().write_text(self.record().read_text().replace(
+            "- status: pending", "- status: approved").replace("- version: r2", "- version: r1"))
+
+        result = self.ask(SECTION.replace("驗收都過了。", "改過一次。"))
+
+        self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+        self.assertIn("- status: pending\n", self.record().read_text())
+        self.assertIn("- version: r2\n", self.record().read_text())
 
     def test_gaps_found_after_writing_fail_the_command(self):
         self.record("OTHER").write_text("# OTHER\n\n- status: pending\n- advisor: needs-human\n")
@@ -196,7 +234,7 @@ class AskHelpTests(AskTestCase):
         result = self.ask(HELP_SECTION, "--advisor", "needs-human", "--help-question")
 
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("- status: pending\n- kind: help\n- advisor: needs-human\n",
+        self.assertIn("- status: pending\n- advisor: needs-human\n- kind: help\n",
                       self.record().read_text())
         self.assertIn("- options: A 已完成 / B 做不到\n", self.record().read_text())
 
@@ -216,9 +254,13 @@ class AskHelpTests(AskTestCase):
         self.assertEqual(refused.returncode, 1)
         self.assertEqual(self.record().read_text(), before)
 
+        self.record().write_text(self.record().read_text().replace(
+            "- advisor: needs-human\n", "- advisor: needs-human\n- kind: decide\n"))
         result = self.ask(HELP_SECTION, "--help-question")
         self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
-        self.assertIn("- status: pending\n- kind: help\n", self.record().read_text())
+        self.assertNotIn("- kind: decide", self.record().read_text())
+        self.assertIn("- status: pending\n- advisor: needs-human\n- kind: help\n",
+                      self.record().read_text())
         self.assertIn("- version: r2\n", self.record().read_text())
 
 
@@ -288,6 +330,24 @@ class RecordChatTests(AskTestCase):
                 self.assertEqual((self.record().read_text(), self.questions.read_text()),
                                  (record, questions))
                 self.record().write_text(original)
+
+    def test_a_failed_mark_undoes_both_files_so_a_retry_records(self):
+        panel = load_module()
+        original = panel.questions._append_journal
+        record, questions = self.record().read_text(), self.questions.read_text()
+
+        def refuse_mark(*args, **kwargs):
+            if kwargs.get("kind") == "set-status":
+                raise OSError("disk full")
+            return original(*args, **kwargs)
+
+        with patch.object(panel.questions, "_append_journal", refuse_mark):
+            with self.assertRaises(OSError):
+                panel.record_chat_answer(self.questions, self.decisions, "Q1", "A", "s-1")
+        self.assertEqual((self.record().read_text(), self.questions.read_text()),
+                         (record, questions))
+        self.assertEqual(self.record_chat().returncode, 0)
+        self.assertEqual(self.board_status(), "recorded")
 
     def test_already_recorded_question_is_refused(self):
         self.assertEqual(self.record_chat().returncode, 0)

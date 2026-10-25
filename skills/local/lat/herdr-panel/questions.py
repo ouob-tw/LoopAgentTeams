@@ -1084,10 +1084,10 @@ def _write_decision_answer(decision_path, section, answer, note, *, channel, sou
             raise ValueError(f"decision record status unreadable: {status.error}")
         if status.status != "pending":
             raise ValueError(f"decision record is not pending (status: {status.status})")
-        version = re.search(r"^- version:\s*r([0-9]+)\b", text, re.MULTILINE | re.IGNORECASE)
-        if version and int(version.group(1)) != section["revision"]:
+        version = _record_revision(text)
+        if version is not None and version != section["revision"]:
             raise ValueError(
-                f"decision record is at r{version.group(1)}, question at r{section['revision']}"
+                f"decision record is at r{version}, question at r{section['revision']}"
             )
         status_line = re.search(r"^- status:.*$", text, re.MULTILINE | re.IGNORECASE)
         lines = [
@@ -1238,7 +1238,8 @@ def record_chat_answer(questions_path, decisions_path, question_id, text, source
     questions_path = Path(questions_path)
     decision_path = Path(decisions_path) / f"{question_id}.md"
     with _path_lock(questions_path):
-        section = _question_section(_read_text_exact(questions_path), question_id)
+        document = _read_text_exact(questions_path)
+        section = _question_section(document, question_id)
         if section["status"] == "recorded":
             raise ValueError(f"question {question_id} r{section['revision']} is already recorded")
         section_sha256 = _section_sha256(section)
@@ -1250,6 +1251,9 @@ def record_chat_answer(questions_path, decisions_path, question_id, text, source
             _set_recorded_locked(questions_path, question_id, section["revision"],
                                  section_sha256, now=now)
         except (OSError, ValueError) as error:
+            # The mark may be written with its journal entry missing; undo both halves.
+            if _read_text_exact(questions_path) != document:
+                _replace_locked(questions_path, document)
             if not _restore_decision(decision_path, written, previous):
                 raise ValueError(f"the question could not be marked recorded: {error}; "
                                  f"{decision_path} already has the answer") from error
@@ -1277,10 +1281,11 @@ def new_decision_record(question_id, incoming, *, advisor, session_id, question=
         f"{letter} {option.label}".strip()
         for letter, option in zip(_option_letters(options), options.options)
     ) if options.kind else "自由作答"
-    lines = [f"# {question_id} {incoming['title']}", "", "- status: pending"]
+    # The advisor line sits right below the status line (references/advisors.md).
+    lines = [f"# {question_id} {incoming['title']}", "", "- status: pending",
+             f"- advisor: {advisor}"]
     if help_question:
         lines.append("- kind: help")
-    lines.append(f"- advisor: {advisor}")
     if session_id:
         lines.append(f"- session: {session_id}")
     lines += [
@@ -1293,18 +1298,21 @@ def new_decision_record(question_id, incoming, *, advisor, session_id, question=
     return "\n".join(lines) + "\n"
 
 
-def decision_revision(decision_path):
-    """The record's ``- version: r<N>`` number, or None without a readable one."""
-    match = re.search(r"^- version:\s*r([0-9]+)\b", _read_text_exact(decision_path),
-                      re.MULTILINE | re.IGNORECASE)
+def _record_revision(text):
+    """A record text's ``- version: r<N>`` number, or None without a readable one."""
+    match = re.search(r"^- version:\s*r([0-9]+)\b", text, re.MULTILINE | re.IGNORECASE)
     return int(match.group(1)) if match else None
+
+
+def decision_revision(decision_path):
+    return _record_revision(_read_text_exact(decision_path))
 
 
 def sync_decision_record(decision_path, revision, *, reopen=False, help_question=False):
     """Set the record's version line to the panel revision; optionally reopen it or mark help.
 
-    ``reopen`` sets the status back to pending; ``help_question`` adds ``- kind: help``
-    after the status line when the record has no kind line.
+    ``reopen`` sets the status back to pending; ``help_question`` makes the kind line
+    ``- kind: help``, adding it after the advisor line (else the status line).
     """
     decision_path = Path(decision_path)
     with _path_lock(decision_path):
@@ -1316,8 +1324,11 @@ def sync_decision_record(decision_path, revision, *, reopen=False, help_question
             raise ValueError(f"decision record has no - status: line: {decision_path}")
         if reopen:
             edits.append((*status, "- status: pending"))
-        if help_question and "kind" not in fields:
-            edits.append((status[1], status[1], "\n- kind: help"))
+        if help_question and "kind" in fields:
+            edits.append((*fields["kind"], "- kind: help"))
+        elif help_question:
+            after = fields.get("advisor", status)[1]
+            edits.append((after, after, "\n- kind: help"))
         version = fields.get("version")
         if version is None:
             edits.append((status[1], status[1], f"\n- version: r{revision}"))

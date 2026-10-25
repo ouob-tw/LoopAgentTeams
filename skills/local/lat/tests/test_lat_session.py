@@ -318,6 +318,18 @@ class SessionTests(unittest.TestCase):
         self.assertNotIn('lat-session.py duty --client', result.stdout)
         self.assert_silent(self.stop_hook('Work done\nDONE: delivered'))
 
+    def test_activate_finishes_when_the_duty_cannot_be_written(self):
+        blocker = self.root / 'not-a-directory'
+        blocker.write_text('')
+        result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                          '--decisions', self.decisions, '--duty-text', '職責',
+                          '--duty-expected', '結果',
+                          extra_env={'LAT_REPORTS_DIR': str(blocker / 'reports')})
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('看板職責未登記：', result.stdout)
+        self.assertIn('lat-session.py duty --client codex', result.stdout)
+        self.assertEqual(json.loads(self.record.read_text())['status'], 'active')
+
     def test_activate_refuses_invalid_or_half_given_duty_before_activating(self):
         for extra, detail in ((('--duty-text', '職責'), 'together'),
                               (('--duty-expected', '結果'), 'together'),
