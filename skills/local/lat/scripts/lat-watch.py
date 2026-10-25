@@ -35,6 +35,7 @@ PROMPT_SETTLE_SECONDS = 1
 PROMPT_POLL_SECONDS = 0.05
 CHECK_SECONDS = 60
 QUOTA_CLEAR_ROUNDS = 2
+QUOTA_REPEAT_SECONDS = 20 * 60
 FAILURE_REPEAT_SECONDS = 60 * 60
 ORCHESTRATOR_GONE_SECONDS = 60 * 60
 LOG_ROTATE_BYTES = 1024 * 1024
@@ -69,7 +70,7 @@ CLIENT_PROFILES = {
     'codex': {
         'error': re.compile(
             r'^■\s+(?:(?P<capacity>Selected model is at capacity\b)|'
-            r"(?P<usage>You've hit your usage limit\b))", re.IGNORECASE),
+            r"(?P<usage>You've hit your usage limit\b|Quota exceeded\b))", re.IGNORECASE),
         'model': re.compile(
             r'^\s*((?:GPT|o)[A-Za-z0-9. -]*?)\s+'
             r'(?:minimal|low|medium|high|xhigh|max|ultra)\s+·', re.IGNORECASE),
@@ -87,6 +88,10 @@ CLIENT_PROFILES = {
             r'(?:low|medium|high|max)\s+·', re.IGNORECASE),
     },
 }
+# Raw crash output starts at column 0; client replies and tool output are prefixed or indented.
+CRASH = re.compile(r'^(?:[A-Za-z].*\bpanicked\b|(?:stack )?backtrace\b)', re.IGNORECASE)
+CRASH_ACTION = ('inspect the agent screen, then resume the same agent or replace it and '
+                'resend its task')
 RECOVERY_ACTIONS = {
     ('codex', 'model-capacity'): 'switch to another model',
     ('codex', 'usage-limit'): (
@@ -126,6 +131,7 @@ class Observation(NamedTuple):
     prompt_readable: bool = True
     screen_tail: tuple = ()
     quota_screen: tuple = ()
+    screen_digest: str = ''
 
 
 class QuotaIssue(NamedTuple):
@@ -194,24 +200,31 @@ def owner_notice(observation, state, now, reason):
                   label='待核准' if reason == 'blocked' else '')
 
 
-def quota_notice(observation):
+def quota_notice(observation, unchanged_minutes=None):
     issue = observation.quota_issue
     reset = f' Reset time: {issue.reset_time}.' if issue.reset_time else ''
-    action_needed = RECOVERY_ACTIONS.get(
-        (observation.client.lower(), issue.kind),
-        'the user decides whether to wait or choose another recovery action',
-    )
+    if issue.kind == 'crash':
+        action_needed = CRASH_ACTION
+    else:
+        action_needed = RECOVERY_ACTIONS.get(
+            (observation.client.lower(), issue.kind),
+            'the user decides whether to wait or choose another recovery action',
+        )
     line_end = '' if issue.line.endswith(('.', '!', '?')) else '.'
     recovery = ('The watcher checks the active cswap account each cycle and only resumes '
                 'a verified Claude quota menu when both usage windows are below 100%. '
                 if observation.quota_screen else 'No terminal nudge was injected. ')
-    message = (f'LAT stall watcher: quota or model-capacity issue for agent '
-               f'{observation.agent}. Client: {observation.client}. Model: '
+    subject = ('crash' if issue.kind == 'crash'
+               else 'quota or model-capacity issue')
+    repeat = (f' Still on screen: the screen has been unchanged for {unchanged_minutes} '
+              'minutes since the last notice.' if unchanged_minutes is not None else '')
+    message = (f'LAT stall watcher: {subject} for agent '
+               f'{observation.agent}.{repeat} Client: {observation.client}. Model: '
                f'{observation.model}. Matched line: {issue.line}{line_end}{reset} '
                f'{recovery}Action needed: {action_needed}.')
     kind = 'notify-user' if observation.is_orchestrator else 'notify-orchestrator'
-    return Action(kind, observation.agent, message, category='quota',
-                  label='模型滿載' if issue.kind == 'model-capacity' else '額度不足')
+    label = {'model-capacity': '模型滿載', 'crash': '程式崩潰'}.get(issue.kind, '額度不足')
+    return Action(kind, observation.agent, message, category='quota', label=label)
 
 
 def quota_dedupe(previous, issue):
@@ -496,10 +509,26 @@ def current_claude_quota_notice(transcript):
     return notice
 
 
+def crash_is_current(lines, index):
+    """A crash is current while no client UI or later error was drawn after it."""
+    model_patterns = tuple(profile['model'] for profile in CLIENT_PROFILES.values())
+    for line in lines[index + 1:]:
+        if (line.startswith(('› ', '❯', '• ', '● ', '■ ', '╭'))
+                or line.strip().startswith('Working')
+                or any(pattern.search(line) for pattern in model_patterns)):
+            return False
+    return True
+
+
 def detect_screen_quota(lines, client, claude_notice=None):
-    """Match quota UI in the current client turn/status region."""
+    """Match quota, capacity or crash UI that is the last error on the screen."""
     if not isinstance(lines, list) or any(not isinstance(line, str) for line in lines):
         raise ValueError('hcom term returned invalid screen lines')
+    # Every crash line still current belongs to the final crash; report its first line.
+    crashes = [index for index, line in enumerate(lines)
+               if CRASH.search(line) and crash_is_current(lines, index)]
+    if crashes:
+        return QuotaIssue('crash', screen_message(lines, crashes[0]))
     profile = CLIENT_PROFILES.get(client.lower())
     if profile is None:
         return None
@@ -629,6 +658,8 @@ def recover_claude_quota(observation, previous, state, orchestrator, workspace, 
     """Handle one menu episode; uncertain key delivery is never retried automatically."""
     if observation.client.lower() != 'claude':
         return
+    if observation.quota_issue is not None and observation.quota_issue.kind == 'crash':
+        observation = observation._replace(quota_issue=None)
     episode = dict((previous or {}).get('quota_recovery', {}))
     if not episode and observation.quota_issue is None:
         return
@@ -827,6 +858,17 @@ def decide(previous, observation, now):
         state.pop('prompt_recovery_uncertain', None)
     actions = ()
     state.update(quota_dedupe(previous, observation.quota_issue))
+    if observation.quota_issue is None:
+        for key in ('quota_notified_at', 'quota_screen_digest', 'quota_screen_since'):
+            state.pop(key, None)
+    else:
+        same_screen = (previous is not None
+                       and previous.get('quota_screen_digest') == observation.screen_digest)
+        state['quota_screen_digest'] = observation.screen_digest
+        state['quota_screen_since'] = (previous.get('quota_screen_since', now)
+                                       if same_screen else now)
+        if state['quota_notified']:
+            state['quota_notified_at'] = previous.get('quota_notified_at', now)
     stalled = now - state['last_progress_at'] >= IDLE_SECONDS
     active_stalled = now - state['last_progress_at'] >= ACTIVE_SECONDS
     finished_active = (observation.client.lower() == 'codex'
@@ -853,8 +895,15 @@ def decide(previous, observation, now):
     if observation.quota_issue is not None and not state['quota_notified']:
         actions = (quota_notice(observation),)
         state['quota_notified'] = True
+        state['quota_notified_at'] = now
     elif observation.quota_issue is not None:
-        pass
+        # Repeat to the orchestrator while the agent stays on the same error screen.
+        unchanged_since = max(state['quota_notified_at'], state['quota_screen_since'])
+        if (not observation.is_orchestrator and observation.status != 'inactive'
+                and now - unchanged_since >= QUOTA_REPEAT_SECONDS):
+            actions = (quota_notice(
+                observation, int((now - state['quota_screen_since']) // 60)),)
+            state['quota_notified_at'] = now
     elif prompt_stalled and not state['prompt_recovery_attempted']:
         actions = (Action(
             'recover-prompt', observation.agent, text=observation.input_text),)
@@ -1841,6 +1890,7 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
                 orchestrator_wait_started_at = declared_at
     ready = terminal.get('ready') is True
     background_running = background_process_running(agent, info, processes)
+    quota_issue = screen_issue or status_issue
     return Observation(
         agent=agent,
         status=info.get('status', 'missing'),
@@ -1864,14 +1914,15 @@ def observe(workspace, decisions, orchestrator, agent, info, card=None, *, proce
         unread_count=unread_count,
         client=client,
         model=model,
-        quota_issue=screen_issue or status_issue,
+        quota_issue=quota_issue,
         codex_turn_finished=(codex_turn_finished(transcript)
                              if client.lower() == 'codex' else None),
         prompt_readable=prompt_readable,
         screen_tail=tuple(line[:SCREEN_TAIL_CHARS] for line in lines[-SCREEN_TAIL_LINES:]
                           if isinstance(line, str)),
-        quota_screen=(tuple(lines[-30:])
-                      if client.lower() == 'claude' and (screen_issue or status_issue) else ()),
+        quota_screen=(tuple(lines[-30:]) if client.lower() == 'claude' and quota_issue
+                      and quota_issue.kind != 'crash' else ()),
+        screen_digest=hashlib.sha256('\n'.join(lines).encode()).hexdigest(),
     )
 
 
@@ -2911,7 +2962,7 @@ def run_cycle(workspace, tasks, decisions, orchestrator, now=None, ledger=None):
     LEDGER_DELIVERIES[str(path)] = ledger_state
     own = states.setdefault(orchestrator, {})
     own['feature_versions'] = {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5,
-                               'claude_quota_resume': 1, 'ledger_due': 1}
+                               'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1}
     if ledger_state:
         own['ledger'] = ledger_state
     else:
