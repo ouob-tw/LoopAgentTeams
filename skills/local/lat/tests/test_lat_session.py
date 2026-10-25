@@ -307,6 +307,30 @@ class SessionTests(unittest.TestCase):
         self.assertIn(f'lat-session.py duty --client codex --workspace {self.work} --text',
                       result.stdout)
 
+    def test_activate_with_duty_text_registers_it_and_the_first_stop_passes(self):
+        result = self.cli('activate', '--workspace', self.work, '--progress', self.progress,
+                          '--decisions', self.decisions, '--duty-text', ' 整理看板名冊 ',
+                          '--duty-expected', '名冊顯示職責')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        duty = json.loads(self.duty_file().read_text())
+        self.assertEqual((duty['text'], duty['expected']), ('整理看板名冊', '名冊顯示職責'))
+        self.assertIn(f'看板職責已登記：{self.duty_file()}', result.stdout)
+        self.assertNotIn('lat-session.py duty --client', result.stdout)
+        self.assert_silent(self.stop_hook('Work done\nDONE: delivered'))
+
+    def test_activate_refuses_invalid_or_half_given_duty_before_activating(self):
+        for extra, detail in ((('--duty-text', '職責'), 'together'),
+                              (('--duty-expected', '結果'), 'together'),
+                              (('--duty-text', '職' * 41, '--duty-expected', '結果'), 'at most 40'),
+                              (('--duty-text', ' ', '--duty-expected', '結果'), 'must not be empty')):
+            with self.subTest(extra=extra):
+                result = self.cli('activate', '--workspace', self.work, '--progress',
+                                  self.progress, '--decisions', self.decisions, *extra)
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(detail, result.stderr)
+                self.assertFalse(self.record.exists())
+                self.assertFalse(self.duty_file().exists())
+
     def test_duty_needs_this_sessions_active_controller(self):
         self.activate(duty=False)
         other = self.record_duty(session=OTHER)
