@@ -196,7 +196,7 @@ class BriefTests(DispatchCase):
         for expected in (
                 f'Report to: nanu', f'Working directory: {ws}', f'{card}',
                 f'{ws}/.lat/runs/issue-123', f'{ws}/.lat/decisions',
-                f'`hcom send @nanu --name {agent}`',
+                '`hcom send @nanu --name fida`',
                 f'/skills/lat/scripts/lat-watch.py wait --workspace {ws} --agent {agent} --for',
                 f'/skills/lat/scripts/lat-watch.py alarm --workspace {ws} --agent {agent} --after 30',
                 'Never run `hcom send` without `@`', 'Nobody watches your terminal',
@@ -266,6 +266,25 @@ class BriefTests(DispatchCase):
             f'hcom send @nanu-impl123-fida --intent request --name nanu --file {output}',
             result.stdout)
         self.assertNotIn('<<', result.stdout)
+
+    def test_send_names_are_the_base_names_hcom_records_for_tagged_agents(self):
+        self.agents.append({'name': 'lat-fix-nanu', 'base_name': 'nanu', 'tag': 'lat-fix'})
+        card = self.make_card(live=LIVE)
+        text = card.read_text().replace('- orchestrator：nanu\n', '- orchestrator：lat-fix-nanu\n')
+        card.write_text(text)
+        _, _, result = self.brief(card=card)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        output = self.root / 'brief.brief.md'
+        self.assertIn(f'hcom send @nanu-impl123-fida --intent request --name nanu --file {output}',
+                      result.stdout)
+        self.assertIn('`hcom send @lat-fix-nanu --name fida`', output.read_text())
+
+    def test_untagged_agent_keeps_its_name(self):
+        self.agents = [{'name': 'fida', 'base_name': 'fida', 'tag': 'nanu-impl123'}]
+        _, _, result = self.brief()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('--intent request --name nanu --file', result.stdout)
+        self.assertIn('`hcom send @nanu --name fida`', (self.root / 'brief.brief.md').read_text())
 
     def test_live_actions_and_preflight_are_copied_verbatim_with_quota_rules(self):
         _, _, result = self.brief()
