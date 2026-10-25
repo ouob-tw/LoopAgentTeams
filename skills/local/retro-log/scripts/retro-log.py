@@ -426,9 +426,9 @@ def cmd_retime(backlog, args):
         record = next((p for p in entry.processing if when(p.time) == when(old)), None)
         if record is None:
             # a rerun after a lost reply lands here; the record at the new time may or may not be the moved one
-            done = any(when(p.time) == when(new) for p in entry.processing)
+            taken = any(when(p.time) == when(new) for p in entry.processing)
             raise Refused(f'#{entry.id} 沒有時間 {old} 的處理紀錄'
-                          + (f'，但已有時間 {new} 的處理紀錄，可能先前已改過' if done else '')
+                          + (f'，但已有時間 {new} 的處理紀錄，可能先前已改過' if taken else '')
                           + f'；用 show {entry.id} 查看各筆紀錄的時間')
         if when(new) == when(record.time):
             return [], '', f'#{entry.id} 的這筆處理紀錄已是 {record.time}，未改動'
