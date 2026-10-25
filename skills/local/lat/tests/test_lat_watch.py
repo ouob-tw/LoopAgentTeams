@@ -1451,7 +1451,7 @@ esac
         self.run_cycles(load_watch(), 4000)
         self.assertEqual(json.loads(path.read_text())['released_reason'], 'expired')
         self.assertFalse(json.loads(path.read_text())['expiry_nudge_pending'])
-        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1})
+        self.assertEqual(self.watch_state()['orch']['feature_versions'], {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1})
         result = self.alarm_cli('--after', 1, agent='worker-open')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(json.loads(path.read_text())['kind'], 'alarm')
@@ -3906,7 +3906,9 @@ esac
             '• Retrying the previous step now.', 'Working (5s · esc to interrupt)',
             *codex_ui]}
         screens = {
-            'model-capacity': {'ready': True, 'prompt_empty': True, 'input_text': '', 'lines': [
+            # Typed text keeps the watcher from sending Continue, so it only notifies.
+            'model-capacity': {'ready': True, 'prompt_empty': False, 'input_text': 'draft',
+                               'lines': [
                 '■ Selected model is at capacity. Please try a different model.', *codex_ui]},
             'usage-limit': {'ready': True, 'prompt_empty': True, 'input_text': '', 'lines': [
                 '■ Quota exceeded. Check your plan and billing details.', *codex_ui]},
@@ -3968,7 +3970,7 @@ esac
     def test_changed_error_screen_restarts_the_repeat_timer(self):
         lines = ['■ Selected model is at capacity. Please try a different model.', '',
                  '› Ask Codex to do anything', '', '  GPT-6.1-Sol medium · ~/repo']
-        terminal = {'ready': True, 'prompt_empty': True, 'input_text': '', 'lines': lines}
+        terminal = {'ready': True, 'prompt_empty': False, 'input_text': 'draft', 'lines': lines}
         watch, stuck = self.observe_screen(terminal)
         state, _ = watch.decide(None, stuck, now=0)
         _, moved = self.observe_screen(dict(terminal, lines=['scrolled', *lines]))
@@ -4006,6 +4008,190 @@ esac
                 self.assertEqual(actions, ())
                 _, actions = watch.decide(_, observation, now=40 * 60)
                 self.assertNotIn('notify-orchestrator', [action.kind for action in actions])
+
+    CAPACITY_LINES = ['■ Selected model is at capacity. Please try a different model.', '',
+                      '› Ask Codex to do anything', '', '  GPT-6.1-Sol medium · ~/repo']
+    RECOVERED_LINES = ['■ Selected model is at capacity. Please try a different model.',
+                       '› Continue', '• Picking up the task again.',
+                       'Working (3s · esc to interrupt)', '', '› Ask Codex to do anything']
+
+    def capacity_screen(self, input_text=''):
+        terminal = {'ready': True, 'prompt_empty': not input_text, 'input_text': input_text,
+                    'lines': self.CAPACITY_LINES}
+        return self.observe_screen(terminal)
+
+    def test_codex_capacity_sends_continue_once_and_notifies_after_5_minutes(self):
+        watch, stuck = self.capacity_screen()
+        state, actions = watch.decide(None, stuck, now=0)
+        self.assertEqual([(a.kind, a.agent, a.text) for a in actions],
+                         [('capacity-continue', 'worker-open', 'Continue')])
+        self.assertEqual(state['decision'], 'capacity-continue')
+
+        # The injected Continue changes the transcript; the screen is still on capacity.
+        for minute in (1, 2, 3, 4):
+            state, actions = watch.decide(
+                state, stuck._replace(transcript_size=minute), now=minute * 60 + 59)
+            self.assertEqual(actions, ())
+        state, actions = watch.decide(state, stuck._replace(transcript_size=4), now=5 * 60)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+        self.assertIn('Continue was sent 5 minutes ago with no reaction', actions[0].message)
+        self.assertIn('hand the work to another agent', actions[0].message)
+        state, actions = watch.decide(state, stuck._replace(transcript_size=4), now=6 * 60)
+        self.assertEqual(actions, ())
+
+        # Then the B1 repeat: every 20 minutes while the same screen stays.
+        state, actions = watch.decide(state, stuck._replace(transcript_size=4), now=25 * 60)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+        self.assertIn('Still on screen', actions[0].message)
+        self.assertIn('Continue was sent 25 minutes ago', actions[0].message)
+
+    def test_codex_capacity_new_output_cancels_the_notice_and_opens_a_new_episode(self):
+        watch, stuck = self.capacity_screen()
+        _, recovered = self.observe_screen({'ready': False, 'prompt_empty': True,
+                                            'input_text': '', 'lines': self.RECOVERED_LINES})
+        self.assertIsNone(recovered.quota_issue)
+        state, actions = watch.decide(None, stuck, now=0)
+        self.assertEqual(actions[0].kind, 'capacity-continue')
+        for minute in range(1, 12):
+            state, actions = watch.decide(
+                state, recovered._replace(transcript_size=minute, capacity_output=True),
+                now=minute * 60)
+            self.assertEqual(actions, ())
+
+        # Capacity again right after one round of new output is a new episode.
+        _, again = self.observe_screen({'ready': True, 'prompt_empty': True, 'input_text': '',
+                                        'lines': [*self.RECOVERED_LINES[:3],
+                                                  *self.CAPACITY_LINES]})
+        self.assertEqual(again.quota_issue.kind, 'model-capacity')
+        _, actions = watch.decide(state, again._replace(transcript_size=20, capacity_output=True),
+                                  now=13 * 60)
+        self.assertEqual([a.kind for a in actions], ['capacity-continue'])
+        state, _ = watch.decide(None, stuck, now=0)
+        # Even a heading identical to the old screen counts once the transcript shows output.
+        state, actions = watch.decide(
+            state, stuck._replace(transcript_size=20, capacity_output=True), now=120)
+        self.assertEqual([a.kind for a in actions], ['capacity-continue'])
+        state, actions = watch.decide(state, stuck._replace(transcript_size=21), now=180)
+        self.assertEqual(actions, ())
+
+    def test_capacity_output_is_any_transcript_record_beyond_the_continue_echo(self):
+        watch = load_watch()
+        transcript = self.work / 'codex.jsonl'
+        echo = [{'type': 'event_msg', 'payload': {'type': 'user_message', 'message': 'Continue'}},
+                {'type': 'event_msg', 'payload': {'type': 'error',
+                                                  'message': 'Selected model is at capacity.'}}]
+        outputs = {
+            'tool call': {'type': 'response_item', 'payload': {
+                'type': 'function_call', 'name': 'shell', 'arguments': '{"command":"pwd"}'}},
+            'short reply': {'type': 'event_msg', 'payload': {'type': 'agent_message',
+                                                             'message': 'OK'}},
+        }
+        other_user = {'type': 'event_msg', 'payload': {'type': 'user_message',
+                                                       'message': 'New instructions'}}
+        # Only complete reply or tool records count; unknown data keeps the episode.
+        developer = {'type': 'response_item', 'payload': {'type': 'message', 'role': 'developer',
+                                                          'content': []}}
+        cases = {'echo only': ([], '', False),
+                 'other user input': ([other_user, developer], '', False),
+                 'partial record': ([], '{"type":"response_item","payload":{"ty', False),
+                 'unreadable': ([], None, False),
+                 **{name: ([record], '', True) for name, record in outputs.items()}}
+        for name, (extra, tail, expected) in cases.items():
+            with self.subTest(name=name):
+                transcript.write_text('{"type":"session_meta","payload":{}}\n')
+                offset = transcript.stat().st_size
+                with transcript.open('a') as stream:
+                    for record in [*echo, *extra]:
+                        stream.write(json.dumps(record) + '\n')
+                    stream.write(tail or '')
+                size = transcript.stat().st_size
+                if tail is None:
+                    transcript.unlink()
+                observation = watch.Observation(
+                    agent='worker-open', status='active', prompt_empty=True,
+                    command_running=False, transcript_size=size,
+                    transcript_mtime_ns=1, event_id=0, client='codex')
+                result = watch.nudge_only_observation(
+                    {'fingerprint': [offset, 0, 0], 'capacity_offset': offset}, observation,
+                    {'transcript_path': str(transcript)}, 'orch')
+                self.assertEqual(result.capacity_output, expected)
+
+    def test_codex_capacity_working_without_new_output_is_still_the_same_episode(self):
+        watch, stuck = self.capacity_screen()
+        _, working = self.observe_screen({'ready': False, 'prompt_empty': True, 'input_text': '',
+                                          'lines': [*self.CAPACITY_LINES[:1], '› Continue',
+                                                    'Working (3s · esc to interrupt)']})
+        self.assertIsNone(working.quota_issue)
+        state, _ = watch.decide(None, stuck, now=0)
+        for minute in (1, 2, 3):
+            state, actions = watch.decide(
+                state, working._replace(transcript_size=minute), now=minute * 60)
+            self.assertEqual(actions, ())
+        state, actions = watch.decide(state, stuck._replace(transcript_size=4), now=4 * 60)
+        self.assertEqual(actions, ())
+        state, actions = watch.decide(state, stuck._replace(transcript_size=4), now=5 * 60)
+        self.assertIn('Continue was sent 5 minutes ago', actions[0].message)
+
+    def test_codex_capacity_followed_by_another_error_or_close_skips_the_handoff_notice(self):
+        watch, stuck = self.capacity_screen()
+        _, quota = self.observe_screen({'ready': True, 'prompt_empty': True, 'input_text': '',
+                                        'lines': ['■ Quota exceeded. Check your plan.',
+                                                  *self.CAPACITY_LINES[1:]]})
+        state, _ = watch.decide(None, stuck, now=0)
+        state, actions = watch.decide(state, quota._replace(transcript_size=1), now=2 * 60)
+        self.assertEqual(actions[0].kind, 'notify-orchestrator')
+        self.assertNotIn('Continue was sent', actions[0].message)
+        for minute in (5, 10):
+            state, actions = watch.decide(state, quota._replace(transcript_size=1),
+                                          now=minute * 60)
+            self.assertEqual(actions, ())
+
+        state, _ = watch.decide(None, stuck, now=0)
+        for minute in (5, 30):
+            state, actions = watch.decide(state, stuck._replace(status='inactive'),
+                                          now=minute * 60)
+            self.assertEqual(actions, ())
+
+    def test_codex_capacity_with_text_in_the_input_box_only_notifies(self):
+        watch, stuck = self.capacity_screen(input_text='half typed reply')
+        state, actions = watch.decide(None, stuck, now=0)
+        self.assertEqual([a.kind for a in actions], ['notify-orchestrator'])
+        self.assertIn('input box has text', actions[0].message)
+        _, emptied = self.capacity_screen()
+        for minute in (1, 5, 10):
+            state, actions = watch.decide(state, emptied, now=minute * 60)
+            self.assertEqual(actions, ())
+
+    def test_capacity_continue_is_not_sent_for_other_clients_or_closed_agents(self):
+        watch, stuck = self.capacity_screen()
+        for changes in ({'client': 'claude'}, {'status': 'inactive'}):
+            with self.subTest(changes=changes):
+                _, actions = watch.decide(None, stuck._replace(**changes), now=0)
+                self.assertNotIn('capacity-continue', [a.kind for a in actions])
+
+    def test_capacity_continue_types_continue_and_enter_and_rolls_back_on_failure(self):
+        watch = load_watch()
+        action = watch.Action('capacity-continue', 'worker-open', text='Continue')
+        with patch.dict(os.environ, self.env):
+            self.assertEqual(watch.perform(action, 'orch'), {'delivery': 'terminal'})
+        self.assertEqual(self.hcom_log.read_text().splitlines(),
+                         ['term inject worker-open Continue --enter --name orch'])
+
+        _, stuck = self.capacity_screen()
+        state, _ = watch.decide(None, stuck, now=0)
+        watch.roll_back(action, state)
+        _, actions = watch.decide(state, stuck, now=60)
+        self.assertEqual([a.kind for a in actions], ['capacity-continue'])
+
+        # A failed notice after the Continue retries the notice, never a second Continue.
+        state, _ = watch.decide(state, stuck, now=60)
+        for now in (6 * 60, 30 * 60):
+            state, actions = watch.decide(state, stuck, now=now)
+            self.assertEqual(actions[0].kind, 'notify-orchestrator')
+            watch.roll_back(actions[0], state)
+            state, actions = watch.decide(state, stuck, now=now + 60)
+            self.assertEqual([a.kind for a in actions], ['notify-orchestrator'])
+            self.assertIn('Continue was sent', actions[0].message)
 
     def test_escalation_actions_use_hcom_and_request_sound_without_real_services(self):
         watch = load_watch()
@@ -4798,7 +4984,7 @@ esac
                          ['orch', 'worker-open'])
         self.assertEqual(self.watch_state(), {
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1}},
             'worker-open': {'last_seen_status': 'listening', 'last_seen_at': 0},
         })
 
@@ -4822,7 +5008,7 @@ esac
             'worker-open': {'nudged': True, 'last_seen_status': 'listening',
                             'last_seen_at': 0},
             'orch': {'last_seen_status': 'listening', 'last_seen_at': 0,
-                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1}},
+                     'feature_versions': {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1}},
         })
 
     def test_malformed_agent_state_fields_restart_that_agent_fresh(self):
@@ -5506,7 +5692,7 @@ esac
         self.assertEqual(state['worker']['decision'], 'valid-wait')
         self.assertEqual(self.wait_file.read_bytes(), before)
         self.assertEqual(state['worker']['feature_versions'],
-                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1})
+                         {'wait_deadline': 2, 'alarm': 1, 'cache_keepalive': 5, 'claude_quota_resume': 1, 'ledger_due': 1, 'screen_errors': 1, 'capacity_continue': 1})
         # The wait still expires at its original deadline, counted once, with the real
         # idle time, and the agent is nudged for the expiry rather than as a stall.
         self.cycle(self.start + 3000)
