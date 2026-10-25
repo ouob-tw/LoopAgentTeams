@@ -214,10 +214,11 @@ def now_iso():
 
 # ---------------------------------------------------------------- full-suite detection
 
-OPERATORS = ('<<<', '&&', '||', ';;', '|&', '>>', '<<', '&>', '>&', '<&', '>|',
+OPERATORS = ('<<<', '&&', '||', ';;', '|&', '>>', '<<-', '<<', '&>', '>&', '<&', '>|',
              ';', '&', '|', '(', ')', '<', '>', '\n')
-REDIRECTS = {'<<<', '>>', '<<', '&>', '>&', '<&', '>|', '<', '>'}
+REDIRECTS = {'<<<', '>>', '<<-', '<<', '&>', '>&', '<&', '>|', '<', '>'}
 SHELLS = {'sh', 'bash', 'zsh', 'dash'}
+HEREDOCS = {'<<', '<<-'}
 
 # Per runner: options that take a separate value, and options that narrow the run.
 RUNNERS = {
@@ -273,9 +274,11 @@ def _tokens(text):
     """(value, is_operator, start, end) for each word and operator of shell text.
 
     Quotes and backslashes are removed from word values; `#` at the start of a word
-    begins a comment up to the end of the line. ValueError on an unclosed quote.
+    begins a comment up to the end of the line. Each heredoc body (`<<EOF` up to the
+    `EOF` line) follows its line's newline as one token, as written, with is_operator None.
+    ValueError on an unclosed quote.
     """
-    tokens, i, n = [], 0, len(text)
+    tokens, pending, i, n = [], [], 0, len(text)
     while i < n:
         if text[i] in ' \t\r':
             i += 1
@@ -288,6 +291,8 @@ def _tokens(text):
             op = _operator_at(text, i)
             tokens.append((op, True, i, i + len(op)))
             i += len(op)
+            if op == '\n' and pending:
+                i = _heredoc_bodies(text, i, pending, tokens)
         else:
             start, value = i, []
             while i < n and text[i] not in ' \t\r' and not _operator_at(text, i):
@@ -315,28 +320,59 @@ def _tokens(text):
                 else:
                     value.append(c)
                     i += 1
+            if tokens and tokens[-1][1] and tokens[-1][0] in HEREDOCS:
+                pending.append((''.join(value), tokens[-1][0] == '<<-'))
             tokens.append((''.join(value), False, start, i))
     return tokens
 
 
+def _heredoc_bodies(text, i, pending, tokens):
+    """Append a body token for each pending (delimiter, strip_tabs), reading the lines from
+    i up to the delimiter line; return the index after the last delimiter line."""
+    for delimiter, strip_tabs in pending:
+        start = i
+        while i < len(text):
+            end = text.find('\n', i)
+            end = len(text) if end < 0 else end
+            line = text[i:end]
+            if (line.lstrip('\t') if strip_tabs else line) == delimiter:
+                tokens.append((text[start:i], None, start, i))
+                i = min(end + 1, len(text))
+                break
+            i = end + 1
+        else:
+            tokens.append((text[start:], None, start, len(text)))
+            i = len(text)
+    pending.clear()
+    return i
+
+
 def _simple_commands(text):
-    """(words, spans) for each simple command, without opening `sh -c`.
+    """(words, spans, heredocs, piped) for each simple command, without opening `sh -c`.
 
     Redirections (`2>&1`, `> out`) are dropped with their target; spans are each word's
-    (start, end) in text. ValueError on an unclosed quote.
+    (start, end) in text; heredocs are the (body, start, end) of the command's `<<`
+    redirections; piped is True when `|` sends its output to the next command.
+    ValueError on an unclosed quote.
     """
-    commands, words, spans = [], [], []
+    commands, words, spans, heredocs = [], [], [], []
+    waiting = []  # heredoc lists of commands whose bodies follow the line
     drop_next = False
     for value, is_operator, start, end in _tokens(text) + [('\n', True, len(text), len(text))]:
-        if is_operator and value in REDIRECTS:
+        if is_operator is None:
+            if waiting:
+                waiting.pop(0).append((value, start, end))
+        elif is_operator and value in REDIRECTS:
             if words and words[-1].isdigit() and spans[-1][1] == start:
                 words.pop()  # the file descriptor of `2>`
                 spans.pop()
+            if value in HEREDOCS:
+                waiting.append(heredocs)
             drop_next = True
         elif is_operator:
             if words:
-                commands.append((words, spans))
-            words, spans, drop_next = [], [], False
+                commands.append((words, spans, heredocs, value in ('|', '|&')))
+            words, spans, heredocs, drop_next = [], [], [], False
         elif drop_next:
             drop_next = False
         else:
@@ -346,16 +382,72 @@ def _simple_commands(text):
 
 
 def split_commands(command):
-    """Simple commands of a shell string, as word lists; `sh -c '...'` is opened up.
+    """Simple commands a shell string runs, as word lists.
 
-    Newlines separate commands, redirections (`2>&1`, `> out`) are dropped with their
-    target, and `#` at the start of a word starts a comment up to the end of the line.
+    `sh -c '...'` and text fed to a shell (`bash <<EOF`, `cat <<EOF | bash`,
+    `echo '...' | sh`) are opened up; a heredoc fed to any other command (`cat > f <<EOF`)
+    runs nothing. `$G` is read as G's suite-gate.py path when an earlier command of the
+    string assigns it. Newlines separate commands, redirections (`2>&1`, `> out`) are
+    dropped with their target, and `#` at the start of a word starts a comment up to the
+    end of the line.
     """
     try:
-        found = [words for words, _ in _simple_commands(command)]
+        found = _simple_commands(command)
     except ValueError:
-        found = [command.split()]
-    return [inner for words in found for inner in _open_shell(words)]
+        found = [(command.split(), [], [], False)]
+    resolved = _gate_variables([words for words, *_ in found])
+    commands = []
+    for i, (words, (_, _, heredocs, _)) in enumerate(zip(resolved, found)):
+        if not heredocs and i and found[i - 1][3]:
+            heredocs = _piped_text(resolved[i - 1], found[i - 1][2])
+        commands += _open_shell(words, heredocs)
+    return commands
+
+
+def _piped_text(words, heredocs):
+    """What a command pipes to the next one as (text, start, end): its heredocs, or the
+    text of echo/printf (`echo 'pytest' | bash`)."""
+    head = _strip_assignments(words)
+    if head and os.path.basename(head[0]) in ('echo', 'printf'):
+        return heredocs + [(' '.join(head[1:]), 0, 0)]
+    return heredocs
+
+
+def _gate_variables(commands):
+    """commands with `$G`/`${G}` replaced by G's value where an earlier command only
+    assigns G (`G=/path/suite-gate.py`) and the value is a suite-gate.py path."""
+    known, resolved = {}, []
+    for words in commands:
+        if words and not _strip_assignments(words):
+            for word in words:
+                name, value = word.split('=', 1)
+                if os.path.basename(value) == SCRIPT.name:
+                    known[name] = value
+                else:
+                    known.pop(name, None)
+        resolved.append([next((value for name, value in known.items()
+                               if word in (f'${name}', f'${{{name}}}')), word)
+                         for word in words])
+    return resolved
+
+
+def _carries_text(words):
+    """True for a command whose arguments are only text: echo, printf, hcom send, gh."""
+    words = _strip_assignments(words)
+    head = os.path.basename(words[0]) if words else ''
+    return head in ('echo', 'printf', 'gh') or (head == 'hcom' and words[1:2] == ['send'])
+
+
+def _reads_stdin_script(words):
+    """True when words start a shell that runs its stdin, such as `bash` or `sh -s`."""
+    words = _strip_assignments(words)
+    while words and (inner := _strip_launcher(words)) is not None:
+        words = inner
+    if not words or os.path.basename(words[0]) not in SHELLS:
+        return False
+    i = _skip_options(words, 1, {'-o', '-O'})
+    return i == len(words) or any(word.startswith('-') and not word.startswith('--')
+                                  and 's' in word[1:] for word in words[1:i])
 
 
 def _shell_body_index(words):
@@ -370,9 +462,13 @@ def _shell_body_index(words):
     return None
 
 
-def _open_shell(words):
+def _open_shell(words, heredocs=()):
     index = _shell_body_index(words)
-    return [words] if index is None else split_commands(words[index])
+    if index is not None:
+        return split_commands(words[index])
+    if _reads_stdin_script(words):
+        return [inner for body, _, _ in heredocs for inner in split_commands(body)]
+    return [words]
 
 
 def _strip_assignments(words):
@@ -395,16 +491,24 @@ def _skip_options(words, start, value_options):
     return i
 
 
+def _strip_launcher(words):
+    """words after a leading time/timeout/nice/env/command/exec/xvfb-run, or None."""
+    head = os.path.basename(words[0])
+    if head not in WRAP_VALUE and head not in ('time', 'command', 'exec', 'xvfb-run'):
+        return None
+    i = _skip_options(words, 1, WRAP_VALUE.get(head, set()))
+    if head == 'timeout' and i < len(words):
+        i += 1  # the duration
+    return _strip_assignments(words[i:])
+
+
 def _unwrap(words):
     """Strip env assignments and launcher words; return (runner, args) or None."""
     words = _strip_assignments(words)
     while words:
         head = os.path.basename(words[0])
-        if head in WRAP_VALUE or head in ('time', 'command', 'exec', 'xvfb-run'):
-            i = _skip_options(words, 1, WRAP_VALUE.get(head, set()))
-            if head == 'timeout' and i < len(words):
-                i += 1  # the duration
-            words = _strip_assignments(words[i:])
+        if (inner := _strip_launcher(words)) is not None:
+            words = inner
         elif head == 'uv' and words[1:2] == ['run']:
             words = words[_skip_options(words, 2, UV_VALUE):]
         elif head in ('poetry', 'pipenv', 'pdm', 'hatch', 'rye') and words[1:2] == ['run']:
@@ -533,19 +637,26 @@ def is_full_suite(command, cwd='.', registry=None):
 
     With a registry that lists `suites`, only those patterns (fnmatch, whitespace
     normalized) count; otherwise a known test runner with no file, path or filter
-    argument counts as full. Pass `registry` to skip reading it from cwd.
+    argument counts as full. The arguments of echo, printf, hcom send and gh are text, not
+    commands. Pass `registry` to skip reading it from cwd.
     """
     if registry is None:
         registry = load_registry(cwd) or {}
     patterns = registry.get('suites') if isinstance(registry, dict) else None
     commands = split_commands(command)
+    runs = [words for words in commands if not _carries_text(words)]
     if isinstance(patterns, list) and patterns:
         normalized = [p for p in (_normalize_pattern(p) for p in patterns if isinstance(p, str))
                       if p]
-        candidates = [_normalize_words(_strip_assignments(w)) for w in commands]
-        candidates.append(_normalize_words([w for c in commands for w in c]))
-        return any(fnmatch.fnmatchcase(c, p) for c in candidates for p in normalized)
-    for words in commands:
+        # A command that only carries text (echo, hcom send) counts only for a pattern that
+        # names its first word, not for one whose leading wildcard takes the text in.
+        named = [p for p in normalized if p[0] not in '*?[']
+        candidates = [(_normalize_words(_strip_assignments(w)),
+                       named if _carries_text(w) else normalized) for w in commands]
+        candidates.append((_normalize_words([w for c in runs for w in c]), normalized))
+        candidates.append((_normalize_words([w for c in commands for w in c]), named))
+        return any(fnmatch.fnmatchcase(c, p) for c, found in candidates for p in found)
+    for words in runs:
         found = _unwrap(words)
         if found and not _is_targeted(*found):
             return True
@@ -2394,25 +2505,32 @@ def _wrap_suites(text, cwd, registry, wrap):
 
     The rest of the text (cd, export, pipes, a later echo) stays as written, so the gate
     records the suite's own exit code. In `bash -c '<body>'` only the body argument is
-    rewritten, so the shell's assignments, options and isolation stay.
+    rewritten, so the shell's assignments, options and isolation stay; in `bash <<EOF`
+    only the heredoc body is.
     """
-    parts, last = [], 0
-    for words, spans in _simple_commands(text):
-        if _is_gate_run(words):
+    edits = []
+    found = _simple_commands(text)
+    for (words, spans, heredocs, _), resolved in zip(
+            found, _gate_variables([words for words, *_ in found])):
+        if _is_gate_run(resolved):
             continue
         index = _shell_body_index(words)
         if index is not None:
             body = _wrap_suites(words[index], cwd, registry, wrap)
-            start, end = spans[index]
-            replacement = None if body == words[index] else shlex.quote(body)
+            if body != words[index]:
+                edits.append((*spans[index], shlex.quote(body)))
+        elif _reads_stdin_script(words):
+            for body, start, end in heredocs:
+                wrapped = _wrap_suites(body, cwd, registry, wrap)
+                if wrapped != body:
+                    edits.append((start, end, wrapped))
         elif is_full_suite(shlex.join(words), cwd, registry):
             start, end = spans[0][0], spans[-1][1]
-            replacement = wrap(text[start:end])
-        else:
-            replacement = None
-        if replacement is not None:
-            parts += [text[last:start], replacement]
-            last = end
+            edits.append((start, end, wrap(text[start:end])))
+    parts, last = [], 0
+    for start, end, replacement in sorted(edits):
+        parts += [text[last:start], replacement]
+        last = end
     return ''.join(parts) + text[last:]
 
 
@@ -2434,6 +2552,16 @@ def gate_rewrite(text, cwd, wrap=gate_command):
         if SCRIPT.name not in text and LOOKS_LIKE_TESTS.search(text):
             return wrap(text)
         return None
+
+
+def _variable_gate_hint(text):
+    """A note for the block message when text runs `$VAR run` the hook cannot read as a gate."""
+    if any(word.startswith('$') and words[i + 1:i + 2] == ['run']
+           for words in split_commands(text) for i, word in enumerate(words)):
+        return ('\nA gate call through a variable counts only when the same command first sets '
+                'the variable to the suite-gate.py path (G=/path/suite-gate.py; ... "$G" run); '
+                'otherwise call suite-gate.py by its full path.')
+    return ''
 
 
 def cmd_hook():
@@ -2462,8 +2590,8 @@ def cmd_hook():
               'When a full suite is really needed, run it through the gate with a purpose:\n'
               f'  {full}\n'
               'Replace --reason \'<...>\' with --purpose post-merge after a batch is merged, '
-              'or --purpose release before a release. The purpose is recorded with the result.',
-              file=sys.stderr)
+              'or --purpose release before a release. The purpose is recorded with the result.'
+              + _variable_gate_hint(text), file=sys.stderr)
         return 2
     print('Blocked: this runs a full test suite outside the suite gate. Run this instead; '
           'the gate reuses a passing result for the same content and queues when the host '
@@ -2474,7 +2602,7 @@ def cmd_hook():
           'sees only exported variables. '
           'Add --rerun "<reason>" after `run` only when the gate reports an earlier pass and '
           'you have a concrete reason to run again. To run only some tests, name the files '
-          'or a filter.',
+          'or a filter.' + _variable_gate_hint(text),
           file=sys.stderr)
     return 2
 

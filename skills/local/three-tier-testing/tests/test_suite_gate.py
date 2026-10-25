@@ -2314,6 +2314,38 @@ class DetectionTests(unittest.TestCase):
             'uv run --no-project python -m unittest discover -s skills/lat/tests', registry=registry))
         self.assertFalse(gate.is_full_suite('pytest', registry=registry))
 
+    def test_suites_in_data_text_do_not_run_but_the_same_text_run_by_a_shell_does(self):
+        """Pairs: the text of a message, comment, echo or file heredoc is not run; the same
+        text after a command separator, in `sh -c` or in a heredoc fed to a shell is."""
+        registry = {'suites': ['*bun run test:all', '*bun run test:all *', '*bun test ./tests']}
+        pairs = [
+            ("hcom send @x --intent inform -- 'ran bun run test:all via the gate'",
+             "sh -c 'bun run test:all'"),
+            ("gh issue comment 5 --body 'bun run test:all passed'",
+             "bash -lc 'echo hi; bun run test:all'"),
+            ('gh pr create --title t --body "run bun test ./tests"',
+             'gh pr create --title t --body x && bun test ./tests'),
+            ('echo bun run test:all', 'echo start; bun run test:all'),
+            ("printf '%s\\n' 'bun run test:all'", "printf 'x' | bun run test:all"),
+            ('cat > notes.md <<EOF\nbun run test:all\nEOF',
+             'bash <<EOF\nbun run test:all\nEOF'),
+            ("cat > notes.md <<'EOF'\nit's bun run test:all\nEOF\ngit status",
+             "bash -s <<'EOF'\ncd board && bun test ./tests\nEOF"),
+            ('hcom send @x --file - <<EOF\nbun test ./tests\nEOF',
+             'timeout 600 sh <<EOF\nbun test ./tests\nEOF'),
+            ('cat <<-EOF > f\n\tbun run test:all\n\tEOF\necho done',
+             'cat <<-EOF > f\n\tnotes\n\tEOF\nbun run test:all'),
+            ('cat <<EOF | tee f\nbun run test:all\nEOF', 'cat <<EOF | bash\nbun run test:all\nEOF'),
+            ("echo 'bun run test:all' | tee f", "echo 'bun run test:all' | sh"),
+        ]
+        for data, run in pairs:
+            self.assertFalse(gate.is_full_suite(data, registry=registry), data)
+            self.assertTrue(gate.is_full_suite(run, registry=registry), run)
+        # A pattern that names the text command itself still counts it.
+        self.assertTrue(gate.is_full_suite('echo smoke', registry={'suites': ['echo smoke']}))
+        self.assertFalse(gate.is_full_suite('cat > f <<EOF\npytest\nEOF', registry={}))
+        self.assertTrue(gate.is_full_suite('bash <<EOF\npytest\nEOF', registry={}))
+
     def test_registry_is_read_from_the_repo_root(self):
         with tempfile.TemporaryDirectory() as tmp:
             repo = Path(tmp)
@@ -2410,6 +2442,55 @@ class HookTests(GateCase):
                 with self.subTest(client=client, text=text):
                     result = run_hook(command, self.repo, self.env)
                     self.assertEqual(result.returncode, 0, result.stderr)
+
+    def test_registry_suites_in_data_text_pass_and_the_same_text_run_by_a_shell_is_blocked(self):
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'suites': ['*bun run test:all']}))
+        g = gate.gate_command
+        for text in ("hcom send @x --intent inform -- 'next: bun run test:all'",
+                     "gh pr comment 3 --comment 'bun run test:all passed'",
+                     'cat > notes.md <<EOF\nbun run test:all\nEOF'):
+            with self.subTest(text=text):
+                result = run_hook(text, self.repo, self.env)
+                self.assertEqual((result.returncode, result.stderr), (0, ''))
+        cases = {
+            "sh -c 'bun run test:all'": 'sh -c ' + gate.shlex.quote(g('bun run test:all')),
+            'bash <<EOF\nbun run test:all\nEOF': 'bash <<EOF\n' + g('bun run test:all') + '\nEOF',
+            'cat > f <<EOF\nbun run test:all\nEOF\nbun run test:all':
+                'cat > f <<EOF\nbun run test:all\nEOF\n' + g('bun run test:all'),
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                result = run_hook(text, self.repo, self.env)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertEqual(rewrite_of(result.stderr), expected)
+
+    def test_gate_calls_by_path_or_a_variable_assigned_in_the_same_command_pass(self):
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'suites': ['*bun run test:all']}))
+        rel = os.path.relpath(SCRIPT, self.repo)
+        for text in (f'uv run --no-project python {rel} run -- bun run test:all',
+                     f'G={SCRIPT}; uv run --no-project python "$G" run -- bun run test:all',
+                     f'G={SCRIPT}\n${{G}} run --rerun flaky -- bun run test:all',
+                     f'cd sub && G={rel} && python3 $G run -- bun run test:all | tail'):
+            with self.subTest(text=text):
+                result = run_hook(text, self.repo, self.env)
+                self.assertEqual((result.returncode, result.stderr), (0, ''))
+
+    def test_gate_calls_through_other_variables_are_blocked_and_told_to_use_the_full_path(self):
+        (self.repo / '.suite-gate.json').write_text(json.dumps({'suites': ['*bun run test:all']}))
+        for text in ('uv run --no-project python "$GATE" run -- bun run test:all',
+                     'G=/tmp/other.py; python "$G" run -- bun run test:all',
+                     f'python "$G" run -- bun run test:all; G={SCRIPT}'):
+            with self.subTest(text=text):
+                result = run_hook(text, self.repo, self.env)
+                self.assertEqual(result.returncode, 2, result.stderr)
+                self.assertIn('full path', result.stderr)
+        result = run_hook(f'G={SCRIPT}; python "$G" run -- bun run test:all && bun run test:all',
+                          self.repo, self.env)
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertEqual(rewrite_of(result.stderr),
+                         f'G={SCRIPT}; python "$G" run -- bun run test:all && '
+                         + gate.gate_command('bun run test:all'))
+        self.assertNotIn('full path', result.stderr)
 
     def test_a_wrapped_suite_does_not_cover_another_unwrapped_one(self):
         result = run_hook(f"{gate.gate_command('pytest')} && pytest", self.repo, self.env)
