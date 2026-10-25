@@ -144,6 +144,9 @@ assert not {{'questions', 'bindings', 'board', 'lat_panel'}} & sys.modules.keys(
                 if args == ['board', '--help']:
                     # `board ledger` came after the split; test_lat_panel_board.py covers it.
                     results[1].stdout = results[1].stdout.replace(b',ledger', b'')
+                if args == ['question', '--help']:
+                    # `question ask` and `record-chat` came after the split; test_lat_panel_ask.py covers them.
+                    results[1].stdout = results[1].stdout.replace(b',ask,record-chat', b'')
                 if args[0] == 'bind':
                     # New bindings moved from the root .lat to .lat/questions/ after the split.
                     results[0].stdout = results[0].stdout.replace(b'questions-ctl.md', b'questions/ctl.md')

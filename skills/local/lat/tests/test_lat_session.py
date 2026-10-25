@@ -756,6 +756,35 @@ class SessionTests(unittest.TestCase):
         questions.write_text(questions.read_text() + '\n## Next\nLAT-B · r1 · 待答\n')
         self.assert_stop_pass(self.stop_hook(stop_hook_active=True), 'LAT-A r1 - Question')
 
+    def test_stop_passes_for_questions_asked_with_question_ask(self):
+        self.write_legacy_record()
+        questions = self.bind_stop_panel()
+
+        def ask(identifier, section, *extra):
+            path = self.root / f'{identifier}-section.md'
+            path.write_text(section)
+            result = subprocess.run(
+                [sys.executable, str(PANEL), 'question', 'ask', '--questions', str(questions),
+                 '--decisions', str(self.decisions), '--id', identifier, '--file', str(path),
+                 *extra],
+                text=True, capture_output=True,
+                env=self.cli_environment(extra_env=self.panel_env()), cwd=self.work)
+            self.assertEqual(result.returncode, 0, result.stdout + result.stderr)
+            self.assertIn('沒有遺漏', result.stdout)
+
+        def assert_pass(message, heading):
+            output = json.loads(self.stop_hook(message).stdout)
+            self.assertEqual(set(output), {'systemMessage'})
+            self.assertTrue(output['systemMessage'].startswith(f'❓ {heading}\n'))
+
+        ask('LAT-A', '## 要合併嗎？\n\n背景。\n\n- A. 合併\n- B. 不合併\n', '--advisor', 'needs-human')
+        ask('LAT-H', '## 請登入\n\n背景。\n\n- A. 已完成\n', '--advisor', 'needs-human',
+            '--help-question')
+        assert_pass('DECIDE: LAT-A r1', 'LAT-A r1 - 要合併嗎？')
+        assert_pass('HELP: LAT-H r1', 'LAT-H r1 - 請登入')
+        ask('LAT-A', '## 要合併嗎？\n\n背景改了。\n\n- A. 合併\n- B. 不合併\n')
+        assert_pass('DECIDE: LAT-A r2', 'LAT-A r2 - 要合併嗎？')
+
     def test_stop_omission_check_skips_other_controllers_records(self):
         self.write_legacy_record()
         self.decisions.joinpath('LAT-A.md').write_text(

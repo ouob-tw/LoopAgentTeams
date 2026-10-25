@@ -48,8 +48,7 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
 
 ## 寫題
 
-1. 依「使用者待決事項」建立 `.lat/decisions/<ID>.md`；題號就是決策紀錄 ID。求助題（HELP）在紀錄加 `- kind: help`。
-2. 依下方「題目格式」把這一題寫成暫存檔，只放標題與內文：
+1. 依下方「題目格式」把這一題寫成暫存檔，只放標題與內文：
 
    ```markdown
    ## 正式版要怎麼併入？
@@ -72,15 +71,37 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" bind \
    【詳細資訊結束】
    ```
 
-3. 寫入問題檔。一律用這個指令（與面板共用檔案鎖），不手動編輯 `$questions`：
+2. 一個指令建立待決紀錄、寫入問題檔並做遺漏檢查；題號就是決策紀錄 ID：
+
+   ```bash
+   uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question ask \
+     --questions "$questions" --decisions "$decisions" --id "<ID>" --file /path/to/section.md \
+     --advisor "<參謀結論>" [--help-question] \
+     [--question "<問題>"] [--authority-gap "<授權缺口>"] [--blocked-work "<受阻工作>"]
+   ```
+
+   - 紀錄不存在時建立 `.lat/decisions/<ID>.md`：`pending` 狀態、參謀行、session、版本、問題、選項、授權缺口與受阻工作。`--advisor` 必填，寫法見 [參謀](advisors.md#待決紀錄的狀態與參謀行)；session 取問題檔綁定的 session，沒有綁定時取 client 的 session 環境變數，可用 `--session-id` 指定。問題預設為標題、選項取自題目；授權缺口預設「需使用者決定」、受阻工作預設「未指定」，只適合簡單題，有實際缺口或受阻工作時明確給。
+   - `--help-question` 標成求助題：紀錄寫 `- kind: help`，題目沒有單選「已完成」選項時拒絕，不改任何檔。
+   - 紀錄已存在時就是改版：只接受 `--help-question`（紀錄沒有 `- kind:` 時補上），其他紀錄欄位參數一律拒絕。寫入後紀錄的版本行改為面板版本。紀錄已非 `pending`（例如答覆含糊要重問）時，題目內容須有改變，寫入後狀態改回 `pending`，舊答覆保留；內容相同則拒絕。題目已從問題檔歸檔時，從紀錄版本的下一版開始。
+   - 寫題的其餘行為與下方 `question upsert` 相同（清理、印 `<ID> r<版本>`、確認題職責提醒、預先授權重查、側欄）；寫入失敗時剛建立的紀錄會移除。最後執行與「待決題目檢查」相同的檢查（帶綁定的 session），有問題時以非零結束，依該節表格處理。
+   - Spec 確認題寫題後另跑共識檢查工具寫入共識行，見 [Spec 共識](consensus.md)。
+
+3. 檢查通過後依「聊天提問格式」提問；使用者可在面板或聊天作答。
+
+### 手動寫題
+
+舊步驟仍可用：
+
+1. 依「使用者待決事項」建立 `.lat/decisions/<ID>.md`。求助題（HELP）在紀錄加 `- kind: help`。
+2. 寫入問題檔。一律用這個指令（與面板共用檔案鎖），不手動編輯 `$questions`：
 
    ```bash
    uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question upsert \
      --questions "$questions" --decisions "$decisions" --id "<ID>" --file /path/to/section.md
    ```
 
-4. 寫入前會自動清理同一份問題檔，條件見下方「清理題目」；正在寫入的同一題號保留，維持升版行為。`--decisions` 必填，缺少或目錄不存在時拒絕寫入。指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。確認題（參謀行為 `exempt ticket-confirmation` 或 `exempt spec-confirmation`）會多印一行目前職責與覆蓋指令；任務改變就照著覆蓋。實際寫入新題或升版時，另在 `panel-journal.jsonl` 寫一筆 `upsert`，記錄題號、版本與時間；內容相同而沒有寫入時不寫。升版規則見下方「版本」。紀錄有 `- action:` 的授權題，寫入前會依當下設定重查預先授權：尚未送出且可直接做時拒絕寫入；已送出的照常寫入並提醒，見 [預先授權](preauth.md#接上提問)。
-5. 發出 `DECIDE:`／`HELP:` 前完成下方「待決題目檢查」，通過後依「聊天提問格式」提問；使用者可在面板或聊天作答。
+3. 寫入前會自動清理同一份問題檔，條件見下方「清理題目」；正在寫入的同一題號保留，維持升版行為。`--decisions` 必填，缺少或目錄不存在時拒絕寫入。指令印出 `<ID> r<版本>`；用這個版本更新決策紀錄。確認題（參謀行為 `exempt ticket-confirmation` 或 `exempt spec-confirmation`）會多印一行目前職責與覆蓋指令；任務改變就照著覆蓋。實際寫入新題或升版時，另在 `panel-journal.jsonl` 寫一筆 `upsert`，記錄題號、版本與時間；內容相同而沒有寫入時不寫。升版規則見下方「版本」。紀錄有 `- action:` 的授權題，寫入前會依當下設定重查預先授權：尚未送出且可直接做時拒絕寫入；已送出的照常寫入並提醒，見 [預先授權](preauth.md#接上提問)。
+4. 發出 `DECIDE:`／`HELP:` 前完成下方「待決題目檢查」，通過後依「聊天提問格式」提問。
 
 ### 題目格式
 
@@ -274,7 +295,17 @@ uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question withdraw
 
 ## 聊天答覆與更正
 
-使用者在聊天回答 `<ID> r<版本>：…` 時，依「手動記錄」的步驟 1 建立快照，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄。標記前對同一份快照執行 `question section-hash --questions "$snapshot" --id "<ID>"`，把輸出的 `section_sha256` 傳給上述 `set-status`。
+使用者在聊天回答 `<ID> r<版本>：…` 時，執行：
+
+```bash
+uv run --no-project python "$lat_dir/herdr-panel/lat_panel.py" question record-chat \
+  --questions "$questions" --decisions "$decisions" --id "<ID>" \
+  --text "<聊天答覆原文>" --source "<session ID 與可定位的訊息來源>"
+```
+
+工具在問題檔鎖內讀一次這題的目前版本（快照），核對待決紀錄仍是 `pending` 且版本相同，把原文逐字附在紀錄末尾的 `## 答覆（r<版本>，聊天，…）`，欄位與面板送出相同，來源寫 `聊天，<--source>，section_sha256 <雜湊>`；狀態改為 `answered`，再把題目標為已記錄。標記失敗時紀錄還原並以非零結束。紀錄不是 `pending`、版本不同、題目已記錄，或 `--text`、`--source` 只有空白時拒絕，不改任何檔。成功時輸出 `id`、`revision`、`status` 與 `section_sha256`。之後照「收到 `lat-panel` 通知」的已記錄題目判斷意思並寫核准。使用者答的不是目前版本時不執行，依「版本」改版重問。
+
+手動做法仍可用：依「手動記錄」的步驟 1 建立快照，照 SKILL.md 規則保存聊天原文與來源，不附面板紀錄。標記前對同一份快照執行 `question section-hash --questions "$snapshot" --id "<ID>"`，把輸出的 `section_sha256` 傳給上述 `set-status`。
 
 使用者在面板送出後又於聊天要求改答案時，舊紀錄保持原樣：新增一筆更正，保存聊天原文與來源，並把舊答案標為「已由更正項目取代」；更正只依聊天答覆的授權範圍生效。
 

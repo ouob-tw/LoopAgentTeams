@@ -893,8 +893,12 @@ def _check_help_question(decisions_path, question_id, incoming):
         kind = read_decision_kind(Path(decisions_path) / f"{question_id}.md")
     except FileNotFoundError:
         return
-    if kind != "help":
-        return
+    if kind == "help":
+        check_done_option(question_id, incoming)
+
+
+def check_done_option(question_id, incoming):
+    """Refuse a help question body without a single-choice 已完成 option."""
     options = parse_question_options({"body": incoming["body"]})
     if options.kind != "single" or not any(
         _answer_label(option.label) == _DONE_OPTION for option in options.options
@@ -911,8 +915,12 @@ def upsert_question(questions_path, question_id, section_text, *, decisions_path
     )[0]
 
 
-def upsert_question_written(questions_path, question_id, section_text, *, decisions_path):
-    """Like ``upsert_question``; also return whether a new question or revision was written."""
+def upsert_question_written(questions_path, question_id, section_text, *, decisions_path,
+                            first_revision=1):
+    """Like ``upsert_question``; also return whether a new question or revision was written.
+
+    A question not in the file starts at ``first_revision``.
+    """
     questions_path = Path(questions_path)
     incoming = _question_input(section_text)
     if not Path(decisions_path).is_dir():
@@ -935,7 +943,7 @@ def upsert_question_written(questions_path, question_id, section_text, *, decisi
         existing = next((item for item in _sections(document)
                          if item["id"] == question_id), None)
         if existing is None:
-            revision = 1
+            revision = first_revision
             replacement = _render_section(
                 question_id, revision, incoming["title"], incoming["body"]
             )
@@ -1057,10 +1065,13 @@ def _indented(text):
     return re.sub(r"\n(?=[^\n])", "\n  ", text)
 
 
-def _write_decision_answer(decision_path, section, proof, answer, note, *, now=None):
-    """Append one panel answer to a pending decision record and mark it answered.
+def _write_decision_answer(decision_path, section, answer, note, *, channel, source,
+                           recorded_by, now=None):
+    """Append one answer to a pending decision record and mark it answered.
 
-    Returns the record's ``(previous, written)`` text, for ``_restore_decision``.
+    ``channel`` (面板 or 聊天) heads the section and the source line; panel and chat
+    answers share every other line. Returns the record's ``(previous, written)``
+    text, for ``_restore_decision``.
     """
     if not decision_path.parent.is_dir():
         raise ValueError(f"decisions directory does not exist: {decision_path.parent}")
@@ -1080,7 +1091,7 @@ def _write_decision_answer(decision_path, section, proof, answer, note, *, now=N
             )
         status_line = re.search(r"^- status:.*$", text, re.MULTILINE | re.IGNORECASE)
         lines = [
-            f"## 答覆（r{section['revision']}，面板，{_iso_time(now)}）",
+            f"## 答覆（r{section['revision']}，{channel}，{_iso_time(now)}）",
             "",
             f"- 題目：{section['id']} r{section['revision']}",
             f"- 答覆：{_indented(answer)}",
@@ -1088,9 +1099,8 @@ def _write_decision_answer(decision_path, section, proof, answer, note, *, now=N
         if note:
             lines.append(f"- 備註：{_indented(note)}")
         lines += [
-            f"- 來源：面板，{proof['journal_path']} 第 {proof['journal_line']} 行，"
-            f"time {proof['time']}，section_sha256 {proof['section_sha256']}",
-            "- 記錄：送出時由 lat-panel 自動記錄；答覆的意思與核准範圍由主控判斷後補寫",
+            f"- 來源：{channel}，{source}",
+            f"- 記錄：{recorded_by}；答覆的意思與核准範圍由主控判斷後補寫",
         ]
         updated = (
             text[:status_line.start()] + f"- status: {ANSWERED_STATUS}" + text[status_line.end():]
@@ -1186,7 +1196,11 @@ def _record_answer_locked(questions_path, journal_path, question_id, decisions_p
             raise ValueError(unknown)
         proof = question_provenance(questions_path, journal_path, question_id)
         decision_path = decisions_path / f"{question_id}.md"
-        previous, written = _write_decision_answer(decision_path, section, proof, answer, note, now=now)
+        previous, written = _write_decision_answer(
+            decision_path, section, answer, note, channel="面板",
+            source=f"{proof['journal_path']} 第 {proof['journal_line']} 行，"
+                   f"time {proof['time']}，section_sha256 {proof['section_sha256']}",
+            recorded_by="送出時由 lat-panel 自動記錄", now=now)
     except (OSError, ValueError, AttributeError, TypeError) as error:
         # The last two: a journal line that is JSON but not an entry.
         outcome["reason"] = str(error)
@@ -1208,6 +1222,110 @@ def _record_answer_locked(questions_path, journal_path, question_id, decisions_p
         return outcome
     outcome["recorded"] = True
     return outcome
+
+
+def record_chat_answer(questions_path, decisions_path, question_id, text, source, *, now=None):
+    """Record a chat answer the way a panel submit is recorded, then mark the question.
+
+    The question's current section is read once under the questions lock; the record
+    must be pending at the same revision, and the question is marked recorded only if
+    that section is unchanged, else the record is put back. ``text`` is kept verbatim.
+    """
+    if not text.strip():
+        raise ValueError("--text must not be blank")
+    if not source.strip():
+        raise ValueError("--source must not be blank")
+    questions_path = Path(questions_path)
+    decision_path = Path(decisions_path) / f"{question_id}.md"
+    with _path_lock(questions_path):
+        section = _question_section(_read_text_exact(questions_path), question_id)
+        if section["status"] == "recorded":
+            raise ValueError(f"question {question_id} r{section['revision']} is already recorded")
+        section_sha256 = _section_sha256(section)
+        previous, written = _write_decision_answer(
+            decision_path, section, text, "", channel="聊天",
+            source=f"{source}，section_sha256 {section_sha256}",
+            recorded_by="由 question record-chat 記錄", now=now)
+        try:
+            _set_recorded_locked(questions_path, question_id, section["revision"],
+                                 section_sha256, now=now)
+        except (OSError, ValueError) as error:
+            if not _restore_decision(decision_path, written, previous):
+                raise ValueError(f"the question could not be marked recorded: {error}; "
+                                 f"{decision_path} already has the answer") from error
+            raise
+    return {"id": question_id, "revision": section["revision"], "status": ANSWERED_STATUS,
+            "section_sha256": section_sha256}
+
+
+def _decision_fields(text):
+    """The decision record's ``- key: value`` lines as ``{key: (start, end)}``, first one wins."""
+    fields = {}
+    for match in re.finditer(r"^- ([a-z ]+):.*$", text, re.MULTILINE | re.IGNORECASE):
+        fields.setdefault(match.group(1).lower(), (match.start(), match.end()))
+    return fields
+
+
+def new_decision_record(question_id, incoming, *, advisor, session_id, question=None,
+                        authority_gap=None, blocked_work=None, help_question=False):
+    """The text of a new pending decision record for ``question ask``, at r1.
+
+    Unset fields default from the question: its title and its option letters and labels.
+    """
+    options = parse_question_options({"body": incoming["body"]})
+    listed = " / ".join(
+        f"{letter} {option.label}".strip()
+        for letter, option in zip(_option_letters(options), options.options)
+    ) if options.kind else "自由作答"
+    lines = [f"# {question_id} {incoming['title']}", "", "- status: pending"]
+    if help_question:
+        lines.append("- kind: help")
+    lines.append(f"- advisor: {advisor}")
+    if session_id:
+        lines.append(f"- session: {session_id}")
+    lines += [
+        "- version: r1",
+        f"- question: {question or incoming['title']}",
+        f"- options: {listed}",
+        f"- authority gap: {authority_gap or '需使用者決定'}",
+        f"- blocked work: {blocked_work or '未指定'}",
+    ]
+    return "\n".join(lines) + "\n"
+
+
+def decision_revision(decision_path):
+    """The record's ``- version: r<N>`` number, or None without a readable one."""
+    match = re.search(r"^- version:\s*r([0-9]+)\b", _read_text_exact(decision_path),
+                      re.MULTILINE | re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def sync_decision_record(decision_path, revision, *, reopen=False, help_question=False):
+    """Set the record's version line to the panel revision; optionally reopen it or mark help.
+
+    ``reopen`` sets the status back to pending; ``help_question`` adds ``- kind: help``
+    after the status line when the record has no kind line.
+    """
+    decision_path = Path(decision_path)
+    with _path_lock(decision_path):
+        text = _read_text_exact(decision_path)
+        edits = []
+        fields = _decision_fields(text)
+        status = fields.get("status")
+        if status is None:
+            raise ValueError(f"decision record has no - status: line: {decision_path}")
+        if reopen:
+            edits.append((*status, "- status: pending"))
+        if help_question and "kind" not in fields:
+            edits.append((status[1], status[1], "\n- kind: help"))
+        version = fields.get("version")
+        if version is None:
+            edits.append((status[1], status[1], f"\n- version: r{revision}"))
+        else:
+            edits.append((*version, f"- version: r{revision}"))
+        for start, end, replacement in sorted(edits, key=lambda edit: edit[:2], reverse=True):
+            text = text[:start] + replacement + text[end:]
+        _replace_locked(decision_path, text)
 
 
 def _recorded_hashes(journal_path, questions_path):
