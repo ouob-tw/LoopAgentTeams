@@ -18,6 +18,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
 ```
 
 - `--` 之後可以是一整串 shell 指令（一個引號包住的字串，以 `sh -c` 執行），也可以是拆開的參數。指令文字會原樣算進指紋，引號或寫法不同就算不同指令；同一個整套測試請固定用同一種寫法。
+- 執行目錄與指令是登記表 `full_suites` 的某一套，但傳法（整串或拆開的參數）或寫法（多餘空白、引號）不同而指紋不同時，執行前印出提醒：這筆結果不會被推送前檢查與安裝檢查採用，並印出登記的寫法。不擋執行。
 - 測試的輸出與結束碼原樣轉出。閘門自己的訊息印在 stderr，開頭是 `suite-gate:`。
 - 已通過時不執行，印出上次的執行者、時間、耗時、指令與輸出結尾，以 0 結束，並提醒把這筆當作結果回報：別人要求「再跑一次」本身不是重跑的理由，有具體原因（環境變了、在查偶發失敗等）才用 `--rerun`。
 - 資料庫、外部服務或沒進版控的設定改了、需要重跑時，用 `--rerun` 寫原因；原因會記進紀錄。`--rerun` 同樣要排隊。
@@ -30,6 +31,15 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --rerun "<原因>" 
   ```
 
   用途與原因寫進紀錄，不進指紋：整批合併後的通過紀錄，發布前可以直接沿用。帶用途的執行沿用了上次結果時，另寫一筆沿用紀錄（`kind: "reuse"`，含用途、被沿用那筆的時間與執行者），本身不能再被沿用；指紋記在 `reused_fingerprint`，不寫 `fingerprint`，所以不看 `kind` 的讀者（例如舊版閘門）找同一指紋的最新紀錄時仍是那筆通過紀錄。`--rerun` 只管「要不要沿用」，不能代替用途。沒有對照表的專案不需要用途，可以照舊帶。
+
+### 照登記寫法跑（`run --registered`）
+
+```bash
+uv run --no-project python <skill>/scripts/suite-gate.py run --registered --purpose release        # 每一套
+uv run --no-project python <skill>/scripts/suite-gate.py run --registered web --purpose post-merge # 指定的幾套
+```
+
+照登記表 `full_suites` 的指令文字與執行目錄依序跑全部或指定的整套，每套都經過閘門（同樣排隊、同內容沿用），結果就是推送前檢查與安裝檢查找的那筆。套件以執行目錄（例如 `web`、`.`）或完整指令文字指定，名稱對不上時不執行並列出登記的套件。一律要帶 `--purpose` 或 `--reason`（沒有對照表的專案也一樣），可加 `--rerun`；`--` 之後不能再接指令。結束碼取第一個非 0 的。
 
 ### 怎樣算「同一份內容」
 
@@ -147,7 +157,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
 | 欄位 | 內容 |
 | ---- | ---- |
 | `integration_branch` | 整合分支名稱，用來算基準點。 |
-| `full_suites` | 每一套整套測試：`command`（一整串 shell 指令文字）與 `cwd`（執行目錄，預設 `.`）。對照表退回整套時跑的就是這些；手動跑時在該目錄用 `run -- '<command>'`（一個引號字串），指紋才會相同。 |
+| `full_suites` | 每一套整套測試：`command`（一整串 shell 指令文字）與 `cwd`（執行目錄，預設 `.`）。對照表退回整套時跑的就是這些；手動跑時在該目錄用 `run -- '<command>'`（一個引號字串），指紋才會相同；或用 `run --registered`。 |
 | `affected.commands` | 執行目錄 → 受影響測試指令樣板，`{tests}` 會換成選出的測試路徑（相對該目錄、已加引號）。 |
 | `affected.map` | 對應規則清單：`paths`（程式路徑樣式）→ `tests`（測試檔或測試路徑樣式，任一層都可以）。`tests` 只能對到可以直接執行的測試檔，不要對到共用的輔助檔。 |
 | `affected.shared` | 改到就改跑整套的路徑樣式，例如依賴鎖定檔、測試共用設定、建置設定。 |
