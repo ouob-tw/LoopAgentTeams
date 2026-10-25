@@ -419,6 +419,27 @@ def cmd_ready(backlog, args):
     return backlog.transaction(change)
 
 
+def cmd_retime(backlog, args):
+    def change():
+        entry = live(backlog, args.id)
+        old, new = normalize_time(args.from_time), normalize_time(args.to)
+        record = next((p for p in entry.processing if when(p.time) == when(old)), None)
+        if record is None:
+            # a rerun after a lost reply lands here; the record at the new time may or may not be the moved one
+            taken = any(when(p.time) == when(new) for p in entry.processing)
+            raise Refused(f'#{entry.id} 沒有時間 {old} 的處理紀錄'
+                          + (f'，但已有時間 {new} 的處理紀錄，可能先前已改過' if taken else '')
+                          + f'；用 show {entry.id} 查看各筆紀錄的時間')
+        if when(new) == when(record.time):
+            return [], '', f'#{entry.id} 的這筆處理紀錄已是 {record.time}，未改動'
+        if any(when(p.time) == when(new) for p in entry.processing):
+            raise Refused(f'#{entry.id} 已有時間 {new} 的處理紀錄，請改用不同的時間')
+        record.time = new
+        return ([entry], f'chore: retime processing record of #{entry.id}',
+                f'已將 #{entry.id} 的 {record.kind} 處理紀錄改到 {new} {summary(entry)}')
+    return backlog.transaction(change)
+
+
 def cmd_unsuspect(backlog, args):
     def change():
         entry = live(backlog, args.id)
@@ -448,7 +469,8 @@ def cmd_merge(backlog, args):
             labelled.append(('合併新增', Processing(merge_time, 'severe', f'合併時 {"；".join(severe)}')))
         clashes = [(label, p) for label, p in labelled if sum(when(q.time) == when(p.time) for _, q in labelled) > 1]
         if clashes:
-            raise Refused('合併後會有時間相同的處理紀錄，拒絕合併；請用 --time 改其中一筆的時間後再合併：\n'
+            raise Refused('合併後會有時間相同的處理紀錄，拒絕合併。請使用者指定先後，用 retime <編號> --from <原時間> '
+                          '--to <新時間> 改其中一筆的時間後再合併（「合併新增」那筆改用 merge 的 --time）：\n'
                           + '\n'.join(f'  {label} {p.time} | {p.kind} | {p.detail}'
                                        for label, p in sorted(clashes, key=lambda c: when(c[1].time))))
         target.occurrences, target.processing = list(occurrences.values()), [p for _, p in labelled]
@@ -570,6 +592,10 @@ def build_parser():
     p = sub.add_parser('ready', help='手動設可處理')
     p.add_argument('id', type=positive)
     p.add_argument('--time', help='處理時間（ISO 8601），預設現在')
+    p = sub.add_parser('retime', help='改既有處理紀錄的時間（例如解決合併時的同時間衝突）')
+    p.add_argument('id', type=positive)
+    p.add_argument('--from', dest='from_time', required=True, help='要改的那筆處理紀錄目前的時間（ISO 8601）')
+    p.add_argument('--to', required=True, help='新的時間（ISO 8601）')
     p = sub.add_parser('unsuspect', help='確認不同後清除疑似相同標記')
     p.add_argument('id', type=positive)
     p = sub.add_parser('merge', help='把來源條目併入目標條目')
@@ -591,7 +617,7 @@ def build_parser():
 
 
 COMMANDS = {'init': cmd_init, 'add': cmd_add, 'occur': cmd_occur, 'severe': cmd_severe, 'done': cmd_done,
-            'wontfix': cmd_wontfix, 'ready': cmd_ready, 'unsuspect': cmd_unsuspect, 'merge': cmd_merge,
+            'wontfix': cmd_wontfix, 'ready': cmd_ready, 'retime': cmd_retime, 'unsuspect': cmd_unsuspect, 'merge': cmd_merge,
             'list': cmd_list, 'search': cmd_search, 'show': cmd_show, 'restore': cmd_restore}
 
 

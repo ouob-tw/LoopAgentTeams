@@ -451,6 +451,59 @@ class RetroLogTests(unittest.TestCase):
         self.assertEqual(len(self.ok('list', '--merged', '--limit', '1').splitlines()), 1)
         self.assertIn('--merged', self.refused('list', '--merged', '--status', 'ready'))
 
+    def test_retime_recomputes_recurrence_from_the_new_time(self):
+        self.add('fixed once', 's1', T1)
+        self.ok('done', '1', '--commit', 'c1', '--time', T2)
+        self.occur(1, 's2', T3)
+        self.assertEqual(self.front(1)['recurring'], 'true')
+        out = self.ok('retime', '1', '--from', T2, '--to', T4)
+        self.assertIn('#1 [已完成]', out)
+        self.assertEqual(self.front(1)['recurring'], 'false')
+        self.assertIn(f'{T4} | done | commit c1', self.records(1))
+        self.assertNotIn(f'{T2} | done', self.records(1))
+        self.assertEqual(self.commits()[0], 'chore: retime processing record of #1')
+        self.assertIn('#1 [可處理]［復發］', self.ok('retime', '1', '--from', T4, '--to', T2))
+        commits = self.commits()
+        self.assertIn('未改動', self.ok('retime', '1', '--from', T2, '--to', T2))
+        self.assertIn('可能先前已改過', self.refused('retime', '1', '--from', T4, '--to', T2))
+        self.assertEqual(self.commits(), commits)
+
+    def test_retime_refuses_a_clash_a_merged_entry_and_a_missing_record(self):
+        self.add('two records', 's1', T1)
+        self.ok('severe', '1', '--reason', 'r', '--time', T2)
+        self.ok('ready', '1', '--time', T3)
+        commits = self.commits()
+        self.assertIn(f'已有時間 {T3}', self.refused('retime', '1', '--from', T2, '--to', T3))
+        self.assertIn(f'沒有時間 {T4}', self.refused('retime', '1', '--from', T4, '--to', T5))
+        self.add('merged away', 's2', T1)
+        self.merge(2, 1)
+        self.assertIn('#2 已併入 #1', self.refused('retime', '2', '--from', T2, '--to', T5))
+        self.assertEqual(len(self.commits()), len(commits) + 2)
+
+    def test_retime_commit_failure_restores(self):
+        self.add()
+        self.ok('ready', '1', '--time', T2)
+        before, commits = self.ok('show', '1'), self.commits()
+        hook = self.backlog / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\nexit 1\n')
+        hook.chmod(0o755)
+        result = self.cli('retime', '1', '--from', T2, '--to', T3)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('已還原', result.stderr)
+        self.assertEqual((self.ok('show', '1'), self.commits()), (before, commits))
+        self.assertEqual(self.git('status', '--porcelain'), '')
+
+    def test_merge_refused_for_a_clash_succeeds_after_retime(self):
+        self.add('done at T2', 's1', T1)
+        self.add('wontfix at T2', 's2', T1)
+        self.ok('done', '1', '--commit', 'c1', '--time', T2)
+        self.ok('wontfix', '2', '--reason', 'meh', '--time', T2)
+        self.assertIn('retime', self.refused('merge', '2', '1'))
+        self.ok('retime', '2', '--from', T2, '--to', T3)
+        self.assertIn('已將 #2 併入 #1', self.merge(2, 1))
+        self.assertIn(f'{T3} | wontfix | meh', self.records(1))
+        self.assertEqual(self.front(1)['status'], '"wontfix"')
+
     def assert_merge_rolls_back_and_reruns(self, break_write, repair):
         self.add('target', 's1', T1)
         self.add('source', 's2', T2)
