@@ -1,4 +1,3 @@
 {"map": [
-  {"paths": ["skills/local/retro-log/scripts/**"], "tests": ["skills/local/retro-log/tests/test_*.py"]},
-  {"paths": ["skills/local/retro-log/tests/test_*.py"], "tests": ["skills/local/retro-log/tests/test_*.py"]}
+  {"paths": ["skills/local/retro-log/scripts/**"], "tests": ["skills/local/retro-log/tests/test_*.py"]}
 ]}

@@ -91,16 +91,24 @@ class RetroLogTests(unittest.TestCase):
     def test_severe_requires_reason_and_add_can_set_severe(self):
         self.add()
         self.assertIn('--reason', self.refused('severe', '1'))
-        self.assertIn('不是嚴重', self.refused('severe', '1', '--unset'))
         out = self.add('Data loss', 's9', T1, '--severe', 'deleted files')
         self.assertIn('#2 [可處理]［嚴重］', out)
 
-    def test_records_are_ordered_by_given_time_and_default_to_now(self):
+    def test_state_follows_record_time_not_insertion_order(self):
+        self.add('set first', 'a')
+        self.add('unset first', 'b')
+        self.ok('severe', '1', '--reason', 'r', '--time', T3)
+        self.assertIn('目前仍是嚴重', self.ok('severe', '1', '--unset', '--time', T2))
+        self.ok('severe', '2', '--unset', '--time', T2)
+        self.ok('severe', '2', '--reason', 'r', '--time', T3)
+        for entry_id in (1, 2):
+            self.assertEqual(self.front(entry_id)['status'], '"ready"')
+            self.assertEqual(self.front(entry_id)['severe'], 'true')
+
+    def test_same_time_processing_is_refused_and_time_defaults_to_now(self):
         self.add()
         self.ok('severe', '1', '--reason', 'r', '--time', T3)
-        self.ok('severe', '1', '--unset', '--time', T2)  # earlier than the set: the later set still wins
-        self.assertEqual(self.front(1)['severe'], 'true')
-        self.assertIn('已有時間', self.refused('severe', '1', '--reason', 'x', '--time', T3))
+        self.assertIn('已有時間', self.refused('severe', '1', '--unset', '--time', T3))
         self.ok('occur', '1', '--project', 'p', '--client', 'codex', '--session', 's2', '--evidence', 'e')
         last = self.ok('show', '1').split('## 出現紀錄')[1].split('## 處理紀錄')[0].strip().splitlines()[-1]
         self.assertRegex(last, r'^- 20\d\d-\d\d-\d\dT[\d:.]+[+-]\d\d:\d\d \| p \| codex \| s2 \| e$')
@@ -148,6 +156,31 @@ class RetroLogTests(unittest.TestCase):
                 '--client', 'codex', '--session', 'x', '--evidence', 'e')
         self.assertEqual(sorted(p.name for p in (self.backlog / 'entries').iterdir()), ['0001.md', '0002.md'])
 
+    def test_rollback_failure_says_not_restored_and_restore_recovers(self):
+        self.add()
+        hook = self.backlog / '.git/hooks/pre-commit'
+        hook.write_text('#!/bin/sh\nchmod a-w .git\nexit 1\n')  # commit and the rollback reset both fail
+        hook.chmod(0o755)
+        result = self.cli('add', '--title', 'Second', '--description', 'd', '--suggestion', 's', '--project', 'p',
+                          '--client', 'codex', '--session', 'x', '--evidence', 'e')
+        (self.backlog / '.git').chmod(0o755)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn('還原也失敗', result.stderr)
+        self.assertNotIn('Traceback', result.stderr)
+        hook.unlink()
+        self.assertIn('entries/0002.md', self.ok('restore'))
+        self.ok('add', '--title', 'Second', '--description', 'd', '--suggestion', 's', '--project', 'p',
+                '--client', 'codex', '--session', 'x', '--evidence', 'e')
+        self.assertEqual(sorted(p.name for p in (self.backlog / 'entries').iterdir()), ['0001.md', '0002.md'])
+
+    def test_git_index_lock_refuses_before_writing(self):
+        self.add()
+        (self.backlog / '.git/index.lock').touch()
+        self.assertIn('index.lock', self.refused('occur', '1', '--project', 'p', '--client', 'codex',
+                                                 '--session', 's2', '--evidence', 'e'))
+        self.assertTrue((self.backlog / '.git/index.lock').exists())
+        self.assertNotIn('s2', (self.backlog / 'entries/0001.md').read_text())
+
     def test_leftover_changes_block_writes_until_restore(self):
         self.add()
         (self.backlog / 'entries/0001.md').write_text('half written')
@@ -170,6 +203,9 @@ class RetroLogTests(unittest.TestCase):
         self.assertIn('時間格式', self.refused('severe', '1', '--reason', 'r', '--time', 'yesterday'))
         self.assertIn('換行', self.refused('occur', '1', '--project', 'p', '--client', 'codex', '--session', 's',
                                            '--evidence', 'a\nb'))
+        self.assertIn('分行', self.refused('occur', '1', '--project', 'p', '--client', 'codex', '--session', 's',
+                                           '--evidence', 'a\x0cb'))
+        self.assertIn('#1', self.ok('list'))
         self.assertEqual(len(self.commits()), 1)
 
 

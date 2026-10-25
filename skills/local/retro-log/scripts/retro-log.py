@@ -27,6 +27,10 @@ class Refused(Exception):
     """An invalid operation; nothing was changed."""
 
 
+class Failed(Exception):
+    """A write or commit failed; the message says whether the backlog was restored."""
+
+
 @dataclass
 class Occurrence:
     time: str
@@ -91,8 +95,8 @@ def normalize_time(text):
 def one_line(name, value, allow_pipe=False):
     if not value or not value.strip():
         raise Refused(f'{name} 不能是空的')
-    if '\n' in value or '\r' in value:
-        raise Refused(f'{name} 不能換行')
+    if len(value.splitlines()) != 1:
+        raise Refused(f'{name} 不能換行或含有分行字元')
     if not allow_pipe and '|' in value:
         raise Refused(f'{name} 不能含有「|」')
     return value.strip()
@@ -123,7 +127,7 @@ def render(entry):
 
 
 def parse(path):
-    text = path.read_text()
+    text = path.read_text(encoding='utf-8')
     try:
         _, front_text, body = text.split('---\n', 2)
         front = {}
@@ -207,6 +211,9 @@ class Backlog:
             if leftover:
                 raise Refused('反饋庫有未提交的改動，拒絕執行：\n' + '\n'.join(f'  {f}' for f in leftover)
                               + '\n請先執行 restore 還原到最後一次 commit，再重跑原指令。')
+            if (self.root / '.git/index.lock').exists():
+                raise Refused('反饋庫的 .git/index.lock 存在：可能有另一個 git 程序正在使用反饋庫。'
+                              '確認沒有其他程序在用後再重跑原指令；若是殘留的鎖檔，請自行確認後移除。')
             start = self.head()
         entries, message, output = change()
         if not entries:
@@ -216,18 +223,18 @@ class Backlog:
                 self.create()
             self.entries_dir.mkdir(exist_ok=True)
             for entry in entries:
-                self.path(entry.id).write_text(render(entry))
+                self.path(entry.id).write_text(render(entry), encoding='utf-8')
             self.git('add', '-A')
             self.git('commit', '-q', '-m', message)
-        except (OSError, RuntimeError) as error:
-            if self.exists():
-                self.discard(start)
+        except (OSError, RuntimeError, ValueError) as error:
+            try:
+                if self.exists():
+                    self.discard(start)
+            except (OSError, RuntimeError) as restore_error:
+                raise Failed(f'寫入失敗：{error}\n還原也失敗：{restore_error}\n反饋庫可能留有未提交的改動；'
+                             '排除原因後執行 restore，再重跑原指令。')
             raise Failed(f'寫入失敗：{error}\n已還原到指令開始前的狀態（{(start or "空的反饋庫")[:12]}），可以直接重跑原指令。')
         return output
-
-
-class Failed(Exception):
-    """A write or commit failed and the backlog was restored."""
 
 
 def backlog_root():
@@ -290,10 +297,10 @@ def cmd_severe(backlog, args):
     def change():
         entry = live(backlog, args.id)
         if args.unset:
-            if not entry.state()['severe']:
-                raise Refused(f'#{entry.id} 目前不是嚴重')
             add_processing(entry, Processing(normalize_time(args.time), 'unsevere', '取消嚴重'))
-            message, verb = f'chore: unmark #{entry.id} severe', '已取消嚴重'
+            message, verb = f'chore: unmark #{entry.id} severe', '已記錄取消嚴重'
+            if entry.state()['severe']:
+                verb += '（之後還有設嚴重紀錄，目前仍是嚴重）'
         else:
             if args.reason is None:
                 raise Refused('設嚴重需要 --reason 理由')
@@ -339,7 +346,10 @@ def cmd_search(backlog, args):
 
 
 def cmd_show(backlog, args):
-    return backlog.path(backlog.get(args.id).id).read_text().rstrip('\n')
+    path = backlog.path(args.id)
+    if not path.exists():
+        raise Refused(f'找不到條目 #{args.id}')
+    return path.read_text(encoding='utf-8').rstrip('\n')
 
 
 def cmd_restore(backlog, args):
