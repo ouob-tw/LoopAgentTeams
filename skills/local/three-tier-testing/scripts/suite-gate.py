@@ -24,6 +24,7 @@ for `reclaim_grace_seconds`, the next gate that reads the state stops what is le
 the slot.
 """
 import argparse
+import contextlib
 import copy
 import difflib
 import fcntl
@@ -1980,9 +1981,52 @@ def cmd_run(rerun, purpose, reason, argv):
     return _guarded(lambda: _drive(gate, gate.run))
 
 
+# Dependencies a suite directory gets installed in a fresh checkout, by the lockfile it holds.
+PREPARE_STEPS = (('bun.lock', ['bun', 'install', '--frozen-lockfile']),
+                 ('bun.lockb', ['bun', 'install', '--frozen-lockfile']))
+
+
+@contextlib.contextmanager
+def clean_checkout(root, commit):
+    """A temporary detached checkout of commit, a worktree of root's repository under the
+    state dir; the directory and its worktree entry are removed however the block ends."""
+    parent = state_dir() / 'checkouts'
+    parent.mkdir(parents=True, exist_ok=True)
+    path = Path(tempfile.mkdtemp(prefix='checkout-', dir=parent))
+    try:
+        result = git(['worktree', 'add', '--detach', '--quiet', str(path), commit], root)
+        if result.returncode != 0:
+            raise RuntimeError(f'git worktree add failed: {result.stderr.strip()}')
+        yield path
+    finally:
+        old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
+        try:
+            git(['worktree', 'remove', '--force', '--force', str(path)], root)
+            shutil.rmtree(path, ignore_errors=True)
+            git(['worktree', 'prune'], root)
+        finally:
+            signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
+        if path.exists():
+            warn(f'could not remove the temporary checkout {path}; remove it and run '
+                 '`git worktree prune`')
+
+
+def prepare_dependencies(directory):
+    """Install the dependencies directory's lockfile names; what failed, or None."""
+    for lockfile, command in PREPARE_STEPS:
+        if (directory / lockfile).is_file():
+            warn(f'preparing {directory}: {shlex.join(command)}')
+            try:
+                code = subprocess.run(command, cwd=directory).returncode
+            except OSError as exc:
+                return f'{shlex.join(command)} could not start: {exc}'
+            return f'{shlex.join(command)} exited {code}' if code else None
+    return None
+
+
 def cmd_run_registered(names, rerun, purpose, reason):
     """Run the registered full suites, all or those named by directory or command, in their
-    registered form, each through the gate."""
+    registered form, each through the gate, in a temporary clean checkout of HEAD."""
     error = run_args_error(rerun, purpose, reason)
     if error:
         warn(error)
@@ -1994,36 +2038,67 @@ def cmd_run_registered(names, rerun, purpose, reason):
     if root is None:
         warn('run --registered: not in a Git work tree')
         return 2
-    try:
-        suites = read_full_suites(load_registry(root) or {})
-    except ValueError as exc:
-        warn(f'run --registered: {exc}')
+    head = git(['rev-parse', '--verify', '--quiet', 'HEAD^{commit}'], root)
+    if head.returncode != 0:
+        warn('run --registered: HEAD is not a commit yet')
         return 2
+    commit = head.stdout.strip()
+    extra = {'purpose': 'reason' if reason else purpose,
+             'purpose_reason': reason.strip() if reason else None}
 
     def named(suite, name):
         return name.strip() == suite['command'] or _dir_key(name) == suite['cwd']
 
-    unknown = [n for n in names if not any(named(s, n) for s in suites)]
-    if unknown:
-        warn(f"run --registered: no registered full suite {', '.join(unknown)}; the "
-             'registered ones (name one by its directory or command):')
-        for suite in suites:
-            warn(f"  {suite['cwd']}: {suite['command']}")
-        return 2
-    if names:
-        suites = [s for s in suites if any(named(s, n) for n in names)]
-    extra = {'purpose': 'reason' if reason else purpose,
-             'purpose_reason': reason.strip() if reason else None}
-
-    def body():
-        code = 0
+    def run_suites(checkout):
+        registry = load_registry(checkout) or {}
+        try:
+            suites = read_full_suites(registry)
+        except ValueError as exc:
+            warn(f'run --registered: {exc}')
+            return 2
+        # The fingerprint takes these (usually ignored) files from the work tree, so the
+        # checkout gets the original tree's copies and its records match that tree.
+        for pattern in include_patterns(registry):
+            for path in root.glob(pattern):
+                if path.is_file():
+                    target = checkout / path.relative_to(root)
+                    target.parent.mkdir(parents=True, exist_ok=True)
+                    shutil.copy2(path, target)
+        unknown = [n for n in names if not any(named(s, n) for s in suites)]
+        if unknown:
+            warn(f"run --registered: no registered full suite {', '.join(unknown)}; the "
+                 'registered ones (name one by its directory or command):')
+            for suite in suites:
+                warn(f"  {suite['cwd']}: {suite['command']}")
+            return 2
+        if names:
+            suites = [s for s in suites if any(named(s, n) for n in names)]
+        code, prepared = 0, {}
         for suite in suites:
             warn(f"full suite in {suite['cwd']}: {suite['command']}")
-            gate = Gate([suite['command']], suite_cwd(root, suite),
-                        rerun.strip() if rerun else None, load_config(), extra)
+            cwd = suite_cwd(checkout, suite)
+            if cwd not in prepared:
+                prepared[cwd] = prepare_dependencies(cwd)
+            if prepared[cwd]:
+                warn(f"not run: preparing {suite['cwd']} failed ({prepared[cwd]}); this is "
+                     'not a test result')
+                code = code or 2
+                continue
+            gate = Gate([suite['command']], cwd, rerun.strip() if rerun else None,
+                        load_config(), extra)
             result = _drive(gate, gate.run)
             code = code or result
         return code
+
+    def body():
+        warn(f'testing HEAD {commit[:12]} in a temporary clean checkout; later changes to '
+             f'{root} do not affect the run')
+        if git(['status', '--porcelain'], root).stdout.strip():
+            warn(f'{root} has uncommitted changes; they are not tested. Commit them first '
+                 'to include them.')
+        with clean_checkout(root, commit) as checkout:
+            warn(f'temporary checkout: {checkout} (removed when the run ends)')
+            return run_suites(checkout)
     return _guarded(body)
 
 
@@ -3212,7 +3287,8 @@ def main(argv=None):
                      help='a free-text purpose instead of --purpose')
     run.add_argument('--registered', nargs='*', metavar='SUITE',
                      help='run the registered full suites (all, or those named by directory '
-                          'or command) in their registered form; needs a purpose')
+                          'or command) in their registered form, in a temporary clean '
+                          'checkout of HEAD; needs a purpose')
     affected = sub.add_parser('affected', help='run the tests the affected-test map selects '
                                                'for this change: affected [--base <rev>]')
     affected.add_argument('--base', metavar='REV', help='measure the change from this commit '

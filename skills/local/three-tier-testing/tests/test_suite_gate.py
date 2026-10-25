@@ -2954,8 +2954,8 @@ class RegisteredFormTests(PrePushCase):
         result = self.gate('run', '--registered', '--purpose', 'release', cwd=self.repo / 'src')
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
-        self.assertEqual({(r['cwd'], r['purpose']) for r in self.records()},
-                         {(str(self.repo), 'release'), (str(self.repo / 'web'), 'release')})
+        self.assertEqual({(r['rel_cwd'], r['purpose']) for r in self.records()},
+                         {('.', 'release'), ('web', 'release')})
         self.assertEqual(self.lacking(), [])
         self.assertEqual(self.push('main').returncode, 0)
         again = self.gate('run', '--registered', '--purpose', 'release')
@@ -2965,6 +2965,7 @@ class RegisteredFormTests(PrePushCase):
     def test_run_registered_runs_the_later_suites_after_a_failure(self):
         self.registry['full_suites'][0]['command'] = self.full('root') + '; exit 3'
         self.write_registry()
+        git(self.repo, 'commit', '-qam', 'registry')
         result = self.gate('run', '--registered', '--purpose', 'release')
         self.assertEqual(result.returncode, 3, result.stderr)
         self.assertEqual(self.full_runs(), ['root', 'web'])
@@ -2995,6 +2996,130 @@ class RegisteredFormTests(PrePushCase):
         with_command = self.gate('run', '--registered', '--purpose', 'release', '--', 'true')
         self.assertEqual(with_command.returncode, 2)
         self.assertEqual((self.full_runs(), self.records()), ([], []))
+
+
+class RegisteredCheckoutTests(PrePushCase):
+    """`run --registered` runs the suites in a temporary detached checkout of HEAD, which is
+    removed however the run ends; the records count for the original tree's content."""
+
+    def setUp(self):
+        super().setUp()
+        self.where = self.tmp / 'where.log'
+        self.registry['full_suites'] = [
+            {'command': f'pwd >> {self.where}; cat {Path("..") / "app.py"} 2>/dev/null; '
+                        f'{self.full("web")}', 'cwd': 'web'}]
+        self.write_registry()
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'one suite')
+
+    def lacking(self, commit=None):
+        with mock.patch.dict(os.environ, self.env):
+            return gate.lacking_full_suites(self.repo, commit or head(self.repo), self.registry)
+
+    def checkouts_left(self):
+        """Temporary checkout directories and extra worktree entries still present."""
+        listed = subprocess.run(['git', 'worktree', 'list', '--porcelain'], cwd=self.repo,
+                                capture_output=True, text=True, env=GIT_ENV).stdout
+        entries = [line for line in listed.splitlines() if line.startswith('worktree ')]
+        parent = self.state / 'checkouts'
+        return [p.name for p in parent.iterdir()] if parent.exists() else [], entries[1:]
+
+    def test_suites_run_in_a_checkout_of_head_that_is_removed_after(self):
+        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ran_in = Path(self.where.read_text().strip())
+        self.assertEqual(ran_in.parent.parent, self.state / 'checkouts')
+        self.assertEqual(ran_in.name, 'web')
+        self.assertIn(f'testing HEAD {head(self.repo)[:12]}', result.stderr)
+        self.assertIn(f'temporary checkout: {ran_in.parent}', result.stderr)
+        self.assertNotIn('uncommitted changes', result.stderr)
+        self.assertEqual(self.checkouts_left(), ([], []))
+        self.assertEqual(self.lacking(), [], 'the pass counts for the original tree')
+        again = self.gate('run', '--purpose', 'post-merge', '--',
+                          self.registry['full_suites'][0]['command'], cwd=self.repo / 'web')
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(self.full_runs(), ['web'], 'a run in the tree itself reuses it')
+
+    def test_the_checkout_is_removed_after_a_failure(self):
+        self.registry['full_suites'][0]['command'] += '; exit 3'
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'registry')
+        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(self.full_runs(), ['web'])
+        self.assertEqual(self.checkouts_left(), ([], []))
+
+    def test_the_checkout_is_removed_after_an_interrupt(self):
+        started, release = self.tmp / 'started', self.tmp / 'release'
+        self.registry['full_suites'][0]['command'] = (
+            f'touch {started}; while [ ! -f {release} ]; do sleep 0.05; done')
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'registry')
+        proc = self.start('run', '--registered', '--purpose', 'post-merge')
+        self.wait_until(started.exists, message='the suite to start')
+        self.assertEqual(len(self.checkouts_left()[0]), 1)
+        proc.send_signal(signal.SIGINT)
+        code, _out, err = self.finish(proc)
+        self.assertEqual(code, 128 + signal.SIGINT, err)
+        self.assertEqual(self.checkouts_left(), ([], []))
+        self.assertEqual(self.records(), [])
+
+    def test_changes_in_the_original_tree_during_the_run_do_not_touch_the_result(self):
+        release = self.tmp / 'release'
+        self.registry['full_suites'][0]['command'] = (
+            f'pwd >> {self.where}; while [ ! -f {release} ]; do sleep 0.05; done')
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'registry')
+        tested = head(self.repo)
+        proc = self.start('run', '--registered', '--purpose', 'post-merge')
+        self.wait_until(self.where.exists, message='the suite to start')
+        self.touch('src/app.py', 'merged = True\n')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'merged meanwhile')
+        self.touch('app.py', 'editing\n')
+        release.touch()
+        code, _out, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        record = self.records()[-1]
+        self.assertEqual((record['reusable'], record['content_changed']), (True, False))
+        self.assertEqual(self.lacking(tested), [])
+        self.assertEqual(self.checkouts_left(), ([], []))
+
+    def test_a_dirty_tree_is_named_and_left_out(self):
+        self.touch('app.py', 'uncommitted\n')
+        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('has uncommitted changes; they are not tested', result.stderr)
+        self.assertIn('x = 1', result.stdout, 'the suite saw the committed app.py')
+        self.assertNotIn('uncommitted', result.stdout)
+
+    def fake_bun(self, code):
+        """A `bun` first on PATH that logs where it ran and exits with code."""
+        fake = self.tmp / 'bin/bun'
+        fake.write_text(f'#!/bin/sh\necho "$PWD $*" >> {self.tmp / "bun.log"}\nexit {code}\n')
+        fake.chmod(0o755)
+
+    def test_a_directory_with_a_bun_lockfile_gets_its_dependencies_first(self):
+        self.registry['full_suites'].append({'command': self.full('root'), 'cwd': '.'})
+        self.write_registry()
+        (self.repo / 'web/bun.lock').write_text('{}\n')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'web dependencies')
+        self.fake_bun(0)
+        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        ran_in = self.where.read_text().strip()
+        self.assertEqual((self.tmp / 'bun.log').read_text(), f'{ran_in} install --frozen-lockfile\n')
+        self.assertEqual(self.full_runs(), ['web', 'root'])
+        self.fake_bun(1)
+        self.counter.unlink()
+        rerun = self.gate('run', '--registered', '--rerun', 'deps', '--purpose', 'post-merge')
+        self.assertEqual(rerun.returncode, 2, rerun.stderr)
+        self.assertIn('not run: preparing web failed (bun install --frozen-lockfile exited 1); '
+                      'this is not a test result', rerun.stderr)
+        self.assertEqual(self.full_runs(), ['root'], 'the other suites still run')
+        self.assertEqual(len(self.records()), 3, 'no record for the suite that did not run')
+        self.assertEqual(self.checkouts_left(), ([], []))
 
 
 class PrePushInstallTests(PrePushCase):
