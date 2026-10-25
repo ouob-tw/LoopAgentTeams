@@ -1297,6 +1297,12 @@ class SessionTests(unittest.TestCase):
     def process_exists(self, pid):
         return Path(f'/proc/{pid}').exists()
 
+    def process_is_gone_or_zombie(self, pid):
+        try:
+            return Path(f'/proc/{pid}/stat').read_text().rsplit(') ', 1)[1][0] == 'Z'
+        except FileNotFoundError:
+            return True
+
     def stop_fake_watchers(self):
         for path in (self.work / '.lat/watch').glob('*.pid'):
             try:
@@ -1759,8 +1765,9 @@ class SessionTests(unittest.TestCase):
         child_file = self.root / 'child.pid'
         (self.binary / 'uv').write_text(
             '#!/bin/sh\n'
+            'cd /\n'  # the child then matches by ancestry only, not by cwd or argv
             'sleep 60 &\n'
-            f'echo $! > "{child_file}"\n'
+            f'echo $! > "{child_file}.tmp" && mv "{child_file}.tmp" "{child_file}"\n'
             'wait\n')
         self.activate()
         self.wait_for(child_file.exists)
@@ -1768,8 +1775,7 @@ class SessionTests(unittest.TestCase):
         # Only the fallback (scan by ownership) can find it once the pid file is gone.
         (self.work / '.lat/watch' / f'{SESSION}.pid').unlink()
         self.assertTrue(self.doCleanups())
-        self.wait_for(lambda: not self.process_exists(child)
-                      or Path(f'/proc/{child}/stat').read_text().rsplit(') ', 1)[1][0] == 'Z')
+        self.wait_for(lambda: self.process_is_gone_or_zombie(child))
 
     def test_hook_restarts_a_watcher_that_stopped_itself_after_its_orchestrator_left(self):
         self.activate()
