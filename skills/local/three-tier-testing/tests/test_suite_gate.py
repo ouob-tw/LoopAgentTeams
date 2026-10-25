@@ -2352,6 +2352,13 @@ class DetectionTests(unittest.TestCase):
             ("cat > f <<'EOF'\n$(printf ')'; bun run test:all)\nEOF",
              "cat > f <<EOF\n$(printf ')'; bun run test:all)\nEOF"),
             ('bash <<EOF </dev/null\nbun run test:all\nEOF', 'bash </dev/null <<EOF\nbun run test:all\nEOF'),
+            # Blocked conservatively: printf/echo text a shell runs that is not rendered, and
+            # an unquoted heredoc with a substitution, which is read as commands as a whole.
+            ("printf 'bun %s%.0s\\n' test ignored | tee f", "printf 'bun %s%.0s\\n' test ignored | bash"),
+            ("printf '%b' 'py\\164est' > f", "printf '%b' 'py\\164est' | sh"),
+            ("echo -e 'bun\\x20test' | tee f", "echo -e 'bun\\x20test' | sh"),
+            ("cat > f <<'EOF'\n$(echo \\); bun run test:all)\nEOF",
+             'cat > f <<EOF\n$(echo \\); bun run test:all)\nEOF'),
         ]
         for data, run in pairs:
             self.assertFalse(gate.is_full_suite(data, registry=registry), data)
@@ -2472,6 +2479,7 @@ class HookTests(GateCase):
             'bash <<EOF\nbun run test:all\nEOF': 'bash <<EOF\n' + g('bun run test:all') + '\nEOF',
             'cat > f <<EOF\nbun run test:all\nEOF\nbun run test:all':
                 'cat > f <<EOF\nbun run test:all\nEOF\n' + g('bun run test:all'),
+            "printf '%b' x | sh": g("printf '%b' x | sh"),
         }
         for text, expected in cases.items():
             with self.subTest(text=text):

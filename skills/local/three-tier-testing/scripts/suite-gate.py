@@ -418,16 +418,25 @@ def _stdin_heredoc(heredocs):
     return [heredoc for heredoc in heredocs if heredoc[2]][-1:]
 
 
+class UnreadableShellInput(ValueError):
+    """A shell reads piped echo/printf text the hook does not render (a `%d` or `%b` form,
+    an escape other than `\\n`), so the command counts as a full suite."""
+
+
 def _piped_text(words, stdin):
     """What a command writes to a pipe, as heredocs: the text of echo/printf, or its stdin
-    for `cat` without files. Other commands count as writing nothing a shell would run."""
+    for `cat` without files; a body of None is text that cannot be rendered. Other commands
+    count as writing nothing a shell would run."""
     words = _strip_assignments(words)
     head = os.path.basename(words[0]) if words else ''
     if head in ('echo', 'printf'):
         args = words[1:]
         while head == 'echo' and args and args[0].startswith('-'):
             args = args[1:]
-        text = ' '.join(args) if head == 'echo' else _printf(args[0], args[1:]) if args else ''
+        form = ' '.join(args) if head == 'echo' else args[0] if args else ''
+        if re.search(r'\\[^n]|%[^s%]', form) or head == 'echo' and form.endswith('\\'):
+            return [(None, True, True, 0, 0)]
+        text = form if head == 'echo' else _printf(form, args[1:])
         return [(text.replace('\\n', '\n'), True, True, 0, 0)]
     if head == 'cat' and all(word.startswith('-') for word in words[1:]):
         return stdin
@@ -435,8 +444,8 @@ def _piped_text(words, stdin):
 
 
 def _printf(form, args):
-    """What printf prints for form and args: each `%...` takes the next argument, and the
-    form repeats while arguments are left."""
+    """What printf prints for a form of only `%s`, `%%` and `\\n`: each `%s` takes the next
+    argument, and the form repeats while arguments are left."""
     args, out = list(args), []
     while True:
         taken = []
@@ -446,7 +455,7 @@ def _printf(form, args):
                 return '%'
             taken.append(1)
             return args.pop(0) if args else ''
-        out.append(re.sub(r'%%|%[-+ #0-9.]*[a-zA-Z]', fill, form))
+        out.append(re.sub(r'%%|%s', fill, form))
         if not args or not taken:
             return ''.join(out)
 
@@ -513,41 +522,24 @@ def _shell_body_index(words):
 
 
 def _open_shell(words, heredocs=(), stdin=()):
-    """The commands words run, given its heredocs and the heredocs it reads on stdin."""
+    """The commands words run, given its heredocs and the heredocs it reads on stdin.
+
+    UnreadableShellInput when a shell reads text that cannot be rendered."""
     index = _shell_body_index(words)
     if index is not None:
         opened = split_commands(words[index])
     elif _reads_stdin_script(words):
+        if any(body is None for body, *_ in stdin):
+            raise UnreadableShellInput('unreadable text piped into a shell')
         opened = [inner for body, *_ in stdin for inner in split_commands(body)]
     else:
         opened = [words]
-    # The shell runs the `$(...)` of an unquoted heredoc before the command reads it.
-    return opened + [inner for body, expands, *_ in heredocs if expands
-                     for text in _substitutions(body) for inner in split_commands(text)]
-
-
-def _substitutions(text):
-    """The text inside each `$(...)` and backtick pair of text the shell expands."""
-    found, i = [], 0
-    while i < len(text):
-        if text.startswith('$(', i):
-            depth, j = 1, i + 2
-            while j < len(text) and depth:
-                if text[j] in '\'"':  # a quoted `)` does not close it
-                    j = text.find(text[j], j + 1)
-                    j = len(text) - 1 if j < 0 else j
-                depth += {'(': 1, ')': -1}.get(text[j], 0)
-                j += 1
-            found.append(text[i + 2:j - 1 if depth == 0 else j])
-            i = j
-        elif text[i] == '`':
-            j = text.find('`', i + 1)
-            j = len(text) if j < 0 else j
-            found.append(text[i + 1:j])
-            i = j + 1
-        else:
-            i += 2 if text[i] == '\\' else 1
-    return found
+    # The shell runs the `$(...)` and backticks of an unquoted heredoc before the command
+    # reads it; such a body is read as commands as a whole (a backtick as a separator)
+    # rather than picking the substitutions out.
+    return opened + [inner for body, expands, *_ in heredocs
+                     if expands and ('$(' in body or '`' in body)
+                     for inner in split_commands(body.replace('`', '\n'))]
 
 
 def _strip_assignments(words):
@@ -716,13 +708,17 @@ def is_full_suite(command, cwd='.', registry=None):
 
     With a registry that lists `suites`, only those patterns (fnmatch, whitespace
     normalized) count; otherwise a known test runner with no file, path or filter
-    argument counts as full. The arguments of echo, printf, hcom send and gh are text, not
+    argument counts as full, and so does text piped into a shell that cannot be rendered
+    (`printf '%b' ... | sh`). The arguments of echo, printf, hcom send and gh are text, not
     commands. Pass `registry` to skip reading it from cwd.
     """
     if registry is None:
         registry = load_registry(cwd) or {}
     patterns = registry.get('suites') if isinstance(registry, dict) else None
-    commands = split_commands(command)
+    try:
+        commands = split_commands(command)
+    except UnreadableShellInput:
+        return True
     runs = [words for words in commands if not _carries_text(words)]
     if isinstance(patterns, list) and patterns:
         normalized = [p for p in (_normalize_pattern(p) for p in patterns if isinstance(p, str))
@@ -2626,6 +2622,8 @@ def gate_rewrite(text, cwd, wrap=gate_command):
         rewritten = _wrap_suites(text, cwd, registry, wrap)
         # Only the commands together match a registry pattern: send all of them.
         return rewritten if rewritten != text else wrap(text)
+    except UnreadableShellInput:
+        return wrap(text)
     except Exception:  # unreadable text or a hook bug: block what looks like a runner
         if SCRIPT.name not in text and LOOKS_LIKE_TESTS.search(text):
             return wrap(text)
@@ -2634,8 +2632,12 @@ def gate_rewrite(text, cwd, wrap=gate_command):
 
 def _variable_gate_hint(text):
     """A note for the block message when text runs `$VAR run` the hook cannot read as a gate."""
+    try:
+        commands = split_commands(text)
+    except UnreadableShellInput:
+        return ''
     if any(word.startswith('$') and words[i + 1:i + 2] == ['run']
-           for words in split_commands(text) for i, word in enumerate(words)):
+           for words in commands for i, word in enumerate(words)):
         return ('\nA gate call through a variable counts only when the same command first sets '
                 'the variable to the suite-gate.py path (G=/path/suite-gate.py; ... "$G" run); '
                 'otherwise call suite-gate.py by its full path.')
