@@ -8,6 +8,7 @@ import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/retro-log.py'
 T1, T2, T3 = '2026-10-01T10:00:00+08:00', '2026-10-02T10:00:00+08:00', '2026-10-03T10:00:00+08:00'
+T4, T5, T6 = '2026-10-04T10:00:00+08:00', '2026-10-05T10:00:00+08:00', '2026-10-06T10:00:00+08:00'
 
 
 class RetroLogTests(unittest.TestCase):
@@ -221,6 +222,119 @@ class RetroLogTests(unittest.TestCase):
                                            '--evidence', 'a\x0cb'))
         self.assertIn('#1', self.ok('list'))
         self.assertEqual(len(self.commits()), 1)
+
+    def state(self, entry_id):
+        front = self.front(entry_id)
+        return front['status'].strip('"'), front['recurring']
+
+    def records(self, entry_id):
+        return self.ok('show', str(entry_id)).split('## 出現紀錄')[1]
+
+    def test_done_needs_commit_or_file_and_wontfix_needs_reason(self):
+        self.add()
+        self.assertIn('--commit', self.refused('done', '1', '--time', T2))
+        self.assertIn('--reason', self.refused('wontfix', '1', '--time', T2))
+        self.assertEqual(len(self.commits()), 1)
+        self.assertIn('#1 [已完成]', self.ok('done', '1', '--file', 'skills/x/SKILL.md', '--time', T2))
+        self.assertIn('| done | file skills/x/SKILL.md', self.ok('show', '1'))
+
+    def test_done_reopens_as_recurring_only_for_a_session_new_after_done(self):
+        self.add('fixed', 's1', T1)
+        self.ok('done', '1', '--commit', 'abc123', '--time', T3)
+        self.occur(1, 's2', T2)  # backfilled, before the fix
+        self.assertEqual(self.state(1), ('done', 'false'))
+        self.occur(1, 's1', T4)  # a session already seen before the fix
+        self.assertEqual(self.state(1), ('done', 'false'))
+        self.assertIn('#1 [可處理]［復發］', self.occur(1, 's3', T4))
+        self.assertEqual(self.state(1), ('ready', 'true'))
+
+    def test_wontfix_reopens_after_two_new_sessions_without_recurring(self):
+        self.add('skip', 's1', T1)
+        self.ok('wontfix', '1', '--reason', 'not worth it', '--time', T2)
+        self.occur(1, 's1', T3)
+        out = self.occur(1, 's2', T3)
+        self.assertIn('#1 [不做]', out)
+        self.assertIn('2 個 session', out)
+        self.assertIn('#1 [可處理] skip（3 個 session）', self.occur(1, 's3', T4))
+        self.assertEqual(self.state(1), ('ready', 'false'))
+        # closing again counts from the latest record: s4 alone does not reopen, s5 does
+        self.ok('wontfix', '1', '--reason', 'still not worth it', '--time', T5)
+        self.occur(1, 's4', T6)
+        self.assertEqual(self.state(1), ('wontfix', 'false'))
+        self.occur(1, 's5', T6)
+        self.assertEqual(self.state(1), ('ready', 'false'))
+
+    def test_done_again_after_recurring_counts_from_the_latest_done(self):
+        self.add('fixed twice', 's1', T1)
+        self.ok('done', '1', '--commit', 'c1', '--time', T2)
+        self.occur(1, 's2', T3)
+        self.ok('done', '1', '--commit', 'c2', '--time', T4)
+        self.assertEqual(self.state(1), ('done', 'false'))
+        self.occur(1, 's2', T5)
+        self.assertEqual(self.state(1), ('done', 'false'))
+        self.occur(1, 's3', T5)
+        self.assertEqual(self.state(1), ('ready', 'true'))
+
+    def test_manual_ready_holds_until_closed_and_reopens_closed_entries(self):
+        self.add('manual', 's1', T1)
+        self.ok('severe', '1', '--reason', 'r', '--time', T2)
+        self.assertIn('#1 [可處理]', self.ok('ready', '1', '--time', T3))
+        self.ok('severe', '1', '--unset', '--time', T4)
+        self.assertEqual(self.state(1), ('ready', 'false'))
+        self.ok('done', '1', '--commit', 'c1', '--time', T5)
+        self.assertEqual(self.state(1), ('done', 'false'))
+        self.assertIn('#1 [已完成]［嚴重］', self.ok('severe', '1', '--reason', 'r2', '--time', T6))
+        self.add('dropped', 's1', T1)
+        self.ok('wontfix', '2', '--reason', 'meh', '--time', T2)
+        self.assertIn('#2 [可處理]', self.ok('ready', '2', '--time', T3))
+        self.ok('ready', '1', '--time', '2026-10-07T10:00:00+08:00')
+        for entry_id in (1, 2):
+            self.assertEqual(self.state(entry_id), ('ready', 'false'))
+
+    def test_processing_sorts_after_occurrence_at_same_time_and_second_record_at_same_time_is_refused(self):
+        self.add('same instant', 's1', T1)
+        self.ok('done', '1', '--commit', 'c1', '--time', T2)
+        self.occur(1, 's2', T2)  # same instant as the fix: counts as before it
+        self.assertEqual(self.state(1), ('done', 'false'))
+        self.assertIn('已有時間', self.refused('wontfix', '1', '--reason', 'r', '--time', T2))
+        self.assertIn('已有時間', self.refused('done', '1', '--commit', 'c2', '--time', T2))
+        self.assertEqual(self.commits()[0], 'chore: record occurrence of #1')
+
+    def test_result_does_not_depend_on_write_order(self):
+        self.add('in order', 's1', T1)
+        self.occur(1, 's2', T2)
+        self.ok('done', '1', '--commit', 'c1', '--time', T3)
+        self.occur(1, 's3', T4)
+        self.add('done first', 's1', T1)
+        self.ok('done', '2', '--commit', 'c1', '--time', T3)
+        self.occur(2, 's3', T4)
+        self.occur(2, 's2', T2)  # backfilled after the fix was written
+        self.assertEqual(self.records(2), self.records(1))
+        self.assertEqual(self.state(2), ('ready', 'true'))
+        # a session first written after the fix and backfilled earlier keeps the earlier time
+        self.add('session moved', 's1', T1)
+        self.ok('done', '3', '--commit', 'c1', '--time', T3)
+        self.occur(3, 's2', T4)
+        self.assertEqual(self.state(3), ('ready', 'true'))
+        self.assertIn('改用較早的時間', self.occur(3, 's2', T2))
+        self.assertEqual(self.state(3), ('done', 'false'))
+
+    def test_rerunning_the_same_commands_leaves_the_entry_unchanged(self):
+        self.add('rerun', 's1', T1)
+        script = [('occur', '1', '--project', 'proj2', '--client', 'codex', '--session', 's2', '--evidence', 'again',
+                   '--time', T2),
+                  ('done', '1', '--commit', 'c1', '--time', T3),
+                  ('done', '1', '--commit', 'c1', '--file', 'a.md', '--time', T4),
+                  ('wontfix', '1', '--reason', 'meh', '--time', T5),
+                  ('severe', '1', '--reason', 'r', '--time', T6)]
+        for command in script:
+            self.ok(*command)
+        before, commits = self.ok('show', '1'), self.commits()
+        for command in script:
+            self.assertIn('已存在', self.ok(*command))
+        self.assertEqual(self.ok('show', '1'), before)
+        self.assertEqual(self.commits(), commits)
+        self.assertEqual(before.count('| done |'), 1)
 
 
 if __name__ == '__main__':

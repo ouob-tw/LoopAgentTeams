@@ -45,7 +45,7 @@ class Occurrence:
 @dataclass
 class Processing:
     time: str
-    kind: str  # severe | unsevere
+    kind: str  # severe | unsevere | done | wontfix | ready
     detail: str
 
 
@@ -61,19 +61,33 @@ class Entry:
     suspected: list = field(default_factory=list)
 
     def state(self):
-        """Replay the records in time order; processing records sort after occurrences at the same time."""
+        """Replay the records in time order; processing records sort after occurrences at the same time.
+
+        Each done or wontfix record starts a new count over the sessions not seen before it: one such
+        session reopens a done entry as recurring, two reopen a wontfix entry (not recurring). A manual
+        ready record holds until the next done or wontfix and reopens a closed entry, not recurring.
+        """
         events = [(when(o.time), 0, o) for o in self.occurrences]
         events += [(when(p.time), 1, p) for p in self.processing]
         sessions, severe, reason = set(), False, ''
+        closed, manual, recurring, before, new = None, False, False, set(), set()
         for _, _, record in sorted(events, key=lambda e: (e[0], e[1])):
             if isinstance(record, Occurrence):
+                if closed and record.session not in before:
+                    new.add(record.session)
+                    if closed == 'done' or len(new) >= 2:
+                        closed, recurring = None, closed == 'done'
                 sessions.add(record.session)
             elif record.kind == 'severe':
                 severe, reason = True, record.detail
             elif record.kind == 'unsevere':
                 severe, reason = False, ''
-        status = 'ready' if severe or len(sessions) >= 2 else 'observing'
-        return {'status': status, 'severe': severe, 'severe_reason': reason, 'recurring': False,
+            elif record.kind in ('done', 'wontfix'):
+                closed, manual, recurring, before, new = record.kind, False, False, set(sessions), set()
+            elif record.kind == 'ready':
+                closed, manual = None, True
+        status = closed or ('ready' if severe or manual or recurring or len(sessions) >= 2 else 'observing')
+        return {'status': status, 'severe': severe, 'severe_reason': reason, 'recurring': recurring,
                 'sessions': len(sessions)}
 
     def latest(self):
@@ -122,9 +136,11 @@ def render(entry):
              'merged_into': entry.merged_into, 'suspected': entry.suspected}
     lines = ['---', *(f'{k}: {json.dumps(front[k], ensure_ascii=False)}' for k in FRONT_KEYS), '---', '',
              H_DESC, '', entry.description, '', H_SUGGEST, '', entry.suggestion, '', H_OCC, '']
-    lines += [f'- {o.time} | {o.project} | {o.client} | {o.session} | {o.evidence}' for o in entry.occurrences]
+    # records are written in time order, so the file does not depend on the order they were added in
+    lines += [f'- {o.time} | {o.project} | {o.client} | {o.session} | {o.evidence}'
+              for o in sorted(entry.occurrences, key=lambda o: when(o.time))]
     lines += ['', H_PROC, '']
-    lines += [f'- {p.time} | {p.kind} | {p.detail}' for p in entry.processing]
+    lines += [f'- {p.time} | {p.kind} | {p.detail}' for p in sorted(entry.processing, key=lambda p: when(p.time))]
     return '\n'.join(lines) + '\n'
 
 
@@ -281,9 +297,18 @@ def occurrence_from(args):
 
 
 def add_processing(entry, record):
-    if any(when(p.time) == when(record.time) for p in entry.processing):
+    """Append record; False when an identical one is already there (a rerun). Another record at its time is refused."""
+    same_time = [p for p in entry.processing if when(p.time) == when(record.time)]
+    if any(p.kind == record.kind and p.detail == record.detail for p in same_time):
+        return False
+    if same_time:
         raise Refused(f'#{entry.id} 已有時間 {record.time} 的處理紀錄，請用 --time 指定不同的時間')
     entry.processing.append(record)
+    return True
+
+
+def unchanged(entry, record):
+    return [], '', f'已存在：#{entry.id} 已有相同的處理紀錄（{record.time} {record.kind}），未新增'
 
 
 def cmd_init(backlog, args):
@@ -309,8 +334,15 @@ def cmd_occur(backlog, args):
     def change():
         entry = live(backlog, args.id)
         occurrence = occurrence_from(args)
-        if any(o.session == occurrence.session for o in entry.occurrences):
+        existing = next((o for o in entry.occurrences if o.session == occurrence.session), None)
+        if existing and when(existing.time) <= when(occurrence.time):
             return [], '', f'已存在：#{entry.id} 已有 session {occurrence.session} 的出現紀錄，未增加次數'
+        if existing:  # keep the earlier time, as a merge does, so the result does not depend on write order
+            entry.occurrences.remove(existing)
+            entry.occurrences.append(occurrence)
+            return ([entry], f'chore: move occurrence of #{entry.id} to an earlier time',
+                    f'已存在：#{entry.id} 已有 session {occurrence.session} 的出現紀錄，改用較早的時間 '
+                    f'{occurrence.time}，未增加次數 {summary(entry)}')
         entry.occurrences.append(occurrence)
         return [entry], f'chore: record occurrence of #{entry.id}', f'已記錄出現 {summary(entry)}'
     return backlog.transaction(change)
@@ -320,17 +352,65 @@ def cmd_severe(backlog, args):
     def change():
         entry = live(backlog, args.id)
         if args.unset:
-            add_processing(entry, Processing(normalize_time(args.time), 'unsevere', '取消嚴重'))
+            record = Processing(normalize_time(args.time), 'unsevere', '取消嚴重')
             message, verb = f'chore: unmark #{entry.id} severe', '已記錄取消嚴重'
-            if entry.state()['severe']:
-                verb += '（之後還有設嚴重紀錄，目前仍是嚴重）'
         else:
             if args.reason is None:
                 raise Refused('設嚴重需要 --reason 理由')
-            add_processing(entry, Processing(normalize_time(args.time), 'severe', one_line('嚴重理由', args.reason, allow_pipe=True)))
+            record = Processing(normalize_time(args.time), 'severe', one_line('嚴重理由', args.reason, allow_pipe=True))
             message, verb = f'chore: mark #{entry.id} severe', '已設嚴重'
+        if not add_processing(entry, record):
+            return unchanged(entry, record)
+        if args.unset and entry.state()['severe']:
+            verb += '（之後還有設嚴重紀錄，目前仍是嚴重）'
         return [entry], message, f'{verb} {summary(entry)}'
     return backlog.transaction(change)
+
+
+def cmd_done(backlog, args):
+    def change():
+        entry = live(backlog, args.id)
+        if args.commit is None and args.file is None:
+            raise Refused('標已完成需要 --commit 或 --file（改了哪個 commit 或檔案）')
+        parts = [f'commit {one_line("commit", args.commit)}'] if args.commit is not None else []
+        if args.file is not None:
+            parts.append(f'file {one_line("檔案", args.file, allow_pipe=True)}')
+        if args.commit is not None and any(p.kind == 'done' and p.detail.split('; ')[0] == parts[0]
+                                           for p in entry.processing):
+            return [], '', f'已存在：#{entry.id} 已有 {parts[0]} 的完成紀錄，未新增'
+        record = Processing(normalize_time(args.time), 'done', '; '.join(parts))
+        if not add_processing(entry, record):
+            return unchanged(entry, record)
+        return [entry], f'chore: mark #{entry.id} done', recorded(entry, '已標已完成', 'done')
+    return backlog.transaction(change)
+
+
+def cmd_wontfix(backlog, args):
+    def change():
+        entry = live(backlog, args.id)
+        if args.reason is None:
+            raise Refused('標不做需要 --reason 理由')
+        record = Processing(normalize_time(args.time), 'wontfix', one_line('不做理由', args.reason, allow_pipe=True))
+        if not add_processing(entry, record):
+            return unchanged(entry, record)
+        return [entry], f'chore: mark #{entry.id} wontfix', recorded(entry, '已標不做', 'wontfix')
+    return backlog.transaction(change)
+
+
+def cmd_ready(backlog, args):
+    def change():
+        entry = live(backlog, args.id)
+        record = Processing(normalize_time(args.time), 'ready', '手動設可處理')
+        if not add_processing(entry, record):
+            return unchanged(entry, record)
+        return [entry], f'chore: mark #{entry.id} ready', recorded(entry, '已手動設可處理', 'ready')
+    return backlog.transaction(change)
+
+
+def recorded(entry, verb, status):
+    if entry.state()['status'] != status:
+        verb += f'（之後還有其他紀錄，目前不是{STATUS_LABELS[status]}）'
+    return f'{verb} {summary(entry)}'
 
 
 def live(backlog, entry_id):
@@ -416,6 +496,18 @@ def build_parser():
     p.add_argument('--reason')
     p.add_argument('--unset', action='store_true')
     p.add_argument('--time', help='處理時間（ISO 8601），預設現在')
+    p = sub.add_parser('done', help='標已完成，附 commit 或檔案')
+    p.add_argument('id', type=positive)
+    p.add_argument('--commit')
+    p.add_argument('--file')
+    p.add_argument('--time', help='完成時間（ISO 8601），預設現在')
+    p = sub.add_parser('wontfix', help='標不做，附理由')
+    p.add_argument('id', type=positive)
+    p.add_argument('--reason')
+    p.add_argument('--time', help='處理時間（ISO 8601），預設現在')
+    p = sub.add_parser('ready', help='手動設可處理')
+    p.add_argument('id', type=positive)
+    p.add_argument('--time', help='處理時間（ISO 8601），預設現在')
     p = sub.add_parser('list', help='依狀態列清單')
     p.add_argument('--status', choices=list(STATUS_LABELS))
     p.add_argument('--limit', type=positive)
@@ -428,8 +520,9 @@ def build_parser():
     return parser
 
 
-COMMANDS = {'init': cmd_init, 'add': cmd_add, 'occur': cmd_occur, 'severe': cmd_severe, 'list': cmd_list,
-            'search': cmd_search, 'show': cmd_show, 'restore': cmd_restore}
+COMMANDS = {'init': cmd_init, 'add': cmd_add, 'occur': cmd_occur, 'severe': cmd_severe, 'done': cmd_done,
+            'wontfix': cmd_wontfix, 'ready': cmd_ready, 'list': cmd_list, 'search': cmd_search, 'show': cmd_show,
+            'restore': cmd_restore}
 
 
 def main(argv=None):
