@@ -2853,6 +2853,13 @@ class RegisteredFormTests(PrePushCase):
         self.assertEqual(again.returncode, 0, again.stderr)
         self.assertEqual(len(self.full_runs()), 2, 'passed content is reused')
 
+    def test_run_registered_runs_the_later_suites_after_a_failure(self):
+        self.registry['full_suites'][0]['command'] = self.full('root') + '; exit 3'
+        self.write_registry()
+        result = self.gate('run', '--registered', '--purpose', 'release')
+        self.assertEqual(result.returncode, 3, result.stderr)
+        self.assertEqual(self.full_runs(), ['root', 'web'])
+
     def test_run_registered_runs_the_named_suites(self):
         result = self.gate('run', '--registered', 'web', '--purpose', 'post-merge')
         self.assertEqual(result.returncode, 0, result.stderr)

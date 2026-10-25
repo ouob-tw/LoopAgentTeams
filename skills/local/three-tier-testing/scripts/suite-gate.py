@@ -1810,7 +1810,8 @@ def cmd_run_registered(names, rerun, purpose, reason):
             warn(f"full suite in {suite['cwd']}: {suite['command']}")
             gate = Gate([suite['command']], suite_cwd(root, suite),
                         rerun.strip() if rerun else None, load_config(), extra)
-            code = code or _drive(gate, gate.run)
+            result = _drive(gate, gate.run)
+            code = code or result
         return code
     return _guarded(body)
 
