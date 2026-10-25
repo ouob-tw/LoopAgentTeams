@@ -1,8 +1,26 @@
 """Fail a test that leaves a process or its temp directory behind."""
+import ctypes
 import os
 import signal
 import time
 from pathlib import Path
+
+# Some Python builds lack os.pidfd_open / signal.pidfd_send_signal; the syscall numbers
+# are the same on every Linux architecture that has them.
+_libc = ctypes.CDLL(None, use_errno=True)
+_SYS_PIDFD_OPEN, _SYS_PIDFD_SEND_SIGNAL = 434, 424
+
+
+def _pidfd_open(pid):
+    fd = _libc.syscall(_SYS_PIDFD_OPEN, pid, 0)
+    if fd < 0:
+        raise OSError(ctypes.get_errno(), 'pidfd_open')
+    return fd
+
+
+def _pidfd_kill(fd):
+    if _libc.syscall(_SYS_PIDFD_SEND_SIGNAL, fd, signal.SIGKILL, None, 0) < 0:
+        raise OSError(ctypes.get_errno(), 'pidfd_send_signal')
 
 
 def owned_processes(root):
@@ -18,7 +36,7 @@ def owned_processes(root):
             continue
         pid = int(entry.name)
         try:
-            fd = os.pidfd_open(pid)
+            fd = _pidfd_open(pid)
         except OSError:
             continue
         try:
@@ -36,7 +54,7 @@ def owned_processes(root):
 def kill(owned):
     for fd, _, _ in owned:
         try:
-            signal.pidfd_send_signal(fd, signal.SIGKILL)
+            _pidfd_kill(fd)
         except OSError:
             pass
         os.close(fd)
