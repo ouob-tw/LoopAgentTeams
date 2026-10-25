@@ -2348,6 +2348,10 @@ class DetectionTests(unittest.TestCase):
             ('bash <<A <<B\nbun run test:all\nA\necho safe\nB',
              'bash <<A <<B\necho safe\nA\nbun run test:all\nB'),
             ('bash 3<<EOF\nbun run test:all\nEOF', 'bash 0<<EOF\nbun run test:all\nEOF'),
+            ("printf '%s %s\\n' bun test > f", "printf '%s %s:%s\\n' 'bun run' test all | bash"),
+            ("cat > f <<'EOF'\n$(printf ')'; bun run test:all)\nEOF",
+             "cat > f <<EOF\n$(printf ')'; bun run test:all)\nEOF"),
+            ('bash <<EOF </dev/null\nbun run test:all\nEOF', 'bash </dev/null <<EOF\nbun run test:all\nEOF'),
         ]
         for data, run in pairs:
             self.assertFalse(gate.is_full_suite(data, registry=registry), data)
@@ -2492,6 +2496,7 @@ class HookTests(GateCase):
                      'G=/tmp/other.py; python "$G" run -- bun run test:all',
                      f'(G={SCRIPT}); python "$G" run -- bun run test:all',
                      f'G={SCRIPT} | true; python "$G" run -- bun run test:all',
+                     f'true | G={SCRIPT}; python "$G" run -- bun run test:all',
                      f'python "$G" run -- bun run test:all; G={SCRIPT}'):
             with self.subTest(text=text):
                 result = run_hook(text, self.repo, self.env)

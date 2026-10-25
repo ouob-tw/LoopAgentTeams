@@ -354,12 +354,13 @@ def _simple_commands(text):
 
     Redirections (`2>&1`, `> out`) are dropped with their target; spans are each word's
     (start, end) in text; heredocs are the (body, expands, stdin, start, end) of the
-    command's `<<` redirections, stdin False for another descriptor (`3<<EOF`); sep is the
+    command's `<<` redirections, stdin False for another descriptor (`3<<EOF`) or when a
+    later `<` replaces it; sep is the
     operator that ends the command (`|`, `;`, `\\n`, ...) and depth how many parentheses it
     is nested in. ValueError on an unclosed quote.
     """
     commands, words, spans, heredocs = [], [], [], []
-    waiting = []  # (heredocs, stdin) of commands whose bodies follow the line
+    waiting = []  # [heredocs, stdin] of commands whose bodies follow the line
     drop_next, depth = False, 0
     for value, is_operator, start, end in _tokens(text) + [('\n', True, len(text), len(text))]:
         if is_operator is None:
@@ -372,7 +373,10 @@ def _simple_commands(text):
                 fd = words.pop()  # the file descriptor of `2>`
                 spans.pop()
             if value in HEREDOCS:
-                waiting.append((heredocs, fd in (None, '0')))
+                waiting.append([heredocs, fd in (None, '0')])
+            elif value in ('<', '<&') and fd in (None, '0'):
+                for entry in waiting:
+                    entry[1] = entry[1] and entry[0] is not heredocs
             drop_next = True
         elif is_operator:
             if words:
@@ -423,22 +427,39 @@ def _piped_text(words, stdin):
         args = words[1:]
         while head == 'echo' and args and args[0].startswith('-'):
             args = args[1:]
-        text = (' ' if head == 'echo' else '\n').join(args).replace('\\n', '\n')
-        return [(text, True, True, 0, 0)]
+        text = ' '.join(args) if head == 'echo' else _printf(args[0], args[1:]) if args else ''
+        return [(text.replace('\\n', '\n'), True, True, 0, 0)]
     if head == 'cat' and all(word.startswith('-') for word in words[1:]):
         return stdin
     return []
 
 
+def _printf(form, args):
+    """What printf prints for form and args: each `%...` takes the next argument, and the
+    form repeats while arguments are left."""
+    args, out = list(args), []
+    while True:
+        taken = []
+
+        def fill(match):
+            if match.group() == '%%':
+                return '%'
+            taken.append(1)
+            return args.pop(0) if args else ''
+        out.append(re.sub(r'%%|%[-+ #0-9.]*[a-zA-Z]', fill, form))
+        if not args or not taken:
+            return ''.join(out)
+
+
 def _gate_variables(commands):
     """The words of _simple_commands' commands with `$G`/`${G}` replaced by G's value where
     an earlier command of the same shell only assigns G (`G=/path/suite-gate.py`) and the
-    value is a suite-gate.py path; assignments in a subshell, pipe or background job (`(...)`,
-    `|`, `&`) do not count."""
-    known, resolved = {}, []
+    value is a suite-gate.py path; assignments in a subshell, pipeline or background job
+    (`(...)`, either side of `|`, `&`) do not count."""
+    known, resolved, after = {}, [], None
     for words, _, _, sep, depth in commands:
         if words and not _strip_assignments(words) and not depth \
-                and sep not in ('|', '|&', '&'):
+                and sep not in ('|', '|&', '&') and after not in ('|', '|&'):
             for word in words:
                 name, value = word.split('=', 1)
                 if os.path.basename(value) == SCRIPT.name:
@@ -448,6 +469,7 @@ def _gate_variables(commands):
         resolved.append([next((value for name, value in known.items()
                                if word in (f'${name}', f'${{{name}}}')), word)
                          for word in words])
+        after = sep
     return resolved
 
 
@@ -511,6 +533,9 @@ def _substitutions(text):
         if text.startswith('$(', i):
             depth, j = 1, i + 2
             while j < len(text) and depth:
+                if text[j] in '\'"':  # a quoted `)` does not close it
+                    j = text.find(text[j], j + 1)
+                    j = len(text) - 1 if j < 0 else j
                 depth += {'(': 1, ')': -1}.get(text[j], 0)
                 j += 1
             found.append(text[i + 2:j - 1 if depth == 0 else j])
