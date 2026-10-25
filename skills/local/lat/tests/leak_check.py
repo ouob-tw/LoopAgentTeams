@@ -23,14 +23,22 @@ def _pidfd_kill(fd):
         raise OSError(ctypes.get_errno(), 'pidfd_send_signal')
 
 
-def owned_processes(root):
-    """(pidfd, pid, command) for processes (not ours) with an argv entry at or under `root`.
+def _stat(entry):
+    """(ppid, pgid) of a /proc entry."""
+    fields = (entry / 'stat').read_text().rsplit(') ', 1)[1].split()
+    return int(fields[1]), int(fields[2])
 
-    The pidfd is opened before argv is read, so signalling through it can never reach a
-    process that reused the PID. The caller closes the fds.
+
+def owned_processes(root):
+    """(pidfd, pid, command) for processes (not ours) that belong to the test under `root`.
+
+    Owned means: an argv entry at or under `root`, a working directory under `root`, or a
+    descendant / process-group member of an owned process (a fake uv's `sleep` child has
+    none of the paths). The pidfd is opened before anything is read, so signalling
+    through it can never reach a process that reused the PID. The caller closes the fds.
     """
     root = str(root)
-    found = []
+    seen = {}
     for entry in Path('/proc').iterdir():
         if not entry.name.isdigit() or int(entry.name) == os.getpid():
             continue
@@ -41,10 +49,30 @@ def owned_processes(root):
             continue
         try:
             argv = [a.decode(errors='replace') for a in (entry / 'cmdline').read_bytes().split(b'\0') if a]
+            ppid, pgid = _stat(entry)
+        except (OSError, IndexError, ValueError):
+            argv, ppid, pgid = [], 0, 0
+        try:
+            cwd = os.readlink(entry / 'cwd')
         except OSError:
-            argv = []
-        if any(a == root or a.startswith(root + '/') or ('=' in a and a.split('=', 1)[1].startswith(root + '/'))
-               for a in argv):
+            cwd = ''
+        direct = (any(a == root or a.startswith(root + '/') or
+                      ('=' in a and a.split('=', 1)[1].startswith(root + '/')) for a in argv)
+                  or cwd == root or cwd.startswith(root + '/'))
+        seen[pid] = [fd, argv, ppid, pgid, direct]
+    owned = {pid for pid, v in seen.items() if v[4]}
+    # Never adopt our own process group (the test runner's) through a shared member.
+    groups = {seen[pid][3] for pid in owned if seen[pid][3] > 1 and seen[pid][3] != os.getpgrp()}
+    changed = True
+    while changed:
+        changed = False
+        for pid, (_, _, ppid, pgid, _) in seen.items():
+            if pid not in owned and (ppid in owned or pgid in groups):
+                owned.add(pid)
+                changed = True
+    found = []
+    for pid, (fd, argv, _, _, _) in seen.items():
+        if pid in owned:
             found.append((fd, pid, ' '.join(argv)))
         else:
             os.close(fd)
