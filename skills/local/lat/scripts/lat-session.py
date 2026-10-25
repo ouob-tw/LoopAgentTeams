@@ -415,6 +415,16 @@ def ledger_command(action, path, *extra):
                        '--ledger', str(path), *extra])
 
 
+def project_integration_branch(workspace, sid):
+    """The preauth config's `integration_branch`, or None when none is set or it cannot be read."""
+    preauth = preauth_module()
+    try:
+        found = preauth.integration_branch(None, preauth.load_layers(workspace, sid)[0])
+    except (OSError, ValueError, subprocess.SubprocessError):
+        return None
+    return found[0] if found else None
+
+
 def round_ledger(workspace, sid, round_number, hcom_name):
     """The round's ledger in the main checkout's .lat, created unless an earlier activate of
     this round already made it."""
@@ -423,8 +433,11 @@ def round_ledger(workspace, sid, round_number, hcom_name):
     store = ledger_module().Store(path)
     if any(item.exists() for item in (store.path, store.seal, store.journal)):
         return path
-    result = ledger_cli('init', '--ledger', path, '--workspace', lat.parent,
-                        '--orchestrator', hcom_name, '--by', hcom_name)
+    flags = ['--orchestrator', hcom_name, '--by', hcom_name]
+    branch = project_integration_branch(workspace, sid)
+    if branch:
+        flags += ['--integration-branch', branch]
+    result = ledger_cli('init', '--ledger', path, '--workspace', lat.parent, *flags)
     if result.returncode:
         raise ValueError(f'工作總表建立失敗：{result.stderr.strip() or result.stdout.strip()}')
     return path

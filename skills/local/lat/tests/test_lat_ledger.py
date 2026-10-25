@@ -408,6 +408,27 @@ class DoneTests(LedgerCase):
         item = self.started('--branch', 'side')
         self.ok('done', str(item), '--commit', self.side)
 
+    def test_commit_merged_then_task_branch_deleted_still_passes(self):
+        item = self.started('--branch', 'side')
+        git(self.workspace, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side')
+        git(self.workspace, 'branch', '-q', '-D', 'side')
+        self.ok('done', str(item), '--commit', self.side, by='impl')
+
+    def test_commit_outside_integration_branch_fails_once_task_branch_is_gone(self):
+        item = self.started('--branch', 'side')
+        git(self.workspace, 'branch', '-q', '-D', 'side')
+        error = self.fails('done', str(item), '--commit', self.side, by='impl')
+        self.assertIn('is not reachable from side or dev', error)
+        self.assertEqual(self.item(item)['status'], 'in_progress')
+
+    def test_update_branch_sets_it_on_a_row_created_without_one(self):
+        item = self.started()
+        self.fails('done', str(item), '--commit', self.side, by='impl')
+        self.ok('update', str(item), '--branch', 'side')
+        self.assertEqual(self.item(item)['branch'], 'side')
+        self.assertEqual(self.item(item)['history'][-1]['changes'], {'branch': [None, 'side']})
+        self.ok('done', str(item), '--commit', self.side, by='impl')
+
     def test_each_failed_evidence_is_listed_and_status_unchanged(self):
         item = self.started(evidence='commit,gate,file')
         before = self.ledger.read_bytes()
@@ -514,6 +535,21 @@ class NextAndCheckTests(LedgerCase):
         result = self.run_ledger('check', env={'LAT_LEDGER_SUITE_GATE': str(broken)})
         self.assertEqual(result.returncode, 1)
         self.assertIn('lookup failed', result.stdout)
+
+    def test_check_passes_after_the_task_branch_is_merged_then_deleted(self):
+        item = self.started('--branch', 'side')
+        self.ok('done', str(item), '--commit', self.side)
+        git(self.workspace, 'merge', '-q', '--no-ff', '-m', 'merge side', 'side')
+        git(self.workspace, 'branch', '-q', '-D', 'side')
+        self.ok('check')
+
+    def test_check_fails_for_a_surviving_commit_outside_the_integration_branch(self):
+        item = self.started('--branch', 'side')
+        self.ok('done', str(item), '--commit', self.side)
+        git(self.workspace, 'branch', '-q', '-D', 'side')
+        result = self.run_ledger('check')
+        self.assertEqual(result.returncode, 1)
+        self.assertIn('is not reachable from side or dev', result.stdout)
 
     def test_check_fails_when_a_closed_commit_disappears(self):
         item = self.started('--branch', 'side')
