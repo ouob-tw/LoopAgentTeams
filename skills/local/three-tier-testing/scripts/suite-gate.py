@@ -3363,8 +3363,18 @@ def cmd_pre_commit():
     root = repo_root(Path.cwd())
     if root is None:
         return 0
-    registry = load_registry(root) or {}
-    branch = registry.get('integration_branch') if is_mapped(registry) else None
+    # The staged registry, so an unstaged edit cannot turn the check off; when it is
+    # unreadable HEAD's names the branch, and the check below refuses it.
+    for rev in ('', 'HEAD'):
+        try:
+            registry = json.loads(git(['show', f'{rev}:{REGISTRY_NAME}'], root).stdout or 'null')
+        except ValueError:
+            continue
+        if registry is None or isinstance(registry, dict):
+            break
+    else:
+        registry = None
+    branch = registry.get('integration_branch') if isinstance(registry, dict) else None
     if not branch or git(['symbolic-ref', '--quiet', '--short', 'HEAD'],
                          root).stdout.strip() != branch:
         return 0
@@ -3389,8 +3399,12 @@ def cmd_pre_commit():
             result = git(['read-tree', '-u', '--reset', tree], checkout)
             if result.returncode != 0:
                 raise RuntimeError(f'git read-tree failed: {result.stderr.strip()}')
-            staged = load_registry(checkout) or {}
-            if not is_mapped(staged):
+            staged = load_registry(checkout)
+            if staged is None and (checkout / REGISTRY_NAME).exists():
+                warn(f'commit refused: the staged {REGISTRY_NAME} is not a readable JSON '
+                     'object. `git commit --no-verify` skips this check.')
+                return 1
+            if not is_mapped(staged or {}):
                 return 0
             try:
                 amap = read_map(staged)
