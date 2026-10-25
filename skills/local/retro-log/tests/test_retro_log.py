@@ -416,8 +416,15 @@ class RetroLogTests(unittest.TestCase):
         commits = self.commits()
         for source, target in ((1, 2), (2, 1)):
             err = self.refused('merge', str(source), str(target))
-            self.assertIn(f'{T2} | done | commit c1', err)
-            self.assertIn(f'{T2} | wontfix | meh', err)
+            self.assertIn(f'#1 {T2} | done | commit c1', err)
+            self.assertIn(f'#2 {T2} | wontfix | meh', err)
+        self.assertEqual(self.commits(), commits)
+        self.add('ready at T3', 's3', T1)
+        self.add('ready at T3 too', 's4', T1)
+        self.ok('ready', '3', '--time', T3)
+        self.ok('ready', '4', '--time', T3)
+        commits = self.commits()
+        self.assertIn(f'#3 {T3} | ready', self.refused('merge', '4', '3'))  # identical records clash too
         self.assertEqual(self.commits(), commits)
 
     def test_merge_refuses_self_and_merged_entries_except_a_repeat_of_the_same_merge(self):
@@ -437,7 +444,12 @@ class RetroLogTests(unittest.TestCase):
         self.merge(2, 1)
         self.assertEqual([line.split(' ')[0] for line in self.ok('list').splitlines()], ['#1'])
         self.assertEqual([line.split(' ')[0] for line in self.ok('list', '--status', 'ready').splitlines()], ['#1'])
-        self.assertIn('#2 [已併入 #1]', self.ok('list', '--merged'))
+        self.add('merged too', 's3', T1)
+        self.merge(3, 1)
+        self.assertEqual([line.split(' ')[0] for line in self.ok('list', '--merged').splitlines()], ['#2', '#3'])
+        self.assertIn('#2 [已併入 #1]', self.ok('list', '--merged', '--limit', '1'))
+        self.assertEqual(len(self.ok('list', '--merged', '--limit', '1').splitlines()), 1)
+        self.assertIn('--merged', self.refused('list', '--merged', '--status', 'ready'))
 
     def assert_merge_rolls_back_and_reruns(self, break_write, repair):
         self.add('target', 's1', T1)

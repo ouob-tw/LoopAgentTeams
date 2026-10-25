@@ -442,34 +442,22 @@ def cmd_merge(backlog, args):
         occurrences = {}
         for o in sorted(target.occurrences + source.occurrences, key=lambda o: when(o.time)):
             occurrences.setdefault(o.session, o)  # the earlier time of a session wins
-        processing = list(target.processing)
-        for record in source.processing:
-            if not any(same_record(p, record) for p in processing):
-                processing.append(record)
+        # even identical records at the same time clash: the Spec refuses any two at one time after a merge
+        labelled = [(f'#{e.id}', p) for e in (target, source) for p in e.processing]
         if severe:
-            processing.append(Processing(merge_time, 'severe', f'合併時 {"；".join(severe)}'))
-        clashes = [p for p in processing if sum(when(q.time) == when(p.time) for q in processing) > 1]
+            labelled.append(('合併新增', Processing(merge_time, 'severe', f'合併時 {"；".join(severe)}')))
+        clashes = [(label, p) for label, p in labelled if sum(when(q.time) == when(p.time) for _, q in labelled) > 1]
         if clashes:
             raise Refused('合併後會有時間相同的處理紀錄，拒絕合併；請用 --time 改其中一筆的時間後再合併：\n'
-                          + '\n'.join(f'  {origin(p, source, target)} {p.time} | {p.kind} | {p.detail}'
-                                       for p in sorted(clashes, key=lambda p: when(p.time))))
-        target.occurrences, target.processing = list(occurrences.values()), processing
+                          + '\n'.join(f'  {label} {p.time} | {p.kind} | {p.detail}'
+                                       for label, p in sorted(clashes, key=lambda c: when(c[1].time))))
+        target.occurrences, target.processing = list(occurrences.values()), [p for _, p in labelled]
         target.suspected = sorted(set(target.suspected + source.suspected) - {source.id, target.id})
         source.occurrences, source.processing, source.merged_into = [], [], target.id
         # target first, so a failure in between leaves the source unmarked; the rollback undoes both anyway
         return ([target, source], f'chore: merge #{source.id} into #{target.id}',
                 f'已將 #{source.id} 併入 #{target.id}：{summary(target)}')
     return backlog.transaction(change)
-
-
-def same_record(a, b):
-    return when(a.time) == when(b.time) and a.kind == b.kind and a.detail == b.detail
-
-
-def origin(record, source, target):
-    if any(p is record for p in target.processing):
-        return f'#{target.id}'
-    return f'#{source.id}' if any(p is record for p in source.processing) else '合併新增'
 
 
 def recorded(entry, verb, status):
@@ -492,13 +480,16 @@ def rank_key(entry):
 
 def cmd_list(backlog, args):
     if args.merged:
-        return '\n'.join(summary(e) for e in backlog.all() if e.merged_into is not None) or '沒有符合的條目'
-    entries = [e for e in backlog.all() if e.merged_into is None]
-    if args.suspected:
-        entries = [e for e in entries if e.suspected]
-    if args.status:
-        entries = [e for e in entries if e.state()['status'] == args.status]
-    entries.sort(key=rank_key)
+        if args.status or args.suspected:
+            raise Refused('--merged 不能和 --status 或 --suspected 一起用：已併入的條目沒有狀態')
+        entries = [e for e in backlog.all() if e.merged_into is not None]
+    else:
+        entries = [e for e in backlog.all() if e.merged_into is None]
+        if args.suspected:
+            entries = [e for e in entries if e.suspected]
+        if args.status:
+            entries = [e for e in entries if e.state()['status'] == args.status]
+        entries.sort(key=rank_key)
     if args.limit is not None:
         entries = entries[:args.limit]
     return '\n'.join(summary(e) for e in entries) or '沒有符合的條目'
