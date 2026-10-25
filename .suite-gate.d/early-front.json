@@ -1,0 +1,4 @@
+{"map": [
+  {"paths": ["board/src/lib/server/appear.ts"],
+   "tests": ["board/tests/server/agent-launch.test.ts", "board/tests/server/wake.test.ts", "board/tests/server/agent-switch.test.ts"]}
+]}

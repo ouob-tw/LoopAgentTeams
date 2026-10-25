@@ -8,7 +8,7 @@ import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
 import type { LaunchList, LaunchResponse, LaunchView } from '../../src/lib/board/launch.ts';
 import { gitRoot } from '../../src/lib/server/git.ts';
-import { checkRunHere, NODE, sleep, startFixture, type Fixture } from '../harness.ts';
+import { checkRunHere, NODE, sleep, startFixture, until, type Fixture } from '../harness.ts';
 
 const commandDir = mkdtempSync(join(tmpdir(), 'lat-board-agent-launch-'));
 const socketPath = join(commandDir, 'herdr.sock');
@@ -534,4 +534,78 @@ test('a launch whose name a few of hcom\'s lists in a row lack is not waited for
 	// Not the time-out's reason: it stopped before the wait ran out.
 	expect(view.follow?.error).toBe('hcom 的清單上沒有 @ghost，分頁沒有移到最前面；請到 Herdr 分頁查看');
 	expect(herdrCalls()).toEqual([]);
+});
+
+// --- The tab goes first before its client runs ----------------------------------------------------
+
+/** Herdr now shows the new pane and tab hcom opened for this launch, its tab at the end, while
+ *  its client has not started yet. */
+function opens(name: string) {
+	const plan = readJson(herdrFile);
+	plan.panes.push({ pane_id: `wA:p-${name}`, workspace_id: 'wA', cwd: '/srv/alpha', tab_id: `wA:t-${name}` });
+	plan.tabs.push({ tab_id: `wA:t-${name}`, label: name, workspace_id: 'wA' });
+	writeFileSync(herdrFile, JSON.stringify(plan));
+}
+/** Herdr now runs the client hcom launched under this name, in its tab. */
+function runs(name: string) {
+	const plan = readJson(herdrFile);
+	plan.agents.push({ agent: 'claude', agent_status: 'idle', cwd: '/srv/alpha', pane_id: `wA:p-${name}`, tab_id: `wA:t-${name}`, workspace_id: 'wA', agent_session: { value: `s-${name}` } });
+	writeFileSync(herdrFile, JSON.stringify(plan));
+}
+const moves = () => herdrCalls().filter((call) => call[1] === 'tab.move');
+
+test('the tab goes first as soon as hcom lists its pane, before its client runs; once it runs it is renamed, not moved again', async () => {
+	herdrPlan();
+	hcomPlan([{ name: 'fast', workspace: 'wA', appears: false }]);
+
+	const { body } = await launch({ folder: folder('early', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '早' } });
+	opens('fast');
+	await until(() => moves().length > 0, 2_000, 'the early move');
+	expect(readJson(herdrFile).tabs.map((tab: { tab_id: string }) => tab.tab_id)).toEqual(['wA:t-fast', 'wA:t1', 'wA:t2']);
+	expect(await launchOf(body.entry!.id)).toMatchObject({ state: 'starting', follow: null });
+
+	runs('fast');
+	const view = await followed(body.entry!.id);
+	expect(view).toMatchObject({ state: 'appeared', follow: { error: null, renameError: null, moveError: null } });
+	expect(herdrCalls()).toEqual([
+		['socket', 'tab.move', { tab_id: 'wA:t-fast', insert_index: 0 }],
+		['tab', 'rename', 'wA:t-fast', '早']
+	]);
+});
+
+test('a pane hcom lists in a tab that was there before the launch never moves that tab; the new one goes first once its client runs', async () => {
+	herdrPlan({ panes: [{ pane_id: 'wA:p-old', workspace_id: 'wA', cwd: '/srv/alpha', tab_id: 'wA:t2' }] });
+	hcomPlan([{ name: 'stale', workspace: 'wA', appears: false }]);
+	const plan = readJson(join(commandDir, 'hcom.json'));
+	plan.launched[0].launch_context.pane_id = 'wA:p-old';
+	writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
+
+	const { body } = await launch({ folder: folder('stale-pane', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } });
+	opens('stale');
+	await sleep(1_500);
+	expect(moves()).toEqual([]);
+
+	runs('stale');
+	const view = await followed(body.entry!.id);
+	expect(view).toMatchObject({ state: 'appeared', follow: { moveError: null } });
+	expect(moves()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-stale', insert_index: 0 }]]);
+});
+
+test("a name hcom hands out again while it still lists the earlier agent never moves or renames that agent's tab", async () => {
+	herdrPlan();
+	hcomPlan([{ name: 'nano', workspace: 'wA' }, { name: 'nano', workspace: 'wA', appears: false }]);
+	const plan = readJson(join(commandDir, 'hcom.json'));
+	plan.launched[1] = { name: 'nano', session_id: 's-nano2', launch_context: { pane_id: 'wA:p-nano2' } };
+	writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
+
+	const first = await launch({ folder: folder('first', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } });
+	await followed(first.body.entry!.id);
+	const second = await launch({ folder: folder('again', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '第二' } });
+	const view = await followed(second.body.entry!.id);
+
+	expect(view.follow).toMatchObject({
+		renameError: '它所在的分頁在啟動前就有了，不是新開的分頁，沒有改名',
+		moveError: '它所在的分頁在啟動前就有了，不是新開的分頁，沒有移動'
+	});
+	expect(herdrCalls()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-nano', insert_index: 0 }]]);
 });

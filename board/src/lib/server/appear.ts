@@ -22,9 +22,11 @@ type Wanted = { name: string } | { sessionId: string };
 /** The Herdr agent that is this client, when both lists are read and agree. */
 export function runningIn(wanted: Wanted, hcom: HcomAgent[], herdr: HerdrAgent[]): { hcom: HcomAgent | undefined; herdr: HerdrAgent | undefined } {
 	const listed = hcom.find((agent) => ('name' in wanted ? agent.name === wanted.name : agent.sessionId === wanted.sessionId));
+	// Its session first: a pane hcom still has from an earlier client may hold another agent now.
 	const seen =
 		listed &&
-		herdr.find((agent) => (listed.sessionId !== null && agent.sessionId === listed.sessionId) || (listed.pane !== null && agent.pane === listed.pane));
+		(herdr.find((agent) => listed.sessionId !== null && agent.sessionId === listed.sessionId) ??
+			herdr.find((agent) => listed.pane !== null && agent.pane === listed.pane));
 	return { hcom: listed, herdr: seen };
 }
 
@@ -32,12 +34,20 @@ export type Appearance = { found: HerdrAgent } | { found: null; reason: string }
 
 /** Wait until the client runs in Herdr, or until `deadline` (board clock); gives up early when
  *  hcom stops listing it, when it is listed but nothing runs in its pane for a while, or when
- *  Herdr's lists cannot be read for a while. `who` names it in the reasons. */
-export async function waitToAppear(config: BoardConfig, wanted: Wanted, deadline: number, who: string): Promise<Appearance> {
+ *  Herdr's lists cannot be read for a while. `who` names it in the reasons. Until it runs, each
+ *  read in which hcom lists a pane for it hands that pane to `onPane`, until `onPane` answers true. */
+export async function waitToAppear(
+	config: BoardConfig,
+	wanted: Wanted,
+	deadline: number,
+	who: string,
+	onPane?: (pane: string) => Promise<boolean>
+): Promise<Appearance> {
 	let missing = 0;
 	let idle = 0;
 	let herdrUnread = 0;
 	let unread: string | null = null;
+	let paneDone = !onPane;
 	for (;;) {
 		const [hcom, herdr] = await Promise.all([listAgents(config), listHerdrAgents(config)]);
 		unread = !hcom.ok ? hcom.reason : !herdr.ok ? herdr.reason : null;
@@ -48,6 +58,7 @@ export async function waitToAppear(config: BoardConfig, wanted: Wanted, deadline
 		if (hcom.ok && herdr.ok) {
 			const running = runningIn(wanted, hcom.agents, herdr.agents);
 			if (running.herdr) return { found: running.herdr };
+			if (!paneDone && running.hcom?.pane) paneDone = await onPane!(running.hcom.pane);
 			missing = running.hcom ? 0 : missing + 1;
 			idle = running.hcom?.pane ? idle + 1 : 0;
 			if (missing >= GONE_AFTER) return { found: null, reason: `hcom 的清單上沒有 ${who}` };
