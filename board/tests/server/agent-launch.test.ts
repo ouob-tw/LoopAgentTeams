@@ -672,3 +672,24 @@ test('a client whose tab went first but that never runs is still reported when t
 	expect(view.follow?.error).toEndWith('，沒有改分頁名稱，分頁已先移到最前面；請到 Herdr 分頁查看');
 	expect(herdrCalls()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-gone', insert_index: 0 }]]);
 });
+
+test("the tab goes first while hcom's launch command still waits for its client to be ready", async () => {
+	herdrPlan();
+	// hcom prints the name at once, then waits 1.5 s for the client, as the real one does.
+	hcomPlan([{ name: 'slow', workspace: 'wA', appears: false }], { sleepMs: 1_500 });
+
+	let answered = false;
+	const answer = launch({ folder: folder('slow-hcom', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } }).then(
+		(made) => ((answered = true), made)
+	);
+	await until(() => hcomCalls().length > 0, 3_000, 'hcom to run');
+	opens('slow');
+	await until(() => moves().length > 0, 1_200, 'the move while hcom runs');
+	expect(answered).toBe(false);
+
+	runs('slow');
+	const { body } = await answer;
+	const view = await followed(body.entry!.id);
+	expect(view).toMatchObject({ state: 'appeared', follow: { error: null, moveError: null } });
+	expect(moves()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-slow', insert_index: 0 }]]);
+});

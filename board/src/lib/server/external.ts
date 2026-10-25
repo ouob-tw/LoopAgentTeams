@@ -34,6 +34,8 @@ interface RunOptions {
 	 *  fallback: the last line of standard error (the default), or the first line of standard
 	 *  output, for a command that prints its reason there and only notices on standard error. */
 	failureFrom?: 'stderr-last' | 'stdout-first';
+	/** Gets all of standard output so far each time more of it comes, while the command runs. */
+	onStdout?: (stdout: string) => void;
 }
 
 const DEFAULT_MAX_BUFFER = 16 * 1024 * 1024;
@@ -89,7 +91,11 @@ export function runCommand(command: string[], args: string[], options: RunOption
 			child[stream]!.on('data', (chunk: Buffer) => {
 				if (bytes[stream] > maxBuffer) return;
 				bytes[stream] += chunk.length;
-				if (bytes[stream] <= maxBuffer) return void output[stream].push(chunk);
+				if (bytes[stream] <= maxBuffer) {
+					output[stream].push(chunk);
+					if (stream === 'stdout') options.onStdout?.(text('stdout'));
+					return;
+				}
 				stop('too-large', `輸出過大（${stream} 超過 ${maxBuffer / 1024 / 1024} MB）`);
 			});
 		}

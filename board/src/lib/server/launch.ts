@@ -30,8 +30,8 @@ import type { BoardConfig } from './config.ts';
 import { cannotCreate, createFolder } from './browse.ts';
 import { gitInit, gitRoot } from './git.ts';
 import { listControllers } from './helper.ts';
-import { waitToAppear } from './appear.ts';
-import { launchAgent } from './hcom.ts';
+import { runningIn, waitToAppear, type Wanted } from './appear.ts';
+import { launchAgent, listAgents } from './hcom.ts';
 import {
 	chooseWorkspace,
 	createWorkspace,
@@ -143,7 +143,7 @@ export function frontTab(config: BoardConfig, workspace: string, before: Set<str
 			return moved;
 		},
 		async onPane(pane: string): Promise<boolean> {
-			if (!before) return true;
+			if (!before || moved) return true;
 			const place = await paneTab(config, pane);
 			// Herdr does not list the pane yet, or its list cannot be read: the next read tries again.
 			if (place === null || 'reason' in place) return false;
@@ -158,6 +158,33 @@ export function frontTab(config: BoardConfig, workspace: string, before: Set<str
 			return moveToFront(config, found.tab);
 		}
 	};
+}
+
+/** How often hcom's list is read for the client's pane while hcom's command still runs. */
+const EARLY_POLL_MS = 400;
+
+/** While hcom's command that opens a client still runs (it waits until the client is ready), hand
+ *  the pane hcom lists for `wanted` (null until it is known) to `front` (`frontTab`), until a tab
+ *  moved or the command is over. */
+export async function frontWhileLaunching(
+	config: BoardConfig,
+	wanted: () => Wanted | null,
+	front: ReturnType<typeof frontTab>,
+	running: Promise<unknown>
+): Promise<void> {
+	let over = false;
+	const ended = running.then(
+		() => (over = true),
+		() => (over = true)
+	);
+	let done: string | null = null;
+	while (!over && !front.moved) {
+		const which = wanted();
+		const list = which ? await listAgents(config) : null;
+		const pane = which && list?.ok ? runningIn(which, list.agents, []).hcom?.pane : null;
+		if (!over && pane && pane !== done && (await front.onPane(pane))) done = pane;
+		await Promise.race([ended, new Promise((resolve) => setTimeout(resolve, EARLY_POLL_MS))]);
+	}
 }
 
 export function startLaunch(board: Board, request: LaunchRequest): Promise<{ status: number; body: LaunchResponse }> {
@@ -212,18 +239,23 @@ async function attempt(
 		// The form does not allow this; nothing was started or changed, so nothing is logged.
 		return { status: 409, body: { ok: false, reason: prepared.reason, entry: null, logError: null } };
 	}
-	let before: Set<string> | null = null;
+	let front: ReturnType<typeof frontTab> | null = null;
+	let early: Promise<void> = Promise.resolve();
 	if ('reason' in prepared) entry.error = prepared.reason;
 	else {
-		before = await tabsBefore(config, entry.herdrWorkspace!);
-		const launched = await launchAgent(config, {
+		front = frontTab(config, entry.herdrWorkspace!, await tabsBefore(config, entry.herdrWorkspace!));
+		let named: string | null = null;
+		const launching = launchAgent(config, {
 			client: entry.client,
 			folder: prepared.startIn,
 			herdrWorkspace: entry.herdrWorkspace!,
 			prompt: agent ? entry.text : latCommand(entry.client, entry.text),
 			// A new Claude starts in bypass-permissions mode. Not in modelArgs: hcom repeats it on resumes (see permission.ts).
-			extraArgs: [...(entry.client === 'claude' ? ['--dangerously-skip-permissions'] : []), ...modelArgs(entry.client, request)]
+			extraArgs: [...(entry.client === 'claude' ? ['--dangerously-skip-permissions'] : []), ...modelArgs(entry.client, request)],
+			onName: (name) => (named = name)
 		});
+		early = frontWhileLaunching(config, () => (named ? { name: named } : null), front, launching);
+		const launched = await launching;
 		entry.outcome = launched.outcome;
 		entry.hcomName = launched.hcomName;
 		entry.error = launched.reason;
@@ -245,20 +277,19 @@ async function attempt(
 		status: ok ? 200 : 502,
 		body: { ok, reason: ok ? null : entry.error, entry: { ...entry, state, controllerId: null, follow: null }, logError },
 		// Without a name nothing in Herdr's list can be told to be this agent.
-		follow: ok && entry.hcomName ? followAgent(board, entry, entry.hcomName, agent?.tabName ?? '', before) : undefined
+		follow: ok && entry.hcomName ? early.then(() => followAgent(board, entry, entry.hcomName!, agent?.tabName ?? '', front!)) : undefined
 	};
 }
 
 /**
  * Wait until Herdr runs the agent hcom started under this name (`waitToAppear`), moving its tab to
- * the front of its workspace as soon as hcom lists its pane (`frontTab`; `before`: the workspace's
- * tabs before the launch). Once it runs, name its tab when a name was asked for, and move the tab
+ * the front of its workspace as soon as hcom lists its pane (`front`, which may have moved it
+ * already while hcom's command ran). Once it runs, name its tab when a name was asked for, and move the tab
  * to the front if it is not there yet. Either step failing leaves the agent started; the log says
  * which one failed.
  */
-async function followAgent(board: Board, entry: SentLaunch, hcomName: string, tabName: string, before: Set<string> | null): Promise<void> {
+async function followAgent(board: Board, entry: SentLaunch, hcomName: string, tabName: string, front: ReturnType<typeof frontTab>): Promise<void> {
 	const config = board.config;
-	const front = frontTab(config, entry.herdrWorkspace!, before);
 	let found: HerdrAgent | null = null;
 	let notFound = '';
 	let renameError: string | null = null;

@@ -17,7 +17,7 @@ const EXITED_AFTER = 8;
 const UNREAD_AFTER = 5;
 
 /** Which client: the one hcom lists under this name, or with this session ID. */
-type Wanted = { name: string } | { sessionId: string };
+export type Wanted = { name: string } | { sessionId: string };
 
 /** The Herdr agent that is this client, when both lists are read and agree. */
 export function runningIn(wanted: Wanted, hcom: HcomAgent[], herdr: HerdrAgent[]): { hcom: HcomAgent | undefined; herdr: HerdrAgent | undefined } {

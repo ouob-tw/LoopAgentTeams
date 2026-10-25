@@ -73,16 +73,24 @@ function launchResult(run: ExternalResult, action = '啟動'): LaunchResult {
 const IN_A_HERDR_TAB = ['--terminal', 'herdr', '--no-run-here'];
 
 /** Start one agent of this client in the folder, with this first message (none when it is
- *  empty), in a new Herdr tab of the workspace. `extraArgs` go to the client, after hcom's own flags. */
+ *  empty), in a new Herdr tab of the workspace. `extraArgs` go to the client, after hcom's own flags.
+ *  hcom prints the agent's name at once, then waits until the client is ready: `onName` gets the
+ *  name as soon as it is printed. */
 export async function launchAgent(
 	config: BoardConfig,
-	launch: { client: LaunchClient; folder: string; herdrWorkspace: string; prompt: string; extraArgs: string[] }
+	launch: { client: LaunchClient; folder: string; herdrWorkspace: string; prompt: string; extraArgs: string[]; onName?: (name: string) => void }
 ): Promise<LaunchResult> {
 	const prompt = launch.prompt ? ['--hcom-prompt', launch.prompt] : [];
 	const args = [launch.client, '--dir', launch.folder, ...IN_A_HERDR_TAB, '--go', ...prompt, ...launch.extraArgs];
+	const { onName } = launch;
 	const run = await runCommand(config.hcomCommand, args, {
 		timeoutMs: config.hcomTimeoutMs,
-		env: hcomEnv(launch.herdrWorkspace)
+		env: hcomEnv(launch.herdrWorkspace),
+		// Whole lines only: a name cut off in the middle is not the agent's.
+		onStdout: onName && ((stdout) => {
+			const name = launchedName(stdout.slice(0, stdout.lastIndexOf('\n') + 1));
+			if (name) onName(name);
+		})
 	});
 	return launchResult(run);
 }
