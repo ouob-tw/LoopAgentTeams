@@ -3,7 +3,8 @@
 
 `card` creates the task card for an HCOM tag that was just launched; the agent's full name
 comes from `hcom list --json`. `brief` turns a four-section Markdown file plus that card into
-a ready-to-send task brief and prints the `hcom send` command. It never launches agents and
+a ready-to-send task brief and prints the `hcom send` command; its `--name` values are the
+base names HCOM records for tagged senders. It never launches agents and
 never sends anything. Hand-written cards and briefs stay allowed.
 
 With --ledger, `card` also opens and assigns a row in the LAT work ledger (lat-ledger.py) and
@@ -22,7 +23,7 @@ import shlex
 import sys
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import run_cli, write_text_atomic
+from _lat_common import hcom_send_name, run_cli, write_text_atomic
 
 LAT_DIR = Path(__file__).resolve().parents[1]
 SECTIONS = ('目標與完成條件', '範圍與不能碰', '其他 Agent 與分工', '現場動作額度')
@@ -48,7 +49,7 @@ FIXED = '''## Fixed fields
 - Language: all agent-to-agent communication (hcom messages, hand-offs, reports) is in English.
 - On completion report: where the results are, test results (for a full suite, attach the suite-gate record: the fingerprint, or the entry `suite-gate.py status` shows; do not rerun just to report), and anything unfinished.
 - Stuck rule: if the same acceptance target fails 3 rounds of fix -> verify (fix -> deploy -> verify when there is a deploy step), report to {orchestrator} immediately with the failure evidence and your next hypothesis. Reset the count when the target passes or changes.
-- Report with: `hcom send @{orchestrator} --name {agent}`. If you forget the syntax, run `hcom <command> --help`; do not guess.
+- Report with: `hcom send @{orchestrator} --name {agent_name}`. If you forget the syntax, run `hcom <command> --help`; do not guess.
 - Always address messages: `@<name>` for one agent, `@<tag>-` for a group. Never run `hcom send` without `@`; it broadcasts to every agent.
 - Nobody watches your terminal window, so do not explain anything there; send every report with `hcom send`.
 
@@ -387,11 +388,13 @@ def make_brief(args):
     parts.append('## Task card live actions and preflight (authoritative; copied from the card)\n\n'
                  f'- live actions：{card["live actions"]}\n- preflight：{card["preflight"]}\n\n'
                  f'{LIVE_RULES}\n')
+    agents = read_hcom_list()
     preauth = preauth_part(args, workspace, card['orchestrator'])
     if preauth:
         parts.append(preauth)
     fixed = FIXED.format(
         workdir=workdir, orchestrator=card['orchestrator'], agent=card['agent'],
+        agent_name=hcom_send_name(card['agent'], agents),
         card=card_path, card_rule=CARD_RULE_READ_ONLY if args.read_only else CARD_RULE,
         runs=card.get('runs') or NONE, workspace=shlex.quote(str(workspace)),
         decisions=workspace / '.lat' / 'decisions',
@@ -410,7 +413,7 @@ def make_brief(args):
     write_text_atomic(output, '\n'.join(parts), mode=0o644)
     print(f'brief: {output}')
     print('send: hcom send @{} --intent request --name {} --file {}'.format(
-        card['agent'], card['orchestrator'], shlex.quote(str(output))))
+        card['agent'], hcom_send_name(card['orchestrator'], agents), shlex.quote(str(output))))
 
 
 def build_parser():

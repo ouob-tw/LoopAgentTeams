@@ -66,6 +66,15 @@ def run_cli(command, *, timeout, failure=None, env=None):
     return result.stdout
 
 
+def hcom_send_name(name, agents):
+    """The name HCOM records as the sender for `name` in `hcom list --json` output: the base
+    name of a tagged instance, else `name` itself."""
+    for item in agents:
+        if item.get('name') == name and isinstance(item.get('base_name'), str):
+            return item['base_name']
+    return name
+
+
 def shared_lat_dir(workspace):
     """One .lat per repository, in the main checkout; linked worktrees share it."""
     workspace = Path(workspace)

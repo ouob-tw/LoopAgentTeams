@@ -84,12 +84,12 @@ class PreauthCase(unittest.TestCase):
         path.write_text(text)
 
     def session(self, settings, *, status='active', round_number=1, history=0,
-                integration='dev', tickets=('313',)):
+                integration='dev', tickets=('313',), hcom_name='orch'):
         ledger = self.repo / '.lat' / 'ledgers' / 'round.json'
         self.write(ledger, json.dumps({'integration_branch': integration,
                                        'items': [{'ticket': t} for t in tickets]}))
         record = dict(status=status, history=[{}] * history, ledger_path=str(ledger),
-                      hcom_name='orch', decisions_path=str(self.repo / '.lat' / 'decisions'))
+                      hcom_name=hcom_name, decisions_path=str(self.repo / '.lat' / 'decisions'))
         if settings is not None:
             record['preauth'] = {'round': round_number, 'settings': settings}
         self.write(self.sessions / f'{SESSION}.json', json.dumps(record))
@@ -678,9 +678,12 @@ class RecordTests(WriteCase):
         self.bin = self.root / 'bin'
         self.bin.mkdir()
         self.events = self.root / 'events.json'
+        self.agents = self.root / 'agents.json'
+        self.agents.write_text('[]')
         hcom = self.bin / 'hcom'
         hcom.write_text(f'#!{sys.executable}\n' + (
             'import json, sys\n'
+            f'if sys.argv[1] == "list": print(open({str(self.agents)!r}).read()); sys.exit()\n'
             'wanted = int(sys.argv[sys.argv.index("--sql") + 1].split("=")[1])\n'
             f'for event in json.load(open({str(self.events)!r})):\n'
             '    if event["id"] == wanted: print(json.dumps(event))\n'))
@@ -727,6 +730,25 @@ class RecordTests(WriteCase):
             result = self.record('--action', 'deploy-test', '--commit', 'abc', '--basis', 'x',
                                  '--result', 'succeeded')
             self.assertIn('needs --notice-before, --notice-after and --started', result.stderr)
+
+    def test_tagged_controller_notices_carry_its_base_name(self):
+        self.session(None, hcom_name='lat-fix-orch')
+        self.agents.write_text(json.dumps([
+            {'name': 'lat-fix-orch', 'base_name': 'orch', 'tag': 'lat-fix'},
+            {'name': 'qa-zorch', 'base_name': 'zorch', 'tag': 'qa'}]))
+        after = self.notice(2, '2026-10-25T10:10:00+00:00')
+        for sender in ('zorch', 'rch', 'fix-orch', 'zono'):
+            with self.subTest(sender=sender):
+                self.events.write_text(json.dumps(
+                    [self.notice(1, '2026-10-25T10:00:00+00:00', sender=sender), after]))
+                result = self.deploy()
+                self.assertEqual(result.returncode, 1, result.stdout)
+                self.assertIn(f'sent by {sender}, not this controller lat-fix-orch', result.stderr)
+                self.assertEqual(self.records(), [])
+        self.events.write_text(json.dumps([self.notice(1, '2026-10-25T10:00:00+00:00'), after]))
+        result = self.deploy()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual([entry['notice_before'] for entry in self.records()], [1])
 
     def test_failed_deploy_is_recorded_with_its_notices(self):
         self.events.write_text(json.dumps([self.notice(1, '2026-10-25T10:00:00+00:00'),

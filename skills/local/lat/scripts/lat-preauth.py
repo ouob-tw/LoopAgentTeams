@@ -28,7 +28,8 @@ import sys
 import tomllib
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
-from _lat_common import shared_lat_dir, write_json_atomic, write_text_atomic
+from _lat_common import (hcom_send_name, run_cli, shared_lat_dir, write_json_atomic,
+                         write_text_atomic)
 from lat_decision_status import (read_decision_action, read_decision_session,
                                  read_decision_status)
 
@@ -881,7 +882,19 @@ def hcom_event(event_id):
     return None
 
 
-def notice_problems(label, event_id, sender):
+def controller_senders(name):
+    """The names HCOM may record for this controller's sends: the session record's name and,
+    for a tagged instance, the base name `hcom list` gives it."""
+    try:
+        agents = json.loads(run_cli(['hcom', 'list', '--json'], timeout=30))
+    except ValueError:
+        return {name}
+    if not isinstance(agents, list):
+        return {name}
+    return {name, hcom_send_name(name, [item for item in agents if isinstance(item, dict)])}
+
+
+def notice_problems(label, event_id, sender, senders):
     """(problems, time) for one HCOM notice the controller says it sent."""
     event = hcom_event(event_id)
     if event is None:
@@ -890,7 +903,7 @@ def notice_problems(label, event_id, sender):
     problems = []
     if event.get('type') != 'message':
         problems.append(f'{label} notice #{event_id} is not a message')
-    if data.get('from') != sender:
+    if data.get('from') not in senders:
         problems.append(f'{label} notice #{event_id} was sent by {data.get("from")}, not this '
                         f'controller {sender}')
     if data.get('scope') != 'mentions' or not data.get('mentions'):
@@ -957,8 +970,9 @@ def auto_entry(args, record):
     if started is None:
         raise Refused('--started must be an ISO time with a time zone')
     sender = record.get('hcom_name')
-    problems, before = notice_problems('before', args.notice_before, sender)
-    more, after = notice_problems('after', args.notice_after, sender)
+    senders = controller_senders(sender)
+    problems, before = notice_problems('before', args.notice_before, sender, senders)
+    more, after = notice_problems('after', args.notice_after, sender, senders)
     problems += more
     if before and before >= started:
         problems.append(f'before notice #{args.notice_before} ({before.isoformat()}) is not '
