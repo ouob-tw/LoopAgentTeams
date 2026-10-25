@@ -1,0 +1,3 @@
+{"map": [
+  {"paths": ["skills/local/lat/tests/leak_check.py"], "tests": ["skills/local/lat/tests/test_lat_session.py"]}
+]}
