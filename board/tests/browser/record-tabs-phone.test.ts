@@ -1,8 +1,10 @@
 // The record tab strips of a controller's page and an agent's page in a real browser: on a phone
 // with the smallest text size at its largest, every tab keeps its label and count on one line and
 // the strip scrolls sideways instead of the page; the open tab, however it was opened, is brought
-// into view; the translation button stays at the strip's end. With the default text size the strip
-// looks as it did: the tabs fit, nothing scrolls, and on a phone they share the width.
+// into view; the translation button stays at the strip's end. With the default text size the tabs
+// fit where there is room (desktop, the agent's strip): nothing scrolls, and on a phone they share
+// the width. Where they do not fit (the controller's five tabs on a phone) the strip scrolls
+// sideways, the last tab reachable, and the page never scrolls sideways.
 import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
@@ -182,12 +184,14 @@ for (const { page, search, ids, prefix } of PAGES) {
 		expect(tab.errors).toEqual([]);
 	}, 60_000);
 
-	test.skipIf(!CHROME)(`${page}'s page with the default text: the tabs fit, nothing scrolls, the open tab underlined on the line`, async () => {
+	test.skipIf(!CHROME)(`${page}'s page with the default text: the tabs fit and share the width, or the strip scrolls and the page does not, the open tab underlined on the line`, async () => {
 		for (const width of [1280, 390]) {
 			await visit(search, width);
 			await tab.until(`document.querySelectorAll('[role="tab"]').length === ${ids.length}`, 'the tab strip');
 			const shape = await strip();
-			expect(shape.strip.scrollWidth).toBe(shape.strip.clientWidth);
+			// Only the controller's five tabs may overflow, and only on a phone.
+			const scrolls = shape.strip.scrollWidth > shape.strip.clientWidth;
+			if (width > 760 || page === 'agent') expect(scrolls).toBe(false);
 			expect(shape.page).toBe(shape.window);
 			for (const entry of shape.tabs) {
 				expect(entry.lines).toBe(1);
@@ -198,6 +202,11 @@ for (const { page, search, ids, prefix } of PAGES) {
 				// Each tab its own width, from the left.
 				for (const entry of shape.tabs) expect(entry.width).toBeCloseTo(entry.natural, 0);
 				expect(shape.tabs[0].left).toBeCloseTo(shape.strip.left, 0);
+			} else if (scrolls) {
+				// Not fitting, the strip slides to the last tab, which then shows whole.
+				await tab.eval(`document.querySelector('[role="tablist"]').scrollLeft = 1e6`);
+				expect(shownWhole(await strip(), ids.at(-1)!)).toBe(true);
+				expect((await strip()).page).toBe(shape.window);
 			} else {
 				// The tabs share the width equally.
 				for (const entry of shape.tabs) expect(entry.width).toBeCloseTo(shape.tabs[0].width, 0);
@@ -227,7 +236,8 @@ test.skipIf(!CHROME)('counts that arrive after the last tab opened bring it back
 	const [name, value] = cookie.split('=');
 	await tab.send('Network.setCookie', { name, value, url: fixture.url });
 	await tab.send('Emulation.setDeviceMetricsOverride', { width: 390, height: 800, deviceScaleFactor: 1, mobile: true });
-	// The sent log and the operation record held back: the tabs show without their counts.
+	// The sent log and the operation record held back: the tabs show without their counts, but the
+	// reports' and the ledger's, which come by other requests.
 	await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/messages?controller=*' }, { urlPattern: '*/api/agents/log*' }] });
 	await tab.navigate(`${fixture.url}/?agent=s-lead`);
 	await tab.until(`document.querySelectorAll('[role="tab"]').length === 5`, 'the tab strip');
@@ -238,7 +248,7 @@ test.skipIf(!CHROME)('counts that arrive after the last tab opened bring it back
 	try {
 		await tab.until(`(document.querySelector('#tab-log').click(), document.querySelector('#tab-log').getAttribute('aria-selected') === 'true')`, 'the last tab open');
 		await untilShownWhole('log');
-		expect(await tab.eval<number>(`document.querySelectorAll('[role="tab"] small').length`)).toBeLessThan(4);
+		expect(await tab.eval<number>(`document.querySelectorAll('[role="tab"] small').length`)).toBe(2);
 		await release();
 		await tab.until(`document.querySelectorAll('[role="tab"] small').length === 4`, 'the counts');
 		await untilShownWhole('log');
