@@ -463,6 +463,10 @@ class RetroLogTests(unittest.TestCase):
         self.assertNotIn(f'{T2} | done', self.records(1))
         self.assertEqual(self.commits()[0], 'chore: retime processing record of #1')
         self.assertIn('#1 [可處理]［復發］', self.ok('retime', '1', '--from', T4, '--to', T2))
+        commits = self.commits()
+        self.assertIn('未改動', self.ok('retime', '1', '--from', T2, '--to', T2))
+        self.assertIn('可能先前已改過', self.refused('retime', '1', '--from', T4, '--to', T2))
+        self.assertEqual(self.commits(), commits)
 
     def test_retime_refuses_a_clash_a_merged_entry_and_a_missing_record(self):
         self.add('two records', 's1', T1)

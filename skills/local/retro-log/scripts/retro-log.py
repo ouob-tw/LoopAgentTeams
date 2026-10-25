@@ -425,7 +425,11 @@ def cmd_retime(backlog, args):
         old, new = normalize_time(args.from_time), normalize_time(args.to)
         record = next((p for p in entry.processing if when(p.time) == when(old)), None)
         if record is None:
-            raise Refused(f'#{entry.id} 沒有時間 {old} 的處理紀錄；用 show {entry.id} 查看各筆紀錄的時間')
+            # a rerun after a lost reply lands here; the record at the new time may or may not be the moved one
+            done = any(when(p.time) == when(new) for p in entry.processing)
+            raise Refused(f'#{entry.id} 沒有時間 {old} 的處理紀錄'
+                          + (f'，但已有時間 {new} 的處理紀錄，可能先前已改過' if done else '')
+                          + f'；用 show {entry.id} 查看各筆紀錄的時間')
         if when(new) == when(record.time):
             return [], '', f'#{entry.id} 的這筆處理紀錄已是 {record.time}，未改動'
         if any(when(p.time) == when(new) for p in entry.processing):
@@ -590,7 +594,7 @@ def build_parser():
     p.add_argument('--time', help='處理時間（ISO 8601），預設現在')
     p = sub.add_parser('retime', help='改既有處理紀錄的時間（例如解決合併時的同時間衝突）')
     p.add_argument('id', type=positive)
-    p.add_argument('--from', dest='from_time', required=True, help='要改的那筆處理紀錄目前的時間')
+    p.add_argument('--from', dest='from_time', required=True, help='要改的那筆處理紀錄目前的時間（ISO 8601）')
     p.add_argument('--to', required=True, help='新的時間（ISO 8601）')
     p = sub.add_parser('unsuspect', help='確認不同後清除疑似相同標記')
     p.add_argument('id', type=positive)
