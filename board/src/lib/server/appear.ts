@@ -32,22 +32,29 @@ export function runningIn(wanted: Wanted, hcom: HcomAgent[], herdr: HerdrAgent[]
 
 export type Appearance = { found: HerdrAgent } | { found: null; reason: string };
 
+/** What a wait does on the way: `onPane` gets each pane hcom lists for the client before it runs,
+ *  until it answers true for that pane; an agent `accepts` turns down is not the client, and the
+ *  wait goes on. */
+export interface Watch {
+	onPane(pane: string): Promise<boolean>;
+	accepts?(found: HerdrAgent): boolean;
+}
+
 /** Wait until the client runs in Herdr, or until `deadline` (board clock); gives up early when
  *  hcom stops listing it, when it is listed but nothing runs in its pane for a while, or when
- *  Herdr's lists cannot be read for a while. `who` names it in the reasons. Until it runs, each
- *  read in which hcom lists a pane for it hands that pane to `onPane`, until `onPane` answers true. */
+ *  Herdr's lists cannot be read for a while. `who` names it in the reasons; `watch` follows it. */
 export async function waitToAppear(
 	config: BoardConfig,
 	wanted: Wanted,
 	deadline: number,
 	who: string,
-	onPane?: (pane: string) => Promise<boolean>
+	watch?: Watch
 ): Promise<Appearance> {
 	let missing = 0;
 	let idle = 0;
 	let herdrUnread = 0;
 	let unread: string | null = null;
-	let paneDone = !onPane;
+	let paneDone: string | null = null;
 	for (;;) {
 		const [hcom, herdr] = await Promise.all([listAgents(config), listHerdrAgents(config)]);
 		unread = !hcom.ok ? hcom.reason : !herdr.ok ? herdr.reason : null;
@@ -57,10 +64,13 @@ export async function waitToAppear(
 		}
 		if (hcom.ok && herdr.ok) {
 			const running = runningIn(wanted, hcom.agents, herdr.agents);
-			if (running.herdr) return { found: running.herdr };
-			if (!paneDone && running.hcom?.pane) paneDone = await onPane!(running.hcom.pane);
+			const turnedDown = running.herdr && watch?.accepts && !watch.accepts(running.herdr);
+			if (running.herdr && !turnedDown) return { found: running.herdr };
+			const pane = running.hcom?.pane;
+			if (watch && pane && pane !== paneDone && (await watch.onPane(pane))) paneDone = pane;
 			missing = running.hcom ? 0 : missing + 1;
-			idle = running.hcom?.pane ? idle + 1 : 0;
+			// An agent turned down runs in that pane: the client has not exited.
+			idle = pane && !turnedDown ? idle + 1 : 0;
 			if (missing >= GONE_AFTER) return { found: null, reason: `hcom 的清單上沒有 ${who}` };
 			if (idle >= EXITED_AFTER) return { found: null, reason: `${who} 沒有在它的 Herdr 分頁裡執行，可能一啟動就結束了` };
 		}

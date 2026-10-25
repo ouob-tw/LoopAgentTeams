@@ -573,7 +573,13 @@ test('the tab goes first as soon as hcom lists its pane, before its client runs;
 	]);
 });
 
-test('a pane hcom lists in a tab that was there before the launch never moves that tab; the new one goes first once its client runs', async () => {
+/** Change what hcom lists for the agents it launched (the fake's own list of them). */
+function hcomLists(change: (agents: { name: string; session_id: string; launch_context: { pane_id: string } }[]) => object[]) {
+	const file = join(commandDir, 'hcom-added.json');
+	writeFileSync(file, JSON.stringify(change(readJson(file))));
+}
+
+test('a pane hcom lists in a tab that was there before the launch never moves that tab; the pane it lists next does, before its client runs', async () => {
 	herdrPlan({ panes: [{ pane_id: 'wA:p-old', workspace_id: 'wA', cwd: '/srv/alpha', tab_id: 'wA:t2' }] });
 	hcomPlan([{ name: 'stale', workspace: 'wA', appears: false }]);
 	const plan = readJson(join(commandDir, 'hcom.json'));
@@ -585,27 +591,51 @@ test('a pane hcom lists in a tab that was there before the launch never moves th
 	await sleep(1_500);
 	expect(moves()).toEqual([]);
 
+	hcomLists((agents) => agents.map((agent) => ({ ...agent, launch_context: { pane_id: 'wA:p-stale' } })));
+	await until(() => moves().length > 0, 2_000, 'the early move');
 	runs('stale');
 	const view = await followed(body.entry!.id);
 	expect(view).toMatchObject({ state: 'appeared', follow: { moveError: null } });
 	expect(moves()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-stale', insert_index: 0 }]]);
 });
 
-test("a name hcom hands out again while it still lists the earlier agent never moves or renames that agent's tab", async () => {
+/** Two launches hcom names `nano`: the first runs in `first`'s workspace, the second opens a new
+ *  tab of wA while hcom still lists the first under the name. */
+async function nanoTwice(first: string) {
 	herdrPlan();
-	hcomPlan([{ name: 'nano', workspace: 'wA' }, { name: 'nano', workspace: 'wA', appears: false }]);
+	hcomPlan([{ name: 'nano', workspace: first }, { name: 'nano', workspace: 'wA', appears: false }]);
 	const plan = readJson(join(commandDir, 'hcom.json'));
 	plan.launched[1] = { name: 'nano', session_id: 's-nano2', launch_context: { pane_id: 'wA:p-nano2' } };
 	writeFileSync(join(commandDir, 'hcom.json'), JSON.stringify(plan));
+	const earlier = await launch({ folder: folder('first', true), workspace: { kind: 'existing', id: first }, agent: { tabName: '' } });
+	await followed(earlier.body.entry!.id);
+	const { body } = await launch({ folder: folder('again', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '第二' } });
+	opens('nano2');
+	return body.entry!.id;
+}
 
-	const first = await launch({ folder: folder('first', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '' } });
-	await followed(first.body.entry!.id);
-	const second = await launch({ folder: folder('again', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '第二' } });
-	const view = await followed(second.body.entry!.id);
-
-	expect(view.follow).toMatchObject({
-		renameError: '它所在的分頁在啟動前就有了，不是新開的分頁，沒有改名',
-		moveError: '它所在的分頁在啟動前就有了，不是新開的分頁，沒有移動'
-	});
+test("a name hcom hands out again while it still lists the earlier agent never touches that agent's tab; the new one is followed once hcom lists it", async () => {
+	const id = await nanoTwice('wA');
+	await sleep(1_500);
 	expect(herdrCalls()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-nano', insert_index: 0 }]]);
+	expect(await launchOf(id)).toMatchObject({ state: 'starting', follow: null });
+
+	hcomLists((agents) => agents.filter((agent) => agent.session_id === 's-nano2'));
+	await until(() => moves().length > 1, 2_000, 'the early move');
+	runs('nano2');
+	const view = await followed(id);
+	expect(view).toMatchObject({ state: 'appeared', follow: { renameError: null, moveError: null } });
+	expect(herdrCalls()).toEqual([
+		['socket', 'tab.move', { tab_id: 'wA:t-nano', insert_index: 0 }],
+		['socket', 'tab.move', { tab_id: 'wA:t-nano2', insert_index: 0 }],
+		['tab', 'rename', 'wA:t-nano2', '第二']
+	]);
+});
+
+test("an earlier agent under the reused name in another workspace is not taken for the new one: nothing of it changes, and the wait runs out as before", async () => {
+	const id = await nanoTwice('wE');
+	const view = await followed(id);
+	expect(view.state).toBe('overdue');
+	expect(view.follow?.error).toStartWith(`等了 ${WAIT_SECONDS} 秒，Herdr 的清單上還沒有 @nano`);
+	expect(herdrCalls()).toEqual([['socket', 'tab.move', { tab_id: 'wE:t-nano', insert_index: 0 }]]);
 });

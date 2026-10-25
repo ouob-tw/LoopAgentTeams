@@ -344,12 +344,12 @@ async function attempt(board: Board, sessionId: string, wake: ClosedWake): Promi
 	const followBack = async (where: string, front: ReturnType<typeof frontTab> | null) => {
 		let appeared: Awaited<ReturnType<typeof waitToAppear>>;
 		try {
-			appeared = await waitToAppear(config, { sessionId }, started + config.launchWaitMs, `@${row.hcomName}`, front?.onPane);
+			appeared = await waitToAppear(config, { sessionId }, started + config.launchWaitMs, `@${row.hcomName}`, front ?? undefined);
 		} catch (error) {
 			appeared = { found: null, reason: `確認不了它有沒有在執行：${(error as Error).message}` };
 		}
 		if (!appeared.found) return void fail(`接回後${appeared.reason}`, 'hcom');
-		const moveError = front ? await front.atAppear(appeared.found.tab) : null;
+		const moveError = front ? await front.atAppear(appeared.found) : null;
 		resumes.delete(sessionId);
 		logResume(board, row, 'hcom', moveError ? `${where}；${moveError}` : where, null);
 		await board.refresh();

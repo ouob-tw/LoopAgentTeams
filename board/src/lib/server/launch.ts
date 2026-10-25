@@ -125,18 +125,18 @@ export async function tabsBefore(config: BoardConfig, workspaceId: string): Prom
 	return 'reason' in listed ? null : new Set(listed.tabs.map((tab) => tab.id));
 }
 
-/** Why a tab the client was found in is left alone: it is not the one the launch opened. */
-const OLD_TAB = '它所在的分頁在啟動前就有了，不是新開的分頁';
-
 /**
  * Bring the tab a launch or resume opened in `workspace` to the front: as soon as hcom lists the
  * client's pane (`onPane`, for `waitToAppear`), before the client has started, else once it runs
- * (`atAppear`). A tab among `before` never moves, so a pane hcom still has from an earlier client,
- * or a reused name, never moves another tab; early, only a tab of that workspace moves, and
- * without `before` it waits for the client.
+ * (`atAppear`). Only a tab of that workspace that is not among `before` moves, so a pane hcom
+ * still has from an earlier client, or a reused name, never moves another tab; without `before`
+ * it waits for the client.
  */
 export function frontTab(config: BoardConfig, workspace: string, before: Set<string> | null) {
 	let moved: string | null = null;
+	/** Whether the client runs in a tab the launch may have opened: one of its workspace that was
+	 *  not there before. */
+	const opened = (found: HerdrAgent) => found.workspace === workspace && !before?.has(found.tab);
 	return {
 		/** The tab it moved before the client ran, or null. */
 		get moved() {
@@ -150,15 +150,12 @@ export function frontTab(config: BoardConfig, workspace: string, before: Set<str
 			if (place.workspace === workspace && !before.has(place.tab) && (await moveToFront(config, place.tab)) === null) moved = place.tab;
 			return true;
 		},
-		/** Whether this tab may be the one the launch opened: it was not there before. */
-		opened(tab: string): boolean {
-			return !before?.has(tab);
-		},
+		opened,
 		/** Move the tab the client runs in, unless it moved already; why it did not move, or null. */
-		atAppear(tab: string): Promise<string | null> {
-			if (tab === moved) return Promise.resolve(null);
-			if (before?.has(tab)) return Promise.resolve(`${OLD_TAB}，沒有移動`);
-			return moveToFront(config, tab);
+		atAppear(found: HerdrAgent): Promise<string | null> {
+			if (found.tab === moved) return Promise.resolve(null);
+			if (!opened(found)) return Promise.resolve('它所在的分頁不是這次新開的分頁（啟動前就有了，或在別的工作區），沒有移動');
+			return moveToFront(config, found.tab);
 		}
 	};
 }
@@ -267,18 +264,17 @@ async function followAgent(board: Board, entry: SentLaunch, hcomName: string, ta
 	let renameError: string | null = null;
 	let moveError: string | null = null;
 	try {
-		const appeared = await waitToAppear(config, { name: hcomName }, Date.parse(entry.time) + config.launchWaitMs, `@${hcomName}`, front.onPane);
+		// An agent in a tab this launch did not open is an earlier one under the same name.
+		const watch = { onPane: front.onPane, accepts: front.opened };
+		const appeared = await waitToAppear(config, { name: hcomName }, Date.parse(entry.time) + config.launchWaitMs, `@${hcomName}`, watch);
 		found = appeared.found;
 		if (!appeared.found) notFound = appeared.reason;
-		else if (!front.opened(appeared.found.tab)) {
-			if (tabName) renameError = `${OLD_TAB}，沒有改名`;
-			moveError = `${OLD_TAB}，沒有移動`;
-		} else {
+		else {
 			if (tabName) {
 				const renamed = await renameTab(config, appeared.found.tab, tabName);
 				if (!renamed.ok) renameError = `改分頁名稱失敗：${renamed.reason}`;
 			}
-			moveError = await front.atAppear(appeared.found.tab);
+			moveError = await front.atAppear(appeared.found);
 		}
 	} catch (error) {
 		// Never expected; the record still says the follow-through is over, and why.
