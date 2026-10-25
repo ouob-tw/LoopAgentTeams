@@ -41,6 +41,9 @@ test.skipIf(!CHROME)('a late item is marked with how late it is, inside the page
 	const tab = browser!.tab;
 	const [luna, nova] = fixture.listed();
 	await tab.navigate(`${fixture.url}/?controller=${luna.session_id}`);
+	await tab.until(`document.querySelector('.detail [data-tab="ledger"]')`, 'the ledger tab');
+	expect(await tab.eval(`document.querySelector('.detail [data-tab="ledger"]').innerText.replace(/\\s+/g, ' ')`)).toBe('工作總表 2');
+	await tab.eval(`document.querySelector('.detail [data-tab="ledger"]').click()`);
 	await tab.until(`document.querySelectorAll('.detail .ledger tbody tr').length === 2`, 'the ledger rows');
 
 	const [onTime, late] = await tab.eval<{ text: string; late: boolean; background: string }[]>(ROWS);

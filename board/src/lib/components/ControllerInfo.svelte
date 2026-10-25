@@ -2,8 +2,8 @@
 	// A controller's information page, made of blocks: its header, a close for an idle or running one
 	// (its conversation still open in Herdr, as on the Herdr 分頁) with a running one's HCOM pause or
 	// resume beside, a bar for each question waiting
-	// for an answer, its work ledger, then its conversation, its reports not yet archived and what was sent to it, one
-	// tab at a time. Its model and effort, and messages and wakes, go through the command line at the
+	// for an answer, then its conversation, its reports not yet archived, its work ledger and what was
+	// sent to it, one tab at a time. Its model and effort, and messages and wakes, go through the command line at the
 	// bottom of the screen.
 	// Opened for a report, the conversation shows that report where it is in the history; opened
 	// for a question, the question where the message that asked it is. Any message that asked
@@ -88,11 +88,12 @@
 	let usage = $state<Usage | null>(null);
 	const shown = $derived(usage && controller.running ? usage : null);
 
-	type Tab = 'transcript' | 'reports' | 'sent' | 'log';
+	type Tab = 'transcript' | 'reports' | 'ledger' | 'sent' | 'log';
 	let tab = $state<Tab>('transcript');
 	const tabs = $derived([
 		{ id: 'transcript', label: '對話紀錄', count: null },
 		{ id: 'reports', label: '回報', count: reports.length },
+		{ id: 'ledger', label: '工作總表', count: controller.ledger.state === 'ok' ? controller.ledger.items.length : null },
 		{ id: 'sent', label: '送出紀錄', count: messaging.sent[controller.id]?.length ?? null },
 		...(agent ? [{ id: 'log', label: '操作紀錄', count: agentControl.logCount(agent.id) } as const] : [])
 	] as const satisfies readonly { id: Tab; label: string; count: number | null }[]);
@@ -120,8 +121,6 @@
 
 <PendingQuestions status={controller.status} {questions} {onopen} />
 
-<LedgerBlock ledger={controller.ledger} />
-
 {#if agent}
 	<AgentClose {agent} />
 {/if}
@@ -132,6 +131,8 @@
 			<Transcript {controller} {asks} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
 		{:else if id === 'reports'}
 			<ReportList {reports} {onopen} />
+		{:else if id === 'ledger'}
+			<LedgerBlock ledger={controller.ledger} />
 		{:else if id === 'sent'}
 			<SentLog {controller} />
 		{:else if agent}

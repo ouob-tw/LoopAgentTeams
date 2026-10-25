@@ -2,19 +2,19 @@
 	// A controller's work ledger: one row per item with its status and how late it is first, so a
 	// phone shows them without scrolling, then its stage, agent and times; a late row marked. No
 	// ledger, or one that cannot be read, says so here only.
-	import { formatTime } from '#lib/board/format.ts';
+	import { clock } from '#lib/board/clock.svelte.ts';
+	import { noticeTime } from '#lib/board/format.ts';
 	import { lateText, type LedgerView } from '#lib/board/ledger.ts';
 
 	let { ledger }: { ledger: LedgerView } = $props();
 
-	const time = (iso: string | null) => (iso ? formatTime(iso) : '—');
+	/** Today's times without the date, as the notices show them. */
+	const time = (iso: string | null) => (iso ? noticeTime(iso, clock.now, clock.timeZone) : '—');
 </script>
 
 <section class="ledger" aria-label="工作總表">
-	<h3>
-		工作總表
-		{#if ledger.state === 'ok' && ledger.updatedAt}<span class="updated">更新於 {formatTime(ledger.updatedAt)}</span>{/if}
-	</h3>
+	<!-- Its tab names it, so only when it was updated heads it. -->
+	{#if ledger.state === 'ok' && ledger.updatedAt}<p class="updated">更新於 {time(ledger.updatedAt)}</p>{/if}
 	{#if ledger.state === 'none'}
 		<p class="note">尚無總表</p>
 	{:else if ledger.state === 'error'}
@@ -55,16 +55,13 @@
 		gap: 0.4rem;
 		min-width: 0;
 	}
-	h3 {
-		margin: 0;
-		font-size: max(0.95rem, var(--min-font, 0px));
-	}
 	.updated,
 	.note {
 		font-weight: normal;
 		font-size: max(0.85rem, var(--min-font, 0px));
 		color: var(--muted);
 	}
+	.updated,
 	.note,
 	.error {
 		margin: 0;
