@@ -62,6 +62,7 @@ LAT 看板的開發者說明：設定變數、各功能的實作細節、錯誤�
 | `LAT_BOARD_CSWAP_COMMAND` | claude-swap 指令（JSON 字串陣列），「額度」分頁讀 Claude 帳號時在後面加上 `list --json --cached-only`（只讀 claude-swap 自己的檔案，不連網、不刷新登入）；看板不會執行其他 cswap 指令 | `["cswap"]` |
 | `LAT_BOARD_CSWAP_TIMEOUT_SECONDS` | 上一項多久沒結束就放棄 | `10` |
 | `CODEX_MULTI_AUTH_DIR` | codex-multi-auth 的資料夾，「額度」分頁直接讀其中的 `openai-codex-accounts.json` 與 `quota-cache.json`，只取 email、使用中、方案、用量、重置時間與更新時間，不執行 codex-multi-auth；沒設定時用 `$CODEX_HOME/multi-auth` | `~/.codex/multi-auth` |
+| `LAT_BOARD_COOKIE_NAME` | 登入 cookie 的名稱；同一個主機名稱下要並存的第二個看板（例如示意看板）才需要改 | `lat_board_device` |
 | `LAT_BOARD_QUOTA_SECONDS` | 「額度」分頁的資料多久讀一次，所有瀏覽器共用 | `30` |
 
 `XDG_STATE_HOME` 未設定時是 `~/.local/state`，`XDG_CONFIG_HOME` 未設定時是 `~/.config`。
@@ -367,8 +368,8 @@ bun run demo --css ./proposed.css --port 7111 --host 127.0.0.1
 - 不給 `--css` 就是預設外觀；`--port 0` 由系統挑；不收 7100。
 - 啟動後印出網址連接埠與登入密碼（測試用的固定值），Ctrl-C 或 SIGTERM 結束，暫存資料夾一併刪掉。要先 `bun run build:test`；它輸出到 `build-test/`，不會改寫常駐看板用的 `build/`。
 - 資料有兩個主控、待決題、Herdr Agent、已關閉的 Agent、額度與一則看板提問；程式在 `scripts/demo-board.ts`，種資料的方式和測試的 `tests/harness.ts` 相同。
-- **別把常駐看板的登入弄掉**：登入的 cookie 只認主機名稱，不分連接埠，同一個主機名稱開 7100 與 7110 會互相登出。用跟常駐看板不同的主機名稱開示意，例如常駐看板從 `s5.ouob.tw:7100` 開，示意就開 `s5.hs:7110`（反過來也行）；兩個名稱都要能連到這台主機。
-- 測試：`tests/unit/demo-board.test.ts`（參數）、`tests/server/demo-board.test.ts`（真的啟動：樣式套上、cookie 不帶 Domain、SIGTERM 後資料夾刪除）。
+- **不會把常駐看板登出**：cookie 只認主機名稱、不分連接埠，兩個看板用同一個主機名稱開時，同名的登入 cookie 會互相蓋掉。所以示意看板的登入 cookie 叫 `lat_board_demo`（由設定 `LAT_BOARD_COOKIE_NAME` 指定），常駐看板維持 `lat_board_device`；不管用哪個主機名稱開，兩邊的登入互不影響。
+- 測試：`tests/unit/demo-board.test.ts`（參數）、`tests/server/demo-board.test.ts`（真的啟動：樣式套上、cookie 不帶 Domain 且名稱獨立、SIGTERM 後資料夾刪除）；`tests/server/cookie-name.test.ts`（預設名稱不變、換名後只認新名稱）。
 
 測試檔不得寫死 `/tmp/` 之類的固定暫存路徑，要用 `mkdtemp(join(tmpdir(), …))` 開暫存資料夾並在結束時刪掉；`tests/unit/no-hardcoded-tmp.test.ts` 掃描 `tests/` 底下的 `.ts`、`.mjs`、`.js`，發現就失敗並列出檔案與行號。
 
