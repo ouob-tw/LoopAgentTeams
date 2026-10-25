@@ -141,7 +141,8 @@ async function main() {
 				{ question: '哪些畫面要先改？', header: '範圍', multiSelect: true, options: [{ label: '總覽', description: '' }, { label: '設定', description: '' }, { label: '額度', description: '' }] }
 			] } })),
 			stdout: 'ignore', stderr: 'ignore',
-			env: { PATH: Bun.env.PATH ?? '', HOME: Bun.env.HOME ?? '', LAT_BOARD_ASKS_DIR: join(dir, 'board-asks'), HERDR_PANE_ID: 'wA:p-s-ask', LAT_BOARD_ASK_WAIT_SECONDS: '86400' }
+			// The server's own environment (temporary HOME, fake helper, Herdr config), so the hook never reaches the host's bindings.
+			env: { ...fixture.serverEnv(), LAT_BOARD_ASKS_DIR: join(dir, 'board-asks'), HERDR_PANE_ID: 'wA:p-s-ask', LAT_BOARD_ASK_WAIT_SECONDS: '86400' }
 		});
 
 		// Closed agents: known to Herdr first, then stopped.
@@ -160,6 +161,7 @@ async function main() {
 			appendFileSync(join(dir, 'hcom-events.jsonl'), JSON.stringify({ data: { action: 'stopped', by: 'cli', reason: 'killed', snapshot: { name, session_id: session, tool: 'claude', directory: '/home/someone/projects/board' } }, id: ++id, instance: name, ts: iso(now - ago), type: 'life' }) + '\n');
 		await fixture.refresh(cookie);
 	} catch (error) {
+		asking?.kill();
 		await fixture.cleanup();
 		throw error;
 	}

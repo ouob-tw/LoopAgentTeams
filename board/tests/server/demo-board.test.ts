@@ -23,12 +23,20 @@ beforeAll(async () => {
 	const deadline = Date.now() + 40_000;
 	while (!output.includes('DEMO READY') && Date.now() < deadline && child.exitCode === null) await Bun.sleep(100);
 	const port = /Listening on http:\/\/[^\s:]+:(\d+)/.exec(output)?.[1];
-	if (!port || !output.includes('DEMO READY')) throw new Error(`demo did not start:\n${output}`);
+	if (!port || !output.includes('DEMO READY')) {
+		child.kill('SIGTERM');
+		throw new Error(`demo did not start:\n${output}`);
+	}
 	url = `http://127.0.0.1:${port}`;
 });
 
-afterAll(() => {
-	if (child.exitCode === null) child.kill('SIGKILL');
+afterAll(async () => {
+	if (child.exitCode === null) {
+		// Let the demo clean up after itself; kill it only when it does not.
+		const exited = new Promise((resolve) => child.once('exit', resolve));
+		child.kill('SIGTERM');
+		if (await Promise.race([exited, Bun.sleep(10_000).then(() => 'late')]) === 'late') child.kill('SIGKILL');
+	}
 	rmSync(dir, { recursive: true, force: true });
 });
 

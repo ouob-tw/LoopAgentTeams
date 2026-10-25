@@ -260,6 +260,8 @@ export interface Fixture {
 	stop(): Promise<void>;
 	cleanup(): Promise<void>;
 	/** Everything the server has written to its standard output and error so far. */
+	/** The environment the server runs with: every path in it points into `dir`. Other processes that act for the board take it too. */
+	serverEnv(): Record<string, string>;
 	serverOutput(): string;
 }
 
@@ -544,6 +546,7 @@ export async function startFixture(
 			server.kill('SIGKILL');
 			await exited;
 		},
+		serverEnv: () => ({ ...env }),
 		serverOutput: () => output,
 		async cleanup() {
 			for (const watch of watches) watch.close();
