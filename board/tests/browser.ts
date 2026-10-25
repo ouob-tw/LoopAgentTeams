@@ -49,9 +49,12 @@ export class Tab {
 	errors: string[] = [];
 	/** An expression in the page whose value a timed out wait reports, to show what the page was doing. */
 	screen: string | undefined;
+	/** What the Chrome behind the tab has written to stderr lately; an unanswered request's failure adds it. */
+	#stderr: (() => string) | undefined;
 	/** `ended`, when given, says how the Chrome behind the tab ended; a closed tab's failures add it. */
-	constructor(socket: WebSocket, ended?: () => Promise<string>) {
+	constructor(socket: WebSocket, ended?: () => Promise<string>, stderr?: () => string) {
 		this.#socket = socket;
+		this.#stderr = stderr;
 		socket.addEventListener('message', (event) => {
 			const message = JSON.parse(String(event.data));
 			if (message.method === 'Page.lifecycleEvent' && message.params.name === 'load') this.#loaded.add(message.params.loaderId);
@@ -77,7 +80,7 @@ export class Tab {
 		this.#waiting.clear();
 	}
 	/** A new tab of the Chrome listening on `debugPort`. `scripts` run first in every document. */
-	static async open(debugPort: number, scripts: string[] = [], ended?: () => Promise<string>): Promise<Tab> {
+	static async open(debugPort: number, scripts: string[] = [], ended?: () => Promise<string>, stderr?: () => string): Promise<Tab> {
 		const deadline = Date.now() + 10_000;
 		let target: { webSocketDebuggerUrl: string } | undefined;
 		while (!target) {
@@ -93,7 +96,7 @@ export class Tab {
 			socket.addEventListener('open', resolve, { once: true });
 			socket.addEventListener('error', () => reject(new Error('the Chrome tab did not open')), { once: true });
 		});
-		const tab = new Tab(socket, ended);
+		const tab = new Tab(socket, ended, stderr);
 		await tab.send('Page.enable');
 		await tab.send('Runtime.enable');
 		await tab.send('Page.setLifecycleEventsEnabled', { enabled: true });
@@ -116,7 +119,8 @@ export class Tab {
 				if (this.#gone) return;
 				this.#failures.delete(fail);
 				this.#waiting.delete(id);
-				reject(new Error(`no answer from Chrome in ${ms} ms to ${describe(method, params)}`));
+				const tail = this.#stderr?.() ?? '';
+				reject(new Error(`no answer from Chrome in ${ms} ms to ${describe(method, params)}${tail ? `; Chrome's stderr ends:\n${tail}` : ''}`));
 			}, ms);
 			this.#failures.add(fail);
 			this.#waiting.set(id, (message) => {
@@ -192,6 +196,14 @@ export interface Browser {
 	close(): Promise<void>;
 }
 
+/**
+ * How every test Chrome starts, before its profile and port. `--password-store=basic` (and, on macOS,
+ * `--use-mock-keychain`) keeps the cookie-encryption key in the profile: without it, Chrome on Linux
+ * asks the session D-Bus (gnome-keyring, the XDG secret portal, 25 s timeout each) before its cookie
+ * store can answer, so the test's first `Network.setCookie` waits on services the test does not own.
+ */
+export const CHROME_FLAGS = ['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', '--password-store=basic', '--use-mock-keychain'];
+
 /** Kill the Chrome and everything it started, by its PID: Chrome leads its own process group. */
 function endProcess(chrome: ChildProcess) {
 	if (chrome.pid === undefined || chrome.exitCode !== null) return;
@@ -210,20 +222,16 @@ function endProcess(chrome: ChildProcess) {
  */
 export async function launchChrome(options: { scripts?: string[]; screen?: string } = {}): Promise<Browser> {
 	const profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-'));
-	const chrome = spawn(
-		CHROME,
-		['--headless=new', '--no-sandbox', '--disable-gpu', '--no-first-run', '--disable-extensions', '--disable-component-extensions-with-background-pages', `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'],
-		{ stdio: ['ignore', 'ignore', 'pipe'], detached: true }
-	);
+	const chrome = spawn(CHROME, [...CHROME_FLAGS, `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'], { stdio: ['ignore', 'ignore', 'pipe'], detached: true });
 	const exited = new Promise<void>((resolve) => chrome.once('exit', () => resolve()));
 	// The end of what Chrome wrote to stderr, to say why it ended.
 	let stderr = '';
 	chrome.stderr!.on('data', (chunk: Buffer) => (stderr = (stderr + chunk).slice(-2000)));
+	const tail = () => stderr.trim().split('\n').slice(-5).join('\n');
 	const ended = async () => {
 		await Promise.race([exited, sleep(EXIT_MS)]);
 		if (chrome.exitCode === null && chrome.signalCode === null) return 'Chrome is still running';
-		const tail = stderr.trim().split('\n').slice(-5).join('\n');
-		return `Chrome exited with ${chrome.signalCode ?? `code ${chrome.exitCode}`}${tail ? `; its stderr ends:\n${tail}` : ''}`;
+		return `Chrome exited with ${chrome.signalCode ?? `code ${chrome.exitCode}`}${tail() ? `; its stderr ends:\n${tail()}` : ''}`;
 	};
 	let tab: Tab | undefined;
 	const close = async () => {
@@ -237,7 +245,7 @@ export async function launchChrome(options: { scripts?: string[]; screen?: strin
 		// Chrome that stops answering after it said its port must not hang the setup past its own cleanup.
 		let giveUp: ReturnType<typeof setTimeout>;
 		const timeout = new Promise<never>((_, reject) => (giveUp = setTimeout(() => reject(new Error('timed out opening a Chrome tab')), 20_000)));
-		tab = await Promise.race([Tab.open(debugPort, options.scripts, ended), timeout]).finally(() => clearTimeout(giveUp));
+		tab = await Promise.race([Tab.open(debugPort, options.scripts, ended, tail), timeout]).finally(() => clearTimeout(giveUp));
 		tab.screen = options.screen;
 		return { tab, debugPort, pid: chrome.pid!, close };
 	} catch (error) {

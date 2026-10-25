@@ -1,0 +1,8 @@
+{
+  "map": [
+    {
+      "paths": ["board/tests/browser/browser-launch.test.ts", "board/tests/browser/launch-case.ts", "board/tests/browser/secret-service-blackhole.py", "board/tests/browser/private-bus.conf"],
+      "tests": ["board/tests/browser/browser-launch.test.ts"]
+    }
+  ]
+}
