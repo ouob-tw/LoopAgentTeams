@@ -18,6 +18,8 @@ import unittest
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-session.py'
 SKILL = SCRIPT.parent.parent
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import leak_check  # noqa: E402
 PANEL = SKILL / 'herdr-panel/lat_panel.py'
 SESSION = '11111111-1111-4111-8111-111111111111'
 OTHER = '22222222-2222-4222-8222-222222222222'
@@ -34,8 +36,9 @@ def setUpModule():
 class SessionTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
-        self.addCleanup(self.temp.cleanup)
         self.root = Path(self.temp.name)
+        leak_check.register(self, self.root)
+        self.addCleanup(self.temp.cleanup)
         self.work = self.root / 'work'
         self.work.mkdir()
         (self.work / '.git').mkdir()
@@ -1300,6 +1303,9 @@ class SessionTests(unittest.TestCase):
                 os.killpg(int(path.read_text()), 15)
             except (FileNotFoundError, ProcessLookupError, ValueError):
                 pass
+        # A watcher whose pid file is missing or not yet written is still ours: it runs
+        # a fake uv inside this test's temp dir.
+        leak_check.stop_under(self.root)
 
     def terminate_process(self, process):
         if process.poll() is None:
