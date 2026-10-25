@@ -327,6 +327,7 @@ def activate(args):
     fingerprint = watcher.rule_fingerprint(SKILL_DIR)
     path = session_path(workspace, sid)
     original = current_bytes(path)
+    new_round = True
     if path.exists():
         existing = read_json(path)
         if existing.get('status') in ENDED:
@@ -355,10 +356,14 @@ def activate(args):
             if any(existing.get(key) != value for key, value in expected.items()):
                 raise ValueError('Existing session record differs; do not reset or rebind it')
             record = dict(existing, tasks_path=record['tasks_path'], hcom_name=record['hcom_name'])
+            new_round = False
         else:
             if any(existing.get(key) != value for key, value in record.items()):
                 raise ValueError('Existing session record differs; do not reset or rebind it')
             record = existing
+            new_round = False
+    if new_round:
+        record['started_at_utc'] = datetime.now(timezone.utc).isoformat()
     record.setdefault('rule_fingerprint', fingerprint)
     panel = panel_module()
     try:
@@ -1456,6 +1461,15 @@ def local_time(value):
         return '不明'
 
 
+def start_time(record):
+    """Local start time of the record's round, or None when neither source holds a valid one."""
+    for value in (record.get('started_at_utc'), ledger_created_at(record)):
+        when = local_time(value)
+        if when != '不明':
+            return when
+    return None
+
+
 def hcom_names():
     """Every name and base name HCOM lists; the LAT_SESSION_HCOM_LIST file stands in for it in tests."""
     fake = os.environ.get('LAT_SESSION_HCOM_LIST')
@@ -1469,6 +1483,15 @@ def hcom_names():
         raise ValueError('HCOM agent list unreadable: not a list of agents')
     return {item[key] for item in value for key in ('name', 'base_name')
             if isinstance(item.get(key), str)}
+
+
+def ledger_created_at(record):
+    """The round ledger's created_at, for records written before they carried a start time."""
+    try:
+        created = read_json(Path(record['ledger_path'])).get('created_at')
+    except (KeyError, TypeError, OSError, ValueError):
+        return None
+    return created if isinstance(created, str) else None
 
 
 def list_active(args):
@@ -1499,10 +1522,8 @@ def list_active(args):
             note = ''
         else:
             note = '（紀錄過期：HCOM 已沒有這個 Agent）'
-        started = record.get('started_at_utc')
-        if started:
-            when = local_time(started)
-        else:
+        when = start_time(record)
+        if when is None:
             try:
                 when = datetime.fromtimestamp(path.stat().st_mtime).astimezone().strftime('%Y-%m-%d %H:%M')
             except OSError:

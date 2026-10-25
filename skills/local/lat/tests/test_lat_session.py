@@ -1054,6 +1054,27 @@ class SessionTests(unittest.TestCase):
         self.activate()
         self.assertEqual(json.loads(self.record.read_text()), first)
 
+    def test_activate_stamps_the_round_start_and_a_rerun_keeps_it(self):
+        self.activate()
+        first = json.loads(self.record.read_text())['started_at_utc']
+        self.assertLess(abs((datetime.now(timezone.utc) - datetime.fromisoformat(first)).total_seconds()), 300)
+        record = json.loads(self.record.read_text())
+        record['started_at_utc'] = '2026-01-02T03:04:05+00:00'
+        self.record.write_text(json.dumps(record))
+        self.activate()
+        self.assertEqual(json.loads(self.record.read_text())['started_at_utc'], '2026-01-02T03:04:05+00:00')
+
+    def test_a_new_round_gets_a_new_start_and_history_keeps_the_old_one(self):
+        self.activate()
+        self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
+        record = json.loads(self.record.read_text())
+        record['started_at_utc'] = '2026-01-02T03:04:05+00:00'
+        self.record.write_text(json.dumps(record))
+        self.activate()
+        current = json.loads(self.record.read_text())
+        self.assertNotEqual(current['started_at_utc'], '2026-01-02T03:04:05+00:00')
+        self.assertEqual(current['history'][0]['started_at_utc'], '2026-01-02T03:04:05+00:00')
+
     def test_finished_session_starts_new_round_with_fresh_paths_and_fingerprint(self):
         self.activate()
         self.assertEqual(self.cli('deactivate', '--workspace', self.work).returncode, 0)
@@ -2207,6 +2228,7 @@ class SessionTests(unittest.TestCase):
                          skill_dir=str(SKILL), progress_path=str(self.progress),
                          decisions_path=str(self.decisions), tasks_path=str(self.tasks),
                          hcom_name='orch', rule_fingerprint=record['rule_fingerprint'],
+                         started_at_utc=record['started_at_utc'],
                          ledger_path=str(self.work / f'.lat/ledgers/{SESSION}-r1.json')))
         sub = self.work / 'src'
         sub.mkdir()
@@ -3269,6 +3291,47 @@ class ListActiveTests(unittest.TestCase):
         result = self.list_active([dict(name='alpha-gafe')])
         self.assertIn(datetime(2026, 10, 25, 1, 2, tzinfo=timezone.utc).astimezone()
                       .strftime('%Y-%m-%d %H:%M'), result.stdout)
+
+    def local(self, text):
+        return datetime.fromisoformat(text).astimezone().strftime('%Y-%m-%d %H:%M')
+
+    def test_a_record_without_a_start_uses_the_round_ledger_creation_time(self):
+        ledger = self.root / 'ledger.json'
+        ledger.write_text(json.dumps(dict(created_at='2026-10-20T05:06:07Z')))
+        self.write_record(SESSION, hcom_name='alpha-gafe', ledger_path=str(ledger))
+        result = self.list_active([dict(name='alpha-gafe')])
+        self.assertIn(self.local('2026-10-20T05:06:07+00:00'), result.stdout)
+        self.assertNotIn('紀錄最後更新', result.stdout)
+
+    def test_the_record_start_wins_over_the_ledger_creation_time(self):
+        ledger = self.root / 'ledger.json'
+        ledger.write_text(json.dumps(dict(created_at='2026-10-20T05:06:07Z')))
+        self.write_record(SESSION, hcom_name='alpha-gafe', ledger_path=str(ledger),
+                          started_at_utc='2026-10-25T01:02:00+00:00')
+        result = self.list_active([dict(name='alpha-gafe')])
+        self.assertIn(self.local('2026-10-25T01:02:00+00:00'), result.stdout)
+        self.assertNotIn(self.local('2026-10-20T05:06:07+00:00'), result.stdout)
+
+    def test_an_invalid_start_falls_through_to_the_next_source(self):
+        ledger = self.root / 'ledger.json'
+        ledger.write_text(json.dumps(dict(created_at='2026-10-20T05:06:07Z')))
+        self.write_record(SESSION, hcom_name='alpha-gafe', ledger_path=str(ledger),
+                          started_at_utc='garbage')
+        result = self.list_active([dict(name='alpha-gafe')])
+        self.assertIn(self.local('2026-10-20T05:06:07+00:00'), result.stdout)
+        ledger.write_text(json.dumps(dict(created_at='invalid')))
+        result = self.list_active([dict(name='alpha-gafe')])
+        self.assertIn('（紀錄最後更新）', result.stdout)
+        self.assertNotIn('不明', result.stdout)
+
+    def test_with_no_start_and_no_usable_ledger_the_file_time_is_labelled(self):
+        for ledger_path in (None, str(self.root / 'missing.json')):
+            with self.subTest(ledger_path=ledger_path):
+                fields = dict(ledger_path=ledger_path) if ledger_path else {}
+                self.write_record(SESSION, hcom_name='alpha-gafe', **fields)
+                result = self.list_active([dict(name='alpha-gafe')])
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn('（紀錄最後更新）', result.stdout)
 
     def test_a_record_without_an_hcom_name_cannot_be_checked(self):
         path = self.write_record(SESSION)
