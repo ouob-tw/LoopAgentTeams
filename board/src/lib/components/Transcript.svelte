@@ -7,8 +7,9 @@
 	// question, its card where the message that asked it is, or where that message will come. A
 	// message that asked questions still in the inbox, or answered ones, shows their cards in its
 	// place; a message whose questions the board has no data for stays text. Given a report card, a
-	// DONE report of the inbox shows its card in place of its text. With 中文 picked above it, the
-	// English replies shown are translated, each with its original a click away.
+	// DONE report of the inbox shows its card in place of its text. Board asks show where they were
+	// asked. With 中文 picked above it, the English replies shown are translated, each with its
+	// original a click away.
 	import { lastSegment } from '#lib/board/agents.ts';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
@@ -20,7 +21,9 @@
 	import { answering } from '#lib/board/answering.svelte.ts';
 	import { RenderedMarkdown } from '#lib/board/markdown.ts';
 		import { toasts } from '#lib/board/toasts.svelte.ts';
+	import type { BoardAsk } from '#lib/board/board-asks.ts';
 	import {
+		askPlaces,
 		isQuestion,
 		questionPlace,
 		reportPlace,
@@ -43,6 +46,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	import type { Usage } from '#lib/board/usage.ts';
 	import { onMount, untrack, type Snippet } from 'svelte';
 	import AttachmentList from './AttachmentList.svelte';
+	import BoardAskCard from './BoardAskCard.svelte';
 
 	/** How long a question not found waits for the next page before it is judged without one. */
 	const JUDGE_WITHOUT_PAGE_MS = 5_000;
@@ -56,6 +60,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		questions = [],
 		questionCards,
 		reportCard,
+		asks = [],
 		target,
 		opens = 0,
 		onplaced,
@@ -77,6 +82,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		questionCards?: Snippet<[InboxQuestion[]]>;
 		/** A DONE report's card, shown in place of the text it carries. */
 		reportCard?: Snippet<[InboxReport, Translation | null]>;
+		/** Its board asks, oldest first: each card shows where it was asked. */
+		asks?: BoardAsk[];
 		/** The report or question this page was opened at. */
 		target?: PlacedTarget;
 		/** Changes with every opening of the target, the same one again too. */
@@ -170,13 +177,24 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	const questionList = $derived(steadyQuestions(questions));
 	const openedQuestion = $derived(steadyOpened(target && isQuestion(target) ? target : null));
 
+	type Row = Segment | { kind: 'placed'; key: 'placed'; seq: number | null } | { kind: 'ask'; key: string; ask: BoardAsk };
+	const steadyAsks = steady<BoardAsk[]>();
+	const askList = $derived(steadyAsks(asks));
 	/** The segments as shown, newest first. The target's text, or the newest place for a question
-	 *  whose message is still to come, is one item, so its card stays put when the message comes. */
-	const shown = $derived.by((): (Segment | { kind: 'placed'; key: 'placed'; seq: number | null })[] => {
-		const rows = view ? segments(view.items).toReversed() : [];
-		if (!view || !(card || questionCards)) return rows;
-		if (place === 'pending') return [{ kind: 'placed', key: 'placed', seq: null }, ...rows];
-		return rows.map((row) => (row.kind === 'text' && row.item.seq === place ? { kind: 'placed', key: 'placed', seq: place } : row));
+	 *  whose message is still to come, is one item, so its card stays put when the message comes.
+	 *  Each board ask is shown under the segment that starts after it was asked, or first. */
+	const shown = $derived.by((): Row[] => {
+		if (!view) return [];
+		const places = askPlaces(view.items, askList);
+		const breaks = new Set([...places.keys()].filter((seq) => seq !== null));
+		let rows: Row[] = segments(view.items, breaks).toReversed();
+		if (card || questionCards) {
+			if (place === 'pending') rows = [{ kind: 'placed', key: 'placed', seq: null }, ...rows];
+			else rows = rows.map((row) => (row.kind === 'text' && row.item.seq === place ? { kind: 'placed', key: 'placed', seq: place } : row));
+		}
+		const askRows = (seq: number | null): Row[] => (places.get(seq) ?? []).toReversed().map((ask) => ({ kind: 'ask', key: `a${ask.id}`, ask }));
+		const first = (row: Row) => (row.kind === 'placed' ? row.seq : row.kind === 'text' ? row.item.seq : row.kind === 'tools' ? row.items[0].seq : null);
+		return [...askRows(null), ...rows.flatMap((row) => (row.kind === 'placed' && row.seq === null ? [row] : [row, ...askRows(first(row))]))];
 	});
 	/** The texts the inbox's reports carry, by `seq`, framed as the reports they are. */
 	const reported = $derived.by(() => {
@@ -500,6 +518,12 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 
 <section class="history" data-block="transcript" bind:this={list} onsubmitcapture={hold}>
 	{#if held}<div class="head" bind:this={head} aria-hidden="true"></div>{/if}
+	<!-- Until the conversation is read, where they were asked is not known: newest first, above it. -->
+	{#if !view}
+		{#each askList.toReversed() as ask (ask.id)}
+			<BoardAskCard {ask} />
+		{/each}
+	{/if}
 	{#if unplaced && card}
 		<div class="placed">{@render card(placedTranslation)}</div>
 	{/if}
@@ -521,6 +545,8 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 						{#if index < shown.length - 1 || view.before !== null}
 							<li class="guide"><ArrowDown size="1em" />較早的訊息</li>
 						{/if}
+					{:else if segment.kind === 'ask'}
+						<li class="ask"><BoardAskCard ask={segment.ask} /></li>
 					{:else if segment.kind === 'text' && questionCards && asking.has(segment.item.seq)}
 						<li class="asking" data-seq={segment.item.seq}>{@render questionCards(asking.get(segment.item.seq)!)}</li>
 					{:else if segment.kind === 'text' && reportCard && reported.get(segment.item.seq)?.tag === 'DONE'}

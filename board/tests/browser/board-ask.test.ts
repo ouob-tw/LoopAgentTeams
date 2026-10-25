@@ -3,7 +3,7 @@ import { launchChrome, type Browser, type Tab } from '../browser.ts';
 // the test board's shared folder, the agent's page shows the card, the answer goes back through the
 // hook. Two browsers answering at once: one answer counts, the other is told someone answered.
 // Once the hook's wait ran out, the answer goes to the agent as a message instead.
-import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { afterAll, afterEach, beforeAll, expect, test } from 'bun:test';
 import { startFixture, type Fixture } from '../harness.ts';
@@ -84,6 +84,12 @@ test('the question shows on its agent\'s page, is answered there and goes back t
 	await tab.until(`document.querySelector('${card}')`, 'the card');
 	// Above the conversation: where it is newest.
 	expect(await tab.eval(`document.querySelector('${card}').compareDocumentPosition(document.querySelector('.detail [role="tabpanel"]:not([hidden]) li, .detail [role="tabpanel"]:not([hidden]) article:not([data-ask])')) & Node.DOCUMENT_POSITION_FOLLOWING`)).toBeTruthy();
+	// Where it was asked: a message after it comes above it, the card staying above the one before.
+	appendFileSync(join(fixture.dir, 'transcripts', 's-ask.jsonl'), JSON.stringify({ kind: 'assistant', time: '2099-01-01T00:00:00.000Z', text: '問完了' }) + '\n');
+	const said = (text: string) => `[...document.querySelectorAll('.detail li.said')].find((li) => li.innerText.includes('${text}'))`;
+	await tab.until(`${said('問完了')}`, 'the later message');
+	expect(await tab.eval(`!!(${said('問完了')}.compareDocumentPosition(document.querySelector('${card}')) & Node.DOCUMENT_POSITION_FOLLOWING)`)).toBe(true);
+	expect(await tab.eval(`!!(document.querySelector('${card}').compareDocumentPosition(${said('問我幾個問題')}) & Node.DOCUMENT_POSITION_FOLLOWING)`)).toBe(true);
 	expect(await tab.eval(`document.querySelector('.detail .profile .status').innerText`)).toContain('等你回答');
 	const shown = await tab.eval<{ question: string; options: string[] }[]>(
 		`[...document.querySelectorAll('${card} [data-question]')].map((section) => ({ question: section.querySelector('h2').innerText, options: [...section.querySelectorAll('li')].map((li) => li.innerText.replace(/\\s+/g, ' ').trim()) }))`

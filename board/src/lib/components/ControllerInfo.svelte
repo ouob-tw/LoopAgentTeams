@@ -9,7 +9,7 @@
 	// for a question, the question where the message that asked it is. Any message that asked
 	// questions still in the inbox, or answered ones, shows their cards in its place.
 	// Opened from the Herdr tab, the page is also the agent's: its close, and what was done to it
-	// as a last tab. Its permission requests on the board show above its conversation, newest first.
+	// as a last tab. Its permission requests on the board show in its conversation, where they were asked.
 	import type { Snippet } from 'svelte';
 	import type { BoardAsk } from '#lib/board/board-asks.ts';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
@@ -22,7 +22,6 @@
 	import type { Usage } from '#lib/board/usage.ts';
 	import AgentClose from './AgentClose.svelte';
 	import AgentLog from './AgentLog.svelte';
-	import BoardAskCard from './BoardAskCard.svelte';
 	import ControllerHeader from './ControllerHeader.svelte';
 	import LedgerBlock from './LedgerBlock.svelte';
 	import PendingQuestions from './PendingQuestions.svelte';
@@ -130,10 +129,7 @@
 <RecordTabs {tabs} bind:tab ariaLabel="主控的紀錄" translateTab="transcript">
 	{#snippet panel(id)}
 		{#if id === 'transcript'}
-			{#each asks.toReversed() as ask (ask.id)}
-				<BoardAskCard {ask} />
-			{/each}
-			<Transcript {controller} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
+			<Transcript {controller} {asks} {reports} questions={withAnswered(questions, answered)} {questionCards} {reportCard} {target} {opens} {onplaced} {onunplaced} {card} {copy} bind:usage />
 		{:else if id === 'reports'}
 			<ReportList {reports} {onopen} />
 		{:else if id === 'sent'}

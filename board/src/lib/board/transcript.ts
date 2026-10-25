@@ -91,19 +91,44 @@ export type Segment =
 	/** The operations between two texts, shown as one line until opened. */
 	| { kind: 'tools'; key: string; items: TranscriptTool[] };
 
-export function segments(items: TranscriptItem[]): Segment[] {
+/** The operations between two texts are one segment, except that one starting at a `seq` of
+ *  `breaks` starts a new one, so what is shown there falls between them. */
+export function segments(items: TranscriptItem[], breaks: ReadonlySet<number> = new Set()): Segment[] {
 	const result: Segment[] = [];
 	for (const item of items) {
 		const previous = result.at(-1);
 		if (item.kind !== 'tool') result.push({ kind: 'text', key: `t${item.seq}`, item });
-		else if (previous?.kind === 'tools') previous.items.push(item);
+		else if (previous?.kind === 'tools' && !breaks.has(item.seq)) previous.items.push(item);
 		// Keyed by its first operation, so an open group stays open as more operations arrive.
 		else result.push({ kind: 'tools', key: `o${item.seq}`, items: [item] });
 	}
 	return result;
 }
 
-export const toolsSummary = (items: TranscriptTool[]) => `⋯ 做了 ${items.length} 個操作`;
+/**
+ * Where each ask goes in the conversation: after the items from before it was asked. Keyed by the
+ * `seq` of the first item after it, or null when it came after every item; in the order given.
+ * An item without a time counts as from the time of the one before it.
+ */
+export function askPlaces<T extends { createdAt: string }>(items: TranscriptItem[], asks: T[]): Map<number | null, T[]> {
+	const places = new Map<number | null, T[]>();
+	for (const ask of asks) {
+		const asked = Date.parse(ask.createdAt);
+		let time = -Infinity;
+		let after: number | null = null;
+		for (const item of items) {
+			if (item.time) time = Date.parse(item.time);
+			if (time > asked) {
+				after = item.seq;
+				break;
+			}
+		}
+		places.set(after, [...(places.get(after) ?? []), ask]);
+	}
+	return places;
+}
+
+export const toolsSummary =(items: TranscriptTool[]) => `⋯ 做了 ${items.length} 個操作`;
 
 const ICONS: Record<string, string> = { hcom: '📨', 'lat-watch': '⏰', hook: '🪝' };
 

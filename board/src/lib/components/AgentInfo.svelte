@@ -3,8 +3,8 @@
 	// of who and where it stands, the details of where it runs, its close, then its conversation and
 	// what was done to it, one tab at a time. Text, an interrupt and a model switch are sent to it
 	// from the command line. The status is hcom's when hcom reaches it and Herdr's otherwise (ADR
-	// 0003), or 等你回答 while a board ask of its waits; its board asks show where its conversation is
-	// newest, above it.
+	// 0003), or 等你回答 while a board ask of its waits; its board asks show in its conversation,
+	// where they were asked.
 	import ChevronDown from '@lucide/svelte/icons/chevron-down';
 	import { onMount } from 'svelte';
 	import { agentControl } from '#lib/board/agent-control.svelte.ts';
@@ -14,7 +14,6 @@
 	import { AGENT_STATUS_LABEL, type KnownAgent } from '#lib/board/types.ts';
 	import AgentClose from './AgentClose.svelte';
 	import AgentLog from './AgentLog.svelte';
-	import BoardAskCard from './BoardAskCard.svelte';
 	import HcomBadge from './HcomBadge.svelte';
 	import StatusMark from './StatusMark.svelte';
 	import TranslateToggle from './TranslateToggle.svelte';
@@ -155,11 +154,7 @@
 
 <!-- Both stay mounted, so the conversation keeps its place and its live feed. -->
 <div class="tabpanel" role="tabpanel" id="agent-panel-transcript" aria-labelledby="agent-tab-transcript" hidden={tab !== 'transcript'}>
-	<!-- Newest first, like the conversation under them. -->
-	{#each asks.toReversed() as ask (ask.id)}
-		<BoardAskCard {ask} />
-	{/each}
-	<Transcript controller={speaker} feed="agent" bind:usage />
+	<Transcript controller={speaker} feed="agent" {asks} bind:usage />
 </div>
 <div class="tabpanel" role="tabpanel" id="agent-panel-log" aria-labelledby="agent-tab-log" hidden={tab !== 'log'}>
 	<AgentLog {agent} />

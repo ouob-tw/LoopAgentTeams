@@ -2,6 +2,7 @@
 // operation when opened, and pages joined without repeating or dropping a text.
 import { expect, test } from 'bun:test';
 import {
+	askPlaces,
 	segments,
 	toolLine,
 	toolsSummary,
@@ -38,6 +39,21 @@ test('a group keeps its key as more operations arrive, so an opened group stays 
 	const before = segments([say(0), op(1)]);
 	const after = segments([say(0), op(1), op(2)]);
 	expect(after[1].key).toBe(before[1].key);
+});
+
+const at = (item: TranscriptItem, time: string | null): TranscriptItem => ({ ...item, time });
+const asked = (id: string, createdAt: string) => ({ id, createdAt });
+
+test('a board ask goes after the items from before it was asked, a timeless item counting as the one before it', () => {
+	const items = [at(say(0, 'user'), '2026-10-24T09:00:00Z'), at(op(1), '2026-10-24T09:01:00Z'), at(op(2), null), at(op(3), '2026-10-24T09:03:00Z'), at(say(4), '2026-10-24T09:04:00Z')];
+	const places = askPlaces(items, [asked('a', '2026-10-24T09:02:00Z'), asked('b', '2026-10-24T09:02:30Z'), asked('c', '2026-10-24T09:05:00Z'), asked('d', '2026-10-24T08:00:00Z')]);
+	expect([...places].map(([seq, asks]) => [seq, asks.map((entry) => entry.id)])).toEqual([
+		[3, ['a', 'b']],
+		[null, ['c']],
+		[0, ['d']]
+	]);
+	// The operations around it are two groups, so the card falls between them.
+	expect(segments(items, new Set([3])).map((segment) => segment.key)).toEqual(['t0', 'o1', 'o3', 't4']);
 });
 
 test('an opened group shows one summary line per operation, a failed one marked', () => {
