@@ -5,34 +5,57 @@ import time
 from pathlib import Path
 
 
-def processes_under(root):
-    """PIDs (not ours) whose command line mentions `root`."""
-    needle = str(root).encode()
+def owned_processes(root):
+    """(pidfd, pid, command) for processes (not ours) with an argv entry at or under `root`.
+
+    The pidfd is opened before argv is read, so signalling through it can never reach a
+    process that reused the PID. The caller closes the fds.
+    """
+    root = str(root)
     found = []
     for entry in Path('/proc').iterdir():
         if not entry.name.isdigit() or int(entry.name) == os.getpid():
             continue
+        pid = int(entry.name)
         try:
-            command = (entry / 'cmdline').read_bytes()
+            fd = os.pidfd_open(pid)
         except OSError:
             continue
-        if needle in command:
-            found.append((int(entry.name), command.replace(b'\0', b' ').decode(errors='replace')))
+        try:
+            argv = [a.decode(errors='replace') for a in (entry / 'cmdline').read_bytes().split(b'\0') if a]
+        except OSError:
+            argv = []
+        if any(a == root or a.startswith(root + '/') or ('=' in a and a.split('=', 1)[1].startswith(root + '/'))
+               for a in argv):
+            found.append((fd, pid, ' '.join(argv)))
+        else:
+            os.close(fd)
     return found
 
 
+def kill(owned):
+    for fd, _, _ in owned:
+        try:
+            signal.pidfd_send_signal(fd, signal.SIGKILL)
+        except OSError:
+            pass
+        os.close(fd)
+
+
+def release(owned):
+    for fd, _, _ in owned:
+        os.close(fd)
+
+
 def stop_under(root, timeout=2):
-    """Kill, by PID, every process whose command line mentions `root`; wait for them to go."""
+    """Kill every process owned by `root` through its pidfd; wait for them to go."""
     deadline = time.monotonic() + timeout
     while True:
-        leftovers = processes_under(root)
-        if not leftovers or time.monotonic() > deadline:
+        owned = owned_processes(root)
+        if not owned or time.monotonic() > deadline:
+            release(owned)
             return
-        for pid, _ in leftovers:
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+        kill(owned)
         time.sleep(0.05)
 
 
@@ -40,21 +63,19 @@ def register(test, root):
     """Register a final cleanup (call before any other cleanup so it runs last).
 
     Raises through the test when something started under `root` still runs, or
-    `root` still exists. Leftover processes are killed by PID so they do not pile up.
+    `root` still exists. Leftover processes are killed so they do not pile up.
     """
     def check():
         problems = []
         deadline = time.monotonic() + 1
-        leftovers = processes_under(root)
-        while leftovers and time.monotonic() < deadline:
+        owned = owned_processes(root)
+        while owned and time.monotonic() < deadline:
+            release(owned)
             time.sleep(0.05)
-            leftovers = processes_under(root)
-        for pid, command in leftovers:
-            problems.append(f'process {pid} still running: {command.strip()[:200]}')
-            try:
-                os.kill(pid, signal.SIGKILL)
-            except ProcessLookupError:
-                pass
+            owned = owned_processes(root)
+        for _, pid, command in owned:
+            problems.append(f'process {pid} still running: {command[:200]}')
+        kill(owned)
         if Path(root).exists():
             problems.append(f'temp dir {root} still exists')
         if problems:
