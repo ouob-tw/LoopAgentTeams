@@ -3253,6 +3253,186 @@ class PrePushInstallTests(PrePushCase):
         self.assertEqual(self.hook.read_text(), '#!/bin/sh\n')
 
 
+class PreCommitCase(AffectedCase):
+    """A mapped project on its integration branch (main here) with the pre-commit check
+    installed. The affected commands log the content of each test file they run and fail
+    when one says FAIL."""
+
+    def setUp(self):
+        super().setUp()
+        git(self.repo, 'checkout', '-q', 'main')
+        self.env_log = self.tmp / 'git-env.log'
+        check = (f'printenv GIT_INDEX_FILE GIT_DIR GIT_WORK_TREE >> {self.env_log}; '
+                 f'cat {{tests}} >> {self.log}; ! grep -q FAIL {{tests}}')
+        self.registry['affected']['commands'] = {'.': check, 'web': check}
+        self.write_registry()
+        for name in ('tests/test_app.py', 'tests/test_util.py'):
+            self.touch(name, f'{name} ok\n')
+        git(self.repo, 'add', '-A')
+        self.commit(self.repo, 'checking commands')
+        self.hook = self.repo / '.git/hooks/pre-commit'
+        self.assertEqual(self.gate('install-pre-commit', '--repo', str(self.repo)).returncode, 0)
+
+    def git_commit(self, *args):
+        return subprocess.run(['git', 'commit', '-qm', 'change', *args], cwd=self.repo,
+                              env=self.env, capture_output=True, text=True, timeout=120)
+
+    def logged(self):
+        return self.log.read_text().splitlines() if self.log.exists() else []
+
+    def checkouts_left(self):
+        listed = subprocess.run(['git', 'worktree', 'list', '--porcelain'], cwd=self.repo,
+                                capture_output=True, text=True, env=GIT_ENV).stdout
+        parent = self.state / 'checkouts'
+        return ([p.name for p in parent.iterdir()] if parent.exists() else [],
+                [line for line in listed.splitlines() if line.startswith('worktree ')][1:])
+
+
+class PreCommitTests(PreCommitCase):
+    def test_only_the_staged_content_is_tested(self):
+        self.touch('src/util.py', 'staged\n')
+        self.touch('tests/test_util.py', 'util staged\n')
+        git(self.repo, 'add', 'src/util.py', 'tests/test_util.py')
+        self.touch('tests/test_app.py', 'FAIL unstaged\n')
+        self.touch('tests/test_extra.py', 'FAIL untracked\n')
+        before = head(self.repo)
+        result = self.git_commit()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertNotEqual(head(self.repo), before)
+        self.assertEqual(self.logged(), ['tests/test_app.py ok', 'util staged'])
+        [record] = self.records()
+        self.assertEqual((record['kind'], record['via'], record['changed_files']),
+                         ('affected', 'pre-commit', ['src/util.py', 'tests/test_util.py']))
+        self.assertEqual(self.env_log.read_text(), '', 'no repository settings of the hook')
+        self.assertEqual(self.checkouts_left(), ([], []))
+        status = subprocess.run(['git', 'status', '--porcelain'], cwd=self.repo,
+                                capture_output=True, text=True, env=GIT_ENV).stdout
+        self.assertEqual(status, ' M tests/test_app.py\n?? tests/test_extra.py\n',
+                         'the index and work tree are left as they were')
+        refused = self.git_commit('-a')
+        self.assertNotEqual(refused.returncode, 0, 'commit -a stages, so it is tested')
+        self.assertIn('FAIL unstaged', self.logged())
+
+    def test_a_failing_selected_test_blocks_the_commit(self):
+        self.touch('tests/test_app.py', 'FAIL staged\n')
+        self.touch('web/src/page.ts', 'changed\n')
+        git(self.repo, 'add', '-A')
+        before = head(self.repo)
+        refused = self.git_commit()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertEqual(head(self.repo), before)
+        self.assertIn('commit refused: these failed on the staged content:\n'
+                      'suite-gate:   .: tests/test_app.py\n', refused.stderr)
+        self.assertNotIn('web: ', refused.stderr.split('commit refused')[1])
+        self.assertIn(f"cd {self.repo} && {cli('pre-commit')}", refused.stderr)
+        self.assertIn(f"the tests in the work tree: cd {self.repo} && printenv",
+                      refused.stderr)
+        self.assertIn('--no-verify', refused.stderr)
+        self.assertEqual(self.full_runs(), [])
+        self.assertEqual(self.checkouts_left(), ([], []))
+        self.assertEqual(self.git_commit('--no-verify').returncode, 0)
+
+    def test_other_branches_and_changes_that_select_no_tests_run_nothing(self):
+        self.touch('docs/guide.md', 'docs\n')
+        git(self.repo, 'add', '-A')
+        result = self.git_commit()
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        git(self.repo, 'checkout', '-q', 'feature')
+        self.touch('tests/test_app.py', 'FAIL on feature\n')
+        git(self.repo, 'add', '-A')
+        result = self.git_commit()
+        self.assertEqual((result.returncode, result.stderr), (0, ''))
+        self.assertEqual((self.logged(), self.records(), self.full_runs()), ([], [], []))
+
+    def test_a_merge_commit_is_not_checked(self):
+        git(self.repo, 'checkout', '-q', '-b', 'other')
+        self.touch('tests/test_app.py', 'FAIL from other\n')
+        git(self.repo, 'commit', '-qam', 'other', '--no-verify')
+        git(self.repo, 'checkout', '-q', 'main')
+        self.touch('tests/test_app.py', 'main ok\n')
+        self.assertEqual(self.git_commit('-a').returncode, 0)
+        self.log.unlink()
+        merge = subprocess.run(['git', 'merge', '-q', 'other'], cwd=self.repo, env=self.env,
+                               capture_output=True, text=True)
+        self.assertNotEqual(merge.returncode, 0, 'the merge conflicts')
+        self.touch('tests/test_app.py', 'FAIL resolved\n')
+        git(self.repo, 'add', '-A')
+        result = subprocess.run(['git', 'commit', '--no-edit'], cwd=self.repo, env=self.env,
+                                capture_output=True, text=True, timeout=120)
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn('a merge commit; not checked', result.stderr)
+        self.assertEqual(self.logged(), [])
+
+    def test_a_fallback_runs_the_needed_full_suites_and_blocks_on_failure(self):
+        self.touch('web/package.json', '{}\n')
+        self.registry['affected']['shared'].append('web/package.json')
+        self.registry['full_suites'][1]['command'] = self.full('web') + '; ! test -f FAIL'
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'shared web path', '--no-verify')
+        git(self.repo, 'add', '-A')
+        git(self.repo, 'commit', '-qm', 'package', '--no-verify')
+        self.touch('web/package.json', '{"a": 1}\n')
+        self.touch('web/FAIL', '')
+        git(self.repo, 'add', '-A')
+        refused = self.git_commit()
+        self.assertNotEqual(refused.returncode, 0)
+        self.assertIn('web/package.json: shared path web/package.json', refused.stderr)
+        self.assertIn(f"  web: full suite {self.registry['full_suites'][1]['command']}",
+                      refused.stderr)
+        self.assertEqual(self.full_runs(), ['web'], 'only the suite holding the trigger')
+        git(self.repo, 'rm', '-q', '--cached', 'web/FAIL')
+        result = self.git_commit()
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), ['web', 'web'])
+        passed = self.records()[-1]
+        self.assertEqual((passed['purpose'], passed['via'], passed['reusable'],
+                          passed['trigger_files']),
+                         ('map-fallback', 'pre-commit', True, ['web/package.json']))
+        self.assertEqual(self.checkouts_left(), ([], []))
+
+
+class PreCommitInstallTests(PreCommitCase):
+    BEGIN, END = '# >>> suite-gate pre-commit >>>\n', '# <<< suite-gate pre-commit <<<\n'
+
+    def test_install_keeps_other_hook_content_and_uninstall_restores_it(self):
+        text = self.hook.read_text()
+        self.assertTrue(text.startswith('#!/bin/sh\n' + self.BEGIN) and text.endswith(self.END))
+        self.assertIn(cli('pre-commit') + ' || exit 1\n', text)
+        self.assertEqual(self.gate('uninstall-pre-commit', '--repo', str(self.repo)).returncode, 0)
+        self.assertFalse(self.hook.exists(), 'a hook the installer created is removed')
+        out = self.tmp / 'old-hook'
+        original = f'#!/bin/sh\necho old >> {out}\n'
+        self.hook.write_text(original)
+        self.hook.chmod(0o755)
+        self.assertEqual(self.gate('install-pre-commit', '--repo', str(self.repo)).returncode, 0)
+        self.assertTrue(self.hook.read_text().endswith(self.END + f'echo old >> {out}\n'))
+        self.assertIn('No changes',
+                      self.gate('install-pre-commit', '--repo', str(self.repo)).stdout)
+        self.touch('tests/test_app.py', 'FAIL\n')
+        git(self.repo, 'add', '-A')
+        self.assertNotEqual(self.git_commit().returncode, 0)
+        self.assertFalse(out.exists(), 'a refused check stops the hook')
+        self.touch('tests/test_app.py', 'fixed\n')
+        git(self.repo, 'add', '-A')
+        self.assertEqual(self.git_commit().returncode, 0)
+        self.assertEqual(out.read_text(), 'old\n', 'the old hook still runs after the check')
+        self.assertEqual(self.gate('uninstall-pre-commit', '--repo', str(self.repo)).returncode, 0)
+        self.assertEqual(self.hook.read_text(), original)
+        self.assertTrue(list((self.repo / '.git/hooks').glob('pre-commit.suite-gate-backup-*')))
+
+    def test_refused_without_a_map_or_an_integration_branch(self):
+        for drop, message in (('affected', 'has no affected-test map'),
+                              ('integration_branch', 'names no integration_branch')):
+            with self.subTest(drop=drop):
+                registry = {k: v for k, v in self.registry.items() if k != drop}
+                (self.repo / '.suite-gate.json').write_text(json.dumps(registry))
+                self.hook.unlink(missing_ok=True)
+                result = self.gate('install-pre-commit', '--repo', str(self.repo))
+                self.assertEqual(result.returncode, 1)
+                self.assertIn(message, result.stderr)
+                self.assertFalse(self.hook.exists())
+
+
 OTHER_GROUPS = [
     {'matcher': 'Bash', 'hooks': [{'type': 'command', 'command':
         'uv run --no-project python /skills/hcom-spawn/scripts/block-broadcast.py'}]},

@@ -6,6 +6,8 @@
 
 推送到 main 或推送標籤前，可以用 Git pre-push 檢查確認這份內容已有每一套整套的通過紀錄（見[推送前把關](#推送前把關pre-push)）。
 
+直接在整合分支上提交時，可以用 Git pre-commit 檢查先跑這次暫存改動影響到的測試（見[提交前把關](#提交前把關pre-commit)）。
+
 整套跑完後，距上次整理太久或整套明顯變慢時，閘門會開整理票或提醒（見[定期整理觸發](#定期整理觸發)）。
 
 以下 `<skill>` 指本技能安裝後的目錄。只用標準函式庫，只支援 Linux。
@@ -270,6 +272,24 @@ uv run --no-project python <skill>/scripts/suite-gate.py uninstall-pre-push --re
   [ -x "$local_hook" ] && exec "$local_hook" "$@"
   exit 0
   ```
+
+## 提交前把關（pre-commit）
+
+有對照表的 repo 可以裝 Git pre-commit 檢查：在 `integration_branch` 上提交時，照[受影響測試](#受影響測試與對照表)的規則挑出這次**暫存改動**相對 `HEAD` 影響到的測試，在暫存內容上跑；有任何一組失敗就擋下提交。
+
+- **測的是暫存內容**：在閘門狀態目錄下開一份 `HEAD` 的暫時乾淨檢出，換成這次要提交的暫存內容（`git commit -a` 或指定檔案提交時就是 Git 實際要記錄的內容），在那裡挑選並執行；未暫存的修改與未追蹤的新檔都不影響結果。登記檔與對照表也讀暫存的版本，`fingerprint_include` 列的被忽略檔照 `run --registered` 的方式從工作區複製過去。目錄有 `bun.lock` 時先在檢出裡裝依賴；裝不起來時擋下並註明不是測試結果。檢出不論結果如何都會移除。
+- **結果經過閘門**：每組受影響測試照 `affected` 一樣寫紀錄（`kind: "affected"`），另記 `via: "pre-commit"`。改到共用路徑或對照表沒列的檔案時，照改跑整套的規則經閘門跑需要的那幾套（同樣排隊、沿用，紀錄用途 `map-fallback`、`via: "pre-commit"`），全部通過才放行。
+- **被擋下時**列出失敗的測試（或整套），以及重跑方式：在 repo 根執行 `uv run --no-project python <skill>/scripts/suite-gate.py pre-commit` 會對目前暫存的內容重做同一檢查；修改期間也可以照印出的指令在工作區直接跑那組測試。
+- **不檢查、立即放行**：不在 `integration_branch` 上、正在完成合併（有 `MERGE_HEAD`；分支已在各自的票跑過受影響測試）、暫存改動沒有選出任何測試（例如只改文件）、repo 沒有對照表。`git commit --no-verify` 可略過，屬使用者自行選擇。
+- 暫存的登記檔或對照表有誤時擋下並說明。
+
+安裝與移除照 [pre-push](#安裝與移除) 的方式，規則相同（只寫 repo 自己的 `<git-common-dir>/hooks/pre-commit`、保留原 hook 內容並備份、`--preview` 只印差異、`core.hooksPath` 時提醒要轉交）；另外要求登記檔有對照表與 `integration_branch`。區塊在原 hook 之前執行，檢查失敗時原 hook 不再執行。
+
+```bash
+uv run --no-project python <skill>/scripts/suite-gate.py install-pre-commit --repo <repo> --preview
+uv run --no-project python <skill>/scripts/suite-gate.py install-pre-commit --repo <repo>
+uv run --no-project python <skill>/scripts/suite-gate.py uninstall-pre-commit --repo <repo>
+```
 
 ## 定期整理觸發
 
