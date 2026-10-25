@@ -2920,6 +2920,19 @@ class SessionTests(unittest.TestCase):
         self.assertTrue(self.ledger_path(2).is_file())
         self.assertEqual(first.read_bytes(), ended)
 
+    def test_ledger_carries_the_integration_branch_the_project_configures(self):
+        self.assertIsNone(self.ledger_doc_after_activate()['integration_branch'])
+        shutil.rmtree(self.work / '.git')
+        subprocess.run(['git', 'init', '-q', str(self.work)], check=True)
+        (self.work / '.lat/preauth.toml').write_text('integration_branch = "dev"\n')
+        shutil.rmtree(self.work / '.lat/ledgers')
+        self.record.unlink()
+        self.assertEqual(self.ledger_doc_after_activate()['integration_branch'], 'dev')
+
+    def ledger_doc_after_activate(self):
+        self.activate(duty=False)
+        return json.loads(self.ledger_path().read_text())
+
     def test_activate_reuses_a_ledger_left_by_an_unfinished_activate(self):
         self.ledger_path().parent.mkdir(parents=True)
         subprocess.run([sys.executable, str(SKILL / 'scripts/lat-ledger.py'), 'init', '--ledger',
