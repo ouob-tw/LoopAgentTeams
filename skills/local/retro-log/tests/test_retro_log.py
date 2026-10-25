@@ -187,7 +187,7 @@ class RetroLogTests(unittest.TestCase):
         writers = [subprocess.Popen([sys.executable, str(SCRIPT), 'add', '--title', f'Writer {n}', '--description', 'd',
                                      '--suggestion', 's', '--project', 'p', '--client', 'codex', '--session', f'w{n}',
                                      '--evidence', 'e'], env=self.env, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
-                                    text=True) for n in range(4)]
+                                    text=True, cwd=self.temp.name) for n in range(4)]
         for writer in writers:
             _, err = writer.communicate()
             self.assertEqual(writer.returncode, 0, err)

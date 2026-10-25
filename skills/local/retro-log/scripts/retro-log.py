@@ -242,8 +242,11 @@ class Backlog:
             if not self.exists():
                 self.create()
             self.entries_dir.mkdir(exist_ok=True)
-            for entry in entries:
-                self.path(entry.id).write_text(render(entry), encoding='utf-8')
+            for entry in entries:  # replace whole files so an unlocked reader never sees half of one
+                path = self.path(entry.id)
+                temp = path.with_name(f'.{path.name}.tmp')
+                temp.write_text(render(entry), encoding='utf-8')
+                os.replace(temp, path)
             self.git('add', '-A')
             self.git('commit', '-q', '-m', message)
         except (OSError, RuntimeError, ValueError) as error:
