@@ -2806,6 +2806,81 @@ class PrePushTests(PrePushCase):
         self.assertEqual(self.full_runs(), [])
 
 
+class RegisteredFormTests(PrePushCase):
+    """`run` of a registered suite in another form warns; `run --registered` uses the
+    registered form, so the push and install checks accept its records."""
+
+    def setUp(self):
+        super().setUp()
+        result = self.install()
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+    def lacking(self):
+        """The suites the install check (lacking_full_suites) still wants for HEAD."""
+        with mock.patch.dict(os.environ, self.env):
+            return gate.lacking_full_suites(self.repo, head(self.repo), self.registry)
+
+    def test_another_form_of_a_registered_suite_warns_with_the_registered_form(self):
+        registered = gate.gate_command(self.full('root'), ('--purpose', 'post-merge'))
+        split = self.gate('run', '--purpose', 'post-merge', '--', *shlex.split(self.full('root')))
+        self.assertEqual(split.returncode, 0, split.stderr)
+        self.assertIn('not be accepted by the push and install checks', split.stderr)
+        self.assertIn(registered, split.stderr)
+        self.assertIn('run --registered', split.stderr)
+        self.assertEqual(self.records()[-1]['exit_code'], 0, 'the run is not blocked')
+        spaced = self.gate('run', '--reason', 'flaky', '--',
+                           self.full('root').replace(' ', '  '))
+        self.assertIn(gate.gate_command(self.full('root'), ('--reason', 'flaky')), spaced.stderr)
+        self.assertEqual(self.lacking(), self.registry['full_suites'])
+        for args, cwd in (([self.full('root')], self.repo),
+                          (shlex.split(self.full('root')), self.repo / 'web'),
+                          (['echo', 'other'], self.repo)):
+            with self.subTest(args=args, cwd=cwd):
+                result = self.gate('run', '--purpose', 'post-merge', '--', *args, cwd=cwd)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertNotIn('not be accepted', result.stderr)
+
+    def test_run_registered_runs_every_suite_so_the_checks_accept_them(self):
+        self.assertNotEqual(self.push('main').returncode, 0)
+        result = self.gate('run', '--registered', '--purpose', 'release', cwd=self.repo / 'src')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
+        self.assertEqual({(r['cwd'], r['purpose']) for r in self.records()},
+                         {(str(self.repo), 'release'), (str(self.repo / 'web'), 'release')})
+        self.assertEqual(self.lacking(), [])
+        self.assertEqual(self.push('main').returncode, 0)
+        again = self.gate('run', '--registered', '--purpose', 'release')
+        self.assertEqual(again.returncode, 0, again.stderr)
+        self.assertEqual(len(self.full_runs()), 2, 'passed content is reused')
+
+    def test_run_registered_runs_the_named_suites(self):
+        result = self.gate('run', '--registered', 'web', '--purpose', 'post-merge')
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertEqual(self.full_runs(), ['web'])
+        self.assertEqual(self.lacking(), self.registry['full_suites'][:1])
+        by_command = self.gate('run', '--registered', self.full('root'), '--reason', 'check')
+        self.assertEqual(by_command.returncode, 0, by_command.stderr)
+        self.assertEqual(self.lacking(), [])
+        unknown = self.gate('run', '--registered', 'nope', '--purpose', 'release')
+        self.assertEqual(unknown.returncode, 2)
+        self.assertIn('nope', unknown.stderr)
+        self.assertIn(f"web: {self.full('web')}", unknown.stderr)
+        self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
+
+    def test_run_registered_needs_a_purpose_even_without_a_map(self):
+        del self.registry['affected']
+        self.write_registry()
+        for args in ([], ['--rerun', 'env changed'], ['web']):
+            with self.subTest(args=args):
+                result = self.gate('run', '--registered', *args)
+                self.assertEqual(result.returncode, 2)
+                self.assertIn('run --registered needs a purpose', result.stderr)
+                self.assertIn('--purpose release', result.stderr)
+        with_command = self.gate('run', '--registered', '--purpose', 'release', '--', 'true')
+        self.assertEqual(with_command.returncode, 2)
+        self.assertEqual((self.full_runs(), self.records()), ([], []))
+
+
 class PrePushInstallTests(PrePushCase):
     OLD = '#!/bin/sh\necho "$@" > {out}.args\ncat > {out}\nexit 0\n'
 

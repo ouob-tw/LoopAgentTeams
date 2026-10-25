@@ -1692,29 +1692,127 @@ def _guarded(body):
         return 2
 
 
-def cmd_run(rerun, purpose, reason, argv):
+PURPOSE_CHOICES = ('--purpose post-merge (after a batch is merged), --purpose release (before '
+                   'a release), or --reason "<why the full suite is needed>"')
+
+
+def run_args_error(rerun, purpose, reason):
+    """What is wrong with run's --rerun, --purpose and --reason, or None."""
     if rerun is not None and not rerun.strip():
-        warn('--rerun needs a reason')
-        return 2
+        return '--rerun needs a reason'
     if reason is not None and not reason.strip():
-        warn('--reason needs text')
-        return 2
+        return '--reason needs text'
     if purpose and reason:
-        warn('give either --purpose or --reason, not both')
+        return 'give either --purpose or --reason, not both'
+    return None
+
+
+def purpose_flags(purpose, reason):
+    if reason:
+        return ('--reason', reason.strip())
+    return ('--purpose', purpose) if purpose else ()
+
+
+def command_words(argv):
+    """argv as the words it runs: a shell string split as sh would, None when it cannot be."""
+    if len(argv) != 1:
+        return list(argv)
+    try:
+        return shlex.split(argv[0])
+    except ValueError:
+        return None
+
+
+def registered_form(cwd, argv):
+    """The registered full suite that argv runs in cwd but written in another form (split
+    arguments or other spelling of the same words), so its fingerprint differs; None when
+    argv matches a registered suite exactly or none."""
+    root = repo_root(cwd)
+    if root is None:
+        return None
+    try:
+        suites = read_full_suites(load_registry(cwd) or {})
+    except ValueError:
+        return None
+    here = rel_cwd(root, cwd)
+    suites = [s for s in suites if rel_cwd(root, suite_cwd(root, s)) == here]
+    if any(len(argv) == 1 and normalize_command(argv) == s['command'] for s in suites):
+        return None
+    words = command_words(argv)
+    return next((s for s in suites if words and words == command_words([s['command']])),
+                None)
+
+
+def cmd_run(rerun, purpose, reason, argv):
+    error = run_args_error(rerun, purpose, reason)
+    if error:
+        warn(error)
         return 2
+    flags = purpose_flags(purpose, reason)
     if reason:
         purpose = 'reason'
     if purpose is None and is_mapped(load_registry(Path.cwd()) or {}):
         warn('this project has an affected-test map, so a full suite needs a purpose. '
              'For the tests this change affects, run instead:\n'
              f'  {affected_command()}\n'
-             'For a full suite, add one after `run`: --purpose post-merge (after a batch '
-             'is merged), --purpose release (before a release), or --reason "<why the full '
-             'suite is needed>"')
+             f'For a full suite, add one after `run`: {PURPOSE_CHOICES}')
         return 2
+    suite = registered_form(Path.cwd(), argv)
+    if suite:
+        warn('this is the registered full suite written in another form, so its result will '
+             'not be accepted by the push and install checks. The registered form:\n'
+             f"  {gate_command(suite['command'], flags)}\n"
+             'or run every registered full suite with: suite-gate.py run --registered '
+             '--purpose <purpose>')
     extra = {'purpose': purpose, 'purpose_reason': reason.strip() if reason else None}
     gate = Gate(argv, Path.cwd(), rerun.strip() if rerun else None, load_config(), extra)
     return _guarded(lambda: _drive(gate, gate.run))
+
+
+def cmd_run_registered(names, rerun, purpose, reason):
+    """Run the registered full suites, all or those named by directory or command, in their
+    registered form, each through the gate."""
+    error = run_args_error(rerun, purpose, reason)
+    if error:
+        warn(error)
+        return 2
+    if not purpose and not reason:
+        warn(f'run --registered needs a purpose: add {PURPOSE_CHOICES}')
+        return 2
+    root = repo_root(Path.cwd())
+    if root is None:
+        warn('run --registered: not in a Git work tree')
+        return 2
+    try:
+        suites = read_full_suites(load_registry(root) or {})
+    except ValueError as exc:
+        warn(f'run --registered: {exc}')
+        return 2
+
+    def named(suite, name):
+        return name.strip() == suite['command'] or _dir_key(name) == suite['cwd']
+
+    unknown = [n for n in names if not any(named(s, n) for s in suites)]
+    if unknown:
+        warn(f"run --registered: no registered full suite {', '.join(unknown)}; the "
+             'registered ones (name one by its directory or command):')
+        for suite in suites:
+            warn(f"  {suite['cwd']}: {suite['command']}")
+        return 2
+    if names:
+        suites = [s for s in suites if any(named(s, n) for n in names)]
+    extra = {'purpose': 'reason' if reason else purpose,
+             'purpose_reason': reason.strip() if reason else None}
+
+    def body():
+        code = 0
+        for suite in suites:
+            warn(f"full suite in {suite['cwd']}: {suite['command']}")
+            gate = Gate([suite['command']], suite_cwd(root, suite),
+                        rerun.strip() if rerun else None, load_config(), extra)
+            code = code or _drive(gate, gate.run)
+        return code
+    return _guarded(body)
 
 
 # ---------------------------------------------------------------- affected tests
@@ -1779,6 +1877,11 @@ def read_full_suites(registry):
         raise ValueError('full_suites must list {"command": "...", "cwd": "<dir>"} entries')
     return [{'command': s['command'].strip(), 'cwd': _dir_key(s.get('cwd', '.'))}
             for s in suites]
+
+
+def suite_cwd(root, suite):
+    """The directory a registered full suite runs in."""
+    return root if suite['cwd'] == '.' else root / suite['cwd']
 
 
 def glob_match(path, pattern):
@@ -2024,9 +2127,8 @@ def run_fallback(root, suites, fallback):
     triggers = sorted({path for path, _ in fallback})
     code = 0
     for suite in suites:
-        cwd = root if suite['cwd'] == '.' else root / suite['cwd']
         warn(f"full suite in {suite['cwd']}: {suite['command']}")
-        gate = Gate([suite['command']], cwd, None, load_config(),
+        gate = Gate([suite['command']], suite_cwd(root, suite), None, load_config(),
                     {'purpose': 'map-fallback', 'trigger_files': triggers})
         result = _drive(gate, gate.run)
         code = code or result
@@ -2697,9 +2799,8 @@ def pushed_commits(root, lines):
 
 
 def release_command(root, suite):
-    cwd = root if suite['cwd'] == '.' else root / suite['cwd']
     run = gate_command(suite['command'], ('--purpose', 'release'))
-    return f'cd {shlex.quote(str(cwd))} && {run}'
+    return f'cd {shlex.quote(str(suite_cwd(root, suite)))} && {run}'
 
 
 def lacking_full_suites(root, commit, registry):
@@ -2868,12 +2969,16 @@ def main(argv=None):
         argv, command = argv[:cut], argv[cut + 1:]
     parser = argparse.ArgumentParser(prog='suite-gate.py', description=__doc__.split('\n')[0])
     sub = parser.add_subparsers(dest='action', required=True)
-    run = sub.add_parser('run', help='run a full suite through the gate: run [--rerun "<reason>"] -- <cmd>')
+    run = sub.add_parser('run', help='run a full suite through the gate: run [--rerun "<reason>"] -- <cmd>, '
+                         'or run --registered [suite ...] --purpose <purpose>')
     run.add_argument('--rerun', metavar='REASON', help='run even if this content already passed')
     run.add_argument('--purpose', choices=('post-merge', 'release'),
                      help='why a full suite runs; required with an affected-test map')
     run.add_argument('--reason', metavar='TEXT',
                      help='a free-text purpose instead of --purpose')
+    run.add_argument('--registered', nargs='*', metavar='SUITE',
+                     help='run the registered full suites (all, or those named by directory '
+                          'or command) in their registered form; needs a purpose')
     affected = sub.add_parser('affected', help='run the tests the affected-test map selects '
                                                'for this change: affected [--base <rev>]')
     affected.add_argument('--base', metavar='REV', help='measure the change from this commit '
@@ -2907,6 +3012,10 @@ def main(argv=None):
         config.add_argument('--codex-home', metavar='DIR', help='default: $CODEX_HOME or ~/.codex')
         config.add_argument('--preview', action='store_true', help='show the diff, write nothing')
     args = parser.parse_args(argv)
+    if args.action == 'run' and args.registered is not None:
+        if command:
+            parser.error('run --registered takes no command after --')
+        return cmd_run_registered(args.registered, args.rerun, args.purpose, args.reason)
     if args.action == 'run':
         if not command:
             parser.error('run needs the suite command after --')
