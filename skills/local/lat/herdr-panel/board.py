@@ -60,7 +60,14 @@ _SESSION_ID = re.compile(r"[A-Za-z0-9_-]{1,128}")
 
 
 def _asked_times(questions_path):
-    """Map ``(question ID, revision)`` to the time its upsert was journaled."""
+    """Map ``(question ID, revision)`` to the time its upsert was journaled.
+
+    An ``-archive`` file's questions were asked in its source file, under that file's path.
+    """
+    questions_path = Path(questions_path)
+    paths = [questions_path]
+    if questions_path.stem.endswith("-archive"):
+        paths.append(questions_path.with_name(questions_path.stem.removesuffix("-archive") + questions_path.suffix))
     times = {}
     try:
         lines = panel_journal_path(questions_path).read_text(encoding="utf-8").splitlines()
@@ -76,7 +83,7 @@ def _asked_times(questions_path):
             and entry.get("kind") == "upsert"
             and isinstance(entry.get("upsert_question"), str)
             and isinstance(entry.get("revision"), int)
-            and _journal_entry_matches_questions(entry, questions_path)
+            and any(_journal_entry_matches_questions(entry, path) for path in paths)
         ):
             times[entry["upsert_question"], entry["revision"]] = entry.get("time")
     return times

@@ -405,6 +405,14 @@ class AskedAtTests(BoardTestCase):
         self.assertEqual(question["asked_at"], asked)
         datetime.fromisoformat(question["recorded_at"])
 
+    def test_an_archived_question_keeps_asked_at(self):
+        self.upsert("A. 看板\nB. 儀表板")
+        asked = self.listed()["asked_at"]
+        archive = self.questions.with_name(f"{self.questions.stem}-archive.md")
+        self.questions.rename(archive)
+        [question] = self.board("questions", "--questions", archive)["questions"]
+        self.assertEqual(question["asked_at"], asked)
+
     def test_submitted_answer_of_an_older_revision_does_not_prove_the_new_one(self):
         self.upsert("A. 看板\nB. 儀表板")
         self.answer(self.questions, "Q1", 1, "--select", "1")
