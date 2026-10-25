@@ -1461,6 +1461,15 @@ def local_time(value):
         return '不明'
 
 
+def start_time(record):
+    """Local start time of the record's round, or None when neither source holds a valid one."""
+    for value in (record.get('started_at_utc'), ledger_created_at(record)):
+        when = local_time(value)
+        if when != '不明':
+            return when
+    return None
+
+
 def hcom_names():
     """Every name and base name HCOM lists; the LAT_SESSION_HCOM_LIST file stands in for it in tests."""
     fake = os.environ.get('LAT_SESSION_HCOM_LIST')
@@ -1513,10 +1522,8 @@ def list_active(args):
             note = ''
         else:
             note = '（紀錄過期：HCOM 已沒有這個 Agent）'
-        started = record.get('started_at_utc') or ledger_created_at(record)
-        if started:
-            when = local_time(started)
-        else:
+        when = start_time(record)
+        if when is None:
             try:
                 when = datetime.fromtimestamp(path.stat().st_mtime).astimezone().strftime('%Y-%m-%d %H:%M')
             except OSError:

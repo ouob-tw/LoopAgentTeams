@@ -3312,6 +3312,18 @@ class ListActiveTests(unittest.TestCase):
         self.assertIn(self.local('2026-10-25T01:02:00+00:00'), result.stdout)
         self.assertNotIn(self.local('2026-10-20T05:06:07+00:00'), result.stdout)
 
+    def test_an_invalid_start_falls_through_to_the_next_source(self):
+        ledger = self.root / 'ledger.json'
+        ledger.write_text(json.dumps(dict(created_at='2026-10-20T05:06:07Z')))
+        self.write_record(SESSION, hcom_name='alpha-gafe', ledger_path=str(ledger),
+                          started_at_utc='garbage')
+        result = self.list_active([dict(name='alpha-gafe')])
+        self.assertIn(self.local('2026-10-20T05:06:07+00:00'), result.stdout)
+        ledger.write_text(json.dumps(dict(created_at='invalid')))
+        result = self.list_active([dict(name='alpha-gafe')])
+        self.assertIn('（紀錄最後更新）', result.stdout)
+        self.assertNotIn('不明', result.stdout)
+
     def test_with_no_start_and_no_usable_ledger_the_file_time_is_labelled(self):
         for ledger_path in (None, str(self.root / 'missing.json')):
             with self.subTest(ledger_path=ledger_path):
