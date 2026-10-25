@@ -14,8 +14,18 @@ test('every test Chrome starts with --password-store=basic and --use-mock-keycha
 // that cannot run it fails here instead of skipping, so the stall can never read as a pass.
 test('a Chrome without the flag waits on the secret service for its first cookie request; launchChrome does not', () => {
 	const dir = import.meta.dir;
-	const script = `python3 ${join(dir, 'secret-service-blackhole.py')} & blackhole=$!; for i in $(seq 50); do [ -n "$(dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner string:org.freedesktop.secrets 2>/dev/null | grep true)" ] && break; sleep 0.1; done; ${process.execPath} test ${join(dir, 'launch-case.ts')}; status=$?; kill $blackhole; exit $status`;
-	const run = spawnSync('dbus-run-session', [`--config-file=${join(dir, 'private-bus.conf')}`, '--', 'bash', '-c', script], { encoding: 'utf8', timeout: 90_000 });
+	// The Secret Service first, then the case; the paths come in as arguments, so the script stays literal.
+	const script = [
+		'python3 "$1" & blackhole=$!',
+		'for i in $(seq 50); do dbus-send --session --dest=org.freedesktop.DBus --print-reply /org/freedesktop/DBus org.freedesktop.DBus.NameHasOwner string:org.freedesktop.secrets 2>/dev/null | grep -q true && break; sleep 0.1; done',
+		'"$2" test "$3"; status=$?',
+		'kill $blackhole; exit $status'
+	].join('\n');
+	const run = spawnSync(
+		'dbus-run-session',
+		[`--config-file=${join(dir, 'private-bus.conf')}`, '--', 'bash', '-c', script, 'launch-case', join(dir, 'secret-service-blackhole.py'), process.execPath, join(dir, 'launch-case.ts')],
+		{ encoding: 'utf8', timeout: 90_000 }
+	);
 	const output = run.stdout + run.stderr;
 	expect(output).toMatch(/ 2 pass\n 0 fail\n/);
 	expect(run.status).toBe(0);
