@@ -187,7 +187,8 @@ for (const { page, search, ids, prefix } of PAGES) {
 	test.skipIf(!CHROME)(`${page}'s page with the default text: the tabs fit and share the width, or the strip scrolls and the page does not, the open tab underlined on the line`, async () => {
 		for (const width of [1280, 390]) {
 			await visit(search, width);
-			await tab.until(`document.querySelectorAll('[role="tab"]').length === ${ids.length}`, 'the tab strip');
+			// Every count in, as one arriving later widens its tab and can push the last one past the edge.
+			await tab.until(`document.querySelectorAll('[role="tab"]').length === ${ids.length} && document.querySelectorAll('[role="tab"] small').length === ${ids.length - 1}`, 'the tab strip and its counts');
 			const shape = await strip();
 			// Only the controller's five tabs may overflow, and only on a phone.
 			const scrolls = shape.strip.scrollWidth > shape.strip.clientWidth;
