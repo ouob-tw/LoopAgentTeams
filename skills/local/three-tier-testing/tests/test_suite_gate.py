@@ -3119,9 +3119,10 @@ class RegisteredCheckoutTests(PrePushCase):
         self.commit(self.repo, 'web dependencies')
         child = self.tmp / 'child.pid'
         # The child ignores SIGTERM, so ending it takes the grace wait and then SIGKILL; a
-        # second Ctrl-C during that wait must not leave it running.
-        self.fake_bun(0, f"(trap '' TERM; exec sleep 300) & echo $! > {child}.tmp; "
-                         f'mv {child}.tmp {child}; wait')
+        # second Ctrl-C during that wait must not leave it running. It writes its pid only
+        # after the trap is set.
+        self.fake_bun(0, f"sh -c 'trap \"\" TERM; echo $$ > {child}.tmp; mv {child}.tmp {child}; "
+                         "exec sleep 300' & wait")
         proc = self.start('run', '--registered', '--purpose', 'post-merge')
         self.wait_until(child.exists, message='the preparation to start')
         pid = int(child.read_text())
