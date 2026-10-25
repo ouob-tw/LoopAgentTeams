@@ -114,6 +114,19 @@ export async function paneExists(config: BoardConfig, paneId: string): Promise<{
 	return { exists: paneList.some((pane) => pane.pane_id === paneId) };
 }
 
+/** The tab and workspace of the pane with this ID, null when Herdr does not list it; or why that
+ *  cannot be told. */
+export async function paneTab(config: BoardConfig, paneId: string): Promise<{ tab: string; workspace: string } | null | { reason: string }> {
+	const panes = await herdr(config, ['pane', 'list']);
+	if ('reason' in panes) return { reason: `讀不到 Herdr 的窗格清單：${panes.reason}` };
+	const paneList = panes.result.panes;
+	if (!Array.isArray(paneList)) return { reason: '讀不到 Herdr 的窗格清單：輸出不是預期的格式' };
+	const pane = paneList.find((candidate) => candidate?.pane_id === paneId);
+	if (!pane) return null;
+	if (typeof pane.tab_id !== 'string' || typeof pane.workspace_id !== 'string') return { reason: '讀不到 Herdr 的窗格清單：輸出不是預期的格式' };
+	return { tab: pane.tab_id, workspace: pane.workspace_id };
+}
+
 /** A workspace's tabs, all of them in the order Herdr shows them, plain terminal tabs included;
  *  or why they cannot be told. */
 export async function workspaceTabs(

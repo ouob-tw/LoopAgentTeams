@@ -8,7 +8,7 @@
 // A plain agent from the Herdr tab goes the same way, without the LAT start command or a Git
 // project. Either form may choose its project's workspace, one Herdr lists, or a new one. Either one is then followed until Herdr lists it under
 // its HCOM name: a plain agent's tab is renamed when a name was asked for, and either one's tab is
-// moved to the front of its workspace.
+// moved to the front of its workspace, as soon as hcom lists its pane.
 import { randomUUID } from 'node:crypto';
 import { realpathSync, statSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -32,7 +32,17 @@ import { gitInit, gitRoot } from './git.ts';
 import { listControllers } from './helper.ts';
 import { waitToAppear } from './appear.ts';
 import { launchAgent } from './hcom.ts';
-import { chooseWorkspace, createWorkspace, moveTab, renameTab, workspaceLabel, type HerdrAgent, type WorkspaceChoice } from './herdr.ts';
+import {
+	chooseWorkspace,
+	createWorkspace,
+	moveTab,
+	paneTab,
+	renameTab,
+	workspaceLabel,
+	workspaceTabs,
+	type HerdrAgent,
+	type WorkspaceChoice
+} from './herdr.ts';
 import { queued, typedText } from './send.ts';
 import { launchDefaults } from './client-settings.ts';
 import type { ReportFile } from './reports.ts';
@@ -108,6 +118,48 @@ export function moveToFront(config: BoardConfig, tabId: string): Promise<string 
 	return queued('launch:front', () => moveTab(config, tabId, 0));
 }
 
+/** The IDs of a workspace's tabs before a launch or resume opens one in it; null when Herdr's tab
+ *  list cannot be read. */
+export async function tabsBefore(config: BoardConfig, workspaceId: string): Promise<Set<string> | null> {
+	const listed = await workspaceTabs(config, workspaceId);
+	return 'reason' in listed ? null : new Set(listed.tabs.map((tab) => tab.id));
+}
+
+/**
+ * Bring the tab a launch or resume opened in `workspace` to the front: as soon as hcom lists the
+ * client's pane (`onPane`, for `waitToAppear`), before the client has started, else once it runs
+ * (`atAppear`). Only a tab of that workspace that is not among `before` moves, so a pane hcom
+ * still has from an earlier client, or a reused name, never moves another tab; without `before`
+ * it waits for the client.
+ */
+export function frontTab(config: BoardConfig, workspace: string, before: Set<string> | null) {
+	let moved: string | null = null;
+	/** Whether the client runs in a tab the launch may have opened: one of its workspace that was
+	 *  not there before. */
+	const opened = (found: HerdrAgent) => found.workspace === workspace && !before?.has(found.tab);
+	return {
+		/** The tab it moved before the client ran, or null. */
+		get moved() {
+			return moved;
+		},
+		async onPane(pane: string): Promise<boolean> {
+			if (!before) return true;
+			const place = await paneTab(config, pane);
+			// Herdr does not list the pane yet, or its list cannot be read: the next read tries again.
+			if (place === null || 'reason' in place) return false;
+			if (place.workspace === workspace && !before.has(place.tab) && (await moveToFront(config, place.tab)) === null) moved = place.tab;
+			return true;
+		},
+		opened,
+		/** Move the tab the client runs in, unless it moved already; why it did not move, or null. */
+		atAppear(found: HerdrAgent): Promise<string | null> {
+			if (found.tab === moved) return Promise.resolve(null);
+			if (!opened(found)) return Promise.resolve('它所在的分頁不是這次新開的分頁（啟動前就有了，或在別的工作區），沒有移動');
+			return moveToFront(config, found.tab);
+		}
+	};
+}
+
 export function startLaunch(board: Board, request: LaunchRequest): Promise<{ status: number; body: LaunchResponse }> {
 	return inLaunchQueue(async () => {
 		const made = await attempt(board, request);
@@ -160,8 +212,10 @@ async function attempt(
 		// The form does not allow this; nothing was started or changed, so nothing is logged.
 		return { status: 409, body: { ok: false, reason: prepared.reason, entry: null, logError: null } };
 	}
+	let before: Set<string> | null = null;
 	if ('reason' in prepared) entry.error = prepared.reason;
 	else {
+		before = await tabsBefore(config, entry.herdrWorkspace!);
 		const launched = await launchAgent(config, {
 			client: entry.client,
 			folder: prepared.startIn,
@@ -191,23 +245,28 @@ async function attempt(
 		status: ok ? 200 : 502,
 		body: { ok, reason: ok ? null : entry.error, entry: { ...entry, state, controllerId: null, follow: null }, logError },
 		// Without a name nothing in Herdr's list can be told to be this agent.
-		follow: ok && entry.hcomName ? followAgent(board, entry, entry.hcomName, agent?.tabName ?? '') : undefined
+		follow: ok && entry.hcomName ? followAgent(board, entry, entry.hcomName, agent?.tabName ?? '', before) : undefined
 	};
 }
 
 /**
- * Wait until Herdr runs the agent hcom started under this name (`waitToAppear`). Then name its tab
- * when a name was asked for, and move the tab to the front of its workspace. Either step failing
- * leaves the agent started; the log says which one failed.
+ * Wait until Herdr runs the agent hcom started under this name (`waitToAppear`), moving its tab to
+ * the front of its workspace as soon as hcom lists its pane (`frontTab`; `before`: the workspace's
+ * tabs before the launch). Once it runs, name its tab when a name was asked for, and move the tab
+ * to the front if it is not there yet. Either step failing leaves the agent started; the log says
+ * which one failed.
  */
-async function followAgent(board: Board, entry: SentLaunch, hcomName: string, tabName: string): Promise<void> {
+async function followAgent(board: Board, entry: SentLaunch, hcomName: string, tabName: string, before: Set<string> | null): Promise<void> {
 	const config = board.config;
+	const front = frontTab(config, entry.herdrWorkspace!, before);
 	let found: HerdrAgent | null = null;
 	let notFound = '';
 	let renameError: string | null = null;
 	let moveError: string | null = null;
 	try {
-		const appeared = await waitToAppear(config, { name: hcomName }, Date.parse(entry.time) + config.launchWaitMs, `@${hcomName}`);
+		// An agent in a tab this launch did not open is an earlier one under the same name.
+		const watch = { onPane: front.onPane, accepts: front.opened };
+		const appeared = await waitToAppear(config, { name: hcomName }, Date.parse(entry.time) + config.launchWaitMs, `@${hcomName}`, watch);
 		found = appeared.found;
 		if (!appeared.found) notFound = appeared.reason;
 		else {
@@ -215,7 +274,7 @@ async function followAgent(board: Board, entry: SentLaunch, hcomName: string, ta
 				const renamed = await renameTab(config, appeared.found.tab, tabName);
 				if (!renamed.ok) renameError = `改分頁名稱失敗：${renamed.reason}`;
 			}
-			moveError = await moveToFront(config, appeared.found.tab);
+			moveError = await front.atAppear(appeared.found);
 		}
 	} catch (error) {
 		// Never expected; the record still says the follow-through is over, and why.
@@ -226,7 +285,11 @@ async function followAgent(board: Board, entry: SentLaunch, hcomName: string, ta
 		kind: 'launch-followed',
 		launchId: entry.id,
 		appearedAt: found ? new Date(config.now()).toISOString() : null,
-		error: found ? null : `${notFound}，${tabName ? '沒有改分頁名稱，也' : '分頁'}沒有移到最前面；請到 Herdr 分頁查看`,
+		error: found
+			? null
+			: front.moved
+				? `${notFound}，${tabName ? '沒有改分頁名稱，' : ''}分頁已先移到最前面；請到 Herdr 分頁查看`
+				: `${notFound}，${tabName ? '沒有改分頁名稱，也' : '分頁'}沒有移到最前面；請到 Herdr 分頁查看`,
 		renameError,
 		moveError,
 		time: new Date(config.now()).toISOString()

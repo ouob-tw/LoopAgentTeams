@@ -27,7 +27,7 @@ import type { BoardConfig } from './config.ts';
 import { listStops, resumeAgent, type HcomStop, type StopList } from './hcom.ts';
 import { readTranscript } from './helper.ts';
 import { chooseWorkspace } from './herdr.ts';
-import { inLaunchQueue, moveToFront } from './launch.ts';
+import { frontTab, inLaunchQueue, tabsBefore } from './launch.ts';
 import { keepPermission } from './permission.ts';
 import { appendSent } from './sent-log.ts';
 import { wakeController } from './wake.ts';
@@ -339,20 +339,21 @@ async function attempt(board: Board, sessionId: string, wake: ClosedWake): Promi
 		return { status: 502, body: { ok: false, reason, logError, abandon } };
 	};
 
-	/** Wait until Herdr runs it, then log it back, its tab first when `toFront`; or log why not. */
-	const followBack = async (where: string, toFront: boolean) => {
+	/** Wait until Herdr runs it, then log it back; or log why not. With `front` (`frontTab`), its tab
+	 *  goes first as soon as hcom lists its pane. */
+	const followBack = async (where: string, front: ReturnType<typeof frontTab> | null) => {
 		let appeared: Awaited<ReturnType<typeof waitToAppear>>;
 		try {
-			appeared = await waitToAppear(config, { sessionId }, started + config.launchWaitMs, `@${row.hcomName}`);
+			appeared = await waitToAppear(config, { sessionId }, started + config.launchWaitMs, `@${row.hcomName}`, front ?? undefined);
 		} catch (error) {
 			appeared = { found: null, reason: `確認不了它有沒有在執行：${(error as Error).message}` };
 		}
 		if (!appeared.found) return void fail(`接回後${appeared.reason}`, 'hcom');
-		const moveError = toFront ? await moveToFront(config, appeared.found.tab) : null;
+		const moveError = front ? await front.atAppear(appeared.found) : null;
 		resumes.delete(sessionId);
 		logResume(board, row, 'hcom', moveError ? `${where}；${moveError}` : where, null);
 		await board.refresh();
-		if (toFront) board.tabMoved();
+		if (front) board.tabMoved();
 	};
 
 	if (row.controller) {
@@ -362,14 +363,15 @@ async function attempt(board: Board, sessionId: string, wake: ClosedWake): Promi
 		const body = { ok: true, reason: entry?.outcome === 'pending' ? entry.error : null, logError: woken.body.logError, abandon: null };
 		// The wake's resume moves its tab to the front itself.
 		const where = `以主控喚醒接回${entry?.herdrWorkspaceLabel ? `，開在工作區「${entry.herdrWorkspaceLabel}」` : ''}`;
-		return { value: { status: 200, body }, follow: followBack(where, false) };
+		return { value: { status: 200, body }, follow: followBack(where, null) };
 	}
 
 	const workspace = await chooseWorkspace(config, row.folder, row.workspace);
 	if (!workspace.ok) return { value: fail(`沒有接回：${workspace.reason}`) };
 	const extraArgs = await keepPermission(config, row.client, sessionId);
+	const before = await tabsBefore(config, workspace.id);
 	const resumed = await resumeAgent(config, { sessionId, herdrWorkspace: workspace.id, prompt: '', extraArgs });
 	if (resumed.outcome === 'failed') return { value: fail(resumed.reason ?? '接回失敗', 'hcom') };
 	const body = { ok: true, reason: resumed.outcome === 'pending' ? resumed.reason : null, logError: null, abandon: null };
-	return { value: { status: 200, body }, follow: followBack(`開在工作區「${workspace.label}」`, true) };
+	return { value: { status: 200, body }, follow: followBack(`開在工作區「${workspace.label}」`, frontTab(config, workspace.id, before)) };
 }

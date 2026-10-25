@@ -434,6 +434,38 @@ test('接回 resumes the same conversation in a new tab of its old workspace, mo
 	expect(log.entries[0]).toMatchObject({ action: 'resume', ok: true });
 });
 
+test('接回 moves its new tab to the front as soon as hcom lists its pane, before the client runs, and only once', async () => {
+	record('s-a');
+	setHerdr([herdrAgent('s-a'), herdrAgent('s-b')]);
+	await fixture.refresh(cookie);
+	setHerdr([herdrAgent('s-b')]);
+	stopEvent('s-a', 'pty', { name: 'aaaa', reason: 'closed' });
+	// Herdr has nothing of it when hcom answers; its pane and tab show up next, its agent after.
+	fixture.setHcom({ agents: [], resumedExits: true, resumed: { name: 'aaaa', session_id: 's-a', status: 'listening', launch_context: { pane_id: 'wA:p-new' } } });
+	const herdrCalls = () => {
+		const file = join(fixture.dir, 'herdr-calls.jsonl');
+		return existsSync(file) ? readFileSync(file, 'utf8').trim().split('\n').map((line) => JSON.parse(line)) : [];
+	};
+	const moves = () => herdrCalls().filter((call) => call[1] === 'tab.move');
+
+	expect((await resume('s-a')).status).toBe(200);
+	const opened = JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8'));
+	opened.panes.push({ pane_id: 'wA:p-new', workspace_id: 'wA', cwd: '/projects/s-a', tab_id: 'wA:t-s-a' });
+	opened.tabs.push({ tab_id: 'wA:t-s-a', workspace_id: 'wA', label: 'resumed' });
+	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify(opened));
+	await until(() => moves().length > 0, 3_000, 'the early move');
+	expect(moves()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-s-a', insert_index: 0 }]]);
+	expect(sentLog().some((line) => line.kind === 'agent-action' && line.action === 'resume')).toBe(false);
+
+	// Herdr now runs it: it is logged back, and its tab is not moved again.
+	const plan = JSON.parse(readFileSync(join(fixture.dir, 'herdr.json'), 'utf8'));
+	plan.agents.push({ ...herdrAgent('s-a'), pane_id: 'wA:p-new' });
+	writeFileSync(join(fixture.dir, 'herdr.json'), JSON.stringify(plan));
+	const done = await until(() => sentLog().find((line) => line.kind === 'agent-action' && line.action === 'resume'), 10_000, 'the resume to be logged');
+	expect(done).toMatchObject({ ok: true, error: null, text: '開在工作區「Alpha」' });
+	expect(moves()).toHaveLength(1);
+});
+
 test("接回 keeps a Claude session's permission mode that hcom's stored arguments lack", async () => {
 	record('s-a');
 	writeFileSync(join(fixture.dir, 'transcripts', 's-a.permission.json'), JSON.stringify({ mode: 'bypassPermissions' }));

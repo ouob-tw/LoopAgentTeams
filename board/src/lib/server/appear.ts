@@ -22,22 +22,39 @@ type Wanted = { name: string } | { sessionId: string };
 /** The Herdr agent that is this client, when both lists are read and agree. */
 export function runningIn(wanted: Wanted, hcom: HcomAgent[], herdr: HerdrAgent[]): { hcom: HcomAgent | undefined; herdr: HerdrAgent | undefined } {
 	const listed = hcom.find((agent) => ('name' in wanted ? agent.name === wanted.name : agent.sessionId === wanted.sessionId));
+	// Its session first: a pane hcom still has from an earlier client may hold another agent now.
 	const seen =
 		listed &&
-		herdr.find((agent) => (listed.sessionId !== null && agent.sessionId === listed.sessionId) || (listed.pane !== null && agent.pane === listed.pane));
+		(herdr.find((agent) => listed.sessionId !== null && agent.sessionId === listed.sessionId) ??
+			herdr.find((agent) => listed.pane !== null && agent.pane === listed.pane));
 	return { hcom: listed, herdr: seen };
 }
 
 export type Appearance = { found: HerdrAgent } | { found: null; reason: string };
 
+/** What a wait does on the way: `onPane` gets each pane hcom lists for the client before it runs,
+ *  until it answers true for that pane; an agent `accepts` turns down is not the client, and the
+ *  wait goes on. */
+export interface Watch {
+	onPane(pane: string): Promise<boolean>;
+	accepts?(found: HerdrAgent): boolean;
+}
+
 /** Wait until the client runs in Herdr, or until `deadline` (board clock); gives up early when
  *  hcom stops listing it, when it is listed but nothing runs in its pane for a while, or when
- *  Herdr's lists cannot be read for a while. `who` names it in the reasons. */
-export async function waitToAppear(config: BoardConfig, wanted: Wanted, deadline: number, who: string): Promise<Appearance> {
+ *  Herdr's lists cannot be read for a while. `who` names it in the reasons; `watch` follows it. */
+export async function waitToAppear(
+	config: BoardConfig,
+	wanted: Wanted,
+	deadline: number,
+	who: string,
+	watch?: Watch
+): Promise<Appearance> {
 	let missing = 0;
 	let idle = 0;
 	let herdrUnread = 0;
 	let unread: string | null = null;
+	let paneDone: string | null = null;
 	for (;;) {
 		const [hcom, herdr] = await Promise.all([listAgents(config), listHerdrAgents(config)]);
 		unread = !hcom.ok ? hcom.reason : !herdr.ok ? herdr.reason : null;
@@ -47,9 +64,13 @@ export async function waitToAppear(config: BoardConfig, wanted: Wanted, deadline
 		}
 		if (hcom.ok && herdr.ok) {
 			const running = runningIn(wanted, hcom.agents, herdr.agents);
-			if (running.herdr) return { found: running.herdr };
+			const turnedDown = running.herdr && watch?.accepts && !watch.accepts(running.herdr);
+			if (running.herdr && !turnedDown) return { found: running.herdr };
+			const pane = running.hcom?.pane;
+			if (watch && pane && pane !== paneDone && (await watch.onPane(pane))) paneDone = pane;
 			missing = running.hcom ? 0 : missing + 1;
-			idle = running.hcom?.pane ? idle + 1 : 0;
+			// An agent turned down runs in that pane: the client has not exited.
+			idle = pane && !turnedDown ? idle + 1 : 0;
 			if (missing >= GONE_AFTER) return { found: null, reason: `hcom 的清單上沒有 ${who}` };
 			if (idle >= EXITED_AFTER) return { found: null, reason: `${who} 沒有在它的 Herdr 分頁裡執行，可能一啟動就結束了` };
 		}
