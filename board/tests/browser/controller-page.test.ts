@@ -99,9 +99,9 @@ test.skipIf(!CHROME)('the header names the controller and its phase; the details
 test.skipIf(!CHROME)('the tabs: conversation first, report count, switched by click and by the arrow keys, wrapping round', async () => {
 	await visit(1280);
 	const tabs = await tab.eval<{ text: string; selected: boolean }[]>(TABS);
-	expect(tabs.map((entry) => entry.text.replace(/ \d+$/, ''))).toEqual(['對話紀錄', '回報', '送出紀錄']);
+	expect(tabs.map((entry) => entry.text.replace(/ \d+$/, ''))).toEqual(['對話紀錄', '回報', '工作總表', '送出紀錄']);
 	expect(tabs[1].text).toBe('回報 2');
-	expect(tabs.map((entry) => entry.selected)).toEqual([true, false, false]);
+	expect(tabs.map((entry) => entry.selected)).toEqual([true, false, false, false]);
 	expect(await tab.eval(SHOWN)).toEqual(['panel-transcript']);
 
 	await tab.eval(`${tabButton('回報')}.click()`);
@@ -112,8 +112,11 @@ test.skipIf(!CHROME)('the tabs: conversation first, report count, switched by cl
 
 	const key = (name: string) => `document.querySelector('.detail [role="tablist"]').dispatchEvent(new KeyboardEvent('keydown', { key: ${JSON.stringify(name)}, bubbles: true }))`;
 	await tab.eval(key('ArrowRight'));
+	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-ledger"]'`, 'the ledger panel');
+	expect((await tab.eval<{ focused: boolean }[]>(TABS)).map((entry) => entry.focused)).toEqual([false, false, true, false]);
+	await tab.eval(key('ArrowRight'));
 	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-sent"]'`, 'the sent panel');
-	expect((await tab.eval<{ focused: boolean }[]>(TABS)).map((entry) => entry.focused)).toEqual([false, false, true]);
+	expect((await tab.eval<{ focused: boolean }[]>(TABS)).map((entry) => entry.focused)).toEqual([false, false, false, true]);
 	await tab.eval(key('ArrowRight'));
 	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-transcript"]'`, 'the conversation, wrapped round');
 	await tab.eval(key('ArrowLeft'));
@@ -140,7 +143,7 @@ test.skipIf(!CHROME)("a report row opens the report in the conversation; a quest
 test.skipIf(!CHROME)("at a phone's width the tabs share the width and nothing scrolls sideways", async () => {
 	await visit(390);
 	const widths = await tab.eval<number[]>(`[...document.querySelectorAll('.detail [role="tab"]')].map((b) => Math.round(b.getBoundingClientRect().width))`);
-	expect(widths).toHaveLength(3);
+	expect(widths).toHaveLength(4);
 	expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1);
 	expect(await tab.eval(FITS)).toBe(true);
 	await tab.eval(`${tabButton('回報')}.click()`);

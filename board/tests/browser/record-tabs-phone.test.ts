@@ -30,10 +30,15 @@ beforeAll(async () => {
 	if (!CHROME) return;
 	fixture = await startFixture();
 	cookie = await fixture.login('record-tabs-phone');
-	// A controller in a Herdr tab, so its page has all four tabs, with a report to open; and an agent.
+	// A controller in a Herdr tab, so its page has all five tabs, with a report to open; and an agent.
 	const lead = fixture.bound('lat', 'lead', { session_id: 's-lead' });
 	fixture.report('s-lead', { tag: 'DONE', summary: '交付第一張票', hcom_name: 'lead', workspace: lead.workspace });
-	fixture.list([lead]);
+	// A ledger of one item, so its tab shows a count like the others.
+	const item = { id: 1, ticket: '#301', stage_label: '實作', status_label: '進行中', agent: 'lead-impl', estimate: null, deadline: null, late_minutes: {}, history: [{ at: '2026-10-24T08:00:00Z' }] };
+	fixture.setHelper({
+		output: { controllers: [lead] },
+		ledgers: { 's-lead': { status: 'ok', ledger: { updated_at: '2026-10-24T08:00:00Z', items: [item] } } }
+	});
 	fixture.setHcom({ agents: [{ name: 'lead', session_id: 's-lead', status: 'listening', launch_context: { pane_id: 'wA:p-s-lead' } }] });
 	const agents = [herdrAgent('s-lead'), herdrAgent('s-plain')];
 	writeFileSync(
@@ -61,9 +66,9 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-/** The two strips: the page of the controller Herdr runs, with its four tabs, and an agent's, with two. */
+/** The two strips: the page of the controller Herdr runs, with its five tabs, and an agent's, with two. */
 const PAGES = [
-	{ page: 'controller', search: '?agent=s-lead', ids: ['transcript', 'reports', 'sent', 'log'], prefix: 'tab-' },
+	{ page: 'controller', search: '?agent=s-lead', ids: ['transcript', 'reports', 'ledger', 'sent', 'log'], prefix: 'tab-' },
 	{ page: 'agent', search: '?agent=s-plain', ids: ['transcript', 'log'], prefix: 'agent-tab-' }
 ] as const;
 
@@ -206,7 +211,7 @@ for (const { page, search, ids, prefix } of PAGES) {
 
 test.skipIf(!CHROME)('opening a report from the controller page brings the conversation tab back into view', async () => {
 	await visit('?agent=s-lead', 390, 24);
-	await tab.until(`document.querySelectorAll('[role="tab"] small').length === 3`, 'the tab strip and its counts');
+	await tab.until(`document.querySelectorAll('[role="tab"] small').length === 4`, 'the tab strip and its counts');
 	// Clicked until its panel shows: a click before the page is ready does nothing.
 	await tab.until(`(document.querySelector('#tab-reports').click(), !!document.querySelector('#panel-reports:not([hidden]) button.main'))`, 'the reports');
 	await tab.eval(`document.querySelector('[role="tablist"]').scrollLeft = 1e6`);
@@ -225,7 +230,7 @@ test.skipIf(!CHROME)('counts that arrive after the last tab opened bring it back
 	// The sent log and the operation record held back: the tabs show without their counts.
 	await tab.send('Fetch.enable', { patterns: [{ urlPattern: '*/api/messages?controller=*' }, { urlPattern: '*/api/agents/log*' }] });
 	await tab.navigate(`${fixture.url}/?agent=s-lead`);
-	await tab.until(`document.querySelectorAll('[role="tab"]').length === 4`, 'the tab strip');
+	await tab.until(`document.querySelectorAll('[role="tab"]').length === 5`, 'the tab strip');
 	const release = async () => {
 		await tab.send('Fetch.disable');
 		for (const requestId of tab.paused.splice(0)) await tab.send('Fetch.continueRequest', { requestId }).catch(() => {});
@@ -233,9 +238,9 @@ test.skipIf(!CHROME)('counts that arrive after the last tab opened bring it back
 	try {
 		await tab.until(`(document.querySelector('#tab-log').click(), document.querySelector('#tab-log').getAttribute('aria-selected') === 'true')`, 'the last tab open');
 		await untilShownWhole('log');
-		expect(await tab.eval<number>(`document.querySelectorAll('[role="tab"] small').length`)).toBeLessThan(3);
+		expect(await tab.eval<number>(`document.querySelectorAll('[role="tab"] small').length`)).toBeLessThan(4);
 		await release();
-		await tab.until(`document.querySelectorAll('[role="tab"] small').length === 3`, 'the counts');
+		await tab.until(`document.querySelectorAll('[role="tab"] small').length === 4`, 'the counts');
 		await untilShownWhole('log');
 	} finally {
 		await release();
