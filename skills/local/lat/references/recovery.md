@@ -48,7 +48,7 @@ uv run --no-project python "$lat_dir/scripts/lat-session.py" deactivate --client
 
 手動停用遺留的 active 紀錄：確認指定對話已結束／取消，再加 `--session-id <record-session-id>`，只改該筆紀錄。session 紀錄永不清理；已結束 session 留下的監控檔，結束滿 40 天後由 [自動清理](cleanup.md#自動清理) 處理（開啟後；activate／deactivate 會在背景觸發），沒有結束時間的由 [清理指令](cleanup.md) 列給使用者確認。
 
-查哪些主控紀錄還是 active：`lat-session.py list --active --workspace "$workspace"`，列出 HCOM 名稱、client、工作區與開始時間（紀錄沒有開始時間欄位時顯示紀錄最後更新時間），並用 `hcom list` 核對；hcom 已沒有該 Agent 的標「紀錄過期」，之後再用 `--session-id` 手動停用。唯讀，不改紀錄；hcom 讀不到時直接報錯，不把全部標成過期。
+查哪些主控紀錄還是 active：`lat-session.py list --active --workspace "$workspace"`，列出 HCOM 名稱、client、工作區與開始時間（取紀錄的開始時間；舊紀錄沒有時改用該輪工作總表的建立時間，兩者都沒有才顯示紀錄最後更新時間並標註），並用 `hcom list` 核對；hcom 已沒有該 Agent 的標「紀錄過期」，之後再用 `--session-id` 手動停用。唯讀，不改紀錄；hcom 讀不到時直接報錯，不把全部標成過期。
 
 ## 技能文字更新
 

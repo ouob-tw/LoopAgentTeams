@@ -327,6 +327,7 @@ def activate(args):
     fingerprint = watcher.rule_fingerprint(SKILL_DIR)
     path = session_path(workspace, sid)
     original = current_bytes(path)
+    new_round = True
     if path.exists():
         existing = read_json(path)
         if existing.get('status') in ENDED:
@@ -355,10 +356,14 @@ def activate(args):
             if any(existing.get(key) != value for key, value in expected.items()):
                 raise ValueError('Existing session record differs; do not reset or rebind it')
             record = dict(existing, tasks_path=record['tasks_path'], hcom_name=record['hcom_name'])
+            new_round = False
         else:
             if any(existing.get(key) != value for key, value in record.items()):
                 raise ValueError('Existing session record differs; do not reset or rebind it')
             record = existing
+            new_round = False
+    if new_round:
+        record['started_at_utc'] = datetime.now(timezone.utc).isoformat()
     record.setdefault('rule_fingerprint', fingerprint)
     panel = panel_module()
     try:
@@ -1471,6 +1476,15 @@ def hcom_names():
             if isinstance(item.get(key), str)}
 
 
+def ledger_created_at(record):
+    """The round ledger's created_at, for records written before they carried a start time."""
+    try:
+        created = read_json(Path(record['ledger_path'])).get('created_at')
+    except (KeyError, TypeError, OSError, ValueError):
+        return None
+    return created if isinstance(created, str) else None
+
+
 def list_active(args):
     """Print each active controller record; read-only."""
     workspace = workspace_root(args.workspace.resolve(strict=True))
@@ -1499,7 +1513,7 @@ def list_active(args):
             note = ''
         else:
             note = '（紀錄過期：HCOM 已沒有這個 Agent）'
-        started = record.get('started_at_utc')
+        started = record.get('started_at_utc') or ledger_created_at(record)
         if started:
             when = local_time(started)
         else:
