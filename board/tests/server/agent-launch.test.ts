@@ -639,3 +639,36 @@ test("an earlier agent under the reused name in another workspace is not taken f
 	expect(view.follow?.error).toStartWith(`等了 ${WAIT_SECONDS} 秒，Herdr 的清單上還沒有 @nano`);
 	expect(herdrCalls()).toEqual([['socket', 'tab.move', { tab_id: 'wE:t-nano', insert_index: 0 }]]);
 });
+
+test("a new controller's tab goes first as soon as hcom lists its pane, before its client runs; once it runs it is not moved again", async () => {
+	const repo = folder('controller-early', true);
+	herdrPlan({ panes: [{ pane_id: 'wA:p1', workspace_id: 'wA', cwd: repo, tab_id: 'wA:t1' }] });
+	hcomPlan([{ name: 'lead', workspace: 'wA', folder: repo, appears: false }]);
+
+	const { body } = await launch({ folder: repo, text: '做一件事' });
+	opens('lead');
+	await until(() => moves().length > 0, 2_000, 'the early move');
+	expect(readJson(herdrFile).tabs.map((tab: { tab_id: string }) => tab.tab_id)).toEqual(['wA:t-lead', 'wA:t1', 'wA:t2']);
+	expect(await launchOf(body.entry!.id)).toMatchObject({ state: 'starting', follow: null });
+
+	runs('lead');
+	const view = await followed(body.entry!.id);
+	expect(view).toMatchObject({ state: 'starting', follow: { error: null, renameError: null, moveError: null } });
+	expect(herdrCalls()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-lead', insert_index: 0 }]]);
+});
+
+test('a client whose tab went first but that never runs is still reported when the wait runs out, saying the tab was moved', async () => {
+	herdrPlan();
+	hcomPlan([{ name: 'gone', workspace: 'wA', appears: false }]);
+
+	const { body } = await launch({ folder: folder('early-then-gone', true), workspace: { kind: 'existing', id: 'wA' }, agent: { tabName: '不會改' } });
+	opens('gone');
+	await until(() => moves().length > 0, 2_000, 'the early move');
+	const view = await followed(body.entry!.id);
+
+	expect(view.state).toBe('overdue');
+	expect(view.follow?.appearedAt).toBeNull();
+	expect(view.follow?.error).toStartWith(`等了 ${WAIT_SECONDS} 秒，Herdr 的清單上還沒有 @gone`);
+	expect(view.follow?.error).toEndWith('，沒有改分頁名稱，分頁已先移到最前面；請到 Herdr 分頁查看');
+	expect(herdrCalls()).toEqual([['socket', 'tab.move', { tab_id: 'wA:t-gone', insert_index: 0 }]]);
+});
