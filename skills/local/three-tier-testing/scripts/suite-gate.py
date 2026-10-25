@@ -3365,15 +3365,17 @@ def cmd_pre_commit():
         return 0
     # The staged registry, so an unstaged edit cannot turn the check off; when it is
     # unreadable HEAD's names the branch, and the check below refuses it.
+    registry = None
     for rev in ('', 'HEAD'):
+        shown = git(['show', f'{rev}:{REGISTRY_NAME}'], root)
+        if shown.returncode != 0:
+            break
         try:
-            registry = json.loads(git(['show', f'{rev}:{REGISTRY_NAME}'], root).stdout or 'null')
+            registry = json.loads(shown.stdout)
         except ValueError:
             continue
-        if registry is None or isinstance(registry, dict):
+        if isinstance(registry, dict):
             break
-    else:
-        registry = None
     branch = registry.get('integration_branch') if isinstance(registry, dict) else None
     if not branch or git(['symbolic-ref', '--quiet', '--short', 'HEAD'],
                          root).stdout.strip() != branch:

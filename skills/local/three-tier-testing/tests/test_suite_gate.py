@@ -3336,14 +3336,16 @@ class PreCommitTests(PreCommitCase):
 
     def test_an_unreadable_staged_registry_blocks_the_commit(self):
         self.touch('tests/test_app.py', 'FAIL staged\n')
-        self.touch('.suite-gate.json', '{broken')
-        git(self.repo, 'add', '-A')
-        self.write_registry()
-        refused = self.git_commit()
-        self.assertNotEqual(refused.returncode, 0)
-        self.assertIn('the staged .suite-gate.json is not a readable JSON object',
-                      refused.stderr)
-        self.assertEqual(self.checkouts_left(), ([], []))
+        for text in ('{broken', 'null', '[]', ''):
+            with self.subTest(text=text):
+                self.touch('.suite-gate.json', text)
+                git(self.repo, 'add', '-A')
+                self.write_registry()
+                refused = self.git_commit()
+                self.assertNotEqual(refused.returncode, 0)
+                self.assertIn('the staged .suite-gate.json is not a readable JSON object',
+                              refused.stderr)
+                self.assertEqual(self.checkouts_left(), ([], []))
 
     def test_other_branches_and_changes_that_select_no_tests_run_nothing(self):
         self.touch('docs/guide.md', 'docs\n')
