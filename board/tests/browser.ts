@@ -22,8 +22,6 @@ const sleep = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
  * board the file started in `beforeAll`.
  */
 export const REQUEST_MS = 10_000;
-/** The least time a check of `Tab.until` gets: a last check just before the deadline is not cut short. */
-const CHECK_MS = 1_000;
 /** How long `Tab.until` waits for its `screen` after a timeout: a page that stopped answering may not show it. */
 const SCREEN_MS = 2_000;
 /** How long a closed tab waits for its Chrome to exit, to say how Chrome ended. */
@@ -158,20 +156,24 @@ export class Tab {
 	/** Wait for an expression in the page to be true. */
 	async until(expression: string, what = expression, ms = 10_000) {
 		const deadline = Date.now() + ms;
-		// A check Chrome does not answer within the time left (at most REQUEST_MS) ends the wait: a page
-		// that stopped answering would only keep the test waiting until Bun's timeout.
-		const check = () =>
-			this.eval(expression, Math.min(Math.max(deadline - Date.now(), CHECK_MS), REQUEST_MS)).catch((error: Error) => {
+		const timedOut = async () => {
+			const shown = this.screen ? `; the page shows ${JSON.stringify(await this.eval(this.screen, SCREEN_MS).catch(() => null))}` : '';
+			return new Error(`timed out waiting for ${what}${shown}`);
+		};
+		for (;;) {
+			const left = deadline - Date.now();
+			if (left <= 0) throw await timedOut();
+			// A check gets only the time left (at most REQUEST_MS): one Chrome does not answer in it ends
+			// the wait, since a page that stopped answering would only keep the test waiting.
+			const met = await this.eval(expression, Math.min(left, REQUEST_MS)).catch((error: Error) => {
 				if (this.#gone) throw error;
 				if (error.message.startsWith('no answer from Chrome')) throw new Error(`timed out waiting for ${what}: ${error.message}`);
 				return false;
 			});
-		while (!(await check())) {
-			if (Date.now() > deadline) {
-				const shown = this.screen ? `; the page shows ${JSON.stringify(await this.eval(this.screen, SCREEN_MS).catch(() => null))}` : '';
-				throw new Error(`timed out waiting for ${what}${shown}`);
-			}
-			await sleep(50);
+			// An answer after the deadline is too late, whatever it says.
+			if (Date.now() > deadline) throw await timedOut();
+			if (met) return;
+			await sleep(Math.min(50, deadline - Date.now()));
 		}
 	}
 	close() {
