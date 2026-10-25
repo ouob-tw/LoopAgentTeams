@@ -2036,7 +2036,12 @@ def prepare_dependencies(directory):
                 signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
                 code = child.wait()
             finally:
-                end_session(child.pid, child)
+                # A second signal must not cut the grace wait short and leave it running.
+                signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
+                try:
+                    end_session(child.pid, child)
+                finally:
+                    signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
             return f'{shlex.join(command)} exited {code}' if code else None
     return None
 
