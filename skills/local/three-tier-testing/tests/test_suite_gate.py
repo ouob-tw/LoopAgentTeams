@@ -2337,6 +2337,17 @@ class DetectionTests(unittest.TestCase):
              'cat <<-EOF > f\n\tnotes\n\tEOF\nbun run test:all'),
             ('cat <<EOF | tee f\nbun run test:all\nEOF', 'cat <<EOF | bash\nbun run test:all\nEOF'),
             ("echo 'bun run test:all' | tee f", "echo 'bun run test:all' | sh"),
+            ("cat > f <<'EOF'\n$(bun run test:all)\nEOF", 'cat > f <<EOF\nout: $(bun run test:all)\nEOF'),
+            ('cat > f <<"EOF"\n`bun test ./tests`\nEOF', 'cat > f <<EOF\n`bun test ./tests`\nEOF'),
+            ('cat /dev/stdin <<EOF\nbun test ./tests\nEOF', 'bash /dev/stdin <<EOF\nbun test ./tests\nEOF'),
+            ("rg 'bun run test:all' README.md", "sh -c 'rg x README.md; bun run test:all'"),
+            ("git commit -m 'run bun run test:all in CI'", "git commit -m x && bun run test:all"),
+            ("printf '%s\\n' 'bun run test:all' > f", "printf '%s\\n' 'bun run test:all' | sh"),
+            ("echo -e 'bun run test:all' >> f", "echo -e 'bun run test:all' | bash"),
+            ('wc -c <<EOF | sh\nbun run test:all\nEOF', 'cat <<EOF | cat | sh\nbun run test:all\nEOF'),
+            ('bash <<A <<B\nbun run test:all\nA\necho safe\nB',
+             'bash <<A <<B\necho safe\nA\nbun run test:all\nB'),
+            ('bash 3<<EOF\nbun run test:all\nEOF', 'bash 0<<EOF\nbun run test:all\nEOF'),
         ]
         for data, run in pairs:
             self.assertFalse(gate.is_full_suite(data, registry=registry), data)
@@ -2479,6 +2490,8 @@ class HookTests(GateCase):
         (self.repo / '.suite-gate.json').write_text(json.dumps({'suites': ['*bun run test:all']}))
         for text in ('uv run --no-project python "$GATE" run -- bun run test:all',
                      'G=/tmp/other.py; python "$G" run -- bun run test:all',
+                     f'(G={SCRIPT}); python "$G" run -- bun run test:all',
+                     f'G={SCRIPT} | true; python "$G" run -- bun run test:all',
                      f'python "$G" run -- bun run test:all; G={SCRIPT}'):
             with self.subTest(text=text):
                 result = run_hook(text, self.repo, self.env)
