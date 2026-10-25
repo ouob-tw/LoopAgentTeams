@@ -234,6 +234,7 @@ class RetroLogTests(unittest.TestCase):
         self.add()
         self.assertIn('--commit', self.refused('done', '1', '--time', T2))
         self.assertIn('--reason', self.refused('wontfix', '1', '--time', T2))
+        self.assertIn('「;」', self.refused('done', '1', '--commit', 'a; b', '--time', T2))
         self.assertEqual(len(self.commits()), 1)
         self.assertIn('#1 [已完成]', self.ok('done', '1', '--file', 'skills/x/SKILL.md', '--time', T2))
         self.assertIn('| done | file skills/x/SKILL.md', self.ok('show', '1'))

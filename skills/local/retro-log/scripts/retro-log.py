@@ -138,7 +138,7 @@ def render(entry):
              H_DESC, '', entry.description, '', H_SUGGEST, '', entry.suggestion, '', H_OCC, '']
     # records are written in time order, so the file does not depend on the order they were added in
     lines += [f'- {o.time} | {o.project} | {o.client} | {o.session} | {o.evidence}'
-              for o in sorted(entry.occurrences, key=lambda o: when(o.time))]
+              for o in sorted(entry.occurrences, key=lambda o: (when(o.time), o.session))]
     lines += ['', H_PROC, '']
     lines += [f'- {p.time} | {p.kind} | {p.detail}' for p in sorted(entry.processing, key=lambda p: when(p.time))]
     return '\n'.join(lines) + '\n'
@@ -341,8 +341,8 @@ def cmd_occur(backlog, args):
             entry.occurrences.remove(existing)
             entry.occurrences.append(occurrence)
             return ([entry], f'chore: move occurrence of #{entry.id} to an earlier time',
-                    f'已存在：#{entry.id} 已有 session {occurrence.session} 的出現紀錄，改用較早的時間 '
-                    f'{occurrence.time}，未增加次數 {summary(entry)}')
+                    f'已改用較早的時間：#{entry.id} 的 session {occurrence.session} 改記為 {occurrence.time}，'
+                    f'未增加次數 {summary(entry)}')
         entry.occurrences.append(occurrence)
         return [entry], f'chore: record occurrence of #{entry.id}', f'已記錄出現 {summary(entry)}'
     return backlog.transaction(change)
@@ -372,6 +372,8 @@ def cmd_done(backlog, args):
         entry = live(backlog, args.id)
         if args.commit is None and args.file is None:
             raise Refused('標已完成需要 --commit 或 --file（改了哪個 commit 或檔案）')
+        if args.commit is not None and ';' in args.commit:
+            raise Refused('commit 不能含有「;」')
         parts = [f'commit {one_line("commit", args.commit)}'] if args.commit is not None else []
         if args.file is not None:
             parts.append(f'file {one_line("檔案", args.file, allow_pipe=True)}')
