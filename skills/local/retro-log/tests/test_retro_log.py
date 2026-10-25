@@ -156,6 +156,7 @@ class RetroLogTests(unittest.TestCase):
                 '--client', 'codex', '--session', 'x', '--evidence', 'e')
         self.assertEqual(sorted(p.name for p in (self.backlog / 'entries').iterdir()), ['0001.md', '0002.md'])
 
+    @unittest.skipIf(os.geteuid() == 0, 'root ignores the read-only .git that makes the rollback fail')
     def test_rollback_failure_says_not_restored_and_restore_recovers(self):
         self.add()
         hook = self.backlog / '.git/hooks/pre-commit'

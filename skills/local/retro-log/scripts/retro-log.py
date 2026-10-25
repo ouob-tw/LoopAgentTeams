@@ -194,11 +194,14 @@ class Backlog:
             return []
         return [parse(p) for p in sorted(self.entries_dir.glob('*.md'))]
 
-    def get(self, entry_id):
+    def existing_path(self, entry_id):
         path = self.path(entry_id)
         if not path.exists():
             raise Refused(f'找不到條目 #{entry_id}')
-        return parse(path)
+        return path
+
+    def get(self, entry_id):
+        return parse(self.existing_path(entry_id))
 
     def next_id(self):
         return max((e.id for e in self.all()), default=0) + 1
@@ -346,10 +349,7 @@ def cmd_search(backlog, args):
 
 
 def cmd_show(backlog, args):
-    path = backlog.path(args.id)
-    if not path.exists():
-        raise Refused(f'找不到條目 #{args.id}')
-    return path.read_text(encoding='utf-8').rstrip('\n')
+    return backlog.existing_path(args.id).read_text(encoding='utf-8').rstrip('\n')
 
 
 def cmd_restore(backlog, args):
