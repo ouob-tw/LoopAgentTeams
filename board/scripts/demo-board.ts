@@ -15,6 +15,8 @@ const ROOT = join(import.meta.dir, '..');
 export const DEMO_PORT = 7110;
 /** The live board's port. The demo never takes it. */
 export const LIVE_PORT = 7100;
+/** The demo's login cookie; the live board's is `lat_board_device`, so opening both on one host name keeps both logins. */
+export const DEMO_COOKIE = 'lat_board_demo';
 const MIN = 60_000;
 
 export interface DemoArgs {
@@ -52,7 +54,7 @@ async function main() {
 		process.exit(1);
 	}
 
-	const fixture = await startFixture({ port: args.port, env: { HOST: args.host, LAT_BOARD_QUOTA_SECONDS: '30' } });
+	const fixture = await startFixture({ port: args.port, env: { HOST: args.host, LAT_BOARD_QUOTA_SECONDS: '30', LAT_BOARD_COOKIE_NAME: DEMO_COOKIE } });
 	const dir = fixture.dir;
 	let asking: ReturnType<typeof Bun.spawn> | undefined;
 	let stopping = false;

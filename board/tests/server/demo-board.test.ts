@@ -61,6 +61,14 @@ test('serves the given stylesheet and the made-up board behind the printed passw
 	expect(asks.some((name) => name.endsWith('.json') && name !== 'heartbeat.json')).toBe(true);
 });
 
+test('the demo logs in under a cookie name of its own, and the live board\'s cookie name gets nothing', async () => {
+	const { cookie } = await login();
+	expect(cookie.startsWith('lat_board_demo=')).toBe(true);
+	expect((await fetch(`${url}/api/board`, { headers: { cookie } })).status).toBe(200);
+	const asLive = cookie.replace('lat_board_demo=', 'lat_board_device=');
+	expect((await fetch(`${url}/api/board`, { headers: { cookie: asLive } })).status).toBe(401);
+});
+
 test('SIGTERM stops the server and deletes its temporary folder', async () => {
 	const { cookie } = await login();
 	// The made-up workspaces live in the fixture's folder.
