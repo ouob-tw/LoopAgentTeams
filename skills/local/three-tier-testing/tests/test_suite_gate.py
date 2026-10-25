@@ -949,7 +949,7 @@ class CompatibilityTests(GateCase):
 class ReclaimTests(GateCase):
     """Holders whose gate is gone while their session still has processes."""
 
-    def leftover(self):
+    def leftover(self, **extra):
         """A process in its own session, and a slot and lock holder for it whose gate is gone
         (its start time differs) that started long ago."""
         session = subprocess.Popen(['sleep', '60'], start_new_session=True)
@@ -957,7 +957,8 @@ class ReclaimTests(GateCase):
         self.addCleanup(session.kill)
         holder = {'id': 'left', 'pid': os.getpid(), 'start': 0, 'sid': session.pid,
                   'cgroup': None, 'agent': 'gone', 'command': 'left suite', 'cwd': str(self.tmp),
-                  'fingerprint': 'f' * 64, 'reservation': None, 'since': time.time() - 86400}
+                  'fingerprint': 'f' * 64, 'reservation': None, 'since': time.time() - 86400,
+                  **extra}
         self.state.mkdir()
         self.save_state({'seq': 0, 'waiters': [], 'locks': {'f' * 64: dict(holder)},
                          'slots': [holder]})
@@ -1022,12 +1023,36 @@ class ReclaimTests(GateCase):
         self.assertEqual(self.runs(), 1)
         self.assert_reclaimed(session)
 
+    def test_a_run_already_queued_reclaims_the_slot_when_the_grace_runs_out(self):
+        self.set_config(max_slots=1)
+        session = self.leftover()
+        proc = self.start('run', '--', self.suite())
+        self.wait_until(lambda: len(self.status()['waiting']) == 1, message='queued')
+        time.sleep(0.3)
+        self.assertIsNone(proc.poll(), 'the leftover keeps the slot within the grace')
+        self.set_config(max_slots=1, reclaim_grace_seconds=0)  # reread on its next poll
+        code, _, err = self.finish(proc)
+        self.assertEqual(code, 0, err)
+        self.assertIn('reclaimed the slot of gone', err)
+        self.assertEqual(self.runs(), 1)
+        self.assert_reclaimed(session)
+
     def test_a_holder_without_a_first_observation_is_not_reclaimed_at_once(self):
         self.set_config(reclaim_grace_seconds=0)
         session = self.leftover()
         self.assertNotIn('leftover_since', self.saved()['slots'][0])
         self.assert_held(session)
         self.assert_reclaimed(session)
+
+    def test_a_holder_marked_gate_done_is_reclaimed_while_its_gate_process_lives(self):
+        self.set_config(reclaim_grace_seconds=0)
+        live = subprocess.Popen(['sleep', '60'])
+        self.addCleanup(live.wait)
+        self.addCleanup(live.kill)
+        session = self.leftover(pid=live.pid, start=gate.proc_stat(live.pid)[2], gate_done=True)
+        self.assert_held(session)
+        self.assert_reclaimed(session)
+        self.assertTrue(self.alive(live.pid), 'only the group is stopped, not the gate')
 
     def test_a_running_gate_is_never_reclaimed(self):
         self.set_config(reclaim_grace_seconds=0)
