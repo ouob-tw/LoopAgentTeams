@@ -638,6 +638,28 @@ class CapacityTests(unittest.TestCase):
         self.assertEqual(len(self.fake.injected), 2)
         self.assertEqual(self.fake.sent, [])  # the first episode recovered in time
 
+    def test_only_complete_agent_output_ends_the_episode(self):
+        tool_call = {'type': 'response_item', 'payload': {
+            'type': 'function_call', 'name': 'shell', 'arguments': '{"command": "pwd"}'}}
+        error = {'type': 'event_msg', 'payload': {'type': 'error', 'message': CAPACITY}}
+        turn = {'type': 'turn_context', 'payload': {'model': 'gpt-6.1-sol'}}
+        cases = {'tool call': ([tool_call], '', True),
+                 'reply': ([REPLY], '', True),
+                 'unfinished last record': ([], '{"type": "response_item", "payload": {"ty', False),
+                 'Continue echo': ([ECHO], '', False),
+                 'error and turn records': ([error, turn], '', False)}
+        for case, (records, tail, ends) in cases.items():
+            with self.subTest(case=case):
+                self.transcript.write_text('{"type": "session_meta", "payload": {}}\n')
+                self.watch.episodes.clear()
+                self.fake.injected.clear()
+                self.step_at(0)
+                self.write(*records)
+                with self.transcript.open('a') as stream:
+                    stream.write(tail)
+                self.step_at(60)
+                self.assertEqual(len(self.fake.injected), 2 if ends else 1)
+
     def test_working_without_output_is_still_the_same_episode(self):
         self.step_at(0)
         self.fake.screen = RECOVERED_SCREEN[:2] + RECOVERED_SCREEN[3:]
@@ -718,6 +740,13 @@ class CapacityTests(unittest.TestCase):
             self.step_at(seconds)
         self.assertEqual((self.fake.injected, self.fake.sent), ([], []))
 
+    def test_agent_going_inactive_after_continue_gets_no_notice(self):
+        self.step_at(0)
+        self.fake.status = 'inactive'
+        for seconds in (120, 300, 600):
+            self.step_at(seconds)
+        self.assertEqual((len(self.fake.injected), self.fake.sent), (1, []))
+
     def test_screen_without_a_current_capacity_error_gets_nothing(self):
         for screen in (CODEX_SCREEN, RECOVERED_SCREEN,
                        [CAPACITY, '■ Quota exceeded. Check your plan.', *CODEX_SCREEN]):
@@ -775,6 +804,14 @@ class CapacityWatchTests(unittest.TestCase):
         self.assertEqual(len(notices), 1)
         self.assertEqual(fake.sent[0][1], '@vare')
         self.assertFalse(marker.exists())
+
+    def test_agent_ending_before_5_minutes_after_continue_gets_no_notice(self):
+        fake = FakeHcom(tool='codex', screens=[CAPACITY_SCREEN], stop_after=200)
+        self.run_codex(fake)
+        self.assertEqual(len(fake.injected), 1)
+        # The stopped agent is released at once; the watch ends with its last agent.
+        self.assertEqual([send for send in fake.sent if 'Continue was sent' in send[-1]], [])
+        self.assertLess(fake.now, 300)
 
     def test_agent_that_already_ended_gets_nothing(self):
         fake = FakeHcom(tool='codex', screens=[CAPACITY_SCREEN], stop_after=0)
