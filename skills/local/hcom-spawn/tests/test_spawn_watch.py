@@ -672,11 +672,18 @@ class CapacityTests(unittest.TestCase):
         self.step_at(10)
         self.assertEqual((self.fake.injected, self.fake.sent), ([], []))
 
-    def test_continue_lat_watch_typed_before_coverage_is_not_typed_again(self):
-        # lat-watch typed Continue 2 minutes before this watcher's first check.
+    def hand_over(self, ago, transcript=None):
+        """Write the record lat-watch leaves after typing Continue `ago` seconds earlier."""
         handed = Path(self.state.name) / 'hcom-spawn/capacity/vare-review-kilo.continued.json'
         handed.parent.mkdir(parents=True, exist_ok=True)
-        handed.write_text(json.dumps({'at': time.time() - 120}))
+        handed.write_text(json.dumps({'at': time.time() - ago,
+                                      'transcript': transcript or str(self.transcript),
+                                      'size': self.transcript.stat().st_size}))
+        return handed
+
+    def test_continue_lat_watch_typed_before_coverage_is_not_typed_again(self):
+        handed = self.hand_over(120)
+        self.write(ECHO)
         self.step_at(0)
         self.assertEqual(self.fake.injected, [])
         self.assertFalse(handed.exists())
@@ -688,6 +695,21 @@ class CapacityTests(unittest.TestCase):
         # After a reply, the next capacity episode gets its own Continue.
         self.write(REPLY)
         self.step_at(190)
+        self.assertEqual(len(self.fake.injected), 1)
+
+    def test_output_after_lat_watchs_continue_ends_that_episode_before_takeover(self):
+        self.hand_over(120)
+        self.write(ECHO, REPLY)  # recovered, then on capacity again
+        self.step_at(0)
+        self.assertEqual(len(self.fake.injected), 1)
+        self.step_at(299)
+        self.assertEqual(self.fake.sent, [])
+        self.step_at(300)
+        self.assertEqual(len(self.fake.sent), 1)
+
+    def test_record_for_another_transcript_is_ignored(self):
+        self.hand_over(120, transcript='/elsewhere/old.jsonl')
+        self.step_at(0)
         self.assertEqual(len(self.fake.injected), 1)
 
     def test_inactive_agent_gets_nothing(self):

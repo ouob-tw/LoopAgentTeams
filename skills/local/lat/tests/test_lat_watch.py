@@ -4175,8 +4175,10 @@ esac
         action = watch.Action('capacity-continue', 'worker-open', text='Continue')
         with patch.dict(os.environ, self.env):
             self.assertEqual(watch.perform(action, 'orch'), {'delivery': 'terminal'})
+        # The transcript length goes to spawn-watch with the Continue (see continued.json).
         self.assertEqual(self.hcom_log.read_text().splitlines(),
-                         ['term inject worker-open Continue --enter --name orch'])
+                         ['list worker-open --json --name orch',
+                          'term inject worker-open Continue --enter --name orch'])
 
         _, stuck = self.capacity_screen()
         state, _ = watch.decide(None, stuck, now=0)
@@ -4283,7 +4285,9 @@ esac
             with self.subTest(order=order), \
                     patch('time.time', lambda: 1_000_000 + now[0]), \
                     patch.object(watch, 'perform_nudge',
-                                 lambda action, *_: lat_typed.append(action) or {}):
+                                 lambda action, *_: lat_typed.append(action) or {}), \
+                    patch.object(watch, 'transcript_now',
+                                 lambda *_: (str(transcript), transcript.stat().st_size)):
                 spawn.release('worker-open', 'worker-open')
                 injected.clear()
                 sent.clear()

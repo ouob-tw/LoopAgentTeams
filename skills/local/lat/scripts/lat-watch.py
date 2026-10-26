@@ -2093,8 +2093,9 @@ def perform_capacity_continue(action, orchestrator, workspace=None):
     """Type Continue unless spawn-watch now covers the agent.
 
     The check and the typing hold the lock spawn-watch takes to start covering an agent,
-    and <agent>.continued.json tells spawn-watch when this Continue was typed, so a
-    watcher that starts covering meanwhile neither types again nor restarts the 5 minutes.
+    and <agent>.continued.json tells spawn-watch when this Continue was typed and how long
+    the transcript was, so a watcher that starts covering meanwhile neither types again,
+    restarts the 5 minutes nor misses output written since.
     """
     directory = spawn_capacity_dir()
     directory.mkdir(parents=True, exist_ok=True)
@@ -2103,11 +2104,23 @@ def perform_capacity_continue(action, orchestrator, workspace=None):
         fcntl.flock(lock, fcntl.LOCK_EX)
         if spawn_watch_covers(action.agent):
             return {'delivery': 'skipped', 'reason': 'spawn-watch covers the agent'}
+        transcript, size = transcript_now(action.agent, orchestrator)
         result = perform_nudge(action, orchestrator, workspace)
-        write_json_atomic(directory / f'{action.agent}.continued.json', {'at': time.time()})
+        write_json_atomic(directory / f'{action.agent}.continued.json',
+                          {'at': time.time(), 'transcript': transcript, 'size': size})
         return result
     finally:
         os.close(lock)
+
+
+def transcript_now(agent, orchestrator):
+    """(transcript path, size) of an agent, or (None, None) when unknown."""
+    try:
+        path = run_json(['hcom', 'list', agent, '--json', '--name', orchestrator])
+        path = path.get('transcript_path') if isinstance(path, dict) else None
+        return (path, Path(path).stat().st_size) if path else (None, None)
+    except (OSError, ValueError):
+        return None, None
 
 
 def send_notification(action, orchestrator, intent):

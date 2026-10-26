@@ -471,17 +471,22 @@ def mark_covered(full):
         (state_dir() / 'capacity' / f'{full}.json').write_text(json.dumps(record))
 
 
-def lat_continue_at(full):
-    """clock() time of a Continue lat-watch typed before this watcher covered the agent,
-    or None. lat-watch writes <agent>.continued.json with the wall time while holding
-    capacity_lock, so it exists by the time mark_covered returns."""
+def lat_continue(full, transcript):
+    """(clock() time, transcript size) of a Continue lat-watch typed into this transcript
+    before this watcher covered the agent, or None. lat-watch writes
+    <agent>.continued.json while holding capacity_lock, so it exists by the time
+    mark_covered returns; a record for another transcript is left over from an earlier
+    agent with the same name."""
     path = state_dir() / 'capacity' / f'{full}.continued.json'
     try:
-        at = float(json.loads(path.read_text())['at'])
-    except (OSError, ValueError, KeyError, TypeError):
+        record = json.loads(path.read_text())
+        at, size = float(record['at']), record.get('size')
+    except (OSError, ValueError, KeyError, TypeError, AttributeError):
         return None
     path.unlink(missing_ok=True)
-    return clock() - max(0.0, time.time() - at)
+    if record.get('transcript') not in (None, transcript):
+        return None
+    return clock() - max(0.0, time.time() - at), size if isinstance(size, int) else None
 
 
 def check_capacity(watched):
@@ -591,9 +596,13 @@ def capacity_step(name, full, spawner):
     if episode and output_since(transcript, episode['offset'], size):
         del episodes[name]
         episode = None
-    if episode is None and (handed_at := lat_continue_at(full)) is not None:
-        # lat-watch typed Continue for this episode; the 5 minutes count from then.
-        episode = episodes[name] = {'offset': size, 'at': handed_at, 'continued': True}
+    if episode is None and (handed := lat_continue(full, transcript)) is not None:
+        # lat-watch typed Continue for this episode; the 5 minutes count from then, and
+        # output written since then already ended it.
+        at, offset = handed
+        offset = size if offset is None else offset
+        if not output_since(transcript, offset, size):
+            episode = episodes[name] = {'offset': offset, 'at': at, 'continued': True}
     code, out = hcom('term', full, '--json', timeout=10)
     try:
         screen = json.loads(out) if code == 0 else None
