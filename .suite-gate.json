@@ -60,14 +60,14 @@
   ],
   "integration_branch": "dev",
   "full_suites": [
-    {"cwd": "board", "command": "bun run test:all"},
-    {"cwd": "skills/local/lat", "command": "uv run --no-project --with textual==8.2.8 python -m unittest discover -s tests"},
-    {"cwd": "skills/local/three-tier-testing", "command": "uv run --no-project python -m unittest discover -s tests"},
-    {"cwd": "skills/local/hcom-spawn", "command": "uv run --no-project python -m unittest discover -s tests"},
-    {"cwd": "skills/local/lat-handover", "command": "uv run --no-project python -m unittest discover -s tests"},
-    {"cwd": "skills/local/host-guard", "command": "uv run --no-project python -m unittest discover -s tests"},
-    {"cwd": "skills/local/retro-log", "command": "uv run --no-project python -m unittest discover -s tests"},
-    {"cwd": "scripts", "command": "uv run --no-project python -m unittest discover -s tests"}
+    {"cwd": "board", "command": "bun run test:all", "depends_on": ["skills/local/lat/herdr-panel/**", "skills/local/lat/scripts/**"]},
+    {"cwd": "skills/local/lat", "command": "uv run --no-project --with textual==8.2.8 python -m unittest discover -s tests", "depends_on": ["skills/local/three-tier-testing/scripts/suite-gate.py"]},
+    {"cwd": "skills/local/three-tier-testing", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
+    {"cwd": "skills/local/hcom-spawn", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
+    {"cwd": "skills/local/lat-handover", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
+    {"cwd": "skills/local/host-guard", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
+    {"cwd": "skills/local/retro-log", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": []},
+    {"cwd": "scripts", "command": "uv run --no-project python -m unittest discover -s tests", "depends_on": ["skills/local/three-tier-testing/scripts/suite-gate.py"]}
   ],
   "affected": {
     "commands": {
