@@ -73,20 +73,23 @@
 	const shownNow = $derived(controller ? shownSettings(lastApplied(entries), switching.current[id]) : { settings: undefined, waiting: false });
 	const current = $derived(shownNow.settings);
 
-	/** The recipient's state as far as what it can switch goes: new board data with the same one
-	 *  does not end a status read on its way. */
-	const switchState = $derived(controller ? `${controller.status}/${controller.running}` : null);
-	// What can be switched: read for another recipient, or when this one starts or ends, unless
-	// read for that state moments ago. The settings come from its conversation, which keeps them
-	// current while its information page is open.
+	/** Ended when another recipient is shown or the picker goes: the reads for this one stop. New
+	 *  board data does not end them, or a slow read would never answer. */
+	let leave = new AbortController();
 	$effect(() => {
-		if (switchState === null) return;
-		const target = id;
-		const state = switchState;
-		const abort = new AbortController();
-		void switching.loadFresh(target, state, abort.signal);
-		if (untrack(() => switching.current[target]) === undefined) void switching.loadCurrent(target, false, abort.signal);
+		void id;
+		const abort = (leave = new AbortController());
 		return () => abort.abort();
+	});
+	// What can be switched: read for another recipient, or when this one starts or ends, unless
+	// read for that state moments ago or still on its way. The settings come from its conversation,
+	// which keeps them current while its information page is open.
+	$effect(() => {
+		if (!controller) return;
+		const target = controller.id;
+		const state = `${controller.status}/${controller.running}`;
+		void switching.loadFresh(target, state, leave.signal);
+		if (untrack(() => switching.current[target]) === undefined) void switching.loadCurrent(target, false, leave.signal);
 	});
 	// With every new board data (each hands a new `controller` object), which is when a resume's
 	// result or the next turn comes in: the sent log while it is not read yet or a switch is still

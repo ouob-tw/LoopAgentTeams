@@ -43,11 +43,12 @@ class Switching {
 		if (update.ok && (again || this.current[controllerId] === undefined)) this.current[controllerId] = update.page.current ?? null;
 	}
 
-	/** `load`, unless the status was read for the same state of the controller in the last 30 s:
-	 *  enough for the label. Opening a menu and applying a switch read it afresh with `load`. */
+	/** `load`, unless the status was read for the same state of the controller in the last 30 s, or
+	 *  that read is still on its way: enough for the label. Opening a menu and applying a switch read
+	 *  it afresh. */
 	async loadFresh(controllerId: string, state: string, signal?: AbortSignal): Promise<void> {
 		const last = this.#read[controllerId];
-		if (last?.key === state && Date.now() - last.at < FRESH_MS && this.status[controllerId]) return;
+		if (last?.key === state && Date.now() - last.at < FRESH_MS && (this.status[controllerId] || this.#reading[controllerId])) return;
 		this.#read[controllerId] = { key: state, at: Date.now() };
 		await this.load(controllerId, signal);
 	}
