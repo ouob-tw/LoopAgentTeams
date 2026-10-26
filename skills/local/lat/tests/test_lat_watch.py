@@ -4290,8 +4290,10 @@ esac
                     lat_actions += actions
                 continues = (len(injected)
                              + sum(a.kind == 'capacity-continue' for a in lat_actions))
+                # The 20-minute repeats ("Still on screen") are not 5-minute notices.
                 notices = (sum('Continue was sent' in text for text in sent)
-                           + sum('Continue was sent' in a.message for a in lat_actions))
+                           + sum('Continue was sent' in a.message
+                                 and 'Still on screen' not in a.message for a in lat_actions))
                 self.assertEqual((continues, notices), (1, 1))
 
         # Once spawn-watch no longer covers it, lat-watch types Continue itself.
