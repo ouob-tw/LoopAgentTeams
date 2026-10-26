@@ -41,7 +41,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --registered --purp
 uv run --no-project python <skill>/scripts/suite-gate.py run --registered web --purpose post-merge # 指定的幾套
 ```
 
-照登記表 `full_suites` 的指令文字與執行目錄依序跑全部或指定的整套，每套都經過閘門（同樣排隊、同內容沿用），結果就是推送前檢查與安裝檢查找的那筆。套件以執行目錄（例如 `web`、`.`）或完整指令文字指定，名稱對不上時不執行並列出登記的套件。一律要帶 `--purpose` 或 `--reason`（沒有對照表的專案也一樣），可加 `--rerun`；`--` 之後不能再接指令。結束碼取第一個非 0 的。
+照登記表 `full_suites` 的指令文字與執行目錄跑全部或指定的整套，每套都經過閘門（同樣排隊、同內容沿用），結果就是推送前檢查與安裝檢查找的那筆。各套同時開始，每套是自己的一個 `run`，照一般的主機名額排隊，所以同時跑幾套由名額規則決定（見[等待與名額](#等待與名額)），整批時間約等於最慢的一套。每套各寫自己的紀錄；一套失敗其餘照跑。跑多套時每行輸出前面加上 `[<執行目錄>] `，結束時每套印一行結果（`passed`、`exit <碼>` 或 `not run`）。套件以執行目錄（例如 `web`、`.`）或完整指令文字指定，名稱對不上時不執行並列出登記的套件。一律要帶 `--purpose` 或 `--reason`（沒有對照表的專案也一樣），可加 `--rerun`；`--` 之後不能再接指令。結束碼取第一個非 0 的。
 
 `run --registered` 不在目前的工作區跑，而是測目前 `HEAD` 那個提交：
 
@@ -49,12 +49,16 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --registered web --
 - 在閘門狀態目錄底下的 `checkouts/` 建一個暫時的 detached worktree（`git worktree add --detach`），印出它的位置，所有套件都在裡面跑。跑的期間在原工作區改檔、合併或切換分支，都不影響結果，也不會讓紀錄變成「內容改變、不可沿用」。
 - 指紋不含路徑，所以暫時目錄裡的通過紀錄就是這份內容的紀錄：原工作區內容與 `HEAD` 相同時，`status`、沿用、推送前檢查與安裝檢查都認得它。`fingerprint_include` 列的檔案中被 Git 忽略的，會先從原工作區複製進去，指紋才會相同；有追蹤或沒被忽略的新檔維持 `HEAD` 的內容。
 - 套件目錄有 `bun.lock`（或 `bun.lockb`）時，先在暫時目錄的該目錄執行 `bun install --frozen-lockfile`，同一目錄只做一次；它在自己的工作階段執行，結束（含 Ctrl-C）時連同它留下的程序一起停掉。準備失敗時該套不執行、不寫紀錄，印出「not run: preparing <目錄> failed」並以 2 結束，這不是測試結果；其餘套件照跑。
+- 某套啟動不了（例如執行目錄不存在）時同樣印出「not run」、以 2 結束，其餘套件照跑。
+- Ctrl-C 或 `kill` 會轉給每一套還在跑的 `run`，等它們都停掉測試後才結束，不寫紀錄；其他原因提早結束時也先停掉已開始的套件，再移除暫時目錄。
 - 跑完（通過、失敗或 Ctrl-C）都會移除暫時目錄並清掉 worktree 登記；移除失敗時印出位置，請手動刪除後執行 `git worktree prune`。閘門被強制殺掉時會留下，同樣手動清。
 - 單獨的 `run -- <指令>` 與 `affected`（包括退回整套）仍在目前工作區執行。
 
 ### 怎樣算「同一份內容」
 
 指紋由三樣組成：工作區內容（追蹤檔加上沒被忽略的新檔，等同 `git add -A` 後的 tree，不動真正的索引）、指令文字、執行目錄相對於 repo 根的路徑。所以合併後 tree 沒變、或在另一個工作區內容相同，都會沿用。
+
+登記表 `full_suites` 裡宣告了 `depends_on` 的整套（指令文字與執行目錄都和登記相同、以一整串指令執行時），內容只看這些檔案：它的執行目錄、全閘門共用的檔案（`.suite-gate.json`、`.suite-gate.d/**`、根目錄的 `.gitignore`）、`fingerprint_include` 列的檔案，以及 `depends_on` 列的路徑。其他地方改了，這套的通過紀錄照樣可以沿用；共用檔案一改，每一套都要重跑。沒宣告的整套、執行目錄是 `.` 的整套與其他指令仍看整個 repo。紀錄的 `tree` 是只含這些檔案的 tree。
 
 - 只有結束碼 0 且執行前後內容相同的紀錄可以沿用。同一內容最近一次的結果是失敗時，照常執行。
 - 執行期間內容改變：照樣寫紀錄，但標為「執行中內容改變，不可沿用」並提醒。測試期間不要改程式檔；改了又在跑完前改回原樣偵測不到。
@@ -132,7 +136,7 @@ repo 根目錄放 `.suite-gate.json`（進版控）：
 ```
 
 - `suites`：整套測試指令的樣式，可用 `*`、`?` 萬用字元；比對時空白會先整理成一格。有登記時只以登記為準，不再用預設判斷。
-- `fingerprint_include`：額外納入指紋的被忽略檔案（glob，相對 repo 根），例如測試用的環境變數檔。
+- `fingerprint_include`：額外納入指紋的被忽略檔案（glob，相對 repo 根），例如測試用的環境變數檔。宣告了 `depends_on` 的整套也一律包含它們。
 - `cleanup`：整理票開在哪個 GitHub repo、用哪個標籤，見[定期整理觸發](#定期整理觸發)。
 
 沒有登記檔時用預設判斷：pytest、`python -m unittest`、bun test、vitest、jest、npm／pnpm／yarn test、playwright test、go test、cargo test 等，沒有指定檔案、路徑或篩選參數（如 `-k`、`-t`、`-g`、`-run`）就算整套。寧可多算，被誤判時加原因重跑即可。這個判斷是 `is_full_suite()`，執行前的 hook 也用它。
@@ -168,14 +172,15 @@ uv run --no-project python <skill>/scripts/suite-gate.py affected --base <commit
 | 欄位 | 內容 |
 | ---- | ---- |
 | `integration_branch` | 整合分支名稱，用來算基準點。 |
-| `full_suites` | 每一套整套測試：`command`（一整串 shell 指令文字）與 `cwd`（執行目錄，預設 `.`）。對照表退回整套時跑的就是這些；手動跑時在該目錄用 `run -- '<command>'`（一個引號字串），指紋才會相同；或用 `run --registered`。 |
+| `full_suites` | 每一套整套測試：`command`（一整串 shell 指令文字）與 `cwd`（執行目錄，預設 `.`），可加 `depends_on`。對照表退回整套時跑的就是這些；手動跑時在該目錄用 `run -- '<command>'`（一個引號字串），指紋才會相同；或用 `run --registered`。 |
+| `full_suites[].depends_on` | 這套測試在執行目錄以外還會讀或執行的檔案（路徑 glob，相對 repo 根，寫法同 `map`：`*` 不跨目錄、`**` 跨目錄，整個資料夾寫 `dir/**`）。有這欄時指紋只看執行目錄、共用檔案與這些路徑（見[怎樣算「同一份內容」](#怎樣算同一份內容)）；空清單表示只看自己的目錄。沒有這欄就看整個 repo。漏列的檔案改了不會要求重跑，所以要照測試實際讀到與執行的檔案列。 |
 | `affected.commands` | 執行目錄 → 受影響測試指令樣板，`{tests}` 會換成選出的測試路徑（相對該目錄、已加引號）。 |
 | `affected.map` | 對應規則清單：`paths`（程式路徑樣式）→ `tests`（測試檔或測試路徑樣式，任一層都可以）。`tests` 只能對到可以直接執行的測試檔，不要對到共用的輔助檔。 |
 | `affected.shared` | 改到就改跑整套的路徑樣式，例如依賴鎖定檔、測試共用設定、建置設定。 |
 
 `affected.map` 的規則也可以分放在 repo 根的 `.suite-gate.d/*.json`，每個檔案是 `{"map": [...]}`，依檔名順序接在 `.suite-gate.json` 的規則後面。同一路徑可以出現在多條規則，選到的測試會合併，所以要替既有路徑多對一個測試時，新增一條規則就好，不必改既有那一行。平行進行的工作各自新增檔案（例如 `.suite-gate.d/skill-hints.json`），合併時就不會在同一行衝突。只新增或修改一個片段時，`affected` 只跑該片段對到的測試，不退回整套；`.suite-gate.json` 本身的改動照上面第 2 項判斷。任一檔案讀不懂時，`affected` 寫出檔名後停止。
 
-`affected.map` 非空就算「有對照表」：`run` 要求用途、`affected` 可用。`affected` 與 `full_suites` 不影響指紋；`suites`（給 hook 判斷用）照舊另外列。
+`affected.map` 非空就算「有對照表」：`run` 要求用途、`affected` 可用。`affected` 與 `full_suites`（除了 `depends_on` 決定的範圍）不影響指紋的算法，但它們寫在 `.suite-gate.json`，這個檔一改，宣告了 `depends_on` 的整套也都要重跑；`suites`（給 hook 判斷用）照舊另外列。
 
 LoopAgentTeams 風格的例子：
 
@@ -248,7 +253,7 @@ uv run --no-project python <skill>/scripts/suite-gate.py install --client codex
 
 有登記檔的 repo 可以裝 Git pre-push 檢查：推送到 `main` 或推送任何標籤時，要求被推送的 commit 在閘門已有 `full_suites` 每一套的可沿用通過紀錄，缺任何一套就擋下推送。只查紀錄、不跑測試；內容相同時沿用，例如整批合併後（`post-merge`）的通過紀錄，發布前推送直接可用。
 
-- 指紋與閘門相同：被推送 commit 的 tree，加上**推送當下工作區**中 `fingerprint_include` 列的檔案，連同該套的指令文字與執行目錄。所以測試後改了 `.env.test` 等檔案會被擋下，照補跑指令重跑後就能推送。登記檔（`full_suites`、`fingerprint_include`）也讀工作區的。
+- 指紋與閘門相同：被推送 commit 的 tree（宣告了 `depends_on` 的套件只取它的範圍），加上**推送當下工作區**中 `fingerprint_include` 列的檔案，連同該套的指令文字與執行目錄。所以測試後改了 `.env.test` 等檔案會被擋下，照補跑指令重跑後就能推送。登記檔（`full_suites`、`fingerprint_include`）也讀工作區的。
 - 被擋下時列出缺紀錄的參照、commit 與每一套，以及可直接執行的補跑指令：`cd <執行目錄> && uv run --no-project python <skill>/scripts/suite-gate.py run --purpose release -- '<整套指令>'`。指令要在那個 commit 的乾淨內容下執行；工作區內容和它不同時會另外提醒（例如先 `git switch --detach <commit>`）。
 - 推送其他分支、刪除遠端參照都不檢查。緊急時 `git push --no-verify` 可略過，屬使用者自行選擇。
 - 登記檔讀不到或 `full_suites` 有誤時一律擋下並說明。
