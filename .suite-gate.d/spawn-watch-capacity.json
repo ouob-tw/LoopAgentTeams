@@ -1,0 +1,4 @@
+{"map": [
+  {"paths": ["skills/local/hcom-spawn/scripts/spawn-watch.py"],
+   "tests": ["skills/local/lat/tests/test_lat_watch.py"]}
+]}
