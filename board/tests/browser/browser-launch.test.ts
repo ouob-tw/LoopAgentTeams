@@ -12,7 +12,7 @@ test('every test Chrome starts with --password-store=basic and --use-mock-keycha
 
 // The case runs on a private session bus whose Secret Service never answers. Like a missing Chrome, a host
 // that cannot run it fails here instead of skipping, so the stall can never read as a pass.
-test('a Chrome without the flag waits on the secret service for its first cookie request; launchChrome does not', () => {
+test('a Chrome without the flag waits on the secret service; launchChrome does not', () => {
 	const dir = import.meta.dir;
 	// The Secret Service first, then the case; the paths come in as arguments, so the script stays literal.
 	// The system Python, whose D-Bus bindings are the distribution's: a `python3` on PATH may be a venv's.

@@ -1,6 +1,6 @@
 // Run by browser-launch.test.ts inside a private session bus whose Secret Service never answers, not by
 // `bun test` itself: a Chrome started without `--password-store=basic` cannot answer its first cookie
-// request until that service does; one started by `launchChrome` answers at once.
+// request (or, in some versions, even to start) until that service does; one started by `launchChrome` answers at once.
 import { spawn } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -20,7 +20,7 @@ test('launchChrome answers the first cookie request without the secret service',
 	}
 }, 20_000);
 
-test('without --password-store=basic the first cookie request waits on the secret service', async () => {
+test('without --password-store=basic Chrome waits on the secret service, at start or at the first cookie request', async () => {
 	const profile = mkdtempSync(join(tmpdir(), 'lat-board-test-chrome-case-'));
 	const flags = CHROME_FLAGS.filter((flag) => !flag.startsWith('--password-store') && flag !== '--use-mock-keychain');
 	const chrome = spawn(CHROME, [...flags, `--user-data-dir=${profile}`, '--remote-debugging-port=0', 'about:blank'], { stdio: 'ignore', detached: true });
@@ -28,15 +28,18 @@ test('without --password-store=basic the first cookie request waits on the secre
 		const file = join(profile, 'DevToolsActivePort');
 		const deadline = Date.now() + 10_000;
 		let port = 0;
-		while (!port) {
+		while (!port && Date.now() < deadline) {
 			if (existsSync(file)) {
 				const [first, rest] = readFileSync(file, 'utf8').split('\n');
 				if (rest !== undefined && Number(first) > 0) port = Number(first);
 			}
-			if (!port) {
-				expect(Date.now()).toBeLessThan(deadline);
-				await sleep(50);
-			}
+			if (!port) await sleep(50);
+		}
+		if (!port) {
+			// Some Chrome versions wait on the service before they publish a debugging port; a Chrome that
+			// crashed would not be waiting.
+			expect(chrome.exitCode).toBeNull();
+			return;
 		}
 		const tab = await Tab.open(port);
 		const outcome = await tab.send('Network.setCookie', COOKIE, 3_000).then(() => 'answered', (error: Error) => error.message);
