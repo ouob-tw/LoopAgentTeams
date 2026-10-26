@@ -1003,7 +1003,7 @@ def decide(previous, observation, now):
             actions = (quota_notice(observation, input_has_text=input_has_text),)
             state['quota_notified'] = True
             state['quota_notified_at'] = now
-    elif (capacity and continue_at is not None
+    elif (capacity and continue_at is not None and not covered
           and not state.get('capacity_continue_notified')):
         if (observation.status != 'inactive'
                 and now - continue_at >= CAPACITY_CONTINUE_SECONDS):

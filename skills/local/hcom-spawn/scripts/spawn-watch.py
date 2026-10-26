@@ -466,57 +466,87 @@ def check_capacity(watched):
             capacity_step(name, full, spawner)
 
 
-def capacity_on_screen(lines):
+def capacity_on_screen(lines, input_text=''):
     """True when the last error on a Codex screen is the model-capacity error."""
     for index in range(len(lines) - 1, -1, -1):
         if CAPACITY_ERROR.search(lines[index]):
-            return capacity_is_current(lines, index)
+            return capacity_is_current(lines, index, input_text)
     return False
 
 
-def capacity_is_current(lines, index):
-    """Same rule as lat-watch: any later reply, error, work or typed prompt replaces it."""
-    for line in lines[index + 1:]:
+def capacity_is_current(lines, index, input_text=''):
+    """Same rule as lat-watch: any later reply, error, work or submitted prompt replaces it.
+
+    The last prompt row showing the unsent input_text is the input box, not a new prompt.
+    """
+    prompts = [i for i in range(index + 1, len(lines)) if lines[i].startswith('› ')]
+    typed = (input_text or '').strip().split('\n')[0].strip()
+    for i, line in enumerate(lines[index + 1:], index + 1):
         stripped = line.strip()
         if stripped.startswith('Working (') or line.startswith(('• ', '■ ')):
             return False
         if line.startswith('› ') and stripped != '› Ask Codex to do anything':
-            return False
+            shown = stripped[2:].strip()
+            if not (typed and shown and i == prompts[-1]
+                    and (typed.startswith(shown) or shown.startswith(typed))):
+                return False
     return True
 
 
-def output_since(transcript, offset, size):
-    """True only for a complete Codex reply or tool record after offset; unknown is False."""
+def transcript_records(transcript, offset, size):
+    """Complete records of the transcript between offset and size (at most the last
+    TRANSCRIPT_TAIL_BYTES); unreadable is none."""
     if not transcript or size <= offset:
-        return False
+        return []
     start = max(offset, size - TRANSCRIPT_TAIL_BYTES)
     try:
         with Path(transcript).open('rb') as stream:
             stream.seek(start)
             lines = stream.read(size - start).split(b'\n')
     except OSError:
-        return False
+        return []
     # The last piece is empty or a record still being written; a cut first line is partial.
     lines = lines[1:-1] if start > offset else lines[:-1]
+    records = []
     for raw in lines:
         try:
             record = json.loads(raw)
         except (ValueError, RecursionError):
             continue
-        payload = record.get('payload') if isinstance(record, dict) else None
-        if not isinstance(payload, dict):
-            continue
-        if record.get('type') == 'response_item':
-            if (payload.get('role') == 'assistant'
-                    or payload.get('type') not in ('message', 'reasoning')):
-                return True
-        elif record.get('type') == 'event_msg':
-            item = payload.get('item')
-            if (payload.get('type') == 'agent_message'
-                    or (payload.get('type') == 'item_completed' and isinstance(item, dict)
-                        and item.get('type') == 'AgentMessage')):
-                return True
-    return False
+        if isinstance(record, dict) and isinstance(record.get('payload'), dict):
+            records.append(record)
+    return records
+
+
+def is_output(record):
+    """A complete Codex reply or tool record (same rule as lat-watch)."""
+    payload = record['payload']
+    if record.get('type') == 'response_item':
+        return (payload.get('role') == 'assistant'
+                or payload.get('type') not in ('message', 'reasoning'))
+    item = payload.get('item')
+    return record.get('type') == 'event_msg' and (
+        payload.get('type') == 'agent_message'
+        or (payload.get('type') == 'item_completed' and isinstance(item, dict)
+            and item.get('type') == 'AgentMessage'))
+
+
+def output_since(transcript, offset, size):
+    """True only for a complete Codex reply or tool record after offset; unknown is False."""
+    return any(is_output(record) for record in transcript_records(transcript, offset, size))
+
+
+def continue_pending(transcript, size):
+    """True when the last user input is a Continue with no agent output after it, e.g.
+    one lat-watch typed before this watcher started covering the agent."""
+    last = None
+    for record in transcript_records(transcript, 0, size):
+        payload = record['payload']
+        if is_output(record):
+            last = None
+        elif record.get('type') == 'event_msg' and payload.get('type') == 'user_message':
+            last = str(payload.get('message', '')).strip()
+    return last == CAPACITY_CONTINUE
 
 
 def capacity_step(name, full, spawner):
@@ -550,10 +580,13 @@ def capacity_step(name, full, spawner):
     except ValueError:
         screen = None
     if not isinstance(screen, dict) or not capacity_on_screen(
-            [str(line) for line in screen.get('lines') or []]):
+            [str(line) for line in screen.get('lines') or []], screen.get('input_text')):
         return
     where = f'{full} (codex) stopped on "Selected model is at capacity".'
-    if episode is None:
+    if episode is None and continue_pending(transcript, size):
+        # Continue already typed (by lat-watch before this watcher covered the agent).
+        episodes[name] = {'offset': size, 'at': clock(), 'continued': True}
+    elif episode is None:
         if screen.get('prompt_empty') is not True or screen.get('input_text'):
             if notify(spawner, f'hcom-spawn: {where} Continue was not typed because its input '
                                f'box has text. Look at it with `hcom term {full}`; switch '

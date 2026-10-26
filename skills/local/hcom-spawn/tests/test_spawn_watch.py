@@ -657,6 +657,34 @@ class CapacityTests(unittest.TestCase):
             self.step_at(seconds)
         self.assertEqual((self.fake.injected, len(self.fake.sent)), ([], 1))
 
+    def test_text_shown_in_the_prompt_row_still_counts_as_capacity_with_text(self):
+        self.fake.input_text = 'half typed reply'
+        self.fake.screen = [CAPACITY, '', '› half typed reply', '', *CODEX_SCREEN[1:]]
+        self.step_at(0)
+        self.assertEqual(self.fake.injected, [])
+        self.assertIn('input box has text', self.fake.sent[0])
+        # A submitted prompt above the input box still replaces the error.
+        self.fake.sent.clear()
+        self.watch.episodes.clear()
+        self.fake.screen = [CAPACITY, '› older prompt', '', '› half typed reply',
+                            *CODEX_SCREEN[1:]]
+        self.step_at(10)
+        self.assertEqual((self.fake.injected, self.fake.sent), ([], []))
+
+    def test_continue_typed_before_coverage_is_not_typed_again(self):
+        # lat-watch typed Continue before this watcher covered the agent.
+        self.write({'type': 'event_msg', 'payload': {'type': 'error', 'message': CAPACITY}},
+                   ECHO)
+        self.step_at(0)
+        self.assertEqual(self.fake.injected, [])
+        self.step_at(300)
+        self.assertEqual(len(self.fake.sent), 1)
+        self.assertIn('Continue was sent', self.fake.sent[0])
+        # After a reply, the next capacity episode gets its own Continue.
+        self.write(REPLY)
+        self.step_at(305)
+        self.assertEqual(len(self.fake.injected), 1)
+
     def test_inactive_agent_gets_nothing(self):
         self.fake.status = 'inactive'
         for seconds in (0, 400):
