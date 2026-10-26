@@ -151,12 +151,12 @@
 
 	/** Opening a menu reads whether the controller can switch now: the status kept for the label
 	 *  may be up to 30 s old, and a turn can end without the roster changing. A part that looked
-	 *  blocked opens once the fresh read clears it. */
+	 *  blocked opens once the fresh read clears it; clicking it again meanwhile waits for the same read. */
 	async function toggle(kind: Kind) {
 		if (menu === kind) return close();
 		if (!controller) return;
 		const target = id;
-		const read = switching.load(target);
+		const read = switching.loadOnce(target);
 		if (reason(kind)) await read;
 		if (target !== id || reason(kind)) return;
 		menu = kind;

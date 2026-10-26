@@ -25,6 +25,8 @@ class Switching {
 	/** Open conversations by controller ID: their live feed keeps `current` up to date. */
 	watched = $state<Record<string, number>>({});
 	#loads: Record<string, number> = {};
+	/** The newest status read still on its way, by controller ID: the one whose answer counts. */
+	#reading: Record<string, { done: Promise<void>; signal?: AbortSignal }> = {};
 	/** When each controller's status was last read, and for which of its states. */
 	#read: Record<string, { key: string; at: number }> = {};
 
@@ -65,8 +67,24 @@ class Switching {
 
 	/** Aborting `signal` (the page left, or another controller opened) ends the read on the server
 	 *  too, and leaves everything as it was. */
-	async load(controllerId: string, signal?: AbortSignal): Promise<void> {
+	load(controllerId: string, signal?: AbortSignal): Promise<void> {
 		const load = (this.#loads[controllerId] = (this.#loads[controllerId] ?? 0) + 1);
+		const done = this.#fetchStatus(controllerId, load, signal).finally(() => {
+			if (this.#reading[controllerId]?.done === done) delete this.#reading[controllerId];
+		});
+		this.#reading[controllerId] = { done, signal };
+		return done;
+	}
+
+	/** Wait for the status read already on its way, or `load` when none is: a picker clicked again
+	 *  while it reads does not start another read, which would drop the answer it waits for. A read
+	 *  that failed or was aborted is not waited for again. */
+	loadOnce(controllerId: string): Promise<void> {
+		const reading = this.#reading[controllerId];
+		return reading && !reading.signal?.aborted ? reading.done : this.load(controllerId);
+	}
+
+	async #fetchStatus(controllerId: string, load: number, signal?: AbortSignal): Promise<void> {
 		const result = await request<ModelStatus>(`/api/model?controller=${encodeURIComponent(controllerId)}`, { signal });
 		if (!result.ok && result.unpaired) return;
 		// Reported below, unless a newer load has taken over.
