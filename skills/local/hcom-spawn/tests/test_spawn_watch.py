@@ -18,6 +18,12 @@ CLAUDE_AUTO = ['▝▜██████▀  Opus 5.5 with low effort · Claude 
                '  ⏵⏵ auto mode on (shift+tab to cycle)']
 CODEX_SCREEN = ['› Ask Codex to do anything',
                 '  GPT-6.1-Sol low · /tmp/probe  ⚠ 1 warning · f2 to view']
+CAPACITY = '■ Selected model is at capacity. Please try a different model.'
+CAPACITY_SCREEN = [CAPACITY, '', *CODEX_SCREEN]
+RECOVERED_SCREEN = [CAPACITY, '› Continue', '• Picking up the task again.',
+                    'Working (3s · esc to interrupt)', *CODEX_SCREEN]
+REPLY = {'type': 'event_msg', 'payload': {'type': 'agent_message', 'message': 'OK'}}
+ECHO = {'type': 'event_msg', 'payload': {'type': 'user_message', 'message': 'Continue'}}
 
 
 def load():
@@ -39,6 +45,7 @@ class FakeHcom:
         self.batches = [self.batch]
         self.blocked_early = False
         self.unsub_fails = False
+        self.injected, self.on_inject = [], None
         self.agents = None  # `hcom list --json` rows; None answers like `hcom list <name>`
 
     def clock(self):
@@ -70,11 +77,17 @@ class FakeHcom:
                 return 0, ('{"id": 150, "data": {"status": "blocked"}}\n'
                            if self.blocked_early else '')
             return 0, ''
+        if args[:2] == ('term', 'inject'):
+            self.injected.append(args)
+            if self.on_inject:
+                self.on_inject()
+            return 0, ''
         if args[0] == 'term':
             if not self.screens:
                 return 1, "Error: 'kilo' has no terminal registered yet\n"
             lines = self.screens.pop(0) if len(self.screens) > 1 else self.screens[0]
-            return 0, json.dumps({'lines': lines, 'ready': True})
+            return 0, json.dumps({'lines': lines, 'ready': True, 'prompt_empty': True,
+                                  'input_text': ''})
         if args == ('list', '--json') and self.agents is not None:
             return 0, json.dumps(self.agents)
         if args[0] == 'list':
@@ -544,3 +557,186 @@ class SpawnWatchTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+
+
+class CapacityHcom:
+    """One Codex agent's `hcom list` row and screen; records Continue and notices."""
+
+    def __init__(self, transcript, screen=CAPACITY_SCREEN, status='listening'):
+        self.transcript, self.screen, self.status = transcript, screen, status
+        self.input_text, self.now, self.injected, self.sent = '', 0.0, [], []
+        self.inject_fails = False
+
+    def clock(self):
+        return self.now
+
+    def __call__(self, *args, timeout=30):
+        if args[0] == 'list':
+            return 0, json.dumps({'status': self.status, 'transcript_path': self.transcript})
+        if args[:2] == ('term', 'inject'):
+            if self.inject_fails:
+                return 1, 'inject failed'
+            self.injected.append(args)
+            return 0, ''
+        if args[0] == 'term':
+            return 0, json.dumps({'lines': self.screen, 'ready': True,
+                                  'prompt_empty': not self.input_text,
+                                  'input_text': self.input_text})
+        if args[0] == 'send':
+            self.sent.append(args[-1])
+            return 0, ''
+        raise AssertionError(f'unexpected hcom call {args}')
+
+
+class CapacityTests(unittest.TestCase):
+    def setUp(self):
+        self.state = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state.cleanup)
+        patcher = mock.patch.dict(os.environ, {'XDG_STATE_HOME': self.state.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        self.watch = load()
+        self.transcript = Path(self.state.name) / 'codex.jsonl'
+        self.transcript.write_text('{"type": "session_meta", "payload": {}}\n')
+        self.fake = CapacityHcom(str(self.transcript))
+        self.watch.hcom, self.watch.clock = self.fake, self.fake.clock
+
+    def write(self, *records):
+        with self.transcript.open('a') as stream:
+            stream.write(''.join(json.dumps(record) + '\n' for record in records))
+
+    def step_at(self, seconds):
+        self.fake.now = seconds
+        self.watch.capacity_step('kilo', 'vare-review-kilo', 'vare')
+
+    def test_one_continue_per_episode_and_one_notice_after_5_minutes(self):
+        self.step_at(0)
+        self.assertEqual(self.fake.injected,
+                         [('term', 'inject', 'vare-review-kilo', 'Continue', '--enter')])
+        # The echoed Continue and another capacity error are not agent output.
+        self.write(ECHO)
+        for seconds in (5, 60, 299):
+            self.step_at(seconds)
+        self.assertEqual((len(self.fake.injected), self.fake.sent), (1, []))
+        self.step_at(300)
+        self.assertEqual(len(self.fake.sent), 1)
+        self.assertIn('vare-review-kilo (codex) stopped on "Selected model is at capacity"',
+                      self.fake.sent[0])
+        self.assertIn('Continue was sent 5 minutes ago with no reaction', self.fake.sent[0])
+        for seconds in (305, 1500):
+            self.step_at(seconds)
+        self.assertEqual((len(self.fake.injected), len(self.fake.sent)), (1, 1))
+
+    def test_new_output_ends_the_episode_and_a_new_one_may_send_again(self):
+        self.step_at(0)
+        self.write(ECHO, REPLY)
+        self.fake.screen = RECOVERED_SCREEN
+        self.step_at(60)
+        self.fake.screen = CAPACITY_SCREEN
+        self.step_at(400)
+        self.assertEqual(len(self.fake.injected), 2)
+        self.assertEqual(self.fake.sent, [])  # the first episode recovered in time
+
+    def test_working_without_output_is_still_the_same_episode(self):
+        self.step_at(0)
+        self.fake.screen = RECOVERED_SCREEN[:2] + RECOVERED_SCREEN[3:]
+        self.step_at(60)
+        self.fake.screen = CAPACITY_SCREEN
+        self.step_at(120)
+        self.assertEqual(len(self.fake.injected), 1)
+
+    def test_text_in_the_input_box_only_notifies(self):
+        self.fake.input_text = 'half typed reply'
+        self.step_at(0)
+        self.assertEqual(self.fake.injected, [])
+        self.assertEqual(len(self.fake.sent), 1)
+        self.assertIn('Continue was not typed because its input box has text',
+                      self.fake.sent[0])
+        self.fake.input_text = ''
+        for seconds in (60, 400):
+            self.step_at(seconds)
+        self.assertEqual((self.fake.injected, len(self.fake.sent)), ([], 1))
+
+    def test_inactive_agent_gets_nothing(self):
+        self.fake.status = 'inactive'
+        for seconds in (0, 400):
+            self.step_at(seconds)
+        self.assertEqual((self.fake.injected, self.fake.sent), ([], []))
+
+    def test_screen_without_a_current_capacity_error_gets_nothing(self):
+        for screen in (CODEX_SCREEN, RECOVERED_SCREEN,
+                       [CAPACITY, '■ Quota exceeded. Check your plan.', *CODEX_SCREEN]):
+            with self.subTest(screen=screen):
+                self.fake.screen = screen
+                self.step_at(0)
+                self.assertEqual(self.fake.injected, [])
+
+    def test_failed_continue_is_retried_on_the_next_check(self):
+        self.fake.inject_fails = True
+        self.step_at(0)
+        self.fake.inject_fails = False
+        self.step_at(5)
+        self.assertEqual(len(self.fake.injected), 1)
+        self.step_at(300)
+        self.assertEqual(self.fake.sent, [])  # counted from the Continue that went through
+        self.step_at(305)
+        self.assertEqual(len(self.fake.sent), 1)
+
+
+class CapacityWatchTests(unittest.TestCase):
+    """The whole watch: covers its Codex agents until they stop."""
+
+    def setUp(self):
+        self.state = tempfile.TemporaryDirectory()
+        self.addCleanup(self.state.cleanup)
+        patcher = mock.patch.dict(os.environ, {'XDG_STATE_HOME': self.state.name})
+        patcher.start()
+        self.addCleanup(patcher.stop)
+
+    def run_codex(self, fake):
+        watch = load()
+        watch.herdr = FakeHerdr()
+        watch.LABEL_WAIT, watch.LABEL_POLL = 0.3, 0.01
+        watch.hcom, watch.clock, watch.sleep = fake, fake.clock, fake.sleep
+        watch.process_ids = lambda: {'kilo': 'kilo'}
+        watch.launched_with = lambda tool, process_id: ('gpt-6.1-sol', 'low')
+        watch.main(['--spawner', 'vare', '--tool', 'codex', '--model', 'gpt-6.1-sol',
+                    '--effort', 'low', '--after-id', '99'])
+
+    def test_codex_agent_on_capacity_gets_one_continue_and_is_covered_until_it_stops(self):
+        log = Path(self.state.name) / 'session.jsonl'
+        log.write_text(json.dumps({'type': 'turn_context', 'payload': {
+            'model': 'gpt-6.1-sol', 'effort': 'low', 'approval_policy': 'never',
+            'sandbox_policy': {'type': 'danger-full-access'}}}) + '\n')
+        fake = FakeHcom(tool='codex', screens=[CAPACITY_SCREEN], log=str(log), stop_after=400)
+        marker = Path(self.state.name) / 'hcom-spawn/capacity/vare-review-kilo.json'
+        covered = []
+        fake.on_inject = lambda: covered.append(json.loads(marker.read_text()))
+        self.run_codex(fake)
+        self.assertEqual(fake.injected,
+                         [('term', 'inject', 'vare-review-kilo', 'Continue', '--enter')])
+        self.assertEqual([record['pid'] for record in covered], [os.getpid()])
+        notices = [send[-1] for send in fake.sent if 'Continue was sent' in send[-1]]
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(fake.sent[0][1], '@vare')
+        self.assertFalse(marker.exists())
+
+    def test_agent_that_already_ended_gets_nothing(self):
+        fake = FakeHcom(tool='codex', screens=[CAPACITY_SCREEN], stop_after=0)
+        self.run_codex(fake)
+        self.assertEqual(fake.injected, [])
+        self.assertEqual([send for send in fake.sent if 'capacity' in send[-1]], [])
+        self.assertEqual(list((Path(self.state.name) / 'hcom-spawn/capacity').iterdir()), [])
+
+    def test_claude_agents_are_not_marked_or_checked_for_capacity(self):
+        watch = load()
+        watch.herdr = FakeHerdr()
+        watch.LABEL_WAIT, watch.LABEL_POLL = 0.3, 0.01
+        fake = FakeHcom(screens=[CLAUDE_START, CAPACITY_SCREEN], stop_after=400)
+        watch.hcom, watch.clock, watch.sleep = fake, fake.clock, fake.sleep
+        watch.process_ids = lambda: {'kilo': 'kilo'}
+        watch.launched_with = lambda tool, process_id: ('claude-sonnet-5-5', 'low')
+        watch.main(['--spawner', 'vare', '--tool', 'claude', '--model', 'claude-sonnet-5-5',
+                    '--effort', 'low', '--after-id', '99'])
+        self.assertEqual(fake.injected, [])
+        self.assertEqual(list((Path(self.state.name) / 'hcom-spawn/capacity').iterdir()), [])

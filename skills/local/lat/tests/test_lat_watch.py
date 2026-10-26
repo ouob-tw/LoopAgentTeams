@@ -18,6 +18,7 @@ from unittest.mock import patch
 
 
 SCRIPT = Path(__file__).resolve().parents[1] / 'scripts/lat-watch.py'
+SPAWN_WATCH = Path(__file__).resolve().parents[2] / 'hcom-spawn/scripts/spawn-watch.py'
 TAIPEI = timezone(timedelta(hours=8))
 _UNSET_LEDGER = object()
 
@@ -4192,6 +4193,84 @@ esac
             state, actions = watch.decide(state, stuck, now=now + 60)
             self.assertEqual([a.kind for a in actions], ['notify-orchestrator'])
             self.assertIn('Continue was sent', actions[0].message)
+
+    def capacity_marker(self, **changes):
+        """Write spawn-watch's coverage record for worker-open, naming this process."""
+        marker = Path(os.environ['XDG_STATE_HOME']) / 'hcom-spawn/capacity/worker-open.json'
+        marker.parent.mkdir(parents=True, exist_ok=True)
+        start = int(Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()[19])
+        marker.write_text(json.dumps({'agent': 'worker-open', 'pid': os.getpid(),
+                                      'start': start, **changes}))
+        self.addCleanup(marker.unlink, missing_ok=True)
+        return marker
+
+    def test_capacity_covered_by_spawn_watch_gets_no_continue_or_5_minute_notice(self):
+        self.capacity_marker()
+        for input_text in ('', 'half typed reply'):
+            with self.subTest(input_text=input_text):
+                watch, stuck = self.capacity_screen(input_text)
+                self.assertTrue(stuck.capacity_covered)
+                state, actions = watch.decide(None, stuck, now=0)
+                self.assertEqual((actions, state['decision']), ((), 'capacity-covered'))
+                for minute in (5, 6, 19):
+                    state, actions = watch.decide(state, stuck, now=minute * 60)
+                    self.assertEqual(actions, ())
+                # The 20-minute repeat to the orchestrator is unchanged.
+                state, actions = watch.decide(state, stuck, now=20 * 60)
+                self.assertEqual(actions[0].kind, 'notify-orchestrator')
+                self.assertIn('Still on screen', actions[0].message)
+                self.assertIn('spawn-watch handles Continue', actions[0].message)
+
+    def test_capacity_marker_counts_only_while_its_spawn_watch_runs(self):
+        for marker in ({'start': -1}, {'pid': 2 ** 22 + 1}, None):
+            with self.subTest(marker=marker):
+                path = self.capacity_marker(**(marker or {}))
+                if marker is None:
+                    path.write_text('not json')
+                _, stuck = self.capacity_screen()
+                self.assertFalse(stuck.capacity_covered)
+
+    @unittest.skipUnless(SPAWN_WATCH.exists(), 'hcom-spawn is not next to lat')
+    def test_covered_agent_gets_one_continue_and_one_notice_across_both_watchers(self):
+        spec = importlib.util.spec_from_file_location('spawn_watch', SPAWN_WATCH)
+        spawn = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(spawn)
+        transcript = self.work / 'codex.jsonl'
+        transcript.write_text('{"type": "session_meta", "payload": {}}\n')
+        now, injected, sent = [0], [], []
+
+        def hcom(*args, timeout=30):
+            if args[0] == 'list':
+                return 0, json.dumps({'status': 'listening', 'transcript_path': str(transcript)})
+            if args[:2] == ('term', 'inject'):
+                injected.append(args)
+                return 0, ''
+            if args[0] == 'term':
+                return 0, json.dumps({'lines': self.CAPACITY_LINES, 'ready': True,
+                                      'prompt_empty': True, 'input_text': ''})
+            sent.append(args[-1])
+            return 0, ''
+        spawn.hcom, spawn.clock = hcom, lambda: now[0]
+        spawn.mark_covered('worker-open')
+        self.addCleanup(spawn.release, 'worker-open', 'worker-open')
+        state, lat_actions = None, []
+        for minute in range(0, 31):
+            now[0] = minute * 60
+            spawn.capacity_step('worker-open', 'worker-open', 'orch')
+            watch, stuck = self.capacity_screen()
+            state, actions = watch.decide(state, stuck, now=minute * 60)
+            lat_actions += actions
+        continues = len(injected) + sum(a.kind == 'capacity-continue' for a in lat_actions)
+        notices = (sum('Continue was sent' in text for text in sent)
+                   + sum('Continue was sent' in a.message for a in lat_actions))
+        self.assertEqual((continues, notices), (1, 1))
+        self.assertEqual(len(injected), 1)
+
+        # Once spawn-watch no longer covers it, lat-watch types Continue itself.
+        spawn.release('worker-open', 'worker-open')
+        watch, stuck = self.capacity_screen()
+        _, actions = watch.decide(None, stuck, now=0)
+        self.assertEqual([a.kind for a in actions], ['capacity-continue'])
 
     def test_escalation_actions_use_hcom_and_request_sound_without_real_services(self):
         watch = load_watch()
