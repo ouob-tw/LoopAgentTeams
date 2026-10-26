@@ -1,7 +1,8 @@
 // Clicking a model picker part again and again while it still reads whether the controller can
 // switch (讀取中…) waits for that one read instead of starting another each time, so the menu
 // opens once it answers, also when new board data comes meanwhile; a read that failed is not
-// waited for again: the next click reads afresh.
+// waited for again: the next click reads afresh. New board data while the first settings read is
+// slow waits for that read too, and a failed one is not waited for again.
 // The status reads are held with the DevTools Fetch domain to make them slow. Headless Chrome over
 // its DevTools protocol, on the built board with fake data. Skipped when the host has no Chrome.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -35,16 +36,22 @@ afterAll(async () => {
 	await fixture?.cleanup();
 });
 
-/** The controller's page with every status read held until the test lets it go. */
-async function openHeld() {
+/** The controller's page with every status read (or, with `reads`, those reads) held until the test
+ *  lets it go. */
+async function openHeld(reads = '*/api/model?controller=*') {
 	await browser?.close();
 	browser = await launchChrome({ screen: `location.search + ' ' + document.body.innerText.slice(0, 1500)` });
 	const [name, value] = cookie.split('=');
 	await tab().send('Network.setCookie', { name, value, url: fixture.url });
-	await tab().send('Fetch.enable', { patterns: [{ urlPattern: '*/api/model?controller=*' }] });
+	await tab().send('Fetch.enable', { patterns: [{ urlPattern: reads }] });
+	// The open conversation's feed would tell the settings instead of those reads.
+	if (reads.includes('/api/transcript')) {
+		await tab().send('Network.enable');
+		await tab().send('Network.setBlockedURLs', { urls: ['*/api/transcript/events*'] });
+	}
 	await tab().navigate(`${fixture.url}/?controller=s-lead`);
 	await tab().until(`!!${PART}?.getBoundingClientRect().height`, 'the picker');
-	await tab().until(`${PART}.title === '讀取中…'`, 'the part reading');
+	if (reads.includes('/api/model')) await tab().until(`${PART}.title === '讀取中…'`, 'the part reading');
 }
 
 /** The held status reads, once the page has sent no more for 300 ms. */
@@ -93,4 +100,22 @@ test.skipIf(!CHROME)('a failed status read is not waited for again: the click af
 	expect(await held()).toBe(1);
 	await release();
 	await tab().until(MENU, 'the menu once the new read answers');
+});
+
+test.skipIf(!CHROME)('new board data during a slow first settings read waits for it: no new read', async () => {
+	await openHeld('*/api/transcript?controller=*');
+	expect(await held()).toBe(1);
+	for (const summary of ['再好了', '還是好了', '一直好了']) {
+		fixture.report('s-lead', { tag: 'DONE', summary, hcom_name: 'lead', workspace });
+		await fixture.refresh(cookie);
+		await tab().until(`document.body.innerText.includes('${summary}')`, 'the new board data');
+	}
+	expect(await held()).toBe(1);
+	// A failed one is not waited for again: the next board data reads afresh.
+	for (const requestId of tab().paused.splice(0)) await tab().send('Fetch.failRequest', { requestId, errorReason: 'Failed' }).catch(() => {});
+	fixture.report('s-lead', { tag: 'DONE', summary: '又再好了', hcom_name: 'lead', workspace });
+	await fixture.refresh(cookie);
+	await tab().until(`document.body.innerText.includes('又再好了')`, 'the board data after the failure');
+	expect(await held()).toBe(1);
+	await release();
 });

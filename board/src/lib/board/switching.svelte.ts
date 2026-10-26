@@ -29,13 +29,27 @@ class Switching {
 	#reading: Record<string, { done: Promise<void>; signal?: AbortSignal }> = {};
 	/** When each controller's status was last read, and for which of its states. */
 	#read: Record<string, { key: string; at: number }> = {};
+	/** The first settings read still on its way, by controller ID. */
+	#readingCurrent: Record<string, { done: Promise<void>; signal?: AbortSignal }> = {};
 
 	/**
 	 * Read the latest settings from the conversation's latest page, for a controller whose
 	 * conversation is not open: once while they are unknown, or again with `again` (a switch waits
-	 * for its next turn). A failed read keeps what is shown.
+	 * for its next turn). A failed read keeps what is shown. While a first read is on its way, a
+	 * further first read waits for it instead of sending another, unless it was aborted.
 	 */
-	async loadCurrent(controllerId: string, again = false, signal?: AbortSignal): Promise<void> {
+	loadCurrent(controllerId: string, again = false, signal?: AbortSignal): Promise<void> {
+		if (again) return this.#fetchCurrent(controllerId, again, signal);
+		const reading = this.#readingCurrent[controllerId];
+		if (reading && !reading.signal?.aborted) return reading.done;
+		const done = this.#fetchCurrent(controllerId, again, signal).finally(() => {
+			if (this.#readingCurrent[controllerId]?.done === done) delete this.#readingCurrent[controllerId];
+		});
+		this.#readingCurrent[controllerId] = { done, signal };
+		return done;
+	}
+
+	async #fetchCurrent(controllerId: string, again: boolean, signal?: AbortSignal): Promise<void> {
 		// A failed read keeps what is shown.
 		const result = await request<TranscriptUpdate>(`/api/transcript?controller=${encodeURIComponent(controllerId)}`, { signal });
 		if (!result.ok) return;
