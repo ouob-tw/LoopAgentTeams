@@ -77,11 +77,16 @@ class Switching {
 	}
 
 	/** Wait for the status read already on its way, or `load` when none is: a picker clicked again
-	 *  while it reads does not start another read, which would drop the answer it waits for. A read
-	 *  that failed or was aborted is not waited for again. */
-	loadOnce(controllerId: string): Promise<void> {
-		const reading = this.#reading[controllerId];
-		return reading && !reading.signal?.aborted ? reading.done : this.load(controllerId);
+	 *  while it reads does not start another read, which would drop the answer it waits for. A newer
+	 *  read that takes over is waited for in turn. A read that failed or was aborted is not waited
+	 *  for again. */
+	async joinOrLoad(controllerId: string): Promise<void> {
+		let reading = this.#reading[controllerId];
+		if (!reading || reading.signal?.aborted) return this.load(controllerId);
+		while (reading) {
+			await reading.done;
+			reading = this.#reading[controllerId];
+		}
 	}
 
 	async #fetchStatus(controllerId: string, load: number, signal?: AbortSignal): Promise<void> {

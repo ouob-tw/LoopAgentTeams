@@ -73,13 +73,16 @@
 	const shownNow = $derived(controller ? shownSettings(lastApplied(entries), switching.current[id]) : { settings: undefined, waiting: false });
 	const current = $derived(shownNow.settings);
 
+	/** The recipient's state as far as what it can switch goes: new board data with the same one
+	 *  does not end a status read on its way. */
+	const switchState = $derived(controller ? `${controller.status}/${controller.running}` : null);
 	// What can be switched: read for another recipient, or when this one starts or ends, unless
 	// read for that state moments ago. The settings come from its conversation, which keeps them
 	// current while its information page is open.
 	$effect(() => {
-		if (!controller) return;
-		const target = controller.id;
-		const state = `${controller.status}/${controller.running}`;
+		if (switchState === null) return;
+		const target = id;
+		const state = switchState;
 		const abort = new AbortController();
 		void switching.loadFresh(target, state, abort.signal);
 		if (untrack(() => switching.current[target]) === undefined) void switching.loadCurrent(target, false, abort.signal);
@@ -149,14 +152,15 @@
 		confirmingSwitch = false;
 	});
 
-	/** Opening a menu reads whether the controller can switch now: the status kept for the label
-	 *  may be up to 30 s old, and a turn can end without the roster changing. A part that looked
-	 *  blocked opens once the fresh read clears it; clicking it again meanwhile waits for the same read. */
+	/** Opening a menu reads whether the controller can switch now, or waits for the read already on
+	 *  its way: the status kept for the label may be up to 30 s old, and a turn can end without the
+	 *  roster changing. A part that looked blocked opens once that read clears it; clicking it again
+	 *  meanwhile waits for the same read. */
 	async function toggle(kind: Kind) {
 		if (menu === kind) return close();
 		if (!controller) return;
 		const target = id;
-		const read = switching.loadOnce(target);
+		const read = switching.joinOrLoad(target);
 		if (reason(kind)) await read;
 		if (target !== id || reason(kind)) return;
 		menu = kind;

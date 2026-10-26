@@ -1,6 +1,7 @@
 // Clicking a model picker part again and again while it still reads whether the controller can
 // switch (讀取中…) waits for that one read instead of starting another each time, so the menu
-// opens once it answers; a read that failed is not waited for again: the next click reads afresh.
+// opens once it answers, also when new board data comes meanwhile; a read that failed is not
+// waited for again: the next click reads afresh.
 // The status reads are held with the DevTools Fetch domain to make them slow. Headless Chrome over
 // its DevTools protocol, on the built board with fake data. Skipped when the host has no Chrome.
 import { afterAll, beforeAll, expect, test } from 'bun:test';
@@ -9,6 +10,7 @@ import { CHROME, launchChrome, type Browser } from '../browser.ts';
 
 let fixture: Fixture;
 let cookie: string;
+let workspace: string;
 let browser: Browser | undefined;
 const tab = () => browser!.tab;
 
@@ -21,9 +23,10 @@ beforeAll(async () => {
 	cookie = await fixture.login('picker-slow-read');
 	const lead = fixture.bound('lat', 'lead', { session_id: 's-lead' });
 	fixture.list([lead]);
+	workspace = lead.workspace;
 	// Closed: its picker offers the models and efforts to wake it with.
 	fixture.setHcom({ agents: [] });
-	fixture.report('s-lead', { tag: 'DONE', summary: '好了', hcom_name: 'lead', workspace: lead.workspace });
+	fixture.report('s-lead', { tag: 'DONE', summary: '好了', hcom_name: 'lead', workspace });
 	await fixture.refresh(cookie);
 }, 30_000);
 
@@ -44,9 +47,12 @@ async function openHeld() {
 	await tab().until(`${PART}.title === '讀取中…'`, 'the part reading');
 }
 
-/** The held status reads, after giving the page a moment to send any more. */
+/** The held status reads, once the page has sent no more for 300 ms. */
 async function held() {
-	await sleep(300);
+	for (let count = -1; count !== tab().paused.length; ) {
+		count = tab().paused.length;
+		await sleep(300);
+	}
 	return tab().paused.length;
 }
 
@@ -63,6 +69,12 @@ test.skipIf(!CHROME)('clicks during a slow status read wait for it: no new read,
 		await tab().eval(`${PART}.click()`);
 		await sleep(60);
 	}
+	expect(await held()).toBe(opening);
+	// New board data for the same closed controller does not end the read the clicks wait for.
+	fixture.report('s-lead', { tag: 'DONE', summary: '又好了', hcom_name: 'lead', workspace });
+	await fixture.refresh(cookie);
+	await tab().until(`document.body.innerText.includes('又好了')`, 'the new board data');
+	await tab().eval(`${PART}.click()`);
 	expect(await held()).toBe(opening);
 	expect(await tab().eval<boolean>(MENU)).toBe(false);
 	await release();
