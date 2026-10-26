@@ -131,12 +131,16 @@ Agent 確定用不到時，召喚者主動關閉，不必等使用者說「收�
 
 閒置（listening）或單一則完成訊息不等於用不到；不設定時清理。卡住升級 effort 與額度換帳號的關閉／接回，依 troubleshooting 的恢復流程。只關 `<自身名稱>-` 開頭的 Agent，使用者自己開的或其他流程的一律保留。
 
-關閉前記下名稱、session ID、client／model／effort、工作目錄與成果位置，關閉後核對已停止。關閉不代表可刪除它的 transcript、worktree 或成果。關閉結果不另外回報。
+關閉前記下名稱、session ID、client／model／effort、工作目錄與成果位置。關閉不代表可刪除它的 transcript、worktree 或成果。關閉結果不另外回報。
+
+用 `scripts/close-agent.py` 關，不直接用 `hcom kill`：不是 hcom 自己啟動的 Agent（例如從看板開的）`hcom kill` 會回 `No tracked PID` 而沒關掉，HERDR 視窗也會留著。腳本先 `hcom kill`，沒有 tracked PID 時改 `hcom stop`，再關掉該 Agent 的 HERDR 視窗，最後核對名稱已離開 `hcom list`、視窗已離開 HERDR。
 
 ```bash
-hcom kill <名稱> --name <自身名稱>                   # 關一個
-hcom kill tag:<自身名稱>-<主題> --name <自身名稱>   # 整組都符合條件才用
+uv run --no-project python <本次實際載入的本技能目錄絕對路徑>/scripts/close-agent.py --name <自身名稱> <名稱>                 # 關一個
+uv run --no-project python <本次實際載入的本技能目錄絕對路徑>/scripts/close-agent.py --name <自身名稱> tag:<自身名稱>-<主題>  # 整組都符合條件才用
 ```
+
+「已關閉」指腳本確認名稱與視窗都不在了。腳本只關 hcom 為該 Agent 記錄、且沒有其他 Agent 或你自己共用的視窗；對不上就不動它。結束碼非 0 時，照輸出列出的剩餘項目（名稱還在、視窗還開著、視窗對不上）處理，處理完才算關閉。
 
 接回會還原對話與工作目錄，但不會還原當時執行中的指令、HERDR 視窗排版或已刪除的 worktree；工作目錄已不存在時，接回前先指定有效目錄並核對。
 

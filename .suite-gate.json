@@ -449,6 +449,8 @@
        "tests": ["skills/local/hcom-spawn/tests/test_spawn_guard.py"]},
       {"paths": ["skills/local/hcom-spawn/scripts/spawn-watch.py"],
        "tests": ["skills/local/hcom-spawn/tests/test_spawn_watch.py", "skills/local/hcom-spawn/tests/test_spawn_guard.py"]},
+      {"paths": ["skills/local/hcom-spawn/scripts/close-agent.py"],
+       "tests": ["skills/local/hcom-spawn/tests/test_close_agent.py"]},
       {"paths": ["skills/local/lat-handover/scripts/**"],
        "tests": ["skills/local/lat-handover/tests/test_*.py"]},
       {"paths": ["skills/local/host-guard/scripts/**"],
