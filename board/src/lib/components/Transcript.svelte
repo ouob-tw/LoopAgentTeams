@@ -13,6 +13,7 @@
 	import { lastSegment } from '#lib/board/agents.ts';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
+	import Check from '@lucide/svelte/icons/check';
 	import Copy from '@lucide/svelte/icons/copy';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import { EarlierReads, transcriptUrl, type TranscriptFeed } from '#lib/board/earlier.ts';
@@ -140,10 +141,15 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		const timer = setTimeout(() => (targetAtLastPage = judged ?? null), JUDGE_WITHOUT_PAGE_MS);
 		return () => clearTimeout(timer);
 	});
-	async function copyText(text: string) {
+	let copiedKey = $state<string | null>(null);
+	let copiedTimer: ReturnType<typeof setTimeout> | undefined;
+
+	async function copyText(key: string, text: string) {
 		try {
 			await navigator.clipboard.writeText(text);
-			toasts.show('ok', '已複製訊息。');
+			copiedKey = key;
+			clearTimeout(copiedTimer);
+			copiedTimer = setTimeout(() => (copiedKey = null), 1500);
 		} catch {
 			toasts.show('failed', '複製失敗，瀏覽器不允許寫入剪貼簿。');
 		}
@@ -576,7 +582,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 									<span class="translating" role="status"><span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>翻譯中</span>
 								{/if}
 							</p>
-							<button class="copy" type="button" title="複製訊息" aria-label="複製訊息" onclick={() => copyText(segment.item.text)}><Copy size="1em" /></button>
+							<button class="copy" type="button" title="複製訊息" aria-label="複製訊息" onclick={() => copyText(segment.key, segment.item.text)}>{#if copiedKey === segment.key}<Check size="1em" />{:else}<Copy size="1em" />{/if}</button>
 							{#if translation?.status === 'done'}
 								<div class="text md" lang="zh-Hant-TW">{@html translatedMarkdown.html(segment.item.seq, translation.text)}</div>
 								<button class="fold original-toggle" aria-expanded={!!originals[segment.key]} onclick={() => (originals[segment.key] = !originals[segment.key])}>
