@@ -49,7 +49,8 @@ uv run --no-project python <skill>/scripts/suite-gate.py run --registered web --
 - 在閘門狀態目錄底下的 `checkouts/` 建一個暫時的 detached worktree（`git worktree add --detach`），印出它的位置，所有套件都在裡面跑。跑的期間在原工作區改檔、合併或切換分支，都不影響結果，也不會讓紀錄變成「內容改變、不可沿用」。
 - 指紋不含路徑，所以暫時目錄裡的通過紀錄就是這份內容的紀錄：原工作區內容與 `HEAD` 相同時，`status`、沿用、推送前檢查與安裝檢查都認得它。`fingerprint_include` 列的檔案中被 Git 忽略的，會先從原工作區複製進去，指紋才會相同；有追蹤或沒被忽略的新檔維持 `HEAD` 的內容。
 - 套件目錄有 `bun.lock`（或 `bun.lockb`）時，先在暫時目錄的該目錄執行 `bun install --frozen-lockfile`，同一目錄只做一次；它在自己的工作階段執行，結束（含 Ctrl-C）時連同它留下的程序一起停掉。準備失敗時該套不執行、不寫紀錄，印出「not run: preparing <目錄> failed」並以 2 結束，這不是測試結果；其餘套件照跑。
-- Ctrl-C 或 `kill` 會轉給每一套還在跑的 `run`，等它們都停掉測試後才結束，不寫紀錄。
+- 某套啟動不了（例如執行目錄不存在）時同樣印出「not run」、以 2 結束，其餘套件照跑。
+- Ctrl-C 或 `kill` 會轉給每一套還在跑的 `run`，等它們都停掉測試後才結束，不寫紀錄；其他原因提早結束時也先停掉已開始的套件，再移除暫時目錄。
 - 跑完（通過、失敗或 Ctrl-C）都會移除暫時目錄並清掉 worktree 登記；移除失敗時印出位置，請手動刪除後執行 `git worktree prune`。閘門被強制殺掉時會留下，同樣手動清。
 - 單獨的 `run -- <指令>` 與 `affected`（包括退回整套）仍在目前工作區執行。
 

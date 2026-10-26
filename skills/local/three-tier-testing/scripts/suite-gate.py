@@ -2103,21 +2103,22 @@ def start_registered(suite, cwd, flags, started, relay):
     them."""
     argv = [sys.executable, str(SCRIPT), 'run', *flags, '--', suite['command']]
     pipe = subprocess.PIPE if relay else None
-    # No signal between starting it and listing it in started with its output read.
+    # No signal between starting it and listing it in started with its output read; a
+    # failure after Popen leaves it in started, for stop_registered.
     old_mask = signal.pthread_sigmask(signal.SIG_BLOCK, SIGNALS)
     try:
         child = subprocess.Popen(argv, cwd=cwd, stdout=pipe, stderr=pipe,
                                  start_new_session=True, preexec_fn=_child_setup({}))
-        child.relays = []
+        child.relays = []  # the relay threads that started
+        started.append(child)
         if relay:
             prefix = f"[{suite['cwd']}] ".encode()
-            child.relays = [threading.Thread(target=relay_lines, args=(stream, out, prefix),
-                                             daemon=True)
-                            for stream, out in ((child.stdout, sys.stdout.buffer),
-                                                (child.stderr, sys.stderr.buffer))]
-            for thread in child.relays:
+            for stream, out in ((child.stdout, sys.stdout.buffer),
+                                (child.stderr, sys.stderr.buffer)):
+                thread = threading.Thread(target=relay_lines, args=(stream, out, prefix),
+                                          daemon=True)
                 thread.start()
-        started.append(child)
+                child.relays.append(thread)
     finally:
         signal.pthread_sigmask(signal.SIG_SETMASK, old_mask)
     return child
@@ -2141,16 +2142,21 @@ def wait_registered(child):
 
 
 def stop_registered(started, signum):
-    """Pass an interrupt on to the registered suites still running and wait until each has
-    ended its suite, so the checkout is removed only after them."""
+    """Pass an interrupt (or SIGTERM when a start failed) on to the registered suites still
+    running and wait until each has ended its suite, so the checkout is removed only after
+    them."""
     for sig in SIGNALS:
         signal.signal(sig, signal.SIG_IGN)
     running = [child for child in started if child.poll() is None]
     if running:
-        warn(f'interrupted: ending {len(running)} running suite(s)')
+        warn(f'stopping {len(running)} running suite(s)')
     for child in running:
         child.send_signal(signum)
     for child in started:
+        # A pipe whose relay never started would fill up unread and hold the child.
+        for stream in (child.stdout, child.stderr)[len(child.relays):]:
+            if stream:
+                stream.close()
         wait_registered(child)
 
 
@@ -2211,11 +2217,18 @@ def cmd_run_registered(names, rerun, purpose, reason):
                          'is not a test result')
                     results.append((suite, None))
                     continue
-                results.append((suite, start_registered(suite, cwd, flags, started,
-                                                        len(suites) > 1)))
+                try:
+                    child = start_registered(suite, cwd, flags, started, len(suites) > 1)
+                except OSError as exc:
+                    warn(f"not run: {suite['cwd']} could not start ({exc}); this is not a "
+                         'test result')
+                    child = None
+                results.append((suite, child))
             codes = [2 if child is None else wait_registered(child) for _, child in results]
-        except Interrupted as exc:
-            stop_registered(started, exc.signum)
+        except BaseException as exc:
+            # Whatever ends this early, the started suites stop before the checkout goes.
+            stop_registered(started, exc.signum if isinstance(exc, Interrupted)
+                            else signal.SIGTERM)
             raise
         if len(suites) > 1:
             for (suite, child), code in zip(results, codes):

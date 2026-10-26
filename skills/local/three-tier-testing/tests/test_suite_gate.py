@@ -3281,6 +3281,19 @@ class ConcurrentRegisteredTests(PrePushCase):
         self.assertEqual(self.records(), [])
         self.assertFalse(list((self.state / 'checkouts').iterdir()))
 
+    def test_a_suite_that_cannot_start_is_not_run_and_the_others_run(self):
+        self.registry['full_suites'] = [{'command': self.full('root'), 'cwd': '.'},
+                                        {'command': self.full('gone'), 'cwd': 'no-such-dir'},
+                                        {'command': self.full('web'), 'cwd': 'web'}]
+        self.write_registry()
+        git(self.repo, 'commit', '-qam', 'suites')
+        result = self.gate('run', '--registered', '--purpose', 'post-merge')
+        self.assertEqual(result.returncode, 2, result.stderr)
+        self.assertIn('not run: no-such-dir could not start', result.stderr)
+        self.assertIn('suite-gate: no-such-dir: not run', result.stderr)
+        self.assertEqual(sorted(self.full_runs()), ['root', 'web'])
+        self.assertFalse(list((self.state / 'checkouts').iterdir()))
+
 
 class PrePushInstallTests(PrePushCase):
     OLD = '#!/bin/sh\necho "$@" > {out}.args\ncat > {out}\nexit 0\n'
