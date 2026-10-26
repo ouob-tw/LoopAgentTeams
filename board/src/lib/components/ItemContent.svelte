@@ -7,6 +7,7 @@
 	import { clock } from '#lib/board/clock.svelte.ts';
 	import { noticeTime } from '#lib/board/format.ts';
 	import { renderLinks, renderMarkdown } from '#lib/board/markdown.ts';
+	import CopyButton from './CopyButton.svelte';
 	import { toasts } from '#lib/board/toasts.svelte.ts';
 	import type { Translation } from '#lib/board/translate.ts';
 	import { isAnswered, itemLabel, type HelperOption, type InboxItem } from '#lib/board/types.ts';
@@ -151,6 +152,7 @@
 {/snippet}
 
 <article class="content" data-kind={item.kind} data-content={item.key}>
+	{#if item.kind !== 'question' && item.message}<CopyButton text={item.message} />{/if}
 	<header>
 		<span class="label">{itemLabel(item)}</span>
 		{#if item.kind === 'question'}
@@ -320,6 +322,7 @@
 
 <style>
 	.content {
+		position: relative;
 		background: var(--surface);
 		border: 1px solid var(--line);
 		border-left: 3px solid var(--ok);
@@ -330,6 +333,7 @@
 		border-left-color: var(--warn);
 	}
 	header {
+		padding-right: 1.6rem;
 		display: flex;
 		flex-wrap: wrap;
 		gap: 0.6rem;

@@ -13,8 +13,6 @@
 	import { lastSegment } from '#lib/board/agents.ts';
 	import ArrowDown from '@lucide/svelte/icons/arrow-down';
 	import ArrowUp from '@lucide/svelte/icons/arrow-up';
-	import Check from '@lucide/svelte/icons/check';
-	import Copy from '@lucide/svelte/icons/copy';
 	import LoaderCircle from '@lucide/svelte/icons/loader-circle';
 	import { EarlierReads, transcriptUrl, type TranscriptFeed } from '#lib/board/earlier.ts';
 	import { askingTexts } from '#lib/board/question-message.ts';
@@ -47,6 +45,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	import { itemLabel, type Controller, type InboxQuestion, type InboxReport } from '#lib/board/types.ts';
 	import type { Usage } from '#lib/board/usage.ts';
 	import { onMount, untrack, type Snippet } from 'svelte';
+	import CopyButton from './CopyButton.svelte';
 	import AttachmentList from './AttachmentList.svelte';
 	import BoardAskCard from './BoardAskCard.svelte';
 
@@ -141,20 +140,6 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 		const timer = setTimeout(() => (targetAtLastPage = judged ?? null), JUDGE_WITHOUT_PAGE_MS);
 		return () => clearTimeout(timer);
 	});
-	let copiedKey = $state<string | null>(null);
-	let copiedTimer: ReturnType<typeof setTimeout> | undefined;
-
-	async function copyText(key: string, text: string) {
-		try {
-			await navigator.clipboard.writeText(text);
-			copiedKey = key;
-			clearTimeout(copiedTimer);
-			copiedTimer = setTimeout(() => (copiedKey = null), 1500);
-		} catch {
-			toasts.show('failed', '複製失敗，瀏覽器不允許寫入剪貼簿。');
-		}
-	}
-
 	/** Whether English replies show translated: the board's setting, unless the button was used on this conversation. */
 	const translating = $derived(translatePref.on);
 	$effect.pre(() => translatePref.enter(id));
@@ -582,7 +567,7 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 									<span class="translating" role="status"><span class="spinning" aria-hidden="true"><LoaderCircle size="1em" /></span>翻譯中</span>
 								{/if}
 							</p>
-							<button class="copy" type="button" title="複製訊息" aria-label="複製訊息" onclick={() => copyText(segment.key, segment.item.text)}>{#if copiedKey === segment.key}<Check size="1em" />{:else}<Copy size="1em" />{/if}</button>
+							<CopyButton text={segment.item.text} />
 							{#if translation?.status === 'done'}
 								<div class="text md" lang="zh-Hant-TW">{@html translatedMarkdown.html(segment.item.seq, translation.text)}</div>
 								<button class="fold original-toggle" aria-expanded={!!originals[segment.key]} onclick={() => (originals[segment.key] = !originals[segment.key])}>
@@ -743,20 +728,6 @@ import { translatePref } from '#lib/board/translate-pref.svelte.ts';
 	}
 	.text {
 		overflow-wrap: anywhere;
-	}
-	.copy {
-		position: absolute;
-		top: 0.3rem;
-		right: 0.4rem;
-		display: inline-flex;
-		padding: 0.25rem;
-		border: 0;
-		background: none;
-		color: var(--muted);
-		cursor: pointer;
-	}
-	.copy:hover {
-		color: var(--text);
 	}
 	.translating {
 		display: inline-flex;
