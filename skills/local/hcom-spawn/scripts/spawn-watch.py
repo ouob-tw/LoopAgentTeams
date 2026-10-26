@@ -461,8 +461,8 @@ def check_capacity(watched):
     if last_capacity_check[0] is not None and clock() - last_capacity_check[0] < CAPACITY_POLL:
         return
     last_capacity_check[0] = clock()
-    for name, (_, _, full, spawner, tool) in list(watched.items()):
-        if tool == 'codex':
+    for name, (_, launch_id, full, spawner, tool) in list(watched.items()):
+        if tool == 'codex' and not stopped_since(name, launch_id):
             capacity_step(name, full, spawner)
 
 
