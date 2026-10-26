@@ -4261,44 +4261,65 @@ esac
             return 0, ''
         spawn.hcom, spawn.clock = hcom, lambda: now[0]
         self.addCleanup(spawn.release, 'worker-open', 'worker-open')
-        echo = json.dumps({'type': 'event_msg', 'payload': {'type': 'user_message',
-                                                            'message': 'Continue'}}) + '\n'
-        # Covered from the start, or lat-watch acting once before spawn-watch covers it.
-        for lat_first in (False, True):
-            with self.subTest(lat_first=lat_first):
-                spawn.episodes.clear()
+        lat_typed = []
+        watch = load_watch()
+
+        def lat_cycle(state, minute, perform=True):
+            """One lat-watch cycle; returns (state, actions decided, actions not yet done)."""
+            now[0] = minute * 60
+            _, stuck = self.capacity_screen()
+            state, actions = watch.decide(state, stuck, now=minute * 60)
+            continues = [a for a in actions if a.kind == 'capacity-continue']
+            if perform:
+                for action in continues:
+                    watch.perform(action, 'orch')
+                continues = []
+            return state, list(actions), continues
+
+        # covered: spawn-watch covers before the error; lat_first: lat-watch types Continue
+        # at minute 0 and spawn-watch covers at minute 2; lat_paused: lat-watch decides at
+        # minute 0, spawn-watch covers and types, then lat-watch performs its decision.
+        for order in ('covered', 'lat_first', 'lat_paused'):
+            with self.subTest(order=order), \
+                    patch('time.time', lambda: 1_000_000 + now[0]), \
+                    patch.object(watch, 'perform_nudge',
+                                 lambda action, *_: lat_typed.append(action) or {}):
+                spawn.release('worker-open', 'worker-open')
                 injected.clear()
                 sent.clear()
-                state, lat_actions = None, []
-                if lat_first:
-                    spawn.release('worker-open', 'worker-open')
-                    watch, stuck = self.capacity_screen()
-                    state, lat_actions = watch.decide(None, stuck, now=0)
-                    lat_actions = list(lat_actions)
-                    with transcript.open('a') as stream:
-                        stream.write(echo)
-                spawn.mark_covered('worker-open')
-                for minute in range(0, 31):
-                    now[0] = minute * 60
+                lat_typed.clear()
+                state, lat_actions, first = None, [], 0
+                if order == 'lat_first':
+                    state, lat_actions, _ = lat_cycle(None, 0)
+                    first = 2
+                    now[0] = first * 60
+                if order == 'lat_paused':
+                    state, lat_actions, queued = lat_cycle(None, 0, perform=False)
+                    spawn.mark_covered('worker-open')
                     spawn.capacity_step('worker-open', 'worker-open', 'orch')
-                    if injected and not lat_first and minute == 0:
-                        with transcript.open('a') as stream:
-                            stream.write(echo)
-                    watch, stuck = self.capacity_screen()
-                    state, actions = watch.decide(state, stuck._replace(transcript_size=1),
-                                                  now=minute * 60 + 1)
+                    for action in queued:
+                        self.assertEqual(watch.perform(action, 'orch')['delivery'], 'skipped')
+                else:
+                    spawn.mark_covered('worker-open')
+                notices_at = []
+                for minute in range(first, 31):
+                    now[0] = minute * 60
+                    before = len(sent)
+                    spawn.capacity_step('worker-open', 'worker-open', 'orch')
+                    if any('Continue was sent' in text for text in sent[before:]):
+                        notices_at.append(minute)
+                    state, actions, _ = lat_cycle(state, minute)
                     lat_actions += actions
-                continues = (len(injected)
-                             + sum(a.kind == 'capacity-continue' for a in lat_actions))
-                # The 20-minute repeats ("Still on screen") are not 5-minute notices.
-                notices = (sum('Continue was sent' in text for text in sent)
-                           + sum('Continue was sent' in a.message
-                                 and 'Still on screen' not in a.message for a in lat_actions))
-                self.assertEqual((continues, notices), (1, 1))
+                    # The 20-minute repeats ("Still on screen") are not 5-minute notices.
+                    if any('Continue was sent' in a.message and 'Still on screen' not in a.message
+                           for a in actions):
+                        notices_at.append(minute)
+                self.assertEqual(len(injected) + len(lat_typed), 1)
+                self.assertEqual(notices_at, [5])
 
         # Once spawn-watch no longer covers it, lat-watch types Continue itself.
         spawn.release('worker-open', 'worker-open')
-        watch, stuck = self.capacity_screen()
+        _, stuck = self.capacity_screen()
         _, actions = watch.decide(None, stuck, now=0)
         self.assertEqual([a.kind for a in actions], ['capacity-continue'])
 

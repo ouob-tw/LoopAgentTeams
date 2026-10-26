@@ -4,6 +4,7 @@ import json
 import os
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest import mock
@@ -671,18 +672,22 @@ class CapacityTests(unittest.TestCase):
         self.step_at(10)
         self.assertEqual((self.fake.injected, self.fake.sent), ([], []))
 
-    def test_continue_typed_before_coverage_is_not_typed_again(self):
-        # lat-watch typed Continue before this watcher covered the agent.
-        self.write({'type': 'event_msg', 'payload': {'type': 'error', 'message': CAPACITY}},
-                   ECHO)
+    def test_continue_lat_watch_typed_before_coverage_is_not_typed_again(self):
+        # lat-watch typed Continue 2 minutes before this watcher's first check.
+        handed = Path(self.state.name) / 'hcom-spawn/capacity/vare-review-kilo.continued.json'
+        handed.parent.mkdir(parents=True, exist_ok=True)
+        handed.write_text(json.dumps({'at': time.time() - 120}))
         self.step_at(0)
         self.assertEqual(self.fake.injected, [])
-        self.step_at(300)
+        self.assertFalse(handed.exists())
+        self.step_at(170)
+        self.assertEqual(self.fake.sent, [])
+        self.step_at(185)  # 5 minutes after lat-watch's Continue
         self.assertEqual(len(self.fake.sent), 1)
         self.assertIn('Continue was sent', self.fake.sent[0])
         # After a reply, the next capacity episode gets its own Continue.
         self.write(REPLY)
-        self.step_at(305)
+        self.step_at(190)
         self.assertEqual(len(self.fake.injected), 1)
 
     def test_inactive_agent_gets_nothing(self):

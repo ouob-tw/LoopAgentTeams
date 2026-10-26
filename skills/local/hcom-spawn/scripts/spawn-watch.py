@@ -9,6 +9,8 @@ stop. Until then it also types Continue once when a Codex agent stops on model c
 (see capacity_step).
 """
 import argparse
+import contextlib
+import fcntl
 import importlib.util
 import json
 import os
@@ -435,6 +437,18 @@ def release(name, full):
     """Stop covering an agent's capacity: lat-watch takes it over again."""
     episodes.pop(name, None)
     (state_dir() / 'capacity' / f'{full}.json').unlink(missing_ok=True)
+    (state_dir() / 'capacity' / f'{full}.continued.json').unlink(missing_ok=True)
+
+
+@contextlib.contextmanager
+def capacity_lock():
+    """Lock shared with lat-watch, which checks coverage and types Continue while holding it."""
+    fd = os.open(state_dir() / 'capacity', os.O_RDONLY)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        os.close(fd)
 
 
 def process_start(pid):
@@ -453,7 +467,21 @@ def mark_covered(full):
     """
     pid = os.getpid()
     record = {'agent': full, 'pid': pid, 'start': process_start(pid)}
-    (state_dir() / 'capacity' / f'{full}.json').write_text(json.dumps(record))
+    with capacity_lock():
+        (state_dir() / 'capacity' / f'{full}.json').write_text(json.dumps(record))
+
+
+def lat_continue_at(full):
+    """clock() time of a Continue lat-watch typed before this watcher covered the agent,
+    or None. lat-watch writes <agent>.continued.json with the wall time while holding
+    capacity_lock, so it exists by the time mark_covered returns."""
+    path = state_dir() / 'capacity' / f'{full}.continued.json'
+    try:
+        at = float(json.loads(path.read_text())['at'])
+    except (OSError, ValueError, KeyError, TypeError):
+        return None
+    path.unlink(missing_ok=True)
+    return clock() - max(0.0, time.time() - at)
 
 
 def check_capacity(watched):
@@ -536,19 +564,6 @@ def output_since(transcript, offset, size):
     return any(is_output(record) for record in transcript_records(transcript, offset, size))
 
 
-def continue_pending(transcript, size):
-    """True when the last user input is a Continue with no agent output after it, e.g.
-    one lat-watch typed before this watcher started covering the agent."""
-    last = None
-    for record in transcript_records(transcript, 0, size):
-        payload = record['payload']
-        if is_output(record):
-            last = None
-        elif record.get('type') == 'event_msg' and payload.get('type') == 'user_message':
-            last = str(payload.get('message', '')).strip()
-    return last == CAPACITY_CONTINUE
-
-
 def capacity_step(name, full, spawner):
     """Handle one check of a Codex agent that may be stopped on model capacity.
 
@@ -556,7 +571,9 @@ def capacity_step(name, full, spawner):
     empty input box Continue + Enter is typed once; with text in it the spawner is told at
     once instead. Still on capacity CAPACITY_NOTICE seconds after Continue, the spawner is
     told once. Only a complete agent reply or tool call in the transcript after the episode
-    began ends it. Inactive agents are left alone; failed sends are retried next check.
+    began ends it. A Continue lat-watch typed before this watcher covered the agent starts
+    the episode instead of a new one. Inactive agents are left alone; failed sends are
+    retried next check.
     """
     code, out = hcom('list', full, '--json')
     try:
@@ -574,6 +591,9 @@ def capacity_step(name, full, spawner):
     if episode and output_since(transcript, episode['offset'], size):
         del episodes[name]
         episode = None
+    if episode is None and (handed_at := lat_continue_at(full)) is not None:
+        # lat-watch typed Continue for this episode; the 5 minutes count from then.
+        episode = episodes[name] = {'offset': size, 'at': handed_at, 'continued': True}
     code, out = hcom('term', full, '--json', timeout=10)
     try:
         screen = json.loads(out) if code == 0 else None
@@ -583,10 +603,7 @@ def capacity_step(name, full, spawner):
             [str(line) for line in screen.get('lines') or []], screen.get('input_text')):
         return
     where = f'{full} (codex) stopped on "Selected model is at capacity".'
-    if episode is None and continue_pending(transcript, size):
-        # Continue already typed (by lat-watch before this watcher covered the agent).
-        episodes[name] = {'offset': size, 'at': clock(), 'continued': True}
-    elif episode is None:
+    if episode is None:
         if screen.get('prompt_empty') is not True or screen.get('input_text'):
             if notify(spawner, f'hcom-spawn: {where} Continue was not typed because its input '
                                f'box has text. Look at it with `hcom term {full}`; switch '

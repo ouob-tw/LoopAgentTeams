@@ -621,14 +621,18 @@ def detect_screen_quota(lines, client, claude_notice=None):
     return None
 
 
+def spawn_capacity_dir():
+    base = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state'))
+    return base / 'hcom-spawn/capacity'
+
+
 def spawn_watch_covers(agent):
     """True while a running hcom-spawn spawn-watch.py handles this agent's model capacity.
 
     spawn-watch writes hcom-spawn/capacity/<agent>.json with its pid and start time.
     """
-    base = Path(os.environ.get('XDG_STATE_HOME', Path.home() / '.local/state'))
     try:
-        record = json.loads((base / 'hcom-spawn/capacity' / f'{agent}.json').read_text())
+        record = json.loads((spawn_capacity_dir() / f'{agent}.json').read_text())
         stat = (Path('/proc') / str(int(record['pid'])) / 'stat').read_text()
         return int(stat.rsplit(')', 1)[1].split()[19]) == record['start']
     except (OSError, ValueError, KeyError, TypeError, IndexError):
@@ -2085,6 +2089,27 @@ def perform_nudge(action, orchestrator, workspace=None):
     return {'delivery': 'terminal'}
 
 
+def perform_capacity_continue(action, orchestrator, workspace=None):
+    """Type Continue unless spawn-watch now covers the agent.
+
+    The check and the typing hold the lock spawn-watch takes to start covering an agent,
+    and <agent>.continued.json tells spawn-watch when this Continue was typed, so a
+    watcher that starts covering meanwhile neither types again nor restarts the 5 minutes.
+    """
+    directory = spawn_capacity_dir()
+    directory.mkdir(parents=True, exist_ok=True)
+    lock = os.open(directory, os.O_RDONLY)
+    try:
+        fcntl.flock(lock, fcntl.LOCK_EX)
+        if spawn_watch_covers(action.agent):
+            return {'delivery': 'skipped', 'reason': 'spawn-watch covers the agent'}
+        result = perform_nudge(action, orchestrator, workspace)
+        write_json_atomic(directory / f'{action.agent}.continued.json', {'at': time.time()})
+        return result
+    finally:
+        os.close(lock)
+
+
 def send_notification(action, orchestrator, intent):
     run_command(
         ['hcom', 'send', f'@{orchestrator}', '--intent', intent,
@@ -2309,7 +2334,7 @@ ACTION_POLICIES = {
     ),
     'notify-user': (perform_notify_user, 'user_notified', ()),
     'recover-prompt': (perform_prompt_recovery, None, ()),
-    'capacity-continue': (perform_nudge, None, ()),
+    'capacity-continue': (perform_capacity_continue, None, ()),
 }
 
 
