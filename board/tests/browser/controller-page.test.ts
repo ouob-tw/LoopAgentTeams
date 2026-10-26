@@ -142,9 +142,33 @@ test.skipIf(!CHROME)("a report row opens the report in the conversation; a quest
 
 test.skipIf(!CHROME)("at a phone's width the tabs share the width and nothing scrolls sideways", async () => {
 	await visit(390);
-	const widths = await tab.eval<number[]>(`[...document.querySelectorAll('.detail [role="tab"]')].map((b) => Math.round(b.getBoundingClientRect().width))`);
-	expect(widths).toHaveLength(4);
-	expect(Math.max(...widths) - Math.min(...widths)).toBeLessThanOrEqual(1);
+	// The counts arrive after the strip and widen their tabs (the ledger has none here).
+	await tab.until(`document.querySelectorAll('.detail [role="tab"] small').length === 2`, 'the tab counts');
+	const shape = await tab.eval<{ tabs: { left: number; right: number; width: number; natural: number }[]; content: number; gap: number }>(`(() => {
+		const strip = document.querySelector('.detail [role="tablist"]');
+		const tabs = [...strip.querySelectorAll('[role="tab"]')].map((button) => {
+			const clone = button.cloneNode(true);
+			clone.style.cssText = 'position: absolute; visibility: hidden; flex: none; min-width: 0; width: max-content';
+			strip.append(clone);
+			const natural = clone.getBoundingClientRect().width;
+			clone.remove();
+			const r = button.getBoundingClientRect();
+			return { left: r.left, right: r.right, width: r.width, natural };
+		});
+		const style = getComputedStyle(strip);
+		return { tabs, content: strip.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight), gap: parseFloat(style.columnGap) || 0 };
+	})()`);
+	const { tabs } = shape;
+	expect(tabs).toHaveLength(4);
+	// The tabs fill the strip, or overflow it by no more than their labels need, and share it;
+	// one whose label and count do not fit its share is as wide as they are.
+	const needed = tabs.reduce((sum, entry) => sum + entry.natural, 0) + shape.gap * (tabs.length - 1);
+	expect(Math.abs(tabs.at(-1)!.right - tabs[0].left - Math.max(shape.content, needed))).toBeLessThanOrEqual(1);
+	const share = Math.min(...tabs.map((entry) => entry.width));
+	for (const entry of tabs) {
+		expect(entry.width).toBeGreaterThanOrEqual(entry.natural - 1);
+		if (entry.width > share + 1) expect(entry.width).toBeCloseTo(entry.natural, 0);
+	}
 	expect(await tab.eval(FITS)).toBe(true);
 	await tab.eval(`${tabButton('回報')}.click()`);
 	await tab.until(`JSON.stringify(${SHOWN}) === '["panel-reports"]'`, 'the reports panel');
